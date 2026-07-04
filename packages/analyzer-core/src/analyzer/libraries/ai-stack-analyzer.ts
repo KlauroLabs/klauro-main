@@ -305,6 +305,9 @@ export class AIStackAnalyzer extends BaseAnalyzer {
 
       // MCP tools and servers are HIGH-value entry points (meta-relevant: agents are Klauro's users).
       if (det.capability === 'mcp-tool') {
+        const handlerCallCandidates = Array.isArray(det.metadata?.handlerCallCandidates) && det.metadata.handlerCallCandidates.length > 0
+          ? det.metadata.handlerCallCandidates
+          : undefined;
         entryPoints.push(
           this.createEntryPoint(
             `entry_mcp_tool_${this.sanitizeId(det.name)}_${this.sanitizeId(det.filePath)}`,
@@ -314,7 +317,15 @@ export class AIStackAnalyzer extends BaseAnalyzer {
             `MCP tool '${det.name}' exposed by an MCP server`,
             { event: 'mcp.tool.call', pattern: det.name },
             undefined,
-            { ai: true, mcp: true, capability: 'mcp-tool' }
+            {
+              ai: true, mcp: true, capability: 'mcp-tool',
+              // Evidence for orchestrator.linkRouteHandlers to resolve into a
+              // real `calls` edge when the registration's handler is an
+              // inline arrow/function (the common case — no bare identifier
+              // to point `handler.method_name` at). See extractHandlerCallCandidates.
+              ...(handlerCallCandidates ? { handlerCallCandidates } : {})
+            },
+            { node_id: nodeId, method_name: det.name, file: det.filePath }
           )
         );
       }
@@ -439,7 +450,23 @@ export class AIStackAnalyzer extends BaseAnalyzer {
 
     // ---- MCP tools (registered handlers — HIGH value) ----
     for (const m of content.matchAll(/\.(?:registerTool|tool)\s*\(\s*['"]([^'"]+)['"]/g)) {
-      push('mcp-tool', m[1], 'mcp-tool', m.index ?? 0, { framework: 'mcp' });
+      // The registration call almost always ends in an inline arrow/function
+      // handler (`server.registerTool('x', schema, async (...) => {...})`),
+      // so there is rarely a bare identifier to point at. Scan that handler's
+      // body text for CALL EXPRESSIONS (`query.buildSummary(...)`,
+      // `runAnalysis(...)`) and surface the callee names as
+      // handlerCallCandidates — evidence for the cross-analyzer edge-linker
+      // (orchestrator.linkRouteHandlers) to resolve into a real `calls` edge.
+      // Nothing is resolved or fabricated here; an unresolved/absent
+      // candidate simply means no edge gets added downstream.
+      const openParenIndex = content.indexOf('(', m.index ?? 0);
+      const candidates = openParenIndex >= 0
+        ? this.extractHandlerCallCandidates(this.extractBalancedArgsText(content, openParenIndex))
+        : [];
+      push('mcp-tool', m[1], 'mcp-tool', m.index ?? 0, {
+        framework: 'mcp',
+        ...(candidates.length > 0 ? { handlerCallCandidates: candidates } : {}),
+      });
     }
     // Python @mcp.tool() / @server.tool()
     for (const m of content.matchAll(/@(?:mcp|server)\.tool\s*\(/g)) {
@@ -492,6 +519,82 @@ export class AIStackAnalyzer extends BaseAnalyzer {
     const window = content.slice(index, index + 200);
     const m = window.match(/def\s+(\w+)\s*\(/);
     return m ? m[1] : undefined;
+  }
+
+  /**
+   * Given the index of a call's opening `(`, return the raw text of its
+   * arguments (balanced on parens/brackets/braces, string-aware), i.e.
+   * everything between the outermost matching parens. Used to get the whole
+   * argument blob for a registration call so we can scan the trailing
+   * handler arg for call expressions.
+   */
+  private extractBalancedArgsText(content: string, openParenIndex: number): string {
+    let depth = 0;
+    let start = -1;
+    let inStr: string | null = null;
+    for (let i = openParenIndex; i < content.length; i++) {
+      const ch = content[i];
+      if (inStr) {
+        if (ch === inStr && content[i - 1] !== '\\') inStr = null;
+        continue;
+      }
+      if (ch === '"' || ch === "'" || ch === '`') { inStr = ch; continue; }
+      if (ch === '(') { depth++; if (depth === 1) start = i + 1; continue; }
+      if (ch === ')') { depth--; if (depth === 0) return start >= 0 ? content.slice(start, i) : ''; }
+    }
+    return start >= 0 ? content.slice(start) : '';
+  }
+
+  /**
+   * Evidence-based fallback for a registration/handler arg that is an inline
+   * arrow/function body rather than a bare identifier reference: scan the
+   * body text for CALL EXPRESSIONS (`identifier(...)` or `ns.identifier(...)`)
+   * and surface their callee names as candidates. Text-based, not scope-aware
+   * — resolution into an actual edge only happens if a downstream consumer
+   * (orchestrator.linkRouteHandlers) finds exactly one matching function node.
+   */
+  private extractHandlerCallCandidates(argsText: string): string[] {
+    if (!argsText) return [];
+    const candidates: string[] = [];
+    const seen = new Set<string>();
+    const skip = new Set([
+      'if', 'for', 'while', 'switch', 'catch', 'return', 'function', 'async',
+      'await', 'json', 'JSON', 'Boolean', 'String', 'Number', 'Array', 'Object',
+      'Promise', 'Error', 'new'
+    ]);
+    // Identify `name`/`ns.name` tokens, then check via a balanced-bracket
+    // scan (not a regex character class) whether they're immediately
+    // followed by an optional generic type-argument list and a call paren.
+    // A naive `<[^<>(){}]*>` class breaks on the common
+    // `apiGet<{ items: Foo[] }>(...)` shape (object/array types nested in
+    // the generic), silently mis-skipping the real callee.
+    const identifierPattern = /([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)/g;
+    let m;
+    while ((m = identifierPattern.exec(argsText)) !== null) {
+      const qualified = m[1];
+      const parts = qualified.split('.');
+      const bare = parts[parts.length - 1];
+      if (skip.has(bare) || skip.has(qualified)) continue;
+
+      let i = identifierPattern.lastIndex;
+      while (i < argsText.length && /\s/.test(argsText[i])) i++;
+      if (argsText[i] === '<') {
+        let depth = 0;
+        let j = i;
+        for (; j < argsText.length; j++) {
+          if (argsText[j] === '<') depth++;
+          else if (argsText[j] === '>') { depth--; if (depth === 0) { j++; break; } }
+        }
+        if (depth !== 0) continue;
+        i = j;
+        while (i < argsText.length && /\s/.test(argsText[i])) i++;
+      }
+      if (argsText[i] !== '(') continue;
+
+      if (!seen.has(qualified)) { seen.add(qualified); candidates.push(qualified); }
+      if (bare !== qualified && !seen.has(bare)) { seen.add(bare); candidates.push(bare); }
+    }
+    return candidates;
   }
 
   private detectionNodeId(det: AIDetection): string {

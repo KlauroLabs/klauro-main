@@ -16,6 +16,18 @@ interface McpToolRegistration {
   receiver: string;
   /** Best-effort pointer to the handler — an identifier name if the last arg is a bare reference. */
   handlerRef?: string;
+  /**
+   * Evidence-based fallback when the handler arg is an inline arrow/function
+   * body rather than a bare identifier (the overwhelming common case for
+   * `server.registerTool('x', schema, async (...) => { ... })`). We scan the
+   * inline body text for call-expression callees (`fooBar(...)`,
+   * `ns.fooBar(...)`) so a real downstream function can still be linked, e.g.
+   * `query.buildSummary(...)` inside the arrow -> function `buildSummary` in
+   * query.ts. Never fabricated: these are literal identifiers pulled from the
+   * source text of the handler body, just not resolved to a node yet (that
+   * happens in the cross-analyzer edge-linking pass).
+   */
+  handlerCallCandidates?: string[];
 }
 
 /**
@@ -154,7 +166,15 @@ export class McpToolRegistrationAnalyzer extends BaseAnalyzer {
           registrationKind: reg.kind,
           receiver: reg.receiver,
           file: reg.filePath,
-          line: reg.line
+          line: reg.line,
+          // Evidence-based candidates for the cross-analyzer edge-linking pass
+          // to resolve into a real `calls` edge when handlerRef is absent
+          // (the common case: inline arrow/function handler body). Absent or
+          // empty when the handler body had nothing resolvable — no edge is
+          // fabricated in that case.
+          handlerCallCandidates: reg.handlerCallCandidates && reg.handlerCallCandidates.length > 0
+            ? reg.handlerCallCandidates
+            : undefined
         }
       } as CASEntryPoint);
     }
@@ -223,7 +243,8 @@ export class McpToolRegistrationAnalyzer extends BaseAnalyzer {
         filePath,
         line: this.lineAt(content, match.index),
         receiver,
-        handlerRef: this.extractHandlerRef(args)
+        handlerRef: this.extractHandlerRef(args),
+        handlerCallCandidates: this.extractHandlerCallCandidates(args)
       });
     }
 
@@ -249,7 +270,8 @@ export class McpToolRegistrationAnalyzer extends BaseAnalyzer {
         filePath,
         line: this.lineAt(content, match.index),
         receiver,
-        handlerRef: this.extractHandlerRef(args)
+        handlerRef: this.extractHandlerRef(args),
+        handlerCallCandidates: this.extractHandlerCallCandidates(args)
       });
     }
 
@@ -274,7 +296,8 @@ export class McpToolRegistrationAnalyzer extends BaseAnalyzer {
         filePath,
         line: this.lineAt(content, match.index),
         receiver,
-        handlerRef: this.extractHandlerRef(args, /* firstArgIsSchema */ true)
+        handlerRef: this.extractHandlerRef(args, /* firstArgIsSchema */ true),
+        handlerCallCandidates: this.extractHandlerCallCandidates(args, /* firstArgIsSchema */ true)
       });
     }
 
@@ -291,6 +314,68 @@ export class McpToolRegistrationAnalyzer extends BaseAnalyzer {
       return last;
     }
     return undefined;
+  }
+
+  /**
+   * When the handler arg is an inline arrow/function body (the common case —
+   * `extractHandlerRef` returns undefined), pull out plausible callee names
+   * from CALL EXPRESSIONS inside that body text: `identifier(...)` or
+   * `ns.identifier(...)`. This is text-based, not scope-aware, so it is
+   * evidence of "this name appears as a call target inside the handler",
+   * not a guarantee of a unique resolution — the cross-analyzer linking pass
+   * (orchestrator.linkRouteHandlers) is responsible for resolving a candidate
+   * to an actual function node and only then emitting an edge. If the last
+   * arg is itself a bare identifier (handled by extractHandlerRef), there is
+   * no body text to scan here, so this returns an empty list in that case.
+   */
+  private extractHandlerCallCandidates(args: string[], firstArgIsSchema = false): string[] {
+    const relevant = firstArgIsSchema ? args.slice(1) : args;
+    const last = (relevant[relevant.length - 1] || '').trim();
+    if (!last || /^[A-Za-z_$][\w$.]*$/.test(last)) return [];
+
+    const candidates: string[] = [];
+    const seen = new Set<string>();
+    // Matches `foo` or `ns.foo` identifier heads; keeps only the
+    // innermost/last member segment (e.g. `query.buildSummary` ->
+    // `buildSummary`) alongside the qualified form so either a namespaced or
+    // bare function node can match. Whether it's actually a call (optionally
+    // through a generic type-argument list, e.g. `apiGet<Foo>(...)`) is
+    // checked below with a balanced-bracket scan rather than folded into the
+    // regex — a naive `<[^<>(){}]*>` class breaks on the common
+    // `Thing<{ items: Foo[] }>(...)` shape (object/array types nested in the
+    // generic), silently mis-skipping the real callee.
+    const identifierPattern = /([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)/g;
+    const skip = new Set([
+      'if', 'for', 'while', 'switch', 'catch', 'return', 'function', 'async',
+      'await', 'json', 'JSON', 'Boolean', 'String', 'Number', 'Array', 'Object',
+      'Promise', 'Error', 'new'
+    ]);
+    let m;
+    while ((m = identifierPattern.exec(last)) !== null) {
+      const qualified = m[1];
+      const parts = qualified.split('.');
+      const bare = parts[parts.length - 1];
+      if (skip.has(bare) || skip.has(qualified)) continue;
+
+      let i = identifierPattern.lastIndex;
+      while (i < last.length && /\s/.test(last[i])) i++;
+      if (last[i] === '<') {
+        let depth = 0;
+        let j = i;
+        for (; j < last.length; j++) {
+          if (last[j] === '<') depth++;
+          else if (last[j] === '>') { depth--; if (depth === 0) { j++; break; } }
+        }
+        if (depth !== 0) continue;
+        i = j;
+        while (i < last.length && /\s/.test(last[i])) i++;
+      }
+      if (last[i] !== '(') continue;
+
+      if (!seen.has(qualified)) { seen.add(qualified); candidates.push(qualified); }
+      if (bare !== qualified && !seen.has(bare)) { seen.add(bare); candidates.push(bare); }
+    }
+    return candidates;
   }
 
   private looksLikeMcpServerReceiver(name: string): boolean {

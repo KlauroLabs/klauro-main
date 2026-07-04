@@ -78,9 +78,29 @@ const LOWERCASE_UTILITY_NAMES = new Set([
   'data', 'item', 'items', 'state', 'status', 'config', 'options', 'props', 'context',
 ]);
 
+// Content hashes, uuids, and random generated ids are plumbing artifacts
+// that can survive as a journey's "terminal_entities" name on thin/near-empty
+// repos (e.g. a hashed cache key or generated record id standing in for a
+// real entity). They must never become terminal-entity CANDIDATES in the
+// first place — rejecting them only at the label-composition layer is too
+// late, since ranked_entities is also consumed directly (narrative entity
+// lists, capability matching) without going through domain composition.
+// Kept in sync with orchestrator.ts's isHashOrIdShapedToken.
+function isHashOrIdShapedName(raw: string): boolean {
+  const normalized = (raw || '').toLowerCase();
+  if (normalized.length < 8) return false;
+  if (/^[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}$/.test(normalized)) return true;
+  if (normalized.length >= 12 && /^[0-9a-f]+$/.test(normalized)) return true;
+  if (normalized.length >= 10 && /^[0-9a-z]+$/.test(normalized) && /[0-9]/.test(normalized) && !/[aeiou]/.test(normalized)) {
+    return true;
+  }
+  return false;
+}
+
 function isNoiseTerminalName(raw: string): boolean {
   const name = (raw || '').trim();
   if (!name) return true;
+  if (isHashOrIdShapedName(name)) return true;
   // Underscore-prefixed names are private helpers in Dart/Python conventions.
   if (name.startsWith('_')) return true;
   // Exception/error classes are failure paths, not product outputs — a

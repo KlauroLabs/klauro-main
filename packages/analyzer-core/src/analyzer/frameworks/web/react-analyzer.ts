@@ -24,7 +24,7 @@ interface ReactComponent {
   isDefaultExport: boolean;
   props: Array<{ name: string; type: string; required: boolean; defaultValue?: string }>;
   state: Array<{ name: string; type: string; initialValue?: string }>;
-  hooks: Array<{ name: string; type: string; dependencies?: string[] }>;
+  hooks: Array<{ name: string; type: string; dependencies?: string[]; hookUsageId?: string }>;
   lifecycle: string[];
   children: string[];
   imports: string[];
@@ -456,6 +456,7 @@ export class ReactAnalyzer extends BaseAnalyzer {
 
             component.hooks.forEach((hook, index) => {
               const hookUsageId = this.generateId('hook_usage', component.filePath, `${component.name}_${hook.name}_${index}`);
+              (hook as { hookUsageId?: string }).hookUsageId = hookUsageId;
               const hookUsageNode = this.createNodeBuilder(hookUsageId, `${hook.name} usage`, 'hook_usage')
                 .withLevel(4, 'member')
                 .withCategory('hook_usage', ['react', 'hook'])
@@ -870,7 +871,16 @@ export class ReactAnalyzer extends BaseAnalyzer {
       f.includes('/lib/') ||
       f.includes('util.') ||
       f.includes('helper.') ||
-      f.includes('lib.')
+      f.includes('lib.') ||
+      // API client / data-access modules (e.g. `shared/api/fetch.ts` exporting
+      // apiGet/apiPost/...) are a common home for the fetcher functions that
+      // data-fetching hooks (useQuery/useMutation) call. Without these paths
+      // in scope, extractFetcherCallCandidates has no node to resolve against
+      // even when it correctly identifies the callee name.
+      f.includes('/api/') ||
+      f.includes('/services/') ||
+      f.includes('api.') ||
+      f.includes('service.')
     );
 
     for (const file of utilFiles) {
@@ -1735,19 +1745,126 @@ export class ReactAnalyzer extends BaseAnalyzer {
     return state;
   }
 
-  private extractComponentHooks(node: any, content: string): Array<{ name: string; type: string; dependencies?: string[] }> {
-    const hooks: Array<{ name: string; type: string; dependencies?: string[] }> = [];
+  private extractComponentHooks(node: any, content: string): Array<{ name: string; type: string; dependencies?: string[]; hookUsageId?: string }> {
+    const hooks: Array<{ name: string; type: string; dependencies?: string[]; hookUsageId?: string }> = [];
     const hookPattern = /(use\w+)\s*\(/g;
+    // Hooks that run a caller-supplied fetcher — the fetcher is the real
+    // downstream call (e.g. React Query's `queryFn`/`mutationFn`, SWR's
+    // positional fetcher). We only look for a callee name inside that
+    // fetcher's body text; nothing is resolved here (no node lookup, no
+    // scope check) — extractComponentHooks just surfaces evidence, the
+    // actual `calls` edge is only created later if that name resolves
+    // uniquely to a real function/util node (see buildReactRelationships).
+    const dataFetchingHooks = new Set(['useQuery', 'useMutation', 'useSWR', 'useSWRMutation', 'useInfiniteQuery']);
 
     let match;
     while ((match = hookPattern.exec(content)) !== null) {
-      hooks.push({
-        name: match[1],
-        type: match[1].startsWith('use') && match[1].length > 3 ? 'custom' : 'built-in'
-      });
+      const hookName = match[1];
+      const hookEntry: { name: string; type: string; dependencies?: string[] } = {
+        name: hookName,
+        type: hookName.startsWith('use') && hookName.length > 3 ? 'custom' : 'built-in'
+      };
+
+      if (dataFetchingHooks.has(hookName)) {
+        const argsText = this.extractBalancedCallArgsText(content, match.index + match[0].length - 1);
+        const candidates = this.extractFetcherCallCandidates(argsText);
+        if (candidates.length > 0) {
+          hookEntry.dependencies = candidates;
+        }
+      }
+
+      hooks.push(hookEntry);
     }
 
     return hooks;
+  }
+
+  /** Given the index of the opening `(` of a call, return the raw text of the
+   *  arguments (balanced on parens/brackets/braces, string-aware) without
+   *  attempting to split them — used when we want the whole argument blob to
+   *  regex over (e.g. to find `queryFn: ...` inside an options object). */
+  private extractBalancedCallArgsText(content: string, openParenIndex: number): string {
+    let depth = 0;
+    let start = -1;
+    for (let i = openParenIndex; i < content.length; i++) {
+      const ch = content[i];
+      if (ch === '(') {
+        depth++;
+        if (depth === 1) start = i + 1;
+        continue;
+      }
+      if (ch === ')') {
+        depth--;
+        if (depth === 0) return start >= 0 ? content.slice(start, i) : '';
+      }
+    }
+    return start >= 0 ? content.slice(start) : '';
+  }
+
+  /**
+   * Best-effort evidence extraction for data-fetching hook callbacks. Looks
+   * for `queryFn:`/`mutationFn:` (React Query) or, failing that, treats the
+   * whole args blob as a fallback scan target (covers SWR's positional
+   * `useSWR(key, fetcherFn)` and `useSWR(key, () => fetcherFn(...))`).
+   * Returns callee names found via CALL EXPRESSIONS inside that scope —
+   * `apiGet(...)` -> 'apiGet', `api.getOrgs(...)` -> ['api.getOrgs','getOrgs'].
+   * A bare identifier with no call (e.g. `mutationFn: apiPost`) is also
+   * captured directly since that's an even stronger, unambiguous reference.
+   */
+  private extractFetcherCallCandidates(argsText: string): string[] {
+    if (!argsText) return [];
+    const candidates: string[] = [];
+    const seen = new Set<string>();
+    const add = (name: string) => { if (name && !seen.has(name)) { seen.add(name); candidates.push(name); } };
+
+    const fnKeyPattern = /(?:queryFn|mutationFn)\s*:\s*([A-Za-z_$][\w$.]*)(?=\s*[,}])/g;
+    let km;
+    while ((km = fnKeyPattern.exec(argsText)) !== null) {
+      const ref = km[1];
+      add(ref);
+      const bare = ref.includes('.') ? ref.split('.').pop()! : ref;
+      if (bare !== ref) add(bare);
+    }
+
+    const skip = new Set([
+      'if', 'for', 'while', 'switch', 'catch', 'return', 'function', 'async',
+      'await', 'JSON', 'Boolean', 'String', 'Number', 'Array', 'Object',
+      'Promise', 'Error', 'new', 'URLSearchParams'
+    ]);
+    // Identify `name` or `ns.name` tokens, then independently check (via a
+    // balanced scanner, not a regex character class) whether they're
+    // immediately followed by an optional generic type-argument list and a
+    // call paren. A plain `<[^<>(){}]*>` class fails on the extremely common
+    // `apiGet<{ items: Foo[] }>(...)` shape (object/array types nested in the
+    // generic), which would silently misdetect the callee — hence the
+    // explicit depth-counting skip below instead of a regex for that part.
+    const identifierPattern = /([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)/g;
+    let im;
+    while ((im = identifierPattern.exec(argsText)) !== null) {
+      const qualified = im[1];
+      const bare = qualified.includes('.') ? qualified.split('.').pop()! : qualified;
+      if (skip.has(bare) || skip.has(qualified)) continue;
+
+      let i = identifierPattern.lastIndex;
+      while (i < argsText.length && /\s/.test(argsText[i])) i++;
+      if (argsText[i] === '<') {
+        let depth = 0;
+        let j = i;
+        for (; j < argsText.length; j++) {
+          if (argsText[j] === '<') depth++;
+          else if (argsText[j] === '>') { depth--; if (depth === 0) { j++; break; } }
+        }
+        if (depth !== 0) continue; // unbalanced generic — not a confident match
+        i = j;
+        while (i < argsText.length && /\s/.test(argsText[i])) i++;
+      }
+      if (argsText[i] !== '(') continue;
+
+      add(qualified);
+      if (bare !== qualified) add(bare);
+    }
+
+    return candidates;
   }
 
   private extractLifecycleMethods(node: any, content: string): string[] {
@@ -2132,6 +2249,28 @@ export class ReactAnalyzer extends BaseAnalyzer {
       util.exports.forEach(exportName => namedTargetIds.set(exportName, utilId));
     });
 
+    // Name -> node id for resolving data-fetching hook callbacks (see
+    // extractFetcherCallCandidates). Uses AMBIGUOUS as a sentinel when two
+    // distinct util declarations share a name across files — in that case we
+    // will not guess which one the hook actually calls, so no edge is emitted
+    // (evidence-based: an edge is only created when the candidate resolves to
+    // exactly one function-like node).
+    const AMBIGUOUS = Symbol('ambiguous');
+    const fetcherTargetIds = new Map<string, string | typeof AMBIGUOUS>();
+    utils.forEach(util => {
+      if (util.type !== 'function') return;
+      const utilId = this.generateId('util', util.filePath, util.name);
+      const names = new Set([util.name, ...util.exports]);
+      names.forEach(name => {
+        const existing = fetcherTargetIds.get(name);
+        if (existing === undefined) {
+          fetcherTargetIds.set(name, utilId);
+        } else if (existing !== utilId) {
+          fetcherTargetIds.set(name, AMBIGUOUS);
+        }
+      });
+    });
+
     components.forEach(component => {
       const componentId = this.generateId('component', component.filePath, component.name);
 
@@ -2164,6 +2303,31 @@ export class ReactAnalyzer extends BaseAnalyzer {
               'behavioral',
               { hook_name: hook.name }
             ));
+          }
+        }
+
+        // Data-fetching hooks (useQuery/useMutation/useSWR/...) carry
+        // candidate fetcher callee names in `dependencies` (see
+        // extractComponentHooks/extractFetcherCallCandidates). Resolve each
+        // candidate against declared functions; emit a `calls` edge from the
+        // hook_usage node (not the component) to the fetcher it actually
+        // invokes only when exactly one function-like node matches the name.
+        // No match / ambiguous match -> no edge (never fabricated).
+        if (hook.hookUsageId && hook.dependencies && hook.dependencies.length > 0) {
+          for (const candidateName of hook.dependencies) {
+            const bare = candidateName.includes('.') ? candidateName.split('.').pop()! : candidateName;
+            const resolved = fetcherTargetIds.get(candidateName) ?? fetcherTargetIds.get(bare);
+            if (resolved && resolved !== AMBIGUOUS) {
+              edges.push(this.createEdge(
+                this.generateEdgeId(hook.hookUsageId, resolved, 'calls'),
+                hook.hookUsageId,
+                resolved,
+                'calls',
+                'behavioral',
+                { hook_name: hook.name, resolution: 'fetcher_call_candidate', candidate: candidateName }
+              ));
+              break;
+            }
           }
         }
       });

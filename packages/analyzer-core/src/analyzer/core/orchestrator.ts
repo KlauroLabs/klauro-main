@@ -1079,6 +1079,7 @@ export class AnalyzerOrchestrator {
     phaseStart = Date.now();
     this.applyCanonicalOrdering(allNodes, allEdges, allEntryPoints, allExitPoints, allLibraries);
     this.linkRouteHandlers(allNodes, allEdges, allEntryPoints);
+    this.linkHookUsageFetchers(allNodes, allEdges);
     this.addDiscoveredEntryPoints(projectPath, allNodes, allEntryPoints, allEdges);
     this.dedupeHttpEntryPoints(allEntryPoints);
     this.normalizeNodeMetrics(allNodes);
@@ -12573,7 +12574,8 @@ export class AnalyzerOrchestrator {
     // ultimately write (terminal entities), not with reference-count order.
     const terminalEntityNames = (terminalSignal?.ranked_entities || [])
       .filter(entity => entity.write_journeys > 0)
-      .map(entity => entity.name);
+      .map(entity => entity.name)
+      .filter(name => !this.isHashOrIdShapedToken(name));
     const meaningfulDatabaseEntities = databaseEntities.filter(entity => !this.isTransportContractEntityName(entity));
     const entityNamesForNarrative = terminalEntityNames.length >= 2
       ? [
@@ -16670,6 +16672,7 @@ export class AnalyzerOrchestrator {
   }
 
   private isGenericCapabilityToken(token: string): boolean {
+    if (this.isHashOrIdShapedToken(token)) return true;
     return new Set([
       'controller', 'service', 'services', 'repository', 'repo', 'model', 'models', 'entity', 'schema', 'module',
       'handler', 'manager', 'processor', 'provider', 'component', 'page', 'view', 'route', 'usecase', 'use', 'case',
@@ -18899,6 +18902,125 @@ export class AnalyzerOrchestrator {
           });
           existingEdgeIds.add(edgeId);
         }
+      }
+
+      // Registration/entry-point markers whose handler is an inline
+      // arrow/function (not a bare identifier) carry no resolvable
+      // `handler.method_name` — the block above legitimately finds nothing.
+      // `handlerCallCandidates` (populated by e.g. mcp-tool-registration-analyzer
+      // by scanning the inline handler body's text for call expressions) gives
+      // a second, independent shot: resolve each candidate name to an actual
+      // function/method node by EXACT name match only (no fuzzy substring —
+      // these are text-scraped, not scope-checked, so a loose match risks a
+      // false edge). First candidate that resolves to a unique function node
+      // wins; ambiguous or unresolved candidates are honestly skipped, not
+      // guessed. This lets `server.registerTool('x', schema, async () => {
+      // return json(query.buildSummary(...)) })`-style handlers still produce
+      // a real edge to `buildSummary` even though the handler itself is inline.
+      if (!matchedFunctionNode) {
+        const candidates: string[] = Array.isArray(ep.metadata?.handlerCallCandidates)
+          ? ep.metadata!.handlerCallCandidates
+          : [];
+        // Emit an edge for every candidate that resolves UNIQUELY to a real
+        // function/method node, not just the first — the inline handler body
+        // often makes several real calls (e.g. a wrapper like
+        // withErrorHandling(...) around the actual logic function), and the
+        // point of this pass is a multi-step flow, not a single arbitrary
+        // pick. Bounded to keep a pathological candidate list (e.g. a huge
+        // schema-description object misread as call text) from exploding
+        // edge count. Ambiguous names (2+ distinct functions with that name)
+        // are skipped, never guessed.
+        const MAX_CANDIDATE_EDGES = 5;
+        let addedForThisEntryPoint = 0;
+        for (const candidate of candidates) {
+          if (addedForThisEntryPoint >= MAX_CANDIDATE_EDGES) break;
+          const bare = candidate.includes('.') ? candidate.split('.').pop()! : candidate;
+          const allMatches = nodes.filter(n =>
+            (n.type === 'function' || n.type === 'method') && n.name === bare
+          );
+          if (allMatches.length !== 1) continue;
+          const target = allMatches[0];
+          if (target.id === routeNodeId) continue;
+
+          const edgeId = `entry_calls_${routeNodeId}_${target.id}`;
+          if (existingEdgeIds.has(edgeId)) continue;
+
+          edges.push({
+            id: edgeId,
+            source: routeNodeId,
+            target: target.id,
+            type: 'calls',
+            metadata: {
+              attributes: {
+                framework: ep.source_analyzer || 'unknown',
+                relationship: 'inline_handler_call',
+                entry_point_type: ep.type,
+                resolution: 'handler_call_candidate'
+              }
+            }
+          });
+          existingEdgeIds.add(edgeId);
+          addedForThisEntryPoint++;
+        }
+      }
+    }
+  }
+
+  /**
+   * Link React `hook_usage` nodes (useQuery/useMutation/useSWR/...) to the
+   * fetcher function they actually invoke. ReactAnalyzer surfaces the
+   * candidate callee name(s) scraped from the hook's inline callback body in
+   * `node.metadata.attributes.dependencies` (see
+   * ReactAnalyzer.extractFetcherCallCandidates) but cannot resolve them
+   * itself — the fetcher (e.g. `apiGet` in `shared/api/fetch.ts`) is very
+   * often declared in a different file and shows up as a plain `function`
+   * node from a different analyzer entirely (typescript-javascript-analyzer),
+   * not as one of ReactAnalyzer's own `util` nodes. This is exactly the same
+   * cross-analyzer resolution problem `linkRouteHandlers` solves for
+   * registration entry points, so it lives here for the same reason: only
+   * the orchestrator sees every analyzer's contributed nodes at once.
+   *
+   * EXACT name match only, and only when it resolves to exactly one
+   * function/method node — an ambiguous or unresolved candidate name yields
+   * no edge (never guessed).
+   */
+  private linkHookUsageFetchers(nodes: CASNode[], edges: CASEdge[]): void {
+    const existingEdgeIds = new Set(edges.map(e => e.id));
+
+    for (const node of nodes) {
+      if (node.type !== 'hook_usage') continue;
+      const candidates: string[] = node.metadata?.attributes?.dependencies;
+      if (!Array.isArray(candidates) || candidates.length === 0) continue;
+
+      for (const candidate of candidates) {
+        const bare = candidate.includes('.') ? candidate.split('.').pop()! : candidate;
+        const allMatches = nodes.filter(n =>
+          (n.type === 'function' || n.type === 'method') && n.name === bare
+        );
+        if (allMatches.length !== 1) continue;
+        const target = allMatches[0];
+        if (target.id === node.id) continue;
+
+        const edgeId = `hook_calls_${node.id}_${target.id}`;
+        if (existingEdgeIds.has(edgeId)) continue;
+
+        edges.push({
+          id: edgeId,
+          source: node.id,
+          target: target.id,
+          type: 'calls',
+          metadata: {
+            attributes: {
+              framework: 'react',
+              relationship: 'data_fetching_hook_call',
+              hook_name: node.metadata?.attributes?.hook_name,
+              resolution: 'fetcher_call_candidate',
+              candidate
+            }
+          }
+        });
+        existingEdgeIds.add(edgeId);
+        break;
       }
     }
   }

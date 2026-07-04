@@ -140,6 +140,33 @@ describe('buildTerminalSignal', () => {
     expect(signal.ranked_stages.map(stage => stage.name)).toEqual(['ReportService']);
   });
 
+  test('hash/id-shaped terminal entity names are rejected as candidates, never ranked', () => {
+    const journeys = [
+      journey({ id: 'j1', terminal_entities: [{ name: 'a3f9c2b1d8e04f77', access: 'created', terminal_kind: 'entity' }] }),
+      journey({ id: 'j2', terminal_entities: [{ name: '9f8e7d6c-5b4a-4321-8765-1234567890ab', access: 'created', terminal_kind: 'entity' }] }),
+      journey({ id: 'j3', terminal_entities: [{ name: '8f3k29xz1q', access: 'created', terminal_kind: 'entity' }] }),
+      journey({ id: 'j4', terminal_entities: [{ name: 'Invoice', access: 'created', terminal_kind: 'entity' }] }),
+    ];
+    const signal = buildTerminalSignal({ journeys, systemCapabilities: [] });
+    expect(signal.ranked_entities.map(entity => entity.name)).toEqual(['Invoice']);
+    expect(signal.domain_seed_text).not.toMatch(/a3f9c2b1d8e04f77|9f8e7d6c|8f3k29xz1q/);
+  });
+
+  test('hash/id-shaped stage names are rejected as candidates', () => {
+    const journeys = [
+      journey({
+        id: 'j1',
+        terminal_entities: [{ name: 'Report', access: 'created', terminal_kind: 'entity' }],
+        steps: [
+          { node_id: 'n1', name: 'a3f9c2b1d8e04f77', layer: 'business', depth: 0 },
+          { node_id: 'n2', name: 'ReportService', layer: 'business', depth: 1 },
+        ],
+      }),
+    ];
+    const signal = buildTerminalSignal({ journeys, systemCapabilities: [] });
+    expect(signal.ranked_stages.map(stage => stage.name)).toEqual(['ReportService']);
+  });
+
   test('deterministic ordering: ties break lexicographically', () => {
     const journeys = [
       journey({ id: 'j1', terminal_entities: [{ name: 'Beta', access: 'created', terminal_kind: 'entity' }] }),

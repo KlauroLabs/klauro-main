@@ -79,6 +79,57 @@ test('McpToolRegistrationAnalyzer extracts registerTool, tool shorthand, and set
   }
 });
 
+test('McpToolRegistrationAnalyzer surfaces handlerCallCandidates from inline async handler bodies', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'mcp-tool-registration-analyzer-inline-'));
+  try {
+    await fs.writeJson(path.join(dir, 'package.json'), {
+      name: 'mcp-server-inline-fixture',
+      dependencies: { '@modelcontextprotocol/sdk': '^1.0.0' }
+    });
+    await fs.ensureDir(path.join(dir, 'src'));
+    await fs.writeFile(path.join(dir, 'src', 'server.ts'), [
+      "import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';",
+      "import * as query from './query';",
+      '',
+      "const server = new McpServer({ name: 'fixture', version: '1.0.0' });",
+      '',
+      "server.registerTool('get_summary', {",
+      "  inputSchema: { type: 'object' },",
+      "}, async ({ path }) => {",
+      '  const cas = await getFreshAnalysisForAgent(path);',
+      '  return json(query.buildSummary(cas));',
+      '});',
+      '',
+    ].join('\n'));
+
+    const analyzer = new McpToolRegistrationAnalyzer();
+    const result = await analyzer.analyze({ projectPath: dir });
+
+    const getSummaryEntry = result.entry_points.find(e => e.name === 'get_summary');
+    assert.ok(getSummaryEntry, 'get_summary entry point exists');
+    const candidates = (getSummaryEntry as any).metadata?.handlerCallCandidates as string[] | undefined;
+    assert.ok(candidates, 'handlerCallCandidates populated for inline handler');
+    assert.ok(candidates!.includes('buildSummary'), 'captures bare callee name from qualified call');
+    assert.ok(candidates!.includes('query.buildSummary'), 'captures qualified callee name');
+    assert.ok(candidates!.includes('getFreshAnalysisForAgent'), 'captures bare function call inside handler body');
+  } finally {
+    await fs.remove(dir);
+  }
+});
+
+test('McpToolRegistrationAnalyzer leaves handlerCallCandidates unset when handler is a bare identifier', async () => {
+  const dir = await makeProject();
+  try {
+    const analyzer = new McpToolRegistrationAnalyzer();
+    const result = await analyzer.analyze({ projectPath: dir });
+    const doThing = result.entry_points.find(e => e.name === 'do_thing');
+    assert.ok(doThing, 'do_thing entry exists');
+    assert.equal((doThing as any).metadata?.handlerCallCandidates, undefined, 'bare-identifier handler has no candidates (handlerRef already covers it)');
+  } finally {
+    await fs.remove(dir);
+  }
+});
+
 test('McpToolRegistrationAnalyzer ignores unrelated .tool() calls on non-server receivers', async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'mcp-tool-registration-analyzer-negative-'));
   try {

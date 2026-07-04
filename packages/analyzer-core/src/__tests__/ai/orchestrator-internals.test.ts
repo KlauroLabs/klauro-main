@@ -2493,6 +2493,28 @@ describe('architecture and capability inference', () => {
     }
   });
 
+  it('rejects hash/id-shaped tokens as domain vocabulary so near-empty repos never compose a "<hash>-management" domain', () => {
+    for (const token of [
+      'a1b2c3d4e5f6', // long pure hex, content-hash shaped
+      '9f86d081884c7d659a2feaa0c55ad015', // sha256-ish hex digest
+      '550e8400-e29b-41d4-a716-446655440000', // canonical uuid
+      '550e8400e29b41d4a716446655440000', // uuid without dashes
+      '8f3k29xz1q', // random base36 id: no vowels, has a digit
+    ]) {
+      expect(orch.isGenericDomainToken(token)).toBe(true);
+    }
+    // Sanity: real short domain words must NOT be caught by the guard.
+    for (const token of ['fleet', 'invoice', 'portfolio', 'clinical']) {
+      expect(orch.isGenericDomainToken(token)).toBe(false);
+    }
+  });
+
+  it('does not compose a hash-shaped token into a "<hash>-management" domain label', () => {
+    const hashToken = 'a1b2c3d4e5f6';
+    expect(orch.refinePrimaryDomainForPurpose(hashToken, { primary_type: 'web-application' })).toBe(hashToken);
+    expect(orch.refinePrimaryDomainForPurpose(hashToken, { primary_type: 'web-application' })).not.toBe(`${hashToken}-management`);
+  });
+
   it('does not infer core capabilities from vendored help-library JavaScript', () => {
     const nodes: CASNode[] = [
       node({
@@ -4076,5 +4098,112 @@ describe('vendor-lib terminal capabilities require product evidence', () => {
 
     expect(orch.isRedundantCoveredCapability(redundant, [covered, redundant])).toBe(true);
     expect(orch.isRedundantCoveredCapability(covered, [covered, redundant])).toBe(false);
+  });
+});
+
+describe('linkRouteHandlers: handlerCallCandidates fallback for inline registration handlers', () => {
+  // Registration-style entry points (MCP tool registration, decorators, etc.)
+  // frequently wrap their real logic in an inline arrow/function, so
+  // `handler.method_name` has nothing to exact/fuzzy match against. The
+  // analyzer that owns the callsite can still surface candidate callee names
+  // scraped from the handler body (`ep.metadata.handlerCallCandidates`);
+  // linkRouteHandlers should resolve those against real function/method nodes
+  // and emit a `calls` edge — but only when the candidate resolves uniquely.
+
+  function functionNode(id: string, name: string, file: string): CASNode {
+    return {
+      id,
+      name,
+      type: 'function',
+      source: { file, line: 1, end_line: 1 },
+    } as unknown as CASNode;
+  }
+
+  it('links an entry point to the function named in handlerCallCandidates when no direct handler match exists', () => {
+    const nodes: CASNode[] = [
+      { id: 'entry_mcp_tool_get_summary', name: 'get_summary', type: 'mcp_tool', source: { file: 'src/server.ts', line: 10, end_line: 10 } } as unknown as CASNode,
+      functionNode('fn_buildSummary', 'buildSummary', 'src/query.ts'),
+    ];
+    const edges: CASEdge[] = [];
+    const entryPoints = [{
+      id: 'entry_1',
+      name: 'get_summary',
+      type: 'message',
+      source_node: 'entry_mcp_tool_get_summary',
+      source_analyzer: 'mcp-tool-registration',
+      trigger: { method: 'registerTool', path: 'get_summary' },
+      handler: { node_id: 'entry_mcp_tool_get_summary', method_name: 'get_summary', file: 'src/server.ts' },
+      metadata: {
+        registrationKind: 'registerTool',
+        receiver: 'server',
+        file: 'src/server.ts',
+        line: 10,
+        handlerCallCandidates: ['query.buildSummary', 'buildSummary'],
+      },
+    }] as any;
+
+    orch.linkRouteHandlers(nodes, edges, entryPoints);
+
+    const edge = edges.find(e => e.target === 'fn_buildSummary');
+    expect(edge).toBeTruthy();
+    expect(edge!.source).toBe('entry_mcp_tool_get_summary');
+    expect(edge!.type).toBe('calls');
+    expect((edge!.metadata as any)?.attributes?.resolution).toBe('handler_call_candidate');
+  });
+
+  it('does not fabricate an edge when a candidate name is ambiguous across multiple functions', () => {
+    const nodes: CASNode[] = [
+      { id: 'entry_mcp_tool_do_thing', name: 'do_thing', type: 'mcp_tool', source: { file: 'src/server.ts', line: 20, end_line: 20 } } as unknown as CASNode,
+      functionNode('fn_helper_a', 'helper', 'src/a.ts'),
+      functionNode('fn_helper_b', 'helper', 'src/b.ts'),
+    ];
+    const edges: CASEdge[] = [];
+    const entryPoints = [{
+      id: 'entry_2',
+      name: 'do_thing',
+      type: 'message',
+      source_node: 'entry_mcp_tool_do_thing',
+      source_analyzer: 'mcp-tool-registration',
+      trigger: { method: 'registerTool', path: 'do_thing' },
+      handler: { node_id: 'entry_mcp_tool_do_thing', method_name: 'do_thing', file: 'src/server.ts' },
+      metadata: {
+        registrationKind: 'registerTool',
+        receiver: 'server',
+        file: 'src/server.ts',
+        line: 20,
+        handlerCallCandidates: ['helper'],
+      },
+    }] as any;
+
+    orch.linkRouteHandlers(nodes, edges, entryPoints);
+
+    expect(edges.length).toBe(0);
+  });
+
+  it('does not add an edge when handlerCallCandidates is absent (no fabrication without evidence)', () => {
+    const nodes: CASNode[] = [
+      { id: 'entry_mcp_tool_unresolvable', name: 'unresolvable', type: 'mcp_tool', source: { file: 'src/server.ts', line: 30, end_line: 30 } } as unknown as CASNode,
+      functionNode('fn_unrelated', 'unrelated', 'src/z.ts'),
+    ];
+    const edges: CASEdge[] = [];
+    const entryPoints = [{
+      id: 'entry_3',
+      name: 'unresolvable',
+      type: 'message',
+      source_node: 'entry_mcp_tool_unresolvable',
+      source_analyzer: 'mcp-tool-registration',
+      trigger: { method: 'registerTool', path: 'unresolvable' },
+      handler: { node_id: 'entry_mcp_tool_unresolvable', method_name: 'unresolvable', file: 'src/server.ts' },
+      metadata: {
+        registrationKind: 'registerTool',
+        receiver: 'server',
+        file: 'src/server.ts',
+        line: 30,
+      },
+    }] as any;
+
+    orch.linkRouteHandlers(nodes, edges, entryPoints);
+
+    expect(edges.length).toBe(0);
   });
 });
