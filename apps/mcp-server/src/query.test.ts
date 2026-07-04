@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { CASOutput, CASNode, CASEdge, CASEntryPoint } from '../../../packages/analyzer-core/src/types/cas.types';
-import { getCodingContext, getFlowConcepts } from './query';
+import { getCodingContext, getFlowConcepts, getCallers, assessChangeRisk, getConfiguration } from './query';
 
 // Builds a synthetic CAS with a single high-fanout "hub" node that has more
 // callers/callees than the default display limit, plus a handful of
@@ -249,4 +249,127 @@ test('getFlowConcepts does not apply the default browse-cap when target narrows 
   // additionally get capped/truncated by the all-flows default.
   assert.equal(result.truncated, false);
   assert.ok(result.flows.length >= 1);
+});
+
+// --- 2026-07-04 impact benchmark fixes ------------------------------------
+//
+// #1 (flagship): get_callers never tracked cross-file reads of exported
+// constants/interface properties, only call expressions — this simulates the
+// CAS shape the fix produces (a 'references' edge, distinct from 'calls') and
+// asserts getCallers surfaces it.
+test('getCallers surfaces a "references" edge to an exported constant, not just "contains"', () => {
+  const cas: any = {
+    cas_version: '1.11.0',
+    analysis_timestamp: new Date().toISOString(),
+    analysis_id: 'analysis-references-test',
+    system: { id: 'system-test', name: 'references-test', type: 'service', root_path: '/tmp/references' },
+    nodes: [
+      { id: 'file_tier_limits_ts', name: 'tier-limits.ts', type: 'file', source: { file: 'tier-limits.ts', line: 1 }, metadata: {} },
+      { id: 'variable_TIER_RATE_LIMITS', name: 'TIER_RATE_LIMITS', type: 'variable', source: { file: 'tier-limits.ts', line: 10 }, metadata: {} },
+      { id: 'method_RateLimiter_isRateLimited', name: 'isRateLimited', type: 'method', source: { file: 'rate-limiter.ts', line: 50 }, metadata: {} },
+    ],
+    edges: [
+      { id: 'e1', source: 'file_tier_limits_ts', target: 'variable_TIER_RATE_LIMITS', type: 'contains' },
+      { id: 'e2', source: 'method_RateLimiter_isRateLimited', target: 'variable_TIER_RATE_LIMITS', type: 'references' },
+    ],
+    analyzer_contributions: [],
+  };
+
+  const result: any = getCallers(cas, 'variable_TIER_RATE_LIMITS', 1, 50);
+  assert.equal(result.total, 2);
+  const via = result.callers.map((c: any) => c.via);
+  assert.ok(via.includes('edge:contains'));
+  assert.ok(via.includes('edge:references'), `expected a references-edge caller, got ${JSON.stringify(result.callers)}`);
+  const referenceCaller = result.callers.find((c: any) => c.via === 'edge:references');
+  assert.equal(referenceCaller.node_id, 'method_RateLimiter_isRateLimited');
+});
+
+// #3: assess_change_risk must not silently return risk:null plus the whole-repo
+// change_risk_summary for a node type buildChangeRisks never scores (e.g. an
+// interface property) — that reads as "assessed, low risk" when it was never
+// evaluated at all.
+test('assessChangeRisk reports unsupported:true for a node type it never scores, instead of a silent whole-repo dump', () => {
+  const cas: any = {
+    nodes: [
+      { id: 'class_RateLimits', name: 'RateLimits', type: 'interface', metadata: {} },
+      { id: 'property_endpoints', name: 'endpoints', type: 'property', metadata: {} },
+    ],
+    edges: [
+      { id: 'e1', source: 'class_RateLimits', target: 'property_endpoints', type: 'contains' },
+    ],
+    change_risks: [],
+    change_risk_summary: {
+      high_risk_nodes: ['unrelated_node_1', 'unrelated_node_2'],
+      untested_critical_paths: [],
+      recent_hotspots: [],
+    },
+  };
+
+  const result: any = assessChangeRisk(cas, 'property_endpoints');
+  assert.equal(result.risk, null);
+  assert.equal(result.unsupported, true);
+  assert.equal(result.node_type, 'property');
+  // The whole-repo summary must NOT leak into an "unsupported" response — that's the
+  // exact silent-wrong-answer shape the bug report flagged.
+  assert.equal(result.change_risk_summary, null);
+});
+
+test('assessChangeRisk still returns real risk + summary for a supported node type (no regression)', () => {
+  const cas: any = {
+    nodes: [
+      { id: 'method_x', name: 'doThing', type: 'method', metadata: {} },
+    ],
+    edges: [],
+    change_risks: [
+      { node_id: 'method_x', risk_level: 'high', risk_factors: [] },
+    ],
+    change_risk_summary: { high_risk_nodes: ['method_x'], untested_critical_paths: [], recent_hotspots: [] },
+  };
+
+  const result: any = assessChangeRisk(cas, 'method_x');
+  assert.equal(result.unsupported, undefined);
+  assert.equal(result.risk.risk_level, 'high');
+  assert.ok(result.change_risk_summary);
+});
+
+// #4: get_configuration(affecting_node_id=...) must surface an env var a node directly
+// reads via process.env.X even when cas.configuration.environment_variables never picked
+// it up (it's only populated from .env-shaped FILES, not from a plain `export const X =
+// process.env.X` in an ordinary source file).
+test('getConfiguration(affecting_node_id) discovers a process.env-backed variable reached via a references edge', () => {
+  const cas: any = {
+    nodes: [
+      {
+        id: 'variable_ENFORCE_API_QUOTAS', name: 'ENFORCE_API_QUOTAS', type: 'variable',
+        source: { file: 'config.ts', line: 5 },
+        metadata: { value: "process.env.ENFORCE_API_QUOTAS === 'true'" },
+      },
+      {
+        id: 'method_intercept', name: 'intercept', type: 'method',
+        source: { file: 'quota-enforcement.interceptor.ts', line: 30 },
+        metadata: {},
+      },
+    ],
+    edges: [
+      { id: 'e1', source: 'method_intercept', target: 'variable_ENFORCE_API_QUOTAS', type: 'references' },
+    ],
+    configuration: {},
+  };
+
+  const result: any = getConfiguration(cas, { affecting_node_id: 'method_intercept' });
+  assert.equal(result.environment_variables.length, 1);
+  assert.equal(result.environment_variables[0].name, 'ENFORCE_API_QUOTAS');
+});
+
+test('getConfiguration(affecting_node_id) returns no env vars for a node with no process.env reference (no false positives)', () => {
+  const cas: any = {
+    nodes: [
+      { id: 'method_unrelated', name: 'unrelated', type: 'method', source: { file: 'x.ts', line: 1 }, metadata: {} },
+    ],
+    edges: [],
+    configuration: {},
+  };
+
+  const result: any = getConfiguration(cas, { affecting_node_id: 'method_unrelated' });
+  assert.equal(result.environment_variables.length, 0);
 });

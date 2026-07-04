@@ -1806,6 +1806,31 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
           if (sourceNodeId && !targetNodeId) {
             this.addEntityAccessEdge(edges, sourceNodeId, call, func);
           }
+        } else if (call.targetType === 'property' && call.argumentCount === 0 && !call.httpMethod) {
+          // Plain read of an imported const/interface/type/class that is never called
+          // (extractIdentifierReference in enhanced-call-graph-extractor.ts) — e.g.
+          // `TIER_RATE_LIMITS[tier]`, `limits.endpoints`. Resolve to the real declaration
+          // node (variable, interface, property, class, ...) and record a 'references' edge
+          // distinct from 'calls' so get_callers surfaces it without claiming a call that
+          // never happened. Evidence-based: if the name doesn't resolve to a real node, no
+          // edge is emitted (never fabricated).
+          const targetNodeId = this.findNodeIdByNameIndexed(call.target, filePath, func.className);
+          if (sourceNodeId && targetNodeId && sourceNodeId !== targetNodeId) {
+            this.addCallEdge(edges, {
+              id: `reference_${sourceNodeId}_${targetNodeId}_${call.line}`,
+              source: sourceNodeId,
+              target: targetNodeId,
+              type: 'references',
+              metadata: {
+                attributes: {
+                  reference_type: 'identifier',
+                  is_conditional: call.isConditional,
+                  is_in_loop: call.isInLoop,
+                  line: call.line
+                }
+              }
+            });
+          }
         } else if (sourceNodeId && (call.targetType === 'external' || call.targetType === 'library')) {
           const library = this.getLibraryForType(call.target) || this.importSourceMap.get(call.target) || call.target;
           const exitPointId = `exit_sdk_${func.name}_${call.target}_${call.line}`.replace(/[^a-zA-Z0-9_]/g, '_');

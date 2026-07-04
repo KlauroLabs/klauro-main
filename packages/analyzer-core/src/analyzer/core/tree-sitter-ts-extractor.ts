@@ -615,7 +615,105 @@ export class TreeSitterTSExtractor {
       }
     }
 
+    calls.push(...this.extractIdentifierReferences(body, enclosingFunction, enclosingClass));
+
     return calls;
+  }
+
+  // Cross-file reads of an imported CONSTANT / INTERFACE / TYPE / CLASS that are never
+  // called — e.g. `TIER_RATE_LIMITS[tier]`, `return limits.endpoints`. Plain
+  // extractCalls only ever fires on call_expression/new_expression, so a bare read of an
+  // imported const/object was previously invisible to the call graph even though the
+  // consumer genuinely breaks if the export's shape changes (the #1 flagship gap from the
+  // 2026-07-04 impact benchmark: get_callers on an exported const/interface property
+  // returned nothing beyond same-file containment). Recorded with targetType 'property'
+  // (distinct from 'function'/'method'/'constructor') so the CAS integration layer can
+  // emit a 'references' edge instead of a 'calls' edge — never claiming a call that never
+  // happened. Deliberately conservative: only fires for identifiers present in this
+  // file's import map, so a same-named local variable is never mistaken for a cross-file
+  // reference (no fabricated edges).
+  private extractIdentifierReferences(body: any, enclosingFunction: string, enclosingClass?: string): TSExtractedCall[] {
+    const refs: TSExtractedCall[] = [];
+    if (this.imports.size === 0) return refs;
+
+    const identifierNodes = this.collectByType(body, 'identifier');
+    const seenAtLine = new Set<string>();
+
+    for (const idNode of identifierNodes) {
+      const name = idNode.text;
+      if (!this.imports.has(name)) continue;
+
+      const parent = idNode.parent;
+      if (!parent) continue;
+
+      // Already captured as a real call/constructor edge by extractCall/extractCalls —
+      // don't double-record the same site as a 'reference' too.
+      if (parent.type === 'call_expression' && parent.childForFieldName('function') === idNode) continue;
+      if (parent.type === 'new_expression' && parent.childForFieldName('function') === idNode) continue;
+      // Import specifier / declaration positions are bindings, not reads.
+      if (parent.type === 'import_specifier' || parent.type === 'import_clause' ||
+          parent.type === 'namespace_import') continue;
+
+      // De-dupe multiple identifier occurrences resolving to the same import at the same
+      // source line (e.g. `TIER_RATE_LIMITS[tier] || TIER_RATE_LIMITS.free` on one line) —
+      // one reference edge per line is enough signal without inflating counts.
+      const line = idNode.startPosition.row + 1;
+      const dedupeKey = `${name}:${line}`;
+      if (seenAtLine.has(dedupeKey)) continue;
+      seenAtLine.add(dedupeKey);
+
+      let parentNode = idNode.parent;
+      let conditionalDepth = 0;
+      let loopDepth = 0;
+      while (parentNode) {
+        if (parentNode.type === 'if_statement' || parentNode.type === 'ternary_expression' || parentNode.type === 'switch_statement') {
+          conditionalDepth++;
+        } else if (parentNode.type === 'for_statement' || parentNode.type === 'for_in_statement' ||
+                   parentNode.type === 'for_of_statement' || parentNode.type === 'while_statement' ||
+                   parentNode.type === 'do_statement') {
+          loopDepth++;
+        }
+        parentNode = parentNode.parent;
+      }
+
+      refs.push({
+        target: name,
+        targetType: 'property',
+        line,
+        column: idNode.startPosition.column,
+        argumentCount: 0,
+        isAsync: false,
+        isConditional: conditionalDepth > 0,
+        isInLoop: loopDepth > 0,
+        callExpression: name,
+        context: {
+          enclosingFunction,
+          enclosingClass,
+          blockDepth: 0,
+          isInTry: false,
+          isInCatch: false,
+          isInFinally: false,
+          isInCallback: false,
+          isInPromise: false,
+          conditionalDepth,
+          loopDepth
+        }
+      });
+    }
+
+    return refs;
+  }
+
+  // True only when `name` is imported from a genuine external package (bare specifier, no
+  // leading `.`/`/`), not a same-project relative import. A same-project import (e.g.
+  // `import { initializeAuth0Token } from '../api/fetch'`) must still resolve through the
+  // normal call-graph name resolver (findNodeIdByNameIndexed) so get_callers can find it —
+  // see bug #2 in the 2026-07-04 impact benchmark.
+  private isExternalImport(name: string): boolean {
+    const info = this.imports.get(name);
+    if (!info) return false;
+    const source = info.source;
+    return !(source.startsWith('.') || source.startsWith('/'));
   }
 
   private extractCall(call: any, enclosingFunction: string, enclosingClass?: string): TSExtractedCall | null {
@@ -631,13 +729,20 @@ export class TreeSitterTSExtractor {
       target = `${obj?.text || ''}.${prop?.text || ''}`;
       targetType = 'method';
 
-      if (obj?.text && this.imports.has(obj.text)) {
+      // Only classify as a 'library' (external SDK) call when the import source is a real
+      // package, not a same-project relative import (e.g. `import { x } from '../api/y'`).
+      // Without this check, any call through an object imported from ANYWHERE — including
+      // this project's own modules — was routed to the external/exit-point branch instead
+      // of resolving to a real 'calls' edge, which is bug #2 from the 2026-07-04 impact
+      // benchmark (get_callers inconsistently missing cross-file calls to imported
+      // functions/objects that happen to be local, not third-party).
+      if (obj?.text && this.isExternalImport(obj.text)) {
         targetType = 'library';
       }
     } else if (callee.type === 'identifier') {
       target = callee.text;
 
-      if (this.imports.has(target)) {
+      if (this.isExternalImport(target)) {
         targetType = 'external';
       } else if (target[0] === target[0].toUpperCase() && target !== 'Object' && target !== 'Array') {
         targetType = 'constructor';

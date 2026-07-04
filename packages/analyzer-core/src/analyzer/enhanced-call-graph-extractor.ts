@@ -323,7 +323,7 @@ export class EnhancedCallGraphExtractor {
     return calls;
   }
 
-  private traverseForCalls(node: any, calls: ExtractedCall[], context: CallContext): void {
+  private traverseForCalls(node: any, calls: ExtractedCall[], context: CallContext, parent: any = null): void {
     // Update context based on node type
     const updatedContext = { ...context };
 
@@ -338,8 +338,8 @@ export class EnhancedCallGraphExtractor {
     } else if (node.type === 'CatchClause') {
       updatedContext.isInCatch = true;
       updatedContext.isInTry = false;
-    } else if (node.type === 'BlockStatement' && node.parent?.type === 'TryStatement') {
-      if (node === node.parent.finalizer) {
+    } else if (node.type === 'BlockStatement' && parent?.type === 'TryStatement') {
+      if (node === parent.finalizer) {
         updatedContext.isInFinally = true;
         updatedContext.isInTry = false;
         updatedContext.isInCatch = false;
@@ -383,17 +383,29 @@ export class EnhancedCallGraphExtractor {
       });
     }
 
+    // Cross-file references to imported CONSTANTS / INTERFACE PROPERTIES that are
+    // never called (e.g. `TIER_RATE_LIMITS[tier]`, `limits.endpoints`). The call-graph
+    // extraction above only ever fires for CallExpression/NewExpression callees, so a
+    // plain read of an imported const/object is otherwise invisible to get_callers —
+    // this is the #1 flagship gap from the 2026-07-04 impact benchmark. We record a
+    // 'reference' pseudo-call (not a 'calls' edge) so get_callers can surface it without
+    // fabricating a call relationship that never happened.
+    const referenceCall = this.extractIdentifierReference(node, parent, updatedContext);
+    if (referenceCall) {
+      calls.push(referenceCall);
+    }
+
     // Recursively traverse
     for (const key in node) {
       if (key !== 'parent' && node[key]) {
         if (Array.isArray(node[key])) {
           for (const child of node[key]) {
             if (child && typeof child === 'object') {
-              this.traverseForCalls(child, calls, updatedContext);
+              this.traverseForCalls(child, calls, updatedContext, node);
             }
           }
         } else if (typeof node[key] === 'object') {
-          this.traverseForCalls(node[key], calls, updatedContext);
+          this.traverseForCalls(node[key], calls, updatedContext, node);
         }
       }
     }
@@ -444,6 +456,83 @@ export class EnhancedCallGraphExtractor {
       callExpression: this.getCallExpressionString(node),
       context
     };
+  }
+
+  // AST parent/key positions where an Identifier is a BINDING (declaration/pattern) or a
+  // non-value slot, not a value READ. Excluding these keeps extractIdentifierReference from
+  // reporting a variable's own declaration, a function's parameter name, an object key, an
+  // import specifier, or a type annotation as if it were a "reference" to that name.
+  private static readonly IDENTIFIER_BINDING_PARENTS = new Set([
+    'VariableDeclarator', // `const X = ...` — `id` is a binding, `init` is a read (handled: we key off parentKey below)
+    'FunctionDeclaration', 'FunctionExpression', 'ArrowFunctionExpression', // function/param names
+    'ClassDeclaration', 'ClassExpression',
+    'ImportSpecifier', 'ImportDefaultSpecifier', 'ImportNamespaceSpecifier',
+    'ExportSpecifier',
+    'TSInterfaceDeclaration', 'TSTypeAliasDeclaration', 'TSEnumDeclaration', 'TSEnumMember',
+    'MethodDefinition', 'TSAbstractMethodDefinition',
+    'Property', // object literal / destructuring key (not the value)
+    'PropertyDefinition', 'TSAbstractPropertyDefinition',
+    'TSTypeReference', 'TSTypeAnnotation', 'TSQualifiedName', // type-position identifiers, not runtime reads
+    'LabeledStatement', 'BreakStatement', 'ContinueStatement',
+  ]);
+
+  /**
+   * Detects a plain read of an imported binding (const/interface/type/enum/class) that is
+   * NOT already captured by extractCallExpression/extractNewExpression — e.g.
+   * `TIER_RATE_LIMITS[tier]`, `return limits.endpoints`, `x: RateLimits`. These are real
+   * cross-file dependencies (the consumer breaks if the export's shape changes) but were
+   * previously invisible to the call graph because nothing walks bare Identifier reads.
+   * Deliberately conservative: only fires for names present in this file's import map, so a
+   * local variable that happens to share a name with an import elsewhere is never confused
+   * for a cross-file reference (no fabricated edges).
+   */
+  private extractIdentifierReference(node: any, parent: any, context: CallContext): ExtractedCall | null {
+    if (node.type !== 'Identifier') return null;
+    const name = node.name;
+    if (!name) return null;
+
+    const imported = this.currentScope.imports.get(name);
+    if (!imported) return null; // not an imported name — nothing to resolve cross-file
+
+    if (!parent) return null;
+
+    // Skip the callee of a call/new expression — extractCallExpression/extractNewExpression
+    // already record that as a 'calls' edge; recording it again as a 'reference' would be
+    // redundant (and could double-count in get_callers).
+    if ((parent.type === 'CallExpression' || parent.type === 'NewExpression') && parent.callee === node) {
+      return null;
+    }
+    // Skip the object of a MemberExpression used as a call target: `Foo.bar()` — `Foo` here
+    // is still a plain read in general (e.g. `Foo.CONST`), so only skip when the whole
+    // MemberExpression is itself the callee of a call (already handled as a method call).
+    // Note: without parent-of-parent tracking we can't inspect the grandparent here, so this
+    // case is handled by the CallExpression branch above already stripping the direct callee;
+    // `Foo` as the object of `Foo.bar()` is NOT the callee itself (the MemberExpression is),
+    // so it still reaches this point — that's fine and intentional: `Foo` really is read.
+
+    if (EnhancedCallGraphExtractor.IDENTIFIER_BINDING_PARENTS.has(parent.type)) {
+      // `const X = ...`: `id` is the binding (skip), `init` is a read (allow) — both share
+      // parent.type === 'VariableDeclarator', so disambiguate by which key holds this node.
+      if (!(parent.type === 'VariableDeclarator' && parent.init === node)) {
+        return null;
+      }
+    }
+
+    return {
+      target: name,
+      targetType: 'property',
+      line: node.loc?.start.line || 0,
+      column: node.loc?.start.column || 0,
+      argumentCount: 0,
+      isAsync: false,
+      isConditional: context.conditionalDepth > 0,
+      isInLoop: context.loopDepth > 0,
+      callExpression: name,
+      context,
+      // Marks this ExtractedCall as a non-call reference for downstream edge typing —
+      // see integrateEnhancedCallGraphDataIndexed's 'reference' handling.
+      resolvedTarget: { functionName: name, isExternal: false, isBuiltin: false }
+    } as ExtractedCall & { referenceKind: 'identifier' };
   }
 
   private extractNewExpression(node: any, context: CallContext): ExtractedCall | null {

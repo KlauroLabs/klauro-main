@@ -9,6 +9,7 @@ import { detectCommunities } from '../../../packages/analyzer-core/src/analyzer/
 import { findNearClones } from '../../../packages/analyzer-core/src/analyzer/core/minhash-clone-detection';
 import { isAuthenticationGuardName } from '../../../packages/analyzer-core/src/analyzer/core/guard-classification';
 import { buildProductMap } from '../../../packages/analyzer-core/src/analyzer/core/product-map';
+import { RISKABLE_NODE_TYPES } from '../../../packages/analyzer-core/src/analyzer/core/orchestrator';
 import { buildTerminalSignal } from '../../../packages/analyzer-core/src/analyzer/core/terminal-signal';
 import { computeFlowConcepts, type ComputeFlowConceptsOptions } from '../../../packages/analyzer-core/src/analyzer/core/flow-concepts';
 import { computeFlowStructuralLinks, computeConflictBehavioralLinks } from '../../../packages/analyzer-core/src/analyzer/core/structural-cross-links';
@@ -830,7 +831,48 @@ export function getStability(cas: CASOutput, nodeId?: string) {
 }
 
 export function assessChangeRisk(cas: CASOutput, nodeId: string) {
+  const node = cas.nodes.find(n => n.id === nodeId);
   const risk = (cas.change_risks || []).find(r => r.node_id === nodeId);
+
+  if (!risk && node && !RISKABLE_NODE_TYPES.includes(node.type)) {
+    // The node exists but its type is never scored by buildChangeRisks (property,
+    // interface, variable, class, file, import, ...) — returning `risk: null` plus the
+    // whole-repo change_risk_summary here would look like "assessed, low-risk" when the
+    // node was never evaluated at all (bug #3, 2026-07-04 impact benchmark: a silent
+    // wrong-looking answer instead of an honest "unsupported" signal). Surface the real
+    // reason and point at a node this tool can actually assess instead.
+    // Walk 'contains' edges upward (property -> class/interface -> file) looking for the
+    // nearest ancestor whose type IS scored, so the caller has something concrete to assess
+    // instead of a dead end.
+    const containedBy = new Map<string, string>();
+    for (const edge of cas.edges) {
+      if (edge.type === 'contains') containedBy.set(edge.target, edge.source);
+    }
+    let supported: CASNode | undefined;
+    let currentId: string | undefined = nodeId;
+    const visited = new Set<string>();
+    while (currentId && !visited.has(currentId)) {
+      visited.add(currentId);
+      const parentId: string | undefined = containedBy.get(currentId);
+      if (!parentId) break;
+      const parentNode = cas.nodes.find(n => n.id === parentId);
+      if (parentNode && RISKABLE_NODE_TYPES.includes(parentNode.type)) {
+        supported = parentNode;
+        break;
+      }
+      currentId = parentId;
+    }
+    return {
+      risk: null,
+      unsupported: true,
+      reason: `assess_change_risk does not score node type '${node.type}' (only ${RISKABLE_NODE_TYPES.join(', ')} are assessed). This node was never evaluated — this is not a "low risk" result.`,
+      node_type: node.type,
+      suggested_node_id: supported?.id,
+      suggested_node_reason: supported ? `Containing ${supported.type} node — assess that instead to get real risk signal for this change.` : undefined,
+      change_risk_summary: null,
+    };
+  }
+
   return {
     risk: risk || null,
     change_risk_summary: cas.change_risk_summary || null,
@@ -3530,11 +3572,13 @@ export function getConfiguration(
     );
   }
 
+  let scopedEnvVars = config.environment_variables || [];
+  let scopedFeatureFlags = config.feature_flags || [];
+
   if (opts.affecting_node_id) {
     const targetNode = cas.nodes.find(n => n.id === opts.affecting_node_id);
     if (!targetNode) return { error: `Node not found: ${opts.affecting_node_id}` };
 
-    const targetFile = targetNode.source?.file;
     const relatedConfigs = filteredNodes.filter(cn => {
       const configEdges = cas.edges.filter(e =>
         (e.source === cn.id && e.target === opts.affecting_node_id) ||
@@ -3545,6 +3589,53 @@ export function getConfiguration(
 
     if (relatedConfigs.length > 0) {
       filteredNodes = relatedConfigs;
+    }
+
+    // Node-scoped process.env.* discovery: cas.configuration.environment_variables is only
+    // ever populated from .env-shaped FILES (see buildConfiguration in orchestrator.ts) — a
+    // plain `export const X = process.env.X === 'true'` in an ordinary source file (e.g.
+    // config.ts) is invisible to that mechanism no matter what affecting_node_id is passed,
+    // even though the target node directly imports and branches on it (bug #4, 2026-07-04
+    // impact benchmark: QuotaEnforcementInterceptor imports ENFORCE_API_QUOTAS from
+    // '../../../config' and gates its entire behavior on it, yet get_configuration scoped to
+    // that class returned an empty environment_variables array). Walk the 'references' edges
+    // (see the extractIdentifierReferences fix for bug #1) from affecting_node_id to any
+    // variable node whose initializer literally reads process.env.*, and surface those
+    // directly — real, evidence-based (regex over the actual captured initializer text), not
+    // fabricated, and additive to whatever cas.configuration already found.
+    const PROCESS_ENV_RE = /process\.env\.([A-Za-z_][A-Za-z0-9_]*)/;
+    const referencedVarIds = new Set(
+      cas.edges
+        .filter(e => e.type === 'references' && e.source === opts.affecting_node_id)
+        .map(e => e.target)
+    );
+    const discoveredEnvVars: NonNullable<typeof scopedEnvVars> = [];
+    for (const varId of referencedVarIds) {
+      const varNode = cas.nodes.find(n => n.id === varId);
+      if (!varNode || varNode.type !== 'variable') continue;
+      const initializer = (varNode.metadata as any)?.value;
+      if (typeof initializer !== 'string') continue;
+      const match = PROCESS_ENV_RE.exec(initializer);
+      if (!match) continue;
+      const envVarName = match[1];
+      const alreadyKnown = scopedEnvVars.some(ev => ev.name === envVarName);
+      if (alreadyKnown) continue;
+      discoveredEnvVars.push({
+        name: envVarName,
+        description: `Discovered via direct process.env read in '${varNode.name}' (${varNode.source?.file}:${varNode.source?.line}), referenced by the target node.`,
+        used_by: [opts.affecting_node_id],
+      });
+    }
+
+    if (discoveredEnvVars.length > 0 || relatedConfigs.length > 0) {
+      // Node-scoped result: only what's actually connected to this node (the discovered
+      // process.env reads plus any cas.configuration entries whose used_by/affected_nodes
+      // already names this node) — not the whole repo's env var list.
+      scopedEnvVars = [
+        ...scopedEnvVars.filter(ev => ev.used_by?.includes(opts.affecting_node_id!)),
+        ...discoveredEnvVars,
+      ];
+      scopedFeatureFlags = scopedFeatureFlags.filter(ff => ff.affected_nodes?.includes(opts.affecting_node_id!));
     }
   }
 
@@ -3558,8 +3649,8 @@ export function getConfiguration(
       file: n.source?.file,
       line: n.source?.line,
     })),
-    environment_variables: config.environment_variables || [],
-    feature_flags: config.feature_flags || [],
+    environment_variables: scopedEnvVars,
+    feature_flags: scopedFeatureFlags,
   };
 }
 

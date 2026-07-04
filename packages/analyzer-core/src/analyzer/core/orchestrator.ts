@@ -201,6 +201,20 @@ export interface IncrementalAnalysisOptions {
   displayName?: string;
 }
 
+/**
+ * Node types buildChangeRisks() actually scores. Anything else (property, interface,
+ * variable, class, file, import, ...) never gets a CASChangeRisk entry — assess_change_risk
+ * must check this before returning `risk: null` plus the whole-repo change_risk_summary, or
+ * it silently looks like "this node was assessed and is low-risk" when it was never
+ * evaluated at all (bug #3, 2026-07-04 impact benchmark: assess_change_risk on an interface
+ * property's node_id returned risk: null + ~90 unrelated repo-wide nodes with no signal that
+ * the node type itself is unsupported).
+ */
+export const RISKABLE_NODE_TYPES: readonly string[] = [
+  'function', 'method', 'service', 'controller', 'serializer',
+  'entity', 'model', 'route', 'handler', 'resolver', 'mutation', 'repository'
+];
+
 export const KLAURO_SELF_CAPABILITY_NAMES: Readonly<Record<string, string>> = {
   agent: 'Agent Context',
   analysis: 'Codebase Analysis',
@@ -13259,13 +13273,8 @@ export class AnalyzerOrchestrator {
       }
     }
 
-    const riskableNodeTypes = [
-      'function', 'method', 'service', 'controller', 'serializer',
-      'entity', 'model', 'route', 'handler', 'resolver', 'mutation', 'repository'
-    ];
-
     for (const node of nodes.filter(node => this.isPrimaryProductNode(node))) {
-      if (!riskableNodeTypes.includes(node.type)) {
+      if (!RISKABLE_NODE_TYPES.includes(node.type)) {
         continue;
       }
 
