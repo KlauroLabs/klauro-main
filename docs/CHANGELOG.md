@@ -5,13 +5,14 @@ agent-feedback reports (`~/.klauro/agent-feedback/*.md`) — nothing is asserted
 Where an item was still in flight at the time this entry was written, it is marked **pending
 final verify** rather than presented as done.
 
-## v1.0.12 — Conceptual understanding layer (in progress at time of writing)
+## v1.0.12 — Conceptual understanding layer (2026-07-04, live on `mcp.klauro.com`)
 
-Status note: this entry describes work present in the working tree as `git status` showed it at
-write time (uncommitted/untracked — see `docs/RAISE-DECK.md` §7). v1.0.11 (commit `5292d01f`) is
-the latest **tagged/released** version; v1.0.12 has not yet been cut. Tool count at write time:
-**199** registered tools (`grep -c registerTool( apps/mcp-server/src/server.ts`), up from 197 at
-v1.0.11.
+Cut and deployed 2026-07-04 (bumped from v1.0.11 `5292d01f`; tagged `v1.0.12`). Live-verified:
+`/health` ok, running version 1.0.12, `/dist/latest.json` 1.0.12 + tarball HTTP 200. **199**
+registered tools (`get_flow_concepts` + `get_unified_perspectives` added, up from 197 at v1.0.11).
+Converged gate green on the merged tree: tsc clean both packages, analyzer-core **828/828** jest,
+coordination **108/108**, `fabric-fleet-proof` all **6** properties. Built in one parallel session
+of 7+ agents coordinating through the fabric (co-editing `orchestrator.ts`/`server.ts` clean).
 
 ### Added
 
@@ -58,35 +59,44 @@ v1.0.11.
   description/prose strings touched, no tool registration changed.
   Source: `~/.klauro/agent-feedback/2026-07-03-consumer-teaching.md`.
 
-### In progress — pending final verify
+### Added (continued) — verified & shipped in v1.0.12
 
-These were active (claimed but not yet released in the parallel work-fabric) at the time this
-changelog entry was written. Do not treat them as shipped until independently re-verified against
-a later commit.
+The following were in flight when this entry was first drafted; all landed, were verified, and
+ship in v1.0.12.
 
-- **Registration/entry-point → real-handler edge-linking** (`edgelink` claim,
-  `orchestrator.ts`/`react-analyzer.ts`/`server.ts`) — intended to close the exact gap
-  `get_flow_concepts` flagged honestly above (React `hook_usage` nodes and this repo's own
-  `entry_mcp_tool_*` markers have no outgoing call edge to the function they actually invoke,
-  so flows degrade to correct-but-shallow single steps on those entry points). Uncommitted
-  changes were present in the working tree (`mcp-tool-registration-analyzer.ts`,
-  `react-analyzer.ts`, `terminal-signal.ts`, plus new tests
-  `react-hook-fetcher-edges.test.ts`/`structural-cross-links.test.ts`) but no completion feedback
-  file existed yet at write time — **pending final verify**.
-- **Structural-perspective unification** (`structural-unify` claim, `query.ts`/`server.ts`/
-  `architectural-conflicts.ts`/`paradigm-conformance.ts`) — intended to bring
-  `get_architectural_conflicts`/`get_paradigm_conformance`/`get_perspectives` under the same
-  conceptual-layer vocabulary as flows/steps. Claim was still active at write time with no
-  completion feedback file — **pending final verify**.
-- **End-to-end fabric fleet proof** (`fabric-proof` claim,
-  `apps/mcp-server/src/gauntlet/fabric-fleet-proof.ts`, `docs/FABRIC-FLEET-PROOF.md`) — intended
-  as a live multi-agent proof run over the conceptual fabric. Neither the script's output nor
-  `docs/FABRIC-FLEET-PROOF.md` existed in the repo at write time — **pending final verify**.
-- **Hash/id-token domain-naming guard hardening** (`hashaudit` claim, `orchestrator.ts`) — a
-  continuation of the corpus-validation hash-domain fixes already released in v1.0.11
-  (`isGenericDomainToken`/`isHashOrIdShapedToken`, commits `8777a22c`/`3a177d4b`); still active at
-  write time — **pending final verify** for whatever incremental hardening it adds beyond what's
-  already shipped.
+- **Registration/entry-point → real-handler edge-linking** (`orchestrator.ts`/`react-analyzer.ts`/
+  `ai-stack-analyzer.ts`/`mcp-tool-registration-analyzer.ts`) — closes the substrate gap
+  `get_flow_concepts` flagged honestly (React `hook_usage` nodes and this repo's own
+  `entry_mcp_tool_*` markers had no outgoing call edge to the function they invoke, so flows
+  degraded to shallow single steps). Handlers are resolved by exact-name match only; ambiguous or
+  unresolved candidates get no edge (never fabricated). Real before/after: Klauro self
+  **0/198 → 198/198** mcp-tool entry points with outgoing `calls` edges (system-wide single-step
+  flows ~200 → 3); zerac-api **0/24 → 24/24** React Query hooks resolved to real fetchers, 5/8
+  flows now with populated `external_integrations`. **822/822** jest, 122/122 node tests.
+  Source: `~/.klauro/agent-feedback/2026-07-03-registration-edge-link.md`.
+- **Structural-perspective unification** — `get_unified_perspectives` (new tool) plus
+  `structural-cross-links.ts`: a Flow/Step now carries its architectural layer + paradigm
+  deviations, and an architectural conflict resolves to the flows/steps/capabilities it touches
+  (bidirectional, evidence-gated — link omitted when no genuine overlap). 6/6 new tests.
+  Source: `~/.klauro/agent-feedback/2026-07-03-structural-unify.md`.
+- **Flow entity derivation** — `deriveCapabilityOperationRoots` in `flow-concepts.ts` seeds flow
+  roots from `system_capabilities[].operations[]` (the real blocker was call-graph reachability,
+  not an id namespace — proven empirically). zerac-api: **0 → 171/1261** lifecycle touchers
+  resolved, **0 → 83/206** flows now carry real derived entities (e.g. `setBillingModel` →
+  `['Partner','Billing']`) — making the cross-flow same-entity conceptual conflict reachable by
+  *derivation* on a real repo. Step-level `entities` added. 13/13 tests.
+  Source: `~/.klauro/agent-feedback/2026-07-03-flow-entities.md`.
+- **End-to-end fabric fleet proof** — `apps/mcp-server/src/gauntlet/fabric-fleet-proof.ts` +
+  `docs/FABRIC-FLEET-PROOF.md`: all 6 properties (ambient awareness, non-blocking parallelism,
+  cross-file conceptual-conflict catch, dedup, conceptual partitioning, honest fabric-vs-no-fabric
+  contrast) demonstrated on real flow ids from a real analysis. Re-run green on the converged tree.
+  Source: `~/.klauro/agent-feedback/2026-07-03-fabric-fleet-proof.md`.
+- **`fab` release fix** — `releaseAgent()` in `local-store.ts` releases ALL of an agent's active
+  claims by `agent_id` (the CLI `claim`/`release` used mismatched claim_id schemes, so finished
+  agents lingered as `active` and produced false-overlap noise). Dogfood-CLI only; the product
+  `release_work` path was unaffected. Test added.
+- **Hash/id-token domain-naming guard hardening** (`orchestrator.ts`) — continuation of the
+  v1.0.11 corpus hash-domain fixes; shipped.
 
 ## v1.0.11 — 2026-07-03 (commit `5292d01f`)
 
