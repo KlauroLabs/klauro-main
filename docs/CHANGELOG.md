@@ -5,6 +5,36 @@ agent-feedback reports (`~/.klauro/agent-feedback/*.md`) — nothing is asserted
 Where an item was still in flight at the time this entry was written, it is marked **pending
 final verify** rather than presented as done.
 
+## v1.0.14 — Fastify + scheduled-job coverage (2026-07-04)
+
+Closes the last residual from the v1.0.13 corpus re-validation (`finance-context-ts` under-detected).
+The residual turned out not to be workspace-discovery (apps already had manifests) but two missing
+analyzers, found by dogfooding. Full suite green (849 jest + 132 node); no regressions.
+
+### Added
+
+- **Fastify route analyzer** (`packages/analyzer-core/src/analyzer/frameworks/web/fastify-analyzer.ts`).
+  Express-only route detection meant `@fastify/*` apps had **zero** visible routes. Now extracts
+  `fastify.get/post/…`, `fastify.route({…})`, the TS-generic form, and multi-level
+  `fastify.register(plugin, {prefix})` plugin-encapsulation chains (import/export graph + BFS, incl.
+  same-file non-exported plugin wrappers). Emits `http` entry points; `route_table` derives for free.
+  `finance-context-ts`/`apps/ext-web-api`: **1 → 50 entry points (45 HTTP routes)**, spot-checked
+  byte-exact incl. 3-level prefix chains and auth flags.
+- **Scheduled-job entry-point detector** (`packages/analyzer-core/src/analyzer/libraries/cron-analyzer.ts`).
+  `cron` `CronJob`, `node-cron` `schedule()`, and `@nestjs/schedule` `@Cron`/`@Interval`/`@Timeout`
+  now emit `type: 'schedule'` entry points (handler = the job fn, schedule expr as metadata) — real
+  flow roots. `apps/scheduler`: **1 → 7** entry points; zerac-api gained 5 legitimate `@Cron` roots
+  (no regression to its 327 HTTP routes). `get_flow_concepts` now roots flows at Fastify routes and
+  cron jobs. Source: `~/.klauro/agent-feedback/2026-07-04-fastify-cron.md`.
+- **Defensive**: workspace-glob member discovery (pnpm/turbo/nx globs) for the latent
+  "glob declares a member with no own package.json" shape (not present in the local corpus), with a
+  guard against re-triggering the v1.0.13 Dockerfile-boundary bug.
+
+### Noted (follow-up)
+
+- The live analyzer registration is `apps/mcp-server/src/analyzer.ts`; **two other registration lists
+  exist and are dead paths** — flagged for consolidation.
+
 ## v1.0.13 — Backend flow accuracy (2026-07-04)
 
 Three analyzer-correctness fixes found by dogfooding the v1.0.12 conceptual layer on real repos —
