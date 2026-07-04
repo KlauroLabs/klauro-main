@@ -5,6 +5,7 @@ export { FlaskAnalyzer } from './flask-analyzer';
 export { FastAPIAnalyzer } from './fastapi-analyzer';
 export { ExpressAnalyzer } from './express-analyzer';
 export { FastifyAnalyzer } from './fastify-analyzer';
+export { NodeHttpAnalyzer } from './node-http-analyzer';
 export { ReactAnalyzer } from './react-analyzer';
 export { VueAnalyzer } from './vue-analyzer';
 export { AngularAnalyzer } from './angular-analyzer';
