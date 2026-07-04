@@ -2,11 +2,11 @@ import * as fs from 'fs-extra';
 import * as path from 'path';
 import type { DeployableEvidence } from '../../../../types/cas.types';
 import type { EvidenceCollectionContext, EvidenceProvider } from '../types';
-import { IGNORE_GLOBS, safeGlobSync } from '../util';
+import { IGNORE_GLOBS, safeDeployableName, safeGlobSync } from '../util';
 
 /** Tier-2: config.ru (Rack app) — server-entry. */
 function collectRackup(ctx: EvidenceCollectionContext): DeployableEvidence[] {
-  const { projectPath } = ctx;
+  const { projectPath, displayName } = ctx;
   const out: DeployableEvidence[] = [];
   let files: string[] = [];
   try {
@@ -18,7 +18,7 @@ function collectRackup(ctx: EvidenceCollectionContext): DeployableEvidence[] {
     const root = path.dirname(file);
     out.push({
       root_path: root,
-      name: path.basename(root) === '.' ? path.basename(projectPath) : path.basename(root),
+      name: path.basename(root) === '.' ? safeDeployableName(displayName || path.basename(projectPath)) : path.basename(root),
       tier: 2,
       kind: 'server-entry',
       evidence: [`config.ru (rackup): ${file}`],
@@ -29,7 +29,7 @@ function collectRackup(ctx: EvidenceCollectionContext): DeployableEvidence[] {
 
 /** Tier-2: bin/rails or bin/rake — a Rails application's server entry point. */
 function collectRailsApp(ctx: EvidenceCollectionContext): DeployableEvidence[] {
-  const { projectPath } = ctx;
+  const { projectPath, displayName } = ctx;
   const out: DeployableEvidence[] = [];
   let files: string[] = [];
   try {
@@ -45,7 +45,7 @@ function collectRailsApp(ctx: EvidenceCollectionContext): DeployableEvidence[] {
     seenRoots.add(root);
     out.push({
       root_path: root === '' ? '.' : root,
-      name: path.basename(root) === '.' || root === '' ? path.basename(projectPath) : path.basename(root),
+      name: path.basename(root) === '.' || root === '' ? safeDeployableName(displayName || path.basename(projectPath)) : path.basename(root),
       tier: 2,
       kind: 'server-entry',
       evidence: [`Rails app entry: ${file}`],
@@ -110,7 +110,7 @@ function collectGemExecutables(ctx: EvidenceCollectionContext): DeployableEviden
 
 /** Tier-3: Gemfile / *.gemspec as package identity. */
 function collectPackageIdentity(ctx: EvidenceCollectionContext): DeployableEvidence[] {
-  const { projectPath } = ctx;
+  const { projectPath, displayName } = ctx;
   const out: DeployableEvidence[] = [];
 
   let gemspecFiles: string[] = [];
@@ -143,7 +143,7 @@ function collectPackageIdentity(ctx: EvidenceCollectionContext): DeployableEvide
   if (!gemspecFiles.length && fs.existsSync(gemfilePath)) {
     out.push({
       root_path: '.',
-      name: path.basename(projectPath),
+      name: safeDeployableName(displayName || path.basename(projectPath)),
       tier: 3,
       kind: 'package',
       evidence: [`Gemfile present: ${path.basename(gemfilePath)}`],

@@ -41,17 +41,19 @@ export interface CollectDeployableEvidenceInput {
   nodes: CASNode[];
   entryPoints: CASEntryPoint[];
   exitPoints: CASExitPoint[];
+  /** Real display name distinct from a hash workspace basename (see EvidenceCollectionContext.displayName). */
+  displayName?: string;
 }
 
 export function collectDeployableEvidence(input: CollectDeployableEvidenceInput): DeployableEvidence[] {
-  const { projectPath, nodes, entryPoints, exitPoints } = input;
+  const { projectPath, nodes, entryPoints, exitPoints, displayName } = input;
 
   const cas: Partial<CASOutput> = {
     nodes,
     entry_points: entryPoints,
     exit_points: exitPoints,
   };
-  const ctx: EvidenceCollectionContext = { cas, projectPath, nodes, exitPoints };
+  const ctx: EvidenceCollectionContext = { cas, projectPath, nodes, exitPoints, displayName };
 
   const results: DeployableEvidence[] = [];
   for (const provider of getProviders()) {

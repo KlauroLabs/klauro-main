@@ -2,7 +2,7 @@ import * as fs from 'fs-extra';
 import * as path from 'path';
 import type { DeployableEvidence } from '../../../../types/cas.types';
 import type { EvidenceCollectionContext, EvidenceProvider } from '../types';
-import { IGNORE_GLOBS, safeGlobSync } from '../util';
+import { IGNORE_GLOBS, safeDeployableName, safeGlobSync } from '../util';
 
 /**
  * C/C++ (CMake + plain Makefile) evidence provider.
@@ -105,7 +105,7 @@ function collectCMake(ctx: EvidenceCollectionContext): DeployableEvidence[] {
  *  name that isn't a conventional phony/utility target and whose recipe
  *  invokes a C/C++ compiler), plus conanfile/vcpkg.json as tier-3 identity. */
 function collectMakeAndPackageIdentity(ctx: EvidenceCollectionContext): DeployableEvidence[] {
-  const { projectPath } = ctx;
+  const { projectPath, displayName } = ctx;
   const out: DeployableEvidence[] = [];
 
   const PHONY_TARGETS = new Set([
@@ -189,7 +189,7 @@ function collectMakeAndPackageIdentity(ctx: EvidenceCollectionContext): Deployab
   if (fs.existsSync(conanPath) || fs.existsSync(conanPyPath)) {
     out.push({
       root_path: '.',
-      name: path.basename(projectPath),
+      name: safeDeployableName(displayName || path.basename(projectPath)),
       tier: 3,
       kind: 'package',
       evidence: [`conanfile present (${fs.existsSync(conanPath) ? 'conanfile.txt' : 'conanfile.py'})`],
@@ -202,7 +202,7 @@ function collectMakeAndPackageIdentity(ctx: EvidenceCollectionContext): Deployab
       const json = fs.readJsonSync(vcpkgPath);
       out.push({
         root_path: '.',
-        name: json.name || path.basename(projectPath),
+        name: json.name || safeDeployableName(displayName || path.basename(projectPath)),
         tier: 3,
         kind: 'package',
         evidence: [`vcpkg.json name: ${json.name || '(unnamed)'}`],

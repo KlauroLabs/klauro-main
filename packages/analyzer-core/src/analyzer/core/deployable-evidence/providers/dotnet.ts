@@ -2,7 +2,7 @@ import * as fs from 'fs-extra';
 import * as path from 'path';
 import type { DeployableEvidence } from '../../../../types/cas.types';
 import type { EvidenceCollectionContext, EvidenceProvider } from '../types';
-import { IGNORE_GLOBS, safeGlobSync } from '../util';
+import { IGNORE_GLOBS, safeDeployableName, safeGlobSync } from '../util';
 
 /**
  * .NET ecosystem (C#, MSBuild) deployable evidence.
@@ -48,8 +48,8 @@ function globSafe(projectPath: string, patterns: string | string[]): string[] {
   }
 }
 
-function moduleNameFromRoot(rootPath: string, projectPath: string, fallback?: string): string {
-  if (rootPath === '.' || rootPath === '') return fallback || path.basename(projectPath);
+function moduleNameFromRoot(rootPath: string, projectPath: string, fallback?: string, displayName?: string): string {
+  if (rootPath === '.' || rootPath === '') return fallback || safeDeployableName(displayName || path.basename(projectPath));
   return fallback || path.basename(rootPath);
 }
 
@@ -61,15 +61,15 @@ function isOutputTypeExe(content: string): boolean {
   return /<OutputType>\s*Exe\s*<\/OutputType>/i.test(content);
 }
 
-function csprojName(content: string, rootPath: string, projectPath: string, csprojFile: string): string {
+function csprojName(content: string, rootPath: string, projectPath: string, csprojFile: string, displayName?: string): string {
   const assemblyNameMatch = content.match(/<AssemblyName>([^<]+)<\/AssemblyName>/);
   if (assemblyNameMatch) return assemblyNameMatch[1];
-  return moduleNameFromRoot(rootPath, projectPath, path.basename(csprojFile, '.csproj'));
+  return moduleNameFromRoot(rootPath, projectPath, path.basename(csprojFile, '.csproj'), displayName);
 }
 
 /** One candidate per .csproj that looks runnable (Exe OutputType or Web SDK). */
 function collectCsprojRunnableTargets(ctx: EvidenceCollectionContext): DeployableEvidence[] {
-  const { projectPath } = ctx;
+  const { projectPath, displayName } = ctx;
   const out: DeployableEvidence[] = [];
   const csprojFiles = globSafe(projectPath, CSPROJ_GLOB);
 
@@ -82,7 +82,7 @@ function collectCsprojRunnableTargets(ctx: EvidenceCollectionContext): Deployabl
     if (!isWeb && !isExe) continue; // library project — handled by collectPackageIdentity only
 
     const rootPath = path.dirname(csproj);
-    const name = csprojName(content, rootPath, projectPath, csproj);
+    const name = csprojName(content, rootPath, projectPath, csproj, displayName);
     const evidence: string[] = [`${csproj}`];
     if (isWeb) evidence.push('Sdk="Microsoft.NET.Sdk.Web"');
     if (isExe) evidence.push('<OutputType>Exe</OutputType>');
@@ -101,7 +101,7 @@ function collectCsprojRunnableTargets(ctx: EvidenceCollectionContext): Deployabl
 
 /** Program.cs top-level statements / classic Main, per containing project, when not already claimed via .csproj scan. */
 function collectProgramCsEntries(ctx: EvidenceCollectionContext, alreadyClaimed: Set<string>): DeployableEvidence[] {
-  const { projectPath } = ctx;
+  const { projectPath, displayName } = ctx;
   const out: DeployableEvidence[] = [];
   const programFiles = globSafe(projectPath, PROGRAM_CS_GLOB);
 
@@ -121,7 +121,7 @@ function collectProgramCsEntries(ctx: EvidenceCollectionContext, alreadyClaimed:
     const rootPath = nearestCsprojRoot(projectPath, file);
     if (alreadyClaimed.has(rootPath)) continue; // module already has a Tier-2 candidate from a .csproj match
 
-    const name = moduleNameFromRoot(rootPath, projectPath);
+    const name = moduleNameFromRoot(rootPath, projectPath, undefined, displayName);
     out.push({
       root_path: rootPath,
       name,
@@ -159,7 +159,7 @@ function nearestCsprojRoot(projectPath: string, sourceFile: string): string {
 
 /** Tier 3: every .csproj (library or app) as a package/module identity candidate, plus .sln as workspace identity. */
 function collectPackageIdentity(ctx: EvidenceCollectionContext): DeployableEvidence[] {
-  const { projectPath } = ctx;
+  const { projectPath, displayName } = ctx;
   const out: DeployableEvidence[] = [];
 
   const csprojFiles = globSafe(projectPath, CSPROJ_GLOB);
@@ -167,7 +167,7 @@ function collectPackageIdentity(ctx: EvidenceCollectionContext): DeployableEvide
     const content = readFileSafe(projectPath, csproj);
     if (content === undefined) continue;
     const rootPath = path.dirname(csproj);
-    const name = csprojName(content, rootPath, projectPath, csproj);
+    const name = csprojName(content, rootPath, projectPath, csproj, displayName);
     const versionMatch = content.match(/<Version>([^<]+)<\/Version>/);
     const targetFrameworkMatch = content.match(/<TargetFramework(?:s)?>([^<]+)<\/TargetFramework(?:s)?>/);
     out.push({

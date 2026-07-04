@@ -16,6 +16,15 @@ export interface EvidenceCollectionContext {
   projectPath: string; // repo root for file reads (glob/fs)
   nodes: CASNode[]; // convenience: cas.nodes
   exitPoints: CASExitPoint[]; // convenience: cas.exit_points
+  /**
+   * Real display name for this project, distinct from `projectPath`'s basename
+   * when the workspace directory is a hash (e.g. remote-analyzer-service writes
+   * snapshots to a sha256-derived workspace dir). Providers should prefer this
+   * over `path.basename(projectPath)` when falling back to a directory-derived
+   * name, so deployable/system names never leak the hash workspace basename.
+   * Manifest-derived names (package.json `name`, etc.) still take precedence.
+   */
+  displayName?: string;
 }
 
 /** A pluggable source of deployable evidence for one ecosystem/concern. */

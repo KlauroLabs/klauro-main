@@ -97,6 +97,43 @@ describe('detectCodebaseIdioms repo-derived statistics', () => {
     expect(validation!.name).toContain('DTO');
   });
 
+  it('never leaks the workspace-absolute (hash-named snapshot dir) path into idiom evidence claim text', () => {
+    // Mirrors production: source is snapshotted to a dir named after the
+    // analysisId hash (remote-analyzer-service.ts), so node.source.file can
+    // arrive as an absolute path rooted under that hash dir, e.g. what a
+    // local klauro-* temp dir looks like. The file-organization "feature
+    // modules" idiom builds evidence.claim from node.source.file directly
+    // (byFeatureDirs), bypassing the buildFileInventory relativization that
+    // protects every other fileEvidence() call site — this is the one path
+    // that needs its own claim-text scrub in normalizeDraftPaths.
+    const hashRoot = '/var/folders/xy/T/klauro-b4d1b9a5fa2fab1c';
+    const nodes = [
+      node({ id: 'c1', name: 'UsersController', type: 'controller', source: { file: `${hashRoot}/users/users.controller.ts`, line: 1 } }),
+      node({ id: 's1', name: 'UsersService', type: 'service', source: { file: `${hashRoot}/users/users.service.ts`, line: 1 } }),
+      node({ id: 'r1', name: 'UsersRepository', type: 'repository', source: { file: `${hashRoot}/users/users.repository.ts`, line: 1 } }),
+      node({ id: 'd1', name: 'UsersDto', type: 'dto', source: { file: `${hashRoot}/users/users.dto.ts`, line: 1 } }),
+      node({ id: 'm1', name: 'UsersModule', type: 'module', source: { file: `${hashRoot}/users/users.module.ts`, line: 1 } }),
+    ];
+    const result = detectCodebaseIdioms(baseInput({ projectPath: hashRoot, nodes }));
+    const featureModules = result.idioms.find(idiom => idiom.category === 'file-organization' && idiom.name.toLowerCase().includes('feature'));
+    expect(featureModules).toBeDefined();
+    expect(featureModules!.evidence.length).toBeGreaterThan(0);
+
+    for (const idiom of result.idioms) {
+      for (const evidence of idiom.evidence) {
+        expect(evidence.claim).not.toContain(hashRoot);
+        expect(evidence.claim).not.toContain('klauro-b4d1b9a5fa2fab1c');
+        if (evidence.file) expect(evidence.file).not.toContain(hashRoot);
+      }
+      for (const deviation of idiom.deviations || []) {
+        expect(deviation.file || '').not.toContain(hashRoot);
+        for (const evidence of deviation.evidence || []) {
+          expect(evidence.claim).not.toContain(hashRoot);
+        }
+      }
+    }
+  });
+
   it('differentiates idioms between two structurally different repos', () => {
     const railsInput = baseInput({
       nodes: [

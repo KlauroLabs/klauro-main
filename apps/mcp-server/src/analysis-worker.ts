@@ -12,6 +12,7 @@ interface WorkerAnalyzeRequest {
   id: number;
   projectPath: string;
   forceFull: boolean;
+  displayName?: string;
   env: Record<string, string>;
 }
 
@@ -35,10 +36,10 @@ function applyEnvSnapshot(snapshot: Record<string, string>): void {
 
 async function executeAnalysis(request: WorkerAnalyzeRequest): Promise<AnalysisRunSummary> {
   if (request.forceFull) {
-    const output = await analyzeProject(request.projectPath);
+    const output = await analyzeProject(request.projectPath, request.displayName);
     return summarizeFullAnalysis(request.projectPath, output);
   }
-  const result = await analyzeProjectIncremental(request.projectPath);
+  const result = await analyzeProjectIncremental(request.projectPath, request.displayName);
   return summarizeIncrementalAnalysis(request.projectPath, result);
 }
 

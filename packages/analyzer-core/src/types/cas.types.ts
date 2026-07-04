@@ -1050,6 +1050,8 @@ export interface CASAnalyzerContribution {
   depends_on?: string[];
   nodes_created?: number;
   edges_created?: number;
+  /** Distinct source files (by node.source.file) that produced this contribution's nodes. Not an AST-node count. */
+  files_created?: number;
   nodes_contributed?: number;
   edges_contributed?: number;
   capabilities?: string[];

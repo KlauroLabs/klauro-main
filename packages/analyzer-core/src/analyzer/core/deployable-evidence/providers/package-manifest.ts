@@ -2,10 +2,11 @@ import * as fs from 'fs-extra';
 import * as path from 'path';
 import type { DeployableEvidence } from '../../../../types/cas.types';
 import type { EvidenceCollectionContext, EvidenceProvider } from '../types';
+import { safeDeployableName } from '../util';
 
 /** package.json / Cargo.toml / go.mod as the publishable/installable unit identity. */
 function collect(ctx: EvidenceCollectionContext): DeployableEvidence[] {
-  const { projectPath } = ctx;
+  const { projectPath, displayName } = ctx;
   const out: DeployableEvidence[] = [];
 
   const packageJsonPath = path.join(projectPath, 'package.json');
@@ -14,7 +15,7 @@ function collect(ctx: EvidenceCollectionContext): DeployableEvidence[] {
       const json = fs.readJsonSync(packageJsonPath);
       out.push({
         root_path: '.',
-        name: json.name || path.basename(projectPath),
+        name: json.name || safeDeployableName(displayName || path.basename(projectPath)),
         tier: 3,
         kind: 'package',
         evidence: [

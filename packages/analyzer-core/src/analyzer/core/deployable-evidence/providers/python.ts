@@ -2,7 +2,7 @@ import * as fs from 'fs-extra';
 import * as path from 'path';
 import type { DeployableEvidence } from '../../../../types/cas.types';
 import type { EvidenceCollectionContext, EvidenceProvider } from '../types';
-import { IGNORE_GLOBS, safeGlobSync } from '../util';
+import { IGNORE_GLOBS, safeDeployableName, safeGlobSync } from '../util';
 
 /** Tier-2: pyproject.toml [project.scripts] / [tool.poetry.scripts], setup.py
  *  console_scripts/entry_points — CLI entry points that ship as `bin`. */
@@ -74,7 +74,7 @@ function collectConsoleScripts(ctx: EvidenceCollectionContext): DeployableEviden
 /** Tier-2: __main__.py with `if __name__ == '__main__':` — module runnable via
  *  `python -m package`. */
 function collectMainModules(ctx: EvidenceCollectionContext): DeployableEvidence[] {
-  const { projectPath } = ctx;
+  const { projectPath, displayName } = ctx;
   const out: DeployableEvidence[] = [];
   let files: string[] = [];
   try {
@@ -93,7 +93,7 @@ function collectMainModules(ctx: EvidenceCollectionContext): DeployableEvidence[
     const packageDir = path.dirname(file);
     out.push({
       root_path: packageDir,
-      name: path.basename(packageDir) === '.' ? path.basename(projectPath) : path.basename(packageDir),
+      name: path.basename(packageDir) === '.' ? safeDeployableName(displayName || path.basename(projectPath)) : path.basename(packageDir),
       tier: 2,
       kind: 'bin',
       evidence: [`__main__.py with if __name__ == '__main__' guard: ${file}`],
@@ -104,7 +104,7 @@ function collectMainModules(ctx: EvidenceCollectionContext): DeployableEvidence[
 
 /** Tier-2: manage.py (Django) — server-entry. */
 function collectDjango(ctx: EvidenceCollectionContext): DeployableEvidence[] {
-  const { projectPath } = ctx;
+  const { projectPath, displayName } = ctx;
   const out: DeployableEvidence[] = [];
   let files: string[] = [];
   try {
@@ -116,7 +116,7 @@ function collectDjango(ctx: EvidenceCollectionContext): DeployableEvidence[] {
     const root = path.dirname(file);
     out.push({
       root_path: root,
-      name: path.basename(root) === '.' ? path.basename(projectPath) : path.basename(root),
+      name: path.basename(root) === '.' ? safeDeployableName(displayName || path.basename(projectPath)) : path.basename(root),
       tier: 2,
       kind: 'server-entry',
       evidence: [`Django manage.py: ${file}`],
@@ -128,7 +128,7 @@ function collectDjango(ctx: EvidenceCollectionContext): DeployableEvidence[] {
 /** Tier-2: wsgi.py/asgi.py (gunicorn/uvicorn target) or a Flask/FastAPI `app = `
  *  instantiation — web server entry points. */
 function collectWsgiAsgiApp(ctx: EvidenceCollectionContext): DeployableEvidence[] {
-  const { projectPath } = ctx;
+  const { projectPath, displayName } = ctx;
   const out: DeployableEvidence[] = [];
   const seenRoots = new Set<string>();
 
@@ -144,7 +144,7 @@ function collectWsgiAsgiApp(ctx: EvidenceCollectionContext): DeployableEvidence[
     seenRoots.add(root);
     out.push({
       root_path: root,
-      name: path.basename(root) === '.' ? path.basename(projectPath) : path.basename(root),
+      name: path.basename(root) === '.' ? safeDeployableName(displayName || path.basename(projectPath)) : path.basename(root),
       tier: 2,
       kind: 'server-entry',
       evidence: [`${path.basename(file)} present (gunicorn/uvicorn target): ${file}`],
@@ -172,7 +172,7 @@ function collectWsgiAsgiApp(ctx: EvidenceCollectionContext): DeployableEvidence[
     seenRoots.add(root);
     out.push({
       root_path: root,
-      name: path.basename(root) === '.' ? path.basename(projectPath) : path.basename(root),
+      name: path.basename(root) === '.' ? safeDeployableName(displayName || path.basename(projectPath)) : path.basename(root),
       tier: 2,
       kind: 'server-entry',
       evidence: [`${match[1]} app instantiation: ${file}`],
@@ -184,7 +184,7 @@ function collectWsgiAsgiApp(ctx: EvidenceCollectionContext): DeployableEvidence[
 
 /** Tier-3: pyproject.toml / setup.py / requirements.txt as package identity. */
 function collectPackageIdentity(ctx: EvidenceCollectionContext): DeployableEvidence[] {
-  const { projectPath } = ctx;
+  const { projectPath, displayName } = ctx;
   const out: DeployableEvidence[] = [];
 
   const pyprojectPath = path.join(projectPath, 'pyproject.toml');
@@ -230,7 +230,7 @@ function collectPackageIdentity(ctx: EvidenceCollectionContext): DeployableEvide
   if (!fs.existsSync(pyprojectPath) && !fs.existsSync(setupPyPath) && fs.existsSync(requirementsPath)) {
     out.push({
       root_path: '.',
-      name: path.basename(projectPath),
+      name: safeDeployableName(displayName || path.basename(projectPath)),
       tier: 3,
       kind: 'package',
       evidence: [`requirements.txt present: ${path.basename(requirementsPath)}`],

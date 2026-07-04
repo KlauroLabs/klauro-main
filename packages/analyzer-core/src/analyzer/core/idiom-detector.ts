@@ -1067,11 +1067,26 @@ function normalizeProjectPath(projectPath: string, file: string): string {
   return relative;
 }
 
+/**
+ * Rewrites an evidence's `claim` text to use the relativized file path
+ * instead of whatever raw (possibly workspace-absolute, possibly
+ * hash-directory-rooted) path it was originally built with. `claim` is a
+ * free-text string baked at construction time (fileEvidence/nodeEvidence
+ * interpolate `file` directly into the sentence), so relativizing the
+ * sibling `file` field alone isn't enough — the same raw path can still be
+ * sitting inside the sentence. Only rewrites when the original raw file
+ * value actually appears in the claim, to avoid mangling unrelated text.
+ */
+function normalizeEvidenceClaim(evidence: CASIdiomEvidence, rawFile: string | undefined, normalizedFile: string): CASIdiomEvidence {
+  if (!rawFile || !evidence.claim || !evidence.claim.includes(rawFile)) return { ...evidence, file: normalizedFile };
+  return { ...evidence, file: normalizedFile, claim: evidence.claim.split(rawFile).join(normalizedFile) };
+}
+
 function normalizeDraftPaths(projectPath: string, draft: IdiomDraft): IdiomDraft {
   return {
     ...draft,
     evidence: draft.evidence.map(evidence => evidence.file
-      ? { ...evidence, file: normalizeProjectPath(projectPath, evidence.file) }
+      ? normalizeEvidenceClaim(evidence, evidence.file, normalizeProjectPath(projectPath, evidence.file))
       : evidence),
     positive_examples: draft.positive_examples.map(example => example.file
       ? { ...example, file: normalizeProjectPath(projectPath, example.file) }
@@ -1084,7 +1099,7 @@ function normalizeDraftPaths(projectPath: string, draft: IdiomDraft): IdiomDraft
       ...deviation,
       file: deviation.file ? normalizeProjectPath(projectPath, deviation.file) : deviation.file,
       evidence: deviation.evidence?.map(evidence => evidence.file
-        ? { ...evidence, file: normalizeProjectPath(projectPath, evidence.file) }
+        ? normalizeEvidenceClaim(evidence, evidence.file, normalizeProjectPath(projectPath, evidence.file))
         : evidence),
     })),
   };

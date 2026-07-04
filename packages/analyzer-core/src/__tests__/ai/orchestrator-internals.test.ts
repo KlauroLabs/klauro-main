@@ -4207,3 +4207,72 @@ describe('linkRouteHandlers: handlerCallCandidates fallback for inline registrat
     expect(edges.length).toBe(0);
   });
 });
+
+describe('orchestrator technologies.languages[].files (real file count, not AST-node count)', () => {
+  // Regression test for the bug where `files` reported result.nodes.length
+  // (an AST-node count) mislabeled as a file count, overstating real file
+  // counts by 5.9x-15.7x on every analyzed repo.
+
+  function nodeInFile(id: string, file: string): CASNode {
+    return { id, name: id, type: 'function', source: { file, line: 1, end_line: 2 } } as unknown as CASNode;
+  }
+
+  it('countDistinctSourceFiles dedupes many nodes down to the real file count', () => {
+    // 3 files, but 12 nodes total (4 nodes per file) - files must be 3, not 12.
+    const nodes: CASNode[] = [
+      nodeInFile('n1', 'src/a.ts'), nodeInFile('n2', 'src/a.ts'), nodeInFile('n3', 'src/a.ts'), nodeInFile('n4', 'src/a.ts'),
+      nodeInFile('n5', 'src/b.ts'), nodeInFile('n6', 'src/b.ts'), nodeInFile('n7', 'src/b.ts'), nodeInFile('n8', 'src/b.ts'),
+      nodeInFile('n9', 'src/c.ts'), nodeInFile('n10', 'src/c.ts'), nodeInFile('n11', 'src/c.ts'), nodeInFile('n12', 'src/c.ts'),
+    ];
+
+    expect(orch.countDistinctSourceFiles(nodes)).toBe(3);
+    expect(nodes.length).toBe(12);
+  });
+
+  it('ignores nodes without a source file rather than fabricating a count for them', () => {
+    const nodes: CASNode[] = [
+      nodeInFile('n1', 'src/a.ts'),
+      { id: 'n2', name: 'synthetic', type: 'function' } as unknown as CASNode, // no source.file
+    ];
+    expect(orch.countDistinctSourceFiles(nodes)).toBe(1);
+  });
+
+  it('returns 0 for an empty or undefined node list', () => {
+    expect(orch.countDistinctSourceFiles([])).toBe(0);
+    expect(orch.countDistinctSourceFiles(undefined)).toBe(0);
+  });
+
+  it('extractTechnologies reports files_created (distinct files), not nodes_created (AST nodes)', () => {
+    // Simulates a language contribution with 100 AST nodes spread across 7 files.
+    const contributions = [{
+      analyzer_id: 'typescript-javascript',
+      analyzer_name: 'TypeScript/JavaScript Analyzer',
+      analyzer_type: 'language',
+      contribution_type: 'language',
+      nodes_created: 100,
+      files_created: 7,
+      edges_created: 0,
+    }];
+
+    const result = orch.extractTechnologies(contributions, []);
+
+    expect(result.languages).toHaveLength(1);
+    expect(result.languages[0].name).toBe('TypeScript/JavaScript');
+    expect(result.languages[0].files).toBe(7);
+    expect(result.languages[0].files).not.toBe(100);
+  });
+
+  it('falls back to nodes_created only when files_created is absent (legacy-contribution safety net)', () => {
+    const contributions = [{
+      analyzer_id: 'legacy',
+      analyzer_name: 'Legacy Analyzer',
+      analyzer_type: 'language',
+      contribution_type: 'language',
+      nodes_created: 42,
+      edges_created: 0,
+    }];
+
+    const result = orch.extractTechnologies(contributions, []);
+    expect(result.languages[0].files).toBe(42);
+  });
+});

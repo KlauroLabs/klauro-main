@@ -27,6 +27,7 @@ import {
   FastAPIAnalyzer,
   ExpressAnalyzer,
   FastifyAnalyzer,
+  NodeHttpAnalyzer,
   ReactAnalyzer,
   VueAnalyzer,
   AngularAnalyzer,
@@ -386,6 +387,7 @@ export function createOrchestrator(): AnalyzerOrchestrator {
     { id: 'rails', name: 'Rails Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { files: ['Gemfile', 'config/routes.rb'], dependencies: ['rails'] }, requires: ['ruby'], analyzer: new RailsAnalyzer() },
     { id: 'express', name: 'Express.js Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['express'], files: ['package.json'] }, requires: ['typescript-javascript'], analyzer: new ExpressAnalyzer() },
     { id: 'fastify', name: 'Fastify Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['fastify', '@fastify/cors', '@fastify/jwt', '@fastify/cookie', '@fastify/multipart', '@fastify/swagger', '@fastify/type-provider-typebox'], files: ['package.json'] }, requires: ['typescript-javascript'], analyzer: new FastifyAnalyzer() },
+    { id: 'node-http', name: 'Node.js Raw HTTP Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { files: ['**/*.{js,ts,mjs,cjs}'], content: [/\b(?:http|https)\.createServer\s*\(/, /(?<![.\w])createServer\s*\(/] }, requires: ['typescript-javascript'], analyzer: new NodeHttpAnalyzer() },
     { id: 'react', name: 'React Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['react', 'react-dom'], files: ['package.json'], content: [/\.jsx$/, /\.tsx$/] }, requires: ['typescript-javascript'], analyzer: new ReactAnalyzer() },
     { id: 'angular', name: 'Angular Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['@angular/core', '@angular/common'], files: ['angular.json', 'package.json'], content: [/\.component\.ts$/] }, requires: ['typescript-javascript'], analyzer: new AngularAnalyzer() },
     { id: 'vue', name: 'Vue.js Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['vue', 'vue@'], files: ['package.json'], content: [/\.vue$/] }, requires: ['typescript-javascript'], analyzer: new VueAnalyzer() },
@@ -734,7 +736,7 @@ function hasStaleNarrativePattern(description: string, previousDomain: string | 
   return false;
 }
 
-export async function analyzeProject(projectPath: string): Promise<CASOutput> {
+export async function analyzeProject(projectPath: string, displayName?: string): Promise<CASOutput> {
   if (!(await fs.pathExists(projectPath))) {
     throw new Error(`Project path does not exist: ${projectPath}`);
   }
@@ -745,7 +747,7 @@ export async function analyzeProject(projectPath: string): Promise<CASOutput> {
     const previousOutput = await loadAnalysis(projectPath, { preferCache: true }).catch(() => null);
     const result = await applyStoredElementDescriptions(projectPath, preservePreviousAIDescriptions(
       previousOutput,
-      await orch.orchestrateAnalysis(projectPath)
+      await orch.orchestrateAnalysis(projectPath, { displayName })
     ));
 
     await saveAnalysis(projectPath, result);
@@ -780,7 +782,7 @@ export interface DeferredAnalysisResult {
  * swallows all errors (logging only) so a failed enrichment can never crash the
  * process — the deterministic CAS stays stored.
  */
-export async function analyzeProjectDeferred(projectPath: string): Promise<DeferredAnalysisResult> {
+export async function analyzeProjectDeferred(projectPath: string, displayName?: string): Promise<DeferredAnalysisResult> {
   if (!(await fs.pathExists(projectPath))) {
     throw new Error(`Project path does not exist: ${projectPath}`);
   }
@@ -793,7 +795,7 @@ export async function analyzeProjectDeferred(projectPath: string): Promise<Defer
       const previousOutput = await loadAnalysis(projectPath, { preferCache: true }).catch(() => null);
       const result = await applyStoredElementDescriptions(projectPath, preservePreviousAIDescriptions(
         previousOutput,
-        await orch.orchestrateAnalysis(projectPath, { deferAiEnrichment: true })
+        await orch.orchestrateAnalysis(projectPath, { deferAiEnrichment: true, displayName })
       ));
 
       await saveAnalysis(projectPath, result);
@@ -1020,17 +1022,17 @@ function withGlobalAnalysisLock<T>(fn: () => Promise<T>): Promise<T> {
   return result;
 }
 
-export async function analyzeProjectIncremental(projectPath: string): Promise<IncrementalAnalysisResult> {
+export async function analyzeProjectIncremental(projectPath: string, displayName?: string): Promise<IncrementalAnalysisResult> {
   if (!(await fs.pathExists(projectPath))) {
     throw new Error(`Project path does not exist: ${projectPath}`);
   }
 
   return withGlobalAnalysisLock(() =>
-    withProjectAnalysisLock(projectPath, () => runIncrementalAnalysis(projectPath)),
+    withProjectAnalysisLock(projectPath, () => runIncrementalAnalysis(projectPath, displayName)),
   );
 }
 
-async function runIncrementalAnalysis(projectPath: string): Promise<IncrementalAnalysisResult> {
+async function runIncrementalAnalysis(projectPath: string, displayName?: string): Promise<IncrementalAnalysisResult> {
   const debugTimings = process.env.KLAURO_DEBUG_INCREMENTAL_TIMINGS === '1';
   const debug = (label: string, startedAt: number) => {
     if (debugTimings) {
@@ -1049,7 +1051,7 @@ async function runIncrementalAnalysis(projectPath: string): Promise<IncrementalA
 
   if (!previousOutput) {
     let phaseStartedAt = Date.now();
-    const result = await orch.orchestrateAnalysis(projectPath);
+    const result = await orch.orchestrateAnalysis(projectPath, { displayName });
     debug('initial-orchestrate-full', phaseStartedAt);
     phaseStartedAt = Date.now();
     await saveAnalysis(projectPath, result);
@@ -1063,7 +1065,8 @@ async function runIncrementalAnalysis(projectPath: string): Promise<IncrementalA
       null,
       {
         loadCache: (hash) => loadFileCache(projectPath, hash),
-        saveCache: (hash, fileResult) => saveFileCache(projectPath, hash, fileResult)
+        saveCache: (hash, fileResult) => saveFileCache(projectPath, hash, fileResult),
+        displayName
       }
     );
     debug('initial-build-state', phaseStartedAt);
@@ -1085,7 +1088,8 @@ async function runIncrementalAnalysis(projectPath: string): Promise<IncrementalA
     previousState,
     {
       loadCache: (hash) => loadFileCache(projectPath, hash),
-      saveCache: (hash, fileResult) => saveFileCache(projectPath, hash, fileResult)
+      saveCache: (hash, fileResult) => saveFileCache(projectPath, hash, fileResult),
+      displayName
     }
   );
   debug('orchestrate-incremental', phaseStartedAt);
@@ -1205,14 +1209,22 @@ export function summarizeIncrementalAnalysis(projectPath: string, result: Increm
 
 export interface RunAnalysisOptions {
   forceFull?: boolean;
+  /**
+   * Real display name for this project, distinct from `projectPath`'s
+   * basename when the workspace directory is a hash (e.g. the remote
+   * analyzer service writes snapshots to a sha256-derived workspace dir).
+   * Threaded through to orchestrateAnalysis so deployable/system names never
+   * leak the hash workspace basename.
+   */
+  displayName?: string;
 }
 
 export async function runAnalysisInProcess(projectPath: string, options: RunAnalysisOptions = {}): Promise<AnalysisRunSummary> {
   if (options.forceFull) {
-    const output = await analyzeProject(projectPath);
+    const output = await analyzeProject(projectPath, options.displayName);
     return summarizeFullAnalysis(projectPath, output);
   }
-  const result = await analyzeProjectIncremental(projectPath);
+  const result = await analyzeProjectIncremental(projectPath, options.displayName);
   return summarizeIncrementalAnalysis(projectPath, result);
 }
 
@@ -1225,6 +1237,7 @@ interface WorkerAnalyzeRequest {
   id: number;
   projectPath: string;
   forceFull: boolean;
+  displayName?: string;
   env: Record<string, string>;
 }
 
@@ -1464,6 +1477,7 @@ function dispatchWorkerJob(projectPath: string, options: RunAnalysisOptions): Pr
       id,
       projectPath,
       forceFull: Boolean(options.forceFull),
+      displayName: options.displayName,
       env: collectKlauroEnvSnapshot(),
     };
     handle.child.send(request, (error) => {

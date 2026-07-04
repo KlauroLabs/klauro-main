@@ -1027,10 +1027,11 @@ async function handleAccountApi(
     const analysisId = project.analysis_id || makeAnalysisId(project.local_path || project.id);
     const workspace = workspacePath(dataDir, analysisId);
     const snapshot = await buildSourceSnapshot(sourcePath);
+    const displayName = resolveDisplayName(snapshot.project_name, sourcePath);
     await fs.remove(workspace);
     await fs.ensureDir(workspace);
     await writeSnapshot(workspace, snapshot.files);
-    const result = await analyzeProjectIncremental(workspace);
+    const result = await analyzeProjectIncremental(workspace, displayName);
     const response: RemoteAnalyzeResponse = {
       status: 'success',
       analysis_id: analysisId,
@@ -1154,6 +1155,7 @@ async function handleAnalyze(dataDir: string, request: RemoteAnalyzeRequest, def
   if (!request.snapshot?.files?.length) throw new Error('Remote analyze requires a source snapshot with files');
   const analysisId = request.project_id || makeAnalysisId(request.project_path || request.snapshot.project_name);
   const workspace = workspacePath(dataDir, analysisId);
+  const displayName = resolveDisplayName(request.snapshot.project_name, request.project_path);
 
   await fs.remove(workspace);
   await fs.ensureDir(workspace);
@@ -1162,7 +1164,7 @@ async function handleAnalyze(dataDir: string, request: RemoteAnalyzeRequest, def
   if (deferAiEnrichment) {
     // Progressive path: return the deterministic CAS now; the AI enrichment
     // runs in the background and upgrades the stored analysis for later fetches.
-    const deferred = await analyzeProjectDeferred(workspace);
+    const deferred = await analyzeProjectDeferred(workspace, displayName);
     return {
       status: 'success',
       analysis_id: analysisId,
@@ -1174,7 +1176,7 @@ async function handleAnalyze(dataDir: string, request: RemoteAnalyzeRequest, def
     };
   }
 
-  const result = await analyzeProjectIncremental(workspace);
+  const result = await analyzeProjectIncremental(workspace, displayName);
   return {
     status: 'success',
     analysis_id: analysisId,
@@ -1194,12 +1196,13 @@ async function handleAnalyzeDiff(dataDir: string, request: RemoteAnalyzeDiffRequ
   // Scope the diff workspace to the target branch so it never overwrites the
   // full ('/v1/analyze') workspace for the same analysis_id.
   const workspace = workspacePath(dataDir, `${analysisId}-branch-${diff.target_branch}`);
+  const displayName = resolveDisplayName(undefined, request.project_path);
 
   await fs.remove(workspace);
   await fs.ensureDir(workspace);
   await writeSnapshot(workspace, diff.files);
 
-  const result = await analyzeProjectIncremental(workspace);
+  const result = await analyzeProjectIncremental(workspace, displayName);
   const cas = result.output;
   cas.analyzed_track = 'other-branch';
   cas.diff_only = true;
@@ -1286,7 +1289,8 @@ async function handleSync(dataDir: string, request: RemoteSyncRequest): Promise<
   }
 
   await applyChanges(workspace, request.changes.changed_files || []);
-  const result = await analyzeProjectIncremental(workspace);
+  const displayName = resolveDisplayName(request.changes.project_name, request.project_path);
+  const result = await analyzeProjectIncremental(workspace, displayName);
   return {
     status: 'success',
     analysis_id: request.analysis_id,
@@ -1500,6 +1504,26 @@ function workspacePath(dataDir: string, analysisId: string): string {
 
 function makeAnalysisId(value: string): string {
   return crypto.createHash('sha256').update(value).digest('hex').slice(0, 24);
+}
+
+/**
+ * Real display name for a project, computed BEFORE the hash-workspace swap
+ * (analysisId/workspace is a sha256-derived directory name — see
+ * makeAnalysisId/workspacePath — so `path.basename(workspace)` downstream
+ * would otherwise resolve to the hash).
+ *
+ * Prefers the basename of the real, caller-supplied `project_path` (this is
+ * what the actual product client sends — see remote-sync-client.ts — and is
+ * always the user's real local repo directory) over the snapshot's
+ * `project_name`, because `project_name` itself falls back to
+ * `path.basename(root)` of whatever directory was walked to build the
+ * snapshot (see buildSourceSnapshot in remote-source.ts) — for a staged/
+ * temporary source tree (e.g. a bench harness staging into a throwaway git
+ * repo) that basename is the STAGING directory, not the real project. Only
+ * falls back to `project_name` when no `project_path` was supplied at all.
+ */
+function resolveDisplayName(projectName?: string, projectPath?: string): string | undefined {
+  return (projectPath ? path.basename(projectPath) : undefined) || projectName;
 }
 
 function safeName(value: string): string {

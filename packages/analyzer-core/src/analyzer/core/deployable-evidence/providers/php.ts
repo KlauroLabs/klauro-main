@@ -2,11 +2,11 @@ import * as fs from 'fs-extra';
 import * as path from 'path';
 import type { DeployableEvidence } from '../../../../types/cas.types';
 import type { EvidenceCollectionContext, EvidenceProvider } from '../types';
-import { arrayOf, IGNORE_GLOBS, safeGlobSync } from '../util';
+import { arrayOf, IGNORE_GLOBS, safeDeployableName, safeGlobSync } from '../util';
 
 /** Tier-2: public/index.php front controller — the classic PHP web-app server entry. */
 function collectFrontController(ctx: EvidenceCollectionContext): DeployableEvidence[] {
-  const { projectPath } = ctx;
+  const { projectPath, displayName } = ctx;
   const out: DeployableEvidence[] = [];
   let files: string[] = [];
   try {
@@ -19,7 +19,7 @@ function collectFrontController(ctx: EvidenceCollectionContext): DeployableEvide
     const root = path.dirname(path.dirname(file));
     out.push({
       root_path: root === '' ? '.' : root,
-      name: path.basename(root) === '.' || root === '' ? path.basename(projectPath) : path.basename(root),
+      name: path.basename(root) === '.' || root === '' ? safeDeployableName(displayName || path.basename(projectPath)) : path.basename(root),
       tier: 2,
       kind: 'server-entry',
       evidence: [`front controller: ${file}`],
@@ -30,7 +30,7 @@ function collectFrontController(ctx: EvidenceCollectionContext): DeployableEvide
 
 /** Tier-2: artisan (Laravel) — server-entry + bin (console commands via `php artisan`). */
 function collectLaravel(ctx: EvidenceCollectionContext): DeployableEvidence[] {
-  const { projectPath } = ctx;
+  const { projectPath, displayName } = ctx;
   const out: DeployableEvidence[] = [];
   let files: string[] = [];
   try {
@@ -40,7 +40,7 @@ function collectLaravel(ctx: EvidenceCollectionContext): DeployableEvidence[] {
   }
   for (const file of files) {
     const root = path.dirname(file);
-    const name = path.basename(root) === '.' ? path.basename(projectPath) : path.basename(root);
+    const name = path.basename(root) === '.' ? safeDeployableName(displayName || path.basename(projectPath)) : path.basename(root);
     out.push({
       root_path: root === '' ? '.' : root,
       name,
@@ -93,7 +93,7 @@ function collectComposerBin(ctx: EvidenceCollectionContext): DeployableEvidence[
 
 /** Tier-3: composer.json as package identity. */
 function collectPackageIdentity(ctx: EvidenceCollectionContext): DeployableEvidence[] {
-  const { projectPath } = ctx;
+  const { projectPath, displayName } = ctx;
   const out: DeployableEvidence[] = [];
   const composerJsonPath = path.join(projectPath, 'composer.json');
   if (fs.existsSync(composerJsonPath)) {
@@ -101,7 +101,7 @@ function collectPackageIdentity(ctx: EvidenceCollectionContext): DeployableEvide
       const json = fs.readJsonSync(composerJsonPath);
       out.push({
         root_path: '.',
-        name: json.name || path.basename(projectPath),
+        name: json.name || safeDeployableName(displayName || path.basename(projectPath)),
         tier: 3,
         kind: 'package',
         evidence: [

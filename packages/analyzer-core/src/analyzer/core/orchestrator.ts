@@ -191,6 +191,14 @@ export interface AnalyzerRegistration {
 export interface IncrementalAnalysisOptions {
   loadCache?: (contentHash: string) => Promise<FileAnalysisResult | null>;
   saveCache?: (contentHash: string, result: FileAnalysisResult) => Promise<void>;
+  /**
+   * Real display name for this project, distinct from `projectPath`'s
+   * basename when the workspace directory is a hash (e.g. the remote
+   * analyzer service writes snapshots to a sha256-derived workspace dir).
+   * Threaded into deployable evidence collection and system/domain naming so
+   * a hash workspace basename never leaks into deployable/system names.
+   */
+  displayName?: string;
 }
 
 export const KLAURO_SELF_CAPABILITY_NAMES: Readonly<Record<string, string>> = {
@@ -306,6 +314,16 @@ export interface OrchestrateAnalysisOptions {
    * and the output is annotated `ai_enrichment='synchronous'`.
    */
   deferAiEnrichment?: boolean;
+  /**
+   * Real display name for this project, distinct from `projectPath`'s
+   * basename when the workspace directory is a hash (e.g. the remote
+   * analyzer service writes snapshots to a sha256-derived workspace dir).
+   * Threaded into deployable evidence collection and system/domain naming so
+   * a hash workspace basename never leaks into deployable/system names. When
+   * absent, `path.basename(projectPath)` is used (correct for direct local
+   * analyze where projectPath already is the real directory name).
+   */
+  displayName?: string;
 }
 
 export class AnalyzerOrchestrator {
@@ -1093,6 +1111,7 @@ export class AnalyzerOrchestrator {
           contribution_type: registration.type,
           execution_time_ms: executionTime,
           nodes_created: result.nodes?.length || 0,
+          files_created: this.countDistinctSourceFiles(result.nodes, projectPath),
           edges_created: result.edges?.length || 0,
           confidence: 1.0,
           contributed_categories: result.categories ? Object.keys(result.categories).length : 0,
@@ -1138,7 +1157,7 @@ export class AnalyzerOrchestrator {
     logTiming('pp_linkRouteHandlers', phaseStart);
 
     phaseStart = Date.now();
-    const systemName = path.basename(projectPath);
+    const systemName = options?.displayName || path.basename(projectPath);
     const progressiveLevels = this.buildProgressiveLevels(allNodes, categories);
     logTiming('pp_progressiveLevels', phaseStart);
 
@@ -1407,6 +1426,7 @@ export class AnalyzerOrchestrator {
       nodes: allNodes,
       entryPoints: allEntryPoints,
       exitPoints: allExitPoints,
+      displayName: options?.displayName,
     });
     const analysisFacts = this.buildAnalysisFacts(
       allNodes,
@@ -1627,7 +1647,7 @@ export class AnalyzerOrchestrator {
 
     if (schemaRebuildReason) {
       this.invalidateProjectDiscovery(projectPath);
-      const output = await this.orchestrateAnalysis(projectPath);
+      const output = await this.orchestrateAnalysis(projectPath, { displayName: options?.displayName });
       const state = this.buildIncrementalState(projectPath, output, changeDetector);
       const changeReport = this.buildChangeReport(
         previousOutput,
@@ -1642,7 +1662,7 @@ export class AnalyzerOrchestrator {
     }
 
     if (!previousState) {
-      const output = previousOutput?.analysis_id ? previousOutput : await this.orchestrateAnalysis(projectPath);
+      const output = previousOutput?.analysis_id ? previousOutput : await this.orchestrateAnalysis(projectPath, { displayName: options?.displayName });
       const state = this.buildIncrementalState(projectPath, output, changeDetector);
       const changeReport = this.buildChangeReport(previousOutput, output, changeSet);
       return { output, state, changeReport, wasFullRebuild: true, fullRebuildReason: 'No previous analysis state' };
@@ -1650,7 +1670,7 @@ export class AnalyzerOrchestrator {
 
     if (changeSet.requiresFullRebuild) {
       this.invalidateProjectDiscovery(projectPath);
-      const output = await this.orchestrateAnalysis(projectPath);
+      const output = await this.orchestrateAnalysis(projectPath, { displayName: options?.displayName });
       const state = this.buildIncrementalState(projectPath, output, changeDetector);
       const changeReport = this.buildChangeReport(previousOutput, output, changeSet);
       return { output, state, changeReport, wasFullRebuild: true, fullRebuildReason: changeSet.reason };
@@ -1807,7 +1827,7 @@ export class AnalyzerOrchestrator {
     );
 
     if (incrementalAnalyzers.length === 0) {
-      const output = await this.orchestrateAnalysis(projectPath);
+      const output = await this.orchestrateAnalysis(projectPath, { displayName: options?.displayName });
       return {
         output,
         fileResults: new Map(),
@@ -1867,7 +1887,7 @@ export class AnalyzerOrchestrator {
       return matchingPlans.length === 0;
     });
     if (unsupportedFiles.length > 0) {
-      const output = await this.orchestrateAnalysis(projectPath);
+      const output = await this.orchestrateAnalysis(projectPath, { displayName: options?.displayName });
       return {
         output,
         fileResults: new Map(),
@@ -2035,7 +2055,7 @@ export class AnalyzerOrchestrator {
     debugIncrementalPhase('analyze-changed-files');
 
     if (failedFiles.length > 0 || fileResults.size !== filesToAnalyze.length) {
-      const output = await this.orchestrateAnalysis(projectPath);
+      const output = await this.orchestrateAnalysis(projectPath, { displayName: options?.displayName });
       const incompleteFiles = filesToAnalyze.filter(file => !fileResults.has(file));
       return {
         output,
@@ -2066,7 +2086,7 @@ export class AnalyzerOrchestrator {
     }
 
     if (filesWithUnsupportedDerivedFacts.length > 0) {
-      const output = await this.orchestrateAnalysis(projectPath);
+      const output = await this.orchestrateAnalysis(projectPath, { displayName: options?.displayName });
       return {
         output,
         fileResults: new Map(),
@@ -2085,7 +2105,8 @@ export class AnalyzerOrchestrator {
       filteredEdges,
       filteredEntryPoints,
       filteredExitPoints,
-      previousOutput
+      previousOutput,
+      options
     );
     if (incrementalMergeWarnings.length > 0) {
       rebuiltOutput.analysis_errors = [...(rebuiltOutput.analysis_errors || []), ...incrementalMergeWarnings];
@@ -2100,7 +2121,8 @@ export class AnalyzerOrchestrator {
     edges: CASEdge[],
     entryPoints: CASEntryPoint[],
     exitPoints: CASExitPoint[],
-    previousOutput: CASOutput
+    previousOutput: CASOutput,
+    options?: IncrementalAnalysisOptions
   ): Promise<CASOutput> {
     const gitAnalyzer = new GitAnalyzer(projectPath);
     const filePathsForGit = nodes
@@ -2111,7 +2133,7 @@ export class AnalyzerOrchestrator {
     this.normalizeNodeMetrics(nodes);
 
     const categories = previousOutput.categories || {};
-    const systemName = path.basename(projectPath);
+    const systemName = options?.displayName || path.basename(projectPath);
     const progressiveLevels = this.buildProgressiveLevels(nodes, categories);
     const index = this.buildIndex(nodes, entryPoints, exitPoints, previousOutput.perspectives || []);
 
@@ -2219,6 +2241,7 @@ export class AnalyzerOrchestrator {
       nodes,
       entryPoints,
       exitPoints,
+      displayName: options?.displayName,
     });
     const analysisFacts = this.buildAnalysisFacts(
       nodes,
@@ -4543,6 +4566,7 @@ export class AnalyzerOrchestrator {
       contribution_type: registration.type,
       execution_time_ms: executionTime,
       nodes_created: result.nodes?.length || 0,
+      files_created: this.countDistinctSourceFiles(result.nodes, projectPath),
       edges_created: result.edges?.length || 0,
       confidence: 1.0,
       contributed_categories: result.categories ? Object.keys(result.categories).length : 0,
@@ -5202,8 +5226,36 @@ export class AnalyzerOrchestrator {
       .sort((a, b) => b.files - a.files);
   }
 
+  /**
+   * Counts distinct source files among a set of CAS nodes, keyed by
+   * node.source.file. Nodes without a source file (e.g. synthetic/derived
+   * nodes) are not counted. Used to report a real per-language file count
+   * instead of an AST-node count.
+   *
+   * Some analyzers (notably nested-root/monorepo-member runs) emit a mix of
+   * absolute and project-relative paths for the *same* file across different
+   * nodes; naively counting raw `source.file` strings double-counts those
+   * files. When `projectPath` is supplied, absolute paths are relativized
+   * against it before dedup so "/abs/root/apps/x.ts" and "apps/x.ts" collapse
+   * to one entry, matching how the rest of the pipeline (buildIncrementalState,
+   * etc.) already keys per-file records.
+   */
+  private countDistinctSourceFiles(nodes: CASNode[] | undefined, projectPath?: string): number {
+    if (!nodes || nodes.length === 0) return 0;
+    const files = new Set<string>();
+    for (const node of nodes) {
+      const file = node.source?.file;
+      if (!file) continue;
+      const key = projectPath && path.isAbsolute(file)
+        ? path.relative(projectPath, file).replace(/\\/g, '/')
+        : file.replace(/\\/g, '/');
+      files.add(key);
+    }
+    return files.size;
+  }
+
   private extractTechnologies(contributions: any[], libraries: any[]): any {
-    const languages = new Map<string, { count: number; percentage?: number }>();
+    const languages = new Map<string, { count: number; files: number; percentage?: number }>();
     const frameworks = new Map<string, { version?: string; confidence: number }>();
 
     contributions.forEach(contrib => {
@@ -5211,6 +5263,11 @@ export class AnalyzerOrchestrator {
         const langName = contrib.analyzer_name.replace(' Analyzer', '');
         languages.set(langName, {
           count: contrib.nodes_created,
+          // files_created is the distinct-file count derived from node.source.file;
+          // fall back to nodes_created only for legacy contributions that predate the
+          // field (defensively avoids an undefined `files` rather than reintroducing
+          // the AST-node-count bug).
+          files: typeof contrib.files_created === 'number' ? contrib.files_created : contrib.nodes_created,
           percentage: 0
         });
 
@@ -5234,7 +5291,7 @@ export class AnalyzerOrchestrator {
       languages: Array.from(languages.entries()).map(([name, data]) => ({
         name,
         percentage: data.percentage,
-        files: data.count
+        files: data.files
       })),
       frameworks: Array.from(frameworks.entries()).map(([name, data]) => ({
         name,

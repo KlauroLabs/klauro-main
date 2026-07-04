@@ -3,6 +3,7 @@ import { CASEdge, CASEntryPoint, CASExitPoint, CASNode } from '../../types/cas.t
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import { glob } from 'glob';
+import { isHashOrIdShapedToken } from '../core/deployable-evidence/util';
 
 interface ComposeService {
   name: string;
@@ -570,7 +571,22 @@ function normalizePort(value: string): string {
 }
 
 function inferServiceName(projectPath: string, relativeFile: string): string {
-  const base = path.basename(projectPath) || path.basename(path.dirname(relativeFile));
+  // Production analyze snapshots the source to an on-disk dir named after the
+  // analysisId HASH, so path.basename(projectPath) can be hash-shaped rather
+  // than a real service name. Prefer it when it's a legitimate name; when
+  // it's hash/id-shaped, fall back to the Dockerfile's own containing
+  // directory name (still real, just less specific), and only as a last
+  // resort to a stable non-hash placeholder — never emit the hash.
+  const projectBase = path.basename(projectPath);
+  const dockerfileDir = path.basename(path.dirname(relativeFile));
+  let base: string;
+  if (projectBase && !isHashOrIdShapedToken(projectBase)) {
+    base = projectBase;
+  } else if (dockerfileDir && dockerfileDir !== '.' && !isHashOrIdShapedToken(dockerfileDir)) {
+    base = dockerfileDir;
+  } else {
+    base = 'unnamed-service';
+  }
   return base.replace(/[^a-zA-Z0-9_.-]/g, '-').toLowerCase();
 }
 

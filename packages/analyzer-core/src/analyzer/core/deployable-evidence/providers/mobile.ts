@@ -2,7 +2,7 @@ import * as fs from 'fs-extra';
 import * as path from 'path';
 import type { DeployableEvidence } from '../../../../types/cas.types';
 import type { EvidenceCollectionContext, EvidenceProvider } from '../types';
-import { IGNORE_GLOBS, safeGlobSync } from '../util';
+import { IGNORE_GLOBS, safeDeployableName, safeGlobSync } from '../util';
 
 /**
  * Mobile (Android + iOS) evidence provider.
@@ -26,7 +26,12 @@ import { IGNORE_GLOBS, safeGlobSync } from '../util';
  * native.ts.
  */
 
-function androidAppModuleName(gradleDir: string, manifestPath: string | undefined, projectPath: string): string {
+function androidAppModuleName(
+  gradleDir: string,
+  manifestPath: string | undefined,
+  projectPath: string,
+  displayName?: string,
+): string {
   // settings.gradle(.kts) `include ':name'` mapping would be the most precise
   // name, but module directory name is a solid, simple identity fallback
   // consistent with how other providers (bin-targets.ts src/bin/*) name by dir.
@@ -39,11 +44,11 @@ function androidAppModuleName(gradleDir: string, manifestPath: string | undefine
       // fall through to dir name
     }
   }
-  return path.basename(gradleDir) === '.' ? path.basename(projectPath) : path.basename(gradleDir);
+  return path.basename(gradleDir) === '.' ? safeDeployableName(displayName || path.basename(projectPath)) : path.basename(gradleDir);
 }
 
 function collectAndroid(ctx: EvidenceCollectionContext): DeployableEvidence[] {
-  const { projectPath } = ctx;
+  const { projectPath, displayName } = ctx;
   const out: DeployableEvidence[] = [];
 
   let gradleFiles: string[] = [];
@@ -87,7 +92,7 @@ function collectAndroid(ctx: EvidenceCollectionContext): DeployableEvidence[] {
     }
 
     if (isApp) {
-      const name = androidAppModuleName(gradleDir, manifestPath, projectPath);
+      const name = androidAppModuleName(gradleDir, manifestPath, projectPath, displayName);
       const evidence = [`build.gradle applies com.android.application (${gradleFile}) — the APK/AAB is the ship unit for Android`];
       if (manifestPath) evidence.push(`AndroidManifest.xml: ${manifestPath}`);
       if (hasLauncherActivity) evidence.push('AndroidManifest.xml declares a MAIN/LAUNCHER activity');
@@ -101,7 +106,7 @@ function collectAndroid(ctx: EvidenceCollectionContext): DeployableEvidence[] {
     } else if (isLib) {
       out.push({
         root_path: gradleDir,
-        name: path.basename(gradleDir) === '.' ? path.basename(projectPath) : path.basename(gradleDir),
+        name: path.basename(gradleDir) === '.' ? safeDeployableName(displayName || path.basename(projectPath)) : path.basename(gradleDir),
         tier: 3,
         kind: 'package',
         evidence: [`build.gradle applies com.android.library (${gradleFile})`],
@@ -226,13 +231,13 @@ function collectSwiftPackage(ctx: EvidenceCollectionContext): DeployableEvidence
 /** Podfile presence: tier-3 package identity for CocoaPods-managed libraries/apps
  *  that have no Xcode/SwiftPM signal picked up above. */
 function collectPodfileIdentity(ctx: EvidenceCollectionContext): DeployableEvidence[] {
-  const { projectPath } = ctx;
+  const { projectPath, displayName } = ctx;
   const out: DeployableEvidence[] = [];
   const podfilePath = path.join(projectPath, 'Podfile');
   if (fs.existsSync(podfilePath)) {
     out.push({
       root_path: '.',
-      name: path.basename(projectPath),
+      name: safeDeployableName(displayName || path.basename(projectPath)),
       tier: 3,
       kind: 'package',
       evidence: ['Podfile present'],

@@ -2,7 +2,7 @@ import * as fs from 'fs-extra';
 import * as path from 'path';
 import type { DeployableEvidence } from '../../../../types/cas.types';
 import type { EvidenceCollectionContext, EvidenceProvider } from '../types';
-import { IGNORE_GLOBS, safeGlobSync } from '../util';
+import { IGNORE_GLOBS, safeDeployableName, safeGlobSync } from '../util';
 
 /**
  * JVM ecosystem (Java/Kotlin, Gradle/Maven, Spring Boot) deployable evidence.
@@ -57,14 +57,14 @@ function globSafe(projectPath: string, patterns: string | string[]): string[] {
   }
 }
 
-function moduleNameFromRoot(rootPath: string, projectPath: string): string {
-  if (rootPath === '.' || rootPath === '') return path.basename(projectPath);
+function moduleNameFromRoot(rootPath: string, projectPath: string, displayName?: string): string {
+  if (rootPath === '.' || rootPath === '') return safeDeployableName(displayName || path.basename(projectPath));
   return path.basename(rootPath);
 }
 
 /** Spring Boot: `@SpringBootApplication` + `public static void main` in the same source file. */
 function collectSpringBootApplications(ctx: EvidenceCollectionContext): DeployableEvidence[] {
-  const { projectPath } = ctx;
+  const { projectPath, displayName } = ctx;
   const out: DeployableEvidence[] = [];
   const sources = globSafe(projectPath, JAVA_KOTLIN_SOURCE_GLOBS);
 
@@ -83,7 +83,7 @@ function collectSpringBootApplications(ctx: EvidenceCollectionContext): Deployab
 
     out.push({
       root_path: rootPath,
-      name: moduleNameFromRoot(rootPath, projectPath) || className,
+      name: moduleNameFromRoot(rootPath, projectPath, displayName) || className,
       tier: 2,
       kind: 'server-entry',
       evidence: [
@@ -115,7 +115,7 @@ function nearestModuleRoot(projectPath: string, sourceFile: string): string {
 
 /** Gradle `application` plugin with `mainClass`/`mainClassName`, per build.gradle(.kts) module. */
 function collectGradleApplicationTargets(ctx: EvidenceCollectionContext): DeployableEvidence[] {
-  const { projectPath } = ctx;
+  const { projectPath, displayName } = ctx;
   const out: DeployableEvidence[] = [];
   const buildFiles = globSafe(projectPath, BUILD_GRADLE_GLOBS);
 
@@ -134,7 +134,7 @@ function collectGradleApplicationTargets(ctx: EvidenceCollectionContext): Deploy
 
     out.push({
       root_path: rootPath,
-      name: moduleNameFromRoot(rootPath, projectPath),
+      name: moduleNameFromRoot(rootPath, projectPath, displayName),
       tier: 2,
       kind: isSpringBoot ? 'server-entry' : 'bin',
       evidence: [
@@ -150,7 +150,7 @@ function collectGradleApplicationTargets(ctx: EvidenceCollectionContext): Deploy
 
 /** Maven `spring-boot-maven-plugin` or shade/assembly mainClass in pom.xml, per pom.xml module. */
 function collectMavenRunnableTargets(ctx: EvidenceCollectionContext): DeployableEvidence[] {
-  const { projectPath } = ctx;
+  const { projectPath, displayName } = ctx;
   const out: DeployableEvidence[] = [];
   const poms = globSafe(projectPath, POM_GLOB);
 
@@ -172,7 +172,7 @@ function collectMavenRunnableTargets(ctx: EvidenceCollectionContext): Deployable
     const mainClass = shadeMainClassMatch?.[1] || execMainClassMatch?.[1] || bareMainClassMatch?.[1];
     out.push({
       root_path: rootPath,
-      name: moduleNameFromRoot(rootPath, projectPath),
+      name: moduleNameFromRoot(rootPath, projectPath, displayName),
       tier: 2,
       kind: hasSpringBootPlugin ? 'server-entry' : 'bin',
       evidence: [
@@ -188,7 +188,7 @@ function collectMavenRunnableTargets(ctx: EvidenceCollectionContext): Deployable
 
 /** Any bare `public static void main` in a .java/.kt file not already claimed as Spring Boot. */
 function collectBareMainMethods(ctx: EvidenceCollectionContext, alreadyClaimed: Set<string>): DeployableEvidence[] {
-  const { projectPath } = ctx;
+  const { projectPath, displayName } = ctx;
   const out: DeployableEvidence[] = [];
   const sources = globSafe(projectPath, JAVA_KOTLIN_SOURCE_GLOBS);
 
@@ -208,7 +208,7 @@ function collectBareMainMethods(ctx: EvidenceCollectionContext, alreadyClaimed: 
     const className = path.basename(file, path.extname(file));
     out.push({
       root_path: rootPath,
-      name: moduleNameFromRoot(rootPath, projectPath) || className,
+      name: moduleNameFromRoot(rootPath, projectPath, displayName) || className,
       tier: 2,
       kind: 'bin',
       evidence: [`main method: ${file}`],
@@ -221,7 +221,7 @@ function collectBareMainMethods(ctx: EvidenceCollectionContext, alreadyClaimed: 
 
 /** Tier 3: pom.xml / build.gradle(.kts) / settings.gradle(.kts) as package identity, per module. */
 function collectPackageIdentity(ctx: EvidenceCollectionContext): DeployableEvidence[] {
-  const { projectPath } = ctx;
+  const { projectPath, displayName } = ctx;
   const out: DeployableEvidence[] = [];
 
   const poms = globSafe(projectPath, POM_GLOB);
@@ -233,7 +233,7 @@ function collectPackageIdentity(ctx: EvidenceCollectionContext): DeployableEvide
     const rootPath = path.dirname(pom);
     out.push({
       root_path: rootPath,
-      name: artifactIdMatch?.[1] || moduleNameFromRoot(rootPath, projectPath),
+      name: artifactIdMatch?.[1] || moduleNameFromRoot(rootPath, projectPath, displayName),
       tier: 3,
       kind: 'package',
       evidence: [
@@ -250,7 +250,7 @@ function collectPackageIdentity(ctx: EvidenceCollectionContext): DeployableEvide
     const rootPath = path.dirname(buildFile);
     out.push({
       root_path: rootPath,
-      name: moduleNameFromRoot(rootPath, projectPath),
+      name: moduleNameFromRoot(rootPath, projectPath, displayName),
       tier: 3,
       kind: 'package',
       evidence: [`Gradle build file: ${buildFile}`],
@@ -265,7 +265,7 @@ function collectPackageIdentity(ctx: EvidenceCollectionContext): DeployableEvide
     const rootPath = path.dirname(settingsFile);
     out.push({
       root_path: rootPath,
-      name: nameMatch?.[1] || moduleNameFromRoot(rootPath, projectPath),
+      name: nameMatch?.[1] || moduleNameFromRoot(rootPath, projectPath, displayName),
       tier: 3,
       kind: 'package',
       evidence: [`Gradle settings file: ${settingsFile}`, ...(nameMatch ? [`rootProject.name: ${nameMatch[1]}`] : [])],

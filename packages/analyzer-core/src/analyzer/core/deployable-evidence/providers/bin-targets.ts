@@ -2,11 +2,11 @@ import * as fs from 'fs-extra';
 import * as path from 'path';
 import type { CASEntryPoint, DeployableEvidence } from '../../../../types/cas.types';
 import type { EvidenceCollectionContext, EvidenceProvider } from '../types';
-import { IGNORE_GLOBS, safeGlobSync } from '../util';
+import { IGNORE_GLOBS, safeDeployableName, safeGlobSync } from '../util';
 
 /** Cargo [[bin]] targets, package.json bin field, go main packages, src/bin/* files. */
 function collectBinTargets(ctx: EvidenceCollectionContext): DeployableEvidence[] {
-  const { projectPath } = ctx;
+  const { projectPath, displayName } = ctx;
   const out: DeployableEvidence[] = [];
 
   // Cargo [[bin]]
@@ -93,7 +93,7 @@ function collectBinTargets(ctx: EvidenceCollectionContext): DeployableEvidence[]
     seenGoDirs.add(dir);
     out.push({
       root_path: dir,
-      name: path.basename(dir) === '.' ? path.basename(projectPath) : path.basename(dir),
+      name: path.basename(dir) === '.' ? safeDeployableName(displayName || path.basename(projectPath)) : path.basename(dir),
       tier: 2,
       kind: 'bin',
       evidence: [`package main entry: ${goFile}`],

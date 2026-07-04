@@ -2,7 +2,7 @@ import * as fs from 'fs-extra';
 import * as path from 'path';
 import type { DeployableEvidence } from '../../../../types/cas.types';
 import type { EvidenceCollectionContext, EvidenceProvider } from '../types';
-import { IGNORE_GLOBS, safeGlobSync } from '../util';
+import { IGNORE_GLOBS, safeDeployableName, safeGlobSync } from '../util';
 
 /**
  * Universal PaaS/orchestration Tier-1 ship declarations, beyond Docker/
@@ -139,7 +139,7 @@ function collectHelm(ctx: EvidenceCollectionContext): DeployableEvidence[] {
 }
 
 function collectServerless(ctx: EvidenceCollectionContext): DeployableEvidence[] {
-  const { projectPath } = ctx;
+  const { projectPath, displayName } = ctx;
   const out: DeployableEvidence[] = [];
 
   let files: string[] = [];
@@ -220,7 +220,7 @@ function collectServerless(ctx: EvidenceCollectionContext): DeployableEvidence[]
     const dir = path.dirname(file);
     out.push({
       root_path: dir,
-      name: path.basename(dir) === '.' ? path.basename(projectPath) : path.basename(dir),
+      name: path.basename(dir) === '.' ? safeDeployableName(displayName || path.basename(projectPath)) : path.basename(dir),
       tier: 1,
       kind: 'serverless',
       evidence: [`AWS SAM template: ${file}`, ...(fnNames.length ? [`AWS::Serverless::Function: ${fnNames.join(', ')}`] : [])],
@@ -245,7 +245,7 @@ function collectServerless(ctx: EvidenceCollectionContext): DeployableEvidence[]
     const dir = path.dirname(file) === '.sst' ? '.' : path.dirname(file);
     out.push({
       root_path: dir,
-      name: path.basename(projectPath),
+      name: safeDeployableName(displayName || path.basename(projectPath)),
       tier: 1,
       kind: 'serverless',
       evidence: [`SST config: ${file}`],
@@ -256,7 +256,7 @@ function collectServerless(ctx: EvidenceCollectionContext): DeployableEvidence[]
 }
 
 function collectProcfile(ctx: EvidenceCollectionContext): DeployableEvidence[] {
-  const { projectPath } = ctx;
+  const { projectPath, displayName } = ctx;
   const out: DeployableEvidence[] = [];
 
   let files: string[] = [];
@@ -284,7 +284,7 @@ function collectProcfile(ctx: EvidenceCollectionContext): DeployableEvidence[] {
 
     out.push({
       root_path: dir,
-      name: path.basename(dir) === '.' ? path.basename(projectPath) : path.basename(dir),
+      name: path.basename(dir) === '.' ? safeDeployableName(displayName || path.basename(projectPath)) : path.basename(dir),
       tier: 1,
       kind: 'installer',
       evidence,
@@ -316,7 +316,7 @@ const SIMPLE_PAAS_MANIFESTS: SimplePaasManifest[] = [
 /** fly.toml / vercel.json / netlify.toml / app.yaml / railway.json / render.yaml —
  *  each declares "this dir is a deployable PaaS site/app", one per manifest. */
 function collectSimplePaasManifests(ctx: EvidenceCollectionContext): DeployableEvidence[] {
-  const { projectPath } = ctx;
+  const { projectPath, displayName } = ctx;
   const out: DeployableEvidence[] = [];
 
   for (const { glob, label } of SIMPLE_PAAS_MANIFESTS) {
@@ -357,7 +357,7 @@ function collectSimplePaasManifests(ctx: EvidenceCollectionContext): DeployableE
 
       out.push({
         root_path: dir,
-        name: name || (path.basename(dir) === '.' ? path.basename(projectPath) : path.basename(dir)),
+        name: name || (path.basename(dir) === '.' ? safeDeployableName(displayName || path.basename(projectPath)) : path.basename(dir)),
         tier: 1,
         kind: 'installer',
         evidence,
