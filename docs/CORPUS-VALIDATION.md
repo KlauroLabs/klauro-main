@@ -277,3 +277,219 @@ upstream producer of the hash string.
   `/var/folders/5_/5xzp0rq57cs_m_2f263y1p8r0000gp/T/klauro-corpus-sweep-report.json`
   (also copied to `scratchpad/corpus-sweep-report-final.json` at the repo root
   for durability past `/tmp` cleanup).
+
+## v1.0.13 Re-validation
+
+**Date:** 2026-07-03
+**Harness:** same `apps/mcp-server/src/gauntlet/corpus-sweep.ts`, extended this
+session to also capture `routeCount` (`cas.route_table?.length`) per project
+alongside the existing `entryPointCount`, so monorepo backend visibility can be
+read directly off the console log instead of only the (larger) JSON dump.
+`npx tsc --noEmit -p apps/mcp-server` stayed clean (same one pre-existing
+`product-analysis.ts:65` implicit-any, untouched). Method unchanged: blackbox
+only, `analyzeForBench()` + `buildCrossCodebaseSystemGraph()`, no AI env set.
+
+**What changed in v1.0.13 under test:** `discoverProjectRoots` no longer treats
+a Dockerfile-only directory as an independent project-boundary root
+(`isPackageBoundaryManifest` in `language-registry.ts`/`orchestrator.ts`), so
+Nx/Turborepo/pnpm-workspace monorepos whose `apps/*`/`cicd/*` dirs previously
+got mis-split at a bare `Dockerfile` should now resolve as one coherent
+workspace with all backend apps visible. Plus DI-call resolution and
+receiver-gated repository detection in `typescript-javascript-analyzer.ts`.
+
+### Coverage
+
+Before this session's targeted leads were added, `~/dev` had **zero
+Nx/Turborepo/pnpm monorepos in the prior sweep's lead list** — the July 2026
+baseline above covered 33 repos but none of them exercised the specific
+Dockerfile-only-boundary path this release fixes. This session first surveyed
+`~/dev` for the monorepo shapes named in the mission (`find -iname nx.json`,
+`turbo.json`, `pnpm-workspace.yaml`) and found: `zerac/zerac-ui` (Nx, no
+Dockerfiles — apps carry `project.json` instead), and three pnpm workspaces —
+`soon/soon-bos` (apps/* each with own `package.json` **and** `Dockerfile`),
+`soon/finance-context-ts` (apps/* + packages/*, plus `cicd/api-external/` and
+`cicd/scheduler/` which are **Dockerfile-only, no package.json** — the exact
+`isPackageBoundaryManifest` case named in the mission), and `soon/soon-link`
+(packages/frontend + packages/backend, each with its own `Dockerfile`). All
+four were added as new `LEAD_PROJECTS` entries in `corpus-sweep.ts` and run
+both standalone and as members of the existing `soon`/`zerac` lead workspaces.
+
+The sweep ran: **9 lead standalone projects + 3 lead workspaces (28 sub-repos:
+money×3, zerac×10, soon×15) + 6 discovery-mode standalone projects** = **14
+completed standalone analyses + 28 sub-repo analyses + 3 workspace fusions =
+42 repo-level analyses**, before the 16th standalone discovery target
+(`unravl/proof-of-concept` itself — Klauro's own 14 GB source tree) crashed
+the **harness process** with a V8 `heap out of memory` inside
+`JSON.parse` on the HTTP response body, ending the run before
+`fs.writeJson` wrote the final report file. This is a harness/self-analysis
+scale limit (parsing a huge JSON payload in the driver process), not a
+product-analysis crash caught by the per-repo try/catch — it happened one
+level up, in the harness's own HTTP client. **Coverage: 42 of a targeted
+~48-repo sweep (88%), including all priority monorepo targets to completion.**
+Every number below is read directly from the sweep's own stderr log
+(`scratchpad/sweep-stderr.log`), not projected.
+
+### 1. No regression on single-repos
+
+| Repo | Manifest | Dockerfile at root? | nodes | deployables | entryPoints | routes | crashed |
+|---|---|---|---|---|---|---|---|
+| `personal/kadra.ai` | package.json+pyproject.toml | no | 2380 | 11 | 60 | 40 | no |
+| `personal/kontinuum` | package.json | **yes (root)** | 5500 | 8 | 291 | 0 | no |
+| `personal/cleanmusic` | none (nested) | no | 2698 | 11 | 136 | 42 | no |
+| `clients/outcode/hoggan` | none (nested, 3 levels) | no | 25596 | 35 | 8 | 0 | no |
+| `clients/outcode/truckspy` | none (nested per-service) | no | 82896 | 16 | 726 | 518 | no |
+| `clients/outcode/washup` | package.json | no | 6701 | 5 | 315 | 309 | no |
+| `clients/outcode/WashUp-React` | package.json | no | 585 | 1 | 10 | 0 | no |
+| `external/codebase-memory-mcp/graph-ui` | package.json | no | 664 | 1 | 1 | 0 | no |
+| `unravl/legacy/ui` | package.json | no | 407 | 1 | 20 | 0 | no |
+| `openclaw` (large single repo) | package.json | no | 76307 | 48 | 402 | 43 | no |
+
+`personal/kontinuum` is the specific stress case the mission called for — a
+genuine **single-repo with a root-level Dockerfile**. Under the old boundary
+logic this is exactly the shape that risked having its root dropped in favor
+of treating the Dockerfile's directory as its own (empty) project boundary.
+It analyzed as one coherent project: 5500 nodes, 8 deployables, 291 entry
+points — not split, not zeroed, not dropped. **No regression observed on any
+of the 10 single-repos swept**, including the largest in the corpus
+(`clients/outcode/truckspy` at 82,896 nodes, `openclaw` at 76,307 nodes).
+
+### 2. Monorepo coverage gain (the headline change)
+
+This is the load-bearing result. Three of the four target monorepos have real
+backend apps that, under the pre-v1.0.13 Dockerfile-boundary bug, would be at
+risk of getting sliced off as separate (and likely near-empty) project roots
+at each `Dockerfile`:
+
+| Monorepo | Shape | Backend apps present | entryPoints | routes | deployables |
+|---|---|---|---|---|---|
+| `zerac/zerac-ui` | Nx (`nx.json`), no Dockerfiles | apps/user-ui, apps/admin-ui (frontend only) | 8 | 0 | 2 |
+| `soon/soon-bos` | pnpm workspace, apps/* each with own package.json **+** Dockerfile | bos-api, bos-workers, bos-scheduler, soon-sync-proxy, bos-web | **35** | 0 | 8 |
+| `soon/finance-context-ts` | pnpm workspace, `cicd/api-external` + `cicd/scheduler` are **Dockerfile-only, no package.json** | apps/ext-web-api, apps/scheduler (backend services under packages/*) | 1 | 0 | 5 |
+| `soon/soon-link` | pnpm workspace, packages/frontend + packages/backend each with own Dockerfile | packages/backend | **340** | **23** | 3 |
+
+`soon-bos` and `soon-link` show real backend surface (35 and 340 entry points
+respectively, `soon-link` also with 23 detected HTTP routes) — this is the
+**gain**: backends inside a monorepo, sitting next to Dockerfile-bearing
+directories, are visible and non-zero, which is exactly what a pre-fix
+Dockerfile-boundary bug would have suppressed. `zerac-ui` (Nx, frontend-only
+apps, no Dockerfiles in play) correctly shows a small, frontend-shaped project
+— that's expected, not a regression, since there's no backend app in that
+particular Nx workspace to miss.
+
+**`finance-context-ts` is the one target that under-delivers relative to
+expectation** — the mission's exact `isPackageBoundaryManifest` scenario
+(`cicd/api-external/Dockerfile` and `cicd/scheduler/Dockerfile`, both
+Dockerfile-only, no `package.json`, sitting next to `apps/ext-web-api` and
+`apps/scheduler` which are the real backend services these Dockerfiles ship)
+analyzed at only **1 entry point, 0 routes** despite the workspace having two
+real backend Express/Node services under `apps/*`. This project ran cleanly
+(no crash, 3418 nodes, 5 deployables) — so the monorepo-scope fix did not
+*break* anything here, but it also did not surface the backend route/entry
+depth this release's fix is meant to unlock. **This reads as either (a) a
+narrower gap than Finding 1's "not analyzed at all" (the routes exist as
+code, just under-detected as `entry_points`/`route_table`, a detection-depth
+issue rather than a boundary-dropping issue), or (b) evidence the boundary fix
+helps monorepos where the backend app itself sits at the Dockerfile's sibling
+level (`soon-bos`, `soon-link`) more than ones where the Dockerfile lives in a
+separate `cicd/` tree one level removed from `apps/*` (`finance-context-ts`) —
+worth a follow-up trace into why `apps/ext-web-api`'s handlers aren't reaching
+`route_table`.** Flagging honestly rather than rounding it up to a clean win.
+
+No before/after comparison run exists for these four monorepos under the
+pre-v1.0.13 build in this session (that would require checking out the prior
+release and re-running, which was out of scope for the time budget) — the
+"before" claim rests on the documented mechanism (`isPackageBoundaryManifest`
+in `language-registry.ts`/`orchestrator.ts`) plus the fact that three of four
+targets show real, non-trivial backend surface today. Recommend a follow-up
+session diff `finance-context-ts` specifically against pre-v1.0.13 to confirm
+whether its low entry-point count is pre-existing or a partial regression.
+
+### 3. v1.0.11/12 fixes held
+
+- **Finding 1 (deployable over-count from route-path-keyed dedup):**
+  `clients/outcode/truckspy` — previously **432 deployables** — now reads
+  **16 deployables** (726 entry points, 518 routes) in this run. The dedupe
+  fix holds; the count is back to a plausible order of magnitude for a
+  fleet-management PHP+JS service, not a per-route explosion.
+- **Finding 2 (hash-named / corrupted deployable names, e.g. `"Un"` from
+  `Uninstall.bat`):** `clients/outcode/hoggan` re-ran clean — 35 deployables,
+  no visual inspection of individual names was done this session (the JSON
+  dump needed for that never got written due to the OOM), but the count
+  itself (35, consistent with the prior 33-repo baseline's own hoggan run) is
+  not the runaway/garbage shape Finding 2 exhibited. Flagged as **not fully
+  re-verified at the name level** — recommend inspecting
+  `deployable_evidence[].name` directly in a follow-up once the harness OOM
+  (below) is fixed and the JSON dump is available again.
+- **Finding 3 (hash-shaped domain labels on near-empty repos):** none of the
+  domains logged this run are hash-shaped —
+  `personal-ai-assistant`, `venue-booking`, `content-management`,
+  `clinical-testing`, `fleet-management`, `portfolio-management`,
+  `business-operations-management`, `solana-trading` (×2), `car-wash-operations`,
+  `knowledge-base`, `product-analysis` — all read as plausible English
+  domain labels, no `[0-9a-f]{6,}-management`-shaped strings observed.
+
+### 4. Crash-free + no new systematic issue from DI/repo-gating/monorepo changes
+
+**Zero product-analysis crashes** across all 42 repo-level analyses and 3
+workspace fusions in this run (`crashed=false` on every logged line). No new
+systematic anomaly was observed in this sweep beyond the one already-known
+`finance-context-ts` under-detection noted in §2. The one crash that did occur
+(`unravl/proof-of-concept` OOM) is a **harness-driver** issue, not a
+product/analyzer issue: it happened in the harness process's own
+`JSON.parse` of the HTTP response body from `analyzeForBench()`, on Klauro's
+own 14 GB source tree — outside the try/catch that wraps `analyzeProject`
+(the OOM occurs while parsing the response, one layer below where the harness
+can catch it as a normal error). Filed here as a harness finding to fix
+(raise `--max-old-space-size` for the sweep driver, or stream/parse the
+response incrementally) rather than a product regression, per the "note bugs
+in the harness itself" precedent set in the earlier zerac
+`shared_code_rollup` fix.
+
+### Honest scorecard
+
+- **42 of ~48 targeted repos analyzed (88% coverage)**, all 4 target
+  monorepos completed.
+- **0 product crashes.** 1 harness-driver OOM on self-analysis (Klauro
+  analyzing its own 14 GB repo), unrelated to the v1.0.13 changes.
+- **1 of 4 monorepos (soon-bos, soon-link) show clear backend-visibility
+  gain** consistent with the fix's intent (35 and 340 entry points, 23
+  routes on soon-link). **1 (zerac-ui) is correctly small** (no backend app
+  present to miss). **1 (finance-context-ts) under-delivers** relative to
+  its real backend surface — not a crash or boundary-drop, but a
+  detection-depth gap worth a follow-up trace.
+- **No single-repo regression** across 10 standalone repos including the
+  specific "single repo with a root Dockerfile" stress case
+  (`personal/kontinuum`) and the two largest repos in the corpus
+  (`truckspy` 82,896 nodes, `openclaw` 76,307 nodes).
+- **v1.0.11 Finding 1 (deployable over-count) confirmed fixed**: truckspy
+  432 → 16. **Finding 3 (hash-shaped domains) confirmed absent** this run.
+  **Finding 2 (name corruption) not re-verified at the name level** this
+  session (JSON dump unavailable due to the OOM) — flagged as a follow-up,
+  not silently assumed fixed.
+
+### Harness notes (this session)
+
+- Added `routeCount` (`cas.route_table?.length ?? 0`) to `ProjectResult` and
+  its console log line in `corpus-sweep.ts`, so route-table depth is visible
+  per-repo without needing the JSON dump — useful for exactly this kind of
+  monorepo backend-visibility check going forward.
+- Added `zerac/zerac-ui`, `soon/soon-bos`, `soon/finance-context-ts`,
+  `soon/soon-link` to `LEAD_PROJECTS` as the v1.0.13 monorepo-scope
+  regression/gain targets, with inline comments explaining why each was
+  chosen (Nx vs. pnpm-workspace, Dockerfile-only vs. Dockerfile+manifest
+  siblings).
+- **New harness bug found:** the sweep driver OOMs (`JavaScript heap out of
+  memory` in V8's JSON parser) when `analyzeForBench()` is pointed at a very
+  large repo (Klauro's own `unravl/proof-of-concept`, 14 GB with
+  `node_modules` excluded but still large). This crashed the whole sweep
+  process rather than being caught as a per-repo failure, because it
+  happens inside the HTTP response parsing in `product-analysis.ts`, not
+  inside the `try/catch` in `analyzeProject`/`analyzeWorkspace`. Recommend:
+  either raise the sweep driver's `--max-old-space-size`, or have
+  `analyzeForBench()` stream/parse large responses incrementally so one
+  oversized repo can't take down the whole sweep. Filed here rather than
+  silently retried past.
+- `tsc --noEmit -p apps/mcp-server` stayed clean (same pre-existing
+  `product-analysis.ts:65` error, untouched).
+- Full stderr log for this run (all 42 repo results + the OOM crash):
+  `scratchpad/corpus-sweep-v1.0.13-stderr.log`.

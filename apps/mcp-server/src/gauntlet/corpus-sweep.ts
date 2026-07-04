@@ -160,6 +160,7 @@ interface ProjectResult {
   deployableNames?: string[];
   distributionUnitCount?: number;
   entryPointCount?: number;
+  routeCount?: number;
   gracefulOnEmpty?: boolean; // only meaningful for no-manifest targets
 }
 
@@ -200,6 +201,7 @@ function casToProjectResult(cas: CASOutput, dirPath: string, name: string, timeM
     deployableNames: deployables.slice(0, 8).map((d) => d.name),
     distributionUnitCount: cas.distribution_units?.length ?? 0,
     entryPointCount: cas.entry_points?.length ?? 0,
+    routeCount: cas.route_table?.length ?? 0,
     gracefulOnEmpty: hasManifest ? undefined : true,
   };
 }
@@ -280,10 +282,16 @@ async function analyzeWorkspace(dirPath: string, name: string, subDirNames: stri
 
 const LEAD_PROJECTS = [
   '~/dev/personal/kadra.ai',
-  '~/dev/personal/kontinuum',
+  '~/dev/personal/kontinuum', // single-repo WITH a root Dockerfile — must not have root dropped
   '~/dev/personal/cleanmusic',
   '~/dev/clients/outcode/hoggan', // no manifest — graceful-handling stress test
   '~/dev/clients/outcode/truckspy', // PHP+JS
+  // v1.0.13 monorepo-scope leads: Nx / pnpm-workspace backends with Dockerfile-only
+  // cicd dirs alongside real app packages — the exact isPackageBoundaryManifest case.
+  '~/dev/zerac/zerac-ui', // Nx monorepo (nx.json), apps/user-ui + apps/admin-ui, no Dockerfiles
+  '~/dev/soon/soon-bos', // pnpm workspace, apps/* each with own package.json + Dockerfile
+  '~/dev/soon/finance-context-ts', // pnpm workspace, cicd/api-external + cicd/scheduler are Dockerfile-ONLY dirs (no package.json) alongside apps/* and packages/*
+  '~/dev/soon/soon-link', // pnpm workspace, packages/frontend + packages/backend each with own Dockerfile
 ].map(expandHome);
 
 const LEAD_WORKSPACES = ['~/dev/personal/money', '~/dev/zerac', '~/dev/soon'].map(expandHome);
@@ -342,7 +350,7 @@ async function main() {
     const t0 = Date.now();
     const r = await analyzeProject(dir, path.basename(dir), manifests.length > 0);
     console.error(
-      `[corpus-sweep]   -> crashed=${r.crashed} nodes=${r.nodeCount ?? '-'} domain=${r.primaryDomain ?? '-'} deployables=${r.deployableCount ?? '-'} time=${Date.now() - t0}ms`
+      `[corpus-sweep]   -> crashed=${r.crashed} nodes=${r.nodeCount ?? '-'} domain=${r.primaryDomain ?? '-'} deployables=${r.deployableCount ?? '-'} entryPoints=${r.entryPointCount ?? '-'} routes=${r.routeCount ?? '-'} time=${Date.now() - t0}ms`
     );
     projectResults.push(r);
   }
@@ -397,7 +405,7 @@ async function main() {
       try {
         const r = await analyzeProject(proj.dirPath, proj.name, true);
         console.error(
-          `[corpus-sweep]   -> crashed=${r.crashed} nodes=${r.nodeCount ?? '-'} domain=${r.primaryDomain ?? '-'} deployables=${r.deployableCount ?? '-'} time=${Date.now() - t0}ms${r.crashed ? ` ERROR=${r.error}` : ''}`
+          `[corpus-sweep]   -> crashed=${r.crashed} nodes=${r.nodeCount ?? '-'} domain=${r.primaryDomain ?? '-'} deployables=${r.deployableCount ?? '-'} entryPoints=${r.entryPointCount ?? '-'} routes=${r.routeCount ?? '-'} time=${Date.now() - t0}ms${r.crashed ? ` ERROR=${r.error}` : ''}`
         );
         projectResults.push(r);
       } catch (err: any) {
