@@ -88,7 +88,7 @@ import { buildDataLineage } from './data-lineage';
 import { isLanguageBuiltinName, isLanguageBuiltinExitPoint, isLanguageBuiltinDomainToken, isCapabilityNoiseToken, isVendorLibDomainToken } from './language-builtins';
 import { buildProductMap } from './product-map';
 import { relativizeProjectPaths } from './relativize-project-paths';
-import { isRegisteredManifest, isRegisteredSourceExtension } from './language-registry';
+import { isRegisteredManifest, isRegisteredSourceExtension, isPackageBoundaryManifest } from './language-registry';
 import { CallGraphBuilder } from './call-graph-builder';
 import { DomainExtractor } from './domain-extractor';
 import { WorkflowDetector } from './workflow-detector';
@@ -414,7 +414,14 @@ export class AnalyzerOrchestrator {
     rootSet.add(projectPath);
 
     try {
-      const matches = await this.getManifestFiles(projectPath);
+      // Package-boundary manifests only (package.json, pom.xml, Cargo.toml, ...) —
+      // NOT deploy/build tooling like Dockerfile. A directory that only has a
+      // Dockerfile (common per-app in Nx/Turborepo monorepos where dependencies
+      // are hoisted to the workspace root) is not an independent package; treating
+      // it as one caused getAnalyzerScopeFilters to wall the whole directory off
+      // from the root-scoped framework analyzer with no dedicated pass ever
+      // covering it (e.g. NestJS controllers under apps/* silently unanalyzed).
+      const matches = (await this.getManifestFiles(projectPath)).filter(isPackageBoundaryManifest);
       for (const match of matches) {
         const absolutePath = path.join(projectPath, path.dirname(match));
         rootSet.add(absolutePath);

@@ -335,3 +335,31 @@ export function isRegisteredSourceExtension(filePath: string): boolean {
   const ext = fileExtension(path.basename(filePath).toLowerCase());
   return ext !== '' && SOURCE_EXTENSIONS.has(ext);
 }
+
+/**
+ * Manifest basenames that are deploy/build TOOLING, not a package/dependency
+ * boundary. `isRegisteredManifest` intentionally includes these (they mark a
+ * file as "manifest-shaped" for source-inventory purposes across many
+ * consumers), but a directory containing only one of these is NOT a separate
+ * package — e.g. every app in an Nx/Turborepo monorepo typically ships its own
+ * `Dockerfile` without a nested `package.json`. Treating that directory as a
+ * distinct "project root" (see orchestrator.ts `discoverProjectRoots`) caused a
+ * real bug: `getAnalyzerScopeFilters` then excludes the whole directory from
+ * the framework analyzer's scope on the assumption a dedicated pass will cover
+ * it, silently dropping every NestJS controller under `apps/*` on monorepos
+ * where Nest deps are hoisted to the root package.json.
+ */
+const NON_PACKAGE_BOUNDARY_MANIFESTS = new Set(['dockerfile', 'containerfile']);
+
+/**
+ * True when `filePath` is a registered manifest that also marks a genuine
+ * package/dependency boundary (the file a nested-project discovery pass should
+ * treat as its own root) — i.e. `isRegisteredManifest` minus deploy/build
+ * tooling files like Dockerfile that commonly live inside a directory with no
+ * independent package identity of its own.
+ */
+export function isPackageBoundaryManifest(filePath: string): boolean {
+  if (!isRegisteredManifest(filePath)) return false;
+  const basename = path.basename(filePath).toLowerCase();
+  return !NON_PACKAGE_BOUNDARY_MANIFESTS.has(basename);
+}
