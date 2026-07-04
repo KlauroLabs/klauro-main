@@ -1329,7 +1329,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
       }
       return undefined;
     }
-    if (this.isRepositoryCall(targetName)) {
+    if (this.isRepositoryCall(targetName, sourceClassName)) {
       const parts = targetName.split('.');
       if (parts.length >= 3 && parts[0] === 'this') {
         const repositoryProperty = parts[1];
@@ -1462,6 +1462,49 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     return undefined;
   }
 
+  /** Resolve `this.<field>.<method>()` / `self.<field>.<method>()` — the NestJS/Angular
+   *  constructor-injection pattern (`constructor(private readonly svc: FooService) {}`
+   *  then `this.svc.doThing()`) — directly to the target method's node id.
+   *
+   *  Evidence/type-gated: only fires when `<field>` is a recorded constructor-injected
+   *  dependency of the CALLER's own class (`classFieldTypes`, populated from constructor
+   *  parameter type annotations in `processTreeSitterClasses`) and the declared type
+   *  resolves (via `importAliasMap` for renamed imports) to a real class-like node that
+   *  declares `<method>`. Ambiguous (multiple distinct classes named `<type>` that both
+   *  declare `<method>`, e.g. an interface with more than one implementation) resolves to
+   *  ALL matching real methods rather than guessing one. Unknown type or no matching
+   *  method returns undefined (never fabricates an edge) so callers fall back to the
+   *  existing name-based resolution. */
+  private resolveDiFieldCall(target: string, func: any): string[] | undefined {
+    if (!target || typeof target !== 'string') return undefined;
+    const parts = target.split('.');
+    if (parts.length !== 3) return undefined;
+    const [recv, field, methodName] = parts;
+    if ((recv !== 'this' && recv !== 'self') || !field || !methodName) return undefined;
+
+    const sourceClassName = func?.className;
+    if (!sourceClassName) return undefined;
+
+    const fieldInfo = this.classFieldTypes.get(`${sourceClassName}.${field}`);
+    if (!fieldInfo || !fieldInfo.typeName) return undefined;
+
+    const m = /^([A-Za-z_$][\w$]*)/.exec(String(fieldInfo.typeName).trim());
+    if (!m) return undefined;
+    const className = this.importAliasMap.get(m[1]) || m[1];
+    if (className === sourceClassName) return undefined; // avoid accidental self-loops
+
+    const classNodes = this.nodesByName.get(className);
+    if (!classNodes) return undefined;
+
+    const resolvedMethodIds: string[] = [];
+    for (const classNode of classNodes) {
+      if (!this.isClassLikeNode(classNode)) continue;
+      const methodNode = this.methodsByParent.get(classNode.id)?.find(mm => mm.name === methodName);
+      if (methodNode) resolvedMethodIds.push(methodNode.id);
+    }
+    return resolvedMethodIds.length > 0 ? resolvedMethodIds : undefined;
+  }
+
   /**
    * Outbound calls (fetch/axios) inside an ANONYMOUS arrow/function-expression
    * callback — e.g. an Express route handler
@@ -1538,6 +1581,13 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
         // (import { Account as Acct }) resolves directly to Account.save — precise,
         // alias-aware, and not subject to the substring heuristic below.
         const typedTargetId = this.resolveTypedReceiverCall(call.target, func);
+        // DI-injected field resolution: `this.svc.doThing()` where `svc` is a
+        // constructor-injected dependency of the caller's own class (NestJS/Angular
+        // pattern) resolves directly to the real target method(s) — see
+        // resolveDiFieldCall for the evidence/type-gating rule. Only consulted when
+        // typedTargetId didn't already resolve it (typedTargetId never fires for
+        // `this.`/`self.` receivers, so there is no overlap in practice).
+        const diTargetIds = typedTargetId ? undefined : this.resolveDiFieldCall(call.target, func);
         if (call.httpMethod && call.httpPath) {
           if (sourceNodeId) {
             entryPoints.push({
@@ -1599,7 +1649,16 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
         }
 
         if (call.targetType === 'method' || call.targetType === 'function') {
-          const targetNodeId = typedTargetId || this.findNodeIdByNameIndexed(call.target, filePath, func.className);
+          // DI-field resolution is evidence-based (constructor-declared type), so it
+          // takes priority over the name-based fuzzy fallback (findNodeIdByNameIndexed),
+          // which can guess the wrong class when a property name merely resembles one.
+          // When the field is a recognized injected dependency (diTargetIds is defined),
+          // skip the fuzzy fallback entirely: unambiguous (exactly one match) resolves
+          // here; ambiguous (2+ matches) is handled by the dedicated branch below, which
+          // fans out to every real match instead of letting the fuzzy fallback guess one.
+          const unambiguousDiTargetId = diTargetIds && diTargetIds.length === 1 ? diTargetIds[0] : undefined;
+          const targetNodeId = typedTargetId || unambiguousDiTargetId ||
+            (diTargetIds ? undefined : this.findNodeIdByNameIndexed(call.target, filePath, func.className));
 
           if (sourceNodeId && targetNodeId && sourceNodeId !== targetNodeId) {
             this.addCallEdge(edges, {
@@ -1610,6 +1669,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
               metadata: {
                 attributes: {
                   call_type: call.targetType,
+                  resolution_type: unambiguousDiTargetId ? 'di_field' : undefined,
                   is_async: call.isAsync,
                   is_conditional: call.isConditional,
                   is_in_loop: call.isInLoop,
@@ -1618,7 +1678,29 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
                 }
               }
             });
-          } else if (sourceNodeId && !targetNodeId && this.isRepositoryCall(call.target)) {
+          } else if (sourceNodeId && !targetNodeId && diTargetIds && diTargetIds.length > 1) {
+            for (const diTargetId of diTargetIds) {
+              if (diTargetId === sourceNodeId) continue;
+              this.addCallEdge(edges, {
+                id: `di_call_${sourceNodeId}_${diTargetId}`,
+                source: sourceNodeId,
+                target: diTargetId,
+                type: 'calls',
+                metadata: {
+                  attributes: {
+                    call_type: call.targetType,
+                    resolution_type: 'di_field',
+                    is_async: call.isAsync,
+                    is_conditional: call.isConditional,
+                    is_in_loop: call.isInLoop,
+                    line: call.line,
+                    method_name: call.target.split('.').pop(),
+                    ambiguous: diTargetIds.length > 1
+                  }
+                }
+              });
+            }
+          } else if (sourceNodeId && !targetNodeId && this.isRepositoryCall(call.target, func.className)) {
             const repoInfo = this.parseRepositoryCall(call.target);
             if (repoInfo) {
               const library = this.getLibraryForType('EntityRepository')
@@ -2587,7 +2669,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
         // Abstract method calls
         if (call.targetType === 'abstract') {
           const sourceNodeId = this.resolveSourceNodeId(filePath, func, nodes);
-          const targetNodeId = this.findNodeIdByName(call.target, nodes);
+          const targetNodeId = this.findNodeIdByName(call.target, nodes, func.className);
 
           if (sourceNodeId && targetNodeId) {
             edges.push({
@@ -2610,7 +2692,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
         // Dependency injection calls
         if (call.injectionType) {
           const sourceNodeId = this.resolveSourceNodeId(filePath, func, nodes);
-          const targetNodeId = this.findNodeIdByName(call.target, nodes);
+          const targetNodeId = this.findNodeIdByName(call.target, nodes, func.className);
 
           if (sourceNodeId && targetNodeId) {
             edges.push({
@@ -2632,7 +2714,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
         // Regular method/function calls
         if (call.targetType === 'method' || call.targetType === 'function') {
           const sourceNodeId = this.resolveSourceNodeId(filePath, func, nodes);
-          const targetNodeId = this.findNodeIdByName(call.target, nodes);
+          const targetNodeId = this.findNodeIdByName(call.target, nodes, func.className);
 
           if (sourceNodeId && targetNodeId && sourceNodeId !== targetNodeId) {
             edges.push({
@@ -2650,7 +2732,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
                 }
               }
             });
-          } else if (sourceNodeId && !targetNodeId && this.isRepositoryCall(call.target)) {
+          } else if (sourceNodeId && !targetNodeId && this.isRepositoryCall(call.target, func.className)) {
             const repoInfo = this.parseRepositoryCall(call.target);
             if (repoInfo) {
               const library = this.getLibraryForType('EntityRepository')
@@ -2709,12 +2791,45 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     });
   }
 
-  private isRepositoryCall(target: string): boolean {
+  /**
+   * Gate repository/ORM exit-point routing on evidence that the RECEIVER is actually
+   * a repository/ORM handle, not just on the method name. Method names like `findAll`,
+   * `persist`, `assign`, `populate`, `flush` are extremely common on plain service
+   * classes (e.g. `OrganizationsService.findAll()`) — treating them as unconditional
+   * ORM markers (the old `ormSpecificMethods` behavior) fabricated DB exit points on
+   * services that never touch a database. Evidence sources, in order:
+   *   1. `classFieldTypes` (`ClassName.field` -> declared constructor-param type) when
+   *      `className` (the CALLER's own class) is known — the most precise signal,
+   *      since it's scoped to the exact class rather than a bare property name.
+   *   2. `repositoryPropertyTypes` (property name -> type), a global fallback already
+   *      populated only for constructor params whose type matched `isRepositoryLikeType`
+   *      (Repository/EntityManager/PrismaClient/Model/Knex/etc.) — used when `className`
+   *      isn't available at the call site (e.g. the un-indexed legacy path/no this.-receiver).
+   *   3. Name-based heuristics (`isRepositoryLikeCaller` / `isModelLikeCaller`) as a last
+   *      resort for receivers with no recorded type at all (e.g. `this.repo.find()` where
+   *      `repo` was never seen as a typed constructor param) — still gated, just weaker
+   *      evidence, and only reachable when no type evidence contradicts it.
+   * A bare method-name match with an UNKNOWN or clearly-non-repository receiver (a plain
+   * service field, a local array `arr.find()`) must NOT be routed to a DB exit point.
+   */
+  private isRepositoryCall(target: string, className?: string): boolean {
     if (!target.includes('.')) return false;
     const parts = target.split('.');
     const methodName = (parts.pop() || '').toLowerCase();
     const originalCallerName = parts.join('.').replace('this.', '');
     const callerName = originalCallerName.toLowerCase();
+
+    // Receiver-type evidence: does the caller's own class record this field as a
+    // constructor-injected dependency, and if so, is that declared type actually a
+    // repository/ORM handle? If we KNOW the type and it's NOT repository-like (e.g.
+    // `someService: OrganizationsService`), that is strong evidence against an ORM
+    // call regardless of the method name — bail out even for "ormSpecificMethods".
+    const lastProperty = originalCallerName.split('.').pop() || originalCallerName;
+    const knownFieldType = (className && this.classFieldTypes.get(`${className}.${lastProperty}`)?.typeName)
+      || this.repositoryPropertyTypes.get(lastProperty);
+    if (knownFieldType) {
+      return this.isRepositoryLikeType(knownFieldType);
+    }
 
     const ormSpecificMethods = [
       'findoneorfail', 'findall', 'findandcount',
@@ -2727,14 +2842,17 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
       'updateone', 'deleteone', 'insertmany'
     ];
 
-    if (ormSpecificMethods.includes(methodName)) return true;
-
     const ambiguousMethods = [
       'find', 'findone', 'create', 'save', 'insert',
       'update', 'delete', 'remove', 'count'
     ];
 
-    if (ambiguousMethods.includes(methodName)) {
+    if (ormSpecificMethods.includes(methodName) || ambiguousMethods.includes(methodName)) {
+      // No recorded type for this receiver at all (untyped param, plain local variable,
+      // or a property this analyzer never saw declared) — fall back to name-based
+      // evidence that the receiver itself looks like a repository/model handle
+      // (`this.repo`, `this.userRepository`, `const userRepo = new UserRepository(...)`,
+      // `UserModel.find()`), never the method name alone.
       return this.isRepositoryLikeCaller(callerName) || this.isModelLikeCaller(originalCallerName);
     }
 
@@ -2747,6 +2865,12 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
   }
 
   private isRepositoryLikeCaller(callerName: string): boolean {
+    // MikroORM's `wrap(entity).assign(...)` / `wrap(entity).toObject()` helper —
+    // the receiver is a call expression, not a field, but `wrap(` is an unambiguous
+    // ORM marker (real import from `@mikro-orm/core`), so treat it as strong
+    // evidence rather than requiring a field name to match.
+    if (/^wrap\(/.test(callerName)) return true;
+
     const parts = callerName.split('.');
     const exactMatchPatterns = new Set([
       'em', 'db', 'orm', 'repo', 'model', 'knex', 'table', 'schema', 'query'
@@ -2758,6 +2882,15 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     for (const part of parts) {
       if (exactMatchPatterns.has(part)) return true;
       if (substringPatterns.some(pattern => part.includes(pattern))) return true;
+      // Compound identifiers ending in the short repository abbreviation
+      // (`userRepo`, `orgRepo`, `componentRepo`, `const userRepo = new UserRepository(...)`)
+      // are a very common naming convention the substring check above misses because it
+      // looks for the full word "repository", not the "repo" abbreviation. Only match as
+      // a suffix (not "repossession"), and explicitly exclude "forRepo"/"ForRepo" — a
+      // distinct, attested English-phrase pattern (`appsForRepo`, `existingForRepo`
+      // meaning "apps for [this] repo", i.e. a filtered ARRAY, not a repository handle)
+      // that would otherwise false-positive on plain Array.prototype.find/filter calls.
+      if (/repo$/.test(part) && part !== 'repo' && !/forrepo$/.test(part)) return true;
     }
     return false;
   }
@@ -2868,8 +3001,8 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     return undefined;
   }
 
-  private findNodeIdByName(targetName: string, nodes: CASNode[]): string | undefined {
-    if (this.isRepositoryCall(targetName)) {
+  private findNodeIdByName(targetName: string, nodes: CASNode[], className?: string): string | undefined {
+    if (this.isRepositoryCall(targetName, className)) {
       const parts = targetName.split('.');
       if (parts.length >= 3 && parts[0] === 'this') {
         const repositoryProperty = parts[1];
@@ -3117,7 +3250,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     const hasPersistingCall = calls.some(call => {
       const target = String(call.target || '');
       const method = target.split('.').pop() || '';
-      return this.classifyEntityAccess(method) === 'creates' && this.isRepositoryCall(target);
+      return this.classifyEntityAccess(method) === 'creates' && this.isRepositoryCall(target, func?.className);
     });
     if (!hasPersistingCall) return;
 
