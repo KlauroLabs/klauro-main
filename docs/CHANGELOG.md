@@ -5,6 +5,17 @@ agent-feedback reports (`~/.klauro/agent-feedback/*.md`) — nothing is asserted
 Where an item was still in flight at the time this entry was written, it is marked **pending
 final verify** rather than presented as done.
 
+## v1.0.17 — Stop analyzing the legacy reference tree as live code (2026-07-04)
+
+Follow-up from v1.0.16's file-count fix. Verifying the "875 of ~1,240 files" gap (verify-first) showed
+it was **mostly legitimate** (legacy/ + fixtures/cas-tests excluded by design, one file over the 1 MB
+cap) — but surfaced a real bug in the other direction: **~102 `legacy/web/` files were being analyzed
+as live product code.** The `package.json#workspaces` glob branch of `discoverProjectRoots` (added
+defensively in v1.0.14) had no legacy-exclusion awareness, and this repo's `workspaces` includes
+`legacy/*`. Fixed by routing both root-discovery branches through the existing legacy exclusion.
+Self-analysis: 102 wrongly-parsed legacy files → 0; parsed-file count now matches ground truth
+(861 vs 860). No cross-repo regression (zerac-api unchanged). 878 jest.
+
 ## v1.0.16 — Correctness wave 2: honest identity, coverage, evidence-gating (2026-07-04)
 
 A second parallel wave off the adversarial analysis audit. Every agent reproduced-before-coding and
