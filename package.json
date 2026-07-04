@@ -9,6 +9,7 @@
     "legacy/*"
   ],
   "scripts": {
+    "deploy": "bash infrastructure/vps/deploy.sh",
     "app:dev": "npm --prefix apps/app run dev",
     "app:build": "npm --prefix apps/app run build",
     "app:typecheck": "npm --prefix apps/app run typecheck",
