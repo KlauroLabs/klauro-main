@@ -74,7 +74,7 @@ import {
 import type { ConceptualCoordinate } from './coordination/types';
 import { loadPersistedRuntimeFacts } from './telemetry-fusion';
 
-const SERVER_INSTRUCTIONS = `Klauro serves a precomputed analysis of this repository — call graph, routes, data flows, entry points, conventions, and tests, queryable directly. Default to it over grep/Read: a query returns real call sites and blast radius, not guesses. The value is the sequence below; each tool's own description has the detail.
+export const SERVER_INSTRUCTIONS = `Klauro serves a precomputed analysis of this repository — call graph, routes, data flows, entry points, conventions, and tests, queryable directly. Default to it over grep/Read: a query returns real call sites and blast radius, not guesses. The value is the sequence below; each tool's own description has the detail.
 
 Orient (once per repo): resolve_agent_analysis(path) confirms an analysis exists and selects the right one (not an embedded sub-fixture); if none, analyze_codebase. get_summary gives domain, capabilities, and entry points in one call.
 
@@ -1715,7 +1715,7 @@ function registerTools(server: McpServer) {
     'get_summary',
     {
       title: 'Get Summary',
-      description: 'Get condensed intelligence summary of an analyzed codebase. Includes system purpose, flow graph highlights (top 15 capabilities by score), architecture summary, database entities, entry point breakdown, node/edge counts, and analyzer contributions. This is the first tool to call to orient on a codebase — the top of the Capability -> Flow -> Step -> Function hierarchy; drill a named capability into its flows with get_flow_concepts, then a flow/step into concrete code with get_coding_context/get_call_chain. Progressive availability: structural fields (entry points, counts, entities, flow highlights) are always final; the prose system purpose and capability descriptions may still be enriching — check ai_enrichment (pending = deterministic text now; re-call in a few seconds only if you need the richer narrative). Never block on pending prose; orient on the structure and proceed.',
+      description: 'Get condensed intelligence summary of an analyzed codebase. Includes system purpose, flow graph highlights (top 15 capabilities by score), architecture summary, database entities, entry point breakdown, node/edge counts, and analyzer contributions. This is the first tool to call to orient on a codebase — the top of the Capability -> Flow -> Step -> Function hierarchy; drill a named capability into its flows with get_flow_concepts, then a flow/step into concrete code with get_coding_context/get_call_chain. Its orient_capsule field is a pure pullable-INDEX of the fabric: per dimension (routes, seams, topology, cicd, runtime metrics, entities, tests) it reports availability + a count + the exact tool that pulls it, at near-zero tokens and with NO narrative — the cheap map of what is knowable. For the woven NARRATIVE of how those layers fit together (entry points -> deployables with bundled members -> topology -> seams -> CAP, as a headline plus compacted content), call get_system_overview and read its system_fit; the capsule tells you what to pull, system_fit tells you the story. Progressive availability: structural fields (entry points, counts, entities, flow highlights) are always final; the prose system purpose and capability descriptions may still be enriching — check ai_enrichment (pending = deterministic text now; re-call in a few seconds only if you need the richer narrative). Never block on pending prose; orient on the structure and proceed.',
       inputSchema: {
         path: z.string().describe('Project path (must be previously analyzed)'),
         track: TRACK_PARAM,
@@ -1737,7 +1737,7 @@ function registerTools(server: McpServer) {
     'get_system_overview',
     {
       title: 'Get System Overview',
-      description: 'Full system metadata: system info, architecture summary, system purpose, capabilities, progressive levels, analyzer contributions, configuration, runtime, errors, validation.',
+      description: 'Full system metadata: system info, architecture summary, system purpose, capabilities, progressive levels, analyzer contributions, configuration, runtime, errors, validation. Its system_fit field is the woven NARRATIVE of how the vertical fits together — a "how it fits" headline (entry points -> deployables with bundled members collapsed -> infra topology -> communication seams -> CAP/consistency flags) plus the compacted content for each layer. This is the richer counterpart to get_summary\'s orient_capsule, which is a pure availability+count INDEX with no narrative: reach for the capsule to learn cheaply what is pullable, and for system_fit to read the actual story of how the layers connect.',
       inputSchema: {
         path: z.string().describe('Project path'),
         runtime: CONTEXT_RUNTIME_PARAM,

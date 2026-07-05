@@ -19,8 +19,15 @@ describe('collectDeployableEvidence', () => {
     if (projectPath) fs.removeSync(projectPath);
   });
 
-  test('Tier 1: Dockerfile node yields a container candidate with ships_paths from base images', () => {
+  test('Tier 1: a Dockerfile with only a base image (no COPY members) yields a container candidate with NO ships_paths', () => {
     projectPath = tempProject();
+    // A base-image FROM ref is NOT a bundle member. ships_paths must stay a pure
+    // member list (bin/crate/service names), so a Dockerfile that ships nothing
+    // parseable carries no ships_paths — the FROM ref remains only in `evidence`.
+    fs.writeFileSync(
+      path.join(projectPath, 'Dockerfile'),
+      'FROM node:22-alpine\nEXPOSE 3000\nCMD ["node", "server.js"]\n'
+    );
     const nodes: CASNode[] = [
       {
         id: 'dockerfile_1',
@@ -40,9 +47,51 @@ describe('collectDeployableEvidence', () => {
     const container = result.find(item => item.kind === 'container');
     expect(container).toBeDefined();
     expect(container!.tier).toBe(1);
-    expect(container!.ships_paths).toEqual(['node:22-alpine']);
+    // The base image no longer leaks into ships_paths (source-side fix).
+    expect(container!.ships_paths).toBeUndefined();
+    // But it is still recorded as human-readable evidence.
+    expect(container!.evidence.some(e => e.includes('FROM node:22-alpine'))).toBe(true);
     expect(container!.ports).toEqual([3000]);
     expect(container!.evidence.some(e => e.includes('Dockerfile'))).toBe(true);
+  });
+
+  test('Tier 1: ships_paths contains only real bundled members, excluding base-image FROM refs and image lineage', () => {
+    projectPath = tempProject();
+    // Multi-stage build: a base-image FROM + a real COPY of a built binary.
+    // Only the built member ("my-service") belongs in ships_paths; the FROM
+    // refs (base + runtime images) must NOT leak in.
+    fs.writeFileSync(
+      path.join(projectPath, 'Dockerfile'),
+      [
+        'FROM rust:1.79 AS builder',
+        'WORKDIR /app',
+        'RUN cargo build --release -p my-service',
+        'FROM debian:bookworm-slim',
+        'COPY --from=builder /app/target/release/my-service /usr/local/bin/my-service',
+        'ENTRYPOINT ["/usr/local/bin/my-service"]',
+      ].join('\n') + '\n'
+    );
+    const nodes: CASNode[] = [
+      {
+        id: 'dockerfile_ms',
+        name: 'Docker image definition: Dockerfile',
+        type: 'container_image_definition',
+        source: { file: 'Dockerfile', line: 1 },
+        metadata: {
+          topology_surface: 'dockerfile',
+          base_images: ['rust:1.79', 'debian:bookworm-slim'],
+        } as any,
+      },
+    ];
+
+    const result = collectDeployableEvidence({ projectPath, nodes, entryPoints: [], exitPoints: [] });
+    const container = result.find(item => item.kind === 'container');
+    expect(container).toBeDefined();
+    // Only the real bundled member survives — no base/runtime image refs.
+    expect(container!.ships_paths).toEqual(['my-service']);
+    expect(container!.ships_paths).not.toContain('rust:1.79');
+    expect(container!.ships_paths).not.toContain('debian:bookworm-slim');
+    expect(container!.entrypoint_member).toBe('my-service');
   });
 
   test('Tier 1: compose service node yields a compose-service candidate', () => {

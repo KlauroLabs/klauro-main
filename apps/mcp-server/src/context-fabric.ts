@@ -292,6 +292,15 @@ export interface SystemFitSummary {
  * seam counts + CAP flags. Every sub-section is omitted when its facts are
  * absent; returns undefined only when NONE of the layers are present, so a
  * plain repo with no seams/topology/deployables is unchanged.
+ *
+ * Role split (see also buildOrientCapsule in query.ts): this is the NARRATIVE —
+ * a woven headline plus the compacted content of each layer, so a caller can
+ * read how the vertical actually connects. get_summary's orient_capsule is the
+ * complementary INDEX — availability + count + the pulling tool per dimension,
+ * no narrative and no per-layer content. They are deliberately non-redundant:
+ * the capsule tells you WHAT is pullable at near-zero tokens; system_fit tells
+ * you the STORY. Keep them that way — do not fold the capsule's per-dimension
+ * counts into system_fit prose, and do not add narrative to the capsule.
  */
 export function buildSystemFitSummary(cas: CASOutput): SystemFitSummary | undefined {
   const deployables = buildBundledDeployables(cas, { limit: 6 });

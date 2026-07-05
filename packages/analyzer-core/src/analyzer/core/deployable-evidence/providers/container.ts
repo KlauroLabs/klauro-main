@@ -4,6 +4,27 @@ import type { DeployableEvidence } from '../../../../types/cas.types';
 import type { EvidenceCollectionContext, EvidenceProvider } from '../types';
 import { arrayOf, formatPort, numericPorts, safeDeployableName } from '../util';
 
+/** A real bundle-member name (bin/crate/service name), as opposed to a
+ *  base-image `FROM` ref, a registry image ref, or a CLI-flag/prose token that
+ *  can leak in from a loosely-matched COPY/RUN line. `ships_paths` must carry
+ *  ONLY these — downstream (context-fabric bundle rendering, cross-codebase
+ *  `bundled_into` resolution) treats every entry as a real member name and
+ *  matches it against sibling app names, so image refs cause false bundling.
+ *  Kept at the SOURCE so the downstream filters are belt-and-suspenders. */
+function isRealMemberToken(token: string): boolean {
+  const t = token.trim();
+  if (!t || t.length < 2) return false;
+  // Image refs: `node:22-alpine`, `alpine:3.19`, `library/redis:7`, `${VAR}`.
+  if (t.includes(':')) return false;
+  if (/^\$?\{?[A-Z0-9_]+\}?$/.test(t) && /\$|\{/.test(t)) return false; // build-arg placeholder like ${BASE}
+  if (/\b(alpine|debian|ubuntu|distroless|scratch|buster|bookworm|slim|busybox)\b/i.test(t)) return false;
+  // Bare CLI/tooling tokens and shell noise that can slip through a COPY/RUN match.
+  if (/^(--?[a-z].*|&&|\|\||;|\.|\.\.|-p|from|as)$/i.test(t)) return false;
+  // Trailing prose punctuation ("below.", "bastion,") is arg noise, not a member.
+  if (/[.,;]$/.test(t)) return false;
+  return true;
+}
+
 /** Parse a Dockerfile's real bundle membership: `cargo build -p X -p Y`
  *  package args, `COPY [--from=stage] .../release/<bin> <dest>` targets, and
  *  the ENTRYPOINT/CMD primary binary. Falls back to no members (caller uses
@@ -82,7 +103,13 @@ export function parseDockerfileMembers(projectPath: string, relativeFile: string
     entrypointMember = [...builtBinaries][0];
   } else entrypointMember = entrypointBaseName || cmdBaseName;
 
-  return { members: [...members], entrypointMember };
+  // Final source-side scrub: drop any token that isn't a real member name
+  // (image refs / CLI-flag / prose noise that slipped through the COPY/RUN
+  // matchers). ships_paths must carry only true bundle members.
+  const cleanMembers = [...members].filter(isRealMemberToken);
+  const cleanEntrypoint =
+    entrypointMember && isRealMemberToken(entrypointMember) ? entrypointMember : undefined;
+  return { members: cleanMembers, entrypointMember: cleanEntrypoint };
 }
 
 /** Clean deployable name for a Dockerfile — NEVER the node's display label.
@@ -146,8 +173,13 @@ function collect(ctx: EvidenceCollectionContext): DeployableEvidence[] {
       // actually builds/COPYs/ships, rather than base-image lineage (which is
       // useless for membership — every stage in a multi-stage build often
       // shares the same FROM images regardless of what binaries it packages).
+      // ships_paths carries ONLY real members: base-image FROM refs stay in
+      // `evidence` (kept above) for context but are deliberately NOT a fallback
+      // here, because every downstream consumer treats a ships_paths entry as a
+      // real member name (context-fabric bundle rendering, cross-codebase
+      // bundled_into resolution) — an image ref there causes false bundling.
       const dockerfileMembers = parseDockerfileMembers(projectPath, file);
-      const shipsPaths = dockerfileMembers.members.length ? dockerfileMembers.members : baseImages;
+      const shipsPaths = dockerfileMembers.members;
       if (dockerfileMembers.members.length) {
         evidence.push(`builds/copies: ${dockerfileMembers.members.join(', ')}`);
       }
@@ -161,7 +193,7 @@ function collect(ctx: EvidenceCollectionContext): DeployableEvidence[] {
         tier: 1,
         kind: 'container',
         evidence,
-        ships_paths: shipsPaths,
+        ships_paths: shipsPaths.length ? shipsPaths : undefined,
         ports: numericPorts(exposedPorts),
         entrypoint_member: dockerfileMembers.entrypointMember,
       });

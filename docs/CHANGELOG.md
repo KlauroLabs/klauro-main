@@ -5,6 +5,21 @@ agent-feedback reports (`~/.klauro/agent-feedback/*.md`) — nothing is asserted
 Where an item was still in flight at the time this entry was written, it is marked **pending
 final verify** rather than presented as done.
 
+## v1.0.28 — Fixpoint polish: teaching surface locked, ships_paths clean at source (2026-07-05)
+
+The final sweep of this run's open items — all polish, no defects remaining.
+
+- **Instruction golden test** — new `instructions-golden.test.ts` asserts every tool named in
+  `SERVER_INSTRUCTIONS` is actually registered and each concept layer (telemetry, seams, CAP, topology,
+  CI/CD, bundled deployables) is mentioned — the teaching surface can no longer silently regress.
+- **Capsule vs system_fit reconciled** — `orient_capsule` (pure `{available,count,tool}` index) and
+  `system_fit` (narrative) declare their distinct roles and cross-reference; `orient-capsule.test.ts`
+  locks the capsule to a byte budget and index-only shape.
+- **`ships_paths` clean at source** — `isRealMemberToken` in the container provider excludes base-image
+  `FROM` refs, registry image refs, build-arg placeholders, and CLI/prose noise, so bundled-member
+  detection (`bundled_into`, context-fabric bundle rendering) works from clean data; downstream filters
+  are now belt-and-suspenders. deployable-evidence 25/25.
+
 ## v1.0.27 — runtime_topology fires on the real (AI-off) path (2026-07-05)
 
 The v1.0.26 metered benchmark caught `runtime_topology` returning empty on real compose repos. Root cause:
