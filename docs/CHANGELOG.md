@@ -5,6 +5,57 @@ agent-feedback reports (`~/.klauro/agent-feedback/*.md`) — nothing is asserted
 Where an item was still in flight at the time this entry was written, it is marked **pending
 final verify** rather than presented as done.
 
+## v1.0.25 — The whole vertical + unified communication seams (2026-07-05)
+
+Coverage now spans every checked-in layer of how a system exists *and* how its parts talk — with a
+single classification over the seams. Built by a ~16-agent Claude+Codex wave; `cas.types.ts` took five
+concurrent additions (`EXIT_POINT_TYPES`, `runtime_topology`, `ci` kind, `consistency_model`,
+`communication_seams`) with zero lost work; tsc clean both packages, analyzer-core jest green.
+
+### Added — the whole system, from checked-in config
+- **CI/CD pipelines** — GitHub Actions / GitLab CI / CircleCI / Jenkins / Azure Pipelines / Travis /
+  Drone / Buildkite / Bitbucket: pipelines, jobs, steps, triggers (incl. schedule), deploy targets, job
+  DAG. Real: openclaw 9 pipelines / 25 jobs / 115 steps / 18 triggers.
+- **Reverse proxy / web server** — Caddy / nginx / Apache / HAProxy / Traefik: routes → upstreams,
+  joined into the infra-topology linker. Our own Caddyfile now completes the edge
+  `mcp.klauro.com → api:8787 → the api deployable → route → handler`.
+- **SOAP / WSDL** — services, operations, contract types + SOAP-consumer exit points.
+- **Terraform HCL-body attributes** — real cloud-resource names (`aws_db_instance` → `identifier`,
+  `aws_sqs_queue` → `name`) so `PROVISIONS_*` joins on the actual name, not the label.
+
+### Added — unified communication seams (sync / async / passive)
+- **`get_communication_seams`** — classifies every seam SYNC / ASYNC / PASSIVE at node and deployable
+  level, derived from existing facts. Real: zerac-api **SYNC 1911 / ASYNC 62 / PASSIVE 329**; the marquee
+  passive seam is two apps sharing the `Client` table with no direct call — shared-state coupling nothing
+  else surfaces.
+- **Routing shape** — RabbitMQ exchange type (**fanout = 1→N broadcast**), Kafka consumer groups, Redis
+  Streams, NATS queue groups, and in-process **EventEmitter** listeners (previously 100% invisible;
+  claudius 0→45 messaging nodes).
+- **Durable orchestrators** — Temporal workflow→activity, AWS Step Functions (ASL), Camunda/Zeebe, Cadence.
+- **CAP / consistency** — read-replica / streaming-sink / CDC / materialized-view / ETL passive seams
+  tagged `{ model: strong|eventual|tunable, staleness_risk, cap_lean }`. truckspy: 24 materialized views +
+  12 TimescaleDB aggregates flagged eventual/stale, primary reads strong.
+
+### Added — product surfaces + fabric-as-product
+- `get_product_map` gains a `runtime_topology` section (per deployable: deploys / exposes / routes /
+  depends_on). zerac-api: 30 edges / 11 deployables.
+- The coordination fabric is exposed as MCP tools: `fab_claim_work` / `fab_check_collision` /
+  `fab_release_work` / `fab_list_active_work`.
+
+### Fixed
+- **Exit-point type parity** — `EXIT_POINT_TYPES` const now drives both the union and `isValidExitPoint`;
+  recovered `'event'` exit points the old allowlist wrongly dropped (washup +8). Pack `emit.kind` validated
+  against `ENTRY_POINT_TYPES` (the stale hardcoded pack enum would have rejected `rpc`/`ipc`/`command`).
+- **Node-level self-telemetry** — the self-loop bootstraps one bounded analysis of its own in-container
+  source, so runtime events correlate to Klauro's own graph nodes (not just routes). HTTP telemetry routes
+  self-heal via lazy backfill; new `@klauro/telemetry/http` raw-node adapter; `performance.now()` parity.
+
+### Known follow-ups
+- `deployable_evidence` route-name-as-deployable fragmentation + a few staged-temp-path leaks in accessor
+  `.file` (the label-leak class); infra-topology `deployable` label normalization.
+- Two coordination surfaces (enforced grant-manager `claim_work` vs advisory `fab_claim_work`) want a docs
+  cross-link; minimal-Express route extraction is thin, which caps runtime→CAS correlation.
+
 ## v1.0.24 — Entry-point parity guard + live analyzer-packs + telemetry backfill (2026-07-05)
 
 ### Fixed
