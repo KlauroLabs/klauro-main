@@ -46,7 +46,14 @@ if [ -z "${VPS_HOST:-}" ] || [ -z "${VPS_USER:-}" ] || [ -z "${VPS_PASSWORD:-}" 
   exit 1
 fi
 command -v sshpass >/dev/null || { echo "ERROR: sshpass not installed." >&2; exit 1; }
-SSH="sshpass -p $VPS_PASSWORD ssh -o StrictHostKeyChecking=no -o ConnectTimeout=25"
+# ControlMaster multiplexing: every ssh/rsync/scp step reuses ONE authenticated
+# connection. Without it a deploy makes ~6 separate auths, and repeated deploys
+# in one session trip the VPS's connection-rate limit ("Permission denied"
+# mid-deploy). The master persists briefly so back-to-back deploys reuse it too.
+CM_DIR="${TMPDIR:-/tmp}/klauro-deploy-cm"
+mkdir -p "$CM_DIR"
+CM_OPTS="-o ControlMaster=auto -o ControlPath=$CM_DIR/%r@%h:%p -o ControlPersist=120"
+SSH="sshpass -p $VPS_PASSWORD ssh -o StrictHostKeyChecking=no -o ConnectTimeout=25 $CM_OPTS"
 DEST="$VPS_USER@$VPS_HOST"
 
 # --- optional: cut the release first --------------------------------------
