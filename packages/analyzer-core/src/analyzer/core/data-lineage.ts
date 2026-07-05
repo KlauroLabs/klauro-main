@@ -23,6 +23,27 @@ export interface DataLineageInput {
   userJourneys: CASUserJourney[];
 }
 
+/**
+ * Recover a repo-relative file path from an accessor node's `source.file`.
+ *
+ * Most nodes already carry a repo-relative path, but some analyzers (and the
+ * bench/remote analyzer, which snapshots source into a throwaway staged dir
+ * like `/var/folders/.../klauro-bench-analyzer-*`) leave an ABSOLUTE staged/temp
+ * path on `source.file`. That leaks the temp mount into `data_lineage` accessor
+ * `.file` values — the same defect class already fixed for system/deployable
+ * names. Normalize at emit time: for an absolute path, keep the repo-relative
+ * tail starting at the first real source segment (apps/libs/packages/src);
+ * relative paths pass through untouched. Mirrors communication-seams.ts's
+ * componentForFile recovery so the two stay consistent.
+ */
+function toRepoRelativeAccessorFile(file: string | undefined): string | undefined {
+  if (!file) return file;
+  const f = file.replace(/\\/g, '/');
+  if (!f.startsWith('/')) return f; // already repo-relative
+  const m = f.match(/\/((?:apps|libs|packages|src)\/.*)$/);
+  return m ? m[1] : undefined; // no recoverable source tail: drop the temp path
+}
+
 const WRITE_EDGE_TYPES = new Set(['writes', 'creates', 'updates', 'deletes', 'persists', 'saves', 'mutates']);
 const READ_EDGE_TYPES = new Set(['reads', 'queries']);
 const CONTAINMENT_EDGE_TYPES = new Set(['contains', 'has_method', 'declares']);
@@ -172,7 +193,7 @@ function buildEntityLineage(entity: CASDataEntity, index: LineageIndex): CASEnti
   const recordAccessor = (map: Map<string, CASEntityLineageAccessor>, nodeId: string | undefined, via: string) => {
     if (!nodeId || map.has(nodeId)) return;
     const node = index.nodesById.get(nodeId);
-    map.set(nodeId, { node_id: nodeId, file: node?.source?.file, via });
+    map.set(nodeId, { node_id: nodeId, file: toRepoRelativeAccessorFile(node?.source?.file), via });
   };
 
   for (const nodeId of entity.lifecycle?.created_by || []) recordAccessor(writers, nodeId, 'lifecycle:created');

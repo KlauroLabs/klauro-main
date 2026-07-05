@@ -1,4 +1,8 @@
-import { classifyCommunicationSeams } from '../../analyzer/core/communication-seams';
+import {
+  classifyCommunicationSeams,
+  mergeSeams,
+  type CommunicationSeam,
+} from '../../analyzer/core/communication-seams';
 import type {
   CASNode,
   CASExitPoint,
@@ -160,5 +164,76 @@ describe('communication-seams classifier', () => {
     expect(checkoutToReporting).toBeDefined();
     expect(checkoutToReporting!.passive).toBe(1);
     expect(checkoutToReporting!.modalities).toContain('passive');
+  });
+});
+
+describe('mergeSeams (passive-seam extension fold)', () => {
+  function passiveSeam(id: string, source: string, target: string, resource: string): CommunicationSeam {
+    return {
+      id,
+      modality: 'passive',
+      confidence: 0.6,
+      kind: 'passive_state',
+      source,
+      target,
+      evidence: `extra:${id}`,
+      summary: `${source} --passive(${resource})--> ${target}`,
+      shared_resource: resource,
+    };
+  }
+
+  function baseResult() {
+    return classifyCommunicationSeams({
+      nodes: [node('fn_charge', 'apps/checkout/pay.ts')],
+      exit_points: [apiExit('fn_charge', 'apps/checkout/pay.ts')],
+      entry_points: [],
+      data_lineage: [],
+      data_entities: [],
+      deployable_evidence: [],
+    });
+  }
+
+  it('folds extra passive seams and rebuilds inventory counts', () => {
+    const base = baseResult();
+    const baseTotal = base.inventory.counts.total;
+    const extra = [
+      passiveSeam('seam_extra_1', 'apps/checkout', 'apps/reporting', 'read_replica'),
+      passiveSeam('seam_extra_2', 'apps/checkout', 'apps/analytics', 'cdc_stream'),
+    ];
+    const merged = mergeSeams(base, extra);
+    expect(merged.seams.length).toBe(base.seams.length + 2);
+    expect(merged.inventory.counts.passive).toBe(base.inventory.counts.passive + 2);
+    expect(merged.inventory.counts.total).toBe(baseTotal + 2);
+    // base is not mutated
+    expect(base.inventory.counts.total).toBe(baseTotal);
+  });
+
+  it('is order-independent — same inventory regardless of extra ordering', () => {
+    const extra = [
+      passiveSeam('seam_extra_1', 'apps/checkout', 'apps/reporting', 'read_replica'),
+      passiveSeam('seam_extra_2', 'apps/checkout', 'apps/analytics', 'cdc_stream'),
+      passiveSeam('seam_extra_3', 'apps/analytics', 'apps/reporting', 'materialized'),
+    ];
+    const forward = mergeSeams(baseResult(), extra);
+    const reversed = mergeSeams(baseResult(), [...extra].reverse());
+    // Aggregated counts are a pure fold over the seam SET — identical either way.
+    expect(reversed.inventory.counts).toEqual(forward.inventory.counts);
+    // The set of component-to-component edges is the same regardless of order
+    // (edges that tie on total keep insertion order, so compare as a set).
+    const asSet = (inv: typeof forward.inventory) =>
+      [...inv.component_seams]
+        .map(e => `${e.source}=>${e.target}:${e.sync}/${e.async}/${e.passive}`)
+        .sort();
+    expect(asSet(reversed.inventory)).toEqual(asSet(forward.inventory));
+  });
+
+  it('dedups seams already present by id (idempotent re-merge)', () => {
+    const base = baseResult();
+    const extra = [passiveSeam('seam_extra_1', 'apps/checkout', 'apps/reporting', 'read_replica')];
+    const once = mergeSeams(base, extra);
+    // merging the SAME extras again must not double-count
+    const twice = mergeSeams(once, extra);
+    expect(twice.seams.length).toBe(once.seams.length);
+    expect(twice.inventory.counts).toEqual(once.inventory.counts);
   });
 });

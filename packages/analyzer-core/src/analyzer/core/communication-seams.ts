@@ -337,6 +337,41 @@ export function classifyCommunicationSeams(
   return result;
 }
 
+/**
+ * Fold EXTRA seams (e.g. the consistency-model's broadened passive seams:
+ * read-replica / streaming / CDC / materialized) into an existing seams result,
+ * returning a NEW result whose inventories are rebuilt from the union. One
+ * helper so passive-seam extensions merge through a single code path instead of
+ * duplicated inline inventory-bumping in the orchestrator.
+ *
+ * Order-independent and dedup-aware: seams are de-duplicated by `id` (a seam
+ * already present in `base` is not counted twice), and every inventory is
+ * recomputed from scratch via `buildInventory` — a pure fold whose output
+ * depends only on the SET of seams, not their insertion order. Merging the same
+ * extras twice, or in any order, yields the same inventories. A deployable-level
+ * inventory is (re)produced whenever either side already carried one.
+ */
+export function mergeSeams(
+  base: CommunicationSeamsResult,
+  extra: CommunicationSeam[],
+): CommunicationSeamsResult {
+  const seen = new Set(base.seams.map(s => s.id));
+  const merged = [...base.seams];
+  for (const s of extra) {
+    if (seen.has(s.id)) continue;
+    seen.add(s.id);
+    merged.push(s);
+  }
+  const result: CommunicationSeamsResult = {
+    seams: merged,
+    inventory: buildInventory(merged, base.inventory.level),
+  };
+  if (base.deployable_inventory) {
+    result.deployable_inventory = buildInventory(merged, base.deployable_inventory.level);
+  }
+  return result;
+}
+
 /** Aggregate seams into a component-to-component inventory at the given level.
  *  At node level, source/target are used as-is (module components). At
  *  deployable level they are already deployable names for deployable-owned

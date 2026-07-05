@@ -127,24 +127,91 @@ function extractPortFromEntryPoint(entry: CASEntryPoint): number | undefined {
 }
 
 /**
+ * Monorepo app-parent segments. The segment IMMEDIATELY after one of these is a
+ * named ship unit (`apps/api`, `services/orders`) — never a route container —
+ * so we must not collapse into it.
+ */
+const APP_PARENT_SEGMENTS = new Set(['apps', 'services', 'packages', 'libs', 'crates', 'cmd']);
+
+/**
+ * Framework route-root segments: the directory under which a file-per-route
+ * layout hangs (`app/api/users/route.ts`, `pages/api/*`, a `routes/` or
+ * `controllers/` tree). Everything at/below such a segment is per-route
+ * structure, not the ship root — collapse to the directory just above it so all
+ * of one server's routes fold into a single server-entry.
+ */
+const ROUTE_ROOT_SEGMENTS = new Set([
+  'routes', 'route', 'pages', 'handlers', 'handler',
+  'controllers', 'controller', 'endpoints', 'endpoint', 'views', 'resolvers',
+]);
+
+/**
+ * Collapse a per-route handler dirname to its owning app/ship root.
+ *
+ * In file-per-route layouts the handler's OWN `path.dirname()` is a per-route
+ * sub-directory (dir named after the route, e.g. `.../users`), so deduping HTTP
+ * entries by raw dirname fragments one server into dozens of "deployables". Walk
+ * segments left→right:
+ *  - An app-parent segment (`apps/`, `services/`, …) protects the next segment
+ *    as a named ship unit; keep everything through it and stop descending.
+ *  - A route-root segment (`routes/`, `pages/`, `app/`+`api` next, …) marks the
+ *    start of per-route structure; the ship root is everything BEFORE it.
+ * `apps/api/src/server.ts` -> `apps/api/src` (app-parent protects `api`), while
+ * `app/api/users/route.ts` -> `app`'s parent (here `.`), collapsing all routes.
+ */
+function serverEntryRoot(handlerFile: string): string {
+  const dir = path.dirname(handlerFile).replace(/\\/g, '/').replace(/\/+$/, '');
+  if (!dir || dir === '.') return dir || '.';
+  const parts = dir.split('/');
+  for (let i = 0; i < parts.length; i++) {
+    const seg = parts[i].toLowerCase();
+    if (APP_PARENT_SEGMENTS.has(seg)) {
+      // Skip the app-parent AND the named app under it; resume scanning inside.
+      i += 1;
+      continue;
+    }
+    // A top-of-tree `app`/`pages` route root (Next.js app-router / pages-router):
+    // treat `app` as a route root only when it is NOT a named app under an
+    // app-parent (that case already `continue`d above). The ship root is the
+    // directory above this route-root segment.
+    if (ROUTE_ROOT_SEGMENTS.has(seg) || seg === 'app' || seg === 'pages') {
+      return parts.slice(0, i).join('/') || '.';
+    }
+  }
+  return dir;
+}
+
+/**
  * Server-bootstrap / port-binding entry points already flagged by framework
  * analyzers as CASEntryPoint type === 'http'.
  *
  * A single running server process can expose hundreds of HTTP routes, but it
  * is still ONE deployable — the process that binds the port, not each route
- * handler. Dedupe by root_path alone (one server-entry per app root) instead
- * of by root_path::routePath, which previously emitted one "deployable" per
- * route (e.g. 432 for a ~4-app repo with ~400 total routes).
+ * handler. Two defects this fold guards against:
+ *  - Dedupe by the app/ship root (see serverEntryRoot), not the raw handler
+ *    dirname, so a file-per-route layout (`app/api/users/route.ts`, …) doesn't
+ *    fragment into one pseudo-deployable per route dir.
+ *  - Name the deployable after the ship root, NEVER after a route path. The
+ *    entry's `name` is a route label like `GET /api/users/:id`; using it as the
+ *    deployable name (as the old `entry.name || handlerFile` did) leaked an
+ *    HTTP path into `.name`, breaking every consumer that maps file→deployable
+ *    by name. The route path belongs in `evidence`, not the name.
  */
 function collectServerEntries(ctx: EvidenceCollectionContext): DeployableEvidence[] {
+  const { displayName, projectPath } = ctx;
   const byRoot = new Map<string, DeployableEvidence>();
   const entryPoints = (ctx.cas.entry_points || []) as CASEntryPoint[];
+
+  const rootName = (rootPath: string): string =>
+    rootPath === '' || rootPath === '.'
+      ? safeDeployableName(displayName || path.basename(projectPath))
+      : safeDeployableName(path.basename(rootPath));
 
   for (const entry of entryPoints) {
     if (entry.type !== 'http') continue;
     const handlerFile = entry.handler?.file;
     if (!handlerFile) continue;
-    const rootPath = path.dirname(handlerFile);
+    const rootPath = serverEntryRoot(handlerFile);
 
     const port = extractPortFromEntryPoint(entry);
     const routeEvidence = entry.trigger?.path
@@ -155,7 +222,9 @@ function collectServerEntries(ctx: EvidenceCollectionContext): DeployableEvidenc
     if (!existing) {
       byRoot.set(rootPath, {
         root_path: rootPath,
-        name: entry.name || handlerFile,
+        // Ship-root name, not the route path. entry.name (e.g. "GET /users")
+        // is recorded as evidence below instead.
+        name: rootName(rootPath),
         tier: 2,
         kind: 'server-entry',
         evidence: [

@@ -2,7 +2,7 @@ import * as fs from 'fs-extra';
 import * as path from 'path';
 import type { DeployableEvidence } from '../../../../types/cas.types';
 import type { EvidenceCollectionContext, EvidenceProvider } from '../types';
-import { arrayOf, formatPort, numericPorts } from '../util';
+import { arrayOf, formatPort, numericPorts, safeDeployableName } from '../util';
 
 /** Parse a Dockerfile's real bundle membership: `cargo build -p X -p Y`
  *  package args, `COPY [--from=stage] .../release/<bin> <dest>` targets, and
@@ -85,6 +85,46 @@ export function parseDockerfileMembers(projectPath: string, relativeFile: string
   return { members: [...members], entrypointMember };
 }
 
+/** Clean deployable name for a Dockerfile — NEVER the node's display label.
+ *  A `container_image_definition` node's `.name` is a human label
+ *  ("Docker image definition: apps/admin-api/Dockerfile"); if that leaks into
+ *  DeployableEvidence.name it flows onto the DEPLOYS edge's `deployable`
+ *  attribute and shows up alongside the clean name ("admin-api") in
+ *  runtime_topology. Derive a clean, still-distinguishing name from the path:
+ *   - A NAMED Dockerfile (`docker/BinA.Dockerfile`, `Dockerfile.web`) carries
+ *     the distinguishing token in its FILENAME stem (`bina`, `web`) — use it,
+ *     so two Dockerfiles sharing a `docker/` dir don't collapse to one name.
+ *   - A PLAIN `Dockerfile` takes its identity from the build-context DIR
+ *     basename (`apps/admin-api/Dockerfile` -> `admin-api`).
+ *   - A root-level plain `Dockerfile` falls back to a pre-inferred non-hash
+ *     `service_aliases[0]`, else the project display name.
+ *  All paths run through safeDeployableName so a hash workspace basename never
+ *  leaks. */
+function dockerfileDeployableName(
+  file: string,
+  metadata: Record<string, any>,
+  ctx: EvidenceCollectionContext,
+): string {
+  const norm = file.replace(/\\/g, '/');
+  const base = path.basename(norm); // e.g. "Dockerfile", "BinA.Dockerfile", "Dockerfile.web"
+  // Distinguishing token from a named Dockerfile: "BinA.Dockerfile" -> "BinA",
+  // "Dockerfile.web" -> "web". A plain "Dockerfile" has no such token.
+  const namedStem =
+    base !== 'Dockerfile'
+      ? base.replace(/\.?dockerfile$/i, '').replace(/^dockerfile\.?/i, '') || ''
+      : '';
+  if (namedStem) return safeDeployableName(namedStem.toLowerCase());
+
+  const dir = path.dirname(norm).replace(/\/+$/, '');
+  const dirBase = dir && dir !== '.' ? path.basename(dir) : '';
+  if (dirBase) return safeDeployableName(dirBase);
+
+  // Root-level plain Dockerfile: prefer a real inferred alias, else display name.
+  const alias = arrayOf(metadata.service_aliases)[0];
+  if (alias) return safeDeployableName(alias);
+  return safeDeployableName(ctx.displayName || path.basename(ctx.projectPath));
+}
+
 /** Dockerfiles (container_image_definition nodes), compose services
  *  (compose_service nodes), and kubernetes_* nodes. */
 function collect(ctx: EvidenceCollectionContext): DeployableEvidence[] {
@@ -117,7 +157,7 @@ function collect(ctx: EvidenceCollectionContext): DeployableEvidence[] {
 
       out.push({
         root_path: path.dirname(file) || '.',
-        name: node.name || file,
+        name: dockerfileDeployableName(file, metadata, ctx),
         tier: 1,
         kind: 'container',
         evidence,

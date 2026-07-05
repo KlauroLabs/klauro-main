@@ -1,4 +1,5 @@
 import { linkInfraTopology } from '../../analyzer/core/infra-topology-linker';
+import { collectDeployableEvidence } from '../../analyzer/core/deployable-evidence';
 import type {
   CASNode,
   CASEntryPoint,
@@ -151,6 +152,45 @@ describe('linkInfraTopology', () => {
     expect(routesTo[0].target).toBe('fn_orders');
     // Every edge carries a concrete join_key (verifiable, not fabricated).
     for (const e of result.edges) expect((e.metadata?.attributes as any)?.join_key).toBeTruthy();
+  });
+
+  test('(b) DEPLOYS edge deployable attribute is the clean deployable NAME, never a display label', () => {
+    // End-to-end guard for the label-leak class: a container_image_definition
+    // node carries a display label as its `.name` ("Docker image definition:
+    // apps/admin-api/Dockerfile"). collectDeployableEvidence must reduce that to
+    // the clean build-context name, and the DEPLOYS edge must carry only that
+    // clean name in its `deployable` attribute.
+    const containerNode = node({
+      id: 'dockerfile_apps_admin_api',
+      name: 'Docker image definition: apps/admin-api/Dockerfile',
+      type: 'container_image_definition',
+      source: { file: 'apps/admin-api/Dockerfile', line: 1 },
+      metadata: {
+        topology_surface: 'dockerfile',
+        attributes: { base_images: ['node:20'], exposed_ports: ['3000'] },
+        base_images: ['node:20'],
+        exposed_ports: ['3000'],
+        service_aliases: ['admin-api'],
+      } as any,
+    });
+    const appNode = node({ id: 'mod_admin_index', name: 'index', type: 'module', level: 1, source: { file: 'apps/admin-api/index.ts', line: 1 } });
+    const evidence = collectDeployableEvidence({
+      projectPath: '/tmp/does-not-matter',
+      nodes: [containerNode],
+      entryPoints: [],
+      exitPoints: [],
+    });
+    const result = linkInfraTopology(
+      base({ nodes: [containerNode, appNode], deployable_evidence: evidence }),
+    );
+    const deploys = result.edges.filter(e => e.type === 'DEPLOYS');
+    expect(deploys.length).toBeGreaterThanOrEqual(1);
+    for (const e of deploys) {
+      const dep = (e.metadata?.attributes as any)?.deployable as string;
+      expect(dep).toBe('admin-api');
+      expect(dep).not.toContain('Docker image definition');
+      expect(dep).not.toContain(':');
+    }
   });
 
   test('aws_sqs_queue joins the code channel of the same name (provisions_channel)', () => {

@@ -198,6 +198,88 @@ describe('collectDeployableEvidence', () => {
     expect(new Set(serverEntries.map(e => e.root_path))).toEqual(new Set(['apps/api/src', 'apps/web/src']));
   });
 
+  test('file-per-route layout collapses to ONE server-entry and NEVER names it after a route path', () => {
+    projectPath = tempProject();
+    // Next.js app-router file-per-route: each handler lives in its own per-route
+    // dir (app/api/users/route.ts, app/api/orders/route.ts, ...). Previously each
+    // produced its own "deployable" rooted at the route dir and named after the
+    // route path — fragmenting one app into dozens of pseudo-components.
+    const routes = ['users', 'orders', 'payments', 'invoices', 'auth', 'health'];
+    const entryPoints: CASEntryPoint[] = routes.map((r, i) => ({
+      id: `entry_${i}`,
+      source_node: `node_${i}`,
+      type: 'http',
+      name: `GET /api/${r}`,
+      trigger: { method: 'GET', path: `/api/${r}` },
+      handler: { node_id: `node_${i}`, method_name: 'GET', file: `app/api/${r}/route.ts`, line: 1 },
+    }));
+
+    const result = collectDeployableEvidence({ projectPath, nodes: [], entryPoints, exitPoints: [] });
+    const serverEntries = result.filter(item => item.kind === 'server-entry');
+    // All six routes fold into a single server-entry, not one per route dir.
+    expect(serverEntries).toHaveLength(1);
+    // The route path must never leak into the deployable name.
+    for (const se of serverEntries) {
+      expect(se.name).not.toMatch(/^\s*(GET|POST|PUT|PATCH|DELETE|ALL)\b/i);
+      expect(se.name).not.toContain('/');
+    }
+  });
+
+  test('(a) no deployable name is an HTTP route path (method + path shape)', () => {
+    projectPath = tempProject();
+    const entryPoints: CASEntryPoint[] = [
+      {
+        id: 'e1', source_node: 'n1', type: 'http',
+        name: 'POST /api/v1/users/:id',
+        trigger: { method: 'POST', path: '/api/v1/users/:id' },
+        handler: { node_id: 'n1', method_name: 'create', file: 'services/user-svc/routes/users.ts', line: 1 },
+      },
+      {
+        id: 'e2', source_node: 'n2', type: 'http',
+        name: 'GET /api/v1/orders',
+        trigger: { method: 'GET', path: '/api/v1/orders' },
+        handler: { node_id: 'n2', method_name: 'list', file: 'services/user-svc/routes/orders.ts', line: 1 },
+      },
+    ];
+    const result = collectDeployableEvidence({ projectPath, nodes: [], entryPoints, exitPoints: [] });
+    for (const dep of result) {
+      // A method-prefixed name or a name containing a `/` route separator is a
+      // leaked route path — the whole class this guards against.
+      expect(dep.name).not.toMatch(/^\s*(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|ALL)\s+\//i);
+      expect(dep.name).not.toContain('/');
+    }
+    // The routes-dir handlers collapse to the owning service, cleanly named.
+    const serverEntries = result.filter(d => d.kind === 'server-entry');
+    expect(serverEntries).toHaveLength(1);
+    expect(serverEntries[0].root_path).toBe('services/user-svc');
+    expect(serverEntries[0].name).toBe('user-svc');
+  });
+
+  test('(b) a Dockerfile deployable name is the clean build-context name, not the node display label', () => {
+    projectPath = tempProject();
+    const nodes: CASNode[] = [
+      {
+        id: 'dockerfile_admin',
+        // The container-topology analyzer names these nodes with a display label.
+        name: 'Docker image definition: apps/admin-api/Dockerfile',
+        type: 'container_image_definition',
+        source: { file: 'apps/admin-api/Dockerfile', line: 1 },
+        metadata: {
+          topology_surface: 'dockerfile',
+          base_images: ['node:22-alpine'],
+          service_aliases: ['admin-api'],
+        } as any,
+      },
+    ];
+    const result = collectDeployableEvidence({ projectPath, nodes, entryPoints: [], exitPoints: [] });
+    const container = result.find(item => item.kind === 'container');
+    expect(container).toBeDefined();
+    // Clean build-context basename, NOT the "Docker image definition: ..." label.
+    expect(container!.name).toBe('admin-api');
+    expect(container!.name).not.toContain('Docker image definition');
+    expect(container!.name).not.toContain(':');
+  });
+
   test('Tier 3: package.json contributes package identity', () => {
     projectPath = tempProject();
     fs.writeJsonSync(path.join(projectPath, 'package.json'), { name: 'my-lib', version: '2.0.0' });

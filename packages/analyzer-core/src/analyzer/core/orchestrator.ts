@@ -84,7 +84,7 @@ import { collectDeployableEvidence } from './deployable-evidence';
 import { classifyCodebaseTypes } from './codebase-type';
 import { applyConventions, type KlauroConventionsInput } from './conventions-applier';
 import { linkInfraTopology } from './infra-topology-linker';
-import { classifyCommunicationSeams } from './communication-seams';
+import { classifyCommunicationSeams, mergeSeams } from './communication-seams';
 import { deriveConsistencyModel, toCommunicationSeams } from './consistency-model';
 import { collectCoverageGaps } from './coverage-gaps';
 import { ChangeDetector } from './change-detector';
@@ -1781,26 +1781,10 @@ export class AnalyzerOrchestrator {
       // passive/total counts; existing sync/async seams are untouched.
       if (consistency.passive_seams.length > 0 && output.communication_seams) {
         const extraSeams = toCommunicationSeams(consistency.passive_seams);
-        output.communication_seams.seams.push(...extraSeams);
-        const bump = (inv: typeof output.communication_seams.inventory | undefined) => {
-          if (!inv) return;
-          inv.counts.passive += extraSeams.length;
-          inv.counts.total += extraSeams.length;
-          for (const s of extraSeams) {
-            const key = `${s.source}=>${s.target}`;
-            let edge = inv.component_seams.find(e => `${e.source}=>${e.target}` === key);
-            if (!edge) {
-              edge = { source: s.source, target: s.target, modalities: [], sync: 0, async: 0, passive: 0, total: 0 };
-              inv.component_seams.push(edge);
-            }
-            edge.passive += 1;
-            edge.total += 1;
-            if (!edge.modalities.includes('passive')) edge.modalities.push('passive');
-          }
-          inv.component_seams.sort((a, b) => b.total - a.total || a.source.localeCompare(b.source));
-        };
-        bump(output.communication_seams.inventory);
-        bump(output.communication_seams.deployable_inventory);
+        // Fold through the single seam-merge helper (dedups by id, rebuilds both
+        // inventories via buildInventory) instead of duplicating inventory-bump
+        // logic inline. Same resulting seams + counts.
+        output.communication_seams = mergeSeams(output.communication_seams, extraSeams);
       }
     } catch (error) {
       console.error('[Klauro] consistency-model pass failed:', error);

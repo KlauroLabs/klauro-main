@@ -385,3 +385,51 @@ describe('buildDataLineage language-builtin exit filtering', () => {
     expect(payment.exposure.external_transfer).toBe(true);
   });
 });
+
+describe('buildDataLineage accessor .file relativization', () => {
+  // (c) Guard for the staged-temp-path leak class: some nodes carry an ABSOLUTE
+  // staged/temp path on source.file (bench/remote analyzer snapshots source into
+  // a throwaway dir). Accessor .file must be recovered to a repo-relative path,
+  // never the /var/folders/.../klauro-bench-analyzer-* mount.
+  const stagedRoot = '/var/folders/xy/T/klauro-bench-analyzer-abc123';
+  const stagedNodes: CASNode[] = [
+    node('n_order_entity', 'Order', 'entity', `${stagedRoot}/src/orders/order.entity.ts`),
+    node('n_orders_service', 'OrdersService', 'service', `${stagedRoot}/src/orders/orders.service.ts`),
+    node('n_orders_create', 'createOrder', 'method', `${stagedRoot}/src/orders/orders.service.ts`),
+  ];
+  const stagedEdges: CASEdge[] = [
+    edge('e_contains_create', 'n_orders_service', 'n_orders_create', 'has_method'),
+  ];
+  const orderEntity: CASDataEntity = {
+    id: 'entity_order',
+    name: 'Order',
+    fields: [{ name: 'total', type: 'number', is_sensitive: false }],
+    lifecycle: { created_by: ['n_orders_create'], read_by: ['n_orders_create'] },
+  } as CASDataEntity;
+
+  const lineage = buildDataLineage({
+    nodes: stagedNodes,
+    edges: stagedEdges,
+    dataEntities: [orderEntity],
+    exitPoints: [],
+    entryPoints: [],
+    userJourneys: [],
+  });
+  const order = lineage.find(item => item.entity_id === 'entity_order')!;
+
+  it('never emits an absolute temp/staged path on an accessor .file', () => {
+    const accessorFiles = [...order.writers, ...order.readers]
+      .map(a => a.file)
+      .filter((f): f is string => typeof f === 'string');
+    expect(accessorFiles.length).toBeGreaterThan(0);
+    for (const file of accessorFiles) {
+      expect(file.startsWith('/')).toBe(false);
+      expect(file).not.toContain('var/folders');
+      expect(file).not.toContain('klauro-bench-analyzer');
+    }
+  });
+
+  it('recovers the repo-relative source tail from the staged path', () => {
+    expect(order.writers[0].file).toBe('src/orders/orders.service.ts');
+  });
+});
