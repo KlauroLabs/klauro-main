@@ -20,7 +20,7 @@ import { ingestAndPersist, loadPersistedRuntimeFacts } from './telemetry-fusion'
 import { backfillIngestedTelemetry, ingestTelemetryBatch, loadTelemetryObservations, summarizeRouteMetrics } from './telemetry-ingestion';
 import { buildNodeRuntimeMetrics } from './product';
 import { getAnalysis } from './analyzer';
-import { buildSummary, getProductMap, getFlowConcepts, getArchitecturalConflicts, getParadigmConformance, getPerspectives } from './query';
+import { buildSummary, getProductMap, getFlowConcepts, getArchitecturalConflicts, getParadigmConformance, getPerspectives, getCicdPipelines, getCommunicationSeams, buildOrientCapsule } from './query';
 import { initSelfTelemetry, instrumentHttpHandler, mapSdkEvent } from './self-telemetry';
 import type { CasRuntimeEvent } from '../../../packages/klauro-sdk-js/src/types';
 
@@ -777,6 +777,86 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
             'Per route+method request_count/error_rate/p50/p95/p99 aggregated from raw observations. Available with or without an analysis; correlate to CAS via /v1/telemetry/node-metrics once the workspace is analyzed.',
           ...(fused?.facts?.length ? { fused_runtime_facts: fused.facts, fused_updated_at: fused.updated_at } : {}),
         });
+        return;
+      }
+
+      // CAS read surfaces — HTTP/API parity with the MCP reads. Each wraps the
+      // SAME query builder as its MCP tool + CLI subcommand (no logic fork), so
+      // all three channels return identical data for a given analyzed workspace.
+      if (request.method === 'GET' && route === '/v1/orient') {
+        const workspace = requestUrl.searchParams.get('workspace') || '';
+        if (!workspace) {
+          writeJson(response, 400, { status: 'error', error: 'workspace query param is required' });
+          return;
+        }
+        const cas = await getAnalysis(workspace).catch(() => null);
+        if (!cas) {
+          writeJson(response, 200, { status: 'success', workspace, note: 'no analysis for workspace' });
+          return;
+        }
+        writeJson(response, 200, { status: 'success', workspace, ...buildOrientCapsule(cas) });
+        return;
+      }
+
+      if (request.method === 'GET' && route === '/v1/cicd') {
+        const workspace = requestUrl.searchParams.get('workspace') || '';
+        if (!workspace) {
+          writeJson(response, 400, { status: 'error', error: 'workspace query param is required' });
+          return;
+        }
+        const cas = await getAnalysis(workspace).catch(() => null);
+        if (!cas) {
+          writeJson(response, 200, { status: 'success', workspace, note: 'no analysis for workspace', pipelines: [] });
+          return;
+        }
+        const limitParam = requestUrl.searchParams.get('limit');
+        const offsetParam = requestUrl.searchParams.get('offset');
+        const result = getCicdPipelines(cas, {
+          provider: requestUrl.searchParams.get('provider') || undefined,
+          deployOnly: requestUrl.searchParams.get('deploy_only') === 'true',
+          limit: limitParam ? Number(limitParam) : undefined,
+          offset: offsetParam ? Number(offsetParam) : undefined,
+        });
+        writeJson(response, 200, { status: 'success', workspace, ...result });
+        return;
+      }
+
+      if (request.method === 'GET' && route === '/v1/communication-seams') {
+        const workspace = requestUrl.searchParams.get('workspace') || '';
+        if (!workspace) {
+          writeJson(response, 400, { status: 'error', error: 'workspace query param is required' });
+          return;
+        }
+        const cas = await getAnalysis(workspace).catch(() => null);
+        if (!cas) {
+          writeJson(response, 200, { status: 'success', workspace, note: 'no analysis for workspace', seams: [] });
+          return;
+        }
+        const limitParam = requestUrl.searchParams.get('limit');
+        const offsetParam = requestUrl.searchParams.get('offset');
+        const result = getCommunicationSeams(cas, {
+          modality: (requestUrl.searchParams.get('modality') as any) || undefined,
+          level: (requestUrl.searchParams.get('level') as any) || undefined,
+          limit: limitParam ? Number(limitParam) : undefined,
+          offset: offsetParam ? Number(offsetParam) : undefined,
+        });
+        writeJson(response, 200, { status: 'success', workspace, ...result });
+        return;
+      }
+
+      if (request.method === 'GET' && route === '/v1/product-map') {
+        const workspace = requestUrl.searchParams.get('workspace') || '';
+        if (!workspace) {
+          writeJson(response, 400, { status: 'error', error: 'workspace query param is required' });
+          return;
+        }
+        const cas = await getAnalysis(workspace).catch(() => null);
+        if (!cas) {
+          writeJson(response, 200, { status: 'success', workspace, note: 'no analysis for workspace' });
+          return;
+        }
+        const result = getProductMap(cas, { section: requestUrl.searchParams.get('section') || undefined });
+        writeJson(response, 200, { status: 'success', workspace, ...result });
         return;
       }
 

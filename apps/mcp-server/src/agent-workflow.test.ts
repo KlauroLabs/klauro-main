@@ -153,6 +153,31 @@ test('agent contexts include telemetry-backed operational priorities for debug/r
       }) as any;
       assert.match(capsuleOnly.context_capsule, /ops .*runtime/);
       assert.match(capsuleOnly.context_capsule, /1err/);
+
+      // Runtime opt-out: runtime:"exclude" omits operational_priorities for the
+      // exact same debug/triage task that includes it above, and the response
+      // is strictly smaller (a real token reduction, not a blanked section).
+      const excluded = await getAgentContext(cas, workspace, {
+        task_type: 'debug',
+        target: 'what bugs should I address today',
+        instructions: 'Use runtime impact to pick the most important bug and preserve local idioms.',
+        runtime: 'exclude',
+      }) as any;
+      // Omitted => the compacted view carries no priorities (null/undefined),
+      // where the included view carried a populated priorities object above.
+      assert.ok(!excluded.work_context.operational_priorities, 'operational_priorities omitted when runtime excluded');
+      assert.ok(excluded.work_context !== undefined, 'static work_context still present');
+      const includedBytes = Buffer.byteLength(JSON.stringify(context), 'utf8');
+      const excludedBytes = Buffer.byteLength(JSON.stringify(excluded), 'utf8');
+      assert.ok(excludedBytes < includedBytes, `runtime-excluded context (${excludedBytes}B) must be smaller than included (${includedBytes}B)`);
+
+      // exclude_sections alias is an equivalent opt-out path.
+      const excludedBySection = await getAgentContext(cas, workspace, {
+        task_type: 'debug',
+        target: 'what bugs should I address today',
+        exclude_sections: ['telemetry'],
+      }) as any;
+      assert.ok(!excludedBySection.work_context.operational_priorities, 'exclude_sections alias omits operational_priorities');
     } finally {
       if (previousStorage === undefined) delete process.env.KLAURO_STORAGE_PATH;
       else process.env.KLAURO_STORAGE_PATH = previousStorage;

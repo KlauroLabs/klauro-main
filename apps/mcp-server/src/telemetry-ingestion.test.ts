@@ -7,6 +7,7 @@ import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.ty
 import { buildNodeRuntimeMetrics, buildOperationalPriorities } from './product';
 import { simulateRuntimeTelemetry } from './runtime-simulation';
 import {
+  appendIngestedTelemetry,
   backfillIngestedTelemetry,
   ingestTelemetryBatch,
   ingestedTelemetryDir,
@@ -332,6 +333,29 @@ test('ingested telemetry keeps a rolling daily window', async () => {
 
     assert.equal(await fs.pathExists(staleFile), false);
     stored = await loadIngestedTelemetry(root);
+    assert.equal(stored.length, 1);
+    assert.equal(stored[0].source, 'ingested');
+  });
+});
+
+test('persisting into a fresh (non-existent) ingested-telemetry dir succeeds without ENOENT', async () => {
+  await withTempStorage(async root => {
+    const cas = buildCas(root);
+    // Simulate the first self-telemetry ingest for a brand-new project: build an
+    // observation, then remove the ingested-telemetry dir so it does NOT exist
+    // when append runs (the prod race: the day-file's parent dir is absent and
+    // fs.move's chmod hit ENOENT). append must recreate it and persist cleanly.
+    const dryRun = await ingestTelemetryBatch(cas, root, [{
+      kind: 'request', method: 'POST', route: '/invoices', status: 201, duration_ms: 42,
+    }], { persist: false });
+    const dir = ingestedTelemetryDir(root);
+    await fs.remove(dir);
+    assert.equal(await fs.pathExists(dir), false);
+
+    await appendIngestedTelemetry(root, dryRun.observations);
+
+    assert.equal(await fs.pathExists(dir), true);
+    const stored = await loadIngestedTelemetry(root);
     assert.equal(stored.length, 1);
     assert.equal(stored[0].source, 'ingested');
   });

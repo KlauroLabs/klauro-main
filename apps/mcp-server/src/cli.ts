@@ -7,6 +7,9 @@ import { writeAgentDefaultConfig } from './agent-defaults';
 import { getAgentDoctor } from './agent-doctor';
 import { buildCASGoldenSnapshot } from './cas-contract';
 import { listCrossCodebaseSystemGraphs, loadCrossCodebaseSystemGraph, saveCrossCodebaseSystemGraph, saveGoldenSnapshot } from './storage';
+import * as query from './query';
+import { buildNodeRuntimeMetrics } from './product';
+import { loadTelemetryObservations } from './telemetry-ingestion';
 import { getAgentContext } from './agent-adoption';
 import type { AgentTask, AgentTaskType } from './agent-adoption';
 import { analyzeCodebaseRemotely, syncWorkingTreeRemotely } from './remote-sync-client';
@@ -65,6 +68,15 @@ interface ParsedArgs {
   email?: string;
   password?: string;
   register: boolean;
+  // Read-subcommand filters (cicd / seams / product-map / node-metrics).
+  provider?: string;
+  deployOnly: boolean;
+  modality?: 'sync' | 'async' | 'passive';
+  level?: 'node' | 'deployable' | 'workspace';
+  section?: string;
+  markdown: boolean;
+  limit?: number;
+  offset?: number;
 }
 
 async function main(): Promise<void> {
@@ -189,6 +201,11 @@ async function main(): Promise<void> {
     'agent-install',
     'doctor',
     'save-golden',
+    'orient',
+    'cicd',
+    'seams',
+    'product-map',
+    'node-metrics',
     'remote-analyze',
     'remote-sync',
     'proposal-preview',
@@ -471,6 +488,51 @@ async function main(): Promise<void> {
     const saved = await saveGoldenSnapshot(projectPath, snapshot);
     const output = { saved, snapshot };
     process.stdout.write(args.json ? `${JSON.stringify(output, null, 2)}\n` : `Saved CAS golden snapshot: ${saved.file}\n`);
+    return;
+  }
+
+  // Thin read subcommands: engineer-facing CLI parity for the high-value MCP
+  // reads. Each wraps the SAME query builder as its MCP tool (no logic fork),
+  // so the CLI and MCP surfaces return byte-identical data for a given repo.
+  if (args.command === 'orient') {
+    const capsule = query.buildOrientCapsule(cas);
+    process.stdout.write(`${JSON.stringify(capsule, null, 2)}\n`);
+    return;
+  }
+
+  if (args.command === 'cicd') {
+    const result = query.getCicdPipelines(cas, {
+      provider: args.provider,
+      deployOnly: args.deployOnly,
+      limit: args.limit,
+      offset: args.offset,
+    });
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    return;
+  }
+
+  if (args.command === 'seams') {
+    const result = query.getCommunicationSeams(cas, {
+      modality: args.modality,
+      level: args.level,
+      limit: args.limit,
+      offset: args.offset,
+    });
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    return;
+  }
+
+  if (args.command === 'product-map') {
+    const result = query.getProductMap(cas, { section: args.section, format: args.markdown ? 'markdown' : 'json' });
+    process.stdout.write(args.markdown && (result as any).markdown ? `${(result as any).markdown}\n` : `${JSON.stringify(result, null, 2)}\n`);
+    return;
+  }
+
+  if (args.command === 'node-metrics') {
+    const observations = await loadTelemetryObservations(projectPath, { source: 'ingested', limit: 5000 }).catch(() => ({ observations: [] as any[] }));
+    const nodeMetrics = buildNodeRuntimeMetrics(cas, observations.observations || [], args.limit ? { limit: args.limit } : undefined);
+    process.stdout.write(`${JSON.stringify({ observation_count: observations.observations?.length || 0, node_metrics: nodeMetrics }, null, 2)}\n`);
+    return;
   }
 }
 
@@ -944,6 +1006,8 @@ function parseArgs(argv: string[]): ParsedArgs {
     allAiCache: false,
     yes: false,
     register: false,
+    deployOnly: false,
+    markdown: false,
   };
 
   for (let i = 1; i < argv.length; i++) {
@@ -1017,6 +1081,22 @@ function parseArgs(argv: string[]): ParsedArgs {
       parsed.yes = true;
     } else if (arg === '--dirty-tree') {
       parsed.dirtyTree = true;
+    } else if (arg === '--provider') {
+      parsed.provider = argv[++i];
+    } else if (arg === '--deploy-only') {
+      parsed.deployOnly = true;
+    } else if (arg === '--modality') {
+      parsed.modality = argv[++i] as ParsedArgs['modality'];
+    } else if (arg === '--level') {
+      parsed.level = argv[++i] as ParsedArgs['level'];
+    } else if (arg === '--section') {
+      parsed.section = argv[++i];
+    } else if (arg === '--markdown') {
+      parsed.markdown = true;
+    } else if (arg === '--limit') {
+      parsed.limit = Number(argv[++i]);
+    } else if (arg === '--offset') {
+      parsed.offset = Number(argv[++i]);
     } else if (arg === '--task-type') {
       parsed.task.task_type = argv[++i] as AgentTaskType;
     } else if (arg === '--target') {
@@ -1077,6 +1157,13 @@ function printHelp(): void {
     '  klauro agent-tracks /path/to/repo [--server-url url] [--analysis-id id] [--json]',
     '  klauro agent-install /path/to/repo [--task-type orient|modify|debug|review|trace|cross-repo|runtime] [--target query] [--json] [--refresh]',
     '  klauro github-import-plan [/path/to/repo] [--json]',
+    '',
+    'Read surfaces (CLI parity with the MCP reads):',
+    '  klauro orient /path/to/repo               (cheap what-Klauro-knows capsule: dimensions + counts + the tool to pull each)',
+    '  klauro cicd /path/to/repo [--provider github-actions] [--deploy-only] [--limit N] [--offset N]   (CI/CD pipeline→job→step→trigger→deploy + job DAG)',
+    '  klauro seams /path/to/repo [--modality sync|async|passive] [--level node|deployable|workspace] [--limit N] [--offset N]',
+    '  klauro product-map /path/to/repo [--section runtime_topology] [--markdown]',
+    '  klauro node-metrics /path/to/repo [--limit N]   (per-node runtime traffic/error-rate/latency correlated to CAS)',
     '',
     'Workspace & greenfield:',
     '  klauro workspace-analysis /path/to/repo-a [--reference-path /path/to/repo-b] [--reference-path /path/to/repo-c] [--target name] [--json] [--refresh]',

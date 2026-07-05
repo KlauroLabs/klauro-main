@@ -18,7 +18,14 @@ import {
   getSecurityOverview,
   searchNodes,
 } from './query';
-import { buildOperationalPriorities, describeAnswerPackCatalog, runAnswerPack } from './product';
+import { buildOperationalPriorities, buildNodeRuntimeMetrics, describeAnswerPackCatalog, runAnswerPack } from './product';
+import {
+  buildCommunicationSeamSummary,
+  buildConsistencyFlags,
+  buildBundledDeployables,
+  buildRuntimeTopologySummary,
+  type CommunicationSeamSummary,
+} from './context-fabric';
 import { semanticSearch } from './semantic-search';
 import type { TestDiscoveryEvidence } from './test-discovery';
 import { assessBehavioralInvariantImpact } from './invariant-validation';
@@ -35,6 +42,7 @@ import {
 } from './analysis-profile';
 import { formatAgentContextCapsule } from './agent-context-codec';
 import { loadTelemetryObservations } from './telemetry-ingestion';
+import { resolveSectionFilter, type ContextRuntimeMode } from './context-filter';
 
 export type AgentTaskType = 'orient' | 'modify' | 'debug' | 'review' | 'trace' | 'cross-repo' | 'runtime';
 type GateStatus = 'pass' | 'warn' | 'fail';
@@ -47,6 +55,22 @@ export interface AgentTask {
   instructions?: string;
   success_criteria?: string[];
   response_profile?: 'standard' | 'minimal' | 'first-turn' | 'capsule-only';
+  /**
+   * Opt-out control for dynamic/heavy runtime context. "auto" (default)
+   * preserves the task-type-gated behavior exactly; "exclude" omits runtime
+   * telemetry (operational priorities, runtime static links) for a pure static
+   * view; "include" opts in. Resolved against KLAURO_CONTEXT_RUNTIME and the
+   * .klaurorc context.runtime default at the server boundary before it reaches
+   * here (param wins). See apps/mcp-server/src/context-filter.ts.
+   */
+  runtime?: ContextRuntimeMode;
+  /**
+   * Named sections to omit from the response regardless of runtime mode, e.g.
+   * ["runtime","seams","topology"]. Aliases (telemetry, observations,
+   * communication_seams, ...) are accepted. Excluded sections are skipped, not
+   * blanked — a real token reduction.
+   */
+  exclude_sections?: string[];
 }
 
 interface AgentToolStep {
@@ -152,7 +176,8 @@ export function getAgentStartContext(cas: CASOutput, path: string, task: AgentTa
   }));
   const entryPoints = getEntryPoints(cas, { limit: 8 });
   const exitPoints = getExitPoints(cas, { limit: 8 });
-  const runtimeLinks = getRuntimeStaticLinks(cas, { limit: 8 });
+  const runtimeExcluded = resolveSectionFilter({ param: task.runtime, exclude_sections: task.exclude_sections }).isExcluded('runtime');
+  const runtimeLinks = runtimeExcluded ? null : getRuntimeStaticLinks(cas, { limit: 8 });
   const productOrientation = buildProductOrientationLine(cas);
   const sensitiveDataExposure = buildSensitiveExposureDigest(cas);
   const analysisFreshness = summarizeAnalysisFreshness(path, cas.analysis_timestamp);
@@ -208,7 +233,7 @@ export function getAgentStartContext(cas: CASOutput, path: string, task: AgentTa
         target: exitPoint.target,
       })),
       connected_nodes: topNodes,
-      runtime_static_links: runtimeLinks.links,
+      ...(runtimeLinks ? { runtime_static_links: runtimeLinks.links } : {}),
     },
     idiom_summary: cas.idiom_summary || null,
     architecture_context: architectureContext,
@@ -239,6 +264,8 @@ export function getAgentStartContext(cas: CASOutput, path: string, task: AgentTa
 
 export async function getAgentContext(cas: CASOutput, path: string, taskInput: AgentTask = {}) {
   const task = normalizeTask(taskInput);
+  const sectionFilter = resolveSectionFilter({ param: task.runtime, exclude_sections: task.exclude_sections });
+  const runtimeExcluded = sectionFilter.isExcluded('runtime');
   const readiness = evaluateAgentReadiness(cas, path);
   const plan = getAgentToolPlan(cas, { path, task });
   const baseTargetQuery = task.target || inferTargetQueryFromTask(task);
@@ -272,8 +299,17 @@ export async function getAgentContext(cas: CASOutput, path: string, taskInput: A
     fileReadPlan = [targetFileReadPlanItem(requestedTargetFile), ...fileReadPlan].slice(0, 12);
   }
   fileReadPlan = augmentFileReadPlanWithTaskHints(cas, fileReadPlan, task, path).slice(0, 12);
-  const operationalPriorities = await buildOperationalPriorityContextForAgent(cas, path, task, selectedNode || undefined, fileReadPlan);
+  // Runtime opt-out: when excluded, skip the telemetry load + priority build
+  // entirely (a real token/compute saving, not a blanked section) so the
+  // context is a pure static view. 'auto'/'include' keep today's gated behavior.
+  const operationalPriorities = runtimeExcluded
+    ? null
+    : await buildOperationalPriorityContextForAgent(cas, path, task, selectedNode || undefined, fileReadPlan);
   fileReadPlan = prioritizeOperationalFileReadPlan(cas, task, operationalPriorities, fileReadPlan);
+  // Task-type-aware fabric weaving (communication seams, infra topology,
+  // consistency/CAP, bundled deployables). Synchronous static CAS reads, so safe
+  // even under runtime opt-out; additive and omitted when the facts are absent.
+  const fabricContext = buildFabricContextForAgent(cas, task, selectedNode || undefined);
   const invariantImpact = assessBehavioralInvariantImpact(cas, {
     target: selectedNode?.id || targetQuery || task.target,
     files: fileReadPlan.map(item => item.file),
@@ -378,6 +414,7 @@ export async function getAgentContext(cas: CASOutput, path: string, taskInput: A
       capability_memory: capabilityMemory,
       description_context: descriptionContext,
       ...(operationalPriorities ? { operational_priorities: operationalPriorities } : {}),
+      ...(fabricContext ? { fabric_context: fabricContext } : {}),
       entry_context: entryContext,
       ...(lineageContext ? { lineage_context: lineageContext } : {}),
       ...(journeyContext ? { journey_context: journeyContext } : {}),
@@ -572,12 +609,20 @@ async function buildOperationalPriorityContextForAgent(
     return rightSelected - leftSelected || right.priority_score - left.priority_score;
   }).slice(0, 5);
 
+  // Runtime node hotspots (highest error_rate / p95) for debug/perf tasks —
+  // reuses the observations already loaded above, so no extra telemetry read.
+  // Additive to the priorities ranking (raw per-endpoint reliability/latency).
+  const runtimeHotspots = (task.task_type === 'debug' || task.task_type === 'runtime')
+    ? buildRuntimeHotspotsForAgent(cas, sourceSet.observations)
+    : undefined;
+
   return {
     status: ranked.length > 0 ? 'ready' : 'no-priorities',
     source: sourceSet.source,
     sources: priorities.sources,
     observation_count: priorities.observation_count,
     simulated_only: simulatedFallback,
+    ...(runtimeHotspots ? { runtime_hotspots: runtimeHotspots } : {}),
     priorities: ranked.map(priority => {
       const staticTarget = priority.static_target || fallbackOperationalStaticTarget(cas, sourceSet.observations, priority);
       return {
@@ -675,6 +720,119 @@ function operationalTaskText(task: AgentTask): string {
     task.instructions,
     ...(Array.isArray(task.success_criteria) ? task.success_criteria : []),
   ].filter(Boolean).join(' ');
+}
+
+// ---------------------------------------------------------------------------
+// Fabric context — task-type-aware weaving of communication seams, infra
+// topology, consistency/CAP posture, and runtime node hotspots into the primary
+// get_agent_context payload. Everything is additive (omitted when absent) and
+// links back to the full tool for detail. Kept compact; budget-aware via the
+// response_profile compaction that runs afterward.
+// ---------------------------------------------------------------------------
+
+/** Architecture/trace-shaped work wants the integration picture (seams + fit). */
+function isArchitectureShapedTask(task: Required<Pick<AgentTask, 'task_type'>> & AgentTask): boolean {
+  if (task.task_type === 'trace' || task.task_type === 'review') return true;
+  const text = operationalTaskText(task);
+  return /\b(architect|system\s*fit|how it fits|topology|integrat|seam|boundary|end[- ]to[- ]end|data flow|deployab|service[- ]to[- ]service)\b/i.test(text);
+}
+
+/** Does this modify/trace task touch an integration boundary worth a seam note? */
+function touchesIntegrationBoundary(
+  cas: CASOutput,
+  task: Required<Pick<AgentTask, 'task_type'>> & AgentTask,
+  selectedNode: CASNode | undefined,
+): CommunicationSeamSummary['top_edges'] | null {
+  const seams = cas.communication_seams;
+  if (!seams?.seams?.length) return null;
+  const needle = [
+    selectedNode?.name,
+    selectedNode?.source?.file,
+    task.target,
+  ].filter(Boolean).map(s => String(s).toLowerCase());
+  if (needle.length === 0) return null;
+  const matched = seams.seams.filter(seam => {
+    const hay = `${seam.source} ${seam.target} ${seam.evidence} ${seam.summary} ${seam.shared_resource || ''}`.toLowerCase();
+    return needle.some(n => n.length > 2 && hay.includes(n));
+  });
+  if (matched.length === 0) return null;
+  return matched.slice(0, 3).map(seam => ({
+    source: seam.source,
+    target: seam.target,
+    modalities: [seam.modality],
+    total: 1,
+  }));
+}
+
+/**
+ * Build the task-type-aware fabric section. Synchronous CAS reads only; the
+ * (async) runtime node hotspots are loaded separately and merged by the caller.
+ * Returns undefined when nothing applicable is present.
+ */
+function buildFabricContextForAgent(
+  cas: CASOutput,
+  task: Required<Pick<AgentTask, 'task_type'>> & AgentTask,
+  selectedNode: CASNode | undefined,
+): Record<string, unknown> | undefined {
+  const out: Record<string, unknown> = {};
+
+  // Architecture / trace / review -> the integration picture: seam summary,
+  // bundled deployables, infra topology, CAP flags. Pointers, not dumps.
+  if (isArchitectureShapedTask(task)) {
+    const seams = buildCommunicationSeamSummary(cas);
+    if (seams) out.communication_seams = seams;
+    const deployables = buildBundledDeployables(cas, { limit: 5 });
+    if (deployables) out.deployables = deployables;
+    const topology = buildRuntimeTopologySummary(cas, { limit: 5 });
+    if (topology) out.runtime_topology = topology;
+    const consistency = buildConsistencyFlags(cas);
+    if (consistency) out.consistency = consistency;
+  }
+
+  // Modify/trace on a specific integration boundary -> the RELEVANT seam's
+  // modality + any CAP staleness note, so an edit knows its sync/async contract.
+  if (task.task_type === 'modify' || task.task_type === 'trace') {
+    const relevant = touchesIntegrationBoundary(cas, task, selectedNode);
+    if (relevant) {
+      out.touched_seams = relevant;
+      const consistency = buildConsistencyFlags(cas);
+      if (consistency) out.consistency_note = { flags: consistency.flags.slice(0, 2), detail_tool: consistency.detail_tool };
+    }
+  }
+
+  if (Object.keys(out).length === 0) return undefined;
+  return { ...out, detail_tools: ['get_communication_seams', 'get_product_map'] };
+}
+
+/**
+ * Runtime node hotspots for debug/perf tasks — the highest error_rate / p95
+ * targets from already-loaded telemetry observations. Extends (does not
+ * duplicate) operational_priorities: priorities rank cross-signal work, this is
+ * the raw per-endpoint reliability/latency leaderboard. Returns undefined when
+ * no observations exist.
+ */
+function buildRuntimeHotspotsForAgent(
+  cas: CASOutput,
+  observations: any[],
+): Record<string, unknown> | undefined {
+  if (!observations || observations.length === 0) return undefined;
+  const metrics = buildNodeRuntimeMetrics(cas, observations, { limit: 5 });
+  if (metrics.length === 0) return undefined;
+  return {
+    hotspots: metrics.map(m => ({
+      label: m.label,
+      type: m.type,
+      file: m.file,
+      route: m.route,
+      request_count: m.request_count,
+      error_count: m.error_count,
+      error_rate: m.error_rate,
+      p95_ms: m.latency?.p95_ms,
+      source: m.source,
+    })),
+    detail_tool: 'get_operational_priorities',
+    note: 'Highest error_rate / p95 endpoints from telemetry. Use get_operational_priorities for the cross-signal ranking with static risk.',
+  };
 }
 
 function targetMatchesOperationalContext(target: any, selectedIds: Set<string>): boolean {
@@ -2185,6 +2343,7 @@ function compactSmallRepoMinimalAgentContext<T extends Record<string, any>>(cont
       capability_memory: compactSmallRepoCapabilityMemory(workContext.capability_memory),
       description_context: compactDescriptionContextForAgent(workContext.description_context),
       operational_priorities: compactOperationalPrioritiesForAgent(workContext.operational_priorities, 2),
+      ...(compactFabricContextForAgent(workContext.fabric_context) ? { fabric_context: compactFabricContextForAgent(workContext.fabric_context) } : {}),
       ...compactPillarWorkContext(workContext, { journeys: 2, entities: 2, deviations: 2 }),
     },
     file_read_plan: compactTinyFileReadPlan(context.file_read_plan, task),
@@ -2241,6 +2400,7 @@ function compactTinyAgentContext<T extends Record<string, any>>(context: T): T {
       } : null,
       description_context: compactDescriptionContextForAgent(workContext.description_context),
       operational_priorities: compactOperationalPrioritiesForAgent(workContext.operational_priorities, 1),
+      ...(compactFabricContextForAgent(workContext.fabric_context) ? { fabric_context: compactFabricContextForAgent(workContext.fabric_context) } : {}),
       ...compactPillarWorkContext(workContext, { journeys: 1, entities: 1, deviations: 1 }),
     },
     file_read_plan: fileReadPlan,
@@ -2525,6 +2685,7 @@ function compactTokenMinimalAgentContext<T extends Record<string, any>>(context:
       capability_memory: compactMinimalCapabilityMemory(workContext.capability_memory),
       description_context: compactDescriptionContextForAgent(workContext.description_context),
       operational_priorities: compactOperationalPrioritiesForAgent(workContext.operational_priorities, 3),
+      ...(compactFabricContextForAgent(workContext.fabric_context) ? { fabric_context: compactFabricContextForAgent(workContext.fabric_context) } : {}),
       ...compactPillarWorkContext(workContext, { journeys: 2, entities: 2, deviations: 2 }),
     },
     file_read_plan: fileReadPlan,
@@ -2875,6 +3036,7 @@ function compactMicroWorkContext(context: any) {
     capability_memory: compactCapabilityMemoryForMicroRepo(context.capability_memory),
     description_context: compactDescriptionContextForAgent(context.description_context),
     operational_priorities: compactOperationalPrioritiesForAgent(context.operational_priorities, 3),
+    ...(compactFabricContextForAgent(context.fabric_context) ? { fabric_context: compactFabricContextForAgent(context.fabric_context) } : {}),
     entry_context: compactEntryContextForMicroRepo(context.entry_context),
     ...compactPillarWorkContext(context, { journeys: 3, entities: 3, deviations: 3 }),
   };
@@ -3100,7 +3262,42 @@ function compactOperationalPrioritiesForAgent(context: any, limit: number) {
       recommendation: priority.recommendation,
     })),
     agent_guidance: Array.isArray(context.agent_guidance) ? context.agent_guidance.slice(0, 3) : context.agent_guidance,
+    // Preserve the compact runtime node hotspots (error_rate / p95) through the
+    // budget compactors — they are already a small top-N leaderboard.
+    ...(context.runtime_hotspots ? { runtime_hotspots: context.runtime_hotspots } : {}),
   };
+}
+
+/**
+ * Budget compaction for fabric_context — the fabric builder is already compact
+ * (pointers, top-N), so this only trims list depth and passes it through the
+ * budget profiles. Returns null when absent so compactors can omit the key.
+ */
+function compactFabricContextForAgent(context: any): Record<string, unknown> | null {
+  if (!context || typeof context !== 'object') return null;
+  const out: Record<string, unknown> = {};
+  if (context.communication_seams) {
+    out.communication_seams = {
+      headline: context.communication_seams.headline,
+      counts: context.communication_seams.counts,
+      level: context.communication_seams.level,
+      detail_tool: context.communication_seams.detail_tool,
+    };
+  }
+  if (Array.isArray(context.deployables)) out.deployables = context.deployables.slice(0, 3);
+  if (context.runtime_topology) {
+    out.runtime_topology = {
+      edge_count: context.runtime_topology.edge_count,
+      deployables: (context.runtime_topology.deployables || []).slice(0, 3),
+      detail_tool: context.runtime_topology.detail_tool,
+    };
+  }
+  if (context.consistency) out.consistency = { flags: (context.consistency.flags || []).slice(0, 2), detail_tool: context.consistency.detail_tool };
+  if (Array.isArray(context.touched_seams)) out.touched_seams = context.touched_seams.slice(0, 3);
+  if (context.consistency_note) out.consistency_note = context.consistency_note;
+  if (Object.keys(out).length === 0) return null;
+  out.detail_tools = context.detail_tools || ['get_communication_seams', 'get_product_map'];
+  return out;
 }
 
 function compactEntryContextForMicroRepo(entry: any) {

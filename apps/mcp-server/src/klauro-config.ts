@@ -84,6 +84,17 @@ export interface KlauroConfig {
    */
   conventions?: KlauroConventions;
   /**
+   * Team-level defaults for the agent context/summary read tools. Currently the
+   * runtime opt-out: `context.runtime` = "exclude" turns off runtime telemetry,
+   * communication-seams, and runtime-topology sections globally for everyone on
+   * the repo (a pure static view); "include" opts back in; "auto" (default,
+   * backward compatible) keeps the existing task-type-gated behavior. A per-call
+   * `runtime` param and the KLAURO_CONTEXT_RUNTIME env var override this. See
+   * apps/mcp-server/src/context-filter.ts. Optional/absent on every existing
+   * .klaurorc.
+   */
+  context?: KlauroContextConfig;
+  /**
    * Local declarative analyzer packs (glob(s), relative to the project root or
    * absolute) that the analyzer-pack engine loads IN ADDITION to the built-in
    * packs shipped with analyzer-core. A pack is a *.pack.yaml with tree-sitter
@@ -141,6 +152,15 @@ export interface KlauroRoleConvention {
 export interface KlauroFlowConvention {
   name: string;
   steps: string[];
+}
+
+export interface KlauroContextConfig {
+  /**
+   * Runtime-section opt-out for the context/summary tools. "auto" (default)
+   * preserves the current task-type-gated behavior; "exclude" omits runtime
+   * telemetry / communication-seams / runtime-topology; "include" opts in.
+   */
+  runtime?: 'include' | 'exclude' | 'auto';
 }
 
 export interface KlauroConventions {
@@ -456,6 +476,9 @@ function mergeConfig(defaults: KlauroConfig, userConfig: Partial<KlauroConfig>):
     },
     github: { ...defaults.github, ...(userConfig.github || {}) },
     conventions: mergeConventions(defaults.conventions, userConfig.conventions),
+    context: userConfig.context !== undefined
+      ? { ...defaults.context, ...userConfig.context }
+      : defaults.context,
     packs: userConfig.packs ?? defaults.packs,
   };
 }

@@ -316,6 +316,7 @@ test('every core-profile tool response stays within the byte budget on the large
       ['get_security_overview', { path }],
       ['get_data_entities', { path }],
       ['get_route_table', { path }],
+      ['get_cicd_pipelines', { path, limit: 10_000 }],
       ['get_entry_points', { path, limit: 10_000 }],
       ['get_exit_points', { path, limit: 10_000 }],
       ['get_level', { path, level: 1 }],

@@ -41,6 +41,7 @@ import { analyzeCodebaseRemotely, syncWorkingTreeRemotely } from './remote-sync-
 import { getAgentRevisionTracks } from './agent-revision-tracks';
 import { buildUploadManifest } from './remote-source';
 import { loadKlauroConfig, writeDefaultKlauroConfig, validateConventions, type KlauroConventions } from './klauro-config';
+import { resolveSectionFilterForProject } from './context-filter';
 import * as fs from 'node:fs/promises';
 import { buildGithubImportPlan } from './github-import';
 import * as proposalPreview from './proposal-preview';
@@ -88,6 +89,8 @@ Think in levels, not just files (Capability -> Flow -> Step -> Function): get_su
 Stay cohesive as the system grows (self-regulation, mandatory before non-trivial additions): lead with the comprehension layer — get_product_map, get_paradigm_conformance, get_patterns — to learn HOW this system is actually built (its layering norm, its dominant design patterns) before writing code that assumes a different shape. Then, before adding a new handler/module/data-access path, call get_architectural_conflicts to check whether what you're about to build would introduce a competing pattern for a concern this codebase already has a norm for (e.g. calling a repository directly where every other handler goes through a service), or an engineering-principle break (layering skip, split ownership of an entity's writes, a new coupling hotspot). A clean is_cohesive:true doesn't mean skip design judgment, but a conflict/violation is a direct signal to align with the existing shape instead of adding a second way to do the same thing — keeping a codebase built by many agents cohesive by construction, not by cleanup after the fact.
 
 Change, then verify: assess_change_risk and get_error_contracts before; validate_agent_change after, to surface ripple (e.g. a dropped DTO field breaking its service and entity) instead of finding it one compile error at a time.
+
+Beyond the static graph — how it RUNS, TALKS, and SHIPS (reach for these on debug/perf/incident/integration work, not just code reading): (1) Runtime "how it runs" — get_runtime_observations returns per-node node_metrics (traffic, error_rate, p50/p95/p99) and get_operational_priorities ranks where load and failures actually concentrate; use them to pick the impactful bug/hot path instead of guessing from structure. (2) Communication seams — get_communication_seams classifies every seam sync / async / passive at node AND deployable level, including shared-state PASSIVE coupling (two components talking through a shared table/cache/bus) that no call-graph or import view shows; call it before changing any integration to see how components really talk. (3) Consistency / CAP — passive seams are tagged strong vs eventual with staleness_risk + cap_lean: a read-replica / CDC / materialized-view seam is EVENTUALLY consistent, a real correctness constraint — do not assume a write is immediately visible across it. (4) Infra + hosting topology — get_product_map's runtime_topology maps each deployable to exposes / routes / depends_on, plus reverse-proxy routes, IaC resources, and CI/CD pipeline/job/step/trigger/deploy facts (how the code ships → get_cicd_pipelines for the first-class pipeline→job→step→trigger→deploy view + job DAG): use it to trace the public-URL -> proxy -> service -> route -> handler chain. (5) Deployables / ship units — a deployable can BUNDLE members (e.g. a client that ships its client-service as one unit, marked bundled_into); treat a bundled member as part of its host, not a separate system.
 
 Cross-repo work (ui -> api -> worker is one product): run_workspace_analysis, then get_workspace_summary / get_workspace_capability_map / get_cross_repo_links.
 
@@ -248,7 +251,7 @@ const GATEWAY_TOOL_GROUPS: Array<{ label: string; tools: string[] }> = [
   { label: 'Analysis management', tools: ['analyze_codebase', 'get_analysis_focus_profiles', 'get_description_enrichment_targets', 'generate_element_description', 'get_element_description', 'get_analysis_phases', 'run_analysis_layer', 'initialize_klauro_project', 'get_klauro_project_config', 'declare_convention', 'get_upload_manifest', 'get_agent_revision_tracks', 'get_github_import_plan', 'analyze_codebase_remote', 'sync_codebase_remote', 'list_analyses', 'validate_cas_contract', 'get_storage_health', 'get_storage_maintenance_report', 'prune_storage_artifacts', 'preview_codebase_iteration', 'get_greenfield_architecture_guidance', 'get_greenfield_build_context', 'preview_greenfield_codebase', 'get_preview_analysis', 'compare_analysis_iterations', 'get_analysis_freshness', 'get_test_discovery_evidence', 'save_cas_golden_snapshot', 'compare_cas_golden_snapshot'] },
   { label: 'System understanding and agent workflow', tools: ['get_summary', 'get_system_overview', 'get_architecture_context', 'list_answer_packs', 'get_mcp_demo_flow', 'get_cross_repo_links', 'run_workspace_analysis', 'resolve_workspace_analysis', 'get_workspace_summary', 'get_workspace_analysis', 'get_workspace_agent_context', 'get_workspace_freshness', 'validate_was_contract', 'get_workspace_health', 'get_workspace_risk_context', 'get_workspace_capability_map', 'get_workspace_entity_map', 'get_workspace_workflow', 'list_workspace_analyses', 'run_cross_codebase_analysis', 'get_cross_codebase_analysis', 'list_cross_codebase_analyses', 'save_workspace_graph', 'get_workspace_graph', 'list_workspace_graphs', 'verify_workspace_link', 'get_agent_bootstrap', 'get_agent_context', 'get_agent_project_map', 'get_agent_doctor', 'get_server_version', 'get_agent_default_config', 'install_agent_default_config', 'get_capability_memory', 'get_idiom_aware_agent_context', 'open_agent_workbench', 'preflight_agent_change', 'get_codebase_agent_rules', 'explain_change_shape', 'evaluate_analysis_truth', 'get_semantic_map', 'get_framework_depth_report', 'get_integration_depth_report', 'get_cross_repo_contracts', 'get_runtime_instrumentation_plan', 'get_runtime_event_contract', 'get_runtime_sdk_package', 'evaluate_agent_task_proof', 'evaluate_agent_readiness', 'run_agentic_benchmark', 'get_agentic_benchmark_report', 'get_agent_performance_proof', 'run_agent_quality_benchmark', 'run_agent_idiom_benchmark', 'run_machine_agent_proof', 'run_incremental_value_benchmark', 'get_patterns', 'get_codebase_idioms', 'get_idiom_examples', 'validate_codebase_idioms', 'get_pattern_instances', 'get_perspectives'] },
   { label: 'Navigation and search', tools: ['semantic_search', 'get_embedding_status', 'get_node', 'get_file_nodes', 'get_level'] },
-  { label: 'Entry points, routes, and call graph', tools: ['get_entry_points', 'get_exit_points', 'get_communication_seams', 'get_route_table', 'get_external_services', 'get_callers', 'get_callees', 'get_call_chain', 'get_method_calls', 'get_interface_signature', 'get_flow_concepts'] },
+  { label: 'Entry points, routes, and call graph', tools: ['get_entry_points', 'get_exit_points', 'get_communication_seams', 'get_route_table', 'get_cicd_pipelines', 'get_external_services', 'get_callers', 'get_callees', 'get_call_chain', 'get_method_calls', 'get_interface_signature', 'get_flow_concepts'] },
   { label: 'Component hierarchy', tools: ['get_component_parents', 'get_component_children', 'get_component_metrics', 'get_shared_components'] },
   { label: 'Coding context and conventions', tools: ['get_conventions', 'get_modification_guide', 'get_pattern_examples', 'find_similar_code', 'get_comments', 'get_error_contracts', 'get_framework_guidance', 'get_usage_examples', 'get_configuration'] },
   { label: 'Intent, data, and risk', tools: ['get_intent', 'get_data_entities', 'get_security_overview', 'get_behavioral_invariants', 'validate_behavioral_invariants', 'get_stability', 'get_flow_coverage'] },
@@ -883,6 +886,34 @@ const TRACK_PARAM = z
   .enum(['main', 'other-branch', 'in-flight'])
   .optional()
   .describe("Optional analysis track to read: 'main' (committed default branch), 'other-branch' (committed non-default branch), or 'in-flight' (dirty working tree). Omit for the default view (in-flight when present, else main).");
+
+// Runtime opt-out controls, shared across the context/summary read tools.
+// 'auto' (default) preserves today's task-type-gated behavior; 'exclude' omits
+// runtime telemetry / communication-seams / runtime-topology sections;
+// 'include' opts in. Resolved against KLAURO_CONTEXT_RUNTIME and the .klaurorc
+// context.runtime default (param wins). See context-filter.ts.
+const CONTEXT_RUNTIME_PARAM = z
+  .enum(['include', 'exclude', 'auto'])
+  .optional()
+  .describe("Runtime-section control: 'auto' (default) keeps the existing task-type-gated behavior; 'exclude' omits runtime telemetry, communication seams, and runtime topology for a pure static view (real token reduction); 'include' opts in. Overrides KLAURO_CONTEXT_RUNTIME and the .klaurorc context.runtime default.");
+const EXCLUDE_SECTIONS_PARAM = z
+  .array(z.string())
+  .optional()
+  .describe('Named sections to omit regardless of runtime mode, e.g. ["runtime","seams","topology"] (aliases like "telemetry","communication_seams" accepted). Excluded sections are skipped, not blanked.');
+
+// Fold env (KLAURO_CONTEXT_RUNTIME) and the .klaurorc context.runtime default
+// into the task's `runtime` field before it reaches getAgentContext (which only
+// resolves the param). The explicit per-call param still wins; env/config only
+// fill in when the caller left it 'auto'/unset. exclude_sections is per-call
+// and passes through unchanged. Returns a task object either way.
+async function applyRuntimeContextDefault(path: string, task: any): Promise<any> {
+  const base = task || {};
+  const filter = await resolveSectionFilterForProject(path, {
+    runtime: base.runtime,
+    exclude_sections: base.exclude_sections,
+  });
+  return { ...base, runtime: filter.runtime_mode };
+}
 
 function registerTools(server: McpServer) {
 
@@ -1689,13 +1720,16 @@ function registerTools(server: McpServer) {
         path: z.string().describe('Project path (must be previously analyzed)'),
         track: TRACK_PARAM,
         detail: z.enum(['compact', 'full']).optional().describe("'compact' (default) omits the static analysis_phases prose and trims architectural_patterns guidance to keep replayed-context cost low; 'full' restores the complete payload."),
+        runtime: CONTEXT_RUNTIME_PARAM,
+        exclude_sections: EXCLUDE_SECTIONS_PARAM,
       } as any,
     } as any,
-    async ({ path, track, detail }: any) => withErrorHandling(async () => {
+    async ({ path, track, detail, runtime, exclude_sections }: any) => withErrorHandling(async () => {
       // track-scoped reads (working/committed/incoming) bypass the freshness gate:
       // getFreshAnalysisForAgent only knows about the default track's CAS.
       const cas = track ? await getAnalysis(path, { track }) : await getFreshAnalysisForAgent(path);
-      return json(withFreshnessStamp(query.buildSummary(cas, { detail })));
+      const filter = await resolveSectionFilterForProject(path, { runtime, exclude_sections });
+      return json(withFreshnessStamp(query.buildSummary(cas, { detail, excludeSeams: filter.isExcluded('seams') })));
     })
   );
 
@@ -1704,11 +1738,20 @@ function registerTools(server: McpServer) {
     {
       title: 'Get System Overview',
       description: 'Full system metadata: system info, architecture summary, system purpose, capabilities, progressive levels, analyzer contributions, configuration, runtime, errors, validation.',
-      inputSchema: { path: z.string().describe('Project path') } as any,
+      inputSchema: {
+        path: z.string().describe('Project path'),
+        runtime: CONTEXT_RUNTIME_PARAM,
+        exclude_sections: EXCLUDE_SECTIONS_PARAM,
+      } as any,
     } as any,
-    async ({ path }: any) => withErrorHandling(async () => {
+    async ({ path, runtime, exclude_sections }: any) => withErrorHandling(async () => {
       const cas = await getFreshAnalysisForAgent(path);
-      return json(withFreshnessStamp(query.getSystemOverview(cas)));
+      const filter = await resolveSectionFilterForProject(path, { runtime, exclude_sections });
+      return json(withFreshnessStamp(query.getSystemOverview(cas, {
+        excludeRuntime: filter.isExcluded('runtime'),
+        excludeSeams: filter.isExcluded('seams'),
+        excludeTopology: filter.isExcluded('topology'),
+      })));
     })
   );
 
@@ -2672,12 +2715,15 @@ function registerTools(server: McpServer) {
           instructions: z.string().optional(),
           success_criteria: z.array(z.string()).optional(),
           response_profile: z.enum(['standard', 'minimal', 'first-turn', 'capsule-only']).optional().describe('Optional response budget. Use capsule-only when token savings matter most; use first-turn for compact fields plus capsules; use minimal for compact context; omit for the full context.'),
+          runtime: CONTEXT_RUNTIME_PARAM,
+          exclude_sections: EXCLUDE_SECTIONS_PARAM,
         }).optional().describe('Task context for building the agent context'),
       } as any,
     } as any,
     async ({ path, workspace_analysis_id, task }: any) => withErrorHandling(async () => {
       const cas = await getFreshAnalysisForAgent(path);
-      const context = await agentAdoption.getAgentContext(cas, path, task || {});
+      const resolvedTask = await applyRuntimeContextDefault(path, task);
+      const context = await agentAdoption.getAgentContext(cas, path, resolvedTask);
       const workspaceGraph = workspace_analysis_id ? await loadCrossCodebaseSystemGraph(workspace_analysis_id) : null;
       return json(workspaceGraph ? {
         ...context,
@@ -2727,12 +2773,15 @@ function registerTools(server: McpServer) {
           runtime_event: z.record(z.unknown()).optional(),
           instructions: z.string().optional(),
           success_criteria: z.array(z.string()).optional(),
+          runtime: CONTEXT_RUNTIME_PARAM,
+          exclude_sections: EXCLUDE_SECTIONS_PARAM,
         }).optional().describe('Task context for building the agent context'),
       } as any,
     } as any,
     async ({ path, workspace_analysis_id, task }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
-      const context = await agentAdoption.getAgentContext(cas, path, task || {});
+      const resolvedTask = await applyRuntimeContextDefault(path, task);
+      const context = await agentAdoption.getAgentContext(cas, path, resolvedTask);
       const workspaceGraph = workspace_analysis_id ? await loadCrossCodebaseSystemGraph(workspace_analysis_id) : null;
       return json({
         ...context,
@@ -3770,6 +3819,25 @@ function registerTools(server: McpServer) {
   );
 
   server.registerTool(
+    'get_cicd_pipelines',
+    {
+      title: 'Get CI/CD Pipelines',
+      description: 'First-class CI/CD read: every detected pipeline with its triggers, stages, jobs, steps (command/action/env+secret refs), deploy targets, and the inter-job DAG. Reads the already-computed CAS CI facts (GitHub Actions, GitLab CI, CircleCI, Jenkins, Azure Pipelines, Travis, Drone, Buildkite, Bitbucket, TeamCity) — does not recompute. Cheap map first (paginated pipelines + counts), heavy step detail included per pipeline. Filter by provider or deploy_only to isolate release pipelines. Use before touching CI or tracing how the code ships.',
+      inputSchema: {
+        path: z.string().describe('Project path'),
+        provider: z.string().optional().describe('Filter by CI provider (github-actions, gitlab-ci, circleci, jenkins, azure-pipelines, travis-ci, drone, buildkite, bitbucket-pipelines, teamcity)'),
+        deploy_only: z.boolean().optional().describe('Only pipelines that have at least one deploy target'),
+        limit: z.number().optional().describe('Max pipelines to return (default 20)'),
+        offset: z.number().optional().describe('Skip first N pipelines (default 0)'),
+      } as any,
+    } as any,
+    async ({ path, provider, deploy_only, limit, offset }: any) => withErrorHandling(async () => {
+      const cas = await getAnalysis(path);
+      return json(query.getCicdPipelines(cas, { provider, deployOnly: deploy_only, limit, offset }));
+    })
+  );
+
+  server.registerTool(
     'get_external_services',
     {
       title: 'Get External Services',
@@ -4681,9 +4749,23 @@ function registerTools(server: McpServer) {
         span_id: z.string().optional().describe('Runtime span id or parent span id'),
         source: z.enum(['ingested', 'simulated', 'all']).optional().describe('Observation provenance to return (default ingested)'),
         limit: z.number().optional().describe('Max results (default storage order, newest first)'),
+        runtime: CONTEXT_RUNTIME_PARAM,
       } as any,
     } as any,
-    async ({ path, type, since, static_id, trace_id, span_id, source, limit }: any) => withErrorHandling(async () => {
+    async ({ path, type, since, static_id, trace_id, span_id, source, limit, runtime }: any) => withErrorHandling(async () => {
+      // Runtime opt-out honored here too: when a team globally disables runtime
+      // context (.klaurorc context.runtime / KLAURO_CONTEXT_RUNTIME) or the
+      // caller passes runtime:"exclude", return a short stub instead of loading
+      // and correlating observations — a real skip, with an explicit override path.
+      const runtimeFilter = await resolveSectionFilterForProject(path, { runtime });
+      if (runtimeFilter.isExcluded('runtime')) {
+        return json({
+          status: 'runtime-context-excluded',
+          runtime_mode: runtimeFilter.runtime_mode,
+          observations: [],
+          guidance: 'Runtime context is disabled by the runtime opt-out (param runtime:"exclude", KLAURO_CONTEXT_RUNTIME, or .klaurorc context.runtime). Pass runtime:"include" to load runtime observations for this call.',
+        });
+      }
       const loadObservations = () => telemetryIngestion.loadTelemetryObservations(path, {
         type,
         since,
@@ -4808,7 +4890,7 @@ function registerTools(server: McpServer) {
     'claim_work',
     {
       title: 'Claim Work',
-      description: 'Request a symbol/path-level GRANT before starting non-trivial changes. ENFORCED (not advisory): at most one active grant per overlapping symbol/path in a workspace at a time — but this governs simultaneous BLIND writes, not your right to reach work you need (§1.6 SPEC-COORDINATION-FABRIC-V2: awareness is the primitive, never a dead end). Returns verdict "granted" (grant_id + lease_expires_at — proceed; heartbeat_work to keep it alive, release_work when done), "queued" (another agent holds a conflicting grant — you get FULL awareness: the holder\'s agent_id + their stated intent + lease_status [active/near_expiry/expired], plus queue_position, plus an `options` array [\'wait_and_heartbeat_poll\', \'take_over_stale_lease\' (only if lease is near_expiry/expired), \'proceed_with_awareness_if_compatible\', \'redirect_to_free_scope\'] plus redirect_hint/free_scope_hint for when the work is fungible), or "duplicate" (you already hold an identical grant). Disjoint work is never queued: block-time is 0 for non-overlapping scope. Overlapping work is resolved by awareness + negotiation, never lockout. CONCEPTUAL VOCABULARY (§4 SPEC-CONCEPTUAL-LAYER.md, additive): pass flow_id/step_id/capability_id/entities to declare the FLOW step or ENTITY you own ("the Charge step of Checkout") alongside/instead of paths/symbols — higher-signal and human-legible. Even if you only pass paths/symbols, the fabric ALWAYS attempts to derive your conceptual coordinates from them (via real flow-concepts, never guessed) and represents them in `concept` on the response, whether or not anyone else is around — awareness is on by default for every claim, not just colliding ones. `concept_awareness` separately reports any OTHER active agent working the SAME flow (different step = informational, safe, both proceed; same step or same entity constraints = a conceptual heads-up, still never a hard stop — enforcement stays limited to the literal path/symbol grant above).',
+      description: 'ENFORCED exclusive-lease coordination (one active grant per overlapping symbol/path + FIFO queue). Use claim_work when you need EXCLUSIVITY — a guaranteed at-most-one-writer lease over a scope, with queueing when it is contended. For non-blocking awareness that never takes a lease or queues you, use fab_claim_work (the advisory fabric) instead. Request a symbol/path-level GRANT before starting non-trivial changes. ENFORCED (not advisory): at most one active grant per overlapping symbol/path in a workspace at a time — but this governs simultaneous BLIND writes, not your right to reach work you need (§1.6 SPEC-COORDINATION-FABRIC-V2: awareness is the primitive, never a dead end). Returns verdict "granted" (grant_id + lease_expires_at — proceed; heartbeat_work to keep it alive, release_work when done), "queued" (another agent holds a conflicting grant — you get FULL awareness: the holder\'s agent_id + their stated intent + lease_status [active/near_expiry/expired], plus queue_position, plus an `options` array [\'wait_and_heartbeat_poll\', \'take_over_stale_lease\' (only if lease is near_expiry/expired), \'proceed_with_awareness_if_compatible\', \'redirect_to_free_scope\'] plus redirect_hint/free_scope_hint for when the work is fungible), or "duplicate" (you already hold an identical grant). Disjoint work is never queued: block-time is 0 for non-overlapping scope. Overlapping work is resolved by awareness + negotiation, never lockout. CONCEPTUAL VOCABULARY (§4 SPEC-CONCEPTUAL-LAYER.md, additive): pass flow_id/step_id/capability_id/entities to declare the FLOW step or ENTITY you own ("the Charge step of Checkout") alongside/instead of paths/symbols — higher-signal and human-legible. Even if you only pass paths/symbols, the fabric ALWAYS attempts to derive your conceptual coordinates from them (via real flow-concepts, never guessed) and represents them in `concept` on the response, whether or not anyone else is around — awareness is on by default for every claim, not just colliding ones. `concept_awareness` separately reports any OTHER active agent working the SAME flow (different step = informational, safe, both proceed; same step or same entity constraints = a conceptual heads-up, still never a hard stop — enforcement stays limited to the literal path/symbol grant above).',
       inputSchema: {
         workspace: z.string().describe('Workspace or project id/path to coordinate within'),
         agent_id: z.string().describe('Stable identifier for the calling agent/session'),
@@ -4941,7 +5023,7 @@ function registerTools(server: McpServer) {
     'release_work',
     {
       title: 'Release Work',
-      description: 'Release a held grant (completed or handing off). Frees its paths/symbols for other agents and immediately advances the FIFO queue: the next non-conflicting queued request (if any) is promoted to granted.',
+      description: 'Release an ENFORCED grant taken via claim_work (completed or handing off). Frees its paths/symbols for other agents and immediately advances the FIFO queue: the next non-conflicting queued request (if any) is promoted to granted. This is the enforced-lease counterpart; to drop an ADVISORY fabric claim (from fab_claim_work) use fab_release_work instead.',
       inputSchema: {
         workspace: z.string().describe('Workspace or project id/path'),
         claim_id: z.string().describe('Grant id to release (as returned by claim_work\'s grant_id/claim_id)'),
@@ -5372,7 +5454,7 @@ function registerTools(server: McpServer) {
     'fab_claim_work',
     {
       title: 'Fab: Claim Work (advisory)',
-      description: 'Advisory work-claim over the same-machine coordination fabric (CLI-parity for `fab.ts claim`). AWARENESS-FIRST, NEVER A LOCKOUT: the claim always succeeds — it announces to peers on this host that you intend to touch these paths/symbols with this intent, so a fleet coordinates instead of blindly clobbering. Unlike the enforced grant surface (claim_work), this takes no lease and never queues you. Belt-and-suspenders: this ALSO runs the same overlap scan check_collision/fab_check_collision does and returns a `warning` (plus `conflicts`) inline when your paths overlap an already-active claim by another agent — so even an agent that skipped the preflight check still gets the heads-up. Call fab_release_work when done.',
+      description: 'ADVISORY awareness claim (default coordination mode) — announces intent to peers, never blocks or queues, takes no lease. Use fab_claim_work for awareness-first parallel work where agents coordinate rather than lock. When you instead need a GUARANTEED exclusive lease over a scope (at-most-one-writer, with queueing on contention), use the enforced claim_work. Advisory work-claim over the same-machine coordination fabric (CLI-parity for `fab.ts claim`). AWARENESS-FIRST, NEVER A LOCKOUT: the claim always succeeds — it announces to peers on this host that you intend to touch these paths/symbols with this intent, so a fleet coordinates instead of blindly clobbering. Unlike the enforced grant surface (claim_work), this takes no lease and never queues you. Belt-and-suspenders: this ALSO runs the same overlap scan check_collision/fab_check_collision does and returns a `warning` (plus `conflicts`) inline when your paths overlap an already-active claim by another agent — so even an agent that skipped the preflight check still gets the heads-up. Call fab_release_work when done.',
       inputSchema: {
         agent_id: z.string().describe('Stable identifier for the calling agent/session'),
         intent: z.string().describe('Short description of the work being claimed'),
@@ -5426,7 +5508,7 @@ function registerTools(server: McpServer) {
     'fab_check_collision',
     {
       title: 'Fab: Check Collision (advisory)',
-      description: 'Read-only advisory preflight over the coordination fabric (CLI-parity for `fab.ts check`): do the proposed paths overlap any OTHER active agent\'s claim on this host? Takes no claim. Returns the conflicting active claims (agent_id + overlapping_paths) so you can coordinate before you call fab_claim_work. Awareness-only — never a gate.',
+      description: 'ADVISORY read-only preflight (pairs with fab_claim_work) — checks overlap without taking any claim or lease; awareness-only, never a gate. (The enforced claim_work performs its own overlap+queue resolution at grant time, so this fabric preflight is for the advisory awareness path.) Read-only advisory preflight over the coordination fabric (CLI-parity for `fab.ts check`): do the proposed paths overlap any OTHER active agent\'s claim on this host? Takes no claim. Returns the conflicting active claims (agent_id + overlapping_paths) so you can coordinate before you call fab_claim_work. Awareness-only — never a gate.',
       inputSchema: {
         agent_id: z.string().describe('Your agent_id (excluded from the overlap scan so you do not collide with yourself)'),
         paths: z.array(z.string()).describe('Proposed file/dir paths to check for overlap'),
@@ -5453,7 +5535,7 @@ function registerTools(server: McpServer) {
     'fab_release_work',
     {
       title: 'Fab: Release Work (advisory)',
-      description: 'Release EVERY advisory claim held by an agent on this host (CLI-parity for `fab.ts release`): drops your work-claims and edit-locks so peers see the scope free again and false-overlap awareness clears. Call the moment you are done or handing off.',
+      description: 'ADVISORY release (counterpart to fab_claim_work) — clears the fabric awareness claims; to release an ENFORCED lease taken via claim_work use release_work instead. Release EVERY advisory claim held by an agent on this host (CLI-parity for `fab.ts release`): drops your work-claims and edit-locks so peers see the scope free again and false-overlap awareness clears. Call the moment you are done or handing off.',
       inputSchema: {
         agent_id: z.string().describe('Agent id whose claims to release'),
         workspace: z.string().optional().describe('Workspace id (defaults to $FAB_WS, else "poc")'),
@@ -5476,7 +5558,7 @@ function registerTools(server: McpServer) {
     'fab_list_active_work',
     {
       title: 'Fab: List Active Work (advisory)',
-      description: 'List every active advisory claim in a workspace on this host (CLI-parity for `fab.ts active`): each agent\'s intent, claimed paths, and symbols. The awareness surface — call before starting work to see who else is here and what they are touching.',
+      description: 'List active ADVISORY fabric claims (the awareness surface for fab_claim_work). For the ENFORCED grant/lease state and its FIFO queue, use get_active_agents instead. List every active advisory claim in a workspace on this host (CLI-parity for `fab.ts active`): each agent\'s intent, claimed paths, and symbols. The awareness surface — call before starting work to see who else is here and what they are touching.',
       inputSchema: {
         workspace: z.string().optional().describe('Workspace id (defaults to $FAB_WS, else "poc")'),
       } as any,

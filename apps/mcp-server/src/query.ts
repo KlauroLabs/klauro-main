@@ -14,6 +14,7 @@ import { buildTerminalSignal } from '../../../packages/analyzer-core/src/analyze
 import { computeFlowConcepts, type ComputeFlowConceptsOptions } from '../../../packages/analyzer-core/src/analyzer/core/flow-concepts';
 import { computeFlowStructuralLinks, computeConflictBehavioralLinks } from '../../../packages/analyzer-core/src/analyzer/core/structural-cross-links';
 import type { CASProductMap } from '../../../packages/analyzer-core/src/types/cas.types';
+import { buildSystemFitSummary, buildCommunicationSeamSummary } from './context-fabric';
 import {
   displayJourneySteps,
   guardPhraseForBoundaries,
@@ -47,7 +48,47 @@ export function analysisVersionNotice(
   return `This analysis (cas_version ${stored}) predates ${featureLabel}, which is guaranteed from CAS ${attestedSince}. Re-run analyze_codebase on this project to generate it.`;
 }
 
-export function buildSummary(cas: CASOutput, opts: { detail?: 'compact' | 'full' } = {}) {
+/**
+ * Cheap orient capsule (progressive disclosure, task-3): a near-zero-token
+ * index of WHAT Klauro knows about this system and WHICH tool pulls each
+ * dimension. Reports availability + a count per dimension WITHOUT any heavy
+ * content, so a caller learns what is pullable before spending tokens. This is
+ * the "map" — the dimension tools (get_route_table, get_cicd_pipelines, …) are
+ * the "detail" pulled on demand. Distinct from get_system_overview's
+ * system_fit (a seams+topology narrative); this is a pure pullable-index.
+ */
+export function buildOrientCapsule(cas: CASOutput) {
+  const nodes = cas.nodes || [];
+  const countType = (type: string) => nodes.filter(node => node.type === type).length;
+  const seams = cas.communication_seams;
+  const topology = (cas.product_map as any)?.runtime_topology;
+  const dimension = (available: boolean, count: number, tool: string) => ({ available, count, tool });
+
+  return {
+    system: cas.system?.name,
+    domain: cas.enhanced_system_purpose?.primary_domain || cas.system_purpose?.primary_type,
+    // Each dimension: is it present, how many items, and the tool that pulls it.
+    dimensions: {
+      entry_points: dimension((cas.entry_points?.length || 0) > 0, cas.entry_points?.length || 0, 'get_entry_points'),
+      routes: dimension((cas.route_table?.length || 0) > 0, cas.route_table?.length || 0, 'get_route_table'),
+      exit_points: dimension((cas.exit_points?.length || 0) > 0, cas.exit_points?.length || 0, 'get_exit_points'),
+      communication_seams: dimension(Boolean(seams), seams?.seams?.length || 0, 'get_communication_seams'),
+      cicd_pipelines: dimension(countType('ci_pipeline') > 0, countType('ci_pipeline'), 'get_cicd_pipelines'),
+      runtime_topology: dimension(Boolean(topology?.deployables?.length), topology?.deployables?.length || 0, 'get_product_map'),
+      runtime_node_metrics: dimension(
+        (cas.runtime_static_links?.length || 0) > 0,
+        cas.runtime_static_links?.length || 0,
+        'get_runtime_observations',
+      ),
+      data_entities: dimension((cas.data_entities?.length || 0) > 0, cas.data_entities?.length || 0, 'get_data_entities'),
+      capabilities: dimension((cas.system_capabilities?.length || 0) > 0, cas.system_capabilities?.length || 0, 'get_summary'),
+      tests: dimension((cas.test_suites?.length || 0) > 0, cas.test_suites?.length || 0, 'get_test_summary'),
+    },
+    hint: 'Availability + counts only — call the named tool to pull each dimension. Heavy content is intentionally omitted from this capsule.',
+  };
+}
+
+export function buildSummary(cas: CASOutput, opts: { detail?: 'compact' | 'full'; excludeSeams?: boolean } = {}) {
   const detail = opts.detail || 'compact';
   const nodesByType: Record<string, number> = {};
   for (const n of cas.nodes) {
@@ -64,6 +105,9 @@ export function buildSummary(cas: CASOutput, opts: { detail?: 'compact' | 'full'
   const primaryDomain = cas.enhanced_system_purpose?.primary_domain || null;
   const productTech = productTechSignals(cas);
   const versionInfo = describeAnalysisVersion(cas.cas_version);
+  // Runtime opt-out: skip computing the seam summary when seams are excluded
+  // (a real compute/token saving, not a blanked field).
+  const seamSummary = opts.excludeSeams ? null : buildCommunicationSeamSummary(cas);
 
   // compact mode (default) drops the static, per-repo-invariant analysis_phases
   // prose (identical on every call, ~40% of the full payload per
@@ -131,13 +175,44 @@ export function buildSummary(cas: CASOutput, opts: { detail?: 'compact' | 'full'
         .map(c => c.name) : [],
     analyzers: cas.analyzer_contributions.map(c => c.analyzer_name),
     errors: cas.analysis_errors?.length || 0,
+    // Compact communication-seam one-liner (N sync / N async / N passive) so the
+    // FIRST orient call surfaces the integration shape. Omitted when no seams.
+    ...(seamSummary ? { communication_seams: { headline: seamSummary.headline, counts: seamSummary.counts, level: seamSummary.level } } : {}),
+    // Cheap orient capsule: the pullable-dimension index (availability + counts +
+    // the tool that pulls each), so the FIRST orient call teaches what is
+    // available at near-zero tokens without any heavy content.
+    orient_capsule: buildOrientCapsule(cas),
     ...(detail === 'compact' ? { detail: 'compact' as const } : {}),
   };
 }
 
-export function getSystemOverview(cas: CASOutput) {
+export interface SystemOverviewFilter {
+  /** Omit runtime/telemetry fields (runtime, runtime_static_links_count). */
+  excludeRuntime?: boolean;
+  /** Omit the communication-seams portion of the dynamic system_fit view. */
+  excludeSeams?: boolean;
+  /** Omit the runtime-topology portion of the dynamic system_fit view. */
+  excludeTopology?: boolean;
+}
+
+export function getSystemOverview(cas: CASOutput, opts: SystemOverviewFilter = {}) {
   const techs = cas.system?.technologies;
   const productTech = productTechSignals(cas);
+  // "How it fits" — the vertical tying entry points -> deployables (bundled
+  // ship-units collapsed) -> infra topology -> communication seams + CAP flags.
+  // Additive: omitted entirely when none of those layers are present.
+  // Runtime opt-out: system_fit is the seams+topology dynamic view, so skip
+  // computing it when both are excluded (a real compute/token saving).
+  const systemFit = opts.excludeSeams && opts.excludeTopology ? null : buildSystemFitSummary(cas);
+  // Runtime opt-out: omit runtime/telemetry fields entirely for a pure static
+  // view. Default keeps today's shape byte-for-byte.
+  // Split so the include case preserves the original key order exactly
+  // (runtime, validation, runtime_static_links_count) — byte-for-byte with the
+  // pre-opt-out shape.
+  const runtimeField = opts.excludeRuntime ? {} : { runtime: cas.runtime || null };
+  const runtimeLinksField = opts.excludeRuntime
+    ? {}
+    : { runtime_static_links_count: cas.runtime_static_links?.length || 0 };
   return {
     name: cas.system?.name,
     type: cas.system?.type,
@@ -187,9 +262,9 @@ export function getSystemOverview(cas: CASOutput) {
     repository_links: cas.repository_links || cas.cross_repository_links || [],
     disclosure: cas.disclosure || null,
     configuration: cas.configuration || null,
-    runtime: cas.runtime || null,
+    ...runtimeField,
     validation: cas.validation || null,
-    runtime_static_links_count: cas.runtime_static_links?.length || 0,
+    ...runtimeLinksField,
     analysis_facts_count: cas.analysis_facts?.length || 0,
     codebase_idioms_count: cas.codebase_idioms?.length || 0,
     idiom_summary: cas.idiom_summary || null,
@@ -208,6 +283,7 @@ export function getSystemOverview(cas: CASOutput) {
       severity: e.severity,
       message: e.message,
     })) || [],
+    ...(systemFit ? { system_fit: systemFit } : {}),
   };
 }
 
@@ -548,6 +624,174 @@ export function getRouteTable(cas: CASOutput, opts: { limit?: number; offset?: n
   const limit = opts.limit || 50;
   const offset = opts.offset || 0;
   return { total, offset, limit, routes: routes.slice(offset, offset + limit) };
+}
+
+/**
+ * First-class read surface for the CI/CD facts the CiPipelineAnalyzer already
+ * emitted into the CAS graph. It does NOT recompute anything: it assembles the
+ * pipeline -> stage/job -> step -> trigger -> deploy-target hierarchy plus the
+ * inter-job DAG purely from the stored `ci_pipeline` / `ci_stage` / `ci_job` /
+ * `ci_step` / `deploy_target` nodes, the `contains` / `depends_on` /
+ * `deploys_to` edges, and the pipeline entry points. Mirrors getRouteTable /
+ * getEntryPoints: a cheap map first (paginated pipelines with counts), heavy
+ * detail (every step's command/action/env/secret refs) pulled on demand.
+ */
+export function getCicdPipelines(
+  cas: CASOutput,
+  opts: { provider?: string; deployOnly?: boolean; limit?: number; offset?: number } = {},
+) {
+  const nodes = cas.nodes || [];
+  const edges = cas.edges || [];
+  const nodesById = new Map(nodes.map(node => [node.id, node]));
+
+  const attrs = (node: CASNode | undefined): Record<string, any> =>
+    (node?.metadata as any)?.attributes || {};
+
+  // contains: parent -> child (pipeline->stage/job, stage->job, job->step)
+  // deploys_to: step -> deploy_target
+  // depends_on: job -> job (the DAG) and stage -> stage (ordering)
+  const containsChildren = new Map<string, string[]>();
+  const deploysTo = new Map<string, string[]>();
+  const dependsOn = new Map<string, Array<{ target: string; reason?: string; dependency?: string }>>();
+  for (const edge of edges) {
+    if (edge.type === 'contains') {
+      (containsChildren.get(edge.source) || containsChildren.set(edge.source, []).get(edge.source)!).push(edge.target);
+    } else if (edge.type === 'deploys_to') {
+      (deploysTo.get(edge.source) || deploysTo.set(edge.source, []).get(edge.source)!).push(edge.target);
+    } else if (edge.type === 'depends_on') {
+      const meta = (edge.metadata as any) || {};
+      (dependsOn.get(edge.source) || dependsOn.set(edge.source, []).get(edge.source)!).push({
+        target: edge.target,
+        reason: meta.reason,
+        dependency: meta.dependency,
+      });
+    }
+  }
+
+  const childNodesOfType = (parentId: string, type: string): CASNode[] =>
+    (containsChildren.get(parentId) || [])
+      .map(id => nodesById.get(id))
+      .filter((node): node is CASNode => Boolean(node) && node!.type === type);
+
+  const buildStep = (step: CASNode) => {
+    const a = attrs(step);
+    const deployTargets = (deploysTo.get(step.id) || [])
+      .map(id => nodesById.get(id)?.name || id)
+      .filter(Boolean);
+    return {
+      id: step.id,
+      name: step.name,
+      file: step.source?.file,
+      line: step.source?.line,
+      command: a.command,
+      action: a.action,
+      deploy_target: a.deploy_target,
+      env_refs: a.env_refs || [],
+      secret_refs: a.secret_refs || [],
+      ...(deployTargets.length ? { deploys_to: deployTargets } : {}),
+    };
+  };
+
+  const buildJob = (job: CASNode) => {
+    const a = attrs(job);
+    const deps = (dependsOn.get(job.id) || [])
+      .map(dep => ({ job: nodesById.get(dep.target)?.name || dep.target, node_id: dep.target, evidence: dep.dependency }))
+      .filter(dep => nodesById.get(dep.node_id)?.type === 'ci_job');
+    return {
+      id: job.id,
+      name: job.name,
+      file: job.source?.file,
+      line: job.source?.line,
+      stage: a.stage,
+      environment: a.environment,
+      needs: a.needs || [],
+      requires: a.requires || [],
+      rules: a.rules || [],
+      env_refs: a.env_refs || [],
+      secret_refs: a.secret_refs || [],
+      depends_on: deps,
+      steps: childNodesOfType(job.id, 'ci_step').map(buildStep),
+    };
+  };
+
+  const pipelineNodes = nodes.filter(node => node.type === 'ci_pipeline');
+  let pipelines = pipelineNodes.map(pipeline => {
+    const a = attrs(pipeline);
+    const provider = a.provider as string | undefined;
+    const jobs = childNodesOfType(pipeline.id, 'ci_job').map(buildJob);
+    const stages = childNodesOfType(pipeline.id, 'ci_stage').map(stage => {
+      const sa = attrs(stage);
+      return {
+        id: stage.id,
+        name: stage.name,
+        file: stage.source?.file,
+        line: stage.source?.line,
+        jobs: (sa.jobs || []).map((id: string) => nodesById.get(id)?.name || id),
+      };
+    });
+    // Triggers live on pipeline entry points (type pipeline/schedule) whose
+    // container (source_node) is this pipeline node.
+    const triggers = (cas.entry_points || [])
+      .filter(ep => ep.source_node === pipeline.id)
+      .map(ep => ({
+        type: ep.type,
+        event: ep.trigger?.event || ep.name,
+        schedule: ep.trigger?.schedule,
+        file: ep.handler?.file || (ep.metadata as any)?.file,
+        line: ep.handler?.line || (ep.metadata as any)?.line,
+      }));
+    // Fall back to the trigger events recorded on the pipeline node itself
+    // (always present) when no entry point resolved to this pipeline.
+    const triggerFallback = triggers.length ? triggers : (a.triggers || []).map((event: string) => ({ type: 'pipeline', event }));
+    // Job DAG: edges among this pipeline's jobs only.
+    const jobIds = new Set(jobs.map(job => job.id));
+    const dag = jobs.flatMap(job =>
+      (dependsOn.get(job.id) || [])
+        .filter(dep => jobIds.has(dep.target))
+        .map(dep => ({ from: job.name, to: nodesById.get(dep.target)?.name || dep.target })),
+    );
+    const deployTargets = jobs
+      .flatMap(job => job.steps)
+      .flatMap(step => step.deploys_to || [])
+      .filter((value, index, arr) => arr.indexOf(value) === index);
+    return {
+      id: pipeline.id,
+      name: pipeline.name,
+      provider,
+      file: pipeline.source?.file,
+      triggers: triggerFallback,
+      stage_count: stages.length,
+      job_count: jobs.length,
+      step_count: jobs.reduce((sum, job) => sum + job.steps.length, 0),
+      deploy_targets: deployTargets,
+      job_dag: dag,
+      stages,
+      jobs,
+    };
+  });
+
+  if (opts.provider) pipelines = pipelines.filter(p => p.provider === opts.provider);
+  if (opts.deployOnly) pipelines = pipelines.filter(p => p.deploy_targets.length > 0);
+
+  const total = pipelines.length;
+  const limit = opts.limit || 20;
+  const offset = opts.offset || 0;
+  const providers = Array.from(new Set(pipelineNodes.map(p => attrs(p).provider).filter(Boolean)));
+
+  return {
+    analysis_version_notice: total === 0 ? analysisVersionNotice(cas, 'first-class CI/CD pipeline facts') : undefined,
+    total,
+    offset,
+    limit,
+    providers,
+    inventory: {
+      pipelines: total,
+      jobs: pipelines.reduce((sum, p) => sum + p.job_count, 0),
+      steps: pipelines.reduce((sum, p) => sum + p.step_count, 0),
+      deploy_targets: nodes.filter(node => node.type === 'deploy_target').length,
+    },
+    pipelines: pipelines.slice(offset, offset + limit),
+  };
 }
 
 export function getExternalServices(cas: CASOutput) {

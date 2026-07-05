@@ -717,6 +717,12 @@ export async function loadTelemetryTrace(
 }
 
 async function writeJsonAtomic(filePath: string, value: unknown): Promise<void> {
+  // Ensure the destination directory exists BEFORE writing/moving. On a fresh
+  // project's first self-telemetry ingest the day-file's parent dir
+  // (…/ingested-telemetry/) may not exist yet, and `fs.move`'s internal
+  // rename/chmod then races to ENOENT ("chmod '…/<day>.json'"). mkdir -p is
+  // idempotent — once the dir exists this is a no-op with zero behavior change.
+  await fs.mkdirp(path.dirname(filePath));
   const tmpPath = path.join(os.tmpdir(), `klauro-telemetry-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.json`);
   await fs.writeJson(tmpPath, value, { spaces: 2 });
   await fs.move(tmpPath, filePath, { overwrite: true });
