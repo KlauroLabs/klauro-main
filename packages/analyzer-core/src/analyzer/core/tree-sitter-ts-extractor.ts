@@ -437,7 +437,11 @@ export class TreeSitterTSExtractor {
 
     let parent = func.parent;
     while (parent) {
-      if (parent.type === 'class_declaration' || parent.type === 'class') {
+      // `abstract_class_declaration` (a distinct node type from `class_declaration` in
+      // tree-sitter-typescript, used for `abstract class X`) needs the same className
+      // attribution as a plain class, or every method of every abstract class silently
+      // loses its className and gets misfiled as a standalone function.
+      if (parent.type === 'class_declaration' || parent.type === 'class' || parent.type === 'abstract_class_declaration') {
         className = parent.childForFieldName('name')?.text;
         break;
       }
@@ -615,7 +619,16 @@ export class TreeSitterTSExtractor {
       }
     }
 
-    calls.push(...this.extractIdentifierReferences(body, enclosingFunction, enclosingClass));
+    const seenAtLine = new Set<string>();
+    calls.push(...this.extractIdentifierReferences(body, enclosingFunction, enclosingClass, seenAtLine));
+
+    // Decorators on this method itself (e.g. `@InternalGet('x', [...ERRORS])` on a
+    // route handler) sit as a sibling of `func`, not inside its `body`, so the scan
+    // above never reaches identifiers used in decorator call arguments. Method-level
+    // decorators are already in scope for this function's call list, so fold their
+    // argument references in here directly. See extractDecoratorArgumentReferences
+    // for why this closes a real, previously-invisible reference-miss class.
+    calls.push(...this.extractDecoratorArgumentReferences(func, enclosingFunction, enclosingClass, seenAtLine));
 
     return calls;
   }
@@ -632,76 +645,193 @@ export class TreeSitterTSExtractor {
   // happened. Deliberately conservative: only fires for identifiers present in this
   // file's import map, so a same-named local variable is never mistaken for a cross-file
   // reference (no fabricated edges).
-  private extractIdentifierReferences(body: any, enclosingFunction: string, enclosingClass?: string): TSExtractedCall[] {
+  private extractIdentifierReferences(
+    body: any,
+    enclosingFunction: string,
+    enclosingClass: string | undefined,
+    seenAtLine: Set<string>
+  ): TSExtractedCall[] {
     const refs: TSExtractedCall[] = [];
     if (this.imports.size === 0) return refs;
 
     const identifierNodes = this.collectByType(body, 'identifier');
-    const seenAtLine = new Set<string>();
 
     for (const idNode of identifierNodes) {
-      const name = idNode.text;
-      if (!this.imports.has(name)) continue;
-
-      const parent = idNode.parent;
-      if (!parent) continue;
-
-      // Already captured as a real call/constructor edge by extractCall/extractCalls —
-      // don't double-record the same site as a 'reference' too.
-      if (parent.type === 'call_expression' && parent.childForFieldName('function') === idNode) continue;
-      if (parent.type === 'new_expression' && parent.childForFieldName('function') === idNode) continue;
-      // Import specifier / declaration positions are bindings, not reads.
-      if (parent.type === 'import_specifier' || parent.type === 'import_clause' ||
-          parent.type === 'namespace_import') continue;
-
-      // De-dupe multiple identifier occurrences resolving to the same import at the same
-      // source line (e.g. `TIER_RATE_LIMITS[tier] || TIER_RATE_LIMITS.free` on one line) —
-      // one reference edge per line is enough signal without inflating counts.
-      const line = idNode.startPosition.row + 1;
-      const dedupeKey = `${name}:${line}`;
-      if (seenAtLine.has(dedupeKey)) continue;
-      seenAtLine.add(dedupeKey);
-
-      let parentNode = idNode.parent;
-      let conditionalDepth = 0;
-      let loopDepth = 0;
-      while (parentNode) {
-        if (parentNode.type === 'if_statement' || parentNode.type === 'ternary_expression' || parentNode.type === 'switch_statement') {
-          conditionalDepth++;
-        } else if (parentNode.type === 'for_statement' || parentNode.type === 'for_in_statement' ||
-                   parentNode.type === 'for_of_statement' || parentNode.type === 'while_statement' ||
-                   parentNode.type === 'do_statement') {
-          loopDepth++;
-        }
-        parentNode = parentNode.parent;
-      }
-
-      refs.push({
-        target: name,
-        targetType: 'property',
-        line,
-        column: idNode.startPosition.column,
-        argumentCount: 0,
-        isAsync: false,
-        isConditional: conditionalDepth > 0,
-        isInLoop: loopDepth > 0,
-        callExpression: name,
-        context: {
-          enclosingFunction,
-          enclosingClass,
-          blockDepth: 0,
-          isInTry: false,
-          isInCatch: false,
-          isInFinally: false,
-          isInCallback: false,
-          isInPromise: false,
-          conditionalDepth,
-          loopDepth
-        }
-      });
+      const ref = this.buildIdentifierReference(idNode, enclosingFunction, enclosingClass, seenAtLine);
+      if (ref) refs.push(ref);
     }
 
     return refs;
+  }
+
+  // Shared per-identifier-node reference builder used by both the function-body scan
+  // (extractIdentifierReferences) and the decorator-argument scan
+  // (extractDecoratorArgumentReferences) so the exclusion rules, de-dupe key, and
+  // conditional/loop-depth walk stay in exactly one place. Returns null for anything
+  // that isn't a genuine cross-file read of an imported binding (never fabricates).
+  private buildIdentifierReference(
+    idNode: any,
+    enclosingFunction: string,
+    enclosingClass: string | undefined,
+    seenAtLine: Set<string>
+  ): TSExtractedCall | null {
+    const name = idNode.text;
+    if (!this.imports.has(name)) return null;
+
+    const parent = idNode.parent;
+    if (!parent) return null;
+
+    // Already captured as a real call/constructor edge by extractCall/extractCalls —
+    // don't double-record the same site as a 'reference' too.
+    if (parent.type === 'call_expression' && parent.childForFieldName('function') === idNode) return null;
+    if (parent.type === 'new_expression' && parent.childForFieldName('function') === idNode) return null;
+    // Import specifier / declaration positions are bindings, not reads.
+    if (parent.type === 'import_specifier' || parent.type === 'import_clause' ||
+        parent.type === 'namespace_import') return null;
+
+    // De-dupe multiple identifier occurrences resolving to the same import at the same
+    // source line (e.g. `TIER_RATE_LIMITS[tier] || TIER_RATE_LIMITS.free` on one line) —
+    // one reference edge per line is enough signal without inflating counts.
+    const line = idNode.startPosition.row + 1;
+    const dedupeKey = `${name}:${line}`;
+    if (seenAtLine.has(dedupeKey)) return null;
+    seenAtLine.add(dedupeKey);
+
+    let parentNode = idNode.parent;
+    let conditionalDepth = 0;
+    let loopDepth = 0;
+    while (parentNode) {
+      if (parentNode.type === 'if_statement' || parentNode.type === 'ternary_expression' || parentNode.type === 'switch_statement') {
+        conditionalDepth++;
+      } else if (parentNode.type === 'for_statement' || parentNode.type === 'for_in_statement' ||
+                 parentNode.type === 'for_of_statement' || parentNode.type === 'while_statement' ||
+                 parentNode.type === 'do_statement') {
+        loopDepth++;
+      }
+      parentNode = parentNode.parent;
+    }
+
+    return {
+      target: name,
+      targetType: 'property',
+      line,
+      column: idNode.startPosition.column,
+      argumentCount: 0,
+      isAsync: false,
+      isConditional: conditionalDepth > 0,
+      isInLoop: loopDepth > 0,
+      callExpression: name,
+      context: {
+        enclosingFunction,
+        enclosingClass,
+        blockDepth: 0,
+        isInTry: false,
+        isInCatch: false,
+        isInFinally: false,
+        isInCallback: false,
+        isInPromise: false,
+        conditionalDepth,
+        loopDepth
+      }
+    };
+  }
+
+  // Decorators (`@InternalGet('x', [[200, Y], ...INTERNAL_GET_ERRORS])`,
+  // `@Module({ providers: [...], })`, ...) sit as `decorator` siblings immediately
+  // before the function/class/property they annotate — tree-sitter does NOT nest them
+  // inside that node's `body`/`class_body`, so identifiers referenced in decorator
+  // arguments (e.g. a spread-imported error-list constant, or a DI token array element)
+  // were entirely invisible to the reference/call graph. Measured on zerac-api: a
+  // decorator-array-spread constant resolved 1/18 real consumers before this fix
+  // (every site was a decorator argument). Only decorator ARGUMENTS are scanned here —
+  // the decorator's own callee name (e.g. `AllowAnonymous` in `@AllowAnonymous()`) is
+  // handled separately by extractDecoratorNameReferences so a same-named local isn't
+  // conflated and so decorator-as-annotation vs decorator-argument stay distinguishable
+  // in the evidence trail.
+  private extractDecoratorArgumentReferences(
+    func: any,
+    enclosingFunction: string,
+    enclosingClass: string | undefined,
+    seenAtLine: Set<string>
+  ): TSExtractedCall[] {
+    const refs: TSExtractedCall[] = [];
+    if (this.imports.size === 0) return refs;
+
+    let sibling = func.previousNamedSibling;
+    while (sibling && sibling.type === 'decorator') {
+      const call = this.findFirst(sibling, 'call_expression');
+      const args = call?.childForFieldName('arguments');
+      if (args) {
+        const identifierNodes = this.collectByType(args, 'identifier');
+        for (const idNode of identifierNodes) {
+          const ref = this.buildIdentifierReference(idNode, enclosingFunction, enclosingClass, seenAtLine);
+          if (ref) refs.push(ref);
+        }
+      }
+      refs.push(...this.extractDecoratorNameReference(sibling, enclosingFunction, enclosingClass, seenAtLine));
+      sibling = sibling.previousNamedSibling;
+    }
+
+    return refs;
+  }
+
+  // The decorator invocation itself (`@AllowAnonymous()`, `@InternalGet(...)`) is a
+  // genuine cross-file usage of the imported decorator factory/function — e.g.
+  // `AllowAnonymous` re-exported through a barrel (`@zerac-api/auth`) and applied to 23
+  // route handlers project-wide resolved 0/23 before this fix, because extractDecorators
+  // only ever kept the bare name string for display, never fed it through the
+  // identifier-reference path. Recorded the same conservative way as a bare read
+  // (targetType 'property', not 'calls') since a decorator is compile-time metadata
+  // attachment, not a runtime call — never claim a call that doesn't happen.
+  private extractDecoratorNameReference(
+    decoratorNode: any,
+    enclosingFunction: string,
+    enclosingClass: string | undefined,
+    seenAtLine: Set<string>
+  ): TSExtractedCall[] {
+    const call = this.findFirst(decoratorNode, 'call_expression');
+    const calleeNode = call
+      ? (call.childForFieldName('function') || call.namedChild(0))
+      : this.findFirst(decoratorNode, 'identifier');
+    if (!calleeNode || calleeNode.type !== 'identifier') return [];
+    if (!this.imports.has(calleeNode.text)) return [];
+
+    // buildIdentifierReference() normally skips an identifier whose parent is a
+    // call_expression function position, to avoid double-recording a real function
+    // call already captured by extractCall/extractCalls as a 'calls' edge. A decorator
+    // invocation (`@Controller()`) is NEVER walked by extractCall (extractCalls only
+    // ever collects call_expression nodes reachable from a function BODY, and
+    // decorators sit outside every body), so there is no real 'calls' edge here to
+    // collide with — bypass that specific exclusion by building the reference
+    // directly instead of routing through buildIdentifierReference's parent check.
+    const line = calleeNode.startPosition.row + 1;
+    const dedupeKey = `${calleeNode.text}:${line}`;
+    if (seenAtLine.has(dedupeKey)) return [];
+    seenAtLine.add(dedupeKey);
+
+    return [{
+      target: calleeNode.text,
+      targetType: 'property',
+      line,
+      column: calleeNode.startPosition.column,
+      argumentCount: 0,
+      isAsync: false,
+      isConditional: false,
+      isInLoop: false,
+      callExpression: calleeNode.text,
+      context: {
+        enclosingFunction,
+        enclosingClass,
+        blockDepth: 0,
+        isInTry: false,
+        isInCatch: false,
+        isInFinally: false,
+        isInCallback: false,
+        isInPromise: false,
+        conditionalDepth: 0,
+        loopDepth: 0
+      }
+    }];
   }
 
   // True only when `name` is imported from a genuine external package (bare specifier, no
@@ -904,8 +1034,16 @@ export class TreeSitterTSExtractor {
 
   private extractClasses(root: any): TSExtractedClass[] {
     const classes: TSExtractedClass[] = [];
+    // `abstract class Foo extends Base` parses as `abstract_class_declaration`, a
+    // DIFFERENT node type from plain `class_declaration` in tree-sitter-typescript —
+    // discovered while diagnosing the callers-completeness gap (an abstract base class
+    // like zerac-api's AgentAccessServiceBase/CheckAccess/AccessMutation chain was
+    // invisible to extractClasses entirely, not just to reference resolution). Include
+    // it here so abstract classes get nodes, methods, heritage, and (via
+    // extractClassLevelReferences) reference edges at all.
     const classNodes = this.collectByTypes(root, new Set([
       'class_declaration',
+      'abstract_class_declaration',
       'interface_declaration',
       'type_alias_declaration',
     ]));
@@ -981,6 +1119,22 @@ export class TreeSitterTSExtractor {
       }
     }
 
+    // Class-level cross-file reads that have no natural enclosing function of their
+    // own: the class decorator (`@Module({ providers: [...], inject: [EventBusService] })`,
+    // `@Controller()`) and the heritage clause (`class Foo extends Base implements I`).
+    // Both sit outside every method's body, so extractCalls()/extractIdentifierReferences
+    // never see them. There is no graph node for "the class's decorator" or "the class's
+    // heritage" in isolation, so — same device already used for anonymous-callback exit
+    // points (see resolveAnonymousContainerNodeIdIndexed in the framework analyzer) —
+    // attribute these reads to the constructor if one exists, else the first extracted
+    // method, so they ride along on a node that genuinely gets indexed. If the class has
+    // no methods at all, the references are dropped rather than fabricating a carrier.
+    const referenceCarrier = methods.find(m => m.type === 'constructor') || methods[0];
+    if (referenceCarrier) {
+      const classRefs = this.extractClassLevelReferences(cls, heritage, className);
+      referenceCarrier.calls.push(...classRefs);
+    }
+
     return {
       name: className,
       kind: 'class',
@@ -995,6 +1149,51 @@ export class TreeSitterTSExtractor {
       decorators,
       documentation
     };
+  }
+
+  // Identifier references that belong to the class as a whole rather than to any one
+  // method: the class decorator's arguments/name (@Module/@Controller/...) and the
+  // heritage clause's type identifiers (`extends Base`, `implements I1, I2`). Heritage
+  // uses `type_identifier` nodes, not `identifier` — a distinct node type the body scan
+  // never looks for, and one that sits outside any method body regardless. Measured on
+  // zerac-api: `class CheckAccess extends AgentAccessServiceBase` produced ZERO
+  // resolvable references before this fix (0 decl candidates even), because the base
+  // class was never linked as a read of the imported binding.
+  private extractClassLevelReferences(cls: any, heritage: any, className: string): TSExtractedCall[] {
+    const refs: TSExtractedCall[] = [];
+    const seenAtLine = new Set<string>();
+
+    let sibling = cls.previousNamedSibling;
+    while (sibling && sibling.type === 'decorator') {
+      const call = this.findFirst(sibling, 'call_expression');
+      const args = call?.childForFieldName('arguments');
+      if (args) {
+        for (const idNode of this.collectByType(args, 'identifier')) {
+          const ref = this.buildIdentifierReference(idNode, className, className, seenAtLine);
+          if (ref) refs.push(ref);
+        }
+      }
+      refs.push(...this.extractDecoratorNameReference(sibling, className, className, seenAtLine));
+      sibling = sibling.previousNamedSibling;
+    }
+
+    if (heritage) {
+      // `implements Foo` types parse as `type_identifier`, but `extends Base` parses
+      // Base as a plain `identifier` (JS/TS grammar treats the extends target as a
+      // value-position expression, not a type) — both node types appear under
+      // class_heritage depending on which clause, so both must be scanned or a plain
+      // `extends Base` (the common case) resolves nothing at all.
+      const heritageIdNodes = [
+        ...this.collectByType(heritage, 'type_identifier'),
+        ...this.collectByType(heritage, 'identifier'),
+      ];
+      for (const idNode of heritageIdNodes) {
+        const ref = this.buildIdentifierReference(idNode, className, className, seenAtLine);
+        if (ref) refs.push(ref);
+      }
+    }
+
+    return refs;
   }
 
   private extractInterface(intf: any): TSExtractedClass | null {
@@ -1287,7 +1486,7 @@ export class TreeSitterTSExtractor {
     const stack = [node];
     while (stack.length > 0) {
       const current = stack.pop()!;
-      if (current !== node && (current.type === 'class_declaration' || current.type === 'class')) {
+      if (current !== node && (current.type === 'class_declaration' || current.type === 'class' || current.type === 'abstract_class_declaration')) {
         continue;
       }
       if (types.has(current.type)) {
