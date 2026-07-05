@@ -22,6 +22,9 @@ RUN npm ci \
 COPY apps/api ./apps/api
 COPY apps/mcp-server ./apps/mcp-server
 COPY packages/analyzer-core ./packages/analyzer-core
+# @klauro/telemetry SDK is imported by relative path (self-telemetry.ts, env-gated);
+# zero runtime deps, run from source via tsx — just needs to be present in the image.
+COPY packages/klauro-sdk-js ./packages/klauro-sdk-js
 
 WORKDIR /app/apps/api
 
