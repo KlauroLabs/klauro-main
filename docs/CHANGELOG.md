@@ -5,6 +5,48 @@ agent-feedback reports (`~/.klauro/agent-feedback/*.md`) — nothing is asserted
 Where an item was still in flight at the time this entry was written, it is marked **pending
 final verify** rather than presented as done.
 
+## v1.0.26 — Surfaced, taught, filterable, measured (2026-07-05)
+
+The productization pass: understanding is only worth anything when it's *surfaced* at the moment an
+agent or engineer needs it — cheaply, pull-not-push. This turns the new fact layers from "exist behind
+a tool" into "taught, indexed, filterable, and proven."
+
+### Added — surfacing (progressive disclosure)
+- **The MCP protocol now teaches the new layers.** `SERVER_INSTRUCTIONS` + `get_agent_bootstrap` describe
+  runtime telemetry, communication seams (sync/async/passive), consistency/CAP, infra/hosting topology,
+  CI/CD, and bundled deployables — and which tool pulls each. Agents learn what's knowable.
+- **Orient capsule** — `get_summary.orient_capsule`: a **943-byte** `{available, count, tool}` index (**9%**
+  of the full summary) so a caller learns what's pullable at near-zero tokens, then pulls on demand.
+- **Woven into orient, task-type-aware** — `get_system_overview.system_fit` (the vertical: entry points →
+  deployables *with bundled ship-units collapsed* → topology → seam counts + CAP flags) and
+  `get_agent_context` (trace/review → fabric context; modify-on-integration → touched seam + consistency
+  note; debug → runtime hotspots). Compact, omitted when absent, threaded through the budget compactors.
+- **`get_cicd_pipelines`** — the one concept that lacked a first-class read tool.
+- **Three-channel parity** — communication-seams / product-map / cicd / node-metrics / orient-capsule are
+  now reachable via **MCP + CLI (`klauro seams|cicd|product-map|node-metrics|orient`) + HTTP API (`/v1/*`)**,
+  byte-identical.
+
+### Added — filter (opt out)
+- Runtime/dynamic-section control: `runtime: include|exclude|auto` (param > `KLAURO_CONTEXT_RUNTIME` env >
+  `.klaurorc context.runtime` > default `auto`) + `exclude_sections[]`. `auto` is byte-for-byte
+  backward-compatible; `exclude` is a real skip — `get_system_overview` 1486B → 457B (**−69%**).
+
+### Measured (real metered gpt-5.5, with-context vs grep/read)
+- New-context benchmark across 2 real repos / 6 grounded questions: **−82% tokens (2,455 vs 13,335)** and
+  **6/6 vs 2/6 correct**. Communication seams and node telemetry each flipped a wrong baseline answer to
+  right; consistency saved ~8× tokens. Harness: `new-context-impact-benchmark.ts` (reusable, metered).
+
+### Fixed — data quality
+- Deployable fragmentation: route-name pseudo-deployables collapsed to real apps (zerac-api **28 → 4**);
+  `DEPLOYS` label leak and accessor `.file` staged-temp-path → repo-relative. Telemetry storage-dir mkdir
+  race. Two coordination surfaces (`claim_work` enforced vs `fab_claim_work` advisory) self-disambiguate.
+
+### Known follow-ups
+- **`runtime_topology` fires empty on real compose repos through `analyzeForBench`** (the measurement caught
+  it — 0 DEPLOYS/EXPOSES edges though the cached analysis had 30) — root-cause fix in progress.
+- Orient capsule (index) vs `system_fit` (narrative) both live on the summary path — reconcile; instruction
+  strings want a golden test to lock against silent regression.
+
 ## v1.0.25 — The whole vertical + unified communication seams (2026-07-05)
 
 Coverage now spans every checked-in layer of how a system exists *and* how its parts talk — with a
