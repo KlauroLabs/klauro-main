@@ -20,6 +20,7 @@ import { TerraformAnalyzer } from '../../../packages/analyzer-core/src/analyzer/
 import { CloudFormationAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/cloudformation-analyzer';
 import { DockerComposeAnalyzer, DockerfileAnalyzer, KubernetesManifestAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/container-topology-analyzer';
 import { AnsibleAnalyzer, PulumiAnalyzer, HelmAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/iac-analyzer';
+import { CaddyAnalyzer, NginxAnalyzer, ApacheAnalyzer, HAProxyAnalyzer, TraefikAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/reverse-proxy-analyzer';
 import { DistributionArtifactAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/distribution-artifact-analyzer';
 import { GenericTreeSitterLanguageAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/generic-tree-sitter-language-analyzer';
 import {
@@ -48,6 +49,7 @@ import {
 import { CronAnalyzer } from '../../../packages/analyzer-core/src/analyzer/libraries/cron-analyzer';
 import { JestAnalyzer, CypressAnalyzer, TestFrameworkAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/testing';
 import { AirflowAnalyzer, DagsterAnalyzer, PrefectAnalyzer, LuigiAnalyzer, JupyterNotebookAnalyzer, MLTrainingAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/dataml';
+import { CiPipelineAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/ci';
 import { WPFAnalyzer, AspNetCoreAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/dotnet';
 import { ActixAnalyzer, RocketAnalyzer, AxumAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/rust';
 import { GinAnalyzer, EchoAnalyzer, FiberAnalyzer, ChiAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/go';
@@ -130,6 +132,7 @@ import {
   DapperAnalyzer,
 } from '../../../packages/analyzer-core/src/analyzer/libraries/orm';
 import { ProtobufAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/protobuf-analyzer';
+import { SoapWsdlAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/soap-wsdl-analyzer';
 import type { AnalyzerRegistration } from '../../../packages/analyzer-core/src/analyzer/core/orchestrator';
 import { PackAnalyzer } from '../../../packages/analyzer-core/src/analyzer/packs';
 import * as fs from 'fs-extra';
@@ -342,6 +345,17 @@ export function createOrchestrator(): AnalyzerOrchestrator {
       analyzer: new ProtobufAnalyzer(),
     },
     {
+      id: 'soap-wsdl',
+      name: 'SOAP/WSDL Analyzer',
+      type: 'language',
+      version: '1.0.0',
+      detectPatterns: {
+        files: [],
+        content: [/\.wsdl$/i, /\.xsd$/i, /from\s+['"](?:soap|strong-soap)['"]/, /import\s+(?:zeep|suds)\b/, /@(WebServiceClient|WebService)\b/, /System\.ServiceModel/, /Savon\.client\b/],
+      },
+      analyzer: new SoapWsdlAnalyzer(),
+    },
+    {
       id: 'dart',
       name: 'Dart/Flutter Analyzer',
       type: 'language',
@@ -441,6 +455,61 @@ export function createOrchestrator(): AnalyzerOrchestrator {
       analyzer: new HelmAnalyzer(),
     },
     {
+      id: 'caddy',
+      name: 'Caddy Reverse Proxy Analyzer',
+      type: 'language',
+      version: '1.0.0',
+      detectPatterns: {
+        files: ['Caddyfile', '**/Caddyfile', '*.Caddyfile', '**/*.Caddyfile'],
+        content: [/^\s*reverse_proxy\s+/m, /^\s*file_server\b/m, /^\s*handle(_path)?\s+/m],
+      },
+      analyzer: new CaddyAnalyzer(),
+    },
+    {
+      id: 'nginx',
+      name: 'Nginx Reverse Proxy Analyzer',
+      type: 'language',
+      version: '1.0.0',
+      detectPatterns: {
+        files: ['nginx.conf', '**/nginx.conf', '**/sites-available/*', '**/sites-enabled/*', '**/conf.d/*.conf'],
+        content: [/^\s*(server|upstream|location)\b[^;]*\{/m, /\bproxy_pass\s+/m],
+      },
+      analyzer: new NginxAnalyzer(),
+    },
+    {
+      id: 'apache-httpd',
+      name: 'Apache HTTP Server Analyzer',
+      type: 'language',
+      version: '1.0.0',
+      detectPatterns: {
+        files: ['httpd.conf', 'apache2.conf', '**/httpd.conf', '**/apache2.conf', '**/sites-available/*.conf', '**/.htaccess'],
+        content: [/<VirtualHost\b/i, /^\s*ProxyPass\b/im, /^\s*RewriteRule\b/im],
+      },
+      analyzer: new ApacheAnalyzer(),
+    },
+    {
+      id: 'haproxy',
+      name: 'HAProxy Analyzer',
+      type: 'language',
+      version: '1.0.0',
+      detectPatterns: {
+        files: ['haproxy.cfg', '**/haproxy.cfg', '**/haproxy/*.cfg'],
+        content: [/^\s*(frontend|backend|listen)\s+/m, /^\s*(use_backend|default_backend)\s+/m],
+      },
+      analyzer: new HAProxyAnalyzer(),
+    },
+    {
+      id: 'traefik',
+      name: 'Traefik Analyzer',
+      type: 'language',
+      version: '1.0.0',
+      detectPatterns: {
+        files: ['traefik.yml', 'traefik.yaml', '**/traefik.yml', '**/traefik.yaml', '**/traefik/*.yml', '**/traefik/*.yaml', '**/dynamic/*.yml', '**/dynamic/*.yaml'],
+        content: [/\brouters:\s*$/m, /\bloadBalancer:\s*$/m, /\brule:\s*.*(Host|PathPrefix)\(/m],
+      },
+      analyzer: new TraefikAnalyzer(),
+    },
+    {
       id: 'distribution-artifacts',
       name: 'Distribution Artifact Analyzer',
       type: 'language',
@@ -507,6 +576,7 @@ export function createOrchestrator(): AnalyzerOrchestrator {
     { id: 'jest', name: 'Jest Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['jest', '@jest/core'], files: ['jest.config.js', 'jest.config.ts'], content: [/\.test\.(js|ts|jsx|tsx)$/, /\.spec\.(js|ts|jsx|tsx)$/] }, requires: ['typescript-javascript'], analyzer: new JestAnalyzer() },
     { id: 'cypress', name: 'Cypress Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['cypress'], files: ['cypress.json', 'cypress.config.js', 'cypress.config.ts'], content: [/\.cy\.(js|ts|jsx|tsx)$/] }, requires: ['typescript-javascript'], analyzer: new CypressAnalyzer() },
     { id: 'test-framework', name: 'Cross-Language Test Framework Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['vitest', 'mocha', 'jasmine', '@playwright/test', 'selenium-webdriver'], files: ['vitest.config.ts', 'playwright.config.ts', 'pytest.ini', 'phpunit.xml', '**/*_test.go', '**/*_spec.rb'], content: [/from\s+['"`]vitest['"`]/, /from\s+['"`]@playwright\/test['"`]/, /import\s+pytest/, /testing\.T\b/, /#\[(?:tokio::)?test\]/, /@Test\b/, /RSpec\.describe/, /PHPUnit\\Framework\\TestCase/] }, analyzer: new TestFrameworkAnalyzer() },
+    { id: 'ci-pipeline', name: 'CI/CD Pipeline Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { files: ['.github/workflows/*.yml', '.github/workflows/*.yaml', '.gitlab-ci.yml', '.circleci/config.yml', 'Jenkinsfile', 'azure-pipelines.yml', 'azure-pipelines.yaml', '.travis.yml', '.drone.yml', '.drone.yaml', '.buildkite/pipeline.yml', '.buildkite/pipeline.yaml', 'bitbucket-pipelines.yml', 'bitbucket-pipelines.yaml', '.teamcity/**/*.kt', '.teamcity/**/*.kts'] }, analyzer: new CiPipelineAnalyzer() },
     { id: 'airflow', name: 'Apache Airflow Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['apache-airflow'], files: ['requirements.txt', '**/dags/**/*.py'], content: [/from\s+airflow\b/, /import\s+airflow\b/, /@dag\b/, /@task\b/] }, requires: ['python'], analyzer: new AirflowAnalyzer() },
     { id: 'dagster', name: 'Dagster Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['dagster'], files: ['requirements.txt'], content: [/from\s+dagster\b/, /import\s+dagster\b/, /@asset\b/, /@op\b/] }, requires: ['python'], analyzer: new DagsterAnalyzer() },
     { id: 'prefect', name: 'Prefect Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['prefect'], files: ['requirements.txt'], content: [/from\s+prefect\b/, /import\s+prefect\b/, /@flow\b/, /@task\b/] }, requires: ['python'], analyzer: new PrefectAnalyzer() },

@@ -507,6 +507,40 @@ export function getExitPoints(cas: CASOutput, opts: { type?: string; limit?: num
   return { total, offset, limit, exit_points: points.slice(offset, offset + limit) };
 }
 
+export function getCommunicationSeams(
+  cas: CASOutput,
+  opts: { modality?: 'sync' | 'async' | 'passive'; level?: 'node' | 'deployable' | 'workspace'; limit?: number; offset?: number } = {},
+) {
+  const seamsResult = cas.communication_seams;
+  if (!seamsResult) {
+    return {
+      analysis_version_notice: analysisVersionNotice(cas, 'communication seams'),
+      total: 0,
+      inventory: { level: 'node', counts: { sync: 0, async: 0, passive: 0, total: 0 }, component_seams: [] },
+      seams: [],
+    };
+  }
+  const level = opts.level || 'node';
+  const inventory =
+    level === 'deployable' && seamsResult.deployable_inventory
+      ? seamsResult.deployable_inventory
+      : seamsResult.inventory;
+  let seams = seamsResult.seams;
+  if (opts.modality) seams = seams.filter(s => s.modality === opts.modality);
+  const total = seams.length;
+  const limit = opts.limit || 50;
+  const offset = opts.offset || 0;
+  return {
+    total,
+    offset,
+    limit,
+    level,
+    // System-level breakdown of every classified seam.
+    inventory,
+    seams: seams.slice(offset, offset + limit),
+  };
+}
+
 export function getRouteTable(cas: CASOutput, opts: { limit?: number; offset?: number; method?: string } = {}) {
   let routes = cas.route_table || [];
   if (opts.method) routes = routes.filter((r: any) => r.method?.toUpperCase() === opts.method!.toUpperCase());
@@ -1280,7 +1314,7 @@ export async function diffBehaviorAgainstSnapshot(
   };
 }
 
-const PRODUCT_MAP_SECTIONS = ['identity', 'capabilities', 'journeys', 'data', 'conventions', 'health', 'coverage_caveats'] as const;
+const PRODUCT_MAP_SECTIONS = ['identity', 'capabilities', 'journeys', 'data', 'conventions', 'health', 'runtime_topology', 'coverage_caveats'] as const;
 
 export function getProductMap(
   cas: CASOutput,
@@ -1399,6 +1433,26 @@ export function productMapToMarkdown(map: CASProductMap): string {
   lines.push(`Implementation: ${impl.complete} complete, ${impl.partial} partial, ${impl.stubs} stubs, ${impl.not_implemented} not implemented, ${impl.deprecated} deprecated.`);
   for (const risk of map.health.top_risks) {
     lines.push(`- Risk [${risk.level}] ${risk.name} (${risk.type}): ${risk.recommendation}`);
+  }
+
+  if (map.runtime_topology && map.runtime_topology.deployables.length > 0) {
+    lines.push('');
+    lines.push(`## Runtime Topology (${map.runtime_topology.edge_count} infra->code edges)`);
+    for (const deployable of map.runtime_topology.deployables) {
+      lines.push(`- **${deployable.name}**`);
+      const facts: Array<[string, string[]]> = [
+        ['deploys', deployable.deploys],
+        ['exposes', deployable.exposes],
+        ['routes', deployable.routes],
+        ['channels', deployable.channels],
+        ['databases', deployable.databases],
+        ['storage', deployable.storage],
+        ['depends on', deployable.depends_on],
+      ];
+      for (const [label, values] of facts) {
+        if (values.length > 0) lines.push(`  - ${label}: ${values.join(', ')}`);
+      }
+    }
   }
 
   if (map.coverage_caveats.length > 0) {

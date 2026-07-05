@@ -302,6 +302,52 @@ test('product map markdown renders journey headlines instead of machine names', 
   assert.ok(!markdown.includes('| boundaries:'), 'pipe-separated machine row is gone');
 });
 
+test('product map markdown renders a runtime topology section when present', () => {
+  const map: any = {
+    identity: { name: 'infra-app', domain: 'unknown', domain_source: 'deterministic', description: '', description_source: 'deterministic' },
+    capabilities: [],
+    journeys: { total: 0, user_facing: 0, system: 0, scheduled: 0, top: [] },
+    data: { entities: 0, sensitive: [], exposure_highlights: [] },
+    conventions: { paradigms: [], open_deviations: { error: 0, warning: 0, info: 0 } },
+    health: { status: 'healthy', tests: { total: 0, passing: 0, failing: 0 }, implementation: { complete: 0, partial: 0, stubs: 0, not_implemented: 0, deprecated: 0 }, top_risks: [] },
+    runtime_topology: {
+      edge_count: 5,
+      deployables: [{
+        name: 'api',
+        deploys: ['api/Dockerfile'],
+        exposes: ['port:8080'],
+        routes: ['/orders'],
+        channels: ['orders'],
+        databases: [],
+        storage: [],
+        depends_on: ['worker'],
+      }],
+    },
+    coverage_caveats: [],
+  };
+  const markdown = productMapToMarkdown(map);
+  assert.ok(markdown.includes('## Runtime Topology (5 infra->code edges)'), 'section header with edge count');
+  assert.ok(markdown.includes('- **api**'), 'per-deployable heading');
+  assert.ok(markdown.includes('deploys: api/Dockerfile'));
+  assert.ok(markdown.includes('exposes: port:8080'));
+  assert.ok(markdown.includes('routes: /orders'));
+  assert.ok(markdown.includes('depends on: worker'));
+});
+
+test('product map markdown omits runtime topology when absent', () => {
+  const map: any = {
+    identity: { name: 'plain', domain: 'unknown', domain_source: 'deterministic', description: '', description_source: 'deterministic' },
+    capabilities: [],
+    journeys: { total: 0, user_facing: 0, system: 0, scheduled: 0, top: [] },
+    data: { entities: 0, sensitive: [], exposure_highlights: [] },
+    conventions: { paradigms: [], open_deviations: { error: 0, warning: 0, info: 0 } },
+    health: { status: 'healthy', tests: { total: 0, passing: 0, failing: 0 }, implementation: { complete: 0, partial: 0, stubs: 0, not_implemented: 0, deprecated: 0 }, top_risks: [] },
+    coverage_caveats: [],
+  };
+  const markdown = productMapToMarkdown(map);
+  assert.ok(!markdown.includes('Runtime Topology'), 'no runtime topology header for non-infra repos');
+});
+
 test('agent context journey digest carries a one-line headline per journey', () => {
   const context = buildJourneyContextForAgent(casWithJourneys() as any, { nodeId: truckspy.entry?.handler_node_id }) as any;
   assert.ok(context);

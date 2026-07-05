@@ -201,6 +201,18 @@ const EXTRA_INCLUDED_EXTENSIONS = new Set([
   // registered-language source — JupyterNotebookAnalyzer parses this format
   // directly (see analyzer/frameworks/dataml/jupyter-notebook-analyzer.ts).
   '.ipynb',
+  // Reverse-proxy / web-server configs: nginx.conf / Apache *.conf (VirtualHost
+  // + ProxyPass) and HAProxy haproxy.cfg — the "how public traffic routes to
+  // services" topology layer parsed by reverse-proxy-analyzer.ts. Not a
+  // registered language extension, so without this the routing config is
+  // silently dropped from every remote/analyzeForBench analysis even though a
+  // direct on-disk run reads it (same defect class as the routes/.yaml notes).
+  '.conf',
+  '.cfg',
+  // SOAP/WSDL contracts: service definitions and referenced schemas are parsed
+  // directly by SoapWsdlAnalyzer, not by a programming-language parser.
+  '.wsdl',
+  '.xsd',
 ]);
 
 const IMPORTANT_EXTENSIONLESS = new Set([
@@ -210,6 +222,12 @@ const IMPORTANT_EXTENSIONLESS = new Set([
   'Gemfile',
   'Rakefile',
   'artisan',
+  // Caddy's config file is extensionless (`Caddyfile`) and holds site-address
+  // blocks + `reverse_proxy <upstream>` — the public-traffic routing topology
+  // parsed by CaddyAnalyzer (reverse-proxy-analyzer.ts). Without this it never
+  // reaches the remote/analyzeForBench analyzer even though canAnalyze() reads
+  // it directly on disk.
+  'Caddyfile',
   // Play Framework's router: conf/routes is the actual route source of truth
   // (see PlayAnalyzer) — it has no extension and would otherwise be silently
   // dropped from the snapshot, leaving the analyzer nothing to read even

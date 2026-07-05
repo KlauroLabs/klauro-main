@@ -58,7 +58,7 @@ import { RESPONSE_BUDGET_BYTES, boundToolPayload, boundToolText, serializeToolRe
 import { getBuildIdentity } from '../../../packages/analyzer-core/src/analyzer/core/build-identity';
 import { loadStoredConnectorAuth, normalizeServerUrl } from './connector-auth';
 import { arbitrate, detectCollisions, getGrants, heartbeatGrant, releaseGrant, requestGrant, type AgentKind, type CasEdgeRef, type WasCapabilityRef, type WorkClaim } from './coordination';
-import { attributeChange, appendClaim, checkEditLock, getActiveClaims, getPresence, readClaimLog, watch } from './coordination/local-store';
+import { attributeChange, appendClaim, checkEditLock, getActiveClaims, getPresence, readClaimLog, releaseAgent, watch } from './coordination/local-store';
 import { deriveActiveClaims } from './coordination/presence';
 import { detectConceptualConflicts, type AgentInFlightState, type ConceptualConflict, type ConflictCas, type SymbolChange } from './coordination/conceptual-conflict';
 import { captureInFlightChanges } from './coordination/in-flight-capture';
@@ -248,7 +248,7 @@ const GATEWAY_TOOL_GROUPS: Array<{ label: string; tools: string[] }> = [
   { label: 'Analysis management', tools: ['analyze_codebase', 'get_analysis_focus_profiles', 'get_description_enrichment_targets', 'generate_element_description', 'get_element_description', 'get_analysis_phases', 'run_analysis_layer', 'initialize_klauro_project', 'get_klauro_project_config', 'declare_convention', 'get_upload_manifest', 'get_agent_revision_tracks', 'get_github_import_plan', 'analyze_codebase_remote', 'sync_codebase_remote', 'list_analyses', 'validate_cas_contract', 'get_storage_health', 'get_storage_maintenance_report', 'prune_storage_artifacts', 'preview_codebase_iteration', 'get_greenfield_architecture_guidance', 'get_greenfield_build_context', 'preview_greenfield_codebase', 'get_preview_analysis', 'compare_analysis_iterations', 'get_analysis_freshness', 'get_test_discovery_evidence', 'save_cas_golden_snapshot', 'compare_cas_golden_snapshot'] },
   { label: 'System understanding and agent workflow', tools: ['get_summary', 'get_system_overview', 'get_architecture_context', 'list_answer_packs', 'get_mcp_demo_flow', 'get_cross_repo_links', 'run_workspace_analysis', 'resolve_workspace_analysis', 'get_workspace_summary', 'get_workspace_analysis', 'get_workspace_agent_context', 'get_workspace_freshness', 'validate_was_contract', 'get_workspace_health', 'get_workspace_risk_context', 'get_workspace_capability_map', 'get_workspace_entity_map', 'get_workspace_workflow', 'list_workspace_analyses', 'run_cross_codebase_analysis', 'get_cross_codebase_analysis', 'list_cross_codebase_analyses', 'save_workspace_graph', 'get_workspace_graph', 'list_workspace_graphs', 'verify_workspace_link', 'get_agent_bootstrap', 'get_agent_context', 'get_agent_project_map', 'get_agent_doctor', 'get_server_version', 'get_agent_default_config', 'install_agent_default_config', 'get_capability_memory', 'get_idiom_aware_agent_context', 'open_agent_workbench', 'preflight_agent_change', 'get_codebase_agent_rules', 'explain_change_shape', 'evaluate_analysis_truth', 'get_semantic_map', 'get_framework_depth_report', 'get_integration_depth_report', 'get_cross_repo_contracts', 'get_runtime_instrumentation_plan', 'get_runtime_event_contract', 'get_runtime_sdk_package', 'evaluate_agent_task_proof', 'evaluate_agent_readiness', 'run_agentic_benchmark', 'get_agentic_benchmark_report', 'get_agent_performance_proof', 'run_agent_quality_benchmark', 'run_agent_idiom_benchmark', 'run_machine_agent_proof', 'run_incremental_value_benchmark', 'get_patterns', 'get_codebase_idioms', 'get_idiom_examples', 'validate_codebase_idioms', 'get_pattern_instances', 'get_perspectives'] },
   { label: 'Navigation and search', tools: ['semantic_search', 'get_embedding_status', 'get_node', 'get_file_nodes', 'get_level'] },
-  { label: 'Entry points, routes, and call graph', tools: ['get_entry_points', 'get_exit_points', 'get_route_table', 'get_external_services', 'get_callers', 'get_callees', 'get_call_chain', 'get_method_calls', 'get_interface_signature', 'get_flow_concepts'] },
+  { label: 'Entry points, routes, and call graph', tools: ['get_entry_points', 'get_exit_points', 'get_communication_seams', 'get_route_table', 'get_external_services', 'get_callers', 'get_callees', 'get_call_chain', 'get_method_calls', 'get_interface_signature', 'get_flow_concepts'] },
   { label: 'Component hierarchy', tools: ['get_component_parents', 'get_component_children', 'get_component_metrics', 'get_shared_components'] },
   { label: 'Coding context and conventions', tools: ['get_conventions', 'get_modification_guide', 'get_pattern_examples', 'find_similar_code', 'get_comments', 'get_error_contracts', 'get_framework_guidance', 'get_usage_examples', 'get_configuration'] },
   { label: 'Intent, data, and risk', tools: ['get_intent', 'get_data_entities', 'get_security_overview', 'get_behavioral_invariants', 'validate_behavioral_invariants', 'get_stability', 'get_flow_coverage'] },
@@ -258,7 +258,7 @@ const GATEWAY_TOOL_GROUPS: Array<{ label: string; tools: string[] }> = [
   { label: 'Coverage Intelligence', tools: ['get_coverage_gaps'] },
   { label: 'Change history', tools: ['get_changes_since', 'get_changes_between', 'get_changes_for_node', 'get_changes_for_file', 'get_changes_for_entry_point', 'get_change_summary', 'get_hot_spots', 'get_analysis_at', 'get_analysis_snapshots'] },
   { label: 'Watch mode', tools: ['start_watch', 'stop_watch', 'get_watch_status', 'list_watches', 'poll_watch_changes', 'install_gauntlet_watcher', 'list_gauntlet_watchers', 'stop_gauntlet_watcher', 'run_incremental_gauntlet'] },
-  { label: 'Multi-agent coordination', tools: ['claim_work', 'release_work', 'heartbeat_work', 'get_active_agents', 'check_collision', 'check_conceptual_conflicts', 'get_in_flight_changes', 'plan_intent_merge', 'plan_parallel_work', 'subscribe_workspace'] },
+  { label: 'Multi-agent coordination', tools: ['claim_work', 'release_work', 'heartbeat_work', 'get_active_agents', 'check_collision', 'check_conceptual_conflicts', 'get_in_flight_changes', 'plan_intent_merge', 'plan_parallel_work', 'subscribe_workspace', 'fab_claim_work', 'fab_check_collision', 'fab_release_work', 'fab_list_active_work'] },
 ];
 
 function buildGatewayDescription(registry: Map<string, RegisteredToolEntry>, profile: ToolProfile): string {
@@ -3733,6 +3733,25 @@ function registerTools(server: McpServer) {
   );
 
   server.registerTool(
+    'get_communication_seams',
+    {
+      title: 'Get Communication Seams',
+      description: "Unified modality classification of every communication seam between components. For each seam — an exit point, a messaging edge, or a shared-state link — it returns a modality: SYNC (request/response the caller awaits: HTTP/REST, gRPC unary, GraphQL, RPC, DB reads), ASYNC (fire-and-forget: message publish/consume, queue enqueue, webhook, event emit), or PASSIVE (communication via shared state — two components that both write and read the same database entity/cache/bucket, with no direct call). Each seam carries confidence + the driving fact as evidence. Also returns a system-level inventory (sync/async/passive counts and the component-to-component seams with their modality) at node level or, rolled up, deployable level. Derived additively from exit/entry/messaging/data-lineage facts. Use level=deployable for cross-deployable seams; filter by modality to isolate e.g. passive shared-state coupling.",
+      inputSchema: {
+        path: z.string().describe('Project path'),
+        modality: z.enum(['sync', 'async', 'passive']).optional().describe('Filter to one modality'),
+        level: z.enum(['node', 'deployable', 'workspace']).optional().describe('Inventory rollup level (default node)'),
+        limit: z.number().optional().describe('Max seams to return (default 50)'),
+        offset: z.number().optional().describe('Skip first N seams (default 0)'),
+      } as any,
+    } as any,
+    async ({ path, modality, level, limit, offset }: any) => withErrorHandling(async () => {
+      const cas = await getAnalysis(path);
+      return json(query.getCommunicationSeams(cas, { modality, level, limit, offset }));
+    })
+  );
+
+  server.registerTool(
     'get_route_table',
     {
       title: 'Get Route Table',
@@ -4441,10 +4460,10 @@ function registerTools(server: McpServer) {
     'get_product_map',
     {
       title: 'Get Product Map',
-      description: 'What this codebase actually does, in one call — read this instead of skimming READMEs and directory trees to orient: system identity, capabilities ordered by criticality and linked to the user journeys and entities they serve, sensitive data and exposure highlights, conventions with open deviations, and health (tests, implementation gaps, top risks), each with coverage caveats so you know what the analysis is sure about. Use section to fetch one part token-efficiently, or format markdown for a compact onboarding brief.',
+      description: 'What this codebase actually does, in one call — read this instead of skimming READMEs and directory trees to orient: system identity, capabilities ordered by criticality and linked to the user journeys and entities they serve, sensitive data and exposure highlights, conventions with open deviations, health (tests, implementation gaps, top risks), and — when the repo carries infra-as-code — a runtime_topology section describing, per deployable, what ships it, the ports/services it exposes, the routes it serves, and the channels/databases/storage it provisions; each with coverage caveats so you know what the analysis is sure about. Use section to fetch one part token-efficiently, or format markdown for a compact onboarding brief.',
       inputSchema: {
         path: z.string().describe('Project path'),
-        section: z.enum(['identity', 'capabilities', 'journeys', 'data', 'conventions', 'health', 'coverage_caveats']).optional().describe('Return only one section of the map'),
+        section: z.enum(['identity', 'capabilities', 'journeys', 'data', 'conventions', 'health', 'runtime_topology', 'coverage_caveats']).optional().describe('Return only one section of the map'),
         format: z.enum(['json', 'markdown']).optional().describe("Output format: 'json' (default) or 'markdown' for a compact product brief"),
       } as any,
     } as any,
@@ -5327,6 +5346,155 @@ function registerTools(server: McpServer) {
         status: 'watching',
         workspace,
         note: 'MCP has no server-push transport; poll get_active_agents/get_in_flight_changes/check_collision for deltas. For cross-machine or SSE-style polling use HTTP GET /v1/coordination/state?workspace=&since=.',
+      });
+    })
+  );
+
+  // -- Advisory coordination fabric over MCP (CLI-parity for fab.ts) --
+  // These four tools expose the SAME advisory, awareness-first local-store
+  // primitives that apps/mcp-server/scripts/fab.ts drives from the shell, so a
+  // fleet coordinates through the product's MCP surface instead of a private
+  // script (the "coordination fabric is CLI-only" open item). They are
+  // deliberately DISTINCT from the enforced grant surface (claim_work /
+  // check_collision / release_work / get_active_agents above, backed by the
+  // grant-manager): those take/queue an ENFORCED one-grant-per-symbol lease;
+  // these are advisory claims (appendClaim / checkEditLock / getActiveClaims /
+  // releaseAgent) that never block — a claim always succeeds, collisions are
+  // surfaced as awareness, not refusals. Same semantics as fab.ts.
+  //
+  // Workspace defaults sensibly: explicit `workspace` arg wins, else the
+  // FAB_WS env, else a stable 'poc' fallback (never the cwd basename — that
+  // was the papercut that let a claim land under the wrong workspace).
+  const advisoryWorkspace = (workspace?: string): string =>
+    (workspace && workspace.trim()) || process.env.FAB_WS || 'poc';
+
+  server.registerTool(
+    'fab_claim_work',
+    {
+      title: 'Fab: Claim Work (advisory)',
+      description: 'Advisory work-claim over the same-machine coordination fabric (CLI-parity for `fab.ts claim`). AWARENESS-FIRST, NEVER A LOCKOUT: the claim always succeeds — it announces to peers on this host that you intend to touch these paths/symbols with this intent, so a fleet coordinates instead of blindly clobbering. Unlike the enforced grant surface (claim_work), this takes no lease and never queues you. Belt-and-suspenders: this ALSO runs the same overlap scan check_collision/fab_check_collision does and returns a `warning` (plus `conflicts`) inline when your paths overlap an already-active claim by another agent — so even an agent that skipped the preflight check still gets the heads-up. Call fab_release_work when done.',
+      inputSchema: {
+        agent_id: z.string().describe('Stable identifier for the calling agent/session'),
+        intent: z.string().describe('Short description of the work being claimed'),
+        paths: z.array(z.string()).optional().describe('File/dir paths this work will touch'),
+        symbols: z.array(z.string()).optional().describe('Symbol/node ids this work will touch'),
+        workspace: z.string().optional().describe('Workspace id to coordinate within (defaults to $FAB_WS, else "poc")'),
+        agent_kind: z.enum(['claude', 'cursor', 'codex', 'human', 'other']).optional().describe('Kind of agent (default claude)'),
+        ttl_ms: z.number().optional().describe('Claim TTL in ms before it is considered stale (default 6h, matching fab.ts)'),
+      } as any,
+    } as any,
+    async ({ agent_id, intent, paths, symbols, workspace, agent_kind, ttl_ms }: any) => withErrorHandling(async () => {
+      const ws = advisoryWorkspace(workspace);
+      const claimPaths: string[] = paths || [];
+      const claimSymbols: string[] = symbols || [];
+      // Belt-and-suspenders (papercut fix (b)): scan for overlap BEFORE claiming
+      // so an agent that skips fab_check_collision still gets the advisory
+      // signal. Advisory — the claim proceeds regardless.
+      const conflicts = claimPaths.length ? await checkEditLock(ws, claimPaths, agent_id) : [];
+      const now = new Date().toISOString();
+      const entry = await appendClaim(ws, {
+        claim_id: `${ws}:${agent_id}`,
+        workspace_id: ws,
+        agent_id,
+        agent_kind: (agent_kind as AgentKind) || 'claude',
+        scope: { repo: ws, paths: claimPaths, symbols: claimSymbols },
+        intent,
+        status: 'active',
+        created_at: now,
+        ttl_ms: ttl_ms ?? 6 * 60 * 60 * 1000,
+        heartbeat_at: now,
+      });
+      return json({
+        status: 'claimed',
+        workspace: ws,
+        agent_id,
+        seq: entry.seq,
+        intent,
+        paths: entry.scope.paths,
+        symbols: entry.scope.symbols,
+        conflicts,
+        warning: conflicts.length
+          ? `ADVISORY: ${conflicts.length} other agent(s) already claim overlapping paths (${conflicts
+              .map((c) => c.agent_id)
+              .join(', ')}). Your claim still succeeded — coordinate before writing.`
+          : undefined,
+      });
+    })
+  );
+
+  server.registerTool(
+    'fab_check_collision',
+    {
+      title: 'Fab: Check Collision (advisory)',
+      description: 'Read-only advisory preflight over the coordination fabric (CLI-parity for `fab.ts check`): do the proposed paths overlap any OTHER active agent\'s claim on this host? Takes no claim. Returns the conflicting active claims (agent_id + overlapping_paths) so you can coordinate before you call fab_claim_work. Awareness-only — never a gate.',
+      inputSchema: {
+        agent_id: z.string().describe('Your agent_id (excluded from the overlap scan so you do not collide with yourself)'),
+        paths: z.array(z.string()).describe('Proposed file/dir paths to check for overlap'),
+        workspace: z.string().optional().describe('Workspace id (defaults to $FAB_WS, else "poc")'),
+      } as any,
+    } as any,
+    async ({ agent_id, paths, workspace }: any) => withErrorHandling(async () => {
+      const ws = advisoryWorkspace(workspace);
+      const conflicts = await checkEditLock(ws, paths || [], agent_id);
+      return json({
+        workspace: ws,
+        agent_id,
+        paths: paths || [],
+        ok: conflicts.length === 0,
+        conflicts,
+        note: conflicts.length
+          ? `${conflicts.length} other agent(s) claim overlapping paths — advisory, coordinate before writing.`
+          : 'No conflicting active claims on those paths.',
+      });
+    })
+  );
+
+  server.registerTool(
+    'fab_release_work',
+    {
+      title: 'Fab: Release Work (advisory)',
+      description: 'Release EVERY advisory claim held by an agent on this host (CLI-parity for `fab.ts release`): drops your work-claims and edit-locks so peers see the scope free again and false-overlap awareness clears. Call the moment you are done or handing off.',
+      inputSchema: {
+        agent_id: z.string().describe('Agent id whose claims to release'),
+        workspace: z.string().optional().describe('Workspace id (defaults to $FAB_WS, else "poc")'),
+      } as any,
+    } as any,
+    async ({ agent_id, workspace }: any) => withErrorHandling(async () => {
+      const ws = advisoryWorkspace(workspace);
+      const released = await releaseAgent(ws, agent_id);
+      return json({
+        status: 'released',
+        workspace: ws,
+        agent_id,
+        released_count: released.length,
+        released: released.map((r) => ({ claim_id: r.claim_id, intent: r.intent, paths: r.scope.paths })),
+      });
+    })
+  );
+
+  server.registerTool(
+    'fab_list_active_work',
+    {
+      title: 'Fab: List Active Work (advisory)',
+      description: 'List every active advisory claim in a workspace on this host (CLI-parity for `fab.ts active`): each agent\'s intent, claimed paths, and symbols. The awareness surface — call before starting work to see who else is here and what they are touching.',
+      inputSchema: {
+        workspace: z.string().optional().describe('Workspace id (defaults to $FAB_WS, else "poc")'),
+      } as any,
+    } as any,
+    async ({ workspace }: any) => withErrorHandling(async () => {
+      const ws = advisoryWorkspace(workspace);
+      const active = await getActiveClaims(ws);
+      return json({
+        workspace: ws,
+        count: active.length,
+        active: active.map((c) => ({
+          agent_id: c.agent_id,
+          agent_kind: c.agent_kind,
+          status: c.status,
+          intent: c.intent,
+          paths: c.scope.paths,
+          symbols: c.scope.symbols,
+        })),
       });
     })
   );

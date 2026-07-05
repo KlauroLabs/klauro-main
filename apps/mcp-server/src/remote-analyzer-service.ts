@@ -17,7 +17,7 @@ import { appendSecurityAudit, assertSameTenant, defaultSecretDenyPatterns, getSe
 import { detectConceptualConflicts, type AgentInFlightState, type ConflictCas, type SymbolChange } from './coordination/conceptual-conflict';
 import { partitionTasks, type PartitionCas, type PartitionTask } from './coordination/partitioner';
 import { ingestAndPersist, loadPersistedRuntimeFacts } from './telemetry-fusion';
-import { ingestTelemetryBatch, loadTelemetryObservations, summarizeRouteMetrics } from './telemetry-ingestion';
+import { backfillIngestedTelemetry, ingestTelemetryBatch, loadTelemetryObservations, summarizeRouteMetrics } from './telemetry-ingestion';
 import { buildNodeRuntimeMetrics } from './product';
 import { getAnalysis } from './analyzer';
 import { buildSummary, getProductMap, getFlowConcepts, getArchitecturalConflicts, getParadigmConformance, getPerspectives } from './query';
@@ -738,11 +738,29 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
         const limitParam = requestUrl.searchParams.get('limit');
         const limit = limitParam ? Number(limitParam) : undefined;
         const traceId = requestUrl.searchParams.get('trace_id') || undefined;
-        const set = await loadTelemetryObservations(workspace, {
+        const loadObservations = () => loadTelemetryObservations(workspace, {
           source: 'ingested',
           ...(traceId ? { traceId } : {}),
           ...(limit && Number.isFinite(limit) && limit > 0 ? { limit } : {}),
         });
+        let set = await loadObservations();
+        // Lazy self-heal (mirrors MCP get_runtime_observations): if the loaded
+        // set still carries pre-analysis `unmatched` observations and a CAS now
+        // exists for this workspace, re-correlate + upgrade them so HTTP reads
+        // populate node-level metrics too. Best-effort, non-blocking, idempotent.
+        try {
+          const hasUnmatched = (set.observations || []).some(
+            (observation: any) => observation?.correlation?.status === 'unmatched');
+          if (hasUnmatched) {
+            const cas = await getAnalysis(workspace).catch(() => null);
+            if (cas) {
+              const backfill = await backfillIngestedTelemetry(cas, workspace).catch(() => null);
+              if (backfill && backfill.upgraded > 0) set = await loadObservations();
+            }
+          }
+        } catch {
+          /* self-heal is best-effort — never fail the read */
+        }
         // Surface any fused runtime facts persisted via /v1/telemetry/ingest for
         // the same workspace, additive — mirrors the MCP get_runtime_observations
         // shape so this HTTP read is a faithful stand-in.
@@ -768,7 +786,9 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           writeJson(response, 400, { status: 'error', error: 'workspace query param is required' });
           return;
         }
-        const set = await loadTelemetryObservations(workspace, { source: 'ingested', limit: 5000 });
+        const loadObservations = () =>
+          loadTelemetryObservations(workspace, { source: 'ingested', limit: 5000 });
+        let set = await loadObservations();
         let cas: any = null;
         try {
           cas = await getAnalysis(workspace);
@@ -778,6 +798,21 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
         if (!cas) {
           writeJson(response, 200, { status: 'success', workspace, node_metrics: [], note: 'no analysis for workspace' });
           return;
+        }
+        // Lazy self-heal: raw observations ingested pre-analysis land `unmatched`
+        // and never correlate to a CAS node, so node_metrics read empty. Now that
+        // a CAS exists, re-correlate + upgrade them here so the node-metrics read
+        // populates on demand (this is what makes VPS self-telemetry node-metrics
+        // fill in on read). Best-effort, idempotent; reload to reflect upgrades.
+        try {
+          const hasUnmatched = (set.observations || []).some(
+            (observation: any) => observation?.correlation?.status === 'unmatched');
+          if (hasUnmatched) {
+            const backfill = await backfillIngestedTelemetry(cas, workspace).catch(() => null);
+            if (backfill && backfill.upgraded > 0) set = await loadObservations();
+          }
+        } catch {
+          /* self-heal is best-effort — never fail the read */
         }
         const nodeMetrics = buildNodeRuntimeMetrics(cas, set.observations || []);
         writeJson(response, 200, {

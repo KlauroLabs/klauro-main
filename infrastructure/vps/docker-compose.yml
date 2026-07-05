@@ -11,12 +11,18 @@ services:
       # Dogfood Klauro's own runtime telemetry: the service emits one runtime
       # event per inbound HTTP request via @klauro/telemetry and self-ingests it
       # into the observation store, correlated against Klauro's OWN analysis.
-      # KLAURO_SELF_TELEMETRY_PROJECT keys observations to the deployed source
-      # path, so `GET /v1/telemetry/node-metrics?workspace=/opt/klauro/source`
-      # reads back per-node traffic/error-rate/latency for Klauro itself.
+      # KLAURO_SELF_TELEMETRY_PROJECT keys observations to a source path that is
+      # PRESENT IN THE CONTAINER. The image copies apps/mcp-server to
+      # /app/apps/mcp-server (see apps/api/Dockerfile), so /app/apps/mcp-server/src
+      # is the mcp-server's own HTTP-handler source — analyzable and readable back
+      # via `GET /v1/telemetry/node-metrics?workspace=/app/apps/mcp-server/src`.
+      # The old host path (/opt/klauro/source) is NOT mounted into the container,
+      # so no analysis of it ever existed and node-level correlation never happened.
+      # On enable the self-loop bootstraps ONE bounded analysis of this dir if none
+      # exists, so node-level self-telemetry works out of the box.
       # ENDPOINT is left UNSET on purpose → in-process transport (no network hop).
       KLAURO_SELF_TELEMETRY: "1"
-      KLAURO_SELF_TELEMETRY_PROJECT: /opt/klauro/source
+      KLAURO_SELF_TELEMETRY_PROJECT: /app/apps/mcp-server/src
     expose:
       - "8787"
     volumes:

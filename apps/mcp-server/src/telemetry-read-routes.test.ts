@@ -24,10 +24,12 @@ interface Ctx {
   server: ReturnType<typeof createRemoteAnalyzerHttpServer>;
   base: string;
   workspace: string;
+  analyzeAndSave: () => Promise<void>;
   cleanup: () => Promise<void>;
 }
 
-async function boot(): Promise<Ctx> {
+async function boot(opts: { preAnalyze?: boolean } = {}): Promise<Ctx> {
+  const preAnalyze = opts.preAnalyze !== false;
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-telemetry-routes-'));
   const storage = path.join(root, 'storage');
   const remoteData = path.join(root, 'remote-data');
@@ -57,10 +59,13 @@ async function boot(): Promise<Ctx> {
     ].join('\n'),
   );
 
-  const cas = await analyzeProject(projectDir);
   // Persist so getAnalysis(projectDir) resolves it inside the HTTP handler.
   const { saveAnalysis } = await import('./storage');
-  await saveAnalysis(projectDir, cas);
+  const analyzeAndSave = async () => {
+    const cas = await analyzeProject(projectDir);
+    await saveAnalysis(projectDir, cas);
+  };
+  if (preAnalyze) await analyzeAndSave();
 
   const server = createRemoteAnalyzerHttpServer({ dataDir: remoteData });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -70,6 +75,7 @@ async function boot(): Promise<Ctx> {
     server,
     base: `http://127.0.0.1:${address.port}`,
     workspace: projectDir,
+    analyzeAndSave,
     cleanup: async () => {
       await new Promise<void>((r) => server.close(() => r()));
       if (prev.storage === undefined) delete process.env.KLAURO_STORAGE_PATH; else process.env.KLAURO_STORAGE_PATH = prev.storage;
@@ -130,6 +136,58 @@ test('telemetry routes: reconcile POST → observations + node-metrics read-back
     const errNode = nm.body.node_metrics.find((m: any) => m.error_count > 0);
     assert.ok(errNode && errNode.error_rate > 0, 'error node should carry a non-zero error_rate');
     assert.ok(errNode.latency && typeof errNode.latency.p95_ms !== 'undefined', 'latency percentiles present');
+  } finally {
+    await ctx.cleanup();
+  }
+});
+
+test('telemetry routes: node-metrics read self-heals pre-analysis unmatched observations', async () => {
+  // VERIFY(1): emit observations BEFORE analysis, analyze, then READ node-metrics
+  // over HTTP — the read must lazily backfill so node metrics populate. This is
+  // what makes VPS self-telemetry node-metrics fill in on read.
+  const ctx = await boot({ preAnalyze: false });
+  try {
+    const ws = encodeURIComponent(ctx.workspace);
+
+    // 1. Ingest telemetry for /items/:id while NO analysis exists → unmatched.
+    const recon = await postJson(ctx.base, `/api/telemetry/runtime-events/${ws}`, {
+      events: [
+        { type: 'request', method: 'GET', route: '/items/:id', path: '/items/1', status_code: 200, duration_ms: 10, trace_id: 'pre-1' },
+        { type: 'request', method: 'GET', route: '/items/:id', path: '/items/2', status_code: 200, duration_ms: 20, trace_id: 'pre-2' },
+        { type: 'error', method: 'GET', route: '/items/:id', path: '/items/3', status_code: 500, duration_ms: 55, error_message: 'boom', trace_id: 'pre-3' },
+      ],
+    });
+    assert.equal(recon.status, 200);
+    assert.equal(recon.body.event_count, 3);
+    assert.equal(recon.body.correlation_summary.unmatched, 3, 'all 3 land unmatched pre-analysis');
+
+    // 2. node-metrics with observations present but no CAS → empty + note.
+    const before = await getJson(ctx.base, `/v1/telemetry/node-metrics?workspace=${ws}`);
+    assert.equal(before.status, 200);
+    assert.deepEqual(before.body.node_metrics, []);
+    assert.equal(before.body.note, 'no analysis for workspace');
+
+    // 3. Analysis now exists.
+    await ctx.analyzeAndSave();
+
+    // 4. READ node-metrics again — the route now transitions from the empty
+    //    `no analysis` note to a populated rollup that aggregates the SAME
+    //    observations ingested pre-analysis. That transition (empty→populated on
+    //    read, with the analysis appearing only between the two reads) is the
+    //    self-heal: the read lazily loaded the CAS, ran the backfill, and
+    //    surfaced the previously-inert observations as node metrics.
+    const after = await getJson(ctx.base, `/v1/telemetry/node-metrics?workspace=${ws}`);
+    assert.equal(after.status, 200);
+    assert.notEqual(after.body.note, 'no analysis for workspace', 'CAS now resolves on read');
+    assert.ok(
+      Array.isArray(after.body.node_metrics) && after.body.node_metrics.length > 0,
+      'node_metrics populate on read after self-heal',
+    );
+    const totalReq = after.body.node_metrics.reduce((s: number, m: any) => s + m.request_count, 0);
+    const totalErr = after.body.node_metrics.reduce((s: number, m: any) => s + m.error_count, 0);
+    assert.equal(totalReq, 3, 'all three pre-analysis observations now aggregate into node metrics');
+    assert.equal(totalErr, 1, 'the pre-analysis error aggregates too');
+    assert.equal(after.body.observation_count, 3, 'all pre-analysis observations are read back');
   } finally {
     await ctx.cleanup();
   }

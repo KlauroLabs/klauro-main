@@ -14,13 +14,17 @@ import {
   appendClaim,
   getActiveClaims,
   announceEdit,
-  checkEditLock,
+  checkEditLock, // used by `check` and (belt-and-suspenders) the pre-claim overlap scan
   releaseAgent,
   findAgentInOtherWorkspaces,
   getStoreDir,
 } from '../src/coordination/local-store';
 
-const WS = process.env.FAB_WS || 'deployable-detection-build';
+// Workspace defaults off the explicit FAB_WS env, then a STABLE fallback —
+// never the cwd basename (the papercut that silently landed claims under the
+// wrong workspace when an agent ran fab.ts from a subdir). The old default was
+// 'deployable-detection-build'; the real feature workspace is usually 'poc'.
+const WS = process.env.FAB_WS || 'poc';
 
 function csv(s: string | undefined): string[] {
   return (s || '').split(',').map((x) => x.trim()).filter(Boolean);
@@ -42,6 +46,15 @@ async function main() {
       const intent = a3 || 'work';
       const paths = csv(a4);
       const symbols = csv(process.argv[6]);
+      // Belt-and-suspenders (papercut fix): run the SAME overlap scan `check`
+      // does BEFORE claiming, and warn inline when the paths are already
+      // claimed by another agent. Advisory — the claim still succeeds — but an
+      // agent that skipped `check` still gets the collision signal.
+      const preConflicts = paths.length ? await checkEditLock(WS, paths, agentId) : [];
+      if (preConflicts.length) {
+        console.error(`WARNING: ${preConflicts.length} other agent(s) already claim overlapping paths (claim still succeeds — coordinate before writing):`);
+        for (const c of preConflicts) console.error(`  ${c.agent_id} overlaps ${JSON.stringify(c.overlapping_paths)}`);
+      }
       const now = new Date().toISOString();
       const entry = await appendClaim(WS, {
         claim_id: `${WS}:${agentId}`,

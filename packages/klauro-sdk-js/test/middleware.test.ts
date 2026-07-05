@@ -7,6 +7,7 @@ import { klauroExpress, klauroExpressErrorHandler } from '../src/middleware/expr
 import { klauroKoa } from '../src/middleware/koa';
 import { klauroFastify } from '../src/middleware/fastify';
 import { KlauroInterceptor } from '../src/middleware/nestjs';
+import { klauroHttp, instrumentHttpServer } from '../src/middleware/http';
 
 function collector() {
   const events: CasRuntimeEvent[] = [];
@@ -111,6 +112,82 @@ test('fastify plugin registers hooks and emits an event on response', async () =
   assert.equal(events[0].route, '/things/:id');
   assert.equal(events[0].type, 'request');
   assert.equal(typeof events[0].duration_ms, 'number');
+});
+
+test('http adapter records method, path, status, high-res duration on finish', async () => {
+  const { events, client } = collector();
+  let handled = false;
+  const wrapped = klauroHttp((_req: any, _res: any) => { handled = true; }, client);
+
+  const req = { method: 'GET', url: '/items/42' };
+  const res = new MockRes();
+  res.statusCode = 200;
+  wrapped(req as never, res as never);
+  assert.ok(handled, 'inner handler is invoked');
+  res.emit('finish');
+  await client.flush();
+
+  assert.equal(events.length, 1);
+  assert.equal(events[0].type, 'request');
+  assert.equal(events[0].method, 'GET');
+  assert.equal(events[0].path, '/items/42');
+  assert.equal(events[0].status_code, 200);
+  assert.equal(typeof events[0].duration_ms, 'number');
+});
+
+test('http adapter classifies 5xx as an error event', async () => {
+  const { events, client } = collector();
+  const wrapped = klauroHttp((_req: any, _res: any) => undefined, client);
+  const res = new MockRes();
+  res.statusCode = 503;
+  wrapped({ method: 'POST', url: '/boom' } as never, res as never);
+  res.emit('finish');
+  await client.flush();
+
+  assert.equal(events.length, 1);
+  assert.equal(events[0].type, 'error');
+  assert.equal(events[0].status_code, 503);
+});
+
+test('http adapter is a no-op passthrough with no client (still calls handler)', () => {
+  let handled = false;
+  const wrapped = klauroHttp((_req: any, _res: any) => { handled = true; }, undefined);
+  const res = new MockRes();
+  wrapped({ method: 'GET', url: '/x' } as never, res as never);
+  res.emit('finish');
+  assert.ok(handled, 'original handler runs even without a client');
+});
+
+test('instrumentHttpServer rewraps existing request listeners', async () => {
+  const { events, client } = collector();
+  let handled = false;
+  const listeners: Array<(req: any, res: any) => void> = [
+    (_req, _res) => { handled = true; },
+  ];
+  const fakeServer = {
+    listeners: (_e: 'request') => listeners.slice(),
+    removeListener(_e: 'request', l: (req: any, res: any) => void) {
+      const i = listeners.indexOf(l);
+      if (i >= 0) listeners.splice(i, 1);
+      return this;
+    },
+    on(_e: 'request', l: (req: any, res: any) => void) {
+      listeners.push(l);
+      return this;
+    },
+  };
+  instrumentHttpServer(fakeServer as never, client);
+
+  assert.equal(listeners.length, 1, 'listener count preserved');
+  const res = new MockRes();
+  res.statusCode = 200;
+  listeners[0]({ method: 'GET', url: '/wrapped' }, res);
+  assert.ok(handled, 'wrapped listener still runs the original');
+  res.emit('finish');
+  await client.flush();
+
+  assert.equal(events.length, 1);
+  assert.equal(events[0].path, '/wrapped');
 });
 
 // Minimal rxjs-Observable stand-in: constructor(subscribeFn), pipe(), subscribe().
