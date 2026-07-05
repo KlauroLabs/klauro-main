@@ -1,0 +1,43 @@
+# Koa-style router pack — proof pack #1: migrating a coded-analyzer-equivalent
+# pattern (`app.get/post/put/.../delete('/path', handler)`) to pure declaration.
+# Klauro's Express analyzer hand-codes the same shape with regex; this pack
+# produces the SAME kind of entry_point facts from a real tree-sitter query
+# instead, on any framework using this exact chained-method-call convention
+# (Koa, and any hand-rolled router following the same call shape).
+#
+# Grounded against the real tree-sitter-typescript grammar (see
+# docs/SPEC-ANALYZER-PACKS.md "AST grounding"): `router.get('/x', handler)`
+# parses as call_expression -> function:(member_expression object property)
+# arguments:(arguments (string (string_fragment)) (identifier)).
+pack: koa-routes
+name: Koa-style Router Routes
+version: "0.1.0"
+language: typescript
+
+applies_when:
+  dependency:
+    - koa
+    - "@koa/router"
+    - koa-router
+  import:
+    - "from ['\"]koa['\"]"
+    - "require\\(\\s*['\"]koa['\"]\\s*\\)"
+
+rules:
+  - name: route-call
+    query: |
+      (call_expression
+        function: (member_expression
+          object: (identifier) @receiver
+          property: (property_identifier) @method)
+        arguments: (arguments
+          (string (string_fragment) @path)
+          (identifier) @handler)
+        (#any-of? @method "get" "post" "put" "delete" "patch" "all")
+      )
+    emit:
+      - fact: entry_point
+        kind: http
+        method: "@method"
+        path: "@path"
+        handler: "@handler"

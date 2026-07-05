@@ -1,0 +1,44 @@
+# Hapi-style router pack — proof pack #2: a "community" example for a
+# framework Klauro does NOT hand-code an analyzer for. Hapi routes are
+# registered as an object literal: `server.route({ method, path, handler })`,
+# a shape a regex-based analyzer would need bespoke logic for; here it is pure
+# declaration end to end (grammar + query + emit, no engine code changes).
+#
+# Grounded against the real tree-sitter-typescript grammar: the call
+# `server.route({ method: 'GET', path: '/x', handler: fn })` parses as
+# call_expression -> arguments:(arguments (object (pair ...) (pair ...) (pair ...))),
+# each pair keyed by a property_identifier matched via #eq? predicates.
+pack: hapi-routes
+name: Hapi Route Registration
+version: "0.1.0"
+language: typescript
+
+applies_when:
+  dependency:
+    - "@hapi/hapi"
+    - hapi
+  import:
+    - "from ['\"]@hapi/hapi['\"]"
+    - "require\\(\\s*['\"]@hapi/hapi['\"]\\s*\\)"
+
+rules:
+  - name: route-object-call
+    query: |
+      (call_expression
+        function: (member_expression
+          object: (identifier)
+          property: (property_identifier) @_call
+          (#eq? @_call "route"))
+        arguments: (arguments
+          (object
+            (pair key: (property_identifier) @_mkey value: (string (string_fragment) @method) (#eq? @_mkey "method"))
+            (pair key: (property_identifier) @_pkey value: (string (string_fragment) @path) (#eq? @_pkey "path"))
+            (pair key: (property_identifier) @_hkey value: (identifier) @handler (#eq? @_hkey "handler"))
+          ))
+      )
+    emit:
+      - fact: entry_point
+        kind: http
+        method: "@method"
+        path: "@path"
+        handler: "@handler"
