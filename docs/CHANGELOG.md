@@ -5,6 +5,23 @@ agent-feedback reports (`~/.klauro/agent-feedback/*.md`) — nothing is asserted
 Where an item was still in flight at the time this entry was written, it is marked **pending
 final verify** rather than presented as done.
 
+## v1.0.23 — Telemetry durability: persist raw, correlate lazily (2026-07-05)
+
+Found by dogfooding self-telemetry on Klauro's own production: ingest **dropped the entire batch**
+when the project had no prior analysis (`No analysis found → dropping batch`, once per request), and the
+SDK's HTTP ingest route 404'd and requeued forever. Telemetry should never be lost because the code
+isn't analyzed yet.
+
+### Fixed
+- `ingestTelemetryBatch(cas: CASOutput | null, …)` — a null CAS is now valid: raw runtime observations
+  (route/method/status/duration/error/timestamp) **persist verbatim** to the same store
+  `loadTelemetryObservations` reads; correlation to CAS nodes happens lazily when an analysis exists (the
+  with-analysis fusion path is unchanged, no regression). The self-loop no longer drops or log-spams; the
+  SDK route `POST /api/telemetry/runtime-events/:projectId` acks **200** instead of 404.
+- New `summarizeRouteMetrics()` — CAS-free per route+method aggregation (request_count / error_rate /
+  p50 / p95 / p99 / max), surfaced additively as `route_metrics` on `GET /v1/telemetry/observations` so
+  traffic + latency are visible **before** a project is analyzed.
+
 ## v1.0.22 — Telemetry read-back + ingest reconcile + self-telemetry on Klauro itself (2026-07-05)
 
 Closing the v1.0.21 telemetry follow-ups + turning the self-loop on.

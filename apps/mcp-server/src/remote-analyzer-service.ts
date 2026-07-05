@@ -17,7 +17,7 @@ import { appendSecurityAudit, assertSameTenant, defaultSecretDenyPatterns, getSe
 import { detectConceptualConflicts, type AgentInFlightState, type ConflictCas, type SymbolChange } from './coordination/conceptual-conflict';
 import { partitionTasks, type PartitionCas, type PartitionTask } from './coordination/partitioner';
 import { ingestAndPersist, loadPersistedRuntimeFacts } from './telemetry-fusion';
-import { ingestTelemetryBatch, loadTelemetryObservations } from './telemetry-ingestion';
+import { ingestTelemetryBatch, loadTelemetryObservations, summarizeRouteMetrics } from './telemetry-ingestion';
 import { buildNodeRuntimeMetrics } from './product';
 import { getAnalysis } from './analyzer';
 import { buildSummary, getProductMap, getFlowConcepts, getArchitecturalConflicts, getParadigmConformance, getPerspectives } from './query';
@@ -193,18 +193,16 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
         }
         const body = await readJsonBody<{ events?: CasRuntimeEvent[] }>(request, maxBodyBytes);
         const events = Array.isArray(body.events) ? body.events : [];
-        let cas: any;
+        // Raw observations MUST persist regardless of analysis state. A missing
+        // analysis is NOT a drop reason: fall back to `null` cas so the raw
+        // events (route/status/duration/error/timestamp) are stored as
+        // `unmatched`, and ack 200 so the SDK does not requeue forever.
+        // Correlation happens lazily once an analysis exists.
+        let cas: any = null;
         try {
           cas = await getAnalysis(projectId);
         } catch {
-          // No analysis for this project yet: cannot correlate. Return 404 so
-          // the SDK requeues rather than silently dropping (matches the SDK's
-          // res.ok contract in client.ts flush()).
-          writeJson(response, 404, {
-            status: 'error',
-            error: `no analysis for project ${projectId}; analyze it before ingesting runtime events`,
-          });
-          return;
+          cas = null;
         }
         const result = await ingestTelemetryBatch(cas, projectId, events.map(mapSdkEvent), { persist: true });
         await appendAuditLog(dataDir, {
@@ -749,10 +747,16 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
         // the same workspace, additive — mirrors the MCP get_runtime_observations
         // shape so this HTTP read is a faithful stand-in.
         const fused = await loadPersistedRuntimeFacts(dataDir, workspace).catch(() => null);
+        // Raw per-route+method traffic/latency, aggregated CAS-free so it is
+        // visible even before the workspace has any analysis. Additive.
+        const routeMetrics = summarizeRouteMetrics(set.observations || []);
         writeJson(response, 200, {
           status: 'success',
           workspace,
           ...set,
+          route_metrics: routeMetrics,
+          route_metrics_guidance:
+            'Per route+method request_count/error_rate/p50/p95/p99 aggregated from raw observations. Available with or without an analysis; correlate to CAS via /v1/telemetry/node-metrics once the workspace is analyzed.',
           ...(fused?.facts?.length ? { fused_runtime_facts: fused.facts, fused_updated_at: fused.updated_at } : {}),
         });
         return;

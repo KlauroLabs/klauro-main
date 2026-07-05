@@ -164,12 +164,22 @@ function localIngestFetch(projectPath: string): typeof fetch {
     try {
       const events = parseSdkBatch(init?.body);
       if (events.length > 0) {
-        const cas = await getAnalysis(projectPath);
+        // Raw observations MUST persist regardless of analysis state. Try to load
+        // the CAS for correlation, but a missing analysis is NOT a drop reason:
+        // fall back to `null` so ingestTelemetryBatch stores the raw events
+        // (route/status/duration/error/timestamp) as `unmatched`. Correlation
+        // happens lazily once an analysis exists — telemetry is never lost.
+        let cas: Awaited<ReturnType<typeof getAnalysis>> | null = null;
+        try {
+          cas = await getAnalysis(projectPath);
+        } catch {
+          cas = null;
+        }
         await ingestTelemetryBatch(cas, projectPath, events.map(mapSdkEvent), { persist: true });
       }
     } catch (err) {
       process.stderr.write(
-        `Klauro self-telemetry local ingest failed (dropping batch): ${err instanceof Error ? err.message : String(err)}\n`,
+        `Klauro self-telemetry local ingest failed: ${err instanceof Error ? err.message : String(err)}\n`,
       );
     }
     // Minimal Response-like object the SDK treats as success (res.ok === true).

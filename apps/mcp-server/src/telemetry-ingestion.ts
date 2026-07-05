@@ -102,8 +102,32 @@ export interface TelemetryLoadOptions {
   limit?: number;
 }
 
+/**
+ * Empty CAS stub used when a batch arrives for a project that has NO analysis
+ * yet. Every correlation helper the ingest path reaches (`resolveHintNode`,
+ * `correlateRuntimeEvent` and its `match*`/`staticRefForId` helpers) reads CAS
+ * collections via `.find`/`.filter`, so `nodes: []` + empty arrays make them all
+ * resolve to `unmatched` without any code duplication. The raw observation —
+ * route, method, status, duration, error, timestamp — is still normalized and
+ * persisted verbatim; only the CAS correlation is skipped (to be redone lazily
+ * once an analysis exists). This is why telemetry is never dropped pre-analysis.
+ */
+function emptyCasStub(): CASOutput {
+  return { nodes: [], edges: [] } as unknown as CASOutput;
+}
+
+/**
+ * Ingest a batch of runtime events, persisting raw observations regardless of
+ * whether the project has been analyzed.
+ *
+ * `cas` may be `null` — when it is (no analysis found for the project yet), the
+ * events are STILL normalized and persisted to the same runtime-observation
+ * store `loadTelemetryObservations` reads from, marked `unmatched`. Correlation
+ * against a CAS happens lazily: now if an analysis exists, later if one appears.
+ * Telemetry must never be silently lost just because analysis hasn't run.
+ */
 export async function ingestTelemetryBatch(
-  cas: CASOutput,
+  cas: CASOutput | null,
   projectPath: string,
   events: TelemetryEvent[],
   options: { persist?: boolean } = {},
@@ -113,16 +137,17 @@ export async function ingestTelemetryBatch(
   const accepted = (events || []).slice(0, MAX_BATCH_SIZE);
   const ingestionId = `ingest_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
   const observations: RuntimeObservation[] = [];
+  const correlationCas = cas ?? emptyCasStub();
 
   for (let index = 0; index < accepted.length; index += 1) {
-    const event = normalizeTelemetryEvent(cas, accepted[index]);
+    const event = normalizeTelemetryEvent(correlationCas, accepted[index]);
     observations.push({
       id: `${ingestionId}_${index + 1}`,
       project_path: projectPath,
       recorded_at: receivedAt,
       source: 'ingested',
       event,
-      correlation: correlateRuntimeEvent(cas, event),
+      correlation: correlateRuntimeEvent(correlationCas, event),
     });
   }
 
@@ -428,6 +453,75 @@ export interface TelemetryObservationSet {
   ingested_count: number;
   simulated_count: number;
   observations: RuntimeObservation[];
+}
+
+/** Per route+method traffic/latency, aggregated from RAW observations (no CAS). */
+export interface RouteRuntimeMetrics {
+  route: string;
+  method?: string;
+  request_count: number;
+  error_count: number;
+  error_rate: number;
+  status_code_distribution: Record<string, number>;
+  latency: { p50_ms?: number; p95_ms?: number; p99_ms?: number; max_ms?: number };
+}
+
+function percentile(sortedAsc: number[], p: number): number | undefined {
+  if (sortedAsc.length === 0) return undefined;
+  const rank = Math.min(sortedAsc.length - 1, Math.ceil((p / 100) * sortedAsc.length) - 1);
+  return sortedAsc[Math.max(0, rank)];
+}
+
+/**
+ * Aggregate raw runtime observations into per-route+method metrics
+ * (request_count / error_rate / p50 / p95 / p99 / max latency). CAS-free: works
+ * purely off the persisted observation records, so traffic and latency are
+ * visible even before the project has any analysis. Additive read-side helper.
+ */
+export function summarizeRouteMetrics(observations: RuntimeObservation[]): RouteRuntimeMetrics[] {
+  const groups = new Map<string, { route: string; method?: string; durations: number[]; errors: number; total: number; statuses: Record<string, number> }>();
+
+  for (const observation of observations) {
+    const event = observation.event;
+    const route = event.route || event.path;
+    if (!route) continue;
+    const method = event.method ? event.method.toUpperCase() : undefined;
+    const key = `${method || ''} ${route}`;
+    let group = groups.get(key);
+    if (!group) {
+      group = { route, method, durations: [], errors: 0, total: 0, statuses: {} };
+      groups.set(key, group);
+    }
+    group.total += 1;
+    if (typeof event.duration_ms === 'number' && Number.isFinite(event.duration_ms)) {
+      group.durations.push(event.duration_ms);
+    }
+    const status = event.status_code;
+    if (typeof status === 'number') {
+      group.statuses[String(status)] = (group.statuses[String(status)] || 0) + 1;
+    }
+    if (event.type === 'error' || (typeof status === 'number' && status >= 500)) {
+      group.errors += 1;
+    }
+  }
+
+  return [...groups.values()].map(group => {
+    const sorted = [...group.durations].sort((a, b) => a - b);
+    return {
+      route: group.route,
+      ...(group.method ? { method: group.method } : {}),
+      request_count: group.total,
+      error_count: group.errors,
+      error_rate: group.total > 0 ? Math.round((group.errors / group.total) * 1000) / 1000 : 0,
+      status_code_distribution: group.statuses,
+      latency: {
+        ...(percentile(sorted, 50) !== undefined ? { p50_ms: percentile(sorted, 50) } : {}),
+        ...(percentile(sorted, 95) !== undefined ? { p95_ms: percentile(sorted, 95) } : {}),
+        ...(percentile(sorted, 99) !== undefined ? { p99_ms: percentile(sorted, 99) } : {}),
+        ...(sorted.length ? { max_ms: sorted[sorted.length - 1] } : {}),
+      },
+    };
+  }).sort((left, right) => right.error_count - left.error_count || right.request_count - left.request_count);
 }
 
 export async function loadTelemetryObservations(

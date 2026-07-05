@@ -11,6 +11,7 @@ import {
   ingestedTelemetryDir,
   loadIngestedTelemetry,
   loadTelemetryObservations,
+  summarizeRouteMetrics,
   type TelemetryEvent,
 } from './telemetry-ingestion';
 
@@ -130,6 +131,48 @@ test('ingestTelemetryBatch correlates events and reports unmatched hints instead
     const stored = await loadIngestedTelemetry(root);
     assert.equal(stored.length, 5);
     assert.equal(stored.filter(observation => observation.correlation.status === 'unmatched').length, 2);
+  });
+});
+
+test('ingestTelemetryBatch persists raw observations when there is NO analysis (cas=null)', async () => {
+  await withTempStorage(async root => {
+    // Simulate the "project not analyzed yet" path: pass cas=null. Raw runtime
+    // observations MUST still persist (route/status/duration/error/timestamp),
+    // marked unmatched — never dropped just because analysis has not run.
+    const events: TelemetryEvent[] = [
+      { kind: 'request', method: 'GET', path: '/opt/klauro/health', status: 200, duration_ms: 8 },
+      { kind: 'request', method: 'GET', path: '/opt/klauro/health', status: 200, duration_ms: 12 },
+      { kind: 'error', method: 'POST', path: '/opt/klauro/analyze', status: 500, duration_ms: 250, error: { message: 'boom' } },
+    ];
+
+    const result = await ingestTelemetryBatch(null, root, events);
+
+    assert.equal(result.event_count, 3, 'all raw events ingested, none dropped');
+    assert.equal(result.correlation_summary.matched, 0);
+    assert.equal(result.correlation_summary.partial, 0);
+    assert.equal(result.correlation_summary.unmatched, 3, 'no CAS => all unmatched');
+
+    // Persisted to the SAME store loadTelemetryObservations reads from.
+    const stored = await loadIngestedTelemetry(root);
+    assert.equal(stored.length, 3, 'raw observations persisted without a CAS');
+    const errObs = stored.find(o => o.event.type === 'error');
+    assert.ok(errObs, 'error observation persisted');
+    assert.equal(errObs!.event.status_code, 500);
+    assert.equal(errObs!.event.duration_ms, 250);
+    assert.ok(errObs!.event.timestamp, 'timestamp preserved on raw observation');
+
+    const set = await loadTelemetryObservations(root, { source: 'ingested' });
+    assert.equal(set.ingested_count, 3);
+
+    // CAS-free per-route aggregation is visible pre-analysis.
+    const metrics = summarizeRouteMetrics(set.observations);
+    const health = metrics.find(m => m.route === '/opt/klauro/health');
+    assert.ok(health, 'per-route metric for /health');
+    assert.equal(health!.request_count, 2);
+    assert.equal(health!.error_count, 0);
+    assert.equal(typeof health!.latency.p50_ms, 'number');
+    const analyze = metrics.find(m => m.route === '/opt/klauro/analyze');
+    assert.ok(analyze && analyze.error_count === 1 && analyze.error_rate === 1);
   });
 });
 

@@ -151,9 +151,34 @@ test('telemetry routes: graceful degradation without a CAS', async () => {
     assert.equal(obs.status, 200);
     assert.equal(obs.body.ingested_count, 0);
 
-    // reconcile with no analysis → 404 (SDK requeue contract), not silent drop.
-    const recon = await postJson(ctx.base, `/api/telemetry/runtime-events/${missing}`, { events: [{ type: 'request', status_code: 200 }] });
-    assert.equal(recon.status, 404);
+    // reconcile with no analysis → 200 and the raw observation PERSISTS
+    // (uncorrelated). Telemetry is never dropped just because the project has
+    // not been analyzed yet; correlation happens lazily once an analysis exists.
+    const recon = await postJson(ctx.base, `/api/telemetry/runtime-events/${missing}`, {
+      events: [
+        { type: 'request', method: 'GET', path: '/widgets', status_code: 200, duration_ms: 12 },
+        { type: 'error', method: 'GET', path: '/widgets', status_code: 500, duration_ms: 40 },
+      ],
+    });
+    assert.equal(recon.status, 200, 'no-analysis ingest acks 200, not 404');
+    assert.equal(recon.body.event_count, 2, 'both raw events ingested');
+    assert.equal(recon.body.correlation_summary.unmatched, 2, 'stored as unmatched (no CAS)');
+
+    // ...and the raw records are readable back with real status/duration, plus a
+    // CAS-free per-route aggregation, even with no analysis for the workspace.
+    const obs2 = await getJson(ctx.base, `/v1/telemetry/observations?workspace=${missing}`);
+    assert.equal(obs2.status, 200);
+    assert.equal(obs2.body.ingested_count, 2, 'raw observations persisted pre-analysis');
+    assert.ok(
+      obs2.body.observations.some((o: any) => o.event.status_code === 500 && o.event.duration_ms === 40),
+      'raw error observation carries real status + duration',
+    );
+    assert.ok(Array.isArray(obs2.body.route_metrics), 'route_metrics is present without a CAS');
+    const widgetMetric = obs2.body.route_metrics.find((m: any) => m.route === '/widgets');
+    assert.ok(widgetMetric, 'per-route aggregation for /widgets');
+    assert.equal(widgetMetric.request_count, 2);
+    assert.equal(widgetMetric.error_count, 1);
+    assert.ok(widgetMetric.error_rate > 0 && typeof widgetMetric.latency.p95_ms === 'number');
 
     // missing workspace query param → 400.
     const bad = await getJson(ctx.base, `/v1/telemetry/observations`);
