@@ -5,6 +5,25 @@ agent-feedback reports (`~/.klauro/agent-feedback/*.md`) — nothing is asserted
 Where an item was still in flight at the time this entry was written, it is marked **pending
 final verify** rather than presented as done.
 
+## v1.0.22 — Telemetry read-back + ingest reconcile + self-telemetry on Klauro itself (2026-07-05)
+
+Closing the v1.0.21 telemetry follow-ups + turning the self-loop on.
+
+### Added
+- **Runtime-observation read API** on the deployed analyzer service: `GET /v1/telemetry/observations`
+  (raw observations, no CAS required) and `GET /v1/telemetry/node-metrics` (per-node traffic /
+  error_rate / p50-p95-p99 latency / status distribution, correlated to CAS nodes when an analysis exists).
+- **Self-telemetry enabled on Klauro's own infra** — `KLAURO_SELF_TELEMETRY=1`,
+  `KLAURO_SELF_TELEMETRY_PROJECT=/opt/klauro/source`, in-process transport. Klauro now emits its own
+  runtime signal, correlated to its own static graph — the product dogfooding itself.
+
+### Fixed
+- **SDK↔server ingest-path reconcile (P1):** `POST /api/telemetry/runtime-events/:projectId` (the path the
+  SDK actually POSTs) now routes through the same ingest as the self-loop. It was structurally unreachable —
+  the `/api/` prefix is a reserved account-session namespace whose guard 401'd before any telemetry handler
+  ran; fixed by intercepting the telemetry path above that guard with analyzer-auth. The installable SDK now
+  ingests against a real server instead of 404-ing.
+
 ## v1.0.21 — Coverage explosion + installable telemetry + self-improving intelligence (2026-07-05)
 
 The largest single-session expansion. A ~14-agent heterogeneous fleet (Claude + Codex on one

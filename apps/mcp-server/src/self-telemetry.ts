@@ -185,8 +185,14 @@ function parseSdkBatch(body: unknown): CasRuntimeEvent[] {
   return Array.isArray(parsed.events) ? parsed.events : [];
 }
 
-/** Map the SDK's CasRuntimeEvent onto the local ingest TelemetryEvent shape. */
-function mapSdkEvent(event: CasRuntimeEvent): TelemetryEvent {
+/**
+ * Map the SDK's CasRuntimeEvent onto the local ingest TelemetryEvent shape.
+ * Exported so the remote-analyzer HTTP `/api/telemetry/runtime-events/:projectId`
+ * ingest-reconcile route (the path a customer-installed SDK POSTs to) maps SDK
+ * batches with the EXACT same field mapping as the in-process self-loop, rather
+ * than duplicating the translation.
+ */
+export function mapSdkEvent(event: CasRuntimeEvent): TelemetryEvent {
   const kind: TelemetryEvent['kind'] =
     event.type === 'error' ? 'error' :
     event.type === 'log' ? 'log' :

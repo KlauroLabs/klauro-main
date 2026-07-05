@@ -7,6 +7,16 @@ services:
     restart: unless-stopped
     env_file:
       - /opt/klauro/.env
+    environment:
+      # Dogfood Klauro's own runtime telemetry: the service emits one runtime
+      # event per inbound HTTP request via @klauro/telemetry and self-ingests it
+      # into the observation store, correlated against Klauro's OWN analysis.
+      # KLAURO_SELF_TELEMETRY_PROJECT keys observations to the deployed source
+      # path, so `GET /v1/telemetry/node-metrics?workspace=/opt/klauro/source`
+      # reads back per-node traffic/error-rate/latency for Klauro itself.
+      # ENDPOINT is left UNSET on purpose → in-process transport (no network hop).
+      KLAURO_SELF_TELEMETRY: "1"
+      KLAURO_SELF_TELEMETRY_PROJECT: /opt/klauro/source
     expose:
       - "8787"
     volumes:

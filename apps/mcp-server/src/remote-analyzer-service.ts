@@ -16,10 +16,13 @@ import { deriveActiveClaims } from './coordination/presence';
 import { appendSecurityAudit, assertSameTenant, defaultSecretDenyPatterns, getSecurityStoreDir, redactInFlightChanges, TenantMismatchError } from './coordination/security';
 import { detectConceptualConflicts, type AgentInFlightState, type ConflictCas, type SymbolChange } from './coordination/conceptual-conflict';
 import { partitionTasks, type PartitionCas, type PartitionTask } from './coordination/partitioner';
-import { ingestAndPersist } from './telemetry-fusion';
+import { ingestAndPersist, loadPersistedRuntimeFacts } from './telemetry-fusion';
+import { ingestTelemetryBatch, loadTelemetryObservations } from './telemetry-ingestion';
+import { buildNodeRuntimeMetrics } from './product';
 import { getAnalysis } from './analyzer';
 import { buildSummary, getProductMap, getFlowConcepts, getArchitecturalConflicts, getParadigmConformance, getPerspectives } from './query';
-import { initSelfTelemetry, instrumentHttpHandler } from './self-telemetry';
+import { initSelfTelemetry, instrumentHttpHandler, mapSdkEvent } from './self-telemetry';
+import type { CasRuntimeEvent } from '../../../packages/klauro-sdk-js/src/types';
 
 const DEFAULT_PORT = 8787;
 const DEFAULT_MAX_BODY_BYTES = 100 * 1024 * 1024;
@@ -158,6 +161,61 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
         const body = await readJsonBody<{ email: string; password: string }>(request, maxBodyBytes);
         const result = await accounts.login(body);
         writeJson(response, 200, result);
+        return;
+      }
+
+      // Ingest-path reconcile (P1): the @klauro/telemetry SDK a customer
+      // installs POSTs batches to `/api/telemetry/runtime-events/:projectId`
+      // (see packages/klauro-sdk-js/src/client.ts `ingestUrl()`), NOT to
+      // `/v1/telemetry/ingest`. It carries its own telemetry `Authorization:
+      // Bearer <apiKey>` — NOT an account session — so it must be handled
+      // BEFORE the `/api/` account-session guard below (otherwise it 401s
+      // "Sign in required"). It uses the same open-analyzer posture as
+      // `/v1/telemetry/ingest`: gated only by authorizeAnalyzerRequest, which
+      // we invoke inline here since this route sits above the shared
+      // authorization block. The SDK's `{ events: CasRuntimeEvent[] }` body is
+      // routed through the SAME observation ingest as the in-process self-loop
+      // (self-telemetry.ts localIngestFetch), via the shared `mapSdkEvent`
+      // translation. `:projectId` is the URL-encoded project/workspace path the
+      // events attach to (and the read key for the observation/node-metrics
+      // routes). `/v1/telemetry/ingest` is unchanged.
+      if (request.method === 'POST' && route.startsWith('/api/telemetry/runtime-events/')) {
+        const reconAuth = await authorizeAnalyzerRequest(accounts, request, token);
+        if (!reconAuth.authorized) {
+          writeJson(response, 401, { status: 'error', error: 'Unauthorized telemetry ingest request' });
+          return;
+        }
+        const rawProjectId = route.slice('/api/telemetry/runtime-events/'.length);
+        const projectId = decodeURIComponent(rawProjectId);
+        if (!projectId) {
+          writeJson(response, 400, { status: 'error', error: 'projectId path segment is required' });
+          return;
+        }
+        const body = await readJsonBody<{ events?: CasRuntimeEvent[] }>(request, maxBodyBytes);
+        const events = Array.isArray(body.events) ? body.events : [];
+        let cas: any;
+        try {
+          cas = await getAnalysis(projectId);
+        } catch {
+          // No analysis for this project yet: cannot correlate. Return 404 so
+          // the SDK requeues rather than silently dropping (matches the SDK's
+          // res.ok contract in client.ts flush()).
+          writeJson(response, 404, {
+            status: 'error',
+            error: `no analysis for project ${projectId}; analyze it before ingesting runtime events`,
+          });
+          return;
+        }
+        const result = await ingestTelemetryBatch(cas, projectId, events.map(mapSdkEvent), { persist: true });
+        await appendAuditLog(dataDir, {
+          event: 'telemetry_runtime_events',
+          workspace: projectId,
+          received: events.length,
+          ingested: result.event_count,
+          matched: result.correlation_summary.matched,
+          unmatched: result.correlation_summary.unmatched,
+        });
+        writeJson(response, 200, { status: 'success', ...result });
         return;
       }
 
@@ -657,6 +715,75 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           total_facts: result.total_facts,
         });
         writeJson(response, 200, { status: 'success', ...result });
+        return;
+      }
+
+      // ---------------------------------------------------------------------
+      // Telemetry read-back (dogfood surface). The deployed service only ever
+      // ACCEPTED telemetry (POST .../ingest, POST .../runtime-events); nothing
+      // let an agent read its own runtime observations back over HTTP. These
+      // two GETs close that loop so `get_runtime_observations`-style data is
+      // reachable from any HTTP client keyed only on the workspace path.
+      //
+      // Read-only, same auth as the sibling coordination/telemetry routes
+      // (already gated above by authorizeAnalyzerRequest). Best-effort CAS:
+      // observations are stored keyed by project path and do NOT require an
+      // analysis to read — a missing/unreadable CAS degrades gracefully rather
+      // than 500ing.
+      // ---------------------------------------------------------------------
+      if (request.method === 'GET' && route === '/v1/telemetry/observations') {
+        const workspace = requestUrl.searchParams.get('workspace') || '';
+        if (!workspace) {
+          writeJson(response, 400, { status: 'error', error: 'workspace query param is required' });
+          return;
+        }
+        const limitParam = requestUrl.searchParams.get('limit');
+        const limit = limitParam ? Number(limitParam) : undefined;
+        const traceId = requestUrl.searchParams.get('trace_id') || undefined;
+        const set = await loadTelemetryObservations(workspace, {
+          source: 'ingested',
+          ...(traceId ? { traceId } : {}),
+          ...(limit && Number.isFinite(limit) && limit > 0 ? { limit } : {}),
+        });
+        // Surface any fused runtime facts persisted via /v1/telemetry/ingest for
+        // the same workspace, additive — mirrors the MCP get_runtime_observations
+        // shape so this HTTP read is a faithful stand-in.
+        const fused = await loadPersistedRuntimeFacts(dataDir, workspace).catch(() => null);
+        writeJson(response, 200, {
+          status: 'success',
+          workspace,
+          ...set,
+          ...(fused?.facts?.length ? { fused_runtime_facts: fused.facts, fused_updated_at: fused.updated_at } : {}),
+        });
+        return;
+      }
+
+      if (request.method === 'GET' && route === '/v1/telemetry/node-metrics') {
+        const workspace = requestUrl.searchParams.get('workspace') || '';
+        if (!workspace) {
+          writeJson(response, 400, { status: 'error', error: 'workspace query param is required' });
+          return;
+        }
+        const set = await loadTelemetryObservations(workspace, { source: 'ingested', limit: 5000 });
+        let cas: any = null;
+        try {
+          cas = await getAnalysis(workspace);
+        } catch {
+          cas = null;
+        }
+        if (!cas) {
+          writeJson(response, 200, { status: 'success', workspace, node_metrics: [], note: 'no analysis for workspace' });
+          return;
+        }
+        const nodeMetrics = buildNodeRuntimeMetrics(cas, set.observations || []);
+        writeJson(response, 200, {
+          status: 'success',
+          workspace,
+          observation_count: set.observations?.length ?? 0,
+          node_metrics: nodeMetrics,
+          node_metrics_guidance:
+            'Per-node traffic/error-rate/latency correlated to CAS static_id. Use static_id as the target for get_coding_context before editing a hot or erroring node.',
+        });
         return;
       }
 
