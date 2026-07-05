@@ -4,9 +4,10 @@ import * as fs from 'fs-extra';
 import * as os from 'os';
 import * as path from 'path';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
-import { buildOperationalPriorities } from './product';
+import { buildNodeRuntimeMetrics, buildOperationalPriorities } from './product';
 import { simulateRuntimeTelemetry } from './runtime-simulation';
 import {
+  backfillIngestedTelemetry,
   ingestTelemetryBatch,
   ingestedTelemetryDir,
   loadIngestedTelemetry,
@@ -173,6 +174,63 @@ test('ingestTelemetryBatch persists raw observations when there is NO analysis (
     assert.equal(typeof health!.latency.p50_ms, 'number');
     const analyze = metrics.find(m => m.route === '/opt/klauro/analyze');
     assert.ok(analyze && analyze.error_count === 1 && analyze.error_rate === 1);
+  });
+});
+
+test('backfillIngestedTelemetry upgrades pre-analysis unmatched observations once a CAS appears', async () => {
+  await withTempStorage(async root => {
+    const cas = buildCas(root);
+
+    // 1. Emit telemetry BEFORE any analysis (cas=null) — the route matches an
+    //    entry point in `cas`, plus a stack-frame hint onto a node — all land
+    //    as `unmatched` because there is no CAS to correlate against yet.
+    const events: TelemetryEvent[] = [
+      { kind: 'request', method: 'POST', route: '/invoices', status: 201, duration_ms: 120, trace_id: 'bf-1' },
+      { kind: 'request', method: 'POST', route: '/invoices', status: 201, duration_ms: 90, trace_id: 'bf-2' },
+      {
+        kind: 'error', method: 'POST', route: '/invoices', status: 500, duration_ms: 1800, trace_id: 'bf-3',
+        error: { type: 'TypeError', message: 'boom', stack_top_frames: [{ file: 'src/billing.service.ts', line: 25, function: 'createInvoice' }] },
+      },
+      { kind: 'request', method: 'GET', route: '/ghost-route', status: 404, trace_id: 'bf-4' },
+    ];
+    await ingestTelemetryBatch(null, root, events);
+
+    const beforeSet = await loadTelemetryObservations(root, { source: 'ingested' });
+    assert.equal(beforeSet.observations.length, 4);
+    assert.equal(beforeSet.observations.every(o => o.correlation.status === 'unmatched'), true, 'all unmatched pre-analysis');
+    assert.equal(buildNodeRuntimeMetrics(cas, beforeSet.observations).every(m => m.type === 'unmatched'), true,
+      'node metrics have no static target before backfill');
+
+    // 2. An analysis now exists — run the backfill.
+    const result = await backfillIngestedTelemetry(cas, root);
+    assert.equal(result.upgraded, 3, 'the 3 /invoices observations upgrade; /ghost-route stays unmatched');
+    assert.equal(result.scanned, 4);
+    assert.equal(result.days_rewritten.length, 1);
+
+    // 3. Previously-unmatched observations now correlate to CAS nodes, and the
+    //    raw factual fields are untouched.
+    const afterSet = await loadTelemetryObservations(root, { source: 'ingested' });
+    const matched = afterSet.observations.filter(o => o.correlation.status !== 'unmatched');
+    assert.equal(matched.length, 3);
+    assert.equal(matched.every(o => o.correlation.matches.some(m => m.id === 'entry-create-invoice')), true);
+    const invoiceReq = afterSet.observations.find(o => o.event.trace_id === 'bf-1');
+    assert.equal(invoiceReq!.event.status_code, 201, 'raw status untouched');
+    assert.equal(invoiceReq!.event.duration_ms, 120, 'raw duration untouched');
+    assert.equal(invoiceReq!.event.route, '/invoices', 'raw route untouched');
+    assert.equal(afterSet.observations.find(o => o.event.trace_id === 'bf-4')!.correlation.status, 'unmatched',
+      'genuinely unmatchable route stays unmatched');
+
+    // 4. buildNodeRuntimeMetrics now returns non-empty per-node metrics.
+    const nodeMetrics = buildNodeRuntimeMetrics(cas, afterSet.observations);
+    const invoiceNode = nodeMetrics.find(m => m.type !== 'unmatched');
+    assert.ok(invoiceNode, 'a correlated node metric exists after backfill');
+    assert.equal(invoiceNode!.request_count >= 2, true);
+    assert.equal(invoiceNode!.error_count >= 1, true);
+
+    // 5. Idempotent: a second pass upgrades nothing and rewrites no files.
+    const second = await backfillIngestedTelemetry(cas, root);
+    assert.equal(second.upgraded, 0);
+    assert.equal(second.days_rewritten.length, 0);
   });
 });
 

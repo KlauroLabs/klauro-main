@@ -390,6 +390,121 @@ export async function compactIngestedTelemetry(projectPath: string, retentionDay
   return { removed_days: expired.map(name => name.replace(/\.json$/, '')).sort() };
 }
 
+/** Bounded number of persisted day-files a single backfill pass will rewrite. */
+const BACKFILL_MAX_DAYS = 30;
+
+export interface TelemetryBackfillResult {
+  scanned: number;
+  upgraded: number;
+  days_rewritten: string[];
+}
+
+/**
+ * Rebuild the `TelemetryEvent`-shaped hint fields `resolveHintNode` reads
+ * (file/function hints + stack frames) from an ALREADY-normalized, persisted
+ * observation event, so a backfill pass can re-resolve a CAS node hint without
+ * the original raw batch. Factual fields (route/status/duration) are never
+ * touched — this only reconstructs the correlation inputs.
+ */
+function hintEventFromObservation(event: RuntimeObservation['event']): TelemetryEvent {
+  const fileHint = event.attributes?.file_hint;
+  const functionHint = event.attributes?.function_hint;
+  const frames = parseStackFrames(event.stack);
+  return {
+    kind: 'log',
+    file_hint: typeof fileHint === 'string' ? fileHint : undefined,
+    function_hint: typeof functionHint === 'string' ? functionHint : undefined,
+    ...(frames.length ? { error: { stack_top_frames: frames } } : {}),
+  };
+}
+
+function parseStackFrames(stack?: string): TelemetryStackFrame[] {
+  if (!stack) return [];
+  return stack
+    .split('\n')
+    .filter(line => line.trimStart().startsWith('at '))
+    .map(line => stackFrameFromLine(line))
+    .filter((frame): frame is TelemetryStackFrame => Boolean(frame && frame.file));
+}
+
+function stackFrameFromLine(line: string): TelemetryStackFrame | undefined {
+  const match = line.match(/at\s+(?:([^\s(]+)\s+)?\(?([^\s():]+):(\d+)(?::\d+)?\)?/);
+  if (!match) return undefined;
+  return { file: match[2], line: Number(match[3]), ...(match[1] ? { function: match[1] } : {}) };
+}
+
+/**
+ * BACKFILL — re-correlate persisted `unmatched` observations against a
+ * now-available CAS and upgrade the ones that now bind to a static node.
+ *
+ * Runtime observations are persisted verbatim even when a project has no
+ * analysis (see `ingestTelemetryBatch` + `emptyCasStub`), landing as
+ * `unmatched`. Once an analysis first appears, those pre-analysis observations
+ * would otherwise stay `unmatched` forever, leaving node-level metrics empty.
+ * This pass loads each day-file, re-runs the SAME vetted `correlateRuntimeEvent`
+ * (plus `resolveHintNode`) over its `unmatched` records, and rewrites only the
+ * ones that now match — mutating solely `correlation` and the derived
+ * `event.node_id`. Route/method/status/duration/timestamp are never altered.
+ *
+ * Idempotent (already-matched records are skipped; re-running finds nothing new),
+ * bounded (at most `BACKFILL_MAX_DAYS` files), and safe to call opportunistically.
+ * A day-file is only rewritten when at least one observation in it upgraded.
+ */
+export async function backfillIngestedTelemetry(
+  cas: CASOutput | null,
+  projectPath: string,
+): Promise<TelemetryBackfillResult> {
+  const result: TelemetryBackfillResult = { scanned: 0, upgraded: 0, days_rewritten: [] };
+  if (!cas || (cas.nodes || []).length === 0) return result;
+
+  const dir = ingestedTelemetryDir(projectPath);
+  if (!(await fs.pathExists(dir))) return result;
+
+  const dayFiles = (await fs.readdir(dir))
+    .filter(name => /^\d{4}-\d{2}-\d{2}\.json$/.test(name))
+    .sort()
+    .reverse()
+    .slice(0, BACKFILL_MAX_DAYS);
+
+  for (const name of dayFiles) {
+    const filePath = path.join(dir, name);
+    let observations: RuntimeObservation[];
+    try {
+      observations = await fs.readJson(filePath);
+    } catch {
+      continue;
+    }
+    if (!Array.isArray(observations)) continue;
+
+    let dayUpgraded = false;
+    for (const observation of observations) {
+      if (observation?.correlation?.status !== 'unmatched') continue;
+      result.scanned += 1;
+
+      const hintNode = resolveHintNode(cas, hintEventFromObservation(observation.event));
+      const eventForCorrelation = hintNode
+        ? { ...observation.event, node_id: observation.event.node_id ?? hintNode.id }
+        : observation.event;
+      const correlation = correlateRuntimeEvent(cas, eventForCorrelation);
+      if (correlation.status === 'unmatched') continue;
+
+      // Upgrade in place: only correlation + the derived node hint change.
+      observation.correlation = correlation;
+      if (hintNode && !observation.event.node_id) observation.event.node_id = hintNode.id;
+      result.upgraded += 1;
+      dayUpgraded = true;
+    }
+
+    if (dayUpgraded) {
+      await writeJsonAtomic(filePath, observations);
+      result.days_rewritten.push(name.replace(/\.json$/, ''));
+    }
+  }
+
+  result.days_rewritten.sort();
+  return result;
+}
+
 export async function loadIngestedTelemetry(projectPath: string, options: TelemetryLoadOptions = {}): Promise<RuntimeObservation[]> {
   const dir = ingestedTelemetryDir(projectPath);
   if (!(await fs.pathExists(dir))) return [];

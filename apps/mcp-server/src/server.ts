@@ -4665,7 +4665,7 @@ function registerTools(server: McpServer) {
       } as any,
     } as any,
     async ({ path, type, since, static_id, trace_id, span_id, source, limit }: any) => withErrorHandling(async () => {
-      const result: any = await telemetryIngestion.loadTelemetryObservations(path, {
+      const loadObservations = () => telemetryIngestion.loadTelemetryObservations(path, {
         type,
         since,
         staticId: static_id,
@@ -4674,13 +4674,41 @@ function registerTools(server: McpServer) {
         source,
         limit,
       });
+      let result: any = await loadObservations();
+      // Lazy backfill: if the returned set still carries pre-analysis `unmatched`
+      // observations and an analysis now exists, re-correlate and upgrade them so
+      // node-level metrics stop reading empty. Bounded, idempotent, best-effort;
+      // reload afterwards so this response reflects the upgraded correlations.
+      let cas: any = null;
+      try {
+        cas = await getAnalysis(path);
+      } catch {
+        cas = null;
+      }
+      if (cas) {
+        const hasUnmatched = (result.observations || []).some(
+          (observation: any) => observation?.correlation?.status === 'unmatched');
+        if (hasUnmatched) {
+          const backfill = await telemetryIngestion.backfillIngestedTelemetry(cas, path).catch(() => null);
+          if (backfill && backfill.upgraded > 0) result = await loadObservations();
+        }
+      }
+      // Per-route+method traffic/latency aggregated from the RAW observations,
+      // CAS-free — visible with or without an analysis. Mirrors the HTTP
+      // GET /v1/telemetry/observations `route_metrics` shape for MCP parity.
+      const routeMetrics = telemetryIngestion.summarizeRouteMetrics(result.observations || []);
+      if (routeMetrics.length > 0) {
+        result.route_metrics = routeMetrics;
+        result.route_metrics_guidance =
+          'Per route+method request_count/error_rate/p50/p95/p99 aggregated from raw observations. Available with or without an analysis; node_metrics correlate these to CAS static_id once the project is analyzed.';
+      }
       // Per-node operational rollup: traffic (request_count/throughput), errors
       // (error_count/error_rate + status distribution), and latency
       // (avg/p50/p95/p99/max) aggregated per CAS node/entry-point/route from the
       // returned observations. Additive — the raw `observations` array is
       // unchanged. Computed over the filtered set so it honors static_id/since.
       try {
-        const cas = await getAnalysis(path);
+        if (!cas) throw new Error('no analysis');
         const nodeMetrics = product.buildNodeRuntimeMetrics(cas, result.observations || []);
         if (nodeMetrics.length > 0) {
           result.node_metrics = nodeMetrics;

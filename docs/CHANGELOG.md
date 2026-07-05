@@ -5,6 +5,27 @@ agent-feedback reports (`~/.klauro/agent-feedback/*.md`) — nothing is asserted
 Where an item was still in flight at the time this entry was written, it is marked **pending
 final verify** rather than presented as done.
 
+## v1.0.24 — Entry-point parity guard + live analyzer-packs + telemetry backfill (2026-07-05)
+
+### Fixed
+- **Entry-point type drift, permanently.** `isValidEntryPoint` now derives its accepted set from a single
+  `ENTRY_POINT_TYPES` const that the `CASEntryPoint['type']` union is itself built from — so adding a kind
+  can never again be silently dropped by a separate hardcoded allowlist (the bug that hit type-data-ML and
+  cat-api). A parity guard test round-trips all 21 kinds through the real merge; dead `grpc`/`graphql` and
+  never-emitted allowlist entries removed. (`isValidExitPoint` carries the same latent drift but its
+  allowlist and union genuinely diverge with cast-emitted types — deferred to avoid dropping working exit
+  points.)
+
+### Added
+- **Declarative analyzer-packs are live.** `PackAnalyzer` is wired into the production orchestrator, driven
+  by built-in packs + a `.klaurorc` `packs:` glob. Proven end-to-end through `analyzeForBench`: **Hapi**
+  (which has NO coded analyzer) yields 0→**3** real route entry points from pure `hapi-routes.pack.yaml`,
+  Koa 0→2; a repo with no packs is unaffected. Any language/framework is now coverable by a YAML declaration.
+- **Telemetry backfill + MCP parity.** Persisted `unmatched` runtime observations re-correlate to CAS nodes
+  once an analysis appears (triggered after `saveAnalysis` and lazily in `get_runtime_observations`), and
+  `route_metrics` is now returned by the `get_runtime_observations` MCP tool (HTTP↔MCP parity). So Klauro's
+  self-telemetry auto-upgrades from route-level to **node-level** the moment its own source is analyzed.
+
 ## v1.0.23 — Telemetry durability: persist raw, correlate lazily (2026-07-05)
 
 Found by dogfooding self-telemetry on Klauro's own production: ingest **dropped the entire batch**
