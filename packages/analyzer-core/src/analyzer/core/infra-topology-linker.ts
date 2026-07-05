@@ -48,7 +48,8 @@ export type InfraTopologyEdgeType =
   | 'PROVISIONS_CHANNEL' // cloud queue/topic resource -> the messaging channel the code uses
   | 'PROVISIONS_DATABASE' // cloud db resource -> the database/data entity the code uses
   | 'PROVISIONS_STORAGE'  // cloud bucket/table/function resource -> the external/storage service the code references
-  | 'RUNTIME_DEPENDS_ON'; // compose depends_on / k8s owner ref resolved to a peer deployable
+  | 'RUNTIME_DEPENDS_ON'  // compose depends_on / k8s owner ref resolved to a peer deployable
+  | 'PROXIES_TO';         // reverse-proxy route (Caddy/Nginx/…) -> the service/deployable its upstream fronts
 
 export interface InfraTopologyLinkResult {
   /** Additive edges to append to output.edges. */
@@ -75,6 +76,7 @@ const INFRA_SURFACES = new Set([
   'docker-compose',
   'dockerfile',
   'cloudformation',
+  'reverse-proxy',
 ]);
 
 interface NormalizedResource {
@@ -144,6 +146,12 @@ function identifiersJoin(a: string | undefined, b: string | undefined): string |
   return undefined;
 }
 
+/** De-duplicate while keeping first-seen order — so the strongest evidence
+ *  (a real declared name) stays ahead of weaker fallbacks (the label). */
+function dedupePreserveOrder(values: string[]): string[] {
+  return Array.from(new Set(values));
+}
+
 function toArray(value: unknown): string[] {
   if (Array.isArray(value)) return value.map(v => String(v)).filter(Boolean);
   if (value === undefined || value === null) return [];
@@ -172,6 +180,8 @@ function normalizeResource(node: CASNode): NormalizedResource | null {
       node.type.startsWith('infrastructure_') ||
       node.type === 'container_image_definition' ||
       node.type === 'compose_service' ||
+      node.type === 'proxy_route' ||
+      node.type === 'proxy_upstream' ||
       node.type.startsWith('cloudformation_'));
   if (!INFRA_SURFACES.has(surface) && !isInfraType) return null;
 
@@ -183,24 +193,34 @@ function normalizeResource(node: CASNode): NormalizedResource | null {
       node.type,
   );
 
-  const names = Array.from(
-    new Set(
-      [
-        attrs.terraform_name,
-        attrs.terraform_address,
-        attrs.queue_name,
-        attrs.bucket,
-        attrs.table_name,
-        attrs.db_name,
-        attrs.function_name,
-        meta.deployment_service_name,
-        ...toArray(meta.service_aliases),
-        ...toArray(attrs.service_aliases),
-        node.name,
-      ]
-        .filter(Boolean)
-        .map(String),
-    ),
+  // Order matters: a resource's REAL declared identifier (the `name = "..."`,
+  // `queue_name`, `bucket`, `table_name`, `identifier`, `function_name`,
+  // `repository` captured off the HCL body) is stronger evidence than the
+  // terraform LABEL — so real attribute names come FIRST and the label/address
+  // are appended only as a fallback. `identifiersJoin` still gates every join,
+  // so the label is used only when no real-name join fires.
+  const names = dedupePreserveOrder(
+    [
+      // Real declared identifiers first (attribute-name join).
+      attrs.name,
+      attrs.queue_name,
+      attrs.bucket,
+      attrs.table_name,
+      attrs.identifier,
+      attrs.db_name,
+      attrs.function_name,
+      attrs.repository,
+      // Deployment / k8s / compose identifiers.
+      meta.deployment_service_name,
+      ...toArray(meta.service_aliases),
+      ...toArray(attrs.service_aliases),
+      // Label fallbacks last.
+      attrs.terraform_name,
+      attrs.terraform_address,
+      node.name,
+    ]
+      .filter(Boolean)
+      .map(String),
   );
 
   const ports = Array.from(
@@ -273,6 +293,7 @@ export function linkInfraTopology(output: Pick<CASOutput, 'nodes' | 'entry_point
   linkServiceExposure(resources, deployables, deployableAnchors, entryPoints, result);
   linkCloudResourceUsage(resources, exitPoints, externalServices, dataEntities, result);
   linkRuntimeDependencies(resources, deployableAnchors, result);
+  linkProxyRoutes(resources, deployableAnchors, entryPoints, result);
 
   // Drop self-loops (a resource whose deployable anchor resolves back to the
   // resource node itself carries no information) and collapse duplicate
@@ -423,6 +444,58 @@ function linkServiceExposure(
       if (!nameJoin) continue;
       result.edges.push(edge('ROUTES_TO', resource.node.id, ep.source_node, nameJoin, { route: routePath, entry_point: ep.id, surface: resource.surface }));
       result.joins.push({ edge_type: 'ROUTES_TO', summary: `${resource.node.name} routes to ${routePath}`, join_key: nameJoin, matched: true, source_node: resource.node.id, target_node: ep.source_node });
+    }
+  }
+}
+
+/**
+ * (2b) Reverse-proxy route (Caddy/Nginx/Apache/HAProxy/Traefik) -> the service /
+ * deployable / route its upstream fronts. The proxy analyzers emit each public
+ * route as a `proxy_route` node carrying its resolved upstream on
+ * deployment_service_name / service_aliases / ports — the SAME join vocabulary
+ * k8s/compose nodes use — so this joins GENERICALLY:
+ *   - proxy route -> deployable whose port or name matches the upstream (EXPOSES)
+ *   - proxy route -> an HTTP entry point (route/handler) the upstream reaches (ROUTES_TO)
+ * completing the topology edge public URL -> proxy -> service:port -> route ->
+ * handler. Evidence-gated: fires only when a concrete port or name joins.
+ */
+function linkProxyRoutes(
+  resources: NormalizedResource[],
+  anchors: DeployableAnchor[],
+  entryPoints: CASEntryPoint[],
+  result: InfraTopologyLinkResult,
+): void {
+  const proxyRoutes = resources.filter(r => r.node.type === 'proxy_route');
+  for (const route of proxyRoutes) {
+    const routePorts = new Set(route.ports);
+    // EXPOSES: the proxy route -> the deployable it fronts, joined by an upstream
+    // port that equals a deployable port, or an upstream service name that equals
+    // the deployable name.
+    for (const anchor of anchors) {
+      const portJoin = [...routePorts].find(p => anchor.ports.has(p));
+      const nameJoin = route.names.map(n => identifiersJoin(n, anchor.deployable.name)).find(Boolean);
+      const joinKey = portJoin ? `port:${portJoin}` : nameJoin;
+      if (!joinKey) continue;
+      result.edges.push(edge('EXPOSES', route.node.id, anchor.anchorNodeId, joinKey, { deployable: anchor.deployable.name, surface: route.surface, via: 'reverse-proxy' }));
+      result.joins.push({ edge_type: 'EXPOSES', summary: `${route.node.name} fronts ${anchor.deployable.name}`, join_key: joinKey, matched: true, source_node: route.node.id, target_node: anchor.anchorNodeId });
+    }
+    // ROUTES_TO: the proxy route -> a code HTTP entry point whose handler file
+    // sits under a deployable that owns the upstream port (so the public URL is
+    // joined all the way to the handler). Only real code routes (with a handler
+    // file) are eligible; the upstream must resolve to a port a deployable owns.
+    if (routePorts.size === 0) continue;
+    const owningAnchors = anchors.filter(a => [...routePorts].some(p => a.ports.has(p)));
+    if (owningAnchors.length === 0) continue;
+    for (const ep of entryPoints) {
+      if (ep.type !== 'http' && ep.type !== 'route') continue;
+      const handlerFile = ep.handler?.file;
+      if (!handlerFile) continue;
+      const ownsHandler = owningAnchors.some(a => underRoot(handlerFile, a.deployable.root_path.replace(/\\/g, '/').replace(/\/+$/, '')));
+      if (!ownsHandler) continue;
+      const routePath = ep.trigger?.path || ep.name;
+      const port = [...routePorts].find(p => owningAnchors.some(a => a.ports.has(p)));
+      result.edges.push(edge('ROUTES_TO', route.node.id, ep.source_node, `port:${port}`, { route: routePath, entry_point: ep.id, surface: route.surface, via: 'reverse-proxy' }));
+      result.joins.push({ edge_type: 'ROUTES_TO', summary: `${route.node.name} routes to ${routePath}`, join_key: `port:${port}`, matched: true, source_node: route.node.id, target_node: ep.source_node });
     }
   }
 }

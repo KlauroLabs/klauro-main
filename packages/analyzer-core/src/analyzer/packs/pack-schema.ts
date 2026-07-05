@@ -8,6 +8,18 @@
  * See docs/SPEC-ANALYZER-PACKS.md for the full format + safety model.
  */
 import { z } from 'zod';
+import { ENTRY_POINT_TYPES } from '../../types/cas.types';
+
+/** Entry-point `kind` values a pack may declare, derived from the single source
+ *  of truth (ENTRY_POINT_TYPES in cas.types.ts) so this enum can never drift
+ *  from the union / `isValidEntryPoint` allowlist downstream. A pack declaring a
+ *  novel/typo kind FAILS LOUDLY here at load time (a scoped Zod error surfaced in
+ *  the pack's error list) instead of being silently dropped later. If exit-point
+ *  emits gain their own kinds, gate them the same way against EXIT_POINT_TYPES. */
+const EntryPointKindSchema = z.enum(
+  ENTRY_POINT_TYPES as unknown as [string, ...string[]],
+  { message: `entry-point "kind" must be one of: ${ENTRY_POINT_TYPES.join(', ')}` },
+);
 
 /** One capture→fact emit mapping. `as` selects which CAS fact this rule
  *  produces; the other fields say which query captures fill which fact
@@ -15,10 +27,7 @@ import { z } from 'zod';
  *  (substituted with that capture's matched text at emit time). */
 const EmitEntryPointSchema = z.object({
   fact: z.literal('entry_point'),
-  kind: z.enum([
-    'http', 'websocket', 'cli', 'event', 'schedule', 'page', 'route', 'message',
-    'file', 'test', 'lifecycle', 'api', 'task', 'pipeline', 'notebook-cell', 'train',
-  ]),
+  kind: EntryPointKindSchema,
   method: z.string().optional(),      // literal or "@capture"
   path: z.string().optional(),        // literal or "@capture"
   handler: z.string().optional(),     // literal or "@capture"

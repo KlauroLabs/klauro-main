@@ -1,8 +1,11 @@
 import {
   CASOutput,
+  CASEdge,
   CASProductMap,
   CASProductMapCapability,
+  CASProductMapDeployableTopology,
   CASProductMapJourney,
+  CASProductMapRuntimeTopology,
   CASUserJourney,
   SystemCapability,
 } from '../../types/cas.types';
@@ -280,6 +283,166 @@ function buildCoverageCaveats(
   return caveats;
 }
 
+/** The infra->code topology edge types emitted by infra-topology-linker.ts. */
+const RUNTIME_TOPOLOGY_EDGE_TYPES = new Set([
+  'DEPLOYS',
+  'EXPOSES',
+  'ROUTES_TO',
+  'PROVISIONS_CHANNEL',
+  'PROVISIONS_DATABASE',
+  'PROVISIONS_STORAGE',
+  'RUNTIME_DEPENDS_ON',
+]);
+
+function edgeAttr(edge: CASEdge, key: string): string | undefined {
+  const value = edge.metadata?.attributes?.[key];
+  return value === undefined || value === null ? undefined : String(value);
+}
+
+/**
+ * Derive a first-class runtime-topology view from the additive infra->code
+ * edges (DEPLOYS, EXPOSES, ROUTES_TO, PROVISIONS_CHANNEL/DATABASE/STORAGE,
+ * RUNTIME_DEPENDS_ON) that infra-topology-linker.ts appends to cas.edges.
+ * Purely additive and evidence-based: reads only real edges, groups them per
+ * deployable, and returns undefined when the analysis carries no infra topology
+ * (so non-infra repos are unchanged).
+ *
+ * The linker anchors DEPLOYS/EXPOSES on the infra resource node (source) ->
+ * deployable, tagging each with a `deployable` attribute; ROUTES_TO and the
+ * PROVISIONS edges also hang off that same resource node, so we attribute those
+ * to the deployable(s) the resource fronts. RUNTIME_DEPENDS_ON carries
+ * `from`/`to` deployable names directly.
+ */
+function buildRuntimeTopology(cas: CASOutput): CASProductMapRuntimeTopology | undefined {
+  const topologyEdges = (cas.edges || []).filter(edge => RUNTIME_TOPOLOGY_EDGE_TYPES.has(edge.type));
+  if (topologyEdges.length === 0) return undefined;
+
+  // Map each infra resource node id -> the deployable name(s) it deploys/exposes,
+  // so a ROUTES_TO / PROVISIONS_* edge from the same resource can be attributed
+  // to the right deployable.
+  const resourceDeployables = new Map<string, Set<string>>();
+  for (const edge of topologyEdges) {
+    if (edge.type !== 'DEPLOYS' && edge.type !== 'EXPOSES') continue;
+    const deployable = edgeAttr(edge, 'deployable');
+    if (!deployable) continue;
+    if (!resourceDeployables.has(edge.source)) resourceDeployables.set(edge.source, new Set());
+    resourceDeployables.get(edge.source)!.add(deployable);
+  }
+
+  interface Buckets {
+    deploys: Set<string>;
+    exposes: Set<string>;
+    routes: Set<string>;
+    channels: Set<string>;
+    databases: Set<string>;
+    storage: Set<string>;
+    depends_on: Set<string>;
+  }
+  const byDeployable = new Map<string, Buckets>();
+  const bucketsFor = (name: string): Buckets => {
+    let buckets = byDeployable.get(name);
+    if (!buckets) {
+      buckets = {
+        deploys: new Set(),
+        exposes: new Set(),
+        routes: new Set(),
+        channels: new Set(),
+        databases: new Set(),
+        storage: new Set(),
+        depends_on: new Set(),
+      };
+      byDeployable.set(name, buckets);
+    }
+    return buckets;
+  };
+
+  const nodeName = new Map((cas.nodes || []).map(node => [node.id, node.name]));
+
+  for (const edge of topologyEdges) {
+    switch (edge.type) {
+      case 'DEPLOYS': {
+        const deployable = edgeAttr(edge, 'deployable');
+        if (!deployable) break;
+        bucketsFor(deployable).deploys.add(nodeName.get(edge.source) || edge.source);
+        break;
+      }
+      case 'EXPOSES': {
+        const deployable = edgeAttr(edge, 'deployable');
+        if (!deployable) break;
+        const joinKey = edgeAttr(edge, 'join_key');
+        // The join key is the port (`port:8080`) or a service name — the concrete
+        // evidence of what fronts the deployable.
+        bucketsFor(deployable).exposes.add(joinKey || nodeName.get(edge.source) || edge.source);
+        break;
+      }
+      case 'ROUTES_TO': {
+        const route = edgeAttr(edge, 'route');
+        if (!route) break;
+        for (const deployable of resourceDeployables.get(edge.source) || []) {
+          bucketsFor(deployable).routes.add(route);
+        }
+        break;
+      }
+      case 'PROVISIONS_CHANNEL':
+      case 'PROVISIONS_DATABASE':
+      case 'PROVISIONS_STORAGE': {
+        const bucketKey =
+          edge.type === 'PROVISIONS_CHANNEL' ? 'channels' : edge.type === 'PROVISIONS_DATABASE' ? 'databases' : 'storage';
+        const label =
+          edgeAttr(edge, 'channel') ||
+          edgeAttr(edge, 'database') ||
+          edgeAttr(edge, 'data_entity') ||
+          edgeAttr(edge, 'service') ||
+          edgeAttr(edge, 'store') ||
+          nodeName.get(edge.target) ||
+          nodeName.get(edge.source) ||
+          edge.target;
+        const owners = resourceDeployables.get(edge.source);
+        if (owners && owners.size > 0) {
+          for (const deployable of owners) (bucketsFor(deployable)[bucketKey] as Set<string>).add(label);
+        }
+        break;
+      }
+      case 'RUNTIME_DEPENDS_ON': {
+        const from = edgeAttr(edge, 'from');
+        const to = edgeAttr(edge, 'to');
+        if (from && to) bucketsFor(from).depends_on.add(to);
+        break;
+      }
+    }
+  }
+
+  const deployables: CASProductMapDeployableTopology[] = [...byDeployable.entries()]
+    .map(([name, buckets]) => ({
+      name,
+      deploys: [...buckets.deploys].sort((a, b) => a.localeCompare(b)),
+      exposes: [...buckets.exposes].sort((a, b) => a.localeCompare(b)),
+      routes: [...buckets.routes].sort((a, b) => a.localeCompare(b)),
+      channels: [...buckets.channels].sort((a, b) => a.localeCompare(b)),
+      databases: [...buckets.databases].sort((a, b) => a.localeCompare(b)),
+      storage: [...buckets.storage].sort((a, b) => a.localeCompare(b)),
+      depends_on: [...buckets.depends_on].sort((a, b) => a.localeCompare(b)),
+    }))
+    .filter(
+      // A deployable with every bucket empty carries no runtime-topology signal;
+      // don't list it. (Can happen if an edge lacked a `deployable` attribute.)
+      entry =>
+        entry.deploys.length +
+          entry.exposes.length +
+          entry.routes.length +
+          entry.channels.length +
+          entry.databases.length +
+          entry.storage.length +
+          entry.depends_on.length >
+        0,
+    )
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  if (deployables.length === 0) return undefined;
+
+  return { edge_count: topologyEdges.length, deployables };
+}
+
 export function buildProductMap(cas: CASOutput): CASProductMap {
   const purpose = cas.enhanced_system_purpose;
   const unanalyzedLanguages = [...(cas.system?.technologies?.unanalyzed_languages || [])].sort(
@@ -288,6 +451,7 @@ export function buildProductMap(cas: CASOutput): CASProductMap {
   const nestedRepositories = [...(cas.system?.technologies?.nested_repositories || [])].sort(
     (a, b) => a.path.localeCompare(b.path)
   );
+  const runtimeTopology = buildRuntimeTopology(cas);
 
   return {
     identity: {
@@ -304,6 +468,7 @@ export function buildProductMap(cas: CASOutput): CASProductMap {
     data: buildData(cas),
     conventions: buildConventions(cas),
     health: buildHealth(cas),
+    ...(runtimeTopology ? { runtime_topology: runtimeTopology } : {}),
     coverage_caveats: buildCoverageCaveats(cas, unanalyzedLanguages),
   };
 }

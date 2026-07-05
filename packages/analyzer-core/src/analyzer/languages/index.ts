@@ -19,7 +19,9 @@ export { SolidityAnalyzer } from './solidity-analyzer';
 export { ElixirAnalyzer } from './elixir-analyzer';
 export { ShellAnalyzer } from './shell-analyzer';
 export { ProtobufAnalyzer } from './protobuf-analyzer';
+export { SoapWsdlAnalyzer } from './soap-wsdl-analyzer';
 export { CliAnalyzer } from './cli-analyzer';
+export { CaddyAnalyzer, NginxAnalyzer, ApacheAnalyzer, HAProxyAnalyzer, TraefikAnalyzer } from './reverse-proxy-analyzer';
 
 // Language analyzer mappings for easy lookup
 export const LanguageAnalyzers = {
@@ -48,7 +50,9 @@ export const LanguageAnalyzers = {
   shell: 'ShellAnalyzer',
   bash: 'ShellAnalyzer',
   protobuf: 'ProtobufAnalyzer',
-  proto: 'ProtobufAnalyzer'
+  proto: 'ProtobufAnalyzer',
+  wsdl: 'SoapWsdlAnalyzer',
+  xsd: 'SoapWsdlAnalyzer'
 } as const;
 
 // Note: CliAnalyzer is a cross-language framework analyzer (Click/argparse/Typer,
@@ -247,6 +251,13 @@ export const ANALYZER_METADATA = [
     name: 'ProtobufAnalyzer',
     languages: ['protobuf', 'proto'],
     frameworks: ['grpc', 'buf'],
+    priority: 85,
+    category: 'language'
+  },
+  {
+    name: 'SoapWsdlAnalyzer',
+    languages: ['wsdl', 'xsd'],
+    frameworks: ['soap', 'wsdl', 'jax-ws', 'svcutil', 'savon', 'zeep'],
     priority: 85,
     category: 'language'
   },

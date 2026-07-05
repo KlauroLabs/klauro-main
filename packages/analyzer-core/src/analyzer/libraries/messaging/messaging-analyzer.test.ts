@@ -97,6 +97,38 @@ async function makeFixture(): Promise<string> {
     ].join('\n')
   );
 
+  // Fanout exchange (RabbitMQ) — a 1->N broadcast seam, plus a topic exchange.
+  await fs.writeFile(
+    path.join(dir, 'broadcast.ts'),
+    [
+      `import * as amqp from 'amqplib';`,
+      '',
+      'export async function setup(ch: amqp.Channel) {',
+      `  await ch.assertExchange('events.fanout', 'fanout', { durable: true });`,
+      `  await ch.assertExchange('logs.topic', 'topic', { durable: true });`,
+      `  await ch.bindQueue('audit', 'logs.topic', 'order.*');`,
+      `  ch.publish('events.fanout', '', Buffer.from('{}'));`,
+      `  ch.publish('logs.topic', 'order.created', Buffer.from('{}'));`,
+      '}',
+      '',
+    ].join('\n')
+  );
+
+  // In-process Node EventEmitter — emit/on pair over a domain event name.
+  await fs.writeFile(
+    path.join(dir, 'bus.ts'),
+    [
+      `import { EventEmitter } from 'events';`,
+      '',
+      'export class OrderBus extends EventEmitter {}',
+      'const bus = new OrderBus();',
+      `bus.on('order.placed', handleOrderPlaced);`,
+      'function handleOrderPlaced() {}',
+      `export function place() { bus.emit('order.placed', { id: 1 }); }`,
+      '',
+    ].join('\n')
+  );
+
   return dir;
 }
 
@@ -139,6 +171,52 @@ test('MessagingAnalyzer emits broker channel nodes, producer exits, consumer ent
     assert.equal(meta.producer_exit_points, exitPoints.length);
     assert.equal(meta.consumer_entry_points, entryPoints.length);
     assert.ok(meta.capabilities.includes('producer-channel-consumer-graph'));
+  } finally {
+    await fs.remove(dir);
+  }
+});
+
+test('MessagingAnalyzer captures exchange routing shape, fanout broadcast, and in-process event seams', async () => {
+  const dir = await makeFixture();
+  try {
+    const analyzer = new MessagingAnalyzer();
+    const contribution = await analyzer.analyze({ projectPath: dir });
+    const nodes = contribution.nodes || [];
+    const edges = contribution.edges || [];
+    const entryPoints = contribution.entry_points || [];
+
+    // Fanout exchange -> broadcast seam (1->N), fanout: true on channel + edge.
+    const fanoutExchange = nodes.find(n => n.type === 'exchange' && n.name === 'events.fanout' && (n.metadata as any)?.system === 'amqplib');
+    assert.ok(fanoutExchange, 'expected a fanout exchange channel node');
+    assert.equal((fanoutExchange!.metadata as any)?.routing?.type, 'fanout', 'exchange routing type should be fanout');
+    assert.equal((fanoutExchange!.metadata as any)?.fanout, true, 'fanout exchange should be flagged as a broadcast');
+    const fanoutEdge = edges.find(e => e.type === 'produces' && e.target === fanoutExchange!.id);
+    assert.ok(fanoutEdge, 'expected a producer -> fanout exchange edge');
+    assert.equal((fanoutEdge!.metadata as any)?.fanout, true, 'produce edge into a fanout exchange should carry fanout: true');
+
+    // Topic exchange -> pattern routing with the binding key captured.
+    const topicExchange = nodes.find(n => n.type === 'exchange' && n.name === 'logs.topic');
+    assert.ok(topicExchange, 'expected a topic exchange channel node');
+    assert.equal((topicExchange!.metadata as any)?.routing?.type, 'topic', 'exchange routing type should be topic');
+    assert.equal((topicExchange!.metadata as any)?.fanout, false, 'a topic exchange is not a blind broadcast');
+    assert.ok(((topicExchange!.metadata as any)?.routing?.keys || []).includes('order.*'), 'expected the bindQueue routing key on the exchange');
+
+    // EventEmitter emit/on pair -> a shared event channel with produce + consume edges.
+    const eventChannel = nodes.find(n => n.type === 'event' && n.name === 'order.placed' && (n.metadata as any)?.system === 'event-emitter');
+    assert.ok(eventChannel, 'expected an in-process event channel node');
+    assert.equal((eventChannel!.metadata as any)?.fanout, true, 'event listeners all receive the emit -> broadcast');
+    assert.ok(edges.find(e => e.type === 'produces' && e.target === eventChannel!.id), 'expected emit -> event channel edge');
+    assert.ok(edges.find(e => e.type === 'consumes' && e.source === eventChannel!.id), 'expected event channel -> listener edge');
+    const listener = nodes.find(n => n.type === 'listener' && (n.metadata as any)?.channel === 'order.placed');
+    assert.ok(listener, 'expected a listener node for the on() handler');
+    assert.ok(entryPoints.find(ep => (ep.metadata as any)?.system === 'event-emitter' && (ep.metadata as any)?.channel === 'order.placed'), 'expected an event-listener entry point');
+
+    // Kafka consumer group -> competing consumers (1->1), fanout: false.
+    const kafkaConsumerEntry = entryPoints.find(ep => (ep.metadata as any)?.system === 'kafkajs' && (ep.metadata as any)?.group === 'billing');
+    assert.ok(kafkaConsumerEntry, 'expected the Kafka consumer group (billing) captured on the consumer');
+    assert.equal((kafkaConsumerEntry!.metadata as any)?.fanout, false, 'a Kafka consumer-group consumer is not a broadcast');
+
+    assert.ok((contribution.analyzer_metadata as any).capabilities.includes('fanout-broadcast-seam-detection'));
   } finally {
     await fs.remove(dir);
   }

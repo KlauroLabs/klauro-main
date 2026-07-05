@@ -333,4 +333,68 @@ describe('buildProductMap with a minimal CAS', () => {
     expect(map.coverage_caveats).toContain('No tests detected; test coverage signals are unavailable');
     expect(map.coverage_caveats).toContain('No data lineage derived; data exposure signals are unavailable');
   });
+
+  it('omits runtime_topology when no infra topology edges exist', () => {
+    expect(map.runtime_topology).toBeUndefined();
+  });
+});
+
+describe('buildProductMap runtime_topology', () => {
+  // Mirror the edges infra-topology-linker.ts appends to cas.edges: DEPLOYS/
+  // EXPOSES hang off the infra resource node and tag `deployable`; ROUTES_TO
+  // and PROVISIONS_* hang off that same resource node; RUNTIME_DEPENDS_ON
+  // carries from/to deployable names.
+  const topoEdge = (
+    type: string,
+    source: string,
+    target: string,
+    attributes: Record<string, unknown>
+  ) => ({
+    id: `edge_${type}_${source}_${target}`,
+    source,
+    target,
+    type,
+    category: 'runtime',
+    metadata: { confidence: 0.9, attributes: { topology_link: true, ...attributes } },
+  });
+
+  const infraCas = {
+    system: { id: 'sys', name: 'infra-app', type: 'application', root_path: '/tmp/infra' },
+    nodes: [
+      { id: 'dockerfile_api', name: 'api/Dockerfile', type: 'container_image_definition' },
+      { id: 'svc_api', name: 'api-service', type: 'kubernetes_service' },
+      { id: 'sqs_orders', name: 'orders-queue', type: 'infrastructure_resource' },
+    ],
+    edges: [
+      topoEdge('DEPLOYS', 'dockerfile_api', 'deployable:api', { deployable: 'api', join_key: 'api' }),
+      topoEdge('EXPOSES', 'svc_api', 'deployable:api', { deployable: 'api', join_key: 'port:8080' }),
+      topoEdge('ROUTES_TO', 'svc_api', 'ep_orders', { deployable: 'api', route: '/orders', join_key: 'orders' }),
+      topoEdge('PROVISIONS_CHANNEL', 'dockerfile_api', 'exit_orders', { channel: 'orders', join_key: 'orders' }),
+      topoEdge('RUNTIME_DEPENDS_ON', 'deployable:api', 'deployable:worker', { from: 'api', to: 'worker' }),
+    ],
+    analyzer_contributions: [],
+    progressive_levels: {} as any,
+  } as unknown as CASOutput;
+
+  const map = buildProductMap(infraCas);
+
+  it('surfaces a runtime_topology section grouped per deployable', () => {
+    expect(map.runtime_topology).toBeDefined();
+    expect(map.runtime_topology!.edge_count).toBe(5);
+    const api = map.runtime_topology!.deployables.find(d => d.name === 'api');
+    expect(api).toBeDefined();
+    expect(api!.deploys).toEqual(['api/Dockerfile']);
+    expect(api!.exposes).toEqual(['port:8080']);
+    expect(api!.routes).toEqual(['/orders']);
+    expect(api!.channels).toEqual(['orders']);
+    expect(api!.depends_on).toEqual(['worker']);
+  });
+
+  it('attributes ROUTES_TO/PROVISIONS_* to the deployable the resource fronts', () => {
+    const api = map.runtime_topology!.deployables.find(d => d.name === 'api')!;
+    // ROUTES_TO from svc_api (EXPOSES api) and PROVISIONS_CHANNEL from
+    // dockerfile_api (DEPLOYS api) both attribute back to `api`.
+    expect(api.routes).toContain('/orders');
+    expect(api.channels).toContain('orders');
+  });
 });

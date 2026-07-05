@@ -4,7 +4,7 @@ import * as path from 'path';
 import * as fs from 'fs-extra';
 import { glob } from 'glob';
 
-type WorkflowSystem = 'temporal' | 'celery' | 'sidekiq' | 'bullmq' | 'kafka' | 'rabbitmq' | 'nats';
+type WorkflowSystem = 'temporal' | 'celery' | 'sidekiq' | 'bullmq' | 'kafka' | 'rabbitmq' | 'nats' | 'step-functions' | 'durable-functions' | 'camunda-zeebe' | 'cadence';
 
 interface JobNodeSpec {
   id: string;
@@ -69,7 +69,7 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
 
     const sample = files.slice(0, 400);
     const importRe =
-      /(@temporalio|temporalio|celery|sidekiq|bullmq|require\s*\(\s*['"]bull['"]\)|from\s+['"]bull['"]|kafkajs|Sidekiq::(Job|Worker)|@shared_task|@app\.task|segmentio\/kafka-go|kafka\.NewWriter|kafka\.NewReader|nats-io\/nats|rdkafka|FutureRecord|async[_-]nats|KafkaTemplate|@KafkaListener|Confluent\.Kafka)/;
+      /(@temporalio|temporalio|celery|sidekiq|bullmq|require\s*\(\s*['"]bull['"]\)|from\s+['"]bull['"]|kafkajs|Sidekiq::(Job|Worker)|@shared_task|@app\.task|segmentio\/kafka-go|kafka\.NewWriter|kafka\.NewReader|nats-io\/nats|rdkafka|FutureRecord|async[_-]nats|KafkaTemplate|@KafkaListener|Confluent\.Kafka|durable-functions|df\.orchestrator|zeebe|ZBClient|go\.uber\.org\/cadence|go\.temporal\.io)/;
     for (const file of sample) {
       try {
         const content = await fs.readFile(file, 'utf-8');
@@ -92,6 +92,19 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
       nodir: true,
     });
     files = this.capAndPrioritizeSourceFiles(files, 'workflow source files');
+    // ASL state-machine JSON is opt-in: only *.asl.json (avoids scanning every
+    // package.json / config file for a StartAt/States shape).
+    try {
+      const aslFiles = await glob('**/*.asl.json', {
+        cwd: context.projectPath,
+        ignore: ignorePatterns,
+        absolute: true,
+        nodir: true,
+      });
+      files = [...files, ...aslFiles];
+    } catch {
+      // ignore
+    }
 
     const { nodes, edges, entryPoints } = await this.processFiles(files, context.projectPath);
 
@@ -117,7 +130,7 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
   async getRelevantFiles(projectPath: string): Promise<string[]> {
     let files: string[] = [];
     try {
-      files = await glob('**/*.{ts,tsx,js,jsx,mjs,cjs,py,rb,go,rs,java,cs}', {
+      files = await glob(['**/*.{ts,tsx,js,jsx,mjs,cjs,py,rb,go,rs,java,cs}', '**/*.asl.json'], {
         cwd: projectPath,
         ignore: this.getIgnorePatterns({ projectPath }),
         nodir: true,
@@ -127,7 +140,7 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
     }
 
     const markerRe =
-      /(@temporalio|temporalio|proxyActivities|@workflow\.defn|@activity\.defn|celery|@shared_task|@app\.task|\.delay\s*\(|\.apply_async\s*\(|Sidekiq::(?:Job|Worker)|\.perform_async|new\s+Queue\b|new\s+Worker\b|\.subscribe\s*\(|kafkajs|\bbullmq\b|\bbull\b|amqplib|\.sendToQueue\s*\(|\.consume\s*\(|\bnats\b|KafkaProducer|KafkaConsumer|kafka-python|confluent_kafka|kafka\.NewWriter|kafka\.NewReader|\.Publish\s*\(|\.Subscribe\s*\(|rdkafka|FutureRecord|async[_-]nats|KafkaTemplate|@KafkaListener|Confluent\.Kafka)/;
+      /(@temporalio|temporalio|proxyActivities|@workflow\.defn|@activity\.defn|celery|@shared_task|@app\.task|\.delay\s*\(|\.apply_async\s*\(|Sidekiq::(?:Job|Worker)|\.perform_async|new\s+Queue\b|new\s+Worker\b|\.subscribe\s*\(|kafkajs|\bbullmq\b|\bbull\b|amqplib|\.sendToQueue\s*\(|\.consume\s*\(|\bnats\b|KafkaProducer|KafkaConsumer|kafka-python|confluent_kafka|kafka\.NewWriter|kafka\.NewReader|\.Publish\s*\(|\.Subscribe\s*\(|rdkafka|FutureRecord|async[_-]nats|KafkaTemplate|@KafkaListener|Confluent\.Kafka|"StartAt"|df\.orchestrator|callActivity|createWorker|ZBClient|workflow\.ExecuteActivity|execute_activity|go\.uber\.org\/cadence|go\.temporal\.io)/;
     const relevant: string[] = [];
     for (const file of files) {
       let content: string;
@@ -218,9 +231,12 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
       const lines = content.split('\n');
       const lineOf = (index: number): number => content.slice(0, index).split('\n').length;
 
-      if (ext === '.py') {
+      if (ext === '.json') {
+        // AWS Step Functions ASL state-machine definitions.
+        this.extractStepFunctions(content, relativePath, nodes, edges, entryPoints);
+      } else if (ext === '.py') {
         this.extractCelery(content, lines, relativePath, nodes, entryPoints, jobNodeIds, pendingEnqueues);
-        this.extractPythonTemporal(content, relativePath, nodes, entryPoints, lineOf);
+        this.extractPythonTemporal(content, relativePath, nodes, edges, entryPoints, lineOf);
         // Python kafka-python / confluent-kafka topic graph (the Python forms in
         // extractKafka are content-gated, so the TS forms simply no-op here).
         this.extractKafka(content, relativePath, nodes, edges, entryPoints, ensureQueueNode, lineOf);
@@ -229,6 +245,8 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
       } else if (ext === '.go') {
         // Go event-driven wiring: segmentio/kafka-go writers/readers + nats.go pub/sub.
         this.extractGoMessaging(content, relativePath, nodes, edges, entryPoints, ensureQueueNode, lineOf);
+        // Cadence/Temporal Go: workflow.ExecuteActivity dispatch seams.
+        this.extractGoCadence(content, relativePath, nodes, edges, entryPoints, lineOf);
       } else if (ext === '.rs') {
         // Rust event-driven wiring: rdkafka producers/consumers + async-nats pub/sub.
         this.extractRustMessaging(content, relativePath, nodes, edges, entryPoints, ensureQueueNode, lineOf);
@@ -244,7 +262,9 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
         this.extractKafka(content, relativePath, nodes, edges, entryPoints, ensureQueueNode, lineOf);
         this.extractRabbitMQ(content, relativePath, nodes, edges, entryPoints, ensureQueueNode, lineOf);
         this.extractNATS(content, relativePath, nodes, edges, entryPoints, ensureQueueNode, lineOf);
-        this.extractTemporal(content, relativePath, nodes, entryPoints, lineOf);
+        this.extractTemporal(content, relativePath, nodes, edges, entryPoints, lineOf);
+        this.extractDurableFunctions(content, relativePath, nodes, edges, entryPoints, lineOf);
+        this.extractCamundaZeebe(content, relativePath, nodes, edges, entryPoints, lineOf);
       }
     }
 
@@ -305,12 +325,15 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
     content: string,
     filePath: string,
     nodes: CASNode[],
+    edges: CASEdge[],
     entryPoints: CASEntryPoint[],
     lineOf: (index: number) => number
   ): void {
     const isWorkflowFile = /(^|\/)workflows?(\/|\.)/.test(filePath.replace(/\\/g, '/'));
 
-    // proxyActivities<...>({...}) -> mark this file as a worker that depends on activities.
+    // Activity names pulled into scope via `const { a, b } = proxyActivities<...>()`.
+    // These are the activities a workflow dispatches — the orchestrator->activity seam.
+    const proxiedActivities = new Set<string>();
     const proxyRe = /proxyActivities\s*</g;
     let m: RegExpExecArray | null;
     while ((m = proxyRe.exec(content)) !== null) {
@@ -322,6 +345,14 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
           subcategories: ['async-flow', 'temporal', 'activity'],
         })
       );
+      // `const { chargeCard, sendEmail } = proxyActivities<Activities>({...})`
+      const destructure = content.slice(Math.max(0, m.index - 200), m.index).match(/\{\s*([^}]+?)\s*\}\s*=\s*$/);
+      if (destructure) {
+        for (const raw of destructure[1].split(',')) {
+          const name = raw.split(':')[0].trim();
+          if (/^\w+$/.test(name)) proxiedActivities.add(name);
+        }
+      }
     }
 
     // Activity definitions via export functions in activities files
@@ -344,10 +375,12 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
 
     // Workflow functions: exported (async) functions in a workflows/ file are workflow entry points.
     const wfRe = /export\s+(?:async\s+)?function\s+(\w+)\s*\(/g;
+    const workflowIds: string[] = [];
     while ((m = wfRe.exec(content)) !== null) {
       const name = m[1];
       const line = lineOf(m.index);
       const id = `flow_temporal_workflow_${this.sanitizeId(name)}`;
+      workflowIds.push(id);
       nodes.push(
         this.createNode(id, name, 'workflow', 3, filePath, line, undefined, {
           system: 'temporal',
@@ -367,6 +400,46 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
         )
       );
     }
+
+    // Orchestrator -> activity edges. `executeActivity('name', ...)` or a
+    // proxied `chargeCard(...)` call dispatches an async activity task.
+    if (workflowIds.length === 0) return;
+    const sourceWorkflow = workflowIds[0];
+    const dispatched = new Set<string>();
+    const execRe = /executeActivity\s*(?:<[^>]*>)?\s*\(\s*['"`]([^'"`]+)['"`]/g;
+    while ((m = execRe.exec(content)) !== null) dispatched.add(m[1]);
+    for (const act of Array.from(proxiedActivities)) {
+      if (new RegExp(`\\b${act}\\s*\\(`).test(content)) dispatched.add(act);
+    }
+    for (const act of Array.from(dispatched)) {
+      const activityId = `flow_temporal_activity_${this.sanitizeId(act)}`;
+      this.addActivityDispatchEdge(sourceWorkflow, activityId, act, 'temporal', nodes, edges);
+    }
+  }
+
+  /**
+   * Emit an orchestrator->activity edge. If the target activity node was not
+   * (yet) defined (cross-file / external), create a lightweight reference node
+   * so the async task seam is still visible in the graph.
+   */
+  private addActivityDispatchEdge(
+    sourceId: string,
+    activityId: string,
+    activityName: string,
+    system: WorkflowSystem,
+    nodes: CASNode[],
+    edges: CASEdge[]
+  ): void {
+    if (!nodes.some(n => n.id === activityId)) {
+      nodes.push(this.createNode(activityId, activityName, 'activity', 3, undefined, undefined, undefined, {
+        system,
+        reference: true,
+        subcategories: ['async-flow', system, 'activity'],
+      }));
+    }
+    const edgeId = `${sourceId}__dispatches__${activityId}`;
+    if (edges.some(e => e.id === edgeId)) return;
+    edges.push(this.createEdge(edgeId, sourceId, activityId, 'dispatches', 'async-flow', { system, activity: activityName, async: true }));
   }
 
   // ---- Temporal (Python) ----
@@ -374,16 +447,19 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
     content: string,
     filePath: string,
     nodes: CASNode[],
+    edges: CASEdge[],
     entryPoints: CASEntryPoint[],
     lineOf: (index: number) => number
   ): void {
     // @workflow.defn ... class X / @workflow.run def ...
     const wfDefnRe = /@workflow\.defn[\s\S]{0,200}?class\s+(\w+)/g;
     let m: RegExpExecArray | null;
+    const workflowIds: string[] = [];
     while ((m = wfDefnRe.exec(content)) !== null) {
       const name = m[1];
       const line = lineOf(m.index);
       const id = `flow_temporal_workflow_${this.sanitizeId(name)}`;
+      workflowIds.push(id);
       nodes.push(
         this.createNode(id, name, 'workflow', 3, filePath, line, undefined, {
           system: 'temporal',
@@ -415,6 +491,201 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
           subcategories: ['async-flow', 'temporal', 'activity'],
         })
       );
+    }
+
+    // workflow.execute_activity(activity_fn, ...) -> orchestrator->activity edge.
+    if (workflowIds.length > 0) {
+      const sourceWorkflow = workflowIds[0];
+      const execRe = /(?:workflow\.)?execute_activity(?:_method)?\s*\(\s*([\w.]+)/g;
+      const seen = new Set<string>();
+      while ((m = execRe.exec(content)) !== null) {
+        const ref = m[1].split('.').pop() || m[1];
+        if (seen.has(ref)) continue;
+        seen.add(ref);
+        this.addActivityDispatchEdge(sourceWorkflow, `flow_temporal_activity_${this.sanitizeId(ref)}`, ref, 'temporal', nodes, edges);
+      }
+    }
+  }
+
+  // ---- AWS Step Functions (Amazon States Language, JSON) ----
+  private extractStepFunctions(
+    content: string,
+    filePath: string,
+    nodes: CASNode[],
+    edges: CASEdge[],
+    entryPoints: CASEntryPoint[]
+  ): void {
+    // Cheap pre-check before JSON.parse: an ASL document has StartAt + States.
+    if (!/"StartAt"/.test(content) || !/"States"/.test(content)) return;
+    let doc: any;
+    try {
+      doc = JSON.parse(content);
+    } catch {
+      return;
+    }
+    const machine = this.findAslStateMachine(doc);
+    if (!machine) return;
+
+    const wfName = path.basename(filePath).replace(/\.(asl\.)?json$/i, '');
+    const wfId = `flow_stepfunctions_workflow_${this.sanitizeId(wfName)}`;
+    nodes.push(this.createNode(wfId, wfName, 'workflow', 3, filePath, undefined, undefined, {
+      system: 'step-functions',
+      startAt: machine.StartAt,
+      subcategories: ['async-flow', 'step-functions', 'workflow'],
+    }));
+    entryPoints.push(this.createEntryPoint(`ep_${wfId}`, wfId, 'event', wfName, `AWS Step Functions state machine ${wfName}`, { event: `step-functions:workflow:${wfName}` }, undefined, { system: 'step-functions', kind: 'workflow' }));
+
+    // Recursively walk States (Task/Choice/Parallel/Map/Wait/Pass/Succeed/Fail).
+    const walkStates = (states: Record<string, any>, parentId: string): void => {
+      for (const [stateName, state] of Object.entries(states || {})) {
+        if (!state || typeof state !== 'object') continue;
+        const stateType = (state as any).Type || 'Task';
+        const stateId = `flow_stepfunctions_state_${this.sanitizeId(wfName)}_${this.sanitizeId(stateName)}`;
+        const isTask = stateType === 'Task';
+        nodes.push(this.createNode(stateId, stateName, isTask ? 'activity' : 'step', isTask ? 3 : 4, filePath, undefined, undefined, {
+          system: 'step-functions',
+          stateType,
+          resource: (state as any).Resource,
+          subcategories: ['async-flow', 'step-functions', isTask ? 'activity' : 'step'],
+        }));
+        // orchestrator -> state (Task states are async task seams).
+        const edgeType = isTask ? 'dispatches' : 'transitions';
+        edges.push(this.createEdge(`${parentId}__${edgeType}__${stateId}`, parentId, stateId, edgeType, 'async-flow', { system: 'step-functions', stateType, resource: (state as any).Resource, async: isTask }));
+        // Nested Parallel branches / Map iterator.
+        for (const branch of (state as any).Branches || []) {
+          if (branch?.States) walkStates(branch.States, stateId);
+        }
+        const iterator = (state as any).Iterator || (state as any).ItemProcessor;
+        if (iterator?.States) walkStates(iterator.States, stateId);
+      }
+    };
+    walkStates(machine.States, wfId);
+  }
+
+  private findAslStateMachine(doc: any): { StartAt: string; States: Record<string, any> } | undefined {
+    if (doc && typeof doc === 'object' && doc.StartAt && doc.States) return doc;
+    // Common wrappers: a CDK/SAM template embeds the definition under a key.
+    for (const key of ['definition', 'Definition', 'StateMachine', 'stateMachine']) {
+      const nested = doc?.[key];
+      if (nested?.StartAt && nested?.States) return nested;
+    }
+    return undefined;
+  }
+
+  // ---- Azure Durable Functions (JS/TS) ----
+  private extractDurableFunctions(
+    content: string,
+    filePath: string,
+    nodes: CASNode[],
+    edges: CASEdge[],
+    entryPoints: CASEntryPoint[],
+    lineOf: (index: number) => number
+  ): void {
+    // Gate on the durable-functions orchestrator idiom.
+    if (!/df\.orchestrator|durable-functions|IDurableOrchestrationContext|DurableOrchestrationContext/.test(content)) return;
+
+    const wfName = path.basename(filePath).replace(/\.[jt]s$/i, '');
+    const wfId = `flow_durablefunctions_orchestrator_${this.sanitizeId(wfName)}`;
+    nodes.push(this.createNode(wfId, wfName, 'workflow', 3, filePath, undefined, undefined, {
+      system: 'durable-functions',
+      subcategories: ['async-flow', 'durable-functions', 'orchestrator'],
+    }));
+    entryPoints.push(this.createEntryPoint(`ep_${wfId}`, wfId, 'event', wfName, `Azure Durable Functions orchestrator ${wfName}`, { event: `durable-functions:orchestrator:${wfName}` }, undefined, { system: 'durable-functions', kind: 'orchestrator' }));
+
+    // context.df.callActivity('name') / callActivityWithRetry('name', ...) -> activity dispatch.
+    const actRe = /call(?:Sub[Oo]rchestrator|Activity)(?:WithRetry)?\s*\(\s*['"`]([^'"`]+)['"`]/g;
+    let m: RegExpExecArray | null;
+    const seen = new Set<string>();
+    while ((m = actRe.exec(content)) !== null) {
+      const name = m[1];
+      if (seen.has(name)) continue;
+      seen.add(name);
+      this.addActivityDispatchEdge(wfId, `flow_durablefunctions_activity_${this.sanitizeId(name)}`, name, 'durable-functions', nodes, edges);
+    }
+  }
+
+  // ---- Camunda / Zeebe (JS/TS) ----
+  private extractCamundaZeebe(
+    content: string,
+    filePath: string,
+    nodes: CASNode[],
+    edges: CASEdge[],
+    entryPoints: CASEntryPoint[],
+    lineOf: (index: number) => number
+  ): void {
+    if (!/ZBClient|ZeebeClient|createWorker|zeebe/i.test(content)) return;
+
+    const wfName = path.basename(filePath).replace(/\.[jt]s$/i, '');
+    const wfId = `flow_camundazeebe_workflow_${this.sanitizeId(wfName)}`;
+    let created = false;
+    const ensureWf = (): string => {
+      if (!created) {
+        created = true;
+        nodes.push(this.createNode(wfId, wfName, 'workflow', 3, filePath, undefined, undefined, {
+          system: 'camunda-zeebe',
+          subcategories: ['async-flow', 'camunda-zeebe', 'workflow'],
+        }));
+        entryPoints.push(this.createEntryPoint(`ep_${wfId}`, wfId, 'event', wfName, `Camunda/Zeebe worker host ${wfName}`, { event: `camunda-zeebe:workflow:${wfName}` }, undefined, { system: 'camunda-zeebe', kind: 'workflow' }));
+      }
+      return wfId;
+    };
+
+    // zbc.createWorker({ taskType: 'charge-card', ... }) / createWorker('charge-card', handler)
+    const workerRe = /createWorker\s*\(\s*(?:\{[\s\S]{0,160}?taskType\s*:\s*(['"`])([^'"`]+)\1|(['"`])([^'"`]+)\3)/g;
+    let m: RegExpExecArray | null;
+    const seen = new Set<string>();
+    while ((m = workerRe.exec(content)) !== null) {
+      const taskType = m[2] || m[4];
+      if (!taskType || seen.has(taskType)) continue;
+      seen.add(taskType);
+      const source = ensureWf();
+      const activityId = `flow_camundazeebe_activity_${this.sanitizeId(taskType)}`;
+      nodes.push(this.createNode(activityId, taskType, 'activity', 3, filePath, lineOf(m.index), undefined, {
+        system: 'camunda-zeebe',
+        taskType,
+        subcategories: ['async-flow', 'camunda-zeebe', 'activity'],
+      }));
+      entryPoints.push(this.createEntryPoint(`ep_${activityId}`, activityId, 'event', `${taskType} worker`, `Zeebe job worker for task type ${taskType}`, { event: `camunda-zeebe:task:${taskType}` }, undefined, { system: 'camunda-zeebe', kind: 'job-worker', taskType }));
+      edges.push(this.createEdge(`${source}__dispatches__${activityId}`, source, activityId, 'dispatches', 'async-flow', { system: 'camunda-zeebe', taskType, async: true }));
+    }
+  }
+
+  // ---- Cadence / Temporal (Go) ----
+  private extractGoCadence(
+    content: string,
+    filePath: string,
+    nodes: CASNode[],
+    edges: CASEdge[],
+    entryPoints: CASEntryPoint[],
+    lineOf: (index: number) => number
+  ): void {
+    if (!/go\.uber\.org\/cadence|go\.temporal\.io|workflow\.ExecuteActivity|RegisterWorkflow/.test(content)) return;
+    const system: WorkflowSystem = /cadence/.test(content) ? 'cadence' : 'temporal';
+
+    // func XxxWorkflow(ctx workflow.Context, ...) -> workflow node.
+    const wfRe = /func\s+(\w*[Ww]orkflow\w*)\s*\(\s*ctx\s+workflow\.Context/g;
+    let m: RegExpExecArray | null;
+    let sourceWorkflow: string | undefined;
+    while ((m = wfRe.exec(content)) !== null) {
+      const name = m[1];
+      const id = `flow_${system}_workflow_${this.sanitizeId(name)}`;
+      if (!sourceWorkflow) sourceWorkflow = id;
+      nodes.push(this.createNode(id, name, 'workflow', 3, filePath, lineOf(m.index), undefined, {
+        system,
+        subcategories: ['async-flow', system, 'workflow'],
+      }));
+      entryPoints.push(this.createEntryPoint(`ep_${id}`, id, 'event', name, `${system} workflow ${name}`, { event: `${system}:workflow:${name}` }, undefined, { system, kind: 'workflow' }));
+    }
+
+    if (!sourceWorkflow) return;
+    // workflow.ExecuteActivity(ctx, ActivityFn, ...) -> orchestrator->activity edge.
+    const execRe = /workflow\.ExecuteActivity\s*\(\s*[\w.]+\s*,\s*([\w.]+)/g;
+    const seen = new Set<string>();
+    while ((m = execRe.exec(content)) !== null) {
+      const ref = m[1].split('.').pop() || m[1];
+      if (seen.has(ref)) continue;
+      seen.add(ref);
+      this.addActivityDispatchEdge(sourceWorkflow, `flow_${system}_activity_${this.sanitizeId(ref)}`, ref, system, nodes, edges);
     }
   }
 
@@ -1017,11 +1288,17 @@ export class WorkflowAnalyzer extends BaseAnalyzer {
   protected getCapabilities(): string[] {
     return [
       'temporal-workflows',
+      'temporal-activity-dispatch-edges',
       'celery-tasks',
       'sidekiq-jobs',
       'bullmq-queues',
       'kafka-consumers',
       'async-flows',
+      'step-functions-state-machines',
+      'durable-functions-orchestrators',
+      'camunda-zeebe-workers',
+      'cadence-workflows',
+      'orchestrator-activity-dispatch-edges',
     ];
   }
 

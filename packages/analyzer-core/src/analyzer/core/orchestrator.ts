@@ -18,6 +18,7 @@ import {
   CASExternalService,
   CASEntryPoint,
   ENTRY_POINT_TYPES,
+  EXIT_POINT_TYPES,
   CASExitPoint,
   CASIntent,
   CASFlowSummary,
@@ -83,6 +84,8 @@ import { collectDeployableEvidence } from './deployable-evidence';
 import { classifyCodebaseTypes } from './codebase-type';
 import { applyConventions, type KlauroConventionsInput } from './conventions-applier';
 import { linkInfraTopology } from './infra-topology-linker';
+import { classifyCommunicationSeams } from './communication-seams';
+import { deriveConsistencyModel, toCommunicationSeams } from './consistency-model';
 import { collectCoverageGaps } from './coverage-gaps';
 import { ChangeDetector } from './change-detector';
 import { buildUserJourneys } from './journey-builder';
@@ -818,6 +821,7 @@ export class AnalyzerOrchestrator {
     ].includes(basename)) return true;
     if (/^(next|jest|cypress)\.config\.(js|ts|mjs|cjs)$/.test(basename)) return true;
     if (filePath.toLowerCase().endsWith('prisma/schema.prisma')) return true;
+    if (this.isCiPipelineConfigFile(filePath)) return true;
     // Jupyter notebooks (.ipynb) are JSON documents, not a registered-language
     // source extension — JupyterNotebookAnalyzer parses the format directly
     // (analyzer/frameworks/dataml/jupyter-notebook-analyzer.ts). Without this,
@@ -827,6 +831,22 @@ export class AnalyzerOrchestrator {
     // Per-language source extensions live in LANGUAGE_REGISTRY (language-registry.ts);
     // adding a language is one entry there, not an edit to this regex.
     return isRegisteredSourceExtension(filePath);
+  }
+
+  private isCiPipelineConfigFile(filePath: string): boolean {
+    const normalized = filePath.replace(/\\/g, '/').toLowerCase();
+    const basename = path.basename(normalized);
+    if (basename === '.gitlab-ci.yml') return true;
+    if (basename === 'jenkinsfile') return true;
+    if (basename === 'azure-pipelines.yml' || basename === 'azure-pipelines.yaml') return true;
+    if (basename === '.travis.yml') return true;
+    if (basename === '.drone.yml' || basename === '.drone.yaml') return true;
+    if (basename === 'bitbucket-pipelines.yml' || basename === 'bitbucket-pipelines.yaml') return true;
+    return normalized.startsWith('.github/workflows/') ||
+      normalized === '.circleci/config.yml' ||
+      normalized === '.buildkite/pipeline.yml' ||
+      normalized === '.buildkite/pipeline.yaml' ||
+      normalized.startsWith('.teamcity/');
   }
 
   private isManifestFile(filePath: string): boolean {
@@ -1727,6 +1747,63 @@ export class AnalyzerOrchestrator {
       if (infraLinks.edges.length > 0) output.edges.push(...infraLinks.edges);
     } catch (error) {
       console.error('[Klauro] infra-topology-linker pass failed:', error);
+    }
+
+    // Communication-seams classifier. Additive, deterministic, non-AI pass over
+    // the already-assembled CASOutput (exit_points / entry_points /
+    // data_lineage / deployable_evidence) that tags every inter-component seam
+    // with a modality — sync (awaited request/response), async (fire-and-forget
+    // messaging/events/webhooks), or passive (shared-state: >1 component
+    // writes+reads the same entity) — and emits a node- and deployable-level
+    // seam inventory. Derived from existing facts, never re-detects; surfaced
+    // via get_communication_seams. See communication-seams.ts. Never blocks.
+    try {
+      output.communication_seams = classifyCommunicationSeams(output);
+    } catch (error) {
+      console.error('[Klauro] communication-seams pass failed:', error);
+    }
+
+    // Consistency / CAP characterization + BROADENED passive seams. Additive,
+    // deterministic, non-AI pass over external services / exit points / config
+    // env vars / data lineage. Extends the passive dimension beyond shared-table
+    // to read-replicas (writer -> replica -> reader), streaming sinks / CDC /
+    // materialized stores / ETL loads, and tags data-store egress + passive
+    // seams with a consistency posture (strong | eventual | tunable,
+    // staleness_risk, CP/AP lean, evidence). Evidence-gated — never guesses a
+    // consistency it cannot infer. Zero behavior change when no such stores
+    // exist. See consistency-model.ts. Never blocks/fails a real analysis run.
+    try {
+      const consistency = deriveConsistencyModel(output);
+      output.consistency_model = consistency;
+      // Fold the broadened passive seams into the communication-seams inventory
+      // so replica/streaming/CDC seams read alongside seam-modality's base
+      // shared-state seams. Additive: append the seam records and bump the
+      // passive/total counts; existing sync/async seams are untouched.
+      if (consistency.passive_seams.length > 0 && output.communication_seams) {
+        const extraSeams = toCommunicationSeams(consistency.passive_seams);
+        output.communication_seams.seams.push(...extraSeams);
+        const bump = (inv: typeof output.communication_seams.inventory | undefined) => {
+          if (!inv) return;
+          inv.counts.passive += extraSeams.length;
+          inv.counts.total += extraSeams.length;
+          for (const s of extraSeams) {
+            const key = `${s.source}=>${s.target}`;
+            let edge = inv.component_seams.find(e => `${e.source}=>${e.target}` === key);
+            if (!edge) {
+              edge = { source: s.source, target: s.target, modalities: [], sync: 0, async: 0, passive: 0, total: 0 };
+              inv.component_seams.push(edge);
+            }
+            edge.passive += 1;
+            edge.total += 1;
+            if (!edge.modalities.includes('passive')) edge.modalities.push('passive');
+          }
+          inv.component_seams.sort((a, b) => b.total - a.total || a.source.localeCompare(b.source));
+        };
+        bump(output.communication_seams.inventory);
+        bump(output.communication_seams.deployable_inventory);
+      }
+    } catch (error) {
+      console.error('[Klauro] consistency-model pass failed:', error);
     }
 
     // Codebase-TYPE classification + self-discovered coverage gaps. Both are
@@ -5011,13 +5088,21 @@ export class AnalyzerOrchestrator {
     return AnalyzerOrchestrator.VALID_ENTRY_POINT_TYPES.has(ep.type);
   }
 
+  /**
+   * Accepted exit-point kinds are DERIVED from the single source of truth
+   * (EXIT_POINT_TYPES in cas.types.ts, which the CASExitPoint['type'] union is
+   * also built from) — mirror of VALID_ENTRY_POINT_TYPES above. Do NOT
+   * reintroduce a hand-maintained allowlist here: the old one had drifted, both
+   * rejecting a real emitted kind ('event') and carrying dead kinds
+   * ('http'/'grpc'/'graphql'/'queue'/'email'/'sms'/'external_api') that no
+   * analyzer emits (createExitPoint's type is compile-locked to the union). Add
+   * new kinds to EXIT_POINT_TYPES and both the type and this validator pick them
+   * up. A parity guard test asserts they agree.
+   */
+  private static readonly VALID_EXIT_POINT_TYPES: ReadonlySet<string> = new Set(EXIT_POINT_TYPES);
+
   private isValidExitPoint(ep: CASExitPoint): boolean {
-    const validTypes = new Set([
-      'database', 'http', 'grpc', 'graphql', 'queue', 'cache',
-      'file', 'email', 'sms', 'external_api', 'sdk',
-      'api', 'navigation', 'client_storage', 'analytics', 'message', 'webhook'
-    ]);
-    if (!validTypes.has(ep.type)) return false;
+    if (!AnalyzerOrchestrator.VALID_EXIT_POINT_TYPES.has(ep.type)) return false;
     if (this.isNoiseExitPoint(ep)) return false;
     return true;
   }

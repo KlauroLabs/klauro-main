@@ -35,6 +35,7 @@ import { SolidityAnalyzer } from '../languages/solidity-analyzer';
 import { ElixirAnalyzer } from '../languages/elixir-analyzer';
 import { ShellAnalyzer } from '../languages/shell-analyzer';
 import { ProtobufAnalyzer } from '../languages/protobuf-analyzer';
+import { SoapWsdlAnalyzer } from '../languages/soap-wsdl-analyzer';
 import { CliAnalyzer } from '../languages/cli-analyzer';
 import { DockerComposeAnalyzer, DockerfileAnalyzer, KubernetesManifestAnalyzer } from '../languages/container-topology-analyzer';
 import { DistributionArtifactAnalyzer } from '../languages/distribution-artifact-analyzer';
@@ -481,6 +482,17 @@ export class CASAnalyzerService {
           content: [/\.proto$/]
         },
         analyzer: new ProtobufAnalyzer()
+      },
+      {
+        id: 'soap-wsdl',
+        name: 'SOAP/WSDL Analyzer',
+        type: 'language',
+        version: '1.0.0',
+        detectPatterns: {
+          files: ['**/*.wsdl', '**/*.xsd'],
+          content: [/\.wsdl$/i, /\.xsd$/i, /from\s+['"](?:soap|strong-soap)['"]/, /import\s+(?:zeep|suds)\b/, /@(WebServiceClient|WebService)\b/, /System\.ServiceModel/, /Savon\.client\b/]
+        },
+        analyzer: new SoapWsdlAnalyzer()
       },
       {
         id: 'cli-frameworks',

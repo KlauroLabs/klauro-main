@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { validatePack } from './pack-schema';
+import { ENTRY_POINT_TYPES } from '../../types/cas.types';
 
 test('validatePack accepts a well-formed pack', () => {
   const result = validatePack({
@@ -44,6 +45,30 @@ test('validatePack rejects an unknown emit fact discriminator', () => {
     rules: [{ name: 'r1', query: '(call_expression) @c', emit: [{ fact: 'not_a_real_fact' }] }],
   });
   assert.equal(result.ok, false);
+});
+
+test('validatePack accepts every entry-point kind in the ENTRY_POINT_TYPES source of truth', () => {
+  for (const kind of ENTRY_POINT_TYPES) {
+    const result = validatePack({
+      pack: `k-${kind}`,
+      language: 'typescript',
+      rules: [{ name: 'r1', query: '(call_expression) @c', emit: [{ fact: 'entry_point', kind, path: '@c' }] }],
+    });
+    assert.equal(result.ok, true, `kind "${kind}" should be a valid entry-point emit kind`);
+  }
+});
+
+test('validatePack rejects a bogus entry-point kind with a clear, scoped error and no fabricated pack', () => {
+  const result = validatePack({
+    pack: 'bad-kind',
+    language: 'typescript',
+    rules: [{ name: 'r1', query: '(call_expression) @c', emit: [{ fact: 'entry_point', kind: 'htttp', path: '@c' }] }],
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.pack, undefined, 'an invalid kind must not yield a usable pack (no silently-dropped fact)');
+  const kindErr = result.errors.find(e => e.startsWith('rules.0.emit.0.kind'));
+  assert.ok(kindErr, `error should be scoped to the offending field: ${JSON.stringify(result.errors)}`);
+  assert.ok(kindErr!.includes('http'), 'error should list the allowed kinds');
 });
 
 test('validatePack rejects a non-array applies_when.dependency', () => {

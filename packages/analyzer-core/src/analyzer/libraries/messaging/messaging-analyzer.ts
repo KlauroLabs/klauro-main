@@ -10,6 +10,7 @@ type MessagingSystem =
   | 'amqplib'
   | 'nats'
   | 'redis-pubsub'
+  | 'redis-streams'
   | 'bullmq'
   | 'bee-queue'
   | 'aws-sqs'
@@ -21,9 +22,30 @@ type MessagingSystem =
   | 'spring-rabbit'
   | 'sidekiq'
   | 'go-kafka'
-  | 'go-nats';
+  | 'go-nats'
+  | 'event-emitter';
 
-type ChannelKind = 'topic' | 'queue' | 'channel' | 'subject';
+type ChannelKind = 'topic' | 'queue' | 'channel' | 'subject' | 'exchange' | 'stream' | 'event';
+
+/**
+ * Routing shape of a channel — the ROUTING SEMANTICS that decide the dataflow
+ * fan-out. A fanout exchange / Redis pub-sub / SNS topic is a 1->N BROADCAST
+ * seam; a work queue / Kafka consumer-group / Redis stream group is a 1->1
+ * (competing-consumers) seam. `fanout: true` is the load-bearing signal that
+ * downstream (seam-modality) uses to distinguish a broadcast from a queue.
+ */
+interface RoutingShape {
+  /** Exchange/dispatch discipline. */
+  type: 'direct' | 'topic' | 'fanout' | 'headers' | 'pubsub' | 'stream' | 'queue-group' | 'consumer-group' | 'event';
+  /** Routing keys / binding patterns / subjects observed for this channel. */
+  keys?: string[];
+  /** True when a publish reaches ALL bound consumers (broadcast, 1->N). */
+  fanout?: boolean;
+  /** Kafka consumer group / NATS queue group / Redis stream group — competing consumers share the load (1->1 per message). */
+  group?: string;
+  /** Whether the subject/binding uses wildcards (topic/pattern routing). */
+  wildcard?: boolean;
+}
 
 interface MessagingFacts {
   nodes: CASNode[];
@@ -41,6 +63,7 @@ interface ProducerSpec {
   name: string;
   action: string;
   payloadType?: string;
+  routing?: RoutingShape;
 }
 
 interface ConsumerSpec {
@@ -52,9 +75,10 @@ interface ConsumerSpec {
   name: string;
   handlerName?: string;
   payloadType?: string;
+  routing?: RoutingShape;
 }
 
-type ChannelEnsurer = (system: MessagingSystem, name: string, kind: ChannelKind, filePath: string, line?: number) => string;
+type ChannelEnsurer = (system: MessagingSystem, name: string, kind: ChannelKind, filePath: string, line?: number, routing?: RoutingShape) => string;
 
 export class MessagingAnalyzer extends BaseAnalyzer {
   constructor() {
@@ -195,18 +219,26 @@ export class MessagingAnalyzer extends BaseAnalyzer {
     const edgeIds = new Set<string>();
     const celeryTaskNames = await this.collectCeleryTaskNames(files, projectPath);
 
-    const ensureChannelNode: ChannelEnsurer = (system, name, kind, filePath, line) => {
+    const channelNodesById = new Map<string, CASNode>();
+
+    const ensureChannelNode: ChannelEnsurer = (system, name, kind, filePath, line, routing) => {
       const key = `${system}:${kind}:${name}`;
       const existing = channelNodeIds.get(key);
-      if (existing) return existing;
+      if (existing) {
+        if (routing) this.mergeRoutingIntoChannel(channelNodesById.get(existing), routing);
+        return existing;
+      }
       const id = `messaging_${system}_${kind}_${this.sanitizeId(name)}`;
       channelNodeIds.set(key, id);
-      nodes.push(this.createNode(id, name, kind, 3, filePath, line, undefined, {
+      const node = this.createNode(id, name, kind, 3, filePath, line, undefined, {
         system,
         channel: name,
         channelKind: kind,
         subcategories: ['async-messaging', system, kind],
-      }));
+        ...(routing ? { routing, fanout: routing.fanout === true } : {}),
+      });
+      channelNodesById.set(id, node);
+      nodes.push(node);
       return id;
     };
 
@@ -260,8 +292,9 @@ export class MessagingAnalyzer extends BaseAnalyzer {
     const queueVars = this.extractQueueVariables(content, lineOf);
 
     if (hasImport('kafkajs')) {
+      const kafkaGroup = this.extractKafkaGroupId(content);
       this.extractObjectSendProducers(content, filePath, 'kafkajs', 'topic', /topic\s*:\s*(['"`])([^'"`]+)\1/g, 'send', nodes, exitPoints, ensureChannelNode, addEdge, lineOf);
-      this.extractTopicConsumers(content, filePath, 'kafkajs', 'topic', /\.subscribe\s*\(\s*\{[\s\S]{0,240}?topic\s*:\s*(['"`])([^'"`]+)\1/g, /eachMessage\s*:\s*(?:async\s*)?\(?\s*([^,\n)=]+)/g, nodes, entryPoints, ensureChannelNode, addEdge, lineOf);
+      this.extractTopicConsumers(content, filePath, 'kafkajs', 'topic', /\.subscribe\s*\(\s*\{[\s\S]{0,240}?topic\s*:\s*(['"`])([^'"`]+)\1/g, /eachMessage\s*:\s*(?:async\s*)?\(?\s*([^,\n)=]+)/g, nodes, entryPoints, ensureChannelNode, addEdge, lineOf, kafkaGroup ? { type: 'consumer-group', fanout: false, group: kafkaGroup } : undefined);
     }
 
     if (hasImport('node-rdkafka')) {
@@ -270,20 +303,32 @@ export class MessagingAnalyzer extends BaseAnalyzer {
     }
 
     if (hasImport('amqplib')) {
+      this.extractRabbitExchanges(content, filePath, 'amqplib', nodes, entryPoints, exitPoints, ensureChannelNode, addEdge, lineOf, {
+        assertExchange: /\.assertExchange\s*\(\s*(['"`])([^'"`]+)\1\s*,\s*(['"`])([^'"`]+)\3/g,
+        bindQueue: /\.bindQueue\s*\(\s*(['"`])([^'"`]+)\1\s*,\s*(['"`])([^'"`]+)\3\s*(?:,\s*(['"`])([^'"`]*)\5)?/g,
+        publish: /\.publish\s*\(\s*(['"`])([^'"`]+)\1\s*,\s*(['"`])([^'"`]*)\3/g,
+      });
       this.extractCallWithStringProducer(content, filePath, 'amqplib', 'queue', /\.sendToQueue\s*\(\s*(['"`])([^'"`]+)\1/g, 'sendToQueue', nodes, exitPoints, ensureChannelNode, addEdge, lineOf);
-      this.extractCallWithStringProducer(content, filePath, 'amqplib', 'channel', /\.publish\s*\(\s*(['"`])([^'"`]+)\1/g, 'publish', nodes, exitPoints, ensureChannelNode, addEdge, lineOf);
       this.extractCallWithStringConsumer(content, filePath, 'amqplib', 'queue', /\.consume\s*\(\s*(['"`])([^'"`]+)\1/g, 'RabbitMQ consumer', nodes, entryPoints, ensureChannelNode, addEdge, lineOf);
     }
 
     if (hasImport('nats')) {
       this.extractCallWithStringProducer(content, filePath, 'nats', 'subject', /\.publish\s*\(\s*(['"`])([^'"`]+)\1/g, 'publish', nodes, exitPoints, ensureChannelNode, addEdge, lineOf);
-      this.extractCallWithStringConsumer(content, filePath, 'nats', 'subject', /\.subscribe\s*\(\s*(['"`])([^'"`]+)\1/g, 'NATS subscriber', nodes, entryPoints, ensureChannelNode, addEdge, lineOf);
+      this.extractNatsSubscribers(content, filePath, 'nats', nodes, entryPoints, ensureChannelNode, addEdge, lineOf);
     }
 
     if (hasImport('ioredis') || hasImport('redis') || hasImport('@redis/client')) {
+      // Pub/sub (broadcast) — publish/subscribe/psubscribe.
       this.extractCallWithStringProducer(content, filePath, 'redis-pubsub', 'channel', /\.publish\s*\(\s*(['"`])([^'"`]+)\1/g, 'publish', nodes, exitPoints, ensureChannelNode, addEdge, lineOf);
       this.extractCallWithStringConsumer(content, filePath, 'redis-pubsub', 'channel', /\.(?:p?subscribe)\s*\(\s*(['"`])([^'"`]+)\1/g, 'Redis subscriber', nodes, entryPoints, ensureChannelNode, addEdge, lineOf);
+      // Streams (durable queue / consumer-groups) — xadd producer, xreadgroup consumer.
+      this.extractCallWithStringProducer(content, filePath, 'redis-streams', 'stream', /\.xadd\s*\(\s*(['"`])([^'"`]+)\1/g, 'xadd', nodes, exitPoints, ensureChannelNode, addEdge, lineOf);
+      this.extractRedisStreamGroups(content, filePath, nodes, entryPoints, ensureChannelNode, addEdge, lineOf);
     }
+
+    // In-process Node EventEmitter (.on/.emit) — not broker-based, but an
+    // event-driven seam. Broadcast: every listener for an event name sees the emit.
+    this.extractEventEmitter(content, filePath, nodes, entryPoints, exitPoints, ensureChannelNode, addEdge, lineOf);
 
     if (hasImport('bullmq')) {
       this.extractQueueAdds(content, queueVars, filePath, 'bullmq', nodes, entryPoints, exitPoints, ensureChannelNode, addEdge, lineOf);
@@ -325,7 +370,26 @@ export class MessagingAnalyzer extends BaseAnalyzer {
     }
 
     if (hasImport('pika')) {
-      this.extractKeywordStringProducer(content, filePath, 'pika', 'channel', /\.basic_publish\s*\([\s\S]{0,300}?exchange\s*=\s*(['"`])([^'"`]+)\1/g, 'basic_publish', nodes, exitPoints, ensureChannelNode, addEdge, lineOf);
+      // exchange_declare(exchange='x', exchange_type='fanout') -> exchange type.
+      const pikaExchangeTypes = new Map<string, RoutingShape['type']>();
+      const declRe = /\.exchange_declare\s*\([\s\S]{0,300}?exchange\s*=\s*(['"`])([^'"`]+)\1[\s\S]{0,200}?exchange_type\s*=\s*(['"`])([^'"`]+)\3/g;
+      let declMatch: RegExpExecArray | null;
+      while ((declMatch = declRe.exec(content)) !== null) {
+        const rawType = declMatch[4].toLowerCase();
+        const type = (['direct', 'topic', 'fanout', 'headers'] as const).includes(rawType as any) ? (rawType as RoutingShape['type']) : 'direct';
+        pikaExchangeTypes.set(declMatch[2], type);
+        ensureChannelNode('pika', declMatch[2], 'exchange', filePath, lineOf(declMatch.index), { type, fanout: type === 'fanout', wildcard: type === 'topic' });
+      }
+      // basic_publish(exchange='x', routing_key='k') -> producer with exchange routing.
+      const pubRe = /\.basic_publish\s*\([\s\S]{0,400}?exchange\s*=\s*(['"`])([^'"`]+)\1(?:[\s\S]{0,200}?routing_key\s*=\s*(['"`])([^'"`]*)\3)?/g;
+      let pubMatch: RegExpExecArray | null;
+      while ((pubMatch = pubRe.exec(content)) !== null) {
+        const exchange = pubMatch[2];
+        const routingKey = pubMatch[4];
+        const type = pikaExchangeTypes.get(exchange) ?? 'direct';
+        const routing: RoutingShape = { type, fanout: type === 'fanout', wildcard: type === 'topic' || /[*#]/.test(routingKey || ''), keys: routingKey ? [routingKey] : undefined };
+        this.addProducer({ system: 'pika', channel: exchange, channelKind: 'exchange', filePath, line: lineOf(pubMatch.index), name: 'pika.basic_publish', action: 'basic_publish', routing }, nodes, exitPoints, ensureChannelNode, addEdge);
+      }
       this.extractKeywordStringConsumer(content, filePath, 'pika', 'queue', /\.basic_consume\s*\([\s\S]{0,300}?queue\s*=\s*(['"`])([^'"`]+)\1/g, 'RabbitMQ consumer', nodes, entryPoints, ensureChannelNode, addEdge, lineOf);
     }
 
@@ -426,7 +490,8 @@ export class MessagingAnalyzer extends BaseAnalyzer {
     ensureChannelNode: ChannelEnsurer,
     addEdge: (source: string, target: string, type: 'produces' | 'consumes', metadata: Record<string, any>) => void
   ): string {
-    const channelId = ensureChannelNode(spec.system, spec.channel, spec.channelKind, spec.filePath, spec.line);
+    const routing = spec.routing ?? this.defaultRouting(spec.system, spec.channelKind, spec.channel);
+    const channelId = ensureChannelNode(spec.system, spec.channel, spec.channelKind, spec.filePath, spec.line, routing);
     const producerId = `messaging_${spec.system}_producer_${this.sanitizeId(spec.channel)}_${this.sanitizeId(spec.filePath)}_${spec.line}`;
     nodes.push(this.createNode(producerId, spec.name, 'producer', 4, spec.filePath, spec.line, undefined, {
       system: spec.system,
@@ -434,6 +499,8 @@ export class MessagingAnalyzer extends BaseAnalyzer {
       channelKind: spec.channelKind,
       action: spec.action,
       payloadType: spec.payloadType,
+      routing,
+      fanout: routing?.fanout === true,
       subcategories: ['async-messaging', spec.system, 'producer'],
     }));
     addEdge(producerId, channelId, 'produces', {
@@ -441,16 +508,18 @@ export class MessagingAnalyzer extends BaseAnalyzer {
       channel: spec.channel,
       channelKind: spec.channelKind,
       payloadType: spec.payloadType,
+      routing,
+      fanout: routing?.fanout === true,
     });
     exitPoints.push(this.createExitPoint(
       `exit_${producerId}`,
       producerId,
       'message',
       `${spec.system} publish to ${spec.channel}`,
-      `${spec.name} publishes to ${spec.channelKind} ${spec.channel}.`,
+      `${spec.name} publishes to ${spec.channelKind} ${spec.channel}${routing?.fanout ? ' (fanout broadcast)' : ''}.`,
       { service_id: spec.system, resource: spec.channel, endpoint: spec.channel },
       { action: spec.action, async: true },
-      { system: spec.system, channel: spec.channel, channelKind: spec.channelKind, payloadType: spec.payloadType }
+      { system: spec.system, channel: spec.channel, channelKind: spec.channelKind, payloadType: spec.payloadType, routing, fanout: routing?.fanout === true }
     ));
     return producerId;
   }
@@ -462,31 +531,38 @@ export class MessagingAnalyzer extends BaseAnalyzer {
     ensureChannelNode: ChannelEnsurer,
     addEdge: (source: string, target: string, type: 'produces' | 'consumes', metadata: Record<string, any>) => void
   ): string {
-    const channelId = ensureChannelNode(spec.system, spec.channel, spec.channelKind, spec.filePath, spec.line);
+    const routing = spec.routing ?? this.defaultRouting(spec.system, spec.channelKind, spec.channel);
+    const channelId = ensureChannelNode(spec.system, spec.channel, spec.channelKind, spec.filePath, spec.line, routing);
     const consumerId = `messaging_${spec.system}_consumer_${this.sanitizeId(spec.channel)}_${this.sanitizeId(spec.filePath)}_${spec.line}`;
-    nodes.push(this.createNode(consumerId, spec.name, spec.system === 'bullmq' || spec.system === 'bee-queue' || spec.system === 'sidekiq' || spec.system === 'celery' ? 'worker' : 'consumer', 4, spec.filePath, spec.line, undefined, {
+    nodes.push(this.createNode(consumerId, spec.name, spec.system === 'bullmq' || spec.system === 'bee-queue' || spec.system === 'sidekiq' || spec.system === 'celery' ? 'worker' : (spec.system === 'event-emitter' ? 'listener' : 'consumer'), 4, spec.filePath, spec.line, undefined, {
       system: spec.system,
       channel: spec.channel,
       channelKind: spec.channelKind,
       handlerName: spec.handlerName,
       payloadType: spec.payloadType,
-      subcategories: ['async-messaging', spec.system, 'consumer'],
+      routing,
+      fanout: routing?.fanout === true,
+      group: routing?.group,
+      subcategories: ['async-messaging', spec.system, spec.system === 'event-emitter' ? 'listener' : 'consumer'],
     }));
     addEdge(channelId, consumerId, 'consumes', {
       system: spec.system,
       channel: spec.channel,
       channelKind: spec.channelKind,
       payloadType: spec.payloadType,
+      routing,
+      fanout: routing?.fanout === true,
+      group: routing?.group,
     });
     entryPoints.push(this.createEntryPoint(
       `ep_${consumerId}`,
       consumerId,
       'message',
       spec.name,
-      `${spec.name} consumes ${spec.channelKind} ${spec.channel}.`,
+      `${spec.name} consumes ${spec.channelKind} ${spec.channel}${routing?.group ? ` (group ${routing.group})` : routing?.fanout ? ' (broadcast)' : ''}.`,
       { event: `${spec.system}:${spec.channelKind}:${spec.channel}` },
       undefined,
-      { system: spec.system, channel: spec.channel, channelKind: spec.channelKind, handlerName: spec.handlerName, payloadType: spec.payloadType }
+      { system: spec.system, channel: spec.channel, channelKind: spec.channelKind, handlerName: spec.handlerName, payloadType: spec.payloadType, routing, fanout: routing?.fanout === true, group: routing?.group }
     ));
     return consumerId;
   }
@@ -579,14 +655,15 @@ export class MessagingAnalyzer extends BaseAnalyzer {
     entryPoints: CASEntryPoint[],
     ensureChannelNode: ChannelEnsurer,
     addEdge: (source: string, target: string, type: 'produces' | 'consumes', metadata: Record<string, any>) => void,
-    lineOf: (index: number) => number
+    lineOf: (index: number) => number,
+    routing?: RoutingShape
   ): void {
     let match: RegExpExecArray | null;
     while ((match = subscribeRe.exec(content)) !== null) {
       const window = content.slice(match.index, match.index + 1000);
       const handlerMatch = handlerRe.exec(window);
       handlerRe.lastIndex = 0;
-      this.addConsumer({ system, channel: match[2], channelKind, filePath, line: lineOf(match.index), name: `${system} consumer`, handlerName: handlerMatch?.[1] }, nodes, entryPoints, ensureChannelNode, addEdge);
+      this.addConsumer({ system, channel: match[2], channelKind, filePath, line: lineOf(match.index), name: `${system} consumer`, handlerName: handlerMatch?.[1], routing }, nodes, entryPoints, ensureChannelNode, addEdge);
     }
   }
 
@@ -964,6 +1041,254 @@ export class MessagingAnalyzer extends BaseAnalyzer {
     return names;
   }
 
+  private extractKafkaGroupId(content: string): string | undefined {
+    const m = content.match(/\.consumer\s*\(\s*\{[\s\S]{0,200}?groupId\s*:\s*(['"`])([^'"`]+)\1/);
+    return m?.[2];
+  }
+
+  /**
+   * RabbitMQ exchanges (amqplib/pika/spring-rabbit): capture the exchange TYPE
+   * (direct/topic/fanout/headers) from assertExchange/exchange_declare, the
+   * bindings from bindQueue, and mark a fanout exchange as a 1->N broadcast
+   * seam. This is what makes a fanout visibly a broadcast rather than a queue.
+   */
+  private extractRabbitExchanges(
+    content: string,
+    filePath: string,
+    system: MessagingSystem,
+    nodes: CASNode[],
+    entryPoints: CASEntryPoint[],
+    exitPoints: CASExitPoint[],
+    ensureChannelNode: ChannelEnsurer,
+    addEdge: (source: string, target: string, type: 'produces' | 'consumes', metadata: Record<string, any>) => void,
+    lineOf: (index: number) => number,
+    res: { assertExchange: RegExp; bindQueue: RegExp; publish: RegExp }
+  ): void {
+    // 1. Exchange declarations -> exchange channel node with its type.
+    const exchangeTypes = new Map<string, RoutingShape['type']>();
+    let match: RegExpExecArray | null;
+    res.assertExchange.lastIndex = 0;
+    while ((match = res.assertExchange.exec(content)) !== null) {
+      const name = match[2];
+      const rawType = (match[4] || 'direct').toLowerCase();
+      const type: RoutingShape['type'] = (['direct', 'topic', 'fanout', 'headers'] as const).includes(rawType as any)
+        ? (rawType as RoutingShape['type'])
+        : 'direct';
+      exchangeTypes.set(name, type);
+      ensureChannelNode(system, name, 'exchange', filePath, lineOf(match.index), {
+        type,
+        fanout: type === 'fanout',
+        wildcard: type === 'topic',
+      });
+    }
+
+    // 2. Bindings -> routing keys accumulate on the exchange channel.
+    res.bindQueue.lastIndex = 0;
+    while ((match = res.bindQueue.exec(content)) !== null) {
+      const exchange = match[4];
+      const routingKey = match[6];
+      const type = exchangeTypes.get(exchange);
+      if (!type) continue;
+      ensureChannelNode(system, exchange, 'exchange', filePath, lineOf(match.index), {
+        type,
+        fanout: type === 'fanout',
+        wildcard: type === 'topic' || /[*#]/.test(routingKey || ''),
+        keys: routingKey ? [routingKey] : undefined,
+      });
+    }
+
+    // 3. publish(exchange, routingKey, ...) -> producer with the exchange's routing shape.
+    res.publish.lastIndex = 0;
+    while ((match = res.publish.exec(content)) !== null) {
+      const exchange = match[2];
+      const routingKey = match[4];
+      const type = exchangeTypes.get(exchange) ?? 'direct';
+      const routing: RoutingShape = {
+        type,
+        fanout: type === 'fanout',
+        wildcard: type === 'topic' || /[*#]/.test(routingKey || ''),
+        keys: routingKey ? [routingKey] : undefined,
+      };
+      this.addProducer({ system, channel: exchange, channelKind: 'exchange', filePath, line: lineOf(match.index), name: `${system}.publish`, action: 'publish', routing }, nodes, exitPoints, ensureChannelNode, addEdge);
+    }
+
+    // 4. Dynamic exchange name: `assertExchange(someVar, 'fanout')` /
+    //    `assertExchange(`${ctx}.${msg}`, 'fanout')`. The name can't be resolved
+    //    statically, but the ROUTING TYPE (and thus the broadcast seam) is the
+    //    load-bearing fact — capture it under a routing-derived channel so a
+    //    dynamically-named fanout is still visibly a 1->N broadcast.
+    const dynamicRe = /\.assertExchange\s*\(\s*(?!['"`])([^,]+?)\s*,\s*(['"`])(fanout|topic|direct|headers)\2/g;
+    let dyn: RegExpExecArray | null;
+    while ((dyn = dynamicRe.exec(content)) !== null) {
+      const type = dyn[3] as RoutingShape['type'];
+      const nameExpr = dyn[1].trim().slice(0, 40);
+      const channelName = `<dynamic:${nameExpr}>`;
+      const routing: RoutingShape = { type, fanout: type === 'fanout', wildcard: type === 'topic' };
+      // Producer publish over the same dynamic exchange (best-effort pairing).
+      this.addProducer({ system, channel: channelName, channelKind: 'exchange', filePath, line: lineOf(dyn.index), name: `${system} ${type} exchange`, action: 'assertExchange', routing }, nodes, exitPoints, ensureChannelNode, addEdge);
+    }
+  }
+
+  /**
+   * NATS subscribers: a `.subscribe(subject, { queue: 'group' })` uses a QUEUE
+   * GROUP (competing consumers, 1->1), while a plain subscribe is broadcast to
+   * every subscriber (1->N). Subject wildcards (`*` / `>`) mark pattern routing.
+   */
+  private extractNatsSubscribers(
+    content: string,
+    filePath: string,
+    system: MessagingSystem,
+    nodes: CASNode[],
+    entryPoints: CASEntryPoint[],
+    ensureChannelNode: ChannelEnsurer,
+    addEdge: (source: string, target: string, type: 'produces' | 'consumes', metadata: Record<string, any>) => void,
+    lineOf: (index: number) => number
+  ): void {
+    const subRe = /\.subscribe\s*\(\s*(['"`])([^'"`]+)\1\s*(?:,\s*\{([\s\S]{0,120}?)\})?/g;
+    let match: RegExpExecArray | null;
+    while ((match = subRe.exec(content)) !== null) {
+      const subject = match[2];
+      const opts = match[3] || '';
+      const queueMatch = opts.match(/queue\s*:\s*(['"`])([^'"`]+)\1/);
+      const wildcard = /[*>]/.test(subject);
+      const routing: RoutingShape = queueMatch
+        ? { type: 'queue-group', fanout: false, group: queueMatch[2], wildcard }
+        : { type: wildcard ? 'topic' : 'direct', fanout: true, wildcard };
+      this.addConsumer({ system, channel: subject, channelKind: 'subject', filePath, line: lineOf(match.index), name: 'NATS subscriber', routing }, nodes, entryPoints, ensureChannelNode, addEdge);
+    }
+  }
+
+  /**
+   * Redis Streams consumer groups (XREADGROUP) — competing consumers over a
+   * durable stream (1->1 per message), the queue counterpart to broadcast pub/sub.
+   */
+  private extractRedisStreamGroups(
+    content: string,
+    filePath: string,
+    nodes: CASNode[],
+    entryPoints: CASEntryPoint[],
+    ensureChannelNode: ChannelEnsurer,
+    addEdge: (source: string, target: string, type: 'produces' | 'consumes', metadata: Record<string, any>) => void,
+    lineOf: (index: number) => number
+  ): void {
+    // xreadgroup('GROUP', groupName, consumer, 'COUNT', n, 'STREAMS', streamKey, id)
+    const groupRe = /\.xreadgroup\s*\(\s*(['"`])GROUP\1\s*,\s*(['"`])([^'"`]+)\2[\s\S]{0,160}?(['"`])STREAMS\4\s*,\s*(['"`])([^'"`]+)\5/gi;
+    let match: RegExpExecArray | null;
+    while ((match = groupRe.exec(content)) !== null) {
+      const group = match[3];
+      const stream = match[6];
+      this.addConsumer({ system: 'redis-streams', channel: stream, channelKind: 'stream', filePath, line: lineOf(match.index), name: `Redis stream group ${group}`, routing: { type: 'consumer-group', fanout: false, group } }, nodes, entryPoints, ensureChannelNode, addEdge);
+    }
+  }
+
+  /**
+   * In-process Node EventEmitter: pair `.emit('evt', ...)` producers with
+   * `.on('evt', handler)` / `.once('evt', ...)` / `.addListener('evt', ...)`
+   * listeners over a shared synthetic event channel. Every listener for an
+   * event name sees each emit, so the event channel is a broadcast (1->N) seam.
+   * Framework buses (NestJS @OnEvent, etc.) are handled by their framework
+   * analyzers; this covers the plain-Node case they don't reach.
+   */
+  private extractEventEmitter(
+    content: string,
+    filePath: string,
+    nodes: CASNode[],
+    entryPoints: CASEntryPoint[],
+    exitPoints: CASExitPoint[],
+    ensureChannelNode: ChannelEnsurer,
+    addEdge: (source: string, target: string, type: 'produces' | 'consumes', metadata: Record<string, any>) => void,
+    lineOf: (index: number) => number
+  ): void {
+    // Only engage when the file actually deals with an EventEmitter, to avoid
+    // matching unrelated `.on(`/`.emit(` (DOM, socket libs handled elsewhere).
+    if (!/EventEmitter|extends\s+EventEmitter|new\s+EventEmitter/.test(content)) return;
+
+    const routing: RoutingShape = { type: 'event', fanout: true };
+
+    const listenerRe = /\.(?:on|once|addListener|prependListener)\s*\(\s*(['"`])([^'"`]+)\1\s*,\s*(?:async\s*)?([\w$.]+)?/g;
+    let match: RegExpExecArray | null;
+    while ((match = listenerRe.exec(content)) !== null) {
+      const event = match[2];
+      // Skip lifecycle/stream noise that isn't a domain event.
+      if (/^(error|close|end|data|finish|drain|open|connect|disconnect|message|newListener|removeListener)$/.test(event)) continue;
+      this.addConsumer({ system: 'event-emitter', channel: event, channelKind: 'event', filePath, line: lineOf(match.index), name: `on(${event})`, handlerName: match[3]?.trim(), routing }, nodes, entryPoints, ensureChannelNode, addEdge);
+    }
+
+    const emitRe = /\.emit\s*\(\s*(['"`])([^'"`]+)\1/g;
+    while ((match = emitRe.exec(content)) !== null) {
+      const event = match[2];
+      if (/^(error|close|end|data|finish|drain|open|connect|disconnect|newListener|removeListener)$/.test(event)) continue;
+      this.addProducer({ system: 'event-emitter', channel: event, channelKind: 'event', filePath, line: lineOf(match.index), name: `emit(${event})`, action: 'emit', routing }, nodes, exitPoints, ensureChannelNode, addEdge);
+    }
+  }
+
+  /**
+   * Merge a newly-observed routing shape into an existing channel node. Later
+   * observations refine earlier ones (an explicit assertExchange('fanout')
+   * upgrades a default), and keys/wildcard accumulate across bindings.
+   */
+  private mergeRoutingIntoChannel(node: CASNode | undefined, routing: RoutingShape): void {
+    if (!node) return;
+    const meta = node.metadata as any;
+    const existing: RoutingShape | undefined = meta.routing;
+    if (!existing) {
+      meta.routing = { ...routing };
+      meta.fanout = routing.fanout === true;
+      return;
+    }
+    // An explicit exchange type / discipline wins over a defaulted one.
+    if (routing.type && routing.type !== existing.type) existing.type = routing.type;
+    if (routing.fanout !== undefined) existing.fanout = existing.fanout || routing.fanout;
+    if (routing.wildcard !== undefined) existing.wildcard = existing.wildcard || routing.wildcard;
+    if (routing.group) existing.group = routing.group;
+    if (routing.keys?.length) {
+      existing.keys = Array.from(new Set([...(existing.keys ?? []), ...routing.keys]));
+    }
+    meta.fanout = existing.fanout === true;
+  }
+
+  /**
+   * Routing shape when a call site did not carry explicit exchange/group
+   * evidence. Distinguishes broadcast (pub/sub channels, SNS topics) from
+   * competing-consumer queues so a plain publish is still classified.
+   */
+  private defaultRouting(system: MessagingSystem, kind: ChannelKind, name: string): RoutingShape | undefined {
+    const wildcard = /[*#>]|\.\*|\.>/.test(name);
+    switch (system) {
+      case 'redis-pubsub':
+        return { type: 'pubsub', fanout: true, wildcard };
+      case 'redis-streams':
+        return { type: 'stream', fanout: false };
+      case 'aws-sns':
+        return { type: 'fanout', fanout: true };
+      case 'aws-sqs':
+        return { type: 'queue-group', fanout: false };
+      case 'nats':
+      case 'go-nats':
+        // NATS core subjects are broadcast unless a queue group is present
+        // (queue-group case is emitted explicitly with routing).
+        return { type: wildcard ? 'topic' : 'direct', fanout: true, wildcard };
+      case 'event-emitter':
+        return { type: 'event', fanout: true };
+      case 'kafkajs':
+      case 'python-kafka':
+      case 'spring-kafka':
+      case 'go-kafka':
+      case 'node-rdkafka':
+        // Kafka delivery within a consumer group is competing-consumer (1->1);
+        // group is attached explicitly when a groupId is found.
+        return { type: 'consumer-group', fanout: false };
+      case 'amqplib':
+      case 'pika':
+      case 'spring-rabbit':
+        // A queue (sendToQueue) is a work queue; an exchange publish gets its
+        // real type from assertExchange (emitted explicitly).
+        return kind === 'exchange' ? { type: 'topic', fanout: false } : { type: 'queue-group', fanout: false };
+      default:
+        return undefined;
+    }
+  }
+
   protected getCapabilities(): string[] {
     return [
       'message-producer-exit-points',
@@ -973,6 +1298,10 @@ export class MessagingAnalyzer extends BaseAnalyzer {
       'kafka-rabbitmq-nats-redis-detection',
       'queue-worker-detection',
       'spring-sidekiq-celery-detection',
+      'exchange-routing-shape-detection',
+      'fanout-broadcast-seam-detection',
+      'consumer-group-competing-consumer-detection',
+      'in-process-event-listener-detection',
     ];
   }
 

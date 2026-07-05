@@ -294,6 +294,7 @@ export class TerraformAnalyzer extends BaseAnalyzer {
 
   private nodeFromBlock(relativePath: string, block: TerraformBlock): CASNode {
     const address = this.blockAddress(block);
+    const resourceAttributes = this.extractResourceAttributes(block);
     return {
       id: generateNodeId('terraform', relativePath, `${address}:${block.line}`),
       name: address,
@@ -318,6 +319,13 @@ export class TerraformAnalyzer extends BaseAnalyzer {
           provider: this.providerForBlock(block),
           depends_on: this.extractDependsOn(block.body),
           environment: this.inferEnvironment(relativePath),
+          // Real identifying attributes declared inside the resource body (e.g.
+          // `name = "orders"`, `queue_name`, `bucket`, `table_name`,
+          // `identifier`) — evidence for name-based topology joins that would
+          // otherwise be stuck on the terraform LABEL. Only literal strings are
+          // captured; interpolated `${...}`/`var.`/`local.` values are skipped
+          // because they cannot be resolved deterministically here.
+          ...resourceAttributes,
         },
       } as any,
       configuration: {
@@ -415,6 +423,57 @@ export class TerraformAnalyzer extends BaseAnalyzer {
       dependencies.add(match);
     }
     return Array.from(dependencies).slice(0, 20);
+  }
+
+  /**
+   * Capture the key identifying attributes declared inside a resource/data
+   * body so downstream topology joins can match a cloud resource to the code
+   * by its REAL name (`name = "orders"`) rather than only its terraform label.
+   *
+   * Evidence-gated: only literal string assignments at the block's TOP level
+   * (depth 1, i.e. not inside a nested block like `tags {}` or `ingress {}`)
+   * are captured. Interpolated values (`${...}`, `var.`, `local.`, heredocs)
+   * are skipped because they cannot be resolved deterministically here. Emits
+   * canonical metadata keys the infra-topology linker already reads —
+   * `name`, `queue_name`, `bucket`, `table_name`, `identifier`,
+   * `function_name`, `repository`, plus `db_name` for RDS databases.
+   */
+  private extractResourceAttributes(block: TerraformBlock): Record<string, string> {
+    if (block.kind !== 'resource' && block.kind !== 'data') return {};
+    const IDENTIFYING_KEYS = new Set([
+      'name',
+      'queue_name',
+      'bucket',
+      'table_name',
+      'identifier',
+      'function_name',
+      'repository',
+      'db_name',
+    ]);
+    const attributes: Record<string, string> = {};
+    // Drop the opening (`resource "x" "y" {`) and closing (`}`) lines so only
+    // the body's own assignments are considered; a simple brace depth counter
+    // keeps us at the resource's TOP level and out of nested sub-blocks.
+    const lines = block.body.split('\n');
+    let depth = 0;
+    const assignPattern = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*"([^"$]*)"\s*$/;
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const opensBefore = depth;
+      depth += countChar(line, '{');
+      depth -= countChar(line, '}');
+      // Assignments belonging to the resource sit at depth 1 (inside the single
+      // top-level brace this block opened). Skip anything deeper (nested blocks).
+      if (opensBefore !== 1 || depth !== 1) continue;
+      const match = assignPattern.exec(line);
+      if (!match) continue;
+      const [, key, value] = match;
+      if (!IDENTIFYING_KEYS.has(key) || !value) continue;
+      // First declaration wins; never overwrite (bodies rarely re-declare, and
+      // if they do the first literal is the safest evidence).
+      if (attributes[key] === undefined) attributes[key] = value;
+    }
+    return attributes;
   }
 
   private blockAddress(block: TerraformBlock): string {

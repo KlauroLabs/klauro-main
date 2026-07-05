@@ -24,6 +24,7 @@ export * from './apex';
 export * from './perl';
 export * from './go';
 export * from './dataml';
+export * from './ci';
 
 import { VaporAnalyzer } from './swift';
 import { GoRouterAnalyzer, ShelfAnalyzer } from './dart';
@@ -64,11 +65,12 @@ import {
   JupyterNotebookAnalyzer,
   MLTrainingAnalyzer
 } from './dataml';
+import { CiPipelineAnalyzer } from './ci';
 
 export interface FrameworkAnalyzerInfo {
   name: string;
   analyzer: any;
-  category: 'web' | 'mobile' | 'testing' | 'library' | 'data';
+  category: 'web' | 'mobile' | 'testing' | 'library' | 'data' | 'ci';
   languages: string[];
   frameworks: string[];
   priority: number;
@@ -346,6 +348,14 @@ export const FRAMEWORK_ANALYZERS: FrameworkAnalyzerInfo[] = [
     languages: ['javascript', 'typescript', 'python', 'go', 'rust', 'java', 'csharp', 'ruby', 'php'],
     frameworks: ['vitest', 'mocha', 'jasmine', 'node:test', 'pytest', 'unittest', 'junit', 'testng', 'xunit', 'nunit', 'rspec', 'minitest', 'phpunit', 'playwright', 'selenium'],
     priority: 45
+  },
+  {
+    name: 'CI/CD Pipelines',
+    analyzer: CiPipelineAnalyzer,
+    category: 'ci',
+    languages: ['yaml', 'groovy', 'kotlin'],
+    frameworks: ['github-actions', 'gitlab-ci', 'circleci', 'jenkins', 'azure-pipelines', 'travis-ci', 'drone', 'buildkite', 'bitbucket-pipelines', 'teamcity'],
+    priority: 90
   },
   {
     name: 'Airflow',

@@ -168,6 +168,54 @@ describe('linkInfraTopology', () => {
     expect((channels[0].metadata?.attributes as any)?.join_key).toBe('orders');
   });
 
+  test('REAL-NAME JOIN: queue joins the code channel by its body `name` attribute, not its label', () => {
+    // Resource labelled `x` but its HCL body declares `name = "orders"`. The
+    // linker must join on the real name (orders), which the label alone
+    // ('x') could never do.
+    const queueByRealName = node({
+      id: 'terraform_sqs_x',
+      name: 'resource.aws_sqs_queue.x',
+      type: 'infrastructure_resource',
+      level: 4,
+      source: { file: 'infra/main.tf', line: 10 },
+      metadata: {
+        topology_surface: 'terraform',
+        attributes: { block_kind: 'resource', terraform_type: 'aws_sqs_queue', terraform_name: 'x', name: 'orders', provider: 'aws' },
+      } as any,
+    });
+    const result = linkInfraTopology(
+      base({ nodes: [queueByRealName], exit_points: [messageExit('orders-queue')] }),
+    );
+    const channels = result.edges.filter(e => e.type === 'PROVISIONS_CHANNEL');
+    expect(channels).toHaveLength(1);
+    expect(channels[0].source).toBe('terraform_sqs_x');
+    expect(channels[0].target).toBe('fn_enqueue');
+    expect((channels[0].metadata?.attributes as any)?.join_key).toBe('orders');
+  });
+
+  test('REAL-NAME MISMATCH: real name governs — no edge when the real name differs from the code channel', () => {
+    // Label `x`, real declared name `shipments`, code channel `orders`. Neither
+    // the real name nor the (non-matching) label joins the orders channel, so
+    // NO PROVISIONS_CHANNEL edge is fabricated. This is the negative twin of the
+    // real-name-join test: the body name, not the label, decides the join.
+    const queueRealNameShipments = node({
+      id: 'terraform_sqs_x2',
+      name: 'resource.aws_sqs_queue.x',
+      type: 'infrastructure_resource',
+      level: 4,
+      source: { file: 'infra/main.tf', line: 10 },
+      metadata: {
+        topology_surface: 'terraform',
+        attributes: { block_kind: 'resource', terraform_type: 'aws_sqs_queue', terraform_name: 'x', name: 'shipments', provider: 'aws' },
+      } as any,
+    });
+    const result = linkInfraTopology(
+      base({ nodes: [queueRealNameShipments], exit_points: [messageExit('orders-queue')] }),
+    );
+    expect(result.edges.filter(e => e.type === 'PROVISIONS_CHANNEL')).toHaveLength(0);
+    expect(result.edges).toHaveLength(0);
+  });
+
   test('EVIDENCE-GATING: a queue whose name matches nothing produces no edge', () => {
     const result = linkInfraTopology(
       base({

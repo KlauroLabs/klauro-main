@@ -51,4 +51,53 @@ describe('TerraformAnalyzer', () => {
     expect(overlays.find(node => node.source?.file === 'staging.tfplan')?.type).toBe('infrastructure_plan');
     expect(entryPoints.some(entry => entry.name === 'Terraform plan staging.tfplan')).toBe(true);
   });
+
+  it('captures real identifying attributes from resource bodies (name/queue_name/bucket/identifier) and skips interpolated values', async () => {
+    await fs.writeFile(path.join(tempDir, 'main.tf'), [
+      'resource "aws_sqs_queue" "x" {',
+      '  name = "orders"',
+      '}',
+      '',
+      'resource "aws_s3_bucket" "assets" {',
+      '  bucket = "company-uploads"',
+      '  tags = {',
+      '    name = "not-the-bucket"',
+      '  }',
+      '}',
+      '',
+      'resource "aws_db_instance" "primary" {',
+      '  identifier = "billing-db"',
+      '  db_name    = "billing"',
+      '}',
+      '',
+      'resource "aws_lambda_function" "worker" {',
+      '  function_name = "${var.env}-worker"',
+      '}',
+    ].join('\n'));
+
+    const analyzer = new TerraformAnalyzer();
+    const result = await analyzer.analyze({
+      projectPath: tempDir,
+      options: {},
+      cache: new Map(),
+      metadata: {},
+    } as any);
+
+    const nodes = result.nodes || [];
+    const attrsFor = (address: string) =>
+      (nodes.find(n => n.qualified_name === address)?.metadata as any)?.attributes || {};
+
+    // Literal top-level identifiers are captured onto the node.
+    expect(attrsFor('resource.aws_sqs_queue.x').name).toBe('orders');
+    expect(attrsFor('resource.aws_s3_bucket.assets').bucket).toBe('company-uploads');
+    expect(attrsFor('resource.aws_db_instance.primary').identifier).toBe('billing-db');
+    expect(attrsFor('resource.aws_db_instance.primary').db_name).toBe('billing');
+
+    // A nested-block assignment (tags.name) must NOT leak into the resource's
+    // top-level identifying attributes.
+    expect(attrsFor('resource.aws_s3_bucket.assets').name).toBeUndefined();
+
+    // Interpolated (`${var.env}-worker`) values are skipped, not fabricated.
+    expect(attrsFor('resource.aws_lambda_function.worker').function_name).toBeUndefined();
+  });
 });

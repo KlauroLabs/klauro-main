@@ -128,6 +128,27 @@ export interface CASOutput {
    */
   conventions_applied?: import('../analyzer/core/conventions-applier').ConventionMatchReport[];
 
+  /**
+   * Unified communication-seam classification (see
+   * analyzer/core/communication-seams.ts): every seam between components —
+   * exit points, messaging edges, and shared-state (passive) links — tagged
+   * with a modality (sync | async | passive) + confidence + the driving fact,
+   * plus a system-level inventory at node and deployable level. Derived
+   * additively from exit/entry/messaging/data-lineage facts; never re-detects.
+   */
+  communication_seams?: import('../analyzer/core/communication-seams').CommunicationSeamsResult;
+
+  /**
+   * CONSISTENCY / CAP characterization + broadened PASSIVE seams. Tags data-store
+   * egress and passive seams (read-replicas, streaming sinks, CDC, materialized
+   * stores, ETL loads) with a consistency posture (strong | eventual | tunable,
+   * staleness_risk, CP/AP lean, evidence) so staleness / eventual-consistency
+   * risk is visible. Derived additively from external services, exit points,
+   * config env vars, and data lineage; evidence-gated (never a guessed
+   * consistency). See consistency-model.ts.
+   */
+  consistency_model?: import('../analyzer/core/consistency-model').ConsistencyModelResult;
+
   libraries?: CASLibrary[];
   progressive_levels: CASProgressiveLevels;
   configuration?: CASConfiguration;
@@ -536,11 +557,33 @@ export interface CASEntryPoint {
   metadata?: Record<string, any>;
 }
 
+/**
+ * Single source of truth for the kinds of exit point the analyzers may emit.
+ *
+ * The `CASExitPoint['type']` union below is DERIVED from this array
+ * (`type: typeof EXIT_POINT_TYPES[number]`), and the orchestrator's
+ * `isValidExitPoint` validator MUST check membership in this same array — mirror
+ * of the entry-point twin (ENTRY_POINT_TYPES above). Historically the validator
+ * kept a HARDCODED, separate allowlist that drifted from this union: it REJECTED
+ * 'event' (a real union member) while carrying dead kinds
+ * ('http'/'grpc'/'graphql'/'queue'/'email'/'sms'/'external_api') no analyzer ever
+ * emits — every exit point flows through base-analyzer's createExitPoint(), whose
+ * `type` parameter is compile-locked to this union, and the only `as CASExitPoint`
+ * casts emit 'sdk'. Add a new kind here and both the type and the validator pick
+ * it up. See the exit-point parity guard test in analyzer-core's __tests__.
+ */
+export const EXIT_POINT_TYPES = [
+  'database', 'api', 'file', 'message', 'event', 'cache', 'sdk',
+  'webhook', 'navigation', 'client_storage', 'analytics',
+] as const;
+
+export type CASExitPointType = typeof EXIT_POINT_TYPES[number];
+
 export interface CASExitPoint {
   id: string;
   source_node: string;
   source_analyzer?: string;
-  type: 'database' | 'api' | 'file' | 'message' | 'event' | 'cache' | 'sdk' | 'webhook' | 'navigation' | 'client_storage' | 'analytics';
+  type: CASExitPointType;
   name: string;
   description?: string;
   description_source?: 'deterministic' | 'ai' | 'manual' | 'reused';
@@ -849,7 +892,42 @@ export interface CASProductMap {
     };
     top_risks: Array<{ name: string; level: 'low' | 'medium' | 'high'; type: string; recommendation: string }>;
   };
+  /**
+   * Runtime topology — the infra->code join produced by infra-topology-linker.ts,
+   * surfaced per deployable so get_product_map describes the RUNNING system, not
+   * just the source tree. Purely additive and evidence-based: present only when
+   * the analysis actually carries infra topology edges (DEPLOYS, EXPOSES,
+   * ROUTES_TO, PROVISIONS_CHANNEL/DATABASE/STORAGE, RUNTIME_DEPENDS_ON). Absent
+   * for repos with no infra-as-code, so non-infra consumers are unchanged.
+   */
+  runtime_topology?: CASProductMapRuntimeTopology;
   coverage_caveats: string[];
+}
+
+export interface CASProductMapRuntimeTopology {
+  /** Total infra->code topology edges backing this section. */
+  edge_count: number;
+  /** One entry per deployable that participates in at least one topology edge. */
+  deployables: CASProductMapDeployableTopology[];
+}
+
+export interface CASProductMapDeployableTopology {
+  /** Deployable name (from the DEPLOYS/EXPOSES edge attributes). */
+  name: string;
+  /** Container images / build contexts that ship this deployable (DEPLOYS). */
+  deploys: string[];
+  /** Ports/services fronting this deployable (EXPOSES), e.g. 'port:8080' or a service name. */
+  exposes: string[];
+  /** HTTP routes served by this deployable's front-ends (ROUTES_TO). */
+  routes: string[];
+  /** Messaging channels this deployable provisions/uses at runtime (PROVISIONS_CHANNEL). */
+  channels: string[];
+  /** Databases/data entities this deployable provisions (PROVISIONS_DATABASE). */
+  databases: string[];
+  /** Buckets/tables/functions/stores this deployable provisions (PROVISIONS_STORAGE). */
+  storage: string[];
+  /** Peer deployables this one depends on at runtime (RUNTIME_DEPENDS_ON). */
+  depends_on: string[];
 }
 
 export interface CASCategories {
