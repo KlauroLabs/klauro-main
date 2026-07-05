@@ -2179,6 +2179,50 @@ export function getLibraries(cas: CASOutput, opts: { query?: string; limit?: num
 }
 
 /**
+ * Self-discovered coverage gaps (see analyzer/core/coverage-gaps.ts): unknown
+ * dependencies matching no analyzer, low node-extraction-ratio files, roots
+ * with zero entry points, and unhandled tree-sitter node types. This is the
+ * queryable surface for "what does this analysis NOT understand yet" — the
+ * mechanism that makes gap-closing systematic instead of ad hoc.
+ */
+export function getCoverageGaps(
+  cas: CASOutput,
+  opts: { kind?: string; severity?: string; limit?: number; offset?: number } = {}
+) {
+  let gaps = cas.coverage_gaps || [];
+  if (opts.kind) {
+    gaps = gaps.filter(g => g.kind === opts.kind);
+  }
+  if (opts.severity) {
+    gaps = gaps.filter(g => g.severity === opts.severity);
+  }
+  const total = gaps.length;
+  const limit = opts.limit || 50;
+  const offset = opts.offset || 0;
+
+  const bySeverityOrder: Record<string, number> = { high: 0, medium: 1, low: 2 };
+  const sorted = [...gaps].sort((a, b) => (bySeverityOrder[a.severity] ?? 3) - (bySeverityOrder[b.severity] ?? 3));
+
+  const byKind: Record<string, number> = {};
+  for (const g of cas.coverage_gaps || []) {
+    byKind[g.kind] = (byKind[g.kind] || 0) + 1;
+  }
+
+  return {
+    total,
+    offset,
+    limit,
+    codebase_type: cas.codebase_type,
+    codebase_type_confidence: cas.codebase_type_confidence,
+    summary: {
+      total_gaps: (cas.coverage_gaps || []).length,
+      by_kind: byKind,
+    },
+    gaps: sorted.slice(offset, offset + limit),
+  };
+}
+
+/**
  * Levenshtein edit distance, used only for short identifier-length strings
  * (fuzzy near-name matching below) — not intended for long text.
  */

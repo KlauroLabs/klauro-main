@@ -5,7 +5,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { buildSourceSnapshot, buildUploadManifest } from './remote-source';
-import { assertRemoteAnalyzerAllowed, defaultKlauroConfig, writeDefaultKlauroConfig, type LoadedKlauroConfig } from './klauro-config';
+import { assertRemoteAnalyzerAllowed, defaultKlauroConfig, writeDefaultKlauroConfig, validateConventions, type LoadedKlauroConfig, type KlauroConventions } from './klauro-config';
 
 const repoRoot = path.resolve(__dirname, '..');
 const tsxBin = fs.existsSync(path.join(repoRoot, 'node_modules', '.bin', 'tsx'))
@@ -209,6 +209,56 @@ test('remote analyzer policy (allowRemoteAnalyzer / allowedAnalyzerHosts) is enf
     /allowedAnalyzerHosts/
   );
   assert.doesNotThrow(() => assertRemoteAnalyzerAllowed(loaded, 'https://allowed.example.test'));
+});
+
+test('validateConventions accepts well-formed conventions of every kind', () => {
+  const conventions: KlauroConventions = {
+    routes: [
+      { decorator: '@Endpoint', path_arg: 0, method_arg: 1 },
+      { kind: 'call', call: 'app.register', method_arg: 0, path_arg: 1, handler_arg: 2 },
+    ],
+    entry_points: [{ files: 'src/jobs/**/*.ts', export_matches: '^run', kind: 'cli' }],
+    entities: [{ name_suffix: 'Aggregate' }],
+    di_bindings: [{ call: 'provide', token_arg: 0, impl_arg: 1 }],
+    roles: [{ name_suffix: 'UseCase', role: 'use-case' }],
+    flows: [{ name: 'Checkout', steps: ['CheckoutController.validate', 'CheckoutController.charge'] }],
+  };
+  const result = validateConventions(conventions);
+  assert.deepEqual(result.errors, []);
+});
+
+test('validateConventions rejects malformed conventions with field-specific errors, not a crash', () => {
+  const badRoute = validateConventions({ routes: [{} as any] });
+  assert.ok(badRoute.errors.some(e => e.includes('conventions.routes[0]') && e.includes('decorator')));
+
+  const badEntryPoint = validateConventions({ entry_points: [{ files: '', export_matches: '(', kind: 'cli' } as any] });
+  assert.ok(badEntryPoint.errors.some(e => e.includes('"files"')));
+  assert.ok(badEntryPoint.errors.some(e => e.includes('not a valid regular expression')));
+
+  const badEntity = validateConventions({ entities: [{} as any] });
+  assert.ok(badEntity.errors.some(e => e.includes('conventions.entities[0]')));
+
+  const badDiBinding = validateConventions({ di_bindings: [{ call: 'provide' } as any] });
+  assert.ok(badDiBinding.errors.some(e => e.includes('token_arg')));
+  assert.ok(badDiBinding.errors.some(e => e.includes('impl_arg')));
+
+  const badRole = validateConventions({ roles: [{ role: 'x' } as any] });
+  assert.ok(badRole.errors.some(e => e.includes('name_suffix') || e.includes('name_regex')));
+
+  const badFlow = validateConventions({ flows: [{ name: 'Empty', steps: [] }] });
+  assert.ok(badFlow.errors.some(e => e.includes('non-empty array')));
+});
+
+test('validateConventions warns (does not error) on a decorator missing the leading @', () => {
+  const result = validateConventions({ routes: [{ decorator: 'Endpoint', path_arg: 0 }] });
+  assert.deepEqual(result.errors, []);
+  assert.ok(result.warnings.some(w => w.includes('leading @')));
+});
+
+test('validateConventions with no conventions section returns no errors/warnings', () => {
+  const result = validateConventions(undefined);
+  assert.deepEqual(result.errors, []);
+  assert.deepEqual(result.warnings, []);
 });
 
 async function withFixtureWorkspace(run: (workspace: { root: string; repo: string }) => void | Promise<void>): Promise<void> {

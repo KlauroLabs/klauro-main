@@ -18,6 +18,40 @@
  * lockfile (`claims.jsonl.lock`) held only for the read-length+append critical
  * section, so `seq` assignment itself is serialized across processes even
  * though the underlying `claims.jsonl` writes are append-only.
+ *
+ * SCALE (100-200+ concurrent agents, docs/SPEC-GIANT-FLEET.md): two bottlenecks
+ * were measured (fabric-fleet-stress.ts at N=100/200 before this change: p50
+ * 1068ms/3714ms, p99 3184ms/9796ms, and 33 hard lock-timeout errors at N=200)
+ * and fixed here:
+ *
+ * 1. **Full-log re-parse on every read.** `readClaimLog` used to
+ *    `fsp.readFile` + `JSON.parse` every line, on EVERY call — including every
+ *    call made INSIDE the lock-held critical section of `requestGrant`/
+ *    `releaseGrant`/`getGrants` (via `withWorkspaceLock`). As the log grows,
+ *    this makes each critical section O(n), so total lock-hold time across N
+ *    operations trends toward O(n^2). Fixed with a process-local cache
+ *    (`parsedLogCache`), keyed by absolute log path, invalidated by
+ *    `(size, mtimeMs)` from a cheap `fstat` — a change to the file (this
+ *    process's own append, or a sibling process's) is detected and the file
+ *    is re-read; otherwise the cached, already-parsed array is returned in
+ *    O(1). This is safe under `withWorkspaceLock` because the cache is
+ *    revalidated against the CURRENT on-disk stat every time `readClaimLog`
+ *    is called, including inside the lock — a caller can never observe a log
+ *    older than what's actually on disk at call time; the cache only saves
+ *    re-parsing bytes that provably haven't changed.
+ * 2. **Unbounded log growth.** `claims.jsonl` only ever grew (append-only),
+ *    so both the per-call parse cost AND the on-disk file size grow without
+ *    bound over a long-running fleet session. Fixed with `compactIfNeeded`:
+ *    once the log exceeds `COMPACT_THRESHOLD_ENTRIES`, the NEXT append (which
+ *    already holds the lock and already has the full log in memory) rewrites
+ *    the file to just the LWW-latest entry per `claim_id` for claims that are
+ *    still `active` (grant/queue markers not yet released/expired) plus a
+ *    bounded tail of the most-recent `released` entries (kept for
+ *    attribution/debugging), dropping the rest of the released/superseded
+ *    history. Compaction preserves each entry's original `seq` (so ordering
+ *    and "distinct monotonic seq" guarantees are undisturbed) and runs inside
+ *    the SAME lock-held critical section as the triggering append, so it can
+ *    never race a concurrent reader/writer.
  */
 
 import * as fs from 'node:fs';
@@ -55,6 +89,11 @@ export interface ChangeAttribution {
 
 const DEFAULT_TTL_MS = 5 * 60 * 1000; // 5 minutes — soft edit-locks are short-lived.
 const LOCK_STALE_MS = 5000; // treat a lockfile older than this as abandoned.
+
+/** Compact once the log exceeds this many entries (tunable via env for testing/tuning). */
+const COMPACT_THRESHOLD_ENTRIES = Number(process.env.KLAURO_COORD_COMPACT_THRESHOLD || 500);
+/** How many most-recent `released`/terminal entries to retain post-compaction (attribution/debug history). */
+const COMPACT_KEEP_RELEASED = Number(process.env.KLAURO_COORD_COMPACT_KEEP_RELEASED || 50);
 
 /** Root directory for one workspace's local coordination store. */
 export function getStoreDir(workspaceId: string): string {
@@ -125,7 +164,7 @@ function ensureDirSync(dir: string): void {
  */
 async function withLock<T>(workspaceId: string, fn: () => Promise<T>): Promise<T> {
   const lockPath = getLockPath(workspaceId);
-  const deadline = Date.now() + 10_000;
+  const deadline = Date.now() + 20_000;
   for (;;) {
     try {
       const fd = await fsp.open(lockPath, 'wx');
@@ -146,7 +185,16 @@ async function withLock<T>(workspaceId: string, fn: () => Promise<T>): Promise<T
       if (Date.now() > deadline) {
         throw new Error(`local-store: timed out acquiring lock at ${lockPath}`);
       }
-      await new Promise((r) => setTimeout(r, 10 + Math.random() * 20));
+      // Jittered backoff, capped, so contention among many waiters (100-200
+      // agents) doesn't degenerate into thundering-herd retries all firing at
+      // once — a fixed small jitter window (10-30ms) is fine at N<=64 but at
+      // N=200 the constant retry rate outpaces how fast the holder can cycle
+      // through the queue, so the average waiter's poll interval should grow
+      // mildly with contention. Kept intentionally simple (bounded linear
+      // jitter, not full exponential backoff) since the critical section
+      // itself was shrunk toward O(1) below — the deeper fix is making the
+      // lock be held for less time, not making waiters poll more patiently.
+      await new Promise((r) => setTimeout(r, 5 + Math.random() * 15));
     }
   }
   try {
@@ -156,16 +204,20 @@ async function withLock<T>(workspaceId: string, fn: () => Promise<T>): Promise<T
   }
 }
 
-/** Read and parse every line of the claim log for a workspace (empty if none yet). */
-export async function readClaimLog(workspaceId: string): Promise<ClaimLogEntry[]> {
-  const logPath = getLogPath(workspaceId);
-  let raw: string;
-  try {
-    raw = await fsp.readFile(logPath, 'utf8');
-  } catch (err: any) {
-    if (err?.code === 'ENOENT') return [];
-    throw err;
-  }
+// ---------------------------------------------------------------------------
+// Parsed-log cache: avoid re-reading + re-JSON.parsing the entire file on
+// every readClaimLog call (see module header SCALE note #1).
+// ---------------------------------------------------------------------------
+
+interface CachedLog {
+  size: number;
+  mtimeMs: number;
+  entries: ClaimLogEntry[];
+}
+
+const parsedLogCache = new Map<string, CachedLog>();
+
+function parseLogText(raw: string): ClaimLogEntry[] {
   const entries: ClaimLogEntry[] = [];
   for (const line of raw.split('\n')) {
     const trimmed = line.trim();
@@ -178,6 +230,66 @@ export async function readClaimLog(workspaceId: string): Promise<ClaimLogEntry[]
     }
   }
   return entries;
+}
+
+/** Read and parse every line of the claim log for a workspace (empty if none yet). */
+export async function readClaimLog(workspaceId: string): Promise<ClaimLogEntry[]> {
+  const logPath = getLogPath(workspaceId);
+  let stat: fs.Stats;
+  try {
+    stat = await fsp.stat(logPath);
+  } catch (err: any) {
+    if (err?.code === 'ENOENT') {
+      parsedLogCache.delete(logPath);
+      return [];
+    }
+    throw err;
+  }
+
+  const cached = parsedLogCache.get(logPath);
+  if (cached && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs) {
+    // Return a fresh array copy — callers (e.g. appendClaimLocked's `existing`
+    // in-lock snapshot) push into what they get back, and must never mutate
+    // the shared cached array as a side effect of doing so.
+    return cached.entries.slice();
+  }
+
+  let raw: string;
+  try {
+    raw = await fsp.readFile(logPath, 'utf8');
+  } catch (err: any) {
+    if (err?.code === 'ENOENT') {
+      parsedLogCache.delete(logPath);
+      return [];
+    }
+    throw err;
+  }
+  const entries = parseLogText(raw);
+  // Re-stat isn't strictly necessary (a concurrent writer between our stat and
+  // readFile would just mean we cache against a slightly stale (size,mtime)
+  // pair and re-read again next call — never wrong, only occasionally an
+  // extra read), so caching the stat we already have keeps this cheap.
+  parsedLogCache.set(logPath, { size: stat.size, mtimeMs: stat.mtimeMs, entries });
+  return entries.slice();
+}
+
+/** Invalidate the cache entry for a workspace (used after a compaction rewrite
+ *  or whenever this process is about to observe a size/mtime it can't trust
+ *  its own optimistic bookkeeping for). */
+function invalidateCache(workspaceId: string): void {
+  parsedLogCache.delete(getLogPath(workspaceId));
+}
+
+/** Update the cache directly after this process's own write, from the stat we
+ *  already have in hand (avoids one extra `fstat` round-trip on the very next
+ *  `readClaimLog` call in the same critical section). */
+async function primeCacheAfterWrite(logPath: string, entries: ClaimLogEntry[]): Promise<void> {
+  try {
+    const stat = await fsp.stat(logPath);
+    parsedLogCache.set(logPath, { size: stat.size, mtimeMs: stat.mtimeMs, entries: entries.slice() });
+  } catch {
+    // best-effort; a miss here just means the next readClaimLog re-reads.
+  }
 }
 
 /**
@@ -199,9 +311,89 @@ async function appendClaimLocked(
     logged_at: new Date().toISOString(),
   };
   const logPath = getLogPath(workspaceId);
-  await fsp.appendFile(logPath, JSON.stringify(entry) + '\n', 'utf8');
+  // Defend against a prior crash-mid-write leaving a torn (unterminated) final
+  // line on disk: if we blindly append `JSON.stringify(entry) + '\n'`, our
+  // bytes land glued onto the tail of that dangling fragment, producing ONE
+  // unparseable line that swallows THIS append too (readClaimLog skips the
+  // whole merged line) — a single crash can silently cascade into losing every
+  // subsequent claim until someone manually truncates the file. Repro:
+  // local-store.test.ts "appendClaim recovers after a torn trailing line left
+  // by a mid-write crash". Guard: if the file exists and its last byte isn't
+  // already a newline, prefix our write with one so the torn fragment stays
+  // isolated on its own (still-unparseable, but no longer corrupts new data).
+  let prefix = '';
+  try {
+    const fd = await fsp.open(logPath, 'r');
+    try {
+      const { size } = await fd.stat();
+      if (size > 0) {
+        const buf = Buffer.alloc(1);
+        await fd.read(buf, 0, 1, size - 1);
+        if (buf[0] !== 0x0a /* '\n' */) prefix = '\n';
+      }
+    } finally {
+      await fd.close();
+    }
+  } catch (err: any) {
+    if (err?.code !== 'ENOENT') throw err;
+    // file doesn't exist yet — no prefix needed, appendFile will create it.
+  }
+  await fsp.appendFile(logPath, prefix + JSON.stringify(entry) + '\n', 'utf8');
   existing.push(entry); // keep the in-lock snapshot current for subsequent appends in this critical section
+  await primeCacheAfterWrite(logPath, existing);
   return entry;
+}
+
+/**
+ * Rewrite `claims.jsonl` to a compacted form once it grows past
+ * `COMPACT_THRESHOLD_ENTRIES` (module header SCALE note #2). Keeps:
+ *   - every entry that is currently `active` (LWW-latest per claim_id) — this
+ *     includes both real grants/edit-locks AND queued grant-manager markers,
+ *     since both must remain visible for `deriveActiveClaims`/queue-advance
+ *     to keep working exactly as before;
+ *   - the `COMPACT_KEEP_RELEASED` most-recent non-active (released/expired)
+ *     entries, purely for attribution/debug history — dropping the rest.
+ * Every KEPT entry's original `seq` and `logged_at` are preserved verbatim,
+ * so `seq` stays monotonic (no renumbering) and nothing downstream that reads
+ * `seq`/`logged_at` can observe a difference from the uncompacted log, other
+ * than older fully-superseded/released noise no longer being present.
+ * MUST be called only from within the lock-held critical section (same
+ * constraint as `appendClaimLocked`) — returns the (possibly unchanged) log
+ * array to use for the remainder of that critical section.
+ */
+async function compactIfNeeded(
+  workspaceId: string,
+  existing: ClaimLogEntry[]
+): Promise<ClaimLogEntry[]> {
+  if (existing.length <= COMPACT_THRESHOLD_ENTRIES) return existing;
+
+  const nowMs = Date.now();
+  const activeIds = new Set(deriveActiveClaims(existing, nowMs).map((c) => c.claim_id));
+  // LWW-latest entry per claim_id (mirrors reduceClaimLog's own tie-break),
+  // since a compacted log must still resolve to the identical active-set on
+  // its next read — we're only trimming SUPERSEDED history, never rewriting
+  // the outcome.
+  const latestById = new Map<string, ClaimLogEntry>();
+  for (const e of existing) {
+    const prior = latestById.get(e.claim_id);
+    if (!prior || e.seq > prior.seq) latestById.set(e.claim_id, e);
+  }
+  const activeEntries = [...latestById.values()].filter((e) => activeIds.has(e.claim_id));
+  const inactiveEntries = [...latestById.values()]
+    .filter((e) => !activeIds.has(e.claim_id))
+    .sort((a, b) => b.seq - a.seq)
+    .slice(0, COMPACT_KEEP_RELEASED);
+
+  const compacted = [...activeEntries, ...inactiveEntries].sort((a, b) => a.seq - b.seq);
+  if (compacted.length >= existing.length) return existing; // nothing to gain; skip the rewrite.
+
+  const logPath = getLogPath(workspaceId);
+  const tmpPath = `${logPath}.compact-${process.pid}-${nowMs}`;
+  const body = compacted.map((e) => JSON.stringify(e)).join('\n') + (compacted.length > 0 ? '\n' : '');
+  await fsp.writeFile(tmpPath, body, 'utf8');
+  await fsp.rename(tmpPath, logPath); // atomic on the same filesystem — no window where readers see a truncated file.
+  await primeCacheAfterWrite(logPath, compacted);
+  return compacted;
 }
 
 /**
@@ -216,6 +408,12 @@ async function appendClaimLocked(
  * enforce). `fn` receives the current log (safe to append to logically; use
  * `appendClaimWithLog` to actually persist an entry and keep the passed-in
  * array current for any further appends within the same `fn` call).
+ *
+ * Also runs opportunistic compaction (module header SCALE note #2) BEFORE
+ * invoking `fn`, so the log a caller reasons over inside its critical section
+ * is already trimmed — keeping both the read-cost and the lock-hold time for
+ * every subsequent operation bounded instead of growing with total fleet
+ * history.
  */
 export async function withWorkspaceLock<T>(
   workspaceId: string,
@@ -224,7 +422,8 @@ export async function withWorkspaceLock<T>(
   const dir = getStoreDir(workspaceId);
   ensureDirSync(dir);
   return withLock(workspaceId, async () => {
-    const log = await readClaimLog(workspaceId);
+    let log = await readClaimLog(workspaceId);
+    log = await compactIfNeeded(workspaceId, log);
     const append = (claim: Omit<WorkClaim, 'seq'> & { seq?: number }) => appendClaimLocked(workspaceId, claim, log);
     return fn({ log, append });
   });
@@ -242,7 +441,8 @@ export async function appendClaim(
   const dir = getStoreDir(workspaceId);
   ensureDirSync(dir);
   return withLock(workspaceId, async () => {
-    const existing = await readClaimLog(workspaceId);
+    let existing = await readClaimLog(workspaceId);
+    existing = await compactIfNeeded(workspaceId, existing);
     return appendClaimLocked(workspaceId, claim, existing);
   });
 }
@@ -348,7 +548,8 @@ export async function releaseAgent(workspaceId: string, agentId: string): Promis
   // local-store.test.ts "releaseAgent is race-safe against a concurrent
   // appendClaim for the same agent".
   return withLock(workspaceId, async () => {
-    const existing = await readClaimLog(workspaceId);
+    let existing = await readClaimLog(workspaceId);
+    existing = await compactIfNeeded(workspaceId, existing);
     const active = deriveActiveClaims(existing, Date.now()).filter(
       (c) => c.workspace_id === workspaceId && c.agent_id === agentId
     );

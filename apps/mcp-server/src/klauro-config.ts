@@ -72,6 +72,72 @@ export interface KlauroConfig {
     repositories?: string[];
     defaultBranchOnly?: boolean;
   };
+  /**
+   * Declared custom-architecture conventions, in Klauro's own node/edge
+   * vocabulary, so hand-rolled/proprietary patterns the auto-detectors can't
+   * infer surface as real entry_points/route_table rows/data_entities/edges/
+   * flows instead of staying invisible. Purely ADDITIVE to auto-detection —
+   * never replaces it, and a declared convention that matches nothing real in
+   * the analyzed nodes emits nothing (evidence-gated, never fabricated). See
+   * docs/CUSTOM-CONVENTIONS.md. Optional/backward-compatible: absent or
+   * empty on every existing .klaurorc.
+   */
+  conventions?: KlauroConventions;
+}
+
+/** One custom route source: a decorator-based router or a registration-call-based router. */
+export type KlauroRouteConvention =
+  | {
+      kind?: 'decorator';
+      decorator: string;
+      path_arg?: number | string;
+      method_arg?: number | string;
+      default_method?: string;
+    }
+  | {
+      kind: 'call';
+      call: string;
+      method_arg: number | string;
+      path_arg: number | string;
+      handler_arg: number | string;
+    };
+
+export interface KlauroEntryPointConvention {
+  files: string;
+  export_matches: string;
+  kind: 'http' | 'websocket' | 'cli' | 'event' | 'schedule' | 'page' | 'route' | 'message' | 'file' | 'test' | 'lifecycle' | 'api' | 'task' | 'pipeline' | 'notebook-cell' | 'train';
+}
+
+export interface KlauroEntityConvention {
+  name_suffix?: string;
+  name_regex?: string;
+  decorator?: string;
+}
+
+export interface KlauroDiBindingConvention {
+  call: string;
+  token_arg: number | string;
+  impl_arg: number | string;
+}
+
+export interface KlauroRoleConvention {
+  name_suffix?: string;
+  name_regex?: string;
+  role: string;
+}
+
+export interface KlauroFlowConvention {
+  name: string;
+  steps: string[];
+}
+
+export interface KlauroConventions {
+  routes?: KlauroRouteConvention[];
+  entry_points?: KlauroEntryPointConvention[];
+  entities?: KlauroEntityConvention[];
+  di_bindings?: KlauroDiBindingConvention[];
+  roles?: KlauroRoleConvention[];
+  flows?: KlauroFlowConvention[];
 }
 
 export interface LoadedKlauroConfig {
@@ -141,6 +207,7 @@ export function defaultKlauroConfig(projectPath: string): KlauroConfig {
     github: {
       defaultBranchOnly: true,
     },
+    conventions: {},
   };
 }
 
@@ -376,6 +443,22 @@ function mergeConfig(defaults: KlauroConfig, userConfig: Partial<KlauroConfig>):
       },
     },
     github: { ...defaults.github, ...(userConfig.github || {}) },
+    conventions: mergeConventions(defaults.conventions, userConfig.conventions),
+  };
+}
+
+function mergeConventions(
+  defaults: KlauroConventions | undefined,
+  userConventions: KlauroConventions | undefined,
+): KlauroConventions {
+  if (!userConventions) return defaults || {};
+  return {
+    routes: userConventions.routes ?? defaults?.routes,
+    entry_points: userConventions.entry_points ?? defaults?.entry_points,
+    entities: userConventions.entities ?? defaults?.entities,
+    di_bindings: userConventions.di_bindings ?? defaults?.di_bindings,
+    roles: userConventions.roles ?? defaults?.roles,
+    flows: userConventions.flows ?? defaults?.flows,
   };
 }
 
@@ -431,6 +514,82 @@ export function validateEmbeddingConfig(config: KlauroConfig): EmbeddingConfigVa
       );
     }
   }
+
+  return { errors, warnings };
+}
+
+export interface ConventionsValidation {
+  errors: string[];
+  warnings: string[];
+}
+
+/**
+ * Validate the `conventions` section with actionable, field-specific
+ * messages — a malformed convention must degrade to a clear error, never a
+ * crash mid-analysis. Called both by the MCP `declare_convention` surface
+ * (reject before writing) and defensively before the applier runs.
+ */
+export function validateConventions(conventions: KlauroConventions | undefined): ConventionsValidation {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+  if (!conventions) return { errors, warnings };
+
+  (conventions.routes || []).forEach((route, i) => {
+    const label = `conventions.routes[${i}]`;
+    if ('call' in route && route.kind === 'call') {
+      if (!route.call) errors.push(`${label}: "call" is required for a call-based route convention (e.g. "app.register")`);
+      if (route.method_arg === undefined) errors.push(`${label}: "method_arg" is required (position or name of the HTTP method argument)`);
+      if (route.path_arg === undefined) errors.push(`${label}: "path_arg" is required (position or name of the path argument)`);
+      if (route.handler_arg === undefined) errors.push(`${label}: "handler_arg" is required (position or name of the handler argument)`);
+    } else if ('decorator' in route) {
+      if (!route.decorator) errors.push(`${label}: "decorator" is required (e.g. "@Endpoint")`);
+      if (!route.decorator?.startsWith('@')) warnings.push(`${label}: "decorator" value "${route.decorator}" does not start with "@" — decorator names are usually written with the leading @`);
+    } else {
+      errors.push(`${label}: must have either "decorator" (decorator-based route) or "kind": "call" + "call" (registration-call-based route)`);
+    }
+  });
+
+  (conventions.entry_points || []).forEach((ep, i) => {
+    const label = `conventions.entry_points[${i}]`;
+    if (!ep.files) errors.push(`${label}: "files" glob is required (e.g. "src/jobs/**/*.ts")`);
+    if (!ep.export_matches) errors.push(`${label}: "export_matches" regex is required to select matching exports`);
+    else {
+      try { new RegExp(ep.export_matches); } catch { errors.push(`${label}: "export_matches" is not a valid regular expression: "${ep.export_matches}"`); }
+    }
+    if (!ep.kind) errors.push(`${label}: "kind" is required (e.g. "cli", "event", "schedule")`);
+  });
+
+  (conventions.entities || []).forEach((entity, i) => {
+    const label = `conventions.entities[${i}]`;
+    if (!entity.name_suffix && !entity.name_regex && !entity.decorator) {
+      errors.push(`${label}: must set at least one of "name_suffix", "name_regex", "decorator" to match classes`);
+    }
+    if (entity.name_regex) {
+      try { new RegExp(entity.name_regex); } catch { errors.push(`${label}: "name_regex" is not a valid regular expression: "${entity.name_regex}"`); }
+    }
+  });
+
+  (conventions.di_bindings || []).forEach((binding, i) => {
+    const label = `conventions.di_bindings[${i}]`;
+    if (!binding.call) errors.push(`${label}: "call" is required (e.g. "provide")`);
+    if (binding.token_arg === undefined) errors.push(`${label}: "token_arg" is required (position or name of the binding token argument)`);
+    if (binding.impl_arg === undefined) errors.push(`${label}: "impl_arg" is required (position or name of the implementation argument)`);
+  });
+
+  (conventions.roles || []).forEach((role, i) => {
+    const label = `conventions.roles[${i}]`;
+    if (!role.name_suffix && !role.name_regex) errors.push(`${label}: must set "name_suffix" or "name_regex" to match nodes`);
+    if (!role.role) errors.push(`${label}: "role" label is required (e.g. "use-case")`);
+    if (role.name_regex) {
+      try { new RegExp(role.name_regex); } catch { errors.push(`${label}: "name_regex" is not a valid regular expression: "${role.name_regex}"`); }
+    }
+  });
+
+  (conventions.flows || []).forEach((flow, i) => {
+    const label = `conventions.flows[${i}]`;
+    if (!flow.name) errors.push(`${label}: "name" is required`);
+    if (!flow.steps || flow.steps.length === 0) errors.push(`${label}: "steps" must be a non-empty array of "Class.method" or "function" references, in order`);
+  });
 
   return { errors, warnings };
 }

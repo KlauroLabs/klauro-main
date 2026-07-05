@@ -197,6 +197,10 @@ const EXTRA_INCLUDED_EXTENSIONS = new Set([
   // Play Framework sub-router include files (conf/api.routes etc.) — see the
   // 'routes' entry in IMPORTANT_EXTENSIONLESS for the base conf/routes file.
   '.routes',
+  // Jupyter notebooks: JSON documents holding an ordered cell sequence, not
+  // registered-language source — JupyterNotebookAnalyzer parses this format
+  // directly (see analyzer/frameworks/dataml/jupyter-notebook-analyzer.ts).
+  '.ipynb',
 ]);
 
 const IMPORTANT_EXTENSIONLESS = new Set([
@@ -211,6 +215,16 @@ const IMPORTANT_EXTENSIONLESS = new Set([
   // dropped from the snapshot, leaving the analyzer nothing to read even
   // though canAnalyze() found it directly on disk.
   'routes',
+  // .klaurorc itself: neither a registered source extension nor a
+  // manifest/extensionless name the language registry knows, so without this
+  // it never reaches the remote analyzer at all — meaning declared
+  // conventions (conventions-applier.ts) silently could never apply in the
+  // hosted/remote analysis path, only a direct on-disk local run. Found via
+  // the same class of bug the routes/routes.yaml fix above documents: a file
+  // canAnalyze()/the config loader reads directly on disk but the snapshot
+  // walker had no rule keeping it.
+  '.klaurorc',
+  '.klaurorc.json',
 ]);
 
 export async function buildSourceSnapshot(projectPath: string): Promise<SourceSnapshot> {

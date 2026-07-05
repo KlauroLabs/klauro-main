@@ -40,7 +40,8 @@ import { runMachineAgentProof } from './machine-gauntlet';
 import { analyzeCodebaseRemotely, syncWorkingTreeRemotely } from './remote-sync-client';
 import { getAgentRevisionTracks } from './agent-revision-tracks';
 import { buildUploadManifest } from './remote-source';
-import { loadKlauroConfig, writeDefaultKlauroConfig } from './klauro-config';
+import { loadKlauroConfig, writeDefaultKlauroConfig, validateConventions, type KlauroConventions } from './klauro-config';
+import * as fs from 'node:fs/promises';
 import { buildGithubImportPlan } from './github-import';
 import * as proposalPreview from './proposal-preview';
 import * as greenfieldGuidance from './greenfield-guidance';
@@ -244,7 +245,7 @@ function enforceResponseBudget(
 }
 
 const GATEWAY_TOOL_GROUPS: Array<{ label: string; tools: string[] }> = [
-  { label: 'Analysis management', tools: ['analyze_codebase', 'get_analysis_focus_profiles', 'get_description_enrichment_targets', 'generate_element_description', 'get_element_description', 'get_analysis_phases', 'run_analysis_layer', 'initialize_klauro_project', 'get_klauro_project_config', 'get_upload_manifest', 'get_agent_revision_tracks', 'get_github_import_plan', 'analyze_codebase_remote', 'sync_codebase_remote', 'list_analyses', 'validate_cas_contract', 'get_storage_health', 'get_storage_maintenance_report', 'prune_storage_artifacts', 'preview_codebase_iteration', 'get_greenfield_architecture_guidance', 'get_greenfield_build_context', 'preview_greenfield_codebase', 'get_preview_analysis', 'compare_analysis_iterations', 'get_analysis_freshness', 'get_test_discovery_evidence', 'save_cas_golden_snapshot', 'compare_cas_golden_snapshot'] },
+  { label: 'Analysis management', tools: ['analyze_codebase', 'get_analysis_focus_profiles', 'get_description_enrichment_targets', 'generate_element_description', 'get_element_description', 'get_analysis_phases', 'run_analysis_layer', 'initialize_klauro_project', 'get_klauro_project_config', 'declare_convention', 'get_upload_manifest', 'get_agent_revision_tracks', 'get_github_import_plan', 'analyze_codebase_remote', 'sync_codebase_remote', 'list_analyses', 'validate_cas_contract', 'get_storage_health', 'get_storage_maintenance_report', 'prune_storage_artifacts', 'preview_codebase_iteration', 'get_greenfield_architecture_guidance', 'get_greenfield_build_context', 'preview_greenfield_codebase', 'get_preview_analysis', 'compare_analysis_iterations', 'get_analysis_freshness', 'get_test_discovery_evidence', 'save_cas_golden_snapshot', 'compare_cas_golden_snapshot'] },
   { label: 'System understanding and agent workflow', tools: ['get_summary', 'get_system_overview', 'get_architecture_context', 'list_answer_packs', 'get_mcp_demo_flow', 'get_cross_repo_links', 'run_workspace_analysis', 'resolve_workspace_analysis', 'get_workspace_summary', 'get_workspace_analysis', 'get_workspace_agent_context', 'get_workspace_freshness', 'validate_was_contract', 'get_workspace_health', 'get_workspace_risk_context', 'get_workspace_capability_map', 'get_workspace_entity_map', 'get_workspace_workflow', 'list_workspace_analyses', 'run_cross_codebase_analysis', 'get_cross_codebase_analysis', 'list_cross_codebase_analyses', 'save_workspace_graph', 'get_workspace_graph', 'list_workspace_graphs', 'verify_workspace_link', 'get_agent_bootstrap', 'get_agent_context', 'get_agent_project_map', 'get_agent_doctor', 'get_server_version', 'get_agent_default_config', 'install_agent_default_config', 'get_capability_memory', 'get_idiom_aware_agent_context', 'open_agent_workbench', 'preflight_agent_change', 'get_codebase_agent_rules', 'explain_change_shape', 'evaluate_analysis_truth', 'get_semantic_map', 'get_framework_depth_report', 'get_integration_depth_report', 'get_cross_repo_contracts', 'get_runtime_instrumentation_plan', 'get_runtime_event_contract', 'get_runtime_sdk_package', 'evaluate_agent_task_proof', 'evaluate_agent_readiness', 'run_agentic_benchmark', 'get_agentic_benchmark_report', 'get_agent_performance_proof', 'run_agent_quality_benchmark', 'run_agent_idiom_benchmark', 'run_machine_agent_proof', 'run_incremental_value_benchmark', 'get_patterns', 'get_codebase_idioms', 'get_idiom_examples', 'validate_codebase_idioms', 'get_pattern_instances', 'get_perspectives'] },
   { label: 'Navigation and search', tools: ['semantic_search', 'get_embedding_status', 'get_node', 'get_file_nodes', 'get_level'] },
   { label: 'Entry points, routes, and call graph', tools: ['get_entry_points', 'get_exit_points', 'get_route_table', 'get_external_services', 'get_callers', 'get_callees', 'get_call_chain', 'get_method_calls', 'get_interface_signature', 'get_flow_concepts'] },
@@ -254,6 +255,7 @@ const GATEWAY_TOOL_GROUPS: Array<{ label: string; tools: string[] }> = [
   { label: 'Workflows, capabilities, and runtime', tools: ['get_workflows', 'get_paradigm_conformance', 'get_architectural_conflicts', 'get_unified_perspectives', 'get_data_lineage', 'diff_behavior', 'get_flow_graph', 'get_runtime_static_links', 'simulate_runtime_telemetry', 'correlate_runtime_event', 'record_runtime_event', 'ingest_telemetry', 'get_runtime_observations', 'get_operational_priorities', 'get_runtime_trace', 'get_analysis_facts', 'get_domain_concepts'] },
   { label: 'Behaviors, testing, data, and health', tools: ['get_behaviors', 'get_lifecycle_hooks', 'get_test_summary', 'get_database_schema', 'get_implementation_health', 'get_system_health', 'get_documentation_coverage', 'get_todos'] },
   { label: 'Dependencies', tools: ['get_dependencies', 'get_libraries'] },
+  { label: 'Coverage Intelligence', tools: ['get_coverage_gaps'] },
   { label: 'Change history', tools: ['get_changes_since', 'get_changes_between', 'get_changes_for_node', 'get_changes_for_file', 'get_changes_for_entry_point', 'get_change_summary', 'get_hot_spots', 'get_analysis_at', 'get_analysis_snapshots'] },
   { label: 'Watch mode', tools: ['start_watch', 'stop_watch', 'get_watch_status', 'list_watches', 'poll_watch_changes', 'install_gauntlet_watcher', 'list_gauntlet_watchers', 'stop_gauntlet_watcher', 'run_incremental_gauntlet'] },
   { label: 'Multi-agent coordination', tools: ['claim_work', 'release_work', 'heartbeat_work', 'get_active_agents', 'check_collision', 'check_conceptual_conflicts', 'get_in_flight_changes', 'plan_intent_merge', 'plan_parallel_work', 'subscribe_workspace'] },
@@ -1145,6 +1147,58 @@ function registerTools(server: McpServer) {
         ignore_file: loaded.ignorePath,
         ignore_patterns: loaded.ignorePatterns,
         config: loaded.config,
+      });
+    })
+  );
+
+  server.registerTool(
+    'declare_convention',
+    {
+      title: 'Declare Custom Convention',
+      description: 'Persist a hand-rolled/proprietary architecture convention (custom route decorator or registration call, entry-point export pattern, entity naming convention, DI binding call, semantic role tag, or a named flow) into .klaurorc conventions: — the DECLARATION half of "analyze ANY codebase" (auto-detection infers patterns; this lets an agent that discovers a bespoke pattern mid-task persist it). Additive only: appends to whichever conventions[kind] array already exists; never replaces prior declarations. Validated before writing — a malformed convention returns a field-specific error and writes nothing, so a mistake never corrupts .klaurorc. The next analyze_codebase run applies it evidence-gated: a declared convention that matches nothing real in the extracted nodes emits nothing (see conventions_applied on the CAS output for the audit trail of what matched).',
+      inputSchema: {
+        path: z.string().describe('Absolute path to the project directory'),
+        kind: z.enum(['routes', 'entry_points', 'entities', 'di_bindings', 'roles', 'flows']).describe('Which conventions[] array to append to'),
+        convention: z.record(z.unknown()).describe(
+          'The convention object, shaped per kind: ' +
+          'routes = {decorator, path_arg?, method_arg?, default_method?} OR {kind:"call", call, method_arg, path_arg, handler_arg}; ' +
+          'entry_points = {files, export_matches, kind}; ' +
+          'entities = {name_suffix?, name_regex?, decorator?} (at least one); ' +
+          'di_bindings = {call, token_arg, impl_arg}; ' +
+          'roles = {name_suffix?, name_regex?, role} (name_suffix or name_regex, plus role); ' +
+          'flows = {name, steps: ["Class.method", ...]}'
+        ),
+      } as any,
+    } as any,
+    async ({ path, kind, convention }: any) => withErrorHandling(async () => {
+      const loaded = await loadKlauroConfig(path);
+      const nextConventions: KlauroConventions = { ...(loaded.config.conventions || {}) };
+      const existing = (nextConventions as any)[kind] || [];
+      const candidate: KlauroConventions = { ...nextConventions, [kind]: [...existing, convention] };
+
+      const validation = validateConventions(candidate);
+      if (validation.errors.length > 0) {
+        return json({
+          status: 'error',
+          message: `Convention rejected — .klaurorc was not modified.`,
+          errors: validation.errors,
+          warnings: validation.warnings,
+        });
+      }
+
+      const configPath = loaded.configPath || (await writeDefaultKlauroConfig(path)).configPath;
+      const rawConfig = JSON.parse(await fs.readFile(configPath, 'utf8'));
+      rawConfig.conventions = candidate;
+      await fs.writeFile(configPath, `${JSON.stringify(rawConfig, null, 2)}\n`, 'utf8');
+
+      return json({
+        status: 'success',
+        config_file: configPath,
+        kind,
+        declared: convention,
+        conventions: candidate,
+        warnings: validation.warnings.length > 0 ? validation.warnings : undefined,
+        next_step: 'Run analyze_codebase to apply this convention; check conventions_applied in the resulting CAS (or the next get_summary/get_route_table/get_data_entities/get_flow_concepts call) to confirm it matched real code.',
       });
     })
   );
@@ -4620,6 +4674,23 @@ function registerTools(server: McpServer) {
         source,
         limit,
       });
+      // Per-node operational rollup: traffic (request_count/throughput), errors
+      // (error_count/error_rate + status distribution), and latency
+      // (avg/p50/p95/p99/max) aggregated per CAS node/entry-point/route from the
+      // returned observations. Additive — the raw `observations` array is
+      // unchanged. Computed over the filtered set so it honors static_id/since.
+      try {
+        const cas = await getAnalysis(path);
+        const nodeMetrics = product.buildNodeRuntimeMetrics(cas, result.observations || []);
+        if (nodeMetrics.length > 0) {
+          result.node_metrics = nodeMetrics;
+          result.node_metrics_guidance =
+            'Per-node traffic/error-rate/latency correlated to CAS static_id. Use static_id here as the target for get_agent_context / get_coding_context before editing a hot or erroring node.';
+        }
+      } catch {
+        // Metrics are best-effort; never fail the observation read if the CAS
+        // analysis is missing or unreadable.
+      }
       // WS-A: merge in fused telemetry facts (hot/slow/error) persisted via
       // POST /v1/telemetry/ingest or ingest_telemetry, additive to the
       // existing observation shape — see telemetry-fusion.ts.
@@ -5454,6 +5525,25 @@ function registerTools(server: McpServer) {
     async ({ path, query: q, limit, offset }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
       return json(query.getLibraries(cas, { query: q, limit, offset }));
+    })
+  );
+
+  server.registerTool(
+    'get_coverage_gaps',
+    {
+      title: 'Get Coverage Gaps',
+      description: 'Self-discovered analysis coverage gaps: dependencies matching no known analyzer, files with a suspiciously low node-extraction ratio (likely an unhandled construct), roots with source but zero entry points, and tree-sitter node types no analyzer ever handled. Also surfaces the codebase_type classification (web-backend, library, cli, ...) this analysis inferred. Use this to see what the analysis does NOT yet understand about a repo, ranked by severity.',
+      inputSchema: {
+        path: z.string().describe('Project path'),
+        kind: z.string().optional().describe('Filter by gap kind: unknown-dependency | low-extraction-ratio | zero-entry-points | unhandled-node-type'),
+        severity: z.string().optional().describe('Filter by severity: high | medium | low'),
+        limit: z.number().optional().describe('Max results (default 50)'),
+        offset: z.number().optional().describe('Skip first N results (default 0)'),
+      } as any,
+    } as any,
+    async ({ path, kind, severity, limit, offset }: any) => withErrorHandling(async () => {
+      const cas = await getAnalysis(path);
+      return json(query.getCoverageGaps(cas, { kind, severity, limit, offset }));
     })
   );
 

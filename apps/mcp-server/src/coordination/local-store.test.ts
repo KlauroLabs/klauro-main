@@ -331,3 +331,43 @@ test('findAgentInOtherWorkspaces catches the wrong-FAB_WS silent-failure mode', 
 
   await fsp.rm(dir, { recursive: true, force: true });
 });
+
+test('appendClaim recovers after a torn trailing line left by a mid-write crash', async () => {
+  // Real failure mode: a process dies mid `fsp.appendFile` write, leaving the
+  // final line in claims.jsonl truncated (no trailing '\n', invalid JSON).
+  // readClaimLog already tolerates this (skips the unparseable line) — but
+  // appendClaimLocked previously wrote `JSON.stringify(entry) + '\n'` with NO
+  // leading newline, so the NEXT append's bytes landed glued onto the tail of
+  // the torn fragment, merging them into ONE unparseable line and silently
+  // swallowing the new claim too (readClaimLog skips the whole merged line).
+  // A single crash could cascade into losing every subsequent append until
+  // someone manually truncated the file. Fixed: appendClaimLocked now checks
+  // whether the log's last byte is already '\n' and prefixes its own write
+  // with one if not, isolating the torn fragment on its own line.
+  const dir = await freshCoordDir();
+  const storeDir = path.join(dir, 'ws-torn');
+  await fsp.mkdir(storeDir, { recursive: true });
+  const logPath = path.join(storeDir, 'claims.jsonl');
+
+  const good = makeClaim({ claim_id: 'claim-a', agent_id: 'agent-a', workspace_id: 'ws-torn' });
+  const goodEntry = { ...good, seq: 1, logged_at: new Date().toISOString() };
+  const tornEntry = JSON.stringify({ ...good, claim_id: 'claim-b', seq: 2, logged_at: new Date().toISOString() });
+  // Write one complete line, then a TRUNCATED (torn) second line with no
+  // trailing newline — simulating a crash mid-`appendFile`.
+  await fsp.writeFile(logPath, JSON.stringify(goodEntry) + '\n' + tornEntry.slice(0, Math.floor(tornEntry.length / 2)), 'utf8');
+
+  const beforeLog = await readClaimLog('ws-torn');
+  assert.deepEqual(beforeLog.map((e) => e.claim_id), ['claim-a'], 'torn line is skipped, prior valid line intact');
+
+  // A fresh agent appends after the crash — this must NOT be swallowed.
+  await appendClaim('ws-torn', makeClaim({ claim_id: 'claim-c', agent_id: 'agent-c', workspace_id: 'ws-torn' }));
+
+  const afterLog = await readClaimLog('ws-torn');
+  const ids = afterLog.map((e) => e.claim_id).sort();
+  assert.deepEqual(ids, ['claim-a', 'claim-c'], 'new claim survives and is readable despite the preceding torn line');
+
+  const active = await getActiveClaims('ws-torn');
+  assert.deepEqual(active.map((c) => c.agent_id).sort(), ['agent-a', 'agent-c']);
+
+  await fsp.rm(dir, { recursive: true, force: true });
+});

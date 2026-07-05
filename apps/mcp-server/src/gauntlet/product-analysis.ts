@@ -115,6 +115,23 @@ export async function analyzeForBench(dir: string): Promise<CASOutput> {
       snapshot,
     });
     const cas = response.cas as CASOutput;
+    // The analyzer server names/identifies the system from the STAGED copy's own
+    // path (a throwaway git repo under a temp dir, e.g.
+    // `.../klauro-bench-analyzer-<pid>/workspaces/<hash>`), since that's the only
+    // path it ever sees — it has no idea `dir` is the caller's real, original
+    // path. Left uncorrected, `system.name`/`system.id`/`system.root_path` are
+    // hash-shaped garbage (the staged dir's basename) instead of the real
+    // project's name, and that WRONG identity gets persisted into the real
+    // project's on-disk analysis entry below (keyed by `dir`) — so any agent
+    // later resolving an analysis for `dir` sees a fabricated hash name instead
+    // of its own project. Same defect class + same fix as
+    // remote-sync-client.ts's `rewriteCasProjectName` (remote analyzer, same
+    // "server only knows the uploaded path" root cause). Repro: analyze a real
+    // repo through this harness, then `get_summary`/`resolve_agent_analysis` on
+    // `dir` shows `name: "<hash>"` instead of `path.basename(dir)`.
+    cas.system.name = path.basename(dir);
+    cas.system.id = `system_${cas.system.name}`;
+    cas.system.root_path = dir;
     // Cache locally exactly as the real product client does (analyze -> server ->
     // local cache), keyed by the ORIGINAL dir so getAnalysis(dir)/the MCP find it.
     await saveAnalysis(dir, cas).catch(() => undefined);
