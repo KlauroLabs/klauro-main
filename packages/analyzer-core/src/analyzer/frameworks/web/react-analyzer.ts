@@ -31,6 +31,9 @@ interface ReactComponent {
   exports: string[];
   jsx: boolean;
   renderedComponents: Array<{ name: string; line: number; props: string[] }>;
+  /** JSX event bindings (`onClick={handler}`) found in this component's own JSX —
+   *  the frontend analog of a route: a user event that triggers a flow. */
+  eventHandlers: Array<{ event: string; handlerName?: string; line: number }>;
 }
 
 interface ReactHook {
@@ -214,7 +217,8 @@ export class ReactAnalyzer extends BaseAnalyzer {
       pages,
       [...utils, ...existingFacts.utils],
       nodes,
-      edges
+      edges,
+      entryPoints
     );
     this.computeComponentMetrics([...components, ...existingFacts.components], nodes, edges);
     this.identifyAPIConnections(components, hooks, nodes, exitPoints);
@@ -279,7 +283,7 @@ export class ReactAnalyzer extends BaseAnalyzer {
       timings['parallelAnalysis'] = Date.now() - t;
 
       t = Date.now();
-      this.buildReactRelationships(components, hooks, contexts, routes, stores, pages, utils, nodes, edges);
+      this.buildReactRelationships(components, hooks, contexts, routes, stores, pages, utils, nodes, edges, entryPoints);
       this.computeComponentMetrics(components, nodes, edges);
       this.identifyAPIConnections(components, hooks, nodes, exitPoints);
       timings['relationships'] = Date.now() - t;
@@ -1384,8 +1388,40 @@ export class ReactAnalyzer extends BaseAnalyzer {
       imports: this.extractImports(content),
       exports: this.extractExports(content),
       jsx: content.includes('jsx') || content.includes('<'),
-      renderedComponents: this.extractRenderedComponents(node, content)
+      renderedComponents: this.extractRenderedComponents(node, content),
+      eventHandlers: this.extractEventHandlers(node, content)
     };
+  }
+
+  /** JSX event props (`onClick={handler}`, `onSubmit={() => submit(x)}`, ...) within
+   *  this component's own JSX. A bare identifier or an arrow body's leading call
+   *  resolves to `handlerName`; anything else is still captured as an event (the
+   *  entry point exists) without a fabricated handler target. */
+  private extractEventHandlers(node: any, content: string): Array<{ event: string; handlerName?: string; line: number }> {
+    const handlers: Array<{ event: string; handlerName?: string; line: number }> = [];
+    const nodeStart = node?.range?.[0] || 0;
+    const nodeEnd = node?.range?.[1] || content.length;
+    const componentContent = content.substring(nodeStart, nodeEnd);
+
+    const pattern = /\bon([A-Z]\w+)=\{([^}]*)\}/g;
+    let match;
+    while ((match = pattern.exec(componentContent)) !== null) {
+      const event = match[1].charAt(0).toLowerCase() + match[1].slice(1);
+      const expr = match[2].trim();
+
+      let handlerName: string | undefined;
+      const bareIdentifier = /^(\w+)$/.exec(expr);
+      const arrowCall = /=>\s*(\w+)\s*\(/.exec(expr);
+      const thisMethod = /^this\.(\w+)$/.exec(expr);
+      if (bareIdentifier) handlerName = bareIdentifier[1];
+      else if (thisMethod) handlerName = thisMethod[1];
+      else if (arrowCall) handlerName = arrowCall[1];
+
+      const lineNumber = content.substring(0, nodeStart + match.index).split('\n').length;
+      handlers.push({ event, handlerName, line: lineNumber });
+    }
+
+    return handlers;
   }
 
   private extractRenderedComponents(node: any, content: string): Array<{ name: string; line: number; props: string[] }> {
@@ -2146,7 +2182,8 @@ export class ReactAnalyzer extends BaseAnalyzer {
             imports: [],
             exports: [],
             jsx: Boolean(node.metadata?.attributes?.jsx),
-            renderedComponents: []
+            renderedComponents: [],
+            eventHandlers: []
           });
         } else if (node.type === 'custom_hook') {
           facts.hooks.push({
@@ -2208,7 +2245,8 @@ export class ReactAnalyzer extends BaseAnalyzer {
     pages: ReactPage[],
     utils: ReactUtil[],
     nodes: CASNode[],
-    edges: CASEdge[]
+    edges: CASEdge[],
+    entryPoints: CASEntryPoint[]
   ): void {
     const componentNameToId = new Map<string, string>();
     components.forEach(component => {
@@ -2347,6 +2385,40 @@ export class ReactAnalyzer extends BaseAnalyzer {
               composition_type: 'jsx'
             }
           ));
+        }
+      });
+
+      // JSX event bindings (onClick/onSubmit/...) are real flow roots for a
+      // frontend app — a user event triggers a handler, the same way an HTTP
+      // route triggers a controller. Emit an `event` entry point per binding;
+      // resolve a `triggers` edge to the handler only when the name matches a
+      // hook usage or a util/function already known by name (evidence-based,
+      // never a guess for inline/ambiguous expressions).
+      (component.eventHandlers || []).forEach((handler, index) => {
+        const entryId = this.generateId('event_entry', component.filePath, `${component.name}_${handler.event}_${index}`);
+        entryPoints.push(this.createEntryPoint(
+          `entry_${entryId}`,
+          componentId,
+          'event',
+          `${component.name} ${handler.event}`,
+          `User ${handler.event} event on ${component.name}${handler.handlerName ? `, handled by ${handler.handlerName}` : ''}`,
+          { pattern: handler.event },
+          undefined,
+          { component: component.name, event: handler.event, handler_name: handler.handlerName, jsx_line: handler.line }
+        ));
+
+        if (handler.handlerName) {
+          const targetId = namedTargetIds.get(handler.handlerName);
+          if (targetId) {
+            edges.push(this.createEdge(
+              this.generateEdgeId(entryId, targetId, 'triggers'),
+              entryId,
+              targetId,
+              'triggers',
+              'behavioral',
+              { event: handler.event, source_component: component.name }
+            ));
+          }
         }
       });
     });

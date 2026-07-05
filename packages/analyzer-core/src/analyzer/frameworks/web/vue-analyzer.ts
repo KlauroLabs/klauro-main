@@ -40,6 +40,8 @@ interface VueComponent {
   emits: string[];
   /** Child components used in this component's <template> (the render tree). */
   childComponents: string[];
+  /** `@click="handler"` / `v-on:click="handler(...)"` bindings in the <template>. */
+  eventHandlers: Array<{ event: string; handlerName?: string }>;
 }
 
 interface VueComposable {
@@ -151,7 +153,7 @@ export class VueAnalyzer extends BaseAnalyzer {
       }), 'Vue source files');
 
       const application = await this.analyzeApplication(context.projectPath, nodes);
-      const components = await this.analyzeComponents(vueFiles, context.projectPath, nodes, edges);
+      const components = await this.analyzeComponents(vueFiles, context.projectPath, nodes, edges, entryPoints);
       const composables = await this.analyzeComposables(vueFiles, context.projectPath, nodes, edges);
       const stores = await this.analyzeStores(vueFiles, context.projectPath, nodes, edges);
       const routes = await this.analyzeRoutes(vueFiles, context.projectPath, nodes, edges, entryPoints);
@@ -286,7 +288,8 @@ export class VueAnalyzer extends BaseAnalyzer {
     files: string[],
     projectPath: string,
     nodes: CASNode[],
-    edges: CASEdge[]
+    edges: CASEdge[],
+    entryPoints: CASEntryPoint[]
   ): Promise<VueComponent[]> {
     const components: VueComponent[] = [];
 
@@ -378,6 +381,38 @@ export class VueAnalyzer extends BaseAnalyzer {
                 'contains',
                 'structural'
               ));
+            });
+
+            // Template event bindings are real flow roots for a frontend app —
+            // a user event triggers a method, the same way an HTTP route
+            // triggers a controller. Emit an `event` entry point per binding;
+            // resolve a `triggers` edge only when the handler name matches a
+            // method already declared on this component (evidence-based).
+            const methodNames = new Set(component.methods.map(m => m.name));
+            component.eventHandlers.forEach((handler, index) => {
+              const eventNodeId = this.generateId('event_binding', component.filePath, `${component.name}_${handler.event}_${index}`);
+              entryPoints.push(this.createEntryPoint(
+                `entry_${eventNodeId}`,
+                componentId,
+                'event',
+                `${component.name} ${handler.event}`,
+                `User ${handler.event} event on ${component.name}${handler.handlerName ? `, handled by ${handler.handlerName}` : ''}`,
+                { pattern: handler.event },
+                undefined,
+                { component: component.name, event: handler.event, handler_name: handler.handlerName }
+              ));
+
+              if (handler.handlerName && methodNames.has(handler.handlerName)) {
+                const methodId = this.generateId('method', component.filePath, `${component.name}_${handler.handlerName}`);
+                edges.push(this.createEdge(
+                  this.generateEdgeId(eventNodeId, methodId, 'triggers'),
+                  eventNodeId,
+                  methodId,
+                  'triggers',
+                  'behavioral',
+                  { event: handler.event }
+                ));
+              }
             });
           }
         } catch (error) {
@@ -761,8 +796,41 @@ export class VueAnalyzer extends BaseAnalyzer {
       exports: this.extractExports(content),
       slots: this.extractSlots(content),
       emits: this.extractEmits(content),
-      childComponents: this.extractChildComponents(content)
+      childComponents: this.extractChildComponents(content),
+      eventHandlers: this.extractTemplateEventHandlers(content)
     };
+  }
+
+  /**
+   * Vue event bindings (`@click="handler"`, `v-on:click="handler(...)"`,
+   * `@click="handler($event)"`) in the <template>. A bare identifier or a bare
+   * `methodName(...)` call resolves `handlerName`; a full inline expression is
+   * still captured as an event without a fabricated handler target.
+   */
+  private extractTemplateEventHandlers(content: string): Array<{ event: string; handlerName?: string }> {
+    const tpl = /<template>([\s\S]*?)<\/template>/.exec(content);
+    if (!tpl) return [];
+    const template = tpl[1];
+    const handlers: Array<{ event: string; handlerName?: string }> = [];
+
+    const shorthandPattern = /@([\w-]+)(?:\.[\w.]+)?=["']([^"']*)["']/g;
+    const longformPattern = /v-on:([\w-]+)(?:\.[\w.]+)?=["']([^"']*)["']/g;
+
+    const collect = (pattern: RegExp) => {
+      let m: RegExpExecArray | null;
+      while ((m = pattern.exec(template)) !== null) {
+        const event = m[1];
+        const expr = m[2].trim();
+        const bareIdentifier = /^(\w+)$/.exec(expr);
+        const call = /^(\w+)\s*\(/.exec(expr);
+        const handlerName = bareIdentifier ? bareIdentifier[1] : call ? call[1] : undefined;
+        handlers.push({ event, handlerName });
+      }
+    };
+    collect(shorthandPattern);
+    collect(longformPattern);
+
+    return handlers;
   }
 
   /** Child components rendered in the <template>: PascalCase tags (the Vue

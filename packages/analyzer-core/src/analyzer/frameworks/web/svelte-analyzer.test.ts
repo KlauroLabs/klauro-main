@@ -52,8 +52,12 @@ export async function POST({ request }) {
     path.join(root, 'src', 'lib', 'Counter.svelte'),
     `<script>
   let count = $state(0);
+  function increment() {
+    count += 1;
+  }
 </script>
 <button on:click={() => count++}>clicks: {count}</button>
+<button on:click={increment}>increment</button>
 `
   );
 
@@ -101,6 +105,35 @@ test('SvelteAnalyzer: extracts components, route, endpoints, and prop', async ()
       n => n.type === 'sveltekit_route' && n.metadata?.attributes?.route_path === '/api'
     );
     assert.ok(apiRoute, 'expected /api route node');
+  } finally {
+    await fs.remove(root);
+  }
+});
+
+test('SvelteAnalyzer: extracts on:click event bindings as event entry points, resolving named handlers', async () => {
+  const root = await makeProject();
+  try {
+    const analyzer = new SvelteAnalyzer();
+    const cas = await analyzer.analyze({ projectPath: root });
+
+    const clickEntries = (cas.entry_points || []).filter(ep => ep.type === 'event' && ep.trigger?.pattern === 'click');
+    assert.ok(clickEntries.length >= 3, `expected at least 3 click entry points, got ${clickEntries.length}`);
+
+    // The named-handler binding on Counter.svelte resolves a handler_name.
+    const namedEntry = clickEntries.find(ep => ep.metadata?.handler_name === 'increment');
+    assert.ok(namedEntry, `expected a click entry point resolving to 'increment', got ${JSON.stringify(clickEntries.map(e => e.metadata))}`);
+
+    // A `triggers` edge from the event binding to the increment function node exists.
+    const handlerFnNode = cas.nodes.find(n => n.type === 'event_handler_function' && n.name === 'increment');
+    assert.ok(handlerFnNode, 'expected event_handler_function node for increment');
+    const triggersEdge = (cas.edges || []).find(
+      e => e.type === 'triggers' && e.target === handlerFnNode!.id
+    );
+    assert.ok(triggersEdge, 'expected a triggers edge into the increment handler node');
+
+    // The inline `() => count++` binding is still captured as an event (no fabricated handler name).
+    const inlineEntry = clickEntries.find(ep => ep.metadata?.handler_name === undefined);
+    assert.ok(inlineEntry, 'expected an event entry point for the inline arrow-expression binding');
   } finally {
     await fs.remove(root);
   }

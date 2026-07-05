@@ -6,7 +6,7 @@ import {
 } from '../../types/cas.types';
 import { AnalyzerError } from '../core/errors';
 import { EnhancedCallGraphExtractor, ExtractedFunction } from '../enhanced-call-graph-extractor';
-import { TreeSitterTSExtractor, TSFileExtraction, TSExtractedFunction, TSExtractedClass } from '../core/tree-sitter-ts-extractor';
+import { TreeSitterTSExtractor, TSFileExtraction, TSExtractedFunction, TSExtractedClass, TSDecoratorDetail } from '../core/tree-sitter-ts-extractor';
 import * as path from 'path';
 import * as fs from 'fs-extra';
 import { parse, TSESTree } from '@typescript-eslint/typescript-estree';
@@ -1001,7 +1001,8 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
             functionType: func.type,
             hasDocumentation: !!documentation,
             complexity: func.complexity,
-            decorators: func.decorators.length > 0 ? func.decorators : undefined
+            decorators: func.decorators.length > 0 ? func.decorators : undefined,
+            decoratorArgs: this.decoratorArgsAttribute(func.decoratorArgs)
           }
         })
         .withSignature({
@@ -1074,6 +1075,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
             propertyCount: cls.properties.length,
             hasDocumentation: !!documentation,
             decorators: cls.decorators.length > 0 ? cls.decorators : undefined,
+            decoratorArgs: this.decoratorArgsAttribute(cls.decoratorArgs),
             dependencies: dependencies.length > 0 ? dependencies : undefined
           }
         })
@@ -1109,7 +1111,8 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
               methodType: method.type,
               hasDocumentation: !!methodDoc,
               complexity: method.complexity,
-              decorators: method.decorators.length > 0 ? method.decorators : undefined
+              decorators: method.decorators.length > 0 ? method.decorators : undefined,
+              decoratorArgs: this.decoratorArgsAttribute(method.decoratorArgs)
             }
           })
           .withSignature({
@@ -1153,7 +1156,8 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
             isReadonly: prop.isReadonly,
             isOptional: prop.isOptional,
             defaultValue: prop.defaultValue,
-            decorators: prop.decorators.length > 0 ? prop.decorators : undefined
+            decorators: prop.decorators.length > 0 ? prop.decorators : undefined,
+            decoratorArgs: this.decoratorArgsAttribute(prop.decoratorArgs)
           }
         ));
       });
@@ -1205,6 +1209,21 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
         this.importSourceMap.set('default', exp.name);
       }
     }
+  }
+
+  /**
+   * The extractor's structured decorator args (`decoratorArgs`) narrowed to only the
+   * decorators that actually carried statically-evaluable arguments, for stashing on
+   * `metadata.attributes.decoratorArgs`. Kept SEPARATE from `attributes.decorators`
+   * (the bare-name string list every existing consumer reads) — this is purely
+   * additive plumbing so buildAllDecorators can lift real args into
+   * CASDecorator.parameters for custom/unrecognized decorators, not just framework
+   * ones. Returns undefined when nothing carried args, so the attribute stays absent
+   * on the common (no-argument) case rather than adding empty noise to every node.
+   */
+  private decoratorArgsAttribute(decoratorArgs?: TSDecoratorDetail[]): TSDecoratorDetail[] | undefined {
+    const withArgs = (decoratorArgs || []).filter(d => d.args.length > 0);
+    return withArgs.length > 0 ? withArgs : undefined;
   }
 
   private determineClassTypeFromExtraction(cls: TSExtractedClass, filePath: string): string {

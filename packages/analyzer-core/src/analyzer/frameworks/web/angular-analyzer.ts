@@ -41,6 +41,8 @@ interface AngularComponent {
   childSelectors: string[];
   /** Constructor-injected collaborator types (Angular DI). */
   dependencies: string[];
+  /** `(event)="handler(...)"` bindings in this component's inline template. */
+  eventHandlers: Array<{ event: string; handlerName?: string }>;
 }
 
 interface AngularService {
@@ -184,7 +186,7 @@ export class AngularAnalyzer extends BaseAnalyzer {
       });
 
       const application = await this.analyzeApplication(context.projectPath, nodes);
-      const components = await this.analyzeComponents(angularFiles, context.projectPath, nodes, edges);
+      const components = await this.analyzeComponents(angularFiles, context.projectPath, nodes, edges, entryPoints);
       const services = await this.analyzeServices(angularFiles, context.projectPath, nodes, edges);
       this.buildInjectionEdges(components, services, edges);
       const modules = await this.analyzeModules(angularFiles, context.projectPath, nodes, edges);
@@ -315,7 +317,8 @@ export class AngularAnalyzer extends BaseAnalyzer {
     files: string[],
     projectPath: string,
     nodes: CASNode[],
-    edges: CASEdge[]
+    edges: CASEdge[],
+    entryPoints: CASEntryPoint[]
   ): Promise<AngularComponent[]> {
     const components: AngularComponent[] = [];
     // selector -> component node id, to resolve template child tags to components.
@@ -359,6 +362,54 @@ export class AngularAnalyzer extends BaseAnalyzer {
               })
               .build();
             nodes.push(componentNode);
+
+            // Event bindings are real flow roots for a frontend app — a user
+            // event triggers a component method, the same way an HTTP route
+            // triggers a controller. Emit an `event` entry point per binding;
+            // resolve a `triggers` edge + a lightweight method node only when
+            // the binding calls a bare method name (evidence-based).
+            const emittedHandlerMethods = new Set<string>();
+            component.eventHandlers.forEach((handler, index) => {
+              const eventNodeId = this.generateId('event_binding', component.filePath, `${component.name}_${handler.event}_${index}`);
+              entryPoints.push(this.createEntryPoint(
+                `entry_${eventNodeId}`,
+                componentId,
+                'event',
+                `${component.name} ${handler.event}`,
+                `User ${handler.event} event on ${component.name}${handler.handlerName ? `, handled by ${handler.handlerName}` : ''}`,
+                { pattern: handler.event },
+                undefined,
+                { component: component.name, event: handler.event, handler_name: handler.handlerName }
+              ));
+
+              if (handler.handlerName) {
+                const methodPattern = new RegExp(`\\b${handler.handlerName}\\s*\\(([^)]*)\\)\\s*(?::[^{]+)?\\{`);
+                if (methodPattern.test(content)) {
+                  const methodId = this.generateId('method', component.filePath, `${component.name}_${handler.handlerName}`);
+                  if (!emittedHandlerMethods.has(methodId)) {
+                    emittedHandlerMethods.add(methodId);
+                    nodes.push(
+                      this.createNodeBuilder(methodId, handler.handlerName, 'method')
+                        .withLevel(4, 'member')
+                        .withCategory('method', ['angular', 'event-handler'])
+                        .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
+                        .withDescription(`Event handler method ${handler.handlerName} in ${component.name}`)
+                        .withParent(componentId)
+                        .withMetadata({ framework: 'angular' })
+                        .build()
+                    );
+                  }
+                  edges.push(this.createEdge(
+                    this.generateEdgeId(eventNodeId, methodId, 'triggers'),
+                    eventNodeId,
+                    methodId,
+                    'triggers',
+                    'behavioral',
+                    { event: handler.event }
+                  ));
+                }
+              }
+            });
           }
         } catch (error) {
           console.warn(`Failed to parse Angular component ${file}:`, error);
@@ -979,8 +1030,32 @@ export class AngularAnalyzer extends BaseAnalyzer {
       exports: this.extractExports(content),
       standalone: content.includes('standalone: true'),
       childSelectors: this.extractChildSelectors(content),
-      dependencies: this.extractDependencies(content)
+      dependencies: this.extractDependencies(content),
+      eventHandlers: this.extractTemplateEventHandlers(content)
     };
+  }
+
+  /**
+   * Angular event bindings (`(click)="handler()"`, `(click)="handler($event)"`) in
+   * the component's inline template. These are the frontend analog of a route:
+   * a user event that triggers a method call. A bare `methodName(...)` call
+   * resolves `handlerName`; anything else (a full expression) is still captured
+   * as an event without a fabricated handler target.
+   */
+  private extractTemplateEventHandlers(content: string): Array<{ event: string; handlerName?: string }> {
+    const tplMatch = content.match(/template:\s*([`'"])([\s\S]*?)\1/);
+    if (!tplMatch) return [];
+    const template = tplMatch[2];
+    const handlers: Array<{ event: string; handlerName?: string }> = [];
+    const bindingRe = /\((\w+)\)\s*=\s*"([^"]*)"/g;
+    let m: RegExpExecArray | null;
+    while ((m = bindingRe.exec(template)) !== null) {
+      const event = m[1];
+      const expr = m[2].trim();
+      const call = /^(\w+)\s*\(/.exec(expr);
+      handlers.push({ event, handlerName: call ? call[1] : undefined });
+    }
+    return handlers;
   }
 
   /**

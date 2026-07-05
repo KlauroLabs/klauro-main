@@ -119,6 +119,7 @@ describe('ReactAnalyzer: data-fetching hook -> fetcher call edges', () => {
         exports: [],
         jsx: true,
         renderedComponents: [],
+        eventHandlers: [],
       }];
       const utils = [util('apiGet', 'src/shared/api/fetch.ts')];
 
@@ -150,6 +151,7 @@ describe('ReactAnalyzer: data-fetching hook -> fetcher call edges', () => {
         exports: [],
         jsx: true,
         renderedComponents: [],
+        eventHandlers: [],
       }];
       const utils = [
         util('fetchData', 'src/moduleA/fetch.ts'),
@@ -180,6 +182,7 @@ describe('ReactAnalyzer: data-fetching hook -> fetcher call edges', () => {
         exports: [],
         jsx: true,
         renderedComponents: [],
+        eventHandlers: [],
       }];
 
       const nodes: CASNode[] = [];

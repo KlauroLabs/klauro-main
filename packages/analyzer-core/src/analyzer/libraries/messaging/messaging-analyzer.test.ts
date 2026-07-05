@@ -1,0 +1,167 @@
+import { test } from 'node:test';
+import * as assert from 'node:assert/strict';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import * as fs from 'fs-extra';
+import { MessagingAnalyzer } from './messaging-analyzer';
+
+async function makeFixture(): Promise<string> {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'messaging-analyzer-'));
+
+  await fs.writeJson(path.join(dir, 'package.json'), {
+    name: 'messaging-fixture',
+    dependencies: {
+      kafkajs: '^2.2.4',
+      bullmq: '^5.0.0',
+      ioredis: '^5.0.0',
+    },
+  });
+  await fs.writeFile(path.join(dir, 'requirements.txt'), 'celery==5.3.0\nredis==5.0.0\n');
+  await fs.writeFile(
+    path.join(dir, 'build.gradle'),
+    "implementation 'org.springframework.kafka:spring-kafka:3.2.0'\n"
+  );
+
+  await fs.writeFile(
+    path.join(dir, 'kafka.ts'),
+    [
+      `import { Kafka } from 'kafkajs';`,
+      '',
+      'const kafka = new Kafka({ clientId: "orders" });',
+      'const producer = kafka.producer();',
+      'const consumer = kafka.consumer({ groupId: "billing" });',
+      '',
+      'export async function publishOrderCreated(payload: OrderCreatedEvent) {',
+      '  await producer.send({ topic: "orders.created", messages: [{ value: JSON.stringify(OrderCreatedEvent) }] });',
+      '}',
+      '',
+      'export async function startConsumer() {',
+      '  await consumer.subscribe({ topic: "orders.created", fromBeginning: false });',
+      '  await consumer.run({ eachMessage: async ({ message }) => {} });',
+      '}',
+      '',
+    ].join('\n')
+  );
+
+  await fs.writeFile(
+    path.join(dir, 'queues.ts'),
+    [
+      `import { Queue, Worker } from 'bullmq';`,
+      `import Redis from 'ioredis';`,
+      '',
+      `const emails = new Queue('emails');`,
+      `emails.add('send-email', { to: 'user@example.com' });`,
+      `new Worker('emails', async job => {});`,
+      '',
+      'const redis = new Redis();',
+      `redis.publish('presence', JSON.stringify({ userId: 'u1' }));`,
+      `redis.subscribe('presence');`,
+      '',
+    ].join('\n')
+  );
+
+  await fs.writeFile(
+    path.join(dir, 'tasks.py'),
+    [
+      'from celery import shared_task',
+      'import redis',
+      '',
+      '@shared_task(queue="reports")',
+      'def render_report(report_id):',
+      '    return report_id',
+      '',
+      'def trigger():',
+      '    render_report.delay("r1")',
+      "    redis.Redis().publish('report-events', 'ready')",
+      "    redis.Redis().pubsub().subscribe('report-events')",
+      '',
+    ].join('\n')
+  );
+
+  await fs.writeFile(
+    path.join(dir, 'OrdersListener.java'),
+    [
+      'import org.springframework.kafka.annotation.KafkaListener;',
+      'import org.springframework.kafka.core.KafkaTemplate;',
+      '',
+      'public class OrdersListener {',
+      '  private KafkaTemplate<String, String> kafkaTemplate;',
+      '  public void publish(String payload) {',
+      '    kafkaTemplate.send("invoices.created", payload);',
+      '  }',
+      '  @KafkaListener(topics = "invoices.created")',
+      '  public void handleInvoice(String payload) {',
+      '  }',
+      '}',
+      '',
+    ].join('\n')
+  );
+
+  return dir;
+}
+
+test('MessagingAnalyzer emits broker channel nodes, producer exits, consumer entries, and graph edges', async () => {
+  const dir = await makeFixture();
+  try {
+    const analyzer = new MessagingAnalyzer();
+    assert.equal(await analyzer.canAnalyze(dir), true, 'canAnalyze should be true');
+
+    const contribution = await analyzer.analyze({ projectPath: dir });
+    const nodes = contribution.nodes || [];
+    const edges = contribution.edges || [];
+    const entryPoints = contribution.entry_points || [];
+    const exitPoints = contribution.exit_points || [];
+
+    const kafkaTopic = nodes.find(node => node.type === 'topic' && node.name === 'orders.created' && (node.metadata as any)?.system === 'kafkajs');
+    assert.ok(kafkaTopic, 'expected a KafkaJS topic node');
+    assert.ok(exitPoints.find(exit => exit.type === 'message' && (exit.metadata as any)?.channel === 'orders.created'), 'expected a KafkaJS producer exit point');
+    assert.ok(entryPoints.find(entry => entry.type === 'message' && (entry.metadata as any)?.channel === 'orders.created'), 'expected a KafkaJS consumer entry point');
+    assert.ok(edges.find(edge => edge.type === 'produces' && edge.target === kafkaTopic!.id), 'expected producer -> Kafka topic edge');
+    assert.ok(edges.find(edge => edge.type === 'consumes' && edge.source === kafkaTopic!.id), 'expected Kafka topic -> consumer edge');
+
+    const emailQueue = nodes.find(node => node.type === 'queue' && node.name === 'emails' && (node.metadata as any)?.system === 'bullmq');
+    assert.ok(emailQueue, 'expected a BullMQ queue node');
+    assert.ok(exitPoints.find(exit => (exit.metadata as any)?.system === 'bullmq' && (exit.metadata as any)?.channel === 'emails'), 'expected a BullMQ producer exit point');
+    assert.ok(entryPoints.find(entry => (entry.metadata as any)?.system === 'bullmq' && (entry.metadata as any)?.channel === 'emails'), 'expected a BullMQ worker entry point');
+
+    const celeryQueue = nodes.find(node => node.type === 'queue' && node.name === 'reports' && (node.metadata as any)?.system === 'celery');
+    assert.ok(celeryQueue, 'expected a Celery queue node from the task decorator');
+    assert.ok(entryPoints.find(entry => entry.name === 'render_report' && entry.type === 'message'), 'expected a Celery task message entry point');
+
+    const redisChannel = nodes.find(node => node.type === 'channel' && node.name === 'presence' && (node.metadata as any)?.system === 'redis-pubsub');
+    assert.ok(redisChannel, 'expected a Redis pub/sub channel node');
+
+    const javaTopic = nodes.find(node => node.type === 'topic' && node.name === 'invoices.created' && (node.metadata as any)?.system === 'spring-kafka');
+    assert.ok(javaTopic, 'expected a Spring Kafka topic node');
+    assert.ok(entryPoints.find(entry => entry.name === 'handleInvoice' && (entry.metadata as any)?.channel === 'invoices.created'), 'expected @KafkaListener message entry point');
+
+    const meta = contribution.analyzer_metadata as any;
+    assert.equal(meta.producer_exit_points, exitPoints.length);
+    assert.equal(meta.consumer_entry_points, entryPoints.length);
+    assert.ok(meta.capabilities.includes('producer-channel-consumer-graph'));
+  } finally {
+    await fs.remove(dir);
+  }
+});
+
+test('MessagingAnalyzer gates bare publish calls on import evidence', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'messaging-analyzer-negative-'));
+  try {
+    await fs.writeFile(
+      path.join(dir, 'plain.ts'),
+      [
+        'function publish(channel: string, value: string) {}',
+        `publish('not-a-broker', 'payload');`,
+        '',
+      ].join('\n')
+    );
+
+    const analyzer = new MessagingAnalyzer();
+    const contribution = await analyzer.analyze({ projectPath: dir });
+    assert.equal((contribution.nodes || []).length, 0, 'expected no broker facts without import evidence');
+    assert.equal((contribution.exit_points || []).length, 0, 'expected no message exits without import evidence');
+    assert.equal((contribution.entry_points || []).length, 0, 'expected no message entries without import evidence');
+  } finally {
+    await fs.remove(dir);
+  }
+});

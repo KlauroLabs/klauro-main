@@ -14,3 +14,4 @@ export {
   architectureDependencyNames,
   architectureLibraryAnalyzerDefinitions,
 } from './architectural-library-analyzer';
+export { ValidationSchemaAnalyzer } from './validation-schema-analyzer';

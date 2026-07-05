@@ -31,6 +31,13 @@ interface SvelteComponent {
   imports: string[]; // raw module specifiers
   componentImports: Array<{ name: string; importPath: string }>; // imported .svelte components
   renderedComponents: string[]; // PascalCase components used in the markup (render tree)
+  eventHandlers: SvelteEventHandler[]; // on:click={handler} bindings in the markup
+}
+
+interface SvelteEventHandler {
+  event: string; // e.g. 'click', 'submit'
+  handlerName?: string; // resolvable identifier if the binding is `on:event={name}` or `on:event={() => name(...)}`
+  line: number;
 }
 
 interface SvelteStore {
@@ -123,7 +130,7 @@ export class SvelteAnalyzer extends BaseAnalyzer {
       const svelteFiles = candidateFiles.filter(f => f.endsWith('.svelte'));
       const moduleFiles = candidateFiles.filter(f => !f.endsWith('.svelte'));
 
-      const components = await this.analyzeComponents(svelteFiles, context.projectPath, nodes);
+      const components = await this.analyzeComponents(svelteFiles, context.projectPath, nodes, edges, entryPoints);
       const stores = await this.analyzeStores(
         [...moduleFiles, ...svelteFiles],
         context.projectPath,
@@ -153,7 +160,9 @@ export class SvelteAnalyzer extends BaseAnalyzer {
   private async analyzeComponents(
     files: string[],
     projectPath: string,
-    nodes: CASNode[]
+    nodes: CASNode[],
+    edges: CASEdge[],
+    entryPoints: CASEntryPoint[]
   ): Promise<SvelteComponent[]> {
     const components: SvelteComponent[] = [];
 
@@ -188,10 +197,82 @@ export class SvelteAnalyzer extends BaseAnalyzer {
               props_count: component.props.length,
               reactive_state: component.reactiveState,
               reactive_state_count: component.reactiveState.length,
+              event_handlers_count: component.eventHandlers.length,
             },
           })
           .build();
         nodes.push(node);
+
+        // Event handlers are real flow roots for a frontend app — a user event
+        // (on:click/on:submit/...) triggers a handler function, the same way an
+        // HTTP route triggers a controller. Emit an event-binding node per handler
+        // here; the entry point + resolution edge to the handler function (when
+        // findable) is created in analyzeEventEntryPoints once all components and
+        // their script-level function declarations are known.
+        const emittedHandlerFns = new Set<string>();
+        component.eventHandlers.forEach((handler, index) => {
+          const eventNodeId = this.generateId('event_binding', component.filePath, `${component.name}_${handler.event}_${index}`);
+          nodes.push(
+            this.createNodeBuilder(eventNodeId, `${component.name}:${handler.event}`, 'dom_event_binding')
+              .withLevel(4, 'member')
+              .withCategory('event_binding', ['svelte', 'event'])
+              .withSource({ file: fullPath, line: handler.line, end_line: handler.line })
+              .withDescription(`${handler.event} handler in ${component.name}${handler.handlerName ? ` -> ${handler.handlerName}` : ''}`)
+              .withParent(componentId)
+              .withMetadata({
+                framework: 'svelte',
+                attributes: { event: handler.event, handler_name: handler.handlerName },
+              })
+              .build()
+          );
+
+          entryPoints.push(
+            this.createEntryPoint(
+              `entry_${eventNodeId}`,
+              eventNodeId,
+              'event',
+              `${component.name} ${handler.event}`,
+              `User ${handler.event} event on ${component.name}${handler.handlerName ? `, handled by ${handler.handlerName}` : ''}`,
+              { pattern: handler.event },
+              undefined,
+              { component: component.name, event: handler.event, handler_name: handler.handlerName }
+            )
+          );
+
+          // Resolve to the handler function only when it's declared as a plain
+          // function/arrow in this same file's script — evidence-based, never a guess.
+          if (handler.handlerName) {
+            const fnPattern = new RegExp(
+              `(?:function\\s+${handler.handlerName}\\s*\\(|(?:const|let)\\s+${handler.handlerName}\\s*=\\s*(?:async\\s*)?(?:\\([^)]*\\)|\\w+)\\s*=>)`
+            );
+            if (fnPattern.test(content)) {
+              const handlerNodeId = this.generateId('function', component.filePath, handler.handlerName);
+              if (!emittedHandlerFns.has(handlerNodeId)) {
+                emittedHandlerFns.add(handlerNodeId);
+                nodes.push(
+                  this.createNodeBuilder(handlerNodeId, handler.handlerName, 'event_handler_function')
+                    .withLevel(4, 'member')
+                    .withCategory('handler', ['svelte', 'event-handler'])
+                    .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
+                    .withDescription(`Event handler function ${handler.handlerName} in ${component.name}`)
+                    .withParent(componentId)
+                    .withMetadata({ framework: 'svelte' })
+                    .build()
+                );
+              }
+              edges.push(
+                this.createEdge(
+                  this.generateEdgeId(eventNodeId, handlerNodeId, 'triggers'),
+                  eventNodeId,
+                  handlerNodeId,
+                  'triggers',
+                  'behavioral',
+                  { event: handler.event }
+                )
+              );
+            }
+          }
+        });
       } catch (error) {
         this.addAnalysisWarning(`Failed to parse Svelte component ${file}: ${(error as Error).message}`);
       }
@@ -236,7 +317,33 @@ export class SvelteAnalyzer extends BaseAnalyzer {
       imports: this.extractImports(scriptBlocks),
       componentImports: this.extractComponentImports(scriptBlocks),
       renderedComponents: this.extractRenderedComponents(markupStripped),
+      eventHandlers: this.extractEventHandlers(markupStripped),
     };
+  }
+
+  /** DOM event bindings in the markup: `on:click={handler}`, `on:click={() => handler(x)}`,
+   *  `on:click={() => doThing()}`. Only a plain identifier callback (with or without an
+   *  arrow-function wrapper calling it) is resolved to `handlerName`; inline expressions
+   *  that don't resolve to a single callable name are still captured as an event (the
+   *  entry point exists) but without a resolvable handler target. */
+  private extractEventHandlers(markup: string): SvelteEventHandler[] {
+    const handlers: SvelteEventHandler[] = [];
+    const pattern = /on:(\w+)(?:\|[\w|]+)?=\{([^}]*)\}/g;
+    let m: RegExpExecArray | null;
+    while ((m = pattern.exec(markup)) !== null) {
+      const event = m[1];
+      const expr = m[2].trim();
+      const line = markup.substring(0, m.index).split('\n').length;
+
+      let handlerName: string | undefined;
+      const bareIdentifier = /^(\w+)$/.exec(expr);
+      const arrowCall = /=>\s*(\w+)\s*\(/.exec(expr);
+      if (bareIdentifier) handlerName = bareIdentifier[1];
+      else if (arrowCall) handlerName = arrowCall[1];
+
+      handlers.push({ event, handlerName, line });
+    }
+    return handlers;
   }
 
   /** PascalCase component tags actually used in the markup — the render tree,

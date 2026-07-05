@@ -296,6 +296,55 @@ describe('source inventory analyzer detection', () => {
   // file's global jest.mock('glob', ...) (see __tests__/setup.ts) stubs out entirely.
 });
 
+describe('detectLibrariesFromManifests pyproject.toml parsing', () => {
+  let root: string;
+
+  afterEach(() => {
+    if (root) fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  // Regression: a TOML group/extras KEY (`dev`, `test`, `ml`) inside
+  // [project.optional-dependencies] or [tool.poetry.group.<name>.dependencies]
+  // was mistaken for a package, producing a spurious CASLibrary named "dev".
+  it('does not emit a "dev" library from optional-dependencies/poetry group keys, and keeps the real packages', () => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-pyproject-dev-'));
+    fs.writeFileSync(
+      path.join(root, 'pyproject.toml'),
+      [
+        '[project]',
+        'name = "sample"',
+        '',
+        '[project.optional-dependencies]',
+        'ml = [',
+        '    "torch>=2.5.0",',
+        '    "scipy>=1.14.0",',
+        ']',
+        'dev = [',
+        '    "black>=24.1.0",',
+        ']',
+        '',
+        '[tool.poetry.group.dev.dependencies]',
+        'pytest = "^8.0"',
+        'ruff = "^0.8.0"',
+        '',
+      ].join('\n'),
+    );
+
+    const libs: any[] = orch.detectLibrariesFromManifests(root);
+    const names = libs.map((l) => l.name);
+
+    // The group/extras keys must NOT surface as packages.
+    expect(names).not.toContain('dev');
+    expect(names).not.toContain('ml');
+    // The genuine packages inside those sections must still be extracted.
+    expect(names).toContain('torch');
+    expect(names).toContain('scipy');
+    expect(names).toContain('black');
+    expect(names).toContain('pytest');
+    expect(names).toContain('ruff');
+  });
+});
+
 describe('architecture and capability inference', () => {
   const node = (partial: Partial<CASNode>): CASNode => ({
     id: partial.id || partial.name || 'node',
