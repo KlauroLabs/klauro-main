@@ -9,66 +9,242 @@ interface RuntimeSdkFile {
   content: string;
 }
 
+/** Published, installable SDK packages. Kept in lockstep with packages/klauro-sdk-{js,py}. */
+const JS_PACKAGE = '@klauro/telemetry';
+const PY_PACKAGE = 'klauro-telemetry';
+
+type Stack = 'node' | 'python';
+
+interface FrameworkSnippet {
+  framework: string;
+  stack: Stack;
+  install: string;
+  init: string; // 3-line copy-paste init for the detected stack
+  docs: string;
+}
+
+/**
+ * Detect the primary web framework and language stack from the analysis so we
+ * can hand the customer the exact install command + init snippet for their app.
+ */
+function detectStack(cas: CASOutput): { stack: Stack; framework: string } {
+  const frameworks = (cas.system.technologies?.frameworks || [])
+    .map(f => (f?.name || '').toLowerCase())
+    .filter(Boolean);
+  const runtime = (cas.system.technologies?.runtime || '').toLowerCase();
+  const languages = (cas.system.technologies?.languages || []).map(l => (l.name || '').toLowerCase());
+  const has = (needle: string) => frameworks.some(f => f.includes(needle));
+
+  // Python frameworks first (each has a distinct integration).
+  if (has('fastapi') || has('starlette')) return { stack: 'python', framework: 'fastapi' };
+  if (has('flask')) return { stack: 'python', framework: 'flask' };
+  if (has('django')) return { stack: 'python', framework: 'django' };
+
+  // Node frameworks.
+  if (has('nest')) return { stack: 'node', framework: 'nestjs' };
+  if (has('fastify')) return { stack: 'node', framework: 'fastify' };
+  if (has('koa')) return { stack: 'node', framework: 'koa' };
+  if (has('express')) return { stack: 'node', framework: 'express' };
+
+  // Fall back to language when no known web framework is detected.
+  const isPython =
+    runtime.includes('python') ||
+    languages.some(l => l === 'python') ||
+    frameworks.some(f => f.includes('python'));
+  if (isPython) return { stack: 'python', framework: 'python' };
+  return { stack: 'node', framework: 'node' };
+}
+
+function snippetFor(framework: string, service: string): FrameworkSnippet {
+  const svc = JSON.stringify(service);
+  switch (framework) {
+    case 'express':
+      return {
+        framework,
+        stack: 'node',
+        install: `npm install ${JS_PACKAGE}`,
+        init: [
+          `import { init } from '${JS_PACKAGE}';`,
+          `import { klauroExpress } from '${JS_PACKAGE}/express';`,
+          `init({ apiKey: process.env.KLAURO_API_KEY, projectId: '<project id>', service: ${svc}, environment: process.env.NODE_ENV });`,
+          `app.use(klauroExpress());`,
+        ].join('\n'),
+        docs: `${JS_PACKAGE}/express`,
+      };
+    case 'fastify':
+      return {
+        framework,
+        stack: 'node',
+        install: `npm install ${JS_PACKAGE}`,
+        init: [
+          `import { init } from '${JS_PACKAGE}';`,
+          `import { klauroFastify } from '${JS_PACKAGE}/fastify';`,
+          `init({ apiKey: process.env.KLAURO_API_KEY, projectId: '<project id>', service: ${svc}, environment: process.env.NODE_ENV });`,
+          `await app.register(klauroFastify());`,
+        ].join('\n'),
+        docs: `${JS_PACKAGE}/fastify`,
+      };
+    case 'koa':
+      return {
+        framework,
+        stack: 'node',
+        install: `npm install ${JS_PACKAGE}`,
+        init: [
+          `import { init } from '${JS_PACKAGE}';`,
+          `import { klauroKoa } from '${JS_PACKAGE}/koa';`,
+          `init({ apiKey: process.env.KLAURO_API_KEY, projectId: '<project id>', service: ${svc}, environment: process.env.NODE_ENV });`,
+          `app.use(klauroKoa());`,
+        ].join('\n'),
+        docs: `${JS_PACKAGE}/koa`,
+      };
+    case 'nestjs':
+      return {
+        framework,
+        stack: 'node',
+        install: `npm install ${JS_PACKAGE}`,
+        init: [
+          `import { init } from '${JS_PACKAGE}';`,
+          `import { KlauroInterceptor } from '${JS_PACKAGE}/nestjs';`,
+          `init({ apiKey: process.env.KLAURO_API_KEY, projectId: '<project id>', service: ${svc}, environment: process.env.NODE_ENV });`,
+          `app.useGlobalInterceptors(new KlauroInterceptor());`,
+        ].join('\n'),
+        docs: `${JS_PACKAGE}/nestjs`,
+      };
+    case 'fastapi':
+      return {
+        framework,
+        stack: 'python',
+        install: `pip install "${PY_PACKAGE}[fastapi]"`,
+        init: [
+          `from klauro_telemetry import init`,
+          `from klauro_telemetry.middleware import KlauroASGIMiddleware`,
+          `init(api_key=os.environ["KLAURO_API_KEY"], project_id="<project id>", service=${svc}, environment=os.environ.get("ENV"))`,
+          `app.add_middleware(KlauroASGIMiddleware)`,
+        ].join('\n'),
+        docs: `${PY_PACKAGE} (FastAPI/Starlette)`,
+      };
+    case 'flask':
+      return {
+        framework,
+        stack: 'python',
+        install: `pip install "${PY_PACKAGE}[flask]"`,
+        init: [
+          `from klauro_telemetry import init`,
+          `from klauro_telemetry.middleware import init_flask`,
+          `init(api_key=os.environ["KLAURO_API_KEY"], project_id="<project id>", service=${svc}, environment=os.environ.get("ENV"))`,
+          `init_flask(app)`,
+        ].join('\n'),
+        docs: `${PY_PACKAGE} (Flask)`,
+      };
+    case 'django':
+      return {
+        framework,
+        stack: 'python',
+        install: `pip install "${PY_PACKAGE}[django]"`,
+        init: [
+          `# settings.py`,
+          `from klauro_telemetry import init`,
+          `init(api_key=os.environ["KLAURO_API_KEY"], project_id="<project id>", service=${svc}, environment=os.environ.get("ENV"))`,
+          `MIDDLEWARE = [*MIDDLEWARE, "klauro_telemetry.middleware.KlauroDjangoMiddleware"]`,
+        ].join('\n'),
+        docs: `${PY_PACKAGE} (Django)`,
+      };
+    case 'python':
+      return {
+        framework,
+        stack: 'python',
+        install: `pip install ${PY_PACKAGE}`,
+        init: [
+          `from klauro_telemetry import init, record`,
+          `init(api_key=os.environ["KLAURO_API_KEY"], project_id="<project id>", service=${svc}, environment=os.environ.get("ENV"))`,
+          `record("service.started")`,
+        ].join('\n'),
+        docs: PY_PACKAGE,
+      };
+    default: // plain node
+      return {
+        framework: 'node',
+        stack: 'node',
+        install: `npm install ${JS_PACKAGE}`,
+        init: [
+          `import { init, record } from '${JS_PACKAGE}';`,
+          `init({ apiKey: process.env.KLAURO_API_KEY, projectId: '<project id>', service: ${svc}, environment: process.env.NODE_ENV });`,
+          `record('service.started');`,
+        ].join('\n'),
+        docs: JS_PACKAGE,
+      };
+  }
+}
+
 export function getRuntimeSdkPackage(cas: CASOutput, opts: { limit?: number } = {}) {
   const contract = getRuntimeEventContract(cas, { limit: opts.limit || 25 });
-  const clientSource = buildTypeScriptClientSource();
+  const { stack, framework } = detectStack(cas);
+  const service = cas.system.name;
+  const snippet = snippetFor(framework, service);
+  const pkg = stack === 'python' ? PY_PACKAGE : JS_PACKAGE;
+
   const manifest = {
-    name: `@klauro/runtime-${slugify(cas.system.name)}`,
-    version: '1.0.0',
+    package: pkg,
+    stack,
+    framework: snippet.framework,
     cas_analysis_id: cas.analysis_id,
     cas_version: cas.cas_version,
     generated_at: new Date().toISOString(),
-    service_name: cas.system.name,
+    service_name: service,
   };
+
+  // The contract file is the one generated artifact worth handing over: it is
+  // the exact runtime-static link set for THIS analysis, so the customer can
+  // pin correlation ids. The SDK client itself is a real published package.
   const files: RuntimeSdkFile[] = [
-    sdkFile('package.json', 'json', JSON.stringify({
-      name: manifest.name,
-      version: manifest.version,
-      type: 'module',
-      main: './dist/klauro-runtime.js',
-      types: './dist/klauro-runtime.d.ts',
-      scripts: {
-        build: 'tsc -p tsconfig.json',
-      },
-      dependencies: {},
-      devDependencies: {
-        typescript: '^5.0.0',
-      },
-    }, null, 2)),
-    sdkFile('tsconfig.json', 'json', JSON.stringify({
-      compilerOptions: {
-        target: 'ES2020',
-        module: 'ES2020',
-        moduleResolution: 'Bundler',
-        declaration: true,
-        outDir: 'dist',
-        strict: true,
-      },
-      include: ['src/**/*.ts'],
-    }, null, 2)),
-    sdkFile('src/klauro-runtime.ts', 'typescript', clientSource),
-    sdkFile('src/cas-runtime-contract.json', 'json', JSON.stringify(contract, null, 2)),
+    sdkFile('cas-runtime-contract.json', 'json', JSON.stringify(contract, null, 2)),
   ];
 
   return {
     manifest,
-    transport: contract.transport,
-    files,
+    // Real, runnable output — an install command + copy-paste init for the stack.
+    install: {
+      command: snippet.install,
+      package: pkg,
+      stack,
+      framework: snippet.framework,
+      docs: snippet.docs,
+    },
     quick_start: {
+      instrument_in_3_lines: snippet.init,
       config: {
-        endpoint: '<backend origin>',
+        endpoint: contract.transport.ingest_path.startsWith('http')
+          ? '<backend origin>'
+          : 'https://mcp.klauro.com',
         projectId: '<project id>',
         apiKey: '<telemetry api key>',
-        serviceName: cas.system.name,
+        service,
         environment: '<environment>',
       },
-      first_call: 'client.recordCasEvent({ type: "custom", signal: "<runtime_signal>" })',
-      flush: 'await client.flush()',
+      manual_api: {
+        node: `import { record, startSpan, captureError } from '${JS_PACKAGE}';`,
+        python: `from klauro_telemetry import record, start_span, capture_error`,
+      }[stack],
+    },
+    transport: contract.transport,
+    files,
+    verify: {
+      after_deploy: 'Call get_runtime_observations to see ingested events, or correlate_runtime_event to map one event back to CAS static structure.',
+      endpoint: `POST {endpoint}${contract.transport.ingest_path.replace(':projectId', '<project id>')}`,
+      body_shape: '{ "events": [ CasRuntimeEvent, ... ] }',
     },
     proof: {
+      installable: true,
       runtime_static_links: contract.totals.runtime_static_links,
       included_contracts: contract.contracts.length,
-      sdk_methods: ['recordCasEvent', 'flush', 'wrapFetch', 'expressMiddleware'],
+      sdk_methods:
+        stack === 'python'
+          ? ['init', 'record', 'record_event', 'start_span', 'capture_error', 'increment_counter', 'record_gauge', 'flush']
+          : ['init', 'record', 'recordEvent', 'startSpan', 'captureError', 'incrementCounter', 'recordGauge', 'flush'],
+      middlewares:
+        stack === 'python'
+          ? ['KlauroASGIMiddleware (FastAPI)', 'init_flask (Flask)', 'KlauroDjangoMiddleware (Django)']
+          : ['klauroExpress', 'klauroFastify', 'klauroKoa', 'KlauroInterceptor (NestJS)'],
       minimum_event_fields: contract.fields.filter(field => field.required).map(field => field.name),
     },
   };
@@ -81,142 +257,4 @@ function sdkFile(filePath: string, language: string, content: string): RuntimeSd
     sha256: crypto.createHash('sha256').update(content).digest('hex'),
     content,
   };
-}
-
-function slugify(value: string): string {
-  return value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'project';
-}
-
-function buildTypeScriptClientSource(): string {
-  return `export type CasRuntimeEventType = 'request' | 'error' | 'exit' | 'log' | 'custom';
-
-export interface CasRuntimeEvent {
-  type: CasRuntimeEventType;
-  timestamp?: string;
-  schema_version?: string;
-  service_name?: string;
-  environment?: string;
-  signal?: string;
-  static_id?: string;
-  node_id?: string;
-  entry_point_id?: string;
-  exit_point_id?: string;
-  call_chain_id?: string;
-  trace_id?: string;
-  span_id?: string;
-  parent_span_id?: string;
-  method?: string;
-  route?: string;
-  path?: string;
-  status_code?: number;
-  duration_ms?: number;
-  error_message?: string;
-  stack?: string;
-  attributes?: Record<string, unknown>;
-}
-
-export interface KlauroRuntimeConfig {
-  endpoint: string;
-  projectId: string;
-  apiKey?: string;
-  serviceName?: string;
-  environment?: string;
-  batchSize?: number;
-  fetchImpl?: typeof fetch;
-}
-
-export class KlauroRuntimeClient {
-  private readonly queue: CasRuntimeEvent[] = [];
-  private readonly fetchImpl: typeof fetch;
-
-  constructor(private readonly config: KlauroRuntimeConfig) {
-    this.fetchImpl = config.fetchImpl || fetch;
-  }
-
-  recordCasEvent(event: CasRuntimeEvent): void {
-    this.queue.push(this.normalize(event));
-    if (this.queue.length >= (this.config.batchSize || 25)) {
-      void this.flush();
-    }
-  }
-
-  async flush(): Promise<void> {
-    if (this.queue.length === 0) return;
-    const events = this.queue.splice(0, this.queue.length);
-    const response = await this.fetchImpl(this.ingestUrl(), {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        ...(this.config.apiKey ? { authorization: \`Bearer \${this.config.apiKey}\` } : {}),
-      },
-      body: JSON.stringify({ events }),
-    });
-    if (!response.ok) {
-      this.queue.unshift(...events);
-      throw new Error(\`Klauro runtime ingest failed: \${response.status}\`);
-    }
-  }
-
-  wrapFetch(input: RequestInfo | URL, init: RequestInit = {}, event: Partial<CasRuntimeEvent> = {}): Promise<Response> {
-    const startedAt = Date.now();
-    const method = String(init.method || 'GET').toUpperCase();
-    const path = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
-    return this.fetchImpl(input, init).then(response => {
-      this.recordCasEvent({
-        type: 'exit',
-        method,
-        path,
-        status_code: response.status,
-        duration_ms: Date.now() - startedAt,
-        ...event,
-      });
-      return response;
-    }).catch(error => {
-      this.recordCasEvent({
-        type: 'error',
-        method,
-        path,
-        duration_ms: Date.now() - startedAt,
-        error_message: error instanceof Error ? error.message : String(error),
-        stack: error instanceof Error ? error.stack : undefined,
-        ...event,
-      });
-      throw error;
-    });
-  }
-
-  expressMiddleware(routeResolver?: (req: any) => Partial<CasRuntimeEvent>) {
-    return (req: any, res: any, next: () => void) => {
-      const startedAt = Date.now();
-      res.on('finish', () => {
-        const route = req.route?.path || req.path || req.url;
-        this.recordCasEvent({
-          type: 'request',
-          method: req.method,
-          route,
-          path: req.originalUrl || req.url,
-          status_code: res.statusCode,
-          duration_ms: Date.now() - startedAt,
-          ...(routeResolver ? routeResolver(req) : {}),
-        });
-      });
-      next();
-    };
-  }
-
-  private normalize(event: CasRuntimeEvent): CasRuntimeEvent {
-    return {
-      schema_version: '1.0.0',
-      timestamp: new Date().toISOString(),
-      service_name: this.config.serviceName,
-      environment: this.config.environment,
-      ...event,
-    };
-  }
-
-  private ingestUrl(): string {
-    return \`\${this.config.endpoint.replace(/\\/$/, '')}/api/telemetry/runtime-events/\${encodeURIComponent(this.config.projectId)}\`;
-  }
-}
-`;
 }

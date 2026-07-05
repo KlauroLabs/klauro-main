@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "klauro-telemetry"
+version = "0.1.0"
+description = "Klauro runtime telemetry SDK. Emits CAS-correlated runtime events so production signal maps back onto your Klauro static analysis."
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+keywords = ["klauro", "telemetry", "observability", "opentelemetry", "runtime", "instrumentation"]
+dependencies = []
+
+[project.optional-dependencies]
+fastapi = ["starlette>=0.27"]
+flask = ["flask>=2.0"]
+django = ["django>=3.2"]
+dev = ["pytest>=7.0"]
+
+[project.urls]
+Homepage = "https://klauro.com"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

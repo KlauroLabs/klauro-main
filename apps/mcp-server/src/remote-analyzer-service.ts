@@ -19,6 +19,7 @@ import { partitionTasks, type PartitionCas, type PartitionTask } from './coordin
 import { ingestAndPersist } from './telemetry-fusion';
 import { getAnalysis } from './analyzer';
 import { buildSummary, getProductMap, getFlowConcepts, getArchitecturalConflicts, getParadigmConformance, getPerspectives } from './query';
+import { initSelfTelemetry, instrumentHttpHandler } from './self-telemetry';
 
 const DEFAULT_PORT = 8787;
 const DEFAULT_MAX_BODY_BYTES = 100 * 1024 * 1024;
@@ -80,7 +81,11 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
   const buckets = new Map<string, RateLimitBucket>();
   const accounts = new AccountStore(dataDir);
 
-  return http.createServer(async (request, response) => {
+  // Self-telemetry (dogfooding): OFF unless KLAURO_SELF_TELEMETRY is truthy.
+  // Init is crash-proof and a no-op when the gate is unset. See self-telemetry.ts.
+  initSelfTelemetry();
+
+  const requestHandler = async (request: http.IncomingMessage, response: http.ServerResponse): Promise<void> => {
     try {
       const requestUrl = new URL(request.url || '/', 'http://localhost');
       const route = requestUrl.pathname;
@@ -664,7 +669,12 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
       const message = error instanceof Error ? error.message : String(error);
       writeJson(response, 500, { status: 'error', error: message });
     }
-  });
+  };
+
+  // instrumentHttpHandler returns requestHandler UNCHANGED when the gate is
+  // unset (zero wrapping / zero overhead); wraps it with SDK request
+  // instrumentation only when KLAURO_SELF_TELEMETRY is truthy.
+  return http.createServer(instrumentHttpHandler(requestHandler));
 }
 
 /**

@@ -147,13 +147,22 @@ export interface RuntimeEventInput {
 
 export interface RuntimeImpactStats {
   observations: number;
+  /** Traffic: total request-like events (volume-weighted), i.e. throughput. */
+  request_count: number;
   errors: number;
+  /** Error count as a volume-weighted total (errors * volume). */
+  error_count: number;
   slow_events: number;
   estimated_volume: number;
   traces: number;
+  /** ISO timestamp of the most recent observation in this group. */
+  last_seen?: string;
+  /** Count of observations per HTTP status code, e.g. { "200": 12, "500": 3 }. */
+  status_code_distribution: Record<string, number>;
   latency: {
     avg_ms?: number;
     max_ms?: number;
+    p50_ms?: number;
     p95_ms?: number;
     p99_ms?: number;
   };
@@ -161,6 +170,38 @@ export interface RuntimeImpactStats {
     error_rate: number;
     throughput_per_min?: number;
   };
+}
+
+/**
+ * Per-node operational metrics: the "how is this node behaving at runtime"
+ * rollup keyed to a CAS static id. Traffic (request_count / throughput),
+ * reliability (error_count / error_rate + status distribution), and speed
+ * (latency percentiles), correlated back to the CAS node / entry point / route.
+ */
+export interface NodeRuntimeMetrics {
+  /** CAS static id (node, entry point, exit point, call chain, or runtime link). */
+  static_id: string;
+  node_id?: string;
+  entry_point_id?: string;
+  label: string;
+  type: EvidenceRef['type'] | 'unmatched';
+  file?: string;
+  route?: string;
+  method?: string;
+  /** Traffic (throughput). */
+  request_count: number;
+  throughput_per_min?: number;
+  /** Reliability. */
+  error_count: number;
+  error_rate: number;
+  status_code_distribution: Record<string, number>;
+  /** Speed. */
+  latency: RuntimeImpactStats['latency'];
+  slow_events: number;
+  observations: number;
+  traces: number;
+  last_seen?: string;
+  source: RuntimeObservationSource | 'mixed';
 }
 
 export type RuntimeObservationSource = 'ingested' | 'simulated';
@@ -1787,12 +1828,28 @@ export function runtimeImpactStats(items: RuntimeObservation[]): RuntimeImpactSt
     const duration = Number(item.event.duration_ms || 0);
     return p99 >= 2000 || p95 >= 1000 || duration >= 1000;
   }).length;
-  const estimatedVolume = items.reduce((total, item) => total + Math.max(1, Number(item.event.attributes?.volume || item.event.attributes?.count || 1)), 0);
+  const volumeOf = (item: RuntimeObservation): number =>
+    Math.max(1, Number(item.event.attributes?.volume || item.event.attributes?.count || 1));
+  const isErrorItem = (item: RuntimeObservation): boolean =>
+    item.event.type === 'error' || Number(item.event.status_code || 0) >= 500 || Boolean(item.event.error_message);
+  const estimatedVolume = items.reduce((total, item) => total + volumeOf(item), 0);
   const traces = new Set(items.map(item => item.event.trace_id).filter(Boolean)).size;
-  const errorVolume = items.reduce((total, item) => {
-    const isError = item.event.type === 'error' || Number(item.event.status_code || 0) >= 500 || Boolean(item.event.error_message);
-    return total + (isError ? Math.max(1, Number(item.event.attributes?.volume || item.event.attributes?.count || 1)) : 0);
-  }, 0);
+  const errorVolume = items.reduce((total, item) => total + (isErrorItem(item) ? volumeOf(item) : 0), 0);
+  // last_seen: newest observation timestamp in this group.
+  let lastSeen: string | undefined;
+  for (const item of items) {
+    const ts = item.event.timestamp || item.recorded_at;
+    if (ts && (!lastSeen || ts > lastSeen)) lastSeen = ts;
+  }
+  // status-code distribution (volume-weighted, so pre-aggregated events count fully).
+  const statusDistribution: Record<string, number> = {};
+  for (const item of items) {
+    const code = item.event.status_code;
+    if (typeof code === 'number' && Number.isFinite(code)) {
+      const key = String(code);
+      statusDistribution[key] = (statusDistribution[key] || 0) + volumeOf(item);
+    }
+  }
   const explicitThroughput = items
     .map(item => Number(item.event.attributes?.rate_per_min || item.event.attributes?.throughput_per_min || 0))
     .filter(value => Number.isFinite(value) && value > 0);
@@ -1800,6 +1857,7 @@ export function runtimeImpactStats(items: RuntimeObservation[]): RuntimeImpactSt
   if (durations.length > 0) {
     latency.avg_ms = Math.round(durations.reduce((sum, value) => sum + value, 0) / durations.length);
     latency.max_ms = durations[durations.length - 1];
+    latency.p50_ms = percentile(durations, 0.5);
     latency.p95_ms = percentile(durations, 0.95);
     latency.p99_ms = percentile(durations, 0.99);
   }
@@ -1809,10 +1867,14 @@ export function runtimeImpactStats(items: RuntimeObservation[]): RuntimeImpactSt
   if (explicitP99) latency.p99_ms = Math.max(latency.p99_ms || 0, explicitP99);
   return {
     observations: items.length,
+    request_count: estimatedVolume,
     errors,
+    error_count: errorVolume,
     slow_events: slowEvents,
     estimated_volume: estimatedVolume,
     traces,
+    last_seen: lastSeen,
+    status_code_distribution: statusDistribution,
     latency,
     rates: {
       error_rate: estimatedVolume > 0 ? Math.round((errorVolume / estimatedVolume) * 10000) / 10000 : 0,
@@ -1825,6 +1887,74 @@ function percentile(sortedValues: number[], p: number): number {
   if (sortedValues.length === 0) return 0;
   const index = Math.min(sortedValues.length - 1, Math.max(0, Math.ceil(sortedValues.length * p) - 1));
   return sortedValues[index];
+}
+
+/**
+ * Aggregate runtime observations into per-node operational metrics: traffic,
+ * error rate, and latency percentiles for each CAS node / entry point / route.
+ * This is the read-side rollup that answers "how does this node behave at
+ * runtime", correlated to the CAS static id. Additive to the raw observation
+ * stream; consumers that only read observations are unaffected.
+ */
+export function buildNodeRuntimeMetrics(
+  cas: CASOutput,
+  observations: RuntimeObservation[],
+  options: { limit?: number } = {},
+): NodeRuntimeMetrics[] {
+  const groups = new Map<string, RuntimeObservation[]>();
+  for (const observation of observations) {
+    const key = observation.correlation.best_match?.id
+      || observation.event.static_id
+      || observation.event.entry_point_id
+      || observation.event.node_id
+      || (observation.event.method && (observation.event.route || observation.event.path)
+        ? `${observation.event.method.toUpperCase()} ${observation.event.route || observation.event.path}`
+        : undefined)
+      || observation.event.route
+      || observation.event.path
+      || observation.event.signal
+      || 'unmatched-runtime';
+    const current = groups.get(key) || [];
+    current.push(observation);
+    groups.set(key, current);
+  }
+
+  const metrics: NodeRuntimeMetrics[] = [...groups.entries()].map(([key, items]) => {
+    const target = pickStaticTarget(cas, items);
+    const stats = runtimeImpactStats(items);
+    const representative = items.find(item => item.event.route || item.event.path) || items[0];
+    const sources = new Set(items.map(runtimeObservationSource));
+    const source: NodeRuntimeMetrics['source'] = sources.size > 1 ? 'mixed' : [...sources][0] || 'ingested';
+    return {
+      static_id: target?.id || key,
+      node_id: representative.event.node_id,
+      entry_point_id: representative.event.entry_point_id,
+      label: target?.label || key,
+      type: target?.type || 'unmatched',
+      file: target?.file,
+      route: representative.event.route || representative.event.path,
+      method: representative.event.method,
+      request_count: stats.request_count,
+      ...(stats.rates.throughput_per_min !== undefined ? { throughput_per_min: stats.rates.throughput_per_min } : {}),
+      error_count: stats.error_count,
+      error_rate: stats.rates.error_rate,
+      status_code_distribution: stats.status_code_distribution,
+      latency: stats.latency,
+      slow_events: stats.slow_events,
+      observations: stats.observations,
+      traces: stats.traces,
+      last_seen: stats.last_seen,
+      source,
+    } satisfies NodeRuntimeMetrics;
+  });
+
+  // Rank by operational signal: errors first, then traffic, then latency.
+  metrics.sort((left, right) =>
+    right.error_count - left.error_count ||
+    right.request_count - left.request_count ||
+    Number(right.latency.p95_ms || 0) - Number(left.latency.p95_ms || 0));
+
+  return options.limit && options.limit > 0 ? metrics.slice(0, options.limit) : metrics;
 }
 
 function maxAttribute(items: RuntimeObservation[], name: string): number {

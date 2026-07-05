@@ -1,0 +1,60 @@
+{
+  "name": "@klauro/telemetry",
+  "version": "0.1.0",
+  "description": "Klauro runtime telemetry SDK. Emits CAS-correlated runtime events (requests, errors, spans, metrics) so production signal maps back onto your Klauro static analysis.",
+  "license": "MIT",
+  "type": "commonjs",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "require": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./express": {
+      "types": "./dist/middleware/express.d.ts",
+      "require": "./dist/middleware/express.js",
+      "default": "./dist/middleware/express.js"
+    },
+    "./fastify": {
+      "types": "./dist/middleware/fastify.d.ts",
+      "require": "./dist/middleware/fastify.js",
+      "default": "./dist/middleware/fastify.js"
+    },
+    "./koa": {
+      "types": "./dist/middleware/koa.d.ts",
+      "require": "./dist/middleware/koa.js",
+      "default": "./dist/middleware/koa.js"
+    },
+    "./nestjs": {
+      "types": "./dist/middleware/nestjs.d.ts",
+      "require": "./dist/middleware/nestjs.js",
+      "default": "./dist/middleware/nestjs.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "tsx --test --test-concurrency=1 \"test/**/*.test.ts\"",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "klauro",
+    "telemetry",
+    "observability",
+    "opentelemetry",
+    "runtime",
+    "instrumentation"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "devDependencies": {
+    "tsx": "^4.7.0",
+    "typescript": "^5.4.0"
+  }
+}
