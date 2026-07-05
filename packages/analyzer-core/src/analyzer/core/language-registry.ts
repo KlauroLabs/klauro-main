@@ -103,7 +103,14 @@ export const LANGUAGE_REGISTRY: LanguageRegistryEntry[] = [
   {
     id: 'scala',
     extensions: ['scala', 'sc', 'sbt'],
-    manifests: ['build.sbt'] // sbt / Scala (http4s)
+    // build.sbt: sbt / Scala (http4s). `routes`: Play Framework's router file
+    // (conf/routes) — the route source of truth has no extension, so without
+    // this entry it is invisible to the orchestrator's inventory and
+    // PlayAnalyzer's canAnalyze() is never even reached (hasAnalyzerSignal
+    // fails first). manifestPatterns covers Play's `conf/*.routes` sub-router
+    // includes (e.g. api.routes).
+    manifests: ['build.sbt', 'routes'],
+    manifestPatterns: [/^.*\.routes$/]
   },
   {
     id: 'crystal',
@@ -349,7 +356,13 @@ export function isRegisteredSourceExtension(filePath: string): boolean {
  * it, silently dropping every NestJS controller under `apps/*` on monorepos
  * where Nest deps are hoisted to the root package.json.
  */
-const NON_PACKAGE_BOUNDARY_MANIFESTS = new Set(['dockerfile', 'containerfile']);
+// 'routes': Play Framework's conf/routes is a router config file, not a
+// package/dependency boundary — a directory containing only conf/routes (e.g.
+// the fixture's conf/ directory) is not its own package and must not be
+// promoted to a nested project root, or getAnalyzerScopeFilters walls off the
+// rest of the tree (app/controllers/*.scala) from PlayAnalyzer's scope,
+// leaving handler resolution with nothing to read.
+const NON_PACKAGE_BOUNDARY_MANIFESTS = new Set(['dockerfile', 'containerfile', 'routes']);
 
 /**
  * True when `filePath` is a registered manifest that also marks a genuine
@@ -361,5 +374,10 @@ const NON_PACKAGE_BOUNDARY_MANIFESTS = new Set(['dockerfile', 'containerfile']);
 export function isPackageBoundaryManifest(filePath: string): boolean {
   if (!isRegisteredManifest(filePath)) return false;
   const basename = path.basename(filePath).toLowerCase();
-  return !NON_PACKAGE_BOUNDARY_MANIFESTS.has(basename);
+  if (NON_PACKAGE_BOUNDARY_MANIFESTS.has(basename)) return false;
+  // Play sub-router includes (conf/api.routes, conf/admin.routes, ...) match
+  // the scala entry's manifestPatterns, not the exact 'routes' basename above —
+  // same non-package-boundary reasoning applies to every one of them.
+  if (/^.*\.routes$/.test(basename)) return false;
+  return true;
 }

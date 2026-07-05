@@ -194,6 +194,9 @@ const EXTRA_INCLUDED_EXTENSIONS = new Set([
   '.yml',
   '.toml',
   '.ini',
+  // Play Framework sub-router include files (conf/api.routes etc.) — see the
+  // 'routes' entry in IMPORTANT_EXTENSIONLESS for the base conf/routes file.
+  '.routes',
 ]);
 
 const IMPORTANT_EXTENSIONLESS = new Set([
@@ -203,6 +206,11 @@ const IMPORTANT_EXTENSIONLESS = new Set([
   'Gemfile',
   'Rakefile',
   'artisan',
+  // Play Framework's router: conf/routes is the actual route source of truth
+  // (see PlayAnalyzer) — it has no extension and would otherwise be silently
+  // dropped from the snapshot, leaving the analyzer nothing to read even
+  // though canAnalyze() found it directly on disk.
+  'routes',
 ]);
 
 export async function buildSourceSnapshot(projectPath: string): Promise<SourceSnapshot> {
