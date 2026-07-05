@@ -1827,6 +1827,21 @@ export class AnalyzerOrchestrator {
       console.error('[Klauro] codebase-type/coverage-gaps pass failed:', error);
     }
 
+    // Rebuild product_map now that the additive deterministic passes above have
+    // appended their facts to the output — the FIRST buildProductMap (right after
+    // output assembly) ran BEFORE the infra-topology-linker pushed its DEPLOYS/
+    // EXPOSES/ROUTES_TO/PROVISIONS_*/RUNTIME_DEPENDS_ON edges onto output.edges, so
+    // product_map.runtime_topology (derived purely from those edges) was always
+    // empty at that point. Only the AI-*pending* branch below rebuilt it afterward,
+    // so on the synchronous / AI-disabled paths (e.g. the blackbox analyzeForBench
+    // bench path, which never configures AI) runtime_topology and the system_fit
+    // capsule stayed empty on real compose/Dockerfile/k8s repos even though the
+    // topology EDGES were present. Rebuilding here — unconditionally, over the
+    // now-complete edge set — makes runtime_topology fire in every path. Pure and
+    // idempotent (reads only assembled facts); the pending branch may rebuild once
+    // more after AI mutates descriptions, which is fine.
+    output.product_map = buildProductMap(output);
+
     if (deferAiEnrichment) {
       // Deterministic result returned instantly. If AI can't run at all, mark
       // 'disabled' so consumers know no upgrade is coming and don't wait.

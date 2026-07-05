@@ -5,6 +5,18 @@ agent-feedback reports (`~/.klauro/agent-feedback/*.md`) — nothing is asserted
 Where an item was still in flight at the time this entry was written, it is marked **pending
 final verify** rather than presented as done.
 
+## v1.0.27 — runtime_topology fires on the real (AI-off) path (2026-07-05)
+
+The v1.0.26 metered benchmark caught `runtime_topology` returning empty on real compose repos. Root cause:
+an **AI-gated ordering bug** — `buildProductMap` ran *before* the infra-topology linker appended its
+DEPLOYS/EXPOSES/RUNTIME_DEPENDS_ON/PROXIES_TO edges, and the only post-linker `product_map` rebuild lived
+inside the AI-pending deferred closure, which never registers on the blackbox / AI-off analyze path. The
+topology edges were on `cas.edges` all along (zerac-api: 34); only the derived `product_map.runtime_topology`
+(and the `system_fit` capsule that reads it) was stale. Fixed with one unconditional `product_map` rebuild
+after the deterministic passes (linker / seams / consistency / codebase-type), before the AI branch. Real:
+zerac-api `runtime_topology` absent → **present (8 deployables, 34 edges)**; no-infra repos stay empty (no
+fabrication). Also un-empties `system_fit` + the orient capsule's topology dimension for every user.
+
 ## v1.0.26 — Surfaced, taught, filterable, measured (2026-07-05)
 
 The productization pass: understanding is only worth anything when it's *surfaced* at the moment an
