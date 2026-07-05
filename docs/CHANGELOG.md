@@ -5,6 +5,79 @@ agent-feedback reports (`~/.klauro/agent-feedback/*.md`) — nothing is asserted
 Where an item was still in flight at the time this entry was written, it is marked **pending
 final verify** rather than presented as done.
 
+## v1.0.21 — Coverage explosion + installable telemetry + self-improving intelligence (2026-07-05)
+
+The largest single-session expansion. A ~14-agent heterogeneous fleet (Claude + Codex on one
+coordination fabric) landed with **zero lost work**: tsc both packages 0 errors, analyzer-core 999
+jest, mcp-server touched suites 36/36, live-registration guard 2/2, and — dogfooded —
+`validate_codebase_idioms` reports **0 violations** across 113 files / 15 new analyzer dirs (the
+coverage surface reads as one author).
+
+### Added — codebase-type coverage (any codebase, not just web backends)
+Desktop (Electron/Tauri IPC + commands), game (Unity/Unreal/Godot lifecycle), embedded/systems
+(C/Arduino/kernel-module ISR + driver hooks), data/ML (Airflow/Dagster/Prefect/Luigi/Jupyter/ML-training),
+frontend component-depth (React/Vue/Angular/Svelte event entry points — 0→173 on real zerac/client-ui),
+library public-API entry points. New `CASEntryPoint` kinds: `ipc`, `command`, `interrupt`, `driver`,
+`task`, `pipeline`, `notebook-cell`, `train`, `rpc` (all cooperatively added to one union across ~13
+agents, no clobber).
+
+### Added — architectural library coverage
+DI containers, mediator/CQRS, reactive streams (RxJS/Reactor/RxJava/Combine), state
+(MobX/Recoil/Jotai/Pinia/NgRx/XState), ORM ×9 (Sequelize/Knex/Objection/Diesel/SeaORM/GORM/sqlx/ent/Dapper),
+validation schemas (Zod/Yup/class-validator/Joi/Ajv/Marshmallow/Cerberus — zerac-api 96 contracts),
+outbound HTTP clients (axios/got/ky/requests/httpx/RestTemplate/Feign/…), **testing frameworks** (~15),
+**mocking/doubles/factories** (dependency-seam map — zerac-api 86 doubles → 20 seams), **messaging/brokers**
+(Kafka/RabbitMQ/NATS/Redis/BullMQ/Celery/Sidekiq/SQS — producer→topic→consumer; Celery repo 46 consumers),
+**auth/authz** (Passport/NextAuth/Spring Security/Devise/Casbin/OPA — `guards` edges onto routes; 16/68
+guarded), **API/RPC** (gRPC server handlers incl. no-`.proto` repos, `rpc` entry points), **observability**
+(OTel/Sentry/Prometheus/Winston/Pino static inventory).
+
+### Added — infra-as-code analysis + understanding
+CloudFormation, raw Kubernetes manifests, Docker Compose, Dockerfile-depth (joining existing
+terraform/Helm/Pulumi/Ansible). **Infra→code topology linker**: `DEPLOYS`/`EXPOSES`/`ROUTES_TO`/
+`PROVISIONS_CHANNEL|DATABASE|STORAGE`/`RUNTIME_DEPENDS_ON` edges (image→app, k8s Service→port→routes,
+`aws_sqs_queue`→messaging channel), evidence-gated with join-key audit trail. Real: zerac-api 30 edges.
+
+### Added — installable telemetry SDKs + per-node runtime metrics
+`@klauro/telemetry` (npm — Express/Fastify/Koa/Nest, 20/20 tests + over-the-wire e2e) and
+`klauro-telemetry` (pip — FastAPI/Flask/Django, 16/16). `get_runtime_sdk_package` now serves a real
+install + 3-line init for the detected stack (was a stub). **Per-node runtime metrics**: traffic
+(`request_count`), `error_count`/`error_rate`, latency p50/p95/p99, status distribution — surfaced on
+`get_runtime_observations.node_metrics`, keyed to the CAS node. Round-trip dogfooded (error_rate exact,
+percentiles correct). Env-gated **self-telemetry loop** (`KLAURO_SELF_TELEMETRY`, off by default) so
+Klauro emits its own runtime signal correlated to its own static graph.
+
+### Added — self-improving coverage intelligence + extensibility
+Codebase-type classifier (evidence-first, fixes the `desktop-app` monorepo misclassification) +
+**coverage-gap self-discovery** (`get_coverage_gaps`: unknown-deps, low-extraction, zero-entry-points,
+unhandled tree-sitter node types) — the learn-as-you-go loop. Declarative `.klaurorc` `conventions:` +
+`declare_convention` MCP tool. Declarative **analyzer-pack engine** (YAML + tree-sitter queries; Koa/Hapi
+proof packs — a framework with no coded analyzer, from pure YAML).
+
+### Fixed
+- **Generic decorator argument capture** — any decorator's literal args now populate
+  `CASDecorator.parameters`, closing the `.klaurorc` custom-route path (`@Endpoint('/orders','GET')`:
+  matched:false → matched:true with a real route). Also fixed a latent positional-index slot bug.
+- **`orchestrator.isValidEntryPoint()`** silently dropped new entry-point kinds via a hardcoded allowlist
+  separate from the union (hit by 2 agents) — new kinds added; parity guard queued.
+- **Spurious `dev`/`ml` CASLibrary** from pyproject `[project.optional-dependencies]` extras-key misparse
+  (non-TOML-aware regex) — fixed + regression test; `coverage-gaps` workaround removed.
+- Fabric crash-recovery cascade (torn final line swallowed subsequent appends); `analyzeForBench`
+  name-corruption of stored analyses.
+
+### Fabric — giant-fleet scale
+N=200 real OS processes: worker errors 33→**0**, shared-file integrity **1200/1200** exact, **0
+double-grants** throughout. Fixed an O(n²) lock-hold (`readClaimLog` re-parsed the whole log inside the
+lock → `(size,mtime)` cache + compaction). `SPEC-GIANT-FLEET.md`.
+
+### Known follow-ups (v1.0.22)
+- SDK ingest path `/api/telemetry/runtime-events/:projectId` vs server `/v1/telemetry/ingest` — reconcile
+  for install-anywhere (self-loop uses in-process transport meanwhile).
+- Expose fabric coordination as MCP tools (`claim_work`/`check_collision`/`release_work`) — CLI-only today.
+- Wire analyzer-pack `PackAnalyzer` into the orchestrator; `isValidEntryPoint`↔union parity guard;
+  terraform HCL-body capture for cloud-resource name joins; a first-class runtime-topology section in
+  `get_product_map`.
+
 ## v1.0.20 — Framework breadth + blast-radius at grep-parity + measured token savings (2026-07-04)
 
 The "prove it + spread it" pass. Full gate green: tsc both, analyzer-core 893 jest, framework node-tests

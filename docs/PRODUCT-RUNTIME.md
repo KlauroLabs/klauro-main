@@ -199,3 +199,38 @@ npm run storage-report
 ```
 
 The intended outcome is simple: gauntlets can be massive, but a normal user should experience Klauro like a small agent utility with heavyweight intelligence available remotely and on demand.
+
+## Self-Telemetry (dogfooding Klauro on Klauro)
+
+The remote-analyzer HTTP service can emit **its own** runtime telemetry via the
+`@klauro/telemetry` SDK, self-ingesting into Klauro's runtime-observation store
+and correlating against Klauro's own static analysis (CAS). It is **OFF by
+default**, env-gated, non-blocking, and crash-proof — safe to ship dormant on a
+release and flip on live.
+
+Implementation: `apps/mcp-server/src/self-telemetry.ts`, wired into
+`createRemoteAnalyzerHttpServer` in `remote-analyzer-service.ts`.
+
+Enable (all knobs are env; nothing changes unless the master gate is truthy):
+
+```bash
+# Master gate. Unset / "" / "0" / "false" / "off" / "no" => total no-op.
+KLAURO_SELF_TELEMETRY=1
+
+# Optional: the Klauro repo path the events attach to. This is the projectId of
+# the self-loop — the SAME path get_runtime_observations(path=...) reads back,
+# and the path whose CAS the events correlate against. Defaults to the HTTP
+# service's process.cwd() (the repo root when run in-tree). Loop name: klauro-self.
+KLAURO_SELF_TELEMETRY_PROJECT=/path/to/unravl/proof-of-concept
+
+# Optional: HTTP endpoint override. When set, events are POSTed over the wire to
+# <origin>/api/telemetry/runtime-events/<projectId> via the SDK's normal
+# transport. When UNSET (default), events route IN-PROCESS straight into the
+# local ingest store — no network — so the self-loop is verifiable on one box.
+KLAURO_SELF_TELEMETRY_ENDPOINT=https://mcp.klauro.com
+```
+
+Captures one runtime event per completed inbound HTTP request on the analyzer
+service (method, route, status, duration; 5xx => `error`, else `request`),
+tagged `service_name=klauro-mcp-server` and the current `NODE_ENV`. Read the
+events back with `get_runtime_observations(path=<KLAURO_SELF_TELEMETRY_PROJECT>)`.
