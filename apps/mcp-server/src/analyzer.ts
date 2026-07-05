@@ -25,6 +25,10 @@ import {
   DjangoAnalyzer,
   FlaskAnalyzer,
   FastAPIAnalyzer,
+  AiohttpAnalyzer,
+  SanicAnalyzer,
+  TornadoAnalyzer,
+  StarletteAnalyzer,
   ExpressAnalyzer,
   FastifyAnalyzer,
   NodeHttpAnalyzer,
@@ -35,17 +39,24 @@ import {
   SymfonyAnalyzer,
   RailsAnalyzer,
   NextJSAnalyzer,
+  SinatraAnalyzer,
+  SlimAnalyzer,
 } from '../../../packages/analyzer-core/src/analyzer/frameworks/web';
 import { CronAnalyzer } from '../../../packages/analyzer-core/src/analyzer/libraries/cron-analyzer';
 import { JestAnalyzer, CypressAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/testing';
 import { WPFAnalyzer, AspNetCoreAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/dotnet';
 import { ActixAnalyzer, RocketAnalyzer, AxumAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/rust';
+import { GinAnalyzer, EchoAnalyzer, FiberAnalyzer, ChiAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/go';
+import { WarpAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/rust/warp-analyzer';
+import { TonicAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/rust/tonic-analyzer';
+import { DrogonAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/cpp/drogon-analyzer';
+import { CrowAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/cpp/crow-analyzer';
 import { VaporAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/swift';
-import { GoRouterAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/dart';
-import { Http4sAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/scala';
+import { GoRouterAnalyzer, ShelfAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/dart';
+import { Http4sAnalyzer, PlayAnalyzer, AkkaHttpAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/scala';
 import { KemalAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/crystal';
 import { GenieAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/julia';
-import { CompojureAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/clojure';
+import { CompojureAnalyzer, ReititAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/clojure';
 import { DreamAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/ocaml';
 import { ApexRestAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/apex';
 import { MojoliciousAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/perl';
@@ -64,6 +75,8 @@ import { WordPressAnalyzer } from '../../../packages/analyzer-core/src/analyzer/
 import { BlazorAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/dotnet/blazor-analyzer';
 import { QuarkusAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/java/quarkus-analyzer';
 import { MicronautAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/java/micronaut-analyzer';
+import { JaxRsAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/java/jaxrs-analyzer';
+import { VertxAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/java/vertx-analyzer';
 import { SolidStartAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/web/solidstart-analyzer';
 import { QwikAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/web/qwik-analyzer';
 import { OpenAPIAnalyzer } from '../../../packages/analyzer-core/src/analyzer/libraries/openapi-analyzer';
@@ -382,6 +395,10 @@ export function createOrchestrator(): AnalyzerOrchestrator {
     { id: 'django', name: 'Django Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['Django', 'django'], files: ['manage.py', 'requirements.txt'] }, requires: ['python'], analyzer: new DjangoAnalyzer() },
     { id: 'flask', name: 'Flask Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['Flask', 'flask'], files: ['requirements.txt'] }, requires: ['python'], analyzer: new FlaskAnalyzer() },
     { id: 'fastapi', name: 'FastAPI Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['fastapi', 'FastAPI'], files: ['requirements.txt'] }, requires: ['python'], analyzer: new FastAPIAnalyzer() },
+    { id: 'aiohttp', name: 'aiohttp Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['aiohttp'], files: ['requirements.txt'], content: [/\bfrom\s+aiohttp\b/, /\bimport\s+aiohttp\b/] }, requires: ['python'], analyzer: new AiohttpAnalyzer() },
+    { id: 'sanic', name: 'Sanic Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['sanic'], files: ['requirements.txt'], content: [/\bfrom\s+sanic\b/, /\bimport\s+sanic\b/, /\bSanic\s*\(/] }, requires: ['python'], analyzer: new SanicAnalyzer() },
+    { id: 'tornado', name: 'Tornado Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['tornado'], files: ['requirements.txt'], content: [/\bfrom\s+tornado\b/, /\bimport\s+tornado\b/, /tornado\.web/] }, requires: ['python'], analyzer: new TornadoAnalyzer() },
+    { id: 'starlette', name: 'Starlette Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['starlette'], files: ['requirements.txt'], content: [/\bfrom\s+starlette\b/, /\bimport\s+starlette\b/] }, requires: ['python'], analyzer: new StarletteAnalyzer() },
     { id: 'laravel', name: 'Laravel Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { files: ['artisan', 'composer.json'], dependencies: ['laravel/framework'] }, requires: ['php'], analyzer: new LaravelAnalyzer() },
     { id: 'symfony', name: 'Symfony Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { files: ['bin/console', 'composer.json'], dependencies: ['symfony/framework-bundle'] }, requires: ['php'], analyzer: new SymfonyAnalyzer() },
     { id: 'rails', name: 'Rails Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { files: ['Gemfile', 'config/routes.rb'], dependencies: ['rails'] }, requires: ['ruby'], analyzer: new RailsAnalyzer() },
@@ -399,13 +416,23 @@ export function createOrchestrator(): AnalyzerOrchestrator {
     { id: 'actix-web', name: 'Actix-web Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['actix-web', 'actix_web'], files: ['Cargo.toml'], content: [/actix_web::/, /#\[(get|post|put|delete|patch)\("/, /HttpServer::/] }, requires: ['rust'], analyzer: new ActixAnalyzer() },
     { id: 'rocket', name: 'Rocket Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['rocket', 'rocket_dyn_templates', 'rocket_sync'], files: ['Cargo.toml'], content: [/rocket::/, /#\[(get|post|put|delete|patch)\("/, /rocket::build/] }, requires: ['rust'], analyzer: new RocketAnalyzer() },
     { id: 'axum', name: 'Axum Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['axum'], files: ['Cargo.toml'], content: [/axum::/, /Router::new\s*\(/, /\.route\s*\(\s*"/] }, requires: ['rust'], analyzer: new AxumAnalyzer() },
+    { id: 'warp', name: 'Warp Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['warp'], files: ['Cargo.toml'], content: [/warp::path\s*[!(]/, /\.and\s*\(\s*warp::(get|post|put|patch|delete)/] }, requires: ['rust'], analyzer: new WarpAnalyzer() },
+    { id: 'tonic', name: 'Tonic gRPC Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['tonic'], files: ['Cargo.toml'], content: [/tonic::async_trait/, /tonic::(Request|Response)/] }, requires: ['rust'], analyzer: new TonicAnalyzer() },
+    { id: 'drogon', name: 'Drogon Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { files: ['CMakeLists.txt', '**/*.cpp', '**/*.h'], content: [/#include\s*[<"]drogon\//, /ADD_METHOD_TO\s*\(/, /app\s*\(\s*\)\s*\.\s*registerHandler\s*\(/] }, requires: ['c-cpp'], analyzer: new DrogonAnalyzer() },
+    { id: 'crow', name: 'Crow Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { files: ['CMakeLists.txt', '**/*.cpp', '**/*.h'], content: [/#include\s*[<"]crow(?:\.h|\/[^">]*)?[>"]/, /CROW_ROUTE\s*\(/] }, requires: ['c-cpp'], analyzer: new CrowAnalyzer() },
     { id: 'vapor', name: 'Vapor Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['vapor'], files: ['Package.swift', '**/*.swift'], content: [/import\s+Vapor/, /\.grouped\s*\(/, /\.(get|post|put|delete|patch)\s*\(/] }, requires: ['swift'], analyzer: new VaporAnalyzer() },
     { id: 'mojolicious', name: 'Mojolicious Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['Mojolicious'], files: ['cpanfile', 'Makefile.PL', '**/*.pl', '**/*.pm'], content: [/use\s+Mojolicious/, /^\s*(get|post|put|patch|del|options|any)\s+['"]/m, /->(get|post|put|patch|del|options|any|under)\s*\(/] }, requires: ['perl'], analyzer: new MojoliciousAnalyzer() },
     { id: 'gorouter', name: 'GoRouter Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['go_router'], files: ['pubspec.yaml', '**/*.dart'], content: [/GoRouter\s*\(/, /GoRoute\s*\(/, /package:go_router/] }, requires: ['dart'], analyzer: new GoRouterAnalyzer() },
+    { id: 'shelf', name: 'Shelf/shelf_router Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['shelf', 'shelf_router'], files: ['pubspec.yaml', '**/*.dart'], content: [/package:shelf_router\//, /package:shelf\//, /Router\s*\(\s*\)/] }, requires: ['dart'], analyzer: new ShelfAnalyzer() },
     { id: 'http4s', name: 'http4s Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['http4s', 'http4s-dsl'], files: ['build.sbt', '**/*.scala'], content: [/org\.http4s/, /HttpRoutes\.of/, /AuthedRoutes\.of/] }, requires: ['scala'], analyzer: new Http4sAnalyzer() },
+    { id: 'play', name: 'Play Framework Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['com.typesafe.play'], files: ['conf/routes', 'conf/*.routes', 'build.sbt'], content: [/^\s*(GET|POST|PUT|DELETE|PATCH)\s+\/\S*\s+[\w.]+\.\w+\(/m] }, requires: ['scala'], analyzer: new PlayAnalyzer() },
+    { id: 'akka-http', name: 'Akka HTTP / Pekko HTTP Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['akka-http', 'pekko-http'], files: ['build.sbt', '**/*.scala'], content: [/import\s+akka\.http/, /import\s+org\.apache\.pekko\.http/, /\bpathPrefix\s*\(/] }, requires: ['scala'], analyzer: new AkkaHttpAnalyzer() },
     { id: 'kemal', name: 'Kemal Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['kemal'], files: ['shard.yml', '**/*.cr'], content: [/require\s+"kemal"/, /^\s*(get|post|put|patch|delete|options|head|ws)\s+"/m] }, requires: ['crystal'], analyzer: new KemalAnalyzer() },
     { id: 'genie', name: 'Genie Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['Genie'], files: ['Project.toml', '**/*.jl'], content: [/Genie/, /\broute\s*\(/, /@(get|post|put|patch|delete)\s*\(/] }, requires: ['julia'], analyzer: new GenieAnalyzer() },
     { id: 'compojure', name: 'Compojure Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['compojure'], files: ['deps.edn', 'project.clj', '**/*.clj', '**/*.cljs', '**/*.cljc'], content: [/compojure\.core/, /\(defroutes\b/, /\(context\b/, /\((?:GET|POST|PUT|DELETE|PATCH|ANY)\s+"/] }, requires: ['clojure'], analyzer: new CompojureAnalyzer() },
+    { id: 'reitit', name: 'Reitit/Ring Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['reitit', 'ring/ring-core', 'ring/ring-jetty-adapter'], files: ['deps.edn', 'project.clj', '**/*.clj', '**/*.cljs', '**/*.cljc'], content: [/reitit\.(ring|core)/, /ring\.adapter/, /\(:handler\b/] }, requires: ['clojure'], analyzer: new ReititAnalyzer() },
+    { id: 'sinatra', name: 'Sinatra Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['sinatra'], files: ['Gemfile', '**/*.rb'], content: [/require\s+['"]sinatra['"]/, /class\s+\w+\s*<\s*Sinatra::Base/] }, requires: ['ruby'], analyzer: new SinatraAnalyzer() },
+    { id: 'slim', name: 'Slim/CodeIgniter Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['slim/slim', 'codeigniter4/framework', 'codeigniter/framework'], files: ['composer.json', '**/*.php'], content: [/AppFactory::create\(\)/, /new\s+\\?Slim\\App\(/, /\$routes->(get|post|put|patch|delete)\s*\(/] }, requires: ['php'], analyzer: new SlimAnalyzer() },
     { id: 'dream', name: 'Dream Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['dream'], files: ['dune-project', 'dune', '**/*.ml'], content: [/Dream\.router/, /Dream\.(get|post|put|patch|delete|options|head)\s+"/, /Dream\.scope/] }, requires: ['ocaml'], analyzer: new DreamAnalyzer() },
     { id: 'apexrest', name: 'Apex REST Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: [], files: ['sfdx-project.json', '**/*.cls'], content: [/@RestResource\b/, /@Http(Get|Post|Put|Patch|Delete)\b/] }, requires: ['apex'], analyzer: new ApexRestAnalyzer() },
     { id: 'svelte', name: 'Svelte/SvelteKit Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['svelte', '@sveltejs/kit'], content: [/\.svelte$/] }, requires: ['typescript-javascript'], analyzer: new SvelteAnalyzer() },
@@ -423,8 +450,14 @@ export function createOrchestrator(): AnalyzerOrchestrator {
     { id: 'blazor', name: 'Blazor Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { files: ['**/*.razor'], content: [/Microsoft\.AspNetCore\.Components/, /@page\s/, /@code\b/] }, requires: ['csharp'], analyzer: new BlazorAnalyzer() },
     { id: 'quarkus', name: 'Quarkus Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['io.quarkus'], files: ['pom.xml', 'build.gradle'], content: [/quarkus\./, /jakarta\.ws\.rs/, /javax\.ws\.rs/] }, requires: ['java'], analyzer: new QuarkusAnalyzer() },
     { id: 'micronaut', name: 'Micronaut Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['io.micronaut'], files: ['pom.xml', 'build.gradle'], content: [/io\.micronaut/, /@Controller/] }, requires: ['java'], analyzer: new MicronautAnalyzer() },
+    { id: 'jaxrs', name: 'JAX-RS / Jersey Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['jersey-server', 'jersey-core', 'jakarta.ws.rs-api', 'javax.ws.rs-api', 'resteasy'], files: ['pom.xml', 'build.gradle'], content: [/import\s+(?:jakarta|javax)\.ws\.rs/, /@Path\s*\(/] }, requires: ['java'], analyzer: new JaxRsAnalyzer() },
+    { id: 'vertx', name: 'Vert.x Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['io.vertx', 'vertx-web', 'vertx-core'], files: ['pom.xml', 'build.gradle', 'build.gradle.kts'], content: [/import\s+io\.vertx/, /Router\.router\s*\(/] }, requires: ['java'], analyzer: new VertxAnalyzer() },
     { id: 'solidstart', name: 'SolidStart Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['solid-start', '@solidjs/start'] }, requires: ['typescript-javascript'], analyzer: new SolidStartAnalyzer() },
     { id: 'qwik', name: 'Qwik Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['@builder.io/qwik', '@builder.io/qwik-city'] }, requires: ['typescript-javascript'], analyzer: new QwikAnalyzer() },
+    { id: 'gin', name: 'Gin Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['github.com/gin-gonic/gin'], files: ['go.mod'], content: [/"github\.com\/gin-gonic\/gin"/, /gin\.(Default|New)\s*\(/, /\.(GET|POST|PUT|PATCH|DELETE)\s*\(\s*"/] }, requires: ['go'], analyzer: new GinAnalyzer() },
+    { id: 'echo', name: 'Echo Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['github.com/labstack/echo'], files: ['go.mod'], content: [/"github\.com\/labstack\/echo(\/v4)?"/, /echo\.New\s*\(/] }, requires: ['go'], analyzer: new EchoAnalyzer() },
+    { id: 'fiber', name: 'Fiber Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['github.com/gofiber/fiber'], files: ['go.mod'], content: [/"github\.com\/gofiber\/fiber\/v?\d*"/, /fiber\.New\s*\(/] }, requires: ['go'], analyzer: new FiberAnalyzer() },
+    { id: 'chi', name: 'Chi Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['github.com/go-chi/chi'], files: ['go.mod'], content: [/"github\.com\/go-chi\/chi(\/v\d+)?"/, /chi\.NewRouter\s*\(/] }, requires: ['go'], analyzer: new ChiAnalyzer() },
   ];
 
   const libraryRegistrations: AnalyzerRegistration[] = [

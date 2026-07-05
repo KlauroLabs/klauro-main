@@ -1,0 +1,11 @@
+<?xml version="1.0"?>
+<project>
+  <groupId>com.example</groupId>
+  <artifactId>jaxrs-routes</artifactId>
+  <dependencies>
+    <dependency>
+      <groupId>org.glassfish.jersey.core</groupId>
+      <artifactId>jersey-server</artifactId>
+    </dependency>
+  </dependencies>
+</project>

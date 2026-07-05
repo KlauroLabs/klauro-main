@@ -1,0 +1,4 @@
+# Routes
+GET     /users                 controllers.UserController.list()
+POST    /users                 controllers.UserController.create()
+GET     /users/:id             controllers.UserController.show(id: Long)

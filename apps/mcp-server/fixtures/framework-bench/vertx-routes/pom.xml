@@ -1,0 +1,11 @@
+<?xml version="1.0"?>
+<project>
+  <groupId>com.example</groupId>
+  <artifactId>vertx-routes</artifactId>
+  <dependencies>
+    <dependency>
+      <groupId>io.vertx</groupId>
+      <artifactId>vertx-web</artifactId>
+    </dependency>
+  </dependencies>
+</project>

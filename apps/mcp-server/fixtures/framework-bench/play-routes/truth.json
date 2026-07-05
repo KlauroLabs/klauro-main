@@ -1,0 +1,2 @@
+{ "task": "route-facts", "true_routes": ["GET /users", "POST /users", "GET /users/:id"],
+  "note": "Play Framework (Scala): routes declared in conf/routes (the router IS the file, not the controller); handler resolved to controllers.UserController.{list,create,show} via file+method-name lookup." }

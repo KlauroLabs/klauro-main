@@ -1,0 +1,2 @@
+{ "task": "route-facts", "true_routes": ["GET /users", "POST /users", "GET /users/:param"],
+  "note": "Akka HTTP / Pekko HTTP route DSL (Scala): path(...) { get { } ~ post { } } combinators; IntNumber path extractor -> :param placeholder (the bound identifier is not recoverable from the extractor name alone)." }

@@ -1,0 +1,2 @@
+{ "task": "route-facts", "true_routes": ["GET /users", "POST /users", "DELETE /users/:id"],
+  "note": "Plain JAX-RS/Jersey resource (no Quarkus/Micronaut wrapper): @Path class + @GET/@POST/@DELETE methods (Java). Method-level @Path('/{id}') composes onto the class base path." }

@@ -1,0 +1,2 @@
+{ "task": "route-facts", "true_routes": ["GET /users", "POST /users", "GET /users/:id"],
+  "note": "Vert.x (vertx-web) Router built with Router.router(vertx) and router.get/post(...).handler(method-ref) chains (Java)." }

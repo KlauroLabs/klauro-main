@@ -1,0 +1,7 @@
+{
+  "name": "example/slim-fixture",
+  "require": {
+    "slim/slim": "^4.11",
+    "slim/psr7": "^1.6"
+  }
+}

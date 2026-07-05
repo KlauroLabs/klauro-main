@@ -1,0 +1,1 @@
+{ "task": "route-facts", "true_routes": ["GET /", "GET /users", "POST /users", "GET /api/items", "GET /api/v2/items"], "note": "CodeIgniter 4: $routes->METHOD('path', 'Controller::method') plus nested $routes->group('prefix', function ($routes) {...}) prefix composition (two levels deep). Handled by the same SlimAnalyzer (shared PHP micro-framework route-table shape)." }

@@ -22,16 +22,18 @@ export * from './clojure';
 export * from './ocaml';
 export * from './apex';
 export * from './perl';
+export * from './go';
 
 import { VaporAnalyzer } from './swift';
-import { GoRouterAnalyzer } from './dart';
+import { GoRouterAnalyzer, ShelfAnalyzer } from './dart';
 import { Http4sAnalyzer } from './scala';
 import { KemalAnalyzer } from './crystal';
 import { GenieAnalyzer } from './julia';
-import { CompojureAnalyzer } from './clojure';
+import { CompojureAnalyzer, ReititAnalyzer } from './clojure';
 import { DreamAnalyzer } from './ocaml';
 import { ApexRestAnalyzer } from './apex';
 import { MojoliciousAnalyzer } from './perl';
+import { GinAnalyzer, EchoAnalyzer, FiberAnalyzer, ChiAnalyzer } from './go';
 
 import {
   NestJSAnalyzer,
@@ -39,11 +41,17 @@ import {
   DjangoAnalyzer,
   FlaskAnalyzer,
   FastAPIAnalyzer,
+  AiohttpAnalyzer,
+  SanicAnalyzer,
+  TornadoAnalyzer,
+  StarletteAnalyzer,
   ExpressAnalyzer,
   ReactAnalyzer,
   VueAnalyzer,
   AngularAnalyzer,
-  LaravelAnalyzer
+  LaravelAnalyzer,
+  SinatraAnalyzer,
+  SlimAnalyzer
 } from './web';
 
 import { JestAnalyzer, CypressAnalyzer } from './testing';
@@ -97,6 +105,38 @@ export const FRAMEWORK_ANALYZERS: FrameworkAnalyzerInfo[] = [
     languages: ['python'],
     frameworks: ['fastapi'],
     priority: 108
+  },
+  {
+    name: 'aiohttp',
+    analyzer: AiohttpAnalyzer,
+    category: 'web',
+    languages: ['python'],
+    frameworks: ['aiohttp'],
+    priority: 104
+  },
+  {
+    name: 'Sanic',
+    analyzer: SanicAnalyzer,
+    category: 'web',
+    languages: ['python'],
+    frameworks: ['sanic'],
+    priority: 104
+  },
+  {
+    name: 'Tornado',
+    analyzer: TornadoAnalyzer,
+    category: 'web',
+    languages: ['python'],
+    frameworks: ['tornado'],
+    priority: 103
+  },
+  {
+    name: 'Starlette',
+    analyzer: StarletteAnalyzer,
+    category: 'web',
+    languages: ['python'],
+    frameworks: ['starlette'],
+    priority: 103
   },
   {
     name: 'Express.js',
@@ -163,6 +203,46 @@ export const FRAMEWORK_ANALYZERS: FrameworkAnalyzerInfo[] = [
     priority: 112
   },
   {
+    name: 'Shelf',
+    analyzer: ShelfAnalyzer,
+    category: 'web',
+    languages: ['dart'],
+    frameworks: ['shelf', 'shelf_router'],
+    priority: 112
+  },
+  {
+    name: 'Gin',
+    analyzer: GinAnalyzer,
+    category: 'web',
+    languages: ['go'],
+    frameworks: ['gin', 'github.com/gin-gonic/gin'],
+    priority: 112
+  },
+  {
+    name: 'Echo',
+    analyzer: EchoAnalyzer,
+    category: 'web',
+    languages: ['go'],
+    frameworks: ['echo', 'github.com/labstack/echo'],
+    priority: 112
+  },
+  {
+    name: 'Fiber',
+    analyzer: FiberAnalyzer,
+    category: 'web',
+    languages: ['go'],
+    frameworks: ['fiber', 'github.com/gofiber/fiber'],
+    priority: 112
+  },
+  {
+    name: 'Chi',
+    analyzer: ChiAnalyzer,
+    category: 'web',
+    languages: ['go'],
+    frameworks: ['chi', 'github.com/go-chi/chi'],
+    priority: 112
+  },
+  {
     name: 'http4s',
     analyzer: Http4sAnalyzer,
     category: 'web',
@@ -193,6 +273,30 @@ export const FRAMEWORK_ANALYZERS: FrameworkAnalyzerInfo[] = [
     languages: ['clojure'],
     frameworks: ['compojure'],
     priority: 112
+  },
+  {
+    name: 'Reitit',
+    analyzer: ReititAnalyzer,
+    category: 'web',
+    languages: ['clojure'],
+    frameworks: ['reitit', 'ring'],
+    priority: 111
+  },
+  {
+    name: 'Sinatra',
+    analyzer: SinatraAnalyzer,
+    category: 'web',
+    languages: ['ruby'],
+    frameworks: ['sinatra'],
+    priority: 84
+  },
+  {
+    name: 'Slim',
+    analyzer: SlimAnalyzer,
+    category: 'web',
+    languages: ['php'],
+    frameworks: ['slim/slim', 'codeigniter4/framework'],
+    priority: 83
   },
   {
     name: 'dream',

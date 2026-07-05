@@ -1,12 +1,16 @@
 export { ActixAnalyzer } from './actix-analyzer';
 export { RocketAnalyzer } from './rocket-analyzer';
 export { AxumAnalyzer } from './axum-analyzer';
+export { WarpAnalyzer } from './warp-analyzer';
+export { TonicAnalyzer } from './tonic-analyzer';
 
 // Framework registry for automatic detection
 export const RUST_FRAMEWORKS = [
   'actix-analyzer',
   'rocket-analyzer',
-  'axum-analyzer'
+  'axum-analyzer',
+  'warp-analyzer',
+  'tonic-analyzer'
 ];
 
 export const FRAMEWORK_DETECTORS = [
@@ -33,6 +37,26 @@ export const FRAMEWORK_DETECTORS = [
       /State</,
       /Template::render/,
       /rocket::build/
+    ]
+  },
+  {
+    id: 'warp',
+    analyzerClass: 'WarpAnalyzer',
+    dependencies: ['warp'],
+    patterns: [
+      /warp::path\s*[!(]/,
+      /warp::(get|post|put|patch|delete)\s*\(\s*\)/,
+      /\.and_then\s*\(/
+    ]
+  },
+  {
+    id: 'tonic',
+    analyzerClass: 'TonicAnalyzer',
+    dependencies: ['tonic'],
+    patterns: [
+      /tonic::async_trait/,
+      /tonic::(Request|Response)/,
+      /impl\s+\w+\s+for\s+\w+/
     ]
   }
 ];
