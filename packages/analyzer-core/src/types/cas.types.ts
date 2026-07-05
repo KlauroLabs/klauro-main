@@ -452,26 +452,43 @@ export interface CASEdge {
   };
 }
 
+/**
+ * Single source of truth for the kinds of entry point the analyzers may emit.
+ *
+ * The `CASEntryPoint['type']` union below is DERIVED from this array
+ * (`type: typeof ENTRY_POINT_TYPES[number]`), and the orchestrator's
+ * `isValidEntryPoint` validator MUST check membership in this same array.
+ * That keeps the union and the runtime allowlist from ever drifting: add a new
+ * kind here and both the type and the validator pick it up automatically. See
+ * the entry-point parity guard test in analyzer-core's __tests__.
+ */
+export const ENTRY_POINT_TYPES = [
+  'http', 'websocket', 'cli', 'event', 'schedule', 'page', 'route',
+  'message', 'file', 'test', 'lifecycle', 'api',
+  // data/ML pipeline entry-point kinds: an orchestration task/asset node (Airflow/Dagster/Prefect/Luigi),
+  // a pipeline-level entry (the DAG/flow/job itself), a single ordered notebook code cell, or an ML
+  // training-loop entry point (train()/fit() call, or the script that drives it).
+  'task', 'pipeline', 'notebook-cell', 'train',
+  // embedded/systems entry-point kinds: a hardware/timer interrupt service routine (ISR),
+  // and a kernel/driver hook (module_init/module_exit, file_operations fops, ioctl handler).
+  'interrupt', 'driver',
+  // desktop-app entry-point kinds: an Electron IPC main-process handler
+  // (ipcMain.handle/.on) invoked from the renderer, and a Tauri Rust command
+  // (#[tauri::command]) invoked from the frontend via invoke().
+  'ipc', 'command',
+  // non-REST API entry-point kind: a gRPC/RPC server-side method handler
+  // (grpc-js addService impl, NestJS @GrpcMethod, Python grpcio Servicer) —
+  // a method dispatch, not an HTTP path, so it reads distinctly from REST routes.
+  'rpc',
+] as const;
+
+export type CASEntryPointType = typeof ENTRY_POINT_TYPES[number];
+
 export interface CASEntryPoint {
   id: string;
   source_node: string;
   source_analyzer?: string;
-  type: 'http' | 'websocket' | 'cli' | 'event' | 'schedule' | 'page' | 'route' | 'message' | 'file' | 'test' | 'lifecycle' | 'api'
-    // data/ML pipeline entry-point kinds: an orchestration task/asset node (Airflow/Dagster/Prefect/Luigi),
-    // a pipeline-level entry (the DAG/flow/job itself), a single ordered notebook code cell, or an ML
-    // training-loop entry point (train()/fit() call, or the script that drives it).
-    | 'task' | 'pipeline' | 'notebook-cell' | 'train'
-    // embedded/systems entry-point kinds: a hardware/timer interrupt service routine (ISR),
-    // and a kernel/driver hook (module_init/module_exit, file_operations fops, ioctl handler).
-    | 'interrupt' | 'driver'
-    // desktop-app entry-point kinds: an Electron IPC main-process handler
-    // (ipcMain.handle/.on) invoked from the renderer, and a Tauri Rust command
-    // (#[tauri::command]) invoked from the frontend via invoke().
-    | 'ipc' | 'command'
-    // non-REST API entry-point kind: a gRPC/RPC server-side method handler
-    // (grpc-js addService impl, NestJS @GrpcMethod, Python grpcio Servicer) —
-    // a method dispatch, not an HTTP path, so it reads distinctly from REST routes.
-    | 'rpc';
+  type: CASEntryPointType;
   name: string;
   description?: string;
   description_source?: 'deterministic' | 'ai' | 'manual' | 'reused';

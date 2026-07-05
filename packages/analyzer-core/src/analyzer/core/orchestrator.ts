@@ -17,6 +17,7 @@ import {
   CASDatabaseEntity,
   CASExternalService,
   CASEntryPoint,
+  ENTRY_POINT_TYPES,
   CASExitPoint,
   CASIntent,
   CASFlowSummary,
@@ -358,6 +359,14 @@ export interface OrchestrateAnalysisOptions {
    * auto-detection; see conventions-applier.ts.
    */
   conventions?: KlauroConventionsInput;
+  /**
+   * Local declarative analyzer-pack globs from .klaurorc's `packs:` section
+   * (resolved in apps/mcp-server via klauro-config.ts, since analyzer-core does
+   * not depend on mcp-server). Loaded IN ADDITION to the built-in packs bundled
+   * with analyzer-core. Additive/evidence-gated; see the pack engine in
+   * analyzer/packs and docs/SPEC-ANALYZER-PACKS.md. Absent → built-in packs only.
+   */
+  packGlobs?: string[];
 }
 
 export class AnalyzerOrchestrator {
@@ -936,6 +945,21 @@ export class AnalyzerOrchestrator {
     return patterns;
   }
 
+  /**
+   * Push resolved local pack globs onto any registered analyzer that exposes a
+   * mutable `localPackGlobs` field (the declarative analyzer-pack engine). Kept
+   * structural (duck-typed) rather than importing a concrete class so the core
+   * orchestrator has no dependency on a specific pattern analyzer.
+   */
+  private applyLocalPackGlobs(globs: string[]): void {
+    for (const registration of this.analyzers.values()) {
+      const analyzer = registration.analyzer as unknown as { localPackGlobs?: string[] };
+      if (Array.isArray(analyzer.localPackGlobs)) {
+        analyzer.localPackGlobs = [...globs];
+      }
+    }
+  }
+
   async detectAnalyzers(projectPath: string): Promise<AnalyzerRegistration[]> {
     const cacheKey = path.resolve(projectPath);
     const cached = this.detectedAnalyzerCache.get(cacheKey);
@@ -1022,6 +1046,14 @@ export class AnalyzerOrchestrator {
         console.error(`[Klauro] phase ${phase} completed in ${timings[phase]}ms`);
       }
     };
+
+    // Thread .klaurorc `packs:` globs (resolved in apps/mcp-server) onto the
+    // declarative analyzer-pack engine BEFORE detection, since its canAnalyze()
+    // loads packs (built-ins + these local globs) to decide applicability. Set
+    // structurally (no hard dependency on the PackAnalyzer class) so the
+    // orchestrator stays decoupled from any single pattern analyzer. When no
+    // globs are provided this is a no-op and only built-in packs are consulted.
+    this.applyLocalPackGlobs(options?.packGlobs ?? []);
 
     let phaseStart = Date.now();
     const detectedAnalyzers = await this.detectAnalyzers(projectPath);
@@ -4361,6 +4393,17 @@ export class AnalyzerOrchestrator {
       return true;
     }
 
+    // 'pattern' analyzers (e.g. the declarative analyzer-pack engine) decide
+    // their own applicability inside canAnalyze() rather than via a static
+    // detectPatterns signal — a pack's applies_when gate is dynamic/data-driven
+    // and unknown until the packs are actually loaded. Treat them like language
+    // analyzers here: defer the real gate to canAnalyze() in shouldUseAnalyzer().
+    // (When no packs are present canAnalyze() returns false, so this stays a
+    // no-op — zero behavior change for a project with no applicable packs.)
+    if (registration.type === 'pattern') {
+      return true;
+    }
+
     const patterns = registration.detectPatterns || {};
     if (patterns.dependencies?.length && await this.manifestContainsAny(projectPath, patterns.dependencies)) {
       return true;
@@ -4954,20 +4997,18 @@ export class AnalyzerOrchestrator {
     this.appendGraphItemsUnique(target.allExitPoints, validExitPoints, 'exit point', contributingAnalyzer, options?.analysisErrors);
   }
 
+  /**
+   * Accepted entry-point kinds are DERIVED from the single source of truth
+   * (ENTRY_POINT_TYPES in cas.types.ts, which the CASEntryPoint['type'] union is
+   * also built from). Do NOT reintroduce a hand-maintained allowlist here — a
+   * separate list silently drops any newly added entry-point kind (this bit
+   * type-data ML and cat-api). Add new kinds to ENTRY_POINT_TYPES and both the
+   * type and this validator pick them up. A parity guard test asserts they agree.
+   */
+  private static readonly VALID_ENTRY_POINT_TYPES: ReadonlySet<string> = new Set(ENTRY_POINT_TYPES);
+
   private isValidEntryPoint(ep: CASEntryPoint): boolean {
-    const validTypes = new Set([
-      'http', 'cli', 'websocket', 'ws_handler', 'message',
-      'event', 'scheduled', 'schedule', 'cron', 'queue', 'grpc', 'graphql',
-      // gRPC/RPC server-side method handlers (grpc-js addService, NestJS @GrpcMethod,
-      // Python grpcio Servicer) — a method dispatch, not an HTTP path.
-      'rpc',
-      'page', 'route', 'lifecycle', 'test',
-      // data/ML pipeline kinds: an orchestration task/asset node (Airflow/Dagster/
-      // Prefect/Luigi), the pipeline/DAG/flow/job itself, an ordered Jupyter
-      // notebook code cell, or an ML training-loop entry point.
-      'task', 'pipeline', 'notebook-cell', 'train'
-    ]);
-    return validTypes.has(ep.type);
+    return AnalyzerOrchestrator.VALID_ENTRY_POINT_TYPES.has(ep.type);
   }
 
   private isValidExitPoint(ep: CASExitPoint): boolean {

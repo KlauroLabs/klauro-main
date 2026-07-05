@@ -83,6 +83,18 @@ export interface KlauroConfig {
    * empty on every existing .klaurorc.
    */
   conventions?: KlauroConventions;
+  /**
+   * Local declarative analyzer packs (glob(s), relative to the project root or
+   * absolute) that the analyzer-pack engine loads IN ADDITION to the built-in
+   * packs shipped with analyzer-core. A pack is a *.pack.yaml with tree-sitter
+   * queries that emit real CAS entry_points/entities/edges — the declarative
+   * equivalent of a hand-coded *-analyzer.ts. See docs/SPEC-ANALYZER-PACKS.md.
+   * Purely ADDITIVE and evidence-gated (each pack's applies_when must match):
+   * absent/empty on every existing .klaurorc, and a malformed pack degrades to
+   * a scoped load error rather than crashing the analysis. Convention mirrors
+   * `conventions` discovery — e.g. `packs: ["./.klauro/packs/*.pack.yaml"]`.
+   */
+  packs?: string[];
 }
 
 /** One custom route source: a decorator-based router or a registration-call-based router. */
@@ -444,6 +456,7 @@ function mergeConfig(defaults: KlauroConfig, userConfig: Partial<KlauroConfig>):
     },
     github: { ...defaults.github, ...(userConfig.github || {}) },
     conventions: mergeConventions(defaults.conventions, userConfig.conventions),
+    packs: userConfig.packs ?? defaults.packs,
   };
 }
 

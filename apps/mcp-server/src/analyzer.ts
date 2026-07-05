@@ -131,6 +131,7 @@ import {
 } from '../../../packages/analyzer-core/src/analyzer/libraries/orm';
 import { ProtobufAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/protobuf-analyzer';
 import type { AnalyzerRegistration } from '../../../packages/analyzer-core/src/analyzer/core/orchestrator';
+import { PackAnalyzer } from '../../../packages/analyzer-core/src/analyzer/packs';
 import * as fs from 'fs-extra';
 import * as nodeFs from 'fs';
 import * as path from 'path';
@@ -142,6 +143,7 @@ import {
   type AnalysisRunStartRecord,
 } from '../../../packages/analyzer-core/src/analyzer/core/run-log';
 import { resolveAnalysisHeapMb, type AnalysisHeapResolution } from './analysis-heap';
+import { backfillIngestedTelemetry } from './telemetry-ingestion';
 import {
   assertAnalysisVersionSupported,
   getAnalysisVersionInfo,
@@ -619,7 +621,29 @@ export function createOrchestrator(): AnalyzerOrchestrator {
     })),
   ];
 
-  for (const reg of [...languageRegistrations, ...frameworkRegistrations, ...libraryRegistrations]) {
+  // Declarative analyzer-pack engine: ONE 'pattern'-type analyzer that runs
+  // every applicable pack (built-in packs bundled in analyzer-core/analyzer/
+  // packs/examples/*.pack.yaml + any local packs a project declares in
+  // .klaurorc `packs:`, threaded in via orchestrateAnalysis({ packGlobs }) —
+  // see analyzeProject below). A pack is a *.pack.yaml with tree-sitter queries
+  // that emit real CAS entry_points/entities/edges, the declarative equivalent
+  // of a hand-coded *-analyzer.ts (docs/SPEC-ANALYZER-PACKS.md). Additive and
+  // evidence-gated: its canAnalyze() is false when no packs load, and each
+  // pack's applies_when must match, so a repo with no applicable packs is
+  // unaffected. A malformed pack degrades to a scoped load/rule error (surfaced
+  // in the contribution metadata) and never crashes the analysis.
+  const patternRegistrations: AnalyzerRegistration[] = [
+    {
+      id: 'analyzer-packs',
+      name: 'Declarative Analyzer-Pack Engine',
+      type: 'pattern',
+      version: '0.1.0',
+      detectPatterns: {},
+      analyzer: new PackAnalyzer(),
+    },
+  ];
+
+  for (const reg of [...languageRegistrations, ...frameworkRegistrations, ...libraryRegistrations, ...patternRegistrations]) {
     created.registerAnalyzer(reg);
   }
 
@@ -644,6 +668,27 @@ export function getOrchestrator(): AnalyzerOrchestrator {
  * and get_klauro_project_config are the surfaces that report validation
  * errors back to the caller before they ever reach here.
  */
+/**
+ * Load .klaurorc `packs:` globs for a project, mirroring how conventions are
+ * discovered. These local declarative-pack globs are loaded IN ADDITION to the
+ * built-in packs bundled with analyzer-core. Purely additive: absent/empty
+ * config yields no local packs (built-ins still apply), and a config read
+ * failure degrades to a logged warning rather than failing the analysis. Actual
+ * pack validation happens in the pack loader (never throws), so a malformed
+ * pack surfaces as a scoped load error in the contribution, not here.
+ */
+async function loadPackGlobsForAnalysis(projectPath: string): Promise<string[]> {
+  try {
+    const loaded = await loadKlauroConfig(projectPath);
+    const packs = loaded.config.packs;
+    if (!Array.isArray(packs)) return [];
+    return packs.filter((glob): glob is string => typeof glob === 'string' && glob.trim().length > 0);
+  } catch (error) {
+    console.warn(`[Klauro] failed to load .klaurorc packs: ${error instanceof Error ? error.message : String(error)}`);
+    return [];
+  }
+}
+
 async function loadConventionsForAnalysis(projectPath: string): Promise<KlauroConventions | undefined> {
   try {
     const loaded = await loadKlauroConfig(projectPath);
@@ -934,15 +979,22 @@ export async function analyzeProject(projectPath: string, displayName?: string):
     const orch = getOrchestrator();
     orch.configureEmbedding(await buildEmbeddingPhaseConfig(projectPath));
     const conventions = await loadConventionsForAnalysis(projectPath);
+    const packGlobs = await loadPackGlobsForAnalysis(projectPath);
     const previousOutput = await loadAnalysis(projectPath, { preferCache: true }).catch(() => null);
     const result = await applyStoredElementDescriptions(projectPath, preservePreviousAIDescriptions(
       previousOutput,
-      await orch.orchestrateAnalysis(projectPath, { displayName, conventions })
+      await orch.orchestrateAnalysis(projectPath, { displayName, conventions, packGlobs })
     ));
 
     await saveAnalysis(projectPath, result);
     clearFreshnessSummaryCache();
     await saveAnalysisSnapshot(projectPath, result);
+
+    // Backfill: an analysis now exists, so re-correlate any runtime observations
+    // that were persisted as `unmatched` before this project was analyzed and
+    // upgrade the ones that now bind to a CAS node. Best-effort and non-blocking
+    // to the returned CAS — telemetry backfill must never fail an analysis.
+    await backfillIngestedTelemetry(result, projectPath).catch(() => undefined);
 
     return result;
   });
@@ -983,10 +1035,11 @@ export async function analyzeProjectDeferred(projectPath: string, displayName?: 
     withProjectAnalysisLock(projectPath, async () => {
       orch.configureEmbedding(await buildEmbeddingPhaseConfig(projectPath));
       const conventions = await loadConventionsForAnalysis(projectPath);
+      const packGlobs = await loadPackGlobsForAnalysis(projectPath);
       const previousOutput = await loadAnalysis(projectPath, { preferCache: true }).catch(() => null);
       const result = await applyStoredElementDescriptions(projectPath, preservePreviousAIDescriptions(
         previousOutput,
-        await orch.orchestrateAnalysis(projectPath, { deferAiEnrichment: true, displayName, conventions })
+        await orch.orchestrateAnalysis(projectPath, { deferAiEnrichment: true, displayName, conventions, packGlobs })
       ));
 
       await saveAnalysis(projectPath, result);
@@ -1234,6 +1287,7 @@ async function runIncrementalAnalysis(projectPath: string, displayName?: string)
   const orch = getOrchestrator();
   orch.configureEmbedding(await buildEmbeddingPhaseConfig(projectPath));
   const conventions = await loadConventionsForAnalysis(projectPath);
+  const packGlobs = await loadPackGlobsForAnalysis(projectPath);
 
   const previousOutput = await loadAnalysis(projectPath, { preferCache: true });
   const previousState = await loadIncrementalState(projectPath);
@@ -1243,7 +1297,7 @@ async function runIncrementalAnalysis(projectPath: string, displayName?: string)
 
   if (!previousOutput) {
     let phaseStartedAt = Date.now();
-    const result = await orch.orchestrateAnalysis(projectPath, { displayName, conventions });
+    const result = await orch.orchestrateAnalysis(projectPath, { displayName, conventions, packGlobs });
     debug('initial-orchestrate-full', phaseStartedAt);
     phaseStartedAt = Date.now();
     await saveAnalysis(projectPath, result);
