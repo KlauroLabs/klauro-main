@@ -27,6 +27,7 @@ import { PHPAnalyzer } from '../languages/php-analyzer';
 import { RubyAnalyzer } from '../languages/ruby-analyzer';
 import { DartAnalyzer } from '../languages/dart-analyzer';
 import { TerraformAnalyzer } from '../languages/terraform-analyzer';
+import { CloudFormationAnalyzer } from '../languages/cloudformation-analyzer';
 import { CCppAnalyzer } from '../languages/c-cpp-analyzer';
 import { KotlinAnalyzer } from '../languages/kotlin-analyzer';
 import { SwiftAnalyzer } from '../languages/swift-analyzer';
@@ -34,6 +35,7 @@ import { SolidityAnalyzer } from '../languages/solidity-analyzer';
 import { ElixirAnalyzer } from '../languages/elixir-analyzer';
 import { ShellAnalyzer } from '../languages/shell-analyzer';
 import { ProtobufAnalyzer } from '../languages/protobuf-analyzer';
+import { CliAnalyzer } from '../languages/cli-analyzer';
 import { DockerComposeAnalyzer, DockerfileAnalyzer, KubernetesManifestAnalyzer } from '../languages/container-topology-analyzer';
 import { DistributionArtifactAnalyzer } from '../languages/distribution-artifact-analyzer';
 import { GenericTreeSitterLanguageAnalyzer } from '../languages/generic-tree-sitter-language-analyzer';
@@ -54,7 +56,8 @@ import {
   NextJSAnalyzer
 } from '../frameworks/web';
 
-import { JestAnalyzer, CypressAnalyzer } from '../frameworks/testing';
+import { JestAnalyzer, CypressAnalyzer, TestFrameworkAnalyzer } from '../frameworks/testing';
+import { ElectronAnalyzer, TauriAnalyzer } from '../frameworks/desktop';
 import { WPFAnalyzer, AspNetCoreAnalyzer } from '../frameworks/dotnet';
 import { ActixAnalyzer, RocketAnalyzer, AxumAnalyzer } from '../frameworks/rust';
 import { PhoenixAnalyzer } from '../frameworks/elixir/phoenix-analyzer';
@@ -74,10 +77,21 @@ import {
   ReduxAnalyzer,
   ZustandAnalyzer,
   TanStackQueryAnalyzer,
+  ReactiveStreamsAnalyzer,
+  FrontendStateAnalyzer,
   ReqwestAnalyzer,
   architectureLibraryAnalyzerDefinitions,
   AIStackAnalyzer,
-  McpToolRegistrationAnalyzer
+  McpToolRegistrationAnalyzer,
+  SequelizeAnalyzer,
+  KnexAnalyzer,
+  ObjectionAnalyzer,
+  DieselAnalyzer,
+  SeaOrmAnalyzer,
+  GormAnalyzer,
+  SqlxAnalyzer,
+  EntAnalyzer,
+  DapperAnalyzer
 } from '../libraries';
 
 import * as fs from 'fs-extra';
@@ -381,6 +395,17 @@ export class CASAnalyzerService {
         analyzer: new TerraformAnalyzer()
       },
       {
+        id: 'cloudformation',
+        name: 'CloudFormation Analyzer',
+        type: 'language',
+        version: '1.0.0',
+        detectPatterns: {
+          files: ['**/*.template', '**/*.yaml', '**/*.yml', '**/*.json'],
+          content: [/AWSTemplateFormatVersion/, /Resources:\s*[\s\S]*Type:\s*AWS::/, /"Resources"\s*:\s*\{[\s\S]*"Type"\s*:\s*"AWS::/]
+        },
+        analyzer: new CloudFormationAnalyzer()
+      },
+      {
         id: 'c-cpp',
         name: 'C/C++ Analyzer',
         type: 'language',
@@ -456,6 +481,25 @@ export class CASAnalyzerService {
           content: [/\.proto$/]
         },
         analyzer: new ProtobufAnalyzer()
+      },
+      {
+        id: 'cli-frameworks',
+        name: 'CLI/Script Entry Point Analyzer',
+        type: 'language',
+        version: '1.0.0',
+        detectPatterns: {
+          files: ['**/*.py', '**/*.ts', '**/*.js', '**/*.go', '**/*.rs', '**/*.rb'],
+          content: [
+            /@click\.(command|group)\b/, /argparse\.ArgumentParser\s*\(/, /\btyper\.Typer\s*\(/,
+            /require\(\s*['"]commander['"]\s*\)|from\s+['"]commander['"]/,
+            /require\(\s*['"]yargs['"]\s*\)|from\s+['"]yargs['"]/,
+            /from\s+['"]@oclif\/core['"]/,
+            /cobra\.Command\b/, /["']github\.com\/urfave\/cli(\/v2)?["']/,
+            /\bclap::/,
+            /class\s+\w+\s*<\s*Thor\b/
+          ]
+        },
+        analyzer: new CliAnalyzer()
       },
       {
         id: 'dockerfile',
@@ -707,6 +751,43 @@ export class CASAnalyzerService {
         },
         requires: ['typescript-javascript'],
         analyzer: new CypressAnalyzer()
+      },
+      {
+        id: 'test-framework',
+        name: 'Cross-Language Test Framework Analyzer',
+        type: 'framework',
+        version: '1.0.0',
+        detectPatterns: {
+          dependencies: ['vitest', 'mocha', 'jasmine', '@playwright/test', 'selenium-webdriver'],
+          files: ['vitest.config.ts', 'playwright.config.ts', 'pytest.ini', 'phpunit.xml', '**/*_test.go', '**/*_spec.rb'],
+          content: [/from\s+['"`]vitest['"`]/, /from\s+['"`]@playwright\/test['"`]/, /import\s+pytest/, /testing\.T\b/, /#\[(?:tokio::)?test\]/, /@Test\b/, /RSpec\.describe/, /PHPUnit\\Framework\\TestCase/]
+        },
+        analyzer: new TestFrameworkAnalyzer()
+      },
+      {
+        id: 'electron',
+        name: 'Electron Desktop Analyzer',
+        type: 'framework',
+        version: '1.0.0',
+        detectPatterns: {
+          dependencies: ['electron'],
+          files: ['package.json'],
+          content: [/\bipcMain\.(handle|on)\s*\(/, /\bipcRenderer\.(invoke|send)\s*\(/, /\bcontextBridge\.exposeInMainWorld\s*\(/, /new\s+BrowserWindow\s*\(/]
+        },
+        requires: ['typescript-javascript'],
+        analyzer: new ElectronAnalyzer()
+      },
+      {
+        id: 'tauri',
+        name: 'Tauri Desktop Analyzer',
+        type: 'framework',
+        version: '1.0.0',
+        detectPatterns: {
+          dependencies: ['@tauri-apps/api', '@tauri-apps/cli'],
+          files: ['src-tauri/Cargo.toml', 'Cargo.toml'],
+          content: [/#\[tauri::command\]/, /tauri::generate_handler!/, /\binvoke\s*\(\s*['"`]/]
+        },
+        analyzer: new TauriAnalyzer()
       },
       {
         id: 'wpf',
@@ -978,6 +1059,28 @@ export class CASAnalyzerService {
         analyzer: new TanStackQueryAnalyzer()
       },
       {
+        id: 'reactive-streams',
+        name: 'Reactive Streams Analyzer',
+        type: 'library',
+        version: '1.0.0',
+        detectPatterns: {
+          dependencies: ['rxjs'],
+          content: [/import\s+reactor\.core\.publisher\.(Mono|Flux)/, /import\s+io\.reactivex[^;]*\.(Observable|Flowable|Single|Maybe|Completable)/, /import\s+Combine\b/]
+        },
+        analyzer: new ReactiveStreamsAnalyzer()
+      },
+      {
+        id: 'frontend-state',
+        name: 'Frontend State Management Analyzer',
+        type: 'library',
+        version: '1.0.0',
+        detectPatterns: {
+          dependencies: ['mobx', 'mobx-react', 'mobx-react-lite', 'recoil', 'jotai', 'valtio', 'pinia', '@ngrx/store', '@ngrx/effects']
+        },
+        requires: ['typescript-javascript'],
+        analyzer: new FrontendStateAnalyzer()
+      },
+      {
         id: 'reqwest',
         name: 'Reqwest HTTP Client Analyzer',
         type: 'library',
@@ -1025,6 +1128,87 @@ export class CASAnalyzerService {
           files: ['requirements.txt', 'pyproject.toml', 'Pipfile', 'setup.py']
         },
         analyzer: new AIStackAnalyzer()
+      },
+      {
+        id: 'sequelize',
+        name: 'Sequelize Analyzer',
+        type: 'library',
+        version: '1.0.0',
+        detectPatterns: { dependencies: ['sequelize'] },
+        requires: ['typescript-javascript'],
+        analyzer: new SequelizeAnalyzer()
+      },
+      {
+        id: 'knex',
+        name: 'Knex Analyzer',
+        type: 'library',
+        version: '1.0.0',
+        detectPatterns: { dependencies: ['knex'] },
+        requires: ['typescript-javascript'],
+        analyzer: new KnexAnalyzer()
+      },
+      {
+        id: 'objection',
+        name: 'Objection.js Analyzer',
+        type: 'library',
+        version: '1.0.0',
+        detectPatterns: { dependencies: ['objection'] },
+        requires: ['typescript-javascript'],
+        analyzer: new ObjectionAnalyzer()
+      },
+      {
+        id: 'diesel',
+        name: 'Diesel Analyzer',
+        type: 'library',
+        version: '1.0.0',
+        detectPatterns: { dependencies: ['diesel'], files: ['Cargo.toml'] },
+        requires: ['rust'],
+        analyzer: new DieselAnalyzer()
+      },
+      {
+        id: 'sea-orm',
+        name: 'SeaORM Analyzer',
+        type: 'library',
+        version: '1.0.0',
+        detectPatterns: { dependencies: ['sea-orm'], files: ['Cargo.toml'] },
+        requires: ['rust'],
+        analyzer: new SeaOrmAnalyzer()
+      },
+      {
+        id: 'gorm',
+        name: 'GORM Analyzer',
+        type: 'library',
+        version: '1.0.0',
+        detectPatterns: { dependencies: ['gorm.io/gorm'], files: ['go.mod'] },
+        requires: ['go'],
+        analyzer: new GormAnalyzer()
+      },
+      {
+        id: 'sqlx',
+        name: 'sqlx Analyzer',
+        type: 'library',
+        version: '1.0.0',
+        detectPatterns: { dependencies: ['sqlx'], files: ['Cargo.toml'] },
+        requires: ['rust'],
+        analyzer: new SqlxAnalyzer()
+      },
+      {
+        id: 'ent',
+        name: 'ent Analyzer',
+        type: 'library',
+        version: '1.0.0',
+        detectPatterns: { dependencies: ['entgo.io/ent'], files: ['go.mod'] },
+        requires: ['go'],
+        analyzer: new EntAnalyzer()
+      },
+      {
+        id: 'dapper',
+        name: 'Dapper Analyzer',
+        type: 'library',
+        version: '1.0.0',
+        detectPatterns: { dependencies: ['Dapper'] },
+        requires: ['csharp'],
+        analyzer: new DapperAnalyzer()
       },
       ...architectureLibraryAnalyzerDefinitions().map(definition => ({
         id: definition.id,

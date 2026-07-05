@@ -11,6 +11,7 @@ export { PHPAnalyzer } from './php-analyzer';
 export { RubyAnalyzer } from './ruby-analyzer';
 export { DartAnalyzer } from './dart-analyzer';
 export { TerraformAnalyzer } from './terraform-analyzer';
+export { CloudFormationAnalyzer } from './cloudformation-analyzer';
 export { CCppAnalyzer } from './c-cpp-analyzer';
 export { KotlinAnalyzer } from './kotlin-analyzer';
 export { SwiftAnalyzer } from './swift-analyzer';
@@ -18,6 +19,7 @@ export { SolidityAnalyzer } from './solidity-analyzer';
 export { ElixirAnalyzer } from './elixir-analyzer';
 export { ShellAnalyzer } from './shell-analyzer';
 export { ProtobufAnalyzer } from './protobuf-analyzer';
+export { CliAnalyzer } from './cli-analyzer';
 
 // Language analyzer mappings for easy lookup
 export const LanguageAnalyzers = {
@@ -36,6 +38,7 @@ export const LanguageAnalyzers = {
   dart: 'DartAnalyzer',
   terraform: 'TerraformAnalyzer',
   hcl: 'TerraformAnalyzer',
+  cloudformation: 'CloudFormationAnalyzer',
   c: 'CCppAnalyzer',
   cpp: 'CCppAnalyzer',
   kotlin: 'KotlinAnalyzer',
@@ -47,6 +50,10 @@ export const LanguageAnalyzers = {
   protobuf: 'ProtobufAnalyzer',
   proto: 'ProtobufAnalyzer'
 } as const;
+
+// Note: CliAnalyzer is a cross-language framework analyzer (Click/argparse/Typer,
+// Commander/yargs/oclif, cobra/urfave-cli, clap, Thor) and is intentionally not
+// keyed by a single language here — see ANALYZER_METADATA and cas-analyzer.service.ts.
 
 // Supported languages list
 export const SUPPORTED_LANGUAGES = Object.keys(LanguageAnalyzers);
@@ -188,6 +195,13 @@ export const ANALYZER_METADATA = [
     category: 'language'
   },
   {
+    name: 'CloudFormationAnalyzer',
+    languages: ['cloudformation'],
+    frameworks: ['aws-cloudformation'],
+    priority: 85,
+    category: 'language'
+  },
+  {
     name: 'CCppAnalyzer',
     languages: ['c', 'cpp'],
     frameworks: ['cmake', 'make', 'native'],
@@ -234,6 +248,13 @@ export const ANALYZER_METADATA = [
     languages: ['protobuf', 'proto'],
     frameworks: ['grpc', 'buf'],
     priority: 85,
+    category: 'language'
+  },
+  {
+    name: 'CliAnalyzer',
+    languages: ['python', 'javascript', 'typescript', 'go', 'rust', 'ruby'],
+    frameworks: ['click', 'argparse', 'typer', 'commander', 'yargs', 'oclif', 'cobra', 'urfave-cli', 'clap', 'thor'],
+    priority: 80,
     category: 'language'
   }
 ] as const;

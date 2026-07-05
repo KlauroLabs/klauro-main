@@ -99,6 +99,36 @@ export interface TSExtractedCall {
   };
 }
 
+/**
+ * One statically-evaluable call argument of a decorator invocation. Positional
+ * arguments carry their index as `name` ('0','1',...); named/object-property
+ * arguments carry the property key. `value`/`type` are only ever populated for
+ * literals we can evaluate without executing code — string, number, boolean,
+ * null, and no-substitution template strings. Any non-literal argument
+ * (identifier, call, computed object value, spread, template with `${}`) is
+ * OMITTED entirely rather than guessed: a downstream consumer that needs an
+ * argument it cannot see must fail evidence-gated, never fabricate a value.
+ */
+export interface TSDecoratorArg {
+  name: string;
+  value: string | number | boolean | null;
+  type: 'string' | 'number' | 'boolean' | 'null';
+}
+
+/**
+ * A decorator invocation with its literal-evaluable call arguments captured
+ * generically for ANY decorator (not just recognized-framework ones). Runs
+ * ALONGSIDE the bare `decorators: string[]` name list — the string list is
+ * left untouched so every existing `.includes(name)` consumer keeps working;
+ * this parallel list is purely additive, and only carries the args we could
+ * statically resolve (an empty `args` means the decorator had none we could
+ * evaluate, not that it had no arguments).
+ */
+export interface TSDecoratorDetail {
+  name: string;
+  args: TSDecoratorArg[];
+}
+
 export interface TSExtractedFunction {
   name: string;
   signature: string;
@@ -118,6 +148,8 @@ export interface TSExtractedFunction {
   calls: TSExtractedCall[];
   complexity: number;
   decorators: string[];
+  /** Parallel to `decorators` — same decorators, with their literal-evaluable call args. Additive. */
+  decoratorArgs?: TSDecoratorDetail[];
   documentation?: string;
   /**
    * True for a nameless arrow/function-expression callback extracted only to
@@ -138,6 +170,8 @@ export interface TSExtractedProperty {
   lineStart: number;
   lineEnd: number;
   decorators: string[];
+  /** Parallel to `decorators` — same decorators, with their literal-evaluable call args. Additive. */
+  decoratorArgs?: TSDecoratorDetail[];
   defaultValue?: string;
 }
 
@@ -153,6 +187,8 @@ export interface TSExtractedClass {
   isExported: boolean;
   isAbstract: boolean;
   decorators: string[];
+  /** Parallel to `decorators` — same decorators, with their literal-evaluable call args. Additive. */
+  decoratorArgs?: TSDecoratorDetail[];
   documentation?: string;
 }
 
@@ -465,6 +501,7 @@ export class TreeSitterTSExtractor {
     const parameters = this.extractParameters(func);
     const returnType = this.extractReturnType(func);
     const decorators = this.extractDecorators(func);
+    const decoratorArgs = this.extractDecoratorArgs(func);
     const calls = this.extractCalls(func, funcName, className);
     const complexity = this.calculateComplexity(func);
     const documentation = this.extractDocumentation(func);
@@ -490,6 +527,7 @@ export class TreeSitterTSExtractor {
       calls,
       complexity,
       decorators,
+      decoratorArgs,
       documentation,
       isAnonymousCallback
     };
@@ -603,6 +641,144 @@ export class TreeSitterTSExtractor {
     }
 
     return decorators;
+  }
+
+  // Structured counterpart to extractDecorators: the SAME decorators, but each paired with
+  // the call arguments we can STATICALLY EVALUATE. This exists so a custom decorator
+  // (`@Endpoint('/orders','GET')`) carries its literal path/method the same way a
+  // recognized-framework decorator does — the bare-name list alone (extractDecorators)
+  // gave downstream consumers (buildAllDecorators -> CASDecorator.parameters -> the
+  // `.klaurorc` conventions applier) nothing to resolve a declared route's args from, so
+  // they correctly refused to emit a route. We only surface args we can evaluate WITHOUT
+  // running code (string/number/boolean/null/no-substitution template); anything else is
+  // omitted, never guessed — evidence-first, same discipline as the reference scan above.
+  //
+  // tree-sitter places a decorator differently by target: on a method/property it is a
+  // PREVIOUS NAMED SIBLING, but on a class_declaration it is a DIRECT CHILD (`decorator`
+  // before the `class` token). We walk both so class-level decorator args resolve too —
+  // extractDecorators (bare names) only ever looks at previous siblings, so class-level
+  // NAMES are a known pre-existing gap there; here we cover both placements.
+  private extractDecoratorArgs(node: any): TSDecoratorDetail[] {
+    const details: TSDecoratorDetail[] = [];
+
+    const decoratorNodes: any[] = [];
+    // Class-level decorators sit as leading children of the declaration node.
+    for (const child of node.namedChildren || []) {
+      if (child.type === 'decorator') decoratorNodes.push(child);
+      else break; // decorators only ever lead; stop at the first non-decorator child.
+    }
+    // Method/property decorators sit as preceding siblings (collected in source order).
+    const siblingDecorators: any[] = [];
+    let sibling = node.previousNamedSibling;
+    while (sibling && sibling.type === 'decorator') {
+      siblingDecorators.unshift(sibling);
+      sibling = sibling.previousNamedSibling;
+    }
+    decoratorNodes.push(...siblingDecorators);
+
+    for (const decoratorNode of decoratorNodes) {
+      const call = this.findFirst(decoratorNode, 'call_expression');
+      // Bare `@Foo` with no call: record the name with no args (mirrors extractDecorators).
+      const calleeNode = call
+        ? (call.childForFieldName('function') || call.namedChild(0))
+        : this.findFirst(decoratorNode, 'identifier');
+      const name = call
+        ? (calleeNode?.text?.split('(')[0] || '')
+        : (calleeNode?.text || '');
+
+      if (name) {
+        const args: TSDecoratorArg[] = [];
+        const argList = call?.childForFieldName('arguments');
+        if (argList) {
+          let positional = 0;
+          for (let i = 0; i < argList.namedChildCount; i++) {
+            const argNode = argList.namedChild(i);
+            if (!argNode) continue;
+
+            // Object argument (`@Foo({ path: '/p', method: 'GET' })`): each key/value
+            // pair whose value is a literal becomes a named entry keyed by the property.
+            if (argNode.type === 'object') {
+              for (let p = 0; p < argNode.namedChildCount; p++) {
+                const pair = argNode.namedChild(p);
+                if (!pair || pair.type !== 'pair') continue;
+                const keyNode = pair.childForFieldName('key');
+                const valueNode = pair.childForFieldName('value');
+                const key = this.decoratorObjectKey(keyNode);
+                if (!key) continue;
+                const evaluated = this.evaluateLiteralNode(valueNode);
+                if (evaluated) args.push({ name: key, value: evaluated.value, type: evaluated.type });
+              }
+              positional++;
+              continue;
+            }
+
+            // Positional argument: only kept when the expression is a literal we can
+            // evaluate. A skipped non-literal still consumes its positional index so the
+            // remaining args keep their true call-site positions (a consumer selecting
+            // `arg[2]` must not silently shift onto `arg[3]`).
+            const evaluated = this.evaluateLiteralNode(argNode);
+            if (evaluated) args.push({ name: String(positional), value: evaluated.value, type: evaluated.type });
+            positional++;
+          }
+        }
+        details.push({ name, args });
+      }
+    }
+
+    return details;
+  }
+
+  // The property key of an object-literal `pair`. Handles both `path:` (property_identifier)
+  // and `'path':` / `"path":` (string) forms; a computed key (`[expr]:`) is not statically
+  // resolvable and yields undefined so the whole pair is skipped.
+  private decoratorObjectKey(keyNode: any): string | undefined {
+    if (!keyNode) return undefined;
+    if (keyNode.type === 'property_identifier') return keyNode.text;
+    if (keyNode.type === 'string') {
+      const evaluated = this.evaluateLiteralNode(keyNode);
+      return evaluated && typeof evaluated.value === 'string' ? evaluated.value : undefined;
+    }
+    return undefined;
+  }
+
+  // Statically evaluate a single expression node to a literal value, or return undefined
+  // when it is not a literal we can resolve without executing code. Intentionally narrow:
+  // string, number, boolean, null, and template strings with NO `${}` substitution. An
+  // identifier, call, member access, spread, binary expression, or a template carrying a
+  // substitution all return undefined — the caller drops them rather than fabricating.
+  private evaluateLiteralNode(node: any): { value: string | number | boolean | null; type: TSDecoratorArg['type'] } | undefined {
+    if (!node) return undefined;
+    switch (node.type) {
+      case 'string': {
+        // A `string` node wraps `string_fragment` child(ren) plus quote tokens; empty
+        // string has no fragment. Concatenate fragments (escapes are left as written —
+        // we surface the source text, not a re-parsed runtime value).
+        const fragments = node.namedChildren
+          .filter((c: any) => c.type === 'string_fragment' || c.type === 'escape_sequence')
+          .map((c: any) => c.text);
+        return { value: fragments.join(''), type: 'string' };
+      }
+      case 'template_string': {
+        // Only a substitution-free template is a static string literal.
+        if (this.findFirst(node, 'template_substitution')) return undefined;
+        const fragments = node.namedChildren
+          .filter((c: any) => c.type === 'string_fragment' || c.type === 'escape_sequence')
+          .map((c: any) => c.text);
+        return { value: fragments.join(''), type: 'string' };
+      }
+      case 'number': {
+        const n = Number(node.text);
+        return Number.isNaN(n) ? undefined : { value: n, type: 'number' };
+      }
+      case 'true':
+        return { value: true, type: 'boolean' };
+      case 'false':
+        return { value: false, type: 'boolean' };
+      case 'null':
+        return { value: null, type: 'null' };
+      default:
+        return undefined;
+    }
   }
 
   private extractCalls(func: any, enclosingFunction: string, enclosingClass?: string): TSExtractedCall[] {
@@ -1091,6 +1267,7 @@ export class TreeSitterTSExtractor {
     const isExported = cls.parent?.type === 'export_statement';
     const isAbstract = cls.children?.some((c: any) => c.type === 'abstract') || false;
     const decorators = this.extractDecorators(cls);
+    const decoratorArgs = this.extractDecoratorArgs(cls);
     const documentation = this.extractDocumentation(cls);
 
     const body = cls.childForFieldName('body');
@@ -1147,6 +1324,7 @@ export class TreeSitterTSExtractor {
       isExported,
       isAbstract,
       decorators,
+      decoratorArgs,
       documentation
     };
   }
@@ -1274,6 +1452,7 @@ export class TreeSitterTSExtractor {
     const defaultValue = valueNode?.text;
 
     const decorators = this.extractDecorators(prop);
+    const decoratorArgs = this.extractDecoratorArgs(prop);
 
     return {
       name,
@@ -1285,6 +1464,7 @@ export class TreeSitterTSExtractor {
       lineStart: prop.startPosition.row + 1,
       lineEnd: prop.endPosition.row + 1,
       decorators,
+      decoratorArgs,
       defaultValue
     };
   }

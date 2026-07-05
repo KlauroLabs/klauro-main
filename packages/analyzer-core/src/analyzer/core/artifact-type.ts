@@ -70,7 +70,7 @@ const APP_ENTRY_TYPES = new Set(['http', 'route', 'page', 'websocket', 'event', 
 const OUTBOUND_EXIT_TYPES = new Set(['api', 'sdk', 'message', 'webhook']);
 
 const CLI_DEPENDENCY_MARKERS = /^(commander|yargs|oclif|@oclif\/.+|meow|cac|vorpal|inquirer|clap|structopt|click|typer|argparse|cobra)$/;
-const APP_FRAMEWORK_MARKERS = /\b(next(\.js)?|nuxt|express|fastify|koa|nestjs|nest|django|flask|fastapi|rails|laravel|symfony|spring|asp\.?net|angular|remix|sveltekit)\b/i;
+export const APP_FRAMEWORK_MARKERS = /\b(next(\.js)?|nuxt|express|fastify|koa|nestjs|nest|django|flask|fastapi|rails|laravel|symfony|spring|asp\.?net|angular|remix|sveltekit)\b/i;
 
 /** Boilerplate self-declaration: title-region text or manifest name/description. */
 const BOILERPLATE_TEXT = /\b(boilerplate|starter[ -]?(kit|template|project|app)?|skeleton|scaffold(ing)?|template)\b/i;

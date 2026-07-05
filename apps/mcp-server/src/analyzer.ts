@@ -9,6 +9,7 @@ import { RustAnalyzer } from '../../../packages/analyzer-core/src/analyzer/langu
 import { PHPAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/php-analyzer';
 import { RubyAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/ruby-analyzer';
 import { ShellAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/shell-analyzer';
+import { CliAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/cli-analyzer';
 import { SolidityAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/solidity-analyzer';
 import { CCppAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/c-cpp-analyzer';
 import { SwiftAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/swift-analyzer';
@@ -16,7 +17,9 @@ import { KotlinAnalyzer } from '../../../packages/analyzer-core/src/analyzer/lan
 import { ElixirAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/elixir-analyzer';
 import { DartAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/dart-analyzer';
 import { TerraformAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/terraform-analyzer';
+import { CloudFormationAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/cloudformation-analyzer';
 import { DockerComposeAnalyzer, DockerfileAnalyzer, KubernetesManifestAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/container-topology-analyzer';
+import { AnsibleAnalyzer, PulumiAnalyzer, HelmAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/iac-analyzer';
 import { DistributionArtifactAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/distribution-artifact-analyzer';
 import { GenericTreeSitterLanguageAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/generic-tree-sitter-language-analyzer';
 import {
@@ -43,7 +46,8 @@ import {
   SlimAnalyzer,
 } from '../../../packages/analyzer-core/src/analyzer/frameworks/web';
 import { CronAnalyzer } from '../../../packages/analyzer-core/src/analyzer/libraries/cron-analyzer';
-import { JestAnalyzer, CypressAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/testing';
+import { JestAnalyzer, CypressAnalyzer, TestFrameworkAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/testing';
+import { AirflowAnalyzer, DagsterAnalyzer, PrefectAnalyzer, LuigiAnalyzer, JupyterNotebookAnalyzer, MLTrainingAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/dataml';
 import { WPFAnalyzer, AspNetCoreAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/dotnet';
 import { ActixAnalyzer, RocketAnalyzer, AxumAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/rust';
 import { GinAnalyzer, EchoAnalyzer, FiberAnalyzer, ChiAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/go';
@@ -73,6 +77,8 @@ import { ComposeAnalyzer } from '../../../packages/analyzer-core/src/analyzer/fr
 import { SoliditySecurityAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/solidity/security-analyzer';
 import { WordPressAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/php/wordpress-analyzer';
 import { BlazorAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/dotnet/blazor-analyzer';
+import { UnityAnalyzer, UnrealAnalyzer, GodotAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/game';
+import { EmbeddedCAnalyzer, ArduinoAnalyzer, LinuxKernelModuleAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/embedded';
 import { QuarkusAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/java/quarkus-analyzer';
 import { MicronautAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/java/micronaut-analyzer';
 import { JaxRsAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/java/jaxrs-analyzer';
@@ -81,6 +87,7 @@ import { SolidStartAnalyzer } from '../../../packages/analyzer-core/src/analyzer
 import { QwikAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/web/qwik-analyzer';
 import { OpenAPIAnalyzer } from '../../../packages/analyzer-core/src/analyzer/libraries/openapi-analyzer';
 import { EFCoreAnalyzer } from '../../../packages/analyzer-core/src/analyzer/libraries/efcore-analyzer';
+import { ElectronAnalyzer, TauriAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/desktop';
 import {
   PrismaAnalyzer,
   SocketIOAnalyzer,
@@ -88,16 +95,40 @@ import {
   ReduxAnalyzer,
   ZustandAnalyzer,
   TanStackQueryAnalyzer,
+  ReactiveStreamsAnalyzer,
+  FrontendStateAnalyzer,
   ReqwestAnalyzer,
+  OutboundHttpClientAnalyzer,
+  ValidationSchemaAnalyzer,
   architectureLibraryAnalyzerDefinitions,
-  McpToolRegistrationAnalyzer
+  McpToolRegistrationAnalyzer,
+  AuthAnalyzer
 } from '../../../packages/analyzer-core/src/analyzer/libraries';
+import { MessagingAnalyzer } from '../../../packages/analyzer-core/src/analyzer/libraries/messaging';
+import { ObservabilityAnalyzer } from '../../../packages/analyzer-core/src/analyzer/libraries/observability';
 import { TRPCAnalyzer } from '../../../packages/analyzer-core/src/analyzer/libraries/trpc-analyzer';
 import { GraphQLAnalyzer } from '../../../packages/analyzer-core/src/analyzer/libraries/graphql-analyzer';
+import { GrpcHandlerAnalyzer } from '../../../packages/analyzer-core/src/analyzer/libraries/api';
 import { AIStackAnalyzer } from '../../../packages/analyzer-core/src/analyzer/libraries/ai-stack-analyzer';
 import { WorkflowAnalyzer } from '../../../packages/analyzer-core/src/analyzer/libraries/workflow-analyzer';
+import { MediatorCqrsAnalyzer } from '../../../packages/analyzer-core/src/analyzer/libraries/mediator-cqrs-analyzer';
 import { SQLAlchemyPydanticAnalyzer } from '../../../packages/analyzer-core/src/analyzer/libraries/sqlalchemy-pydantic-analyzer';
-import { DrizzleAnalyzer, TypeORMAnalyzer, MongooseAnalyzer } from '../../../packages/analyzer-core/src/analyzer/libraries/orm';
+import { DiContainerBindingAnalyzer } from '../../../packages/analyzer-core/src/analyzer/libraries/architecture/di-container-analyzer';
+import { MockingLibraryAnalyzer } from '../../../packages/analyzer-core/src/analyzer/libraries/testing';
+import {
+  DrizzleAnalyzer,
+  TypeORMAnalyzer,
+  MongooseAnalyzer,
+  SequelizeAnalyzer,
+  KnexAnalyzer,
+  ObjectionAnalyzer,
+  DieselAnalyzer,
+  SeaOrmAnalyzer,
+  GormAnalyzer,
+  SqlxAnalyzer,
+  EntAnalyzer,
+  DapperAnalyzer,
+} from '../../../packages/analyzer-core/src/analyzer/libraries/orm';
 import { ProtobufAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/protobuf-analyzer';
 import type { AnalyzerRegistration } from '../../../packages/analyzer-core/src/analyzer/core/orchestrator';
 import * as fs from 'fs-extra';
@@ -126,7 +157,7 @@ import {
   getProjectStorageDir,
   withProjectAnalysisLock
 } from './storage';
-import { loadKlauroConfig, validateEmbeddingConfig } from './klauro-config';
+import { loadKlauroConfig, validateEmbeddingConfig, validateConventions, type KlauroConventions } from './klauro-config';
 import { clearFreshnessSummaryCache } from './freshness';
 import { createEmbeddingProvider } from '../../../packages/analyzer-core/src/analyzer/embedding/embedding-provider-factory';
 import { createVectorStore } from '../../../packages/analyzer-core/src/analyzer/embedding/vector-store-factory';
@@ -331,6 +362,17 @@ export function createOrchestrator(): AnalyzerOrchestrator {
       analyzer: new TerraformAnalyzer(),
     },
     {
+      id: 'cloudformation',
+      name: 'CloudFormation Analyzer',
+      type: 'language',
+      version: '1.0.0',
+      detectPatterns: {
+        files: ['**/*.template', '**/*.yaml', '**/*.yml', '**/*.json'],
+        content: [/AWSTemplateFormatVersion/, /Resources:\s*[\s\S]*Type:\s*AWS::/, /"Resources"\s*:\s*\{[\s\S]*"Type"\s*:\s*"AWS::/],
+      },
+      analyzer: new CloudFormationAnalyzer(),
+    },
+    {
       id: 'dockerfile',
       name: 'Dockerfile Analyzer',
       type: 'language',
@@ -364,6 +406,39 @@ export function createOrchestrator(): AnalyzerOrchestrator {
       analyzer: new KubernetesManifestAnalyzer(),
     },
     {
+      id: 'ansible',
+      name: 'Ansible Analyzer',
+      type: 'language',
+      version: '1.0.0',
+      detectPatterns: {
+        files: ['**/playbook*.yml', '**/playbook*.yaml', '**/site.yml', '**/site.yaml', '**/roles/*/tasks/*.yml', '**/roles/*/tasks/*.yaml', '**/ansible.cfg'],
+        content: [/^\s*-\s*hosts:\s*/m],
+      },
+      analyzer: new AnsibleAnalyzer(),
+    },
+    {
+      id: 'pulumi',
+      name: 'Pulumi Analyzer',
+      type: 'language',
+      version: '1.0.0',
+      detectPatterns: {
+        files: ['**/Pulumi.yaml', '**/Pulumi.yml'],
+        content: [/^runtime:\s*(nodejs|python|go|dotnet)/m],
+      },
+      analyzer: new PulumiAnalyzer(),
+    },
+    {
+      id: 'helm',
+      name: 'Helm Chart Analyzer',
+      type: 'language',
+      version: '1.0.0',
+      detectPatterns: {
+        files: ['**/Chart.yaml', '**/Chart.yml'],
+        content: [/^apiVersion:\s*v[12]\s*$/m],
+      },
+      analyzer: new HelmAnalyzer(),
+    },
+    {
       id: 'distribution-artifacts',
       name: 'Distribution Artifact Analyzer',
       type: 'language',
@@ -373,6 +448,25 @@ export function createOrchestrator(): AnalyzerOrchestrator {
         content: [/systemctl|launchctl|makensis|msiexec|pkgbuild|create-dmg|SERVICE_NAME|BINARY_NAME|DOWNLOAD_PREFIX|manifest\.json/i],
       },
       analyzer: new DistributionArtifactAnalyzer(),
+    },
+    {
+      id: 'cli-frameworks',
+      name: 'CLI/Script Entry Point Analyzer',
+      type: 'language',
+      version: '1.0.0',
+      detectPatterns: {
+        files: ['**/*.py', '**/*.ts', '**/*.js', '**/*.go', '**/*.rs', '**/*.rb'],
+        content: [
+          /@click\.(command|group)\b/, /argparse\.ArgumentParser\s*\(/, /\btyper\.Typer\s*\(/,
+          /require\(\s*['"]commander['"]\s*\)|from\s+['"]commander['"]/,
+          /require\(\s*['"]yargs['"]\s*\)|from\s+['"]yargs['"]/,
+          /from\s+['"]@oclif\/core['"]/,
+          /cobra\.Command\b/, /["']github\.com\/urfave\/cli(\/v2)?["']/,
+          /\bclap::/,
+          /class\s+\w+\s*<\s*Thor\b/,
+        ],
+      },
+      analyzer: new CliAnalyzer(),
     },
     {
       // Breadth fallback: any grammar-backed language without a deep analyzer
@@ -410,7 +504,16 @@ export function createOrchestrator(): AnalyzerOrchestrator {
     { id: 'vue', name: 'Vue.js Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['vue', 'vue@'], files: ['package.json'], content: [/\.vue$/] }, requires: ['typescript-javascript'], analyzer: new VueAnalyzer() },
     { id: 'jest', name: 'Jest Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['jest', '@jest/core'], files: ['jest.config.js', 'jest.config.ts'], content: [/\.test\.(js|ts|jsx|tsx)$/, /\.spec\.(js|ts|jsx|tsx)$/] }, requires: ['typescript-javascript'], analyzer: new JestAnalyzer() },
     { id: 'cypress', name: 'Cypress Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['cypress'], files: ['cypress.json', 'cypress.config.js', 'cypress.config.ts'], content: [/\.cy\.(js|ts|jsx|tsx)$/] }, requires: ['typescript-javascript'], analyzer: new CypressAnalyzer() },
+    { id: 'test-framework', name: 'Cross-Language Test Framework Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['vitest', 'mocha', 'jasmine', '@playwright/test', 'selenium-webdriver'], files: ['vitest.config.ts', 'playwright.config.ts', 'pytest.ini', 'phpunit.xml', '**/*_test.go', '**/*_spec.rb'], content: [/from\s+['"`]vitest['"`]/, /from\s+['"`]@playwright\/test['"`]/, /import\s+pytest/, /testing\.T\b/, /#\[(?:tokio::)?test\]/, /@Test\b/, /RSpec\.describe/, /PHPUnit\\Framework\\TestCase/] }, analyzer: new TestFrameworkAnalyzer() },
+    { id: 'airflow', name: 'Apache Airflow Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['apache-airflow'], files: ['requirements.txt', '**/dags/**/*.py'], content: [/from\s+airflow\b/, /import\s+airflow\b/, /@dag\b/, /@task\b/] }, requires: ['python'], analyzer: new AirflowAnalyzer() },
+    { id: 'dagster', name: 'Dagster Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['dagster'], files: ['requirements.txt'], content: [/from\s+dagster\b/, /import\s+dagster\b/, /@asset\b/, /@op\b/] }, requires: ['python'], analyzer: new DagsterAnalyzer() },
+    { id: 'prefect', name: 'Prefect Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['prefect'], files: ['requirements.txt'], content: [/from\s+prefect\b/, /import\s+prefect\b/, /@flow\b/, /@task\b/] }, requires: ['python'], analyzer: new PrefectAnalyzer() },
+    { id: 'luigi', name: 'Luigi Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['luigi'], files: ['requirements.txt'], content: [/import\s+luigi\b/, /luigi\.Task\b/] }, requires: ['python'], analyzer: new LuigiAnalyzer() },
+    { id: 'jupyter-notebook', name: 'Jupyter Notebook Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { files: ['**/*.ipynb'] }, analyzer: new JupyterNotebookAnalyzer() },
+    { id: 'ml-training', name: 'ML Training Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['torch', 'tensorflow', 'keras'], files: ['requirements.txt', 'pyproject.toml'], content: [/import\s+torch\b/, /from\s+torch\b/, /import\s+tensorflow\b/, /\.fit\s*\(/] }, requires: ['python'], analyzer: new MLTrainingAnalyzer() },
     { id: 'wpf', name: 'WPF Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { files: ['**/*.xaml', '**/*.csproj'], content: [/PresentationFramework/, /System\.Windows/, /<UseWPF>true<\/UseWPF>/] }, requires: ['csharp'], analyzer: new WPFAnalyzer() },
+    { id: 'electron', name: 'Electron Desktop Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['electron'], files: ['package.json'], content: [/\bipcMain\.(handle|on)\s*\(/, /\bipcRenderer\.(invoke|send)\s*\(/, /\bcontextBridge\.exposeInMainWorld\s*\(/, /new\s+BrowserWindow\s*\(/] }, requires: ['typescript-javascript'], analyzer: new ElectronAnalyzer() },
+    { id: 'tauri', name: 'Tauri Desktop Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['@tauri-apps/api', '@tauri-apps/cli'], files: ['src-tauri/Cargo.toml', 'Cargo.toml'], content: [/#\[tauri::command\]/, /tauri::generate_handler!/, /\binvoke\s*\(\s*['"`]/] }, analyzer: new TauriAnalyzer() },
     { id: 'aspnet-core', name: 'ASP.NET Core Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { files: ['**/*.csproj'], content: [/Microsoft\.AspNetCore/, /Microsoft\.NET\.Sdk\.Web/] }, requires: ['csharp'], analyzer: new AspNetCoreAnalyzer() },
     { id: 'nextjs', name: 'Next.js Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['next'], files: ['next.config.js', 'next.config.mjs', 'next.config.ts'] }, requires: ['typescript-javascript'], analyzer: new NextJSAnalyzer() },
     { id: 'actix-web', name: 'Actix-web Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['actix-web', 'actix_web'], files: ['Cargo.toml'], content: [/actix_web::/, /#\[(get|post|put|delete|patch)\("/, /HttpServer::/] }, requires: ['rust'], analyzer: new ActixAnalyzer() },
@@ -458,6 +561,12 @@ export function createOrchestrator(): AnalyzerOrchestrator {
     { id: 'echo', name: 'Echo Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['github.com/labstack/echo'], files: ['go.mod'], content: [/"github\.com\/labstack\/echo(\/v4)?"/, /echo\.New\s*\(/] }, requires: ['go'], analyzer: new EchoAnalyzer() },
     { id: 'fiber', name: 'Fiber Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['github.com/gofiber/fiber'], files: ['go.mod'], content: [/"github\.com\/gofiber\/fiber\/v?\d*"/, /fiber\.New\s*\(/] }, requires: ['go'], analyzer: new FiberAnalyzer() },
     { id: 'chi', name: 'Chi Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['github.com/go-chi/chi'], files: ['go.mod'], content: [/"github\.com\/go-chi\/chi(\/v\d+)?"/, /chi\.NewRouter\s*\(/] }, requires: ['go'], analyzer: new ChiAnalyzer() },
+    { id: 'unity', name: 'Unity Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { files: ['ProjectSettings/ProjectVersion.txt', '**/*.unity', '**/*.meta', '**/*.cs'], content: [/^\s*using\s+UnityEngine\s*;/m] }, requires: ['csharp'], analyzer: new UnityAnalyzer() },
+    { id: 'unreal', name: 'Unreal Engine Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { files: ['**/*.uproject', '**/*.cpp', '**/*.h'], content: [/GENERATED_BODY\s*\(\s*\)/, /#include\s*"CoreMinimal\.h"/] }, requires: ['c-cpp'], analyzer: new UnrealAnalyzer() },
+    { id: 'godot', name: 'Godot Engine Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { files: ['project.godot', '**/*.tscn', '**/*.gd'], content: [/\bfunc\s+_ready\s*\(/, /\bfunc\s+_process\s*\(/] }, analyzer: new GodotAnalyzer() },
+    { id: 'embedded-c', name: 'Embedded C Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { files: ['**/*.c', '**/*.h', '**/*.ld'], content: [/#include\s*[<"]avr\/(io|interrupt)\.h[>"]/, /\bISR\s*\(/, /__attribute__\s*\(\s*\(\s*interrupt/] }, requires: ['c-cpp'], analyzer: new EmbeddedCAnalyzer() },
+    { id: 'arduino', name: 'Arduino Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { files: ['**/*.ino', '**/*.cpp', '**/*.h'], content: [/#include\s*[<"]Arduino\.h[>"]/, /\bvoid\s+setup\s*\(/, /\bvoid\s+loop\s*\(/] }, analyzer: new ArduinoAnalyzer() },
+    { id: 'linux-kernel-module', name: 'Linux Kernel Module Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { files: ['**/*.c', 'Kbuild', 'Makefile'], content: [/#include\s*[<"]linux\/module\.h[>"]/, /\bmodule_init\s*\(/, /\bmodule_exit\s*\(/] }, requires: ['c-cpp'], analyzer: new LinuxKernelModuleAnalyzer() },
   ];
 
   const libraryRegistrations: AnalyzerRegistration[] = [
@@ -467,19 +576,39 @@ export function createOrchestrator(): AnalyzerOrchestrator {
     { id: 'redux', name: 'Redux/RTK Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['@reduxjs/toolkit', 'redux'] }, requires: ['typescript-javascript'], analyzer: new ReduxAnalyzer() },
     { id: 'zustand', name: 'Zustand Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['zustand'] }, requires: ['typescript-javascript'], analyzer: new ZustandAnalyzer() },
     { id: 'tanstack-query', name: 'TanStack Query Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['@tanstack/react-query', 'react-query', '@tanstack/vue-query', '@tanstack/svelte-query'] }, requires: ['typescript-javascript'], analyzer: new TanStackQueryAnalyzer() },
+    { id: 'reactive-streams', name: 'Reactive Streams Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['rxjs'], content: [/import\s+reactor\.core\.publisher\.(Mono|Flux)/, /import\s+io\.reactivex[^;]*\.(Observable|Flowable|Single|Maybe|Completable)/, /import\s+Combine\b/] }, analyzer: new ReactiveStreamsAnalyzer() },
+    { id: 'frontend-state', name: 'Frontend State Management Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['mobx', 'mobx-react', 'mobx-react-lite', 'recoil', 'jotai', 'valtio', 'pinia', '@ngrx/store', '@ngrx/effects'] }, requires: ['typescript-javascript'], analyzer: new FrontendStateAnalyzer() },
     { id: 'reqwest', name: 'Reqwest HTTP Client Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['reqwest'], files: ['Cargo.toml'] }, requires: ['rust'], analyzer: new ReqwestAnalyzer() },
+    { id: 'outbound-http-client', name: 'Outbound HTTP Client Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['axios', 'got', 'ky', 'node-fetch', '@apollo/client', 'urql', 'requests', 'httpx', 'aiohttp', 'spring-web', 'spring-webflux', 'okhttp', 'feign-core', 'spring-cloud-starter-openfeign', 'github.com/go-resty/resty'], content: [/\bfetch\s*\(\s*['"`]https?:\/\//, /@FeignClient\b/, /\bhttp\.(Get|Post|NewRequest)/] }, analyzer: new OutboundHttpClientAnalyzer() },
+    { id: 'validation-schema-contracts', name: 'Validation Schema Contract Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['zod', 'yup', 'class-validator', 'joi', '@hapi/joi', 'ajv', 'marshmallow', 'cerberus'], content: [/\bz\.object\s*\(/, /\byup\.object\b/, /\bJoi\.object\s*\(/, /\bnew\s+Ajv\b/, /@Is[A-Za-z]+\s*\(/, /\bfields\.[A-Za-z]+\s*\(/, /\bValidator\s*\(/] }, analyzer: new ValidationSchemaAnalyzer() },
     { id: 'trpc', name: 'tRPC API Contract Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['@trpc/server', '@trpc/client'] }, requires: ['typescript-javascript'], analyzer: new TRPCAnalyzer() },
     { id: 'graphql', name: 'GraphQL API Contract Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['graphql', '@apollo/server', 'type-graphql', 'graphql-yoga', 'nexus', 'strawberry-graphql', 'graphene', 'ariadne', 'gqlgen', 'spring-graphql', 'graphql-java'], files: ['**/*.graphql', '**/*.gql'] }, requires: ['typescript-javascript'], analyzer: new GraphQLAnalyzer() },
+    { id: 'grpc-handler', name: 'gRPC Handler Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['@grpc/grpc-js', 'grpc', 'nice-grpc', '@nestjs/microservices', 'grpcio'], files: ['**/*_pb2_grpc.py'], content: [/\.addService\s*\(/, /@GrpcMethod\b/, /add_\w+Servicer_to_server/] }, analyzer: new GrpcHandlerAnalyzer() },
     { id: 'drizzle', name: 'Drizzle ORM Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['drizzle-orm'] }, requires: ['typescript-javascript'], analyzer: new DrizzleAnalyzer() },
     { id: 'typeorm', name: 'TypeORM Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['typeorm'] }, requires: ['typescript-javascript'], analyzer: new TypeORMAnalyzer() },
     { id: 'mongoose', name: 'Mongoose Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['mongoose'] }, requires: ['typescript-javascript'], analyzer: new MongooseAnalyzer() },
     { id: 'sqlalchemy-pydantic', name: 'SQLAlchemy/Pydantic Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['sqlalchemy', 'pydantic', 'SQLAlchemy', 'sqlmodel'], files: ['requirements.txt', 'pyproject.toml', 'Pipfile'] }, requires: ['python'], analyzer: new SQLAlchemyPydanticAnalyzer() },
+    { id: 'sequelize', name: 'Sequelize Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['sequelize'] }, requires: ['typescript-javascript'], analyzer: new SequelizeAnalyzer() },
+    { id: 'knex', name: 'Knex Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['knex'] }, requires: ['typescript-javascript'], analyzer: new KnexAnalyzer() },
+    { id: 'objection', name: 'Objection.js Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['objection'] }, requires: ['typescript-javascript'], analyzer: new ObjectionAnalyzer() },
+    { id: 'diesel', name: 'Diesel Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['diesel'], files: ['Cargo.toml'] }, requires: ['rust'], analyzer: new DieselAnalyzer() },
+    { id: 'sea-orm', name: 'SeaORM Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['sea-orm'], files: ['Cargo.toml'] }, requires: ['rust'], analyzer: new SeaOrmAnalyzer() },
+    { id: 'gorm', name: 'GORM Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['gorm.io/gorm'], files: ['go.mod'] }, requires: ['go'], analyzer: new GormAnalyzer() },
+    { id: 'sqlx', name: 'sqlx Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['sqlx'], files: ['Cargo.toml'] }, requires: ['rust'], analyzer: new SqlxAnalyzer() },
+    { id: 'ent', name: 'ent Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['entgo.io/ent'], files: ['go.mod'] }, requires: ['go'], analyzer: new EntAnalyzer() },
+    { id: 'dapper', name: 'Dapper Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['Dapper'] }, requires: ['csharp'], analyzer: new DapperAnalyzer() },
     { id: 'ai-stack', name: 'AI/LLM Stack Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['langchain', '@langchain/core', 'llamaindex', 'ai', '@ai-sdk/openai', 'openai', '@anthropic-ai/sdk', '@modelcontextprotocol/sdk', 'langgraph', 'crewai', '@pinecone-database/pinecone', 'weaviate-ts-client', 'chromadb', 'qdrant'] }, requires: ['typescript-javascript'], analyzer: new AIStackAnalyzer() },
     { id: 'workflow', name: 'Workflow/Queue Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['@temporalio/client', '@temporalio/worker', 'celery', 'sidekiq', 'bullmq', 'bull', 'kafkajs', 'amqplib', 'nats', 'kafka-python', 'confluent-kafka', 'kafka-go', 'nats.go', 'rdkafka', 'async-nats', 'spring-kafka', 'Confluent.Kafka'] }, requires: ['typescript-javascript'], analyzer: new WorkflowAnalyzer() },
+    { id: 'async-messaging', name: 'Async Messaging Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['kafkajs', 'node-rdkafka', 'amqplib', 'nats', 'ioredis', 'redis', 'bullmq', 'bee-queue', '@aws-sdk/client-sqs', '@aws-sdk/client-sns', 'confluent-kafka', 'kafka-python', 'pika', 'celery', 'spring-kafka', 'spring-rabbit', 'sidekiq', 'github.com/segmentio/kafka-go', 'github.com/nats-io/nats.go'], content: [/producer\.send\s*\(\s*\{[\s\S]{0,200}?topic\s*:/, /\.sendToQueue\s*\(/, /\.publish\s*\(\s*['"`][^'"`]+['"`]/, /@KafkaListener|@RabbitListener/, /Sidekiq::Worker/] }, analyzer: new MessagingAnalyzer() },
+    { id: 'observability-instrumentation', name: 'Observability Instrumentation Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['@opentelemetry/api', '@opentelemetry/sdk-node', '@sentry/node', '@sentry/nextjs', '@sentry/browser', 'dd-trace', 'rollbar', '@bugsnag/js', '@bugsnag/node', 'prom-client', 'hot-shots', 'node-statsd', 'winston', 'pino', 'bunyan', 'sentry-sdk', 'structlog', 'opentelemetry-api', 'opentelemetry-sdk', 'io.opentelemetry', 'io.micrometer', 'micrometer-core', 'org.slf4j', 'log4j', 'logback-classic', 'go.uber.org/zap', 'github.com/rs/zerolog'], content: [/trace\.getTracer|startSpan\s*\(|@WithSpan/, /Sentry\.captureException|capture_exception\s*\(/, /new\s+(?:Counter|Gauge|Histogram)\s*\(/, /createLogger\s*\(|pino\s*\(|structlog\.get_logger|LoggerFactory\.getLogger/] }, analyzer: new ObservabilityAnalyzer() },
+    { id: 'mediator-cqrs-messaging', name: 'Mediator/CQRS Messaging Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['MediatR', 'MassTransit', 'NServiceBus', '@nestjs/cqrs', 'nestjs-cqrs', '@aws-sdk/client-sqs', 'aws-lambda', 'boto3'], content: [/IRequestHandler|INotificationHandler|IMediator/, /IConsumer<|IHandleMessages</, /@CommandHandler|@QueryHandler|@EventsHandler/, /SQSEvent|event\.Records|eventSourceARN/] }, analyzer: new MediatorCqrsAnalyzer() },
     { id: 'openapi', name: 'OpenAPI/Swagger Analyzer', type: 'library', version: '1.0.0', detectPatterns: { files: ['openapi.json', 'openapi.yaml', 'openapi.yml', 'swagger.json', 'swagger.yaml'], content: [/openapi\s*:/, /"openapi"\s*:/, /swagger\s*:/] }, analyzer: new OpenAPIAnalyzer() },
     { id: 'efcore', name: 'EF Core Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['Microsoft.EntityFrameworkCore'], content: [/:\s*DbContext/, /DbSet</] }, requires: ['csharp'], analyzer: new EFCoreAnalyzer() },
     { id: 'cron', name: 'Scheduled Job (Cron) Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['cron', 'node-cron', '@nestjs/schedule'] }, requires: ['typescript-javascript'], analyzer: new CronAnalyzer() },
     { id: 'mcp-tool-registration', name: 'MCP Tool Registration Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['@modelcontextprotocol/sdk'], content: [/\.registerTool\s*\(/, /\.setRequestHandler\s*\(/] }, requires: ['typescript-javascript'], analyzer: new McpToolRegistrationAnalyzer() },
+    { id: 'di-container-bindings', name: 'DI Container Binding Graph Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['inversify', 'tsyringe', 'Ninject', 'Autofac', 'Microsoft.Extensions.DependencyInjection', 'dagger', 'com.google.dagger', 'com.google.inject', 'guice', 'io.insert-koin', 'symfony/dependency-injection', 'php-di/php-di', 'dependency_injector', 'dependency-injector'] }, analyzer: new DiContainerBindingAnalyzer() },
+    { id: 'mocking-test-doubles-fixtures', name: 'Mocking, Test Double and Fixture Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['sinon', 'jest', '@jest/globals', 'vitest', 'testdouble', 'responses', 'requests-mock', 'org.mockito:mockito-core', 'mockito-core', 'org.easymock:easymock', 'github.com/golang/mock', 'go.uber.org/mock', 'github.com/stretchr/testify', 'Moq', 'NSubstitute', 'rspec-mocks', 'fishery', 'factory-boy', '@faker-js/faker', 'factory_bot', 'factory_bot_rails'], content: [/\b(?:jest|vi)\.(?:mock|fn|spyOn)\s*\(/, /\bsinon\.(?:stub|spy|mock|fake)\s*\(/, /@Mock\b/, /\bNewMock[A-Z]/, /\bSubstitute\.For</, /\bMock\.Of</, /\bpatch\s*\(\s*['"]/, /\bmonkeypatch\./, /\bFactory\.define\b/, /\binstance_double\s*\(/] }, analyzer: new MockingLibraryAnalyzer() },
+    { id: 'auth', name: 'Authentication and Authorization Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['passport', 'next-auth', '@auth/core', '@auth0/nextjs-auth0', '@clerk/nextjs', 'firebase-admin', 'lucia', 'jsonwebtoken', 'express-jwt', 'spring-security', 'spring-boot-starter-security', 'Django', 'djangorestframework', 'Flask-Login', 'PyJWT', 'Authlib', 'devise', 'pundit', 'cancancan', 'casbin', '@casl/ability', 'oso'], files: ['**/*.rego'], content: [/passport\.authenticate\s*\(/, /@(PreAuthorize|Secured|RolesAllowed)\b/, /\bpermission_classes\b/, /@login_required\b/, /\bauthorize!?\b/] }, analyzer: new AuthAnalyzer() },
     ...architectureLibraryAnalyzerDefinitions().map(definition => ({
       id: definition.id,
       name: definition.name,
@@ -506,6 +635,33 @@ export function getOrchestrator(): AnalyzerOrchestrator {
 
   orchestrator = createOrchestrator();
   return orchestrator;
+}
+
+/**
+ * Load .klaurorc `conventions:` for a project, validated. A malformed
+ * convention degrades to a logged warning and the whole section is dropped
+ * (never crashes a real analysis run for a config typo) — declare_convention
+ * and get_klauro_project_config are the surfaces that report validation
+ * errors back to the caller before they ever reach here.
+ */
+async function loadConventionsForAnalysis(projectPath: string): Promise<KlauroConventions | undefined> {
+  try {
+    const loaded = await loadKlauroConfig(projectPath);
+    const conventions = loaded.config.conventions;
+    if (!conventions || Object.keys(conventions).length === 0) return undefined;
+    const validation = validateConventions(conventions);
+    if (validation.errors.length > 0) {
+      console.warn(`[Klauro] .klaurorc conventions invalid, skipping declared conventions for this analysis: ${validation.errors.join('; ')}`);
+      return undefined;
+    }
+    for (const warning of validation.warnings) {
+      console.warn(`[Klauro] .klaurorc conventions warning: ${warning}`);
+    }
+    return conventions;
+  } catch (error) {
+    console.warn(`[Klauro] failed to load .klaurorc conventions: ${error instanceof Error ? error.message : String(error)}`);
+    return undefined;
+  }
 }
 
 async function buildEmbeddingPhaseConfig(projectPath: string): Promise<EmbeddingPhaseConfig | null> {
@@ -777,10 +933,11 @@ export async function analyzeProject(projectPath: string, displayName?: string):
   return withProjectAnalysisLock(projectPath, async () => {
     const orch = getOrchestrator();
     orch.configureEmbedding(await buildEmbeddingPhaseConfig(projectPath));
+    const conventions = await loadConventionsForAnalysis(projectPath);
     const previousOutput = await loadAnalysis(projectPath, { preferCache: true }).catch(() => null);
     const result = await applyStoredElementDescriptions(projectPath, preservePreviousAIDescriptions(
       previousOutput,
-      await orch.orchestrateAnalysis(projectPath, { displayName })
+      await orch.orchestrateAnalysis(projectPath, { displayName, conventions })
     ));
 
     await saveAnalysis(projectPath, result);
@@ -825,10 +982,11 @@ export async function analyzeProjectDeferred(projectPath: string, displayName?: 
   const output = await withGlobalAnalysisLock(() =>
     withProjectAnalysisLock(projectPath, async () => {
       orch.configureEmbedding(await buildEmbeddingPhaseConfig(projectPath));
+      const conventions = await loadConventionsForAnalysis(projectPath);
       const previousOutput = await loadAnalysis(projectPath, { preferCache: true }).catch(() => null);
       const result = await applyStoredElementDescriptions(projectPath, preservePreviousAIDescriptions(
         previousOutput,
-        await orch.orchestrateAnalysis(projectPath, { deferAiEnrichment: true, displayName })
+        await orch.orchestrateAnalysis(projectPath, { deferAiEnrichment: true, displayName, conventions })
       ));
 
       await saveAnalysis(projectPath, result);
@@ -1075,6 +1233,7 @@ async function runIncrementalAnalysis(projectPath: string, displayName?: string)
 
   const orch = getOrchestrator();
   orch.configureEmbedding(await buildEmbeddingPhaseConfig(projectPath));
+  const conventions = await loadConventionsForAnalysis(projectPath);
 
   const previousOutput = await loadAnalysis(projectPath, { preferCache: true });
   const previousState = await loadIncrementalState(projectPath);
@@ -1084,7 +1243,7 @@ async function runIncrementalAnalysis(projectPath: string, displayName?: string)
 
   if (!previousOutput) {
     let phaseStartedAt = Date.now();
-    const result = await orch.orchestrateAnalysis(projectPath, { displayName });
+    const result = await orch.orchestrateAnalysis(projectPath, { displayName, conventions });
     debug('initial-orchestrate-full', phaseStartedAt);
     phaseStartedAt = Date.now();
     await saveAnalysis(projectPath, result);

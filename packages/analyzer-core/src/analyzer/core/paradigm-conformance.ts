@@ -23,7 +23,7 @@ const MAX_EVIDENCE_FILES = 5;
 const CALL_EDGE_TYPES = new Set(['calls', 'invokes', 'executes', 'uses', 'depends_on', 'injects', 'queries']);
 const WRITE_EDGE_TYPES = new Set(['writes', 'creates', 'updates', 'deletes', 'persists', 'saves', 'mutates']);
 const CONTAINMENT_EDGE_TYPES = new Set(['contains', 'has_method', 'declares']);
-const GUARD_EDGE_TYPES = new Set(['guarded_by', 'protected_by', 'guards', 'middleware', 'intercepts', 'before_action']);
+const GUARD_EDGE_TYPES = new Set(['guarded_by', 'protected_by', 'guards', 'authorizes', 'middleware', 'intercepts', 'before_action']);
 
 const ENTRY_LAYER_TYPE = /(^|[_\s])(controller|gateway|resolver|handler|api_route|endpoint)([_\s]|$)/;
 const SERVICE_LAYER_TYPE = /(^|[_\s])(service|use_case|usecase|interactor|application_service|workflow)([_\s]|$)/;

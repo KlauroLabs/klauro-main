@@ -23,6 +23,7 @@ export * from './ocaml';
 export * from './apex';
 export * from './perl';
 export * from './go';
+export * from './dataml';
 
 import { VaporAnalyzer } from './swift';
 import { GoRouterAnalyzer, ShelfAnalyzer } from './dart';
@@ -54,12 +55,20 @@ import {
   SlimAnalyzer
 } from './web';
 
-import { JestAnalyzer, CypressAnalyzer } from './testing';
+import { JestAnalyzer, CypressAnalyzer, TestFrameworkAnalyzer } from './testing';
+import {
+  AirflowAnalyzer,
+  DagsterAnalyzer,
+  PrefectAnalyzer,
+  LuigiAnalyzer,
+  JupyterNotebookAnalyzer,
+  MLTrainingAnalyzer
+} from './dataml';
 
 export interface FrameworkAnalyzerInfo {
   name: string;
   analyzer: any;
-  category: 'web' | 'mobile' | 'testing' | 'library';
+  category: 'web' | 'mobile' | 'testing' | 'library' | 'data';
   languages: string[];
   frameworks: string[];
   priority: number;
@@ -329,6 +338,62 @@ export const FRAMEWORK_ANALYZERS: FrameworkAnalyzerInfo[] = [
     languages: ['javascript', 'typescript'],
     frameworks: ['cypress'],
     priority: 55
+  },
+  {
+    name: 'Test Frameworks',
+    analyzer: TestFrameworkAnalyzer,
+    category: 'testing',
+    languages: ['javascript', 'typescript', 'python', 'go', 'rust', 'java', 'csharp', 'ruby', 'php'],
+    frameworks: ['vitest', 'mocha', 'jasmine', 'node:test', 'pytest', 'unittest', 'junit', 'testng', 'xunit', 'nunit', 'rspec', 'minitest', 'phpunit', 'playwright', 'selenium'],
+    priority: 45
+  },
+  {
+    name: 'Airflow',
+    analyzer: AirflowAnalyzer,
+    category: 'data',
+    languages: ['python'],
+    frameworks: ['apache-airflow', 'airflow'],
+    priority: 105
+  },
+  {
+    name: 'Dagster',
+    analyzer: DagsterAnalyzer,
+    category: 'data',
+    languages: ['python'],
+    frameworks: ['dagster'],
+    priority: 105
+  },
+  {
+    name: 'Prefect',
+    analyzer: PrefectAnalyzer,
+    category: 'data',
+    languages: ['python'],
+    frameworks: ['prefect'],
+    priority: 105
+  },
+  {
+    name: 'Luigi',
+    analyzer: LuigiAnalyzer,
+    category: 'data',
+    languages: ['python'],
+    frameworks: ['luigi'],
+    priority: 100
+  },
+  {
+    name: 'Jupyter Notebook',
+    analyzer: JupyterNotebookAnalyzer,
+    category: 'data',
+    languages: ['python'],
+    frameworks: ['jupyter', 'ipynb'],
+    priority: 90
+  },
+  {
+    name: 'ML Training (PyTorch/Keras/TensorFlow)',
+    analyzer: MLTrainingAnalyzer,
+    category: 'data',
+    languages: ['python'],
+    frameworks: ['torch', 'tensorflow', 'keras'],
+    priority: 95
   }
 ];
 

@@ -94,6 +94,40 @@ export interface CASOutput {
   // v1.10.0+ Graph-Anchored Semantic Retrieval
   embedding_index?: CASEmbeddingIndex;
 
+  /**
+   * Codebase-TYPE classification (see analyzer/core/codebase-type.ts):
+   * what KIND of thing this repo/root is (web-backend, library, cli, ...),
+   * from deterministic manifest/entry-point/dependency evidence. Tells
+   * downstream analysis what an "entry point" even means here (a library's
+   * public surface is its exports, not routes).
+   */
+  codebase_type?: import('../analyzer/core/codebase-type').CodebaseType;
+  codebase_type_confidence?: number;
+  /** Every codebase TYPE with non-trivial evidence, ranked by confidence — a
+   *  monorepo or hybrid root can legitimately carry more than one. */
+  codebase_types?: Array<{ type: import('../analyzer/core/codebase-type').CodebaseType; confidence: number }>;
+  codebase_type_signals?: import('../analyzer/core/codebase-type').CodebaseTypeSignal[];
+
+  /**
+   * Self-discovered coverage gaps recorded during this analysis (see
+   * analyzer/core/coverage-gaps.ts): unknown dependencies matching no
+   * analyzer, low node-extraction-ratio files, zero-entry-point roots, and
+   * aggregate counts of tree-sitter node types no analyzer handled. This is
+   * the mechanism that makes gap-closing systematic — "take note of new
+   * things we haven't encountered, so we close gaps as discovered."
+   */
+  coverage_gaps?: CASCoverageGap[];
+
+  /**
+   * Audit trail for declared custom-architecture conventions (.klaurorc
+   * `conventions:`, see analyzer/core/conventions-applier.ts): what each
+   * declared convention matched or failed to match in the real extracted
+   * nodes. Evidence-gated — a convention with `matched: false` emitted
+   * nothing rather than fabricating a route/entity/flow. Absent when no
+   * conventions are declared.
+   */
+  conventions_applied?: import('../analyzer/core/conventions-applier').ConventionMatchReport[];
+
   libraries?: CASLibrary[];
   progressive_levels: CASProgressiveLevels;
   configuration?: CASConfiguration;
@@ -422,7 +456,22 @@ export interface CASEntryPoint {
   id: string;
   source_node: string;
   source_analyzer?: string;
-  type: 'http' | 'websocket' | 'cli' | 'event' | 'schedule' | 'page' | 'route' | 'message' | 'file' | 'test' | 'lifecycle';
+  type: 'http' | 'websocket' | 'cli' | 'event' | 'schedule' | 'page' | 'route' | 'message' | 'file' | 'test' | 'lifecycle' | 'api'
+    // data/ML pipeline entry-point kinds: an orchestration task/asset node (Airflow/Dagster/Prefect/Luigi),
+    // a pipeline-level entry (the DAG/flow/job itself), a single ordered notebook code cell, or an ML
+    // training-loop entry point (train()/fit() call, or the script that drives it).
+    | 'task' | 'pipeline' | 'notebook-cell' | 'train'
+    // embedded/systems entry-point kinds: a hardware/timer interrupt service routine (ISR),
+    // and a kernel/driver hook (module_init/module_exit, file_operations fops, ioctl handler).
+    | 'interrupt' | 'driver'
+    // desktop-app entry-point kinds: an Electron IPC main-process handler
+    // (ipcMain.handle/.on) invoked from the renderer, and a Tauri Rust command
+    // (#[tauri::command]) invoked from the frontend via invoke().
+    | 'ipc' | 'command'
+    // non-REST API entry-point kind: a gRPC/RPC server-side method handler
+    // (grpc-js addService impl, NestJS @GrpcMethod, Python grpcio Servicer) —
+    // a method dispatch, not an HTTP path, so it reads distinctly from REST routes.
+    | 'rpc';
   name: string;
   description?: string;
   description_source?: 'deterministic' | 'ai' | 'manual' | 'reused';
@@ -984,6 +1033,30 @@ export interface CASTestCoverage {
     assertions?: number;
     coverage_contribution?: number;
   }>;
+}
+
+/**
+ * A structured, self-discovered coverage gap — a concrete thing this analysis
+ * pass encountered but does not (yet) understand. See analyzer/core/coverage-gaps.ts
+ * for the collection logic and rationale.
+ */
+export type CASCoverageGapKind =
+  | 'unknown-dependency'
+  | 'low-extraction-ratio'
+  | 'zero-entry-points'
+  | 'unhandled-node-type';
+
+export interface CASCoverageGap {
+  kind: CASCoverageGapKind;
+  /** Short human-readable statement of the gap. */
+  evidence: string;
+  file?: string;
+  severity: 'low' | 'medium' | 'high';
+  /** Machine-stable key for aggregation across repos (e.g. the dep name, the
+   *  node-type string, or the codebase_type for zero-entry-point gaps). */
+  key?: string;
+  /** Extra structured detail specific to `kind` (counts, ratios, etc). */
+  detail?: Record<string, unknown>;
 }
 
 export interface CASLibrary {

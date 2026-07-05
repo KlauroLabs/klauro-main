@@ -77,8 +77,12 @@ import {
   INCREMENTAL_STATE_VERSION,
   CASArtifactType
 } from '../../types/cas.types';
-import { classifyArtifactType, artifactLedDomainLabel, collectArtifactManifestSignal, type ArtifactTypeResult } from './artifact-type';
+import { classifyArtifactType, artifactLedDomainLabel, collectArtifactManifestSignal, APP_FRAMEWORK_MARKERS, type ArtifactTypeResult } from './artifact-type';
 import { collectDeployableEvidence } from './deployable-evidence';
+import { classifyCodebaseTypes } from './codebase-type';
+import { applyConventions, type KlauroConventionsInput } from './conventions-applier';
+import { linkInfraTopology } from './infra-topology-linker';
+import { collectCoverageGaps } from './coverage-gaps';
 import { ChangeDetector } from './change-detector';
 import { buildUserJourneys } from './journey-builder';
 import { buildTerminalSignal, type TerminalSignal } from './terminal-signal';
@@ -313,6 +317,15 @@ interface DiscoveredEntryPointCandidate {
   name: string;
   description: string;
   trigger?: CASEntryPoint['trigger'];
+  /**
+   * Set when this candidate is a package.json main/module/exports field on a
+   * LIBRARY-shaped package (publishable surface, no bin, no app framework,
+   * no server/app entry points). Carries the package name so the per-export
+   * expansion in addDiscoveredEntryPoints can label emitted `api` entry
+   * points, and the manifest field so duplicate fields (main+module often
+   * point at different bundles of the same source) don't double-emit.
+   */
+  libraryPublicApi?: { packageName: string; field: string };
 }
 
 /**
@@ -338,6 +351,13 @@ export interface OrchestrateAnalysisOptions {
    * analyze where projectPath already is the real directory name).
    */
   displayName?: string;
+  /**
+   * Declared custom-architecture conventions from .klaurorc's `conventions:`
+   * section (resolved in apps/mcp-server via klauro-config.ts, since
+   * analyzer-core does not depend on mcp-server). Additive to
+   * auto-detection; see conventions-applier.ts.
+   */
+  conventions?: KlauroConventionsInput;
 }
 
 export class AnalyzerOrchestrator {
@@ -789,6 +809,12 @@ export class AnalyzerOrchestrator {
     ].includes(basename)) return true;
     if (/^(next|jest|cypress)\.config\.(js|ts|mjs|cjs)$/.test(basename)) return true;
     if (filePath.toLowerCase().endsWith('prisma/schema.prisma')) return true;
+    // Jupyter notebooks (.ipynb) are JSON documents, not a registered-language
+    // source extension — JupyterNotebookAnalyzer parses the format directly
+    // (analyzer/frameworks/dataml/jupyter-notebook-analyzer.ts). Without this,
+    // notebooks are silently invisible to hasAnalyzerSignal()'s file-pattern
+    // matching, so the analyzer never gets a chance to run.
+    if (basename.endsWith('.ipynb')) return true;
     // Per-language source extensions live in LANGUAGE_REGISTRY (language-registry.ts);
     // adding a language is one entry there, not an edit to this regex.
     return isRegisteredSourceExtension(filePath);
@@ -1198,6 +1224,42 @@ export class AnalyzerOrchestrator {
     this.applyCanonicalOrdering(allNodes, allEdges, allEntryPoints, allExitPoints, allLibraries);
     logTiming('pp_linkRouteHandlers', phaseStart);
 
+    // Declared custom-architecture conventions (.klaurorc conventions:) —
+    // additive, evidence-gated pass over the SAME extracted nodes/edges, so
+    // hand-rolled/proprietary patterns the auto-detectors can't infer still
+    // surface as real entry_points/route_table rows/data_entities/flows. See
+    // conventions-applier.ts. Never fails/blocks a real analysis run.
+    let declaredDataEntities: CASDataEntity[] = [];
+    let declaredConventionMatches: ReturnType<typeof applyConventions>['matches'] = [];
+    try {
+      // buildAllDecorators only reads node.call_graph.decorators/
+      // node.metadata.attributes.decorators, both already populated by the
+      // per-language analyzers at this point — safe to compute early here
+      // too (buildAllDecorators is pure/idempotent; it is recomputed at its
+      // normal call site below for the CAS `decorators` field, cheap either
+      // way) so declared route-decorator conventions have real argument
+      // evidence to match against instead of bare names only.
+      const decoratorsForConventions = this.buildAllDecorators(allNodes);
+      const conventionsResult = applyConventions(options?.conventions, allNodes, allEdges, decoratorsForConventions);
+      allEntryPoints.push(...conventionsResult.entry_points);
+      allEdges.push(...conventionsResult.edges);
+      declaredDataEntities = conventionsResult.data_entities;
+      declaredConventionMatches = conventionsResult.matches;
+      for (const { node_id, role } of conventionsResult.role_tags) {
+        const node = allNodes.find(n => n.id === node_id);
+        if (node) {
+          node.metadata = node.metadata || {};
+          node.metadata.attributes = { ...(node.metadata.attributes || {}), declared_role: role };
+          node.tags = [...new Set([...(node.tags || []), `role:${role}`])];
+        }
+      }
+      if (conventionsResult.entry_points.length > 0) {
+        this.dedupeHttpEntryPoints(allEntryPoints);
+      }
+    } catch (error) {
+      console.error('[Klauro] conventions-applier pass failed:', error);
+    }
+
     phaseStart = Date.now();
     const systemName = options?.displayName || path.basename(projectPath);
     const progressiveLevels = this.buildProgressiveLevels(allNodes, categories);
@@ -1232,7 +1294,7 @@ export class AnalyzerOrchestrator {
     phaseStart = Date.now();
     const flowSummary = this.buildFlowSummary(allNodes, allEntryPoints);
     const dataEntities = this.enrichCuratedProductDataEntities(
-      this.buildDataEntities(allNodes, allEdges, projectPath),
+      [...this.buildDataEntities(allNodes, allEdges, projectPath), ...declaredDataEntities],
       systemName,
       allNodes,
       projectPath
@@ -1450,7 +1512,7 @@ export class AnalyzerOrchestrator {
     logTiming('pp_finalMetadata', phaseStart);
 
     phaseStart = Date.now();
-    const testSuites = this.buildTestSuites(allNodes, allEntryPoints, projectPath);
+    const testSuites = this.buildTestSuites(allNodes, allEntryPoints, projectPath, allEdges);
     const mocks = this.buildMocks(allNodes);
     const fixtures = this.buildFixtures(allNodes);
     const testSummary = this.buildTestSummary(allNodes, allEntryPoints);
@@ -1615,6 +1677,62 @@ export class AnalyzerOrchestrator {
     } as CASOutput;
 
     output.product_map = buildProductMap(output);
+
+    // Infra -> code topology linker. Additive, deterministic, evidence-gated
+    // pass over the already-assembled CASOutput that joins infra-as-code
+    // resources (Terraform / Helm-emitted kubernetes_<kind> / Compose /
+    // Dockerfile / CloudFormation) to the deployables, routes, channels, and
+    // stores the code actually ships and uses — the runtime-topology layer
+    // (deploys/exposes/routes_to/provisions_*/runtime_depends_on edges). See
+    // infra-topology-linker.ts. Never blocks/fails a real analysis run.
+    try {
+      const infraLinks = linkInfraTopology(output);
+      if (infraLinks.nodes.length > 0) output.nodes.push(...infraLinks.nodes);
+      // Additive runtime-topology edges (deploys/exposes/routes_to/
+      // provisions_*/runtime_depends_on) join infra resources to the code they
+      // ship and use; they live on output.edges alongside compose/terraform
+      // depends_on, traversable via query_graph / get_dependencies.
+      if (infraLinks.edges.length > 0) output.edges.push(...infraLinks.edges);
+    } catch (error) {
+      console.error('[Klauro] infra-topology-linker pass failed:', error);
+    }
+
+    // Codebase-TYPE classification + self-discovered coverage gaps. Both are
+    // additive, deterministic, non-AI passes over already-produced facts (see
+    // codebase-type.ts / coverage-gaps.ts) — never block/fail analysis on them.
+    try {
+      const typeClassification = classifyCodebaseTypes({
+        projectPath,
+        entryPoints: allEntryPoints,
+        libraries: allLibraries,
+        nodes: allNodes,
+      });
+      output.codebase_type = typeClassification.primary_type;
+      output.codebase_type_confidence = typeClassification.confidence;
+      output.codebase_types = typeClassification.types;
+      output.codebase_type_signals = typeClassification.signals;
+
+      const recognizedDependencyNames = new Set<string>();
+      for (const registration of this.analyzers.values()) {
+        for (const dep of registration.detectPatterns?.dependencies ?? []) {
+          recognizedDependencyNames.add(dep.toLowerCase());
+        }
+      }
+      const gaps = collectCoverageGaps({
+        projectPath,
+        nodes: allNodes,
+        entryPoints: allEntryPoints,
+        libraries: allLibraries,
+        recognizedDependencyNames,
+        codebaseType: typeClassification.primary_type,
+      });
+      output.coverage_gaps = gaps.length > 0 ? gaps : undefined;
+      output.conventions_applied = declaredConventionMatches.length > 0 ? declaredConventionMatches : undefined;
+    } catch (error) {
+      // Never let the (additive, optional) intelligence layer take down a real
+      // analysis run.
+      console.error('[Klauro] codebase-type/coverage-gaps pass failed:', error);
+    }
 
     if (deferAiEnrichment) {
       // Deterministic result returned instantly. If AI can't run at all, mark
@@ -2204,7 +2322,7 @@ export class AnalyzerOrchestrator {
     const securitySummary = this.buildSecuritySummary(securityBoundaries, nodes, productEntryPointsForSecurity);
     const temporalStability = this.buildTemporalStability(nodes, gitAnalyzer);
     const stabilitySummary = this.buildStabilitySummary(temporalStability);
-    const testSuites = this.buildTestSuites(nodes, entryPoints, projectPath);
+    const testSuites = this.buildTestSuites(nodes, entryPoints, projectPath, edges);
     const behavioralInvariants = this.buildBehavioralInvariants(nodes, edges, entryPoints, databaseSchema, dataEntities, securityBoundaries, testSuites, projectPath);
     const behavioralInvariantSummary = this.buildBehavioralInvariantSummary(behavioralInvariants);
 
@@ -4840,7 +4958,14 @@ export class AnalyzerOrchestrator {
     const validTypes = new Set([
       'http', 'cli', 'websocket', 'ws_handler', 'message',
       'event', 'scheduled', 'schedule', 'cron', 'queue', 'grpc', 'graphql',
-      'page', 'route', 'lifecycle', 'test'
+      // gRPC/RPC server-side method handlers (grpc-js addService, NestJS @GrpcMethod,
+      // Python grpcio Servicer) — a method dispatch, not an HTTP path.
+      'rpc',
+      'page', 'route', 'lifecycle', 'test',
+      // data/ML pipeline kinds: an orchestration task/asset node (Airflow/Dagster/
+      // Prefect/Luigi), the pipeline/DAG/flow/job itself, an ordered Jupyter
+      // notebook code cell, or an ML training-loop entry point.
+      'task', 'pipeline', 'notebook-cell', 'train'
     ]);
     return validTypes.has(ep.type);
   }
@@ -19334,6 +19459,30 @@ export class AnalyzerOrchestrator {
       const entryId = `entry_discovered_${candidate.file.replace(/[^a-zA-Z0-9]/g, '_')}`;
       if (existingIds.has(entryId)) continue;
 
+      // Library public-API entry-point model: for a package whose main/module/
+      // exports field IS the product surface, the meaningful "entry points"
+      // are its exported symbols, not the barrel file itself. When we can
+      // resolve real exported declarations under this entry file, emit one
+      // `api` entry point per export (evidence-based — only nodes the
+      // language analyzer already marked exported) instead of a single
+      // generic file-level entry. Falls through to the existing file-level
+      // entry when no exports are resolvable (e.g. languages where the
+      // analyzer doesn't yet tag is_exported) so behavior for those repos is
+      // unchanged.
+      if (candidate.libraryPublicApi) {
+        const exportEntryPoints = this.buildLibraryPublicApiEntryPoints(
+          nodes, projectPath, candidate, sourceNode, existingIds, existingSourceNodes
+        );
+        if (exportEntryPoints.length > 0) {
+          for (const exportEntryPoint of exportEntryPoints) {
+            entryPoints.push(exportEntryPoint);
+            existingIds.add(exportEntryPoint.id);
+            existingSourceNodes.add(exportEntryPoint.source_node);
+          }
+          continue;
+        }
+      }
+
       entryPoints.push({
         id: entryId,
         source_node: sourceNode.id,
@@ -19426,6 +19575,17 @@ export class AnalyzerOrchestrator {
         }
       }
 
+      // A package.json main/module/exports field is the PUBLIC API SURFACE of
+      // a library — not just "a file to point at". Libraries have no
+      // route/page shape; their entry points are their exported symbols. Gate
+      // on the same structural evidence deployable/artifact-type classification
+      // uses (publishable, no bin, no app framework dependency) so server/app
+      // repos that merely happen to declare `main` (e.g. for tooling) are
+      // unaffected — they keep the existing single file-level entry below.
+      const depsText = JSON.stringify({ ...(packageJson.dependencies || {}), ...(packageJson.devDependencies || {}) }).toLowerCase();
+      const isLibraryShaped = Boolean(packageJson.main || packageJson.module || packageJson.exports) &&
+        !packageJson.bin && packageJson.private !== true && !APP_FRAMEWORK_MARKERS.test(depsText);
+
       for (const field of ['main', 'module', 'exports']) {
         const value = packageJson[field];
         if (typeof value === 'string') {
@@ -19435,6 +19595,9 @@ export class AnalyzerOrchestrator {
             name: `${packageJson.name || path.basename(projectPath)} ${field}`,
             description: `Package ${field} entry declared in package.json.`,
             trigger: { pattern: field },
+            libraryPublicApi: isLibraryShaped
+              ? { packageName: packageJson.name || path.basename(projectPath), field }
+              : undefined,
           });
         }
       }
@@ -19538,6 +19701,84 @@ export class AnalyzerOrchestrator {
     return relative === expectedRelativeFile || normalizedSource.endsWith(`/${expectedRelativeFile}`);
   }
 
+  /**
+   * Library public-API entry-point model: resolve the real exported
+   * declarations under a package's main/module/exports entry file and emit
+   * one `api` entry point per PUBLIC export, so get_flow_concepts/
+   * capabilities root at the actual public surface and get_callers on an
+   * export shows external-consumer shape — the real "entry" to a library.
+   *
+   * Evidence-based only: a node counts as a public export when the
+   * analyzer that produced it explicitly marked it (`metadata.is_exported`
+   * true, or `metadata.access_modifier === 'public'` for languages that use
+   * that field instead — Elixir/Kotlin/Solidity/Swift). Internal helpers
+   * (unexported, private/protected) are excluded. Coverage today is
+   * whatever the per-language analyzers already tag: solid for
+   * TypeScript/JavaScript (typescript-javascript-analyzer.ts sets
+   * is_exported on every top-level function/class/const), partial for
+   * Go/Rust (isExported/isPublic tracked in-analyzer but not consistently
+   * copied onto CASNode.metadata yet), and absent for Python (no
+   * __all__/leading-underscore signal wired to metadata yet) — for those,
+   * this returns no entries and the caller falls back to the single
+   * file-level entry point that already existed, so nothing regresses.
+   */
+  private buildLibraryPublicApiEntryPoints(
+    nodes: CASNode[],
+    projectPath: string,
+    candidate: DiscoveredEntryPointCandidate,
+    entryFileNode: CASNode,
+    existingIds: Set<string>,
+    existingSourceNodes: Set<string>
+  ): CASEntryPoint[] {
+    const normalizedEntryFile = candidate.file.replace(/\\/g, '/').replace(/^\.\//, '');
+    const isPublicExport = (node: CASNode): boolean => {
+      if (node.metadata?.is_exported === true) return true;
+      if (node.metadata?.access_modifier === 'public') return true;
+      return false;
+    };
+    const EXPORTABLE_NODE_TYPES = /^(function|class|const|variable|interface|type|enum|struct|component)$/i;
+
+    const exportedNodes = nodes.filter(node => {
+      if (node.id === entryFileNode.id) return false;
+      if (!EXPORTABLE_NODE_TYPES.test(node.type)) return false;
+      const sourceFile = node.source?.file;
+      if (!sourceFile || !this.sourcePathMatches(projectPath, sourceFile, normalizedEntryFile)) return false;
+      return isPublicExport(node);
+    });
+
+    const results: CASEntryPoint[] = [];
+    const packageName = candidate.libraryPublicApi?.packageName || path.basename(projectPath);
+    for (const node of exportedNodes) {
+      if (existingSourceNodes.has(node.id)) continue;
+      const entryId = `entry_api_${packageName}_${node.name}`.replace(/[^a-zA-Z0-9]/g, '_');
+      if (existingIds.has(entryId)) continue;
+
+      results.push({
+        id: entryId,
+        source_node: node.id,
+        source_analyzer: 'orchestrator',
+        type: 'api',
+        name: `${packageName}.${node.name}`,
+        description: `Public API export of ${packageName} (${candidate.libraryPublicApi?.field || 'main'} entry): ${node.name}.`,
+        trigger: { pattern: node.name },
+        handler: {
+          node_id: node.id,
+          method_name: node.name,
+          file: node.source?.file || candidate.file,
+          line: node.source?.line || 1,
+        },
+        metadata: {
+          discovered: true,
+          discovery_source: 'library-public-api-export',
+          library_package: packageName,
+          library_entry_field: candidate.libraryPublicApi?.field,
+          file: candidate.file,
+        },
+      });
+    }
+    return results;
+  }
+
   private selectFallbackEntryNode(nodes: CASNode[], edges: CASEdge[] = []): CASNode | undefined {
     const candidates = nodes.filter(node =>
       Boolean(node.source?.file) &&
@@ -19570,11 +19811,32 @@ export class AnalyzerOrchestrator {
     return score;
   }
 
-  private buildTestSuites(nodes: CASNode[], entryPoints: CASEntryPoint[], projectPath: string): CASTestSuite[] {
+  private buildTestSuites(nodes: CASNode[], entryPoints: CASEntryPoint[], projectPath: string, edges: CASEdge[] = []): CASTestSuite[] {
     const testSuites: CASTestSuite[] = [];
     const addedSuiteIds = new Set<string>();
     const childrenByParent = new Map<string, CASNode[]>();
     const nodesByFile = new Map<string, CASNode[]>();
+
+    // Subject-under-test map: analyzers emit `covers`/`tests` edges from a test
+    // (or suite) node to the source symbol it exercises. Fold those into each
+    // suite's coverage.nodes_tested so find_tests / get_test_summary can answer
+    // "which tests cover this node" — otherwise the edges are structurally
+    // present but invisible to the coverage queries.
+    const coversByOriginNode = new Map<string, Set<string>>();
+    for (const edge of edges) {
+      if (edge.type !== 'covers' && edge.type !== 'tests') continue;
+      if (!edge.source || !edge.target) continue;
+      if (!coversByOriginNode.has(edge.source)) coversByOriginNode.set(edge.source, new Set());
+      coversByOriginNode.get(edge.source)!.add(edge.target);
+    }
+    const coveredNodesForSuite = (suiteOriginId: string, caseOriginIds: string[]): string[] => {
+      const covered = new Set<string>();
+      for (const target of coversByOriginNode.get(suiteOriginId) || []) covered.add(target);
+      for (const caseId of caseOriginIds) {
+        for (const target of coversByOriginNode.get(caseId) || []) covered.add(target);
+      }
+      return [...covered];
+    };
 
     for (const node of nodes) {
       if (node.parent) {
@@ -19607,12 +19869,14 @@ export class AnalyzerOrchestrator {
         if (testsInSuite.length > 0) {
           const suiteId = `suite_${suite.id}`;
           addedSuiteIds.add(suiteId);
+          const nodesTested = coveredNodesForSuite(suite.id, testsInSuite.map(t => t.id));
           testSuites.push({
             id: suiteId,
             name: suite.name,
             file_path: suiteFile,
             test_type: this.inferTestType(suite),
             framework: this.inferTestFramework(suite),
+            coverage: nodesTested.length > 0 ? { nodes_tested: nodesTested } : undefined,
             tests: testsInSuite.map(t => ({
               id: `test_${t.id}`,
               name: t.name,
@@ -20095,6 +20359,20 @@ export class AnalyzerOrchestrator {
   }
 
   private inferTestFramework(node: CASNode): string {
+    // Trust the analyzer's own framework label when it named a real test
+    // framework — a test-framework analyzer that parsed the imports (e.g. vitest
+    // vs jest, testng vs junit) knows better than a filename guess. Gated to a
+    // known-framework allowlist so unrelated analyzer metadata (e.g. a language
+    // analyzer stamping "python language") can't leak in as a framework name.
+    const KNOWN_TEST_FRAMEWORKS = new Set([
+      'jest', 'vitest', 'mocha', 'jasmine', 'node:test', 'cypress', 'playwright',
+      'selenium', 'pytest', 'unittest', 'django.test', 'go-test', 'rust-test',
+      'junit', 'testng', 'xunit', 'nunit', 'rspec', 'minitest', 'phpunit',
+      'flutter-test', 'testing-library', 'supertest'
+    ]);
+    const declared = node.metadata?.framework;
+    if (typeof declared === 'string' && KNOWN_TEST_FRAMEWORKS.has(declared)) return declared;
+
     const file = (node.source?.file || '').toLowerCase();
     const name = (node.name || '').toLowerCase();
     const lang = node.metadata?.language;
@@ -21962,6 +22240,14 @@ export class AnalyzerOrchestrator {
     for (const node of nodes) {
       const callGraphDecs = node.call_graph?.decorators || [];
       const attrDecs = (node.metadata?.attributes as any)?.decorators || [];
+      // Parallel to `attrDecs`: the language analyzers now also carry each decorator's
+      // statically-evaluable call arguments (`decoratorArgs: [{ name, args:[{name,value,type}] }]`),
+      // captured GENERICALLY for any decorator, not only recognized-framework ones. This is
+      // what lets a custom route decorator (`@Endpoint('/orders','GET')`) resolve its
+      // path/method — `attrDecs` alone is just the bare name string. Absent for nodes whose
+      // decorators had no evaluable args (the common case), so guarded per-name below.
+      const attrDecArgs: Array<{ name: string; args: Array<{ name: string; value: any; type: string }> }> =
+        (node.metadata?.attributes as any)?.decoratorArgs || [];
 
       for (const dec of callGraphDecs) {
         const name = dec.name;
@@ -22004,6 +22290,23 @@ export class AnalyzerOrchestrator {
 
         const category = this.classifyDecoratorCategory(name);
 
+        // Lift this decorator's captured literal args (if any) into CASDecorator.parameters
+        // in call-site order — positional args keyed '0','1',..., named/object-property args
+        // keyed by property name — so an unrecognized decorator resolves arguments exactly
+        // like a recognized-framework one. Only decorators that carried evaluable args appear
+        // in `attrDecArgs`; a decorator with none stays parameter-less (never fabricated).
+        const capturedArgs = attrDecArgs.find(d => d.name === name)?.args || [];
+        const parameters = capturedArgs.length > 0
+          ? capturedArgs.map(a => ({ name: a.name, value: a.value, type: a.type }))
+          : undefined;
+        // Shape the args as a name->value map so extractRoutingInfo/extractSecurityInfo
+        // (which read `dec.arguments`) can lift a path/method/roles the same way they do
+        // for framework decorators. Positional keys ('0','1') are preserved alongside named.
+        const argMap = capturedArgs.length > 0
+          ? Object.fromEntries(capturedArgs.map(a => [a.name, a.value]))
+          : undefined;
+        const decForInfo = { name, arguments: argMap };
+
         decorators.push({
           id: `dec_${node.id}_${name}`,
           target_node: node.id,
@@ -22021,7 +22324,10 @@ export class AnalyzerOrchestrator {
             category,
             behavior: this.describeDecoratorBehavior(name, category),
             affects_runtime: category !== 'other'
-          }
+          },
+          parameters,
+          routing_info: category === 'routing' && argMap ? this.extractRoutingInfo(decForInfo) : undefined,
+          security_info: category === 'security' && argMap ? this.extractSecurityInfo(decForInfo) : undefined
         });
       }
     }
@@ -22668,6 +22974,20 @@ export class AnalyzerOrchestrator {
             continue;
           }
           if (inDeps) {
+            // Skip extras/group KEY lines that introduce an ARRAY of the real packages.
+            // In [project.optional-dependencies] (PEP 621) the extras keys map to arrays:
+            //   dev = [ "pytest", "ruff" ]
+            // and the same array-of-strings form appears for grouped extras. The `dev`/
+            // `test`/`ml` key here is a group name, NOT a package — treating it as one
+            // produced a spurious "dev" library. The array MEMBERS ("pytest", ...) live on
+            // the following lines and are still extracted by the package regex below.
+            // NOTE: we only skip ARRAY assignments. Poetry group tables
+            // ([tool.poetry.group.<name>.dependencies]) use scalar assignments where the
+            // KEY *is* the package, e.g. `pytest = "^8.0"` — those must fall through and be
+            // captured, so we do not skip `<name> = "..."` / `<name> = {...}` lines.
+            if (/^"?[a-zA-Z0-9_.-]+"?\s*=\s*\[/.test(trimmed)) {
+              continue;
+            }
             const match = trimmed.match(/^"?([a-zA-Z0-9_.-]+)"?\s*(?:[><=!~]+\s*"?([^",\]]+))?/);
             if (match && !match[1].startsWith('#')) {
               const name = match[1];
