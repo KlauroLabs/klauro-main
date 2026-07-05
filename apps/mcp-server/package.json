@@ -1,6 +1,6 @@
 {
   "name": "@klauro/mcp-server",
-  "version": "1.0.27",
+  "version": "1.0.29",
   "private": true,
   "description": "MCP server for Klauro codebase analysis",
   "main": "dist/index.cjs",
@@ -53,6 +53,7 @@
     "proposal-preview-gauntlet": "tsx src/proposal-preview-gauntlet.ts",
     "telemetry-ingestion-proof": "tsx src/telemetry-ingestion-proof.ts",
     "runtime-impact-benchmark": "tsx src/runtime-impact-benchmark.ts",
+    "impact-benchmark": "tsx src/new-context-impact-benchmark.ts",
     "discover-real-repos": "tsx src/repo-discovery.ts --dev-root /Users/michaelshattuck/dev",
     "repo-documentation": "tsx src/repo-documentation.ts",
     "save-golden": "tsx src/cli.ts save-golden",
