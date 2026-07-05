@@ -5,6 +5,34 @@ agent-feedback reports (`~/.klauro/agent-feedback/*.md`) — nothing is asserted
 Where an item was still in flight at the time this entry was written, it is marked **pending
 final verify** rather than presented as done.
 
+## v1.0.20 — Framework breadth + blast-radius at grep-parity + measured token savings (2026-07-04)
+
+The "prove it + spread it" pass. Full gate green: tsc both, analyzer-core 893 jest, framework node-tests
+166/166, live-registration guard 2/2 (every new analyzer wired live, no dead paths).
+
+### Added — major-framework coverage across languages (live count 48 → ~68)
+A 6-agent parallel wave (co-editing the shared registration files clean through multiple real fabric
+409s): **Go** — Gin/Echo/Fiber/Chi (was 0); **Dart** — shelf server routes; **Python** —
+aiohttp/Sanic/Tornado/Starlette; **JVM** — JAX-RS/Jersey, Vert.x, Akka HTTP, Play (parses `conf/routes`);
+**Ruby** — Sinatra; **PHP** — Slim/CodeIgniter; **Clojure** — Reitit/Ring; **Rust** — warp, tonic (gRPC);
+**C++** — Drogon, Crow (first C++ web support). Each evidence-gated, handler-resolved, fixture/real-repo
+validated. Honest shape: ~130 languages parse; the *majors* now covered for ~10 major languages (not
+"dozens per language" — that's JS/TS only).
+
+### Fixed
+- **`get_callers` blast-radius now at grep parity.** The v1.0.19 dedupe fixed one case; a real metered
+  benchmark showed it still returned a fraction of consumers (11% on zerac-api). Root causes (AST-level):
+  decorator-argument identifiers, decorator-name refs, `abstract_class_declaration`, and class
+  `extends`/`implements` were all unscanned. Now resolved (no fabricated edges; shadowing respected).
+  Real: `INTERNAL_GET_ERRORS` 1/18→**18/18**, `AllowAnonymous` 0/23→**23/23**, `EventBusService` 8/9→**9/9**.
+- Play's `conf/routes` reaches the analyzer (snapshot allowlist) and isn't treated as a package boundary.
+
+### Measured (real gpt-5.5, on-machine, metered — `docs/IMPACT-BENCHMARK.md`)
+Agent token cost, with-Klauro vs grep/read baseline: **orientation ~98% fewer tokens at equal
+correctness** (35,010 → 537 to orient one repo); **blast-radius ~98% fewer AND now grep-parity complete**
+after the fix above. Honest: measured with gpt-5.5 (Claude CLI wasn't headless-authable here); directional
+sample size — the harness (`scratchpad/token-grid.ts` pattern) is reusable for a larger grid.
+
 ## v1.0.19 — Blast-radius completeness: dedupe phantom util-node twins (2026-07-04)
 
 The v1.0.18 `get_callers` fix was real but incomplete on real repos — the right-shape re-benchmark
