@@ -24,7 +24,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { createRemoteAnalyzerHttpServer } from '../remote-analyzer-service';
 import { buildSourceSnapshot, EXCLUDED_DIRECTORIES } from '../remote-source';
-import { saveAnalysis } from '../storage';
+import { getAnalysisEntry, saveAnalysis } from '../storage';
 import type { CASOutput } from '../../../../packages/analyzer-core/src/types/cas.types';
 
 let localServerUrl: string | null = null;
@@ -132,9 +132,20 @@ export async function analyzeForBench(dir: string): Promise<CASOutput> {
     cas.system.name = path.basename(dir);
     cas.system.id = `system_${cas.system.name}`;
     cas.system.root_path = dir;
-    // Cache locally exactly as the real product client does (analyze -> server ->
-    // local cache), keyed by the ORIGINAL dir so getAnalysis(dir)/the MCP find it.
-    await saveAnalysis(dir, cas).catch(() => undefined);
+    // Seed the local cache keyed by the ORIGINAL dir so getAnalysis(dir)/the MCP
+    // find it — but ONLY when no analysis is already stored for that dir. The
+    // harness is a blackbox READ-side consumer: it must never downgrade the real
+    // store. This bench run analyzes a staged throwaway copy, with the server's
+    // own (often AI-less) config, so overwriting an existing analysis would stamp
+    // fresh `description_generation: ai_skipped/no-ai-provider-configured`
+    // provenance + a new analysis_timestamp over a previously enriched analysis
+    // (observed clobbering soon-bos/soon-decrypter/Finance-Context via the
+    // usefulness-review sweep). Writes to the stored CAS belong to explicit
+    // analyze/enrichment entry points (analyzeProject/runAnalysis) only; the
+    // seed-if-absent below cannot destroy any provenance because the slot is
+    // empty. Callers always get the fresh `cas` in-memory regardless.
+    const existing = await getAnalysisEntry(dir).catch(() => null);
+    if (!existing) await saveAnalysis(dir, cas).catch(() => undefined);
     return cas;
   } finally {
     if (staged !== dir) await fs.remove(staged).catch(() => undefined);
