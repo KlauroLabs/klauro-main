@@ -3,6 +3,11 @@ import * as fs from 'fs';
 import type { CASEntryPoint, CASExitPoint, CASNode, CASOutput, CASTemporalStability } from '../../../packages/analyzer-core/src/types/cas.types';
 import { aiService } from '../../../packages/analyzer-core/src/ai/ai-service';
 import { describeConfiguredAIProvider } from '../../../packages/analyzer-core/src/config/ai.config';
+import {
+  isInfrastructureSemanticName,
+  isRuntimeEndpointSemanticName,
+  isSupportingSemanticName,
+} from './semantic-roles';
 
 export type SystemInterfaceKind =
   | 'http-api'
@@ -6775,23 +6780,9 @@ function semanticRoleForWorkspaceItem(name: unknown, score: number, fallback: Wo
   return role;
 }
 
-function isInfrastructureSemanticName(normalized: string): boolean {
-  return /\b(database|postgres|mysql|redis|cache|queue|broker infrastructure|cloud|infrastructure|terraform|pulumi|kubernetes|docker|compose|deployment|provisioning|monitoring|observability|logging|ci|cd|build|pipeline|container|backend provisioning)\b/.test(normalized);
-}
-
-function isRuntimeEndpointSemanticName(normalized: string): boolean {
-  const raw = String(normalized || '');
-  const compact = raw.trim();
-  const normalizedText = normalizeAiItemName(raw);
-  return /^[a-z0-9 ._-]+:\d+(?:\b|$)/i.test(compact) ||
-    /\bhttps?:\/\/[a-z0-9._-]+:\d+/i.test(compact) ||
-    /^[a-z0-9 ._-]+\s+\d{2,5}$/.test(normalizedText);
-}
-
-function isSupportingSemanticName(normalized: string): boolean {
-  return /\b(license|licensing|notification|notifications|terms|conditions|impersonation|revocation|audit|activity log|password reset|email|mailer|usage|settings|configuration|logo|avatar|theme|session|token|apikey|api key|identity|authentication|forgot password|reset password|profile|preference|preferences|document|documents|cancellation|feedback|credential|credentials|platform)\b/.test(normalized) ||
-    /\b(passwordreset|cancellationfeedback|userapikey|apikey|credential|credentials)\b/.test(normalized);
-}
+// isInfrastructureSemanticName / isRuntimeEndpointSemanticName /
+// isSupportingSemanticName now live in ./semantic-roles (single source of truth
+// shared with the per-entity/per-flow role classifiers) and are imported above.
 
 function effectiveWorkspaceTerminalScore(name: unknown, score: number): number {
   if (!Number.isFinite(score) || score <= 0) return 0;
