@@ -50,9 +50,9 @@ command -v sshpass >/dev/null || { echo "ERROR: sshpass not installed." >&2; exi
 # connection. Without it a deploy makes ~6 separate auths, and repeated deploys
 # in one session trip the VPS's connection-rate limit ("Permission denied"
 # mid-deploy). The master persists briefly so back-to-back deploys reuse it too.
-CM_DIR="${TMPDIR:-/tmp}/klauro-deploy-cm"
-mkdir -p "$CM_DIR"
-CM_OPTS="-o ControlMaster=auto -o ControlPath=$CM_DIR/%r@%h:%p -o ControlPersist=120"
+# NB: ControlPath must stay short (macOS TMPDIR overflows the Unix-socket path
+# limit) — use /tmp directly + %C (hash of conn params) instead of %r@%h:%p.
+CM_OPTS="-o ControlMaster=auto -o ControlPath=/tmp/klauro-cm-%C -o ControlPersist=120"
 SSH="sshpass -p $VPS_PASSWORD ssh -o StrictHostKeyChecking=no -o ConnectTimeout=25 $CM_OPTS"
 DEST="$VPS_USER@$VPS_HOST"
 
