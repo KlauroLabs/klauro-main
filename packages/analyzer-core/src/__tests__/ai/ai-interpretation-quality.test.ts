@@ -293,6 +293,39 @@ describe('external service plausibility filter', () => {
     expect(isPlausibleExternalServiceName('Geocodio', ['location-api'])).toBe(true);
   });
 
+  it('rejects CI shell-command fragments so they never become service labels', () => {
+    // The exact class that leaked into testing-utilities-net's description:
+    // a raw `dotnet pack` line from .gitlab-ci.yml surfaced as a "service".
+    const leaked = [
+      'dotnet pack "Soon.TestingUtilities/Soon.TestingUtilities.csproj" -p:Version=$VER',
+      '.NET pack "Soon.TestingUtilities/Soon.TestingUtilities.csproj" -p:Version=$VER deploys to nuget',
+      'npm publish --access public',
+      'docker build -t app:${CI_COMMIT_SHA} .',
+      'cargo publish --token $CARGO_TOKEN',
+      'helm upgrade --install my-release charts/app',
+      'bash scripts/deploy.sh production',
+      'echo $DEPLOY_URL > target/url.txt',
+      'a very long multi word fragment that reads like prose not a service name',
+    ];
+    for (const name of leaked) {
+      expect(isPlausibleExternalServiceName(name, ['testing-utilities-net'])).toBe(false);
+    }
+    expect(filterPlausibleExternalServices(leaked, ['testing-utilities-net'])).toEqual([]);
+    // Orchestrator-side gate (buildExternalServices) rejects the same class.
+    for (const name of leaked) {
+      expect(orch.isMeaningfulExternalServiceName(name)).toBe(false);
+    }
+    // Real service names still pass both gates.
+    for (const name of ['Stripe', 'S3', 'auth0.com']) {
+      expect(isPlausibleExternalServiceName(name, ['testing-utilities-net'])).toBe(true);
+    }
+    // (auth0.com is rejected by the orchestrator's pre-existing dotted-identifier
+    // rule, independent of the command-shape filter added here.)
+    for (const name of ['Stripe', 'S3']) {
+      expect(orch.isMeaningfulExternalServiceName(name)).toBe(true);
+    }
+  });
+
   it('feeds only plausible names into the combined interpretation prompt facts', () => {
     const previousPath = orch.activeAnalysisProjectPath;
     orch.activeAnalysisProjectPath = '/Users/example/dev/zerac/poc';

@@ -93,6 +93,16 @@ test('CiPipelineAnalyzer emits pipeline, job, step, trigger, dependency, and dep
   assert.ok(cas.edges.some(edge => edge.type === 'depends_on' && edge.metadata?.dependency === 'unit'));
   assert.ok(cas.edges.some(edge => edge.type === 'deploys_to'));
   assert.ok(cas.exit_points.some(exit => exit.type === 'sdk' && exit.metadata?.command?.includes('kubectl apply')));
+
+  // The external-service LABEL for a deploy exit point must be the deploy
+  // target, never the command-shaped step name (hash-shaped-token-leak class:
+  // raw `dotnet pack …` lines must not surface as "connects to <command>").
+  const deployExits = cas.exit_points.filter(exit => exit.type === 'sdk' && exit.operation?.action === 'deploy');
+  assert.ok(deployExits.length > 0);
+  for (const exit of deployExits) {
+    assert.equal(exit.target?.sdk, exit.target?.service_id);
+    assert.ok(!/\s--?[A-Za-z]|\$[A-Za-z{]/.test(exit.target?.sdk || ''), `command-shaped sdk label: ${exit.target?.sdk}`);
+  }
 });
 
 test('AnalyzerOrchestrator selection sees hidden CI config files', async () => {

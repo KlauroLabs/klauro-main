@@ -114,7 +114,7 @@ import { aiService } from '../../ai/ai-service';
 import { setAICacheProjectScope } from '../../ai/ai-cache';
 import { aiConfig, getAIConfig } from '../../config/ai.config';
 import { validateElementDescription as validateSharedElementDescription } from '../../ai/element-description-validator';
-import { filterPlausibleExternalServices } from '../../ai/external-service-plausibility';
+import { filterPlausibleExternalServices, isCommandShapedLabel } from '../../ai/external-service-plausibility';
 
 export type { CASOutput } from '../../types/cas.types';
 import * as fs from 'fs-extra';
@@ -7165,6 +7165,10 @@ export class AnalyzerOrchestrator {
     const value = (name || '').replace(/^call to\s*/i, '').trim();
     if (!value) return false;
     const lower = value.toLowerCase();
+    // Shell-command-shaped fragments (e.g. CI script lines like
+    // `dotnet pack "Foo/Foo.csproj" -p:Version=$VER`) must never become
+    // external-service labels. They can survive as raw evidence only.
+    if (isCommandShapedLabel(value)) return false;
     if (/\boperations?\s+via\b/i.test(value)) return false;
     if (/^(database|request external|shutil|subprocess|re|pathlib|os|sys|typing|datetime|uuid)$/.test(lower)) return false;
     if (value.includes('${')) return false;
@@ -13184,6 +13188,13 @@ export class AnalyzerOrchestrator {
     for (const framework of frameworks) {
       if (/\b(jest|vitest|mocha|cypress|playwright)\b/i.test(framework)) continue;
       if (/^dart$/i.test(String(framework || '').trim())) continue;
+      // Test harnesses and analysis/packaging artifacts are real detections but
+      // not what a system is "built with" — "built with rust-test, React, and
+      // dockerfile" (zerac poc) reads as noise to a cold reader. Narrative
+      // headline only; detection output is unchanged.
+      if (/(?:^|[\s/_-])tests?(?:$|[\s/_-])|\btest framework\b/i.test(framework)) continue;
+      if (/^(dockerfile|docker compose|distribution artifact|helm chart|kubernetes manifest)$/i.test(String(framework || '').trim())) continue;
+      if (/\b(?:ast|language)$/i.test(String(framework || '').trim())) continue;
       const display = this.frameworkDisplayName(framework);
       const key = display.toLowerCase().replace(/[^a-z0-9]+/g, '');
       if (!display || seen.has(key)) continue;

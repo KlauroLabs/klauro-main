@@ -35,6 +35,36 @@ const CODE_TYPE_TOKENS = new Set([
 
 const PASCAL_CASE_MULTIWORD_PATTERN = /^[A-Z][a-z0-9]*(?:[A-Z][a-z0-9]*)+$/;
 
+// Command verbs that indicate a shell command was captured, not a service name
+// (e.g. `dotnet pack "Foo/Foo.csproj" -p:Version=$VER` from a CI script).
+const COMMAND_VERB_PATTERN = /^(?:\.net|dotnet|npm|npx|pnpm|yarn|bun|cargo|rustup|docker|docker-compose|podman|kubectl|helm|bash|sh|zsh|pwsh|powershell|python[0-9.]*|pip[0-9]*|node|deno|go|mvn|gradle|make|cmake|msbuild|nuget|terraform|ansible|pulumi|aws|az|gcloud|gh|git|curl|wget|scp|rsync|ssh|apt|apt-get|yum|brew|composer|bundle|rake|flutter|swift|xcodebuild|echo|export|cd|cp|mv|rm|mkdir|chmod|tar|zip|unzip)\s+\S/i;
+
+/**
+ * True when a candidate label looks like a shell command / CI script fragment
+ * (or a piece of one) rather than the name of a real external service.
+ * Command-shaped tokens must never become narrative labels — they can survive
+ * only as raw evidence/metadata. (hash-shaped-token-leak class)
+ */
+export function isCommandShapedLabel(name: string): boolean {
+  const value = (name || '').trim();
+  if (!value) return false;
+  // Shell metacharacters / quoting never appear in real service names.
+  if (/[|&;<>`"\\]/.test(value)) return true;
+  // Unexpanded variables: $VER, ${VERSION}, %VERSION%, ${{ github.ref }}
+  if (/\$\{?[A-Za-z_{]/.test(value) || /%[A-Za-z_][A-Za-z0-9_]*%/.test(value)) return true;
+  // CLI flag tokens: -p:Version=, --output, -o dir
+  if (/(?:^|\s)--?[A-Za-z]/.test(value)) return true;
+  // Path separator combined with a file extension: Soon.TestingUtilities/Soon.TestingUtilities.csproj
+  if (/\/[^\s/]*\.[A-Za-z0-9]{1,6}(?:\s|$)/.test(value) && !/:\/\//.test(value)) return true;
+  // Command verb at the start followed by arguments: `dotnet pack …`, `npm publish …`
+  if (COMMAND_VERB_PATTERN.test(value)) return true;
+  // Overlong multi-word fragments are prose/commands, not names.
+  const words = value.split(/\s+/);
+  if (words.length >= 5) return true;
+  if (words.length >= 2 && value.length > 60) return true;
+  return false;
+}
+
 function normalizeServiceName(name: string): string {
   return (name || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
 }
@@ -51,6 +81,7 @@ export function isPlausibleExternalServiceName(name: string, selfNames: string[]
   }
 
   if (KNOWN_SERVICE_NAMES.has(norm)) return true;
+  if (isCommandShapedLabel(trimmed)) return false;
   if (/^[A-Za-z][A-Za-z ]*:\s/.test(trimmed)) return false;
   if (/\boperations?\s+via\b/i.test(trimmed)) return false;
   if (/_/.test(trimmed)) return false;
