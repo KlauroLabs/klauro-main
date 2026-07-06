@@ -78,6 +78,18 @@ echo "==> Packing tarball (build + npm pack + latest.json)"
 npm run pack:tarball >/dev/null
 test -f ./.pack/klauro-latest.tgz || { echo "ERROR: tarball not produced"; exit 1; }
 test -f ./.pack/latest.json       || { echo "ERROR: latest.json not produced"; exit 1; }
+
+# Freshness gate: the tarball's INNER package.json version must equal the
+# release version. This caught real poisoning — the old picker copied the
+# PREVIOUS klauro-latest.tgz onto itself (alphabetical readdir .find), so
+# every release since July 1 shipped the 1.0.0 bits while latest.json claimed
+# the new version, silently downgrading every `klauro update` user.
+INNER_VER="$(tar -xzOf ./.pack/klauro-latest.tgz package/package.json | node -p "JSON.parse(require('fs').readFileSync(0)).version" 2>/dev/null || echo unknown)"
+if [ "$INNER_VER" != "$VERSION" ]; then
+  echo "ERROR: tarball is STALE — inner package version $INNER_VER != release $VERSION. Refusing to upload." >&2
+  exit 1
+fi
+echo "    tarball freshness OK (inner package version $INNER_VER)"
 echo "    packed $(du -h ./.pack/klauro-latest.tgz | cut -f1) tarball, manifest version $(node -p "require('./.pack/latest.json').version")"
 
 if [ "${RELEASE_SKIP_UPLOAD:-0}" = "1" ]; then
