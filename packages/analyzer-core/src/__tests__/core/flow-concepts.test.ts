@@ -219,6 +219,39 @@ describe('computeFlowConcepts', () => {
     expect(flow.contract.constraints.length).toBeGreaterThan(0);
   });
 
+  test('constraints are first-class {kind, rule, evidence} records, not bare strings', () => {
+    const flow = flows[0];
+    for (const c of flow.contract.constraints) {
+      expect(typeof c).toBe('object');
+      expect(typeof c.kind).toBe('string');
+      expect(typeof c.rule).toBe('string');
+      expect(typeof c.evidence).toBe('string');
+      expect(c.evidence.length).toBeGreaterThan(0); // evidence-gated: never empty
+    }
+    // the auth guard on the entry point must surface as an auth-kind constraint
+    const authConstraint = flow.contract.constraints.find(c => c.kind === 'auth');
+    expect(authConstraint).toBeDefined();
+    expect(authConstraint!.rule).toMatch(/authenticated/i);
+    // the guard clause in validateOrder's source must surface as a business-rule
+    const bizRule = flow.contract.constraints.find(c => c.kind === 'business-rule');
+    expect(bizRule).toBeDefined();
+    // the data-entity invariant must surface as an invariant-kind constraint
+    const invariant = flow.contract.constraints.find(c => c.kind === 'invariant');
+    expect(invariant).toBeDefined();
+    expect(invariant!.rule).toMatch(/total must be positive/i);
+    // the validation-schema rule must surface as a validation-kind constraint
+    const validation = flow.contract.constraints.find(c => c.kind === 'validation');
+    expect(validation).toBeDefined();
+  });
+
+  test('no telemetry facet when there are no runtime observations (never fabricated)', () => {
+    const flow = flows[0];
+    expect(flow.contract.telemetry).toBeUndefined();
+    for (const step of flow.steps) {
+      expect(step.contract.telemetry).toBeUndefined();
+    }
+  });
+
   test('honest gaps: target with no match reports a gap, not a fabricated flow', () => {
     const noMatch = computeFlowConcepts(cas, { target: 'nonexistent-route-xyz' });
     expect(noMatch.length).toBe(0);
@@ -440,5 +473,184 @@ describe('computeFlowConcepts — capability-operation-only root synthesis', () 
 
   test('the synthesized flow still derives real entities from the backend chain it reaches', () => {
     expect(flows[0].entities).toContain('Billing');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FACET 5 (consistency constraints) + FACET 6 (telemetry) — the two new
+// facets of the uniform understanding contract, both evidence-gated.
+// ---------------------------------------------------------------------------
+import {
+  attachTelemetryToFlows,
+  telemetryForNode,
+  CONTRACT_MODEL_NAME,
+  UNDERSTANDING_CONTRACT_FACETS,
+  type RuntimeMetricLike,
+} from '../../analyzer/core/flow-concepts';
+
+describe('contract model naming', () => {
+  test('exposes a single renamable model-name constant and the 6 facets', () => {
+    expect(typeof CONTRACT_MODEL_NAME).toBe('string');
+    expect(UNDERSTANDING_CONTRACT_FACETS).toEqual([
+      'input', 'constraints', 'system_effects', 'logic', 'output', 'telemetry',
+    ]);
+    expect(CONTRACT_MODEL_NAME).toBe('ICELOT');
+  });
+});
+
+describe('consistency constraints (facet 5, kind=consistency)', () => {
+  test('a staleness-risky store read this unit owns becomes a consistency constraint', () => {
+    const cas = buildFixtureCas();
+    // saveOrder's DB exit reads a store the consistency model tagged eventual.
+    (cas as any).consistency_model = {
+      passive_seams: [],
+      store_consistency: [
+        {
+          ref_id: 'xp_saveOrder', // must match this unit's own exit point id
+          store: 'aurora-replica',
+          consistency: {
+            model: 'eventual',
+            staleness_risk: true,
+            cap_lean: 'AP',
+            evidence: 'READ_REPLICA_URL env var -> reader endpoint',
+          },
+        },
+      ],
+      counts: { passive_replica: 1, passive_streaming: 0, strong_stores: 0, eventual_stores: 1, tunable_stores: 0 },
+    };
+    const flows = computeFlowConcepts(cas);
+    const consistency = flows[0].contract.constraints.find(c => c.kind === 'consistency');
+    expect(consistency).toBeDefined();
+    expect(consistency!.rule).toMatch(/eventually consistent/i);
+    expect(consistency!.evidence).toMatch(/READ_REPLICA_URL/);
+  });
+
+  test('a strong primary read carries NO consistency constraint (not fabricated)', () => {
+    const cas = buildFixtureCas();
+    (cas as any).consistency_model = {
+      passive_seams: [],
+      store_consistency: [
+        {
+          ref_id: 'xp_saveOrder',
+          store: 'postgres-primary',
+          consistency: { model: 'strong', staleness_risk: false, cap_lean: 'CP', evidence: 'primary connection' },
+        },
+      ],
+      counts: { passive_replica: 0, passive_streaming: 0, strong_stores: 1, eventual_stores: 0, tunable_stores: 0 },
+    };
+    const flows = computeFlowConcepts(cas);
+    expect(flows[0].contract.constraints.some(c => c.kind === 'consistency')).toBe(false);
+  });
+});
+
+describe('error constraints (facet 2, kind=error)', () => {
+  /** Add error-contract primitives onto the base fixture: n_validateOrder
+   *  declares a throw in signature.throws, and a call chain runs
+   *  entryPoint -> validateOrder (the thrower) with no try-catch pattern on
+   *  the path — the exact shape get_error_contracts reads. */
+  function withThrows(): CASOutput {
+    const cas = buildFixtureCas();
+    const validate = cas.nodes.find(n => n.id === 'n_validateOrder')!;
+    (validate as any).signature = { ...(validate as any).signature, throws: ['ValidationError'] };
+    (cas as any).call_chains = [
+      {
+        id: 'chain_createOrder',
+        chain_type: 'entry-to-exit',
+        entry_point: { node_id: 'n_handleCreateOrder', method_name: 'handleCreateOrder', entry_point_id: 'ep_createOrder' },
+        call_path: [
+          { call_id: 'c1', node_id: 'n_handleCreateOrder', method_name: 'handleCreateOrder', depth: 0 },
+          { call_id: 'c2', node_id: 'n_validateOrder', method_name: 'validateOrder', depth: 1 },
+        ],
+        characteristics: { total_calls: 2, max_depth: 1, has_external_calls: false, has_database_calls: false, has_async_calls: false },
+      },
+    ];
+    return cas;
+  }
+
+  test('a throwing node yields a kind:error "throws" constraint with the right rule + evidence', () => {
+    const flows = computeFlowConcepts(withThrows());
+    const errs = flows[0].contract.constraints.filter(c => c.kind === 'error');
+    const thrown = errs.find(c => c.rule === 'throws ValidationError');
+    expect(thrown).toBeDefined();
+    expect(thrown!.evidence).toMatch(/signature\.throws includes ValidationError/);
+    expect(thrown!.evidence).toMatch(/validateOrder/);
+  });
+
+  test('an uncaught throwing chain yields a kind:error "uncaught path to entry point" constraint naming the entry point', () => {
+    const flows = computeFlowConcepts(withThrows());
+    const errs = flows[0].contract.constraints.filter(c => c.kind === 'error');
+    const uncaught = errs.find(c => c.rule.startsWith('uncaught path to entry point'));
+    expect(uncaught).toBeDefined();
+    expect(uncaught!.rule).toBe('uncaught path to entry point createOrder');
+    expect(uncaught!.evidence).toMatch(/traverses throwing node/);
+    expect(uncaught!.evidence).toMatch(/no try-catch/);
+  });
+
+  test('a try-catch on the chain suppresses the uncaught-path constraint (handled, not fabricated)', () => {
+    const cas = withThrows();
+    (cas as any).patterns = [
+      { id: 'p_try', name: 'try-catch', confidence: 1, instances: ['n_handleCreateOrder'] },
+    ];
+    const flows = computeFlowConcepts(cas);
+    const errs = flows[0].contract.constraints.filter(c => c.kind === 'error');
+    // throws is still surfaced (the node still declares it)...
+    expect(errs.some(c => c.rule === 'throws ValidationError')).toBe(true);
+    // ...but the caught path is NOT reported as uncaught.
+    expect(errs.some(c => c.rule.startsWith('uncaught path'))).toBe(false);
+  });
+
+  test('a clean node with no throws and no throwing chain carries NO error constraint (no fabrication)', () => {
+    const flows = computeFlowConcepts(buildFixtureCas());
+    expect(flows[0].contract.constraints.some(c => c.kind === 'error')).toBe(false);
+  });
+});
+
+describe('telemetry join (facet 6)', () => {
+  const cas = buildFixtureCas();
+  const flows = computeFlowConcepts(cas);
+
+  const metrics: RuntimeMetricLike[] = [
+    {
+      static_id: 'n_saveOrder',
+      node_id: 'n_saveOrder',
+      request_count: 1200,
+      error_rate: 0.02,
+      latency: { p50_ms: 4, p95_ms: 30, p99_ms: 90 },
+      status_code_distribution: { '200': 1176, '500': 24 },
+      source: 'ingested',
+      last_seen: '2026-07-05T00:00:00.000Z',
+    },
+  ];
+
+  test('attaches telemetry only to the step whose function has observations', () => {
+    const cloned = computeFlowConcepts(cas);
+    attachTelemetryToFlows(cloned, metrics);
+    const persistStep = cloned[0].steps.find(s => s.functions.some(f => f.function_id === 'n_saveOrder'));
+    expect(persistStep!.contract.telemetry).toBeDefined();
+    expect(persistStep!.contract.telemetry!.request_count).toBe(1200);
+    expect(persistStep!.contract.telemetry!.p99_ms).toBe(90);
+    // a step with no matching observation stays telemetry-free (not zero-filled)
+    const validateStep = cloned[0].steps.find(s => s.functions.some(f => f.function_id === 'n_validateOrder'));
+    expect(validateStep!.contract.telemetry).toBeUndefined();
+    // flow-level telemetry is present because one of its nodes matched
+    expect(cloned[0].contract.telemetry).toBeDefined();
+  });
+
+  test('empty metrics leaves every telemetry facet absent', () => {
+    const cloned = computeFlowConcepts(cas);
+    attachTelemetryToFlows(cloned, []);
+    expect(cloned[0].contract.telemetry).toBeUndefined();
+    expect(cloned[0].steps.every(s => s.contract.telemetry === undefined)).toBe(true);
+  });
+
+  test('telemetryForNode returns metrics for a matching node and undefined otherwise', () => {
+    expect(telemetryForNode('n_saveOrder', metrics)).toBeDefined();
+    expect(telemetryForNode('n_nonexistent', metrics)).toBeUndefined();
+    expect(telemetryForNode('n_saveOrder', [])).toBeUndefined();
+  });
+
+  // keep `flows` referenced so the top-level compute is exercised in this block too
+  test('base compute still yields the flow used by these telemetry tests', () => {
+    expect(flows.length).toBe(1);
   });
 });

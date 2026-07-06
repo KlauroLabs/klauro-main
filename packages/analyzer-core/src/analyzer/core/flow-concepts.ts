@@ -27,6 +27,82 @@ import { buildTerminalSignal } from './terminal-signal';
  * seam, and it is fully inert when omitted.
  */
 
+/**
+ * THE UNIFORM UNDERSTANDING CONTRACT — "ICELOT". The model name lives in ONE
+ * place so it is trivially renamable. Every unit (flow, step, function/node)
+ * carries the same 6-facet contract, and every facet is EVIDENCE-GATED: a facet
+ * is only populated from a fact the CAS already extracted, never fabricated.
+ * Absent facets are omitted, not invented.
+ *
+ * ICELOT is NOT an execution order — it is the six questions asked of every unit:
+ *   I. Input        — what does it take?    params / consumed request shape / reads.
+ *   C. Constraints  — what bounds it?       validation / auth / rate-limit / error /
+ *                     invariant / consistency rules, each with kind + evidence.
+ *   E. Effects      — what does it touch?   system effects: integrations (outbound
+ *                     calls) + state_changes (DB/cache/file writes, mutations).
+ *   L. Logic        — how does it decide?   what it computes / the ordered behavior.
+ *   O. Output       — what does it emit?    returns / produced responses & entities.
+ *   T. Telemetry    — how does it behave?   joined runtime metrics (traffic / errors /
+ *                     latency) when real observations exist for the unit.
+ *
+ * Reads as: contract surface (I, C) → impact surface (E) → internal behavior
+ * (L, O) → observable runtime behavior (T).
+ */
+export const CONTRACT_MODEL_NAME = 'ICELOT';
+
+export const UNDERSTANDING_CONTRACT_FACETS = [
+  'input',
+  'constraints',
+  'system_effects',
+  'logic',
+  'output',
+  'telemetry',
+] as const;
+
+export type UnderstandingContractFacet = (typeof UNDERSTANDING_CONTRACT_FACETS)[number];
+
+/** What kind of constraint this is — governs how an agent should honor it.
+ *  Each value maps 1:1 to a fact source the CAS already computes. */
+export type ConstraintKind =
+  | 'validation'   // input validation schema / required fields / types
+  | 'auth'         // authentication / authorization guard on the entry point
+  | 'rate-limit'   // throughput / quota guard, when surfaced
+  | 'error'        // failure-mode / error contract (throws, uncaught paths)
+  | 'invariant'    // data-entity or behavioral invariant enforced here
+  | 'business-rule'// guard clause / gating conditional in the unit's own source
+  | 'consistency'; // CAP / staleness posture: reads here may be eventual
+
+/** A single first-class constraint on a unit, carrying its evidence + kind so
+ *  an agent can both honor it and trace WHY it holds. Never fabricated — the
+ *  `evidence` string is always the concrete fact that produced it. */
+export interface FacetConstraint {
+  kind: ConstraintKind;
+  /** Human-legible rule ("caller must be authenticated", "amount > 0"). */
+  rule: string;
+  /** The concrete CAS fact that drove this constraint (guard text, guard
+   *  name, invariant description, consistency posture evidence, …). */
+  evidence: string;
+}
+
+/** Runtime "how this unit actually runs" — a compact projection of the
+ *  per-node runtime metrics (buildNodeRuntimeMetrics) joined onto a unit when
+ *  real observations exist for it. Omitted entirely when there is no runtime
+ *  data — never fabricated, never zero-filled. */
+export interface ContractTelemetry {
+  /** CAS static id the metrics correlated to (node / entry-point / route). */
+  static_id: string;
+  request_count: number;
+  error_rate: number;
+  /** Latency percentiles in ms (only the ones present are set). */
+  p50_ms?: number;
+  p95_ms?: number;
+  p99_ms?: number;
+  status_code_distribution?: Record<string, number>;
+  /** 'ingested' | 'simulated' | 'mixed' — provenance of the observations. */
+  source: string;
+  last_seen?: string;
+}
+
 export interface ILSOContract {
   input: string[];
   logic: string;
@@ -35,10 +111,16 @@ export interface ILSOContract {
     external_integrations: string[];
   };
   output: string[];
-  /** Business rules / invariants / guards enforced here — from guard clauses,
-   *  validation, assertions, gating conditionals. Deterministic extraction
-   *  only; never fabricated. Empty when none could be derived. */
-  constraints: string[];
+  /** Business rules / invariants / guards / auth / validation / consistency
+   *  enforced here — each a first-class {kind, rule, evidence} record derived
+   *  from guard clauses, validation schemas, auth guards, data-entity/behavioral
+   *  invariants, and the consistency model. Deterministic extraction only;
+   *  never fabricated. Empty when none could be derived. */
+  constraints: FacetConstraint[];
+  /** Runtime metrics joined onto this unit when observations exist. Absent
+   *  (undefined) when there is no runtime data — the pure/static analyzer never
+   *  populates this; it is joined at the query layer from persisted telemetry. */
+  telemetry?: ContractTelemetry;
 }
 
 export interface FlowStep {
@@ -409,34 +491,40 @@ function buildExitPointIndex(cas: CASOutput): Map<string, CASExitPoint[]> {
  *  business rule where the condition is legible, or the raw guarded
  *  condition text otherwise. Deterministic text-pattern extraction only —
  *  never invents rules that aren't textually present. */
-function extractConstraintsFromSource(node: CASNode): string[] {
+function extractConstraintsFromSource(node: CASNode): FacetConstraint[] {
   const raw = node.source?.raw;
   if (!raw) return [];
-  const constraints: string[] = [];
+  const out: FacetConstraint[] = [];
+  const seen = new Set<string>();
+  const push = (kind: ConstraintKind, rule: string, evidence: string) => {
+    if (seen.has(rule)) return;
+    seen.add(rule);
+    out.push({ kind, rule, evidence });
+  };
 
   // require(expr) / assert(expr) -> "expr" as a stated invariant.
   const callGuardRe = /\b(?:require|assert)\s*\(\s*([^,)]+?)\s*(?:,|\))/g;
   let m: RegExpExecArray | null;
   while ((m = callGuardRe.exec(raw))) {
     const expr = m[1].trim();
-    if (expr) constraints.push(`must satisfy: ${expr}`);
+    if (expr) push('business-rule', `must satisfy: ${expr}`, m[0].trim());
   }
 
   // if (!cond) throw ... -> "cond must hold" (negated guard -> positive rule).
   const negatedThrowRe = /if\s*\(\s*!\s*([^)]+?)\s*\)\s*(?:\{[^}]*)?throw/g;
   while ((m = negatedThrowRe.exec(raw))) {
     const cond = m[1].trim();
-    if (cond) constraints.push(`must hold: ${cond}`);
+    if (cond) push('business-rule', `must hold: ${cond}`, m[0].trim());
   }
 
   // if (cond) throw ... (direct gating conditional guarding via throw).
   const directThrowRe = /if\s*\(\s*([^)!][^)]*?)\s*\)\s*(?:\{[^}]*)?throw/g;
   while ((m = directThrowRe.exec(raw))) {
     const cond = m[1].trim();
-    if (cond && !constraints.some(c => c.includes(cond))) constraints.push(`must NOT hold: ${cond}`);
+    if (cond) push('business-rule', `must NOT hold: ${cond}`, m[0].trim());
   }
 
-  return [...new Set(constraints)];
+  return out;
 }
 
 /** Constraints derivable from CAS structural facts rather than raw-source
@@ -446,32 +534,141 @@ function extractConstraintsFromSource(node: CASNode): string[] {
 function extractStructuralConstraints(
   nodeIds: Set<string>,
   cas: CASOutput,
-  ownEntryPoints: CASEntryPoint[]
-): string[] {
-  const constraints: string[] = [];
+  ownEntryPoints: CASEntryPoint[],
+  exitPointsByNode: Map<string, CASExitPoint[]>
+): FacetConstraint[] {
+  const out: FacetConstraint[] = [];
+  const seen = new Set<string>();
+  const push = (kind: ConstraintKind, rule: string, evidence: string) => {
+    const key = `${kind}::${rule}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({ kind, rule, evidence });
+  };
 
+  // --- Auth constraints (auth analyzer -> entry_point.security). ---
   for (const ep of ownEntryPoints) {
-    if (ep.security?.authenticated) constraints.push('caller must be authenticated');
+    if (ep.security?.authenticated) {
+      push('auth', 'caller must be authenticated', `entry point "${ep.name}" security.authenticated=true`);
+    }
     for (const role of ep.security?.authorized_roles || ep.security?.roles || []) {
-      constraints.push(`caller must have role: ${role}`);
+      push('auth', `caller must have role: ${role}`, `entry point "${ep.name}" security.roles`);
     }
     for (const guard of ep.security?.guards || []) {
-      constraints.push(`guarded by: ${guard}`);
+      push('auth', `guarded by: ${guard}`, `entry point "${ep.name}" security.guards`);
     }
+    // --- Validation constraints (validation-schema analyzer -> input.validation). ---
     for (const rule of ep.input?.validation || []) {
-      constraints.push(rule);
+      push('validation', rule, `entry point "${ep.name}" input.validation`);
+    }
+    // --- Rate-limit constraints, when the entry point security surfaces one. ---
+    const rateLimit = (ep.security as any)?.rate_limit ?? (ep as any)?.rate_limit;
+    if (rateLimit) {
+      push('rate-limit', `rate limited: ${typeof rateLimit === 'string' ? rateLimit : JSON.stringify(rateLimit)}`,
+        `entry point "${ep.name}" rate_limit`);
     }
   }
 
+  // --- Data-entity invariants enforced by a node in this unit. ---
   for (const entity of cas.data_entities || []) {
     for (const inv of entity.invariants || []) {
       if (inv.enforced_by.some(id => nodeIds.has(id))) {
-        constraints.push(inv.description);
+        push('invariant', inv.description, `data_entity "${entity.name}" invariant enforced_by a node in this unit`);
       }
     }
   }
 
-  return [...new Set(constraints)];
+  // --- Consistency / CAP constraints: if any exit point of this unit reads
+  //     from a store that the consistency model tagged eventual / staleness-
+  //     risky, that is a real correctness constraint ("reads here may be
+  //     stale"). Evidence-gated by ref_id match against this unit's exits. ---
+  const consistency = cas.consistency_model;
+  if (consistency) {
+    const ownExitIds = new Set<string>();
+    for (const id of nodeIds) {
+      for (const ep of exitPointsByNode.get(id) || []) ownExitIds.add(ep.id);
+    }
+    for (const sc of consistency.store_consistency || []) {
+      if (!sc.consistency.staleness_risk) continue; // strong primary reads carry no staleness constraint.
+      if (!ownExitIds.has(sc.ref_id)) continue;      // only when THIS unit's own exit reads that store.
+      const cap = sc.consistency.cap_lean ? ` (${sc.consistency.cap_lean})` : '';
+      push('consistency', `reads from ${sc.store} are eventually consistent${cap} — may observe stale data`,
+        sc.consistency.evidence);
+    }
+    // Passive seams whose reader side is one of this unit's nodes: the landed
+    // data is eventual by construction (replica / CDC / sink / materialized).
+    for (const seam of consistency.passive_seams || []) {
+      if (!nodeIds.has(seam.target)) continue;
+      push('consistency', `reads via ${seam.channel} (${seam.shared_resource}) are eventually consistent — may lag the source`,
+        seam.evidence);
+    }
+  }
+
+  // --- Error / failure-mode constraints (kind: 'error'). Derived from the same
+  //     CAS primitives get_error_contracts (query.ts getErrorContracts) reads —
+  //     node.signature.throws + call_chains — but scoped to THIS unit's own
+  //     nodes. Evidence-gated: only emitted when the fact NAMES one of this
+  //     unit's nodes (throws declared on the node, or an uncaught propagation
+  //     path that traverses the node). Never a generic "may throw". ---
+  for (const c of extractErrorConstraints(nodeIds, cas)) push(c.kind, c.rule, c.evidence);
+
+  return out;
+}
+
+/** Failure-mode constraints for a unit (kind: 'error'). Pure static pass over
+ *  the CAS primitives — never imports the app / query layer. Reads exactly the
+ *  facts get_error_contracts derives from:
+ *    - node.signature.throws           -> "throws <ErrorType>"
+ *    - call_chains traversing the node -> "uncaught path to entry point <X>"
+ *  and gates every emission on one of THIS unit's own node ids being named by
+ *  the fact (declaring node for throws; a call_path step's node_id for paths).
+ *  A node that neither declares a throw nor lies on a throwing chain yields
+ *  nothing — no fabrication, no generic "may throw". */
+function extractErrorConstraints(nodeIds: Set<string>, cas: CASOutput): FacetConstraint[] {
+  const out: FacetConstraint[] = [];
+  const seen = new Set<string>();
+  const push = (rule: string, evidence: string) => {
+    if (seen.has(rule)) return;
+    seen.add(rule);
+    out.push({ kind: 'error', rule, evidence });
+  };
+
+  // "throws <ErrorType>" — only for nodes in THIS unit that declare throws.
+  const throwingHere = new Set<string>();
+  for (const node of cas.nodes || []) {
+    if (!nodeIds.has(node.id)) continue;
+    for (const errorType of node.signature?.throws || []) {
+      throwingHere.add(node.id);
+      push(`throws ${errorType}`, `node "${node.name}" signature.throws includes ${errorType}`);
+    }
+  }
+
+  // "uncaught path to entry point <X>" — a call chain whose path traverses one
+  // of this unit's throwing nodes AND does not surface a caught-here handler
+  // for it. We only assert the path when the throwing node is on the chain
+  // (the fact names the node), mirroring getErrorContracts' uncaught_paths.
+  if (throwingHere.size > 0) {
+    for (const chain of cas.call_chains || []) {
+      const throwerOnPath = (chain.call_path || []).find(step => throwingHere.has(step.node_id));
+      if (!throwerOnPath) continue;
+      // Evidence-gated caught check: a try-catch pattern instance on a node that
+      // sits on this chain downstream of / at the thrower means the error is
+      // handled — do not report it as uncaught.
+      const chainNodeIds = new Set((chain.call_path || []).map(s => s.node_id));
+      const caughtOnChain = (cas.patterns || []).some(p =>
+        p.name.toLowerCase().includes('try-catch') &&
+        (p.instances || []).some(id => chainNodeIds.has(id))
+      );
+      if (caughtOnChain) continue;
+      const epId = chain.entry_point.entry_point_id || chain.entry_point.node_id;
+      const epName = (cas.entry_points || []).find(ep => ep.id === epId)?.name
+        || chain.entry_point.method_name || epId;
+      push(`uncaught path to entry point ${epName}`,
+        `call chain ${chain.id} traverses throwing node "${throwerOnPath.method_name}" and reaches entry point ${epName} with no try-catch on the path`);
+    }
+  }
+
+  return out;
 }
 
 /** Build the ILSOContract for a set of functions (a step, or the whole flow
@@ -491,7 +688,14 @@ function buildContract(
   const output = new Set<string>();
   const stateChanges = new Set<string>();
   const externalIntegrations = new Set<string>();
-  const constraints = new Set<string>();
+  const constraints: FacetConstraint[] = [];
+  const constraintKeys = new Set<string>();
+  const addConstraint = (c: FacetConstraint) => {
+    const key = `${c.kind}::${c.rule}`;
+    if (constraintKeys.has(key)) return;
+    constraintKeys.add(key);
+    constraints.push(c);
+  };
 
   const nodeIds = new Set(nodes.map(n => n.id));
 
@@ -510,7 +714,7 @@ function buildContract(
       }
     }
 
-    for (const c of extractConstraintsFromSource(node)) constraints.add(c);
+    for (const c of extractConstraintsFromSource(node)) addConstraint(c);
   }
 
   // entity-level side effects (writes/reads), named by entity rather than by
@@ -528,7 +732,7 @@ function buildContract(
   }
 
   const ownEntryPoints = nodes.flatMap(n => entryPointsByNode.get(n.id) || []);
-  for (const c of extractStructuralConstraints(nodeIds, cas, ownEntryPoints)) constraints.add(c);
+  for (const c of extractStructuralConstraints(nodeIds, cas, ownEntryPoints, exitPointsByNode)) addConstraint(c);
 
   const logicNames = nodes.map(n => n.name);
   return {
@@ -539,7 +743,7 @@ function buildContract(
       external_integrations: [...externalIntegrations],
     },
     output: [...output],
-    constraints: [...constraints],
+    constraints,
   };
 }
 
@@ -550,14 +754,20 @@ function aggregateFlowContract(steps: FlowStep[]): ILSOContract {
   const output = new Set<string>();
   const stateChanges = new Set<string>();
   const externalIntegrations = new Set<string>();
-  const constraints = new Set<string>();
+  const constraints: FacetConstraint[] = [];
+  const constraintKeys = new Set<string>();
 
   for (const step of steps) {
     for (const v of step.contract.input) input.add(v);
     for (const v of step.contract.output) output.add(v);
     for (const v of step.contract.side_effects.state_changes) stateChanges.add(v);
     for (const v of step.contract.side_effects.external_integrations) externalIntegrations.add(v);
-    for (const v of step.contract.constraints) constraints.add(v);
+    for (const c of step.contract.constraints) {
+      const key = `${c.kind}::${c.rule}`;
+      if (constraintKeys.has(key)) continue;
+      constraintKeys.add(key);
+      constraints.push(c);
+    }
   }
 
   return {
@@ -568,7 +778,7 @@ function aggregateFlowContract(steps: FlowStep[]): ILSOContract {
       external_integrations: [...externalIntegrations],
     },
     output: [...output],
-    constraints: [...constraints],
+    constraints,
   };
 }
 
@@ -833,4 +1043,118 @@ export function computeFlowConcepts(cas: CASOutput, opts: ComputeFlowConceptsOpt
   }
 
   return flows;
+}
+
+// ---------------------------------------------------------------------------
+// TELEMETRY FACET (facet 6) — evidence-gated runtime join
+// ---------------------------------------------------------------------------
+
+/**
+ * Minimal per-unit runtime metric shape the telemetry join consumes. It is a
+ * structural subset of the MCP server's `NodeRuntimeMetrics`
+ * (product.buildNodeRuntimeMetrics) — declared here so analyzer-core carries
+ * no dependency on the app layer; the query layer maps NodeRuntimeMetrics onto
+ * this. Every field that reaches a unit came from a real observation.
+ */
+export interface RuntimeMetricLike {
+  static_id: string;
+  node_id?: string;
+  entry_point_id?: string;
+  route?: string;
+  method?: string;
+  request_count: number;
+  error_rate: number;
+  latency?: { p50_ms?: number | null; p95_ms?: number | null; p99_ms?: number | null };
+  status_code_distribution?: Record<string, number>;
+  source?: string;
+  last_seen?: string;
+}
+
+/** Build a lookup from every id/route a metric can be keyed by -> the metric,
+ *  so a unit can be matched by node id, entry-point id, or "METHOD /route". */
+function indexRuntimeMetrics(metrics: RuntimeMetricLike[]): Map<string, RuntimeMetricLike> {
+  const index = new Map<string, RuntimeMetricLike>();
+  for (const m of metrics) {
+    const keys = [
+      m.static_id,
+      m.node_id,
+      m.entry_point_id,
+      m.route,
+      m.method && m.route ? `${m.method.toUpperCase()} ${m.route}` : undefined,
+    ].filter((k): k is string => Boolean(k));
+    for (const k of keys) if (!index.has(k)) index.set(k, m);
+  }
+  return index;
+}
+
+function toContractTelemetry(m: RuntimeMetricLike): ContractTelemetry {
+  const t: ContractTelemetry = {
+    static_id: m.static_id,
+    request_count: m.request_count,
+    error_rate: m.error_rate,
+    source: m.source || 'ingested',
+  };
+  if (m.latency?.p50_ms != null) t.p50_ms = m.latency.p50_ms;
+  if (m.latency?.p95_ms != null) t.p95_ms = m.latency.p95_ms;
+  if (m.latency?.p99_ms != null) t.p99_ms = m.latency.p99_ms;
+  if (m.status_code_distribution && Object.keys(m.status_code_distribution).length > 0) {
+    t.status_code_distribution = m.status_code_distribution;
+  }
+  if (m.last_seen) t.last_seen = m.last_seen;
+  return t;
+}
+
+/** Find the telemetry for a unit given the node ids it owns plus an optional
+ *  entry-point id (flow root) / route key. Returns undefined when NO real
+ *  runtime data matches — the facet is then omitted, never fabricated. */
+function telemetryForUnit(
+  index: Map<string, RuntimeMetricLike>,
+  nodeIds: Iterable<string>,
+  extraKeys: Array<string | undefined> = []
+): ContractTelemetry | undefined {
+  for (const key of extraKeys) {
+    if (key && index.has(key)) return toContractTelemetry(index.get(key)!);
+  }
+  for (const id of nodeIds) {
+    if (index.has(id)) return toContractTelemetry(index.get(id)!);
+  }
+  return undefined;
+}
+
+/**
+ * Join runtime telemetry (facet 6) onto already-computed flows: attaches
+ * `contract.telemetry` to a flow (keyed on its entry point / root node) and to
+ * each step (keyed on the step's own function ids). Purely additive — mutates
+ * in place and returns the same array. When `metrics` is empty, or nothing
+ * matches, every telemetry field is simply left absent (evidence-gated: no
+ * observation -> no facet). This runs at the query layer, where persisted
+ * observations are available, NOT inside computeFlowConcepts (which stays a
+ * pure static pass over the CAS).
+ */
+export function attachTelemetryToFlows(flows: FlowConcept[], metrics: RuntimeMetricLike[]): FlowConcept[] {
+  if (!metrics || metrics.length === 0) return flows;
+  const index = indexRuntimeMetrics(metrics);
+  if (index.size === 0) return flows;
+
+  for (const flow of flows) {
+    const flowNodeIds = new Set<string>();
+    for (const step of flow.steps) {
+      const stepNodeIds = step.functions.map(f => f.function_id);
+      for (const id of stepNodeIds) flowNodeIds.add(id);
+      const stepTel = telemetryForUnit(index, stepNodeIds);
+      if (stepTel) step.contract.telemetry = stepTel;
+    }
+    const flowTel = telemetryForUnit(index, flowNodeIds, [flow.entry_point]);
+    if (flowTel) flow.contract.telemetry = flowTel;
+  }
+  return flows;
+}
+
+/** Standalone telemetry lookup for a single node (used by get_coding_context,
+ *  which resolves one target node rather than a whole flow). Undefined when no
+ *  observation matches. */
+export function telemetryForNode(nodeId: string, metrics: RuntimeMetricLike[]): ContractTelemetry | undefined {
+  if (!metrics || metrics.length === 0) return undefined;
+  const index = indexRuntimeMetrics(metrics);
+  return telemetryForUnit(index, [nodeId]);
 }
