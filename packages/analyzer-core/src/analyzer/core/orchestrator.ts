@@ -4571,7 +4571,16 @@ export class AnalyzerOrchestrator {
               ...packageJson.optionalDependencies
             };
             const dependencyNames = Object.keys(deps).map(dep => dep.toLowerCase());
-            if (loweredNeedles.some(needle => dependencyNames.some(dep => dep.includes(needle) || needle.includes(dep)))) {
+            // Match a needle only when a real dependency NAME contains it
+            // (`dep.includes(needle)` — catches ecosystem families like
+            // react/react-dom and scoped @aws-sdk/*). The reverse direction
+            // (`needle.includes(dep)`) was a false-positive engine: a marker
+            // like 'aws-lambda' spuriously matched an unrelated short dep such
+            // as 'ws', so framework analyzers (mediator/cron/tanstack) ran a
+            // full-repo scan to contribute ZERO nodes — ~19s of pure waste on
+            // soon-lens. Non-npm manifests (go.mod/Cargo/requirements) still
+            // match via the raw-content scan below, so no ecosystem regresses.
+            if (loweredNeedles.some(needle => dependencyNames.some(dep => dep.includes(needle)))) {
               return true;
             }
           }
