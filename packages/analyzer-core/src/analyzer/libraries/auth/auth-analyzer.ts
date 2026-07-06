@@ -40,6 +40,16 @@ interface RouteTarget {
   path?: string;
   handler?: string;
   line: number;
+  /**
+   * True when `path` is a file-anchored fallback (e.g. the source file itself for a
+   * Python `@api_view`, or `file#action` for a Rails action) rather than a resolved
+   * URL. The owning framework analyzer (Django/Rails) resolves the real URL→auth
+   * mapping via its urls.py / routes graph, so the auth analyzer must NOT synthesize a
+   * standalone route into the route table from this fallback — that would duplicate the
+   * protected route under a bogus file path. The auth mechanism node/edge is still
+   * emitted so the guard evidence is recorded.
+   */
+  pathIsFile?: boolean;
 }
 
 const AUTH_RULES: AuthRule[] = [
@@ -246,7 +256,13 @@ export class AuthAnalyzer extends BaseAnalyzer {
         }
       ));
 
-      if (site.route) {
+      // Only synthesize a standalone protected route when the auth site carries a
+      // RESOLVED URL path. When `pathIsFile` is set (Python @api_view / Rails action),
+      // the path is a file-anchored fallback and the owning framework analyzer
+      // (Django/Rails) already emits the real route with its auth guard — synthesizing
+      // here would duplicate the protected route under a bogus file path and pollute the
+      // route table. The auth mechanism node/edge above still records the guard evidence.
+      if (site.route && !site.route.pathIsFile) {
         const routeId = `auth_route_${this.sanitizeId(site.file)}_${site.route.line}`;
         if (!nodes.some(node => node.id === routeId)) {
           nodes.push(this.createNode(
@@ -393,7 +409,9 @@ export class AuthAnalyzer extends BaseAnalyzer {
       if (apiView) {
         const method = apiView[1].match(/['"]([A-Z]+)['"]/)?.[1] || 'GET';
         const handler = this.nextFunctionName(lines, i);
-        for (let j = i; j <= i + 4 && j < lines.length; j++) contexts.set(j + 1, { method, path: file, handler, line: i + 1 });
+        // path falls back to the source file: the Django analyzer resolves the real
+        // URL (urls.py) and owns the route+auth mapping. Flag so we don't emit a phantom.
+        for (let j = i; j <= i + 4 && j < lines.length; j++) contexts.set(j + 1, { method, path: file, handler, line: i + 1, pathIsFile: true });
       }
 
       const nextHandler = line.match(/export\s+async\s+function\s+(GET|POST|PUT|PATCH|DELETE)\b/);
@@ -403,7 +421,9 @@ export class AuthAnalyzer extends BaseAnalyzer {
 
       const railsAction = line.match(/^\s*def\s+([a-zA-Z_]\w*)/);
       if (railsAction) {
-        for (let j = i; j <= i + 12 && j < lines.length; j++) contexts.set(j + 1, { path: `${file}#${railsAction[1]}`, handler: railsAction[1], line: i + 1 });
+        // path is a file-anchored pseudo-route (`file#action`); the Rails analyzer owns
+        // the resolved routes.rb URL→auth mapping. Flag so we don't emit a phantom route.
+        for (let j = i; j <= i + 12 && j < lines.length; j++) contexts.set(j + 1, { path: `${file}#${railsAction[1]}`, handler: railsAction[1], line: i + 1, pathIsFile: true });
       }
     }
     return contexts;

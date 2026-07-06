@@ -6766,9 +6766,16 @@ export class AnalyzerOrchestrator {
         // Canonicalize path params to the `:name` convention so the route table is
         // uniform across frameworks: FastAPI/Spring `{id}` and Flask/Django
         // `<int:id>`/`<id>` both -> `:id` (the converter prefix is dropped).
-        path: (ep.trigger?.path || '/')
-          .replace(/\{([^}:]+)\}/g, ':$1')
-          .replace(/<(?:[^>:]+:)?([^>]+)>/g, ':$1'),
+        //
+        // Exception: a framework whose *wire* route syntax IS the angle/brace form
+        // (shelf_router matches on the literal `<id>` at runtime, not a source-only
+        // convention that maps to `:id`) can opt out by declaring `native_path` in
+        // its entry-point metadata. When present we emit it verbatim so the route
+        // table reflects how that framework actually names the parameter.
+        path: (metadata.native_path as string | undefined) ??
+          (ep.trigger?.path || '/')
+            .replace(/\{([^}:]+)\}/g, ':$1')
+            .replace(/<(?:[^>:]+:)?([^>]+)>/g, ':$1'),
         controller: controllerName,
         handler: handlerName,
         auth: ep.security?.authenticated || false,

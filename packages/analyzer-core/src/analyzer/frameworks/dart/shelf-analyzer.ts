@@ -265,6 +265,12 @@ export class ShelfAnalyzer extends BaseAnalyzer {
           method: route.method,
           path: route.path,
           handler: route.handler,
+          // shelf_router matches on the literal `<id>` form at runtime — that IS
+          // the framework's wire route syntax, not a source-only convention that
+          // resolves to `:id` (as Flask/Django `<id>` does). Declare it as the
+          // native path so buildRouteTable preserves it verbatim instead of
+          // canonicalizing `<id>` -> `:id`.
+          native_path: route.path,
         },
         { node_id: nodeId, method_name: route.handler, file: route.file, line: route.line }
       )

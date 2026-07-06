@@ -297,7 +297,10 @@ export class MessagingAnalyzer extends BaseAnalyzer {
 
     if (hasImport('kafkajs')) {
       const kafkaGroup = this.extractKafkaGroupId(content);
-      this.extractObjectSendProducers(content, filePath, 'kafkajs', 'topic', /topic\s*:\s*(['"`])([^'"`]+)\1/g, 'send', nodes, exitPoints, ensureChannelNode, addEdge, lineOf);
+      // Anchor on the `.send(` / `.sendBatch(` call — a bare `topic:` property
+      // also appears inside `consumer.subscribe({ topic })`, so matching topic:
+      // anywhere fabricated a spurious `produces <topic>` for every consumed topic.
+      this.extractObjectSendProducers(content, filePath, 'kafkajs', 'topic', /\.send(?:Batch)?\s*\(\s*\{[\s\S]{0,240}?topic\s*:\s*(['"`])([^'"`]+)\1/g, 'send', nodes, exitPoints, ensureChannelNode, addEdge, lineOf);
       this.extractTopicConsumers(content, filePath, 'kafkajs', 'topic', /\.subscribe\s*\(\s*\{[\s\S]{0,240}?topic\s*:\s*(['"`])([^'"`]+)\1/g, /eachMessage\s*:\s*(?:async\s*)?\(?\s*([^,\n)=]+)/g, nodes, entryPoints, ensureChannelNode, addEdge, lineOf, kafkaGroup ? { type: 'consumer-group', fanout: false, group: kafkaGroup } : undefined);
     }
 
@@ -892,11 +895,12 @@ export class MessagingAnalyzer extends BaseAnalyzer {
       if (!queueName) continue;
       this.addProducer({ system, channel: queueName, channelKind: 'queue', filePath, line: lineOf(match.index), name: `${match[1]}.add`, action: 'add', payloadType: match[3] }, nodes, exitPoints, ensureChannelNode, addEdge);
     }
-
-    for (const [queueVar, queueName] of Array.from(queueVars.entries())) {
-      if (!new RegExp(`\\b${queueVar}\\.add\\s*\\(`).test(content)) continue;
-      this.addConsumer({ system, channel: queueName, channelKind: 'queue', filePath, line: 1, name: `${system} queue ${queueName}` }, nodes, entryPoints, ensureChannelNode, addEdge);
-    }
+    // NOTE: a `new Queue(name)` + `.add()` is the PRODUCER side only. The
+    // consumer for a BullMQ queue is a `new Worker(name, ...)` (see
+    // extractNewWorkerConsumers) or a `queue.process(...)` handler — declaring a
+    // queue and enqueuing to it does NOT make this process a consumer. Emitting a
+    // consumes-edge here fabricated a spurious `consumes <queue>` for every
+    // produced-only queue.
   }
 
   private extractNewWorkerConsumers(
