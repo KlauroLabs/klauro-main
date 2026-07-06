@@ -513,6 +513,9 @@ export class JavaAnalyzer extends BaseAnalyzer {
         t.location.line >= method.lineStart && t.location.line <= method.lineEnd
       );
 
+      const thrownTypes = this.extractThrownTypes(lines, method.lineStart, method.lineEnd);
+      const signatureThrows = this.buildSignatureThrows(method.throwsExceptions, javadoc, thrownTypes);
+
       const methodNode = this.createNodeBuilder(
         methodId,
         method.name,
@@ -533,6 +536,11 @@ export class JavaAnalyzer extends BaseAnalyzer {
             isStatic: method.isStatic,
             isPublic: method.modifiers.includes('public')
           }
+        })
+        .withSignature({
+          parameters: method.parameters.map(p => ({ name: p.name, type: p.type })),
+          return_type: method.returnType || undefined,
+          throws: signatureThrows
         })
         .withParent(classId)
         .withDocumentation(javadoc)
@@ -651,6 +659,9 @@ export class JavaAnalyzer extends BaseAnalyzer {
         t.location.line >= method.lineStart && t.location.line <= method.lineEnd
       );
 
+      const thrownTypes = this.extractThrownTypes(lines, method.lineStart, method.lineEnd);
+      const signatureThrows = this.buildSignatureThrows(method.throwsExceptions, javadoc, thrownTypes);
+
       const methodNode = this.createNodeBuilder(
         methodId,
         method.name,
@@ -663,8 +674,14 @@ export class JavaAnalyzer extends BaseAnalyzer {
           attributes: {
             returnType: method.returnType,
             parameters: method.parameters,
-            annotations: method.annotations
+            annotations: method.annotations,
+            throwsExceptions: method.throwsExceptions
           }
+        })
+        .withSignature({
+          parameters: method.parameters.map(p => ({ name: p.name, type: p.type })),
+          return_type: method.returnType || undefined,
+          throws: signatureThrows
         })
         .withParent(interfaceId)
         .withDocumentation(javadoc)
@@ -832,9 +849,11 @@ export class JavaAnalyzer extends BaseAnalyzer {
           const returnType = this.extractReturnType(line);
           const parameters = this.extractParameters(line);
           const annotations = this.extractAnnotations(lines, i);
-          const throwsMatch = line.match(/throws\s+([^{]+)/);
+          // Stop the throws clause at the body brace `{` or the abstract/interface
+          // terminator `;` so we don't capture `IOException;` or a trailing brace.
+          const throwsMatch = line.match(/throws\s+([^{;]+)/);
           const throwsExceptions = throwsMatch
-            ? throwsMatch[1].split(',').map(s => s.trim())
+            ? throwsMatch[1].split(',').map(s => s.trim()).filter(s => s.length > 0)
             : [];
 
           const methodEndLine = this.findMethodEnd(lines, i);
@@ -857,6 +876,62 @@ export class JavaAnalyzer extends BaseAnalyzer {
     }
 
     return methods;
+  }
+
+  /**
+   * Scan a method body for `throw new FooException(...)` statements and return the
+   * exception TYPE names (deduped, in first-seen order). Evidence-gated: bare
+   * re-throws (`throw e;`) yield no recoverable type and are skipped, matching the
+   * TS/JS extractor's contract. `bodyStart`/`bodyEnd` are 1-based inclusive line
+   * numbers (method.lineStart/lineEnd).
+   */
+  private extractThrownTypes(lines: string[], bodyStart: number, bodyEnd: number): string[] {
+    const types = new Set<string>();
+    const from = Math.max(0, bodyStart - 1);
+    const to = Math.min(lines.length - 1, bodyEnd - 1);
+    // `throw new com.foo.BarException(` or `throw new BarException(` -> capture the
+    // simple (trailing) type name only. Requires `new` so we never lift bare rethrows.
+    const throwNew = /\bthrow\s+new\s+([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\s*[(<]/g;
+    for (let i = from; i <= to; i++) {
+      const line = lines[i];
+      let m: RegExpExecArray | null;
+      throwNew.lastIndex = 0;
+      while ((m = throwNew.exec(line)) !== null) {
+        const parts = m[1].split('.');
+        const simple = parts[parts.length - 1];
+        if (simple) types.add(simple);
+      }
+    }
+    return Array.from(types);
+  }
+
+  /**
+   * Merge the evidence sources for `signature.throws` into a deduped `string[]` of
+   * exception TYPE names, mirroring the TS/JS analyzer's `buildSignatureThrows`:
+   *   1. The declared `throws` clause (`throwsExceptions`).
+   *   2. Javadoc `@throws`/`@exception` tags (via `documentation.throws[].type`).
+   *   3. Actual `throw new Foo(...)` statements found in the method body.
+   * Returns undefined when nothing is recoverable so `signature.throws` stays absent
+   * rather than an empty array (evidence-gated contract).
+   */
+  private buildSignatureThrows(
+    declared: string[] | undefined,
+    documentation: CASDocumentation | undefined,
+    thrown: string[] | undefined
+  ): string[] | undefined {
+    const types = new Set<string>();
+    for (const t of declared || []) {
+      // A declared clause entry may be a generic like `List<E>`; keep the simple tail.
+      const trimmed = t?.trim();
+      if (trimmed) types.add(trimmed);
+    }
+    for (const d of documentation?.throws || []) {
+      if (d?.type) types.add(d.type);
+    }
+    for (const t of thrown || []) {
+      if (t) types.add(t);
+    }
+    return types.size > 0 ? Array.from(types) : undefined;
   }
 
   private extractFields(lines: string[], classStart: number, classEnd: number): JavaField[] {
