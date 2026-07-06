@@ -77,6 +77,7 @@ interface ParsedArgs {
   modality?: 'sync' | 'async' | 'passive';
   level?: 'node' | 'deployable' | 'workspace';
   section?: string;
+  format?: 'json' | 'mermaid';
   markdown: boolean;
   limit?: number;
   offset?: number;
@@ -222,6 +223,7 @@ async function main(): Promise<void> {
     'cicd',
     'seams',
     'product-map',
+    'erd',
     'node-metrics',
     'remote-analyze',
     'remote-sync',
@@ -532,6 +534,17 @@ async function main(): Promise<void> {
   if (args.command === 'product-map') {
     const result = query.getProductMap(cas, { section: args.section, format: args.markdown ? 'markdown' : 'json' });
     process.stdout.write(args.markdown && (result as any).markdown ? `${(result as any).markdown}\n` : `${JSON.stringify(result, null, 2)}\n`);
+    return;
+  }
+
+  if (args.command === 'erd') {
+    const result = query.getErd(cas, { format: args.format, entityName: args.task.target });
+    // Print the Mermaid diagram raw so it can be piped straight into a renderer.
+    if (args.format === 'mermaid') {
+      process.stdout.write(`${(result as any).mermaid}\n`);
+    } else {
+      process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    }
     return;
   }
 
@@ -1499,6 +1512,10 @@ function parseArgs(argv: string[]): ParsedArgs {
       parsed.level = argv[++i] as ParsedArgs['level'];
     } else if (arg === '--section') {
       parsed.section = argv[++i];
+    } else if (arg === '--format') {
+      const value = argv[++i];
+      if (value !== 'json' && value !== 'mermaid') throw new Error('--format must be json or mermaid');
+      parsed.format = value;
     } else if (arg === '--workspace') {
       parsed.workspace = argv[++i];
     } else if (arg === '--markdown') {
@@ -1581,6 +1598,7 @@ function printHelp(): void {
     '  klauro cicd /path/to/repo [--provider github-actions] [--deploy-only] [--limit N] [--offset N]   (CI/CD pipeline→job→step→trigger→deploy + job DAG)',
     '  klauro seams /path/to/repo [--modality sync|async|passive] [--level node|deployable|workspace] [--limit N] [--offset N]',
     '  klauro product-map /path/to/repo [--section runtime_topology] [--markdown]',
+    '  klauro erd /path/to/repo [--format json|mermaid] [--target EntityName]   (entity-relationship model + renderable Mermaid erDiagram, from ORM analysis)',
     '  klauro node-metrics /path/to/repo [--limit N]   (per-node runtime traffic/error-rate/latency correlated to CAS)',
     '',
     'Workspace & greenfield:',

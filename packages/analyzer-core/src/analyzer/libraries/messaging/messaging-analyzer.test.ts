@@ -243,3 +243,104 @@ test('MessagingAnalyzer gates bare publish calls on import evidence', async () =
     await fs.remove(dir);
   }
 });
+
+test('MessagingAnalyzer detects NestJS microservice patterns and amqp-connection-manager', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'messaging-analyzer-nest-'));
+  try {
+    await fs.writeJson(path.join(dir, 'package.json'), {
+      name: 'nest-messaging-fixture',
+      dependencies: {
+        '@nestjs/microservices': '^10.0.0',
+        'amqp-connection-manager': '^4.1.0',
+      },
+    });
+
+    // NestJS microservice consumers + a ClientProxy producer.
+    await fs.writeFile(
+      path.join(dir, 'orders.controller.ts'),
+      [
+        `import { MessagePattern, EventPattern, ClientProxy } from '@nestjs/microservices';`,
+        '',
+        'export class OrdersController {',
+        '  constructor(private readonly client: ClientProxy) {}',
+        '',
+        `  @MessagePattern({ cmd: 'get_order' })`,
+        '  async getOrder(id: string) { return id; }',
+        '',
+        `  @EventPattern('order.created')`,
+        '  async onOrderCreated(payload: OrderCreated) {}',
+        '',
+        '  async place(dto: PlaceDto) {',
+        `    this.client.emit('order.created', dto);`,
+        `    return this.client.send({ cmd: 'get_order' }, dto.id);`,
+        '  }',
+        '}',
+        '',
+      ].join('\n')
+    );
+
+    // amqp-connection-manager wraps amqplib; same channel API inside setup().
+    await fs.writeFile(
+      path.join(dir, 'rabbit.ts'),
+      [
+        `import amqp from 'amqp-connection-manager';`,
+        '',
+        'export function setup() {',
+        `  const conn = amqp.connect(['amqp://localhost']);`,
+        '  return conn.createChannel({',
+        '    setup: (ch: any) => {',
+        `      ch.assertExchange('events.fanout', 'fanout', { durable: true });`,
+        `      ch.sendToQueue('work.queue', Buffer.from('{}'));`,
+        `      ch.consume('work.queue', (msg: any) => {});`,
+        '    },',
+        '  });',
+        '}',
+        '',
+      ].join('\n')
+    );
+
+    const analyzer = new MessagingAnalyzer();
+    assert.equal(await analyzer.canAnalyze(dir), true, 'canAnalyze should be true for Nest/amqp-connection-manager');
+
+    const contribution = await analyzer.analyze({ projectPath: dir });
+    const nodes = contribution.nodes || [];
+    const entryPoints = contribution.entry_points || [];
+    const exitPoints = contribution.exit_points || [];
+
+    // @MessagePattern -> consumer entry point keyed on the pattern token.
+    assert.ok(
+      entryPoints.find(e => (e.metadata as any)?.system === 'nestjs-microservice' && (e.metadata as any)?.channel === 'cmd=get_order'),
+      'expected @MessagePattern consumer entry point'
+    );
+    // @EventPattern -> broadcast consumer entry point.
+    const eventConsumer = entryPoints.find(e => (e.metadata as any)?.system === 'nestjs-microservice' && (e.metadata as any)?.channel === 'order.created' && (e.metadata as any)?.channelKind === 'event');
+    assert.ok(eventConsumer, 'expected @EventPattern consumer entry point');
+    assert.equal((eventConsumer!.metadata as any)?.fanout, true, '@EventPattern should be a broadcast seam');
+
+    // ClientProxy .emit / .send -> producer exit points.
+    assert.ok(
+      exitPoints.find(x => (x.metadata as any)?.system === 'nestjs-microservice' && (x.metadata as any)?.channel === 'order.created'),
+      'expected client.emit producer exit point'
+    );
+    assert.ok(
+      exitPoints.find(x => (x.metadata as any)?.system === 'nestjs-microservice' && (x.metadata as any)?.channel === 'cmd=get_order'),
+      'expected client.send producer exit point'
+    );
+
+    // amqp-connection-manager -> RabbitMQ facts under its own system label.
+    assert.ok(
+      nodes.find(n => n.type === 'exchange' && n.name === 'events.fanout' && (n.metadata as any)?.system === 'amqp-connection-manager'),
+      'expected amqp-connection-manager fanout exchange node'
+    );
+    assert.ok(
+      exitPoints.find(x => (x.metadata as any)?.system === 'amqp-connection-manager' && (x.metadata as any)?.channel === 'work.queue'),
+      'expected amqp-connection-manager sendToQueue producer'
+    );
+    assert.ok(
+      entryPoints.find(e => (e.metadata as any)?.system === 'amqp-connection-manager' && (e.metadata as any)?.channel === 'work.queue'),
+      'expected amqp-connection-manager consume entry point'
+    );
+  } finally {
+    await fs.remove(dir);
+  }
+});

@@ -111,6 +111,92 @@ describe('AuthAnalyzer', () => {
     expect(contribution.edges || []).toHaveLength(0);
   });
 
+  it('detects @auth0/auth0-react SPA guards (useAuth0, Auth0Provider, withAuthenticationRequired)', async () => {
+    const contribution = await analyzeProject(
+      { 'package.json': { dependencies: { '@auth0/auth0-react': '^2.2.4', react: '^18.0.0' } } },
+      {
+        'src/App.tsx': [
+          "import { Auth0Provider, useAuth0, withAuthenticationRequired } from '@auth0/auth0-react';",
+          '',
+          'export const App = () => (',
+          '  <Auth0Provider domain="tenant.auth0.com" clientId="abc">',
+          '    <Dashboard />',
+          '  </Auth0Provider>',
+          ');',
+          '',
+          'export function Profile() {',
+          '  const { user, isAuthenticated } = useAuth0();',
+          '  return isAuthenticated ? <div>{user?.name}</div> : null;',
+          '}',
+          '',
+          'export const GuardedDashboard = withAuthenticationRequired(Dashboard);',
+        ].join('\n'),
+      }
+    );
+
+    const strategies = nodesOfType(contribution, 'auth_strategy');
+    expect(strategies.length).toBeGreaterThanOrEqual(1);
+    expect(strategies.every(node => (node.metadata as any)?.library === 'Auth0 guard')).toBe(true);
+  });
+
+  it('detects @clerk/clerk-react SPA guards (ClerkProvider, SignedIn, useUser)', async () => {
+    const contribution = await analyzeProject(
+      { 'package.json': { dependencies: { '@clerk/clerk-react': '^4.30.7', react: '^18.0.0' } } },
+      {
+        'src/App.tsx': [
+          "import { ClerkProvider, SignedIn, SignedOut, useUser } from '@clerk/clerk-react';",
+          '',
+          'export const App = () => (',
+          '  <ClerkProvider publishableKey="pk_test">',
+          '    <SignedIn><Dashboard /></SignedIn>',
+          '    <SignedOut><Login /></SignedOut>',
+          '  </ClerkProvider>',
+          ');',
+          '',
+          'export function Profile() {',
+          '  const { user } = useUser();',
+          '  return <div>{user?.fullName}</div>;',
+          '}',
+        ].join('\n'),
+      }
+    );
+
+    const strategies = nodesOfType(contribution, 'auth_strategy');
+    expect(strategies.length).toBeGreaterThanOrEqual(1);
+    expect(strategies.every(node => (node.metadata as any)?.library === 'Clerk guard')).toBe(true);
+  });
+
+  it('detects NestJS passport guards (@UseGuards(AuthGuard) and PassportStrategy subclasses)', async () => {
+    const contribution = await analyzeProject(
+      { 'package.json': { dependencies: { '@nestjs/passport': '^10.0.0', '@nestjs/jwt': '^10.0.0', 'passport-jwt': '^4.0.1' } } },
+      {
+        'src/jwt.strategy.ts': [
+          "import { PassportStrategy } from '@nestjs/passport';",
+          "import { Strategy, ExtractJwt } from 'passport-jwt';",
+          '',
+          'export class JwtStrategy extends PassportStrategy(Strategy) {',
+          '  constructor() { super({ jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken() }); }',
+          '}',
+        ].join('\n'),
+        'src/users.controller.ts': [
+          "import { AuthGuard } from '@nestjs/passport';",
+          "import { Controller, Get, UseGuards } from '@nestjs/common';",
+          '',
+          "@Controller('users')",
+          'export class UsersController {',
+          "  @UseGuards(AuthGuard('jwt'))",
+          '  @Get()',
+          '  findAll() { return []; }',
+          '}',
+        ].join('\n'),
+      }
+    );
+
+    const strategies = nodesOfType(contribution, 'auth_strategy');
+    expect(strategies.length).toBeGreaterThanOrEqual(2);
+    expect(strategies.every(node => (node.metadata as any)?.library === 'Passport strategy')).toBe(true);
+  });
+
   it('emits policy nodes for OPA/Rego policy files without requiring a package manifest', async () => {
     const contribution = await analyzeProject(
       {},

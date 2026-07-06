@@ -43,9 +43,15 @@ interface RouteTarget {
 }
 
 const AUTH_RULES: AuthRule[] = [
-  rule('passport', 'Passport strategy', 'auth_strategy', ['npm'], ['passport'], [/^passport$/, /^passport-/], [
+  rule('passport', 'Passport strategy', 'auth_strategy', ['npm'], ['passport', '@nestjs/passport', '@nestjs/jwt', 'passport-jwt'], [/^passport$/, /^passport-/, /^@nestjs\/(?:passport|jwt)$/], [
     /\bpassport\.use\s*\(/,
     /\bpassport\.authenticate\s*\(/,
+    // NestJS passport idioms — corpus-depth sweep: NestJS APIs (zerac-api,
+    // legacy/api) use @UseGuards(AuthGuard(...)) + PassportStrategy subclasses,
+    // never bare passport.use/authenticate; auth ran with ZERO nodes on them.
+    // Import-gated on passport/@nestjs/passport/@nestjs/jwt.
+    /@UseGuards\s*\(\s*(?:new\s+)?[A-Za-z]*AuthGuard/,
+    /\bextends\s+PassportStrategy\s*\(/,
   ]),
   rule('next-auth', 'NextAuth/Auth.js session', 'auth_strategy', ['npm'], ['next-auth', '@auth/core', '@auth/nextjs'], [/^next-auth(?:\/|$)/, /^@auth\//], [
     /\bNextAuth\s*\(/,
@@ -53,9 +59,19 @@ const AUTH_RULES: AuthRule[] = [
   ]),
   rule('auth0', 'Auth0 guard', 'auth_strategy', ['npm'], ['@auth0/nextjs-auth0', '@auth0/auth0-react', 'express-oauth2-jwt-bearer', 'auth0'], [/^@auth0\//, /^express-oauth2-jwt-bearer$/], [
     /\b(withApiAuthRequired|withPageAuthRequired|requiresAuth|auth|claimCheck|jwtCheck)\s*\(/,
+    // React SPA idioms (@auth0/auth0-react) — corpus-depth sweep: 4 real repos
+    // shipped auth0-react and produced ZERO auth nodes because only the
+    // server-SDK call shapes were recognized. Import-gated (/^@auth0\//), so
+    // these names can't fire in unrelated code.
+    /\buseAuth0\s*\(/,
+    /<Auth0Provider\b/,
+    /\bwithAuthenticationRequired\s*\(/,
   ]),
-  rule('clerk', 'Clerk guard', 'auth_strategy', ['npm'], ['@clerk/nextjs', '@clerk/clerk-sdk-node', '@clerk/express'], [/^@clerk\//], [
+  rule('clerk', 'Clerk guard', 'auth_strategy', ['npm'], ['@clerk/nextjs', '@clerk/clerk-sdk-node', '@clerk/express', '@clerk/clerk-react'], [/^@clerk\//], [
     /\b(auth|currentUser|clerkClient|requireAuth|clerkMiddleware)\s*\(/,
+    // React SPA idioms (@clerk/clerk-react) — same corpus-depth gap as auth0.
+    /<(ClerkProvider|SignedIn|SignedOut|RedirectToSignIn)\b/,
+    /\buse(Auth|User|Session|Clerk)\s*\(/,
   ]),
   rule('firebase-auth', 'Firebase Auth token verification', 'auth_strategy', ['npm', 'pip'], ['firebase-admin', 'firebase'], [/^firebase-admin(?:\/|$)/, /^firebase(?:\/|$)/], [
     /\b(verifyIdToken|getAuth|createCustomToken|signInWithEmailAndPassword)\s*\(/,

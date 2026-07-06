@@ -174,6 +174,46 @@ describe('OutboundHttpClientAnalyzer', () => {
     ]));
   });
 
+  it('extracts calls through a client instance imported from another module (cross-file), with TS generics and template paths', async () => {
+    const contribution = await analyze({
+      'package.json': JSON.stringify({ dependencies: { axios: '^1.0.0' } }),
+      // The canonical shape: ONE module owns the axios instance (non-literal
+      // baseURL), every other module imports and calls it.
+      'src/core/http.ts': [
+        "import axios from 'axios';",
+        'const http = axios.create({ baseURL: import.meta.env.VITE_API_BASE_URL });',
+        'export default http;',
+      ].join('\n'),
+      'src/api/users.ts': [
+        "import http from '../core/http';",
+        "export const listUsers = () => http.get<User[]>('/users/');",
+        'export const getUser = (id: string) => http.get<User>(`/users/${id}/`);',
+        "export const createUser = (data: unknown) => http.post<User>('/users/', data);",
+      ].join('\n'),
+    });
+
+    const endpoints = exits(contribution).map(exit => `${exit.operation?.method} ${exit.target?.endpoint}`);
+    expect(endpoints).toEqual(expect.arrayContaining([
+      'GET /users/',
+      'GET /users/{param}/',
+      'POST /users/',
+    ]));
+  });
+
+  it('still drops placeholder-only template endpoints (no static path content)', async () => {
+    const contribution = await analyze({
+      'package.json': JSON.stringify({ dependencies: { axios: '^1.0.0' } }),
+      'src/dynamic.ts': [
+        "import axios from 'axios';",
+        'const client = axios.create({});',
+        'export const fetchAny = (url: string) => client.get(`${url}`);',
+        'export const fetchByBase = (base: string) => client.get(`/${base}/`);',
+      ].join('\n'),
+    });
+
+    expect(exits(contribution)).toHaveLength(0);
+  });
+
   it('does not fabricate URLs from non-literal or unrelated symbols', async () => {
     const contribution = await analyze({
       'package.json': JSON.stringify({ dependencies: { axios: '^1.0.0' } }),

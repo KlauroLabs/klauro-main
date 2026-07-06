@@ -102,6 +102,12 @@ export class JestAnalyzer extends BaseAnalyzer {
     );
   }
 
+  /** True when a test file imports vitest — such files belong to the
+   *  cross-language TestFramework analyzer's vitest rule, never to jest. */
+  static isVitestFile(content: string): boolean {
+    return /\bfrom\s+['"`]vitest['"`]|\brequire\(\s*['"`]vitest['"`]\s*\)/.test(content);
+  }
+
   async canAnalyze(projectPath: string): Promise<boolean> {
     try {
       const packageJsonPath = path.join(projectPath, 'package.json');
@@ -136,6 +142,11 @@ export class JestAnalyzer extends BaseAnalyzer {
       if (testFiles.length > 0) {
         for (const file of testFiles) {
           const content = await fs.readFile(path.join(projectPath, file), 'utf-8');
+          // A vitest-importing file is NOT jest evidence — vitest repos share
+          // the *.test.ts naming + describe/it shape, and claiming them here
+          // duplicated every suite/case id the cross-language TestFramework
+          // analyzer (the rightful vitest owner) emits (corpus-depth sweep fix).
+          if (JestAnalyzer.isVitestFile(content)) continue;
           if (content.includes('describe(') || content.includes('test(') || content.includes('it(')) {
             return true;
           }
@@ -296,6 +307,13 @@ export class JestAnalyzer extends BaseAnalyzer {
     for (const file of files) {
       const fullPath = path.join(projectPath, file);
       const content = await fs.readFile(fullPath, 'utf-8');
+
+      // Vitest owns its own files (via the cross-language TestFramework
+      // analyzer). Claiming them as jest suites emitted duplicate suite/case
+      // ids for every vitest file — the orchestrator dedup then logged one
+      // PARTIAL_ANALYSIS error per suite+case (hundreds per repo in the
+      // corpus-depth sweep) and dropped one analyzer's version of each.
+      if (JestAnalyzer.isVitestFile(content)) continue;
 
         try {
           const jsx = this.shouldParseJsx(file, content);

@@ -63,6 +63,17 @@ const RULES: ObservabilityRule[] = [
     extractor('tracer setup', /\btracer\.init\s*\(/g, 'telemetry', 'dd-trace-init'),
     extractor('trace span', /\btracer\.trace\s*\(\s*['"`](?<name>[^'"`]+)['"`]/g, 'span', 'dd-trace-span'),
   ], 'Datadog tracing instrumentation should preserve operation names and tracer initialization order.'),
+  rule('datadog-browser', 'Datadog Browser SDK', ['@datadog/browser-logs', '@datadog/browser-rum'], ['npm'], ['@datadog/browser-logs', '@datadog/browser-rum'], ['ts', 'tsx', 'js', 'jsx'], 'telemetry', [
+    extractor('rum setup', /\bdatadogRum\.init\s*\(/g, 'telemetry', 'dd-rum-init'),
+    extractor('logs setup', /\bdatadogLogs\.init\s*\(/g, 'telemetry', 'dd-logs-init'),
+    extractor('logger creation', /\bdatadogLogs\.createLogger\s*\(\s*['"`](?<name>[^'"`]+)['"`]/g, 'logger', 'dd-browser-logger'),
+    extractor('error capture', /\bdatadogRum\.addError\s*\(\s*(?<name>[A-Za-z0-9_.$]+)/g, 'telemetry', 'dd-rum-error'),
+  ], 'Datadog browser RUM/logs init and named loggers feed operational dashboards; preserve service names, logger identities, and captured error context.'),
+  rule('datadog-mobile', 'Datadog Mobile React Native', ['@datadog/mobile-react-native'], ['npm'], ['@datadog/mobile-react-native'], ['ts', 'tsx', 'js', 'jsx'], 'telemetry', [
+    extractor('sdk setup', /\bDdSdkReactNative\.initialize\s*\(/g, 'telemetry', 'dd-rn-init'),
+    extractor('sdk configuration', /\bnew\s+DdSdkReactNativeConfiguration\s*\(/g, 'telemetry', 'dd-rn-config'),
+    extractor('log call', /\bDdLogs\.(?:error|warn|info|debug)\s*\(/g, 'logger', 'dd-rn-log-call'),
+  ], 'Datadog React Native SDK init and DdLogs calls define the mobile observability surface; preserve configuration flags and log levels.'),
   rule('sentry-js', 'Sentry JS', ['@sentry/node', '@sentry/nextjs', '@sentry/browser'], ['npm'], ['@sentry/node', '@sentry/nextjs', '@sentry/browser'], ['ts', 'tsx', 'js', 'jsx'], 'telemetry', [
     extractor('error reporter setup', /\bSentry\.init\s*\(/g, 'telemetry', 'sentry-init'),
     extractor('exception capture', /\bSentry\.captureException\s*\(\s*(?<name>[A-Za-z0-9_.$]+)/g, 'telemetry', 'captureException'),
@@ -396,8 +407,11 @@ export class ObservabilityAnalyzer extends BaseAnalyzer {
     for (const line of content.split(/\r?\n/)) {
       const importMatch = line.match(/^\s*import\s+(?:.+?\s+from\s+)?['"]([^'"]+)['"]/);
       const requireMatch = line.match(/\brequire\(['"]([^'"]+)['"]\)/);
+      // Multi-line named imports put the source on its own `} from '...'` line
+      // (the norm in real SPAs/RN apps), which the line-based import match misses.
+      const fromMatch = line.match(/^\s*\}?\s*from\s+['"]([^'"]+)['"]/);
       const pythonMatch = line.match(/^\s*(?:from\s+([a-zA-Z0-9_.]+)\s+import|import\s+([a-zA-Z0-9_.]+))/);
-      const value = importMatch?.[1] || requireMatch?.[1] || pythonMatch?.[1] || pythonMatch?.[2];
+      const value = importMatch?.[1] || requireMatch?.[1] || fromMatch?.[1] || pythonMatch?.[1] || pythonMatch?.[2];
       if (value) imports.add(value);
     }
     return [...imports];

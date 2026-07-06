@@ -8,6 +8,8 @@ type MessagingSystem =
   | 'kafkajs'
   | 'node-rdkafka'
   | 'amqplib'
+  | 'amqp-connection-manager'
+  | 'nestjs-microservice'
   | 'nats'
   | 'redis-pubsub'
   | 'redis-streams'
@@ -91,6 +93,8 @@ export class MessagingAnalyzer extends BaseAnalyzer {
       'kafkajs',
       'node-rdkafka',
       'amqplib',
+      'amqp-connection-manager',
+      '@nestjs/microservices',
       'nats',
       'ioredis',
       'redis',
@@ -121,7 +125,7 @@ export class MessagingAnalyzer extends BaseAnalyzer {
       nodir: true,
     });
 
-    const importRe = /(from\s+['"]kafkajs['"]|require\(['"]kafkajs['"]\)|from\s+['"]amqplib['"]|require\(['"]amqplib['"]\)|from\s+['"]bullmq['"]|require\(['"]bullmq['"]\)|from\s+celery\b|import\s+celery\b|from\s+confluent_kafka\b|from\s+kafka\b|import\s+pika\b|@KafkaListener|KafkaTemplate|@RabbitListener|RabbitTemplate|Sidekiq::Worker|github\.com\/segmentio\/kafka-go|github\.com\/nats-io\/nats\.go)/;
+    const importRe = /(from\s+['"]kafkajs['"]|require\(['"]kafkajs['"]\)|from\s+['"]amqplib['"]|require\(['"]amqplib['"]\)|from\s+['"]amqp-connection-manager['"]|require\(['"]amqp-connection-manager['"]\)|from\s+['"]@nestjs\/microservices['"]|@MessagePattern|@EventPattern|from\s+['"]bullmq['"]|require\(['"]bullmq['"]\)|from\s+celery\b|import\s+celery\b|from\s+confluent_kafka\b|from\s+kafka\b|import\s+pika\b|@KafkaListener|KafkaTemplate|@RabbitListener|RabbitTemplate|Sidekiq::Worker|github\.com\/segmentio\/kafka-go|github\.com\/nats-io\/nats\.go)/;
     for (const file of files.slice(0, 400)) {
       try {
         const content = await fs.readFile(file, 'utf-8');
@@ -302,14 +306,26 @@ export class MessagingAnalyzer extends BaseAnalyzer {
       this.extractCallWithStringConsumer(content, filePath, 'node-rdkafka', 'topic', /\.subscribe\s*\(\s*\[\s*(['"`])([^'"`]+)\1/g, 'rdkafka consumer', nodes, entryPoints, ensureChannelNode, addEdge, lineOf);
     }
 
-    if (hasImport('amqplib')) {
-      this.extractRabbitExchanges(content, filePath, 'amqplib', nodes, entryPoints, exitPoints, ensureChannelNode, addEdge, lineOf, {
+    // amqp-connection-manager wraps amqplib and exposes the identical channel API
+    // (assertExchange/bindQueue/publish/sendToQueue/consume), typically inside a
+    // `createChannel({ setup })` callback. Same channel surface → same extraction.
+    if (hasImport('amqplib') || hasImport('amqp-connection-manager')) {
+      const rabbitSystem = hasImport('amqplib') ? 'amqplib' : 'amqp-connection-manager';
+      this.extractRabbitExchanges(content, filePath, rabbitSystem, nodes, entryPoints, exitPoints, ensureChannelNode, addEdge, lineOf, {
         assertExchange: /\.assertExchange\s*\(\s*(['"`])([^'"`]+)\1\s*,\s*(['"`])([^'"`]+)\3/g,
         bindQueue: /\.bindQueue\s*\(\s*(['"`])([^'"`]+)\1\s*,\s*(['"`])([^'"`]+)\3\s*(?:,\s*(['"`])([^'"`]*)\5)?/g,
         publish: /\.publish\s*\(\s*(['"`])([^'"`]+)\1\s*,\s*(['"`])([^'"`]*)\3/g,
       });
-      this.extractCallWithStringProducer(content, filePath, 'amqplib', 'queue', /\.sendToQueue\s*\(\s*(['"`])([^'"`]+)\1/g, 'sendToQueue', nodes, exitPoints, ensureChannelNode, addEdge, lineOf);
-      this.extractCallWithStringConsumer(content, filePath, 'amqplib', 'queue', /\.consume\s*\(\s*(['"`])([^'"`]+)\1/g, 'RabbitMQ consumer', nodes, entryPoints, ensureChannelNode, addEdge, lineOf);
+      this.extractCallWithStringProducer(content, filePath, rabbitSystem, 'queue', /\.sendToQueue\s*\(\s*(['"`])([^'"`]+)\1/g, 'sendToQueue', nodes, exitPoints, ensureChannelNode, addEdge, lineOf);
+      this.extractCallWithStringConsumer(content, filePath, rabbitSystem, 'queue', /\.consume\s*\(\s*(['"`])([^'"`]+)\1/g, 'RabbitMQ consumer', nodes, entryPoints, ensureChannelNode, addEdge, lineOf);
+    }
+
+    // NestJS microservices: @MessagePattern/@EventPattern decorate consumer handlers
+    // (entry points); ClientProxy `.emit(pattern, ...)` / `.send(pattern, ...)` are
+    // producers. Patterns may be string literals or `{ cmd: 'x' }` object shapes.
+    if (hasImport('@nestjs/microservices') || /@(?:Message|Event)Pattern\s*\(/.test(content)) {
+      this.extractNestMicroserviceHandlers(content, filePath, nodes, entryPoints, ensureChannelNode, addEdge, lineOf);
+      this.extractNestClientProducers(content, filePath, nodes, exitPoints, ensureChannelNode, addEdge, lineOf);
     }
 
     if (hasImport('nats')) {
@@ -681,6 +697,95 @@ export class MessagingAnalyzer extends BaseAnalyzer {
     let match: RegExpExecArray | null;
     while ((match = constructorRe.exec(content)) !== null) {
       this.addConsumer({ system, channel: match[2], channelKind: 'topic', filePath, line: lineOf(match.index), name: `${system} consumer` }, nodes, entryPoints, ensureChannelNode, addEdge);
+    }
+  }
+
+  /**
+   * Extract the pattern token from a NestJS `@MessagePattern`/`@EventPattern`
+   * argument. Supports the string form (`'cmd'`) and the object form
+   * (`{ cmd: 'sum' }` / `{ role: 'user', cmd: 'get' }`). Returns a stable label.
+   */
+  private extractNestPatternToken(arg: string): string | undefined {
+    const strLit = /^\s*(['"`])([^'"`]+)\1/.exec(arg);
+    if (strLit) return strLit[2];
+    // Object form: join key:value string-literal pairs (e.g. "role=user,cmd=get").
+    const pairRe = /([A-Za-z_$][\w$]*)\s*:\s*(['"`])([^'"`]+)\2/g;
+    const pairs: string[] = [];
+    let m: RegExpExecArray | null;
+    while ((m = pairRe.exec(arg)) !== null) pairs.push(`${m[1]}=${m[3]}`);
+    return pairs.length ? pairs.join(',') : undefined;
+  }
+
+  /**
+   * NestJS microservice consumers: `@MessagePattern(pattern)` (request/response)
+   * and `@EventPattern(pattern)` (fire-and-forget) decorate the handler method
+   * that follows. Each is a message entry point keyed on the pattern token.
+   */
+  private extractNestMicroserviceHandlers(
+    content: string,
+    filePath: string,
+    nodes: CASNode[],
+    entryPoints: CASEntryPoint[],
+    ensureChannelNode: ChannelEnsurer,
+    addEdge: (source: string, target: string, type: 'produces' | 'consumes', metadata: Record<string, any>) => void,
+    lineOf: (index: number) => number
+  ): void {
+    const decoratorRe = /@(MessagePattern|EventPattern)\s*\(([\s\S]{0,200}?)\)/g;
+    let match: RegExpExecArray | null;
+    while ((match = decoratorRe.exec(content)) !== null) {
+      const kindTag = match[1]; // MessagePattern | EventPattern
+      const token = this.extractNestPatternToken(match[2]);
+      if (!token) continue;
+      const channelKind: ChannelKind = kindTag === 'EventPattern' ? 'event' : 'queue';
+      // The handler method name follows the decorator (skip other decorators).
+      const after = content.slice(match.index + match[0].length, match.index + match[0].length + 400);
+      const handlerMatch = /(?:@[\w.]+\s*(?:\([^)]*\))?\s*)*(?:public\s+|private\s+|protected\s+)?(?:async\s+)?([A-Za-z_$][\w$]*)\s*\(/.exec(after);
+      this.addConsumer({
+        system: 'nestjs-microservice',
+        channel: token,
+        channelKind,
+        filePath,
+        line: lineOf(match.index),
+        name: `@${kindTag}(${token})`,
+        handlerName: handlerMatch?.[1],
+      }, nodes, entryPoints, ensureChannelNode, addEdge);
+    }
+  }
+
+  /**
+   * NestJS ClientProxy producers: `client.send(pattern, payload)` (request/
+   * response) and `client.emit(pattern, payload)` (fire-and-forget event). The
+   * pattern arg may be a string literal or `{ cmd: '...' }` object.
+   */
+  private extractNestClientProducers(
+    content: string,
+    filePath: string,
+    nodes: CASNode[],
+    exitPoints: CASExitPoint[],
+    ensureChannelNode: ChannelEnsurer,
+    addEdge: (source: string, target: string, type: 'produces' | 'consumes', metadata: Record<string, any>) => void,
+    lineOf: (index: number) => number
+  ): void {
+    // Require a payload arg after the pattern (`,`): ClientProxy is always
+    // `.send(pattern, payload)` / `.emit(pattern, payload)`, which excludes the
+    // common single-arg lookalikes (`res.send('ok')`, EventEmitter `.emit(evt)`).
+    const callRe = /\.(send|emit)\s*\(\s*((['"`])[^'"`]+\3|\{[\s\S]{0,200}?\})\s*,/g;
+    let match: RegExpExecArray | null;
+    while ((match = callRe.exec(content)) !== null) {
+      const action = match[1]; // send | emit
+      const token = this.extractNestPatternToken(match[2]);
+      if (!token) continue;
+      const channelKind: ChannelKind = action === 'emit' ? 'event' : 'queue';
+      this.addProducer({
+        system: 'nestjs-microservice',
+        channel: token,
+        channelKind,
+        filePath,
+        line: lineOf(match.index),
+        name: `client.${action}(${token})`,
+        action,
+        payloadType: this.extractPayloadType(content.slice(match.index, match.index + 300)),
+      }, nodes, exitPoints, ensureChannelNode, addEdge);
     }
   }
 
@@ -1279,11 +1384,16 @@ export class MessagingAnalyzer extends BaseAnalyzer {
         // group is attached explicitly when a groupId is found.
         return { type: 'consumer-group', fanout: false };
       case 'amqplib':
+      case 'amqp-connection-manager':
       case 'pika':
       case 'spring-rabbit':
         // A queue (sendToQueue) is a work queue; an exchange publish gets its
         // real type from assertExchange (emitted explicitly).
         return kind === 'exchange' ? { type: 'topic', fanout: false } : { type: 'queue-group', fanout: false };
+      case 'nestjs-microservice':
+        // @MessagePattern is request/response (competing-consumer, 1->1);
+        // @EventPattern / client.emit is fire-and-forget broadcast (1->N).
+        return kind === 'event' ? { type: 'event', fanout: true } : { type: 'queue-group', fanout: false };
       default:
         return undefined;
     }

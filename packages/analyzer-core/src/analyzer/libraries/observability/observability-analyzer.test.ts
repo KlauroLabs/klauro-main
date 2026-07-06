@@ -118,6 +118,82 @@ test('ObservabilityAnalyzer emits telemetry, span, metric, logger nodes and inst
   }
 });
 
+test('ObservabilityAnalyzer detects Datadog browser and mobile SDK instrumentation', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'observability-analyzer-datadog-'));
+  try {
+    await fs.writeJson(path.join(dir, 'package.json'), {
+      name: 'datadog-sdk-fixture',
+      dependencies: {
+        '@datadog/browser-logs': '^4.50.0',
+        '@datadog/browser-rum': '^4.50.0',
+        '@datadog/mobile-react-native': '^1.8.5',
+      },
+    });
+
+    // Mirrors the real soon-ui shape (datadogRum/datadogLogs init + createLogger + addError).
+    await fs.writeFile(
+      path.join(dir, 'data-dog.ts'),
+      [
+        `import { datadogRum } from '@datadog/browser-rum';`,
+        `import { datadogLogs } from '@datadog/browser-logs';`,
+        '',
+        'export function initDataDog() {',
+        `  datadogRum.init({ applicationId: 'app', clientToken: 'token', service: 'soon-platform' });`,
+        `  datadogLogs.init({ clientToken: 'token', service: 'ui' });`,
+        `  const auditLogger = datadogLogs.createLogger('ui-audit', { handler: 'http', level: 'info' });`,
+        '}',
+        '',
+        'export function logError(error: Error) {',
+        '  datadogRum.addError(error, { source: "app" });',
+        '}',
+        '',
+      ].join('\n')
+    );
+
+    // Mirrors the real mobile-ui shape (DdSdkReactNative initialize + DdLogs calls).
+    await fs.writeFile(
+      path.join(dir, 'datadog-mobile.ts'),
+      [
+        // Multi-line import, exactly like the real mobile-ui common/datadog/index.ts.
+        'import {',
+        '  DdSdkReactNative,',
+        '  DdSdkReactNativeConfiguration,',
+        '  DdLogs',
+        `} from '@datadog/mobile-react-native';`,
+        '',
+        'export async function init() {',
+        `  const config = new DdSdkReactNativeConfiguration('token', 'env', 'app', true, true, true);`,
+        '  await DdSdkReactNative.initialize(config);',
+        '}',
+        '',
+        'export function logError(error: Error) {',
+        '  DdLogs.error(error.message, error);',
+        '}',
+        '',
+      ].join('\n')
+    );
+
+    const analyzer = new ObservabilityAnalyzer();
+    assert.equal(await analyzer.canAnalyze(dir), true, 'canAnalyze should detect Datadog SDK dependencies');
+
+    const contribution = await analyzer.analyze({ projectPath: dir });
+    const { nodes } = contribution;
+
+    assert.ok(nodes.find(node => (node.metadata as any)?.identifier === 'dd-rum-init'), 'expected datadogRum.init node');
+    assert.ok(nodes.find(node => (node.metadata as any)?.identifier === 'dd-logs-init'), 'expected datadogLogs.init node');
+    assert.ok(nodes.find(node => node.type === 'logger' && (node.metadata as any)?.identifier === 'ui-audit'), 'expected named browser logger node');
+    assert.ok(nodes.find(node => (node.metadata as any)?.operation === 'error capture'), 'expected datadogRum.addError capture node');
+    assert.ok(nodes.find(node => (node.metadata as any)?.identifier === 'dd-rn-init'), 'expected DdSdkReactNative.initialize node');
+    assert.ok(nodes.find(node => node.type === 'logger' && (node.metadata as any)?.identifier === 'dd-rn-log-call'), 'expected DdLogs call node');
+    assert.ok(
+      contribution.libraries?.some(library => library.category === 'observability' && library.name.startsWith('@datadog/browser-')),
+      'expected Datadog browser library inventory'
+    );
+  } finally {
+    await fs.remove(dir);
+  }
+});
+
 test('ObservabilityAnalyzer gates bare logger and metric calls on import evidence', async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'observability-analyzer-negative-'));
   try {

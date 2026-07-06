@@ -57,6 +57,7 @@ import { pruneKlauroStorage } from './storage-maintenance';
 import { resolveWorkspaceInputPaths, type WorkspaceSkippedInput } from './workspace-inputs';
 import { RESPONSE_BUDGET_BYTES, boundToolPayload, boundToolText, serializeToolResponse } from './response-budget';
 import { getBuildIdentity } from '../../../packages/analyzer-core/src/analyzer/core/build-identity';
+import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import { loadStoredConnectorAuth, normalizeServerUrl } from './connector-auth';
 import { arbitrate, detectCollisions, getGrants, heartbeatGrant, releaseGrant, requestGrant, type AgentKind, type CasEdgeRef, type WasCapabilityRef, type WorkClaim } from './coordination';
 import { attributeChange, appendClaim, checkEditLock, getActiveClaims, getPresence, readClaimLog, releaseAgent, watch } from './coordination/local-store';
@@ -82,11 +83,13 @@ Orient (once per repo): resolve_agent_analysis(path) confirms an analysis exists
 
 Progressive availability (don't wait): structural facts — call graph, routes, entry points, file nodes, data flows — are precomputed and return instantly. They are complete and authoritative; use them immediately. AI-written prose (the system/element descriptions) enriches in the background, so every result carries an ai_enrichment field: 'ready' = prose included; 'pending' = you got deterministic text now, re-call in a few seconds only if you specifically need the richer narrative; 'disabled'/'synchronous' = no background pass, the text you have is final. Never block on 'pending' — act on the structure first; the prose is flavor, the facts are the product.
 
-Find (instead of grep): search_nodes / semantic_search rank nodes by name+meaning with file:line and risk flags. get_route_table for routes (method/path/handler/auth); get_entry_points and get_exit_points for CLI, events, and queues; get_file_nodes for what a file defines; get_data_entities for the domain's data shapes (entities, fields, and who reads/writes them); get_test_summary for the test-suite inventory — pull it before writing tests so you extend the existing suites instead of inventing a parallel harness.
+Find (instead of grep): search_nodes / semantic_search rank nodes by name+meaning with file:line and risk flags. get_route_table for routes (method/path/handler/auth); get_entry_points and get_exit_points for CLI, events, and queues; get_file_nodes for what a file defines; get_data_entities for the domain's data shapes (entities, fields, and who reads/writes them); get_erd for the entity-relationship model + a renderable Mermaid erDiagram (entities, fields, evidence-gated cardinalities); get_test_summary for the test-suite inventory — pull it before writing tests so you extend the existing suites instead of inventing a parallel harness.
 
 Understand before editing (highest value): get_coding_context(target) returns the node plus conventions, layer boundaries, callers, callees, and the exact tests to run — one call instead of read-file + trace-callers + find-tests. get_callers shows each call site's actual arguments; get_call_chain traces a request end to end; get_data_lineage tracks an entity's reads and writes; get_intent / get_conventions / get_modification_guide explain why it exists and how to change it safely. Before changing an entity, call get_interface_signature to see its full contract — Input (params/entry points it requires), Logic (its caller/callee blackbox wiring), Side-effects (external systems/entities it touches), Output (return type/produced entities) — and blast radius in one call, at function/flow/capability/project/workspace level, instead of joining entry_points + exit_points + data_lineage + get_callers by hand. For the ordered steps a request/job actually moves through (not just one entity's contract), call get_flow_concepts — a named flow per entry point, each step tied to concrete functions (1:1/1:many/sub-section) with its own I/L/S/O + Constraints; use this to coordinate work at the flow/step level ("I own the Persist step of the Checkout flow") instead of file/function.
 
 Think in levels, not just files (Capability -> Flow -> Step -> Function): get_summary names the capabilities; get_flow_concepts breaks each into named flows as ordered steps, each step carrying its own Input/Logic/Side-effects(state_changes vs external_integrations)/Output/Constraints; get_coding_context/get_call_chain drill a step down to its concrete function(s) — 1:1, 1:many, or a sub-section of one function. Every level answers the same shape of question, so "what does this do, what does it touch, what rule must hold" is answerable uniformly from one function up to a whole capability — orient wide with get_summary, then narrow through get_flow_concepts before you ever drop to a single file.
+
+Every unit (flow, step, function/node) carries the SAME uniform 6-facet understanding contract (docs/UNDERSTANDING-MODEL.md), all evidence-gated — never fabricated, absent facets omitted: (1) input, (2) output, (3) logic, (4) system effects (state_changes vs external_integrations), (5) constraints — first-class {kind, rule, evidence} where kind is validation | auth | rate-limit | error | invariant | business-rule | consistency (a consistency constraint means "reads here may be eventually consistent / stale" — a real correctness rule, not a hint), and (6) telemetry — real runtime request_count/error_rate/p50-p95-p99 when observations exist. get_flow_concepts returns the full contract per flow AND per step; get_coding_context returns it (incl. the telemetry facet) for one resolved node. When you need "what must hold here" or "how does this actually run", read the constraints/telemetry facets rather than re-deriving them from raw source.
 
 Stay cohesive as the system grows (self-regulation, mandatory before non-trivial additions): lead with the comprehension layer — get_product_map, get_paradigm_conformance, get_patterns — to learn HOW this system is actually built (its layering norm, its dominant design patterns) before writing code that assumes a different shape. Then, before adding a new handler/module/data-access path, call get_architectural_conflicts to check whether what you're about to build would introduce a competing pattern for a concern this codebase already has a norm for (e.g. calling a repository directly where every other handler goes through a service), or an engineering-principle break (layering skip, split ownership of an entity's writes, a new coupling hotspot). A clean is_cohesive:true doesn't mean skip design judgment, but a conflict/violation is a direct signal to align with the existing shape instead of adding a second way to do the same thing — keeping a codebase built by many agents cohesive by construction, not by cleanup after the fact.
 
@@ -126,6 +129,26 @@ async function getFreshAnalysisForAgent(projectPath: string) {
   }
 
   return (await analyzeProjectIncremental(projectPath)).output;
+}
+
+/**
+ * TELEMETRY facet (facet 6 of the uniform understanding contract): load
+ * persisted runtime observations for `path` and roll them up into per-node
+ * metrics (product.buildNodeRuntimeMetrics), returning them in the shape the
+ * flow/coding-context telemetry join consumes. Best-effort and evidence-gated:
+ * returns [] when there are no observations, so the join simply omits the
+ * facet — nothing is fabricated. Reuses `path` as the workspace key, the same
+ * convention get_runtime_observations / ingest_telemetry / get_coding_context
+ * already use.
+ */
+async function runtimeMetricsForContract(cas: CASOutput, path: string): Promise<product.NodeRuntimeMetrics[]> {
+  try {
+    const observations = await loadRuntimeObservations(path);
+    if (!observations || observations.length === 0) return [];
+    return product.buildNodeRuntimeMetrics(cas, observations);
+  } catch {
+    return [];
+  }
 }
 
 export type ToolProfile = 'core' | 'core-no-pillars' | 'full';
@@ -258,7 +281,7 @@ const GATEWAY_TOOL_GROUPS: Array<{ label: string; tools: string[] }> = [
   { label: 'Coding context and conventions', tools: ['get_conventions', 'get_modification_guide', 'get_pattern_examples', 'find_similar_code', 'get_comments', 'get_error_contracts', 'get_framework_guidance', 'get_usage_examples', 'get_configuration'] },
   { label: 'Intent, data, and risk', tools: ['get_intent', 'get_data_entities', 'get_security_overview', 'get_behavioral_invariants', 'validate_behavioral_invariants', 'get_stability', 'get_flow_coverage'] },
   { label: 'Workflows, capabilities, and runtime', tools: ['get_workflows', 'get_paradigm_conformance', 'get_architectural_conflicts', 'get_unified_perspectives', 'get_data_lineage', 'diff_behavior', 'get_flow_graph', 'get_runtime_static_links', 'simulate_runtime_telemetry', 'correlate_runtime_event', 'record_runtime_event', 'ingest_telemetry', 'get_runtime_observations', 'get_operational_priorities', 'get_runtime_trace', 'get_analysis_facts', 'get_domain_concepts'] },
-  { label: 'Behaviors, testing, data, and health', tools: ['get_behaviors', 'get_lifecycle_hooks', 'get_test_summary', 'get_database_schema', 'get_implementation_health', 'get_system_health', 'get_documentation_coverage', 'get_todos'] },
+  { label: 'Behaviors, testing, data, and health', tools: ['get_behaviors', 'get_lifecycle_hooks', 'get_test_summary', 'get_database_schema', 'get_erd', 'get_implementation_health', 'get_system_health', 'get_documentation_coverage', 'get_todos'] },
   { label: 'Dependencies', tools: ['get_dependencies', 'get_libraries'] },
   { label: 'Coverage Intelligence', tools: ['get_coverage_gaps'] },
   { label: 'Change history', tools: ['get_changes_since', 'get_changes_between', 'get_changes_for_node', 'get_changes_for_file', 'get_changes_for_entry_point', 'get_change_summary', 'get_hot_spots', 'get_analysis_at', 'get_analysis_snapshots'] },
@@ -4021,18 +4044,22 @@ function registerTools(server: McpServer) {
     'get_flow_concepts',
     {
       title: 'Get Flow Concepts',
-      description: 'High-level named flows (the behavioral conceptual layer over the call graph, docs/SPEC-CONCEPTUAL-LAYER.md) — each flow = an ordered set of semantic steps (Validate -> Process -> Persist -> Call External -> Respond), not a raw function chain. Each flow and each step carries the full I/L/S/O + Constraints contract: input, logic, side_effects split into state_changes (DB/cache writes) vs external_integrations (API/webhook/SDK/queue calls), output, and constraints (business rules/guards/invariants deterministically extracted from guard clauses, validation, and data-entity invariants — never fabricated). Each step ties back to concrete function_ids, 1:1, 1:many, or a sub-section (line-range) of a single large function. Flows link to capability_id when a system_capabilities entry references the same entry point, and list the data entities touched. Deterministic-first (composed from entry_points, call edges, exit_points, data_lineage, data_entities.invariants) — omits (not fabricates) whatever cannot be derived, with reasons in gaps. Powers the UI capability->flow->step->function hierarchy, agent work-alignment (coordinate at flow/step level, not file/function), and the coordination fabric. Sits between get_summary (names the capability) and get_coding_context/get_call_chain (drills a step into its concrete function) — the middle rung of the level-drilling path, and the concept-level vocabulary the fabric uses for claims ("I own the Persist step of the Checkout flow") when multiple agents work this codebase at once.',
+      description: 'High-level named flows (the behavioral conceptual layer over the call graph, docs/SPEC-CONCEPTUAL-LAYER.md) — each flow = an ordered set of semantic steps (Validate -> Process -> Persist -> Call External -> Respond), not a raw function chain. Each flow and each step carries the full 6-facet UNDERSTANDING CONTRACT (docs/UNDERSTANDING-MODEL.md), all evidence-gated: (1) input, (2) output, (3) logic, (4) system effects split into state_changes (DB/cache/file writes, entity mutations) vs external_integrations (API/webhook/SDK/queue calls), (5) constraints — first-class {kind, rule, evidence} records where kind is validation | auth | rate-limit | error | invariant | business-rule | consistency (derived from validation schemas, auth guards, guard clauses, data-entity/behavioral invariants, and the consistency model — e.g. "reads from this replica are eventually consistent"), and (6) telemetry — real runtime metrics (request_count/error_rate/p50-p95-p99/status distribution) joined onto the unit WHEN observations exist for it, omitted otherwise. Nothing is fabricated: a facet with no supporting fact is omitted. Each step ties back to concrete function_ids, 1:1, 1:many, or a sub-section (line-range) of a single large function. Flows link to capability_id when a system_capabilities entry references the same entry point, and list the data entities touched. Deterministic-first (composed from entry_points, call edges, exit_points, data_lineage, data_entities.invariants, consistency_model, and persisted telemetry) — omits (not fabricates) whatever cannot be derived, with reasons in gaps. Powers the UI capability->flow->step->function hierarchy, agent work-alignment (coordinate at flow/step level, not file/function), and the coordination fabric. Sits between get_summary (names the capability) and get_coding_context/get_call_chain (drills a step into its concrete function) — the middle rung of the level-drilling path, and the concept-level vocabulary the fabric uses for claims ("I own the Persist step of the Checkout flow") when multiple agents work this codebase at once.',
       inputSchema: {
         path: z.string().describe('Project path'),
         target: z.string().optional().describe('Restrict to entry points matching this id, name, or route path substring (e.g. "/orders" or "createOrder"); omit for all derivable flows'),
         max_depth: z.number().optional().describe('Bound on forward call-chain traversal depth from the entry point (default 6)'),
         max_functions_per_flow: z.number().optional().describe('Cap on distinct functions traced per flow, deduped (default 40)'),
         max_flows: z.number().optional().describe('Cap on number of flows returned (default 15 when target is omitted — each flow carries a full I/L/S/O contract per flow+step, so "all entry points" can be very large on big repos; response reports total_available/truncated so you know when to raise this. When target is set the result is already narrow and uncapped by default.)'),
+        role: z.enum(['core', 'supporting', 'infrastructure']).optional().describe('Filter to flows with this semantic role. core = domain capability flows; supporting = auth/config/notifications/audit; infrastructure = plumbing (health/telemetry/migrations/serialization). Each returned flow also carries `role` + `role_evidence`, and the response includes a role_breakdown count. When set, all flows are classified first so the filter never silently misses matches past the browse cap.'),
       } as any,
     } as any,
-    async ({ path, target, max_depth, max_functions_per_flow, max_flows }: any) => withErrorHandling(async () => {
+    async ({ path, target, max_depth, max_functions_per_flow, max_flows, role }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
-      return json(query.getFlowConcepts(cas, { target, maxDepth: max_depth, maxFunctionsPerFlow: max_functions_per_flow, maxFlows: max_flows }));
+      // TELEMETRY facet: join persisted runtime metrics onto flow/step
+      // contracts when observations exist (evidence-gated, omitted otherwise).
+      const runtimeMetrics = await runtimeMetricsForContract(cas, path);
+      return json(query.getFlowConcepts(cas, { target, maxDepth: max_depth, maxFunctionsPerFlow: max_functions_per_flow, maxFlows: max_flows, role, runtimeMetrics }));
     })
   );
 
@@ -4060,7 +4087,7 @@ function registerTools(server: McpServer) {
     'get_coding_context',
     {
       title: 'Get Coding Context',
-      description: 'THE essential tool for AI coding. Returns everything needed to start coding in a specific area: target node details, conventions, patterns, layer boundaries, modification checklist, and connected code. Call this before writing ANY code. This is the bottom rung of the level-drilling path (get_summary -> get_flow_concepts -> here): use it once you have a concrete target — a step from get_flow_concepts, or a node from search — to resolve it down to the actual function(s)/sub-section.',
+      description: 'THE essential tool for AI coding. Returns everything needed to start coding in a specific area: target node details, conventions, patterns, layer boundaries, modification checklist, connected code, and — when real runtime observations exist for the resolved node — a `telemetry` facet (request_count/error_rate/p50-p95-p99), the telemetry facet of the uniform 6-facet understanding contract (docs/UNDERSTANDING-MODEL.md; omitted when no observation matches, never fabricated). Call this before writing ANY code. This is the bottom rung of the level-drilling path (get_summary -> get_flow_concepts -> here): use it once you have a concrete target — a step from get_flow_concepts, or a node from search — to resolve it down to the actual function(s)/sub-section.',
       inputSchema: {
         path: z.string().describe('Project path'),
         target: z.string().describe('Node ID, file path, or search query to find the target'),
@@ -4072,14 +4099,17 @@ function registerTools(server: McpServer) {
     } as any,
     async ({ path, target, task_type, include, caller_limit, callee_limit }: any) => withErrorHandling(async () => {
       const cas = await getFreshAnalysisForAgent(path);
-      const context: any = query.getCodingContext(cas, target, { task_type, include, caller_limit, callee_limit });
+      // TELEMETRY facet: join persisted runtime metrics onto the resolved
+      // target node's contract (evidence-gated; omitted when none match).
+      const runtimeMetrics = await runtimeMetricsForContract(cas, path);
+      const context: any = query.getCodingContext(cas, target, { task_type, include, caller_limit, callee_limit, runtimeMetrics });
       // WS-A (minimal, safe merge): surface fused runtime facts for the
       // resolved target node, if any were persisted via telemetry ingest.
       // We don't have a dedicated dataDir/workspace parameter on this tool,
       // so we reuse `path` as the workspace key (same convention as
       // get_runtime_observations / ingest_telemetry) rather than threading a
       // new parameter through query.getCodingContext.
-      const nodeId = context?.node?.id;
+      const nodeId = context?.target_node?.id;
       if (nodeId) {
         const fused = await loadPersistedRuntimeFacts('', path).catch(() => null);
         const matches = fused?.facts?.filter((f) => f.node_id === nodeId) || [];
@@ -4091,7 +4121,7 @@ function registerTools(server: McpServer) {
       // diff tripped the full-rebuild path). Attach the specific reason to the node
       // instead of only a project-wide banner, so the agent knows exactly what's
       // uncertain rather than an undifferentiated stale/fresh flag.
-      const nodeFile = context?.node?.source?.file;
+      const nodeFile = context?.target_node?.file;
       if (nodeFile) {
         const postRefreshSummary = freshness.summarizeAnalysisFreshness(path, cas.analysis_timestamp);
         const normalizedFile = String(nodeFile).replace(/\\/g, '/');
@@ -4296,17 +4326,18 @@ function registerTools(server: McpServer) {
     'get_data_entities',
     {
       title: 'Get Data Entities',
-      description: 'Data entity lifecycle: entities with fields, CRUD lifecycle (created_by, read_by, updated_by, deleted_by), transformations, invariants, sensitive data, validation gaps. Paginated (default 25).',
+      description: 'Data entity lifecycle: entities with fields, CRUD lifecycle (created_by, read_by, updated_by, deleted_by), transformations, invariants, sensitive data, validation gaps. Each entity also carries a semantic `role` (core = domain/business noun the product exists for; supporting = auth/config/session/audit; infrastructure = migration/log/telemetry/serialization plumbing) with `role_evidence`, classified by the shared core/supporting/infrastructure classifier (reused from the workspace item classifier) anchored on the already-computed domain-concept classification and the entity lifecycle shape; the response includes a role_breakdown count. Paginated (default 25).',
       inputSchema: {
         path: z.string().describe('Project path'),
         entity_name: z.string().optional().describe('Filter by entity name'),
         limit: z.number().optional().describe('Max results (default 25)'),
         offset: z.number().optional().describe('Skip first N results (default 0)'),
+        role: z.enum(['core', 'supporting', 'infrastructure']).optional().describe('Filter to entities with this semantic role (applied before pagination so total/role_breakdown stay honest).'),
       } as any,
     } as any,
-    async ({ path, entity_name, limit, offset }: any) => withErrorHandling(async () => {
+    async ({ path, entity_name, limit, offset, role }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
-      return json(query.getDataEntities(cas, { entityName: entity_name, limit, offset }));
+      return json(query.getDataEntities(cas, { entityName: entity_name, limit, offset, role }));
     })
   );
 
@@ -5835,6 +5866,23 @@ function registerTools(server: McpServer) {
     async ({ path }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
       return json(query.getDatabaseSchema(cas));
+    })
+  );
+
+  server.registerTool(
+    'get_erd',
+    {
+      title: 'Get ERD (Entity-Relationship Diagram)',
+      description: 'Entity-relationship model from ORM analysis: entities (fields with PK/FK/nullable/unique), and evidence-gated relationships (one-to-one/one-to-many/many-to-one/many-to-many, or "unknown" when the ORM relation kind is unrecognized — never guessed) with the join field. Returns a renderable Mermaid erDiagram plus compact JSON. Reshapes get_database_schema; does not re-extract. Empty ERD for repos with no entities.',
+      inputSchema: {
+        path: z.string().describe('Project path'),
+        format: z.enum(['json', 'mermaid']).optional().describe('json = structured model only; mermaid = erDiagram string only; omit for both'),
+        entity: z.string().optional().describe('Focus on one entity and its direct neighbours (subgraph)'),
+      } as any,
+    } as any,
+    async ({ path, format, entity }: any) => withErrorHandling(async () => {
+      const cas = await getAnalysis(path);
+      return json(query.getErd(cas, { format, entityName: entity }));
     })
   );
 

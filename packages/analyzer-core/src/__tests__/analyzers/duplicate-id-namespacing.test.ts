@@ -104,7 +104,10 @@ describe('duplicate id namespacing across files', () => {
         '});',
       ].join('\n'));
       write('src/config/env-preserve.test.ts', [
-        "import { describe, it, expect } from 'vitest';",
+        // Jest-flavored globals import — a vitest import here would (correctly)
+        // make JestAnalyzer skip the file as vitest-owned, which is not what
+        // this test guards (env-* filename glob behavior).
+        "import { describe, it, expect } from '@jest/globals';",
         '',
         "describe('env preserve', () => {",
         "  it('keeps env refs', () => {",

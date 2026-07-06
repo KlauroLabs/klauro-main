@@ -11,10 +11,16 @@ import { isAuthenticationGuardName } from '../../../packages/analyzer-core/src/a
 import { buildProductMap } from '../../../packages/analyzer-core/src/analyzer/core/product-map';
 import { RISKABLE_NODE_TYPES } from '../../../packages/analyzer-core/src/analyzer/core/orchestrator';
 import { buildTerminalSignal } from '../../../packages/analyzer-core/src/analyzer/core/terminal-signal';
-import { computeFlowConcepts, type ComputeFlowConceptsOptions } from '../../../packages/analyzer-core/src/analyzer/core/flow-concepts';
+import { computeFlowConcepts, attachTelemetryToFlows, telemetryForNode, type ComputeFlowConceptsOptions, type RuntimeMetricLike } from '../../../packages/analyzer-core/src/analyzer/core/flow-concepts';
 import { computeFlowStructuralLinks, computeConflictBehavioralLinks } from '../../../packages/analyzer-core/src/analyzer/core/structural-cross-links';
 import type { CASProductMap } from '../../../packages/analyzer-core/src/types/cas.types';
 import { buildSystemFitSummary, buildCommunicationSeamSummary } from './context-fabric';
+import {
+  buildDomainConceptIndex,
+  classifyEntityRole,
+  classifyFlowRole,
+  type SemanticRole,
+} from './semantic-roles';
 import {
   displayJourneySteps,
   guardPhraseForBoundaries,
@@ -964,38 +970,71 @@ export function getIntent(cas: CASOutput, nodeId: string) {
   return (cas.intents || []).find(i => i.node_id === nodeId) || null;
 }
 
-export function getDataEntities(cas: CASOutput, opts: { entityName?: string; limit?: number; offset?: number } = {}) {
+export function getDataEntities(
+  cas: CASOutput,
+  opts: { entityName?: string; limit?: number; offset?: number; role?: SemanticRole } = {}
+) {
   let entities = cas.data_entities || [];
   if (opts.entityName) {
     entities = entities.filter(e =>
       e.name.toLowerCase().includes(opts.entityName!.toLowerCase())
     );
   }
+
+  // Per-entity semantic role (core / supporting / infrastructure), classified
+  // with the SAME evidence + logic as the workspace item classifier (shared
+  // ./semantic-roles module), corroborated by the already-computed domain
+  // concept classification (cas.domain_concepts[].classification) and the
+  // entity's own lifecycle shape. Additive; omitted (`unknown`) when
+  // unclassifiable. See docs/SPEC-CONCEPTUAL-LAYER.md role vocabulary.
+  const conceptIndex = buildDomainConceptIndex(cas.domain_concepts);
+  const roleByEntityId = new Map<string, { role?: SemanticRole; role_evidence: string[] }>();
+  for (const e of entities) {
+    roleByEntityId.set(e.id, classifyEntityRole(e, conceptIndex));
+  }
+
+  // Optional role filter — apply BEFORE pagination so counts stay honest.
+  if (opts.role) {
+    entities = entities.filter(e => roleByEntityId.get(e.id)?.role === opts.role);
+  }
+
   const total = entities.length;
   const limit = opts.limit || 25;
   const offset = opts.offset || 0;
 
-  const summarized = entities.slice(offset, offset + limit).map(e => ({
-    id: e.id,
-    name: e.name,
-    schema_source: e.schema_source,
-    field_count: e.fields?.length || 0,
-    fields: (e.fields || []).slice(0, 10),
-    lifecycle_summary: {
-      created_by_count: e.lifecycle?.created_by?.length || 0,
-      read_by_count: e.lifecycle?.read_by?.length || 0,
-      updated_by_count: e.lifecycle?.updated_by?.length || 0,
-      deleted_by_count: e.lifecycle?.deleted_by?.length || 0,
-      created_by_sample: (e.lifecycle?.created_by || []).slice(0, 3),
-      read_by_sample: (e.lifecycle?.read_by || []).slice(0, 3),
-      updated_by_sample: (e.lifecycle?.updated_by || []).slice(0, 3),
-      deleted_by_sample: (e.lifecycle?.deleted_by || []).slice(0, 3),
-    },
-    transformation_count: e.transformations?.length || 0,
-    invariant_count: e.invariants?.length || 0,
-  }));
+  const roleBreakdown: Record<'core' | 'supporting' | 'infrastructure' | 'unknown', number> =
+    { core: 0, supporting: 0, infrastructure: 0, unknown: 0 };
+  for (const e of entities) {
+    const r = roleByEntityId.get(e.id)?.role;
+    roleBreakdown[r || 'unknown']++;
+  }
 
-  return { total, offset, limit, entities: summarized, data_summary: cas.data_summary };
+  const summarized = entities.slice(offset, offset + limit).map(e => {
+    const classification = roleByEntityId.get(e.id);
+    return {
+      id: e.id,
+      name: e.name,
+      schema_source: e.schema_source,
+      role: classification?.role,
+      role_evidence: classification?.role_evidence,
+      field_count: e.fields?.length || 0,
+      fields: (e.fields || []).slice(0, 10),
+      lifecycle_summary: {
+        created_by_count: e.lifecycle?.created_by?.length || 0,
+        read_by_count: e.lifecycle?.read_by?.length || 0,
+        updated_by_count: e.lifecycle?.updated_by?.length || 0,
+        deleted_by_count: e.lifecycle?.deleted_by?.length || 0,
+        created_by_sample: (e.lifecycle?.created_by || []).slice(0, 3),
+        read_by_sample: (e.lifecycle?.read_by || []).slice(0, 3),
+        updated_by_sample: (e.lifecycle?.updated_by || []).slice(0, 3),
+        deleted_by_sample: (e.lifecycle?.deleted_by || []).slice(0, 3),
+      },
+      transformation_count: e.transformations?.length || 0,
+      invariant_count: e.invariants?.length || 0,
+    };
+  });
+
+  return { total, offset, limit, role_breakdown: roleBreakdown, entities: summarized, data_summary: cas.data_summary };
 }
 
 export function getSecurityOverview(cas: CASOutput) {
@@ -2387,6 +2426,273 @@ export function getDatabaseSchema(cas: CASOutput) {
   return cas.database_schema || null;
 }
 
+// --- Entity-Relationship model (ERD) -----------------------------------------
+//
+// The ORM analyzers + entity extraction already give us `cas.database_schema`
+// (entities, fields, and `relationships` carrying an ORM relation kind + target
+// + field). `buildErd` reshapes THAT — it does not re-extract — into a
+// structured entity-relationship model plus a renderable Mermaid `erDiagram`.
+//
+// Evidence-gating: every relationship edge comes from a real ORM relation
+// declaration (decorator, typed edge, attribute, or Eloquent method) captured on
+// an entity's `relationships[]`. We never invent an edge from a field name that
+// merely looks like a foreign key. When the relation kind is present but its
+// cardinality is not one of the four known ORM kinds, we label the edge
+// `unknown` rather than guessing a cardinality.
+
+export type ErdCardinality = 'one-to-one' | 'one-to-many' | 'many-to-one' | 'many-to-many' | 'unknown';
+
+export interface ErdField {
+  name: string;
+  type: string;
+  pk?: boolean;
+  fk?: boolean;
+  unique?: boolean;
+  nullable?: boolean;
+}
+
+export interface ErdEntity {
+  name: string;
+  table?: string;
+  source_file?: string;
+  fields: ErdField[];
+  /** Repos this entity appears in (only set when a workspace analysis spans repos). */
+  repos?: string[];
+  cross_repo?: boolean;
+}
+
+export interface ErdRelationship {
+  from: string;
+  to: string;
+  cardinality: ErdCardinality;
+  /** The declaring field / relation-method name on `from`. */
+  field?: string;
+  join_table?: string;
+  /** How the relation kind was grounded, e.g. the raw ORM relation type. */
+  evidence: string;
+}
+
+export interface ErdModel {
+  orm?: string;
+  entities: ErdEntity[];
+  relationships: ErdRelationship[];
+  cardinality_breakdown: Record<ErdCardinality, number>;
+  cross_repo?: {
+    /** Entity names that appear in more than one repo in the workspace. */
+    shared_entities: string[];
+    repos: string[];
+  };
+}
+
+const ERD_RELATION_KIND_TO_CARDINALITY: Record<string, ErdCardinality> = {
+  OneToOne: 'one-to-one',
+  OneToMany: 'one-to-many',
+  ManyToOne: 'many-to-one',
+  ManyToMany: 'many-to-many',
+};
+
+// The Mermaid crow's-foot notation for the LEFT->RIGHT reading of the edge.
+// `from` side first. e.g. one-to-many: from ||--o{ to.
+const ERD_CARDINALITY_TO_MERMAID: Record<ErdCardinality, string> = {
+  'one-to-one': '||--||',
+  'one-to-many': '||--o{',
+  'many-to-one': '}o--||',
+  'many-to-many': '}o--o{',
+  unknown: '..',
+};
+
+/**
+ * Build a structured ERD model from `cas.database_schema`. Optionally accepts a
+ * workspace analysis to annotate entities that span multiple repos (the same
+ * entity/relationship graph spanning repos). Returns an empty (non-crashing)
+ * model when the repo has no entities.
+ */
+export function buildErd(
+  cas: CASOutput,
+  opts: { entityName?: string; workspace?: { entities?: Array<{ name: string; project_ids?: string[] }>; project_ids?: string[] } } = {},
+): ErdModel {
+  const schema = cas.database_schema;
+  const emptyBreakdown = (): Record<ErdCardinality, number> => ({
+    'one-to-one': 0, 'one-to-many': 0, 'many-to-one': 0, 'many-to-many': 0, unknown: 0,
+  });
+
+  if (!schema || !schema.entities || schema.entities.length === 0) {
+    return { orm: schema?.orm, entities: [], relationships: [], cardinality_breakdown: emptyBreakdown() };
+  }
+
+  const wantEntity = opts.entityName?.toLowerCase();
+
+  // Cross-repo annotation: which entity names appear in >1 repo of the workspace.
+  const sharedEntityNames = new Set<string>();
+  const wsRepos = new Set<string>();
+  const wsEntities = opts.workspace?.entities || [];
+  for (const we of wsEntities) {
+    const projects = we.project_ids || [];
+    projects.forEach(p => wsRepos.add(p));
+    if (projects.length > 1) sharedEntityNames.add(we.name.toLowerCase());
+  }
+  const wsEntityRepos = new Map<string, string[]>();
+  for (const we of wsEntities) {
+    if (we.project_ids && we.project_ids.length) wsEntityRepos.set(we.name.toLowerCase(), we.project_ids);
+  }
+
+  const knownEntityNames = new Set(schema.entities.map(e => e.name));
+
+  const entities: ErdEntity[] = [];
+  const relationships: ErdRelationship[] = [];
+  const breakdown = emptyBreakdown();
+  const relSeen = new Set<string>();
+
+  for (const ent of schema.entities) {
+    if (wantEntity && ent.name.toLowerCase() !== wantEntity) {
+      // Still allow it to appear if it is the TARGET of a wanted entity's
+      // relationship — handled below by not filtering targets out of the graph.
+    }
+
+    // Foreign-key fields: a scalar field whose name matches a relation's join
+    // field, or ends in a conventional `_id`/`Id` suffix AND names a known
+    // entity. Only the former is strictly evidence-backed; the suffix heuristic
+    // is a labelling aid (fk?), never a source of relationship edges.
+    const relationFieldNames = new Set((ent.relationships || []).map(r => r.field).filter(Boolean) as string[]);
+
+    const fields: ErdField[] = (ent.fields || []).map(f => {
+      const looksFk =
+        relationFieldNames.has(f.name) ||
+        /(_id|Id)$/.test(f.name) && knownEntityNames.has(fkTargetGuess(f.name));
+      return {
+        name: f.name,
+        type: f.type || 'unknown',
+        pk: f.primary || undefined,
+        fk: looksFk || undefined,
+        unique: f.unique || undefined,
+        nullable: f.nullable || undefined,
+      };
+    });
+
+    const nameKey = ent.name.toLowerCase();
+    const repos = wsEntityRepos.get(nameKey);
+    entities.push({
+      name: ent.name,
+      table: ent.table,
+      source_file: ent.source_file,
+      fields,
+      repos: repos && repos.length ? repos : undefined,
+      cross_repo: sharedEntityNames.has(nameKey) || undefined,
+    });
+
+    // Evidence-gated relationships: one edge per declared ORM relation.
+    for (const rel of ent.relationships || []) {
+      if (!rel.target) continue;
+      const cardinality: ErdCardinality = ERD_RELATION_KIND_TO_CARDINALITY[rel.type] || 'unknown';
+      // Dedup on (from|kind|to|field) so a decorator + typed-edge description of
+      // the SAME relation don't double-count.
+      const key = `${ent.name}|${cardinality}|${rel.target}|${rel.field || ''}`.toLowerCase();
+      if (relSeen.has(key)) continue;
+      relSeen.add(key);
+      relationships.push({
+        from: ent.name,
+        to: rel.target,
+        cardinality,
+        field: rel.field || undefined,
+        join_table: rel.join_table || undefined,
+        evidence: `ORM relation ${rel.type}${rel.field ? ` via ${rel.field}` : ''}`,
+      });
+      breakdown[cardinality] += 1;
+    }
+  }
+
+  // Entity filter: when an entity is named, keep it, its direct neighbours, and
+  // only the edges touching it — so the ERD is a focused subgraph, not a lie.
+  let outEntities = entities;
+  let outRelationships = relationships;
+  if (wantEntity) {
+    const neighbours = new Set<string>([wantEntity]);
+    for (const r of relationships) {
+      if (r.from.toLowerCase() === wantEntity) neighbours.add(r.to.toLowerCase());
+      if (r.to.toLowerCase() === wantEntity) neighbours.add(r.from.toLowerCase());
+    }
+    outEntities = entities.filter(e => neighbours.has(e.name.toLowerCase()));
+    outRelationships = relationships.filter(
+      r => r.from.toLowerCase() === wantEntity || r.to.toLowerCase() === wantEntity,
+    );
+    // Recompute breakdown for the focused view.
+    const fb = emptyBreakdown();
+    for (const r of outRelationships) fb[r.cardinality] += 1;
+    return {
+      orm: schema.orm,
+      entities: outEntities,
+      relationships: outRelationships,
+      cardinality_breakdown: fb,
+      ...(wsRepos.size ? { cross_repo: { shared_entities: [...sharedEntityNames], repos: [...wsRepos] } } : {}),
+    };
+  }
+
+  return {
+    orm: schema.orm,
+    entities: outEntities,
+    relationships: outRelationships,
+    cardinality_breakdown: breakdown,
+    ...(wsRepos.size ? { cross_repo: { shared_entities: [...sharedEntityNames], repos: [...wsRepos] } } : {}),
+  };
+}
+
+function fkTargetGuess(fieldName: string): string {
+  // `userId` / `user_id` -> `User`. Best-effort, only used to LABEL a field as
+  // fk when the guessed target is a known entity; never emits a relationship.
+  const base = fieldName.replace(/(_id|Id)$/, '');
+  const camel = base.replace(/[_-](\w)/g, (_, c) => c.toUpperCase());
+  return camel.charAt(0).toUpperCase() + camel.slice(1);
+}
+
+/** Render a Mermaid `erDiagram` string from an ERD model. */
+export function erdToMermaid(model: ErdModel): string {
+  const lines: string[] = ['erDiagram'];
+  const safe = (n: string) => n.replace(/[^A-Za-z0-9_]/g, '_');
+
+  for (const ent of model.entities) {
+    const header = ent.cross_repo ? `  ${safe(ent.name)} {` : `  ${safe(ent.name)} {`;
+    lines.push(header);
+    if (ent.fields.length === 0) {
+      // Mermaid needs at least a valid block; emit nothing inside is allowed but
+      // some renderers dislike empty blocks, so annotate presence.
+    }
+    for (const f of ent.fields) {
+      const type = safe(f.type || 'unknown') || 'unknown';
+      const tags: string[] = [];
+      if (f.pk) tags.push('PK');
+      if (f.fk) tags.push('FK');
+      const comment = f.unique || f.nullable
+        ? ` "${[f.unique ? 'unique' : '', f.nullable ? 'nullable' : ''].filter(Boolean).join(', ')}"`
+        : '';
+      lines.push(`    ${type} ${safe(f.name)}${tags.length ? ` ${tags.join(',')}` : ''}${comment}`);
+    }
+    lines.push('  }');
+  }
+
+  for (const rel of model.relationships) {
+    const conn = ERD_CARDINALITY_TO_MERMAID[rel.cardinality];
+    const label = rel.field || (rel.cardinality === 'unknown' ? 'relates' : 'has');
+    lines.push(`  ${safe(rel.from)} ${conn} ${safe(rel.to)} : "${label}"`);
+  }
+
+  return lines.join('\n');
+}
+
+/**
+ * Public ERD query used by the MCP tool / CLI / HTTP. Returns the structured
+ * model plus a Mermaid `erDiagram`. `format` narrows the payload.
+ */
+export function getErd(
+  cas: CASOutput,
+  opts: { entityName?: string; format?: 'json' | 'mermaid'; workspace?: Parameters<typeof buildErd>[1] extends infer O ? O : never } = {},
+) {
+  const model = buildErd(cas, { entityName: opts.entityName, workspace: (opts as any).workspace });
+  const mermaid = erdToMermaid(model);
+  if (opts.format === 'mermaid') return { mermaid };
+  if (opts.format === 'json') return model;
+  return { ...model, mermaid };
+}
+
 export function getImplementationHealth(cas: CASOutput) {
   return cas.implementation_health || null;
 }
@@ -2626,6 +2932,7 @@ export function getCodingContext(
     include?: string[];
     caller_limit?: number;
     callee_limit?: number;
+    runtimeMetrics?: RuntimeMetricLike[];
   } = {}
 ) {
   const taskType = opts.task_type || 'modify';
@@ -2897,6 +3204,15 @@ export function getCodingContext(
       : {}),
   };
 
+  // TELEMETRY facet (facet 6 of the uniform understanding contract): if the
+  // caller supplied runtime metrics, attach "how this unit actually runs" to
+  // the resolved target node. Evidence-gated — omitted entirely when no
+  // observation matches this node, never fabricated.
+  if (opts.runtimeMetrics && opts.runtimeMetrics.length > 0) {
+    const tel = telemetryForNode(targetNode.id, opts.runtimeMetrics);
+    if (tel) result.telemetry = tel;
+  }
+
   return result;
 }
 
@@ -3088,7 +3404,7 @@ const DEFAULT_MAX_FLOWS = 15;
  */
 export function getFlowConcepts(
   cas: CASOutput,
-  opts: { target?: string; maxDepth?: number; maxFunctionsPerFlow?: number; maxFlows?: number; includeStructural?: boolean } = {}
+  opts: { target?: string; maxDepth?: number; maxFunctionsPerFlow?: number; maxFlows?: number; includeStructural?: boolean; runtimeMetrics?: RuntimeMetricLike[]; role?: SemanticRole } = {}
 ) {
   // Only apply the default cap when browsing all flows (no target filter).
   // A targeted lookup ("flows touching this entry point") is already
@@ -3102,18 +3418,48 @@ export function getFlowConcepts(
     maxDepth: opts.maxDepth,
     maxFunctionsPerFlow: opts.maxFunctionsPerFlow,
     // Probe one extra so we can report truncation honestly without a
-    // second full compute pass just to learn the true total.
-    maxFlows: effectiveMaxFlows ? effectiveMaxFlows + 1 : undefined,
+    // second full compute pass just to learn the true total. When a `role`
+    // filter is active we must compute over ALL flows first (otherwise the
+    // per-flow filter would only ever see the first N and silently miss
+    // matching flows past the cap), so drop the probe cap in that case.
+    maxFlows: opts.role ? undefined : (effectiveMaxFlows ? effectiveMaxFlows + 1 : undefined),
   };
-  const probedFlows = computeFlowConcepts(cas, computeOpts);
+  let probedFlows = computeFlowConcepts(cas, computeOpts);
+
+  // Per-flow semantic role (core / supporting / infrastructure), classified
+  // with the SAME shared ./semantic-roles logic as entities + workspace items,
+  // anchored on the already-computed domain concept classification
+  // (entry-point-anchored and touched-entity-anchored) with a name-based
+  // fallback. Additive; `unknown` (undefined) when unclassifiable.
+  const flowConceptIndex = buildDomainConceptIndex(cas.domain_concepts);
+  const roleByFlowId = new Map<string, { role?: SemanticRole; role_evidence: string[] }>();
+  for (const f of probedFlows) {
+    roleByFlowId.set(f.flow_id, classifyFlowRole(f, flowConceptIndex));
+  }
+
+  // Optional role filter — applied to the fully-computed flow set before the
+  // browse cap, so counts and truncation stay honest for the filtered view.
+  if (opts.role) {
+    probedFlows = probedFlows.filter(f => roleByFlowId.get(f.flow_id)?.role === opts.role);
+  }
+
   const truncated = effectiveMaxFlows !== undefined && probedFlows.length > effectiveMaxFlows;
   const flows = truncated ? probedFlows.slice(0, effectiveMaxFlows) : probedFlows;
+
+  const roleBreakdown: Record<'core' | 'supporting' | 'infrastructure' | 'unknown', number> =
+    { core: 0, supporting: 0, infrastructure: 0, unknown: 0 };
+  for (const f of probedFlows) {
+    roleBreakdown[roleByFlowId.get(f.flow_id)?.role || 'unknown']++;
+  }
   // True total when we didn't truncate is just what we got; when we did,
   // it's at least effectiveMaxFlows+1 (we don't re-probe uncapped here —
   // entry_points.length is the authoritative upper bound for "all flows").
+  // When a role filter is active we computed over ALL flows, so probedFlows
+  // (post-filter) is the exact filtered total — don't fall back to the
+  // entry-point upper bound (which ignores the filter).
   const totalFlowsAvailable = truncated
-    ? Math.max(probedFlows.length, (cas.entry_points || []).length)
-    : flows.length;
+    ? (opts.role ? probedFlows.length : Math.max(probedFlows.length, (cas.entry_points || []).length))
+    : probedFlows.length;
 
   const gaps: string[] = [];
   if (!cas.entry_points || cas.entry_points.length === 0) {
@@ -3135,7 +3481,11 @@ export function getFlowConcepts(
   // additive: `structural` is a new field on each flow/step; existing
   // consumers reading name/contract/functions see no change.
   const includeStructural = opts.includeStructural !== false;
-  let flowsOut = flows;
+  const withRole = (flow: typeof flows[number]) => {
+    const classification = roleByFlowId.get(flow.flow_id);
+    return { ...flow, role: classification?.role, role_evidence: classification?.role_evidence };
+  };
+  let flowsOut: any[] = flows.map(withRole);
   if (includeStructural && flows.length > 0) {
     const linksByFlow = computeFlowStructuralLinks(cas, flows);
     if ((cas.paradigm_conformance || []).length === 0) {
@@ -3143,8 +3493,11 @@ export function getFlowConcepts(
     }
     flowsOut = flows.map(flow => {
       const linked = linksByFlow.get(flow.flow_id);
+      const classification = roleByFlowId.get(flow.flow_id);
       return {
         ...flow,
+        role: classification?.role,
+        role_evidence: classification?.role_evidence,
         structural: linked?.flow,
         steps: flow.steps.map(step => ({
           ...step,
@@ -3152,6 +3505,18 @@ export function getFlowConcepts(
         })),
       };
     });
+  }
+
+  // TELEMETRY facet (facet 6 of the uniform understanding contract): join
+  // real runtime metrics onto each flow/step contract when the caller supplied
+  // them (server.ts loads persisted observations and builds NodeRuntimeMetrics).
+  // Evidence-gated: attachTelemetryToFlows only sets `contract.telemetry` where
+  // an observation actually matches; nothing is fabricated. The mutation lands
+  // on the shared `contract` object referenced by both `flows` and `flowsOut`
+  // (the structural branch shallow-spreads steps, so `step.contract` is the
+  // same reference).
+  if (opts.runtimeMetrics && opts.runtimeMetrics.length > 0) {
+    attachTelemetryToFlows(flows, opts.runtimeMetrics);
   }
 
   return {
@@ -3163,6 +3528,7 @@ export function getFlowConcepts(
     total: flows.length,
     total_available: totalFlowsAvailable,
     truncated,
+    role_breakdown: roleBreakdown,
     gaps: gaps.length ? gaps : undefined,
   };
 }

@@ -2312,6 +2312,12 @@ describe('architecture and capability inference', () => {
       'React Router',
     ]);
     expect(orch.frameworkDisplayNamesForNarrative(['dotnet', 'dotnet-host'])).toEqual(['.NET', '.NET host']);
+    // Test harnesses and analysis/packaging artifacts never headline "built with"
+    // (zerac poc read "built with rust-test, React, and dockerfile").
+    expect(orch.frameworkDisplayNamesForNarrative([
+      'rust-test', 'react', 'typescript/javascript ast', 'python language', 'dockerfile',
+      'enhanced rust', 'reqwest http client', 'distribution artifact', 'cross-language test framework',
+    ])).toEqual(['React', 'enhanced rust', 'reqwest http client']);
     expect(orch.cleanGeneratedDescriptionText('a system built with dotnet and dotnet-host. it records tests.')).toBe('a system built with .NET and .NET host. It records tests.');
   });
 

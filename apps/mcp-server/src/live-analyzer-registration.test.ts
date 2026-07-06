@@ -144,6 +144,61 @@ test('every concrete analyzer class is wired into the live createOrchestrator() 
   );
 });
 
+test('inline registration ids equal the analyzer instance self-id (no id drift)', async () => {
+  // Drift class from docs/CORPUS-DEPTH-SWEEP.md #5: a registration `{ id: 'x',
+  // ... analyzer: new Foo() }` where `new Foo().id === 'y'`. The orchestrator
+  // keys its map on the registration id, but every node/tag/contribution stamps
+  // the analyzer's OWN id (analyzer_id / `analyzer:<id>` / source_analyzer), so a
+  // mismatch makes node-level consumers unable to correlate the analyzer's
+  // output back to its registration. Guard: for every inline `{ id: '...',
+  // ... analyzer: new ClassName() }` in the live file, the two must be equal.
+  const liveSource = fs.readFileSync(LIVE_REGISTRATION_FILE, 'utf8');
+  // className -> absolute source file, from the same on-disk scan used above.
+  const classFile = new Map<string, string>();
+  for (const { className, file } of discoverAnalyzerClasses()) {
+    if (!classFile.has(className)) classFile.set(className, path.join(REPO_ROOT, file));
+  }
+
+  // Match inline registration objects: capture the string id and the class of
+  // the no-arg `analyzer: new ClassName()`. (Indirect registrations via
+  // architectureLibraryAnalyzerDefinitions() already share one id source and are
+  // out of scope here.)
+  const inlineRe = /\{\s*id:\s*'([^']+)'[\s\S]*?analyzer:\s*new\s+([A-Za-z0-9_]+)\s*\(\s*\)/g;
+  const mismatches: Array<{ registrationId: string; className: string; selfId: string }> = [];
+  let m: RegExpExecArray | null;
+  let checked = 0;
+  while ((m = inlineRe.exec(liveSource)) !== null) {
+    const [, registrationId, className] = m;
+    const file = classFile.get(className);
+    if (!file) continue; // not a BaseAnalyzer class discovered on disk
+    const mod = await import(file);
+    const Ctor = (mod as Record<string, any>)[className];
+    if (typeof Ctor !== 'function') continue;
+    let instance: any;
+    try {
+      instance = new Ctor();
+    } catch {
+      continue; // constructor needs args — not an inline no-arg registration
+    }
+    if (typeof instance?.id !== 'string') continue;
+    checked += 1;
+    if (instance.id !== registrationId) {
+      mismatches.push({ registrationId, className, selfId: instance.id });
+    }
+  }
+
+  assert.ok(checked > 5, `expected to check several inline registrations, only checked ${checked} — the parse may be broken`);
+  assert.deepEqual(
+    mismatches,
+    [],
+    `Registration id(s) drift from the analyzer instance's own id (super() id). The orchestrator ` +
+    `keys on the registration id while nodes carry the self-id, so these analyzers' nodes cannot be ` +
+    `correlated to their registration: ${JSON.stringify(mismatches, null, 2)}. Fix: make the ` +
+    `registration \`id:\` in apps/mcp-server/src/analyzer.ts equal the id passed to super() in the ` +
+    `analyzer class.`
+  );
+});
+
 test('the two non-live analyzer-registration-shaped lists are not silently consumed as if they were live', () => {
   // packages/analyzer-core/src/analyzer/frameworks/index.ts: FRAMEWORK_ANALYZERS must only be
   // imported by the benchmark grid, not by any production entry point.
