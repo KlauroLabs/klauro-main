@@ -96,9 +96,9 @@ test('reanalyze re-runs on the last uploaded snapshot, never touching project.lo
     assert.doesNotMatch(noSnapshotBody.error, /local_path/i, 'user-facing message must never mention server-disk local_path');
 
     // --- client uploads a snapshot (the same path klauro init/analyze use) ---
-    const analyzeResult = await analyzeCodebaseRemotely({ projectPath: repo, serverUrl, token, analysisId: project.id });
+    const analyzeResult = await analyzeCodebaseRemotely({ projectPath: repo, serverUrl, token, analysisId: project.id, wait: true });
     assert.equal(analyzeResult.status, 'success');
-    assert.ok(analyzeResult.cas.nodes.length > 0);
+    assert.ok(analyzeResult.cas!.nodes.length > 0);
 
     // Project record must now carry the analysis_id set by /v1/analyze.
     const projectAfterUploadRes = await request(port, 'GET', `/api/workspaces/${workspaceId}/projects`, undefined, token);

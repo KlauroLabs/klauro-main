@@ -123,7 +123,7 @@ test('klauro analyze auto-attaches to the bound account project (.klaurorc proje
     // Simulate `klauro init` having bound this repo to the project via .klaurorc.
     writeKlaurorc(repo, project.id);
 
-    const first = await analyzeCodebaseRemotely({ projectPath: repo, serverUrl, token });
+    const first = await analyzeCodebaseRemotely({ projectPath: repo, serverUrl, token, wait: true });
     assert.equal(first.status, 'success');
     // Stable analysis_id: since project_id is bound, it IS the account project id.
     assert.equal(first.analysis_id, project.id);
@@ -138,7 +138,7 @@ test('klauro analyze auto-attaches to the bound account project (.klaurorc proje
     fs.appendFileSync(path.join(repo, 'app.py'), '\ndef handler_two():\n    return 2\n');
     git(repo, ['add', '.']);
     git(repo, ['commit', '-m', 'second commit']);
-    const second = await analyzeCodebaseRemotely({ projectPath: repo, serverUrl, token });
+    const second = await analyzeCodebaseRemotely({ projectPath: repo, serverUrl, token, wait: true });
     assert.equal(second.analysis_id, first.analysis_id);
 
     const projectsAfterSecond = await request(port, 'GET', `/api/workspaces/${workspaceId}/projects`, undefined, token);
@@ -176,7 +176,7 @@ test('klauro analyze does not attach an unbound repo push to any project (no .kl
     const repo = makeRepo(root, 'foreign-repo', 'def handler():\n    return 1\n', 'https://github.com/example/completely-different-repo');
     // No .klaurorc project binding — resolveAnalysisId falls back to the
     // sha256-of-path analysisId, which never has a prj_ prefix.
-    const result = await analyzeCodebaseRemotely({ projectPath: repo, serverUrl, token });
+    const result = await analyzeCodebaseRemotely({ projectPath: repo, serverUrl, token, wait: true });
     assert.equal(result.status, 'success');
     assert.doesNotMatch(result.analysis_id, /^prj_/);
 
@@ -207,7 +207,7 @@ test('klauro analyze auto-attaches by matching git remote when no .klaurorc bind
     // No .klaurorc written — the repo only carries the git remote as evidence.
     const repo = makeRepo(root, 'remote-matched-repo', 'def handler():\n    return 1\n', 'git@github.com:example/remote-matched-repo.git');
 
-    const result = await analyzeCodebaseRemotely({ projectPath: repo, serverUrl, token });
+    const result = await analyzeCodebaseRemotely({ projectPath: repo, serverUrl, token, wait: true });
     assert.equal(result.status, 'success');
 
     const projectsRes = await request(port, 'GET', `/api/workspaces/${workspaceId}/projects`, undefined, token);
@@ -222,7 +222,7 @@ test('klauro analyze auto-attaches by matching git remote when no .klaurorc bind
     }, token);
 
     const repo2 = makeRepo(root, 'remote-matched-repo-2', 'def handler_other():\n    return 2\n', 'git@github.com:example/remote-matched-repo.git');
-    const result2 = await analyzeCodebaseRemotely({ projectPath: repo2, serverUrl, token });
+    const result2 = await analyzeCodebaseRemotely({ projectPath: repo2, serverUrl, token, wait: true });
     assert.equal(result2.status, 'success');
 
     const projectsAfterAmbiguous = await request(port, 'GET', `/api/workspaces/${workspaceId}/projects`, undefined, token);

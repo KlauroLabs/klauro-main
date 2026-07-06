@@ -44,10 +44,10 @@ test('remote analyzer supports full source upload and dirty-tree incremental syn
     assert.equal(account.statusCode, 201);
     const token = JSON.parse(account.body).token as string;
 
-    const full = await analyzeCodebaseRemotely({ projectPath: repo, serverUrl, token });
+    const full = await analyzeCodebaseRemotely({ projectPath: repo, serverUrl, token, wait: true });
     assert.equal(full.status, 'success');
     assert.equal(full.analysis_type, 'full');
-    assert.ok(full.cas.nodes.length > 0);
+    assert.ok(full.cas!.nodes.length > 0);
     assert.ok((await getAnalysis(repo)).nodes.length > 0);
     const revisions = await getJson(address.port, `/v1/projects/${encodeURIComponent(full.analysis_id)}/revisions`, token);
     assert.equal(revisions.statusCode, 200);
@@ -127,11 +127,11 @@ test('dirty tree analyze: shared revision is committed HEAD and the in-flight pa
     const token = JSON.parse(account.body).token as string;
 
     // No refusal: the dirty tree analyzes fine.
-    const result = await analyzeCodebaseRemotely({ projectPath: repo, serverUrl, token });
+    const result = await analyzeCodebaseRemotely({ projectPath: repo, serverUrl, token, wait: true });
     assert.equal(result.status, 'success');
     assert.equal(result.snapshot_source, 'committed-head');
     assert.equal(result.base_commit, head, 'shared revision is tagged with the HEAD commit');
-    assert.ok(result.cas.nodes.length > 0);
+    assert.ok(result.cas!.nodes.length > 0);
 
     // The shared (main track) analysis must NOT see the dirty route.
     const main = await getAnalysis(repo, { track: 'main' });

@@ -13,6 +13,10 @@ export interface RemoteSyncOptions {
   serverUrl?: string;
   token?: string;
   analysisId?: string;
+  /** Wait for the full server-side analysis and return the CAS (legacy
+   *  synchronous behavior). Default false: the push returns in seconds with
+   *  status 'accepted' and the analysis runs entirely on the server. */
+  wait?: boolean;
 }
 
 /** How the working-tree (in-flight) side of a dirty-tree analyze went. */
@@ -22,7 +26,14 @@ export interface InFlightSyncOutcome {
   detail?: string;
 }
 
-export interface AnalyzeRemotelyResult extends RemoteAnalyzeResponse {
+export interface AnalyzeRemotelyResult extends Omit<RemoteAnalyzeResponse, 'status' | 'cas' | 'analysis_revision' | 'analysis_type'> {
+  /** 'accepted' = the default fast path: snapshot uploaded, analysis running
+   *  entirely server-side (progressive disclosure). 'success' = legacy
+   *  synchronous path (options.wait) carrying the full CAS. */
+  status: 'success' | 'accepted';
+  analysis_revision?: number;
+  analysis_type?: 'full' | 'incremental';
+  cas?: RemoteAnalyzeResponse['cas'];
   /** What the shared snapshot was built from (committed HEAD vs working tree).
    *  Optional so plain sync responses remain assignable for shared formatting. */
   snapshot_source?: 'committed-head' | 'working-tree';
@@ -46,11 +57,23 @@ export async function analyzeCodebaseRemotely(options: RemoteSyncOptions): Promi
     organization_id: loaded.config.project.organizationId,
     project_path: projectPath,
     snapshot,
+    // Progressive disclosure by default: the server answers in seconds with
+    // 'accepted' and runs the analysis entirely server-side. options.wait
+    // restores the legacy synchronous response (used where the caller needs
+    // the CAS inline).
+    async: options.wait === true ? undefined : true,
   }, serverUrl) as AnalyzeRemotelyResult;
-  await saveAnalysis(projectPath, stampAnalyzedCommit(rewriteCasProjectName(response, projectPath).cas, response.base_commit));
+  if (response.cas) {
+    await saveAnalysis(projectPath, stampAnalyzedCommit(rewriteCasProjectName(response as RemoteAnalyzeResponse, projectPath).cas, response.base_commit));
+  }
   response.snapshot_source = snapshot.snapshot_source;
 
-  if (snapshot.snapshot_source === 'committed-head') {
+  if (snapshot.snapshot_source === 'committed-head' && response.status === 'accepted') {
+    // Fast path: don't block the seconds-long accept on a synchronous
+    // in-flight pass — the dirty-tree track is captured on demand
+    // (get_in_flight_changes / remote-sync) whenever an agent asks for it.
+    response.in_flight = { status: 'skipped', detail: 'captured on demand' };
+  } else if (snapshot.snapshot_source === 'committed-head') {
     // The tree was dirty: the shared revision above is HEAD-only, so ALSO run the
     // in-flight (dirty working tree) pass for local agent context. Its failure
     // must never fail the shared analysis that already succeeded.

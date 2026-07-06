@@ -99,8 +99,8 @@ test('workspace analysis auto-builds once from stored member analyses after a de
     const repoA = makeRepo(root, 'repo-a', 'def handler_a():\n    return 1\n');
     const repoB = makeRepo(root, 'repo-b', 'def handler_b():\n    return 2\n');
 
-    const analyzeA = await analyzeCodebaseRemotely({ projectPath: repoA, serverUrl, token });
-    const analyzeB = await analyzeCodebaseRemotely({ projectPath: repoB, serverUrl, token });
+    const analyzeA = await analyzeCodebaseRemotely({ projectPath: repoA, serverUrl, token, wait: true });
+    const analyzeB = await analyzeCodebaseRemotely({ projectPath: repoB, serverUrl, token, wait: true });
 
     // Link both analyses to account projects in this workspace (the
     // `klauro init` reconnect shape: project.analysis_id set at creation).
@@ -121,8 +121,8 @@ test('workspace analysis auto-builds once from stored member analyses after a de
     // Re-push both analyses (simulating a second analyze pass on each repo,
     // now that they're linked) within the debounce window — this is the
     // "5-repo batch push -> ~1 rebuild" scenario, scaled to 2 repos x 2 pushes.
-    await analyzeCodebaseRemotely({ projectPath: repoA, serverUrl, token, analysisId: analyzeA.analysis_id });
-    await analyzeCodebaseRemotely({ projectPath: repoB, serverUrl, token, analysisId: analyzeB.analysis_id });
+    await analyzeCodebaseRemotely({ projectPath: repoA, serverUrl, token, analysisId: analyzeA.analysis_id, wait: true });
+    await analyzeCodebaseRemotely({ projectPath: repoB, serverUrl, token, analysisId: analyzeB.analysis_id, wait: true });
 
     // Immediately after landing, before the debounce timer fires, the GET
     // must report 'pending' rather than silently serving nothing.

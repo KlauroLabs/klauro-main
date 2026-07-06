@@ -276,6 +276,71 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
 
       if (request.method === 'POST' && route === '/v1/analyze') {
         const body = await readJsonBody<RemoteAnalyzeRequest>(request, maxBodyBytes);
+
+        if (body.async === true) {
+          // Progressive disclosure: persist the snapshot NOW, answer in
+          // seconds, and run the entire analysis server-side in the
+          // background. The background continuation performs the exact same
+          // post-analyze steps as the synchronous path below (revision append,
+          // account-project attach, audit log, WAS rebuild trigger); its
+          // failures are logged + audited, never a hung/failed upload.
+          if (!body.snapshot?.files?.length) {
+            writeJson(response, 400, { status: 'error', error: 'Remote analyze requires a source snapshot with files' });
+            return;
+          }
+          const acceptedAnalysisId = body.project_id || makeAnalysisId(body.project_path || body.snapshot.project_name);
+          const acceptedWorkspace = workspacePath(dataDir, acceptedAnalysisId);
+          await fs.remove(acceptedWorkspace);
+          await fs.ensureDir(acceptedWorkspace);
+          await writeSnapshot(acceptedWorkspace, body.snapshot.files);
+          writeJson(response, 202, {
+            status: 'accepted',
+            analysis_id: acceptedAnalysisId,
+            base_commit: body.snapshot.base_commit,
+            manifest: body.snapshot.manifest,
+          });
+          const backgroundClientId = authorization.clientId;
+          setImmediate(async () => {
+            try {
+              const displayName = resolveDisplayName(body.snapshot.project_name, body.project_path);
+              const deferred = await analyzeProjectDeferred(acceptedWorkspace, displayName);
+              const backgroundResult: RemoteAnalyzeResponse = {
+                status: 'success',
+                analysis_id: acceptedAnalysisId,
+                analysis_revision: Date.now(),
+                analysis_type: 'full',
+                base_commit: body.snapshot.base_commit,
+                manifest: body.snapshot.manifest,
+                cas: deferred.output,
+              };
+              await appendProjectRevision(dataDir, backgroundResult, 'local_commit_submission');
+              await linkAnalysisToAccountProject(accounts, backgroundClientId, body.project_id, acceptedAnalysisId, body.snapshot?.manifest?.git_remote);
+              await appendAuditLog(dataDir, {
+                event: 'analyze',
+                analysis_id: acceptedAnalysisId,
+                project_id: body.project_id,
+                organization_id: body.organization_id,
+                files: body.snapshot.manifest?.file_count,
+                bytes: body.snapshot.manifest?.total_bytes,
+                nodes: deferred.output.nodes.length,
+                edges: deferred.output.edges.length,
+                mode: 'async',
+              });
+              void notifyProjectAnalysisLandedForAnalysisId(acceptedAnalysisId);
+            } catch (error) {
+              const detail = error instanceof Error ? error.message : String(error);
+              console.error(`[Klauro] async analyze failed for ${acceptedAnalysisId}: ${detail}`);
+              await appendAuditLog(dataDir, {
+                event: 'analyze_async_failed',
+                analysis_id: acceptedAnalysisId,
+                project_id: body.project_id,
+                error: detail.slice(0, 500),
+              }).catch(() => {});
+            }
+          });
+          return;
+        }
+
         const result = await handleAnalyze(dataDir, body, deferAiEnrichment);
         await appendProjectRevision(dataDir, result, 'local_commit_submission');
         // Attach the landed analysis to the matching account project record.

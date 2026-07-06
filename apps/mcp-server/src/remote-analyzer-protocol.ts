@@ -7,6 +7,21 @@ export interface RemoteAnalyzeRequest {
   organization_id?: string;
   project_path?: string;
   snapshot: SourceSnapshot;
+  /** Progressive-disclosure mode (the default client behavior): the server
+   *  accepts the snapshot and responds in seconds with `status:'accepted'`;
+   *  the analysis runs entirely server-side in the background, attaching to
+   *  the account project and refreshing the workspace analysis as it lands.
+   *  Omit/false for the legacy synchronous response carrying the full CAS. */
+  async?: boolean;
+}
+
+/** Immediate response to an `async: true` analyze push — the snapshot was
+ *  accepted and the analysis is running server-side. */
+export interface RemoteAnalyzeAcceptedResponse {
+  status: 'accepted';
+  analysis_id: string;
+  base_commit?: string;
+  manifest: SourceManifest;
 }
 
 export interface RemoteSyncRequest {

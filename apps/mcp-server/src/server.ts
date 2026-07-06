@@ -1332,7 +1332,9 @@ function registerTools(server: McpServer) {
       } as any,
     } as any,
     async ({ path, server_url, analysis_id }: any) => withErrorHandling(async () => {
-      const result = await analyzeCodebaseRemotely({ projectPath: path, serverUrl: server_url, analysisId: analysis_id });
+      // wait:true — this MCP tool's contract is to cache the returned CAS
+      // locally for fast queries, so it needs the synchronous response.
+      const result = await analyzeCodebaseRemotely({ projectPath: path, serverUrl: server_url, analysisId: analysis_id, wait: true });
       return json({
         status: result.status,
         analysis_id: result.analysis_id,
@@ -1341,10 +1343,10 @@ function registerTools(server: McpServer) {
         files_sent: result.manifest.file_count,
         bytes_sent: result.manifest.total_bytes,
         path,
-        name: result.cas.system?.name || path.split('/').pop(),
-        nodes: result.cas.nodes?.length || 0,
-        edges: result.cas.edges?.length || 0,
-        entry_points: result.cas.entry_points?.length || 0,
+        name: result.cas!.system?.name || path.split('/').pop(),
+        nodes: result.cas!.nodes?.length || 0,
+        edges: result.cas!.edges?.length || 0,
+        entry_points: result.cas!.entry_points?.length || 0,
       });
     })
   );

@@ -1017,7 +1017,9 @@ async function runInitCommand(projectPath: string, args: ParsedArgs): Promise<vo
         serverUrl,
         analysisId: args.analysisId,
       }));
-      record('analysis', 'ok', `${result.analysis_id} @ revision ${result.analysis_revision} (${result.cas.nodes.length} nodes, ${result.cas.edges.length} edges)`);
+      record('analysis', 'ok', result.status === 'accepted'
+        ? `${result.analysis_id} uploaded (${result.manifest.file_count} files) — analyzing on the server, results appear on your project shortly`
+        : `${result.analysis_id} @ revision ${result.analysis_revision} (${result.cas?.nodes.length ?? 0} nodes, ${result.cas?.edges.length ?? 0} edges)`);
     } catch (error) {
       record('analysis', 'warn', `did not complete (${error instanceof Error ? error.message : String(error)}) — retry with: klauro analyze .`);
     }
@@ -1832,6 +1834,21 @@ function formatLocalAnalyzeResult(result: Awaited<ReturnType<typeof analyzeProje
 }
 
 function formatRemoteResult(result: Awaited<ReturnType<typeof analyzeCodebaseRemotely>>): string {
+  if (result.status === 'accepted') {
+    // Fast path (the default): the snapshot is uploaded in seconds and the
+    // analysis runs entirely on the server, landing on the project
+    // progressively (deterministic layers first, AI enrichment after).
+    const lines = [
+      `Uploaded ${result.manifest.file_count} files (${result.manifest.total_bytes} bytes).`,
+      `Analysis is running on the Klauro server (id: ${result.analysis_id}) — results appear on your project as they land.`,
+    ];
+    if (result.snapshot_source === 'committed-head') {
+      const shortSha = (result.base_commit || '').slice(0, 7) || 'HEAD';
+      lines.push(`Shared revision = committed HEAD (${shortSha}); working-tree changes ${result.in_flight?.status === 'completed' ? 'uploaded separately as in-flight context' : `in-flight pass ${result.in_flight?.status || 'skipped'}`}.`);
+    }
+    lines.push('');
+    return lines.join('\n');
+  }
   const changedFiles = result.change_report
     ? result.change_report.summary.filesAdded + result.change_report.summary.filesModified + result.change_report.summary.filesDeleted
     : 0;
@@ -1842,8 +1859,8 @@ function formatRemoteResult(result: Awaited<ReturnType<typeof analyzeCodebaseRem
     `Type: ${result.analysis_type}`,
     `Files sent: ${result.manifest.file_count}`,
     `Bytes sent: ${result.manifest.total_bytes}`,
-    `Nodes: ${result.cas.nodes.length}`,
-    `Edges: ${result.cas.edges.length}`,
+    `Nodes: ${result.cas?.nodes.length ?? 0}`,
+    `Edges: ${result.cas?.edges.length ?? 0}`,
     `Changed files: ${changedFiles}`,
   ];
   if (result.snapshot_source === 'committed-head') {
