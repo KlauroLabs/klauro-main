@@ -97,6 +97,59 @@ describe('RustAnalyzer', () => {
         exit.target?.endpoint === 'http://drop-server/drops'
       )).toBe(true);
     });
+
+    test('exit-point ids are project-relative and carry no absolute snapshot path', async () => {
+      setupMockFileSystem([
+        createMockRustFile('src/client.rs', `
+          use some_external_crate::do_thing;
+          pub async fn call_admin(client: &reqwest::Client, admin_api_url: url::Url) {
+              client.post(admin_api_url.join("/v1/users").unwrap()).send().await.unwrap();
+              some_external_crate::do_thing();
+          }
+        `),
+        createMockCargoToml(['reqwest', 'some_external_crate'])
+      ]);
+
+      const result = await analyzer.analyze(testContext) as any;
+      const rustExits = (result.exit_points as any[]).filter(
+        (exit: any) => typeof exit.id === 'string' &&
+          (exit.id.startsWith('reqwest_call:') || exit.id.startsWith('ext_call:'))
+      );
+      expect(rustExits.length).toBeGreaterThan(0);
+      for (const exit of rustExits) {
+        // Project root is '/test'; ids must not embed the absolute project path,
+        // any tmp-snapshot path, or a leading slash into the file segment.
+        expect(exit.id).not.toContain('/test/');
+        expect(exit.id).not.toContain('/var/folders');
+        expect(exit.id).toContain('src/client.rs');
+        expect(exit.id).not.toMatch(/:\/[^:]*src\/client\.rs/); // no leading slash before rel path
+      }
+    });
+
+    test('does not emit duplicate exit-point ids on a cargo workspace (same rel path in two crates)', async () => {
+      // Two crates share the same project-relative source path; previously each
+      // crate re-linked the file and emitted colliding exit-point ids.
+      const clientSrc = `
+        use shared_crate::helper;
+        pub async fn ping(client: &reqwest::Client) {
+            client.post("https://api.example.com/ping").send().await.unwrap();
+            shared_crate::helper();
+        }
+      `;
+      setupMockFileSystem([
+        createMockRustFile('crates/a/src/client.rs', clientSrc),
+        createMockRustFile('crates/b/src/client.rs', clientSrc),
+        createMockCargoToml(['reqwest', 'shared_crate'])
+      ]);
+
+      const result = await analyzer.analyze(testContext) as any;
+      const ids = (result.exit_points as any[]).map((exit: any) => exit.id);
+      const rustIds = ids.filter((id: any) =>
+        typeof id === 'string' && (id.startsWith('reqwest_call:') || id.startsWith('ext_call:'))
+      );
+      const uniqueRustIds = new Set(rustIds);
+      expect(rustIds.length).toBe(uniqueRustIds.size);
+    });
   });
 
   describe('Struct Analysis', () => {

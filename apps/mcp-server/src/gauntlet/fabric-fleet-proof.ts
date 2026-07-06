@@ -146,7 +146,7 @@ async function selectRealFlows(): Promise<SelectedFlows> {
   };
 
   // A real flow with >= 2 steps (route -> component -> hooks is the common shape here).
-  const multiStep = flows.filter((f) => f.steps.length >= 2 && f.steps.every((s) => s.functions.length > 0));
+  const multiStep = flows.filter((f) => f.steps.length >= 2 && f.steps.every((s: any) => s.functions.length > 0));
   if (multiStep.length < 1) throw new Error('No multi-step real flow found — cannot demonstrate property 2/3 honestly.');
   const chosenFlow = multiStep[0];
   const stepA = chosenFlow.steps[0];

@@ -274,6 +274,7 @@ interface RustParameter {
 
 interface RustFileExtraction {
   fullPath: string;
+  relativePath: string;
   structs: RustStruct[];
   enums: RustEnum[];
   traits: RustTrait[];
@@ -849,7 +850,7 @@ export class RustAnalyzer extends BaseAnalyzer {
       const statics = await this.extractStatics(content, relativePath, nodes);
       const types = await this.extractTypes(content, relativePath, nodes);
 
-      return { fullPath, structs, enums, traits, impls, functions, constants, statics, types };
+      return { fullPath, relativePath, structs, enums, traits, impls, functions, constants, statics, types };
     } catch (error) {
       console.warn(`Failed to analyze file ${fullPath}:`, error);
       return undefined;
@@ -864,10 +865,13 @@ export class RustAnalyzer extends BaseAnalyzer {
     exitPoints: CASExitPoint[],
     methodCalls: CASMethodCall[]
   ): void {
-    const { fullPath, structs, enums, traits, impls, functions, constants, statics, types } = extraction;
+    const { relativePath, structs, enums, traits, impls, functions, constants, statics, types } = extraction;
     this.createRelationships(nodes, edges, edgeIds, structs, enums, traits, impls, functions, constants, statics, types);
     this.createMethodCalls(functions, nodes, methodCalls);
-    this.createExitPointsFromFunctions(functions, fullPath, exitPoints, nodes);
+    // Pass the project-relative path (not fullPath) so exit-point ids are stable
+    // across machines/snapshots. seenExitPointIds dedupes across all files in the
+    // run (cargo workspaces re-emit the same relative path from multiple crates).
+    this.createExitPointsFromFunctions(functions, relativePath, exitPoints, nodes);
   }
 
   private async extractModules(content: string, relativePath: string, nodes: CASNode[]): Promise<RustModule[]> {
@@ -2502,6 +2506,15 @@ export class RustAnalyzer extends BaseAnalyzer {
 
   private createExitPointsFromFunctions(functions: RustFunction[], filePath: string, exitPoints: CASExitPoint[], nodes: CASNode[]): void {
     const seenCalls = new Set<string>();
+    // Guard against emitting the same exit-point id twice within a single run.
+    // On cargo workspaces the same project-relative path is linked from multiple
+    // crates, which previously produced duplicate-id PARTIAL_ANALYSIS errors.
+    const existingExitPointIds = new Set(exitPoints.map(ep => ep.id));
+    const pushExitPoint = (ep: CASExitPoint): void => {
+      if (existingExitPointIds.has(ep.id)) return;
+      existingExitPointIds.add(ep.id);
+      exitPoints.push(ep);
+    };
 
     for (const func of functions) {
       const sourceNodeId = this.findRustFunctionNodeId(nodes, func);
@@ -2512,7 +2525,7 @@ export class RustAnalyzer extends BaseAnalyzer {
         if (seenCalls.has(uniqueKey)) continue;
         seenCalls.add(uniqueKey);
         const exitPointId = `reqwest_call:${filePath}:${call.line}:${call.method}:${call.endpoint}`.replace(/[^a-zA-Z0-9_:/.-]/g, '_');
-        exitPoints.push(this.createExitPoint(
+        pushExitPoint(this.createExitPoint(
           exitPointId,
           sourceNodeId,
           'api',
@@ -2552,9 +2565,9 @@ export class RustAnalyzer extends BaseAnalyzer {
 
         seenCalls.add(uniqueKey);
         const category = this.categorizeExitPoint(moduleName, functionName);
-        const exitPointId = `ext_call:${filePath}:${call.callLine}:${callKey}`;
+        const exitPointId = `ext_call:${filePath}:${call.callLine}:${callKey}`.replace(/[^a-zA-Z0-9_:/.-]/g, '_');
 
-        exitPoints.push(this.createExitPoint(
+        pushExitPoint(this.createExitPoint(
           exitPointId,
           sourceNodeId,
           category.type,

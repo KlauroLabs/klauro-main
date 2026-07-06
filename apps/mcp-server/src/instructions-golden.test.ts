@@ -26,6 +26,7 @@ const NON_TOOL_TOKENS = new Set<string>([
   'entry_points',
   'exit_points',
   'node_metrics',
+  'request_count',
   'error_rate',
   'staleness_risk',
   'cap_lean',

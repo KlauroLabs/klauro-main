@@ -84,11 +84,11 @@ async function selectRealFlowMaterial(): Promise<RealFlowMaterial> {
   const index = buildConceptIndex(flows);
 
   const multiStep = flows
-    .filter((f) => f.steps.length >= 2 && f.steps.every((s) => s.functions.length > 0))
+    .filter((f) => f.steps.length >= 2 && f.steps.every((s: any) => s.functions.length > 0))
     .slice(0, 64)
     .map((f) => ({
       flow_id: f.flow_id,
-      steps: f.steps.map((s) => ({ step_id: s.step_id, symbol: s.functions[0].function_id })),
+      steps: f.steps.map((s: any) => ({ step_id: s.step_id, symbol: s.functions[0].function_id })),
     }));
 
   // IMPORTANT: `disjoint` must be flow-disjoint AND symbol-disjoint from
@@ -101,7 +101,7 @@ async function selectRealFlowMaterial(): Promise<RealFlowMaterial> {
   // request — it was the scenario BUILDER, not the fabric, that mislabeled
   // an accidental overlap as "expected disjoint".
   const multiStepFlowIds = new Set(multiStep.map((f) => f.flow_id));
-  const multiStepSymbols = new Set(multiStep.flatMap((f) => f.steps.map((s) => s.symbol)));
+  const multiStepSymbols = new Set(multiStep.flatMap((f) => f.steps.map((s: any) => s.symbol)));
   const disjoint = flows
     .filter(
       (f) =>
