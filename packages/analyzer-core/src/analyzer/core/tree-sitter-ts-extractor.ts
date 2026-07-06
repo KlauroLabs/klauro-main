@@ -152,6 +152,12 @@ export interface TSExtractedFunction {
   decoratorArgs?: TSDecoratorDetail[];
   documentation?: string;
   /**
+   * Error TYPE names thrown by `throw new Foo(...)` / `throw Foo(...)` inside this
+   * function's body, deduped. Bare re-throws (`throw err`) yield no recoverable type
+   * and are intentionally omitted (evidence-gated). Feeds `signature.throws`.
+   */
+  throws?: string[];
+  /**
    * True for a nameless arrow/function-expression callback extracted only to
    * carry its outbound calls (e.g. an Express route handler at module scope).
    * Consumers should NOT emit a graph node for these — they exist so calls made
@@ -505,6 +511,7 @@ export class TreeSitterTSExtractor {
     const calls = this.extractCalls(func, funcName, className);
     const complexity = this.calculateComplexity(func);
     const documentation = this.extractDocumentation(func);
+    const throws = this.extractThrows(func);
 
     const signature = this.buildSignature(funcName, parameters, returnType, isAsync, isGenerator);
 
@@ -529,8 +536,82 @@ export class TreeSitterTSExtractor {
       decorators,
       decoratorArgs,
       documentation,
+      throws,
       isAnonymousCallback
     };
+  }
+
+  /**
+   * Collect the error TYPE names thrown by `throw` statements in this function's own
+   * body. Evidence-gated: only forms where a type is recoverable are emitted —
+   *   `throw new Foo(...)`        -> "Foo"     (new_expression constructor)
+   *   `throw new errors.Foo(...)` -> "Foo"     (member_expression -> property)
+   *   `throw Foo(...)`            -> "Foo"     (call_expression factory, PascalCase only)
+   *   `throw err` / `throw e`     -> (skipped, no type recoverable)
+   * Nested function/method bodies are NOT descended into (each gets its own scan).
+   * Returns undefined when nothing is recoverable so we never emit an empty array.
+   */
+  private extractThrows(func: any): string[] | undefined {
+    const body = func.childForFieldName('body');
+    if (!body) return undefined;
+
+    const nestedFnTypes = new Set([
+      'function_declaration', 'generator_function_declaration',
+      'method_definition', 'arrow_function',
+      'function_expression', 'generator_function'
+    ]);
+
+    const types = new Set<string>();
+    // Manual walk so we can prune nested function bodies (their throws belong to them).
+    const stack: any[] = [body];
+    while (stack.length > 0) {
+      const node = stack.pop()!;
+      if (node !== body && nestedFnTypes.has(node.type)) continue;
+      if (node.type === 'throw_statement') {
+        const typeName = this.throwTypeName(node);
+        if (typeName) types.add(typeName);
+      }
+      for (let i = node.namedChildCount - 1; i >= 0; i--) {
+        stack.push(node.namedChild(i));
+      }
+    }
+
+    return types.size > 0 ? Array.from(types) : undefined;
+  }
+
+  /** Extract the error type name from a `throw_statement`, or undefined if none is recoverable. */
+  private throwTypeName(throwStmt: any): string | undefined {
+    // The thrown value is the first (and only) named child of `throw_statement`.
+    const expr = throwStmt.namedChild(0);
+    if (!expr) return undefined;
+
+    if (expr.type === 'new_expression') {
+      const ctor = expr.childForFieldName('constructor');
+      return this.identifierTail(ctor);
+    }
+
+    if (expr.type === 'call_expression') {
+      // Factory form `throw makeError()` — only treat as a type when the callee is
+      // PascalCase (looks like a constructor/error factory), to avoid lifting plain
+      // helper calls like `throw buildResponse()`.
+      const callee = expr.childForFieldName('function');
+      const name = this.identifierTail(callee);
+      if (name && /^[A-Z]/.test(name)) return name;
+      return undefined;
+    }
+
+    // `throw err`, `throw obj.field`, string/object literals — no error TYPE to record.
+    return undefined;
+  }
+
+  /** Resolve `identifier` directly or the trailing `property` of a `member_expression`. */
+  private identifierTail(node: any): string | undefined {
+    if (!node) return undefined;
+    if (node.type === 'identifier') return node.text;
+    if (node.type === 'member_expression') {
+      return node.childForFieldName('property')?.text;
+    }
+    return undefined;
   }
 
   /** Whether `node` is lexically nested inside any function-like ancestor. */

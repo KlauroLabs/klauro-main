@@ -963,6 +963,30 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     });
   }
 
+  /**
+   * Merge the two evidence sources for `signature.throws` into a deduped `string[]`
+   * of error TYPE names:
+   *   1. JSDoc `@throws {FooError}` / `@exception` — surfaced via `documentation.throws[].type`
+   *      (reusing the already-parsed JSDoc; we do NOT re-parse).
+   *   2. Actual `throw new Foo()` / `throw Foo()` statements lifted by the tree-sitter
+   *      extractor into `func.throws`.
+   * Returns undefined when neither source yields a type, so `signature.throws` stays
+   * absent rather than an empty array (matches the evidence-gated contract).
+   */
+  private buildSignatureThrows(
+    extracted: string[] | undefined,
+    documentation?: CASDocumentation
+  ): string[] | undefined {
+    const types = new Set<string>();
+    for (const t of extracted || []) {
+      if (t) types.add(t);
+    }
+    for (const d of documentation?.throws || []) {
+      if (d?.type) types.add(d.type);
+    }
+    return types.size > 0 ? Array.from(types) : undefined;
+  }
+
   private processTreeSitterFunctions(
     extraction: TSFileExtraction,
     filePath: string,
@@ -1012,7 +1036,8 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
             optional: p.optional,
             description: undefined
           })),
-          return_type: func.returnType
+          return_type: func.returnType,
+          throws: this.buildSignatureThrows((func as any).throws, documentation)
         })
         .withDocumentation(documentation)
         .build();
@@ -1122,7 +1147,8 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
               optional: p.optional,
               description: undefined
             })),
-            return_type: method.returnType
+            return_type: method.returnType,
+            throws: this.buildSignatureThrows((method as any).throws, methodDoc)
           })
           .withParent(classId)
           .withDocumentation(methodDoc)
