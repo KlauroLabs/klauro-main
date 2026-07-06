@@ -111,6 +111,7 @@ import { FlowGraphBuilder } from './flow-graph-builder';
 import { GitAnalyzer } from './git-analyzer';
 import { detectCodebaseIdioms } from './idiom-detector';
 import { AnalysisRunLog } from './run-log';
+import { withAnalyzerFileReadCache, getDebugCacheStats } from './analyzer-file-read-cache';
 import { EmbeddingPhase, type EmbeddingPhaseConfig } from '../embedding/embedding-phase';
 import { aiService } from '../../ai/ai-service';
 import { setAICacheProjectScope } from '../../ai/ai-cache';
@@ -1077,13 +1078,26 @@ export class AnalyzerOrchestrator {
     // globs are provided this is a no-op and only built-in packs are consulted.
     this.applyLocalPackGlobs(options?.packGlobs ?? []);
 
+    // Perf: 120+ framework/library analyzers each independently glob() the
+    // project and fs.readFile() every matched source file, even though many
+    // of them scan the exact same file set (measured: soon-lens, 757 TS/JS
+    // files, ~20 analyzers each spending 10-18s re-reading files the
+    // TypeScript/JavaScript analyzer already read moments earlier). This
+    // transparently caches file content by absolute path for the duration of
+    // detectAnalyzers()+languageAnalyzers+frameworkAnalyzers (every phase
+    // that does filesystem-scanning analyzer work), with zero changes to any
+    // analyzer call site — see analyzer-file-read-cache.ts for the safety
+    // argument (read-only patch, scoped, always restored).
     let phaseStart = Date.now();
-    const detectedAnalyzers = await this.detectAnalyzers(projectPath);
-    logTiming('detectAnalyzers', phaseStart);
-    const context: AnalysisContext = {
-      projectPath,
-      filters: await this.getAnalysisContextFilters(projectPath)
-    };
+    const { detectedAnalyzers, context } = await withAnalyzerFileReadCache(async () => {
+      const detected = await this.detectAnalyzers(projectPath);
+      logTiming('detectAnalyzers', phaseStart);
+      const ctx: AnalysisContext = {
+        projectPath,
+        filters: await this.getAnalysisContextFilters(projectPath)
+      };
+      return { detectedAnalyzers: detected, context: ctx };
+    });
 
     const allNodes: CASNode[] = [];
     const allEdges: CASEdge[] = [];
@@ -1110,6 +1124,14 @@ export class AnalyzerOrchestrator {
     const parallelAnalyzers = detectedAnalyzers.filter(r => r.type === 'framework' || r.type === 'library');
     const patternAnalyzers = detectedAnalyzers.filter(r => r.type === 'pattern');
 
+    // Single cache scope spanning language + framework/library analyzers: the
+    // framework/library analyzers run AFTER languageAnalyzers and very often
+    // re-scan the same files the language analyzer(s) already read (e.g. the
+    // TypeScript/JavaScript analyzer reads every .ts/.tsx/.js/.jsx file, then
+    // ~20-100 framework/library analyzers each re-read a subset of that same
+    // set). Keeping them under one `withAnalyzerFileReadCache` means the
+    // framework/library phase gets free cache hits for anything already read.
+    await withAnalyzerFileReadCache(async () => {
     phaseStart = Date.now();
     for (const registration of languageAnalyzers) {
       try {
@@ -1266,6 +1288,10 @@ export class AnalyzerOrchestrator {
       }
     }
     logTiming('frameworkAnalyzers', phaseStart);
+    });
+    if (process.env.KLAURO_DEBUG_FILE_READ_CACHE === '1') {
+      console.error('[Klauro] file-read-cache stats:', JSON.stringify(getDebugCacheStats()));
+    }
 
     phaseStart = Date.now();
     this.dedupeUtilNodeDuplicates(allNodes, allEdges);

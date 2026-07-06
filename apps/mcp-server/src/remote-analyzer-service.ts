@@ -3,7 +3,7 @@ import * as http from 'node:http';
 import * as fs from 'fs-extra';
 import * as path from 'node:path';
 import { gunzipSync } from 'node:zlib';
-import { analyzeProjectIncremental, analyzeProjectDeferred } from './analyzer';
+import { analyzeProjectIncremental, analyzeProjectDeferred, analyzeProjectLayered } from './analyzer';
 import type { RemoteAnalyzeDiffRequest, RemoteAnalyzeRequest, RemoteAnalyzeResponse, RemoteGreenfieldPreviewRequest, RemoteProjectRevision, RemoteProjectRevisionsResponse, RemoteProposalPreviewRequest, RemoteSyncRequest } from './remote-analyzer-protocol';
 import type { BranchDiffContext, RemoteFileChange, SourceManifest } from './remote-source';
 import { buildSourceSnapshot } from './remote-source';
@@ -301,9 +301,31 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           });
           const backgroundClientId = authorization.clientId;
           setImmediate(async () => {
+            let attachedEarly = false;
             try {
               const displayName = resolveDisplayName(body.snapshot.project_name, body.project_path);
-              const deferred = await analyzeProjectDeferred(acceptedWorkspace, displayName);
+              const layered = await analyzeProjectLayered(acceptedWorkspace, displayName);
+
+              // Progressive availability (task #112): attach the project +
+              // notify WAS the moment L0 (the fast index/inventory pre-pass)
+              // is persisted, not after the full deterministic pipeline
+              // finishes. This is what makes the web app show the project
+              // populating within seconds instead of after the full ~1-2.5min
+              // pass — the account-project record only needs an analysis_id
+              // to resolve to SOME stored CAS at acceptedWorkspace, and
+              // whichever layer is currently on disk there is what queries see
+              // (honestly, via that CAS's own layers_ready manifest).
+              await layered.l0;
+              try {
+                await linkAnalysisToAccountProject(accounts, backgroundClientId, body.project_id, acceptedAnalysisId, body.snapshot?.manifest?.git_remote);
+                attachedEarly = true;
+                void notifyProjectAnalysisLandedForAnalysisId(acceptedAnalysisId);
+              } catch (attachError) {
+                const detail = attachError instanceof Error ? attachError.message : String(attachError);
+                console.error(`[Klauro] early L0 project attach failed for ${acceptedAnalysisId}: ${detail}`);
+              }
+
+              const deferred = await layered.rest;
               const backgroundResult: RemoteAnalyzeResponse = {
                 status: 'success',
                 analysis_id: acceptedAnalysisId,
@@ -314,7 +336,12 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
                 cas: deferred.output,
               };
               await appendProjectRevision(dataDir, backgroundResult, 'local_commit_submission');
-              await linkAnalysisToAccountProject(accounts, backgroundClientId, body.project_id, acceptedAnalysisId, body.snapshot?.manifest?.git_remote);
+              // Attach again (idempotent) in case the early L0 attach above
+              // failed or was skipped — never leave the landed full analysis
+              // unattached because of a transient early-attach error.
+              if (!attachedEarly) {
+                await linkAnalysisToAccountProject(accounts, backgroundClientId, body.project_id, acceptedAnalysisId, body.snapshot?.manifest?.git_remote);
+              }
               await appendAuditLog(dataDir, {
                 event: 'analyze',
                 analysis_id: acceptedAnalysisId,
@@ -1578,10 +1605,17 @@ async function handleAccountApi(
       const cas = await getAnalysis(workspacePath(dataDir, project.analysis_id));
       const summary = buildSummary(cas, { detail: 'compact' });
       const productMap = getProductMap(cas);
+      // Progressive availability (task #112): a project attached during its
+      // L0-only window is real and queryable, just not fully layered yet — the
+      // web app's live progress ladder distinguishes 'populating' (some
+      // layers still pending) from 'ready' (every layer landed) using the
+      // same layers_ready manifest surfaced in `summary`, rather than the
+      // caller having to infer it from node counts.
+      const status = cas.layers_ready && !cas.layers_ready.complete ? 'populating' : 'ready';
       return {
         statusCode: 200,
         body: {
-          status: 'ready',
+          status,
           project_id: project.id,
           analysis_id: project.analysis_id,
           summary,

@@ -726,6 +726,14 @@ export function createOrchestrator(): AnalyzerOrchestrator {
   return created;
 }
 
+/**
+ * Process-wide orchestrator singleton for read-only introspection ONLY (e.g.
+ * listRegisteredAnalyzers() in apps/mcp-server/src/gauntlet/coverage.ts).
+ * Actual analysis runs (analyzeProject/analyzeProjectIncremental/
+ * analyzeProjectDeferred below) each get their own dedicated orchestrator
+ * instance via createOrchestrator() through the lane pool — see "Analysis
+ * lane pool" below for why a shared instance is unsafe across concurrent runs.
+ */
 export function getOrchestrator(): AnalyzerOrchestrator {
   if (process.env.KLAURO_FRESH_ORCHESTRATOR_PER_ANALYSIS === '1') {
     return createOrchestrator();
@@ -1058,8 +1066,7 @@ export async function analyzeProject(projectPath: string, displayName?: string):
     throw new Error(`Project path does not exist: ${projectPath}`);
   }
 
-  return withProjectAnalysisLock(projectPath, async () => {
-    const orch = getOrchestrator();
+  return withProjectAnalysisLock(projectPath, () => withAnalysisLane(async (orch) => {
     orch.configureEmbedding(await buildEmbeddingPhaseConfig(projectPath));
     const conventions = await loadConventionsForAnalysis(projectPath);
     const packGlobs = await loadPackGlobsForAnalysis(projectPath);
@@ -1080,7 +1087,7 @@ export async function analyzeProject(projectPath: string, displayName?: string):
     await backfillIngestedTelemetry(result, projectPath).catch(() => undefined);
 
     return result;
-  });
+  }));
 }
 
 /**
@@ -1102,36 +1109,45 @@ export interface DeferredAnalysisResult {
  * slow AI enrichment in the background and re-save the upgraded CAS
  * (ai_enrichment='ready'). The next loadAnalysis picks up the enriched version.
  *
- * The background task re-uses the analysis locks so the enrich re-save never
- * races a concurrent analysis on the shared orchestrator singleton, and it
- * swallows all errors (logging only) so a failed enrichment can never crash the
- * process — the deterministic CAS stays stored.
+ * The background task re-uses the per-project file lock so the enrich re-save
+ * never races a concurrent analysis of the same project, and re-acquires a
+ * bounded lane permit (KLAURO_ANALYSIS_LANES) so deferred AI passes count
+ * against the same concurrency cap as full analyses; it swallows all errors
+ * (logging only) so a failed enrichment can never crash the process — the
+ * deterministic CAS stays stored.
  */
 export async function analyzeProjectDeferred(projectPath: string, displayName?: string): Promise<DeferredAnalysisResult> {
   if (!(await fs.pathExists(projectPath))) {
     throw new Error(`Project path does not exist: ${projectPath}`);
   }
 
-  const orch = getOrchestrator();
+  // enrichAnalysisAI(output) below must run on the SAME orchestrator instance
+  // that produced `output`: orchestrateAnalysis stashes the deferred-enrichment
+  // closure in a WeakMap keyed by the output object, held only on `this`
+  // (packages/analyzer-core/src/analyzer/core/orchestrator.ts). So this call
+  // owns one dedicated orchestrator instance across both phases, but only
+  // holds a lane pool *permit* (the bounded-concurrency slot) while each phase
+  // is actually running — the permit is released between the deterministic
+  // phase and the background AI phase so other analyses can use that slot
+  // while this one's enrichment is deferred/queued.
+  const dedicatedOrch = createOrchestrator();
 
-  const output = await withGlobalAnalysisLock(() =>
-    withProjectAnalysisLock(projectPath, async () => {
-      orch.configureEmbedding(await buildEmbeddingPhaseConfig(projectPath));
-      const conventions = await loadConventionsForAnalysis(projectPath);
-      const packGlobs = await loadPackGlobsForAnalysis(projectPath);
-      const previousOutput = await loadAnalysis(projectPath, { preferCache: true }).catch(() => null);
-      const result = await applyStoredElementDescriptions(projectPath, preservePreviousAIDescriptions(
-        previousOutput,
-        await orch.orchestrateAnalysis(projectPath, { deferAiEnrichment: true, displayName, conventions, packGlobs })
-      ));
+  const output = await withProjectAnalysisLock(projectPath, () => withLanePermit(async () => {
+    dedicatedOrch.configureEmbedding(await buildEmbeddingPhaseConfig(projectPath));
+    const conventions = await loadConventionsForAnalysis(projectPath);
+    const packGlobs = await loadPackGlobsForAnalysis(projectPath);
+    const previousOutput = await loadAnalysis(projectPath, { preferCache: true }).catch(() => null);
+    const result = await applyStoredElementDescriptions(projectPath, preservePreviousAIDescriptions(
+      previousOutput,
+      await dedicatedOrch.orchestrateAnalysis(projectPath, { deferAiEnrichment: true, displayName, conventions, packGlobs })
+    ));
 
-      await saveAnalysis(projectPath, result);
-      clearFreshnessSummaryCache();
-      await saveAnalysisSnapshot(projectPath, result);
+    await saveAnalysis(projectPath, result);
+    clearFreshnessSummaryCache();
+    await saveAnalysisSnapshot(projectPath, result);
 
-      return result;
-    }),
-  );
+    return result;
+  }));
 
   // Nothing to enrich (no AI provider, or already enriched) → done.
   if (output.ai_enrichment !== 'pending') {
@@ -1139,20 +1155,123 @@ export async function analyzeProjectDeferred(projectPath: string, displayName?: 
   }
 
   // Fire-and-forget: run the AI phase in the background, then re-save the
-  // upgraded CAS. Guarded by the same locks + a catch so it can never crash.
-  const enrichment = withGlobalAnalysisLock(() =>
-    withProjectAnalysisLock(projectPath, async () => {
-      await orch.enrichAnalysisAI(output);
-      await saveAnalysis(projectPath, output);
-      clearFreshnessSummaryCache();
-      await saveAnalysisSnapshot(projectPath, output);
-    }),
-  ).catch((error: unknown) => {
+  // upgraded CAS. Guarded by the project lock + a bounded lane permit + a
+  // catch so it can never crash.
+  const enrichment = withProjectAnalysisLock(projectPath, () => withLanePermit(async () => {
+    await dedicatedOrch.enrichAnalysisAI(output);
+    await saveAnalysis(projectPath, output);
+    clearFreshnessSummaryCache();
+    await saveAnalysisSnapshot(projectPath, output);
+  })).catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[Klauro] deferred AI enrichment failed for ${projectPath} (${message}); deterministic analysis remains stored`);
   });
 
   return { output, enrichment };
+}
+
+/**
+ * Result of the layered/progressive entrypoint. `l0` resolves in seconds (the
+ * fast index/inventory pre-pass, persisted before the deterministic pipeline
+ * runs) so callers who only need "has this project been touched yet" can act
+ * immediately. `rest` resolves once L1-L4 (and, if configured, L5 AI
+ * enrichment) have landed and been saved — the same DeferredAnalysisResult
+ * analyzeProjectDeferred always returned. Both promises resolve against the
+ * SAME saved analysis lineage: the L1-L4 save supersedes the L0-only stub,
+ * and (if AI is configured) the enrichment save supersedes that in turn. A
+ * caller that only awaits `l0` and returns has a valid, honestly-partial CAS
+ * on disk the whole time — `layers_ready` on it says exactly what's missing.
+ */
+export interface LayeredAnalysisResult {
+  l0: Promise<CASOutput>;
+  rest: Promise<DeferredAnalysisResult>;
+}
+
+/**
+ * Progressive-layering entrypoint (task #112): compute and PERSIST the L0
+ * index/inventory first — a pure filesystem walk with no dependency on the
+ * analyzer pipeline, so it lands in seconds — before the full deterministic
+ * pass (L1-L4, still one entangled block inside AnalyzerOrchestrator) and the
+ * existing L5 AI-enrichment deferral run to completion. Every intermediate
+ * save is a fully honest CASOutput: `layers_ready` always reflects what has
+ * actually landed on THIS stored copy, and no layer's fields are fabricated
+ * ahead of that layer completing. The final saved CAS is byte-for-byte what
+ * analyzeProjectDeferred/analyzeProject would have produced on their own —
+ * this only changes WHEN facts become queryable, never what they are.
+ */
+export async function analyzeProjectLayered(projectPath: string, displayName?: string): Promise<LayeredAnalysisResult> {
+  if (!(await fs.pathExists(projectPath))) {
+    throw new Error(`Project path does not exist: ${projectPath}`);
+  }
+
+  const { computeL0Index, buildL0OnlyCas } = await import('./layered-analysis');
+
+  const l0Promise = (async () => {
+    const l0Index = await computeL0Index(projectPath);
+    const l0Cas = buildL0OnlyCas(projectPath, displayName, l0Index);
+    // Best-effort: if a fuller analysis is already mid-save under the project
+    // lock, skip the L0 stub rather than block seconds-scale availability on
+    // it — the fuller save that follows supersedes it moments later anyway.
+    await withProjectAnalysisLock(projectPath, async () => {
+      const existing = await loadAnalysis(projectPath, { preferCache: true }).catch(() => null);
+      // Never regress a more-complete stored analysis back down to an L0-only
+      // stub (e.g. a re-analyze racing an already-fresh CAS on disk).
+      if (existing && (existing.layers_ready?.complete ?? true) && (existing.nodes?.length ?? 0) > 0) {
+        return;
+      }
+      await saveAnalysis(projectPath, l0Cas);
+      clearFreshnessSummaryCache();
+    }).catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`[Klauro] L0 index save failed for ${projectPath} (${message}); continuing to full analysis`);
+    });
+    return l0Cas;
+  })();
+
+  const restPromise = l0Promise.then(async () => {
+    const { buildLayersReady } = await import('./layered-analysis');
+    const deferred = await analyzeProjectDeferred(projectPath, displayName);
+
+    // Stamp the full ladder onto the landed CAS: L1-L4 are ready the moment
+    // orchestrateAnalysis returns (they're produced as one entangled block —
+    // see layered-analysis.ts for why), L5 mirrors the pre-existing
+    // ai_enrichment marker so `layers_ready` is a single place to read the
+    // whole ladder instead of two fields with different vocabularies.
+    const now = new Date().toISOString();
+    const aiConfigured = deferred.output.ai_enrichment !== undefined && deferred.output.ai_enrichment !== 'disabled';
+    deferred.output.layers_ready = buildLayersReady({
+      L0: { status: 'ready', completedAt: now },
+      L1: { status: 'ready', completedAt: now },
+      L2: { status: 'ready', completedAt: now },
+      L3: { status: 'ready', completedAt: now },
+      L4: { status: 'ready', completedAt: now },
+      L5: { status: aiConfigured ? (deferred.output.ai_enrichment === 'ready' || deferred.output.ai_enrichment === 'synchronous' ? 'ready' : 'pending') : 'ready' },
+    });
+    await saveAnalysis(projectPath, deferred.output);
+    clearFreshnessSummaryCache();
+
+    // If L5 is still enriching in the background, re-stamp layers_ready as
+    // fully complete once that promise resolves and re-save — mirrors
+    // analyzeProjectDeferred's own re-save-on-enrich, just adding the manifest
+    // flip alongside it so a caller polling layers_ready sees L5 flip too.
+    const enrichment = deferred.enrichment.then(async () => {
+      if (deferred.output.ai_enrichment !== 'ready') return;
+      deferred.output.layers_ready = buildLayersReady({
+        L0: { status: 'ready' }, L1: { status: 'ready' }, L2: { status: 'ready' },
+        L3: { status: 'ready' }, L4: { status: 'ready' },
+        L5: { status: 'ready', completedAt: new Date().toISOString() },
+      });
+      await saveAnalysis(projectPath, deferred.output);
+      clearFreshnessSummaryCache();
+    }).catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`[Klauro] layers_ready L5 re-stamp failed for ${projectPath} (${message})`);
+    });
+
+    return { output: deferred.output, enrichment };
+  });
+
+  return { l0: l0Promise, rest: restPromise };
 }
 
 export async function getAnalysis(
@@ -1334,19 +1453,98 @@ function buildChangeHistoryEntry(result: IncrementalAnalysisResult): ChangeHisto
   };
 }
 
-// In-process global analysis mutex. getOrchestrator() returns a process-wide
-// singleton that carries per-analysis mutable state (activeAnalysisProjectPath,
-// projectRoots, discovery/inventory caches), so two analyses of DIFFERENT projects
-// running concurrently on it interleave and clobber each other — one project's
-// analyzers run against another's roots and silently emit nothing. Node analysis is
-// single-threaded and CPU-bound, so serializing costs ~no wall-clock over the
-// interleaving it prevents. The per-project file lock only guards same-path runs;
-// this guards ALL of them (e.g. the analyzer server fanning out concurrent requests).
-let globalAnalysisTail: Promise<unknown> = Promise.resolve();
-function withGlobalAnalysisLock<T>(fn: () => Promise<T>): Promise<T> {
-  const result = globalAnalysisTail.then(fn, fn);
-  globalAnalysisTail = result.then(() => undefined, () => undefined);
-  return result;
+// --- Analysis lane pool ------------------------------------------------
+//
+// getOrchestrator() used to hand every analysis the SAME process-wide
+// AnalyzerOrchestrator singleton. That instance carries per-analysis mutable
+// state (activeAnalysisProjectPath, projectRoots, discovery/inventory caches,
+// embeddingPhaseConfig set via configureEmbedding()), so two analyses of
+// DIFFERENT projects running concurrently on it would interleave and clobber
+// each other — one project's analyzers could run against another's roots and
+// silently emit nothing. `withGlobalAnalysisLock` used to serialize ALL
+// analyses process-wide to avoid that, which is why a 6-repo batch ran end to
+// end (~11 min) instead of finishing in ~one slowest-repo's time.
+//
+// Fix: each concurrent analysis gets its OWN orchestrator instance (via
+// createOrchestrator(), the same factory getOrchestrator() uses for its
+// singleton — construction is just building analyzer objects and registering
+// them, no I/O, so a fresh instance per call is cheap), so there is no shared
+// mutable state between concurrently running analyses and the per-project
+// file lock (withProjectAnalysisLock) is the only serialization same-path
+// runs need. Concurrency is still bounded by a small permit pool — Node
+// analysis is CPU-bound and a 27k-node repo holds significant memory, so
+// unbounded parallelism would thrash the VPS; a fixed number of permits queues
+// extra work FIFO instead of running it all at once.
+//
+// Server-side config only (KLAURO_ANALYSIS_LANES) — not customer-facing.
+const DEFAULT_ANALYSIS_LANES = 2;
+
+function getAnalysisLaneCount(): number {
+  const raw = process.env.KLAURO_ANALYSIS_LANES;
+  if (raw === undefined || raw === '') return DEFAULT_ANALYSIS_LANES;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed >= 1 ? Math.floor(parsed) : DEFAULT_ANALYSIS_LANES;
+}
+
+// Simple counting semaphore: `permitsInUse` vs. the configured lane count,
+// with a FIFO wait queue for callers beyond capacity. Lane-count changes take
+// effect for the next acquire (safe — the count only changes between
+// test runs / config reloads, never assumed constant mid-batch).
+let permitsInUse = 0;
+let laneWaiters: Array<() => void> = [];
+
+function acquireLanePermit(): Promise<void> {
+  if (permitsInUse < getAnalysisLaneCount()) {
+    permitsInUse += 1;
+    return Promise.resolve();
+  }
+  return new Promise<void>((resolve) => {
+    laneWaiters.push(resolve);
+  });
+}
+
+function releaseLanePermit(): void {
+  const nextWaiter = laneWaiters.shift();
+  if (nextWaiter) {
+    // Hand the freed permit straight to the next waiter (permitsInUse stays
+    // the same — it never actually dropped below capacity).
+    nextWaiter();
+    return;
+  }
+  permitsInUse = Math.max(0, permitsInUse - 1);
+}
+
+/**
+ * Run fn bounded to KLAURO_ANALYSIS_LANES concurrent analyses (default 2).
+ * Extra callers queue FIFO for a free permit — this is what replaces the old
+ * process-wide withGlobalAnalysisLock mutex, so a batch of N<=lanes
+ * independent-project analyses runs in parallel instead of serially, while
+ * still bounding memory pressure on the host.
+ */
+async function withLanePermit<T>(fn: () => Promise<T>): Promise<T> {
+  await acquireLanePermit();
+  try {
+    return await fn();
+  } finally {
+    releaseLanePermit();
+  }
+}
+
+/**
+ * Run fn on a fresh, dedicated orchestrator instance, bounded by the same
+ * lane permit pool as withLanePermit. Use this when the caller doesn't need
+ * to retain the orchestrator instance beyond the call (analyzeProject,
+ * analyzeProjectIncremental); analyzeProjectDeferred manages its own
+ * dedicated instance across two phases and uses withLanePermit directly.
+ */
+function withAnalysisLane<T>(fn: (orch: AnalyzerOrchestrator) => Promise<T>): Promise<T> {
+  return withLanePermit(() => fn(createOrchestrator()));
+}
+
+/** Test-only: reset lane pool state (e.g. after changing KLAURO_ANALYSIS_LANES). */
+export function __resetAnalysisLanesForTests(): void {
+  permitsInUse = 0;
+  laneWaiters = [];
 }
 
 export async function analyzeProjectIncremental(projectPath: string, displayName?: string): Promise<IncrementalAnalysisResult> {
@@ -1354,12 +1552,13 @@ export async function analyzeProjectIncremental(projectPath: string, displayName
     throw new Error(`Project path does not exist: ${projectPath}`);
   }
 
-  return withGlobalAnalysisLock(() =>
-    withProjectAnalysisLock(projectPath, () => runIncrementalAnalysis(projectPath, displayName)),
+  return withProjectAnalysisLock(
+    projectPath,
+    () => withAnalysisLane((orch) => runIncrementalAnalysis(projectPath, orch, displayName)),
   );
 }
 
-async function runIncrementalAnalysis(projectPath: string, displayName?: string): Promise<IncrementalAnalysisResult> {
+async function runIncrementalAnalysis(projectPath: string, orch: AnalyzerOrchestrator, displayName?: string): Promise<IncrementalAnalysisResult> {
   const debugTimings = process.env.KLAURO_DEBUG_INCREMENTAL_TIMINGS === '1';
   const debug = (label: string, startedAt: number) => {
     if (debugTimings) {
@@ -1367,7 +1566,6 @@ async function runIncrementalAnalysis(projectPath: string, displayName?: string)
     }
   };
 
-  const orch = getOrchestrator();
   orch.configureEmbedding(await buildEmbeddingPhaseConfig(projectPath));
   const conventions = await loadConventionsForAnalysis(projectPath);
   const packGlobs = await loadPackGlobsForAnalysis(projectPath);

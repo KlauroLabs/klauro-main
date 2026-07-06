@@ -2,7 +2,8 @@ import * as fs from 'fs-extra';
 import * as path from 'path';
 import { execFileSync } from 'child_process';
 import { glob } from 'glob';
-import { getAnalysisEntry, loadIncrementalState } from './storage';
+import { getAnalysisEntry, loadAnalysis, loadIncrementalState } from './storage';
+import type { CASLayersReady } from '../../../packages/analyzer-core/src/types/cas.types';
 import { getRepoRevision, compareRevision, type RevisionMatch } from './revision';
 
 export type FreshnessStatus = 'fresh' | 'stale' | 'no-analysis';
@@ -51,6 +52,10 @@ export interface AnalysisFreshnessReport {
     modified_at: string;
   }>;
   recommendation: string;
+  /** Progressive-layering ladder (task #112), mirrored from the stored CAS's
+   *  `layers_ready` when present — absent for analyses produced outside the
+   *  layered entrypoint, where every layer is implicitly complete. */
+  layers_ready?: CASLayersReady;
 }
 
 const SOURCE_PATTERNS = [
@@ -392,6 +397,18 @@ export async function getAnalysisFreshness(projectPath: string): Promise<Analysi
   const incrementalState = await loadIncrementalState(projectPath);
   const status: FreshnessStatus = modified.length > 0 ? 'stale' : 'fresh';
 
+  // Best-effort: pull layers_ready off the stored CAS (task #112) so a caller
+  // checking freshness in one call also learns whether the analysis on disk
+  // is still progressively filling in. Never let a load failure break the
+  // freshness report itself — freshness is meaningful even without it.
+  let layersReady: CASLayersReady | undefined;
+  try {
+    const cas = await loadAnalysis(projectPath, { preferCache: true });
+    layersReady = cas?.layers_ready;
+  } catch {
+    layersReady = undefined;
+  }
+
   return {
     generated_at: new Date().toISOString(),
     path: projectPath,
@@ -405,5 +422,6 @@ export async function getAnalysisFreshness(projectPath: string): Promise<Analysi
     recommendation: status === 'fresh'
       ? 'CAS is fresh relative to source file mtimes.'
       : 'Run analyze_codebase to refresh CAS before using it as default agent context.',
+    ...(layersReady ? { layers_ready: layersReady } : {}),
   };
 }

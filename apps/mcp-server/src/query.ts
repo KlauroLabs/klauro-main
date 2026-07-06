@@ -188,6 +188,12 @@ export function buildSummary(cas: CASOutput, opts: { detail?: 'compact' | 'full'
     // the tool that pulls each), so the FIRST orient call teaches what is
     // available at near-zero tokens without any heavy content.
     orient_capsule: buildOrientCapsule(cas),
+    // Progressive-layering ladder (task #112): present only on a CAS produced
+    // via the layered/progressive entrypoint (analyzeProjectLayered). Absent
+    // on the plain analyze_codebase path, where every layer lands in one shot
+    // and is implicitly complete — omitted rather than a fabricated "all
+    // ready" so callers can tell "not layered" apart from "layered and done".
+    ...(cas.layers_ready ? { layers_ready: cas.layers_ready } : {}),
     ...(detail === 'compact' ? { detail: 'compact' as const } : {}),
   };
 }

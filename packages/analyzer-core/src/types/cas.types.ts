@@ -187,6 +187,65 @@ export interface CASOutput {
    *    (no provider / feature off), so no background upgrade will arrive.
    */
   ai_enrichment?: 'pending' | 'ready' | 'disabled' | 'synchronous';
+
+  /**
+   * Progressive-layering manifest (see analyzer/core/layered-analysis.ts /
+   * apps/mcp-server/src/layered-analysis.ts). Absent on legacy/older stores and
+   * on the plain synchronous analyzeProject() path, where the full CAS lands
+   * in one shot and every layer is implicitly ready. Present when the
+   * layered/progressive entrypoint (analyzeProjectLayered) is used: each
+   * layer's `status` tracks whether the fields that layer owns are populated
+   * on THIS stored copy yet. A partial CAS (some layers 'pending') is honest
+   * about what it does not have — never fabricates facts for a layer that
+   * hasn't landed; callers should treat missing/pending-layer fields as
+   * "still computing", not "absent from the codebase".
+   */
+  layers_ready?: CASLayersReady;
+
+  /**
+   * L0 fast index/inventory (see apps/mcp-server/src/layered-analysis.ts):
+   * file count, language breakdown, and top-level directory structure from a
+   * pure filesystem walk, computed and persisted before the analyzer pipeline
+   * (L1-L4) runs. Present only on a CAS produced via the layered entrypoint,
+   * absent once superseded by the fuller structural facts L1+ derive from
+   * actual parsed nodes (the `system.technologies` field remains the
+   * authoritative post-L1 source).
+   */
+  l0_index?: {
+    total_files: number;
+    languages: Array<{ name: string; files: number }>;
+    top_level_dirs: string[];
+    duration_ms: number;
+  };
+}
+
+/** One entry in the layer ladder. `fields` lists the top-level CASOutput keys
+ *  this layer is responsible for populating, for callers that want to check a
+ *  specific field's provenance without re-deriving the ladder. */
+export interface CASLayerStatus {
+  layer: 'L0' | 'L1' | 'L2' | 'L3' | 'L4' | 'L5';
+  name: string;
+  status: 'pending' | 'ready';
+  /** ISO timestamp this layer's status last changed, when known. */
+  completed_at?: string;
+  duration_ms?: number;
+  fields: string[];
+}
+
+/**
+ * L0 index/inventory -> L1 nodes/entry points/routes -> L2 call graph/edges ->
+ * L3 entities/lineage/database schema -> L4 flows/capabilities/contracts ->
+ * L5 AI enrichment (the pre-existing ai_enrichment marker, mirrored here for a
+ * single place to read the whole ladder). Ordered fast -> slow; each layer is
+ * additive over the previous — a later layer never retracts an earlier one's
+ * facts, only supersedes L0's provisional index once L1 lands.
+ */
+export interface CASLayersReady {
+  layers: CASLayerStatus[];
+  /** True once every layer in `layers` is 'ready' (L5 excluded when AI is
+   *  disabled for this project, since no upgrade is ever coming). */
+  complete: boolean;
+  generated_at: string;
 }
 
 export interface CASEmbeddingIndex {
