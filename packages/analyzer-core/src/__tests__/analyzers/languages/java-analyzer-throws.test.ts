@@ -144,6 +144,51 @@ describe('JavaAnalyzer signature.throws population', () => {
     expect(wrap!.signature?.throws).toBeUndefined();
   });
 
+  it('lifts a multi-line `throws` clause (wrapped across lines) into signature.throws', async () => {
+    const source = [
+      'package demo;',
+      'import java.io.IOException;',
+      'import java.sql.SQLException;',
+      'public class Wrapper {',
+      '    void f()',
+      '        throws IOException,',
+      '        SQLException {',
+      '        System.out.println("x");',
+      '    }',
+      '}',
+    ].join('\n');
+
+    const nodes = await analyzeJava('Wrapper.java', source);
+    const f = methodNode(nodes, 'f');
+    expect(f).toBeDefined();
+    expect(f!.signature?.throws).toEqual(
+      expect.arrayContaining(['IOException', 'SQLException'])
+    );
+    expect(f!.signature?.throws).toHaveLength(2);
+  });
+
+  it('does NOT classify a `throw new X()` statement line as a method declaration', async () => {
+    const source = [
+      'package demo;',
+      'public class Thrower {',
+      '    void go() {',
+      '        throw new IllegalStateException("boom");',
+      '    }',
+      '}',
+    ].join('\n');
+
+    const nodes = await analyzeJava('Thrower.java', source);
+    // The only real method is `go`. The `throw new IllegalStateException(...)`
+    // line must not be lifted into a phantom `IllegalStateException` method.
+    const methods = nodes.filter(
+      n => n.type === 'method' || n.type === 'interface_method'
+    );
+    expect(methods.map(m => m.name).sort()).toEqual(['go']);
+    // Sanity: the real throw is still surfaced on the method signature.
+    const go = methodNode(nodes, 'go');
+    expect(go!.signature?.throws).toEqual(['IllegalStateException']);
+  });
+
   it('lifts declared throws on an interface method into signature.throws', async () => {
     const source = [
       'package demo;',

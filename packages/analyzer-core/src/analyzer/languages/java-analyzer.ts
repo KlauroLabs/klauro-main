@@ -849,9 +849,13 @@ export class JavaAnalyzer extends BaseAnalyzer {
           const returnType = this.extractReturnType(line);
           const parameters = this.extractParameters(line);
           const annotations = this.extractAnnotations(lines, i);
-          // Stop the throws clause at the body brace `{` or the abstract/interface
-          // terminator `;` so we don't capture `IOException;` or a trailing brace.
-          const throwsMatch = line.match(/throws\s+([^{;]+)/);
+          // Parse the declared `throws` clause. It may wrap across several lines
+          // (`void f()\n  throws IOException,\n  SQLException {`), so join the
+          // signature from this line up to the body brace `{` or the abstract/
+          // interface terminator `;` before extracting. Stopping at `{`/`;`
+          // ensures we never capture a trailing brace or body content.
+          const signatureText = this.joinSignatureLines(lines, i);
+          const throwsMatch = signatureText.match(/throws\s+([^{;]+)/);
           const throwsExceptions = throwsMatch
             ? throwsMatch[1].split(',').map(s => s.trim()).filter(s => s.length > 0)
             : [];
@@ -967,12 +971,72 @@ export class JavaAnalyzer extends BaseAnalyzer {
   }
 
   private isMethodDeclaration(line: string): boolean {
-    return line.includes('(') && line.includes(')') &&
-           !line.startsWith('//') && !line.includes('if') &&
-           !line.includes('while') && !line.includes('for') &&
-           (line.includes('public') || line.includes('private') ||
-            line.includes('protected') || line.includes('void') ||
-            !!line.match(/\w+\s+\w+\s*\(/));
+    const trimmed = line.trim();
+
+    // A statement line is never a method declaration. `throw new Foo(...)`,
+    // `return foo(...)`, and control-flow headers all carry a `(` + `)` and can
+    // otherwise satisfy the `type name(` shape (`new SomeException(`), so reject
+    // any line that opens with a statement/control keyword up front.
+    if (/^(?:throw|return|if|else|for|while|switch|do|try|catch|finally|synchronized|assert|new|super|this)\b/.test(trimmed)) {
+      return false;
+    }
+
+    // Must contain a call-shaped `name(...)` on this line (the method name + params).
+    if (!trimmed.includes('(') || !trimmed.includes(')')) {
+      return false;
+    }
+    if (trimmed.startsWith('//') || trimmed.startsWith('*') || trimmed.startsWith('@')) {
+      return false;
+    }
+
+    // Guard against embedded control-flow keywords appearing as whole words
+    // (e.g. `} else if (`), while still allowing identifiers that merely contain
+    // those substrings (e.g. `formatId`, `whileLoopCount`).
+    if (/\b(?:if|while|for|switch|catch)\s*\(/.test(trimmed)) {
+      return false;
+    }
+
+    // A method decl needs a modifier/return-type token in front of `name(`:
+    // `<modifiers/return type> name(`. Constructors have `Name(` preceded by a
+    // modifier; require either an explicit modifier keyword or a `type name(`
+    // (two identifiers) shape so a bare `foo()` call statement is not a decl.
+    const hasModifier = /\b(?:public|private|protected|static|final|abstract|synchronized|native|default)\b/.test(trimmed);
+    const hasVoid = /\bvoid\s+\w+\s*\(/.test(trimmed);
+    const hasTypeName = /\b[A-Za-z_$][\w$]*(?:\s*<[^;{()]*>)?(?:\s*\[\s*\])*\s+[A-Za-z_$][\w$]*\s*\(/.test(trimmed);
+
+    return hasModifier || hasVoid || hasTypeName;
+  }
+
+  /**
+   * Join a method-signature that may span multiple physical lines into one
+   * string, starting at `startIndex` and stopping once we reach the body opener
+   * `{` or the abstract/interface terminator `;` (inclusive of that char's line
+   * up to the terminator). This lets the caller parse a `throws` clause wrapped
+   * across continuation lines, e.g.:
+   *   void f()
+   *       throws IOException,
+   *       SQLException {
+   * Bounded to a small look-ahead window so a malformed signature can't scan the
+   * whole file.
+   */
+  private joinSignatureLines(lines: string[], startIndex: number, maxLookahead = 8): string {
+    let joined = lines[startIndex];
+    // If the first line already terminates the signature, no continuation needed.
+    if (/[{;]/.test(joined)) {
+      const cut = joined.search(/[{;]/);
+      return joined.slice(0, cut + 1);
+    }
+    const limit = Math.min(lines.length - 1, startIndex + maxLookahead);
+    for (let j = startIndex + 1; j <= limit; j++) {
+      const next = lines[j];
+      const cut = next.search(/[{;]/);
+      if (cut !== -1) {
+        joined += ' ' + next.slice(0, cut + 1);
+        return joined;
+      }
+      joined += ' ' + next;
+    }
+    return joined;
   }
 
   private isFieldDeclaration(line: string): boolean {
