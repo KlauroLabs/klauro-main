@@ -95,6 +95,18 @@ export interface KlauroConfig {
    */
   context?: KlauroContextConfig;
   /**
+   * Coordination-fabric settings for this project, written by `klauro init`
+   * (enabled by default when connecting a repo) and by `klauro fabric on|off`
+   * for fine control (see docs/FABRIC-REMOTE.md). When `enabled` is true, the fab CLI
+   * (scripts/fab.ts) and the fab_* MCP tools route advisory claims to the
+   * cross-machine coordination API at `endpoint` under `workspace` — no env
+   * vars needed. The Bearer token is NEVER stored here: it is resolved at call
+   * time from the same credential store `klauro init`/`klauro login` use
+   * (~/.klauro/auth.json). Optional and additive: absent on every existing
+   * .klaurorc = the original local-only fabric, byte-for-byte unchanged.
+   */
+  fabric?: KlauroFabricConfig;
+  /**
    * Local declarative analyzer packs (glob(s), relative to the project root or
    * absolute) that the analyzer-pack engine loads IN ADDITION to the built-in
    * packs shipped with analyzer-core. A pack is a *.pack.yaml with tree-sitter
@@ -161,6 +173,16 @@ export interface KlauroContextConfig {
    * telemetry / communication-seams / runtime-topology; "include" opts in.
    */
   runtime?: 'include' | 'exclude' | 'auto';
+}
+
+/** Project-level coordination-fabric settings (written by `klauro init`; `klauro fabric on|off` for fine control). */
+export interface KlauroFabricConfig {
+  /** Route fab claims to the remote coordination API (true) or stay local-only (false). */
+  enabled: boolean;
+  /** Coordination service base URL (e.g. https://mcp.klauro.com). Token comes from ~/.klauro/auth.json, never from this file. */
+  endpoint?: string;
+  /** Shared workspace id — must match on every machine coordinating on this repo. */
+  workspace?: string;
 }
 
 export interface KlauroConventions {
@@ -279,20 +301,27 @@ export async function writeDefaultKlauroConfig(projectPath: string, options: {
   config.project.workspaceId = options.workspaceId || config.project.workspaceId;
   config.project.organizationId = options.organizationId || config.project.organizationId;
 
+  let ignoreExists = false;
   if (!options.force) {
-    for (const file of [configPath, ignorePath]) {
-      try {
-        await fs.access(file);
-        throw new Error(`${path.basename(file)} already exists. Use --force to overwrite.`);
-      } catch (error) {
-        if (error instanceof Error && !('code' in error)) throw error;
-        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-      }
+    try {
+      await fs.access(configPath);
+      throw new Error(`${path.basename(configPath)} already exists. Use --force to overwrite.`);
+    } catch (error) {
+      if (error instanceof Error && !('code' in error)) throw error;
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+    // A pre-existing .klauroignore is KEPT, not an error: `klauro init` must be
+    // idempotent/re-runnable, and a hand-tuned ignore file is user data.
+    try {
+      await fs.access(ignorePath);
+      ignoreExists = true;
+    } catch {
+      ignoreExists = false;
     }
   }
 
   await fs.writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, 'utf8');
-  await fs.writeFile(ignorePath, defaultKlauroIgnore(), 'utf8');
+  if (!ignoreExists) await fs.writeFile(ignorePath, defaultKlauroIgnore(), 'utf8');
   return { configPath, ignorePath, config };
 }
 
@@ -480,6 +509,7 @@ function mergeConfig(defaults: KlauroConfig, userConfig: Partial<KlauroConfig>):
       ? { ...defaults.context, ...userConfig.context }
       : defaults.context,
     packs: userConfig.packs ?? defaults.packs,
+    fabric: userConfig.fabric ?? defaults.fabric,
   };
 }
 

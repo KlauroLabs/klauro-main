@@ -7,13 +7,16 @@ contract and its honest limits.
 
 ## Point a second machine at the fabric
 
-No env vars. It is CLI + config-file driven, like the rest of the product:
+No env vars, no separate fabric setup. Connecting a repo to Klauro includes the
+fabric — `klauro init` is the ONE onboarding command (auth, project identity,
+analysis, in-flight tracking, agent MCP wiring, and the fabric, enabled by
+default):
 
 ```bash
 curl -fsSL https://mcp.klauro.com/dist/install.sh | sh   # install klauro
-klauro init            # existing auth/link flow (stores credentials in ~/.klauro/auth.json)
+klauro login --email you@example.com                     # once per machine (stores credentials in ~/.klauro/auth.json)
 cd /path/to/repo
-klauro fabric on       # done — persists {fabric:{enabled,endpoint,workspace}} into .klaurorc
+klauro init            # done — connects the repo end to end, incl. {fabric:{enabled,endpoint,workspace}} in .klaurorc
 
 # then the fab surface is unchanged, remote automatically, in every shell:
 npx tsx apps/mcp-server/scripts/fab.ts claim  my-agent "refactor auth" src/auth/login.ts
@@ -21,21 +24,29 @@ npx tsx apps/mcp-server/scripts/fab.ts check  my-agent src/auth/login.ts
 npx tsx apps/mcp-server/scripts/fab.ts active
 npx tsx apps/mcp-server/scripts/fab.ts release my-agent
 
-klauro fabric status   # enabled/endpoint/workspace + the live active-claims view
-klauro fabric off      # back to the local-only fabric
+klauro status          # one-glance view: auth, project, analysis, in-flight, MCP, fabric
+klauro fabric status   # fabric detail view: enabled/endpoint/workspace + the live active-claims view
+klauro fabric off      # rare explicit opt-out — back to the local-only fabric (klauro fabric on re-enables)
 ```
 
-`klauro fabric on` resolves everything from state the product already has:
+Re-running `klauro init` is idempotent: it verifies and refreshes each
+subsystem instead of erroring, and it respects an explicit `klauro fabric off`
+opt-out (it never flips a deliberately disabled fabric back on).
 
-- **Endpoint**: `--server-url` flag > the repo's `.klaurorc` `analyzer.serverUrl`
-  (what `klauro init` wrote) > the stored-login default. It then verifies
+The fabric step of `klauro init` (and `klauro fabric on`, which survives as
+fine control for re-enabling after an opt-out) resolves everything from state
+the product already has:
+
+- **Endpoint**: `--server-url` flag > the repo's `.klaurorc` `fabric.endpoint`
+  / `analyzer.serverUrl` > the stored-login default. It then verifies
   reachability; an unreachable service is a loud warning, not a failure.
 - **Token**: NEVER stored in `.klaurorc` and never prompted for. Resolved at
-  call time from the same credential store `klauro init` / `klauro login`
-  maintain (`~/.klauro/auth.json`). No stored credentials = a clear
-  "run `klauro init` first" error.
+  call time from the same credential store `klauro login` maintains
+  (`~/.klauro/auth.json`). Not signed in = `klauro init` keeps the fabric
+  local and says so; sign in and re-run `klauro init` to go remote.
 - **Workspace identity** (must match on all machines), autodetected, most
-  stable first: **1)** `--workspace <name>` override → **2)** the `.klaurorc`
+  stable first: **1)** `--workspace <name>` override (on `init` or `fabric
+  on`) → **2)** the `.klaurorc`
   `project.id` (the hosted Klauro project identity — identical on every
   machine linked to the same project) → **3)** the normalized git remote URL
   as `<repo>-<8-hex sha256>` (identical on every clone, ssh and https forms
@@ -44,7 +55,7 @@ klauro fabric off      # back to the local-only fabric
 The same config switches the `fab_claim_work` / `fab_check_collision` /
 `fab_release_work` / `fab_list_active_work` **MCP tools** to remote mode: they
 resolve `.klaurorc` by walking up from the MCP server process's cwd, so an
-agent session in a `fabric on` repo is remote with zero setup. Responses carry
+agent session in an init'd repo is remote with zero setup. Responses carry
 `tier: 'remote' | 'local'` so you always know which view you got.
 
 **No fabric section + no env = the original local filesystem fabric,
@@ -69,7 +80,7 @@ export FAB_WS=<workspace>         # must match the team's workspace id
 ```
 
 This is an escape hatch, not the setup path — interactive machines should use
-`klauro fabric on`.
+`klauro init`.
 
 ## API (on `remote-analyzer-service.ts`, Bearer auth required)
 
@@ -142,9 +153,10 @@ fast (10s timeout) rather than hanging an agent.
   20-way concurrency, typed transport errors).
 - `apps/mcp-server/scripts/fab-remote-e2e.ts` — the analyzer service plus two
   real fab.ts OS processes with isolated local stores, configured PURELY via
-  `klauro init` + `klauro fabric on` (every FAB_/KLAURO_ env var scrubbed from
-  the children); proves the only shared channel is HTTP, that the token never
-  lands in `.klaurorc`, loud degrade, `fabric status`/`off`, and the latency
+  one `klauro init` per machine (every FAB_/KLAURO_ env var scrubbed from
+  the children); proves fabric-on-by-default, init idempotency, that the only
+  shared channel is HTTP, that the token never lands in `.klaurorc`, loud
+  degrade, `fabric status`/`off`/`on` fine control, and the latency
   numbers above.
 - `apps/mcp-server/src/coordination/fabric-config.test.ts` — the resolution
   precedence contract (explicit > config > env > local; disabled-config beats

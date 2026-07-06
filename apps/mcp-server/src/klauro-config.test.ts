@@ -13,6 +13,24 @@ const tsxBin = fs.existsSync(path.join(repoRoot, 'node_modules', '.bin', 'tsx'))
   : path.join(repoRoot, '..', '..', 'node_modules', '.bin', 'tsx');
 const fixturePath = path.join(repoRoot, 'fixtures', 'analysis-truth', 'fastapi-sqlalchemy');
 
+/**
+ * Hermetic env for spawning `klauro init` in tests: the unified init reuses
+ * stored credentials and kicks off hosted analysis/fabric when signed in, so
+ * point the credential store at a nonexistent file and scrub every token/URL
+ * env var — the test must never touch the developer's real account or a real
+ * service.
+ */
+function signedOutEnv(workspaceDir: string): Record<string, string | undefined> {
+  const env: Record<string, string | undefined> = { ...process.env };
+  for (const key of [
+    'KLAURO_ACCOUNT_TOKEN', 'KLAURO_AUTH_TOKEN', 'KLAURO_ANALYZER_TOKEN',
+    'KLAURO_API_URL', 'KLAURO_ANALYZER_URL', 'KLAURO_URL',
+    'FAB_REMOTE_URL', 'FAB_REMOTE_TOKEN', 'FAB_WS',
+  ]) delete env[key];
+  env.KLAURO_AUTH_CONFIG_PATH = path.join(workspaceDir, 'no-such-auth.json');
+  return env;
+}
+
 test('upload manifest honors .klaurorc and .klauroignore before remote upload', async () => {
   await withFixtureWorkspace(async workspace => {
     await writeDefaultKlauroConfig(workspace.repo, { force: true, serverUrl: 'https://analyzer.example.test' });
@@ -47,14 +65,18 @@ test('customer CLI init and upload-manifest produce parseable onboarding artifac
       '--organization-id',
       'org_test',
       '--json',
-    ], { cwd: repoRoot, encoding: 'utf8' });
+    ], { cwd: repoRoot, encoding: 'utf8', env: signedOutEnv(workspace.repo) });
 
     assert.equal(init.status, 0, init.stderr);
     const initialized = JSON.parse(init.stdout);
-    assert.equal(initialized.config.project.id, 'proj_test');
-    assert.equal(initialized.config.project.organizationId, 'org_test');
+    assert.equal(initialized.status, 'connected');
+    assert.equal(initialized.project.id, 'proj_test');
+    assert.ok(Array.isArray(initialized.steps) && initialized.steps.length === 6, 'init reports all six onboarding steps');
     assert.ok(fs.existsSync(path.join(workspace.repo, '.klaurorc')));
     assert.ok(fs.existsSync(path.join(workspace.repo, '.klauroignore')));
+    const rc = JSON.parse(fs.readFileSync(path.join(workspace.repo, '.klaurorc'), 'utf8'));
+    assert.equal(rc.project.id, 'proj_test');
+    assert.equal(rc.project.organizationId, 'org_test');
 
     const manifest = spawnSync(tsxBin, ['src/cli.ts', 'upload-manifest', workspace.repo, '--json'], {
       cwd: repoRoot,
@@ -184,11 +206,17 @@ test('remote init defaults to Klauro Cloud without requiring --server-url', () =
       'init',
       workspace.repo,
       '--json',
-    ], { cwd: repoRoot, encoding: 'utf8' });
+    ], { cwd: repoRoot, encoding: 'utf8', env: signedOutEnv(workspace.repo) });
 
     assert.equal(init.status, 0, init.stderr);
     const initialized = JSON.parse(init.stdout);
-    assert.equal(initialized.config.analyzer.serverUrl, 'https://mcp.klauro.com');
+    assert.equal(initialized.server_url, 'https://mcp.klauro.com');
+    const rc = JSON.parse(fs.readFileSync(path.join(workspace.repo, '.klaurorc'), 'utf8'));
+    assert.equal(rc.analyzer.serverUrl, 'https://mcp.klauro.com');
+    // Signed out: hosted steps are skipped and the fabric stays LOCAL — a repo
+    // is never flipped remote without stored credentials.
+    assert.equal(initialized.signed_in, false);
+    assert.equal(initialized.fabric, null);
   });
 });
 

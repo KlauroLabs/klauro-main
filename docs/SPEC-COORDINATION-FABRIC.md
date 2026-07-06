@@ -74,6 +74,10 @@ one working tree). The coordination store MUST work at two tiers, composed:
 - **REMOTE tier (cross-machine).** The VPS store (WS-C-transport SSE) syncs claims/presence/in-flight
   across machines. A claim writes to BOTH: local (instant, for same-host peers) and remote
   (propagate, for other machines). Reads merge the local active-set with the remote active-set.
+  **SHIPPED for the fab surface — see `docs/FABRIC-REMOTE.md`** for the operator guide
+  (`FAB_REMOTE_URL`/`FAB_REMOTE_TOKEN` point fab.ts + the fab_* MCP tools at
+  `/v1/coordination/{claim,check,release,active}` on the analyzer service; 30-min WAN TTL,
+  heartbeat-by-reclaim, loud degrade-to-local on network failure, loopback p50 33ms/p95 64ms).
 
 **Why same-machine still needs coordination even though agents share the filesystem:** they see the
 *code* on disk, but the filesystem carries **no intent, no reasoning, no "peer is mid-edit", and no

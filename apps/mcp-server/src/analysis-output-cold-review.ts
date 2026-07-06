@@ -159,7 +159,11 @@ function scoreNarrative(repo: MachineRepoResult, descriptionGate?: { score?: num
   const source = repo.cas?.description_source || '';
   const generation = repo.cas?.description_generation;
   const base = Number(descriptionGate?.score || 0);
-  const trusted = /^(ai|manual|reused-ai|ai-reviewed-deterministic)$/i.test(source);
+  // 'reused' is what the product actually emits when a prior trusted (ai/manual)
+  // description is carried forward (orchestrator sets description_source='reused');
+  // the usefulness review already trusts it (isTrustedDescriptionSource). The old
+  // 'reused-ai' value here matched nothing the product ever writes.
+  const trusted = /^(ai|manual|reused|reused-ai|ai-reviewed-deterministic)$/i.test(source);
   if (trusted && descriptionGate?.status === 'pass') return clamp(Math.max(base, 90));
   if (generation?.attempted === false || /deterministic/i.test(source)) return clamp(Math.min(base || 65, 72));
   if (descriptionGate?.status === 'fail') return clamp(Math.min(base || 45, 50));

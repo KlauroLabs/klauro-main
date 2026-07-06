@@ -117,6 +117,61 @@ test('analysis profile treats Electron apps as desktop apps before embedded HTTP
   }
 });
 
+test('analysis profile does not classify a repo as desktop-app just because source mentions electron', () => {
+  // Klauro-self regression: an analyzer product whose source SUPPORTS Electron apps
+  // (node names/files mention electron) is not itself a desktop app.
+  const projectPath = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-analyzer-profile-'));
+  try {
+    fs.writeFileSync(path.join(projectPath, 'package.json'), JSON.stringify({
+      name: 'analyzer-monorepo',
+      dependencies: { express: '^4.18.0' },
+    }));
+
+    const cas: any = {
+      nodes: [
+        {
+          id: 'electron-analyzer',
+          name: 'ElectronAnalyzer',
+          type: 'class',
+          source: { file: 'src/analyzer/frameworks/electron-analyzer.ts' },
+          metadata: { language: 'typescript', framework: 'Express' },
+        },
+        {
+          id: 'controller',
+          name: 'AnalysisController',
+          type: 'controller',
+          source: { file: 'src/analysis.controller.ts' },
+          metadata: { language: 'typescript', framework: 'Express' },
+        },
+      ],
+      edges: [],
+      entry_points: [
+        {
+          id: 'analyze-route',
+          type: 'http',
+          name: 'POST /analyze',
+          source_node: 'controller',
+          handler: { file: 'src/analysis.controller.ts' },
+        },
+      ],
+      system: {
+        type: 'application',
+        technologies: {
+          languages: [{ name: 'TypeScript/JavaScript' }],
+          frameworks: [{ name: 'Express' }],
+        },
+      },
+    };
+
+    const profile = classifyAnalysisProfile(cas, projectPath);
+
+    assert.notEqual(profile.kind, 'desktop-app');
+    assert.equal(profile.kind, 'backend-service');
+  } finally {
+    fs.rmSync(projectPath, { recursive: true, force: true });
+  }
+});
+
 test('analysis profile does not treat generic desktop wording as a desktop app signal', () => {
   const projectPath = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-web-profile-'));
   try {

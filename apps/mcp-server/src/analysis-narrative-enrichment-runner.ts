@@ -121,7 +121,8 @@ export async function runAnalysisNarrativeEnrichmentRunner(options: {
     const targets = filteredTargets.slice(0, perRepoLimit);
     queuedTargets += targets.length;
 
-    for (const target of targets) {
+    for (let targetIndex = 0; targetIndex < targets.length; targetIndex += 1) {
+      const target = targets[targetIndex];
       if (options.maxTargets && results.length >= options.maxTargets) break;
       if (Date.now() >= deadline && results.length > 0) {
         stoppedEarly = true;
@@ -171,6 +172,19 @@ export async function runAnalysisNarrativeEnrichmentRunner(options: {
             target_removed_from_queue: !remainingTarget,
             after_reasons: remainingTarget?.reasons.slice(0, 4),
           });
+          // A system refresh regenerates the CAS, so capabilities may have been
+          // renamed; the pre-refresh queue for this repo would then chase stale
+          // names ("Could not find capability matching: ..."). Requeue the rest
+          // of this repo's budget from the refreshed target list.
+          if (afterCas) {
+            const processedKeys = new Set(targets.slice(0, targetIndex + 1).map(targetKey));
+            const staleTailLength = targets.length - targetIndex - 1;
+            const refreshedTail = afterTargets
+              .filter(next => !processedKeys.has(targetKey(next)) && !resumeKeys.has(targetKey(next)))
+              .slice(0, Math.max(0, staleTailLength));
+            targets.splice(targetIndex + 1, staleTailLength, ...refreshedTail);
+            queuedTargets += refreshedTail.length - staleTailLength;
+          }
         } catch (error) {
           results.push({
             ...base,

@@ -11,7 +11,7 @@ import { previewCodebaseIteration, previewGreenfieldCodebase } from './proposal-
 import { isDirectCliInvocation } from './cli-invocation';
 import { AccountHttpError, AccountStore } from './account-store';
 import { getGrants, heartbeatGrant, releaseGrant, requestGrant, type AgentKind } from './coordination';
-import { appendClaim, getActiveClaims, getPresence, getStoreDir, readClaimLog } from './coordination/local-store';
+import { appendClaim, checkEditLock, getActiveClaims, getPresence, getStoreDir, readClaimLog, releaseAgent } from './coordination/local-store';
 import { deriveActiveClaims } from './coordination/presence';
 import { appendSecurityAudit, assertSameTenant, defaultSecretDenyPatterns, getSecurityStoreDir, redactInFlightChanges, TenantMismatchError } from './coordination/security';
 import { detectConceptualConflicts, type AgentInFlightState, type ConflictCas, type SymbolChange } from './coordination/conceptual-conflict';
@@ -27,6 +27,16 @@ import type { CasRuntimeEvent } from '../../../packages/klauro-sdk-js/src/types'
 const DEFAULT_PORT = 8787;
 const DEFAULT_MAX_BODY_BYTES = 100 * 1024 * 1024;
 const SSE_HEARTBEAT_MS = 25_000;
+/**
+ * Default TTL for ADVISORY claims made over the WAN coordination API
+ * (POST /v1/coordination/claim with mode:'advisory'). Deliberately shorter
+ * than fab.ts's same-machine 6h default: a remote agent that dies (or loses
+ * its network) can't be observed via local process/file signals, so its
+ * claims must self-expire on the server within a bounded window. Heartbeat =
+ * re-claiming the same claim_id (LWW supersede refreshes heartbeat_at); an
+ * agent quiet for longer than this TTL drops out of /v1/coordination/active.
+ */
+const REMOTE_ADVISORY_DEFAULT_TTL_MS = 30 * 60 * 1000;
 
 /**
  * §WS-C-transport — minimal in-process pub/sub for the coordination SSE
@@ -362,7 +372,64 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           workspace: string; agent_id: string; intent: string; agent_kind?: AgentKind;
           paths?: string[]; symbols?: string[]; capability?: string; ttl_ms?: number;
           base_commit?: string; branch?: string; claim_id?: string;
+          /** 'advisory' = fabric awareness claim (fab.ts parity: never blocks,
+           *  never queues, always succeeds, returns overlap warnings inline).
+           *  Absent/'grant' = the ENFORCED grant path below (unchanged). */
+          mode?: 'advisory' | 'grant';
         }>(request, maxBodyBytes);
+
+        // ADVISORY fabric path (cross-machine mirror of fab.ts claim /
+        // fab_claim_work): append to the SERVER's per-workspace claim log
+        // (same local-store primitives, server dataDir's KLAURO_COORD_DIR) so
+        // agents on DIFFERENT machines see each other. Awareness-first: the
+        // claim always succeeds; overlap with another agent's active claim is
+        // returned as `conflicts` + `warning`, never a queue or a denial.
+        // Server-assigned `seq` + `server_time` are authoritative for
+        // cross-machine ordering (client clocks are not trusted).
+        // TTL: WAN-appropriate default of 30 minutes (a remote agent that
+        // dies stops re-claiming and expires via the same heartbeat_at+ttl_ms
+        // model presence.ts applies to local claims). Re-claiming the same
+        // claim_id refreshes heartbeat_at (LWW supersede) = the heartbeat.
+        if (body.mode === 'advisory') {
+          const workspace = body.workspace;
+          const claimPaths = body.paths || [];
+          const conflicts = claimPaths.length ? await checkEditLock(workspace, claimPaths, body.agent_id) : [];
+          const now = new Date().toISOString();
+          const entry = await appendClaim(workspace, {
+            claim_id: body.claim_id || `${workspace}:${body.agent_id}`,
+            workspace_id: workspace,
+            agent_id: body.agent_id,
+            agent_kind: body.agent_kind || 'other',
+            scope: { repo: workspace, paths: claimPaths, symbols: body.symbols || [], capability: body.capability },
+            intent: body.intent,
+            status: 'active',
+            created_at: now,
+            ttl_ms: body.ttl_ms ?? REMOTE_ADVISORY_DEFAULT_TTL_MS,
+            heartbeat_at: now,
+            base_commit: body.base_commit,
+            branch: body.branch,
+          });
+          broadcastCoordinationEvent(workspace, 'claim', {
+            claim_id: entry.claim_id,
+            agent_id: body.agent_id,
+            verdict: 'granted',
+            mode: 'advisory',
+          });
+          writeJson(response, 200, {
+            claim_id: entry.claim_id,
+            seq: entry.seq,
+            verdict: 'granted',
+            mode: 'advisory',
+            ttl_ms: entry.ttl_ms,
+            server_time: now,
+            conflicts,
+            warning: conflicts.length
+              ? `ADVISORY: ${conflicts.length} other agent(s) already claim overlapping paths (${conflicts.map((c) => c.agent_id).join(', ')}). Your claim still succeeded — coordinate before writing.`
+              : undefined,
+          });
+          return;
+        }
+
         const result = await requestGrant({
           workspace_id: body.workspace,
           agent_id: body.agent_id,
@@ -416,9 +483,31 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
       }
 
       if (request.method === 'POST' && route === '/v1/coordination/release') {
-        const body = await readJsonBody<{ workspace: string; claim_id: string; agent_id?: string }>(request, maxBodyBytes);
+        const body = await readJsonBody<{ workspace: string; claim_id?: string; agent_id?: string }>(request, maxBodyBytes);
         if (!body.agent_id) {
           writeJson(response, 400, { status: 'error', error: 'agent_id is required to release a grant', claim_id: body.claim_id });
+          return;
+        }
+        // ADVISORY release-all (fab.ts `release <agent>` parity, cross-machine):
+        // no claim_id means "drop EVERY active advisory claim this agent holds
+        // in this workspace" — same releaseAgent semantics as the local fabric,
+        // applied to the server-side per-workspace claim log.
+        if (!body.claim_id) {
+          const released = await releaseAgent(body.workspace, body.agent_id);
+          broadcastCoordinationEvent(body.workspace, 'release', {
+            agent_id: body.agent_id,
+            released_count: released.length,
+            status: 'released',
+            mode: 'advisory',
+          });
+          writeJson(response, 200, {
+            status: 'released',
+            mode: 'advisory',
+            agent_id: body.agent_id,
+            released_count: released.length,
+            released: released.map((r) => ({ claim_id: r.claim_id, intent: r.intent, paths: r.scope.paths })),
+            server_time: new Date().toISOString(),
+          });
           return;
         }
         await releaseGrant(body.workspace, body.agent_id, body.claim_id);
@@ -443,6 +532,62 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           lease_expires_at: result.lease_expires_at,
         });
         writeJson(response, 200, { status: 'heartbeat', claim_id: body.claim_id, lease_expires_at: result.lease_expires_at });
+        return;
+      }
+
+      // ADVISORY read-only preflight, cross-machine (fab.ts `check` /
+      // fab_check_collision parity): do `paths` overlap any OTHER active
+      // claim in the server-side workspace log? Never a gate — returns the
+      // conflicting claims (agent + intent + overlapping paths) so the caller
+      // coordinates before writing. `agent_id` excludes the caller's own
+      // claims from the scan.
+      if (request.method === 'POST' && route === '/v1/coordination/check') {
+        const body = await readJsonBody<{ workspace: string; agent_id?: string; paths?: string[] }>(request, maxBodyBytes);
+        if (!body.workspace) {
+          writeJson(response, 400, { status: 'error', error: 'workspace is required' });
+          return;
+        }
+        const conflicts = await checkEditLock(body.workspace, body.paths || [], body.agent_id);
+        writeJson(response, 200, {
+          workspace: body.workspace,
+          paths: body.paths || [],
+          ok: conflicts.length === 0,
+          conflicts,
+          server_time: new Date().toISOString(),
+        });
+        return;
+      }
+
+      // ADVISORY active-claims view, cross-machine (fab.ts `active` /
+      // fab_list_active_work parity): every active (non-expired) claim in the
+      // workspace, LWW-reduced. A thin subset of GET /v1/coordination/state
+      // for clients that only want the awareness surface.
+      if (request.method === 'GET' && route === '/v1/coordination/active') {
+        const workspace = requestUrl.searchParams.get('workspace') || '';
+        if (!workspace) {
+          writeJson(response, 400, { status: 'error', error: 'workspace query param is required' });
+          return;
+        }
+        const log = await readClaimLog(workspace);
+        const active = await getActiveClaims(workspace);
+        writeJson(response, 200, {
+          workspace,
+          count: active.length,
+          max_seq: log.reduce((max, entry) => Math.max(max, entry.seq), 0),
+          server_time: new Date().toISOString(),
+          active: active.map((c) => ({
+            claim_id: c.claim_id,
+            seq: c.seq,
+            agent_id: c.agent_id,
+            agent_kind: c.agent_kind,
+            status: c.status,
+            intent: c.intent,
+            paths: c.scope.paths,
+            symbols: c.scope.symbols,
+            heartbeat_at: c.heartbeat_at,
+            ttl_ms: c.ttl_ms,
+          })),
+        });
         return;
       }
 

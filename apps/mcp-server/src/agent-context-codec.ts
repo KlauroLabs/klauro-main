@@ -39,6 +39,24 @@ type Candidate = {
   actionable: number;
   exactPaths: number;
   promptNative: number;
+  /**
+   * Deterministic encoder-cost class used for the score's speed term.
+   * Wall-clock encode timing (encode_ms_per_1000) is still MEASURED and
+   * REPORTED, but it must never feed balanced_score: Date.now() noise under
+   * machine load flipped score orderings (the historical K15 test flake — a
+   * loaded box pushed K15's 1000-encode loop past 100ms, zeroing its speed
+   * term while a luckier-timed K14 kept points, flipping the recommendation).
+   * 'text' = plain string assembly (the fast class), 'binary' = compression /
+   * base64 pipelines (gzip, packed proxies — the slow class this term exists
+   * to penalize).
+   */
+  encodeCost: 'text' | 'binary';
+};
+
+/** Deterministic speed score per encoder-cost class (replaces wall-clock ms in balanced_score). */
+const ENCODE_COST_SPEED_SCORE: Record<Candidate['encodeCost'], number> = {
+  text: 95,
+  binary: 50,
 };
 
 export function formatAgentContextCapsule(context: any): AgentContextCodecResult {
@@ -83,7 +101,9 @@ export function benchmarkAgentContextCodecs(context: any): {
         candidate.actionable * 0.19 +
         candidate.exactPaths * 0.12 +
         candidate.promptNative * 0.10 +
-        Math.max(0, 100 - timing.msPer1000) * 0.04
+        // Deterministic speed term: encoder-cost CLASS, not wall-clock timing.
+        // timing.msPer1000 stays reported (encode_ms_per_1000) but score-inert.
+        ENCODE_COST_SPEED_SCORE[candidate.encodeCost] * 0.04
       );
       return {
         name: candidate.name,
@@ -511,29 +531,29 @@ function buildCandidates(context: any): Candidate[] {
   const gzipK7 = () => zlib.gzipSync(Buffer.from(k7())).toString('base64');
 
   return [
-    { name: 'min-json', encode: minJson, agentReadable: 76, actionable: 70, exactPaths: 100, promptNative: 92 },
-    { name: 'short-key-json', encode: shortJson, agentReadable: 66, actionable: 74, exactPaths: 100, promptNative: 88 },
-    { name: 'toonish-table', encode: toonish, agentReadable: 90, actionable: 82, exactPaths: 100, promptNative: 95 },
-    { name: 'yaml-brief', encode: yamlBrief, agentReadable: 88, actionable: 82, exactPaths: 100, promptNative: 94 },
-    { name: 'xml-tags', encode: xmlTags, agentReadable: 80, actionable: 80, exactPaths: 100, promptNative: 90 },
-    { name: 'tsv-opcodes', encode: tsv, agentReadable: 82, actionable: 84, exactPaths: 100, promptNative: 93 },
-    { name: 'protobuf-text', encode: protobufText, agentReadable: 70, actionable: 76, exactPaths: 100, promptNative: 82 },
-    { name: 'jsonb-rowset', encode: jsonbRowset, agentReadable: 74, actionable: 78, exactPaths: 100, promptNative: 84 },
-    { name: 'cbor-diagnostic-json', encode: cborDiagnostic, agentReadable: 62, actionable: 70, exactPaths: 100, promptNative: 76 },
-    { name: 'messagepack-base64-proxy', encode: messagePackBase64, agentReadable: 5, actionable: 8, exactPaths: 100, promptNative: 5 },
-    { name: 'k5-plus-short-json', encode: k5PlusShort, agentReadable: 86, actionable: 90, exactPaths: 100, promptNative: 94 },
-    { name: 'k6-context-capsule', encode: k6, agentReadable: 91, actionable: 94, exactPaths: 100, promptNative: 97 },
-    { name: 'k7-agent-context-language', encode: k7, agentReadable: 93, actionable: 96, exactPaths: 100, promptNative: 99 },
-    { name: 'k8-agent-context-language', encode: k8, agentReadable: 94, actionable: 97, exactPaths: 100, promptNative: 99 },
-    { name: 'k9-agent-context-language', encode: k9, agentReadable: 94, actionable: 98, exactPaths: 100, promptNative: 99 },
-    { name: 'k10-agent-context-language', encode: k10, agentReadable: 93, actionable: 98, exactPaths: 100, promptNative: 99 },
-    { name: 'k11-agent-context-language', encode: k11, agentReadable: 92, actionable: 98, exactPaths: 100, promptNative: 99 },
-    { name: 'k12-agent-context-language', encode: k12, agentReadable: 90, actionable: 98, exactPaths: 100, promptNative: 99 },
-    { name: 'k13-agent-context-language', encode: k13, agentReadable: 91, actionable: 98, exactPaths: 100, promptNative: 99 },
-    { name: 'k14-agent-context-language', encode: k14, agentReadable: 90, actionable: 98, exactPaths: 100, promptNative: 99 },
-    { name: 'k15-agent-context-language', encode: k15, agentReadable: 90, actionable: 98, exactPaths: 100, promptNative: 99 },
-    { name: 'gzip-json-base64', encode: gzipJson, agentReadable: 5, actionable: 8, exactPaths: 100, promptNative: 5 },
-    { name: 'gzip-k7-base64', encode: gzipK7, agentReadable: 5, actionable: 8, exactPaths: 100, promptNative: 5 },
+    { name: 'min-json', encode: minJson, agentReadable: 76, actionable: 70, exactPaths: 100, promptNative: 92, encodeCost: 'text' },
+    { name: 'short-key-json', encode: shortJson, agentReadable: 66, actionable: 74, exactPaths: 100, promptNative: 88, encodeCost: 'text' },
+    { name: 'toonish-table', encode: toonish, agentReadable: 90, actionable: 82, exactPaths: 100, promptNative: 95, encodeCost: 'text' },
+    { name: 'yaml-brief', encode: yamlBrief, agentReadable: 88, actionable: 82, exactPaths: 100, promptNative: 94, encodeCost: 'text' },
+    { name: 'xml-tags', encode: xmlTags, agentReadable: 80, actionable: 80, exactPaths: 100, promptNative: 90, encodeCost: 'text' },
+    { name: 'tsv-opcodes', encode: tsv, agentReadable: 82, actionable: 84, exactPaths: 100, promptNative: 93, encodeCost: 'text' },
+    { name: 'protobuf-text', encode: protobufText, agentReadable: 70, actionable: 76, exactPaths: 100, promptNative: 82, encodeCost: 'text' },
+    { name: 'jsonb-rowset', encode: jsonbRowset, agentReadable: 74, actionable: 78, exactPaths: 100, promptNative: 84, encodeCost: 'text' },
+    { name: 'cbor-diagnostic-json', encode: cborDiagnostic, agentReadable: 62, actionable: 70, exactPaths: 100, promptNative: 76, encodeCost: 'text' },
+    { name: 'messagepack-base64-proxy', encode: messagePackBase64, agentReadable: 5, actionable: 8, exactPaths: 100, promptNative: 5, encodeCost: 'binary' },
+    { name: 'k5-plus-short-json', encode: k5PlusShort, agentReadable: 86, actionable: 90, exactPaths: 100, promptNative: 94, encodeCost: 'text' },
+    { name: 'k6-context-capsule', encode: k6, agentReadable: 91, actionable: 94, exactPaths: 100, promptNative: 97, encodeCost: 'text' },
+    { name: 'k7-agent-context-language', encode: k7, agentReadable: 93, actionable: 96, exactPaths: 100, promptNative: 99, encodeCost: 'text' },
+    { name: 'k8-agent-context-language', encode: k8, agentReadable: 94, actionable: 97, exactPaths: 100, promptNative: 99, encodeCost: 'text' },
+    { name: 'k9-agent-context-language', encode: k9, agentReadable: 94, actionable: 98, exactPaths: 100, promptNative: 99, encodeCost: 'text' },
+    { name: 'k10-agent-context-language', encode: k10, agentReadable: 93, actionable: 98, exactPaths: 100, promptNative: 99, encodeCost: 'text' },
+    { name: 'k11-agent-context-language', encode: k11, agentReadable: 92, actionable: 98, exactPaths: 100, promptNative: 99, encodeCost: 'text' },
+    { name: 'k12-agent-context-language', encode: k12, agentReadable: 90, actionable: 98, exactPaths: 100, promptNative: 99, encodeCost: 'text' },
+    { name: 'k13-agent-context-language', encode: k13, agentReadable: 91, actionable: 98, exactPaths: 100, promptNative: 99, encodeCost: 'text' },
+    { name: 'k14-agent-context-language', encode: k14, agentReadable: 90, actionable: 98, exactPaths: 100, promptNative: 99, encodeCost: 'text' },
+    { name: 'k15-agent-context-language', encode: k15, agentReadable: 90, actionable: 98, exactPaths: 100, promptNative: 99, encodeCost: 'text' },
+    { name: 'gzip-json-base64', encode: gzipJson, agentReadable: 5, actionable: 8, exactPaths: 100, promptNative: 5, encodeCost: 'binary' },
+    { name: 'gzip-k7-base64', encode: gzipK7, agentReadable: 5, actionable: 8, exactPaths: 100, promptNative: 5, encodeCost: 'binary' },
   ];
 }
 

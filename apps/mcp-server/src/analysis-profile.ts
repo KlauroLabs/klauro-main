@@ -67,7 +67,12 @@ export function classifyAnalysisProfile(cas: CASOutput, projectPath: string): An
   const hasCli = entryTypes.has('cli') || /\b(command|cli|bin|commander|yargs|click|cobra)\b/i.test(text) || manifests.hasBin;
   const hasFrontend = entryTypes.has('page') || entryTypes.has('route') || hasProductFrontendFramework || manifests.hasFrontend || (hasSystemFrontendFramework && !hasCli);
   const hasHttp = entryTypes.has('http') || hasProductHttpFramework || (hasSystemHttpFramework && !hasCli && !hasFrontend);
-  const hasDesktop = manifests.hasDesktop || hasWpfDesktopShape || hasProductDesktopFramework || (hasSystemDesktopFramework && !hasCli) || /\belectron\b/i.test(text);
+  // No raw-text "electron" fallback: node names/files merely MENTIONING electron
+  // (e.g. an analyzer product that supports Electron apps — Klauro itself) must not
+  // classify as desktop-app. Real Electron apps always carry the structured
+  // signals: the electron dependency/config (manifests.hasDesktop) or an
+  // electron/tauri framework detection on nodes.
+  const hasDesktop = manifests.hasDesktop || hasWpfDesktopShape || hasProductDesktopFramework || (hasSystemDesktopFramework && !hasCli);
   const hasProductDart = productNodes.some(node => String(node.metadata?.language || '').toLowerCase().includes('dart') || (node.source?.file || '').endsWith('.dart'));
   const hasMobile = hasProductDart || nodeTypes.has('mobile_screen') || manifests.hasFlutter || /\/(android|ios|macos)\b/i.test(projectPath);
   const hasWorker = entryTypes.has('schedule') || entryTypes.has('message') || nodeTypes.has('worker') || nodeTypes.has('scheduler') || /\b(worker|scheduler|job|queue|consumer|listener)\b/i.test(text);

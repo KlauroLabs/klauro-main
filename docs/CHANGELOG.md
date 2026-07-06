@@ -5,6 +5,54 @@ agent-feedback reports (`~/.klauro/agent-feedback/*.md`) — nothing is asserted
 Where an item was still in flight at the time this entry was written, it is marked **pending
 final verify** rather than presented as done.
 
+## v1.0.30 — One onboarding: `klauro init` connects everything (2026-07-05)
+
+Product-shape correction (user feedback): the CLI connects a PROJECT to Klauro — analysis, in-flight,
+MCP, and fabric are all part of being connected, not separately-enabled features.
+
+- **`klauro init`** is the one onboarding: `[1/6]` auth (stored credentials) → `[2/6]` project identity
+  (hosted id → git-remote hash → basename) → `[3/6]` analysis (kicked off, best-effort) → `[4/6]`
+  in-flight (automatic, reported) → `[5/6]` MCP agent setup (detected/offered) → `[6/6]` **fabric enabled
+  by default** (ambient, per the standing parallel-through-fabric principle; explicit opt-out respected).
+  Idempotent on re-run. Second-machine flow: install → login → `klauro init` → done.
+- **`klauro status`/`doctor`** report all subsystems in one glance (project · in-flight · MCP · fabric
+  endpoint/workspace/active claims · analysis freshness).
+- `klauro fabric` demoted to fine control (status / off / re-enable); removed from all happy-path docs.
+- Deploy tooling: SSH ControlMaster multiplexing — one auth per deploy, ending the VPS rate-limit
+  failures that repeatedly broke mid-deploy this session.
+
+## v1.0.29 — Fabric over the internet + depth debt paid (2026-07-05)
+
+### Added — cross-machine coordination fabric (CLI-first, no env vars)
+- The advisory fabric now works **over the internet**: authed HTTP API
+  (`POST /v1/coordination/claim|check|release` + `GET /active`, advisory mode, server-authoritative seq,
+  30-min remote TTL so dead agents self-expire) + a config-driven client transport used by both `fab.ts`
+  and the `fab_*` MCP tools.
+- **DevX**: `klauro fabric on|off|status` — run in a repo, it resolves credentials from the existing
+  `klauro init` store (token never touches the repo), **autodetects the workspace** (hosted project id →
+  normalized git-remote hash so all clones converge → basename), persists to `.klaurorc`. One `fabric on`
+  makes every fab call in that repo cross-machine; env vars remain only as a CI escape hatch.
+- Proven e2e through the config path: two OS processes, HTTP the only shared channel — cross-machine
+  claim/check/warn/release visibility; 20-way concurrency 20/20, p50 35ms / p95 58ms loopback.
+  `docs/FABRIC-REMOTE.md`.
+
+### Fixed — depth debt (60-repo corpus sweep, 0 crashes; `docs/CORPUS-DEPTH-SWEEP.md`)
+- **http-client** extraction (TS generics, cross-file axios instances, template endpoints): investor 1→52
+  outbound exit points. **jest over-claiming vitest** (the corpus's #1 error source: 1,735 duplicate-id
+  errors across 7 repos) — jest now skips vitest files. **Auth SPA/NestJS blindness** (auth0-react/clerk +
+  `@UseGuards`/PassportStrategy): admin-portal-ui 0→64, soon-ui 0→21, zerac-api 0→8 auth nodes. Harness:
+  `.sln` project boundary, resumable sweep.
+- **K15 flake root-caused** (#89): wall-clock timing was folded into the codec score — now a deterministic
+  per-class cost; 10/10 green under sustained CPU load.
+- **Cold-agent bar (#11)**: Klauro-self 74→**99** (and no longer profiled as a desktop app), zerac/poc
+  →94, soon-bos →90 — with real fixes (test-token headline leakage, `electron` raw-text misclassification,
+  harness provenance, stale-name requeue).
+
+### Added — standing gates (the last-mile rule, institutionalized)
+- **Fact-layer completeness guard**: walks the orient capsule's dimensions and fails if any is unregistered,
+  untaught, or channel-unpaired — caught two untaught dimensions on day one. `docs/FACT-LAYER-CHECKLIST.md`
+  + one-command `npm run impact-benchmark`.
+
 ## v1.0.28 — Fixpoint polish: teaching surface locked, ships_paths clean at source (2026-07-05)
 
 The final sweep of this run's open items — all polish, no defects remaining.

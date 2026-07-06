@@ -60,6 +60,8 @@ import { getBuildIdentity } from '../../../packages/analyzer-core/src/analyzer/c
 import { loadStoredConnectorAuth, normalizeServerUrl } from './connector-auth';
 import { arbitrate, detectCollisions, getGrants, heartbeatGrant, releaseGrant, requestGrant, type AgentKind, type CasEdgeRef, type WasCapabilityRef, type WorkClaim } from './coordination';
 import { attributeChange, appendClaim, checkEditLock, getActiveClaims, getPresence, readClaimLog, releaseAgent, watch } from './coordination/local-store';
+import { remoteActive, remoteCheck, remoteClaim, remoteRelease } from './coordination/remote-transport';
+import { resolveFabricSettings } from './coordination/fabric-config';
 import { deriveActiveClaims } from './coordination/presence';
 import { detectConceptualConflicts, type AgentInFlightState, type ConceptualConflict, type ConflictCas, type SymbolChange } from './coordination/conceptual-conflict';
 import { captureInFlightChanges } from './coordination/in-flight-capture';
@@ -80,7 +82,7 @@ Orient (once per repo): resolve_agent_analysis(path) confirms an analysis exists
 
 Progressive availability (don't wait): structural facts — call graph, routes, entry points, file nodes, data flows — are precomputed and return instantly. They are complete and authoritative; use them immediately. AI-written prose (the system/element descriptions) enriches in the background, so every result carries an ai_enrichment field: 'ready' = prose included; 'pending' = you got deterministic text now, re-call in a few seconds only if you specifically need the richer narrative; 'disabled'/'synchronous' = no background pass, the text you have is final. Never block on 'pending' — act on the structure first; the prose is flavor, the facts are the product.
 
-Find (instead of grep): search_nodes / semantic_search rank nodes by name+meaning with file:line and risk flags. get_route_table for routes (method/path/handler/auth); get_entry_points and get_exit_points for CLI, events, and queues; get_file_nodes for what a file defines.
+Find (instead of grep): search_nodes / semantic_search rank nodes by name+meaning with file:line and risk flags. get_route_table for routes (method/path/handler/auth); get_entry_points and get_exit_points for CLI, events, and queues; get_file_nodes for what a file defines; get_data_entities for the domain's data shapes (entities, fields, and who reads/writes them); get_test_summary for the test-suite inventory — pull it before writing tests so you extend the existing suites instead of inventing a parallel harness.
 
 Understand before editing (highest value): get_coding_context(target) returns the node plus conventions, layer boundaries, callers, callees, and the exact tests to run — one call instead of read-file + trace-callers + find-tests. get_callers shows each call site's actual arguments; get_call_chain traces a request end to end; get_data_lineage tracks an entity's reads and writes; get_intent / get_conventions / get_modification_guide explain why it exists and how to change it safely. Before changing an entity, call get_interface_signature to see its full contract — Input (params/entry points it requires), Logic (its caller/callee blackbox wiring), Side-effects (external systems/entities it touches), Output (return type/produced entities) — and blast radius in one call, at function/flow/capability/project/workspace level, instead of joining entry_points + exit_points + data_lineage + get_callers by hand. For the ordered steps a request/job actually moves through (not just one entity's contract), call get_flow_concepts — a named flow per entry point, each step tied to concrete functions (1:1/1:many/sub-section) with its own I/L/S/O + Constraints; use this to coordinate work at the flow/step level ("I own the Persist step of the Checkout flow") instead of file/function.
 
@@ -5444,11 +5446,16 @@ function registerTools(server: McpServer) {
   // releaseAgent) that never block — a claim always succeeds, collisions are
   // surfaced as awareness, not refusals. Same semantics as fab.ts.
   //
-  // Workspace defaults sensibly: explicit `workspace` arg wins, else the
-  // FAB_WS env, else a stable 'poc' fallback (never the cwd basename — that
-  // was the papercut that let a claim land under the wrong workspace).
-  const advisoryWorkspace = (workspace?: string): string =>
-    (workspace && workspace.trim()) || process.env.FAB_WS || 'poc';
+  // Transport + workspace resolution is CONFIG-DRIVEN (coordination/
+  // fabric-config.ts): once `klauro init` (or `klauro fabric on`) has persisted a fabric section
+  // into the repo's .klaurorc (found by walking up from this server process's
+  // cwd), these tools go remote automatically — no env vars per shell/agent.
+  // Precedence: explicit `workspace` arg > .klaurorc fabric > FAB_* env
+  // escape hatch (CI) > local fabric with the stable 'poc' fallback (never
+  // the cwd basename — that was the papercut that let a claim land under the
+  // wrong workspace).
+  const advisoryFabricSettings = (workspace?: string) =>
+    resolveFabricSettings({ cwd: process.cwd(), explicitWorkspace: workspace });
 
   server.registerTool(
     'fab_claim_work',
@@ -5460,15 +5467,44 @@ function registerTools(server: McpServer) {
         intent: z.string().describe('Short description of the work being claimed'),
         paths: z.array(z.string()).optional().describe('File/dir paths this work will touch'),
         symbols: z.array(z.string()).optional().describe('Symbol/node ids this work will touch'),
-        workspace: z.string().optional().describe('Workspace id to coordinate within (defaults to $FAB_WS, else "poc")'),
+        workspace: z.string().optional().describe('Workspace id to coordinate within (defaults to the repo .klaurorc fabric.workspace from `klauro init`, then $FAB_WS, else "poc")'),
         agent_kind: z.enum(['claude', 'cursor', 'codex', 'human', 'other']).optional().describe('Kind of agent (default claude)'),
         ttl_ms: z.number().optional().describe('Claim TTL in ms before it is considered stale (default 6h, matching fab.ts)'),
       } as any,
     } as any,
     async ({ agent_id, intent, paths, symbols, workspace, agent_kind, ttl_ms }: any) => withErrorHandling(async () => {
-      const ws = advisoryWorkspace(workspace);
+      const settings = await advisoryFabricSettings(workspace);
+      const ws = settings.workspace;
       const claimPaths: string[] = paths || [];
       const claimSymbols: string[] = symbols || [];
+      // REMOTE MODE (docs/FABRIC-REMOTE.md): a `klauro init` fabric config (or
+      // the FAB_REMOTE_URL CI escape hatch) routes the claim to the
+      // cross-machine coordination API instead of this host's filesystem.
+      // Advisory contract on network failure: degrade LOUDLY to local, never error.
+      const remote = settings.remote;
+      if (remote) {
+        try {
+          const res = await remoteClaim(remote, {
+            workspace: ws, agentId: agent_id, intent,
+            paths: claimPaths, symbols: claimSymbols,
+            agentKind: (agent_kind as AgentKind) || 'claude', ttlMs: ttl_ms,
+          });
+          return json({
+            status: 'claimed', tier: 'remote', remote_url: remote.baseUrl,
+            workspace: ws, agent_id, seq: res.seq, intent,
+            paths: claimPaths, symbols: claimSymbols,
+            ttl_ms: res.ttl_ms, server_time: res.server_time,
+            conflicts: res.conflicts, warning: res.warning,
+            heartbeat_hint: 'Re-claim before ttl_ms elapses to stay visible; fab_release_work when done.',
+          });
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          return await localClaim(`Remote fabric claim failed (${msg}) — DEGRADED to the LOCAL fabric: agents on other machines can NOT see this claim.`);
+        }
+      }
+      return await localClaim();
+
+      async function localClaim(degradeWarning?: string) {
       // Belt-and-suspenders (papercut fix (b)): scan for overlap BEFORE claiming
       // so an agent that skips fab_check_collision still gets the advisory
       // signal. Advisory — the claim proceeds regardless.
@@ -5486,8 +5522,14 @@ function registerTools(server: McpServer) {
         ttl_ms: ttl_ms ?? 6 * 60 * 60 * 1000,
         heartbeat_at: now,
       });
+      const overlapWarning = conflicts.length
+        ? `ADVISORY: ${conflicts.length} other agent(s) already claim overlapping paths (${conflicts
+            .map((c) => c.agent_id)
+            .join(', ')}). Your claim still succeeded — coordinate before writing.`
+        : undefined;
       return json({
         status: 'claimed',
+        tier: 'local',
         workspace: ws,
         agent_id,
         seq: entry.seq,
@@ -5495,12 +5537,9 @@ function registerTools(server: McpServer) {
         paths: entry.scope.paths,
         symbols: entry.scope.symbols,
         conflicts,
-        warning: conflicts.length
-          ? `ADVISORY: ${conflicts.length} other agent(s) already claim overlapping paths (${conflicts
-              .map((c) => c.agent_id)
-              .join(', ')}). Your claim still succeeded — coordinate before writing.`
-          : undefined,
+        warning: [degradeWarning, overlapWarning].filter(Boolean).join(' ') || undefined,
       });
+      }
     })
   );
 
@@ -5512,21 +5551,48 @@ function registerTools(server: McpServer) {
       inputSchema: {
         agent_id: z.string().describe('Your agent_id (excluded from the overlap scan so you do not collide with yourself)'),
         paths: z.array(z.string()).describe('Proposed file/dir paths to check for overlap'),
-        workspace: z.string().optional().describe('Workspace id (defaults to $FAB_WS, else "poc")'),
+        workspace: z.string().optional().describe('Workspace id (defaults to the repo .klaurorc fabric.workspace from `klauro init`, then $FAB_WS, else "poc")'),
       } as any,
     } as any,
     async ({ agent_id, paths, workspace }: any) => withErrorHandling(async () => {
-      const ws = advisoryWorkspace(workspace);
+      const settings = await advisoryFabricSettings(workspace);
+      const ws = settings.workspace;
+      const remote = settings.remote;
+      let degradeNote: string | undefined;
+      if (remote) {
+        try {
+          const res = await remoteCheck(remote, { workspace: ws, agentId: agent_id, paths: paths || [] });
+          return json({
+            workspace: ws,
+            tier: 'remote',
+            remote_url: remote.baseUrl,
+            agent_id,
+            paths: paths || [],
+            ok: res.ok,
+            conflicts: res.conflicts,
+            server_time: res.server_time,
+            note: res.ok
+              ? 'No conflicting active claims on those paths (cross-machine view).'
+              : `${res.conflicts.length} other agent(s) claim overlapping paths — advisory, coordinate before writing.`,
+          });
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          degradeNote = `Remote fabric check failed (${msg}) — DEGRADED to the LOCAL view: claims from other machines are NOT visible in this result. `;
+        }
+      }
       const conflicts = await checkEditLock(ws, paths || [], agent_id);
       return json({
         workspace: ws,
+        tier: 'local',
         agent_id,
         paths: paths || [],
         ok: conflicts.length === 0,
         conflicts,
-        note: conflicts.length
-          ? `${conflicts.length} other agent(s) claim overlapping paths — advisory, coordinate before writing.`
-          : 'No conflicting active claims on those paths.',
+        note:
+          (degradeNote || '') +
+          (conflicts.length
+            ? `${conflicts.length} other agent(s) claim overlapping paths — advisory, coordinate before writing.`
+            : 'No conflicting active claims on those paths.'),
       });
     })
   );
@@ -5538,18 +5604,41 @@ function registerTools(server: McpServer) {
       description: 'ADVISORY release (counterpart to fab_claim_work) — clears the fabric awareness claims; to release an ENFORCED lease taken via claim_work use release_work instead. Release EVERY advisory claim held by an agent on this host (CLI-parity for `fab.ts release`): drops your work-claims and edit-locks so peers see the scope free again and false-overlap awareness clears. Call the moment you are done or handing off.',
       inputSchema: {
         agent_id: z.string().describe('Agent id whose claims to release'),
-        workspace: z.string().optional().describe('Workspace id (defaults to $FAB_WS, else "poc")'),
+        workspace: z.string().optional().describe('Workspace id (defaults to the repo .klaurorc fabric.workspace from `klauro init`, then $FAB_WS, else "poc")'),
       } as any,
     } as any,
     async ({ agent_id, workspace }: any) => withErrorHandling(async () => {
-      const ws = advisoryWorkspace(workspace);
+      const settings = await advisoryFabricSettings(workspace);
+      const ws = settings.workspace;
+      const remote = settings.remote;
+      let degradeWarning: string | undefined;
+      if (remote) {
+        try {
+          const res = await remoteRelease(remote, { workspace: ws, agentId: agent_id });
+          return json({
+            status: 'released',
+            tier: 'remote',
+            remote_url: remote.baseUrl,
+            workspace: ws,
+            agent_id,
+            released_count: res.released_count,
+            released: res.released,
+            server_time: res.server_time,
+          });
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          degradeWarning = `Remote fabric release failed (${msg}) — released LOCAL claims only; any remote claim will linger until its TTL expires. Re-release once the service is reachable.`;
+        }
+      }
       const released = await releaseAgent(ws, agent_id);
       return json({
         status: 'released',
+        tier: 'local',
         workspace: ws,
         agent_id,
         released_count: released.length,
         released: released.map((r) => ({ claim_id: r.claim_id, intent: r.intent, paths: r.scope.paths })),
+        warning: degradeWarning,
       });
     })
   );
@@ -5560,14 +5649,44 @@ function registerTools(server: McpServer) {
       title: 'Fab: List Active Work (advisory)',
       description: 'List active ADVISORY fabric claims (the awareness surface for fab_claim_work). For the ENFORCED grant/lease state and its FIFO queue, use get_active_agents instead. List every active advisory claim in a workspace on this host (CLI-parity for `fab.ts active`): each agent\'s intent, claimed paths, and symbols. The awareness surface — call before starting work to see who else is here and what they are touching.',
       inputSchema: {
-        workspace: z.string().optional().describe('Workspace id (defaults to $FAB_WS, else "poc")'),
+        workspace: z.string().optional().describe('Workspace id (defaults to the repo .klaurorc fabric.workspace from `klauro init`, then $FAB_WS, else "poc")'),
       } as any,
     } as any,
     async ({ workspace }: any) => withErrorHandling(async () => {
-      const ws = advisoryWorkspace(workspace);
+      const settings = await advisoryFabricSettings(workspace);
+      const ws = settings.workspace;
+      const remote = settings.remote;
+      let degradeNote: string | undefined;
+      if (remote) {
+        try {
+          const res = await remoteActive(remote, ws);
+          return json({
+            workspace: ws,
+            tier: 'remote',
+            remote_url: remote.baseUrl,
+            count: res.count,
+            max_seq: res.max_seq,
+            server_time: res.server_time,
+            active: res.active.map((c) => ({
+              agent_id: c.agent_id,
+              agent_kind: c.agent_kind,
+              status: c.status,
+              intent: c.intent,
+              paths: c.paths,
+              symbols: c.symbols,
+              seq: c.seq,
+            })),
+          });
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          degradeNote = `Remote fabric unreachable (${msg}) — showing the LOCAL view only; agents on other machines are NOT listed.`;
+        }
+      }
       const active = await getActiveClaims(ws);
       return json({
         workspace: ws,
+        tier: 'local',
+        note: degradeNote,
         count: active.length,
         active: active.map((c) => ({
           agent_id: c.agent_id,

@@ -9,6 +9,21 @@
  *   npx tsx apps/mcp-server/scripts/fab.ts announce <agentId> <comma,files>
  *   npx tsx apps/mcp-server/scripts/fab.ts check <agentId> <comma,paths>
  *   npx tsx apps/mcp-server/scripts/fab.ts release <agentId>
+ *
+ * REMOTE MODE (cross-machine, docs/FABRIC-REMOTE.md) is CONFIG-DRIVEN: run
+ * `klauro init` once inside the repo (it enables the fabric by default as
+ * part of connecting the project) and every command above goes over
+ * HTTPS to the coordination API persisted in the repo's .klaurorc
+ * (`fabric.endpoint` / `fabric.workspace`; the Bearer token comes from the
+ * same ~/.klauro/auth.json store `klauro init`/`login` maintain) — so agents
+ * on different machines coordinate through one shared per-workspace claim
+ * log with ZERO per-shell env setup. Full precedence lives in
+ * coordination/fabric-config.ts (explicit > .klaurorc > FAB_REMOTE_URL/FAB_WS
+ * env escape hatch for CI > local default). Server `seq`/`server_time` are
+ * authoritative. Network failure NEVER crashes a command: it warns loudly and
+ * degrades to the LOCAL fabric (same-machine peers only) so the advisory
+ * system keeps working. No config + no env = byte-for-byte the original
+ * local behavior.
  */
 import {
   appendClaim,
@@ -19,21 +34,66 @@ import {
   findAgentInOtherWorkspaces,
   getStoreDir,
 } from '../src/coordination/local-store';
-
-// Workspace defaults off the explicit FAB_WS env, then a STABLE fallback —
-// never the cwd basename (the papercut that silently landed claims under the
-// wrong workspace when an agent ran fab.ts from a subdir). The old default was
-// 'deployable-detection-build'; the real feature workspace is usually 'poc'.
-const WS = process.env.FAB_WS || 'poc';
+import {
+  remoteActive,
+  remoteCheck,
+  remoteClaim,
+  remoteRelease,
+  RemoteFabricError,
+  REMOTE_ADVISORY_DEFAULT_TTL_MS,
+} from '../src/coordination/remote-transport';
+import { resolveFabricSettings } from '../src/coordination/fabric-config';
 
 function csv(s: string | undefined): string[] {
   return (s || '').split(',').map((x) => x.trim()).filter(Boolean);
 }
 
+/**
+ * Advisory-system degrade contract: a remote failure must never crash the
+ * caller — warn LOUDLY (so the agent knows cross-machine awareness is
+ * currently blind) and fall back to the local fabric so same-machine
+ * coordination keeps working.
+ */
+function warnRemoteDegrade(op: string, err: unknown): void {
+  const msg = err instanceof RemoteFabricError ? err.message : String(err);
+  console.error(
+    `WARNING: remote fabric ${op} failed (${msg}). Degrading to LOCAL fabric — ` +
+      `same-machine peers only; agents on OTHER machines can NOT see this. ` +
+      `Run \`klauro fabric status\` to inspect the endpoint/credentials and re-run once the service is reachable.`
+  );
+}
+
 async function main() {
   const [cmd, agentId, a3, a4] = process.argv.slice(2);
+  // Config-driven transport (coordination/fabric-config.ts): `klauro fabric
+  // on` in this repo makes every command remote; the FAB_* env vars remain a
+  // low-priority CI escape hatch. Workspace never defaults to cwd basename
+  // (the old wrong-workspace papercut) — explicit > .klaurorc > FAB_WS > 'poc'.
+  const settings = await resolveFabricSettings({ cwd: process.cwd() });
+  const WS = settings.workspace;
+  const REMOTE = settings.remote;
+  // Remote claims default to the WAN TTL (30min; heartbeat = re-claim). Local
+  // claims keep the original 6h. FAB_TTL_MS overrides either.
+  const TTL_MS = process.env.FAB_TTL_MS
+    ? Number(process.env.FAB_TTL_MS)
+    : REMOTE
+      ? REMOTE_ADVISORY_DEFAULT_TTL_MS
+      : 6 * 60 * 60 * 1000;
   switch (cmd) {
     case 'active': {
+      if (REMOTE) {
+        try {
+          const res = await remoteActive(REMOTE, WS);
+          if (!res.active.length) { console.log(`(no active claims) [remote ${REMOTE.baseUrl}]`); break; }
+          for (const c of res.active) {
+            console.log(`${c.agent_id} [${c.status}] intent="${c.intent}" paths=${JSON.stringify(c.paths)} symbols=${JSON.stringify(c.symbols)} seq=${c.seq}`);
+          }
+          console.log(`[remote ${REMOTE.baseUrl} max_seq=${res.max_seq} server_time=${res.server_time}]`);
+          break;
+        } catch (err) {
+          warnRemoteDegrade('active', err);
+        }
+      }
       const active = await getActiveClaims(WS);
       if (!active.length) { console.log('(no active claims)'); break; }
       for (const c of active) {
@@ -46,6 +106,23 @@ async function main() {
       const intent = a3 || 'work';
       const paths = csv(a4);
       const symbols = csv(process.argv[6]);
+      if (REMOTE) {
+        try {
+          const res = await remoteClaim(REMOTE, { workspace: WS, agentId, intent, paths, symbols, ttlMs: TTL_MS });
+          if (res.warning) {
+            console.error(`WARNING: ${res.warning}`);
+            for (const c of res.conflicts) console.error(`  ${c.agent_id} overlaps ${JSON.stringify(c.overlapping_paths)}`);
+          }
+          console.log(
+            `claimed seq=${res.seq} ${agentId} intent="${intent}" -> ${JSON.stringify(paths)} ` +
+              `[remote ${REMOTE.baseUrl} ttl=${Math.round(res.ttl_ms / 60000)}m server_time=${res.server_time}]`
+          );
+          console.log(`(heartbeat: re-run this claim before the TTL elapses; release when done)`);
+          break;
+        } catch (err) {
+          warnRemoteDegrade('claim', err);
+        }
+      }
       // Belt-and-suspenders (papercut fix): run the SAME overlap scan `check`
       // does BEFORE claiming, and warn inline when the paths are already
       // claimed by another agent. Advisory — the claim still succeeds — but an
@@ -65,18 +142,47 @@ async function main() {
         intent,
         status: 'active',
         created_at: now,
-        ttl_ms: 6 * 60 * 60 * 1000,
+        ttl_ms: TTL_MS,
         heartbeat_at: now,
       });
       console.log(`claimed seq=${entry.seq} ${agentId} intent="${intent}" -> ${JSON.stringify(entry.scope.paths)}`);
       break;
     }
     case 'announce': {
+      if (REMOTE) {
+        try {
+          // Same edit-lock claim_id scheme local announceEdit uses, so a
+          // re-announce LWW-supersedes rather than duplicating.
+          const res = await remoteClaim(REMOTE, {
+            workspace: WS,
+            agentId,
+            intent: 'edit-lock',
+            paths: csv(a3),
+            ttlMs: TTL_MS,
+            claimId: `edit-lock:${WS}:${agentId}`,
+          });
+          console.log(`announced edit-lock seq=${res.seq} ${agentId} -> ${JSON.stringify(csv(a3))} [remote ${REMOTE.baseUrl}]`);
+          break;
+        } catch (err) {
+          warnRemoteDegrade('announce', err);
+        }
+      }
       const entry = await announceEdit(WS, agentId, csv(a3), { agentKind: 'claude', intent: 'edit-lock' });
       console.log(`announced edit-lock seq=${entry.seq} ${agentId} -> ${JSON.stringify(entry.scope.paths)}`);
       break;
     }
     case 'check': {
+      if (REMOTE) {
+        try {
+          const res = await remoteCheck(REMOTE, { workspace: WS, agentId, paths: csv(a3) });
+          if (res.ok) { console.log(`OK: no conflicting active claims on those paths [remote ${REMOTE.baseUrl}]`); break; }
+          console.log(`CONFLICT: ${res.conflicts.length} other agent(s) claim overlapping paths [remote ${REMOTE.baseUrl}]:`);
+          for (const c of res.conflicts) console.log(`  ${c.agent_id} overlaps ${JSON.stringify(c.overlapping_paths)}`);
+          break;
+        } catch (err) {
+          warnRemoteDegrade('check', err);
+        }
+      }
       const conflicts = await checkEditLock(WS, csv(a3), agentId);
       if (!conflicts.length) { console.log('OK: no conflicting active claims on those paths'); break; }
       console.log(`CONFLICT: ${conflicts.length} other agent(s) claim overlapping paths:`);
@@ -84,6 +190,17 @@ async function main() {
       break;
     }
     case 'release': {
+      if (REMOTE) {
+        try {
+          const res = await remoteRelease(REMOTE, { workspace: WS, agentId });
+          console.log(
+            `released ${agentId} (${res.released_count} claim${res.released_count === 1 ? '' : 's'}) workspace="${WS}" [remote ${REMOTE.baseUrl}]`
+          );
+          break;
+        } catch (err) {
+          warnRemoteDegrade('release', err);
+        }
+      }
       const rel = await releaseAgent(WS, agentId);
       console.log(`released ${agentId} (${rel.length} claim${rel.length === 1 ? '' : 's'}) workspace="${WS}" dir=${getStoreDir(WS)}`);
       if (rel.length === 0) {
@@ -96,7 +213,8 @@ async function main() {
         if (elsewhere.length > 0) {
           console.error(
             `WARNING: no active claim for "${agentId}" under workspace "${WS}", but it IS active under: ${elsewhere.join(', ')}. ` +
-              `You likely have the wrong FAB_WS (or KLAURO_COORD_DIR) set — re-run with FAB_WS=<one of the above>.`
+              `You likely have the wrong workspace configured (.klaurorc fabric.workspace / FAB_WS / KLAURO_COORD_DIR) — ` +
+              `check \`klauro fabric status\` or re-run with FAB_WS=<one of the above>.`
           );
           process.exitCode = 1;
         }

@@ -30,6 +30,9 @@ import { summarizeAnalysisFreshness } from './freshness';
 import { buildCrossCodebaseSystemGraph, selectWorkspaceAnalysisDetail, summarizeCrossCodebaseSystemGraph, type WorkspaceDetailLevel } from './cross-codebase-analysis';
 import { clearStoredConnectorSession, connectorToken, loadStoredConnectorAuth, normalizeServerUrl, requireConnectorEntitlement, saveStoredConnectorSession } from './connector-auth';
 import { detectRemoteProvider } from './remote-provider';
+import { detectWorkspaceIdentity, findFabricProjectRoot, resolveFabricSettings, resolveFabricToken, writeFabricSection } from './coordination/fabric-config';
+import { remoteActive } from './coordination/remote-transport';
+import { getActiveClaims } from './coordination/local-store';
 import * as fs from 'fs-extra';
 import * as readline from 'readline';
 
@@ -77,6 +80,8 @@ interface ParsedArgs {
   markdown: boolean;
   limit?: number;
   offset?: number;
+  /** Fabric workspace override for `klauro init` (same semantics as `klauro fabric on --workspace`). */
+  workspace?: string;
 }
 
 async function main(): Promise<void> {
@@ -108,6 +113,11 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (process.argv[2] === 'fabric') {
+    await runFabricCommand(process.argv.slice(3));
+    return;
+  }
+
   const args = parseArgs(process.argv.slice(2));
   if (!args.command || args.command === 'help' || args.command === '--help' || args.command === '-h') {
     printHelp();
@@ -121,7 +131,14 @@ async function main(): Promise<void> {
 
   if (args.command === 'doctor' && !args.path) {
     const report = await runEnvironmentDoctor({ projectPath: process.cwd() });
-    process.stdout.write(args.json ? `${JSON.stringify(report, null, 2)}\n` : `${await formatEnvironmentDoctor(report)}\n`);
+    // Same one-glance subsystem view as `klauro status`: is THIS repo fully
+    // connected (project identity / in-flight / MCP / fabric)?
+    const connection = await buildConnectionReport(process.cwd());
+    if (args.json) {
+      process.stdout.write(`${JSON.stringify({ ...report, connection }, null, 2)}\n`);
+    } else {
+      process.stdout.write(`${await formatEnvironmentDoctor(report)}\n\nConnection (this repo):\n${formatConnectionReportLines(connection).map(line => `  ${line}`).join('\n')}\n`);
+    }
     process.exitCode = report.status === 'fail' ? 1 : 0;
     return;
   }
@@ -234,17 +251,7 @@ async function main(): Promise<void> {
   const projectPath = args.path ? path.resolve(args.path) : '';
 
   if (args.command === 'init') {
-    const initOptions = await resolveInitOptions(projectPath, args);
-    const result = await writeDefaultKlauroConfig(projectPath, {
-      force: args.force,
-      serverUrl: initOptions.serverUrl,
-      projectId: initOptions.projectId,
-      workspaceId: initOptions.workspaceId,
-      organizationId: initOptions.organizationId,
-      projectName: initOptions.projectName,
-      kind: initOptions.kind,
-    });
-    process.stdout.write(args.json ? `${JSON.stringify(result, null, 2)}\n` : formatInitResult(result));
+    await runInitCommand(projectPath, args);
     return;
   }
 
@@ -671,6 +678,10 @@ async function runStatusCommand(args: ParsedArgs): Promise<void> {
     repo = { analyzed: false };
   }
 
+  // Every subsystem `klauro init` connects, in one view (auth above, then
+  // project identity / analysis / in-flight / MCP / fabric below).
+  const connection = await buildConnectionReport(repoPath);
+
   const report = {
     version: identity.version,
     channel: identity.channel,
@@ -686,6 +697,11 @@ async function runStatusCommand(args: ParsedArgs): Promise<void> {
     repo_system: repo.system ?? null,
     repo_analyzed_at: repo.analyzed_at ?? null,
     repo_staleness: repo.staleness ?? null,
+    project: connection.project,
+    workspace_identity: connection.identity,
+    in_flight: connection.in_flight,
+    mcp_registered: connection.mcp_registered,
+    fabric: connection.fabric,
   };
 
   if (args.json) {
@@ -699,9 +715,10 @@ async function runStatusCommand(args: ParsedArgs): Promise<void> {
     latest
       ? (report.update_available ? `Release:  ${latest} available — run: klauro update` : `Release:  up to date (${latest})`)
       : `Release:  could not reach ${serverUrl}`,
+    ...formatConnectionReportLines(connection),
     report.repo_analyzed
-      ? `Repo:     ${report.repo_system || 'analyzed'} · ${report.repo_staleness || 'unknown'} · ${report.repo_analyzed_at || ''}`.trim()
-      : `Repo:     ${repoPath} not analyzed  (klauro analyze .)`,
+      ? `Analysis: ${report.repo_system || 'analyzed'} · ${report.repo_staleness || 'unknown'} · ${report.repo_analyzed_at || ''}`.trim()
+      : `Analysis: ${repoPath} not analyzed  (klauro analyze .)`,
   ];
   process.stdout.write(lines.join('\n') + '\n');
 }
@@ -740,6 +757,397 @@ async function runLoginCommand(args: ParsedArgs): Promise<void> {
   process.stdout.write(args.json
     ? `${JSON.stringify(result, null, 2)}\n`
     : `Signed in to ${stored.serverUrl} as ${identity.user?.email || email} (${identity.entitlement.status}).\nAuth stored at ${stored.file}\n`);
+}
+
+/**
+ * `klauro fabric on|off|status` — FINE CONTROL over the coordination fabric
+ * (docs/FABRIC-REMOTE.md). The happy path is `klauro init`, which enables the
+ * fabric by default as part of connecting a repo; this subcommand survives for
+ * the detail view (`status`), the rare explicit opt-out (`off`), and
+ * re-enabling after an opt-out (`on`). `on` resolves the endpoint from the
+ * repo's .klaurorc / stored login, the Bearer token from the SAME credential
+ * store `klauro init`/`klauro login` maintain (~/.klauro/auth.json — never
+ * prompted for, never written into the repo), autodetects a stable workspace
+ * identity (project.id > git-remote hash > repo basename; --workspace
+ * overrides), and persists `{fabric: {enabled, endpoint, workspace}}` into
+ * .klaurorc so every fab.ts call and fab_* MCP tool in this repo is remote
+ * automatically, across shells and sessions.
+ */
+async function runFabricCommand(argv: string[]): Promise<void> {
+  let action: string | undefined;
+  let workspaceFlag: string | undefined;
+  let serverUrlFlag: string | undefined;
+  let pathArg: string | undefined;
+  let json = false;
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === '--workspace') workspaceFlag = argv[++i];
+    else if (arg === '--server-url') serverUrlFlag = argv[++i];
+    else if (arg === '--json') json = true;
+    else if (arg === '--path') pathArg = argv[++i];
+    else if (!arg.startsWith('--') && !action) action = arg;
+    else if (!arg.startsWith('--') && !pathArg) pathArg = arg;
+    else throw new Error(`Unexpected fabric argument: ${arg}`);
+  }
+  if (!action || !['on', 'off', 'status'].includes(action)) {
+    throw new Error('Usage: klauro fabric on|off|status [/path/to/repo] [--workspace name] [--server-url url] [--json]');
+  }
+  const startDir = path.resolve(pathArg || '.');
+  const found = findFabricProjectRoot(startDir);
+
+  if (action === 'status') {
+    const settings = await resolveFabricSettings({ cwd: startDir, explicitWorkspace: workspaceFlag });
+    const report: Record<string, unknown> = {
+      enabled: Boolean(settings.remote),
+      mode: settings.remote ? 'remote' : 'local',
+      source: settings.remote ? settings.remoteSource : (settings.fabric ? 'config' : 'default'),
+      endpoint: settings.remote?.baseUrl ?? null,
+      credentials: settings.remote ? Boolean(settings.remote.token) : null,
+      workspace: settings.workspace,
+      workspace_source: settings.workspaceSource,
+      config: settings.configPath ?? null,
+    };
+    let claims: Array<{ agent_id: string; intent: string; paths: string[] }> = [];
+    let claimsNote: string | undefined;
+    if (settings.remote) {
+      try {
+        const active = await remoteActive(settings.remote, settings.workspace);
+        claims = active.active.map(c => ({ agent_id: c.agent_id, intent: c.intent, paths: c.paths }));
+      } catch (err) {
+        claimsNote = `remote fabric unreachable (${err instanceof Error ? err.message : String(err)}) — active claims unavailable; fab commands will degrade to the local fabric.`;
+      }
+    } else {
+      claims = (await getActiveClaims(settings.workspace)).map(c => ({ agent_id: c.agent_id, intent: c.intent, paths: c.scope.paths }));
+      claimsNote = 'local fabric (same-machine peers only)';
+    }
+    report.active_claims = claims;
+    if (claimsNote) report.note = claimsNote;
+    if (args_json_write(json, report)) return;
+    const lines = [
+      settings.remote
+        ? `Fabric:    ON (remote, via ${report.source}) -> ${settings.remote.baseUrl}${settings.remote.token ? '' : '  [NO CREDENTIALS — run `klauro login`]'}`
+        : `Fabric:    OFF (local fabric only${settings.fabric ? ', disabled in .klaurorc — re-enable with `klauro fabric on`' : ' — run `klauro init` in the repo to connect it (fabric included)'})`,
+      `Workspace: ${settings.workspace} (${settings.workspaceSource})`,
+      `Config:    ${settings.configPath || 'none found (run `klauro init`)'}`,
+      claimsNote && settings.remote ? `Note:      ${claimsNote}` : undefined,
+      claims.length
+        ? `Active claims (${claims.length}):\n${claims.map(c => `  ${c.agent_id} intent="${c.intent}" paths=${JSON.stringify(c.paths)}`).join('\n')}`
+        : 'Active claims: none',
+    ].filter(Boolean);
+    process.stdout.write(lines.join('\n') + '\n');
+    return;
+  }
+
+  if (action === 'off') {
+    if (!found) {
+      process.stdout.write(`No .klaurorc found at or above ${startDir} — the fabric here is already local-only.\n`);
+      return;
+    }
+    const loaded = await loadKlauroConfig(found.root);
+    const prior = loaded.config.fabric;
+    const section = { ...(prior || {}), enabled: false };
+    const { configPath } = writeFabricSection(found.root, section);
+    if (args_json_write(json, { status: 'disabled', config: configPath, fabric: section })) return;
+    process.stdout.write(`Fabric OFF — fab commands in this repo now use the LOCAL fabric only (${configPath}).\nRe-enable any time with: klauro fabric on\n`);
+    return;
+  }
+
+  // action === 'on'
+  if (!found) {
+    throw new Error(
+      `No .klaurorc found at or above ${startDir}. Run \`klauro init\` in the repo first, then \`klauro fabric on\`.`,
+    );
+  }
+  const loaded = await loadKlauroConfig(found.root);
+  const endpoint = normalizeServerUrl(serverUrlFlag || loaded.config.fabric?.endpoint || loaded.config.analyzer.serverUrl);
+  const token = resolveFabricToken(endpoint);
+  if (!token) {
+    throw new Error(
+      `No stored Klauro credentials for ${endpoint}. Run \`klauro init\` (or \`klauro login --server-url ${endpoint}\`) first — ` +
+        'fabric reuses that stored account; it never takes raw tokens.',
+    );
+  }
+  const identity = workspaceFlag && workspaceFlag.trim()
+    ? { workspace: workspaceFlag.trim(), source: 'explicit' as const }
+    : detectWorkspaceIdentity(found.root, loaded.config.project.id);
+  const { configPath } = writeFabricSection(found.root, { enabled: true, endpoint, workspace: identity.workspace });
+
+  // Reachability probe — advisory contract: an unreachable service is a loud
+  // warning, not a failure; the config persists and fab degrades gracefully.
+  let activeCount: number | null = null;
+  let probeError: string | undefined;
+  try {
+    const active = await remoteActive({ baseUrl: endpoint, token }, identity.workspace);
+    activeCount = active.count;
+  } catch (err) {
+    probeError = err instanceof Error ? err.message : String(err);
+  }
+
+  if (args_json_write(json, {
+    status: 'enabled',
+    config: configPath,
+    endpoint,
+    workspace: identity.workspace,
+    workspace_source: identity.source,
+    reachable: probeError === undefined,
+    active_claims: activeCount,
+    probe_error: probeError ?? null,
+  })) return;
+  process.stdout.write([
+    `Fabric ON — every fab command and fab_* MCP tool in this repo now coordinates through ${endpoint}`,
+    `Workspace: ${identity.workspace} (${identity.source}${identity.source !== 'explicit' ? '; override with --workspace <name>' : ''})`,
+    `Config:    ${configPath}`,
+    probeError === undefined
+      ? `Verified:  service reachable, ${activeCount} active claim${activeCount === 1 ? '' : 's'} in this workspace`
+      : `WARNING:   could not reach the service (${probeError}). Config saved anyway; fab commands will warn and degrade to the LOCAL fabric until it is reachable.`,
+    '',
+  ].join('\n'));
+}
+
+function args_json_write(json: boolean, payload: unknown): boolean {
+  if (!json) return false;
+  process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
+  return true;
+}
+
+/**
+ * `klauro init` — THE one onboarding command. Run in a repo, it connects the
+ * project to Klauro end to end, in order: (a) auth (reuse stored credentials,
+ * never prompts for a password), (b) project identity (.klaurorc + the stable
+ * workspace identity), (c) analysis (kicks off the hosted analysis when signed
+ * in), (d) in-flight tracking (automatic — reported, not configured), (e) MCP
+ * agent wiring (detected; offered via `klauro install` when missing), and
+ * (f) the coordination fabric — ENABLED BY DEFAULT as part of connecting
+ * (parallel-through-fabric is the product's default mode, not an opt-in;
+ * `klauro fabric off` remains the rare explicit opt-out and is respected on
+ * re-runs). Re-running init on a connected repo is idempotent: it verifies and
+ * refreshes each subsystem instead of erroring.
+ */
+interface InitStep {
+  step: 'auth' | 'project' | 'analysis' | 'in-flight' | 'mcp' | 'fabric';
+  status: 'ok' | 'warn' | 'skip';
+  detail: string;
+}
+
+async function runInitCommand(projectPath: string, args: ParsedArgs): Promise<void> {
+  const steps: InitStep[] = [];
+  const labels: Record<InitStep['step'], string> = {
+    auth: 'Auth', project: 'Project', analysis: 'Analysis', 'in-flight': 'In-flight', mcp: 'MCP', fabric: 'Fabric',
+  };
+  const record = (step: InitStep['step'], status: InitStep['status'], detail: string) => {
+    steps.push({ step, status, detail });
+    if (!args.json) {
+      const marker = status === 'ok' ? 'OK  ' : status === 'warn' ? 'WARN' : 'SKIP';
+      process.stdout.write(`[${steps.length}/6] ${marker} ${labels[step]}: ${detail}\n`);
+    }
+  };
+  if (!args.json) process.stdout.write(`Connecting ${projectPath} to Klauro\n`);
+
+  // (a) Auth — reuse/verify the stored credentials; login stays a separate,
+  // explicit command (init never prompts for a password).
+  let loaded = await loadKlauroConfig(projectPath);
+  const hadConfig = Boolean(loaded.configPath);
+  const auth = loadStoredConnectorAuth();
+  const serverUrl = normalizeServerUrl(
+    args.serverUrl || (hadConfig ? loaded.config.analyzer.serverUrl : undefined) || auth.defaultServerUrl,
+  );
+  const token = connectorToken(undefined, serverUrl);
+  const email = auth.accounts[serverUrl]?.email;
+  if (token) {
+    record('auth', 'ok', `signed in to ${serverUrl}${email ? ` as ${email}` : ''}`);
+  } else {
+    record('auth', 'warn', `not signed in to ${serverUrl} — hosted steps are skipped (run: klauro login --email you@example.com, then re-run klauro init)`);
+  }
+
+  // (b) Project identity — resolve or register. Existing .klaurorc = keep it
+  // (idempotent refresh); missing = the existing init flow (interactive when a
+  // TTY, defaults otherwise).
+  if (!hadConfig || args.force) {
+    const initOptions = await resolveInitOptions(projectPath, args);
+    await writeDefaultKlauroConfig(projectPath, {
+      force: args.force,
+      serverUrl: initOptions.serverUrl || (args.serverUrl ? serverUrl : undefined),
+      projectId: initOptions.projectId,
+      workspaceId: initOptions.workspaceId,
+      organizationId: initOptions.organizationId,
+      projectName: initOptions.projectName,
+      kind: initOptions.kind,
+    });
+    loaded = await loadKlauroConfig(projectPath);
+  }
+  const identity = detectWorkspaceIdentity(projectPath, loaded.config.project.id);
+  record('project', 'ok',
+    `${loaded.config.project.name || path.basename(projectPath)}${loaded.config.project.id ? ` (hosted project ${loaded.config.project.id})` : ''} · identity ${identity.workspace} (${identity.source})${hadConfig && !args.force ? ' · existing .klaurorc kept' : ` · wrote ${loaded.configPath}`}`);
+
+  // (c) Analysis — kick off / refresh the hosted analysis for this repo.
+  // Best-effort: a failed or slow analysis never fails the connect.
+  if (!token) {
+    record('analysis', 'skip', 'requires sign-in — run `klauro analyze .` after `klauro login`');
+  } else {
+    try {
+      const result = await withLogHandling(true, true, () => analyzeCodebaseRemotely({
+        projectPath,
+        serverUrl,
+        analysisId: args.analysisId,
+      }));
+      record('analysis', 'ok', `${result.analysis_id} @ revision ${result.analysis_revision} (${result.cas.nodes.length} nodes, ${result.cas.edges.length} edges)`);
+    } catch (error) {
+      record('analysis', 'warn', `did not complete (${error instanceof Error ? error.message : String(error)}) — retry with: klauro analyze .`);
+    }
+  }
+
+  // (d) In-flight — the dirty-tree track is automatic (no setup step): the
+  // working tree is captured on demand (get_in_flight_changes / remote-sync)
+  // and published through the fabric when remote. Report, don't configure.
+  const dirty = countDirtyFiles(projectPath);
+  record('in-flight', 'ok', dirty === undefined
+    ? 'automatic — uncommitted work is tracked on demand (no git repo detected here, so the track starts with the first commit history)'
+    : dirty === 0
+      ? 'automatic — working tree clean; uncommitted work is tracked on demand'
+      : `automatic — ${dirty} uncommitted file(s) currently in flight`);
+
+  // (e) MCP — agents on this machine get the Klauro tools via the existing
+  // install flow. Detected here; offered (not force-run — it builds/installs).
+  const mcp = detectClaudeMcpRegistration();
+  if (mcp === true) record('mcp', 'ok', 'klauro MCP server registered with Claude Code');
+  else if (mcp === false) record('mcp', 'warn', 'not registered with Claude Code — run: klauro install   (wires the MCP server + agent defaults for this machine)');
+  else record('mcp', 'skip', 'claude CLI not found — run `klauro install` to wire agent MCP access when a client is present');
+
+  // (f) Fabric — enabled by default as part of connecting (same resolution
+  // `klauro fabric on` used: endpoint from config/login, token from the
+  // credential store, stable workspace identity). `klauro fabric off` is the
+  // explicit opt-out and survives re-runs.
+  const priorFabric = loaded.config.fabric;
+  if (priorFabric && priorFabric.enabled === false) {
+    record('fabric', 'skip', 'disabled by explicit opt-out (`klauro fabric off`) — re-enable with: klauro fabric on');
+  } else if (!token) {
+    record('fabric', 'skip', 'staying on the local (same-machine) fabric — sign in and re-run `klauro init` to coordinate across machines');
+  } else {
+    const endpoint = normalizeServerUrl(args.serverUrl || priorFabric?.endpoint || loaded.config.analyzer.serverUrl);
+    const fabricWorkspace = (args.workspace && args.workspace.trim()) || priorFabric?.workspace || identity.workspace;
+    writeFabricSection(projectPath, { enabled: true, endpoint, workspace: fabricWorkspace });
+    let probeNote: string;
+    try {
+      const active = await remoteActive({ baseUrl: endpoint, token: resolveFabricToken(endpoint) }, fabricWorkspace);
+      probeNote = `service reachable, ${active.count} active claim${active.count === 1 ? '' : 's'}`;
+    } catch (error) {
+      probeNote = `service unreachable right now (${error instanceof Error ? error.message : String(error)}) — config saved; fab commands degrade to the local fabric until it is back`;
+    }
+    record('fabric', 'ok', `ON — remote via ${endpoint} · workspace ${fabricWorkspace} · ${probeNote}`);
+  }
+
+  const payload = {
+    status: 'connected',
+    path: projectPath,
+    config: loaded.configPath ?? path.join(projectPath, '.klaurorc'),
+    server_url: serverUrl,
+    signed_in: Boolean(token),
+    project: {
+      name: loaded.config.project.name ?? null,
+      id: loaded.config.project.id ?? null,
+      workspace_id: loaded.config.project.workspaceId ?? null,
+      kind: loaded.config.kind ?? null,
+    },
+    workspace_identity: identity,
+    fabric: (await loadKlauroConfig(projectPath)).config.fabric ?? null,
+    steps,
+    idempotent: hadConfig,
+  };
+  if (args.json) {
+    process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
+    return;
+  }
+  process.stdout.write([
+    '',
+    `Klauro connected: ${payload.project.name || path.basename(projectPath)}`,
+    `Config: ${payload.config}`,
+    'Check any time with `klauro status`; re-running `klauro init` is idempotent (verifies and refreshes each subsystem).',
+    '',
+  ].join('\n'));
+}
+
+/** Best-effort count of uncommitted (dirty + untracked) files; undefined = not a git repo. */
+function countDirtyFiles(projectPath: string): number | undefined {
+  const result = spawnSync('git', ['-C', projectPath, 'status', '--porcelain', '-uall'], { encoding: 'utf8', timeout: 5000 });
+  if (result.status !== 0 || typeof result.stdout !== 'string') return undefined;
+  return result.stdout.split('\n').filter(line => line.trim()).length;
+}
+
+/** true = registered, false = claude present but klauro not registered, undefined = no claude CLI. */
+function detectClaudeMcpRegistration(): boolean | undefined {
+  const probe = spawnSync('claude', ['mcp', 'get', 'klauro'], { encoding: 'utf8', timeout: 10000 });
+  if (probe.error || probe.status === null) return undefined;
+  return probe.status === 0;
+}
+
+/**
+ * One-glance connection report for `klauro status` / `klauro doctor`: every
+ * subsystem `klauro init` connects, for the current repo.
+ */
+async function buildConnectionReport(repoPath: string): Promise<{
+  project: { initialized: boolean; config: string | null; name: string | null; id: string | null; workspace_id: string | null; kind: string | null };
+  identity: WorkspaceIdentityReport;
+  in_flight: { tracked: 'automatic'; dirty_files: number | null };
+  mcp_registered: boolean | null;
+  fabric: { enabled: boolean; mode: 'remote' | 'local'; endpoint: string | null; workspace: string; active_claims: number | null; note?: string };
+}> {
+  const loaded = await loadKlauroConfig(repoPath).catch(() => undefined);
+  const initialized = Boolean(loaded?.configPath);
+  const identity = detectWorkspaceIdentity(repoPath, loaded?.config.project.id);
+  const settings = await resolveFabricSettings({ cwd: repoPath });
+  let activeClaims: number | null = null;
+  let fabricNote: string | undefined;
+  if (settings.remote) {
+    try {
+      activeClaims = (await remoteActive(settings.remote, settings.workspace)).count;
+    } catch (error) {
+      fabricNote = `remote fabric unreachable (${error instanceof Error ? error.message : String(error)})`;
+    }
+  } else {
+    activeClaims = (await getActiveClaims(settings.workspace).catch(() => [])).length;
+    fabricNote = settings.fabric && settings.fabric.enabled === false ? 'disabled by `klauro fabric off`' : 'local fabric (same-machine peers only)';
+  }
+  const dirty = countDirtyFiles(repoPath);
+  return {
+    project: {
+      initialized,
+      config: loaded?.configPath ?? null,
+      name: loaded?.config.project.name ?? null,
+      id: loaded?.config.project.id ?? null,
+      workspace_id: loaded?.config.project.workspaceId ?? null,
+      kind: loaded?.config.kind ?? null,
+    },
+    identity,
+    in_flight: { tracked: 'automatic', dirty_files: dirty ?? null },
+    mcp_registered: detectClaudeMcpRegistration() ?? null,
+    fabric: {
+      enabled: Boolean(settings.remote),
+      mode: settings.remote ? 'remote' : 'local',
+      endpoint: settings.remote?.baseUrl ?? null,
+      workspace: settings.workspace,
+      active_claims: activeClaims,
+      note: fabricNote,
+    },
+  };
+}
+
+type WorkspaceIdentityReport = ReturnType<typeof detectWorkspaceIdentity>;
+
+function formatConnectionReportLines(report: Awaited<ReturnType<typeof buildConnectionReport>>): string[] {
+  return [
+    report.project.initialized
+      ? `Project:  ${report.project.name || 'unnamed'}${report.project.id ? ` (hosted project ${report.project.id})` : ''} · identity ${report.identity.workspace} (${report.identity.source}) · ${report.project.config}`
+      : `Project:  not connected  (run: klauro init)`,
+    `In-flight: automatic${report.in_flight.dirty_files === null ? '' : ` · ${report.in_flight.dirty_files} uncommitted file(s)`}`,
+    report.mcp_registered === null
+      ? 'MCP:      unknown (claude CLI not found) — klauro install wires agent access'
+      : report.mcp_registered
+        ? 'MCP:      klauro registered with Claude Code'
+        : 'MCP:      not registered  (run: klauro install)',
+    report.fabric.mode === 'remote'
+      ? `Fabric:   remote via ${report.fabric.endpoint} · workspace ${report.fabric.workspace} · ${report.fabric.active_claims === null ? (report.fabric.note || 'claims unavailable') : `${report.fabric.active_claims} active claim(s)`}`
+      : `Fabric:   local · workspace ${report.fabric.workspace}${report.fabric.note ? ` · ${report.fabric.note}` : ''}${report.project.initialized ? '' : '  (klauro init connects it)'}`,
+  ];
 }
 
 async function resolveInitOptions(projectPath: string, args: ParsedArgs): Promise<{
@@ -1091,6 +1499,8 @@ function parseArgs(argv: string[]): ParsedArgs {
       parsed.level = argv[++i] as ParsedArgs['level'];
     } else if (arg === '--section') {
       parsed.section = argv[++i];
+    } else if (arg === '--workspace') {
+      parsed.workspace = argv[++i];
     } else if (arg === '--markdown') {
       parsed.markdown = true;
     } else if (arg === '--limit') {
@@ -1124,7 +1534,10 @@ function printHelp(): void {
     'Setup:',
     '  klauro install [repo-path] [--claude-md /path/to/repo] [--claude-scope user|project|local] [--no-register] [--rebuild] [--skip-self-check]',
     '  klauro uninstall [--claude-md /path/to/repo] [--no-deregister]',
-    '  klauro init [/path/to/repo] [--server-url url] [--project-id id] [--organization-id id] [--force] [--json]',
+    '  klauro init [/path/to/repo] [--server-url url] [--workspace name] [--project-id id] [--organization-id id] [--force] [--json]',
+    '      THE onboarding: connects the repo end to end — auth, project identity, hosted analysis,',
+    '      in-flight tracking, agent MCP wiring, and the coordination fabric (on by default).',
+    '      Idempotent: re-running verifies and refreshes each subsystem.',
     '',
     'Status & maintenance:',
     '  klauro version [--json]                 (build, node, platform)',
@@ -1140,6 +1553,11 @@ function printHelp(): void {
     '  klauro whoami [--server-url url] [--json]',
     '  klauro auth-status [--server-url url] [--json]',
     '  klauro logout [--server-url url] [--json]',
+    '',
+    'Coordination fabric — fine control only; `klauro init` enables it by default (docs/FABRIC-REMOTE.md):',
+    '  klauro fabric status [/path/to/repo] [--json]                                     (detail view: enabled/endpoint/workspace + active claims)',
+    '  klauro fabric off [/path/to/repo] [--json]                                        (rare explicit opt-out: back to the local-only fabric)',
+    '  klauro fabric on [/path/to/repo] [--workspace name] [--server-url url] [--json]   (re-enable after an opt-out)',
     '',
     'Analyze:',
     '  klauro analyze [/path/to/repo] [--server-url url] [--analysis-id id] [--analysis-focus agent-fast|ui-overview|deep-context|full] [--force] [--json]',
@@ -1233,21 +1651,6 @@ async function runAnalyzerServerCommand(args: ParsedArgs): Promise<void> {
   process.once('SIGINT', stop);
   process.once('SIGTERM', stop);
   await new Promise(() => undefined);
-}
-
-function formatInitResult(result: Awaited<ReturnType<typeof writeDefaultKlauroConfig>>): string {
-  return [
-    'Initialized Klauro project config',
-    `Config: ${result.configPath}`,
-    `Ignore: ${result.ignorePath}`,
-    `Analyzer URL: ${result.config.analyzer.serverUrl || 'not set'}`,
-    '',
-    'Next:',
-    '  klauro upload-manifest .',
-    '  klauro analyze .',
-    '  klauro install-agent .',
-    '',
-  ].join('\n');
 }
 
 function formatUploadManifest(manifest: Awaited<ReturnType<typeof buildUploadManifest>>): string {

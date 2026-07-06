@@ -46,11 +46,17 @@ async function manifestsIn(dir: string): Promise<string[]> {
   } catch {
     return [];
   }
-  return entries.filter(e => MANIFEST_NAMES.includes(e) || e.endsWith('.csproj'));
+  // .sln BEFORE .csproj: a solution dir is ONE project boundary — without this,
+  // a 28-project .NET solution (e.g. soon/Finance-Context) eats 28 discovery
+  // slots as separate "repos" and skews any corpus-wide sweep.
+  return entries.filter(e => MANIFEST_NAMES.includes(e) || e.endsWith('.sln') || e.endsWith('.csproj'));
 }
 
 async function discover(root: string, maxDepth = 3, maxProjects = 40): Promise<DiscoveredEntry[]> {
   const projects: DiscoveredEntry[] = [];
+  // COVERAGE_SWEEP_SKIP: comma-separated dir basenames to exclude (known-huge
+  // repos that would eat the whole per-repo timeout budget).
+  const skipNames = new Set((process.env.COVERAGE_SWEEP_SKIP || '').split(',').map(s => s.trim()).filter(Boolean));
 
   async function walk(dir: string, depth: number): Promise<void> {
     if (projects.length >= maxProjects) return;
@@ -67,7 +73,7 @@ async function discover(root: string, maxDepth = 3, maxProjects = 40): Promise<D
       return;
     }
     const subDirs = subEntries.filter(
-      e => e.isDirectory() && !e.isSymbolicLink() && !SKIP_DIR_NAMES.has(e.name) && !e.name.startsWith('.')
+      e => e.isDirectory() && !e.isSymbolicLink() && !SKIP_DIR_NAMES.has(e.name) && !skipNames.has(e.name) && !e.name.startsWith('.')
     );
     for (const sd of subDirs) {
       if (projects.length >= maxProjects) return;
@@ -91,6 +97,68 @@ interface RepoResult {
   codebaseTypes?: Array<{ type: string; confidence: number }>;
   entryPointCount?: number;
   gaps?: CASCoverageGap[];
+  /** Depth capture (corpus-depth sweep): per-layer firing facts for the
+   *  v1.0.21-28 layers so breadth-vs-depth debt is measurable per repo. */
+  depth?: RepoDepthCapture;
+}
+
+/** Per-repo capture of the v1.0.21-28 layer outputs, read straight off the
+ *  CASOutput the product returns (blackbox — no engine imports). */
+interface RepoDepthCapture {
+  /** communication_seams inventory counts (sync/async/passive/total), or null when the layer did not run. */
+  seams: { sync: number; async: number; passive: number; total: number } | null;
+  /** consistency-model counts + how many store egresses got a posture. */
+  consistency: {
+    passive_replica: number;
+    passive_streaming: number;
+    strong_stores: number;
+    eventual_stores: number;
+    tunable_stores: number;
+    store_consistency: number;
+  } | null;
+  /** product_map.runtime_topology: deployables + infra->code edge count. */
+  topology: { deployables: number; edge_count: number } | null;
+  /** ci_pipeline / ci_job node counts. */
+  ci: { pipelines: number; jobs: number };
+  /** nodes_created per analyzer_id, for EVERY analyzer that contributed —
+   *  the honest layer-firing record (0-node contributions included). */
+  analyzer_nodes: Record<string, number>;
+  /** analysis_errors grouped by analyzer (degraded-analyzer signal). */
+  errors: Array<{ analyzer?: string; severity: string; code: string; message: string }>;
+  test_suites: number;
+  exit_points: number;
+  external_services: number;
+}
+
+function captureDepth(cas: CASOutput): RepoDepthCapture {
+  const nodes = cas.nodes || [];
+  const countType = (type: string) => nodes.filter(n => n.type === type).length;
+  const seamCounts = cas.communication_seams?.inventory?.counts;
+  const cons = (cas as any).consistency_model;
+  const topology = (cas.product_map as any)?.runtime_topology;
+  const analyzerNodes: Record<string, number> = {};
+  for (const c of cas.analyzer_contributions || []) {
+    analyzerNodes[c.analyzer_id || c.analyzer_name] = c.nodes_created ?? 0;
+  }
+  return {
+    seams: seamCounts
+      ? { sync: seamCounts.sync, async: seamCounts.async, passive: seamCounts.passive, total: seamCounts.total }
+      : null,
+    consistency: cons
+      ? { ...cons.counts, store_consistency: cons.store_consistency?.length ?? 0 }
+      : null,
+    topology: topology
+      ? { deployables: topology.deployables?.length ?? 0, edge_count: topology.edge_count ?? 0 }
+      : null,
+    ci: { pipelines: countType('ci_pipeline'), jobs: countType('ci_job') },
+    analyzer_nodes: analyzerNodes,
+    errors: (cas.analysis_errors || []).map(e => ({
+      analyzer: e.analyzer, severity: e.severity, code: e.code, message: (e.message || '').slice(0, 200),
+    })),
+    test_suites: cas.test_suites?.length ?? 0,
+    exit_points: cas.exit_points?.length ?? 0,
+    external_services: (cas as any).external_services?.length ?? 0,
+  };
 }
 
 const PER_REPO_TIMEOUT_MS = Number(process.env.COVERAGE_SWEEP_PER_REPO_TIMEOUT_MS || '120000');
@@ -120,6 +188,7 @@ async function analyzeOne(entry: DiscoveredEntry): Promise<RepoResult> {
       codebaseTypes: cas.codebase_types,
       entryPointCount: cas.entry_points?.length ?? 0,
       gaps: cas.coverage_gaps ?? [],
+      depth: captureDepth(cas),
     };
   } catch (error) {
     return {
@@ -226,16 +295,36 @@ ${crashed.length > 0 ? `## Crashed (${crashed.length})\n\n${crashed.map(r => `- 
 async function main() {
   const root = process.env.COVERAGE_SWEEP_ROOT || path.join(os.homedir(), 'dev');
   const maxProjects = Number(process.env.COVERAGE_SWEEP_MAX_PROJECTS || '40');
+  // Depth mode (corpus-depth sweep): resumable, writes raw per-repo JSON (incl.
+  // the depth capture) to COVERAGE_SWEEP_STATE instead of regenerating
+  // docs/COVERAGE-INTELLIGENCE.md. The analysis doc (docs/CORPUS-DEPTH-SWEEP.md)
+  // is authored from that JSON, not auto-rendered.
+  const depthMode = process.env.COVERAGE_SWEEP_DEPTH === '1';
+  const statePath = process.env.COVERAGE_SWEEP_STATE || path.join(os.tmpdir(), 'corpus-depth-sweep-state.json');
 
   console.error(`[coverage-intel-sweep] discovering projects under ${root} (max ${maxProjects})...`);
   const entries = await discover(root, 3, maxProjects);
   console.error(`[coverage-intel-sweep] discovered ${entries.length} projects. Analyzing...`);
 
   const results: RepoResult[] = [];
+  const done = new Set<string>();
+  if (depthMode && await fs.pathExists(statePath)) {
+    const prior: RepoResult[] = await fs.readJson(statePath);
+    for (const r of prior) { results.push(r); done.add(r.dirPath); }
+    console.error(`[coverage-intel-sweep] resuming: ${results.length} repos already captured in ${statePath}`);
+  }
+
   for (const entry of entries) {
+    if (done.has(entry.dirPath)) continue;
     const r = await analyzeOne(entry);
     results.push(r);
     console.error(`[coverage-intel-sweep] ${r.crashed ? 'CRASH' : 'ok'} ${r.name} (${r.timeMs}ms)${r.crashed ? ` — ${r.error}` : ` type=${r.codebaseType} gaps=${r.gaps?.length ?? 0}`}`);
+    if (depthMode) await fs.writeJson(statePath, results, { spaces: 0 });
+  }
+
+  if (depthMode) {
+    console.error(`[coverage-intel-sweep] depth mode: raw results at ${statePath} (${results.length} repos)`);
+    return;
   }
 
   const md = renderMarkdown(results);
