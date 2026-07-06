@@ -1,5 +1,13 @@
 export interface CASOutput {
   cas_version: string;
+  /**
+   * Deterministic identity of the analyzer build that produced this output
+   * (getBuildIdentity().version — base package version + git sha). Incremental
+   * analysis stamps this and forces a full rebuild of derived artifacts when the
+   * stored stamp differs from the current analyzer build, so engine/deriver code
+   * changes are not masked by cached derived layers on unchanged target files.
+   */
+  analyzer_build?: string;
   analysis_timestamp: string;
   analysis_id: string;
   system: CASSystem;

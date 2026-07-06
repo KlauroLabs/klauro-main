@@ -89,6 +89,7 @@ import { classifyCommunicationSeams, mergeSeams } from './communication-seams';
 import { deriveConsistencyModel, toCommunicationSeams } from './consistency-model';
 import { collectCoverageGaps } from './coverage-gaps';
 import { ChangeDetector } from './change-detector';
+import { getBuildIdentity } from './build-identity';
 import { buildUserJourneys } from './journey-builder';
 import { buildTerminalSignal, type TerminalSignal } from './terminal-signal';
 import { buildParadigmConformance } from './paradigm-conformance';
@@ -1641,6 +1642,7 @@ export class AnalyzerOrchestrator {
 
     const output = {
       cas_version: CAS_VERSION,
+      analyzer_build: getBuildIdentity().version,
       analysis_timestamp: new Date().toISOString(),
       analysis_id: analysisId,
       system: {
@@ -1925,6 +1927,13 @@ export class AnalyzerOrchestrator {
     const schemaRebuildReason = this.fullRebuildReasonForPreviousOutput(previousOutput);
 
     if (schemaRebuildReason) {
+      // Distinguish an analyzer-build/version bump (engine or deriver code
+      // changed) from a persisted-output/schema drift so agents can see WHY the
+      // fast path was bypassed. File-change rebuilds are logged separately below.
+      const trigger = schemaRebuildReason.startsWith('Analyzer build changed')
+        ? 'analyzer-version'
+        : 'persisted-output-schema';
+      console.error(`[Klauro] incremental full rebuild (${trigger}): ${schemaRebuildReason}`);
       this.invalidateProjectDiscovery(projectPath);
       const output = await this.orchestrateAnalysis(projectPath, { displayName: options?.displayName });
       const state = this.buildIncrementalState(projectPath, output, changeDetector);
@@ -2032,6 +2041,18 @@ export class AnalyzerOrchestrator {
   }
 
   private fullRebuildReasonForPreviousOutput(previousOutput: CASOutput): string | null {
+    // Analyzer-code / version identity. When the engine itself changes (a fix or
+    // a new deriver) but the target files are unchanged, the incremental fast
+    // path would otherwise reuse the persisted DERIVED artifacts (ERD, flow
+    // concepts, error contracts, entrenchment, ...) and serve stale output. The
+    // stamp is deterministic and reproducible (base package version + git sha),
+    // so this only fires when the analyzer build actually differs — never on an
+    // unchanged engine.
+    const currentAnalyzerBuild = getBuildIdentity().version;
+    const previousAnalyzerBuild = previousOutput.analyzer_build;
+    if (previousAnalyzerBuild !== currentAnalyzerBuild) {
+      return `Analyzer build changed (${previousAnalyzerBuild || 'unstamped'} -> ${currentAnalyzerBuild})`;
+    }
     if (previousOutput.cas_version !== CAS_VERSION) {
       return `CAS version changed (${previousOutput.cas_version || 'unknown'} -> ${CAS_VERSION})`;
     }
