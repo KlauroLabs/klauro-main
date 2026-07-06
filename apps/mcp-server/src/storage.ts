@@ -18,6 +18,7 @@ import type { RuntimeObservation } from './product';
 import { mirrorArtifactsToS3 } from './s3-artifacts';
 import type { AnalysisTrack } from './track';
 import { trackSuffix } from './track';
+import { resolveAnalysisScope, filterEntriesToScope, filterWorkspaceGraphsToScope } from './analysis-scope';
 
 const execFileAsync = promisify(execFile);
 const brotliCompressAsync = promisify(zlib.brotliCompress);
@@ -786,7 +787,23 @@ export async function loadAnalysis(
 
 export async function listAnalyses(): Promise<AnalysisEntry[]> {
   const index = await loadIndex();
-  return Object.values(index.analyses);
+  const entries = Object.values(index.analyses);
+  const scope = await resolveAnalysisScope();
+  return filterEntriesToScope(entries, scope);
+}
+
+/**
+ * Same as listAnalyses, but also returns the resolved scope so a caller can
+ * surface "scoped to workspace X" (or explicitly report unscoped) without
+ * ever naming what was filtered out. Use this in any tool handler that wants
+ * to be honest about isolation; listAnalyses() alone stays the drop-in
+ * choke point for existing callers.
+ */
+export async function listAnalysesWithScope(): Promise<{ entries: AnalysisEntry[]; scope: Awaited<ReturnType<typeof resolveAnalysisScope>> }> {
+  const index = await loadIndex();
+  const entries = Object.values(index.analyses);
+  const scope = await resolveAnalysisScope();
+  return { entries: await filterEntriesToScope(entries, scope), scope };
 }
 
 export async function getAnalysisEntry(projectPath: string): Promise<AnalysisEntry | null> {
@@ -966,7 +983,7 @@ export async function loadCrossCodebaseSystemGraph(idOrName: string): Promise<an
   return null;
 }
 
-export async function listCrossCodebaseSystemGraphs(): Promise<Array<{
+export interface CrossCodebaseSystemGraphSummary {
   id: string;
   name: string;
   generated_at?: string;
@@ -977,13 +994,15 @@ export async function listCrossCodebaseSystemGraphs(): Promise<Array<{
   unmatched_interface_count?: number;
   inputs?: Array<{ project_id?: string; codebase_id?: string; repo_path?: string; path?: string; cas_generated_at?: string }>;
   file: string;
-}>> {
+}
+
+export async function listCrossCodebaseSystemGraphs(): Promise<CrossCodebaseSystemGraphSummary[]> {
   const storagePath = await ensureStorageDir();
   const directory = path.join(storagePath, 'workspace-analyses');
   if (!(await fs.pathExists(directory))) return [];
 
   const files = await fs.readdir(directory);
-  const graphs = [];
+  const graphs: CrossCodebaseSystemGraphSummary[] = [];
   for (const file of files.filter(isWorkspaceAnalysisDataFile)) {
     const filePath = path.join(directory, file);
     const metadata = await readWorkspaceAnalysisMetadata(directory, filePath);
@@ -1000,7 +1019,9 @@ export async function listCrossCodebaseSystemGraphs(): Promise<Array<{
       file: filePath,
     });
   }
-  return graphs.sort((left, right) => String(right.saved_at || right.generated_at || '').localeCompare(String(left.saved_at || left.generated_at || '')));
+  const sorted = graphs.sort((left, right) => String(right.saved_at || right.generated_at || '').localeCompare(String(left.saved_at || left.generated_at || '')));
+  const scope = await resolveAnalysisScope();
+  return filterWorkspaceGraphsToScope(sorted, scope);
 }
 
 export const saveWorkspaceAnalysis = saveCrossCodebaseSystemGraph;

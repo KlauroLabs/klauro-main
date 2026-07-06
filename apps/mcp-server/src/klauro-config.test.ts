@@ -148,16 +148,79 @@ test('dirty-tree manifest is private local working-copy context, not shared proj
   });
 });
 
-test('shared source snapshot rejects uncommitted git changes', async () => {
+function gitCommitAll(repo: string, message: string): string {
+  const run = (args: string[]) => spawnSync('git', ['-c', 'user.email=test@klauro.test', '-c', 'user.name=Klauro Test', ...args], { cwd: repo, encoding: 'utf8' });
+  run(['add', '-A']);
+  const commit = run(['commit', '-m', message, '--no-gpg-sign']);
+  assert.equal(commit.status, 0, commit.stderr);
+  return run(['rev-parse', 'HEAD']).stdout.trim();
+}
+
+test('dirty tree: shared snapshot is built from COMMITTED HEAD, never the dirty working tree', async () => {
+  await withFixtureWorkspace(async workspace => {
+    spawnSync('git', ['init'], { cwd: workspace.repo, encoding: 'utf8' });
+    await writeDefaultKlauroConfig(workspace.repo, { force: true });
+    const committedContent = fs.readFileSync(path.join(workspace.repo, 'app/main.py'), 'utf8');
+    const head = gitCommitAll(workspace.repo, 'baseline');
+
+    // Dirty a tracked file + add an untracked file: neither may reach the snapshot.
+    fs.appendFileSync(path.join(workspace.repo, 'app/main.py'), '\n# DIRTY-ONLY-EDIT\n');
+    fs.writeFileSync(path.join(workspace.repo, 'app/untracked_new.py'), 'SECRET_NEW = True\n');
+
+    const snapshot = await buildSourceSnapshot(workspace.repo);
+    assert.equal(snapshot.snapshot_source, 'committed-head');
+    assert.equal(snapshot.base_commit, head);
+    const main = snapshot.files.find(file => file.path === 'app/main.py');
+    assert.ok(main, 'tracked file is in the HEAD snapshot');
+    assert.equal(main.content, committedContent, 'snapshot carries the committed content');
+    assert.ok(!main.content.includes('DIRTY-ONLY-EDIT'), 'dirty edit is absent from the shared snapshot');
+    assert.ok(!snapshot.files.some(file => file.path === 'app/untracked_new.py'), 'untracked file is absent');
+
+    // Building the snapshot must never touch the working tree.
+    assert.ok(fs.readFileSync(path.join(workspace.repo, 'app/main.py'), 'utf8').includes('DIRTY-ONLY-EDIT'), 'working tree untouched');
+    assert.ok(fs.existsSync(path.join(workspace.repo, 'app/untracked_new.py')), 'untracked file untouched');
+  });
+});
+
+test('dirty tree: a file deleted in the working tree but present at HEAD stays in the snapshot', async () => {
+  await withFixtureWorkspace(async workspace => {
+    spawnSync('git', ['init'], { cwd: workspace.repo, encoding: 'utf8' });
+    await writeDefaultKlauroConfig(workspace.repo, { force: true });
+    fs.writeFileSync(path.join(workspace.repo, 'app/kept_at_head.py'), 'KEPT = 1\n');
+    gitCommitAll(workspace.repo, 'baseline');
+    fs.rmSync(path.join(workspace.repo, 'app/kept_at_head.py'));
+
+    const snapshot = await buildSourceSnapshot(workspace.repo);
+    assert.equal(snapshot.snapshot_source, 'committed-head');
+    const kept = snapshot.files.find(file => file.path === 'app/kept_at_head.py');
+    assert.ok(kept, 'HEAD content is authoritative: deleted-in-worktree file is still in the snapshot');
+    assert.equal(kept.content, 'KEPT = 1\n');
+    assert.ok(!fs.existsSync(path.join(workspace.repo, 'app/kept_at_head.py')), 'deletion in the working tree is left alone');
+  });
+});
+
+test('clean tree: shared snapshot behavior is unchanged (working-tree walk)', async () => {
+  await withFixtureWorkspace(async workspace => {
+    spawnSync('git', ['init'], { cwd: workspace.repo, encoding: 'utf8' });
+    await writeDefaultKlauroConfig(workspace.repo, { force: true });
+    const head = gitCommitAll(workspace.repo, 'baseline');
+
+    const snapshot = await buildSourceSnapshot(workspace.repo);
+    assert.equal(snapshot.snapshot_source, 'working-tree');
+    assert.equal(snapshot.base_commit, head);
+    assert.ok(snapshot.files.some(file => file.path === 'app/main.py'));
+  });
+});
+
+test('git repo with no commits yet: snapshot falls back to the working tree (no refusal)', async () => {
   await withFixtureWorkspace(async workspace => {
     spawnSync('git', ['init'], { cwd: workspace.repo, encoding: 'utf8' });
     await writeDefaultKlauroConfig(workspace.repo, { force: true });
     fs.appendFileSync(path.join(workspace.repo, 'app/main.py'), '\n# local edit\n');
 
-    await assert.rejects(
-      () => buildSourceSnapshot(workspace.repo),
-      /Shared Klauro project analysis runs on committed source/
-    );
+    const snapshot = await buildSourceSnapshot(workspace.repo);
+    assert.equal(snapshot.snapshot_source, 'working-tree');
+    assert.ok(snapshot.files.some(file => file.path === 'app/main.py'));
   });
 });
 

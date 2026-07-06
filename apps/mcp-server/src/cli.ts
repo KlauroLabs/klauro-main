@@ -1835,7 +1835,7 @@ function formatRemoteResult(result: Awaited<ReturnType<typeof analyzeCodebaseRem
   const changedFiles = result.change_report
     ? result.change_report.summary.filesAdded + result.change_report.summary.filesModified + result.change_report.summary.filesDeleted
     : 0;
-  return [
+  const lines = [
     `Klauro remote analysis: ${result.status.toUpperCase()}`,
     `Analysis id: ${result.analysis_id}`,
     `Revision: ${result.analysis_revision}`,
@@ -1845,8 +1845,18 @@ function formatRemoteResult(result: Awaited<ReturnType<typeof analyzeCodebaseRem
     `Nodes: ${result.cas.nodes.length}`,
     `Edges: ${result.cas.edges.length}`,
     `Changed files: ${changedFiles}`,
-    '',
-  ].join('\n');
+  ];
+  if (result.snapshot_source === 'committed-head') {
+    const shortSha = (result.base_commit || '').slice(0, 7) || 'HEAD';
+    if (result.in_flight?.status === 'completed') {
+      lines.push(`Analyzed committed HEAD (${shortSha}) as the shared revision; working-tree changes analyzed separately as in-flight context${result.in_flight.changed_files != null ? ` (${result.in_flight.changed_files} changed files)` : ''}.`);
+    } else {
+      lines.push(`Analyzed committed HEAD (${shortSha}) as the shared revision; uncommitted working-tree changes were NOT included.`);
+      lines.push(`In-flight (working-tree) context pass ${result.in_flight?.status || 'skipped'}${result.in_flight?.detail ? `: ${result.in_flight.detail}` : ''}.`);
+    }
+  }
+  lines.push('');
+  return lines.join('\n');
 }
 
 function formatGithubImportPlan(plan: ReturnType<typeof buildGithubImportPlan>): string {

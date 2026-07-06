@@ -86,6 +86,90 @@ test('remote analyzer supports full source upload and dirty-tree incremental syn
   }
 });
 
+test('dirty tree analyze: shared revision is committed HEAD and the in-flight pass runs automatically', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-dirty-analyze-test-'));
+  const repo = path.join(root, 'repo');
+  const storage = path.join(root, 'storage');
+  const remoteData = path.join(root, 'remote-data');
+  const previousStorage = process.env.KLAURO_STORAGE_PATH;
+  const previousRemoteData = process.env.KLAURO_REMOTE_ANALYZER_DATA;
+
+  process.env.KLAURO_STORAGE_PATH = storage;
+  process.env.KLAURO_REMOTE_ANALYZER_DATA = remoteData;
+  fs.cpSync(fixturePath, repo, { recursive: true });
+  execFileSync('git', ['init'], { cwd: repo, stdio: 'ignore' });
+  execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: repo, stdio: 'ignore' });
+  execFileSync('git', ['config', 'user.name', 'Test User'], { cwd: repo, stdio: 'ignore' });
+  execFileSync('git', ['add', '.'], { cwd: repo, stdio: 'ignore' });
+  execFileSync('git', ['commit', '-m', 'fixture'], { cwd: repo, stdio: 'ignore' });
+  const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim();
+
+  // Dirty the tree BEFORE analyze: an uncommitted route on a tracked file plus an
+  // untracked file. Neither may reach the shared revision; both are in-flight-only.
+  const appFile = path.join(repo, 'app', 'main.py');
+  const dirtyWorkingContent = `${fs.readFileSync(appFile, 'utf8')}\n\n@app.get("/dirty-only")\ndef dirty_only():\n    return {"dirty": True}\n`;
+  fs.writeFileSync(appFile, dirtyWorkingContent);
+  fs.writeFileSync(path.join(repo, 'app', 'untracked_extra.py'), 'EXTRA = True\n');
+
+  const server = createRemoteAnalyzerHttpServer({ dataDir: remoteData });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  assert.ok(address && typeof address === 'object');
+  const serverUrl = `http://127.0.0.1:${address.port}`;
+
+  try {
+    const account = await postJson(address.port, '/api/auth/register', {
+      email: 'owner@example.com',
+      password: 'password-1234',
+      workspace_name: 'Dirty Analyze Workspace',
+    });
+    assert.equal(account.statusCode, 201);
+    const token = JSON.parse(account.body).token as string;
+
+    // No refusal: the dirty tree analyzes fine.
+    const result = await analyzeCodebaseRemotely({ projectPath: repo, serverUrl, token });
+    assert.equal(result.status, 'success');
+    assert.equal(result.snapshot_source, 'committed-head');
+    assert.equal(result.base_commit, head, 'shared revision is tagged with the HEAD commit');
+    assert.ok(result.cas.nodes.length > 0);
+
+    // The shared (main track) analysis must NOT see the dirty route.
+    const main = await getAnalysis(repo, { track: 'main' });
+    assert.ok(main.nodes.length > 0);
+    assert.ok(!JSON.stringify(main.entry_points || []).includes('dirty_only'), 'dirty-only route is absent from the shared revision');
+
+    // The in-flight pass ran automatically, saw the dirty change, and landed on
+    // the dedicated in-flight track.
+    assert.equal(result.in_flight?.status, 'completed');
+    assert.ok((result.in_flight?.changed_files || 0) >= 1, 'in-flight pass reported the dirty file(s)');
+    const inFlight = await getAnalysis(repo, { track: 'in-flight' });
+    assert.ok(JSON.stringify(inFlight.entry_points || []).includes('dirty_only'), 'in-flight analysis sees the dirty route');
+
+    // Server-side revision log records the HEAD commit as the shared revision.
+    const revisions = await getJson(address.port, `/v1/projects/${encodeURIComponent(result.analysis_id)}/revisions`, token);
+    assert.equal(revisions.statusCode, 200);
+    const revisionPayload = JSON.parse(revisions.body);
+    assert.equal(revisionPayload.revisions[0].commit, head);
+
+    // The working tree was never touched by analyze.
+    assert.equal(fs.readFileSync(appFile, 'utf8'), dirtyWorkingContent);
+    assert.ok(fs.existsSync(path.join(repo, 'app', 'untracked_extra.py')));
+  } finally {
+    await new Promise<void>(resolve => server.close(() => resolve()));
+    if (previousStorage === undefined) {
+      delete process.env.KLAURO_STORAGE_PATH;
+    } else {
+      process.env.KLAURO_STORAGE_PATH = previousStorage;
+    }
+    if (previousRemoteData === undefined) {
+      delete process.env.KLAURO_REMOTE_ANALYZER_DATA;
+    } else {
+      process.env.KLAURO_REMOTE_ANALYZER_DATA = previousRemoteData;
+    }
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('remote analyzer honors hosted request body limit from environment', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-remote-limit-test-'));
   const previousMaxBody = process.env.KLAURO_MAX_BODY_MB;

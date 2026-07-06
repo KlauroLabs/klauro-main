@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { listAnalysesFiltered, DEFAULT_LIMIT, MAX_LIMIT } from './analysis-listing';
 import type { AnalysisTrack } from './track';
 import { listWorkspaceAnalysesFiltered } from './workspace-listing';
+import { resolveAnalysisScope, type AnalysisScope } from './analysis-scope';
 import { installGauntletWatcher, listGauntletWatchers, stopGauntletWatcher } from './gauntlet/gauntlet-watcher';
 import { runIncrementalGauntlet, listIncrementalRecords } from './gauntlet/incremental-gauntlet';
 import { appendFileSync } from 'fs';
@@ -363,6 +364,20 @@ function enableToolCallLogging(server: McpServer): void {
 
 function json(data: unknown): { content: Array<{ type: 'text'; text: string }> } {
   return { content: [{ type: 'text', text: serializeToolResponse(data) }] };
+}
+
+// Honest-but-non-leaking projection of AnalysisScope for multi-analysis list
+// tool responses (list_analyses, list_workspace_analyses,
+// list_cross_codebase_analyses). Reports isolation is active and names the
+// agent's OWN workspace; deliberately omits `workspaceRoot` (a local
+// filesystem path) since it is not needed by the caller and could hint at
+// directory layout beyond what "scoped to workspace X" should reveal.
+function describeScopeForResponse(scope: AnalysisScope): { mode: 'workspace' | 'machine'; workspace_name?: string; reason: string } {
+  return {
+    mode: scope.mode,
+    ...(scope.workspaceName ? { workspace_name: scope.workspaceName } : {}),
+    reason: scope.reason,
+  };
 }
 
 // Stamp the freshness guarantee onto agent-entry tool responses, mirroring the
@@ -1377,7 +1392,7 @@ function registerTools(server: McpServer) {
     'list_analyses',
     {
       title: 'List Analyses',
-      description: 'List previously analyzed codebases, with narrowing and pagination. A machine can hold thousands of analyses, so this never dumps them all: filter by name/path, framework, system_type, or min_nodes/min_edges; sort by nodes (default), edges, name, or recent; dedupe re-analyses by name or path; and page with limit/offset. The response reports total_indexed, matched, has_more, and next_offset.',
+      description: 'List previously analyzed codebases, with narrowing and pagination. A machine can hold thousands of analyses, so this never dumps them all: filter by name/path, framework, system_type, or min_nodes/min_edges; sort by nodes (default), edges, name, or recent; dedupe re-analyses by name or path; and page with limit/offset. The response reports total_indexed, matched, has_more, and next_offset. When this project is bound to an account workspace (.klaurorc project.workspaceId), results are isolated to that workspace by default (response.scope reports this) — other workspaces\' analyses never appear, by name or otherwise. Set .klaurorc scope.mode="machine" to opt out.',
       inputSchema: {
         limit: z.number().int().optional().describe(`Page size (default ${DEFAULT_LIMIT}, max ${MAX_LIMIT}).`),
         offset: z.number().int().optional().describe('Page offset (default 0). Use next_offset from a prior call.'),
@@ -1394,7 +1409,8 @@ function registerTools(server: McpServer) {
     } as any,
     async (query: any) => withErrorHandling(async () => {
       const analyses = await listAnalyses();
-      return json(listAnalysesFiltered(analyses, query || {}));
+      const scope = await resolveAnalysisScope();
+      return json({ scope: describeScopeForResponse(scope), ...listAnalysesFiltered(analyses, query || {}) });
     })
   );
 
@@ -2350,7 +2366,7 @@ function registerTools(server: McpServer) {
     compact: z.boolean().optional().describe('Compact projection with member repo names (default true).'),
     max_members: z.number().int().optional().describe('Max member-repo names per workspace in the compact shape (default 20).'),
   };
-  const listWorkspacesDescription = 'List persisted WAS-compliant Workspace analyses, with narrowing and pagination. Re-runs of the same workspace are collapsed to the richest entry per name by default, so a few real workspaces are not buried under hundreds of duplicates. Filter by name or min_repos; sort by repos (default), recent, or name; page with limit/offset. Reports total_indexed, matched, has_more, next_offset.';
+  const listWorkspacesDescription = 'List persisted WAS-compliant Workspace analyses, with narrowing and pagination. Re-runs of the same workspace are collapsed to the richest entry per name by default, so a few real workspaces are not buried under hundreds of duplicates. Filter by name or min_repos; sort by repos (default), recent, or name; page with limit/offset. Reports total_indexed, matched, has_more, next_offset. IMPORTANT: this indexes LOCAL analysis files on this machine (~/.klauro/analyses/workspace-analyses/), including one-off benchmark/gauntlet runs (ids often look like "gauntlet-<name>-<runid>") that scan arbitrary local folders and are NOT the same thing as a live account workspace or its connected-project membership on mcp.klauro.com. A "soon" entry here can have a very different repo_count/member_repos than the real account workspace of the same name. Never tell a user "workspace X has N repos" based on this tool alone — cross-check the live account workspace (GET /api/workspaces/:id/projects, or the web app) before reporting repo counts tied to a named account workspace.';
 
   server.registerTool(
     'list_workspace_analyses',
@@ -2360,7 +2376,8 @@ function registerTools(server: McpServer) {
       inputSchema: workspaceListSchema as any,
     } as any,
     async (query: any) => withErrorHandling(async () => {
-      return json(listWorkspaceAnalysesFiltered(await listCrossCodebaseSystemGraphs(), query || {}));
+      const scope = await resolveAnalysisScope();
+      return json({ scope: describeScopeForResponse(scope), ...listWorkspaceAnalysesFiltered(await listCrossCodebaseSystemGraphs(), query || {}) });
     })
   );
 
@@ -2424,7 +2441,8 @@ function registerTools(server: McpServer) {
       inputSchema: workspaceListSchema as any,
     } as any,
     async (query: any) => withErrorHandling(async () => {
-      return json(listWorkspaceAnalysesFiltered(await listCrossCodebaseSystemGraphs(), query || {}));
+      const scope = await resolveAnalysisScope();
+      return json({ scope: describeScopeForResponse(scope), ...listWorkspaceAnalysesFiltered(await listCrossCodebaseSystemGraphs(), query || {}) });
     })
   );
 

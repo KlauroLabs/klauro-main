@@ -224,6 +224,44 @@ export class AccountStore {
       .sort((left, right) => left.name.localeCompare(right.name));
   }
 
+  /**
+   * Internal accessor for server-side background jobs (e.g. the auto-refreshed
+   * workspace-analysis scheduler) that need a workspace's project membership
+   * WITHOUT a specific acting user — there is no human request in flight when
+   * a debounced rebuild fires. Deliberately bypasses requireMembership: the
+   * caller is trusted server code, not a request handler exposing this to a
+   * client. Never wire this to an HTTP route directly.
+   */
+  async listProjectsForWorkspace(workspaceId: string): Promise<AccountProject[]> {
+    const db = await this.load();
+    return db.projects
+      .filter(project => project.workspace_id === workspaceId)
+      .sort((left, right) => left.name.localeCompare(right.name));
+  }
+
+  /** Internal accessor mirroring listProjectsForWorkspace, for the same background-job use case. */
+  async getWorkspaceById(workspaceId: string): Promise<AccountWorkspace | null> {
+    const db = await this.load();
+    return db.workspaces.find(candidate => candidate.id === workspaceId) || null;
+  }
+
+  /**
+   * Internal accessor for the auto-refresh trigger: `/v1/analyze` and
+   * `/api/projects/:id/reanalyze` only know an `analysis_id` (a deterministic
+   * hash of the repo path/name, NOT an AccountStore project id — see
+   * remote-sync-client.ts `resolveAnalysisId`). To know which account
+   * workspace(s) to mark dirty when an analysis lands, look up every project
+   * record that has been linked to this analysis_id (via `createProject` with
+   * `analysis_id` set, the `klauro init` reconnect flow). Zero matches is the
+   * common case for ad-hoc/unlinked analyze calls — that's fine, there is
+   * simply no workspace to refresh.
+   */
+  async findProjectsByAnalysisId(analysisId: string): Promise<AccountProject[]> {
+    if (!analysisId) return [];
+    const db = await this.load();
+    return db.projects.filter(project => project.analysis_id === analysisId);
+  }
+
   async createProject(userId: string, workspaceId: string, input: { name: string; repo_url?: string; local_path?: string; analysis_id?: string }): Promise<AccountProject> {
     const db = await this.load();
     requireMembership(db, userId, workspaceId, ['owner', 'admin', 'member']);
@@ -274,6 +312,27 @@ export class AccountStore {
     const role = roleFor(match.workspace_id);
     if (!workspace || !role) return null;
     return { project: match, workspace, role };
+  }
+
+  /**
+   * ALL projects (across every workspace the user belongs to) whose repo_url
+   * normalizes to the same value as `repoUrl`. Unlike `findProjectByRepoUrl`
+   * (which returns the first match for the `klauro init` reconnect prompt),
+   * this exists so callers that must never guess ambiguously — e.g. the
+   * `/v1/analyze` auto-attach fallback in remote-analyzer-service.ts — can
+   * tell "exactly one match" apart from "zero or more than one," and only
+   * attach on the unambiguous case.
+   */
+  async findProjectsByRepoUrlForUser(userId: string, repoUrl: string | undefined): Promise<AccountProject[]> {
+    const normalized = normalizeRepoUrlForMatch(repoUrl);
+    if (!normalized) return [];
+    const db = await this.load();
+    const memberWorkspaceIds = new Set(
+      db.workspace_users.filter(member => member.user_id === userId).map(member => member.workspace_id),
+    );
+    return db.projects.filter(project =>
+      memberWorkspaceIds.has(project.workspace_id) && normalizeRepoUrlForMatch(project.repo_url) === normalized,
+    );
   }
 
   async setProjectAnalysisId(userId: string, projectId: string, analysisId: string): Promise<AccountProject> {

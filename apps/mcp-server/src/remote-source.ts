@@ -38,6 +38,14 @@ export type RemoteFileChange = RemoteChangedFile | RemoteDeletedFile;
 export interface SourceSnapshot {
   project_name: string;
   base_commit?: string;
+  /**
+   * Where the snapshot content was read from:
+   * - 'committed-head': file contents read from the HEAD commit's git objects
+   *   (git-archive semantics) — the working tree may be dirty, but none of the
+   *   dirty content is in this snapshot.
+   * - 'working-tree': file contents read from disk (clean tree, or not a git repo).
+   */
+  snapshot_source: 'committed-head' | 'working-tree';
   files: RemoteSourceFile[];
   manifest: SourceManifest;
 }
@@ -249,8 +257,12 @@ export async function buildSourceSnapshot(projectPath: string): Promise<SourceSn
   const root = path.resolve(projectPath);
   const loaded = await loadKlauroConfig(root);
   const head = readGitHead(root);
-  if (isGitRepository(root) && listGitChanges(root).length > 0) {
-    throw new Error('Shared Klauro project analysis runs on committed source. Commit or stash uncommitted changes before remote analysis. Use klauro index --dirty-tree for private local agent assistance.');
+  if (isGitRepository(root) && head && listGitChanges(root).length > 0) {
+    // Dirty working tree: the shared analysis still runs — on the COMMITTED HEAD
+    // content (git-archive semantics, read straight from git objects). The dirty
+    // working tree is never touched, stashed, or included; uncommitted work flows
+    // through the separate in-flight track (buildWorkingTreeChangeContext).
+    return buildHeadSourceSnapshot(root, loaded, head);
   }
   const files: RemoteSourceFile[] = [];
   await walkConfiguredSourceFiles(root, loaded, async absolutePath => {
@@ -261,6 +273,48 @@ export async function buildSourceSnapshot(projectPath: string): Promise<SourceSn
   return {
     project_name: loaded.config.project.name || path.basename(root),
     base_commit: head,
+    snapshot_source: 'working-tree',
+    files: files.sort((left, right) => left.path.localeCompare(right.path)),
+    manifest: buildManifest(root, loaded, files),
+  };
+}
+
+/**
+ * Build a source snapshot from the COMMITTED HEAD only — `git ls-files`-at-HEAD /
+ * `git archive` semantics. Every file's content is read from the HEAD commit's git
+ * objects (`git show HEAD:<path>`), never from the working tree, so:
+ * - dirty (uncommitted) edits to tracked files are absent,
+ * - untracked files are absent,
+ * - files deleted in the working tree but present at HEAD ARE included,
+ * - the user's working tree is never mutated (no stash/checkout/reset).
+ */
+export async function buildHeadSourceSnapshot(
+  projectPath: string,
+  preloadedConfig?: LoadedKlauroConfig,
+  headOverride?: string
+): Promise<SourceSnapshot> {
+  const root = path.resolve(projectPath);
+  const loaded = preloadedConfig ?? await loadKlauroConfig(root);
+  const head = headOverride ?? readGitHead(root);
+  if (!head) {
+    throw new Error('Cannot build a committed-HEAD snapshot: this repository has no HEAD commit.');
+  }
+  const files: RemoteSourceFile[] = [];
+  for (const trackedPath of listGitTrackedPathsAtHead(root)) {
+    const normalized = normalizeRelativePath(trackedPath);
+    const content = readFileAtRef(root, 'HEAD', normalized);
+    if (content == null) continue;
+    // Use the git-blob byte size for the max-file-bytes gate: the file may not
+    // exist (or may differ) in the working tree, so stat-ing disk would be wrong.
+    const byteSize = Buffer.byteLength(content, 'utf8');
+    if (!(await shouldIncludeRelativePath(root, normalized, loaded, byteSize))) continue;
+    files.push({ path: normalized, content, hash: hashContent(content) });
+  }
+
+  return {
+    project_name: loaded.config.project.name || path.basename(root),
+    base_commit: head,
+    snapshot_source: 'committed-head',
     files: files.sort((left, right) => left.path.localeCompare(right.path)),
     manifest: buildManifest(root, loaded, files),
   };
@@ -580,6 +634,22 @@ async function shouldIncludeRelativePath(
   }
   const ext = base.slice(base.lastIndexOf('.'));
   return EXTRA_INCLUDED_EXTENSIONS.has(ext);
+}
+
+/** List every file path tracked at the HEAD commit (`git ls-tree -r HEAD`) —
+ *  the committed tree, regardless of working-tree state. */
+function listGitTrackedPathsAtHead(root: string): string[] {
+  try {
+    const output = execFileSync('git', ['ls-tree', '-r', '--name-only', '-z', 'HEAD'], {
+      cwd: root,
+      encoding: 'utf8',
+      maxBuffer: 1024 * 1024 * 64,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    return output.split('\0').filter(Boolean);
+  } catch {
+    return [];
+  }
 }
 
 function listGitChanges(root: string): Array<{ path: string; status: 'added' | 'modified' | 'deleted' }> {

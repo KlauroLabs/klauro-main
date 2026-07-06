@@ -10,6 +10,7 @@ import { buildSourceSnapshot } from './remote-source';
 import { previewCodebaseIteration, previewGreenfieldCodebase } from './proposal-preview';
 import { isDirectCliInvocation } from './cli-invocation';
 import { AccountHttpError, AccountStore } from './account-store';
+import { AccountWorkspaceAnalysisScheduler } from './account-workspace-analysis';
 import { getGrants, heartbeatGrant, releaseGrant, requestGrant, type AgentKind } from './coordination';
 import { appendClaim, checkEditLock, getActiveClaims, getPresence, getStoreDir, readClaimLog, releaseAgent } from './coordination/local-store';
 import { deriveActiveClaims } from './coordination/presence';
@@ -93,6 +94,23 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
   const deferAiEnrichment = options.deferAiEnrichment === true;
   const buckets = new Map<string, RateLimitBucket>();
   const accounts = new AccountStore(dataDir);
+  // Server-side auto-refreshed Workspace Analysis (WAS): rebuilds are
+  // debounced/coalesced per account workspace and run async — see
+  // account-workspace-analysis.ts. notifyProjectAnalysisLandedForAnalysisId
+  // below is the shared trigger both /v1/analyze and reanalyze use.
+  const workspaceAnalyses = new AccountWorkspaceAnalysisScheduler(dataDir, accounts);
+  const notifyProjectAnalysisLandedForAnalysisId = async (analysisId: string | undefined): Promise<void> => {
+    if (!analysisId) return;
+    try {
+      const projects = await accounts.findProjectsByAnalysisId(analysisId);
+      const workspaceIds = new Set(projects.map(project => project.workspace_id));
+      for (const workspaceId of workspaceIds) workspaceAnalyses.notifyProjectAnalysisLanded(workspaceId);
+    } catch (error) {
+      // Never let workspace-analysis bookkeeping affect the analyze/reanalyze
+      // response — it has already been computed successfully at this point.
+      console.error(`[Klauro] failed to schedule workspace analysis rebuild for analysis ${analysisId}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
 
   // Self-telemetry (dogfooding): OFF unless KLAURO_SELF_TELEMETRY is truthy.
   // Init is crash-proof and a no-op when the gate is unset. See self-telemetry.ts.
@@ -233,7 +251,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           writeJson(response, 401, { status: 'error', error: 'Sign in required' });
           return;
         }
-        const accountResult = await handleAccountApi(accounts, apiAuthorization.userId, route, request, maxBodyBytes, apiAuthorization.sharedToken, dataDir);
+        const accountResult = await handleAccountApi(accounts, apiAuthorization.userId, route, request, maxBodyBytes, apiAuthorization.sharedToken, dataDir, workspaceAnalyses);
         writeJson(response, accountResult.statusCode, accountResult.body);
         return;
       }
@@ -260,6 +278,13 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
         const body = await readJsonBody<RemoteAnalyzeRequest>(request, maxBodyBytes);
         const result = await handleAnalyze(dataDir, body, deferAiEnrichment);
         await appendProjectRevision(dataDir, result, 'local_commit_submission');
+        // Attach the landed analysis to the matching account project record.
+        // Without this, a project created in the web app (no analysis_id at
+        // creation) NEVER shows an analysis on /api/projects/:id/analysis even
+        // though every CLI `klauro analyze` push succeeded — the analysis sat
+        // orphaned under workspacePath(analysis_id). The CLI sends project_id
+        // = .klaurorc project.id (prj_...), which IS the account project id.
+        await linkAnalysisToAccountProject(accounts, authorization.clientId, body.project_id, result.analysis_id, body.snapshot?.manifest?.git_remote);
         await appendAuditLog(dataDir, {
           event: 'analyze',
           analysis_id: result.analysis_id,
@@ -271,6 +296,10 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           edges: result.cas.edges.length,
         });
         writeJson(response, 200, result);
+        // Async, never blocks/affects the response above: if this analysis_id
+        // is linked to an account project (klauro init reconnect flow), mark
+        // that project's workspace(s) dirty for a debounced WAS rebuild.
+        void notifyProjectAnalysisLandedForAnalysisId(result.analysis_id);
         return;
       }
 
@@ -1235,10 +1264,20 @@ async function describeGrantHolders(
 
 async function authorizeAnalyzerRequest(accounts: AccountStore, request: http.IncomingMessage, sharedToken: string | undefined): Promise<{ authorized: boolean; clientId?: string }> {
   const token = bearerToken(request);
+  if (sharedToken && token && token === sharedToken) return { authorized: true, clientId: 'shared-token' };
+  // Always try to resolve a real account user from the Bearer token first —
+  // this is what lets linkAnalysisToAccountProject identify the pushing user
+  // (`user:<id>`) and safely attach the analysis to their project. Without
+  // this check, a server run with no KLAURO_ANALYZER_TOKEN configured (the
+  // common self-hosted/dev shape, and every /v1/* request in that mode)
+  // never even attempted to authenticate the Bearer token AccountStore-side,
+  // so every push looked anonymous and the analysis could never attach.
+  if (token) {
+    const user = await accounts.authenticate(token);
+    if (user) return { authorized: true, clientId: `user:${user.id}` };
+  }
   if (!sharedToken) return { authorized: true, clientId: request.socket.remoteAddress || 'anonymous' };
-  if (token && token === sharedToken) return { authorized: true, clientId: 'shared-token' };
-  const user = await accounts.authenticate(token);
-  return user ? { authorized: true, clientId: `user:${user.id}` } : { authorized: false };
+  return { authorized: false };
 }
 
 async function authorizeAccountApiRequest(accounts: AccountStore, request: http.IncomingMessage, sharedToken: string | undefined): Promise<{ authorized: boolean; userId: string; sharedToken?: boolean }> {
@@ -1250,6 +1289,82 @@ async function authorizeAccountApiRequest(accounts: AccountStore, request: http.
   return user ? { authorized: true, userId: user.id } : { authorized: false, userId: '' };
 }
 
+/**
+ * §THE-SEAM fix — evidence-gated attach of a landed `/v1/analyze` push to the
+ * account project record it belongs to. Without this, `AccountStore.
+ * setProjectAnalysisId` is only ever called at project *creation* (the
+ * `klauro init` reconnect flow) — every subsequent CLI push just re-analyzes
+ * into `workspacePath(analysis_id)` with no link back, so the web app shows
+ * "Analysis: Not run" forever even though pushes are succeeding.
+ *
+ * Evidence-gated, never a guess:
+ *  - `clientId` must be a real authenticated user (`user:<id>` from
+ *    authorizeAnalyzerRequest) — an anonymous/shared-token push has no
+ *    resolvable membership, so it is never attached to anyone's project.
+ *  - Primary path: `projectId` looks like an AccountStore project id
+ *    (`prj_...`) — the CLI sends this once `.klaurorc` is bound to a project
+ *    (see remote-sync-client.ts resolveAnalysisId). Attach directly.
+ *  - Fallback path: `projectId` is a bare analysisId (sha256 of the local
+ *    path — unbound repo, no `.klaurorc` project binding yet). Look up the
+ *    pushed snapshot's git remote against every project the user can access
+ *    (AccountStore.findProjectsByRepoUrlForUser); attach ONLY when exactly
+ *    one project matches. Zero matches (no such project) or more than one
+ *    (ambiguous — e.g. a forked/mirrored remote shared by two projects)
+ *    both mean "do not attach," logged with the reason.
+ *  - `setProjectAnalysisId` itself re-checks workspace membership
+ *    (`requireMembership`) — a project id from a different user's workspace
+ *    throws 404, which is caught and logged, never attached.
+ *
+ * Never throws: analysis already landed and was already written to disk by
+ * the time this runs, so a linking failure must never fail the response.
+ */
+async function linkAnalysisToAccountProject(
+  accounts: AccountStore,
+  clientId: string | undefined,
+  projectId: string | undefined,
+  analysisId: string | undefined,
+  gitRemote: string | undefined,
+): Promise<void> {
+  if (!analysisId) return;
+  if (!clientId || !clientId.startsWith('user:')) {
+    // Anonymous / shared-token push: no user identity to check membership
+    // against, so there is nothing safe to attach — log why, never guess.
+    console.error(`[Klauro] skip analysis attach: push was not from an authenticated user (clientId=${clientId ?? 'none'})`);
+    return;
+  }
+  const userId = clientId.slice('user:'.length);
+
+  if (projectId && /^prj_/.test(projectId)) {
+    try {
+      await accounts.setProjectAnalysisId(userId, projectId, analysisId);
+    } catch (error) {
+      // 404 (project/workspace not found or not a member) is the expected
+      // shape of "ambiguous or foreign — do not attach"; log and move on.
+      const detail = error instanceof AccountHttpError ? error.message : (error instanceof Error ? error.message : String(error));
+      console.error(`[Klauro] skip analysis attach for project ${projectId} (user ${userId}): ${detail}`);
+    }
+    return;
+  }
+
+  // No `.klaurorc` project binding on this push (projectId is a bare
+  // analysisId, or absent) — try the by-remote fallback, but only attach on
+  // an unambiguous single match.
+  if (!gitRemote) return;
+  try {
+    const matches = await accounts.findProjectsByRepoUrlForUser(userId, gitRemote);
+    if (matches.length !== 1) {
+      if (matches.length > 1) {
+        console.error(`[Klauro] skip analysis attach by remote "${gitRemote}" (user ${userId}): ${matches.length} projects share this remote — ambiguous, not attaching.`);
+      }
+      return; // 0 matches: no project for this remote — nothing to attach.
+    }
+    await accounts.setProjectAnalysisId(userId, matches[0].id, analysisId);
+  } catch (error) {
+    const detail = error instanceof AccountHttpError ? error.message : (error instanceof Error ? error.message : String(error));
+    console.error(`[Klauro] skip analysis attach by remote "${gitRemote}" (user ${userId}): ${detail}`);
+  }
+}
+
 async function handleAccountApi(
   accounts: AccountStore,
   userId: string,
@@ -1258,6 +1373,7 @@ async function handleAccountApi(
   maxBodyBytes: number,
   sharedToken = false,
   dataDir?: string,
+  workspaceAnalyses?: AccountWorkspaceAnalysisScheduler,
 ): Promise<{ statusCode: number; body: unknown }> {
   if (request.method === 'GET' && route === '/api/me') {
     if (sharedToken) {
@@ -1322,6 +1438,38 @@ async function handleAccountApi(
       const body = await readJsonBody<{ name: string; repo_url?: string; local_path?: string; analysis_id?: string }>(request, maxBodyBytes);
       return { statusCode: 201, body: { project: await accounts.createProject(userId, workspaceId, body) } };
     }
+  }
+
+  const workspaceAnalysisMatch = route.match(/^\/api\/workspaces\/([^/]+)\/analysis$/);
+  if (workspaceAnalysisMatch && request.method === 'GET') {
+    const workspaceId = decodeURIComponent(workspaceAnalysisMatch[1]);
+    // requireMembership-equivalent: listProjects throws 404 for non-members,
+    // which is exactly the access check this route needs before returning
+    // any workspace-scoped data.
+    await accounts.listProjects(userId, workspaceId);
+    if (!workspaceAnalyses) {
+      return { statusCode: 200, body: { status: 'none', workspace_id: workspaceId } };
+    }
+    const record = await workspaceAnalyses.load(workspaceId);
+    const pending = workspaceAnalyses.isPending(workspaceId);
+    if (!record) {
+      return {
+        statusCode: 200,
+        body: { status: pending ? 'pending' : 'none', workspace_id: workspaceId },
+      };
+    }
+    return {
+      statusCode: 200,
+      body: {
+        status: pending ? 'pending' : 'ready',
+        workspace_id: record.workspace_id,
+        workspace_name: record.workspace_name,
+        generated_at: record.generated_at,
+        member_project_ids: record.member_project_ids,
+        member_project_names: record.member_project_names,
+        analysis: record.graph,
+      },
+    };
   }
 
   // Recognition lookup for `klauro init`: has this Git remote already been
@@ -1443,32 +1591,78 @@ async function handleAccountApi(
     if (!dataDir) throw new AccountHttpError(500, 'Analysis storage unavailable');
     const project = await accounts.getProjectForUser(userId, decodeURIComponent(projectReanalyzeMatch[1]));
     if (!project) throw new AccountHttpError(404, 'Project not found');
-    const sourcePath = project.local_path || project.repo_url;
-    if (!sourcePath || !(await fs.pathExists(sourcePath))) {
-      throw new AccountHttpError(400, 'Project has no analyzable local_path on this server. Attach a local_path that exists on the API host, or use the Klauro CLI to push an analysis for this project.');
+
+    // Product model: the client (laptop) reads its own repo and uploads a
+    // compressed snapshot; the server analyzes and discards. `local_path` is
+    // the USER'S laptop path — it is never meaningful on this host, so
+    // reanalyze must never read from it. Instead, re-run analysis on the
+    // last-uploaded snapshot already persisted at workspacePath(analysis_id)
+    // (the same workspace handleAnalyze/handleSync write to and keep).
+    if (!project.analysis_id) {
+      return {
+        statusCode: 409,
+        body: {
+          status: 'no_snapshot',
+          project_id: project.id,
+          error: 'No uploaded snapshot yet for this project. Run `klauro analyze` in the repo (or `klauro init`) to push an analysis before reanalyzing.',
+        },
+      };
     }
-    const analysisId = project.analysis_id || makeAnalysisId(project.local_path || project.id);
+    const analysisId = project.analysis_id;
     const workspace = workspacePath(dataDir, analysisId);
-    const snapshot = await buildSourceSnapshot(sourcePath);
-    const displayName = resolveDisplayName(snapshot.project_name, sourcePath);
-    await fs.remove(workspace);
-    await fs.ensureDir(workspace);
-    await writeSnapshot(workspace, snapshot.files);
-    const result = await analyzeProjectIncremental(workspace, displayName);
+    let sourceRoot = workspace;
+    if (!(await fs.pathExists(workspace))) {
+      // Operator fallback only: a local_path that genuinely exists on this
+      // host (e.g. a dev/ops box colocated with the repo) may still be used,
+      // but this is never the default end-user path and never surfaced as
+      // the primary story to a user-facing client.
+      if (project.local_path && (await fs.pathExists(project.local_path))) {
+        sourceRoot = project.local_path;
+      } else {
+        return {
+          statusCode: 409,
+          body: {
+            status: 'no_snapshot',
+            project_id: project.id,
+            analysis_id: analysisId,
+            error: 'No uploaded snapshot found for this project on the server. Run `klauro analyze` in the repo (or `klauro init`) to push an analysis before reanalyzing.',
+          },
+        };
+      }
+    }
+    const displayName = resolveDisplayName(undefined, project.name);
+    let result: Awaited<ReturnType<typeof analyzeProjectIncremental>>;
+    let manifest: SourceManifest;
+    let baseCommit: string | undefined;
+    if (sourceRoot === workspace) {
+      // Re-run analysis in place on the already-uploaded snapshot workspace.
+      result = await analyzeProjectIncremental(workspace, displayName);
+      manifest = await buildWorkspaceManifest(workspace);
+    } else {
+      // Operator fallback: source exists on this host — rebuild the snapshot
+      // from it and refresh the stored workspace.
+      const snapshot = await buildSourceSnapshot(sourceRoot);
+      await fs.remove(workspace);
+      await fs.ensureDir(workspace);
+      await writeSnapshot(workspace, snapshot.files);
+      result = await analyzeProjectIncremental(workspace, displayName);
+      manifest = snapshot.manifest;
+      baseCommit = snapshot.base_commit;
+    }
     const response: RemoteAnalyzeResponse = {
       status: 'success',
       analysis_id: analysisId,
       analysis_revision: Date.now(),
       analysis_type: result.wasFullRebuild ? 'full' : 'incremental',
-      base_commit: snapshot.base_commit,
-      manifest: snapshot.manifest,
+      base_commit: baseCommit,
+      manifest,
       cas: result.output,
       change_report: result.changeReport,
     };
     await appendProjectRevision(dataDir, response, 'local_commit_submission');
-    if (project.analysis_id !== analysisId) {
-      await accounts.setProjectAnalysisId(userId, project.id, analysisId);
-    }
+    // This route is already project-scoped (getProjectForUser above), so the
+    // owning workspace is known directly — no analysis_id lookup needed.
+    workspaceAnalyses?.notifyProjectAnalysisLanded(project.workspace_id);
     return {
       statusCode: 200,
       body: {
@@ -1951,6 +2145,36 @@ function resolveDisplayName(projectName?: string, projectPath?: string): string 
 
 function safeName(value: string): string {
   return value.replace(/[^a-zA-Z0-9_.-]/g, '-').slice(0, 120);
+}
+
+/**
+ * Manifest for a reanalyze run against an already-uploaded snapshot workspace
+ * (no new file transfer happened, so file_count/total_bytes are computed from
+ * what is currently on disk in the workspace rather than a fresh upload).
+ */
+async function buildWorkspaceManifest(workspace: string): Promise<SourceManifest> {
+  let fileCount = 0;
+  let totalBytes = 0;
+  async function walk(dir: string): Promise<void> {
+    const entries = await fs.readdir(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        await walk(full);
+      } else if (entry.isFile()) {
+        fileCount += 1;
+        totalBytes += (await fs.stat(full)).size;
+      }
+    }
+  }
+  await walk(workspace);
+  return {
+    generated_at: new Date().toISOString(),
+    root: workspace,
+    file_count: fileCount,
+    total_bytes: totalBytes,
+    excluded_directories: [],
+  };
 }
 
 function buildChangeManifest(workspace: string, changes: RemoteFileChange[]): SourceManifest {

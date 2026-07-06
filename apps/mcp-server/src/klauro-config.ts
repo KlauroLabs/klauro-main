@@ -118,6 +118,31 @@ export interface KlauroConfig {
    * `conventions` discovery — e.g. `packs: ["./.klauro/packs/*.pack.yaml"]`.
    */
   packs?: string[];
+  /**
+   * Agent-isolation scope for multi-analysis MCP surfaces (list_analyses,
+   * list_workspace_analyses/list_cross_codebase_analyses, resolve_agent_analysis,
+   * get_agent_project_map). See apps/mcp-server/src/analysis-scope.ts.
+   *
+   * When this project (or an ancestor directory) is bound to an account
+   * workspace (`project.workspaceId` set, typically on a `kind: "workspace"`
+   * .klaurorc written by `klauro init` at the workspace root), the default is
+   * `mode: "workspace"`: multi-analysis tools are filtered to analyses whose
+   * path falls under that workspace root, so an agent operating in one
+   * customer's workspace never sees another customer's — or the operator's
+   * personal — analyses. Set `mode: "machine"` to explicitly opt back into
+   * the old all-local-store view (the operator's own dogfooding machine).
+   * Absent + no bound workspaceId = unchanged legacy behavior (machine-wide).
+   */
+  scope?: KlauroScopeConfig;
+}
+
+export interface KlauroScopeConfig {
+  /**
+   * "workspace" (default when project.workspaceId is set): filter multi-analysis
+   * enumeration to the bound workspace's projects. "machine": explicit opt-out,
+   * see every locally stored analysis (pre-isolation behavior).
+   */
+  mode?: 'workspace' | 'machine';
 }
 
 /** One custom route source: a decorator-based router or a registration-call-based router. */
@@ -245,7 +270,12 @@ export function defaultKlauroConfig(projectPath: string): KlauroConfig {
     embedding: {
       enabled: true,
       provider: 'local',
-      model: 'klauro-local-hash-v1',
+      // Real in-process ONNX sentence-embedding model (all-MiniLM-L6-v2). The
+      // local factory (createLocalEmbeddingProvider) transparently falls back to
+      // the zero-dependency hash embedding (klauro-local-hash-v1) when the model
+      // can't load, so concept queries get real semantic matching where the
+      // model is present and never fail where it isn't. Both are 384-dim.
+      model: 'onnx-all-MiniLM-L6-v2',
       apiKeyEnv: 'KLAURO_EMBEDDING_API_KEY',
       dimensions: 384,
       maxDocumentChars: 8000,
@@ -510,6 +540,7 @@ function mergeConfig(defaults: KlauroConfig, userConfig: Partial<KlauroConfig>):
       : defaults.context,
     packs: userConfig.packs ?? defaults.packs,
     fabric: userConfig.fabric ?? defaults.fabric,
+    scope: userConfig.scope ?? defaults.scope,
   };
 }
 
@@ -579,6 +610,18 @@ export function validateEmbeddingConfig(config: KlauroConfig): EmbeddingConfigVa
         `embedding.apiKeyEnv "${embedding.apiKeyEnv}" is not set; API embedding will fail until it is`,
       );
     }
+  }
+
+  // The local ONNX model (all-MiniLM-L6-v2) emits fixed 384-dim vectors; a
+  // mismatched dimensions setting would force a fallback to the hash embedding.
+  if (
+    embedding.provider === 'local' &&
+    embedding.model === 'onnx-all-MiniLM-L6-v2' &&
+    embedding.dimensions !== 384
+  ) {
+    warnings.push(
+      `embedding.model "onnx-all-MiniLM-L6-v2" requires embedding.dimensions=384 (got ${embedding.dimensions}); the local provider will fall back to the hash embedding`,
+    );
   }
 
   return { errors, warnings };
