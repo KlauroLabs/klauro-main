@@ -864,6 +864,48 @@ test('agent-fast usefulness review requires default AI summary and capability de
   assert.equal(review.gates.some(gate => gate.id === 'description-quality'), false);
 });
 
+test('external-integration-evidence gate flags command-shaped fragments claimed as integrations', () => {
+  const baseCas = {
+    system: { name: 'testing-utilities-net', type: 'library' },
+    nodes: [
+      { id: 'n1', name: 'TestUtil', type: 'function', source: { file: 'src/TestUtil.cs' } },
+    ],
+    edges: [],
+    index: { nodes_by_type: { function: ['n1'] } },
+    analysis_facts: [{ id: 'f', type: 'route', description: 'x', evidence: ['src/TestUtil.cs'] }],
+    enhanced_system_purpose: {
+      primary_domain: 'test-utilities',
+      inferred_description: 'A test utility library that centers on shared assertion helpers for .NET projects across the suite.',
+      core_concepts: ['test', 'utility'],
+    },
+    system_capabilities: [{ name: 'Test Utilities', related_entities: [], related_domains: [], operations: [] }],
+    domain_concepts: [{ name: 'test', appears_in: { nodes: [], entry_points: [], entities: [] } }],
+    architecture_summary: { system_type: 'library', architectural_patterns: [], architectural_inventory: {} },
+    analyzer_contributions: [],
+    progressive_levels: {} as any,
+  };
+
+  // A leaked CI/shell fragment surfaced as an "external service".
+  const leaked = reviewAnalysisUsefulnessStatic({
+    ...baseCas,
+    external_services: [
+      { name: 'dotnet pack "Soon.TestingUtilities/Soon.TestingUtilities.csproj" -p:Version=$VER', type: 'sdk' },
+    ],
+  } as any, '/tmp/testing-utilities-net', 'testing-utilities-net');
+  const leakedGate = leaked.gates.find(gate => gate.id === 'external-integration-evidence');
+  assert.ok(leakedGate, 'integration-evidence gate present');
+  assert.ok((leakedGate!.score ?? 100) < 100, `command fragment must drop the gate score, got ${leakedGate!.score}`);
+  assert.match(leakedGate!.detail || '', /command fragments/);
+
+  // A real domain-name service is not flagged.
+  const legit = reviewAnalysisUsefulnessStatic({
+    ...baseCas,
+    external_services: [{ name: 'sentry.io', type: 'api' }],
+  } as any, '/tmp/testing-utilities-net', 'testing-utilities-net');
+  const legitGate = legit.gates.find(gate => gate.id === 'external-integration-evidence');
+  assert.equal(legitGate?.score, 100, 'real service name should keep a clean integration-evidence score');
+});
+
 test('usefulness review fails disorganized CAS graphs with fixture pollution and weak evidence', () => {
   const review = reviewAnalysisUsefulnessStatic({
     system: { name: 'polluted', type: 'application' },

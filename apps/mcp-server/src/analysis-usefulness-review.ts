@@ -8,6 +8,7 @@ import { classifyAnalysisProfile, type AnalysisProfile } from './analysis-profil
 import { discoverRealRepos, type RealRepoTarget } from './repo-discovery';
 import { isDirectCliInvocation } from './cli-invocation';
 import { withAnalysisFocus, type AnalysisFocus } from './analysis-focus';
+import { isCommandShapedLabel, isHostnameLikeServiceName } from '../../../packages/analyzer-core/src/ai/external-service-plausibility';
 
 type GateStatus = 'pass' | 'warn' | 'fail';
 
@@ -1054,14 +1055,20 @@ function scoreExternalIntegrationEvidence(cas: CASOutput, profile: AnalysisProfi
   const services: string[] = ((cas as any).external_services || [])
     .map((service: any) => clean(service?.name || service?.service || service))
     .filter((name: string) => Boolean(name) && !isRuntimeIntegrationNoise(name));
-  const weakNames = services.filter(name => looksLikeInternalMemberAccess(name));
+  // An "external integration" whose name is command-shaped (a leaked CI/shell
+  // fragment, e.g. `dotnet pack "Foo.csproj" -p:Version=$VER`) is not evidence
+  // of a real integration. Score it as an unexplained claim using the SAME lens
+  // the product path uses to reject such labels (isCommandShapedLabel), so the
+  // referee and the product agree and this gate can catch regressions of the
+  // class it exists to catch.
+  const weakNames = services.filter(name => looksLikeInternalMemberAccess(name) || isCommandShapedLabel(name));
   if (services.length === 0) return gate('external-integration-evidence', 100, 'no external integrations claimed');
   if (weakNames.length === 0) return gate('external-integration-evidence', 100, `${services.length} external integration claims look service-like`);
   const score = Math.max(0, 100 - Math.ceil((weakNames.length / services.length) * 100));
   return gate(
     'external-integration-evidence',
     score,
-    `external integration names look like internal member access: ${weakNames.slice(0, 5).join(', ')}`
+    `external integration names look like internal member access or command fragments: ${weakNames.slice(0, 5).join(', ')}`
   );
 }
 
@@ -1635,6 +1642,10 @@ function countInventoryNodes(inventory: Record<string, any>): number {
 function looksLikeInternalMemberAccess(name: string): boolean {
   const value = clean(name);
   if (!value.includes('.')) return false;
+  // Real hostnames (auth0.com, api.stripe.com, sentry.io) are external services,
+  // not member-access chains — accept them via the shared product lens so the
+  // referee and the product agree on what a domain is.
+  if (isHostnameLikeServiceName(value)) return false;
   if (/^[a-z]+:\/\//i.test(value) || /[\/@]/.test(value)) return false;
   if (/^[a-z0-9-]+\.[a-z0-9-]+\.[a-z]{2,}$/i.test(value)) return false;
   if (/[()[\]{}]|=>/.test(value)) return true;

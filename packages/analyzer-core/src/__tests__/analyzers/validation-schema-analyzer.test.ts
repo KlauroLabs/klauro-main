@@ -5,7 +5,7 @@ jest.unmock('glob');
 import * as fs from 'fs-extra';
 import * as os from 'os';
 import * as path from 'path';
-import { ValidationSchemaAnalyzer } from '../../analyzer/libraries/architecture/validation-schema-analyzer';
+import { ValidationSchemaAnalyzer, describeValidationRules } from '../../analyzer/libraries/architecture/validation-schema-analyzer';
 import { CASContribution, CASNode } from '../../types/cas.types';
 
 describe('ValidationSchemaAnalyzer', () => {
@@ -130,6 +130,54 @@ describe('ValidationSchemaAnalyzer', () => {
     ]));
   });
 
+  it('extracts named-import and builder-chain Joi schemas (corpus shapes)', async () => {
+    const contribution = await analyzeProject(
+      { 'package.json': { dependencies: { joi: '^17.11.0' } } },
+      {
+        // Mirrors finance-context-ts packages/domain/src/common/uuid.ts: a
+        // default-import builder chain with no Joi.object and no "Schema" token.
+        'src/common/uuid.ts': [
+          "import Joi from 'joi'",
+          "import * as uuid from 'uuid'",
+          '',
+          'export const create = () => uuid.v4()',
+          '',
+          'export const validator = Joi.string().guid()',
+        ].join('\n'),
+        // Named-import forms: object schema + scalar builder chain.
+        'src/contracts/user.ts': [
+          "import { object, string, number as num } from 'joi'",
+          '',
+          'export const UserSchema = object({',
+          '  name: string().required(),',
+          '  age: num().optional(),',
+          '});',
+          '',
+          'export const emailValidator = string().email().required()',
+        ].join('\n'),
+        // Bare builders WITHOUT a joi import must not match.
+        'src/other.ts': [
+          "import { string } from './my-own-lib'",
+          '',
+          'export const notJoi = string().custom()',
+        ].join('\n'),
+      }
+    );
+
+    const validator = contract(contribution, 'validator');
+    expect(validator.metadata?.attributes?.library).toBe('joi');
+    expect((validator.metadata as any)?.schemaKind).toBe('joi-builder-schema');
+
+    const userSchema = contract(contribution, 'UserSchema');
+    expect(userSchema.metadata?.attributes?.library).toBe('joi');
+    expect(userSchema.metadata?.attributes?.fields).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'name', required: true }),
+    ]));
+
+    expect((contract(contribution, 'emailValidator').metadata as any)?.schemaKind).toBe('joi-builder-schema');
+    expect(contractNodes(contribution).find(node => node.name === 'notJoi')).toBeUndefined();
+  });
+
   it('extracts class-validator DTO fields and handler parameter usage', async () => {
     const contribution = await analyzeProject(
       { 'package.json': { dependencies: { 'class-validator': '^0.14.0', '@nestjs/common': '^10.0.0' } } },
@@ -161,6 +209,91 @@ describe('ValidationSchemaAnalyzer', () => {
       expect.objectContaining({ name: 'name', type: 'string', required: false }),
     ]));
     expect(contribution.edges?.some(edge => edge.type === 'validates_input_for')).toBe(true);
+  });
+
+  it('captures class-validator decorator arguments for bounded rules', async () => {
+    const contribution = await analyzeProject(
+      { 'package.json': { dependencies: { 'class-validator': '^0.14.0', '@nestjs/common': '^10.0.0' } } },
+      {
+        'src/create-order.controller.ts': [
+          "import { Body, Controller, Post } from '@nestjs/common';",
+          "import { IsEnum, IsInt, IsNotEmpty, IsOptional, IsString, Length, Max, Min } from 'class-validator';",
+          'export class CreateOrderDto {',
+          '  @IsNotEmpty()',
+          '  @IsString()',
+          '  @Length(1, 64)',
+          '  name!: string;',
+          '  @Min(0)',
+          '  @Max(100)',
+          '  @IsInt()',
+          '  quantity!: number;',
+          "  @IsEnum(OrderStatus)",
+          '  status!: OrderStatus;',
+          '  @IsOptional()',
+          '  @IsString()',
+          '  note?: string;',
+          '}',
+        ].join('\n'),
+      }
+    );
+
+    const dto = contract(contribution, 'CreateOrderDto');
+    const fields = dto.metadata?.attributes?.fields as any[];
+    const quantity = fields.find(f => f.name === 'quantity');
+    expect(quantity.decoratorArgs).toEqual(expect.objectContaining({ Min: '0', Max: '100' }));
+    const name = fields.find(f => f.name === 'name');
+    expect(name.decoratorArgs).toEqual(expect.objectContaining({ Length: '1, 64' }));
+    const status = fields.find(f => f.name === 'status');
+    expect(status.decoratorArgs).toEqual(expect.objectContaining({ IsEnum: 'OrderStatus' }));
+
+    // The lift phrases these into human-legible rules.
+    const rules = describeValidationRules(fields);
+    expect(rules).toEqual(expect.arrayContaining([
+      'name must be a non-empty string, length 1-64',
+      expect.stringContaining('quantity must be an integer'),
+      'status must be one of the OrderStatus values',
+      'note must be a string (optional)',
+    ]));
+    const quantityRule = rules.find(r => r.startsWith('quantity'))!;
+    expect(quantityRule).toContain('>= 0');
+    expect(quantityRule).toContain('<= 100');
+  });
+
+  describe('describeValidationRules', () => {
+    it('phrases the common class-validator decorators into legible rules', () => {
+      expect(describeValidationRules([
+        { name: 'email', validators: ['IsNotEmpty', 'IsEmail'] },
+      ])).toEqual(['email must be a non-empty valid email']);
+
+      expect(describeValidationRules([
+        { name: 'amount', validators: ['IsNumber', 'Min'], decoratorArgs: { Min: '0' } },
+      ])).toEqual(['amount must be a number, >= 0']);
+
+      expect(describeValidationRules([
+        { name: 'quantity', validators: ['IsInt', 'Min', 'Max'], decoratorArgs: { Min: '0', Max: '100' } },
+      ])).toEqual(['quantity must be an integer, >= 0, <= 100']);
+
+      expect(describeValidationRules([
+        { name: 'role', validators: ['IsIn'], decoratorArgs: { IsIn: "['admin', 'user']" } },
+      ])).toEqual(['role must be one of admin, user']);
+    });
+
+    it('ignores documentation/serialization decorators and drops empty fields', () => {
+      // @ApiProperty / *Property / @Type carry no runtime constraint.
+      expect(describeValidationRules([
+        { name: 'meta', validators: ['ApiProperty', 'ObjectProperty', 'Type'] },
+      ])).toEqual([]);
+      // A field with only @IsOptional is not a constraint on its own.
+      expect(describeValidationRules([
+        { name: 'x', validators: ['IsOptional'] },
+      ])).toEqual([]);
+    });
+
+    it('surfaces unknown custom validators by name rather than dropping them', () => {
+      expect(describeValidationRules([
+        { name: 'cidr', validators: ['IsHostOrCidr'] },
+      ])).toEqual(['cidr constrained by IsHostOrCidr']);
+    });
   });
 
   it('extracts Marshmallow and Cerberus schemas without duplicating Pydantic', async () => {

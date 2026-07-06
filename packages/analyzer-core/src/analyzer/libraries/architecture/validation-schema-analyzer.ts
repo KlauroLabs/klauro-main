@@ -11,6 +11,13 @@ interface ValidationField {
   type: string;
   required?: boolean;
   validators?: string[];
+  /**
+   * class-validator decorators WITH their raw argument text, keyed by decorator
+   * name (e.g. `{ Min: '0', Length: '1, 64', IsEnum: 'AccessType' }`). Only the
+   * class-validator DTO path populates this; it is what lets the entry-point lift
+   * phrase bounded rules ("amount must be >= 0") instead of bare decorator names.
+   */
+  decoratorArgs?: Record<string, string>;
 }
 
 interface ValidationContract {
@@ -284,7 +291,10 @@ export class ValidationSchemaAnalyzer extends BaseAnalyzer {
     const contracts: ValidationContract[] = [];
     if (imported.has('zod')) contracts.push(...this.extractObjectCallSchemas(content, filePath, 'zod', /\bz\.object\s*\(\s*\{/g));
     if (imported.has('yup')) contracts.push(...this.extractObjectCallSchemas(content, filePath, 'yup', /\byup\.object(?:\s*\(\s*\))?\s*(?:\.shape)?\s*\(\s*\{/g));
-    if (imported.has('joi')) contracts.push(...this.extractObjectCallSchemas(content, filePath, 'joi', /\bJoi\.object\s*\(\s*\{/g));
+    if (imported.has('joi')) {
+      contracts.push(...this.extractObjectCallSchemas(content, filePath, 'joi', /\bJoi\.object\s*\(\s*\{/g));
+      contracts.push(...this.extractJoiBuilderSchemas(content, filePath));
+    }
     if (imported.has('ajv')) contracts.push(...this.extractJsonSchemas(content, filePath));
     if (imported.has('class-validator')) contracts.push(...this.extractClassValidatorDtos(content, filePath));
     if (imported.has('marshmallow')) contracts.push(...this.extractMarshmallowSchemas(content, filePath));
@@ -317,6 +327,74 @@ export class ValidationSchemaAnalyzer extends BaseAnalyzer {
         evidence: content.slice(assignment.index, Math.min(bodyEnd + 1, assignment.index + 220)).replace(/\s+/g, ' ').trim(),
       });
     }
+    return contracts;
+  }
+
+  /**
+   * Joi schemas that the `Joi.object({...})` shape misses but that are the norm
+   * in real repos (found in the 2026-07-05 corpus depth sweep):
+   *  - default-import builder chains assigned to a name: `const validator = Joi.string().guid()`
+   *  - named-import builders: `import { object, string } from 'joi'` then
+   *    `const s = object({...})` / `const v = string().email()`.
+   * Named-import matching is gated on the names ACTUALLY imported from 'joi' so a
+   * bare `object(` / `string(` from another library never matches.
+   */
+  private extractJoiBuilderSchemas(content: string, filePath: string): ValidationContract[] {
+    const contracts: ValidationContract[] = [];
+    const builders = ['string', 'number', 'boolean', 'date', 'array', 'binary', 'alternatives', 'any', 'symbol', 'link'];
+    const seen = new Set<string>();
+
+    const pushScalar = (name: string, index: number, expression: string) => {
+      if (seen.has(name)) return;
+      seen.add(name);
+      const line = this.lineForIndex(content, index);
+      contracts.push({
+        id: this.contractId('joi', filePath, name),
+        name,
+        variableName: name,
+        library: 'joi',
+        kind: 'joi-builder-schema',
+        fields: [],
+        filePath,
+        line,
+        endLine: line,
+        evidence: expression.replace(/\s+/g, ' ').trim().slice(0, 220),
+      });
+    };
+
+    // Default-import chains: const X = Joi.string().guid()... (Joi.object is handled separately.)
+    const defaultChain = new RegExp(
+      `(?:^|\\n)\\s*(?:export\\s+)?(?:const|let|var)\\s+([A-Za-z_$][\\w$]*)\\s*=\\s*(Joi\\.(?:${builders.join('|')})\\s*\\([^)]*\\)(?:\\s*\\.[A-Za-z_$][\\w$]*\\s*\\([^)]*\\))*)`,
+      'g'
+    );
+    let match: RegExpExecArray | null;
+    while ((match = defaultChain.exec(content)) !== null) {
+      pushScalar(match[1], match.index, match[2]);
+    }
+
+    // Named imports actually bound from 'joi' (respects `as` renames).
+    const namedImport = /import\s*\{([^}]+)\}\s*from\s*['"](?:joi|@hapi\/joi)['"]/.exec(content);
+    if (!namedImport) return contracts;
+    const locals = new Map<string, string>();
+    for (const piece of namedImport[1].split(',')) {
+      const renamed = /^\s*([A-Za-z_$][\w$]*)(?:\s+as\s+([A-Za-z_$][\w$]*))?\s*$/.exec(piece);
+      if (renamed) locals.set(renamed[2] || renamed[1], renamed[1]);
+    }
+
+    for (const [local, original] of locals) {
+      if (original === 'object') {
+        contracts.push(...this.extractObjectCallSchemas(content, filePath, 'joi', new RegExp(`(?<![.\\w])${this.escapeRegExp(local)}\\s*\\(\\s*\\{`, 'g')));
+      } else if (builders.includes(original)) {
+        const namedChain = new RegExp(
+          `(?:^|\\n)\\s*(?:export\\s+)?(?:const|let|var)\\s+([A-Za-z_$][\\w$]*)\\s*=\\s*(${this.escapeRegExp(local)}\\s*\\([^)]*\\)(?:\\s*\\.[A-Za-z_$][\\w$]*\\s*\\([^)]*\\))*)`,
+          'g'
+        );
+        while ((match = namedChain.exec(content)) !== null) {
+          pushScalar(match[1], match.index, match[2]);
+        }
+      }
+    }
+
     return contracts;
   }
 
@@ -474,23 +552,37 @@ export class ValidationSchemaAnalyzer extends BaseAnalyzer {
     const fields: ValidationField[] = [];
     const lines = body.split(/\r?\n/);
     let decorators: string[] = [];
+    let decoratorArgs: Record<string, string> = {};
     for (const line of lines) {
-      const decorator = line.trim().match(/^@(Is[A-Za-z]+|Array[A-Za-z]+|Validate[A-Za-z]+|Min|Max|Length|Matches)\s*\(/);
+      const trimmed = line.trim();
+      // Widen the decorator gate beyond the Is*/Array*/Validate* families so
+      // property-name decorators (@ApiProperty), custom validators (@IsPortRange,
+      // @IsHostOrCidr), and the bare min/max/length family all count. Any leading
+      // @Name( on the line is a decorator; the raw arg text (balanced-paren) is
+      // kept so the entry-point lift can phrase bounded rules like "amount >= 0".
+      const decorator = trimmed.match(/^@([A-Za-z_$][\w$]*)\s*\(/);
       if (decorator) {
+        const openParen = line.indexOf('(', line.indexOf('@'));
+        const close = this.findMatching(line, openParen, '(', ')');
+        const args = close > openParen ? line.slice(openParen + 1, close).trim() : '';
         decorators.push(decorator[1]);
+        if (args) decoratorArgs[decorator[1]] = args;
         continue;
       }
-      const field = line.trim().match(/^(?:readonly\s+)?([A-Za-z_$][\w$]*)[!?]?\s*:\s*([^;=]+)/);
+      const field = trimmed.match(/^(?:readonly\s+)?([A-Za-z_$][\w$]*)[!?]?\s*:\s*([^;=]+)/);
       if (field && decorators.length > 0) {
         fields.push({
           name: field[1],
           type: field[2].trim(),
           required: !decorators.includes('IsOptional'),
           validators: [...decorators],
+          decoratorArgs: Object.keys(decoratorArgs).length ? { ...decoratorArgs } : undefined,
         });
         decorators = [];
-      } else if (line.trim() && !line.trim().startsWith('@')) {
+        decoratorArgs = {};
+      } else if (trimmed && !trimmed.startsWith('@')) {
         decorators = [];
+        decoratorArgs = {};
       }
     }
     return fields;
@@ -603,15 +695,22 @@ export class ValidationSchemaAnalyzer extends BaseAnalyzer {
     for (const line of content.split(/\r?\n/)) {
       const importMatch = line.match(/^\s*import\s+(?:.+?\s+from\s+)?['"]([^'"]+)['"]/);
       const requireMatch = line.match(/\brequire\(['"]([^'"]+)['"]\)/);
+      // Multi-line named imports put the source on its own `} from '...'` line
+      // (the norm in real SPAs), which the line-based import match misses.
+      const fromMatch = line.match(/^\s*\}?\s*from\s+['"]([^'"]+)['"]/);
       const pythonMatch = line.match(/^\s*(?:from\s+([a-zA-Z0-9_.-]+)\s+import|import\s+([a-zA-Z0-9_.-]+))/);
-      const value = importMatch?.[1] || requireMatch?.[1] || pythonMatch?.[1] || pythonMatch?.[2];
+      const value = importMatch?.[1] || requireMatch?.[1] || fromMatch?.[1] || pythonMatch?.[1] || pythonMatch?.[2];
       if (value) imports.add(value);
     }
     return [...imports];
   }
 
   private fileMayContainValidation(content: string): boolean {
-    return /(z\.object|yup\.object|Joi\.object|new\s+Ajv|@Is[A-Za-z]+|fields\.[A-Za-z]+|Validator\s*\(|Schema\b)/.test(content);
+    // Joi files often contain no `Joi.object` and no `Schema` token at all
+    // (`const validator = Joi.string().guid()`, named-import builders), so any
+    // joi/@hapi/joi import marks the file as a candidate; extraction stays gated
+    // on the real schema shapes.
+    return /(z\.object|yup\.object|Joi\.[a-z]+\s*\(|new\s+Ajv|@Is[A-Za-z]+|fields\.[A-Za-z]+|Validator\s*\(|Schema\b|(?:from\s*|require\s*\(\s*)['"](?:joi|@hapi\/joi)['"])/.test(content);
   }
 
   private async sourceFiles(projectPath: string): Promise<string[]> {
@@ -774,4 +873,139 @@ export class ValidationSchemaAnalyzer extends BaseAnalyzer {
     return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   }
 
+}
+
+/** The field shape emitted onto `validation_contract` node metadata.attributes.fields.
+ *  Kept structurally compatible with the analyzer's private ValidationField so the
+ *  entry-point lift (orchestrator) can read it back without importing internals. */
+export interface ValidationContractField {
+  name: string;
+  type?: string;
+  required?: boolean;
+  validators?: string[];
+  decoratorArgs?: Record<string, string>;
+}
+
+/**
+ * Turn a class-validator DTO's decorated fields into HUMAN-LEGIBLE rule strings,
+ * e.g. `@IsNotEmpty @IsString name` -> "name must be a non-empty string",
+ * `@Min(0) amount` -> "amount must be >= 0". This is the phrasing the flow-concepts
+ * deriver reads back via `entry_point.input.validation` and turns into
+ * kind='validation' constraints. Deterministic and side-effect-free so the
+ * orchestrator lift and the analyzer's own tests share one source of truth.
+ *
+ * One rule per field; multiple decorators on a field are folded into a single
+ * clause so the output stays legible (e.g. "email must be a valid email (optional)").
+ */
+export function describeValidationRules(fields: ValidationContractField[]): string[] {
+  const rules: string[] = [];
+  for (const field of fields) {
+    const rule = describeFieldRule(field);
+    if (rule) rules.push(rule);
+  }
+  return rules;
+}
+
+const TYPE_PHRASE: Record<string, string> = {
+  IsString: 'a string',
+  IsNumberString: 'a numeric string',
+  IsNumber: 'a number',
+  IsInt: 'an integer',
+  IsBoolean: 'a boolean',
+  IsArray: 'an array',
+  IsObject: 'an object',
+  IsDate: 'a date',
+  IsDateString: 'a date string',
+  IsUUID: 'a UUID',
+  IsEmail: 'a valid email',
+  IsUrl: 'a valid URL',
+  IsIP: 'an IP address',
+  IsPhoneNumber: 'a phone number',
+};
+
+/**
+ * Decorators that DECORATE a DTO property but assert no runtime constraint:
+ * class-validator's IsOptional/IsDefined (handled as the optional flag), and the
+ * documentation/serialization families (@ApiProperty and the common *Property
+ * Swagger wrappers, class-transformer's @Type/@Expose/@Transform). Excluding
+ * these keeps the lifted rule about what the INPUT must satisfy, not how it is
+ * documented or serialized.
+ */
+function isNonConstraintDecorator(name: string): boolean {
+  if (name === 'IsOptional' || name === 'IsDefined') return true;
+  if (name === 'Type' || name === 'Expose' || name === 'Transform') return true;
+  if (name === 'ApiProperty' || name === 'ApiPropertyOptional') return true;
+  if (/Property$/.test(name)) return true; // ArrayProperty/ObjectProperty/DateProperty (Swagger wrappers).
+  return false;
+}
+
+function describeFieldRule(field: ValidationContractField): string | null {
+  const validators = field.validators || [];
+  if (validators.length === 0) return null;
+  const args = field.decoratorArgs || {};
+  const optional = validators.includes('IsOptional');
+  // Clauses are collected WITHOUT a leading "must be" so the assembly step can
+  // prepend it exactly once ("a number, >= 0" -> "must be a number, >= 0")
+  // instead of repeating it per-clause ("must be a number, must be >= 0").
+  const clauses: string[] = [];
+
+  // Leading type/format clause (first recognized type decorator wins).
+  const typeDec = validators.find(v => v in TYPE_PHRASE);
+  let base = typeDec ? TYPE_PHRASE[typeDec] : undefined;
+  if (validators.includes('IsNotEmpty')) {
+    base = base ? `a non-empty ${base.replace(/^an? /, '')}` : 'non-empty';
+  }
+  if (base) clauses.push(base);
+
+  // Enumerations / allow-lists.
+  if (validators.includes('IsEnum') && args.IsEnum) {
+    clauses.push(`one of the ${args.IsEnum.split(/[,)]/)[0].trim()} values`);
+  } else if (validators.includes('IsIn') && args.IsIn) {
+    clauses.push(`one of ${collapse(args.IsIn)}`);
+  }
+
+  // Numeric bounds.
+  if (validators.includes('Min') && args.Min !== undefined) clauses.push(`>= ${firstArg(args.Min)}`);
+  if (validators.includes('Max') && args.Max !== undefined) clauses.push(`<= ${firstArg(args.Max)}`);
+
+  // Length / size bounds.
+  if (validators.includes('Length') && args.Length !== undefined) {
+    const parts = args.Length.split(',').map(s => s.trim()).filter(Boolean);
+    if (parts.length >= 2) clauses.push(`length ${parts[0]}-${parts[1]}`);
+    else if (parts.length === 1) clauses.push(`min length ${parts[0]}`);
+  }
+  if (validators.includes('MinLength') && args.MinLength !== undefined) clauses.push(`min length ${firstArg(args.MinLength)}`);
+  if (validators.includes('MaxLength') && args.MaxLength !== undefined) clauses.push(`max length ${firstArg(args.MaxLength)}`);
+  if (validators.includes('ArrayMinSize') && args.ArrayMinSize !== undefined) clauses.push(`>= ${firstArg(args.ArrayMinSize)} items`);
+  if (validators.includes('ArrayMaxSize') && args.ArrayMaxSize !== undefined) clauses.push(`<= ${firstArg(args.ArrayMaxSize)} items`);
+  if (validators.includes('ArrayUnique')) clauses.push('unique items');
+
+  // Pattern.
+  if (validators.includes('Matches')) clauses.push('matching the required pattern');
+  if (validators.includes('ValidateNested')) clauses.push('a validated nested object');
+
+  // Custom validators the phrasing map does not know about: surface the name so
+  // the rule is grounded in real evidence rather than dropped silently.
+  if (clauses.length === 0) {
+    const custom = validators.filter(v => !isNonConstraintDecorator(v));
+    if (custom.length === 0) return null;
+    return `${field.name} constrained by ${custom.join(', ')}${optional ? ' (optional)' : ''}`;
+  }
+
+  const body = clauses.join(', ');
+  return `${field.name} must be ${body}${optional ? ' (optional)' : ''}`;
+}
+
+function firstArg(raw: string): string {
+  return raw.split(',')[0].trim();
+}
+
+function collapse(raw: string): string {
+  // `['a','b','c']` -> `a, b, c`; leave already-bare text alone. Bounded so a
+  // huge inline array does not produce an unreadable rule.
+  const inner = raw.replace(/^\[|\]$/g, '');
+  const items = inner.split(',').map(s => s.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean);
+  if (items.length === 0) return raw.trim();
+  const shown = items.slice(0, 6).join(', ');
+  return items.length > 6 ? `${shown}, ...` : shown;
 }

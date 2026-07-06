@@ -58,11 +58,56 @@ export function isCommandShapedLabel(name: string): boolean {
   if (/\/[^\s/]*\.[A-Za-z0-9]{1,6}(?:\s|$)/.test(value) && !/:\/\//.test(value)) return true;
   // Command verb at the start followed by arguments: `dotnet pack …`, `npm publish …`
   if (COMMAND_VERB_PATTERN.test(value)) return true;
+  // Command verb joined to a subcommand by - or _: `dotnet-pack`, `npm-publish`.
+  // Deliberately a NARROW verb list (no `go`, `make`, …) so real library/service
+  // labels like `go-redis` are not swept up.
+  if (/^(?:dotnet|npm|npx|pnpm|yarn|cargo|docker|docker-compose|podman|kubectl|helm|git|nuget|msbuild|gradle|mvn|pip|terraform|pulumi|ansible|xcodebuild)[-_][a-z][a-z0-9-]*$/i.test(value)) return true;
   // Overlong multi-word fragments are prose/commands, not names.
   const words = value.split(/\s+/);
   if (words.length >= 5) return true;
   if (words.length >= 2 && value.length > 60) return true;
   return false;
+}
+
+// A conservative set of TLDs that real external-service hostnames use. This is
+// not exhaustive — it exists only to distinguish a hostname (auth0.com,
+// api.stripe.com, sentry.io) from a dotted code identifier (this.foo.bar,
+// Repo.Save) or a namespaced type (System.Text). Bare-domain services must be
+// admissible; internal member access must not.
+const KNOWN_SERVICE_TLDS = new Set([
+  'com', 'net', 'org', 'io', 'co', 'ai', 'dev', 'app', 'cloud', 'gov', 'edu',
+  'info', 'biz', 'me', 'sh', 'xyz', 'tech', 'run', 'link',
+]);
+
+/**
+ * True when a candidate label is a real hostname (an external service reachable
+ * by domain), e.g. `auth0.com`, `api.stripe.com`, `sentry.io`. Requires:
+ * dot-separated DNS labels, a recognized TLD, no path, no scheme, no shell
+ * characters, no CLI flags — so a file path (`foo/bar.csproj`), a namespaced
+ * code identifier (`System.Text`), or a member-access chain (`this.repo.save`)
+ * is NOT a hostname. Optional URL scheme (`https://…`) and a leading `www.` /
+ * `api.` subdomain are tolerated; a path segment is not.
+ */
+export function isHostnameLikeServiceName(name: string): boolean {
+  let value = (name || '').trim();
+  if (!value) return false;
+  if (isCommandShapedLabel(value)) return false;
+  // Tolerate an explicit scheme but reject anything with a path/query/port.
+  const schemeMatch = value.match(/^([a-z][a-z0-9+.-]*):\/\//i);
+  if (schemeMatch) {
+    if (!/^https?$/i.test(schemeMatch[1])) return false;
+    value = value.slice(schemeMatch[0].length);
+  }
+  // A path, query, fragment, port, or whitespace means this is not a bare host.
+  if (/[\/?#:\s]/.test(value)) return false;
+  const labels = value.split('.');
+  if (labels.length < 2) return false;
+  // Each DNS label: alphanumeric + hyphen, not starting/ending with a hyphen.
+  if (!labels.every(label => /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/i.test(label))) return false;
+  const tld = labels[labels.length - 1].toLowerCase();
+  // TLD must be alphabetic and recognized (excludes `.csproj`, `.Save`, `.ts`).
+  if (!/^[a-z]{2,}$/.test(tld)) return false;
+  return KNOWN_SERVICE_TLDS.has(tld);
 }
 
 function normalizeServiceName(name: string): string {

@@ -84,6 +84,7 @@ import { collectDeployableEvidence } from './deployable-evidence';
 import { classifyCodebaseTypes } from './codebase-type';
 import { applyConventions, type KlauroConventionsInput } from './conventions-applier';
 import { linkInfraTopology } from './infra-topology-linker';
+import { describeValidationRules, type ValidationContractField } from '../libraries/architecture/validation-schema-analyzer';
 import { classifyCommunicationSeams, mergeSeams } from './communication-seams';
 import { deriveConsistencyModel, toCommunicationSeams } from './consistency-model';
 import { collectCoverageGaps } from './coverage-gaps';
@@ -114,7 +115,7 @@ import { aiService } from '../../ai/ai-service';
 import { setAICacheProjectScope } from '../../ai/ai-cache';
 import { aiConfig, getAIConfig } from '../../config/ai.config';
 import { validateElementDescription as validateSharedElementDescription } from '../../ai/element-description-validator';
-import { filterPlausibleExternalServices, isCommandShapedLabel } from '../../ai/external-service-plausibility';
+import { filterPlausibleExternalServices, isCommandShapedLabel, isHostnameLikeServiceName } from '../../ai/external-service-plausibility';
 
 export type { CASOutput } from '../../types/cas.types';
 import * as fs from 'fs-extra';
@@ -1311,6 +1312,16 @@ export class AnalyzerOrchestrator {
     } catch (error) {
       console.error('[Klauro] conventions-applier pass failed:', error);
     }
+
+    // Lift class-validator DTO decorators onto the entry points that consume them,
+    // so `entry_point.input.validation` carries human-legible rules and the
+    // flow-concepts deriver can ground kind='validation' constraints. Runs after
+    // linkRouteHandlers (needs ep.handler.node_id resolved) and the conventions
+    // pass (so declared entry points are covered too). Evidence-gated on a real
+    // handler param TYPE matching a real validation_contract DTO name.
+    phaseStart = Date.now();
+    this.liftValidationToEntryPoints(allNodes, allEntryPoints);
+    logTiming('pp_liftValidation', phaseStart);
 
     phaseStart = Date.now();
     const systemName = options?.displayName || path.basename(projectPath);
@@ -6855,7 +6866,7 @@ export class AnalyzerOrchestrator {
         } else {
           fields.push({
             name: prop.name,
-            type: prop.signature?.return_type || 'unknown',
+            type: this.entityFieldType(prop),
             primary: isPrimary,
             unique: isUnique,
             nullable,
@@ -6986,6 +6997,34 @@ export class AnalyzerOrchestrator {
     return [...matches.entries()]
       .sort((a, b) => a[1] - b[1])
       .map(([node]) => node);
+  }
+
+  /**
+   * Resolve an entity field's declared type for the database schema / ERD.
+   *
+   * `signature.return_type` is only populated for method/function-shaped nodes;
+   * for ORM property nodes (MikroORM/TypeORM/Prisma `@Property`/`@Column`, JPA
+   * fields, etc.) it is empty, which used to render every field type as
+   * `unknown`. The language analyzers instead stash the property's declared TS
+   * type on `metadata.type` (see typescript-javascript-analyzer property nodes),
+   * so fall back to that. Evidence-gated: only return a real type when one is
+   * actually present — never fabricate — leaving `unknown` when nothing is
+   * recoverable.
+   */
+  private entityFieldType(prop: CASNode): string {
+    const candidates = [
+      prop.signature?.return_type,
+      (prop.metadata as any)?.type,
+      (prop.metadata as any)?.attributes?.type,
+    ];
+    for (const candidate of candidates) {
+      if (typeof candidate !== 'string') continue;
+      // Collapse multi-line union/generic types onto one line so the value is a
+      // clean, renderable token rather than raw source with embedded newlines.
+      const normalized = candidate.replace(/\s+/g, ' ').trim();
+      if (normalized) return normalized;
+    }
+    return 'unknown';
   }
 
   private normalizeSourcePath(file: string): string {
@@ -7169,6 +7208,11 @@ export class AnalyzerOrchestrator {
     // `dotnet pack "Foo/Foo.csproj" -p:Version=$VER`) must never become
     // external-service labels. They can survive as raw evidence only.
     if (isCommandShapedLabel(value)) return false;
+    // Real hostnames / domains (auth0.com, api.stripe.com, sentry.io) are
+    // meaningful service names — accept them before the dotted-identifier
+    // heuristics below, which would otherwise reject any a.b.c chain. The
+    // hostname gate is strict (rejects .csproj paths, command lines, hashes).
+    if (isHostnameLikeServiceName(value)) return true;
     if (/\boperations?\s+via\b/i.test(value)) return false;
     if (/^(database|request external|shutil|subprocess|re|pathlib|os|sys|typing|datetime|uuid)$/.test(lower)) return false;
     if (value.includes('${')) return false;
@@ -19219,6 +19263,88 @@ export class AnalyzerOrchestrator {
       evidence: evidence.slice(0, 5),
       secondary_types: secondaryTypes.length > 0 ? secondaryTypes : undefined
     };
+  }
+
+  /**
+   * Lift class-validator DTO decorators onto `entry_point.input.validation`.
+   *
+   * The validation-schema analyzer already emits one `validation_contract` node
+   * per decorated DTO class (with fields + decorators + args on
+   * metadata.attributes.fields), but nothing ever connected those to the
+   * controller entry points that consume them — so on NestJS repos every entry
+   * point had empty `input.validation` and the flow-concepts deriver never
+   * grounded a kind='validation' constraint (zerac-api: 581 entry points / 0
+   * with validation, 0/400 flows with a validation constraint).
+   *
+   * Resolution is evidence-gated, not name-heuristic: for each http/ws/message
+   * entry point we resolve its handler function/method node (ep.handler.node_id,
+   * set by linkRouteHandlers) and match a handler PARAMETER TYPE against a real
+   * DTO contract name. NestJS binds the request body/query/params by the param's
+   * declared type (`@Body() dto: CreateFooDto`), so a param whose type is a
+   * genuine validation_contract DTO is proof that route validates against it.
+   * Only then do we populate input.validation with the human-legible rules
+   * derived from that DTO's decorators (describeValidationRules). Additive: never
+   * overwrites an existing input.validation (e.g. the trpc analyzer's ['zod']).
+   */
+  private liftValidationToEntryPoints(nodes: CASNode[], entryPoints: CASEntryPoint[]): void {
+    // Collect DTO contracts by class name. A name can appear in >1 file; keep the
+    // first (they are almost always identical shapes; over-precision here is not
+    // worth a second pass).
+    const dtoByName = new Map<string, ValidationContractField[]>();
+    for (const node of nodes) {
+      if (node.type !== 'validation_contract') continue;
+      const fields = ((node.metadata?.attributes as any)?.fields || (node.metadata as any)?.fields) as ValidationContractField[] | undefined;
+      if (!Array.isArray(fields) || fields.length === 0) continue;
+      if (!dtoByName.has(node.name)) dtoByName.set(node.name, fields);
+    }
+    if (dtoByName.size === 0) return;
+
+    const nodeById = new Map(nodes.map(n => [n.id, n]));
+    const supported = new Set(['http', 'websocket', 'message', 'event']);
+    const normalizeType = (raw: string | undefined): string =>
+      (raw || '').replace(/\[\]$/, '').replace(/\s*\|\s*.*$/, '').replace(/<.*>/, '').trim();
+
+    for (const ep of entryPoints) {
+      if (!supported.has(ep.type)) continue;
+      if (ep.input?.validation && ep.input.validation.length > 0) continue; // additive, never clobber.
+
+      const handler = ep.handler?.node_id ? nodeById.get(ep.handler.node_id) : undefined;
+      const params = handler?.signature?.parameters || [];
+      // First param whose declared type is a genuine DTO contract. NestJS route
+      // handlers carry at most one @Body DTO; if several params are DTOs (rare),
+      // fold all their rules in so nothing is silently dropped.
+      const matchedDtos: ValidationContractField[][] = [];
+      const matchedNames: string[] = [];
+      for (const p of params) {
+        const t = normalizeType(p.type);
+        const fields = t ? dtoByName.get(t) : undefined;
+        if (fields && !matchedNames.includes(t)) {
+          matchedDtos.push(fields);
+          matchedNames.push(t);
+        }
+      }
+      if (matchedDtos.length === 0) continue;
+
+      const rules: string[] = [];
+      for (const fields of matchedDtos) {
+        for (const rule of describeValidationRules(fields)) {
+          if (!rules.includes(rule)) rules.push(rule);
+        }
+      }
+      if (rules.length === 0) continue;
+
+      ep.input = {
+        ...ep.input,
+        type: ep.input?.type || 'class-validator',
+        schema: ep.input?.schema || matchedNames.join(', '),
+        validation: rules,
+      };
+      ep.metadata = {
+        ...ep.metadata,
+        validation_dtos: matchedNames,
+        validation_source: 'class-validator-decorators',
+      };
+    }
   }
 
   private linkRouteHandlers(

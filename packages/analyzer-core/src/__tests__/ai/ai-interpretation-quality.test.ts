@@ -1,7 +1,7 @@
 import { AnalyzerOrchestrator } from '../../analyzer/core/orchestrator';
 import { aiService } from '../../ai/ai-service';
 import { validateElementDescription } from '../../ai/element-description-validator';
-import { filterPlausibleExternalServices, isPlausibleExternalServiceName } from '../../ai/external-service-plausibility';
+import { filterPlausibleExternalServices, isPlausibleExternalServiceName, isHostnameLikeServiceName } from '../../ai/external-service-plausibility';
 
 // These exercise internal heuristics of the orchestrator. They are private by
 // design (not part of the public CAS contract) so the tests reach them via a
@@ -319,10 +319,36 @@ describe('external service plausibility filter', () => {
     for (const name of ['Stripe', 'S3', 'auth0.com']) {
       expect(isPlausibleExternalServiceName(name, ['testing-utilities-net'])).toBe(true);
     }
-    // (auth0.com is rejected by the orchestrator's pre-existing dotted-identifier
-    // rule, independent of the command-shape filter added here.)
-    for (const name of ['Stripe', 'S3']) {
+    // Real domain-name services now pass the orchestrator gate too (bare domains
+    // are meaningful; the dotted-identifier rule no longer over-rejects them).
+    for (const name of ['Stripe', 'S3', 'auth0.com', 'api.stripe.com', 'sentry.io']) {
       expect(orch.isMeaningfulExternalServiceName(name)).toBe(true);
+    }
+    // …while command-shaped / path / variable junk stays rejected by the gate.
+    for (const name of ['dotnet-pack', 'Soon.TestingUtilities/Soon.TestingUtilities.csproj', '$VER']) {
+      expect(orch.isMeaningfulExternalServiceName(name)).toBe(false);
+    }
+  });
+
+  it('accepts real hostnames but rejects command/path/hash junk (isHostnameLikeServiceName)', () => {
+    for (const host of ['auth0.com', 'api.stripe.com', 'sentry.io', 'https://sentry.io', 'my-service.dev', 'foo.bar.co.io']) {
+      expect(isHostnameLikeServiceName(host)).toBe(true);
+    }
+    for (const notHost of [
+      'Soon.TestingUtilities/Soon.TestingUtilities.csproj',
+      'dotnet pack "Foo.csproj" -p:Version=$VER',
+      'dotnet-pack',
+      '$VER',
+      'System.Text',
+      'this.repo.save',
+      'Repo.Save',
+      'sentry.io/path',
+      'sentry.io:443',
+      'ftp://sentry.io',
+      'foo.internalzzz',
+      'plainword',
+    ]) {
+      expect(isHostnameLikeServiceName(notHost)).toBe(false);
     }
   });
 
