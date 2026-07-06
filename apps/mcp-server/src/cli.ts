@@ -27,6 +27,7 @@ import { getAnalysisRunLogPath } from '../../../packages/analyzer-core/src/analy
 import { formatBuildIdentity, getBuildIdentity } from '../../../packages/analyzer-core/src/analyzer/core/build-identity';
 import { withAnalysisFocus, type AnalysisFocus } from './analysis-focus';
 import { summarizeAnalysisFreshness } from './freshness';
+import { decideInitFlow, resolveNamedChoice, type RecognizedRemote } from './init-resolution';
 import { buildCrossCodebaseSystemGraph, selectWorkspaceAnalysisDetail, summarizeCrossCodebaseSystemGraph, type WorkspaceDetailLevel } from './cross-codebase-analysis';
 import { clearStoredConnectorSession, connectorToken, loadStoredConnectorAuth, normalizeServerUrl, requireConnectorEntitlement, saveStoredConnectorSession } from './connector-auth';
 import { detectRemoteProvider } from './remote-provider';
@@ -35,6 +36,7 @@ import { remoteActive } from './coordination/remote-transport';
 import { getActiveClaims } from './coordination/local-store';
 import * as fs from 'fs-extra';
 import * as readline from 'readline';
+import { promptPassword, readAllStdin } from './password-prompt';
 
 interface ParsedArgs {
   command?: string;
@@ -70,6 +72,7 @@ interface ParsedArgs {
   yes: boolean;
   email?: string;
   password?: string;
+  passwordStdin: boolean;
   register: boolean;
   // Read-subcommand filters (cicd / seams / product-map / node-metrics).
   provider?: string;
@@ -738,10 +741,21 @@ async function runStatusCommand(args: ParsedArgs): Promise<void> {
 
 async function runLoginCommand(args: ParsedArgs): Promise<void> {
   const serverUrl = normalizeServerUrl(args.serverUrl);
+  // Credentials must travel over HTTPS only — never send a password in the clear.
+  if (!/^https:\/\//i.test(serverUrl) && !/^https?:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/i.test(serverUrl)) {
+    throw new Error(`Refusing to send credentials over a non-HTTPS server URL: ${serverUrl}`);
+  }
   const email = args.email || await promptLine('Email: ');
-  const password = args.password || await promptLine('Password: ');
+  // Password read, in priority order:
+  //  1. --password-stdin  (scriptable; read the piped/redirected stdin stream)
+  //  2. --password VALUE  (legacy; discouraged — visible in shell history)
+  //  3. interactive no-echo TTY prompt (characters are never echoed)
+  // The value is never echoed, logged, or persisted; only the exchanged token is stored.
+  const password = args.passwordStdin
+    ? await readAllStdin()
+    : (args.password || await promptPassword('Password: '));
   if (!email) throw new Error('login requires --email or an entered email');
-  if (!password) throw new Error('login requires --password or an entered password');
+  if (!password) throw new Error('login requires --password, --password-stdin, or an entered password');
   const endpoint = args.register ? '/api/auth/register' : '/api/auth/login';
   const response = await fetch(`${serverUrl}${endpoint}`, {
     method: 'POST',
@@ -1185,6 +1199,7 @@ async function resolveInitOptions(projectPath: string, args: ParsedArgs): Promis
   const token = connectorToken(undefined, serverUrl);
   const manifest = await buildUploadManifest(projectPath);
   const defaultKind = manifest.workspace_recommendation?.recommended ? 'workspace' : 'project';
+  const remoteUrl = manifest.remote_provider?.repository_url;
   process.stdout.write(`Klauro init for ${projectPath}\n`);
   if (manifest.remote_provider) {
     const remote = manifest.remote_provider.owner && manifest.remote_provider.repository
@@ -1192,21 +1207,48 @@ async function resolveInitOptions(projectPath: string, args: ParsedArgs): Promis
       : manifest.remote_provider.repository_url || manifest.remote_provider.provider;
     process.stdout.write(`Detected remote: ${remote}\n`);
   }
+
+  if (!token) {
+    process.stdout.write('Not signed in. Writing local config only; run `klauro login` to link/create hosted workspaces and projects.\n');
+    const kind = await promptChoice<'project' | 'workspace'>(
+      'Initialize this folder as a project or workspace?',
+      ['project', 'workspace'],
+      defaultKind,
+    );
+    const name = await promptLine(`Name [${path.basename(projectPath)}]: `) || path.basename(projectPath);
+    return { serverUrl, kind, projectName: name, projectId: undefined, organizationId: undefined, workspaceId: undefined };
+  }
+
+  // Recognition first: has THIS remote already been connected? If so, offer a
+  // one-keystroke reconnect — the common re-init case — before asking anything.
+  const recognized = remoteUrl ? await findConnectedRemote(serverUrl, token, remoteUrl) : null;
+  const flow = decideInitFlow(recognized);
+  if (flow.mode === 'reconnect' && recognized) {
+    process.stdout.write(`${flow.recommendation}.\n`);
+    const answer = await promptChoice<'yes' | 'no'>('Reconnect this folder here?', ['yes', 'no'], 'yes');
+    if (answer === 'yes') {
+      return {
+        serverUrl,
+        kind: 'project',
+        projectName: recognized.project.name,
+        projectId: recognized.project.id,
+        workspaceId: recognized.workspace.id,
+        organizationId: recognized.workspace.id,
+      };
+    }
+    process.stdout.write('OK — setting this repo up fresh instead.\n');
+  }
+
+  // Not recognized (or declined): fresh placement. Ask project vs workspace,
+  // then place BY NAME (never a bare number prompt).
   if (manifest.workspace_recommendation?.recommended) {
     process.stdout.write(`Detected child projects: ${manifest.workspace_recommendation.candidates.map(candidate => candidate.path).join(', ')}\n`);
   }
-
   const kind = await promptChoice<'project' | 'workspace'>(
     'Initialize this folder as a project or workspace?',
     ['project', 'workspace'],
     defaultKind,
   );
-
-  if (!token) {
-    process.stdout.write('Not signed in. Writing local config only; run `klauro login` to link/create hosted workspaces and projects.\n');
-    const name = await promptLine(`Name [${path.basename(projectPath)}]: `) || path.basename(projectPath);
-    return { serverUrl, kind, projectName: name, projectId: undefined, organizationId: undefined, workspaceId: undefined };
-  }
 
   if (kind === 'workspace') {
     const workspace = await selectOrCreateWorkspace(serverUrl, token, path.basename(projectPath));
@@ -1221,12 +1263,13 @@ async function resolveInitOptions(projectPath: string, args: ParsedArgs): Promis
 
   const workspace = await selectOrCreateWorkspace(serverUrl, token, undefined);
   const projects = await listRemoteProjects(serverUrl, token, workspace.id);
-  const remoteUrl = manifest.remote_provider?.repository_url;
-  const matched = remoteUrl ? projects.find(project => normalizeRepoUrl(project.repo_url) === normalizeRepoUrl(remoteUrl)) : undefined;
   let project: RemoteProjectChoice | undefined;
+  // Recognition can still fire within the chosen workspace (e.g. the top-level
+  // recognition was declined, or the remote had no canonical url): offer it.
+  const matched = remoteUrl ? projects.find(candidate => normalizeRepoUrl(candidate.repo_url) === normalizeRepoUrl(remoteUrl)) : undefined;
   if (matched) {
     const answer = await promptChoice<'yes' | 'no'>(
-      `Found matching Klauro project "${matched.name}" for this Git remote. Link to it?`,
+      `Found matching project "${matched.name}" for this remote in "${workspace.name}". Link to it?`,
       ['yes', 'no'],
       'yes',
     );
@@ -1238,7 +1281,7 @@ async function resolveInitOptions(projectPath: string, args: ParsedArgs): Promis
   }
   if (!project) {
     const defaultName = path.basename(projectPath);
-    const name = await promptLine(`Project name [${defaultName}]: `) || defaultName;
+    const name = await promptLine(`New project name [${defaultName}]: `) || defaultName;
     project = await createRemoteProject(serverUrl, token, workspace.id, {
       name,
       repo_url: remoteUrl,
@@ -1256,6 +1299,19 @@ async function resolveInitOptions(projectPath: string, args: ParsedArgs): Promis
   };
 }
 
+/** Recognition lookup — asks the backend whether this remote is already connected for this user. */
+async function findConnectedRemote(serverUrl: string, token: string, repoUrl: string): Promise<RecognizedRemote | null> {
+  try {
+    const payload = await remoteJson<{ match?: RecognizedRemote | null }>(
+      serverUrl, token, `/api/projects/by-remote?repo_url=${encodeURIComponent(repoUrl)}`,
+    );
+    return payload.match ?? null;
+  } catch {
+    // Recognition is a convenience; a lookup failure must never block init.
+    return null;
+  }
+}
+
 interface RemoteWorkspaceChoice {
   id: string;
   name: string;
@@ -1271,37 +1327,59 @@ interface RemoteProjectChoice {
 
 async function selectOrCreateWorkspace(serverUrl: string, token: string, defaultName?: string): Promise<RemoteWorkspaceChoice> {
   const workspaces = await listRemoteWorkspaces(serverUrl, token);
-  if (workspaces.length > 0) {
-    process.stdout.write('Workspaces:\n');
-    workspaces.forEach((workspace, index) => {
-      process.stdout.write(`  ${index + 1}. ${workspace.name}${workspace.project_count !== undefined ? ` (${workspace.project_count} projects)` : ''}\n`);
-    });
+  // Single workspace = no ambiguity: default to it (still name-based, one keystroke to accept).
+  if (workspaces.length === 1) {
+    const only = workspaces[0];
+    const answer = await promptChoice<'yes' | 'new'>(
+      `Use your workspace "${only.name}"${only.project_count !== undefined ? ` (${only.project_count} project${only.project_count === 1 ? '' : 's'})` : ''}?`,
+      ['yes', 'new'],
+      'yes',
+    );
+    if (answer === 'yes') return only;
+    return createRemoteWorkspace(serverUrl, token, await promptWorkspaceName(defaultName));
   }
-  const action = workspaces.length
-    ? await promptChoice<'existing' | 'new'>('Use an existing workspace or create a new one?', ['existing', 'new'], 'existing')
-    : 'new';
-  if (action === 'existing') return selectRemoteWorkspace(workspaces);
-  const fallback = defaultName || 'Klauro Workspace';
-  const name = await promptLine(`Workspace name [${fallback}]: `) || fallback;
-  return createRemoteWorkspace(serverUrl, token, name);
+  if (workspaces.length > 1) {
+    process.stdout.write('Your workspaces:\n');
+    workspaces.forEach(workspace => {
+      process.stdout.write(`  - ${workspace.name}${workspace.project_count !== undefined ? ` (${workspace.project_count} project${workspace.project_count === 1 ? '' : 's'})` : ''}\n`);
+    });
+    const action = await promptChoice<'existing' | 'new'>('Use an existing workspace or create a new one?', ['existing', 'new'], 'existing');
+    if (action === 'existing') return selectByName('workspace', workspaces);
+  }
+  return createRemoteWorkspace(serverUrl, token, await promptWorkspaceName(defaultName));
 }
 
-async function selectRemoteWorkspace(workspaces: RemoteWorkspaceChoice[]): Promise<RemoteWorkspaceChoice> {
-  if (!workspaces.length) throw new Error('No workspaces available');
-  const raw = await promptLine(`Workspace number [1]: `);
-  const index = raw ? Number(raw) - 1 : 0;
-  if (!Number.isInteger(index) || index < 0 || index >= workspaces.length) throw new Error('Invalid workspace selection');
-  return workspaces[index];
+async function promptWorkspaceName(defaultName?: string): Promise<string> {
+  const fallback = defaultName || 'Klauro Workspace';
+  return (await promptLine(`New workspace name [${fallback}]: `)) || fallback;
 }
 
 async function selectRemoteProject(projects: RemoteProjectChoice[]): Promise<RemoteProjectChoice> {
-  projects.forEach((project, index) => {
-    process.stdout.write(`  ${index + 1}. ${project.name}${project.repo_url ? ` (${project.repo_url})` : ''}\n`);
+  process.stdout.write('Projects:\n');
+  projects.forEach(project => {
+    process.stdout.write(`  - ${project.name}${project.repo_url ? ` (${project.repo_url})` : ''}\n`);
   });
-  const raw = await promptLine(`Project number [1]: `);
-  const index = raw ? Number(raw) - 1 : 0;
-  if (!Number.isInteger(index) || index < 0 || index >= projects.length) throw new Error('Invalid project selection');
-  return projects[index];
+  return selectByName('project', projects);
+}
+
+/**
+ * Prompt the user to pick a named entity BY NAME (a list number is accepted as
+ * a shorthand, but the prompt asks for a name and never a bare "… number"). Re-
+ * prompts on an ambiguous or unknown answer instead of throwing.
+ */
+async function selectByName<T extends { id: string; name: string }>(label: string, choices: readonly T[]): Promise<T> {
+  if (!choices.length) throw new Error(`No ${label}s available`);
+  for (;;) {
+    const raw = await promptLine(`${label.charAt(0).toUpperCase()}${label.slice(1)} name [${choices[0].name}]: `);
+    if (!raw) return choices[0];
+    const result = resolveNamedChoice(choices, raw);
+    if ('match' in result) return result.match;
+    if ('ambiguous' in result) {
+      process.stdout.write(`  "${raw}" matches ${result.ambiguous.map(c => `"${c.name}"`).join(', ')} — please be more specific.\n`);
+      continue;
+    }
+    process.stdout.write(`  No ${label} matches "${raw}". Options: ${choices.map(c => `"${c.name}"`).join(', ')}.\n`);
+  }
 }
 
 async function promptChoice<T extends string>(label: string, choices: readonly T[], defaultChoice: T): Promise<T> {
@@ -1359,6 +1437,7 @@ async function promptLine(label: string): Promise<string> {
   rl.close();
   return answer.trim();
 }
+
 
 async function loadOrAnalyze(projectPath: string, refresh: boolean) {
   if (refresh) return (await analyzeProjectIncremental(projectPath)).output;
@@ -1426,6 +1505,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     all: false,
     allAiCache: false,
     yes: false,
+    passwordStdin: false,
     register: false,
     deployOnly: false,
     markdown: false,
@@ -1450,6 +1530,8 @@ function parseArgs(argv: string[]): ParsedArgs {
       parsed.email = argv[++i];
     } else if (arg === '--password') {
       parsed.password = argv[++i];
+    } else if (arg === '--password-stdin') {
+      parsed.passwordStdin = true;
     } else if (arg === '--register') {
       parsed.register = true;
     } else if (arg === '--path') {
@@ -1566,7 +1648,8 @@ function printHelp(): void {
     '  klauro support-bundle [/path/to/repo] [--output bundle.tar.gz] [--json]',
     '',
     'Account:',
-    '  klauro login --email you@example.com [--password value] [--server-url url] [--register]',
+    '  klauro login --email you@example.com [--password-stdin | --password value] [--server-url url] [--register]',
+    '    (password is prompted with echo off; --password-stdin reads it from a pipe for scripting)',
     '  klauro whoami [--server-url url] [--json]',
     '  klauro auth-status [--server-url url] [--json]',
     '  klauro logout [--server-url url] [--json]',

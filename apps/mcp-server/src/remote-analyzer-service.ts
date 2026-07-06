@@ -1324,6 +1324,28 @@ async function handleAccountApi(
     }
   }
 
+  // Recognition lookup for `klauro init`: has this Git remote already been
+  // connected to a project by this user? Returns the matched project plus its
+  // workspace so the CLI can offer a one-keystroke reconnect (or null when the
+  // remote is new). Placed before the `/api/projects/:id` matcher so the
+  // literal `by-remote` segment is not read as a project id.
+  if (request.method === 'GET' && route === '/api/projects/by-remote') {
+    if (sharedToken) return { statusCode: 200, body: { match: null } };
+    const repoUrl = new URL(request.url || '', 'http://localhost').searchParams.get('repo_url') || '';
+    if (!repoUrl.trim()) throw new AccountHttpError(400, 'repo_url query parameter is required');
+    const found = await accounts.findProjectByRepoUrl(userId, repoUrl);
+    if (!found) return { statusCode: 200, body: { match: null } };
+    return {
+      statusCode: 200,
+      body: {
+        match: {
+          project: found.project,
+          workspace: { id: found.workspace.id, name: found.workspace.name, role: found.role },
+        },
+      },
+    };
+  }
+
   const projectMatch = route.match(/^\/api\/projects\/([^/]+)$/);
   if (projectMatch && request.method === 'GET') {
     const project = await accounts.getProjectForUser(userId, decodeURIComponent(projectMatch[1]));

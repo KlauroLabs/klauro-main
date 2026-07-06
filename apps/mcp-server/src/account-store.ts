@@ -1,6 +1,7 @@
 import * as crypto from 'node:crypto';
 import * as fs from 'fs-extra';
 import * as path from 'node:path';
+import { detectRemoteProvider } from './remote-provider';
 
 export type WorkspaceRole = 'owner' | 'admin' | 'member';
 
@@ -248,6 +249,33 @@ export class AccountStore {
     return project;
   }
 
+  /**
+   * Recognition lookup for `klauro init`: has this Git remote already been
+   * connected to a project by this user? Searches across every workspace the
+   * user belongs to and returns the match with its workspace name so the CLI
+   * can offer a one-keystroke reconnect. Matching is normalized (scheme, `.git`
+   * suffix, and case are ignored) so `git@github.com:Org/Repo.git` and
+   * `https://github.com/org/repo` resolve to the same project.
+   */
+  async findProjectByRepoUrl(userId: string, repoUrl: string): Promise<{ project: AccountProject; workspace: AccountWorkspace; role: WorkspaceRole } | null> {
+    const normalized = normalizeRepoUrlForMatch(repoUrl);
+    if (!normalized) return null;
+    const db = await this.load();
+    const memberWorkspaceIds = new Set(
+      db.workspace_users.filter(member => member.user_id === userId).map(member => member.workspace_id),
+    );
+    const roleFor = (workspaceId: string): WorkspaceRole | undefined =>
+      db.workspace_users.find(member => member.user_id === userId && member.workspace_id === workspaceId)?.role;
+    const match = db.projects.find(project =>
+      memberWorkspaceIds.has(project.workspace_id) && normalizeRepoUrlForMatch(project.repo_url) === normalized,
+    );
+    if (!match) return null;
+    const workspace = db.workspaces.find(candidate => candidate.id === match.workspace_id);
+    const role = roleFor(match.workspace_id);
+    if (!workspace || !role) return null;
+    return { project: match, workspace, role };
+  }
+
   async setProjectAnalysisId(userId: string, projectId: string, analysisId: string): Promise<AccountProject> {
     const db = await this.load();
     const project = db.projects.find(candidate => candidate.id === projectId);
@@ -361,6 +389,15 @@ function hashToken(token: string): string {
 
 function id(prefix: string): string {
   return `${prefix}_${crypto.randomBytes(12).toString('base64url')}`;
+}
+
+/** Normalize a Git remote for identity matching: scheme, `.git`, and case are ignored. */
+function normalizeRepoUrlForMatch(value: string | undefined): string | undefined {
+  const trimmed = String(value || '').trim();
+  if (!trimmed) return undefined;
+  const detected = detectRemoteProvider(trimmed);
+  const canonical = detected?.repository_url || trimmed;
+  return canonical.replace(/\.git$/i, '').toLowerCase();
 }
 
 function normalizeEmail(email: string): string {
