@@ -1,0 +1,36 @@
+{
+  "description": "Latency budgets for the perf:budget gate (task #115). Prevents backslide first; ratchet down as speed-round work (analyzer-gating, ts-hotspot, worker-pool, etc.) lands. Values are current-reality ceilings measured on the reference fixtures in this directory, not aspirational targets.",
+  "updated": "2026-07-06",
+  "fixtures": {
+    "small": {
+      "l0_ms": 2000,
+      "deterministic_ms": 20000,
+      "phases": {
+        "detectAnalyzers": 5000,
+        "languageAnalyzers": 8000,
+        "frameworkAnalyzers": 8000,
+        "pp_capabilities": 2000,
+        "pp_enhancedPurpose": 2000,
+        "pp_traceability": 2000
+      }
+    },
+    "medium": {
+      "l0_ms": 2000,
+      "deterministic_ms": 45000,
+      "phases": {
+        "detectAnalyzers": 8000,
+        "languageAnalyzers": 20000,
+        "frameworkAnalyzers": 20000,
+        "pp_capabilities": 4000,
+        "pp_enhancedPurpose": 4000,
+        "pp_traceability": 4000
+      }
+    }
+  },
+  "notes": [
+    "l0_ms budgets the time-to-L0 promise from analyzeProjectLayered (pure filesystem walk, no analyzer pipeline dependency).",
+    "deterministic_ms budgets total wall time for the deterministic pass (orchestrateAnalysis via analyzeProjectLayered's rest promise), AI phase excluded from pass/fail unless it blows its own phase ceiling.",
+    "phases.* budgets come from AnalysisRunLog phase records (same phases KLAURO_DEBUG_ANALYZER_PHASES=1 prints); any phase not listed here has no enforced ceiling yet.",
+    "Ratchet plan: tighten these numbers downward as analyzer-gating/ts-hotspot/worker-pool speed rounds land. Do not loosen without a comment explaining why reality regressed."
+  ]
+}

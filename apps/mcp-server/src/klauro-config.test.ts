@@ -253,6 +253,34 @@ test('source snapshot carries plain (non-manifest-named) config YAML files frame
   });
 });
 
+test('defaultKlauroConfig names the project from package.json "name" when it differs from the directory basename', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-pkgname-test-'));
+  try {
+    const projectDir = path.join(root, 'checkout-dir-xyz');
+    fs.mkdirSync(projectDir, { recursive: true });
+    fs.writeFileSync(path.join(projectDir, 'package.json'), JSON.stringify({ name: '@acme/real-service-name' }));
+
+    const config = defaultKlauroConfig(projectDir);
+    assert.equal(config.project.name, '@acme/real-service-name');
+    assert.notEqual(config.project.name, path.basename(projectDir));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('defaultKlauroConfig falls back to the directory basename when no manifest declares a name', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-noname-test-'));
+  try {
+    const projectDir = path.join(root, 'plain-checkout');
+    fs.mkdirSync(projectDir, { recursive: true });
+
+    const config = defaultKlauroConfig(projectDir);
+    assert.equal(config.project.name, 'plain-checkout');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('analyzer is one product (hosted) — no local/remote mode field at all', () => {
   // One product: analysis goes to the hosted service (heavy work + AI on the VPS),
   // production by default. There is no analyzer.mode. See docs/KLAURO-PRODUCT-MODEL.md.

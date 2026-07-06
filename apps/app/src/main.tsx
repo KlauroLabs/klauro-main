@@ -23,6 +23,7 @@ import {
 } from 'lucide-react';
 import {
   addWorkspaceMember,
+  ApiError,
   apiBaseUrl,
   AppStateData,
   ConceptualResponse,
@@ -32,6 +33,7 @@ import {
   FlowStep,
   getProjectAnalysis,
   getProjectConceptual,
+  getWorkspaceAnalysis,
   loadAppData,
   Project,
   ProjectAnalysisResponse,
@@ -40,6 +42,7 @@ import {
   registerAccount,
   signIn,
   Workspace,
+  WorkspaceAnalysisResponse,
 } from './api';
 import './styles.css';
 
@@ -126,6 +129,7 @@ function App() {
             )}
             {route.type === 'workspace' && selectedWorkspace && (
               <WorkspaceView
+                token={token}
                 workspace={selectedWorkspace}
                 projects={data?.projectsByWorkspace[selectedWorkspace.id] || []}
                 members={data?.membersByWorkspace[selectedWorkspace.id] || []}
@@ -169,6 +173,7 @@ function App() {
       )}
       {modal === 'project' && selectedWorkspace && (
         <ProjectModal
+          workspaceName={selectedWorkspace.name}
           onClose={() => setModal(null)}
           onSubmit={async input => {
             await createProject(token, selectedWorkspace.id, input);
@@ -210,8 +215,8 @@ function Sidebar(props: {
         </div>
         <nav className="side-section flush">
           <button className={navClass(props.route.type === 'home')} onClick={props.onHome}><Grid2X2 size={16} /> Home</button>
-          <button className="nav-item"><Inbox size={16} /> Inbox <span className="badge">0</span></button>
-          <button className="nav-item"><Activity size={16} /> Activity</button>
+          <ComingSoonButton icon={<Inbox size={16} />} label="Inbox" />
+          <ComingSoonButton icon={<Activity size={16} />} label="Activity" />
         </nav>
         <div className="side-section">
           <div className="side-label">Workspace</div>
@@ -242,13 +247,13 @@ function Sidebar(props: {
         <div className="side-section">
           <div className="side-label">Organization</div>
           <button className="nav-item" onClick={props.onAddMember}><Users size={16} /> Members</button>
-          <button className="nav-item"><Link2 size={16} /> Integrations</button>
-          <button className="nav-item"><Database size={16} /> Billing</button>
+          <ComingSoonButton icon={<Link2 size={16} />} label="Integrations" />
+          <ComingSoonButton icon={<Database size={16} />} label="Billing" />
         </div>
       </div>
       <div className="side-bottom">
-        <button className="nav-item"><HelpCircle size={16} /> Help</button>
-        <button className="nav-item"><Settings size={16} /> Settings</button>
+        <ComingSoonButton icon={<HelpCircle size={16} />} label="Help" />
+        <ComingSoonButton icon={<Settings size={16} />} label="Settings" />
       </div>
     </aside>
   );
@@ -313,6 +318,7 @@ function HomeView(props: {
 }
 
 function WorkspaceView(props: {
+  token: string;
   workspace: Workspace;
   projects: Project[];
   members: unknown[];
@@ -322,6 +328,38 @@ function WorkspaceView(props: {
   onAddMember: () => void;
 }) {
   const activities = buildActivitiesForProjects(props.projects, props.revisionsByProject);
+  const [workspaceAnalysis, setWorkspaceAnalysis] = useState<WorkspaceAnalysisResponse | null>(null);
+  const [workspaceAnalysisError, setWorkspaceAnalysisError] = useState('');
+
+  useEffect(() => {
+    setWorkspaceAnalysis(null);
+    setWorkspaceAnalysisError('');
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    async function poll() {
+      try {
+        const result = await getWorkspaceAnalysis(props.token, props.workspace.id);
+        if (cancelled) return;
+        setWorkspaceAnalysis(result);
+        if (result.status === 'pending') {
+          timer = setTimeout(poll, 5000);
+        }
+      } catch (error) {
+        if (!cancelled) setWorkspaceAnalysisError(error instanceof Error ? error.message : 'Failed to load workspace analysis');
+      }
+    }
+    poll();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [props.token, props.workspace.id]);
+
+  const narrative = workspaceAnalysis?.analysis?.workspace_narrative;
+  const health = workspaceAnalysis?.analysis?.health;
+  const analysisSummary = workspaceAnalysis?.analysis?.summary;
+
   return (
     <div className="workspace-view">
       <div className="workspace-header">
@@ -330,6 +368,7 @@ function WorkspaceView(props: {
         <p>{workspaceDescription(props.workspace, props.projects)}</p>
         <Meta parts={[plural(props.projects.length, 'Repository'), plural(props.members.length || props.workspace.user_count, 'Contributor'), plural(props.projects.filter(project => project.analysis_id).length, 'Analyzed project')]} />
       </div>
+      {!props.projects.length && <OnboardingGuide workspaceName={props.workspace.name} />}
       <div className="workspace-grid">
         <section className="panel map-card">
           <h2>System Map</h2>
@@ -346,12 +385,93 @@ function WorkspaceView(props: {
       </div>
       <div className="repo-toolbar">
         <h2>Repositories <span>External services this system relies on</span></h2>
-        <div className="top-actions"><button className="button" onClick={props.onAddMember}>Members</button><button className="button primary icon-only" onClick={props.onAddProject}><Plus size={18} /></button></div>
+        <div className="top-actions"><button className="button" onClick={props.onAddMember}>Members</button><button className="button primary" onClick={props.onAddProject}><Plus size={18} /> Add project</button></div>
       </div>
       <div className="repo-grid">
         {props.projects.map(project => <RepoCard key={project.id} project={project} revisions={props.revisionsByProject[project.id] || []} onOpen={() => props.onProject(project.id)} />)}
         {!props.projects.length && <EmptyState text="No repositories yet. Add one to start analysis." />}
       </div>
+      {props.projects.length > 0 && (
+        <section className="repo-section">
+          <h2>Workspace Analysis <span>Cross-repository system view, built from every member's analysis</span></h2>
+          {workspaceAnalysisError && <EmptyState text={`Could not load the workspace analysis: ${workspaceAnalysisError}`} />}
+          {!workspaceAnalysisError && !workspaceAnalysis && <EmptyState text="Loading workspace analysis…" />}
+          {!workspaceAnalysisError && workspaceAnalysis?.status === 'none' && (
+            <EmptyState text="No workspace analysis yet. It is built automatically once at least one repository here has a landed analysis." />
+          )}
+          {!workspaceAnalysisError && workspaceAnalysis?.status === 'pending' && (
+            <EmptyState text="Workspace analysis is building — combining the analyses of every repository in this workspace into one system view. This refreshes automatically." />
+          )}
+          {!workspaceAnalysisError && workspaceAnalysis?.status === 'ready' && (
+            <div className="workspace-analysis-grid">
+              <div className="panel structural-card">
+                <h3>{narrative?.title || 'System narrative'}</h3>
+                <p className="subtle">{narrative?.description || narrative?.product_value_summary || 'No narrative generated yet.'}</p>
+                {!!narrative?.key_capabilities?.length && (
+                  <div className="tags">{narrative.key_capabilities.slice(0, 8).map(capability => <span key={capability}>{capability}</span>)}</div>
+                )}
+                {!!narrative?.relationship_summary?.length && (
+                  <ul className="structural-list" style={{ marginTop: 12 }}>
+                    {narrative.relationship_summary.slice(0, 6).map((line, index) => <li key={index}>{line}</li>)}
+                  </ul>
+                )}
+              </div>
+              <div className="panel structural-card">
+                <h3>Members</h3>
+                <Meta parts={[
+                  `${analysisSummary?.codebases ?? workspaceAnalysis.member_project_ids?.length ?? props.projects.length} codebases`,
+                  analysisSummary?.applications !== undefined ? `${analysisSummary.applications} applications` : undefined,
+                  analysisSummary?.domains !== undefined ? `${analysisSummary.domains} domains` : undefined,
+                  analysisSummary?.entities !== undefined ? `${analysisSummary.entities} entities` : undefined,
+                ]} />
+                <ul className="structural-list" style={{ marginTop: 12 }}>
+                  {(workspaceAnalysis.member_project_names || props.projects.map(project => project.name)).map((name, index) => (
+                    <li key={`${name}-${index}`}>{name}</li>
+                  ))}
+                </ul>
+              </div>
+              <div className="panel structural-card">
+                <h3>Health</h3>
+                {health ? (
+                  <>
+                    <strong style={{ fontSize: 26, display: 'block' }}>{health.score}<span style={{ fontSize: 12, color: 'var(--muted)', marginLeft: 3 }}>/100 - {health.status}</span></strong>
+                    <p className="subtle" style={{ marginTop: 8 }}>{health.summary}</p>
+                    <Meta parts={[
+                      health.risk_area_count !== undefined ? `${health.risk_area_count} risk areas` : undefined,
+                      health.critical_risk_count ? `${health.critical_risk_count} critical` : undefined,
+                      health.high_risk_count ? `${health.high_risk_count} high` : undefined,
+                    ]} />
+                  </>
+                ) : <EmptyState text="No health rollup on this workspace analysis yet." />}
+              </div>
+            </div>
+          )}
+        </section>
+      )}
+    </div>
+  );
+}
+
+function OnboardingGuide({ workspaceName }: { workspaceName: string }) {
+  return (
+    <div className="panel onboarding-card">
+      <h2>Get your first repository analyzed</h2>
+      <p className="subtle">This workspace has no repositories yet. Run these three commands from your terminal to connect one — Klauro builds the system map and shared context as soon as the first analysis lands.</p>
+      <ol className="onboarding-steps">
+        <li>
+          <span>1. Install the Klauro CLI</span>
+          <pre><code>curl -fsSL https://mcp.klauro.com/install | sh</code></pre>
+        </li>
+        <li>
+          <span>2. Sign in with the account you used here</span>
+          <pre><code>klauro login --email you@example.com</code></pre>
+        </li>
+        <li>
+          <span>3. Connect a repository</span>
+          <pre><code>cd your-repo{'\n'}klauro init .</code></pre>
+        </li>
+      </ol>
+      <p className="subtle">Pick "{workspaceName}" when `klauro init` asks which workspace to attach to — the repository, its capabilities, entities, and flows will show up here right after.</p>
     </div>
   );
 }
@@ -362,6 +482,7 @@ function RepoOverview(props: { token: string; workspace: Workspace; project: Pro
   const [analysisError, setAnalysisError] = useState('');
   const [reanalyzing, setReanalyzing] = useState(false);
   const [reanalyzeError, setReanalyzeError] = useState('');
+  const [reanalyzeNoSnapshot, setReanalyzeNoSnapshot] = useState(false);
   const [tab, setTab] = useState<'overview' | 'conceptual'>('overview');
 
   useEffect(() => {
@@ -369,21 +490,42 @@ function RepoOverview(props: { token: string; workspace: Workspace; project: Pro
     setAnalysisError('');
     if (!props.project.analysis_id) return;
     let cancelled = false;
-    getProjectAnalysis(props.token, props.project.id)
-      .then(result => { if (!cancelled) setAnalysis(result); })
-      .catch(error => { if (!cancelled) setAnalysisError(error instanceof Error ? error.message : 'Failed to load analysis'); });
-    return () => { cancelled = true; };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    async function poll() {
+      try {
+        const result = await getProjectAnalysis(props.token, props.project.id);
+        if (cancelled) return;
+        setAnalysis(result);
+        // Live progress ladder (task #112): layers_ready.complete === false means
+        // more analysis layers are still landing on the server. Keep polling
+        // until it flips to 'ready' so the first-run customer sees real
+        // progress instead of a static "pending" chip.
+        if (result.status === 'populating') {
+          timer = setTimeout(poll, 4000);
+        }
+      } catch (error) {
+        if (!cancelled) setAnalysisError(error instanceof Error ? error.message : 'Failed to load analysis');
+      }
+    }
+    poll();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
   }, [props.token, props.project.id, props.project.analysis_id]);
 
   async function handleReanalyze() {
     setReanalyzing(true);
     setReanalyzeError('');
+    setReanalyzeNoSnapshot(false);
     try {
       await reanalyzeProject(props.token, props.project);
       props.onReanalyzed();
       const result = await getProjectAnalysis(props.token, props.project.id);
       setAnalysis(result);
     } catch (error) {
+      if (error instanceof ApiError && error.status === 409) setReanalyzeNoSnapshot(true);
       setReanalyzeError(error instanceof Error ? error.message : 'Re-analysis failed');
     } finally {
       setReanalyzing(false);
@@ -391,23 +533,55 @@ function RepoOverview(props: { token: string; workspace: Workspace; project: Pro
   }
 
   const productMap = analysis?.status === 'ready' ? analysis.product_map : undefined;
+  const summary = analysis?.status !== 'no_analysis' ? analysis?.summary : undefined;
+  const populating = analysis?.status === 'populating';
   const capabilities = productMap?.capabilities || [];
   const entityNames = (productMap?.data.exposure_highlights.map(highlight => highlight.entity) || []).slice(0, 8);
+  const layers = summary?.layers_ready?.layers;
+  const layerEntries = layers ? Object.entries(layers) : [];
+  const layersDone = layerEntries.filter(([, done]) => done).length;
 
   return (
     <div className="repo-overview">
       <div className="workspace-header repo-head">
         <div className="updated"><span className="status-dot" />Updated {latest ? relativeTime(latest.generated_at) : 'after first analysis'}</div>
         <div className="title-row"><h1>{props.project.name}</h1><span className="source-badge">{props.project.repo_url ? 'GitHub' : 'Project'}</span></div>
-        <p>{productMap?.identity.description || repoSummary(props.project)}</p>
+        <p>{productMap?.identity.description || summary?.description || repoSummary(props.project)}</p>
+        {(!!summary?.languages?.length || !!summary?.frameworks?.length || !!summary?.primary_domain) && (
+          <div className="tags">
+            {summary?.primary_domain && <span key="domain">{summary.primary_domain}</span>}
+            {(summary?.languages || []).slice(0, 6).map(language => <span key={`lang-${language}`}>{language}</span>)}
+            {(summary?.frameworks || []).slice(0, 6).map(framework => <span key={`fw-${framework}`}>{framework}</span>)}
+          </div>
+        )}
         <div className="repo-actions">
           <button className="button"><Edit2 size={16} /> Edit Summary</button>
           <button className="button primary" onClick={handleReanalyze} disabled={reanalyzing}>
             <RefreshCcw size={16} /> {reanalyzing ? 'Analyzing…' : 'Re-Analyze'}
           </button>
         </div>
-        {reanalyzeError && <p className="error">{reanalyzeError}</p>}
+        {reanalyzeError && (
+          <div className="error">
+            <p>{reanalyzeError}</p>
+            {reanalyzeNoSnapshot && (
+              <pre><code>cd your-repo{'\n'}klauro init .</code></pre>
+            )}
+          </div>
+        )}
       </div>
+      {populating && (
+        <div className="panel populating-card">
+          <div className="populating-head">
+            <span className="status-dot" />
+            <strong>Analysis is populating…</strong>
+            <span className="subtle">{layerEntries.length ? `${layersDone}/${layerEntries.length} layers landed` : 'Building the full analysis'}</span>
+          </div>
+          {layerEntries.length > 0 && (
+            <div className="layer-progress"><div className="layer-progress-fill" style={{ width: `${Math.round((layersDone / layerEntries.length) * 100)}%` }} /></div>
+          )}
+          <p className="subtle">Capabilities, entities, and flows below will fill in automatically as each layer completes — no need to refresh.</p>
+        </div>
+      )}
       <div className="repo-tabs">
         <button className={`repo-tab${tab === 'overview' ? ' active' : ''}`} onClick={() => setTab('overview')}>Overview</button>
         <button className={`repo-tab${tab === 'conceptual' ? ' active' : ''}`} onClick={() => setTab('conceptual')}>Conceptual</button>
@@ -415,16 +589,21 @@ function RepoOverview(props: { token: string; workspace: Workspace; project: Pro
       {tab === 'overview' && (
         <>
           <div className="metric-strip">
-            <Metric label="Capabilities" value={capabilities.length ? String(capabilities.length) : props.project.analysis_id ? 'Available' : 'Pending'} hint="Core business domains" />
-            <Metric label="Entry points" value={String(latest?.nodes || 0)} hint="Known graph nodes" />
+            <Metric label="Capabilities" value={capabilities.length ? String(capabilities.length) : summary?.capabilities ? String(summary.capabilities) : props.project.analysis_id ? 'Available' : 'Pending'} hint="Core business domains" />
+            <Metric label="Entry points" value={String(summary?.entry_points ?? latest?.nodes ?? 0)} hint="Known graph nodes" />
             <Metric label="Contributors" value={String(props.members.length || '-')} hint="Workspace users" />
-            <Metric label="Analysis" value={latest?.source || 'Not run'} hint={latest ? relativeTime(latest.generated_at) : 'Awaiting run'} />
+            <Metric label="Analysis" value={populating ? 'Populating' : (latest?.source || 'Not run')} hint={latest ? relativeTime(latest.generated_at) : 'Awaiting run'} />
             {productMap?.health.score !== undefined && (
               <Metric label="Health" value={`${productMap.health.score}`} hint={productMap.health.status || 'System complexity'} />
             )}
           </div>
           {!props.project.analysis_id && (
-            <EmptyState text="No analysis attached to this project yet. Click Re-Analyze to run Klauro on this repository and populate real capabilities, entities, and health." />
+            <div className="panel onboarding-card">
+              <h2>Run your first analysis</h2>
+              <p className="subtle">No analysis is attached to this project yet. From the repository on your machine, run:</p>
+              <pre><code>curl -fsSL https://mcp.klauro.com/install | sh{'\n'}klauro login --email you@example.com{'\n'}cd your-repo{'\n'}klauro init .</code></pre>
+              <p className="subtle">Capabilities, entities, flows, and health will appear here as soon as the analysis lands.</p>
+            </div>
           )}
           {props.project.analysis_id && analysisError && (
             <EmptyState text={`Could not load the analysis for this project: ${analysisError}`} />
@@ -816,16 +995,39 @@ function WorkspaceModal(props: { onClose: () => void; onSubmit: (name: string) =
   return <TextModal title="Add Workspace" label="Name" placeholder="Soon" submit="Create workspace" onClose={props.onClose} onSubmit={value => props.onSubmit(value)} />;
 }
 
-function ProjectModal(props: { onClose: () => void; onSubmit: (input: { name: string; repo_url?: string; local_path?: string; analysis_id?: string }) => Promise<void> }) {
+function ProjectModal(props: { workspaceName: string; onClose: () => void; onSubmit: (input: { name: string; repo_url?: string; local_path?: string; analysis_id?: string }) => Promise<void> }) {
+  const [showManual, setShowManual] = useState(false);
   return (
-    <ModalFrame title="Add Repository" onClose={props.onClose}>
-      <form className="form-grid" onSubmit={event => submitForm(event, props.onSubmit)}>
-        <label>Name<input name="name" placeholder="backend" required /></label>
-        <label>Repo URL<input name="repo_url" placeholder="https://github.com/acme/backend" /></label>
-        <label>Local path<input name="local_path" placeholder="/Users/me/dev/acme/backend" /></label>
-        <label>Analysis ID<input name="analysis_id" placeholder="optional" /></label>
-        <div className="form-actions"><button type="button" className="button" onClick={props.onClose}>Cancel</button><button className="button primary">Add repository</button></div>
-      </form>
+    <ModalFrame title="Connect a repository" onClose={props.onClose}>
+      <p className="subtle">Projects are connected via the Klauro CLI, not uploaded through the browser. Run these three commands from your terminal, in the repository you want analyzed.</p>
+      <ol className="onboarding-steps">
+        <li>
+          <span>1. Install the Klauro CLI</span>
+          <pre><code>curl -fsSL https://mcp.klauro.com/install | sh</code></pre>
+        </li>
+        <li>
+          <span>2. Sign in with the account you used here</span>
+          <pre><code>klauro login --email you@example.com</code></pre>
+        </li>
+        <li>
+          <span>3. Connect the repository</span>
+          <pre><code>cd your-repo{'\n'}klauro init .</code></pre>
+        </li>
+      </ol>
+      <p className="subtle">Pick "{props.workspaceName}" when `klauro init` asks which workspace to attach to. Once it finishes, this repository will appear here automatically and populate with capabilities, entities, and flows as the analysis lands — no manual step needed.</p>
+      <button type="button" className="link-button" onClick={() => setShowManual(value => !value)}>
+        {showManual ? 'Hide manual registration' : 'Already ran klauro init elsewhere? Register the project manually'}
+      </button>
+      {showManual && (
+        <form className="form-grid" onSubmit={event => submitForm(event, props.onSubmit)}>
+          <label>Name<input name="name" placeholder="backend" required /></label>
+          <label>Repo URL<input name="repo_url" placeholder="https://github.com/acme/backend" /></label>
+          <label>Local path<input name="local_path" placeholder="/Users/me/dev/acme/backend" /></label>
+          <label>Analysis ID<input name="analysis_id" placeholder="optional" /></label>
+          <div className="form-actions"><button type="button" className="button" onClick={props.onClose}>Cancel</button><button className="button primary">Register project</button></div>
+        </form>
+      )}
+      {!showManual && <div className="form-actions" style={{ marginTop: 16 }}><button type="button" className="button" onClick={props.onClose}>Close</button></div>}
     </ModalFrame>
   );
 }
@@ -888,6 +1090,14 @@ function Metric({ label, value, hint }: { label: string; value: string; hint: st
 
 function EmptyState({ text }: { text: string }) {
   return <div className="empty-state">{text}</div>;
+}
+
+function ComingSoonButton({ icon, label }: { icon: React.ReactNode; label: string }) {
+  return (
+    <button className="nav-item disabled" disabled title={`${label} is coming soon`} aria-label={`${label} (coming soon)`}>
+      {icon} {label} <span className="badge soon">Soon</span>
+    </button>
+  );
 }
 
 interface ActivityItem {

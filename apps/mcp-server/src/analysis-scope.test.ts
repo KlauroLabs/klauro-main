@@ -8,6 +8,7 @@ import {
   isPathUnderRoot,
   filterEntriesToScope,
   filterWorkspaceGraphsToScope,
+  excludeForeignWorkspaceEntries,
   type AnalysisScope,
 } from './analysis-scope';
 
@@ -145,4 +146,54 @@ test('filterWorkspaceGraphsToScope: machine mode is a no-op', async () => {
   const scope: AnalysisScope = { mode: 'machine', reason: 'unscoped' };
   const graphs = [{ id: 'a', inputs: [{ path: '/anywhere' }] }];
   assert.deepEqual(await filterWorkspaceGraphsToScope(graphs, scope), graphs);
+});
+
+/**
+ * CROSS-TENANT LEAK-PROOF TEST (2026-07-06 cold-customer audit): a caller
+ * whose OWN requested path has no workspace binding of its own (a brand-new
+ * account's freshly-created fixture repo, never `klauro init`-connected yet —
+ * or a genuinely unhosted solo dev) resolves to `mode: 'machine'`, which
+ * `filterEntriesToScope` treats as a no-op by design (see the test above).
+ * That is fine when every candidate entry is ALSO unbound. It is NOT fine
+ * when a candidate entry under consideration is bound to somebody else's
+ * real, specific, different workspace — that is exactly how the audit's
+ * agent, working from an unbound path, ended up being handed the operator's
+ * real proof-of-concept analysis (45,804 real nodes) under a brand-new
+ * account's session. `excludeForeignWorkspaceEntries` must strip any entry
+ * bound to a DIFFERENT workspace even while the requester itself is
+ * unscoped, and must do so regardless of scope.mode.
+ */
+test('excludeForeignWorkspaceEntries: unbound requester (machine mode) still excludes an entry bound to a DIFFERENT specific workspace', async () => {
+  const scope: AnalysisScope = { mode: 'machine', reason: 'No .klaurorc found; machine-wide view (unscoped, legacy behavior).' };
+
+  const ownerRepo = mkTmpDir('klauro-scope-owner-repo-');
+  writeKlaurorc(ownerRepo, { version: 1, kind: 'project', project: { name: 'proof-of-concept', workspaceId: 'wsp_owner_real' } });
+
+  const unboundFixture = mkTmpDir('klauro-scope-fresh-fixture-'); // no .klaurorc — the new account's never-connected repo
+
+  const entries = [
+    { path: ownerRepo, name: 'proof-of-concept' }, // bound to a DIFFERENT workspace — must be excluded
+    { path: unboundFixture, name: 'widget-tracker-api' }, // unbound, same as requester — kept
+  ];
+
+  const filtered = await excludeForeignWorkspaceEntries(entries, scope);
+  assert.deepEqual(filtered.map(e => e.name), ['widget-tracker-api']);
+
+  const serialized = JSON.stringify(filtered);
+  assert.ok(!serialized.includes('proof-of-concept'), 'owner\'s real, differently-scoped project must never appear in the response');
+});
+
+test('excludeForeignWorkspaceEntries: requester bound to workspace A excludes an entry bound to workspace B, keeps unbound entries', async () => {
+  const scope: AnalysisScope = { mode: 'workspace', workspaceId: 'wsp_a', reason: 'test' };
+
+  const bRepo = mkTmpDir('klauro-scope-workspace-b-');
+  writeKlaurorc(bRepo, { version: 1, project: { name: 'b-repo', workspaceId: 'wsp_b' } });
+  const unbound = mkTmpDir('klauro-scope-unbound-');
+
+  const entries = [
+    { path: bRepo, name: 'b-repo' },
+    { path: unbound, name: 'unbound-repo' },
+  ];
+  const filtered = await excludeForeignWorkspaceEntries(entries, scope);
+  assert.deepEqual(filtered.map(e => e.name), ['unbound-repo']);
 });

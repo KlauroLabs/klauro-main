@@ -785,10 +785,10 @@ export async function loadAnalysis(
   return output ? tagAnalysisVersion(output) : output;
 }
 
-export async function listAnalyses(): Promise<AnalysisEntry[]> {
+export async function listAnalyses(options: { scopeCwd?: string } = {}): Promise<AnalysisEntry[]> {
   const index = await loadIndex();
   const entries = Object.values(index.analyses);
-  const scope = await resolveAnalysisScope();
+  const scope = await resolveAnalysisScope({ cwd: options.scopeCwd });
   return filterEntriesToScope(entries, scope);
 }
 
@@ -798,11 +798,18 @@ export async function listAnalyses(): Promise<AnalysisEntry[]> {
  * ever naming what was filtered out. Use this in any tool handler that wants
  * to be honest about isolation; listAnalyses() alone stays the drop-in
  * choke point for existing callers.
+ *
+ * `scopeCwd` lets a caller anchor the scope on a specific requested path
+ * (e.g. resolve_agent_analysis's `path` argument) instead of the MCP
+ * process's own process.cwd() — see agent-project-map.ts for why: the
+ * process cwd is not necessarily the repo the caller is asking about, and
+ * scoping by the wrong directory can fail open to 'machine' (unscoped) even
+ * when the REQUESTED path has a real workspace binding of its own.
  */
-export async function listAnalysesWithScope(): Promise<{ entries: AnalysisEntry[]; scope: Awaited<ReturnType<typeof resolveAnalysisScope>> }> {
+export async function listAnalysesWithScope(options: { scopeCwd?: string } = {}): Promise<{ entries: AnalysisEntry[]; scope: Awaited<ReturnType<typeof resolveAnalysisScope>> }> {
   const index = await loadIndex();
   const entries = Object.values(index.analyses);
-  const scope = await resolveAnalysisScope();
+  const scope = await resolveAnalysisScope({ cwd: options.scopeCwd });
   return { entries: await filterEntriesToScope(entries, scope), scope };
 }
 

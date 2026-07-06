@@ -1,4 +1,6 @@
 import { globSync as importedGlobSync } from 'glob';
+import * as fs from 'fs';
+import * as path from 'path';
 
 /**
  * Defensive glob resolution: under some CJS/ESM interop configurations (seen
@@ -82,4 +84,65 @@ export function isHashOrIdShapedToken(token: string): boolean {
 export function safeDeployableName(basename: string): string {
   if (isHashOrIdShapedToken(basename)) return 'unnamed-service';
   return basename;
+}
+
+/**
+ * Project display-name resolution: prefer the ecosystem manifest's declared
+ * name (package.json "name", Cargo.toml [package] name, go.mod module,
+ * pyproject.toml [project]/[tool.poetry] name) over the bare directory
+ * basename. Cold-customer feedback (2026-07-06): naming a project after the
+ * checkout dir (e.g. a hash-named snapshot dir, or a clone folder that
+ * doesn't match the package name) reads as unpolished/wrong — the manifest
+ * name is the deterministic, evidence-backed ground truth when present.
+ * Falls back to `fallback` (typically path.basename(projectPath)) only when
+ * no manifest declares a name, or the declared name is unreadable/empty.
+ * Mirrors the same regex-based TOML field extraction already used by the
+ * package-manifest and python deployable-evidence providers (no toml
+ * dependency) — kept in sync manually since those aren't exported for reuse.
+ */
+export function resolveManifestProjectName(projectPath: string, fallback: string): string {
+  const packageJsonPath = path.join(projectPath, 'package.json');
+  if (fs.existsSync(packageJsonPath)) {
+    try {
+      const json = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+      if (typeof json.name === 'string' && json.name.trim()) return json.name.trim();
+    } catch {
+      // unreadable/invalid manifest — fall through to other ecosystems
+    }
+  }
+
+  const pyprojectPath = path.join(projectPath, 'pyproject.toml');
+  if (fs.existsSync(pyprojectPath)) {
+    try {
+      const content = fs.readFileSync(pyprojectPath, 'utf8');
+      const name = content.match(/^\s*name\s*=\s*"([^"]+)"/m)?.[1];
+      if (name) return name;
+    } catch {
+      // unreadable manifest contributes nothing
+    }
+  }
+
+  const cargoTomlPath = path.join(projectPath, 'Cargo.toml');
+  if (fs.existsSync(cargoTomlPath)) {
+    try {
+      const content = fs.readFileSync(cargoTomlPath, 'utf8');
+      const name = content.match(/^\s*name\s*=\s*"([^"]+)"/m)?.[1];
+      if (name) return name;
+    } catch {
+      // unreadable manifest contributes nothing
+    }
+  }
+
+  const goModPath = path.join(projectPath, 'go.mod');
+  if (fs.existsSync(goModPath)) {
+    try {
+      const content = fs.readFileSync(goModPath, 'utf8');
+      const module = content.match(/^module\s+(\S+)/m)?.[1];
+      if (module) return module;
+    } catch {
+      // unreadable manifest contributes nothing
+    }
+  }
+
+  return fallback;
 }

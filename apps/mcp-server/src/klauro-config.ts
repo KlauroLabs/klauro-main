@@ -1,6 +1,7 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { DEFAULT_KLAURO_CLOUD_URL } from './defaults';
+import { resolveManifestProjectName } from '../../../packages/analyzer-core/src/analyzer/core/deployable-evidence/util';
 
 export interface KlauroConfig {
   version: number;
@@ -233,7 +234,12 @@ export function defaultKlauroConfig(projectPath: string): KlauroConfig {
     version: 1,
     kind: 'project',
     project: {
-      name: path.basename(path.resolve(projectPath)),
+      // Prefer the ecosystem manifest's declared name (package.json/pyproject.toml/
+      // Cargo.toml/go.mod) over the bare directory basename — a checkout folder or
+      // hash-named snapshot dir frequently doesn't match the actual package name,
+      // and naming the project after it reads as unpolished. See cold-customer
+      // feedback 2026-07-06 (~/.klauro/agent-feedback/2026-07-06-cold-customer.md).
+      name: resolveManifestProjectName(path.resolve(projectPath), path.basename(path.resolve(projectPath))),
     },
     analyzer: {
       // One product: analysis goes to the hosted service (heavy work + AI on the VPS),

@@ -164,7 +164,7 @@ import {
 } from './storage';
 import { loadKlauroConfig, validateEmbeddingConfig, validateConventions, type KlauroConventions } from './klauro-config';
 import { clearFreshnessSummaryCache } from './freshness';
-import { createEmbeddingProvider, createLocalEmbeddingProvider } from '../../../packages/analyzer-core/src/analyzer/embedding/embedding-provider-factory';
+import { createEmbeddingProvider } from '../../../packages/analyzer-core/src/analyzer/embedding/embedding-provider-factory';
 import { createVectorStore } from '../../../packages/analyzer-core/src/analyzer/embedding/vector-store-factory';
 import type { VectorStoreSetting } from '../../../packages/analyzer-core/src/analyzer/embedding/vector-store-factory';
 import type { VectorStore } from '../../../packages/analyzer-core/src/analyzer/embedding/types';
@@ -822,10 +822,7 @@ async function buildEmbeddingPhaseConfig(projectPath: string): Promise<Embedding
     // The local path prefers the real ONNX model and lazily falls back to the
     // hash embedding when it can't load, so the index is built with real
     // semantics wherever the model is present. The API path is unchanged.
-    const provider =
-      embedding.provider === 'local'
-        ? await createLocalEmbeddingProvider(providerOptions)
-        : createEmbeddingProvider(embedding.provider, providerOptions);
+    const provider = createEmbeddingProvider(embedding.provider, providerOptions);
 
     const store = buildVectorStore(
       projectPath,

@@ -50,6 +50,10 @@ const NON_TOOL_TOKENS = new Set<string>([
   'wait_and_heartbeat_poll',
   'proceed_with_awareness_if_compatible',
   'take_over_stale_lease',
+  // server-staleness response fields (the tool is get_server_version)
+  'server_update',
+  'running_stale',
+  'installed_version',
 ]);
 
 function toolShapedTokens(text: string): Set<string> {

@@ -2,6 +2,7 @@ import type { Readable, Writable } from 'stream';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { createServer } from './server.js';
 import { grammarHealth } from '../../../packages/analyzer-core/src/analyzer/core/wasm-tree-sitter';
+import { writeSessionLock, removeSessionLock } from './session-lock';
 
 /**
  * Boot self-check for the tree-sitter breadth path. In the dev tree this always
@@ -41,16 +42,22 @@ process.on('unhandledRejection', (reason) => {
   process.stderr.write(`Klauro MCP unhandled rejection: ${msg}\n`);
 });
 
-process.stdin.on('end', () => process.exit(0));
-process.stdin.on('close', () => process.exit(0));
-process.on('SIGTERM', () => process.exit(0));
-process.on('SIGHUP', () => process.exit(0));
+process.stdin.on('end', () => { removeSessionLock(); process.exit(0); });
+process.stdin.on('close', () => { removeSessionLock(); process.exit(0); });
+process.on('SIGTERM', () => { removeSessionLock(); process.exit(0); });
+process.on('SIGHUP', () => { removeSessionLock(); process.exit(0); });
+process.on('exit', () => removeSessionLock());
 
 export async function startServer(
   input: Readable = process.stdin,
   output: Writable = process.stdout
 ): Promise<void> {
   reportGrammarHealth();
+  // Best-effort session lock (~/.klauro/mcp-sessions/<pid>.json): lets
+  // `klauro update`/`klauro status` tell the human "a running MCP session was
+  // detected — restart it after updating" instead of updating silently with
+  // no signal that anything needs to change client-side. Never blocks startup.
+  writeSessionLock();
   const server = createServer();
   const transport = new StdioServerTransport(input, output);
   await server.connect(transport);

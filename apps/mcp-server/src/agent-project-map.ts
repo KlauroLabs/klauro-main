@@ -1,10 +1,11 @@
 import * as path from 'path';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
-import { listAnalyses, getAnalysisEntry, type AnalysisEntry } from './storage';
+import { listAnalysesWithScope, getAnalysisEntry, type AnalysisEntry } from './storage';
 import { getAnalysis, analyzeProjectIncremental } from './analyzer';
 import { evaluateAgentReadiness, type AgentTask } from './agent-adoption';
 import { classifyAnalysisProfile } from './analysis-profile';
 import { summarizeAnalysisFreshness, type AnalysisFreshnessSummary } from './freshness';
+import { excludeForeignWorkspaceEntries } from './analysis-scope';
 
 export interface AgentAnalysisCandidate {
   path: string;
@@ -45,7 +46,30 @@ export async function getAgentProjectMap(input: {
   task?: AgentTask;
   limit?: number;
 } = {}): Promise<AgentProjectMap> {
-  const entries = await listAnalyses();
+  // SECURITY: scope by the REQUESTED path, not the MCP process's own
+  // process.cwd(). listAnalyses()'s default scope resolution walks up from
+  // cwd looking for a .klaurorc binding and falls back to 'machine' (fully
+  // unscoped, every analysis on this machine) when none is found there. If
+  // this tool scoped on cwd, a caller could pass an arbitrary `path`
+  // belonging to a DIFFERENT, unrelated (and possibly unbound) workspace and
+  // still see every analysis stored on the host whenever the *server
+  // process's* cwd happened to lack a binding — regardless of whether the
+  // requested path itself belongs to someone else's real, bound project.
+  // Anchoring on input.path means: if the repo the caller says they're
+  // working in is bound to workspace W, only W's analyses are visible,
+  // independent of the process's own working directory. This closes the
+  // cross-tenant bleed from the 2026-07-06 cold-customer audit, where
+  // resolve_agent_analysis(otherAccountsRealPath) returned that account's
+  // full analysis to an unrelated caller.
+  const { entries: scopedEntries, scope } = await listAnalysesWithScope({ scopeCwd: input.path });
+  // Second, fail-closed pass: filterEntriesToScope (inside listAnalysesWithScope)
+  // is a no-op when scope.mode is 'machine' (unbound requester — e.g. a
+  // brand-new/fixture repo with no .klaurorc yet, exactly the cold-customer
+  // audit's case). That "everything on this machine" fallback is intentional
+  // for a genuinely unhosted solo dev, but it must never surface an entry
+  // that IS bound to someone else's specific, different workspace. Strip
+  // those out regardless of the requester's own scope mode.
+  const entries = await excludeForeignWorkspaceEntries(scopedEntries, scope);
   const candidates: AgentAnalysisCandidate[] = [];
   const requestedPath = input.path ? normalizePath(input.path) : undefined;
   const target = input.task?.target;

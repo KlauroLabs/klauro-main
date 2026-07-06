@@ -229,6 +229,40 @@ export async function filterEntriesToScope<T extends { path: string }>(entries: 
 }
 
 /**
+ * Fail-closed cross-tenant guard for path-targeted lookups (resolve_agent_
+ * analysis, get_agent_project_map). `filterEntriesToScope` above is a no-op
+ * in `mode: 'machine'` — that is correct for `list_analyses`/`list_
+ * workspace_analyses` (a caller with no workspace binding of their own
+ * legitimately gets the pre-isolation "everything on this machine" view,
+ * e.g. a solo local dev with one repo and no hosted account at all).
+ *
+ * It is NOT correct for a tool where the caller supplies a specific target
+ * `path` and expects to be resolved to ONLY that repo's own analysis: if the
+ * requested path is unbound (no workspace of its own) or bound to workspace
+ * A, this must never surface an entry whose OWN `.klaurorc` binds it to a
+ * DIFFERENT workspace B — that is exactly the 2026-07-06 cold-customer
+ * cross-tenant bleed (a caller in an unbound/fixture repo asked to resolve a
+ * path belonging to the operator's real, separately-bound project, and
+ * `mode: 'machine'` fell open and returned it).
+ *
+ * Rule: an entry is excluded iff its own path has a workspaceId binding AND
+ * that binding differs from the requester's scope.workspaceId (including
+ * "requester has none"). An entry with no binding of its own is kept — it is
+ * either the requester's own never-hosted repo or genuinely never opted into
+ * workspace isolation, which is the existing 'machine' semantics.
+ */
+export async function excludeForeignWorkspaceEntries<T extends { path: string }>(entries: T[], scope: AnalysisScope): Promise<T[]> {
+  const lookup = memoizedWorkspaceIdLookup();
+  const kept: T[] = [];
+  for (const entry of entries) {
+    const boundId = await lookup(entry.path);
+    if (boundId !== undefined && boundId !== scope.workspaceId) continue;
+    kept.push(entry);
+  }
+  return kept;
+}
+
+/**
  * Same filter for workspace-analysis / cross-codebase graphs, which don't
  * have a single top-level `path` but do carry `inputs[].repo_path|path`
  * (member repo paths). In scope iff at least one member repo's own

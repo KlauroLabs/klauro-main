@@ -86,11 +86,33 @@ export interface ProductMap {
   };
 }
 
+export interface LayersReady {
+  complete: boolean;
+  layers?: Record<string, boolean>;
+  [key: string]: unknown;
+}
+
+export interface AnalysisSummary {
+  name?: string;
+  type?: string;
+  languages?: string[];
+  frameworks?: string[];
+  primary_domain?: string | null;
+  description?: string | null;
+  nodes?: number;
+  edges?: number;
+  entry_points?: number;
+  capabilities?: number;
+  top_capabilities?: string[];
+  layers_ready?: LayersReady;
+  [key: string]: unknown;
+}
+
 export interface ProjectAnalysisResponse {
-  status: 'ready' | 'no_analysis';
+  status: 'ready' | 'populating' | 'no_analysis';
   project_id: string;
   analysis_id?: string;
-  summary?: unknown;
+  summary?: AnalysisSummary;
   product_map?: ProductMap;
   error?: string;
 }
@@ -178,6 +200,47 @@ export interface ConceptualResponse {
       analysis_version_notice?: string;
     };
     perspectives: unknown[];
+  };
+}
+
+export interface WorkspaceAnalysisResponse {
+  status: 'ready' | 'pending' | 'none';
+  workspace_id: string;
+  workspace_name?: string;
+  generated_at?: string;
+  member_project_ids?: string[];
+  member_project_names?: string[];
+  analysis?: {
+    workspace_narrative?: {
+      title?: string;
+      description?: string;
+      product_value_summary?: string;
+      value_drivers?: string[];
+      domains?: string[];
+      key_capabilities?: string[];
+      relationship_summary?: string[];
+    };
+    health?: {
+      status?: 'healthy' | 'watch' | 'at-risk' | 'unknown';
+      score?: number;
+      summary?: string;
+      risk_area_count?: number;
+      critical_risk_count?: number;
+      high_risk_count?: number;
+    };
+    codebases?: Array<{ id: string; name?: string }>;
+    applications?: Array<{ id: string; name?: string; kind?: string }>;
+    summary?: {
+      codebases?: number;
+      applications?: number;
+      distribution_units?: number;
+      composition_kind?: string;
+      capabilities?: number;
+      domains?: number;
+      entities?: number;
+      risk_areas?: number;
+    };
+    [key: string]: unknown;
   };
 }
 
@@ -283,6 +346,10 @@ export function addWorkspaceMember(token: string, workspaceId: string, input: { 
 
 export function getProjectAnalysis(token: string, projectId: string): Promise<ProjectAnalysisResponse> {
   return apiRequest(`/api/projects/${encodeURIComponent(projectId)}/analysis`, token);
+}
+
+export function getWorkspaceAnalysis(token: string, workspaceId: string): Promise<WorkspaceAnalysisResponse> {
+  return apiRequest(`/api/workspaces/${encodeURIComponent(workspaceId)}/analysis`, token);
 }
 
 export function getProjectConceptual(token: string, projectId: string, target?: string): Promise<ConceptualResponse> {

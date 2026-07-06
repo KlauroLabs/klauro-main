@@ -57,7 +57,7 @@ import { semanticSearch } from './semantic-search';
 import { pruneKlauroStorage } from './storage-maintenance';
 import { resolveWorkspaceInputPaths, type WorkspaceSkippedInput } from './workspace-inputs';
 import { RESPONSE_BUDGET_BYTES, boundToolPayload, boundToolText, serializeToolResponse } from './response-budget';
-import { getBuildIdentity } from '../../../packages/analyzer-core/src/analyzer/core/build-identity';
+import { getBuildIdentity, checkServerStaleness } from '../../../packages/analyzer-core/src/analyzer/core/build-identity';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import { loadStoredConnectorAuth, normalizeServerUrl } from './connector-auth';
 import { arbitrate, detectCollisions, getGrants, heartbeatGrant, releaseGrant, requestGrant, type AgentKind, type CasEdgeRef, type WasCapabilityRef, type WorkClaim } from './coordination';
@@ -110,7 +110,9 @@ When finishing overlapping work, reconcile by intent, not by textual diff: call 
 
 Before fanning work out to a fleet, plan the batching instead of guessing it: call plan_parallel_work with your pending task list (and the repo path) to turn it into the maximally-parallel non-conflicting batches up front — it uses the same CAS blast-radius awareness as the rest of this group, so tasks that look textually disjoint but reach into the same call-graph surface still land in different batches.
 
-Trust, then verify: every result is stamped to a commit/branch. If get_file_nodes returns nothing for a file you can see on disk, it is likely on an unmerged branch — re-analyze or read that one file. On any tool error, fall back to reading. Don't lean on a single tool; no one view is the whole picture.`;
+Trust, then verify: every result is stamped to a commit/branch. If get_file_nodes returns nothing for a file you can see on disk, it is likely on an unmerged branch — re-analyze or read that one file. On any tool error, fall back to reading. Don't lean on a single tool; no one view is the whole picture.
+
+Watch for silent server staleness: \`klauro update\` overwrites the installed MCP server on disk, but an ALREADY-RUNNING server process keeps executing the OLD build in memory until the client restarts — MCP servers do not hot-reload, and this happens with no error, just missing tools or stale behavior. Every get_summary / get_system_overview response (and anything else on the freshness-stamped orient path) carries a server_update field once it becomes known (empty on the very first call of a session, populated from the second call onward) whenever a newer build is installed or available; get_server_version is the direct, always-fresh way to check on demand and returns the same finding as running_stale/server_update plus installed_version. If you see server_update or a get_server_version note asking for a restart, relay it to the human verbatim — restarting the MCP client (Claude Code / IDE) is the only way to pick up the new build.`;
 
 // Freshness-gated read: this is now the DEFAULT way any agent-entry tool reads
 // CAS, not a special agent-only path (see docs/SPEC-FRESHNESS.md). It checks the
@@ -389,9 +391,42 @@ function describeScopeForResponse(scope: AnalysisScope): { mode: 'workspace' | '
 // mutated.
 function withFreshnessStamp<T>(data: T): T {
   if (data && typeof data === 'object' && !Array.isArray(data)) {
-    return { ...data, freshness_checked_at: new Date().toISOString() };
+    return { ...data, freshness_checked_at: new Date().toISOString(), ...serverUpdateStampFields() };
   }
   return data;
+}
+
+// Silent-staleness surfacing on the main orient path (get_summary,
+// get_system_overview, and everything else routed through withFreshnessStamp):
+// the customer-facing bug this exists for is that `klauro update` overwrites
+// the installed bundle on disk while an already-running MCP server keeps
+// serving the OLD in-memory build, with no signal to the human that a restart
+// is needed. checkServerStaleness is async (a disk read + an optional network
+// fetch of latest.json) and throttled to ~once per 10min internally, but tool
+// responses here must stay synchronous and instant — so this wrapper reads the
+// LAST completed check synchronously and kicks off a fresh (still throttled)
+// check in the background for next time. The very first call in a process's
+// lifetime has no prior result yet, so it returns no server_update field
+// rather than blocking the response on the fetch; the field appears from the
+// second agent-entry call onward.
+let lastKnownStaleness: import('../../../packages/analyzer-core/src/analyzer/core/build-identity').StalenessCheck | undefined;
+let stalenessRefreshInFlight = false;
+
+function serverUpdateStampFields(): { server_update?: string } {
+  refreshStalenessInBackground();
+  if (lastKnownStaleness?.note) return { server_update: lastKnownStaleness.note };
+  return {};
+}
+
+function refreshStalenessInBackground(): void {
+  if (stalenessRefreshInFlight) return;
+  stalenessRefreshInFlight = true;
+  const auth = loadStoredConnectorAuth();
+  const resolvedServerUrl = normalizeServerUrl(auth.defaultServerUrl || process.env.KLAURO_URL);
+  checkServerStaleness({ serverUrl: resolvedServerUrl })
+    .then(result => { lastKnownStaleness = result; })
+    .catch(() => { /* best-effort; a failed background check just leaves the prior result in place */ })
+    .finally(() => { stalenessRefreshInFlight = false; });
 }
 
 function compactText(value: unknown, max = 180): string | undefined {
@@ -2595,7 +2630,7 @@ function registerTools(server: McpServer) {
     'get_server_version',
     {
       title: 'Get Server Version',
-      description: 'Diagnostic: report the running Klauro MCP server\'s version and whether a newer build is available. Call this FIRST whenever a tool you expect (e.g. one mentioned in docs, changelog, or another agent\'s output) appears to be missing — that almost always means this MCP connection is a stale/pre-release build, not that the feature does not exist. Always available, no analysis required, never throws.',
+      description: 'Diagnostic: report the running Klauro MCP server\'s version and whether a newer build is available. Call this FIRST whenever a tool you expect (e.g. one mentioned in docs, changelog, or another agent\'s output) appears to be missing — that almost always means this MCP connection is a stale/pre-release build, not that the feature does not exist. Also detects the SILENT-STALENESS case: `klauro update` overwrites the installed package on disk, but an already-running MCP server process keeps executing the OLD build in memory until the client restarts (MCP servers do not hot-reload) — server_update/running_stale surfaces that drift even when this exact process has never seen a hosted-version check. Always available, no analysis required, never throws.',
       inputSchema: {
         server_url: z.string().optional().describe('Optional override for the release-manifest host; defaults to the stored login server, KLAURO_URL, or the public Klauro cloud URL.'),
       } as any,
@@ -2606,24 +2641,11 @@ function registerTools(server: McpServer) {
       const auth = loadStoredConnectorAuth();
       const resolvedServerUrl = normalizeServerUrl(server_url || auth.defaultServerUrl || process.env.KLAURO_URL);
 
-      let latestVersion: string | null = null;
-      try {
-        const response = await fetch(`${resolvedServerUrl}/dist/latest.json`, { headers: { 'cache-control': 'no-cache' } });
-        if (response.ok) {
-          const manifest = await response.json().catch(() => null) as { version?: string } | null;
-          latestVersion = manifest?.version || null;
-        }
-      } catch {
-        // best-effort; unreachable manifest is not an error for this diagnostic tool
-        latestVersion = null;
-      }
-
-      const upToDate = latestVersion ? currentVersion === latestVersion : null;
-      const note = latestVersion === null
-        ? 'Could not reach the release manifest.'
-        : upToDate
-          ? 'On the latest version.'
-          : `This MCP server is running ${currentVersion} but ${latestVersion} is available. The human should run \`klauro update\` and RESTART the MCP client (Claude Code / IDE) to load the new server — MCP servers do not hot-reload.`;
+      const staleness = await checkServerStaleness({ serverUrl: resolvedServerUrl, forceRefresh: true });
+      const latestVersion = staleness.latest_version;
+      const upToDate = latestVersion ? !staleness.running_stale && !staleness.update_available : null;
+      const note = staleness.note
+        ?? (latestVersion === null ? 'Could not reach the release manifest.' : 'On the latest version.');
 
       return json({
         current_version: currentVersion,
@@ -2631,6 +2653,10 @@ function registerTools(server: McpServer) {
         up_to_date: upToDate,
         update_command: 'klauro update',
         note,
+        // Silent-staleness fields (SPEC: running bundle vs installed-on-disk bundle vs hosted latest):
+        installed_version: staleness.installed_version,
+        running_stale: staleness.running_stale,
+        server_update: staleness.note,
       });
     })
   );

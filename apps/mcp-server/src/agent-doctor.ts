@@ -1,7 +1,7 @@
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import { evaluateAgentReadiness } from './agent-adoption';
 import { validateCASContract, type CASGoldenSnapshot, compareCASGoldenSnapshot } from './cas-contract';
-import { getAnalysisFreshness } from './freshness';
+import { getAnalysisFreshness, summarizeAnalysisFreshness } from './freshness';
 import { getRuntimeEventContract } from './runtime-contract';
 import { getRuntimeSdkPackage } from './runtime-sdk';
 import { getTestDiscoveryEvidence } from './test-discovery';
@@ -17,6 +17,29 @@ export async function getAgentDoctor(cas: CASOutput, projectPath: string, option
         recommendation: 'Analysis was generated for the current evaluation run.',
       }
     : await getAnalysisFreshness(projectPath);
+  // `klauro status` and the auto-refresh gate (cli.ts loadOrAnalyze) both treat
+  // summarizeAnalysisFreshness's git-diff-based `staleness` as the authoritative
+  // "is this analysis complete/current" signal. `getAnalysisFreshness` above uses
+  // an independent mtime-glob heuristic over a different file-pattern set, so the
+  // two could (and did — cold-customer feedback 2026-07-06) disagree for minutes
+  // during the populating-to-ready window. Reconcile here: if the shared
+  // staleness check disagrees with the mtime-glob status, defer to it — same
+  // source of truth `status` reports, so `doctor` and `status` never contradict.
+  const sharedStaleness = options.assumeFresh ? null : summarizeAnalysisFreshness(projectPath, cas.analysis_timestamp);
+  const reconciledFreshnessStatus: typeof freshness.status = sharedStaleness
+    ? (sharedStaleness.staleness === 'fresh' ? 'fresh' : sharedStaleness.staleness === 'stale' ? 'stale' : freshness.status)
+    : freshness.status;
+  if (sharedStaleness && reconciledFreshnessStatus !== freshness.status) {
+    (freshness as { status: typeof freshness.status }).status = reconciledFreshnessStatus;
+    (freshness as { recommendation: string }).recommendation = sharedStaleness.recommendation;
+  }
+  // Same layers_ready manifest `klauro status` now surfaces (repo_analysis_complete)
+  // and the hosted API's populating/ready status already use (remote-analyzer-
+  // service.ts) — a CAS mid-progressive-analysis is real and queryable but not
+  // fully layered, and both surfaces must agree on that, not just on staleness.
+  const layersReady = cas.layers_ready;
+  const analysisComplete = !layersReady || layersReady.complete !== false;
+  const pendingLayers = (layersReady?.layers || []).filter(layer => layer.status === 'pending').map(layer => layer.layer);
   const readiness = evaluateAgentReadiness(cas, projectPath, { testEvidence });
   const contract = validateCASContract(cas);
   const runtime = getRuntimeEventContract(cas, { limit: 25 });
@@ -33,6 +56,8 @@ export async function getAgentDoctor(cas: CASOutput, projectPath: string, option
     check('cas-contract', contract.status, contract.score, `${contract.summary.nodes} nodes, ${contract.summary.edges} edges`),
     check('agent-readiness', readiness.status, readiness.score, readiness.agent_context_ready ? 'Ready for agent use' : readiness.adoption_gaps.join('; ')),
     check('freshness', freshness.status === 'fresh' ? 'pass' : freshness.status === 'stale' ? 'warn' : 'fail', freshness.status === 'fresh' ? 100 : freshness.status === 'stale' ? 70 : 0, freshness.recommendation),
+    check('layers-complete', analysisComplete ? 'pass' : 'warn', analysisComplete ? 100 : 60,
+      analysisComplete ? 'All analysis layers complete' : `Analysis still populating: ${pendingLayers.join(', ') || 'background layers pending'}`),
     check('test-evidence', testEvidence.status === 'cas-covered' ? 'pass' : 'warn', testEvidence.status === 'cas-covered' ? 100 : 80, testEvidence.summary),
     check('runtime-sdk', runtime.totals.runtime_static_links > 0 && sdkPackage.files.length > 0 ? 'pass' : 'warn', runtime.totals.runtime_static_links > 0 ? 100 : 75, `${runtime.totals.runtime_static_links} runtime links, ${sdkPackage.files.length} SDK files`),
     check('golden-snapshot', goldenStatus, goldenStatus === 'pass' ? 100 : goldenStatus === 'warn' ? 80 : 0, savedGolden ? `${goldenGates.length} snapshot gates` : 'No saved CAS golden snapshot'),
@@ -45,7 +70,7 @@ export async function getAgentDoctor(cas: CASOutput, projectPath: string, option
     generated_at: new Date().toISOString(),
     path: projectPath,
     status,
-    agent_context_ready: status !== 'fail' && readiness.agent_context_ready && freshness.status !== 'stale',
+    agent_context_ready: status !== 'fail' && readiness.agent_context_ready && freshness.status !== 'stale' && analysisComplete,
     checks,
     readiness,
     freshness,

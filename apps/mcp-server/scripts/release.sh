@@ -74,6 +74,17 @@ VERSION="$(node -e '
 ' "$BUMP" "$REPO_ROOT/package-lock.json")"
 echo "    new version: $VERSION"
 
+# Commit the version bump BEFORE building. build-bundle.mjs derives the
+# hosted -dirty suffix from `git status --porcelain`; if we pack while the
+# bump is still uncommitted, every real release ships marked -dirty even
+# though it's built from an intentional, tagged commit. Commit first so the
+# tree is clean at build time, then pack/tag against that clean commit.
+echo "==> Committing version bump v$VERSION"
+cd "$REPO_ROOT"
+git add apps/mcp-server/package.json apps/mcp-server/package-lock.json package-lock.json
+git commit -q -m "Release v$VERSION" || echo "    (nothing to commit — version already staged/committed)"
+cd "$APP_DIR"
+
 echo "==> Packing tarball (build + npm pack + latest.json)"
 npm run pack:tarball >/dev/null
 test -f ./.pack/klauro-latest.tgz || { echo "ERROR: tarball not produced"; exit 1; }
@@ -128,8 +139,6 @@ fi
 
 echo "==> Tagging v$VERSION"
 cd "$REPO_ROOT"
-git add apps/mcp-server/package.json apps/mcp-server/package-lock.json package-lock.json
-git commit -q -m "Release v$VERSION" || echo "    (nothing to commit — version already staged/committed)"
 git tag -a "v$VERSION" -m "klauro v$VERSION" 2>/dev/null && echo "    tagged v$VERSION" || echo "    tag v$VERSION already exists"
 
 echo "==> Done. v$VERSION released."

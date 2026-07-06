@@ -25,6 +25,8 @@ import { buildSupportBundle, formatSupportBundleResult } from './support-bundle'
 import { formatFullPurgeReport, formatProjectPurgeReport, purgeAll, purgeProject, resolvePurgeRoots } from './purge';
 import { getAnalysisRunLogPath } from '../../../packages/analyzer-core/src/analyzer/core/run-log';
 import { formatBuildIdentity, getBuildIdentity } from '../../../packages/analyzer-core/src/analyzer/core/build-identity';
+import { resolveManifestProjectName } from '../../../packages/analyzer-core/src/analyzer/core/deployable-evidence/util';
+import { listActiveSessions } from './session-lock';
 import { withAnalysisFocus, type AnalysisFocus } from './analysis-focus';
 import { summarizeAnalysisFreshness } from './freshness';
 import { decideInitFlow, resolveNamedChoice, type RecognizedRemote } from './init-resolution';
@@ -246,6 +248,16 @@ async function main(): Promise<void> {
   ].includes(args.command)) {
     throw new Error(`Unknown command: ${args.command}`);
   }
+  // Track whether the caller gave an explicit path vs. the '.' default below.
+  // `init` uses this to make the ambient-cwd case loud instead of silent —
+  // see the 2026-07-06 cold-customer audit: a `klauro init` run with no
+  // explicit path from a process whose cwd was NOT the intended repo (e.g. an
+  // agent invoked without first `cd`-ing into the target fixture) silently
+  // registered a hosted project under whatever directory `.` happened to
+  // resolve to, name/local_path and all. Ambient cwd is fine for a human at a
+  // terminal who obviously knows where they are; it is not a safe default for
+  // scripted/agent invocations.
+  const pathWasExplicit = Boolean(args.path);
   if (!args.path && ['init', 'index', 'analyze', 'upload-manifest', 'install-agent', 'github-import-plan', 'agent-tracks'].includes(args.command)) {
     args.path = '.';
   }
@@ -256,7 +268,7 @@ async function main(): Promise<void> {
   const projectPath = args.path ? path.resolve(args.path) : '';
 
   if (args.command === 'init') {
-    await runInitCommand(projectPath, args);
+    await runInitCommand(projectPath, args, { pathWasExplicit });
     return;
   }
 
@@ -372,7 +384,7 @@ async function main(): Promise<void> {
       const cas = await withLogHandling(args.json, args.quiet, () => loadOrAnalyze(absolute, false));
       references.push({
         path: absolute,
-        name: cas.system?.name || path.basename(absolute),
+        name: cas.system?.name || resolveManifestProjectName(absolute, path.basename(absolute)),
         cas,
       });
     }
@@ -392,7 +404,7 @@ async function main(): Promise<void> {
       const cas = await withLogHandling(args.json, args.quiet, () => loadOrAnalyze(absolute, false));
       references.push({
         path: absolute,
-        name: cas.system?.name || path.basename(absolute),
+        name: cas.system?.name || resolveManifestProjectName(absolute, path.basename(absolute)),
         cas,
       });
     }
@@ -439,7 +451,7 @@ async function main(): Promise<void> {
     for (const selectedPath of selectedPaths) {
       const absolute = path.resolve(selectedPath);
       const cas = await withLogHandling(args.json, args.quiet, () => loadOrAnalyze(absolute, args.refresh));
-      repositories.push({ path: absolute, name: cas.system?.name || path.basename(absolute), cas });
+      repositories.push({ path: absolute, name: cas.system?.name || resolveManifestProjectName(absolute, path.basename(absolute)), cas });
     }
     const graph = buildCrossCodebaseSystemGraph(args.task.target || 'analyzed-system', repositories);
     const saved = await saveCrossCodebaseSystemGraph(graph);
@@ -624,6 +636,37 @@ async function fetchReleaseManifest(serverUrl: string): Promise<ReleaseManifest 
   }
 }
 
+// Lines that are routine npm dependency-tree noise during `npm install -g`,
+// not signal a `klauro update` caller needs. Conservative: only drops lines
+// matching npm's own well-known prefixes/patterns for warnings/notices that
+// are not actionable errors. Anything else (including "npm ERR!") passes
+// through untouched so real problems are never hidden.
+const NPM_NOISE_PATTERNS: RegExp[] = [
+  /^npm warn deprecated\b/i,
+  /^npm warn config\b/i,
+  /^npm warn tar\b/i,
+  /^npm warn skipping integrity check\b/i,
+  /^npm warn engine\b/i,
+  /^npm notice\b/i,
+  /^npm fund\b/i,
+  /^\d+ packages? (is|are) looking for funding$/i,
+  /^\s*run `npm fund` for details$/i,
+  /^added \d+ packages?.*in\s/i,
+  /^changed \d+ packages?.*in\s/i,
+];
+
+// Exported (cli.ts is otherwise entry-only / spawnSync-tested) so this pure
+// filter can be unit-tested directly instead of only via a full `npm install`
+// spawn in tests.
+export function filterNpmNoise(output: string): string {
+  return output
+    .split('\n')
+    .filter(line => !NPM_NOISE_PATTERNS.some(pattern => pattern.test(line.trim())))
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 async function runUpdateCommand(args: ParsedArgs): Promise<void> {
   // Resolve the server that hosts the tarball: explicit flag, then the stored
   // login default, then KLAURO_URL, then the public default.
@@ -658,16 +701,54 @@ async function runUpdateCommand(args: ParsedArgs): Promise<void> {
     return;
   }
 
+  // Detect running MCP sessions BEFORE installing: this is a best-effort
+  // announcement (session-lock.ts), not a lock — it never blocks the update,
+  // it only changes what we print afterward so the human gets an explicit
+  // "you need to restart N sessions" signal instead of updating silently.
+  const sessionsBeforeUpdate = listActiveSessions();
+
   const tarballUrl = manifest?.tarball || `${serverUrl}/dist/klauro-latest.tgz`;
   process.stdout.write(`\nInstalling ${tarballUrl} ...\n`);
   process.stdout.write('(this may take a minute -- native tree-sitter deps compile)\n\n');
   // --force reinstalls even when the version string is unchanged, so users
   // always pick up fresh bits; the server sends Cache-Control: no-cache too.
-  const result = spawnSync('npm', ['install', '-g', tarballUrl, '--force'], { stdio: 'inherit' });
+  // Capture (rather than inherit) npm's output so we can filter its routine
+  // dependency-tree noise (deprecation warnings, funding nags, etc) — cold-
+  // customer feedback 2026-07-06 flagged the raw firehose as making `klauro
+  // update` feel unfinished. Real errors (non-zero exit, or any line that
+  // isn't recognized noise) are still surfaced in full.
+  const result = spawnSync('npm', ['install', '-g', tarballUrl, '--force'], {
+    stdio: ['inherit', 'pipe', 'pipe'],
+    encoding: 'utf8',
+  });
+  const npmOutput = filterNpmNoise(`${result.stdout || ''}${result.stderr || ''}`);
+  if (npmOutput) process.stdout.write(npmOutput.endsWith('\n') ? npmOutput : `${npmOutput}\n`);
   if (result.status !== 0) {
     throw new Error(`npm install failed (exit ${result.status ?? 'unknown'}). See output above.`);
   }
-  process.stdout.write('\nklauro updated. Restart Claude Code (or your MCP client) to load the new server.\n');
+
+  if (args.json) {
+    process.stdout.write(`${JSON.stringify({
+      status: 'updated',
+      version: latest,
+      running_sessions_detected: sessionsBeforeUpdate.length,
+      running_session_pids: sessionsBeforeUpdate.map(s => s.pid),
+      restart_required: sessionsBeforeUpdate.length > 0,
+    }, null, 2)}\n`);
+    return;
+  }
+
+  if (sessionsBeforeUpdate.length > 0) {
+    const plural = sessionsBeforeUpdate.length === 1 ? 'session' : 'sessions';
+    process.stdout.write(
+      `\nklauro updated to ${latest ?? 'the latest version'}.\n` +
+      `Detected ${sessionsBeforeUpdate.length} running MCP ${plural} (pid ${sessionsBeforeUpdate.map(s => s.pid).join(', ')}) still on the OLD build ` +
+      `(${sessionsBeforeUpdate.map(s => s.version).join(', ')}) — they will keep running the old code silently until restarted.\n` +
+      `RESTART Claude Code (or your MCP client) now to load the new server.\n`
+    );
+  } else {
+    process.stdout.write('\nklauro updated. No running MCP sessions were detected on this machine, but restart Claude Code (or your MCP client) before your next session to load the new server.\n');
+  }
 }
 
 async function runStatusCommand(args: ParsedArgs): Promise<void> {
@@ -679,24 +760,40 @@ async function runStatusCommand(args: ParsedArgs): Promise<void> {
   const latest = manifest?.version || null;
 
   // Best-effort: is the current directory analyzed, and how fresh?
+  // `analysis_complete` reads the SAME layers_ready manifest `doctor` (via
+  // getAnalysisFreshness) and the hosted API's populating/ready status
+  // (remote-analyzer-service.ts) already use — cold-customer feedback
+  // 2026-07-06: `status` used to report `analyzed: true` the instant any CAS
+  // existed on disk, ignoring whether background layers were still
+  // populating, while `doctor` surfaced layers_ready — so the two disagreed
+  // for the whole populating window. Both now key off layers_ready.complete.
   const repoPath = path.resolve(args.path || '.');
-  let repo: { analyzed: boolean; system?: string; analyzed_at?: string; staleness?: string } = { analyzed: false };
+  let repo: { analyzed: boolean; analysis_complete: boolean; system?: string; analyzed_at?: string; staleness?: string; layers_ready?: unknown } = { analyzed: false, analysis_complete: false };
   try {
     const cas = await getAnalysis(repoPath);
     const freshness = summarizeAnalysisFreshness(repoPath, cas.analysis_timestamp);
+    const layersReady = (cas as any).layers_ready;
     repo = {
       analyzed: true,
+      analysis_complete: !layersReady || layersReady.complete !== false,
       system: (cas as any).system_name || (cas as any).summary?.system_name,
       analyzed_at: cas.analysis_timestamp,
       staleness: freshness?.staleness,
+      ...(layersReady ? { layers_ready: layersReady } : {}),
     };
   } catch {
-    repo = { analyzed: false };
+    repo = { analyzed: false, analysis_complete: false };
   }
 
   // Every subsystem `klauro init` connects, in one view (auth above, then
   // project identity / analysis / in-flight / MCP / fabric below).
   const connection = await buildConnectionReport(repoPath);
+
+  // Running MCP sessions (session-lock.ts): surfaces the silent-staleness gap
+  // directly in `klauro status` too — a session running an OLDER build than
+  // what's installed on disk right now means that client needs a restart.
+  const activeSessions = listActiveSessions();
+  const sessionsOnOldBuild = activeSessions.filter(s => s.version !== identity.version);
 
   const report = {
     version: identity.version,
@@ -710,6 +807,8 @@ async function runStatusCommand(args: ParsedArgs): Promise<void> {
     update_available: Boolean(latest && latest !== identity.base_version),
     repo: repoPath,
     repo_analyzed: repo.analyzed,
+    repo_analysis_complete: repo.analysis_complete,
+    repo_layers_ready: repo.layers_ready ?? null,
     repo_system: repo.system ?? null,
     repo_analyzed_at: repo.analyzed_at ?? null,
     repo_staleness: repo.staleness ?? null,
@@ -718,6 +817,8 @@ async function runStatusCommand(args: ParsedArgs): Promise<void> {
     in_flight: connection.in_flight,
     mcp_registered: connection.mcp_registered,
     fabric: connection.fabric,
+    running_mcp_sessions: activeSessions.length,
+    running_mcp_sessions_on_old_build: sessionsOnOldBuild.length,
   };
 
   if (args.json) {
@@ -733,8 +834,13 @@ async function runStatusCommand(args: ParsedArgs): Promise<void> {
       : `Release:  could not reach ${serverUrl}`,
     ...formatConnectionReportLines(connection),
     report.repo_analyzed
-      ? `Analysis: ${report.repo_system || 'analyzed'} · ${report.repo_staleness || 'unknown'} · ${report.repo_analyzed_at || ''}`.trim()
+      ? `Analysis: ${report.repo_system || 'analyzed'} · ${report.repo_analysis_complete ? (report.repo_staleness || 'unknown') : 'populating (layers still filling in)'} · ${report.repo_analyzed_at || ''}`.trim()
       : `Analysis: ${repoPath} not analyzed  (klauro analyze .)`,
+    sessionsOnOldBuild.length > 0
+      ? `MCP:      ${sessionsOnOldBuild.length} running session(s) on an OLDER build (${sessionsOnOldBuild.map(s => s.version).join(', ')}) — restart your MCP client`
+      : activeSessions.length > 0
+        ? `MCP:      ${activeSessions.length} running session(s), all on the current build`
+        : `MCP:      no running sessions detected on this machine`,
   ];
   process.stdout.write(lines.join('\n') + '\n');
 }
@@ -956,7 +1062,7 @@ interface InitStep {
   detail: string;
 }
 
-async function runInitCommand(projectPath: string, args: ParsedArgs): Promise<void> {
+async function runInitCommand(projectPath: string, args: ParsedArgs, options: { pathWasExplicit: boolean } = { pathWasExplicit: true }): Promise<void> {
   const steps: InitStep[] = [];
   const labels: Record<InitStep['step'], string> = {
     auth: 'Auth', project: 'Project', analysis: 'Analysis', 'in-flight': 'In-flight', mcp: 'MCP', fabric: 'Fabric',
@@ -968,7 +1074,22 @@ async function runInitCommand(projectPath: string, args: ParsedArgs): Promise<vo
       process.stdout.write(`[${steps.length}/6] ${marker} ${labels[step]}: ${detail}\n`);
     }
   };
-  if (!args.json) process.stdout.write(`Connecting ${projectPath} to Klauro\n`);
+  // ALWAYS surface the resolved absolute path being connected, in both human
+  // and --json output, and call out plainly when it came from an implicit
+  // cwd default rather than an explicit --path/positional argument. This is
+  // the single most consequential fact in the whole command: init writes
+  // .klaurorc AND (when signed in) registers/links a hosted project using
+  // this exact directory's name and absolute path (see resolveInitOptions).
+  // A scripted/agent caller that didn't explicitly pass a path has no other
+  // signal that it might be about to connect the wrong repo — see the
+  // 2026-07-06 cold-customer audit, where exactly this silently registered
+  // the operator's real repo under a brand-new account.
+  if (!args.json) {
+    process.stdout.write(`Connecting ${projectPath} to Klauro\n`);
+    if (!options.pathWasExplicit) {
+      process.stdout.write(`WARN  no --path given — using current directory (${projectPath}). Pass --path explicitly if this is not the repo you intend to connect.\n`);
+    }
+  }
 
   // (a) Auth — reuse/verify the stored credentials; login stays a separate,
   // explicit command (init never prompts for a password).
@@ -1004,7 +1125,7 @@ async function runInitCommand(projectPath: string, args: ParsedArgs): Promise<vo
   }
   const identity = detectWorkspaceIdentity(projectPath, loaded.config.project.id);
   record('project', 'ok',
-    `${loaded.config.project.name || path.basename(projectPath)}${loaded.config.project.id ? ` (hosted project ${loaded.config.project.id})` : ''} · identity ${identity.workspace} (${identity.source})${hadConfig && !args.force ? ' · existing .klaurorc kept' : ` · wrote ${loaded.configPath}`}`);
+    `${loaded.config.project.name || resolveManifestProjectName(projectPath, path.basename(projectPath))}${loaded.config.project.id ? ` (hosted project ${loaded.config.project.id})` : ''} · identity ${identity.workspace} (${identity.source})${hadConfig && !args.force ? ' · existing .klaurorc kept' : ` · wrote ${loaded.configPath}`}`);
 
   // (c) Analysis — kick off / refresh the hosted analysis for this repo.
   // Best-effort: a failed or slow analysis never fails the connect.
@@ -1068,6 +1189,7 @@ async function runInitCommand(projectPath: string, args: ParsedArgs): Promise<vo
   const payload = {
     status: 'connected',
     path: projectPath,
+    path_was_explicit: options.pathWasExplicit,
     config: loaded.configPath ?? path.join(projectPath, '.klaurorc'),
     server_url: serverUrl,
     signed_in: Boolean(token),
@@ -1088,7 +1210,7 @@ async function runInitCommand(projectPath: string, args: ParsedArgs): Promise<vo
   }
   process.stdout.write([
     '',
-    `Klauro connected: ${payload.project.name || path.basename(projectPath)}`,
+    `Klauro connected: ${payload.project.name || resolveManifestProjectName(projectPath, path.basename(projectPath))}`,
     `Config: ${payload.config}`,
     'Check any time with `klauro status`; re-running `klauro init` is idempotent (verifies and refreshes each subsystem).',
     '',
@@ -1210,6 +1332,11 @@ async function resolveInitOptions(projectPath: string, args: ParsedArgs): Promis
     process.stdout.write(`Detected remote: ${remote}\n`);
   }
 
+  // Prefer the ecosystem manifest's declared name (package.json/pyproject.toml/
+  // Cargo.toml/go.mod) over the bare directory basename for every default-name
+  // suggestion below — a checkout dir frequently doesn't match the package name.
+  const defaultProjectName = resolveManifestProjectName(projectPath, path.basename(projectPath));
+
   if (!token) {
     process.stdout.write('Not signed in. Writing local config only; run `klauro login` to link/create hosted workspaces and projects.\n');
     const kind = await promptChoice<'project' | 'workspace'>(
@@ -1217,7 +1344,7 @@ async function resolveInitOptions(projectPath: string, args: ParsedArgs): Promis
       ['project', 'workspace'],
       defaultKind,
     );
-    const name = await promptLine(`Name [${path.basename(projectPath)}]: `) || path.basename(projectPath);
+    const name = await promptLine(`Name [${defaultProjectName}]: `) || defaultProjectName;
     return { serverUrl, kind, projectName: name, projectId: undefined, organizationId: undefined, workspaceId: undefined };
   }
 
@@ -1253,7 +1380,7 @@ async function resolveInitOptions(projectPath: string, args: ParsedArgs): Promis
   );
 
   if (kind === 'workspace') {
-    const workspace = await selectOrCreateWorkspace(serverUrl, token, path.basename(projectPath));
+    const workspace = await selectOrCreateWorkspace(serverUrl, token, defaultProjectName);
     return {
       serverUrl,
       kind: 'workspace',
@@ -1282,7 +1409,7 @@ async function resolveInitOptions(projectPath: string, args: ParsedArgs): Promis
     if (answer === 'existing') project = await selectRemoteProject(projects);
   }
   if (!project) {
-    const defaultName = path.basename(projectPath);
+    const defaultName = defaultProjectName;
     const name = await promptLine(`New project name [${defaultName}]: `) || defaultName;
     project = await createRemoteProject(serverUrl, token, workspace.id, {
       name,

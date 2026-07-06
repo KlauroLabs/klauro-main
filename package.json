@@ -20,7 +20,8 @@
     "mcp:test": "npm --prefix apps/mcp-server test",
     "analyzer:build": "npm --prefix packages/analyzer-core run build",
     "analyzer:test": "npm --prefix packages/analyzer-core test",
-    "proof": "npm run mcp:typecheck && npm run mcp:test && npm run analyzer:build && npm run analyzer:test"
+    "proof": "npm run mcp:typecheck && npm run mcp:test && npm run analyzer:build && npm run analyzer:test",
+    "perf:budget": "npm --prefix apps/mcp-server run perf:budget"
   },
   "license": "UNLICENSED"
 }

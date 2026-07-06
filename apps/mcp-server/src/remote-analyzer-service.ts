@@ -288,7 +288,8 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
             writeJson(response, 400, { status: 'error', error: 'Remote analyze requires a source snapshot with files' });
             return;
           }
-          const acceptedAnalysisId = body.project_id || makeAnalysisId(body.project_path || body.snapshot.project_name);
+          const rawAcceptedId = body.project_id || makeAnalysisId(body.project_path || body.snapshot.project_name);
+          const acceptedAnalysisId = resolveStorageAnalysisId(rawAcceptedId, accountSaltFor(authorization.clientId));
           const acceptedWorkspace = workspacePath(dataDir, acceptedAnalysisId);
           await fs.remove(acceptedWorkspace);
           await fs.ensureDir(acceptedWorkspace);
@@ -368,7 +369,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           return;
         }
 
-        const result = await handleAnalyze(dataDir, body, deferAiEnrichment);
+        const result = await handleAnalyze(dataDir, body, deferAiEnrichment, accountSaltFor(authorization.clientId));
         await appendProjectRevision(dataDir, result, 'local_commit_submission');
         // Attach the landed analysis to the matching account project record.
         // Without this, a project created in the web app (no analysis_id at
@@ -397,7 +398,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
 
       if (request.method === 'POST' && route === '/v1/analyze-diff') {
         const body = await readJsonBody<RemoteAnalyzeDiffRequest>(request, maxBodyBytes);
-        const result = await handleAnalyzeDiff(dataDir, body);
+        const result = await handleAnalyzeDiff(dataDir, body, accountSaltFor(authorization.clientId));
         await appendAuditLog(dataDir, {
           event: 'analyze_diff',
           analysis_id: result.analysis_id,
@@ -416,14 +417,21 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
 
       const revisionsMatch = route.match(/^\/v1\/projects\/([^/]+)\/revisions$/);
       if (request.method === 'GET' && revisionsMatch) {
-        const result = await readProjectRevisions(dataDir, decodeURIComponent(revisionsMatch[1]));
+        // Same resolveStorageAnalysisId salting as the write paths: a raw
+        // client-computed bare-hash id must resolve to the CALLER's own
+        // per-account revision file, never another account's, even if two
+        // accounts happen to compute the identical unsalted hash (same repo
+        // path). A prj_... id passes through unchanged, same as elsewhere.
+        const requestedAnalysisId = decodeURIComponent(revisionsMatch[1]);
+        const analysisId = resolveStorageAnalysisId(requestedAnalysisId, accountSaltFor(authorization.clientId));
+        const result = await readProjectRevisions(dataDir, analysisId);
         writeJson(response, 200, result);
         return;
       }
 
       if (request.method === 'POST' && route === '/v1/sync') {
         const body = await readJsonBody<RemoteSyncRequest>(request, maxBodyBytes);
-        const result = await handleSync(dataDir, body);
+        const result = await handleSync(dataDir, body, accountSaltFor(authorization.clientId));
         await appendAuditLog(dataDir, {
           event: 'sync',
           analysis_id: result.analysis_id,
@@ -443,7 +451,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
 
       if (request.method === 'POST' && route === '/v1/proposals/preview') {
         const body = await readJsonBody<RemoteProposalPreviewRequest>(request, maxBodyBytes);
-        const result = await handleProposalPreview(dataDir, body);
+        const result = await handleProposalPreview(dataDir, body, accountSaltFor(authorization.clientId));
         await appendAuditLog(dataDir, {
           event: 'proposal_preview',
           project_id: body.project_id,
@@ -1354,6 +1362,19 @@ async function describeGrantHolders(
   return out;
 }
 
+/**
+ * The account-scoping salt for `makeAnalysisId`'s fallback (bare path/name
+ * hash) path — see makeAnalysisId's doc comment for the bug this closes.
+ * Only a real authenticated account (`clientId === 'user:<id>'` from
+ * authorizeAnalyzerRequest) yields a salt; shared-token and anonymous
+ * requests (and the ip-address clientId anonymous fallback) return
+ * `undefined`, preserving the pre-fix unsalted hash for those callers (there
+ * is no per-account keyspace to collapse into when there is no account).
+ */
+function accountSaltFor(clientId: string | undefined): string | undefined {
+  return clientId && clientId.startsWith('user:') ? clientId : undefined;
+}
+
 async function authorizeAnalyzerRequest(accounts: AccountStore, request: http.IncomingMessage, sharedToken: string | undefined): Promise<{ authorized: boolean; clientId?: string }> {
   const token = bearerToken(request);
   if (sharedToken && token && token === sharedToken) return { authorized: true, clientId: 'shared-token' };
@@ -1711,11 +1732,23 @@ async function handleAccountApi(
     const workspace = workspacePath(dataDir, analysisId);
     let sourceRoot = workspace;
     if (!(await fs.pathExists(workspace))) {
-      // Operator fallback only: a local_path that genuinely exists on this
-      // host (e.g. a dev/ops box colocated with the repo) may still be used,
-      // but this is never the default end-user path and never surfaced as
-      // the primary story to a user-facing client.
-      if (project.local_path && (await fs.pathExists(project.local_path))) {
+      // SECURITY: `project.local_path` is client-supplied, tenant-scoped
+      // metadata (see AccountStore.createProject) — it is NEVER verified to
+      // be a path this account is actually entitled to have this server
+      // read. On a shared host (the deployed shape today: one analyzer
+      // process, many tenants), reading it here is an arbitrary local-file
+      // read/re-analyze primitive: any account whose project record ends up
+      // with a `local_path` pointing at another tenant's (or the operator's)
+      // real repo — via a client bug, an ambient-cwd mistake in `klauro
+      // init`, or a malicious API call — causes THIS account's reanalyze to
+      // walk and return that path's real source under its own session. This
+      // is exactly the cross-tenant bleed reported in the 2026-07-06
+      // cold-customer audit. Disabled by default; only for a genuinely
+      // colocated dev/ops box where every project's local_path is trusted
+      // operator-controlled state, opt in with
+      // KLAURO_ALLOW_LOCAL_PATH_REANALYZE_FALLBACK=1.
+      const fallbackAllowed = process.env.KLAURO_ALLOW_LOCAL_PATH_REANALYZE_FALLBACK === '1';
+      if (fallbackAllowed && project.local_path && (await fs.pathExists(project.local_path))) {
         sourceRoot = project.local_path;
       } else {
         return {
@@ -1786,11 +1819,12 @@ function resolveMaxBodyBytes(): number {
   return DEFAULT_MAX_BODY_BYTES;
 }
 
-async function handleProposalPreview(dataDir: string, request: RemoteProposalPreviewRequest): Promise<unknown> {
+async function handleProposalPreview(dataDir: string, request: RemoteProposalPreviewRequest, accountSalt?: string): Promise<unknown> {
   if (!request.snapshot?.files?.length && !request.project_path) {
     throw new Error('Remote proposal preview requires a source snapshot or project_path');
   }
-  const analysisId = request.project_id || makeAnalysisId(request.project_path || request.snapshot?.project_name || 'proposal');
+  const rawAnalysisId = request.project_id || makeAnalysisId(request.project_path || request.snapshot?.project_name || 'proposal');
+  const analysisId = resolveStorageAnalysisId(rawAnalysisId, accountSalt);
   const workspace = workspacePath(dataDir, `${analysisId}-proposal-source`);
   if (request.snapshot?.files?.length) {
     await fs.remove(workspace);
@@ -1867,9 +1901,10 @@ function anonymizeClient(clientId: string): string {
   return crypto.createHash('sha256').update(clientId).digest('hex').slice(0, 16);
 }
 
-async function handleAnalyze(dataDir: string, request: RemoteAnalyzeRequest, deferAiEnrichment = false): Promise<RemoteAnalyzeResponse> {
+async function handleAnalyze(dataDir: string, request: RemoteAnalyzeRequest, deferAiEnrichment = false, accountSalt?: string): Promise<RemoteAnalyzeResponse> {
   if (!request.snapshot?.files?.length) throw new Error('Remote analyze requires a source snapshot with files');
-  const analysisId = request.project_id || makeAnalysisId(request.project_path || request.snapshot.project_name);
+  const rawAnalysisId = request.project_id || makeAnalysisId(request.project_path || request.snapshot.project_name);
+  const analysisId = resolveStorageAnalysisId(rawAnalysisId, accountSalt);
   const workspace = workspacePath(dataDir, analysisId);
   const displayName = resolveDisplayName(request.snapshot.project_name, request.project_path);
 
@@ -1905,10 +1940,11 @@ async function handleAnalyze(dataDir: string, request: RemoteAnalyzeRequest, def
   };
 }
 
-async function handleAnalyzeDiff(dataDir: string, request: RemoteAnalyzeDiffRequest): Promise<RemoteAnalyzeResponse> {
+async function handleAnalyzeDiff(dataDir: string, request: RemoteAnalyzeDiffRequest, accountSalt?: string): Promise<RemoteAnalyzeResponse> {
   const diff = request.diff_context;
   if (!diff?.files?.length) throw new Error('Remote analyze-diff requires a diff_context with changed source files');
-  const analysisId = request.project_id || makeAnalysisId(request.project_path || diff.target_branch);
+  const rawAnalysisId = request.project_id || makeAnalysisId(request.project_path || diff.target_branch);
+  const analysisId = resolveStorageAnalysisId(rawAnalysisId, accountSalt);
   // Scope the diff workspace to the target branch so it never overwrites the
   // full ('/v1/analyze') workspace for the same analysis_id.
   const workspace = workspacePath(dataDir, `${analysisId}-branch-${diff.target_branch}`);
@@ -1997,9 +2033,16 @@ function safeFileName(value: string): string {
   return value.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 120) || 'project';
 }
 
-async function handleSync(dataDir: string, request: RemoteSyncRequest): Promise<RemoteAnalyzeResponse> {
+async function handleSync(dataDir: string, request: RemoteSyncRequest, accountSalt?: string): Promise<RemoteAnalyzeResponse> {
   if (!request.analysis_id) throw new Error('Remote sync requires analysis_id');
-  const workspace = workspacePath(dataDir, request.analysis_id);
+  // Same resolveStorageAnalysisId salting as /v1/analyze: the client resends
+  // the same bare-hash id it computed for the original analyze call, so
+  // re-deriving it the same way (same account, same rawId) locates the exact
+  // per-account workspace directory the analyze call created. See
+  // resolveStorageAnalysisId's doc comment for the full cross-tenant bleed
+  // this closes.
+  const analysisId = resolveStorageAnalysisId(request.analysis_id, accountSalt);
+  const workspace = workspacePath(dataDir, analysisId);
   if (!(await fs.pathExists(workspace))) {
     throw new Error(`No remote workspace found for analysis_id=${request.analysis_id}; run remote analyze first`);
   }
@@ -2009,7 +2052,7 @@ async function handleSync(dataDir: string, request: RemoteSyncRequest): Promise<
   const result = await analyzeProjectIncremental(workspace, displayName);
   return {
     status: 'success',
-    analysis_id: request.analysis_id,
+    analysis_id: analysisId,
     analysis_revision: Date.now(),
     analysis_type: result.wasFullRebuild ? 'full' : 'incremental',
     base_commit: request.changes.base_commit,
@@ -2220,6 +2263,67 @@ function workspacePath(dataDir: string, analysisId: string): string {
 
 function makeAnalysisId(value: string): string {
   return crypto.createHash('sha256').update(value).digest('hex').slice(0, 24);
+}
+
+/**
+ * §P0 fix (2026-07-06 cold-customer cross-tenant bleed) — analysis storage
+ * (`workspacePath(dataDir, analysisId)`) is a shared, flat directory keyed
+ * ONLY by whatever id reaches this function's call sites. Before this fix,
+ * every call site used `request.project_id || makeAnalysisId(request.project_path
+ * || ...)` directly. Critically, the CLI/client (remote-sync-client.ts's
+ * `defaultAnalysisId`) ALWAYS sends a non-empty `project_id`, even for a repo
+ * never connected to any account: `resolveAnalysisId` falls back to
+ * `defaultAnalysisId(projectPath) = sha256(path.resolve(projectPath))`
+ * client-side whenever `.klaurorc` has no bound `project.id` yet. That value
+ * is a BARE, UNSALTED hash of the local filesystem path, identical for every
+ * account whose repo happens to be checked out at the same absolute path (a
+ * routine occurrence on a shared devbox, CI runner, or simply two people who
+ * both `git clone` to the same conventional directory name). Because the
+ * client-sent value was always truthy, the server's own
+ * `|| makeAnalysisId(...)` fallback never even ran: the raw client hash was
+ * trusted verbatim as the on-disk storage key, so account B's very first
+ * analyze silently read/overwrote account A's stored CAS at the identical
+ * `workspacePath`, and any tool resolving by that id (reanalyze, MCP resolve,
+ * revisions) served account A's real data to account B. That is exactly what
+ * the cold-customer audit reproduced end-to-end via the live API.
+ *
+ * FIX: every call site that turns a client-supplied id into a storage key now
+ * routes through this function instead of trusting `project_id` verbatim.
+ * Rule:
+ *  - `rawId` that already looks like an AccountStore project id (`prj_...`)
+ *    is returned UNCHANGED: it is already globally unique (server-generated
+ *    by AccountStore.createProject) and every read of it is already
+ *    authorization-checked via getProjectForUser/requireMembership, so there
+ *    is no collision risk and no need to re-derive it.
+ *  - `rawId` that already carries this function's own `acct_` output prefix
+ *    (see below) is ALSO returned unchanged. This is the idempotency case: a
+ *    client legitimately round-trips the salted id it was handed back on the
+ *    first `/v1/analyze` response (e.g. `analyzeCodebaseRemotely({
+ *    analysisId })` on a re-push, or `/v1/sync`'s `analysis_id`) — without
+ *    this check, re-salting an already-salted id on every subsequent request
+ *    would compute a DIFFERENT storage key each time and break the very
+ *    re-push/sync idempotency the pre-existing test suite already covers
+ *    (account-workspace-analysis.test.ts's debounced-batch-push test caught
+ *    this: a naive "always salt" version regressed it).
+ *  - Any other `rawId` (the bare, unprefixed path/name hash — the exact
+ *    collision case above) is RE-DERIVED by folding the authenticated
+ *    account (`accountSalt` = `user:<id>` from authorizeAnalyzerRequest)
+ *    into the hash and prefixing the result with `acct_`, so the same raw
+ *    value from two different accounts maps to two different, clearly-
+ *    tagged storage keys, collapsing the previously shared keyspace into a
+ *    per-account one. Deterministic per (account, rawId) pair, so the SAME
+ *    account's later `/v1/sync` call (which resends the id from its own
+ *    `/v1/analyze` response) still resolves to the workspace its own
+ *    `/v1/analyze` created — and, by the previous bullet, does not get
+ *    re-salted a second time.
+ *  - `accountSalt` undefined (anonymous / shared-token request, no account to
+ *    namespace by) preserves the exact pre-fix unsalted hash, so
+ *    self-hosted/no-auth deployments and the shared-analyzer-token flow are
+ *    byte-for-byte unchanged.
+ */
+function resolveStorageAnalysisId(rawId: string, accountSalt: string | undefined): string {
+  if (/^prj_/.test(rawId) || /^acct_/.test(rawId)) return rawId;
+  return accountSalt ? `acct_${makeAnalysisId(accountSalt + '::' + rawId)}` : rawId;
 }
 
 /**
