@@ -5,6 +5,19 @@
 app.klauro.com {
 	encode gzip zstd
 	root * /srv/app
+
+	# Vite emits content-hashed filenames under /assets (index-<hash>.js), so
+	# those are immutable and can be cached hard.
+	@assets path /assets/*
+	header @assets Cache-Control "public, max-age=31536000, immutable"
+
+	# The SPA shell (index.html) must NEVER be cached: it references the current
+	# hashed bundle, so a stale index.html pins the browser to an OLD app after a
+	# deploy. This was the real "the app looks broken / I can't use it" bug —
+	# browsers held yesterday's index.html. Always revalidate it.
+	@html path / /index.html
+	header @html Cache-Control "no-cache, no-store, must-revalidate"
+
 	try_files {path} /index.html
 	file_server
 }
