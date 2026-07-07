@@ -18472,11 +18472,20 @@ export class AnalyzerOrchestrator {
       .filter(Boolean);
   }
 
+  // Pure token->singular transform, memoized: matchesSignalPattern re-singularizes
+  // the SAME node tokens once per candidate pattern (hundreds of patterns x
+  // thousands of nodes), so the same short strings are transformed repeatedly.
+  // A plain string->string cache collapses that with identical output.
+  private readonly singularSignalCache = new Map<string, string>();
   private singularizeSignalToken(token: string): string {
-    if (token.length > 3 && token.endsWith('ies')) return `${token.slice(0, -3)}y`;
-    if (token.length > 4 && token.endsWith('ses')) return token.slice(0, -2);
-    if (token.length > 2 && token.endsWith('s') && !token.endsWith('ss')) return token.slice(0, -1);
-    return token;
+    const cached = this.singularSignalCache.get(token);
+    if (cached !== undefined) return cached;
+    let out = token;
+    if (token.length > 3 && token.endsWith('ies')) out = `${token.slice(0, -3)}y`;
+    else if (token.length > 4 && token.endsWith('ses')) out = token.slice(0, -2);
+    else if (token.length > 2 && token.endsWith('s') && !token.endsWith('ss')) out = token.slice(0, -1);
+    if (this.singularSignalCache.size < 20000) this.singularSignalCache.set(token, out);
+    return out;
   }
 
   /**
