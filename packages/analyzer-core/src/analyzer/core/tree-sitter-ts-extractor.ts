@@ -877,7 +877,29 @@ export class TreeSitterTSExtractor {
     const body = func.childForFieldName('body');
     if (!body) return calls;
 
-    const callNodes = this.collectByType(body, 'call_expression');
+    // extractCalls walked the body for call_expression and then
+    // extractIdentifierReferences walked the SAME body again for identifier —
+    // two full DFS per function body across the native tree-sitter boundary.
+    // Do ONE walk that buckets both types (identifiers only when there are
+    // imports, matching extractIdentifierReferences' early-return so no extra
+    // work when it would be a no-op). Same pre-order DFS => same node order in
+    // each bucket, and calls are still emitted before identifier refs, so
+    // output is byte-identical.
+    const needIdentifiers = this.imports.size > 0;
+    const callNodes: any[] = [];
+    const identifierNodes: any[] = [];
+    {
+      const stack = [body];
+      while (stack.length > 0) {
+        const current = stack.pop()!;
+        const t = current.type;
+        if (t === 'call_expression') callNodes.push(current);
+        else if (needIdentifiers && t === 'identifier') identifierNodes.push(current);
+        for (let i = current.namedChildCount - 1; i >= 0; i--) {
+          stack.push(current.namedChild(i));
+        }
+      }
+    }
 
     for (const call of callNodes) {
       const extracted = this.extractCall(call, enclosingFunction, enclosingClass);
@@ -887,7 +909,7 @@ export class TreeSitterTSExtractor {
     }
 
     const seenAtLine = new Set<string>();
-    calls.push(...this.extractIdentifierReferences(body, enclosingFunction, enclosingClass, seenAtLine));
+    calls.push(...this.extractIdentifierReferences(body, enclosingFunction, enclosingClass, seenAtLine, identifierNodes));
 
     // Decorators on this method itself (e.g. `@InternalGet('x', [...ERRORS])` on a
     // route handler) sit as a sibling of `func`, not inside its `body`, so the scan
@@ -916,12 +938,13 @@ export class TreeSitterTSExtractor {
     body: any,
     enclosingFunction: string,
     enclosingClass: string | undefined,
-    seenAtLine: Set<string>
+    seenAtLine: Set<string>,
+    preCollected?: any[]
   ): TSExtractedCall[] {
     const refs: TSExtractedCall[] = [];
     if (this.imports.size === 0) return refs;
 
-    const identifierNodes = this.collectByType(body, 'identifier');
+    const identifierNodes = preCollected ?? this.collectByType(body, 'identifier');
 
     for (const idNode of identifierNodes) {
       const ref = this.buildIdentifierReference(idNode, enclosingFunction, enclosingClass, seenAtLine);
