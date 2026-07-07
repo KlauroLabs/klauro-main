@@ -7,7 +7,7 @@ import { AnalyzerError } from '../../core/errors';
 import * as path from 'path';
 import * as fs from 'fs-extra';
 import { glob } from 'glob';
-import { parse } from '@typescript-eslint/typescript-estree';
+import { cachedEstreeParse as parse } from '../../core/estree-parse-cache';
 import { AngularRouteResolver, ResolvedAngularRoute } from './angular-route-resolver';
 
 interface AngularApplication {

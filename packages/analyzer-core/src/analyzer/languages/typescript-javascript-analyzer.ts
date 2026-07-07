@@ -9,7 +9,8 @@ import { EnhancedCallGraphExtractor, ExtractedFunction } from '../enhanced-call-
 import { TreeSitterTSExtractor, TSFileExtraction, TSExtractedFunction, TSExtractedClass, TSDecoratorDetail } from '../core/tree-sitter-ts-extractor';
 import * as path from 'path';
 import * as fs from 'fs-extra';
-import { parse, TSESTree } from '@typescript-eslint/typescript-estree';
+import { TSESTree } from '@typescript-eslint/typescript-estree';
+import { cachedEstreeParse as parse } from '../core/estree-parse-cache';
 import { glob } from 'glob';
 import * as crypto from 'crypto';
 

@@ -8,7 +8,7 @@ import { classifyGuardKind, isAuthenticationGuardName } from '../../core/guard-c
 import * as path from 'path';
 import * as fs from 'fs-extra';
 import { glob } from 'glob';
-import { parse } from '@typescript-eslint/typescript-estree';
+import { cachedEstreeParse as parse } from '../../core/estree-parse-cache';
 
 interface ExpressApplication {
   name: string;

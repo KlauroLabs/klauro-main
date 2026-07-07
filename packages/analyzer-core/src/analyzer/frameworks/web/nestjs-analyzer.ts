@@ -8,7 +8,8 @@ import { isAuthenticationGuardName } from '../../core/guard-classification';
 import { EnhancedCallGraphExtractor } from '../../enhanced-call-graph-extractor';
 import * as path from 'path';
 import * as fs from 'fs-extra';
-import { parse, TSESTree } from '@typescript-eslint/typescript-estree';
+import { TSESTree } from '@typescript-eslint/typescript-estree';
+import { cachedEstreeParse as parse } from '../../core/estree-parse-cache';
 import { glob } from 'glob';
 
 const BUILTIN_NOT_EXIT_POINTS = new Set([
