@@ -13,7 +13,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as yaml from 'js-yaml';
-import { glob } from 'glob';
+import { cachedGlob as glob } from '../core/glob-cache';
 import { validatePack, Pack } from './pack-schema';
 
 export interface LoadedPack {

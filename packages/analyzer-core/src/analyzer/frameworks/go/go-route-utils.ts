@@ -1,6 +1,6 @@
 import * as fs from 'fs-extra';
 import * as path from 'path';
-import { glob } from 'glob';
+import { cachedGlob as glob } from '../../core/glob-cache';
 
 /** One HTTP route extracted from a Go source file, path already includes any
  *  Group()/Route() prefix accumulated at the call site's lexical nesting depth. */

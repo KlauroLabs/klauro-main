@@ -5,7 +5,7 @@ import {
 import { AnalyzerError } from '../../core/errors';
 import * as path from 'path';
 import * as fs from 'fs-extra';
-import { glob } from 'glob';
+import { cachedGlob as glob } from '../../core/glob-cache';
 
 /** A `class Foo(nn.Module):` / `class Foo(torch.nn.Module):` model definition. */
 interface MLModel {

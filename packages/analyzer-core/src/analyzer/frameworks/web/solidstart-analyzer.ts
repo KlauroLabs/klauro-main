@@ -5,7 +5,7 @@ import {
 } from '../../../types/cas.types';
 import * as path from 'path';
 import * as fs from 'fs-extra';
-import { glob } from 'glob';
+import { cachedGlob as glob } from '../../core/glob-cache';
 
 const ROUTE_GLOBS = ['src/routes/**/*.{tsx,jsx,ts,js}'];
 const COMPONENT_GLOBS = ['src/components/**/*.{tsx,jsx,ts,js}'];

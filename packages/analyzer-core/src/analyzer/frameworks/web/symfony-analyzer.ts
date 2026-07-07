@@ -7,7 +7,7 @@ import { AnalyzerError } from '../../core/errors';
 import * as path from 'path';
 import * as fs from 'fs-extra';
 import * as yaml from 'js-yaml';
-import { glob } from 'glob';
+import { cachedGlob as glob } from '../../core/glob-cache';
 
 interface SymfonyRoute {
   path: string;

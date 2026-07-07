@@ -2,7 +2,7 @@ import { BaseAnalyzer, AnalysisContext, FileAnalysisContext } from '../../core/b
 import { CASNode, CASEdge, CASContribution, FileAnalysisResult } from '../../../types/cas.types';
 import * as path from 'path';
 import * as fs from 'fs-extra';
-import { glob } from 'glob';
+import { cachedGlob as glob } from '../../core/glob-cache';
 
 interface ObjectionRelation {
   name: string;

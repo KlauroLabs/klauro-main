@@ -5,7 +5,7 @@ import {
 import { AnalyzerError } from '../core/errors';
 import { parseWasm, hasWasmGrammar } from '../core/wasm-tree-sitter';
 import * as fs from 'fs-extra';
-import { glob } from 'glob';
+import { cachedGlob as glob } from '../core/glob-cache';
 import * as path from 'path';
 
 type KotlinTypeKind =

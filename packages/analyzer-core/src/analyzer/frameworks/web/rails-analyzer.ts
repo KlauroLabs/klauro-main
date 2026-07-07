@@ -5,7 +5,7 @@ import {
 import { AnalyzerError } from '../../core/errors';
 import * as fs from 'fs-extra';
 import * as path from 'path';
-import { glob } from 'glob';
+import { cachedGlob as glob } from '../../core/glob-cache';
 
 interface RailsAssociation {
   type: 'has_many' | 'has_one' | 'belongs_to' | 'has_and_belongs_to_many';

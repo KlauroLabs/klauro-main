@@ -5,7 +5,7 @@ import {
 import { AnalyzerError } from '../../core/errors';
 import * as path from 'path';
 import * as fs from 'fs-extra';
-import { glob } from 'glob';
+import { cachedGlob as glob } from '../../core/glob-cache';
 
 /**
  * A single Airflow task: either a `@task` (TaskFlow API) decorated function or a

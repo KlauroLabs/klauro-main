@@ -2,7 +2,7 @@ import { BaseAnalyzer, AnalysisContext, FileAnalysisContext, FileAnalysisResult 
 import { CASNode, CASEdge, CASContribution, CASEntryPoint, CASExitPoint } from '../../../types/cas.types';
 import * as path from 'path';
 import * as fs from 'fs-extra';
-import { glob } from 'glob';
+import { cachedGlob as glob } from '../../core/glob-cache';
 
 const JSX_ROUTE_V5 = /<Route[^>]*path=["']([^"']+)["'][^>]*component=\{?([^}\s>]+)\}?/g;
 const JSX_ROUTE_V6_ELEMENT = /<Route[^>]*path=["']([^"']+)["'][^>]*element=\{[^}]*<(\w+)/g;

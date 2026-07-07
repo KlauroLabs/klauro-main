@@ -6,7 +6,7 @@ import { AnalyzerError } from '../../core/errors';
 import { classifyGuardKind, isAuthenticationGuardName } from '../../core/guard-classification';
 import * as path from 'path';
 import * as fs from 'fs-extra';
-import { glob } from 'glob';
+import { cachedGlob as glob } from '../../core/glob-cache';
 
 /**
  * A single `fastify.<method>('/path', ...)` (or `.route({...})`) call found in a file.

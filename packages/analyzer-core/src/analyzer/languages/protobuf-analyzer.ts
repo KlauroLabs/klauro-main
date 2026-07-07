@@ -5,7 +5,7 @@ import {
 } from '../../types/cas.types';
 import { AnalyzerError } from '../core/errors';
 import * as fs from 'fs-extra';
-import { glob } from 'glob';
+import { cachedGlob as glob } from '../core/glob-cache';
 import * as path from 'path';
 
 interface ProtoField {

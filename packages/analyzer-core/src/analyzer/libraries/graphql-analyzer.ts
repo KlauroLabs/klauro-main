@@ -2,7 +2,7 @@ import { BaseAnalyzer, AnalysisContext, FileAnalysisContext } from '../core/base
 import { CASNode, CASEdge, CASContribution, CASEntryPoint, CASExitPoint, FileAnalysisResult } from '../../types/cas.types';
 import * as path from 'path';
 import * as fs from 'fs-extra';
-import { glob } from 'glob';
+import { cachedGlob as glob } from '../core/glob-cache';
 
 type GraphQLTypeKind = 'type' | 'input' | 'interface' | 'enum';
 const ROOT_TYPES = new Set(['Query', 'Mutation', 'Subscription']);

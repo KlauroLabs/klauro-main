@@ -3,7 +3,7 @@ import { CASContribution, CASNode, CASEdge, CASEntryPoint, CASExitPoint } from '
 import { RustAnalyzer } from '../../languages/rust-analyzer';
 import * as fs from 'fs-extra';
 import * as path from 'path';
-import { glob } from 'glob';
+import { cachedGlob as glob } from '../../core/glob-cache';
 
 /**
  * Anchor framework analyzer (Solana smart contracts, Rust).

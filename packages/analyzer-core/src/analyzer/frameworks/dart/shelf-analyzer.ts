@@ -3,7 +3,7 @@ import { CASContribution, CASEntryPoint, CASNode, CASEdge } from '../../../types
 import { parseWasm } from '../../core/wasm-tree-sitter';
 import * as fs from 'fs-extra';
 import * as path from 'path';
-import { glob } from 'glob';
+import { cachedGlob as glob } from '../../core/glob-cache';
 
 /**
  * Shelf / shelf_router (Dart server) framework analyzer.

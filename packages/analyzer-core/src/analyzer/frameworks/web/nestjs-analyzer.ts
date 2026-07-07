@@ -10,7 +10,7 @@ import * as path from 'path';
 import * as fs from 'fs-extra';
 import { TSESTree } from '@typescript-eslint/typescript-estree';
 import { cachedEstreeParse as parse } from '../../core/estree-parse-cache';
-import { glob } from 'glob';
+import { cachedGlob as glob } from '../../core/glob-cache';
 
 const BUILTIN_NOT_EXIT_POINTS = new Set([
   'Math', 'JSON', 'Array', 'Object', 'String', 'Number', 'Boolean',

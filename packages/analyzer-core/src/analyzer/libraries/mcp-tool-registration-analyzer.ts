@@ -2,7 +2,7 @@ import { BaseAnalyzer, AnalysisContext } from '../core/base-analyzer';
 import { CASNode, CASEdge, CASContribution, CASEntryPoint, CASExitPoint } from '../../types/cas.types';
 import * as path from 'path';
 import * as fs from 'fs-extra';
-import { glob } from 'glob';
+import { cachedGlob as glob } from '../core/glob-cache';
 
 type McpRegistrationKind = 'registerTool' | 'tool' | 'setRequestHandler';
 

@@ -2,7 +2,7 @@ import { AnalysisContext, BaseAnalyzer, FileAnalysisContext, FileAnalysisResult 
 import { CASContribution, CASEdge, CASLibrary, CASNode } from '../../../types/cas.types';
 import * as fs from 'fs-extra';
 import * as path from 'path';
-import { glob } from 'glob';
+import { cachedGlob as glob } from '../../core/glob-cache';
 
 /**
  * Mocking / test-double + fixture-factory library analyzer.

@@ -2,7 +2,7 @@ import { BaseAnalyzer, AnalysisContext, FileAnalysisContext } from '../core/base
 import { CASNode, CASEdge, CASEntryPoint, CASContribution, CASExitPoint, FileAnalysisResult } from '../../types/cas.types';
 import * as path from 'path';
 import * as fs from 'fs-extra';
-import { glob } from 'glob';
+import { cachedGlob as glob } from '../core/glob-cache';
 
 type WorkflowSystem = 'temporal' | 'celery' | 'sidekiq' | 'bullmq' | 'kafka' | 'rabbitmq' | 'nats' | 'step-functions' | 'durable-functions' | 'camunda-zeebe' | 'cadence';
 

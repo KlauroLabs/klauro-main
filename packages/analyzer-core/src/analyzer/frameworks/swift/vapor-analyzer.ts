@@ -4,7 +4,7 @@ import { isAuthenticationGuardName } from '../../core/guard-classification';
 import { parseWasm } from '../../core/wasm-tree-sitter';
 import * as fs from 'fs-extra';
 import * as path from 'path';
-import { glob } from 'glob';
+import { cachedGlob as glob } from '../../core/glob-cache';
 
 /**
  * Vapor (Swift server) framework analyzer.

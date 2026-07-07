@@ -2,7 +2,7 @@ import { BaseAnalyzer, CASAnalysisResult, CASNode, CASEdge, AnalysisContext } fr
 import { AnalyzerError } from '../../core/errors';
 import * as path from 'path';
 import * as fs from 'fs-extra';
-import { glob } from 'glob';
+import { cachedGlob as glob } from '../../core/glob-cache';
 import { parse } from '@typescript-eslint/typescript-estree';
 
 interface JestConfiguration {

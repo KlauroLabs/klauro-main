@@ -7,7 +7,7 @@ import { AnalyzerError } from '../core/errors';
 import { detectSyntaxDegradation } from '../core/syntax-degradation';
 import { isPhpPureBuiltinFunction } from '../core/language-builtins';
 import * as fs from 'fs-extra';
-import { glob } from 'glob';
+import { cachedGlob as glob } from '../core/glob-cache';
 import { TreeSitterParser } from '../core/tree-sitter-parser';
 import type { PHPASTNode } from '../core/ast-types';
 import * as path from 'path';

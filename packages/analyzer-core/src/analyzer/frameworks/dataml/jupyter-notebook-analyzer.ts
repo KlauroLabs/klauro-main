@@ -5,7 +5,7 @@ import {
 import { AnalyzerError } from '../../core/errors';
 import * as path from 'path';
 import * as fs from 'fs-extra';
-import { glob } from 'glob';
+import { cachedGlob as glob } from '../../core/glob-cache';
 
 /**
  * Jupyter notebooks (.ipynb) are not source code — they're JSON documents whose

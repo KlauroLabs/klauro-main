@@ -6,7 +6,7 @@ import {
 import { AnalyzerError } from '../core/errors';
 import { detectSyntaxDegradation } from '../core/syntax-degradation';
 import * as fs from 'fs-extra';
-import { glob } from 'glob';
+import { cachedGlob as glob } from '../core/glob-cache';
 
 interface PythonClass {
   name: string;

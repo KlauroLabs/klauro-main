@@ -6,7 +6,7 @@ import {
 import { BaseAnalyzer, AnalysisContext, FileAnalysisContext } from '../core/base-analyzer';
 import { AnalyzerError } from '../core/errors';
 import * as fs from 'fs-extra';
-import { glob } from 'glob';
+import { cachedGlob as glob } from '../core/glob-cache';
 import { TreeSitterParser } from '../core/tree-sitter-parser';
 import type { RustASTNode } from '../core/ast-types';
 import * as path from 'path';

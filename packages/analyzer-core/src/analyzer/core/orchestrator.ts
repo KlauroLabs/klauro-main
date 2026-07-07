@@ -121,7 +121,8 @@ import { filterPlausibleExternalServices, isCommandShapedLabel, isHostnameLikeSe
 
 export type { CASOutput } from '../../types/cas.types';
 import * as fs from 'fs-extra';
-import { glob, globSync } from 'glob';
+import { cachedGlob as glob, beginGlobRun, endGlobRun } from './glob-cache';
+import { globSync } from 'glob';
 import * as path from 'path';
 
 /**
@@ -1034,11 +1035,18 @@ export class AnalyzerOrchestrator {
     setAICacheProjectScope(projectPath);
     const analysisId = `analysis_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     const runLog = new AnalysisRunLog(projectPath, analysisId, CAS_VERSION);
+    // Activate run-scoped glob memoization for this analysis so the ~200 identical
+    // async glob() calls across analyzers collapse to one FS walk each. Cleared in
+    // finally so caching is never active outside a run (unit tests that drive
+    // analyzers directly keep hitting real/mocked glob with no caching).
+    const globRun = beginGlobRun();
     try {
       return await this.executeAnalysis(projectPath, analysisId, runLog, options);
     } catch (error) {
       runLog.fail(error);
       throw error;
+    } finally {
+      endGlobRun(globRun);
     }
   }
 
@@ -14957,7 +14965,7 @@ export class AnalyzerOrchestrator {
       'src/migrations/**/*',
     ].flatMap(pattern => {
       try {
-        return glob.sync(pattern, {
+        return globSync(pattern, {
           cwd: projectPath,
           nodir: true,
           ignore: ['**/node_modules/**', '**/dist/**', '**/build/**', '**/.git/**'],

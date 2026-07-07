@@ -3,7 +3,7 @@ import { CASNode, CASEdge, CASContribution, CASEntryPoint, CASExitPoint, CASPers
 import { AnalyzerError } from '../../core/errors';
 import * as path from 'path';
 import * as fs from 'fs-extra';
-import { glob } from 'glob';
+import { cachedGlob as glob } from '../../core/glob-cache';
 import { cachedEstreeParse as parse } from '../../core/estree-parse-cache';
 
 interface ReactApplication {

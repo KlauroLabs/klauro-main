@@ -2,7 +2,7 @@ import { BaseAnalyzer, AnalysisContext } from '../../core/base-analyzer';
 import { CASContribution, CASExitPoint, CASNode } from '../../../types/cas.types';
 import * as fs from 'fs-extra';
 import * as path from 'path';
-import { glob } from 'glob';
+import { cachedGlob as glob } from '../../core/glob-cache';
 
 interface ReqwestCall {
   method: string;

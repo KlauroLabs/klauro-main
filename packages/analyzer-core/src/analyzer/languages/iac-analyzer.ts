@@ -11,7 +11,7 @@ import {
 } from '../../types/cas.types';
 import * as fs from 'fs-extra';
 import * as path from 'path';
-import { glob } from 'glob';
+import { cachedGlob as glob } from '../core/glob-cache';
 
 // Shared helpers for the IaC (Ansible/Pulumi/Helm) analyzers. Terraform and
 // Kubernetes/Docker manifests already have dedicated analyzers

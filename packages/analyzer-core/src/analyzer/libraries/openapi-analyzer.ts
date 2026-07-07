@@ -3,7 +3,7 @@ import {
   CASNode, CASEdge, CASContribution, CASEntryPoint, CASExitPoint, FileAnalysisResult
 } from '../../types/cas.types';
 import * as fs from 'fs-extra';
-import { glob } from 'glob';
+import { cachedGlob as glob } from '../core/glob-cache';
 import * as path from 'path';
 
 const HTTP_METHODS = ['get', 'post', 'put', 'delete', 'patch', 'head', 'options', 'trace'];

@@ -2,7 +2,7 @@ import { AnalysisContext, BaseAnalyzer } from '../../core/base-analyzer';
 import { CASContribution, CASEntryPoint, CASNode, CASEdge } from '../../../types/cas.types';
 import * as fs from 'fs-extra';
 import * as path from 'path';
-import { glob } from 'glob';
+import { cachedGlob as glob } from '../../core/glob-cache';
 
 /**
  * Arduino framework analyzer — the Arduino core's `setup()`/`loop()`

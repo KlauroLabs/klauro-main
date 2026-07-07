@@ -19,7 +19,7 @@ import { LANGUAGE_SPECS } from '../core/language-spec';
 import { LANGUAGE_REGISTRY } from '../core/language-registry';
 import { LanguageAnalyzers } from './index';
 import * as fs from 'fs-extra';
-import { glob } from 'glob';
+import { cachedGlob as glob } from '../core/glob-cache';
 import * as path from 'path';
 
 /**
