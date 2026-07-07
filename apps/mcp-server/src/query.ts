@@ -3547,7 +3547,11 @@ export function getFlowConcepts(
   const includeStructural = opts.includeStructural !== false;
   const withRole = (flow: typeof flows[number]) => {
     const classification = roleByFlowId.get(flow.flow_id);
-    return { ...flow, role: classification?.role, role_evidence: classification?.role_evidence };
+    // `terminus` (what the flow PRODUCES at its resolved exit — SPEC terminal
+    // anchor) is spread via `...flow`, but named explicitly so the projection is
+    // an intentional, grep-visible field-list rather than an implicit spread that
+    // a future compaction could silently drop.
+    return { ...flow, terminus: flow.terminus, role: classification?.role, role_evidence: classification?.role_evidence };
   };
   let flowsOut: any[] = flows.map(withRole);
   if (includeStructural && flows.length > 0) {
@@ -3560,6 +3564,7 @@ export function getFlowConcepts(
       const classification = roleByFlowId.get(flow.flow_id);
       return {
         ...flow,
+        terminus: flow.terminus,
         role: classification?.role,
         role_evidence: classification?.role_evidence,
         structural: linked?.flow,

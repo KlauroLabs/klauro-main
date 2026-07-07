@@ -2790,6 +2790,30 @@ export interface CASAnalysisPhase {
   notes?: string[];
 }
 
+/**
+ * Kind of a data entity, derived DETERMINISTICALLY from framework-analyzer
+ * evidence carried on the node (subcategories / node type / metadata attributes),
+ * NEVER from the entity's name or casing. This is a Camp-B structural fact.
+ *
+ *  - `persisted-entity`  ORM/@Entity/table-mapped record — the durable state the
+ *                        system stores.
+ *  - `api-response`      what the system PRODUCES for its consumers — controller
+ *                        return shape / OpenAPI-or-GraphQL response / serializer
+ *                        output. This kind IS the terminal set.
+ *  - `request-dto`       the inbound contract — @Body / validation DTO / request
+ *                        schema.
+ *  - `value-object`      field-only shape with no persistence and no route/api
+ *                        binding — an internal domain value, not stored or exposed.
+ *
+ * Consumers (flow-concepts.ts / context-fabric.ts) may rely on this union and on
+ * `api-response` being the terminal-entity kind.
+ */
+export type CASDataEntityKind =
+  | 'persisted-entity'
+  | 'api-response'
+  | 'request-dto'
+  | 'value-object';
+
 export interface CASDataEntity {
   id: string;
   name: string;
@@ -2797,6 +2821,13 @@ export interface CASDataEntity {
   description?: string;
   description_source?: 'deterministic' | 'ai' | 'manual' | 'reused';
   description_generation?: CASDescriptionGeneration;
+
+  /**
+   * Deterministic structural kind derived from framework evidence (never from the
+   * entity name). Camp-B fact. See CASDataEntityKind.
+   */
+  kind?: CASDataEntityKind;
+  kind_source?: 'framework-evidence';
 
   fields?: Array<{
     name: string;

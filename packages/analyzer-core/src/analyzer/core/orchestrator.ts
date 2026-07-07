@@ -29,6 +29,7 @@ import {
   CASUserJourney,
   CASDescriptionGeneration,
   CASDataSummary,
+  CASDataEntityKind,
   CASBehavioralInvariant,
   CASBehavioralInvariantSummary,
   CASSecurityBoundary,
@@ -386,47 +387,6 @@ export interface OrchestrateAnalysisOptions {
    */
   packGlobs?: string[];
 }
-
-/**
- * Kind of a data entity, derived DETERMINISTICALLY from framework-analyzer
- * evidence carried on the node (subcategories / node type / metadata attributes),
- * NEVER from the entity's name or casing. This is a Camp-B structural fact.
- *
- *  - `persisted-entity`  ORM/@Entity/table-mapped record — the durable state the
- *                        system stores (typeorm/sea-orm/gorm/mikroorm/data-access,
- *                        node.type entity|model, or metadata.attributes.orm/table).
- *  - `api-response`      what the system PRODUCES for its consumers — controller
- *                        return shape / OpenAPI-or-GraphQL response / serializer
- *                        output (subcategories api|api-contract|api-response|
- *                        openapi|graphql|serializer, or a `*Response`/`*Output`
- *                        data shape). This kind IS the terminal set.
- *  - `request-dto`       the inbound contract — @Body / validation DTO / request
- *                        schema (subcategories input-validation|request|validation|
- *                        contract|validation_contract, node.type dto, or a
- *                        `*Request`/`*Body`/`*Input` shape).
- *  - `value-object`      field-only shape with no persistence and no route/api
- *                        binding — an internal domain value, not stored or exposed.
- *
- * Consumers (peers on flow-concepts.ts / context-fabric.ts) may rely on this
- * union and on `api-response` being the terminal-entity kind.
- */
-export type CASDataEntityKind =
-  | 'persisted-entity'
-  | 'api-response'
-  | 'request-dto'
-  | 'value-object';
-
-/**
- * The shared CASDataEntity does not yet carry `kind` (see cas.types.ts —
- * reconciliation note for the orchestrator owner: add `kind?: CASDataEntityKind`
- * plus `kind_source?: 'framework-evidence'` to the interface). Until then we
- * widen locally so the deterministic tag can be attached and read within the
- * orchestrator without an unsafe `any`.
- */
-export type CASDataEntityWithKind = CASDataEntity & {
-  kind?: CASDataEntityKind;
-  kind_source?: 'framework-evidence';
-};
 
 export class AnalyzerOrchestrator {
   private analyzers: Map<string, AnalyzerRegistration> = new Map();
@@ -12338,7 +12298,7 @@ export class AnalyzerOrchestrator {
         }
       }
 
-      const ormEntity: CASDataEntityWithKind = {
+      const ormEntity: CASDataEntity = {
         id: `entity_${entityNode.name.toLowerCase()}`,
         name: entityNode.name,
         schema_source: entityNode.source?.file,
@@ -12440,7 +12400,7 @@ export class AnalyzerOrchestrator {
   }
 
   /** Attach the deterministic kind (framework-evidence sourced) to an entity. */
-  private tagDataEntityKind(entity: CASDataEntityWithKind, anchors: CASNode[], fallback: CASDataEntityKind): void {
+  private tagDataEntityKind(entity: CASDataEntity, anchors: CASNode[], fallback: CASDataEntityKind): void {
     entity.kind = this.classifyDataEntityKind(anchors, fallback);
     entity.kind_source = 'framework-evidence';
   }
@@ -12588,7 +12548,7 @@ export class AnalyzerOrchestrator {
     propertyIndex: EntityPropertyIndex,
     existingNames: Set<string>,
     projectPath?: string,
-  ): CASDataEntityWithKind[] {
+  ): CASDataEntity[] {
     const GENERIC = /^(pagination|paginated|response|error|base|common|list|meta|page|sort|filter|query|param|option|config|result|success|status|health|ping|api|data|item|value|generic|wrapper|envelope|dto|input|output|payload|request|body|args|count|info|detail|map|record|enum|type|abstract|sortby|orderby|where|select)s?$/i;
     const groups = new Map<string, { rep: CASNode; nodes: CASNode[]; ops: Set<string> }>();
     for (const node of nodes) {
@@ -12609,7 +12569,7 @@ export class AnalyzerOrchestrator {
       }
     }
     const sensitive = /password|secret|token|key|credential|ssn|email|phone|card|cvv|account/i;
-    const derived: CASDataEntityWithKind[] = [];
+    const derived: CASDataEntity[] = [];
     for (const group of groups.values()) {
       const fieldMap = new Map<string, { name: string; type: string; is_sensitive: boolean }>();
       for (const node of group.nodes) {
@@ -12631,7 +12591,7 @@ export class AnalyzerOrchestrator {
       const anchorIds = new Set(group.nodes.map(node => node.id));
       const edgeLifecycle = this.attributeLifecycleFromEdges(anchorIds, edgesByNode, nodesById);
       const coreName = this.dataShapeAffix(group.rep.name || '').core;
-      const derivedEntity: CASDataEntityWithKind = {
+      const derivedEntity: CASDataEntity = {
         id: `entity_${this.dataShapeAffix(group.rep.name || '').core.toLowerCase().replace(/[^a-z0-9]+/g, '_')}`,
         name: coreName,
         schema_source: group.rep.source?.file,
@@ -14170,42 +14130,16 @@ export class AnalyzerOrchestrator {
     entryPoints: CASEntryPoint[],
     projectPath?: string
   ): SystemCapability[] {
-    const repoName = path.basename(projectPath || '').replace(/[_-]+/g, ' ').trim();
-    const corpus = [
-      repoName,
-      projectPath || '',
-      ...nodes.slice(0, 400).map(node => `${node.name} ${node.type} ${node.source?.file || ''}`),
-    ].join(' ').toLowerCase();
-    let name = `${this.humanizeDisplayName(repoName || 'Repository')} Operations`;
-    let domain = this.normalizeDomainToken(repoName || 'repository') || 'repository';
-    let description = `${name} captures the main runnable or library behavior visible in this repository so agents still have an oriented work target when no richer capability graph is available.`;
-
-    if (/\b(testing utilities|testing-utilities|test utility|test utilities|moq|specs)\b/.test(corpus)) {
-      name = 'Test Utility Support';
-      domain = 'testing-utilities';
-      description = 'Test Utility Support provides reusable helpers, fixtures, or assertion utilities used by test suites in related projects.';
-    } else if (/\b(decrypt|decrypter|decryptor|cipher|crypto)\b/.test(corpus)) {
-      name = 'Data Decryption';
-      domain = 'data-decryption';
-      description = 'Data Decryption handles decryption or cryptographic utility behavior exposed by this repository.';
-    } else if (/\b(quic|udp|tcp|protocol|network)\b/.test(corpus) && /\b(test|poc|experiment)\b/.test(corpus)) {
-      name = 'Network Protocol Testing';
-      domain = 'network-protocol-testing';
-      description = 'Network Protocol Testing exercises protocol, connection, or transport behavior for development and validation.';
-    } else if (/\b(release|artifact|download|deploy)\b/.test(corpus)) {
-      name = 'Release Artifact Management';
-      domain = 'release-artifacts';
-      description = 'Release Artifact Management prepares, hosts, or authenticates access to release files and deployment artifacts.';
-    } else if (/\b(auth|login|oauth|session|token|webauthn)\b/.test(corpus)) {
-      name = 'Authentication';
-      domain = 'auth';
-      description = 'Authentication manages sign-in, token, or identity access behavior visible in the repository.';
-    } else if (/\b(api|server|controller|route|endpoint)\b/.test(corpus)) {
-      name = 'API Service Operations';
-      domain = 'api-service';
-      description = 'API Service Operations coordinates server-side request handling and service behavior visible in this repository.';
-    }
-
+    // DETERMINISM BOUNDARY (docs/cas/DETERMINISM-BOUNDARY.md): this fallback fires
+    // only when the terminal/AI capability path produced ZERO capabilities. It is
+    // a purely STRUCTURAL grouping so agents still have an oriented work target —
+    // one capability anchored on the real entry points (or, absent those, the
+    // first source nodes). It carries NO comprehension: the previous
+    // keyword→label/description classifier (corpus regexes mapping crypto→"Data
+    // Decryption", auth→"Authentication", api→"API Service Operations", etc.) has
+    // been removed. `name` is a structural placeholder derived only from the repo
+    // basename (never a keyword-guessed domain); `description` is omitted so the
+    // AI comprehension pass writes it — never a hardcoded sentence.
     const operations = (entryPoints.length > 0 ? entryPoints : nodes.slice(0, 6)).slice(0, 12).map((item: CASEntryPoint | CASNode) => {
       const isEntry = 'handler' in item || 'trigger' in item;
       return {
@@ -14216,10 +14150,18 @@ export class AnalyzerOrchestrator {
       };
     });
 
+    // No structural evidence at all → no fabricated capability. Honest empty.
+    if (operations.length === 0) return [];
+
+    const repoName = path.basename(projectPath || '').replace(/[_-]+/g, ' ').trim();
+    const name = `${this.humanizeDisplayName(repoName || 'Repository')} Operations`;
+
     return [{
       id: 'cap_repository_fallback',
       name,
-      description,
+      // Empty (not a hardcoded sentence): comprehension is AI-only. The
+      // description_generation below flags this for the AI pass to fill.
+      description: '',
       description_source: undefined,
       description_generation: {
         status: 'ai_skipped',
@@ -14230,9 +14172,9 @@ export class AnalyzerOrchestrator {
       category: 'supporting',
       operations,
       related_entities: [],
-      related_domains: [domain],
+      related_domains: [],
       criticality: 'low',
-      criticality_factors: ['Fallback capability created from repository-level source and entry-point evidence'],
+      criticality_factors: ['Fallback capability grouped from repository entry-point / source-node evidence'],
     }];
   }
 
@@ -14809,7 +14751,7 @@ export class AnalyzerOrchestrator {
       // capability — it is a data shape a real capability consumes. Drop it so
       // the capability set stays anchored on outputs, not intermediate contracts.
       const entityKindOf = (entity: CASDataEntity): CASDataEntityKind =>
-        (entity as CASDataEntityWithKind).kind ?? 'value-object';
+        entity.kind ?? 'value-object';
       const terminalEntities = uniqueEntities.filter(entity => entityKindOf(entity) === 'api-response');
       const producedEntities = uniqueEntities.filter(entity =>
         entityKindOf(entity) === 'api-response' || entityKindOf(entity) === 'persisted-entity');
