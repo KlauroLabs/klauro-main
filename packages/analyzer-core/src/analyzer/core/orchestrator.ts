@@ -10011,16 +10011,14 @@ export class AnalyzerOrchestrator {
       projectTextConcepts?: string[];
     },
   ): { ok: true } | { ok: false; reason: string } {
-    const lower = ` ${cleaned.toLowerCase()} `;
-    // Pull the descriptor words immediately preceding a system-type head noun,
-    // e.g. "security-scanning tool", "crypto market-intelligence api",
-    // "portfolio management system". Only the FIRST such phrase (the headline
-    // identity claim) is enforced.
+    // Descriptor words (allowing glued hyphen compounds like
+    // "security-scanning-tool") immediately preceding a system-type head noun:
+    // "security-scanning tool", "crypto market-intelligence api", "portfolio
+    // management system". EVERY such phrase whose modifiers are not just the
+    // system name / filler is enforced — a "soon-lens system" phrase (only the
+    // name as modifier) is skipped, but a later "security-scanning tool" is not.
     const typeHead = '(?:tool|system|service|platform|application|app|api|engine|framework|library|server|gateway|pipeline|dashboard|suite|toolkit|sdk)';
-    const match = new RegExp(`\\b((?:[a-z][a-z0-9]*(?:[- ][a-z][a-z0-9]*){0,3})\\s+)${typeHead}s?\\b`, 'i').exec(cleaned);
-    if (!match) return { ok: true };
-    // Distinctive modifier tokens (drop articles, generic build words, and the
-    // system's own name — none of those are a claim that needs evidence).
+    const phrasePattern = new RegExp(`\\b((?:[a-z][a-z0-9]*(?:[- ][a-z][a-z0-9]*){0,3})[- ])${typeHead}s?\\b`, 'gi');
     const stopWords = new Set([
       'a', 'an', 'the', 'this', 'that', 'built', 'with', 'and', 'or', 'for',
       'based', 'full', 'stack', 'end', 'to', 'backend', 'frontend', 'web',
@@ -10035,11 +10033,6 @@ export class AnalyzerOrchestrator {
         .split(/[^a-z0-9]+/)
         .filter(Boolean),
     );
-    const modifierTokens = match[1]
-      .toLowerCase()
-      .split(/[^a-z0-9]+/)
-      .filter(token => token.length >= 4 && !stopWords.has(token) && !nameTokens.has(token) && !this.isGenericCapabilityToken(token));
-    if (modifierTokens.length === 0) return { ok: true };
     // Build the corpus of grounded evidence text once.
     const evidenceCorpus = [
       ...groundedTerms,
@@ -10052,15 +10045,25 @@ export class AnalyzerOrchestrator {
     ]
       .join(' ')
       .toLowerCase();
-    // Grounded if ANY distinctive modifier token (or its 5-char stem) appears in
-    // the evidence corpus. Stemming lets "scanning"/"scanner", "crypto"/
-    // "cryptocurrency", "trading"/"trade" match their evidence form.
-    const grounded = modifierTokens.some(token => {
-      const stem = token.slice(0, 5);
-      return evidenceCorpus.includes(token) || evidenceCorpus.includes(stem);
-    });
-    if (!grounded) {
-      return { ok: false, reason: `ungrounded-system-type: ${modifierTokens.join('-')}` };
+    let phraseMatch: RegExpExecArray | null;
+    while ((phraseMatch = phrasePattern.exec(cleaned)) !== null) {
+      // Distinctive modifier tokens (drop articles, generic build words, and the
+      // system's own name — none of those are a claim that needs evidence).
+      const modifierTokens = phraseMatch[1]
+        .toLowerCase()
+        .split(/[^a-z0-9]+/)
+        .filter(token => token.length >= 4 && !stopWords.has(token) && !nameTokens.has(token) && !this.isGenericCapabilityToken(token));
+      if (modifierTokens.length === 0) continue;
+      // Grounded if ANY distinctive modifier token (or its 5-char stem) appears
+      // in the evidence corpus. Stemming lets "scanning"/"scanner", "crypto"/
+      // "cryptocurrency", "trading"/"trade" match their evidence form.
+      const grounded = modifierTokens.some(token => {
+        const stem = token.slice(0, 5);
+        return evidenceCorpus.includes(token) || evidenceCorpus.includes(stem);
+      });
+      if (!grounded) {
+        return { ok: false, reason: `ungrounded-system-type: ${modifierTokens.join('-')}` };
+      }
     }
     return { ok: true };
   }
@@ -10103,20 +10106,6 @@ export class AnalyzerOrchestrator {
       if (structuralMatches < 2) {
         return { ok: false, reason: 'not-grounded-in-domain-or-concepts' };
       }
-    }
-    // EVIDENCE-GROUNDED SYSTEM-TYPE ENFORCEMENT: the noun the description uses to
-    // name WHAT THE SYSTEM IS ("a security-scanning tool", "a portfolio manager")
-    // must be traceable to a real supplied fact. The gate above only checks the
-    // AI-supplied domain/concepts grounds itself (circular when the AI both
-    // fabricates the domain AND writes it into the description). This check reads
-    // the SYSTEM-TYPE head noun out of the prose and rejects it when NO distinctive
-    // token in it appears in any grounded fact (deps, entities, integrations,
-    // concepts, manifest text). Not a keyword blocklist — a fabricated "security
-    // scanning tool" with zero security/scanning evidence is rejected; a
-    // "crypto market-intelligence API" backed by ccxt/DexTrade is accepted.
-    const systemTypeVerdict = this.systemTypeIsGrounded(cleaned, groundedTerms, facts);
-    if (!systemTypeVerdict.ok) {
-      return { ok: false, reason: systemTypeVerdict.reason };
     }
     const marketingLanguagePattern = /\b(seamless(?:ly)?|user experience|entry point for an application|gateway between the frontend and backend|reducing complexity|ecosystem|wide range of clients|robust api|crucial role|scalability|usability|underlying platform|indispensable|unified experience|complex queries|large datasets|high-quality [a-z ]+ experience|regulatory requirements?|best practices|designed for managing|facilitates|various applications|robust [a-z ]*framework|enhanc(?:e|es|ing) (?:the )?[a-z ]*(?:analysis process|security|efficiency|navigation|insights)|allowing developers to focus|complex tasks|structured data and insights|insights(?: into)?|efficient(?:ly)?|efficiency|productivity|compliant|compliance|advanced|streamline(?:s|d|ing)?|user-friendly|business value|improving operational|reduces? costs?|secure by design)\b/gi;
     const marketingMatches = Array.from(new Set(
@@ -10306,6 +10295,20 @@ export class AnalyzerOrchestrator {
     const databaseDomainContext = /\b(no-code-database-platform|developer-platform)\b/.test(`${domain || ''} ${primaryType || ''}`);
     if (!databaseDomainContext && (facts.databaseEntities || []).length === 0 && /\b(relational database|database|data store|stores entities)\b/i.test(cleaned)) {
       return { ok: false, reason: 'unsupported-database-claim' };
+    }
+    // EVIDENCE-GROUNDED SYSTEM-TYPE ENFORCEMENT (last, so more specific rejection
+    // reasons win first): the noun the description uses to name WHAT THE SYSTEM IS
+    // ("a security-scanning tool", "a portfolio manager") must be traceable to a
+    // real supplied fact. The domain/concepts grounding check above is circular
+    // when the AI both fabricates the domain AND writes it into the description;
+    // this reads the SYSTEM-TYPE head noun out of the prose and rejects it when NO
+    // distinctive modifier appears in any grounded fact (deps, entities,
+    // integrations, concepts, manifest text). Not a keyword blocklist — a
+    // fabricated "security-scanning tool" with zero security/scanning evidence is
+    // rejected; a "crypto market-intelligence API" backed by ccxt/DexTrade passes.
+    const systemTypeVerdict = this.systemTypeIsGrounded(cleaned, groundedTerms, facts);
+    if (!systemTypeVerdict.ok) {
+      return { ok: false, reason: systemTypeVerdict.reason };
     }
     return { ok: true };
   }
