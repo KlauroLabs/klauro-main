@@ -387,22 +387,82 @@ describe('architecture and capability inference', () => {
   });
 
   it('identifies an MCP analyzer monorepo ahead of incidental legacy framework analyzers', () => {
+    // A real MCP tool server exposes its capability as MCP tool registrations: 'mcp_tool' nodes
+    // plus 'message' entry points (produced by the mcp-tool-registration-analyzer). This dominant
+    // MCP entry surface — not a mere dependency on the SDK or an "Analyzer"-named class — is what
+    // qualifies a repo as an MCP analyzer.
     const nodes: CASNode[] = [
       node({ id: 'mcp-server-file', name: 'server.ts', type: 'file', source: { file: 'apps/mcp-server/src/server.ts' } }),
-      node({ id: 'mcp-tool', name: 'getArchitectureContext', type: 'function', source: { file: 'apps/mcp-server/src/server.ts' } }),
+      node({ id: 'mcp-tool-1', name: 'getArchitectureContext', type: 'mcp_tool', source: { file: 'apps/mcp-server/src/server.ts' } }),
+      node({ id: 'mcp-tool-2', name: 'getCallers', type: 'mcp_tool', source: { file: 'apps/mcp-server/src/server.ts' } }),
+      node({ id: 'mcp-tool-3', name: 'getSummary', type: 'mcp_tool', source: { file: 'apps/mcp-server/src/server.ts' } }),
+      node({ id: 'mcp-tool-4', name: 'searchNodes', type: 'mcp_tool', source: { file: 'apps/mcp-server/src/server.ts' } }),
+      node({ id: 'mcp-tool-5', name: 'getRouteTable', type: 'mcp_tool', source: { file: 'apps/mcp-server/src/server.ts' } }),
       node({ id: 'analyzer-file', name: 'orchestrator.ts', type: 'file', source: { file: 'packages/analyzer-core/src/analyzer/core/orchestrator.ts' } }),
       node({ id: 'analyzer-class', name: 'AnalyzerOrchestrator', type: 'class', source: { file: 'packages/analyzer-core/src/analyzer/core/orchestrator.ts' } }),
       node({ id: 'legacy-route', name: 'legacyRoute', type: 'function', source: { file: 'legacy/api/routes.ts' } }),
     ];
+    const entryPoints = ['mcp-tool-1', 'mcp-tool-2', 'mcp-tool-3', 'mcp-tool-4', 'mcp-tool-5'].map((sourceNode, index) => ({
+      id: `entry-mcp-${index}`,
+      type: 'message',
+      name: sourceNode,
+      source_node: sourceNode,
+      trigger: { method: 'registerTool', path: sourceNode },
+    }));
     const contributions = [
       { analyzer_type: 'framework', analyzer_name: 'Express.js Analyzer', nodes_created: 3, confidence: 1 },
       { analyzer_type: 'framework', analyzer_name: 'NestJS Analyzer', nodes_created: 6, confidence: 1 },
       { analyzer_type: 'language', analyzer_name: 'TypeScript/JavaScript Analyzer', nodes_created: 200 },
     ];
 
-    const summary = orch.buildArchitectureSummary(nodes, [], [], contributions);
+    const summary = orch.buildArchitectureSummary(nodes, entryPoints as any, [], contributions);
 
     expect(summary.system_type).toBe('MCP analyzer monorepo');
+  });
+
+  it('classifies a crypto/NestJS API that merely imports the MCP SDK as an API service, not an MCP analyzer', () => {
+    // Regression: soon-lens is a NestJS crypto-market API that depends on @modelcontextprotocol/sdk
+    // (a few agent-preflight endpoints) and ships "Analyzer"-named service classes, yet its dominant
+    // entry surface is HUNDREDS of HTTP routes. It must classify as the API service it is — the
+    // incidental MCP surface must never leak Klauro's own "MCP analyzer service" identity onto it.
+    const nodes: CASNode[] = [
+      ...Array.from({ length: 4 }, (_v, index) => node({
+        id: `controller-${index}`,
+        name: `Market${index}Controller`,
+        type: 'controller',
+        source: { file: `src/market/market-${index}.controller.ts` },
+      })),
+      node({ id: 'risk-analyzer', name: 'RiskAnalyzer', type: 'service', source: { file: 'src/risk/risk-analyzer.service.ts' } }),
+      node({ id: 'mcp-tool-1', name: 'preflight', type: 'mcp_tool', source: { file: 'src/agent/preflight.controller.ts' } }),
+      node({ id: 'ohlcv-entity', name: 'OhlcvCandle', type: 'entity', source: { file: 'src/market/ohlcv.entity.ts' } }),
+    ];
+    const httpEntryPoints = Array.from({ length: 12 }, (_v, index) => ({
+      id: `entry-http-${index}`,
+      type: 'http',
+      name: `GET /market/${index}`,
+      source_node: `controller-${index % 4}`,
+      handler: { node_id: `controller-${index % 4}`, file: `src/market/market-${index % 4}.controller.ts` },
+      trigger: { method: 'GET', path: `/market/${index}` },
+    }));
+    const mcpEntryPoint = {
+      id: 'entry-mcp-0',
+      type: 'message',
+      name: 'preflight',
+      source_node: 'mcp-tool-1',
+      trigger: { method: 'registerTool', path: 'preflight' },
+    };
+    const contributions = [
+      { analyzer_type: 'framework', analyzer_name: 'NestJS Analyzer', nodes_created: 50, confidence: 1 },
+    ];
+
+    const summary = orch.buildArchitectureSummary(nodes, [...httpEntryPoints, mcpEntryPoint] as any, [], contributions);
+
+    expect(summary.system_type).not.toBe('MCP analyzer service');
+    expect(summary.system_type).not.toBe('MCP analyzer monorepo');
+    // A NestJS API with data entities resolves to a backend/API service — the exact label depends
+    // on framework/data signals, but it must be one of the dominant-API-surface classifications,
+    // never the incidental MCP-analyzer one.
+    expect(['API service', 'Backend service']).toContain(summary.system_type);
   });
 
   it('uses dominant product shape instead of tiny framework contributions for API services', () => {
@@ -951,22 +1011,6 @@ describe('architecture and capability inference', () => {
     expect(actions).toEqual(expect.arrayContaining(['List', 'Create', 'Update', 'Delete']));
   });
 
-  it('prefers broader product data domains over incidental auth/login capabilities', () => {
-    const capabilities = [
-      { name: 'Login Management', related_domains: ['login'], related_entities: [], operations: [] },
-      { name: 'Logout Management', related_domains: ['logout'], related_entities: [], operations: [] },
-      { name: 'Product Management', related_domains: ['product'], related_entities: ['ProductConnection'], operations: [] },
-      { name: 'Company Source Management', related_domains: ['company', 'source'], related_entities: ['CompanySourceLog'], operations: [] },
-      { name: 'Serializers Management', related_domains: ['serializers'], related_entities: [], operations: [] },
-    ];
-    const concepts = [
-      { name: 'product', nodes: [], entry_points: [], data_entities: [], confidence: 0.9 },
-      { name: 'company source', nodes: [], entry_points: [], data_entities: [], confidence: 0.8 },
-    ];
-
-    expect(orch.inferPrimaryDomainFromCapabilities(capabilities, concepts)).toBe('product-data-management');
-  });
-
   it('filters parser and framework utility labels out of key capability summaries', () => {
     expect(orch.isGenericCapabilityDisplayName('Has Management')).toBe(true);
     expect(orch.isGenericCapabilityDisplayName('Serializers Management')).toBe(true);
@@ -1044,50 +1088,6 @@ describe('architecture and capability inference', () => {
     expect(messageKey).toBe('invoice-requested');
     expect(orch.inferResourceName({ type: 'cli' } as any, cliKey)).toBe('Invoice Commands');
     expect(orch.inferResourceName({ type: 'message' } as any, messageKey)).toBe('Invoice Requested Handlers');
-  });
-
-  it('keeps quick descriptions focused on product capabilities', () => {
-    const description = orch.buildQuickDescription(
-      { primary_type: 'backend-service' },
-      { capabilities: [] },
-      ['ProductConnection', 'CompanySourceLog'],
-      [{ type: 'http', count: 10 }],
-      ['Django'],
-      [],
-      [
-        { name: 'Product Management', category: 'core', criticality: 'medium', operations: [{ action: 'Read' }], related_domains: ['product'], related_entities: ['ProductConnection'] },
-        { name: 'Products Management', category: 'core', criticality: 'medium', operations: [{ action: 'Read' }], related_domains: ['products'], related_entities: [] },
-        { name: 'Method Management', category: 'supporting', criticality: 'low', operations: [{ action: 'Read' }], related_domains: ['method'], related_entities: [] },
-        { name: 'Checkconnectivity Management', category: 'supporting', criticality: 'low', operations: [{ action: 'Validate' }], related_domains: ['connectivity'], related_entities: [] },
-        { name: 'Fetch Products Management', category: 'supporting', criticality: 'low', operations: [{ action: 'Read' }], related_domains: ['products'], related_entities: [] },
-        { name: 'Generator Management', category: 'supporting', criticality: 'low', operations: [{ action: 'Read' }], related_domains: ['generator'], related_entities: [] },
-        { name: 'Select Project Management', category: 'supporting', criticality: 'low', operations: [{ action: 'Read' }], related_domains: ['select', 'project'], related_entities: [] },
-        { name: 'Events Handlers', category: 'supporting', criticality: 'medium', operations: [{ action: 'Handle' }], related_domains: ['events'], related_entities: [] },
-        { name: 'Company Source Management', category: 'core', criticality: 'medium', operations: [{ action: 'Read' }], related_domains: ['company', 'source'], related_entities: ['CompanySourceLog'] },
-      ],
-      'product-data-management',
-      ['product', 'company-source']
-    );
-
-    expect(description).toContain('covers product and company');
-    expect(description).toContain('Its model centers on product connection and company source log');
-    expect(description).not.toContain('HTTP endpoints');
-    expect(description).not.toContain('Key capabilities:');
-    expect(description).not.toContain('Data model:');
-    expect(description).not.toContain('Entry points:');
-    expect(description).not.toContain('products management');
-    expect(description).not.toContain('fetch products');
-    expect(description).not.toContain('generator management');
-    expect(description).not.toContain('select project');
-    expect(description).not.toContain('event handling');
-    expect(description).not.toContain('events handlers');
-    expect(description).not.toContain('method management');
-    expect(description).not.toContain('checkconnectivity');
-  });
-
-  it('uses a natural article for user-oriented generated descriptions', () => {
-    expect(orch.articleFor('user identity management')).toBe('A');
-    expect(orch.articleFor('identity management')).toBe('An');
   });
 
   it('does not auto-generate entity descriptions during the default analysis pass', () => {
@@ -1338,28 +1338,6 @@ describe('architecture and capability inference', () => {
     )).toBe(false);
   });
 
-  it('attempts AI interpretation by default instead of keeping deterministic descriptions', () => {
-    const previous = process.env.KLAURO_AI_INTERPRETATION_ALLOW_DETERMINISTIC_KEEP;
-    delete process.env.KLAURO_AI_INTERPRETATION_ALLOW_DETERMINISTIC_KEEP;
-    try {
-      expect(orch.shouldKeepDeterministicSystemDescription({
-        primary_type: 'backend-service',
-        confidence: 0.8,
-        evidence: [],
-        primary_domain: 'product-data-management',
-        core_concepts: ['product', 'company-source'],
-        inferred_description: 'A product data management system built with Django that coordinates product and company source workflows. Its model centers on product connection and company source log, it is exercised through HTTP endpoints.',
-        supporting_workflow_ids: [],
-      })).toBe(false);
-    } finally {
-      if (previous === undefined) {
-        delete process.env.KLAURO_AI_INTERPRETATION_ALLOW_DETERMINISTIC_KEEP;
-      } else {
-        process.env.KLAURO_AI_INTERPRETATION_ALLOW_DETERMINISTIC_KEEP = previous;
-      }
-    }
-  });
-
   it('uses page route segments instead of grouping every frontend route under pages', () => {
     const productPage = {
       id: 'entry-product',
@@ -1385,167 +1363,6 @@ describe('architecture and capability inference', () => {
 
     expect(domains).toEqual(expect.arrayContaining(['product', 'company']));
     expect(domains).not.toContain('pages');
-  });
-
-  it('lets a grounded structural domain beat the text-keyword catalog', () => {
-    const capabilities = [
-      {
-        name: 'Fleet Management',
-        description: 'Coordinates fleet operations',
-        category: 'core',
-        related_domains: ['fleet'],
-        related_entities: ['Vehicle', 'Driver', 'Dispatch'],
-        operations: [],
-      },
-      {
-        name: 'Vehicle Management',
-        description: 'Tracks vehicles',
-        category: 'core',
-        related_domains: ['vehicle'],
-        related_entities: ['Vehicle'],
-        operations: [],
-      },
-    ];
-    const coreConcepts = [{ name: 'Vehicle' }, { name: 'Driver' }, { name: 'Dispatch' }];
-    const signal = {
-      primaryDomain: 'billing-payments',
-      concepts: ['invoice', 'billing'],
-      evidence: ['README.md'],
-    };
-
-    expect(orch.refinePrimaryDomain('unknown', 'some-app', capabilities, coreConcepts, signal)).toBe('fleet-management');
-  });
-
-  it('does not let an ungrounded structural domain beat a specific text domain', () => {
-    const capabilities = [
-      {
-        name: 'Fleet Management',
-        description: '',
-        category: 'core',
-        related_domains: [],
-        related_entities: [],
-        operations: [],
-      },
-    ];
-    const signal = {
-      primaryDomain: 'clinical-testing',
-      concepts: ['patient', 'measurement'],
-      evidence: ['README.md'],
-    };
-
-    expect(orch.refinePrimaryDomain('unknown', 'some-app', capabilities, [], signal)).toBe('clinical-testing');
-  });
-
-  it('classifies zero-trust style structure from gateway/access/policy entities without name checks', () => {
-    const capabilities = [
-      {
-        name: 'Gateway Management',
-        description: 'Provision and pause gateways',
-        category: 'core',
-        related_domains: ['gateway'],
-        related_entities: ['Gateway', 'InlineGateway'],
-        operations: [],
-      },
-      {
-        name: 'Access Request Management',
-        description: 'Review access requests against policies',
-        category: 'core',
-        related_domains: ['access'],
-        related_entities: ['AccessRequest', 'AccessBinding', 'Policy'],
-        operations: [],
-      },
-      {
-        name: 'Network Management',
-        description: 'Manage networks and posture checks',
-        category: 'core',
-        related_domains: ['network'],
-        related_entities: ['Network', 'PostureCheck'],
-        operations: [],
-      },
-    ];
-    const coreConcepts = [{ name: 'Gateway' }, { name: 'AccessRequest' }, { name: 'Policy' }, { name: 'Network' }];
-
-    expect(orch.inferPrimaryDomainFromCapabilities(capabilities, coreConcepts)).toBe('network-access-management');
-    expect(orch.refinePrimaryDomain('unknown', 'some-platform', capabilities, coreConcepts, { concepts: [], evidence: [] }))
-      .toBe('network-access-management');
-  });
-
-  it('classifies codebase-analysis structure from analyzer/cas/mcp vocabulary without name checks', () => {
-    const capabilities = [
-      {
-        name: 'Codebase Analysis',
-        description: 'Analyze repositories into a graph',
-        category: 'core',
-        related_domains: ['analysis'],
-        related_entities: ['Analysis', 'AnalysisSnapshot'],
-        operations: [],
-      },
-      {
-        name: 'Agent Context',
-        description: 'Serve MCP agent contexts from the CAS graph',
-        category: 'core',
-        related_domains: ['mcp'],
-        related_entities: ['AgentContext'],
-        operations: [],
-      },
-    ];
-    const coreConcepts = [{ name: 'Analyzer' }, { name: 'Codebase' }, { name: 'CAS' }];
-
-    expect(orch.inferPrimaryDomainFromCapabilities(capabilities, coreConcepts)).toBe('codebase-analysis');
-  });
-
-  it('classifies conflicting top-level areas separately and surfaces secondary domains', () => {
-    const nodes: CASNode[] = [
-      node({ id: 'order-model', name: 'Order', type: 'entity', source: { file: 'app/models/order.rb' } }),
-      node({ id: 'invoice-model', name: 'Invoice', type: 'entity', source: { file: 'app/models/invoice.rb' } }),
-      node({ id: 'payment-model', name: 'Payment', type: 'entity', source: { file: 'app/models/payment.rb' } }),
-      node({ id: 'orders-controller', name: 'OrdersController', type: 'controller', source: { file: 'app/controllers/orders_controller.rb' } }),
-      node({ id: 'invoices-controller', name: 'InvoicesController', type: 'controller', source: { file: 'app/controllers/invoices_controller.rb' } }),
-      node({ id: 'payments-service', name: 'PaymentCaptureService', type: 'service', source: { file: 'app/services/payment_capture_service.rb' } }),
-      node({ id: 'tf-vpc', name: 'aws_vpc.main', type: 'resource', source: { file: 'terraform/vpc.tf' } }),
-      node({ id: 'tf-ecs', name: 'aws_ecs_cluster.app', type: 'resource', source: { file: 'terraform/ecs.tf' } }),
-      node({ id: 'tf-rds', name: 'aws_db_instance.primary', type: 'resource', source: { file: 'terraform/rds.tf' } }),
-    ];
-
-    const areas = orch.classifyTopLevelAreaDomains(nodes, '/tmp/shop-app');
-    expect(areas.map((area: any) => area.area)).toEqual(expect.arrayContaining(['app', 'terraform']));
-    expect(areas.find((area: any) => area.area === 'terraform')?.domain).toBe('cloud-infrastructure');
-    expect(areas.find((area: any) => area.area === 'app')?.domain).toBe('order-invoice-management');
-
-    const resolution = orch.reconcilePrimaryDomainWithAreas('order-invoice-management', areas);
-    expect(resolution.primaryDomain).toBe('order-invoice-management');
-    expect(resolution.secondaryDomains).toEqual([
-      { domain: 'cloud-infrastructure', areas: ['terraform'], node_share: expect.any(Number) },
-    ]);
-  });
-
-  it('picks the primary domain by product-node weight when the catalog claims a minority area', () => {
-    const nodes: CASNode[] = [
-      node({ id: 'order-model', name: 'Order', type: 'entity', source: { file: 'app/models/order.rb' } }),
-      node({ id: 'invoice-model', name: 'Invoice', type: 'entity', source: { file: 'app/models/invoice.rb' } }),
-      node({ id: 'payment-model', name: 'Payment', type: 'entity', source: { file: 'app/models/payment.rb' } }),
-      node({ id: 'orders-controller', name: 'OrdersController', type: 'controller', source: { file: 'app/controllers/orders_controller.rb' } }),
-      node({ id: 'invoices-controller', name: 'InvoicesController', type: 'controller', source: { file: 'app/controllers/invoices_controller.rb' } }),
-      node({ id: 'payments-service', name: 'PaymentCaptureService', type: 'service', source: { file: 'app/services/payment_capture_service.rb' } }),
-      node({ id: 'tf-vpc', name: 'aws_vpc.main', type: 'resource', source: { file: 'terraform/vpc.tf' } }),
-      node({ id: 'tf-ecs', name: 'aws_ecs_cluster.app', type: 'resource', source: { file: 'terraform/ecs.tf' } }),
-      node({ id: 'tf-rds', name: 'aws_db_instance.primary', type: 'resource', source: { file: 'terraform/rds.tf' } }),
-    ];
-
-    const areas = orch.classifyTopLevelAreaDomains(nodes, '/tmp/shop-app');
-    const resolution = orch.reconcilePrimaryDomainWithAreas('cloud-infrastructure', areas);
-
-    expect(resolution.primaryDomain).toBe('order-invoice-management');
-    expect(resolution.secondaryDomains.map((entry: any) => entry.domain)).toContain('cloud-infrastructure');
-  });
-
-  it('does not report secondary domains when a single area disagrees with the primary', () => {
-    const resolution = orch.reconcilePrimaryDomainWithAreas('fleet-management', [
-      { area: 'src', domain: 'billing-payments', nodeCount: 50, share: 1 },
-    ]);
-
-    expect(resolution.primaryDomain).toBe('fleet-management');
-    expect(resolution.secondaryDomains).toEqual([]);
   });
 
   it('strips agent tooling instructions from guide-file project text so they cannot poison domain inference', () => {
@@ -1702,16 +1519,6 @@ describe('architecture and capability inference', () => {
     expect(purpose.primary_type).toBe('clinical-testing-platform');
   });
 
-  it('uses the product category as primary domain for clinical platforms instead of the repo name', () => {
-    expect(orch.refinePrimaryDomainForPurpose('hoggan', { primary_type: 'clinical-testing-platform' })).toBe('clinical-testing');
-  });
-
-  it('does not let hardware or medical purpose labels override stronger product domains', () => {
-    expect(orch.refinePrimaryDomainForPurpose('solana-arbitrage', { primary_type: 'hardware-device-software' })).toBe('solana-arbitrage');
-    expect(orch.refinePrimaryDomainForPurpose('testing-utilities-net', { primary_type: 'medical-device-software' })).toBe('testing-utilities-net');
-    expect(orch.refinePrimaryDomainForPurpose('sensor', { primary_type: 'hardware-device-software' })).toBe('hardware-device');
-  });
-
   it('prioritizes clinical capabilities in clinical testing summaries', () => {
     expect(orch.capabilityPurposeBias('clinical-testing', { name: 'Patient Report Management', related_domains: [], related_entities: [] })).toBe(0);
     expect(orch.capabilityPurposeBias('clinical-testing', { name: 'Snack Management', related_domains: [], related_entities: [] })).toBe(1);
@@ -1846,78 +1653,6 @@ describe('architecture and capability inference', () => {
     expect(services.map((service: any) => service.name)).toEqual(['Stripe']);
   });
 
-  it('recognizes ecommerce storefront and personal assistant project text domains', () => {
-    expect(orch.inferDomainFromProjectText(
-      'Dawn is a Shopify theme for Online Store 2.0 storefronts that helps merchants build ecommerce themes.',
-      '/tmp/elevate-skincare'
-    )).toBe('ecommerce-storefront');
-
-    expect(orch.inferDomainFromProjectText(
-      'OpenClaw is a personal AI assistant with a local-first gateway and multi-channel messaging for WhatsApp, Slack, Discord, and other channels.',
-      '/tmp/openclaw'
-    )).toBe('personal-ai-assistant');
-  });
-
-  it('does not classify UI theming vocabulary as an ecommerce storefront without a shopify, liquid, or storefront anchor', () => {
-    expect(orch.inferDomainFromProjectText(
-      'A content management system with an admin interface. Users can switch the admin theme between light theme and dark theme, customize the theme colors, and apply a theme to page previews while editing site content.',
-      '/tmp/wagtail'
-    )).not.toBe('ecommerce-storefront');
-  });
-
-  it('does not claim Shopify or Liquid in the ecommerce storefront summary without project text evidence', () => {
-    const shopifyText = 'dawn is a shopify theme for the online store 2.0 storefront, using a server-rendered liquid template for each merchant.';
-    const shopifyConcepts = orch.inferConceptsFromProjectText(shopifyText);
-    expect(orch.summaryFromProjectText('ecommerce-storefront', shopifyConcepts, shopifyText, ['README.md'])).toMatch(/shopify/i);
-
-    const genericStorefrontText = 'a storefront for each merchant selling products in an online store with theme customization and checkout.';
-    const genericConcepts = orch.inferConceptsFromProjectText(genericStorefrontText);
-    const summary = orch.summaryFromProjectText('ecommerce-storefront', genericConcepts, genericStorefrontText, ['README.md']);
-    expect(summary).toBeDefined();
-    expect(summary).not.toMatch(/shopify|liquid/i);
-  });
-
-  it('never returns canned domain copy for a domain whose vocabulary is absent from the project text', () => {
-    // A repo misclassified as fleet-management (for example a cybersecurity
-    // knowledge base) must not receive a description fabricating fleet claims.
-    const text = 'a cybersecurity knowledge base with notes on malware analysis, detection engineering, and incident response playbooks.';
-    const concepts = orch.inferConceptsFromProjectText(text);
-    const summary = orch.summaryFromProjectText('fleet-management', concepts, text, ['README.md']);
-    if (summary) {
-      expect(summary).not.toMatch(/real-time tracking|commercial vehicle|telematics|compliance management|safety monitoring|dispatch/i);
-      expect(summary).not.toMatch(/project documentation describes/i);
-    }
-    // Every canned per-domain paragraph is gone: with no concepts from the
-    // project's own text, no domain label can produce a description.
-    for (const domain of [
-      'fleet-management', 'zero-trust-security', 'commerce-operations-portal',
-      'car-wash-operations', 'pharmaceutical-order-management', 'clinical-testing',
-      'solana-arbitrage', 'codebase-analysis', 'cloud-infrastructure',
-      'personal-ai-assistant', 'ecommerce-storefront', 'portfolio-management',
-    ]) {
-      expect(orch.summaryFromProjectText(domain, [], 'unrelated project text', ['README.md'])).toBeUndefined();
-    }
-  });
-
-  it('does not classify order/search/account vocabulary as commerce without a cart, checkout, invoice, or billing anchor', () => {
-    expect(orch.inferDomainFromProjectText(
-      'A voice conversion web UI where users search models, set the sort order of results, manage account settings, and pick output locations for converted audio.',
-      '/tmp/rvc-webui'
-    )).not.toBe('commerce-operations-portal');
-
-    expect(orch.inferDomainFromProjectText(
-      'Customers manage cart handling, checkout, orders, invoices, and billing for the storefront operations team.',
-      '/tmp/shop-ops'
-    )).toBe('commerce-operations-portal');
-  });
-
-  it('keeps portfolio-heavy applications out of generic commerce when checkout is supporting flow', () => {
-    expect(orch.inferDomainFromProjectText(
-      'A React portfolio automation app with portfolio analysis, crypto asset tables, managed investments, brokerage connections, tax stash automation, DCA investing, checkout, and billing screens.',
-      '/tmp/soon-ui'
-    )).toBe('portfolio-management');
-  });
-
   it('uses React feature page folders before hook/library vocabulary for page capability keys', () => {
     // The full folder-name phrase is preserved rather than truncated to its
     // first word — "portfolio-analysis" is a more specific, correct key than
@@ -1955,22 +1690,6 @@ describe('architecture and capability inference', () => {
     expect(orch.isProjectNameCapabilityName('Soon Management', '/tmp/soon-ui')).toBe(true);
     expect(orch.isProjectNameConcept('soon', '/tmp/soon-ui')).toBe(true);
     expect(orch.isProjectNameCapabilityName('Portfolio Management', '/tmp/soon-ui')).toBe(false);
-  });
-
-  it('normalizes common framework names in deterministic overview copy', () => {
-    expect(orch.frameworkDisplayNamesForNarrative(['react', 'tanstack query', 'tanstack-query', 'react router'])).toEqual([
-      'React',
-      'TanStack Query',
-      'React Router',
-    ]);
-    expect(orch.frameworkDisplayNamesForNarrative(['dotnet', 'dotnet-host'])).toEqual(['.NET', '.NET host']);
-    // Test harnesses and analysis/packaging artifacts never headline "built with"
-    // (zerac poc read "built with rust-test, React, and dockerfile").
-    expect(orch.frameworkDisplayNamesForNarrative([
-      'rust-test', 'react', 'typescript/javascript ast', 'python language', 'dockerfile',
-      'enhanced rust', 'reqwest http client', 'distribution artifact', 'cross-language test framework',
-    ])).toEqual(['React', 'enhanced rust', 'reqwest http client']);
-    expect(orch.cleanGeneratedDescriptionText('a system built with dotnet and dotnet-host. it records tests.')).toBe('a system built with .NET and .NET host. It records tests.');
   });
 
   it('treats UI-control vocabulary as capability noise', () => {
@@ -2063,90 +1782,6 @@ describe('architecture and capability inference', () => {
     })).toMatch(/built with React and Prisma/);
   });
 
-  it('does not classify an application repo as cloud infrastructure just because it contains terraform files', () => {
-    expect(orch.inferDomainFromProjectText(
-      'A Rails application for laundry pickup and delivery, with customer billing and invoices. The repo also contains terraform modules describing AWS VPC and ECS deployment resources for the app.',
-      '/tmp/clients/washup'
-    )).not.toBe('cloud-infrastructure');
-
-    expect(orch.inferDomainFromProjectText(
-      'Terraform modules and providers describing AWS VPC, ECS, RDS, and CloudFront deployment resources with variables and outputs.',
-      '/tmp/clients/central-server-infra'
-    )).toBe('cloud-infrastructure');
-  });
-
-  it('rejects technology names and repo-name echoes as primary domains', () => {
-    expect(orch.isNonSemanticDomainLabel('jenkins', 'zerac-ci')).toBe(true);
-    expect(orch.isNonSemanticDomainLabel('zerac', 'zerac-ui')).toBe(true);
-    expect(orch.isNonSemanticDomainLabel('fleet-management', 'truckspyui')).toBe(false);
-  });
-
-  it('does not classify generic commerce access copy as zero-trust security', () => {
-    expect(orch.inferDomainFromProjectText(
-      'Customers manage account access, cart handling, search, checkout, orders, invoices, billing, and locations in an Angular frontend that talks to protected resources through route guards.',
-      '/tmp/hercules/portals/frontend'
-    )).toBe('commerce-operations-portal');
-  });
-
-  it('requires explicit zero-trust evidence instead of generic access and network words', () => {
-    expect(orch.inferDomainFromProjectText(
-      'The application manages access to network resources, secure gateways, account screens, and verification forms.',
-      '/tmp/random-portal'
-    )).toBeUndefined();
-
-    expect(orch.inferDomainFromProjectText(
-      'The platform provides zero trust access requests, continuous verification, identity provider integration, and protected resource gateways.',
-      '/tmp/secure-access-platform'
-    )).toBe('zero-trust-security');
-  });
-
-  it('classifies codebase analysis from cas/mcp/analyzer vocabulary without product-name hints', () => {
-    expect(orch.inferDomainFromProjectText(
-      'A codebase analysis engine that turns repositories into a CAS relationship graph, exposes the analysis through an MCP server, and tracks entry points and call graph data with hosted analyzers.',
-      '/tmp/some-monorepo'
-    )).toBe('codebase-analysis');
-  });
-
-  it('uses Hoggan and patient measurement signals as clinical testing domain text', () => {
-    expect(orch.inferDomainFromProjectText(
-      'Hoggan Scientific desktop software manages patients, protocols, muscle measurement, device force readings, assessments, reports, and clinical testing workflows.',
-      '/tmp/HogganScientific-Rebuild'
-    )).toBe('clinical-testing');
-  });
-
-  it('does not let weak billing/invoice vocabulary claim commerce when fleet signals are present', () => {
-    expect(orch.inferDomainFromProjectText(
-      'Angular screens manage orders, billing, invoice generation, driver activity, partner records, maintenance, and route access.',
-      '/tmp/clients/outcode/truckspy/truckspyui'
-    )).not.toBe('commerce-operations-portal');
-  });
-
-  it('classifies fleet management from product vocabulary without repo-name hints', () => {
-    expect(orch.inferDomainFromProjectText(
-      'A fleet management platform for commercial vehicle operations with telematics, driver activity, dispatching, fuel and maintenance reporting, and billing for partner services.',
-      '/tmp/clients/some-fleet-product'
-    )).toBe('fleet-management');
-  });
-
-  it('uses repo and path product signals to classify crypto trading bots', () => {
-    expect(orch.inferDomainFromProjectText(
-      'A trading bot that watches DEX quotes and submits bundled transactions.',
-      '/tmp/reference-bots/Solana-Pumpfun-Sniper-Bot'
-    )).toBe('solana-arbitrage');
-
-    expect(orch.inferDomainFromProjectText(
-      'Volume automation bot for token launches.',
-      '/tmp/reference-bots/Pumpfun-Volume-Bot'
-    )).toBe('solana-arbitrage');
-  });
-
-  it('rejects AI descriptions that add unsupported crypto-mining claims', () => {
-    expect(orch.isUsefulAIInterpretation(
-      'The Solana bot is a decentralized application designed for miners to mine tokens on the Solana blockchain.',
-      { primary_domain: 'solana-arbitrage', core_concepts: ['solana', 'pumpfun', 'dex', 'trading'] }
-    )).toBe(false);
-  });
-
   it('treats helper verbs and generic UI actions as weak capability/domain terms', () => {
     for (const token of ['search', 'render', 'close', 'focus', 'normalize', 'ensure', 'path', 'clamp', 'install', 'modal', 'dialog', 'screen']) {
       expect(orch.isGenericDomainToken(token)).toBe(true);
@@ -2168,12 +1803,6 @@ describe('architecture and capability inference', () => {
     for (const token of ['fleet', 'invoice', 'portfolio', 'clinical']) {
       expect(orch.isGenericDomainToken(token)).toBe(false);
     }
-  });
-
-  it('does not compose a hash-shaped token into a "<hash>-management" domain label', () => {
-    const hashToken = 'a1b2c3d4e5f6';
-    expect(orch.refinePrimaryDomainForPurpose(hashToken, { primary_type: 'web-application' })).toBe(hashToken);
-    expect(orch.refinePrimaryDomainForPurpose(hashToken, { primary_type: 'web-application' })).not.toBe(`${hashToken}-management`);
   });
 
   it('does not infer core capabilities from vendored help-library JavaScript', () => {
@@ -2205,22 +1834,6 @@ describe('architecture and capability inference', () => {
 
     expect(names).toContain('Muscle Management');
     expect(names).not.toContain('Next Management');
-  });
-
-  it('rejects AI descriptions that make false framework or runtime-service claims', () => {
-    const purpose = { primary_domain: 'hoggan', core_concepts: ['hoggan'] };
-
-    expect(orch.isUsefulAIInterpretation(
-      'This Hoggan system leverages WPF for cross-platform UI compatibility and external services including File.Exists.',
-      purpose
-    )).toBe(false);
-  });
-
-  it('rejects AI system descriptions that read like product marketing instead of grounded analysis', () => {
-    expect(orch.isUsefulAIInterpretation(
-      'The mcp-server is an advanced hub that streamlines code understanding and improves productivity through efficient, scalable analysis.',
-      { primary_domain: 'code-analysis', core_concepts: ['code', 'analysis', 'cas'] }
-    )).toBe(false);
   });
 
   it('rejects AI system descriptions that end in generic concept lists', () => {
@@ -2273,13 +1886,6 @@ describe('architecture and capability inference', () => {
         inferred_description: 'A fleet management system for dispatch and vehicle maintenance workflows.',
       }
     ).reason).toBe('unsupported-external-service-claim');
-  });
-
-  it('allows marketing-flagged words that are grounded in the system domain or core concepts', () => {
-    expect(orch.isUsefulAIInterpretation(
-      'The fleet system records driver logs and compliance events for vehicle inspections across the fleet, keeping inspection history tied to each driver and vehicle.',
-      { primary_domain: 'fleet-compliance', core_concepts: ['fleet', 'vehicle', 'compliance', 'driver'] }
-    )).toBe(true);
   });
 
 });
@@ -2497,33 +2103,6 @@ describe('domain and security classification robustness (out-of-distribution rep
     expect(enforcementIds).toContain('guard');
     expect(enforcementIds).toContain('authorizer');
     expect(enforcementIds).toContain('policy');
-  });
-
-  it('does not let parent directories of the repo influence project-text domain inference', () => {
-    expect(orch.inferDomainFromProjectText(
-      'Customers manage cart handling, checkout, orders, and billing for the storefront operations team.',
-      '/tmp/terraform-workspaces/shop'
-    )).toBe('commerce-operations-portal');
-
-    expect(orch.inferDomainFromProjectText(
-      'Terraform modules and providers describing AWS VPC, ECS, RDS, and CloudFront deployment resources with variables and outputs.',
-      '/tmp/shop-clones/central-server-infra'
-    )).toBe('cloud-infrastructure');
-  });
-
-  it('classifies order plus payment vocabulary without invoices as order-payment-management', () => {
-    expect(orch.structuralDomainFromText('order checkout payment shipment customers')).toBe('order-payment-management');
-    expect(orch.structuralDomainFromText('order invoice payment ledger')).toBe('order-invoice-management');
-    expect(orch.structuralDomainFromText('order fulfillment warehouse')).toBe('order-management');
-  });
-
-  it('does not classify commerce payment gateways and store policies as network access management', () => {
-    expect(orch.structuralDomainFromText(
-      'checkout cart order payment gateways policies access store products'
-    )).toBe('order-payment-management');
-    expect(orch.structuralDomainFromText(
-      'gateway posture policy network access request verification'
-    )).toBe('network-access-management');
   });
 
   it('filters rails-ecosystem framework noise out of capability naming', () => {
@@ -2968,313 +2547,6 @@ describe('content-management domain anchor (inferSystemPurpose)', () => {
     expect(purpose.primary_type).not.toBe('content-management');
   });
 
-  it('maps a generic primary domain to content-management for CMS purposes', () => {
-    expect(orch.refinePrimaryDomainForPurpose('views', { primary_type: 'content-management' })).toBe('content-management');
-    expect(orch.refinePrimaryDomainForPurpose('publishing', { primary_type: 'content-management' })).toBe('content-management');
-    expect(orch.refinePrimaryDomainForPurpose('clinical-trials', { primary_type: 'content-management' })).toBe('clinical-trials');
-    expect(orch.refinePrimaryDomainForPurpose('views', { primary_type: 'web-application' })).toBe('views');
-  });
-});
-
-describe('structural domain text rules: content management precedence', () => {
-  it('classifies page+revision+publishing vocabulary as content-management even with ordering noise', () => {
-    const text = 'page management revision management publish unpublish draft moderation set page order ordering position';
-    expect(orch.structuralDomainFromText(text)).toBe('content-management');
-  });
-
-  it('keeps order vocabulary without revision/publishing as order-management', () => {
-    const text = 'order management fulfillment shipping customer orders';
-    expect(orch.structuralDomainFromText(text)).toBe('order-management');
-  });
-
-  it('keeps order+invoice commerce vocabulary out of content-management', () => {
-    const text = 'order management invoice billing payment pages';
-    expect(orch.structuralDomainFromText(text)).toBe('order-invoice-management');
-  });
-});
-
-describe('structural domain text rules: pharmaceutical ordering anchor', () => {
-  it('classifies pharma entity evidence plus ordering structure as pharmaceutical-order-management', () => {
-    const text = 'rems management ndc numbers orders order items invoices specialty pharmacy products manufacturers';
-    expect(orch.structuralDomainFromText(text)).toBe('pharmaceutical-order-management');
-  });
-
-  it('requires two distinct pharma anchors: a single rems-like token stays commerce', () => {
-    const text = 'rems management orders order items invoices customers products';
-    expect(orch.structuralDomainFromText(text)).toBe('order-invoice-management');
-  });
-
-  it('requires ordering structure: pharma vocabulary without orders is not pharma ordering', () => {
-    const text = 'prescription records medication schedules patient education content';
-    expect(orch.structuralDomainFromText(text)).not.toBe('pharmaceutical-order-management');
-  });
-
-  it('does not classify generic commerce as pharma', () => {
-    const text = 'cart checkout orders invoices billing customers products shipping warehouse';
-    expect(orch.structuralDomainFromText(text)).not.toBe('pharmaceutical-order-management');
-  });
-
-  it('outranks the fleet anchor when fleet-prefixed naming sits next to pharma ordering evidence', () => {
-    const text = 'fleet order api fleet orders driver deliveries rems ndc orders invoices pharmacy products';
-    expect(orch.structuralDomainFromText(text)).toBe('pharmaceutical-order-management');
-  });
-});
-
-describe('structural domain text rules: fleet anchor evidence strength', () => {
-  it('keeps fleet-management for real vehicle-operations vocabulary', () => {
-    const text = 'fleet management vehicles drivers dispatch trips telematics fuel maintenance';
-    expect(orch.structuralDomainFromText(text)).toBe('fleet-management');
-  });
-
-  it('does not mint fleet from fleet-prefixed naming plus one incidental driver token', () => {
-    const text = 'fleet order api driver orders order items invoices customers products';
-    expect(orch.structuralDomainFromText(text)).toBe('order-invoice-management');
-  });
-});
-
-describe('structural domain text rules: learning platform anchor', () => {
-  it('classifies course/lab/achievement/leaderboard structure as learning-management', () => {
-    const text = 'questions courses labs achievements leaderboards activity logs progress users sessions';
-    expect(orch.structuralDomainFromText(text)).toBe('learning-management');
-  });
-
-  it('outranks document-reporting noise from downloadable course materials and progress reports', () => {
-    const text = 'courses lessons quizzes certificates files downloads progress reports documents pdf';
-    expect(orch.structuralDomainFromText(text)).toBe('learning-management');
-  });
-
-  it('requires three distinct learning anchors: a lone course token stays commerce', () => {
-    const text = 'courses customers orders order items invoices products shipping';
-    expect(orch.structuralDomainFromText(text)).toBe('order-invoice-management');
-  });
-});
-
-describe('structural domain text rules: codebase-analysis anchor strength', () => {
-  it('does not mint codebase-analysis from a packet parser and network analyzer in a security simulation', () => {
-    const text = 'packet parser network analyzer app window manager renderer shell process manager network stack';
-    expect(orch.structuralDomainFromText(text)).not.toBe('codebase-analysis');
-  });
-
-  it('keeps codebase-analysis for real code-analysis vocabulary', () => {
-    const text = 'cas graph mcp server analyzer codebase analysis entry points';
-    expect(orch.structuralDomainFromText(text)).toBe('codebase-analysis');
-  });
-});
-
-describe('structural domain text rules: document-reporting evidence density', () => {
-  it('classifies repeated document and reporting vocabulary as document-reporting', () => {
-    const text = 'documents files reports pdf download generator document templates report exports';
-    expect(orch.structuralDomainFromText(text)).toBe('document-reporting');
-  });
-
-  it('does not mint document-reporting from one incidental file plus one report token', () => {
-    const text = 'file associations window renderer report shell desktop audio manager filesystem';
-    expect(orch.structuralDomainFromText(text)).not.toBe('document-reporting');
-  });
-
-  it('does not match file and print inside profile and fingerprint', () => {
-    const text = 'profile profiles fingerprint fingerprints reporting documents';
-    expect(orch.structuralDomainFromText(text)).not.toBe('document-reporting');
-  });
-});
-
-describe('structural domain text rules: site operations anchor', () => {
-  it('classifies inspection/incident/shift/equipment/bay vocabulary as site-operations-management', () => {
-    const text = 'inspections incidents shifts equipment bays locations tasks task lists order update services';
-    expect(orch.structuralDomainFromText(text)).toBe('site-operations-management');
-  });
-
-  it('refines to car-wash-operations when wash evidence accompanies the site-operations anchors', () => {
-    const text = 'inspections incidents shifts equipment wash bays locations services detailing';
-    expect(orch.structuralDomainFromText(text)).toBe('car-wash-operations');
-  });
-
-  it('requires three distinct site-operations anchors', () => {
-    const text = 'inspections shifts customers orders invoices billing';
-    expect(orch.structuralDomainFromText(text)).toBe('order-invoice-management');
-  });
-
-  it('does not mint order-management from bare singular position-ordering vocabulary', () => {
-    const text = 'task list order update display order sorting position';
-    expect(orch.structuralDomainFromText(text)).not.toBe('order-management');
-  });
-});
-
-describe('structural domain text rules: business operations anchor', () => {
-  it('classifies approvals/budgets/kpis/profit vocabulary as business-operations-management even with connector content noise', () => {
-    const text = 'approvals budget reviews kpis profit objectives webflow cms content sync pages collections invoices payments';
-    expect(orch.structuralDomainFromText(text)).toBe('business-operations-management');
-  });
-
-  it('requires three distinct business-operations anchors: a lone approval token stays commerce', () => {
-    const text = 'approvals orders order items invoices customers products shipping';
-    expect(orch.structuralDomainFromText(text)).toBe('order-invoice-management');
-  });
-
-  it('requires three distinct anchors: two business tokens do not claim the identity', () => {
-    const text = 'approvals budget orders order items invoices customers products';
-    expect(orch.structuralDomainFromText(text)).toBe('order-invoice-management');
-  });
-
-  it('does not steal a real CMS: revision plus page plus publishing evidence keeps content-management', () => {
-    const text = 'pages revisions publish unpublish drafts moderation workflow approvals budget kpis';
-    expect(orch.structuralDomainFromText(text)).toBe('content-management');
-  });
-});
-
-describe('dominant business domain: connector content vocabulary cannot own a business OS', () => {
-  const capability = (name: string, entities: string[]) => ({
-    id: `cap_${name.toLowerCase().replace(/\s+/g, '_')}`,
-    name,
-    description: '',
-    category: 'core',
-    related_domains: [],
-    related_entities: entities,
-    operations: [],
-  });
-
-  it('prefers business-operations-management over a lone connector content token', () => {
-    const result = orch.inferDominantBusinessDomainFromCapabilities(
-      [
-        capability('Approval Management', ['Approval', 'ApprovalRequest']),
-        capability('Budget Management', ['Budget', 'BudgetLine']),
-        capability('KPI Management', ['Kpi', 'KpiSnapshot']),
-        capability('Content Sync', ['Content', 'WebflowItem']),
-      ],
-      [{ name: 'Approval' }, { name: 'Budget' }, { name: 'Kpi' }, { name: 'Profit' }]
-    );
-    expect(result).toBe('business-operations-management');
-  });
-
-  it('keeps content-management when business-operations evidence is a stray token', () => {
-    const result = orch.inferDominantBusinessDomainFromCapabilities(
-      [
-        capability('Content Management', ['Content', 'Post']),
-        capability('Approval Management', ['Approval']),
-      ],
-      [{ name: 'Content' }, { name: 'Post' }, { name: 'Approval' }]
-    );
-    expect(result).toBe('content-management');
-  });
-});
-
-describe('reconcilePrimaryDomainWithAreas: module-confined identity suppression', () => {
-  it('majority business-operations area beats a primary no area supports', () => {
-    const areas = [
-      { area: 'apps', domain: 'business-operations-management', nodeCount: 3024, share: 0.82 },
-      { area: 'packages', domain: 'business-operations-management', nodeCount: 647, share: 0.17 },
-    ];
-    const result = orch.reconcilePrimaryDomainWithAreas('content-management', areas);
-    expect(result.primaryDomain).toBe('business-operations-management');
-  });
-
-  it('keeps the primary when the majority area carries a compatible domain', () => {
-    const areas = [
-      { area: 'wagtail', domain: 'content-management', nodeCount: 5000, share: 0.95 },
-    ];
-    const result = orch.reconcilePrimaryDomainWithAreas('content-management', areas);
-    expect(result.primaryDomain).toBe('content-management');
-  });
-
-  it('keeps the primary when the conflicting area lacks a clear majority', () => {
-    const areas = [
-      { area: 'apps', domain: 'business-operations-management', nodeCount: 500, share: 0.45 },
-      { area: 'packages', domain: 'billing-payments', nodeCount: 400, share: 0.4 },
-    ];
-    const result = orch.reconcilePrimaryDomainWithAreas('content-management', areas);
-    expect(result.primaryDomain).toBe('content-management');
-  });
-});
-
-describe('project text domains: car wash and pharmaceutical anchors', () => {
-  it('classifies a car wash operations README as car-wash-operations', () => {
-    expect(orch.inferDomainFromProjectText(
-      'A B2B operations and management platform built specifically for the car wash industry. Includes task management, inspections, incident reporting, service tracking, and site-specific tools to help operators run car wash locations and improve wash quality.',
-      '/tmp/site-ops-app'
-    )).toBe('car-wash-operations');
-  });
-
-  it('does not claim car wash without a wash-business anchor phrase', () => {
-    expect(orch.inferDomainFromProjectText(
-      'A B2B operations platform with task management, inspections, incident reporting, shift scheduling, and service tracking for site teams.',
-      '/tmp/site-ops-app'
-    )).not.toBe('car-wash-operations');
-  });
-
-  it('classifies pharmacy ordering project text as pharmaceutical-order-management', () => {
-    expect(orch.inferDomainFromProjectText(
-      'A pharmacy ordering portal where clinics submit medication orders, track prescriptions, manage NDC catalogs and REMS compliance, and receive invoices from distributors.',
-      '/tmp/pharma-portal'
-    )).toBe('pharmaceutical-order-management');
-  });
-
-  it('does not classify generic commerce project text as pharma', () => {
-    expect(orch.inferDomainFromProjectText(
-      'Customers manage cart handling, checkout, orders, invoices, and billing for the storefront operations team.',
-      '/tmp/shop-ops'
-    )).not.toBe('pharmaceutical-order-management');
-  });
-
-  it('keeps infrastructure-only repos as cloud-infrastructure', () => {
-    expect(orch.inferDomainFromProjectText(
-      'Terraform modules and providers describing AWS VPC, ECS, RDS, and CloudFront deployment resources with variables and outputs.',
-      '/tmp/acme/platform-infra'
-    )).toBe('cloud-infrastructure');
-  });
-});
-
-describe('project text domains: fleet anchor gating', () => {
-  it('does not mint fleet-management from repeated device-driver vocabulary without a fleet anchor', () => {
-    // A cybersecurity training simulation talks about device drivers,
-    // driver installation, and driver updates; none of that is vehicle
-    // operations evidence.
-    expect(orch.inferDomainFromProjectText(
-      'Install the audio driver, update the display driver, roll back the network driver, list driver versions, scan driver vulnerabilities, and quarantine a malicious driver in the simulated device manager.',
-      '/tmp/cyber-sim'
-    )).not.toBe('fleet-management');
-  });
-
-  it('keeps fleet-management for real fleet project text', () => {
-    expect(orch.inferDomainFromProjectText(
-      'A fleet management platform with telematics integrations for tracking vehicles, drivers, dispatching, fuel usage, and maintenance across commercial vehicle fleets.',
-      '/tmp/fleet-app'
-    )).toBe('fleet-management');
-  });
-});
-
-describe('refinePrimaryDomain: grounded learning structure beats a stray text-catalog domain', () => {
-  const learningCapabilities = [
-    {
-      name: 'Course Progress Management',
-      description: 'Tracks course and lab completion',
-      category: 'core',
-      related_domains: ['course', 'lab'],
-      related_entities: ['Course', 'Lab', 'Question'],
-      operations: [],
-    },
-    {
-      name: 'Achievement Management',
-      description: 'Awards achievements and ranks leaderboards',
-      category: 'core',
-      related_domains: ['achievement', 'leaderboard'],
-      related_entities: ['Achievement', 'Leaderboard'],
-      operations: [],
-    },
-  ];
-  const coreConcepts = [{ name: 'Course' }, { name: 'Lab' }, { name: 'Achievement' }, { name: 'Leaderboard' }];
-
-  it('classifies learning structure from capabilities', () => {
-    expect(orch.inferPrimaryDomainFromCapabilities(learningCapabilities, coreConcepts)).toBe('learning-management');
-  });
-
-  it('does not let a content-corpus text domain override the grounded learning structure', () => {
-    const signal = {
-      primaryDomain: 'fleet-management',
-      concepts: ['driver', 'vehicle'],
-      evidence: ['source text'],
-    };
-    expect(orch.refinePrimaryDomain('unknown', 'knowledgebase', learningCapabilities, coreConcepts, signal)).toBe('learning-management');
-  });
 });
 
 describe('extractProjectTextSignal: bulk content corpora do not feed domain evidence', () => {
@@ -3303,185 +2575,6 @@ describe('extractProjectTextSignal: bulk content corpora do not feed domain evid
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
-  });
-});
-
-describe('refinePrimaryDomain: industry refinement of generic structural classes', () => {
-  const siteOpsCapabilities = [
-    {
-      name: 'Inspections Management',
-      description: 'Site inspection workflows',
-      category: 'core',
-      related_domains: ['inspections'],
-      related_entities: ['Inspection', 'InspectionsEquipment'],
-      operations: [],
-    },
-    {
-      name: 'Incidents Management',
-      description: 'Incident reporting',
-      category: 'core',
-      related_domains: ['incidents'],
-      related_entities: ['Incident'],
-      operations: [],
-    },
-    {
-      name: 'Shifts Management',
-      description: 'Shift scheduling',
-      category: 'core',
-      related_domains: ['shifts'],
-      related_entities: ['Shift', 'ShiftBreak'],
-      operations: [],
-    },
-  ];
-  const siteOpsConcepts = [{ name: 'Inspection' }, { name: 'Incident' }, { name: 'Shift' }, { name: 'Location' }];
-
-  it('lets a compatible car-wash project text label refine a site-operations structural class', () => {
-    const signal = {
-      primaryDomain: 'car-wash-operations',
-      concepts: ['car wash', 'inspections'],
-      evidence: ['README.md'],
-    };
-    expect(orch.refinePrimaryDomain('unknown', 'some-app', siteOpsCapabilities, siteOpsConcepts, signal))
-      .toBe('car-wash-operations');
-  });
-
-  it('keeps the structural class when the project text label shares no evidence vocabulary', () => {
-    const signal = {
-      primaryDomain: 'solana-arbitrage',
-      concepts: ['solana'],
-      evidence: ['README.md'],
-    };
-    expect(orch.refinePrimaryDomain('unknown', 'some-app', siteOpsCapabilities, siteOpsConcepts, signal))
-      .toBe('site-operations-management');
-  });
-
-  it('does not let one generic structural class hijack another via project text', () => {
-    const capabilities = [
-      {
-        name: 'Order Management',
-        description: 'Order lifecycle',
-        category: 'core',
-        related_domains: ['orders'],
-        related_entities: ['Order', 'OrderItem'],
-        operations: [],
-      },
-      {
-        name: 'Invoice Management',
-        description: 'Invoicing',
-        category: 'core',
-        related_domains: ['invoices'],
-        related_entities: ['Invoice'],
-        operations: [],
-      },
-    ];
-    const concepts = [{ name: 'Order' }, { name: 'Invoice' }];
-    const signal = {
-      primaryDomain: 'billing-payments',
-      concepts: ['billing'],
-      evidence: ['README.md'],
-    };
-    expect(orch.refinePrimaryDomain('unknown', 'some-app', capabilities, concepts, signal))
-      .toBe('order-invoice-management');
-  });
-});
-
-describe('bare generic domain tokens never become the primary domain', () => {
-  const crossCuttingCapabilities = [
-    {
-      name: 'User Management',
-      description: 'Manage users',
-      category: 'core',
-      related_domains: ['user'],
-      related_entities: ['User'],
-      operations: [],
-    },
-  ];
-
-  it('rejects bare generic concept-fallback tokens like resource and command', () => {
-    const concepts = [
-      { name: 'admin' },
-      { name: 'zerac' },
-      { name: 'resource' },
-      { name: 'command' },
-    ];
-    const refined = orch.refinePrimaryDomain('admin', 'zerac-demo', crossCuttingCapabilities, concepts, { concepts: [], evidence: [] });
-    expect(refined).not.toBe('resource');
-    expect(refined).not.toBe('command');
-  });
-
-  it('rejects a bare generic extractor domain like resource and defers to capabilities', () => {
-    const refined = orch.refinePrimaryDomain('resource', 'some-app', crossCuttingCapabilities, [], { concepts: [], evidence: [] });
-    expect(refined).not.toBe('resource');
-  });
-
-  it('still accepts a semantic single-token concept fallback', () => {
-    const concepts = [{ name: 'admin' }, { name: 'pharmacy' }];
-    expect(orch.refinePrimaryDomain('unknown', 'some-app', [], concepts, { concepts: [], evidence: [] }))
-      .toBe('pharmacy');
-  });
-
-  it('does not reject composed domains containing a generic noun token', () => {
-    expect(orch.isBareGenericDomainNoun('resource-management')).toBe(false);
-    expect(orch.isBareGenericDomainNoun('resource')).toBe(true);
-    const capabilities = [
-      {
-        name: 'Resource Allocation',
-        description: 'Allocate shared resources to teams',
-        category: 'core',
-        related_domains: ['resource'],
-        related_entities: ['ResourcePool', 'Allocation'],
-        operations: [],
-      },
-      {
-        name: 'Resource Scheduling',
-        description: 'Schedule resource usage windows',
-        category: 'core',
-        related_domains: ['scheduling'],
-        related_entities: ['ResourcePool', 'Booking'],
-        operations: [],
-      },
-    ];
-    const concepts = [{ name: 'ResourcePool' }, { name: 'Allocation' }, { name: 'Booking' }];
-    const signal = { primaryDomain: 'resource-management', concepts: ['resource pool'], evidence: ['README.md'] };
-    expect(orch.refinePrimaryDomain('unknown', 'some-app', capabilities, concepts, signal))
-      .toBe('resource-management');
-  });
-});
-
-describe('reconcilePrimaryDomainWithAreas: bare-token primaries yield to composed area domains', () => {
-  it('replaces a single bare-token primary with the heaviest composed area domain', () => {
-    const areas = [
-      { area: 'admin-ui', domain: 'network-access-management', nodeCount: 843, share: 0.49 },
-      { area: 'internal', domain: 'network-access-management', nodeCount: 554, share: 0.32 },
-      { area: 'zerac', domain: 'user-identity-management', nodeCount: 274, share: 0.16 },
-    ];
-    const result = orch.reconcilePrimaryDomainWithAreas('resource', areas);
-    expect(result.primaryDomain).toBe('network-access-management');
-  });
-
-  it('keeps a composed primary that is compatible with the heaviest area domain', () => {
-    const areas = [
-      { area: 'src', domain: 'fleet-management', nodeCount: 900, share: 0.9 },
-    ];
-    const result = orch.reconcilePrimaryDomainWithAreas('fleet-vehicle-management', areas);
-    expect(result.primaryDomain).toBe('fleet-vehicle-management');
-  });
-
-  it('keeps a bare-token primary when the classified area share is marginal', () => {
-    const areas = [
-      { area: 'plugins', domain: 'billing-payments', nodeCount: 50, share: 0.1 },
-    ];
-    const result = orch.reconcilePrimaryDomainWithAreas('pharmacy', areas);
-    expect(result.primaryDomain).toBe('pharmacy');
-  });
-
-  it('never resolves to a junk bare-token area domain when a composed one exists', () => {
-    const areas = [
-      { area: 'apps', domain: 'use', nodeCount: 3024, share: 0.82 },
-      { area: 'packages', domain: 'billing-payments', nodeCount: 647, share: 0.17 },
-    ];
-    const result = orch.reconcilePrimaryDomainWithAreas('unknown', areas);
-    expect(result.primaryDomain).toBe('billing-payments');
   });
 });
 

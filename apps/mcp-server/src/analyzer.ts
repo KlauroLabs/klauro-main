@@ -1167,6 +1167,12 @@ export async function analyzeProjectDeferred(projectPath: string, displayName?: 
     // waiting forever. There is NO deterministic comprehension substitute; the
     // Camp-B structure remains stored, comprehension fields stay unset.
     output.ai_enrichment = 'error';
+    // Capture the UNDERLYING reason so it's queryable via the API (surfaced
+    // onto layers_ready L5.error), not just in this container's stderr. This is
+    // the difference between "AI comprehension pass failed" (generic) and the
+    // real cause ("AI interpretation budget exceeded" / a provider 401/429 /
+    // a grounding-gate rejection) an operator needs to act on.
+    output.ai_enrichment_error = message;
     try {
       await withProjectAnalysisLock(projectPath, () => withLanePermit(async () => {
         await saveAnalysis(projectPath, output);
@@ -1306,9 +1312,16 @@ export async function analyzeProjectLayered(projectPath: string, displayName?: s
         });
       } else if (deferred.output.ai_enrichment === 'error') {
         // Visible terminal failure: L5 'error', not a silent stay-pending.
+        // Surface the UNDERLYING reason (captured on ai_enrichment_error by
+        // analyzeProjectDeferred's catch) so the real cause is queryable via
+        // the API, not just in container stderr; fall back to the generic
+        // message only if the detail wasn't captured.
+        const l5Detail = deferred.output.ai_enrichment_error
+          ? `AI comprehension pass failed (comprehension is AI-only, no deterministic fallback): ${deferred.output.ai_enrichment_error}`
+          : 'AI comprehension pass failed; comprehension is AI-only (no deterministic fallback)';
         deferred.output.layers_ready = buildLayersReady({
           ...baseLayers,
-          L5: { status: 'error', completedAt: new Date().toISOString(), error: 'AI comprehension pass failed; comprehension is AI-only (no deterministic fallback)' },
+          L5: { status: 'error', completedAt: new Date().toISOString(), error: l5Detail },
         });
       } else {
         // 'disabled'/'synchronous' or nothing to enrich — leave the manifest as

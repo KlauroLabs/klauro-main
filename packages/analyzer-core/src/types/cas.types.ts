@@ -207,6 +207,16 @@ export interface CASOutput {
   ai_enrichment?: 'pending' | 'ready' | 'disabled' | 'synchronous' | 'error';
 
   /**
+   * When ai_enrichment === 'error', the UNDERLYING failure reason from the AI
+   * comprehension pass (the model call / grounding gate exception message,
+   * e.g. "AI interpretation budget exceeded", a provider 401/429, or a
+   * grounding-gate rejection). Populated so the real cause is queryable via the
+   * API (surfaced onto layers_ready L5.error) instead of only living in the
+   * analyzer container's stderr. Absent unless ai_enrichment === 'error'.
+   */
+  ai_enrichment_error?: string;
+
+  /**
    * Progressive-layering manifest (see analyzer/core/layered-analysis.ts /
    * apps/mcp-server/src/layered-analysis.ts). Absent on legacy/older stores and
    * on the plain synchronous analyzeProject() path, where the full CAS lands

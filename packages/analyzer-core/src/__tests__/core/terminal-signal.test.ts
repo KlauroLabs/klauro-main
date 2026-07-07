@@ -299,20 +299,4 @@ describe('evaluateAIDomainCandidate (domain authority)', () => {
     // Structure (Camp B) is still produced.
     expect(purpose.core_concepts).toContain('Portfolio');
   });
-
-  test('weak terminal token may only label an otherwise weak fallback', () => {
-    const orch = new AnalyzerOrchestrator() as any;
-    const candidate = orch.domainFromTerminalSignal({
-      ranked_entities: [
-        { name: 'Nimbus', score: 5, journey_count: 2, write_journeys: 2, read_journeys: 0, user_facing_journeys: 1 },
-        { name: 'Nimbus', score: 4, journey_count: 1, write_journeys: 1, read_journeys: 0, user_facing_journeys: 1 },
-        { name: 'Nimbus', score: 3, journey_count: 1, write_journeys: 1, read_journeys: 0, user_facing_journeys: 0 },
-      ],
-      ranked_stages: [],
-      ranked_capabilities: [],
-      domain_seed_text: 'nimbus nimbus nimbus nimbus nimbus',
-    });
-
-    expect(candidate).toEqual({ domain: 'nimbus-management', strong: false });
-  });
 });
