@@ -290,6 +290,10 @@ interface ProjectTextSignal {
   concepts: string[];
   summary?: string;
   evidence: string[];
+  // Raw, verbatim manifest self-description (e.g. package.json "description").
+  // A real human-authored evidence STRING, NOT a keyword-classified summary —
+  // surfaced to the comprehension prompt as authoritative product framing.
+  manifestDescription?: string;
 }
 
 type DescriptionTargetKind = 'capability' | 'entity';
@@ -8737,7 +8741,9 @@ export class AnalyzerOrchestrator {
       domainConcepts,
       systemCapabilities,
       libraryNames,
-      projectTextSignal
+      projectTextSignal,
+      dataEntities,
+      projectTextSignal.manifestDescription || ''
     );
     const descriptionPromptContract = this.buildAIDescriptionPromptContract(
       enhancedSystemPurpose,
@@ -8806,14 +8812,23 @@ export class AnalyzerOrchestrator {
     }
     if (timeoutHandle) clearTimeout(timeoutHandle);
 
+    // The gate grounds the description against the SAME distinctive evidence the
+    // prompt saw (distinctive entities + declared dependencies + manifest text),
+    // not just the narrow ORM entity list — otherwise a description grounded in
+    // ccxt/DexTrade would be rejected as ungrounded because those facts never
+    // reached the gate.
+    const distinctiveEntityNames = this.selectDistinctiveEntityNames(dataEntities);
+    const gateEntityGrounding = distinctiveEntityNames.length > 0
+      ? Array.from(new Set([...distinctiveEntityNames, ...databaseEntities]))
+      : databaseEntities;
     const interpretationFacts = {
       systemName,
       frameworks,
       libraries: libraryNames,
-      databaseEntities,
+      databaseEntities: gateEntityGrounding,
       externalServices: this.plausiblePromptExternalServices(systemName, externalServices),
-      structuralTokens: this.structuralGroundingTokens(structuralFacts, databaseEntities),
-      projectTextSummary: projectTextSignal.summary,
+      structuralTokens: this.structuralGroundingTokens(structuralFacts, gateEntityGrounding),
+      projectTextSummary: projectTextSignal.manifestDescription || projectTextSignal.summary,
       projectTextConcepts: projectTextSignal.concepts,
       isKlauroSelfProject: this.isKlauroSelfProject(this.activeAnalysisProjectPath),
     };
@@ -9035,6 +9050,62 @@ export class AnalyzerOrchestrator {
     return filterPlausibleExternalServices(externalServices, selfNames);
   }
 
+  /**
+   * A generic/plumbing data-entity name shared by nearly every app (user,
+   * account, session, settings, preferences, generic Portfolio/Strategy CRUD).
+   * These flood the highest-frequency entity list and drown the DISTINCTIVE
+   * domain evidence, so the comprehension grounding down-weights them. This is
+   * an evidence-SELECTION heuristic (which real facts to surface first), NOT a
+   * domain classifier — it never maps a name to a domain label.
+   */
+  private isGenericDomainEntityName(entityName: string): boolean {
+    const normalized = this.humanizePascalName(entityName).toLowerCase().trim();
+    if (!normalized) return true;
+    const words = normalized.split(/\s+/).filter(Boolean);
+    // Single generic nouns (or generic-noun + generic-suffix) that carry no
+    // distinctive domain signal on their own.
+    const genericHead = new Set([
+      'user', 'account', 'session', 'setting', 'settings', 'preference',
+      'preferences', 'profile', 'role', 'permission', 'token', 'auth',
+      'organization', 'org', 'team', 'member', 'membership', 'tenant',
+      'workspace', 'project', 'group', 'invite', 'invitation', 'notification',
+      'log', 'audit', 'event', 'job', 'task', 'queue', 'config', 'configuration',
+      'file', 'upload', 'image', 'asset', 'tag', 'label', 'comment', 'message',
+      'usage', 'stats', 'statistic', 'metric', 'metadata', 'record', 'item',
+      'entity', 'object', 'data', 'entry', 'row', 'status', 'state', 'history',
+      'portfolio', 'strategy', 'plan', 'subscription', 'billing', 'invoice',
+      'payment', 'customer', 'contact', 'address',
+    ]);
+    // If every word in the name is a generic head noun, the entity is generic.
+    return words.every(word => genericHead.has(word) || genericHead.has(word.replace(/s$/, '')));
+  }
+
+  /**
+   * Surface the DISTINCTIVE data entities for the comprehension grounding:
+   * domain-specific names (DexTrade, WhaleTransaction, OhlcvCandle,
+   * PreflightDecision) ranked ahead of the generic Portfolio/Strategy/User CRUD
+   * that every app shares. Evidence SELECTION only — the AI still infers what
+   * the domain IS from these real entity names; nothing here labels a domain.
+   */
+  private selectDistinctiveEntityNames(dataEntities: CASDataEntity[], limit = 20): string[] {
+    const seen = new Set<string>();
+    const distinctive: string[] = [];
+    const generic: string[] = [];
+    for (const entity of dataEntities) {
+      const name = String(entity?.name || '').trim();
+      if (!name) continue;
+      if (this.isTransportContractEntityName(name)) continue;
+      const key = name.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      if (this.isGenericDomainEntityName(name)) generic.push(name);
+      else distinctive.push(name);
+    }
+    // Distinctive first; backfill with generic only if we have room, so the
+    // list is never empty for a purely-generic schema.
+    return [...distinctive, ...generic].slice(0, limit);
+  }
+
   private structuralGroundingTokens(
     structuralFacts: Record<string, unknown>,
     databaseEntities: string[]
@@ -9043,6 +9114,12 @@ export class AnalyzerOrchestrator {
     const sources = [
       ...((structuralFacts.capabilities as string[]) || []),
       ...((structuralFacts.domainConcepts as string[]) || []),
+      ...((structuralFacts.distinctiveEntities as string[]) || []),
+      // Declared dependencies and the manifest self-description are real
+      // grounding facts: a description that names the domain the deps imply
+      // (ccxt/web3 => "crypto") must be able to ground on them.
+      ...((structuralFacts.libraries as string[]) || []),
+      ...(structuralFacts.manifestDescription ? [String(structuralFacts.manifestDescription)] : []),
       ...databaseEntities,
     ];
     for (const value of sources) {
@@ -9910,6 +9987,84 @@ export class AnalyzerOrchestrator {
     });
   }
 
+  /**
+   * Evidence-grounding enforcement for the SYSTEM-TYPE noun the description uses
+   * to declare what the product IS. Extracts the head noun-phrase (the modifier
+   * words immediately before "system/tool/service/api/platform/application/...")
+   * from the first sentence and checks that at least one DISTINCTIVE modifier
+   * token traces to a real supplied fact (domain/concepts, structural tokens,
+   * library/dependency names, entity names, external services, manifest text).
+   * When none do, the system-type was invented from thin air and is rejected so
+   * the AI repair pass can re-ground it. This is evidence-grounding, NOT a
+   * keyword blocklist — no term is banned, every named type must just be earned.
+   */
+  private systemTypeIsGrounded(
+    cleaned: string,
+    groundedTerms: string[],
+    facts: {
+      systemName?: string;
+      libraries?: string[];
+      databaseEntities?: string[];
+      externalServices?: string[];
+      structuralTokens?: string[];
+      projectTextSummary?: string;
+      projectTextConcepts?: string[];
+    },
+  ): { ok: true } | { ok: false; reason: string } {
+    const lower = ` ${cleaned.toLowerCase()} `;
+    // Pull the descriptor words immediately preceding a system-type head noun,
+    // e.g. "security-scanning tool", "crypto market-intelligence api",
+    // "portfolio management system". Only the FIRST such phrase (the headline
+    // identity claim) is enforced.
+    const typeHead = '(?:tool|system|service|platform|application|app|api|engine|framework|library|server|gateway|pipeline|dashboard|suite|toolkit|sdk)';
+    const match = new RegExp(`\\b((?:[a-z][a-z0-9]*(?:[- ][a-z][a-z0-9]*){0,3})\\s+)${typeHead}s?\\b`, 'i').exec(cleaned);
+    if (!match) return { ok: true };
+    // Distinctive modifier tokens (drop articles, generic build words, and the
+    // system's own name — none of those are a claim that needs evidence).
+    const stopWords = new Set([
+      'a', 'an', 'the', 'this', 'that', 'built', 'with', 'and', 'or', 'for',
+      'based', 'full', 'stack', 'end', 'to', 'backend', 'frontend', 'web',
+      'software', 'modern', 'simple', 'small', 'large', 'internal', 'core',
+      'main', 'primary', 'central', 'general', 'purpose', 'multi', 'single',
+      'automated', 'comprehensive',
+    ]);
+    const nameTokens = new Set(
+      String(facts.systemName || '')
+        .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+        .toLowerCase()
+        .split(/[^a-z0-9]+/)
+        .filter(Boolean),
+    );
+    const modifierTokens = match[1]
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter(token => token.length >= 4 && !stopWords.has(token) && !nameTokens.has(token) && !this.isGenericCapabilityToken(token));
+    if (modifierTokens.length === 0) return { ok: true };
+    // Build the corpus of grounded evidence text once.
+    const evidenceCorpus = [
+      ...groundedTerms,
+      ...(facts.structuralTokens || []),
+      ...(facts.libraries || []),
+      ...(facts.databaseEntities || []),
+      ...(facts.externalServices || []),
+      ...(facts.projectTextConcepts || []),
+      facts.projectTextSummary || '',
+    ]
+      .join(' ')
+      .toLowerCase();
+    // Grounded if ANY distinctive modifier token (or its 5-char stem) appears in
+    // the evidence corpus. Stemming lets "scanning"/"scanner", "crypto"/
+    // "cryptocurrency", "trading"/"trade" match their evidence form.
+    const grounded = modifierTokens.some(token => {
+      const stem = token.slice(0, 5);
+      return evidenceCorpus.includes(token) || evidenceCorpus.includes(stem);
+    });
+    if (!grounded) {
+      return { ok: false, reason: `ungrounded-system-type: ${modifierTokens.join('-')}` };
+    }
+    return { ok: true };
+  }
+
   private validateAIInterpretation(
     description: string,
     enhancedSystemPurpose: EnhancedSystemPurpose,
@@ -9948,6 +10103,20 @@ export class AnalyzerOrchestrator {
       if (structuralMatches < 2) {
         return { ok: false, reason: 'not-grounded-in-domain-or-concepts' };
       }
+    }
+    // EVIDENCE-GROUNDED SYSTEM-TYPE ENFORCEMENT: the noun the description uses to
+    // name WHAT THE SYSTEM IS ("a security-scanning tool", "a portfolio manager")
+    // must be traceable to a real supplied fact. The gate above only checks the
+    // AI-supplied domain/concepts grounds itself (circular when the AI both
+    // fabricates the domain AND writes it into the description). This check reads
+    // the SYSTEM-TYPE head noun out of the prose and rejects it when NO distinctive
+    // token in it appears in any grounded fact (deps, entities, integrations,
+    // concepts, manifest text). Not a keyword blocklist — a fabricated "security
+    // scanning tool" with zero security/scanning evidence is rejected; a
+    // "crypto market-intelligence API" backed by ccxt/DexTrade is accepted.
+    const systemTypeVerdict = this.systemTypeIsGrounded(cleaned, groundedTerms, facts);
+    if (!systemTypeVerdict.ok) {
+      return { ok: false, reason: systemTypeVerdict.reason };
     }
     const marketingLanguagePattern = /\b(seamless(?:ly)?|user experience|entry point for an application|gateway between the frontend and backend|reducing complexity|ecosystem|wide range of clients|robust api|crucial role|scalability|usability|underlying platform|indispensable|unified experience|complex queries|large datasets|high-quality [a-z ]+ experience|regulatory requirements?|best practices|designed for managing|facilitates|various applications|robust [a-z ]*framework|enhanc(?:e|es|ing) (?:the )?[a-z ]*(?:analysis process|security|efficiency|navigation|insights)|allowing developers to focus|complex tasks|structured data and insights|insights(?: into)?|efficient(?:ly)?|efficiency|productivity|compliant|compliance|advanced|streamline(?:s|d|ing)?|user-friendly|business value|improving operational|reduces? costs?|secure by design)\b/gi;
     const marketingMatches = Array.from(new Set(
@@ -10458,7 +10627,9 @@ export class AnalyzerOrchestrator {
     domainConcepts: CASDomainConcept[],
     systemCapabilities: SystemCapability[] = [],
     libraryNames: string[] = [],
-    projectTextSignal: ProjectTextSignal = { concepts: [], evidence: [] }
+    projectTextSignal: ProjectTextSignal = { concepts: [], evidence: [] },
+    dataEntities: CASDataEntity[] = [],
+    manifestDescription = ''
   ): Record<string, unknown> {
     // Terminal-segment principle: hand the model what journeys ultimately
     // produce (terminal entities) and the near-terminal stages leading there,
@@ -10485,15 +10656,35 @@ export class AnalyzerOrchestrator {
         artifactTypeInstruction: `This codebase is ${artifactNarrativeByType[this.activeArtifactType]}.`,
       }
       : {};
+    // Distinctive entities (DexTrade/WhaleTransaction/OhlcvCandle...) are the
+    // strongest domain evidence in the schema; the narrow ORM/@Entity list
+    // (databaseEntities) is dominated by generic Portfolio/Strategy/User CRUD
+    // and drowns the domain truth. Prefer the distinctive selection as the
+    // entity grounding, falling back to the ORM list only when the full
+    // data-entity catalog is unavailable. Evidence SELECTION only — no labels.
+    const distinctiveEntities = this.selectDistinctiveEntityNames(dataEntities);
+    const entityGrounding = distinctiveEntities.length > 0 ? distinctiveEntities : databaseEntities;
+    // The raw human-authored manifest description ("Soon Lens crypto
+    // intelligence and agent preflight API") is a real evidence STRING (not a
+    // keyword classification) — surface it verbatim as the strongest product
+    // framing when present.
+    const manifestFacts = manifestDescription.trim()
+      ? {
+        manifestDescription: manifestDescription.trim().slice(0, 400),
+        manifestDescriptionInstruction: 'manifestDescription is the repo\'s own one-line self-description from its package manifest. Treat it as authoritative product framing when it is consistent with the structural facts.',
+      }
+      : {};
     return {
       ...terminalFacts,
       ...artifactFacts,
+      ...manifestFacts,
       ...this.buildProjectTextInterpretationFacts(projectTextSignal),
       ...this.buildSelfProjectInterpretationFacts(),
       ...this.buildAIInterpretationBaseFacts(
-        systemName, frameworks, entryPointSummary, databaseEntities,
+        systemName, frameworks, entryPointSummary, entityGrounding,
         externalServices, flowGraph, domainConcepts, systemCapabilities, libraryNames
       ),
+      ...(distinctiveEntities.length > 0 ? { distinctiveEntities } : {}),
     };
   }
 
@@ -10510,8 +10701,11 @@ export class AnalyzerOrchestrator {
       suppliedPurposeType: enhancedSystemPurpose.primary_type,
       evidence_priority: [
         'productIdentity/productIdentityInstruction when present',
+        'manifestDescription when present; the repo\'s own self-description is authoritative product framing',
         'authoritativeProductFrame when present; it overrides examples, tests, docs, sample apps, and incidental code vocabulary',
         'projectTextDomain, projectTextSummary, and projectTextConcepts from human-authored repo text',
+        'libraries — the declared dependencies are the strongest signal of what this IS (e.g. ccxt/web3/@triton-one/yellowstone-grpc => a crypto/DEX/blockchain system); infer the domain from them',
+        'distinctiveEntities — the domain-specific data shapes that define the product (prefer these over generic User/Account/Portfolio/Strategy entities)',
         'artifactTypeInstruction when the repo is a library, SDK, CLI, or boilerplate',
         'terminalOutputs and nearTerminalStages because they show what journeys ultimately produce or manage',
         'capabilities and domainConcepts',
@@ -10525,7 +10719,8 @@ export class AnalyzerOrchestrator {
         'Sentence 3 optional: describe architecture, boundary, integrations, tests, or risk only when supplied facts support it.',
       ],
       required_grounding: [
-        'Mention at least two concrete supplied product nouns from capabilities, domainConcepts, projectTextConcepts, terminalOutputs, or databaseEntities.',
+        'Mention at least two concrete supplied product nouns from capabilities, domainConcepts, projectTextConcepts, terminalOutputs, distinctiveEntities, or databaseEntities.',
+        'The system-type/domain you name (e.g. "crypto market-intelligence API", "identity service") MUST be traceable to a supplied fact — a dependency in libraries, a distinctiveEntity, an externalService, a domainConcept, or manifestDescription. Never name a system-type with no supporting supplied fact.',
         'Mention frameworks only if they are listed in allowedFrameworks.',
         'Mention integrations only by exact names listed in externalServices.',
         'Preserve suppliedPrimaryDomain unless supplied facts clearly support a more specific label.',
@@ -10981,10 +11176,13 @@ export class AnalyzerOrchestrator {
     const textParts: string[] = [];
     const evidence: string[] = [];
 
+    let manifestDescription: string | undefined;
     const packageJson = this.safeReadJson(path.join(projectPath, 'package.json'));
     if (packageJson?.description) {
-      textParts.push(String(packageJson.description));
+      const rawDescription = String(packageJson.description).trim();
+      textParts.push(rawDescription);
       evidence.push('package.json description');
+      if (rawDescription) manifestDescription = rawDescription;
     }
     if (packageJson?.name) textParts.push(String(packageJson.name));
 
@@ -11045,7 +11243,7 @@ export class AnalyzerOrchestrator {
     // vocabulary is kept as AI grounding.
     const concepts = this.inferConceptsFromProjectText(text);
 
-    return { primaryDomain: undefined, concepts, summary: undefined, evidence };
+    return { primaryDomain: undefined, concepts, summary: undefined, evidence, manifestDescription };
   }
 
   private safeReadJson(filePath: string): any | null {

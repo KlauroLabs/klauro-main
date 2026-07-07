@@ -1744,6 +1744,99 @@ describe('architecture and capability inference', () => {
     }).reason).toBe('project-name-as-concept');
   });
 
+  it('selects distinctive domain entities ahead of generic Portfolio/Strategy/User CRUD', () => {
+    const dataEntities = [
+      { id: 'e1', name: 'Portfolio', lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] } },
+      { id: 'e2', name: 'Strategy', lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] } },
+      { id: 'e3', name: 'UsageStats', lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] } },
+      { id: 'e4', name: 'UserPreferences', lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] } },
+      { id: 'e5', name: 'DexTrade', lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] } },
+      { id: 'e6', name: 'WhaleTransaction', lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] } },
+      { id: 'e7', name: 'OhlcvCandle', lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] } },
+      { id: 'e8', name: 'PreflightDecision', lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] } },
+    ];
+    const selected = orch.selectDistinctiveEntityNames(dataEntities as any);
+    // Distinctive crypto entities rank ahead of the generic ones.
+    expect(selected.slice(0, 4)).toEqual(['DexTrade', 'WhaleTransaction', 'OhlcvCandle', 'PreflightDecision']);
+    expect(selected.indexOf('DexTrade')).toBeLessThan(selected.indexOf('Portfolio'));
+    expect(selected.indexOf('WhaleTransaction')).toBeLessThan(selected.indexOf('UsageStats'));
+  });
+
+  it('surfaces the DISTINCTIVE crypto grounding (ccxt, DexTrade, manifest description) to the comprehension prompt for a soon-lens-shaped repo', () => {
+    // The narrow ORM/@Entity view is the generic Strategy CRUD; the real
+    // 202-entity catalog holds the crypto truth. The prompt facts must ground on
+    // the distinctive entities + full dependency manifest + manifest description,
+    // NOT the generic ORM list.
+    const databaseEntities = ['Strategy', 'StrategyExecution', 'StrategyAlert'];
+    const libraryNames = ['@nestjs/core', 'ccxt', '@triton-one/yellowstone-grpc', 'web3', 'mikro-orm'];
+    const dataEntities = [
+      { id: 'e1', name: 'Strategy', lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] } },
+      { id: 'e2', name: 'DexTrade', lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] } },
+      { id: 'e3', name: 'DexPoolInfo', lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] } },
+      { id: 'e4', name: 'OhlcvCandle', lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] } },
+      { id: 'e5', name: 'WhaleTransaction', lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] } },
+      { id: 'e6', name: 'PoolState', lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] } },
+      { id: 'e7', name: 'PreflightDecision', lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] } },
+    ];
+    const projectTextSignal = {
+      concepts: ['dex', 'whale', 'ohlcv'],
+      evidence: ['package.json description'],
+      manifestDescription: 'Soon Lens crypto intelligence and agent preflight API',
+    };
+
+    const facts = orch.buildAIInterpretationFacts(
+      'soon-lens',
+      ['nestjs'],
+      [{ type: 'http', count: 45 }],
+      databaseEntities,
+      [],
+      orch.emptyFlowGraph(),
+      [],
+      [],
+      libraryNames,
+      projectTextSignal,
+      dataEntities as any,
+      projectTextSignal.manifestDescription,
+    );
+
+    // Full dependency manifest reaches the prompt (ccxt/yellowstone/web3).
+    expect(facts.libraries).toContain('ccxt');
+    expect(facts.libraries).toContain('@triton-one/yellowstone-grpc');
+    expect(facts.libraries).toContain('web3');
+    // Distinctive crypto entities reach the prompt as an explicit fact.
+    expect(facts.distinctiveEntities).toContain('DexTrade');
+    expect(facts.distinctiveEntities).toContain('WhaleTransaction');
+    expect(facts.distinctiveEntities).toContain('PreflightDecision');
+    // The entity grounding fed to base facts is the distinctive set, NOT the
+    // generic 3-entity ORM view.
+    expect(facts.databaseEntities).toContain('DexTrade');
+    // The raw manifest self-description reaches the prompt verbatim.
+    expect(facts.manifestDescription).toBe('Soon Lens crypto intelligence and agent preflight API');
+  });
+
+  it('rejects a fabricated system-type with no supporting evidence but accepts one grounded in dependencies', () => {
+    const purpose = { primary_domain: 'crypto-market-intelligence', core_concepts: ['dex', 'ohlcv', 'whale', 'pool'] };
+    const grounding = {
+      systemName: 'soon-lens',
+      frameworks: ['nestjs'],
+      libraries: ['ccxt', '@triton-one/yellowstone-grpc', 'web3'],
+      databaseEntities: ['DexTrade', 'WhaleTransaction', 'OhlcvCandle', 'PreflightDecision'],
+      structuralTokens: ['dextrade', 'whale', 'ohlcv', 'pool', 'preflight'],
+      projectTextSummary: 'Soon Lens crypto intelligence and agent preflight API',
+    };
+
+    // FABRICATION: "security-scanning tool" with zero security/scanning evidence.
+    const fabricated = 'soon-lens is a security-scanning tool built with NestJS that manages portfolio holdings and strategy configuration. It tracks DexTrade and OhlcvCandle records for market analysis.';
+    const fabricatedVerdict = orch.validateGeneratedAIInterpretation(fabricated, purpose, grounding);
+    expect(fabricatedVerdict.ok).toBe(false);
+    expect(String(fabricatedVerdict.reason)).toMatch(/ungrounded-system-type/);
+
+    // GROUNDED: "crypto market-intelligence API" — every distinctive modifier
+    // traces to a supplied fact (ccxt dep / crypto concepts).
+    const grounded = 'soon-lens is a crypto market-intelligence API built with NestJS that aggregates DexTrade and OhlcvCandle market data across exchanges. It surfaces WhaleTransaction signals and PreflightDecision risk attestations for trading agents.';
+    expect(orch.validateGeneratedAIInterpretation(grounded, purpose, grounding).ok).toBe(true);
+  });
+
   it('accepts framework mentions backed by detected libraries instead of framework analyzers', () => {
     const purpose = { primary_domain: 'game-management', core_concepts: ['game', 'tournament', 'card', 'deck'] };
     const description = 'A game management system built with React and Prisma that coordinates game, tournament, card, and deck workflows, tracking deck construction and tournament pairings for players.';

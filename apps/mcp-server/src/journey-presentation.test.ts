@@ -302,6 +302,33 @@ test('product map markdown renders journey headlines instead of machine names', 
   assert.ok(!markdown.includes('| boundaries:'), 'pipe-separated machine row is gone');
 });
 
+test('product map markdown renders exposure highlight fields as labels, never [object Object]', () => {
+  const map: any = {
+    identity: { name: 'legacy-app', domain: 'crypto', domain_source: 'ai', description: '', description_source: 'ai' },
+    capabilities: [],
+    journeys: { total: 0, user_facing: 0, system: 0, scheduled: 0, top: [] },
+    data: {
+      entities: 1,
+      sensitive: ['DexTrade'],
+      // Legacy/cross-repo analyses can carry OBJECTS instead of bare strings.
+      exposure_highlights: [{
+        entity: 'DexTrade',
+        sensitive_fields: [{ name: 'walletAddress' }, 'txHash'],
+        unguarded_paths: 2,
+        external_transfer: true,
+        external_recipients: [{ service: 'binance' }, 'coinbase'],
+      }],
+    },
+    conventions: { paradigms: [], open_deviations: { error: 0, warning: 0, info: 0 } },
+    health: { status: 'healthy', tests: { total: 0, passing: 0, failing: 0 }, implementation: { complete: 0, partial: 0, stubs: 0, not_implemented: 0, deprecated: 0 }, top_risks: [] },
+    coverage_caveats: [],
+  };
+  const markdown = productMapToMarkdown(map);
+  assert.ok(!markdown.includes('[object Object]'), 'no [object Object] leaks into the rendered map');
+  assert.ok(markdown.includes('sensitive fields: walletAddress, txHash'), 'object-shaped sensitive fields render their names');
+  assert.ok(markdown.includes('external transfer to binance, coinbase'), 'object-shaped recipients render their service names');
+});
+
 test('product map markdown renders a runtime topology section when present', () => {
   const map: any = {
     identity: { name: 'infra-app', domain: 'unknown', domain_source: 'deterministic', description: '', description_source: 'deterministic' },

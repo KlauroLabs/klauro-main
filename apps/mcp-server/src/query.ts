@@ -1675,6 +1675,26 @@ export function getProductMap(
 export function productMapToMarkdown(map: CASProductMap): string {
   const lines: string[] = [];
   const percent = (rate: number) => `${Math.round(rate * 100)}%`;
+  // Exposure-highlight fields (sensitive_fields, external_recipients) are typed
+  // string[], but legacy/cross-repo analyses can carry field/recipient OBJECTS
+  // ({name,...} / {service,...}) instead of bare strings; joining those renders
+  // "[object Object]" in the served map. Coerce to a meaningful string so old
+  // analyses degrade to the field/service NAME instead of the object noise.
+  const asLabel = (value: unknown): string => {
+    if (value == null) return '';
+    if (typeof value === 'string') return value;
+    if (typeof value === 'object') {
+      const record = value as Record<string, unknown>;
+      const label = record.name ?? record.service ?? record.field ?? record.label ?? record.boundary;
+      if (typeof label === 'string') return label;
+    }
+    return String(value);
+  };
+  const joinLabels = (values: unknown): string =>
+    (Array.isArray(values) ? values : [])
+      .map(asLabel)
+      .filter(Boolean)
+      .join(', ');
 
   lines.push(`# ${map.identity.name} - Product Map`);
   lines.push('');
@@ -1724,14 +1744,15 @@ export function productMapToMarkdown(map: CASProductMap): string {
   lines.push(`${map.data.entities} entities tracked. Sensitive: ${sensitiveText}.`);
   for (const highlight of map.data.exposure_highlights) {
     const details: string[] = [];
-    if (highlight.sensitive_fields.length > 0) details.push(`sensitive fields: ${highlight.sensitive_fields.join(', ')}`);
+    const sensitiveFieldsText = joinLabels(highlight.sensitive_fields);
+    if (sensitiveFieldsText) details.push(`sensitive fields: ${sensitiveFieldsText}`);
     if (highlight.unguarded_paths > 0) {
       const nonAuth = highlight.non_auth_guarded_paths || 0;
       const nonAuthSuffix = nonAuth > 0 ? ` (${nonAuth} with non-auth guards only)` : '';
       details.push(`${highlight.unguarded_paths} unguarded path${highlight.unguarded_paths === 1 ? '' : 's'}${nonAuthSuffix}`);
     }
-    if (highlight.external_transfer) details.push(`external transfer to ${highlight.external_recipients.join(', ') || 'unknown service'}`);
-    lines.push(`- ${highlight.entity}: ${details.join('; ')}`);
+    if (highlight.external_transfer) details.push(`external transfer to ${joinLabels(highlight.external_recipients) || 'unknown service'}`);
+    lines.push(`- ${asLabel(highlight.entity)}: ${details.join('; ')}`);
   }
 
   lines.push('');
