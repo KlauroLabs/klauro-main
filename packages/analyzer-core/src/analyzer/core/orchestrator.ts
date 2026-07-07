@@ -316,6 +316,12 @@ interface DescriptionTarget {
 interface EntityPropertyIndex {
   byParent: Map<string, Array<{ node: CASNode; position: number }>>;
   byFileBasename: Map<string, Array<{ node: CASNode; position: number; normalizedFile: string }>>;
+  // Per-run memo of resolved property lists, keyed by entity node id. The
+  // basename fallback in entityPropertyNodesFromIndex is O(bucket) with a
+  // per-node substring check, and the dedup/derive code resolves the same
+  // entity node up to 3x — memoizing collapses that repeat work. Keyed by id,
+  // safe because the index's underlying nodes are immutable for its lifetime.
+  resolved: Map<string, CASNode[]>;
 }
 
 interface DiscoveredEntryPointCandidate {
@@ -1383,17 +1389,25 @@ export class AnalyzerOrchestrator {
 
     phaseStart = Date.now();
     const flowSummary = this.buildFlowSummary(allNodes, allEntryPoints);
+    logTiming('pp_flowSummary', phaseStart);
+    phaseStart = Date.now();
     const dataEntities = this.enrichCuratedProductDataEntities(
       [...this.buildDataEntities(allNodes, allEdges, projectPath), ...declaredDataEntities],
       systemName,
       allNodes,
       projectPath
     );
+    logTiming('pp_dataEntities', phaseStart);
+    phaseStart = Date.now();
     const dataSummary = this.buildDataSummary(dataEntities, allNodes);
+    logTiming('pp_dataSummary', phaseStart);
+    phaseStart = Date.now();
     const productEntryPointsForSecurity = this.filterPrimaryProductEntryPoints(allEntryPoints, allNodes, projectPath);
     const securityBoundaries = this.buildSecurityBoundaries(allNodes, allEntryPoints, projectPath);
+    logTiming('pp_securityBoundaries', phaseStart);
+    phaseStart = Date.now();
     const securitySummary = this.buildSecuritySummary(securityBoundaries, allNodes, productEntryPointsForSecurity);
-    logTiming('pp_dataAndSecurity', phaseStart);
+    logTiming('pp_securitySummary', phaseStart);
 
     phaseStart = Date.now();
     const gitAnalyzer = new GitAnalyzer(projectPath);
@@ -7036,10 +7050,13 @@ export class AnalyzerOrchestrator {
       }
     }
 
-    return { byParent, byFileBasename };
+    return { byParent, byFileBasename, resolved: new Map() };
   }
 
   private entityPropertyNodesFromIndex(index: EntityPropertyIndex, entityNode: CASNode): CASNode[] {
+    const memoized = index.resolved.get(entityNode.id);
+    if (memoized) return memoized;
+
     const matches = new Map<CASNode, number>();
 
     for (const { node, position } of index.byParent.get(entityNode.id) || []) {
@@ -7057,9 +7074,11 @@ export class AnalyzerOrchestrator {
       }
     }
 
-    return [...matches.entries()]
+    const result = [...matches.entries()]
       .sort((a, b) => a[1] - b[1])
       .map(([node]) => node);
+    index.resolved.set(entityNode.id, result);
+    return result;
   }
 
   /**
