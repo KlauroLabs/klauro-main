@@ -103,6 +103,19 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
   /** local import name -> original exported name, for `import { Account as Acct }`
    *  so a receiver typed `Acct` resolves to the class `Account`. */
   private importAliasMap = new Map<string, string>();
+  /**
+   * Per-consumer-file import index: consumerFile -> (localName -> resolvedModuleFile).
+   * Unlike the global {@link importSourceMap} (last-writer-wins, name-only), this
+   * preserves *which module each specific file imported a name from*, so
+   * cross-file reference resolution can disambiguate same-named declarations by
+   * their import SOURCE instead of arbitrary insertion order. resolvedModuleFile
+   * is a project-relative path (matching CASNode.source.file) for local imports,
+   * or the raw bare specifier for package imports. Built in buildNodeIndexes.
+   */
+  private importsByConsumerFile = new Map<string, Map<string, string>>();
+  /** Project root captured at analyze() start, so buildNodeIndexes can resolve
+   *  import specifiers to project-relative module files. */
+  private currentProjectPath = '';
   private classFieldTypes = new Map<string, { typeName: string; library?: string }>();
   private repositoryPropertyTypes = new Map<string, string>();
   private prismaModelNames = new Map<string, string>();
@@ -344,6 +357,8 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
 
     this.importSourceMap.clear();
     this.importAliasMap.clear();
+    this.importsByConsumerFile.clear();
+    this.currentProjectPath = context.projectPath;
     this.classFieldTypes.clear();
     this.repositoryPropertyTypes.clear();
     this.prismaModelNames.clear();
@@ -1294,6 +1309,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     this.nodeById.clear();
     this.nodesByName.clear();
     this.methodsByParent.clear();
+    this.importsByConsumerFile.clear();
 
     for (const node of nodes) {
       this.nodeById.set(node.id, node);
@@ -1309,8 +1325,96 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
         }
         this.methodsByParent.get(node.parent)!.push(node);
       }
+
+      if (node.type === 'import') {
+        this.indexImportNode(node);
+      }
     }
   }
+
+  /**
+   * Record which module each consumer file imported each local name from, so
+   * cross-file reference resolution can prefer the declaration in the imported
+   * module over an arbitrary same-named declaration elsewhere. Reuses the same
+   * {@link resolveImportPath} machinery the analyzer already uses to resolve
+   * import specifiers to project-relative files, keeping this source-aware map in
+   * lockstep with how declaration nodes are keyed (CASNode.source.file).
+   */
+  private indexImportNode(node: CASNode): void {
+    const consumerFile = node.source?.file;
+    if (!consumerFile) return;
+    const meta = node.metadata as { source?: string; specifiers?: Array<{ name?: string }> } | undefined;
+    const importSource = meta?.source;
+    const specifiers = meta?.specifiers;
+    if (!importSource || !Array.isArray(specifiers) || specifiers.length === 0) return;
+
+    // Resolve relative/absolute imports to a project-relative module file so it
+    // can be matched against candidate declarations' source.file. Bare package
+    // specifiers stay as-is (they never match a local declaration file, so they
+    // simply won't bias resolution — the unambiguous/sorted path still applies).
+    let resolvedModule = importSource;
+    if (importSource.startsWith('.') || importSource.startsWith('/')) {
+      const absConsumer = path.isAbsolute(consumerFile)
+        ? consumerFile
+        : path.join(this.currentProjectPath, consumerFile);
+      const resolved = this.resolveImportPath(importSource, absConsumer, this.currentProjectPath);
+      if (resolved) resolvedModule = resolved;
+    }
+
+    let fileMap = this.importsByConsumerFile.get(consumerFile);
+    if (!fileMap) {
+      fileMap = new Map<string, string>();
+      this.importsByConsumerFile.set(consumerFile, fileMap);
+    }
+    for (const spec of specifiers) {
+      if (spec?.name) fileMap.set(spec.name, resolvedModule);
+    }
+  }
+
+  /**
+   * Deterministically pick one node from same-named candidates, preferring the
+   * declaration that lives in the module the consumer imported the name FROM.
+   * Import-source-aware first (evidence: the import edge already names the
+   * module); then a stable tiebreak over sorted candidates (never insertion
+   * order), so the result is byte-identical run-to-run.
+   */
+  private selectDeclarationCandidate(
+    candidates: CASNode[],
+    targetName: string,
+    sourceFile?: string
+  ): CASNode {
+    // Common path: exactly one declaration — no ambiguity, no cost.
+    if (candidates.length === 1) return candidates[0];
+
+    // Import-source-aware disambiguation: if the consumer imported this name from
+    // a specific module, prefer the candidate declared in that module's file.
+    if (sourceFile) {
+      const resolvedModule = this.importsByConsumerFile.get(sourceFile)?.get(targetName);
+      if (resolvedModule) {
+        const inModule = candidates
+          .filter(n => n.source?.file === resolvedModule)
+          .sort(this.compareNodesStable);
+        if (inModule.length > 0) return inModule[0];
+      }
+    }
+
+    // Still ambiguous: deterministic stable selection over SORTED candidates,
+    // never candidates[0] on unsorted insertion order.
+    return [...candidates].sort(this.compareNodesStable)[0];
+  }
+
+  /** Stable total order for tie-breaking candidate declarations: by source file,
+   *  then line, then node id — all deterministic, insertion-order-independent. */
+  private compareNodesStable = (a: CASNode, b: CASNode): number => {
+    const fileA = a.source?.file ?? '';
+    const fileB = b.source?.file ?? '';
+    if (fileA !== fileB) return fileA < fileB ? -1 : 1;
+    const lineA = a.source?.line ?? 0;
+    const lineB = b.source?.line ?? 0;
+    if (lineA !== lineB) return lineA - lineB;
+    if (a.id !== b.id) return a.id < b.id ? -1 : 1;
+    return 0;
+  };
 
   private isClassLikeNode(node?: CASNode): boolean {
     if (!node) return false;
@@ -1343,8 +1447,17 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     // A `this.method()` call resolves to a method on the CALLER's own class, so it
     // cannot be cached by target name alone (the same "this.x" means different
     // methods in different classes). Cache only receiver-free / cross-object names.
+    //
+    // A bare name with MULTIPLE same-named declarations is also caller-relative:
+    // resolution now depends on which module the caller's file imported it from
+    // (import-source-aware disambiguation), so the same name can resolve to
+    // different nodes in different files. Key those by sourceFile too, otherwise
+    // the first caller's answer would be wrongly reused for every other file.
     const isThisCall = targetName.startsWith('this.') || targetName.startsWith('self.');
-    const cacheKey = isThisCall ? `${sourceFile}::${sourceClassName}::${targetName}` : targetName;
+    const isAmbiguousBareName = !isThisCall && (this.nodesByName.get(targetName)?.length ?? 0) > 1;
+    const cacheKey = (isThisCall || isAmbiguousBareName)
+      ? `${sourceFile}::${sourceClassName}::${targetName}`
+      : targetName;
     if (this.callTargetResolutionCache.has(cacheKey)) {
       return this.callTargetResolutionCache.get(cacheKey);
     }
@@ -1402,7 +1515,11 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
 
     const directMatch = this.nodesByName.get(targetName);
     if (directMatch && directMatch.length > 0) {
-      return directMatch[0].id;
+      // Import-source-aware + deterministic: when the same name is declared in
+      // multiple modules, prefer the declaration in the module the consumer
+      // imported it FROM; otherwise pick deterministically over sorted
+      // candidates. Single-declaration common path returns immediately.
+      return this.selectDeclarationCandidate(directMatch, targetName, sourceFile).id;
     }
 
     if (!targetName.includes('.')) {

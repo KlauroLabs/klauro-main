@@ -358,4 +358,78 @@ describe('collectDeployableEvidence', () => {
     const result = collectDeployableEvidence({ projectPath, nodes: [], entryPoints: [], exitPoints: [] });
     expect(result).toEqual([]);
   });
+
+  test('multi-deployable: an installer bundles two named bins while a third bin stays independent (zerac/poc shape, SPEC §6/§7-case-1)', () => {
+    // Evidence-first multi-deployable fixture per docs/SPEC-DEPLOYABLE-DETECTION.md
+    // §6 (zerac/poc worked example) + §7 case 1 (bundle-via-installer), exercised at
+    // the evidence-collection layer (deterministic, no cross-repo graph, no AI):
+    //
+    //   - 3 runnable Cargo [[bin]] targets (Tier 2): client, client-service, worker
+    //   - 1 installer artifact (Tier 1) whose binary_names bundle EXACTLY
+    //     client + client-service into one ship unit (ships_paths = those two).
+    //
+    // The installer is positive Tier-1 bundling evidence naming client &
+    // client-service; `worker` is named by NOTHING, so it must remain a separate
+    // candidate (the SPEC's "never merge on absence alone" rule). This asserts the
+    // evidence layer emits the correct ships_paths membership — the input the
+    // downstream resolver uses to set bundled_into — without silently merging worker.
+    projectPath = tempProject();
+    fs.writeFileSync(
+      path.join(projectPath, 'Cargo.toml'),
+      [
+        '[package]',
+        'name = "zerac-poc"',
+        'version = "0.1.0"',
+        '',
+        '[[bin]]',
+        'name = "client"',
+        'path = "src/client/main.rs"',
+        '',
+        '[[bin]]',
+        'name = "client-service"',
+        'path = "src/client-service/main.rs"',
+        '',
+        '[[bin]]',
+        'name = "worker"',
+        'path = "src/worker/main.rs"',
+        '',
+      ].join('\n')
+    );
+    const nodes: CASNode[] = [
+      {
+        id: 'installer_zerac',
+        name: 'Installer: ZeracClient',
+        type: 'distribution_installer',
+        source: { file: 'installer/install.sh', line: 1 },
+        metadata: {
+          topology_surface: 'distribution-artifacts',
+          artifact_kind: 'installer',
+          distribution_role: 'installer',
+          product_name: 'ZeracClient',
+          // The installer bundles exactly these two bins into one shipped product.
+          binary_names: ['client', 'client-service'],
+        } as any,
+      },
+    ];
+
+    const result = collectDeployableEvidence({ projectPath, nodes, entryPoints: [], exitPoints: [] });
+
+    // Three Tier-2 bins are discovered from Cargo.toml.
+    const bins = result.filter(item => item.kind === 'bin');
+    expect(new Set(bins.map(b => b.name))).toEqual(new Set(['client', 'client-service', 'worker']));
+    for (const b of bins) expect(b.tier).toBe(2);
+
+    // One Tier-1 installer, bundling exactly the two named members — this is the
+    // ship-unit boundary evidence the resolver folds members into.
+    const installer = result.find(item => item.kind === 'installer');
+    expect(installer).toBeDefined();
+    expect(installer!.tier).toBe(1);
+    expect(installer!.name).toBe('ZeracClient');
+    expect(installer!.ships_paths).toEqual(['client', 'client-service']);
+
+    // `worker` is named by no ship artifact — it must NOT be swept into the
+    // installer's membership. (Evidence layer: absence of it from any ships_paths.)
+    const allShipsPaths = result.flatMap(item => item.ships_paths ?? []);
+    expect(allShipsPaths).not.toContain('worker');
+  });
 });

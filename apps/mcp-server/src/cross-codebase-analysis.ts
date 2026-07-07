@@ -1129,7 +1129,7 @@ export async function enrichWorkspaceAnalysisNarrative(graph: WorkspaceAnalysisG
           generated_at: now,
           confidence: Math.max(graph.workspace_narrative.confidence, 0.76),
           description: narrativeDescription,
-          product_value_summary: usefulAiProductValueSummary(parsed.product_value_summary, graph.workspace_narrative.product_value_summary, graph) || inferAiProductValueFromNarrative(narrativeDescription, graph.workspace_narrative.product_value_summary, graph),
+          product_value_summary: usefulAiProductValueSummary(parsed.product_value_summary, graph.workspace_narrative.product_value_summary, graph) || graph.workspace_narrative.product_value_summary,
           domains: parsed.domains?.length ? parsed.domains.slice(0, 12) : graph.workspace_narrative.domains,
           key_capabilities: parsed.key_capabilities?.length ? parsed.key_capabilities.slice(0, 12) : graph.workspace_narrative.key_capabilities,
           value_drivers: parsed.value_drivers?.length ? parsed.value_drivers.slice(0, 8) : graph.workspace_narrative.value_drivers,
@@ -2180,8 +2180,9 @@ function promoteUsefulWorkspaceNarrativeFromAiSemantics(graph: WorkspaceAnalysis
     capabilities.every(item => isAgentVisibleAiSemanticDescriptionReady(item));
   if (!primarySemanticsReady) return undefined;
   const description = normalizeWorkspaceAiDescriptionText(graph.workspace_narrative.description || '');
-  const productValueSummary = usefulAiProductValueSummary(graph.workspace_narrative.product_value_summary, graph.workspace_narrative.product_value_summary, graph)
-    || inferAiProductValueFromNarrative(description, graph.workspace_narrative.product_value_summary, graph);
+  // AI-only (docs/cas/DETERMINISM-BOUNDARY.md): use the AI/manual product-value
+  // summary if present; if none, bail rather than synthesize a deterministic one.
+  const productValueSummary = usefulAiProductValueSummary(graph.workspace_narrative.product_value_summary, graph.workspace_narrative.product_value_summary, graph);
   if (!productValueSummary) return undefined;
   if (!isUsefulAiWorkspaceNarrative(description)) return undefined;
   if (!isWorkspaceNarrativeConsistentWithFacts(graph, description, productValueSummary) && !isGroundedAiWorkspaceNarrative(graph, description, productValueSummary)) return undefined;
@@ -2221,8 +2222,9 @@ function synthesizeWorkspaceNarrativeFromAiSemantics(graph: WorkspaceAnalysisGra
     .slice(0, 5)
     .map(app => app.name)
     .join(', ');
-  const summary = usefulAiProductValueSummary(graph.workspace_narrative.product_value_summary, graph.workspace_narrative.product_value_summary, graph)
-    || inferAiProductValueFromNarrative(graph.workspace_narrative.description, graph.workspace_narrative.product_value_summary, graph);
+  // AI-only (docs/cas/DETERMINISM-BOUNDARY.md): use the AI/manual product-value
+  // summary if present; if none, bail rather than synthesize a deterministic one.
+  const summary = usefulAiProductValueSummary(graph.workspace_narrative.product_value_summary, graph.workspace_narrative.product_value_summary, graph);
   if (!summary) return undefined;
   const summaryBody = stripProductNamePrefix(productName, summary).replace(/\.$/, '');
   const description = normalizeWorkspaceAiDescriptionText([
@@ -2707,16 +2709,13 @@ function workspaceNarrativeMentionsSourceBackedAccessTopology(graph: WorkspaceAn
   return matchedTopologyTerms >= 3 && hasAccessTerms;
 }
 
-function inferAiProductValueFromNarrative(description: string, fallback: string, graph?: WorkspaceAnalysisGraph): string {
-  const normalized = normalizeAiItemName(description);
-  if (hasSecureNetworkAccessSignal(normalized) && (!graph || workspaceHasSecureNetworkAccessSignal(graph))) {
-    return 'This workspace appears to provide managed secure access by coordinating users, devices, policies, desktop agents, broker services, and API control surfaces so access can be requested, routed, and enforced from source-backed application boundaries.';
-  }
-  if (/\b(codebase|cas|mcp|analysis|agent|agent context|analyzer)\b/.test(normalized) && (!graph || workspaceHasCodebaseIntelligenceSignal(graph))) {
-    return 'This workspace appears to provide codebase intelligence for humans and AI agents by turning analyzed project structure, behavior, risks, and relationships into compact guidance and visual inspection surfaces.';
-  }
-  return fallback;
-}
+// NOTE (docs/cas/DETERMINISM-BOUNDARY.md): the former
+// `inferAiProductValueFromNarrative` — which, when the AI product-value summary
+// was missing/rejected, substituted a hardcoded "managed secure access" or
+// "codebase intelligence" sentence based on keyword signals — was deleted. That
+// was a deterministically-authored comprehension fallback. Callers now fall back
+// only to the carried-forward AI/manual summary (or nothing), never to a
+// synthesized deterministic sentence.
 
 function usefulAiProductValueSummary(value: unknown, fallback?: string, graph?: WorkspaceAnalysisGraph): string | undefined {
   const text = cleanNarrativeString(value);
@@ -8934,16 +8933,18 @@ function buildWorkspaceNarrative(
     deployables.some(app => /worker|sync|listener|agent|coordinator|gateway|drop-server/.test(app.name)) ? 'background, agent, or coordination services' : '',
     runtimeComponents.length > 0 ? 'declared runtime and deployment topology' : '',
   ].filter(Boolean);
-  const productValueSummary = inferWorkspaceProductValueSummary(productName, domains, capabilities, applications, insights, codebases);
   return {
     source: 'ai-required-degraded',
     generated_at: generatedAt,
     confidence: codebases.length > 1 && applicationLinks.length > 0 ? 0.68 : 0.54,
     title: `${productName} workspace analysis`,
-    product_value_summary: productValueSummary,
-    // Comprehension is AI-only: the workspace description is left empty here and
-    // is written solely by enrichWorkspaceAnalysisNarrative (or that pass throws).
-    // The deterministic workspace description builder was deleted.
+    // Comprehension is AI-only (docs/cas/DETERMINISM-BOUNDARY.md): both the
+    // workspace description AND the product-value summary are left empty here and
+    // are written solely by enrichWorkspaceAnalysisNarrative (or that pass
+    // throws). The deterministic workspace description/product-value builders were
+    // deleted — there is no keyword-classified "financial/crypto/secure-access"
+    // frame to substitute when AI is unavailable.
+    product_value_summary: '',
     description: '',
     value_drivers: valueDrivers,
     domains: domains.map(domain => domain.name).slice(0, 12),
@@ -8971,118 +8972,12 @@ function joinHumanReadableList(items: string[]): string {
   return `${list.slice(0, -1).join(', ')}, and ${list[list.length - 1]}`;
 }
 
-function inferWorkspaceProductValueSummary(
-  productName: string,
-  domains: WorkspaceDomain[],
-  capabilities: WorkspaceCapability[],
-  applications: SystemApplication[],
-  insights: SystemInsight[],
-  codebases: SystemCodebase[] = [],
-): string {
-  const text = normalizeAiItemName([
-    productName,
-    domains.map(domain => domain.name).join(' '),
-    capabilities.map(capability => `${capability.name} ${capability.description}`).join(' '),
-    applications.map(app => app.name).join(' '),
-    insights.map(insight => insight.title).join(' '),
-  ].join(' '));
-  const accessSignals = countUniqueMatches(text, [
-    /\bzero trust\b/,
-    /\bnetwork access\b/,
-    /\baccess request\b/,
-    /\bcoordinator\b/,
-    /\bgateway\b/,
-    /\bbroker\b/,
-    /\brelay\b/,
-    /\bagent\b/,
-    /\bdevice\b/,
-    /\bpolicy\b/,
-    /\bclient service\b/,
-    /\bdesktop installation\b/,
-    /\bidentity\b/,
-    /\bauth(?:entication|orization)?\b/,
-  ]);
-  const financeSignals = countUniqueMatches(text, [
-    /\bfinance\b/,
-    /\bfinancial\b/,
-    /\bportfolio\b/,
-    /\bcrypto\b/,
-    /\btrade\b/,
-    /\btrading\b/,
-    /\binvest(?:ing|ment)?\b/,
-    /\bliquidation\b/,
-    /\border\b/,
-    /\btax stash\b/,
-    /\bbilling\b/,
-    /\bpayment\b/,
-    /\binvoice\b/,
-    /\bsettlement\b/,
-    /\baccount sync\b/,
-  ]);
-  const codebaseSignals = countUniqueMatches(text, [
-    /\bcodebase\b/,
-    /\bcas\b/,
-    /\bworkspace analysis\b/,
-    /\bagent context\b/,
-    /\banalyzer\b/,
-    /\bmcp\b/,
-  ]);
-  const primarySemanticText = normalizeAiItemName([
-    productName,
-    codebases.map(codebase => codebase.name).join(' '),
-    domains.slice(0, 8).map(domain => `${domain.name} ${domain.description}`).join(' '),
-    capabilities.slice(0, 8).map(capability => `${capability.name} ${capability.description}`).join(' '),
-  ].join(' '));
-  const primaryFinanceSignals = countUniqueMatches(primarySemanticText, [
-    /\bfinance\b/,
-    /\bfinancial\b/,
-    /\bportfolio\b/,
-    /\bcrypto\b/,
-    /\binvest(?:ing|ment)?\b/,
-    /\bliquidation\b/,
-    /\border\b/,
-    /\bpayment\b/,
-    /\bpurchase\b/,
-    /\btrading?\b/,
-  ]);
-  if (codebaseSignals >= 4) {
-    return `${productName} is a codebase-intelligence workspace that turns repo analyses into graph, risk, idiom, and work-context context for humans and AI agents.`;
-  }
-  // Crypto / digital-asset frame is decided before the generic finance frame.
-  // Blockchain RPC ports (8545/8546/30303/8899...) and blockchain-node
-  // deployables are near-unambiguous proof; otherwise a cluster of crypto
-  // vocabulary (wallet, custody, on-chain, token, liquidation, exchange, defi)
-  // in product facts is enough. Without this gate, crypto systems collapse into
-  // the bland "financial application workspace" label (the Soon regression).
-  const cryptoStrongSignals = countUniqueMatches(text, CRYPTO_STRONG_PATTERNS);
-  const appPortTokens = normalizePortTokens(applications.flatMap(app => app.ports));
-  const hasBlockchainRpcPort = appPortTokens.some(port => CRYPTO_RPC_PORTS.has(port));
-  const hasBlockchainNode = applications.some(app =>
-    CRYPTO_CHAIN_PATTERN.test(String(app.name || '')) && CRYPTO_NODE_PATTERN.test(String(app.name || ''))
-  );
-  const detectedChains = [...new Set(applications
-    .map(app => (String(app.name || '').match(CRYPTO_CHAIN_PATTERN) || [])[1])
-    .filter(Boolean)
-    .map(chain => String(chain).toLowerCase()))];
-  const cryptoFrameLikely = hasBlockchainRpcPort || hasBlockchainNode || cryptoStrongSignals >= 2;
-  if (cryptoFrameLikely) {
-    const chainText = detectedChains.length ? ` across ${detectedChains.slice(0, 4).join(', ')} node connections` : ' across blockchain node connections';
-    return `${productName} is a crypto / digital-asset workspace that manages on-chain assets, wallets and custody, trading, liquidation, and portfolio flows${chainText}, fronted by user-facing surfaces, APIs, and background workers.`;
-  }
-  const secureAccessFrameLikely = accessSignals >= 4 && hasSecureNetworkAccessSignal(text);
-  const financeFrameLikely = financeSignals >= 3 && (
-    primaryFinanceSignals >= 2 ||
-    (financeSignals >= 4 && !secureAccessFrameLikely)
-  );
-  if (financeFrameLikely) {
-    return `${productName} appears to be a financial application workspace that coordinates account, portfolio, transaction, payment, and reporting flows across user-facing surfaces, APIs, workers, and data stores.`;
-  }
-  if (secureAccessFrameLikely) {
-    return `${productName} is a secure network-access workspace that coordinates users, devices, policies, gateways, agents, and API control surfaces so access can be requested, brokered, and enforced across desktop and service deployables.`;
-  }
-  const topCapabilities = capabilities.slice(0, 3).map(capability => capability.name.toLowerCase()).join(', ');
-  return `${productName} appears to coordinate ${topCapabilities || 'the primary product capabilities'} across the analyzed deployables, APIs, data entities, and runtime infrastructure.`;
-}
+// NOTE (docs/cas/DETERMINISM-BOUNDARY.md): the former
+// `inferWorkspaceProductValueSummary` keyword classifier — which authored a
+// deterministic "financial / crypto / secure-access / codebase-intelligence"
+// product-value sentence from vocabulary matches — was deleted. Comprehension
+// (including the workspace product-value summary) is AI-only or throw; a
+// deterministically-authored frame is never substituted.
 
 function countUniqueMatches(text: string, patterns: RegExp[]): number {
   return patterns.reduce((count, pattern) => count + (pattern.test(text) ? 1 : 0), 0);

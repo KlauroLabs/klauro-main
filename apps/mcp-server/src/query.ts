@@ -1784,7 +1784,12 @@ export function productMapToMarkdown(map: CASProductMap): string {
 
   if (map.runtime_topology && map.runtime_topology.deployables.length > 0) {
     lines.push('');
-    lines.push(`## Runtime Topology (${map.runtime_topology.edge_count} infra->code edges)`);
+    const commTotal = map.runtime_topology.communication?.counts.total || 0;
+    lines.push(
+      `## Runtime Topology (${map.runtime_topology.edge_count} infra->code edges` +
+        (commTotal > 0 ? `, ${commTotal} communication seams` : '') +
+        ')'
+    );
     for (const deployable of map.runtime_topology.deployables) {
       lines.push(`- **${deployable.name}**`);
       const facts: Array<[string, string[]]> = [
@@ -1799,6 +1804,21 @@ export function productMapToMarkdown(map: CASProductMap): string {
       for (const [label, values] of facts) {
         if (values.length > 0) lines.push(`  - ${label}: ${values.join(', ')}`);
       }
+    }
+    const comm = map.runtime_topology.communication;
+    if (comm && comm.edges.length > 0) {
+      lines.push('');
+      lines.push(
+        `### Communication graph (${comm.counts.total} seams: ${comm.counts.sync} sync / ${comm.counts.async} async / ${comm.counts.passive} passive)`
+      );
+      for (const edge of comm.edges.slice(0, 25)) {
+        const breakdown = (['sync', 'async', 'passive'] as const)
+          .filter(m => edge[m] > 0)
+          .map(m => `${edge[m]} ${m}`)
+          .join(', ');
+        lines.push(`- ${edge.source} -> ${edge.target} (${breakdown})`);
+      }
+      if (comm.edges.length > 25) lines.push(`- ...and ${comm.edges.length - 25} more edges`);
     }
   }
 

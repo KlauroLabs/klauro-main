@@ -3,6 +3,7 @@ import {
   CASEdge,
   CASProductMap,
   CASProductMapCapability,
+  CASProductMapCommunicationGraph,
   CASProductMapDeployableTopology,
   CASProductMapJourney,
   CASProductMapRuntimeTopology,
@@ -300,6 +301,52 @@ function edgeAttr(edge: CASEdge, key: string): string | undefined {
 }
 
 /**
+ * Project the deployable-to-deployable communication graph out of the
+ * communication-seams pass. This is a pure re-read of already-computed Camp-B
+ * structural facts (docs/cas/DETERMINISM-BOUNDARY.md): the seams pass already
+ * classified every exit-point / messaging / passive-state fact into sync/async/
+ * passive seams and rolled them up to a deployable-level inventory. We surface
+ * that inventory as the topology's edge graph — the infra RUNTIME_DEPENDS_ON
+ * links alone are sparse (often one or zero edges), while this carries HOW
+ * components talk (modality) and how much (per-modality counts). Returns
+ * undefined when no deployable-level seam inventory exists (nothing to add).
+ */
+function buildCommunicationGraph(cas: CASOutput): CASProductMapCommunicationGraph | undefined {
+  const inventory = cas.communication_seams?.deployable_inventory;
+  if (!inventory || inventory.counts.total === 0) return undefined;
+
+  const edges = [...inventory.component_seams]
+    .map(edge => ({
+      source: edge.source,
+      target: edge.target,
+      // Deterministic modality order (sync, async, passive) rather than the
+      // inventory's insertion order, so the same facts serialize identically.
+      modalities: (['sync', 'async', 'passive'] as const).filter(m => edge.modalities.includes(m)),
+      sync: edge.sync,
+      async: edge.async,
+      passive: edge.passive,
+      total: edge.total,
+    }))
+    // Busiest seams first; ties broken lexicographically for a stable order.
+    .sort(
+      (a, b) =>
+        b.total - a.total ||
+        a.source.localeCompare(b.source) ||
+        a.target.localeCompare(b.target),
+    );
+
+  return {
+    counts: {
+      sync: inventory.counts.sync,
+      async: inventory.counts.async,
+      passive: inventory.counts.passive,
+      total: inventory.counts.total,
+    },
+    edges,
+  };
+}
+
+/**
  * Derive a first-class runtime-topology view from the additive infra->code
  * edges (DEPLOYS, EXPOSES, ROUTES_TO, PROVISIONS_CHANNEL/DATABASE/STORAGE,
  * RUNTIME_DEPENDS_ON) that infra-topology-linker.ts appends to cas.edges.
@@ -440,7 +487,35 @@ function buildRuntimeTopology(cas: CASOutput): CASProductMapRuntimeTopology | un
 
   if (deployables.length === 0) return undefined;
 
-  return { edge_count: topologyEdges.length, deployables };
+  const communication = buildCommunicationGraph(cas);
+
+  // Enrich each deployable's depends_on with its outbound communication seams to
+  // OTHER named deployables — the sparse RUNTIME_DEPENDS_ON links miss most real
+  // runtime coupling. We only fold in edges whose target is itself a deployable
+  // in this topology (external targets like `external_api` stay in the top-level
+  // `communication` graph, not in depends_on, which means "peer deployables").
+  if (communication) {
+    const topologyNames = new Set(deployables.map(d => d.name));
+    const dependsOn = new Map<string, Set<string>>();
+    for (const edge of communication.edges) {
+      if (edge.source === edge.target) continue;
+      if (!topologyNames.has(edge.source) || !topologyNames.has(edge.target)) continue;
+      if (!dependsOn.has(edge.source)) dependsOn.set(edge.source, new Set());
+      dependsOn.get(edge.source)!.add(edge.target);
+    }
+    for (const deployable of deployables) {
+      const peers = dependsOn.get(deployable.name);
+      if (!peers) continue;
+      const merged = new Set([...deployable.depends_on, ...peers]);
+      deployable.depends_on = [...merged].sort((a, b) => a.localeCompare(b));
+    }
+  }
+
+  return {
+    edge_count: topologyEdges.length,
+    deployables,
+    ...(communication ? { communication } : {}),
+  };
 }
 
 export function buildProductMap(cas: CASOutput): CASProductMap {

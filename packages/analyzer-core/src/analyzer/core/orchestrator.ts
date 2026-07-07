@@ -13296,14 +13296,23 @@ export class AnalyzerOrchestrator {
       for (const token of this.signalTokens(node.name)) enforcementNameIndex.add(token);
     }
 
+    // Prefer framework/library-analyzer evidence: nodes the auth analyzer tagged
+    // as auth mechanisms (auth_strategy/guard, subcategories:['auth',kind],
+    // security_source on protected routes). Only when the auth analyzer produced
+    // NO evidence at all do we fall back to the legacy name vocabulary, so a repo
+    // whose framework the analyzer understands never depends on name spelling.
     const authVocabulary = [
       'auth', 'authentication', 'authenticate', 'authenticated', 'authenticator',
       'jwt', 'login', 'logout', 'session', 'token', 'oauth', 'sso', 'devise', 'warden',
     ];
-    const authNodes = securityNodes.filter(n => {
-      const tokens = this.signalTokens(n.name);
-      return authVocabulary.some(term => tokens.includes(term));
-    });
+    const evidenceAuthNodes = securityNodes.filter(n =>
+      this.hasAuthAnalyzerEvidence(n) && !this.hasAuthorizationAnalyzerEvidence(n));
+    const authNodes = evidenceAuthNodes.length > 0
+      ? evidenceAuthNodes
+      : securityNodes.filter(n => {
+        const tokens = this.signalTokens(n.name);
+        return authVocabulary.some(term => tokens.includes(term));
+      });
 
     const authenticatedEntryPoints = effectiveEntryPoints.filter(ep => ep.security?.authenticated);
 
@@ -13370,12 +13379,18 @@ export class AnalyzerOrchestrator {
       });
     }
 
+    // Authorization boundary: prefer analyzer evidence (auth_policy kind /
+    // policy_engine, e.g. Spring Security / Pundit / OPA). Fall back to the name
+    // vocabulary only when no policy-engine evidence exists.
     const permissionVocabulary = ['role', 'roles', 'permission', 'permissions', 'crud', 'access', 'pundit', 'cancan', 'cancancan'];
-    const permissionNodes = securityNodes.filter(n => {
-      const tokens = this.signalTokens(n.name);
-      return permissionVocabulary.some(term => tokens.includes(term)) ||
-        this.nameTokensIndicateAuthorizationActor(tokens);
-    });
+    const evidencePermissionNodes = securityNodes.filter(n => this.hasAuthorizationAnalyzerEvidence(n));
+    const permissionNodes = evidencePermissionNodes.length > 0
+      ? evidencePermissionNodes
+      : securityNodes.filter(n => {
+        const tokens = this.signalTokens(n.name);
+        return permissionVocabulary.some(term => tokens.includes(term)) ||
+          this.nameTokensIndicateAuthorizationActor(tokens);
+      });
 
     if (permissionNodes.length > 0) {
       boundaries.push({
@@ -13558,6 +13573,79 @@ export class AnalyzerOrchestrator {
   }
 
   /**
+   * DETERMINISM BOUNDARY (docs/cas/DETERMINISM-BOUNDARY.md): a node counts as
+   * authentication/authorization evidence when a framework/library analyzer
+   * TAGGED it as such — NOT when its name contains an auth-looking substring.
+   * The auth analyzer (analyzer/libraries/auth/auth-analyzer.ts:241-256) emits
+   * `type` ∈ {auth_strategy, auth_policy, guard} and stamps
+   * `metadata.auth_kind` / `metadata.library` / `metadata.subcategories:['auth',kind]`
+   * on every mechanism node; auth-protected routes carry
+   * `metadata.subcategories:['route','http','auth-protected']` +
+   * `metadata.security_source`. Keying on those fields is the same evidence-first
+   * rule as entity kind-tagging: understanding the framework beats regexing names.
+   */
+  private authMechanismKindOf(node: CASNode): 'auth_strategy' | 'auth_policy' | 'guard' | undefined {
+    if (node.type === 'auth_strategy' || node.type === 'auth_policy' || node.type === 'guard') {
+      return node.type;
+    }
+    const authKind = (node.metadata as any)?.auth_kind;
+    if (authKind === 'auth_strategy' || authKind === 'auth_policy' || authKind === 'guard') {
+      return authKind;
+    }
+    return undefined;
+  }
+
+  /** True when a framework/library analyzer tagged this node as an auth mechanism. */
+  private hasAuthAnalyzerEvidence(node: CASNode): boolean {
+    if (this.authMechanismKindOf(node)) return true;
+    const metaSubs = ((node.metadata as any)?.subcategories || []) as string[];
+    if (metaSubs.includes('auth') || metaSubs.includes('auth-protected')) return true;
+    if ((node.metadata as any)?.security_source) return true;
+    const nodeSubs = (node.subcategories || []);
+    return nodeSubs.includes('auth') || nodeSubs.includes('auth-protected');
+  }
+
+  /** True when a framework/library analyzer tagged this node as an authorization (policy) mechanism. */
+  private hasAuthorizationAnalyzerEvidence(node: CASNode): boolean {
+    if (this.authMechanismKindOf(node) === 'auth_policy') return true;
+    // Spring Security / Pundit / OPA policy engines flag policy_engine on the node.
+    if ((node.metadata as any)?.policy_engine === true) return true;
+    return false;
+  }
+
+  /** Does any member node of a capability group carry auth-analyzer evidence? */
+  private capabilityHasAuthEvidence(nodes: CASNode[]): boolean {
+    return nodes.some(node => this.hasAuthAnalyzerEvidence(node));
+  }
+
+  /**
+   * The auth METHOD (jwt/session/oauth/...) for a security context, derived from
+   * the auth analyzer's identified library — NOT from a substring of the node
+   * name. `metadata.library` (displayName) and `metadata.auth_library` (rule
+   * name) are the analyzer's own closed-vocabulary facts; we map that known
+   * identity to its method family. Returns undefined when no library evidence
+   * exists (caller then records the honest 'custom').
+   */
+  private authMethodFromEvidence(node: CASNode): string | undefined {
+    const meta = (node.metadata as any) || {};
+    const identity = String(meta.auth_library || meta.library || meta.security_source || '').toLowerCase();
+    if (!identity) return undefined;
+    // Rule names (auth-analyzer.ts AUTH_RULES) and their displayName equivalents.
+    if (identity.includes('jsonwebtoken') || identity.includes('express-jwt') || identity.includes('pyjwt') ||
+      identity.includes('jwt')) return 'jwt';
+    if (identity.includes('next-auth') || identity.includes('nextauth') || identity.includes('lucia') ||
+      identity.includes('session')) return 'session';
+    if (identity.includes('auth0') || identity.includes('clerk') || identity.includes('authlib') ||
+      identity.includes('oauth')) return 'oauth';
+    if (identity.includes('passport')) return 'passport';
+    if (identity.includes('firebase')) return 'firebase';
+    if (identity.includes('spring-security') || identity.includes('spring security') ||
+      identity.includes('pundit') || identity.includes('devise') || identity.includes('django') ||
+      identity.includes('flask')) return 'framework';
+    return 'custom';
+  }
+
+  /**
    * Security boundaries are anchored on code that ENFORCES access decisions
    * (guards, middleware, policies, before_action filters, devise/warden,
    * permission configuration), never on domain models whose names merely
@@ -13565,6 +13653,12 @@ export class AnalyzerOrchestrator {
    * `PaymentAuthorization` are commerce domain models, not enforcement points.
    */
   private hasSecurityEnforcementSemantics(node: CASNode): boolean {
+    // Framework/library-analyzer evidence first: an auth-analyzer-tagged
+    // mechanism node (auth_strategy/auth_policy/guard + metadata.auth_kind /
+    // subcategories:['auth',kind]) IS an enforcement point regardless of its
+    // name. This is the evidence path — the name-keyword vocabulary below is a
+    // legacy last-resort for nodes no analyzer tagged.
+    if (this.hasAuthAnalyzerEvidence(node)) return true;
     const subcategories = (node.subcategories || []).map(s => s.toLowerCase());
     if (node.type === 'guard' || node.type === 'middleware') return true;
     if (['guard', 'middleware', 'permission', 'policy', 'before_action', 'before_filter', 'ability'].some(s => subcategories.includes(s))) {
@@ -13604,23 +13698,30 @@ export class AnalyzerOrchestrator {
     return ['policy', 'ability'].some(term => head === term || tail === term);
   }
 
+  /**
+   * The mechanism label is the auth analyzer's OWN identification of the library
+   * (`metadata.library` = "JWT token guard", "Passport strategy", "Spring
+   * Security policy", ...) or the route's `security_source`. That is a
+   * deterministic framework/library FACT, not a keyword guess on the node name.
+   * When no analyzer stamped a library (e.g. a declared-guard marker with no
+   * resolved code), we return a neutral structural label — never a name-regexed
+   * mechanism sub-type.
+   */
+  private authMechanismLibrary(node: CASNode): string | undefined {
+    const meta = (node.metadata as any) || {};
+    const library = meta.library || meta.security_source || meta.auth_library;
+    return typeof library === 'string' && library.trim() ? library.trim() : undefined;
+  }
+
   private inferAuthMechanism(node: CASNode): string {
-    const nameLower = node.name.toLowerCase();
-    if (nameLower.includes('jwt')) return 'JWT validation';
-    if (nameLower.includes('session')) return 'Session-based authentication';
-    if (nameLower.includes('token')) return 'Token-based authentication';
-    if (nameLower.includes('oauth')) return 'OAuth authentication';
-    if (nameLower.includes('login')) return 'Login authentication';
-    return 'Authentication check';
+    return this.authMechanismLibrary(node) || 'Authentication enforcement point';
   }
 
   private inferAuthzMechanism(node: CASNode): string {
-    const nameLower = node.name.toLowerCase();
-    if (nameLower.includes('role')) return 'Role-based access control';
-    if (nameLower.includes('permission')) return 'Permission-based access control';
-    if (nameLower.includes('crud')) return 'CRUD permission enforcement';
-    if (nameLower.includes('policy')) return 'Policy-based access control';
-    return 'Authorization check';
+    const library = this.authMechanismLibrary(node);
+    if (library) return library;
+    if ((node.metadata as any)?.policy_engine === true) return 'Policy engine authorization';
+    return 'Authorization enforcement point';
   }
 
   private buildSecuritySummary(
@@ -14036,7 +14137,8 @@ export class AnalyzerOrchestrator {
 
       const category = this.inferCapabilityCategory(group.entryPoints, resourceKey);
 
-      const capabilityName = this.formatDomainCapabilityName(resourceKey, group.name, operations, relatedEntities.length, projectPath);
+      const relatedNodes = productNodes.filter(node => relatedNodeIds.has(node.id));
+      const capabilityName = this.formatDomainCapabilityName(resourceKey, group.name, operations, relatedEntities.length, projectPath, relatedNodes);
 
       capabilities.push({
         id: nextCapabilityId({ name: capabilityName, related_domains: [resourceKey] }),
@@ -14776,7 +14878,7 @@ export class AnalyzerOrchestrator {
           path_or_command: node.source?.file,
         }));
       const category = this.inferTerminalCapabilityCategory(key, uniqueNodes, uniqueEntities);
-      const capabilityName = this.formatTerminalCapabilityName(key, group.label, operations, uniqueEntities, projectPath);
+      const capabilityName = this.formatTerminalCapabilityName(key, group.label, operations, uniqueEntities, projectPath, uniqueNodes);
       if ((!this.namedSystemCapabilityForDomain(key, projectPath) && this.isGenericCapabilityResourceKey(key, capabilityName)) ||
         this.isProjectNameCapabilityName(capabilityName, projectPath)) {
         continue;
@@ -15313,10 +15415,16 @@ export class AnalyzerOrchestrator {
     label: string,
     operations: SystemCapability['operations'],
     entities: CASDataEntity[],
-    projectPath?: string
+    projectPath?: string,
+    nodes: CASNode[] = []
   ): string {
     const namedDomain = this.namedSystemCapabilityForDomain(key, projectPath);
     if (namedDomain) return namedDomain;
+
+    // Authentication is labeled from framework/library-analyzer EVIDENCE — a
+    // member node the auth analyzer tagged (auth_strategy/guard/auth_policy) —
+    // never from an /auth|login|jwt/ regex on the key/name/operation text.
+    const hasAuthEvidence = this.capabilityHasAuthEvidence(nodes);
 
     const lower = label.toLowerCase();
     const operationText = operations.map(operation => operation.action).join(' ').toLowerCase();
@@ -15341,9 +15449,11 @@ export class AnalyzerOrchestrator {
       return `${this.humanizeDomainKey(key)} Integration`;
     }
     if (/^(rpc|node-rpc|solana-rpc)$/.test(key)) return 'RPC Connectivity';
-    if (lower === 'auth') return 'Authentication';
-    if (lower === 'login') return 'Login';
-    if (/\b(auth|login|session|oauth|jwt)\b/.test(`${lower} ${operationText}`)) {
+    // Authentication ONLY when member nodes carry auth-analyzer evidence; a name
+    // like `auth`/`login` with no auth mechanism node is left to normal labeling
+    // (and the AI comprehension pass) rather than keyword-stamped.
+    if (hasAuthEvidence) {
+      if (lower === 'auth' || lower === 'login') return 'Authentication';
       return this.appendCapabilitySuffix(label, 'Authentication');
     }
     if (/\b(settle|settlement)\b/.test(operationText)) {
@@ -15378,8 +15488,12 @@ export class AnalyzerOrchestrator {
     fallbackLabel: string,
     operations: SystemCapability['operations'],
     entityCount = 0,
-    projectPath?: string
+    projectPath?: string,
+    nodes: CASNode[] = []
   ): string {
+    // Authentication is labeled from auth-analyzer evidence on member nodes, not
+    // from an /auth|login|jwt|token/ regex on the operation text.
+    const hasAuthEvidence = this.capabilityHasAuthEvidence(nodes);
     const namedDomain = this.namedSystemCapabilityForDomain(key, projectPath);
     if (namedDomain) return namedDomain;
     const operationText = [
@@ -15403,7 +15517,7 @@ export class AnalyzerOrchestrator {
       .replace(/\s+/g, ' ')
       .trim() || this.humanizeDomainKey(key);
 
-    if (/\b(auth|login|logout|session|oauth|jwt|password|token)\b/.test(operationText)) return 'Authentication';
+    if (hasAuthEvidence) return 'Authentication';
     if (/\b(settle|settlement)\b/.test(operationText)) return this.appendCapabilitySuffix(label, 'Settlement');
     if (/\b(rebalance|allocation|allocate|optimi[sz]e)\b/.test(operationText)) return this.appendCapabilitySuffix(label, 'Rebalancing');
     if (/\b(report|analytics|analysis|metric|insight)\b/.test(operationText)) return this.appendCapabilitySuffix(label, 'Reporting');
@@ -20501,20 +20615,24 @@ export class AnalyzerOrchestrator {
       return securityKeywords.some(kw => nameLower.includes(kw));
     });
 
-    const authNodes = securityNodes.filter(n => {
-      const name = n.name.toLowerCase();
-      return name.includes('auth') || name.includes('login') || name.includes('session') || name.includes('token');
-    });
+    // Prefer framework/library-analyzer evidence for the auth node set. Only fall
+    // back to the name substrings when the auth analyzer produced no evidence.
+    const evidenceAuthNodes = nodes.filter(n => this.hasAuthAnalyzerEvidence(n));
+    const authNodes = evidenceAuthNodes.length > 0
+      ? evidenceAuthNodes
+      : securityNodes.filter(n => {
+        const name = n.name.toLowerCase();
+        return name.includes('auth') || name.includes('login') || name.includes('session') || name.includes('token');
+      });
 
     if (authNodes.length > 0) {
       const methods = new Set<string>();
       for (const node of authNodes) {
-        const name = node.name.toLowerCase();
-        if (name.includes('jwt') || name.includes('token')) methods.add('jwt');
-        if (name.includes('session')) methods.add('session');
-        if (name.includes('oauth')) methods.add('oauth');
-        if (name.includes('basic')) methods.add('basic');
-        if (name.includes('api') && name.includes('key')) methods.add('api_key');
+        // The method is derived from the analyzer's OWN mechanism identity
+        // (metadata.library / auth_library rule name) when present — a structural
+        // fact — rather than substring-matching the node name.
+        const method = this.authMethodFromEvidence(node);
+        if (method) methods.add(method);
       }
       if (methods.size === 0) methods.add('custom');
 
@@ -20537,10 +20655,13 @@ export class AnalyzerOrchestrator {
       });
     }
 
-    const authzNodes = securityNodes.filter(n => {
-      const name = n.name.toLowerCase();
-      return name.includes('role') || name.includes('permission') || name.includes('guard') || name.includes('authorize') || name.includes('policy');
-    });
+    const evidenceAuthzNodes = nodes.filter(n => this.hasAuthorizationAnalyzerEvidence(n));
+    const authzNodes = evidenceAuthzNodes.length > 0
+      ? evidenceAuthzNodes
+      : securityNodes.filter(n => {
+        const name = n.name.toLowerCase();
+        return name.includes('role') || name.includes('permission') || name.includes('guard') || name.includes('authorize') || name.includes('policy');
+      });
 
     if (authzNodes.length > 0) {
       const roles = new Set<string>();

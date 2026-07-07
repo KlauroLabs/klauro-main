@@ -1012,10 +1012,41 @@ export interface CASProductMap {
 }
 
 export interface CASProductMapRuntimeTopology {
-  /** Total infra->code topology edges backing this section. */
+  /** Total infra->code topology edges backing the per-deployable buckets below. */
   edge_count: number;
   /** One entry per deployable that participates in at least one topology edge. */
   deployables: CASProductMapDeployableTopology[];
+  /**
+   * The deployable-to-deployable communication graph, drawn deterministically
+   * from the communication-seams pass (Camp-B structural facts). Each edge is a
+   * real seam between two components with its per-modality counts, so the
+   * topology surfaces HOW deployables talk (sync/async/passive) and how much,
+   * not just the sparse infra RUNTIME_DEPENDS_ON links. Present only when the
+   * analysis carried a deployable-level seam inventory.
+   */
+  communication?: CASProductMapCommunicationGraph;
+}
+
+export interface CASProductMapCommunicationGraph {
+  /** Total classified seams underlying this graph, by modality. */
+  counts: { sync: number; async: number; passive: number; total: number };
+  /** Component-to-component edges (deployable-to-deployable, or to an external
+   *  target like `external_api`/an SDK), each with its dominant modality and
+   *  per-modality seam counts. Sorted by total seams descending. */
+  edges: CASProductMapCommunicationEdge[];
+}
+
+export interface CASProductMapCommunicationEdge {
+  /** Component that initiates / writes (a deployable name, module, or repo). */
+  source: string;
+  /** Component that serves / reads, or the external target. */
+  target: string;
+  /** Distinct modalities carried on this edge. */
+  modalities: ('sync' | 'async' | 'passive')[];
+  sync: number;
+  async: number;
+  passive: number;
+  total: number;
 }
 
 export interface CASProductMapDeployableTopology {
