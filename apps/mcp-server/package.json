@@ -1,6 +1,6 @@
 {
   "name": "@klauro/mcp-server",
-  "version": "1.0.49",
+  "version": "1.0.50",
   "private": true,
   "description": "MCP server for Klauro codebase analysis",
   "main": "dist/index.cjs",
