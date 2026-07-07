@@ -1227,7 +1227,31 @@ export async function analyzeProjectLayered(projectPath: string, displayName?: s
 
   const restPromise = l0Promise.then(async () => {
     const { buildLayersReady } = await import('./layered-analysis');
-    const deferred = await analyzeProjectDeferred(projectPath, displayName);
+
+    // WARM PATH: when a previous COMPLETE analysis exists for this workspace,
+    // take the incremental pipeline instead of a full deferred pass. Change
+    // detection is content-hash based, so a customer's warm re-push (snapshot
+    // rewritten, few files actually different) analyzes only the changed files
+    // — seconds instead of a full re-analysis. Falls through to the full
+    // deferred pass on any doubt (no previous, L0-only stub, or incremental
+    // throwing) so cold behavior is unchanged.
+    const previous = await loadAnalysis(projectPath, { preferCache: true }).catch(() => null);
+    const hasCompletePrevious = Boolean(
+      previous && (previous.layers_ready?.complete ?? true) && (previous.nodes?.length ?? 0) > 0
+    );
+    let deferred: DeferredAnalysisResult;
+    if (hasCompletePrevious) {
+      try {
+        const incremental = await analyzeProjectIncremental(projectPath, displayName);
+        deferred = { output: incremental.output, enrichment: Promise.resolve() };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(`[Klauro] warm incremental pass failed for ${projectPath} (${message}); falling back to full deferred analysis`);
+        deferred = await analyzeProjectDeferred(projectPath, displayName);
+      }
+    } else {
+      deferred = await analyzeProjectDeferred(projectPath, displayName);
+    }
 
     // Stamp the full ladder onto the landed CAS: L1-L4 are ready the moment
     // orchestrateAnalysis returns (they're produced as one entangled block —
