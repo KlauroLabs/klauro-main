@@ -57,3 +57,8 @@ apps/marketing-site/node_modules/
 breadth-codex*.md
 # Release packing output (klauro tarball + manifest staged for VPS upload)
 apps/mcp-server/.pack/
+
+# Untracked build/output artifacts
+**/tsconfig.tsbuildinfo
+logs/
+apps/mcp-server/src/gauntlet/scorecard-out/
