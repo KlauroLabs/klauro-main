@@ -122,12 +122,31 @@ test('reanalyze re-runs on the last uploaded snapshot, never touching project.lo
     assert.equal(linkRes.statusCode, 201);
     const linkedProject = JSON.parse(linkRes.body).project as { id: string };
 
+    // Reanalyze is ASYNC (task: large-repo reanalyze never persisted): it answers
+    // 202/accepted in seconds and runs the full layered analysis (L0->L1-4->L5) in
+    // the background so it survives the client/edge timeout that a synchronous
+    // multi-minute 27k-node rebuild would blow past. The fresh CAS lands via the
+    // background task; clients poll GET /api/projects/:id/analysis for completion.
     const reanalyzeRes = await request(port, 'POST', `/api/projects/${linkedProject.id}/reanalyze`, {}, token);
-    assert.equal(reanalyzeRes.statusCode, 200);
+    assert.equal(reanalyzeRes.statusCode, 202, 'reanalyze must accept immediately, never block on the full analysis');
     const reanalyzeBody = JSON.parse(reanalyzeRes.body);
-    assert.equal(reanalyzeBody.status, 'success');
+    assert.equal(reanalyzeBody.status, 'accepted');
     assert.equal(reanalyzeBody.analysis_id, analyzeResult.analysis_id);
-    assert.ok(reanalyzeBody.nodes > 0, 'reanalyze should produce a non-empty CAS from the stored snapshot');
+
+    // Poll the analysis endpoint until the background reanalyze has landed a
+    // real CAS (proving the fresh analysis persists despite the async accept).
+    let landed = false;
+    for (let attempt = 0; attempt < 80 && !landed; attempt++) {
+      const analysisRes = await request(port, 'GET', `/api/projects/${linkedProject.id}/analysis`, undefined, token);
+      assert.equal(analysisRes.statusCode, 200);
+      const analysisBody = JSON.parse(analysisRes.body) as { status?: string; summary?: { nodes?: number } };
+      if ((analysisBody.status === 'ready' || analysisBody.status === 'populating') && (analysisBody.summary?.nodes ?? 0) > 0) {
+        landed = true;
+        break;
+      }
+      await new Promise<void>(resolve => setTimeout(resolve, 250));
+    }
+    assert.ok(landed, 'background reanalyze should persist a non-empty CAS the poller can read');
   } finally {
     await new Promise<void>(resolve => server.close(() => resolve()));
     if (previousRemoteData === undefined) delete process.env.KLAURO_REMOTE_ANALYZER_DATA;

@@ -1763,46 +1763,108 @@ async function handleAccountApi(
       }
     }
     const displayName = resolveDisplayName(undefined, project.name);
-    let result: Awaited<ReturnType<typeof analyzeProjectIncremental>>;
-    let manifest: SourceManifest;
-    let baseCommit: string | undefined;
+    const dataDirForBackground = dataDir;
+    const workspaceIdForBackground = project.workspace_id;
+
+    // ASYNC REANALYZE (task: large-repo reanalyze never persisted). A 27k-node
+    // full rebuild (which an analyzer-build version bump forces — see
+    // orchestrator.fullRebuildReasonForPreviousOutput) + inline AI comprehension
+    // takes minutes, far exceeding the Cloudflare edge (~125s) and the client
+    // POST timeout (~30s). The OLD code awaited analyzeProjectIncremental
+    // SYNCHRONOUSLY inside this handler and only returned 200 on completion, so
+    // the connection dropped (524/000) long before the fresh analysis landed and
+    // large repos stayed frozen at their old timestamp forever.
+    //
+    // Fix: answer 202 immediately and run the full layered analysis in the
+    // background (survives client disconnect). Uses analyzeProjectLayered — the
+    // SAME entrypoint the async /v1/analyze path uses — so L0 lands in seconds,
+    // then L1-L4, then L5 AI comprehension, each stamping layers_ready as it
+    // completes and persisting via saveAnalysis. Clients poll
+    // GET /api/projects/{id}/analysis (layers_ready.L5) for completion. The
+    // version-bump full-rebuild invalidation (orchestrator ~2133) fires inside
+    // analyzeProjectIncremental/Layered exactly as before, so a fresh deploy
+    // forces a fresh FULL analysis rather than reusing stale derived artifacts.
+    let manifestForResponse: SourceManifest;
+    let baseCommitForResponse: string | undefined;
     if (sourceRoot === workspace) {
-      // Re-run analysis in place on the already-uploaded snapshot workspace.
-      result = await analyzeProjectIncremental(workspace, displayName);
-      manifest = await buildWorkspaceManifest(workspace);
+      manifestForResponse = await buildWorkspaceManifest(workspace);
     } else {
       // Operator fallback: source exists on this host — rebuild the snapshot
-      // from it and refresh the stored workspace.
+      // from it and refresh the stored workspace BEFORE the background analysis
+      // reads it (must complete before we answer so the workspace is coherent).
       const snapshot = await buildSourceSnapshot(sourceRoot);
       await fs.remove(workspace);
       await fs.ensureDir(workspace);
       await writeSnapshot(workspace, snapshot.files);
-      result = await analyzeProjectIncremental(workspace, displayName);
-      manifest = snapshot.manifest;
-      baseCommit = snapshot.base_commit;
+      manifestForResponse = snapshot.manifest;
+      baseCommitForResponse = snapshot.base_commit;
     }
-    const response: RemoteAnalyzeResponse = {
-      status: 'success',
-      analysis_id: analysisId,
-      analysis_revision: Date.now(),
-      analysis_type: result.wasFullRebuild ? 'full' : 'incremental',
-      base_commit: baseCommit,
-      manifest,
-      cas: result.output,
-      change_report: result.changeReport,
-    };
-    await appendProjectRevision(dataDir, response, 'local_commit_submission');
-    // This route is already project-scoped (getProjectForUser above), so the
-    // owning workspace is known directly — no analysis_id lookup needed.
-    workspaceAnalyses?.notifyProjectAnalysisLanded(project.workspace_id);
+
+    setImmediate(async () => {
+      try {
+        const layered = await analyzeProjectLayered(workspace, displayName);
+        // Wait for the full deterministic pipeline (L1-L4) so the persisted CAS
+        // is a real analysis, not just the L0 stub, before appending a revision.
+        const deferred = await layered.rest;
+        const backgroundResult: RemoteAnalyzeResponse = {
+          status: 'success',
+          analysis_id: analysisId,
+          analysis_revision: Date.now(),
+          analysis_type: 'full',
+          base_commit: baseCommitForResponse,
+          manifest: manifestForResponse,
+          cas: deferred.output,
+        };
+        if (dataDirForBackground) {
+          await appendProjectRevision(dataDirForBackground, backgroundResult, 'local_commit_submission');
+        }
+        // This route is already project-scoped, so the owning workspace is known
+        // directly — no analysis_id lookup needed.
+        workspaceAnalyses?.notifyProjectAnalysisLanded(workspaceIdForBackground);
+        if (dataDirForBackground) {
+          await appendAuditLog(dataDirForBackground, {
+            event: 'reanalyze',
+            analysis_id: analysisId,
+            project_id: project.id,
+            nodes: deferred.output.nodes.length,
+            edges: deferred.output.edges.length,
+            mode: 'async',
+          }).catch(() => {});
+        }
+        // Let the L5 AI-comprehension pass finish + re-stamp layers_ready. Its
+        // failure is a VISIBLE terminal state (L5 'error'), never a hang.
+        await deferred.enrichment.catch(() => {});
+        // Re-append the enriched revision + re-notify WAS so pollers and the
+        // workspace rollup see the comprehension-complete CAS, not just L1-L4.
+        if (dataDirForBackground) {
+          await appendProjectRevision(dataDirForBackground, {
+            ...backgroundResult,
+            analysis_revision: Date.now(),
+            cas: deferred.output,
+          }, 'local_commit_submission').catch(() => {});
+        }
+        workspaceAnalyses?.notifyProjectAnalysisLanded(workspaceIdForBackground);
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.error(`[Klauro] async reanalyze failed for ${analysisId}: ${detail}`);
+        if (dataDirForBackground) {
+          await appendAuditLog(dataDirForBackground, {
+            event: 'reanalyze_async_failed',
+            analysis_id: analysisId,
+            project_id: project.id,
+            error: detail.slice(0, 500),
+          }).catch(() => {});
+        }
+      }
+    });
+
     return {
-      statusCode: 200,
+      statusCode: 202,
       body: {
-        status: 'success',
+        status: 'accepted',
         analysis_id: analysisId,
-        analysis_revision: response.analysis_revision,
-        nodes: response.cas.nodes.length,
-        edges: response.cas.edges.length,
+        base_commit: baseCommitForResponse,
+        manifest: manifestForResponse,
       },
     };
   }
