@@ -1,11 +1,14 @@
 {
   "version": 1,
+  "kind": "project",
   "project": {
-    "name": "proof-of-concept"
+    "name": "proof-of-concept",
+    "id": "prj_wbW33m-wfETn1N41",
+    "workspaceId": "wsp_PWXpXfnPgDnf6lBC",
+    "organizationId": "wsp_PWXpXfnPgDnf6lBC"
   },
   "analyzer": {
-    "mode": "remote",
-    "serverUrl": "https://app.klauro.com",
+    "serverUrl": "https://mcp.klauro.com",
     "selfHosted": false
   },
   "source": {
@@ -44,7 +47,6 @@
       "**/.dart_tool/**",
       "**/.gradle/**",
       "**/Pods/**",
-      "**/bin/**",
       "**/obj/**",
       "**/.env",
       "**/.env.*",
@@ -76,7 +78,7 @@
   "embedding": {
     "enabled": true,
     "provider": "local",
-    "model": "klauro-local-hash-v1",
+    "model": "onnx-all-MiniLM-L6-v2",
     "apiKeyEnv": "KLAURO_EMBEDDING_API_KEY",
     "dimensions": 384,
     "maxDocumentChars": 8000,
@@ -91,5 +93,11 @@
   },
   "github": {
     "defaultBranchOnly": true
+  },
+  "conventions": {},
+  "fabric": {
+    "enabled": true,
+    "endpoint": "https://mcp.klauro.com",
+    "workspace": "Klauro"
   }
 }

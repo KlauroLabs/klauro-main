@@ -127,6 +127,15 @@ export type FabricSettingSource = 'explicit' | 'config' | 'env' | 'default';
 export interface ResolveFabricOptions {
   /** Directory to resolve the project config from (walks up). Default process.cwd(). */
   cwd?: string;
+  /**
+   * Additional directories to search for the project's .klaurorc BEFORE falling
+   * back to `cwd`/process.cwd(). Lets a globally-registered MCP server — whose
+   * process.cwd() is NOT inside the target repo — still find the repo's fabric
+   * config by anchoring on a repo path the tool call already knows (e.g. an
+   * analyzed project root). First directory that yields a config wins; each is
+   * walked UP like git, same as `cwd`. Undefined/empty = just use `cwd`.
+   */
+  searchDirs?: string[];
   /** Explicit remote endpoint — beats config and env. */
   explicitUrl?: string;
   /** Explicit token — beats env and the credential store. */
@@ -147,6 +156,16 @@ export interface ResolvedFabricSettings {
   configPath?: string;
   /** The raw fabric section from that config, when present. */
   fabric?: KlauroFabricConfig;
+  /**
+   * When `remote` is undefined, a human-readable reason the tier is LOCAL — so
+   * a caller can tell "configured-but-degraded" from "not configured". Set
+   * whenever local is the resolved tier: fabric enabled but no reachable
+   * endpoint in config, an explicit `fabric off`, or no .klaurorc found from
+   * any search root. Undefined only when `remote` IS set (tier is remote).
+   */
+  localReason?: string;
+  /** The directories that were searched (in order) for a .klaurorc, for diagnostics. */
+  searchedDirs?: string[];
 }
 
 /**
@@ -156,16 +175,32 @@ export interface ResolvedFabricSettings {
  */
 export async function resolveFabricSettings(options: ResolveFabricOptions = {}): Promise<ResolvedFabricSettings> {
   const env = options.env ?? process.env;
-  const found = findFabricProjectRoot(options.cwd ?? process.cwd());
+  // Search caller-provided repo roots FIRST (a globally-registered server whose
+  // process.cwd() is outside the repo can still find the repo's fabric config),
+  // then KLAURO_FABRIC_CWD, then cwd/process.cwd(). First hit wins. De-duped,
+  // order-preserving.
+  const searchRoots = [
+    ...(options.searchDirs ?? []),
+    ...(env.KLAURO_FABRIC_CWD ? [env.KLAURO_FABRIC_CWD] : []),
+    options.cwd ?? process.cwd(),
+  ].filter((d): d is string => Boolean(d && d.trim()));
+  const searchedDirs = [...new Set(searchRoots.map((d) => path.resolve(d)))];
+  let found: FabricProjectRoot | undefined;
+  for (const dir of searchedDirs) {
+    found = findFabricProjectRoot(dir);
+    if (found) break;
+  }
   let fabric: KlauroFabricConfig | undefined;
   let analyzerServerUrl: string | undefined;
+  let configLoadError: string | undefined;
   if (found) {
     try {
       const loaded = await loadKlauroConfig(found.root);
       fabric = loaded.config.fabric;
       analyzerServerUrl = loaded.config.analyzer.serverUrl;
-    } catch {
+    } catch (err) {
       // Malformed .klaurorc: behave as if absent (env chain still applies).
+      configLoadError = err instanceof Error ? err.message : String(err);
     }
   }
 
@@ -197,6 +232,7 @@ export async function resolveFabricSettings(options: ResolveFabricOptions = {}):
       workspaceSource,
       configPath: found?.configPath,
       fabric,
+      searchedDirs,
     };
   }
   if (fabric) {
@@ -210,18 +246,41 @@ export async function resolveFabricSettings(options: ResolveFabricOptions = {}):
           workspaceSource,
           configPath: found?.configPath,
           fabric,
+          searchedDirs,
         };
       }
+      // enabled but no endpoint resolvable — a real misconfiguration, not a
+      // deliberate local mode. Say so.
+      return {
+        workspace,
+        workspaceSource,
+        configPath: found?.configPath,
+        fabric,
+        searchedDirs,
+        localReason: `fabric.enabled is true in ${found?.configPath ?? '.klaurorc'} but no endpoint could be resolved (set fabric.endpoint or analyzer.serverUrl) — staying LOCAL.`,
+      };
     }
-    // fabric section present but disabled (or enabled with no resolvable
-    // endpoint): stay LOCAL, deliberately ignoring FAB_REMOTE_URL.
-    return { workspace, workspaceSource, configPath: found?.configPath, fabric };
+    // fabric section present but disabled: an explicit `klauro fabric off`.
+    return {
+      workspace,
+      workspaceSource,
+      configPath: found?.configPath,
+      fabric,
+      searchedDirs,
+      localReason: `fabric is disabled in ${found?.configPath ?? '.klaurorc'} (klauro fabric off) — LOCAL by design; run \`klauro fabric on\` to coordinate cross-machine.`,
+    };
   }
   const envRemote = getRemoteFabConfig(env);
   if (envRemote) {
-    return { remote: envRemote, remoteSource: 'env', workspace, workspaceSource, configPath: found?.configPath };
+    return { remote: envRemote, remoteSource: 'env', workspace, workspaceSource, configPath: found?.configPath, searchedDirs };
   }
-  return { workspace, workspaceSource, configPath: found?.configPath };
+  // No fabric config found anywhere and no env escape hatch: not configured for
+  // remote at all. Name the concrete cause so a caller can tell this apart from
+  // a configured-but-degraded fallback.
+  const localReason = configLoadError
+    ? `.klaurorc found (${found?.configPath}) but could not be parsed (${configLoadError}) — LOCAL fabric only.`
+    : `no .klaurorc fabric config found from ${searchedDirs.join(', ') || 'the server working directory'} — LOCAL fabric only (remote not configured). Run \`klauro fabric on\` in the repo, or ensure the server can reach the repo root (KLAURO_FABRIC_CWD).`;
+  return { workspace, workspaceSource, configPath: found?.configPath, searchedDirs, localReason };
 }
 
 /**

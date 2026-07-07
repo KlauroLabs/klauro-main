@@ -66,6 +66,7 @@ import { remoteActive, remoteCheck, remoteClaim, remoteRelease } from './coordin
 import { resolveFabricSettings } from './coordination/fabric-config';
 import { deriveActiveClaims } from './coordination/presence';
 import { detectConceptualConflicts, type AgentInFlightState, type ConceptualConflict, type ConflictCas, type SymbolChange } from './coordination/conceptual-conflict';
+import { computeAdvisoryOverlap, type AdvisoryOverlapFinding } from './context-fabric';
 import { captureInFlightChanges } from './coordination/in-flight-capture';
 import { planIntentMerge } from './coordination/intent-merge';
 import { partitionTasks, groupTasksByConcept, type PartitionCas, type PartitionTask } from './coordination/partitioner';
@@ -5532,8 +5533,116 @@ function registerTools(server: McpServer) {
   // escape hatch (CI) > local fabric with the stable 'poc' fallback (never
   // the cwd basename — that was the papercut that let a claim land under the
   // wrong workspace).
-  const advisoryFabricSettings = (workspace?: string) =>
-    resolveFabricSettings({ cwd: process.cwd(), explicitWorkspace: workspace });
+  // Resolve fabric settings for an advisory fab_* call. process.cwd() alone is
+  // fragile: a globally-registered MCP server whose cwd is NOT inside the repo
+  // would never find the repo's .klaurorc, so fabric silently stays LOCAL with
+  // no reason. Fix: seed the config search with the roots of already-analyzed
+  // projects (reusing the analysis registry — the same path resolution the
+  // analysis tools use), preferring one whose name/basename matches the
+  // requested workspace, so the repo's fabric config is found regardless of
+  // where the server process was launched. process.cwd() and KLAURO_FABRIC_CWD
+  // remain in the search chain (handled inside resolveFabricSettings), so the
+  // original cwd path is preserved and this only ADDS reach.
+  const advisoryFabricSettings = async (workspace?: string) => {
+    let searchDirs: string[] = [];
+    try {
+      const analyses = await listAnalyses();
+      const roots = analyses.map((a) => a.path).filter(Boolean);
+      if (workspace && workspace.trim()) {
+        const wsLower = workspace.trim().toLowerCase();
+        // Surface a repo whose registered name or directory basename matches the
+        // requested workspace first (best guess at "the repo this call is about"),
+        // then the rest as fallbacks.
+        const preferred = analyses
+          .filter((a) => a.name?.toLowerCase() === wsLower || nodePath.basename(a.path).toLowerCase() === wsLower)
+          .map((a) => a.path)
+          .filter(Boolean);
+        searchDirs = [...new Set([...preferred, ...roots])];
+      } else {
+        searchDirs = [...new Set(roots)];
+      }
+    } catch {
+      // Registry unreadable: fall back to the cwd/env chain only (unchanged behavior).
+    }
+    return resolveFabricSettings({ searchDirs, cwd: process.cwd(), explicitWorkspace: workspace });
+  };
+
+  /**
+   * CAS+WAS-backed advisory overlap for the LOCAL fab_* path — the blast-radius
+   * + cross-repo upgrade over the legacy path-only `checkEditLock`. Reuses the
+   * existing analysis machinery (`partitionCasForPath` for same-repo CAS,
+   * `resolveWorkspaceAnalysisForPaths` for the workspace WAS) and hands both to
+   * `computeAdvisoryOverlap` (context-fabric.ts).
+   *
+   * Return shape is a STRICT SUPERSET of `checkEditLock`'s `EditLockConflict[]`
+   * (agent_id, claim_id, paths, overlapping_paths preserved) so existing callers
+   * — `conflicts.length`, `conflicts.map(c => c.agent_id)`, the JSON `conflicts`
+   * field — keep working unchanged; the added fields (overlapping_symbols,
+   * reason, cas_derived, was_derived, shared_surface) are pure enrichment.
+   *
+   * Advisory + non-blocking + graceful: every resolution is best-effort and
+   * `computeAdvisoryOverlap` never throws, so on any failure this degrades to
+   * the plain path-only `checkEditLock` result (never fewer signals than before,
+   * never an error, never a gate).
+   */
+  const advisoryOverlapConflicts = async (
+    ws: string,
+    agentId: string,
+    claimPaths: string[],
+    claimSymbols: string[],
+  ): Promise<Array<AdvisoryOverlapFinding & { paths: string[] }>> => {
+    // Legacy path-only result is the guaranteed floor — we never return less.
+    const editLock = claimPaths.length ? await checkEditLock(ws, claimPaths, agentId) : [];
+    try {
+      const active = await getActiveClaims(ws);
+      const others = active.filter((c) => c.agent_id !== agentId);
+      // Nothing to compare against, or the caller declared no footprint at all:
+      // fall back to the legacy shape (as EditLockConflict already is).
+      if (others.length === 0 || (claimPaths.length === 0 && claimSymbols.length === 0)) {
+        return editLock.map((c) => ({
+          agent_id: c.agent_id,
+          claim_id: c.claim_id,
+          intent: others.find((o) => o.claim_id === c.claim_id)?.intent ?? '',
+          overlapping_paths: c.overlapping_paths,
+          overlapping_symbols: [],
+          reason: 'path' as const,
+          cas_derived: false,
+          was_derived: false,
+          paths: c.paths,
+        }));
+      }
+      // Same-repo CAS (best-effort; empty CAS => literal symbol/path overlap).
+      const cas = await partitionCasForPath(ws);
+      // Workspace WAS (best-effort; absent => cross-repo layer skipped).
+      let was: any | undefined;
+      try {
+        was = (await resolveWorkspaceAnalysisForPaths([ws])).selected ?? undefined;
+      } catch {
+        was = undefined;
+      }
+      const findings = computeAdvisoryOverlap(
+        { agent_id: agentId, paths: claimPaths, symbols: claimSymbols },
+        active,
+        cas,
+        {},
+        was,
+      );
+      return findings.map((f) => ({ ...f, paths: claimPaths }));
+    } catch {
+      // Any failure — degrade to the legacy path-only conflicts, never throw.
+      return editLock.map((c) => ({
+        agent_id: c.agent_id,
+        claim_id: c.claim_id,
+        intent: '',
+        overlapping_paths: c.overlapping_paths,
+        overlapping_symbols: [],
+        reason: 'path' as const,
+        cas_derived: false,
+        was_derived: false,
+        paths: c.paths,
+      }));
+    }
+  };
 
   server.registerTool(
     'fab_claim_work',
@@ -5585,8 +5694,10 @@ function registerTools(server: McpServer) {
       async function localClaim(degradeWarning?: string) {
       // Belt-and-suspenders (papercut fix (b)): scan for overlap BEFORE claiming
       // so an agent that skips fab_check_collision still gets the advisory
-      // signal. Advisory — the claim proceeds regardless.
-      const conflicts = claimPaths.length ? await checkEditLock(ws, claimPaths, agent_id) : [];
+      // signal. Advisory — the claim proceeds regardless. Now CAS+WAS-backed
+      // (blast-radius + cross-repo aware), a strict superset of the old
+      // path-only checkEditLock; degrades gracefully and never throws.
+      const conflicts = await advisoryOverlapConflicts(ws, agent_id, claimPaths, claimSymbols);
       const now = new Date().toISOString();
       const entry = await appendClaim(ws, {
         claim_id: `${ws}:${agent_id}`,
@@ -5601,10 +5712,15 @@ function registerTools(server: McpServer) {
         heartbeat_at: now,
       });
       const overlapWarning = conflicts.length
-        ? `ADVISORY: ${conflicts.length} other agent(s) already claim overlapping paths (${conflicts
-            .map((c) => c.agent_id)
-            .join(', ')}). Your claim still succeeded — coordinate before writing.`
+        ? `ADVISORY: ${conflicts.length} other agent(s) overlap your scope (${conflicts
+            .map((c) => `${c.agent_id}:${c.reason}`)
+            .join(', ')})${conflicts.some((c) => c.was_derived) ? ' [incl. cross-repo]' : conflicts.some((c) => c.cas_derived) ? ' [incl. call-graph blast-radius]' : ''}. Your claim still succeeded — coordinate before writing.`
         : undefined;
+      // Tier note, never silent: `degradeWarning` = remote configured but the
+      // remote claim failed (unreachable/401); otherwise settings.localReason =
+      // remote was never in play (not configured/disabled/config not found from
+      // server cwd) so peers on other machines can't see this claim.
+      const tierNote = degradeWarning || settings.localReason;
       return json({
         status: 'claimed',
         tier: 'local',
@@ -5615,7 +5731,7 @@ function registerTools(server: McpServer) {
         paths: entry.scope.paths,
         symbols: entry.scope.symbols,
         conflicts,
-        warning: [degradeWarning, overlapWarning].filter(Boolean).join(' ') || undefined,
+        warning: [tierNote, overlapWarning].filter(Boolean).join(' ') || undefined,
       });
       }
     })
@@ -5658,7 +5774,17 @@ function registerTools(server: McpServer) {
           degradeNote = `Remote fabric check failed (${msg}) — DEGRADED to the LOCAL view: claims from other machines are NOT visible in this result. `;
         }
       }
-      const conflicts = await checkEditLock(ws, paths || [], agent_id);
+      // CAS+WAS-backed advisory overlap (blast-radius + cross-repo aware), a
+      // strict superset of the old path-only checkEditLock; degrades gracefully
+      // and never throws. This preflight is paths-only (no symbols input), so
+      // pass [] for symbols — CAS still expands the paths' blast radius and the
+      // WAS still surfaces cross-repo shared-code/contract overlap.
+      const conflicts = await advisoryOverlapConflicts(ws, agent_id, paths || [], []);
+      // degradeNote = remote was configured but the call failed (unreachable/401).
+      // settings.localReason = remote was never in play (not configured/disabled/
+      // config not found from server cwd). Surface whichever applies so a local
+      // result is never silently ambiguous about cross-machine visibility.
+      const localTierNote = degradeNote || (settings.localReason ? `${settings.localReason} ` : '');
       return json({
         workspace: ws,
         tier: 'local',
@@ -5667,9 +5793,9 @@ function registerTools(server: McpServer) {
         ok: conflicts.length === 0,
         conflicts,
         note:
-          (degradeNote || '') +
+          localTierNote +
           (conflicts.length
-            ? `${conflicts.length} other agent(s) claim overlapping paths — advisory, coordinate before writing.`
+            ? `${conflicts.length} other agent(s) overlap your scope (${[...new Set(conflicts.map((c) => c.reason))].join(', ')})${conflicts.some((c) => c.was_derived) ? ' incl. cross-repo' : conflicts.some((c) => c.cas_derived) ? ' incl. call-graph blast-radius' : ''} — advisory, coordinate before writing.`
             : 'No conflicting active claims on those paths.'),
       });
     })
@@ -5716,7 +5842,10 @@ function registerTools(server: McpServer) {
         agent_id,
         released_count: released.length,
         released: released.map((r) => ({ claim_id: r.claim_id, intent: r.intent, paths: r.scope.paths })),
-        warning: degradeWarning,
+        // degradeWarning = remote release failed; settings.localReason = remote
+        // was never configured (so "released local only" is expected, not a
+        // failure). Either way, say why this was a local-only release.
+        warning: degradeWarning || settings.localReason,
       });
     })
   );
@@ -5764,7 +5893,12 @@ function registerTools(server: McpServer) {
       return json({
         workspace: ws,
         tier: 'local',
-        note: degradeNote,
+        // Never silent: if remote was expected but we fell back, degradeNote
+        // carries the runtime cause (unreachable/401); otherwise settings.localReason
+        // explains why local is the resolved tier (not configured / disabled /
+        // config not found from the server cwd). Only truly-local, correctly-
+        // configured runs have no note.
+        note: degradeNote || settings.localReason,
         count: active.length,
         active: active.map((c) => ({
           agent_id: c.agent_id,

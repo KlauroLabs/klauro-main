@@ -21,6 +21,9 @@ import type {
   CASOutput,
   CASProductMapDeployableTopology,
 } from '../../../packages/analyzer-core/src/types/cas.types';
+import { partitionTasks, type PartitionCas, type PartitionTask } from './coordination/partitioner';
+import type { WorkClaim } from './coordination/types';
+import type { CrossCodebaseSystemGraph } from './cross-codebase-analysis';
 
 // ---------------------------------------------------------------------------
 // Communication seams — one-line modality summary + a couple of top edges
@@ -340,4 +343,406 @@ export function buildSystemFitSummary(cas: CASOutput): SystemFitSummary | undefi
     ...(consistency ? { consistency } : {}),
     detail_tools: [...detailTools],
   };
+}
+
+// ---------------------------------------------------------------------------
+// CAS-backed advisory overlap — blast-radius + symbol/contract aware
+// ---------------------------------------------------------------------------
+//
+// The advisory fabric surface (fab_claim_work / fab_check_collision) detects
+// overlap today with `checkEditLock` (coordination/local-store.ts) — a PURE
+// STRING/PATH-PREFIX scan: it compares only the raw `scope.paths` of the
+// proposed claim against every active claim's raw `scope.paths`, ignoring
+// `scope.symbols` entirely and never consulting the analysis. That misses the
+// whole differentiation of Klauro's fabric: two agents editing functions in
+// the same CALL CHAIN collide even in DIFFERENT files (call-graph blast
+// radius), and two agents changing the same SYMBOL/contract collide
+// semantically even when their file paths are disjoint.
+//
+// The enforced surface (claim_work / check_collision) already sees this via
+// coordination/collision.ts's Detector 4 (detectBlastIntersections) and the
+// planner (plan_parallel_work) already sees it via coordination/partitioner.ts
+// (`partitionTasks` with `includeBlastRadius`, expanding each footprint one hop
+// over CAS "calls" edges). The advisory path was the odd one out.
+//
+// `computeAdvisoryOverlap` closes that gap by REUSING the partitioner — the
+// exact same blast-radius machinery plan_parallel_work runs — instead of
+// reinventing a call-graph walk here. Each active claim + the proposed claim
+// become PartitionTasks; `partitionTasks(..., { includeBlastRadius })` computes
+// their symbol/path footprints, expands them by one CAS hop, and reports every
+// conflict edge with its reason ('symbol' | 'path' | 'blast-radius'). We keep
+// only the edges touching the proposed claim and hand them back as awareness.
+//
+// STRICTLY ADVISORY: this is a pure function that RETURNS findings — it never
+// blocks, queues, gates, or throws. Callers use it exactly like `checkEditLock`
+// (surface the findings, proceed regardless).
+//
+// CROSS-REPO (WAS) LAYER (§4.2/§4.3/§7 SPEC-COORDINATION-FABRIC-V2): CAS
+// blast-radius is single-repo. But a fleet works a WORKSPACE: agent A edits a
+// shared type/lib in one repo, agent B edits its consumer in ANOTHER repo —
+// only the workspace analysis (WAS) sees that cross-deployable link and the
+// frozen cross-repo contract surface. CAS-only collision detection is blind to
+// exactly the fleet-scale collisions that matter most. When a WAS graph is
+// available for the claim's workspace, `computeAdvisoryOverlap` also folds in
+// two cross-repo signals, REUSING the WAS machinery (never reinventing it):
+//   (a) SHARED-CODE ROLLUP (`was.shared_code_rollup`): a claim touching a
+//       shared-library symbol (its `consumed_surface` / per-symbol
+//       `blast_radius`) overlaps any other claim touching a CONSUMER deployable
+//       of that symbol — the cross-repo shared-code blast radius the WAS builds.
+//   (b) FROZEN/SHARED CROSS-REPO CONTRACTS (`was.interfaces` + `was.links`): a
+//       claim touching one side of a cross-repo interface link (provided
+//       route/message/db surface) overlaps another claim touching the linked
+//       counterpart — the contract surface two repos share.
+//
+// GRACEFULLY DEGRADING (WAS -> CAS -> string, never throw): when no WAS graph
+// is passed, the cross-repo layer is simply skipped and the result is the
+// CAS-backed set below. When no CAS is available either (`cas` undefined / an
+// empty nodes+edges set — the common case for a logical workspace id with no
+// analyzable project), `partitionTasks` naturally falls back to raw symbol/path
+// overlap (no edges to expand), so this reduces to a SUPERSET of `checkEditLock`
+// (adds symbol overlap; never loses the path overlap it had). Every layer is
+// wrapped so a failure degrades to fewer findings, never an exception. Safe to
+// call unconditionally.
+
+/** One advisory overlap finding against the proposed claim. Superset of
+ *  local-store's path-only `EditLockConflict`: it adds the overlapping SYMBOLS,
+ *  the overlap REASON, and (for cross-repo overlap) the shared workspace
+ *  surface, so callers can distinguish a literal path/symbol clash from a
+ *  call-graph blast-radius reach or a cross-repo (WAS) dependency. */
+export interface AdvisoryOverlapFinding {
+  /** The already-active claim whose footprint overlaps the proposed one. */
+  agent_id: string;
+  claim_id: string;
+  intent: string;
+  /** Overlapping raw paths (path-prefix intersection), for parity with the
+   *  legacy string scan. Empty when the overlap is symbol/blast-radius only. */
+  overlapping_paths: string[];
+  /** Overlapping symbols/node-ids. Empty when the overlap is path-only. */
+  overlapping_symbols: string[];
+  /** Why they overlap:
+   *  - 'path'          : raw file-path prefix overlap (what the old scan caught).
+   *  - 'symbol'        : the two claims literally name the same symbol/entity.
+   *  - 'blast-radius'  : literal footprints are disjoint, but one claim edits a
+   *                      CAS caller/callee of the other — the same-repo moat
+   *                      signal a file/path-only scan cannot see.
+   *  - 'cross-repo-shared-code' : both claims touch a shared library symbol
+   *                      (one the lib, the other a cross-repo consumer of it),
+   *                      via the WAS shared_code_rollup blast radius.
+   *  - 'cross-repo-contract'    : both claims touch two ends of a frozen/shared
+   *                      cross-repo interface link (WAS interfaces + links). */
+  reason: 'path' | 'symbol' | 'blast-radius' | 'cross-repo-shared-code' | 'cross-repo-contract';
+  /** True when the finding came from the CAS (reason 'blast-radius' or 'symbol')
+   *  — visible only because the single-repo analysis was consulted. */
+  cas_derived: boolean;
+  /** True when the finding came from the WAS (a 'cross-repo-*' reason) — visible
+   *  only because the WORKSPACE analysis was consulted (cross-repo blindness a
+   *  single-repo CAS cannot see). */
+  was_derived: boolean;
+  /** For cross-repo findings: the shared workspace surface both claims touch —
+   *  the shared library name/symbols, or the cross-repo contract id — so the
+   *  awareness names WHAT is shared, not just that something is. */
+  shared_surface?: string[];
+}
+
+/** The proposed (not-yet-appended) advisory claim footprint to check. */
+export interface AdvisoryClaimProposal {
+  agent_id: string;
+  paths?: string[];
+  symbols?: string[];
+}
+
+export interface AdvisoryOverlapOptions {
+  /** Expand footprints by one hop of CAS call-graph edges before intersecting.
+   *  Default true — this is the point of the helper. Set false to reduce to a
+   *  literal path/symbol overlap check (still a superset of the old path-only
+   *  scan). */
+  includeBlastRadius?: boolean;
+  /** Cap on findings returned (highest-signal first: cross-repo, then symbol,
+   *  then blast-radius, then path). Default 25 — advisory awareness, not a full
+   *  report. */
+  limit?: number;
+}
+
+const REASON_RANK: Record<AdvisoryOverlapFinding['reason'], number> = {
+  'cross-repo-contract': 0,
+  'cross-repo-shared-code': 1,
+  symbol: 2,
+  'blast-radius': 3,
+  path: 4,
+};
+
+/**
+ * CAS+WAS-backed advisory overlap between a proposed claim and the active
+ * claims. Same-repo overlap reuses `partitionTasks`' blast-radius machinery;
+ * cross-repo overlap reuses the WAS `shared_code_rollup` + `interfaces`/`links`
+ * (see the section header).
+ *
+ * Pure and non-blocking: returns findings, never throws — any internal failure
+ * degrades to fewer findings (awareness is best-effort, never a gate).
+ * Degrades WAS -> CAS -> string:
+ *  - Pass a real `PartitionCas` (server.ts builds one via `partitionCasForPath`)
+ *    for same-repo blast-radius/symbol awareness; `undefined`/empty CAS degrades
+ *    to literal symbol/path overlap.
+ *  - Pass a WAS graph (server.ts resolves one via `resolveWorkspaceAnalysisForPaths`)
+ *    for cross-repo shared-code + contract awareness; omit it to skip that layer.
+ */
+export function computeAdvisoryOverlap(
+  proposal: AdvisoryClaimProposal,
+  activeClaims: WorkClaim[],
+  cas: PartitionCas | undefined,
+  opts: AdvisoryOverlapOptions = {},
+  was?: CrossCodebaseSystemGraph | undefined,
+): AdvisoryOverlapFinding[] {
+  const others = activeClaims.filter(
+    (c) => c.status === 'active' && c.agent_id !== proposal.agent_id,
+  );
+  if (others.length === 0) return [];
+
+  const byClaimId = new Map<string, WorkClaim>();
+  for (const claim of others) {
+    if (!byClaimId.has(claim.claim_id)) byClaimId.set(claim.claim_id, claim);
+  }
+
+  // Each layer is independently guarded: a failure in one degrades to fewer
+  // findings, never an exception and never a lost other layer.
+  const findingsByClaim = new Map<string, AdvisoryOverlapFinding>();
+  const record = (f: AdvisoryOverlapFinding) => {
+    // One finding per conflicting claim — keep the highest-signal reason
+    // (lowest REASON_RANK) when a claim overlaps on multiple layers, and merge
+    // the surfaces so the awareness stays complete.
+    const existing = findingsByClaim.get(f.claim_id);
+    if (!existing) {
+      findingsByClaim.set(f.claim_id, f);
+      return;
+    }
+    const merged: AdvisoryOverlapFinding =
+      REASON_RANK[f.reason] < REASON_RANK[existing.reason] ? { ...f } : { ...existing };
+    merged.overlapping_paths = [...new Set([...existing.overlapping_paths, ...f.overlapping_paths])];
+    merged.overlapping_symbols = [...new Set([...existing.overlapping_symbols, ...f.overlapping_symbols])];
+    merged.cas_derived = existing.cas_derived || f.cas_derived;
+    merged.was_derived = existing.was_derived || f.was_derived;
+    const surface = [...(existing.shared_surface ?? []), ...(f.shared_surface ?? [])];
+    if (surface.length) merged.shared_surface = [...new Set(surface)];
+    findingsByClaim.set(f.claim_id, merged);
+  };
+
+  // ---- Same-repo layer: CAS blast-radius via partitionTasks ----
+  try {
+    const PROPOSAL_ID = '__advisory_proposal__';
+    const tasks: PartitionTask[] = [
+      {
+        id: PROPOSAL_ID,
+        intent: 'advisory overlap probe',
+        target_symbols: proposal.symbols ?? [],
+        target_paths: proposal.paths ?? [],
+      },
+    ];
+    for (const claim of byClaimId.values()) {
+      tasks.push({
+        id: claim.claim_id,
+        intent: claim.intent,
+        target_symbols: claim.scope.symbols ?? [],
+        target_paths: claim.scope.paths ?? [],
+      });
+    }
+
+    // Empty/undefined CAS -> partitionTasks has no edges to expand and reduces
+    // to literal symbol/path overlap. Feeding {nodes:[],edges:[]} is the same
+    // graceful-degradation path server.ts's partitionCasForPath already yields.
+    const partitionCas: PartitionCas = cas ?? { nodes: [], edges: [] };
+    const includeBlastRadius = opts.includeBlastRadius ?? true;
+    const result = partitionTasks(tasks, partitionCas, { includeBlastRadius });
+
+    for (const edge of result.conflict_edges) {
+      const otherId = edge.a === PROPOSAL_ID ? edge.b : edge.b === PROPOSAL_ID ? edge.a : undefined;
+      if (!otherId) continue;
+      const claim = byClaimId.get(otherId);
+      if (!claim) continue;
+      record({
+        agent_id: claim.agent_id,
+        claim_id: claim.claim_id,
+        intent: claim.intent,
+        overlapping_paths: intersectPaths(proposal.paths ?? [], claim.scope.paths ?? []),
+        overlapping_symbols: intersectExact(proposal.symbols ?? [], claim.scope.symbols ?? []),
+        reason: edge.reason,
+        cas_derived: edge.reason === 'blast-radius' || edge.reason === 'symbol',
+        was_derived: false,
+      });
+    }
+  } catch {
+    // Same-repo layer failed — cross-repo layer below still runs.
+  }
+
+  // ---- Cross-repo layer: WAS shared-code rollup + contract links ----
+  if (was) {
+    try {
+      for (const f of computeCrossRepoOverlap(proposal, [...byClaimId.values()], was)) {
+        record(f);
+      }
+    } catch {
+      // Cross-repo layer failed — same-repo findings above are preserved.
+    }
+  }
+
+  const findings = [...findingsByClaim.values()];
+  findings.sort((a, b) => REASON_RANK[a.reason] - REASON_RANK[b.reason]);
+  const limit = opts.limit ?? 25;
+  return findings.slice(0, limit);
+}
+
+/**
+ * Cross-repo (WAS) overlap: does the proposed claim share a WORKSPACE surface
+ * with any other active claim that a single-repo CAS cannot see? Two signals,
+ * both read straight off the persisted WAS graph:
+ *
+ *  (a) shared_code_rollup — a shared library and its cross-repo consumers. If
+ *      the proposed claim touches a shared symbol (or the lib itself) and
+ *      another claim touches a CONSUMER of that symbol (or the lib), they
+ *      collide across repos. `blast_radius[].symbol -> consumer_deployable_ids`
+ *      is exactly the WAS's own cross-deployable dependency index.
+ *  (b) interfaces + links — a frozen/shared cross-repo contract. Each `link`
+ *      ties a provider interface to a consumer interface across two codebases;
+ *      if the proposed claim touches one interface's refs and another claim
+ *      touches the linked counterpart's refs, both are editing two ends of the
+ *      same cross-repo contract.
+ *
+ * Matching against a claim's footprint is deliberately tolerant (symbol-name OR
+ * path-substring), mirroring the WAS's own evidence granularity — the WAS
+ * records symbol names and file/path hints, not CAS node ids.
+ */
+function computeCrossRepoOverlap(
+  proposal: AdvisoryClaimProposal,
+  others: WorkClaim[],
+  was: CrossCodebaseSystemGraph,
+): AdvisoryOverlapFinding[] {
+  const out: AdvisoryOverlapFinding[] = [];
+  const proposalSyms = new Set(proposal.symbols ?? []);
+  const proposalPaths = proposal.paths ?? [];
+
+  // A claim "touches" a surface token when the token matches one of its symbols
+  // exactly, or appears as a substring of one of its paths (or vice-versa) —
+  // the WAS surface is name/path-shaped, not a CAS node id.
+  const claimTouches = (claim: WorkClaim | AdvisoryClaimProposal, token: string): boolean => {
+    if (!token) return false;
+    const syms = 'symbols' in claim ? (claim.symbols ?? []) : (claim as WorkClaim).scope.symbols ?? [];
+    if (syms.includes(token)) return true;
+    const paths = 'symbols' in claim ? (claim.paths ?? []) : (claim as WorkClaim).scope.paths ?? [];
+    return paths.some((p) => p === token || p.includes(token) || token.includes(p));
+  };
+  const proposalTouches = (token: string) =>
+    proposalSyms.has(token) || proposalPaths.some((p) => p === token || p.includes(token) || token.includes(p));
+
+  // (a) Shared-code rollup: shared library + its cross-repo consumers.
+  for (const rollup of was.shared_code_rollup ?? []) {
+    // The shared surface: the lib's exported symbols plus per-symbol blast radius.
+    const surfaceSymbols = new Set<string>([
+      ...(rollup.consumed_surface ?? []),
+      ...((rollup.blast_radius ?? []).map((b) => b.symbol)),
+    ]);
+    const libTokens = [rollup.lib_name, rollup.path_hint].filter(Boolean) as string[];
+
+    // Does the proposal touch this shared lib (a symbol on its surface, or the
+    // lib path/name itself)?
+    const proposalHitsSymbols = [...surfaceSymbols].filter((s) => proposalTouches(s));
+    const proposalHitsLib = libTokens.some((t) => proposalTouches(t));
+    if (proposalHitsSymbols.length === 0 && !proposalHitsLib) continue;
+
+    for (const claim of others) {
+      // Does this other claim touch the same shared surface / lib (a consumer
+      // or the lib itself)?
+      const claimHitsSymbols = [...surfaceSymbols].filter((s) => claimTouches(claim, s));
+      const claimHitsLib = libTokens.some((t) => claimTouches(claim, t));
+      if (claimHitsSymbols.length === 0 && !claimHitsLib) continue;
+
+      const shared = [...new Set([...proposalHitsSymbols, ...claimHitsSymbols, ...(proposalHitsLib || claimHitsLib ? [rollup.lib_name] : [])])].filter(Boolean);
+      out.push({
+        agent_id: claim.agent_id,
+        claim_id: claim.claim_id,
+        intent: claim.intent,
+        overlapping_paths: [],
+        overlapping_symbols: intersectExact(proposalHitsSymbols, claimHitsSymbols),
+        reason: 'cross-repo-shared-code',
+        cas_derived: false,
+        was_derived: true,
+        shared_surface: shared,
+      });
+    }
+  }
+
+  // (b) Cross-repo contract links: two ends of the same frozen/shared contract.
+  const interfaceById = new Map<string, (typeof was.interfaces)[number]>();
+  for (const iface of was.interfaces ?? []) interfaceById.set(iface.id, iface);
+
+  const interfaceTokens = (ifaceId: string): string[] => {
+    const iface = interfaceById.get(ifaceId);
+    if (!iface) return [];
+    const toks: string[] = [];
+    for (const r of iface.refs ?? []) {
+      if (r.name) toks.push(r.name);
+      if (r.file) toks.push(r.file);
+    }
+    for (const t of [iface.endpoint, iface.topic, iface.resource, iface.name, iface.key]) {
+      if (t) toks.push(t);
+    }
+    return [...new Set(toks)];
+  };
+
+  for (const link of was.links ?? []) {
+    const srcTokens = interfaceTokens(link.source_interface_id);
+    const dstTokens = interfaceTokens(link.target_interface_id);
+    if (srcTokens.length === 0 && dstTokens.length === 0) continue;
+
+    const proposalOnSrc = srcTokens.some((t) => proposalTouches(t));
+    const proposalOnDst = dstTokens.some((t) => proposalTouches(t));
+    if (!proposalOnSrc && !proposalOnDst) continue;
+
+    for (const claim of others) {
+      const claimOnSrc = srcTokens.some((t) => claimTouches(claim, t));
+      const claimOnDst = dstTokens.some((t) => claimTouches(claim, t));
+      // Overlap when the two claims sit on the SAME contract — either both ends,
+      // or opposite ends of the same cross-repo link (the fleet-scale case:
+      // provider edited in one repo, consumer edited in the other).
+      if (!claimOnSrc && !claimOnDst) continue;
+      const sameContract = (proposalOnSrc || proposalOnDst) && (claimOnSrc || claimOnDst);
+      if (!sameContract) continue;
+
+      const shared = [...new Set([
+        ...(proposalOnSrc || claimOnSrc ? srcTokens : []),
+        ...(proposalOnDst || claimOnDst ? dstTokens : []),
+      ])].slice(0, 8);
+      out.push({
+        agent_id: claim.agent_id,
+        claim_id: claim.claim_id,
+        intent: claim.intent,
+        overlapping_paths: [],
+        overlapping_symbols: [],
+        reason: 'cross-repo-contract',
+        cas_derived: false,
+        was_derived: true,
+        shared_surface: [`${link.kind}:${link.id}`, ...shared],
+      });
+    }
+  }
+
+  return out;
+}
+
+/** Path-prefix intersection (mirrors partitioner/local-store `pathsOverlap`),
+ *  returning the concrete overlapping paths for the finding. */
+function intersectPaths(a: string[], b: string[]): string[] {
+  const out = new Set<string>();
+  for (const p of a) {
+    const np = p.replace(/\/+$/, '');
+    for (const q of b) {
+      const nq = q.replace(/\/+$/, '');
+      if (np === nq || np.startsWith(nq + '/') || nq.startsWith(np + '/')) out.add(nq);
+    }
+  }
+  return [...out];
+}
+
+/** Exact symbol/name intersection. */
+function intersectExact(a: string[], b: string[]): string[] {
+  const setB = new Set(b);
+  return [...new Set(a.filter((x) => setB.has(x)))];
 }

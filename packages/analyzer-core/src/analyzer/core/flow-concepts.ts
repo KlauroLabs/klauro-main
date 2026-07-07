@@ -5,6 +5,7 @@ import type {
   CASEntryPoint,
   CASExitPoint,
   CASEntityLineage,
+  CASCallChain,
   SystemCapability,
 } from '../../types/cas.types';
 import { buildTerminalSignal } from './terminal-signal';
@@ -158,6 +159,24 @@ export interface FlowConcept {
   /** Flow-level I/L/S/O + Constraints, aggregated over steps. */
   contract: ILSOContract;
   steps: FlowStep[];
+  /**
+   * The TERMINAL this flow is anchored on — what the system actually produces
+   * at the end of this chain (the exit point the pre-computed entry-to-exit
+   * call chain ends at). Present only for flows derived from a real terminal
+   * call chain (buildTerminalFlows); omitted for entry-point-rooted flows that
+   * have no resolved exit terminus. This is the deterministic answer to "why
+   * this flow exists" — it ends by writing a store, calling an integration, or
+   * emitting a response. */
+  terminus?: {
+    /** exit_point id (resolves in cas.exit_points). */
+    exit_point_id: string;
+    /** api | database | sdk | webhook | event | navigation | … (exit type). */
+    kind: string;
+    /** The produced target — service_id / resource / route / method name. */
+    produces: string;
+    /** The node at the terminus (last node on the chain that emits the exit). */
+    node_id: string;
+  };
   /** Honest caveats about this specific flow's segmentation/derivation. */
   gaps?: string[];
 }
@@ -917,13 +936,254 @@ function flowIntentForEntryPoint(ep: CASEntryPoint): string {
 }
 
 /**
- * computeFlowConcepts — one FlowConcept per (matching) entry point.
- * Deterministic-first: composes entry_points, call edges/method_calls,
- * exit_points, data_lineage, data_entities.invariants, entry_point
- * security/validation, and system_capabilities already on the CAS.
+ * TERMINAL-CHAIN FLOWS — the primary flow-derivation path. A flow is a logical
+ * unit over the compile graph ANCHORED ON A TERMINAL CHAIN: a pre-computed
+ * `call_chains` entry of `chain_type === 'entry-to-exit'`, i.e. a chain that
+ * runs from an entry point all the way to an EXIT point (an api response, a DB
+ * write, an SDK/integration call, a webhook, an emitted event) — what the
+ * system actually PRODUCES. Chains that dead-end (produce nothing) are NOT
+ * flows; the terminal is the whole point (terminal-signal.ts: "terminal call
+ * chains end at what the system produces").
+ *
+ * Every fact used here is already on the CAS and deterministic: the ordered
+ * `call_path` (entry → terminus), the resolved exit point, the same
+ * exit_points / data_lineage / data_entities.invariants / entry-point
+ * security+validation the entry-point path uses. The chain's own `call_path`
+ * IS the chain — we do NOT re-trace a BFS; we segment the exact recorded path
+ * into steps. `opts.nameStep` remains the only AI seam and stays inert when
+ * omitted; Logic + interpretive meaning are AI-only-or-omitted downstream.
+ *
+ * Returns [] when there are no entry-to-exit chains, so callers can fall back
+ * to entry-point-rooted flows without a regression on repos that don't emit
+ * call_chains.
+ */
+function buildTerminalFlows(cas: CASOutput, opts: ComputeFlowConceptsOptions): FlowConcept[] {
+  const chains = (cas.call_chains || []).filter(c => c.chain_type === 'entry-to-exit' && c.exit_point);
+  if (chains.length === 0) return [];
+
+  const maxDepth = opts.maxDepth && opts.maxDepth > 0 ? opts.maxDepth : DEFAULT_MAX_DEPTH;
+  const maxFunctions = opts.maxFunctionsPerFlow && opts.maxFunctionsPerFlow > 0 ? opts.maxFunctionsPerFlow : DEFAULT_MAX_FUNCTIONS;
+
+  const nodesById = new Map(cas.nodes.map(n => [n.id, n]));
+  const capabilities = cas.system_capabilities || [];
+  const exitPointsByNode = buildExitPointIndex(cas);
+  const lineageByNode = buildLineageIndex(cas);
+  const exitById = new Map((cas.exit_points || []).map(e => [e.id, e]));
+  const entryById = new Map((cas.entry_points || []).map(e => [e.id, e]));
+
+  const entryPointsByNode = new Map<string, CASEntryPoint[]>();
+  for (const ep of cas.entry_points || []) {
+    const nodeId = ep.handler?.node_id || ep.source_node;
+    if (!entryPointsByNode.has(nodeId)) entryPointsByNode.set(nodeId, []);
+    entryPointsByNode.get(nodeId)!.push(ep);
+  }
+
+  const allLineage = [...(cas.data_lineage || [])];
+
+  // Deterministic order: chains sorted by id so the flow set is byte-stable
+  // run-to-run (Camp-B determinism rule). `target` filter matches against the
+  // entry method, exit target, and resolved entry-point route/name.
+  const sorted = [...chains].sort((a, b) => a.id.localeCompare(b.id));
+
+  const flows: FlowConcept[] = [];
+
+  for (const chain of sorted) {
+    // Resolve the ordered chain nodes from the pre-computed call_path (this IS
+    // the terminal chain — no re-tracing). Skip unresolvable path nodes rather
+    // than fabricating; depth-bound and function-cap still honored so a flow's
+    // step count matches the entry-point path's shape.
+    const chainNodes: ChainNode[] = [];
+    const seen = new Set<string>();
+    for (const step of chain.call_path || []) {
+      if (step.depth >= maxDepth) continue;
+      if (seen.has(step.node_id)) continue;
+      const node = nodesById.get(step.node_id);
+      if (!node) continue;
+      seen.add(step.node_id);
+      chainNodes.push({ node, depth: step.depth });
+      if (chainNodes.length >= maxFunctions) break;
+    }
+    if (chainNodes.length === 0) continue;
+
+    const rootEp = chain.entry_point.entry_point_id
+      ? entryById.get(chain.entry_point.entry_point_id)
+      : undefined;
+    const rootNode = nodesById.get(chain.entry_point.node_id);
+
+    // Resolve the terminus: the exit point this chain ends at (what it
+    // produces). exit_point_id resolves against cas.exit_points.
+    const exit = chain.exit_point?.exit_point_id ? exitById.get(chain.exit_point.exit_point_id) : undefined;
+    const terminusNodeId = chain.exit_point?.node_id
+      || exit?.source_node
+      || chainNodes[chainNodes.length - 1].node.id;
+
+    // `target` narrowing: id / entry method / route / exit target substring.
+    if (opts.target) {
+      const t = opts.target.toLowerCase();
+      const hay = [
+        chain.id,
+        chain.entry_point.method_name,
+        chain.exit_point?.method_name,
+        rootEp?.name,
+        rootEp?.trigger?.path,
+        exit?.target?.service_id,
+        exit?.target?.resource,
+      ].filter(Boolean).join(' ').toLowerCase();
+      if (!hay.includes(t)) continue;
+    }
+
+    const segments = segmentIntoSteps(chainNodes, exitPointsByNode, lineageByNode);
+
+    const gaps: string[] = [];
+    if (chainNodes.length >= maxFunctions) {
+      gaps.push(`Terminal chain truncated at maxFunctionsPerFlow=${maxFunctions}; some downstream steps may be missing.`);
+    }
+    if ((chain.call_path || []).length > chainNodes.length + 1) {
+      gaps.push('Some call_path nodes did not resolve in the graph and were skipped from this flow.');
+    }
+    if (segments.length === 1) {
+      gaps.push('Entire terminal chain classified as a single step — no side-effect or layer boundary detected between entry and terminus.');
+    }
+
+    const steps: FlowStep[] = segments.map((seg, i) => {
+      const { name, description } = nameStepDeterministically(seg.character, seg.nodes, exitPointsByNode, allLineage);
+      const contract = buildContract(seg.nodes, cas, exitPointsByNode, entryPointsByNode);
+
+      let functions: FlowStep['functions'];
+      if (seg.nodes.length === 1) {
+        const sections = detectSubSections(seg.nodes[0]);
+        functions = sections
+          ? sections.map(s => ({ function_id: seg.nodes[0].id, section: s }))
+          : [{ function_id: seg.nodes[0].id }];
+      } else {
+        functions = seg.nodes.map(n => ({ function_id: n.id }));
+      }
+
+      const stepNodeIds = new Set(seg.nodes.map(n => n.id));
+      const step: FlowStep = {
+        step_id: `flow::${chain.id}::step${i}`,
+        order: i,
+        name,
+        description,
+        contract,
+        functions,
+        entities: entitiesForNodes(stepNodeIds, cas),
+      };
+      if (opts.nameStep && rootEp) {
+        const override = opts.nameStep(step, { flowEntryPoint: rootEp });
+        if (override?.name) step.name = override.name;
+        if (override?.description) step.description = override.description;
+      }
+      return step;
+    });
+
+    const allNodeIds = new Set(chainNodes.map(c => c.node.id));
+
+    // Terminus ICELOT enrichment: the exit the chain ends at IS a produced
+    // Output / Effect. Fold it into the flow-level contract deterministically
+    // (evidence = the resolved exit point) so the flow's Output/Effects reflect
+    // what it actually produces at the terminus, not just node return types.
+    const contract = aggregateFlowContract(steps);
+    let terminus: FlowConcept['terminus'];
+    if (exit) {
+      const produces = exit.target?.service_id || exit.target?.resource || exit.target?.endpoint
+        || exit.name || exit.type;
+      terminus = { exit_point_id: exit.id, kind: exit.type, produces, node_id: terminusNodeId };
+      const label = `${exit.type}:${produces}`;
+      if (exit.type === 'database' || exit.type === 'cache' || exit.type === 'file') {
+        if (!contract.side_effects.state_changes.includes(label)) contract.side_effects.state_changes.push(label);
+      } else {
+        if (!contract.side_effects.external_integrations.includes(label)) contract.side_effects.external_integrations.push(label);
+        // api / webhook / event terminals are the flow's response/emission —
+        // record what it emits in Output too (deterministic, evidence-gated on
+        // the resolved exit point).
+        if (['api', 'webhook', 'event', 'navigation'].includes(exit.type)) {
+          const out = exit.data?.output_type || `${exit.type} ${produces}`;
+          if (!contract.output.includes(out)) contract.output.push(out);
+        }
+      }
+    }
+
+    const capabilityId = rootEp
+      ? capabilityForEntryPoint(rootEp, capabilities)
+      : capabilityForNodeId(chain.entry_point.node_id, capabilities);
+    if (!capabilityId) {
+      gaps.push('No system_capabilities entry references this flow\'s entry point — capability_id omitted rather than guessed.');
+    }
+
+    const flowName = rootEp
+      ? flowNameForEntryPoint(rootEp)
+      : titleize(chain.entry_point.method_name);
+    const produced = terminus ? ` → ${terminus.kind} ${terminus.produces}` : '';
+    const intent = rootEp
+      ? `${flowIntentForEntryPoint(rootEp)}${produced}`
+      : `Chain from ${chain.entry_point.method_name}${produced}`;
+
+    flows.push({
+      flow_id: `flow::${chain.id}`,
+      name: flowName,
+      intent,
+      entry_point: chain.entry_point.entry_point_id || chain.entry_point.node_id,
+      capability_id: capabilityId,
+      entities: entitiesForNodes(allNodeIds, cas),
+      contract,
+      steps,
+      terminus,
+      gaps: gaps.length ? gaps : undefined,
+    });
+    void rootNode; // rootNode resolution kept for symmetry / future naming; not required.
+
+    if (opts.maxFlows && opts.maxFlows > 0 && flows.length >= opts.maxFlows) break;
+  }
+
+  return flows;
+}
+
+/** Title-case a raw method/handler name for a flow display name when there is
+ *  no resolved entry point to name from. */
+function titleize(raw: string): string {
+  const words = (raw || '').replace(/[-_]/g, ' ').replace(/([a-z0-9])([A-Z])/g, '$1 $2');
+  return words.split(' ').filter(Boolean).map(w => w[0].toUpperCase() + w.slice(1)).join(' ') || raw;
+}
+
+/** Capability whose operations reference a raw node id directly (the
+ *  `node:<id>` or bare id shape), used when a terminal chain has no resolved
+ *  CASEntryPoint to match on. Never name-guessed. */
+function capabilityForNodeId(nodeId: string, capabilities: SystemCapability[]): string | undefined {
+  const match = capabilities.find(c => (c.operations || []).some(op =>
+    op.entry_point_id === `node:${nodeId}` || op.entry_point_id === nodeId
+  ));
+  return match?.id;
+}
+
+/**
+ * computeFlowConcepts — flows over the compile graph. PRIMARY PATH: anchor on
+ * terminal call chains (buildTerminalFlows) — a flow is a chain that runs from
+ * an entry point to an EXIT point (what the system produces). FALLBACK: when
+ * the CAS carries no entry-to-exit chains, root one flow per (matching) entry
+ * point and trace forward (the original behavior), so repos without call_chains
+ * still get flows.
+ *
+ * Deterministic-first either way: composes entry_points, call
+ * edges/method_calls, exit_points, data_lineage, data_entities.invariants,
+ * entry_point security/validation, and system_capabilities already on the CAS.
  * `opts.nameStep` is the only AI seam and is fully inert when omitted.
  */
 export function computeFlowConcepts(cas: CASOutput, opts: ComputeFlowConceptsOptions = {}): FlowConcept[] {
+  // PRIMARY: terminal-chain-anchored flows (what the system produces). Empty
+  // only when the CAS emitted no entry-to-exit chains.
+  const terminalFlows = buildTerminalFlows(cas, opts);
+  if (terminalFlows.length > 0) return terminalFlows;
+
+  return computeEntryPointFlows(cas, opts);
+}
+
+/**
+ * FALLBACK — one FlowConcept per (matching) entry point, forward-traced. Used
+ * when the CAS carries no entry-to-exit call chains to anchor on. Same
+ * deterministic fact sources as the terminal path.
+ */
+function computeEntryPointFlows(cas: CASOutput, opts: ComputeFlowConceptsOptions = {}): FlowConcept[] {
   const maxDepth = opts.maxDepth && opts.maxDepth > 0 ? opts.maxDepth : DEFAULT_MAX_DEPTH;
   const maxFunctions = opts.maxFunctionsPerFlow && opts.maxFunctionsPerFlow > 0 ? opts.maxFunctionsPerFlow : DEFAULT_MAX_FUNCTIONS;
 

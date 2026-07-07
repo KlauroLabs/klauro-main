@@ -387,6 +387,47 @@ export interface OrchestrateAnalysisOptions {
   packGlobs?: string[];
 }
 
+/**
+ * Kind of a data entity, derived DETERMINISTICALLY from framework-analyzer
+ * evidence carried on the node (subcategories / node type / metadata attributes),
+ * NEVER from the entity's name or casing. This is a Camp-B structural fact.
+ *
+ *  - `persisted-entity`  ORM/@Entity/table-mapped record — the durable state the
+ *                        system stores (typeorm/sea-orm/gorm/mikroorm/data-access,
+ *                        node.type entity|model, or metadata.attributes.orm/table).
+ *  - `api-response`      what the system PRODUCES for its consumers — controller
+ *                        return shape / OpenAPI-or-GraphQL response / serializer
+ *                        output (subcategories api|api-contract|api-response|
+ *                        openapi|graphql|serializer, or a `*Response`/`*Output`
+ *                        data shape). This kind IS the terminal set.
+ *  - `request-dto`       the inbound contract — @Body / validation DTO / request
+ *                        schema (subcategories input-validation|request|validation|
+ *                        contract|validation_contract, node.type dto, or a
+ *                        `*Request`/`*Body`/`*Input` shape).
+ *  - `value-object`      field-only shape with no persistence and no route/api
+ *                        binding — an internal domain value, not stored or exposed.
+ *
+ * Consumers (peers on flow-concepts.ts / context-fabric.ts) may rely on this
+ * union and on `api-response` being the terminal-entity kind.
+ */
+export type CASDataEntityKind =
+  | 'persisted-entity'
+  | 'api-response'
+  | 'request-dto'
+  | 'value-object';
+
+/**
+ * The shared CASDataEntity does not yet carry `kind` (see cas.types.ts —
+ * reconciliation note for the orchestrator owner: add `kind?: CASDataEntityKind`
+ * plus `kind_source?: 'framework-evidence'` to the interface). Until then we
+ * widen locally so the deterministic tag can be attached and read within the
+ * orchestrator without an unsafe `any`.
+ */
+export type CASDataEntityWithKind = CASDataEntity & {
+  kind?: CASDataEntityKind;
+  kind_source?: 'framework-evidence';
+};
+
 export class AnalyzerOrchestrator {
   private analyzers: Map<string, AnalyzerRegistration> = new Map();
   private projectRoots: string[] = [];
@@ -8786,7 +8827,7 @@ export class AnalyzerOrchestrator {
       raw = await Promise.race([
         aiService.generateComponentDescription({
           additionalContext: {
-            task: 'You are writing the Klauro CAS human/agent orientation. Based ONLY on the supplied facts and descriptionContract, return ONLY valid JSON with this shape: {"system_description":"...","domain":"...","descriptions":[{"id":"...","description":"..."}],"quality_check":{"used_facts":["..."],"unsupported_claims":[]}}. Before writing, follow descriptionContract.evidence_priority in order. system_description must be exactly 2 or 3 full sentences and must satisfy descriptionContract.system_description_shape. Sentence 1 identifies what the codebase is using the supplied project text/artifact type/dependencies. Sentence 2 names the concrete product workflows/capabilities it manages. Sentence 3, when needed, names architecture or boundary facts using only supplied frameworks, entities, integrations, dependencies, and concepts. Infer the domain from the real dependencies and integrations (for example a codebase depending on ccxt/web3/ethers is a crypto/blockchain system) — NEVER from a keyword in the project name. domain must be one lowercase kebab-case label of 2 to 4 concrete product nouns from the facts. descriptions must include one grounded sentence per item in items; each sentence must name the concrete record, lifecycle, workflow, model, or boundary that item owns.',
+            task: 'You are writing the Klauro CAS human/agent orientation. Based ONLY on the supplied facts and descriptionContract, return ONLY valid JSON with this shape: {"system_description":"...","domain":"...","descriptions":[{"id":"...","description":"..."}],"quality_check":{"used_facts":["..."],"unsupported_claims":[]}}. Before writing, follow descriptionContract.evidence_priority in order. system_description must be ONE rich paragraph of 4 to 6 full sentences that answers, in order, the four questions in descriptionContract.system_description_shape: (1) WHAT IT IS — the system type/domain, inferred from the supplied dependencies, distinctiveEntities, and project text; (2) WHAT IT DOES — the concrete product workflows and the terminalOutputs it produces for its consumers; (3) HOW IT WORKS — how those outputs are produced, naming the real capabilities, terminal (api-response) entities, and near-terminal stages that lead to them; (4) HOW IT IS BUILT — the architecture, frameworks, and third-party integrations, using only supplied allowedFrameworks, entities, integrations, and dependencies. Infer the domain from the real dependencies and integrations (for example a codebase depending on ccxt/web3/ethers is a crypto/blockchain system) — NEVER from a keyword in the project name. Anchor WHAT IT DOES and HOW IT WORKS on what the system PRODUCES (terminalOutputs / api-response entities), not on mid-chain create/update/delete of records. domain must be one lowercase kebab-case label of 2 to 4 concrete product nouns from the facts. descriptions must include one grounded sentence per item in items; each sentence must name the concrete record, lifecycle, workflow, model, or boundary that item owns.',
             style: 'Use precise engineering/product language. No markdown. No headings. No colon-prefixed inventory labels. No marketing. No vague placeholders. Do not describe source mechanics; translate them into product purpose. If a claim cannot be supported by a supplied fact, omit it and list it in quality_check.unsupported_claims instead of writing it.',
             descriptionContract: descriptionPromptContract,
             primaryDomain: enhancedSystemPurpose.primary_domain,
@@ -8879,7 +8920,7 @@ export class AnalyzerOrchestrator {
         const repairRaw = await Promise.race([
           aiService.generateComponentDescription({
             additionalContext: {
-              task: 'Repair the rejected parts of the previous answer. Return ONLY valid JSON with the same shape: {"system_description":"...","domain":"...","descriptions":[{"id":"...","description":"..."}]}. Fix only what was rejected: write a grounded 2-3 full-sentence system_description (at least 150 characters) if it was rejected, and one grounded sentence per rejected item. Infer the domain from the real dependencies/integrations, never from a name. Mention integrations or external services only by the exact names listed in externalServices; if none are listed, do not mention integrations at all.',
+              task: 'Repair the rejected parts of the previous answer. Return ONLY valid JSON with the same shape: {"system_description":"...","domain":"...","descriptions":[{"id":"...","description":"..."}]}. Fix only what was rejected: write a grounded system_description that is ONE paragraph of 4 to 6 full sentences (at least 240 characters) answering, in order, what the system is, what it does (anchored on the terminalOutputs it produces), how it works, and how it is built — if it was rejected, and one grounded sentence per rejected item. Infer the domain from the real dependencies/integrations, never from a name. Mention integrations or external services only by the exact names listed in externalServices; if none are listed, do not mention integrations at all.',
               style: 'Use descriptionContract as the acceptance test. No markdown. No marketing language. No raw labels like "Key capabilities:" or "Data model:". Do not invent features, company names, domains, compliance, scale, productivity, user-experience claims, or integrations beyond the facts. If the previous answer was rejected as source-bucket-restatement, rewrite it as product behavior. Do not use interaction surfaces, HTTP endpoints, HTTP workflows, API workflows, route workflows, WebSocket workflows, route surfaces, page routes, CLI commands, schedule surfaces, script-based, script-driven, internal script, internal files, source files, file-based entry points, or file entry point.',
               descriptionContract: descriptionPromptContract,
               rejected_system_description: validation.ok ? undefined : cleaned,
@@ -9961,7 +10002,12 @@ export class AnalyzerOrchestrator {
     const base = this.validateAIInterpretation(description, enhancedSystemPurpose, facts);
     if (!base.ok) return base;
     const cleaned = this.cleanGeneratedDescriptionText(description);
-    if (cleaned.length < 160) return { ok: false, reason: 'too-short-for-ai-paragraph' };
+    // The description is a four-question paragraph (what-is / does / how-works /
+    // how-built), so require enough substance to have answered them — but keep
+    // the floor low enough that a dense, fact-packed paragraph is not rejected.
+    // Sentence floor stays at >=2 (a floor, not the exact shape — the prompt asks
+    // for 4-6); length carries the paragraph-vs-one-liner distinction.
+    if (cleaned.length < 200) return { ok: false, reason: 'too-short-for-ai-paragraph' };
     if (this.descriptionSentenceCount(cleaned) < 2) return { ok: false, reason: 'single-sentence-ai-summary' };
     if (/\bworkflows\s+workflows\b/i.test(cleaned)) return { ok: false, reason: 'duplicate-workflow-wording' };
     if (/\bmodel centers on\s+user\b/i.test(cleaned)) return { ok: false, reason: 'generic-user-model-summary' };
@@ -10715,8 +10761,8 @@ export class AnalyzerOrchestrator {
     projectTextSignal: ProjectTextSignal
   ): Record<string, unknown> {
     return {
-      version: 'klauro-ai-description-contract-v1',
-      goal: 'Produce a specific, accurate, defensible product/architecture paragraph from CAS facts only.',
+      version: 'klauro-ai-description-contract-v2-four-question-paragraph',
+      goal: 'Produce a specific, accurate, defensible product/architecture paragraph from CAS facts only, answering four questions in order: what the system is, what it does, how it works, and how it is built.',
       systemName,
       suppliedPrimaryDomain: enhancedSystemPurpose.primary_domain,
       suppliedPurposeType: enhancedSystemPurpose.primary_type,
@@ -10734,10 +10780,11 @@ export class AnalyzerOrchestrator {
         'deterministicOverview as a fallback only when it does not conflict with stronger evidence',
       ],
       system_description_shape: [
-        'Exactly 2 or 3 sentences, no bullets.',
-        'Sentence 1: "<domain/artifact> built with <frameworks if allowed> that <specific behavior>."',
-        'Sentence 2: "It <maintains/tracks/links/prepares> <specific records/workflows/entities> for <specific users/operators/agents/workflows>."',
-        'Sentence 3 optional: describe architecture, boundary, integrations, tests, or risk only when supplied facts support it.',
+        'One paragraph, 4 to 6 sentences, no bullets. Answer these four questions in order:',
+        'WHAT IT IS: name the system type/domain — "<domain/artifact-type> that <core purpose>." Ground the type in dependencies, distinctiveEntities, or project text.',
+        'WHAT IT DOES: name the concrete product workflows and the terminalOutputs it produces for its consumers/operators/agents — anchor on what it PRODUCES, not on record CRUD.',
+        'HOW IT WORKS: describe how those outputs are produced, naming the real capabilities, terminal (api-response) entities, and near-terminal stages that lead to them.',
+        'HOW IT IS BUILT: name the architecture, allowed frameworks, and third-party integrations, using only supplied allowedFrameworks, entities, integrations, and dependencies; include boundary/tests/risk only when supplied facts support it.',
       ],
       required_grounding: [
         'Mention at least two concrete supplied product nouns from capabilities, domainConcepts, projectTextConcepts, terminalOutputs, distinctiveEntities, or databaseEntities.',
@@ -12291,7 +12338,7 @@ export class AnalyzerOrchestrator {
         }
       }
 
-      entities.push({
+      const ormEntity: CASDataEntityWithKind = {
         id: `entity_${entityNode.name.toLowerCase()}`,
         name: entityNode.name,
         schema_source: entityNode.source?.file,
@@ -12302,7 +12349,14 @@ export class AnalyzerOrchestrator {
           updated_by: [...new Set(updatedBy)],
           deleted_by: [...new Set(deletedBy)]
         }
-      });
+      };
+      // KIND is a Camp-B fact derived from framework evidence on the anchor node
+      // (never from the name). This selection path is ORM/@Entity/table-mapped or
+      // an /entities/ data shape, so the evidence classifier defaults these to
+      // persisted-entity, but api/serializer evidence on the same node can still
+      // reclassify it as api-response.
+      this.tagDataEntityKind(ormEntity, [entityNode], 'persisted-entity');
+      entities.push(ormEntity);
     }
 
     // Many codebases express their data model as DTOs / typed request-response
@@ -12333,6 +12387,62 @@ export class AnalyzerOrchestrator {
     }
 
     return entities;
+  }
+
+  /**
+   * Deterministic entity KIND from framework-analyzer evidence carried on the
+   * anchor node(s) — subcategories, node.type, and metadata.attributes only.
+   * NEVER reads the entity name or casing (that would be the keyword classifier
+   * the determinism boundary forbids). Precedence when a shape carries mixed
+   * evidence: api-response (what it produces) > persisted-entity (durable state)
+   * > request-dto (inbound contract) > value-object (internal shape). `fallback`
+   * is used when no discriminating evidence is present (the caller's selection
+   * path already narrowed the candidate set — e.g. an ORM selection path passes
+   * 'persisted-entity', the DTO-shape path passes 'value-object').
+   */
+  private classifyDataEntityKind(anchors: CASNode[], fallback: CASDataEntityKind): CASDataEntityKind {
+    const subcats = new Set<string>();
+    let sawOrmType = false;
+    let sawDtoType = false;
+    let ormAttr = false;
+    for (const node of anchors) {
+      if (!node) continue;
+      for (const sub of node.subcategories || []) subcats.add(String(sub).toLowerCase());
+      const type = String(node.type || '').toLowerCase();
+      if (type === 'entity' || type === 'model') sawOrmType = true;
+      if (type === 'dto') sawDtoType = true;
+      const attrs = (node.metadata?.attributes || {}) as Record<string, unknown>;
+      if (attrs.orm || attrs.table || attrs.persisted || attrs.is_persisted) ormAttr = true;
+    }
+    const has = (...names: string[]) => names.some(name => subcats.has(name));
+
+    // api-response — what the system produces for its consumers. This is the
+    // terminal set. Serializer output and OpenAPI/GraphQL/api-contract response
+    // shapes are the product's outward-facing contract.
+    if (has('api-response', 'serializer') ||
+        (has('api', 'api-contract', 'openapi', 'graphql') && !ormAttr && !sawOrmType)) {
+      return 'api-response';
+    }
+
+    // persisted-entity — durable state (ORM decorator / @Entity / table mapping).
+    if (ormAttr || sawOrmType ||
+        has('orm', 'orm-entity', 'entity', 'typeorm', 'sea-orm', 'gorm', 'mikroorm', 'data-access')) {
+      return 'persisted-entity';
+    }
+
+    // request-dto — inbound contract (@Body / validation DTO / request schema).
+    if (sawDtoType ||
+        has('input-validation', 'request', 'validation', 'validation_contract', 'contract', 'schema')) {
+      return 'request-dto';
+    }
+
+    return fallback;
+  }
+
+  /** Attach the deterministic kind (framework-evidence sourced) to an entity. */
+  private tagDataEntityKind(entity: CASDataEntityWithKind, anchors: CASNode[], fallback: CASDataEntityKind): void {
+    entity.kind = this.classifyDataEntityKind(anchors, fallback);
+    entity.kind_source = 'framework-evidence';
   }
 
   /** Lightweight English singularizer for matching method-name nouns to entities. */
@@ -12478,7 +12588,7 @@ export class AnalyzerOrchestrator {
     propertyIndex: EntityPropertyIndex,
     existingNames: Set<string>,
     projectPath?: string,
-  ): CASDataEntity[] {
+  ): CASDataEntityWithKind[] {
     const GENERIC = /^(pagination|paginated|response|error|base|common|list|meta|page|sort|filter|query|param|option|config|result|success|status|health|ping|api|data|item|value|generic|wrapper|envelope|dto|input|output|payload|request|body|args|count|info|detail|map|record|enum|type|abstract|sortby|orderby|where|select)s?$/i;
     const groups = new Map<string, { rep: CASNode; nodes: CASNode[]; ops: Set<string> }>();
     for (const node of nodes) {
@@ -12499,7 +12609,7 @@ export class AnalyzerOrchestrator {
       }
     }
     const sensitive = /password|secret|token|key|credential|ssn|email|phone|card|cvv|account/i;
-    const derived: CASDataEntity[] = [];
+    const derived: CASDataEntityWithKind[] = [];
     for (const group of groups.values()) {
       const fieldMap = new Map<string, { name: string; type: string; is_sensitive: boolean }>();
       for (const node of group.nodes) {
@@ -12521,7 +12631,7 @@ export class AnalyzerOrchestrator {
       const anchorIds = new Set(group.nodes.map(node => node.id));
       const edgeLifecycle = this.attributeLifecycleFromEdges(anchorIds, edgesByNode, nodesById);
       const coreName = this.dataShapeAffix(group.rep.name || '').core;
-      derived.push({
+      const derivedEntity: CASDataEntityWithKind = {
         id: `entity_${this.dataShapeAffix(group.rep.name || '').core.toLowerCase().replace(/[^a-z0-9]+/g, '_')}`,
         name: coreName,
         schema_source: group.rep.source?.file,
@@ -12532,11 +12642,28 @@ export class AnalyzerOrchestrator {
           updated_by: [...new Set([...edgeLifecycle.updated_by, ...affix('update')])],
           deleted_by: [...new Set([...edgeLifecycle.deleted_by, ...affix('delete')])],
         },
-      });
+      };
+      // These are typed request/response/value data shapes, not ORM records.
+      // Default to value-object; framework evidence on the group's nodes (api /
+      // serializer / validation subcategories, dto node type) reclassifies to
+      // api-response or request-dto. The name/affix is intentionally NOT used.
+      this.tagDataEntityKind(derivedEntity, group.nodes, 'value-object');
+      derived.push(derivedEntity);
     }
-    // Keep the entities with the most field/shape evidence; cap to avoid DTO noise.
+    // Rank by KIND then field evidence, then cap: an api-response / persisted
+    // shape is the product's real domain object, while nested request-dto and
+    // value-object shapes are the plumbing that inflates the count. Kind ranking
+    // (not just field count) keeps the domain-defining shapes when the cap bites.
+    const kindRank: Record<CASDataEntityKind, number> = {
+      'api-response': 0,
+      'persisted-entity': 1,
+      'request-dto': 2,
+      'value-object': 3,
+    };
     return derived
-	      .sort((left, right) => (right.fields?.length || 0) - (left.fields?.length || 0))
+	      .sort((left, right) =>
+	        kindRank[left.kind ?? 'value-object'] - kindRank[right.kind ?? 'value-object'] ||
+	        (right.fields?.length || 0) - (left.fields?.length || 0))
 	      .slice(0, 60);
 	  }
 
@@ -14666,10 +14793,30 @@ export class AnalyzerOrchestrator {
     }
 
     const capabilities: SystemCapability[] = [];
+    // Terminal anchoring: how strongly each capability describes what the system
+    // PRODUCES for its consumers, measured by its api-response (terminal-kind)
+    // entities. A capability anchored on api-response outputs ranks above one
+    // anchored only on mid-chain persisted records or inbound request DTOs, so
+    // capabilities read as "what this produces" rather than CRUD over records.
+    const terminalAnchorScore = new Map<SystemCapability, number>();
     for (const [key, group] of groups) {
       const uniqueNodes = Array.from(new Map(group.nodes.map(node => [node.id, node])).values());
       const uniqueEntities = Array.from(new Map(group.entities.map(entity => [entity.id, entity])).values());
       if (uniqueNodes.length + uniqueEntities.length === 0) continue;
+
+      // A group whose only entity evidence is inbound plumbing (request-dto /
+      // value-object) and that carries no operations is not a produced
+      // capability — it is a data shape a real capability consumes. Drop it so
+      // the capability set stays anchored on outputs, not intermediate contracts.
+      const entityKindOf = (entity: CASDataEntity): CASDataEntityKind =>
+        (entity as CASDataEntityWithKind).kind ?? 'value-object';
+      const terminalEntities = uniqueEntities.filter(entity => entityKindOf(entity) === 'api-response');
+      const producedEntities = uniqueEntities.filter(entity =>
+        entityKindOf(entity) === 'api-response' || entityKindOf(entity) === 'persisted-entity');
+      if (uniqueEntities.length > 0 && producedEntities.length === 0 &&
+        group.operations.length === 0 && uniqueNodes.length === 0) {
+        continue;
+      }
 
       const labelTokens = [...group.labelTokenLists].sort((a, b) =>
         a.length - b.length || a.join(' ').localeCompare(b.join(' '))
@@ -14710,7 +14857,7 @@ export class AnalyzerOrchestrator {
         isVendorLibDomainToken(this.normalizeDomainToken(key))) {
         continue;
       }
-      capabilities.push({
+      const capability: SystemCapability = {
         id: 'cap_pending',
         name: capabilityName,
         description: this.generateTerminalCapabilityDescription(capabilityName, uniqueNodes, uniqueEntities, operations),
@@ -14727,12 +14874,17 @@ export class AnalyzerOrchestrator {
         related_domains: [key],
         criticality: this.inferTerminalCriticality(key, uniqueNodes, uniqueEntities),
         criticality_factors: this.terminalCriticalityFactors(key, uniqueNodes, uniqueEntities),
-      });
+      };
+      // Weight terminal (api-response) entities highest, produced persisted
+      // records next; request-dto/value-object contribute nothing to the anchor.
+      terminalAnchorScore.set(capability, terminalEntities.length * 2 + (producedEntities.length - terminalEntities.length));
+      capabilities.push(capability);
     }
 
     return capabilities
       .filter(capability => capability.category !== 'internal' || capability.operations.length > 0)
       .sort((a, b) =>
+        (terminalAnchorScore.get(b) || 0) - (terminalAnchorScore.get(a) || 0) ||
         b.related_entities.length - a.related_entities.length ||
         b.operations.length - a.operations.length
       )
