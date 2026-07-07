@@ -260,8 +260,18 @@ export class TreeSitterTSExtractor {
     const tree = parser.parse(content);
     const root = getRootNode(tree);
 
+    // extractImports/Classes/Variables/Exports each independently did a full
+    // pre-order DFS of the whole tree to collect their root-level node types —
+    // 4 traversals, each marshaling every named node across the native
+    // tree-sitter boundary. Collapse them into ONE walk that buckets by type.
+    // Because collectByType(s) and this walk use the identical stack/reverse-push
+    // order, each type's filtered subsequence is byte-identical to the old
+    // per-type walk, so the extract methods produce the same output (proven by
+    // node-count equality on hercules-fe).
+    const buckets = this.collectRootNodeBuckets(root);
+
     const result: TSFileExtraction = {
-      imports: this.extractImports(root),
+      imports: this.extractImports(root, buckets.imports),
       functions: [],
       classes: [],
       variables: [],
@@ -271,7 +281,7 @@ export class TreeSitterTSExtractor {
     };
 
     const functions = this.extractStandaloneFunctions(root);
-    const classes = this.extractClasses(root);
+    const classes = this.extractClasses(root, buckets.classes);
 
     for (const cls of classes) {
       result.classes.push(cls);
@@ -283,8 +293,8 @@ export class TreeSitterTSExtractor {
       }
     }
 
-    result.variables = this.extractVariables(root);
-    result.exports = this.extractExports(root);
+    result.variables = this.extractVariables(root, buckets.variables);
+    result.exports = this.extractExports(root, buckets.exports);
 
     return result;
   }
@@ -298,9 +308,9 @@ export class TreeSitterTSExtractor {
     }
   }
 
-  private extractImports(root: any): TSExtractedImport[] {
+  private extractImports(root: any, preCollected?: any[]): TSExtractedImport[] {
     const imports: TSExtractedImport[] = [];
-    const importNodes = this.collectByType(root, 'import_statement');
+    const importNodes = preCollected ?? this.collectByType(root, 'import_statement');
 
     for (const imp of importNodes) {
       const sourceNode = imp.childForFieldName('source') || this.findFirst(imp, 'string');
@@ -312,7 +322,7 @@ export class TreeSitterTSExtractor {
 
       const clause = this.findFirst(imp, 'import_clause');
       if (clause) {
-        for (let i = 0; i < clause.namedChildCount; i++) {
+        for (let i = 0, n = clause.namedChildCount; i < n; i++) {
           const child = clause.namedChild(i);
           if (child.type === 'identifier') {
             specifiers.push({ name: child.text, isDefault: true });
@@ -638,7 +648,7 @@ export class TreeSitterTSExtractor {
 
     if (!paramsNode) return params;
 
-    for (let i = 0; i < paramsNode.namedChildCount; i++) {
+    for (let i = 0, n = paramsNode.namedChildCount; i < n; i++) {
       const param = paramsNode.namedChild(i);
       if (!param) continue;
 
@@ -772,7 +782,7 @@ export class TreeSitterTSExtractor {
         const argList = call?.childForFieldName('arguments');
         if (argList) {
           let positional = 0;
-          for (let i = 0; i < argList.namedChildCount; i++) {
+          for (let i = 0, n = argList.namedChildCount; i < n; i++) {
             const argNode = argList.namedChild(i);
             if (!argNode) continue;
 
@@ -1289,7 +1299,7 @@ export class TreeSitterTSExtractor {
     return undefined;
   }
 
-  private extractClasses(root: any): TSExtractedClass[] {
+  private extractClasses(root: any, preCollected?: any[]): TSExtractedClass[] {
     const classes: TSExtractedClass[] = [];
     // `abstract class Foo extends Base` parses as `abstract_class_declaration`, a
     // DIFFERENT node type from plain `class_declaration` in tree-sitter-typescript —
@@ -1298,7 +1308,7 @@ export class TreeSitterTSExtractor {
     // invisible to extractClasses entirely, not just to reference resolution). Include
     // it here so abstract classes get nodes, methods, heritage, and (via
     // extractClassLevelReferences) reference edges at all.
-    const classNodes = this.collectByTypes(root, new Set([
+    const classNodes = preCollected ?? this.collectByTypes(root, new Set([
       'class_declaration',
       'abstract_class_declaration',
       'interface_declaration',
@@ -1331,7 +1341,7 @@ export class TreeSitterTSExtractor {
                      this.findFirst(cls, 'class_heritage');
 
     if (heritage) {
-      for (let i = 0; i < heritage.namedChildCount; i++) {
+      for (let i = 0, n = heritage.namedChildCount; i < n; i++) {
         const clause = heritage.namedChild(i);
         if (clause.type === 'extends_clause') {
           const type = clause.namedChild(0);
@@ -1356,7 +1366,7 @@ export class TreeSitterTSExtractor {
     const properties: TSExtractedProperty[] = [];
 
     if (body) {
-      for (let i = 0; i < body.namedChildCount; i++) {
+      for (let i = 0, n = body.namedChildCount; i < n; i++) {
         const member = body.namedChild(i);
         if (!member) continue;
 
@@ -1550,9 +1560,9 @@ export class TreeSitterTSExtractor {
     };
   }
 
-  private extractVariables(root: any): TSExtractedVariable[] {
+  private extractVariables(root: any, preCollected?: any[]): TSExtractedVariable[] {
     const variables: TSExtractedVariable[] = [];
-    const varDeclNodes = this.collectByTypes(root, new Set(['lexical_declaration', 'variable_declaration']));
+    const varDeclNodes = preCollected ?? this.collectByTypes(root, new Set(['lexical_declaration', 'variable_declaration']));
 
     for (const decl of varDeclNodes) {
       if (this.isInsideFunction(decl)) continue;
@@ -1588,9 +1598,9 @@ export class TreeSitterTSExtractor {
     return variables;
   }
 
-  private extractExports(root: any): TSExtractedExport[] {
+  private extractExports(root: any, preCollected?: any[]): TSExtractedExport[] {
     const exports: TSExtractedExport[] = [];
-    const exportNodes = this.collectByType(root, 'export_statement');
+    const exportNodes = preCollected ?? this.collectByType(root, 'export_statement');
 
     for (const exp of exportNodes) {
       const isDefault = exp.text.includes('export default');
@@ -1685,7 +1695,7 @@ export class TreeSitterTSExtractor {
 
   private hasAsyncKeyword(node: any): boolean {
     if (node.text.startsWith('async')) return true;
-    for (let i = 0; i < node.childCount; i++) {
+    for (let i = 0, n = node.childCount; i < n; i++) {
       const child = node.child(i);
       if (child.type === 'async') return true;
     }
@@ -1727,6 +1737,38 @@ export class TreeSitterTSExtractor {
     return results;
   }
 
+  /**
+   * Single-pass root collector: one pre-order DFS that buckets the four
+   * root-level node categories that extractImports/Classes/Variables/Exports
+   * used to each walk the whole tree for. The stack/reverse-push order is
+   * identical to collectByType(s), so each bucket equals the corresponding
+   * per-type walk exactly (same nodes, same document order).
+   */
+  private collectRootNodeBuckets(root: any): {
+    imports: any[];
+    classes: any[];
+    variables: any[];
+    exports: any[];
+  } {
+    const imports: any[] = [];
+    const classes: any[] = [];
+    const variables: any[] = [];
+    const exports: any[] = [];
+    const stack = [root];
+    while (stack.length > 0) {
+      const current = stack.pop()!;
+      const t = current.type;
+      if (t === 'import_statement') imports.push(current);
+      else if (t === 'class_declaration' || t === 'abstract_class_declaration' || t === 'interface_declaration' || t === 'type_alias_declaration') classes.push(current);
+      else if (t === 'lexical_declaration' || t === 'variable_declaration') variables.push(current);
+      else if (t === 'export_statement') exports.push(current);
+      for (let i = current.namedChildCount - 1; i >= 0; i--) {
+        stack.push(current.namedChild(i));
+      }
+    }
+    return { imports, classes, variables, exports };
+  }
+
   private collectByTypes(node: any, types: Set<string>): any[] {
     const results: any[] = [];
     const stack = [node];
@@ -1762,7 +1804,7 @@ export class TreeSitterTSExtractor {
 
   private findFirst(node: any, type: string): any | null {
     if (node.type === type) return node;
-    for (let i = 0; i < node.namedChildCount; i++) {
+    for (let i = 0, n = node.namedChildCount; i < n; i++) {
       const found = this.findFirst(node.namedChild(i), type);
       if (found) return found;
     }
