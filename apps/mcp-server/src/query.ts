@@ -141,7 +141,13 @@ export function buildSummary(cas: CASOutput, opts: { detail?: 'compact' | 'full'
     analysis_version_notice: versionInfo.status === 'older-compatible'
       ? `This analysis was produced by cas_version ${versionInfo.stored_version}; the server is at ${versionInfo.current_version}. Re-run analyze_codebase to populate fields added since (user journeys, data lineage, paradigm conformance, product map).`
       : undefined,
-    languages: productTech.languages.length ? productTech.languages : techs?.languages?.map(l => l.name) || [],
+    // Primary source is the byte-ranked language mix (system.technologies.languages,
+    // computed from real source bytes on disk so the true primary language sorts
+    // first — see orchestrator.extractTechnologies). productTech (per-node product
+    // signals) is only a fallback for the rare case where technologies is empty;
+    // it is NOT byte-ranked and previously mis-ordered TypeScript behind trailing
+    // markup files.
+    languages: techs?.languages?.length ? techs.languages.map(l => l.name) : productTech.languages,
     frameworks: productTech.frameworks.length ? productTech.frameworks : techs?.frameworks?.map(f => f.name) || [],
     primary_domain: primaryDomain,
     description: cas.enhanced_system_purpose?.inferred_description || null,
@@ -158,7 +164,15 @@ export function buildSummary(cas: CASOutput, opts: { detail?: 'compact' | 'full'
     edges: cas.edges.length,
     entry_points: cas.entry_points?.length || 0,
     entry_points_by_type: entryPointsByType,
-    database_entities: cas.database_schema?.entities.map(e => e.name) || [],
+    // The product's domain entities live in cas.data_entities (the full Camp-B
+    // entity extraction — DTOs, domain shapes, ORM models, etc.). cas.database_schema
+    // is a much narrower ORM/DDL-only view (e.g. 3 @Entity classes) that is NOT the
+    // domain-entity surface the summary is meant to convey — reading it here reported
+    // "3 entities" for a 202-entity codebase. Surface data_entities; fall back to the
+    // database_schema names only when the fuller extraction is absent.
+    database_entities: (cas.data_entities?.length
+      ? cas.data_entities.map(e => e.name)
+      : cas.database_schema?.entities.map(e => e.name)) || [],
     capabilities: cas.system_capabilities?.length || cas.flow_graph?.capabilities.length || 0,
     top_capabilities: cas.system_capabilities?.length
       ? [...cas.system_capabilities]
@@ -391,14 +405,37 @@ function nameMatchRank(node: CASNode, queryLower: string): number {
   return 3;
 }
 
+function nodeLanguageSignal(node: CASNode): string {
+  // Language analyzers do not all stamp a single `metadata.language` field: the
+  // TypeScript/JavaScript analyzer (the dominant source in a JS/TS repo) stamps
+  // `metadata.isTypeScript` + `metadata.extension` and leaves `language` unset,
+  // while only the breadth/tree-sitter analyzers set `metadata.language`. Reading
+  // `metadata.language` alone therefore silently drops TypeScript and surfaces
+  // only the trailing markup/shell files (the historic `[shell,html,css,glimmer]`
+  // summary that hid a 99.9%-TypeScript codebase). Derive the label from whichever
+  // reliable signal the producing analyzer actually set.
+  // `isTypeScript`/`extension` are stamped at analysis time by the TS/JS analyzer
+  // but are not part of the declared CASNode metadata shape, so read them off a
+  // widened view rather than the typed surface.
+  const meta = (node.metadata || {}) as Record<string, unknown>;
+  const explicit = String(meta.language || '').trim();
+  if (explicit) return normalizeTechLabel(explicit);
+  if (meta.isTypeScript === true) return 'TypeScript/JavaScript';
+  const ext = String(meta.extension || '').trim().toLowerCase().replace(/^\./, '');
+  if (ext === 'ts' || ext === 'tsx' || ext === 'js' || ext === 'jsx' || ext === 'mjs' || ext === 'cjs') {
+    return 'TypeScript/JavaScript';
+  }
+  return '';
+}
+
 function productTechSignals(cas: CASOutput): { languages: string[]; frameworks: string[] } {
   const languages = new Set<string>();
   const frameworks = new Set<string>();
   for (const node of cas.nodes || []) {
     if (!isPrimaryProductNodeForQuery(node)) continue;
-    const language = String(node.metadata?.language || '').trim();
+    const language = nodeLanguageSignal(node);
     const framework = String(node.metadata?.framework || '').trim();
-    if (language) languages.add(normalizeTechLabel(language));
+    if (language) languages.add(language);
     if (framework && !isTestFramework(framework)) frameworks.add(normalizeTechLabel(framework));
   }
   return {

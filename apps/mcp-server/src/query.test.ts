@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { CASOutput, CASNode, CASEdge, CASEntryPoint } from '../../../packages/analyzer-core/src/types/cas.types';
-import { getCodingContext, getFlowConcepts, getCallers, assessChangeRisk, getConfiguration } from './query';
+import { getCodingContext, getFlowConcepts, getCallers, assessChangeRisk, getConfiguration, buildSummary } from './query';
 
 // Builds a synthetic CAS with a single high-fanout "hub" node that has more
 // callers/callees than the default display limit, plus a handful of
@@ -372,4 +372,94 @@ test('getConfiguration(affecting_node_id) returns no env vars for a node with no
 
   const result: any = getConfiguration(cas, { affecting_node_id: 'method_unrelated' });
   assert.equal(result.environment_variables.length, 0);
+});
+
+// Regression: buildSummary must surface the RIGHT CAS fields for the two facts
+// the summary exists to convey — the primary language and the domain entities.
+// The bug this locks out (v1.0.51 blocker): a 99.9%-TypeScript, 202-entity crypto
+// codebase was summarized as languages [shell,html,css,glimmer] with 3 entities,
+// because buildSummary read node.metadata.language (which the TS analyzer never
+// stamps) and cas.database_schema.entities (a narrow ORM/DDL view) instead of the
+// byte-ranked system.technologies.languages and the full cas.data_entities.
+function buildTwoSourceCas(): any {
+  const nodes: any[] = [];
+  // 40 primary TS product nodes that carry isTypeScript/extension but NOT a
+  // metadata.language field — exactly how the TS/JS analyzer stamps them.
+  for (let i = 0; i < 40; i++) {
+    nodes.push({
+      id: `fn_${i}`,
+      name: `handler${i}`,
+      type: 'function',
+      source: { file: `src/business/handler${i}.ts`, line: 1 },
+      metadata: { isTypeScript: true, extension: '.ts', framework: 'nestjs' },
+    });
+  }
+  // A couple of trailing markup/shell nodes that DO carry metadata.language —
+  // the only thing the old node-metadata scan could see.
+  nodes.push({ id: 'tpl', name: 't', type: 'template', source: { file: 'views/x.hbs', line: 1 }, metadata: { language: 'glimmer' } });
+  nodes.push({ id: 'sh', name: 's', type: 'script', source: { file: 'scripts/run.sh', line: 1 }, metadata: { language: 'shell' } });
+
+  return {
+    nodes,
+    edges: [],
+    entry_points: [],
+    cas_version: '1.11.0',
+    analyzer_contributions: [],
+    system: {
+      name: 'soon-lens',
+      type: 'service',
+      technologies: {
+        // Byte-ranked: TypeScript wins by a mile. This is the authoritative source.
+        languages: [
+          { name: 'TypeScript/JavaScript', percentage: 99.9, files: 742 },
+          { name: 'Shell/Bash', percentage: 0.1, files: 2 },
+          { name: 'Glimmer', percentage: 0, files: 7 },
+        ],
+        frameworks: [{ name: 'NestJS' }],
+      },
+    },
+    // Full domain-entity extraction (Camp-B): 202 in production; 5 representative here.
+    data_entities: [
+      { id: 'e1', name: 'Macd' }, { id: 'e2', name: 'BollingerBands' },
+      { id: 'e3', name: 'RiskMetrics' }, { id: 'e4', name: 'AssetAnalysis' },
+      { id: 'e5', name: 'OracleFeedMapping' },
+    ],
+    // Narrow ORM/DDL view — the field the summary used to (wrongly) read from.
+    database_schema: { entities: [{ name: 'Strategy' }, { name: 'StrategyExecution' }, { name: 'StrategyAlert' }] },
+  };
+}
+
+test('buildSummary reports the byte-ranked primary language, not trailing markup/shell noise', () => {
+  const summary: any = buildSummary(buildTwoSourceCas(), { detail: 'compact' });
+  assert.equal(summary.languages[0], 'TypeScript/JavaScript',
+    `primary language must be TypeScript, got ${JSON.stringify(summary.languages)}`);
+  // The historic failure surfaced ONLY the markup/shell files and dropped TS entirely.
+  assert.ok(!/^(shell|glimmer|html|css)/i.test(summary.languages[0]),
+    `primary language must not be a trailing markup/shell file: ${JSON.stringify(summary.languages)}`);
+});
+
+test('buildSummary surfaces the full domain-entity set (data_entities), not the narrow database_schema view', () => {
+  const summary: any = buildSummary(buildTwoSourceCas(), { detail: 'compact' });
+  assert.equal(summary.database_entities.length, 5,
+    `expected the 5 data_entities, got ${summary.database_entities.length}: ${JSON.stringify(summary.database_entities)}`);
+  assert.ok(summary.database_entities.includes('Macd'),
+    'domain entities (Macd, BollingerBands, ...) must be present, not just the 3 ORM entities');
+  assert.ok(!summary.database_entities.includes('StrategyAlert') || summary.database_entities.length > 3,
+    'must not collapse to the 3-entity database_schema view');
+});
+
+test('buildSummary falls back to database_schema entities only when data_entities is absent', () => {
+  const cas = buildTwoSourceCas();
+  cas.data_entities = [];
+  const summary: any = buildSummary(cas, { detail: 'compact' });
+  assert.deepEqual(summary.database_entities, ['Strategy', 'StrategyExecution', 'StrategyAlert']);
+});
+
+test('buildSummary falls back to product-node language signals only when technologies.languages is empty', () => {
+  const cas = buildTwoSourceCas();
+  cas.system.technologies.languages = [];
+  const summary: any = buildSummary(cas, { detail: 'compact' });
+  // productTechSignals now derives TS from isTypeScript/extension, so TS still wins.
+  assert.ok(summary.languages.includes('TypeScript/JavaScript'),
+    `product-node fallback must still detect TypeScript: ${JSON.stringify(summary.languages)}`);
 });
