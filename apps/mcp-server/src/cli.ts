@@ -1129,8 +1129,17 @@ async function runInitCommand(projectPath: string, args: ParsedArgs, options: { 
 
   // (c) Analysis — kick off / refresh the hosted analysis for this repo.
   // Best-effort: a failed or slow analysis never fails the connect.
+  const boundProjectId = loaded.config.project.id;
   if (!token) {
     record('analysis', 'skip', 'requires sign-in — run `klauro analyze .` after `klauro login`');
+  } else if (!boundProjectId || !/^prj_/.test(boundProjectId)) {
+    // Signed in but the project never bound to a hosted prj_ — an upload here
+    // lands under a path-hash slug and is orphaned (never appears in any
+    // workspace). Fail loudly instead of printing "ok", and make --json exit
+    // non-zero so a scripted caller notices.
+    const workspaceName = (args.workspace && args.workspace.trim()) || path.basename(projectPath);
+    record('analysis', 'warn', `project not bound — analysis would upload as an orphaned slug and will not appear in workspace ${workspaceName}; re-run with --workspace or check auth`);
+    process.exitCode = 1;
   } else {
     try {
       const result = await withLogHandling(true, true, () => analyzeCodebaseRemotely({
@@ -1310,6 +1319,24 @@ async function resolveInitOptions(projectPath: string, args: ParsedArgs): Promis
   kind?: 'project' | 'workspace';
 }> {
   if (args.json || !process.stdin.isTTY || args.projectId || args.organizationId) {
+    // An explicit --project-id (or --organization-id) is honored as-is, and a
+    // caller with no stored token stays local-only (undefined ids). Otherwise a
+    // non-interactive caller still gets a real hosted placement — mirror the
+    // interactive branch's resolve-or-create, headlessly — so the analysis
+    // lands in a workspace instead of an orphaned path-hash slug.
+    const serverUrl = normalizeServerUrl(args.serverUrl);
+    const token = args.projectId || args.organizationId ? undefined : connectorToken(undefined, serverUrl);
+    if (token) {
+      const placed = await placeHostedProjectHeadless(projectPath, serverUrl, token, args);
+      return {
+        serverUrl,
+        kind: 'project',
+        projectName: placed.project.name,
+        projectId: placed.project.id,
+        workspaceId: placed.workspace.id,
+        organizationId: placed.workspace.id,
+      };
+    }
     return {
       serverUrl: args.serverUrl,
       projectId: args.projectId,
@@ -1439,6 +1466,46 @@ async function findConnectedRemote(serverUrl: string, token: string, repoUrl: st
     // Recognition is a convenience; a lookup failure must never block init.
     return null;
   }
+}
+
+/**
+ * Non-interactive equivalent of the interactive branch's resolve-or-create: pick
+ * the hosted workspace named by --workspace (or the repo basename), reusing an
+ * existing one with that name if present else creating it, then create the
+ * project inside it. Same helpers and error handling as the TTY path — just
+ * reachable with no prompts, so `--json` / scripted init binds a real prj_/wsp_.
+ */
+async function placeHostedProjectHeadless(
+  projectPath: string,
+  serverUrl: string,
+  token: string,
+  args: ParsedArgs,
+): Promise<{ workspace: RemoteWorkspaceChoice; project: RemoteProjectChoice }> {
+  const manifest = await buildUploadManifest(projectPath);
+  const remoteUrl = manifest.remote_provider?.repository_url;
+  const defaultProjectName = resolveManifestProjectName(projectPath, path.basename(projectPath));
+  const workspaceName = (args.workspace && args.workspace.trim()) || defaultProjectName;
+
+  const workspaces = await listRemoteWorkspaces(serverUrl, token);
+  const existing = workspaces.find(candidate => candidate.name === workspaceName);
+  const workspace = existing ?? await createRemoteWorkspace(serverUrl, token, workspaceName);
+
+  // Idempotency: a repeat headless init must reuse the existing project rather
+  // than mint a duplicate. With no prompt available we auto-reuse a match — by
+  // canonical remote url (like the interactive path), or by local_path for a
+  // standalone repo that has no remote (this project's case). Only create when
+  // nothing matches.
+  const projects = await listRemoteProjects(serverUrl, token, workspace.id);
+  const reused = projects.find(candidate =>
+    (remoteUrl && normalizeRepoUrl(candidate.repo_url) === normalizeRepoUrl(remoteUrl)) ||
+    (candidate.local_path && candidate.local_path === projectPath),
+  );
+  const project = reused ?? await createRemoteProject(serverUrl, token, workspace.id, {
+    name: defaultProjectName,
+    repo_url: remoteUrl,
+    local_path: projectPath,
+  });
+  return { workspace, project };
 }
 
 interface RemoteWorkspaceChoice {
