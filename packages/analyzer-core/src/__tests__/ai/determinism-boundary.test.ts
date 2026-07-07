@@ -34,7 +34,9 @@ function writeFixture(root: string): void {
     path.join(root, 'package.json'),
     JSON.stringify(
       {
-        name: 'klauro-determinism-fixture',
+        // Must NOT match the Klauro self-project detector (/(^|[@/])klauro([-/.]|$)/),
+        // or the self-identity grounding gate applies to this order fixture.
+        name: 'order-tracking-determinism-fixture',
         version: '1.0.0',
         dependencies: { express: '^4.18.2' },
       },
@@ -172,7 +174,15 @@ describe('deterministic/AI boundary', () => {
     fs.rmSync(fixtureDir, { recursive: true, force: true });
   });
 
-  it('produces identical structure whether AI is off, broken, or on', async () => {
+  // Target model (docs/cas/DETERMINISM-BOUNDARY.md): Camp-B STRUCTURE is
+  // deterministic and ships with AI off; COMPREHENSION (domain, overall
+  // description, capability descriptions) is AI-only. When comprehension is
+  // explicitly OFF the run is structure-only (comprehension fields unset, never a
+  // 'deterministic' provenance). When comprehension is ATTEMPTED but the provider
+  // fails, the comprehension pass THROWS — there is no deterministic substitute.
+  // When AI succeeds, comprehension is written with 'ai' provenance.
+
+  it('ships deterministic structure with comprehension OFF, and never writes a deterministic provenance', async () => {
     const describeSpy = jest.spyOn(aiService, 'generateComponentDescription');
 
     setAIEnv({
@@ -185,33 +195,58 @@ describe('deterministic/AI boundary', () => {
     describeSpy.mockRejectedValue(new Error('AI must not be called when disabled'));
     const disabledRun = await createPipelineOrchestrator().orchestrateAnalysis(fixtureDir);
     expect(describeSpy).not.toHaveBeenCalled();
-    expect(disabledRun.enhanced_system_purpose?.description_source).toBe('deterministic');
+    // Structure is present and deterministic.
+    expect(disabledRun.nodes.length).toBeGreaterThan(0);
+    // Comprehension is UNSET (no deterministic substitute), never 'deterministic'.
+    expect(disabledRun.enhanced_system_purpose?.description_source).not.toBe('deterministic');
+    expect(disabledRun.enhanced_system_purpose?.domain_source).not.toBe('deterministic');
     expect(disabledRun.enhanced_system_purpose?.description_generation?.status).toBe('ai_skipped');
     expect(disabledRun.enhanced_system_purpose?.description_generation?.reason).toBe('disabled-by-env');
-    expect(disabledRun.enhanced_system_purpose?.domain_source).not.toBe('ai');
+    for (const capability of disabledRun.system_capabilities || []) {
+      expect(capability.description_source).not.toBe('deterministic');
+      expect(capability.description_generation?.status).not.toBe('deterministic_initial');
+      expect(capability.description_generation?.status).not.toBe('deterministic_kept');
+    }
+    for (const entity of disabledRun.data_entities || []) {
+      expect(entity.description_source).not.toBe('deterministic');
+    }
+  });
+
+  it('THROWS when comprehension is attempted but the AI provider fails (no deterministic fallback)', async () => {
+    const describeSpy = jest.spyOn(aiService, 'generateComponentDescription');
 
     setAIEnv({
       KLAURO_AI_INTERPRETATION: 'true',
       KLAURO_AI_ELEMENT_DESCRIPTIONS: 'true',
-      KLAURO_EMBEDDING_ENABLED: 'true',
+      KLAURO_EMBEDDING_ENABLED: 'false',
       OPENAI_API_KEY: 'test-determinism-key',
     });
     resetAICooldownState();
     describeSpy.mockReset();
     describeSpy.mockRejectedValue(new Error('ai provider unavailable'));
-    const brokenRun = await createPipelineOrchestrator().orchestrateAnalysis(fixtureDir);
-    expect(describeSpy).toHaveBeenCalled();
-    expect(brokenRun.enhanced_system_purpose?.description_source).toBe('deterministic');
-    expect(brokenRun.enhanced_system_purpose?.description_generation?.status).toBe('ai_failed');
-    expect(brokenRun.enhanced_system_purpose?.domain_source).not.toBe('ai');
-    for (const capability of brokenRun.system_capabilities || []) {
-      expect(capability.description_source === undefined || capability.description_source === 'deterministic').toBe(true);
-    }
+    await expect(createPipelineOrchestrator().orchestrateAnalysis(fixtureDir)).rejects.toThrow(
+      /comprehension/i,
+    );
+  });
+
+  it('writes AI comprehension with an ai provenance and keeps structure identical to the AI-off run', async () => {
+    const describeSpy = jest.spyOn(aiService, 'generateComponentDescription');
+
+    // Baseline structure with comprehension off.
+    setAIEnv({
+      KLAURO_AI_INTERPRETATION: 'false',
+      KLAURO_AI_ELEMENT_DESCRIPTIONS: 'false',
+      KLAURO_EMBEDDING_ENABLED: 'false',
+    });
+    resetAICooldownState();
+    describeSpy.mockReset();
+    describeSpy.mockRejectedValue(new Error('AI must not be called when disabled'));
+    const disabledRun = await createPipelineOrchestrator().orchestrateAnalysis(fixtureDir);
 
     setAIEnv({
       KLAURO_AI_INTERPRETATION: 'true',
       KLAURO_AI_ELEMENT_DESCRIPTIONS: 'true',
-      KLAURO_EMBEDDING_ENABLED: 'true',
+      KLAURO_EMBEDDING_ENABLED: 'false',
       OPENAI_API_KEY: 'test-determinism-key',
     });
     resetAICooldownState();
@@ -226,24 +261,26 @@ describe('deterministic/AI boundary', () => {
     );
     const enabledRun = await createPipelineOrchestrator().orchestrateAnalysis(fixtureDir);
     expect(describeSpy).toHaveBeenCalled();
-    const enabledStatus = enabledRun.enhanced_system_purpose?.description_generation?.status;
-    expect(['ai_applied', 'ai_rejected', 'deterministic_kept']).toContain(enabledStatus);
-    if (enabledStatus === 'ai_applied') {
-      expect(enabledRun.enhanced_system_purpose?.description_source).toBe('ai');
-    } else {
-      expect(enabledRun.enhanced_system_purpose?.description_source).toBe('deterministic');
-    }
+    // Comprehension, when produced, is AI provenance — never deterministic.
+    expect(enabledRun.enhanced_system_purpose?.description_source).toBe('ai');
+    expect(enabledRun.enhanced_system_purpose?.description_generation?.status).toBe('ai_applied');
+    expect(enabledRun.enhanced_system_purpose?.description_source).not.toBe('deterministic');
+    expect(enabledRun.enhanced_system_purpose?.domain_source).not.toBe('deterministic');
     if (enabledRun.enhanced_system_purpose?.domain_source === 'ai') {
       expect(enabledRun.enhanced_system_purpose?.primary_domain).toBe('customer-order-tracking');
     }
     for (const capability of enabledRun.system_capabilities || []) {
+      expect(capability.description_source).not.toBe('deterministic');
+      expect(capability.description_generation?.status).not.toBe('deterministic_initial');
+      expect(capability.description_generation?.status).not.toBe('deterministic_kept');
       if (capability.description_source === 'ai') {
-        expect(capability.description_generation?.status).toBe('ai_applied');
+        expect(['ai_applied', 'ai_rejected', 'ai_skipped', 'ai_failed']).toContain(
+          capability.description_generation?.status,
+        );
       }
     }
 
-    const disabledStructure = structuralView(disabledRun);
-    expect(structuralView(brokenRun)).toEqual(disabledStructure);
-    expect(structuralView(enabledRun)).toEqual(disabledStructure);
+    // Camp-B structure is identical whether comprehension is off or AI-on.
+    expect(structuralView(enabledRun)).toEqual(structuralView(disabledRun));
   });
 });

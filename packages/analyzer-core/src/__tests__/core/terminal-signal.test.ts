@@ -253,7 +253,7 @@ describe('evaluateAIDomainCandidate (domain authority)', () => {
     expect(verdict.accepted).toBe(true);
   });
 
-  test('weak terminal token label does not replace a specific fallback domain', () => {
+  test('buildEnhancedSystemPurpose does not seed a deterministic comprehension domain or description (AI-only)', () => {
     const orch = new AnalyzerOrchestrator() as any;
     const purpose = orch.buildEnhancedSystemPurpose(
       { primary_type: 'application', confidence: 0.7, evidence: [] },
@@ -290,7 +290,14 @@ describe('evaluateAIDomainCandidate (domain authority)', () => {
       []
     );
 
-    expect(purpose.primary_domain).toBe('portfolio-management');
+    // Comprehension is AI-only: the builder must NOT keyword-classify a domain
+    // or write a description. Those are produced solely by applyAIInterpretation.
+    expect(purpose.primary_domain).toBe('');
+    expect(purpose.inferred_description).toBe('');
+    expect(purpose.domain_source).toBeUndefined();
+    expect(purpose.description_source).toBeUndefined();
+    // Structure (Camp B) is still produced.
+    expect(purpose.core_concepts).toContain('Portfolio');
   });
 
   test('weak terminal token may only label an otherwise weak fallback', () => {

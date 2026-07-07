@@ -1927,7 +1927,30 @@ async function handleAnalyze(dataDir: string, request: RemoteAnalyzeRequest, def
     };
   }
 
-  const result = await analyzeProjectIncremental(workspace, displayName);
+  let result: Awaited<ReturnType<typeof analyzeProjectIncremental>>;
+  try {
+    result = await analyzeProjectIncremental(workspace, displayName);
+  } catch (error) {
+    // Comprehension is AI-only and THROWS when a hosted AI provider is not
+    // available (docs/cas/DETERMINISM-BOUNDARY.md). The remote analyze edge is
+    // structure-first: rather than fail the whole request (and rather than emit a
+    // deterministic comprehension substitute — which does not exist), ship the
+    // deterministic Camp-B CAS now with comprehension left pending/unset. In the
+    // hosted product a provider is always configured, so this path is not taken.
+    const message = error instanceof Error ? error.message : String(error);
+    if (!/comprehension/i.test(message)) throw error;
+    console.error(`[Klauro] remote analyze: comprehension unavailable, returning structure-only CAS (${message})`);
+    const deferred = await analyzeProjectDeferred(workspace, displayName);
+    return {
+      status: 'success',
+      analysis_id: analysisId,
+      analysis_revision: Date.now(),
+      analysis_type: 'full',
+      base_commit: request.snapshot.base_commit,
+      manifest: request.snapshot.manifest,
+      cas: deferred.output,
+    };
+  }
   return {
     status: 'success',
     analysis_id: analysisId,
@@ -1954,8 +1977,24 @@ async function handleAnalyzeDiff(dataDir: string, request: RemoteAnalyzeDiffRequ
   await fs.ensureDir(workspace);
   await writeSnapshot(workspace, diff.files);
 
-  const result = await analyzeProjectIncremental(workspace, displayName);
-  const cas = result.output;
+  let cas: Awaited<ReturnType<typeof analyzeProjectIncremental>>['output'];
+  let changeReport: RemoteAnalyzeResponse['change_report'];
+  let analysisType: 'full' | 'incremental' = 'incremental';
+  try {
+    const result = await analyzeProjectIncremental(workspace, displayName);
+    cas = result.output;
+    changeReport = result.changeReport;
+    analysisType = result.wasFullRebuild ? 'full' : 'incremental';
+  } catch (error) {
+    // Comprehension is AI-only and throws without a provider; ship structure-only
+    // (deferred) rather than fail the diff request or emit deterministic prose.
+    const message = error instanceof Error ? error.message : String(error);
+    if (!/comprehension/i.test(message)) throw error;
+    console.error(`[Klauro] remote analyze-diff: comprehension unavailable, returning structure-only CAS (${message})`);
+    const deferred = await analyzeProjectDeferred(workspace, displayName);
+    cas = deferred.output;
+    analysisType = 'full';
+  }
   cas.analyzed_track = 'other-branch';
   cas.diff_only = true;
   if (diff.head_commit) cas.base_commit = diff.head_commit;
@@ -1965,11 +2004,11 @@ async function handleAnalyzeDiff(dataDir: string, request: RemoteAnalyzeDiffRequ
     status: 'success',
     analysis_id: analysisId,
     analysis_revision: Date.now(),
-    analysis_type: result.wasFullRebuild ? 'full' : 'incremental',
+    analysis_type: analysisType,
     base_commit: diff.head_commit,
     manifest: buildDiffManifest(workspace, diff),
     cas,
-    change_report: result.changeReport,
+    change_report: changeReport,
   };
 }
 

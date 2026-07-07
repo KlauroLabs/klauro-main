@@ -1,10 +1,15 @@
 # AI Provider Setup (hosted, low-cost)
 
-Klauro's analysis is **deterministic-first**: the system description, domains, and
-primary capabilities are produced from source-backed evidence first, then AI
-turns that evidence into concise, defensible prose. In the commercial product,
-that AI enrichment runs on the hosted analyzer service, not on a customer's
-laptop.
+Klauro splits its output in two (see `docs/cas/DETERMINISM-BOUNDARY.md`):
+**STRUCTURE** (the compile/connectivity graph and all code facts) is produced
+deterministically, and **COMPREHENSION** (the system/workspace description,
+domains, and capability descriptions) is produced **only by AI**. There is no
+deterministic comprehension and no deterministic fallback: if the comprehension
+model call is unavailable or fails, the comprehension pass **throws** — it never
+emits a deterministically-authored description or domain. In the commercial
+product that AI enrichment runs on the hosted analyzer service, not on a
+customer's laptop. **A hosted AI provider is therefore required to produce a
+customer-facing analysis; structure alone can be produced with AI disabled.**
 
 ## Recommended posture: cheap hosted open-weight model
 
@@ -42,17 +47,19 @@ Customer machines should not set DeepInfra/OpenAI/Anthropic keys, run Ollama, or
 download local model weights for Klauro. Local connectors do deterministic
 indexing, cache reads, and branch overlays; hosted analyzers do the AI work.
 
-## Capability & description AI overlay (the interpretation layer)
+## Capability & description AI comprehension (the interpretation layer)
 
-Klauro's pipeline is **deterministic facts → AI interpretation**. The analyzer extracts honest
+Klauro's pipeline is **deterministic facts → AI comprehension**. The analyzer extracts honest
 structural facts (capability groupings, the data entities each touches, operations, entry-point
-surfaces, repo-relative file paths) and writes a fact-grounded deterministic description. The AI
-overlay then rewrites those facts into prose, grounded by `element-description-validator.ts` (which
-rejects ungrounded/marketing/restated output and triggers a repair pass), and **falls back to the
-deterministic description** whenever AI is unavailable or its output fails the grounding gate.
+surfaces, repo-relative file paths, and the full dependency manifest — e.g. `ccxt`/`web3`). The AI
+pass reads those facts and writes the domain, the system description, and the capability
+descriptions, grounded by `element-description-validator.ts` (which rejects ungrounded/marketing/
+restated output and triggers a repair pass). There is **no deterministic fallback**: if AI is
+unavailable or the output cannot be grounded after repair, the comprehension pass **throws**. The
+model infers the domain from the real dependencies/integrations (a repo depending on `ccxt`/`web3`
+reads as crypto), never from a keyword in the repo name.
 
-This overlay is **ON by default** (CAS-level capability/entity description interpretation). To get
-AI prose instead of the deterministic baseline, point it at a capable model:
+Comprehension is **ON by default**. To produce comprehension you must point it at a capable model:
 
 ```bash
 export DEEPINFRA_API_KEY="..."
@@ -63,12 +70,13 @@ export KLAURO_AI_INTERPRETATION_BUDGET_MS=120000
 ```
 
 Behavior:
-- **Capable model configured** → capability/entity descriptions become `description_source: 'ai'`,
-  grounded on the deterministic facts (the entities/operations/domains each capability touches).
-- **No model / model fails grounding** → `description_source: 'deterministic'` with the honest
-  fact-grounded text ("Payments Management creates and deletes payments records through 8 HTTP
-  routes (src/app/controllers/payment/payment.controller.ts)"). Never canned, never brand-keyed.
-- To disable the overlay entirely (pure deterministic): `export KLAURO_AI_INTERPRETATION=false`.
+- **Capable model configured** → domain, description, and capability/entity descriptions are
+  produced by AI with `description_source`/`domain_source: 'ai'` (or `'reused'` for incremental
+  carry-forward), grounded on the real evidence bundle.
+- **No model / model fails grounding** → the comprehension pass **THROWS**. There is no
+  `description_source: 'deterministic'` — that value is never written. Comprehension is AI-only.
+- To run **structure-only** (Camp-B facts, comprehension skipped and left unset, no throw):
+  `export KLAURO_AI_INTERPRETATION=false`.
 
 The same hosted provider cascade and AI cache (above) apply, so re-analysis of
 unchanged code reuses cached AI output.

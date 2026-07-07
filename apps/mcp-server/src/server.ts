@@ -847,13 +847,14 @@ async function loadWorkspaceRepositoryAnalyses(options: {
 }
 
 function markWorkspaceAiEnrichmentSkipped(graph: crossCodebaseAnalysis.CrossCodebaseSystemGraph): crossCodebaseAnalysis.CrossCodebaseSystemGraph {
-  const deterministicNarrative = graph.deterministic_narrative;
+  // Workspace comprehension is AI-only. When AI is intentionally skipped the
+  // narrative stays a pre-AI placeholder (empty description); there is no
+  // deterministic workspace narrative to substitute in.
   graph.workspace_narrative = {
     ...graph.workspace_narrative,
     source: 'ai-required-degraded',
-    degraded_reason: 'Workspace AI enrichment was intentionally skipped for fast deterministic generation.',
+    degraded_reason: 'Workspace AI enrichment was intentionally skipped; comprehension is AI-only, so the narrative is a placeholder until AI runs.',
   };
-  graph.deterministic_narrative = deterministicNarrative;
   return graph;
 }
 

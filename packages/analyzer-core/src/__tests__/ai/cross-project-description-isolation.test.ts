@@ -30,10 +30,13 @@ const savedEnv: Record<string, string | undefined> = {};
 let projectA: string;
 let projectB: string;
 
+// Grounded, non-source-bucket AI descriptions (no "through HTTP endpoints"
+// restatement) so they pass the comprehension grounding gate — comprehension is
+// AI-only and rejects source-bucket restatement rather than falling back.
 const SHOPIFY_DESCRIPTION =
-  'Shopwave is an ecommerce storefront theme service built on Express where merchants manage Shopify theme development, server-rendered Liquid templates, storefront sections, and online store settings through HTTP endpoints.';
+  'Shopwave is an ecommerce storefront theme where merchants manage Shopify theme development, server-rendered Liquid templates, storefront sections, and online store settings. It coordinates theme customization so merchants can shape how their storefront looks and behaves.';
 const CMS_DESCRIPTION =
-  'PageCraft is a content management service built on Express where editors create pages, publish site content, and manage page revisions through HTTP endpoints.';
+  'PageCraft is a content management system where editors create pages, publish site content, and manage page revisions. It coordinates the editorial lifecycle so teams can draft, preview, and publish website content.';
 
 function writeExpressFixture(root: string, packageName: string, readme: string, noun: string): void {
   fs.mkdirSync(path.join(root, 'src'), { recursive: true });
@@ -170,7 +173,16 @@ describe('cross-project description isolation', () => {
       const serializedBCalls = mockProvider.generateDescription.mock.calls
         .slice(callsAfterA)
         .map(call => JSON.stringify(call[0]));
-      expect(serializedBCalls.some(call => /pagecraft/i.test(call))).toBe(true);
+      // Project B triggered its own comprehension calls (not served A's cache)…
+      expect(serializedBCalls.length).toBeGreaterThan(0);
+      // …and none of B's prompts leak project A's identity. The project name no
+      // longer travels via a deterministic project-text summary (that keyword-
+      // composed summary was removed), so we assert isolation directly.
+      for (const call of serializedBCalls) {
+        expect(call).not.toMatch(/shopwave/i);
+        expect(call).not.toMatch(/shopify/i);
+        expect(call).not.toMatch(/liquid/i);
+      }
 
       // The cache entries for the two projects must be distinct keys.
       expect(keysAfterB.length).toBeGreaterThan(0);

@@ -218,7 +218,10 @@ export interface SystemApplicationLink {
 export type WorkspaceDeployableLink = SystemApplicationLink;
 
 export interface WorkspaceNarrative {
-  source: 'deterministic' | 'ai' | 'ai-required-degraded';
+  // Comprehension is AI-only. 'ai' = written by AI; 'ai-required-degraded' = a
+  // pre-AI placeholder (empty description) before enrichment runs. There is no
+  // 'deterministic' workspace narrative.
+  source: 'ai' | 'ai-required-degraded';
   generated_at: string;
   confidence: number;
   title: string;
@@ -247,7 +250,7 @@ export interface WorkspaceAiProviderMetadata {
   verified: boolean;
 }
 
-export type WorkspaceDescriptionSource = 'cas' | 'deterministic' | 'ai' | 'ai-required-degraded';
+export type WorkspaceDescriptionSource = 'cas' | 'ai' | 'ai-required-degraded';
 
 export interface WorkspaceDomain {
   name: string;
@@ -890,7 +893,6 @@ export interface CrossCodebaseSystemGraph {
   data_flow_paths: SystemDataFlowPath[];
   unmatched_interfaces: UnmatchedSystemInterface[];
   workspace_narrative: WorkspaceNarrative;
-  deterministic_narrative: WorkspaceNarrative;
   ai_enrichment: WorkspaceAiProviderMetadata;
   detail_views: WorkspaceDetailViews;
   validation: WorkspaceValidation;
@@ -1017,7 +1019,6 @@ export function buildCrossCodebaseSystemGraph(
     data_flow_paths: dataFlowPaths,
     unmatched_interfaces: unmatchedInterfaces,
     workspace_narrative: workspaceNarrative,
-    deterministic_narrative: workspaceNarrative,
     ai_enrichment: workspaceAiProviderMetadata(),
     detail_views: detailViews,
     validation,
@@ -1073,16 +1074,12 @@ function normalizeWorkspaceNextMcpCalls(graph: CrossCodebaseSystemGraph): void {
 }
 
 export async function enrichWorkspaceAnalysisNarrative(graph: WorkspaceAnalysisGraph): Promise<WorkspaceAnalysisGraph> {
-  const deterministicNarrative = graph.deterministic_narrative;
+  // COMPREHENSION BOUNDARY (docs/cas/DETERMINISM-BOUNDARY.md): the workspace
+  // narrative, domains, and capability descriptions are AI-only. There is no
+  // deterministic workspace narrative and no degraded deterministic fallback:
+  // if AI enrichment is disabled or the model call fails, this THROWS.
   if (!workspaceAiEnrichmentEnabled()) {
-    applyWorkspaceAiProviderMetadata(graph);
-    graph.workspace_narrative = {
-      ...graph.workspace_narrative,
-      source: 'ai-required-degraded',
-      degraded_reason: 'Workspace AI enrichment is disabled by environment for this run.',
-    };
-    graph.deterministic_narrative = deterministicNarrative;
-    return graph;
+    throw new Error('Klauro workspace comprehension requires AI enrichment, but it is disabled by environment. Workspace narrative/domains/capabilities are AI-only; there is no deterministic fallback (see docs/cas/DETERMINISM-BOUNDARY.md).');
   }
 
   try {
@@ -1096,10 +1093,8 @@ export async function enrichWorkspaceAnalysisNarrative(graph: WorkspaceAnalysisG
     // catalog before the narrative/description passes run, so they describe the
     // merged capabilities rather than the noisy name-deduped union.
     graph.workspace_capabilities = await aiMergeWorkspaceCapabilities(graph);
-    // Realign the deterministic narrative's capability list to the merged catalog
-    // so the description and the capability list never disagree (e.g. description
-    // saying "Trade Execution" while the list shows "Manage Trading"), even if the
-    // AI narrative is later rejected and we fall back to the deterministic one.
+    // Realign the narrative's capability list to the merged catalog so the
+    // description and the capability list never disagree.
     const mergedCoreNames = graph.workspace_capabilities.filter(capability => capability.semantic_role === 'core').map(capability => capability.name);
     if (mergedCoreNames.length > 0) {
       const sentence = ` Its core capabilities are ${joinHumanReadableList(mergedCoreNames.slice(0, 5))}.`;
@@ -1111,10 +1106,9 @@ export async function enrichWorkspaceAnalysisNarrative(graph: WorkspaceAnalysisG
         }
       };
       realign(graph.workspace_narrative);
-      realign(graph.deterministic_narrative);
     }
     if (useSmallWorkspaceAiDefaultPasses()) {
-      return await enrichWorkspaceAnalysisNarrativeWithSmallPasses(graph, deterministicNarrative);
+      return await enrichWorkspaceAnalysisNarrativeWithSmallPasses(graph);
     }
     const raw = await withWorkspaceAiTimeout(generateWorkspaceAiText(workspaceNarrativePromptContext(graph)));
     writeWorkspaceAiDebug(raw);
@@ -1183,25 +1177,19 @@ export async function enrichWorkspaceAnalysisNarrative(graph: WorkspaceAnalysisG
     graph.detail_views.overview.quality_flags = graph.quality_flags;
     return graph;
   } catch (error) {
-    const fallback = await enrichWorkspaceAnalysisNarrativeWithSmallPasses(graph, deterministicNarrative, error);
+    // One bounded retry via the small-pass strategy (still AI). If AI still
+    // cannot produce a grounded narrative, THROW — there is no deterministic
+    // workspace narrative to degrade to.
+    const fallback = await enrichWorkspaceAnalysisNarrativeWithSmallPasses(graph, error);
     if (fallback.workspace_narrative.source === 'ai' || !fallback.quality_flags?.some(flag => flag.code === 'capability-descriptions-degraded' || flag.code === 'domain-descriptions-degraded')) {
       return fallback;
     }
-    graph.workspace_narrative = {
-      ...graph.workspace_narrative,
-      source: 'ai-required-degraded',
-      degraded_reason: `Workspace AI enrichment failed: ${error instanceof Error ? error.message : String(error)}`,
-    };
-    graph.deterministic_narrative = deterministicNarrative;
-    graph.quality_flags = buildWorkspaceQualityFlags(graph.workspace_narrative, graph.workspace_capabilities, graph.workspace_domains, graph.workspace_entities, graph.codebases, graph.interfaces, graph.application_links, graph.unmatched_interfaces);
-    graph.detail_views.overview.quality_flags = graph.quality_flags;
-    return graph;
+    throw new Error(`Klauro workspace comprehension failed (AI): ${error instanceof Error ? error.message : String(error)}. Workspace narrative/domains/capabilities are AI-only; there is no deterministic fallback.`);
   }
 }
 
 async function enrichWorkspaceAnalysisNarrativeWithSmallPasses(
   graph: WorkspaceAnalysisGraph,
-  deterministicNarrative: WorkspaceAnalysisGraph['deterministic_narrative'],
   initialError?: unknown,
 ): Promise<WorkspaceAnalysisGraph> {
   const generatedAt = new Date().toISOString();
@@ -1234,7 +1222,6 @@ async function enrichWorkspaceAnalysisNarrativeWithSmallPasses(
   finalizeRequiredWorkspaceAiSemantics(graph, generatedAt);
   applyWorkspaceAiProviderMetadata(graph);
 
-  graph.deterministic_narrative = deterministicNarrative;
   graph.detail_views.overview.capabilities = graph.workspace_capabilities.slice(0, 12);
   graph.detail_views.overview.workflows = graph.workspace_workflows.slice(0, 12);
   graph.detail_views.overview.entities = graph.workspace_entities.slice(0, 12);
@@ -5362,7 +5349,10 @@ function buildWorkspaceDomains(
     .slice(0, 16)
     .map(([name, value]) => ({
       name,
-      description: deterministicWorkspaceDomainDescription(name, value, codebaseNameById),
+      // Domain descriptions are AI comprehension: left empty until the workspace
+      // AI domain-description pass writes them (or throws). No deterministic
+      // domain description text.
+      description: '',
       project_ids: value.project_ids,
       evidence: value.evidence,
       semantic_role: value.terminal_score >= 8 ? semanticRoleForWorkspaceItem(name, value.terminal_score, 'core') : undefined,
@@ -5374,61 +5364,6 @@ function buildWorkspaceDomains(
       generation_pass: 'default-summary' as const,
       degraded_reason: 'Whole-workspace domain descriptions require default AI enrichment from deterministic WAS facts.',
     }));
-}
-
-/**
- * Honest, evidence-grounded fallback description used until AI enrichment runs
- * (or when AI is unavailable). It names the concrete capabilities, entities, and
- * projects that produced the domain instead of the old circular boilerplate
- * ("X is a whole-workspace domain inferred from repo-level CAS concepts ...").
- */
-function deterministicWorkspaceDomainDescription(
-  name: string,
-  value: { project_ids: string[]; evidence: string[] },
-  codebaseNameById: Map<string, string>,
-): string {
-  const selfName = normalizeAiItemName(name);
-  // Collapse singular/plural and punctuation-variant duplicates so a concept
-  // list reads "Token" once, not "Token, Tokens, Token,".
-  const dedupeLabels = (labels: string[]): string[] => {
-    const seen = new Set<string>();
-    const out: string[] = [];
-    for (const label of labels) {
-      const key = normalizeAiItemName(label).replace(/s\b/g, '').replace(/\s+/g, ' ').trim();
-      if (!key || seen.has(key)) continue;
-      seen.add(key);
-      out.push(label);
-    }
-    return out;
-  };
-  const pick = (prefix: string) => dedupeLabels(mergeStrings([], (value.evidence || [])
-    .filter(item => item.startsWith(prefix))
-    // Strip the "concept_" / "concept " token and any trailing punctuation so
-    // domain_concept evidence does not surface as "Concept Soon" or "Token,".
-    .map(item => titleizeDomain(item.slice(prefix.length).split(':')[0].replace(/^concept[_\s]+/i, '').replace(/[^a-z0-9]+$/i, ''))))
-    .filter(Boolean)
-    // Drop names identical to the domain itself (avoids "Finance Management
-    // groups capabilities Finance Management").
-    .filter(item => normalizeAiItemName(item) !== selfName));
-  const capabilities = dedupeLabels(mergeStrings(pick('capability:'), pick('capability_domain:'))).slice(0, 3);
-  const entities = dedupeLabels(pick('entity:')).slice(0, 3);
-  const concepts = dedupeLabels(mergeStrings(pick('domain_concept:'), pick('core_concept:'))).slice(0, 3);
-  const projects = mergeStrings([], (value.project_ids || [])
-    .map(id => codebaseNameById.get(id) || id)).filter(Boolean).slice(0, 3);
-  const isCryptoAnchor = (value.evidence || []).some(item => item.startsWith('crypto_anchor:'));
-
-  const parts: string[] = [];
-  if (capabilities.length) parts.push(`capabilities ${capabilities.join(', ')}`);
-  if (entities.length) parts.push(`entities ${entities.join(', ')}`);
-  if (!capabilities.length && !entities.length && concepts.length) parts.push(`concepts ${concepts.join(', ')}`);
-  const carrier = parts.length ? parts.join('; ') : 'related repo-level capabilities and entities';
-  const projectText = projects.length
-    ? ` across ${projects.length === 1 ? projects[0] : `${projects.length} projects (${projects.join(', ')})`}`
-    : '';
-  if (isCryptoAnchor) {
-    return `${name} groups the workspace's crypto / digital-asset behavior — ${carrier}${projectText}, anchored by blockchain node connections and on-chain asset flows.`;
-  }
-  return `${name} groups ${carrier}${projectText}.`;
 }
 
 function collapseOverlappingWorkspaceDomains(
@@ -8928,8 +8863,10 @@ function addSuffixConceptualEntity(
     related_data_flow_path_ids: mergeStrings([], members.flatMap(entity => entity.related_data_flow_path_ids)),
     sensitive_fields: mergeStrings([], members.flatMap(entity => entity.sensitive_fields)),
     lifecycle,
-    description: `${conceptName} is a workspace-level conceptual entity aggregated from ${memberNames.slice(0, 4).join(', ')}${memberNames.length > 4 ? ` and ${memberNames.length - 4} more device-shaped entities` : ''}. Use repo-level entity refs for implementation-specific names and schemas.`,
-    description_source: 'deterministic',
+    // Entity descriptions are AI comprehension: left unset here, written by the
+    // workspace AI entity-description pass (or that pass throws). No deterministic
+    // entity description / provenance.
+    description: undefined,
     semantic_role: members.some(entity => entity.semantic_role === 'core') ? 'core' : 'supporting',
     terminal_score: Math.max(...members.map(entity => entity.terminal_score || 0)),
     terminal_evidence: mergeStrings([], members.flatMap(entity => entity.terminal_evidence || [])).slice(0, 8),
@@ -9004,7 +8941,10 @@ function buildWorkspaceNarrative(
     confidence: codebases.length > 1 && applicationLinks.length > 0 ? 0.68 : 0.54,
     title: `${productName} workspace analysis`,
     product_value_summary: productValueSummary,
-    description: deterministicWorkspaceDescription(productName, productValueSummary, codebases, deployables, capabilities, applicationLinks, insights, runtimeComponents, composition, languages, frameworks),
+    // Comprehension is AI-only: the workspace description is left empty here and
+    // is written solely by enrichWorkspaceAnalysisNarrative (or that pass throws).
+    // The deterministic workspace description builder was deleted.
+    description: '',
     value_drivers: valueDrivers,
     domains: domains.map(domain => domain.name).slice(0, 12),
     key_capabilities: capabilityNames.slice(0, 10),
@@ -9021,56 +8961,6 @@ function buildWorkspaceNarrative(
     generation_pass: 'default-summary',
     degraded_reason: 'AI workspace narrative enrichment was not attached to this synchronous WAS builder run. Overall description and primary capabilities are required default AI enrichment; refresh/run WAS with AI enrichment before customer-facing use.',
   };
-}
-
-function deterministicWorkspaceDescription(
-  productName: string,
-  productValueSummary: string,
-  codebases: SystemCodebase[],
-  deployables: SystemApplication[],
-  capabilities: WorkspaceCapability[],
-  applicationLinks: SystemApplicationLink[],
-  insights: SystemInsight[],
-  runtimeComponents: SystemRuntimeComponent[],
-  composition: WorkspaceCompositionProfile,
-  languages: string[],
-  frameworks: string[],
-): string {
-  const brokerInsights = insights.filter(insight => insight.type === 'broker-service').slice(0, 2).map(insight => insight.title);
-  const uiPairs = insights.filter(insight => insight.type === 'ui-api-pairing').slice(0, 3).map(insight => insight.title);
-  const controlSurfaces = insights.filter(insight => insight.type === 'mcp-agent-surface').slice(0, 2).map(insight => insight.title);
-  const declaredUnused = insights.filter(insight => insight.type === 'declared-unused-infrastructure').slice(0, 2).map(insight => insight.title);
-  const runtimeInfra = [...new Set(runtimeComponents.map(component => component.kind).filter(Boolean))].slice(0, 6);
-  const relationshipParts = [
-    brokerInsights.length ? brokerInsights.join('; ') : '',
-    uiPairs.length ? uiPairs.join('; ') : '',
-    controlSurfaces.length ? controlSurfaces.join('; ') : '',
-    declaredUnused.length ? declaredUnused.join('; ') : '',
-  ].filter(Boolean);
-  // Lead with the product job, then the core capabilities, then the concrete
-  // product deployables — not "classified as a hybrid-system workspace with N
-  // deployables", which taught the reader nothing.
-  const coreCapabilityNames = capabilities
-    .filter(capability => capability.semantic_role === 'core')
-    .map(capability => capability.name)
-    .slice(0, 5);
-  const productDeployables = [...new Set(deployables
-    .filter(app => shouldExposeInWorkspaceOverview(app, deployables) && app.ports.length > 0)
-    .map(app => app.name))]
-    .slice(0, 6);
-  const capabilityText = coreCapabilityNames.length
-    ? ` Its core capabilities are ${joinHumanReadableList(coreCapabilityNames)}.`
-    : '';
-  const deployableText = productDeployables.length
-    ? ` Primary runtime surfaces include ${joinHumanReadableList(productDeployables)} across ${codebases.length} analyzed repo(s).`
-    : ` It spans ${deployables.length} deployable or package surfaces across ${codebases.length} analyzed repo(s).`;
-  const relationshipText = relationshipParts.length
-    ? ` ${relationshipParts.map(part => part.replace(/[.;]\s*$/, '')).join('. ')}.`
-    : applicationLinks.length
-      ? ` ${applicationLinks.length} source-backed or topology-backed deployable relationship(s) connect them.`
-      : '';
-  const runtimeText = runtimeInfra.length ? ` Runtime/infra evidence includes ${runtimeInfra.slice(0, 4).join(', ')}.` : '';
-  return `${productValueSummary}${capabilityText}${deployableText}${relationshipText}${runtimeText}`.replace(/\s+/g, ' ').trim();
 }
 
 function joinHumanReadableList(items: string[]): string {

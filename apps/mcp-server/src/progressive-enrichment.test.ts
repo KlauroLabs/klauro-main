@@ -50,32 +50,45 @@ function anyAiDescriptionSource(cas: import('../../../packages/analyzer-core/src
   return (cas.system_capabilities || []).some(capability => capability.description_source === 'ai');
 }
 
-test('default (non-deferred) analyze annotates ai_enrichment=synchronous and is otherwise unchanged', async () => {
+test('default (non-deferred) analyze marks synchronous when AI is available, and is comprehension-AI-only', async () => {
   await withScopedStorage(async repo => {
+    if (!aiConfigured) {
+      // No AI provider = structure-only mode: comprehension is skipped and left
+      // UNSET — never a deterministic substitute. Structure still ships. (In the
+      // hosted product a provider is always configured; a configured-but-failing
+      // provider is what throws, covered by the analyzer-core determinism tests.)
+      const structureOnly = await analyzeProject(repo);
+      assert.ok(structureOnly.nodes.length > 0, 'structure ships with AI unavailable');
+      assert.notEqual(structureOnly.enhanced_system_purpose?.description_source, 'deterministic');
+      assert.equal(hasDescriptions(structureOnly), false, 'no deterministic comprehension is written');
+      return;
+    }
     const result = await analyzeProject(repo);
     assert.equal(result.ai_enrichment, 'synchronous', 'default path must mark the result synchronous');
     assert.ok(result.nodes.length > 0, 'default path still produces the full graph');
-    assert.ok(hasDescriptions(result), 'default path produces a system description');
+    assert.ok(hasDescriptions(result), 'with AI configured the synchronous path produces a system description');
 
-    // The stored copy matches the returned copy (byte-for-byte behavior of the
-    // synchronous path is preserved; the marker is a pure annotation).
     const stored = await getAnalysis(repo);
     assert.equal(stored.ai_enrichment, 'synchronous');
   });
 });
 
-test('deferred analyze returns the deterministic result fast, then the background AI enrichment upgrades the store', async () => {
+test('deferred analyze returns the deterministic STRUCTURE fast, then background AI enrichment writes comprehension', async () => {
   await withScopedStorage(async repo => {
     const startedAt = Date.now();
     const { output, enrichment } = await analyzeProjectDeferred(repo);
     const deterministicMs = Date.now() - startedAt;
 
+    // Camp-B STRUCTURE ships immediately; comprehension is deferred (AI-only).
     assert.ok(output.nodes.length > 0, 'deterministic result still produces the full graph');
-    assert.ok(hasDescriptions(output), 'deterministic result carries deterministic descriptions');
+    // Comprehension is NOT deterministic: while pending/disabled, the system
+    // description is unset (empty) — never a deterministic substitute.
+    assert.notEqual(output.enhanced_system_purpose?.description_source, 'deterministic');
 
     if (!aiConfigured) {
-      // No provider → nothing to enrich; the deterministic result is final.
+      // No provider → nothing to enrich; structure is final, comprehension unset.
       assert.equal(output.ai_enrichment, 'disabled');
+      assert.equal(hasDescriptions(output), false, 'no deterministic comprehension is written');
       await enrichment; // resolves immediately
       return;
     }

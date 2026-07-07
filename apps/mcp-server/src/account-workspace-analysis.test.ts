@@ -68,8 +68,15 @@ test('workspace analysis auto-builds once from stored member analyses after a de
   const remoteData = path.join(root, 'remote-data');
   const previousRemoteData = process.env.KLAURO_REMOTE_ANALYZER_DATA;
   const previousDebounce = process.env.KLAURO_WORKSPACE_ANALYSIS_DEBOUNCE_MS;
+  const previousInterpretation = process.env.KLAURO_AI_INTERPRETATION;
+  const previousWorkspaceAi = process.env.KLAURO_WORKSPACE_AI_ENRICHMENT;
   process.env.KLAURO_REMOTE_ANALYZER_DATA = remoteData;
   process.env.KLAURO_WORKSPACE_ANALYSIS_DEBOUNCE_MS = '150';
+  // Comprehension is AI-only and THROWS without a provider. This test exercises
+  // workspace auto-build orchestration on Camp-B STRUCTURE, not comprehension, so
+  // run it structure-only (no AI provider is configured in CI).
+  process.env.KLAURO_AI_INTERPRETATION = 'false';
+  process.env.KLAURO_WORKSPACE_AI_ENRICHMENT = 'false';
 
   const server = createRemoteAnalyzerHttpServer({ dataDir: remoteData });
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -169,6 +176,10 @@ test('workspace analysis auto-builds once from stored member analyses after a de
     else process.env.KLAURO_REMOTE_ANALYZER_DATA = previousRemoteData;
     if (previousDebounce === undefined) delete process.env.KLAURO_WORKSPACE_ANALYSIS_DEBOUNCE_MS;
     else process.env.KLAURO_WORKSPACE_ANALYSIS_DEBOUNCE_MS = previousDebounce;
+    if (previousInterpretation === undefined) delete process.env.KLAURO_AI_INTERPRETATION;
+    else process.env.KLAURO_AI_INTERPRETATION = previousInterpretation;
+    if (previousWorkspaceAi === undefined) delete process.env.KLAURO_WORKSPACE_AI_ENRICHMENT;
+    else process.env.KLAURO_WORKSPACE_AI_ENRICHMENT = previousWorkspaceAi;
     fs.rmSync(root, { recursive: true, force: true });
   }
 });

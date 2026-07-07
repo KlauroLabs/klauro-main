@@ -1725,7 +1725,7 @@ export class AnalyzerOrchestrator {
       analysis_phases: this.buildAnalysisPhases({
         hasAIProvider: this.hasAIInterpretationProviderConfigured(),
         systemDescriptionSource: enhancedSystemPurpose.description_source,
-        capabilityDescriptionSource: systemCapabilities.some(capability => capability.description_source === 'ai') ? 'ai' : 'deterministic',
+        capabilityDescriptionSource: systemCapabilities.some(capability => capability.description_source === 'ai') ? 'ai' : 'skipped',
         embeddingEnabled: Boolean(this.embeddingPhaseConfig),
         runtimeSignals: runtimeStaticLinks.length,
       }),
@@ -1935,7 +1935,7 @@ export class AnalyzerOrchestrator {
           output.analysis_phases = this.buildAnalysisPhases({
             hasAIProvider: this.hasAIInterpretationProviderConfigured(),
             systemDescriptionSource: enhancedSystemPurpose.description_source,
-            capabilityDescriptionSource: systemCapabilities.some(capability => capability.description_source === 'ai') ? 'ai' : 'deterministic',
+            capabilityDescriptionSource: systemCapabilities.some(capability => capability.description_source === 'ai') ? 'ai' : 'skipped',
             embeddingEnabled: Boolean(this.embeddingPhaseConfig),
             runtimeSignals: runtimeStaticLinks.length,
           });
@@ -2747,7 +2747,7 @@ export class AnalyzerOrchestrator {
       analysis_phases: this.buildAnalysisPhases({
         hasAIProvider: this.hasAIInterpretationProviderConfigured(),
         systemDescriptionSource: enhancedSystemPurpose.description_source,
-        capabilityDescriptionSource: systemCapabilities.some(capability => capability.description_source === 'ai') ? 'ai' : 'deterministic',
+        capabilityDescriptionSource: systemCapabilities.some(capability => capability.description_source === 'ai') ? 'ai' : 'skipped',
         embeddingEnabled: Boolean(this.embeddingPhaseConfig),
         runtimeSignals: runtimeStaticLinks.length,
       }),
@@ -8598,11 +8598,21 @@ export class AnalyzerOrchestrator {
   }
 
   /**
-   * Budgeted, non-fatal AI interpretation pass. Replaces the heuristic
-   * `inferred_description` with a model-generated narrative when the AI
-   * subsystem is enabled and responds within the wall-clock budget.
-   * On timeout, failure, or a low-quality result the heuristic description
-   * produced by buildEnhancedSystemPurpose is left untouched.
+   * COMPREHENSION PASS (Camp C) — AI ONLY, or THROW.
+   *
+   * Per docs/cas/DETERMINISM-BOUNDARY.md, the primary domain, the overall
+   * description, and every capability/entity description are MEANING and are
+   * produced ONLY by this AI pass, grounded in the real Camp-B evidence bundle
+   * (dependency manifest incl. ccxt/web3, real languages, entities, external
+   * integrations, deployables, routes). There is NO deterministic comprehension
+   * and NO deterministic fallback: if the model call fails, is unavailable, or
+   * returns an ungrounded result that fails the grounding gate, this THROWS.
+   * `description_source`/`domain_source` are only ever 'ai' / 'manual' / 'reused'.
+   *
+   * The only non-throwing exit is when comprehension is explicitly turned OFF
+   * (KLAURO_AI_INTERPRETATION=false, feature disabled, or budget<=0): the run is
+   * then STRUCTURE-ONLY — comprehension fields are left UNSET (never seeded with a
+   * deterministic substitute) so Camp-B structure still returns.
    */
   private async applyAIInterpretation(
     enhancedSystemPurpose: EnhancedSystemPurpose,
@@ -8625,20 +8635,16 @@ export class AnalyzerOrchestrator {
       enhancedSystemPurpose.core_concepts,
       enhancedSystemPurpose.inferred_description
     );
+
+    // ---- Structure-only mode: comprehension explicitly OFF. Not a failure;
+    // leave comprehension unset (no deterministic substitute) and return so
+    // Camp-B structure still ships. ----
     if (process.env.KLAURO_AI_INTERPRETATION === 'false' || process.env.KLAURO_AI_INTERPRETATION === '0') {
-      this.recordDescriptionGeneration(enhancedSystemPurpose, 'deterministic', 'ai_skipped', false, 'disabled-by-env');
+      this.recordComprehensionSkipped(enhancedSystemPurpose, systemCapabilities, dataEntities, 'disabled-by-env');
       return;
     }
     if (!aiConfig.features.naturalLanguageDescriptions) {
-      this.recordDescriptionGeneration(enhancedSystemPurpose, 'deterministic', 'ai_skipped', false, 'feature-disabled');
-      return;
-    }
-    if (!this.hasAIInterpretationProviderConfigured()) {
-      this.recordDescriptionGeneration(enhancedSystemPurpose, 'deterministic', 'ai_skipped', false, 'no-ai-provider-configured');
-      return;
-    }
-    if (AnalyzerOrchestrator.aiInterpretationDisabledUntil > Date.now()) {
-      this.recordDescriptionGeneration(enhancedSystemPurpose, 'deterministic', 'ai_skipped', false, 'cooldown-active');
+      this.recordComprehensionSkipped(enhancedSystemPurpose, systemCapabilities, dataEntities, 'feature-disabled');
       return;
     }
     const configuredBudget = Number(process.env.KLAURO_AI_INTERPRETATION_BUDGET_MS || '');
@@ -8646,50 +8652,40 @@ export class AnalyzerOrchestrator {
       ? configuredBudget
       : 20000;
     if (budgetMs <= 0) {
-      this.recordDescriptionGeneration(enhancedSystemPurpose, 'deterministic', 'ai_skipped', false, 'budget-disabled', budgetMs);
+      this.recordComprehensionSkipped(enhancedSystemPurpose, systemCapabilities, dataEntities, 'budget-disabled');
       return;
     }
 
-    // AI EXTRACTS the capability catalog (the business value) from the
-    // deterministic fact bundle — user journeys, entities, route areas, services.
-    // Capabilities are an interpretation of facts, not a route grouping; the
-    // deterministic groups are only candidate hints. This runs INDEPENDENTLY of the
-    // system-description decision below (a useful deterministic system description
-    // must not skip capability extraction). On success, replaces systemCapabilities
-    // in place (each linked back to the operations/entities that evidence it).
-    if (process.env.KLAURO_DEBUG_CATALOG) {
-      console.error('[catalog-debug] reached catalog block: caps=', systemCapabilities.length, 'journeys=', userJourneys.length, 'budgetMs=', budgetMs);
+    // No AI provider configured at all = the structure-only operating mode (the
+    // deployment/run is not wired for comprehension; in the hosted product a
+    // provider is ALWAYS configured). This is NOT a comprehension failure: we skip
+    // and leave comprehension UNSET — never a deterministic substitute. The throw
+    // case is a provider that IS configured but whose model call fails/ungrounds
+    // (handled below). This keeps "no deterministic comprehension" without failing
+    // structure-only analyses.
+    if (!this.hasAIInterpretationProviderConfigured()) {
+      this.recordComprehensionSkipped(enhancedSystemPurpose, systemCapabilities, dataEntities, 'no-ai-provider-configured');
+      return;
     }
+
+    // AI EXTRACTS the capability catalog (the business value) from the Camp-B
+    // fact bundle — user journeys, entities, route areas, services. On success,
+    // replaces systemCapabilities in place, each linked back to its evidence.
     if (systemCapabilities.length > 0 || userJourneys.length > 0) {
-      try {
-        const extracted = await this.aiExtractCapabilityCatalog({
-          systemName,
-          enhancedSystemPurpose,
-          frameworks,
-          userJourneys,
-          dataEntities,
-          candidateCapabilities: [...systemCapabilities],
-          externalServices,
-          flowGraph,
-          budgetMs,
-        });
-        if (process.env.KLAURO_DEBUG_CATALOG) {
-          console.error('[catalog-debug] extracted.length=', extracted.length);
-        }
-        if (extracted.length > 0) {
-          systemCapabilities.splice(0, systemCapabilities.length, ...extracted);
-        }
-      } catch (error) {
-        if (process.env.KLAURO_DEBUG_CATALOG) {
-          console.error('[catalog-debug] extraction threw:', error instanceof Error ? error.message : String(error));
-        }
-        // Non-fatal: keep the deterministic candidate capabilities if extraction fails.
+      const extracted = await this.aiExtractCapabilityCatalog({
+        systemName,
+        enhancedSystemPurpose,
+        frameworks,
+        userJourneys,
+        dataEntities,
+        candidateCapabilities: [...systemCapabilities],
+        externalServices,
+        flowGraph,
+        budgetMs,
+      });
+      if (extracted.length > 0) {
+        systemCapabilities.splice(0, systemCapabilities.length, ...extracted);
       }
-    }
-
-    if (this.shouldKeepDeterministicSystemDescription(enhancedSystemPurpose)) {
-      this.recordDescriptionGeneration(enhancedSystemPurpose, 'deterministic', 'deterministic_kept', false, 'deterministic-description-is-useful');
-      return;
     }
 
     const structuralFacts = this.buildAIInterpretationFacts(
@@ -8709,10 +8705,6 @@ export class AnalyzerOrchestrator {
       systemName,
       projectTextSignal
     );
-    const authoritativeOverview = typeof structuralFacts.authoritativeProductFrame === 'string'
-      ? structuralFacts.authoritativeProductFrame
-      : enhancedSystemPurpose.inferred_description;
-    const deterministicDescriptionBeforeAI = enhancedSystemPurpose.inferred_description;
     const isKlauroSelfProject = this.isKlauroSelfProject(this.activeAnalysisProjectPath);
     const klauroSelfConcepts = [
       'CAS relationship graph',
@@ -8742,18 +8734,19 @@ export class AnalyzerOrchestrator {
       ? systemCapabilities.filter(capability => capability.description_source !== 'ai').slice(0, elementLimit).map(capability => this.capabilityDescriptionTarget(capability, entityNamesById))
       : [];
 
+    const aiStartedAt = Date.now();
+    let timeoutHandle: NodeJS.Timeout | undefined;
+    let raw: string;
     try {
-      const aiStartedAt = Date.now();
-      let timeoutHandle: NodeJS.Timeout | undefined;
-      const raw = await Promise.race([
-          aiService.generateComponentDescription({
-            additionalContext: {
-            task: 'You are writing the Klauro CAS human/agent orientation. Based ONLY on the supplied facts and descriptionContract, return ONLY valid JSON with this shape: {"system_description":"...","domain":"...","descriptions":[{"id":"...","description":"..."}],"quality_check":{"used_facts":["..."],"unsupported_claims":[]}}. Before writing, follow descriptionContract.evidence_priority in order. system_description must be exactly 2 or 3 full sentences and must satisfy descriptionContract.system_description_shape. Sentence 1 identifies what the codebase is using the supplied primaryDomain/project text/artifact type. Sentence 2 names the concrete product workflows/capabilities it manages. Sentence 3, when needed, names architecture or boundary facts using only supplied frameworks, entities, integrations, and concepts. domain must be one lowercase kebab-case label of 2 to 4 concrete product nouns from the facts. descriptions must include one grounded sentence per item in items; each sentence must name the concrete record, lifecycle, workflow, model, or boundary that item owns.',
+      raw = await Promise.race([
+        aiService.generateComponentDescription({
+          additionalContext: {
+            task: 'You are writing the Klauro CAS human/agent orientation. Based ONLY on the supplied facts and descriptionContract, return ONLY valid JSON with this shape: {"system_description":"...","domain":"...","descriptions":[{"id":"...","description":"..."}],"quality_check":{"used_facts":["..."],"unsupported_claims":[]}}. Before writing, follow descriptionContract.evidence_priority in order. system_description must be exactly 2 or 3 full sentences and must satisfy descriptionContract.system_description_shape. Sentence 1 identifies what the codebase is using the supplied project text/artifact type/dependencies. Sentence 2 names the concrete product workflows/capabilities it manages. Sentence 3, when needed, names architecture or boundary facts using only supplied frameworks, entities, integrations, dependencies, and concepts. Infer the domain from the real dependencies and integrations (for example a codebase depending on ccxt/web3/ethers is a crypto/blockchain system) — NEVER from a keyword in the project name. domain must be one lowercase kebab-case label of 2 to 4 concrete product nouns from the facts. descriptions must include one grounded sentence per item in items; each sentence must name the concrete record, lifecycle, workflow, model, or boundary that item owns.',
             style: 'Use precise engineering/product language. No markdown. No headings. No colon-prefixed inventory labels. No marketing. No vague placeholders. Do not describe source mechanics; translate them into product purpose. If a claim cannot be supported by a supplied fact, omit it and list it in quality_check.unsupported_claims instead of writing it.',
             descriptionContract: descriptionPromptContract,
             primaryDomain: enhancedSystemPurpose.primary_domain,
             coreConcepts: promptCoreConcepts,
-            deterministicOverview: authoritativeOverview,
+            dependencies: libraryNames,
             items: capabilityTargets,
             ...structuralFacts,
             ...(unanalyzedLanguages.length > 0 ? {
@@ -8766,59 +8759,73 @@ export class AnalyzerOrchestrator {
           timeoutHandle = setTimeout(() => reject(new Error('AI interpretation budget exceeded')), budgetMs);
         }),
       ]);
+    } catch (error) {
       if (timeoutHandle) clearTimeout(timeoutHandle);
+      const message = error instanceof Error ? error.message : String(error);
+      this.recordDescriptionGeneration(enhancedSystemPurpose, 'ai', 'ai_failed', true, message, budgetMs);
+      throw new Error(`Klauro comprehension failed (AI provider): ${message}. Comprehension is AI-only; there is no deterministic fallback.`);
+    }
+    if (timeoutHandle) clearTimeout(timeoutHandle);
 
-      const combined = this.parseCombinedInterpretation(raw);
-      const interpretationFacts = {
-        systemName,
-        frameworks,
-        libraries: libraryNames,
-        databaseEntities,
-        externalServices: this.plausiblePromptExternalServices(systemName, externalServices),
-        structuralTokens: this.structuralGroundingTokens(structuralFacts, databaseEntities),
-        projectTextSummary: projectTextSignal.summary,
-        projectTextConcepts: projectTextSignal.concepts,
-        isKlauroSelfProject: this.isKlauroSelfProject(this.activeAnalysisProjectPath),
-      };
-      const domainCandidates: string[] = [];
-      if (combined.domain) domainCandidates.push(combined.domain);
+    const interpretationFacts = {
+      systemName,
+      frameworks,
+      libraries: libraryNames,
+      databaseEntities,
+      externalServices: this.plausiblePromptExternalServices(systemName, externalServices),
+      structuralTokens: this.structuralGroundingTokens(structuralFacts, databaseEntities),
+      projectTextSummary: projectTextSignal.summary,
+      projectTextConcepts: projectTextSignal.concepts,
+      isKlauroSelfProject: this.isKlauroSelfProject(this.activeAnalysisProjectPath),
+    };
 
-      let cleaned = this.cleanGeneratedDescriptionText(combined.systemDescription || '');
-      let validation = this.validateGeneratedAIInterpretation(cleaned, enhancedSystemPurpose, interpretationFacts);
-      if (!validation.ok) {
-        const sanitized = this.sanitizeAIInterpretation(cleaned, enhancedSystemPurpose, interpretationFacts);
-        const sanitizedValidation = this.validateGeneratedAIInterpretation(sanitized, enhancedSystemPurpose, interpretationFacts);
-        if (sanitizedValidation.ok) {
-          cleaned = sanitized;
-          validation = sanitizedValidation;
-        }
+    const combined = this.parseCombinedInterpretation(raw);
+    const domainCandidates: string[] = [];
+    if (combined.domain) domainCandidates.push(combined.domain);
+
+    // Comprehension is AI-first: seed the AI's own normalized domain candidate
+    // onto the purpose BEFORE validating the description, so the description
+    // grounding gate can ground against the AI domain + concepts (there is no
+    // longer a deterministic domain seed to ground against).
+    const firstDomainCandidate = domainCandidates.map(c => this.normalizeAIDomainLabel(c)).find(Boolean);
+    if (firstDomainCandidate && !enhancedSystemPurpose.primary_domain) {
+      enhancedSystemPurpose.primary_domain = firstDomainCandidate;
+    }
+
+    let cleaned = this.cleanGeneratedDescriptionText(combined.systemDescription || '');
+    let validation = this.validateGeneratedAIInterpretation(cleaned, enhancedSystemPurpose, interpretationFacts);
+    if (!validation.ok) {
+      const sanitized = this.sanitizeAIInterpretation(cleaned, enhancedSystemPurpose, interpretationFacts);
+      const sanitizedValidation = this.validateGeneratedAIInterpretation(sanitized, enhancedSystemPurpose, interpretationFacts);
+      if (sanitizedValidation.ok) {
+        cleaned = sanitized;
+        validation = sanitizedValidation;
       }
+    }
 
-      const acceptedElements = new Map<string, string>();
-      const rejectedElements = new Map<string, string>();
-      for (const target of capabilityTargets) {
-        const originalCandidate = combined.elements.get(target.id) || '';
-        const candidate = this.sanitizeElementDescriptionCandidate(originalCandidate, target);
-        const elementValidation = candidate
-          ? this.validateElementDescription(candidate, target)
-          : originalCandidate
-            ? this.validateElementDescription(originalCandidate, target)
-            : { ok: false as const, reason: 'missing-description' };
-        if (elementValidation.ok && candidate) acceptedElements.set(target.id, candidate);
-        else rejectedElements.set(target.id, elementValidation.reason || 'generated-description-failed-quality-gate');
-      }
-      if (rejectedElements.size > 0) {
-        console.error(`[Klauro] AI capability descriptions rejected on first pass: ${[...rejectedElements.entries()].map(([id, reason]) => `${id} (${reason})`).join('; ')}`);
-      }
+    const acceptedElements = new Map<string, string>();
+    const rejectedElements = new Map<string, string>();
+    for (const target of capabilityTargets) {
+      const originalCandidate = combined.elements.get(target.id) || '';
+      const candidate = this.sanitizeElementDescriptionCandidate(originalCandidate, target);
+      const elementValidation = candidate
+        ? this.validateElementDescription(candidate, target)
+        : originalCandidate
+          ? this.validateElementDescription(originalCandidate, target)
+          : { ok: false as const, reason: 'missing-description' };
+      if (elementValidation.ok && candidate) acceptedElements.set(target.id, candidate);
+      else rejectedElements.set(target.id, elementValidation.reason || 'generated-description-failed-quality-gate');
+    }
 
-      if ((!validation.ok || rejectedElements.size > 0) && Date.now() - aiStartedAt < budgetMs) {
-        try {
+    // One bounded repair pass to fix ungrounded parts — still AI, still grounded.
+    if ((!validation.ok || rejectedElements.size > 0) && Date.now() - aiStartedAt < budgetMs) {
+      try {
         const remainingMs = Math.max(1, budgetMs - (Date.now() - aiStartedAt));
         let repairTimeoutHandle: NodeJS.Timeout | undefined;
         const repairRaw = await Promise.race([
           aiService.generateComponentDescription({
             additionalContext: {
-              task: 'Repair the rejected parts of the previous answer. Return ONLY valid JSON with the same shape: {"system_description":"...","domain":"...","descriptions":[{"id":"...","description":"..."}]}. Fix only what was rejected: write a grounded 2-3 full-sentence system_description (at least 150 characters) if it was rejected, and one grounded sentence per rejected item. Mention integrations or external services only by the exact names listed in externalServices; if none are listed, do not mention integrations at all.',
+              task: 'Repair the rejected parts of the previous answer. Return ONLY valid JSON with the same shape: {"system_description":"...","domain":"...","descriptions":[{"id":"...","description":"..."}]}. Fix only what was rejected: write a grounded 2-3 full-sentence system_description (at least 150 characters) if it was rejected, and one grounded sentence per rejected item. Infer the domain from the real dependencies/integrations, never from a name. Mention integrations or external services only by the exact names listed in externalServices; if none are listed, do not mention integrations at all.',
               style: 'Use descriptionContract as the acceptance test. No markdown. No marketing language. No raw labels like "Key capabilities:" or "Data model:". Do not invent features, company names, domains, compliance, scale, productivity, user-experience claims, or integrations beyond the facts. If the previous answer was rejected as source-bucket-restatement, rewrite it as product behavior. Do not use interaction surfaces, HTTP endpoints, HTTP workflows, API workflows, route workflows, WebSocket workflows, route surfaces, page routes, CLI commands, schedule surfaces, script-based, script-driven, internal script, internal files, source files, file-based entry points, or file entry point.',
               descriptionContract: descriptionPromptContract,
               rejected_system_description: validation.ok ? undefined : cleaned,
@@ -8828,8 +8835,7 @@ export class AnalyzerOrchestrator {
                 .map(target => ({ ...target, rejection_reason: rejectedElements.get(target.id) })),
               primaryDomain: enhancedSystemPurpose.primary_domain,
               coreConcepts: promptCoreConcepts,
-              deterministicOverview: enhancedSystemPurpose.inferred_description,
-              authoritativeOverview,
+              dependencies: libraryNames,
               ...structuralFacts,
             },
           }),
@@ -8864,222 +8870,121 @@ export class AnalyzerOrchestrator {
             rejectedElements.delete(target.id);
           }
         }
-        } catch (repairError) {
-          const repairMessage = repairError instanceof Error ? repairError.message : String(repairError);
-          console.error(`[Klauro] AI interpretation repair skipped (${repairMessage}); keeping first-pass results`);
-        }
+      } catch (repairError) {
+        const repairMessage = repairError instanceof Error ? repairError.message : String(repairError);
+        console.error(`[Klauro] AI interpretation repair skipped (${repairMessage}); using first-pass results`);
       }
+    }
 
-      const deterministicValidation = this.validateAIInterpretation(
-        enhancedSystemPurpose.inferred_description || '',
-        enhancedSystemPurpose,
-        interpretationFacts
-      );
-      if (!validation.ok && deterministicValidation.ok && Date.now() - aiStartedAt < budgetMs) {
-        try {
-          const remainingMs = Math.max(1, budgetMs - (Date.now() - aiStartedAt));
-          let rewriteTimeoutHandle: NodeJS.Timeout | undefined;
-          const rewriteRaw = await Promise.race([
-            aiService.generateComponentDescription({
-              additionalContext: {
-                task: 'Rewrite the accepted deterministic overview into a useful AI-generated system paragraph. Return ONLY valid JSON with this shape: {"system_description":"...","domain":"...","descriptions":[]}. Use only the accepted_overview and structural facts below. Preserve the exact product meaning. Do not add new features, outcomes, compliance, users, exchanges, profit, scale, performance, or integrations beyond exact listed facts.',
-                style: 'Use descriptionContract as the acceptance test. The system_description must be exactly 2 or 3 full sentences, at least 150 characters, and read like an architecture/product summary for an engineer. No markdown. No labels like "Key capabilities:". No marketing language. Mention integrations only by exact names in externalServices. Describe the real behavior, not the source bucket: do not use interaction surfaces, HTTP endpoints, HTTP workflows, API workflows, route workflows, WebSocket workflows, route surfaces, page routes, CLI commands, schedule surfaces, script-based, script-driven, internal script, internal files, source files, file-based entry points, or file entry point.',
-                descriptionContract: descriptionPromptContract,
-                rejected_system_description: cleaned,
-                rejection_reason: validation.reason,
-                accepted_overview: enhancedSystemPurpose.inferred_description,
-                authoritativeOverview,
-                primaryDomain: enhancedSystemPurpose.primary_domain,
-                coreConcepts: promptCoreConcepts,
-                ...structuralFacts,
-              },
-            }),
-            new Promise<string>((_, reject) => {
-              rewriteTimeoutHandle = setTimeout(() => reject(new Error('AI deterministic-overview rewrite budget exceeded')), remainingMs);
-            }),
-          ]);
-          if (rewriteTimeoutHandle) clearTimeout(rewriteTimeoutHandle);
-          const rewrite = this.parseCombinedInterpretation(rewriteRaw);
-          let rewrittenDescription = this.cleanGeneratedDescriptionText(rewrite.systemDescription || '');
-          let rewrittenValidation = this.validateGeneratedAIInterpretation(rewrittenDescription, enhancedSystemPurpose, interpretationFacts);
-          if (!rewrittenValidation.ok) {
-            const sanitizedRewrite = this.sanitizeAIInterpretation(rewrittenDescription, enhancedSystemPurpose, interpretationFacts);
-            const sanitizedRewriteValidation = this.validateGeneratedAIInterpretation(sanitizedRewrite, enhancedSystemPurpose, interpretationFacts);
-            if (sanitizedRewriteValidation.ok) {
-              rewrittenDescription = sanitizedRewrite;
-              rewrittenValidation = sanitizedRewriteValidation;
-            }
-          }
-          if (rewrittenValidation.ok) {
-            cleaned = rewrittenDescription;
-            validation = rewrittenValidation;
-          }
-        } catch (rewriteError) {
-          const rewriteMessage = rewriteError instanceof Error ? rewriteError.message : String(rewriteError);
-          console.error(`[Klauro] AI deterministic-overview rewrite skipped (${rewriteMessage}); keeping prior interpretation state`);
-        }
+    // The system_description MUST be AI-grounded. There is no deterministic
+    // substitute — if it still fails the grounding gate after repair, throw.
+    if (!validation.ok) {
+      this.recordDescriptionGeneration(enhancedSystemPurpose, 'ai', 'ai_rejected', true, validation.reason || 'generated-description-failed-quality-gate', budgetMs);
+      throw new Error(`Klauro comprehension produced an ungrounded system description that failed the grounding gate (${validation.reason || 'unknown-rejection'}). Comprehension is AI-only; there is no deterministic fallback.`);
+    }
+
+    enhancedSystemPurpose.inferred_description = cleaned;
+    this.recordDescriptionGeneration(enhancedSystemPurpose, 'ai', 'ai_applied', true, undefined, budgetMs);
+
+    // Apply the AI domain label directly, grounded in the evidence bundle. The
+    // model infers the domain from real dependencies/integrations; we normalize
+    // the shape (kebab-case, 2-4 tokens) but do NOT keyword-stamp it. The first
+    // normalized candidate may already be seeded onto primary_domain (above, so
+    // description grounding could use it) with domain_source still unset.
+    let domainApplied = enhancedSystemPurpose.domain_source === 'ai' || enhancedSystemPurpose.domain_source === 'ai-refined';
+    for (const candidate of domainCandidates) {
+      const label = this.normalizeAIDomainLabel(candidate);
+      if (!label) continue;
+      // The pre-seeded first candidate: stamp its AI provenance if a grounded
+      // domain hasn't been applied yet.
+      if (label === enhancedSystemPurpose.primary_domain && !domainApplied) {
+        const verdict = this.evaluateAIDomainCandidate(label, enhancedSystemPurpose);
+        enhancedSystemPurpose.domain_source = verdict.refined ? 'ai-refined' : 'ai';
+        enhancedSystemPurpose.primary_type = this.refinePurposeTypeForDomain(
+          enhancedSystemPurpose.primary_type,
+          label,
+          frameworks,
+          entryPointSummary
+        );
+        domainApplied = true;
+        continue;
       }
+      if (label === enhancedSystemPurpose.primary_domain) continue;
+      const verdict = this.evaluateAIDomainCandidate(label, enhancedSystemPurpose);
+      if (verdict.accepted) {
+        enhancedSystemPurpose.primary_domain = label;
+        enhancedSystemPurpose.domain_source = verdict.refined ? 'ai-refined' : 'ai';
+        enhancedSystemPurpose.primary_type = this.refinePurposeTypeForDomain(
+          enhancedSystemPurpose.primary_type,
+          label,
+          frameworks,
+          entryPointSummary
+        );
+        domainApplied = true;
+        break;
+      }
+      enhancedSystemPurpose.domain_rejected_candidates = [
+        ...(enhancedSystemPurpose.domain_rejected_candidates || []),
+        { label, reason: verdict.reason },
+      ];
+    }
+    // A domain that is set but whose AI provenance was never stamped (e.g. the
+    // seeded candidate failed the grounding gate) still gets an 'ai' provenance —
+    // it is AI-authored, never a deterministic keyword classification.
+    if (enhancedSystemPurpose.primary_domain && !enhancedSystemPurpose.domain_source) {
+      enhancedSystemPurpose.domain_source = 'ai';
+    }
 
-      if (validation.ok && this.deterministicSystemDescriptionIsStronger(enhancedSystemPurpose, cleaned, interpretationFacts)) {
-        this.recordDescriptionGeneration(enhancedSystemPurpose, 'deterministic', 'deterministic_kept', true, 'deterministic-retained-stronger', budgetMs);
-        AnalyzerOrchestrator.aiInterpretationTimeouts = 0;
-        console.error('[Klauro] deterministic system description retained; AI replacement carried fewer grounded facts');
-      } else if (validation.ok) {
-        enhancedSystemPurpose.inferred_description = cleaned;
-        this.recordDescriptionGeneration(enhancedSystemPurpose, 'ai', 'ai_applied', true, undefined, budgetMs);
-        AnalyzerOrchestrator.aiInterpretationTimeouts = 0;
-        console.error('[Klauro] AI interpretation applied to system description');
+    // Element (capability) descriptions: AI-applied when accepted; otherwise
+    // left unset (no deterministic substitute).
+    for (const target of capabilityTargets) {
+      const accepted = acceptedElements.get(target.id);
+      if (accepted) {
+        this.applyElementDescription(target.id, accepted, systemCapabilities, [], 'ai', 'ai_applied', true, undefined, budgetMs);
       } else {
-        if (deterministicValidation.ok) {
-          const strictAiRequested = process.env.KLAURO_AI_INTERPRETATION_FORCE === 'true' ||
-            process.env.KLAURO_AI_INTERPRETATION_FORCE === '1' ||
-            process.env.KLAURO_AI_INTERPRETATION_ALLOW_DETERMINISTIC_KEEP === 'false' ||
-            process.env.KLAURO_AI_INTERPRETATION_ALLOW_DETERMINISTIC_KEEP === '0';
-          const repairedFallback = strictAiRequested
-            ? this.productConceptFallbackDescription(enhancedSystemPurpose, systemCapabilities)
-            : '';
-          const repairedFallbackValidation = repairedFallback
-            ? this.validateGeneratedAIInterpretation(repairedFallback, enhancedSystemPurpose, interpretationFacts)
-            : { ok: false as const };
-          if (repairedFallback && repairedFallbackValidation.ok) {
-            enhancedSystemPurpose.inferred_description = repairedFallback;
-            this.recordDescriptionGeneration(enhancedSystemPurpose, 'ai', 'ai_applied', true, `sanitized-product-fallback-after-ai-rejection (${validation.reason || 'unknown-rejection'})`, budgetMs);
-            AnalyzerOrchestrator.aiInterpretationTimeouts = 0;
-            console.error('[Klauro] AI interpretation repaired with product-concept fallback');
-          } else {
-            if (repairedFallback && process.env.KLAURO_DEBUG_ANALYZER_PHASES === '1') {
-              console.error(`[Klauro] product fallback rejected (${repairedFallbackValidation.reason || 'unknown-rejection'}): ${repairedFallback}`);
-            }
-            this.recordDescriptionGeneration(enhancedSystemPurpose, 'deterministic', 'deterministic_kept', true, `ai-rejected-deterministic-usable (${validation.reason || 'unknown-rejection'})`, budgetMs);
-            AnalyzerOrchestrator.aiInterpretationTimeouts = 0;
-            console.error(`[Klauro] AI interpretation rejected (${validation.reason || 'unknown-rejection'}); keeping validated deterministic description`);
-          }
-        } else {
-          const repairedFallback = this.productConceptFallbackDescription(enhancedSystemPurpose, systemCapabilities);
-          const repairedFallbackValidation = this.validateGeneratedAIInterpretation(repairedFallback, enhancedSystemPurpose, interpretationFacts);
-          if (repairedFallbackValidation.ok) {
-            enhancedSystemPurpose.inferred_description = repairedFallback;
-            this.recordDescriptionGeneration(enhancedSystemPurpose, 'ai', 'ai_applied', true, `sanitized-product-fallback-after-ai-rejection (${validation.reason || 'unknown-rejection'})`, budgetMs);
-            AnalyzerOrchestrator.aiInterpretationTimeouts = 0;
-            console.error('[Klauro] AI interpretation repaired with product-concept fallback');
-          } else {
-            if (repairedFallback && process.env.KLAURO_DEBUG_ANALYZER_PHASES === '1') {
-              console.error(`[Klauro] product fallback rejected (${repairedFallbackValidation.reason || 'unknown-rejection'}): ${repairedFallback}`);
-            }
-            this.recordDescriptionGeneration(enhancedSystemPurpose, 'deterministic', 'ai_rejected', true, validation.reason || 'generated-description-failed-quality-gate', budgetMs);
-            console.error('[Klauro] AI interpretation result unusable; keeping heuristic description');
-          }
-        }
+        this.applyElementDescription(target.id, undefined, systemCapabilities, [], 'ai', 'ai_rejected', true, rejectedElements.get(target.id) || 'generated-description-failed-quality-gate', budgetMs);
       }
+    }
+    if (elementsEnabled && systemCapabilities.length > capabilityTargets.length) {
+      const skippedCapabilities = systemCapabilities.slice(elementLimit);
+      const skippedTargets = skippedCapabilities.map(capability => this.capabilityDescriptionTarget(capability, entityNamesById));
+      this.recordElementDescriptionGenerationByIds(
+        skippedTargets.map(target => target.id),
+        systemCapabilities,
+        [],
+        'ai',
+        'ai_skipped',
+        false,
+        'manual-trigger-only',
+        budgetMs
+      );
+    }
+  }
 
-      for (const candidate of domainCandidates) {
-        const label = this.normalizeAIDomainLabel(candidate);
-        if (!label || label === enhancedSystemPurpose.primary_domain) continue;
-        const verdict = this.evaluateAIDomainCandidate(label, {
-          ...enhancedSystemPurpose,
-          inferred_description: deterministicDescriptionBeforeAI,
-        });
-        if (verdict.accepted) {
-          enhancedSystemPurpose.primary_domain = label;
-          enhancedSystemPurpose.domain_source = verdict.refined ? 'ai-refined' : 'ai';
-          enhancedSystemPurpose.primary_type = this.refinePurposeTypeForDomain(
-            enhancedSystemPurpose.primary_type,
-            label,
-            frameworks,
-            entryPointSummary
-          );
-          console.error(`[Klauro] AI domain label applied: ${label}`);
-          break;
-        }
-        enhancedSystemPurpose.domain_rejected_candidates = [
-          ...(enhancedSystemPurpose.domain_rejected_candidates || []),
-          { label, reason: verdict.reason },
-        ];
-        console.error(`[Klauro] AI domain label rejected (${verdict.reason}): ${label}`);
-      }
-
-      if (enhancedSystemPurpose.description_source === 'ai') {
-        const finalValidation = this.validateAIInterpretation(enhancedSystemPurpose.inferred_description, enhancedSystemPurpose, interpretationFacts);
-        if (!finalValidation.ok) {
-          const finalSanitized = this.sanitizeAIInterpretation(enhancedSystemPurpose.inferred_description, enhancedSystemPurpose, interpretationFacts);
-          const finalSanitizedValidation = this.validateAIInterpretation(finalSanitized, enhancedSystemPurpose, interpretationFacts);
-          if (finalSanitizedValidation.ok) {
-            enhancedSystemPurpose.inferred_description = finalSanitized;
-          } else {
-            const deterministic = this.sanitizeAIInterpretation(deterministicDescriptionBeforeAI, enhancedSystemPurpose, interpretationFacts);
-            const deterministicFinalValidation = this.validateAIInterpretation(deterministic, enhancedSystemPurpose, interpretationFacts);
-            if (deterministicFinalValidation.ok) {
-              enhancedSystemPurpose.inferred_description = deterministic;
-              this.recordDescriptionGeneration(enhancedSystemPurpose, 'deterministic', 'ai_rejected', true, `ai-conflicted-with-final-domain (${finalValidation.reason || 'unknown'})`, budgetMs);
-            }
-          }
-        }
-      }
-
-      for (const target of capabilityTargets) {
-        const selfCurated = this.isKlauroSelfProject(this.activeAnalysisProjectPath)
-          ? this.curatedElementDescription(target)
-          : undefined;
-        if (selfCurated) {
-          this.applyElementDescription(target.id, selfCurated, systemCapabilities, [], 'deterministic', 'deterministic_kept', true, 'curated-self-product-capability-description', budgetMs);
-          continue;
-        }
-        const accepted = acceptedElements.get(target.id);
-        if (accepted) {
-          this.applyElementDescription(target.id, accepted, systemCapabilities, [], 'ai', 'ai_applied', true, undefined, budgetMs);
-          continue;
-        }
-        const curated = this.curatedElementDescription(target);
-        if (curated) {
-          const firstPassReason = rejectedElements.get(target.id) || 'generated-description-failed-quality-gate';
-          this.applyElementDescription(target.id, curated, systemCapabilities, [], 'deterministic', 'deterministic_kept', true, `curated-product-capability-description (was: ${firstPassReason})`, budgetMs);
-        } else {
-          const retained = this.validRetainedElementDescription(target);
-          if (retained) {
-            this.applyElementDescription(target.id, retained, systemCapabilities, [], 'deterministic', 'deterministic_kept', true, `ai-rejected-deterministic-usable (was: ${rejectedElements.get(target.id) || 'generated-description-failed-quality-gate'})`, budgetMs);
-          } else {
-            this.applyElementDescription(target.id, undefined, systemCapabilities, [], 'deterministic', 'ai_rejected', true, rejectedElements.get(target.id) || 'generated-description-failed-quality-gate', budgetMs);
-          }
-        }
-      }
-      if (elementsEnabled && systemCapabilities.length > capabilityTargets.length) {
-        const skippedCapabilities = systemCapabilities.slice(elementLimit);
-        const skippedTargets = skippedCapabilities.map(capability => this.capabilityDescriptionTarget(capability, entityNamesById));
-        const retainedIds: string[] = [];
-        for (const target of skippedTargets) {
-          if (!this.applyCuratedDescriptionIfAvailable(target, systemCapabilities, 'manual-trigger-only', false, budgetMs)) {
-            retainedIds.push(target.id);
-          }
-        }
-        if (retainedIds.length > 0) {
-          this.recordElementDescriptionGenerationByIds(
-            retainedIds,
-            systemCapabilities,
-            [],
-            'deterministic',
-            'ai_skipped',
-            false,
-            'manual-trigger-only',
-            budgetMs
-          );
-        }
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (/budget exceeded|timed out|timeout/i.test(message)) {
-        AnalyzerOrchestrator.aiInterpretationTimeouts += 1;
-        const threshold = Number(process.env.KLAURO_AI_INTERPRETATION_TIMEOUT_THRESHOLD || '3');
-        const cooldownMs = Number(process.env.KLAURO_AI_INTERPRETATION_COOLDOWN_MS || '60000');
-        if (AnalyzerOrchestrator.aiInterpretationTimeouts >= Math.max(1, threshold)) {
-          AnalyzerOrchestrator.aiInterpretationDisabledUntil = Date.now() + Math.max(0, cooldownMs);
-          console.error(`[Klauro] AI interpretation cooldown enabled after ${AnalyzerOrchestrator.aiInterpretationTimeouts} timeouts`);
-        }
-      }
-      this.recordDescriptionGeneration(enhancedSystemPurpose, 'deterministic', 'ai_failed', true, message, budgetMs);
-      if (capabilityTargets.length > 0) {
-        this.recordElementDescriptionGenerationByIds(capabilityTargets.map(target => target.id), systemCapabilities, [], 'deterministic', 'ai_failed', true, message, budgetMs);
-      }
-      console.error(`[Klauro] AI interpretation skipped (${message}); keeping heuristic description`);
+  /**
+   * Structure-only exit: comprehension is explicitly disabled. Records the skip
+   * WITHOUT writing any comprehension text or a 'deterministic' provenance —
+   * comprehension fields are simply left unset (the run is Camp-B structure).
+   */
+  private recordComprehensionSkipped(
+    enhancedSystemPurpose: EnhancedSystemPurpose,
+    systemCapabilities: SystemCapability[],
+    dataEntities: CASDataEntity[],
+    reason: string
+  ): void {
+    enhancedSystemPurpose.description_generation = {
+      status: 'ai_skipped',
+      attempted: false,
+      reason,
+      generated_at: new Date().toISOString(),
+    };
+    for (const capability of systemCapabilities) {
+      if (capability.description_source === 'ai' || capability.description_source === 'manual') continue;
+      capability.description_generation = { status: 'ai_skipped', attempted: false, reason };
+    }
+    for (const entity of dataEntities) {
+      if (entity.description_source === 'ai' || entity.description_source === 'manual') continue;
+      entity.description_generation = { status: 'ai_skipped', attempted: false, reason };
     }
   }
 
@@ -9207,12 +9112,10 @@ export class AnalyzerOrchestrator {
     const tokens = cleaned.split(/[\s-]+/).filter(Boolean);
     if (tokens.length < 2 || tokens.length > 4) return undefined;
     if (tokens.some(token => token.length < 3 || token.length > 24)) return undefined;
-    if (tokens.includes('solana') && tokens.includes('arbitrage')) return 'solana-arbitrage';
-    if (tokens.includes('solana') && tokens.some(token => ['trading', 'trade', 'wallet', 'execution', 'vault'].includes(token))) return 'solana-trading';
-    if (tokens.includes('audio') && (tokens.includes('processing') || tokens.includes('voice'))) return 'audio-processing';
-    if (tokens.includes('venue') && (tokens.includes('booking') || tokens.includes('portfolio'))) return 'venue-booking';
-    if (tokens.includes('game') && (tokens.includes('card') || tokens.includes('security') || tokens.includes('management'))) return 'card-game-platform';
-    if (tokens.includes('device') && tokens.includes('simulation')) return 'market-simulation';
+    // Shape normalization ONLY (kebab-case, 2-4 tokens). No keyword stamps: the
+    // AI's evidence-grounded label is used as-is. The hardcoded solana/audio/
+    // venue/card-game/market-simulation remaps were the garbage generators and
+    // were deleted.
     return tokens.join('-');
   }
 
@@ -9241,23 +9144,13 @@ export class AnalyzerOrchestrator {
     const stem = (token: string) => token.slice(0, Math.min(6, token.length));
     const labelTokens = label.split('-').filter(token => token.length > 2 && token !== 'management');
     const currentDomainTokens = (enhancedSystemPurpose.primary_domain || '').split('-').filter(Boolean);
-    const repoDomainOverride = this.knownRepoDomainOverride(this.activeAnalysisProjectPath);
-    if (repoDomainOverride && label !== repoDomainOverride) {
-      return { accepted: false, refined: false, reason: 'known-repo-domain-override-is-authoritative' };
-    }
-    if (label === 'codebase-analysis' && !this.isKlauroSelfProject(this.activeAnalysisProjectPath)) {
-      return { accepted: false, refined: false, reason: 'codebase-analysis-reserved-for-klauro' };
-    }
-    if (label === 'portfolio-management' && this.domainEvidencePrefersVenue(enhancedSystemPurpose)) {
-      return { accepted: false, refined: false, reason: 'venue-booking-evidence-outranks-portfolio-label' };
-    }
-    if (label === 'card-game-platform') {
-      return { accepted: true, refined: false, reason: 'accepted-card-game-domain' };
-    }
-    const mixedDomain = this.detectMixedAIDomainFamily(labelTokens);
-    if (mixedDomain) {
-      return { accepted: false, refined: false, reason: mixedDomain };
-    }
+    // NOTE: the hardcoded repo-name/brand domain overrides, the reserved-label
+    // rules (card-game-platform, venue-booking, codebase-analysis), and the
+    // keyword mixed-family gate were the "Solana arbitrage" garbage generators
+    // and were deleted. The AI infers the domain from the real evidence bundle;
+    // the only checks that remain are STRUCTURAL grounding: the label must be
+    // grounded in the AI description/concepts and (when journeys write terminal
+    // entities) anchored in those real product outputs.
     if (labelTokens.some(token =>
       currentDomainTokens.some(current => current !== token && current.startsWith(token) && current.length - token.length >= 2)
     )) {
@@ -9404,15 +9297,15 @@ export class AnalyzerOrchestrator {
     if (targets.length === 0) return;
 
     if (process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS === 'false' || process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS === '0') {
-      this.recordElementDescriptionGeneration(capabilities, entities, 'deterministic', 'ai_skipped', false, 'disabled-by-env');
+      this.recordElementDescriptionGeneration(capabilities, entities, undefined, 'ai_skipped', false, 'disabled-by-env');
       return;
     }
     if (!aiConfig.features.naturalLanguageDescriptions) {
-      this.recordElementDescriptionGeneration(capabilities, entities, 'deterministic', 'ai_skipped', false, 'feature-disabled');
+      this.recordElementDescriptionGeneration(capabilities, entities, undefined, 'ai_skipped', false, 'feature-disabled');
       return;
     }
     if (!this.hasAIInterpretationProviderConfigured()) {
-      this.recordElementDescriptionGeneration(capabilities, entities, 'deterministic', 'ai_skipped', false, 'no-ai-provider-configured');
+      this.recordElementDescriptionGeneration(capabilities, entities, undefined, 'ai_skipped', false, 'no-ai-provider-configured');
       return;
     }
 
@@ -9421,7 +9314,7 @@ export class AnalyzerOrchestrator {
       ? configuredBudget
       : 15000;
     if (budgetMs <= 0) {
-      this.recordElementDescriptionGeneration(capabilities, entities, 'deterministic', 'ai_skipped', false, 'budget-disabled', budgetMs);
+      this.recordElementDescriptionGeneration(capabilities, entities, undefined, 'ai_skipped', false, 'budget-disabled', budgetMs);
       return;
     }
 
@@ -9440,7 +9333,7 @@ export class AnalyzerOrchestrator {
 
     await runWithConcurrency(batches, aiConcurrencyLimit(), async (batch) => {
       if (Date.now() - startedAt >= budgetMs) {
-        this.recordElementDescriptionGenerationByIds(batch.map(target => target.id), capabilities, entities, 'deterministic', 'ai_skipped', false, 'budget-exhausted', budgetMs);
+        this.recordElementDescriptionGenerationByIds(batch.map(target => target.id), capabilities, entities, undefined, 'ai_skipped', false, 'budget-exhausted', budgetMs);
         return;
       }
 
@@ -9474,7 +9367,7 @@ export class AnalyzerOrchestrator {
 
         const parsed = this.parseDescriptionBatch(raw);
         if (!parsed || parsed.size === 0) {
-          this.recordElementDescriptionGenerationByIds(batch.map(target => target.id), capabilities, entities, 'deterministic', 'ai_rejected', true, 'invalid-json-or-empty', budgetMs);
+          this.recordElementDescriptionGenerationByIds(batch.map(target => target.id), capabilities, entities, undefined, 'ai_rejected', true, 'invalid-json-or-empty', budgetMs);
           return;
         }
         for (const target of batch) {
@@ -9604,37 +9497,29 @@ export class AnalyzerOrchestrator {
             ? this.validateElementDescription(repairedDescription, byId.get(target.id) || target)
             : { ok: false, reason: originalValidation.reason || 'generated-description-failed-quality-gate' };
           const individualDescription = originalValidation.ok || repairedValidation.ok ? undefined : individualRepairs.get(target.id);
-          const curatedDescription = originalValidation.ok || repairedValidation.ok || individualDescription
-            ? undefined
-            : this.curatedElementDescription(target);
-          const retainedDescription = originalValidation.ok || repairedValidation.ok || individualDescription || curatedDescription
-            ? undefined
-            : this.validRetainedElementDescription(target);
-          const description = originalValidation.ok ? originalDescription : repairedValidation.ok ? repairedDescription : individualDescription || curatedDescription || retainedDescription;
+          // Element descriptions are AI-only: no curated/retained deterministic
+          // fallback. If no AI-authored, grounded description survives, the
+          // element description is left unset (never a 'deterministic' provenance).
+          const description = originalValidation.ok ? originalDescription : repairedValidation.ok ? repairedDescription : individualDescription;
           if (description) {
-            const deterministicFallback = (curatedDescription && description === curatedDescription) || (retainedDescription && description === retainedDescription);
             this.applyElementDescription(
               target.id,
               description,
               capabilities,
               entities,
-              deterministicFallback ? 'deterministic' : 'ai',
-              deterministicFallback ? 'deterministic_kept' : 'ai_applied',
+              'ai',
+              'ai_applied',
               true,
-              curatedDescription && description === curatedDescription
-                ? `curated-product-capability-description (was: ${repairedValidation.reason || 'generated-description-failed-quality-gate'})`
-                : retainedDescription && description === retainedDescription
-                  ? `ai-rejected-deterministic-usable (was: ${repairedValidation.reason || 'generated-description-failed-quality-gate'})`
-                : undefined,
+              undefined,
               budgetMs
             );
           } else {
-            this.applyElementDescription(target.id, undefined, capabilities, entities, 'deterministic', 'ai_rejected', true, repairedValidation.reason || 'generated-description-failed-quality-gate', budgetMs);
+            this.applyElementDescription(target.id, undefined, capabilities, entities, undefined, 'ai_rejected', true, repairedValidation.reason || 'generated-description-failed-quality-gate', budgetMs);
           }
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        this.recordElementDescriptionGenerationByIds(batch.map(target => target.id), capabilities, entities, 'deterministic', 'ai_failed', true, message, budgetMs);
+        this.recordElementDescriptionGenerationByIds(batch.map(target => target.id), capabilities, entities, undefined, 'ai_failed', true, message, budgetMs);
       } finally {
         if (timeoutHandle) clearTimeout(timeoutHandle);
       }
@@ -9704,73 +9589,6 @@ export class AnalyzerOrchestrator {
     return this.validateElementDescription(sanitized, target).ok ? sanitized : undefined;
   }
 
-  private validRetainedElementDescription(target: DescriptionTarget): string | undefined {
-    const retained = this.cleanGeneratedDescriptionText(target.currentDescription || '');
-    if (!retained) return undefined;
-    if (/\b(?:covers|handles|supports|coordinates)\b[^.]{0,80}\b(?:paths?|operations?|tasks?|files?)\b|\bspans\b/i.test(retained)) {
-      return undefined;
-    }
-    return this.validateElementDescription(retained, target).ok ? retained : undefined;
-  }
-
-  private curatedElementDescription(target: DescriptionTarget): string | undefined {
-    if (target.kind !== 'capability') return undefined;
-    const key = target.name.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
-    const descriptions: Record<string, string> = {
-      'file workflow': 'Infrastructure Definition captures resource files, variables, modules, and provider relationships so agents can understand what cloud resources the stack manages.',
-    };
-    if (this.isKlauroSelfProject(this.activeAnalysisProjectPath)) {
-      Object.assign(descriptions, KLAURO_SELF_CAPABILITY_DESCRIPTIONS);
-    }
-    if (descriptions[key]) return descriptions[key];
-
-    if (/\blogin\b/.test(key) && /\bauth/.test(key)) {
-      return 'Login Authentication verifies submitted user credentials and starts authenticated sessions for the surrounding product behavior.';
-    }
-    if (/\blogout\b/.test(key)) {
-      return 'Logout Management ends authenticated sessions and preserves the sign-out boundary for the surrounding product behavior.';
-    }
-    if (/\bauth/.test(key)) {
-      return `${this.humanizeDomainKey(key)} verifies identity and preserves access boundaries for the surrounding product behavior.`;
-    }
-
-    const managementSubject = key.replace(/\bmanagement\b/g, ' ').replace(/\s+/g, ' ').trim();
-    if (managementSubject) {
-      const subjectTokens = managementSubject
-        .split(/\s+/)
-        .map(token => this.normalizeDomainToken(token))
-        .filter(token => token && !this.isGenericCapabilityToken(token));
-      const hasEntityGrounding = (target.relatedEntities || []).some(entity => {
-        const normalized = this.normalizeDomainToken(entity);
-        return normalized && subjectTokens.some(token => normalized.includes(token) || token.includes(normalized));
-      });
-      const hasDomainGrounding = (target.relatedDomains || []).some(domain => {
-        const normalized = this.normalizeDomainToken(domain);
-        return normalized && !this.isGenericCapabilityToken(normalized) &&
-          subjectTokens.some(token => normalized.includes(token) || token.includes(normalized));
-      });
-      const subjectLooksLikeDomainNoun = subjectTokens.some(token => this.isKnownCapabilityDomainNoun(token));
-      if (
-        subjectTokens.length > 0 &&
-        !subjectTokens.some(token => this.isCodeIdentifierSubjectToken(token)) &&
-        (hasEntityGrounding || hasDomainGrounding || subjectLooksLikeDomainNoun)
-      ) {
-        const subject = this.humanizeDomainKey(subjectTokens.join(' ')).toLowerCase();
-        const label = /\bmanagement\b/.test(key)
-          ? `${this.humanizeDomainKey(subjectTokens.join(' '))} Management`
-          : this.humanizeDomainKey(key);
-        const domain = target.relatedDomains?.[0] && !this.isGenericCapabilityToken(target.relatedDomains[0])
-          ? this.humanizeDomainKey(target.relatedDomains[0]).toLowerCase()
-          : 'the surrounding product';
-        const domainPhrase = domain === 'the surrounding product'
-          ? 'the surrounding product'
-          : `${domain} behavior`;
-        return `${label} maintains ${subject} records, workflows, and relationships used by ${domainPhrase}.`;
-      }
-    }
-    return undefined;
-  }
-
   private isKnownCapabilityDomainNoun(token: string): boolean {
     return new Set([
       'account', 'accounts', 'asset', 'assets', 'booking', 'bookings', 'case', 'cases',
@@ -9781,29 +9599,6 @@ export class AnalyzerOrchestrator {
       'transaction', 'transactions', 'trip', 'trips', 'user', 'users', 'vehicle', 'vehicles',
       'vendor', 'vendors', 'workflow', 'workflows',
     ]).has(token);
-  }
-
-  private applyCuratedDescriptionIfAvailable(
-    target: DescriptionTarget,
-    capabilities: SystemCapability[],
-    reason: string,
-    attempted: boolean,
-    budgetMs?: number
-  ): boolean {
-    const curated = this.curatedElementDescription(target);
-    if (!curated) return false;
-    this.applyElementDescription(
-      target.id,
-      curated,
-      capabilities,
-      [],
-      'deterministic',
-      'deterministic_kept',
-      attempted,
-      `curated-product-capability-description (was: ${reason})`,
-      budgetMs
-    );
-    return true;
   }
 
   private isCodeIdentifierSubjectToken(token: string): boolean {
@@ -9909,7 +9704,7 @@ export class AnalyzerOrchestrator {
   private recordElementDescriptionGeneration(
     capabilities: SystemCapability[],
     entities: CASDataEntity[],
-    source: 'deterministic' | 'ai' | 'manual' | 'reused',
+    source: 'ai' | 'manual' | 'reused' | undefined,
     status: CASDescriptionGeneration['status'],
     attempted: boolean,
     reason?: string,
@@ -9931,7 +9726,7 @@ export class AnalyzerOrchestrator {
     ids: string[],
     capabilities: SystemCapability[],
     entities: CASDataEntity[],
-    source: 'deterministic' | 'ai' | 'manual' | 'reused',
+    source: 'ai' | 'manual' | 'reused' | undefined,
     status: CASDescriptionGeneration['status'],
     attempted: boolean,
     reason?: string,
@@ -9947,7 +9742,7 @@ export class AnalyzerOrchestrator {
     description: string | undefined,
     capabilities: SystemCapability[],
     entities: CASDataEntity[],
-    source: 'deterministic' | 'ai' | 'manual' | 'reused',
+    source: 'ai' | 'manual' | 'reused' | undefined,
     status: CASDescriptionGeneration['status'],
     attempted: boolean,
     reason?: string,
@@ -9958,7 +9753,11 @@ export class AnalyzerOrchestrator {
     if (description) {
       target.description = description;
     }
-    target.description_source = source;
+    // Only ever an AI/manual/reused provenance is written; a skip/failure leaves
+    // description_source unset (comprehension is AI-only — no 'deterministic').
+    if (source !== undefined) {
+      target.description_source = source;
+    }
     target.description_generation = {
       status,
       attempted,
@@ -9970,7 +9769,7 @@ export class AnalyzerOrchestrator {
 
   private recordDescriptionGeneration(
     enhancedSystemPurpose: EnhancedSystemPurpose,
-    source: NonNullable<EnhancedSystemPurpose['description_source']>,
+    source: 'ai' | 'manual' | 'reused',
     status: NonNullable<EnhancedSystemPurpose['description_generation']>['status'],
     attempted: boolean,
     reason?: string,
@@ -10039,7 +9838,7 @@ export class AnalyzerOrchestrator {
         can_run_later: true,
         requires_ai: true,
         generated_at: generatedAt,
-        notes: input.hasAIProvider ? undefined : ['No AI provider is configured; deterministic descriptions were retained.'],
+        notes: input.hasAIProvider ? undefined : ['No AI provider is configured; comprehension is AI-only, so descriptions are unset until AI runs.'],
       },
       {
         id: 'deferred-element-descriptions',
@@ -10173,7 +9972,13 @@ export class AnalyzerOrchestrator {
     const domain = enhancedSystemPurpose.primary_domain?.toLowerCase();
     const primaryType = enhancedSystemPurpose.primary_type?.toLowerCase();
     const concepts = (enhancedSystemPurpose.core_concepts || []).map(concept => concept.toLowerCase());
-    const groundedTerms = [domain, ...concepts].filter((term): term is string => Boolean(term && term !== 'unknown'));
+    // Ground against both the kebab-case domain and its de-hyphenated form, plus
+    // its individual tokens, so a description that spells the domain out in prose
+    // ("ecommerce storefront theme") grounds a "ecommerce-storefront-theme" label.
+    const domainForms = domain && domain !== 'unknown'
+      ? [domain, domain.replace(/-/g, ' '), ...domain.split('-')].filter(form => form.length > 2)
+      : [];
+    const groundedTerms = [...domainForms, ...concepts].filter((term): term is string => Boolean(term && term !== 'unknown'));
     if (this.descriptionContradictsPurposeFamily(cleaned, domain, primaryType)) {
       return { ok: false, reason: 'contradicts-primary-domain-or-purpose' };
     }
@@ -10733,27 +10538,6 @@ export class AnalyzerOrchestrator {
     return `${this.articleFor(labelPhrase)} ${labelPhrase} that centers on ${conceptPhrase} as the primary behavior and data boundaries in this repository. It links those concepts to the local architecture, contracts, and behavioral expectations so agents can understand what changes affect before editing.`;
   }
 
-  private knownRepoDomainOverride(projectPath?: string): string | undefined {
-    const repoName = path.basename(projectPath || '').toLowerCase();
-    const known: Record<string, string> = {
-      'cal.com': 'scheduling-platform',
-      supabase: 'developer-platform',
-      appwrite: 'developer-platform',
-      medusa: 'commerce-platform',
-      saleor: 'commerce-platform',
-      outline: 'knowledge-base',
-      budibase: 'internal-tools-platform',
-      ghost: 'publishing-platform',
-      immich: 'photo-management-platform',
-      mastodon: 'federated-social-platform',
-      nocodb: 'no-code-database-platform',
-      posthog: 'product-analytics-platform',
-      'user-service': 'user-identity-management',
-    };
-    if (/alpha_engine|arb_engine|trading|sniper|pumpfun|jito|solana/.test(repoName)) return 'solana-trading';
-    return known[repoName];
-  }
-
   private mentionsKnownExternalService(text: string, externalServices: string[]): boolean {
     const normalizedText = text.toLowerCase();
     const wordNormalizedText = normalizedText.replace(/[^a-z0-9]+/g, ' ').trim();
@@ -10913,7 +10697,10 @@ export class AnalyzerOrchestrator {
         used_facts: 'List 3-8 exact supplied facts used.',
         unsupported_claims: 'Must be [] if every written claim is supported; otherwise omit unsupported claims from the description and list them here.',
       },
-      projectTextDomain: projectTextSignal.primaryDomain,
+      // NOTE: projectTextDomain (a keyword-classified label) is intentionally NOT
+      // fed to the model — the AI infers the domain from real dependencies/
+      // integrations, never from a pre-classified keyword label. Raw human text
+      // (concepts/summary) is still supplied as grounding.
       projectTextConcepts: projectTextSignal.concepts.slice(0, 10),
     };
   }
@@ -10927,7 +10714,7 @@ export class AnalyzerOrchestrator {
       version: 'klauro-ai-element-description-contract-v2-product-meaning',
       goal: 'Describe each capability/entity by what it MEANS in this product — what it lets the product\'s users or operators do, or what real concept it represents — grounded in the data entities it manages and the product domain. A capability is product value, not CRUD plumbing; describe the value, not the mechanism.',
       systemName,
-      productDomain: enhancedSystemPurpose?.primary_domain || projectTextSignal.primaryDomain,
+      productDomain: enhancedSystemPurpose?.primary_domain,
       evidence_priority: [
         'system.domain and system.concepts (what product this is)',
         'relatedEntities (the real domain objects this manages — name the user-facing concept they represent)',
@@ -10954,7 +10741,8 @@ export class AnalyzerOrchestrator {
   private buildProjectTextInterpretationFacts(projectTextSignal: ProjectTextSignal): Record<string, unknown> {
     if (!projectTextSignal.summary && projectTextSignal.concepts.length === 0) return {};
     return {
-      projectTextDomain: projectTextSignal.primaryDomain,
+      // projectTextDomain (keyword-classified) omitted — the AI infers the domain
+      // from real evidence, not from a pre-classified label. Raw text kept.
       projectTextConcepts: projectTextSignal.concepts.slice(0, 10),
       projectTextSummary: projectTextSignal.summary,
       projectTextEvidence: projectTextSignal.evidence.slice(0, 5),
@@ -11006,7 +10794,6 @@ export class AnalyzerOrchestrator {
       })
       .slice(0, 12)
       .map(c => c.name);
-    const curatedIdentity = this.curatedNarrativeIdentityFacts(systemName);
 
     // Test harnesses are not part of what the system *is* — drop `test`
     // entry points so they do not pollute the narrative.
@@ -11032,145 +10819,11 @@ export class AnalyzerOrchestrator {
           ? 'No framework was detected in product code; mention only packages listed in libraries.'
           : 'No framework was detected in product code; do not mention any framework.',
       entryPoints: [...meaningfulEntryPoints].sort((a, b) => a.type.localeCompare(b.type)),
-      ...(curatedIdentity ? { authoritativeProductFrame: curatedIdentity.frame } : {}),
-      capabilities: curatedIdentity?.capabilities || topCapabilities,
-      domainConcepts: curatedIdentity?.concepts || conceptPool,
-      databaseEntities: curatedIdentity?.entities || databaseEntities.filter(entity => !this.isTransportContractEntityName(entity)).slice(0, 15),
+      capabilities: topCapabilities,
+      domainConcepts: conceptPool,
+      databaseEntities: databaseEntities.filter(entity => !this.isTransportContractEntityName(entity)).slice(0, 15),
       externalServices: this.plausiblePromptExternalServices(systemName, externalServices).slice(0, 10),
     };
-  }
-
-  private curatedNarrativeIdentityFacts(systemName: string): { frame: string; concepts: string[]; capabilities: string[]; entities: string[] } | undefined {
-    // NEUTRALIZED: this was a hardcoded table that returned hand-written
-    // frame/concepts/capabilities/entities for 14 named OSS products (Supabase,
-    // Medusa, Cal.com, Outline, Ghost, Immich, ...). Identity, capabilities, and
-    // entities must come from deterministic facts + AI interpretation, never a
-    // product-name lookup. An empty corpus means no brand below ever matches, so
-    // this function now always returns undefined; the dead branches stay only to
-    // avoid a 120-line deletion in this pass and will be removed in cleanup.
-    void systemName;
-    const text = '';
-    if (/\bsupabase\b/.test(text)) {
-      return {
-        frame: 'Supabase is a developer platform and open-source Firebase alternative centered on Postgres databases, authentication, realtime updates, storage, and edge functions. Example apps in the repo are usage demonstrations, not the product identity.',
-        concepts: ['Postgres database', 'authentication', 'realtime updates', 'storage buckets', 'edge functions', 'developer projects'],
-        capabilities: ['Project Backend Provisioning', 'Authentication Services', 'Realtime Data Sync', 'Storage And Functions'],
-        entities: ['Project', 'Database', 'User', 'Storage Bucket', 'Realtime Channel', 'Edge Function'],
-      };
-    }
-    if (/\bappwrite\b/.test(text)) {
-      return {
-        frame: 'Appwrite is a backend-as-a-service developer platform centered on projects, authentication, databases, storage, functions, messaging, and realtime APIs.',
-        concepts: ['developer projects', 'authentication', 'databases', 'storage buckets', 'functions', 'realtime APIs'],
-        capabilities: ['Project Backend Provisioning', 'Authentication Services', 'Realtime Data Sync', 'Storage And Functions'],
-        entities: ['Project', 'User', 'Database', 'Collection', 'Storage Bucket', 'Function'],
-      };
-    }
-    if (/\bmedusa\b/.test(text)) {
-      return {
-        frame: 'Medusa is a commerce platform centered on product catalogs, carts, checkout, orders, payments, inventory, fulfillment, and commerce administration.',
-        concepts: ['product catalog', 'cart', 'checkout', 'order fulfillment', 'inventory', 'payments', 'commerce administration'],
-        capabilities: ['Product Catalog', 'Cart And Checkout', 'Order Fulfillment', 'Commerce Administration'],
-        entities: ['Product', 'Variant', 'Cart', 'Order', 'Inventory Item', 'Payment', 'Customer'],
-      };
-    }
-    if (/\bsaleor\b/.test(text)) {
-      return {
-        frame: 'Saleor is a commerce platform centered on GraphQL storefront APIs, product catalogs, checkout, orders, payments, channels, and commerce administration.',
-        concepts: ['product catalog', 'checkout', 'orders', 'payments', 'channels', 'GraphQL storefront API'],
-        capabilities: ['Product Catalog', 'Cart And Checkout', 'Order Fulfillment', 'Commerce Administration'],
-        entities: ['Product', 'Variant', 'Checkout', 'Order', 'Payment', 'Channel', 'Customer'],
-      };
-    }
-    if (/\boutline\b/.test(text)) {
-      return {
-        frame: 'Outline is a team knowledge-base and document-collaboration platform centered on documents, collections, comments, search, sharing, permissions, and workspace organization.',
-        concepts: ['documents', 'collections', 'comments', 'search', 'sharing', 'permissions', 'workspace organization'],
-        capabilities: ['Document Collaboration', 'Collection Organization', 'Knowledge Access Control', 'Knowledge Search'],
-        entities: ['Document', 'Collection', 'Comment', 'Workspace', 'User Group', 'Share'],
-      };
-    }
-    if (/\bcal\.com\b/.test(text)) {
-      return {
-        frame: 'Cal.com is a scheduling platform centered on booking lifecycle, calendar availability, event type configuration, routing, conferencing, and scheduling integrations.',
-        concepts: ['booking lifecycle', 'calendar availability', 'event types', 'routing', 'conferencing', 'scheduling integrations'],
-        capabilities: ['Booking Lifecycle', 'Calendar Availability', 'Event Type Configuration', 'Scheduling Integrations'],
-        entities: ['Booking', 'Calendar', 'Availability', 'Event Type', 'Attendee', 'Organizer'],
-      };
-    }
-    if (/\bbudibase\b/.test(text)) {
-      return {
-        frame: 'Budibase is an internal-tools and low-code app platform centered on app building, data-source integration, automations, permissions, and workspace administration.',
-        concepts: ['app builder', 'data sources', 'automation workflows', 'permissions', 'workspaces', 'deployments'],
-        capabilities: ['App Builder', 'Data Source Integration', 'Automation Workflows', 'Tenant App Administration'],
-        entities: ['App', 'Workspace', 'Data Source', 'Automation', 'User', 'Permission'],
-      };
-    }
-    if (/\bghost\b/.test(text)) {
-      return {
-        frame: 'Ghost is a publishing platform centered on posts, pages, authors, members, newsletters, themes, and publication administration.',
-        concepts: ['posts', 'pages', 'authors', 'members', 'newsletters', 'themes', 'publication settings'],
-        capabilities: ['Content Publishing', 'Membership And Subscriptions', 'Newsletter Delivery', 'Publication Administration'],
-        entities: ['Post', 'Page', 'Author', 'Member', 'Newsletter', 'Theme'],
-      };
-    }
-    if (/\bimmich\b/.test(text)) {
-      return {
-        frame: 'Immich is a photo and video management platform centered on media backup, asset libraries, albums, sharing, search, and machine-learning media metadata.',
-        concepts: ['media library', 'asset upload', 'albums', 'sharing', 'facial recognition', 'search'],
-        capabilities: ['Media Library', 'Backup And Upload', 'Media Intelligence', 'Sharing And Access'],
-        entities: ['Asset', 'Album', 'User', 'Person', 'Face', 'Shared Link'],
-      };
-    }
-    if (/\bmastodon\b/.test(text)) {
-      return {
-        frame: 'Mastodon is a federated social platform centered on accounts, posts, timelines, follows, moderation, notifications, and ActivityPub delivery.',
-        concepts: ['accounts', 'statuses', 'timelines', 'follows', 'moderation', 'federation'],
-        capabilities: ['Social Timelines', 'Federation Delivery', 'Moderation And Safety', 'Notifications And Messaging'],
-        entities: ['Account', 'Status', 'Follow', 'Notification', 'Report', 'Domain Block'],
-      };
-    }
-    if (/\bnocodb\b/.test(text)) {
-      return {
-        frame: 'NocoDB is a no-code database platform centered on tables, fields, relations, spreadsheet-style views, generated APIs, and workspace collaboration.',
-        concepts: ['tables', 'fields', 'relations', 'views', 'generated APIs', 'workspaces'],
-        capabilities: ['Table Modeling', 'Spreadsheet Views', 'API Data Access', 'Workspace Collaboration'],
-        entities: ['Table', 'Field', 'Relation', 'View', 'Base', 'Workspace'],
-      };
-    }
-    if (/\bposthog\b/.test(text)) {
-      return {
-        frame: 'PostHog is a product analytics platform centered on event capture, funnels, cohorts, feature flags, experiments, session replay, and dashboards.',
-        concepts: ['event capture', 'funnels', 'cohorts', 'feature flags', 'experiments', 'session replay'],
-        capabilities: ['Event Capture', 'Product Analytics', 'Feature Flags And Experiments', 'Session Replay'],
-        entities: ['Event', 'Person', 'Organization', 'Project', 'Feature Flag', 'Session Recording'],
-      };
-    }
-    if (/\btruckspy\b/.test(text)) {
-      return {
-        frame: 'TruckSpy is a fleet-management backend centered on vehicles, drivers, fuel transactions, IFTA/rate reporting, maintenance, odometer history, and operational communications.',
-        concepts: ['fleet operations', 'vehicles', 'drivers', 'fuel transactions', 'maintenance', 'IFTA reporting'],
-        capabilities: ['Fleet Operations', 'Fuel Management', 'Vehicle Maintenance', 'Driver Communication'],
-        entities: ['Vehicle', 'Driver', 'Fuel Transaction', 'Maintenance Issue', 'Odometer Reading', 'Company', 'Trip', 'Reporting Profile'],
-      };
-    }
-    if (/\buser-service\b/.test(text)) {
-      return {
-        frame: 'User Service is an identity and authentication service centered on user accounts, registration, password recovery, token lifecycle, sessions, roles, and authorization boundaries.',
-        concepts: ['user accounts', 'registration', 'password recovery', 'token lifecycle', 'sessions', 'authorization'],
-        capabilities: ['Identity Management', 'Token Lifecycle', 'Password Recovery', 'Access Authorization'],
-        entities: ['User', 'Account', 'Credential', 'Session', 'Access Token', 'Refresh Token', 'Role', 'Password Reset'],
-      };
-    }
-    if (/(^|[^a-z0-9])(alpha[_-]engine|arb[_-]engine|treecity|pumpfun|jito|solana|sniper|trading)([^a-z0-9]|$)/.test(text)) {
-      return {
-        frame: 'This is a Solana trading and portfolio-automation codebase centered on market data, trade execution, token positions, allocation, hedging, and risk controls.',
-        concepts: ['market data', 'trade execution', 'token positions', 'portfolio allocation', 'hedging', 'risk controls'],
-        capabilities: ['Trade Execution', 'Market Data', 'Portfolio Allocation', 'Risk Controls'],
-        entities: ['Token', 'Trade', 'Position', 'Portfolio', 'Allocation', 'Market Signal', 'Risk Limit'],
-      };
-    }
-    return undefined;
   }
 
   private frameworksForNarrativeFacts(systemName: string, frameworks: string[]): string[] {
@@ -11250,205 +10903,39 @@ export class AnalyzerOrchestrator {
       manifest: artifactManifest,
     });
     this.activeArtifactType = artifactResult.artifactType;
-    // Terminal-segment principle: the domain is what the journeys ultimately
-    // produce or manage (terminal entities + near-terminal stages), not what
-    // the pooled vocabulary mentions most. The terminal-derived domain is the
-    // primary seed; extractor/text inference is the fallback when journeys
-    // are too sparse to carry a specific domain.
-    const terminalCandidate = this.domainFromTerminalSignal(terminalSignal);
-    const fallbackDomain = this.refinePrimaryDomain(
-      domainExtractor.inferPrimaryDomain(domainConcepts),
-      systemName,
-      systemCapabilities,
-      coreConcepts,
-      projectTextSignal
-    );
-    // Referee: a rule-matched terminal domain (structural class hit on the
-    // terminal seed) outranks an UNCORROBORATED fallback; when two
-    // independent fallback signals agree (project text + capability-derived
-    // domain sharing stems), the corroborated fallback wins — terminal rules
-    // were tuned for full text and can misfire on a terminal seed. Composed
-    // terminal labels (weak) only ever label a weak fallback.
-    const fallbackIsWeak = !fallbackDomain ||
-      this.isGenericDomainToken(fallbackDomain) ||
-      !fallbackDomain.includes('-');
-    const stem6 = (token: string) => token.slice(0, Math.min(6, token.length));
-    const fallbackStems = new Set((fallbackDomain || '').split('-').filter(t => t.length > 2).map(stem6));
-    const sharesFallbackStem = (domain: string | null | undefined) =>
-      Boolean(domain) && domain!.split('-').some(token => token.length > 2 && fallbackStems.has(stem6(token)));
-    const capabilityDomainForReferee = this.inferPrimaryDomainFromCapabilities(systemCapabilities, coreConcepts);
-    const fallbackCorroborated = !fallbackIsWeak &&
-      sharesFallbackStem(projectTextSignal.primaryDomain) &&
-      sharesFallbackStem(capabilityDomainForReferee);
-    // Terminal evidence (what journeys actually produce) outranks any
-    // UNCORROBORATED pooled-vocabulary fallback; only a fallback confirmed by
-    // two independent signals (project text + capabilities agreeing) wins.
-    const terminalDomain = terminalCandidate && !fallbackCorroborated && (terminalCandidate.strong || fallbackIsWeak)
-      ? terminalCandidate.domain
-      : null;
-    const inferredPrimaryDomain = terminalDomain ?? fallbackDomain;
-    const areaDomains = this.classifyTopLevelAreaDomains(nodes, projectPath);
-    const areaResolution = this.reconcilePrimaryDomainWithAreas(inferredPrimaryDomain, areaDomains);
-    let primaryDomain = this.refinePrimaryDomainForPurpose(areaResolution.primaryDomain, basePurpose);
-    // Artifact-led domain: library/client-sdk/boilerplate repos whose domain
-    // was NOT anchored by terminal evidence get a label that leads with what
-    // the artifact IS ('tray-icon-library', 'soap-client-library',
-    // 'react-boilerplate') instead of a business domain inferred from pooled
-    // vocabulary. An anchored product domain is kept (an SDK clearly for
-    // payments stays payments) — the artifact type still rides along on
-    // artifact_type for every surface to use.
-    if (!terminalDomain) {
-      const artifactDomain = artifactLedDomainLabel(
-        artifactResult,
-        [
-          artifactManifest.cargo?.description || '',
-          artifactManifest.packageJson?.description || '',
-          artifactManifest.composer?.description || '',
-          ...projectTextSignal.concepts,
-          ...coreConcepts.map(c => c.name),
-          ...systemCapabilities.map(c => c.name),
-        ],
-        frameworks
-      );
-      if (artifactDomain) {
-        primaryDomain = artifactDomain === 'react-boilerplate' && this.hasNetworkAccessManagementSignal(systemCapabilities, coreConcepts, nodes)
-          ? 'network-access-management'
-          : artifactDomain;
-      }
-    }
-    if (this.hasNetworkAccessManagementSignal(systemCapabilities, coreConcepts, nodes) &&
-      /^(agent-management|device-management|policy-management|resource-management|react-boilerplate|product-data-management|content-management|product-management)$/.test(primaryDomain)) {
-      primaryDomain = 'network-access-management';
-    }
-    if (this.hasNetworkAccessConceptSignal(primaryDomain, systemCapabilities, coreConcepts, nodes, projectTextSignal.concepts)) {
-      primaryDomain = 'network-access-management';
-    }
-    if (this.hasTradingAutomationSignal(systemCapabilities, coreConcepts, nodes) &&
-      /^(content-management|zero-trust-security|quote-management|market-management|token-management|react-boilerplate)$/.test(primaryDomain)) {
-      primaryDomain = /solana|jupiter|raydium|dex|cex|token|swap|arb|arbitrage/i.test(`${projectPath} ${systemCapabilities.map(c => c.name).join(' ')}`)
-        ? /arb|arbitrage/i.test(`${projectPath} ${systemCapabilities.map(c => c.name).join(' ')}`)
-          ? 'solana-arbitrage'
-          : 'solana-trading'
-        : 'trading-automation';
-    }
-    if (primaryDomain === 'react-boilerplate' && /\b(washup|carwash|car-wash|car_wash)\b/i.test(projectPath || '')) {
-      primaryDomain = 'car-wash-operations';
-    }
-    if (/\/outline(?:\/|$)|\boutline\b/i.test(projectPath || '') &&
-      /^(content-management|product-data-management|document-management)$/.test(primaryDomain)) {
-      primaryDomain = 'knowledge-base';
-    }
-    const repoDomainOverride = this.knownRepoDomainOverride(projectPath);
-    if (repoDomainOverride) {
-      primaryDomain = repoDomainOverride;
-    }
-    if (primaryDomain === 'codebase-analysis' && !this.isKlauroSelfProject(projectPath)) {
-      const financeText = `${systemCapabilities.map(c => `${c.name} ${c.description || ''}`).join(' ')} ${coreConcepts.map(c => c.name).join(' ')}`.toLowerCase();
-      primaryDomain = /\b(solana|arbitrage|dex|trade execution|token balance)\b/.test(financeText)
-        ? /\barbitrage\b/.test(financeText) ? 'solana-arbitrage' : 'solana-trading'
-        : /\b(portfolio|payment|billing|invoice|market price|strategy|asset|liquidation)\b/.test(financeText)
-          ? 'portfolio-management'
-          : 'product-analysis';
-    }
-    if (primaryDomain === 'portfolio-device-library') {
-      primaryDomain = 'market-simulation';
-    }
-    if (systemCapabilities.some(capability => capability.name === 'Test Utility Support')) {
-      primaryDomain = 'testing-utilities';
-    }
-    if (systemCapabilities.some(capability => capability.name === 'Data Decryption') &&
-      /^(pool-management|sync-management|data-management|unknown)$/.test(primaryDomain)) {
-      primaryDomain = 'data-decryption';
-    }
-    if (process.env.KLAURO_DOMAIN_DEBUG) {
-      console.error('[domain-debug]', JSON.stringify({
-        terminalDomain,
-        terminalEntities: terminalSignal?.ranked_entities.slice(0, 5).map(e => e.name),
-        terminalStages: terminalSignal?.ranked_stages.slice(0, 5).map(s => s.name),
-        extractorDomain: domainExtractor.inferPrimaryDomain(domainConcepts),
-        capabilityDomain: this.inferPrimaryDomainFromCapabilities(systemCapabilities, coreConcepts),
-        projectTextDomain: projectTextSignal.primaryDomain,
-        inferredPrimaryDomain,
-        areaDomains,
-        areaResolved: areaResolution.primaryDomain,
-        artifactType: artifactResult.artifactType,
-        artifactEvidence: artifactResult.evidence,
-        final: primaryDomain,
-      }));
-    }
-
+    // COMPREHENSION BOUNDARY (docs/cas/DETERMINISM-BOUNDARY.md): the primary
+    // domain, the overall description, and every capability/entity description
+    // are COMPREHENSION and are produced ONLY by the AI interpretation pass,
+    // grounded in the real Camp-B evidence bundle (dependency manifest,
+    // languages, entities, integrations, deployables, routes). This builder no
+    // longer seeds a deterministic domain or description — the entire hardcoded
+    // keyword/terminal/repo-name domain classifier and the deterministic
+    // description frame were the "Solana arbitrage" garbage generators and were
+    // deleted. What remains here is STRUCTURE (Camp B): artifact_type and the
+    // grounded core-concept vocabulary the AI prompt reads. `primary_domain` and
+    // `inferred_description` are left UNSET; applyAIInterpretation is the sole
+    // writer and THROWS if AI comprehension cannot be produced.
     const coreConceptNames = [
       ...projectTextSignal.concepts,
       ...coreConcepts.map(c => c.name),
       ...domainConcepts.slice(0, 25).map(c => c.name),
     ].filter(concept => !this.isProjectNameConcept(concept, projectPath));
-    if (primaryDomain === 'portfolio-management') {
-      const conceptText = coreConceptNames.join(' ').toLowerCase();
-      const venueSignals = /\b(venue|venues|booking|bookings|host|style|styles)\b/.test(conceptText);
-      const tradingSignals = /\b(solana|arbitrage|dex|swap|token balance|trade execution|portfolio holdings|investment)\b/.test(conceptText);
-      const audioSignals = /\b(audio|song|songs|track|tracks|vocal|voice|rvc|demucs|rmvpe|fcpe|transcript|music)\b/.test(conceptText);
-      if (venueSignals && !tradingSignals) {
-        primaryDomain = 'venue-booking';
-      } else if (audioSignals && !tradingSignals) {
-        primaryDomain = 'audio-processing';
-      }
-    }
-    if (/^(content-management|product-data-management)$/.test(primaryDomain)) {
-      const conceptText = coreConceptNames.join(' ').toLowerCase();
-      const audioSignals = /\b(audio|song|songs|track|tracks|vocal|voice|rvc|demucs|rmvpe|fcpe|transcript|music)\b/.test(conceptText);
-      const commerceSignals = /\b(product|cart|checkout|order|billing|invoice|customer)\b/.test(conceptText);
-      if (audioSignals && !commerceSignals) primaryDomain = 'audio-processing';
-    }
-
-    // Prefer the structural description (frameworks, capabilities, entities,
-    // entry points observed in this repo); the project-text summary is a thin
-    // honest fallback used only when the structural signal is too weak.
-    const description = projectTextSignal.summary &&
-      this.shouldPreferProjectTextSummary(primaryDomain, systemCapabilities, flowGraph)
-      ? projectTextSignal.summary
-      : this.buildQuickDescription(
-      basePurpose,
-      flowGraph,
-      databaseEntities,
-      entryPointSummary,
-      frameworks,
-      externalServices,
-      systemCapabilities,
-      primaryDomain,
-      coreConceptNames,
-      terminalSignal,
-      artifactResult
-    );
 
     const supportingWorkflows = workflows.filter(w => w.classification === 'supporting');
-    const primaryType = this.refinePurposeTypeForDomain(
-      basePurpose.primary_type,
-      primaryDomain,
-      frameworks,
-      entryPointSummary
-    );
-    const confidence = this.knownRepoDomainOverride(projectPath)
-      ? Math.max(basePurpose.confidence || 0, 0.9)
-      : basePurpose.confidence;
 
     return {
       ...basePurpose,
-      primary_type: primaryType,
-      confidence,
+      confidence: basePurpose.confidence,
       evidence: [...basePurpose.evidence, ...projectTextSignal.evidence].slice(0, 20),
-      primary_domain: primaryDomain,
-      domain_source: terminalDomain || projectTextSignal.primaryDomain ? 'deterministic' : undefined,
       artifact_type: artifactResult.artifactType,
-      ...(terminalDomain ? { domain_anchored: true } : {}),
-      ...(areaResolution.secondaryDomains.length > 0 ? { secondary_domains: areaResolution.secondaryDomains } : {}),
       core_concepts: Array.from(new Set(coreConceptNames)).slice(0, 10),
-      inferred_description: this.cleanGeneratedDescriptionText(description),
-      description_source: 'deterministic',
-      description_generation: {
-        status: 'deterministic_initial',
-        attempted: false,
-        generated_at: new Date().toISOString(),
-      },
+      // primary_domain / inferred_description are COMPREHENSION and are left
+      // empty here (the structural equivalent of "unset"): applyAIInterpretation
+      // is the sole writer and fills them from the AI evidence bundle, or throws.
+      // No domain_source / description_source is set — a 'deterministic'
+      // provenance must never be written.
+      primary_domain: '',
+      inferred_description: '',
       primary_workflow_id: workflowGraph.primary_workflow_id,
       supporting_workflow_ids: supportingWorkflows.map(w => w.id)
     };
@@ -12428,11 +11915,14 @@ export class AnalyzerOrchestrator {
     if (sourceTextFound) evidence.push('source text');
 
     const text = textParts.join('\n').toLowerCase();
-    const primaryDomain = this.inferDomainFromProjectText(text, projectPath);
+    // COMPREHENSION BOUNDARY: the project-text DOMAIN and the composed SUMMARY were
+    // keyword-classified comprehension (the "A <keyword-domain> codebase..." frame
+    // and the solana/trading/etc. domain scorer in inferDomainFromProjectText).
+    // Both are deleted from the signal — domain and description are AI-only. Only
+    // the raw human-authored CONCEPT vocabulary is kept as AI grounding.
     const concepts = this.inferConceptsFromProjectText(text);
-    const summary = this.summaryFromProjectText(primaryDomain, concepts, text, evidence);
 
-    return { primaryDomain, concepts, summary, evidence };
+    return { primaryDomain: undefined, concepts, summary: undefined, evidence };
   }
 
   private safeReadJson(filePath: string): any | null {
@@ -14461,78 +13951,16 @@ export class AnalyzerOrchestrator {
 
 	  private enrichCuratedProductDataEntities(
     entities: CASDataEntity[],
-    systemName: string,
-    nodes: CASNode[],
-    projectPath?: string
+    _systemName: string,
+    _nodes: CASNode[],
+    _projectPath?: string
   ): CASDataEntity[] {
-    const curated = this.curatedNarrativeIdentityFacts(systemName);
-    if (!curated || curated.entities.length === 0) return entities;
-
-    const productEntityNames = new Set(curated.entities.map(entity => entity.toLowerCase()));
-    const pollutedExampleNames = new Set([
-      'canvasobject',
-      'syncedobject',
-      'usercursor',
-      'circle',
-      'rectangle',
-      'profile',
-      'travelnode',
-      'archivedincollection',
-      'incollection',
-    ]);
-    const hasCuratedProjectPath = Boolean(projectPath && /\b(supabase|appwrite|medusa|saleor|outline|cal\.com|budibase|ghost|immich|mastodon|nocodb|posthog|truckspy|user-service|treecity|pumpfun|jito|solana|sniper|trading)\b|alpha[_-]engine|arb[_-]engine/i.test(projectPath));
-    if (!hasCuratedProjectPath) return entities;
-
-    const filtered = entities.filter(entity => {
-      const key = entity.name.replace(/[^a-z0-9]+/gi, '').toLowerCase();
-      return !pollutedExampleNames.has(key) || productEntityNames.has(entity.name.toLowerCase());
-    });
-    const existing = new Set(filtered.map(entity => entity.name.toLowerCase()));
-    const relevantNodes = nodes.filter(node => this.isPrimaryProductNodeForProject(node, projectPath!));
-
-    for (const entityName of curated.entities) {
-      if (existing.has(entityName.toLowerCase())) continue;
-      const entityWords = entityName
-        .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
-        .toLowerCase()
-        .split(/[^a-z0-9]+/)
-        .filter(token => token.length >= 3);
-      const lifecycleNodes = relevantNodes
-        .filter(node => {
-          const text = `${node.name} ${node.source?.file || ''}`.toLowerCase();
-          return entityWords.some(word => text.includes(word));
-        })
-        .slice(0, 12)
-        .map(node => node.id);
-      filtered.push({
-        id: `entity_${entityName.toLowerCase().replace(/[^a-z0-9]+/g, '_')}`,
-        name: entityName,
-        schema_source: 'curated-product-frame',
-        description: `${entityName} is a product-level data concept inferred from the repository identity and product vocabulary.`,
-        description_source: 'deterministic',
-        description_generation: {
-          status: 'deterministic_initial',
-          attempted: false,
-          generated_at: new Date().toISOString(),
-        },
-        lifecycle: {
-          created_by: lifecycleNodes,
-          read_by: lifecycleNodes,
-          updated_by: lifecycleNodes,
-          deleted_by: [],
-        },
-      });
-    }
-
-    const curatedOrder = new Map(curated.entities.map((entity, index) => [entity.toLowerCase(), index]));
-    return filtered.sort((left, right) => {
-      const leftRank = curatedOrder.get(left.name.toLowerCase());
-      const rightRank = curatedOrder.get(right.name.toLowerCase());
-      if (leftRank !== undefined || rightRank !== undefined) {
-        return (leftRank ?? Number.MAX_SAFE_INTEGER) - (rightRank ?? Number.MAX_SAFE_INTEGER);
-      }
-      return left.name.localeCompare(right.name);
-    });
+    // DELETED: this fabricated data entities from a hardcoded per-brand frame
+    // (supabase/medusa/...|solana|sniper|trading) and stamped them with
+    // description_source:'deterministic'. Entities are Camp-B structural facts
+    // extracted from the code; any product framing of them is AI comprehension.
+    // No brand injection, no deterministic entity descriptions — pass through.
+    return entities;
   }
 
   private buildDataSummary(entities: CASDataEntity[], nodes: CASNode[]): CASDataSummary {
@@ -15911,9 +15339,10 @@ export class AnalyzerOrchestrator {
         id: nextCapabilityId({ name: capabilityName, related_domains: [resourceKey] }),
         name: capabilityName,
         description: this.generateCapabilityDescription(capabilityName, operations, relatedEntities, group.entryPoints),
-        description_source: 'deterministic',
+        description_source: undefined,
         description_generation: {
-          status: 'deterministic_initial',
+          status: 'ai_skipped',
+          reason: 'awaiting-ai-comprehension',
           attempted: false,
           generated_at: new Date().toISOString(),
         },
@@ -15969,7 +15398,10 @@ export class AnalyzerOrchestrator {
         : capabilities;
     const dedupedCapabilities = this.dedupeSystemCapabilitiesByName(capabilitiesForAgents);
     const trimmedCapabilities = this.trimLowValueFallbackCapabilities(dedupedCapabilities, projectPath);
-    const primaryDomain = this.knownRepoDomainOverride(projectPath);
+    // Domain is comprehension (AI-only) and is not known at this structural
+    // stage; the hardcoded repo-name domain override was deleted. Capability
+    // ordering therefore no longer biases on a keyword-classified domain.
+    const primaryDomain: string | undefined = undefined;
     const domainFilteredCapabilities = this.filterCapabilitiesForKnownDomain(trimmedCapabilities, primaryDomain);
     const sortedCapabilities = this.isKlauroSelfProject(projectPath)
       ? this.prioritizeKlauroSelfCapabilities(domainFilteredCapabilities, projectPath)
@@ -16045,9 +15477,10 @@ export class AnalyzerOrchestrator {
       id: 'cap_repository_fallback',
       name,
       description,
-      description_source: 'deterministic',
+      description_source: undefined,
       description_generation: {
-        status: 'deterministic_initial',
+        status: 'ai_skipped',
+        reason: 'awaiting-ai-comprehension',
         attempted: false,
         generated_at: new Date().toISOString(),
       },
@@ -16324,9 +15757,10 @@ export class AnalyzerOrchestrator {
           id: '',
           name,
           description: this.infrastructureCapabilityDescription(name, providers, resourceTypes, files),
-          description_source: 'deterministic' as const,
+          description_source: undefined,
           description_generation: {
-            status: 'deterministic_initial' as const,
+            status: 'ai_skipped' as const,
+            reason: 'awaiting-ai-comprehension' as const,
             attempted: false,
             generated_at: new Date().toISOString(),
           },
@@ -16529,437 +15963,6 @@ export class AnalyzerOrchestrator {
       });
     });
   }
-
-  private buildPurposeCapabilitiesFromSignals(nodes: CASNode[], existingCapabilities: SystemCapability[], projectPath?: string): SystemCapability[] {
-    const signalNodes = nodes.filter(node => !this.isAnalyzerImplementationPurposeSignalNode(node));
-    const corpus = signalNodes
-      .map(node => `${node.name} ${node.source?.file || ''} ${(node.subcategories || []).join(' ')}`)
-      .join('\n')
-      .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
-      .replace(/[_\-./]/g, ' ')
-      .toLowerCase();
-    const projectPathText = (projectPath || '').toLowerCase();
-    const brandDomain =
-      /\bcal\.com\b/.test(projectPathText) ? 'scheduling-platform' :
-          /\b(supabase|appwrite)\b/.test(projectPathText) ? 'developer-platform' :
-          /\b(medusa|saleor)\b/.test(projectPathText) ? 'commerce-platform' :
-            /\boutline\b/.test(projectPathText) ? 'knowledge-base' :
-              /\bbudibase\b/.test(projectPathText) ? 'internal-tools-platform' :
-                /\bghost\b/.test(projectPathText) ? 'publishing-platform' :
-                  /\bimmich\b/.test(projectPathText) ? 'photo-management-platform' :
-                    /\bmastodon\b/.test(projectPathText) ? 'federated-social-platform' :
-                      /\bnocodb\b/.test(projectPathText) ? 'no-code-database-platform' :
-                        /\bposthog\b/.test(projectPathText) ? 'product-analytics-platform' :
-                          /\b(hoggan|clinical|myotest)\b/.test(projectPathText) ? 'clinical-testing' :
-                            /\btruckspy\b/.test(projectPathText) ? 'fleet-management' :
-                              /\b(user-service|identity)\b/.test(projectPathText) ? 'user-identity-management' :
-                                /\b(alpha_engine|arb_engine|solana|pumpfun|jito|sniper|trading)\b/.test(projectPathText) ? 'solana-trading' :
-                            undefined;
-    const hasClinicalSignal = (!brandDomain || brandDomain === 'clinical-testing') &&
-      (/\b(hoggan|clinical|myotest|muscle|grip|pinch|inclinometry)\b/.test(corpus) ||
-        (/\bpatient\b/.test(corpus) && /\b(measurement|test|testing|device|report)\b/.test(corpus)));
-    const fleetAnchorMatches = (corpus.match(/\b(truckspy|fleet|vehicle|vehicles|telematics|odometer|ifta)\b/g) || []).length;
-    const fleetCompanionMatches = (corpus.match(/\b(vehicle|vehicles|driver|drivers|fuel|odometer|maintenance|dispatch|booking|trip|trips|telematics)\b/g) || []).length;
-    const hasFleetSignal = brandDomain === 'fleet-management' || (!brandDomain && fleetAnchorMatches >= 1 && fleetCompanionMatches >= 3);
-    const tradingAnchorMatches = (corpus.match(/\b(solana|arbitrage|trade|trading|swap|token|wallet|portfolio|jupiter|raydium|pumpfun|jito|dex|cex)\b/g) || []).length;
-    const hasTradingSignal = brandDomain === 'solana-trading' || (!brandDomain && tradingAnchorMatches >= 4);
-    const hasUserIdentitySignal = brandDomain === 'user-identity-management';
-    const projectPathAnchorsCarWash = /\b(washup|carwash|car-wash|car_wash)\b/.test(projectPathText);
-    const carWashCompanionMatches = (corpus.match(/\b(location|locations|shift|shifts|inspection|inspections|incident|incidents|bay|bays|equipment|service|services|task|tasks|schedule|scheduled|recurring|availability|availabilities)\b/g) || []).length;
-    const hasCarWashSignal = !brandDomain && projectPathAnchorsCarWash && carWashCompanionMatches >= 4;
-    const networkAccessAnchorMatches = (corpus.match(/\b(zero trust|protected resource|posture|wireguard)\b/g) || []).length;
-    const networkAccessCompanionMatches = (corpus.match(/\b(device|devices|register|registration|organization|organizations|signal|signals|connect|disconnect|connection|connections|token|tokens|session|sessions)\b/g) || []).length;
-    const hasNetworkAccessSignal = brandDomain || hasClinicalSignal || hasFleetSignal
-      ? false
-      : networkAccessAnchorMatches >= 2 && networkAccessCompanionMatches >= 3;
-    const schedulingAnchorMatches = (corpus.match(/\b(cal\.com|scheduling|booking|bookings|calendar|availability|appointments?|event types?|round robin|routing forms?)\b/g) || []).length;
-    const hasSchedulingSignal = brandDomain === 'scheduling-platform' ||
-      (!brandDomain && /\b(scheduling platform|appointment scheduling|calendar booking|booking platform)\b/.test(corpus));
-    const developerPlatformAnchorMatches = (corpus.match(/\b(supabase|appwrite|developer platform|backend as a service|database platform|postgres|realtime|edge functions?|storage buckets?|sdk)\b/g) || []).length;
-    const hasDeveloperPlatformSignal = brandDomain === 'developer-platform' || (!brandDomain && !hasSchedulingSignal && developerPlatformAnchorMatches >= 5);
-    const commercePlatformAnchorMatches = (corpus.match(/\b(medusa|commerce platform|digital commerce|ecommerce|cart|checkout|orders?|products?|inventory|fulfillment|payment)\b/g) || []).length;
-    const hasCommercePlatformSignal = brandDomain === 'commerce-platform' || (!brandDomain && !hasSchedulingSignal && !hasDeveloperPlatformSignal && !hasClinicalSignal && !hasFleetSignal && !hasCarWashSignal && !hasTradingSignal && commercePlatformAnchorMatches >= 5);
-    const knowledgeBaseAnchorMatches = (corpus.match(/\b(outline|knowledge base|team wiki|documents?|collections?|comments?|revisions?|sharing|permissions?)\b/g) || []).length;
-    const hasKnowledgeBaseSignal = brandDomain === 'knowledge-base' || (!brandDomain && !hasSchedulingSignal && !hasDeveloperPlatformSignal && !hasCommercePlatformSignal && !hasClinicalSignal && !hasFleetSignal && !hasTradingSignal && !hasUserIdentitySignal && knowledgeBaseAnchorMatches >= 5);
-    const hasInternalToolsSignal = brandDomain === 'internal-tools-platform';
-    const hasPublishingSignal = brandDomain === 'publishing-platform';
-    const hasPhotoManagementSignal = brandDomain === 'photo-management-platform';
-    const hasFederatedSocialSignal = brandDomain === 'federated-social-platform';
-    const hasNoCodeDatabaseSignal = brandDomain === 'no-code-database-platform';
-    const hasProductAnalyticsSignal = brandDomain === 'product-analytics-platform';
-
-    const existingCapabilityNames = new Set(existingCapabilities.map(capability => capability.name.trim().toLowerCase()));
-    const makeOperations = (pattern: RegExp): SystemCapability['operations'] => signalNodes
-      .filter(node => pattern.test(`${node.name} ${node.source?.file || ''}`))
-      .slice(0, 12)
-      .map(node => ({
-        entry_point_id: `node:${node.id}`,
-        entry_point_type: 'internal',
-        action: this.inferActionFromNodeName(node.name),
-        path_or_command: node.source?.file,
-      }));
-
-    const candidates: Array<{
-      name: string;
-      description: string;
-      domain: string;
-      pattern: RegExp;
-      criticality: SystemCapability['criticality'];
-      force?: boolean;
-    }> = [
-      ...(hasClinicalSignal ? [
-        {
-          name: 'Patient Records',
-          description: 'Patient Records maintains patient identity, visit, and profile context used by clinical testing workflows.',
-          domain: 'patient',
-          pattern: /\bpatient\b/i,
-          criticality: 'high' as const,
-        },
-        {
-          name: 'Clinical Measurements',
-          description: 'Clinical Measurements captures muscle, force, grip, pinch, inclinometry, and assessment data for test sessions.',
-          domain: 'clinical-measurement',
-          pattern: /\b(muscle|force|grip|pinch|inclinometry|measurement|assessment|myotest)\b/i,
-          criticality: 'critical' as const,
-        },
-        {
-          name: 'Device Connectivity',
-          description: 'Device Connectivity links testing devices, sensors, calibration, and connection state to measurement workflows.',
-          domain: 'device-connectivity',
-          pattern: /\b(device|sensor|calibration|connection|connectivity|bluetooth|serial)\b/i,
-          criticality: 'high' as const,
-        },
-        {
-          name: 'Clinical Reporting',
-          description: 'Clinical Reporting prepares reports, print previews, and cover letters from patient testing results.',
-          domain: 'clinical-reporting',
-          pattern: /\b(report|reports|print|preview|cover\s*letter|coverletter)\b/i,
-          criticality: 'high' as const,
-        },
-      ] : []),
-      ...(hasFleetSignal ? [
-        {
-          name: 'Fleet Operations',
-          description: 'Fleet Operations coordinates vehicle, driver, trip, dispatch, and company workflows across the fleet backend.',
-          domain: 'fleet-operations',
-          pattern: /\b(fleet|vehicle|vehicles|driver|drivers|trip|trips|dispatch|booking|company)\b/i,
-          criticality: 'critical' as const,
-        },
-        {
-          name: 'Fuel Management',
-          description: 'Fuel Management tracks fuel transactions, rates, synchronization, and reporting signals for fleet operations.',
-          domain: 'fuel-management',
-          pattern: /\b(fuel|ifta|rate|rates|transaction|transactions)\b/i,
-          criticality: 'high' as const,
-        },
-        {
-          name: 'Vehicle Maintenance',
-          description: 'Vehicle Maintenance manages odometer, scheduled-maintenance, repair, and maintenance-issue workflows for vehicles.',
-          domain: 'vehicle-maintenance',
-          pattern: /\b(maintenance|repair|odometer|scheduled|issue|issues|vehicle)\b/i,
-          criticality: 'high' as const,
-        },
-        {
-          name: 'Driver Communication',
-          description: 'Driver Communication sends mobile, email, and push notifications that keep drivers and operators aligned.',
-          domain: 'driver-communication',
-          pattern: /\b(driver|drivers|mobile|push|notification|notifications|message|messages|email)\b/i,
-          criticality: 'medium' as const,
-        },
-      ] : []),
-      ...(hasUserIdentitySignal ? [
-        {
-          name: 'Identity Management',
-          description: 'Identity Management maintains users, account state, credentials, and registration context for authentication flows.',
-          domain: 'identity-management',
-          pattern: /\b(user|users|identity|account|accounts|register|registration|profile)\b/i,
-          criticality: 'critical' as const,
-          force: true,
-        },
-        {
-          name: 'Token Lifecycle',
-          description: 'Token Lifecycle creates, validates, rotates, and revokes tokens used for authenticated access.',
-          domain: 'token-lifecycle',
-          pattern: /\b(token|tokens|jwt|refresh|session|sessions|credential|credentials)\b/i,
-          criticality: 'critical' as const,
-          force: true,
-        },
-        {
-          name: 'Password Recovery',
-          description: 'Password Recovery handles reset requests, verification steps, and password update boundaries.',
-          domain: 'password-recovery',
-          pattern: /\b(password|reset|recovery|recover|forgot|forgotten)\b/i,
-          criticality: 'high' as const,
-          force: true,
-        },
-        {
-          name: 'Access Authorization',
-          description: 'Access Authorization applies roles, permissions, scopes, and authorization checks around identity operations.',
-          domain: 'access-authorization',
-          pattern: /\b(authorize|authorization|permission|permissions|role|roles|scope|access)\b/i,
-          criticality: 'high' as const,
-          force: true,
-        },
-      ] : []),
-      ...(hasCarWashSignal ? [
-        {
-          name: 'Wash Site Scheduling',
-          description: 'Wash Site Scheduling manages shifts, recurring availability, tasks, and service timing for car-wash locations.',
-          domain: 'wash-site-scheduling',
-          pattern: /\b(shift|shifts|schedule|scheduled|recurring|availability|availabilities|task|tasks)\b/i,
-          criticality: 'critical' as const,
-        },
-        {
-          name: 'Location Operations',
-          description: 'Location Operations keeps car-wash locations, bays, equipment, owners, and site assignments aligned for daily operations.',
-          domain: 'location-operations',
-          pattern: /\b(location|locations|bay|bays|equipment|owner|owners|service|services)\b/i,
-          criticality: 'high' as const,
-        },
-        {
-          name: 'Inspection Tracking',
-          description: 'Inspection Tracking records inspection work, equipment checks, and operational follow-up for car-wash sites.',
-          domain: 'inspection-tracking',
-          pattern: /\b(inspection|inspections|inspections?equipment|check|checks|equipment)\b/i,
-          criticality: 'high' as const,
-        },
-        {
-          name: 'Incident Tracking',
-          description: 'Incident Tracking records incidents, notes, and history so operators can follow up on site issues.',
-          domain: 'incident-tracking',
-          pattern: /\b(incident|incidents|note|notes|history|event|events)\b/i,
-          criticality: 'high' as const,
-        },
-      ] : []),
-      ...(hasNetworkAccessSignal ? [
-        {
-          name: 'Device Enrollment',
-          description: 'Device Enrollment registers devices and binds them to the identity and organization context used for network access.',
-          domain: 'device-enrollment',
-          pattern: /\b(device|devices|register|registration|enroll|enrollment|bincode)\b/i,
-          criticality: 'high' as const,
-        },
-        {
-          name: 'Network Connection Control',
-          description: 'Network Connection Control starts, stops, and tracks protected network connections for the local device.',
-          domain: 'network-connection-control',
-          pattern: /\b(connect|disconnect|connection|connections|vpn|wireguard|gateway|network)\b/i,
-          criticality: 'critical' as const,
-        },
-        {
-          name: 'Organization Access Context',
-          description: 'Organization Access Context keeps the selected organization, identity, and access scope aligned with device workflows.',
-          domain: 'organization-access-context',
-          pattern: /\b(organization|organizations|identity|access|scope|policy|resource)\b/i,
-          criticality: 'high' as const,
-        },
-        {
-          name: 'Signal Synchronization',
-          description: 'Signal Synchronization exchanges control signals that keep device and network access state current.',
-          domain: 'signal-synchronization',
-          pattern: /\b(signal|signals|sync|synchronization|status|state)\b/i,
-          criticality: 'medium' as const,
-        },
-      ] : []),
-      ...(hasSchedulingSignal ? [
-        {
-          name: 'Booking Lifecycle',
-          description: 'Booking Lifecycle turns availability, attendee choices, and organizer rules into confirmed or cancelled scheduled meetings.',
-          domain: 'booking-lifecycle',
-          pattern: /\b(booking|bookings|cancel|reschedule|attendee|meeting)\b/i,
-          criticality: 'critical' as const,
-          force: brandDomain === 'scheduling-platform',
-        },
-        {
-          name: 'Calendar Availability',
-          description: 'Calendar Availability joins connected calendar data, working hours, buffers, and conflict checks before a booking can be offered.',
-          domain: 'calendar-availability',
-          pattern: /\b(calendar|availability|available|busy|working\s*hours|slots?)\b/i,
-          criticality: 'critical' as const,
-          force: brandDomain === 'scheduling-platform',
-        },
-        {
-          name: 'Event Type Configuration',
-          description: 'Event Type Configuration defines bookable meeting types, durations, locations, routing rules, and scheduling constraints.',
-          domain: 'event-type-configuration',
-          pattern: /\b(event\s*type|eventtype|duration|location|routing|round\s*robin)\b/i,
-          criticality: 'high' as const,
-          force: brandDomain === 'scheduling-platform',
-        },
-        {
-          name: 'Scheduling Integrations',
-          description: 'Scheduling Integrations connect video, calendar, payment, CRM, and notification providers to the booking workflow.',
-          domain: 'scheduling-integrations',
-          pattern: /\b(googlecalendar|office365|zoom|stripe|paypal|sendgrid|calendar|video|payment|crm)\b/i,
-          criticality: 'high' as const,
-          force: brandDomain === 'scheduling-platform',
-        },
-      ] : []),
-      ...(hasDeveloperPlatformSignal ? [
-        {
-          name: 'Project Backend Provisioning',
-          description: 'Project Backend Provisioning creates and configures developer projects, databases, APIs, and backend resources.',
-          domain: 'project-backend-provisioning',
-          pattern: /\b(project|database|postgres|api|provision|deployment)\b/i,
-          criticality: 'critical' as const,
-          force: brandDomain === 'developer-platform',
-        },
-        {
-          name: 'Authentication Services',
-          description: 'Authentication Services manage users, sessions, tokens, providers, and authorization policies for developer applications.',
-          domain: 'authentication-services',
-          pattern: /\b(auth|authentication|user|session|token|provider|permission)\b/i,
-          criticality: 'critical' as const,
-          force: brandDomain === 'developer-platform',
-        },
-        {
-          name: 'Realtime Data Sync',
-          description: 'Realtime Data Sync publishes database or function changes to subscribed clients so applications stay current.',
-          domain: 'realtime-data-sync',
-          pattern: /\b(realtime|subscription|channel|event|websocket|sync)\b/i,
-          criticality: 'high' as const,
-          force: brandDomain === 'developer-platform',
-        },
-        {
-          name: 'Storage And Functions',
-          description: 'Storage And Functions manage object buckets, file permissions, serverless functions, and execution boundaries for app backends.',
-          domain: 'storage-and-functions',
-          pattern: /\b(storage|bucket|file|function|functions|edge|serverless)\b/i,
-          criticality: 'high' as const,
-          force: brandDomain === 'developer-platform',
-        },
-      ] : []),
-      ...(hasCommercePlatformSignal ? [
-        {
-          name: 'Product Catalog',
-          description: 'Product Catalog manages products, variants, prices, inventory references, and merchandising state for commerce channels.',
-          domain: 'product-catalog',
-          pattern: /\b(product|products|variant|variants|price|prices|catalog)\b/i,
-          criticality: 'critical' as const,
-          force: brandDomain === 'commerce-platform',
-        },
-        {
-          name: 'Cart And Checkout',
-          description: 'Cart And Checkout preserves cart lines, shipping choices, pricing adjustments, and payment context before order creation.',
-          domain: 'cart-and-checkout',
-          pattern: /\b(cart|checkout|shipping|payment|discount|promotion)\b/i,
-          criticality: 'critical' as const,
-          force: brandDomain === 'commerce-platform',
-        },
-        {
-          name: 'Order Fulfillment',
-          description: 'Order Fulfillment tracks orders, shipments, returns, inventory reservations, and fulfillment-provider state.',
-          domain: 'order-fulfillment',
-          pattern: /\b(order|orders|fulfillment|shipment|return|reservation|inventory)\b/i,
-          criticality: 'critical' as const,
-          force: brandDomain === 'commerce-platform',
-        },
-        {
-          name: 'Commerce Administration',
-          description: 'Commerce Administration organizes customer, region, tax, sales channel, and store configuration used by operators.',
-          domain: 'commerce-administration',
-          pattern: /\b(customer|region|tax|store|sales\s*channel|admin)\b/i,
-          criticality: 'high' as const,
-          force: brandDomain === 'commerce-platform',
-        },
-      ] : []),
-      ...(hasKnowledgeBaseSignal ? [
-        {
-          name: 'Document Collaboration',
-          description: 'Document Collaboration maintains document content, revisions, comments, and publication state for shared team knowledge.',
-          domain: 'document-collaboration',
-          pattern: /\b(document|documents|revision|comment|comments|publish|editor)\b/i,
-          criticality: 'critical' as const,
-          force: brandDomain === 'knowledge-base',
-        },
-        {
-          name: 'Collection Organization',
-          description: 'Collection Organization arranges documents into collections, navigation trees, and workspace-visible knowledge areas.',
-          domain: 'collection-organization',
-          pattern: /\b(collection|collections|workspace|navigation|tree|folder)\b/i,
-          criticality: 'high' as const,
-          force: brandDomain === 'knowledge-base',
-        },
-        {
-          name: 'Knowledge Access Control',
-          description: 'Knowledge Access Control applies sharing, permissions, membership, and authentication rules around documents and collections.',
-          domain: 'knowledge-access-control',
-          pattern: /\b(share|sharing|permission|permissions|member|membership|auth|user|group)\b/i,
-          criticality: 'high' as const,
-          force: brandDomain === 'knowledge-base',
-        },
-        {
-          name: 'Knowledge Search',
-          description: 'Knowledge Search indexes documents, collections, and related metadata so teams can find existing knowledge quickly.',
-          domain: 'knowledge-search',
-          pattern: /\b(search|index|query|documents|collections)\b/i,
-          criticality: 'medium' as const,
-          force: brandDomain === 'knowledge-base',
-        },
-      ] : []),
-      ...(hasInternalToolsSignal ? [
-        { name: 'App Builder', description: 'App Builder creates internal tools from screens, data bindings, permissions, and deployable app definitions.', domain: 'app-builder', pattern: /\b(app|builder|screen|component|layout)\b/i, criticality: 'critical' as const, force: true },
-        { name: 'Data Source Integration', description: 'Data Source Integration connects databases, APIs, and external systems to internal tool screens and workflows.', domain: 'data-source-integration', pattern: /\b(datasource|data source|query|table|api|database)\b/i, criticality: 'critical' as const, force: true },
-        { name: 'Automation Workflows', description: 'Automation Workflows run triggered actions and background steps that connect app events to operational processes.', domain: 'automation-workflows', pattern: /\b(automation|workflow|trigger|action|job)\b/i, criticality: 'high' as const, force: true },
-        { name: 'Tenant App Administration', description: 'Tenant App Administration manages users, workspaces, permissions, deployments, and app lifecycle controls.', domain: 'tenant-app-administration', pattern: /\b(tenant|workspace|permission|deploy|user)\b/i, criticality: 'high' as const, force: true },
-      ] : []),
-      ...(hasPublishingSignal ? [
-        { name: 'Content Publishing', description: 'Content Publishing manages posts, pages, authors, editorial state, and site-facing publication workflows.', domain: 'content-publishing', pattern: /\b(post|page|author|publish|draft|editor)\b/i, criticality: 'critical' as const, force: true },
-        { name: 'Membership And Subscriptions', description: 'Membership And Subscriptions manage readers, members, offers, payments, and access to publication content.', domain: 'membership-subscriptions', pattern: /\b(member|subscription|offer|payment|portal)\b/i, criticality: 'critical' as const, force: true },
-        { name: 'Newsletter Delivery', description: 'Newsletter Delivery sends published content and member communications through email and delivery providers.', domain: 'newsletter-delivery', pattern: /\b(newsletter|email|mail|campaign)\b/i, criticality: 'high' as const, force: true },
-        { name: 'Publication Administration', description: 'Publication Administration manages site settings, themes, analytics, staff roles, and operational configuration.', domain: 'publication-administration', pattern: /\b(site|theme|staff|setting|analytics)\b/i, criticality: 'high' as const, force: true },
-      ] : []),
-      ...(hasPhotoManagementSignal ? [
-        { name: 'Media Library', description: 'Media Library organizes photos, videos, albums, metadata, search, and timeline browsing for personal media collections.', domain: 'media-library', pattern: /\b(asset|photo|video|album|media|timeline)\b/i, criticality: 'critical' as const, force: true },
-        { name: 'Backup And Upload', description: 'Backup And Upload moves device media into server storage while tracking sync, deduplication, and processing state.', domain: 'backup-upload', pattern: /\b(upload|backup|sync|asset|device)\b/i, criticality: 'critical' as const, force: true },
-        { name: 'Media Intelligence', description: 'Media Intelligence extracts faces, places, thumbnails, machine-learning metadata, and search signals from uploaded media.', domain: 'media-intelligence', pattern: /\b(face|facial|recognition|machine|thumbnail|ocr|metadata)\b/i, criticality: 'high' as const, force: true },
-        { name: 'Sharing And Access', description: 'Sharing And Access controls albums, partners, users, permissions, and shared media links.', domain: 'sharing-access', pattern: /\b(share|sharing|partner|permission|user|album)\b/i, criticality: 'high' as const, force: true },
-      ] : []),
-      ...(hasFederatedSocialSignal ? [
-        { name: 'Social Timelines', description: 'Social Timelines organize posts, boosts, follows, accounts, and feed delivery for users.', domain: 'social-timelines', pattern: /\b(status|timeline|account|follow|boost|feed)\b/i, criticality: 'critical' as const, force: true },
-        { name: 'Federation Delivery', description: 'Federation Delivery exchanges ActivityPub messages, remote accounts, inboxes, outboxes, and delivery state across servers.', domain: 'federation-delivery', pattern: /\b(activitypub|federat|inbox|outbox|remote|deliver)\b/i, criticality: 'critical' as const, force: true },
-        { name: 'Moderation And Safety', description: 'Moderation And Safety handles reports, blocks, mutes, domain controls, and policy enforcement.', domain: 'moderation-safety', pattern: /\b(report|block|mute|moderation|domain|policy)\b/i, criticality: 'high' as const, force: true },
-        { name: 'Notifications And Messaging', description: 'Notifications And Messaging alerts users to follows, mentions, boosts, replies, and direct interactions.', domain: 'notifications-messaging', pattern: /\b(notification|mention|reply|message|conversation)\b/i, criticality: 'high' as const, force: true },
-      ] : []),
-      ...(hasNoCodeDatabaseSignal ? [
-        { name: 'Table Modeling', description: 'Table Modeling turns database tables, fields, relations, and metadata into no-code application structures.', domain: 'table-modeling', pattern: /\b(table|field|relation|schema|model)\b/i, criticality: 'critical' as const, force: true },
-        { name: 'Spreadsheet Views', description: 'Spreadsheet Views present records through grids, forms, kanban boards, galleries, and filtered collaboration surfaces.', domain: 'spreadsheet-views', pattern: /\b(grid|view|form|kanban|gallery|filter)\b/i, criticality: 'critical' as const, force: true },
-        { name: 'API Data Access', description: 'API Data Access exposes generated APIs, permissions, and integrations around modeled database records.', domain: 'api-data-access', pattern: /\b(api|permission|integration|record|token)\b/i, criticality: 'high' as const, force: true },
-        { name: 'Workspace Collaboration', description: 'Workspace Collaboration manages users, projects, bases, sharing, and operational workspace settings.', domain: 'workspace-collaboration', pattern: /\b(workspace|project|base|share|user)\b/i, criticality: 'high' as const, force: true },
-      ] : []),
-      ...(hasProductAnalyticsSignal ? [
-        { name: 'Event Capture', description: 'Event Capture collects product events, identities, sessions, and ingestion state from customer applications.', domain: 'event-capture', pattern: /\b(event|capture|ingest|identity|session)\b/i, criticality: 'critical' as const, force: true },
-        { name: 'Product Analytics', description: 'Product Analytics builds funnels, cohorts, trends, retention views, and dashboards from captured events.', domain: 'product-analytics', pattern: /\b(funnel|cohort|trend|retention|dashboard|insight)\b/i, criticality: 'critical' as const, force: true },
-        { name: 'Feature Flags And Experiments', description: 'Feature Flags And Experiments control rollouts, experiments, variants, and targeting rules.', domain: 'feature-flags-experiments', pattern: /\b(flag|experiment|variant|rollout|target)\b/i, criticality: 'high' as const, force: true },
-        { name: 'Session Replay', description: 'Session Replay records interaction traces and playback data used to diagnose product behavior.', domain: 'session-replay', pattern: /\b(replay|recording|session|trace|snapshot)\b/i, criticality: 'high' as const, force: true },
-      ] : []),
-    ];
-
-    return candidates
-      .filter(candidate => candidate.force || candidate.pattern.test(corpus))
-      .filter(candidate => candidate.force || !existingCapabilityNames.has(candidate.name.toLowerCase()))
-      .map(candidate => {
-        const operations = makeOperations(candidate.pattern);
-        return {
-          id: 'cap_pending',
-          name: candidate.name,
-          description: candidate.description,
-          description_source: 'deterministic',
-          description_generation: {
-            status: 'deterministic_initial',
-            attempted: false,
-            generated_at: new Date().toISOString(),
-          },
-          category: 'core',
-          operations,
-          related_entities: [],
-          related_domains: [candidate.domain],
-          criticality: candidate.criticality,
-          criticality_factors: ['Inferred from product vocabulary in node names and source paths'],
-        } satisfies SystemCapability;
-      });
-  }
-
   private isAnalyzerImplementationPurposeSignalNode(node: CASNode): boolean {
     const file = (node.source?.file || '').replace(/\\/g, '/').toLowerCase();
     if (/(^|\/)packages\/analyzer-core\/src\/analyzer\/(core|frameworks|languages|library|libraries)\//.test(file)) return true;
@@ -17095,9 +16098,10 @@ export class AnalyzerOrchestrator {
         id: 'cap_pending',
         name: capabilityName,
         description: this.generateTerminalCapabilityDescription(capabilityName, uniqueNodes, uniqueEntities, operations),
-        description_source: 'deterministic',
+        description_source: undefined,
         description_generation: {
-          status: 'deterministic_initial',
+          status: 'ai_skipped',
+          reason: 'awaiting-ai-comprehension',
           attempted: false,
           generated_at: new Date().toISOString(),
         },
@@ -18264,331 +17268,12 @@ export class AnalyzerOrchestrator {
     return ` ${this.joinHumanList(phrases.slice(0, 3))}`;
   }
 
-  private productSpecificCapabilityDescription(name: string): string | undefined {
-    const subject = name.replace(/\s+(Management|Capability|Workflow|Reporting|Analysis|Generation|Settlement|Rebalancing|Authentication)$/i, '').trim() || name;
-    const subjectLower = subject.toLowerCase();
-    const nameLower = name.toLowerCase();
-    if (/\brule analysis\b/.test(nameLower)) {
-      return `${name} analyzes rule behavior and records the decisions or signals produced by that analysis.`;
-    }
-    if (/\btrade execution\b/.test(nameLower)) {
-      return `${name} submits token buy and sell transactions and coordinates the trading actions around those orders.`;
-    }
-    if (/\btoken balance discovery\b/.test(nameLower)) {
-      return `${name} reads SPL token balances and wallet token-account state before trading decisions are made.`;
-    }
-    if (/\bmarket data discovery\b/.test(nameLower)) {
-      return `${name} discovers market pairs and token metadata used to decide whether a trade should run.`;
-    }
-    if (/\bfee transfer\b/.test(nameLower)) {
-      return `${name} sends developer-fee transfers associated with trading transactions.`;
-    }
-    if (/\bportfolio\b/.test(subjectLower)) {
-      return `${name} presents portfolio holdings, allocation history, and account-level analysis for investment workflows.`;
-    }
-    if (/\bautomation\b/.test(subjectLower)) {
-      return `${name} controls automated investing configuration and recurring investment behavior.`;
-    }
-    if (/\bexchange connection\b/.test(subjectLower) || /\bexchange\b/.test(subjectLower)) {
-      return `${name} links external exchange or brokerage connections to portfolio and automation workflows.`;
-    }
-    if (/\btoken authentication\b/.test(nameLower)) {
-      return `${name} manages authentication tokens used to verify identity and access rather than blockchain asset balances.`;
-    }
-    if (/\bwallet withdrawal\b/.test(nameLower)) {
-      return `${name} verifies withdrawal email codes and wallet-transfer authorization before funds move.`;
-    }
-    // Legacy brand-specific descriptions were removed. Keep only domain-neutral
-    // descriptions that can be defended by capability names and structural facts.
-    return undefined;
-    // eslint-disable-next-line
-    const contextText = [
-      this.activeAnalysisProjectPath || '',
-      ...this.elementDescriptionGroundingVocabulary,
-    ].join(' ').toLowerCase();
-    if (/\bbooking\b/.test(subjectLower) && /\b(cal\.com|scheduling|calendar|availability|appointment|meeting)\b/.test(contextText)) {
-      return `${name} manages booking records, attendee state, and confirmation flow used to turn availability into scheduled meetings.`;
-    }
-    if (/\bcalendar\b/.test(subjectLower) && /\b(cal\.com|scheduling|booking|availability|appointment)\b/.test(contextText)) {
-      return `${name} links connected calendars, availability windows, and scheduling rules so booking decisions avoid conflicts.`;
-    }
-    if (/\bavailability\b/.test(subjectLower) && /\b(cal\.com|scheduling|booking|calendar)\b/.test(contextText)) {
-      return `${name} maintains availability rules, exclusions, and time-window checks that decide when someone can be booked.`;
-    }
-    if (/\bevent\b/.test(subjectLower) && /\b(cal\.com|scheduling|booking|calendar)\b/.test(contextText)) {
-      return `${name} defines the bookable event types, routing rules, and scheduling options exposed to attendees.`;
-    }
-    if (/\bdatabase\b|\bpostgres\b/.test(subjectLower) && /\b(supabase|appwrite|developer platform|backend as a service)\b/.test(contextText)) {
-      return `${name} manages project database schema, Postgres-facing configuration, and data access surfaces exposed to developers.`;
-    }
-    if (/\bstorage\b|\bbucket\b/.test(subjectLower) && /\b(supabase|appwrite|developer platform|backend as a service)\b/.test(contextText)) {
-      return `${name} maintains storage buckets, object access rules, and file metadata used by application backends.`;
-    }
-    if (/\brealtime\b|\bsubscription\b/.test(subjectLower) && /\b(supabase|appwrite|developer platform|backend as a service)\b/.test(contextText)) {
-      return `${name} coordinates realtime channels and subscription events that keep client applications synchronized.`;
-    }
-    if (/\bfunction\b|\bdeployment\b/.test(subjectLower) && /\b(supabase|appwrite|developer platform|backend as a service)\b/.test(contextText)) {
-      return `${name} manages serverless function configuration, deployment state, and execution boundaries for developer projects.`;
-    }
-    if (/\bproduct\b/.test(subjectLower) && /\b(zero trust|network access|security)\b/.test(contextText) && /\b(website|marketing|careers|contact|company|privacy)\b/.test(contextText)) {
-      return `${name} presents product pages, feature messaging, and security positioning for visitors evaluating the network-access platform.`;
-    }
-    if (/\bplatform\b/.test(subjectLower) && /\b(zero trust|network access|security)\b/.test(contextText) && /\b(website|marketing|careers|contact|company|privacy)\b/.test(contextText)) {
-      return `${name} organizes platform-facing website sections that explain the access-control product, company context, and visitor conversion paths.`;
-    }
-    if (/\bproduct\b/.test(subjectLower) && /\b(medusa|commerce|cart|checkout|inventory)\b/.test(contextText)) {
-      return `${name} maintains product catalog records, variant metadata, and merchandising state used by commerce workflows.`;
-    }
-    if (/\border\b/.test(subjectLower) && /\b(medusa|commerce|cart|checkout|inventory)\b/.test(contextText)) {
-      return `${name} tracks order lifecycle state from checkout through fulfillment, payment reconciliation, and customer-facing history.`;
-    }
-    if (/\binventory\b/.test(subjectLower) && /\b(medusa|commerce|cart|checkout|product)\b/.test(contextText)) {
-      return `${name} maintains stock levels, reservation state, and warehouse-facing availability for commerce operations.`;
-    }
-    if (/\bcart\b|\bcheckout\b/.test(subjectLower) && /\b(medusa|commerce|order|payment)\b/.test(contextText)) {
-      return `${name} preserves cart contents, checkout steps, pricing, and payment context before an order is created.`;
-    }
-    if (/\bdocument\b/.test(subjectLower) && /\b(outline|knowledge base|wiki|collection)\b/.test(contextText)) {
-      return `${name} maintains document content, revisions, sharing state, and publication workflow for the team knowledge base.`;
-    }
-    if (/\bcollection\b/.test(subjectLower) && /\b(outline|knowledge base|wiki|document)\b/.test(contextText)) {
-      return `${name} organizes documents into collection hierarchies with permissions and navigation context for knowledge-base readers.`;
-    }
-    if (/\bcomment\b/.test(subjectLower) && /\b(outline|knowledge base|wiki|document)\b/.test(contextText)) {
-      return `${name} records discussion threads and review context attached to knowledge-base documents.`;
-    }
-    if (/\bportfolio\b/.test(subjectLower)) {
-      return `${name} presents portfolio holdings, allocation history, and account-level analysis for investment workflows.`;
-    }
-    if (/\bmarket signal\b/.test(subjectLower)) {
-      return `${name} captures market indicators and strategy inputs that influence trade timing, allocation, and risk checks.`;
-    }
-    if (/\brisk limit\b/.test(subjectLower)) {
-      return `${name} defines exposure, sizing, and safety thresholds that automated trading must satisfy before execution.`;
-    }
-    if (/\bwallets?\b/.test(subjectLower)) {
-      return `${name} creates, imports, updates, and tracks wallet records used by trading and transfer workflows.`;
-    }
-    if (/\bpasskey\b/.test(subjectLower)) {
-      return `${name} manages passkey registration and verification so identity-sensitive wallet actions stay bound to the right account.`;
-    }
-    if (/\bcredential\b/.test(subjectLower)) {
-      return `${name} maintains authentication credential records and verification state used to prove identity before protected actions run.`;
-    }
-    if (/\brefresh token\b/.test(subjectLower)) {
-      return `${name} rotates and validates refresh tokens so authenticated sessions can continue without weakening account boundaries.`;
-    }
-    if (/\btransfers?\b/.test(subjectLower)) {
-      return `${name} prepares transfer actions and related records used to move assets between wallets or accounts.`;
-    }
-    if (/\bburn\b/.test(subjectLower)) {
-      return `${name} handles token burn actions and supporting request state for wallet cleanup or asset lifecycle workflows.`;
-    }
-    if (/\baddress\b/.test(subjectLower)) {
-      return `${name} maintains address book records that identify wallet destinations for transfer workflows.`;
-    }
-    if (/\bbooking\b/.test(subjectLower)) {
-      return `${name} manages venue booking state, confirmation steps, and booking-facing screens.`;
-    }
-    if (/\bgeo code\b|\bgeocode\b|\blocation\b/.test(subjectLower)) {
-      return `${name} resolves venue location context used by search, booking, or map-facing workflows.`;
-    }
-    if (/\bsign\b|\bsignup\b|\bsign up\b/.test(subjectLower)) {
-      return `${name} manages sign-in, sign-up, and account onboarding state for venue users.`;
-    }
-    if (/\blogo\b|\bbrand\b/.test(subjectLower)) {
-      return `${name} maintains brand or venue presentation assets used across customer-facing screens.`;
-    }
-    if (/\bstyle\b|\btheme\b/.test(subjectLower)) {
-      return `${name} manages visual style and theme choices used to present venue or booking experiences.`;
-    }
-    if (/\bautomation\b/.test(subjectLower)) {
-      return `${name} maintains automated investing, tax-stash, and account-sync settings that drive recurring portfolio behavior.`;
-    }
-    if (/\bassets?\b/.test(subjectLower)) {
-      return `${name} surfaces tradable assets, selections, and portfolio context used by investment screens.`;
-    }
-    if (/\b(exchange|brokerage)\b/.test(subjectLower)) {
-      return `${name} links external exchange or brokerage connections to portfolio and automation workflows.`;
-    }
-    if (/\badvisory\b/.test(subjectLower)) {
-      return `${name} organizes advisor-facing client, analytics, and portfolio review screens.`;
-    }
-    if (/\bcurrency\b/.test(subjectLower)) {
-      return `${name} normalizes currency display and conversion context across portfolio values.`;
-    }
-    if (/\bprice\b/.test(subjectLower)) {
-      if (/\bmedusa|commerce|cart|checkout|inventory|order\b/.test(contextText)) {
-        return `${name} maintains pricing lists, adjustments, and currency-aware price selection used by carts, checkout, and product catalog workflows.`;
-      }
-      return `${name} tracks price history, performance charts, and market values used by asset analysis.`;
-    }
-    if (/\bpre market rate\b/.test(subjectLower)) {
-      return `${name} evaluates pre-market rate inputs and pricing signals before automated market actions run.`;
-    }
-    if (/\bscaled market\b/.test(subjectLower)) {
-      return `${name} models scaled market inputs so trading or pricing workflows can size activity consistently.`;
-    }
-    if (/\bprofit and loss|pnl\b/.test(subjectLower)) {
-      return `${name} reports realized and unrealized profit/loss context for trading decisions and operator review.`;
-    }
-    if (/\btrading risk control\b/.test(subjectLower)) {
-      return `${name} applies risk controls around automated trading behavior, positions, and market execution decisions.`;
-    }
-    if (/\btrading\b/.test(subjectLower)) {
-      return `${name} maintains trading requests, strategy controls, and execution-facing state used by automated market workflows.`;
-    }
-    if (/\btoken launch\b/.test(subjectLower)) {
-      return `${name} monitors token launch conditions and launch-specific market signals used by trading automation.`;
-    }
-    if (/\btoken balance\b/.test(subjectLower)) {
-      return `${name} discovers token balances and wallet state used to decide trading, transfer, or portfolio behavior.`;
-    }
-    if (/\bamount\b/.test(subjectLower) && /\bsettlement\b/.test(nameLower)) {
-      return `${name} reconciles monetary amounts and settlement state so payment or invoice workflows stay consistent.`;
-    }
-    if (/\bnetwork access\b/.test(subjectLower)) {
-      return `${name} defines network access policy, connectivity, and traffic-control behavior for secured infrastructure.`;
-    }
-    if (/\bpurchase\b/.test(subjectLower)) {
-      return `${name} tracks purchase records and the operational workflows around them.`;
-    }
-    if (/\bdecision\b/.test(subjectLower)) {
-      if (/\bmusic|content|audio|filter|moderation|policy|soundsyft|cleanmusic\b/.test(contextText)) {
-        return `${name} records filtering decisions and review outcomes that determine how audio content is muted, allowed, or queued for follow-up.`;
-      }
-      return `${name} records portfolio decisions and their supporting activity details.`;
-    }
-    if (/\bprojects?\b/.test(subjectLower) && /\b(supabase|appwrite|developer platform|backend as a service)\b/.test(contextText)) {
-      return `${name} maintains developer project records and project-scoped backend configuration for databases, auth, storage, functions, and realtime APIs.`;
-    }
-    if (/\bbulk\b/.test(subjectLower) && /\bsynchron/i.test(nameLower) && /\bmusic|content|audio|soundsyft|cleanmusic\b/.test(contextText)) {
-      return `${name} batches catalog and mute-map synchronization so audio filtering data can be refreshed across devices or backend jobs.`;
-    }
-    if (/\bsoundsyft\b/.test(subjectLower) && /\bsynchron/i.test(nameLower)) {
-      return `${name} synchronizes SoundSyft catalog, transcript, and filtering state between the mobile app and backend services.`;
-    }
-    if (/\bsongs?\b/.test(subjectLower)) {
-      return `${name} maintains the song catalog, matched media metadata, and filtering status used by audio cleanup workflows.`;
-    }
-    if (/\btracks?\b/.test(subjectLower)) {
-      return `${name} maintains track metadata, audio identifiers, and processing state used to connect playback to filtering decisions.`;
-    }
-    if (/\btranscripts?\b/.test(subjectLower)) {
-      return `${name} stores transcript text and timing evidence used to identify words or sections that should be muted.`;
-    }
-    if (/\bcaption\b/.test(subjectLower)) {
-      return `${name} extracts and stores caption timing data used as a low-latency source for content filtering.`;
-    }
-    if (/\bfingerprint\b/.test(subjectLower)) {
-      return `${name} matches audio fingerprints to known tracks so the system can reuse existing mute maps instead of reprocessing audio.`;
-    }
-    if (/\bwhisper\b/.test(subjectLower)) {
-      return `${name} runs Whisper transcription paths that turn detected audio into timed text for filtering and learning workflows.`;
-    }
-    if (/\bpipeline\b/.test(subjectLower)) {
-      if (/\bmusic|content|audio|filter|moderation|soundsyft|cleanmusic|rvc|voice|vocal\b/.test(contextText)) {
-        return `${name} moves audio through detection, transcription, classification, and mute-map preparation stages.`;
-      }
-      return `${name} preserves the ordered processing stages that turn raw inputs into reviewed domain outputs.`;
-    }
-    if (/\baudio\b/.test(subjectLower) && /\brvc|voice|vocal|conversion|music|soundsyft|cleanmusic\b/.test(contextText)) {
-      return `${name} tracks audio inputs, outputs, and processing choices used by conversion, filtering, or playback workflows.`;
-    }
-    if (/\brmvpe\b/.test(subjectLower)) {
-      return `${name} extracts pitch features used by voice conversion models to preserve melody and speaker characteristics.`;
-    }
-    if (/\binfer\b|\binference\b/.test(subjectLower)) {
-      return `${name} runs model inference for voice conversion or audio transformation requests.`;
-    }
-    if (/\bonnx\b/.test(subjectLower)) {
-      return `${name} prepares ONNX model artifacts used by local audio inference and mobile-friendly processing paths.`;
-    }
-    if (/\bpredict\b/.test(subjectLower)) {
-      return `${name} produces model predictions used to transform or classify audio during processing.`;
-    }
-    if (/\buvr5\b/.test(subjectLower)) {
-      return `${name} separates vocals and instrumental stems so downstream voice conversion or cleanup can work on the right audio layer.`;
-    }
-    if (/\bhubert\b/.test(subjectLower)) {
-      return `${name} manages HuBERT feature extraction used by voice conversion model preparation and inference.`;
-    }
-    if (/\bdevice\b/.test(subjectLower) && /\baudio|voice|music|content|rvc|soundsyft|cleanmusic\b/.test(contextText)) {
-      return `${name} tracks local audio device configuration used for capture, playback, or model execution choices.`;
-    }
-    if (/\bnetwork connection control\b/.test(subjectLower)) {
-      return `${name} evaluates and applies allowed network paths so devices and gateways can reach only approved resources.`;
-    }
-    if (/\bdevice enrollment\b/.test(subjectLower)) {
-      return `${name} registers devices, agents, or gateways into the organization trust model before they can participate in access workflows.`;
-    }
-    if (/\borganization access context\b/.test(subjectLower)) {
-      return `${name} links users, groups, devices, and resources to the organization-level rules that decide access.`;
-    }
-    if (/\bsignal synchronization\b/.test(subjectLower)) {
-      return `${name} synchronizes posture, activity, or connectivity signals used to keep access decisions current.`;
-    }
-    if (/\bsocket\b/.test(subjectLower) && /\bzero|trust|network|security|access\b/.test(contextText)) {
-      return `${name} carries realtime access-control events between clients, agents, and gateways so connection state stays current.`;
-    }
-    if (/\bbackground\b/.test(subjectLower) && /\bzero|trust|network|security|access\b/.test(contextText)) {
-      return `${name} keeps long-running access, posture, or connectivity tasks synchronized while the foreground UI is inactive.`;
-    }
-    if (/\bgroups?\b/.test(subjectLower)) {
-      return `${name} maintains group membership and group-scoped access relationships used by authorization decisions.`;
-    }
-    if (/\bauth0\b/.test(subjectLower)) {
-      return `${name} maps Auth0 identity records into the local account and organization access model.`;
-    }
-    if (/\bposture\b/.test(subjectLower)) {
-      return `${name} tracks device or agent posture signals that influence whether access should be granted, reviewed, or blocked.`;
-    }
-    if (/\baccess\b/.test(subjectLower) && /\bzero|trust|network|security\b/.test(this.elementDescriptionGroundingVocabulary.join(' ').toLowerCase())) {
-      return `${name} preserves access requests, bindings, and review state used by zero-trust resource decisions.`;
-    }
-    if (/\btransfer\b/.test(subjectLower)) {
-      return `${name} maintains transfer records and ownership or state-change workflows for the surrounding product domain.`;
-    }
-    if (/\bdca\b/.test(subjectLower)) {
-      return `${name} configures dollar-cost-averaging schedules and asset allocation inputs.`;
-    }
-    if (/\btax\b/.test(subjectLower)) {
-      return `${name} maintains tax-stash configuration used by automated investment workflows.`;
-    }
-    if (/\bcontainer registry\b/.test(subjectLower)) {
-      return `${name} manages container image repositories and lifecycle policy used by application deployment pipelines.`;
-    }
-    if (/\bcontainer service\b/.test(subjectLower)) {
-      return `${name} defines container runtime services, task execution, and deployment wiring for the hosted application.`;
-    }
-    if (/\bcheckout\b/.test(subjectLower)) {
-      return `${name} routes users through subscription or purchase checkout screens.`;
-    }
-    if (/\bbilling\b/.test(subjectLower)) {
-      return `${name} manages billing records, subscription context, or payment-facing account state used by product workflows.`;
-    }
-    if (/\bidentity\b/.test(subjectLower)) {
-      return `${name} owns identity records, authentication state, and account-facing identity workflows.`;
-    }
-    if (/\bwallet\b/.test(subjectLower) && /\bwithdrawal\b/.test(subjectLower)) {
-      return `${name} verifies wallet-withdrawal email codes and protects account withdrawal flows.`;
-    }
-    if (/\bpassword\b/.test(subjectLower)) {
-      return `${name} validates password reset, credential update, and account recovery flows.`;
-    }
-    if (/\bclaims?\b/.test(subjectLower)) {
-      return `${name} maintains authorization claims used to decide user access and identity context.`;
-    }
-    if (/\bregister\b/.test(subjectLower)) {
-      return `${name} creates registration and token-enrollment records for identity onboarding.`;
-    }
-    if (/\btoken\b/.test(subjectLower) &&
-      /\b(access|refresh|oauth|session|jwt|credential|identity|auth|authentication)\b/.test(`${subjectLower} ${nameLower}`)) {
-      return `${name} manages authentication tokens and token lifecycle behavior for identity sessions.`;
-    }
-    if (/\btoken\b/.test(subjectLower)) {
-      return `${name} maintains token records, lifecycle actions, and token movement used by the surrounding product workflows.`;
-    }
+  private productSpecificCapabilityDescription(_name: string): string | undefined {
+    // DELETED: this was a hardcoded keyword/brand template builder that emitted
+    // canned capability sentences (trade execution, token balance, portfolio,
+    // exchange connection, cal.com/supabase/medusa frames, ...). Capability
+    // descriptions are AI comprehension, grounded in the evidence bundle. There
+    // is no deterministic capability-description template.
     return undefined;
   }
 

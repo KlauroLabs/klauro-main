@@ -393,10 +393,14 @@ test('workspace analysis composes completed CAS outputs without source reads', (
   assert.equal(graph.spec_version, '1.0.0');
   assert.equal(graph.composition.kind, 'interconnected-system');
   assert.equal(graph.composition.recommended_primary_view, 'system-map');
-  assert.ok(/analyzed repo\(s\)|deployable or package surfaces/.test(graph.workspace_narrative.description));
+  // Comprehension is AI-only: the synchronous WAS builder leaves the narrative
+  // description empty (a pre-AI placeholder). There is no deterministic workspace
+  // description; enrichWorkspaceAnalysisNarrative writes it, or throws.
+  assert.equal(graph.workspace_narrative.description, '');
   assert.equal(graph.workspace_narrative.ai_required, true);
   assert.equal(graph.workspace_narrative.generation_pass, 'default-summary');
   assert.equal(graph.workspace_narrative.source, 'ai-required-degraded');
+  assert.notEqual(graph.workspace_narrative.source, 'deterministic');
   assert.ok(graph.workspace_capabilities.some(capability => capability.name === 'Agent Access Brokerage' && capability.description_source === 'ai-required-degraded'));
   assert.ok(graph.workspace_entities.some(entity => entity.name === 'Agent' && entity.sensitive_fields.includes('token')));
   assert.ok(graph.workspace_entity_paths.some(entityPath => entityPath.entity_name === 'Agent' && entityPath.path_type === 'lineage'));
