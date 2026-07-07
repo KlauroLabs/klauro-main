@@ -9115,6 +9115,13 @@ export class AnalyzerOrchestrator {
       ...((structuralFacts.capabilities as string[]) || []),
       ...((structuralFacts.domainConcepts as string[]) || []),
       ...((structuralFacts.distinctiveEntities as string[]) || []),
+      // Terminal signal (the strongest domain evidence): ranked terminal
+      // entities/capabilities/stages + the weighted seed text. A description
+      // that names the domain the terminal segment implies must ground on them.
+      ...((structuralFacts.terminalOutputs as string[]) || []),
+      ...((structuralFacts.terminalCapabilities as string[]) || []),
+      ...((structuralFacts.nearTerminalStages as string[]) || []),
+      ...(structuralFacts.terminalDomainSeed ? [String(structuralFacts.terminalDomainSeed)] : []),
       // Declared dependencies and the manifest self-description are real
       // grounding facts: a description that names the domain the deps imply
       // (ccxt/web3 => "crypto") must be able to ground on them.
@@ -10638,11 +10645,22 @@ export class AnalyzerOrchestrator {
     // produce (terminal entities) and the near-terminal stages leading there,
     // so domain/description anchor on product truth instead of the plumbing
     // vocabulary (users/sessions/serialization) every codebase shares.
+    // The terminal signal is the PRIMARY distinctive-evidence source: the last
+    // segment of each journey (what it ultimately writes/produces) reveals what
+    // the app is FOR, while the generic mid-chain CRUD (Portfolio/Strategy/
+    // UsageStats) it shares with every app is down-ranked by proximity decay.
+    // For soon-lens the terminal entities are DexTrade/WhaleTransaction/
+    // OhlcvCandle/PreflightDecision (crypto). We feed the ranked terminal
+    // entities, near-terminal stages, terminal capabilities, AND the weighted
+    // domain_seed_text — all raw facts; the AI infers the domain, no label here.
     const terminalFacts = this.activeTerminalSignal && this.activeTerminalSignal.ranked_entities.length > 0
       ? {
-        terminalOutputs: this.activeTerminalSignal.ranked_entities.slice(0, 6).map(entity =>
+        terminalOutputs: this.activeTerminalSignal.ranked_entities.slice(0, 8).map(entity =>
           `${entity.name} (${entity.write_journeys > 0 ? 'written' : 'read'} by ${entity.journey_count} journeys)`),
-        nearTerminalStages: this.activeTerminalSignal.ranked_stages.slice(0, 5).map(stage => stage.name),
+        nearTerminalStages: this.activeTerminalSignal.ranked_stages.slice(0, 6).map(stage => stage.name),
+        terminalCapabilities: this.activeTerminalSignal.ranked_capabilities.slice(0, 6).map(cap => cap.name),
+        terminalDomainSeed: this.activeTerminalSignal.domain_seed_text.slice(0, 600),
+        terminalSignalInstruction: 'terminalOutputs, terminalCapabilities and terminalDomainSeed are the strongest domain evidence: they are what the product\'s journeys ultimately produce/manage (the terminal segment), which reveals what the product IS. Anchor the domain and description on these, not on generic mid-chain CRUD like Portfolio/Strategy/User/UsageStats.',
       }
       : {};
     // Artifact truth for the model: a library/client/CLI/boilerplate must be
@@ -10705,12 +10723,12 @@ export class AnalyzerOrchestrator {
       evidence_priority: [
         'productIdentity/productIdentityInstruction when present',
         'manifestDescription when present; the repo\'s own self-description is authoritative product framing',
+        'libraries — the declared dependencies are the strongest signal of what this IS (e.g. ccxt/web3/@triton-one/yellowstone-grpc => a crypto/DEX/blockchain system); infer the domain from them',
+        'distinctiveEntities — the domain-specific data shapes that define the product (e.g. DexTrade/WhaleTransaction/OhlcvCandle/AssetAnalysis); PREFER these over generic User/Account/Portfolio/Strategy CRUD, which every app has and which the entry-route journeys over-emphasize',
         'authoritativeProductFrame when present; it overrides examples, tests, docs, sample apps, and incidental code vocabulary',
         'projectTextDomain, projectTextSummary, and projectTextConcepts from human-authored repo text',
-        'libraries — the declared dependencies are the strongest signal of what this IS (e.g. ccxt/web3/@triton-one/yellowstone-grpc => a crypto/DEX/blockchain system); infer the domain from them',
-        'distinctiveEntities — the domain-specific data shapes that define the product (prefer these over generic User/Account/Portfolio/Strategy entities)',
+        'terminalOutputs, terminalCapabilities, nearTerminalStages, and terminalDomainSeed — the terminal segment of the product journeys; corroborating evidence, but note it can over-index on the generic record a chain writes (Portfolio/Strategy) rather than the domain-specific analysis it produces, so it must NOT override libraries/distinctiveEntities',
         'artifactTypeInstruction when the repo is a library, SDK, CLI, or boilerplate',
-        'terminalOutputs and nearTerminalStages because they show what journeys ultimately produce or manage',
         'capabilities and domainConcepts',
         'databaseEntities, externalServices, frameworks, and libraries',
         'deterministicOverview as a fallback only when it does not conflict with stronger evidence',

@@ -1814,6 +1814,36 @@ describe('architecture and capability inference', () => {
     expect(facts.manifestDescription).toBe('Soon Lens crypto intelligence and agent preflight API');
   });
 
+  it('feeds the terminal signal (ranked terminal entities/capabilities + domain seed) into the comprehension prompt as primary grounding', () => {
+    // The terminal signal is what journeys ultimately produce — the strongest
+    // "what is this product" evidence. It must reach the prompt facts.
+    const localOrch = new AnalyzerOrchestrator() as any;
+    localOrch.activeTerminalSignal = {
+      ranked_entities: [
+        { name: 'DexTrade', score: 9, journey_count: 4, write_journeys: 4, read_journeys: 0, user_facing_journeys: 2 },
+        { name: 'WhaleTransaction', score: 8, journey_count: 3, write_journeys: 3, read_journeys: 0, user_facing_journeys: 1 },
+        { name: 'OhlcvCandle', score: 7, journey_count: 3, write_journeys: 2, read_journeys: 1, user_facing_journeys: 1 },
+      ],
+      ranked_stages: [{ name: 'DexPricingService', score: 6, journey_count: 3, min_distance_from_terminal: 1 }],
+      ranked_capabilities: [{ name: 'DEX market pricing', score: 9, matched_terminal_entities: ['DexTrade', 'OhlcvCandle'] }],
+      domain_seed_text: 'DexTrade WhaleTransaction OhlcvCandle DexTrade DexPricingService',
+    };
+    const facts = localOrch.buildAIInterpretationFacts(
+      'soon-lens', ['nestjs'], [{ type: 'http', count: 45 }],
+      ['Strategy', 'Portfolio'], [], localOrch.emptyFlowGraph(), [], [],
+      ['ccxt', '@triton-one/yellowstone-grpc'],
+      { concepts: [], evidence: [] }, [], '',
+    );
+    expect(facts.terminalOutputs.some((o: string) => o.startsWith('DexTrade'))).toBe(true);
+    expect(facts.terminalCapabilities).toContain('DEX market pricing');
+    expect(String(facts.terminalDomainSeed)).toContain('DexTrade');
+    expect(facts.nearTerminalStages).toContain('DexPricingService');
+    // And the gate can ground a crypto/DEX description on the terminal tokens
+    // (camelCase entity names are split, so "OhlcvCandle" -> ohlcv/candle etc.).
+    const tokens = localOrch.structuralGroundingTokens(facts, ['Strategy', 'Portfolio']);
+    expect(tokens).toEqual(expect.arrayContaining(['ohlcv', 'candle', 'whale', 'pricing']));
+  });
+
   it('rejects a fabricated system-type with no supporting evidence but accepts one grounded in dependencies', () => {
     const purpose = { primary_domain: 'crypto-market-intelligence', core_concepts: ['dex', 'ohlcv', 'whale', 'pool'] };
     const grounding = {
