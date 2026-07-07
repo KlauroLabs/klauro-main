@@ -14848,16 +14848,21 @@ export class AnalyzerOrchestrator {
       const uniqueEntities = Array.from(new Map(group.entities.map(entity => [entity.id, entity])).values());
       if (uniqueNodes.length + uniqueEntities.length === 0) continue;
 
-      // A group whose only entity evidence is inbound plumbing (request-dto /
-      // value-object) and that carries no operations is not a produced
-      // capability — it is a data shape a real capability consumes. Drop it so
-      // the capability set stays anchored on outputs, not intermediate contracts.
-      const entityKindOf = (entity: CASDataEntity): CASDataEntityKind =>
-        entity.kind ?? 'value-object';
-      const terminalEntities = uniqueEntities.filter(entity => entityKindOf(entity) === 'api-response');
+      // A group whose only entity evidence is PROVEN inbound plumbing
+      // (framework evidence classified every entity as request-dto / value-object)
+      // and that carries no operations is not a produced capability — it is a data
+      // shape a real capability consumes. Drop it so the capability set stays
+      // anchored on outputs, not intermediate contracts. An entity with an
+      // unclassified kind (kind_source absent) is NOT proven plumbing: it carries
+      // real domain evidence and must survive, so the drop only fires when every
+      // entity was explicitly evidence-classified as an inbound shape.
+      const terminalEntities = uniqueEntities.filter(entity => entity.kind === 'api-response');
       const producedEntities = uniqueEntities.filter(entity =>
-        entityKindOf(entity) === 'api-response' || entityKindOf(entity) === 'persisted-entity');
-      if (uniqueEntities.length > 0 && producedEntities.length === 0 &&
+        entity.kind === 'api-response' || entity.kind === 'persisted-entity');
+      const provenInboundPlumbing = uniqueEntities.every(entity =>
+        entity.kind_source === 'framework-evidence' &&
+        (entity.kind === 'request-dto' || entity.kind === 'value-object'));
+      if (uniqueEntities.length > 0 && provenInboundPlumbing &&
         group.operations.length === 0 && uniqueNodes.length === 0) {
         continue;
       }

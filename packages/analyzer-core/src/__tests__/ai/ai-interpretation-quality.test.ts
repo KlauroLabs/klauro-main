@@ -351,7 +351,7 @@ describe('AI interpretation budgets for hosted providers', () => {
     delete process.env.KLAURO_AI_INTERPRETATION_BUDGET_MS;
 
     const spy = jest.spyOn(aiService, 'generateComponentDescription').mockResolvedValue(JSON.stringify({
-      system_description: 'A code analysis service builds CAS relationship graphs from repositories for coding agents. It exposes analysis context so agents can navigate code structure, risks, and tests before editing.',
+      system_description: 'Klauro builds CAS relationship graphs from source repositories so coding agents can reason about a codebase before touching it. It parses code into structural facts — call graphs, routes, entities, and tests — and layers comprehension over them. The pipeline resolves references, derives capabilities, and grounds every description in the evidence bundle it gathered. It is built in TypeScript and hands this analysis context to agents over MCP, keeping facts deterministic and meaning model-authored.',
       domain: '',
       descriptions: [],
     }));
