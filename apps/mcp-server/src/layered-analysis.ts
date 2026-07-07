@@ -136,7 +136,7 @@ const LAYER_DEFINITIONS: Array<{ layer: CASLayerStatus['layer']; name: string; f
   { layer: 'L5', name: 'AI enrichment', fields: ['enhanced_system_purpose', 'system_purpose.description_source'] },
 ];
 
-export function buildLayersReady(statuses: Partial<Record<CASLayerStatus['layer'], { status: 'pending' | 'ready'; completedAt?: string; durationMs?: number }>>): CASLayersReady {
+export function buildLayersReady(statuses: Partial<Record<CASLayerStatus['layer'], { status: 'pending' | 'ready' | 'error'; completedAt?: string; durationMs?: number; error?: string }>>): CASLayersReady {
   const layers: CASLayerStatus[] = LAYER_DEFINITIONS.map(def => {
     const entry = statuses[def.layer];
     return {
@@ -145,6 +145,7 @@ export function buildLayersReady(statuses: Partial<Record<CASLayerStatus['layer'
       status: entry?.status ?? 'pending',
       ...(entry?.completedAt ? { completed_at: entry.completedAt } : {}),
       ...(entry?.durationMs !== undefined ? { duration_ms: entry.durationMs } : {}),
+      ...(entry?.error ? { error: entry.error } : {}),
       fields: def.fields,
     };
   });

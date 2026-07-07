@@ -312,11 +312,14 @@ describe('buildProductMap with a minimal CAS', () => {
     expect(map.identity).toMatchObject({
       name: 'bare',
       domain: 'unknown',
-      domain_source: 'deterministic',
       description: '',
-      description_source: 'deterministic',
       unanalyzed_languages: [],
     });
+    // Comprehension is AI-only (docs/cas/DETERMINISM-BOUNDARY.md): with no AI
+    // comprehension, provenance is left UNSET — never coerced to 'deterministic'
+    // on empty output.
+    expect(map.identity.domain_source).toBeUndefined();
+    expect(map.identity.description_source).toBeUndefined();
     expect(map.identity.nested_repositories).toBeUndefined();
     expect(map.capabilities).toEqual([]);
     expect(map.journeys).toMatchObject({ total: 0, user_facing: 0, system: 0, scheduled: 0, top: [] });

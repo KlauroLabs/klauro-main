@@ -115,7 +115,11 @@ describe('capability clustering builtin token filtering', () => {
     expect(orchestrator.domainKeyFromEntryPointText('tty')).toBeUndefined();
     expect(orchestrator.domainKeyFromEntryPointText('spawn')).toBeUndefined();
     expect(orchestrator.domainKeyFromEntryPointText('fmt')).toBeUndefined();
-    expect(orchestrator.domainKeyFromEntryPointText('coordinator_keepalive')).toBe('coordinator');
+    // The full meaningful phrase is preserved rather than truncated to a
+    // single leading word ("coordinator" alone would drop "keepalive" and is
+    // the same truncation bug that produced malformed capability names like
+    // "Monte Management" from "Monte Carlo").
+    expect(orchestrator.domainKeyFromEntryPointText('coordinator_keepalive')).toBe('coordinator-keepalive');
   });
 });
 
@@ -173,7 +177,8 @@ describe('capability tokenizers reject numeric and qualifier noise', () => {
 
   it('keeps digit-led technology tokens as domain anchors', () => {
     expect(orchestrator.domainTokensFromText('enable_2fa')).toEqual(['enable', '2fa']);
-    expect(orchestrator.domainKeyFromEntryPointText('2fa_enrollment')).toBe('2fa');
+    // Full phrase preserved instead of truncated to the first token alone.
+    expect(orchestrator.domainKeyFromEntryPointText('2fa_enrollment')).toBe('2fa-enrollment');
   });
 });
 

@@ -457,9 +457,14 @@ export function buildProductMap(cas: CASOutput): CASProductMap {
     identity: {
       name: cas.system?.name || 'unknown',
       domain: purpose?.primary_domain || 'unknown',
-      domain_source: purpose?.domain_source || 'deterministic',
+      // Comprehension is AI-only (docs/cas/DETERMINISM-BOUNDARY.md): 'deterministic'
+      // is NOT a valid comprehension provenance. When AI hasn't run (or failed),
+      // the domain/description provenance is left UNSET rather than stamped
+      // 'deterministic' on empty output — never claim a deterministic authorship
+      // for a comprehension field.
+      domain_source: purpose?.domain_source,
       description: purpose?.inferred_description || cas.system?.description || '',
-      description_source: purpose?.description_source || (cas.system?.description ? 'manual' : 'deterministic'),
+      description_source: purpose?.description_source || (cas.system?.description ? 'manual' : undefined),
       unanalyzed_languages: unanalyzedLanguages,
       ...(nestedRepositories.length > 0 ? { nested_repositories: nestedRepositories } : {}),
     },

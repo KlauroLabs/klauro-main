@@ -199,8 +199,12 @@ export interface CASOutput {
    *    stored analysis; at least one element carries an 'ai' description.
    *  - 'disabled': deferred enrichment was requested but AI is not available
    *    (no provider / feature off), so no background upgrade will arrive.
+   *  - 'error': the background AI enrichment was dispatched and FAILED (the model
+   *    call or grounding gate threw). Comprehension is AI-only, so there is no
+   *    deterministic substitute — this is a visible terminal failure, NOT a
+   *    silent stay-pending. No 'ai' description was applied on this copy.
    */
-  ai_enrichment?: 'pending' | 'ready' | 'disabled' | 'synchronous';
+  ai_enrichment?: 'pending' | 'ready' | 'disabled' | 'synchronous' | 'error';
 
   /**
    * Progressive-layering manifest (see analyzer/core/layered-analysis.ts /
@@ -239,10 +243,19 @@ export interface CASOutput {
 export interface CASLayerStatus {
   layer: 'L0' | 'L1' | 'L2' | 'L3' | 'L4' | 'L5';
   name: string;
-  status: 'pending' | 'ready';
+  /**
+   * 'pending' = not landed yet; 'ready' = landed. 'error' is L5-only: the AI
+   * comprehension pass was dispatched and FAILED (model call or grounding gate
+   * threw). It exists so a stuck/failed L5 is VISIBLE — comprehension is
+   * AI-only (docs/cas/DETERMINISM-BOUNDARY.md) and must never sit 'pending'
+   * forever nor fall back to a deterministic substitute.
+   */
+  status: 'pending' | 'ready' | 'error';
   /** ISO timestamp this layer's status last changed, when known. */
   completed_at?: string;
   duration_ms?: number;
+  /** When status === 'error', the failure reason surfaced to callers. */
+  error?: string;
   fields: string[];
 }
 
@@ -923,9 +936,12 @@ export interface CASProductMap {
   identity: {
     name: string;
     domain: string;
-    domain_source: 'deterministic' | 'ai' | 'ai-refined' | 'reused';
+    // Comprehension provenance is AI-only (docs/cas/DETERMINISM-BOUNDARY.md).
+    // Left UNSET until AI runs — never coerced to 'deterministic' on empty
+    // output. ('deterministic' remains in the union only for legacy/reused rows.)
+    domain_source?: 'deterministic' | 'ai' | 'ai-refined' | 'reused';
     description: string;
-    description_source: 'deterministic' | 'ai' | 'manual' | 'reused';
+    description_source?: 'deterministic' | 'ai' | 'manual' | 'reused';
     unanalyzed_languages: Array<{ name: string; files: number; share_of_source: number }>;
     nested_repositories?: CASNestedRepository[];
   };

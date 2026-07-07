@@ -1159,9 +1159,25 @@ export async function analyzeProjectDeferred(projectPath: string, displayName?: 
     await saveAnalysis(projectPath, output);
     clearFreshnessSummaryCache();
     await saveAnalysisSnapshot(projectPath, output);
-  })).catch((error: unknown) => {
+  })).catch(async (error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
-    console.error(`[Klauro] deferred AI enrichment failed for ${projectPath} (${message}); deterministic analysis remains stored`);
+    // Comprehension is AI-only (docs/cas/DETERMINISM-BOUNDARY.md). A failed AI
+    // pass is a VISIBLE terminal state, never a silent stay-pending: mark
+    // ai_enrichment='error' and persist it so pollers see L5 failed instead of
+    // waiting forever. There is NO deterministic comprehension substitute; the
+    // Camp-B structure remains stored, comprehension fields stay unset.
+    output.ai_enrichment = 'error';
+    try {
+      await withProjectAnalysisLock(projectPath, () => withLanePermit(async () => {
+        await saveAnalysis(projectPath, output);
+        clearFreshnessSummaryCache();
+        await saveAnalysisSnapshot(projectPath, output);
+      }));
+    } catch (saveError) {
+      const saveMessage = saveError instanceof Error ? saveError.message : String(saveError);
+      console.error(`[Klauro] failed to persist ai_enrichment='error' for ${projectPath} (${saveMessage})`);
+    }
+    console.error(`[Klauro] deferred AI enrichment FAILED for ${projectPath} (${message}); marked ai_enrichment='error' (comprehension is AI-only, no deterministic substitute)`);
   });
 
   return { output, enrichment };
@@ -1271,17 +1287,34 @@ export async function analyzeProjectLayered(projectPath: string, displayName?: s
     await saveAnalysis(projectPath, deferred.output);
     clearFreshnessSummaryCache();
 
-    // If L5 is still enriching in the background, re-stamp layers_ready as
-    // fully complete once that promise resolves and re-save — mirrors
-    // analyzeProjectDeferred's own re-save-on-enrich, just adding the manifest
-    // flip alongside it so a caller polling layers_ready sees L5 flip too.
+    // If L5 is still enriching in the background, re-stamp layers_ready once
+    // that promise resolves and re-save — mirrors analyzeProjectDeferred's own
+    // re-save-on-enrich, adding the manifest flip so a caller polling
+    // layers_ready sees L5 flip too. Comprehension is AI-only
+    // (docs/cas/DETERMINISM-BOUNDARY.md): L5 flips to 'ready' on success or
+    // 'error' on a failed AI pass — it NEVER stays 'pending' forever, and the
+    // failure is surfaced visibly (never a deterministic substitute).
     const enrichment = deferred.enrichment.then(async () => {
-      if (deferred.output.ai_enrichment !== 'ready') return;
-      deferred.output.layers_ready = buildLayersReady({
-        L0: { status: 'ready' }, L1: { status: 'ready' }, L2: { status: 'ready' },
-        L3: { status: 'ready' }, L4: { status: 'ready' },
-        L5: { status: 'ready', completedAt: new Date().toISOString() },
-      });
+      const baseLayers = {
+        L0: { status: 'ready' as const }, L1: { status: 'ready' as const }, L2: { status: 'ready' as const },
+        L3: { status: 'ready' as const }, L4: { status: 'ready' as const },
+      };
+      if (deferred.output.ai_enrichment === 'ready') {
+        deferred.output.layers_ready = buildLayersReady({
+          ...baseLayers,
+          L5: { status: 'ready', completedAt: new Date().toISOString() },
+        });
+      } else if (deferred.output.ai_enrichment === 'error') {
+        // Visible terminal failure: L5 'error', not a silent stay-pending.
+        deferred.output.layers_ready = buildLayersReady({
+          ...baseLayers,
+          L5: { status: 'error', completedAt: new Date().toISOString(), error: 'AI comprehension pass failed; comprehension is AI-only (no deterministic fallback)' },
+        });
+      } else {
+        // 'disabled'/'synchronous' or nothing to enrich — leave the manifest as
+        // the restPromise already stamped it (L5 'ready' when AI isn't coming).
+        return;
+      }
       await saveAnalysis(projectPath, deferred.output);
       clearFreshnessSummaryCache();
     }).catch((error: unknown) => {

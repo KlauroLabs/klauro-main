@@ -1032,10 +1032,18 @@ describe('architecture and capability inference', () => {
       handler: { node_id: 'node-handler', method_name: 'handleInvoiceSettlement' },
     });
 
+    // Resource keys preserve the FULL meaningful phrase rather than
+    // truncating to a single leading word: dropping "settlement"/"requested"
+    // would collapse multi-word subjects like "Monte Carlo" or "Profit And
+    // Loss" into a single mid-word token and produce malformed downstream
+    // capability names (e.g. "Monte Management" instead of "Monte Carlo
+    // Analysis"). "invoice" alone would also be a lossier, less specific key.
+    // "settlement" is filtered as a generic capability/action token, so the
+    // preserved phrase is "invoice-requested" (not "invoice-settlement-requested").
     expect(cliKey).toBe('invoice');
-    expect(messageKey).toBe('invoice');
+    expect(messageKey).toBe('invoice-requested');
     expect(orch.inferResourceName({ type: 'cli' } as any, cliKey)).toBe('Invoice Commands');
-    expect(orch.inferResourceName({ type: 'message' } as any, messageKey)).toBe('Invoice Handlers');
+    expect(orch.inferResourceName({ type: 'message' } as any, messageKey)).toBe('Invoice Requested Handlers');
   });
 
   it('keeps quick descriptions focused on product capabilities', () => {
@@ -1561,8 +1569,13 @@ describe('architecture and capability inference', () => {
     for (const text of ['sortByDate', 'filterColumns', 'getChildren', 'objectKeys', 'iconForStatus', 'ngrxEffects', 'provideStoreNgrx', 'toggleDropdown', 'paginationState']) {
       expect(orch.domainKeyFromText(text)).toBeUndefined();
     }
+    // Keys preserve the full meaningful phrase instead of truncating to a
+    // single leading word — dropping "inspection" here is exactly the class
+    // of bug that produced malformed capability names elsewhere (e.g.
+    // "Monte Management" from "Monte Carlo"). "request" is filtered as a
+    // generic token, so "evidenceRequest" still reduces to "evidence".
     expect(orch.domainKeyFromText('evidenceRequest')).toBe('evidence');
-    expect(orch.domainKeyFromText('vehicleInspection')).toBe('vehicle');
+    expect(orch.domainKeyFromText('vehicleInspection')).toBe('vehicle-inspection');
   });
 
   it('does not promote UI interaction and data-fetching mechanics into product capabilities', () => {
@@ -1906,11 +1919,15 @@ describe('architecture and capability inference', () => {
   });
 
   it('uses React feature page folders before hook/library vocabulary for page capability keys', () => {
+    // The full folder-name phrase is preserved rather than truncated to its
+    // first word — "portfolio-analysis" is a more specific, correct key than
+    // "portfolio" alone (dropping "analysis" is the truncation bug that also
+    // produced malformed names like "Monte Management" from "Monte Carlo").
     expect(orch.inferResourceKey({
       type: 'page',
       name: 'PortfolioAnalysisPage',
       handler: { file: 'src/views/app/pages/portfolio-analysis/index.tsx' },
-    })).toBe('portfolio');
+    })).toBe('portfolio-analysis');
     expect(orch.inferResourceKey({
       type: 'page',
       name: 'VerifyEmailView',

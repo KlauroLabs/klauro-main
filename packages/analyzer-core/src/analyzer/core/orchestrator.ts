@@ -408,6 +408,7 @@ export class AnalyzerOrchestrator {
   private activeTerminalSignal: TerminalSignal | null = null;
   private activeArtifactType: CASArtifactType | null = null;
   private klauroSelfProjectCache: Map<string, boolean> = new Map();
+  private bundledFrontendRootsCache: Map<string, string[]> = new Map();
   /**
    * System-level grounding vocabulary (primary domain, core concepts,
    * deterministic overview) for the element description validator. Set by the
@@ -1059,8 +1060,13 @@ export class AnalyzerOrchestrator {
    * `analysis_phases`/`product_map`, sets `ai_enrichment='ready'`, and returns
    * the same (now enriched) output. Idempotent: if the output has no pending
    * enrichment (already enriched, or produced synchronously), it is returned
-   * unchanged. AI failures inside the phase are already swallowed by
-   * applyAIInterpretation, so this resolves rather than rejects in that case.
+   * unchanged.
+   *
+   * Comprehension is AI-only (docs/cas/DETERMINISM-BOUNDARY.md): applyAIInterpretation
+   * THROWS when the model call or grounding gate fails — there is no deterministic
+   * substitute. On that throw we mark `ai_enrichment='error'` (so a failed L5 is
+   * VISIBLE and never sits 'pending' forever) and RE-THROW so the caller can
+   * surface/record the failure. It is NOT swallowed here.
    */
   async enrichAnalysisAI(output: CASOutput): Promise<CASOutput> {
     const run = this.deferredAiEnrichments.get(output);
@@ -1069,7 +1075,12 @@ export class AnalyzerOrchestrator {
     }
     // Consume once — guards against a double enrich racing the same closure.
     this.deferredAiEnrichments.delete(output);
-    await run();
+    try {
+      await run();
+    } catch (error) {
+      output.ai_enrichment = 'error';
+      throw error;
+    }
     output.ai_enrichment = 'ready';
     return output;
   }
@@ -6548,6 +6559,7 @@ export class AnalyzerOrchestrator {
   private isPrimaryProductPathForProject(filePath: string, projectPath: string): boolean {
     const normalized = filePath.replace(/\\/g, '/');
     if (!normalized) return true;
+    if (this.isBundledFrontendPath(normalized, projectPath)) return false;
     if (path.isAbsolute(normalized)) {
       const relative = path.relative(projectPath, normalized).replace(/\\/g, '/');
       if (relative && !relative.startsWith('..') && !path.isAbsolute(relative)) {
@@ -9775,7 +9787,17 @@ export class AnalyzerOrchestrator {
     reason?: string,
     budgetMs?: number
   ): void {
-    enhancedSystemPurpose.description_source = source;
+    // Provenance is only stamped when a description was actually AUTHORED. A
+    // failed/rejected AI pass (status ai_failed / ai_rejected) authored NO text,
+    // so it must not claim `description_source:'ai'` over an empty description —
+    // that surfaces as "source: ai, description: ''" downstream (a lie). The
+    // attempt is still recorded via description_generation.status. Comprehension
+    // is AI-only (docs/cas/DETERMINISM-BOUNDARY.md): no source is also correct
+    // here, since there is no deterministic substitute to attribute.
+    const authored = status !== 'ai_failed' && status !== 'ai_rejected';
+    if (authored) {
+      enhancedSystemPurpose.description_source = source;
+    }
     enhancedSystemPurpose.description_generation = {
       status,
       attempted,
@@ -16021,7 +16043,7 @@ export class AnalyzerOrchestrator {
     }
 
     for (const node of nodes) {
-      if (!this.isCapabilityCandidateNode(node)) continue;
+      if (!this.isCapabilityCandidateNode(node, projectPath)) continue;
       const hasChildren = (node.children?.length || 0) > 0;
       const isTerminal = !hasChildren && (incoming.get(node.id) || 0) > 0 && (outgoing.get(node.id) || 0) <= 1;
       const isBusinessParent = hasChildren && this.isBusinessOrDomainNode(node);
@@ -16213,7 +16235,7 @@ export class AnalyzerOrchestrator {
     return true;
   }
 
-  private isCapabilityCandidateNode(node: CASNode): boolean {
+  private isCapabilityCandidateNode(node: CASNode, projectPath?: string): boolean {
     if (node.metadata?.is_test || node.metadata?.is_generated) return false;
     if (this.isInternalCapabilityHelperNode(node)) return false;
     const file = node.source?.file?.toLowerCase() || '';
@@ -16221,7 +16243,100 @@ export class AnalyzerOrchestrator {
     if (/\.(min|bundle)\.(js|css)$/.test(file)) return false;
     if (/\/lib\/(waypoints|owlcarousel|chart|easing|tempusdominus|bootstrap|jquery)\//.test(file)) return false;
     if (/\.(test|spec|stories|story)\.[a-z0-9]+$/i.test(file)) return false;
+    if (this.isBundledFrontendNode(node, projectPath)) return false;
     return this.isBusinessOrDomainNode(node);
+  }
+
+  /**
+   * Detects whether a node lives inside a vendored/bundled frontend package —
+   * a subdirectory that has ITS OWN package.json declaring a frontend UI
+   * framework (react/vue/svelte/solid/angular) plus frontend build tooling
+   * (vite/webpack/parcel/react-scripts/CRA/next/nuxt), distinct from the
+   * project's root manifest. This is evidence-based (a real manifest + real
+   * dependencies), not a folder-name guess: a repo can name this directory
+   * `ui/`, `web/`, `frontend/`, `client/`, `dashboard/`, anything — what
+   * matters is that it is its own installable package built with UI tooling.
+   * Product/domain capabilities should be grounded in backend
+   * entities/routes/services, not in the presentational component/store/hook
+   * names of a bundled UI app.
+   */
+  private isBundledFrontendNode(node: CASNode, projectPath?: string): boolean {
+    const file = (node.source?.file || '').replace(/\\/g, '/');
+    if (!file || !projectPath) return false;
+    return this.isBundledFrontendPath(file, projectPath);
+  }
+
+  private isBundledFrontendPath(filePath: string, projectPath?: string): boolean {
+    if (!projectPath) return false;
+    const file = filePath.replace(/\\/g, '/');
+    if (!file) return false;
+    const roots = this.getBundledFrontendRoots(projectPath);
+    if (roots.length === 0) return false;
+    const absoluteFile = path.isAbsolute(file) ? file : path.join(path.resolve(projectPath), file);
+    return roots.some(root => absoluteFile === root || absoluteFile.startsWith(`${root}/`));
+  }
+
+  private getBundledFrontendRoots(projectPath: string): string[] {
+    const resolvedProject = path.resolve(projectPath);
+    const cached = this.bundledFrontendRootsCache.get(resolvedProject);
+    if (cached) return cached;
+
+    const roots: string[] = [];
+    try {
+      const rootManifestPath = path.join(resolvedProject, 'package.json');
+      const rootManifestName = fs.existsSync(rootManifestPath)
+        ? this.safeReadPackageJsonName(rootManifestPath)
+        : undefined;
+
+      const entries = fs.readdirSync(resolvedProject, { withFileTypes: true });
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue;
+        if (/^(node_modules|\.git|dist|build|coverage)$/.test(entry.name)) continue;
+        const candidateDir = path.join(resolvedProject, entry.name);
+        const candidateManifestPath = path.join(candidateDir, 'package.json');
+        if (!fs.existsSync(candidateManifestPath)) continue;
+        if (this.isFrontendUiPackageManifest(candidateManifestPath, rootManifestName)) {
+          roots.push(candidateDir);
+        }
+      }
+    } catch {
+      // best-effort filesystem probe; absence of evidence just means no exclusion
+    }
+
+    this.bundledFrontendRootsCache.set(resolvedProject, roots);
+    return roots;
+  }
+
+  private safeReadPackageJsonName(manifestPath: string): string | undefined {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+      return typeof parsed?.name === 'string' ? parsed.name : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private isFrontendUiPackageManifest(manifestPath: string, rootManifestName?: string): boolean {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+      if (typeof parsed?.name === 'string' && rootManifestName && parsed.name === rootManifestName) {
+        return false;
+      }
+      const deps = {
+        ...(parsed?.dependencies || {}),
+        ...(parsed?.devDependencies || {}),
+      };
+      const depNames = Object.keys(deps);
+      const hasUiFramework = depNames.some(dep =>
+        /^(react|react-dom|vue|@vue\/.*|svelte|solid-js|@angular\/core)$/.test(dep)
+      );
+      const hasFrontendBuildTooling = depNames.some(dep =>
+        /^(vite|@vitejs\/.*|webpack|parcel|react-scripts|@craco\/craco|next|nuxt|@sveltejs\/kit)$/.test(dep)
+      );
+      return hasUiFramework && hasFrontendBuildTooling;
+    } catch {
+      return false;
+    }
   }
 
   private isInternalCapabilityHelperNode(node: CASNode): boolean {
@@ -16303,7 +16418,15 @@ export class AnalyzerOrchestrator {
   }
 
   private domainKeyFromText(text: string): string | undefined {
-    return this.domainTokensFromText(text)[0];
+    // Keep the FULL meaningful phrase (hyphen-joined), not just its first
+    // token: a subject like "Monte Carlo" or "Profit And Loss" must not
+    // collapse to a single truncated word ("monte"), which downstream naming
+    // turns into malformed capability names ("Monte Management" instead of
+    // "Monte Carlo Analysis"). Callers that need just a lookup/grouping key
+    // still get a single string; it just isn't mid-word truncated anymore.
+    const tokens = this.domainTokensFromText(text);
+    if (tokens.length === 0) return undefined;
+    return tokens.join('-');
   }
 
   private domainTokensFromText(text: string): string[] {
@@ -16466,6 +16589,37 @@ export class AnalyzerOrchestrator {
     return false;
   }
 
+  /**
+   * Appends a capability-name suffix ("Management", "Analysis", ...) to a
+   * subject label WITHOUT duplicating the head noun when the label already
+   * ends in that suffix (or a synonymous one). Without this guard, a subject
+   * whose own name is already a capability-shaped word — e.g. a label of
+   * "Analysis" (from a node/file literally named `analysis.store.ts`) — gets
+   * "Analysis" appended again, producing malformed names like
+   * "Analysis Analysis" or "Goal Alignment Analysis Analysis".
+   */
+  private appendCapabilitySuffix(label: string, suffix: string): string {
+    const trimmedLabel = label.trim();
+    const synonymGroups: string[][] = [
+      ['management', 'workflow', 'capability'],
+      ['analysis', 'analytics', 'reporting'],
+      ['synchronization', 'sync'],
+      ['authentication', 'auth'],
+      ['generation'],
+      ['settlement'],
+      ['rebalancing'],
+      ['validation'],
+      ['messaging'],
+    ];
+    const suffixGroup = synonymGroups.find(group => group.includes(suffix.toLowerCase())) || [suffix.toLowerCase()];
+    const labelWords = trimmedLabel.split(/\s+/);
+    const lastWord = (labelWords[labelWords.length - 1] || '').toLowerCase();
+    if (suffixGroup.includes(lastWord)) {
+      return trimmedLabel;
+    }
+    return `${trimmedLabel} ${suffix}`;
+  }
+
   private formatTerminalCapabilityName(
     key: string,
     label: string,
@@ -16502,33 +16656,33 @@ export class AnalyzerOrchestrator {
     if (lower === 'auth') return 'Authentication';
     if (lower === 'login') return 'Login';
     if (/\b(auth|login|session|oauth|jwt)\b/.test(`${lower} ${operationText}`)) {
-      return `${label} Authentication`;
+      return this.appendCapabilitySuffix(label, 'Authentication');
     }
     if (/\b(settle|settlement)\b/.test(operationText)) {
-      return `${label} Settlement`;
+      return this.appendCapabilitySuffix(label, 'Settlement');
     }
     if (/\b(rebalance|allocation|allocate|optimize|optimise)\b/.test(operationText)) {
-      return `${label} Rebalancing`;
+      return this.appendCapabilitySuffix(label, 'Rebalancing');
     }
     if (/\b(generate|generation|export)\b/.test(operationText) && /\b(report|document|file|feed)\b/.test(lower)) {
-      return `${label} Generation`;
+      return this.appendCapabilitySuffix(label, 'Generation');
     }
     if (/\b(sync|synchroni[sz]e|synchronization)\b/.test(operationText)) {
-      return `${label} Synchronization`;
+      return this.appendCapabilitySuffix(label, 'Synchronization');
     }
     if (/\b(analyze|analyse|analysis)\b/.test(`${lower} ${operationText}`)) {
-      return `${label} Analysis`;
+      return this.appendCapabilitySuffix(label, 'Analysis');
     }
     if (/\b(report|analytics|metric|insight)\b/.test(`${lower} ${operationText}`)) {
-      return `${label} Reporting`;
+      return this.appendCapabilitySuffix(label, 'Reporting');
     }
     if (operations.some(operation => /(^|\/)(entity|entities|model|models|controller|controllers)(\/|$)/i.test(operation.path_or_command || ''))) {
-      return `${label} Management`;
+      return this.appendCapabilitySuffix(label, 'Management');
     }
     if (/\b(payment|billing|invoice|transaction|card|employee|profile|organization|resource)\b/.test(lower) || entities.length > 0 || operations.length > 1) {
-      return `${label} Management`;
+      return this.appendCapabilitySuffix(label, 'Management');
     }
-    return `${label} Capability`;
+    return this.appendCapabilitySuffix(label, 'Capability');
   }
 
   private formatDomainCapabilityName(
@@ -16557,23 +16711,23 @@ export class AnalyzerOrchestrator {
     if (/^(pnl|p-l|profit-loss|profit-and-loss)$/.test(key)) return 'Profit And Loss Reporting';
 
     const label = fallbackLabel
-      .replace(/\b(Commands|Handlers|Tasks|Management|Capability)\b/g, '')
+      .replace(/\b(Commands|Handlers|Tasks|Management|Capability|Workflow|Analysis|Analytics|Reporting|Synchronization|Sync|Authentication|Generation|Settlement|Rebalancing|Validation|Messaging)\b/g, '')
       .replace(/\s+/g, ' ')
       .trim() || this.humanizeDomainKey(key);
 
     if (/\b(auth|login|logout|session|oauth|jwt|password|token)\b/.test(operationText)) return 'Authentication';
-    if (/\b(settle|settlement)\b/.test(operationText)) return `${label} Settlement`;
-    if (/\b(rebalance|allocation|allocate|optimi[sz]e)\b/.test(operationText)) return `${label} Rebalancing`;
-    if (/\b(report|analytics|analysis|metric|insight)\b/.test(operationText)) return `${label} Reporting`;
-    if (/\b(generate|export|render)\b/.test(operationText)) return `${label} Generation`;
+    if (/\b(settle|settlement)\b/.test(operationText)) return this.appendCapabilitySuffix(label, 'Settlement');
+    if (/\b(rebalance|allocation|allocate|optimi[sz]e)\b/.test(operationText)) return this.appendCapabilitySuffix(label, 'Rebalancing');
+    if (/\b(report|analytics|analysis|metric|insight)\b/.test(operationText)) return this.appendCapabilitySuffix(label, 'Reporting');
+    if (/\b(generate|export|render)\b/.test(operationText)) return this.appendCapabilitySuffix(label, 'Generation');
     if (/\b(sync|synchroni[sz]e|replicate|mirror)\b/.test(operationText)) {
       if (/^(sync|synchroni[sz]e|replicate|mirror)$/i.test(label)) return 'Data Synchronization';
-      return `${label} Synchronization`;
+      return this.appendCapabilitySuffix(label, 'Synchronization');
     }
-    if (/\b(validate|verify|check)\b/.test(operationText)) return `${label} Validation`;
-    if (/\b(send|publish|notify|message|event)\b/.test(operationText)) return `${label} Messaging`;
-    if (entityCount > 0 || operations.length > 1) return `${label} Management`;
-    return `${label} Workflow`;
+    if (/\b(validate|verify|check)\b/.test(operationText)) return this.appendCapabilitySuffix(label, 'Validation');
+    if (/\b(send|publish|notify|message|event)\b/.test(operationText)) return this.appendCapabilitySuffix(label, 'Messaging');
+    if (entityCount > 0 || operations.length > 1) return this.appendCapabilitySuffix(label, 'Management');
+    return this.appendCapabilitySuffix(label, 'Workflow');
   }
 
   private isKlauroSelfProject(projectPath?: string): boolean {
@@ -16996,7 +17150,13 @@ export class AnalyzerOrchestrator {
       return 'auth';
     }
     if (tokens.length === 0) return undefined;
-    return tokens.find(token => !/^(app|bin|console|command|event|message|handler|handlers)$/.test(token)) || tokens[0];
+    const meaningfulTokens = tokens.filter(token => !/^(app|bin|console|command|event|message|handler|handlers)$/.test(token));
+    const startIndex = tokens.findIndex(token => meaningfulTokens.includes(token));
+    // Preserve the FULL meaningful phrase, not just its first word: a subject
+    // like "Monte Carlo" or "Profit And Loss" must not collapse to a single
+    // truncated token ("monte"), which downstream naming turns into malformed
+    // capability names ("Monte Management" instead of "Monte Carlo Analysis").
+    return (startIndex >= 0 ? tokens.slice(startIndex) : tokens).join('-');
   }
 
   private inferResourceName(ep: CASEntryPoint, resourceKey: string): string {
