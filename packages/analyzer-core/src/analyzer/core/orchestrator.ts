@@ -18520,12 +18520,23 @@ export class AnalyzerOrchestrator {
    * `return_authorization`. Single-token patterns may also match a join of
    * two or more adjacent tokens ("viewmodel" matches `MuscleTestViewModel`).
    */
+  // Pattern-tokenization cache: matchesSignalPattern is called millions of times
+  // per run (nodes x ~40 signatures x patterns) with a CONSTANT set of pattern
+  // strings, yet re-ran `toLowerCase().split(/[^a-z0-9]+/).map(singularize)` every
+  // call — the split regex was hot in the CPU profile (748ms self-time). The
+  // tokenization is a pure function of `pattern`, so memoize by the pattern string:
+  // identical output, just skips the repeated regex + tokenize.
+  private readonly signalPatternTokenCache = new Map<string, string[]>();
   private matchesSignalPattern(rawTokens: string[], pattern: string): boolean {
-    const patternTokens = pattern
-      .toLowerCase()
-      .split(/[^a-z0-9]+/)
-      .filter(Boolean)
-      .map(token => this.singularizeSignalToken(token));
+    let patternTokens = this.signalPatternTokenCache.get(pattern);
+    if (patternTokens === undefined) {
+      patternTokens = pattern
+        .toLowerCase()
+        .split(/[^a-z0-9]+/)
+        .filter(Boolean)
+        .map(token => this.singularizeSignalToken(token));
+      if (this.signalPatternTokenCache.size < 20000) this.signalPatternTokenCache.set(pattern, patternTokens);
+    }
     if (patternTokens.length === 0) return false;
     const tokens = rawTokens.map(token => this.singularizeSignalToken(token));
     for (let i = 0; i + patternTokens.length <= tokens.length; i++) {
