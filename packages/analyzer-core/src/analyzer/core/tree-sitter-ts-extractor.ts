@@ -50,6 +50,23 @@ function getRootNode(tree: any): any {
   return root;
 }
 
+/**
+ * Deterministic identity comparison for two tree-sitter nodes.
+ *
+ * The native tree-sitter binding does NOT guarantee a single persistent JS
+ * wrapper object per underlying node — repeated accessors (`.parent`,
+ * `childForFieldName`, `namedChild`) may hand back freshly-allocated wrappers
+ * for the very same node, so `a === b` is unreliable and, worse, its result can
+ * differ run-to-run depending on wrapper allocation/GC timing. Every node
+ * exposes a stable numeric `id` (the underlying node address) which IS a true
+ * identity, so compare on that. Guards against null/undefined so callers can
+ * pass a possibly-absent `childForFieldName(...)` result directly.
+ */
+function nodeIdEquals(a: any, b: any): boolean {
+  if (!a || !b) return false;
+  return a.id === b.id;
+}
+
 function getGrammar(filePath: string): any {
   loadParser();
   if (filePath.endsWith('.tsx') || filePath.endsWith('.jsx')) {
@@ -700,7 +717,11 @@ export class TreeSitterTSExtractor {
     const returnType = func.childForFieldName('return_type') ||
                        this.findFirst(func, 'type_annotation');
 
-    if (returnType && returnType.parent === func) {
+    // Compare by stable node id, not object identity — `.parent` may return a
+    // freshly-allocated wrapper for the same node, making `===` nondeterministic
+    // across processes (see nodeIdEquals). A spurious mismatch here would drop
+    // the return type run-to-run.
+    if (returnType && nodeIdEquals(returnType.parent, func)) {
       return this.extractTypeText(returnType);
     }
     return undefined;
@@ -973,8 +994,18 @@ export class TreeSitterTSExtractor {
 
     // Already captured as a real call/constructor edge by extractCall/extractCalls —
     // don't double-record the same site as a 'reference' too.
-    if (parent.type === 'call_expression' && parent.childForFieldName('function') === idNode) return null;
-    if (parent.type === 'new_expression' && parent.childForFieldName('function') === idNode) return null;
+    //
+    // Compare tree-sitter nodes by their stable numeric `id`, NOT by object
+    // identity (`===`). The native binding does not guarantee a single persistent
+    // JS wrapper per underlying node: a fresh access (here `childForFieldName`)
+    // can return a newly-allocated wrapper for the same node, so `===` is
+    // nondeterministic across processes (it depends on wrapper GC/allocation
+    // timing). When `===` spuriously fails on a genuine call callee, the call
+    // site leaks in as a bogus `references` edge, flipping the edge set run-to-run
+    // (Camp-B determinism defect). `id` is the underlying node identity and is
+    // stable, so this exclusion is now deterministic. See `nodeIdEquals`.
+    if (parent.type === 'call_expression' && nodeIdEquals(parent.childForFieldName('function'), idNode)) return null;
+    if (parent.type === 'new_expression' && nodeIdEquals(parent.childForFieldName('function'), idNode)) return null;
     // Import specifier / declaration positions are bindings, not reads.
     if (parent.type === 'import_specifier' || parent.type === 'import_clause' ||
         parent.type === 'namespace_import') return null;

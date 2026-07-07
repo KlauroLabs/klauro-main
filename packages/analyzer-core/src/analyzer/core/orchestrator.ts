@@ -81,6 +81,7 @@ import {
 } from '../../types/cas.types';
 import { classifyArtifactType, artifactLedDomainLabel, collectArtifactManifestSignal, APP_FRAMEWORK_MARKERS, type ArtifactTypeResult } from './artifact-type';
 import { collectDeployableEvidence } from './deployable-evidence';
+import { buildDependencyManifest } from './dependency-manifest';
 import { classifyCodebaseTypes } from './codebase-type';
 import { applyConventions, type KlauroConventionsInput } from './conventions-applier';
 import { linkInfraTopology } from './infra-topology-linker';
@@ -1567,6 +1568,22 @@ export class AnalyzerOrchestrator {
 
     phaseStart = Date.now();
     const unanalyzedLanguages = this.scanUnanalyzedLanguages(projectPath);
+    // Full declared-dependency manifest (Camp-B FACT): every dependency name
+    // across every package.json/requirements/Cargo/go.mod/pyproject under the
+    // root, not just the framework subset the library detectors recognize. Raw
+    // facts only — interpretation of what a dependency means is the AI pass's
+    // job, which now receives these names as grounding (see below).
+    const dependencyManifest = buildDependencyManifest(projectPath);
+    logTiming('pp_dependencyManifest', phaseStart);
+    // Union of the analyzer-recognized library names with the FULL declared
+    // manifest, so the AI comprehension prompt sees the defining dependencies
+    // (e.g. ccxt/web3) even when no dedicated detector recognizes them. Names
+    // only; the model interprets meaning.
+    const dependencyNamesForAI = Array.from(new Set([
+      ...this.libraryNamesForInterpretation(allLibraries),
+      ...((dependencyManifest?.dependencies || []).map(dep => dep.name)),
+    ]));
+    phaseStart = Date.now();
     const nestedRepositories = await this.describeNestedRepositories(projectPath);
 
     // The single blocking AI phase, wrapped so it can run inline (default) or be
@@ -1587,7 +1604,7 @@ export class AnalyzerOrchestrator {
         domainConcepts,
         systemCapabilities,
         unanalyzedLanguages,
-        this.libraryNamesForInterpretation(allLibraries),
+        dependencyNamesForAI,
         dataEntities,
         projectTextSignal,
         userJourneyResult.journeys
@@ -1699,7 +1716,7 @@ export class AnalyzerOrchestrator {
         type: this.determineSystemType(allNodes) as 'monorepo' | 'application' | 'library' | 'service' | 'package',
         root_path: projectPath,
         technologies: {
-          ...this.extractTechnologies(contributions, allLibraries),
+          ...this.extractTechnologies(contributions, allLibraries, projectPath),
           unanalyzed_languages: unanalyzedLanguages,
           ...(nestedRepositories.length > 0 ? { nested_repositories: nestedRepositories } : {}),
         },
@@ -1729,6 +1746,7 @@ export class AnalyzerOrchestrator {
       repository_links: repositoryLinks.length > 0 ? repositoryLinks : undefined,
       cross_repository_links: repositoryLinks.length > 0 ? repositoryLinks : undefined,
       libraries: allLibraries.length > 0 ? allLibraries : undefined,
+      dependency_manifest: dependencyManifest,
       analyzer_contributions: contributions,
       progressive_levels: progressiveLevels,
       intents: intents.length > 0 ? intents : undefined,
@@ -5635,7 +5653,7 @@ export class AnalyzerOrchestrator {
     return files.size;
   }
 
-  private extractTechnologies(contributions: any[], libraries: any[]): any {
+  private extractTechnologies(contributions: any[], libraries: any[], projectPath?: string): any {
     const languages = new Map<string, { count: number; files: number; percentage?: number }>();
     const frameworks = new Map<string, { version?: string; confidence: number }>();
 
@@ -5663,22 +5681,119 @@ export class AnalyzerOrchestrator {
       }
     });
 
-    const totalNodes = Array.from(languages.values()).reduce((sum, l) => sum + l.count, 0);
+    // Language MIX and PRIMARY-language ranking are a source-byte fact, not an
+    // AST-node-count artifact. Node counts vary wildly per language/analyzer — a
+    // template or markup analyzer can emit thousands of tiny nodes and outrank
+    // the real primary language (the historic `[shell,html,css,glimmer]`-over-
+    // TypeScript failure). We therefore rank + weight languages by real bytes on
+    // disk when we can map an analyzer's language to source extensions, falling
+    // back to node counts only for languages with no byte signal (so nothing
+    // that the analyzers reported ever vanishes).
+    const byteByLanguage = projectPath ? this.scanSourceBytesByLanguage(projectPath) : new Map<string, number>();
+    const weightFor = (name: string, nodeCount: number): number => {
+      const bytes = byteByLanguage.get(this.normalizeLanguageNameForBytes(name));
+      return typeof bytes === 'number' && bytes > 0 ? bytes : nodeCount;
+    };
+    const totalWeight = Array.from(languages.entries())
+      .reduce((sum, [name, l]) => sum + weightFor(name, l.count), 0);
     languages.forEach((value, key) => {
-      value.percentage = totalNodes > 0 ? (value.count / totalNodes) * 100 : 0;
+      value.percentage = totalWeight > 0 ? (weightFor(key, value.count) / totalWeight) * 100 : 0;
     });
 
     return {
-      languages: Array.from(languages.entries()).map(([name, data]) => ({
-        name,
-        percentage: data.percentage,
-        files: data.files
-      })),
+      languages: Array.from(languages.entries())
+        .map(([name, data]) => ({
+          name,
+          percentage: data.percentage,
+          files: data.files,
+          weight: weightFor(name, data.count),
+        }))
+        // Primary language first: highest source-byte share, stable tie-break by name.
+        .sort((a, b) => b.weight - a.weight || a.name.localeCompare(b.name))
+        .map(({ name, percentage, files }) => ({ name, percentage, files })),
       frameworks: Array.from(frameworks.entries()).map(([name, data]) => ({
         name,
         confidence: data.confidence
       }))
     };
+  }
+
+  /**
+   * Maps CAS analyzer language names to the source-byte key used by
+   * scanSourceBytesByLanguage. Language analyzers report combined or descriptive
+   * names ("TypeScript/JavaScript") while the byte scan keys by concrete family
+   * ("TypeScript"). Returning the same family key for both makes the byte lookup
+   * hit. Names with no known byte mapping return the name unchanged (byte lookup
+   * misses -> node-count fallback in extractTechnologies), which is correct for
+   * non-source analyzers (Docker Compose, Kubernetes Manifest, etc.).
+   */
+  private normalizeLanguageNameForBytes(name: string): string {
+    const lower = name.toLowerCase();
+    if (lower.includes('typescript') || lower.includes('javascript')) return 'TypeScript/JavaScript';
+    if (lower.startsWith('python')) return 'Python';
+    if (lower.startsWith('go')) return 'Go';
+    if (lower.startsWith('rust')) return 'Rust';
+    if (lower.startsWith('java') && !lower.includes('javascript')) return 'Java';
+    if (lower.startsWith('c#') || lower.includes('csharp')) return 'C#';
+    if (lower.startsWith('ruby')) return 'Ruby';
+    if (lower.startsWith('php')) return 'PHP';
+    if (lower.startsWith('shell') || lower.startsWith('bash')) return 'Shell/Bash';
+    return name;
+  }
+
+  /**
+   * Real source-byte distribution by language family, from a bounded filesystem
+   * walk of the project. This is the authoritative signal for language MIX and
+   * PRIMARY-language ranking — a deterministic Camp-B fact (same tree -> same
+   * bytes). Repo-agnostic: keyed purely off file extension -> language family,
+   * no repo/brand knowledge. Extensions not mapped here contribute no bytes and
+   * simply fall back to their analyzer node count in the caller.
+   */
+  private scanSourceBytesByLanguage(projectPath: string): Map<string, number> {
+    const extToFamily: Record<string, string> = {
+      ts: 'TypeScript/JavaScript', tsx: 'TypeScript/JavaScript',
+      js: 'TypeScript/JavaScript', jsx: 'TypeScript/JavaScript',
+      mjs: 'TypeScript/JavaScript', cjs: 'TypeScript/JavaScript',
+      py: 'Python', pyi: 'Python',
+      go: 'Go', rs: 'Rust', java: 'Java', kt: 'Kotlin', kts: 'Kotlin',
+      cs: 'C#', rb: 'Ruby', erb: 'Ruby', php: 'PHP', dart: 'Dart',
+      swift: 'Swift', scala: 'Scala', ex: 'Elixir', exs: 'Elixir',
+      c: 'C', h: 'C', cpp: 'C++', cc: 'C++', hpp: 'C++',
+      sh: 'Shell/Bash', bash: 'Shell/Bash', sol: 'Solidity',
+    };
+    const ignored = new Set([
+      'node_modules', 'dist', 'build', 'out', 'coverage', 'vendor', 'vendors',
+      'target', '.git', '.next', '.turbo', '.cache', '.terraform', '__pycache__',
+      'venv', '.venv', 'env',
+    ]);
+    const bytes = new Map<string, number>();
+    const stack: Array<{ dir: string; depth: number }> = [{ dir: projectPath, depth: 0 }];
+    while (stack.length > 0) {
+      const { dir, depth } = stack.pop()!;
+      if (depth > 8) continue;
+      let entries: fs.Dirent[];
+      try {
+        entries = fs.readdirSync(dir, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+      for (const entry of entries) {
+        if (entry.isDirectory()) {
+          if (entry.name.startsWith('.') || ignored.has(entry.name)) continue;
+          stack.push({ dir: path.join(dir, entry.name), depth: depth + 1 });
+          continue;
+        }
+        if (!entry.isFile()) continue;
+        const ext = entry.name.split('.').pop()?.toLowerCase() || '';
+        const family = extToFamily[ext];
+        if (!family) continue;
+        try {
+          const size = fs.statSync(path.join(dir, entry.name)).size;
+          bytes.set(family, (bytes.get(family) || 0) + size);
+        } catch { /* unreadable file: skip */ }
+      }
+    }
+    return bytes;
   }
 
   private extractFrameworksFromSpec(
@@ -10903,7 +11018,13 @@ export class AnalyzerOrchestrator {
     return {
       systemName,
       frameworks: narrativeFrameworks,
-      libraries: libraryNames.slice(0, 12),
+      // The full declared-dependency manifest is threaded in here as raw grounding
+      // (see dependencyNamesForAI). A tiny alphabetical cap silently dropped the
+      // DEFINING dependencies (a repo depending on ccxt/web3 lost them because
+      // they sort past the first 12), leaving the model to write domain identity
+      // from thin air. Surface the full list — it is fact grounding, not prose —
+      // capped only high enough to bound prompt size for pathological manifests.
+      libraries: libraryNames.slice(0, 200),
       allowedFrameworks: narrativeFrameworks.length > 0 ? narrativeFrameworks : ['none detected'],
       forbiddenFrameworkInstruction: narrativeFrameworks.length > 0
         ? 'Mention only frameworks in allowedFrameworks or packages in libraries. If allowedFrameworks says mixed monorepo, do not list individual frameworks in the narrative.'

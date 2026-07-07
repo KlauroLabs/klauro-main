@@ -158,6 +158,20 @@ export interface CASOutput {
   consistency_model?: import('../analyzer/core/consistency-model').ConsistencyModelResult;
 
   libraries?: CASLibrary[];
+
+  /**
+   * Full declared-dependency manifest (Camp-B structural FACT), extracted
+   * repo-agnostically from every package.json / requirements*.txt / Cargo.toml /
+   * go.mod / pyproject.toml under the project root. This is the COMPLETE list of
+   * declared dependency names, not just the subset the framework/library
+   * detectors recognize (`libraries` above). It is a fact bundle only — raw
+   * names + which manifest declared them + the scope (runtime/dev/peer/optional).
+   * No interpretation of what a dependency MEANS lives here; that is the AI
+   * comprehension pass's job, which reads these facts as grounding. Absent when
+   * no manifest files are found. See buildDependencyManifest() in orchestrator.ts.
+   */
+  dependency_manifest?: CASDependencyManifest;
+
   progressive_levels: CASProgressiveLevels;
   configuration?: CASConfiguration;
   runtime?: CASRuntime;
@@ -1272,6 +1286,38 @@ export interface CASLibrary {
     auto_updatable?: boolean;
     breaking_changes_risk?: string;
   };
+}
+
+/**
+ * Full declared-dependency manifest — a Camp-B structural FACT (see
+ * CASOutput.dependency_manifest). Every declared dependency name across every
+ * manifest file in the repo, with the manifest that declared it and the scope.
+ * Raw facts only: no meaning, category, or interpretation is attached here.
+ */
+export interface CASDependencyManifest {
+  /** Manifest files scanned, project-relative (e.g. "package.json",
+   *  "blockchains/package.json", "requirements.txt"), sorted. */
+  manifests: string[];
+  /** Deduped dependency names across all manifests, sorted, each with the
+   *  ecosystem, declaring manifest(s), scope(s), and declared version range
+   *  when the manifest records one. */
+  dependencies: CASDeclaredDependency[];
+  /** Count of distinct dependency names (== dependencies.length; convenience). */
+  total: number;
+}
+
+export interface CASDeclaredDependency {
+  /** Raw package name exactly as declared (e.g. "ccxt", "web3",
+   *  "@solana/web3.js", "requests"). No normalization of meaning. */
+  name: string;
+  /** Package ecosystem the declaring manifest belongs to. */
+  ecosystem: 'npm' | 'pypi' | 'cargo' | 'go' | 'unknown';
+  /** Declared version / range when the manifest records one (npm/cargo/pypi). */
+  version?: string;
+  /** Dependency scope(s) this name was declared under, across manifests. */
+  scopes: Array<'runtime' | 'dev' | 'peer' | 'optional' | 'build'>;
+  /** Manifest file(s) that declared this dependency, project-relative, sorted. */
+  declared_in: string[];
 }
 
 export interface CASAnalyzerContribution {

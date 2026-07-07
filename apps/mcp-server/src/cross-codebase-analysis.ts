@@ -10404,6 +10404,7 @@ function resolveDeployables(applications: SystemApplication[], repositories: Cro
     // Evidence-gated: only demotes when >= 2 OTHER apps are positively
     // named; a real standalone service whose own Dockerfile happens to
     // mention one sibling path is unaffected.
+    const demotedAsPackagingArtifact = new Set<string>();
     for (const app of appsForRepo) {
       if (app.bundled_into || rootBundleTargets.has(app.id)) continue;
       const resolution = resolutions.get(app.id);
@@ -10417,6 +10418,7 @@ function resolveDeployables(applications: SystemApplication[], repositories: Cro
       );
       if (namedSiblings.size < 2) continue;
       app.deployable = false;
+      demotedAsPackagingArtifact.add(app.id);
       app.boundary_evidence = mergeStrings(app.boundary_evidence || [], [
         'packaging-artifact-not-own-deployable:ships-paths-name-multiple-sibling-apps',
         ...resolution.evidence,
@@ -10428,8 +10430,31 @@ function resolveDeployables(applications: SystemApplication[], repositories: Cro
       if (app.bundled_into) continue; // already resolved by the root-bundle pass above
       const resolution = resolutions.get(app.id);
       if (!resolution) continue;
-      if (!app.deployable) continue; // demoted above: packaging artifact, not a deployable in its own right
+      if (!app.deployable && demotedAsPackagingArtifact.has(app.id)) continue; // demoted above: packaging artifact, not a deployable in its own right
       if (resolution.tier === 1 || rootBundleTargets.has(app.id)) {
+        // TIER-1-OVERRIDES-FOLDER-PRIOR (spec SPEC-DEPLOYABLE-DETECTION.md
+        // §2/§3): a self-anchored Tier-1 ship artifact (a Dockerfile/compose-
+        // service/k8s-manifest/installer/CI-deploy job that names THIS app
+        // specifically, not a fuzzy containment match spanning several
+        // sibling artifacts) is real, positive ship evidence and must win
+        // over the Tier-4 packages/crates/libs folder-prior veto baked into
+        // isDeployableApplication()/isPackagePathHint() upstream. Without
+        // this, a monorepo whose real ship units happen to live under a
+        // `packages/*` workspace glob (a name choice, not a library/app
+        // distinction — e.g. a pnpm workspace with `"workspaces": ["packages/*"]`
+        // where packages/backend and packages/frontend each have their own
+        // Dockerfile and their own docker-compose service) stays permanently
+        // deployable:false, because nothing else in this resolver ever
+        // promotes deployable back to true. Only promotes on a self-anchored
+        // match — the fuzzy containment fallback can merge evidence across
+        // unrelated sibling artifacts sharing one root_path and is not safe
+        // to treat as this app's own ship declaration.
+        if (!app.deployable && resolution.selfAnchored) {
+          app.deployable = true;
+          app.boundary_evidence = mergeStrings(app.boundary_evidence || [], [
+            'tier-1-overrides-folder-prior:self-anchored-ship-artifact-outranks-packages-crates-libs-default',
+          ]);
+        }
         const rootBundle = rootBundleTargets.get(app.id);
         app.boundary_evidence = mergeStrings(app.boundary_evidence || [], [
           `tier-1-deployable:${resolution.kind}`,
