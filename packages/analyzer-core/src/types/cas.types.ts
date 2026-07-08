@@ -3075,6 +3075,26 @@ export interface CASStabilitySummary {
 export interface SystemCapability {
   id: string;
   name: string;
+  /**
+   * Provenance of `name`. A capability NAME asserts what the capability DOES /
+   * MEANS for consumers — that is COMPREHENSION, produced only by AI (or a
+   * curated `manual` map, or `reused` incremental carry-forward), never by a
+   * deterministic keyword→label template (see docs/cas/DETERMINISM-BOUNDARY.md).
+   * When comprehension has not yet run, `name_source` is left UNSET and `name`
+   * holds a terminal-evidence-grounded structural placeholder (see
+   * `structural_label`) awaiting the AI naming pass — it is never a fabricated
+   * "<Domain> Management/Analysis/…" claim about behavior.
+   */
+  name_source?: 'ai' | 'manual' | 'reused';
+  name_generation?: CASDescriptionGeneration;
+  /**
+   * Deterministic FACT label for this capability: the humanized domain key
+   * anchored on the terminal (api-response / persisted) entities it produces.
+   * Pure Camp-B structure — used for dedup, grouping, and the structural
+   * quality gates. Unlike `name`, it makes no interpretive claim about behavior
+   * and is stable run-to-run. `name` may equal this before the AI naming pass.
+   */
+  structural_label?: string;
   description: string;
   description_source?: 'deterministic' | 'ai' | 'manual' | 'reused';
   description_generation?: CASDescriptionGeneration;

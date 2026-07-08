@@ -8610,6 +8610,10 @@ export class AnalyzerOrchestrator {
       out.push({
         id: `capability_${key.replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '')}`,
         name,
+        // The catalog NAME is AI-authored comprehension, grounded in journeys +
+        // entities — the correct source for a capability's user-facing name.
+        name_source: 'ai',
+        name_generation: { status: 'ai_applied', attempted: true, generated_at: new Date().toISOString() },
         description,
         description_source: 'ai',
         description_generation: { status: 'ai_applied', attempted: true, generated_at: new Date().toISOString() },
@@ -12346,7 +12350,23 @@ export class AnalyzerOrchestrator {
       };
     }
 
-    return entities;
+    // Deflate the surfaced entity set to the product's real DOMAIN objects using
+    // the deterministic KIND fact (framework evidence, never name/casing). The
+    // domain surface is what the system PERSISTS (persisted-entity) and what it
+    // PRODUCES for consumers (api-response). Inbound request-dto contracts and
+    // internal value-object plumbing shapes are real code but not domain entities;
+    // in DTO-heavy frameworks (NestJS + class-validator, FastAPI, gRPC) they vastly
+    // outnumber the domain objects and inflate the count (soon-lens: 202). Every
+    // entity is kind-tagged above (tagDataEntityKind on both the ORM and DTO paths),
+    // so this filter — not the earlier kind ranking, which only ORDERS — is what
+    // makes the tagging actually reduce the count. Undefined kind (no discriminating
+    // evidence) is treated as domain to avoid dropping genuine shapes on thin
+    // evidence. If a codebase has zero persisted/api-response shapes, keep the full
+    // ranked set rather than blank the entity model.
+    const domainEntities = entities.filter(
+      entity => entity.kind === 'persisted-entity' || entity.kind === 'api-response' || entity.kind == null
+    );
+    return domainEntities.length > 0 ? domainEntities : entities;
   }
 
   /**
@@ -14138,12 +14158,26 @@ export class AnalyzerOrchestrator {
       const category = this.inferCapabilityCategory(group.entryPoints, resourceKey);
 
       const relatedNodes = productNodes.filter(node => relatedNodeIds.has(node.id));
-      const capabilityName = this.formatDomainCapabilityName(resourceKey, group.name, operations, relatedEntities.length, projectPath, relatedNodes);
+      // Deterministic STRUCTURAL label (fact) — seeds the id and grounds the
+      // description. The invented "<Domain> Management/…" behavior suffix stays
+      // here for stability but is stripped from the shipped display name.
+      const structuralLabel = this.formatDomainCapabilityName(resourceKey, group.name, operations, relatedEntities.length, projectPath, relatedNodes);
+      // DISPLAY NAME = terminal-evidence-grounded placeholder (fact), overwritten
+      // by the AI naming pass with an AI-authored name (name_source:'ai').
+      const capabilityName = this.terminalGroundedCapabilityName(structuralLabel, resourceKey, relatedEntities, projectPath);
 
       capabilities.push({
-        id: nextCapabilityId({ name: capabilityName, related_domains: [resourceKey] }),
+        id: nextCapabilityId({ name: structuralLabel, related_domains: [resourceKey] }),
         name: capabilityName,
-        description: this.generateCapabilityDescription(capabilityName, operations, relatedEntities, group.entryPoints),
+        name_source: undefined,
+        name_generation: {
+          status: 'ai_skipped',
+          reason: 'awaiting-ai-comprehension',
+          attempted: false,
+          generated_at: new Date().toISOString(),
+        },
+        structural_label: structuralLabel,
+        description: this.generateCapabilityDescription(structuralLabel, operations, relatedEntities, group.entryPoints),
         description_source: undefined,
         description_generation: {
           status: 'ai_skipped',
@@ -14883,33 +14917,50 @@ export class AnalyzerOrchestrator {
           path_or_command: node.source?.file,
         }));
       const category = this.inferTerminalCapabilityCategory(key, uniqueNodes, uniqueEntities);
-      const capabilityName = this.formatTerminalCapabilityName(key, group.label, operations, uniqueEntities, projectPath, uniqueNodes);
-      if ((!this.namedSystemCapabilityForDomain(key, projectPath) && this.isGenericCapabilityResourceKey(key, capabilityName)) ||
-        this.isProjectNameCapabilityName(capabilityName, projectPath)) {
+      // Deterministic STRUCTURAL label (fact). Drives the quality gates below,
+      // dedup, and the fact-grounded description. It carries the "<Domain>
+      // Management/Analysis/…" grammar the gates key off — but that grammar is
+      // an invented behavior claim, so it never becomes the shipped display name.
+      const structuralLabel = this.formatTerminalCapabilityName(key, group.label, operations, uniqueEntities, projectPath, uniqueNodes);
+      if ((!this.namedSystemCapabilityForDomain(key, projectPath) && this.isGenericCapabilityResourceKey(key, structuralLabel)) ||
+        this.isProjectNameCapabilityName(structuralLabel, projectPath)) {
         continue;
       }
       if (this.isTerminalCapabilityNoise(key, labelTokens, uniqueEntities, operations)) {
         continue;
       }
-      if (this.isEvidenceLightFallbackCapability(capabilityName, uniqueEntities, operations)) {
+      if (this.isEvidenceLightFallbackCapability(structuralLabel, uniqueEntities, operations)) {
         continue;
       }
-      if (uniqueEntities.length === 0 && this.isStructurallyMalformedCapabilityName(capabilityName)) {
+      if (uniqueEntities.length === 0 && this.isStructurallyMalformedCapabilityName(structuralLabel)) {
         continue;
       }
       // A bare vendor/infrastructure library token ("Jito Capability") that
       // reached the evidence-free Capability fallback is SDK plumbing, not a
       // product capability. Vendor tokens WITH product evidence (entities or
       // multiple operations) keep their Management/domain-pattern names.
-      if (/ Capability$/.test(capabilityName) &&
+      if (/ Capability$/.test(structuralLabel) &&
         labelTokens.every(token => isVendorLibDomainToken(this.normalizeDomainToken(token))) &&
         isVendorLibDomainToken(this.normalizeDomainToken(key))) {
         continue;
       }
+      // DISPLAY NAME = terminal-evidence-grounded placeholder (fact), NOT the
+      // invented "<Domain> Management" behavior claim. The AI naming pass
+      // (aiExtractCapabilityCatalog) overwrites it with an AI-authored name and
+      // stamps name_source:'ai'; until then name_source stays unset.
+      const capabilityName = this.terminalGroundedCapabilityName(structuralLabel, key, uniqueEntities, projectPath);
       const capability: SystemCapability = {
         id: 'cap_pending',
         name: capabilityName,
-        description: this.generateTerminalCapabilityDescription(capabilityName, uniqueNodes, uniqueEntities, operations),
+        name_source: undefined,
+        name_generation: {
+          status: 'ai_skipped',
+          reason: 'awaiting-ai-comprehension',
+          attempted: false,
+          generated_at: new Date().toISOString(),
+        },
+        structural_label: structuralLabel,
+        description: this.generateTerminalCapabilityDescription(structuralLabel, uniqueNodes, uniqueEntities, operations),
         description_source: undefined,
         description_generation: {
           status: 'ai_skipped',
@@ -15413,6 +15464,71 @@ export class AnalyzerOrchestrator {
       return trimmedLabel;
     }
     return `${trimmedLabel} ${suffix}`;
+  }
+
+  // Invented capability-VERB suffixes ("Management", "Analysis", …) that the
+  // deterministic structural-label ladder appends. These are a COMPREHENSION
+  // claim about what the capability DOES — reserved for the AI naming pass, per
+  // docs/cas/DETERMINISM-BOUNDARY.md. The structural label keeps them (the
+  // quality gates key off them); the user-facing display name strips them.
+  private static readonly INVENTED_CAPABILITY_SUFFIXES = new Set([
+    'management', 'capability', 'workflow', 'analysis', 'analytics', 'reporting',
+    'generation', 'settlement', 'rebalancing', 'synchronization', 'sync',
+    'validation', 'messaging', 'processing', 'handling', 'service',
+  ]);
+
+  /**
+   * Derive the DISPLAY-NAME PLACEHOLDER from a deterministic structural label.
+   *
+   * A capability NAME states what the capability does/produces for consumers —
+   * that is COMPREHENSION and belongs to the AI naming pass. Until AI runs we
+   * must not ship a fabricated "<Domain> Management/Analysis/…" behavior claim.
+   * This returns a terminal-evidence-grounded FACT instead: the domain subject
+   * anchored on the terminal (api-response / persisted) entities the capability
+   * actually produces — e.g. structural label "Oracle Price Management" over
+   * OraclePrice/OracleFeedMapping becomes the placeholder "Oracle Price"
+   * (grounded), not a guess about what it manages.
+   *
+   * Curated (`namedSystemCapabilityForDomain`) and factual-resource
+   * (ECR/ECS/Route53 infrastructure) names carry real meaning already and are
+   * returned unchanged.
+   */
+  private terminalGroundedCapabilityName(
+    structuralLabel: string,
+    key: string,
+    entities: CASDataEntity[],
+    projectPath?: string
+  ): string {
+    // Curated manual name for Klauro-self: real meaning, keep verbatim.
+    if (this.namedSystemCapabilityForDomain(key, projectPath)) return structuralLabel;
+    // Factual infrastructure-resource identities are not invented behavior.
+    if (/\b(Infrastructure|Connectivity|Integration)$/.test(structuralLabel)) return structuralLabel;
+
+    // Strip only a TRAILING invented behavior suffix; keep the domain subject.
+    const words = structuralLabel.trim().split(/\s+/);
+    while (words.length > 1 &&
+      AnalyzerOrchestrator.INVENTED_CAPABILITY_SUFFIXES.has((words[words.length - 1] || '').toLowerCase())) {
+      words.pop();
+    }
+    const subject = words.join(' ').trim();
+    if (!subject) return structuralLabel;
+
+    // Anchor on what the capability PRODUCES: the terminal (api-response) or
+    // persisted entities. If the produced-entity name is not already implied by
+    // the subject, surface the entity — the honest fact about what this yields —
+    // rather than an invented verb. This mirrors the four-question description's
+    // terminal-output anchoring, at label granularity.
+    const producedEntity = entities.find(entity =>
+      entity.kind === 'api-response' || entity.kind === 'persisted-entity');
+    if (producedEntity?.name) {
+      const subjectLower = subject.toLowerCase().replace(/[^a-z0-9]+/g, '');
+      const entityLower = producedEntity.name.toLowerCase().replace(/[^a-z0-9]+/g, '');
+      const overlaps = subjectLower.includes(entityLower) || entityLower.includes(subjectLower);
+      if (!overlaps && producedEntity.name.length <= 40) {
+        return `${subject} (${producedEntity.name})`;
+      }
+    }
+    return subject;
   }
 
   private formatTerminalCapabilityName(

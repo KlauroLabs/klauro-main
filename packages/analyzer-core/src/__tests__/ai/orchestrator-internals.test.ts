@@ -745,8 +745,14 @@ describe('architecture and capability inference', () => {
 
     const capabilities = orch.buildSystemCapabilities([], entities, nodes, edges);
 
-    expect(capabilities.map((capability: any) => capability.name)).toContain('Invoice Settlement');
-    expect(capabilities.find((capability: any) => capability.name === 'Invoice Settlement')?.related_entities).toContain('entity-invoice');
+    // The deterministic structural_label carries the "<Domain> Settlement"
+    // grammar; the display name is the terminal-grounded subject ("Invoice")
+    // awaiting the AI naming pass (comprehension is AI-only, not a template).
+    const labels = capabilities.map((capability: any) => capability.structural_label);
+    expect(labels).toContain('Invoice Settlement');
+    expect(capabilities.find((capability: any) => capability.structural_label === 'Invoice Settlement')?.name).toBe('Invoice');
+    expect(capabilities.find((capability: any) => capability.structural_label === 'Invoice Settlement')?.name_source).toBeUndefined();
+    expect(capabilities.find((capability: any) => capability.structural_label === 'Invoice Settlement')?.related_entities).toContain('entity-invoice');
     expect(capabilities.map((capability: any) => capability.related_domains).flat()).not.toContain('flutter');
   });
 
@@ -770,10 +776,14 @@ describe('architecture and capability inference', () => {
     ];
 
     const capabilities = orch.buildSystemCapabilities([], [], nodes, edges);
+    const labels = capabilities.map((capability: any) => capability.structural_label);
     const names = capabilities.map((capability: any) => capability.name);
     const relatedDomains = capabilities.map((capability: any) => capability.related_domains).flat();
 
-    expect(names).toContain('Transaction Management');
+    // Structural label keeps the "<Domain> Management" grammar; display name is
+    // the terminal-grounded subject.
+    expect(labels).toContain('Transaction Management');
+    expect(names).toContain('Transaction');
     expect(relatedDomains).toContain('transaction');
     expect(relatedDomains).not.toContain('users');
     expect(relatedDomains).not.toContain('dev');
@@ -793,11 +803,17 @@ describe('architecture and capability inference', () => {
 
     const capabilities = orch.buildSystemCapabilities([], [], nodes, edges);
     const domains = capabilities.map((capability: any) => capability.related_domains).flat();
+    const labels = capabilities.map((capability: any) => capability.structural_label);
     const names = capabilities.map((capability: any) => capability.name);
 
     expect(domains).toEqual(expect.arrayContaining(['report', 'portfolio', 'invoice']));
     expect(domains).not.toEqual(expect.arrayContaining(['generate', 'rebalance', 'settle']));
-    expect(names).toEqual(expect.arrayContaining(['Report Generation', 'Portfolio Rebalancing', 'Invoice Settlement']));
+    // Capabilities are anchored on the business object (structural label), and
+    // the display name is that object, not the verb — no "Generate"/"Rebalance"
+    // action-verb subject leaks in either.
+    expect(labels).toEqual(expect.arrayContaining(['Report Generation', 'Portfolio Rebalancing', 'Invoice Settlement']));
+    expect(names).toEqual(expect.arrayContaining(['Report', 'Portfolio', 'Invoice']));
+    expect(names.some((name: string) => /^(Generate|Rebalance|Settle)\b/.test(name))).toBe(false);
   });
 
   it('does not treat blockchain token domains as identity authentication', () => {
@@ -841,14 +857,18 @@ describe('architecture and capability inference', () => {
     } as any];
 
     const capabilities = orch.buildSystemCapabilities([], entities, nodes, edges);
+    const labels = capabilities.map((capability: any) => capability.structural_label);
     const names = capabilities.map((capability: any) => capability.name);
 
-    expect(names).toContain('Vehicle Management');
-    expect(names).not.toContain('Dto Management');
-    expect(names).not.toContain('Constants Capability');
-    expect(names).not.toContain('Handling Capability');
-    expect(names).not.toContain('Connection Capability');
-    expect(names).not.toContain('Support Capability');
+    // The Vehicle capability survives (structural label "Vehicle Management",
+    // display name "Vehicle"); DTO/support helper buckets are filtered out.
+    expect(labels).toContain('Vehicle Management');
+    expect(names).toContain('Vehicle');
+    expect(labels).not.toContain('Dto Management');
+    expect(labels).not.toContain('Constants Capability');
+    expect(labels).not.toContain('Handling Capability');
+    expect(labels).not.toContain('Connection Capability');
+    expect(labels).not.toContain('Support Capability');
   });
 
   it('expands common source abbreviations before naming capabilities', () => {
@@ -861,13 +881,17 @@ describe('architecture and capability inference', () => {
     ];
 
     const capabilities = orch.buildSystemCapabilities([], [], nodes, edges);
+    const labels = capabilities.map((capability: any) => capability.structural_label);
     const names = capabilities.map((capability: any) => capability.name);
     const domains = capabilities.flatMap((capability: any) => capability.related_domains);
 
-    expect(names).toContain('Location Synchronization');
+    // "loc" is expanded to "location" before labeling; structural label carries
+    // the "Synchronization" grammar, display name is the expanded subject.
+    expect(labels).toContain('Location Synchronization');
+    expect(names).toContain('Location');
     expect(domains).toContain('location');
-    expect(names).not.toContain('Loc Workflow');
-    expect(names).not.toContain('Loc Capability');
+    expect(labels).not.toContain('Loc Workflow');
+    expect(labels).not.toContain('Loc Capability');
   });
 
   it('uses product-surface capability names and filters helper buckets when analyzing Klauro itself', () => {
@@ -947,7 +971,11 @@ describe('architecture and capability inference', () => {
       for (const name of klauroVocabulary) {
         expect(names).not.toContain(name);
       }
-      expect(names).toContain('Task Management');
+      // Foreign repo: real domain capability derived structurally ("Task
+      // Management" label), display name is the terminal-grounded subject.
+      const labels = capabilities.map((capability: any) => capability.structural_label);
+      expect(labels).toContain('Task Management');
+      expect(names).toContain('Task');
     } finally {
       fs.rmSync(foreignRoot, { recursive: true, force: true });
     }
@@ -1435,16 +1463,19 @@ describe('architecture and capability inference', () => {
 
     const capabilities = orch.buildSystemCapabilities(entryPoints as any, [], nodes, [], '/tmp/soon-ui');
     const names = capabilities.map((capability: any) => capability.name);
+    const labels = capabilities.map((capability: any) => capability.structural_label);
     const approvalCapability = capabilities.find((capability: any) => /approval/i.test(capability.name));
 
     expect(names.some((name: string) => /approval/i.test(name))).toBe(true);
     expect(approvalCapability?.id).toMatch(/^cap_approval/);
-    expect(names).not.toContain('Click Management');
-    expect(names).not.toContain('Mutation Management');
-    expect(names).not.toContain('Query Management');
-    expect(names).not.toContain('Latest Management');
-    expect(names).not.toContain('Soon Management');
-    expect(names.join('\n')).not.toMatch(/\b(click|mutation|query|latest)\s+(management|workflow|capability)\b/i);
+    // Noise domains never become capabilities — assert on the structural label,
+    // which retains the "<Domain> Management" grammar the filters key off.
+    expect(labels).not.toContain('Click Management');
+    expect(labels).not.toContain('Mutation Management');
+    expect(labels).not.toContain('Query Management');
+    expect(labels).not.toContain('Latest Management');
+    expect(labels).not.toContain('Soon Management');
+    expect(labels.join('\n')).not.toMatch(/\b(click|mutation|query|latest)\s+(management|workflow|capability)\b/i);
   });
 
   it('does not classify marketing UI cards and video players as a gaming platform', () => {
@@ -1954,9 +1985,11 @@ describe('architecture and capability inference', () => {
 
     const capabilities = orch.buildSystemCapabilities([], entities, nodes, []);
     const names = capabilities.map((capability: any) => capability.name);
+    const labels = capabilities.map((capability: any) => capability.structural_label);
 
-    expect(names).toContain('Muscle Management');
-    expect(names).not.toContain('Next Management');
+    expect(labels).toContain('Muscle Management');
+    expect(names).toContain('Muscle');
+    expect(labels).not.toContain('Next Management');
   });
 
   it('rejects AI system descriptions that end in generic concept lists', () => {
@@ -2118,7 +2151,7 @@ variable "allowable_ip_range" { type = string }
       expect(names).toEqual(expect.arrayContaining([
         'Database Infrastructure',
       ]));
-      expect(names).not.toContain('File Workflow');
+      expect(capabilities.map((capability: any) => capability.structural_label)).not.toContain('File Workflow');
       expect(capabilities.every((capability: any) => capability.operations.length > 0)).toBe(true);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
@@ -2284,9 +2317,15 @@ describe('capability noise floor and terminal capability labels', () => {
       new Set<string>()
     );
     const names = capabilities.map((capability: { name: string }) => capability.name);
-    expect(names).toContain('Wishlist Management');
-    expect(names).toContain('Wished Item Management');
-    expect(names.some((name: string) => /^Wished Management$/.test(name))).toBe(false);
+    const labels = capabilities.map((capability: any) => capability.structural_label);
+    // The FULL domain phrase is preserved (not truncated to "Wished"); the
+    // structural label carries the grammar, the display name is the subject.
+    expect(labels).toContain('Wishlist Management');
+    expect(labels).toContain('Wished Item Management');
+    expect(names).toContain('Wishlist');
+    expect(names).toContain('Wished Item');
+    expect(labels.some((label: string) => /^Wished Management$/.test(label))).toBe(false);
+    expect(names.some((name: string) => /^Wished$/.test(name))).toBe(false);
   });
 
   it('skips terminal capabilities whose domain duplicates an existing route domain in singular or plural form', () => {
@@ -2302,11 +2341,15 @@ describe('capability noise floor and terminal capability labels', () => {
       [],
       new Set<string>(['orders', 'line_items', 'stock_items'])
     );
+    const labels = capabilities.map((capability: any) => capability.structural_label);
     const names = capabilities.map((capability: { name: string }) => capability.name);
-    expect(names).not.toContain('Order Management');
-    expect(names).not.toContain('Line Management');
-    expect(names).not.toContain('Line Item Management');
-    expect(names).toContain('Stock Management');
+    // Duplicate route domains are skipped; assert on the structural label which
+    // retains the "<Domain> Management" grammar the dedup keys off.
+    expect(labels).not.toContain('Order Management');
+    expect(labels).not.toContain('Line Management');
+    expect(labels).not.toContain('Line Item Management');
+    expect(labels).toContain('Stock Management');
+    expect(names).toContain('Stock');
   });
 
   it('suppresses terminal helper clusters that have no entity or entry-point evidence', () => {
@@ -2347,16 +2390,20 @@ describe('capability noise floor and terminal capability labels', () => {
     } as any;
 
     const capabilities = orch.buildTerminalCapabilities([orderEntity], nodes, edges, new Set<string>());
+    const labels = capabilities.map((capability: any) => capability.structural_label);
     const names = capabilities.map((capability: { name: string }) => capability.name);
 
-    expect(names).toContain('Order Management');
-    expect(names).not.toContain('Bootstrap Management');
-    expect(names).not.toContain('Clean Management');
-    expect(names).not.toContain('Collect Management');
-    expect(names).not.toContain('Materialize Management');
-    expect(names).not.toContain('Save Management');
-    expect(names).not.toContain('Merge Management');
-    expect(names).not.toContain('Thinking Management');
+    expect(labels).toContain('Order Management');
+    expect(names).toContain('Order');
+    // Helper clusters with no evidence never become capabilities — assert on the
+    // structural label (retains the grammar the noise filter keys off).
+    expect(labels).not.toContain('Bootstrap Management');
+    expect(labels).not.toContain('Clean Management');
+    expect(labels).not.toContain('Collect Management');
+    expect(labels).not.toContain('Materialize Management');
+    expect(labels).not.toContain('Save Management');
+    expect(labels).not.toContain('Merge Management');
+    expect(labels).not.toContain('Thinking Management');
   });
 });
 
@@ -2720,8 +2767,10 @@ describe('vendor-lib terminal capabilities require product evidence', () => {
     ] as CASEdge[];
 
     const capabilities = orch.buildTerminalCapabilities([], nodes, edges, new Set<string>());
-    const names = capabilities.map((capability: { name: string }) => capability.name);
-    expect(names).not.toContain('Jito Capability');
+    const labels = capabilities.map((capability: any) => capability.structural_label);
+    // The vendor-SDK drop keys off the "Capability" structural label; assert it
+    // never survives as a capability at all.
+    expect(labels).not.toContain('Jito Capability');
   });
 
   it('keeps vendor-token capabilities that carry product evidence', () => {
@@ -2732,8 +2781,10 @@ describe('vendor-lib terminal capabilities require product evidence', () => {
     } as CASDataEntity;
 
     const capabilities = orch.buildTerminalCapabilities([entity], [], [], new Set<string>());
+    const labels = capabilities.map((capability: any) => capability.structural_label);
     const names = capabilities.map((capability: { name: string }) => capability.name);
-    expect(names).toContain('Jito Bundle Management');
+    expect(labels).toContain('Jito Bundle Management');
+    expect(names).toContain('Jito Bundle');
   });
 
   it('keeps non-vendor evidence-free capabilities untouched', () => {
