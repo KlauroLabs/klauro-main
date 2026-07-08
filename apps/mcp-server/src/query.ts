@@ -137,6 +137,15 @@ export function buildSummary(cas: CASOutput, opts: { detail?: 'compact' | 'full'
     name: cas.system?.name,
     type: cas.system?.type,
     cas_version: versionInfo.stored_version,
+    // Content-production time of THIS analysis (set by the orchestrator when it
+    // actually (re)computes; a no-op incremental preserves the prior value).
+    // This is the release-gate freshness marker: it is the ONLY summary field
+    // that reflects when the served content was produced. layers_ready.generated_at
+    // now tracks the same instant, but analysis_timestamp is the canonical,
+    // always-present source and is surfaced here at a stable, readable path so
+    // GET /api/projects/{id}/analysis exposes freshness without the caller
+    // digging into the layers ladder.
+    analysis_timestamp: cas.analysis_timestamp || null,
     analysis_version_status: versionInfo.status,
     analysis_version_notice: versionInfo.status === 'older-compatible'
       ? `This analysis was produced by cas_version ${versionInfo.stored_version}; the server is at ${versionInfo.current_version}. Re-run analyze_codebase to populate fields added since (user journeys, data lineage, paradigm conformance, product map).`

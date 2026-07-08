@@ -136,7 +136,10 @@ const LAYER_DEFINITIONS: Array<{ layer: CASLayerStatus['layer']; name: string; f
   { layer: 'L5', name: 'AI enrichment', fields: ['enhanced_system_purpose', 'system_purpose.description_source'] },
 ];
 
-export function buildLayersReady(statuses: Partial<Record<CASLayerStatus['layer'], { status: 'pending' | 'ready' | 'error'; completedAt?: string; durationMs?: number; error?: string }>>): CASLayersReady {
+export function buildLayersReady(
+  statuses: Partial<Record<CASLayerStatus['layer'], { status: 'pending' | 'ready' | 'error'; completedAt?: string; durationMs?: number; error?: string }>>,
+  options: { generatedAt?: string } = {},
+): CASLayersReady {
   const layers: CASLayerStatus[] = LAYER_DEFINITIONS.map(def => {
     const entry = statuses[def.layer];
     return {
@@ -152,7 +155,16 @@ export function buildLayersReady(statuses: Partial<Record<CASLayerStatus['layer'
   return {
     layers,
     complete: layers.every(l => l.status === 'ready'),
-    generated_at: new Date().toISOString(),
+    // `generated_at` must track when the CAS CONTENT was produced, not when this
+    // manifest object was last minted. A no-op incremental reanalyze reuses the
+    // prior output verbatim (same analysis_timestamp) and only re-stamps the
+    // ladder — if generated_at defaulted to `new Date()` it would advance while
+    // the content stayed frozen, so the read served a fresh-looking timestamp on
+    // stale content (the soon-lens 2026-07-07 reanalyze: content 16:12,
+    // generated_at 23:21). Callers pass the CAS analysis_timestamp so the
+    // freshness marker never lies about content age; wall-clock is only the
+    // fallback when no content timestamp is available.
+    generated_at: options.generatedAt || new Date().toISOString(),
   };
 }
 

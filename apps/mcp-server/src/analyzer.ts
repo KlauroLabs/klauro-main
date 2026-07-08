@@ -1281,15 +1281,20 @@ export async function analyzeProjectLayered(projectPath: string, displayName?: s
     // ai_enrichment marker so `layers_ready` is a single place to read the
     // whole ladder instead of two fields with different vocabularies.
     const now = new Date().toISOString();
+    // Anchor the ladder's generated_at to the CAS content timestamp so a no-op
+    // incremental (which reuses previousOutput verbatim, keeping its older
+    // analysis_timestamp) doesn't advertise a fresh generated_at over stale
+    // content. Falls back to wall-clock only when the output lacks a timestamp.
+    const contentGeneratedAt = deferred.output.analysis_timestamp || now;
     const aiConfigured = deferred.output.ai_enrichment !== undefined && deferred.output.ai_enrichment !== 'disabled';
     deferred.output.layers_ready = buildLayersReady({
-      L0: { status: 'ready', completedAt: now },
-      L1: { status: 'ready', completedAt: now },
-      L2: { status: 'ready', completedAt: now },
-      L3: { status: 'ready', completedAt: now },
-      L4: { status: 'ready', completedAt: now },
+      L0: { status: 'ready', completedAt: contentGeneratedAt },
+      L1: { status: 'ready', completedAt: contentGeneratedAt },
+      L2: { status: 'ready', completedAt: contentGeneratedAt },
+      L3: { status: 'ready', completedAt: contentGeneratedAt },
+      L4: { status: 'ready', completedAt: contentGeneratedAt },
       L5: { status: aiConfigured ? (deferred.output.ai_enrichment === 'ready' || deferred.output.ai_enrichment === 'synchronous' ? 'ready' : 'pending') : 'ready' },
-    });
+    }, { generatedAt: contentGeneratedAt });
     await saveAnalysis(projectPath, deferred.output);
     clearFreshnessSummaryCache();
 
@@ -1305,11 +1310,15 @@ export async function analyzeProjectLayered(projectPath: string, displayName?: s
         L0: { status: 'ready' as const }, L1: { status: 'ready' as const }, L2: { status: 'ready' as const },
         L3: { status: 'ready' as const }, L4: { status: 'ready' as const },
       };
+      // L5 landing IS a genuine content change, so anchor generated_at to the
+      // (possibly refreshed) content timestamp rather than reverting to the
+      // deterministic-pass time. Falls back to the L5 completion instant.
+      const l5GeneratedAt = deferred.output.analysis_timestamp || new Date().toISOString();
       if (deferred.output.ai_enrichment === 'ready') {
         deferred.output.layers_ready = buildLayersReady({
           ...baseLayers,
           L5: { status: 'ready', completedAt: new Date().toISOString() },
-        });
+        }, { generatedAt: l5GeneratedAt });
       } else if (deferred.output.ai_enrichment === 'error') {
         // Visible terminal failure: L5 'error', not a silent stay-pending.
         // Surface the UNDERLYING reason (captured on ai_enrichment_error by
@@ -1322,7 +1331,7 @@ export async function analyzeProjectLayered(projectPath: string, displayName?: s
         deferred.output.layers_ready = buildLayersReady({
           ...baseLayers,
           L5: { status: 'error', completedAt: new Date().toISOString(), error: l5Detail },
-        });
+        }, { generatedAt: l5GeneratedAt });
       } else {
         // 'disabled'/'synchronous' or nothing to enrich — leave the manifest as
         // the restPromise already stamped it (L5 'ready' when AI isn't coming).
