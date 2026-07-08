@@ -315,7 +315,14 @@ function storageLockAgeMs(state: StorageLockState): number {
 function isStorageLockStale(state: StorageLockState, staleMs: number): boolean {
   if (storageLockAgeMs(state) > staleMs) return true;
   if (!state.info) return false;
-  return state.info.hostname === os.hostname() && !isProcessAlive(state.info.pid);
+  // Same host: the holder is reclaimable only once its pid is gone.
+  if (state.info.hostname === os.hostname()) return !isProcessAlive(state.info.pid);
+  // Different host: in this single-container deployment a lock stamped with another
+  // hostname is a prior container generation left behind by a deploy recreate — the
+  // holder is definitively gone, so reclaim it immediately instead of waiting out the
+  // age window (the deploy-orphaned-lock stall). If this ever runs multi-container,
+  // this branch must instead consult a shared liveness signal.
+  return true;
 }
 
 async function removeStorageLockIfUnchanged(lockPath: string, expectedRaw: string): Promise<void> {

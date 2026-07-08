@@ -348,3 +348,109 @@ export function getAIConfig(): AIConfig {
 }
 
 export const aiConfig = getAIConfig();
+
+/**
+ * One entry in the ordered AI provider fallback chain. Each is an
+ * OpenAI-compatible endpoint tried in order; on error / 429 / empty content the
+ * next is tried, so a slow-or-rate-limited provider never causes L5 comprehension
+ * to silently skip.
+ */
+export interface AIProviderChainEntry {
+  name: string;
+  baseURL: string;
+  apiKey: string;
+  model: string;
+  structuredModel?: string;
+  /** Reasoning models (e.g. OpenRouter hy3) burn output budget on hidden
+   * reasoning tokens and return empty content unless given generous room. */
+  maxTokens?: number;
+}
+
+/**
+ * Build the ordered provider fallback chain. Priority:
+ *   1. KLAURO_AI_PROVIDER_CHAIN — a JSON array of
+ *      {name?, base_url, key_env?|api_key?, model, structured_model?, max_tokens?}
+ *      giving explicit, ordered control (DeepInfra -> local Mac -> OpenRouter).
+ *   2. Otherwise a sensible default chain from the discrete env vars:
+ *      DeepInfra (primary) -> optional local LLM (LOCAL_LLM_BASE_URL) ->
+ *      OpenRouter (OPENROUTER_API_KEY, reasoning-safe max_tokens).
+ * Entries missing a base URL or resolvable key are dropped. Returns [] when
+ * nothing is configured (the caller then uses its single-provider path).
+ */
+export function getAIProviderChain(env: NodeJS.ProcessEnv = process.env): AIProviderChainEntry[] {
+  const resolveKey = (spec: { key_env?: string; api_key?: string }): string | undefined => {
+    if (spec.api_key) return spec.api_key;
+    if (spec.key_env && env[spec.key_env]) return env[spec.key_env];
+    return undefined;
+  };
+
+  // 1) Explicit JSON chain.
+  if (env.KLAURO_AI_PROVIDER_CHAIN) {
+    try {
+      const parsed = JSON.parse(env.KLAURO_AI_PROVIDER_CHAIN);
+      if (Array.isArray(parsed)) {
+        const chain: AIProviderChainEntry[] = [];
+        for (const raw of parsed) {
+          const baseURL = raw.base_url || raw.baseURL;
+          const model = raw.model;
+          const apiKey = resolveKey(raw) || 'local';
+          if (!baseURL || !model) continue;
+          chain.push({
+            name: raw.name || new URL(baseURL).hostname,
+            baseURL,
+            apiKey,
+            model,
+            structuredModel: raw.structured_model || raw.structuredModel || model,
+            maxTokens: raw.max_tokens ?? raw.maxTokens,
+          });
+        }
+        if (chain.length) return chain;
+      }
+    } catch {
+      // fall through to the default chain on malformed JSON
+    }
+  }
+
+  // 2) Default chain from discrete env vars.
+  const chain: AIProviderChainEntry[] = [];
+
+  // Primary: DeepInfra (cheap hosted 70B, no reasoning-token overhead).
+  if (env.DEEPINFRA_API_KEY) {
+    chain.push({
+      name: 'deepinfra',
+      baseURL: env.DEEPINFRA_BASE_URL || DEEPINFRA_OPENAI_BASE_URL,
+      apiKey: env.DEEPINFRA_API_KEY,
+      model: env.DEEPINFRA_MODEL || DEFAULT_DEEPINFRA_MODEL,
+      structuredModel: env.DEEPINFRA_STRUCTURED_MODEL || env.DEEPINFRA_MODEL || DEFAULT_DEEPINFRA_MODEL,
+    });
+  }
+
+  // Secondary (optional): a local LLM (e.g. a dedicated Mac over Tailscale).
+  // Slotted in only when its base URL is set; skipped otherwise.
+  if (env.LOCAL_LLM_BASE_URL) {
+    chain.push({
+      name: 'local-llm',
+      baseURL: env.LOCAL_LLM_BASE_URL,
+      apiKey: (env.LOCAL_LLM_API_KEY && env.LOCAL_LLM_API_KEY) || 'local',
+      model: env.LOCAL_LLM_MODEL || 'qwen2.5:7b-instruct',
+      structuredModel: env.LOCAL_LLM_STRUCTURED_MODEL || env.LOCAL_LLM_MODEL || 'qwen2.5:7b-instruct',
+      maxTokens: env.LOCAL_LLM_MAX_TOKENS ? parseInt(env.LOCAL_LLM_MAX_TOKENS) : undefined,
+    });
+  }
+
+  // Fallback: OpenRouter free model. hy3 is a reasoning model, so it needs a
+  // generous max_tokens or it returns empty content (which the loop treats as a
+  // provider failure and would otherwise thrash).
+  if (env.OPENROUTER_API_KEY) {
+    chain.push({
+      name: 'openrouter',
+      baseURL: env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1',
+      apiKey: env.OPENROUTER_API_KEY,
+      model: env.OPENROUTER_MODEL || 'tencent/hy3:free',
+      structuredModel: env.OPENROUTER_STRUCTURED_MODEL || env.OPENROUTER_MODEL || 'tencent/hy3:free',
+      maxTokens: env.OPENROUTER_MAX_TOKENS ? parseInt(env.OPENROUTER_MAX_TOKENS) : 4000,
+    });
+  }
+
+  return chain;
+}

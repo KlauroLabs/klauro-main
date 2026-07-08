@@ -1,4 +1,4 @@
-import { aiConfig, AIConfig, getAIConfig } from '../config/ai.config';
+import { aiConfig, AIConfig, getAIConfig, getAIProviderChain, type AIProviderChainEntry } from '../config/ai.config';
 import { OpenAIProvider } from './providers/openai-provider';
 import { ClaudeProvider } from './providers/claude-provider';
 import { FallbackProvider } from './providers/fallback-provider';
@@ -105,6 +105,10 @@ export interface AIUsageStats {
 
 export class AIService {
   private providers: Map<string, AIProvider> = new Map();
+  /** Ordered OpenAI-compatible fallback chain (DeepInfra -> local -> OpenRouter).
+   * Each entry carries its own model + max_tokens so a reasoning model gets the
+   * room it needs. Empty when no chain is configured (single-provider path). */
+  private providerChain: Array<{ entry: AIProviderChainEntry; provider: AIProvider }> = [];
   private cache: AICache;
   private logger: winston.Logger;
   private usageStats!: AIUsageStats;
@@ -159,6 +163,44 @@ export class AIService {
     // Fallback provider is always available
     this.providers.set('fallback', new FallbackProvider(aiConfig));
     this.logger.info('Fallback provider initialized');
+
+    this.initializeProviderChain();
+  }
+
+  /**
+   * Build the ordered OpenAI-compatible provider fallback chain. Each entry is a
+   * distinct OpenAIProvider whose config is aiConfig cloned with that entry's
+   * baseURL/apiKey/model. Failures here are non-fatal (the discrete single
+   * provider above still serves); a broken entry is simply skipped.
+   */
+  private initializeProviderChain(): void {
+    let chain: AIProviderChainEntry[] = [];
+    try {
+      chain = getAIProviderChain();
+    } catch (error) {
+      this.logger.warn('Failed to build AI provider chain:', error);
+      return;
+    }
+    for (const entry of chain) {
+      try {
+        const entryConfig: AIConfig = {
+          ...aiConfig,
+          openai: {
+            ...aiConfig.openai,
+            apiKey: entry.apiKey,
+            baseURL: entry.baseURL,
+            model: entry.model,
+            maxTokens: entry.maxTokens ?? aiConfig.openai.maxTokens,
+          },
+        };
+        this.providerChain.push({ entry, provider: new OpenAIProvider(entryConfig) });
+      } catch (error) {
+        this.logger.warn(`Failed to init chain provider ${entry.name}:`, error);
+      }
+    }
+    if (this.providerChain.length) {
+      this.logger.info(`AI provider chain: ${this.providerChain.map(p => p.entry.name).join(' -> ')}`);
+    }
   }
 
   private initializeUsageTracking(): void {
@@ -193,23 +235,34 @@ export class AIService {
       // Rate limiting
       await this.rateLimiter.waitForCapacity('description');
 
+      // Ordered fallback chain: try each provider in turn. A provider error
+      // (network, 4xx/5xx, 429) OR empty content (the reasoning-model
+      // out-of-budget case) advances to the next provider. L5 comprehension must
+      // never silently skip because ONE provider is slow/rate-limited, so only
+      // when EVERY provider fails do we throw (never a deterministic substitute).
+      if (this.providerChain.length > 0) {
+        const description = await this.generateDescriptionViaChain(context);
+        await this.cache.set(cacheKey, description);
+        return description;
+      }
+
       const provider = await this.selectBestProvider();
       if (provider.name === 'fallback' && process.env.AI_DESCRIPTION_ALLOW_RULE_BASED_FALLBACK !== 'true') {
         throw new Error('No generative AI provider is available for description generation');
       }
       const startTime = Date.now();
-      
+
       this.logger.info(`Generating description using ${provider.name} provider`);
-      
+
       const description = await provider.generateDescription(context);
 
       // Track usage
       const responseTime = Date.now() - startTime;
       this.updateUsageStats(provider.name, true, responseTime);
-      
+
       // Cache result
       await this.cache.set(cacheKey, description);
-      
+
       return description;
     } catch (error) {
       this.logger.error('Failed to generate description:', error);
@@ -219,6 +272,54 @@ export class AIService {
       }
       return this.generateFallbackDescription(context);
     }
+  }
+
+  /**
+   * Try each provider in the ordered chain until one returns non-empty content.
+   * A thrown error OR empty/whitespace content advances to the next provider
+   * (empty content is exactly the reasoning-model-out-of-budget failure). Each
+   * entry injects its own model + max_tokens via additionalContext so a caller's
+   * explicit per-call model/maxTokens still wins, but chain entries supply a
+   * default when the caller left them unset. Throws an aggregate error only when
+   * every provider fails, so the AI-only boundary is preserved (no deterministic
+   * substitute) while a single slow/rate-limited provider can never skip L5.
+   */
+  private async generateDescriptionViaChain(context: AIAnalysisContext): Promise<string> {
+    const errors: string[] = [];
+    const wantsStructured = context.additionalContext?.responseFormat === 'json'
+      || context.additionalContext?.response_format === 'json';
+    for (const { entry, provider } of this.providerChain) {
+      const startTime = Date.now();
+      try {
+        this.logger.info(`Generating description using ${entry.name} provider (chain)`);
+        const perProviderContext: AIAnalysisContext = {
+          ...context,
+          additionalContext: {
+            ...context.additionalContext,
+            // Caller-supplied model/maxTokens win; otherwise use the entry's.
+            model: context.additionalContext?.model
+              ?? (wantsStructured ? (entry.structuredModel || entry.model) : entry.model),
+            maxTokens: context.additionalContext?.maxTokens
+              ?? context.additionalContext?.max_tokens
+              ?? entry.maxTokens,
+          },
+        };
+        const description = await provider.generateDescription(perProviderContext);
+        if (!description || !description.trim()) {
+          // Empty content (reasoning model consumed all output budget, or a
+          // provider stub) — treat as a failure and fall through to the next.
+          throw new Error('provider returned empty content');
+        }
+        this.updateUsageStats(entry.name, true, Date.now() - startTime);
+        return description;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.logger.warn(`Chain provider ${entry.name} failed (${message}); trying next`);
+        this.updateUsageStats(entry.name, false, Date.now() - startTime);
+        errors.push(`${entry.name}: ${message}`);
+      }
+    }
+    throw new Error(`All AI providers in the chain failed: ${errors.join(' | ')}`);
   }
 
   async assessComponentRisk(context: AIAnalysisContext): Promise<AIRiskAssessment> {
