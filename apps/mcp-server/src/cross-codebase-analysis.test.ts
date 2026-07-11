@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { assertRealWorkspaceAiAttempt, buildCrossCodebaseSystemGraph, buildWorkspaceAgentContext, detectWorkspaceCryptoProfile, enforceWorkspaceNarrativeProductValueSummary, enrichWorkspaceAnalysisNarrative, evaluateWorkspaceNarrativeGate, selectPreferredWorkspaceOllamaModel, selectWorkspaceAnalysisDetail, workspaceNarrativeHardRejectReason } from './cross-codebase-analysis';
+import { assertRealWorkspaceAiAttempt, buildCrossCodebaseSystemGraph, buildWorkspaceAgentContext, detectWorkspaceCryptoProfile, enforceWorkspaceNarrativeProductValueSummary, enrichWorkspaceAnalysisNarrative, evaluateWorkspaceNarrativeGate, selectPreferredWorkspaceOllamaModel, selectWorkspaceAnalysisDetail, withWorkspaceAiTimeout, workspaceNarrativeHardRejectReason, workspaceNarrativePromptContext } from './cross-codebase-analysis';
 import { aiService } from '../../../packages/analyzer-core/src/ai/ai-service';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 
@@ -1759,4 +1759,174 @@ test('ambiguous general-purpose ports (Django 8000, pprof 6060) never assert a c
   const crypto = detectWorkspaceCryptoProfile([], [evmNode], new Map());
   assert.equal(crypto.isCrypto, true);
   assert.ok(crypto.rpc_ports.includes('8545'));
+});
+
+// ---------------------------------------------------------------------------
+// Workspace narrative frame-bias fixes (the live OpenClaw degrade loop):
+// (1) the prompt context carries the workspace's OWN member domains and no
+//     hardcoded frame vocabulary, (2) a frame rejection re-prompts with
+//     feedback naming the actual rejected frame on a fresh cache key, and
+// (3) the WAS AI timeout is env-configurable with a generous default.
+// ---------------------------------------------------------------------------
+
+function messagingGatewayCas(): CASOutput {
+  return cas({
+    system: { id: 'openclaw-gateway', name: 'openclaw-gateway', type: 'service', root_path: '/tmp/openclaw-gateway' } as any,
+    nodes: [{ id: 'route-node', name: 'routeInboundMessage', type: 'function', source: { file: 'src/gateway/router.ts', line: 1 } } as any],
+    entry_points: [{ id: 'entry:message', source_node: 'route-node', type: 'http', name: 'POST /channels/inbound', trigger: { method: 'POST', path: '/channels/inbound' } }] as any,
+    enhanced_system_purpose: {
+      primary_domain: 'messaging-gateway',
+      core_concepts: ['Channel Routing', 'Exec Approvals'],
+    } as any,
+    system_capabilities: [{
+      id: 'capability:channel-routing',
+      name: 'Multi-Channel Message Routing',
+      description: 'Routes inbound and outbound messages across Discord, Telegram, and Slack channel adapters.',
+      category: 'core',
+      criticality: 'critical',
+      operations: [{ entry_point_id: 'entry:message', action: 'route', path_or_command: '/channels/inbound' }],
+      related_entities: ['ChannelMessage'],
+      related_domains: ['Messaging'],
+      confidence: 0.9,
+      evidence: ['entry:message'],
+    }, {
+      id: 'capability:exec-approvals',
+      name: 'Exec Approvals',
+      description: 'Holds outbound agent exec commands for human approval before dispatching them to a channel.',
+      category: 'core',
+      criticality: 'high',
+      operations: [{ entry_point_id: 'entry:message', action: 'approve', path_or_command: '/approvals' }],
+      related_entities: ['ExecApproval'],
+      related_domains: ['Messaging'],
+      confidence: 0.85,
+      evidence: ['entry:message'],
+    }] as any,
+    domain_concepts: [{ id: 'domain:messaging', name: 'Messaging', classification: 'core', confidence: 0.9, evidence: [] }] as any,
+    data_entities: [
+      { id: 'entity_channel_message', name: 'ChannelMessage', fields: [], lifecycle: { created_by: ['route-node'], read_by: ['route-node'], updated_by: [], deleted_by: [] } },
+      { id: 'entity_exec_approval', name: 'ExecApproval', fields: [], lifecycle: { created_by: ['route-node'], read_by: ['route-node'], updated_by: [], deleted_by: [] } },
+    ] as any,
+  });
+}
+
+test('workspace narrative prompt foregrounds the members\' own domains and contains no hardcoded frame vocabulary', () => {
+  const graph = buildCrossCodebaseSystemGraph('openclaw-workspace', [
+    { path: '/tmp/openclaw-gateway', name: 'openclaw-gateway', cas: messagingGatewayCas() },
+  ]);
+  const context = workspaceNarrativePromptContext(graph) as any;
+  const serialized = JSON.stringify(context);
+
+  // The member project's own analyzed primary_domain is foregrounded.
+  assert.match(serialized, /messaging-gateway/, 'the member primary_domain must appear in the prompt context');
+  const memberProjects = context.facts?.member_projects as Array<Record<string, unknown>>;
+  assert.ok(Array.isArray(memberProjects) && memberProjects.length > 0, 'facts.member_projects must be present');
+  assert.equal(memberProjects[0].primary_domain, 'messaging-gateway');
+  const mustExplain = (context.facts?.must_explain || []) as string[];
+  assert.ok(mustExplain.some(item => /primary_domain is messaging-gateway/.test(item)), `must_explain must lead with member domain evidence, got: ${JSON.stringify(mustExplain)}`);
+
+  // NEVER-HARDCODE: the old classifier-era frame exemplars must not appear
+  // anywhere in the prompt for a workspace whose evidence does not contain them
+  // (they seeded exactly those frames into the model output — the OpenClaw bias).
+  assert.doesNotMatch(serialized, /secure network access/i);
+  assert.doesNotMatch(serialized, /zero-trust/i);
+  assert.doesNotMatch(serialized, /codebase intelligence/i);
+  assert.doesNotMatch(serialized, /desktop-agent access/i);
+  assert.doesNotMatch(serialized, /agent-context infrastructure/i);
+});
+
+test('a frame rejection re-prompts with feedback naming the actual rejected frame, on a fresh cache key per attempt', async () => {
+  const originalGenerate = aiService.generateComponentDescription;
+  const originalEnv = process.env.KLAURO_WORKSPACE_AI_ENRICHMENT;
+  const originalAutoConfig = process.env.KLAURO_WORKSPACE_AI_AUTO_CONFIG;
+  const originalOllamaBaseUrl = process.env.OLLAMA_BASE_URL;
+  const originalOllamaAuto = process.env.KLAURO_OLLAMA_AUTO;
+  process.env.KLAURO_WORKSPACE_AI_ENRICHMENT = 'true';
+  process.env.KLAURO_WORKSPACE_AI_AUTO_CONFIG = 'false';
+  delete process.env.OLLAMA_BASE_URL;
+  delete process.env.KLAURO_OLLAMA_AUTO;
+
+  // A shop workspace has NO codebase-intelligence evidence, so a narrative
+  // claiming that frame must be frame-rejected (the OpenClaw failure shape).
+  const FRAMED_JUNK = JSON.stringify({
+    description: 'This workspace provides codebase intelligence for coding agents: the analyzer builds a precomputed graph over the repositories and serves agent context through MCP so that agents can navigate the services, routes, and tooling that make up the analyzed system.',
+    product_value_summary: 'Serves codebase intelligence and agent context to coding agents.',
+  });
+  const contexts: Array<Record<string, unknown> | undefined> = [];
+  let repairCalls = 0;
+  aiService.generateComponentDescription = async (context: any) => {
+    contexts.push(context?.additionalContext);
+    if (typeof context?.additionalContext?.rejection_feedback === 'string') {
+      repairCalls += 1;
+      // First repair attempt repeats the bad frame; the second converges.
+      if (repairCalls === 1) return FRAMED_JUNK;
+      return JSON.stringify({
+        description: REAL_SHOP_NARRATIVE,
+        product_value_summary: 'Runs the storefront ordering and catalog backend.',
+      });
+    }
+    return FRAMED_JUNK;
+  };
+  try {
+    const graph = buildCrossCodebaseSystemGraph('shop-workspace', [
+      { path: '/tmp/shop-api', name: 'shop-api', cas: shopCas() },
+    ]);
+    const enriched = await enrichWorkspaceAnalysisNarrative(graph);
+    assert.equal(enriched.workspace_narrative.source, 'ai', `expected convergence after frame-rejection retries, got: ${enriched.workspace_narrative.degraded_reason}`);
+    assert.match(enriched.workspace_narrative.description, /Order Fulfillment routes checkout orders/);
+
+    const repairContexts = contexts.filter(context => typeof context?.rejection_feedback === 'string');
+    assert.ok(repairContexts.length >= 2, `expected at least two frame-rejection re-prompts, got ${repairContexts.length}`);
+    // The feedback names the ACTUAL rejected frame (from the narrative text,
+    // not a hardcoded list) and points at the workspace's own evidence.
+    assert.match(String(repairContexts[0]!.rejection_feedback), /codebase intelligence/i, 'feedback must name the rejected frame');
+    assert.match(String(repairContexts[0]!.rejection_feedback), /does not support/i);
+    assert.match(String(repairContexts[0]!.rejection_feedback), /workspace's own evidence/i, 'feedback must point at the real evidence to use');
+    // Every retry is a distinct cache key: attempt index AND per-call nonce.
+    const nonces = repairContexts.map(context => String(context!.retry_nonce || ''));
+    assert.ok(nonces.every(nonce => nonce.length > 0), 'every retry must carry a cache-busting nonce');
+    assert.equal(new Set(nonces).size, nonces.length, 'retry cache keys must differ across attempts');
+    // The repair context supplies the workspace's own domain evidence to reframe with.
+    assert.ok(Array.isArray(repairContexts[0]!.workspace_domains), 'repair prompt must carry workspace_domains evidence');
+    assert.ok(Array.isArray(repairContexts[0]!.member_projects), 'repair prompt must carry member_projects evidence');
+  } finally {
+    aiService.generateComponentDescription = originalGenerate;
+    if (originalEnv === undefined) delete process.env.KLAURO_WORKSPACE_AI_ENRICHMENT;
+    else process.env.KLAURO_WORKSPACE_AI_ENRICHMENT = originalEnv;
+    if (originalAutoConfig === undefined) delete process.env.KLAURO_WORKSPACE_AI_AUTO_CONFIG;
+    else process.env.KLAURO_WORKSPACE_AI_AUTO_CONFIG = originalAutoConfig;
+    if (originalOllamaBaseUrl === undefined) delete process.env.OLLAMA_BASE_URL;
+    else process.env.OLLAMA_BASE_URL = originalOllamaBaseUrl;
+    if (originalOllamaAuto === undefined) delete process.env.KLAURO_OLLAMA_AUTO;
+    else process.env.KLAURO_OLLAMA_AUTO = originalOllamaAuto;
+  }
+});
+
+test('WAS AI timeout is env-configurable (KLAURO_WAS_AI_TIMEOUT_MS, legacy alias) with a generous default', async () => {
+  const originalNew = process.env.KLAURO_WAS_AI_TIMEOUT_MS;
+  const originalLegacy = process.env.KLAURO_WORKSPACE_AI_TIMEOUT_MS;
+  const delay = <T,>(ms: number, value: T) => new Promise<T>(resolve => setTimeout(() => resolve(value), ms));
+  try {
+    // Default is generous (120s) — a slow-ish provider chain is not killed.
+    delete process.env.KLAURO_WAS_AI_TIMEOUT_MS;
+    delete process.env.KLAURO_WORKSPACE_AI_TIMEOUT_MS;
+    assert.equal(await withWorkspaceAiTimeout(delay(30, 'ok')), 'ok');
+
+    // KLAURO_WAS_AI_TIMEOUT_MS is respected.
+    process.env.KLAURO_WAS_AI_TIMEOUT_MS = '10';
+    await assert.rejects(() => withWorkspaceAiTimeout(delay(300, 'late')), /exceeded 10ms/);
+
+    // Legacy KLAURO_WORKSPACE_AI_TIMEOUT_MS still works as an alias.
+    delete process.env.KLAURO_WAS_AI_TIMEOUT_MS;
+    process.env.KLAURO_WORKSPACE_AI_TIMEOUT_MS = '10';
+    await assert.rejects(() => withWorkspaceAiTimeout(delay(300, 'late')), /exceeded 10ms/);
+
+    // The new var wins over the legacy alias.
+    process.env.KLAURO_WAS_AI_TIMEOUT_MS = '5000';
+    assert.equal(await withWorkspaceAiTimeout(delay(30, 'ok')), 'ok');
+  } finally {
+    if (originalNew === undefined) delete process.env.KLAURO_WAS_AI_TIMEOUT_MS;
+    else process.env.KLAURO_WAS_AI_TIMEOUT_MS = originalNew;
+    if (originalLegacy === undefined) delete process.env.KLAURO_WORKSPACE_AI_TIMEOUT_MS;
+    else process.env.KLAURO_WORKSPACE_AI_TIMEOUT_MS = originalLegacy;
+  }
 });

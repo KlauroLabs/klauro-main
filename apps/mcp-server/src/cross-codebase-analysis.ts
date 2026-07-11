@@ -71,6 +71,10 @@ export interface SystemCodebase {
   path: string;
   project_role: 'production' | 'prototype' | 'demo' | 'infrastructure' | 'library' | 'tooling' | 'unknown';
   system_type: string;
+  /** The member project's own analyzed primary domain (from its CAS
+   *  enhanced_system_purpose) — the workspace narrative prompt foregrounds this
+   *  so the frame comes from the members' own evidence, never a canned frame. */
+  primary_domain?: string;
   languages: string[];
   frameworks: string[];
   packages: string[];
@@ -2012,7 +2016,14 @@ function workspaceNarrativeRepairPromptContext(graph: WorkspaceAnalysisGraph, re
     // distinct ai-service cache key, so a rejected cached response can never be
     // replayed as the "retry" (the 104ms instant-degrade failure mode).
     retry_attempt: attempt ?? 0,
-    ...(rejectionReason ? { rejection_feedback: `A previous draft was rejected by the WAS quality gate: ${rejectionReason}. Fix exactly this problem in the rewrite.` } : {}),
+    // Per-CALL nonce: retry_attempt only varies within one enrichment run, so a
+    // re-analyze replayed the SAME attempt-0/1/2 cache entries and degraded in
+    // <0.35s without any real AI attempt (the live OpenClaw frame-rejection
+    // loop). A gate-rejection retry must ALWAYS be a fresh model round-trip —
+    // this applies uniformly to every rejection kind (frame, ungrounded,
+    // missing product_value_summary), not just some paths.
+    retry_nonce: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+    ...(rejectionReason ? { rejection_feedback: `A previous draft was rejected by the WAS quality gate: ${rejectionReason}. Fix exactly this problem in the rewrite, grounding it in the supplied workspace_domains, primary_capabilities, and required_terms evidence.` } : {}),
     task: 'Return only valid JSON with keys description and product_value_summary. Rewrite the workspace description from the supplied WAS facts only.',
     rules: [
       'Write one concrete paragraph.',
@@ -2031,6 +2042,16 @@ function workspaceNarrativeRepairPromptContext(graph: WorkspaceAnalysisGraph, re
       ...runtime.slice(0, 4),
     ].slice(0, 14),
     product_value_summary_hint: graph.workspace_narrative.product_value_summary,
+    workspace_domains: primaryWorkspaceDomains(graph).map(domain => ({
+      name: domain.name,
+      description: truncateText(domain.description, 140),
+      evidence: domain.evidence.slice(0, 3),
+    })),
+    member_projects: graph.codebases.slice(0, 8).map(codebase => ({
+      name: codebase.name,
+      ...(codebase.primary_domain ? { primary_domain: codebase.primary_domain } : {}),
+      system_type: codebase.system_type,
+    })),
     relationships: graph.workspace_workflows.slice(0, 6).map(workflow => ({
       name: workflow.name,
       description: workflow.description,
@@ -2295,7 +2316,7 @@ function promoteUsefulWorkspaceNarrativeFromAiSemantics(graph: WorkspaceAnalysis
   const productValueSummary = usefulAiProductValueSummary(graph.workspace_narrative.product_value_summary, graph.workspace_narrative.product_value_summary, graph);
   if (!productValueSummary) return undefined;
   if (!isUsefulAiWorkspaceNarrative(description)) return undefined;
-  if (!isWorkspaceNarrativeConsistentWithFacts(graph, description, productValueSummary) && !isGroundedAiWorkspaceNarrative(graph, description, productValueSummary)) return undefined;
+  if (workspaceNarrativeUnsupportedFrameReason(graph, description, productValueSummary) !== null && !isGroundedAiWorkspaceNarrative(graph, description, productValueSummary)) return undefined;
   return {
     ...graph.workspace_narrative,
     source: 'ai',
@@ -2363,7 +2384,7 @@ function isSynthesizedWorkspaceNarrativeAcceptable(graph: WorkspaceAnalysisGraph
   if (description.trim().length < 180) return false;
   if (/\b(?:classified as|repo analysis input|language inventory|primarily built using|consists of multiple|contains analyzed projects)\b/.test(normalized)) return false;
   if (
-    !isWorkspaceNarrativeConsistentWithFacts(graph, description, productValueSummary) &&
+    workspaceNarrativeUnsupportedFrameReason(graph, description, productValueSummary) !== null &&
     !isGroundedAiWorkspaceNarrative(graph, description, productValueSummary)
   ) return false;
   return true;
@@ -2796,9 +2817,9 @@ export function evaluateWorkspaceNarrativeGate(
   const effectiveSummary = String(productValueSummary ?? '').trim() || String(fallbackProductValueSummary ?? '').trim();
   const hardReject = workspaceNarrativeHardRejectReason(description, effectiveSummary);
   if (hardReject) return { accepted: false, reason: hardReject };
-  const consistent = isWorkspaceNarrativeConsistentWithFacts(graph, description, productValueSummary);
-  if (!consistent) {
-    return { accepted: false, reason: 'the description claims a product frame (secure network access / codebase intelligence) that the workspace evidence does not support' };
+  const unsupportedFrame = workspaceNarrativeUnsupportedFrameReason(graph, description, productValueSummary);
+  if (unsupportedFrame) {
+    return { accepted: false, reason: unsupportedFrame };
   }
   if (isUsefulAiWorkspaceNarrative(description)) return { accepted: true };
   if (isGroundedAiWorkspaceNarrative(graph, description, productValueSummary)) return { accepted: true };
@@ -2850,17 +2871,40 @@ function isUsefulAiWorkspaceNarrative(description: string): boolean {
   return concreteRelationships >= 4 && behaviorWords >= 3;
 }
 
-function isWorkspaceNarrativeConsistentWithFacts(graph: WorkspaceAnalysisGraph, description: string, productValueSummary?: unknown): boolean {
+/**
+ * Frame consistency check: detects a narrative claiming a product frame the
+ * workspace evidence does not support, and returns a rejection reason that
+ * (a) names the ACTUAL offending frame found in the narrative text (never a
+ * hardcoded frame list) and (b) names the workspace's own evidence to reframe
+ * around — so the retry re-prompt carries actionable, evidence-grounded
+ * feedback instead of replaying the same rejection. Returns null when
+ * consistent.
+ */
+function workspaceNarrativeUnsupportedFrameReason(graph: WorkspaceAnalysisGraph, description: string, productValueSummary?: unknown): string | null {
   const text = normalizeAiItemName(`${description} ${cleanNarrativeString(productValueSummary)}`);
+  const evidenceHint = () => {
+    const domains = [
+      ...graph.codebases.map(codebase => codebase.primary_domain).filter(Boolean) as string[],
+      ...primaryWorkspaceDomains(graph).map(domain => domain.name),
+    ].filter(Boolean).slice(0, 5);
+    const capabilities = primaryWorkspaceCapabilities(graph).map(capability => capability.name).slice(0, 5);
+    const parts: string[] = [];
+    if (domains.length) parts.push(`domains: ${[...new Set(domains)].join(', ')}`);
+    if (capabilities.length) parts.push(`capabilities: ${capabilities.join(', ')}`);
+    return parts.length ? ` Reframe the description around the workspace's own evidence (${parts.join('; ')}).` : '';
+  };
   if (
     hasSecureNetworkAccessSignal(text) &&
     !workspaceHasSecureNetworkAccessSignal(graph) &&
     !workspaceNarrativeMentionsSourceBackedAccessTopology(graph, text)
   ) {
-    return false;
+    return `the description claims a secure-access/network-brokering product frame that the workspace evidence does not support.${evidenceHint()}`;
   }
-  if (/\b(codebase intelligence|cas|mcp|agent context|analyzer)\b/.test(text) && !workspaceHasCodebaseIntelligenceSignal(graph)) return false;
-  return true;
+  const intelligenceFrameMatch = text.match(/\b(codebase intelligence|cas|mcp|agent context|analyzer)\b/);
+  if (intelligenceFrameMatch && !workspaceHasCodebaseIntelligenceSignal(graph)) {
+    return `the description claims a "${intelligenceFrameMatch[1]}" product frame that the workspace evidence does not support.${evidenceHint()}`;
+  }
+  return null;
 }
 
 function isGroundedAiWorkspaceNarrative(graph: WorkspaceAnalysisGraph, description: string, productValueSummary?: unknown): boolean {
@@ -3084,8 +3128,14 @@ export function workspaceAiEnrichmentEnabled(): boolean {
     process.env.KLAURO_AI_INTERPRETATION !== 'false';
 }
 
-async function withWorkspaceAiTimeout<T>(promise: Promise<T>): Promise<T> {
-  const timeoutMs = Number(process.env.KLAURO_WORKSPACE_AI_TIMEOUT_MS || 15_000);
+// Exported for tests (timeout env contract).
+export async function withWorkspaceAiTimeout<T>(promise: Promise<T>): Promise<T> {
+  // The WAS AI provider chain (hosted -> local -> fallback tiers) can
+  // legitimately take well over 15s on cold local/openrouter tiers. Budget
+  // philosophy matches the project tier (KLAURO_AI_INTERPRETATION_BUDGET_MS):
+  // generous by default, env-tunable. KLAURO_WORKSPACE_AI_TIMEOUT_MS is the
+  // legacy alias.
+  const timeoutMs = Number(process.env.KLAURO_WAS_AI_TIMEOUT_MS || process.env.KLAURO_WORKSPACE_AI_TIMEOUT_MS || 120_000);
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return promise;
   let timer: NodeJS.Timeout | undefined;
   try {
@@ -3100,17 +3150,22 @@ async function withWorkspaceAiTimeout<T>(promise: Promise<T>): Promise<T> {
   }
 }
 
-function workspaceNarrativePromptContext(graph: WorkspaceAnalysisGraph): Record<string, unknown> {
+// Exported for tests: the prompt context must stay free of hardcoded frame
+// vocabulary and must foreground the workspace's own member-project domains.
+export function workspaceNarrativePromptContext(graph: WorkspaceAnalysisGraph): Record<string, unknown> {
   const productName = inferWorkspaceProductName(graph.codebases, graph.name);
-  const forbiddenProductFrames = [
-    ...(!workspaceHasSecureNetworkAccessSignal(graph) ? ['Do not describe this workspace as secure network access, zero-trust/network access, desktop-agent access brokering, or users/devices/policies/gateways/agents unless those exact broker/runtime facts are present in must_explain.'] : []),
-    ...(!workspaceHasCodebaseIntelligenceSignal(graph) ? ['Do not describe this workspace as codebase intelligence, CAS, MCP, analyzer, work-context, or agent-context infrastructure unless those exact facts are present in must_explain.'] : []),
-  ];
+  // NEVER-HARDCODE MANDATE: this prompt must not name any product-frame
+  // vocabulary of its own (the old classifier-era "secure network access" /
+  // "codebase intelligence" negative exemplars planted exactly those frames in
+  // the model's output — the live OpenClaw frame-bias degrade loop). The frame
+  // must come from the workspace's OWN evidence, so the rule below is
+  // evidence-positive and generic; the fact sheet foregrounds member-project
+  // domains/capabilities so the model has the real frame to reach for.
   return {
     compactPrompt: true,
     responseFormat: 'json',
     maxTokens: Number(process.env.KLAURO_WORKSPACE_AI_MAX_TOKENS || '650'),
-    prompt_version: 'was-default-primary-semantics-v9',
+    prompt_version: 'was-default-primary-semantics-v10',
     product_name: productName,
     task: 'Return only valid JSON with keys description, product_value_summary, domain_items, capability_items, value_drivers, relationship_summary. domain_items and capability_items must include every required exact name exactly once. Use only supplied WAS facts.',
     style: `Write for a senior engineer or AI agent changing ${productName}. The description is one concrete paragraph about product/runtime behavior, not an inventory. It must explain how the key deployables, contracts, data, or infrastructure work together.`,
@@ -3133,7 +3188,7 @@ function workspaceNarrativePromptContext(graph: WorkspaceAnalysisGraph): Record<
       'For every connection, preserve direction exactly as source -> target. For sdk-install, the source depends on or imports the target; do not reverse that relationship.',
       'Do not turn warnings, unclaimed-provider insights, or topology-only declarations into active source-backed relationships.',
       'Do not describe a service as communicating with another service unless the connection appears in behavior_facts.important_connections with the same source and target.',
-      ...forbiddenProductFrames,
+      'Frame the workspace ONLY through the domains, capabilities, and member-project facts supplied in facts.member_projects, facts.semantic_targets, and must_explain. Never assign the workspace a product category or frame that is not named there.',
       'If the facts include blockchain RPC/p2p ports (e.g. 8545/8546/30303/8899), blockchain-node deployables (ethereum/bitcoin/solana/polygon nodes), or wallet/custody/token/exchange/liquidation entities, identify the workspace as a crypto / digital-asset system and name the chains and on-chain behavior; do not flatten it into a generic "financial application".',
       'Return domain_items for every required_domain_names item, using exact names.',
       'Return capability_items for every required_capability_names item, using exact names.',
@@ -3187,17 +3242,38 @@ function workspaceAiFactSheet(graph: WorkspaceAnalysisGraph, productName = infer
   const environments = graph.environments.map(environment =>
     `${environment.name}: ${environment.infrastructure_kinds.slice(0, 3).join(', ')}`
   );
+  // Foreground the workspace's OWN frame evidence: each member project's
+  // analyzed primary domain plus the derived workspace domains. These lead
+  // must_explain so the model grounds the product frame in what the members
+  // actually are (e.g. a messaging-gateway) instead of grasping at a generic
+  // frame when behavioral facts are thin.
+  const memberProjects = graph.codebases.slice(0, 12).map(codebase => ({
+    name: codebase.name,
+    ...(codebase.primary_domain ? { primary_domain: codebase.primary_domain } : {}),
+    system_type: codebase.system_type,
+    role: codebase.project_role,
+    frameworks: codebase.frameworks.slice(0, 4),
+    languages: codebase.languages.slice(0, 4),
+  }));
+  const memberDomainFacts = graph.codebases
+    .filter(codebase => codebase.primary_domain)
+    .slice(0, 6)
+    .map(codebase => `${codebase.name}: member primary_domain is ${codebase.primary_domain}`);
+  const workspaceDomainNames = primaryWorkspaceDomains(graph).map(domain => domain.name).filter(Boolean);
   const mustExplain = [
+    ...memberDomainFacts.slice(0, 4),
+    ...(workspaceDomainNames.length ? [`workspace domains: ${workspaceDomainNames.slice(0, 6).join(', ')}`] : []),
     ...blockchainSurfaces.slice(0, 3),
     ...distributionUnits,
     ...connections,
     ...insights.filter(insight => /mcp-agent-surface|declared-unused-infrastructure/.test(insight)).slice(0, 3),
     ...external.filter(dep => /source-backed|auth0|redis|postgres|rds|aws|terraform/i.test(dep)).slice(0, 3),
-  ].slice(0, 12);
+  ].slice(0, 14);
   return {
     product_name: productName,
     product_value_summary_hint: graph.workspace_narrative.product_value_summary,
     must_explain: mustExplain,
+    member_projects: memberProjects,
     composition: {
       kind: graph.composition.kind,
       primary_view: graph.composition.recommended_primary_view,
@@ -8270,6 +8346,7 @@ function toSystemCodebase(repository: CrossCodebaseInput): SystemCodebase {
     path: repository.path,
     project_role: inferProjectRole(repository),
     system_type: cas.system?.type || 'application',
+    primary_domain: String((cas as any).enhanced_system_purpose?.primary_domain || '').trim() || undefined,
     languages: (cas.system?.technologies?.languages || []).map(language => language.name).filter(Boolean),
     frameworks: (cas.system?.technologies?.frameworks || []).map(framework => framework.name).filter(Boolean),
     packages,
