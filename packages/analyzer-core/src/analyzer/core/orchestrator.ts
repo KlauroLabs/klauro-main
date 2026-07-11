@@ -10093,12 +10093,42 @@ export class AnalyzerOrchestrator {
    * verbatim; on failure the returned text/reason are the LATEST candidate
    * state, ready to feed the AI repair re-prompt.
    */
+  /**
+   * MECHANICAL repair for sentences that end on a dangling function word — a
+   * truncated clause the model emitted (prod: the accepted Klauro description
+   * ended "…telemetry data and graph evidence for."). Strips the trailing
+   * function word(s) so the sentence ends on a content word; if that would gut
+   * the sentence (< 4 words left) the whole sentence is dropped instead when
+   * other sentences remain. A cheap edit of the AI's own text, not authorship.
+   */
+  private repairDanglingSentenceEndings(text: string): string {
+    const danglingTail = /(?:\s+(?:for|with|of|to|from|by|in|on|at|into|onto|and|or|but|the|a|an|as|via|per|than|that|which|while|when|where|whose|its|their))+\s*([.!?])$/i;
+    const sentences = (text || '').split(/(?<=[.!?])\s+/);
+    const repaired = sentences
+      .map(sentence => {
+        const trimmed = sentence.trim();
+        const match = danglingTail.exec(trimmed);
+        if (!match) return sentence;
+        const stripped = trimmed.replace(danglingTail, '$1');
+        const remainingWords = stripped.replace(/[.!?]$/, '').trim().split(/\s+/).filter(Boolean);
+        if (remainingWords.length < 4 && sentences.length > 1) return '';
+        return stripped;
+      })
+      .filter(Boolean)
+      .join(' ')
+      .trim();
+    return repaired || text;
+  }
+
   private acceptAIInterpretationCandidate(
     candidate: string,
     enhancedSystemPurpose: EnhancedSystemPurpose,
     facts: Parameters<AnalyzerOrchestrator['validateGeneratedAIInterpretation']>[2],
   ): { text: string; validation: { ok: boolean; reason?: string } } {
-    let text = this.cleanGeneratedDescriptionText(candidate);
+    // Dangling-clause self-heal BEFORE validation: a truncated trailing clause
+    // ("…graph evidence for.") is a mechanical defect the gates do not model,
+    // so repair it up front and let the normal validate path judge the result.
+    let text = this.repairDanglingSentenceEndings(this.cleanGeneratedDescriptionText(candidate));
     let validation = this.validateGeneratedAIInterpretation(text, enhancedSystemPurpose, facts);
     if (validation.ok) return { text, validation };
 

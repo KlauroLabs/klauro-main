@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { assertRealWorkspaceAiAttempt, buildCrossCodebaseSystemGraph, buildWorkspaceAgentContext, detectWorkspaceCryptoProfile, enrichWorkspaceAnalysisNarrative, evaluateWorkspaceNarrativeGate, selectPreferredWorkspaceOllamaModel, selectWorkspaceAnalysisDetail, workspaceNarrativeHardRejectReason } from './cross-codebase-analysis';
+import { assertRealWorkspaceAiAttempt, buildCrossCodebaseSystemGraph, buildWorkspaceAgentContext, detectWorkspaceCryptoProfile, enforceWorkspaceNarrativeProductValueSummary, enrichWorkspaceAnalysisNarrative, evaluateWorkspaceNarrativeGate, selectPreferredWorkspaceOllamaModel, selectWorkspaceAnalysisDetail, workspaceNarrativeHardRejectReason } from './cross-codebase-analysis';
 import { aiService } from '../../../packages/analyzer-core/src/ai/ai-service';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 
@@ -1538,6 +1538,11 @@ test('WAS quality gate hard-rejects id-leaking, route-dumping, single-flow prose
   assert.match(String(workspaceNarrativeHardRejectReason('Friends is a workspace visible flow that manages friendship records across the services and stores the resulting state for the reporting pipeline and the admin tooling to read later on.', 'summary')), /single-flow|flow/i);
   // Empty product_value_summary alongside a non-empty description is a hard reject.
   assert.match(String(workspaceNarrativeHardRejectReason(REAL_SHOP_NARRATIVE, '')), /product_value_summary/i);
+  // Hash-shaped token leak (live: "Docker images from a Dockerfile with hash 7331").
+  assert.match(String(workspaceNarrativeHardRejectReason('This workspace builds Docker images from a Dockerfile with hash 7331 and ships them to the registry so deployment stays consistent across the analysis services and the admin tooling that operates them.', 'summary')), /hash/i);
+  assert.match(String(workspaceNarrativeHardRejectReason('This workspace publishes release artifacts whose sha 4f3a2b1c digest is recorded alongside the build metadata so downstream services can trace which build produced each running deployment across environments.', 'summary')), /hash/i);
+  // Prose that merely talks about checksum verification (no bare token) is clean.
+  assert.equal(workspaceNarrativeHardRejectReason('This workspace verifies SHA-256 checksums during install and coordinates the registry, deployment services, and the admin tooling that keep storefront releases consistent for the engineering teams that operate them.', 'Runs release verification for the storefront platform.'), null);
   // A clean workspace-level narrative with a summary has no hard-reject marker.
   assert.equal(workspaceNarrativeHardRejectReason(REAL_SHOP_NARRATIVE, 'Runs the storefront ordering and catalog backend.'), null);
 });
@@ -1640,6 +1645,94 @@ test('a gate rejection re-prompts with the rejection reason (and a fresh cache k
     else process.env.OLLAMA_BASE_URL = originalOllamaBaseUrl;
     if (originalOllamaAuto === undefined) delete process.env.KLAURO_OLLAMA_AUTO;
     else process.env.KLAURO_OLLAMA_AUTO = originalOllamaAuto;
+  }
+});
+
+test('a model response that lacks product_value_summary is rejected at the accept path and re-prompted naming the missing field', async () => {
+  const originalGenerate = aiService.generateComponentDescription;
+  const originalEnv = process.env.KLAURO_WORKSPACE_AI_ENRICHMENT;
+  const originalAutoConfig = process.env.KLAURO_WORKSPACE_AI_AUTO_CONFIG;
+  process.env.KLAURO_WORKSPACE_AI_ENRICHMENT = 'true';
+  process.env.KLAURO_WORKSPACE_AI_AUTO_CONFIG = 'false';
+
+  const contexts: Array<Record<string, unknown> | undefined> = [];
+  aiService.generateComponentDescription = async (context: any) => {
+    contexts.push(context?.additionalContext);
+    if (typeof context?.additionalContext?.rejection_feedback === 'string') {
+      // The field-naming re-prompt supplies the missing summary.
+      return JSON.stringify({
+        description: REAL_SHOP_NARRATIVE,
+        product_value_summary: 'Runs the storefront ordering and catalog backend.',
+      });
+    }
+    // First attempt: an otherwise-acceptable narrative that simply OMITS the
+    // product_value_summary field (the live v1.0.63 OpenClaw/Clients/Personal
+    // shape). The old accept path persisted this as source='ai' with an empty
+    // summary; it must now be rejected and re-prompted instead.
+    return JSON.stringify({ description: REAL_SHOP_NARRATIVE });
+  };
+  try {
+    const graph = buildCrossCodebaseSystemGraph('shop-workspace', [
+      { path: '/tmp/shop-api', name: 'shop-api', cas: shopCas() },
+    ]);
+    const enriched = await enrichWorkspaceAnalysisNarrative(graph);
+    assert.equal(enriched.workspace_narrative.source, 'ai');
+    assert.equal(enriched.workspace_narrative.product_value_summary, 'Runs the storefront ordering and catalog backend.');
+    const repairContext = contexts.find(context => typeof context?.rejection_feedback === 'string');
+    assert.ok(repairContext, 'the re-prompt must fire when the summary field is missing');
+    assert.match(String(repairContext!.rejection_feedback), /product_value_summary/i, 'the re-prompt must name the missing field');
+  } finally {
+    aiService.generateComponentDescription = originalGenerate;
+    if (originalEnv === undefined) delete process.env.KLAURO_WORKSPACE_AI_ENRICHMENT;
+    else process.env.KLAURO_WORKSPACE_AI_ENRICHMENT = originalEnv;
+    if (originalAutoConfig === undefined) delete process.env.KLAURO_WORKSPACE_AI_AUTO_CONFIG;
+    else process.env.KLAURO_WORKSPACE_AI_AUTO_CONFIG = originalAutoConfig;
+  }
+});
+
+test('persist seam: source=ai with an empty product_value_summary is structurally impossible', async () => {
+  const originalGenerate = aiService.generateComponentDescription;
+  const graph = buildCrossCodebaseSystemGraph('shop-workspace', [
+    { path: '/tmp/shop-api', name: 'shop-api', cas: shopCas() },
+  ]);
+
+  // Case 1: the field-naming re-prompt recovers the summary and 'ai' stands.
+  const contexts: Array<Record<string, unknown> | undefined> = [];
+  aiService.generateComponentDescription = async (context: any) => {
+    contexts.push(context?.additionalContext);
+    return JSON.stringify({ product_value_summary: 'Runs the storefront ordering and catalog backend.' });
+  };
+  try {
+    graph.workspace_narrative = { ...graph.workspace_narrative, source: 'ai', description: REAL_SHOP_NARRATIVE, product_value_summary: '' };
+    await enforceWorkspaceNarrativeProductValueSummary(graph);
+    assert.equal(graph.workspace_narrative.source, 'ai');
+    assert.equal(graph.workspace_narrative.product_value_summary, 'Runs the storefront ordering and catalog backend.');
+    assert.equal(contexts.length, 1, 'exactly one re-prompt');
+    assert.match(String(contexts[0]?.rejection_feedback), /product_value_summary/i, 'the re-prompt must name the missing field');
+
+    // Case 2: the re-prompt STILL does not supply the field -> honest degrade.
+    aiService.generateComponentDescription = async () => JSON.stringify({ description: 'still no summary field in this response, only unrelated prose that goes on long enough to be non-empty' });
+    graph.workspace_narrative = { ...graph.workspace_narrative, source: 'ai', description: REAL_SHOP_NARRATIVE, product_value_summary: '' };
+    await enforceWorkspaceNarrativeProductValueSummary(graph);
+    assert.equal(graph.workspace_narrative.source, 'ai-required-degraded');
+    assert.match(String(graph.workspace_narrative.degraded_reason), /missing product_value_summary/i);
+
+    // Case 3: the AI call fails outright -> honest degrade, never empty-PVS-as-ai.
+    aiService.generateComponentDescription = async () => { throw new Error('provider down'); };
+    graph.workspace_narrative = { ...graph.workspace_narrative, source: 'ai', description: REAL_SHOP_NARRATIVE, product_value_summary: '', degraded_reason: undefined };
+    await enforceWorkspaceNarrativeProductValueSummary(graph);
+    assert.equal(graph.workspace_narrative.source, 'ai-required-degraded');
+    assert.match(String(graph.workspace_narrative.degraded_reason), /missing product_value_summary/i);
+
+    // A narrative that already carries a summary is untouched (no AI call).
+    let called = false;
+    aiService.generateComponentDescription = async () => { called = true; return '{}'; };
+    graph.workspace_narrative = { ...graph.workspace_narrative, source: 'ai', description: REAL_SHOP_NARRATIVE, product_value_summary: 'Runs the storefront ordering and catalog backend.', degraded_reason: undefined };
+    await enforceWorkspaceNarrativeProductValueSummary(graph);
+    assert.equal(graph.workspace_narrative.source, 'ai');
+    assert.equal(called, false);
+  } finally {
+    aiService.generateComponentDescription = originalGenerate;
   }
 });
 

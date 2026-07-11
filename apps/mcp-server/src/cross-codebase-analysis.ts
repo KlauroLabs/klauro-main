@@ -1116,7 +1116,19 @@ export async function enrichWorkspaceAnalysisNarrative(graph: WorkspaceAnalysisG
     const parsed = parseWorkspaceNarrativeJson(raw);
     const now = new Date().toISOString();
     const narrativeDescription = String(parsed.description || '').trim();
-    const narrativeGate = evaluateWorkspaceNarrativeGate(graph, narrativeDescription, parsed.product_value_summary, graph.workspace_narrative.product_value_summary);
+    // GATE/PERSIST AGREEMENT (live v1.0.63 contradiction): the gate used to
+    // check the RAW parsed summary for non-emptiness, while the accepted branch
+    // persisted the STRICTER usefulAiProductValueSummary(...) result — so a
+    // summary that was non-empty at gate time but rejected by the usefulness
+    // filter persisted source='ai' with product_value_summary:"". Compute the
+    // value that will actually persist FIRST and gate on that.
+    const acceptedProductValueSummary = usefulAiProductValueSummary(parsed.product_value_summary, graph.workspace_narrative.product_value_summary, graph)
+      || safeAiProductValueSummary(parsed.product_value_summary, graph.workspace_narrative.product_value_summary, graph)
+      || String(graph.workspace_narrative.product_value_summary || '').trim();
+    const baseNarrativeGate = evaluateWorkspaceNarrativeGate(graph, narrativeDescription, parsed.product_value_summary, graph.workspace_narrative.product_value_summary);
+    const narrativeGate = baseNarrativeGate.accepted && !acceptedProductValueSummary
+      ? { accepted: false, reason: 'missing product_value_summary: the response omitted a usable product_value_summary field — return JSON that explicitly includes a non-empty product_value_summary (one concrete, evidence-backed sentence)' }
+      : baseNarrativeGate;
     graph.workspace_narrative = narrativeGate.accepted
       ? {
           ...graph.workspace_narrative,
@@ -1127,7 +1139,7 @@ export async function enrichWorkspaceAnalysisNarrative(graph: WorkspaceAnalysisG
           generated_at: now,
           confidence: Math.max(graph.workspace_narrative.confidence, 0.76),
           description: narrativeDescription,
-          product_value_summary: usefulAiProductValueSummary(parsed.product_value_summary, graph.workspace_narrative.product_value_summary, graph) || graph.workspace_narrative.product_value_summary,
+          product_value_summary: acceptedProductValueSummary,
           domains: parsed.domains?.length ? parsed.domains.slice(0, 12) : graph.workspace_narrative.domains,
           key_capabilities: parsed.key_capabilities?.length ? parsed.key_capabilities.slice(0, 12) : graph.workspace_narrative.key_capabilities,
           value_drivers: parsed.value_drivers?.length ? parsed.value_drivers.slice(0, 8) : graph.workspace_narrative.value_drivers,
@@ -1173,6 +1185,7 @@ export async function enrichWorkspaceAnalysisNarrative(graph: WorkspaceAnalysisG
       if (!stillMissingDefaultDescriptions) break;
     }
     finalizeRequiredWorkspaceAiSemantics(graph, now);
+    await enforceWorkspaceNarrativeProductValueSummary(graph);
     graph.detail_views.overview.capabilities = graph.workspace_capabilities.slice(0, 12);
     graph.detail_views.overview.workflows = graph.workspace_workflows.slice(0, 12);
     graph.detail_views.overview.entities = graph.workspace_entities.slice(0, 12);
@@ -1224,6 +1237,7 @@ async function enrichWorkspaceAnalysisNarrativeWithSmallPasses(
     if (!stillMissingDefaultDescriptions) break;
   }
   finalizeRequiredWorkspaceAiSemantics(graph, generatedAt);
+  await enforceWorkspaceNarrativeProductValueSummary(graph);
   applyWorkspaceAiProviderMetadata(graph);
 
   graph.detail_views.overview.capabilities = graph.workspace_capabilities.slice(0, 12);
@@ -1505,7 +1519,15 @@ async function repairRejectedWorkspaceNarrative(
     writeWorkspaceAiRepairDebug({ stage: 'narrative-repair-raw', attempt: attempt ?? 0, rejection_reason: truncateText(rejectionReason, 400), raw: truncateText(raw, 1800) });
     const parsed = parseWorkspaceNarrativeJson(raw);
     const description = String(parsed.description || cleanNarrativeString(raw) || '').trim();
-    const gate = evaluateWorkspaceNarrativeGate(graph, description, parsed.product_value_summary, graph.workspace_narrative.product_value_summary);
+    // Same gate/persist agreement as the primary pass: gate on the summary that
+    // will actually persist, never on the raw pre-filter value.
+    const repairedProductValueSummary = usefulAiProductValueSummary(parsed.product_value_summary, graph.workspace_narrative.product_value_summary, graph)
+      || safeAiProductValueSummary(parsed.product_value_summary, graph.workspace_narrative.product_value_summary, graph)
+      || String(graph.workspace_narrative.product_value_summary || '').trim();
+    const baseGate = evaluateWorkspaceNarrativeGate(graph, description, parsed.product_value_summary, graph.workspace_narrative.product_value_summary);
+    const gate = baseGate.accepted && !repairedProductValueSummary
+      ? { accepted: false, reason: 'missing product_value_summary: the response omitted a usable product_value_summary field — return JSON that explicitly includes a non-empty product_value_summary (one concrete, evidence-backed sentence)' }
+      : baseGate;
     if (!gate.accepted) {
       return {
         ...graph.workspace_narrative,
@@ -1519,7 +1541,7 @@ async function repairRejectedWorkspaceNarrative(
       generated_at: generatedAt,
       confidence: Math.max(graph.workspace_narrative.confidence, 0.74),
       description,
-      product_value_summary: usefulAiProductValueSummary(parsed.product_value_summary, graph.workspace_narrative.product_value_summary, graph) || graph.workspace_narrative.product_value_summary,
+      product_value_summary: repairedProductValueSummary,
       ai_provider: metadata.provider,
       ai_model: metadata.model,
       ai_structured_model: metadata.structured_model,
@@ -1528,6 +1550,55 @@ async function repairRejectedWorkspaceNarrative(
   } catch {
     return graph.workspace_narrative;
   }
+}
+
+/**
+ * LAST-STEP-BEFORE-PERSIST invariant: a workspace narrative with source='ai'
+ * MUST carry a non-empty product_value_summary. The gate enforces this on the
+ * paths it sees, but the enrichment pipeline has several accept/promote paths;
+ * this runs after ALL of them so the invariant holds structurally at the seam
+ * whose return value is what persists (record.graph = await enrich...(graph)).
+ * When the summary is missing: one re-prompt that explicitly names the missing
+ * field; if the model still does not supply a usable one, honest degrade with
+ * reason "missing product_value_summary". Exported for tests.
+ */
+export async function enforceWorkspaceNarrativeProductValueSummary(graph: WorkspaceAnalysisGraph): Promise<void> {
+  const narrative = graph.workspace_narrative;
+  if (!narrative || narrative.source !== 'ai') return;
+  if (String(narrative.product_value_summary || '').trim()) return;
+  try {
+    const raw = await withWorkspaceAiTimeout(generateWorkspaceAiText({
+      responseFormat: 'json',
+      maxTokens: Number(process.env.KLAURO_WORKSPACE_AI_REPAIR_MAX_TOKENS || '240'),
+      prompt_version: 'was-missing-product-value-summary-v1',
+      task: 'The accepted workspace narrative is missing its REQUIRED product_value_summary field. Return only valid JSON shaped {"product_value_summary":"..."} — one concrete, evidence-backed sentence explaining the product/business job this workspace serves.',
+      rejection_feedback: 'missing product_value_summary: the previous response omitted or emptied the product_value_summary field. You must return the product_value_summary field explicitly and non-empty.',
+      rules: [
+        'Return the product_value_summary field explicitly; never omit or empty it.',
+        'One sentence, plain product language, grounded in the supplied description and capabilities only.',
+        'No raw internal identifiers, hashes, route paths, or marketing language.',
+      ],
+      workspace_description: narrative.description,
+      key_capabilities: (narrative.key_capabilities || []).slice(0, 8),
+      domains: (narrative.domains || []).slice(0, 8),
+    }));
+    assertRealWorkspaceAiAttempt(raw);
+    const parsed = parseWorkspaceNarrativeJson(raw);
+    const summary = usefulAiProductValueSummary(parsed.product_value_summary, narrative.product_value_summary, graph)
+      || safeAiProductValueSummary(parsed.product_value_summary, narrative.product_value_summary, graph);
+    if (summary && !workspaceNarrativeHardRejectReason(narrative.description, summary)) {
+      graph.workspace_narrative = { ...narrative, product_value_summary: summary };
+      return;
+    }
+  } catch {
+    // Fall through to the honest degrade below — persisting source='ai' with an
+    // empty product_value_summary is never an option.
+  }
+  graph.workspace_narrative = {
+    ...narrative,
+    source: 'ai-required-degraded',
+    degraded_reason: 'missing product_value_summary: the AI narrative was accepted without a product_value_summary and one field-naming re-prompt did not supply a usable one',
+  };
 }
 
 async function configureWorkspaceAiProviderDefaults(): Promise<void> {
@@ -2685,6 +2756,15 @@ export function workspaceNarrativeHardRejectReason(description: string, effectiv
   if (/\bis an? (?:[a-z][a-z-]*\s+){0,3}flow\b/i.test(raw) || /\b(?:reached|triggered|invoked) by\b[^.]{0,120}\broutes?\b/i.test(raw)) {
     return 'the description is single-flow altitude prose (describes one flow/endpoint, not the workspace)';
   }
+  // Hash-shaped token leak (the known hash-token-leak class): a bare 4+ char
+  // digit/hex token tied to hash/sha/checksum context is analyzer plumbing at
+  // the wrong altitude (live: "Docker images from a Dockerfile with hash 7331").
+  if (
+    /\b(?:hash(?:es)?|sha-?\d*|checksums?|digests?)\b[\s:=("'`-]{0,4}(?:value\s+|token\s+|id\s+)?[0-9a-f]{4,64}\b/i.test(raw) ||
+    /\b[0-9a-f]{7,64}\b[\s)"'`-]{0,3}(?:hash(?:es)?|sha|checksums?|digests?)\b/i.test(raw)
+  ) {
+    return 'the description leaks a raw hash-shaped token (bare digit/hex token tied to hash/sha context)';
+  }
   // Plain non-empty check (NOT cleanNarrativeString, whose >=80-char floor
   // would misclassify a valid one-sentence summary as "empty").
   const summary = String(effectiveProductValueSummary ?? '').trim();
@@ -2850,6 +2930,23 @@ function workspaceNarrativeMentionsSourceBackedAccessTopology(graph: WorkspaceAn
 // synthesized deterministic sentence.
 
 function usefulAiProductValueSummary(value: unknown, fallback?: string, graph?: WorkspaceAnalysisGraph): string | undefined {
+  const text = safeAiProductValueSummary(value, fallback, graph);
+  if (!text) return undefined;
+  const normalized = normalizeAiItemName(text);
+  const hasConcreteProductTerms = /\b(access|identity|auth0|device|policy|network|gateway|agent|api|desktop|codebase|analysis|mcp|workflow|account|portfolio|transaction|payment|balance|asset|trading|settlement|report|finance|financial|cas|telemetry|graph)\b/.test(normalized);
+  const hasConcreteVerb = /\b(coordinates?|manages?|brokers?|routes?|enforces?|connects?|analyzes?|maps?|guides?|protects?)\b/.test(normalized);
+  return hasConcreteProductTerms && hasConcreteVerb ? text : undefined;
+}
+
+/**
+ * SAFETY-only filter for a product_value_summary: rejects unsupported product
+ * frames and marketing language but does NOT apply usefulAiProductValueSummary's
+ * concrete-term/verb quality heuristic. Used at the persist seam so a summary
+ * the gate accepted can never be silently emptied by a keyword-list heuristic
+ * (the live v1.0.63 empty-PVS-as-ai class): a safe-but-plain summary persists;
+ * only unsafe or genuinely missing summaries fall through to re-prompt/degrade.
+ */
+function safeAiProductValueSummary(value: unknown, fallback?: string, graph?: WorkspaceAnalysisGraph): string | undefined {
   const text = cleanNarrativeSummaryString(value);
   if (!text) return undefined;
   const normalized = normalizeAiItemName(text);
@@ -2861,9 +2958,7 @@ function usefulAiProductValueSummary(value: unknown, fallback?: string, graph?: 
   if (/\b(codebase intelligence|cas|mcp|agent context|analyzer)\b/.test(normalized) && graph && !workspaceHasCodebaseIntelligenceSignal(graph)) return undefined;
   const unsupportedMarketing = /\b(scalable|enterprise grade|enterprise-grade|real time|mission critical|mission-critical|compliance|hybrid environments?)\b/.test(normalized);
   if (unsupportedMarketing) return undefined;
-  const hasConcreteProductTerms = /\b(access|identity|auth0|device|policy|network|gateway|agent|api|desktop|codebase|analysis|mcp|workflow|account|portfolio|transaction|payment|balance|asset|trading|settlement|report|finance|financial|cas|telemetry|graph)\b/.test(normalized);
-  const hasConcreteVerb = /\b(coordinates?|manages?|brokers?|routes?|enforces?|connects?|analyzes?|maps?|guides?|protects?)\b/.test(normalized);
-  return hasConcreteProductTerms && hasConcreteVerb ? text : undefined;
+  return text;
 }
 
 function workspaceHasSecureNetworkAccessSignal(graph: WorkspaceAnalysisGraph): boolean {

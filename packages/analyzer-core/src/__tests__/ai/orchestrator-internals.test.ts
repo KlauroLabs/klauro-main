@@ -3485,3 +3485,27 @@ describe('entity-extraction gaps from real-repo onboarding (mtg/openclaw/hercule
     expect(users[0].lifecycle.read_by).toContain('svc_get_user');
   });
 });
+
+describe('repairDanglingSentenceEndings', () => {
+  it('strips a trailing dangling preposition left by a truncated clause (the accepted Klauro description class)', () => {
+    const text = 'Klauro is a codebase analysis platform built as a monorepo. It stores telemetry data and graph evidence for.';
+    expect(orch.repairDanglingSentenceEndings(text)).toBe(
+      'Klauro is a codebase analysis platform built as a monorepo. It stores telemetry data and graph evidence.'
+    );
+  });
+
+  it('strips stacked dangling function words back to the last content word', () => {
+    expect(orch.repairDanglingSentenceEndings('The service records analysis runs and exposes them to agents with the.'))
+      .toBe('The service records analysis runs and exposes them to agents.');
+  });
+
+  it('drops a sentence gutted by the repair when other sentences remain', () => {
+    expect(orch.repairDanglingSentenceEndings('The service runs scheduled analysis jobs across every repository. Built for and with the.'))
+      .toBe('The service runs scheduled analysis jobs across every repository.');
+  });
+
+  it('leaves clean prose untouched', () => {
+    const clean = 'The service records analysis runs. Agents query the resulting graph to plan changes.';
+    expect(orch.repairDanglingSentenceEndings(clean)).toBe(clean);
+  });
+});
