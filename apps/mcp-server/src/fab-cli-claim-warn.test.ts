@@ -16,12 +16,20 @@ const repoRoot = path.resolve(__dirname, '..');
 const tsxBin = fs.existsSync(path.join(repoRoot, 'node_modules', '.bin', 'tsx'))
   ? path.join(repoRoot, 'node_modules', '.bin', 'tsx')
   : path.join(repoRoot, '..', '..', 'node_modules', '.bin', 'tsx');
+const fabScript = path.join(repoRoot, 'scripts', 'fab.ts');
 
 function runFab(coordDir: string, args: string[]) {
-  return spawnSync(tsxBin, ['scripts/fab.ts', ...args], {
-    cwd: repoRoot,
+  // cwd is the throwaway coord dir, NOT the repo: fab.ts resolves its tier +
+  // workspace from the nearest .klaurorc (resolveFabricSettings). Run from
+  // inside this repo and it finds the repo's own fabric config — remote tier,
+  // config workspace (which beats FAB_WS) — and the test would exercise the
+  // LIVE fabric endpoint (nondeterministic: prior runs' claims persist there
+  // for their TTL) instead of the local store under KLAURO_COORD_DIR. From a
+  // config-less temp cwd the chain is FAB_WS -> local store, fully hermetic.
+  return spawnSync(tsxBin, [fabScript, ...args], {
+    cwd: coordDir,
     encoding: 'utf8',
-    env: { ...process.env, KLAURO_COORD_DIR: coordDir, FAB_WS: 'fab-cli-test' },
+    env: { ...process.env, KLAURO_COORD_DIR: coordDir, FAB_WS: 'fab-cli-test', KLAURO_FABRIC_CWD: coordDir },
   });
 }
 

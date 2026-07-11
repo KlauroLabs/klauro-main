@@ -384,6 +384,80 @@ describe('AI interpretation budgets for hosted providers', () => {
   });
 });
 
+describe('AI repair re-prompt budget (2 attempts) and terminal throw', () => {
+  const envKeys = ['OPENAI_API_KEY', 'KLAURO_AI_INTERPRETATION', 'KLAURO_AI_INTERPRETATION_FORCE', 'KLAURO_AI_INTERPRETATION_BUDGET_MS'];
+  let saved: Record<string, string | undefined>;
+
+  beforeEach(() => {
+    saved = Object.fromEntries(envKeys.map(key => [key, process.env[key]]));
+    process.env.OPENAI_API_KEY = 'test-openai-key';
+    // Comprehension is AI-only and default-OFF in tests (setup.ts); opt into it.
+    process.env.KLAURO_AI_INTERPRETATION = 'true';
+    process.env.KLAURO_AI_INTERPRETATION_FORCE = '1';
+    delete process.env.KLAURO_AI_INTERPRETATION_BUDGET_MS;
+  });
+
+  afterEach(() => {
+    for (const key of envKeys) {
+      if (saved[key] === undefined) delete process.env[key];
+      else process.env[key] = saved[key];
+    }
+    jest.restoreAllMocks();
+  });
+
+  const freshPurpose = (): any => ({
+    primary_type: 'developer-tool',
+    confidence: 0.9,
+    evidence: [],
+    primary_domain: 'code-analysis',
+    core_concepts: ['code', 'analysis'],
+    inferred_description: 'A code analysis service.',
+    supporting_workflow_ids: [],
+  });
+
+  // Semantically unfixable: "interaction surfaces" is a source-bucket
+  // restatement that neither the sanitizer nor the mechanical repair path
+  // edits away — only a fresh AI re-prompt could fix it.
+  const badAnswer = JSON.stringify({
+    system_description: 'Klauro analyzes code repositories and builds analysis graphs for coding agents to consume before they edit. It exposes interaction surfaces for operators to trigger analysis runs and inspect code analysis results across repositories and workspaces before agents act on them.',
+    domain: '',
+    descriptions: [],
+  });
+  const goodAnswer = JSON.stringify({
+    system_description: 'Klauro builds CAS relationship graphs from source repositories so coding agents can reason about a codebase before touching it. It parses code into structural facts — call graphs, routes, entities, and tests — and layers comprehension over them. The pipeline resolves references, derives capabilities, and grounds every description in the evidence bundle it gathered. It is built in TypeScript and hands this analysis context to agents over MCP, keeping facts deterministic and meaning model-authored.',
+    domain: '',
+    descriptions: [],
+  });
+
+  it('accepts a description produced on the SECOND repair re-prompt (previously only one repair pass existed)', async () => {
+    const spy = jest.spyOn(aiService, 'generateComponentDescription')
+      .mockResolvedValueOnce(badAnswer)
+      .mockResolvedValueOnce(badAnswer)
+      .mockResolvedValueOnce(goodAnswer);
+    const purpose = freshPurpose();
+
+    await orch.applyAIInterpretation(purpose, 'analysis-api', [], [], [], [], orch.emptyFlowGraph(), []);
+
+    // 1 initial + 2 repair re-prompts.
+    expect(spy).toHaveBeenCalledTimes(3);
+    expect(purpose.description_generation.status).toBe('ai_applied');
+    expect(purpose.inferred_description).toMatch(/CAS relationship graphs/);
+  });
+
+  it('throws AFTER exhausting both repair re-prompts (AI-only-or-throw stands, no deterministic fallback)', async () => {
+    const spy = jest.spyOn(aiService, 'generateComponentDescription').mockResolvedValue(badAnswer);
+    const purpose = freshPurpose();
+
+    await expect(
+      orch.applyAIInterpretation(purpose, 'analysis-api', [], [], [], [], orch.emptyFlowGraph(), [])
+    ).rejects.toThrow(/failed the grounding gate \(source-bucket-restatement\)/);
+
+    expect(spy).toHaveBeenCalledTimes(3);
+    expect(purpose.description_generation.status).toBe('ai_rejected');
+    expect(purpose.inferred_description).toBe('A code analysis service.');
+  });
+});
+
 describe('self-analysis AI description guardrails', () => {
   const purpose: any = {
     primary_type: 'developer-tool',

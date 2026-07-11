@@ -8851,16 +8851,15 @@ export class AnalyzerOrchestrator {
       enhancedSystemPurpose.primary_domain = firstDomainCandidate;
     }
 
-    let cleaned = this.cleanGeneratedDescriptionText(combined.systemDescription || '');
-    let validation = this.validateGeneratedAIInterpretation(cleaned, enhancedSystemPurpose, interpretationFacts);
-    if (!validation.ok) {
-      const sanitized = this.sanitizeAIInterpretation(cleaned, enhancedSystemPurpose, interpretationFacts);
-      const sanitizedValidation = this.validateGeneratedAIInterpretation(sanitized, enhancedSystemPurpose, interpretationFacts);
-      if (sanitizedValidation.ok) {
-        cleaned = sanitized;
-        validation = sanitizedValidation;
-      }
-    }
+    // Validate → sanitize → MECHANICAL repair (repair-not-reject): 'too-long'
+    // and single-word 'unsupported-marketing-language' rejections are
+    // deterministic edits of the AI's own text, healed here without burning a
+    // repair re-prompt. Semantic rejections fall through to the AI repair loop.
+    let { text: cleaned, validation } = this.acceptAIInterpretationCandidate(
+      combined.systemDescription || '',
+      enhancedSystemPurpose,
+      interpretationFacts
+    );
 
     const acceptedElements = new Map<string, string>();
     const rejectedElements = new Map<string, string>();
@@ -8876,8 +8875,14 @@ export class AnalyzerOrchestrator {
       else rejectedElements.set(target.id, elementValidation.reason || 'generated-description-failed-quality-gate');
     }
 
-    // One bounded repair pass to fix ungrounded parts — still AI, still grounded.
-    if ((!validation.ok || rejectedElements.size > 0) && Date.now() - aiStartedAt < budgetMs) {
+    // Bounded AI repair re-prompts (up to 2) to fix ungrounded parts — still
+    // AI, still grounded. Each attempt carries the LATEST rejected text and
+    // its specific rejection reason so the model fixes the actual failure
+    // instead of re-rolling blind; mechanically-fixable rejections never reach
+    // here (healed above / below via acceptAIInterpretationCandidate).
+    for (let repairAttempt = 0; repairAttempt < 2; repairAttempt++) {
+      if (validation.ok && rejectedElements.size === 0) break;
+      if (Date.now() - aiStartedAt >= budgetMs) break;
       try {
         const remainingMs = Math.max(1, budgetMs - (Date.now() - aiStartedAt));
         let repairTimeoutHandle: NodeJS.Timeout | undefined;
@@ -8905,20 +8910,19 @@ export class AnalyzerOrchestrator {
         if (repairTimeoutHandle) clearTimeout(repairTimeoutHandle);
         const repaired = this.parseCombinedInterpretation(repairRaw);
         if (repaired.domain) domainCandidates.push(repaired.domain);
-        if (!validation.ok) {
-          let repairedDescription = this.cleanGeneratedDescriptionText(repaired.systemDescription || '');
-          let repairedValidation = this.validateGeneratedAIInterpretation(repairedDescription, enhancedSystemPurpose, interpretationFacts);
-          if (!repairedValidation.ok) {
-            const sanitizedRepair = this.sanitizeAIInterpretation(repairedDescription, enhancedSystemPurpose, interpretationFacts);
-            const sanitizedRepairValidation = this.validateGeneratedAIInterpretation(sanitizedRepair, enhancedSystemPurpose, interpretationFacts);
-            if (sanitizedRepairValidation.ok) {
-              repairedDescription = sanitizedRepair;
-              repairedValidation = sanitizedRepairValidation;
-            }
-          }
-          if (repairedValidation.ok) {
-            cleaned = repairedDescription;
-            validation = repairedValidation;
+        if (!validation.ok && (repaired.systemDescription || '').trim()) {
+          // Same validate → sanitize → mechanical-repair path as the first
+          // pass. On acceptance we're done; on rejection, adopt the repaired
+          // candidate's text + reason so the NEXT re-prompt (if any) carries
+          // the newest rejection instead of re-litigating the first pass.
+          const outcome = this.acceptAIInterpretationCandidate(
+            repaired.systemDescription || '',
+            enhancedSystemPurpose,
+            interpretationFacts
+          );
+          if (outcome.text) {
+            cleaned = outcome.text;
+            validation = outcome.validation;
           }
         }
         for (const target of capabilityTargets) {
@@ -9989,6 +9993,111 @@ export class AnalyzerOrchestrator {
     return (description.match(/[.!?](?:\s|$)/g) || []).length;
   }
 
+  /**
+   * MECHANICAL self-heal for gate rejections that are deterministic EDITS of
+   * the AI's own text, not deterministic authorship (the AI-only comprehension
+   * boundary stands: trimming AI prose to a length budget or deleting a flagged
+   * marketing word edits AI output without adding a single non-AI claim).
+   * Handles exactly two reason classes:
+   *  - 'too-long': trim to the last full sentence inside the 2000-char limit
+   *    (prod: hercules — a valid paragraph perma-rejected for running long).
+   *  - 'unsupported-marketing-language: <words>': strip precisely the flagged
+   *    words/phrases (prod: electripure — ONE "efficient" killed an otherwise
+   *    grounded paragraph) — UNLESS the paragraph is SATURATED with marketing
+   *    language (many distinct flagged phrases or repeated occurrences), where
+   *    word-deletion would gut the text; saturation stays a semantic rejection
+   *    for the AI repair re-prompt.
+   * Returns undefined when the reason is not mechanically fixable (all
+   * semantic reason classes go to the AI re-prompt instead).
+   */
+  private mechanicallyRepairAIInterpretation(description: string, reason?: string): string | undefined {
+    if (!reason) return undefined;
+    if (reason === 'too-long') {
+      const cleaned = this.cleanGeneratedDescriptionText(description);
+      if (cleaned.length <= 2000) return undefined;
+      const window = cleaned.slice(0, 2000);
+      const lastSentenceEnd = Math.max(window.lastIndexOf('.'), window.lastIndexOf('!'), window.lastIndexOf('?'));
+      const trimmed = (lastSentenceEnd > 0 ? window.slice(0, lastSentenceEnd + 1) : window).trim();
+      return trimmed && trimmed !== cleaned ? trimmed : undefined;
+    }
+    const marketing = /^unsupported-marketing-language:\s*(.+)$/.exec(reason);
+    if (marketing) {
+      const flagged = Array.from(new Set(
+        marketing[1].split(',').map(phrase => phrase.trim()).filter(Boolean)
+      ));
+      if (flagged.length === 0) return undefined;
+      const flaggedPatterns = flagged.map(phrase => {
+        const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+');
+        return new RegExp(`\\b${escaped}\\b`, 'gi');
+      });
+      const totalOccurrences = flaggedPatterns.reduce(
+        (count, pattern) => count + (description.match(pattern) || []).length,
+        0
+      );
+      // SATURATION GATE: a paragraph leaning on marketing vocabulary
+      // throughout is a semantic failure, not a word-level cleanup — deleting
+      // 4+ distinct phrases (or 6+ occurrences) would leave a gutted husk that
+      // no longer says what the AI meant. Reject so the repair re-prompt (or
+      // the final throw) handles it.
+      if (flagged.length >= 4 || totalOccurrences >= 6) return undefined;
+      let stripped = description;
+      for (const pattern of flaggedPatterns) {
+        stripped = stripped.replace(pattern, '');
+      }
+      const repaired = this.cleanGeneratedDescriptionText(
+        stripped
+          .replace(/\s+,/g, ',')
+          .replace(/,(?:\s*,)+/g, ',')
+          .replace(/,\s*(?:and\s*)?\./g, '.')
+          .replace(/\s+\./g, '.')
+          .replace(/\band\s+\./gi, '.')
+          .replace(/\s{2,}/g, ' ')
+      );
+      return repaired && repaired !== this.cleanGeneratedDescriptionText(description) ? repaired : undefined;
+    }
+    return undefined;
+  }
+
+  /**
+   * Full acceptance path for ONE AI system-description candidate:
+   * validate → (on rejection) sanitize+revalidate → mechanical repair loop
+   * (each round fixes one reason class; a too-long trim can expose a flagged
+   * marketing word next) → sanitize the mechanically-repaired text as a last
+   * resort. Every accepted text has passed validateGeneratedAIInterpretation
+   * verbatim; on failure the returned text/reason are the LATEST candidate
+   * state, ready to feed the AI repair re-prompt.
+   */
+  private acceptAIInterpretationCandidate(
+    candidate: string,
+    enhancedSystemPurpose: EnhancedSystemPurpose,
+    facts: Parameters<AnalyzerOrchestrator['validateGeneratedAIInterpretation']>[2],
+  ): { text: string; validation: { ok: boolean; reason?: string } } {
+    let text = this.cleanGeneratedDescriptionText(candidate);
+    let validation = this.validateGeneratedAIInterpretation(text, enhancedSystemPurpose, facts);
+    if (validation.ok) return { text, validation };
+
+    const sanitized = this.sanitizeAIInterpretation(text, enhancedSystemPurpose, facts);
+    const sanitizedValidation = this.validateGeneratedAIInterpretation(sanitized, enhancedSystemPurpose, facts);
+    if (sanitizedValidation.ok) return { text: sanitized, validation: sanitizedValidation };
+
+    for (let round = 0; round < 3 && !validation.ok; round++) {
+      const repaired = this.mechanicallyRepairAIInterpretation(text, validation.reason);
+      if (!repaired || repaired === text) break;
+      text = repaired;
+      validation = this.validateGeneratedAIInterpretation(text, enhancedSystemPurpose, facts);
+    }
+    if (validation.ok) return { text, validation };
+
+    // The mechanical edit may have unlocked the sentence-level sanitizer path
+    // (e.g. marketing word stripped, remaining phrasing rejection fixable).
+    const sanitizedRepair = this.sanitizeAIInterpretation(text, enhancedSystemPurpose, facts);
+    if (sanitizedRepair !== text) {
+      const sanitizedRepairValidation = this.validateGeneratedAIInterpretation(sanitizedRepair, enhancedSystemPurpose, facts);
+      if (sanitizedRepairValidation.ok) return { text: sanitizedRepair, validation: sanitizedRepairValidation };
+    }
+    return { text, validation };
+  }
+
   private projectNameAppearsAsConcept(description: string, systemName?: string): boolean {
     const tokens = String(systemName || '')
       .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
@@ -10043,6 +10152,21 @@ export class AnalyzerOrchestrator {
       'main', 'primary', 'central', 'general', 'purpose', 'multi', 'single',
       'automated', 'comprehensive',
     ]);
+    // Verbal participle connectors: -ing forms that link a noun to its
+    // complement clause ("monorepo INCORPORATING tree-sitter parsers") rather
+    // than describing the head noun attributively ("security-SCANNING tool").
+    // These are verb forms, not system-type claims, so they are never counted
+    // as distinctive modifiers that need grounding. This is a secondary guard
+    // behind the positional cut below (a non-final -ing token ends the
+    // attributive run), catching connectors that land directly before a head
+    // noun ("suite incorporating services").
+    const participleConnectors = new Set([
+      'incorporating', 'using', 'leveraging', 'utilizing', 'employing',
+      'providing', 'enabling', 'combining', 'supporting', 'including',
+      'featuring', 'comprising', 'containing', 'offering', 'integrating',
+      'exposing', 'powering', 'serving', 'delivering', 'wrapping',
+      'spanning', 'orchestrating', 'coordinating', 'bundling',
+    ]);
     const nameTokens = new Set(
       String(facts.systemName || '')
         .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
@@ -10064,12 +10188,32 @@ export class AnalyzerOrchestrator {
       .toLowerCase();
     let phraseMatch: RegExpExecArray | null;
     while ((phraseMatch = phrasePattern.exec(cleaned)) !== null) {
-      // Distinctive modifier tokens (drop articles, generic build words, and the
-      // system's own name — none of those are a claim that needs evidence).
-      const modifierTokens = phraseMatch[1]
+      const rawTokens = phraseMatch[1]
         .toLowerCase()
         .split(/[^a-z0-9]+/)
-        .filter(token => token.length >= 4 && !stopWords.has(token) && !nameTokens.has(token) && !this.isGenericCapabilityToken(token));
+        .filter(Boolean);
+      // The modifier window can cross a clause boundary: in "an internal
+      // platform incorporating the core services", the -ing token is a verbal
+      // participle opening the complement of the PRECEDING noun, not an
+      // attributive modifier of the head noun ("services"). Only tokens AFTER
+      // the last such participle genuinely premodify the head; an -ing token
+      // is attributive only when it sits directly against the head
+      // ("security-scanning tool", "parsing pipeline"). Cut the run at the
+      // last non-final -ing token so verb forms/gerunds are never enforced as
+      // system-type claims (the prod 'ungrounded-system-type: incorporating'
+      // false rejection).
+      let attributiveTokens = rawTokens;
+      for (let i = rawTokens.length - 2; i >= 0; i--) {
+        if (/[a-z]{3,}ing$/.test(rawTokens[i])) {
+          attributiveTokens = rawTokens.slice(i + 1);
+          break;
+        }
+      }
+      // Distinctive modifier tokens (drop articles, generic build words, the
+      // system's own name, and verbal participle connectors — none of those
+      // are a claim that needs evidence).
+      const modifierTokens = attributiveTokens
+        .filter(token => token.length >= 4 && !stopWords.has(token) && !nameTokens.has(token) && !this.isGenericCapabilityToken(token) && !participleConnectors.has(token));
       if (modifierTokens.length === 0) continue;
       // Grounded if ANY distinctive modifier token (or its 5-char stem) appears
       // in the evidence corpus. Stemming lets "scanning"/"scanner", "crypto"/
@@ -12186,6 +12330,33 @@ export class AnalyzerOrchestrator {
   }
 
   private buildDataEntities(nodes: CASNode[], edges: CASEdge[], projectPath?: string): CASDataEntity[] {
+    // ORM entities keyed by canonical identity (the name-derived entity id).
+    // Multiple anchor nodes can describe the same entity (a framework analyzer's
+    // model node + a language analyzer's class node, or two same-named models):
+    // without dedup the SAME id appears twice in database_entities. On collision
+    // keep the richest-evidence copy (most fields; tie → the one with a schema
+    // source) and union the lifecycle so no accessor evidence is dropped.
+    const ormEntitiesById = new Map<string, CASDataEntity>();
+    const mergeOrmEntity = (candidate: CASDataEntity) => {
+      const existing = ormEntitiesById.get(candidate.id);
+      if (!existing) {
+        ormEntitiesById.set(candidate.id, candidate);
+        return;
+      }
+      const richer =
+        (candidate.fields?.length || 0) > (existing.fields?.length || 0) ||
+        ((candidate.fields?.length || 0) === (existing.fields?.length || 0) &&
+          Boolean(candidate.schema_source) && !existing.schema_source)
+          ? candidate : existing;
+      const other = richer === candidate ? existing : candidate;
+      richer.lifecycle = {
+        created_by: [...new Set([...richer.lifecycle.created_by, ...other.lifecycle.created_by])],
+        read_by: [...new Set([...richer.lifecycle.read_by, ...other.lifecycle.read_by])],
+        updated_by: [...new Set([...richer.lifecycle.updated_by, ...other.lifecycle.updated_by])],
+        deleted_by: [...new Set([...richer.lifecycle.deleted_by, ...other.lifecycle.deleted_by])],
+      };
+      ormEntitiesById.set(candidate.id, richer);
+    };
     const entities: CASDataEntity[] = [];
 
     const entityNodes = nodes.filter(n =>
@@ -12255,6 +12426,29 @@ export class AnalyzerOrchestrator {
         });
       }
 
+      // Schema-file ORM analyzers (Prisma & co.) carry the parsed field list on
+      // the entity node's metadata.attributes.fields instead of emitting one
+      // property node per field. When no property nodes matched, surface those
+      // analyzer-parsed fields — same evidence, different carrier.
+      if (fields.length === 0) {
+        // createNode() spreads analyzer metadata onto node.metadata directly,
+        // while some analyzers nest under metadata.attributes — accept both.
+        const metadataRecord = (entityNode.metadata || {}) as Record<string, unknown>;
+        const attrFields = ((metadataRecord.attributes as Record<string, unknown> | undefined)?.fields) ?? metadataRecord.fields;
+        if (Array.isArray(attrFields)) {
+          for (const raw of attrFields) {
+            const fieldName = typeof (raw as { name?: unknown })?.name === 'string' ? (raw as { name: string }).name : undefined;
+            if (!fieldName) continue;
+            const fieldType = typeof (raw as { type?: unknown })?.type === 'string' ? (raw as { type: string }).type : 'unknown';
+            fields.push({
+              name: fieldName,
+              type: fieldType,
+              is_sensitive: sensitivePatterns.some(p => fieldName.toLowerCase().includes(p)),
+            });
+          }
+        }
+      }
+
       const createdBy: string[] = [];
       const readBy: string[] = [];
       const updatedBy: string[] = [];
@@ -12320,8 +12514,9 @@ export class AnalyzerOrchestrator {
       // persisted-entity, but api/serializer evidence on the same node can still
       // reclassify it as api-response.
       this.tagDataEntityKind(ormEntity, [entityNode], 'persisted-entity');
-      entities.push(ormEntity);
+      mergeOrmEntity(ormEntity);
     }
+    entities.push(...ormEntitiesById.values());
 
     // Many codebases express their data model as DTOs / typed request-response
     // shapes rather than ORM entity classes (NestJS, FastAPI, gRPC, etc.). A DTO
@@ -12569,7 +12764,22 @@ export class AnalyzerOrchestrator {
     existingNames: Set<string>,
     projectPath?: string,
   ): CASDataEntity[] {
-    const GENERIC = /^(pagination|paginated|response|error|base|common|list|meta|page|sort|filter|query|param|option|config|result|success|status|health|ping|api|data|item|value|generic|wrapper|envelope|dto|input|output|payload|request|body|args|count|info|detail|map|record|enum|type|abstract|sortby|orderby|where|select)s?$/i;
+    // Structural-generic vocabulary plus serialization-FORMAT tokens (json/xml/
+    // yaml/...): a core noun left over from a shape like `JsonSchema` names a
+    // wire format, not a domain object. Format tokens are structural vocabulary
+    // (same class as `payload`/`record` above), not a domain-name blocklist.
+    const GENERIC = /^(pagination|paginated|response|error|base|common|list|meta|page|sort|filter|query|param|option|config|result|success|status|health|ping|api|data|item|value|generic|wrapper|envelope|dto|input|output|payload|request|body|args|count|info|detail|map|record|enum|type|abstract|sortby|orderby|where|select|json|xml|yaml|toml|csv|html|markdown|proto)s?$/i;
+    // Callable names in the graph (functions/methods). A data shape whose core
+    // noun IS a callable's name (HandleCommandsParams ↔ handleCommands,
+    // RunEmbeddedPiAgentParams ↔ runEmbeddedPiAgent) is that operation's
+    // argument/result CONTRACT, not a domain entity — the evidence is the
+    // callable node itself, not the shape's verb-looking name.
+    const callableNames = new Set<string>();
+    for (const node of nodes) {
+      if (node.type !== 'function' && node.type !== 'method') continue;
+      const name = String(node.name || '').toLowerCase();
+      if (name) callableNames.add(name);
+    }
     const groups = new Map<string, { rep: CASNode; nodes: CASNode[]; ops: Set<string> }>();
     for (const node of nodes) {
       if (!this.isDtoLikeDataShapeNode(node, propertyIndex)) continue;
@@ -12578,6 +12788,7 @@ export class AnalyzerOrchestrator {
       if (!core || core.length < 3) continue;
       const key = core.toLowerCase();
       if (GENERIC.test(key) || existingNames.has(key)) continue;
+      if (callableNames.has(key)) continue;
       if (!this.dataShapeNodeHasFieldEvidence(node, propertyIndex)) continue;
       let group = groups.get(key);
       if (!group) { group = { rep: node, nodes: [], ops: new Set() }; groups.set(key, group); }
@@ -15149,8 +15360,54 @@ export class AnalyzerOrchestrator {
       // best-effort filesystem probe; absence of evidence just means no exclusion
     }
 
+    // A frontend package is only "bundled" when there is a product OUTSIDE it
+    // for it to be bundled INTO. If excluding these roots would leave no
+    // product evidence at all (no root manifest, no non-frontend sibling
+    // package, no root-level source), the frontend subdirectory IS the
+    // product — e.g. a repo whose entire Next.js app (with its own Prisma
+    // schema) lives under app/ with only docs at the root. Excluding it
+    // blanked data entities and the domain surface for such repos.
+    if (roots.length > 0 && !this.hasProductEvidenceOutsideRoots(resolvedProject, roots)) {
+      roots.length = 0;
+    }
+
     this.bundledFrontendRootsCache.set(resolvedProject, roots);
     return roots;
+  }
+
+  /**
+   * Evidence that the project has product code OUTSIDE the candidate
+   * bundled-frontend roots: a root-level manifest of any ecosystem, a sibling
+   * top-level directory carrying its own manifest, or root-level source files.
+   * Filesystem facts only — no name heuristics.
+   */
+  private hasProductEvidenceOutsideRoots(resolvedProject: string, excludedRoots: string[]): boolean {
+    const MANIFESTS = [
+      'package.json', 'go.mod', 'pyproject.toml', 'requirements.txt', 'setup.py',
+      'Cargo.toml', 'pom.xml', 'build.gradle', 'build.gradle.kts', 'composer.json',
+      'Gemfile', 'mix.exs', 'pubspec.yaml',
+    ];
+    const SOURCE_EXT = /\.(ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|kt|rb|php|cs|c|cc|cpp|ex|exs|swift|scala)$/i;
+    try {
+      for (const manifest of MANIFESTS) {
+        if (fs.existsSync(path.join(resolvedProject, manifest))) return true;
+      }
+      const excluded = new Set(excludedRoots.map(root => path.resolve(root)));
+      const entries = fs.readdirSync(resolvedProject, { withFileTypes: true });
+      for (const entry of entries) {
+        if (entry.isFile() && SOURCE_EXT.test(entry.name)) return true;
+        if (!entry.isDirectory()) continue;
+        if (/^(node_modules|\.git|dist|build|coverage|docs?)$/i.test(entry.name)) continue;
+        const dir = path.join(resolvedProject, entry.name);
+        if (excluded.has(path.resolve(dir))) continue;
+        for (const manifest of MANIFESTS) {
+          if (fs.existsSync(path.join(dir, manifest))) return true;
+        }
+      }
+    } catch {
+      // On probe failure err on the side of NOT excluding anything.
+    }
+    return false;
   }
 
   private safeReadPackageJsonName(manifestPath: string): string | undefined {

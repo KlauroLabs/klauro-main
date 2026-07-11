@@ -7,6 +7,7 @@ import * as http from 'node:http';
 import { execFileSync } from 'node:child_process';
 import { createRemoteAnalyzerHttpServer } from './remote-analyzer-service';
 import { analyzeCodebaseRemotely } from './remote-sync-client';
+import { aiService } from '../../../packages/analyzer-core/src/ai/ai-service';
 
 function git(repo: string, args: string[]): void {
   execFileSync('git', args, { cwd: repo, stdio: 'ignore' });
@@ -180,6 +181,135 @@ test('workspace analysis auto-builds once from stored member analyses after a de
     else process.env.KLAURO_AI_INTERPRETATION = previousInterpretation;
     if (previousWorkspaceAi === undefined) delete process.env.KLAURO_WORKSPACE_AI_ENRICHMENT;
     else process.env.KLAURO_WORKSPACE_AI_ENRICHMENT = previousWorkspaceAi;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+/**
+ * POST /api/workspaces/{id}/reanalyze — the product surface for refreshing a
+ * server-side WAS WITH AI narrative enrichment. The live-prod gap this guards
+ * against: auto-built WAS records shipped with workspace_narrative.source =
+ * 'ai-required-degraded' (empty description) and there was NO endpoint to
+ * re-run the workspace with enrichment attached. Asserts: (1) 202 accepted
+ * immediately, (2) the rebuild runs in the background and persists a record
+ * whose narrative source is 'ai' when the AI enrichment pass succeeds,
+ * (3) workspace isolation — a non-member gets 404, never a scheduled rebuild.
+ */
+test('workspace reanalyze returns 202, background-persists an AI-enriched narrative, and is workspace-isolated', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-was-reanalyze-'));
+  const remoteData = path.join(root, 'remote-data');
+  const previousRemoteData = process.env.KLAURO_REMOTE_ANALYZER_DATA;
+  const previousDebounce = process.env.KLAURO_WORKSPACE_ANALYSIS_DEBOUNCE_MS;
+  const previousInterpretation = process.env.KLAURO_AI_INTERPRETATION;
+  const previousWorkspaceAi = process.env.KLAURO_WORKSPACE_AI_ENRICHMENT;
+  const previousAutoConfig = process.env.KLAURO_WORKSPACE_AI_AUTO_CONFIG;
+  const previousOllamaBaseUrl = process.env.OLLAMA_BASE_URL;
+  const previousOllamaAuto = process.env.KLAURO_OLLAMA_AUTO;
+  process.env.KLAURO_REMOTE_ANALYZER_DATA = remoteData;
+  process.env.KLAURO_WORKSPACE_ANALYSIS_DEBOUNCE_MS = '150';
+  // Enrichment must be ENABLED for this test: the scheduler's env gate decides
+  // whether the AI pass is even attempted. The model call itself is mocked at
+  // the aiService seam (same pattern as cross-codebase-analysis.test.ts), so
+  // this asserts the server-side WIRING: attach -> background -> persist 'ai'.
+  process.env.KLAURO_AI_INTERPRETATION = 'true';
+  process.env.KLAURO_WORKSPACE_AI_ENRICHMENT = 'true';
+  process.env.KLAURO_WORKSPACE_AI_AUTO_CONFIG = 'false';
+  delete process.env.OLLAMA_BASE_URL;
+  delete process.env.KLAURO_OLLAMA_AUTO;
+
+  // Grounded-narrative mock: long enough (>=180 chars), concrete surfaces
+  // (http/api/service/server/client/route), behavior verbs (routes/records/
+  // returns/handles/provides/supports), and none of the ungrounded product
+  // frames the WAS quality gate rejects — so the real
+  // enrichWorkspaceAnalysisNarrative pass accepts it and stamps source 'ai'.
+  const enrichedDescription = 'This workspace routes HTTP requests through the repo-reanalyze Python API service, records each request in the backend server, and returns computed handler results to the calling client. The API handles request processing, provides a single route surface, and supports the workspace backend behavior end to end.';
+  const originalGenerate = aiService.generateComponentDescription;
+  aiService.generateComponentDescription = async () => JSON.stringify({
+    description: enrichedDescription,
+    product_value_summary: 'Gives users one HTTP API service that routes requests to Python handlers and returns computed results.',
+    value_drivers: ['API-backed request handling'],
+    relationship_summary: ['client calls repo-reanalyze API over HTTP'],
+  });
+
+  const server = createRemoteAnalyzerHttpServer({ dataDir: remoteData });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  assert.ok(address && typeof address === 'object');
+  const port = address.port;
+  const serverUrl = `http://127.0.0.1:${port}`;
+
+  try {
+    const registerRes = await request(port, 'POST', '/api/auth/register', {
+      email: 'owner@example.com',
+      password: 'password-1234',
+      workspace_name: 'Reanalyze WAS Workspace',
+    });
+    assert.equal(registerRes.statusCode, 201);
+    const token = JSON.parse(registerRes.body).token as string;
+
+    const workspacesRes = await request(port, 'GET', '/api/workspaces', undefined, token);
+    const workspaceId = JSON.parse(workspacesRes.body).workspaces[0].id as string;
+
+    const repo = makeRepo(root, 'repo-reanalyze', 'def handler():\n    return 1\n');
+    const analyzed = await analyzeCodebaseRemotely({ projectPath: repo, serverUrl, token, wait: true });
+    const projectRes = await request(port, 'POST', `/api/workspaces/${workspaceId}/projects`, {
+      name: 'repo-reanalyze',
+      analysis_id: analyzed.analysis_id,
+    }, token);
+    assert.equal(projectRes.statusCode, 201);
+
+    // The refresh surface: 202 immediately, never blocking on the rebuild.
+    const reanalyzeRes = await request(port, 'POST', `/api/workspaces/${workspaceId}/reanalyze`, {}, token);
+    assert.equal(reanalyzeRes.statusCode, 202, 'workspace reanalyze must accept immediately, never block on the WAS rebuild');
+    const reanalyzeBody = JSON.parse(reanalyzeRes.body);
+    assert.equal(reanalyzeBody.status, 'accepted');
+    assert.equal(reanalyzeBody.workspace_id, workspaceId);
+
+    // Background rebuild + enrichment persist: poll until the record is ready
+    // AND the narrative is AI-written (the deterministic first persist may be
+    // observed as ready with enrichment still pending — progressive availability).
+    await waitFor(async () => {
+      const res = await request(port, 'GET', `/api/workspaces/${workspaceId}/analysis`, undefined, token);
+      const body = JSON.parse(res.body);
+      return body.status === 'ready' && body.analysis?.workspace_narrative?.source === 'ai';
+    });
+    const readyRes = await request(port, 'GET', `/api/workspaces/${workspaceId}/analysis`, undefined, token);
+    const readyBody = JSON.parse(readyRes.body);
+    assert.equal(readyBody.analysis.workspace_narrative.source, 'ai');
+    // The enrichment pass may normalize punctuation (e.g. hyphens) in the
+    // accepted description — match on content, not byte equality.
+    assert.match(readyBody.analysis.workspace_narrative.description, /routes HTTP requests through the repo.reanalyze Python API service/);
+    assert.equal(readyBody.analysis.workspace_narrative.degraded_reason, undefined);
+    assert.equal(readyBody.enrichment?.status, 'ai');
+    assert.ok(readyBody.enrichment?.completed_at);
+
+    // Workspace isolation: a non-member must get 404, and no rebuild may be
+    // scheduled on their behalf.
+    const otherRegisterRes = await request(port, 'POST', '/api/auth/register', {
+      email: 'other@example.com',
+      password: 'password-1234',
+      workspace_name: 'Other Workspace',
+    });
+    const otherToken = JSON.parse(otherRegisterRes.body).token as string;
+    const crossRes = await request(port, 'POST', `/api/workspaces/${workspaceId}/reanalyze`, {}, otherToken);
+    assert.equal(crossRes.statusCode, 404);
+  } finally {
+    aiService.generateComponentDescription = originalGenerate;
+    await new Promise<void>(resolve => server.close(() => resolve()));
+    if (previousRemoteData === undefined) delete process.env.KLAURO_REMOTE_ANALYZER_DATA;
+    else process.env.KLAURO_REMOTE_ANALYZER_DATA = previousRemoteData;
+    if (previousDebounce === undefined) delete process.env.KLAURO_WORKSPACE_ANALYSIS_DEBOUNCE_MS;
+    else process.env.KLAURO_WORKSPACE_ANALYSIS_DEBOUNCE_MS = previousDebounce;
+    if (previousInterpretation === undefined) delete process.env.KLAURO_AI_INTERPRETATION;
+    else process.env.KLAURO_AI_INTERPRETATION = previousInterpretation;
+    if (previousWorkspaceAi === undefined) delete process.env.KLAURO_WORKSPACE_AI_ENRICHMENT;
+    else process.env.KLAURO_WORKSPACE_AI_ENRICHMENT = previousWorkspaceAi;
+    if (previousAutoConfig === undefined) delete process.env.KLAURO_WORKSPACE_AI_AUTO_CONFIG;
+    else process.env.KLAURO_WORKSPACE_AI_AUTO_CONFIG = previousAutoConfig;
+    if (previousOllamaBaseUrl === undefined) delete process.env.OLLAMA_BASE_URL;
+    else process.env.OLLAMA_BASE_URL = previousOllamaBaseUrl;
+    if (previousOllamaAuto === undefined) delete process.env.KLAURO_OLLAMA_AUTO;
+    else process.env.KLAURO_OLLAMA_AUTO = previousOllamaAuto;
     fs.rmSync(root, { recursive: true, force: true });
   }
 });

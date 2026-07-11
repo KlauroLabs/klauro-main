@@ -1,7 +1,7 @@
 import * as fs from 'fs-extra';
 import * as path from 'node:path';
 import { getAnalysis } from './analyzer';
-import { buildCrossCodebaseSystemGraph, type CrossCodebaseInput, type CrossCodebaseSystemGraph } from './cross-codebase-analysis';
+import { buildCrossCodebaseSystemGraph, enrichWorkspaceAnalysisNarrative, workspaceAiEnrichmentEnabled, type CrossCodebaseInput, type CrossCodebaseSystemGraph } from './cross-codebase-analysis';
 import type { AccountStore } from './account-store';
 
 /**
@@ -31,6 +31,22 @@ import type { AccountStore } from './account-store';
 
 const DEFAULT_DEBOUNCE_MS = 3000;
 
+/**
+ * Terminal-honest AI narrative enrichment state for a persisted WAS record.
+ * 'pending' only ever appears in the FIRST (deterministic) persist of a
+ * rebuild — every rebuild ends by re-persisting with a terminal status
+ * ('ai' | 'degraded' | 'skipped' | 'error'), so a record can never look
+ * silently degraded-forever: either the narrative is AI-written ('ai'), or
+ * the record says exactly why it is not.
+ */
+interface WorkspaceAnalysisEnrichment {
+  status: 'pending' | 'ai' | 'degraded' | 'skipped' | 'error';
+  reason?: string;
+  error?: string;
+  started_at?: string;
+  completed_at?: string;
+}
+
 interface WorkspaceAnalysisRecord {
   workspace_id: string;
   workspace_name: string;
@@ -38,6 +54,8 @@ interface WorkspaceAnalysisRecord {
   member_project_ids: string[];
   member_project_names: string[];
   graph: CrossCodebaseSystemGraph;
+  /** Absent on records persisted before enrichment was attached to server-side WAS rebuilds. */
+  enrichment?: WorkspaceAnalysisEnrichment;
 }
 
 interface PendingRebuild {
@@ -161,8 +179,63 @@ export class AccountWorkspaceAnalysisScheduler {
       member_project_ids: memberIds,
       member_project_names: memberNames,
       graph,
+      enrichment: { status: 'pending', started_at: new Date().toISOString() },
     };
     await fs.ensureDir(this.storeDir);
+    // Persist the deterministic build FIRST (progressive availability — the
+    // WAS sibling of the project L0->L5 ladder): readers get the structural
+    // facts immediately while the AI narrative pass runs below; a second
+    // persist then attaches the enriched (or error-stamped) narrative. This
+    // whole method already runs in the background (debounced timer or the
+    // 202-answered reanalyze route), so the enrichment never blocks an HTTP
+    // response.
+    await fs.writeJson(this.recordPath(workspaceId), record, { spaces: 2 });
+
+    if (!workspaceAiEnrichmentEnabled()) {
+      // Honest terminal state, mirroring run_workspace_analysis's
+      // ai_enrichment:false: comprehension is AI-only, so the narrative stays
+      // the AI-required placeholder — but the record says WHY instead of
+      // looking permanently pending.
+      record.enrichment = {
+        status: 'skipped',
+        reason: 'Workspace AI enrichment is disabled by environment; the narrative is a placeholder until AI runs.',
+        started_at: record.enrichment?.started_at,
+        completed_at: new Date().toISOString(),
+      };
+      await fs.writeJson(this.recordPath(workspaceId), record, { spaces: 2 });
+      return;
+    }
+
+    // AI workspace narrative enrichment — the SAME pass the run_workspace_analysis
+    // MCP tool attaches (enrichWorkspaceAnalysisNarrative), using the ai-service
+    // provider chain (DeepInfra -> local -> OpenRouter) already configured on
+    // this host. Without this pass the server-side auto-WAS ships an
+    // 'ai-required-degraded' narrative with empty description forever.
+    try {
+      record.graph = await enrichWorkspaceAnalysisNarrative(graph);
+      record.enrichment = {
+        status: record.graph.workspace_narrative?.source === 'ai' ? 'ai' : 'degraded',
+        reason: record.graph.workspace_narrative?.source === 'ai' ? undefined : record.graph.workspace_narrative?.degraded_reason,
+        started_at: record.enrichment?.started_at,
+        completed_at: new Date().toISOString(),
+      };
+    } catch (error) {
+      // Enrichment failure is a VISIBLE terminal state (never silent
+      // degraded-forever): stamp the narrative AND the record with the error
+      // so readers/support can see exactly what to retry.
+      const detail = error instanceof Error ? error.message : String(error);
+      record.graph.workspace_narrative = {
+        ...record.graph.workspace_narrative,
+        source: 'ai-required-degraded',
+        degraded_reason: `AI workspace narrative enrichment failed during the server-side WAS rebuild: ${detail}. Retry via POST /api/workspaces/{id}/reanalyze once an AI provider is reachable.`,
+      };
+      record.enrichment = {
+        status: 'error',
+        error: detail.slice(0, 500),
+        started_at: record.enrichment?.started_at,
+        completed_at: new Date().toISOString(),
+      };
+    }
     await fs.writeJson(this.recordPath(workspaceId), record, { spaces: 2 });
   }
 
@@ -185,4 +258,4 @@ function resolveDebounceMs(): number {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_DEBOUNCE_MS;
 }
 
-export type { WorkspaceAnalysisRecord };
+export type { WorkspaceAnalysisRecord, WorkspaceAnalysisEnrichment };

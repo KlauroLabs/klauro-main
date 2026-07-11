@@ -2851,7 +2851,7 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-function workspaceAiEnrichmentEnabled(): boolean {
+export function workspaceAiEnrichmentEnabled(): boolean {
   return process.env.KLAURO_WORKSPACE_AI_ENRICHMENT !== 'false' &&
     process.env.KLAURO_AI_INTERPRETATION_ENABLED !== 'false' &&
     process.env.KLAURO_AI_INTERPRETATION !== 'false';
@@ -5301,6 +5301,16 @@ function buildWorkspaceDomains(
     }
     for (const concept of repository.cas.domain_concepts || []) {
       const signal = terminalSignalForName(terminalProfile, concept.name);
+      // EVIDENCE GATE: a repo concept only enters the workspace domain
+      // vocabulary when its own occurrence evidence is domain-shaped — it
+      // appears in at least one data entity or at a structural (non
+      // file-basename) entry point — or the WHOLE name is terminally
+      // grounded (a direct profile hit; substring fuzz would let word
+      // fragments like "uild" ride "build..." terminal names). Concepts that
+      // occur solely as file/identifier tokens (shell script basenames, test
+      // fixtures, format words like "json") are raw token frequency, not
+      // domains, and must not become workspace domains.
+      if (!isEvidenceGroundedWorkspaceDomainConcept(concept as any, directTerminalNameScore(terminalProfile, concept.name))) continue;
       add(concept.name, projectId, `domain_concept:${concept.id || concept.name}`, concept.classification === 'core' ? 4 : 3, signal.score, signal.evidence);
     }
     for (const capability of repository.cas.system_capabilities || []) {
@@ -5340,6 +5350,15 @@ function buildWorkspaceDomains(
     // The workspace/product name itself ("Soon") is never a domain — drop it
     // rather than letting it rank as one.
     .filter(([name]) => !productNames.has(normalizeAiItemName(name)))
+    // EVIDENCE-FIRST: a workspace domain must be backed by real domain
+    // evidence — the analyzer's own domain answer (primary_domain /
+    // project_domain / crypto_anchor), a capability, or genuine terminal
+    // grounding. Entity evidence counts only when the name also carries some
+    // terminal signal (a DTO/class token echoing its own name back is raw
+    // frequency, not a domain). Token-frequency-only names — file-format
+    // words, shell/fixture tokens, word fragments — have none of these and
+    // are dropped rather than ranked.
+    .filter(([, value]) => hasWorkspaceDomainEvidence(value))
     .sort((left, right) =>
       workspaceDomainSortScore(right[0], right[1], productNames) -
         workspaceDomainSortScore(left[0], left[1], productNames) ||
@@ -5363,6 +5382,55 @@ function buildWorkspaceDomains(
       generation_pass: 'default-summary' as const,
       degraded_reason: 'Whole-workspace domain descriptions require default AI enrichment from deterministic WAS facts.',
     }));
+}
+
+/**
+ * Structural evidence gate for repo-level domain concepts entering the
+ * workspace domain vocabulary. The CAS concept extractor records WHERE each
+ * concept token occurs (`appears_in`): tokens grounded in data entities or at
+ * structural entry points (routes, CLI subcommands, queues) are domain
+ * vocabulary; tokens that occur only in file-basename entry points
+ * (`entry_file_*` — shell scripts, test fixtures) or bare code nodes are
+ * identifier/path frequency, not domain evidence ("shell", "pentest", "curl",
+ * "json"). Terminal grounding (the name participates in the repo's terminal
+ * value chain) also qualifies. A concept without `appears_in` (older CAS) is
+ * not gated — absence of evidence metadata is not evidence of noise.
+ */
+function isEvidenceGroundedWorkspaceDomainConcept(
+  concept: { appears_in?: { entry_points?: string[]; entities?: string[]; nodes?: string[] } },
+  terminalScore: number,
+): boolean {
+  const appearsIn = concept?.appears_in;
+  if (!appearsIn) return true;
+  if ((appearsIn.entities || []).length > 0) return true;
+  if ((appearsIn.entry_points || []).some(id => !isFileBasenameEntryPointId(id))) return true;
+  return terminalScore >= 8;
+}
+
+/** Entry-point ids minted from a file basename (e.g. shell scripts / fixture
+ * files: `entry_file_pentest_phase1_external_recon_sh`) rather than from a
+ * structural trigger (route, CLI subcommand, queue). */
+function isFileBasenameEntryPointId(id: unknown): boolean {
+  return /^entry_file_/.test(String(id || ''));
+}
+
+/**
+ * EVIDENCE-FIRST final gate for workspace domains (see buildWorkspaceDomains):
+ * anchored analyzer answers (primary_domain / project_domain / crypto_anchor)
+ * and capability backing qualify a name outright. Everything else needs BOTH
+ * corroboration — a data entity or the analyzer's own core-concept answer —
+ * AND terminal grounding. A bare domain_concept token never qualifies on
+ * frequency + terminal fuzz alone: that is exactly how "Work", "Json",
+ * "Space", "Revisions" became live workspace domains. The `deployable:`
+ * evidence kind is the domains-empty fallback and stays eligible so an
+ * evidence-poor workspace still reports something honest.
+ */
+function hasWorkspaceDomainEvidence(value: { evidence?: string[]; terminal_score?: number }): boolean {
+  const evidence = value.evidence || [];
+  if (evidence.some(item => /^(primary_domain|project_domain|crypto_anchor|capability|capability_domain|deployable):/.test(item))) return true;
+  const terminalScore = value.terminal_score || 0;
+  if (terminalScore <= 0) return false;
+  return evidence.some(item => item.startsWith('entity:') || item.startsWith('core_concept:'));
 }
 
 function collapseOverlappingWorkspaceDomains(
@@ -6481,14 +6549,34 @@ function buildTerminalSemanticProfile(projectId: string, cas: any): WorkspaceTer
 
   for (const journey of cas.user_journeys || []) {
     const journeyWeight = journey.criticality === 'critical' ? 4 : journey.criticality === 'high' ? 3 : journey.classification === 'primary' ? 2 : 1;
+    // Shell-script journeys surface the external OS commands a script invokes
+    // as pseudo terminal "entities" ("Curl read" alongside `External command:
+    // curl`). The journey's own terminal_effects identify which names are
+    // subprocess commands — execution plumbing, never domain entities — so
+    // they must not seed terminal grounding (that is exactly how "Curl"
+    // became a live workspace domain).
+    const externalCommandNames = journeyExternalCommandNames(journey);
+    const isExternalCommand = (name: unknown) => matchesExternalCommandName(externalCommandNames, name);
     for (const entity of journey.terminal_entities || []) {
+      if (isExternalCommand(entity.name)) continue;
       const writeWeight = entity.access === 'created' || entity.access === 'updated' || entity.access === 'deleted' ? 14 : 6;
       addTerminalNameSeed(entity.name, writeWeight + journeyWeight, `terminal_entity:${journey.name || journey.id}:${entity.name}:${entity.access}`);
     }
-    for (const entity of journey.terminal_effects?.entities_written || []) addTerminalNameSeed(entity, 14 + journeyWeight, `terminal_write:${journey.name || journey.id}:${entity}`);
-    for (const entity of journey.terminal_effects?.entities_read || []) addTerminalNameSeed(entity, 5 + journeyWeight, `terminal_read:${journey.name || journey.id}:${entity}`);
+    for (const entity of journey.terminal_effects?.entities_written || []) {
+      if (isExternalCommand(entity)) continue;
+      addTerminalNameSeed(entity, 14 + journeyWeight, `terminal_write:${journey.name || journey.id}:${entity}`);
+    }
+    for (const entity of journey.terminal_effects?.entities_read || []) {
+      if (isExternalCommand(entity)) continue;
+      addTerminalNameSeed(entity, 5 + journeyWeight, `terminal_read:${journey.name || journey.id}:${entity}`);
+    }
     for (const message of journey.terminal_effects?.messages_emitted || []) addName(message, 8 + journeyWeight, `terminal_message:${journey.name || journey.id}:${message}`);
-    for (const service of journey.terminal_effects?.external_services || []) addName(service, 4 + journeyWeight, `terminal_external:${journey.name || journey.id}:${service}`);
+    for (const service of journey.terminal_effects?.external_services || []) {
+      // Real external SERVICES (Stripe, Auth0, a database) are terminal
+      // semantics; a subprocess command invocation is not.
+      if (isExternalCommandService(service)) continue;
+      addName(service, 4 + journeyWeight, `terminal_external:${journey.name || journey.id}:${service}`);
+    }
   }
 
   for (const workflow of cas.workflows || []) {
@@ -6502,6 +6590,40 @@ function buildTerminalSemanticProfile(projectId: string, cas: any): WorkspaceTer
   propagateNearTerminalCapabilitySignals(cas, terminalCapabilitySeeds, addCapability);
 
   return profile;
+}
+
+/** The `External command: <cmd>` entries a journey reports in its
+ * terminal_effects.external_services — the CAS's own marker that a name is a
+ * subprocess invocation (shell script calling curl/aws/jq), not a domain
+ * entity or an external service integration. */
+function journeyExternalCommandNames(journey: any): Set<string> {
+  const names = new Set<string>();
+  for (const service of journey?.terminal_effects?.external_services || []) {
+    const match = String(service || '').match(/^\s*external command:\s*(.+)$/i);
+    if (!match) continue;
+    const normalized = normalizeAiItemName(match[1]);
+    if (normalized) names.add(normalized);
+  }
+  return names;
+}
+
+function matchesExternalCommandName(commandNames: Set<string>, name: unknown): boolean {
+  if (commandNames.size === 0) return false;
+  const normalized = normalizeAiItemName(String(name || ''));
+  if (!normalized) return false;
+  if (commandNames.has(normalized)) return true;
+  // Journey entity names may be depluralized forms of the command ("Aw" from
+  // `aws`); compare trailing-s-insensitively so the marker still applies.
+  const stripS = (value: string) => value.endsWith('s') && !value.endsWith('ss') ? value.slice(0, -1) : value;
+  const stripped = stripS(normalized);
+  for (const command of commandNames) {
+    if (stripS(command) === stripped) return true;
+  }
+  return false;
+}
+
+function isExternalCommandService(service: unknown): boolean {
+  return /^\s*external command:/i.test(String(service || ''));
 }
 
 function isWeakTerminalCapabilitySignal(value: unknown): boolean {
@@ -6589,6 +6711,17 @@ function propagateNearTerminalCapabilitySignals(
       queue.push({ id: upstream.id, score, depth: nextDepth, evidence: upstream.evidence });
     }
   }
+}
+
+/** Direct (whole-name) terminal grounding only — no substring/token fuzz.
+ * Used by evidence GATES, where fuzzy matching would let word fragments
+ * ("uild") or embedded tokens ride unrelated terminal names. Scoring/ranking
+ * paths keep the fuzzy terminalSignalForName. */
+function directTerminalNameScore(profile: WorkspaceTerminalSemanticProfile, name: unknown): number {
+  const normalized = normalizeAiItemName(String(name || ''));
+  if (!normalized) return 0;
+  const direct = profile.names.get(normalized);
+  return direct ? capTerminalSignalScore(normalized, direct.score) : 0;
 }
 
 function terminalSignalForName(profile: WorkspaceTerminalSemanticProfile, name: unknown): { score: number; evidence: string[] } {

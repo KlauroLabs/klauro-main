@@ -7,11 +7,21 @@ import { listCrossCodebaseSystemGraphs, loadCrossCodebaseSystemGraph, saveCrossC
 
 async function withStoragePath<T>(fn: (storagePath: string) => Promise<T>): Promise<T> {
   const previous = process.env.KLAURO_STORAGE_PATH;
+  const previousCwd = process.cwd();
   const storagePath = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-storage-test-'));
   process.env.KLAURO_STORAGE_PATH = storagePath;
+  // listCrossCodebaseSystemGraphs applies the workspace-isolation scope
+  // resolved from process.cwd() (analysis-scope.ts). Running from inside this
+  // repo — which carries a .klaurorc bound to a hosted workspace — would
+  // filter out the test graphs (their /tmp member paths have no .klaurorc of
+  // their own). chdir to the scratch dir so the scope resolves to the
+  // machine-wide (unscoped) view; these tests exercise metadata listing, not
+  // scoping (which has its own tests in analysis-scope.test.ts).
+  process.chdir(storagePath);
   try {
     return await fn(storagePath);
   } finally {
+    process.chdir(previousCwd);
     if (previous === undefined) {
       delete process.env.KLAURO_STORAGE_PATH;
     } else {

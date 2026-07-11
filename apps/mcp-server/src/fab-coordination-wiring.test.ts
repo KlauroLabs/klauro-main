@@ -27,14 +27,48 @@ function payload(result: any): any {
   return JSON.parse(result.content[0].text);
 }
 
-test('fab advisory tools: claim -> list sees it -> check reports collision -> release clears', async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-fab-wiring-'));
+/**
+ * Hermetic fabric environment for the fab_* handlers. They resolve their tier
+ * and workspace via resolveFabricSettings, searching the analysis registry's
+ * project roots AND process.cwd() for a .klaurorc. Run unisolated from inside
+ * this repo — whose .klaurorc enables the fabric with a remote endpoint and a
+ * config workspace that beats $FAB_WS — and these tests would exercise the
+ * LIVE endpoint (nondeterministic: prior runs' claims persist there for their
+ * TTL) instead of the local store under KLAURO_COORD_DIR. Point the storage
+ * registry at an empty temp dir and chdir into a config-less temp root so the
+ * chain resolves to the LOCAL tier deterministically.
+ */
+async function withHermeticFabricEnv<T>(fn: (root: string) => Promise<T>): Promise<T> {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-fab-hermetic-'));
   const previousCoordDir = process.env.KLAURO_COORD_DIR;
   const previousFabWs = process.env.FAB_WS;
+  const previousStorage = process.env.KLAURO_STORAGE_PATH;
+  const previousFabricCwd = process.env.KLAURO_FABRIC_CWD;
+  const previousCwd = process.cwd();
   process.env.KLAURO_COORD_DIR = path.join(root, 'coord');
-  delete process.env.FAB_WS; // exercise the stable 'poc' fallback
-
+  process.env.KLAURO_STORAGE_PATH = path.join(root, 'storage');
+  delete process.env.KLAURO_FABRIC_CWD;
+  process.chdir(root);
   try {
+    return await fn(root);
+  } finally {
+    process.chdir(previousCwd);
+    if (previousCoordDir === undefined) delete process.env.KLAURO_COORD_DIR;
+    else process.env.KLAURO_COORD_DIR = previousCoordDir;
+    if (previousFabWs === undefined) delete process.env.FAB_WS;
+    else process.env.FAB_WS = previousFabWs;
+    if (previousStorage === undefined) delete process.env.KLAURO_STORAGE_PATH;
+    else process.env.KLAURO_STORAGE_PATH = previousStorage;
+    if (previousFabricCwd === undefined) delete process.env.KLAURO_FABRIC_CWD;
+    else process.env.KLAURO_FABRIC_CWD = previousFabricCwd;
+    await fs.rm(root, { recursive: true, force: true });
+  }
+}
+
+test('fab advisory tools: claim -> list sees it -> check reports collision -> release clears', async () => {
+  await withHermeticFabricEnv(async () => {
+  delete process.env.FAB_WS; // exercise the stable 'poc' fallback
+  {
     const server = createServer();
     const claim = getToolHandler(server, 'fab_claim_work');
     const check = getToolHandler(server, 'fab_check_collision');
@@ -55,7 +89,14 @@ test('fab advisory tools: claim -> list sees it -> check reports collision -> re
     assert.equal(claimed.agent_id, 'agent-a');
     assert.deepEqual(claimed.paths, ['src/foo.ts']);
     assert.equal(claimed.conflicts.length, 0, 'no conflict on a fresh claim');
-    assert.equal(claimed.warning, undefined);
+    // A fresh claim carries no OVERLAP advisory. (In this hermetic env the
+    // response may carry the informational local-tier diagnostic — "no
+    // .klaurorc fabric config found ... LOCAL fabric only" — which is the
+    // intended remote-vs-local honesty surfacing, not a conflict warning.)
+    assert.ok(
+      !claimed.warning || !/ADVISORY/.test(claimed.warning),
+      `unexpected overlap advisory on a fresh claim: ${claimed.warning}`,
+    );
 
     // list_active_work sees agent A's claim.
     const listed = payload(await list({ workspace: ws }));
@@ -116,27 +157,18 @@ test('fab advisory tools: claim -> list sees it -> check reports collision -> re
     // assert the awareness correctly attributes it to the remaining holder.
     assert.equal(freed.ok, false);
     assert.equal(freed.conflicts[0].agent_id, 'agent-b');
-  } finally {
-    if (previousCoordDir === undefined) delete process.env.KLAURO_COORD_DIR;
-    else process.env.KLAURO_COORD_DIR = previousCoordDir;
-    if (previousFabWs === undefined) delete process.env.FAB_WS;
-    else process.env.FAB_WS = previousFabWs;
-    await fs.rm(root, { recursive: true, force: true });
   }
+  });
 });
 
-test('fab_list_active_work / fab_check_collision default workspace to $FAB_WS then "poc"', async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-fab-default-ws-'));
-  const previousCoordDir = process.env.KLAURO_COORD_DIR;
-  const previousFabWs = process.env.FAB_WS;
-  process.env.KLAURO_COORD_DIR = path.join(root, 'coord');
-
-  try {
+test('fab workspace default chain: .klaurorc fabric.workspace > $FAB_WS > "poc"', async () => {
+  await withHermeticFabricEnv(async (root) => {
     const server = createServer();
     const claim = getToolHandler(server, 'fab_claim_work');
     const list = getToolHandler(server, 'fab_list_active_work');
 
-    // No workspace arg, no FAB_WS -> defaults to 'poc'.
+    // No workspace arg, no .klaurorc in reach, no FAB_WS -> stable 'poc'
+    // fallback (never the cwd basename — that was the original papercut).
     delete process.env.FAB_WS;
     const claimedPoc = payload(await claim({ agent_id: 'agent-a', intent: 'work', paths: ['a.ts'] }));
     assert.equal(claimedPoc.workspace, 'poc');
@@ -149,11 +181,17 @@ test('fab_list_active_work / fab_check_collision default workspace to $FAB_WS th
     const listedFeature = payload(await list({}));
     assert.equal(listedFeature.workspace, 'my-feature');
     assert.equal(listedFeature.count, 0, 'different workspace, no claims yet');
-  } finally {
-    if (previousCoordDir === undefined) delete process.env.KLAURO_COORD_DIR;
-    else process.env.KLAURO_COORD_DIR = previousCoordDir;
-    if (previousFabWs === undefined) delete process.env.FAB_WS;
-    else process.env.FAB_WS = previousFabWs;
-    await fs.rm(root, { recursive: true, force: true });
-  }
+
+    // A .klaurorc fabric.workspace in reach (here: the test cwd) is the FIRST
+    // link of the chain — it beats $FAB_WS. fabric.enabled=false keeps the
+    // tier LOCAL (an explicit `klauro fabric off` still names its workspace).
+    await fs.writeJson(path.join(root, '.klaurorc'), {
+      version: 1,
+      kind: 'project',
+      project: { name: 'fab-default-chain-fixture' },
+      fabric: { enabled: false, workspace: 'config-ws' },
+    });
+    const listedConfig = payload(await list({}));
+    assert.equal(listedConfig.workspace, 'config-ws', '.klaurorc fabric.workspace beats $FAB_WS');
+  });
 });

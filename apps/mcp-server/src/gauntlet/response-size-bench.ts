@@ -43,7 +43,12 @@ export interface ResponseSizeBenchReport {
 // Targets from docs/SPEC-RESPONSE-BUDGET.md §4 ("New default target"),
 // converted from the ~4-bytes-per-token estimate used throughout that spec.
 export const RESPONSE_SIZE_BUDGETS: ResponseSizeBudget[] = [
-  { tool: 'get_summary', budget_bytes: 1500 * 4 },
+  // 1500 tok was the original §4 target; +50 tok covers the deliberate
+  // honest-AI-state additions to buildSummary (ai_enrichment status and, on a
+  // terminal failure, ai_enrichment_error) — signal a reader needs to tell
+  // "degraded-but-final" from "still populating", not filler. The old 1500*4
+  // budget was measured with ~0 headroom, so those ~40-200 bytes tripped it.
+  { tool: 'get_summary', budget_bytes: 1550 * 4 },
   { tool: 'search_nodes', budget_bytes: 1000 * 4 },
   { tool: 'resolve_agent_analysis', budget_bytes: 1000 * 4 },
   // get_flow_concepts had NO default cap on flows returned (one per entry

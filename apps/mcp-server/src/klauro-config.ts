@@ -361,6 +361,42 @@ export async function writeDefaultKlauroConfig(projectPath: string, options: {
   return { configPath, ignorePath, config };
 }
 
+/**
+ * Persist a hosted-project binding into an EXISTING .klaurorc additively: the
+ * raw file is read as-is and ONLY the project ids (+ name/kind when absent)
+ * are updated, so hand-tuned source/exclude/analyzer customizations are never
+ * clobbered. This is the self-heal path for a stale config written by an
+ * older CLI that left `project.id: null` — `klauro init` re-binds it in place
+ * instead of making the user `rm .klaurorc` and start over. Mirrors the
+ * additive contract of writeFabricSection (fabric-config.ts).
+ */
+export async function writeProjectBindingIntoConfig(projectPath: string, binding: {
+  projectId: string;
+  workspaceId?: string;
+  organizationId?: string;
+  projectName?: string;
+  kind?: 'project' | 'workspace';
+}): Promise<{ configPath: string }> {
+  const root = path.resolve(projectPath);
+  const configPath = await findFirstExisting(root, CONFIG_FILES);
+  if (!configPath) {
+    throw new Error(`No .klaurorc found at ${root} — run \`klauro init\` to create one.`);
+  }
+  const raw = JSON.parse(await fs.readFile(configPath, 'utf8')) as Record<string, unknown>;
+  const project = raw.project && typeof raw.project === 'object' && !Array.isArray(raw.project)
+    ? (raw.project as Record<string, unknown>)
+    : {};
+  project.id = binding.projectId;
+  if (binding.workspaceId) project.workspaceId = binding.workspaceId;
+  if (binding.organizationId) project.organizationId = binding.organizationId;
+  // A user-chosen name in the file wins; only fill the name when it is absent.
+  if (binding.projectName && !project.name) project.name = binding.projectName;
+  raw.project = project;
+  if (binding.kind && !raw.kind) raw.kind = binding.kind;
+  await fs.writeFile(configPath, `${JSON.stringify(raw, null, 2)}\n`, 'utf8');
+  return { configPath };
+}
+
 export function defaultExcludePatterns(): string[] {
   return [
     '**/.git/**',

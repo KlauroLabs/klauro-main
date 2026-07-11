@@ -94,6 +94,30 @@ export function buildOrientCapsule(cas: CASOutput) {
   };
 }
 
+/**
+ * Last-resort domain-entity surfacing for CAS shapes where the data-entity
+ * extraction produced nothing but language analyzers DID type real domain
+ * entities as nodes (type 'entity'/'model' or an 'entity' subcategory).
+ * Mirrors buildDataEntities' kind-filter semantics: only analyzer-asserted
+ * entity kinds count — plain structs/classes/DTO-shaped nodes are NOT
+ * inflated in, and abstract shapes stay excluded.
+ */
+function entityKindNodeNames(nodes: CASOutput['nodes']): string[] {
+  const names: string[] = [];
+  const seen = new Set<string>();
+  for (const node of nodes || []) {
+    if (node.subcategories?.includes('abstract')) continue;
+    const type = String(node.type || '');
+    const isEntityKind = type === 'entity' || type === 'model' || Boolean(node.subcategories?.includes('entity'));
+    if (!isEntityKind) continue;
+    const key = String(node.name || '').toLowerCase();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    names.push(node.name);
+  }
+  return names;
+}
+
 export function buildSummary(cas: CASOutput, opts: { detail?: 'compact' | 'full'; excludeSeams?: boolean } = {}) {
   const detail = opts.detail || 'compact';
   const nodesByType: Record<string, number> = {};
@@ -161,6 +185,17 @@ export function buildSummary(cas: CASOutput, opts: { detail?: 'compact' | 'full'
     primary_domain: primaryDomain,
     description: cas.enhanced_system_purpose?.inferred_description || null,
     description_source: cas.enhanced_system_purpose?.description_source || null,
+    // Honest terminal AI-comprehension state. 'error' means the L5 pass RAN
+    // and FAILED (model call or grounding gate threw) — comprehension is
+    // AI-only, so description stays null with no deterministic substitute.
+    // Surfaced here so a reader (customer or validator) sees a
+    // degraded-but-final analysis instead of inferring forever-pending from
+    // description_source: null. Omitted when the marker is absent (legacy
+    // stores / synchronous path).
+    ...(cas.ai_enrichment ? { ai_enrichment: cas.ai_enrichment } : {}),
+    ...(cas.ai_enrichment === 'error' && cas.ai_enrichment_error
+      ? { ai_enrichment_error: cas.ai_enrichment_error }
+      : {}),
     ...(detail === 'full' ? { analysis_phases: cas.analysis_phases || [] } : {}),
     architecture_type: cas.architecture_summary?.system_type || null,
     architectural_patterns: architecturalPatterns,
@@ -178,10 +213,16 @@ export function buildSummary(cas: CASOutput, opts: { detail?: 'compact' | 'full'
     // is a much narrower ORM/DDL-only view (e.g. 3 @Entity classes) that is NOT the
     // domain-entity surface the summary is meant to convey — reading it here reported
     // "3 entities" for a 202-entity codebase. Surface data_entities; fall back to the
-    // database_schema names only when the fuller extraction is absent.
+    // database_schema names when the fuller extraction is absent; finally fall back
+    // to entity-kind NODES: some repo shapes (e.g. Rust + shell + TS mixes) parse
+    // real domain entities as type 'entity'/'model' nodes yet produce an empty
+    // data_entities extraction, which mis-reported "0 entities" for codebases whose
+    // own description names concrete entities.
     database_entities: (cas.data_entities?.length
       ? cas.data_entities.map(e => e.name)
-      : cas.database_schema?.entities.map(e => e.name)) || [],
+      : cas.database_schema?.entities?.length
+        ? cas.database_schema.entities.map(e => e.name)
+        : entityKindNodeNames(cas.nodes)) || [],
     capabilities: cas.system_capabilities?.length || cas.flow_graph?.capabilities.length || 0,
     top_capabilities: cas.system_capabilities?.length
       ? [...cas.system_capabilities]

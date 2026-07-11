@@ -113,7 +113,13 @@ test('concurrent index writes from two real processes do not lose entries', asyn
   const previous = process.env.KLAURO_STORAGE_PATH;
   process.env.KLAURO_STORAGE_PATH = storageDir;
   try {
-    const listed = await listAnalyses();
+    // Anchor the workspace-isolation scope on the temp storage dir (no
+    // .klaurorc => machine-wide view). Without scopeCwd the scope resolves
+    // from process.cwd() — this repo, which is bound to a hosted workspace —
+    // and the temp-path entries (no .klaurorc of their own) would be
+    // filtered out as out-of-scope. This test is about lock/index integrity,
+    // not scoping.
+    const listed = await listAnalyses({ scopeCwd: storageDir });
     assert.equal(listed.length, entriesPerChild * 2);
   } finally {
     restoreEnv('KLAURO_STORAGE_PATH', previous);

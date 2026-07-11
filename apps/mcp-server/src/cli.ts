@@ -16,7 +16,7 @@ import { analyzeCodebaseRemotely, syncWorkingTreeRemotely } from './remote-sync-
 import { getAgentRevisionTracks } from './agent-revision-tracks';
 import { createRemoteAnalyzerHttpServer } from './remote-analyzer-service';
 import { buildUploadManifest } from './remote-source';
-import { loadKlauroConfig, writeDefaultKlauroConfig } from './klauro-config';
+import { loadKlauroConfig, writeDefaultKlauroConfig, writeProjectBindingIntoConfig } from './klauro-config';
 import { buildGithubImportPlan } from './github-import';
 import { compareAnalysisIterations, getPreviewAnalysis, previewCodebaseIteration, previewGreenfieldCodebase, type ProposedFileInput } from './proposal-preview';
 import { buildGreenfieldArchitectureGuidance, type GreenfieldReferenceAnalysis } from './greenfield-guidance';
@@ -667,6 +667,83 @@ export function filterNpmNoise(output: string): string {
     .trim();
 }
 
+/**
+ * Resolve WHICH installation `klauro update` must upgrade: the one actually
+ * running this process — NOT whatever `npm` happens to be first on PATH. On a
+ * machine with several nodes (homebrew node 26 + nvm node 22, say) the
+ * installed CLI lives under one global prefix while PATH's npm belongs to
+ * another; updating via PATH-npm then reinstalls into the WRONG tree (and on
+ * the newer node tree-sitter's node-gyp build can fail outright) while the
+ * running installation silently stays stale.
+ *
+ * Derivation, in order:
+ *  1. the running CLI script's realpath — a global install lives at
+ *     <prefix>/lib/node_modules/klauro/… (posix) or <prefix>\node_modules\…
+ *     (Windows), so the prefix is read straight off the path;
+ *  2. fallback: the running node's own prefix (dirname(execPath)/.. on posix;
+ *     on Windows the execPath directory IS the prefix) — e.g. a dev/tsx run.
+ * npm is taken from the detected PREFIX's own bin when present — and, when
+ * that prefix also carries its own node, npm is RUN WITH that node (nodeBin):
+ * node-gyp compiles native addons against the node that runs npm, so letting
+ * a PATH/homebrew node 26 drive the install would build tree-sitter for the
+ * wrong ABI (or fail outright — the original field failure) even with the
+ * prefix pinned. Fallbacks: npm beside the running node, then PATH npm pinned
+ * by --prefix. Exported (cli.ts is otherwise entry-only) so the resolution is
+ * unit-testable.
+ */
+export function resolveSelfUpdateTarget(options: {
+  execPath?: string;
+  scriptPath?: string;
+  platform?: NodeJS.Platform;
+  realpath?: (p: string) => string;
+  exists?: (p: string) => boolean;
+} = {}): { npmBin: string; nodeBin?: string; prefix: string; prefixSource: 'cli-realpath' | 'exec-path' } {
+  const execPath = options.execPath ?? process.execPath;
+  const platform = options.platform ?? process.platform;
+  const realpath = options.realpath ?? ((p: string) => fs.realpathSync(p));
+  const exists = options.exists ?? ((p: string) => fs.existsSync(p));
+  const p = platform === 'win32' ? path.win32 : path.posix;
+
+  let prefix: string | undefined;
+  let prefixSource: 'cli-realpath' | 'exec-path' = 'exec-path';
+  const script = options.scriptPath ?? process.argv[1];
+  if (script) {
+    try {
+      const real = realpath(script);
+      const marker = platform === 'win32' ? `${p.sep}node_modules${p.sep}` : `${p.sep}lib${p.sep}node_modules${p.sep}`;
+      const index = real.lastIndexOf(marker);
+      if (index > 0) {
+        prefix = real.slice(0, index);
+        prefixSource = 'cli-realpath';
+      }
+    } catch {
+      // Not resolvable (dev run, deleted bin) — fall through to execPath.
+    }
+  }
+  if (!prefix) {
+    prefix = platform === 'win32' ? p.dirname(execPath) : p.resolve(p.dirname(execPath), '..');
+  }
+
+  // Prefer the prefix's OWN npm + node (right ABI for the tree being
+  // updated), then the npm beside the running node, then PATH npm.
+  const prefixBinDir = platform === 'win32' ? prefix : p.join(prefix, 'bin');
+  const prefixNpm = p.join(prefixBinDir, platform === 'win32' ? 'npm.cmd' : 'npm');
+  const prefixNode = p.join(prefixBinDir, platform === 'win32' ? 'node.exe' : 'node');
+  if (exists(prefixNpm)) {
+    return {
+      npmBin: prefixNpm,
+      // npm's shebang is `env node`, which would resolve back to PATH's
+      // (possibly wrong) node — so when the prefix carries its own node, the
+      // caller must launch npm THROUGH it.
+      nodeBin: exists(prefixNode) ? prefixNode : undefined,
+      prefix,
+      prefixSource,
+    };
+  }
+  const execNpm = p.join(p.dirname(execPath), platform === 'win32' ? 'npm.cmd' : 'npm');
+  return { npmBin: exists(execNpm) ? execNpm : 'npm', prefix, prefixSource };
+}
+
 async function runUpdateCommand(args: ParsedArgs): Promise<void> {
   // Resolve the server that hosts the tarball: explicit flag, then the stored
   // login default, then KLAURO_URL, then the public default.
@@ -708,29 +785,53 @@ async function runUpdateCommand(args: ParsedArgs): Promise<void> {
   const sessionsBeforeUpdate = listActiveSessions();
 
   const tarballUrl = manifest?.tarball || `${serverUrl}/dist/klauro-latest.tgz`;
+  // Upgrade the installation that is actually RUNNING, not whatever npm is
+  // first on PATH — on multi-node machines (homebrew node 26 + nvm node 22)
+  // PATH-npm can point at a different global tree, where the reinstall either
+  // lands uselessly or fails its native tree-sitter build (2026-07 field bug).
+  const target = resolveSelfUpdateTarget();
   process.stdout.write(`\nInstalling ${tarballUrl} ...\n`);
+  process.stdout.write(
+    `Target: the running CLI's own installation at prefix ${target.prefix} ` +
+    `(${target.prefixSource === 'cli-realpath' ? 'resolved from the installed bin realpath' : 'resolved from the running node'}; npm: ${target.npmBin}${target.nodeBin ? ` run with ${target.nodeBin}` : ''})\n`,
+  );
   process.stdout.write('(this may take a minute -- native tree-sitter deps compile)\n\n');
   // --force reinstalls even when the version string is unchanged, so users
   // always pick up fresh bits; the server sends Cache-Control: no-cache too.
+  // --prefix pins the global install to the running CLI's prefix even when a
+  // user npmrc or PATH-npm default would point elsewhere.
   // Capture (rather than inherit) npm's output so we can filter its routine
   // dependency-tree noise (deprecation warnings, funding nags, etc) — cold-
   // customer feedback 2026-07-06 flagged the raw firehose as making `klauro
   // update` feel unfinished. Real errors (non-zero exit, or any line that
   // isn't recognized noise) are still surfaced in full.
-  const result = spawnSync('npm', ['install', '-g', tarballUrl, '--force'], {
-    stdio: ['inherit', 'pipe', 'pipe'],
-    encoding: 'utf8',
-  });
+  // When the prefix carries its own node, run npm THROUGH it (npm's `env
+  // node` shebang would otherwise pick PATH's node and node-gyp would build
+  // the native deps against the wrong ABI — the original field failure).
+  const installArgs = ['install', '-g', tarballUrl, '--force', '--prefix', target.prefix];
+  const result = target.nodeBin
+    ? spawnSync(target.nodeBin, [target.npmBin, ...installArgs], {
+      stdio: ['inherit', 'pipe', 'pipe'],
+      encoding: 'utf8',
+    })
+    : spawnSync(target.npmBin, installArgs, {
+      stdio: ['inherit', 'pipe', 'pipe'],
+      encoding: 'utf8',
+      shell: process.platform === 'win32',
+    });
   const npmOutput = filterNpmNoise(`${result.stdout || ''}${result.stderr || ''}`);
   if (npmOutput) process.stdout.write(npmOutput.endsWith('\n') ? npmOutput : `${npmOutput}\n`);
   if (result.status !== 0) {
-    throw new Error(`npm install failed (exit ${result.status ?? 'unknown'}). See output above.`);
+    throw new Error(`npm install failed (exit ${result.status ?? 'unknown'}) while updating prefix ${target.prefix}. See output above.`);
   }
 
   if (args.json) {
     process.stdout.write(`${JSON.stringify({
       status: 'updated',
       version: latest,
+      prefix: target.prefix,
+      prefix_source: target.prefixSource,
+      npm: target.npmBin,
       running_sessions_detected: sessionsBeforeUpdate.length,
       running_session_pids: sessionsBeforeUpdate.map(s => s.pid),
       restart_required: sessionsBeforeUpdate.length > 0,
@@ -741,13 +842,13 @@ async function runUpdateCommand(args: ParsedArgs): Promise<void> {
   if (sessionsBeforeUpdate.length > 0) {
     const plural = sessionsBeforeUpdate.length === 1 ? 'session' : 'sessions';
     process.stdout.write(
-      `\nklauro updated to ${latest ?? 'the latest version'}.\n` +
+      `\nklauro updated to ${latest ?? 'the latest version'} (installation at ${target.prefix}).\n` +
       `Detected ${sessionsBeforeUpdate.length} running MCP ${plural} (pid ${sessionsBeforeUpdate.map(s => s.pid).join(', ')}) still on the OLD build ` +
       `(${sessionsBeforeUpdate.map(s => s.version).join(', ')}) — they will keep running the old code silently until restarted.\n` +
       `RESTART Claude Code (or your MCP client) now to load the new server.\n`
     );
   } else {
-    process.stdout.write('\nklauro updated. No running MCP sessions were detected on this machine, but restart Claude Code (or your MCP client) before your next session to load the new server.\n');
+    process.stdout.write(`\nklauro updated (installation at ${target.prefix}). No running MCP sessions were detected on this machine, but restart Claude Code (or your MCP client) before your next session to load the new server.\n`);
   }
 }
 
@@ -1109,7 +1210,16 @@ async function runInitCommand(projectPath: string, args: ParsedArgs, options: { 
 
   // (b) Project identity — resolve or register. Existing .klaurorc = keep it
   // (idempotent refresh); missing = the existing init flow (interactive when a
-  // TTY, defaults otherwise).
+  // TTY, defaults otherwise). EXCEPTION: an existing config whose project.id
+  // is null/non-prj_ (written by an older broken CLI) is UNBOUND — keeping it
+  // verbatim just re-warns "orphaned slug" forever and forces the user to rm
+  // .klaurorc and start over. When signed in, self-heal it instead: run the
+  // same headless resolve-or-create placement the fresh path uses (honoring
+  // --workspace), then write ONLY the real ids into the existing file so
+  // source/exclude customizations survive. A bound (prj_) config is untouched
+  // — re-running init stays a no-op verify.
+  let projectStatus: InitStep['status'] = 'ok';
+  let projectNote = hadConfig && !args.force ? ' · existing .klaurorc kept' : '';
   if (!hadConfig || args.force) {
     const initOptions = await resolveInitOptions(projectPath, args);
     await writeDefaultKlauroConfig(projectPath, {
@@ -1122,17 +1232,34 @@ async function runInitCommand(projectPath: string, args: ParsedArgs, options: { 
       kind: initOptions.kind,
     });
     loaded = await loadKlauroConfig(projectPath);
+    projectNote = ` · wrote ${loaded.configPath}`;
+  } else if (token && isUnboundHostedProjectId(loaded.config.project.id)) {
+    try {
+      const placed = await placeHostedProjectHeadless(projectPath, serverUrl, token, args);
+      await writeProjectBindingIntoConfig(projectPath, {
+        projectId: placed.project.id,
+        workspaceId: placed.workspace.id,
+        organizationId: placed.workspace.id,
+        projectName: placed.project.name,
+        kind: 'project',
+      });
+      loaded = await loadKlauroConfig(projectPath);
+      projectNote = ` · healed stale unbound .klaurorc (bound to workspace ${placed.workspace.name}; your other settings were kept)`;
+    } catch (error) {
+      projectStatus = 'warn';
+      projectNote = ` · existing .klaurorc is UNBOUND (project.id missing) and could not self-heal (${error instanceof Error ? error.message : String(error)}) — re-run klauro init, or rm .klaurorc to start fresh`;
+    }
   }
   const identity = detectWorkspaceIdentity(projectPath, loaded.config.project.id);
-  record('project', 'ok',
-    `${loaded.config.project.name || resolveManifestProjectName(projectPath, path.basename(projectPath))}${loaded.config.project.id ? ` (hosted project ${loaded.config.project.id})` : ''} · identity ${identity.workspace} (${identity.source})${hadConfig && !args.force ? ' · existing .klaurorc kept' : ` · wrote ${loaded.configPath}`}`);
+  record('project', projectStatus,
+    `${loaded.config.project.name || resolveManifestProjectName(projectPath, path.basename(projectPath))}${loaded.config.project.id ? ` (hosted project ${loaded.config.project.id})` : ''} · identity ${identity.workspace} (${identity.source})${projectNote}`);
 
   // (c) Analysis — kick off / refresh the hosted analysis for this repo.
   // Best-effort: a failed or slow analysis never fails the connect.
   const boundProjectId = loaded.config.project.id;
   if (!token) {
     record('analysis', 'skip', 'requires sign-in — run `klauro analyze .` after `klauro login`');
-  } else if (!boundProjectId || !/^prj_/.test(boundProjectId)) {
+  } else if (isUnboundHostedProjectId(boundProjectId)) {
     // Signed in but the project never bound to a hosted prj_ — an upload here
     // lands under a path-hash slug and is orphaned (never appears in any
     // workspace). Fail loudly instead of printing "ok", and make --json exit
@@ -1308,6 +1435,17 @@ function formatConnectionReportLines(report: Awaited<ReturnType<typeof buildConn
       ? `Fabric:   remote via ${report.fabric.endpoint} · workspace ${report.fabric.workspace} · ${report.fabric.active_claims === null ? (report.fabric.note || 'claims unavailable') : `${report.fabric.active_claims} active claim(s)`}`
       : `Fabric:   local · workspace ${report.fabric.workspace}${report.fabric.note ? ` · ${report.fabric.note}` : ''}${report.project.initialized ? '' : '  (klauro init connects it)'}`,
   ];
+}
+
+/**
+ * True when a .klaurorc's project.id does NOT bind to a hosted project: null /
+ * missing / any non-prj_ placeholder (all of which an older broken CLI could
+ * leave behind). An unbound config makes every analysis upload land as an
+ * orphaned path-hash slug, so `klauro init` self-heals it when signed in.
+ * Exported (cli.ts is otherwise entry-only) so the decision is unit-testable.
+ */
+export function isUnboundHostedProjectId(id: unknown): boolean {
+  return typeof id !== 'string' || !/^prj_/.test(id);
 }
 
 async function resolveInitOptions(projectPath: string, args: ParsedArgs): Promise<{

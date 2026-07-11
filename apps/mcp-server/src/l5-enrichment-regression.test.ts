@@ -63,12 +63,18 @@ function groundedDescriptionFor(ctx: any): string {
   const deps: string[] = Array.isArray(facts.dependencies) ? facts.dependencies : [];
   const tokens: string[] = Array.isArray(facts.structuralTokens) ? facts.structuralTokens : [];
   const grounding = [...frameworks, ...entities, ...deps, ...tokens].filter(Boolean);
-  const lead = grounding.slice(0, 6).join(', ') || 'HTTP endpoints and persisted records';
+  const lead = grounding.slice(0, 6).join(', ') || 'persisted records';
+  const stack = frameworks.join(', ') || deps.slice(0, 3).join(', ') || 'a Node runtime';
+  // Written against the v2 four-question contract + the current gate: no
+  // "built with <framework>" lead (framework-led-product-narrative), no
+  // source-bucket restatement ("HTTP endpoints", "route handlers"), 4-6 full
+  // sentences answering what it is / what it does / how it works / how built.
   return (
-    `This service exposes an HTTP API that manages ${entities.slice(0, 3).join(', ') || 'domain records'} ` +
-    `through request handlers persisting to a datastore. It coordinates the create, read, update, and delete ` +
-    `operations surfaced by its routes, grounded in ${lead}. The implementation is built with ` +
-    `${frameworks.join(', ') || deps.slice(0, 3).join(', ') || 'a Node runtime'} and validates inputs before writing records.`
+    `This system is a record-management service that keeps ${entities.slice(0, 3).join(', ') || 'domain records'} ` +
+    `accurate and retrievable for its callers. It lets a caller create, read, update, and delete those records, ` +
+    `grounded in ${lead}. It works by accepting each incoming request, validating the submitted fields, and ` +
+    `persisting the resulting record to its datastore before confirming the change. ` +
+    `The implementation composes ${stack} on a Node runtime, with schema definitions enforcing the shape of every stored record.`
   );
 }
 

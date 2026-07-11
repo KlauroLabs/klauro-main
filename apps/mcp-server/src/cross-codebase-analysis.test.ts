@@ -788,6 +788,80 @@ test('workspace domains demote thin entity-only concepts below terminal product 
   assert.ok(!graph.workspace_domains.some(domain => domain.name === 'Analysis'));
 });
 
+// Regression (live prod v1.0.61): shell-script/fixture/file-format tokens leaked
+// into workspace `domains` ("Json", "Curl", "Pentest", "Shell", ...). Their repo
+// concepts occur ONLY in file-basename entry points (entry_file_*.sh) and bare
+// code nodes — never in a data entity, a structural entry point, or the terminal
+// value chain. The evidence gate must drop them at derivation, while concepts
+// grounded in entities/structural entries (and capability-backed domains) stay.
+test('workspace domains reject token-frequency concepts sourced only from shell scripts and file basenames', () => {
+  const agent = cas({
+    system: { id: 'agent', name: 'zt-agent', type: 'service', root_path: '/tmp/zt-agent' },
+    nodes: [{ id: 'enroll', name: 'enrollDevice', type: 'function', source: { file: '/tmp/zt-agent/src/enroll.rs', line: 1 } } as any],
+    entry_points: [{ id: 'entry:enroll', source_node: 'enroll', type: 'http', name: 'POST /enroll', trigger: { method: 'POST', path: '/enroll' } }],
+    enhanced_system_purpose: {
+      primary_domain: 'Network Access Management',
+      core_concepts: ['device', 'access'],
+    } as any,
+    system_capabilities: [{
+      id: 'capability:policy',
+      name: 'Policy Management',
+      description: 'Policy Management evaluates access policies for enrolled devices.',
+      category: 'core',
+      criticality: 'critical',
+      operations: [{ entry_point_id: 'entry:enroll', action: 'evaluate', path_or_command: '/enroll' }],
+      related_entities: ['Policy'],
+      related_domains: ['Policy Management'],
+      confidence: 0.9,
+      evidence: ['entry:enroll'],
+    }] as any,
+    domain_concepts: [
+      // Grounded: appears in data entities → real domain vocabulary.
+      { id: 'concept_policy', name: 'policy', classification: 'core', frequency: 41, appears_in: { entry_points: [], entities: ['entity_policy'], nodes: ['impl:access_policies.rs:AccessPolicyExecutor'] } },
+      // Grounded: appears at a structural (non file-basename) entry point.
+      { id: 'concept_network', name: 'network', classification: 'core', frequency: 228, appears_in: { entry_points: ['entry:cli:crates/config/src/machine.rs:subcommand:NetworkAccessRequest'], entities: [], nodes: [] } },
+      // Junk class: tokens occurring ONLY in shell-script file-basename entry
+      // points and shell function nodes. These are exactly the live leaks.
+      { id: 'concept_shell', name: 'shell', classification: 'core', frequency: 243, appears_in: { entry_points: ['entry_file_pentest_full_attack_suite_sh', 'entry_file_build_dmg_installer_sh'], entities: [], nodes: [] } },
+      { id: 'concept_pentest', name: 'pentest', classification: 'core', frequency: 8, appears_in: { entry_points: ['entry_file_scripts_test_relay_scenarios_39_pentest_malformed_zerac_sh'], entities: [], nodes: ['function_pentest_setup_sh_check_tool_10'] } },
+      { id: 'concept_curl', name: 'curl', classification: 'supporting', frequency: 5, appears_in: { entry_points: [], entities: [], nodes: ['function_scripts_test_relay_lib_workload_sh_workload_curl_minio_87'] } },
+      { id: 'concept_json', name: 'json', classification: 'supporting', frequency: 12, appears_in: { entry_points: [], entities: [], nodes: ['function_scripts_parse_json_sh_parse_json_3'] } },
+      { id: 'concept_revisions', name: 'revisions', classification: 'supporting', frequency: 6, appears_in: { entry_points: [], entities: [], nodes: ['function_scripts_revisions_sh_list_revisions_2'] } },
+    ] as any,
+    data_entities: [
+      { id: 'entity_policy', name: 'Policy', fields: [], lifecycle: { created_by: ['enroll'], read_by: ['enroll'], updated_by: [], deleted_by: [] } },
+    ] as any,
+    user_journeys: [{
+      id: 'journey:enroll',
+      name: 'Enroll Device',
+      classification: 'primary',
+      criticality: 'critical',
+      terminal_entities: [{ name: 'Policy', access: 'read' }],
+      terminal_effects: { entities_written: ['Policy'], entities_read: ['Policy'], messages_emitted: [], external_services: [] },
+    }] as any,
+  });
+
+  const graph = buildCrossCodebaseSystemGraph('zt-workspace', [
+    { path: '/tmp/zt-agent', name: 'zt-agent', cas: agent },
+  ]);
+  const domainNames = graph.workspace_domains.map(domain => domain.name);
+
+  // Junk tokens sourced only from shell scripts / file basenames never surface.
+  for (const junk of ['Shell', 'Pentest', 'Curl', 'Json', 'Revisions']) {
+    assert.ok(!domainNames.includes(junk), `junk token "${junk}" must not be a workspace domain: ${JSON.stringify(domainNames)}`);
+  }
+  // Every surfaced domain is backed by real evidence (analyzer domain answer,
+  // capability, or terminal grounding) — never raw token frequency alone.
+  for (const domain of graph.workspace_domains) {
+    const anchored = domain.evidence.some(item => /^(primary_domain|project_domain|crypto_anchor|capability|capability_domain|deployable):/.test(item));
+    assert.ok(anchored || (domain.terminal_score || 0) > 0,
+      `domain "${domain.name}" surfaced without domain evidence: ${JSON.stringify(domain.evidence)}`);
+  }
+  // The evidence-grounded domains still surface.
+  assert.ok(domainNames.some(name => /Network Access/i.test(name)), `expected a Network Access domain: ${JSON.stringify(domainNames)}`);
+  assert.ok(domainNames.some(name => /Policy/i.test(name)), `expected a Policy domain: ${JSON.stringify(domainNames)}`);
+});
+
 test('AI enrichment rejects item descriptions that are useful-sounding but not grounded in target evidence', async () => {
   const originalGenerate = aiService.generateComponentDescription;
   const originalEnv = process.env.KLAURO_WORKSPACE_AI_ENRICHMENT;
@@ -948,7 +1022,7 @@ test('surfaces source-backed auth providers and topology-only infrastructure sep
   ));
 });
 
-test('keeps deterministic product summaries scoped to the actual workspace vocabulary', () => {
+test('never authors deterministic product summaries — pre-AI narrative ships empty awaiting AI enrichment', () => {
   const soon = cas({
     system: { id: 'soon-sync', name: 'soon-sync', type: 'service', root_path: '/tmp/soon-sync' },
     nodes: [{ id: 'billing-route', name: 'BillingRecoveryController', type: 'function', source: { file: 'src/billing.ts', line: 1 } } as any],
@@ -989,10 +1063,14 @@ test('keeps deterministic product summaries scoped to the actual workspace vocab
   const soonGraph = buildCrossCodebaseSystemGraph('Soon', [{ path: '/tmp/soon-sync', name: 'soon-sync', cas: soon }]);
   const klauroGraph = buildCrossCodebaseSystemGraph('Klauro', [{ path: '/tmp/klauro', name: 'Klauro', cas: klauro }]);
 
-  assert.match(soonGraph.workspace_narrative.product_value_summary, /financial application workspace/i);
-  assert.doesNotMatch(soonGraph.workspace_narrative.product_value_summary, /secure network-access/i);
-  assert.match(klauroGraph.workspace_narrative.product_value_summary, /codebase-intelligence workspace/i);
-  assert.doesNotMatch(klauroGraph.workspace_narrative.product_value_summary, /secure network-access/i);
+  // DETERMINISM-BOUNDARY: comprehension prose is AI-only. The pre-AI structural
+  // builder must never author a keyword-frame summary ("financial application
+  // workspace", "codebase-intelligence workspace", ...) — it ships empty and is
+  // marked as requiring AI enrichment.
+  assert.equal(soonGraph.workspace_narrative.product_value_summary, '');
+  assert.equal(klauroGraph.workspace_narrative.product_value_summary, '');
+  assert.equal(soonGraph.workspace_narrative.source, 'ai-required-degraded');
+  assert.equal(klauroGraph.workspace_narrative.source, 'ai-required-degraded');
 });
 
 test('workspace AI auto configuration prefers fast capable local Ollama models', () => {

@@ -1580,8 +1580,48 @@ async function handleAccountApi(
         generated_at: record.generated_at,
         member_project_ids: record.member_project_ids,
         member_project_names: record.member_project_names,
+        // Terminal-honest AI narrative state ('ai' | 'degraded' | 'skipped' |
+        // 'error' | 'pending'); absent on records persisted before enrichment
+        // was attached to server-side WAS rebuilds.
+        enrichment: record.enrichment,
         analysis: record.graph,
       },
+    };
+  }
+
+  // POST /api/workspaces/{id}/reanalyze — recompute the server-side WAS for
+  // this workspace from the STORED member analyses, WITH the AI narrative
+  // enrichment pass, and persist. Mirrors POST /api/projects/{id}/reanalyze:
+  // answer 202 immediately and run in the background (a multi-repo WAS build
+  // + AI narrative can exceed the Cloudflare edge and client POST timeouts),
+  // then let clients poll GET /api/workspaces/{id}/analysis for
+  // status:'ready' + enrichment.status. This is the product surface for
+  // refreshing a workspace whose auto-built narrative landed degraded.
+  const workspaceReanalyzeMatch = route.match(/^\/api\/workspaces\/([^/]+)\/reanalyze$/);
+  if (workspaceReanalyzeMatch && request.method === 'POST') {
+    const workspaceId = decodeURIComponent(workspaceReanalyzeMatch[1]);
+    // Workspace isolation: same membership gate as GET /analysis above —
+    // listProjects throws 404 for non-members BEFORE any workspace-scoped
+    // work is scheduled, so a user can only reanalyze their own workspace.
+    await accounts.listProjects(userId, workspaceId);
+    if (!workspaceAnalyses) throw new AccountHttpError(500, 'Workspace analysis storage unavailable');
+    const dataDirForBackground = dataDir;
+    setImmediate(() => {
+      workspaceAnalyses.rebuild(workspaceId).catch(async error => {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.error(`[Klauro] async workspace reanalyze failed for ${workspaceId}: ${detail}`);
+        if (dataDirForBackground) {
+          await appendAuditLog(dataDirForBackground, {
+            event: 'workspace_reanalyze_async_failed',
+            workspace_id: workspaceId,
+            error: detail.slice(0, 500),
+          }).catch(() => {});
+        }
+      });
+    });
+    return {
+      statusCode: 202,
+      body: { status: 'accepted', workspace_id: workspaceId },
     };
   }
 
@@ -1632,11 +1672,34 @@ async function handleAccountApi(
       // layers still pending) from 'ready' (every layer landed) using the
       // same layers_ready manifest surfaced in `summary`, rather than the
       // caller having to infer it from node counts.
-      const status = cas.layers_ready && !cas.layers_ready.complete ? 'populating' : 'ready';
+      // 'populating' ONLY while a layer is genuinely still coming. A layer in
+      // terminal 'error' (the L5 AI comprehension pass failed its model call
+      // or grounding gate) keeps layers_ready.complete false forever — before
+      // this distinction, a project whose L5 errored read as 'populating'
+      // indefinitely (prod: electripure/hercules/openclaw stuck "populating"
+      // with description_source null). The structure IS complete and final, so
+      // the project is 'ready', with an explicit degraded ai_enrichment
+      // indicator + the underlying rejection reason so the failure is VISIBLE.
+      const ladderLayers = cas.layers_ready?.layers || [];
+      const hasPendingLayer = ladderLayers.some(layer => layer.status === 'pending');
+      const erroredLayers = ladderLayers.filter(layer => layer.status === 'error');
+      const status = cas.layers_ready && !cas.layers_ready.complete && hasPendingLayer
+        ? 'populating'
+        : 'ready';
+      const aiDegraded = cas.ai_enrichment === 'error' || (erroredLayers.length > 0 && !hasPendingLayer);
       return {
         statusCode: 200,
         body: {
           status,
+          ...(aiDegraded
+            ? {
+                ai_enrichment: 'error',
+                ai_enrichment_error:
+                  cas.ai_enrichment_error ||
+                  erroredLayers.find(layer => layer.error)?.error ||
+                  'AI comprehension pass failed; comprehension is AI-only (no deterministic fallback)',
+              }
+            : {}),
           project_id: project.id,
           analysis_id: project.analysis_id,
           summary,

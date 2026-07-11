@@ -1898,6 +1898,117 @@ describe('architecture and capability inference', () => {
     expect(orch.validateGeneratedAIInterpretation(grounded, purpose, grounding).ok).toBe(true);
   });
 
+  it('does not reject a description because a gerund/participle lands in the system-type modifier window (prod: ungrounded-system-type: incorporating)', () => {
+    // Klauro-self-shaped facts: monorepo/MCP/analyzer are all real evidence.
+    const purpose = { primary_domain: 'code-analysis', core_concepts: ['monorepo', 'mcp', 'analyzer', 'parser'] };
+    const grounding = {
+      systemName: 'klauro',
+      frameworks: ['nestjs'],
+      libraries: ['tree-sitter', '@nestjs/core', '@modelcontextprotocol/sdk'],
+      databaseEntities: ['AnalysisSnapshot', 'CapabilityNode'],
+      structuralTokens: ['monorepo', 'analyzer', 'parser', 'capability'],
+      projectTextSummary: 'MCP analyzer monorepo for codebase analysis',
+    };
+
+    // "incorporating" is a verbal participle linking a clause, NOT a
+    // system-type claim. Before the fix, the modifier-window extraction
+    // crossed the clause boundary ("platform incorporating the core
+    // services"), every other window token was filtered as stopword/generic,
+    // and the gate rejected the whole paragraph with
+    // 'ungrounded-system-type: incorporating'.
+    const description = 'klauro is an MCP analyzer monorepo built with NestJS, an internal platform incorporating the core services that parse repositories with tree-sitter and expose analysis results over MCP. Capability and parser records are stored as AnalysisSnapshot data for downstream agents.';
+    expect(orch.validateGeneratedAIInterpretation(description, purpose, grounding)).toEqual({ ok: true });
+
+    // A genuinely ungrounded system-type claim must still fail: zero solana/
+    // arbitrage evidence anywhere in the supplied facts.
+    const fabricated = 'klauro is a solana arbitrage-trading platform built with NestJS that scans monorepo analyzer output and parser records for price gaps. It streams capability data as AnalysisSnapshot rows and settles the resulting trades automatically for downstream agents.';
+    const fabricatedVerdict = orch.validateGeneratedAIInterpretation(fabricated, purpose, grounding);
+    expect(fabricatedVerdict.ok).toBe(false);
+    expect(String(fabricatedVerdict.reason)).toMatch(/ungrounded-system-type/);
+  });
+
+  describe('mechanical repair-not-reject for fixable gate rejections', () => {
+    const purpose = { primary_domain: 'crypto-market-intelligence', core_concepts: ['dex', 'ohlcv', 'whale', 'pool'] };
+    const grounding = {
+      systemName: 'soon-lens',
+      frameworks: ['nestjs'],
+      libraries: ['ccxt', '@triton-one/yellowstone-grpc', 'web3'],
+      databaseEntities: ['DexTrade', 'WhaleTransaction', 'OhlcvCandle', 'PreflightDecision'],
+      structuralTokens: ['dextrade', 'whale', 'ohlcv', 'pool', 'preflight'],
+      projectTextSummary: 'Soon Lens crypto intelligence and agent preflight API',
+    };
+    // A grounded paragraph proven valid by the fabricated-vs-grounded test above.
+    const groundedParagraph = 'soon-lens is a crypto market-intelligence API built with NestJS that aggregates DexTrade and OhlcvCandle market data across exchanges. It surfaces WhaleTransaction signals and PreflightDecision risk attestations for trading agents.';
+
+    it('heals a too-long paragraph by trimming to a sentence boundary instead of rejecting (prod: hercules)', () => {
+      // Build an over-budget (>2000 chars) paragraph out of individually valid
+      // grounded sentences.
+      const filler = ' It aggregates DexTrade and OhlcvCandle market data for trading agents across venues.';
+      let long = groundedParagraph;
+      while (long.length <= 2100) long += filler;
+      expect(orch.validateGeneratedAIInterpretation(long, purpose, grounding).reason).toBe('too-long');
+
+      const trimmed = orch.mechanicallyRepairAIInterpretation(long, 'too-long');
+      expect(trimmed).toBeDefined();
+      expect(trimmed.length).toBeLessThanOrEqual(2000);
+      expect(trimmed.endsWith('.')).toBe(true);
+
+      const outcome = orch.acceptAIInterpretationCandidate(long, purpose, grounding);
+      expect(outcome.validation).toEqual({ ok: true });
+      expect(outcome.text.length).toBeLessThanOrEqual(2000);
+      expect(outcome.text.startsWith('soon-lens is a crypto market-intelligence API')).toBe(true);
+    });
+
+    it('heals a single ungrounded marketing word by stripping it instead of rejecting the paragraph (prod: electripure "efficient")', () => {
+      const oneWord = groundedParagraph.replace('is a crypto market-intelligence API', 'is an efficient crypto market-intelligence API');
+      const verdict = orch.validateGeneratedAIInterpretation(oneWord, purpose, grounding);
+      expect(verdict.reason).toBe('unsupported-marketing-language: efficient');
+
+      // Reason-driven mechanical strip: exactly the flagged word is removed.
+      const stripped = orch.mechanicallyRepairAIInterpretation(oneWord, verdict.reason);
+      expect(stripped).toBeDefined();
+      expect(stripped).not.toMatch(/\befficient\b/i);
+      expect(stripped).toMatch(/crypto market-intelligence API/);
+
+      const outcome = orch.acceptAIInterpretationCandidate(oneWord, purpose, grounding);
+      expect(outcome.validation.ok).toBe(true);
+      expect(outcome.text).not.toMatch(/\befficient\b/i);
+      expect(outcome.text).toMatch(/DexTrade/);
+    });
+
+    it('still rejects a paragraph SATURATED with marketing language (word-deletion would gut it)', () => {
+      const saturated = 'soon-lens is a seamless crypto market-intelligence API built with NestJS that seamlessly boosts productivity and business value while aggregating DexTrade and OhlcvCandle market data. It surfaces user-friendly WhaleTransaction signals, improving operational productivity and business value with a seamless PreflightDecision workflow for trading agents.';
+      const verdict = orch.validateGeneratedAIInterpretation(saturated, purpose, grounding);
+      expect(String(verdict.reason)).toMatch(/^unsupported-marketing-language:/);
+
+      // 4+ distinct flagged phrases → NOT mechanically fixable.
+      expect(orch.mechanicallyRepairAIInterpretation(saturated, verdict.reason)).toBeUndefined();
+      const outcome = orch.acceptAIInterpretationCandidate(saturated, purpose, grounding);
+      expect(outcome.validation.ok).toBe(false);
+      expect(String(outcome.validation.reason)).toMatch(/^unsupported-marketing-language:/);
+    });
+
+    it('chains mechanical repairs: a too-long trim followed by a marketing-word strip', () => {
+      const withWord = groundedParagraph.replace('is a crypto market-intelligence API', 'is an efficient crypto market-intelligence API');
+      const filler = ' It aggregates DexTrade and OhlcvCandle market data for trading agents across venues.';
+      let longAndMarketing = withWord;
+      while (longAndMarketing.length <= 2100) longAndMarketing += filler;
+      // First rejection is too-long (checked before marketing in the gate).
+      expect(orch.validateGeneratedAIInterpretation(longAndMarketing, purpose, grounding).reason).toBe('too-long');
+
+      const outcome = orch.acceptAIInterpretationCandidate(longAndMarketing, purpose, grounding);
+      expect(outcome.validation.ok).toBe(true);
+      expect(outcome.text.length).toBeLessThanOrEqual(2000);
+      expect(outcome.text).not.toMatch(/\befficient\b/i);
+    });
+
+    it('does not mechanically repair semantic rejection reasons (they go to the AI re-prompt)', () => {
+      expect(orch.mechanicallyRepairAIInterpretation(groundedParagraph, 'source-bucket-restatement')).toBeUndefined();
+      expect(orch.mechanicallyRepairAIInterpretation(groundedParagraph, 'ungrounded-system-type: detected')).toBeUndefined();
+      expect(orch.mechanicallyRepairAIInterpretation(groundedParagraph, undefined)).toBeUndefined();
+    });
+  });
+
   it('accepts framework mentions backed by detected libraries instead of framework analyzers', () => {
     const purpose = { primary_domain: 'game-management', core_concepts: ['game', 'tournament', 'card', 'deck'] };
     const description = 'A game management system built with React and Prisma that coordinates game, tournament, card, and deck workflows, tracking deck construction and tournament pairings for players.';
@@ -3109,5 +3220,171 @@ describe('orchestrator dedupeUtilNodeDuplicates (2026-07-04 references-idshapes)
     expect(nodes).toHaveLength(1);
     expect(nodes[0].id).toBe(utilA.id);
     expect(edges[0].target).toBe(utilA.id);
+  });
+});
+
+describe('entity-extraction gaps from real-repo onboarding (mtg/openclaw/hercules)', () => {
+  const node = (partial: Partial<CASNode>): CASNode => ({
+    id: partial.id || partial.name || 'node',
+    name: partial.name || 'Node',
+    type: partial.type || 'class',
+    source: partial.source || { file: `src/${partial.name || 'node'}.ts`, line: 1 },
+    metadata: partial.metadata || {},
+    subcategories: partial.subcategories,
+    parent: partial.parent,
+    signature: partial.signature,
+  } as CASNode);
+
+  describe('bundled-frontend roots require a product outside them (mtg gap)', () => {
+    let root: string;
+
+    beforeEach(() => {
+      root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-bundled-frontend-'));
+    });
+
+    afterEach(() => {
+      fs.rmSync(root, { recursive: true, force: true });
+      orch.bundledFrontendRootsCache.clear();
+    });
+
+    const writeFrontendManifest = (dir: string) => {
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+        name: 'webapp',
+        dependencies: { react: '^18.0.0', next: '^14.0.0' },
+      }));
+    };
+
+    it('does not exclude the frontend dir when it IS the whole product (docs-only root)', () => {
+      writeFrontendManifest(path.join(root, 'app'));
+      fs.writeFileSync(path.join(root, 'README.md'), '# docs only');
+
+      expect(orch.getBundledFrontendRoots(root)).toEqual([]);
+      // The Prisma schema inside the app must therefore stay a primary product path.
+      expect(orch.isPrimaryProductPathForProject('app/prisma/schema.prisma', root)).toBe(true);
+    });
+
+    it('still excludes a frontend dir bundled into a root-manifest product', () => {
+      writeFrontendManifest(path.join(root, 'web'));
+      fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ name: 'backend', dependencies: { express: '^4.0.0' } }));
+
+      expect(orch.getBundledFrontendRoots(root)).toEqual([path.join(root, 'web')]);
+    });
+
+    it('still excludes a frontend dir when a sibling backend package exists', () => {
+      writeFrontendManifest(path.join(root, 'web'));
+      fs.mkdirSync(path.join(root, 'server'), { recursive: true });
+      fs.writeFileSync(path.join(root, 'server', 'go.mod'), 'module example.com/server');
+
+      expect(orch.getBundledFrontendRoots(root)).toEqual([path.join(root, 'web')]);
+    });
+  });
+
+  it('surfaces Prisma schema models as persisted data entities with analyzer-parsed fields', () => {
+    const nodes: CASNode[] = [
+      node({
+        id: 'entity_prisma_deck',
+        name: 'Deck',
+        type: 'entity',
+        source: { file: 'app/prisma/schema.prisma', line: 1 },
+        metadata: {
+          attributes: {
+            orm: 'Prisma',
+            source: 'prisma_schema',
+            fields: [
+              { name: 'id', type: 'String', primary: true },
+              { name: 'name', type: 'String' },
+              { name: 'ownerId', type: 'String' },
+            ],
+          },
+        },
+        subcategories: ['entity', 'prisma'],
+      }),
+    ];
+
+    const entities = orch.buildDataEntities(nodes, []);
+    expect(entities).toHaveLength(1);
+    expect(entities[0].name).toBe('Deck');
+    expect(entities[0].kind).toBe('persisted-entity');
+    expect((entities[0].fields || []).map((field: any) => field.name)).toEqual(['id', 'name', 'ownerId']);
+  });
+
+  describe('operation-shaped and format-token shapes stay out of the entity set (openclaw gap)', () => {
+    it('excludes a params shape whose core noun is a callable in the graph', () => {
+      const nodes: CASNode[] = [
+        node({
+          id: 'type_handle_commands_params',
+          name: 'HandleCommandsParams',
+          type: 'interface',
+          source: { file: 'src/auto-reply/reply/commands-types.ts', line: 1 },
+        }),
+        node({ id: 'prop_command_body', name: 'commandBody', type: 'property', parent: 'type_handle_commands_params', source: { file: 'src/auto-reply/reply/commands-types.ts', line: 2 } }),
+        node({ id: 'fn_handle_commands', name: 'handleCommands', type: 'function', source: { file: 'src/auto-reply/reply/commands-core.ts', line: 1 } }),
+        // A genuine domain shape with the same structure must survive.
+        node({
+          id: 'type_payment_dto',
+          name: 'PaymentDto',
+          type: 'dto',
+          source: { file: 'src/payments/payment.dto.ts', line: 1 },
+        }),
+        node({ id: 'prop_amount', name: 'amount', type: 'property', parent: 'type_payment_dto', source: { file: 'src/payments/payment.dto.ts', line: 2 } }),
+      ];
+
+      const entities = orch.buildDataEntities(nodes, []);
+      const names = entities.map((entity: any) => entity.name);
+      expect(names).toContain('Payment');
+      expect(names).not.toContain('HandleCommands');
+    });
+
+    it('excludes serialization-format tokens left over from suffix stripping', () => {
+      const nodes: CASNode[] = [
+        node({
+          id: 'type_json_schema',
+          name: 'JsonSchema',
+          type: 'interface',
+          source: { file: 'src/agents/schema/types.ts', line: 1 },
+        }),
+        node({ id: 'prop_type', name: 'type', type: 'property', parent: 'type_json_schema', source: { file: 'src/agents/schema/types.ts', line: 2 } }),
+      ];
+
+      const entities = orch.buildDataEntities(nodes, []);
+      expect(entities.map((entity: any) => entity.name)).not.toContain('Json');
+    });
+  });
+
+  it('dedupes same-named ORM entities into one richest-evidence entry with merged lifecycle (hercules gap)', () => {
+    const nodes: CASNode[] = [
+      node({
+        id: 'model_fleet_user',
+        name: 'User',
+        type: 'model',
+        source: { file: 'modules/fleet/models.py', line: 1 },
+        subcategories: ['data', 'entity'],
+      }),
+      node({ id: 'prop_fleet_azure_id', name: 'azure_id', type: 'field', parent: 'model_fleet_user', source: { file: 'modules/fleet/models.py', line: 2 } }),
+      node({
+        id: 'model_users_user',
+        name: 'User',
+        type: 'model',
+        source: { file: 'modules/users/models.py', line: 1 },
+        subcategories: ['data', 'entity'],
+      }),
+      node({ id: 'prop_users_email', name: 'email', type: 'field', parent: 'model_users_user', source: { file: 'modules/users/models.py', line: 2 } }),
+      node({ id: 'prop_users_username', name: 'username', type: 'field', parent: 'model_users_user', source: { file: 'modules/users/models.py', line: 3 } }),
+    ];
+    const edges: CASEdge[] = [
+      { id: 'edge_creates_fleet', source: 'svc_create_fleet_user', target: 'model_fleet_user', type: 'creates' } as CASEdge,
+      { id: 'edge_reads_users', source: 'svc_get_user', target: 'model_users_user', type: 'reads' } as CASEdge,
+    ];
+
+    const entities = orch.buildDataEntities(nodes, edges);
+    const users = entities.filter((entity: any) => entity.id === 'entity_user');
+    expect(users).toHaveLength(1);
+    // Richest-evidence copy wins (two fields beats one)...
+    expect((users[0].fields || []).map((field: any) => field.name).sort()).toEqual(['email', 'username']);
+    expect(users[0].schema_source).toBe('modules/users/models.py');
+    // ...and lifecycle evidence from BOTH anchors is preserved.
+    expect(users[0].lifecycle.created_by).toContain('svc_create_fleet_user');
+    expect(users[0].lifecycle.read_by).toContain('svc_get_user');
   });
 });

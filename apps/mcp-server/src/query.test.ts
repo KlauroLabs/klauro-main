@@ -455,6 +455,30 @@ test('buildSummary falls back to database_schema entities only when data_entitie
   assert.deepEqual(summary.database_entities, ['Strategy', 'StrategyExecution', 'StrategyAlert']);
 });
 
+// Regression (live prod, Zerac): a Rust + shell + TS repo whose analyzers typed
+// real domain entities as entity/model NODES (NotificationModel, DeviceIdentity,
+// Identity) but whose data-entity extraction produced nothing reported
+// database_entities: [] even though the repo's own AI description named those
+// entities. The summary must surface entity-KIND nodes as the last-resort
+// source — without inflating plain structs/classes/DTOs in.
+test('buildSummary surfaces entity-kind nodes when data_entities and database_schema are both empty', () => {
+  const cas = buildTwoSourceCas();
+  cas.data_entities = [];
+  cas.database_schema = { entities: [] };
+  cas.nodes.push(
+    { id: 'ent1', name: 'NotificationModel', type: 'model', source: { file: 'bin/agent/src/notify.rs', line: 3 } },
+    { id: 'ent2', name: 'DeviceIdentity', type: 'entity', source: { file: 'crates/protocol/src/identity.rs', line: 10 } },
+    { id: 'ent3', name: 'Identity', type: 'struct', subcategories: ['entity'], source: { file: 'crates/protocol/src/identity.rs', line: 40 } },
+    // Must NOT be inflated in: a plain struct, an abstract shape, a DTO-ish class.
+    { id: 'plain', name: 'RetryConfig', type: 'struct', source: { file: 'crates/config/src/retry.rs', line: 1 } },
+    { id: 'abstract', name: 'BaseRecord', type: 'entity', subcategories: ['abstract'], source: { file: 'src/base.ts', line: 1 } },
+    { id: 'dto', name: 'LoginRequestDto', type: 'class', source: { file: 'src/dto/login.ts', line: 1 } },
+  );
+  const summary: any = buildSummary(cas, { detail: 'compact' });
+  assert.deepEqual([...summary.database_entities].sort(), ['DeviceIdentity', 'Identity', 'NotificationModel'],
+    `entity-kind nodes must surface (and only those): ${JSON.stringify(summary.database_entities)}`);
+});
+
 test('buildSummary falls back to product-node language signals only when technologies.languages is empty', () => {
   const cas = buildTwoSourceCas();
   cas.system.technologies.languages = [];
@@ -462,4 +486,28 @@ test('buildSummary falls back to product-node language signals only when technol
   // productTechSignals now derives TS from isTypeScript/extension, so TS still wins.
   assert.ok(summary.languages.includes('TypeScript/JavaScript'),
     `product-node fallback must still detect TypeScript: ${JSON.stringify(summary.languages)}`);
+});
+
+// Honest L5 status (live prod: electripure/hercules/openclaw): when the AI
+// comprehension pass terminally FAILED, the summary must SAY so — surfacing
+// ai_enrichment: 'error' + the underlying rejection reason — instead of leaving
+// readers to infer forever-pending from description_source: null.
+test('buildSummary surfaces a terminal ai_enrichment error with its rejection reason', () => {
+  const cas = buildTwoSourceCas();
+  cas.ai_enrichment = 'error';
+  cas.ai_enrichment_error = 'grounding gate rejection (source-bucket-restatement)';
+  const summary: any = buildSummary(cas, { detail: 'compact' });
+  assert.equal(summary.ai_enrichment, 'error');
+  assert.equal(summary.ai_enrichment_error, 'grounding gate rejection (source-bucket-restatement)');
+
+  // Non-error states surface the marker without the error field; absent marker stays absent.
+  cas.ai_enrichment = 'ready';
+  delete cas.ai_enrichment_error;
+  const readySummary: any = buildSummary(cas, { detail: 'compact' });
+  assert.equal(readySummary.ai_enrichment, 'ready');
+  assert.equal('ai_enrichment_error' in readySummary, false);
+
+  delete cas.ai_enrichment;
+  const legacySummary: any = buildSummary(cas, { detail: 'compact' });
+  assert.equal('ai_enrichment' in legacySummary, false);
 });

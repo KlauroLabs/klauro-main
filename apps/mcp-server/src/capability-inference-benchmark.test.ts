@@ -7,7 +7,11 @@ test('capability inference benchmark prefers domain capabilities over framework 
 
   assert.equal(report.status, 'pass');
   assert.equal(report.score, 100);
-  assert.equal(report.summary.primary_domain, 'fleet-management');
+  // Domain comprehension is AI-only: through a product server with no AI
+  // provider the domain is honestly ABSENT (ai_skipped provenance); when the
+  // product ran with AI it must be AI-sourced. Either way it must never be a
+  // deterministic hardcoded stamp — the primary-domain-provenance gate (part
+  // of report.status above) enforces exactly that, so no literal label here.
   assert.equal(report.summary.generic_capability_count, 0);
   // Match each domain concept over name + description, case-insensitively, with
   // concept synonyms (invoice settlement/billing). Capability phrasing is AI-derived
