@@ -1111,15 +1111,13 @@ export async function enrichWorkspaceAnalysisNarrative(graph: WorkspaceAnalysisG
       return await enrichWorkspaceAnalysisNarrativeWithSmallPasses(graph);
     }
     const raw = await withWorkspaceAiTimeout(generateWorkspaceAiText(workspaceNarrativePromptContext(graph)));
+    assertRealWorkspaceAiAttempt(raw);
     writeWorkspaceAiDebug(raw);
     const parsed = parseWorkspaceNarrativeJson(raw);
     const now = new Date().toISOString();
     const narrativeDescription = String(parsed.description || '').trim();
-    const narrativeAccepted = (
-      isUsefulAiWorkspaceNarrative(narrativeDescription) &&
-      isWorkspaceNarrativeConsistentWithFacts(graph, narrativeDescription, parsed.product_value_summary)
-    ) || isGroundedAiWorkspaceNarrative(graph, narrativeDescription, parsed.product_value_summary);
-    graph.workspace_narrative = narrativeAccepted
+    const narrativeGate = evaluateWorkspaceNarrativeGate(graph, narrativeDescription, parsed.product_value_summary, graph.workspace_narrative.product_value_summary);
+    graph.workspace_narrative = narrativeGate.accepted
       ? {
           ...graph.workspace_narrative,
           ai_provider: graph.ai_enrichment.provider,
@@ -1143,7 +1141,7 @@ export async function enrichWorkspaceAnalysisNarrative(graph: WorkspaceAnalysisG
           ai_structured_model: graph.ai_enrichment.structured_model,
           source: 'ai-required-degraded',
           generated_at: now,
-          degraded_reason: 'Workspace AI enrichment returned a generic, inventory-style, or evidence-inconsistent description and was rejected by the WAS quality gate.',
+          degraded_reason: `Workspace AI enrichment was rejected by the WAS quality gate: ${narrativeGate.reason}`,
         };
     graph.workspace_domains = invalidateDuplicateWorkspaceDomainDescriptions(applyAiDomainDescriptions(graph.workspace_domains, parsed.domain_items || [], now));
     graph.workspace_capabilities = applyAiCapabilityDescriptions(graph.workspace_capabilities, parsed.capability_items || [], now);
@@ -1151,8 +1149,14 @@ export async function enrichWorkspaceAnalysisNarrative(graph: WorkspaceAnalysisG
     graph.workspace_workflows = applyAiWorkflowDescriptions(graph.workspace_workflows, parsed.workflow_items || [], now);
     graph.workspace_entities = applyAiEntityDescriptions(graph.workspace_entities, parsed.entity_items || [], now);
     if (graph.workspace_narrative.source !== 'ai') {
+      // Retry semantics (project-side parity): a gate rejection re-prompts with
+      // the specific rejection reason before degrading. The reason + attempt
+      // index are part of the prompt context, which ALSO changes the ai-service
+      // cache key — without that, a deterministic prompt context replays the
+      // previously-rejected cached response on every retry and the whole
+      // "retry" degrades in milliseconds without a real AI attempt.
       for (let attempt = 0; attempt < 3 && graph.workspace_narrative.source !== 'ai'; attempt += 1) {
-        graph.workspace_narrative = await repairRejectedWorkspaceNarrative(graph, now);
+        graph.workspace_narrative = await repairRejectedWorkspaceNarrative(graph, now, graph.workspace_narrative.degraded_reason, attempt);
       }
     }
     const defaultDescriptionRepairAttempts = Math.max(0, Number(process.env.KLAURO_WORKSPACE_AI_REPAIR_ATTEMPTS || '2'));
@@ -1203,7 +1207,7 @@ async function enrichWorkspaceAnalysisNarrativeWithSmallPasses(
   }
 
   for (let attempt = 0; attempt < 3 && graph.workspace_narrative.source !== 'ai'; attempt += 1) {
-    graph.workspace_narrative = await repairRejectedWorkspaceNarrative(graph, generatedAt);
+    graph.workspace_narrative = await repairRejectedWorkspaceNarrative(graph, generatedAt, graph.workspace_narrative.degraded_reason, attempt);
   }
 
   const defaultDescriptionRepairAttempts = Math.max(1, Number(process.env.KLAURO_WORKSPACE_AI_REPAIR_ATTEMPTS || '2'));
@@ -1235,6 +1239,24 @@ function useSmallWorkspaceAiDefaultPasses(): boolean {
   if (process.env.KLAURO_WORKSPACE_AI_STRATEGY === 'single') return false;
   if (process.env.KLAURO_WORKSPACE_AI_STRATEGY === 'split') return true;
   return false;
+}
+
+/**
+ * Guard against fake quality-gate rejections: if the AI layer never actually
+ * attempted generation (feature-disabled canned string, or an empty response),
+ * that is an enrichment ERROR with a real cause — it must never be laundered
+ * into "rejected by the WAS quality gate" (the live "Clients" workspace
+ * degraded in 104ms with a gate message when no model round-trip happened).
+ * Exported for tests.
+ */
+export function assertRealWorkspaceAiAttempt(raw: string): void {
+  const text = String(raw || '').trim();
+  if (!text) {
+    throw new Error('Workspace AI enrichment returned an empty response — no usable AI attempt was made (provider misconfigured, out of budget, or empty completion). This is an enrichment error, not a quality-gate rejection.');
+  }
+  if (/^AI description generation is disabled\b/i.test(text)) {
+    throw new Error('Workspace AI enrichment made no real attempt: the AI service reports description generation is disabled (features.naturalLanguageDescriptions=false). Enable an AI provider and retry; this is an enrichment error, not a quality-gate rejection.');
+  }
 }
 
 async function generateWorkspaceAiText(additionalContext: Record<string, unknown>): Promise<string> {
@@ -1471,17 +1493,25 @@ function workspaceDirectOutputShape(additionalContext: Record<string, unknown>):
   };
 }
 
-async function repairRejectedWorkspaceNarrative(graph: WorkspaceAnalysisGraph, generatedAt: string): Promise<WorkspaceNarrative> {
+async function repairRejectedWorkspaceNarrative(
+  graph: WorkspaceAnalysisGraph,
+  generatedAt: string,
+  rejectionReason?: string,
+  attempt?: number,
+): Promise<WorkspaceNarrative> {
   try {
-    const raw = await withWorkspaceAiTimeout(generateWorkspaceAiText(workspaceNarrativeRepairPromptContext(graph)));
-    writeWorkspaceAiRepairDebug({ stage: 'narrative-repair-raw', raw: truncateText(raw, 1800) });
+    const raw = await withWorkspaceAiTimeout(generateWorkspaceAiText(workspaceNarrativeRepairPromptContext(graph, rejectionReason, attempt)));
+    assertRealWorkspaceAiAttempt(raw);
+    writeWorkspaceAiRepairDebug({ stage: 'narrative-repair-raw', attempt: attempt ?? 0, rejection_reason: truncateText(rejectionReason, 400), raw: truncateText(raw, 1800) });
     const parsed = parseWorkspaceNarrativeJson(raw);
     const description = String(parsed.description || cleanNarrativeString(raw) || '').trim();
-    const accepted = (
-      isUsefulAiWorkspaceNarrative(description) &&
-      isWorkspaceNarrativeConsistentWithFacts(graph, description, parsed.product_value_summary)
-    ) || isGroundedAiWorkspaceNarrative(graph, description, parsed.product_value_summary);
-    if (!accepted) return graph.workspace_narrative;
+    const gate = evaluateWorkspaceNarrativeGate(graph, description, parsed.product_value_summary, graph.workspace_narrative.product_value_summary);
+    if (!gate.accepted) {
+      return {
+        ...graph.workspace_narrative,
+        degraded_reason: `Workspace AI enrichment was rejected by the WAS quality gate: ${gate.reason}`,
+      };
+    }
     const metadata = workspaceAiProviderMetadata();
     return {
       ...graph.workspace_narrative,
@@ -1890,7 +1920,7 @@ function workspaceDescriptionRepairPromptContext(
   };
 }
 
-function workspaceNarrativeRepairPromptContext(graph: WorkspaceAnalysisGraph): Record<string, unknown> {
+function workspaceNarrativeRepairPromptContext(graph: WorkspaceAnalysisGraph, rejectionReason?: string, attempt?: number): Record<string, unknown> {
   const productName = inferWorkspaceProductName(graph.codebases, graph.name);
   const links = graph.application_links.slice(0, 8).map(link => ({
     mode: link.mode,
@@ -1904,11 +1934,20 @@ function workspaceNarrativeRepairPromptContext(graph: WorkspaceAnalysisGraph): R
   return {
     responseFormat: 'json',
     maxTokens: Number(process.env.KLAURO_WORKSPACE_AI_REPAIR_MAX_TOKENS || '520'),
-    prompt_version: 'was-default-narrative-repair-v1',
+    prompt_version: 'was-default-narrative-repair-v2',
     product_name: productName,
+    // The attempt index and rejection feedback are deliberately part of this
+    // context: they tell the model exactly what to fix AND make each retry a
+    // distinct ai-service cache key, so a rejected cached response can never be
+    // replayed as the "retry" (the 104ms instant-degrade failure mode).
+    retry_attempt: attempt ?? 0,
+    ...(rejectionReason ? { rejection_feedback: `A previous draft was rejected by the WAS quality gate: ${rejectionReason}. Fix exactly this problem in the rewrite.` } : {}),
     task: 'Return only valid JSON with keys description and product_value_summary. Rewrite the workspace description from the supplied WAS facts only.',
     rules: [
       'Write one concrete paragraph.',
+      'Never include raw internal identifiers (prj_/wsp_/acct_ tokens), raw route paths with :params, or HTTP-method lists.',
+      'Describe the workspace as a whole, never a single flow or endpoint.',
+      'Always include a non-empty product_value_summary.',
       'Do not say classified as, repo analysis input, language inventory, or describe the workspace as an inventory.',
       'Do not mention repo counts, language inventory, or "the system includes".',
       'Name concrete deployables, packages, data/runtime concepts, and infrastructure from evidence.',
@@ -2620,6 +2659,99 @@ function meaningfulWorkspaceNameTokens(name: string): string[] {
     .filter(token => token.length >= 3 && !stop.has(token));
 }
 
+/**
+ * Non-negotiable rejection markers for a WORKSPACE narrative, checked before
+ * any acceptance path. These catch the wrong-altitude/leaky prose that the
+ * softer heuristics can accidentally admit (the live "Personal" workspace
+ * accepted "Friends is a workspace visible flow in account
+ * project-prj_yg64u7pf7lvdcppt. It is reached by DELETE/PATCH/GET/event
+ * route(s) such as /API/friends/:friendshipId..." — raw project id, HTTP-method
+ * dump, single-flow altitude, and an empty product_value_summary).
+ * Returns the human-readable rejection reason, or null when clean.
+ * Exported for tests.
+ */
+export function workspaceNarrativeHardRejectReason(description: string, effectiveProductValueSummary?: unknown): string | null {
+  const raw = String(description || '');
+  if (!raw.trim()) return 'the description is empty';
+  if (/\b(?:prj|wsp|acct|proj|org|usr)_[A-Za-z0-9]{6,}\b/.test(raw)) {
+    return 'the description leaks raw internal id tokens (prj_/wsp_/acct_ style identifiers)';
+  }
+  if (/\b(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s*\/\s*(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\b/.test(raw)) {
+    return 'the description dumps HTTP-method route fragments (e.g. "DELETE/PATCH/GET route(s)") instead of workspace-level behavior';
+  }
+  if (/\/:[A-Za-z_]/.test(raw) || /\/[A-Za-z0-9_.~-]+\/:\s?[A-Za-z_]/.test(raw)) {
+    return 'the description quotes raw route path fragments with parameter placeholders (e.g. "/api/friends/:friendshipId")';
+  }
+  if (/\bis an? (?:[a-z][a-z-]*\s+){0,3}flow\b/i.test(raw) || /\b(?:reached|triggered|invoked) by\b[^.]{0,120}\broutes?\b/i.test(raw)) {
+    return 'the description is single-flow altitude prose (describes one flow/endpoint, not the workspace)';
+  }
+  // Plain non-empty check (NOT cleanNarrativeString, whose >=80-char floor
+  // would misclassify a valid one-sentence summary as "empty").
+  const summary = String(effectiveProductValueSummary ?? '').trim();
+  if (!summary) {
+    return 'the narrative has an empty product_value_summary alongside a non-empty description';
+  }
+  return null;
+}
+
+/**
+ * THE WAS narrative quality gate — single decision point used by the primary
+ * enrichment pass and every repair attempt. Hard-reject markers always lose;
+ * otherwise a narrative is accepted via any of three paths:
+ *  (1) useful + fact-consistent (the original heuristic),
+ *  (2) grounded in important deployable/distribution names,
+ *  (3) grounded in the workspace's OWN semantic catalog (capability/domain/
+ *      codebase/application names) — enumerating REAL capabilities is evidence
+ *      of grounding, not "inventory-style" (the pre-calibration gate
+ *      over-triggered on exactly this and rejected real workspace narratives).
+ * Returns the specific rejection reason so retries can re-prompt with it and
+ * degraded records say WHY. Exported for tests.
+ */
+export function evaluateWorkspaceNarrativeGate(
+  graph: WorkspaceAnalysisGraph,
+  description: string,
+  productValueSummary?: unknown,
+  fallbackProductValueSummary?: string,
+): { accepted: boolean; reason?: string } {
+  const effectiveSummary = String(productValueSummary ?? '').trim() || String(fallbackProductValueSummary ?? '').trim();
+  const hardReject = workspaceNarrativeHardRejectReason(description, effectiveSummary);
+  if (hardReject) return { accepted: false, reason: hardReject };
+  const consistent = isWorkspaceNarrativeConsistentWithFacts(graph, description, productValueSummary);
+  if (!consistent) {
+    return { accepted: false, reason: 'the description claims a product frame (secure network access / codebase intelligence) that the workspace evidence does not support' };
+  }
+  if (isUsefulAiWorkspaceNarrative(description)) return { accepted: true };
+  if (isGroundedAiWorkspaceNarrative(graph, description, productValueSummary)) return { accepted: true };
+  if (isWorkspaceSemanticsGroundedNarrative(graph, description)) return { accepted: true };
+  return {
+    accepted: false,
+    reason: 'the description is generic or ungrounded: it needs a multi-sentence workspace-level narrative (>=180 chars) that names the workspace\'s real capabilities, domains, codebases, or deployables and uses concrete behavior verbs',
+  };
+}
+
+const WORKSPACE_BEHAVIOR_WORD_PATTERN = /\b(?:brokers?|relays?|routes?|ships?|installs?|communicates?|calls?|pairs?|interacts?|authenticates?|authorizes?|enrolls?|connects?|protects?|provisions?|declares?|exposes?|records?|forwards?|coordinates?|manages?|handles?|supports?|provides?|processes?|captures?|uses?|consumes?|performs?|orchestrates?|flows?|turns?|transforms?|generates?|retrieves?|returns?|maps?|compares?|compresses?|guides?|validates?|depends?|enables?|enabling|powers?|drives?|runs?|executes?|requires?|syncs?|trades?|settles?|holds?|tracks?|surfaces?|lets?|gives?|fronts?|stores?|persists?|publishes?|streams?|schedules?|triggers?|signs?|verifies?|secures?|enforces?|monitors?)\b/g;
+
+/**
+ * Acceptance path (3): the narrative is grounded when it names the workspace's
+ * OWN derived semantics — capabilities, domains, codebases, applications.
+ * A narrative that enumerates the workspace's real capability catalog with
+ * behavior verbs is a grounded workspace description, not inventory filler.
+ */
+function isWorkspaceSemanticsGroundedNarrative(graph: WorkspaceAnalysisGraph, description: string): boolean {
+  const text = String(description || '').trim();
+  if (text.length < 180) return false;
+  const normalized = normalizeAiItemName(text);
+  if (/\b(?:classified as|repo analysis input|language inventory|primarily built using|consists of multiple|contains analyzed projects)\b/.test(normalized)) return false;
+  const semanticNames = new Set<string>();
+  for (const capability of (graph.workspace_capabilities || []).slice(0, 16)) semanticNames.add(normalizeAiItemName(capability.name));
+  for (const domain of (graph.workspace_domains || []).slice(0, 12)) semanticNames.add(normalizeAiItemName(domain.name));
+  for (const codebase of (graph.codebases || []).slice(0, 24)) semanticNames.add(normalizeAiItemName(codebase.name));
+  for (const app of (graph.applications || []).slice(0, 48)) semanticNames.add(normalizeAiItemName(app.name));
+  const mentioned = [...semanticNames].filter(name => name.length >= 3 && normalized.includes(name)).length;
+  const behaviorWords = (normalized.match(WORKSPACE_BEHAVIOR_WORD_PATTERN) || []).length;
+  return mentioned >= 2 && behaviorWords >= 2;
+}
+
 function isUsefulAiWorkspaceNarrative(description: string): boolean {
   const text = description.trim();
   const normalized = normalizeAiItemName(text);
@@ -2718,7 +2850,7 @@ function workspaceNarrativeMentionsSourceBackedAccessTopology(graph: WorkspaceAn
 // synthesized deterministic sentence.
 
 function usefulAiProductValueSummary(value: unknown, fallback?: string, graph?: WorkspaceAnalysisGraph): string | undefined {
-  const text = cleanNarrativeString(value);
+  const text = cleanNarrativeSummaryString(value);
   if (!text) return undefined;
   const normalized = normalizeAiItemName(text);
   const fallbackText = normalizeAiItemName(fallback || '');
@@ -3178,7 +3310,7 @@ function parseWorkspaceNarrativeJson(raw: string): ParsedWorkspaceNarrative {
     .concat(cleanNarrativeItems(parsed.workspace_entities));
   return {
     description: cleanNarrativeString(parsed.description),
-    product_value_summary: cleanNarrativeString(parsed.product_value_summary),
+    product_value_summary: cleanNarrativeSummaryString(parsed.product_value_summary),
     domains: domainItems.length ? domainItems.map(item => item.name) : cleanNarrativeArray(parsed.domains),
     key_capabilities: capabilityItems.length ? capabilityItems.map(item => item.name) : cleanNarrativeArray(parsed.key_capabilities),
     value_drivers: cleanNarrativeArray(parsed.value_drivers),
@@ -3195,7 +3327,7 @@ function parseMalformedWorkspaceNarrative(text: string): ParsedWorkspaceNarrativ
   const productValueSummary = extractJsonLikeStringField(text, 'product_value_summary');
   return {
     description: cleanNarrativeString(description),
-    product_value_summary: cleanNarrativeString(productValueSummary),
+    product_value_summary: cleanNarrativeSummaryString(productValueSummary),
     domains: undefined,
     key_capabilities: undefined,
     value_drivers: undefined,
@@ -3251,6 +3383,16 @@ function extractJsonLikeArraySection(text: string, start: number): string {
 function cleanNarrativeString(value: unknown): string | undefined {
   const text = normalizeWorkspaceAiDescriptionText(value);
   return text.length >= 80 ? text : undefined;
+}
+
+/**
+ * product_value_summary is ONE sentence — the 80-char description floor above
+ * erased legitimate short summaries at parse time, which then tripped the
+ * gate's empty-summary hard reject on otherwise-real narratives.
+ */
+function cleanNarrativeSummaryString(value: unknown): string | undefined {
+  const text = normalizeWorkspaceAiDescriptionText(value);
+  return text.length >= 20 ? text : undefined;
 }
 
 function normalizeWorkspaceAiDescriptionText(value: unknown): string {
@@ -5098,10 +5240,17 @@ function buildWorkspaceTelemetry(repositories: CrossCodebaseInput[], application
 // 26656/26657 (Cosmos/Tendermint). Port strings in compose facts can carry
 // trailing quote/protocol noise (e.g. `8545"`, `30303/udp`), so callers must
 // normalize to digit runs before matching.
+//
+// Deliberately EXCLUDED because they are ambiguous general-purpose ports and a
+// single port here is treated as decisive proof of crypto:
+//   8000/8001 — Django `runserver`/uvicorn/gunicorn defaults (a Django orders
+//   app on :8000 must never rank "Crypto Asset Trading" #1 in its workspace;
+//   they were once listed for Solana gossip, which is corroborated by 8899/8900
+//   anyway), and 6060 — the standard Go pprof debug port.
 const CRYPTO_RPC_PORTS = new Set([
-  '8545', '8546', '8547', '30303', '30304', '30311', '6060',
+  '8545', '8546', '8547', '30303', '30304', '30311',
   '8332', '8333', '18332', '18333',
-  '8899', '8900', '8000', '8001',
+  '8899', '8900',
   '9933', '9944', '26656', '26657',
 ]);
 
@@ -5159,7 +5308,7 @@ function normalizePortTokens(ports: Array<string | undefined> | undefined): stri
  * port or a blockchain node deployable is present, OR when at least three
  * distinct crypto vocabulary terms appear in product (non-infrastructure) facts.
  */
-function detectWorkspaceCryptoProfile(
+export function detectWorkspaceCryptoProfile(
   repositories: CrossCodebaseInput[],
   applications: SystemApplication[],
   terminalProfiles: Map<string, WorkspaceTerminalSemanticProfile>,

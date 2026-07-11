@@ -2004,9 +2004,106 @@ describe('architecture and capability inference', () => {
 
     it('does not mechanically repair semantic rejection reasons (they go to the AI re-prompt)', () => {
       expect(orch.mechanicallyRepairAIInterpretation(groundedParagraph, 'source-bucket-restatement')).toBeUndefined();
+      // Multi-token ungrounded-system-type = wholesale fabrication, NOT a
+      // word-level cleanup — stays semantic.
+      expect(orch.mechanicallyRepairAIInterpretation(groundedParagraph, 'ungrounded-system-type: solana-arbitrage')).toBeUndefined();
+      // Single-token strip only edits text that actually contains the token.
       expect(orch.mechanicallyRepairAIInterpretation(groundedParagraph, 'ungrounded-system-type: detected')).toBeUndefined();
       expect(orch.mechanicallyRepairAIInterpretation(groundedParagraph, undefined)).toBeUndefined();
     });
+
+    it('heals a SINGLE ungrounded system-type modifier by stripping it and keeping the grounded type head (prod: hercules "commerce")', () => {
+      const purpose = { primary_domain: 'crew-dispatch', core_concepts: ['crew', 'dispatch', 'job'] };
+      const grounding = {
+        systemName: 'fieldapp',
+        frameworks: [],
+        libraries: [],
+        databaseEntities: ['Crew', 'Job'],
+        structuralTokens: ['crew', 'dispatch', 'job'],
+        projectTextSummary: 'Crew dispatch and job tracking',
+      };
+      const description = 'fieldapp is a logistics platform that coordinates crew and dispatch assignments for every job in the field. It records Crew and Job entities, links each dispatch to its crew, and tracks job completion for dispatch supervisors.';
+      const verdict = orch.validateGeneratedAIInterpretation(description, purpose, grounding);
+      expect(verdict.reason).toBe('ungrounded-system-type: logistics');
+
+      const stripped = orch.mechanicallyRepairAIInterpretation(description, verdict.reason);
+      expect(stripped).toBeDefined();
+      expect(stripped).not.toMatch(/\blogistics\b/i);
+      expect(stripped).toMatch(/\bplatform\b/i);
+
+      const outcome = orch.acceptAIInterpretationCandidate(description, purpose, grounding);
+      expect(outcome.validation).toEqual({ ok: true });
+      expect(outcome.text).not.toMatch(/\blogistics\b/i);
+      expect(outcome.text).toMatch(/^fieldapp is a platform/i);
+    });
+  });
+
+  it('never enforces bare verb forms as system-type claims (prod: ungrounded-system-type: allowed)', () => {
+    const purpose = { primary_domain: 'code-analysis', core_concepts: ['monorepo', 'mcp', 'analyzer', 'parser'] };
+    const grounding = {
+      systemName: 'klauro',
+      frameworks: ['nestjs'],
+      libraries: ['tree-sitter', '@nestjs/core', '@modelcontextprotocol/sdk'],
+      databaseEntities: ['AnalysisSnapshot', 'CapabilityNode'],
+      structuralTokens: ['monorepo', 'analyzer', 'parser', 'capability'],
+      projectTextSummary: 'MCP analyzer monorepo for codebase analysis',
+    };
+    // "allowed" is a past participle inside a verb phrase ("access is allowed
+    // through the API") — grammatically it can never be a TYPE claim, but the
+    // modifier window used to cross the verb and enforce it (prod: Klauro
+    // proof-of-concept rejected with 'ungrounded-system-type: allowed').
+    const description = 'klauro is an MCP analyzer monorepo built with NestJS that parses repositories with tree-sitter and exposes analysis results over MCP. Cross-origin access is allowed through the API so downstream agents can read capability and parser records stored as AnalysisSnapshot data.';
+    expect(orch.validateGeneratedAIInterpretation(description, purpose, grounding)).toEqual({ ok: true });
+  });
+
+  it('grounds an umbrella domain modifier through synonym-cluster evidence (prod: hercules "commerce" with orders/invoices/deliveries)', () => {
+    const purpose = { primary_domain: 'order-management', core_concepts: ['order', 'invoice', 'delivery', 'warehouse'] };
+    const grounding = {
+      systemName: 'hercules',
+      frameworks: ['django'],
+      libraries: ['django', 'celery'],
+      databaseEntities: ['Order', 'Invoice', 'Delivery', 'Warehouse'],
+      structuralTokens: ['order', 'invoice', 'delivery', 'warehouse'],
+      projectTextSummary: 'Orders, invoices and warehouse management',
+    };
+    // "commerce" never appears literally in the evidence, but orders +
+    // invoices + deliveries make the claim evidence-consistent — the model
+    // kept re-emitting the natural word and the repair loop never converged.
+    const description = 'hercules is a commerce platform built with Django that manages order, invoice, and delivery records across warehouse locations. It links each invoice to its order, schedules delivery for warehouse staff, and answers order lookups for operators.';
+    expect(orch.validateGeneratedAIInterpretation(description, purpose, grounding)).toEqual({ ok: true });
+
+    // The slack is grounding, not a free pass: with NO cluster evidence the
+    // same claim still fails.
+    const bareGrounding = {
+      systemName: 'hercules',
+      frameworks: ['django'],
+      libraries: ['django'],
+      databaseEntities: ['Widget'],
+      structuralTokens: ['widget'],
+      projectTextSummary: 'Widget tooling',
+    };
+    const barePurpose = { primary_domain: 'widget-tooling', core_concepts: ['widget'] };
+    const bareDescription = 'hercules is a commerce platform built with Django that manages widget records for teams. It links each widget to its owner, schedules widget refreshes for staff, and answers widget lookups for operators across the deployment.';
+    const bareVerdict = orch.validateGeneratedAIInterpretation(bareDescription, barePurpose, bareGrounding);
+    expect(bareVerdict.ok).toBe(false);
+    expect(String(bareVerdict.reason)).toMatch(/ungrounded-system-type: commerce/);
+  });
+
+  it('sentence-level sanitization never drops the OPENING sentence (prod: openclaw accepted description starting "It produces...")', () => {
+    const purpose = { primary_domain: 'game-management', core_concepts: ['game', 'tournament', 'card', 'deck'] };
+    // First sentence trips a sentence-drop rule (unsupported framework claim
+    // with frameworks: []) — sanitize must NOT return a paragraph whose
+    // subject sentence is gone.
+    const description = 'openclaw is built with React and Prisma for its tournament screens. It produces game, tournament, card, and deck records for organizers and tracks deck construction and tournament pairings for players across events.';
+    const sanitized = orch.sanitizeAIInterpretation(description, purpose, { frameworks: [] });
+    expect(sanitized).not.toMatch(/^It\b/);
+    expect(sanitized).toMatch(/^openclaw\b/i);
+
+    // Dropping a NON-opening sentence still works.
+    const midBad = 'openclaw is a game management system that coordinates game, tournament, card, and deck workflows. It is built with React and Prisma for the pairing screens. It tracks deck construction and tournament pairings for players across events.';
+    const midSanitized = orch.sanitizeAIInterpretation(midBad, purpose, { frameworks: [] });
+    expect(midSanitized).not.toMatch(/react/i);
+    expect(midSanitized).toMatch(/^openclaw is a game management system/i);
   });
 
   it('accepts framework mentions backed by detected libraries instead of framework analyzers', () => {

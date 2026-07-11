@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildCrossCodebaseSystemGraph, buildWorkspaceAgentContext, enrichWorkspaceAnalysisNarrative, selectPreferredWorkspaceOllamaModel, selectWorkspaceAnalysisDetail } from './cross-codebase-analysis';
+import { assertRealWorkspaceAiAttempt, buildCrossCodebaseSystemGraph, buildWorkspaceAgentContext, detectWorkspaceCryptoProfile, enrichWorkspaceAnalysisNarrative, evaluateWorkspaceNarrativeGate, selectPreferredWorkspaceOllamaModel, selectWorkspaceAnalysisDetail, workspaceNarrativeHardRejectReason } from './cross-codebase-analysis';
 import { aiService } from '../../../packages/analyzer-core/src/ai/ai-service';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 
@@ -583,6 +583,7 @@ test('AI enrichment updates workspace narrative, domains, and primary capability
   delete process.env.KLAURO_OLLAMA_AUTO;
   aiService.generateComponentDescription = async () => JSON.stringify({
     description: 'This workspace coordinates agent registration through the agent API service so agent enrollment, trust checks, access requests, and heartbeat records stay connected to a single source-backed API flow. The agent enrollment workflow routes registration into the API, records agent identity and state, and exposes the resulting access context to downstream tools.',
+    product_value_summary: 'The workspace coordinates agent enrollment and access state through a single API.',
     domains: [{ name: 'Agent Access', description: 'Agent Access routes device agents through the drop server and admin API so enrollment, trust, and access-request state stay tied to concrete agent records.' }],
     key_capabilities: [{ name: 'Agent Access Brokerage', description: 'Agent Access Brokerage routes drop server register agents calls into the admin API, stores agent state, and exposes that state to MCP-facing access workflows.' }],
     workflows: [{ name: 'Agent Enrollment', description: 'Agent Enrollment follows the drop server to admin API route that records agent identity, heartbeat, and access state for downstream MCP access decisions.' }],
@@ -1476,4 +1477,193 @@ test('falls back to the repo directory name instead of a bare external endpoint 
   const names = graph.applications.map(candidate => candidate.name);
   assert.ok(!names.includes('ws-efsllc-com'), `expected no bare-hostname name, got: ${names.join(', ')}`);
   assert.ok(names.includes('wex-client-php'), `expected repo-directory-derived name "wex-client-php", got: ${names.join(', ')}`);
+});
+
+// --- WAS narrative quality-gate calibration (live-prod regression fixtures) ---
+
+function shopCas(): CASOutput {
+  return cas({
+    system: { id: 'shop-api', name: 'shop-api', type: 'service', root_path: '/tmp/shop-api' },
+    nodes: [{ id: 'order-route', name: 'createOrder', type: 'function', source: { file: 'src/orders.controller.ts', line: 1 } } as any],
+    entry_points: [{ id: 'entry:order', source_node: 'order-route', type: 'http', name: 'POST /orders', trigger: { method: 'POST', path: '/orders' } }],
+    system_capabilities: [{
+      id: 'capability:order-fulfillment',
+      name: 'Order Fulfillment',
+      description: 'Deterministic order fulfillment capability text.',
+      category: 'core',
+      criticality: 'critical',
+      operations: [{ entry_point_id: 'entry:order', action: 'create', path_or_command: '/orders' }],
+      related_entities: ['Order'],
+      related_domains: ['Commerce'],
+      confidence: 0.9,
+      evidence: ['entry:order'],
+    }, {
+      id: 'capability:catalog-management',
+      name: 'Catalog Management',
+      description: 'Deterministic catalog capability text.',
+      category: 'core',
+      criticality: 'high',
+      operations: [{ entry_point_id: 'entry:order', action: 'read', path_or_command: '/catalog' }],
+      related_entities: ['Product'],
+      related_domains: ['Commerce'],
+      confidence: 0.85,
+      evidence: ['entry:order'],
+    }] as any,
+    domain_concepts: [{ id: 'domain:commerce', name: 'Commerce', classification: 'core', confidence: 0.9, evidence: [] } as any],
+    data_entities: [
+      { id: 'entity_order', name: 'Order', fields: [], lifecycle: { created_by: ['order-route'], read_by: ['order-route'], updated_by: [], deleted_by: [] } },
+      { id: 'entity_product', name: 'Product', fields: [], lifecycle: { created_by: [], read_by: ['order-route'], updated_by: [], deleted_by: [] } },
+    ] as any,
+  });
+}
+
+const REAL_SHOP_NARRATIVE = 'This workspace powers the shop-api storefront backend: Order Fulfillment routes checkout orders into the shop-api service and records payment and shipment state, while Catalog Management stores product and price records and surfaces them to the storefront client over the HTTP API.';
+
+// Verbatim shape of the live "Personal" workspace bad-accept (raw project id,
+// HTTP-method dump, route param fragment, single-flow altitude).
+const PERSONAL_BAD_ACCEPT_NARRATIVE = 'Friends is a workspace visible flow in account project-prj_yg64u7pf7lvdcppt. It is reached by DELETE/PATCH/GET/event route(s) such as /API/friends/:friendshipId and records friendship state so the account can manage friend connections across the workspace projects and services.';
+
+test('WAS quality gate hard-rejects id-leaking, route-dumping, single-flow prose (the Personal bad-accept)', () => {
+  const graph = buildCrossCodebaseSystemGraph('personal-workspace', [
+    { path: '/tmp/shop-api', name: 'shop-api', cas: shopCas() },
+  ]);
+  const gate = evaluateWorkspaceNarrativeGate(graph, PERSONAL_BAD_ACCEPT_NARRATIVE, 'Manages friend connections for accounts.');
+  assert.equal(gate.accepted, false);
+  assert.ok(gate.reason, 'a rejection must carry a specific reason');
+
+  // Each hard-reject marker individually:
+  assert.match(String(workspaceNarrativeHardRejectReason('This workspace serves account project-prj_yg64u7pf7lvdcppt records to clients across services and stores them durably for later retrieval by the reporting pipeline and admin tools.', 'summary')), /internal id/i);
+  assert.match(String(workspaceNarrativeHardRejectReason('This workspace is reached by DELETE/PATCH/GET route(s) that manage records across the services and store the resulting state for the reporting pipeline and admin tooling to read later.', 'summary')), /route fragments|single-flow/i);
+  assert.match(String(workspaceNarrativeHardRejectReason('This workspace exposes endpoints such as /api/friends/:friendshipId that manage records across the services and store the resulting state for the reporting pipeline and admin tooling.', 'summary')), /route path|parameter/i);
+  assert.match(String(workspaceNarrativeHardRejectReason('Friends is a workspace visible flow that manages friendship records across the services and stores the resulting state for the reporting pipeline and the admin tooling to read later on.', 'summary')), /single-flow|flow/i);
+  // Empty product_value_summary alongside a non-empty description is a hard reject.
+  assert.match(String(workspaceNarrativeHardRejectReason(REAL_SHOP_NARRATIVE, '')), /product_value_summary/i);
+  // A clean workspace-level narrative with a summary has no hard-reject marker.
+  assert.equal(workspaceNarrativeHardRejectReason(REAL_SHOP_NARRATIVE, 'Runs the storefront ordering and catalog backend.'), null);
+});
+
+test('WAS quality gate accepts a real workspace narrative that enumerates the workspace\'s own capabilities', () => {
+  const graph = buildCrossCodebaseSystemGraph('shop-workspace', [
+    { path: '/tmp/shop-api', name: 'shop-api', cas: shopCas() },
+  ]);
+  const gate = evaluateWorkspaceNarrativeGate(graph, REAL_SHOP_NARRATIVE, 'Runs the storefront ordering and catalog backend.');
+  assert.equal(gate.accepted, true, `expected acceptance, got rejection: ${gate.reason}`);
+});
+
+test('a no-attempt AI response surfaces an honest enrichment error, never a fake quality-gate rejection', async () => {
+  // Direct guard behavior.
+  assert.throws(() => assertRealWorkspaceAiAttempt(''), /empty response/i);
+  assert.throws(() => assertRealWorkspaceAiAttempt('AI description generation is disabled'), /no real attempt/i);
+  assert.doesNotThrow(() => assertRealWorkspaceAiAttempt('{"description":"real model output"}'));
+
+  const originalGenerate = aiService.generateComponentDescription;
+  const originalEnv = process.env.KLAURO_WORKSPACE_AI_ENRICHMENT;
+  const originalAutoConfig = process.env.KLAURO_WORKSPACE_AI_AUTO_CONFIG;
+  const originalOllamaBaseUrl = process.env.OLLAMA_BASE_URL;
+  const originalOllamaAuto = process.env.KLAURO_OLLAMA_AUTO;
+  process.env.KLAURO_WORKSPACE_AI_ENRICHMENT = 'true';
+  process.env.KLAURO_WORKSPACE_AI_AUTO_CONFIG = 'false';
+  delete process.env.OLLAMA_BASE_URL;
+  delete process.env.KLAURO_OLLAMA_AUTO;
+  // The feature-disabled canned string means NO model round-trip happened —
+  // the 104ms live instant-degrade class. It must never be laundered into a
+  // "rejected by the WAS quality gate" narrative.
+  aiService.generateComponentDescription = async () => 'AI description generation is disabled';
+  try {
+    const graph = buildCrossCodebaseSystemGraph('shop-workspace', [
+      { path: '/tmp/shop-api', name: 'shop-api', cas: shopCas() },
+    ]);
+    await assert.rejects(
+      () => enrichWorkspaceAnalysisNarrative(graph),
+      (error: Error) => /no real attempt/i.test(error.message) && !/rejected by the WAS quality gate/i.test(error.message),
+    );
+  } finally {
+    aiService.generateComponentDescription = originalGenerate;
+    if (originalEnv === undefined) delete process.env.KLAURO_WORKSPACE_AI_ENRICHMENT;
+    else process.env.KLAURO_WORKSPACE_AI_ENRICHMENT = originalEnv;
+    if (originalAutoConfig === undefined) delete process.env.KLAURO_WORKSPACE_AI_AUTO_CONFIG;
+    else process.env.KLAURO_WORKSPACE_AI_AUTO_CONFIG = originalAutoConfig;
+    if (originalOllamaBaseUrl === undefined) delete process.env.OLLAMA_BASE_URL;
+    else process.env.OLLAMA_BASE_URL = originalOllamaBaseUrl;
+    if (originalOllamaAuto === undefined) delete process.env.KLAURO_OLLAMA_AUTO;
+    else process.env.KLAURO_OLLAMA_AUTO = originalOllamaAuto;
+  }
+});
+
+test('a gate rejection re-prompts with the rejection reason (and a fresh cache key) before degrading', async () => {
+  const originalGenerate = aiService.generateComponentDescription;
+  const originalEnv = process.env.KLAURO_WORKSPACE_AI_ENRICHMENT;
+  const originalAutoConfig = process.env.KLAURO_WORKSPACE_AI_AUTO_CONFIG;
+  const originalOllamaBaseUrl = process.env.OLLAMA_BASE_URL;
+  const originalOllamaAuto = process.env.KLAURO_OLLAMA_AUTO;
+  process.env.KLAURO_WORKSPACE_AI_ENRICHMENT = 'true';
+  process.env.KLAURO_WORKSPACE_AI_AUTO_CONFIG = 'false';
+  delete process.env.OLLAMA_BASE_URL;
+  delete process.env.KLAURO_OLLAMA_AUTO;
+
+  const contexts: Array<Record<string, unknown> | undefined> = [];
+  aiService.generateComponentDescription = async (context: any) => {
+    contexts.push(context?.additionalContext);
+    if (context?.additionalContext?.rejection_feedback) {
+      // The re-prompt (carrying the gate's rejection reason) produces a real narrative.
+      return JSON.stringify({
+        description: REAL_SHOP_NARRATIVE,
+        product_value_summary: 'Runs the storefront ordering and catalog backend.',
+      });
+    }
+    // First attempt: generic inventory prose the gate rejects.
+    return JSON.stringify({
+      description: 'This workspace consists of multiple projects and provides various applications and services for end users, and it appears to serve customer-related functionality across the analyzed repositories in a generally useful manner overall.',
+      product_value_summary: 'The workspace may serve customer functionality.',
+    });
+  };
+  try {
+    const graph = buildCrossCodebaseSystemGraph('shop-workspace', [
+      { path: '/tmp/shop-api', name: 'shop-api', cas: shopCas() },
+    ]);
+    const enriched = await enrichWorkspaceAnalysisNarrative(graph);
+    assert.equal(enriched.workspace_narrative.source, 'ai');
+    assert.match(enriched.workspace_narrative.description, /Order Fulfillment routes checkout orders/);
+    const repairContext = contexts.find(context => typeof context?.rejection_feedback === 'string');
+    assert.ok(repairContext, 'the repair re-prompt must carry rejection_feedback');
+    assert.match(String(repairContext!.rejection_feedback), /rejected by the WAS quality gate/i);
+    // The retry attempt index is part of the prompt context so the retry can
+    // never replay the rejected response from the content-addressed AI cache.
+    assert.equal(typeof repairContext!.retry_attempt, 'number');
+  } finally {
+    aiService.generateComponentDescription = originalGenerate;
+    if (originalEnv === undefined) delete process.env.KLAURO_WORKSPACE_AI_ENRICHMENT;
+    else process.env.KLAURO_WORKSPACE_AI_ENRICHMENT = originalEnv;
+    if (originalAutoConfig === undefined) delete process.env.KLAURO_WORKSPACE_AI_AUTO_CONFIG;
+    else process.env.KLAURO_WORKSPACE_AI_AUTO_CONFIG = originalAutoConfig;
+    if (originalOllamaBaseUrl === undefined) delete process.env.OLLAMA_BASE_URL;
+    else process.env.OLLAMA_BASE_URL = originalOllamaBaseUrl;
+    if (originalOllamaAuto === undefined) delete process.env.KLAURO_OLLAMA_AUTO;
+    else process.env.KLAURO_OLLAMA_AUTO = originalOllamaAuto;
+  }
+});
+
+test('ambiguous general-purpose ports (Django 8000, pprof 6060) never assert a crypto workspace domain', () => {
+  const djangoOrders = {
+    id: 'app:hercules',
+    codebase_id: 'hercules',
+    codebase_path: '/tmp/hercules',
+    name: 'hercules-orders',
+    kind: 'service',
+    deployable: true,
+    path_hint: '',
+    service_aliases: [],
+    ports: ['8000', '8001', '6060'],
+    interface_ids: [],
+    runtime_component_ids: [],
+    evidence: [],
+  } as any;
+  const noCrypto = detectWorkspaceCryptoProfile([], [djangoOrders], new Map());
+  assert.equal(noCrypto.isCrypto, false, `a Django orders app on :8000 must not assert crypto: ${JSON.stringify(noCrypto.evidence)}`);
+
+  // Real blockchain RPC ports still assert decisively.
+  const evmNode = { ...djangoOrders, id: 'app:evm', name: 'geth-node', ports: ['8545', '30303'] } as any;
+  const crypto = detectWorkspaceCryptoProfile([], [evmNode], new Map());
+  assert.equal(crypto.isCrypto, true);
+  assert.ok(crypto.rpc_ports.includes('8545'));
 });

@@ -313,3 +313,97 @@ test('workspace reanalyze returns 202, background-persists an AI-enriched narrat
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+/**
+ * Instant-degrade honesty (live "Clients" workspace regression): when the AI
+ * layer short-circuits without a real model round-trip (feature-disabled canned
+ * string / empty response), the WAS record must land in enrichment status
+ * 'error' with the real cause — never a fake "rejected by the WAS quality gate"
+ * degrade produced in milliseconds without an attempt.
+ */
+test('a short-circuited AI attempt persists an honest enrichment error, not a fake quality-gate degrade', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-was-honest-error-'));
+  const remoteData = path.join(root, 'remote-data');
+  const previousRemoteData = process.env.KLAURO_REMOTE_ANALYZER_DATA;
+  const previousDebounce = process.env.KLAURO_WORKSPACE_ANALYSIS_DEBOUNCE_MS;
+  const previousInterpretation = process.env.KLAURO_AI_INTERPRETATION;
+  const previousWorkspaceAi = process.env.KLAURO_WORKSPACE_AI_ENRICHMENT;
+  const previousAutoConfig = process.env.KLAURO_WORKSPACE_AI_AUTO_CONFIG;
+  const previousOllamaBaseUrl = process.env.OLLAMA_BASE_URL;
+  const previousOllamaAuto = process.env.KLAURO_OLLAMA_AUTO;
+  process.env.KLAURO_REMOTE_ANALYZER_DATA = remoteData;
+  process.env.KLAURO_WORKSPACE_ANALYSIS_DEBOUNCE_MS = '150';
+  process.env.KLAURO_AI_INTERPRETATION = 'true';
+  process.env.KLAURO_WORKSPACE_AI_ENRICHMENT = 'true';
+  process.env.KLAURO_WORKSPACE_AI_AUTO_CONFIG = 'false';
+  delete process.env.OLLAMA_BASE_URL;
+  delete process.env.KLAURO_OLLAMA_AUTO;
+
+  // The ai-service returns its feature-disabled canned string instantly —
+  // exactly the no-attempt short-circuit class behind the 104ms live degrade.
+  const originalGenerate = aiService.generateComponentDescription;
+  aiService.generateComponentDescription = async () => 'AI description generation is disabled';
+
+  const server = createRemoteAnalyzerHttpServer({ dataDir: remoteData });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  assert.ok(address && typeof address === 'object');
+  const port = address.port;
+  const serverUrl = `http://127.0.0.1:${port}`;
+
+  try {
+    const registerRes = await request(port, 'POST', '/api/auth/register', {
+      email: 'owner@example.com',
+      password: 'password-1234',
+      workspace_name: 'Honest Error WAS Workspace',
+    });
+    assert.equal(registerRes.statusCode, 201);
+    const token = JSON.parse(registerRes.body).token as string;
+
+    const workspacesRes = await request(port, 'GET', '/api/workspaces', undefined, token);
+    const workspaceId = JSON.parse(workspacesRes.body).workspaces[0].id as string;
+
+    const repo = makeRepo(root, 'repo-honest-error', 'def handler():\n    return 1\n');
+    const analyzed = await analyzeCodebaseRemotely({ projectPath: repo, serverUrl, token, wait: true });
+    const projectRes = await request(port, 'POST', `/api/workspaces/${workspaceId}/projects`, {
+      name: 'repo-honest-error',
+      analysis_id: analyzed.analysis_id,
+    }, token);
+    assert.equal(projectRes.statusCode, 201);
+
+    const reanalyzeRes = await request(port, 'POST', `/api/workspaces/${workspaceId}/reanalyze`, {}, token);
+    assert.equal(reanalyzeRes.statusCode, 202);
+
+    await waitFor(async () => {
+      const res = await request(port, 'GET', `/api/workspaces/${workspaceId}/analysis`, undefined, token);
+      const body = JSON.parse(res.body);
+      return body.status === 'ready' && ['error', 'degraded', 'ai'].includes(body.enrichment?.status);
+    });
+    const readyRes = await request(port, 'GET', `/api/workspaces/${workspaceId}/analysis`, undefined, token);
+    const readyBody = JSON.parse(readyRes.body);
+    // The terminal state must be an honest ERROR naming the no-attempt cause...
+    assert.equal(readyBody.enrichment?.status, 'error');
+    assert.match(String(readyBody.enrichment?.error || ''), /no real attempt/i);
+    // ...and the narrative must never claim a quality-gate rejection happened.
+    assert.ok(!/rejected by the WAS quality gate/i.test(String(readyBody.analysis?.workspace_narrative?.degraded_reason || '')),
+      `no fake gate rejection allowed: ${readyBody.analysis?.workspace_narrative?.degraded_reason}`);
+  } finally {
+    aiService.generateComponentDescription = originalGenerate;
+    await new Promise<void>(resolve => server.close(() => resolve()));
+    if (previousRemoteData === undefined) delete process.env.KLAURO_REMOTE_ANALYZER_DATA;
+    else process.env.KLAURO_REMOTE_ANALYZER_DATA = previousRemoteData;
+    if (previousDebounce === undefined) delete process.env.KLAURO_WORKSPACE_ANALYSIS_DEBOUNCE_MS;
+    else process.env.KLAURO_WORKSPACE_ANALYSIS_DEBOUNCE_MS = previousDebounce;
+    if (previousInterpretation === undefined) delete process.env.KLAURO_AI_INTERPRETATION;
+    else process.env.KLAURO_AI_INTERPRETATION = previousInterpretation;
+    if (previousWorkspaceAi === undefined) delete process.env.KLAURO_WORKSPACE_AI_ENRICHMENT;
+    else process.env.KLAURO_WORKSPACE_AI_ENRICHMENT = previousWorkspaceAi;
+    if (previousAutoConfig === undefined) delete process.env.KLAURO_WORKSPACE_AI_AUTO_CONFIG;
+    else process.env.KLAURO_WORKSPACE_AI_AUTO_CONFIG = previousAutoConfig;
+    if (previousOllamaBaseUrl === undefined) delete process.env.OLLAMA_BASE_URL;
+    else process.env.OLLAMA_BASE_URL = previousOllamaBaseUrl;
+    if (previousOllamaAuto === undefined) delete process.env.KLAURO_OLLAMA_AUTO;
+    else process.env.KLAURO_OLLAMA_AUTO = previousOllamaAuto;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

@@ -9982,7 +9982,7 @@ export class AnalyzerOrchestrator {
     if (/\bbuilt with\s+none detected\b/i.test(cleaned)) return { ok: false, reason: 'missing-framework-restatement' };
     if (/\bbuilt with\s+(?:a\s+)?mixed(?:\s+[^.]{0,80})?\s+monorepo\b/i.test(cleaned) ||
       /\bmixed(?:\s+[^.]{0,80})?\s+monorepo\s+that\s+(?:coordinates|captures|manages|maintains)\b/i.test(cleaned)) return { ok: false, reason: 'monorepo-shape-as-product-description' };
-    if (/^(?:it|this|the)\s+(?:software\s+)?(?:system\s+)?(?:provides|supports|handles|coordinates|manages|uses|defines|processes)\b/i.test(cleaned)) {
+    if (/^(?:it|this|the)\s+(?:software\s+)?(?:system\s+)?(?:provides|supports|handles|coordinates|manages|uses|defines|processes|produces|generates|offers|exposes|combines|includes|contains|serves|captures|tracks|stores|records|implements|analyzes|analyses)\b/i.test(cleaned)) {
       return { ok: false, reason: 'generic-pronoun-start' };
     }
     if (this.projectNameAppearsAsConcept(cleaned, facts.systemName)) return { ok: false, reason: 'project-name-as-concept' };
@@ -9998,7 +9998,7 @@ export class AnalyzerOrchestrator {
    * the AI's own text, not deterministic authorship (the AI-only comprehension
    * boundary stands: trimming AI prose to a length budget or deleting a flagged
    * marketing word edits AI output without adding a single non-AI claim).
-   * Handles exactly two reason classes:
+   * Handles exactly three reason classes:
    *  - 'too-long': trim to the last full sentence inside the 2000-char limit
    *    (prod: hercules — a valid paragraph perma-rejected for running long).
    *  - 'unsupported-marketing-language: <words>': strip precisely the flagged
@@ -10007,6 +10007,12 @@ export class AnalyzerOrchestrator {
    *    language (many distinct flagged phrases or repeated occurrences), where
    *    word-deletion would gut the text; saturation stays a semantic rejection
    *    for the AI repair re-prompt.
+   *  - 'ungrounded-system-type: <token>' with a SINGLE flagged modifier: strip
+   *    just that modifier, keeping the grounded type head ("a commerce
+   *    platform" -> "a platform"; prod: hercules — the model kept re-emitting
+   *    the natural near-synonym and the repair loop never converged). A
+   *    multi-token flagged phrase ("solana-arbitrage") is a wholesale
+   *    fabrication, not a word-level cleanup, and stays a semantic rejection.
    * Returns undefined when the reason is not mechanically fixable (all
    * semantic reason classes go to the AI re-prompt instead).
    */
@@ -10051,6 +10057,26 @@ export class AnalyzerOrchestrator {
           .replace(/,\s*(?:and\s*)?\./g, '.')
           .replace(/\s+\./g, '.')
           .replace(/\band\s+\./gi, '.')
+          .replace(/\s{2,}/g, ' ')
+      );
+      return repaired && repaired !== this.cleanGeneratedDescriptionText(description) ? repaired : undefined;
+    }
+    const ungroundedType = /^ungrounded-system-type:\s*(.+)$/.exec(reason);
+    if (ungroundedType) {
+      // Reason payload joins modifier tokens with '-'; only a SINGLE flagged
+      // token is a deterministic word-level edit (delete the modifier, keep
+      // the grounded head noun). Two-plus tokens = fabricated phrase =
+      // semantic re-prompt.
+      const flaggedTokens = ungroundedType[1].split('-').map(token => token.trim()).filter(Boolean);
+      if (flaggedTokens.length !== 1 || !/^[a-z0-9]+$/i.test(flaggedTokens[0])) return undefined;
+      const escaped = flaggedTokens[0].replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const stripped = description.replace(new RegExp(`\\b${escaped}[- ]`, 'gi'), '');
+      const repaired = this.cleanGeneratedDescriptionText(
+        stripped
+          // Stripping a vowel-initial modifier can orphan its article:
+          // "an ecommerce platform" -> "an platform". Repair only when the
+          // article now sits directly against a consonant-initial type head.
+          .replace(/\ban(\s+(?:tool|system|service|platform|pipeline|dashboard|suite|toolkit|server|gateway|framework|library)s?\b)/gi, 'a$1')
           .replace(/\s{2,}/g, ' ')
       );
       return repaired && repaired !== this.cleanGeneratedDescriptionText(description) ? repaired : undefined;
@@ -10167,6 +10193,46 @@ export class AnalyzerOrchestrator {
       'exposing', 'powering', 'serving', 'delivering', 'wrapping',
       'spanning', 'orchestrating', 'coordinating', 'bundling',
     ]);
+    // Function words that END an attributive modifier run: an auxiliary/copula,
+    // preposition, relative, or conjunction between a candidate token and the
+    // type head means the tokens BEFORE it belong to a different clause, not to
+    // the noun phrase ("access is ALLOWED THROUGH the API" — nothing before
+    // "through" premodifies "API"). This is grammatical-position awareness, not
+    // a vocabulary judgement: the prod 'ungrounded-system-type: allowed' false
+    // rejection was a bare past participle from a verb phrase being enforced as
+    // a system-type claim because the modifier window crossed the verb.
+    const clauseBreakers = new Set([
+      'is', 'are', 'was', 'were', 'be', 'been', 'being',
+      'has', 'have', 'had', 'does', 'do', 'did',
+      'can', 'could', 'may', 'might', 'must', 'shall', 'should', 'will', 'would', 'not',
+      'that', 'which', 'who', 'whose', 'when', 'where', 'while', 'than', 'then',
+      'if', 'because', 'although', 'though', 'once', 'also', 'both',
+      'as', 'at', 'by', 'of', 'in', 'on', 'onto', 'into', 'over', 'via', 'through',
+      'between', 'across', 'within', 'without', 'against', 'during', 'after',
+      'before', 'under', 'about', 'around', 'per', 'like',
+      'it', 'its', 'they', 'their', 'this', 'these', 'those',
+    ]);
+    // Domain-word grounding slack: a flagged modifier that IS a legitimate
+    // umbrella domain term counts as grounded when the evidence corpus contains
+    // >=2 distinct terms from its cluster (orders+invoices+deliveries make a
+    // "commerce" claim evidence-consistent even though the literal token never
+    // appears — the prod 'ungrounded-system-type: commerce' repair-loop
+    // non-convergence on hercules). This WIDENS acceptance only — it is a
+    // grounding vocabulary, never a blocklist; a term with zero cluster hits
+    // still needs literal evidence like any other modifier.
+    const domainSynonymClusters: Record<string, string[]> = (() => {
+      const commerce = [
+        'order', 'invoice', 'cart', 'checkout', 'payment', 'product', 'inventory',
+        'warehouse', 'shipment', 'delivery', 'deliveries', 'customer', 'catalog',
+        'pricing', 'sku', 'billing',
+      ];
+      return {
+        commerce, ecommerce: commerce, retail: commerce,
+        messaging: ['message', 'channel', 'conversation', 'thread', 'inbox', 'notification'],
+        scheduling: ['schedule', 'calendar', 'appointment', 'booking', 'shift', 'slot'],
+        analytics: ['metric', 'event', 'dashboard', 'report', 'aggregation', 'funnel'],
+      };
+    })();
     const nameTokens = new Set(
       String(facts.systemName || '')
         .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
@@ -10204,23 +10270,40 @@ export class AnalyzerOrchestrator {
       // false rejection).
       let attributiveTokens = rawTokens;
       for (let i = rawTokens.length - 2; i >= 0; i--) {
-        if (/[a-z]{3,}ing$/.test(rawTokens[i])) {
+        if (/[a-z]{3,}ing$/.test(rawTokens[i]) || clauseBreakers.has(rawTokens[i])) {
           attributiveTokens = rawTokens.slice(i + 1);
           break;
         }
       }
       // Distinctive modifier tokens (drop articles, generic build words, the
       // system's own name, and verbal participle connectors — none of those
-      // are a claim that needs evidence).
+      // are a claim that needs evidence). Verb forms are excluded entirely:
+      // a bare -ed past participle ("allowed", "managed", "deployed") is a
+      // predicate, not a TYPE claim — only genuine content modifiers of a
+      // recognized type head are enforced.
       const modifierTokens = attributiveTokens
-        .filter(token => token.length >= 4 && !stopWords.has(token) && !nameTokens.has(token) && !this.isGenericCapabilityToken(token) && !participleConnectors.has(token));
+        .filter(token =>
+          token.length >= 4 &&
+          !stopWords.has(token) &&
+          !nameTokens.has(token) &&
+          !this.isGenericCapabilityToken(token) &&
+          !participleConnectors.has(token) &&
+          !/[a-z]{3,}ed$/.test(token));
       if (modifierTokens.length === 0) continue;
       // Grounded if ANY distinctive modifier token (or its 5-char stem) appears
       // in the evidence corpus. Stemming lets "scanning"/"scanner", "crypto"/
       // "cryptocurrency", "trading"/"trade" match their evidence form.
       const grounded = modifierTokens.some(token => {
         const stem = token.slice(0, 5);
-        return evidenceCorpus.includes(token) || evidenceCorpus.includes(stem);
+        if (evidenceCorpus.includes(token) || evidenceCorpus.includes(stem)) return true;
+        // Synonym-cluster slack: an umbrella domain word is grounded when the
+        // evidence corpus contains >=2 distinct terms from its cluster.
+        const cluster = domainSynonymClusters[token];
+        if (cluster) {
+          const hits = new Set(cluster.filter(term => evidenceCorpus.includes(term)));
+          if (hits.size >= 2) return true;
+        }
+        return false;
       });
       if (!grounded) {
         return { ok: false, reason: `ungrounded-system-type: ${modifierTokens.join('-')}` };
@@ -10694,6 +10777,13 @@ export class AnalyzerOrchestrator {
     });
 
     if (keep.length === sentences.length) return cleaned;
+    // The OPENING sentence carries the paragraph's subject ("<name> is a ...").
+    // Dropping it leaves pronoun-headed prose with no referent ("It produces
+    // ..." — prod: openclaw shipped an accepted description clipped this way).
+    // Sentence-level sanitization is only a valid repair when the first
+    // sentence survives; otherwise the text goes back unchanged so the
+    // semantic rejection stands and the AI re-prompt re-authors it whole.
+    if (keep.length === 0 || keep[0] !== sentences[0]) return cleaned;
     const sanitized = keep.join(' ').trim();
     if (!sanitized) return cleaned;
     if (this.descriptionSentenceCount(sanitized) >= 2 && sanitized.length >= 160) return sanitized;
