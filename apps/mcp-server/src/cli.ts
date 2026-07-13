@@ -31,7 +31,7 @@ import { withAnalysisFocus, type AnalysisFocus } from './analysis-focus';
 import { summarizeAnalysisFreshness } from './freshness';
 import { decideInitFlow, resolveNamedChoice, type RecognizedRemote } from './init-resolution';
 import { buildCrossCodebaseSystemGraph, selectWorkspaceAnalysisDetail, summarizeCrossCodebaseSystemGraph, type WorkspaceDetailLevel } from './cross-codebase-analysis';
-import { clearStoredConnectorSession, connectorToken, loadStoredConnectorAuth, normalizeServerUrl, requireConnectorEntitlement, saveStoredConnectorSession } from './connector-auth';
+import { clearStoredConnectorSession, connectorToken, isNetworkUnreachableError, loadStoredConnectorAuth, normalizeServerUrl, requireConnectorEntitlement, saveStoredConnectorSession, unreachableServerError } from './connector-auth';
 import { detectRemoteProvider } from './remote-provider';
 import { detectWorkspaceIdentity, findFabricProjectRoot, resolveFabricSettings, resolveFabricToken, writeFabricSection } from './coordination/fabric-config';
 import { remoteActive } from './coordination/remote-transport';
@@ -623,7 +623,48 @@ interface ReleaseManifest {
   tarball: string;
   tarball_path?: string;
   min_node?: number;
+  max_node?: number;
+  supported_node_range?: string;
   published_at?: string | null;
+}
+
+/**
+ * Node support gate shared by `klauro update` (and mirrored in install.sh):
+ * the native tree-sitter dependency (0.25.x, no shipped prebuilds, binding.gyp
+ * pins -std=c++17) fails to compile against Node 23+ headers (v8config.h:
+ * "C++20 or later required" — verified empirically against the 22/23/24/25/26
+ * header sets). Failing AFTER download, mid-`npm install -g`, buries that in a
+ * node-gyp stack trace; this gate turns it into one actionable sentence BEFORE
+ * anything is touched. The hosted manifest's min_node/max_node override the
+ * baked-in defaults so a future WASM/prebuild release widens the range without
+ * shipping a new CLI. Exported (cli.ts is otherwise entry-only) for unit tests.
+ */
+export const DEFAULT_MIN_NODE = 18;
+export const DEFAULT_MAX_NODE = 22;
+
+export function checkNodeSupportedForNativeBuild(
+  nodeMajor: number,
+  manifest: Pick<ReleaseManifest, 'min_node' | 'max_node' | 'supported_node_range'> | null,
+): { ok: boolean; min: number; max: number; message?: string } {
+  const min = manifest?.min_node ?? DEFAULT_MIN_NODE;
+  const max = manifest?.max_node ?? DEFAULT_MAX_NODE;
+  const range = manifest?.supported_node_range || `${min}-${max}`;
+  if (!Number.isInteger(nodeMajor) || nodeMajor < min) {
+    return {
+      ok: false, min, max,
+      message: `Klauro currently supports Node ${range}; you have ${nodeMajor}. Upgrade Node (e.g. \`nvm install ${max} && nvm use ${max}\` or \`volta install node@${max}\`) and re-run.`,
+    };
+  }
+  if (nodeMajor > max) {
+    return {
+      ok: false, min, max,
+      message: `Klauro currently supports Node ${range}; you have ${nodeMajor}. ` +
+        `Klauro's native tree-sitter parser does not compile on Node ${max + 1}+ yet. ` +
+        `Install a supported Node (e.g. \`nvm install ${max} && nvm use ${max}\` or \`volta install node@${max}\`) and re-run, ` +
+        `or set KLAURO_SKIP_NODE_CHECK=1 to bypass at your own risk.`,
+    };
+  }
+  return { ok: true, min, max };
 }
 
 async function fetchReleaseManifest(serverUrl: string): Promise<ReleaseManifest | null> {
@@ -790,6 +831,20 @@ async function runUpdateCommand(args: ParsedArgs): Promise<void> {
   // PATH-npm can point at a different global tree, where the reinstall either
   // lands uselessly or fails its native tree-sitter build (2026-07 field bug).
   const target = resolveSelfUpdateTarget();
+
+  // Node-range gate (same range install.sh enforces, manifest-overridable):
+  // node-gyp compiles the native tree-sitter deps against the node that RUNS
+  // npm — target.nodeBin when the prefix carries its own node, else this
+  // process's node — so gate on that version, before anything downloads.
+  const buildNodeVersion = target.nodeBin
+    ? (spawnSync(target.nodeBin, ['-v'], { encoding: 'utf8', timeout: 10000 }).stdout || '').trim() || process.version
+    : process.version;
+  const buildNodeMajor = Number.parseInt(buildNodeVersion.replace(/^v/, '').split('.')[0], 10);
+  const nodeSupport = checkNodeSupportedForNativeBuild(buildNodeMajor, manifest);
+  if (!nodeSupport.ok && process.env.KLAURO_SKIP_NODE_CHECK !== '1') {
+    throw new Error(`Cannot update: ${nodeSupport.message} (update would build with ${buildNodeVersion} at ${target.nodeBin || process.execPath})`);
+  }
+
   process.stdout.write(`\nInstalling ${tarballUrl} ...\n`);
   process.stdout.write(
     `Target: the running CLI's own installation at prefix ${target.prefix} ` +
@@ -852,6 +907,60 @@ async function runUpdateCommand(args: ParsedArgs): Promise<void> {
   }
 }
 
+/**
+ * Hosted analysis state for `klauro status`: the SAME GET
+ * /api/projects/{id}/analysis read `klauro init` (analyzeCodebaseRemotely) and
+ * the web app's progress ladder key off. Cold-customer audit (2026-07,
+ * v1.0.65): seconds after a successful hosted init+analysis, `status` said
+ * "not analyzed (klauro analyze .)" because it consulted only the LOCAL
+ * analysis store — a hosted-init repo has nothing there by design. Returns
+ * null when unreachable/unauthorized so the caller can fall back to
+ * local-store wording.
+ */
+export interface HostedAnalysisState {
+  status: 'ready' | 'populating' | 'no_analysis';
+  project_id?: string;
+  analysis_id?: string;
+  summary?: { name?: string | null; analysis_timestamp?: string | null };
+}
+
+async function fetchHostedAnalysisState(serverUrl: string, token: string, projectId: string): Promise<HostedAnalysisState | null> {
+  try {
+    const state = await remoteJson<HostedAnalysisState>(serverUrl, token, `/api/projects/${encodeURIComponent(projectId)}/analysis`);
+    return state && typeof state.status === 'string' ? state : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The single human-readable `Analysis:` line for `klauro status`, assembled
+ * from the hosted state (authoritative when the repo is bound + signed in)
+ * with the local store as fallback. Exported (cli.ts is otherwise entry-only)
+ * for unit tests.
+ */
+export function buildAnalysisStatusLine(input: {
+  repoPath: string;
+  hosted: HostedAnalysisState | null;
+  hostedProjectId: string | null;
+  local: { analyzed: boolean; analysis_complete: boolean; system?: string; analyzed_at?: string; staleness?: string };
+}): string {
+  const { hosted, local } = input;
+  if (hosted?.status === 'populating') {
+    return `Analysis: server analysis in progress (populating)${input.hostedProjectId ? ` · hosted project ${input.hostedProjectId}` : ''} — results appear shortly`;
+  }
+  if (hosted?.status === 'ready') {
+    const system = hosted.summary?.name || local.system || 'analyzed';
+    const when = hosted.summary?.analysis_timestamp || local.analyzed_at;
+    const staleness = local.analyzed ? local.staleness : undefined;
+    return `Analysis: ${system} · analyzed on server · ${staleness || 'fresh'}${when ? ` · ${when}` : ''}`;
+  }
+  // hosted 'no_analysis', or unreachable/offline/unbound → local-store wording.
+  return local.analyzed
+    ? `Analysis: ${local.system || 'analyzed'} · ${local.analysis_complete ? (local.staleness || 'unknown') : 'populating (layers still filling in)'} · ${local.analyzed_at || ''}`.trim()
+    : `Analysis: ${input.repoPath} not analyzed  (klauro analyze .)`;
+}
+
 async function runStatusCommand(args: ParsedArgs): Promise<void> {
   const identity = getBuildIdentity();
   const auth = loadStoredConnectorAuth();
@@ -890,6 +999,16 @@ async function runStatusCommand(args: ParsedArgs): Promise<void> {
   // project identity / analysis / in-flight / MCP / fabric below).
   const connection = await buildConnectionReport(repoPath);
 
+  // Hosted analysis state: when the repo is bound to a hosted prj_ and we hold
+  // a token, the SERVER is the source of truth for "is this analyzed" (init
+  // uploads there; the local store stays empty by design). Only fall back to
+  // local-store wording when unbound, signed out, or offline.
+  const token = connectorToken(undefined, serverUrl);
+  const boundProjectId = connection.project.id && /^prj_/.test(connection.project.id) ? connection.project.id : null;
+  const hosted = token && boundProjectId
+    ? await fetchHostedAnalysisState(serverUrl, token, boundProjectId)
+    : null;
+
   // Running MCP sessions (session-lock.ts): surfaces the silent-staleness gap
   // directly in `klauro status` too — a session running an OLDER build than
   // what's installed on disk right now means that client needs a restart.
@@ -913,6 +1032,10 @@ async function runStatusCommand(args: ParsedArgs): Promise<void> {
     repo_system: repo.system ?? null,
     repo_analyzed_at: repo.analyzed_at ?? null,
     repo_staleness: repo.staleness ?? null,
+    server_analysis_status: hosted?.status ?? null,
+    server_analysis_id: hosted?.analysis_id ?? null,
+    server_analysis_system: hosted?.summary?.name ?? null,
+    server_analysis_timestamp: hosted?.summary?.analysis_timestamp ?? null,
     project: connection.project,
     workspace_identity: connection.identity,
     in_flight: connection.in_flight,
@@ -927,21 +1050,28 @@ async function runStatusCommand(args: ParsedArgs): Promise<void> {
     return;
   }
 
+  // ONE `MCP:` line, not two: formatConnectionReportLines carries a
+  // registration MCP line and status used to append a second sessions MCP
+  // line — merge registration + sessions here instead.
+  const mcpRegistration = report.mcp_registered === null
+    ? 'registration unknown (claude CLI not found)'
+    : report.mcp_registered
+      ? 'klauro registered with Claude Code'
+      : 'not registered  (run: klauro install)';
+  const mcpSessions = sessionsOnOldBuild.length > 0
+    ? `${sessionsOnOldBuild.length} running session(s) on an OLDER build (${sessionsOnOldBuild.map(s => s.version).join(', ')}) — restart your MCP client`
+    : activeSessions.length > 0
+      ? `${activeSessions.length} running session(s), all on the current build`
+      : 'no running sessions detected on this machine';
   const lines = [
     `klauro ${report.version} (${report.channel}) · node ${report.node} · ${report.platform}`,
     report.signed_in ? `Account:  signed in to ${serverUrl}${report.email ? ` as ${report.email}` : ''}` : `Account:  not signed in to ${serverUrl}  (klauro login --email you@example.com --register)`,
     latest
       ? (report.update_available ? `Release:  ${latest} available — run: klauro update` : `Release:  up to date (${latest})`)
       : `Release:  could not reach ${serverUrl}`,
-    ...formatConnectionReportLines(connection),
-    report.repo_analyzed
-      ? `Analysis: ${report.repo_system || 'analyzed'} · ${report.repo_analysis_complete ? (report.repo_staleness || 'unknown') : 'populating (layers still filling in)'} · ${report.repo_analyzed_at || ''}`.trim()
-      : `Analysis: ${repoPath} not analyzed  (klauro analyze .)`,
-    sessionsOnOldBuild.length > 0
-      ? `MCP:      ${sessionsOnOldBuild.length} running session(s) on an OLDER build (${sessionsOnOldBuild.map(s => s.version).join(', ')}) — restart your MCP client`
-      : activeSessions.length > 0
-        ? `MCP:      ${activeSessions.length} running session(s), all on the current build`
-        : `MCP:      no running sessions detected on this machine`,
+    ...formatConnectionReportLines(connection).filter(line => !line.startsWith('MCP:')),
+    buildAnalysisStatusLine({ repoPath, hosted, hostedProjectId: boundProjectId, local: repo }),
+    `MCP:      ${mcpRegistration} · ${mcpSessions}`,
   ];
   process.stdout.write(lines.join('\n') + '\n');
 }
@@ -964,13 +1094,20 @@ async function runLoginCommand(args: ParsedArgs): Promise<void> {
   if (!email) throw new Error('login requires --email or an entered email');
   if (!password) throw new Error('login requires --password, --password-stdin, or an entered password');
   const endpoint = args.register ? '/api/auth/register' : '/api/auth/login';
-  const response = await fetch(`${serverUrl}${endpoint}`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(args.register
-      ? { email, password, workspace_name: 'Klauro' }
-      : { email, password }),
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${serverUrl}${endpoint}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(args.register
+        ? { email, password, workspace_name: 'Klauro' }
+        : { email, password }),
+    });
+  } catch (error) {
+    // A typo'd --server-url is a URL problem, not a credentials problem.
+    if (isNetworkUnreachableError(error)) throw unreachableServerError(serverUrl, error);
+    throw error;
+  }
   const payload = await response.json().catch(() => ({})) as any;
   if (!response.ok || !payload?.token) {
     throw new Error(payload?.error || `Klauro login failed with HTTP ${response.status}`);
@@ -1285,12 +1422,17 @@ async function runInitCommand(projectPath: string, args: ParsedArgs, options: { 
   // (d) In-flight — the dirty-tree track is automatic (no setup step): the
   // working tree is captured on demand (get_in_flight_changes / remote-sync)
   // and published through the fabric when remote. Report, don't configure.
-  const dirty = countDirtyFiles(projectPath);
+  const dirtyFiles = listDirtyFiles(projectPath);
+  const dirty = dirtyFiles?.length;
+  // init itself just wrote .klaurorc (and possibly .klauroignore) — counting
+  // them as anonymous "in flight" work reads as if init dirtied the user's
+  // repo with mystery changes. Call them out explicitly instead.
+  const klauroConfigDirty = (dirtyFiles || []).filter(file => /(^|\/)\.klauro(rc|ignore)$/.test(file)).length;
   record('in-flight', 'ok', dirty === undefined
     ? 'automatic — uncommitted work is tracked on demand (no git repo detected here, so the track starts with the first commit history)'
     : dirty === 0
       ? 'automatic — working tree clean; uncommitted work is tracked on demand'
-      : `automatic — ${dirty} uncommitted file(s) currently in flight`);
+      : `automatic — ${dirty} uncommitted file(s) currently in flight${klauroConfigDirty > 0 ? ' (includes the Klauro config init just wrote — commit these)' : ''}`);
 
   // (e) MCP — agents on this machine get the Klauro tools via the existing
   // install flow. Detected here; offered (not force-run — it builds/installs).
@@ -1322,8 +1464,12 @@ async function runInitCommand(projectPath: string, args: ParsedArgs, options: { 
     record('fabric', 'ok', `ON — remote via ${endpoint} · workspace ${fabricWorkspace} · ${probeNote}`);
   }
 
+  const warnSteps = steps.filter(step => step.status === 'warn');
+  const skipSteps = steps.filter(step => step.status === 'skip');
   const payload = {
-    status: 'connected',
+    status: warnSteps.length > 0 ? 'connected_with_warnings' : 'connected',
+    warnings: warnSteps.length,
+    skipped: skipSteps.length,
     path: projectPath,
     path_was_explicit: options.pathWasExplicit,
     config: loaded.configPath ?? path.join(projectPath, '.klaurorc'),
@@ -1344,20 +1490,38 @@ async function runInitCommand(projectPath: string, args: ParsedArgs, options: { 
     process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
     return;
   }
+  // The closing banner must reflect how the run actually went: a WARN/SKIP-
+  // heavy init announcing a rosy "Klauro connected" buries the problems the
+  // step lines just reported (2026-07 cold-customer audit).
+  const displayName = payload.project.name || resolveManifestProjectName(projectPath, path.basename(projectPath));
+  const banner = warnSteps.length > 0
+    ? `Klauro connected with ${warnSteps.length} warning${warnSteps.length === 1 ? '' : 's'}: ${displayName}  (${warnSteps.map(step => labels[step.step]).join(', ')} above need attention)`
+    : skipSteps.length > 0
+      ? `Klauro connected: ${displayName}  (${skipSteps.length} step${skipSteps.length === 1 ? '' : 's'} skipped — see above)`
+      : `Klauro connected: ${displayName}`;
   process.stdout.write([
     '',
-    `Klauro connected: ${payload.project.name || resolveManifestProjectName(projectPath, path.basename(projectPath))}`,
+    banner,
     `Config: ${payload.config}`,
     'Check any time with `klauro status`; re-running `klauro init` is idempotent (verifies and refreshes each subsystem).',
     '',
   ].join('\n'));
 }
 
-/** Best-effort count of uncommitted (dirty + untracked) files; undefined = not a git repo. */
-function countDirtyFiles(projectPath: string): number | undefined {
+/** Best-effort list of uncommitted (dirty + untracked) file paths; undefined = not a git repo. */
+function listDirtyFiles(projectPath: string): string[] | undefined {
   const result = spawnSync('git', ['-C', projectPath, 'status', '--porcelain', '-uall'], { encoding: 'utf8', timeout: 5000 });
   if (result.status !== 0 || typeof result.stdout !== 'string') return undefined;
-  return result.stdout.split('\n').filter(line => line.trim()).length;
+  return result.stdout
+    .split('\n')
+    .filter(line => line.trim())
+    // porcelain: "XY path" (or "XY old -> new" for renames — keep the new path).
+    .map(line => line.slice(3).replace(/^.* -> /, '').replace(/^"|"$/g, ''));
+}
+
+/** Best-effort count of uncommitted (dirty + untracked) files; undefined = not a git repo. */
+function countDirtyFiles(projectPath: string): number | undefined {
+  return listDirtyFiles(projectPath)?.length;
 }
 
 /** true = registered, false = claude present but klauro not registered, undefined = no claude CLI. */
@@ -1745,15 +1909,24 @@ async function createRemoteProject(serverUrl: string, token: string, workspaceId
 }
 
 async function remoteJson<T>(serverUrl: string, token: string, route: string, body?: unknown): Promise<T> {
-  const response = await fetch(`${serverUrl}${route}`, {
-    method: body ? 'POST' : 'GET',
-    headers: {
-      'content-type': 'application/json',
-      authorization: `Bearer ${token}`,
-    },
-    body: body ? JSON.stringify(body) : undefined,
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${serverUrl}${route}`, {
+      method: body ? 'POST' : 'GET',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${token}`,
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+  } catch (error) {
+    // A nonexistent/unreachable host is a server-url problem, not an auth or
+    // API problem — say so instead of surfacing a bare "fetch failed".
+    if (isNetworkUnreachableError(error)) throw unreachableServerError(serverUrl, error);
+    throw error;
+  }
   const payload = await response.json().catch(() => ({})) as any;
+  if (response.status === 401) throw new Error(payload?.error || `Klauro authentication failed (HTTP 401) at ${serverUrl}. Run \`klauro login\` to sign in again.`);
   if (!response.ok) throw new Error(payload?.error || `Klauro API request failed with HTTP ${response.status}`);
   return payload as T;
 }

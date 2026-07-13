@@ -26,35 +26,57 @@ function normalizeEntityName(name: string): string {
   return name.toLowerCase().replace(/^entity_/, '').replace(/[^a-z0-9]/g, '');
 }
 
-function journeyTerminalNames(journey: CASUserJourney): Set<string> {
-  const names = new Set<string>();
+/**
+ * The journey's PRIMARY entities — what it terminally PRODUCES: terminal
+ * entities it created/updated/deleted plus terminal_effects.entities_written.
+ * A read-only journey writes nothing, so its terminal READS are its actual
+ * subject and serve as the fallback. Non-write reads on a journey that DOES
+ * write never count: "reads a shared entity somewhere along the chain" is
+ * exactly the non-discriminating overlap that pasted every journey onto every
+ * capability touching that entity (live: mtg's ~30 socket journeys ×every
+ * economy capability, Klauro's 16 workspace journeys ×3 capabilities). A
+ * journey attaches to the few capabilities anchored on what it produces,
+ * not to everything it brushes against.
+ */
+function journeyPrimaryEntityNames(journey: CASUserJourney): Set<string> {
+  const written = new Set<string>();
   for (const terminal of journey.terminal_entities || []) {
-    names.add(normalizeEntityName(terminal.name));
+    if (terminal.access !== 'read') written.add(normalizeEntityName(terminal.name));
   }
-  for (const written of journey.terminal_effects?.entities_written || []) {
-    names.add(normalizeEntityName(written));
+  for (const name of journey.terminal_effects?.entities_written || []) {
+    written.add(normalizeEntityName(name));
   }
-  for (const read of journey.terminal_effects?.entities_read || []) {
-    names.add(normalizeEntityName(read));
+  if (written.size > 0) return written;
+
+  const read = new Set<string>();
+  for (const terminal of journey.terminal_entities || []) {
+    read.add(normalizeEntityName(terminal.name));
   }
-  return names;
+  for (const name of journey.terminal_effects?.entities_read || []) {
+    read.add(normalizeEntityName(name));
+  }
+  return read;
 }
 
 function linkJourneysToCapability(
   capability: SystemCapability,
   capabilityEntityNames: string[],
   journeys: CASUserJourney[],
-  terminalNamesByJourney: Map<string, Set<string>>
+  primaryNamesByJourney: Map<string, Set<string>>
 ): CASUserJourney[] {
   const entryPointIds = new Set(capability.operations.map(operation => operation.entry_point_id));
   const capabilityEntities = new Set(capabilityEntityNames.map(normalizeEntityName));
 
   return journeys.filter(journey => {
+    // Entry-point family: the capability's own operations reference this
+    // journey's entry point — the strongest, structural attachment.
     if (entryPointIds.has(journey.entry_point_id)) return true;
     if (capabilityEntities.size === 0) return false;
-    const terminalNames = terminalNamesByJourney.get(journey.id);
-    if (!terminalNames) return false;
-    for (const name of terminalNames) {
+    // Otherwise the journey's PRIMARY (terminal produced) entity must be one
+    // of the capability's anchor entities — never any-shared-entity overlap.
+    const primaryNames = primaryNamesByJourney.get(journey.id);
+    if (!primaryNames) return false;
+    for (const name of primaryNames) {
       if (capabilityEntities.has(name)) return true;
     }
     return false;
@@ -76,13 +98,13 @@ function capabilityRiskLevel(
 
 function buildCapabilities(cas: CASOutput): CASProductMapCapability[] {
   const journeys = cas.user_journeys || [];
-  const terminalNamesByJourney = new Map(journeys.map(journey => [journey.id, journeyTerminalNames(journey)]));
+  const primaryNamesByJourney = new Map(journeys.map(journey => [journey.id, journeyPrimaryEntityNames(journey)]));
   const entityNameById = new Map((cas.data_entities || []).map(entity => [entity.id, entity.name]));
   const capabilityOrder = new Map((cas.system_capabilities || []).map((capability, index) => [capability.name, index]));
 
   const capabilities = (cas.system_capabilities || []).map(capability => {
     const entityNames = (capability.related_entities || []).map(reference => entityNameById.get(reference) || reference);
-    const linked = linkJourneysToCapability(capability, entityNames, journeys, terminalNamesByJourney);
+    const linked = linkJourneysToCapability(capability, entityNames, journeys, primaryNamesByJourney);
     const linkedSorted = [...linked].sort(
       (a, b) => criticalityRank(a.criticality) - criticalityRank(b.criticality) || a.name.localeCompare(b.name)
     );

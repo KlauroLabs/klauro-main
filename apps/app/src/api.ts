@@ -86,11 +86,24 @@ export interface ProductMap {
   };
 }
 
+export interface LayerStatus {
+  layer: string;
+  name: string;
+  status: 'pending' | 'ready' | 'error';
+  fields: string[];
+  completed_at?: string;
+  duration_ms?: number;
+  error?: string;
+}
+
 export interface LayersReady {
   complete: boolean;
-  layers?: Record<string, boolean>;
+  layers?: LayerStatus[];
+  generated_at?: string;
   [key: string]: unknown;
 }
+
+export type AiEnrichmentState = 'pending' | 'ready' | 'disabled' | 'synchronous' | 'error';
 
 export interface AnalysisSummary {
   name?: string;
@@ -105,6 +118,8 @@ export interface AnalysisSummary {
   capabilities?: number;
   top_capabilities?: string[];
   layers_ready?: LayersReady;
+  ai_enrichment?: AiEnrichmentState;
+  ai_enrichment_error?: string;
   [key: string]: unknown;
 }
 
@@ -114,6 +129,9 @@ export interface ProjectAnalysisResponse {
   analysis_id?: string;
   summary?: AnalysisSummary;
   product_map?: ProductMap;
+  /** Present (as 'error') when the AI comprehension pass terminally failed. */
+  ai_enrichment?: AiEnrichmentState;
+  ai_enrichment_error?: string;
   error?: string;
 }
 
@@ -145,7 +163,11 @@ export interface FlowConcept {
   name: string;
   intent: string;
   entry_point: string;
+  /** Evidence-gated: present only when a system_capabilities operation
+   *  references this flow's entry point; omitted (never fabricated) otherwise. */
   capability_id?: string;
+  /** Deterministic semantic role classification — always real API data. */
+  role?: 'core' | 'supporting' | 'infrastructure';
   entities: string[];
   contract: ILSOContract;
   steps: FlowStep[];
@@ -160,7 +182,32 @@ export interface ConceptualCapability {
 }
 
 export interface ArchitecturalConflict {
+  id: string;
+  kind: 'pattern-conflict' | 'pattern-overlap';
+  concern: string;
+  competing: Array<{ label: string; files: string[]; share: number }>;
   severity: 'low' | 'medium' | 'high';
+  evidence: string[];
+  suggested_alignment: string;
+  [key: string]: unknown;
+}
+
+export interface PrincipleViolation {
+  id: string;
+  principle: string;
+  file: string;
+  node_id: string;
+  detail: string;
+  severity: 'info' | 'warning' | 'error';
+  [key: string]: unknown;
+}
+
+export interface Perspective {
+  id: string;
+  name: string;
+  description: string;
+  analyzer_id?: string;
+  type?: string;
   [key: string]: unknown;
 }
 
@@ -186,10 +233,13 @@ export interface ConceptualResponse {
   };
   structural?: {
     architectural: {
-      total?: number;
-      violations_by_severity?: Record<string, number>;
+      total_conflicts?: number;
+      total_principle_violations?: number;
+      principle_violations_by_severity?: Record<string, number>;
+      principle_violations_by_principle?: Record<string, number>;
       conflicts?: ArchitecturalConflict[];
-      violations?: unknown[];
+      principle_violations?: PrincipleViolation[];
+      is_cohesive?: boolean;
       analysis_version_notice?: string;
       [key: string]: unknown;
     };
@@ -199,7 +249,7 @@ export interface ConceptualResponse {
       paradigms: ParadigmSummary[];
       analysis_version_notice?: string;
     };
-    perspectives: unknown[];
+    perspectives: Perspective[];
   };
 }
 
@@ -228,8 +278,28 @@ export interface WorkspaceAnalysisResponse {
       critical_risk_count?: number;
       high_risk_count?: number;
     };
-    codebases?: Array<{ id: string; name?: string }>;
-    applications?: Array<{ id: string; name?: string; kind?: string }>;
+    codebases?: Array<{
+      id: string;
+      name?: string;
+      /** `account-project:<projectId>` for account-workspace analyses. */
+      path?: string;
+      primary_domain?: string;
+      system_type?: string;
+      languages?: string[];
+      frameworks?: string[];
+    }>;
+    applications?: Array<{ id: string; name?: string; kind?: string; codebase_id?: string }>;
+    application_links?: Array<{
+      id: string;
+      kind?: string;
+      source_application_id?: string;
+      target_application_id?: string;
+      source_application_name?: string;
+      target_application_name?: string;
+      source_codebase_id: string;
+      target_codebase_id: string;
+      [key: string]: unknown;
+    }>;
     summary?: {
       codebases?: number;
       applications?: number;

@@ -1,0 +1,135 @@
+# SEMANTIC MODEL — Capability / Flow / Step / ICELOT / Code
+
+Status: **authoritative doctrine (2026-07-13).** Complements
+[cas/DETERMINISM-BOUNDARY.md](cas/DETERMINISM-BOUNDARY.md) (facts deterministic,
+comprehension AI-only-or-throw — that boundary governs everything here).
+This doc defines WHAT the semantic layers mean; the boundary doc defines WHO
+(deterministic code vs AI) may author each part.
+
+## The model in one line
+
+```
+Capability = purpose · Flow = behavior · Step = action · ICELOT = contract · Code = evidence
+```
+
+These are NOT increasingly summarized views of the call graph. They are
+different semantic concepts grounded in the same observed evidence. The
+program model (nodes/edges/routes/entities/exits) stays authoritative for what
+EXISTS; the semantic overlay explains what it MEANS. Navigation must work both
+ways: capability → flows → steps → code, and function → steps → flows →
+capabilities. Bidirectional traceability is what makes the layer trustworthy.
+
+## Capability — why the system exists
+
+A capability is something the system was BUILT to enable for a user, operator,
+customer, partner, or external actor. **The purpose test: would this appear in
+a product description, user objective, business offering, or operational
+responsibility?** "Trade cryptocurrency" passes. "Connect a wallet",
+"Authenticate users", "Record telemetry" do not — they are supporting concepts
+unless the product IS an auth/telemetry/wallet product (evidence-based
+exception, never keyword-based).
+
+Capabilities require BOTH bottom-up evidence (entry points, entities, terminal
+effects, behavior families/registration surfaces) AND top-down evidence
+(README/docs, product terminology, routes and UI labels, domain modules,
+manifest description). Pure bottom-up clustering yields "Wallet interaction"
+when the capability is "Trade cryptocurrency."
+
+Capabilities do NOT carry ICELOT (too high-level to bind directly).
+
+## Flow — a complete behavior of the system
+
+An end-to-end semantic behavior from an initiating input/trigger through its
+meaningful outcomes and side effects. A flow crosses layers, modules,
+processes, queues, and sync/async boundaries as needed.
+
+- **Flow = semantic step GRAPH** (branches, error paths, compensations,
+  parallel work, async handoffs). The ordered step list shown to humans is a
+  PROJECTION of that graph, not its structure.
+- **Async continuation ≠ new flow.** An event publish consumed by a worker is
+  a continuation segment of the same end-to-end flow (and may also be a
+  reusable subflow). Relationships: a flow CONTAINS steps; a flow may INVOKE
+  or CONTINUE THROUGH another flow (subflows / continuation flows / shared
+  flows).
+- **Flow roles are RELATIONAL, not intrinsic.** Role lives on the
+  capability↔flow relationship edge, not the flow:
+  `CapabilityFlowRelationship { capability_id, flow_id, role, rationale }`,
+  role ∈ `primary | supporting | prerequisite | operational | administrative |
+  recovery | observability | compliance | maintenance`. "Connect wallet" is
+  supporting for Trade-crypto and primary for Manage-wallets, simultaneously.
+
+## Step — the human-understandable action
+
+A meaningful change in what the system knows, decides, validates, performs, or
+produces. A step is NOT a function and NOT a summarized code block:
+
+- **Step ↔ code is many-to-many.** One step may span several functions plus a
+  branch inside another; one large function may contain several steps; a
+  generic `authorizeRequest()` may serve hundreds of steps.
+- Mappings are typed: `StepCodeMapping { step_id, code_region, relationship,
+  contribution, confidence }`, relationship ∈ `implements |
+  partially_implements | initiates | completes | validates | branches |
+  transforms | causes_effect | observes | handles_failure | provides_input |
+  consumes_output`.
+
+## ICELOT — the shared behavioral vocabulary below capability
+
+`Input · Constraints · Effects (state + integrations) · Logic · Output ·
+Telemetry`. Applies to flows, steps, and code units — everything BELOW
+capability. Facets describe OBSERVED semantic traits; artificial completeness
+is forbidden (a decision step may have no effects; telemetry-only steps exist).
+
+ICELOT is **recursive and aggregatable, but each layer changes abstraction —
+never a simple union**: a function's ICELOT is its local contract from code
+evidence; a step's ICELOT combines and REFRAMES its mapped regions' facets in
+human terms; a flow's ICELOT aggregates its steps and adds flow-level
+semantics (initiating input, cross-step constraints, terminal effects,
+end-to-end telemetry). Inheritance is evidence-backed, never automatic.
+
+Per the determinism boundary: deterministic facets (Input=signatures,
+Effects=writes/integrations from the graph, Output=return/produced entities,
+Telemetry=observed calls) are Camp-B facts; Logic and interpretive reframing
+are AI-only, evidence-gated, with provenance (`description_source`).
+
+## Coverage invariants — "everything rolls up" must be measurable
+
+Every non-orphaned executable unit should contribute to at least one flow
+(many-to-many; participation in hundreds of flows is fine). Klauro exposes:
+
+```
+semantic_coverage: {
+  reachable_code_to_steps,   // % reachable executable code mapped to ≥1 step
+  steps_to_flows,            // % steps assigned to ≥1 flow
+  flows_to_capabilities      // % meaningful flows related to ≥1 capability
+}
+unmapped: { code_units, steps, flows }   // honest lists, not just counts
+```
+
+Unmapped code indicates: missing semantics, generic infrastructure, dead code,
+framework-generated behavior, incomplete extraction, or an undiscovered
+capability/flow — each worth surfacing, none worth hiding. These metrics are a
+release gate (like latency budgets): regressions fail the gauntlet.
+
+## Evidence and confidence — everywhere
+
+Every semantic object carries provenance: evidence refs into the code graph,
+confidence, and (for AI-authored text) source stamps. A capability's evidence
+is indirect — through its flows' steps' code evidence — but the chain must be
+walkable. Models/passes may ABSTAIN; low-confidence results route to a
+stronger model or honest absence, never a fabricated answer (boundary doc
+rules apply).
+
+## Implementation map (packets)
+
+- B1 CapabilityFlowRelationship M:N + relational roles — replaces single
+  `capability_id`; both directions serialized (flow.capability_relationships,
+  capability.related_flows).
+- B2 semantic_coverage + unmapped as product surface + gauntlet gate.
+- C1 flow step-graph + async continuations + subflow relationships.
+- C2 top-down capability evidence + purpose test in the AI catalog contract.
+- D1 StepCodeMapping many-to-many + intra-function step segmentation
+  (AI-proposed, evidence-gated).
+- D2 ICELOT aggregation/reframe rules with facet provenance.
+- E1 AI-decision instrumentation → versioned dataset (the future training
+  corpus for a distilled semantic encoder; encoder training itself is
+  DEFERRED until the dataset exists at scale).

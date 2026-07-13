@@ -283,17 +283,76 @@ export function classifyEntityRole(
   return { role: 'supporting', role_evidence: evidence };
 }
 
+/** Structural (terminal/product) evidence for a flow's role, resolved by the
+ *  query layer from the CAS entry point + the flow's terminus. This is TYPE
+ *  evidence (entry-point handler file kind, exit-point kind, capability
+ *  membership), never a name blocklist. */
+export interface FlowRoleStructuralEvidence {
+  /** Entry point type ('http' | 'cli' | 'event' | ...). */
+  entry_type?: string;
+  /** Entry point handler/source file, when resolvable. */
+  entry_file?: string;
+  /** The flow's resolved terminus exit kind ('api' | 'database' | 'sdk' | ...). */
+  terminus_kind?: string;
+  /** What the terminus produces (service id / resource / route). */
+  terminus_produces?: string;
+  /** True when a system_capabilities operation references this flow's entry point. */
+  capability_linked?: boolean;
+}
+
+/** Shell/batch/build-script file — a script ENTRY is structural evidence that
+ *  the flow is operational plumbing (deploy/install/release/build), regardless
+ *  of what domain vocabulary its name happens to contain. */
+function isScriptEntryFile(file: string | undefined): boolean {
+  return /\.(sh|bash|zsh|ps1|bat|cmd)$|(^|\/)(makefile|justfile)$/i.test(String(file || ''));
+}
+
+/** Product-facing terminus kinds — the flow ends by emitting a response,
+ *  persisting state, or raising a product event (vs. a build/deploy artifact). */
+const PRODUCT_TERMINUS_KINDS = new Set(['api', 'database', 'cache', 'event', 'webhook', 'message', 'queue', 'navigation']);
+
 /**
  * Classify a FLOW. Evidence, strongest-first:
+ *   0. STRUCTURAL terminal/product evidence, when supplied: a flow rooted at a
+ *      build/deploy/install script entry is infrastructure (script entry IS
+ *      the evidence — no name blocklist); a flow serving a capability
+ *      operation with an api-response/persisted terminus is core. This
+ *      outranks domain-concept anchors: a shell domain concept classified
+ *      "core" must not make deploy.sh a core product flow, and a capability
+ *      operation that responds/persists is core product surface even when its
+ *      name carries no domain vocabulary.
  *   1. domain-concept classification for the flow's entry point (reused signal);
  *   2. domain-concept classification for any data entity the flow touches;
  *   3. the name-based classifier applied to the flow name / intent.
  */
 export function classifyFlowRole(
   flow: { name?: string; intent?: string; entry_point?: string; entities?: string[] },
-  index: DomainConceptIndex
+  index: DomainConceptIndex,
+  structural?: FlowRoleStructuralEvidence
 ): RoleClassification {
   const evidence: string[] = [];
+
+  // 0. Structural terminal/product evidence (entry TYPE + terminus), when the
+  // caller resolved it. Evidence-gated: each branch names the concrete fact.
+  if (structural) {
+    const scriptEntry = isScriptEntryFile(structural.entry_file);
+    const productTerminus = Boolean(structural.terminus_kind && PRODUCT_TERMINUS_KINDS.has(structural.terminus_kind));
+    if (scriptEntry && !(structural.capability_linked && productTerminus)) {
+      return {
+        role: 'infrastructure',
+        role_evidence: [
+          `entry point is a script file (${structural.entry_file}) — operational build/deploy/install surface, not product flow`,
+          ...(structural.terminus_kind ? [`terminus kind: ${structural.terminus_kind}${structural.terminus_produces ? ` (${structural.terminus_produces})` : ''}`] : []),
+        ],
+      };
+    }
+    if (structural.capability_linked && productTerminus) {
+      evidence.push(
+        `serves a capability operation and terminates at ${structural.terminus_kind}${structural.terminus_produces ? ` (${structural.terminus_produces})` : ''} — product-facing terminal evidence`
+      );
+      return { role: 'core', role_evidence: evidence };
+    }
+  }
 
   // 1. Entry-point-anchored concept.
   const epHit = flow.entry_point ? roleFromConcepts(index.byEntryPoint.get(flow.entry_point)) : {};

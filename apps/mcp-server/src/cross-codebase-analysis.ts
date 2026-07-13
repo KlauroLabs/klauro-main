@@ -2,6 +2,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import type { CASEntryPoint, CASExitPoint, CASNode, CASOutput, CASTemporalStability } from '../../../packages/analyzer-core/src/types/cas.types';
 import { aiService } from '../../../packages/analyzer-core/src/ai/ai-service';
+import { ungroundedMarketingMatches } from '../../../packages/analyzer-core/src/ai/element-description-validator';
 import { describeConfiguredAIProvider } from '../../../packages/analyzer-core/src/config/ai.config';
 import {
   isInfrastructureSemanticName,
@@ -917,6 +918,11 @@ export interface CrossCodebaseSystemGraph {
     risk_areas: number;
     capabilities: number;
     workflows: number;
+    /** True workflow count before the payload-size cap; equals `workflows`
+     *  when nothing was truncated. */
+    workflows_total: number;
+    /** True when `workflows` was truncated to the payload-size cap. */
+    workflows_truncated: boolean;
     domains: number;
     entities: number;
     entity_paths: number;
@@ -963,7 +969,11 @@ export function buildCrossCodebaseSystemGraph(
   const activity = buildWorkspaceActivity(repositories, applications);
   const telemetry = buildWorkspaceTelemetry(repositories, applications);
   const capabilities = buildWorkspaceCapabilities(repositories, applications, codebases, systemInsights);
-  const workflows = buildWorkspaceWorkflows(repositories, applications, interfaces, applicationLinks);
+  // Honest truncation: the persisted list is capped for payload size, and the
+  // true count is surfaced in summary.workflows_total/workflows_truncated so
+  // "exactly 40" is a visible truncation, never a silent quota.
+  const workflowsAll = buildWorkspaceWorkflows(repositories, applications, interfaces, applicationLinks);
+  const workflows = workflowsAll.slice(0, WORKSPACE_WORKFLOWS_MAX);
   const domains = buildWorkspaceDomains(repositories, applications, codebases, name);
   const environments = buildWorkspaceEnvironments(runtimeComponents, applications, repositories);
   const infrastructureOverlay = buildWorkspaceInfrastructureOverlay(runtimeComponents, runtimeLinks, applications);
@@ -1027,7 +1037,7 @@ export function buildCrossCodebaseSystemGraph(
     detail_views: detailViews,
     validation,
     quality_flags: qualityFlags,
-    summary: summarize(codebases, applications, distributionUnits, interfaces, runtimeComponents, runtimeLinks, applicationLinks, systemInsights, links, unmatchedInterfaces, composition, riskAreas, capabilities, workflows, domains, entityMap.entities, entityMap.paths),
+    summary: summarize(codebases, applications, distributionUnits, interfaces, runtimeComponents, runtimeLinks, applicationLinks, systemInsights, links, unmatchedInterfaces, composition, riskAreas, capabilities, workflows, domains, entityMap.entities, entityMap.paths, workflowsAll.length),
   };
   normalizeWorkspaceNextMcpCalls(graph);
   return graph;
@@ -1142,8 +1152,10 @@ export async function enrichWorkspaceAnalysisNarrative(graph: WorkspaceAnalysisG
           source: 'ai',
           generated_at: now,
           confidence: Math.max(graph.workspace_narrative.confidence, 0.76),
-          description: narrativeDescription,
-          product_value_summary: acceptedProductValueSummary,
+          // Persist seam: isolated ungrounded marketing instances are stripped
+          // mechanically (saturation was already rejected by the gate).
+          description: stripUngroundedWorkspaceMarketingLanguage(graph, narrativeDescription),
+          product_value_summary: stripUngroundedWorkspaceMarketingLanguage(graph, acceptedProductValueSummary),
           domains: parsed.domains?.length ? parsed.domains.slice(0, 12) : graph.workspace_narrative.domains,
           key_capabilities: parsed.key_capabilities?.length ? parsed.key_capabilities.slice(0, 12) : graph.workspace_narrative.key_capabilities,
           value_drivers: parsed.value_drivers?.length ? parsed.value_drivers.slice(0, 8) : graph.workspace_narrative.value_drivers,
@@ -1356,7 +1368,7 @@ async function aiMergeWorkspaceCapabilities(graph: WorkspaceAnalysisGraph): Prom
     let description = String(item.description || '');
     // A model occasionally nests JSON into the description field; treat that as
     // empty so we rebuild a clean description from the title and entities.
-    if (description.includes('{') || /"description"\s*:|key_capabilities/i.test(description)) description = '';
+    if (description.includes('{') || /"description"\s*:|key_capabilities/i.test(description) || isWorkspaceAiParseArtifactText(description)) description = '';
     description = description
       // Strip any "through/using/via … <api|routes|endpoints|operations|deployables>…" mechanism tail.
       .replace(/\s+(?:through|using|via)\s+(?:the\s+)?[^.]*?\b(?:api|apis|routes?|endpoints?|operations?|deployables?|controllers?)\b[^.]*/gi, '')
@@ -1544,8 +1556,8 @@ async function repairRejectedWorkspaceNarrative(
       source: 'ai',
       generated_at: generatedAt,
       confidence: Math.max(graph.workspace_narrative.confidence, 0.74),
-      description,
-      product_value_summary: repairedProductValueSummary,
+      description: stripUngroundedWorkspaceMarketingLanguage(graph, description),
+      product_value_summary: stripUngroundedWorkspaceMarketingLanguage(graph, repairedProductValueSummary),
       ai_provider: metadata.provider,
       ai_model: metadata.model,
       ai_structured_model: metadata.structured_model,
@@ -1767,7 +1779,12 @@ async function repairSingleDefaultWorkspaceDescription(
     ]);
     if (isUsefulAiWorkspaceDescription(item.name, firstCandidate, kind)) return firstCandidate;
     writeWorkspaceAiRepairDebug({ stage: 'single-repair-rejected', kind, name: item.name, candidate: firstCandidate, raw: truncateText(raw, 1200) });
-    raw = await withWorkspaceAiTimeout(generateWorkspaceAiText(workspaceSingleDescriptionRepairPromptContext(graph, kind, item, firstCandidate)));
+    // The retry must be a fresh model round-trip (cache-busted): when the first
+    // response failed to parse, firstCandidate is undefined and the retry
+    // context would otherwise be byte-identical to the first call — replaying
+    // the same unparsable cached response. The nonce forces a distinct
+    // ai-service cache key for the retry.
+    raw = await withWorkspaceAiTimeout(generateWorkspaceAiText(workspaceSingleDescriptionRepairPromptContext(graph, kind, item, firstCandidate, `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`)));
     const retryParsed = parseWorkspaceNarrativeJson(raw);
     const retryCandidates = kind === 'domain' ? retryParsed.domain_items || [] : retryParsed.capability_items || [];
     const retryExact = retryCandidates.find(candidate => normalizeAiItemName(candidate.name) === normalizeAiItemName(item.name));
@@ -1798,7 +1815,12 @@ function bestSingleWorkspaceDescriptionCandidate(
     .filter((candidate): candidate is string => Boolean(candidate))
     .filter(candidate => isUsefulAiWorkspaceDescription(name, candidate, kind))
     .sort((left, right) => singleWorkspaceDescriptionScore(name, right) - singleWorkspaceDescriptionScore(name, left));
-  return usable[0] || candidates.map(candidate => cleanNarrativeString(candidate)).find(Boolean);
+  // The permissive fallback still must never surface an unparsed structured
+  // blob (persist-seam guard): a parse artifact is "no candidate", not a
+  // best-effort description.
+  return usable[0] || candidates
+    .map(candidate => cleanNarrativeString(candidate))
+    .find(candidate => Boolean(candidate) && !isWorkspaceAiParseArtifactText(candidate));
 }
 
 function singleWorkspaceDescriptionScore(name: string, description: string): number {
@@ -1815,12 +1837,19 @@ function singleWorkspaceDescriptionScore(name: string, description: string): num
 function cleanSingleDescriptionFromRaw(raw: string): string | undefined {
   const text = String(raw || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
   const descriptionMatch = text.match(/"description"\s*:\s*"([^"]{60,500})"/i);
-  if (descriptionMatch?.[1]) return descriptionMatch[1].replace(/\\"/g, '"').replace(/\s+/g, ' ').trim();
+  if (descriptionMatch?.[1]) {
+    const extracted = descriptionMatch[1].replace(/\\"/g, '"').replace(/\s+/g, ' ').trim();
+    if (!isWorkspaceAiParseArtifactText(extracted)) return extracted;
+  }
   const line = text
     .split(/\n+/)
     .map(item => item.replace(/^[-*\d.\s]+/, '').trim())
-    .find(item => item.length >= 80 && item.length <= 240);
-  return line || cleanNarrativeString(text);
+    .find(item => item.length >= 80 && item.length <= 240 && !isWorkspaceAiParseArtifactText(item));
+  if (line) return line;
+  // NEVER salvage the raw blob itself: an unparsed structured response is a
+  // parse failure, and the honest outcome is "no description", not the blob.
+  const cleaned = cleanNarrativeString(text);
+  return cleaned && !isWorkspaceAiParseArtifactText(cleaned) ? cleaned : undefined;
 }
 
 function workspaceSingleDescriptionRepairPromptContext(
@@ -1828,6 +1857,7 @@ function workspaceSingleDescriptionRepairPromptContext(
   kind: 'domain' | 'capability',
   item: WorkspaceDomain | WorkspaceCapability,
   rejectedDescription?: string,
+  retryNonce?: string,
 ): Record<string, unknown> {
   const appById = new Map(graph.applications.map(app => [app.id, app]));
   const projectById = new Map(graph.codebases.map(project => [project.id, project]));
@@ -1854,6 +1884,7 @@ function workspaceSingleDescriptionRepairPromptContext(
     exact_name: item.name,
     required_name_terms: requiredNameTerms,
     rejected_description: rejectedDescription,
+    ...(retryNonce ? { retry_nonce: retryNonce } : {}),
     rules: [
       'Use the exact name provided.',
       'Write 1 sentence, 90-210 characters.',
@@ -2005,7 +2036,13 @@ function workspaceNarrativeRepairPromptContext(graph: WorkspaceAnalysisGraph, re
     evidence: link.evidence.slice(0, 3),
   }));
   const deployables = graph.detail_views.overview.deployables.slice(0, 8).map(app => `${app.name} (${app.kind})`);
-  const runtime = graph.runtime_components.slice(0, 8).map(component => `${component.name}${component.ports?.length ? `:${component.ports.join(',')}` : ''}`);
+  // Runtime components with artifact-shaped names ("image: Dockerfile") are
+  // analyzer plumbing, not product surfaces — quoting them yields customer
+  // prose like "deployed with image: Dockerfile:7331".
+  const runtime = graph.runtime_components
+    .filter(component => !/^image:|dockerfile/i.test(String(component.name || '')))
+    .slice(0, 8)
+    .map(component => `${component.name}${component.ports?.length ? `:${component.ports.join(',')}` : ''}`);
   return {
     responseFormat: 'json',
     maxTokens: Number(process.env.KLAURO_WORKSPACE_AI_REPAIR_MAX_TOKENS || '520'),
@@ -2035,6 +2072,8 @@ function workspaceNarrativeRepairPromptContext(graph: WorkspaceAnalysisGraph, re
       'Name concrete deployables, packages, data/runtime concepts, and infrastructure from evidence.',
       'Explain how work moves through the workspace.',
       'Do not invent customers, pricing, revenue model, integrations, or links.',
+      'member_projects are DISTINCT projects: attribute each capability, domain, and behavior to the member that owns it; never present one member as the workspace and never assign one member\'s capabilities to another member.',
+      'workspace_insights and composition facts are internal analysis diagnostics: never quote their phrasing (e.g. "source-backed", "isolated deployable(s)", "should not be forced into the system graph", "Dockerfile") verbatim — translate them into plain engineering language or omit them.',
     ],
     required_terms: [
       ...deployables.slice(0, 5),
@@ -2592,8 +2631,28 @@ function isDefaultWorkspaceDescriptionReady(
   return source === 'ai' && isUsefulAiWorkspaceDescription(name, description, kind);
 }
 
+/**
+ * PERSIST-SEAM GUARD (live 4-workspace audit defect): when a model response
+ * fails to parse, the raw structured output must NEVER be stored as a
+ * customer-facing description. Any candidate that still looks like structured
+ * model output — starts with '{'/'[', carries JSON field syntax, wrapper keys
+ * like "key_capabilities", or a fenced code block — is a parse artifact, not
+ * prose. Every description accept path runs through this. Exported for tests.
+ */
+export function isWorkspaceAiParseArtifactText(value: unknown): boolean {
+  const text = String(value ?? '').trim();
+  if (!text) return false;
+  if (/^[{[]/.test(text)) return true;
+  if (text.includes('```')) return true;
+  if (/"(?:key_capabilities|capabilities|capability_items|domain_items|domains|workflow_items|entity_items)"\s*:/i.test(text)) return true;
+  if (/"(?:name|title|description|category|source_names)"\s*:/i.test(text)) return true;
+  if (/[{[]\s*"/.test(text)) return true;
+  return false;
+}
+
 function isUsefulAiWorkspaceDescription(name: string, description: string | undefined, kind: 'domain' | 'capability' | 'workflow' | 'entity'): boolean {
   const text = String(description || '').trim();
+  if (isWorkspaceAiParseArtifactText(text)) return false;
   if (text.length < (kind === 'entity' ? 55 : kind === 'workflow' ? 52 : 68)) return false;
   const normalized = normalizeAiItemName(text);
   const normalizedName = normalizeAiItemName(name);
@@ -2765,6 +2824,9 @@ function meaningfulWorkspaceNameTokens(name: string): string[] {
 export function workspaceNarrativeHardRejectReason(description: string, effectiveProductValueSummary?: unknown): string | null {
   const raw = String(description || '');
   if (!raw.trim()) return 'the description is empty';
+  if (isWorkspaceAiParseArtifactText(raw)) {
+    return 'the description is an unparsed structured-output artifact (raw JSON/model output pasted as prose) — return plain narrative text, never the raw response';
+  }
   if (/\b(?:prj|wsp|acct|proj|org|usr)_[A-Za-z0-9]{6,}\b/.test(raw)) {
     return 'the description leaks raw internal id tokens (prj_/wsp_/acct_ style identifiers)';
   }
@@ -2796,6 +2858,106 @@ export function workspaceNarrativeHardRejectReason(description: string, effectiv
 }
 
 /**
+ * Grounding vocabulary that legitimizes marketing-flagged words in WAS prose —
+ * the workspace's OWN derived semantics (domain/capability/codebase/entity
+ * names). Parity with the element-description validator's grounded-words rule:
+ * "compliance" survives in a compliance workspace, "comprehensive" never does.
+ */
+function workspaceMarketingGroundingTokens(graph: WorkspaceAnalysisGraph | undefined): { tokens: string[]; text: string } {
+  if (!graph) return { tokens: [], text: '' };
+  const sources = [
+    ...(graph.workspace_domains || []).slice(0, 16).map(domain => domain.name),
+    ...(graph.workspace_capabilities || []).slice(0, 24).map(capability => capability.name),
+    ...(graph.codebases || []).map(codebase => codebase.primary_domain || ''),
+    ...(graph.workspace_entities || []).slice(0, 24).map(entity => entity.name),
+  ].filter(Boolean);
+  const tokens = sources
+    .flatMap(value => normalizeAiItemName(String(value)).split(/\s+/))
+    .filter(token => token.length > 2);
+  return { tokens, text: sources.join(' ').toLowerCase() };
+}
+
+/**
+ * Unsupported-marketing-language lint for WAS narratives — REUSES the
+ * project-tier mechanism (analyzer-core element-description-validator's
+ * shared pattern + grounding rule), it is not a second list. Exported for
+ * tests.
+ */
+export function workspaceNarrativeMarketingMatches(graph: WorkspaceAnalysisGraph | undefined, text: string): string[] {
+  const grounding = workspaceMarketingGroundingTokens(graph);
+  return ungroundedMarketingMatches(String(text || ''), [], grounding.tokens, grounding.text);
+}
+
+/**
+ * Mechanical strip of isolated marketing instances ("a comprehensive workspace"
+ * -> "a workspace"). Saturated marketing prose is rejected by the gate instead
+ * — stripping cannot rescue a sentence that is entirely fluff. Exported for tests.
+ */
+export function stripUngroundedWorkspaceMarketingLanguage(graph: WorkspaceAnalysisGraph | undefined, text: string): string {
+  const matches = workspaceNarrativeMarketingMatches(graph, text);
+  if (matches.length === 0) return String(text || '');
+  let result = String(text || '');
+  for (const match of matches) {
+    const pattern = new RegExp(`\\s*\\b${match.split(/[\s-]+/).map(part => escapeRegExp(part)).join('[- ]')}\\b`, 'gi');
+    result = result.replace(pattern, '');
+  }
+  return result
+    .replace(/\s+([.,;:])/g, '$1')
+    .replace(/\ban?\s+([.,;:])/gi, '$1')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
+/**
+ * Member-attribution gate (live "Personal"/"Clients" workspace defect): a
+ * multi-member workspace narrative must never attribute one member's evidence
+ * to another member — e.g. a sentence whose subject is Kontinuum claiming
+ * mtg's game-economy capabilities, or the workspace framed as a single member.
+ * Checkable form: member A's exclusive capability names appearing in a
+ * sentence whose subject is member B (and A is not mentioned in that
+ * sentence). Returns the rejection reason, or null. Exported for tests.
+ */
+export function workspaceNarrativeMisattributionReason(graph: WorkspaceAnalysisGraph, description: string): string | null {
+  const codebases = graph.codebases || [];
+  if (codebases.length < 2) return null;
+  const workspaceName = normalizeAiItemName(graph.name || '');
+  const members = codebases
+    .map(codebase => ({ id: codebase.id, name: codebase.name, normalized: normalizeAiItemName(codebase.name) }))
+    .filter(member => member.normalized.length >= 3 && member.normalized !== workspaceName);
+  if (members.length < 2) return null;
+  const exclusiveCapabilities: Array<{ ownerId: string; ownerName: string; ownerNormalized: string; capability: string; normalized: string }> = [];
+  for (const capability of graph.workspace_capabilities || []) {
+    const owners = [...new Set(capability.project_ids || [])];
+    if (owners.length !== 1) continue;
+    const owner = members.find(member => member.id === owners[0]);
+    if (!owner) continue;
+    const normalized = normalizeAiItemName(capability.name);
+    if (normalized.length < 8 || normalized.split(/\s+/).length < 2) continue;
+    exclusiveCapabilities.push({ ownerId: owner.id, ownerName: owner.name, ownerNormalized: owner.normalized, capability: capability.name, normalized });
+  }
+  if (exclusiveCapabilities.length === 0) return null;
+  const sentences = String(description || '').split(/(?<=[.!?])\s+/).filter(Boolean);
+  for (const sentence of sentences) {
+    const normalizedSentence = normalizeAiItemName(sentence);
+    // Sentence subject: the earliest member named in the sentence, provided it
+    // sits in subject position (leading clause) rather than deep in the predicate.
+    const subject = members
+      .map(member => ({ member, index: normalizedSentence.search(new RegExp(`\\b${escapeRegExp(member.normalized)}\\b`)) }))
+      .filter(item => item.index >= 0)
+      .sort((left, right) => left.index - right.index)[0];
+    if (!subject || subject.index > 24) continue;
+    for (const item of exclusiveCapabilities) {
+      if (item.ownerId === subject.member.id) continue;
+      if (new RegExp(`\\b${escapeRegExp(item.ownerNormalized)}\\b`).test(normalizedSentence)) continue;
+      if (new RegExp(`\\b${escapeRegExp(item.normalized)}\\b`).test(normalizedSentence)) {
+        return `the narrative attributes "${item.capability}" (evidence only in member ${item.ownerName}) to ${subject.member.name} — attribute each member project's domains/capabilities to that member, and describe the workspace by its own name, never as a single member`;
+      }
+    }
+  }
+  return null;
+}
+
+/**
  * THE WAS narrative quality gate — single decision point used by the primary
  * enrichment pass and every repair attempt. Hard-reject markers always lose;
  * otherwise a narrative is accepted via any of three paths:
@@ -2820,6 +2982,21 @@ export function evaluateWorkspaceNarrativeGate(
   const unsupportedFrame = workspaceNarrativeUnsupportedFrameReason(graph, description, productValueSummary);
   if (unsupportedFrame) {
     return { accepted: false, reason: unsupportedFrame };
+  }
+  const misattribution = workspaceNarrativeMisattributionReason(graph, description);
+  if (misattribution) {
+    return { accepted: false, reason: misattribution };
+  }
+  // Marketing-language lint (same mechanism as the project-tier element gate):
+  // isolated instances are stripped mechanically at the persist seam; a
+  // narrative SATURATED with ungrounded marketing language is rejected outright
+  // (the live OpenClaw "comprehensive workspace… robust… ideal solution" prose).
+  const marketingMatches = workspaceNarrativeMarketingMatches(graph, `${description} ${String(productValueSummary ?? '')}`);
+  if (marketingMatches.length >= 3) {
+    return {
+      accepted: false,
+      reason: `unsupported-marketing-language saturation (${marketingMatches.join(', ')}): replace marketing adjectives with concrete, evidence-backed workspace behavior`,
+    };
   }
   if (isUsefulAiWorkspaceNarrative(description)) return { accepted: true };
   if (isGroundedAiWorkspaceNarrative(graph, description, productValueSummary)) return { accepted: true };
@@ -3002,6 +3179,15 @@ function safeAiProductValueSummary(value: unknown, fallback?: string, graph?: Wo
   if (/\b(codebase intelligence|cas|mcp|agent context|analyzer)\b/.test(normalized) && graph && !workspaceHasCodebaseIntelligenceSignal(graph)) return undefined;
   const unsupportedMarketing = /\b(scalable|enterprise grade|enterprise-grade|real time|mission critical|mission-critical|compliance|hybrid environments?)\b/.test(normalized);
   if (unsupportedMarketing) return undefined;
+  // Shared project-tier marketing lint (element-description-validator
+  // mechanism): saturation is unsafe; isolated instances are stripped so a
+  // factual-but-lightly-decorated summary survives honestly.
+  const marketingMatches = workspaceNarrativeMarketingMatches(graph, text);
+  if (marketingMatches.length >= 3) return undefined;
+  if (marketingMatches.length > 0) {
+    const stripped = stripUngroundedWorkspaceMarketingLanguage(graph, text);
+    return stripped.length >= 20 ? stripped : undefined;
+  }
   return text;
 }
 
@@ -3185,6 +3371,8 @@ export function workspaceNarrativePromptContext(graph: WorkspaceAnalysisGraph): 
       'The description must reflect product_value_summary_hint and then explain concrete app/deployable relationships from must_explain.',
       'Return product_value_summary as one evidence-backed sentence explaining the product/business job this workspace appears to serve.',
       'Do not use unsupported marketing claims such as scalable, enterprise-grade, real-time, mission-critical, compliance, or hybrid environments unless those exact facts appear in evidence.',
+      'facts.member_projects lists DISTINCT member projects, each with its OWN own_capabilities/own_domains. Attribute every capability, domain, and behavior to the member project that owns it; never present one member as the workspace, never assign one member\'s capabilities to another member, and never frame or title the workspace as a single member.',
+      'facts.behavior_facts.insights and facts.composition are internal analysis diagnostics: NEVER quote their phrasing (e.g. "source-backed", "isolated deployable(s)", "should not be forced into the system graph", "Dockerfile", raw image/port tokens) in customer prose — translate them into plain engineering language or omit them.',
       'For every connection, preserve direction exactly as source -> target. For sdk-install, the source depends on or imports the target; do not reverse that relationship.',
       'Do not turn warnings, unclaimed-provider insights, or topology-only declarations into active source-backed relationships.',
       'Do not describe a service as communicating with another service unless the connection appears in behavior_facts.important_connections with the same source and target.',
@@ -3247,6 +3435,11 @@ function workspaceAiFactSheet(graph: WorkspaceAnalysisGraph, productName = infer
   // must_explain so the model grounds the product frame in what the members
   // actually are (e.g. a messaging-gateway) instead of grasping at a generic
   // frame when behavioral facts are thin.
+  // Each member is presented as a DISTINCT project with ITS OWN domains and
+  // capabilities (evidence exclusive to that member), so a multi-member
+  // workspace narrative can — and must — attribute behavior per member instead
+  // of pouring every member's evidence into whichever member it names first
+  // (the live "Kontinuum owns mtg's game economy" misattribution).
   const memberProjects = graph.codebases.slice(0, 12).map(codebase => ({
     name: codebase.name,
     ...(codebase.primary_domain ? { primary_domain: codebase.primary_domain } : {}),
@@ -3254,6 +3447,14 @@ function workspaceAiFactSheet(graph: WorkspaceAnalysisGraph, productName = infer
     role: codebase.project_role,
     frameworks: codebase.frameworks.slice(0, 4),
     languages: codebase.languages.slice(0, 4),
+    own_capabilities: (graph.workspace_capabilities || [])
+      .filter(capability => (capability.project_ids || []).length >= 1 && capability.project_ids.every(id => id === codebase.id))
+      .map(capability => capability.name)
+      .slice(0, 6),
+    own_domains: (graph.workspace_domains || [])
+      .filter(domain => (domain.project_ids || []).length >= 1 && domain.project_ids.every(id => id === codebase.id))
+      .map(domain => domain.name)
+      .slice(0, 5),
   }));
   const memberDomainFacts = graph.codebases
     .filter(codebase => codebase.primary_domain)
@@ -3551,6 +3752,23 @@ function extractJsonLikeArraySection(text: string, start: number): string {
   return nextTopLevelField > 0 ? text.slice(start, start + 1 + nextTopLevelField) : text.slice(start);
 }
 
+/**
+ * Camel-case prose splitting that preserves compound product tokens (the live
+ * "macOS" -> "mac OS", "iOS" -> "i OS", "iMessages" -> "I Messages" tokenizer
+ * artifacts). Generic rules, no brand list:
+ *  - a token whose word START is a single lowercase letter followed by a
+ *    capital (iOS, iMessage, eBay) is a brand-style compound — never split;
+ *  - a lowercase->UPPERCASE boundary splits only when the capital starts a new
+ *    capitalized WORD ([A-Z][a-z]); a trailing all-caps run stays attached
+ *    (macOS, userDB), because splitting it produces a bare acronym fragment.
+ */
+function splitCamelCaseProseToken(token: string): string {
+  if (/^[a-z][A-Z]/.test(token)) return token;
+  return token
+    .replace(/([a-z0-9])([A-Z][a-z])/g, '$1 $2')
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2');
+}
+
 function cleanNarrativeString(value: unknown): string | undefined {
   const text = normalizeWorkspaceAiDescriptionText(value);
   return text.length >= 80 ? text : undefined;
@@ -3566,10 +3784,11 @@ function cleanNarrativeSummaryString(value: unknown): string | undefined {
   return text.length >= 20 ? text : undefined;
 }
 
-function normalizeWorkspaceAiDescriptionText(value: unknown): string {
+// Exported for tests (compound-token preservation contract: macOS/iOS/iMessage
+// must survive camel-case prose splitting).
+export function normalizeWorkspaceAiDescriptionText(value: unknown): string {
   return String(value || '')
-    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
-    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+    .replace(/\b[A-Za-z][A-Za-z0-9]*\b/g, token => splitCamelCaseProseToken(token))
     .replace(/\b([a-zA-Z]+)-([a-zA-Z]+)\b/g, '$1 $2')
     .replace(/\bRES Tful\b/g, 'RESTful')
     .replace(/\bAP Is\b/g, 'APIs')
@@ -5666,6 +5885,7 @@ function buildWorkspaceDomains(
 	  if (domains.size === 0) {
 	    for (const app of applications) add(app.name, app.codebase_id, `deployable:${app.name}`, 0.5);
 	  }
+  const entityNames = workspaceEntityNameSet(repositories);
   return collapseOverlappingWorkspaceDomains([...domains.entries()], productNames)
     // The workspace/product name itself ("Soon") is never a domain — drop it
     // rather than letting it rank as one.
@@ -5679,11 +5899,23 @@ function buildWorkspaceDomains(
     // words, shell/fixture tokens, word fragments — have none of these and
     // are dropped rather than ranked.
     .filter(([, value]) => hasWorkspaceDomainEvidence(value))
+    // ALTITUDE FILTERS (live "exactly 16 domains" quota-padding defect): the
+    // list is evidence-length, not quota-length — fewer is fine, and the tail
+    // must never be padded with wrong-altitude names:
+    //  - a bare data-entity/class name (CodebaseConnection, PricingType,
+    //    TelemetrySnapshot) is a data shape, not a domain, unless corroborated
+    //    by real domain evidence beyond its own entity record;
+    //  - a verb-phrase label ("Sends Messages", "List Tools") is a capability
+    //    label at the wrong altitude — domains are noun concepts.
+    .filter(([name, value]) => !isUncorroboratedEntityNameDomain(name, value, entityNames))
+    .filter(([name]) => !isVerbPhraseDomainLabel(name))
     .sort((left, right) =>
       workspaceDomainSortScore(right[0], right[1], productNames) -
         workspaceDomainSortScore(left[0], left[1], productNames) ||
       left[0].localeCompare(right[0])
     )
+    // 16 is a MAXIMUM, never a quota: everything below already passed the
+    // evidence + altitude gates, so shorter lists ship as-is.
     .slice(0, 16)
     .map(([name, value]) => ({
       name,
@@ -5751,6 +5983,53 @@ function hasWorkspaceDomainEvidence(value: { evidence?: string[]; terminal_score
   const terminalScore = value.terminal_score || 0;
   if (terminalScore <= 0) return false;
   return evidence.some(item => item.startsWith('entity:') || item.startsWith('core_concept:'));
+}
+
+/** All data-entity names across the member CAS inputs, normalized. */
+function workspaceEntityNameSet(repositories: CrossCodebaseInput[]): Set<string> {
+  const names = new Set<string>();
+  for (const repository of repositories) {
+    for (const entity of repository.cas.data_entities || []) {
+      const normalized = normalizeAiItemName(String((entity as any).name || ''));
+      if (normalized) names.add(normalized);
+    }
+  }
+  return names;
+}
+
+/**
+ * ALTITUDE FILTER: a workspace-domain candidate whose name IS a data-entity/
+ * class name (CodebaseConnection, EntityStatus, PricingType, TelemetrySnapshot)
+ * is a data shape echoed upward, not a domain — unless the name is
+ * corroborated as a domain concept by evidence beyond its own entity record
+ * (the analyzer's primary/project domain answer, a crypto anchor, a
+ * capability's related domain, or a core concept).
+ */
+function isUncorroboratedEntityNameDomain(
+  name: string,
+  value: { evidence?: string[] },
+  entityNames: Set<string>,
+): boolean {
+  const normalized = normalizeAiItemName(name);
+  if (!normalized) return false;
+  const matchesEntityName = entityNames.has(normalized) || entityNames.has(normalized.replace(/\s+/g, ''));
+  const looksLikeClassIdentifier = /[a-z][A-Z]/.test(String(name || '').replace(/\s+/g, ''));
+  if (!matchesEntityName && !(looksLikeClassIdentifier && normalized.split(/\s+/).length === 1)) return false;
+  const corroborated = (value.evidence || []).some(item =>
+    /^(primary_domain|project_domain|crypto_anchor|capability|capability_domain|core_concept):/.test(item)
+  );
+  return !corroborated;
+}
+
+/**
+ * ALTITUDE FILTER: verb-first multi-word labels ("Sends Messages", "List
+ * Tools", "Manage Portfolio") are capability/action labels, not domains —
+ * domains are noun concepts (Payments, Trading, Telemetry).
+ */
+function isVerbPhraseDomainLabel(name: string): boolean {
+  const tokens = normalizeAiItemName(name).split(/\s+/).filter(Boolean);
+  if (tokens.length < 2) return false;
+  return /^(?:send|sends|list|lists|get|gets|create|creates|update|updates|delete|deletes|manage|manages|handle|handles|fetch|fetches|build|builds|run|runs|execute|executes|process|processes|load|loads|save|saves|read|reads|write|writes|add|adds|remove|removes|check|checks|validate|validates|parse|parses|render|renders|receive|receives|start|starts|stop|stops|sync|syncs|track|tracks|monitor|monitors|generate|generates|compute|computes|calculate|calculates|provide|provides|expose|exposes|register|registers|configure|configures)$/.test(tokens[0]);
 }
 
 function collapseOverlappingWorkspaceDomains(
@@ -7555,10 +7834,15 @@ function buildWorkspaceWorkflows(
       });
     }
   }
+  // No silent cap here: the caller truncates for payload size and records the
+  // true pre-truncation count in summary.workflows_total (the live audit found
+  // every workspace shipping "exactly 40 workflows" with no truncation signal).
   return dedupeWorkspaceWorkflows(workflows.map(normalizeWorkspaceWorkflowSemantics))
-    .sort((left, right) => workspaceWorkflowRank(right) - workspaceWorkflowRank(left) || left.name.localeCompare(right.name))
-    .slice(0, 40);
+    .sort((left, right) => workspaceWorkflowRank(right) - workspaceWorkflowRank(left) || left.name.localeCompare(right.name));
 }
+
+/** Payload-size cap for persisted workspace workflows (a maximum, not a quota). */
+export const WORKSPACE_WORKFLOWS_MAX = 40;
 
 function workspaceWorkflowNameFromLink(source: SystemApplication, target: SystemApplication, link: SystemApplicationLink): string {
   const kind = link.kind === 'http-call' ? 'HTTP'
@@ -9391,7 +9675,12 @@ function buildWorkspaceNarrative(
     source: 'ai-required-degraded',
     generated_at: generatedAt,
     confidence: codebases.length > 1 && applicationLinks.length > 0 ? 0.68 : 0.54,
-    title: `${productName} workspace analysis`,
+    // The title names the WORKSPACE, never a member project (live defect:
+    // "Kontinuum workspace analysis" for the Personal workspace, "Backend
+    // workspace analysis" for Clients — a member/member-token name collapsing
+    // the workspace to one member). The inferred product name is only a
+    // fallback when the workspace name itself is unusable (hash-shaped/empty).
+    title: `${workspaceNarrativeTitleName(name, productName)} workspace analysis`,
     // Comprehension is AI-only (docs/cas/DETERMINISM-BOUNDARY.md): both the
     // workspace description AND the product-value summary are left empty here and
     // are written solely by enrichWorkspaceAnalysisNarrative (or that pass
@@ -9403,10 +9692,17 @@ function buildWorkspaceNarrative(
     value_drivers: valueDrivers,
     domains: domains.map(domain => domain.name).slice(0, 12),
     key_capabilities: capabilityNames.slice(0, 10),
+    // relationship_summary is customer-facing prose: composition.reasons and
+    // diagnostic insight titles ("exposes provider interfaces with no
+    // source-backed incoming consumers", "isolated and should not be forced
+    // into the system graph") are internal analysis phrasing and stay in
+    // graph.composition/graph.system_insights, never in the narrative surface.
     relationship_summary: [
       ...linkSummaries,
-      ...composition.reasons.slice(0, 4),
-      ...insights.slice(0, 6).map(insight => insight.title),
+      ...insights
+        .filter(insight => !INTERNAL_ANALYSIS_INSIGHT_TYPES.has(insight.type) && !isInternalAnalysisPhrase(insight.title))
+        .slice(0, 6)
+        .map(insight => insight.title),
     ].slice(0, 16),
     evidence: [
       ...codebases.map(codebase => `${codebase.name}:${codebase.graph.nodes} nodes/${codebase.graph.entry_points} entries/${codebase.graph.exit_points} exits`).slice(0, 8),
@@ -9416,6 +9712,29 @@ function buildWorkspaceNarrative(
     generation_pass: 'default-summary',
     degraded_reason: 'AI workspace narrative enrichment was not attached to this synchronous WAS builder run. Overall description and primary capabilities are required default AI enrichment; refresh/run WAS with AI enrichment before customer-facing use.',
   };
+}
+
+/** Insight types whose titles/descriptions are analysis diagnostics, not
+ *  customer-facing relationships (they remain available in system_insights). */
+const INTERNAL_ANALYSIS_INSIGHT_TYPES = new Set([
+  'provider-api-without-source-consumers',
+  'unclaimed-runtime-surface',
+  'declared-unused-infrastructure',
+]);
+
+/** Internal analysis phrasing that must never leak into customer prose
+ *  surfaces (narrative relationship_summary and similar). */
+function isInternalAnalysisPhrase(text: string): boolean {
+  return /\b(?:source-backed|should not be forced|system graph|repo-level CAS|analysis input|Klauro did not find|deployable\(s\)|evidence quality)\b/i.test(String(text || ''));
+}
+
+/** Workspace-name-first title resolution: use the workspace's own name unless
+ *  it is unusable (empty or hash/id-shaped), then fall back to the inferred
+ *  product name. Never a member project's name when the workspace has one. */
+function workspaceNarrativeTitleName(workspaceName: string, productName: string): string {
+  const cleaned = String(workspaceName || '').trim();
+  if (!cleaned || isHashOrIdShapedToken(cleaned)) return productName;
+  return cleaned;
 }
 
 function joinHumanReadableList(items: string[]): string {
@@ -11074,6 +11393,7 @@ function summarize(
   domains: WorkspaceDomain[],
   entities: WorkspaceEntity[],
   entityPaths: WorkspaceEntityPath[],
+  workflowsTotal?: number,
 ): CrossCodebaseSystemGraph['summary'] {
   return {
     codebases: codebases.length,
@@ -11091,6 +11411,8 @@ function summarize(
     risk_areas: riskAreas.length,
     capabilities: capabilities.length,
     workflows: workflows.length,
+    workflows_total: workflowsTotal ?? workflows.length,
+    workflows_truncated: (workflowsTotal ?? workflows.length) > workflows.length,
     domains: domains.length,
     entities: entities.length,
     entity_paths: entityPaths.length,

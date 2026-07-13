@@ -82,7 +82,7 @@ const FILLER_PHRASE_PATTERN = new RegExp([
   '\\bcentralizes? the coordination of [^.]{0,140}\\bscripts?\\b',
 ].join('|'), 'i');
 
-const MARKETING_LANGUAGE_PATTERN = /\b(seamless(?:ly)?|robust|comprehensive|various|crucial role|plays a key role|efficient(?:ly)?|efficiency|productivity|compliant|compliance|advanced|streamline(?:s|d|ing)?|user-friendly|business value|improving operational|enhanc(?:e|es|ing)|better understanding|insights(?: into)?|structured data and insights|reduces? costs?|best practices|scalable|secure by design|user experience)\b/gi;
+const MARKETING_LANGUAGE_PATTERN = /\b(seamless(?:ly)?|robust|comprehensive|various|crucial role|plays a key role|efficient(?:ly)?|efficiency|productivity|compliant|compliance|advanced|streamline(?:s|d|ing)?|user-friendly|business value|improving operational|enhanc(?:e|es|ing)|better understanding|insights(?: into)?|structured data and insights|reduces? costs?|best practices|scalable|secure by design|user experience|strong foundation|ideal solution|best[- ]in[- ]class|state[- ]of[- ]the[- ]art|cutting[- ]edge|feature[- ]rich)\b/gi;
 
 function splitGroundingSource(value: string): string[] {
   return value
@@ -128,7 +128,14 @@ function marketingGroundingTokens(
     .filter(token => token.length > 2);
 }
 
-function ungroundedMarketingMatches(
+/**
+ * THE shared unsupported-marketing-language lint (project tier AND workspace
+ * tier reuse this — never fork the list). Returns the distinct marketing
+ * matches in `description` that are NOT legitimized by the supplied grounding
+ * tokens/vocabulary. Exported so the WAS narrative/product-value gate applies
+ * the exact same mechanism as the element-description gate.
+ */
+export function ungroundedMarketingMatches(
   description: string,
   subjectTokens: string[],
   extraGroundingTokens: string[] = [],

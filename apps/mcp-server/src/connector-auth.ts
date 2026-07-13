@@ -28,6 +28,33 @@ export interface StoredConnectorAuth {
   }>;
 }
 
+/**
+ * Network-unreachable classification: a nonexistent host / refused connection /
+ * DNS failure / timeout is NOT an auth problem, and telling the user to
+ * `klauro login` against a server that doesn't exist (2026-07 cold-customer
+ * audit: a typo'd --server-url produced "Klauro account required") sends them
+ * chasing the wrong fix. undici's fetch wraps these as TypeError('fetch
+ * failed') with the syscall error on `cause`.
+ */
+export function isNetworkUnreachableError(error: unknown): boolean {
+  if (!error) return false;
+  const name = (error as { name?: string }).name;
+  if (name === 'AbortError' || name === 'TimeoutError') return true;
+  const cause = (error as { cause?: unknown }).cause ?? error;
+  const code = (cause as { code?: unknown })?.code;
+  if (typeof code === 'string' &&
+    /^(ENOTFOUND|ECONNREFUSED|ECONNRESET|EAI_AGAIN|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH|EPIPE|UND_ERR_CONNECT_TIMEOUT|UND_ERR_SOCKET|UND_ERR_HEADERS_TIMEOUT)$/.test(code)) {
+    return true;
+  }
+  return error instanceof TypeError && /fetch failed/i.test(error.message || '');
+}
+
+export function unreachableServerError(serverUrl: string, error: unknown): Error {
+  const cause = (error as { cause?: { code?: string } })?.cause;
+  const detail = cause?.code || (error instanceof Error ? error.message : String(error));
+  return new Error(`Could not reach ${serverUrl} — check the server URL (${detail}).`);
+}
+
 export function connectorToken(explicitToken?: string, serverUrl?: string): string | undefined {
   return explicitToken ||
     process.env.KLAURO_ACCOUNT_TOKEN ||
@@ -51,17 +78,37 @@ export async function requireConnectorEntitlement(input: {
   }
 
   const token = connectorToken(input.token, input.serverUrl);
+  const serverUrl = normalizeServerUrl(input.serverUrl);
   if (!token) {
-    throw new Error('Klauro account required. Run `klauro login` or set KLAURO_ACCOUNT_TOKEN before local indexing, sync, or MCP hosted context.');
+    // No stored token for THIS server url. Before claiming auth is the
+    // problem, check the url is even reachable: with a wrong/typo'd
+    // --server-url there is never a stored account for it, so this branch
+    // used to misdiagnose an unreachable host as "account required".
+    try {
+      await fetch(`${serverUrl}/api/me`, { signal: AbortSignal.timeout(5000) });
+    } catch (error) {
+      if (isNetworkUnreachableError(error)) throw unreachableServerError(serverUrl, error);
+      // Reachability probe failed for a non-network reason — fall through to
+      // the honest auth message.
+    }
+    throw new Error(`Klauro account required for ${serverUrl}. Run \`klauro login\` or set KLAURO_ACCOUNT_TOKEN before local indexing, sync, or MCP hosted context.`);
   }
 
-  const serverUrl = normalizeServerUrl(input.serverUrl);
-  const response = await fetch(`${serverUrl}/api/me`, {
-    headers: {
-      authorization: `Bearer ${token}`,
-    },
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${serverUrl}/api/me`, {
+      headers: {
+        authorization: `Bearer ${token}`,
+      },
+    });
+  } catch (error) {
+    if (isNetworkUnreachableError(error)) throw unreachableServerError(serverUrl, error);
+    throw error;
+  }
   const payload = await response.json().catch(() => ({})) as any;
+  if (response.status === 401) {
+    throw new Error(payload?.error || `Klauro authentication failed (HTTP 401) at ${serverUrl}. Run \`klauro login\` to sign in again.`);
+  }
   if (!response.ok) {
     throw new Error(payload?.error || `Klauro account check failed with HTTP ${response.status}`);
   }

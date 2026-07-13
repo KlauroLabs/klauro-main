@@ -401,3 +401,86 @@ describe('buildProductMap runtime_topology', () => {
     expect(api.channels).toContain('orders');
   });
 });
+
+describe('journey attachment discriminates on primary (terminal produced) entities', () => {
+  const discriminationCapabilities: SystemCapability[] = [
+    {
+      id: 'cap_economy',
+      name: 'Economy',
+      description: 'Manages the user economy.',
+      category: 'core',
+      operations: [],
+      related_entities: ['EconomyTransaction'],
+      related_domains: ['economy'],
+      criticality: 'high',
+      criticality_factors: [],
+    },
+    {
+      id: 'cap_profiles',
+      name: 'Profiles',
+      description: 'Manages user profiles.',
+      category: 'supporting',
+      operations: [],
+      related_entities: ['UserProfile'],
+      related_domains: ['profile'],
+      criticality: 'medium',
+      criticality_factors: [],
+    },
+  ];
+
+  const discriminationJourneys: CASUserJourney[] = [
+    // Writes UserProfile terminally, only READS EconomyTransaction mid-chain —
+    // the mtg fan-out shape (socket journeys pasted onto every economy cap).
+    journey({
+      id: 'j_socket',
+      name: 'Socket presence update',
+      terminal_entities: [{ name: 'UserProfile', access: 'updated', terminal_kind: 'entity' }],
+      terminal_effects: {
+        entities_written: ['UserProfile'],
+        entities_read: ['EconomyTransaction'],
+        external_services: [],
+        messages_emitted: [],
+      },
+    }),
+    journey({
+      id: 'j_purchase',
+      name: 'Purchase item',
+      terminal_entities: [{ name: 'EconomyTransaction', access: 'created', terminal_kind: 'entity' }],
+    }),
+    // Read-only journey: its terminal READ is its subject, so it still attaches.
+    journey({
+      id: 'j_view',
+      name: 'View balance',
+      terminal_entities: [{ name: 'EconomyTransaction', access: 'read', terminal_kind: 'entity' }],
+    }),
+  ];
+
+  const cas = {
+    system: { id: 'sys2', name: 'mtg-like', type: 'application', root_path: '/tmp/mtg' },
+    nodes: [],
+    edges: [],
+    analyzer_contributions: [],
+    progressive_levels: {} as any,
+    system_capabilities: discriminationCapabilities,
+    user_journeys: discriminationJourneys,
+  } as unknown as CASOutput;
+
+  const map = buildProductMap(cas);
+  const journeyNamesFor = (capabilityName: string) =>
+    (map.capabilities.find(capability => capability.name === capabilityName)?.journeys || []).map(j => j.name);
+
+  it('a journey with terminal entity A attaches only to the A-anchored capability', () => {
+    expect(journeyNamesFor('Economy')).toContain('Purchase item');
+    expect(journeyNamesFor('Profiles')).not.toContain('Purchase item');
+  });
+
+  it('mid-chain reads do not fan a writing journey onto every capability sharing the entity', () => {
+    expect(journeyNamesFor('Profiles')).toContain('Socket presence update');
+    expect(journeyNamesFor('Economy')).not.toContain('Socket presence update');
+  });
+
+  it('a read-only journey attaches via its terminal read subject', () => {
+    expect(journeyNamesFor('Economy')).toContain('View balance');
+    expect(journeyNamesFor('Profiles')).not.toContain('View balance');
+  });
+});

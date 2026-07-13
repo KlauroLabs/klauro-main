@@ -129,6 +129,17 @@ export interface FlowStep {
   order: number;
   name: string;
   description: string;
+  /**
+   * Provenance of `name`/`description` — the ICELOT doctrine seam made
+   * explicit. 'deterministic-label' = the structural template label
+   * (nameStepDeterministically), a FACT-shaped label, never interpretation.
+   * 'ai' = the interpretive naming/description pass (opts.nameStep, fed by
+   * the query layer from the persisted AI element-description store) replaced
+   * the label. The deterministic label always remains the fallback: when the
+   * AI pass has not run (or was rejected), the step stays
+   * 'deterministic-label' — provenance is never fabricated.
+   */
+  description_source: 'deterministic-label' | 'ai';
   contract: ILSOContract;
   /** 1:1, 1:many, or a SUB-SECTION of a single function (section present
    *  when the step is only part of one function's body). */
@@ -148,6 +159,12 @@ export interface FlowConcept {
   flow_id: string;
   name: string;
   intent: string;
+  /** Interpretive flow-level description. ONLY ever populated by the AI
+   *  enrichment pass (query layer joins the persisted element-description
+   *  store) — omitted otherwise, never fabricated. `intent` remains the
+   *  deterministic fact-shaped fallback. */
+  description?: string;
+  description_source?: 'ai';
   entry_point: string;
   /** The capability this flow realizes, if derivable from CAS
    *  system_capabilities.operations[].entry_point_id. Omitted (not
@@ -270,17 +287,16 @@ export function layerOf(node: CASNode): string {
   return 'unknown';
 }
 
-/**
- * Trace the forward call chain from an entry point's handler node, bounded
- * by depth, deduped by node id (a diamond-shaped call graph must not be
- * walked twice or produce duplicate steps).
- */
-function traceForwardChain(
-  cas: CASOutput,
-  rootId: string,
-  maxDepth: number,
-  maxFunctions: number
-): ChainNode[] {
+/** Prebuilt forward-traversal index over the CAS graph, so callers that trace
+ *  many roots (union path, entry-family entity rollup) build the O(edges)
+ *  adjacency maps ONCE instead of once per root. */
+interface TraversalIndex {
+  nodesById: Map<string, CASNode>;
+  outgoingEdges: Map<string, CASEdge[]>;
+  outgoingMethodCalls: Map<string, string[]>;
+}
+
+function buildTraversalIndex(cas: CASOutput): TraversalIndex {
   const nodesById = new Map(cas.nodes.map(n => [n.id, n]));
   // Traversable edge kinds: function-call edges (backend/service chains) AND
   // 'renders'/'uses' (frontend route -> component chains, e.g. React Router
@@ -302,6 +318,21 @@ function traceForwardChain(
     if (!outgoingMethodCalls.has(mc.caller_node)) outgoingMethodCalls.set(mc.caller_node, []);
     outgoingMethodCalls.get(mc.caller_node)!.push(mc.target_node);
   }
+  return { nodesById, outgoingEdges, outgoingMethodCalls };
+}
+
+/**
+ * Trace the forward call chain from an entry point's handler node, bounded
+ * by depth, deduped by node id (a diamond-shaped call graph must not be
+ * walked twice or produce duplicate steps).
+ */
+function traceForwardChain(
+  index: TraversalIndex,
+  rootId: string,
+  maxDepth: number,
+  maxFunctions: number
+): ChainNode[] {
+  const { nodesById, outgoingEdges, outgoingMethodCalls } = index;
 
   const visited = new Set<string>([rootId]);
   const chain: ChainNode[] = [];
@@ -554,7 +585,8 @@ function extractStructuralConstraints(
   nodeIds: Set<string>,
   cas: CASOutput,
   ownEntryPoints: CASEntryPoint[],
-  exitPointsByNode: Map<string, CASExitPoint[]>
+  exitPointsByNode: Map<string, CASExitPoint[]>,
+  scopeEntryPointIds?: Set<string>
 ): FacetConstraint[] {
   const out: FacetConstraint[] = [];
   const seen = new Set<string>();
@@ -629,7 +661,7 @@ function extractStructuralConstraints(
   //     nodes. Evidence-gated: only emitted when the fact NAMES one of this
   //     unit's nodes (throws declared on the node, or an uncaught propagation
   //     path that traverses the node). Never a generic "may throw". ---
-  for (const c of extractErrorConstraints(nodeIds, cas)) push(c.kind, c.rule, c.evidence);
+  for (const c of extractErrorConstraints(nodeIds, cas, scopeEntryPointIds)) push(c.kind, c.rule, c.evidence);
 
   return out;
 }
@@ -643,7 +675,18 @@ function extractStructuralConstraints(
  *  the fact (declaring node for throws; a call_path step's node_id for paths).
  *  A node that neither declares a throw nor lies on a throwing chain yields
  *  nothing — no fabrication, no generic "may throw". */
-function extractErrorConstraints(nodeIds: Set<string>, cas: CASOutput): FacetConstraint[] {
+function extractErrorConstraints(
+  nodeIds: Set<string>,
+  cas: CASOutput,
+  /** When building a FLOW/STEP contract, the flow's own entry point ids.
+   *  Uncaught-path constraints are then scoped to chains rooted at THIS
+   *  flow's entry — a shared helper (e.g. a storage loader) sits on chains
+   *  reaching hundreds of OTHER entry points, and those paths are not part
+   *  of this flow's contract (measured live: 106 cross-entry constraints ≈
+   *  29KB duplicated per flow+step before scoping). Absent scope keeps the
+   *  unit-level behavior (a function's error contract spans all entries). */
+  scopeEntryPointIds?: Set<string>
+): FacetConstraint[] {
   const out: FacetConstraint[] = [];
   const seen = new Set<string>();
   const push = (rule: string, evidence: string) => {
@@ -668,6 +711,11 @@ function extractErrorConstraints(nodeIds: Set<string>, cas: CASOutput): FacetCon
   // (the fact names the node), mirroring getErrorContracts' uncaught_paths.
   if (throwingHere.size > 0) {
     for (const chain of cas.call_chains || []) {
+      // Flow/step scope: only chains rooted at this flow's own entry point.
+      if (scopeEntryPointIds && scopeEntryPointIds.size > 0) {
+        const chainEp = chain.entry_point.entry_point_id || chain.entry_point.node_id;
+        if (!scopeEntryPointIds.has(chainEp) && !scopeEntryPointIds.has(chain.entry_point.node_id)) continue;
+      }
       const throwerOnPath = (chain.call_path || []).find(step => throwingHere.has(step.node_id));
       if (!throwerOnPath) continue;
       // Evidence-gated caught check: a try-catch pattern instance on a node that
@@ -687,6 +735,20 @@ function extractErrorConstraints(nodeIds: Set<string>, cas: CASOutput): FacetCon
     }
   }
 
+  // Defensive size cap for any unscoped caller: a widely-shared throwing
+  // helper can otherwise emit one constraint per reachable entry point.
+  // Keep the deterministic first N and summarize the rest honestly.
+  const ERROR_CONSTRAINT_CAP = 12;
+  if (out.length > ERROR_CONSTRAINT_CAP) {
+    const dropped = out.length - ERROR_CONSTRAINT_CAP;
+    const capped = out.slice(0, ERROR_CONSTRAINT_CAP);
+    capped.push({
+      kind: 'error',
+      rule: `+${dropped} more uncaught-throw paths (truncated)`,
+      evidence: `${dropped} additional error constraints of the same shape were derived; truncated to keep the contract readable`,
+    });
+    return capped;
+  }
   return out;
 }
 
@@ -701,7 +763,10 @@ function buildContract(
   nodes: CASNode[],
   cas: CASOutput,
   exitPointsByNode: Map<string, CASExitPoint[]>,
-  entryPointsByNode: Map<string, CASEntryPoint[]>
+  entryPointsByNode: Map<string, CASEntryPoint[]>,
+  /** The owning flow's entry point ids — scopes error constraints to THIS
+   *  flow's chains (see extractErrorConstraints). */
+  scopeEntryPointIds?: Set<string>
 ): ILSOContract {
   const input = new Set<string>();
   const output = new Set<string>();
@@ -751,7 +816,7 @@ function buildContract(
   }
 
   const ownEntryPoints = nodes.flatMap(n => entryPointsByNode.get(n.id) || []);
-  for (const c of extractStructuralConstraints(nodeIds, cas, ownEntryPoints, exitPointsByNode)) addConstraint(c);
+  for (const c of extractStructuralConstraints(nodeIds, cas, ownEntryPoints, exitPointsByNode, scopeEntryPointIds)) addConstraint(c);
 
   const logicNames = nodes.map(n => n.name);
   return {
@@ -830,6 +895,47 @@ function entitiesForNodes(nodeIds: Set<string>, cas: CASOutput): string[] {
     if (touchers.some(id => nodeIds.has(id))) names.add(entity.name);
   }
   return [...names];
+}
+
+/**
+ * ENTRY-POINT-FAMILY entity rollup: the full forward-reachable node set from a
+ * flow's root ("the route/handler's lineage"), used to attach entities the
+ * flow genuinely reaches even when the specific recorded chain path missed the
+ * write/read node (a terminal chain records ONE path; the handler's family
+ * covers the sibling branches). Still evidence-gated — the entity must have a
+ * real accessor node inside the traced family; no name-similarity, no
+ * capability-co-membership shortcut. Memoized per root so many chains sharing
+ * one handler pay for the BFS once.
+ */
+function makeEntryFamilyEntities(
+  cas: CASOutput,
+  index: TraversalIndex,
+  maxDepth: number,
+  maxFunctions: number
+): (rootId: string | undefined) => string[] {
+  const memo = new Map<string, string[]>();
+  return (rootId: string | undefined): string[] => {
+    if (!rootId) return [];
+    const cached = memo.get(rootId);
+    if (cached) return cached;
+    const family = traceForwardChain(index, rootId, maxDepth, maxFunctions);
+    const familyIds = new Set(family.map(c => c.node.id));
+    familyIds.add(rootId);
+    const entities = entitiesForNodes(familyIds, cas);
+    memo.set(rootId, entities);
+    return entities;
+  };
+}
+
+/** Union of two entity-name lists, order-stable (first list wins ordering). */
+function unionEntities(primary: string[], extra: string[]): string[] {
+  if (extra.length === 0) return primary;
+  const seen = new Set(primary);
+  const out = [...primary];
+  for (const name of extra) {
+    if (!seen.has(name)) { seen.add(name); out.push(name); }
+  }
+  return out;
 }
 
 /** The capability this flow realizes, if a system_capabilities entry
@@ -980,6 +1086,12 @@ function buildTerminalFlows(cas: CASOutput, opts: ComputeFlowConceptsOptions): F
 
   const allLineage = [...(cas.data_lineage || [])];
 
+  // Entry-family entity rollup (memoized BFS per root): attaches entities the
+  // handler's forward-reachable family touches even when this specific chain
+  // path missed the accessor node.
+  const traversal = buildTraversalIndex(cas);
+  const familyEntities = makeEntryFamilyEntities(cas, traversal, maxDepth, maxFunctions);
+
   // Deterministic order: chains sorted by id so the flow set is byte-stable
   // run-to-run (Camp-B determinism rule). `target` filter matches against the
   // entry method, exit target, and resolved entry-point route/name.
@@ -1045,9 +1157,10 @@ function buildTerminalFlows(cas: CASOutput, opts: ComputeFlowConceptsOptions): F
       gaps.push('Entire terminal chain classified as a single step — no side-effect or layer boundary detected between entry and terminus.');
     }
 
+    const flowEntryScope = new Set([chain.entry_point.entry_point_id, chain.entry_point.node_id].filter(Boolean) as string[]);
     const steps: FlowStep[] = segments.map((seg, i) => {
       const { name, description } = nameStepDeterministically(seg.character, seg.nodes, exitPointsByNode, allLineage);
-      const contract = buildContract(seg.nodes, cas, exitPointsByNode, entryPointsByNode);
+      const contract = buildContract(seg.nodes, cas, exitPointsByNode, entryPointsByNode, flowEntryScope);
 
       let functions: FlowStep['functions'];
       if (seg.nodes.length === 1) {
@@ -1065,6 +1178,7 @@ function buildTerminalFlows(cas: CASOutput, opts: ComputeFlowConceptsOptions): F
         order: i,
         name,
         description,
+        description_source: 'deterministic-label',
         contract,
         functions,
         entities: entitiesForNodes(stepNodeIds, cas),
@@ -1073,6 +1187,7 @@ function buildTerminalFlows(cas: CASOutput, opts: ComputeFlowConceptsOptions): F
         const override = opts.nameStep(step, { flowEntryPoint: rootEp });
         if (override?.name) step.name = override.name;
         if (override?.description) step.description = override.description;
+        if (override?.name || override?.description) step.description_source = 'ai';
       }
       return step;
     });
@@ -1125,7 +1240,7 @@ function buildTerminalFlows(cas: CASOutput, opts: ComputeFlowConceptsOptions): F
       intent,
       entry_point: chain.entry_point.entry_point_id || chain.entry_point.node_id,
       capability_id: capabilityId,
-      entities: entitiesForNodes(allNodeIds, cas),
+      entities: unionEntities(entitiesForNodes(allNodeIds, cas), familyEntities(chain.entry_point.node_id)),
       contract,
       steps,
       terminus,
@@ -1157,12 +1272,14 @@ function capabilityForNodeId(nodeId: string, capabilities: SystemCapability[]): 
 }
 
 /**
- * computeFlowConcepts — flows over the compile graph. PRIMARY PATH: anchor on
+ * computeFlowConcepts — flows over the compile graph. UNION of two anchors:
  * terminal call chains (buildTerminalFlows) — a flow is a chain that runs from
- * an entry point to an EXIT point (what the system produces). FALLBACK: when
- * the CAS carries no entry-to-exit chains, root one flow per (matching) entry
- * point and trace forward (the original behavior), so repos without call_chains
- * still get flows.
+ * an entry point to an EXIT point (what the system produces) — PLUS
+ * entry-point-rooted flows for significant entry points whose chains dead-end
+ * (event handlers, routes, MCP tools, scheduled jobs legitimately lacking a
+ * clean exit). Deduped by entry point (terminal wins). When the CAS carries no
+ * entry-to-exit chains at all, every flow is entry-point-rooted (the original
+ * behavior), so repos without call_chains still get flows.
  *
  * Deterministic-first either way: composes entry_points, call
  * edges/method_calls, exit_points, data_lineage, data_entities.invariants,
@@ -1170,20 +1287,57 @@ function capabilityForNodeId(nodeId: string, capabilities: SystemCapability[]): 
  * `opts.nameStep` is the only AI seam and is fully inert when omitted.
  */
 export function computeFlowConcepts(cas: CASOutput, opts: ComputeFlowConceptsOptions = {}): FlowConcept[] {
-  // PRIMARY: terminal-chain-anchored flows (what the system produces). Empty
-  // only when the CAS emitted no entry-to-exit chains.
+  // PRIMARY: terminal-chain-anchored flows (what the system produces).
   const terminalFlows = buildTerminalFlows(cas, opts);
-  if (terminalFlows.length > 0) return terminalFlows;
 
-  return computeEntryPointFlows(cas, opts);
+  // UNION (not all-or-nothing): a handful of terminal chains must not suppress
+  // every entry-point flow — entry points whose chains dead-end (event
+  // handlers, HTTP routes, MCP tools, scheduled jobs legitimately lacking a
+  // clean exit) still deserve flows. Dedup by entry point: an entry point
+  // already covered by a terminal-anchored flow contributes no second flow
+  // (terminal wins — it carries the terminus). Entry-point flows in the union
+  // are significance-filtered (non-test, non-trivial) so the count stays sane.
+  if (terminalFlows.length === 0) return computeEntryPointFlows(cas, opts);
+  if (opts.maxFlows && opts.maxFlows > 0 && terminalFlows.length >= opts.maxFlows) return terminalFlows;
+
+  // Covered keys: the terminal flow's entry_point is entry_point_id when the
+  // chain resolved one, else the raw root node id — exclude BOTH forms so an
+  // entry-point-rooted flow for the same root never duplicates it.
+  const coveredEntryKeys = new Set<string>();
+  const entryById = new Map((cas.entry_points || []).map(e => [e.id, e]));
+  for (const flow of terminalFlows) {
+    coveredEntryKeys.add(flow.entry_point);
+    const ep = entryById.get(flow.entry_point);
+    if (ep) coveredEntryKeys.add(ep.handler?.node_id || ep.source_node);
+  }
+
+  const remaining = opts.maxFlows && opts.maxFlows > 0 ? opts.maxFlows - terminalFlows.length : undefined;
+  const entryFlows = computeEntryPointFlows(
+    cas,
+    { ...opts, maxFlows: remaining },
+    { excludeEntryKeys: coveredEntryKeys, significantOnly: true }
+  );
+  return [...terminalFlows, ...entryFlows];
 }
 
 /**
- * FALLBACK — one FlowConcept per (matching) entry point, forward-traced. Used
- * when the CAS carries no entry-to-exit call chains to anchor on. Same
- * deterministic fact sources as the terminal path.
+ * Entry-point-rooted flows — one FlowConcept per (matching) entry point,
+ * forward-traced. The ONLY derivation path when the CAS carries no
+ * entry-to-exit call chains; the UNION complement (dead-end entries) when it
+ * does. Same deterministic fact sources as the terminal path.
+ *
+ * `unionOpts` (internal, set only by computeFlowConcepts' union path):
+ *   - excludeEntryKeys: entry-point ids / root node ids already covered by a
+ *     terminal-anchored flow (dedup — terminal wins).
+ *   - significantOnly: drop test entries and trivial dead flows (a single
+ *     traced node with no exits, no lineage, and no security/validation
+ *     surface) so 3,700 raw entry points don't become 3,700 noise flows.
  */
-function computeEntryPointFlows(cas: CASOutput, opts: ComputeFlowConceptsOptions = {}): FlowConcept[] {
+function computeEntryPointFlows(
+  cas: CASOutput,
+  opts: ComputeFlowConceptsOptions = {},
+  unionOpts: { excludeEntryKeys?: Set<string>; significantOnly?: boolean } = {}
+): FlowConcept[] {
   const maxDepth = opts.maxDepth && opts.maxDepth > 0 ? opts.maxDepth : DEFAULT_MAX_DEPTH;
   const maxFunctions = opts.maxFunctionsPerFlow && opts.maxFunctionsPerFlow > 0 ? opts.maxFunctionsPerFlow : DEFAULT_MAX_FUNCTIONS;
 
@@ -1196,6 +1350,16 @@ function computeEntryPointFlows(cas: CASOutput, opts: ComputeFlowConceptsOptions
   const synthesizedRootIds = new Set(synthesizedRoots.map(r => r.ep.id));
 
   let entryPoints: CASEntryPoint[] = [...realEntryPoints, ...synthesizedRoots.map(r => r.ep)];
+  if (unionOpts.excludeEntryKeys && unionOpts.excludeEntryKeys.size > 0) {
+    const covered = unionOpts.excludeEntryKeys;
+    entryPoints = entryPoints.filter(ep =>
+      !covered.has(ep.id) && !covered.has(ep.handler?.node_id || ep.source_node)
+    );
+  }
+  if (unionOpts.significantOnly) {
+    // Test entries never make product flows (the union must stay sane).
+    entryPoints = entryPoints.filter(ep => ep.type !== 'test');
+  }
   if (opts.target) {
     const t = opts.target.toLowerCase();
     entryPoints = entryPoints.filter(ep =>
@@ -1205,7 +1369,7 @@ function computeEntryPointFlows(cas: CASOutput, opts: ComputeFlowConceptsOptions
       ep.source_node.toLowerCase() === t
     );
   }
-  if (opts.maxFlows && opts.maxFlows > 0) entryPoints = entryPoints.slice(0, opts.maxFlows);
+  const maxEntryFlows = opts.maxFlows && opts.maxFlows > 0 ? opts.maxFlows : undefined;
 
   const exitPointsByNode = buildExitPointIndex(cas);
   const lineageByNode = buildLineageIndex(cas);
@@ -1225,14 +1389,33 @@ function computeEntryPointFlows(cas: CASOutput, opts: ComputeFlowConceptsOptions
   // without another CAS-wide pass. Computed once, lazily unused otherwise.
   void buildTerminalSignal; // referenced for future step-naming refinement; not required for correctness today.
 
+  const traversal = buildTraversalIndex(cas);
+
   const flows: FlowConcept[] = [];
 
   for (const ep of entryPoints) {
+    if (maxEntryFlows !== undefined && flows.length >= maxEntryFlows) break;
     const rootNode = nodesById.get(ep.handler?.node_id || ep.source_node);
     if (!rootNode) continue;
 
-    const chain = traceForwardChain(cas, rootNode.id, maxDepth, maxFunctions);
+    const chain = traceForwardChain(traversal, rootNode.id, maxDepth, maxFunctions);
     if (chain.length === 0) continue;
+
+    if (unionOpts.significantOnly && chain.length === 1) {
+      // A single traced node with NO observable surface — no exits, no entity
+      // lineage, no auth/validation on the entry — is a trivial dead flow;
+      // skip it in the union so the flow count stays product-shaped. All
+      // checks are existing CAS facts (evidence, not name heuristics).
+      const rootId = rootNode.id;
+      const hasExit = (exitPointsByNode.get(rootId) || []).length > 0;
+      const hasLineage = Boolean(lineageByNode.get(rootId));
+      const hasSurface = Boolean(
+        ep.security?.authenticated ||
+        (ep.security?.guards || []).length > 0 ||
+        (ep.input?.validation || []).length > 0
+      );
+      if (!hasExit && !hasLineage && !hasSurface) continue;
+    }
 
     const segments = segmentIntoSteps(chain, exitPointsByNode, lineageByNode);
 
@@ -1247,9 +1430,10 @@ function computeEntryPointFlows(cas: CASOutput, opts: ComputeFlowConceptsOptions
       gaps.push('Entire chain classified as a single step — no side-effect or layer boundary detected; segmentation is coarse for this flow.');
     }
 
+    const flowEntryScope = new Set([ep.id, ep.handler?.node_id || ep.source_node].filter(Boolean) as string[]);
     const steps: FlowStep[] = segments.map((seg, i) => {
       const { name, description } = nameStepDeterministically(seg.character, seg.nodes, exitPointsByNode, allLineage);
-      const contract = buildContract(seg.nodes, cas, exitPointsByNode, entryPointsByNode);
+      const contract = buildContract(seg.nodes, cas, exitPointsByNode, entryPointsByNode, flowEntryScope);
 
       // sub-section detection: only meaningful when the step maps to a
       // SINGLE function (a multi-function step is already segmented at
@@ -1271,6 +1455,7 @@ function computeEntryPointFlows(cas: CASOutput, opts: ComputeFlowConceptsOptions
         order: i,
         name,
         description,
+        description_source: 'deterministic-label',
         contract,
         functions,
         entities: entitiesForNodes(stepNodeIds, cas),
@@ -1279,6 +1464,7 @@ function computeEntryPointFlows(cas: CASOutput, opts: ComputeFlowConceptsOptions
         const override = opts.nameStep(step, { flowEntryPoint: ep });
         if (override?.name) step.name = override.name;
         if (override?.description) step.description = override.description;
+        if (override?.name || override?.description) step.description_source = 'ai';
       }
       return step;
     });
@@ -1294,6 +1480,9 @@ function computeEntryPointFlows(cas: CASOutput, opts: ComputeFlowConceptsOptions
       name: flowNameForEntryPoint(ep),
       intent: flowIntentForEntryPoint(ep),
       entry_point: ep.id,
+      // No separate entry-family union here: this chain IS the root's forward
+      // family (same traversal, same bounds), unlike the terminal path where
+      // the recorded call_path is one narrow route through it.
       capability_id: capabilityId,
       entities: entitiesForNodes(allNodeIds, cas),
       contract: aggregateFlowContract(steps),

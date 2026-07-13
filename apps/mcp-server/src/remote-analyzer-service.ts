@@ -1735,11 +1735,23 @@ async function handleAccountApi(
       const architectural = getArchitecturalConflicts(cas, { limit: 25 });
       const paradigms = getParadigmConformance(cas);
       const perspectives = getPerspectives(cas);
+      // Capability -> flow linkage, BOTH directions readable: each flow already
+      // carries capability_id; the capability side carries related_flows (the
+      // ids of returned flows that realize it) so the UI can render the
+      // capability -> flow hierarchy without joining client-side.
+      const flowIdsByCapability = new Map<string, string[]>();
+      for (const flow of (flowConcepts.flows || []) as Array<{ flow_id: string; capability_id?: string }>) {
+        if (!flow.capability_id) continue;
+        const list = flowIdsByCapability.get(flow.capability_id) || [];
+        list.push(flow.flow_id);
+        flowIdsByCapability.set(flow.capability_id, list);
+      }
       const capabilities = (cas.system_capabilities || []).map(capability => ({
         id: capability.id,
         name: capability.name,
         category: capability.category,
         criticality: capability.criticality,
+        related_flows: flowIdsByCapability.get(capability.id) || [],
       }));
       return {
         statusCode: 200,

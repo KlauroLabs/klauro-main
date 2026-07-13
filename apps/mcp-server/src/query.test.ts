@@ -511,3 +511,36 @@ test('buildSummary surfaces a terminal ai_enrichment error with its rejection re
   const legacySummary: any = buildSummary(cas, { detail: 'compact' });
   assert.equal('ai_enrichment' in legacySummary, false);
 });
+
+// Regression (live, openclaw): the #1 top capability in get_summary was
+// "Deletes Profile data" — supporting plumbing outranked the product's core
+// capabilities because the sort keyed on criticality alone. Plumbing must
+// never lead: supporting/admin rank strictly below core, internal is excluded.
+test('buildSummary top_capabilities is never led by supporting/admin plumbing', () => {
+  const cas = buildTwoSourceCas();
+  cas.system_capabilities = [
+    {
+      id: 'c1', name: 'Deletes Profile data', category: 'supporting', criticality: 'high',
+      operations: [{}, {}, {}], related_entities: [], related_domains: ['profile'],
+    },
+    {
+      id: 'c2', name: 'Puzzle Play', category: 'core', criticality: 'medium',
+      operations: [{}], related_entities: [], related_domains: ['puzzle'],
+    },
+    {
+      id: 'c3', name: 'Admin Settings', category: 'admin', criticality: 'high',
+      operations: [{}, {}], related_entities: [], related_domains: ['settings'],
+    },
+    {
+      id: 'c4', name: 'Health Checks', category: 'internal', criticality: 'low',
+      operations: [{}], related_entities: [], related_domains: ['health'],
+    },
+  ];
+  const summary: any = buildSummary(cas, { detail: 'compact' });
+  assert.equal(summary.top_capabilities[0], 'Puzzle Play',
+    `core capability must lead, got ${JSON.stringify(summary.top_capabilities)}`);
+  assert.ok(!summary.top_capabilities.includes('Health Checks'),
+    'internal capabilities must not appear in the top list');
+  assert.ok(summary.top_capabilities.indexOf('Deletes Profile data') > summary.top_capabilities.indexOf('Puzzle Play'),
+    'supporting plumbing ranks strictly below core');
+});

@@ -1,7 +1,7 @@
 import { AnalyzerOrchestrator } from '../../analyzer/core/orchestrator';
 import { TerraformAnalyzer } from '../../analyzer/languages/terraform-analyzer';
 import { aiService } from '../../ai/ai-service';
-import { CASDataEntity, CASEdge, CASExitPoint, CASNode } from '../../types/cas.types';
+import { CASDataEntity, CASEdge, CASEntryPoint, CASExitPoint, CASNode } from '../../types/cas.types';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -3507,5 +3507,640 @@ describe('repairDanglingSentenceEndings', () => {
   it('leaves clean prose untouched', () => {
     const clean = 'The service records analysis runs. Agents query the resulting graph to plan changes.';
     expect(orch.repairDanglingSentenceEndings(clean)).toBe(clean);
+  });
+});
+
+describe('evidence-based capability category and criticality (no keyword doctrine)', () => {
+  // DOCTRINE (docs/cas/DETERMINISM-BOUNDARY.md + the capability cardinal rule):
+  // core = what the app was BUILT FOR, proven by produced evidence (api-response /
+  // persisted entities, lifecycle breadth) — never by a domain-token keyword list.
+  // Identity/session/telemetry plumbing is supporting on non-auth/non-observability
+  // products; the exception is itself evidence-based (repo-wide analyzer-tag share).
+  const capNode = (partial: Partial<CASNode>): CASNode => ({
+    id: partial.id || partial.name || 'node',
+    name: partial.name || 'Node',
+    type: partial.type || 'service',
+    source: partial.source || { file: 'src/a.ts', line: 1 },
+    metadata: partial.metadata || {},
+    ...partial,
+  } as CASNode);
+
+  const capEntity = (partial: Partial<CASDataEntity>): CASDataEntity => ({
+    id: partial.id || partial.name || 'entity',
+    name: partial.name || 'Entity',
+    lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] },
+    ...partial,
+  } as CASDataEntity);
+
+  // Auth-analyzer-shaped evidence: mechanism node types + the analyzer's
+  // stamped subcategories (auth-analyzer.ts:255) — NOT auth-looking names.
+  const authMechanismNodes = [
+    capNode({ id: 'g1', name: 'requireSession', type: 'guard' }),
+    capNode({ id: 'g2', name: 'credentialsStrategy', type: 'auth_strategy' }),
+    capNode({ id: 'g3', name: 'serializeMember', type: 'function', metadata: { subcategories: ['auth', 'auth_strategy'] } as any }),
+  ];
+
+  it('identity-mechanism capability on a NON-auth repo is supporting, never core/high', () => {
+    const userEntity = capEntity({ name: 'User' });
+    const category = orch.inferTerminalCapabilityCategory(
+      'user', authMechanismNodes, [userEntity], { identityShare: 0.02, observabilityShare: 0 });
+    expect(category).toBe('supporting');
+    const criticality = orch.inferTerminalCriticality(authMechanismNodes, [userEntity]);
+    expect(criticality).not.toBe('high');
+    expect(criticality).not.toBe('critical');
+  });
+
+  it('the same identity shape on an auth PRODUCT (auth-analyzer-heavy repo evidence) may be core', () => {
+    const sessionResponse = capEntity({ name: 'SessionToken', kind: 'api-response', kind_source: 'framework-evidence' });
+    const category = orch.inferTerminalCapabilityCategory(
+      'user', authMechanismNodes, [sessionResponse], { identityShare: 0.4, observabilityShare: 0 });
+    expect(category).toBe('core');
+  });
+
+  it("categorizes a pricing capability by evidence, not the retired 'price' keyword", () => {
+    // Bare 'price' key with one thin helper node: the retired keyword list
+    // forced core (why a Django pharma portal shipped 12/12 core).
+    const thin = orch.inferTerminalCapabilityCategory(
+      'price', [capNode({ name: 'PriceHelper', type: 'function' })], [],
+      { identityShare: 0, observabilityShare: 0 });
+    expect(thin).toBe('supporting');
+    // Same key WITH produced evidence (persisted entity + lifecycle breadth) → core.
+    const priced = orch.inferTerminalCapabilityCategory(
+      'price',
+      [capNode({ id: 'svc', name: 'PricingService', type: 'service' }), capNode({ id: 'repo', name: 'PriceRepository', type: 'class' })],
+      [capEntity({ name: 'PriceList', kind: 'persisted-entity', kind_source: 'framework-evidence' })],
+      { identityShare: 0, observabilityShare: 0 });
+    expect(priced).toBe('core');
+  });
+
+  it('observability-instrumentation groups are supporting on non-observability products', () => {
+    const otelNodes = [
+      capNode({ id: 'o1', name: 'span: analyze', type: 'function', metadata: { subcategories: ['observability-instrumentation', 'span', 'otel'] } as any }),
+      capNode({ id: 'o2', name: 'traces.ts observability surface', type: 'module', metadata: { subcategories: ['observability-module'] } as any }),
+    ];
+    expect(orch.inferTerminalCapabilityCategory(
+      'trace', otelNodes, [], { identityShare: 0, observabilityShare: 0.01 })).toBe('supporting');
+  });
+
+  it('bare entity possession without lifecycle breadth is not core (honest distributions)', () => {
+    // The retired rule was "any group with entities → core", which produced
+    // 100%-core capability sets. A dangling DTO with no operating nodes is
+    // not proof of product value.
+    expect(orch.inferTerminalCapabilityCategory(
+      'preference', [], [capEntity({ name: 'CustomerPreference' })],
+      { identityShare: 0, observabilityShare: 0 })).toBe('supporting');
+  });
+
+  it('no hardcoded category keyword list or name-based criticality boost remains (grep)', () => {
+    const source = fs.readFileSync(path.join(__dirname, '../../analyzer/core/orchestrator.ts'), 'utf8');
+    // The crypto-benchmark leftover core list (trade|…|bundler|price|sol → core).
+    expect(source).not.toContain('trade|token-balance|market-data');
+    expect(source).not.toContain('bundler|bundle|price|prices|sol');
+    // The identity/finance NAME boost that shipped plumbing as high-criticality.
+    expect(source).not.toContain('auth|tenant|permission|payment|billing|invoice|order|security|user|account');
+  });
+});
+
+describe('capability hygiene: entity-set dedup', () => {
+  const capFixture = (over: Partial<SystemCapabilityLike>): any => ({
+    id: 'cap_x',
+    name: 'Cap',
+    description: 'desc',
+    category: 'supporting',
+    operations: [],
+    related_entities: [],
+    related_domains: [],
+    criticality: 'medium',
+    criticality_factors: [],
+    ...over,
+  });
+  type SystemCapabilityLike = {
+    id: string; name: string; description: string; category: string;
+    operations: Array<{ entry_point_id: string; entry_point_type: string; action: string; path_or_command?: string }>;
+    related_entities: string[]; related_domains: string[];
+    criticality: string; criticality_factors: string[];
+  };
+
+  it('merges verb-variant capabilities over the identical entity set, keeping the core-most copy and merging evidence', () => {
+    // kontinuum live case: "Tracks task reports" (core) + "Provides task
+    // reports" (supporting), both anchored on the single entity TaskReport.
+    // Entity refs deliberately differ in representation (id vs name) to prove
+    // canonicalization.
+    const merged = orch.dedupeSystemCapabilitiesByName([
+      capFixture({
+        name: 'Tracks task reports', category: 'core',
+        related_entities: ['entity_taskreport'], related_domains: ['task'],
+        operations: [{ entry_point_id: 'ep1', entry_point_type: 'http', action: 'track' }],
+      }),
+      capFixture({
+        name: 'Provides task reports', category: 'supporting',
+        related_entities: ['TaskReport'], related_domains: ['report'],
+        operations: [{ entry_point_id: 'ep2', entry_point_type: 'http', action: 'provide' }],
+      }),
+    ]);
+    expect(merged).toHaveLength(1);
+    expect(merged[0].name).toBe('Tracks task reports');
+    expect(merged[0].category).toBe('core');
+    // Evidence merged from both copies.
+    expect(merged[0].operations).toHaveLength(2);
+    expect(merged[0].related_domains.sort()).toEqual(['report', 'task']);
+  });
+
+  it('merges a subset-entity capability with no distinct operations into the superset', () => {
+    const merged = orch.dedupeSystemCapabilitiesByName([
+      capFixture({
+        name: 'Manages user economy transactions',
+        related_entities: ['EconomyTransaction', 'EconomyReward'],
+        operations: [{ entry_point_id: 'ep1', entry_point_type: 'http', action: 'update' }],
+      }),
+      capFixture({ name: 'Manages user economy rewards', related_entities: ['EconomyReward'] }),
+    ]);
+    expect(merged).toHaveLength(1);
+    expect(merged[0].name).toBe('Manages user economy transactions');
+  });
+
+  it('keeps a subset-entity capability that carries distinct operations', () => {
+    const merged = orch.dedupeSystemCapabilitiesByName([
+      capFixture({ name: 'Manages orders', related_entities: ['Order', 'OrderLine'] }),
+      capFixture({
+        name: 'Exports order lines', related_entities: ['OrderLine'],
+        operations: [{ entry_point_id: 'ep_export', entry_point_type: 'cli', action: 'export' }],
+      }),
+    ]);
+    expect(merged).toHaveLength(2);
+  });
+
+  it('never set-merges capabilities with no related entities', () => {
+    const merged = orch.dedupeSystemCapabilitiesByName([
+      capFixture({ name: 'Health checks' }),
+      capFixture({ name: 'Log rotation' }),
+    ]);
+    expect(merged).toHaveLength(2);
+  });
+});
+
+describe('capability hygiene: code-artifact entity filter (evidence-first)', () => {
+  it('flags infra-role head nouns only', () => {
+    expect(orch.isCodeArtifactRoleName('RegisterTelegramHandler')).toBe(true);
+    expect(orch.isCodeArtifactRoleName('ChannelHandler')).toBe(true);
+    expect(orch.isCodeArtifactRoleName('InMemoryMemoryGraphAdapter')).toBe(true);
+    expect(orch.isCodeArtifactRoleName('PluginRegistry')).toBe(true);
+    expect(orch.isCodeArtifactRoleName('NodePairingPending')).toBe(true);
+    expect(orch.isCodeArtifactRoleName('TaskReport')).toBe(false);
+    expect(orch.isCodeArtifactRoleName('EconomyTransaction')).toBe(false);
+    // Substring must not trigger: role token must be the TAIL noun.
+    expect(orch.isCodeArtifactRoleName('HandlerMetrics')).toBe(false);
+  });
+
+  it('derive path drops an artifact shape without persistence evidence, keeps one WITH ORM evidence', () => {
+    const shape = (name: string, id: string, extra: Record<string, unknown> = {}): CASNode => ({
+      id, name, type: 'interface',
+      source: { file: `src/types/${name.toLowerCase()}.ts`, line: 1 },
+      metadata: {}, ...extra,
+    } as CASNode);
+    const prop = (parent: string, name: string): CASNode => ({
+      id: `${parent}.${name}`, name, type: 'property', parent,
+      source: { file: `src/types/shapes.ts`, line: 2 }, metadata: {},
+    } as CASNode);
+    const nodes: CASNode[] = [
+      shape('ChannelHandler', 'n_ch'), prop('n_ch', 'channelId'),
+      shape('OrderHandler', 'n_oh', { subcategories: ['orm-entity'] }), prop('n_oh', 'orderId'),
+      shape('TaskReport', 'n_tr'), prop('n_tr', 'taskId'),
+    ];
+    const derived = orch.deriveEntitiesFromDataShapeNodes(
+      nodes, new Map(), new Map(nodes.map(n => [n.id, n])),
+      orch.buildEntityPropertyIndex(nodes), new Set<string>()
+    );
+    const names = derived.map((entity: { name: string }) => entity.name);
+    expect(names).not.toContain('ChannelHandler'); // artifact, no persistence evidence
+    expect(names).toContain('OrderHandler'); // role-suffixed but framework-proven persisted
+    expect(names).toContain('TaskReport'); // ordinary domain shape untouched
+  });
+
+  it('a code-artifact entity without persistence evidence never seeds a terminal capability', () => {
+    const artifactEntity: CASDataEntity = {
+      id: 'entity_registertelegramhandler', name: 'RegisterTelegramHandler',
+      kind: 'value-object', kind_source: 'framework-evidence',
+      lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] },
+    } as CASDataEntity;
+    const capabilities = orch.buildTerminalCapabilities([artifactEntity], [], [], new Set<string>());
+    expect(capabilities).toHaveLength(0);
+  });
+
+  it('a role-suffixed entity WITH persistence evidence still anchors a capability', () => {
+    const persistedEntity: CASDataEntity = {
+      id: 'entity_orderhandler', name: 'OrderHandler',
+      kind: 'persisted-entity', kind_source: 'framework-evidence',
+      lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] },
+    } as CASDataEntity;
+    const capabilities = orch.buildTerminalCapabilities([persistedEntity], [], [], new Set<string>());
+    expect(capabilities.length).toBeGreaterThan(0);
+  });
+});
+
+describe('comprehension-input gates: test/fixture sources never seed meaning (live Klauro-self leak)', () => {
+  // Live defect: journeys from `*.integration.test.ts` and a NestJS-fixture
+  // scheduled job surfaced in the live capability list, and a hallucinated
+  // capability was sourced from a fixture journey. Structural facts KEEP test
+  // nodes/journeys (get_test_summary depends on them); comprehension inputs
+  // must exclude them.
+  const gateNode = (partial: Partial<CASNode>): CASNode => ({
+    id: partial.id || partial.name || 'node',
+    name: partial.name || 'Node',
+    type: partial.type || 'function',
+    source: partial.source || { file: `src/${partial.name || 'node'}.ts`, line: 1 },
+    metadata: partial.metadata || {},
+  } as CASNode);
+
+  const entryPoint = (id: string, file: string, nodeId: string): any => ({
+    id,
+    source_node: nodeId,
+    type: 'http',
+    name: id,
+    handler: { node_id: nodeId, method_name: 'handle', file },
+  });
+
+  const journey = (id: string, entryPointId: string, handlerNodeId?: string): any => ({
+    id,
+    name: id,
+    journey_kind: 'user-facing',
+    entry_point_id: entryPointId,
+    entry: { type: 'http', name: id, handler_node_id: handlerNodeId },
+    steps: [],
+    terminal_effects: { entities_written: [], entities_read: [], external_services: [], messages_emitted: [] },
+    terminal_entities: [],
+    security_boundaries: [],
+    tests_covering: [],
+    criticality: 'high',
+    call_chain_ids: [],
+    exit_point_ids: [],
+  });
+
+  const projectPath = '/repo';
+  const nodes: CASNode[] = [
+    gateNode({ id: 'product-handler', name: 'createOrder', source: { file: 'src/orders/orders.controller.ts', line: 1 } }),
+    gateNode({ id: 'test-handler', name: 'doThing', source: { file: 'src/tools/do-thing.integration.test.ts', line: 1 } }),
+    gateNode({ id: 'fixture-handler', name: 'scheduledScan', source: { file: 'apps/mcp-server/fixtures/nestjs-schedule/scan.service.ts', line: 1 } }),
+  ];
+  const entryPoints = [
+    entryPoint('ep_product', 'src/orders/orders.controller.ts', 'product-handler'),
+    entryPoint('ep_test', 'src/tools/do-thing.integration.test.ts', 'test-handler'),
+    entryPoint('ep_fixture', 'apps/mcp-server/fixtures/nestjs-schedule/scan.service.ts', 'fixture-handler'),
+  ];
+
+  it('excludes fixture/test-path journeys from comprehension inputs while the journey list itself is untouched', () => {
+    const journeys = [
+      journey('journey_product', 'ep_product', 'product-handler'),
+      journey('journey_entry_mcp_tool_do_thing_integration_test_ts', 'ep_test', 'test-handler'),
+      journey('journey_entry_scheduled_job_nestjs_schedule_scheduledScan_0', 'ep_fixture', 'fixture-handler'),
+    ];
+    const filtered = orch.filterPrimaryProductJourneys(journeys, entryPoints, nodes, projectPath);
+    expect(filtered.map((j: any) => j.id)).toEqual(['journey_product']);
+    // Structural facts keep every journey: the input array is not mutated.
+    expect(journeys).toHaveLength(3);
+  });
+
+  it('falls back to the handler node path when the entry point is unknown, and keeps journeys with no source evidence', () => {
+    const journeys = [
+      journey('journey_orphan_test', 'ep_unknown', 'test-handler'),
+      journey('journey_orphan_product', 'ep_unknown', 'product-handler'),
+      journey('journey_no_evidence', 'ep_unknown', undefined),
+    ];
+    const filtered = orch.filterPrimaryProductJourneys(journeys, entryPoints, nodes, projectPath);
+    expect(filtered.map((j: any) => j.id)).toEqual(['journey_orphan_product', 'journey_no_evidence']);
+  });
+
+  it('excludes fixture-sourced data entities from comprehension entity seeds', () => {
+    const entities = [
+      {
+        id: 'entity_order', name: 'Order', schema_source: 'src/orders/order.entity.ts',
+        lifecycle: { created_by: ['product-handler'], read_by: [], updated_by: [], deleted_by: [] },
+      },
+      {
+        id: 'entity_fixture', name: 'ScanResult', schema_source: 'apps/mcp-server/fixtures/nestjs-schedule/scan-result.entity.ts',
+        lifecycle: { created_by: ['fixture-handler'], read_by: [], updated_by: [], deleted_by: [] },
+      },
+      {
+        id: 'entity_test_lifecycle_only', name: 'Widget', schema_source: undefined,
+        lifecycle: { created_by: ['test-handler'], read_by: [], updated_by: [], deleted_by: [] },
+      },
+    ] as unknown as CASDataEntity[];
+    const filtered = orch.filterPrimaryProductDataEntities(entities, nodes, projectPath);
+    expect(filtered.map((e: any) => e.id)).toEqual(['entity_order']);
+  });
+
+  it('framework list for the narrative excludes fixture-sourced frameworks', () => {
+    const frameworkNodes: CASNode[] = [
+      gateNode({ id: 'nest-app', name: 'AppModule', metadata: { framework: 'NestJS' }, source: { file: 'src/app.module.ts', line: 1 } }),
+      gateNode({ id: 'django-fixture', name: 'urls', metadata: { framework: 'Django' }, source: { file: 'apps/mcp-server/fixtures/framework-bench/django-app/urls.py', line: 1 } }),
+      gateNode({ id: 'fastapi-testfile', name: 'main', metadata: { framework: 'FastAPI' }, source: { file: 'src/__tests__/analyzers/fastapi-analyzer.test.ts', line: 1 } }),
+    ];
+    const frameworks = orch.frameworkNamesForPurpose([], frameworkNodes, projectPath);
+    expect(frameworks).toContain('NestJS');
+    expect(frameworks).not.toContain('Django');
+    expect(frameworks).not.toContain('FastAPI');
+  });
+});
+
+describe('terminal-outputs prompt fact is kind-filtered (no raw node names as outputs)', () => {
+  // Live defect: descriptions cited UI pages/adapter classes (GraphExplorer,
+  // InMemoryMemoryGraphAdapter) as "terminal outputs". The prompt list must
+  // come from api-response/persisted-kind entities.
+  const flowGraph = { capabilities: [], flows: [] } as any;
+
+  const factsWith = (dataEntities: CASDataEntity[]): Record<string, unknown> => {
+    orch.activeTerminalSignal = {
+      ranked_entities: [
+        { name: 'AssetAnalysis', score: 9, journey_count: 4, write_journeys: 3, read_journeys: 1, user_facing_journeys: 3 },
+        { name: 'GraphExplorer', score: 7, journey_count: 2, write_journeys: 0, read_journeys: 2, user_facing_journeys: 2 },
+        { name: 'InMemoryMemoryGraphAdapter', score: 5, journey_count: 1, write_journeys: 1, read_journeys: 0, user_facing_journeys: 0 },
+        { name: 'OrderQuery', score: 4, journey_count: 1, write_journeys: 0, read_journeys: 1, user_facing_journeys: 1 },
+      ],
+      ranked_stages: [],
+      ranked_capabilities: [],
+      domain_seed_text: 'AssetAnalysis',
+    };
+    try {
+      return orch.buildAIInterpretationFacts(
+        'sys', [], [], [], [], flowGraph, [], [], [], { concepts: [], evidence: [] }, dataEntities, ''
+      );
+    } finally {
+      orch.activeTerminalSignal = undefined;
+    }
+  };
+
+  const entity = (name: string, kind?: string): CASDataEntity => ({
+    id: `entity_${name}`,
+    name,
+    kind,
+    lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] },
+  } as unknown as CASDataEntity);
+
+  it('keeps api-response/persisted entities and drops raw node names and non-output kinds', () => {
+    const facts = factsWith([
+      entity('AssetAnalysis', 'api-response'),
+      entity('OrderQuery', 'request-dto'),
+    ]);
+    const outputs = (facts.terminalOutputs as string[]) || [];
+    expect(outputs.some(o => o.startsWith('AssetAnalysis'))).toBe(true);
+    expect(outputs.some(o => o.startsWith('GraphExplorer'))).toBe(false);
+    expect(outputs.some(o => o.startsWith('InMemoryMemoryGraphAdapter'))).toBe(false);
+    expect(outputs.some(o => o.startsWith('OrderQuery'))).toBe(false);
+  });
+
+  it('gives an entity with unknown kind the benefit of the doubt, but never an unresolved node name', () => {
+    const facts = factsWith([entity('AssetAnalysis', undefined)]);
+    const outputs = (facts.terminalOutputs as string[]) || [];
+    expect(outputs.some(o => o.startsWith('AssetAnalysis'))).toBe(true);
+    expect(outputs.some(o => o.startsWith('GraphExplorer'))).toBe(false);
+  });
+
+  it('passes the ranked list through unchanged when no entity catalog exists to resolve against', () => {
+    const facts = factsWith([]);
+    const outputs = (facts.terminalOutputs as string[]) || [];
+    expect(outputs.some(o => o.startsWith('AssetAnalysis'))).toBe(true);
+    expect(outputs.some(o => o.startsWith('GraphExplorer'))).toBe(true);
+  });
+});
+
+describe('stripped-sentence grammar guard and repetition collapse (live mtg/hercules defects)', () => {
+  it('repairs the live dangling-clause stump "...graph evidence for."', () => {
+    expect(orch.repairStrippedSentenceGrammar('It works by providing telemetry data and graph evidence for.'))
+      .toBe('It works by providing telemetry data and graph evidence.');
+  });
+
+  it('repairs the live broken-coordination stump "a robust and solution"', () => {
+    expect(orch.repairStrippedSentenceGrammar('The service offers a robust and solution.'))
+      .toBe('The service offers a robust solution.');
+  });
+
+  it('drops a sentence that cannot be restored to clause shape when other sentences remain', () => {
+    const text = 'The service records analysis runs for agents. Providing a the and.';
+    expect(orch.repairStrippedSentenceGrammar(text)).toBe('The service records analysis runs for agents.');
+  });
+
+  it('sanitizeAIInterpretation no longer manufactures a dangling "for" from a bare "insights"', () => {
+    const purpose = { primary_domain: 'order-management', core_concepts: ['orders'] } as any;
+    const sanitized = orch.sanitizeAIInterpretation(
+      'The platform manages customer orders and produces insights.',
+      purpose,
+      {}
+    );
+    expect(sanitized.endsWith('for.')).toBe(false);
+    expect(sanitized).toContain('graph evidence');
+  });
+
+  it('collapses the same domain-justification sentence restated 3x to one sentence', () => {
+    const text = 'The system\'s domain is inferred from its dependencies and entities. ' +
+      'The system\'s domain is clearly inferred from its dependencies and entities. ' +
+      'The domain of the system is inferred from its entities and dependencies.';
+    const collapsed = orch.collapseNearDuplicateSentences(text);
+    expect(collapsed.split(/(?<=[.!?])\s+/)).toHaveLength(1);
+  });
+
+  it('keeps genuinely distinct sentences intact', () => {
+    const text = 'Klauro analyzes codebases into a relationship graph. Agents query the graph through MCP tools. Telemetry correlates runtime events with static structure.';
+    expect(orch.collapseNearDuplicateSentences(text)).toBe(text);
+  });
+
+  it('collapses the hercules-style duplicated focus clause across two sentences', () => {
+    const text = 'Hercules is an order platform with a focus on managing customer data and orders. ' +
+      'It is built with a focus on managing customer data and orders.';
+    const collapsed = orch.collapseNearDuplicateSentences(text);
+    expect(collapsed).toBe('Hercules is an order platform with a focus on managing customer data and orders.');
+  });
+});
+
+describe('behavior-anchored capability derivation (buildBehaviorCapabilities)', () => {
+  const localOrch = new AnalyzerOrchestrator() as any;
+
+  const bNode = (partial: Partial<CASNode>): CASNode => ({
+    id: 'node',
+    name: 'node',
+    type: 'function',
+    ...partial,
+  } as CASNode);
+
+  const mcpToolEntry = (name: string, index: number): { node: CASNode; entry: CASEntryPoint } => {
+    const nodeId = `mcp_tool_${name}_${index}`;
+    return {
+      node: bNode({ id: nodeId, name, type: 'mcp_tool' as any, source: { file: `src/tools/${name}.ts` } as any }),
+      entry: {
+        id: `entry_${nodeId}`,
+        source_node: nodeId,
+        type: 'message',
+        name,
+        trigger: { method: 'registerTool', path: name },
+        handler: { node_id: nodeId, method_name: name, file: `src/tools/${name}.ts` },
+      } as CASEntryPoint,
+    };
+  };
+
+  const socketEntry = (event: string, index: number): { node: CASNode; entry: CASEntryPoint } => {
+    const nodeId = `socket_file_${index}`;
+    return {
+      node: bNode({ id: nodeId, name: 'socket.ts', type: 'file', source: { file: 'src/server/socket.ts' } as any }),
+      entry: {
+        id: `entry_socket_${event.replace(/[^a-zA-Z0-9]/g, '_')}`,
+        source_node: nodeId,
+        type: 'event',
+        name: `SOCKET ${event}`,
+        trigger: { event },
+        metadata: { framework: 'socket.io' },
+      } as CASEntryPoint,
+    };
+  };
+
+  it('derives ONE surface capability from a large diverse mcp_tool registration family', () => {
+    // 14 tools, diverse names (no dominant prefix family) — the registration
+    // surface itself is the capability, exactly one.
+    const toolNames = [
+      'get_summary', 'get_call_chain', 'search_nodes', 'semantic_search',
+      'analyze_codebase', 'get_route_table', 'get_entry_points', 'get_data_entities',
+      'assess_change_risk', 'plan_parallel_work', 'get_coding_context', 'get_erd',
+      'validate_agent_change', 'preflight_agent_change',
+    ];
+    const fixtures = toolNames.map((name, index) => mcpToolEntry(name, index));
+    const capabilities = localOrch.buildBehaviorCapabilities(
+      fixtures.map(fixture => fixture.entry),
+      fixtures.map(fixture => fixture.node),
+      [],
+      []
+    );
+
+    expect(capabilities).toHaveLength(1);
+    const capability = capabilities[0];
+    expect(capability.structural_label).toMatch(/Mcp Tool.*Surface/i);
+    // Awaiting-AI naming contract: placeholder name, no name_source yet.
+    expect(capability.name_source).toBeUndefined();
+    expect(capability.name_generation?.reason).toBe('awaiting-ai-comprehension');
+    expect(capability.category).toBe('core');
+    expect(capability.criticality).toBe('high');
+    expect(capability.operations.length).toBeGreaterThan(0);
+    expect(capability.operations.every((operation: any) => operation.entry_point_type === 'message')).toBe(true);
+  });
+
+  it('derives shared-prefix socket event families (game_*) as capabilities, ignoring DOM click/change noise', () => {
+    const events = [
+      'game:action', 'game:pass-priority', 'game:pass-turn', 'game:concede',
+      'game:mulligan-keep', 'game:reconnect',
+      'lobby:create', 'lobby:join', 'lobby:leave', 'lobby:start',
+      'chat:send', 'chat:quick',
+    ];
+    const fixtures = events.map((event, index) => socketEntry(event, index));
+    // DOM interaction handlers must never form or pollute a behavior family.
+    const domEntries: CASEntryPoint[] = Array.from({ length: 20 }, (_, index) => ({
+      id: `entry_dom_${index}`,
+      source_node: 'dom_node',
+      type: 'event',
+      name: `HomePage click`,
+      trigger: { event: 'click' },
+    } as CASEntryPoint));
+
+    const capabilities = localOrch.buildBehaviorCapabilities(
+      [...fixtures.map(fixture => fixture.entry), ...domEntries],
+      [...fixtures.map(fixture => fixture.node), bNode({ id: 'dom_node', name: 'HomePage', type: 'component' })],
+      [],
+      []
+    );
+
+    const labels = capabilities.map((capability: any) => capability.structural_label);
+    expect(labels).toContain('Game Event Surface');
+    expect(labels).toContain('Lobby Event Surface');
+    // chat has only 2 events — below the family threshold, no capability.
+    expect(labels.join(' ')).not.toMatch(/\bChat\b/);
+    // No surface-level "Event Surface" from the generic event type, and no
+    // DOM-noise capability.
+    expect(labels).not.toContain('Event Surface');
+    expect(labels.join(' ')).not.toMatch(/click/i);
+    const game = capabilities.find((capability: any) => capability.structural_label === 'Game Event Surface');
+    expect(game.criticality_factors.join(' ')).toContain("family ('game')");
+    expect(game.criticality_factors.join(' ')).toContain('socket.io');
+  });
+
+  it('merges a behavior cluster into an overlapping entity-anchored capability instead of duplicating', () => {
+    // Socket game family whose handlers reach the Game entity, while an
+    // entity-anchored "Game" capability already exists → MERGE, not duplicate.
+    const events = ['game:action', 'game:concede', 'game:pass-turn', 'game:reconnect'];
+    const fixtures = events.map((event, index) => socketEntry(event, index));
+    const handlerToEngine: CASEdge[] = fixtures.map((fixture, index) => ({
+      id: `edge_${index}`,
+      source: fixture.node.id,
+      target: 'game-engine',
+      type: 'calls',
+    } as CASEdge));
+    const engineNode = bNode({ id: 'game-engine', name: 'GameEngine', type: 'class', source: { file: 'src/server/game/GameEngine.ts' } as any });
+    const gameEntity = {
+      id: 'entity-game',
+      name: 'Game',
+      type: 'entity',
+      fields: [],
+      lifecycle: { created_by: ['game-engine'], read_by: ['game-engine'], updated_by: ['game-engine'], deleted_by: [] },
+      relationships: [],
+    } as any;
+
+    const entityCapability = {
+      id: 'cap_game',
+      name: 'Game',
+      description: '',
+      category: 'supporting',
+      operations: [],
+      related_entities: ['entity-game'],
+      related_domains: ['game'],
+      criticality: 'low',
+      criticality_factors: [],
+    } as any;
+    const capabilities = [entityCapability];
+
+    const candidates = localOrch.buildBehaviorCapabilities(
+      fixtures.map(fixture => fixture.entry),
+      [...fixtures.map(fixture => fixture.node), engineNode],
+      handlerToEngine,
+      [gameEntity]
+    );
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0].related_entities).toContain('entity-game');
+
+    const merged = localOrch.mergeBehaviorCapabilityIntoExisting(candidates[0], capabilities);
+    expect(merged).toBe(true);
+    expect(capabilities).toHaveLength(1);
+    expect(entityCapability.operations.length).toBeGreaterThan(0);
+    expect(entityCapability.criticality).toBe('medium');
+    expect(entityCapability.category).toBe('core');
+  });
+
+  it('exercises count restraint: no behavior capability from small or prefix-less surfaces, hard cap overall', () => {
+    // 3 cli commands (below family threshold) + 5 diverse cli commands with
+    // action-verb prefixes only → nothing.
+    const cliEntries: CASEntryPoint[] = [
+      'deploy:web', 'deploy:api', 'deploy:docs',
+      'get_thing', 'run_thing', 'list_thing', 'create_thing', 'update_thing',
+    ].map((name, index) => ({
+      id: `entry_cli_${index}`,
+      source_node: `cli_${index}`,
+      type: 'cli',
+      name,
+    } as CASEntryPoint));
+    const cliNodes = cliEntries.map((entry, index) => bNode({ id: `cli_${index}`, name: entry.name, type: 'function' }));
+
+    const capabilities = localOrch.buildBehaviorCapabilities(cliEntries, cliNodes, [], []);
+    expect(capabilities).toHaveLength(0);
+  });
+
+  it('surfaces behavior capabilities through buildSystemCapabilities end-to-end', () => {
+    const toolNames = [
+      'get_summary', 'get_call_chain', 'search_nodes', 'semantic_search',
+      'analyze_codebase', 'get_route_table', 'get_entry_points', 'get_data_entities',
+      'assess_change_risk', 'plan_parallel_work', 'get_coding_context', 'get_erd',
+    ];
+    const fixtures = toolNames.map((name, index) => mcpToolEntry(name, index));
+    const capabilities = localOrch.buildSystemCapabilities(
+      fixtures.map(fixture => fixture.entry),
+      [],
+      fixtures.map(fixture => fixture.node),
+      []
+    );
+    const labels = capabilities.map((capability: any) => capability.structural_label || capability.name);
+    expect(labels.some((label: string) => /Mcp Tool.*Surface/i.test(label))).toBe(true);
   });
 });

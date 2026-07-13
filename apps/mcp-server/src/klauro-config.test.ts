@@ -69,7 +69,9 @@ test('customer CLI init and upload-manifest produce parseable onboarding artifac
 
     assert.equal(init.status, 0, init.stderr);
     const initialized = JSON.parse(init.stdout);
-    assert.equal(initialized.status, 'connected');
+    // Signed-out init WARNs on the auth/analysis steps, and init now reports
+    // that honestly instead of a rosy blanket "connected".
+    assert.equal(initialized.status, 'connected_with_warnings');
     assert.equal(initialized.project.id, 'proj_test');
     assert.ok(Array.isArray(initialized.steps) && initialized.steps.length === 6, 'init reports all six onboarding steps');
     assert.ok(fs.existsSync(path.join(workspace.repo, '.klaurorc')));

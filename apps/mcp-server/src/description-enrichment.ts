@@ -6,9 +6,10 @@ import { setAICacheProjectScope } from '../../../packages/analyzer-core/src/ai/a
 import { getAIConfig } from '../../../packages/analyzer-core/src/config/ai.config';
 import { validateElementDescription } from '../../../packages/analyzer-core/src/ai/element-description-validator';
 import type { CASOutput, CASNode } from '../../../packages/analyzer-core/src/types/cas.types';
+import { computeFlowConcepts, type FlowConcept, type FlowStep } from '../../../packages/analyzer-core/src/analyzer/core/flow-concepts';
 import { getProjectStorageDir, loadAnalysis, saveAnalysis } from './storage';
 
-export type DescriptionTargetKind = 'node' | 'service' | 'entity' | 'capability' | 'entry_point' | 'exit_point';
+export type DescriptionTargetKind = 'node' | 'service' | 'entity' | 'capability' | 'entry_point' | 'exit_point' | 'flow';
 
 interface StoredDescription {
   key: string;
@@ -311,6 +312,11 @@ export async function applyStoredElementDescriptions(projectPath: string, cas: C
   let changed = false;
   for (const key of keys) {
     const entry = store.entries[key];
+    // Flow/step descriptions are not CAS residents — they join at the query
+    // layer (get_flow_concepts aiDescriptions via loadStoredFlowDescriptions);
+    // re-resolving them here would recompute the whole flow set per entry for
+    // an application that cannot stick to the CAS anyway.
+    if (entry.target_kind === 'flow') continue;
     const resolved = await resolveTarget(projectPath, cas, entry.target_id, entry.target_kind);
     if (!resolved || resolved.fingerprint !== entry.fingerprint) {
       if (!entry.invalidated_at) {
@@ -343,9 +349,13 @@ async function resolveTarget(
   target: string,
   targetKind?: DescriptionTargetKind,
 ): Promise<ResolvedTarget | null> {
+  // 'flow' joins the default candidate list only when the target is
+  // flow-id-shaped (flow::<chain|ep>[::stepN]) — resolving flows means
+  // recomputing the flow set, too heavy to attempt for every free-text lookup.
+  const flowShaped = /^flow::|::step\d+$/.test(target);
   const candidateKinds: DescriptionTargetKind[] = targetKind
     ? [targetKind]
-    : ['node', 'entity', 'capability', 'entry_point', 'exit_point'];
+    : ['node', 'entity', 'capability', 'entry_point', 'exit_point', ...(flowShaped ? ['flow' as const] : [])];
   for (const kind of candidateKinds) {
     const resolved = await resolveTargetByKind(projectPath, cas, target, kind);
     if (resolved) return resolved;
@@ -371,6 +381,21 @@ async function resolveTargetByKind(projectPath: string, cas: CASOutput, target: 
   if (kind === 'entry_point') {
     const entryPoint = (cas.entry_points || []).find(ep => ep.id === target || matches(ep.name) || matches(ep.trigger?.path));
     return entryPoint ? buildGenericTarget(projectPath, 'entry_point', entryPoint.id, entryPoint.name, entryPoint, entryPoint.handler?.file) : null;
+  }
+  if (kind === 'flow') {
+    // Flow/step targets: matched against the SAME union flow set
+    // get_flow_concepts serves (bounded — enrichment only ever targets the
+    // top capability-linked flows, never thousands). A step target is the
+    // step_id; a flow target is the flow_id or a name match.
+    const flows = computeFlowConcepts(cas, { maxFlows: 400 });
+    for (const flow of flows) {
+      if (flow.flow_id === target || matches(flow.name)) {
+        return buildFlowTarget(projectPath, flow, undefined);
+      }
+      const step = (flow.steps || []).find(s => s.step_id === target);
+      if (step) return buildFlowTarget(projectPath, flow, step);
+    }
+    return null;
   }
   const exitPoint = (cas.exit_points || []).find(ep => ep.id === target || matches(ep.name));
   return exitPoint ? buildGenericTarget(projectPath, 'exit_point', exitPoint.id, exitPoint.name, exitPoint, undefined) : null;
@@ -434,6 +459,84 @@ async function buildGenericTarget(
     fingerprint: await fingerprintTarget(projectPath, context, file),
     context,
   };
+}
+
+/** Resolve a FLOW (or one of its STEPS) as a description target. The target
+ *  object is the ephemeral computed flow/step — persistence lives in the
+ *  description store, joined back by get_flow_concepts (query layer) via
+ *  loadStoredFlowDescriptions; nothing is written onto the CAS. */
+async function buildFlowTarget(projectPath: string, flow: FlowConcept, step: FlowStep | undefined): Promise<ResolvedTarget> {
+  const id = step ? step.step_id : flow.flow_id;
+  const name = step ? `${flow.name} — ${step.name}` : flow.name;
+  const context = {
+    kind: 'flow' as const,
+    id,
+    name,
+    flow: {
+      flow_id: flow.flow_id,
+      name: flow.name,
+      intent: flow.intent,
+      entry_point: flow.entry_point,
+      capability_id: flow.capability_id,
+      entities: flow.entities,
+      terminus: flow.terminus,
+      logic: flow.contract?.logic,
+      steps: (flow.steps || []).map(s => ({
+        step_id: s.step_id,
+        name: s.name,
+        description: s.description,
+        entities: s.entities,
+        state_changes: s.contract?.side_effects?.state_changes,
+        external_integrations: s.contract?.side_effects?.external_integrations,
+      })),
+    },
+    step: step
+      ? {
+          step_id: step.step_id,
+          name: step.name,
+          description: step.description,
+          entities: step.entities,
+          constraints: (step.contract?.constraints || []).slice(0, 8),
+          state_changes: step.contract?.side_effects?.state_changes,
+          external_integrations: step.contract?.side_effects?.external_integrations,
+        }
+      : undefined,
+    facts: {
+      description_guardrails: [
+        'Describe the runtime behavior this flow (or step) performs, grounded ONLY in the provided steps, entities, termini, and side effects.',
+        'One or two sentences about what moves through the system and what it produces at the end.',
+        'Do not mention function names, file paths, graph counts, or analyzer internals.',
+      ],
+    },
+  };
+  return {
+    kind: 'flow',
+    id,
+    name,
+    target: step || flow,
+    fingerprint: await fingerprintTarget(projectPath, context),
+    context,
+  };
+}
+
+/**
+ * Stored AI descriptions for FLOWS and STEPS (kind 'flow'), keyed by
+ * flow_id/step_id — the join input for get_flow_concepts' aiDescriptions
+ * option (the caller of the interpretive nameStep seam). Invalidated entries
+ * are excluded; when the store is empty this returns an empty map and the
+ * flow output stays fully deterministic.
+ */
+export async function loadStoredFlowDescriptions(projectPath: string): Promise<Map<string, { description: string }>> {
+  const out = new Map<string, { description: string }>();
+  const store = await loadDescriptionStore(projectPath).catch(() => undefined);
+  if (!store) return out;
+  for (const entry of Object.values(store.entries)) {
+    if (entry.target_kind !== 'flow') continue;
+    if (entry.invalidated_at) continue;
+    if (!entry.description) continue;
+    out.set(entry.target_id, { description: entry.description });
+  }
+  return out;
 }
 
 function promptDisplayName(kind: DescriptionTargetKind, name: string, file?: string): string {

@@ -13,7 +13,7 @@ analysis, in-flight tracking, agent MCP wiring, and the fabric, enabled by
 default):
 
 ```bash
-curl -fsSL https://mcp.klauro.com/dist/install.sh | sh   # install klauro
+curl -fsSL https://mcp.klauro.com/install | sh           # install klauro
 klauro login --email you@example.com                     # once per machine (stores credentials in ~/.klauro/auth.json)
 cd /path/to/repo
 klauro init            # done — connects the repo end to end, incl. {fabric:{enabled,endpoint,workspace}} in .klaurorc

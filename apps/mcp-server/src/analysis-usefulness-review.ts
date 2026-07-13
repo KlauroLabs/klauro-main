@@ -9,6 +9,7 @@ import { discoverRealRepos, type RealRepoTarget } from './repo-discovery';
 import { isDirectCliInvocation } from './cli-invocation';
 import { withAnalysisFocus, type AnalysisFocus } from './analysis-focus';
 import { isCommandShapedLabel, isHostnameLikeServiceName } from '../../../packages/analyzer-core/src/ai/external-service-plausibility';
+import { computeFlowConcepts } from '../../../packages/analyzer-core/src/analyzer/core/flow-concepts';
 
 type GateStatus = 'pass' | 'warn' | 'fail';
 
@@ -44,7 +45,7 @@ export interface AnalysisUsefulnessReview {
 }
 
 export interface DescriptionEnrichmentTarget {
-  target_kind: 'system' | 'node' | 'service' | 'entity' | 'capability' | 'entry_point' | 'exit_point';
+  target_kind: 'system' | 'node' | 'service' | 'entity' | 'capability' | 'entry_point' | 'exit_point' | 'flow';
   target: string;
   target_id?: string;
   priority: 'critical' | 'high' | 'medium';
@@ -607,6 +608,38 @@ function appendManualElementDescriptionTargets(cas: CASOutput, targets: Descript
       },
     });
     if (targets.length >= 24) return;
+  }
+
+  // FLOW targets — the interpretive half of the flow layer (ICELOT doctrine):
+  // step/flow descriptions are deterministic labels until this AI pass runs.
+  // Budget-bounded: only the TOP capability-linked flows (they realize a
+  // named product capability — the flows agents/the UI actually drill), never
+  // the full union set. The generated descriptions persist in the
+  // element-description store and join back via get_flow_concepts.
+  try {
+    const flows = computeFlowConcepts(cas, { maxFlows: 60 })
+      .filter(flow => Boolean(flow.capability_id))
+      .slice(0, 5);
+    for (const flow of flows) {
+      if (flow.description_source === 'ai') continue;
+      add({
+        target_kind: 'flow',
+        target: clean(flow.name) || flow.flow_id,
+        target_id: flow.flow_id,
+        priority: 'medium',
+        reasons: ['flow description is a deterministic structural label (interpretive pass has not run)'],
+        current_source: 'deterministic-label',
+        suggested_tool: 'generate_element_description',
+        suggested_args: {
+          target: flow.flow_id,
+          target_kind: 'flow',
+          instructions: 'Write a behavior-level description of this flow: what request/job moves through it, what it validates/computes, and what it produces at its terminus. Ground every claim in the provided steps, entities, and side effects. Do not mention function names or files.',
+        },
+      });
+      if (targets.length >= 30) return;
+    }
+  } catch {
+    // Flow computation must never break the enrichment queue.
   }
 }
 

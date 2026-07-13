@@ -16,10 +16,30 @@ echo "  ================"
 echo "  Installing the klauro CLI/MCP from ${KLAURO_URL}"
 echo ""
 
-# --- Require Node >= 18 ---------------------------------------------------
+# --- Require a supported Node range ----------------------------------------
+# Klauro's native tree-sitter dependency (tree-sitter 0.25.x, no shipped
+# prebuilds, binding.gyp pins -std=c++17) fails to compile against Node 23+
+# headers (v8config.h: "C++20 or later required" — verified against the
+# 22/23/24/25/26 header sets). Gate BEFORE npm install so the failure is a
+# plain sentence, not a node-gyp stack trace. The hosted release manifest
+# (/dist/latest.json: min_node/max_node) overrides these baked-in defaults,
+# so a future WASM/prebuild release widens the range without a new installer.
+NODE_MIN_DEFAULT=18
+NODE_MAX_DEFAULT=22
+
+MANIFEST_JSON="$(curl -fsSL --max-time 10 "${KLAURO_URL}/dist/latest.json" 2>/dev/null || true)"
+# Minimal JSON field extraction (no jq dependency): "min_node": 18
+manifest_int_field() {
+  echo "${MANIFEST_JSON}" | tr -d ' \n\r\t' | sed -n "s/.*\"$1\":\([0-9][0-9]*\).*/\1/p" | head -n1
+}
+NODE_MIN="$(manifest_int_field min_node)"
+NODE_MAX="$(manifest_int_field max_node)"
+[ -n "${NODE_MIN}" ] || NODE_MIN="${NODE_MIN_DEFAULT}"
+[ -n "${NODE_MAX}" ] || NODE_MAX="${NODE_MAX_DEFAULT}"
+
 if ! command -v node >/dev/null 2>&1; then
   echo "Error: Node.js is not installed."
-  echo "Klauro requires Node.js 18 or newer. Install it from https://nodejs.org"
+  echo "Klauro requires Node.js ${NODE_MIN}-${NODE_MAX}. Install it from https://nodejs.org"
   exit 1
 fi
 
@@ -30,14 +50,28 @@ NODE_MAJOR="$(echo "${NODE_VERSION}" | sed 's/^v//' | cut -d. -f1)"
 case "${NODE_MAJOR}" in
   ''|*[!0-9]*)
     echo "Error: could not determine the Node.js version (got '${NODE_VERSION}')."
-    echo "Klauro requires Node.js 18 or newer. See https://nodejs.org"
+    echo "Klauro requires Node.js ${NODE_MIN}-${NODE_MAX}. See https://nodejs.org"
     exit 1
     ;;
 esac
 
-if [ "${NODE_MAJOR}" -lt 18 ]; then
+if [ "${NODE_MAJOR}" -lt "${NODE_MIN}" ]; then
   echo "Error: Node.js ${NODE_VERSION} is too old."
-  echo "Klauro requires Node.js 18 or newer. Upgrade at https://nodejs.org"
+  echo "Klauro currently supports Node ${NODE_MIN}-${NODE_MAX}; you have ${NODE_MAJOR}."
+  echo "Upgrade at https://nodejs.org, or install a supported version with:"
+  echo "  nvm install ${NODE_MAX} && nvm use ${NODE_MAX}     # https://github.com/nvm-sh/nvm"
+  echo "  volta install node@${NODE_MAX}                # https://volta.sh"
+  exit 1
+fi
+
+if [ "${NODE_MAJOR}" -gt "${NODE_MAX}" ] && [ "${KLAURO_SKIP_NODE_CHECK:-0}" != "1" ]; then
+  echo "Error: Node.js ${NODE_VERSION} is not supported yet."
+  echo "Klauro currently supports Node ${NODE_MIN}-${NODE_MAX}; you have ${NODE_MAJOR}."
+  echo "(Klauro's native tree-sitter parser does not compile on Node $((NODE_MAX + 1))+ yet.)"
+  echo "Install a supported version and re-run this installer:"
+  echo "  nvm install ${NODE_MAX} && nvm use ${NODE_MAX}     # https://github.com/nvm-sh/nvm"
+  echo "  volta install node@${NODE_MAX}                # https://volta.sh"
+  echo "Set KLAURO_SKIP_NODE_CHECK=1 to bypass this check at your own risk."
   exit 1
 fi
 

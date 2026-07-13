@@ -360,6 +360,38 @@ function WorkspaceView(props: {
   const health = workspaceAnalysis?.analysis?.health;
   const analysisSummary = workspaceAnalysis?.analysis?.summary;
 
+  // Real cross-project topology from the workspace analysis (WAS). Codebase
+  // paths for account workspaces are `account-project:<projectId>`, which maps
+  // each WAS codebase back to its project record exactly (name is the fallback
+  // for older records).
+  const wsReady = workspaceAnalysis?.status === 'ready';
+  const codebases = workspaceAnalysis?.analysis?.codebases || [];
+  const codebaseByProjectId = useMemo(() => {
+    const map = new Map<string, (typeof codebases)[number]>();
+    for (const project of props.projects) {
+      const codebase = codebases.find(cb => cb.path === `account-project:${project.id}`)
+        || codebases.find(cb => cb.name === project.name);
+      if (codebase) map.set(project.id, codebase);
+    }
+    return map;
+  }, [codebases, props.projects]);
+  const projectLinks = useMemo(() => {
+    const projectIdByCodebaseId = new Map<string, string>();
+    for (const [projectId, codebase] of codebaseByProjectId) projectIdByCodebaseId.set(codebase.id, projectId);
+    const seen = new Set<string>();
+    const pairs: Array<[string, string]> = [];
+    for (const link of workspaceAnalysis?.analysis?.application_links || []) {
+      const source = projectIdByCodebaseId.get(link.source_codebase_id);
+      const target = projectIdByCodebaseId.get(link.target_codebase_id);
+      if (!source || !target || source === target) continue;
+      const key = [source, target].sort().join('->');
+      if (seen.has(key)) continue;
+      seen.add(key);
+      pairs.push([source, target]);
+    }
+    return pairs;
+  }, [workspaceAnalysis, codebaseByProjectId]);
+
   return (
     <div className="workspace-view">
       <div className="workspace-header">
@@ -373,12 +405,25 @@ function WorkspaceView(props: {
         <section className="panel map-card">
           <h2>System Map</h2>
           <p className="subtle">Visual overview of this workspace architecture</p>
-          <SystemMap projects={props.projects} onProject={props.onProject} />
+          <SystemMap
+            projects={props.projects}
+            links={projectLinks}
+            codebaseByProjectId={codebaseByProjectId}
+            analysisReady={wsReady}
+            onProject={props.onProject}
+          />
         </section>
         <aside className="right-rail">
           <section className="panel complexity-card">
             <div className="orb">◎</div>
-            <div><h2>System Complexity</h2><p className="subtle">How complex is your system</p><strong>{complexityScore(props.projects)}<span>/100</span></strong><button>View Analysis ›</button></div>
+            <div>
+              <h2>System Health</h2>
+              <p className="subtle">From the workspace analysis</p>
+              {health?.score !== undefined
+                ? <strong>{health.score}<span>/100{health.status ? ` - ${health.status}` : ''}</span></strong>
+                : <p className="subtle">Available after the workspace analysis lands.</p>}
+              <button>View Analysis ›</button>
+            </div>
           </section>
           <ActivityPanel activities={activities} compact />
         </aside>
@@ -388,7 +433,7 @@ function WorkspaceView(props: {
         <div className="top-actions"><button className="button" onClick={props.onAddMember}>Members</button><button className="button primary" onClick={props.onAddProject}><Plus size={18} /> Add project</button></div>
       </div>
       <div className="repo-grid">
-        {props.projects.map(project => <RepoCard key={project.id} project={project} revisions={props.revisionsByProject[project.id] || []} onOpen={() => props.onProject(project.id)} />)}
+        {props.projects.map(project => <RepoCard key={project.id} project={project} codebase={codebaseByProjectId.get(project.id)} revisions={props.revisionsByProject[project.id] || []} onOpen={() => props.onProject(project.id)} />)}
         {!props.projects.length && <EmptyState text="No repositories yet. Add one to start analysis." />}
       </div>
       {props.projects.length > 0 && (
@@ -500,8 +545,11 @@ function RepoOverview(props: { token: string; workspace: Workspace; project: Pro
         // Live progress ladder (task #112): layers_ready.complete === false means
         // more analysis layers are still landing on the server. Keep polling
         // until it flips to 'ready' so the first-run customer sees real
-        // progress instead of a static "pending" chip.
-        if (result.status === 'populating') {
+        // progress instead of a static "pending" chip. Also keep polling while
+        // the AI narrative enrichment pass is still 'pending' — structure is
+        // final but the prose is still landing.
+        const aiPending = result.ai_enrichment === 'pending' || result.summary?.ai_enrichment === 'pending';
+        if (result.status === 'populating' || aiPending) {
           timer = setTimeout(poll, 4000);
         }
       } catch (error) {
@@ -537,9 +585,13 @@ function RepoOverview(props: { token: string; workspace: Workspace; project: Pro
   const populating = analysis?.status === 'populating';
   const capabilities = productMap?.capabilities || [];
   const entityNames = (productMap?.data.exposure_highlights.map(highlight => highlight.entity) || []).slice(0, 8);
-  const layers = summary?.layers_ready?.layers;
-  const layerEntries = layers ? Object.entries(layers) : [];
-  const layersDone = layerEntries.filter(([, done]) => done).length;
+  // layers_ready.layers is an ARRAY of {layer, name, status, fields} — count
+  // status === 'ready', never Object.entries truthiness (which read every
+  // layer object as "done" and pinned the progress bar at 100%).
+  const layerEntries = summary?.layers_ready?.layers || [];
+  const layersDone = layerEntries.filter(layer => layer.status === 'ready').length;
+  const aiEnrichment = analysis?.ai_enrichment || summary?.ai_enrichment;
+  const aiEnrichmentError = analysis?.ai_enrichment_error || summary?.ai_enrichment_error;
 
   return (
     <div className="repo-overview">
@@ -582,6 +634,22 @@ function RepoOverview(props: { token: string; workspace: Workspace; project: Pro
           <p className="subtle">Capabilities, entities, and flows below will fill in automatically as each layer completes — no need to refresh.</p>
         </div>
       )}
+      {!populating && aiEnrichment === 'pending' && (
+        <div className="panel populating-card">
+          <div className="populating-head">
+            <span className="status-dot" />
+            <span className="subtle">AI narrative enriching… structural facts below are complete; descriptions refresh automatically.</span>
+          </div>
+        </div>
+      )}
+      {aiEnrichment === 'error' && (
+        <div className="panel populating-card">
+          <div className="populating-head">
+            <strong>AI narrative unavailable</strong>
+            <span className="subtle">{aiEnrichmentError || 'The AI comprehension pass failed for this analysis. Structural facts below are complete; descriptions are deterministic only.'}</span>
+          </div>
+        </div>
+      )}
       <div className="repo-tabs">
         <button className={`repo-tab${tab === 'overview' ? ' active' : ''}`} onClick={() => setTab('overview')}>Overview</button>
         <button className={`repo-tab${tab === 'conceptual' ? ' active' : ''}`} onClick={() => setTab('conceptual')}>Conceptual</button>
@@ -590,7 +658,9 @@ function RepoOverview(props: { token: string; workspace: Workspace; project: Pro
         <>
           <div className="metric-strip">
             <Metric label="Capabilities" value={capabilities.length ? String(capabilities.length) : summary?.capabilities ? String(summary.capabilities) : props.project.analysis_id ? 'Available' : 'Pending'} hint="Core business domains" />
-            <Metric label="Entry points" value={String(summary?.entry_points ?? latest?.nodes ?? 0)} hint="Known graph nodes" />
+            {summary?.entry_points !== undefined
+              ? <Metric label="Entry points" value={String(summary.entry_points)} hint="Routes, CLIs, handlers" />
+              : <Metric label="Graph nodes" value={String(summary?.nodes ?? latest?.nodes ?? 0)} hint="Known graph nodes" />}
             <Metric label="Contributors" value={String(props.members.length || '-')} hint="Workspace users" />
             <Metric label="Analysis" value={populating ? 'Populating' : (latest?.source || 'Not run')} hint={latest ? relativeTime(latest.generated_at) : 'Awaiting run'} />
             {productMap?.health.score !== undefined && (
@@ -704,7 +774,15 @@ function ConceptualView(props: { token: string; project: Project }) {
                       onClick={() => { setSelectedFlowId(flow.flow_id); setSelectedStepId(null); }}
                     >
                       <strong>{flow.name}</strong>
-                      {capability ? <span className="concept-sub">{capability.name}</span> : <span className="concept-sub gap">no capability link</span>}
+                      {/* capability_id is evidence-gated (only present when a
+                          system_capabilities operation references this flow's
+                          entry point). When absent, fall back to the flow's
+                          real semantic role instead of a shouty gap label. */}
+                      {capability
+                        ? <span className="concept-sub">{capability.name}</span>
+                        : flow.role
+                          ? <span className="concept-sub">{flow.role} flow</span>
+                          : <span className="concept-sub gap">no capability link</span>}
                       <span className="concept-meta">{flow.steps.length} step{flow.steps.length === 1 ? '' : 's'}</span>
                     </button>
                   );
@@ -804,11 +882,19 @@ function ContractRow({ label, values, emptyText }: { label: string; values: stri
   );
 }
 
+function violationSeverityClass(severity: string): string {
+  // Principle violations use info/warning/error — map onto the low/medium/high
+  // severity-dot classes the stylesheet defines.
+  if (severity === 'error') return 'severity-high';
+  if (severity === 'warning') return 'severity-medium';
+  return 'severity-low';
+}
+
 function StructuralPerspectivePanel({ structural }: { structural: ConceptualResponse['structural'] }) {
   if (!structural) return null;
   const { architectural, paradigms, perspectives } = structural;
-  const conflicts = (architectural?.conflicts || []) as Array<Record<string, unknown>>;
-  const violations = (architectural?.violations || []) as Array<Record<string, unknown>>;
+  const conflicts = architectural?.conflicts || [];
+  const violations = architectural?.principle_violations || [];
   return (
     <section className="repo-section">
       <h2>Structural Perspectives <span>How the system is built — architecture and paradigm, the same code seen from another angle</span></h2>
@@ -819,15 +905,17 @@ function StructuralPerspectivePanel({ structural }: { structural: ConceptualResp
           {conflicts.length || violations.length ? (
             <ul className="structural-list">
               {conflicts.slice(0, 8).map((conflict, index) => (
-                <li key={`conflict-${index}`}>
-                  <span className={`severity-dot severity-${conflict.severity as string}`} />
-                  {String(conflict.description || conflict.name || 'Conflict')}
+                <li key={conflict.id || `conflict-${index}`}>
+                  <span className={`severity-dot severity-${conflict.severity}`} />
+                  {conflict.concern || 'Conflict'}
+                  {conflict.suggested_alignment && <span className="concept-meta">{conflict.suggested_alignment}</span>}
                 </li>
               ))}
               {violations.slice(0, 8).map((violation, index) => (
-                <li key={`violation-${index}`}>
-                  <span className="severity-dot severity-medium" />
-                  {String(violation.description || violation.principle || 'Principle violation')}
+                <li key={violation.id || `violation-${index}`}>
+                  <span className={`severity-dot ${violationSeverityClass(violation.severity)}`} />
+                  {violation.detail || violation.principle || 'Principle violation'}
+                  {violation.principle && violation.detail && <span className="concept-meta">{violation.principle}{violation.file ? ` — ${violation.file}` : ''}</span>}
                 </li>
               ))}
             </ul>
@@ -852,7 +940,9 @@ function StructuralPerspectivePanel({ structural }: { structural: ConceptualResp
           {perspectives && perspectives.length ? (
             <ul className="structural-list">
               {perspectives.slice(0, 8).map((perspective, index) => (
-                <li key={index}>{typeof perspective === 'string' ? perspective : JSON.stringify(perspective)}</li>
+                <li key={perspective.id || index}>
+                  <strong>{perspective.name}</strong>{perspective.description ? ` — ${perspective.description}` : ''}
+                </li>
               ))}
             </ul>
           ) : <EmptyState text="No additional perspectives recorded for this analysis." />}
@@ -902,20 +992,46 @@ function ActivityPanel({ activities, compact = false }: { activities: ActivityIt
   );
 }
 
-function SystemMap({ projects, onProject }: { projects: Project[]; onProject: (id: string) => void }) {
+interface SystemMapCodebase {
+  primary_domain?: string;
+  system_type?: string;
+}
+
+function SystemMap({ projects, links, codebaseByProjectId, analysisReady, onProject }: {
+  projects: Project[];
+  /** Real cross-project links (from the WAS application_links), as project-id pairs. */
+  links: Array<[string, string]>;
+  codebaseByProjectId: Map<string, SystemMapCodebase>;
+  analysisReady: boolean;
+  onProject: (id: string) => void;
+}) {
   if (!projects.length) return <EmptyState text="Add repositories to generate the workspace map." />;
   const positions = [[16, 37], [16, 65], [39, 53], [55, 34], [58, 74], [76, 42], [78, 69], [91, 54]];
+  const placed = projects.slice(0, 8);
+  const positionByProjectId = new Map(placed.map((project, index) => [project.id, positions[index]]));
+  const drawableLinks = links.filter(([source, target]) => positionByProjectId.has(source) && positionByProjectId.has(target));
   return (
-    <div className="map-stage">
-      {projects.slice(1, 8).map((project, index) => <MapLine key={project.id} from={positions[0]} to={positions[index + 1]} />)}
-      {projects.slice(0, 8).map((project, index) => (
-        <button key={project.id} className="map-node" style={{ left: `${positions[index][0]}%`, top: `${positions[index][1]}%` }} onClick={() => onProject(project.id)}>
-          <span className="cube"><Layers3 size={22} /></span>
-          <strong>{project.name}</strong>
-          <small>{projectKind(project)}</small>
-        </button>
-      ))}
-    </div>
+    <>
+      <div className="map-stage">
+        {drawableLinks.map(([source, target]) => (
+          <MapLine key={`${source}->${target}`} from={positionByProjectId.get(source)!} to={positionByProjectId.get(target)!} />
+        ))}
+        {placed.map(project => {
+          const position = positionByProjectId.get(project.id)!;
+          const codebase = codebaseByProjectId.get(project.id);
+          const detail = codebase?.primary_domain || codebase?.system_type;
+          return (
+            <button key={project.id} className="map-node" style={{ left: `${position[0]}%`, top: `${position[1]}%` }} onClick={() => onProject(project.id)}>
+              <span className="cube"><Layers3 size={22} /></span>
+              <strong>{project.name}</strong>
+              {detail && <small>{detail}</small>}
+            </button>
+          );
+        })}
+      </div>
+      {analysisReady && !drawableLinks.length && <p className="subtle">No cross-project links detected between these repositories.</p>}
+      {!analysisReady && <p className="subtle">Cross-project links appear once the workspace analysis lands.</p>}
+    </>
   );
 }
 
@@ -927,12 +1043,27 @@ function MapLine({ from, to }: { from: number[]; to: number[] }) {
   return <span className="map-line" style={{ left: `${from[0]}%`, top: `${from[1]}%`, width: `${length}%`, transform: `rotate(${angle}deg)` }} />;
 }
 
-function RepoCard({ project, revisions, onOpen }: { project: Project; revisions: ProjectRevision[]; onOpen: () => void }) {
+function RepoCard({ project, codebase, revisions, onOpen }: {
+  project: Project;
+  codebase?: { primary_domain?: string; languages?: string[]; frameworks?: string[] };
+  revisions: ProjectRevision[];
+  onOpen: () => void;
+}) {
+  // Real analysis facts only — the project's analyzed primary domain and
+  // languages from the workspace analysis. No name-regex guesses: a project
+  // without an analysis simply shows no tags.
+  const tags = codebase
+    ? [codebase.primary_domain, ...(codebase.languages || []).slice(0, 3)].filter((tag): tag is string => Boolean(tag)).slice(0, 4)
+    : [];
   return (
     <button className="repo-card card" onClick={onOpen}>
       <span className="round-arrow">↗</span>
-      <div><h3><Layers2 size={18} /> {project.name}</h3><p>{repoSummary(project)}</p><div className="tags">{projectTags(project).map(tag => <span key={tag}>{tag}</span>)}</div></div>
-      <div className="repo-bottom"><div><small>Assignees</small><div className="avatar-stack"><span /><span /><span /></div></div><small>{revisions[0] ? `Last analyzed - ${relativeTime(revisions[0].generated_at)}` : 'Not analyzed yet'}</small></div>
+      <div>
+        <h3><Layers2 size={18} /> {project.name}</h3>
+        <p>{repoSummary(project)}</p>
+        {tags.length > 0 && <div className="tags">{tags.map(tag => <span key={tag}>{tag}</span>)}</div>}
+      </div>
+      <div className="repo-bottom"><small>{revisions[0] ? `Last analyzed - ${relativeTime(revisions[0].generated_at)}` : 'Not analyzed yet'}</small></div>
     </button>
   );
 }
@@ -1134,43 +1265,16 @@ function workspaceName(data: AppStateData | null, workspaceId?: string) {
 
 function workspaceDescription(workspace: Workspace, projects: Project[]) {
   if (!projects.length) return 'This workspace is ready to collect repository analyses. Add projects to build the shared system map and agent context.';
-  const kinds = Array.from(new Set(projects.map(projectKind))).slice(0, 4).join(', ');
-  return `${workspace.name} contains ${plural(projects.length, 'project')} spanning ${kinds}. Klauro uses pushed-code analyses from these projects to build shared workspace context, change activity, and MCP guidance for local agents.`;
+  return `${workspace.name} contains ${plural(projects.length, 'project')}. Klauro uses pushed-code analyses from these projects to build shared workspace context, change activity, and MCP guidance for local agents.`;
 }
 
 function repoSummary(project: Project) {
-  if (project.analysis_id) return `Connected to Klauro analysis ${project.analysis_id}. Serves as a ${projectKind(project).toLowerCase()} project in this workspace.`;
+  if (project.analysis_id) return `Connected to Klauro analysis ${project.analysis_id}.`;
   return `Tracks ${sourceLabel(project)}. Run analysis to populate capabilities, flows, entities, risks, and MCP agent contexts.`;
 }
 
 function sourceLabel(project: Project) {
   return project.repo_url || project.local_path || project.analysis_id || 'No source attached yet';
-}
-
-function projectKind(project: Project) {
-  const value = [project.name, sourceLabel(project)].join(' ').toLowerCase();
-  if (/web|front|ui|app/.test(value)) return 'Frontend';
-  if (/api|server|backend|service/.test(value)) return 'Backend';
-  if (/worker|job|queue|sync/.test(value)) return 'Worker';
-  if (/mobile|ios|android|flutter/.test(value)) return 'Mobile';
-  if (/infra|terraform|deploy|ci/.test(value)) return 'Infrastructure';
-  return 'Project';
-}
-
-function projectTags(project: Project) {
-  const value = sourceLabel(project).toLowerCase();
-  const tags = [];
-  if (value.includes('github')) tags.push('GitHub');
-  if (value.includes('gitlab')) tags.push('GitLab');
-  if (/node|api|web|front|backend/.test(value)) tags.push('TypeScript');
-  if (/infra|terraform|deploy/.test(value)) tags.push('Infra');
-  if (!tags.length) tags.push(projectKind(project));
-  return tags.slice(0, 4);
-}
-
-function complexityScore(projects: Project[]) {
-  if (!projects.length) return 0;
-  return Math.min(100, Math.max(12, projects.length * 11 + projects.filter(project => project.analysis_id).length * 7));
 }
 
 function lastWorkspaceUpdate(projects: Project[], revisionsByProject: Record<string, ProjectRevision[]>) {

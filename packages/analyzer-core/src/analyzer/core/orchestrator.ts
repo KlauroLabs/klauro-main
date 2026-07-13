@@ -82,6 +82,7 @@ import {
 } from '../../types/cas.types';
 import { classifyArtifactType, artifactLedDomainLabel, collectArtifactManifestSignal, APP_FRAMEWORK_MARKERS, type ArtifactTypeResult } from './artifact-type';
 import { collectDeployableEvidence } from './deployable-evidence';
+import { isIdentifierShapedRepoBasename } from './deployable-evidence/util';
 import { buildDependencyManifest } from './dependency-manifest';
 import { classifyCodebaseTypes } from './codebase-type';
 import { applyConventions, type KlauroConventionsInput } from './conventions-applier';
@@ -1475,7 +1476,14 @@ export class AnalyzerOrchestrator {
     logTiming('pp_enrichNodes', phaseStart);
 
     phaseStart = Date.now();
-    const flowCoverage = this.buildFlowCoverage(allNodes, allEntryPoints, callChains);
+    // testSuites hoisted above flow coverage: the suites' coverage.nodes_tested
+    // is the only populated test-to-code join on many repos (node.testing
+    // .tested_by and test-entry connected_nodes are frequently empty), so the
+    // coverage pass must be able to consume it. Same inputs, same result as the
+    // former later call site — buildTestSuites reads only nodes/entryPoints/
+    // edges/projectPath, all final by this point.
+    const testSuites = this.buildTestSuites(allNodes, allEntryPoints, projectPath, allEdges);
+    const flowCoverage = this.buildFlowCoverage(allNodes, allEntryPoints, callChains, testSuites);
     const testGaps = this.buildTestGaps(flowCoverage, allNodes);
     logTiming('pp_flowCoverage', phaseStart);
 
@@ -1556,8 +1564,15 @@ export class AnalyzerOrchestrator {
     const frameworkNames = this.frameworkNamesForPurpose(contributions, allNodes, projectPath);
     const dbEntityNames = databaseSchema.entities.map(e => e.name);
     const externalServiceNames = externalServices.map(svc => svc.name);
+    // Comprehension derivation (terminal signal, capability catalog, purpose,
+    // description evidence) sees only product journeys/entities — test/fixture
+    // sources stay in the structural graph but never seed meaning.
+    const comprehensionJourneys = this.filterPrimaryProductJourneys(
+      userJourneyResult.journeys, allEntryPoints, allNodes, projectPath
+    );
+    const comprehensionDataEntities = this.filterPrimaryProductDataEntities(dataEntities, allNodes, projectPath);
     const terminalSignal = buildTerminalSignal({
-      journeys: userJourneyResult.journeys,
+      journeys: comprehensionJourneys,
       systemCapabilities,
     });
 
@@ -1621,9 +1636,9 @@ export class AnalyzerOrchestrator {
         systemCapabilities,
         unanalyzedLanguages,
         dependencyNamesForAI,
-        dataEntities,
+        comprehensionDataEntities,
         projectTextSignal,
-        userJourneyResult.journeys
+        comprehensionJourneys
       );
       const aiDuration = Date.now() - aiPhaseStart;
       const aiGeneration = enhancedSystemPurpose.description_generation;
@@ -1657,7 +1672,7 @@ export class AnalyzerOrchestrator {
     logTiming('pp_finalMetadata', phaseStart);
 
     phaseStart = Date.now();
-    const testSuites = this.buildTestSuites(allNodes, allEntryPoints, projectPath, allEdges);
+    // testSuites built earlier (hoisted above the flow-coverage pass).
     const mocks = this.buildMocks(allNodes);
     const fixtures = this.buildFixtures(allNodes);
     const testSummary = this.buildTestSummary(allNodes, allEntryPoints);
@@ -2558,7 +2573,7 @@ export class AnalyzerOrchestrator {
     this.deriveParentFromContainsEdges(nodes, edges);
     this.enrichNodePerspectives(nodes, previousOutput.perspectives || []);
 
-    const flowCoverage = this.buildFlowCoverage(nodes, entryPoints, callChains);
+    const flowCoverage = this.buildFlowCoverage(nodes, entryPoints, callChains, testSuites);
     const testGaps = this.buildTestGaps(flowCoverage, nodes);
 
     const domainExtractor = new DomainExtractor();
@@ -2675,6 +2690,12 @@ export class AnalyzerOrchestrator {
     const incrExternalServiceNames = externalServices.map(svc => svc.name);
     const incrEntryPointSummary = this.summarizeEntryPoints(this.filterPrimaryProductEntryPoints(entryPoints, nodes, projectPath));
     const incrProjectTextSignal = this.extractProjectTextSignal(projectPath);
+    // Same comprehension-input gate as the full path: test/fixture journeys and
+    // entities stay structural facts but never seed comprehension.
+    const incrComprehensionJourneys = this.filterPrimaryProductJourneys(
+      userJourneyResult.journeys, entryPoints, nodes, projectPath
+    );
+    const incrComprehensionDataEntities = this.filterPrimaryProductDataEntities(dataEntities, nodes, projectPath);
     const enhancedSystemPurpose = this.buildEnhancedSystemPurpose(
       systemPurpose,
       domainConcepts,
@@ -2691,7 +2712,7 @@ export class AnalyzerOrchestrator {
       incrProjectTextSignal,
       nodes,
       projectPath,
-      buildTerminalSignal({ journeys: userJourneyResult.journeys, systemCapabilities }),
+      buildTerminalSignal({ journeys: incrComprehensionJourneys, systemCapabilities }),
       exitPoints
     );
     if (this.shouldRefreshAIInterpretation(
@@ -2717,9 +2738,9 @@ export class AnalyzerOrchestrator {
         systemCapabilities,
         previousOutput.system?.technologies?.unanalyzed_languages || [],
         this.libraryNamesForInterpretation(libraries),
-        dataEntities,
+        incrComprehensionDataEntities,
         incrProjectTextSignal,
-        userJourneyResult.journeys
+        incrComprehensionJourneys
       );
     } else if (
       previousOutput.enhanced_system_purpose?.inferred_description &&
@@ -6559,6 +6580,71 @@ export class AnalyzerOrchestrator {
     );
   }
 
+  /**
+   * COMPREHENSION-INPUT gate for user journeys: journeys whose entry point (or
+   * handler node) lives in a test/fixture path must never seed comprehension —
+   * capability catalogs, terminal signal, framework narrative, description
+   * evidence. Live-proven leak: Klauro's own analysis surfaced journeys from
+   * `*.integration.test.ts` and a NestJS fixture scheduled job as product
+   * capabilities, and a whole hallucinated capability sourced from a fixture
+   * journey. The STRUCTURAL graph keeps every journey (tests are real facts —
+   * get_test_summary depends on them); this filter applies to comprehension
+   * derivation only. Reuses the same isPrimaryProductPath classifier the rest
+   * of the purpose pipeline (entry points, frameworks, capabilities) trusts.
+   */
+  private filterPrimaryProductJourneys(
+    journeys: CASUserJourney[],
+    entryPoints: CASEntryPoint[],
+    nodes: CASNode[],
+    projectPath: string
+  ): CASUserJourney[] {
+    if (journeys.length === 0) return journeys;
+    const entryPointById = new Map(entryPoints.map(entryPoint => [entryPoint.id, entryPoint]));
+    const productEntryPointIds = new Set(
+      this.filterPrimaryProductEntryPoints(entryPoints, nodes, projectPath).map(entryPoint => entryPoint.id)
+    );
+    const nodeById = new Map(nodes.map(node => [node.id, node]));
+    return journeys.filter(journey => {
+      if (journey.entry_point_id && entryPointById.has(journey.entry_point_id)) {
+        return productEntryPointIds.has(journey.entry_point_id);
+      }
+      const handlerNode = journey.entry?.handler_node_id ? nodeById.get(journey.entry.handler_node_id) : undefined;
+      if (handlerNode) return this.isPrimaryProductNodeForProject(handlerNode, projectPath);
+      // No resolvable source evidence: keep — exclusion requires evidence.
+      return true;
+    });
+  }
+
+  /**
+   * COMPREHENSION-INPUT gate for data entities (entity seeds): an entity whose
+   * schema source is a test/fixture path, or whose lifecycle accessors all live
+   * outside product paths, must not seed the capability catalog, the
+   * distinctive-entity grounding, or the description evidence. Same policy
+   * buildSystemCapabilities already applies to its own entity set; extracted so
+   * the AI-comprehension boundary applies it too. Structural output keeps every
+   * entity.
+   */
+  private filterPrimaryProductDataEntities(
+    dataEntities: CASDataEntity[],
+    nodes: CASNode[],
+    projectPath: string
+  ): CASDataEntity[] {
+    if (dataEntities.length === 0) return dataEntities;
+    const productNodeIds = new Set(
+      nodes.filter(node => this.isPrimaryProductNodeForProject(node, projectPath)).map(node => node.id)
+    );
+    return dataEntities.filter(entity => {
+      if (entity.schema_source && !this.isPrimaryProductPathForProject(entity.schema_source, projectPath)) return false;
+      const lifecycleIds = [
+        ...entity.lifecycle.created_by,
+        ...entity.lifecycle.read_by,
+        ...entity.lifecycle.updated_by,
+        ...entity.lifecycle.deleted_by,
+      ];
+      return lifecycleIds.length === 0 || lifecycleIds.some(id => productNodeIds.has(id));
+    });
+  }
+
   private frameworkNamesForPurpose(contributions: any[], nodes: CASNode[], projectPath: string): string[] {
     const productFrameworks = new Set<string>();
     for (const node of nodes) {
@@ -8273,38 +8359,90 @@ export class AnalyzerOrchestrator {
       adjacency.get(edge.source)!.push(edge);
     }
 
+    // Deterministic exploration order: pre-sort every adjacency list once by
+    // edge rank, then target id, then edge id, so BFS below is byte-stable
+    // run-to-run regardless of input edge order.
+    for (const list of adjacency.values()) {
+      list.sort((a, b) =>
+        (this.rankChainEdge(a) - this.rankChainEdge(b)) ||
+        a.target.localeCompare(b.target) ||
+        (a.id || '').localeCompare(b.id || '')
+      );
+    }
+
     const chains: CASCallChain[] = [];
     const maxDepth = 8;
+    // Per-entry node-visit budget: bounds work on huge/wide graphs while still
+    // letting realistic handler fan-outs reach their terminals. Measured on the
+    // self-analysis graph (46k nodes, 3.7k entries): 600 reaches the graph's
+    // full exit-reachability ceiling and the whole phase stays ~15ms.
+    const nodeVisitBudget = 600;
 
     for (const entryPoint of entryPoints) {
       const startNodeId = entryPoint.handler?.node_id || entryPoint.source_node;
       const startNode = nodeById.get(startNodeId);
       if (!startNode) continue;
 
-      const selectedPath: Array<{ nodeId: string; edge?: CASEdge }> = [{ nodeId: startNode.id }];
-      const visited = new Set<string>([startNode.id]);
-      let currentNodeId = startNode.id;
-      let matchedExitPoint: CASExitPoint | undefined;
+      // Bounded multi-path BFS from the entry point following ALL outgoing
+      // call edges (not one greedy edge). Select the best reachable exit:
+      // highest-value exit kind first (db/api/external write over log-like),
+      // then shortest path, then stable node-id tie-break.
+      const parentByNode = new Map<string, { parent: string; edge: CASEdge }>();
+      const depthByNode = new Map<string, number>([[startNode.id, 0]]);
+      const queue: string[] = [startNode.id];
+      let queueIndex = 0;
+      let visitedCount = 0;
+      let deepestNodeId = startNode.id;
+      let best: { nodeId: string; depth: number; exit: CASExitPoint; rank: number } | undefined;
 
-      for (let depth = 0; depth < maxDepth; depth++) {
-        const exits = exitBySource.get(currentNodeId);
-        if (exits?.length) {
-          matchedExitPoint = exits[0];
-          break;
+      while (queueIndex < queue.length && visitedCount < nodeVisitBudget) {
+        const currentNodeId = queue[queueIndex++];
+        visitedCount++;
+        const depth = depthByNode.get(currentNodeId)!;
+        if (depth > depthByNode.get(deepestNodeId)!) {
+          deepestNodeId = currentNodeId;
         }
 
-        const nextEdge = (adjacency.get(currentNodeId) || [])
-          .filter(edge => !visited.has(edge.target))
-          .sort((a, b) => this.rankChainEdge(a) - this.rankChainEdge(b))[0];
+        const exits = exitBySource.get(currentNodeId);
+        if (exits?.length) {
+          const bestHere = [...exits].sort((a, b) =>
+            (this.rankChainExit(a) - this.rankChainExit(b)) || a.id.localeCompare(b.id)
+          )[0];
+          const rank = this.rankChainExit(bestHere);
+          if (
+            !best ||
+            rank < best.rank ||
+            (rank === best.rank && depth < best.depth) ||
+            (rank === best.rank && depth === best.depth && currentNodeId.localeCompare(best.nodeId) < 0)
+          ) {
+            best = { nodeId: currentNodeId, depth, exit: bestHere, rank };
+          }
+          // A chain terminates at an exit node, so don't expand past it.
+          // Early exit: BFS visits by depth, so the first top-rank exit found
+          // is on a shortest path for that rank.
+          if (best.rank === 0) break;
+          continue;
+        }
 
-        if (!nextEdge) break;
-
-        selectedPath.push({ nodeId: nextEdge.target, edge: nextEdge });
-        visited.add(nextEdge.target);
-        currentNodeId = nextEdge.target;
+        if (depth >= maxDepth) continue;
+        for (const edge of adjacency.get(currentNodeId) || []) {
+          if (depthByNode.has(edge.target)) continue;
+          depthByNode.set(edge.target, depth + 1);
+          parentByNode.set(edge.target, { parent: currentNodeId, edge });
+          queue.push(edge.target);
+        }
       }
 
-      matchedExitPoint = matchedExitPoint || exitBySource.get(currentNodeId)?.[0];
+      // Reconstruct the selected path: to the best exit if one was reached,
+      // otherwise to the deepest node explored (an honest dead-end path).
+      const matchedExitPoint = best?.exit;
+      const selectedPath: Array<{ nodeId: string; edge?: CASEdge }> = [];
+      let cursor: string | undefined = best ? best.nodeId : deepestNodeId;
+      while (cursor) {
+        const parent = parentByNode.get(cursor);
+        selectedPath.unshift({ nodeId: cursor, edge: parent?.edge });
+        cursor = parent?.parent;
+      }
 
       const pathNodes = selectedPath
         .map(step => nodeById.get(step.nodeId))
@@ -8318,7 +8456,7 @@ export class AnalyzerOrchestrator {
 
       chains.push({
         id: `chain:${entryPoint.id}`,
-        chain_type: matchedExitPoint ? 'entry-to-exit' : selectedPath.length > 1 ? 'dead-end' : 'dead-end',
+        chain_type: matchedExitPoint ? 'entry-to-exit' : 'dead-end',
         entry_point: {
           node_id: startNode.id,
           method_name: entryPoint.handler?.method_name || startNode.name,
@@ -8381,6 +8519,28 @@ export class AnalyzerOrchestrator {
       subscribes: 12
     };
     return ranks[edge.type] ?? 99;
+  }
+
+  /**
+   * Value ranking for exit-point kinds when selecting the best terminal for a
+   * call chain: durable side effects (database/api/external writes) beat
+   * observability-style exits (analytics). Lower rank = more valuable.
+   */
+  private rankChainExit(exitPoint: CASExitPoint): number {
+    const ranks: Record<string, number> = {
+      database: 0,
+      api: 1,
+      sdk: 2,
+      webhook: 3,
+      message: 4,
+      event: 5,
+      file: 6,
+      cache: 7,
+      client_storage: 8,
+      navigation: 9,
+      analytics: 10
+    };
+    return ranks[exitPoint.type] ?? 99;
   }
 
   private buildEnhancedFlowSummary(
@@ -8573,6 +8733,11 @@ export class AnalyzerOrchestrator {
         .replace(/\s+(?:through|using|via)\s+(?:the\s+)?[^.]*?\b(?:api|apis|routes?|endpoints?|operations?|controllers?)\b[^.]*/gi, '')
         .replace(/\b[a-z]+:\/[^\s.]*/gi, '')
         .replace(/\s+/g, ' ').trim();
+      // The mechanism-clause strip above can cut mid-sentence and leave a
+      // grammatical stump ("providing telemetry data and graph evidence for.");
+      // repair or drop the broken sentence — a gutted result falls through to
+      // the entity-grounded rebuild below.
+      description = this.repairStrippedSentenceGrammar(description);
       if (description.length < 25 && itemEntityNamesRaw.length) {
         description = `${name} manages ${itemEntityNamesRaw.slice(0, 4).join(', ')}.`;
       }
@@ -8791,7 +8956,7 @@ export class AnalyzerOrchestrator {
       raw = await Promise.race([
         aiService.generateComponentDescription({
           additionalContext: {
-            task: 'You are writing the Klauro CAS human/agent orientation. Based ONLY on the supplied facts and descriptionContract, return ONLY valid JSON with this shape: {"system_description":"...","domain":"...","descriptions":[{"id":"...","description":"..."}],"quality_check":{"used_facts":["..."],"unsupported_claims":[]}}. Before writing, follow descriptionContract.evidence_priority in order. system_description must be ONE rich paragraph of 4 to 6 full sentences that answers, in order, the four questions in descriptionContract.system_description_shape: (1) WHAT IT IS — the system type/domain, inferred from the supplied dependencies, distinctiveEntities, and project text; (2) WHAT IT DOES — the concrete product workflows and the terminalOutputs it produces for its consumers; (3) HOW IT WORKS — how those outputs are produced, naming the real capabilities, terminal (api-response) entities, and near-terminal stages that lead to them; (4) HOW IT IS BUILT — the architecture, frameworks, and third-party integrations, using only supplied allowedFrameworks, entities, integrations, and dependencies. Infer the domain from the real dependencies and integrations (for example a codebase depending on ccxt/web3/ethers is a crypto/blockchain system) — NEVER from a keyword in the project name. Anchor WHAT IT DOES and HOW IT WORKS on what the system PRODUCES (terminalOutputs / api-response entities), not on mid-chain create/update/delete of records. domain must be one lowercase kebab-case label of 2 to 4 concrete product nouns from the facts. descriptions must include one grounded sentence per item in items; each sentence must name the concrete record, lifecycle, workflow, model, or boundary that item owns.',
+            task: 'You are writing the Klauro CAS human/agent orientation. Based ONLY on the supplied facts and descriptionContract, return ONLY valid JSON with this shape: {"system_description":"...","domain":"...","descriptions":[{"id":"...","description":"..."}],"quality_check":{"used_facts":["..."],"unsupported_claims":[]}}. Before writing, follow descriptionContract.evidence_priority in order. system_description must be ONE rich paragraph of 4 to 6 full sentences that answers, in order, the four questions in descriptionContract.system_description_shape: (1) WHAT IT IS — the system type/domain, inferred from the supplied dependencies, distinctiveEntities, and project text; (2) WHAT IT DOES — the concrete product workflows and the terminalOutputs it produces for its consumers; (3) HOW IT WORKS — the concrete mechanism that produces those outputs, naming at least one supplied mechanism fact (an allowedFramework, a library, a near-terminal stage, or the dataflow from a capability through its entities to a terminal output) — never a circular restatement of the capability or output lists;(4) HOW IT IS BUILT — the architecture, frameworks, and third-party integrations, using only supplied allowedFrameworks, entities, integrations, and dependencies. Infer the domain from the real dependencies and integrations (for example a codebase depending on ccxt/web3/ethers is a crypto/blockchain system) — NEVER from a keyword in the project name. Anchor WHAT IT DOES and HOW IT WORKS on what the system PRODUCES (terminalOutputs / api-response entities), not on mid-chain create/update/delete of records. domain must be one lowercase kebab-case label of 2 to 4 concrete product nouns from the facts. descriptions must include one grounded sentence per item in items; each sentence must name the concrete record, lifecycle, workflow, model, or boundary that item owns.',
             style: 'Use precise engineering/product language. No markdown. No headings. No colon-prefixed inventory labels. No marketing. No vague placeholders. Do not describe source mechanics; translate them into product purpose. If a claim cannot be supported by a supplied fact, omit it and list it in quality_check.unsupported_claims instead of writing it.',
             descriptionContract: descriptionPromptContract,
             primaryDomain: enhancedSystemPurpose.primary_domain,
@@ -10050,7 +10215,7 @@ export class AnalyzerOrchestrator {
       for (const pattern of flaggedPatterns) {
         stripped = stripped.replace(pattern, '');
       }
-      const repaired = this.cleanGeneratedDescriptionText(
+      const repaired = this.repairStrippedSentenceGrammar(this.cleanGeneratedDescriptionText(
         stripped
           .replace(/\s+,/g, ',')
           .replace(/,(?:\s*,)+/g, ',')
@@ -10058,7 +10223,7 @@ export class AnalyzerOrchestrator {
           .replace(/\s+\./g, '.')
           .replace(/\band\s+\./gi, '.')
           .replace(/\s{2,}/g, ' ')
-      );
+      ));
       return repaired && repaired !== this.cleanGeneratedDescriptionText(description) ? repaired : undefined;
     }
     const ungroundedType = /^ungrounded-system-type:\s*(.+)$/.exec(reason);
@@ -10071,14 +10236,16 @@ export class AnalyzerOrchestrator {
       if (flaggedTokens.length !== 1 || !/^[a-z0-9]+$/i.test(flaggedTokens[0])) return undefined;
       const escaped = flaggedTokens[0].replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       const stripped = description.replace(new RegExp(`\\b${escaped}[- ]`, 'gi'), '');
-      const repaired = this.cleanGeneratedDescriptionText(
+      // Stripping one conjunct of a coordination leaves stumps like "a robust
+      // and solution" — repairStrippedSentenceGrammar heals or drops them.
+      const repaired = this.repairStrippedSentenceGrammar(this.cleanGeneratedDescriptionText(
         stripped
           // Stripping a vowel-initial modifier can orphan its article:
           // "an ecommerce platform" -> "an platform". Repair only when the
           // article now sits directly against a consonant-initial type head.
           .replace(/\ban(\s+(?:tool|system|service|platform|pipeline|dashboard|suite|toolkit|server|gateway|framework|library)s?\b)/gi, 'a$1')
           .replace(/\s{2,}/g, ' ')
-      );
+      ));
       return repaired && repaired !== this.cleanGeneratedDescriptionText(description) ? repaired : undefined;
     }
     return undefined;
@@ -10120,6 +10287,81 @@ export class AnalyzerOrchestrator {
     return repaired || text;
   }
 
+  /**
+   * Grammar guard for SANITIZED text (composes with, never duplicates,
+   * repairDanglingSentenceEndings): word-level sanitizer strips leave two
+   * mechanical stump classes the trailing-function-word repair alone cannot fix
+   * (live: "providing telemetry data and graph evidence for." and "a robust
+   * and solution").
+   *  1. Broken coordination — a deleted conjunct leaves "<article> <modifier>
+   *     and <head-noun>"; drop the orphaned conjunction.
+   *  2. Clause-shape validation — after the dangling-tail repair, any sentence
+   *     that still ends on a dangling function word or carries an orphaned
+   *     conjunction/article has lost its subject-verb-object shape and is
+   *     dropped whole (when other sentences remain) rather than shipped as a
+   *     grammatical stump.
+   */
+  private repairStrippedSentenceGrammar(text: string): string {
+    const coordinationRepaired = (text || '')
+      // "a robust and solution" -> "a robust solution": article + single
+      // modifier + orphaned conjunction directly against the head noun.
+      .replace(/\b(a|an|the)\s+([a-z][a-z-]*)\s+(?:and|or)\s+(solution|system|service|platform|tool|api|library|framework|pipeline|architecture|approach|interface|design|toolkit|suite)\b/gi, '$1 $2 $3')
+      // Doubled conjunctions left by adjacent strips: "and and", "or or".
+      .replace(/\b(and|or)\s+\1\b/gi, '$1')
+      // Conjunction directly against sentence punctuation is already handled by
+      // repairDanglingSentenceEndings; collapse whitespace introduced above.
+      .replace(/\s{2,}/g, ' ')
+      .trim();
+    const repaired = this.repairDanglingSentenceEndings(coordinationRepaired);
+    // Drop sentences the repairs could not restore to clause shape.
+    const danglingTail = /\s+(?:for|with|of|to|from|by|in|on|at|into|onto|and|or|but|the|a|an|as|via|per|than|that|which|while|when|where|whose|its|their)\s*[.!?]$/i;
+    const orphanedJoint = /\b(?:a|an|the)\s+(?:and|or)\b|\b(?:and|or)\s*[,.]/i;
+    const sentences = repaired.split(/(?<=[.!?])\s+/).map(sentence => sentence.trim()).filter(Boolean);
+    if (sentences.length <= 1) return repaired;
+    const kept = sentences.filter(sentence => !danglingTail.test(sentence) && !orphanedJoint.test(sentence));
+    if (kept.length === 0) return repaired;
+    return kept.join(' ').trim();
+  }
+
+  /**
+   * Repetition-padding collapse: the model (and the repair re-prompts) restate
+   * the same domain-justification sentence 2-3x (live: "The system's domain is
+   * inferred..." x3; "...with a focus on managing customer data and orders"
+   * x2). Sentences are compared on normalized token sets; a later sentence
+   * whose tokens overlap an earlier kept sentence at >= 0.8 Jaccard (or that is
+   * an exact normalized duplicate) is padding, not new information, and is
+   * dropped. Deterministic edit of the AI's own text — no authorship.
+   */
+  private collapseNearDuplicateSentences(text: string): string {
+    const sentences = (text || '').split(/(?<=[.!?])\s+/).map(sentence => sentence.trim()).filter(Boolean);
+    if (sentences.length <= 1) return text;
+    const tokenSetOf = (sentence: string): Set<string> => new Set(
+      sentence.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(token => token.length > 2)
+    );
+    const keptSets: Set<string>[] = [];
+    const kept: string[] = [];
+    for (const sentence of sentences) {
+      const tokens = tokenSetOf(sentence);
+      const isDuplicate = keptSets.some(previous => {
+        if (tokens.size === 0 || previous.size === 0) return false;
+        let shared = 0;
+        for (const token of tokens) if (previous.has(token)) shared++;
+        const jaccard = shared / (tokens.size + previous.size - shared);
+        if (jaccard >= 0.8) return true;
+        // Containment: a later sentence almost fully inside an earlier one is
+        // the same information restated ("...with a focus on managing customer
+        // data and orders" appended to two sentences — live hercules padding).
+        const containment = shared / Math.min(tokens.size, previous.size);
+        return Math.min(tokens.size, previous.size) >= 4 && containment >= 0.85;
+      });
+      if (isDuplicate) continue;
+      keptSets.push(tokens);
+      kept.push(sentence);
+    }
+    if (kept.length === sentences.length) return text;
+    return kept.join(' ').trim() || text;
+  }
+
   private acceptAIInterpretationCandidate(
     candidate: string,
     enhancedSystemPurpose: EnhancedSystemPurpose,
@@ -10128,7 +10370,9 @@ export class AnalyzerOrchestrator {
     // Dangling-clause self-heal BEFORE validation: a truncated trailing clause
     // ("…graph evidence for.") is a mechanical defect the gates do not model,
     // so repair it up front and let the normal validate path judge the result.
-    let text = this.repairDanglingSentenceEndings(this.cleanGeneratedDescriptionText(candidate));
+    let text = this.collapseNearDuplicateSentences(
+      this.repairStrippedSentenceGrammar(this.cleanGeneratedDescriptionText(candidate))
+    );
     let validation = this.validateGeneratedAIInterpretation(text, enhancedSystemPurpose, facts);
     if (validation.ok) return { text, validation };
 
@@ -10654,7 +10898,7 @@ export class AnalyzerOrchestrator {
     enhancedSystemPurpose: EnhancedSystemPurpose,
     facts: { frameworks?: string[]; libraries?: string[]; databaseEntities?: string[]; externalServices?: string[] } = {},
   ): string {
-    const cleaned = this.cleanGeneratedDescriptionText(description)
+    const wordSanitized = this.cleanGeneratedDescriptionText(description)
       .replace(/\bfacilitates\b/gi, 'links')
       .replace(/\buser experience\b/gi, 'interface behavior')
       .replace(/\bportfolio management system\b/gi, `${(enhancedSystemPurpose.primary_domain || 'domain').replace(/-/g, ' ')} system`)
@@ -10732,7 +10976,11 @@ export class AnalyzerOrchestrator {
       .replace(/\benhanc(?:e|es|ing) (?:the )?navigation\b/gi, 'adds navigation')
       .replace(/\benhanc(?:e|es|ing) (?:the )?insights\b/gi, 'adds graph evidence')
       .replace(/\bstructured data and insights\b/gi, 'structured CAS graph data')
-      .replace(/\binsights?(?: into)?\b/gi, 'graph evidence for')
+      // "insights into X" keeps its complement ("graph evidence for X"), but a
+      // BARE "insights" must not gain a preposition — that manufactured the
+      // live dangling stump "…telemetry data and graph evidence for."
+      .replace(/\binsights? into\b/gi, 'graph evidence for')
+      .replace(/\binsights?\b/gi, 'graph evidence')
       .replace(/\bcomplex tasks\b/gi, 'codebase tasks')
       .replace(/\befficient(?:ly)?\b/gi, '')
       .replace(/\befficiency\b/gi, 'speed')
@@ -10741,6 +10989,11 @@ export class AnalyzerOrchestrator {
       .replace(/\bA\s+(audio|access|api|analytics|arbitrage|infrastructure)\b/g, 'An $1')
       .replace(/\s+/g, ' ')
       .trim();
+    // Word-level substitutions/deletions above can leave grammatical stumps
+    // ("…graph evidence for.", "a robust and solution") and the model pads
+    // paragraphs by restating the same domain sentence 2-3x — repair grammar
+    // and collapse near-duplicate sentences before sentence-level filtering.
+    const cleaned = this.collapseNearDuplicateSentences(this.repairStrippedSentenceGrammar(wordSanitized));
     const sentences = cleaned
       .split(/(?<=[.!?])\s+/)
       .map(sentence => sentence.trim())
@@ -10927,10 +11180,32 @@ export class AnalyzerOrchestrator {
     // OhlcvCandle/PreflightDecision (crypto). We feed the ranked terminal
     // entities, near-terminal stages, terminal capabilities, AND the weighted
     // domain_seed_text — all raw facts; the AI infers the domain, no label here.
+    // terminalOutputs fed to the prompt must be OUTPUT-shaped entities — the
+    // api-response / persisted-entity kinds (deterministic framework-evidence
+    // kinds on CASDataEntity) — never raw node names. Live defect: UI pages and
+    // adapter classes (GraphExplorer, InMemoryMemoryGraphAdapter) were cited as
+    // "terminal outputs" because ranked terminal names include node-kind
+    // terminals. When an entity catalog exists, keep only ranked names that
+    // resolve to a data entity whose kind is output-shaped (unknown kind on a
+    // real entity gets the benefit of the doubt; request-dto/value-object and
+    // unresolved node names do not). With no catalog there is nothing to
+    // resolve against, so the ranked list passes through unchanged.
+    const entityKindByName = new Map(dataEntities.map(entity => [entity.name.toLowerCase(), entity.kind]));
+    const isOutputShapedTerminal = (name: string): boolean => {
+      if (entityKindByName.size === 0) return true;
+      if (!entityKindByName.has(name.toLowerCase())) return false;
+      const kind = entityKindByName.get(name.toLowerCase());
+      return kind === undefined || kind === 'api-response' || kind === 'persisted-entity';
+    };
+    const rankedTerminalOutputs = this.activeTerminalSignal
+      ? this.activeTerminalSignal.ranked_entities.filter(entity => isOutputShapedTerminal(entity.name))
+      : [];
     const terminalFacts = this.activeTerminalSignal && this.activeTerminalSignal.ranked_entities.length > 0
       ? {
-        terminalOutputs: this.activeTerminalSignal.ranked_entities.slice(0, 8).map(entity =>
-          `${entity.name} (${entity.write_journeys > 0 ? 'written' : 'read'} by ${entity.journey_count} journeys)`),
+        ...(rankedTerminalOutputs.length > 0 ? {
+          terminalOutputs: rankedTerminalOutputs.slice(0, 8).map(entity =>
+            `${entity.name} (${entity.write_journeys > 0 ? 'written' : 'read'} by ${entity.journey_count} journeys)`),
+        } : {}),
         nearTerminalStages: this.activeTerminalSignal.ranked_stages.slice(0, 6).map(stage => stage.name),
         terminalCapabilities: this.activeTerminalSignal.ranked_capabilities.slice(0, 6).map(cap => cap.name),
         terminalDomainSeed: this.activeTerminalSignal.domain_seed_text.slice(0, 600),
@@ -10989,7 +11264,7 @@ export class AnalyzerOrchestrator {
     projectTextSignal: ProjectTextSignal
   ): Record<string, unknown> {
     return {
-      version: 'klauro-ai-description-contract-v2-four-question-paragraph',
+      version: 'klauro-ai-description-contract-v11-mechanism-grounded-how-it-works',
       goal: 'Produce a specific, accurate, defensible product/architecture paragraph from CAS facts only, answering four questions in order: what the system is, what it does, how it works, and how it is built.',
       systemName,
       suppliedPrimaryDomain: enhancedSystemPurpose.primary_domain,
@@ -11011,7 +11286,7 @@ export class AnalyzerOrchestrator {
         'One paragraph, 4 to 6 sentences, no bullets. Answer these four questions in order:',
         'WHAT IT IS: name the system type/domain — "<domain/artifact-type> that <core purpose>." Ground the type in dependencies, distinctiveEntities, or project text.',
         'WHAT IT DOES: name the concrete product workflows and the terminalOutputs it produces for its consumers/operators/agents — anchor on what it PRODUCES, not on record CRUD.',
-        'HOW IT WORKS: describe how those outputs are produced, naming the real capabilities, terminal (api-response) entities, and near-terminal stages that lead to them.',
+        'HOW IT WORKS: describe the concrete MECHANISM that produces those outputs — name at least one real supplied mechanism fact (a framework from allowedFrameworks, a package from libraries, a nearTerminalStage, or the dataflow from a capability through its entities to a terminal output). NEVER write a circular restatement such as "works by leveraging its capabilities to produce these terminal outputs" — a how-it-works sentence that only re-lists the capabilities or the outputs says nothing and will be rejected.',
         'HOW IT IS BUILT: name the architecture, allowed frameworks, and third-party integrations, using only supplied allowedFrameworks, entities, integrations, and dependencies; include boundary/tests/risk only when supplied facts support it.',
       ],
       required_grounding: [
@@ -11022,6 +11297,8 @@ export class AnalyzerOrchestrator {
         'Preserve suppliedPrimaryDomain unless supplied facts clearly support a more specific label.',
       ],
       forbidden_claims: [
+        'Do not write circular mechanism claims — "works by leveraging its capabilities to produce these terminal outputs" (or any how-it-works sentence that merely restates the capability list or the output list) is forbidden; the mechanism sentence must name a concrete framework, package, stage, or dataflow from the supplied facts.',
+        'Do not restate the same justification sentence more than once; each sentence must add new grounded information.',
         'Do not invent customers, business outcomes, compliance, scale, performance, revenue, quality, or integrations.',
         'Do not use source-mechanic language: entry points, endpoints, routes, pages, CLI commands, source files, internal files, handlers, operations, query processing, state stores, or interaction surfaces.',
         'Do not use generic filler: manages data, supports workflows, handles operations, records/lists, screen state, workflow state, product context, insights, streamline, efficient, compliant, productivity, business value.',
@@ -12959,6 +13236,20 @@ export class AnalyzerOrchestrator {
       // serializer / validation subcategories, dto node type) reclassifies to
       // api-response or request-dto. The name/affix is intentionally NOT used.
       this.tagDataEntityKind(derivedEntity, group.nodes, 'value-object');
+      // Evidence-first code-artifact exclusion: a shape whose head noun is a
+      // code-infrastructure ROLE (…Handler/Adapter/Registry/Factory/Provider/
+      // Middleware/Preflight/Pending) is wiring — a callable's contract, not a
+      // domain entity (live: RegisterTelegramHandler, ChannelHandler,
+      // PluginRegistry, *PairingPending seeding fake capabilities). BOTH
+      // conditions required: the role-suffix name AND no persistence /
+      // api-response framework evidence — an OrderHandler that classifyDataEntityKind
+      // proved persisted (ORM/@Entity/table) or produced (serializer/api-response)
+      // is a legit domain record and survives.
+      if (this.isCodeArtifactRoleName(coreName) &&
+          derivedEntity.kind !== 'persisted-entity' &&
+          derivedEntity.kind !== 'api-response') {
+        continue;
+      }
       derived.push(derivedEntity);
     }
     // Rank by KIND then field evidence, then cap: an api-response / persisted
@@ -13001,6 +13292,19 @@ export class AnalyzerOrchestrator {
 
   private dataShapeNodeHasFieldEvidence(node: CASNode, propertyIndex: EntityPropertyIndex): boolean {
     return this.entityPropertyNodesFromIndex(propertyIndex, node).length > 0;
+  }
+
+  /**
+   * Head noun names a code-infrastructure ROLE: Handler / Adapter / Registry /
+   * Factory / Provider / Middleware / Preflight / Pending. Such a shape is code
+   * wiring, not a domain entity — but this is only HALF the exclusion test:
+   * callers must ALSO confirm the shape lacks persistence / api-response
+   * framework evidence (kind !== 'persisted-entity' && kind !== 'api-response')
+   * before dropping it, so a legit domain record that merely ends in a role
+   * suffix (OrderHandler with @Entity) is never nuked on its name alone.
+   */
+  private isCodeArtifactRoleName(name: string): boolean {
+    return /(Handler|Handlers|Adapter|Adapters|Registry|Registries|Factory|Factories|Provider|Providers|Middleware|Middlewares|Preflight|Pending)$/.test(String(name || '').trim());
   }
 
 	  private enrichCuratedProductDataEntities(
@@ -14105,7 +14409,8 @@ export class AnalyzerOrchestrator {
   private buildFlowCoverage(
     nodes: CASNode[],
     entryPoints: CASEntryPoint[],
-    callChains: CASCallChain[]
+    callChains: CASCallChain[],
+    testSuites?: CASTestSuite[]
   ): CASFlowCoverage[] {
     const flowCoverage: CASFlowCoverage[] = [];
 
@@ -14126,6 +14431,40 @@ export class AnalyzerOrchestrator {
         testedNodes.add(node.id);
         for (const testId of node.testing.tested_by) {
           testNodeIds.add(testId);
+        }
+      }
+    }
+
+    // TEST-TO-FLOW JOIN FIX: on many repos the two sources above are empty
+    // (no analyzer stamps node.testing.tested_by, test entry points carry no
+    // connected_nodes), yet test_suites[].coverage.nodes_tested IS populated —
+    // it just names FILE-level node ids (file_<path>), while call chains walk
+    // function/method node ids, so the join was silently empty (391 suites,
+    // 0 covered chains). Fold nodes_tested in, expanding a file node to the
+    // nodes defined in that file (evidence-gated: the suite names the file;
+    // file membership is a structural fact). File-level granularity — a suite
+    // covering a file marks that file's nodes tested, which is the honest
+    // resolution the suite evidence supports.
+    if (testSuites && testSuites.length > 0) {
+      const nodeIdsByFile = new Map<string, string[]>();
+      const filePathByFileNodeId = new Map<string, string>();
+      for (const node of nodes) {
+        const file = node.source?.file;
+        if (!file) continue;
+        if (node.type === 'file') {
+          filePathByFileNodeId.set(node.id, file);
+        } else {
+          if (!nodeIdsByFile.has(file)) nodeIdsByFile.set(file, []);
+          nodeIdsByFile.get(file)!.push(node.id);
+        }
+      }
+      for (const suite of testSuites) {
+        for (const tested of suite.coverage?.nodes_tested || []) {
+          testedNodes.add(tested);
+          const filePath = filePathByFileNodeId.get(tested);
+          if (filePath) {
+            for (const id of nodeIdsByFile.get(filePath) || []) testedNodes.add(id);
+          }
         }
       }
     }
@@ -14552,6 +14891,30 @@ export class AnalyzerOrchestrator {
       });
     }
 
+    // BEHAVIOR-anchored capability derivation (the flagship-capability fix):
+    // everything above anchors on data entities / terminal graph nodes, so a
+    // behavior engine with no persisted entity — a rules-accurate game engine
+    // behind a socket-event namespace, a 200+ tool MCP agent-context surface,
+    // a CLI command suite — is INVISIBLE and the list reads as CRUD-over-tables.
+    // This pass derives capabilities from entry-point CLUSTERS (registration
+    // surfaces + shared-prefix families). A cluster whose reachable entities
+    // substantially overlap an existing entity-anchored capability MERGES into
+    // it (never duplicates); only entity-free behavior clusters stand alone.
+    const behaviorCapabilities = this.buildBehaviorCapabilities(
+      productEntryPoints,
+      productNodes,
+      productEdges,
+      productDataEntities,
+      projectPath
+    );
+    for (const candidate of behaviorCapabilities) {
+      if (this.mergeBehaviorCapabilityIntoExisting(candidate, capabilities)) continue;
+      capabilities.push({
+        ...candidate,
+        id: nextCapabilityId(candidate),
+      });
+    }
+
     const nonRedundantCapabilities = capabilities.filter(capability =>
       !this.isRedundantCoveredCapability(capability, capabilities)
     );
@@ -14620,7 +14983,17 @@ export class AnalyzerOrchestrator {
     // No structural evidence at all → no fabricated capability. Honest empty.
     if (operations.length === 0) return [];
 
-    const repoName = path.basename(projectPath || '').replace(/[_-]+/g, ' ').trim();
+    // HASH-TOKEN-LEAK GUARD: production analyze calls snapshot sources into a
+    // dir named after the project/analysis id (e.g. "prj_jGNMsl_nmy8Lauen"),
+    // and humanizing that basename produced the capability label "Prj J GNMsl
+    // Nmy8 Lauen Operations" during the populating window (2026-07 cold-
+    // customer audit). Identifier-shaped basenames (prj_/wsp_/acct_ prefixes,
+    // uuid/hash shapes) never enter labels — omit and fall back to the honest
+    // structural placeholder "Repository Operations".
+    const rawBasename = path.basename(projectPath || '');
+    const repoName = isIdentifierShapedRepoBasename(rawBasename)
+      ? ''
+      : rawBasename.replace(/[_-]+/g, ' ').trim();
     const name = `${this.humanizeDisplayName(repoName || 'Repository')} Operations`;
 
     return [{
@@ -14862,7 +15235,111 @@ export class AnalyzerOrchestrator {
         : capability.category;
     }
 
-    return Array.from(byName.values());
+    return this.dedupeSystemCapabilitiesByEntitySet(Array.from(byName.values()));
+  }
+
+  /**
+   * Second dedup pass keyed on canonical ENTITY-SET identity. Name-keyed dedup
+   * (above) cannot catch verb-variant capabilities — "Tracks task reports" vs
+   * "Provides task reports" — that are the SAME capability because both anchor
+   * on the identical related_entities set (live: kontinuum TaskReport ×2, mtg
+   * EconomyTransaction ×2). Same entity set ⇒ same capability regardless of
+   * name: merge evidence and keep the richest / core-most copy. Near-dup: a
+   * capability whose entity set is a strict SUBSET of another's and that
+   * carries no operation the superset lacks adds no distinct behavior — merge
+   * it into the superset too. Capabilities with NO related entities are never
+   * set-merged (an empty set is not shared identity, and it is trivially a
+   * subset of everything), so evidence-light capabilities keep name-keyed
+   * dedup only.
+   */
+  private dedupeSystemCapabilitiesByEntitySet(capabilities: SystemCapability[]): SystemCapability[] {
+    const criticalityRank: Record<SystemCapability['criticality'], number> = {
+      critical: 4,
+      high: 3,
+      medium: 2,
+      low: 1,
+    };
+    const categoryRank: Record<SystemCapability['category'], number> = {
+      core: 4,
+      supporting: 3,
+      admin: 2,
+      internal: 1,
+    };
+    // Entity references may be ids ("entity_taskreport") on the terminal path
+    // and names ("TaskReport") on the AI-catalog path — canonicalize both to
+    // the same token so the set identity is representation-independent.
+    const normalizeEntityRef = (reference: string) =>
+      String(reference || '').toLowerCase().replace(/^entity_/, '').replace(/[^a-z0-9]/g, '');
+    const entitySetOf = (capability: SystemCapability) =>
+      new Set((capability.related_entities || []).map(normalizeEntityRef).filter(Boolean));
+    const richness = (capability: SystemCapability) =>
+      categoryRank[capability.category] * 1000 +
+      (capability.description_source === 'ai' ? 500 : 0) +
+      Math.min(capability.operations.length, 99);
+    const operationKey = (operation: SystemCapability['operations'][number]) =>
+      [operation.entry_point_id, operation.entry_point_type, operation.action, operation.path_or_command].join('|');
+
+    const removed = new Set<SystemCapability>();
+    const mergeInto = (winner: SystemCapability, loser: SystemCapability) => {
+      if (winner.description_source !== 'ai' && loser.description_source === 'ai') {
+        winner.description = loser.description;
+        winner.description_source = loser.description_source;
+        winner.description_generation = loser.description_generation;
+      }
+      winner.operations = this.uniqueCapabilityOperations([...winner.operations, ...loser.operations]).slice(0, 24);
+      winner.related_entities = Array.from(new Set([...winner.related_entities, ...loser.related_entities]));
+      winner.related_domains = Array.from(new Set([...winner.related_domains, ...loser.related_domains]));
+      winner.criticality = criticalityRank[loser.criticality] > criticalityRank[winner.criticality]
+        ? loser.criticality
+        : winner.criticality;
+      winner.criticality_factors = Array.from(new Set([
+        ...winner.criticality_factors,
+        ...loser.criticality_factors,
+      ])).slice(0, 8);
+      if (winner.category !== 'core' && loser.category === 'core') {
+        winner.category = loser.category;
+      }
+      removed.add(loser);
+    };
+
+    // Pass 1 — exact entity-set identity.
+    const bySetKey = new Map<string, SystemCapability>();
+    for (const capability of capabilities) {
+      const set = entitySetOf(capability);
+      if (set.size === 0) continue;
+      const key = [...set].sort().join('|');
+      const existing = bySetKey.get(key);
+      if (!existing) {
+        bySetKey.set(key, capability);
+        continue;
+      }
+      if (richness(capability) > richness(existing)) {
+        mergeInto(capability, existing);
+        bySetKey.set(key, capability);
+      } else {
+        mergeInto(existing, capability);
+      }
+    }
+
+    // Pass 2 — strict-subset near-dups with no distinct operations.
+    const anchored = [...bySetKey.values()];
+    for (const capability of anchored) {
+      if (removed.has(capability)) continue;
+      const set = entitySetOf(capability);
+      const superset = anchored.find(other => {
+        if (other === capability || removed.has(other)) return false;
+        const otherSet = entitySetOf(other);
+        if (otherSet.size <= set.size) return false;
+        for (const name of set) {
+          if (!otherSet.has(name)) return false;
+        }
+        const supersetOperations = new Set(other.operations.map(operationKey));
+        return capability.operations.every(operation => supersetOperations.has(operationKey(operation)));
+      });
+      if (superset) mergeInto(superset, capability);
+    }
+
+    return capabilities.filter(capability => !removed.has(capability));
   }
 
   private uniqueCapabilityOperations(operations: SystemCapability['operations']): SystemCapability['operations'] {
@@ -15131,6 +15608,10 @@ export class AnalyzerOrchestrator {
     projectPath?: string
   ): SystemCapability[] {
     const nodesById = new Map(nodes.map(node => [node.id, node]));
+    // Repo-wide identity/observability evidence share: the evidence-based
+    // exception that lets an actual auth/observability PRODUCT keep those
+    // capabilities as core (see inferTerminalCapabilityCategory).
+    const repoPlumbingProfile = this.repoPlumbingEvidenceProfile(nodes);
     const incoming = new Map<string, number>();
     const outgoing = new Map<string, number>();
     for (const edge of edges) {
@@ -15156,6 +15637,17 @@ export class AnalyzerOrchestrator {
     };
 
     for (const entity of dataEntities) {
+      // Code-artifact-shaped entities (…Handler/Adapter/Registry/… head noun)
+      // that carry no persistence / api-response framework evidence never seed
+      // a capability: they are wiring that leaked into the entity set (live:
+      // openclaw "Registers Telegram Handlers" from RegisterTelegramHandler).
+      // Same both-conditions rule as the derivation-path filter — a role-suffixed
+      // entity WITH real persisted/produced evidence still anchors capabilities.
+      if (this.isCodeArtifactRoleName(entity.name) &&
+          entity.kind !== 'persisted-entity' &&
+          entity.kind !== 'api-response') {
+        continue;
+      }
       const tokens = this.domainTokensFromText(entity.name);
       const key = tokens[0];
       if (!key || this.domainCoveredByExistingDomain(key, existingDomains)) continue;
@@ -15247,7 +15739,7 @@ export class AnalyzerOrchestrator {
           action: this.inferActionFromNodeName(node.name),
           path_or_command: node.source?.file,
         }));
-      const category = this.inferTerminalCapabilityCategory(key, uniqueNodes, uniqueEntities);
+      const category = this.inferTerminalCapabilityCategory(key, uniqueNodes, uniqueEntities, repoPlumbingProfile);
       // Deterministic STRUCTURAL label (fact). Drives the quality gates below,
       // dedup, and the fact-grounded description. It carries the "<Domain>
       // Management/Analysis/…" grammar the gates key off — but that grammar is
@@ -15303,8 +15795,8 @@ export class AnalyzerOrchestrator {
         operations: operations.slice(0, 12),
         related_entities: uniqueEntities.map(entity => entity.id),
         related_domains: [key],
-        criticality: this.inferTerminalCriticality(key, uniqueNodes, uniqueEntities),
-        criticality_factors: this.terminalCriticalityFactors(key, uniqueNodes, uniqueEntities),
+        criticality: this.inferTerminalCriticality(uniqueNodes, uniqueEntities),
+        criticality_factors: this.terminalCriticalityFactors(uniqueNodes, uniqueEntities),
       };
       // Weight terminal (api-response) entities highest, produced persisted
       // records next; request-dto/value-object contribute nothing to the anchor.
@@ -15320,6 +15812,428 @@ export class AnalyzerOrchestrator {
         b.operations.length - a.operations.length
       )
       .slice(0, 24);
+  }
+
+  /** Minimum entries for a shared-prefix entry-point family to evidence a capability. */
+  private static readonly BEHAVIOR_FAMILY_MIN_ENTRIES = 4;
+  /** Minimum entries for a whole registration surface (e.g. an MCP tool server) to be one capability. */
+  private static readonly BEHAVIOR_SURFACE_MIN_ENTRIES = 12;
+  /** Hard cap: behavior derivation adds FEW flagship capabilities, never bloat. */
+  private static readonly BEHAVIOR_CAPABILITY_MAX = 5;
+
+  /**
+   * Structural browser-interaction grammar (NOT domain vocabulary): a DOM/UI
+   * event name identifies page plumbing, never a product behavior family.
+   */
+  private static readonly DOM_INTERACTION_EVENT_TOKENS = new Set([
+    'click', 'dblclick', 'change', 'submit', 'input', 'select', 'toggle', 'hover',
+    'focus', 'blur', 'scroll', 'drag', 'dragstart', 'dragend', 'dragover', 'drop',
+    'keydown', 'keyup', 'keypress', 'mousedown', 'mouseup', 'mouseover', 'mouseout',
+    'mousemove', 'mouseenter', 'mouseleave', 'touchstart', 'touchend', 'touchmove',
+    'wheel', 'resize', 'contextmenu', 'pointerdown', 'pointerup', 'pointermove',
+  ]);
+
+  /**
+   * Grammatical action-verb prefixes (get_/create_/run_…): an operation naming
+   * convention shared across unrelated tools, so a common action verb does NOT
+   * evidence one cohesive behavior family the way a shared SUBJECT prefix
+   * (game:*, tournament:*, fab_*) does.
+   */
+  private static readonly BEHAVIOR_ACTION_VERB_PREFIXES = new Set([
+    'get', 'set', 'fetch', 'list', 'find', 'load', 'show', 'view', 'read',
+    'create', 'add', 'new', 'update', 'edit', 'delete', 'remove', 'save',
+    'submit', 'send', 'sync', 'run', 'execute', 'process', 'handle', 'make',
+    'build', 'init', 'initialize', 'validate', 'check', 'resolve', 'generate',
+    'start', 'stop', 'open', 'close', 'enable', 'disable', 'apply', 'compute',
+  ]);
+
+  /**
+   * BEHAVIOR-anchored capability derivation — the counterpart to the
+   * entity-anchored buildTerminalCapabilities above. That path derives a
+   * capability from dataEntities + terminal graph nodes, so capability ==
+   * persisted/produced DATA; behavior engines with little or no entity surface
+   * are structurally invisible to it (audited on 5 live repos: MTG's
+   * rules-accurate game engine + multiplayer, openclaw's assistant runtime,
+   * Klauro's own ~280-tool MCP surface — every flagship missing while the list
+   * bloated with CRUD-over-tables).
+   *
+   * Source material (all deterministic, already computed):
+   *  - entry-point REGISTRATION SURFACES: entries whose source node carries a
+   *    specific registration node type (e.g. 'mcp_tool') — framework evidence
+   *    that a body of same-kind registrations IS a product surface;
+   *  - entry-point PREFIX FAMILIES: entries of one behavior entry type
+   *    (event/message/websocket/cli/schedule/rpc/ipc/…) sharing a leading
+   *    SUBJECT token (game:*, tournament:*, fab_*) — module-cohesion evidence
+   *    of one behavior capability spanning many operations;
+   *  - bounded call-graph reachability from the cluster's handlers into data
+   *    entities — the call-chain/flow evidence used to MERGE a behavior
+   *    cluster into an entity-anchored capability it substantially overlaps
+   *    (merge, never duplicate — see mergeBehaviorCapabilityIntoExisting).
+   *
+   * Grouping is purely structural (entry type, source-node type, shared name
+   * prefix, reachable entities) — NEVER a hardcoded domain/brand vocabulary.
+   * Naming follows the awaiting-ai pattern the entity path uses: the
+   * structural_label / placeholder name state only facts ("<Prefix> <Surface>
+   * Surface"); the AI catalog pass authors the final display name.
+   *
+   * Count restraint: thresholds on family/surface size plus a hard cap keep
+   * this to FEW high-evidence flagship capabilities — this pass adds flagships,
+   * it must never add plumbing.
+   */
+  private buildBehaviorCapabilities(
+    entryPoints: CASEntryPoint[],
+    nodes: CASNode[],
+    edges: CASEdge[],
+    dataEntities: CASDataEntity[],
+    projectPath?: string
+  ): SystemCapability[] {
+    const nodesById = new Map(nodes.map(node => [node.id, node]));
+
+    // Node types that are plain code structure: they carry no registration
+    // evidence. Any OTHER node type on an entry's source node (e.g. 'mcp_tool')
+    // is analyzer-stamped evidence of a named registration surface.
+    const genericNodeTypes = new Set([
+      'function', 'method', 'class', 'module', 'file', 'component',
+      'functional_component', 'variable', 'interface', 'constant',
+      'constant_util', 'type', 'service', 'controller', 'handler', 'hook_usage',
+      'import', 'property', 'test', 'dto', 'entity', 'page', 'route', 'hook',
+    ]);
+    // Entry types that describe BEHAVIOR being invoked (commands, events,
+    // messages, jobs) rather than resource-shaped HTTP/page surfaces the
+    // resource-group path above already covers.
+    const behaviorEntryTypes = new Set([
+      'message', 'websocket', 'ws_handler', 'event', 'cli', 'schedule',
+      'scheduled', 'cron', 'rpc', 'ipc', 'command', 'task', 'pipeline', 'train',
+      'queue', 'grpc', 'interrupt', 'driver',
+    ]);
+
+    interface BehaviorEntry {
+      ep: CASEntryPoint;
+      prefix?: string;
+    }
+    interface BehaviorSurface {
+      kind: string;
+      kindEvidence: 'registration' | 'entry-type';
+      entries: BehaviorEntry[];
+    }
+
+    const surfaces = new Map<string, BehaviorSurface>();
+    for (const ep of entryPoints) {
+      const type = String(ep.type || '').toLowerCase();
+      if (type === 'test' || type === 'file' || type === 'lifecycle') continue;
+      if ((ep as any).metadata?.inferred_orientation_only) continue;
+
+      const sourceNode = ep.source_node ? nodesById.get(ep.source_node) : undefined;
+      const nodeType = String(sourceNode?.type || '').toLowerCase();
+      // An 'event' entry rooted in a UI COMPONENT node is a JSX prop handler
+      // (onProjectSelect/onClick wiring the page together) — interaction
+      // plumbing, never a product behavior surface. Server-side registrations
+      // root in files/registration nodes, so this is a structural
+      // discriminator, not a name heuristic.
+      if (/^(component|functional_component|page|view|screen|widget)$/.test(nodeType)) continue;
+      const registrationKind = nodeType && !genericNodeTypes.has(nodeType) ? nodeType : undefined;
+      if (!registrationKind && !behaviorEntryTypes.has(type)) continue;
+
+      // The SUBJECT of the entry: the registered event/command/tool name.
+      const rawSubject = String(ep.trigger?.event || ep.trigger?.pattern || ep.name || '');
+      const subjectTokens = rawSubject
+        .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+        .toLowerCase()
+        .split(/[^a-z0-9]+/)
+        .filter(Boolean);
+
+      // DOM/UI interaction handlers (Page click/change/submit…) are page
+      // plumbing wired by the component analyzers, not a behavior family.
+      // Tested against the registered EVENT name only (every token DOM-shaped),
+      // so a mid-name token like the 'change' in an `assess_change_risk` tool
+      // never disqualifies a real behavior entry.
+      const eventTokens = String(ep.trigger?.event || '')
+        .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+        .toLowerCase()
+        .split(/[^a-z0-9]+/)
+        .filter(Boolean);
+      if (eventTokens.length > 0 &&
+        eventTokens.every(token => AnalyzerOrchestrator.DOM_INTERACTION_EVENT_TOKENS.has(token))) {
+        continue;
+      }
+
+      // Family prefix = first meaningful SUBJECT token. Transport lead-ins
+      // ("SOCKET game:action") and grammatical action verbs (get_/run_) are
+      // skipped/rejected — they name the wire or the operation, not a family.
+      const firstToken = subjectTokens.find(token =>
+        !/^(socket|sockets|event|events|message|messages|cmd|command|commands|on|emit|ws|handler|handlers)$/.test(token));
+      let prefix: string | undefined;
+      if (firstToken && firstToken.length > 2) {
+        const normalized = this.normalizeDomainToken(firstToken);
+        if (normalized &&
+          !AnalyzerOrchestrator.BEHAVIOR_ACTION_VERB_PREFIXES.has(normalized) &&
+          !AnalyzerOrchestrator.DOM_INTERACTION_EVENT_TOKENS.has(normalized) &&
+          !this.isGenericCapabilityToken(normalized) &&
+          !this.isGenericDomainToken(normalized) &&
+          !isCapabilityNoiseToken(normalized) &&
+          !isLanguageBuiltinDomainToken(normalized)) {
+          prefix = normalized;
+        }
+      }
+
+      // Normalize separator spelling so analyzers that stamp 'mcp_tool' and
+      // 'mcp-tool' contribute to ONE surface.
+      const kind = (registrationKind || type).replace(/-/g, '_');
+      if (!surfaces.has(kind)) {
+        surfaces.set(kind, {
+          kind,
+          kindEvidence: registrationKind ? 'registration' : 'entry-type',
+          entries: [],
+        });
+      }
+      surfaces.get(kind)!.entries.push({ ep, prefix });
+    }
+
+    // Bounded call-graph reachability (2 hops) from a cluster's handlers —
+    // the evidence for entity overlap (merge) and for the description facts.
+    const outgoingBySource = new Map<string, string[]>();
+    for (const edge of edges) {
+      const targets = outgoingBySource.get(edge.source);
+      if (targets) targets.push(edge.target);
+      else outgoingBySource.set(edge.source, [edge.target]);
+    }
+    const entityLifecycleIds = dataEntities.map(entity => ({
+      entity,
+      ids: [
+        ...entity.lifecycle.created_by,
+        ...entity.lifecycle.read_by,
+        ...entity.lifecycle.updated_by,
+        ...entity.lifecycle.deleted_by,
+      ],
+    }));
+
+    const buildCandidate = (
+      surface: BehaviorSurface,
+      prefix: string | undefined,
+      entries: BehaviorEntry[]
+    ): SystemCapability => {
+      const handlerNodeIds = new Set<string>();
+      for (const { ep } of entries) {
+        if (ep.source_node) handlerNodeIds.add(ep.source_node);
+        if (ep.handler?.node_id) handlerNodeIds.add(ep.handler.node_id);
+      }
+      const reachable = new Set(handlerNodeIds);
+      let frontier: Set<string> = handlerNodeIds;
+      for (let hop = 0; hop < 2 && frontier.size > 0; hop++) {
+        const next = new Set<string>();
+        for (const nodeId of frontier) {
+          for (const target of outgoingBySource.get(nodeId) || []) {
+            if (!reachable.has(target)) {
+              reachable.add(target);
+              next.add(target);
+            }
+          }
+        }
+        frontier = next;
+      }
+      const relatedEntities = entityLifecycleIds
+        .filter(({ ids }) => ids.some(id => reachable.has(id)))
+        .map(({ entity }) => entity);
+
+      const operations = entries.slice(0, 12).map(({ ep }) => ({
+        entry_point_id: ep.id,
+        entry_point_type: String(ep.type),
+        action: this.inferActionFromEntryPoint(ep),
+        path_or_command: this.extractPathOrCommand(ep),
+      }));
+
+      // Framework identity ONLY when the emitting analyzer stamped one and it
+      // is uniform across the cluster (evidence, not inference).
+      const frameworks = new Set(entries
+        .map(({ ep }) => String((ep as any).metadata?.framework || ''))
+        .filter(Boolean));
+      const framework = frameworks.size === 1 ? [...frameworks][0] : undefined;
+
+      // Deterministic STRUCTURAL label: pure facts (family prefix, surface
+      // kind, framework evidence) — no invented "<Domain> Management" behavior
+      // grammar. Display name = the same fact placeholder; the AI catalog pass
+      // overwrites it and stamps name_source:'ai' (identical contract to the
+      // entity-anchored path above).
+      const kindLabel = this.humanizeDomainKey(surface.kind.replace(/[_-]+/g, ' '));
+      const prefixLabel = prefix ? this.humanizeDomainKey(prefix) : undefined;
+      // Skip the prefix when the kind label already starts with it ("Mcp" +
+      // "Mcp Tool" must not read "Mcp Mcp Tool").
+      const structuralLabel = prefixLabel && !kindLabel.toLowerCase().startsWith(prefixLabel.toLowerCase())
+        ? `${prefixLabel} ${kindLabel} Surface`
+        : `${kindLabel} Surface`;
+
+      const total = entries.length;
+      const criticality: SystemCapability['criticality'] =
+        total >= AnalyzerOrchestrator.BEHAVIOR_SURFACE_MIN_ENTRIES * 2 ? 'critical' :
+        total >= AnalyzerOrchestrator.BEHAVIOR_SURFACE_MIN_ENTRIES ? 'high' : 'medium';
+      const exampleNames = entries.slice(0, 3)
+        .map(({ ep }) => String(ep.trigger?.event || ep.name || '').trim())
+        .filter(Boolean);
+      const handlerFiles = new Set(entries
+        .map(({ ep }) => ep.handler?.file || nodesById.get(ep.source_node || '')?.source?.file || '')
+        .filter(Boolean));
+
+      return {
+        id: 'cap_pending',
+        name: structuralLabel,
+        name_source: undefined,
+        name_generation: {
+          status: 'ai_skipped',
+          reason: 'awaiting-ai-comprehension',
+          attempted: false,
+          generated_at: new Date().toISOString(),
+        },
+        structural_label: structuralLabel,
+        // Fact-grounded description (structure only); the AI comprehension
+        // pass authors the interpreted narrative.
+        description: `Behavior surface: ${total} ${kindLabel.toLowerCase()} entry points` +
+          (prefix ? ` sharing the '${prefix}' name prefix` : '') +
+          (framework ? ` registered via ${framework}` : '') +
+          (exampleNames.length > 0 ? ` (e.g. ${exampleNames.join(', ')})` : '') +
+          (relatedEntities.length > 0
+            ? `; handlers reach ${relatedEntities.length} data entit${relatedEntities.length === 1 ? 'y' : 'ies'}.`
+            : `; handlers form a behavior engine with no persisted-entity surface.`),
+        description_source: undefined,
+        description_generation: {
+          status: 'ai_skipped',
+          reason: 'awaiting-ai-comprehension',
+          attempted: false,
+          generated_at: new Date().toISOString(),
+        },
+        category: 'core',
+        operations,
+        related_entities: relatedEntities.map(entity => entity.id),
+        related_domains: [prefix || surface.kind.replace(/_/g, '-')],
+        criticality,
+        criticality_factors: [
+          `${total} ${surface.kind} entry points form one cohesive behavior ${prefix ? `family ('${prefix}')` : 'surface'}`,
+          ...(framework ? [`Registered via ${framework} (analyzer framework evidence)`] : []),
+          ...(handlerFiles.size > 1 ? [`Handlers span ${handlerFiles.size} modules`] : []),
+        ],
+      };
+    };
+
+    const candidates: Array<{ capability: SystemCapability; evidence: number }> = [];
+    for (const surface of surfaces.values()) {
+      const total = surface.entries.length;
+      if (total < AnalyzerOrchestrator.BEHAVIOR_FAMILY_MIN_ENTRIES) continue;
+
+      const familyMap = new Map<string, BehaviorEntry[]>();
+      for (const entry of surface.entries) {
+        if (!entry.prefix) continue;
+        const family = familyMap.get(entry.prefix);
+        if (family) family.push(entry);
+        else familyMap.set(entry.prefix, [entry]);
+      }
+      const strongFamilies = [...familyMap.entries()]
+        .filter(([, entries]) => entries.length >= AnalyzerOrchestrator.BEHAVIOR_FAMILY_MIN_ENTRIES)
+        .sort((a, b) => b[1].length - a[1].length);
+      const familyCoverage = strongFamilies.reduce((sum, [, entries]) => sum + entries.length, 0) / total;
+
+      if (surface.kindEvidence === 'registration' &&
+        total >= AnalyzerOrchestrator.BEHAVIOR_SURFACE_MIN_ENTRIES &&
+        (strongFamilies.length === 0 || familyCoverage < 0.5)) {
+        // A large registration surface with no dominant sub-family (a 200+ tool
+        // MCP server whose tool names are diverse) IS one product capability.
+        candidates.push({ capability: buildCandidate(surface, undefined, surface.entries), evidence: total });
+        continue;
+      }
+
+      // Otherwise: only cohesive shared-prefix families are capabilities.
+      // A generic entry-type surface (all 'event' handlers in an app) is NOT
+      // one capability — without a shared subject there is no evidence these
+      // entries serve one behavior.
+      for (const [prefix, entries] of strongFamilies.slice(0, 3)) {
+        candidates.push({ capability: buildCandidate(surface, prefix, entries), evidence: entries.length });
+      }
+    }
+
+    return candidates
+      .sort((a, b) => b.evidence - a.evidence)
+      .slice(0, AnalyzerOrchestrator.BEHAVIOR_CAPABILITY_MAX)
+      .map(candidate => candidate.capability);
+  }
+
+  /**
+   * Merge-not-duplicate: a behavior cluster whose reachable data entities (or
+   * family domain) substantially overlap an existing entity-anchored
+   * capability ENRICHES that capability — its operations, criticality, and
+   * evidence — instead of standing next to it as a near-duplicate. Returns
+   * true when merged. Only entity-free / non-overlapping behavior clusters
+   * (the invisible flagship engines this pass exists for) stay standalone.
+   */
+  private mergeBehaviorCapabilityIntoExisting(
+    candidate: SystemCapability,
+    capabilities: SystemCapability[]
+  ): boolean {
+    const candidateEntities = new Set(candidate.related_entities);
+    const candidateDomain = this.normalizeDomainToken(
+      String(candidate.related_domains[0] || '').toLowerCase());
+
+    let best: SystemCapability | undefined;
+    let bestScore = 0;
+    for (const capability of capabilities) {
+      const sharedEntities = capability.related_entities
+        .filter(id => candidateEntities.has(id)).length;
+      const entityOverlap = candidateEntities.size > 0 &&
+        sharedEntities / candidateEntities.size >= 0.5;
+      const domainMatch = Boolean(candidateDomain) &&
+        (capability.related_domains || []).some(domain =>
+          this.domainVariantInSet(candidateDomain, new Set([
+            this.normalizeDomainToken(String(domain || '').toLowerCase()),
+          ])));
+      // Subject agreement: the candidate's family subject appears among the
+      // target's identity tokens (name/domains). Entity overlap ALONE cannot
+      // authorize a merge — sibling families registered in one shared module
+      // (a socket.ts hosting game:*/tournament:*/lobby:*) reach the SAME
+      // entities, so raw co-reachability would collapse distinct behavior
+      // families into whichever entity capability comes first. Merge requires
+      // the subjects to agree; overlap then confirms the flows really touch
+      // that capability's data.
+      const targetTokens = new Set(
+        `${capability.name || ''} ${(capability.related_domains || []).join(' ')}`
+          .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+          .toLowerCase()
+          .split(/[^a-z0-9]+/)
+          .map(token => this.normalizeDomainToken(token))
+          .filter(Boolean));
+      const subjectAgreement = Boolean(candidateDomain) && targetTokens.has(candidateDomain);
+      if (!domainMatch && !(entityOverlap && subjectAgreement)) continue;
+      // Exact domain identity dominates; entity-confirmed subject agreement next.
+      const score = (domainMatch ? 1000 : 0) + (subjectAgreement ? 100 : 0) + sharedEntities * 2;
+      if (!best || score > bestScore) {
+        best = capability;
+        bestScore = score;
+      }
+    }
+    if (!best) return false;
+
+    const criticalityRank: Record<SystemCapability['criticality'], number> = {
+      critical: 4, high: 3, medium: 2, low: 1,
+    };
+    best.operations = this.uniqueCapabilityOperations([
+      ...best.operations,
+      ...candidate.operations,
+    ]).slice(0, 24);
+    best.related_entities = Array.from(new Set([
+      ...best.related_entities,
+      ...candidate.related_entities,
+    ]));
+    best.related_domains = Array.from(new Set([
+      ...best.related_domains,
+      ...candidate.related_domains,
+    ]));
+    if (criticalityRank[candidate.criticality] > criticalityRank[best.criticality]) {
+      best.criticality = candidate.criticality;
+    }
+    if (best.category !== 'core' && candidate.category === 'core') {
+      best.category = 'core';
+    }
+    best.criticality_factors = Array.from(new Set([
+      ...best.criticality_factors,
+      ...candidate.criticality_factors,
+    ]));
+    return true;
   }
 
   private isTerminalCapabilityNoise(
@@ -16081,38 +16995,145 @@ export class AnalyzerOrchestrator {
     return 'Coordinate';
   }
 
+  /**
+   * True when the observability library analyzer tagged this node as
+   * telemetry/instrumentation surface. The analyzer
+   * (analyzer/libraries/observability/observability-analyzer.ts) stamps
+   * `subcategories: ['observability-module']` /
+   * `['observability-instrumentation', kind, ruleId]` plus
+   * `metadata.observability_system` / `metadata.instrumentation_kind` on every
+   * hit. Framework evidence only — never a name regex — mirroring
+   * hasAuthAnalyzerEvidence (docs/cas/DETERMINISM-BOUNDARY.md).
+   */
+  private hasObservabilityAnalyzerEvidence(node: CASNode): boolean {
+    const meta = (node.metadata as any) || {};
+    if (meta.observability_system || meta.instrumentation_kind) return true;
+    const subs = [...(node.subcategories || []), ...((meta.subcategories || []) as string[])];
+    return subs.includes('observability-module') || subs.includes('observability-instrumentation');
+  }
+
+  /**
+   * True when a framework/library analyzer tagged this node as an auth
+   * MECHANISM (strategy/policy/guard — auth-analyzer.ts stamps
+   * `subcategories: ['auth', kind]` on mechanism sites). Deliberately narrower
+   * than hasAuthAnalyzerEvidence: an 'auth-protected' ROUTE is a business
+   * surface guarded BY auth, not identity plumbing itself, so it must not pull
+   * its capability into the supporting gate.
+   */
+  private isAuthMechanismNode(node: CASNode): boolean {
+    if (this.authMechanismKindOf(node)) return true;
+    const subs = [...(node.subcategories || []), ...((((node.metadata as any)?.subcategories) || []) as string[])];
+    return subs.includes('auth');
+  }
+
+  /**
+   * Repo-level plumbing-evidence profile: what share of the WHOLE graph's
+   * nodes carry analyzer-tagged identity/observability mechanism evidence.
+   * This is the evidence-based EXCEPTION to the supporting gate below: when a
+   * repo's own evidence mass says the product IS an auth/identity or
+   * observability product, identity/telemetry-shaped capabilities are its core
+   * value, not plumbing. An evidence share, never a name/keyword check.
+   */
+  private repoPlumbingEvidenceProfile(allNodes: CASNode[]): { identityShare: number; observabilityShare: number } {
+    if (allNodes.length === 0) return { identityShare: 0, observabilityShare: 0 };
+    let identity = 0;
+    let observability = 0;
+    for (const node of allNodes) {
+      if (this.isAuthMechanismNode(node)) identity++;
+      if (this.hasObservabilityAnalyzerEvidence(node)) observability++;
+    }
+    return {
+      identityShare: identity / allNodes.length,
+      observabilityShare: observability / allNodes.length,
+    };
+  }
+
+  /**
+   * Evidence-shaped plumbing detection for ONE capability group: the group is
+   * identity- or observability-plumbing when analyzer-tagged mechanism nodes
+   * make up at least half of its node evidence (group nodes include the
+   * lifecycle nodes of the group's entities, so a session/user table written
+   * mostly by auth-mechanism code lands here transitively). Framework evidence
+   * only — a group whose nodes merely have auth-looking NAMES is untouched.
+   */
+  private terminalGroupPlumbingKind(nodes: CASNode[]): 'identity' | 'observability' | undefined {
+    if (nodes.length === 0) return undefined;
+    const identity = nodes.filter(node => this.isAuthMechanismNode(node)).length;
+    if (identity * 2 >= nodes.length) return 'identity';
+    const observability = nodes.filter(node => this.hasObservabilityAnalyzerEvidence(node)).length;
+    if (observability * 2 >= nodes.length) return 'observability';
+    return undefined;
+  }
+
+  /**
+   * CATEGORY IS AN EVIDENCE CALL, NEVER A VOCABULARY CALL
+   * (docs/cas/DETERMINISM-BOUNDARY.md). `core` = what the app was BUILT FOR,
+   * proven by what the group PRODUCES: terminal api-response entities,
+   * persisted/domain state with real lifecycle breadth, or a substantial
+   * business-node cluster. Analyzer-tagged identity/telemetry plumbing is
+   * `supporting` unless the repo's own evidence mass says it IS an
+   * identity/observability product. The former hardcoded token list
+   * (trade|market|price|sol|bundler|… → core) was a crypto-benchmark leftover
+   * that shipped 12/12-core pharma portals; a domain token is not evidence.
+   */
   private inferTerminalCapabilityCategory(
     key: string,
     nodes: CASNode[],
-    entities: CASDataEntity[]
+    entities: CASDataEntity[],
+    repoProfile?: { identityShare: number; observabilityShare: number }
   ): 'core' | 'supporting' | 'admin' | 'internal' {
     if (/(admin|setting|config|system|manage)/.test(key)) return 'admin';
     if (/(health|metric|telemetry|log|debug|cache|queue|worker|infra)/.test(key)) return 'internal';
-    if (/^(trade|token-balance|market-data|pair|pairs|token-pair|token-pairs|market|market-usd|market_usd|purchase|buy|batch|bundler|bundle|price|prices|sol)$/.test(key)) return 'core';
-    if (key === 'fee') return 'supporting';
-    if (entities.length > 0 || nodes.some(node => /\b(service|usecase|workflow|entity|model)\b/i.test(`${node.type} ${node.name}`))) {
+
+    // Evidence-based SUPPORTING gate: a capability whose node evidence is
+    // predominantly analyzer-tagged auth/observability mechanism is
+    // infrastructure the product uses, not value the product provides —
+    // UNLESS the repo-wide evidence share says the product IS that thing.
+    const PLUMBING_PRODUCT_EVIDENCE_SHARE = 0.15;
+    const plumbing = this.terminalGroupPlumbingKind(nodes);
+    if (plumbing === 'identity' && (repoProfile?.identityShare ?? 0) < PLUMBING_PRODUCT_EVIDENCE_SHARE) {
+      return 'supporting';
+    }
+    if (plumbing === 'observability' && (repoProfile?.observabilityShare ?? 0) < PLUMBING_PRODUCT_EVIDENCE_SHARE) {
+      return 'supporting';
+    }
+
+    // `core` requires PRODUCED-VALUE evidence, so category distributions stay
+    // honest (a group merely HAVING an entity is not proof of product value):
+    // 1) terminal api-response entities — consumer-visible output;
+    if (entities.some(entity => entity.kind === 'api-response')) return 'core';
+    // 2) persisted domain state the graph actually operates on;
+    if (entities.some(entity => entity.kind === 'persisted-entity') && nodes.length >= 2) return 'core';
+    // 3) unclassified (not proven-plumbing) entities with lifecycle breadth;
+    if (entities.some(entity => !entity.kind_source) && nodes.length >= 2) return 'core';
+    // 4) a substantial business-implementation cluster.
+    if (nodes.length >= 3 && nodes.some(node => /\b(service|usecase|workflow|entity|model)\b/i.test(`${node.type} ${node.name}`))) {
       return 'core';
     }
     return 'supporting';
   }
 
+  /**
+   * Criticality is evidence-only: sensitive-field entities (field-level
+   * analyzer evidence) and the breadth of the implementing cluster. The former
+   * /(auth|…|user|account)/ name boost is gone — it shipped identity plumbing
+   * as high-criticality on non-auth apps; a domain NAME is not impact evidence.
+   */
   private inferTerminalCriticality(
-    key: string,
     nodes: CASNode[],
     entities: CASDataEntity[]
   ): 'critical' | 'high' | 'medium' | 'low' {
-    if (/(auth|tenant|permission|payment|billing|invoice|order|security|user|account)/.test(key)) return 'high';
     if (entities.some(entity => entity.fields?.some(field => field.is_sensitive))) return 'high';
     if (entities.length > 0 && nodes.length >= 3) return 'medium';
     return nodes.length >= 5 ? 'medium' : 'low';
   }
 
-  private terminalCriticalityFactors(key: string, nodes: CASNode[], entities: CASDataEntity[]): string[] {
+  private terminalCriticalityFactors(nodes: CASNode[], entities: CASDataEntity[]): string[] {
     const factors: string[] = [];
     if (entities.length > 0) factors.push(`Backed by ${entities.length} data entity node(s)`);
     if (nodes.length > 0) factors.push(`Inferred from ${nodes.length} terminal or parent business node(s)`);
-    if (/(auth|tenant|permission|payment|billing|invoice|order|security|user|account)/.test(key)) {
-      factors.push('Domain name suggests security, identity, financial, or account impact');
+    if (entities.some(entity => entity.fields?.some(field => field.is_sensitive))) {
+      factors.push('Touches fields marked sensitive by field-level analyzer evidence');
     }
     if (factors.length === 0) factors.push('Inferred from graph terminality');
     return factors;

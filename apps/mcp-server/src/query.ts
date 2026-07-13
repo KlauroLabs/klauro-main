@@ -229,11 +229,17 @@ export function buildSummary(cas: CASOutput, opts: { detail?: 'compact' | 'full'
         .filter(c => c.category !== 'internal')
         .sort((a, b) => {
           const order = { critical: 0, high: 1, medium: 2, low: 3 };
+          // Plumbing never leads: supporting/admin capabilities rank strictly
+          // below core, whatever their criticality — a summary whose #1
+          // capability is profile/session/config upkeep misrepresents what
+          // the product was built for.
+          const categoryRank = (capability: any) => capability.category === 'core' ? 0 : 1;
           const domainBias = (capability: any) =>
             primaryDomain && capability.related_domains?.some((domain: string) => domain.includes(primaryDomain) || primaryDomain.includes(domain))
               ? 0
               : 1;
-          return domainBias(a) - domainBias(b) ||
+          return categoryRank(a) - categoryRank(b) ||
+            domainBias(a) - domainBias(b) ||
             order[a.criticality] - order[b.criticality] ||
             b.operations.length - a.operations.length;
         })
@@ -1297,10 +1303,50 @@ export function getFlowCoverage(cas: CASOutput, chainId?: string) {
       test_gaps: (cas.test_gaps || []).filter(g => g.location.call_chain_id === chainId),
     };
   }
-  const byStatus: Record<string, number> = {};
+  // VOCABULARY COHERENCE: `flow_coverage` entries are per CALL CHAIN
+  // (call_chain_id), not per flow. Report chains as chains, and measure FLOW
+  // coverage over the SAME flow set get_flow_concepts returns
+  // (computeFlowConcepts' union), joined chain->flow by chain id (terminal
+  // flows embed it: flow::<chain_id>) or by shared entry point. Previously
+  // `total_flows` was the raw chain count (e.g. 3703) while get_flow_concepts
+  // said 10 — two tools, one word, two meanings.
+  const chainByStatus: Record<string, number> = {};
   for (const fc of coverage) {
-    byStatus[fc.coverage_status] = (byStatus[fc.coverage_status] || 0) + 1;
+    chainByStatus[fc.coverage_status] = (chainByStatus[fc.coverage_status] || 0) + 1;
   }
+
+  const flows = computeFlowConcepts(cas);
+  const coverageByChainId = new Map(coverage.map(fc => [fc.call_chain_id, fc]));
+  // entry node/entry-point id -> best coverage status of any chain rooted there
+  // (for entry-point-rooted flows that don't wrap a single recorded chain).
+  const STATUS_RANK: Record<string, number> = { 'fully-covered': 3, 'partially-covered': 2, 'not-covered': 1 };
+  const bestStatusByEntry = new Map<string, string>();
+  for (const chain of cas.call_chains || []) {
+    const fc = coverageByChainId.get(chain.id);
+    if (!fc) continue;
+    for (const key of [chain.entry_point.entry_point_id, chain.entry_point.node_id]) {
+      if (!key) continue;
+      const prev = bestStatusByEntry.get(key);
+      if (!prev || (STATUS_RANK[fc.coverage_status] || 0) > (STATUS_RANK[prev] || 0)) {
+        bestStatusByEntry.set(key, fc.coverage_status);
+      }
+    }
+  }
+
+  const flowsByStatus: Record<string, number> = {};
+  let unmeasuredFlows = 0;
+  for (const flow of flows) {
+    // Terminal flows carry their chain id in the flow_id (flow::<chain_id>).
+    const embeddedChainId = flow.flow_id.startsWith('flow::') ? flow.flow_id.slice('flow::'.length) : undefined;
+    const direct = embeddedChainId ? coverageByChainId.get(embeddedChainId) : undefined;
+    const status = direct?.coverage_status || bestStatusByEntry.get(flow.entry_point);
+    if (status) {
+      flowsByStatus[status] = (flowsByStatus[status] || 0) + 1;
+    } else {
+      unmeasuredFlows += 1;
+    }
+  }
+
   const gaps = cas.test_gaps || [];
   const gapsBySeverity: Record<string, number> = {};
   for (const g of gaps) {
@@ -1308,8 +1354,17 @@ export function getFlowCoverage(cas: CASOutput, chainId?: string) {
   }
   return {
     flow_summary: cas.flow_summary || null,
-    total_flows: coverage.length,
-    by_coverage_status: byStatus,
+    // Flows — the SAME flow set (and count) as get_flow_concepts.
+    total_flows: flows.length,
+    flows_by_coverage_status: flowsByStatus,
+    // Flows with no coverage-measured chain rooted at their entry point —
+    // honest "unmeasured", never silently folded into not-covered.
+    unmeasured_flows: unmeasuredFlows,
+    // Chains — the raw per-call-chain coverage records, reported as chains.
+    total_chains: coverage.length,
+    chains_by_coverage_status: chainByStatus,
+    // Back-compat alias (pre-coherence field name; same chain breakdown).
+    by_coverage_status: chainByStatus,
     total_test_gaps: gaps.length,
     test_gaps_by_severity: gapsBySeverity,
   };
@@ -3538,7 +3593,15 @@ const DEFAULT_MAX_FLOWS = 15;
  */
 export function getFlowConcepts(
   cas: CASOutput,
-  opts: { target?: string; maxDepth?: number; maxFunctionsPerFlow?: number; maxFlows?: number; includeStructural?: boolean; runtimeMetrics?: RuntimeMetricLike[]; role?: SemanticRole } = {}
+  opts: {
+    target?: string; maxDepth?: number; maxFunctionsPerFlow?: number; maxFlows?: number; includeStructural?: boolean; runtimeMetrics?: RuntimeMetricLike[]; role?: SemanticRole;
+    /** Persisted AI-authored flow/step descriptions (element-description store,
+     *  kind 'flow'), keyed by flow_id AND step_id. This is the caller of the
+     *  interpretive `nameStep` seam: step keys feed computeFlowConcepts'
+     *  nameStep hook (description_source flips to 'ai'); flow keys overlay the
+     *  flow-level description. Absent -> fully deterministic output. */
+    aiDescriptions?: Map<string, { description: string }>;
+  } = {}
 ) {
   // Only apply the default cap when browsing all flows (no target filter).
   // A targeted lookup ("flows touching this entry point") is already
@@ -3557,8 +3620,30 @@ export function getFlowConcepts(
     // per-flow filter would only ever see the first N and silently miss
     // matching flows past the cap), so drop the probe cap in that case.
     maxFlows: opts.role ? undefined : (effectiveMaxFlows ? effectiveMaxFlows + 1 : undefined),
+    // The interpretive seam's caller (ICELOT doctrine): persisted AI-authored
+    // step descriptions (element-description store, kind 'flow') feed the
+    // nameStep hook, flipping matched steps' description_source to 'ai'.
+    // Deterministic labels remain the fallback for every unmatched step.
+    nameStep: opts.aiDescriptions && opts.aiDescriptions.size > 0
+      ? (step) => {
+          const hit = opts.aiDescriptions!.get(step.step_id);
+          return hit ? { description: hit.description } : undefined;
+        }
+      : undefined,
   };
   let probedFlows = computeFlowConcepts(cas, computeOpts);
+
+  // Flow-level AI description overlay (same store, keyed by flow_id). The
+  // deterministic `intent` stays untouched as the fact-shaped fallback.
+  if (opts.aiDescriptions && opts.aiDescriptions.size > 0) {
+    for (const f of probedFlows) {
+      const hit = opts.aiDescriptions.get(f.flow_id);
+      if (hit) {
+        f.description = hit.description;
+        f.description_source = 'ai';
+      }
+    }
+  }
 
   // Per-flow semantic role (core / supporting / infrastructure), classified
   // with the SAME shared ./semantic-roles logic as entities + workspace items,
@@ -3566,9 +3651,29 @@ export function getFlowConcepts(
   // (entry-point-anchored and touched-entity-anchored) with a name-based
   // fallback. Additive; `unknown` (undefined) when unclassifiable.
   const flowConceptIndex = buildDomainConceptIndex(cas.domain_concepts);
+  // Structural terminal/product evidence per flow (entry TYPE + terminus +
+  // capability membership) — outranks domain-concept/name anchors inside
+  // classifyFlowRole, so a deploy.sh-rooted flow is infrastructure even when a
+  // "shell" domain concept was classified core, and a capability-serving flow
+  // with an api/persisted terminus is core regardless of its name.
+  const roleEntryPointById = new Map((cas.entry_points || []).map(ep => [ep.id, ep]));
+  const roleNodeById = new Map(cas.nodes.map(n => [n.id, n]));
+  const structuralRoleEvidence = (f: (typeof probedFlows)[number]) => {
+    const ep = roleEntryPointById.get(f.entry_point);
+    const rootNode = ep
+      ? roleNodeById.get(ep.handler?.node_id || ep.source_node)
+      : roleNodeById.get(f.entry_point);
+    return {
+      entry_type: ep?.type,
+      entry_file: ep?.handler?.file || rootNode?.source?.file,
+      terminus_kind: f.terminus?.kind,
+      terminus_produces: f.terminus?.produces,
+      capability_linked: Boolean(f.capability_id),
+    };
+  };
   const roleByFlowId = new Map<string, { role?: SemanticRole; role_evidence: string[] }>();
   for (const f of probedFlows) {
-    roleByFlowId.set(f.flow_id, classifyFlowRole(f, flowConceptIndex));
+    roleByFlowId.set(f.flow_id, classifyFlowRole(f, flowConceptIndex, structuralRoleEvidence(f)));
   }
 
   // Optional role filter — applied to the fully-computed flow set before the
@@ -3618,10 +3723,11 @@ export function getFlowConcepts(
   const withRole = (flow: typeof flows[number]) => {
     const classification = roleByFlowId.get(flow.flow_id);
     // `terminus` (what the flow PRODUCES at its resolved exit — SPEC terminal
-    // anchor) is spread via `...flow`, but named explicitly so the projection is
-    // an intentional, grep-visible field-list rather than an implicit spread that
-    // a future compaction could silently drop.
-    return { ...flow, terminus: flow.terminus, role: classification?.role, role_evidence: classification?.role_evidence };
+    // anchor) and `capability_id` (the capability->flow hierarchy link the UI
+    // binds) are spread via `...flow`, but named explicitly so the projection
+    // is an intentional, grep-visible field-list rather than an implicit
+    // spread that a future compaction could silently drop.
+    return { ...flow, terminus: flow.terminus, capability_id: flow.capability_id, role: classification?.role, role_evidence: classification?.role_evidence };
   };
   let flowsOut: any[] = flows.map(withRole);
   if (includeStructural && flows.length > 0) {
@@ -3635,6 +3741,7 @@ export function getFlowConcepts(
       return {
         ...flow,
         terminus: flow.terminus,
+        capability_id: flow.capability_id,
         role: classification?.role,
         role_evidence: classification?.role_evidence,
         structural: linked?.flow,

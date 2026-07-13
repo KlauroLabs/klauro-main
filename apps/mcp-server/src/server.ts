@@ -1080,7 +1080,7 @@ function registerTools(server: McpServer) {
       inputSchema: {
         path: z.string().describe('Absolute path to the analyzed project directory'),
         target: z.string().describe('Element id or name to describe'),
-        target_kind: z.enum(['node', 'service', 'entity', 'capability', 'entry_point', 'exit_point']).optional().describe('Optional target kind to disambiguate ids/names'),
+        target_kind: z.enum(['node', 'service', 'entity', 'capability', 'entry_point', 'exit_point', 'flow']).optional().describe('Optional target kind to disambiguate ids/names'),
         instructions: z.string().optional().describe('Optional guidance for the description, such as audience or what to emphasize'),
       } as any,
     } as any,
@@ -1102,7 +1102,7 @@ function registerTools(server: McpServer) {
       inputSchema: {
         path: z.string().describe('Absolute path to the analyzed project directory'),
         target: z.string().describe('Element id or name to fetch'),
-        target_kind: z.enum(['node', 'service', 'entity', 'capability', 'entry_point', 'exit_point']).optional().describe('Optional target kind to disambiguate ids/names'),
+        target_kind: z.enum(['node', 'service', 'entity', 'capability', 'entry_point', 'exit_point', 'flow']).optional().describe('Optional target kind to disambiguate ids/names'),
       } as any,
     } as any,
     async ({ path, target, target_kind }: any) => withErrorHandling(async () => {
@@ -1152,7 +1152,7 @@ function registerTools(server: McpServer) {
         path: z.string().describe('Absolute path to the analyzed project directory'),
         layer: z.enum(['agent-fast-refresh', 'ui-overview-refresh', 'deep-context-refresh', 'manual-element-description', 'runtime-simulation']).describe('Layer to run'),
         target: z.string().optional().describe('Element id/name for manual-element-description'),
-        target_kind: z.enum(['node', 'service', 'entity', 'capability', 'entry_point', 'exit_point']).optional().describe('Element kind for manual-element-description'),
+        target_kind: z.enum(['node', 'service', 'entity', 'capability', 'entry_point', 'exit_point', 'flow']).optional().describe('Element kind for manual-element-description'),
         instructions: z.string().optional().describe('Description instructions for manual-element-description'),
         scenario: z.enum(['balanced', 'bug-hunt', 'traffic-spike', 'slow-dependencies']).optional().describe('Runtime simulation scenario'),
         event_count: z.number().optional().describe('Runtime simulation event count'),
@@ -4107,7 +4107,12 @@ function registerTools(server: McpServer) {
       // TELEMETRY facet: join persisted runtime metrics onto flow/step
       // contracts when observations exist (evidence-gated, omitted otherwise).
       const runtimeMetrics = await runtimeMetricsForContract(cas, path);
-      return json(query.getFlowConcepts(cas, { target, maxDepth: max_depth, maxFunctionsPerFlow: max_functions_per_flow, maxFlows: max_flows, role, runtimeMetrics }));
+      // INTERPRETIVE layer: persisted AI-authored flow/step descriptions
+      // (element-description store, kind 'flow') feed the nameStep seam —
+      // matched units flip description_source to 'ai'; unmatched units keep
+      // their deterministic labels. Empty store -> fully deterministic output.
+      const aiDescriptions = await descriptionEnrichment.loadStoredFlowDescriptions(path).catch(() => undefined);
+      return json(query.getFlowConcepts(cas, { target, maxDepth: max_depth, maxFunctionsPerFlow: max_functions_per_flow, maxFlows: max_flows, role, runtimeMetrics, aiDescriptions }));
     })
   );
 

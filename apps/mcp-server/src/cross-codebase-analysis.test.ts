@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { assertRealWorkspaceAiAttempt, buildCrossCodebaseSystemGraph, buildWorkspaceAgentContext, detectWorkspaceCryptoProfile, enforceWorkspaceNarrativeProductValueSummary, enrichWorkspaceAnalysisNarrative, evaluateWorkspaceNarrativeGate, selectPreferredWorkspaceOllamaModel, selectWorkspaceAnalysisDetail, withWorkspaceAiTimeout, workspaceNarrativeHardRejectReason, workspaceNarrativePromptContext } from './cross-codebase-analysis';
+import { assertRealWorkspaceAiAttempt, buildCrossCodebaseSystemGraph, buildWorkspaceAgentContext, detectWorkspaceCryptoProfile, enforceWorkspaceNarrativeProductValueSummary, enrichWorkspaceAnalysisNarrative, evaluateWorkspaceNarrativeGate, isWorkspaceAiParseArtifactText, normalizeWorkspaceAiDescriptionText, selectPreferredWorkspaceOllamaModel, selectWorkspaceAnalysisDetail, stripUngroundedWorkspaceMarketingLanguage, withWorkspaceAiTimeout, workspaceNarrativeHardRejectReason, workspaceNarrativeMarketingMatches, workspaceNarrativeMisattributionReason, workspaceNarrativePromptContext } from './cross-codebase-analysis';
 import { aiService } from '../../../packages/analyzer-core/src/ai/ai-service';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 
@@ -1928,5 +1928,148 @@ test('WAS AI timeout is env-configurable (KLAURO_WAS_AI_TIMEOUT_MS, legacy alias
     else process.env.KLAURO_WAS_AI_TIMEOUT_MS = originalNew;
     if (originalLegacy === undefined) delete process.env.KLAURO_WORKSPACE_AI_TIMEOUT_MS;
     else process.env.KLAURO_WORKSPACE_AI_TIMEOUT_MS = originalLegacy;
+  }
+});
+
+// --- WAS output-quality regressions (live 4-workspace audit fixtures) ---
+
+test('persist-seam guard: unparsed structured model output is never a description (JSON-leak class)', () => {
+  // Verbatim shape of the live capability-description blob leak.
+  const blob = '{ "key_capabilities": [ { "name": "Manages project and codebase lifecycle", "description": "Handles project records" } ] }';
+  assert.equal(isWorkspaceAiParseArtifactText(blob), true);
+  assert.equal(isWorkspaceAiParseArtifactText('[{"name":"x"}]'), true);
+  assert.equal(isWorkspaceAiParseArtifactText('```json\n{"description":"x"}\n```'), true);
+  assert.equal(isWorkspaceAiParseArtifactText('Reads "description" values are honest prose here: manages project and codebase lifecycle across the workspace API.'), false);
+
+  // Narrative hard-reject: a blob description can never be accepted.
+  const reason = workspaceNarrativeHardRejectReason(blob, 'Manages orders for the storefront.');
+  assert.ok(reason && /unparsed structured-output artifact/.test(reason), `expected artifact hard-reject, got: ${reason}`);
+  const graph = buildCrossCodebaseSystemGraph('personal-workspace', [
+    { path: '/tmp/shop-api', name: 'shop-api', cas: shopCas() },
+  ]);
+  const gate = evaluateWorkspaceNarrativeGate(graph, blob, 'Manages orders for the storefront.');
+  assert.equal(gate.accepted, false);
+});
+
+test('misattribution gate: member A capabilities in a sentence whose subject is member B are rejected', () => {
+  const graph = {
+    name: 'Personal',
+    codebases: [
+      { id: 'prj-kontinuum', name: 'kontinuum', primary_domain: 'document-management' },
+      { id: 'prj-mtg', name: 'mtg', primary_domain: 'game-economy' },
+    ],
+    applications: [],
+    distribution_units: [],
+    system_insights: [],
+    workspace_domains: [],
+    workspace_entities: [],
+    workspace_capabilities: [
+      { name: 'Manage User Economy Transactions', project_ids: ['prj-mtg'], deployable_ids: [], evidence: [] },
+      { name: 'Manage Workspace Documents', project_ids: ['prj-kontinuum'], deployable_ids: [], evidence: [] },
+    ],
+  } as any;
+
+  // The live Personal-workspace defect shape: Kontinuum (member B) named as the
+  // workspace and given mtg's (member A) entire game product.
+  const bad = 'Kontinuum is a workspace that helps players manage user economy transactions and user game activity.';
+  const reason = workspaceNarrativeMisattributionReason(graph, bad);
+  assert.ok(reason && /Manage User Economy Transactions/.test(reason) && /mtg/.test(reason), `expected misattribution reason, got: ${reason}`);
+  assert.equal(evaluateWorkspaceNarrativeGate(graph, bad, 'Manages personal projects.').accepted, false);
+
+  // Correct per-member attribution passes the misattribution check.
+  const good = 'mtg manages user economy transactions for players, while kontinuum manages workspace documents for owners.';
+  assert.equal(workspaceNarrativeMisattributionReason(graph, good), null);
+
+  // Single-member workspaces are exempt (nothing to cross-attribute).
+  const single = { ...graph, codebases: [graph.codebases[0]] };
+  assert.equal(workspaceNarrativeMisattributionReason(single, bad), null);
+});
+
+test('WAS narrative gate applies the project-tier marketing lint: saturation rejects, single instances strip', () => {
+  const graph = buildCrossCodebaseSystemGraph('openclaw-workspace', [
+    { path: '/tmp/shop-api', name: 'shop-api', cas: shopCas() },
+  ]);
+  // Verbatim class of the live OpenClaw fluff that survived the gate.
+  const fluff = 'This comprehensive workspace offers a robust set of features and provides a strong foundation, making it an ideal solution for businesses and organizations.';
+  const matches = workspaceNarrativeMarketingMatches(graph, fluff);
+  assert.ok(matches.length >= 3, `expected saturated marketing matches, got: ${JSON.stringify(matches)}`);
+  const gate = evaluateWorkspaceNarrativeGate(graph, fluff, 'Manages orders for the storefront.');
+  assert.equal(gate.accepted, false);
+  assert.ok(/unsupported-marketing-language/.test(gate.reason || ''), `expected marketing rejection, got: ${gate.reason}`);
+
+  // A single ungrounded instance is stripped mechanically, keeping the facts.
+  const single = 'This comprehensive workspace routes checkout orders into the shop-api service and records payment and shipment state for the storefront.';
+  const stripped = stripUngroundedWorkspaceMarketingLanguage(graph, single);
+  assert.ok(!/comprehensive/i.test(stripped), `expected "comprehensive" stripped, got: ${stripped}`);
+  assert.ok(/routes checkout orders into the shop-api service/.test(stripped), `facts must survive the strip, got: ${stripped}`);
+});
+
+test('workspace domains are evidence-length: no verb-phrase capability labels, no silent 16-quota padding', () => {
+  const app = cas({
+    system: { id: 'msgs', name: 'msgs-api', type: 'service', root_path: '/tmp/msgs-api' },
+    nodes: [{ id: 'send-route', name: 'sendMessage', type: 'function', source: { file: 'src/messages.controller.ts', line: 1 } } as any],
+    entry_points: [{ id: 'entry:send', source_node: 'send-route', type: 'http', name: 'POST /messages', trigger: { method: 'POST', path: '/messages' } }],
+    system_capabilities: [{
+      id: 'capability:send-messages',
+      name: 'Send Messages',
+      description: 'Sends messages between users.',
+      category: 'core',
+      criticality: 'high',
+      operations: [{ entry_point_id: 'entry:send', action: 'create', path_or_command: '/messages' }],
+      related_entities: ['Message'],
+      related_domains: [],
+      confidence: 0.9,
+      evidence: ['entry:send'],
+    }] as any,
+    data_entities: [
+      { id: 'entity_pricingtype', name: 'PricingType', fields: [], lifecycle: { created_by: [], read_by: ['send-route'], updated_by: [], deleted_by: [] } },
+      { id: 'entity_telemetrysnapshot', name: 'TelemetrySnapshot', fields: [], lifecycle: { created_by: [], read_by: ['send-route'], updated_by: [], deleted_by: [] } },
+    ] as any,
+  });
+  const graph = buildCrossCodebaseSystemGraph('padding-workspace', [{ path: '/tmp/msgs-api', cas: app }]);
+  const domainNames = graph.workspace_domains.map(domain => domain.name);
+  // Verb-phrase capability labels are the wrong altitude for domains.
+  assert.ok(!domainNames.some(name => /^Sends? Messages$/i.test(name)), `verb-phrase label leaked into domains: ${JSON.stringify(domainNames)}`);
+  // Bare entity/class names never pad the domain list.
+  assert.ok(!domainNames.includes('PricingType'), `entity name leaked into domains: ${JSON.stringify(domainNames)}`);
+  assert.ok(!domainNames.includes('TelemetrySnapshot'), `entity name leaked into domains: ${JSON.stringify(domainNames)}`);
+  // Evidence-length, not quota-length.
+  assert.ok(graph.workspace_domains.length < 16, `expected an evidence-length domain list, got ${graph.workspace_domains.length}`);
+});
+
+test('workflow summary surfaces the true pre-cap count and a truncation flag', () => {
+  const graph = buildCrossCodebaseSystemGraph('shop-workspace', [
+    { path: '/tmp/shop-api', name: 'shop-api', cas: shopCas() },
+  ]);
+  assert.equal(typeof graph.summary.workflows_total, 'number');
+  assert.equal(graph.summary.workflows_total, graph.workspace_workflows.length);
+  assert.equal(graph.summary.workflows_truncated, false);
+  assert.ok(graph.workspace_workflows.length <= 40);
+});
+
+test('compound product tokens survive prose normalization (macOS / iOS / iMessages tokenizer artifacts)', () => {
+  const text = normalizeWorkspaceAiDescriptionText('Runs on macOS and iOS devices and relays iMessages through the gateway workflowEngine.');
+  assert.ok(text.includes('macOS'), `macOS must not split, got: ${text}`);
+  assert.ok(text.includes('iOS'), `iOS must not split, got: ${text}`);
+  assert.ok(text.includes('iMessages'), `iMessages must not split, got: ${text}`);
+  assert.ok(!/\bmac OS\b/.test(text), `got tokenizer artifact: ${text}`);
+  assert.ok(!/\bi OS\b/.test(text), `got tokenizer artifact: ${text}`);
+  // Real concatenated camelCase words still split into prose.
+  assert.ok(/workflow Engine/.test(text), `expected camelCase prose split, got: ${text}`);
+});
+
+test('workspace narrative title uses the workspace name, never a member project name', () => {
+  const graph = buildCrossCodebaseSystemGraph('Personal', [
+    { path: '/tmp/shop-api', name: 'shop-api', cas: shopCas() },
+  ]);
+  assert.equal(graph.workspace_narrative.title, 'Personal workspace analysis');
+});
+
+test('internal analysis phrasing stays out of the narrative relationship summary', () => {
+  const graph = buildCrossCodebaseSystemGraph('diag-workspace', [
+    { path: '/tmp/shop-api', name: 'shop-api', cas: shopCas() },
+  ]);
+  for (const line of graph.workspace_narrative.relationship_summary) {
+    assert.ok(!/source-backed|should not be forced|system graph|deployable\(s\)/i.test(line), `internal analysis phrase leaked into relationship_summary: ${line}`);
   }
 });

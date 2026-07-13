@@ -72,6 +72,25 @@ export function isHashOrIdShapedToken(token: string): boolean {
 }
 
 /**
+ * Identifier-shaped directory basenames (hosted ids like prj_/wsp_/acct_,
+ * uuid/hash-named snapshot dirs, or names containing hash-shaped path
+ * segments) must NEVER enter user-facing labels. Production analyze calls
+ * snapshot sources into dirs named after the project/analysis id — e.g.
+ * "prj_jGNMsl_nmy8Lauen" — and a label fallback that humanizes the basename
+ * turned that into the capability "Prj J GNMsl Nmy8 Lauen Operations"
+ * (2026-07 cold-customer audit; the known hash-token-leak class). Checks the
+ * RAW basename (before any dash/underscore-to-space humanization): known
+ * hosted-id prefixes, whole-name hash shape, and per-token hash shape.
+ */
+export function isIdentifierShapedRepoBasename(basename: string): boolean {
+  const raw = (basename || '').trim();
+  if (!raw) return false;
+  if (/^(prj|wsp|acct|org|usr|tok|ana)_/i.test(raw)) return true;
+  if (isHashOrIdShapedToken(raw)) return true;
+  return raw.split(/[_\-.]+/).some(token => isHashOrIdShapedToken(token));
+}
+
+/**
  * Deployable/service-name fallback used across evidence providers whenever a
  * manifest doesn't declare an explicit name. Historically this fell back
  * straight to `path.basename(projectPath)` — but production analyze calls
