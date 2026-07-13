@@ -766,7 +766,19 @@ function ConceptualView(props: { token: string; project: Project }) {
               <div className="concept-column-label">Flows ({flows.length})</div>
               <div className="concept-list">
                 {flows.map(flow => {
-                  const capability = flow.capability_id ? capabilitiesById.get(flow.capability_id) : undefined;
+                  // M:N model — roles are RELATIONAL (on the capability↔flow
+                  // edge). Prefer the primary edge; fall back to the first
+                  // relationship of any role (labelled with its role), then
+                  // the flow's semantic role. All evidence-gated upstream.
+                  const relationships = flow.capability_relationships || [];
+                  const primaryRel = relationships.find(rel => rel.role === 'primary') || relationships[0];
+                  const capability = flow.capability_id
+                    ? capabilitiesById.get(flow.capability_id)
+                    : primaryRel
+                      ? capabilitiesById.get(primaryRel.capability_id)
+                      : undefined;
+                  const edgeRole = primaryRel && primaryRel.role !== 'primary' ? primaryRel.role : undefined;
+                  const extraRels = relationships.length > 1 ? relationships.length - 1 : 0;
                   return (
                     <button
                       key={flow.flow_id}
@@ -774,12 +786,8 @@ function ConceptualView(props: { token: string; project: Project }) {
                       onClick={() => { setSelectedFlowId(flow.flow_id); setSelectedStepId(null); }}
                     >
                       <strong>{flow.name}</strong>
-                      {/* capability_id is evidence-gated (only present when a
-                          system_capabilities operation references this flow's
-                          entry point). When absent, fall back to the flow's
-                          real semantic role instead of a shouty gap label. */}
                       {capability
-                        ? <span className="concept-sub">{capability.name}</span>
+                        ? <span className="concept-sub">{capability.name}{edgeRole ? ` (${edgeRole})` : ''}{extraRels ? ` +${extraRels}` : ''}</span>
                         : flow.role
                           ? <span className="concept-sub">{flow.role} flow</span>
                           : <span className="concept-sub gap">no capability link</span>}

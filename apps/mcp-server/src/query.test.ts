@@ -251,6 +251,68 @@ test('getFlowConcepts does not apply the default browse-cap when target narrows 
   assert.ok(result.flows.length >= 1);
 });
 
+// --- PACKET B1: capability_relationships (M:N, role on the EDGE) serialized
+// through getFlowConcepts, including rule (c): an entity-overlap edge on a
+// flow the semantic-role classifier grounds as infrastructure (script entry)
+// is 'operational', not 'supporting'.
+test('getFlowConcepts serializes capability_relationships and upgrades infrastructure entity-overlap edges to operational', () => {
+  const cas = {
+    cas_version: '1.11.0',
+    analysis_timestamp: new Date().toISOString(),
+    analysis_id: 'analysis-cap-rel-test',
+    system: { id: 'system-test', name: 'cap-rel-test', type: 'service', root_path: '/tmp/cap-rel' },
+    nodes: [
+      { id: 'n_create', name: 'createOrder', type: 'function', source: { file: 'src/orders/create.ts', line: 1 }, metadata: {} },
+      { id: 'n_deploy', name: 'runDeploy', type: 'function', source: { file: 'scripts/deploy.sh', line: 1 }, metadata: {} },
+    ],
+    edges: [],
+    entry_points: [
+      { id: 'ep_create', type: 'http', name: 'createOrder', source_node: 'n_create', trigger: { method: 'POST', path: '/orders' }, handler: { node_id: 'n_create', method_name: 'createOrder' } },
+      { id: 'ep_deploy', type: 'cli', name: 'deploy', source_node: 'n_deploy', handler: { node_id: 'n_deploy', method_name: 'runDeploy' } },
+    ],
+    exit_points: [
+      { id: 'xp_create', source_node: 'n_create', type: 'database', name: 'saveOrder', target: { resource: 'orders' } },
+    ],
+    data_lineage: [
+      {
+        entity_id: 'entity_order', entity_name: 'Order', sensitive_fields: [],
+        writers: [{ node_id: 'n_create' }, { node_id: 'n_deploy' }],
+        readers: [], external_recipients: [], boundaries_crossed: [], journeys_carrying: [],
+        exposure: { unguarded_paths: 0, external_transfer: false, sensitive: false },
+      },
+    ],
+    system_capabilities: [
+      {
+        id: 'cap_orders', name: 'Order Management', description: 'Orders', category: 'core',
+        operations: [{ entry_point_id: 'ep_create', entry_point_type: 'http', action: 'create' }],
+        related_entities: ['Order'], related_domains: [], criticality: 'high', criticality_factors: [],
+      },
+    ],
+    analyzer_contributions: [],
+  } as unknown as CASOutput;
+
+  const result: any = getFlowConcepts(cas, {});
+  const createFlow = result.flows.find((f: any) => f.entry_point === 'ep_create');
+  const deployFlow = result.flows.find((f: any) => f.entry_point === 'ep_deploy');
+
+  // Flow side, both directions of the M:N model serialized per flow.
+  assert.ok(createFlow.capability_relationships, 'primary flow must carry capability_relationships');
+  assert.equal(createFlow.capability_relationships[0].capability_id, 'cap_orders');
+  assert.equal(createFlow.capability_relationships[0].role, 'primary');
+  assert.ok(createFlow.capability_relationships[0].rationale.includes('ep_create'));
+  assert.equal(createFlow.capability_id, 'cap_orders'); // back-compat primary link
+
+  // Rule (c): deploy.sh-rooted flow is classifier-grounded infrastructure, so
+  // its entity-overlap edge to cap_orders is 'operational' (not 'supporting').
+  assert.ok(deployFlow, 'deploy flow must exist');
+  assert.equal(deployFlow.role, 'infrastructure');
+  assert.equal(deployFlow.capability_relationships.length, 1);
+  assert.equal(deployFlow.capability_relationships[0].capability_id, 'cap_orders');
+  assert.equal(deployFlow.capability_relationships[0].role, 'operational');
+  assert.ok(deployFlow.capability_relationships[0].rationale.includes('semantic-role classifier'));
+  assert.equal(deployFlow.capability_id, undefined); // no operation ref → no primary
+});
+
 // --- 2026-07-04 impact benchmark fixes ------------------------------------
 //
 // #1 (flagship): get_callers never tracked cross-file reads of exported

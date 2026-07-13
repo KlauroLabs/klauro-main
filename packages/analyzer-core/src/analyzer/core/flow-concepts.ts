@@ -155,6 +155,47 @@ export interface FlowStep {
   entities: string[];
 }
 
+/**
+ * Role of a flow ON A SPECIFIC capability↔flow relationship EDGE — RELATIONAL,
+ * not intrinsic (docs/SEMANTIC-MODEL.md, Flow section): "Connect wallet" is
+ * supporting for Trade-crypto and primary for Manage-wallets, simultaneously.
+ * The role therefore lives on the edge, never on the flow itself.
+ *
+ * Deterministic (Camp-B) derivation rules — every role is grounded in a
+ * structural ref, never a name keyword:
+ *   - 'primary'       — a capability operation references this flow's entry
+ *                        point (operations[].entry_point_id match).
+ *   - 'supporting'    — the flow's TOUCHED ENTITIES overlap the capability's
+ *                        related_entities, but its entry point is NOT among
+ *                        the capability's operations.
+ *   - 'operational'   — an entity-overlap edge whose flow the semantic-role
+ *                        classifier classified 'infrastructure' (deploy /
+ *                        install script entry — applied at the query layer via
+ *                        applyFlowRoleToCapabilityRelationships).
+ *   - 'observability' — an entity-overlap edge whose flow's exits are
+ *                        dominated by telemetry exit kinds (exit-point type
+ *                        facts, e.g. 'analytics').
+ *   - 'prerequisite' / 'recovery' — in the vocabulary (doctrine roles) but
+ *                        carry NO deterministic derivation rule yet; only an
+ *                        AI/manual pass may assert them, evidence-gated.
+ */
+export type CapabilityFlowRole =
+  | 'primary'
+  | 'supporting'
+  | 'prerequisite'
+  | 'operational'
+  | 'recovery'
+  | 'observability';
+
+/** One capability↔flow relationship edge. `rationale` always cites the
+ *  concrete structural evidence that produced the edge (the operation ref,
+ *  the shared entity names, the telemetry exit facts) — never fabricated. */
+export interface CapabilityFlowRelationship {
+  capability_id: string;
+  role: CapabilityFlowRole;
+  rationale: string;
+}
+
 export interface FlowConcept {
   flow_id: string;
   name: string;
@@ -166,10 +207,18 @@ export interface FlowConcept {
   description?: string;
   description_source?: 'ai';
   entry_point: string;
-  /** The capability this flow realizes, if derivable from CAS
-   *  system_capabilities.operations[].entry_point_id. Omitted (not
-   *  fabricated) when no capability references this entry point. */
+  /** BACK-COMPAT single link: the PRIMARY relationship's capability when one
+   *  exists (= the first capability whose operations reference this flow's
+   *  entry point). `capability_relationships` is the real model — M:N with
+   *  the role on the edge; this stays populated so existing consumers keep
+   *  working. Omitted (not fabricated) when no primary relationship exists. */
   capability_id?: string;
+  /** ALL capability↔flow relationship edges for this flow (M:N — a flow may
+   *  relate to multiple capabilities with different roles). Deterministic
+   *  derivation (see CapabilityFlowRole); each edge carries the structural
+   *  evidence in `rationale`. Omitted (never []) when no capability relates
+   *  to this flow by operation ref or entity overlap. */
+  capability_relationships?: CapabilityFlowRelationship[];
   /** Data entities the flow's functions read or write (by name), from
    *  data_lineage membership across all of the flow's functions. */
   entities: string[];
@@ -938,22 +987,140 @@ function unionEntities(primary: string[], extra: string[]): string[] {
   return out;
 }
 
-/** The capability this flow realizes, if a system_capabilities entry
- *  references this entry point in its operations. Never guessed by
- *  name-similarity — only a direct entry_point_id membership match.
- *  Operation entry_point_id values come in two shapes: a plain
- *  cas.entry_points[].id, or a `node:<node id>` reference straight at a
- *  handler/method node (see deriveCapabilityOperationRoots) — both are
- *  checked since a synthesized root's synthetic id won't itself appear in
- *  any operation, only its underlying node id does. */
-function capabilityForEntryPoint(ep: CASEntryPoint, capabilities: SystemCapability[]): string | undefined {
-  const rootNodeId = ep.handler?.node_id || ep.source_node;
-  const match = capabilities.find(c => (c.operations || []).some(op =>
-    op.entry_point_id === ep.id ||
-    op.entry_point_id === `node:${rootNodeId}` ||
-    op.entry_point_id === rootNodeId
-  ));
-  return match?.id;
+/** Exit-point kinds that ARE telemetry emission (exit-point TYPE facts from
+ *  the CAS exit-point union — never a name pattern). 'analytics' is the only
+ *  telemetry-shaped kind in EXIT_POINT_TYPES today; extend here if the union
+ *  grows a metrics/log/trace kind. */
+const TELEMETRY_EXIT_KINDS = new Set(['analytics']);
+
+/** Whether a flow's observable exits are DOMINATED by telemetry exit kinds —
+ *  the deterministic ground for an 'observability' capability relationship.
+ *  Facts only: the flow's own nodes' exit points (by type) plus the resolved
+ *  terminus kind. Dominated = the terminus itself is a telemetry exit, or
+ *  strictly more telemetry exits than non-telemetry ones across the flow's
+ *  nodes. Returns the concrete evidence string alongside the verdict. */
+function telemetryExitDominance(
+  nodeIds: Set<string>,
+  exitPointsByNode: Map<string, CASExitPoint[]>,
+  terminusKind?: string
+): { dominated: boolean; evidence?: string } {
+  const telemetry: CASExitPoint[] = [];
+  let otherCount = 0;
+  for (const id of nodeIds) {
+    for (const ep of exitPointsByNode.get(id) || []) {
+      if (TELEMETRY_EXIT_KINDS.has(ep.type)) telemetry.push(ep);
+      else otherCount++;
+    }
+  }
+  if (terminusKind && TELEMETRY_EXIT_KINDS.has(terminusKind)) {
+    return { dominated: true, evidence: `flow terminus is a telemetry exit (kind '${terminusKind}')` };
+  }
+  if (telemetry.length > 0 && telemetry.length > otherCount) {
+    const names = telemetry.slice(0, 3).map(e => e.name).join(', ');
+    return {
+      dominated: true,
+      evidence: `${telemetry.length}/${telemetry.length + otherCount} of the flow's exit points are telemetry kinds (${names})`,
+    };
+  }
+  return { dominated: false };
+}
+
+/**
+ * Derive ALL capability↔flow relationship edges for one flow — DETERMINISTIC
+ * (Camp-B), structural refs only, never name keywords:
+ *
+ *   (a) a capability operation references this flow's entry point
+ *       (operations[].entry_point_id === entry-point id | `node:<root>` |
+ *       root node id — the same three shapes deriveCapabilityOperationRoots
+ *       documents) → 'primary'; rationale cites the operation ref.
+ *   (b) the flow's touched entities overlap the capability's related_entities
+ *       but its entry point is NOT among the capability's operations →
+ *       'supporting'; rationale cites the shared entity names.
+ *   (d) an entity-overlap edge on a flow whose exits are dominated by
+ *       telemetry exit kinds → 'observability'; rationale cites the exit
+ *       facts. (An operation ref still wins: realizing an operation of the
+ *       capability is stronger evidence than the exit mix.)
+ *
+ * Rule (c) — entity-overlap edge + flow classified 'infrastructure' by the
+ * semantic-role classifier → 'operational' — is applied at the QUERY layer
+ * (applyFlowRoleToCapabilityRelationships), because the role classifier lives
+ * there; this pure static pass never sees it.
+ *
+ * A flow may relate to MULTIPLE capabilities (one edge per capability, in
+ * capabilities array order — stable run-to-run). Returns [] when nothing
+ * relates; callers omit the field rather than serializing an empty array.
+ */
+function deriveCapabilityRelationships(args: {
+  capabilities: SystemCapability[];
+  /** Resolved cas.entry_points[].id for the flow root, when one exists. */
+  entryPointId?: string;
+  /** The flow root's handler node id (always known). */
+  rootNodeId?: string;
+  /** Entity names the flow's functions genuinely touch (entitiesForNodes). */
+  entities: string[];
+  /** Telemetry-dominance verdict for this flow (telemetryExitDominance). */
+  telemetry: { dominated: boolean; evidence?: string };
+}): CapabilityFlowRelationship[] {
+  const { capabilities, entryPointId, rootNodeId, entities, telemetry } = args;
+  const out: CapabilityFlowRelationship[] = [];
+  const entityKeySet = new Set(entities.map(e => e.toLowerCase()));
+
+  for (const cap of capabilities) {
+    const opMatch = (cap.operations || []).find(op =>
+      (entryPointId !== undefined && op.entry_point_id === entryPointId) ||
+      (rootNodeId !== undefined && (op.entry_point_id === `node:${rootNodeId}` || op.entry_point_id === rootNodeId))
+    );
+    if (opMatch) {
+      out.push({
+        capability_id: cap.id,
+        role: 'primary',
+        rationale: `capability operation "${opMatch.action}" (entry_point_id=${opMatch.entry_point_id}) references this flow's entry point`,
+      });
+      continue;
+    }
+
+    const shared = (cap.related_entities || []).filter(name => entityKeySet.has(String(name).toLowerCase()));
+    if (shared.length === 0) continue;
+    const sharedList = shared.join(', ');
+    if (telemetry.dominated) {
+      out.push({
+        capability_id: cap.id,
+        role: 'observability',
+        rationale: `flow touches this capability's related entities (${sharedList}) and ${telemetry.evidence}`,
+      });
+    } else {
+      out.push({
+        capability_id: cap.id,
+        role: 'supporting',
+        rationale: `flow touches entities in this capability's related_entities (${sharedList}) but its entry point is not among the capability's operations`,
+      });
+    }
+  }
+
+  return out;
+}
+
+/**
+ * Rule (c) of the capability↔flow role derivation, applied at the QUERY layer
+ * where the semantic-role classifier (apps/mcp-server/src/semantic-roles.ts
+ * classifyFlowRole) runs: a flow the classifier grounds as 'infrastructure'
+ * (deploy/install script entry, plumbing surface) relates to a capability via
+ * shared entities as 'operational', not 'supporting'. Only entity-overlap
+ * edges flip — an operation ref ('primary') and telemetry dominance
+ * ('observability') are stronger, more specific evidence and keep their role.
+ * Mutates in place; a no-op for any other role / when no relationships exist.
+ */
+export function applyFlowRoleToCapabilityRelationships(
+  flow: Pick<FlowConcept, 'capability_relationships'>,
+  role: string | undefined,
+  roleEvidence?: string[]
+): void {
+  if (role !== 'infrastructure' || !flow.capability_relationships) return;
+  for (const rel of flow.capability_relationships) {
+    if (rel.role !== 'supporting') continue;
+    rel.role = 'operational';
+    rel.rationale += `; flow classified 'infrastructure' by the semantic-role classifier${roleEvidence && roleEvidence.length ? ` (${roleEvidence[0]})` : ''}`;
+  }
 }
 
 /** entry_point_type values on a capability operation don't necessarily line
@@ -1219,11 +1386,22 @@ function buildTerminalFlows(cas: CASOutput, opts: ComputeFlowConceptsOptions): F
       }
     }
 
-    const capabilityId = rootEp
-      ? capabilityForEntryPoint(rootEp, capabilities)
-      : capabilityForNodeId(chain.entry_point.node_id, capabilities);
-    if (!capabilityId) {
-      gaps.push('No system_capabilities entry references this flow\'s entry point — capability_id omitted rather than guessed.');
+    // M:N capability relationships (role on the EDGE — doctrine: flow roles
+    // are relational, not intrinsic). capability_id stays populated as the
+    // primary relationship's capability for back-compat.
+    const flowEntities = unionEntities(entitiesForNodes(allNodeIds, cas), familyEntities(chain.entry_point.node_id));
+    const capabilityRelationships = deriveCapabilityRelationships({
+      capabilities,
+      entryPointId: rootEp?.id || chain.entry_point.entry_point_id,
+      rootNodeId: rootEp ? (rootEp.handler?.node_id || rootEp.source_node) : chain.entry_point.node_id,
+      entities: flowEntities,
+      telemetry: telemetryExitDominance(allNodeIds, exitPointsByNode, terminus?.kind),
+    });
+    const capabilityId = capabilityRelationships.find(r => r.role === 'primary')?.capability_id;
+    if (capabilityRelationships.length === 0) {
+      gaps.push('No system_capabilities entry references this flow\'s entry point or shares its touched entities — capability_relationships omitted rather than guessed.');
+    } else if (!capabilityId) {
+      gaps.push('No system_capabilities operation references this flow\'s entry point — capability_id (primary) omitted rather than guessed; only non-primary relationships derived.');
     }
 
     const flowName = rootEp
@@ -1240,7 +1418,8 @@ function buildTerminalFlows(cas: CASOutput, opts: ComputeFlowConceptsOptions): F
       intent,
       entry_point: chain.entry_point.entry_point_id || chain.entry_point.node_id,
       capability_id: capabilityId,
-      entities: unionEntities(entitiesForNodes(allNodeIds, cas), familyEntities(chain.entry_point.node_id)),
+      capability_relationships: capabilityRelationships.length ? capabilityRelationships : undefined,
+      entities: flowEntities,
       contract,
       steps,
       terminus,
@@ -1259,16 +1438,6 @@ function buildTerminalFlows(cas: CASOutput, opts: ComputeFlowConceptsOptions): F
 function titleize(raw: string): string {
   const words = (raw || '').replace(/[-_]/g, ' ').replace(/([a-z0-9])([A-Z])/g, '$1 $2');
   return words.split(' ').filter(Boolean).map(w => w[0].toUpperCase() + w.slice(1)).join(' ') || raw;
-}
-
-/** Capability whose operations reference a raw node id directly (the
- *  `node:<id>` or bare id shape), used when a terminal chain has no resolved
- *  CASEntryPoint to match on. Never name-guessed. */
-function capabilityForNodeId(nodeId: string, capabilities: SystemCapability[]): string | undefined {
-  const match = capabilities.find(c => (c.operations || []).some(op =>
-    op.entry_point_id === `node:${nodeId}` || op.entry_point_id === nodeId
-  ));
-  return match?.id;
 }
 
 /**
@@ -1470,9 +1639,23 @@ function computeEntryPointFlows(
     });
 
     const allNodeIds = new Set(chain.map(c => c.node.id));
-    const capabilityId = capabilityForEntryPoint(ep, capabilities);
-    if (!capabilityId) {
-      gaps.push('No system_capabilities entry references this entry point — capability_id omitted rather than guessed.');
+    // M:N capability relationships (role on the EDGE); capability_id stays the
+    // primary relationship's capability for back-compat.
+    const flowEntities = entitiesForNodes(allNodeIds, cas);
+    const capabilityRelationships = deriveCapabilityRelationships({
+      capabilities,
+      entryPointId: ep.id,
+      rootNodeId: ep.handler?.node_id || ep.source_node,
+      entities: flowEntities,
+      // No resolved terminus on entry-point-rooted flows — dominance derives
+      // from the traced nodes' own exit points alone.
+      telemetry: telemetryExitDominance(allNodeIds, exitPointsByNode),
+    });
+    const capabilityId = capabilityRelationships.find(r => r.role === 'primary')?.capability_id;
+    if (capabilityRelationships.length === 0) {
+      gaps.push('No system_capabilities entry references this entry point or shares its touched entities — capability_relationships omitted rather than guessed.');
+    } else if (!capabilityId) {
+      gaps.push('No system_capabilities operation references this entry point — capability_id (primary) omitted rather than guessed; only non-primary relationships derived.');
     }
 
     flows.push({
@@ -1484,7 +1667,8 @@ function computeEntryPointFlows(
       // family (same traversal, same bounds), unlike the terminal path where
       // the recorded call_path is one narrow route through it.
       capability_id: capabilityId,
-      entities: entitiesForNodes(allNodeIds, cas),
+      capability_relationships: capabilityRelationships.length ? capabilityRelationships : undefined,
+      entities: flowEntities,
       contract: aggregateFlowContract(steps),
       steps,
       gaps: gaps.length ? gaps : undefined,

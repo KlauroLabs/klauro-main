@@ -1735,23 +1735,30 @@ async function handleAccountApi(
       const architectural = getArchitecturalConflicts(cas, { limit: 25 });
       const paradigms = getParadigmConformance(cas);
       const perspectives = getPerspectives(cas);
-      // Capability -> flow linkage, BOTH directions readable: each flow already
-      // carries capability_id; the capability side carries related_flows (the
-      // ids of returned flows that realize it) so the UI can render the
-      // capability -> flow hierarchy without joining client-side.
-      const flowIdsByCapability = new Map<string, string[]>();
-      for (const flow of (flowConcepts.flows || []) as Array<{ flow_id: string; capability_id?: string }>) {
-        if (!flow.capability_id) continue;
-        const list = flowIdsByCapability.get(flow.capability_id) || [];
-        list.push(flow.flow_id);
-        flowIdsByCapability.set(flow.capability_id, list);
+      // Capability <-> flow linkage, BOTH directions readable, M:N with the
+      // ROLE ON THE EDGE (docs/SEMANTIC-MODEL.md: flow roles are RELATIONAL,
+      // not intrinsic): each flow carries capability_relationships (plus the
+      // back-compat primary capability_id); the capability side carries
+      // related_flows — one {flow_id, role, rationale} edge per returned flow
+      // that relates to it — so the UI can render the capability -> flow
+      // hierarchy (with roles) without joining client-side.
+      const flowEdgesByCapability = new Map<string, Array<{ flow_id: string; role: string; rationale: string }>>();
+      for (const flow of (flowConcepts.flows || []) as Array<{
+        flow_id: string;
+        capability_relationships?: Array<{ capability_id: string; role: string; rationale: string }>;
+      }>) {
+        for (const rel of flow.capability_relationships || []) {
+          const list = flowEdgesByCapability.get(rel.capability_id) || [];
+          list.push({ flow_id: flow.flow_id, role: rel.role, rationale: rel.rationale });
+          flowEdgesByCapability.set(rel.capability_id, list);
+        }
       }
       const capabilities = (cas.system_capabilities || []).map(capability => ({
         id: capability.id,
         name: capability.name,
         category: capability.category,
         criticality: capability.criticality,
-        related_flows: flowIdsByCapability.get(capability.id) || [],
+        related_flows: flowEdgesByCapability.get(capability.id) || [],
       }));
       return {
         statusCode: 200,

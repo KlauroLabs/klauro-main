@@ -158,14 +158,28 @@ export interface FlowStep {
   }>;
 }
 
+/** One capability↔flow relationship edge — the role is RELATIONAL (lives on
+ *  the edge, not the flow): the same flow can be primary for one capability
+ *  and supporting/operational/observability for another. `rationale` cites
+ *  the structural evidence that produced the edge. */
+export interface CapabilityFlowRelationship {
+  capability_id: string;
+  role: 'primary' | 'supporting' | 'prerequisite' | 'operational' | 'recovery' | 'observability';
+  rationale: string;
+}
+
 export interface FlowConcept {
   flow_id: string;
   name: string;
   intent: string;
   entry_point: string;
-  /** Evidence-gated: present only when a system_capabilities operation
-   *  references this flow's entry point; omitted (never fabricated) otherwise. */
+  /** Back-compat primary link: the PRIMARY relationship's capability when one
+   *  exists (a system_capabilities operation references this flow's entry
+   *  point); omitted (never fabricated) otherwise. */
   capability_id?: string;
+  /** The real M:N model — every capability this flow relates to, with the
+   *  role on the edge. Evidence-gated; omitted when nothing relates. */
+  capability_relationships?: CapabilityFlowRelationship[];
   /** Deterministic semantic role classification — always real API data. */
   role?: 'core' | 'supporting' | 'infrastructure';
   entities: string[];
@@ -179,6 +193,8 @@ export interface ConceptualCapability {
   name: string;
   category: string;
   criticality: string;
+  /** Flow edges relating to this capability (M:N, role on the edge). */
+  related_flows?: Array<{ flow_id: string; role: string; rationale: string }>;
 }
 
 export interface ArchitecturalConflict {

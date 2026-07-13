@@ -654,3 +654,159 @@ describe('telemetry join (facet 6)', () => {
     expect(flows.length).toBe(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// PACKET B1 — CapabilityFlowRelationship M:N with RELATIONAL roles
+// (docs/SEMANTIC-MODEL.md: "Flow roles are RELATIONAL, not intrinsic" — the
+// role lives on the capability↔flow EDGE). Deterministic derivation only:
+// operation refs → primary; entity overlap → supporting; telemetry-dominated
+// exits → observability; the query layer flips supporting → operational for
+// classifier-grounded infrastructure flows.
+// ---------------------------------------------------------------------------
+import { applyFlowRoleToCapabilityRelationships, type FlowConcept } from '../../analyzer/core/flow-concepts';
+
+function buildRelationshipFixtureCas(): CASOutput {
+  const nodes: CASNode[] = [
+    node({ id: 'n_handleCreate', name: 'handleCreateOrder', type: 'controller', category: 'entry' }),
+    node({ id: 'n_save', name: 'saveOrder', type: 'function', category: 'data' }),
+    node({ id: 'n_handleTrack', name: 'handleTrackEvent', type: 'controller', category: 'entry' }),
+    node({ id: 'n_emit', name: 'emitOrderMetric', type: 'function', category: 'business' }),
+  ];
+  const edges: CASEdge[] = [
+    { id: 're1', source: 'n_handleCreate', target: 'n_save', type: 'calls' },
+    { id: 're2', source: 'n_handleTrack', target: 'n_emit', type: 'calls' },
+  ];
+  const entry_points: CASEntryPoint[] = [
+    {
+      id: 'ep_create', source_node: 'n_handleCreate', type: 'http', name: 'createOrder',
+      trigger: { method: 'POST', path: '/orders' },
+      handler: { node_id: 'n_handleCreate', method_name: 'handleCreateOrder' },
+    },
+    {
+      id: 'ep_track', source_node: 'n_handleTrack', type: 'http', name: 'trackOrderEvent',
+      trigger: { method: 'POST', path: '/track' },
+      handler: { node_id: 'n_handleTrack', method_name: 'handleTrackEvent' },
+    },
+  ];
+  const exit_points: CASExitPoint[] = [
+    { id: 'rxp_save', source_node: 'n_save', type: 'database', name: 'saveOrder', target: { resource: 'orders' } } as CASExitPoint,
+    { id: 'rxp_emit', source_node: 'n_emit', type: 'analytics', name: 'orderMetric', target: { service_id: 'metrics-sink' } } as CASExitPoint,
+  ];
+  const data_lineage: CASEntityLineage[] = [
+    {
+      entity_id: 'entity_order', entity_name: 'Order', sensitive_fields: [],
+      writers: [{ node_id: 'n_save' } as any],
+      readers: [{ node_id: 'n_emit' } as any],
+      external_recipients: [], boundaries_crossed: [], journeys_carrying: [],
+      exposure: { unguarded_paths: 0, external_transfer: false, sensitive: false },
+    },
+  ];
+  const system_capabilities: SystemCapability[] = [
+    {
+      id: 'cap_orders', name: 'Order Management', description: 'Create and manage orders', category: 'core',
+      operations: [{ entry_point_id: 'ep_create', entry_point_type: 'http', action: 'create' }],
+      related_entities: ['Order'], related_domains: [], criticality: 'high', criticality_factors: [],
+    },
+    {
+      id: 'cap_fulfillment', name: 'Order Fulfillment', description: 'Fulfill orders', category: 'core',
+      operations: [{ entry_point_id: 'ep_ship', entry_point_type: 'http', action: 'ship' }],
+      related_entities: ['Order'], related_domains: [], criticality: 'high', criticality_factors: [],
+    },
+  ];
+  return {
+    cas_version: '1.0.0',
+    analysis_timestamp: new Date().toISOString(),
+    analysis_id: 'test-capability-relationships',
+    system: { name: 'test-system' } as any,
+    nodes, edges, entry_points, exit_points, data_lineage,
+    data_entities: [],
+    system_capabilities,
+    analyzer_contributions: [],
+  } as unknown as CASOutput;
+}
+
+describe('capability_relationships — M:N with relational roles', () => {
+  const cas = buildRelationshipFixtureCas();
+  const flows = computeFlowConcepts(cas);
+  const createFlow = flows.find(f => f.entry_point === 'ep_create')!;
+  const trackFlow = flows.find(f => f.entry_point === 'ep_track')!;
+
+  test('operation ref → primary edge, rationale cites the operation', () => {
+    const rels = createFlow.capability_relationships!;
+    const primary = rels.find(r => r.capability_id === 'cap_orders');
+    expect(primary).toBeDefined();
+    expect(primary!.role).toBe('primary');
+    expect(primary!.rationale).toContain('"create"');
+    expect(primary!.rationale).toContain('ep_create');
+  });
+
+  test('a flow relates to MULTIPLE capabilities with different roles', () => {
+    const rels = createFlow.capability_relationships!;
+    expect(rels.length).toBe(2);
+    const supporting = rels.find(r => r.capability_id === 'cap_fulfillment');
+    expect(supporting!.role).toBe('supporting');
+    expect(supporting!.rationale).toContain('Order');
+    expect(supporting!.rationale).toContain('not among the capability\'s operations');
+  });
+
+  test('back-compat: capability_id equals the primary relationship\'s capability', () => {
+    expect(createFlow.capability_id).toBe('cap_orders');
+  });
+
+  test('telemetry-dominated flow relates as observability via entity overlap', () => {
+    const rels = trackFlow.capability_relationships!;
+    expect(rels.length).toBe(2);
+    for (const rel of rels) {
+      expect(rel.role).toBe('observability');
+      expect(rel.rationale).toContain('Order');
+      expect(rel.rationale).toMatch(/telemetry|analytics/);
+    }
+    // no operation references ep_track, so no primary and no capability_id
+    expect(trackFlow.capability_id).toBeUndefined();
+    expect((trackFlow.gaps || []).join(' ')).toContain('capability_id (primary) omitted');
+  });
+
+  test('deterministic: same CAS → identical relationship edges run-to-run', () => {
+    const again = computeFlowConcepts(buildRelationshipFixtureCas());
+    const againCreate = again.find(f => f.entry_point === 'ep_create')!;
+    expect(againCreate.capability_relationships).toEqual(createFlow.capability_relationships);
+  });
+
+  test('no relation at all → field omitted (never []) with an honest gap', () => {
+    const bare = buildRelationshipFixtureCas();
+    (bare as any).system_capabilities = [];
+    const bareFlows = computeFlowConcepts(bare);
+    for (const f of bareFlows) {
+      expect(f.capability_relationships).toBeUndefined();
+      expect((f.gaps || []).join(' ')).toContain('capability_relationships omitted');
+    }
+  });
+});
+
+describe('applyFlowRoleToCapabilityRelationships — rule (c), operational upgrade', () => {
+  const mkFlow = (): Pick<FlowConcept, 'capability_relationships'> => ({
+    capability_relationships: [
+      { capability_id: 'cap_a', role: 'primary', rationale: 'operation ref' },
+      { capability_id: 'cap_b', role: 'supporting', rationale: 'shared entities (Order)' },
+      { capability_id: 'cap_c', role: 'observability', rationale: 'telemetry exits' },
+    ],
+  });
+
+  test('infrastructure role flips only supporting → operational, appending evidence', () => {
+    const flow = mkFlow();
+    applyFlowRoleToCapabilityRelationships(flow, 'infrastructure', ['entry point is a script file (deploy.sh)']);
+    const [a, b, c] = flow.capability_relationships!;
+    expect(a.role).toBe('primary');
+    expect(b.role).toBe('operational');
+    expect(b.rationale).toContain('deploy.sh');
+    expect(b.rationale).toContain('semantic-role classifier');
+    expect(c.role).toBe('observability');
+  });
+
+  test('non-infrastructure roles and missing relationships are no-ops', () => {
+    const flow = mkFlow();
+    applyFlowRoleToCapabilityRelationships(flow, 'core', []);
+    expect(flow.capability_relationships![1].role).toBe('supporting');
+    expect(() => applyFlowRoleToCapabilityRelationships({}, 'infrastructure')).not.toThrow();
+  });
+});

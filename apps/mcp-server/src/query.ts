@@ -11,7 +11,7 @@ import { isAuthenticationGuardName } from '../../../packages/analyzer-core/src/a
 import { buildProductMap } from '../../../packages/analyzer-core/src/analyzer/core/product-map';
 import { RISKABLE_NODE_TYPES } from '../../../packages/analyzer-core/src/analyzer/core/orchestrator';
 import { buildTerminalSignal } from '../../../packages/analyzer-core/src/analyzer/core/terminal-signal';
-import { computeFlowConcepts, attachTelemetryToFlows, telemetryForNode, type ComputeFlowConceptsOptions, type RuntimeMetricLike } from '../../../packages/analyzer-core/src/analyzer/core/flow-concepts';
+import { computeFlowConcepts, attachTelemetryToFlows, telemetryForNode, applyFlowRoleToCapabilityRelationships, type ComputeFlowConceptsOptions, type RuntimeMetricLike } from '../../../packages/analyzer-core/src/analyzer/core/flow-concepts';
 import { computeFlowStructuralLinks, computeConflictBehavioralLinks } from '../../../packages/analyzer-core/src/analyzer/core/structural-cross-links';
 import type { CASProductMap } from '../../../packages/analyzer-core/src/types/cas.types';
 import { buildSystemFitSummary, buildCommunicationSeamSummary } from './context-fabric';
@@ -3673,7 +3673,15 @@ export function getFlowConcepts(
   };
   const roleByFlowId = new Map<string, { role?: SemanticRole; role_evidence: string[] }>();
   for (const f of probedFlows) {
-    roleByFlowId.set(f.flow_id, classifyFlowRole(f, flowConceptIndex, structuralRoleEvidence(f)));
+    const classification = classifyFlowRole(f, flowConceptIndex, structuralRoleEvidence(f));
+    roleByFlowId.set(f.flow_id, classification);
+    // Rule (c) of the capability↔flow relational-role derivation
+    // (docs/SEMANTIC-MODEL.md — roles live on the EDGE): an entity-overlap
+    // relationship on a flow the classifier grounds as 'infrastructure'
+    // (deploy/install script entry, plumbing surface) is 'operational', not
+    // 'supporting'. Primary (operation-ref) and observability (telemetry-exit)
+    // edges keep their stronger evidence.
+    applyFlowRoleToCapabilityRelationships(f, classification.role, classification.role_evidence);
   }
 
   // Optional role filter — applied to the fully-computed flow set before the
@@ -3723,11 +3731,12 @@ export function getFlowConcepts(
   const withRole = (flow: typeof flows[number]) => {
     const classification = roleByFlowId.get(flow.flow_id);
     // `terminus` (what the flow PRODUCES at its resolved exit — SPEC terminal
-    // anchor) and `capability_id` (the capability->flow hierarchy link the UI
-    // binds) are spread via `...flow`, but named explicitly so the projection
-    // is an intentional, grep-visible field-list rather than an implicit
-    // spread that a future compaction could silently drop.
-    return { ...flow, terminus: flow.terminus, capability_id: flow.capability_id, role: classification?.role, role_evidence: classification?.role_evidence };
+    // anchor), `capability_id` (back-compat primary link the UI binds) and
+    // `capability_relationships` (the real M:N model — role on the edge) are
+    // spread via `...flow`, but named explicitly so the projection is an
+    // intentional, grep-visible field-list rather than an implicit spread
+    // that a future compaction could silently drop.
+    return { ...flow, terminus: flow.terminus, capability_id: flow.capability_id, capability_relationships: flow.capability_relationships, role: classification?.role, role_evidence: classification?.role_evidence };
   };
   let flowsOut: any[] = flows.map(withRole);
   if (includeStructural && flows.length > 0) {
@@ -3742,6 +3751,7 @@ export function getFlowConcepts(
         ...flow,
         terminus: flow.terminus,
         capability_id: flow.capability_id,
+        capability_relationships: flow.capability_relationships,
         role: classification?.role,
         role_evidence: classification?.role_evidence,
         structural: linked?.flow,
