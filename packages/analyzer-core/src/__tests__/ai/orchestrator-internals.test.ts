@@ -3451,6 +3451,63 @@ describe('entity-extraction gaps from real-repo onboarding (mtg/openclaw/hercule
       const entities = orch.buildDataEntities(nodes, []);
       expect(entities.map((entity: any) => entity.name)).not.toContain('Json');
     });
+
+    // DEFECT-2: infrastructure/runtime/lifecycle-shaped concepts leaked into
+    // database_entities via the DTO-only FALLBACK (a repo with zero persisted/
+    // api-response shapes surfaces its full DTO set — openclaw). The capability
+    // purpose gate already recognized these shapes; the same recognition now runs
+    // at the entity-surfacing layer, gated on entity KIND + name shape.
+    it('drops infra/runtime/lifecycle-shaped non-persisted DTOs but keeps domain DTOs (openclaw fallback)', () => {
+      const nodes: CASNode[] = [
+        // Runtime/lifecycle plumbing shapes — value-object DTOs, no persisted /
+        // api-response evidence → must NOT surface as domain data entities.
+        node({ id: 'dto_daemon', name: 'DaemonAction', type: 'dto', source: { file: 'src/runtime/daemon.ts', line: 1 } }),
+        node({ id: 'p_daemon', name: 'signal', type: 'property', parent: 'dto_daemon', source: { file: 'src/runtime/daemon.ts', line: 2 } }),
+        node({ id: 'dto_spawn', name: 'SpawnBase', type: 'dto', source: { file: 'src/runtime/spawn.ts', line: 1 } }),
+        node({ id: 'p_spawn', name: 'pid', type: 'property', parent: 'dto_spawn', source: { file: 'src/runtime/spawn.ts', line: 2 } }),
+        node({ id: 'dto_usage', name: 'ZaiUsage', type: 'dto', source: { file: 'src/providers/zai.ts', line: 1 } }),
+        node({ id: 'p_usage', name: 'tokens', type: 'property', parent: 'dto_usage', source: { file: 'src/providers/zai.ts', line: 2 } }),
+        node({ id: 'dto_hook', name: 'HookAgent', type: 'dto', source: { file: 'src/runtime/hooks.ts', line: 1 } }),
+        node({ id: 'p_hook', name: 'agent', type: 'property', parent: 'dto_hook', source: { file: 'src/runtime/hooks.ts', line: 2 } }),
+        // Genuine product shapes with the SAME kind (value-object DTO) → kept.
+        node({ id: 'dto_voice', name: 'VoiceMessage', type: 'dto', source: { file: 'src/voice/voice.ts', line: 1 } }),
+        node({ id: 'p_voice', name: 'transcript', type: 'property', parent: 'dto_voice', source: { file: 'src/voice/voice.ts', line: 2 } }),
+        node({ id: 'dto_profile', name: 'Profile', type: 'dto', source: { file: 'src/profile/profile.ts', line: 1 } }),
+        node({ id: 'p_profile', name: 'handle', type: 'property', parent: 'dto_profile', source: { file: 'src/profile/profile.ts', line: 2 } }),
+      ];
+      const names = orch.buildDataEntities(nodes, []).map((e: any) => e.name);
+      // infra-shaped shapes gone
+      for (const infra of ['DaemonAction', 'SpawnBase', 'ZaiUsage', 'HookAgent']) {
+        expect(names).not.toContain(infra);
+      }
+      // real domain shapes kept
+      expect(names).toContain('VoiceMessage');
+      expect(names).toContain('Profile');
+    });
+
+    it('keeps an infra-NAMED shape when it carries persisted-entity evidence (kind exemption)', () => {
+      const nodes: CASNode[] = [
+        // A persisted ORM entity that happens to be named with an infra token —
+        // the gate is KIND + shape, so durable-state evidence overrides the name.
+        node({ id: 'entity_worker', name: 'WorkerRegistry', type: 'entity', source: { file: 'src/entities/worker-registry.ts', line: 1 }, subcategories: ['entity'] }),
+        node({ id: 'p_wr_id', name: 'id', type: 'property', parent: 'entity_worker', source: { file: 'src/entities/worker-registry.ts', line: 2 } }),
+      ];
+      const entities = orch.buildDataEntities(nodes, []);
+      expect(entities.map((e: any) => e.name)).toContain('WorkerRegistry');
+      expect(entities.find((e: any) => e.name === 'WorkerRegistry')!.kind).toBe('persisted-entity');
+    });
+
+    it('never blanks the entity model when EVERY shape reads as infrastructure', () => {
+      const nodes: CASNode[] = [
+        node({ id: 'dto_daemon2', name: 'DaemonAction', type: 'dto', source: { file: 'src/runtime/daemon.ts', line: 1 } }),
+        node({ id: 'p_d2', name: 'signal', type: 'property', parent: 'dto_daemon2', source: { file: 'src/runtime/daemon.ts', line: 2 } }),
+        node({ id: 'dto_spawn2', name: 'SpawnBase', type: 'dto', source: { file: 'src/runtime/spawn.ts', line: 1 } }),
+        node({ id: 'p_s2', name: 'pid', type: 'property', parent: 'dto_spawn2', source: { file: 'src/runtime/spawn.ts', line: 2 } }),
+      ];
+      const entities = orch.buildDataEntities(nodes, []);
+      // The guard keeps the surfaced set rather than returning an empty model.
+      expect(entities.length).toBeGreaterThan(0);
+    });
   });
 
   it('dedupes same-named ORM entities into one richest-evidence entry with merged lifecycle (hercules gap)', () => {

@@ -8887,7 +8887,7 @@ export class AnalyzerOrchestrator {
     // Runtime / lifecycle / process-control shapes. Matched as camelCase
     // segments so a product noun that merely contains the letters does not trip
     // (e.g. "Presentation" never yields a "Presence" segment).
-    const INFRA_SEGMENT = /^(Sentinel|Sentinels|Runtime|Runtimes|Daemon|Daemons|Spawn|Spawns|Restart|Restarts|Heartbeat|Heartbeats|Watchdog|Supervisor|Bootstrap|Lifecycle|Presence|Invoke|Invokes|Invocation|Runner|Runners|Worker|Workers|Scheduler|Reaper|Janitor|Usage|Uptime|Liveness|Readiness)$/;
+    const INFRA_SEGMENT = /^(Sentinel|Sentinels|Runtime|Runtimes|Daemon|Daemons|Spawn|Spawns|Restart|Restarts|Heartbeat|Heartbeats|Watchdog|Supervisor|Bootstrap|Lifecycle|Presence|Invoke|Invokes|Invocation|Runner|Runners|Worker|Workers|Scheduler|Reaper|Janitor|Usage|Uptime|Liveness|Readiness|Hook|Hooks)$/;
     const segments = String(name || '').trim().replace(/([a-z0-9])([A-Z])/g, '$1 $2').split(/\s+/);
     return segments.some(segment => INFRA_SEGMENT.test(segment));
   }
@@ -13066,7 +13066,27 @@ export class AnalyzerOrchestrator {
     const domainEntities = entities.filter(
       entity => entity.kind === 'persisted-entity' || entity.kind === 'api-response' || entity.kind == null
     );
-    return domainEntities.length > 0 ? domainEntities : entities;
+    const surfaced = domainEntities.length > 0 ? domainEntities : entities;
+
+    // INFRASTRUCTURE-SHAPE GATE (mirrors the capability purpose gate —
+    // isInfrastructureOnlyCapability / isInfrastructureShapedEntityName). A
+    // runtime/lifecycle/process-control-shaped concept (daemon/sentinel/spawn/
+    // restart/presence/invoke/usage/hook shapes) that carries NO persisted-domain
+    // or api-response evidence is plumbing, not a domain data entity — so it must
+    // not surface in database_entities even when the domain filter above fell back
+    // to the full set (a DTO-only repo with zero persisted/api-response shapes,
+    // e.g. openclaw, where SpawnBase/DaemonAction/RuntimeInfo/ZaiUsage/… would
+    // otherwise leak through the fallback). Gated on entity KIND + name shape
+    // (evidence), never a capability/keyword blocklist: persisted-entity /
+    // api-response shapes are kept regardless of name. Never blank the entity
+    // model — if EVERY surfaced shape reads as infrastructure (a pure daemon/
+    // runtime repo), keep the surfaced set so consumers still have targets.
+    const withoutInfra = surfaced.filter(entity =>
+      entity.kind === 'persisted-entity' ||
+      entity.kind === 'api-response' ||
+      !this.isInfrastructureShapedEntityName(entity.name)
+    );
+    return withoutInfra.length > 0 ? withoutInfra : surfaced;
   }
 
   /**

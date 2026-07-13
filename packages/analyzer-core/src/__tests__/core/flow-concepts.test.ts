@@ -663,7 +663,7 @@ describe('telemetry join (facet 6)', () => {
 // exits → observability; the query layer flips supporting → operational for
 // classifier-grounded infrastructure flows.
 // ---------------------------------------------------------------------------
-import { applyFlowRoleToCapabilityRelationships, type FlowConcept } from '../../analyzer/core/flow-concepts';
+import { applyFlowRoleToCapabilityRelationships, normalizeEntityKey, type FlowConcept } from '../../analyzer/core/flow-concepts';
 
 function buildRelationshipFixtureCas(): CASOutput {
   const nodes: CASNode[] = [
@@ -780,6 +780,112 @@ describe('capability_relationships — M:N with relational roles', () => {
       expect(f.capability_relationships).toBeUndefined();
       expect((f.gaps || []).join(' ')).toContain('capability_relationships omitted');
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// DEFECT-1 regression: the two capability↔flow derivation paths that silently
+// fired ZERO on real repos.
+//   (b) related_entities carried as IDs ("entity_order") never matched flow
+//       entities carried as NAMES ("Order") — a hard format mismatch that made
+//       every entity-overlap edge vanish. normalizeEntityKey reconciles them.
+//   (a-interior) a capability whose OWN entry-point handler is realized as an
+//       interior STEP of a larger flow (not that flow's root) now links to it
+//       as 'supporting' — "a capability whose anchor entry-points appear on a
+//       flow's path links to it" (docs/SEMANTIC-MODEL.md).
+// ---------------------------------------------------------------------------
+describe('normalizeEntityKey — reconciles entity id-form and name-form', () => {
+  test('entity_<name> id and the display name collapse to one key', () => {
+    expect(normalizeEntityKey('entity_workingmemorysession')).toBe('workingmemorysession');
+    expect(normalizeEntityKey('WorkingMemorySession')).toBe('workingmemorysession');
+    expect(normalizeEntityKey('entity_workingmemorysession')).toBe(normalizeEntityKey('WorkingMemorySession'));
+    // snake_case and casing variants of the same entity also collapse together.
+    expect(normalizeEntityKey('working_memory_session')).toBe('workingmemorysession');
+    // distinct entities stay distinct.
+    expect(normalizeEntityKey('Order')).not.toBe(normalizeEntityKey('Invoice'));
+  });
+});
+
+describe('capability↔flow path (b) — entity overlap survives id/name format gap', () => {
+  test('related_entities in ID form ("entity_order") still overlap a flow touching "Order"', () => {
+    const cas = buildRelationshipFixtureCas();
+    // Rewrite the fulfillment capability's related_entities to the ID form the
+    // real CAS emits (capability.related_entities are entity IDs; flow.entities
+    // are display names). Pre-fix this NEVER matched and the edge vanished.
+    (cas.system_capabilities as SystemCapability[])[1].related_entities = ['entity_order'];
+    const flows = computeFlowConcepts(cas);
+    const createFlow = flows.find(f => f.entry_point === 'ep_create')!;
+    const supporting = createFlow.capability_relationships!.find(r => r.capability_id === 'cap_fulfillment');
+    expect(supporting).toBeDefined();
+    expect(supporting!.role).toBe('supporting');
+  });
+});
+
+function buildInteriorFixtureCas(): CASOutput {
+  // Parent flow (POST /parent) calls into the handler node of a SEPARATE entry
+  // point (POST /child). A capability's operation references the CHILD entry
+  // point; the child handler is therefore an INTERIOR node on the parent flow's
+  // path. No entity overlap and no operation ref to the parent root exist — so
+  // ONLY the interior-entry-point rule can produce the parent→capability edge.
+  const nodes: CASNode[] = [
+    node({ id: 'n_parent', name: 'handleParent', type: 'controller', category: 'entry' }),
+    node({ id: 'n_child', name: 'handleChild', type: 'controller', category: 'entry' }),
+  ];
+  const edges: CASEdge[] = [
+    { id: 'ie1', source: 'n_parent', target: 'n_child', type: 'calls' },
+  ];
+  const entry_points: CASEntryPoint[] = [
+    { id: 'ep_parent', source_node: 'n_parent', type: 'http', name: 'parent',
+      trigger: { method: 'POST', path: '/parent' },
+      handler: { node_id: 'n_parent', method_name: 'handleParent' } },
+    { id: 'ep_child', source_node: 'n_child', type: 'http', name: 'child',
+      trigger: { method: 'POST', path: '/child' },
+      handler: { node_id: 'n_child', method_name: 'handleChild' } },
+  ];
+  const system_capabilities: SystemCapability[] = [
+    { id: 'cap_child', name: 'Child Capability', description: 'child op', category: 'core',
+      operations: [{ entry_point_id: 'ep_child', entry_point_type: 'http', action: 'do' }],
+      related_entities: [], related_domains: [], criticality: 'medium', criticality_factors: [] },
+  ];
+  return {
+    cas_version: '1.0.0', analysis_timestamp: new Date().toISOString(),
+    analysis_id: 'test-interior', system: { name: 'test-system' } as any,
+    nodes, edges, entry_points, exit_points: [], data_lineage: [],
+    data_entities: [], system_capabilities, analyzer_contributions: [],
+  } as unknown as CASOutput;
+}
+
+describe('capability↔flow path (a-interior) — anchor entry point realized as an interior step', () => {
+  const flows = computeFlowConcepts(buildInteriorFixtureCas());
+  const parentFlow = flows.find(f => f.entry_point === 'ep_parent')!;
+  const childFlow = flows.find(f => f.entry_point === 'ep_child')!;
+
+  test('child capability whose entry point is on the parent flow path → supporting', () => {
+    const rel = parentFlow.capability_relationships?.find(r => r.capability_id === 'cap_child');
+    expect(rel).toBeDefined();
+    expect(rel!.role).toBe('supporting');
+    expect(rel!.rationale).toContain('interior step');
+    expect(rel!.rationale).toContain('ep_child');
+  });
+
+  test('the child flow itself still links primary via its own entry point', () => {
+    const rel = childFlow.capability_relationships?.find(r => r.capability_id === 'cap_child');
+    expect(rel!.role).toBe('primary');
+  });
+
+  test('a utility node ref (not a real entry-point handler) never interior-links', () => {
+    const cas = buildInteriorFixtureCas();
+    // Point the capability op at an INTERNAL node ref rather than a real entry
+    // point: it is NOT in entryHandlerNodeIdByEpId, so the parent flow must not
+    // gain a spurious supporting edge from a bare utility node on its path.
+    (cas.system_capabilities as SystemCapability[])[0].operations = [
+      { entry_point_id: 'node:n_child', entry_point_type: 'http', action: 'do' },
+    ];
+    const f2 = computeFlowConcepts(cas);
+    const parent2 = f2.find(f => f.entry_point === 'ep_parent')!;
+    const interior = (parent2.capability_relationships || []).find(r =>
+      r.capability_id === 'cap_child' && /interior step/.test(r.rationale));
+    expect(interior).toBeUndefined();
   });
 });
 

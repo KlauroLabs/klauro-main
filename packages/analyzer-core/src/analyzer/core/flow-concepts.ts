@@ -576,6 +576,18 @@ function buildLineageIndex(cas: CASOutput): Map<string, { writes: CASEntityLinea
   return index;
 }
 
+/** Map every REAL entry point's id → its handler NODE id. Interior capability↔
+ *  flow matching (deriveCapabilityRelationships) consults this to resolve a
+ *  capability operation's `entry_point_id` to the node it anchors on, gated to
+ *  genuine entry-point handlers so utility node refs can never over-link. */
+function buildEntryHandlerNodeIdByEpId(cas: CASOutput): Map<string, string> {
+  const index = new Map<string, string>();
+  for (const ep of cas.entry_points || []) {
+    index.set(ep.id, ep.handler?.node_id || ep.source_node);
+  }
+  return index;
+}
+
 function buildExitPointIndex(cas: CASOutput): Map<string, CASExitPoint[]> {
   const index = new Map<string, CASExitPoint[]>();
   for (const ep of cas.exit_points || []) {
@@ -947,6 +959,24 @@ function entitiesForNodes(nodeIds: Set<string>, cas: CASOutput): string[] {
 }
 
 /**
+ * Normalize an entity reference to a comparison key that reconciles the TWO
+ * shapes the CAS uses for the SAME entity: the display NAME carried on
+ * flow.entities (from data_lineage.entity_name / data_entities.name, e.g.
+ * "WorkingMemorySession") and the ID carried on capability.related_entities
+ * (e.g. "entity_workingmemorysession"). Without this reconciliation the path-(b)
+ * overlap in deriveCapabilityRelationships compares "entity_workingmemorysession"
+ * against "workingmemorysession" and NEVER matches — silently zeroing every
+ * entity-overlap capability↔flow edge. Lowercases, strips a leading `entity_`
+ * id-prefix, and drops non-alphanumerics so "WorkingMemorySession",
+ * "working_memory_session", and "entity_workingmemorysession" all collapse to
+ * one key. Deterministic, evidence-preserving (no fuzzy matching — exact key
+ * equality after canonicalization).
+ */
+export function normalizeEntityKey(ref: string): string {
+  return String(ref).toLowerCase().replace(/^entity_/, '').replace(/[^a-z0-9]/g, '');
+}
+
+/**
  * ENTRY-POINT-FAMILY entity rollup: the full forward-reachable node set from a
  * flow's root ("the route/handler's lineage"), used to attach entities the
  * flow genuinely reaches even when the specific recorded chain path missed the
@@ -1060,10 +1090,22 @@ function deriveCapabilityRelationships(args: {
   entities: string[];
   /** Telemetry-dominance verdict for this flow (telemetryExitDominance). */
   telemetry: { dominated: boolean; evidence?: string };
+  /** ALL node ids on the flow's traced path (root + every interior step) — lets
+   *  a capability whose own entry-point handler is realized as an INTERIOR step
+   *  of this larger flow link to it (→ supporting). Omitted → interior matching
+   *  is skipped (behavior unchanged). */
+  pathNodeIds?: Set<string>;
+  /** Resolver from a capability operation's `entry_point_id` to the handler
+   *  NODE id it anchors on, restricted to REAL entry points (cas.entry_points).
+   *  Interior matching consults this so only a capability's genuine entry-point
+   *  handler counts as an interior anchor — a utility/helper node a capability
+   *  merely names is excluded, so a shared helper never blasts the edge across
+   *  every flow that happens to traverse it. */
+  entryHandlerNodeIdByEpId?: Map<string, string>;
 }): CapabilityFlowRelationship[] {
-  const { capabilities, entryPointId, rootNodeId, entities, telemetry } = args;
+  const { capabilities, entryPointId, rootNodeId, entities, telemetry, pathNodeIds, entryHandlerNodeIdByEpId } = args;
   const out: CapabilityFlowRelationship[] = [];
-  const entityKeySet = new Set(entities.map(e => e.toLowerCase()));
+  const entityKeySet = new Set(entities.map(normalizeEntityKey));
 
   for (const cap of capabilities) {
     const opMatch = (cap.operations || []).find(op =>
@@ -1079,7 +1121,30 @@ function deriveCapabilityRelationships(args: {
       continue;
     }
 
-    const shared = (cap.related_entities || []).filter(name => entityKeySet.has(String(name).toLowerCase()));
+    // INTERIOR entry-point anchor: a capability whose OWN entry-point handler is
+    // realized as a step on THIS flow's path (but is not the flow's root) — the
+    // flow passes THROUGH that capability's entry point, so the capability is
+    // 'supporting' to this flow. Evidence-gated to real entry-point handlers
+    // (entryHandlerNodeIdByOpEp) — never a bare utility node ref — and stronger
+    // than entity overlap, so it wins when both would fire.
+    if (pathNodeIds && entryHandlerNodeIdByEpId) {
+      const interiorOp = (cap.operations || []).find(op => {
+        const handlerNodeId = entryHandlerNodeIdByEpId.get(op.entry_point_id);
+        return handlerNodeId !== undefined
+          && handlerNodeId !== rootNodeId
+          && pathNodeIds.has(handlerNodeId);
+      });
+      if (interiorOp) {
+        out.push({
+          capability_id: cap.id,
+          role: 'supporting',
+          rationale: `capability operation "${interiorOp.action}" (entry_point_id=${interiorOp.entry_point_id}) is realized as an interior step on this flow's path`,
+        });
+        continue;
+      }
+    }
+
+    const shared = (cap.related_entities || []).filter(name => entityKeySet.has(normalizeEntityKey(String(name))));
     if (shared.length === 0) continue;
     const sharedList = shared.join(', ');
     if (telemetry.dominated) {
@@ -1239,6 +1304,7 @@ function buildTerminalFlows(cas: CASOutput, opts: ComputeFlowConceptsOptions): F
 
   const nodesById = new Map(cas.nodes.map(n => [n.id, n]));
   const capabilities = cas.system_capabilities || [];
+  const entryHandlerNodeIdByEpId = buildEntryHandlerNodeIdByEpId(cas);
   const exitPointsByNode = buildExitPointIndex(cas);
   const lineageByNode = buildLineageIndex(cas);
   const exitById = new Map((cas.exit_points || []).map(e => [e.id, e]));
@@ -1396,6 +1462,8 @@ function buildTerminalFlows(cas: CASOutput, opts: ComputeFlowConceptsOptions): F
       rootNodeId: rootEp ? (rootEp.handler?.node_id || rootEp.source_node) : chain.entry_point.node_id,
       entities: flowEntities,
       telemetry: telemetryExitDominance(allNodeIds, exitPointsByNode, terminus?.kind),
+      pathNodeIds: allNodeIds,
+      entryHandlerNodeIdByEpId,
     });
     const capabilityId = capabilityRelationships.find(r => r.role === 'primary')?.capability_id;
     if (capabilityRelationships.length === 0) {
@@ -1512,6 +1580,7 @@ function computeEntryPointFlows(
 
   const nodesById = new Map(cas.nodes.map(n => [n.id, n]));
   const capabilities = cas.system_capabilities || [];
+  const entryHandlerNodeIdByEpId = buildEntryHandlerNodeIdByEpId(cas);
 
   const realEntryPoints = cas.entry_points || [];
   const realRootNodeIds = new Set(realEntryPoints.map(ep => ep.handler?.node_id || ep.source_node));
@@ -1650,6 +1719,8 @@ function computeEntryPointFlows(
       // No resolved terminus on entry-point-rooted flows — dominance derives
       // from the traced nodes' own exit points alone.
       telemetry: telemetryExitDominance(allNodeIds, exitPointsByNode),
+      pathNodeIds: allNodeIds,
+      entryHandlerNodeIdByEpId,
     });
     const capabilityId = capabilityRelationships.find(r => r.role === 'primary')?.capability_id;
     if (capabilityRelationships.length === 0) {

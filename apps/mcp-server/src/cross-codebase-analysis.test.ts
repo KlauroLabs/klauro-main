@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { assertRealWorkspaceAiAttempt, buildCrossCodebaseSystemGraph, buildWorkspaceAgentContext, detectWorkspaceCryptoProfile, enforceWorkspaceNarrativeProductValueSummary, enrichWorkspaceAnalysisNarrative, evaluateWorkspaceNarrativeGate, isUncorroboratedEntityNameDomain, isVerbPhraseDomainLabel, isWorkspaceAiParseArtifactText, normalizeWorkspaceAiDescriptionText, productFrameworksFromCas, selectPreferredWorkspaceOllamaModel, selectWorkspaceAnalysisDetail, stripUngroundedWorkspaceMarketingLanguage, stripWorkspaceItemDescriptionArtifacts, withWorkspaceAiTimeout, workspaceNarrativeDomainMisattributionReason, workspaceNarrativeHardRejectReason, workspaceNarrativeMarketingMatches, workspaceNarrativeMisattributionReason, workspaceNarrativePromptContext } from './cross-codebase-analysis';
+import { assertRealWorkspaceAiAttempt, buildCrossCodebaseSystemGraph, buildWorkspaceAgentContext, detectWorkspaceCryptoProfile, enforceWorkspaceNarrativeProductValueSummary, enrichWorkspaceAnalysisNarrative, evaluateWorkspaceNarrativeGate, isUncorroboratedEntityNameDomain, isVerbPhraseDomainLabel, isWorkspaceAiParseArtifactText, normalizeWorkspaceAiDescriptionText, productFrameworksFromCas, selectPreferredWorkspaceOllamaModel, selectWorkspaceAnalysisDetail, stripUngroundedWorkspaceMarketingLanguage, stripWorkspaceItemDescriptionArtifacts, withWorkspaceAiTimeout, workspaceNarrativeDomainMisattributionReason, workspaceNarrativeEntityMisattributionReason, workspaceNarrativeHardRejectReason, workspaceNarrativeMarketingMatches, workspaceNarrativeMisattributionReason, workspaceNarrativePromptContext } from './cross-codebase-analysis';
 import { aiService } from '../../../packages/analyzer-core/src/ai/ai-service';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 
@@ -2131,6 +2131,68 @@ test('DEFECT2: domain misattribution uses deterministic workspace_domains as gro
   assert.equal(workspaceNarrativeDomainMisattributionReason(graph, good), null);
 });
 
+test('DEFECT-WAS1: entity misattribution catches paraphrased cross-member credit the domain gate evades (real Personal shape)', () => {
+  const graph: any = {
+    name: 'Personal',
+    codebases: [
+      { id: 'p-kontinuum', name: 'kontinuum' },
+      { id: 'p-mtg', name: 'mtg' },
+    ],
+    workspace_capabilities: [],
+    // decks/economy are mtg's ENTITIES, never top-level domains -> the domain
+    // gate cannot see them; the entity gate is the ground truth.
+    workspace_domains: [],
+    workspace_entities: [
+      { name: 'Deck', project_ids: ['p-mtg'] },
+      { name: 'EconomyTransaction', project_ids: ['p-mtg'] },
+      { name: 'RemoteMemory', project_ids: ['p-kontinuum'] },
+      { name: 'Account', project_ids: ['p-kontinuum', 'p-mtg'] }, // co-owned -> ignored
+    ],
+  };
+  // The exact live degraded narrative: Kontinuum credited with mtg's decks +
+  // economy transactions (paraphrased, so the exact-phrase capability gate misses it).
+  const bad = 'Kontinuum is a web based platform that enables users to purchase and manage decks, while also providing secure remote task reports and managing user economy transactions.';
+  // The domain-only gate (prior mechanism) does NOT catch this — that is the evasion.
+  assert.equal(workspaceNarrativeDomainMisattributionReason(graph, bad), null);
+  // The entity gate does, keyed on deterministic member->entity attribution.
+  const reason = workspaceNarrativeEntityMisattributionReason(graph, bad);
+  assert.ok(reason && /mtg/.test(reason) && /(EconomyTransaction|Deck)/.test(reason), `expected entity misattribution, got ${reason}`);
+  assert.equal(evaluateWorkspaceNarrativeGate(graph, bad, 'A digital asset system.').accepted, false);
+  // CONTROL: correctly-attributed narrative (mtg owns decks/economy) passes.
+  const good = 'Kontinuum manages remote memory and secures remote task reports. mtg lets users purchase and manage decks and manages user economy transactions.';
+  assert.equal(workspaceNarrativeEntityMisattributionReason(graph, good), null);
+  // Single-member workspace -> no cross-attribution possible.
+  const single: any = { ...graph, codebases: [{ id: 'p-mtg', name: 'mtg' }] };
+  assert.equal(workspaceNarrativeEntityMisattributionReason(single, bad), null);
+});
+
+test('DEFECT-WAS2: marketing saturation strips-and-accepts a grounded 2-repo narrative, still rejects pure fluff', () => {
+  const graph: any = {
+    name: 'Clients',
+    codebases: [
+      { id: 'c-backend', name: 'backend' },
+      { id: 'c-infra', name: 'infrastructure' },
+    ],
+    workspace_capabilities: [],
+    workspace_domains: [
+      { name: 'Billing Location', project_ids: ['c-backend'] },
+      { name: 'Cloud Access Control', project_ids: ['c-infra'] },
+      { name: 'Database Infrastructure', project_ids: ['c-infra'] },
+      { name: 'Cloud Monitoring', project_ids: ['c-infra'] },
+    ],
+    workspace_entities: [],
+  };
+  // Grounded 2-repo narrative sprinkled with the 3 live-degrade adjectives
+  // (comprehensive / various / robust) -> was hard-rejected at >=3, now strips
+  // and re-checks grounding: the stripped text still names real domains + verbs.
+  const grounded = 'This workspace groups two client projects. The backend manages billing location and synchronizes inventory with NetSuite. The infrastructure project provisions cloud access control, database infrastructure, and exposes a comprehensive cloud monitoring surface across various environments with robust network access control.';
+  const pvs = 'Manages NetSuite billing synchronization and provisions the cloud access, monitoring and database infrastructure that runs it.';
+  assert.equal(evaluateWorkspaceNarrativeGate(graph, grounded, pvs).accepted, true);
+  // Pure marketing fluff strips to nothing grounded -> still rejected.
+  const fluff = 'This is a comprehensive and robust workspace that provides various powerful solutions. It is a best-in-class, seamless, scalable platform designed to deliver an ideal experience for all stakeholders alike.';
+  assert.equal(evaluateWorkspaceNarrativeGate(graph, fluff, 'A comprehensive solution.').accepted, false);
+});
+
 test('DEFECT3: framework rollup drops fixture-sourced frameworks, keeps product + manifest-only', () => {
   const casOut: any = {
     system: { technologies: { frameworks: [{ name: 'Django' }, { name: 'Jest' }, { name: 'NestJS' }, { name: 'Terraform' }] } },
@@ -2158,6 +2220,20 @@ test('DEFECT4: verb-phrase domain labels rejected (Surfaces/Analyzes), noun doma
   assert.equal(isVerbPhraseDomainLabel('Surfaces Remote Memory'), true);
   assert.equal(isVerbPhraseDomainLabel('Network Access Control'), false);
   assert.equal(isVerbPhraseDomainLabel('Payments'), false);
+  // Real hosted leaks (v1.0.67): these evaded the prior list.
+  assert.equal(isVerbPhraseDomainLabel('Describes Images'), true);      // OpenClaw (-es fallback + list)
+  assert.equal(isVerbPhraseDomainLabel('Polls Users'), true);          // OpenClaw
+  assert.equal(isVerbPhraseDomainLabel('Secures Remote Task Reports'), true); // Personal
+  assert.equal(isVerbPhraseDomainLabel('Alter Netsuitesynctrack'), true);     // Clients (base-form verb)
+  // Real noun domains from the same 4 hosted lists MUST be kept.
+  for (const keep of [
+    'Game Server', 'Web Memory Intelligence', 'Deck Card Purchase', 'React Route Surface',
+    'Billing Location', 'Customer Invoice Preferences Netsuite', 'Mutation Surface',
+    'Cloud Access Control', 'Container Registry Infrastructure', 'Cloud Monitoring',
+    'Cloudfront Distribution Infrastructure', 'Database Infrastructure', 'Route53 Record Infrastructure',
+  ]) {
+    assert.equal(isVerbPhraseDomainLabel(keep), false, `should keep noun domain: ${keep}`);
+  }
 });
 
 test('DEFECT4: bare entity/class-name domains rejected; core-concept domains kept', () => {

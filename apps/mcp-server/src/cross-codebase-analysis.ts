@@ -3046,8 +3046,107 @@ export function workspaceNarrativeMisattributionReason(graph: WorkspaceAnalysisG
   // subject (member A) is CREDITED with a domain the deterministic attribution
   // assigns exclusively to a different member B, that is a misattribution even
   // when B is named elsewhere in the same sentence.
-  return workspaceNarrativeDomainMisattributionReason(graph, description);
+  return (
+    workspaceNarrativeDomainMisattributionReason(graph, description) ||
+    // Entities and capabilities are the finer-grained ground truth: the live
+    // Personal defect credits Kontinuum with "decks" and "economy transactions"
+    // — those are mtg's ENTITIES (Deck, EconomyTransaction), never top-level
+    // DOMAINS, so the domain-level gate above never sees them. The entity map's
+    // deterministic member→entity attribution catches the paraphrase.
+    workspaceNarrativeEntityMisattributionReason(graph, description)
+  );
 }
+
+/**
+ * Deterministic member→entity attribution as ground truth (live Personal-ws
+ * defect: "Kontinuum … enables users to purchase and manage decks … managing
+ * user economy transactions" — Deck + EconomyTransaction are exclusively mtg's
+ * entities). Mirrors the domain misattribution gate but keys on graph
+ * .workspace_entities, splits camelCase entity names ("EconomyTransaction" ->
+ * "economy transaction") so paraphrased prose matches, and tolerates plurals
+ * ("decks", "economy transactions"). A mention is a MISATTRIBUTION when a
+ * distinctive entity phrase owned exclusively by member B appears after a
+ * crediting verb in a sentence whose subject is a different member A, and is
+ * not directly owner-qualified ("mtg deck"). Exported for tests.
+ */
+export function workspaceNarrativeEntityMisattributionReason(graph: WorkspaceAnalysisGraph, description: string): string | null {
+  const codebases = graph.codebases || [];
+  if (codebases.length < 2) return null;
+  const workspaceName = normalizeAiItemName(graph.name || '');
+  const members = codebases
+    .map(codebase => ({ id: codebase.id, name: codebase.name, normalized: normalizeAiItemName(codebase.name) }))
+    .filter(member => member.normalized.length >= 3 && member.normalized !== workspaceName);
+  if (members.length < 2) return null;
+  const normalizeEntityPhrase = (value: string): string => normalizeAiItemName(splitCamelCaseProseToken(String(value || '')));
+  const exclusiveEntities: Array<{ ownerId: string; ownerName: string; ownerNormalized: string; entity: string; normalized: string; lastToken: string }> = [];
+  for (const entity of graph.workspace_entities || []) {
+    const owners = [...new Set(entity.project_ids || [])];
+    if (owners.length !== 1) continue;
+    const owner = members.find(member => member.id === owners[0]);
+    if (!owner) continue;
+    const normalized = normalizeEntityPhrase(entity.name);
+    const tokens = normalized.split(/\s+/).filter(Boolean);
+    // Distinctiveness: a single generic entity token ("user", "order", "session")
+    // recurs across members and is too collision-prone to attribute by string
+    // match; a distinctive noun ("deck") or multi-token phrase ("economy
+    // transaction") is safe. Require >=4 chars and not a generic bucket token.
+    if (normalized.length < 4) continue;
+    if (tokens.length === 1 && WORKSPACE_GENERIC_ENTITY_TOKENS.has(tokens[0])) continue;
+    if (tokens.length > 1 && tokens.every(token => WORKSPACE_GENERIC_ENTITY_TOKENS.has(token))) continue;
+    exclusiveEntities.push({
+      ownerId: owner.id,
+      ownerName: owner.name,
+      ownerNormalized: owner.normalized,
+      entity: entity.name,
+      normalized,
+      lastToken: tokens[tokens.length - 1] || normalized,
+    });
+  }
+  if (exclusiveEntities.length === 0) return null;
+  // Broader crediting-verb set than the domain gate: entity credit shows up as
+  // "purchase/manage/buy/sell/track/create decks", not just "provides/offers".
+  const creditingVerb = /\b(provid\w*|offer\w*|includ\w*|deliver\w*|serv\w*|host\w*|run\w*|operat\w*|expos\w*|power\w*|enabl\w*|features?|manag\w*|purchas\w*|buy\w*|buys|sell\w*|track\w*|handl\w*|process\w*|creat\w*|store\w*|stores|support\w*|maintain\w*|own\w*)\b/;
+  const sentences = String(description || '').split(/(?<=[.!?])\s+/).filter(Boolean);
+  for (const sentence of sentences) {
+    const normalizedSentence = normalizeEntityPhrase(sentence);
+    const subject = members
+      .map(member => ({ member, index: normalizedSentence.search(new RegExp(`\\b${escapeRegExp(member.normalized)}\\b`)) }))
+      .filter(item => item.index >= 0)
+      .sort((left, right) => left.index - right.index)[0];
+    if (!subject || subject.index > 24) continue;
+    for (const ent of exclusiveEntities) {
+      if (ent.ownerId === subject.member.id) continue;
+      // Plural tolerance: match the phrase with an optional trailing "s" on the
+      // final token ("deck" -> "decks", "economy transaction" ->
+      // "economy transactions"). Capture the preceding word to exempt legitimate
+      // owner-qualified references ("mtg deck").
+      const phraseWithPlural = ent.normalized.replace(/\s*$/, '') + 's?';
+      const re = new RegExp(`(?:\\b(\\w+)\\s+)?\\b${phraseWithPlural}\\b`, 'g');
+      let match: RegExpExecArray | null;
+      while ((match = re.exec(normalizedSentence)) !== null) {
+        const precedingWord = match[1] || '';
+        if (precedingWord === ent.ownerNormalized) continue;
+        if (creditingVerb.test(normalizedSentence.slice(0, match.index))) {
+          return `the narrative credits ${subject.member.name} with the "${ent.entity}" entity, which the deterministic workspace attribution assigns exclusively to member ${ent.ownerName} — attribute "${ent.entity}" (and its data) to ${ent.ownerName}, describe each member's own entities under that member, and never fold one member's product into another`;
+        }
+      }
+    }
+  }
+  return null;
+}
+
+// Generic entity tokens too collision-prone to attribute cross-member by string
+// match — they recur as tables/models across unrelated members.
+const WORKSPACE_GENERIC_ENTITY_TOKENS = new Set([
+  'user', 'users', 'account', 'accounts', 'order', 'orders', 'session', 'sessions',
+  'data', 'item', 'items', 'record', 'records', 'event', 'events', 'request',
+  'requests', 'response', 'responses', 'token', 'tokens', 'config', 'message',
+  'messages', 'log', 'logs', 'job', 'jobs', 'task', 'tasks', 'file', 'files',
+  'node', 'nodes', 'edge', 'edges', 'role', 'roles', 'status', 'entry', 'entries',
+  'value', 'key', 'keys', 'name', 'names', 'operation', 'operations', 'decision',
+  'decisions', 'profile', 'profiles', 'source', 'sources', 'company', 'product',
+  'products', 'location', 'delivery', 'invoice', 'approval', 'approvals',
+]);
 
 /**
  * Uses the deterministic workspace_domains member→domain attribution as ground
@@ -3153,10 +3252,30 @@ export function evaluateWorkspaceNarrativeGate(
   // (the live OpenClaw "comprehensive workspace… robust… ideal solution" prose).
   const marketingMatches = workspaceNarrativeMarketingMatches(graph, `${description} ${String(productValueSummary ?? '')}`);
   if (marketingMatches.length >= 3) {
-    return {
-      accepted: false,
-      reason: `unsupported-marketing-language saturation (${marketingMatches.join(', ')}): replace marketing adjectives with concrete, evidence-backed workspace behavior`,
-    };
+    // SATURATION vs INCIDENTAL (live "Clients" 2-repo defect: a legitimate
+    // narrative that concretely describes hercules + electripure but sprinkles
+    // three generic adjectives — "comprehensive, various, robust" — was degraded
+    // to an EMPTY description instead of stripped-and-accepted, because the
+    // strip mechanism only ran on the accepted branch). Saturation means the
+    // marketing was load-bearing: once the ungrounded adjectives are removed the
+    // narrative collapses. Strip first and re-check grounding — only reject when
+    // the STRIPPED narrative no longer stands on its own (still names real
+    // semantics + behavior verbs at length). The persist seam strips the
+    // adjectives from the accepted text, so incidental marketing never survives.
+    const strippedDescription = stripUngroundedWorkspaceMarketingLanguage(graph, description);
+    const strippedStandsAlone =
+      strippedDescription.length >= 180 &&
+      (isUsefulAiWorkspaceNarrative(strippedDescription) ||
+        isGroundedAiWorkspaceNarrative(graph, strippedDescription, productValueSummary) ||
+        isWorkspaceSemanticsGroundedNarrative(graph, strippedDescription));
+    if (!strippedStandsAlone) {
+      return {
+        accepted: false,
+        reason: `unsupported-marketing-language saturation (${marketingMatches.join(', ')}): replace marketing adjectives with concrete, evidence-backed workspace behavior`,
+      };
+    }
+    // else: incidental marketing — fall through to the acceptance paths; the
+    // persist seam strips the flagged adjectives from the accepted narrative.
   }
   if (isUsefulAiWorkspaceNarrative(description)) return { accepted: true };
   if (isGroundedAiWorkspaceNarrative(graph, description, productValueSummary)) return { accepted: true };
@@ -6247,12 +6366,35 @@ export function isUncorroboratedEntityNameDomain(
 export function isVerbPhraseDomainLabel(name: string): boolean {
   const tokens = normalizeAiItemName(name).split(/\s+/).filter(Boolean);
   if (tokens.length < 2) return false;
-  // Live WAS leaks these evaded because "surfaces"/"analyzes" were absent:
-  // "Surfaces Codebase Analysis Results", "Surfaces Remote Memory",
-  // "Surfaces Cloud Resources", "Analyzes Codebase Patterns". Domains are noun
-  // concepts; any leading action verb makes the label a capability echo.
-  return /^(?:send|sends|list|lists|get|gets|create|creates|delete|deletes|manage|manages|handle|handles|fetch|fetches|build|builds|run|runs|execute|executes|process|processes|load|loads|save|saves|read|reads|write|writes|add|adds|remove|removes|check|checks|validate|validates|parse|parses|render|renders|receive|receives|start|starts|stop|stops|sync|syncs|track|tracks|monitor|monitors|generate|generates|compute|computes|calculate|calculates|provide|provides|expose|exposes|register|registers|configure|configures|update|updates|surface|surfaces|analyze|analyzes|analyse|analyses|transcribe|transcribes|approve|approves|spawn|spawns|search|searches|ingest|ingests|transform|transforms|index|indexes|map|maps|define|defines|coordinate|coordinates|deploy|deploys|install|installs|connect|connects|collect|collects|record|records|enforce|enforces|integrate|integrates|audit|audits|examine|examines|identify|identifies|assess|assesses|detect|detects|discover|discovers|retrieve|retrieves|import|imports|export|exports|route|routes|dispatch|dispatches|orchestrate|orchestrates)$/.test(tokens[0]);
+  const leading = tokens[0];
+  // Domains are noun concepts; a capitalized leading present-tense verb + object
+  // ("Describes Images", "Polls Users", "Secures Remote Task Reports", "Alter
+  // Netsuitesynctrack") is a capability/action label, not a domain. An explicit
+  // verb lexicon covers base forms that morphology cannot detect (Alter, Send,
+  // Get). Extend only when a NEW base-form verb leaks.
+  if (/^(?:send|sends|list|lists|get|gets|create|creates|delete|deletes|manage|manages|handle|handles|fetch|fetches|build|builds|run|runs|execute|executes|process|processes|load|loads|save|saves|read|reads|write|writes|add|adds|remove|removes|check|checks|validate|validates|parse|parses|render|renders|receive|receives|start|starts|stop|stops|sync|syncs|track|tracks|monitor|monitors|generate|generates|compute|computes|calculate|calculates|provide|provides|expose|exposes|register|registers|configure|configures|update|updates|surface|surfaces|analyze|analyzes|analyse|analyses|transcribe|transcribes|approve|approves|spawn|spawns|search|searches|ingest|ingests|transform|transforms|index|indexes|map|maps|define|defines|coordinate|coordinates|deploy|deploys|install|installs|connect|connects|collect|collects|record|records|enforce|enforces|integrate|integrates|audit|audits|examine|examines|identify|identifies|assess|assesses|detect|detects|discover|discovers|retrieve|retrieves|import|imports|export|exports|route|routes|dispatch|dispatches|orchestrate|orchestrates|describe|describes|poll|polls|secures|alter|alters|notify|notifies|publish|publishes|subscribe|subscribes|resolve|resolves|aggregate|aggregates|submit|submits|upload|uploads|download|downloads|emit|emits|broadcast|broadcasts|replicate|replicates|migrate|migrates|encrypt|encrypts|decrypt|decrypts|persist|persists|verify|verifies)$/.test(leading)) {
+    return true;
+  }
+  // Grammatical fallback for 3rd-person-singular present verbs the lexicon has
+  // not enumerated: a leading token ending in "-es" (describes, analyzes,
+  // pushes, fetches, dispatches, watches) reads as a verb. English domain HEAD
+  // nouns almost never end in "-es"; the few plural "-es" nouns that legitimately
+  // head a domain are guarded below so real noun domains survive.
+  if (leading.length >= 4 && /es$/.test(leading) && !/(?:ss|ies)$/.test(leading) && !PLURAL_ES_NOUN_DOMAIN_HEADS.has(leading)) {
+    return true;
+  }
+  return false;
 }
+
+// Plural nouns ending in "-es" that legitimately HEAD a domain label — exempt
+// from the grammatical "-es leading verb" fallback so real noun domains survive.
+const PLURAL_ES_NOUN_DOMAIN_HEADS = new Set([
+  'devices', 'services', 'databases', 'instances', 'resources', 'interfaces',
+  'namespaces', 'workspaces', 'pipelines', 'invoices', 'notes', 'roles', 'types',
+  'templates', 'routes', 'sources', 'images', 'packages', 'releases', 'features',
+  'issues', 'queues', 'caches', 'nodes', 'edges', 'files', 'stages', 'phases',
+  'preferences', 'appliances', 'balances', 'licenses', 'warehouses', 'purchases',
+]);
 
 function collapseOverlappingWorkspaceDomains(
   entries: Array<[string, { project_ids: string[]; evidence: string[]; score: number; terminal_score: number; terminal_evidence: string[] }]>,
