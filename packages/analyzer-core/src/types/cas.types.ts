@@ -3111,6 +3111,19 @@ export interface SystemCapability {
   related_domains: string[];
   criticality: 'critical' | 'high' | 'medium' | 'low';
   criticality_factors: string[];
+  /**
+   * Provenance of the EVIDENCE that produced this capability, used by the
+   * post-AI-catalog reconciliation (see reconcileCatalogedCapabilities):
+   * - 'behavior-surface': derived from a named registration surface (e.g. a
+   *   200+ tool MCP server, a socket-event namespace) with no persisted-entity
+   *   anchor. The AI catalog pass — which reasons from journeys/entities —
+   *   systematically MISSES these, so they are re-injected if the catalog
+   *   dropped them. This is the flagship-capability guarantee.
+   * - 'infrastructure': the capability's only anchors are runtime/lifecycle-
+   *   shaped entities with no product (persisted/api-response) evidence; it
+   *   fails the purpose test and is dropped from the shipped catalog.
+   */
+  evidence_kind?: 'behavior-surface' | 'infrastructure';
 }
 
 export interface SystemPurpose {

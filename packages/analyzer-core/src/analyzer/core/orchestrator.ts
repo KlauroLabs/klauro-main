@@ -95,6 +95,7 @@ import { ChangeDetector } from './change-detector';
 import { getBuildIdentity } from './build-identity';
 import { buildUserJourneys } from './journey-builder';
 import { buildTerminalSignal, type TerminalSignal } from './terminal-signal';
+import { selectProductFrameworkNames, analyzerTypeMap } from './framework-comprehension';
 import { buildParadigmConformance } from './paradigm-conformance';
 import { buildArchitecturalConflicts } from './architectural-conflicts';
 import { buildDataLineage } from './data-lineage';
@@ -6645,33 +6646,25 @@ export class AnalyzerOrchestrator {
     });
   }
 
+  /**
+   * The COMPREHENSION framework list — the frameworks the AI description/narrative
+   * may assert the system is "built with", and the seed for summary.frameworks the
+   * description cites. Delegates to the shared evidence-based gate
+   * (framework-comprehension.ts): only framework-type analyzers, only product-path
+   * evidence, and only frameworks with a real application surface (not adapter
+   * shims). This is why Klauro (a TypeScript monorepo) no longer lists django /
+   * fastapi (they came from Python fixtures and the klauro-sdk-py telemetry SDK's
+   * adapter middleware) and no longer lists library category labels
+   * ("authentication and authorization"). The structural inventory
+   * (system.technologies.frameworks) is unaffected — it MAY keep the raw mix.
+   */
   private frameworkNamesForPurpose(contributions: any[], nodes: CASNode[], projectPath: string): string[] {
-    const productFrameworks = new Set<string>();
-    for (const node of nodes) {
-      if (!node.source?.file) continue;
-      if (!this.isPrimaryProductNodeForProject(node, projectPath)) continue;
-      const metadata = (node.metadata || {}) as Record<string, unknown>;
-      const candidates = [
-        metadata.framework,
-        metadata.library,
-        ...(Array.isArray(metadata.frameworks) ? metadata.frameworks : []),
-      ];
-      for (const candidate of candidates) {
-        const name = String(candidate || '')
-          .trim()
-          .replace(/\s*analyzer$/i, '')
-          .replace(/^enhanced\s+/i, '')
-          .trim();
-        if (name) productFrameworks.add(name);
-      }
-    }
-
-    if (productFrameworks.size > 0) {
-      return [...productFrameworks]
-        .filter(name => !/\b(language|ast|analyzer)\b/i.test(name))
-        .slice(0, 8);
-    }
-    return [];
+    return selectProductFrameworkNames(
+      nodes,
+      analyzerTypeMap(contributions),
+      node => Boolean(node.source?.file) && this.isPrimaryProductNodeForProject(node as CASNode, projectPath),
+      8,
+    );
   }
 
   private isPrimaryProductPathForProject(filePath: string, projectPath: string): boolean {
@@ -8793,6 +8786,112 @@ export class AnalyzerOrchestrator {
     return out.slice(0, 16);
   }
 
+  /**
+   * Post-AI-catalog reconciliation — restores the deterministic guarantees the
+   * catalog replacement (systemCapabilities.splice with the AI output) throws
+   * away. The AI catalog reasons only from journeys + data entities, so on real
+   * hosted repos it: (1) DROPS behavior-surface flagships (Klauro's 207-tool MCP
+   * surface vanished), (2) ships INFRASTRUCTURE as capabilities ("Manages
+   * Restart sentinels", "Manages Runtime info"), and (3) emits verb-variant
+   * NEAR-DUPLICATES on one entity ("Provides analysis results" / "Surfaces
+   * analysis insights"). Prior fixes to buildBehaviorCapabilities / the dedup
+   * passes only ran on the DETERMINISTIC list and were verified with AI off, so
+   * they never touched the hosted (AI-on) output. This re-applies all three to
+   * the cataloged list.
+   */
+  private reconcileCatalogedCapabilities(
+    cataloged: SystemCapability[],
+    candidates: SystemCapability[],
+    dataEntities: CASDataEntity[],
+  ): SystemCapability[] {
+    const entityById = new Map(dataEntities.map(entity => [entity.id, entity]));
+    const result = [...cataloged];
+
+    // (1) FLAGSHIP RE-INJECTION. A deterministic candidate tagged
+    // evidence_kind:'behavior-surface' is a NAMED registration surface (mcp_tool
+    // / rpc / command registry) — a product behavior engine the entity/journey-
+    // driven catalog cannot see. Re-inject it unless the catalog already covers
+    // that SAME surface (a cataloged cap whose name/domain carries the surface's
+    // distinctive subject token). Entity overlap alone does NOT suppress: the
+    // whole point is that this engine is distinct from the entity-CRUD caps that
+    // happen to touch the same records.
+    const GENERIC_SURFACE_TOKENS = new Set(['surface', 'tool', 'tools', 'server', 'service', 'api', 'event', 'events', 'command', 'commands', 'message', 'messages', 'call', 'calls', 'handler', 'handlers']);
+    const distinctiveTokens = (capability: SystemCapability): Set<string> =>
+      new Set([capability.structural_label || capability.name, ...(capability.related_domains || [])]
+        .join(' ')
+        .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+        .toLowerCase()
+        .split(/[^a-z0-9]+/)
+        .filter(token => token.length > 2 && !GENERIC_SURFACE_TOKENS.has(token)));
+    const catalogedTokenPool = new Set<string>();
+    for (const capability of cataloged) {
+      for (const token of distinctiveTokens(capability)) catalogedTokenPool.add(token);
+    }
+    for (const candidate of candidates) {
+      if (candidate.evidence_kind !== 'behavior-surface') continue;
+      const tokens = distinctiveTokens(candidate);
+      const alreadyCovered = tokens.size > 0 && [...tokens].some(token => catalogedTokenPool.has(token));
+      if (alreadyCovered) continue;
+      // Re-injected as a core capability with its deterministic structural label;
+      // description_source stays unset so the element-description AI pass writes
+      // its narrative (identical contract to the entity-anchored path).
+      result.push({ ...candidate, category: 'core' });
+    }
+
+    // (2) PURPOSE GATE. Drop capabilities whose ONLY anchors are runtime/
+    // lifecycle-shaped entities with no product (persisted/api-response)
+    // evidence — they fail the purpose test ("would this appear in a product
+    // description?"). Evidence-gated on the entity's KIND + shape, never a
+    // capability-name keyword blocklist.
+    const purposeGated = result.filter(capability => {
+      if (!this.isInfrastructureOnlyCapability(capability, entityById)) return true;
+      return false;
+    });
+    // Never let the gate empty the catalog; if everything read as infra (a pure
+    // runtime/daemon repo), keep the original so agents still have targets.
+    const gated = purposeGated.length > 0 ? purposeGated : result;
+
+    // (3) DEDUP. Re-run the name + entity-set dedup (with the strengthened
+    // verb-variant pass) on the AI output — it never ran on the catalog.
+    return this.dedupeSystemCapabilitiesByName(gated);
+  }
+
+  /**
+   * A capability fails the purpose test when its only anchors are infrastructure/
+   * runtime/lifecycle-shaped entities that carry no product evidence. "Product
+   * evidence" = an entity classified persisted-entity or api-response (a real
+   * domain record or a produced response). Absent that, an entity whose name
+   * shape is runtime/daemon/sentinel/spawn/restart/… is plumbing, and a
+   * capability anchored ONLY on such shapes is infrastructure, not a product
+   * capability. Gated on entity KIND + name shape (evidence), not on the
+   * capability's own name.
+   */
+  private isInfrastructureOnlyCapability(
+    capability: SystemCapability,
+    entityById: Map<string, CASDataEntity>,
+  ): boolean {
+    const anchors = (capability.related_entities || [])
+      .map(id => entityById.get(id))
+      .filter((entity): entity is CASDataEntity => Boolean(entity));
+    // No resolvable entity anchor → this gate does not apply (a behavior-surface
+    // or operation-only capability is judged elsewhere).
+    if (anchors.length === 0) return false;
+    return anchors.every(entity => {
+      // Real product record / produced response → product evidence, keep.
+      if (entity.kind === 'persisted-entity' || entity.kind === 'api-response') return false;
+      return this.isInfrastructureShapedEntityName(entity.name);
+    });
+  }
+
+  private isInfrastructureShapedEntityName(name: string): boolean {
+    // Runtime / lifecycle / process-control shapes. Matched as camelCase
+    // segments so a product noun that merely contains the letters does not trip
+    // (e.g. "Presentation" never yields a "Presence" segment).
+    const INFRA_SEGMENT = /^(Sentinel|Sentinels|Runtime|Runtimes|Daemon|Daemons|Spawn|Spawns|Restart|Restarts|Heartbeat|Heartbeats|Watchdog|Supervisor|Bootstrap|Lifecycle|Presence|Invoke|Invokes|Invocation|Runner|Runners|Worker|Workers|Scheduler|Reaper|Janitor|Usage|Uptime|Liveness|Readiness)$/;
+    const segments = String(name || '').trim().replace(/([a-z0-9])([A-Z])/g, '$1 $2').split(/\s+/);
+    return segments.some(segment => INFRA_SEGMENT.test(segment));
+  }
+
   private parseCapabilityCatalog(raw: string): Array<Record<string, unknown>> {
     if (!raw) return [];
     let text = String(raw).trim().replace(/^```(?:json)?/i, '').replace(/```$/i, '').trim();
@@ -8885,19 +8984,27 @@ export class AnalyzerOrchestrator {
     // fact bundle — user journeys, entities, route areas, services. On success,
     // replaces systemCapabilities in place, each linked back to its evidence.
     if (systemCapabilities.length > 0 || userJourneys.length > 0) {
+      // Snapshot the DETERMINISTIC candidates BEFORE the AI replaces them. The
+      // deterministic pass has already applied entity-set dedup, the purpose
+      // gate, and behavior-surface derivation; the AI catalog (which reasons
+      // only from journeys/entities) discards all of that. reconcile re-applies
+      // those guarantees to the AI output and re-injects flagship behavior
+      // surfaces the catalog dropped — see reconcileCatalogedCapabilities.
+      const candidateSnapshot = systemCapabilities.map(capability => ({ ...capability }));
       const extracted = await this.aiExtractCapabilityCatalog({
         systemName,
         enhancedSystemPurpose,
         frameworks,
         userJourneys,
         dataEntities,
-        candidateCapabilities: [...systemCapabilities],
+        candidateCapabilities: candidateSnapshot,
         externalServices,
         flowGraph,
         budgetMs,
       });
       if (extracted.length > 0) {
-        systemCapabilities.splice(0, systemCapabilities.length, ...extracted);
+        const reconciled = this.reconcileCatalogedCapabilities(extracted, candidateSnapshot, dataEntities);
+        systemCapabilities.splice(0, systemCapabilities.length, ...reconciled);
       }
     }
 
@@ -8956,7 +9063,7 @@ export class AnalyzerOrchestrator {
       raw = await Promise.race([
         aiService.generateComponentDescription({
           additionalContext: {
-            task: 'You are writing the Klauro CAS human/agent orientation. Based ONLY on the supplied facts and descriptionContract, return ONLY valid JSON with this shape: {"system_description":"...","domain":"...","descriptions":[{"id":"...","description":"..."}],"quality_check":{"used_facts":["..."],"unsupported_claims":[]}}. Before writing, follow descriptionContract.evidence_priority in order. system_description must be ONE rich paragraph of 4 to 6 full sentences that answers, in order, the four questions in descriptionContract.system_description_shape: (1) WHAT IT IS — the system type/domain, inferred from the supplied dependencies, distinctiveEntities, and project text; (2) WHAT IT DOES — the concrete product workflows and the terminalOutputs it produces for its consumers; (3) HOW IT WORKS — the concrete mechanism that produces those outputs, naming at least one supplied mechanism fact (an allowedFramework, a library, a near-terminal stage, or the dataflow from a capability through its entities to a terminal output) — never a circular restatement of the capability or output lists;(4) HOW IT IS BUILT — the architecture, frameworks, and third-party integrations, using only supplied allowedFrameworks, entities, integrations, and dependencies. Infer the domain from the real dependencies and integrations (for example a codebase depending on ccxt/web3/ethers is a crypto/blockchain system) — NEVER from a keyword in the project name. Anchor WHAT IT DOES and HOW IT WORKS on what the system PRODUCES (terminalOutputs / api-response entities), not on mid-chain create/update/delete of records. domain must be one lowercase kebab-case label of 2 to 4 concrete product nouns from the facts. descriptions must include one grounded sentence per item in items; each sentence must name the concrete record, lifecycle, workflow, model, or boundary that item owns.',
+            task: 'You are writing the Klauro CAS human/agent orientation. Based ONLY on the supplied facts and descriptionContract, return ONLY valid JSON with this shape: {"system_description":"...","domain":"...","descriptions":[{"id":"...","description":"..."}],"quality_check":{"used_facts":["..."],"unsupported_claims":[]}}. Before writing, follow descriptionContract.evidence_priority in order. system_description must be ONE rich paragraph of 4 to 6 full sentences that answers, in order, the four questions in descriptionContract.system_description_shape: (1) WHAT IT IS — the system type/domain, inferred from the supplied dependencies, distinctiveEntities, and project text; (2) WHAT IT DOES — the concrete product workflows and the terminalOutputs it produces for its consumers; (3) HOW IT WORKS — the concrete mechanism that produces those outputs, naming at least one supplied mechanism fact (a framework the system is built with from the allowedFrameworks fact list, a library, a near-terminal stage, or the dataflow from a capability through its entities to a terminal output) — never a circular restatement of the capability or output lists;(4) HOW IT IS BUILT — the architecture, the frameworks the system is built with, and third-party integrations, drawing only on the supplied allowedFrameworks fact list, entities, integrations, and dependencies. Never write internal fact-list key names (such as the literal phrase "allowed frameworks") in the prose. Infer the domain from the real dependencies and integrations (for example a codebase depending on ccxt/web3/ethers is a crypto/blockchain system) — NEVER from a keyword in the project name. Anchor WHAT IT DOES and HOW IT WORKS on what the system PRODUCES (terminalOutputs / api-response entities), not on mid-chain create/update/delete of records. domain must be one lowercase kebab-case label of 2 to 4 concrete product nouns from the facts. descriptions must include one grounded sentence per item in items; each sentence must name the concrete record, lifecycle, workflow, model, or boundary that item owns.',
             style: 'Use precise engineering/product language. No markdown. No headings. No colon-prefixed inventory labels. No marketing. No vague placeholders. Do not describe source mechanics; translate them into product purpose. If a claim cannot be supported by a supplied fact, omit it and list it in quality_check.unsupported_claims instead of writing it.',
             descriptionContract: descriptionPromptContract,
             primaryDomain: enhancedSystemPurpose.primary_domain,
@@ -11286,13 +11393,13 @@ export class AnalyzerOrchestrator {
         'One paragraph, 4 to 6 sentences, no bullets. Answer these four questions in order:',
         'WHAT IT IS: name the system type/domain — "<domain/artifact-type> that <core purpose>." Ground the type in dependencies, distinctiveEntities, or project text.',
         'WHAT IT DOES: name the concrete product workflows and the terminalOutputs it produces for its consumers/operators/agents — anchor on what it PRODUCES, not on record CRUD.',
-        'HOW IT WORKS: describe the concrete MECHANISM that produces those outputs — name at least one real supplied mechanism fact (a framework from allowedFrameworks, a package from libraries, a nearTerminalStage, or the dataflow from a capability through its entities to a terminal output). NEVER write a circular restatement such as "works by leveraging its capabilities to produce these terminal outputs" — a how-it-works sentence that only re-lists the capabilities or the outputs says nothing and will be rejected.',
-        'HOW IT IS BUILT: name the architecture, allowed frameworks, and third-party integrations, using only supplied allowedFrameworks, entities, integrations, and dependencies; include boundary/tests/risk only when supplied facts support it.',
+        'HOW IT WORKS: describe the concrete MECHANISM that produces those outputs — name at least one real supplied mechanism fact (a framework the system is built with from the supplied allowedFrameworks fact list, a package from libraries, a nearTerminalStage, or the dataflow from a capability through its entities to a terminal output). NEVER write a circular restatement such as "works by leveraging its capabilities to produce these terminal outputs" — a how-it-works sentence that only re-lists the capabilities or the outputs says nothing and will be rejected.',
+        'HOW IT IS BUILT: name the architecture, the frameworks the system is built with, and third-party integrations, drawing only on the supplied allowedFrameworks fact list, entities, integrations, and dependencies; include boundary/tests/risk only when supplied facts support it.',
       ],
       required_grounding: [
         'Mention at least two concrete supplied product nouns from capabilities, domainConcepts, projectTextConcepts, terminalOutputs, distinctiveEntities, or databaseEntities.',
         'The system-type/domain you name (e.g. "crypto market-intelligence API", "identity service") MUST be traceable to a supplied fact — a dependency in libraries, a distinctiveEntity, an externalService, a domainConcept, or manifestDescription. Never name a system-type with no supporting supplied fact.',
-        'Mention frameworks only if they are listed in allowedFrameworks.',
+        'Name a framework only if it appears in the supplied allowedFrameworks fact list; in prose call them the frameworks the system is built with, never the literal phrase "allowed frameworks".',
         'Mention integrations only by exact names listed in externalServices.',
         'Preserve suppliedPrimaryDomain unless supplied facts clearly support a more specific label.',
       ],
@@ -11301,6 +11408,7 @@ export class AnalyzerOrchestrator {
         'Do not restate the same justification sentence more than once; each sentence must add new grounded information.',
         'Do not invent customers, business outcomes, compliance, scale, performance, revenue, quality, or integrations.',
         'Do not use source-mechanic language: entry points, endpoints, routes, pages, CLI commands, source files, internal files, handlers, operations, query processing, state stores, or interaction surfaces.',
+        'Do not leak internal prompt/fact-list vocabulary into prose: never write "allowed frameworks", "allowedFrameworks", "supplied facts", "distinctiveEntities", "terminalOutputs", or any other fact-list key name — describe the frameworks as the ones the system is built with, in plain product language.',
         'Do not use generic filler: manages data, supports workflows, handles operations, records/lists, screen state, workflow state, product context, insights, streamline, efficient, compliant, productivity, business value.',
         'Do not let examples, tests, docs, or sample apps override human-authored project identity.',
       ],
@@ -11431,7 +11539,7 @@ export class AnalyzerOrchestrator {
       libraries: libraryNames.slice(0, 200),
       allowedFrameworks: narrativeFrameworks.length > 0 ? narrativeFrameworks : ['none detected'],
       forbiddenFrameworkInstruction: narrativeFrameworks.length > 0
-        ? 'Mention only frameworks in allowedFrameworks or packages in libraries. If allowedFrameworks says mixed monorepo, do not list individual frameworks in the narrative.'
+        ? 'Name a framework in prose only if it is in the allowedFrameworks fact list or is a package in libraries; refer to them as the frameworks the system is built with, never as "allowed frameworks". If allowedFrameworks says mixed monorepo, do not list individual frameworks in the narrative.'
         : libraryNames.length > 0
           ? 'No framework was detected in product code; mention only packages listed in libraries.'
           : 'No framework was detected in product code; do not mention any framework.',
@@ -13304,7 +13412,39 @@ export class AnalyzerOrchestrator {
    * suffix (OrderHandler with @Entity) is never nuked on its name alone.
    */
   private isCodeArtifactRoleName(name: string): boolean {
-    return /(Handler|Handlers|Adapter|Adapters|Registry|Registries|Factory|Factories|Provider|Providers|Middleware|Middlewares|Preflight|Pending)$/.test(String(name || '').trim());
+    const trimmed = String(name || '').trim();
+    // (a) SUFFIX roles — the head noun IS a code-infrastructure role. Widened
+    // from the original {Handler/Adapter/Registry/Factory/Provider/Middleware/
+    // Preflight/Pending} to also cover the callable/wiring shapes that leaked
+    // through on real repos: Core (HandleDirectiveOnlyCore), Gate
+    // (AckReactionGate), Dispatcher/Dispatch (FeishuReplyDispatcher,
+    // BrowserDispatch), Container (ExecApprovalContainer), View
+    // (ProjectCommandCenterView). Uppercase-anchored so domain words that merely
+    // END in these letters lowercase (Interview/Preview→"view", Hardcore→"core")
+    // never match.
+    if (/(Handler|Handlers|Adapter|Adapters|Registry|Registries|Factory|Factories|Provider|Providers|Middleware|Middlewares|Preflight|Pending|Core|Gate|Gates|Dispatcher|Dispatchers|Dispatch|Container|Containers|View|Views)$/.test(trimmed)) {
+      return true;
+    }
+    // (b) VERB-NAMED CALLABLES — a shape whose name is an imperative callable
+    // (SendFeishuMessage, HandleDirective, RegisterAgent) is that operation's
+    // argument/result contract, not a domain record. Require the verb to be a
+    // full leading camelCase segment followed by more capitalized words so nouns
+    // that merely start with the letters (Sender, Handler, Registry) do not
+    // match — those are covered by (a) where appropriate.
+    if (/^(Send|Handle|Register)[A-Z]/.test(trimmed)) {
+      return true;
+    }
+    // (c) STRONG ROLE WORD as an INTERNAL segment — a role token appearing at a
+    // non-leading camelCase position (MentionGateWithBypass → "Gate" at index 1)
+    // is wiring buried inside the name. Restricted to index >= 1 so a LEADING
+    // qualifier ("HandlerMetrics" → Handler is the qualifier, Metrics the tail
+    // domain noun) is NOT flagged — the role token must not be the head word.
+    // "Gateway" (a product noun) splits to its own segment and never matches
+    // "Gate".
+    const segments = trimmed.replace(/([a-z0-9])([A-Z])/g, '$1 $2').split(/\s+/);
+    return segments.some((segment, index) =>
+      index >= 1 &&
+      /^(Gate|Gates|Dispatch|Dispatcher|Dispatchers|Handler|Handlers|Container|Containers|Sentinel|Sentinels)$/.test(segment));
   }
 
 	  private enrichCuratedProductDataEntities(
@@ -15302,9 +15442,17 @@ export class AnalyzerOrchestrator {
       removed.add(loser);
     };
 
+    // A behavior-surface capability is identified by its REGISTRATION surface,
+    // not by the entities its handlers incidentally reach (2-hop call-graph
+    // reachability). Its entity set is therefore not a merge key: it must never
+    // be merged away as an entity near-dup, nor act as a superset that absorbs a
+    // genuine entity-anchored capability whose records it happens to touch.
+    const isSurfaceCap = (capability: SystemCapability) => capability.evidence_kind === 'behavior-surface';
+
     // Pass 1 — exact entity-set identity.
     const bySetKey = new Map<string, SystemCapability>();
     for (const capability of capabilities) {
+      if (isSurfaceCap(capability)) continue;
       const set = entitySetOf(capability);
       if (set.size === 0) continue;
       const key = [...set].sort().join('|');
@@ -15337,6 +15485,51 @@ export class AnalyzerOrchestrator {
         return capability.operations.every(operation => supersetOperations.has(operationKey(operation)));
       });
       if (superset) mergeInto(superset, capability);
+    }
+
+    // Pass 3 — verb-variant near-dups that share the SAME PRIMARY entity and an
+    // overlapping domain but differ only by the leading value-verb / a synonym
+    // tail noun. Exact-set dedup (pass 1) already merges identical sets
+    // ("Provides analysis results"/"Surfaces analysis insights" both {AnalysisResult}),
+    // but the AI catalog also emits variants whose FULL sets differ by an
+    // incidental co-anchor ("Surfaces analysis results" {Codebase,AnalysisResult}
+    // vs "Provides analysis results" {AnalysisResult}) — same product concept,
+    // phrased twice. Merge when the PRIMARY (first, highest-evidence) entity
+    // agrees, the domain-subject phrase (name minus leading verb and trailing
+    // synonym noun) matches, and the loser adds no distinct operation.
+    const primaryEntityOf = (capability: SystemCapability): string =>
+      normalizeEntityRef((capability.related_entities || [])[0] || '');
+    const subjectPhraseOf = (capability: SystemCapability): string =>
+      String(capability.name || '')
+        .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+        .toLowerCase()
+        // leading value-verb
+        .replace(/^\s*(provides?|surfaces?|tracks?|exposes?|manages?|monitors?|secures?|handles?|enforces?|settles?|delivers?|renders?|displays?|shows?)\s+/i, '')
+        // trailing near-synonym result nouns so results/insights/data/info collapse
+        .replace(/\s+(results?|insights?|data|info|information|details?|records?|entries?|items?)\s*$/i, '')
+        .replace(/[^a-z0-9]+/g, ' ')
+        .trim();
+    const survivors = capabilities.filter(capability => !removed.has(capability) && !isSurfaceCap(capability));
+    for (const capability of survivors) {
+      if (removed.has(capability)) continue;
+      const primary = primaryEntityOf(capability);
+      if (!primary) continue;
+      const subject = subjectPhraseOf(capability);
+      if (!subject) continue;
+      const domains = new Set((capability.related_domains || []).map(d => normalizeEntityRef(String(d))));
+      for (const other of survivors) {
+        if (other === capability || removed.has(other) || removed.has(capability)) continue;
+        if (primaryEntityOf(other) !== primary) continue;
+        if (subjectPhraseOf(other) !== subject) continue;
+        const otherDomains = new Set((other.related_domains || []).map(d => normalizeEntityRef(String(d))));
+        const domainOverlap = domains.size === 0 || otherDomains.size === 0 ||
+          [...domains].some(d => otherDomains.has(d));
+        if (!domainOverlap) continue;
+        // Merge the poorer copy into the richer one; the richer keeps its
+        // operations and unions the evidence.
+        if (richness(capability) >= richness(other)) mergeInto(capability, other);
+        else mergeInto(other, capability);
+      }
     }
 
     return capabilities.filter(capability => !removed.has(capability));
@@ -16105,6 +16298,12 @@ export class AnalyzerOrchestrator {
         related_entities: relatedEntities.map(entity => entity.id),
         related_domains: [prefix || surface.kind.replace(/_/g, '-')],
         criticality,
+        // A NAMED registration surface (mcp_tool / rpc / command registry) with
+        // its own registration node type is a product behavior engine the
+        // journey/entity-driven AI catalog systematically misses. Tag it so the
+        // post-catalog reconciliation re-injects it when the AI drops it (the
+        // flagship-capability guarantee — e.g. Klauro's 207-tool MCP surface).
+        evidence_kind: surface.kindEvidence === 'registration' ? 'behavior-surface' : undefined,
         criticality_factors: [
           `${total} ${surface.kind} entry points form one cohesive behavior ${prefix ? `family ('${prefix}')` : 'surface'}`,
           ...(framework ? [`Registered via ${framework} (analyzer framework evidence)`] : []),

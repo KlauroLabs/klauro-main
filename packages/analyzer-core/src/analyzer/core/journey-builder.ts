@@ -63,6 +63,22 @@ const USER_FACING_ENTRY_TYPES = new Set(['http', 'websocket', 'cli', 'page', 'ro
 const SCHEDULED_ENTRY_TYPES = new Set(['schedule']);
 const SKIPPED_ENTRY_TYPES = new Set(['test']);
 
+// A shell/batch/build-script file rooted at a CLI entry is OPERATIONAL plumbing
+// (deploy / install / release / smoke / build), NOT a user-facing product
+// surface — regardless of the script's name. `cli` is in USER_FACING_ENTRY_TYPES
+// because real product CLIs (a node/python/compiled `bin`) are user-facing, but a
+// `.sh`/`.ps1` deploy or install script is an operator surface and must be
+// journey_kind 'system'. This mirrors the FLOW-role signal
+// (semantic-roles.ts isScriptEntryFile / classifyFlowRole), applied to the KIND
+// axis. Evidence = entry TYPE + a script-file root; no name blocklist. Live leak:
+// release.sh (Klauro), doctor-install-switch-docker.sh (openclaw),
+// install-local-sync.sh / hosted-mcp-allowlist-smoke.sh (kontinuum) surfaced as
+// user-facing/high journeys.
+const OPERATIONAL_SCRIPT_ENTRY_FILE = /\.(sh|bash|zsh|ps1|bat|cmd)$|(^|\/)(makefile|justfile)$/i;
+function isOperationalScriptEntry(file: string | undefined): boolean {
+  return OPERATIONAL_SCRIPT_ENTRY_FILE.test(String(file || ''));
+}
+
 const RISK_ORDER: Record<string, number> = { low: 0, medium: 1, high: 2, critical: 3 };
 const CRITICALITY_ORDER: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
 
@@ -270,9 +286,14 @@ export function buildUserJourneys(input: UserJourneyInput, options: UserJourneyO
     const testsCovering = collectTestsCovering(pathNodeIds, graph.testEdgesByTarget, graph.nodesById);
     const risk = maxRiskOnPath(pathNodeIds, riskByNode);
 
+    // The entry's own source file — handler file first, then the handler/source
+    // node's file — is the evidence for the operational-script downgrade.
+    const entryFile = entryPoint.handler?.file
+      || graph.nodesById.get(entryPoint.handler?.node_id || '')?.source?.file
+      || graph.nodesById.get(entryPoint.source_node || '')?.source?.file;
     const journeyKind: CASUserJourney['journey_kind'] = SCHEDULED_ENTRY_TYPES.has(entryPoint.type)
       ? 'scheduled'
-      : USER_FACING_ENTRY_TYPES.has(entryPoint.type)
+      : (USER_FACING_ENTRY_TYPES.has(entryPoint.type) && !isOperationalScriptEntry(entryFile))
         ? 'user-facing'
         : 'system';
 

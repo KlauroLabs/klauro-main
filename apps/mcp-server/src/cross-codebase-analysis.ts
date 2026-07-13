@@ -1176,6 +1176,10 @@ export async function enrichWorkspaceAnalysisNarrative(graph: WorkspaceAnalysisG
     graph.workspace_capabilities = invalidateDuplicateWorkspaceCapabilityDescriptions(graph.workspace_capabilities);
     graph.workspace_workflows = applyAiWorkflowDescriptions(graph.workspace_workflows, parsed.workflow_items || [], now);
     graph.workspace_entities = applyAiEntityDescriptions(graph.workspace_entities, parsed.entity_items || [], now);
+    // Persist-seam strip BEFORE the repair loop: any prompt-echo blob carried in
+    // by the merge/apply passes is cleared to absent here so the repair loop
+    // below regenerates it (cache-busted) instead of trusting the 'ai' source.
+    stripWorkspaceItemDescriptionArtifacts(graph);
     if (graph.workspace_narrative.source !== 'ai') {
       // Retry semantics (project-side parity): a gate rejection re-prompts with
       // the specific rejection reason before degrading. The reason + attempt
@@ -1202,6 +1206,9 @@ export async function enrichWorkspaceAnalysisNarrative(graph: WorkspaceAnalysisG
     }
     finalizeRequiredWorkspaceAiSemantics(graph, now);
     await enforceWorkspaceNarrativeProductValueSummary(graph);
+    // FINAL persist seam: finalize/sync can copy a counterpart's text without
+    // re-guarding, so strip once more after all comprehension writes complete.
+    stripWorkspaceItemDescriptionArtifacts(graph);
     graph.detail_views.overview.capabilities = graph.workspace_capabilities.slice(0, 12);
     graph.detail_views.overview.workflows = graph.workspace_workflows.slice(0, 12);
     graph.detail_views.overview.entities = graph.workspace_entities.slice(0, 12);
@@ -1255,6 +1262,8 @@ async function enrichWorkspaceAnalysisNarrativeWithSmallPasses(
   finalizeRequiredWorkspaceAiSemantics(graph, generatedAt);
   await enforceWorkspaceNarrativeProductValueSummary(graph);
   applyWorkspaceAiProviderMetadata(graph);
+  // FINAL persist seam (small-pass path parity).
+  stripWorkspaceItemDescriptionArtifacts(graph);
 
   graph.detail_views.overview.capabilities = graph.workspace_capabilities.slice(0, 12);
   graph.detail_views.overview.workflows = graph.workspace_workflows.slice(0, 12);
@@ -2275,7 +2284,7 @@ function finalizeRequiredWorkspaceAiSemantics(graph: WorkspaceAnalysisGraph, gen
         !isDefaultWorkspaceDescriptionReady(domain.name, domain.description, domain.description_source, 'domain') ||
         currentDescription.length < 80 ||
         description.length > currentDescription.length + 20;
-      if (shouldPreferCounterpart && description.length >= 68 && descriptionMatchesItemName(domain.name, normalizeAiItemName(description))) {
+      if (shouldPreferCounterpart && description.length >= 68 && !isWorkspaceAiParseArtifactText(description) && descriptionMatchesItemName(domain.name, normalizeAiItemName(description))) {
         return {
           ...domain,
           description,
@@ -2304,7 +2313,7 @@ function finalizeRequiredWorkspaceAiSemantics(graph: WorkspaceAnalysisGraph, gen
     let description = '';
     if (counterpart?.description_source === 'ai') {
       const domainDescription = String(counterpart.description || '').trim();
-      if (domainDescription.length >= 68 && descriptionMatchesItemName(capability.name, normalizeAiItemName(domainDescription))) {
+      if (domainDescription.length >= 68 && !isWorkspaceAiParseArtifactText(domainDescription) && descriptionMatchesItemName(capability.name, normalizeAiItemName(domainDescription))) {
         description = domainDescription;
       }
     }
@@ -2640,14 +2649,88 @@ function isDefaultWorkspaceDescriptionReady(
  * prose. Every description accept path runs through this. Exported for tests.
  */
 export function isWorkspaceAiParseArtifactText(value: unknown): boolean {
-  const text = String(value ?? '').trim();
-  if (!text) return false;
+  const raw = String(value ?? '').trim();
+  if (!raw) return false;
+  // ESCAPED-QUOTE ARTIFACTS (live 4-workspace defect: capability/domain
+  // descriptions were literally `"task": "Return only valid JSON shaped
+  // {\"key_capabilities\":[{\"name\":..."`). When a model echoes the prompt
+  // PAYLOAD back, its embedded JSON arrives with backslash-escaped quotes
+  // (\"key_capabilities\") and often starts with a bare quoted key ("task":)
+  // rather than a brace — so none of the unescaped-quote regexes below fire.
+  // Normalize escaped quotes first so every structural check works on both the
+  // escaped and unescaped forms, and detect the echoed prompt directly.
+  const text = raw.replace(/\\+"/g, '"');
   if (/^[{[]/.test(text)) return true;
   if (text.includes('```')) return true;
+  // Object-FRAGMENT start: a string that opens with a quoted key immediately
+  // followed by a colon is a serialized-object slice, not prose (prose never
+  // begins `"word":`). Covers the leading `"task":` / `"description":` echoes.
+  if (/^"[a-z_][\w-]*"\s*:/i.test(text)) return true;
+  // Prompt-echo tells: the model handed back our own instruction/context keys.
+  if (/\bReturn only valid JSON\b/i.test(text)) return true;
+  if (/\bGenerate exactly one AI description\b/i.test(text)) return true;
+  if (/"(?:prompt_version|responseFormat|response_format|required_name_terms|exact_name|output_schema|rejected_description|retry_nonce)"\s*:/i.test(text)) return true;
   if (/"(?:key_capabilities|capabilities|capability_items|domain_items|domains|workflow_items|entity_items)"\s*:/i.test(text)) return true;
-  if (/"(?:name|title|description|category|source_names)"\s*:/i.test(text)) return true;
+  if (/"(?:task|name|title|description|category|source_names|rules|evidence)"\s*:/i.test(text)) return true;
   if (/[{[]\s*"/.test(text)) return true;
   return false;
+}
+
+/**
+ * PERSIST-SEAM SANITIZER (live 4-workspace defect: prompt-echo blobs on
+ * capabilities AND domains). Every accept path that WRITES a description
+ * (aiMergeWorkspaceCapabilities early-returning a member-carried blob, the
+ * finalize/sync copy paths that lift a counterpart's text without re-guarding,
+ * a member CAS that rolled up an already-artifacted 'ai' description) can
+ * deposit a structured blob into an item whose description_source is already
+ * 'ai' — after which the grounded-description guards are skipped. This is the
+ * single seam every WAS item passes through before persist: it routes ALL
+ * per-item descriptions (capability/domain/workflow/entity) AND the narrative
+ * text through isWorkspaceAiParseArtifactText and, on rejection, leaves the
+ * description honestly ABSENT (never the blob). Clearing to '' marks the item
+ * "not default-ready", so the surrounding repair loop regenerates it
+ * (cache-busted) on its next pass. Returns the count cleared for telemetry.
+ */
+export function stripWorkspaceItemDescriptionArtifacts(graph: WorkspaceAnalysisGraph): number {
+  let cleared = 0;
+  const scrubItem = <T extends { description?: string; description_source?: WorkspaceDescriptionSource; degraded_reason?: string; name?: string }>(
+    item: T,
+    kind: 'capability' | 'domain' | 'workflow' | 'entity',
+  ): T => {
+    if (!isWorkspaceAiParseArtifactText(item.description)) return item;
+    cleared += 1;
+    writeWorkspaceAiRepairDebug({ stage: 'persist-seam-artifact-stripped', kind, name: item.name, candidate: truncateText(String(item.description || ''), 200) });
+    return {
+      ...item,
+      description: '',
+      description_source: 'ai-required-degraded',
+      degraded_reason: `AI description was an unparsed model/prompt artifact and was rejected at the persist seam; regenerate the ${kind} description from its own evidence before customer-facing use.`,
+    };
+  };
+  graph.workspace_capabilities = (graph.workspace_capabilities || []).map(item => scrubItem(item, 'capability'));
+  graph.workspace_domains = (graph.workspace_domains || []).map(item => scrubItem(item, 'domain'));
+  graph.workspace_workflows = (graph.workspace_workflows || []).map(item => scrubItem(item, 'workflow'));
+  graph.workspace_entities = (graph.workspace_entities || []).map(item => scrubItem(item, 'entity'));
+  const narrative = graph.workspace_narrative;
+  if (narrative) {
+    if (isWorkspaceAiParseArtifactText(narrative.description)) {
+      cleared += 1;
+      narrative.description = '';
+      narrative.source = 'ai-required-degraded';
+      narrative.degraded_reason = 'Workspace narrative was an unparsed model/prompt artifact and was rejected at the persist seam.';
+    }
+    if (isWorkspaceAiParseArtifactText(narrative.product_value_summary)) {
+      cleared += 1;
+      narrative.product_value_summary = '';
+    }
+  }
+  // Detail-view overviews are slices of the arrays above; re-project so a
+  // sanitized array never leaves a stale blob behind in a projected view.
+  if (graph.detail_views?.overview) {
+    graph.detail_views.overview.capabilities = graph.workspace_capabilities.slice(0, 12);
+    graph.detail_views.overview.description = graph.workspace_narrative?.description;
+  }
+  return cleared;
 }
 
 function isUsefulAiWorkspaceDescription(name: string, description: string | undefined, kind: 'domain' | 'capability' | 'workflow' | 'entity'): boolean {
@@ -2954,8 +3037,85 @@ export function workspaceNarrativeMisattributionReason(graph: WorkspaceAnalysisG
       }
     }
   }
+  // GROUND-TRUTH DOMAIN ATTRIBUTION (live Personal-workspace defect: "Kontinuum
+  // … while also providing a game server" — Game Server is deterministically
+  // mtg's domain). The capability check above is evaded when the crediting
+  // sentence also NAMES the true owner ("… connected to the mtg game server"),
+  // because it exempts on any owner-name mention. The deterministic
+  // workspace_domains member→domain map is authoritative: if the sentence's
+  // subject (member A) is CREDITED with a domain the deterministic attribution
+  // assigns exclusively to a different member B, that is a misattribution even
+  // when B is named elsewhere in the same sentence.
+  return workspaceNarrativeDomainMisattributionReason(graph, description);
+}
+
+/**
+ * Uses the deterministic workspace_domains member→domain attribution as ground
+ * truth to catch a subject member being credited with another member's domain.
+ * A domain is "owned" by a member only when its deterministic project_ids point
+ * at exactly that one member. A mention is a MISATTRIBUTION when it (a) sits
+ * after a crediting verb (provides/offers/includes/serves as/…) in a sentence
+ * whose subject is a DIFFERENT member, and (b) is not directly owner-qualified
+ * ("mtg game server" / "mtg's game server" is legitimate description of B's
+ * asset, not a credit to A). Exported for tests.
+ */
+export function workspaceNarrativeDomainMisattributionReason(graph: WorkspaceAnalysisGraph, description: string): string | null {
+  const codebases = graph.codebases || [];
+  if (codebases.length < 2) return null;
+  const workspaceName = normalizeAiItemName(graph.name || '');
+  const members = codebases
+    .map(codebase => ({ id: codebase.id, name: codebase.name, normalized: normalizeAiItemName(codebase.name) }))
+    .filter(member => member.normalized.length >= 3 && member.normalized !== workspaceName);
+  if (members.length < 2) return null;
+  const exclusiveDomains: Array<{ ownerId: string; ownerName: string; ownerNormalized: string; domain: string; normalized: string }> = [];
+  for (const domain of graph.workspace_domains || []) {
+    const owners = [...new Set(domain.project_ids || [])];
+    if (owners.length !== 1) continue;
+    const owner = members.find(member => member.id === owners[0]);
+    if (!owner) continue;
+    const normalized = normalizeAiItemName(domain.name);
+    // A distinctive, multi-character domain phrase — a single generic token
+    // ("rules", "access") is too collision-prone to attribute by string match.
+    if (normalized.length < 5 || WORKSPACE_GENERIC_DOMAIN_TOKENS.has(normalized)) continue;
+    exclusiveDomains.push({ ownerId: owner.id, ownerName: owner.name, ownerNormalized: owner.normalized, domain: domain.name, normalized });
+  }
+  if (exclusiveDomains.length === 0) return null;
+  const creditingVerb = /\b(provid\w*|offer\w*|includ\w*|deliver\w*|serv\w*|act\w*|function\w*|host\w*|run\w*|operat\w*|expos\w*|power\w*|enabl\w*|features?)\b/;
+  const sentences = String(description || '').split(/(?<=[.!?])\s+/).filter(Boolean);
+  for (const sentence of sentences) {
+    const normalizedSentence = normalizeAiItemName(sentence);
+    const subject = members
+      .map(member => ({ member, index: normalizedSentence.search(new RegExp(`\\b${escapeRegExp(member.normalized)}\\b`)) }))
+      .filter(item => item.index >= 0)
+      .sort((left, right) => left.index - right.index)[0];
+    if (!subject || subject.index > 24) continue;
+    for (const dom of exclusiveDomains) {
+      if (dom.ownerId === subject.member.id) continue;
+      // Scan every mention of the domain phrase in the sentence. A mention is a
+      // misattribution only if it (a) is preceded by a crediting verb and (b) is
+      // NOT directly qualified by the true owner's name (which would make it a
+      // legitimate reference to the owner's asset).
+      const re = new RegExp(`(?:\\b(\\w+)\\s+)?\\b${escapeRegExp(dom.normalized)}\\b`, 'g');
+      let match: RegExpExecArray | null;
+      while ((match = re.exec(normalizedSentence)) !== null) {
+        const precedingWord = match[1] || '';
+        if (precedingWord === dom.ownerNormalized) continue;
+        if (creditingVerb.test(normalizedSentence.slice(0, match.index))) {
+          return `the narrative credits ${subject.member.name} with the "${dom.domain}" domain, which the deterministic workspace attribution assigns exclusively to member ${dom.ownerName} — attribute "${dom.domain}" to ${dom.ownerName}, describe each member's own domains under that member, and never fold one member's product into another`;
+        }
+      }
+    }
+  }
   return null;
 }
+
+// Generic single-token domain buckets that are too collision-prone to use as a
+// string-match key for cross-member attribution (they recur across members).
+const WORKSPACE_GENERIC_DOMAIN_TOKENS = new Set([
+  'access', 'rules', 'order', 'orders', 'cards', 'network', 'security', 'channel',
+  'operations', 'risks', 'verification', 'agents', 'agent', 'tools', 'devices',
+  'profiles', 'terms', 'approvals', 'session', 'sessions', 'status', 'data',
+]);
 
 /**
  * THE WAS narrative quality gate — single decision point used by the primary
@@ -3762,7 +3922,18 @@ function extractJsonLikeArraySection(text: string, start: number): string {
  *    capitalized WORD ([A-Z][a-z]); a trailing all-caps run stays attached
  *    (macOS, userDB), because splitting it produces a bare acronym fragment.
  */
+// Known technology compound words that are ONE brand token, never a camelCase
+// boundary to split (live WAS defect: "Type Script/Java Script" in Klauro ws
+// prose). Extend as new compounds surface — these must survive prose splitting.
+const PRESERVED_TECH_COMPOUNDS = new Set([
+  'typescript', 'javascript', 'coffeescript', 'actionscript', 'postgresql',
+  'graphql', 'nosql', 'mysql', 'mssql', 'sqlite', 'dynamodb', 'mongodb',
+  'github', 'gitlab', 'bitbucket', 'devops', 'webassembly', 'openapi',
+  'graphviz', 'nodejs', 'openai', 'chatgpt', 'websocket', 'websockets',
+]);
+
 function splitCamelCaseProseToken(token: string): string {
+  if (PRESERVED_TECH_COMPOUNDS.has(token.toLowerCase())) return token;
   if (/^[a-z][A-Z]/.test(token)) return token;
   return token
     .replace(/([a-z0-9])([A-Z][a-z])/g, '$1 $2')
@@ -3795,6 +3966,11 @@ export function normalizeWorkspaceAiDescriptionText(value: unknown): string {
     .replace(/\bSD Ks\b/g, 'SDKs')
     .replace(/\bID Es\b/g, 'IDEs')
     .replace(/\bU Is\b/g, 'UIs')
+    // Belt-and-suspenders: repair tech compounds if they arrived already split.
+    .replace(/\bType Script\b/g, 'TypeScript')
+    .replace(/\bJava Script\b/g, 'JavaScript')
+    .replace(/\bPostgre SQL\b/g, 'PostgreSQL')
+    .replace(/\bGraph QL\b/g, 'GraphQL')
     .replace(/\bproof and unravelling\b/gi, 'analysis evidence')
     .replace(/\bproof mechanisms?\b/gi, 'analysis mechanisms')
     .replace(/\bunravelling\b/gi, 'analysis')
@@ -6005,19 +6181,61 @@ function workspaceEntityNameSet(repositories: CrossCodebaseInput[]): Set<string>
  * (the analyzer's primary/project domain answer, a crypto anchor, a
  * capability's related domain, or a core concept).
  */
-function isUncorroboratedEntityNameDomain(
+function singularizeDomainKey(value: string): string {
+  if (/[a-z]ies$/.test(value)) return `${value.slice(0, -3)}y`;
+  // Strip "-es" only where the singular really ends in s/x/z/ch/sh (searches ->
+  // search, boxes -> box, classes -> class); NOT generic "-ses" (bases -> base).
+  if (/(ches|shes|sses|xes|zes)$/.test(value)) return value.slice(0, -2);
+  return value.endsWith('s') && !value.endsWith('ss') ? value.slice(0, -1) : value;
+}
+
+/**
+ * True when a `capability:`/`capability_domain:` evidence entry is merely a
+ * mechanical CRUD echo of the entity/domain name itself ("Manages Spawn bases"
+ * for domain "SpawnBase") rather than an independent domain signal. A per-entity
+ * "Manage <Entity>" capability is auto-derived FROM the entity, so it cannot
+ * corroborate that same entity name as a business domain (live OpenClaw defect:
+ * SpawnBase / NodeInvoke / GrokSearch survived on exactly these self-echoes).
+ */
+function isSelfEchoCapabilityForDomain(capabilityName: string, domainNormalized: string): boolean {
+  const stripped = normalizeAiItemName(capabilityName)
+    .replace(/^(?:manage|manages|managing|surface|surfaces|track|tracks|monitor|monitors|handle|handles|create|creates|provide|provides|analyze|analyzes|configure|configures|list|lists|get|gets|update|updates|store|stores|process|processes|generate|generates|expose|exposes|maintain|maintains)\s+/, '')
+    .trim();
+  const capKey = singularizeDomainKey(stripped.replace(/\s+/g, ''));
+  const domKey = singularizeDomainKey(domainNormalized.replace(/\s+/g, ''));
+  return capKey.length > 0 && capKey === domKey;
+}
+
+export function isUncorroboratedEntityNameDomain(
   name: string,
   value: { evidence?: string[] },
   entityNames: Set<string>,
 ): boolean {
   const normalized = normalizeAiItemName(name);
   if (!normalized) return false;
-  const matchesEntityName = entityNames.has(normalized) || entityNames.has(normalized.replace(/\s+/g, ''));
+  // Entity-name match tolerant of singular/plural (live defect: domain
+  // "Employees"/"Terms" evaded the gate because the entity set holds the
+  // SINGULAR "Employee"/"Term", so the plural domain name never matched).
+  const collapsed = normalized.replace(/\s+/g, '');
+  const nameKeys = new Set([
+    normalized,
+    collapsed,
+    singularizeDomainKey(normalized),
+    singularizeDomainKey(collapsed),
+  ]);
+  const matchesEntityName = [...nameKeys].some(key => entityNames.has(key));
   const looksLikeClassIdentifier = /[a-z][A-Z]/.test(String(name || '').replace(/\s+/g, ''));
   if (!matchesEntityName && !(looksLikeClassIdentifier && normalized.split(/\s+/).length === 1)) return false;
-  const corroborated = (value.evidence || []).some(item =>
-    /^(primary_domain|project_domain|crypto_anchor|capability|capability_domain|core_concept):/.test(item)
-  );
+  // Corroboration = a REAL domain signal (analyzer's own domain answer or a core
+  // concept), OR a capability/capability_domain that is NOT a self-echo of this
+  // same entity name. A bare "Manage <Entity>" capability does not count.
+  const evidence = value.evidence || [];
+  const corroborated =
+    evidence.some(item => /^(primary_domain|project_domain|crypto_anchor|core_concept):/.test(item)) ||
+    evidence.some(item => {
+      const match = item.match(/^(?:capability|capability_domain):(.*)$/);
+      return Boolean(match) && !isSelfEchoCapabilityForDomain(match![1], normalized);
+    });
   return !corroborated;
 }
 
@@ -6026,10 +6244,14 @@ function isUncorroboratedEntityNameDomain(
  * Tools", "Manage Portfolio") are capability/action labels, not domains —
  * domains are noun concepts (Payments, Trading, Telemetry).
  */
-function isVerbPhraseDomainLabel(name: string): boolean {
+export function isVerbPhraseDomainLabel(name: string): boolean {
   const tokens = normalizeAiItemName(name).split(/\s+/).filter(Boolean);
   if (tokens.length < 2) return false;
-  return /^(?:send|sends|list|lists|get|gets|create|creates|update|updates|delete|deletes|manage|manages|handle|handles|fetch|fetches|build|builds|run|runs|execute|executes|process|processes|load|loads|save|saves|read|reads|write|writes|add|adds|remove|removes|check|checks|validate|validates|parse|parses|render|renders|receive|receives|start|starts|stop|stops|sync|syncs|track|tracks|monitor|monitors|generate|generates|compute|computes|calculate|calculates|provide|provides|expose|exposes|register|registers|configure|configures)$/.test(tokens[0]);
+  // Live WAS leaks these evaded because "surfaces"/"analyzes" were absent:
+  // "Surfaces Codebase Analysis Results", "Surfaces Remote Memory",
+  // "Surfaces Cloud Resources", "Analyzes Codebase Patterns". Domains are noun
+  // concepts; any leading action verb makes the label a capability echo.
+  return /^(?:send|sends|list|lists|get|gets|create|creates|delete|deletes|manage|manages|handle|handles|fetch|fetches|build|builds|run|runs|execute|executes|process|processes|load|loads|save|saves|read|reads|write|writes|add|adds|remove|removes|check|checks|validate|validates|parse|parses|render|renders|receive|receives|start|starts|stop|stops|sync|syncs|track|tracks|monitor|monitors|generate|generates|compute|computes|calculate|calculates|provide|provides|expose|exposes|register|registers|configure|configures|update|updates|surface|surfaces|analyze|analyzes|analyse|analyses|transcribe|transcribes|approve|approves|spawn|spawns|search|searches|ingest|ingests|transform|transforms|index|indexes|map|maps|define|defines|coordinate|coordinates|deploy|deploys|install|installs|connect|connects|collect|collects|record|records|enforce|enforces|integrate|integrates|audit|audits|examine|examines|identify|identifies|assess|assesses|detect|detects|discover|discovers|retrieve|retrieves|import|imports|export|exports|route|routes|dispatch|dispatches|orchestrate|orchestrates)$/.test(tokens[0]);
 }
 
 function collapseOverlappingWorkspaceDomains(
@@ -8616,6 +8838,58 @@ function titleizeDomain(value: string | undefined): string {
     .join(' ');
 }
 
+/** A CAS node minted from a test/fixture/mock/generated path or flagged as a
+ * test/generated node — not part of the shipped product. Mirrors the gating
+ * analysis-profile.ts applies for its product-vs-system framework split. */
+function isFixtureOrTestCasNode(node: any): boolean {
+  if (node?.metadata?.is_test || node?.metadata?.is_generated) return true;
+  const file = String(node?.source?.file || node?.name || '').replace(/\\/g, '/').toLowerCase();
+  if (!file) return false;
+  if (/(^|\/)(node_modules|dist|build|coverage|vendor|vendors|generated|fixtures?|__fixtures__|__mocks__)(\/|$)/.test(file)) return true;
+  if (/(^|\/)(__tests__|tests?|spec|e2e|cypress|playwright)(\/|$)/.test(file)) return true;
+  if (/\.(test|spec|stories|story)\.[a-z0-9]+$/.test(file)) return true;
+  return false;
+}
+
+/**
+ * The member's product-framework list: the raw `technologies.frameworks`
+ * inventory MINUS frameworks whose only node-level evidence is fixture/test
+ * sourced. A framework survives when it either (a) appears as `metadata.framework`
+ * on at least one PRIMARY PRODUCT node, or (b) has no node-level framework
+ * evidence at all (manifest-only detection — we cannot prove it is fixture
+ * sourced, so we keep it). It is dropped only when it is evidenced on
+ * test/fixture nodes and NEVER on a product node. Exported for tests.
+ */
+export function productFrameworksFromCas(cas: any): string[] {
+  // FOLLOW-UP (WAS adapter-shim residual): this fixture-path gate drops
+  // frameworks seen only on test/fixture nodes, but NOT adapter shims on
+  // product paths (e.g. django/fastapi from the klauro-sdk-py telemetry SDK's
+  // KlauroDjangoMiddleware). The member's OWN description is correctly gated
+  // via the shared selectProductFrameworkNames (query.ts productTechSignals);
+  // routing this WAS rollup through that shared gate needs the member CAS's
+  // analyzer_contributions wired through, deferred to avoid a rushed
+  // integration. The workspace narrative for a telemetry-SDK-carrying repo may
+  // still cite an adapter-shim framework until then.
+  const declared = ((cas?.system?.technologies?.frameworks || []) as Array<{ name?: string }>)
+    .map(framework => String(framework?.name || '').trim())
+    .filter(Boolean);
+  if (declared.length === 0) return [];
+  const productFrameworks = new Set<string>();
+  const fixtureFrameworks = new Set<string>();
+  for (const node of (cas?.nodes || []) as any[]) {
+    const framework = String(node?.metadata?.framework || '').trim().toLowerCase();
+    if (!framework) continue;
+    if (isFixtureOrTestCasNode(node)) fixtureFrameworks.add(framework);
+    else productFrameworks.add(framework);
+  }
+  return declared.filter(name => {
+    const normalized = name.toLowerCase();
+    // Fixture-sourced: seen only on test/fixture nodes, never on a product node.
+    if (fixtureFrameworks.has(normalized) && !productFrameworks.has(normalized)) return false;
+    return true;
+  });
+}
+
 function toSystemCodebase(repository: CrossCodebaseInput): SystemCodebase {
   const cas = repository.cas;
   const packages = directPackages(cas).map(pkg => pkg.name).sort();
@@ -8632,7 +8906,14 @@ function toSystemCodebase(repository: CrossCodebaseInput): SystemCodebase {
     system_type: cas.system?.type || 'application',
     primary_domain: String((cas as any).enhanced_system_purpose?.primary_domain || '').trim() || undefined,
     languages: (cas.system?.technologies?.languages || []).map(language => language.name).filter(Boolean),
-    frameworks: (cas.system?.technologies?.frameworks || []).map(framework => framework.name).filter(Boolean),
+    // FIXTURE-FRAMEWORK GATE (live Klauro-ws defect: "built on top of Django,
+    // FastAPI, Flask, and Jest" — all Python/JS TEST-FIXTURE frameworks of a
+    // TypeScript product). The raw technologies inventory does not distinguish a
+    // product framework from one detected only in test fixtures/mocks/samples,
+    // so the WAS rolled them all up. Drop any framework whose ONLY node-level
+    // evidence is on non-product (test/fixture/generated) nodes and which never
+    // appears on a primary product node.
+    frameworks: productFrameworksFromCas(cas),
     packages,
     sdk_package_names: sdkPackageNames,
     graph: {

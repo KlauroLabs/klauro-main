@@ -190,6 +190,51 @@ describe('buildUserJourneys', () => {
     expect(journeys[0].journey_kind).toBe('scheduled');
   });
 
+  it('classifies a CLI entry rooted in a shell script as system (operational), not user-facing', () => {
+    // Live leak: release.sh / install.sh / *-smoke.sh surfaced as user-facing/high
+    // journeys. A `.sh` deploy/install/release/smoke script is an operator surface,
+    // not a product CLI — evidence = entry TYPE (cli) + a script-file root.
+    const scriptEntry: CASEntryPoint = {
+      id: 'entry_release_script',
+      source_node: 'n_service',
+      type: 'cli',
+      name: 'Shell script: release.sh',
+      handler: { node_id: 'n_service', method_name: 'main', file: 'apps/mcp-server/scripts/release.sh' },
+    } as CASEntryPoint;
+
+    const { journeys } = buildUserJourneys({
+      ...baseInput,
+      entryPoints: [scriptEntry],
+      callChains: [
+        chain('chain_release', 'n_service', 'entry_release_script', [['n_service', 0], ['n_repo', 1]]),
+      ],
+    });
+
+    expect(journeys).toHaveLength(1);
+    expect(journeys[0].journey_kind).toBe('system');
+  });
+
+  it('keeps a genuine product CLI (bin entry rooted in a source file) user-facing', () => {
+    const cliEntry: CASEntryPoint = {
+      id: 'entry_klauro_cli',
+      source_node: 'n_controller',
+      type: 'cli',
+      name: 'klauro',
+      handler: { node_id: 'n_controller', method_name: 'main', file: 'apps/mcp-server/src/cli.ts' },
+    } as CASEntryPoint;
+
+    const { journeys } = buildUserJourneys({
+      ...baseInput,
+      entryPoints: [cliEntry],
+      callChains: [
+        chain('chain_cli', 'n_controller', 'entry_klauro_cli', [['n_controller', 0], ['n_service', 1], ['n_repo', 2]], 'exit_work_order_db', 'n_repo'),
+      ],
+    });
+
+    expect(journeys).toHaveLength(1);
+    expect(journeys[0].journey_kind).toBe('user-facing');
+  });
+
   it('falls back to call edges when no call chains exist for an entry point', () => {
     const { journeys } = buildUserJourneys({ ...baseInput, callChains: [] });
     expect(journeys).toHaveLength(1);

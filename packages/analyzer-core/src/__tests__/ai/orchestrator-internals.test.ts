@@ -1191,28 +1191,32 @@ describe('architecture and capability inference', () => {
     expect(orch.frameworkNamesForPurpose(contributions, nodes, projectRoot)).toEqual([]);
   });
 
-  it('strips analyzer display-name artifacts so "enhanced rust" never reaches purpose framework names', () => {
+  it('strips analyzer display-name artifacts and admits only framework-analyzer application surfaces', () => {
     const projectRoot = '/repo/arb_engine';
+    const contributions = [
+      { analyzer_id: 'rust', analyzer_type: 'language', analyzer_name: 'Rust Analyzer' },
+      { analyzer_id: 'react', analyzer_type: 'framework', analyzer_name: 'React Analyzer' },
+    ];
     const nodes: CASNode[] = [
-      node({
-        id: 'engine',
-        name: 'engine',
-        type: 'module',
+      // Language-analyzer tag on a rust module — a LANGUAGE, not a framework the
+      // system is "built with"; excluded from the comprehension framework list.
+      {
+        id: 'engine', name: 'engine', type: 'module',
         source: { file: '/repo/arb_engine/src/engine.rs' },
-        metadata: { framework: 'enhanced rust' },
-      }),
-      node({
-        id: 'router',
-        name: 'AppRouter',
-        type: 'component',
+        metadata: { framework: 'enhanced rust' }, analyzers: ['rust'],
+      } as CASNode,
+      // Framework-analyzer node with a real application surface (component) → kept,
+      // with the "enhanced" analyzer-display artifact stripped.
+      {
+        id: 'router', name: 'AppRouter', type: 'component',
         source: { file: '/repo/arb_engine/ui/src/AppRouter.tsx' },
-        metadata: { framework: 'React Router' },
-      }),
+        metadata: { framework: 'enhanced React Router' }, analyzers: ['react'],
+      } as CASNode,
     ];
 
-    const names = orch.frameworkNamesForPurpose([], nodes, projectRoot);
-    expect(names).toContain('rust');
+    const names = orch.frameworkNamesForPurpose(contributions, nodes, projectRoot);
     expect(names).toContain('React Router');
+    expect(names).not.toContain('rust');
     expect(names.join(' ')).not.toMatch(/enhanced/i);
   });
 
@@ -3692,6 +3696,28 @@ describe('capability hygiene: code-artifact entity filter (evidence-first)', () 
     expect(orch.isCodeArtifactRoleName('HandlerMetrics')).toBe(false);
   });
 
+  it('flags the widened suffix + verb-callable + internal-role artifact shapes (live openclaw/kontinuum)', () => {
+    // Suffix roles widened beyond the original set.
+    expect(orch.isCodeArtifactRoleName('HandleDirectiveOnlyCore')).toBe(true); // Core (also Handle-prefixed)
+    expect(orch.isCodeArtifactRoleName('AckReactionGate')).toBe(true);        // Gate
+    expect(orch.isCodeArtifactRoleName('FeishuReplyDispatcher')).toBe(true);  // Dispatcher
+    expect(orch.isCodeArtifactRoleName('BrowserDispatch')).toBe(true);        // Dispatch
+    expect(orch.isCodeArtifactRoleName('ExecApprovalContainer')).toBe(true);  // Container
+    expect(orch.isCodeArtifactRoleName('ProjectCommandCenterView')).toBe(true); // View
+    // Verb-named callables (leading Send/Handle/Register + a capitalized word).
+    expect(orch.isCodeArtifactRoleName('SendMSTeamsMessage')).toBe(true);
+    expect(orch.isCodeArtifactRoleName('SendFeishuMessage')).toBe(true);
+    expect(orch.isCodeArtifactRoleName('SendGroup')).toBe(true);
+    // Internal (non-leading) role word buried mid-name.
+    expect(orch.isCodeArtifactRoleName('MentionGateWithBypass')).toBe(true);  // Gate at index 1
+    // Guards: leading qualifier is NOT the head noun; product nouns survive.
+    expect(orch.isCodeArtifactRoleName('HandlerMetrics')).toBe(false);
+    expect(orch.isCodeArtifactRoleName('PaymentGateway')).toBe(false); // "Gateway" != "Gate"
+    expect(orch.isCodeArtifactRoleName('Interview')).toBe(false);      // ends "view" lowercase
+    expect(orch.isCodeArtifactRoleName('Sender')).toBe(false);         // "Send" not followed by [A-Z]
+    expect(orch.isCodeArtifactRoleName('OrderContainer')).toBe(true);  // flagged by name; kind-gate keeps a persisted OrderContainer at the call site
+  });
+
   it('derive path drops an artifact shape without persistence evidence, keeps one WITH ORM evidence', () => {
     const shape = (name: string, id: string, extra: Record<string, unknown> = {}): CASNode => ({
       id, name, type: 'interface',
@@ -3738,6 +3764,99 @@ describe('capability hygiene: code-artifact entity filter (evidence-first)', () 
   });
 });
 
+describe('capability hygiene: post-AI-catalog reconciliation (real hosted-CAS defects)', () => {
+  // These reproduce the three defects that survived on the hosted (AI-on) output
+  // because the AI catalog REPLACES the deterministic system_capabilities and
+  // bypasses all deterministic post-processing. reconcileCatalogedCapabilities
+  // re-applies dedup + the purpose gate and re-injects flagship behavior surfaces.
+  const cap = (over: Record<string, unknown>): any => ({
+    id: 'c', name: 'Cap', description: 'x'.repeat(30), description_source: 'ai',
+    category: 'supporting', operations: [], related_entities: [], related_domains: [],
+    criticality: 'medium', criticality_factors: [], ...over,
+  });
+  const entity = (name: string, kind: string): any => ({
+    id: name, name, kind,
+    lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] },
+  });
+
+  it('FLAGSHIP: re-injects a behavior-surface candidate the AI catalog dropped (Klauro 207-tool MCP surface)', () => {
+    const cataloged = [
+      cap({ name: 'Surfaces codebase analysis results', category: 'core', criticality: 'high', related_entities: ['Codebase'] }),
+      cap({ name: 'Provides codebase analysis results', category: 'core', criticality: 'high', related_entities: ['AnalysisResult'] }),
+    ];
+    const behaviorCandidate = cap({
+      name: 'Mcp Tool Surface', structural_label: 'Mcp Tool Surface',
+      category: 'core', criticality: 'critical', evidence_kind: 'behavior-surface',
+      related_entities: ['Codebase', 'Component', 'Project', 'User', 'Workspace'],
+      related_domains: ['mcp-tool'], description_source: undefined,
+    });
+    const out = orch.reconcileCatalogedCapabilities(cataloged, [behaviorCandidate], []);
+    const surface = out.find((c: any) => c.evidence_kind === 'behavior-surface');
+    expect(surface).toBeDefined();
+    expect(surface.name).toBe('Mcp Tool Surface');
+    // The surface must NOT swallow the entity-anchored Codebase capability whose
+    // records its handlers incidentally reach.
+    expect(out.some((c: any) => c.name === 'Surfaces codebase analysis results')).toBe(true);
+  });
+
+  it('FLAGSHIP: does NOT re-inject when the catalog already covers that surface subject', () => {
+    const cataloged = [cap({ name: 'Exposes MCP tools to agents', category: 'core', related_entities: ['Codebase'], related_domains: ['mcp-tool'] })];
+    const behaviorCandidate = cap({
+      name: 'Mcp Tool Surface', structural_label: 'Mcp Tool Surface',
+      category: 'core', evidence_kind: 'behavior-surface', related_domains: ['mcp-tool'],
+    });
+    const out = orch.reconcileCatalogedCapabilities(cataloged, [behaviorCandidate], []);
+    expect(out.filter((c: any) => /mcp/i.test(c.name))).toHaveLength(1); // no duplicate surface
+  });
+
+  it('PURPOSE GATE: drops infra/runtime-only capabilities, keeps product ones (openclaw)', () => {
+    const dataEntities = [
+      entity('RestartSentinel', 'request-dto'), entity('RuntimeInfo', 'request-dto'),
+      entity('DaemonAction', 'request-dto'), entity('SpawnBase', 'request-dto'),
+      entity('SystemPresence', 'request-dto'),
+      entity('Voice', 'request-dto'), entity('ChannelSetup', 'request-dto'),
+      entity('ExecApproval', 'request-dto'), entity('OrderRecord', 'persisted-entity'),
+    ];
+    const cataloged = [
+      cap({ name: 'Manages Voice interactions', category: 'core', related_entities: ['ChannelSetup', 'Voice'] }),
+      cap({ name: 'Manages Exec approvals', related_entities: ['ExecApproval'] }),
+      cap({ name: 'Manages Restart sentinels', related_entities: ['RestartSentinel'] }),
+      cap({ name: 'Manages Runtime info', related_entities: ['RuntimeInfo'] }),
+      cap({ name: 'Manages Daemon actions', related_entities: ['DaemonAction'] }),
+      cap({ name: 'Manages Spawn bases', related_entities: ['SpawnBase'] }),
+      cap({ name: 'Manages System presence', related_entities: ['SystemPresence'] }),
+    ];
+    const out = orch.reconcileCatalogedCapabilities(cataloged, [], dataEntities);
+    const names = out.map((c: any) => c.name);
+    expect(names).toContain('Manages Voice interactions');
+    expect(names).toContain('Manages Exec approvals');
+    expect(names).not.toContain('Manages Restart sentinels');
+    expect(names).not.toContain('Manages Runtime info');
+    expect(names).not.toContain('Manages Daemon actions');
+    expect(names).not.toContain('Manages Spawn bases');
+    expect(names).not.toContain('Manages System presence');
+  });
+
+  it('PURPOSE GATE: an infra-shaped name with PERSISTED evidence is kept (product record)', () => {
+    const dataEntities = [entity('RuntimeConfig', 'persisted-entity')];
+    const cataloged = [cap({ name: 'Manages runtime config', category: 'core', related_entities: ['RuntimeConfig'] })];
+    const out = orch.reconcileCatalogedCapabilities(cataloged, [], dataEntities);
+    expect(out.map((c: any) => c.name)).toContain('Manages runtime config');
+  });
+
+  it('DEDUP: collapses verb-variant near-dups on the same entity set (Klauro telemetry/connections)', () => {
+    const cataloged = [
+      cap({ name: 'Monitors codebase telemetry', related_entities: ['TelemetryData'] }),
+      cap({ name: 'Manages codebase telemetry', related_entities: ['TelemetryData'] }),
+      cap({ name: 'Tracks codebase connections', related_entities: ['CodebaseConnection'] }),
+      cap({ name: 'Exposes codebase connections', related_entities: ['CodebaseConnection'] }),
+    ];
+    const out = orch.reconcileCatalogedCapabilities(cataloged, [], []);
+    expect(out.filter((c: any) => /telemetry/i.test(c.name))).toHaveLength(1);
+    expect(out.filter((c: any) => /connections/i.test(c.name))).toHaveLength(1);
+  });
+});
+
 describe('comprehension-input gates: test/fixture sources never seed meaning (live Klauro-self leak)', () => {
   // Live defect: journeys from `*.integration.test.ts` and a NestJS-fixture
   // scheduled job surfaced in the live capability list, and a hallucinated
@@ -3750,6 +3869,7 @@ describe('comprehension-input gates: test/fixture sources never seed meaning (li
     type: partial.type || 'function',
     source: partial.source || { file: `src/${partial.name || 'node'}.ts`, line: 1 },
     metadata: partial.metadata || {},
+    analyzers: partial.analyzers,
   } as CASNode);
 
   const entryPoint = (id: string, file: string, nodeId: string): any => ({
@@ -3829,16 +3949,33 @@ describe('comprehension-input gates: test/fixture sources never seed meaning (li
     expect(filtered.map((e: any) => e.id)).toEqual(['entity_order']);
   });
 
-  it('framework list for the narrative excludes fixture-sourced frameworks', () => {
-    const frameworkNodes: CASNode[] = [
-      gateNode({ id: 'nest-app', name: 'AppModule', metadata: { framework: 'NestJS' }, source: { file: 'src/app.module.ts', line: 1 } }),
-      gateNode({ id: 'django-fixture', name: 'urls', metadata: { framework: 'Django' }, source: { file: 'apps/mcp-server/fixtures/framework-bench/django-app/urls.py', line: 1 } }),
-      gateNode({ id: 'fastapi-testfile', name: 'main', metadata: { framework: 'FastAPI' }, source: { file: 'src/__tests__/analyzers/fastapi-analyzer.test.ts', line: 1 } }),
+  it('framework list for the narrative excludes fixture-sourced, adapter-shim, and library-category frameworks', () => {
+    // Only framework-type analyzers contribute a framework NAME (drops library
+    // category labels); the evidence must be product-path (drops fixture apps and
+    // test files); and it must be a real application surface (drops adapter shims —
+    // a lone middleware/module node the way klauro-sdk-py's telemetry adapters look).
+    const contributions = [
+      { analyzer_id: 'nestjs', analyzer_type: 'framework', analyzer_name: 'NestJS Framework Analyzer' },
+      { analyzer_id: 'django', analyzer_type: 'framework', analyzer_name: 'Django Framework Analyzer' },
+      { analyzer_id: 'fastapi', analyzer_type: 'framework', analyzer_name: 'FastAPI Framework Analyzer' },
+      { analyzer_id: 'auth', analyzer_type: 'library', analyzer_name: 'Auth Library Analyzer' },
     ];
-    const frameworks = orch.frameworkNamesForPurpose([], frameworkNodes, projectPath);
+    const frameworkNodes: CASNode[] = [
+      // Real product surface (controller) contributed by a framework analyzer → kept.
+      gateNode({ id: 'nest-ctrl', name: 'UsersController', type: 'controller', metadata: { framework: 'NestJS' }, source: { file: 'src/users/users.controller.ts', line: 1 }, analyzers: ['nestjs'] }),
+      // Fixture-sourced django app → gated by product path.
+      gateNode({ id: 'django-fixture', name: 'urls', type: 'route', metadata: { framework: 'Django' }, source: { file: 'apps/mcp-server/fixtures/framework-bench/django-app/urls.py', line: 1 }, analyzers: ['django'] }),
+      // Product-path fastapi evidence but only an ADAPTER-SHIM middleware node (no
+      // route/app surface) — the exact klauro-sdk-py false positive → excluded.
+      gateNode({ id: 'fastapi-shim', name: 'KlauroASGIMiddleware', type: 'middleware', metadata: { framework: 'FastAPI' }, source: { file: 'packages/klauro-sdk-py/src/klauro_telemetry/middleware.py', line: 1 }, analyzers: ['fastapi'] }),
+      // Library-analyzer CATEGORY label stamped onto a product route → excluded (not a framework).
+      gateNode({ id: 'auth-route', name: 'login', type: 'route', metadata: { framework: 'authentication and authorization' }, source: { file: 'src/auth/auth.controller.ts', line: 1 }, analyzers: ['auth'] }),
+    ];
+    const frameworks = orch.frameworkNamesForPurpose(contributions, frameworkNodes, projectPath);
     expect(frameworks).toContain('NestJS');
     expect(frameworks).not.toContain('Django');
     expect(frameworks).not.toContain('FastAPI');
+    expect(frameworks).not.toContain('authentication and authorization');
   });
 });
 

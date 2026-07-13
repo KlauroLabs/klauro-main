@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { assertRealWorkspaceAiAttempt, buildCrossCodebaseSystemGraph, buildWorkspaceAgentContext, detectWorkspaceCryptoProfile, enforceWorkspaceNarrativeProductValueSummary, enrichWorkspaceAnalysisNarrative, evaluateWorkspaceNarrativeGate, isWorkspaceAiParseArtifactText, normalizeWorkspaceAiDescriptionText, selectPreferredWorkspaceOllamaModel, selectWorkspaceAnalysisDetail, stripUngroundedWorkspaceMarketingLanguage, withWorkspaceAiTimeout, workspaceNarrativeHardRejectReason, workspaceNarrativeMarketingMatches, workspaceNarrativeMisattributionReason, workspaceNarrativePromptContext } from './cross-codebase-analysis';
+import { assertRealWorkspaceAiAttempt, buildCrossCodebaseSystemGraph, buildWorkspaceAgentContext, detectWorkspaceCryptoProfile, enforceWorkspaceNarrativeProductValueSummary, enrichWorkspaceAnalysisNarrative, evaluateWorkspaceNarrativeGate, isUncorroboratedEntityNameDomain, isVerbPhraseDomainLabel, isWorkspaceAiParseArtifactText, normalizeWorkspaceAiDescriptionText, productFrameworksFromCas, selectPreferredWorkspaceOllamaModel, selectWorkspaceAnalysisDetail, stripUngroundedWorkspaceMarketingLanguage, stripWorkspaceItemDescriptionArtifacts, withWorkspaceAiTimeout, workspaceNarrativeDomainMisattributionReason, workspaceNarrativeHardRejectReason, workspaceNarrativeMarketingMatches, workspaceNarrativeMisattributionReason, workspaceNarrativePromptContext } from './cross-codebase-analysis';
 import { aiService } from '../../../packages/analyzer-core/src/ai/ai-service';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 
@@ -2072,4 +2072,103 @@ test('internal analysis phrasing stays out of the narrative relationship summary
   for (const line of graph.workspace_narrative.relationship_summary) {
     assert.ok(!/source-backed|should not be forced|system graph|deployable\(s\)/i.test(line), `internal analysis phrase leaked into relationship_summary: ${line}`);
   }
+});
+
+// ============================================================================
+// WAS live-revalidation defect fixes (v1.0.66 4-workspace audit)
+// ============================================================================
+
+// The real hosted blob (Klauro/Clients/Personal): the model echoed the repair
+// prompt PAYLOAD back, so its embedded JSON arrives backslash-escaped and starts
+// with a bare quoted key ("task":) — evading every unescaped-quote guard.
+const REAL_PROMPT_ECHO_BLOB =
+  '"task": "Return only valid JSON shaped {\\"key_capabilities\\":[{\\"name\\":\\"Surfaces codebase analysis insights\\",\\"description\\":\\"...\\"}]}. Generate exactly one AI description for the exact capability name.", "exact_name": "Surfaces codebase analysis insights"';
+
+test('DEFECT1: parse-artifact guard catches escaped-quote prompt-echo blobs (real hosted shape)', () => {
+  assert.equal(isWorkspaceAiParseArtifactText(REAL_PROMPT_ECHO_BLOB), true);
+  // Unescaped and brace-led variants still caught; real prose is not.
+  assert.equal(isWorkspaceAiParseArtifactText('{"key_capabilities":[]}'), true);
+  assert.equal(isWorkspaceAiParseArtifactText('"description": "x"'), true);
+  assert.equal(isWorkspaceAiParseArtifactText('Return only valid JSON shaped ...'), true);
+  assert.equal(isWorkspaceAiParseArtifactText('Surfaces analyzed codebase structure, entities, and risks as reviewable context for engineers and agents.'), false);
+});
+
+test('DEFECT1: persist-seam sanitizer clears blob descriptions to honest absence (never the blob)', () => {
+  const graph: any = {
+    workspace_capabilities: [{ name: 'Surfaces codebase analysis insights', description: REAL_PROMPT_ECHO_BLOB, description_source: 'ai' }],
+    workspace_domains: [{ name: 'Surfaces Codebase Analysis Results', description: REAL_PROMPT_ECHO_BLOB, description_source: 'ai' }],
+    workspace_workflows: [],
+    workspace_entities: [],
+    workspace_narrative: { description: 'Real narrative.', product_value_summary: 'Real summary.', source: 'ai' },
+    detail_views: { overview: { capabilities: [{ name: 'Surfaces codebase analysis insights', description: REAL_PROMPT_ECHO_BLOB }], description: 'Real narrative.' } },
+  };
+  const cleared = stripWorkspaceItemDescriptionArtifacts(graph);
+  assert.equal(cleared, 2);
+  assert.equal(graph.workspace_capabilities[0].description, '');
+  assert.equal(graph.workspace_capabilities[0].description_source, 'ai-required-degraded');
+  assert.equal(graph.workspace_domains[0].description, '');
+  // Detail-view projection is re-synced from the sanitized array — no stale blob.
+  assert.equal(graph.detail_views.overview.capabilities[0].description, '');
+});
+
+test('DEFECT2: domain misattribution uses deterministic workspace_domains as ground truth', () => {
+  const graph: any = {
+    name: 'Personal',
+    codebases: [
+      { id: 'p-kontinuum', name: 'kontinuum' },
+      { id: 'p-mtg', name: 'mtg' },
+    ],
+    workspace_capabilities: [],
+    workspace_domains: [{ name: 'Game Server', project_ids: ['p-mtg'] }],
+  };
+  // Subject "Kontinuum" credited with mtg's Game Server -> reject, even though
+  // "mtg" is also named later in the sentence (evades the capability gate).
+  const bad = 'Kontinuum is a personal intelligence substrate that manages memory, while also providing a game server, and is connected to the mtg game server.';
+  const reason = workspaceNarrativeDomainMisattributionReason(graph, bad);
+  assert.ok(reason && /Game Server/.test(reason) && /mtg/.test(reason), `expected misattribution reason, got ${reason}`);
+  // Owner-qualified reference to mtg's own asset is legitimate -> accept.
+  const good = 'Kontinuum is a personal intelligence substrate; the mtg game server is a separate member.';
+  assert.equal(workspaceNarrativeDomainMisattributionReason(graph, good), null);
+});
+
+test('DEFECT3: framework rollup drops fixture-sourced frameworks, keeps product + manifest-only', () => {
+  const casOut: any = {
+    system: { technologies: { frameworks: [{ name: 'Django' }, { name: 'Jest' }, { name: 'NestJS' }, { name: 'Terraform' }] } },
+    nodes: [
+      { metadata: { framework: 'nestjs' }, source: { file: 'src/app.controller.ts' } }, // product
+      { metadata: { framework: 'django' }, source: { file: 'tests/fixtures/py/manage.py' } }, // fixture only
+      { metadata: { framework: 'jest', is_test: true }, source: { file: 'src/app.spec.ts' } }, // test only
+      // Terraform: no node-level framework evidence (manifest-only) -> kept.
+    ],
+  };
+  const frameworks = productFrameworksFromCas(casOut);
+  assert.deepEqual(frameworks, ['NestJS', 'Terraform']);
+});
+
+test('DEFECT3: TypeScript/JavaScript survive prose tokenization', () => {
+  const out = normalizeWorkspaceAiDescriptionText('It uses TypeScript/JavaScript, and PostgreSQL and GraphQL.');
+  assert.ok(/TypeScript/.test(out) && !/Type Script/.test(out), out);
+  assert.ok(/JavaScript/.test(out) && !/Java Script/.test(out), out);
+  assert.ok(/PostgreSQL/.test(out) && /GraphQL/.test(out), out);
+});
+
+test('DEFECT4: verb-phrase domain labels rejected (Surfaces/Analyzes), noun domains kept', () => {
+  assert.equal(isVerbPhraseDomainLabel('Surfaces Codebase Analysis Results'), true);
+  assert.equal(isVerbPhraseDomainLabel('Analyzes Codebase Patterns'), true);
+  assert.equal(isVerbPhraseDomainLabel('Surfaces Remote Memory'), true);
+  assert.equal(isVerbPhraseDomainLabel('Network Access Control'), false);
+  assert.equal(isVerbPhraseDomainLabel('Payments'), false);
+});
+
+test('DEFECT4: bare entity/class-name domains rejected; core-concept domains kept', () => {
+  const entityNames = new Set(['spawnbase', 'nodeinvoke', 'groksearch', 'employee', 'term', 'agent', 'membership']);
+  // camelCase class identifiers whose only capability evidence is a self-echo.
+  assert.equal(isUncorroboratedEntityNameDomain('SpawnBase', { evidence: ['entity:SpawnBase', 'capability:Manages Spawn bases'] }, entityNames), true);
+  assert.equal(isUncorroboratedEntityNameDomain('GrokSearch', { evidence: ['entity:GrokSearch', 'capability:Manages Grok searches'] }, entityNames), true);
+  // plural entity name vs singular entity in the set (Employees -> Employee).
+  assert.equal(isUncorroboratedEntityNameDomain('Employees', { evidence: ['domain_concept:concept_employees', 'entity:Employee'] }, entityNames), true);
+  assert.equal(isUncorroboratedEntityNameDomain('Terms', { evidence: ['domain_concept:concept_terms', 'entity:Term'] }, entityNames), true);
+  // A real domain answer or core concept corroborates -> kept.
+  assert.equal(isUncorroboratedEntityNameDomain('Agents', { evidence: ['core_concept:agent', 'domain_concept:concept_agents'] }, entityNames), false);
+  assert.equal(isUncorroboratedEntityNameDomain('Orders', { evidence: ['primary_domain:orders', 'entity:Order'] }, new Set(['order'])), false);
 });

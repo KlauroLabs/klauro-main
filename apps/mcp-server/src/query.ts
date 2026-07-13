@@ -11,6 +11,7 @@ import { isAuthenticationGuardName } from '../../../packages/analyzer-core/src/a
 import { buildProductMap } from '../../../packages/analyzer-core/src/analyzer/core/product-map';
 import { RISKABLE_NODE_TYPES } from '../../../packages/analyzer-core/src/analyzer/core/orchestrator';
 import { buildTerminalSignal } from '../../../packages/analyzer-core/src/analyzer/core/terminal-signal';
+import { selectProductFrameworkNames, analyzerTypeMap } from '../../../packages/analyzer-core/src/analyzer/core/framework-comprehension';
 import { computeFlowConcepts, attachTelemetryToFlows, telemetryForNode, applyFlowRoleToCapabilityRelationships, type ComputeFlowConceptsOptions, type RuntimeMetricLike } from '../../../packages/analyzer-core/src/analyzer/core/flow-concepts';
 import { computeFlowStructuralLinks, computeConflictBehavioralLinks } from '../../../packages/analyzer-core/src/analyzer/core/structural-cross-links';
 import type { CASProductMap } from '../../../packages/analyzer-core/src/types/cas.types';
@@ -486,17 +487,25 @@ function nodeLanguageSignal(node: CASNode): string {
 
 function productTechSignals(cas: CASOutput): { languages: string[]; frameworks: string[] } {
   const languages = new Set<string>();
-  const frameworks = new Set<string>();
   for (const node of cas.nodes || []) {
     if (!isPrimaryProductNodeForQuery(node)) continue;
     const language = nodeLanguageSignal(node);
-    const framework = String(node.metadata?.framework || '').trim();
     if (language) languages.add(language);
-    if (framework && !isTestFramework(framework)) frameworks.add(normalizeTechLabel(framework));
   }
+  // Frameworks go through the SAME comprehension gate the orchestrator uses to
+  // seed the description (framework-analyzer + product-path + application-surface),
+  // so summary.frameworks — the field the description cites — no longer reports
+  // adapter shims (django/fastapi from an SDK) or library category labels
+  // ("authentication and authorization") as frameworks the system is built with.
+  const frameworks = selectProductFrameworkNames(
+    cas.nodes || [],
+    analyzerTypeMap(cas.analyzer_contributions || []),
+    node => isPrimaryProductNodeForQuery(node as CASNode),
+    10,
+  ).filter(name => !isTestFramework(name)).map(normalizeTechLabel);
   return {
     languages: Array.from(languages).filter(Boolean).slice(0, 8),
-    frameworks: Array.from(frameworks).filter(Boolean).slice(0, 10),
+    frameworks: Array.from(new Set(frameworks)).filter(Boolean).slice(0, 10),
   };
 }
 

@@ -606,3 +606,33 @@ test('buildSummary top_capabilities is never led by supporting/admin plumbing', 
   assert.ok(summary.top_capabilities.indexOf('Deletes Profile data') > summary.top_capabilities.indexOf('Puzzle Play'),
     'supporting plumbing ranks strictly below core');
 });
+
+test('buildSummary.frameworks reports only real product frameworks, not adapter shims or category labels', () => {
+  // Regression for the live dogfood leak: Klauro (a TypeScript monorepo) reported
+  // django/fastapi (from Python fixtures + the klauro-sdk-py telemetry SDK's
+  // adapter middleware) and library CATEGORY labels ("authentication and
+  // authorization") as its frameworks. summary.frameworks is the field the AI
+  // description cites, so it must go through the comprehension gate.
+  const cas = {
+    system: { name: 'proof-of-concept', type: 'monorepo', technologies: { frameworks: [{ name: 'FastAPI' }, { name: 'Django' }] } },
+    nodes: [
+      { id: 'r1', name: 'App', type: 'react_app', source: { file: 'apps/app/src/App.tsx' }, metadata: { framework: 'react' }, analyzers: ['react'] },
+      { id: 'r2', name: 'Panel', type: 'functional_component', source: { file: 'apps/app/src/Panel.tsx' }, metadata: { framework: 'react' }, analyzers: ['react'] },
+      { id: 'f1', name: 'KlauroASGIMiddleware', type: 'middleware', source: { file: 'packages/klauro-sdk-py/src/klauro_telemetry/middleware.py' }, metadata: { framework: 'fastapi' }, analyzers: ['fastapi'] },
+      { id: 'd1', name: 'klauro_telemetry', type: 'module', source: { file: 'packages/klauro-sdk-py/src/klauro_telemetry' }, metadata: { framework: 'django' }, analyzers: ['django'] },
+      { id: 'a1', name: 'login', type: 'route', source: { file: 'src/auth/auth.controller.ts' }, metadata: { framework: 'authentication and authorization' }, analyzers: ['auth'] },
+    ],
+    edges: [],
+    entry_points: [],
+    analyzer_contributions: [
+      { analyzer_id: 'react', analyzer_type: 'framework', analyzer_name: 'React Analyzer' },
+      { analyzer_id: 'fastapi', analyzer_type: 'framework', analyzer_name: 'FastAPI Analyzer' },
+      { analyzer_id: 'django', analyzer_type: 'framework', analyzer_name: 'Django Analyzer' },
+      { analyzer_id: 'auth', analyzer_type: 'library', analyzer_name: 'Auth Library Analyzer' },
+    ],
+  } as unknown as CASOutput;
+
+  const summary: any = buildSummary(cas, { detail: 'compact' });
+  assert.deepEqual(summary.frameworks, ['react'],
+    `summary.frameworks must be only real product frameworks, got ${JSON.stringify(summary.frameworks)}`);
+});
