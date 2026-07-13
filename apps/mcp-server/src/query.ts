@@ -13,6 +13,7 @@ import { RISKABLE_NODE_TYPES } from '../../../packages/analyzer-core/src/analyze
 import { buildTerminalSignal } from '../../../packages/analyzer-core/src/analyzer/core/terminal-signal';
 import { selectProductFrameworkNames, analyzerTypeMap } from '../../../packages/analyzer-core/src/analyzer/core/framework-comprehension';
 import { computeFlowConcepts, attachTelemetryToFlows, telemetryForNode, applyFlowRoleToCapabilityRelationships, type ComputeFlowConceptsOptions, type RuntimeMetricLike } from '../../../packages/analyzer-core/src/analyzer/core/flow-concepts';
+import { computeSemanticCoverage, toCompactSemanticCoverage, type SemanticCoverage } from '../../../packages/analyzer-core/src/analyzer/core/semantic-coverage';
 import { computeFlowStructuralLinks, computeConflictBehavioralLinks } from '../../../packages/analyzer-core/src/analyzer/core/structural-cross-links';
 import type { CASProductMap } from '../../../packages/analyzer-core/src/types/cas.types';
 import { buildSystemFitSummary, buildCommunicationSeamSummary } from './context-fabric';
@@ -265,8 +266,51 @@ export function buildSummary(cas: CASOutput, opts: { detail?: 'compact' | 'full'
     // and is implicitly complete — omitted rather than a fabricated "all
     // ready" so callers can tell "not layered" apart from "layered and done".
     ...(cas.layers_ready ? { layers_ready: cas.layers_ready } : {}),
+    // SEMANTIC COVERAGE (docs/SEMANTIC-MODEL.md "Coverage invariants") — the
+    // compact projection: the three rollup ratios + unmapped COUNTS only (the
+    // full honest unmapped lists live in get_semantic_coverage). Deterministic,
+    // evidence-only; the release-gate signal that "everything rolls up" holds.
+    //
+    // LATENCY GUARD (STANDING budget gate, get_summary is L0 <2s): the coverage
+    // MATH is cheap (~37ms even on a 46k-node CAS), but it needs the full flow
+    // set, and computeFlowConcepts on a large repo is ~9.5s (measured: Klauro,
+    // 3,794 entry points / 2,194 flows). Computing that on every orient call
+    // would blow the L0 budget — so the compact field is only inlined here when
+    // the flow set is small enough to stay well under budget. Above the guard we
+    // OMIT it (never fabricate a partial/capped ratio that would disagree with the
+    // dedicated tool) and rely on get_semantic_coverage, which carries the full
+    // uncapped compute (a heavier profile, like get_flow_coverage). The gauntlet
+    // gate reads the full value, not this convenience field.
+    ...(() => {
+      const entryCount = cas.entry_points?.length || 0;
+      const nodeCount = cas.nodes?.length || 0;
+      // ~2.5ms/entry-point measured; 400 EPs ≈ ~1s, comfortably inside the budget.
+      if (entryCount > 400 || nodeCount > 15000) {
+        return { semantic_coverage_available: 'call get_semantic_coverage (omitted from summary: flow set too large to compute within the orient latency budget)' as const };
+      }
+      try {
+        const flows = computeFlowConcepts(cas);
+        return { semantic_coverage: toCompactSemanticCoverage(computeSemanticCoverage(cas, flows)) };
+      } catch {
+        return {};
+      }
+    })(),
     ...(detail === 'compact' ? { detail: 'compact' as const } : {}),
   };
+}
+
+/**
+ * getSemanticCoverage — the dedicated read tool payload (docs/SEMANTIC-MODEL.md
+ * "Coverage invariants"). The three rollup ratios PLUS the full honest unmapped
+ * lists (reachable code with no step, orphan steps, capability-less flows), each
+ * capped for response budget with an explicit omitted count. Deterministic and
+ * evidence-only — measured over the SAME full flow set get_flow_coverage uses
+ * (computeFlowConcepts, no cap) so the ratios reflect the true rollup, not a
+ * browse-capped slice.
+ */
+export function getSemanticCoverage(cas: CASOutput): SemanticCoverage {
+  const flows = computeFlowConcepts(cas);
+  return computeSemanticCoverage(cas, flows);
 }
 
 export interface SystemOverviewFilter {

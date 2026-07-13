@@ -283,7 +283,7 @@ const GATEWAY_TOOL_GROUPS: Array<{ label: string; tools: string[] }> = [
   { label: 'Entry points, routes, and call graph', tools: ['get_entry_points', 'get_exit_points', 'get_communication_seams', 'get_route_table', 'get_cicd_pipelines', 'get_external_services', 'get_callers', 'get_callees', 'get_call_chain', 'get_method_calls', 'get_interface_signature', 'get_flow_concepts'] },
   { label: 'Component hierarchy', tools: ['get_component_parents', 'get_component_children', 'get_component_metrics', 'get_shared_components'] },
   { label: 'Coding context and conventions', tools: ['get_conventions', 'get_modification_guide', 'get_pattern_examples', 'find_similar_code', 'get_comments', 'get_error_contracts', 'get_framework_guidance', 'get_usage_examples', 'get_configuration'] },
-  { label: 'Intent, data, and risk', tools: ['get_intent', 'get_data_entities', 'get_security_overview', 'get_behavioral_invariants', 'validate_behavioral_invariants', 'get_stability', 'get_flow_coverage'] },
+  { label: 'Intent, data, and risk', tools: ['get_intent', 'get_data_entities', 'get_security_overview', 'get_behavioral_invariants', 'validate_behavioral_invariants', 'get_stability', 'get_flow_coverage', 'get_semantic_coverage'] },
   { label: 'Workflows, capabilities, and runtime', tools: ['get_workflows', 'get_paradigm_conformance', 'get_architectural_conflicts', 'get_unified_perspectives', 'get_data_lineage', 'diff_behavior', 'get_flow_graph', 'get_runtime_static_links', 'simulate_runtime_telemetry', 'correlate_runtime_event', 'record_runtime_event', 'ingest_telemetry', 'get_runtime_observations', 'get_operational_priorities', 'get_runtime_trace', 'get_analysis_facts', 'get_domain_concepts'] },
   { label: 'Behaviors, testing, data, and health', tools: ['get_behaviors', 'get_lifecycle_hooks', 'get_test_summary', 'get_database_schema', 'get_erd', 'get_implementation_health', 'get_system_health', 'get_documentation_coverage', 'get_todos'] },
   { label: 'Dependencies', tools: ['get_dependencies', 'get_libraries'] },
@@ -4499,6 +4499,21 @@ function registerTools(server: McpServer) {
     async ({ path, chain_id }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
       return json(query.getFlowCoverage(cas, chain_id));
+    })
+  );
+
+  server.registerTool(
+    'get_semantic_coverage',
+    {
+      title: 'Get Semantic Coverage',
+      description: 'Measures "everything rolls up" (docs/SEMANTIC-MODEL.md "Coverage invariants") — the honest, deterministic answer to how much of the code the Capability->Flow->Step semantic layer actually explains. Returns three ratios (0..1): reachable_code_to_steps (of executable nodes REACHABLE from an entry point via the call graph, what fraction participate in >=1 flow step), steps_to_flows (of all steps, what fraction are assigned to a flow — an invariant ~1.0 by construction, measured to catch regressions), and flows_to_capabilities (of flows, what fraction carry >=1 capability relationship). Each ratio reports mapped/total. Crucially it also returns the UNMAPPED lists themselves (not just counts): the reachable code_units with no step (each with a deterministic reason: reachable-with-effects-uncaptured | framework-generated | test-code | reachable-no-effects), orphan steps, and capability-less flows — capped ~50 each with an omitted count. Unmapped code is surfaced, never hidden: it flags missing semantics, generic infra, dead code, framework-generated behavior, incomplete extraction, or an undiscovered capability. Deterministic (Camp-B), evidence-only, byte-stable run-to-run; measured over the full flow set (same as get_flow_coverage). Use to audit semantic completeness of an analysis and to see exactly what the flow layer is not yet explaining.',
+      inputSchema: {
+        path: z.string().describe('Project path'),
+      } as any,
+    } as any,
+    async ({ path }: any) => withErrorHandling(async () => {
+      const cas = await getAnalysis(path);
+      return json(query.getSemanticCoverage(cas));
     })
   );
 

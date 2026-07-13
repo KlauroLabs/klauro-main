@@ -4338,3 +4338,94 @@ describe('behavior-anchored capability derivation (buildBehaviorCapabilities)', 
     expect(labels.some((label: string) => /Mcp Tool.*Surface/i.test(label))).toBe(true);
   });
 });
+
+describe('top-down capability evidence (C2)', () => {
+  it('extracts verbatim product framing from a README (title + opening paragraph)', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-topdown-readme-'));
+    try {
+      fs.writeFileSync(
+        path.join(root, 'README.md'),
+        '# Arcane Table\n\n![build](https://img.shields.io/badge/x)\n\nArcane Table is a private web-based Magic: The Gathering Commander platform for real-time multiplayer games.\n\n## Setup\n\n- run npm install\n'
+      );
+      const signal = orch.extractProjectTextSignal(root);
+      expect(signal.productDocTitle).toBe('Arcane Table');
+      expect(signal.productDocSummary).toMatch(/Commander platform/);
+      // Badge line and the "Setup" list must not leak into the product summary.
+      expect(signal.productDocSummary).not.toMatch(/shields\.io|npm install/);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('falls back to a PRD/product doc when no README states the product, skipping bold metadata', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-topdown-prd-'));
+    try {
+      fs.writeFileSync(
+        path.join(root, 'PRD.md'),
+        '# Arcane Table - MTG Commander Platform\n## Product Requirements Document (PRD)\n\n**Version:** 1.1\n**Status:** Draft\n\n---\n\n## 1. Executive Summary\n\nArcane Table is a private, web-based Magic: The Gathering Commander platform designed for friends and family to play the full Commander experience digitally.\n'
+      );
+      const signal = orch.extractProjectTextSignal(root);
+      expect(signal.productDocTitle).toBe('Arcane Table - MTG Commander Platform');
+      expect(signal.productDocSummary).toMatch(/Commander platform designed for friends/);
+      expect(signal.productDocSummary).not.toMatch(/Version|Status|Draft/);
+      expect(signal.evidence).toContain('PRD.md');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('does NOT treat an agent-tooling CLAUDE.md as product framing', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-topdown-noproductdoc-'));
+    try {
+      fs.writeFileSync(path.join(root, 'CLAUDE.md'), '# Instructions\n\nDo not take shortcuts. Fix things properly.\n');
+      const signal = orch.extractProjectTextSignal(root);
+      expect(signal.productDocTitle).toBeUndefined();
+      expect(signal.productDocSummary).toBeUndefined();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('feeds top_down_signals + the purpose test into the catalog prompt, and omits the block when absent', async () => {
+    const captured: any[] = [];
+    const original = (aiService as any).generateComponentDescription;
+    (aiService as any).generateComponentDescription = async (arg: any) => {
+      captured.push(arg);
+      return JSON.stringify({ capabilities: [{ name: 'Play Commander matches', description: 'Lets friends play full Magic Commander games together in real time online.', category: 'core', entities: [], journeys: [] }] });
+    };
+    try {
+      const withSignal = {
+        concepts: [],
+        evidence: ['PRD.md'],
+        productDocTitle: 'Arcane Table - MTG Commander Platform',
+        productDocSummary: 'A web-based Magic: The Gathering Commander platform with real-time multiplayer and AI opponents.',
+      };
+      await orch.aiExtractCapabilityCatalog({
+        systemName: 'mtg',
+        enhancedSystemPurpose: { primary_domain: 'games', core_concepts: [] },
+        frameworks: [], userJourneys: [], dataEntities: [],
+        candidateCapabilities: [{ name: 'Game session', related_entities: [], operations: [] }],
+        externalServices: [], flowGraph: { capabilities: [] },
+        projectTextSignal: withSignal, budgetMs: 30000,
+      });
+      const withCtx = captured[captured.length - 1].additionalContext;
+      expect(withCtx.facts.top_down_signals.product_title).toMatch(/Arcane Table/);
+      expect(withCtx.facts.top_down_signals.product_overview).toMatch(/Commander/);
+      expect(withCtx.task).toMatch(/PURPOSE TEST/);
+      expect(withCtx.task).toMatch(/access control/i);
+
+      // No product doc => the block is omitted entirely (evidence-gated, no fabrication).
+      await orch.aiExtractCapabilityCatalog({
+        systemName: 'bare',
+        enhancedSystemPurpose: { primary_domain: 'x', core_concepts: [] },
+        frameworks: [], userJourneys: [], dataEntities: [],
+        candidateCapabilities: [], externalServices: [], flowGraph: { capabilities: [] },
+        projectTextSignal: { concepts: [], evidence: [] }, budgetMs: 30000,
+      });
+      const bareCtx = captured[captured.length - 1].additionalContext;
+      expect(bareCtx.facts.top_down_signals).toBeUndefined();
+    } finally {
+      (aiService as any).generateComponentDescription = original;
+    }
+  });
+});

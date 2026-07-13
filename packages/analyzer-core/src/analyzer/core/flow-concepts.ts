@@ -268,7 +268,7 @@ export interface ComputeFlowConceptsOptions {
 
 type StepCharacter = 'validate' | 'logic' | 'persist' | 'external' | 'respond';
 
-interface ChainNode {
+export interface ChainNode {
   node: CASNode;
   depth: number;
 }
@@ -276,7 +276,7 @@ interface ChainNode {
 const DEFAULT_MAX_DEPTH = 6;
 const DEFAULT_MAX_FUNCTIONS = 40;
 
-const TRACEABLE_NODE_TYPES = new Set([
+export const TRACEABLE_NODE_TYPES = new Set([
   'function', 'method', 'controller', 'handler', 'route', 'resolver', 'gateway',
   'service', 'usecase', 'repository', 'dao',
   // frontend / SPA route->view chains (reached via 'renders'/'uses' edges):
@@ -339,13 +339,13 @@ export function layerOf(node: CASNode): string {
 /** Prebuilt forward-traversal index over the CAS graph, so callers that trace
  *  many roots (union path, entry-family entity rollup) build the O(edges)
  *  adjacency maps ONCE instead of once per root. */
-interface TraversalIndex {
+export interface TraversalIndex {
   nodesById: Map<string, CASNode>;
   outgoingEdges: Map<string, CASEdge[]>;
   outgoingMethodCalls: Map<string, string[]>;
 }
 
-function buildTraversalIndex(cas: CASOutput): TraversalIndex {
+export function buildTraversalIndex(cas: CASOutput): TraversalIndex {
   const nodesById = new Map(cas.nodes.map(n => [n.id, n]));
   // Traversable edge kinds: function-call edges (backend/service chains) AND
   // 'renders'/'uses' (frontend route -> component chains, e.g. React Router
@@ -375,7 +375,7 @@ function buildTraversalIndex(cas: CASOutput): TraversalIndex {
  * by depth, deduped by node id (a diamond-shaped call graph must not be
  * walked twice or produce duplicate steps).
  */
-function traceForwardChain(
+export function traceForwardChain(
   index: TraversalIndex,
   rootId: string,
   maxDepth: number,

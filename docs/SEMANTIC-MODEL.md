@@ -35,6 +35,34 @@ effects, behavior families/registration surfaces) AND top-down evidence
 manifest description). Pure bottom-up clustering yields "Wallet interaction"
 when the capability is "Trade cryptocurrency."
 
+### Top-down evidence bundle + the purpose-test exclusion (C2)
+
+The AI capability catalog receives a `top_down_signals` block alongside the
+bottom-up facts. It carries the product's OWN words — README title + opening
+overview (verbatim), manifest self-description, and product terminology (route-
+area + journey names). These are Camp-B facts (extracted deterministically, like
+any evidence) fed to the AI for comprehension; they are **evidence-gated** —
+omitted entirely when the repo has no such text, **never fabricated**, and carry
+no hardcoded product vocabulary.
+
+Two forces the catalog contract must compose:
+
+- **RAISE (top-down corroboration):** a capability named by the product's own
+  title/overview/terminology is core even when the bottom-up entities under-
+  represent it. This is how "Play Commander matches" surfaces for a game whose
+  routes look like generic CRUD, and how the built-for capability outranks a
+  bottom-up plumbing cap.
+- **DEMOTE (the purpose-test exclusion):** a supporting/infrastructural concern
+  (auth, access control/permissions, session, logging/telemetry, caching,
+  brokering, generic CRUD, health, config, database) may be named a capability
+  ONLY when `top_down_signals` shows the product IS that kind of product. Absent
+  that evidence it is at most "supporting", never "core", and is usually
+  dropped — so a codebase-analysis product never ships "Manage access and
+  permissions" as a core capability. This is a PROMPT-CONTRACT rule keyed on
+  top-down evidence, **not a hardcoded capability-name blocklist**; the
+  deterministic `reconcileCatalogedCapabilities` purpose gate (entity KIND +
+  shape) remains as a second, evidence-gated demotion of pure runtime anchors.
+
 Capabilities do NOT carry ICELOT (too high-level to bind directly).
 
 ## Flow — a complete behavior of the system

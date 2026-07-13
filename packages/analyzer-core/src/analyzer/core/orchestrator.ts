@@ -297,6 +297,15 @@ interface ProjectTextSignal {
   // A real human-authored evidence STRING, NOT a keyword-classified summary —
   // surfaced to the comprehension prompt as authoritative product framing.
   manifestDescription?: string;
+  // Verbatim TOP-DOWN product evidence read from the repo's own product doc
+  // (README, or a PRD/PRODUCT/OVERVIEW when no README states the product): the
+  // first heading (the product's name/tagline) and the first real paragraph
+  // (what it says it is/does). Extracted deterministically (Camp-B facts, like
+  // manifestDescription) and fed to the capability catalog + description prompts
+  // as product-facing grounding — evidence-gated, undefined when no such doc.
+  // Agent-tooling docs (CLAUDE.md/AGENTS.md) are NOT product docs and excluded.
+  productDocTitle?: string;
+  productDocSummary?: string;
 }
 
 type DescriptionTargetKind = 'capability' | 'entity';
@@ -8613,6 +8622,7 @@ export class AnalyzerOrchestrator {
     candidateCapabilities: SystemCapability[];
     externalServices: string[];
     flowGraph: CASFlowGraph;
+    projectTextSignal?: ProjectTextSignal;
     budgetMs: number;
   }): Promise<SystemCapability[]> {
     const purpose = input.enhancedSystemPurpose || ({} as EnhancedSystemPurpose);
@@ -8638,6 +8648,29 @@ export class AnalyzerOrchestrator {
     const candidateAreas = input.candidateCapabilities.map(capability => capability.name).slice(0, 24);
     const services = (input.externalServices || []).slice(0, 12);
 
+    // ---- TOP-DOWN EVIDENCE BUNDLE ----
+    // The catalog is otherwise BOTTOM-UP (entities + route areas + journeys),
+    // which yields plumbing names ("Wallet interaction") over the built-for
+    // capability ("Trade cryptocurrency") and lets a supporting concern
+    // (access-control) read as core. Top-down evidence = the product's OWN
+    // words: its README title/overview, its manifest self-description, and its
+    // product terminology (route-area + journey names). All excerpts are real
+    // and evidence-gated — omitted when absent, never fabricated. The catalog
+    // must let this evidence RAISE the capability the product was built for and
+    // (via the purpose test) DEMOTE plumbing the product never sells.
+    const signal = input.projectTextSignal;
+    const productTerminology = Array.from(new Set([
+      ...journeys.map(journey => journey.name),
+      ...candidateAreas,
+    ].map(term => String(term || '').trim()).filter(Boolean))).slice(0, 20);
+    const topDownSignals: Record<string, unknown> = {};
+    if (signal?.productDocTitle) topDownSignals.product_title = signal.productDocTitle;
+    if (signal?.productDocSummary) topDownSignals.product_overview = signal.productDocSummary;
+    if (signal?.manifestDescription) topDownSignals.product_self_description = signal.manifestDescription;
+    if (purpose.inferred_description) topDownSignals.inferred_product_description = purpose.inferred_description;
+    if (productTerminology.length) topDownSignals.product_terminology = productTerminology;
+    const hasTopDown = Object.keys(topDownSignals).length > 0;
+
     // A cold hosted-70B catalog call (large fact bundle in, 6-14 JSON capabilities
     // out) is HIGHLY variable on shared inference (15s to 60s+). The catalog
     // succeeding is what curates 40 noisy candidates down to ~12 real product
@@ -8655,7 +8688,7 @@ export class AnalyzerOrchestrator {
               // benefits from its reliability; opt in via DEEPINFRA_STRUCTURED_MODEL
               // or OPENAI_STRUCTURED_MODEL.
               model: process.env.DEEPINFRA_STRUCTURED_MODEL || process.env.OPENAI_STRUCTURED_MODEL || undefined,
-              task: 'You are cataloging the BUSINESS VALUE of a codebase. From the deterministic facts (user journeys, data entities, candidate route areas, external services), return ONLY valid JSON: {"capabilities":[{"name":"...","description":"...","category":"core|supporting","entities":["..."],"journeys":["..."]}]}. Rules: (1) Each capability is something the product lets its USERS or OPERATORS do, in plain product language, grounded in the journeys and entities it touches — NOT a CRUD/route/lifecycle mechanism. (2) MERGE related route areas and journeys into real capabilities; do not emit one per route. (3) EXCLUDE purely supporting or infrastructural concerns (authentication, session/token handling, logging, notifications, caching, message brokering, generic CRUD, health checks, config) UNLESS that concern is the product\'s actual value. (4) category="core" only for the capabilities that ARE the product\'s value proposition; "supporting" for necessary-but-not-the-value. (5) entities/journeys must be names copied from the supplied facts. (6) Each description is ONE concise sentence, 8-16 words — no clauses, no lists. Return 6 to 12 capabilities, ordered most-core first.',
+              task: `You are cataloging the BUSINESS VALUE of a codebase. You are given BOTTOM-UP facts (user journeys, data entities, candidate route areas, external services) AND, when available, a top_down_signals block — the product's OWN words about what it is (README title/overview, manifest self-description, product terminology). Return ONLY valid JSON: {"capabilities":[{"name":"...","description":"...","category":"core|supporting","entities":["..."],"journeys":["..."]}]}. Rules: (1) THE PURPOSE TEST — every capability you name must be a product/user/operational ability that would appear in a product description, a user objective, a business offering, or an operational responsibility. If it would not, it is NOT a capability; drop it. Name capabilities as what the product lets its USERS or OPERATORS DO in plain product language (e.g. "Trade cryptocurrency", "Play Commander matches"), NEVER as a mechanism or a supporting noun ("Wallet interaction", "Manage sessions"). (2) USE top_down_signals as the primary arbiter of what the product IS BUILT FOR: the capability the product's own title/overview/terminology names is a core capability even if the bottom-up entities under-represent it — let this evidence RAISE the built-for capability to the top. (3) THE PURPOSE-TEST EXCLUSION — do NOT emit supporting/infrastructural concerns as capabilities (authentication, access control/permissions, session/token handling, logging/telemetry, notifications, caching, message brokering, generic CRUD, health checks, config, database) UNLESS top_down_signals shows the product IS that kind of product (an auth product sells access control; a codebase-analysis or game product does not). Absent top-down evidence that the product sells it, such a concern is at most "supporting", never "core", and is usually dropped. (4) MERGE related route areas and journeys into real capabilities; do not emit one per route. (5) category="core" only for the capabilities that ARE the product's value proposition (those corroborated by top_down_signals rank first); "supporting" for necessary-but-not-the-value. (6) entities/journeys must be names copied from the supplied facts. (7) Each description is ONE concise sentence, 8-16 words — no clauses, no lists. Return 6 to 12 capabilities, ordered most-core first.`,
               style: 'Write like a product engineer or PM. Plain language. No markdown. Value verbs (lets, gives, tracks, surfaces, exposes, manages, monitors, secures, settles, enforces). No CRUD verbs, no "lifecycle", no route counts, no file paths, no marketing fluff. Each description names the concrete user-facing concept the entities point to.',
               product: {
                 name: input.systemName,
@@ -8669,6 +8702,10 @@ export class AnalyzerOrchestrator {
                 data_entities: entities,
                 candidate_route_areas: candidateAreas,
                 external_services: services,
+                // Evidence-gated: present ONLY when the repo supplied real
+                // product-facing text. Its absence must not weaken the catalog;
+                // its presence must anchor the built-for capability.
+                ...(hasTopDown ? { top_down_signals: topDownSignals } : {}),
               },
             },
           }),
@@ -9000,6 +9037,7 @@ export class AnalyzerOrchestrator {
         candidateCapabilities: candidateSnapshot,
         externalServices,
         flowGraph,
+        projectTextSignal,
         budgetMs,
       });
       if (extracted.length > 0) {
@@ -11378,6 +11416,7 @@ export class AnalyzerOrchestrator {
       suppliedPurposeType: enhancedSystemPurpose.primary_type,
       evidence_priority: [
         'productIdentity/productIdentityInstruction when present',
+        'readmeProductTitle and readmeProductOverview when present; the repo\'s own README title and opening statement of what it is are top-down product framing — authoritative for WHAT the product is built for',
         'manifestDescription when present; the repo\'s own self-description is authoritative product framing',
         'libraries — the declared dependencies are the strongest signal of what this IS (e.g. ccxt/web3/@triton-one/yellowstone-grpc => a crypto/DEX/blockchain system); infer the domain from them',
         'distinctiveEntities — the domain-specific data shapes that define the product (e.g. DexTrade/WhaleTransaction/OhlcvCandle/AssetAnalysis); PREFER these over generic User/Account/Portfolio/Strategy CRUD, which every app has and which the entry-route journeys over-emphasize',
@@ -11464,13 +11503,18 @@ export class AnalyzerOrchestrator {
   }
 
   private buildProjectTextInterpretationFacts(projectTextSignal: ProjectTextSignal): Record<string, unknown> {
-    if (!projectTextSignal.summary && projectTextSignal.concepts.length === 0) return {};
+    const hasReadmeFraming = Boolean(projectTextSignal.productDocTitle || projectTextSignal.productDocSummary);
+    if (!projectTextSignal.summary && projectTextSignal.concepts.length === 0 && !hasReadmeFraming) return {};
     return {
       // projectTextDomain (keyword-classified) omitted — the AI infers the domain
       // from real evidence, not from a pre-classified label. Raw text kept.
       projectTextConcepts: projectTextSignal.concepts.slice(0, 10),
       projectTextSummary: projectTextSignal.summary,
       projectTextEvidence: projectTextSignal.evidence.slice(0, 5),
+      // TOP-DOWN product framing (verbatim product-doc title/overview) — the
+      // product's own statement of what it is; authoritative for WHAT to describe.
+      ...(projectTextSignal.productDocTitle ? { readmeProductTitle: projectTextSignal.productDocTitle } : {}),
+      ...(projectTextSignal.productDocSummary ? { readmeProductOverview: projectTextSignal.productDocSummary } : {}),
       projectTextInstruction: 'Human-authored project text is product framing. Use it to choose emphasis, but keep every claim grounded in the structural facts.',
     };
   }
@@ -11879,6 +11923,35 @@ export class AnalyzerOrchestrator {
       break;
     }
 
+    // TOP-DOWN product framing: capture the product doc's own title + opening
+    // paragraph VERBATIM. This is what the authors say the product IS — the
+    // strongest top-down capability signal — and must reach the catalog prompt
+    // intact (mtg's PRD names the Commander game it hosts; a codebase-analysis
+    // tool's README never sells "access management"). Prefer README; fall back
+    // to an explicit product doc (PRD/PRODUCT/OVERVIEW) when no README frames the
+    // product. Agent-tooling docs (CLAUDE.md/AGENTS.md) are deliberately NOT in
+    // this list — they describe how to work ON the repo, not what the product is.
+    let productDocTitle: string | undefined;
+    let productDocSummary: string | undefined;
+    const PRODUCT_DOC_CANDIDATES = [
+      'README.md', 'README.mdx', 'readme.md',
+      'docs/README.md',
+      'PRD.md', 'docs/PRD.md',
+      'PRODUCT.md', 'docs/PRODUCT.md',
+      'OVERVIEW.md', 'docs/OVERVIEW.md',
+    ];
+    for (const docName of PRODUCT_DOC_CANDIDATES) {
+      const content = this.safeReadText(path.join(projectPath, docName), 16000);
+      if (!content) continue;
+      const framing = this.extractProductDocFraming(content);
+      if (framing.title || framing.summary) {
+        productDocTitle = framing.title;
+        productDocSummary = framing.summary;
+        if (!evidence.includes(docName)) evidence.push(docName);
+        break;
+      }
+    }
+
     for (const guideName of ['CLAUDE.md', 'AGENTS.md', 'KLAURO.md']) {
       const guidePath = path.join(projectPath, guideName);
       const content = this.safeReadText(guidePath, 30000);
@@ -11924,7 +11997,69 @@ export class AnalyzerOrchestrator {
     // vocabulary is kept as AI grounding.
     const concepts = this.inferConceptsFromProjectText(text);
 
-    return { primaryDomain: undefined, concepts, summary: undefined, evidence, manifestDescription };
+    return { primaryDomain: undefined, concepts, summary: undefined, evidence, manifestDescription, productDocTitle, productDocSummary };
+  }
+
+  /**
+   * TOP-DOWN product framing from a product doc (README/PRD/PRODUCT/OVERVIEW),
+   * extracted DETERMINISTICALLY (a Camp-B fact, like manifestDescription —
+   * verbatim human text, no interpretation). Returns the first markdown heading
+   * (the product's name/tagline) and the first substantive prose paragraph (its
+   * own statement of what it is/does). Skips badge/HTML/blockquote/code/table/
+   * bold-metadata/horizontal-rule noise so the summary is real product prose.
+   * Both fields are evidence-gated: undefined when the doc has no heading / no
+   * qualifying paragraph — never fabricated.
+   */
+  private extractProductDocFraming(content: string): { title?: string; summary?: string } {
+    const lines = String(content || '').replace(/\r\n/g, '\n').split('\n');
+    let title: string | undefined;
+    let summary: string | undefined;
+    const paragraph: string[] = [];
+    const isNoise = (line: string): boolean => {
+      const t = line.trim();
+      if (!t) return true;
+      // Badges/images/links-only, HTML tags, blockquotes, code fences, tables,
+      // list markers, and horizontal rules are not product-statement prose.
+      if (/^(!\[|<|>|```|\||---|===|\* \* \*|\*\*\*|___)/.test(t)) return true;
+      if (/^!?\[[^\]]*\]\([^)]*\)\s*$/.test(t)) return true; // pure badge/image line
+      if (/^(#{1,6}\s|[-*+]\s|\d+\.\s)/.test(t)) return true; // heading or list item
+      // Bold key:value front-matter metadata ("**Version:** 1.1", "**Status:**
+      // Draft") — document bookkeeping, not a statement of what the product is.
+      if (/^\*\*[^*]{1,40}:\*\*\s*\S/.test(t)) return true;
+      if (/^[A-Za-z][A-Za-z ]{1,30}:\s*\S{1,40}$/.test(t) && t.length < 60) return true;
+      return false;
+    };
+    for (let i = 0; i < lines.length && i < 200; i++) {
+      const raw = lines[i];
+      const t = raw.trim();
+      if (!title) {
+        const heading = t.match(/^#{1,6}\s+(.+?)\s*#*$/);
+        if (heading) {
+          const cleaned = heading[1].replace(/[`*_]/g, '').replace(/\[([^\]]+)\]\([^)]*\)/g, '$1').trim();
+          if (cleaned) title = cleaned.slice(0, 120);
+          continue;
+        }
+      }
+      // Accumulate the first real prose paragraph AFTER we've seen (or skipped) a title.
+      if (paragraph.length === 0 && isNoise(t)) continue;
+      if (paragraph.length > 0 && !t) break; // blank line ends the paragraph
+      if (isNoise(t) && paragraph.length === 0) continue;
+      if (!isNoise(t) || paragraph.length > 0) {
+        if (isNoise(t)) break;
+        paragraph.push(t);
+        if (paragraph.join(' ').length > 400) break;
+      }
+    }
+    if (paragraph.length > 0) {
+      summary = paragraph
+        .join(' ')
+        .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1') // markdown links -> text
+        .replace(/[`*_]/g, '')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 400);
+    }
+    return { title, summary };
   }
 
   private safeReadJson(filePath: string): any | null {
