@@ -1511,7 +1511,7 @@ export class AnalyzerOrchestrator {
     phaseStart = Date.now();
     const changeRiskSummary = this.buildChangeRiskSummary(changeRisks);
     const stabilitySummary = this.buildStabilitySummary(temporalStability);
-    const systemCapabilities = await this.buildSystemCapabilities(allEntryPoints, dataEntities, allNodes, allEdges, projectPath);
+    const { capabilities: systemCapabilities, behaviorSurfaces } = await this.buildSystemCapabilities(allEntryPoints, dataEntities, allNodes, allEdges, projectPath);
     await yieldToEventLoop();
     const systemPurpose = await this.inferSystemPurpose(allEntryPoints, dataEntities, systemCapabilities, allNodes);
     logTiming('pp_capabilities', phaseStart);
@@ -1885,6 +1885,13 @@ export class AnalyzerOrchestrator {
       temporal_stability: temporalStability.length > 0 ? temporalStability : undefined,
       stability_summary: stabilitySummary,
       system_capabilities: systemCapabilities.length > 0 ? systemCapabilities : undefined,
+      // SURFACES ARE NOT CAPABILITIES (docs/SEMANTIC-MODEL.md purpose test):
+      // registration/behavior surfaces (mcp_tool, rpc, command, event, message
+      // handler engines with no product-entity anchor) live here, structurally
+      // excluded from system_capabilities/top_capabilities ranking and from
+      // criticality — never core, never high/critical. Still fully navigable:
+      // each entry carries its own operations/entry-point evidence.
+      behavior_surfaces: behaviorSurfaces.length > 0 ? behaviorSurfaces : undefined,
       system_purpose: {
         ...systemPurpose,
         primary_type: enhancedSystemPurpose.primary_type,
@@ -2668,7 +2675,7 @@ export class AnalyzerOrchestrator {
     const behavioralInvariants = this.buildBehavioralInvariants(nodes, edges, entryPoints, databaseSchema, dataEntities, securityBoundaries, testSuites, projectPath);
     const behavioralInvariantSummary = this.buildBehavioralInvariantSummary(behavioralInvariants);
 
-    const systemCapabilities = await this.buildSystemCapabilities(entryPoints, dataEntities, nodes, edges, projectPath);
+    const { capabilities: systemCapabilities, behaviorSurfaces } = await this.buildSystemCapabilities(entryPoints, dataEntities, nodes, edges, projectPath);
     await yieldToEventLoop();
     const systemPurpose = await this.inferSystemPurpose(entryPoints, dataEntities, systemCapabilities, nodes);
 
@@ -2921,6 +2928,7 @@ export class AnalyzerOrchestrator {
       temporal_stability: temporalStability.length > 0 ? temporalStability : undefined,
       stability_summary: stabilitySummary,
       system_capabilities: systemCapabilities.length > 0 ? systemCapabilities : undefined,
+      behavior_surfaces: behaviorSurfaces.length > 0 ? behaviorSurfaces : undefined,
       system_purpose: {
         ...systemPurpose,
         primary_type: enhancedSystemPurpose.primary_type,
@@ -8753,6 +8761,75 @@ export class AnalyzerOrchestrator {
   }
 
   /**
+   * Evidence-richness ranking for the bounded candidate window handed to the AI
+   * capability catalog (candidate_route_areas). The window is small (24), so
+   * WHICH candidates reach the prompt decides which capabilities can survive
+   * the cut at all. Ranking is pure deterministic evidence — never a name/domain
+   * keyword judgement:
+   *   1. GROUNDED FIRST: candidates carrying related domain entities, or whose
+   *      subject terminology is corroborated by a user journey (top-down
+   *      route-area/journey vocabulary), outrank entity-less runtime anchors.
+   *   2. Then by entity count (domain-record grounding depth),
+   *   3. then by journey-corroboration count,
+   *   4. then by externally-invocable operation count (http/page/cli/... over
+   *      'internal'), raw operation count last — volume alone (a plumbing
+   *      family with hundreds of handlers) must never outrank grounding.
+   * Deterministic tie-break by name keeps the window stable run-to-run.
+   */
+  /**
+   * Light plural stem for terminology-token matching only ("inspections" must
+   * corroborate "inspection", "trips" ↔ "trip"). Pure grammar normalization —
+   * never touches labels or output, and carries no domain vocabulary.
+   */
+  private stemTerminologyToken(token: string): string {
+    if (token.length > 4 && token.endsWith('ies')) return `${token.slice(0, -3)}y`;
+    if (token.length > 5 && /(sh|ch|x|z|ss)es$/.test(token)) return token.slice(0, -2);
+    if (token.length > 4 && token.endsWith('s') && !token.endsWith('ss')) return token.slice(0, -1);
+    return token;
+  }
+
+  private rankCatalogPromptCandidates(
+    candidates: SystemCapability[],
+    userJourneys: CASUserJourney[],
+  ): SystemCapability[] {
+    // Journey SUBJECT tokens: the leading value-verb ("Manage"/"Track"/...) is
+    // capability-naming grammar, not terminology — without stripping it, every
+    // "Manage <X>" candidate would corroborate every "Manage <Y>" journey.
+    const journeyTokens = new Set<string>();
+    for (const journey of userJourneys) {
+      for (const token of String(journey.name || '')
+        .replace(/^\s*(provides?|surfaces?|tracks?|exposes?|manages?|monitors?|secures?|handles?|enforces?|settles?|delivers?|renders?|displays?|shows?|supports?|enables?|creates?|updates?|deletes?|views?)\s+/i, '')
+        .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+        .toLowerCase()
+        .split(/[^a-z0-9]+/)) {
+        if (token.length > 3 && !this.isGenericCapabilityToken(token)) journeyTokens.add(this.stemTerminologyToken(token));
+      }
+    }
+    const scored = candidates.map(candidate => {
+      const subjectTokens = `${candidate.structural_label || candidate.name} ${(candidate.related_domains || []).join(' ')}`
+        .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+        .toLowerCase()
+        .split(/[^a-z0-9]+/)
+        .filter(token => token.length > 3 && !this.isGenericCapabilityToken(token))
+        .map(token => this.stemTerminologyToken(token));
+      const journeyCorroboration = new Set(subjectTokens.filter(token => journeyTokens.has(token))).size;
+      const entityCount = (candidate.related_entities || []).length;
+      const externalOps = (candidate.operations || [])
+        .filter(operation => operation.entry_point_type && operation.entry_point_type !== 'internal').length;
+      return { candidate, grounded: entityCount > 0 || journeyCorroboration > 0 ? 0 : 1, entityCount, journeyCorroboration, externalOps };
+    });
+    return scored
+      .sort((a, b) =>
+        a.grounded - b.grounded ||
+        b.entityCount - a.entityCount ||
+        b.journeyCorroboration - a.journeyCorroboration ||
+        b.externalOps - a.externalOps ||
+        (b.candidate.operations || []).length - (a.candidate.operations || []).length ||
+        a.candidate.name.localeCompare(b.candidate.name))
+      .map(entry => entry.candidate);
+  }
+
+  /**
    * AI capability extraction: the capability catalog is an INTERPRETATION of the
    * deterministic facts (user journeys, entities, route areas, services), not a
    * route grouping. The deterministic capability detector only produces candidate
@@ -8794,7 +8871,20 @@ export class AnalyzerOrchestrator {
       .sort((left, right) => (right.fields?.length || 0) - (left.fields?.length || 0))
       .slice(0, 18)
       .map(entity => ({ name: entity.name, fields: (entity.fields || []).slice(0, 6).map(field => field.name) }));
-    const candidateAreas = input.candidateCapabilities.map(capability => capability.name).slice(0, 24);
+    // THE CUT (candidate window): the prompt receives a bounded candidate list
+    // (24 of possibly 150+ deterministic candidates). Taking the FIRST 24 of the
+    // criticality-sorted list systematically starved entity-rich domain
+    // candidates: entity-less runtime anchors (infra groups, high-op plumbing
+    // families) sort critical-first and monopolized the window, so genuine
+    // built-for route areas (dispatch/safety/fuel-style groups on a fleet
+    // platform) never even REACHED the AI. Rank the window by domain-evidence
+    // richness instead — related domain entities, journey-terminology
+    // corroboration, externally-invocable operations — so the candidates the
+    // purpose test cares about are the ones the catalog sees. Pure evidence
+    // ordering, never name keywords; the output cap (16) is unchanged.
+    const candidateAreas = this.rankCatalogPromptCandidates(input.candidateCapabilities, input.userJourneys || [])
+      .map(capability => capability.name)
+      .slice(0, 24);
     const services = (input.externalServices || []).slice(0, 12);
 
     // ---- TOP-DOWN EVIDENCE BUNDLE ----
@@ -9028,15 +9118,58 @@ export class AnalyzerOrchestrator {
       }
     }
 
+    // Grounding facts for the ungrounded-filler gate below. Journey references
+    // only ground a capability when they name REAL supplied journeys (the model
+    // sometimes invents journey strings, which must not count as evidence).
+    // Top-down corroboration = the capability's SUBJECT (name minus the leading
+    // value-verb, so the ubiquitous "Manage"/"Track" verbs corroborate nothing)
+    // appearing in the product's own words — README title/overview/manifest
+    // self-description or journey vocabulary. All evidence-derived; no
+    // capability-name keyword judgement.
+    const suppliedJourneyNames = new Set(
+      (input.userJourneys || []).map(journey => String(journey.name || '').toLowerCase().trim()).filter(Boolean));
+    const topDownCorroborationTokens = new Set<string>();
+    for (const text of [
+      String(topDownSignals.product_title || ''),
+      String(topDownSignals.product_overview || ''),
+      String(topDownSignals.product_self_description || ''),
+      (input.userJourneys || []).map(journey => String(journey.name || '')).join(' '),
+    ]) {
+      for (const token of text.replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase().split(/[^a-z0-9]+/)) {
+        if (token.length > 3 && !this.isGenericCapabilityToken(token)) topDownCorroborationTokens.add(this.stemTerminologyToken(token));
+      }
+    }
+    const subjectTokensOf = (capabilityName: string): string[] =>
+      String(capabilityName || '')
+        .replace(/^\s*(provides?|surfaces?|tracks?|exposes?|manages?|monitors?|secures?|handles?|enforces?|settles?|delivers?|renders?|displays?|shows?|supports?|enables?)\s+/i, '')
+        .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+        .toLowerCase()
+        .split(/[^a-z0-9]+/)
+        .filter(token => token.length > 3 && !this.isGenericCapabilityToken(token) && !GENERIC_CAPABILITY_NAME_TOKENS.has(token))
+        .map(token => this.stemTerminologyToken(token));
+
     for (let index = 0; index < staged.length; index++) {
       const { name, key, description, category, relatedEntities, journeys } = staged[index];
       const operations = opsByItemIndex.get(index) || [];
       const dedupedOps = Array.from(new Map(operations.map(op => [op.entry_point_id, op])).values()).slice(0, 12);
-      // Drop ungrounded filler: a supporting capability that resolved to NO entity
-      // and NO operation has zero evidence in the deterministic facts — it is a
-      // model guess ("Monitors System Health", "Secures Communication"), not a
-      // capability we can stand behind or let an agent navigate to.
-      if (category !== 'core' && relatedEntities.length === 0 && dedupedOps.length === 0) continue;
+      // Drop ungrounded filler: a capability that resolved to NO entity and NO
+      // operation has zero evidence in the deterministic facts — it is a model
+      // guess ("Monitors System Health", "Secures Communication"), not a
+      // capability we can stand behind or let an agent navigate to. The gate
+      // applies to category:'core' TOO — an AI-asserted "core" label is itself
+      // ungrounded output, so it cannot be the thing that exempts an item from
+      // the grounding check ("Manage pricing" shipped core with 0 entities and
+      // 0 journeys through exactly that hole). A 0-entity/0-operation CORE item
+      // survives only when it is genuinely journey-grounded (references a REAL
+      // supplied journey) or its subject is corroborated by the product's own
+      // top-down vocabulary (README/manifest/journey terminology).
+      if (relatedEntities.length === 0 && dedupedOps.length === 0) {
+        if (category !== 'core') continue;
+        const groundedJourneys = (Array.isArray(journeys) ? journeys : [])
+          .filter((value: unknown) => suppliedJourneyNames.has(String(value || '').toLowerCase().trim())).length;
+        const subjectCorroborated = subjectTokensOf(name).some(token => topDownCorroborationTokens.has(token));
+        if (groundedJourneys === 0 && !subjectCorroborated) continue;
+      }
       out.push({
         id: `capability_${key.replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '')}`,
         name,
@@ -9073,14 +9206,25 @@ export class AnalyzerOrchestrator {
    * Post-AI-catalog reconciliation — restores the deterministic guarantees the
    * catalog replacement (systemCapabilities.splice with the AI output) throws
    * away. The AI catalog reasons only from journeys + data entities, so on real
-   * hosted repos it: (1) DROPS behavior-surface flagships (Klauro's 207-tool MCP
-   * surface vanished), (2) ships INFRASTRUCTURE as capabilities ("Manages
-   * Restart sentinels", "Manages Runtime info"), and (3) emits verb-variant
-   * NEAR-DUPLICATES on one entity ("Provides analysis results" / "Surfaces
-   * analysis insights"). Prior fixes to buildBehaviorCapabilities / the dedup
-   * passes only ran on the DETERMINISTIC list and were verified with AI off, so
-   * they never touched the hosted (AI-on) output. This re-applies all three to
-   * the cataloged list.
+   * hosted repos it: (1) ships INFRASTRUCTURE as capabilities ("Manages Restart
+   * sentinels", "Manages Runtime info"), and (2) emits verb-variant NEAR-
+   * DUPLICATES on one entity ("Provides analysis results" / "Surfaces analysis
+   * insights"). Prior fixes to the dedup passes only ran on the DETERMINISTIC
+   * list and were verified with AI off, so they never touched the hosted
+   * (AI-on) output. This re-applies both to the cataloged list.
+   *
+   * FLAGSHIP RE-INJECTION REMOVED (was here as step (1) prior to the
+   * behavior-surfaces navigation tier): behavior-surface candidates
+   * (evidence_kind:'behavior-surface' — mcp_tool/rpc/command/event/message
+   * registration engines) now live exclusively in the separate
+   * `behavior_surfaces` CAS field (see buildSystemCapabilities), never in the
+   * `candidates` snapshot handed to the AI catalog and never re-injected into
+   * `system_capabilities`. Re-injecting them here would defeat the whole point
+   * of the navigation tier — they would again outrank real domain capabilities
+   * in top_capabilities via inflated criticality/operation counts. The `never
+   * re-inject a behavior-surface candidate` guard below is defense-in-depth
+   * for any caller that (incorrectly) hands this a surface as a `candidates`
+   * entry — it is filtered out, not promoted.
    */
   private reconcileCatalogedCapabilities(
     cataloged: SystemCapability[],
@@ -9088,40 +9232,11 @@ export class AnalyzerOrchestrator {
     dataEntities: CASDataEntity[],
   ): SystemCapability[] {
     const entityById = new Map(dataEntities.map(entity => [entity.id, entity]));
-    const result = [...cataloged];
+    // Defense-in-depth: a behavior-surface item must never enter the ranked
+    // catalog through this path, however it got into `cataloged`/`candidates`.
+    const result = [...cataloged].filter(capability => capability.evidence_kind !== 'behavior-surface');
 
-    // (1) FLAGSHIP RE-INJECTION. A deterministic candidate tagged
-    // evidence_kind:'behavior-surface' is a NAMED registration surface (mcp_tool
-    // / rpc / command registry) — a product behavior engine the entity/journey-
-    // driven catalog cannot see. Re-inject it unless the catalog already covers
-    // that SAME surface (a cataloged cap whose name/domain carries the surface's
-    // distinctive subject token). Entity overlap alone does NOT suppress: the
-    // whole point is that this engine is distinct from the entity-CRUD caps that
-    // happen to touch the same records.
-    const GENERIC_SURFACE_TOKENS = new Set(['surface', 'tool', 'tools', 'server', 'service', 'api', 'event', 'events', 'command', 'commands', 'message', 'messages', 'call', 'calls', 'handler', 'handlers']);
-    const distinctiveTokens = (capability: SystemCapability): Set<string> =>
-      new Set([capability.structural_label || capability.name, ...(capability.related_domains || [])]
-        .join(' ')
-        .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
-        .toLowerCase()
-        .split(/[^a-z0-9]+/)
-        .filter(token => token.length > 2 && !GENERIC_SURFACE_TOKENS.has(token)));
-    const catalogedTokenPool = new Set<string>();
-    for (const capability of cataloged) {
-      for (const token of distinctiveTokens(capability)) catalogedTokenPool.add(token);
-    }
-    for (const candidate of candidates) {
-      if (candidate.evidence_kind !== 'behavior-surface') continue;
-      const tokens = distinctiveTokens(candidate);
-      const alreadyCovered = tokens.size > 0 && [...tokens].some(token => catalogedTokenPool.has(token));
-      if (alreadyCovered) continue;
-      // Re-injected as a core capability with its deterministic structural label;
-      // description_source stays unset so the element-description AI pass writes
-      // its narrative (identical contract to the entity-anchored path).
-      result.push({ ...candidate, category: 'core' });
-    }
-
-    // (2) PURPOSE GATE. Drop capabilities whose ONLY anchors are runtime/
+    // (1) PURPOSE GATE. Drop capabilities whose ONLY anchors are runtime/
     // lifecycle-shaped entities with no product (persisted/api-response)
     // evidence — they fail the purpose test ("would this appear in a product
     // description?"). Evidence-gated on the entity's KIND + shape, never a
@@ -9134,7 +9249,7 @@ export class AnalyzerOrchestrator {
     // runtime/daemon repo), keep the original so agents still have targets.
     const gated = purposeGated.length > 0 ? purposeGated : result;
 
-    // (3) DEDUP. Re-run the name + entity-set dedup (with the strengthened
+    // (2) DEDUP. Re-run the name + entity-set dedup (with the strengthened
     // verb-variant pass) on the AI output — it never ran on the catalog.
     return this.dedupeSystemCapabilitiesByName(gated);
   }
@@ -9272,11 +9387,14 @@ export class AnalyzerOrchestrator {
     // replaces systemCapabilities in place, each linked back to its evidence.
     if (systemCapabilities.length > 0 || userJourneys.length > 0) {
       // Snapshot the DETERMINISTIC candidates BEFORE the AI replaces them. The
-      // deterministic pass has already applied entity-set dedup, the purpose
-      // gate, and behavior-surface derivation; the AI catalog (which reasons
-      // only from journeys/entities) discards all of that. reconcile re-applies
-      // those guarantees to the AI output and re-injects flagship behavior
-      // surfaces the catalog dropped — see reconcileCatalogedCapabilities.
+      // deterministic pass has already applied entity-set dedup and the
+      // purpose gate; the AI catalog (which reasons only from journeys/
+      // entities) discards all of that. reconcile re-applies those guarantees
+      // to the AI output — see reconcileCatalogedCapabilities. `systemCapabilities`
+      // here is domain capabilities ONLY: behavior surfaces (mcp_tool/rpc/
+      // command/event/message registration engines) were already routed into
+      // the separate `behaviorSurfaces` list by buildSystemCapabilities and
+      // never reach this candidate snapshot or the AI catalog prompt at all.
       const candidateSnapshot = systemCapabilities.map(capability => ({ ...capability }));
       const extracted = await this.aiExtractCapabilityCatalog({
         systemName,
@@ -15508,7 +15626,7 @@ export class AnalyzerOrchestrator {
     nodes: CASNode[],
     edges: CASEdge[],
     projectPath?: string
-  ): Promise<SystemCapability[]> {
+  ): Promise<{ capabilities: SystemCapability[]; behaviorSurfaces: SystemCapability[] }> {
     // Event-loop hygiene: this pass was the single worst measured stall on a
     // whale re-analysis (6.7s sync on a 76k-node repo — product-path minimatch
     // per node plus per-group criticality/terminal scans). The budget yields
@@ -15700,10 +15818,20 @@ export class AnalyzerOrchestrator {
       productDataEntities,
       projectPath
     );
+    // SURFACES ARE NOT CAPABILITIES (docs/SEMANTIC-MODEL.md purpose test): a
+    // behavior surface (mcp_tool / rpc / command / event / message registration
+    // engine) that genuinely overlaps an existing entity-anchored capability's
+    // records still MERGES into it, deepening that real domain capability's
+    // evidence. A surface that does NOT overlap anything stands on its own as
+    // pure navigation — it goes to `behaviorSurfaces`, never into the ranked
+    // `capabilities` list. This is what keeps "Command Surface" / "Event
+    // Subscriber Surface" / "Message Handler Surface" out of top_capabilities
+    // while remaining fully browsable via the separate behavior_surfaces field.
+    const behaviorSurfaces: SystemCapability[] = [];
     for (const candidate of behaviorCapabilities) {
       await maybeYield();
       if (this.mergeBehaviorCapabilityIntoExisting(candidate, capabilities)) continue;
-      capabilities.push({
+      behaviorSurfaces.push({
         ...candidate,
         id: nextCapabilityId(candidate),
       });
@@ -15739,7 +15867,7 @@ export class AnalyzerOrchestrator {
       : [];
     const capabilitiesToSort = sortedCapabilities.length > 0 ? sortedCapabilities : fallbackCapabilities;
 
-    return capabilitiesToSort.sort((a, b) => {
+    const finalCapabilities = capabilitiesToSort.sort((a, b) => {
       const critOrder = { critical: 0, high: 1, medium: 2, low: 3 };
       return this.klauroSelfCapabilityPriority(projectPath, a) - this.klauroSelfCapabilityPriority(projectPath, b) ||
         this.capabilityPurposeBias(primaryDomain, a) - this.capabilityPurposeBias(primaryDomain, b) ||
@@ -15748,6 +15876,7 @@ export class AnalyzerOrchestrator {
         b.operations.length - a.operations.length ||
         a.name.localeCompare(b.name);
     });
+    return { capabilities: finalCapabilities, behaviorSurfaces };
   }
 
   private buildRepositoryFallbackCapabilities(
@@ -16931,9 +17060,14 @@ export class AnalyzerOrchestrator {
         : `${kindLabel} Surface`;
 
       const total = entries.length;
+      // Surfaces live in behavior_surfaces, not system_capabilities, and must
+      // never masquerade as a domain capability's urgency: criticality is
+      // capped at 'medium' (never high/critical) regardless of registration
+      // volume. A 200-tool MCP surface is navigationally important but is not
+      // a product purpose, so it may not outrank/out-criticality real domain
+      // capabilities anywhere a caller sorts on criticality.
       const criticality: SystemCapability['criticality'] =
-        total >= AnalyzerOrchestrator.BEHAVIOR_SURFACE_MIN_ENTRIES * 2 ? 'critical' :
-        total >= AnalyzerOrchestrator.BEHAVIOR_SURFACE_MIN_ENTRIES ? 'high' : 'medium';
+        total >= AnalyzerOrchestrator.BEHAVIOR_SURFACE_MIN_ENTRIES ? 'medium' : 'low';
       const exampleNames = entries.slice(0, 3)
         .map(({ ep }) => String(ep.trigger?.event || ep.name || '').trim())
         .filter(Boolean);
@@ -16968,16 +17102,23 @@ export class AnalyzerOrchestrator {
           attempted: false,
           generated_at: new Date().toISOString(),
         },
-        category: 'core',
+        // Surfaces are navigation, not purpose: 'internal' is structurally
+        // excluded from the ranked/core catalog everywhere a caller filters on
+        // category (see query.ts top_capabilities, which already drops
+        // category:'internal'). Never 'core' — see reconcileCatalogedCapabilities
+        // and buildSystemCapabilities, which route standalone surface candidates
+        // into the separate behavior_surfaces list rather than system_capabilities.
+        category: 'internal',
         operations,
         related_entities: relatedEntities.map(entity => entity.id),
         related_domains: [prefix || surface.kind.replace(/_/g, '-')],
         criticality,
         // A NAMED registration surface (mcp_tool / rpc / command registry) with
         // its own registration node type is a product behavior engine the
-        // journey/entity-driven AI catalog systematically misses. Tag it so the
-        // post-catalog reconciliation re-injects it when the AI drops it (the
-        // flagship-capability guarantee — e.g. Klauro's 207-tool MCP surface).
+        // journey/entity-driven AI catalog systematically misses. Tag it so
+        // buildSystemCapabilities routes it into the separate `behavior_surfaces`
+        // CAS field (never system_capabilities/top_capabilities) instead of
+        // merging it into an existing entity-anchored capability.
         evidence_kind: surface.kindEvidence === 'registration' ? 'behavior-surface' : undefined,
         criticality_factors: [
           `${total} ${surface.kind} entry points form one cohesive behavior ${prefix ? `family ('${prefix}')` : 'surface'}`,
@@ -17083,9 +17224,6 @@ export class AnalyzerOrchestrator {
     }
     if (!best) return false;
 
-    const criticalityRank: Record<SystemCapability['criticality'], number> = {
-      critical: 4, high: 3, medium: 2, low: 1,
-    };
     best.operations = this.uniqueCapabilityOperations([
       ...best.operations,
       ...candidate.operations,
@@ -17098,12 +17236,13 @@ export class AnalyzerOrchestrator {
       ...best.related_domains,
       ...candidate.related_domains,
     ]));
-    if (criticalityRank[candidate.criticality] > criticalityRank[best.criticality]) {
-      best.criticality = candidate.criticality;
-    }
-    if (best.category !== 'core' && candidate.category === 'core') {
-      best.category = 'core';
-    }
+    // CRITICALITY/CATEGORY ARE NEVER BOOSTED BY A MERGED SURFACE. `candidate`
+    // here is always a behavior-surface-family output of buildBehaviorCapabilities
+    // (never core/high-or-critical since that change); a real domain
+    // capability's criticality and category must continue to derive purely
+    // from its OWN evidence, not from a registration surface that happens to
+    // reach the same records. Only operations/entities/domains — genuine
+    // additional evidence — are unioned in.
     best.criticality_factors = Array.from(new Set([
       ...best.criticality_factors,
       ...candidate.criticality_factors,

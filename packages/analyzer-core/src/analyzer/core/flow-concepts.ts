@@ -2433,7 +2433,20 @@ function buildTerminalFlows(
   const maxFunctions = opts.maxFunctionsPerFlow && opts.maxFunctionsPerFlow > 0 ? opts.maxFunctionsPerFlow : DEFAULT_MAX_FUNCTIONS;
 
   const nodesById = new Map(cas.nodes.map(n => [n.id, n]));
-  const capabilities = cas.system_capabilities || [];
+  // COVERAGE DECISION (flows_to_capabilities invariant): behavior surfaces
+  // moved out of system_capabilities into the behavior_surfaces navigation
+  // tier (SURFACES ARE NOT CAPABILITIES — docs/SEMANTIC-MODEL.md), but a flow
+  // rooted at a surface-registered entry point (a command handler, an event
+  // subscriber, an MCP tool) is still genuinely OWNED by that surface for
+  // navigation. Deriving relationships against capabilities-only would strand
+  // every such flow (capability_relationships: []) and crater
+  // flows_to_capabilities on registration-heavy repos — an artifact of the
+  // tier split, not a real coverage loss. Surfaces therefore stay in the
+  // relationship-derivation pool: a surface-anchored link satisfies the
+  // coverage invariant (capability_id may reference a behavior_surfaces
+  // entry), while ranking/summary consumers stay surface-free because those
+  // read system_capabilities directly.
+  const capabilities = [...(cas.system_capabilities || []), ...(cas.behavior_surfaces || [])];
   const entryHandlerNodeIdByEpId = buildEntryHandlerNodeIdByEpId(cas);
   const exitPointsByNode = buildExitPointIndex(cas);
   const lineageByNode = buildLineageIndex(cas);
@@ -2810,7 +2823,20 @@ function computeEntryPointFlows(
   const maxFunctions = opts.maxFunctionsPerFlow && opts.maxFunctionsPerFlow > 0 ? opts.maxFunctionsPerFlow : DEFAULT_MAX_FUNCTIONS;
 
   const nodesById = new Map(cas.nodes.map(n => [n.id, n]));
-  const capabilities = cas.system_capabilities || [];
+  // COVERAGE DECISION (flows_to_capabilities invariant): behavior surfaces
+  // moved out of system_capabilities into the behavior_surfaces navigation
+  // tier (SURFACES ARE NOT CAPABILITIES — docs/SEMANTIC-MODEL.md), but a flow
+  // rooted at a surface-registered entry point (a command handler, an event
+  // subscriber, an MCP tool) is still genuinely OWNED by that surface for
+  // navigation. Deriving relationships against capabilities-only would strand
+  // every such flow (capability_relationships: []) and crater
+  // flows_to_capabilities on registration-heavy repos — an artifact of the
+  // tier split, not a real coverage loss. Surfaces therefore stay in the
+  // relationship-derivation pool: a surface-anchored link satisfies the
+  // coverage invariant (capability_id may reference a behavior_surfaces
+  // entry), while ranking/summary consumers stay surface-free because those
+  // read system_capabilities directly.
+  const capabilities = [...(cas.system_capabilities || []), ...(cas.behavior_surfaces || [])];
   const entryHandlerNodeIdByEpId = buildEntryHandlerNodeIdByEpId(cas);
 
   const realEntryPoints = cas.entry_points || [];

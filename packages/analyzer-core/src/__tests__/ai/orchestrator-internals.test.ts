@@ -743,7 +743,7 @@ describe('architecture and capability inference', () => {
       relationships: [],
     } as any];
 
-    const capabilities = await orch.buildSystemCapabilities([], entities, nodes, edges);
+    const { capabilities } = await orch.buildSystemCapabilities([], entities, nodes, edges);
 
     // The deterministic structural_label carries the "<Domain> Settlement"
     // grammar; the display name is the terminal-grounded subject ("Invoice")
@@ -775,7 +775,7 @@ describe('architecture and capability inference', () => {
       { id: 'e1', source: 'transaction-service', target: 'transaction-method', type: 'calls' },
     ];
 
-    const capabilities = await orch.buildSystemCapabilities([], [], nodes, edges);
+    const { capabilities } = await orch.buildSystemCapabilities([], [], nodes, edges);
     const labels = capabilities.map((capability: any) => capability.structural_label);
     const names = capabilities.map((capability: any) => capability.name);
     const relatedDomains = capabilities.map((capability: any) => capability.related_domains).flat();
@@ -801,7 +801,7 @@ describe('architecture and capability inference', () => {
       { id: 'e1', source: 'invoice-service', target: 'invoice-method', type: 'calls' },
     ];
 
-    const capabilities = await orch.buildSystemCapabilities([], [], nodes, edges);
+    const { capabilities } = await orch.buildSystemCapabilities([], [], nodes, edges);
     const domains = capabilities.map((capability: any) => capability.related_domains).flat();
     const labels = capabilities.map((capability: any) => capability.structural_label);
     const names = capabilities.map((capability: any) => capability.name);
@@ -825,7 +825,7 @@ describe('architecture and capability inference', () => {
       { id: 'e1', source: 'wallet', target: 'balance', type: 'calls' },
     ];
 
-    const capabilities = await orch.buildSystemCapabilities([], [], nodes, edges);
+    const { capabilities } = await orch.buildSystemCapabilities([], [], nodes, edges);
     const names = capabilities.map((capability: any) => capability.name);
 
     expect(names).toContain('Token Balance Discovery');
@@ -856,7 +856,7 @@ describe('architecture and capability inference', () => {
       relationships: [],
     } as any];
 
-    const capabilities = await orch.buildSystemCapabilities([], entities, nodes, edges);
+    const { capabilities } = await orch.buildSystemCapabilities([], entities, nodes, edges);
     const labels = capabilities.map((capability: any) => capability.structural_label);
     const names = capabilities.map((capability: any) => capability.name);
 
@@ -880,7 +880,7 @@ describe('architecture and capability inference', () => {
       { id: 'e1', source: 'loc-service', target: 'loc-method', type: 'calls' },
     ];
 
-    const capabilities = await orch.buildSystemCapabilities([], [], nodes, edges);
+    const { capabilities } = await orch.buildSystemCapabilities([], [], nodes, edges);
     const labels = capabilities.map((capability: any) => capability.structural_label);
     const names = capabilities.map((capability: any) => capability.name);
     const domains = capabilities.flatMap((capability: any) => capability.related_domains);
@@ -908,7 +908,7 @@ describe('architecture and capability inference', () => {
     ];
 
     try {
-      const capabilities = await orch.buildSystemCapabilities([], [], nodes, [], klauroRoot);
+      const { capabilities } = await orch.buildSystemCapabilities([], [], nodes, [], klauroRoot);
       const names = capabilities.map((capability: any) => capability.name);
 
       expect(names).toEqual(expect.arrayContaining(['Agent Context', 'Runtime Telemetry', 'Proposal Preview']));
@@ -950,7 +950,7 @@ describe('architecture and capability inference', () => {
     ];
 
     try {
-      const capabilities = await orch.buildSystemCapabilities([], entities, nodes, edges, foreignRoot);
+      const { capabilities } = await orch.buildSystemCapabilities([], entities, nodes, edges, foreignRoot);
       const names = capabilities.map((capability: any) => capability.name);
 
       expect(names.length).toBeGreaterThan(0);
@@ -1027,10 +1027,10 @@ describe('architecture and capability inference', () => {
       lifecycle: { created_by: ['work-orders-create-action'], read_by: [], updated_by: [], deleted_by: [] },
     } as any];
 
-    const withoutProject = await orch.buildSystemCapabilities(entryPoints, entities, nodes, []);
+    const { capabilities: withoutProject } = await orch.buildSystemCapabilities(entryPoints, entities, nodes, []);
     expect(withoutProject.flatMap((capability: any) => capability.operations.map((op: any) => op.entry_point_type))).not.toContain('http');
 
-    const capabilities = await orch.buildSystemCapabilities(entryPoints, entities, nodes, [], projectRoot);
+    const { capabilities } = await orch.buildSystemCapabilities(entryPoints, entities, nodes, [], projectRoot);
     const routeCapability = capabilities.find((capability: any) =>
       capability.operations.some((op: any) => op.entry_point_type === 'http')
     );
@@ -1390,7 +1390,7 @@ describe('architecture and capability inference', () => {
       node({ id: 'product-page', name: 'ProductPage', type: 'component', source: { file: 'src/app/product/page.tsx' } }),
       node({ id: 'company-page', name: 'CompanyPage', type: 'component', source: { file: 'src/app/company/page.tsx' } }),
     ];
-    const capabilities = await orch.buildSystemCapabilities([productPage, companyPage] as any, [], nodes, []);
+    const { capabilities } = await orch.buildSystemCapabilities([productPage, companyPage] as any, [], nodes, []);
     const domains = capabilities.map((capability: any) => capability.related_domains).flat();
 
     expect(domains).toEqual(expect.arrayContaining(['product', 'company']));
@@ -1465,7 +1465,7 @@ describe('architecture and capability inference', () => {
       },
     ];
 
-    const capabilities = await orch.buildSystemCapabilities(entryPoints as any, [], nodes, [], '/tmp/soon-ui');
+    const { capabilities } = await orch.buildSystemCapabilities(entryPoints as any, [], nodes, [], '/tmp/soon-ui');
     const names = capabilities.map((capability: any) => capability.name);
     const labels = capabilities.map((capability: any) => capability.structural_label);
     const approvalCapability = capabilities.find((capability: any) => /approval/i.test(capability.name));
@@ -2195,7 +2195,7 @@ describe('architecture and capability inference', () => {
       relationships: [],
     } as any];
 
-    const capabilities = await orch.buildSystemCapabilities([], entities, nodes, []);
+    const { capabilities } = await orch.buildSystemCapabilities([], entities, nodes, []);
     const names = capabilities.map((capability: any) => capability.name);
     const labels = capabilities.map((capability: any) => capability.structural_label);
 
@@ -2306,7 +2306,7 @@ variable "allowed_ip_range" { type = string }
         'aws_s3_bucket_policy',
       ]));
 
-      const capabilities = await orch.buildSystemCapabilities(contribution.entry_points || [], [], nodes, edges, root);
+      const { capabilities } = await orch.buildSystemCapabilities(contribution.entry_points || [], [], nodes, edges, root);
       expect(capabilities.map((capability: any) => capability.name)).toEqual(expect.arrayContaining([
         'Object Storage',
       ]));
@@ -2357,7 +2357,7 @@ variable "allowable_ip_range" { type = string }
     try {
       const analyzer = new TerraformAnalyzer();
       const contribution = await analyzer.analyze({ projectPath: root, config: {} } as any);
-      const capabilities = await orch.buildSystemCapabilities(contribution.entry_points || [], [], contribution.nodes || [], contribution.edges || [], root);
+      const { capabilities } = await orch.buildSystemCapabilities(contribution.entry_points || [], [], contribution.nodes || [], contribution.edges || [], root);
       const names = capabilities.map((capability: any) => capability.name);
 
       expect(names).toEqual(expect.arrayContaining([
@@ -3836,7 +3836,16 @@ describe('capability hygiene: post-AI-catalog reconciliation (real hosted-CAS de
     lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] },
   });
 
-  it('FLAGSHIP: re-injects a behavior-surface candidate the AI catalog dropped (Klauro 207-tool MCP surface)', async () => {
+  it('SURFACES ARE NOT CAPABILITIES: a behavior-surface candidate is never re-injected into the ranked catalog, even if the AI dropped it', async () => {
+    // Prior to the behavior_surfaces navigation tier, reconcile used to
+    // re-inject a dropped surface as a 'core' capability (the "flagship"
+    // countermeasure) — that inflated criticality/operation counts crowded
+    // out real domain capabilities in top_capabilities (the truckspy bug:
+    // "Command Surface" / "Event Subscriber Surface" outranking "Manage
+    // trips"). Surfaces now live exclusively in `behavior_surfaces`
+    // (buildSystemCapabilities), never in the candidate snapshot fed here —
+    // this test guards the defense-in-depth filter for a caller that hands
+    // one in anyway.
     const cataloged = [
       cap({ name: 'Surfaces codebase analysis results', category: 'core', criticality: 'high', related_entities: ['Codebase'] }),
       cap({ name: 'Provides codebase analysis results', category: 'core', criticality: 'high', related_entities: ['AnalysisResult'] }),
@@ -3848,22 +3857,21 @@ describe('capability hygiene: post-AI-catalog reconciliation (real hosted-CAS de
       related_domains: ['mcp-tool'], description_source: undefined,
     });
     const out = orch.reconcileCatalogedCapabilities(cataloged, [behaviorCandidate], []);
-    const surface = out.find((c: any) => c.evidence_kind === 'behavior-surface');
-    expect(surface).toBeDefined();
-    expect(surface.name).toBe('Mcp Tool Surface');
-    // The surface must NOT swallow the entity-anchored Codebase capability whose
-    // records its handlers incidentally reach.
+    expect(out.some((c: any) => c.evidence_kind === 'behavior-surface')).toBe(false);
+    expect(out.some((c: any) => c.name === 'Mcp Tool Surface')).toBe(false);
+    // The real entity-anchored domain capabilities are untouched.
     expect(out.some((c: any) => c.name === 'Surfaces codebase analysis results')).toBe(true);
+    expect(out.some((c: any) => c.name === 'Provides codebase analysis results')).toBe(true);
   });
 
-  it('FLAGSHIP: does NOT re-inject when the catalog already covers that surface subject', async () => {
-    const cataloged = [cap({ name: 'Exposes MCP tools to agents', category: 'core', related_entities: ['Codebase'], related_domains: ['mcp-tool'] })];
-    const behaviorCandidate = cap({
-      name: 'Mcp Tool Surface', structural_label: 'Mcp Tool Surface',
-      category: 'core', evidence_kind: 'behavior-surface', related_domains: ['mcp-tool'],
-    });
-    const out = orch.reconcileCatalogedCapabilities(cataloged, [behaviorCandidate], []);
-    expect(out.filter((c: any) => /mcp/i.test(c.name))).toHaveLength(1); // no duplicate surface
+  it('SURFACES ARE NOT CAPABILITIES: a behavior-surface entry in `cataloged` itself is filtered out, not merely left alone', async () => {
+    const cataloged = [
+      cap({ name: 'Mcp Tool Surface', category: 'core', criticality: 'critical', evidence_kind: 'behavior-surface', related_domains: ['mcp-tool'] }),
+      cap({ name: 'Exposes MCP tools to agents', category: 'core', related_entities: ['Codebase'], related_domains: ['mcp-tool'] }),
+    ];
+    const out = orch.reconcileCatalogedCapabilities(cataloged, [], []);
+    expect(out.some((c: any) => c.evidence_kind === 'behavior-surface')).toBe(false);
+    expect(out.filter((c: any) => /mcp/i.test(c.name))).toHaveLength(1);
   });
 
   it('PURPOSE GATE: drops infra/runtime-only capabilities, keeps product ones (openclaw)', async () => {
@@ -4208,8 +4216,13 @@ describe('behavior-anchored capability derivation (buildBehaviorCapabilities)', 
     // Awaiting-AI naming contract: placeholder name, no name_source yet.
     expect(capability.name_source).toBeUndefined();
     expect(capability.name_generation?.reason).toBe('awaiting-ai-comprehension');
-    expect(capability.category).toBe('core');
-    expect(capability.criticality).toBe('high');
+    // SURFACES ARE NOT CAPABILITIES: buildBehaviorCapabilities output is
+    // never 'core' and criticality is capped at 'medium' — it is routed into
+    // the separate behavior_surfaces navigation tier by buildSystemCapabilities,
+    // never system_capabilities/top_capabilities, so it can never outrank or
+    // out-criticality a real domain capability.
+    expect(capability.category).toBe('internal');
+    expect(capability.criticality).toBe('medium');
     expect(capability.operations.length).toBeGreaterThan(0);
     expect(capability.operations.every((operation: any) => operation.entry_point_type === 'message')).toBe(true);
   });
@@ -4299,8 +4312,14 @@ describe('behavior-anchored capability derivation (buildBehaviorCapabilities)', 
     expect(merged).toBe(true);
     expect(capabilities).toHaveLength(1);
     expect(entityCapability.operations.length).toBeGreaterThan(0);
-    expect(entityCapability.criticality).toBe('medium');
-    expect(entityCapability.category).toBe('core');
+    // CRITICALITY/CATEGORY ARE NEVER BOOSTED BY A MERGED SURFACE (docs/
+    // SEMANTIC-MODEL.md purpose test + the criticality invariant): the
+    // merged-in surface candidate contributes operations/entities/domains
+    // ONLY. entityCapability's own criticality/category — its real evidence —
+    // is unchanged by absorbing a surface whose handlers happen to reach the
+    // same records.
+    expect(entityCapability.criticality).toBe('low');
+    expect(entityCapability.category).toBe('supporting');
   });
 
   it('exercises count restraint: no behavior capability from small or prefix-less surfaces, hard cap overall', async () => {
@@ -4321,21 +4340,29 @@ describe('behavior-anchored capability derivation (buildBehaviorCapabilities)', 
     expect(capabilities).toHaveLength(0);
   });
 
-  it('surfaces behavior capabilities through buildSystemCapabilities end-to-end', async () => {
+  it('surfaces behavior capabilities into behavior_surfaces (not system_capabilities) through buildSystemCapabilities end-to-end', async () => {
     const toolNames = [
       'get_summary', 'get_call_chain', 'search_nodes', 'semantic_search',
       'analyze_codebase', 'get_route_table', 'get_entry_points', 'get_data_entities',
       'assess_change_risk', 'plan_parallel_work', 'get_coding_context', 'get_erd',
     ];
     const fixtures = toolNames.map((name, index) => mcpToolEntry(name, index));
-    const capabilities = await localOrch.buildSystemCapabilities(
+    const { capabilities, behaviorSurfaces } = await localOrch.buildSystemCapabilities(
       fixtures.map(fixture => fixture.entry),
       [],
       fixtures.map(fixture => fixture.node),
       []
     );
-    const labels = capabilities.map((capability: any) => capability.structural_label || capability.name);
-    expect(labels.some((label: string) => /Mcp Tool.*Surface/i.test(label))).toBe(true);
+    // SURFACES ARE NOT CAPABILITIES: the standalone (unmerged) MCP-tool
+    // registration surface lands in behaviorSurfaces, never in the ranked
+    // `capabilities` list — this is what keeps it out of top_capabilities.
+    const domainLabels = capabilities.map((capability: any) => capability.structural_label || capability.name);
+    expect(domainLabels.some((label: string) => /Mcp Tool.*Surface/i.test(label))).toBe(false);
+    const surfaceLabels = behaviorSurfaces.map((surface: any) => surface.structural_label || surface.name);
+    expect(surfaceLabels.some((label: string) => /Mcp Tool.*Surface/i.test(label))).toBe(true);
+    const surface = behaviorSurfaces.find((s: any) => /Mcp Tool.*Surface/i.test(s.structural_label || s.name));
+    expect(surface.category).toBe('internal');
+    expect(['medium', 'low']).toContain(surface.criticality);
   });
 });
 
@@ -4474,6 +4501,69 @@ describe('top-down capability evidence (C2)', () => {
       });
       const bareCtx = captured[captured.length - 1].additionalContext;
       expect(bareCtx.facts.top_down_signals).toBeUndefined();
+    } finally {
+      (aiService as any).generateComponentDescription = original;
+    }
+  });
+
+  it('THE CUT: entity-rich domain candidates outrank entity-less high-volume anchors in the bounded prompt window', () => {
+    // Live truckspy: 186 candidates -> a 24-name window taken in criticality-
+    // sorted order, so entity-less runtime anchors (huge operation counts)
+    // monopolized the window and dispatch/safety/fuel-style entity-rich route
+    // areas never reached the AI catalog at all.
+    const mkOps = (n: number) => Array.from({ length: n }, (_, i) => ({
+      entry_point_id: `ep_${i}`, entry_point_type: 'http', action: 'Handle', path_or_command: `/x/${i}`,
+    }));
+    const internalOps = (n: number) => Array.from({ length: n }, (_, i) => ({
+      entry_point_id: `node:n_${i}`, entry_point_type: 'internal', action: 'Coordinate', path_or_command: `src/n_${i}.ts`,
+    }));
+    const entityRich = { name: 'Dispatch Resource Management', related_entities: ['entity_booking', 'entity_stop', 'entity_trip'], related_domains: ['dispatch'], operations: mkOps(4) };
+    const journeyCorroborated = { name: 'Inspection Resource Management', related_entities: [], related_domains: ['inspection'], operations: mkOps(2) };
+    const entitylessAnchor = { name: 'Runtime Coordination', related_entities: [], related_domains: ['runtime'], operations: internalOps(200) };
+    const journeys = [{ name: 'Create inspection report' }] as any[];
+    const ranked = orch.rankCatalogPromptCandidates(
+      [entitylessAnchor, journeyCorroborated, entityRich] as any[],
+      journeys
+    ).map((candidate: any) => candidate.name);
+    // Grounded candidates (entities or journey-terminology corroboration)
+    // strictly precede the entity-less anchor, whatever its operation volume.
+    expect(ranked.indexOf('Dispatch Resource Management')).toBeLessThan(ranked.indexOf('Runtime Coordination'));
+    expect(ranked.indexOf('Inspection Resource Management')).toBeLessThan(ranked.indexOf('Runtime Coordination'));
+    // Entity grounding outranks journey-only grounding.
+    expect(ranked.indexOf('Dispatch Resource Management')).toBeLessThan(ranked.indexOf('Inspection Resource Management'));
+  });
+
+  it('UNGROUNDED-FILLER GATE: an AI-asserted "core" item with 0 entities, 0 operations, and 0 real journeys is dropped ("Manage pricing"), while a top-down-corroborated one survives', async () => {
+    const original = (aiService as any).generateComponentDescription;
+    (aiService as any).generateComponentDescription = async () => JSON.stringify({
+      capabilities: [
+        // The live truckspy escape: category:'core' used to bypass the gate entirely.
+        { name: 'Manage pricing', description: 'Maintains pricing records, rate decisions, and billing adjustments for operators.', category: 'core', entities: [], journeys: [] },
+        // Fabricated journey strings must not count as journey grounding.
+        { name: 'Coordinate partners', description: 'Coordinates partner onboarding workflows and partner account decisions end to end.', category: 'core', entities: [], journeys: ['Totally invented journey'] },
+        // Entity-grounded core item survives as before.
+        { name: 'Manage trips', description: 'Tracks Trip records from booking through completion for dispatch operators.', category: 'core', entities: ['Trip'], journeys: [] },
+        // 0-entity/0-op core item whose SUBJECT is corroborated by a real
+        // journey's vocabulary (top-down terminology) survives — the RAISE force.
+        { name: 'Manage inspections', description: 'Owns inspection reports and their review workflow decisions for fleet compliance.', category: 'core', entities: [], journeys: [] },
+      ],
+    });
+    try {
+      const catalog = await orch.aiExtractCapabilityCatalog({
+        systemName: 'fleet',
+        enhancedSystemPurpose: { primary_domain: 'fleet', core_concepts: [] },
+        frameworks: [],
+        userJourneys: [{ name: 'Create inspection report' }] as any[],
+        dataEntities: [{ id: 'entity_trip', name: 'Trip' }] as any[],
+        candidateCapabilities: [],
+        externalServices: [], flowGraph: { capabilities: [] } as any,
+        projectTextSignal: { concepts: [], evidence: [] } as any, budgetMs: 30000,
+      });
+      const names = catalog.map((capability: any) => capability.name);
+      expect(names).not.toContain('Manage pricing');
+      expect(names).not.toContain('Coordinate partners');
+      expect(names).toContain('Manage trips');
+      expect(names).toContain('Manage inspections');
     } finally {
       (aiService as any).generateComponentDescription = original;
     }

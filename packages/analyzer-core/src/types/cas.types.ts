@@ -73,6 +73,20 @@ export interface CASOutput {
   temporal_stability?: CASTemporalStability[];
   stability_summary?: CASStabilitySummary;
   system_capabilities?: SystemCapability[];
+  /**
+   * Navigation tier for behavior/registration surfaces (mcp_tool / rpc /
+   * command / event / message-handler engines with no product-entity anchor
+   * — see buildBehaviorCapabilities in orchestrator.ts). SURFACES ARE NOT
+   * CAPABILITIES (docs/SEMANTIC-MODEL.md purpose test): a surface is
+   * structurally excluded from system_capabilities/top_capabilities ranking,
+   * always category:'internal', and criticality is capped at 'medium' so it
+   * can never boost or outrank a domain capability's urgency. Still fully
+   * navigable — each entry carries its own operations/entry-point evidence,
+   * just as a SystemCapability does. A surface that genuinely overlaps a
+   * real domain capability's entities is merged INTO that capability instead
+   * of appearing here (mergeBehaviorCapabilityIntoExisting).
+   */
+  behavior_surfaces?: SystemCapability[];
   system_purpose?: SystemPurpose;
 
   workflows?: CASWorkflow[];
