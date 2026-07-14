@@ -171,3 +171,82 @@ describe('computeFlowConcepts — union of terminal + dead-end entry flows', () 
     if (untouched) expect(untouched.description_source).toBe('deterministic-label');
   });
 });
+
+/**
+ * SIGNIFICANCE-FIRST WINDOW ORDER (flow-entity starvation): when the CAS has
+ * no entry-to-exit chains and entry_points is dominated by test suites, the
+ * maxFlows window must prefer product roots — real non-test entries first,
+ * then synthesized capability-operation roots — over test entries, instead of
+ * slicing raw array order (which filled the whole window with test roots that
+ * have no forward reach, starving flow entities and every capability role).
+ */
+describe('computeFlowConcepts — significance-first maxFlows window', () => {
+  function buildTestCrowdedCas(): CASOutput {
+    const nodes: CASNode[] = [
+      // 30 test-suite roots FIRST in the array (raw order would fill a small window).
+      ...Array.from({ length: 30 }, (_, i) =>
+        node({ id: `n_test_${i}`, name: `TestSuite${i}`, type: 'test' })),
+      // A real (non-test) message entry, listed AFTER all the tests.
+      node({ id: 'n_consumer', name: 'onOrderPlaced', type: 'handler', category: 'entry' }),
+      node({ id: 'n_project', name: 'projectOrder', type: 'function', category: 'business' }),
+      // A capability-anchored handler with NO entry_points root (bridge-gap shape).
+      node({ id: 'n_capop', name: 'reconcileOrders', type: 'function', category: 'business' }),
+      node({ id: 'n_saveRecon', name: 'saveReconciliation', type: 'function', category: 'data' }),
+    ];
+    const edges: CASEdge[] = [
+      { id: 'e_c1', source: 'n_consumer', target: 'n_project', type: 'calls' },
+      { id: 'e_k1', source: 'n_capop', target: 'n_saveRecon', type: 'calls' },
+    ];
+    const entry_points: CASEntryPoint[] = [
+      ...Array.from({ length: 30 }, (_, i) => ({
+        id: `ep_test_${i}`, source_node: `n_test_${i}`, type: 'test' as const, name: `TestSuite${i}`,
+        handler: { node_id: `n_test_${i}`, method_name: `TestSuite${i}` },
+      })),
+      {
+        id: 'ep_consumer', source_node: 'n_consumer', type: 'event', name: 'orderPlaced',
+        trigger: { event: 'order.placed' },
+        handler: { node_id: 'n_consumer', method_name: 'onOrderPlaced' },
+        security: { authenticated: true },
+      },
+    ];
+    const data_lineage: CASEntityLineage[] = [
+      {
+        entity_id: 'entity_reconciliation', entity_name: 'Reconciliation', sensitive_fields: [],
+        writers: [{ node_id: 'n_saveRecon' } as any], readers: [],
+        external_recipients: [], boundaries_crossed: [], journeys_carrying: [],
+        exposure: { unguarded_paths: 0, external_transfer: false, sensitive: false },
+      },
+    ];
+    const system_capabilities: SystemCapability[] = [
+      {
+        id: 'cap_recon', name: 'Order Reconciliation', category: 'core', criticality: 'high',
+        operations: [{ action: 'reconcile orders', entry_point_id: 'node:n_capop', entry_point_type: 'internal' }],
+        related_entities: ['entity_reconciliation'],
+      } as any,
+    ];
+    return {
+      analysis_id: 'test-window',
+      nodes, edges, entry_points, exit_points: [], data_lineage, system_capabilities,
+    } as unknown as CASOutput;
+  }
+
+  test('a small maxFlows window is NOT crowded out by test entries listed first', () => {
+    const flows = computeFlowConcepts(buildTestCrowdedCas(), { maxFlows: 2 });
+    expect(flows.map(f => f.entry_point)).toEqual(['ep_consumer', 'synthflow:n_capop']);
+  });
+
+  test('the synthesized capability root in the window carries its genuinely-touched entities and a primary role', () => {
+    const flows = computeFlowConcepts(buildTestCrowdedCas(), { maxFlows: 2 });
+    const synth = flows.find(f => f.entry_point === 'synthflow:n_capop')!;
+    expect(synth.entities).toContain('Reconciliation');
+    expect(synth.capability_relationships?.map(r => r.role)).toContain('primary');
+  });
+
+  test('test entries still get flows AFTER significant roots (ordered, not filtered)', () => {
+    const flows = computeFlowConcepts(buildTestCrowdedCas(), { maxFlows: 5 });
+    expect(flows.slice(0, 2).map(f => f.entry_point)).toEqual(['ep_consumer', 'synthflow:n_capop']);
+    expect(flows.slice(2).every(f => f.entry_point.startsWith('ep_test_'))).toBe(true);
+    // Within the test class, original array order is preserved (stable sort).
+    expect(flows.slice(2).map(f => f.entry_point)).toEqual(['ep_test_0', 'ep_test_1', 'ep_test_2']);
+  });
+});

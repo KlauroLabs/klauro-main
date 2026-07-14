@@ -95,6 +95,7 @@ import { ChangeDetector } from './change-detector';
 import { getBuildIdentity } from './build-identity';
 import { buildUserJourneys } from './journey-builder';
 import { buildTerminalSignal, type TerminalSignal } from './terminal-signal';
+import { TRACEABLE_NODE_TYPES } from './flow-concepts';
 import { selectProductFrameworkNames, analyzerTypeMap } from './framework-comprehension';
 import { buildParadigmConformance } from './paradigm-conformance';
 import { buildArchitecturalConflicts } from './architectural-conflicts';
@@ -1477,7 +1478,7 @@ export class AnalyzerOrchestrator {
 
     phaseStart = Date.now();
     const callGraphBuilder = new CallGraphBuilder(allNodes, allEdges, allExitPoints);
-    const callChains = this.buildCallChains(allNodes, allEdges, allEntryPoints, allExitPoints, callGraphBuilder);
+    const callChains = this.buildCallChains(allNodes, allEdges, allEntryPoints, allExitPoints, callGraphBuilder, systemCapabilities);
     logTiming('pp_callGraph', phaseStart);
 
     phaseStart = Date.now();
@@ -2578,7 +2579,7 @@ export class AnalyzerOrchestrator {
     const systemPurpose = this.inferSystemPurpose(entryPoints, dataEntities, systemCapabilities, nodes);
 
     const callGraphBuilder = new CallGraphBuilder(nodes, edges, exitPoints);
-    const callChains = this.buildCallChains(nodes, edges, entryPoints, exitPoints, callGraphBuilder);
+    const callChains = this.buildCallChains(nodes, edges, entryPoints, exitPoints, callGraphBuilder, systemCapabilities);
 
     this.enrichNodeCallGraphs(nodes, callGraphBuilder, entryPoints, exitPoints);
     this.deriveParentFromContainsEdges(nodes, edges);
@@ -8328,9 +8329,48 @@ export class AnalyzerOrchestrator {
     edges: CASEdge[],
     entryPoints: CASEntryPoint[],
     exitPoints: CASExitPoint[],
-    _callGraph: CallGraphBuilder
+    _callGraph: CallGraphBuilder,
+    systemCapabilities: SystemCapability[] = []
   ): CASCallChain[] {
     const nodeById = new Map(nodes.map(node => [node.id, node]));
+
+    // CAPABILITY-OPERATION SEEDED ROOTS (call-graph reachability starvation):
+    // on codebases whose real handlers never surface in entry_points (e.g. a
+    // CAS where 972/976 entries are test suites — test nodes carry no outgoing
+    // call edges, so every chain dead-ends), system_capabilities[].operations[]
+    // already anchors the real handler/method node via a `node:<id>` reference.
+    // Seed those nodes as additional chain roots — the same evidence rule
+    // flow-concepts' deriveCapabilityOperationRoots trusts (node id and the
+    // capability naming it both come straight off the CAS; never fabricated).
+    // Seeded roots contribute ONLY when they actually reach an exit
+    // (entry-to-exit) — synthetic dead-ends are dropped below so they never
+    // add noise chains; real entry points keep their honest dead-ends.
+    const realRootNodeIds = new Set(entryPoints.map(ep => ep.handler?.node_id || ep.source_node));
+    const seededNodeIds = new Set<string>();
+    const seededEntries: CASEntryPoint[] = [];
+    for (const cap of systemCapabilities) {
+      for (const op of cap.operations || []) {
+        if (!op.entry_point_id?.startsWith('node:')) continue;
+        const nodeId = op.entry_point_id.slice('node:'.length);
+        if (realRootNodeIds.has(nodeId) || seededNodeIds.has(nodeId)) continue;
+        const node = nodeById.get(nodeId);
+        if (!node) continue;
+        if (!TRACEABLE_NODE_TYPES.has(node.type) && node.type !== 'method') continue;
+        seededNodeIds.add(nodeId);
+        seededEntries.push({
+          // Same id shape flow-concepts synthesizes for capability roots, so a
+          // terminal chain rooted here and the entry-point flow for the same
+          // root dedupe to one flow in computeFlowConcepts' union.
+          id: `synthflow:${nodeId}`,
+          source_node: nodeId,
+          type: 'message',
+          name: node.name,
+          handler: { node_id: nodeId, method_name: node.name },
+        } as CASEntryPoint);
+      }
+    }
+    const seededEntryIds = new Set(seededEntries.map(ep => ep.id));
+    entryPoints = seededEntries.length > 0 ? [...entryPoints, ...seededEntries] : entryPoints;
     const exitBySource = new Map<string, CASExitPoint[]>();
     for (const exitPoint of exitPoints) {
       if (!exitBySource.has(exitPoint.source_node)) {
@@ -8502,7 +8542,14 @@ export class AnalyzerOrchestrator {
       });
     }
 
-    return chains;
+    // Seeded (capability-operation) roots only contribute resolved
+    // entry-to-exit chains; their dead-ends are dropped (see seeding note).
+    if (seededEntryIds.size === 0) return chains;
+    return chains.filter(chain =>
+      chain.chain_type === 'entry-to-exit' ||
+      !chain.entry_point.entry_point_id ||
+      !seededEntryIds.has(chain.entry_point.entry_point_id)
+    );
   }
 
   private rankChainEdge(edge: CASEdge): number {

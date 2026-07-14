@@ -174,3 +174,74 @@ describe('buildCallChains multi-path exploration', () => {
     expect(chains[0].exit_point?.exit_point_id).toBe('xNear');
   });
 });
+
+describe('buildCallChains capability-operation seeded roots', () => {
+  // Bridge-gap shape: entry_points only carries a test suite (no outgoing call
+  // edges), while a system_capabilities operation anchors the REAL handler via
+  // a node: reference. The seeded root must produce an entry-to-exit chain.
+  function seededFixture() {
+    const nodes = [
+      node('testSuite', 'test'),
+      node('reconcile', 'function'),
+      node('save', 'function'),
+      node('db'),
+      node('orphan', 'function'),
+    ];
+    const graph = [
+      edge('reconcile', 'save'),
+      edge('save', 'db'),
+    ];
+    const entryPoints = [{ id: 'ep_t', source_node: 'testSuite', type: 'test', name: 'suite' } as unknown as CASEntryPoint];
+    const exitPoints = [exit('x_db', 'db')];
+    const caps = [{
+      id: 'cap_r', name: 'Reconciliation', category: 'core', criticality: 'high',
+      operations: [
+        { action: 'reconcile', entry_point_id: 'node:reconcile', entry_point_type: 'internal' },
+        { action: 'orphaned op', entry_point_id: 'node:orphan', entry_point_type: 'internal' },
+        { action: 'missing node', entry_point_id: 'node:doesNotExist', entry_point_type: 'internal' },
+      ],
+    }];
+    return { nodes, graph, entryPoints, exitPoints, caps };
+  }
+
+  function buildChainsWithCaps(f: ReturnType<typeof seededFixture>): CASCallChain[] {
+    const orchestrator = new AnalyzerOrchestrator() as any;
+    return orchestrator.buildCallChains(f.nodes, f.graph, f.entryPoints, f.exitPoints, null, f.caps);
+  }
+
+  test('a capability node:-anchored operation with no entry_points root seeds an entry-to-exit chain', () => {
+    const chains = buildChainsWithCaps(seededFixture());
+    const seeded = chains.find(c => c.entry_point.entry_point_id === 'synthflow:reconcile');
+    expect(seeded).toBeDefined();
+    expect(seeded!.chain_type).toBe('entry-to-exit');
+    expect(seeded!.exit_point?.exit_point_id).toBe('x_db');
+    expect(seeded!.call_path.map(s => s.node_id)).toEqual(['reconcile', 'save', 'db']);
+  });
+
+  test('seeded roots that reach no exit contribute NO chain (synthetic dead-ends dropped); real dead-ends kept', () => {
+    const chains = buildChainsWithCaps(seededFixture());
+    // orphan seeds but dead-ends -> dropped; missing node never seeds.
+    expect(chains.find(c => c.entry_point.entry_point_id === 'synthflow:orphan')).toBeUndefined();
+    // the real test entry keeps its honest dead-end chain.
+    const real = chains.find(c => c.entry_point.entry_point_id === 'ep_t');
+    expect(real).toBeDefined();
+    expect(real!.chain_type).toBe('dead-end');
+    expect(chains).toHaveLength(2);
+  });
+
+  test('a node already rooted by a real entry point is never double-seeded', () => {
+    const f = seededFixture();
+    f.entryPoints.push(entry('ep_real', 'reconcile'));
+    const chains = buildChainsWithCaps(f);
+    expect(chains.filter(c => c.entry_point.node_id === 'reconcile')).toHaveLength(1);
+    expect(chains.find(c => c.entry_point.entry_point_id === 'synthflow:reconcile')).toBeUndefined();
+  });
+
+  test('no capabilities passed — behavior unchanged (back-compat default)', () => {
+    const f = seededFixture();
+    const orchestrator = new AnalyzerOrchestrator() as any;
+    const chains: CASCallChain[] = orchestrator.buildCallChains(f.nodes, f.graph, f.entryPoints, f.exitPoints, null);
+    expect(chains).toHaveLength(1);
+    expect(chains[0].chain_type).toBe('dead-end');
+  });
+});

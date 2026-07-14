@@ -2586,6 +2586,25 @@ function computeEntryPointFlows(
   }
   const maxEntryFlows = opts.maxFlows && opts.maxFlows > 0 ? opts.maxFlows : undefined;
 
+  // SIGNIFICANCE-FIRST WINDOW ORDER (re-validation: flow-entity starvation):
+  // the maxFlows window used to slice entry points in raw array order, so on a
+  // test-heavy CAS (e.g. 972/976 'test' entries) the whole window filled with
+  // test-suite roots — which have no forward reach into the call graph — while
+  // the synthesized capability-operation roots (appended after the real
+  // entries) never entered the window. Result: 0/100 flows with entities, and
+  // every capability↔flow role starved. Order the candidates by significance
+  // CLASS, stable within class (original array order), so the window prefers
+  // product entries: (0) real non-test entry points, (1) synthesized
+  // capability-operation roots, (2) test entries. Deterministic — a pure
+  // stable class sort over facts already on each candidate, no sampling.
+  const entryClassRank = (ep: CASEntryPoint): number =>
+    ep.type === 'test' ? 2 : synthesizedRootIds.has(ep.id) ? 1 : 0;
+  const entryOriginalIndex = new Map(entryPoints.map((ep, i) => [ep.id, i]));
+  entryPoints = [...entryPoints].sort((a, b) =>
+    (entryClassRank(a) - entryClassRank(b)) ||
+    (entryOriginalIndex.get(a.id)! - entryOriginalIndex.get(b.id)!)
+  );
+
   const exitPointsByNode = buildExitPointIndex(cas);
   const lineageByNode = buildLineageIndex(cas);
   const conditionalOut = buildConditionalOutIndex(cas);
