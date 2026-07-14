@@ -22,6 +22,9 @@ import { backfillIngestedTelemetry, ingestTelemetryBatch, loadTelemetryObservati
 import { buildNodeRuntimeMetrics } from './product';
 import { getAnalysis } from './analyzer';
 import { buildSummary, getProductMap, getFlowConcepts, getArchitecturalConflicts, getParadigmConformance, getPerspectives, getCicdPipelines, getCommunicationSeams, buildOrientCapsule, getSemanticCoverage } from './query';
+import { getAnalysisFileFingerprint } from './storage';
+import { descriptionStorePath } from './description-enrichment';
+import { ResponseCache, responseCacheKey } from './response-cache';
 import { initSelfTelemetry, instrumentHttpHandler, mapSdkEvent } from './self-telemetry';
 import type { CasRuntimeEvent } from '../../../packages/klauro-sdk-js/src/types';
 
@@ -271,7 +274,13 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           return;
         }
         const accountResult = await handleAccountApi(accounts, apiAuthorization.userId, route, request, maxBodyBytes, apiAuthorization.sharedToken, dataDir, workspaceAnalyses);
-        writeJson(response, accountResult.statusCode, accountResult.body);
+        if (accountResult.serializedBody !== undefined) {
+          // Pre-serialized (cacheable) responses are written verbatim so a
+          // cache hit is byte-identical to the fresh compute that produced it.
+          writeText(response, accountResult.statusCode, 'application/json', accountResult.serializedBody);
+        } else {
+          writeJson(response, accountResult.statusCode, accountResult.body);
+        }
         return;
       }
 
@@ -1497,6 +1506,41 @@ async function linkAnalysisToAccountProject(
   }
 }
 
+/**
+ * Response cache for the pure-function-of-the-stored-CAS read endpoints
+ * (/conceptual, /semantic-coverage). See response-cache.ts for the honesty
+ * invariant (cached body byte-identical to fresh compute) and the whale-CAS
+ * starvation rationale (TASK: Cloudflare 524s during re-analysis). Few
+ * entries: payloads are ~100KB and only actively-viewed projects benefit.
+ */
+const casReadResponseCache = new ResponseCache(8);
+
+/** Test/ops probe: lets the endpoint tests assert deterministically that a
+ * repeat GET was served from the cache (not merely byte-identical by luck). */
+export function getCasReadResponseCacheStats(): { hits: number; misses: number; size: number } {
+  return casReadResponseCache.stats;
+}
+
+/**
+ * Version fingerprint of everything getAnalysis() folds into a read response:
+ * the stored analysis file (rewritten by every saveAnalysis — each reanalyze
+ * layer stamp included) plus the element-description store joined on by
+ * applyStoredElementDescriptions. Null → caller must bypass the cache.
+ */
+async function storedAnalysisVersion(workspace: string): Promise<string | null> {
+  const analysisFingerprint = await getAnalysisFileFingerprint(workspace);
+  if (!analysisFingerprint) return null;
+  let descriptions = 'none';
+  try {
+    const stat = await fs.stat(descriptionStorePath(workspace));
+    descriptions = `${stat.mtimeMs}:${stat.size}`;
+  } catch {
+    // No description store yet — 'none' participates in the key so its later
+    // appearance changes the fingerprint.
+  }
+  return `${analysisFingerprint}|${descriptions}`;
+}
+
 async function handleAccountApi(
   accounts: AccountStore,
   userId: string,
@@ -1506,7 +1550,7 @@ async function handleAccountApi(
   sharedToken = false,
   dataDir?: string,
   workspaceAnalyses?: AccountWorkspaceAnalysisScheduler,
-): Promise<{ statusCode: number; body: unknown }> {
+): Promise<{ statusCode: number; body: unknown; serializedBody?: string }> {
   if (request.method === 'GET' && route === '/api/me') {
     if (sharedToken) {
       return {
@@ -1751,16 +1795,32 @@ async function handleAccountApi(
       return { statusCode: 200, body: { status: 'no_analysis', project_id: project.id } };
     }
     try {
-      const cas = await getAnalysis(workspacePath(dataDir, project.analysis_id));
-      return {
-        statusCode: 200,
-        body: {
-          status: 'ready',
-          project_id: project.id,
-          analysis_id: project.analysis_id,
-          semantic_coverage: getSemanticCoverage(cas),
-        },
+      const workspace = workspacePath(dataDir, project.analysis_id);
+      // Response cache: this payload is a pure function of the stored CAS —
+      // on a hit we never load the (potentially whale-sized) analysis at all.
+      const version = await storedAnalysisVersion(workspace);
+      const cacheKey = version === null ? null : responseCacheKey({
+        endpoint: 'semantic-coverage',
+        projectId: project.id,
+        analysisId: project.analysis_id,
+        version,
+      });
+      if (cacheKey) {
+        const cached = casReadResponseCache.get(cacheKey);
+        if (cached !== undefined) {
+          return { statusCode: 200, body: JSON.parse(cached), serializedBody: cached };
+        }
+      }
+      const cas = await getAnalysis(workspace);
+      const body = {
+        status: 'ready',
+        project_id: project.id,
+        analysis_id: project.analysis_id,
+        semantic_coverage: getSemanticCoverage(cas),
       };
+      const serializedBody = JSON.stringify(body);
+      if (cacheKey) casReadResponseCache.set(cacheKey, serializedBody);
+      return { statusCode: 200, body, serializedBody };
     } catch (error) {
       return {
         statusCode: 200,
@@ -1783,9 +1843,31 @@ async function handleAccountApi(
       return { statusCode: 200, body: { status: 'no_analysis', project_id: project.id } };
     }
     try {
-      const cas = await getAnalysis(workspacePath(dataDir, project.analysis_id));
+      const workspace = workspacePath(dataDir, project.analysis_id);
       const url = new URL(request.url || '', 'http://localhost');
       const target = url.searchParams.get('target') || undefined;
+      const include = url.searchParams.get('include') || undefined;
+      // Response cache (TASK: whale-CAS /conceptual 524s): the payload below is
+      // a pure function of the stored CAS + (target, include). Fresh compute on
+      // a 45k-node CAS costs seconds of synchronous CPU (CAS JSON parse +
+      // getFlowConcepts + getArchitecturalConflicts + getParadigmConformance +
+      // getPerspectives) — exactly what starves the loop during a re-analysis.
+      // On a hit we skip ALL of it and replay the byte-identical body.
+      const version = await storedAnalysisVersion(workspace);
+      const cacheKey = version === null ? null : responseCacheKey({
+        endpoint: 'conceptual',
+        projectId: project.id,
+        analysisId: project.analysis_id,
+        version,
+        params: { target, include },
+      });
+      if (cacheKey) {
+        const cached = casReadResponseCache.get(cacheKey);
+        if (cached !== undefined) {
+          return { statusCode: 200, body: JSON.parse(cached), serializedBody: cached };
+        }
+      }
+      const cas = await getAnalysis(workspace);
       const flowConcepts = getFlowConcepts(cas, { target, maxFlows: 20 });
       // Endpoint projection (re-validation F1): D2 facet_provenance + D1
       // code_mappings inflated per-flow weight ~3-4x (whale payload 96KB+ at 20
@@ -1838,21 +1920,21 @@ async function handleAccountApi(
         criticality: capability.criticality,
         related_flows: flowEdgesByCapability.get(capability.id) || [],
       }));
-      return {
-        statusCode: 200,
-        body: {
-          status: 'ready',
-          project_id: project.id,
-          analysis_id: project.analysis_id,
-          capabilities,
-          flows: flowConcepts,
-          structural: {
-            architectural,
-            paradigms,
-            perspectives,
-          },
+      const body = {
+        status: 'ready',
+        project_id: project.id,
+        analysis_id: project.analysis_id,
+        capabilities,
+        flows: flowConcepts,
+        structural: {
+          architectural,
+          paradigms,
+          perspectives,
         },
       };
+      const serializedBody = JSON.stringify(body);
+      if (cacheKey) casReadResponseCache.set(cacheKey, serializedBody);
+      return { statusCode: 200, body, serializedBody };
     } catch (error) {
       return {
         statusCode: 200,

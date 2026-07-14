@@ -12,6 +12,7 @@ import * as fs from 'fs-extra';
 import { TSESTree } from '@typescript-eslint/typescript-estree';
 import { cachedEstreeParse as parse } from '../core/estree-parse-cache';
 import { cachedGlob as glob } from '../core/glob-cache';
+import { yieldToEventLoop, createYieldBudget } from '../core/event-loop-yield';
 import * as crypto from 'crypto';
 
 const BUILTIN_NOT_EXIT_POINTS = new Set([
@@ -494,7 +495,14 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     for (let i = 0; i < sourceFiles.length; i += PARALLEL_BATCH_SIZE) {
       const batch = sourceFiles.slice(i, i + PARALLEL_BATCH_SIZE);
 
-      const batchResults = await Promise.all(
+      // I/O (stat + read) stays concurrent, but the synchronous tree-sitter
+      // extraction is pulled OUT of the concurrent map into the sequential
+      // loop below so it can yield the event loop every few files. When reads
+      // resolve from the analyzer file-read cache there is no real I/O between
+      // parses, so without the explicit yield a whole batch parses in ONE
+      // macrotask (measured ~2.9s block on a 204-file repo) and every pending
+      // HTTP request — including /health — stalls for the duration.
+      const loadedBatch = await Promise.all(
         batch.map(async (file) => {
           const fullPath = path.join(projectPath, file);
           try {
@@ -507,11 +515,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
               return null;
             }
             const content = await fs.readFile(fullPath, 'utf-8');
-            const extraction = this.tsExtractor.extractFromSource(content, fullPath);
-            if (extraction.hasSyntaxErrors) {
-              this.addAnalysisWarning(`${file} contains syntax errors; extraction may be partial`);
-            }
-            return { relativePath: file, fullPath, content, extraction };
+            return { relativePath: file, fullPath, content };
           } catch (error) {
             this.addAnalysisWarning(`${file} could not be parsed: ${(error as Error).message}`);
             console.warn(`Failed to parse ${file}:`, error);
@@ -520,7 +524,22 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
         })
       );
 
-      results.push(...batchResults.filter((r): r is NonNullable<typeof r> => r !== null));
+      const maybeYield = createYieldBudget();
+      for (const loaded of loadedBatch) {
+        if (loaded === null) continue;
+        try {
+          const extraction = this.tsExtractor.extractFromSource(loaded.content, loaded.fullPath);
+          if (extraction.hasSyntaxErrors) {
+            this.addAnalysisWarning(`${loaded.relativePath} contains syntax errors; extraction may be partial`);
+          }
+          results.push({ ...loaded, extraction });
+        } catch (error) {
+          this.addAnalysisWarning(`${loaded.relativePath} could not be parsed: ${(error as Error).message}`);
+          console.warn(`Failed to parse ${loaded.relativePath}:`, error);
+        }
+        await maybeYield();
+      }
+      await yieldToEventLoop();
     }
 
     return results;
@@ -535,25 +554,17 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     for (let i = 0; i < sourceFiles.length; i += PARALLEL_BATCH_SIZE) {
       const batch = sourceFiles.slice(i, i + PARALLEL_BATCH_SIZE);
 
-      const batchResults = await Promise.all(
+      // Same event-loop-yield restructure as preloadFilesWithTreeSitter:
+      // concurrent I/O, then sequential synchronous estree parsing with a
+      // yield every few files so the in-process HTTP server stays responsive.
+      const loadedBatch = await Promise.all(
         batch.map(async (file) => {
           const fullPath = path.join(projectPath, file);
           try {
             const stat = await fs.stat(fullPath);
             if (!stat.isFile()) return null;
             const content = await fs.readFile(fullPath, 'utf-8');
-            const jsx = this.shouldParseJsx(file, content);
-            const ast = parse(content, {
-              loc: true,
-              range: false,
-              jsx,
-              comment: true,
-              tokens: false,
-              useJSXTextNode: jsx,
-              ecmaFeatures: { jsx },
-              sourceType: 'module'
-            });
-            return { relativePath: file, fullPath, content, ast };
+            return { relativePath: file, fullPath, content };
           } catch (error) {
             console.warn(`Failed to parse ${file}:`, error);
             return null;
@@ -561,7 +572,28 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
         })
       );
 
-      results.push(...batchResults.filter((r): r is NonNullable<typeof r> => r !== null));
+      const maybeYield = createYieldBudget();
+      for (const loaded of loadedBatch) {
+        if (loaded === null) continue;
+        try {
+          const jsx = this.shouldParseJsx(loaded.relativePath, loaded.content);
+          const ast = parse(loaded.content, {
+            loc: true,
+            range: false,
+            jsx,
+            comment: true,
+            tokens: false,
+            useJSXTextNode: jsx,
+            ecmaFeatures: { jsx },
+            sourceType: 'module'
+          });
+          results.push({ ...loaded, ast });
+        } catch (error) {
+          console.warn(`Failed to parse ${loaded.relativePath}:`, error);
+        }
+        await maybeYield();
+      }
+      await yieldToEventLoop();
     }
 
     return results;

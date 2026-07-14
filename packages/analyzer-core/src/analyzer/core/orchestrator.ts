@@ -128,6 +128,10 @@ import { filterPlausibleExternalServices, isCommandShapedLabel, isHostnameLikeSe
 export type { CASOutput } from '../../types/cas.types';
 import * as fs from 'fs-extra';
 import { cachedGlob as glob, beginGlobRun, endGlobRun } from './glob-cache';
+// Event-loop yields between analysis phases: the analyzer runs in-process with
+// the HTTP server, so long synchronous phases starve every request (incl.
+// /health) — see event-loop-yield.ts for the measured 524-starvation story.
+import { yieldToEventLoop } from './event-loop-yield';
 import { globSync } from 'glob';
 import * as path from 'path';
 
@@ -1136,6 +1140,7 @@ export class AnalyzerOrchestrator {
     const { detectedAnalyzers, context } = await withAnalyzerFileReadCache(async () => {
       const detected = await this.detectAnalyzers(projectPath);
       logTiming('detectAnalyzers', phaseStart);
+      await yieldToEventLoop();
       const ctx: AnalysisContext = {
         projectPath,
         filters: await this.getAnalysisContextFilters(projectPath)
@@ -1182,6 +1187,7 @@ export class AnalyzerOrchestrator {
         const langStart = Date.now();
         await this.runAnalyzer(registration, context, projectPath, accumulators);
         logTiming(`language_${registration.id}`, langStart);
+        await yieldToEventLoop();
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         console.error(`Error running analyzer ${registration.id}:`, error);
@@ -1195,6 +1201,7 @@ export class AnalyzerOrchestrator {
       }
     }
     logTiming('languageAnalyzers', phaseStart);
+    await yieldToEventLoop();
 
     phaseStart = Date.now();
     if (parallelAnalyzers.length > 0) {
@@ -1217,6 +1224,14 @@ export class AnalyzerOrchestrator {
 
       const parallelResults = await Promise.allSettled(
         parallelAnalyzers.map(async (registration) => {
+          // Event-loop yield before each analyzer starts: Promise.allSettled
+          // otherwise begins every analyzer's synchronous prefix back-to-back
+          // in one macrotask (measured ~1.3s block in this phase), starving
+          // the in-process HTTP server. Each yield re-queues via setImmediate,
+          // which lets the poll phase (pending sockets, /health) run between
+          // analyzers. Order/results are unchanged — results are keyed per
+          // registration and merged in sorted order below.
+          await yieldToEventLoop();
           const analyzerStartTime = Date.now();
           const matchedRoot = this.analyzerRootMap.get(registration.id) || projectPath;
 
@@ -1332,6 +1347,7 @@ export class AnalyzerOrchestrator {
       }
     }
     logTiming('frameworkAnalyzers', phaseStart);
+    await yieldToEventLoop();
     });
     if (process.env.KLAURO_DEBUG_FILE_READ_CACHE === '1') {
       console.error('[Klauro] file-read-cache stats:', JSON.stringify(getDebugCacheStats()));
@@ -1347,6 +1363,7 @@ export class AnalyzerOrchestrator {
     this.normalizeNodeMetrics(allNodes);
     this.applyCanonicalOrdering(allNodes, allEdges, allEntryPoints, allExitPoints, allLibraries);
     logTiming('pp_linkRouteHandlers', phaseStart);
+    await yieldToEventLoop();
 
     // Declared custom-architecture conventions (.klaurorc conventions:) —
     // additive, evidence-gated pass over the SAME extracted nodes/edges, so
@@ -1393,15 +1410,18 @@ export class AnalyzerOrchestrator {
     phaseStart = Date.now();
     this.liftValidationToEntryPoints(allNodes, allEntryPoints);
     logTiming('pp_liftValidation', phaseStart);
+    await yieldToEventLoop();
 
     phaseStart = Date.now();
     const systemName = options?.displayName || path.basename(projectPath);
     const progressiveLevels = this.buildProgressiveLevels(allNodes, categories);
     logTiming('pp_progressiveLevels', phaseStart);
+    await yieldToEventLoop();
 
     phaseStart = Date.now();
     const index = this.buildIndex(allNodes, allEntryPoints, allExitPoints, allPerspectives);
     logTiming('pp_buildIndex', phaseStart);
+    await yieldToEventLoop();
 
     if (allLibraries.length === 0) {
       const detectedLibraries = this.detectLibrariesFromManifests(projectPath);
@@ -1414,20 +1434,24 @@ export class AnalyzerOrchestrator {
     const databaseSchema = this.buildDatabaseSchema(allNodes, allLibraries, projectPath, allEdges);
     const externalServices = this.buildExternalServices(allNodes, allExitPoints, allLibraries);
     logTiming('pp_architecture', phaseStart);
+    await yieldToEventLoop();
 
     // Structural design-pattern detection. Per-language analyzers rarely emit
     // design patterns (get_patterns was empty on every TS/JS codebase); detect the
     // common ones from node/edge structure so the tool returns real signal.
     allPatterns.push(...this.detectDesignPatterns(allNodes, allEdges));
     logTiming('pp_detectPatterns', Date.now());
+    await yieldToEventLoop();
 
     phaseStart = Date.now();
     const intents = this.buildIntents(allNodes);
     logTiming('pp_buildIntents', phaseStart);
+    await yieldToEventLoop();
 
     phaseStart = Date.now();
     const flowSummary = this.buildFlowSummary(allNodes, allEntryPoints);
     logTiming('pp_flowSummary', phaseStart);
+    await yieldToEventLoop();
     phaseStart = Date.now();
     const dataEntities = this.enrichCuratedProductDataEntities(
       [...this.buildDataEntities(allNodes, allEdges, projectPath), ...declaredDataEntities],
@@ -1436,16 +1460,20 @@ export class AnalyzerOrchestrator {
       projectPath
     );
     logTiming('pp_dataEntities', phaseStart);
+    await yieldToEventLoop();
     phaseStart = Date.now();
     const dataSummary = this.buildDataSummary(dataEntities, allNodes);
     logTiming('pp_dataSummary', phaseStart);
+    await yieldToEventLoop();
     phaseStart = Date.now();
     const productEntryPointsForSecurity = this.filterPrimaryProductEntryPoints(allEntryPoints, allNodes, projectPath);
     const securityBoundaries = this.buildSecurityBoundaries(allNodes, allEntryPoints, projectPath);
     logTiming('pp_securityBoundaries', phaseStart);
+    await yieldToEventLoop();
     phaseStart = Date.now();
     const securitySummary = this.buildSecuritySummary(securityBoundaries, allNodes, productEntryPointsForSecurity);
     logTiming('pp_securitySummary', phaseStart);
+    await yieldToEventLoop();
 
     phaseStart = Date.now();
     const gitAnalyzer = new GitAnalyzer(projectPath);
@@ -1468,6 +1496,7 @@ export class AnalyzerOrchestrator {
       changeRisks = this.buildChangeRisks(allNodes, allEdges, allEntryPoints);
     }
     logTiming('pp_gitAnalysis', phaseStart);
+    await yieldToEventLoop();
 
     phaseStart = Date.now();
     const changeRiskSummary = this.buildChangeRiskSummary(changeRisks);
@@ -1475,17 +1504,20 @@ export class AnalyzerOrchestrator {
     const systemCapabilities = this.buildSystemCapabilities(allEntryPoints, dataEntities, allNodes, allEdges, projectPath);
     const systemPurpose = this.inferSystemPurpose(allEntryPoints, dataEntities, systemCapabilities, allNodes);
     logTiming('pp_capabilities', phaseStart);
+    await yieldToEventLoop();
 
     phaseStart = Date.now();
     const callGraphBuilder = new CallGraphBuilder(allNodes, allEdges, allExitPoints);
     const callChains = this.buildCallChains(allNodes, allEdges, allEntryPoints, allExitPoints, callGraphBuilder, systemCapabilities);
     logTiming('pp_callGraph', phaseStart);
+    await yieldToEventLoop();
 
     phaseStart = Date.now();
     this.enrichNodeCallGraphs(allNodes, callGraphBuilder, allEntryPoints, allExitPoints);
     this.deriveParentFromContainsEdges(allNodes, allEdges);
     this.enrichNodePerspectives(allNodes, allPerspectives);
     logTiming('pp_enrichNodes', phaseStart);
+    await yieldToEventLoop();
 
     phaseStart = Date.now();
     // testSuites hoisted above flow coverage: the suites' coverage.nodes_tested
@@ -1498,11 +1530,13 @@ export class AnalyzerOrchestrator {
     const flowCoverage = this.buildFlowCoverage(allNodes, allEntryPoints, callChains, testSuites);
     const testGaps = this.buildTestGaps(flowCoverage, allNodes);
     logTiming('pp_flowCoverage', phaseStart);
+    await yieldToEventLoop();
 
     phaseStart = Date.now();
     const domainExtractor = new DomainExtractor();
     const domainConcepts = domainExtractor.extract(allNodes, allEntryPoints, dataEntities, allEdges, projectPath);
     logTiming('pp_domainConcepts', phaseStart);
+    await yieldToEventLoop();
 
     phaseStart = Date.now();
     const workflowDetector = new WorkflowDetector();
@@ -1510,6 +1544,7 @@ export class AnalyzerOrchestrator {
     workflowDetector.classifyWorkflows(workflows, domainConcepts);
     const workflowGraph = workflowDetector.buildDependencyGraph(workflows, callChains, allNodes);
     logTiming('pp_workflows', phaseStart);
+    await yieldToEventLoop();
 
     phaseStart = Date.now();
     const flowGraph = this.buildFlowGraph(
@@ -1523,11 +1558,13 @@ export class AnalyzerOrchestrator {
       systemPurpose
     );
     logTiming('pp_flowGraph', phaseStart);
+    await yieldToEventLoop();
 
     phaseStart = Date.now();
     const enhancedChangeRisks = this.enhanceChangeRisks(changeRisks, callGraphBuilder, callChains, allEntryPoints);
     const enhancedFlowSummary = this.buildEnhancedFlowSummary(callChains, allEntryPoints);
     logTiming('pp_enhanceRisks', phaseStart);
+    await yieldToEventLoop();
 
     phaseStart = Date.now();
     const userJourneyResult = buildUserJourneys({
@@ -1561,6 +1598,7 @@ export class AnalyzerOrchestrator {
       userJourneys: userJourneyResult.journeys,
     });
     logTiming('pp_userJourneys', phaseStart);
+    await yieldToEventLoop();
 
     // No per-language analyzer emits behaviors, so get_behaviors was empty even on
     // request-driven apps. A user journey IS a named system behavior with an
@@ -1608,6 +1646,7 @@ export class AnalyzerOrchestrator {
       allExitPoints
     );
     logTiming('pp_enhancedPurpose', phaseStart);
+    await yieldToEventLoop();
 
     phaseStart = Date.now();
     const unanalyzedLanguages = this.scanUnanalyzedLanguages(projectPath);
@@ -1618,6 +1657,7 @@ export class AnalyzerOrchestrator {
     // job, which now receives these names as grounding (see below).
     const dependencyManifest = buildDependencyManifest(projectPath);
     logTiming('pp_dependencyManifest', phaseStart);
+    await yieldToEventLoop();
     // Union of the analyzer-recognized library names with the FULL declared
     // manifest, so the AI comprehension prompt sees the defining dependencies
     // (e.g. ccxt/web3) even when no dedicated detector recognizes them. Names
@@ -1669,10 +1709,12 @@ export class AnalyzerOrchestrator {
       await runAiInterpretation();
     }
     logTiming('pp_aiInterpretation', phaseStart);
+    await yieldToEventLoop();
 
     phaseStart = Date.now();
     const methodCalls = this.buildMethodCalls(allNodes, allEdges);
     logTiming('pp_methodCalls', phaseStart);
+    await yieldToEventLoop();
 
     phaseStart = Date.now();
     const allDecorators = this.buildAllDecorators(allNodes);
@@ -1682,6 +1724,7 @@ export class AnalyzerOrchestrator {
     const securityContexts = this.buildSecurityContexts(allNodes, allEntryPoints, allEdges);
     const configuration = this.buildAllConfiguration(allNodes, allExitPoints, externalServices, projectPath);
     logTiming('pp_finalMetadata', phaseStart);
+    await yieldToEventLoop();
 
     phaseStart = Date.now();
     // testSuites built earlier (hoisted above the flow-coverage pass).
@@ -1691,6 +1734,7 @@ export class AnalyzerOrchestrator {
     const behavioralInvariants = this.buildBehavioralInvariants(allNodes, allEdges, allEntryPoints, databaseSchema, dataEntities, securityBoundaries, testSuites, projectPath);
     const behavioralInvariantSummary = this.buildBehavioralInvariantSummary(behavioralInvariants);
     logTiming('pp_testData', phaseStart);
+    await yieldToEventLoop();
 
     phaseStart = Date.now();
     const runtime = this.buildRuntime(projectPath, allEntryPoints, allExitPoints, externalServices, configuration, callChains);
@@ -1742,6 +1786,7 @@ export class AnalyzerOrchestrator {
     );
     const validation = this.buildValidation(allNodes, allEdges, allEntryPoints, allExitPoints, runtimeStaticLinks, analysisFacts);
     logTiming('pp_traceability', phaseStart);
+    await yieldToEventLoop();
 
     const totalTime = Date.now() - startTime;
     if (process.env.KLAURO_DEBUG_ANALYSIS_TIMINGS === '1') {
@@ -1999,6 +2044,7 @@ export class AnalyzerOrchestrator {
     phaseStart = Date.now();
     await this.applyEmbeddingPhase(output, projectPath);
     logTiming('pp_embeddingAndFinalize', phaseStart);
+    await yieldToEventLoop();
 
     const sourceFiles = new Set<string>();
     for (const node of output.nodes) {
@@ -2128,6 +2174,7 @@ export class AnalyzerOrchestrator {
       changeDetector
     );
     debugFinalIncrementalPhase('update-state');
+    await yieldToEventLoop();
 
     const changeReport = this.buildIncrementalChangeReport(
       previousOutput,
@@ -2137,9 +2184,11 @@ export class AnalyzerOrchestrator {
       incrementalResult.fileResults
     );
     debugFinalIncrementalPhase('build-change-report');
+    await yieldToEventLoop();
 
     await this.applyEmbeddingPhase(incrementalResult.output, projectPath);
     debugFinalIncrementalPhase('apply-embedding-phase');
+    await yieldToEventLoop();
 
     return {
       output: incrementalResult.output,
@@ -2231,6 +2280,7 @@ export class AnalyzerOrchestrator {
     };
     const detectedAnalyzers = await this.detectAnalyzers(projectPath);
     debugIncrementalPhase('detect-analyzers');
+    await yieldToEventLoop();
     const incrementalAnalyzers = detectedAnalyzers.filter(
       r => r.analyzer.supportsIncrementalAnalysis?.() && r.analyzer.analyzeFileSingle
     );
@@ -2250,6 +2300,7 @@ export class AnalyzerOrchestrator {
       filesToAnalyze.some(filePath => this.analyzerCanHandleFile(registration.id, filePath))
     );
     debugIncrementalPhase('select-candidate-analyzers');
+    await yieldToEventLoop();
     const previousNodesById = new Map(previousOutput.nodes.map(node => [node.id, node]));
     const matchingAnalyzerPlansByFile = new Map<string, Array<{ registration: AnalyzerRegistration; relevantFiles: Set<string> }>>();
     const filesNeedingRelevanceScan: string[] = [];
@@ -2276,6 +2327,7 @@ export class AnalyzerOrchestrator {
       }
     }
     debugIncrementalPhase('plan-direct-matches');
+    await yieldToEventLoop();
 
     const analyzerPlans = filesNeedingRelevanceScan.length > 0
       ? await Promise.all(
@@ -2286,6 +2338,7 @@ export class AnalyzerOrchestrator {
       )
       : [];
     debugIncrementalPhase('relevance-scan');
+    await yieldToEventLoop();
 
     const unsupportedFiles = filesToAnalyze.filter(relativePath => {
       const existingPlans = matchingAnalyzerPlansByFile.get(relativePath);
@@ -2332,6 +2385,7 @@ export class AnalyzerOrchestrator {
       return false;
     });
     debugIncrementalPhase('unsupported-derived-fact-check');
+    await yieldToEventLoop();
     const allNodes = [...previousOutput.nodes];
     const allEdges = [...previousOutput.edges];
     const allEntryPoints = [...(previousOutput.entry_points || [])];
@@ -2367,6 +2421,7 @@ export class AnalyzerOrchestrator {
     const filteredEntryPoints = allEntryPoints.filter(ep => !deletedEntryPointIds.has(ep.id));
     const filteredExitPoints = allExitPoints.filter(ex => !deletedExitPointIds.has(ex.id));
     debugIncrementalPhase('filter-previous-graph');
+    await yieldToEventLoop();
 
     const fileResults = new Map<string, FileAnalysisResult>();
     const failedFiles: string[] = [];
@@ -2462,6 +2517,7 @@ export class AnalyzerOrchestrator {
     this.dedupeGraphItemsInPlace(filteredExitPoints, 'exit point', 'incremental', incrementalMergeWarnings);
     this.dedupeGraphItemsInPlace(filteredEdges, 'edge', 'incremental', incrementalMergeWarnings);
     debugIncrementalPhase('analyze-changed-files');
+    await yieldToEventLoop();
 
     if (failedFiles.length > 0 || fileResults.size !== filesToAnalyze.length) {
       const output = await this.orchestrateAnalysis(projectPath, { displayName: options?.displayName });
@@ -2482,6 +2538,7 @@ export class AnalyzerOrchestrator {
       fileResults
     );
     debugIncrementalPhase('retain-stable-missing-facts');
+    await yieldToEventLoop();
 
     const localizedOutput = this.tryBuildLocalizedIncrementalOutput(
       previousOutput,
@@ -2490,6 +2547,7 @@ export class AnalyzerOrchestrator {
       fileResults
     );
     debugIncrementalPhase('try-localized-output');
+    await yieldToEventLoop();
     if (localizedOutput) {
       return { output: localizedOutput, fileResults };
     }

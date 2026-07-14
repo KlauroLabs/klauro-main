@@ -1015,6 +1015,10 @@ async function saveDescriptionStore(projectPath: string, store: DescriptionStore
   await fs.writeJson(file, store, { spaces: 2 });
 }
 
-function descriptionStorePath(projectPath: string): string {
+/** Exported for cache fingerprinting (remote-analyzer-service response cache):
+ * getAnalysis() joins this store onto the CAS via applyStoredElementDescriptions,
+ * so any response cached as a pure function of getAnalysis() must include this
+ * file's stat in its version key. */
+export function descriptionStorePath(projectPath: string): string {
   return path.join(getProjectStorageDir(projectPath), 'element-descriptions.json');
 }

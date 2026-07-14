@@ -741,19 +741,24 @@ export async function saveAnalysis(
   return entry;
 }
 
-export async function loadAnalysis(
+/**
+ * Resolve the on-disk analysis file a load for `projectPath` would read,
+ * honoring the same track selection and legacy-filename fallbacks as
+ * loadAnalysis (which delegates here — single source of truth, no drift).
+ */
+async function resolveAnalysisFileForLoad(
   projectPath: string,
-  options?: { preferCache?: boolean; track?: AnalysisTrack }
-): Promise<CASOutput | null> {
+  requestedTrack?: AnalysisTrack
+): Promise<string | null> {
   const index = await loadIndex();
   // Default view (no explicit track): the agent's current working state
   // (in-flight) when one exists, else the shared committed baseline (main). An
   // explicit track is honored exactly. This keeps a dirty-tree sync readable by
   // default while never letting it clobber the preserved main analysis.
-  const track: AnalysisTrack = options?.track
+  const track: AnalysisTrack = requestedTrack
     ?? (index.analyses[analysisIndexKey(projectPath, 'in-flight')] ? 'in-flight' : 'main');
   // Track-specific entry; for 'main' this is the legacy bare-path key.
-  let entry = index.analyses[analysisIndexKey(projectPath, track)];
+  const entry = index.analyses[analysisIndexKey(projectPath, track)];
   // Backward compat: a legacy 'main' analysis may only exist under the bare
   // path key, which analysisIndexKey('main') already returns — no extra work.
   if (!entry) return null;
@@ -767,6 +772,37 @@ export async function loadAnalysis(
     const legacyName = `${projectSlug(projectPath)}.json${compressedJsonExtension()}`;
     resolved = await resolveJsonStoragePath(path.join(storagePath, legacyName));
   }
+  return resolved;
+}
+
+/**
+ * Cheap version fingerprint of the stored analysis for `projectPath`:
+ * `mtimeMs:size` of the exact file loadAnalysis would read (same track
+ * selection, same legacy fallbacks). Changes on every saveAnalysis rewrite —
+ * including each layer stamp of an in-flight reanalyze — so it is a safe
+ * (invalidates at least as often as needed) cache key for any response that
+ * is a pure function of the stored CAS. Returns null when no analysis file
+ * resolves; callers must then bypass their cache.
+ */
+export async function getAnalysisFileFingerprint(
+  projectPath: string,
+  options?: { track?: AnalysisTrack }
+): Promise<string | null> {
+  const resolved = await resolveAnalysisFileForLoad(projectPath, options?.track);
+  if (!resolved) return null;
+  try {
+    const stat = await fs.stat(resolved);
+    return `${stat.mtimeMs}:${stat.size}`;
+  } catch {
+    return null;
+  }
+}
+
+export async function loadAnalysis(
+  projectPath: string,
+  options?: { preferCache?: boolean; track?: AnalysisTrack }
+): Promise<CASOutput | null> {
+  const resolved = await resolveAnalysisFileForLoad(projectPath, options?.track);
   if (!resolved) return null;
 
   if (options?.preferCache) {
