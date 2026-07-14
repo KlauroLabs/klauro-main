@@ -4386,6 +4386,56 @@ describe('top-down capability evidence (C2)', () => {
     }
   });
 
+  it('partitions candidate operations per capability instead of broadcasting one pool (task #17)', async () => {
+    // Reproduces the degenerate shape from a stored real CAS (autonomous-klauro):
+    // every capability name shares a repo-dominant token ("codebase"), so token
+    // matching alone cross-wired ALL candidates to ALL items and every capability
+    // shipped the IDENTICAL operations list — which made every capability
+    // 'primary' for every anchored flow downstream. Entities + best-match
+    // assignment must partition the pools.
+    const original = (aiService as any).generateComponentDescription;
+    (aiService as any).generateComponentDescription = async () => JSON.stringify({
+      capabilities: [
+        { name: 'Exposes codebase analysis', description: 'Analyzes source repositories and produces structural analysis output for agent consumption.', category: 'core', entities: ['Analysis'], journeys: [] },
+        { name: 'Tracks codebase changes', description: 'Tracks change reports across repository revisions so agents can diff behavior over time.', category: 'supporting', entities: ['ChangeReport'], journeys: [] },
+        { name: 'Secures codebase access', description: 'Maintains security contexts governing which accounts may read a given analysis.', category: 'supporting', entities: ['SecurityContext'], journeys: [] },
+      ],
+    });
+    try {
+      const dataEntities = [
+        { id: 'entity_analysis', name: 'Analysis' },
+        { id: 'entity_changereport', name: 'ChangeReport' },
+        { id: 'entity_securitycontext', name: 'SecurityContext' },
+      ];
+      const mkOps = (prefix: string, count: number) => Array.from({ length: count }, (_, i) => ({
+        entry_point_id: `node:${prefix}_${i}`, entry_point_type: 'internal', action: 'Coordinate', path_or_command: `src/${prefix}.ts`,
+      }));
+      const catalog = await orch.aiExtractCapabilityCatalog({
+        systemName: 'ak',
+        enhancedSystemPurpose: { primary_domain: 'analysis', core_concepts: [] },
+        frameworks: [], userJourneys: [],
+        dataEntities,
+        candidateCapabilities: [
+          { name: 'Analysis Management', related_entities: ['entity_analysis'], operations: mkOps('analysis', 4) },
+          { name: 'Change Report Management', related_entities: ['entity_changereport'], operations: mkOps('change', 3) },
+          { name: 'Security Context Management', related_entities: ['entity_securitycontext'], operations: mkOps('security', 2) },
+        ],
+        externalServices: [], flowGraph: { capabilities: [] },
+        projectTextSignal: { concepts: [], evidence: [] }, budgetMs: 30000,
+      });
+      expect(catalog.length).toBe(3);
+      const opSets = catalog.map((cap: any) => JSON.stringify((cap.operations || []).map((op: any) => op.entry_point_id).sort()));
+      // The defect: distinct op sets == 1. The fix: each capability owns its own.
+      expect(new Set(opSets).size).toBe(3);
+      const byName = new Map(catalog.map((cap: any) => [cap.name, cap]));
+      expect((byName.get('Exposes codebase analysis') as any).operations.every((op: any) => op.entry_point_id.startsWith('node:analysis_'))).toBe(true);
+      expect((byName.get('Tracks codebase changes') as any).operations.every((op: any) => op.entry_point_id.startsWith('node:change_'))).toBe(true);
+      expect((byName.get('Secures codebase access') as any).operations.every((op: any) => op.entry_point_id.startsWith('node:security_'))).toBe(true);
+    } finally {
+      (aiService as any).generateComponentDescription = original;
+    }
+  });
+
   it('feeds top_down_signals + the purpose test into the catalog prompt, and omits the block when absent', async () => {
     const captured: any[] = [];
     const original = (aiService as any).generateComponentDescription;

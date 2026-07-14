@@ -8822,6 +8822,19 @@ export class AnalyzerOrchestrator {
       'handles', 'enforces', 'surfaces', 'tracks', 'exposes', 'secures', 'monitors',
     ]);
     const seen = new Set<string>();
+    // ---- PASS 1: parse/repair each catalog item (no operation linking yet —
+    // operation assignment needs the FULL item set first, see pass 2). ----
+    type StagedCatalogItem = {
+      name: string;
+      key: string;
+      description: string;
+      category: SystemCapability['category'];
+      relatedEntities: string[];
+      entityNameSet: Set<string>;
+      nameTokensAll: string[];
+      journeys: unknown;
+    };
+    const staged: StagedCatalogItem[] = [];
     for (const item of catalog) {
       const name = String(item.name || '').replace(/\s+/g, ' ').trim();
       const itemEntityNamesRaw = (Array.isArray(item.entities) ? item.entities : []).map((value: unknown) => String(value || '')).filter(Boolean);
@@ -8850,22 +8863,73 @@ export class AnalyzerOrchestrator {
       const relatedEntities = itemEntityNames
         .map((entityName: string) => entityIdByName.get(entityName))
         .filter((value: string | undefined): value is string => Boolean(value));
-      // Link to the deterministic operations (with file paths) of the candidate
-      // areas this capability actually covers, so the catalog stays navigable.
-      // Match on a SHARED ENTITY or a shared DOMAIN token — never on the generic
-      // capability-template connective words ("management", "analysis", ...), which
-      // otherwise cross-wire every "<Noun> Management" cap to every other one and
-      // paste the same boilerplate routes across unrelated capabilities.
-      const nameTokens = new Set(key.split(/\s+/).filter(token => token.length > 3 && !GENERIC_CAPABILITY_NAME_TOKENS.has(token)));
-      const entityNameSet = new Set(itemEntityNames);
-      const operations: SystemCapability['operations'] = [];
-      for (const candidate of input.candidateCapabilities) {
-        const candidateEntityNames = candidate.related_entities.map(id => (entityNameById.get(id) || id).toLowerCase());
-        const candidateTokens = candidate.name.toLowerCase().split(/\s+/).filter(token => token.length > 3 && !GENERIC_CAPABILITY_NAME_TOKENS.has(token));
-        const entityOverlap = candidateEntityNames.some(entityName => entityNameSet.has(entityName));
-        const nameOverlap = candidateTokens.some(token => nameTokens.has(token));
-        if (entityOverlap || nameOverlap) operations.push(...candidate.operations);
+      staged.push({
+        name,
+        key,
+        description,
+        category,
+        relatedEntities,
+        entityNameSet: new Set(itemEntityNames),
+        nameTokensAll: key.split(/\s+/).filter(token => token.length > 3 && !GENERIC_CAPABILITY_NAME_TOKENS.has(token)),
+        journeys: item.journeys,
+      });
+    }
+
+    // ---- PASS 2: link each catalog item to the deterministic operations of
+    // the candidate areas it actually covers, so the catalog stays navigable.
+    //
+    // Two rules keep an operation with the capability that OWNS it (task #17 —
+    // a stored real CAS had 12 capabilities each carrying the IDENTICAL 12-op
+    // set, which made deriveCapabilityRelationships mark every capability
+    // 'primary' for every anchored flow):
+    //
+    // 1. REPO-ADAPTIVE non-discriminative tokens: beyond the fixed generic
+    //    connectives ("management", ...), a token appearing in MOST of THIS
+    //    repo's capability names (e.g. "codebase" on a code-analysis product)
+    //    distinguishes nothing here — matching on it cross-wires the whole
+    //    catalog. Derived from the catalog itself (document frequency), never
+    //    a hardcoded vocabulary.
+    // 2. BEST-MATCH assignment, not broadcast: each CANDIDATE's operations go
+    //    only to the catalog item(s) with the strongest evidence overlap
+    //    (shared entities weighted over shared name tokens). Ties share the
+    //    operations (genuine M:N); everything below the max gets nothing.
+    const tokenDf = new Map<string, number>();
+    for (const item of staged) {
+      for (const token of new Set(item.nameTokensAll)) tokenDf.set(token, (tokenDf.get(token) || 0) + 1);
+    }
+    const nonDiscriminative = new Set(
+      staged.length >= 3
+        ? [...tokenDf.entries()].filter(([, df]) => df > staged.length / 2).map(([token]) => token)
+        : []
+    );
+    const discriminativeTokens = (tokens: string[]) => new Set(tokens.filter(token => !nonDiscriminative.has(token)));
+    const itemTokens = staged.map(item => discriminativeTokens(item.nameTokensAll));
+    const opsByItemIndex = new Map<number, SystemCapability['operations']>();
+    for (const candidate of input.candidateCapabilities) {
+      const candidateEntityNames = candidate.related_entities.map(id => (entityNameById.get(id) || id).toLowerCase());
+      const candidateTokens = discriminativeTokens(
+        candidate.name.toLowerCase().split(/\s+/).filter(token => token.length > 3 && !GENERIC_CAPABILITY_NAME_TOKENS.has(token))
+      );
+      let best = 0;
+      const scores: number[] = staged.map((item, index) => {
+        const entityOverlap = candidateEntityNames.filter(entityName => item.entityNameSet.has(entityName)).length;
+        let tokenOverlap = 0;
+        for (const token of candidateTokens) if (itemTokens[index].has(token)) tokenOverlap++;
+        const score = entityOverlap * 2 + tokenOverlap;
+        if (score > best) best = score;
+        return score;
+      });
+      if (best === 0) continue;
+      for (let index = 0; index < staged.length; index++) {
+        if (scores[index] !== best) continue;
+        if (!opsByItemIndex.has(index)) opsByItemIndex.set(index, []);
+        opsByItemIndex.get(index)!.push(...candidate.operations);
       }
+    }
+
+    for (let index = 0; index < staged.length; index++) {
+      const { name, key, description, category, relatedEntities, journeys } = staged[index];
+      const operations = opsByItemIndex.get(index) || [];
       const dedupedOps = Array.from(new Map(operations.map(op => [op.entry_point_id, op])).values()).slice(0, 12);
       // Drop ungrounded filler: a supporting capability that resolved to NO entity
       // and NO operation has zero evidence in the deterministic facts — it is a
@@ -8885,7 +8949,7 @@ export class AnalyzerOrchestrator {
         category,
         operations: dedupedOps,
         related_entities: relatedEntities,
-        related_domains: Array.isArray(item.journeys) ? item.journeys.map((value: unknown) => String(value || '')).filter(Boolean).slice(0, 6) : [],
+        related_domains: Array.isArray(journeys) ? journeys.map((value: unknown) => String(value || '')).filter(Boolean).slice(0, 6) : [],
         criticality: category === 'core' ? 'high' : 'medium',
         criticality_factors: ['ai-extracted-from-journeys-and-entities'],
       });
@@ -16162,12 +16226,18 @@ export class AnalyzerOrchestrator {
       if (!key || this.domainCoveredByExistingDomain(key, existingDomains)) continue;
       const group = ensureGroup(key, nodeTokens);
       group.nodes.push(node);
-      group.operations.push({
-        entry_point_id: `node:${node.id}`,
-        entry_point_type: 'internal',
-        action: this.inferActionFromNodeName(node.name),
-        path_or_command: node.source?.file,
-      });
+      // Operation anchors must be CALLABLE handlers (task #17: a stored real
+      // CAS carried a `node:import_...` operation anchor — an import is
+      // evidence an entity is referenced, never an operation an agent can
+      // navigate to or a flow can root at).
+      if (TRACEABLE_NODE_TYPES.has(node.type) || node.type === 'method' || node.type === 'class') {
+        group.operations.push({
+          entry_point_id: `node:${node.id}`,
+          entry_point_type: 'internal',
+          action: this.inferActionFromNodeName(node.name),
+          path_or_command: node.source?.file,
+        });
+      }
     }
 
     const capabilities: SystemCapability[] = [];
@@ -16210,12 +16280,17 @@ export class AnalyzerOrchestrator {
 
       const operations = group.operations.length > 0
         ? group.operations
-        : uniqueNodes.slice(0, 6).map(node => ({
-          entry_point_id: `node:${node.id}`,
-          entry_point_type: 'internal',
-          action: this.inferActionFromNodeName(node.name),
-          path_or_command: node.source?.file,
-        }));
+        : uniqueNodes
+          // Same callable-anchor gate as the direct path (task #17): lifecycle
+          // membership can put import/type nodes in the group, and an import
+          // must never become a capability operation.
+          .filter(node => TRACEABLE_NODE_TYPES.has(node.type) || node.type === 'method' || node.type === 'class')
+          .slice(0, 6).map(node => ({
+            entry_point_id: `node:${node.id}`,
+            entry_point_type: 'internal',
+            action: this.inferActionFromNodeName(node.name),
+            path_or_command: node.source?.file,
+          }));
       const category = this.inferTerminalCapabilityCategory(key, uniqueNodes, uniqueEntities, repoPlumbingProfile);
       // Deterministic STRUCTURAL label (fact). Drives the quality gates below,
       // dedup, and the fact-grounded description. It carries the "<Domain>
