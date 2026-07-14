@@ -209,6 +209,106 @@ export interface FlowILSOContract extends ILSOContract {
   internal_outputs_count?: number;
 }
 
+/**
+ * D1 (docs/SEMANTIC-MODEL.md, Step): "Step ↔ code is many-to-many. One step may
+ * span several functions plus a branch inside another; one large function may
+ * contain several steps; a generic authorizeRequest() may serve hundreds of
+ * steps." The mapping is TYPED — how a code region relates to the step, not
+ * just that it does.
+ *
+ * Deterministic (Camp-B) derivation rules — every relationship is grounded in a
+ * fact the CAS already computed, never fabricated:
+ *   - 'implements'            — default for the SOLE node of a step's segment
+ *                               when no more-specific relationship applies.
+ *   - 'partially_implements'  — default for each node of a MULTI-node segment
+ *                               when no more-specific relationship applies.
+ *   - 'initiates'             — the node bound to the flow's entry point
+ *                               (first step only).
+ *   - 'completes'             — the node resolving the flow's terminus exit
+ *                               point (terminal step of a terminal-chain flow).
+ *   - 'validates'             — the node contributes a non-error constraint
+ *                               (source guard clause, entry-point auth/
+ *                               validation facts, data-entity invariant
+ *                               enforced_by — the same facts D2's provenance
+ *                               cites).
+ *   - 'handles_failure'       — the node is an instance of a try-catch pattern
+ *                               (cas.patterns) — it sits on a catch path.
+ *   - 'branches'              — the node has a conditional control-flow
+ *                               successor (buildConditionalOutIndex evidence,
+ *                               the same facts C1's 'branch' step-graph edges
+ *                               use).
+ *   - 'causes_effect'         — the node contributes a state change or
+ *                               external integration (its own exit points /
+ *                               data_lineage writes — D2's effects facts).
+ *   - 'observes'              — the node contributes TELEMETRY ONLY (all its
+ *                               exits are telemetry kinds, no writes).
+ *   - 'provides_input'        — the node writes an entity the NEXT step's
+ *                               nodes read (data_lineage only; skipped when
+ *                               not derivable — no fabrication).
+ *   - 'consumes_output'       — the node reads an entity the PREVIOUS step's
+ *                               nodes wrote (data_lineage only).
+ *   - 'transforms'            — in the vocabulary (doctrine) but carries NO
+ *                               deterministic derivation rule yet; only an
+ *                               AI/manual pass may assert it, evidence-gated
+ *                               (same posture as the prerequisite/recovery
+ *                               capability-flow roles).
+ *
+ * A node can carry MULTIPLE mappings within one step (e.g. a controller node
+ * that initiates + validates + causes_effect), and the SAME node mapped into
+ * different steps (shared helpers across flows) can carry different
+ * relationships in each — that is the many-to-many point.
+ */
+export type StepCodeRelationship =
+  | 'implements'
+  | 'partially_implements'
+  | 'initiates'
+  | 'completes'
+  | 'validates'
+  | 'branches'
+  | 'transforms'
+  | 'causes_effect'
+  | 'observes'
+  | 'handles_failure'
+  | 'provides_input'
+  | 'consumes_output';
+
+/** The code region a mapping points at. Node-level today; `line_range` is
+ *  present only when the node carries real span facts (source.line/end_line) —
+ *  never invented. */
+export interface StepCodeRegion {
+  node_id: string;
+  file?: string;
+  line_range?: [number, number];
+}
+
+/** INTRA-FUNCTION SEGMENTATION PLUG POINT (D1, docs/SEMANTIC-MODEL.md:
+ *  "intra-function step segmentation (AI-proposed, evidence-gated)"): a
+ *  sub-region INSIDE the mapped node that realizes just this step. AI-ONLY-
+ *  OR-ABSENT per docs/cas/DETERMINISM-BOUNDARY.md — the deterministic pass
+ *  NEVER populates it; only a future AI enrichment pass may, and every
+ *  proposed segment must cite the deterministic evidence (`evidence_refs`)
+ *  that grounds it. */
+export interface StepCodeSubSegment {
+  label: string;
+  line_range: [number, number];
+  description_source: 'ai';
+  evidence_refs: string[];
+}
+
+export interface StepCodeMapping {
+  step_id: string;
+  code_region: StepCodeRegion;
+  relationship: StepCodeRelationship;
+  /** Short deterministic phrase citing the concrete fact that produced this
+   *  mapping (same style as D2's facet-provenance evidence strings). */
+  contribution: string;
+  /** 1.0 for mappings derived from direct CAS facts (all deterministic rules
+   *  above are). Weaker derivations should be omitted, not down-weighted. */
+  confidence: number;
+  /** ABSENT in deterministic runs — see StepCodeSubSegment. */
+  sub_segments?: StepCodeSubSegment[];
+}
+
 export interface FlowStep {
   step_id: string;
   order: number;
@@ -238,6 +338,14 @@ export interface FlowStep {
    *  down. Empty (not omitted) when this step genuinely touches no known
    *  entity. */
   entities: string[];
+  /** D1 typed step↔code mappings (many-to-many; see StepCodeMapping). One or
+   *  more mappings per node in this step's segment, each grounded in a CAS
+   *  fact. Sorted (node_id, relationship), capped at STEP_CODE_MAPPING_CAP.
+   *  Additive — consumers reading `functions`/`contract` see no change. */
+  code_mappings?: StepCodeMapping[];
+  /** Honest truncation marker: how many derived mappings were dropped by the
+   *  STEP_CODE_MAPPING_CAP. Present only when > 0 — never zero-filled. */
+  code_mappings_truncated?: number;
 }
 
 /**
@@ -1600,6 +1708,221 @@ function buildDeleterNodeIds(cas: CASOutput): Set<string> {
   return ids;
 }
 
+// ---------------------------------------------------------------------------
+// STEP↔CODE MAPPINGS (D1) — typed many-to-many mappings from a step to the
+// code regions that realize it (docs/SEMANTIC-MODEL.md, Step). Deterministic:
+// every relationship is grounded in a fact the CAS already computed (the same
+// facts C1's step-graph edges and D2's facet provenance cite).
+// ---------------------------------------------------------------------------
+
+/** Sane per-step cap on code mappings — a step's segment is already bounded by
+ *  maxFunctionsPerFlow, so this only guards a pathological many-relationship
+ *  blowup. Overflow is reported honestly via `code_mappings_truncated`. */
+const STEP_CODE_MAPPING_CAP = 50;
+
+/** Per-CAS evidence indexes for the D1 mapping rules that aren't already
+ *  indexed elsewhere: try-catch pattern membership (→ 'handles_failure') and
+ *  data-entity invariant enforcement (→ 'validates'). node id → the concrete
+ *  evidence string. Facts only; built once per CAS. */
+function buildStepMappingEvidence(cas: CASOutput): {
+  tryCatchEvidence: Map<string, string>;
+  invariantEvidence: Map<string, string>;
+} {
+  const tryCatchEvidence = new Map<string, string>();
+  for (const p of cas.patterns || []) {
+    if (!p.name.toLowerCase().includes('try-catch')) continue;
+    for (const id of p.instances || []) {
+      if (!tryCatchEvidence.has(id)) {
+        tryCatchEvidence.set(id, `node is an instance of pattern "${p.name}" — sits on a catch/failure-handling path`);
+      }
+    }
+  }
+  const invariantEvidence = new Map<string, string>();
+  for (const entity of cas.data_entities || []) {
+    for (const inv of entity.invariants || []) {
+      for (const id of inv.enforced_by || []) {
+        if (!invariantEvidence.has(id)) {
+          invariantEvidence.set(id, `enforces data_entity "${entity.name}" invariant: ${inv.description}`);
+        }
+      }
+    }
+  }
+  return { tryCatchEvidence, invariantEvidence };
+}
+
+/** The code region for a node: node-level always; file + line_range only when
+ *  the node carries the real span facts — never invented. */
+function codeRegionFor(node: CASNode): StepCodeRegion {
+  const region: StepCodeRegion = { node_id: node.id };
+  if (node.source?.file) region.file = node.source.file;
+  const line = node.source?.line;
+  const endLine = node.source?.end_line;
+  if (typeof line === 'number' && typeof endLine === 'number' && endLine >= line) {
+    region.line_range = [line, endLine];
+  }
+  return region;
+}
+
+/**
+ * Derive the typed StepCodeMappings for one step's segment — the D1 rules
+ * (see StepCodeRelationship for the rule table). Each node gets its specific
+ * relationships when the facts support them; a node with NO specific
+ * relationship falls back to the default ('implements' for a sole node,
+ * 'partially_implements' in a multi-node segment). The same node may carry
+ * multiple mappings (many-to-many within the step), and the same node mapped
+ * into a different step/flow derives its relationships independently there
+ * (many-to-many across steps). Deterministic: deduped per (node, relationship),
+ * sorted (node_id, relationship), capped with an honest overflow count.
+ * `sub_segments` is NEVER populated here (AI-only-or-absent).
+ */
+function deriveStepCodeMappings(args: {
+  stepId: string;
+  segNodes: CASNode[];
+  isFirstStep: boolean;
+  isTerminalStep: boolean;
+  /** The flow root's handler node id — grounds 'initiates' on the first step. */
+  rootNodeId?: string;
+  /** Display ref for the entry point cited in the 'initiates' contribution. */
+  rootEpRef?: string;
+  /** Resolved terminus (terminal-chain flows only) — grounds 'completes'. */
+  terminus?: { node_id: string; exit_point_id: string; kind: string };
+  /** Neighboring segments' nodes — ground provides_input/consumes_output via
+   *  data_lineage. Absent for the first/last step respectively. */
+  prevNodes?: CASNode[];
+  nextNodes?: CASNode[];
+  exitPointsByNode: Map<string, CASExitPoint[]>;
+  lineageByNode: Map<string, { writes: CASEntityLineage[]; reads: CASEntityLineage[] }>;
+  entryPointsByNode: Map<string, CASEntryPoint[]>;
+  conditionalOut: Map<string, string>;
+  tryCatchEvidence: Map<string, string>;
+  invariantEvidence: Map<string, string>;
+}): { mappings: StepCodeMapping[]; truncated: number } {
+  const {
+    stepId, segNodes, isFirstStep, isTerminalStep, rootNodeId, rootEpRef, terminus,
+    prevNodes, nextNodes, exitPointsByNode, lineageByNode, entryPointsByNode,
+    conditionalOut, tryCatchEvidence, invariantEvidence,
+  } = args;
+
+  const byKey = new Map<string, StepCodeMapping>();
+  const add = (node: CASNode, relationship: StepCodeRelationship, contribution: string) => {
+    const key = `${node.id}\u0000${relationship}`;
+    if (byKey.has(key)) return;
+    byKey.set(key, {
+      step_id: stepId,
+      code_region: codeRegionFor(node),
+      relationship,
+      contribution,
+      confidence: 1.0,
+    });
+  };
+
+  // Entity names the neighboring steps' nodes read/write — the data_lineage
+  // ground for provides_input/consumes_output. Empty sets → the rules never
+  // fire (skipped, not fabricated).
+  const nextReads = new Set<string>();
+  for (const n of nextNodes || []) {
+    for (const e of lineageByNode.get(n.id)?.reads || []) nextReads.add(e.entity_name);
+  }
+  const prevWrites = new Set<string>();
+  for (const n of prevNodes || []) {
+    for (const e of lineageByNode.get(n.id)?.writes || []) prevWrites.add(e.entity_name);
+  }
+
+  const multi = segNodes.length > 1;
+  for (const node of segNodes) {
+    let specific = false;
+    const mark = (relationship: StepCodeRelationship, contribution: string) => {
+      specific = true;
+      add(node, relationship, contribution);
+    };
+
+    // initiates — the node bound to the flow's entry point (first step only).
+    if (isFirstStep && rootNodeId !== undefined && node.id === rootNodeId) {
+      mark('initiates', `bound to the flow's entry point${rootEpRef ? ` ${rootEpRef}` : ''} (root handler node)`);
+    }
+    // completes — the node resolving the flow's terminus (terminal step only).
+    if (isTerminalStep && terminus && node.id === terminus.node_id) {
+      mark('completes', `resolves the flow's terminus exit point ${terminus.exit_point_id} (${terminus.kind})`);
+    }
+
+    // validates — non-error constraint facts THIS node contributes (the same
+    // facts D2's provenance cites): source guard clauses, entry-point auth/
+    // validation facts, data-entity invariants enforced by the node.
+    const srcGuard = extractConstraintsFromSource(node)[0];
+    if (srcGuard) mark('validates', `enforces "${srcGuard.rule}" (guard clause in node source)`);
+    for (const ep of entryPointsByNode.get(node.id) || []) {
+      const hasAuth = Boolean(ep.security?.authenticated)
+        || (ep.security?.guards || []).length > 0
+        || (ep.security?.authorized_roles || ep.security?.roles || []).length > 0;
+      if (hasAuth) mark('validates', `entry point "${ep.name}" carries auth guards (security facts)`);
+      if ((ep.input?.validation || []).length > 0) {
+        mark('validates', `entry point "${ep.name}" carries input.validation rules`);
+      }
+    }
+    const invEv = invariantEvidence.get(node.id);
+    if (invEv) mark('validates', invEv);
+
+    // handles_failure — the node sits on a catch path (try-catch pattern instance).
+    const tcEv = tryCatchEvidence.get(node.id);
+    if (tcEv) mark('handles_failure', tcEv);
+
+    // branches — the node has a conditional control-flow successor (the same
+    // buildConditionalOutIndex evidence C1's 'branch' step-graph edges use).
+    const branchEv = conditionalOut.get(node.id);
+    if (branchEv) mark('branches', branchEv);
+
+    // causes_effect / observes — the node's own exits + lineage writes (D2's
+    // effects facts). Telemetry-only exits with no writes → 'observes' instead.
+    const exits = exitPointsByNode.get(node.id) || [];
+    const writes = lineageByNode.get(node.id)?.writes || [];
+    const effectExit = exits.find(e => !TELEMETRY_EXIT_KINDS.has(e.type));
+    if (effectExit) {
+      const facet = ['database', 'cache', 'file'].includes(effectExit.type) ? 'state change' : 'external integration';
+      mark('causes_effect', `exit point ${effectExit.id} (${effectExit.type}) on this node — ${facet}`);
+    } else if (writes.length > 0) {
+      mark('causes_effect', `data_lineage "${writes[0].entity_name}" writers include this node — state change`);
+    }
+    const telemetryExit = exits.find(e => TELEMETRY_EXIT_KINDS.has(e.type));
+    if (telemetryExit && !effectExit && writes.length === 0) {
+      mark('observes', `all exits on this node are telemetry kinds (exit point ${telemetryExit.id}, ${telemetryExit.type}) and it writes no entity`);
+    }
+
+    // provides_input / consumes_output — data_lineage-derivable ONLY.
+    if (nextReads.size > 0) {
+      const provided = writes.find(w => nextReads.has(w.entity_name));
+      if (provided) {
+        mark('provides_input', `writes "${provided.entity_name}" which the next step's nodes read (data_lineage)`);
+      }
+    }
+    if (prevWrites.size > 0) {
+      const reads = lineageByNode.get(node.id)?.reads || [];
+      const consumed = reads.find(r => prevWrites.has(r.entity_name));
+      if (consumed) {
+        mark('consumes_output', `reads "${consumed.entity_name}" which the previous step's nodes wrote (data_lineage)`);
+      }
+    }
+
+    // Default mapping when nothing more specific applied.
+    if (!specific) {
+      add(
+        node,
+        multi ? 'partially_implements' : 'implements',
+        multi
+          ? `one of ${segNodes.length} nodes realizing this step's segment ("${node.name}")`
+          : `sole node of this step's segment ("${node.name}")`
+      );
+    }
+  }
+
+  const sorted = [...byKey.values()].sort((a, b) =>
+    a.code_region.node_id.localeCompare(b.code_region.node_id)
+    || a.relationship.localeCompare(b.relationship));
+  if (sorted.length > STEP_CODE_MAPPING_CAP) {
+    return { mappings: sorted.slice(0, STEP_CODE_MAPPING_CAP), truncated: sorted.length - STEP_CODE_MAPPING_CAP };
+  }
+  return { mappings: sorted, truncated: 0 };
+}
+
 /** Sane cap on step-graph edges (steps are already function-capped, so this is
  *  a defensive bound only — a pathological flow never emits an unbounded graph). */
 const STEP_GRAPH_EDGE_CAP = 250;
@@ -1838,6 +2161,7 @@ function buildTerminalFlows(cas: CASOutput, opts: ComputeFlowConceptsOptions): F
   const lineageByNode = buildLineageIndex(cas);
   const conditionalOut = buildConditionalOutIndex(cas);
   const deleterNodeIds = buildDeleterNodeIds(cas);
+  const mappingEvidence = buildStepMappingEvidence(cas);
   const exitById = new Map((cas.exit_points || []).map(e => [e.id, e]));
   const entryById = new Map((cas.entry_points || []).map(e => [e.id, e]));
 
@@ -1937,8 +2261,28 @@ function buildTerminalFlows(cas: CASOutput, opts: ComputeFlowConceptsOptions): F
       }
 
       const stepNodeIds = new Set(seg.nodes.map(n => n.id));
+      const stepId = `flow::${chain.id}::step${i}`;
+      // D1 typed step↔code mappings — grounded in the same facts as the step
+      // graph (branches), D2 provenance (validates/causes_effect/observes) and
+      // the resolved terminus (initiates/completes).
+      const { mappings: codeMappings, truncated: mappingsTruncated } = deriveStepCodeMappings({
+        stepId,
+        segNodes: seg.nodes,
+        isFirstStep: i === 0,
+        isTerminalStep: i === segments.length - 1,
+        rootNodeId: chain.entry_point.node_id,
+        rootEpRef: rootEp?.id || chain.entry_point.entry_point_id,
+        terminus: exit ? { node_id: terminusNodeId, exit_point_id: exit.id, kind: exit.type } : undefined,
+        prevNodes: segments[i - 1]?.nodes,
+        nextNodes: segments[i + 1]?.nodes,
+        exitPointsByNode,
+        lineageByNode,
+        entryPointsByNode,
+        conditionalOut,
+        ...mappingEvidence,
+      });
       const step: FlowStep = {
-        step_id: `flow::${chain.id}::step${i}`,
+        step_id: stepId,
         order: i,
         name,
         description,
@@ -1946,6 +2290,8 @@ function buildTerminalFlows(cas: CASOutput, opts: ComputeFlowConceptsOptions): F
         contract,
         functions,
         entities: entitiesForNodes(stepNodeIds, cas),
+        ...(codeMappings.length > 0 ? { code_mappings: codeMappings } : {}),
+        ...(mappingsTruncated > 0 ? { code_mappings_truncated: mappingsTruncated } : {}),
       };
       if (opts.nameStep && rootEp) {
         const override = opts.nameStep(step, { flowEntryPoint: rootEp });
@@ -2185,6 +2531,7 @@ function computeEntryPointFlows(
   const lineageByNode = buildLineageIndex(cas);
   const conditionalOut = buildConditionalOutIndex(cas);
   const deleterNodeIds = buildDeleterNodeIds(cas);
+  const mappingEvidence = buildStepMappingEvidence(cas);
 
   const entryPointsByNode = new Map<string, CASEntryPoint[]>();
   for (const ep of cas.entry_points || []) {
@@ -2262,8 +2609,26 @@ function computeEntryPointFlows(
       }
 
       const stepNodeIds = new Set(seg.nodes.map(n => n.id));
+      const stepId = `${ep.id}::step${i}`;
+      // D1 typed step↔code mappings. No resolved terminus on entry-point-rooted
+      // flows — 'completes' is never derived here (omitted, not fabricated).
+      const { mappings: codeMappings, truncated: mappingsTruncated } = deriveStepCodeMappings({
+        stepId,
+        segNodes: seg.nodes,
+        isFirstStep: i === 0,
+        isTerminalStep: i === segments.length - 1,
+        rootNodeId: ep.handler?.node_id || ep.source_node,
+        rootEpRef: ep.id,
+        prevNodes: segments[i - 1]?.nodes,
+        nextNodes: segments[i + 1]?.nodes,
+        exitPointsByNode,
+        lineageByNode,
+        entryPointsByNode,
+        conditionalOut,
+        ...mappingEvidence,
+      });
       const step: FlowStep = {
-        step_id: `${ep.id}::step${i}`,
+        step_id: stepId,
         order: i,
         name,
         description,
@@ -2271,6 +2636,8 @@ function computeEntryPointFlows(
         contract,
         functions,
         entities: entitiesForNodes(stepNodeIds, cas),
+        ...(codeMappings.length > 0 ? { code_mappings: codeMappings } : {}),
+        ...(mappingsTruncated > 0 ? { code_mappings_truncated: mappingsTruncated } : {}),
       };
       if (opts.nameStep) {
         const override = opts.nameStep(step, { flowEntryPoint: ep });
