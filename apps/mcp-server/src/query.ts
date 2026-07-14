@@ -3648,6 +3648,10 @@ export function getFlowConcepts(
   cas: CASOutput,
   opts: {
     target?: string; maxDepth?: number; maxFunctionsPerFlow?: number; maxFlows?: number; includeStructural?: boolean; runtimeMetrics?: RuntimeMetricLike[]; role?: SemanticRole;
+    /** 'compact' (default) elides the heavy evidence tiers (contract
+     *  facet_provenance, step code_mappings) with availability markers so the
+     *  browse response stays inside the size budget; 'full' inlines them. */
+    detail?: 'compact' | 'full';
     /** Persisted AI-authored flow/step descriptions (element-description store,
      *  kind 'flow'), keyed by flow_id AND step_id. This is the caller of the
      *  interpretive `nameStep` seam: step keys feed computeFlowConcepts'
@@ -3826,6 +3830,37 @@ export function getFlowConcepts(
   // same reference).
   if (opts.runtimeMetrics && opts.runtimeMetrics.length > 0) {
     attachTelemetryToFlows(flows, opts.runtimeMetrics);
+  }
+
+  // COMPACT projection (default): D2 facet_provenance + D1 code_mappings
+  // inflate per-flow weight ~3-4x, and with the significance-first flow window
+  // (task #15) the default window carries REAL flows — a whale's compact
+  // get_flow_concepts response measured 138KB against the 64KB budget. The
+  // heavy evidence tiers leave the default projection (marker fields say what
+  // was elided); `detail: 'full'` opts back in for callers that want the
+  // walkable provenance/mapping chains inline. Built as NEW objects — the
+  // underlying flow/step/contract objects are shared with `flows` and must
+  // not be mutated.
+  if (opts.detail !== 'full') {
+    const stripContract = (contract: any) => {
+      if (!contract || typeof contract !== 'object' || !('facet_provenance' in contract)) return contract;
+      const { facet_provenance: _fp, ...rest } = contract;
+      return { ...rest, facet_provenance_available: true };
+    };
+    flowsOut = flowsOut.map(flow => ({
+      ...flow,
+      contract: stripContract(flow.contract),
+      steps: Array.isArray(flow.steps)
+        ? flow.steps.map((step: any) => {
+            const { code_mappings: cm, code_mappings_truncated: _cmt, ...rest } = step;
+            return {
+              ...rest,
+              contract: stripContract(step.contract),
+              ...(Array.isArray(cm) && cm.length ? { code_mappings_available: cm.length } : {}),
+            };
+          })
+        : flow.steps,
+    }));
   }
 
   return {

@@ -4100,9 +4100,10 @@ function registerTools(server: McpServer) {
         max_functions_per_flow: z.number().optional().describe('Cap on distinct functions traced per flow, deduped (default 40)'),
         max_flows: z.number().optional().describe('Cap on number of flows returned (default 15 when target is omitted — each flow carries a full I/L/S/O contract per flow+step, so "all entry points" can be very large on big repos; response reports total_available/truncated so you know when to raise this. When target is set the result is already narrow and uncapped by default.)'),
         role: z.enum(['core', 'supporting', 'infrastructure']).optional().describe('Filter to flows with this semantic role. core = domain capability flows; supporting = auth/config/notifications/audit; infrastructure = plumbing (health/telemetry/migrations/serialization). Each returned flow also carries `role` + `role_evidence`, and the response includes a role_breakdown count. When set, all flows are classified first so the filter never silently misses matches past the browse cap.'),
+        detail: z.enum(['compact', 'full']).optional().describe("'compact' (default) elides the heavy evidence tiers — contract facet_provenance and per-step code_mappings — with availability markers (facet_provenance_available, code_mappings_available) so a browse response stays small; 'full' inlines the walkable provenance + typed step-code mapping chains. Prefer compact + a targeted full call over full browsing."),
       } as any,
     } as any,
-    async ({ path, target, max_depth, max_functions_per_flow, max_flows, role }: any) => withErrorHandling(async () => {
+    async ({ path, target, max_depth, max_functions_per_flow, max_flows, role, detail }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
       // TELEMETRY facet: join persisted runtime metrics onto flow/step
       // contracts when observations exist (evidence-gated, omitted otherwise).
@@ -4112,7 +4113,7 @@ function registerTools(server: McpServer) {
       // matched units flip description_source to 'ai'; unmatched units keep
       // their deterministic labels. Empty store -> fully deterministic output.
       const aiDescriptions = await descriptionEnrichment.loadStoredFlowDescriptions(path).catch(() => undefined);
-      return json(query.getFlowConcepts(cas, { target, maxDepth: max_depth, maxFunctionsPerFlow: max_functions_per_flow, maxFlows: max_flows, role, runtimeMetrics, aiDescriptions }));
+      return json(query.getFlowConcepts(cas, { target, maxDepth: max_depth, maxFunctionsPerFlow: max_functions_per_flow, maxFlows: max_flows, role, detail, runtimeMetrics, aiDescriptions }));
     })
   );
 

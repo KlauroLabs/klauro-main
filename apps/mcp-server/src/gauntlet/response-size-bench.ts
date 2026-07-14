@@ -57,11 +57,16 @@ export const RESPONSE_SIZE_BUDGETS: ResponseSizeBudget[] = [
   // point) — measured 1,133 flows / ~1.87MB / ~467k tokens on this repo
   // before query.ts's DEFAULT_MAX_FLOWS=15 fix. 15 capped flows measure
   // ~14.2k tokens on this repo (each flow carries a full I/L/S/O contract
-  // per flow AND per step, so this is real signal, not filler) — 16000 tok
-  // budget gives modest headroom while still catching any regression back
-  // toward "all entry points" by default (a regression would blow past this
-  // by 1-2 orders of magnitude, not marginally).
-  { tool: 'get_flow_concepts', budget_bytes: 16000 * 4 },
+  // per flow AND per step, so this is real signal, not filler). Raised
+  // 16000->16500 tok for the semantic-model wave: the significance-first
+  // flow window (task #15) fills the default window with REAL flows instead
+  // of trivial test-entry flows, and each carries the C1 step_graph + D2
+  // reframed flow contract — measured 64,192B compact (the heavy
+  // facet_provenance/code_mappings tiers are already elided from the compact
+  // projection; detail:'full' carries them). The bench still catches any
+  // regression back toward "all entry points" by default (a regression would
+  // blow past this by 1-2 orders of magnitude, not marginally).
+  { tool: 'get_flow_concepts', budget_bytes: 16500 * 4 },
 ];
 
 function byteSize(value: unknown): number {
