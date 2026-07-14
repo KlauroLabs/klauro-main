@@ -149,6 +149,38 @@ interface PHPEnumCase {
   lineNumber: number;
 }
 
+/**
+ * Per-class type facts used by call-graph resolution: what a class extends /
+ * implements / uses, and the declared type of each property (typed
+ * declarations, PHP 8 promoted constructor params, constructor-assignment
+ * injection, and `@var` docblocks). All names are namespace-stripped base
+ * names — the analyzer's node lookup tables are keyed the same way.
+ */
+interface PhpClassTypeInfo {
+  name: string;
+  isInterface: boolean;
+  isAbstract: boolean;
+  extendsName?: string;
+  interfaces: string[];
+  traits: string[];
+  propertyTypes: Map<string, string>;
+  /** Declared return types (base names) — lets `$x = $this->repo->createQb()` type $x. */
+  methodReturnTypes: Map<string, string>;
+}
+
+/**
+ * Project-wide type index for evidence-gated call resolution: Symfony DI
+ * (interface -> unique implementation, or an explicit services.yaml alias)
+ * and Doctrine (entity -> custom repository class from
+ * `repositoryClass:`/`parent::__construct($registry, Entity::class)`).
+ */
+interface PhpTypeIndex {
+  classInfoByName: Map<string, PhpClassTypeInfo>;
+  implsByInterface: Map<string, string[]>;
+  repoClassByEntity: Map<string, string>;
+  bindingByInterface: Map<string, string>;
+}
+
 export class PHPAnalyzer extends BaseAnalyzer {
   private laravelFrameworkDetected = false;
   private symfonyFrameworkDetected = false;
@@ -1778,11 +1810,33 @@ export class PHPAnalyzer extends BaseAnalyzer {
       const line = lines[i].trim();
 
       if (this.isMethodDeclaration(line)) {
+        // Modern PHP (Symfony especially) writes signatures across MANY lines
+        // — one param per line, attributes interleaved. Join the declaration
+        // until its parens balance so those methods exist as nodes at all
+        // (a missing controller/service method kills the whole call chain).
+        let signatureText = line;
+        let signatureEndIndex = i;
+        {
+          let depth = 0;
+          for (const ch of line) {
+            if (ch === '(') depth++;
+            else if (ch === ')') depth--;
+          }
+          for (let j = i + 1; depth > 0 && j < Math.min(lines.length, i + 60); j++) {
+            const cont = lines[j].trim();
+            signatureText += ' ' + cont;
+            for (const ch of cont) {
+              if (ch === '(') depth++;
+              else if (ch === ')') depth--;
+            }
+            signatureEndIndex = j;
+          }
+        }
         // Visibility is OPTIONAL in PHP — a bare `function name()` inside a class
         // is implicitly public. Capture any leading modifiers as a prefix and
         // parse them (order-independent: `public static` or `static public`),
         // defaulting visibility to public when none is written.
-        const methodMatch = line.match(/^((?:(?:public|private|protected|static|abstract|final|readonly)\s+)*)function\s+([a-zA-Z0-9_]+)\s*\(([^)]*)\)(?:\s*:\s*([^{]+))?/);
+        const methodMatch = signatureText.match(/^((?:(?:public|private|protected|static|abstract|final|readonly)\s+)*)function\s+([a-zA-Z0-9_]+)\s*\(([^)]*)\)(?:\s*:\s*([^{;]+))?/);
         if (methodMatch) {
           const mods = methodMatch[1].trim().split(/\s+/).filter(Boolean);
           const visibility = mods.find(m => m === 'public' || m === 'private' || m === 'protected') || 'public';
@@ -1795,7 +1849,12 @@ export class PHPAnalyzer extends BaseAnalyzer {
           if (modifier) modifiers.push(modifier);
 
           const docComment = this.extractDocComment(lines, i);
-          const methodEndLine = this.findMethodEnd(lines, i);
+          // Abstract/interface signatures end in `;` with no body — for the
+          // multi-line form the end is where the signature closed, not the
+          // next block findBlockEnd would swallow.
+          const methodEndLine = signatureEndIndex > i && signatureText.trimEnd().endsWith(';')
+            ? signatureEndIndex + 1
+            : this.findMethodEnd(lines, signatureEndIndex > i ? signatureEndIndex : i);
 
           const parameters = this.extractFunctionParameters(paramsStr);
 
@@ -2339,6 +2398,443 @@ export class PHPAnalyzer extends BaseAnalyzer {
     return m;
   }
 
+  /**
+   * Namespace-stripped base class name of a PHP type expression, or undefined
+   * when the type is scalar/keyword-like (string, int, self, ...) and cannot
+   * name a project class. Unions take the first class-like member.
+   */
+  private phpBaseTypeName(raw?: string): string | undefined {
+    if (!raw) return undefined;
+    for (const part of raw.replace(/^\?/, '').split('|')) {
+      const base = (part.trim().replace(/^\\+/, '').split('\\').pop() || '').trim();
+      if (/^[A-Z][A-Za-z0-9_]*$/.test(base)) return base;
+    }
+    return undefined;
+  }
+
+  /**
+   * One pass over the project's PHP files (plus Symfony service config)
+   * building the evidence needed to resolve calls across service boundaries:
+   * property/constructor-injection types, interface -> implementation
+   * candidates, and Doctrine entity -> repository class bindings.
+   * Every fact recorded here is read directly from source — nothing is
+   * guessed from names.
+   */
+  private async buildPhpTypeIndex(projectPath: string, phpFiles: string[]): Promise<PhpTypeIndex> {
+    const classInfoByName = new Map<string, PhpClassTypeInfo>();
+    const implsByInterface = new Map<string, string[]>();
+    const repoClassByEntity = new Map<string, string>();
+    const bindingByInterface = new Map<string, string>();
+
+    const typeDeclRe = /^(?:(abstract|final)\s+)?(class|interface|trait|enum)\s+([A-Za-z_][\w]*)(?:\s*:\s*\w+)?(?:\s+extends\s+([\w\\,\s]+?))?(?:\s+implements\s+([\w\\,\s]+?))?\s*(?:\{|$)/;
+    const propertyRe = /(?:public|private|protected)(?:\s+(?:static|readonly))*\s+(\??[A-Za-z_\\][\w\\|?]*)\s+\$(\w+)/;
+    const untypedPropertyRe = /^(?:public|private|protected)(?:\s+(?:static|readonly))*\s+\$(\w+)/;
+    const repoAttrRe = /repositoryClass\s*[:=]\s*(?:\\?([\w\\]+)::class|["']\\?([\w\\]+)["'])/;
+
+    for (const file of phpFiles) {
+      const fullPath = path.isAbsolute(file) ? file : path.join(projectPath, file);
+      let content: string;
+      try {
+        content = await this.readFileCached(fullPath);
+      } catch {
+        continue;
+      }
+      const lines = content.split('\n');
+
+      let current: PhpClassTypeInfo | undefined;
+      let currentEnd = -1;
+      let pendingRepoClass: string | undefined;
+      let pendingVarType: string | undefined;
+      let sigAccum: string | null = null;
+      let sigDepth = 0;
+      let lastSigParamTypes: Map<string, string> | undefined;
+
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i].trim();
+        if (current && i + 1 > currentEnd) current = undefined;
+
+        // Doctrine repository binding evidence lives in attributes/annotations
+        // (often inside docblocks), so scan for it before skipping comments.
+        const repoMatch = line.match(repoAttrRe);
+        if (repoMatch) pendingRepoClass = this.phpBaseTypeName(repoMatch[1] || repoMatch[2]);
+        const varMatch = line.match(/@var\s+([\w\\|?]+)/);
+        if (varMatch) pendingVarType = varMatch[1];
+
+        if (line.startsWith('//') || line.startsWith('*') || line.startsWith('/*')) continue;
+
+        if (/\b(?:class|interface|trait|enum)\s+[A-Za-z_]/.test(line)) {
+          const decl = line.match(typeDeclRe);
+          if (decl) {
+            const kind = decl[2];
+            const name = decl[3];
+            const extendsList = (decl[4] || '').split(',').map(s => this.phpBaseTypeName(s)).filter((s): s is string => !!s);
+            const implementsList = (decl[5] || '').split(',').map(s => this.phpBaseTypeName(s)).filter((s): s is string => !!s);
+            current = {
+              name,
+              isInterface: kind === 'interface',
+              isAbstract: decl[1] === 'abstract',
+              extendsName: kind === 'interface' ? undefined : extendsList[0],
+              // For interfaces, `extends` lists parent interfaces.
+              interfaces: kind === 'interface' ? extendsList : implementsList,
+              traits: [],
+              propertyTypes: new Map(),
+              methodReturnTypes: new Map()
+            };
+            currentEnd = this.findBlockEnd(lines, i);
+            if (!classInfoByName.has(name)) classInfoByName.set(name, current);
+            if (pendingRepoClass && kind === 'class') {
+              if (!repoClassByEntity.has(name)) repoClassByEntity.set(name, pendingRepoClass);
+              pendingRepoClass = undefined;
+            }
+            pendingVarType = undefined;
+            lastSigParamTypes = undefined;
+            continue;
+          }
+        }
+
+        if (!current) continue;
+
+        // Trait usage inside a class body: `use FooTrait;` / `use A, B;`
+        const traitUse = line.match(/^use\s+([\w\\]+(?:\s*,\s*[\w\\]+)*)\s*;/);
+        if (traitUse) {
+          for (const t of traitUse[1].split(',')) {
+            const base = this.phpBaseTypeName(t);
+            if (base) current.traits.push(base);
+          }
+          continue;
+        }
+
+        // Typed property declarations AND promoted constructor params share
+        // one shape: `<visibility> [static|readonly] Type $name`.
+        const prop = line.match(propertyRe);
+        if (prop) {
+          const t = this.phpBaseTypeName(prop[1]);
+          if (t && !current.propertyTypes.has(prop[2])) current.propertyTypes.set(prop[2], t);
+          pendingVarType = undefined;
+        } else {
+          const untyped = line.match(untypedPropertyRe);
+          if (untyped && pendingVarType) {
+            const t = this.phpBaseTypeName(pendingVarType);
+            if (t && !current.propertyTypes.has(untyped[1])) current.propertyTypes.set(untyped[1], t);
+            pendingVarType = undefined;
+          }
+        }
+
+        // Accumulate method signatures (they span lines in real Symfony code)
+        // so constructor-assignment injection `$this->x = $x;` can inherit
+        // the constructor param's declared type.
+        if (sigAccum === null && /function\s+\w+\s*\(/.test(line)) {
+          sigAccum = '';
+          sigDepth = 0;
+        }
+        if (sigAccum !== null) {
+          sigAccum += ' ' + line;
+          for (const ch of line) {
+            if (ch === '(') sigDepth++;
+            else if (ch === ')') sigDepth--;
+          }
+          if (sigDepth <= 0 && sigAccum.includes('(')) {
+            lastSigParamTypes = new Map();
+            const sigParams = sigAccum.slice(sigAccum.indexOf('('));
+            for (const pm of sigParams.matchAll(/(\??[A-Za-z_\\][\w\\|?]*)\s+&?(?:\.\.\.)?\$(\w+)/g)) {
+              const t = this.phpBaseTypeName(pm[1]);
+              if (t) lastSigParamTypes.set(pm[2], t);
+            }
+            // Declared return type — evidence for typing fluent/assigned
+            // call results (`$qb = $this->repo->createQueryBuilder(...)`).
+            const sigHead = sigAccum.match(/function\s+(\w+)\s*\(/);
+            const closeParen = sigParams.lastIndexOf(')');
+            const returnDecl = closeParen >= 0 ? sigParams.slice(closeParen + 1).match(/^\s*:\s*(\??[\w\\|]+)/) : null;
+            if (sigHead && returnDecl) {
+              const raw = returnDecl[1].replace(/^\?/, '');
+              // Fluent builders declare `self`/`static` — that IS this class.
+              const rt = raw === 'self' || raw === 'static' ? current.name : this.phpBaseTypeName(raw);
+              if (rt && !current.methodReturnTypes.has(sigHead[1])) current.methodReturnTypes.set(sigHead[1], rt);
+            }
+            sigAccum = null;
+          }
+          if (sigAccum !== null) continue;
+        }
+
+        const assign = line.match(/\$this->(\w+)\s*=\s*\$(\w+)\s*[;,]?\s*$/);
+        if (assign && lastSigParamTypes) {
+          const t = lastSigParamTypes.get(assign[2]);
+          if (t && !current.propertyTypes.has(assign[1])) current.propertyTypes.set(assign[1], t);
+        }
+
+        // ServiceEntityRepository convention: the repository names its entity.
+        const parentCtor = line.match(/parent::__construct\(\s*\$\w+\s*,\s*\\?([\w\\]+)::class/);
+        if (parentCtor) {
+          const entity = this.phpBaseTypeName(parentCtor[1]);
+          if (entity && !repoClassByEntity.has(entity)) repoClassByEntity.set(entity, current.name);
+        }
+      }
+    }
+
+    // interface -> implementation candidates. Interface inheritance counts:
+    // a class implementing IChild also implements everything IChild extends.
+    const expandInterfaces = (names: string[]): Set<string> => {
+      const out = new Set<string>();
+      const queue = [...names];
+      while (queue.length) {
+        const n = queue.pop()!;
+        if (out.has(n)) continue;
+        out.add(n);
+        const info = classInfoByName.get(n);
+        if (info?.isInterface) queue.push(...info.interfaces);
+      }
+      return out;
+    };
+    for (const info of classInfoByName.values()) {
+      if (info.isInterface || info.interfaces.length === 0) continue;
+      for (const iface of expandInterfaces(info.interfaces)) {
+        if (!classInfoByName.get(iface)?.isInterface) continue;
+        const impls = implsByInterface.get(iface) || [];
+        impls.push(info.name);
+        implsByInterface.set(iface, impls);
+      }
+    }
+    // Prefer concrete implementations when counting candidates: an abstract
+    // base implementing the interface is not the object DI will inject.
+    for (const [iface, impls] of implsByInterface) {
+      const concrete = impls.filter(name => !classInfoByName.get(name)?.isAbstract);
+      if (concrete.length > 0 && concrete.length < impls.length) implsByInterface.set(iface, concrete);
+    }
+
+    await this.collectPhpServiceBindings(projectPath, bindingByInterface);
+
+    return { classInfoByName, implsByInterface, repoClassByEntity, bindingByInterface };
+  }
+
+  /**
+   * Symfony services.yaml alias evidence for interface -> implementation
+   * binding when multiple implementations exist. Only explicit aliases are
+   * trusted: `Foo\BarInterface: '@Foo\Baz'` or a nested `alias:` key.
+   */
+  private async collectPhpServiceBindings(projectPath: string, out: Map<string, string>): Promise<void> {
+    let configFiles: string[] = [];
+    try {
+      configFiles = await glob(
+        ['config/**/*.yaml', 'config/**/*.yml', 'app/config/**/*.yml', 'services.yaml', 'services.yml'],
+        { cwd: projectPath, ignore: ['**/vendor/**', '**/node_modules/**'], nodir: true }
+      );
+    } catch {
+      return;
+    }
+    configFiles.sort();
+    for (const file of configFiles) {
+      let content: string;
+      try {
+        content = await this.readFileCached(path.join(projectPath, file));
+      } catch {
+        continue;
+      }
+      const lines = content.split('\n');
+      let pendingKey: string | undefined;
+      for (const rawLine of lines) {
+        const line = rawLine.replace(/#.*$/, '');
+        const inline = line.match(/^\s*\\?([\w\\]+Interface)\s*:\s*['"]?@\\?([\w\\]+)['"]?\s*$/);
+        if (inline) {
+          const iface = this.phpBaseTypeName(inline[1]);
+          const impl = this.phpBaseTypeName(inline[2]);
+          if (iface && impl && !out.has(iface)) out.set(iface, impl);
+          pendingKey = undefined;
+          continue;
+        }
+        const key = line.match(/^\s*\\?([\w\\]+Interface)\s*:\s*$/);
+        if (key) {
+          pendingKey = this.phpBaseTypeName(key[1]);
+          continue;
+        }
+        if (pendingKey) {
+          const alias = line.match(/^\s+alias\s*:\s*['"]?@?\\?([\w\\]+)['"]?\s*$/);
+          if (alias) {
+            const impl = this.phpBaseTypeName(alias[1]);
+            if (impl && !out.has(pendingKey)) out.set(pendingKey, impl);
+          }
+          if (line.trim() !== '') pendingKey = undefined;
+        }
+      }
+    }
+  }
+
+  /**
+   * Resolve a declared type to the class node a call on it would dispatch to.
+   * Interfaces bind to their implementation ONLY on concrete evidence: an
+   * explicit services.yaml alias, or exactly one implementation in the repo.
+   * Ambiguous interfaces resolve to the interface node itself (the call edge
+   * then truthfully targets the declared method, not a guessed impl).
+   */
+  private resolvePhpTypeToClassNode(
+    typeName: string | undefined,
+    index: PhpTypeIndex,
+    firstClassByName: (name?: string) => CASNode | undefined
+  ): CASNode | undefined {
+    const base = this.phpBaseTypeName(typeName);
+    if (!base) return undefined;
+    const node = firstClassByName(base);
+    const isInterface = node?.type === 'interface' || index.classInfoByName.get(base)?.isInterface === true;
+    if (isInterface) {
+      const bound = index.bindingByInterface.get(base);
+      if (bound) {
+        const implNode = firstClassByName(bound);
+        if (implNode) return implNode;
+      }
+      const impls = index.implsByInterface.get(base);
+      if (impls && impls.length === 1) {
+        const implNode = firstClassByName(impls[0]);
+        if (implNode) return implNode;
+      }
+    }
+    return node;
+  }
+
+  /**
+   * Find a method on a class or anywhere up its inheritance surface:
+   * the class itself, its traits, then the extends chain (each parent's
+   * traits included). Bounded and cycle-guarded.
+   */
+  private findPhpMethodInHierarchy(
+    startClass: CASNode | undefined,
+    methodName: string | undefined,
+    index: PhpTypeIndex,
+    firstClassByName: (name?: string) => CASNode | undefined,
+    firstMethodInClass: (classId: string, name?: string) => CASNode | undefined
+  ): CASNode | undefined {
+    if (!startClass || !methodName) return undefined;
+    const visited = new Set<string>();
+    let cursor: CASNode | undefined = startClass;
+    for (let depth = 0; cursor && depth < 8; depth++) {
+      if (visited.has(cursor.name)) break;
+      visited.add(cursor.name);
+      const direct = firstMethodInClass(cursor.id, methodName);
+      if (direct) return direct;
+      const info = index.classInfoByName.get(cursor.name);
+      for (const traitName of info?.traits || []) {
+        const traitNode = firstClassByName(traitName);
+        if (traitNode) {
+          const traitMethod = firstMethodInClass(traitNode.id, methodName);
+          if (traitMethod) return traitMethod;
+        }
+      }
+      const parentName: string | undefined = info?.extendsName
+        || this.phpBaseTypeName(cursor.metadata?.attributes?.extendsClass as string | undefined);
+      cursor = parentName ? firstClassByName(parentName) : undefined;
+    }
+    return undefined;
+  }
+
+  /** Declared type of `$this->prop`, searched up the inheritance chain. */
+  private phpPropertyTypeOf(className: string | undefined, prop: string, index: PhpTypeIndex): string | undefined {
+    let cursor = className ? index.classInfoByName.get(className) : undefined;
+    const visited = new Set<string>();
+    for (let depth = 0; cursor && depth < 8; depth++) {
+      if (visited.has(cursor.name)) break;
+      visited.add(cursor.name);
+      const t = cursor.propertyTypes.get(prop);
+      if (t) return t;
+      for (const traitName of cursor.traits) {
+        const traitInfo = index.classInfoByName.get(traitName);
+        const traitType = traitInfo?.propertyTypes.get(prop);
+        if (traitType) return traitType;
+      }
+      cursor = cursor.extendsName ? index.classInfoByName.get(cursor.extendsName) : undefined;
+    }
+    return undefined;
+  }
+
+  /** Declared return type of `Class::method`, searched up the inheritance chain. */
+  private phpMethodReturnTypeOf(className: string | undefined, method: string, index: PhpTypeIndex): string | undefined {
+    let cursor = className ? index.classInfoByName.get(className) : undefined;
+    const visited = new Set<string>();
+    for (let depth = 0; cursor && depth < 8; depth++) {
+      if (visited.has(cursor.name)) break;
+      visited.add(cursor.name);
+      const t = cursor.methodReturnTypes.get(method);
+      if (t) return t === 'self' || t === 'static' ? cursor.name : t;
+      for (const traitName of cursor.traits) {
+        const traitType = index.classInfoByName.get(traitName)?.methodReturnTypes.get(method);
+        if (traitType) return traitType;
+      }
+      cursor = cursor.extendsName ? index.classInfoByName.get(cursor.extendsName) : undefined;
+    }
+    return undefined;
+  }
+
+  /**
+   * Per-method receiver typing (v2 of buildPhpReceiverTypes): typed params
+   * from the FULL (multi-line) signature, `new Type()` assignments,
+   * `$x = $this->prop` (property's declared type),
+   * `$x = ...->getRepository(Entity::class)` (Doctrine repository binding),
+   * and `$x = <typed receiver>->method()` (declared return type).
+   */
+  private buildPhpReceiverTypesV2(
+    lines: string[],
+    startLine: number,
+    endLine: number,
+    containingClassName: string | undefined,
+    index: PhpTypeIndex
+  ): Map<string, string> {
+    const m = new Map<string, string>();
+    const lo = Math.max(0, startLine - 1);
+    const hi = Math.min(lines.length, endLine);
+
+    // Signature: accumulate from the declaration line until parens balance.
+    let sig = '';
+    let depth = 0;
+    for (let i = lo; i < hi && i < lo + 60; i++) {
+      sig += ' ' + lines[i];
+      for (const ch of lines[i]) {
+        if (ch === '(') depth++;
+        else if (ch === ')') depth--;
+      }
+      if (depth <= 0 && sig.includes('(')) break;
+    }
+    const paren = sig.indexOf('(');
+    if (paren >= 0) {
+      for (const pm of sig.slice(paren).matchAll(/(\??[A-Za-z_\\][\w\\|?]*)\s+&?(?:\.\.\.)?\$(\w+)/g)) {
+        const t = this.phpBaseTypeName(pm[1]);
+        if (t) m.set(pm[2], t);
+      }
+    }
+
+    for (let i = lo; i < hi; i++) {
+      const ln = lines[i];
+      for (const vm of ln.matchAll(/\$(\w+)\s*=\s*new\s+\\?([A-Za-z_\\][\w\\]*)/g)) {
+        const t = this.phpBaseTypeName(vm[2]);
+        if (t) m.set(vm[1], t);
+      }
+      for (const rm of ln.matchAll(/\$(\w+)\s*=\s*[^=;]*->getRepository\(\s*\\?([\w\\]+)::class/g)) {
+        const entity = this.phpBaseTypeName(rm[2]);
+        const repo = entity ? index.repoClassByEntity.get(entity) : undefined;
+        if (repo) m.set(rm[1], repo);
+      }
+      for (const pm of ln.matchAll(/\$(\w+)\s*=\s*\$this->(\w+)\s*;/g)) {
+        const t = this.phpPropertyTypeOf(containingClassName, pm[2], index);
+        if (t) m.set(pm[1], t);
+      }
+      // Return-type evidence: `$x = $this->method(...)`, `$x = $this->prop->method(...)`,
+      // `$x = $var->method(...)` — the declared return type types the variable.
+      for (const am of ln.matchAll(/\$(\w+)\s*=\s*\$this->(\w+)(->(\w+))?\s*\(/g)) {
+        if (am[3]) {
+          const propType = this.phpPropertyTypeOf(containingClassName, am[2], index);
+          const rt = propType ? this.phpMethodReturnTypeOf(propType, am[4], index) : undefined;
+          if (rt) m.set(am[1], rt);
+        } else {
+          const rt = this.phpMethodReturnTypeOf(containingClassName, am[2], index);
+          if (rt) m.set(am[1], rt);
+        }
+      }
+      for (const am of ln.matchAll(/\$(\w+)\s*=\s*\$(\w+)->(\w+)\s*\(/g)) {
+        if (am[2] === 'this') continue;
+        const recvType = m.get(am[2]);
+        const rt = recvType ? this.phpMethodReturnTypeOf(recvType, am[3], index) : undefined;
+        if (rt) m.set(am[1], rt);
+      }
+    }
+    return m;
+  }
+
   private async analyzeCallGraph(projectPath: string, nodes: CASNode[], edges: CASEdge[], exitPoints: CASExitPoint[]): Promise<void> {
     const phpFiles = await glob(['**/*.php'], {
       cwd: projectPath,
@@ -2391,12 +2887,16 @@ export class PHPAnalyzer extends BaseAnalyzer {
       }
     }
 
+    // Cross-boundary resolution evidence (DI interface bindings, Doctrine
+    // repositories, property/constructor injection types) — one pass over
+    // the same files every path below re-reads from cache.
+    const typeIndex = await this.buildPhpTypeIndex(projectPath, phpFiles);
+
     if (phpFiles.length > 1000 || methodNodes.length > 12000) {
-      await this.analyzeCallGraphFastFallback(projectPath, phpFiles, nodes, edges, exitPoints, methodNodes, classNodes);
+      await this.analyzeCallGraphFastFallback(projectPath, phpFiles, nodes, edges, exitPoints, methodNodes, classNodes, typeIndex);
       return;
     }
 
-    const firstMethodByName = (name?: string) => name ? methodNodesByName.get(name)?.[0] : undefined;
     const firstClassByName = (name?: string) => name ? classNodesByName.get(name)?.[0] : undefined;
     const firstMethodByFileAndName = (file: string, name?: string) => name ? methodNodesByFileAndName.get(`${file}:${name}`)?.[0] : undefined;
     const firstMethodInClass = (classId: string, name?: string) => {
@@ -2443,29 +2943,56 @@ export class PHPAnalyzer extends BaseAnalyzer {
 
           if (call.receiver !== undefined) {
             // Member call `$recv->method()`: resolve $recv to its class. `$this`
-            // (and `self`/`static`) means the containing class, captured by the
-            // parser as call.class; any other var is type-resolved from scope.
+            // (and `self`/`static`) means the containing class; `$this->prop`
+            // resolves through the property's declared type (constructor/DI
+            // injection); Doctrine `->getRepository(E::class)` chains resolve
+            // to E's repository class; any other var is type-resolved from
+            // scope. Interface types bind to their implementation only on
+            // evidence (unique impl or services.yaml alias).
+            const recv = call.receiver;
             let recvType: string | undefined;
-            if (call.receiver === 'this' || call.receiver === 'self' || call.receiver === 'static') {
+            const repoChain = recv.match(/getRepository\(\s*\\?([\w\\]+)(?:::class)?\s*\)$/);
+            const thisProp = recv.match(/^this->(\w+)$/);
+            const thisCallChain = recv.match(/^this->(\w+)\([^()]*\)$/);
+            const propCallChain = recv.match(/^this->(\w+)->(\w+)\([^()]*\)$/);
+            if (recv === 'this' || recv === 'self' || recv === 'static') {
               recvType = call.class;
-            } else {
+            } else if (repoChain) {
+              const entity = this.phpBaseTypeName(repoChain[1]);
+              recvType = entity ? typeIndex.repoClassByEntity.get(entity) : undefined;
+            } else if (thisProp) {
+              recvType = this.phpPropertyTypeOf(call.class, thisProp[1], typeIndex);
+            } else if (thisCallChain) {
+              recvType = this.phpMethodReturnTypeOf(call.class, thisCallChain[1], typeIndex);
+            } else if (propCallChain) {
+              const propType = this.phpPropertyTypeOf(call.class, propCallChain[1], typeIndex);
+              recvType = propType ? this.phpMethodReturnTypeOf(propType, propCallChain[2], typeIndex) : undefined;
+            } else if (/^\w+$/.test(recv)) {
               let map = recvTypesByMethodId.get(callerMethod.id);
               if (!map) {
-                map = this.buildPhpReceiverTypes(fileLines, callerMethod.source?.line ?? 1, callerMethod.source?.end_line ?? fileLines.length);
+                map = this.buildPhpReceiverTypesV2(
+                  fileLines,
+                  callerMethod.source?.line ?? 1,
+                  callerMethod.source?.end_line ?? fileLines.length,
+                  call.class,
+                  typeIndex
+                );
                 recvTypesByMethodId.set(callerMethod.id, map);
               }
-              recvType = map.get(call.receiver);
+              recvType = map.get(recv);
             }
             if (recvType && call.method) {
-              const targetClass = firstClassByName(recvType);
-              targetMethod = targetClass ? firstMethodInClass(targetClass.id, call.method) : undefined;
+              const targetClass = this.resolvePhpTypeToClassNode(recvType, typeIndex, firstClassByName);
+              targetMethod = this.findPhpMethodInHierarchy(targetClass, call.method, typeIndex, firstClassByName, firstMethodInClass);
             }
           } else if (call.class && call.method) {
             // Static/scoped call `Foo::bar()` — call.class IS the target class.
-            const targetClass = firstClassByName(call.class);
-            if (targetClass) targetMethod = firstMethodInClass(targetClass.id, call.method);
+            const targetClass = firstClassByName(this.phpBaseTypeName(call.class));
+            targetMethod = this.findPhpMethodInHierarchy(targetClass, call.method, typeIndex, firstClassByName, firstMethodInClass);
           } else if (call.function) {
-            targetMethod = firstMethodByName(call.function);
+            // Bare-name calls can only be standalone functions in PHP —
+            // binding them to any same-named class METHOD fabricates edges.
+            targetMethod = (methodNodesByName.get(call.function) || []).find(n => n.type === 'function');
           }
 
           if (targetMethod && targetMethod.id !== callerMethod.id) {
@@ -2508,6 +3035,156 @@ export class PHPAnalyzer extends BaseAnalyzer {
     }
   }
 
+  /** PHP keywords/constructs a bare `name(` match must never treat as a call. */
+  private static readonly PHP_CALL_KEYWORDS = new Set([
+    'if', 'elseif', 'else', 'while', 'for', 'foreach', 'switch', 'match', 'catch',
+    'fn', 'function', 'array', 'list', 'isset', 'unset', 'empty', 'echo', 'print',
+    'exit', 'die', 'return', 'new', 'use', 'require', 'include', 'require_once',
+    'include_once', 'static', 'parent', 'self', 'and', 'or', 'xor', 'clone',
+    'throw', 'yield', 'declare', 'compact', 'extract', 'strict_types'
+  ]);
+
+  /**
+   * All call sites a regex pass can see on one line, classified by receiver
+   * shape so the resolver can apply the right typing evidence. Shared by the
+   * fast fallback (whale repos) and the AST-failure fallback.
+   */
+  private collectPhpLineCallMatches(line: string): Array<{
+    kind: 'this' | 'this-prop' | 'repo' | 'var' | 'self' | 'parent' | 'static' | 'scoped' | 'new' | 'plain'
+      | 'this-call-chain' | 'prop-call-chain' | 'var-call-chain';
+    objectOrClass: string;
+    methodName?: string;
+    chainMethod?: string;
+  }> {
+    const matches: Array<{ kind: any; objectOrClass: string; methodName?: string; chainMethod?: string }> = [];
+
+    // `$this->prop->method()` — property receiver (constructor/DI injection).
+    for (const m of line.matchAll(/\$this->(\w+)->(\w+)\s*\(/g)) {
+      matches.push({ kind: 'this-prop', objectOrClass: m[1], methodName: m[2] });
+    }
+    // One-hop fluent chains, typed by the first call's declared return type:
+    // `$this->m1(...)->m2(`, `$this->prop->m1(...)->m2(`, `$var->m1(...)->m2(`.
+    // Only paren-free first arguments — regex cannot balance nesting.
+    for (const m of line.matchAll(/\$this->(\w+)\s*\(([^()]*)\)\s*->\s*(\w+)\s*\(/g)) {
+      matches.push({ kind: 'this-call-chain', objectOrClass: m[1], chainMethod: m[1], methodName: m[3] });
+    }
+    for (const m of line.matchAll(/\$this->(\w+)->(\w+)\s*\(([^()]*)\)\s*->\s*(\w+)\s*\(/g)) {
+      matches.push({ kind: 'prop-call-chain', objectOrClass: m[1], chainMethod: m[2], methodName: m[4] });
+    }
+    for (const m of line.matchAll(/\$(\w+)->(\w+)\s*\(([^()]*)\)\s*->\s*(\w+)\s*\(/g)) {
+      if (m[1] === 'this') continue;
+      matches.push({ kind: 'var-call-chain', objectOrClass: `$${m[1]}`, chainMethod: m[2], methodName: m[4] });
+    }
+    // Doctrine `...->getRepository(Entity::class)->method()` chains.
+    for (const m of line.matchAll(/->getRepository\(\s*\\?([\w\\]+)(?:::class)?\s*\)\s*->\s*(\w+)\s*\(/g)) {
+      matches.push({ kind: 'repo', objectOrClass: m[1], methodName: m[2] });
+    }
+    // `$var->method()` — includes `$this->method()` (kind 'this').
+    for (const m of line.matchAll(/(\$\w+)->(\w+)\s*\(/g)) {
+      if (m[1] === '$this') matches.push({ kind: 'this', objectOrClass: '$this', methodName: m[2] });
+      else matches.push({ kind: 'var', objectOrClass: m[1], methodName: m[2] });
+    }
+    // `Foo::bar()` / self:: / parent:: / static::
+    for (const m of line.matchAll(/([\w\\]+)::(\w+)\s*\(/g)) {
+      if (m[1] === 'self' || m[1] === 'parent' || m[1] === 'static') {
+        matches.push({ kind: m[1], objectOrClass: m[1], methodName: m[2] });
+      } else {
+        matches.push({ kind: 'scoped', objectOrClass: m[1], methodName: m[2] });
+      }
+    }
+    // `new Foo(...)`
+    for (const m of line.matchAll(/new\s+\\?([\w\\]+)\s*\(/g)) {
+      matches.push({ kind: 'new', objectOrClass: m[1], methodName: '__construct' });
+    }
+    // Bare `name(...)` — a standalone function call. The lookbehind rejects
+    // method/static/variable receivers; keyword and declaration hits are
+    // filtered here so they can never bind to a same-named class method.
+    for (const m of line.matchAll(/(?<![\w$>:\\])([a-zA-Z_]\w*)\s*\(/g)) {
+      const name = m[1];
+      if (PHPAnalyzer.PHP_CALL_KEYWORDS.has(name)) continue;
+      const before = line.slice(0, m.index ?? 0);
+      if (/(?:function|new)\s+$/.test(before)) continue;
+      matches.push({ kind: 'plain', objectOrClass: name });
+    }
+    return matches;
+  }
+
+  /**
+   * Resolve one regex-matched call site to a target method node using the
+   * project's type evidence. Returns undefined (abstains) when there is no
+   * concrete binding fact — never guesses across same-named candidates.
+   */
+  private resolvePhpFallbackCallTarget(
+    match: { kind: string; objectOrClass: string; methodName?: string; chainMethod?: string },
+    callerMethod: CASNode,
+    ctx: {
+      typeIndex: PhpTypeIndex;
+      firstClassByName: (name?: string) => CASNode | undefined;
+      firstMethodInClass: (classId: string, name?: string) => CASNode | undefined;
+      methodNodesByName: Map<string, CASNode[]>;
+      classByMethodId: Map<string, CASNode>;
+      receiverTypesFor: (callerMethod: CASNode) => Map<string, string>;
+    }
+  ): CASNode | undefined {
+    const { typeIndex, firstClassByName, firstMethodInClass, methodNodesByName, classByMethodId } = ctx;
+    const inHierarchy = (cls: CASNode | undefined, method?: string) =>
+      this.findPhpMethodInHierarchy(cls, method, typeIndex, firstClassByName, firstMethodInClass);
+    const viaType = (typeName?: string, method?: string) =>
+      inHierarchy(this.resolvePhpTypeToClassNode(typeName, typeIndex, firstClassByName), method);
+
+    switch (match.kind) {
+      case 'this':
+      case 'self':
+      case 'static':
+        return inHierarchy(classByMethodId.get(callerMethod.id), match.methodName);
+      case 'parent': {
+        const containing = classByMethodId.get(callerMethod.id);
+        const parentName = typeIndex.classInfoByName.get(containing?.name || '')?.extendsName
+          || this.phpBaseTypeName(containing?.metadata?.attributes?.extendsClass as string | undefined);
+        return inHierarchy(firstClassByName(parentName), match.methodName);
+      }
+      case 'this-prop': {
+        const containing = classByMethodId.get(callerMethod.id);
+        const propType = this.phpPropertyTypeOf(containing?.name, match.objectOrClass, typeIndex);
+        return viaType(propType, match.methodName);
+      }
+      case 'repo': {
+        const entity = this.phpBaseTypeName(match.objectOrClass);
+        const repoClass = entity ? typeIndex.repoClassByEntity.get(entity) : undefined;
+        return viaType(repoClass, match.methodName);
+      }
+      case 'var': {
+        const varType = ctx.receiverTypesFor(callerMethod).get(match.objectOrClass.replace(/^\$/, ''));
+        return viaType(varType, match.methodName);
+      }
+      case 'this-call-chain': {
+        const containing = classByMethodId.get(callerMethod.id);
+        const rt = this.phpMethodReturnTypeOf(containing?.name, match.chainMethod || '', typeIndex);
+        return viaType(rt, match.methodName);
+      }
+      case 'prop-call-chain': {
+        const containing = classByMethodId.get(callerMethod.id);
+        const propType = this.phpPropertyTypeOf(containing?.name, match.objectOrClass, typeIndex);
+        const rt = propType ? this.phpMethodReturnTypeOf(propType, match.chainMethod || '', typeIndex) : undefined;
+        return viaType(rt, match.methodName);
+      }
+      case 'var-call-chain': {
+        const varType = ctx.receiverTypesFor(callerMethod).get(match.objectOrClass.replace(/^\$/, ''));
+        const rt = varType ? this.phpMethodReturnTypeOf(varType, match.chainMethod || '', typeIndex) : undefined;
+        return viaType(rt, match.methodName);
+      }
+      case 'scoped':
+      case 'new':
+        return inHierarchy(firstClassByName(this.phpBaseTypeName(match.objectOrClass)), match.methodName);
+      case 'plain':
+        // Bare-name calls can only be standalone functions in PHP — binding
+        // them to a same-named class METHOD would fabricate edges.
+        return (methodNodesByName.get(match.objectOrClass) || []).find(n => n.type === 'function');
+      default:
+        return undefined;
+    }
+  }
+
   private async analyzeCallGraphFastFallback(
     projectPath: string,
     phpFiles: string[],
@@ -2515,8 +3192,10 @@ export class PHPAnalyzer extends BaseAnalyzer {
     edges: CASEdge[],
     exitPoints: CASExitPoint[],
     methodNodes: CASNode[],
-    classNodes: CASNode[]
+    classNodes: CASNode[],
+    prebuiltTypeIndex?: PhpTypeIndex
   ): Promise<void> {
+    const typeIndex = prebuiltTypeIndex ?? await this.buildPhpTypeIndex(projectPath, phpFiles);
     const edgeIds = new Set(edges.map(edge => edge.id));
     const exitIds = new Set(exitPoints.map(exit => exit.id));
     const classIds = new Set(classNodes.map(node => node.id));
@@ -2557,7 +3236,6 @@ export class PHPAnalyzer extends BaseAnalyzer {
       }
     }
 
-    const firstMethodByName = (name?: string) => name ? methodNodesByName.get(name)?.[0] : undefined;
     const firstClassByName = (name?: string) => name ? classNodesByName.get(name)?.[0] : undefined;
     const firstMethodInClass = (classId: string, name?: string) => {
       if (!name) return undefined;
@@ -2592,49 +3270,42 @@ export class PHPAnalyzer extends BaseAnalyzer {
         n.source?.line !== undefined && n.source.line <= line &&
         n.source?.end_line !== undefined && n.source.end_line >= line
       );
+      const recvTypesByMethodId = new Map<string, Map<string, string>>();
+      const receiverTypesFor = (callerMethod: CASNode): Map<string, string> => {
+        let map = recvTypesByMethodId.get(callerMethod.id);
+        if (!map) {
+          map = this.buildPhpReceiverTypesV2(
+            lines,
+            callerMethod.source?.line ?? 1,
+            callerMethod.source?.end_line ?? lines.length,
+            classByMethodId.get(callerMethod.id)?.name,
+            typeIndex
+          );
+          recvTypesByMethodId.set(callerMethod.id, map);
+        }
+        return map;
+      };
 
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
         if (!line.includes('(')) continue;
 
-        const functionCalls: any[] = [
-          ...Array.from(line.matchAll(/(\$\w+)->(\w+)\s*\(/g)),
-          ...Array.from(line.matchAll(/(\w+)::(\w+)\s*\(/g)),
-          ...Array.from(line.matchAll(/new\s+(\w+)\s*\(/g)).map(m => [m[0], m[1], '__construct']),
-          ...Array.from(line.matchAll(/\$this->(\w+)\s*\(/g)).map(m => [m[0], '$this', m[1]]),
-          ...Array.from(line.matchAll(/self::(\w+)\s*\(/g)).map(m => [m[0], 'self', m[1]]),
-          ...Array.from(line.matchAll(/parent::(\w+)\s*\(/g)).map(m => [m[0], 'parent', m[1]]),
-          ...Array.from(line.matchAll(/static::(\w+)\s*\(/g)).map(m => [m[0], 'static', m[1]]),
-          ...Array.from(line.matchAll(/(\w+)\s*\(/g))
-        ];
+        const functionCalls = this.collectPhpLineCallMatches(line);
 
         for (const match of functionCalls) {
-          const fullMatch = match[0];
-          const objectOrClass = match[1];
-          const methodName = match[2];
           const callerMethod = callerForLine(i + 1);
           if (!callerMethod) continue;
 
-          let targetMethod: CASNode | undefined;
-
-          if (objectOrClass === '$this' || objectOrClass === 'self' || objectOrClass === 'static') {
-            const containingClass = classByMethodId.get(callerMethod.id);
-            if (containingClass) targetMethod = firstMethodInClass(containingClass.id, methodName);
-          } else if (objectOrClass === 'parent') {
-            const containingClass = classByMethodId.get(callerMethod.id);
-            if (containingClass && containingClass.metadata?.attributes?.extendsClass) {
-              const parentClass = firstClassByName(containingClass.metadata.attributes.extendsClass);
-              if (parentClass) targetMethod = firstMethodInClass(parentClass.id, methodName);
-            }
-          } else if (fullMatch.startsWith('new ')) {
-            const targetClass = firstClassByName(objectOrClass);
-            if (targetClass) targetMethod = firstMethodInClass(targetClass.id, '__construct');
-          } else if (methodName) {
-            const targetClass = firstClassByName(objectOrClass);
-            if (targetClass) targetMethod = firstMethodInClass(targetClass.id, methodName);
-          } else {
-            targetMethod = firstMethodByName(objectOrClass);
-          }
+          const targetMethod = this.resolvePhpFallbackCallTarget(match, callerMethod, {
+            typeIndex,
+            firstClassByName,
+            firstMethodInClass,
+            methodNodesByName,
+            classByMethodId,
+            receiverTypesFor
+          });
+          const objectOrClass = match.objectOrClass;
+          const methodName = match.methodName;
 
           if (targetMethod && targetMethod.id !== callerMethod.id) {
             pushEdgeOnce(this.createEdge(
@@ -2645,11 +3316,12 @@ export class PHPAnalyzer extends BaseAnalyzer {
               'behavior',
               {
                 line: i + 1,
-                callType: fullMatch.startsWith('new ') ? 'constructor' :
+                callType: match.kind === 'new' ? 'constructor' :
                   objectOrClass === 'parent' ? 'parent' :
                     objectOrClass === 'self' || objectOrClass === 'static' ? 'static' :
                       objectOrClass === '$this' ? 'internal' :
-                        methodName ? 'method' : 'function'
+                        methodName ? 'method' : 'function',
+                resolution: match.kind
               }
             ));
           } else if (this.isExternalLibraryCall(objectOrClass, methodName || objectOrClass, currentNamespace)) {
@@ -2682,8 +3354,10 @@ export class PHPAnalyzer extends BaseAnalyzer {
     exitPoints: CASExitPoint[],
     methodNodes: CASNode[],
     classNodes: CASNode[],
-    projectPath: string
+    projectPath: string,
+    prebuiltTypeIndex?: PhpTypeIndex
   ): Promise<void> {
+    const typeIndex = prebuiltTypeIndex ?? await this.buildPhpTypeIndex(projectPath, [fullPath]);
     const content = await this.readFileCached(fullPath);
     const lines = content.split('\n');
     const currentNamespace = this.extractNamespace(content) || 'global';
@@ -2727,7 +3401,6 @@ export class PHPAnalyzer extends BaseAnalyzer {
       n.source?.line !== undefined && n.source.line <= line &&
       n.source?.end_line !== undefined && n.source.end_line >= line
     );
-    const firstMethodByName = (name?: string) => name ? methodNodesByName.get(name)?.[0] : undefined;
     const firstClassByName = (name?: string) => name ? classNodesByName.get(name)?.[0] : undefined;
     const firstMethodInClass = (classId: string, name?: string) => {
       if (!name) return undefined;
@@ -2744,62 +3417,44 @@ export class PHPAnalyzer extends BaseAnalyzer {
       exitPoints.push(exit);
     };
 
+      const recvTypesByMethodId = new Map<string, Map<string, string>>();
+      const receiverTypesFor = (callerMethod: CASNode): Map<string, string> => {
+        let map = recvTypesByMethodId.get(callerMethod.id);
+        if (!map) {
+          map = this.buildPhpReceiverTypesV2(
+            lines,
+            callerMethod.source?.line ?? 1,
+            callerMethod.source?.end_line ?? lines.length,
+            classByMethodId.get(callerMethod.id)?.name,
+            typeIndex
+          );
+          recvTypesByMethodId.set(callerMethod.id, map);
+        }
+        return map;
+      };
+
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
 
-        const functionCalls = [
-          ...Array.from(line.matchAll(/(\$\w+)->(\w+)\s*\(/g)),
-          ...Array.from(line.matchAll(/(\w+)::(\w+)\s*\(/g)),
-          ...Array.from(line.matchAll(/new\s+(\w+)\s*\(/g)).map(m => [m[0], m[1], '__construct']),
-          ...Array.from(line.matchAll(/\$this->(\w+)\s*\(/g)).map(m => [m[0], '$this', m[1]]),
-          ...Array.from(line.matchAll(/self::(\w+)\s*\(/g)).map(m => [m[0], 'self', m[1]]),
-          ...Array.from(line.matchAll(/parent::(\w+)\s*\(/g)).map(m => [m[0], 'parent', m[1]]),
-          ...Array.from(line.matchAll(/static::(\w+)\s*\(/g)).map(m => [m[0], 'static', m[1]]),
-          ...Array.from(line.matchAll(/(\w+)\s*\(/g))
-        ];
+        const functionCalls = line.includes('(') ? this.collectPhpLineCallMatches(line) : [];
 
         for (const match of functionCalls) {
-          const fullMatch = match[0];
-          const objectOrClass = match[1];
-          const methodName = match[2];
+          const objectOrClass = match.objectOrClass;
+          const methodName = match.methodName;
 
           const callerMethod = callerForLine(i + 1);
 
           if (callerMethod) {
-            let targetMethod: CASNode | undefined;
+            const targetMethod = this.resolvePhpFallbackCallTarget(match, callerMethod, {
+              typeIndex,
+              firstClassByName,
+              firstMethodInClass,
+              methodNodesByName,
+              classByMethodId,
+              receiverTypesFor
+            });
 
-            if (objectOrClass === '$this' || objectOrClass === 'self' || objectOrClass === 'static') {
-              const containingClass = classByMethodId.get(callerMethod.id);
-
-              if (containingClass) {
-                targetMethod = firstMethodInClass(containingClass.id, methodName);
-              }
-            } else if (objectOrClass === 'parent') {
-              const containingClass = classByMethodId.get(callerMethod.id);
-
-              if (containingClass && containingClass.metadata?.attributes?.extendsClass) {
-                const parentClassName = containingClass.metadata.attributes.extendsClass;
-                const parentClass = firstClassByName(parentClassName);
-
-                if (parentClass) {
-                  targetMethod = firstMethodInClass(parentClass.id, methodName);
-                }
-              }
-            } else if (fullMatch.startsWith('new ')) {
-              const targetClass = firstClassByName(objectOrClass);
-              if (targetClass) {
-                targetMethod = firstMethodInClass(targetClass.id, '__construct');
-              }
-            } else if (methodName) {
-              const targetClass = firstClassByName(objectOrClass);
-              if (targetClass) {
-                targetMethod = firstMethodInClass(targetClass.id, methodName);
-              }
-            } else {
-              targetMethod = firstMethodByName(objectOrClass);
-            }
-
-            if (targetMethod) {
+            if (targetMethod && targetMethod.id !== callerMethod.id) {
               const callEdgeId = `call_${callerMethod.id}_to_${targetMethod.id}_${i}`;
               pushEdgeOnce(this.createEdge(
                   callEdgeId,
@@ -2809,11 +3464,12 @@ export class PHPAnalyzer extends BaseAnalyzer {
                   'behavior',
                   {
                     line: i + 1,
-                    callType: fullMatch.startsWith('new ') ? 'constructor' :
+                    callType: match.kind === 'new' ? 'constructor' :
                              objectOrClass === 'parent' ? 'parent' :
                              objectOrClass === 'self' || objectOrClass === 'static' ? 'static' :
                              objectOrClass === '$this' ? 'internal' :
-                             methodName ? 'method' : 'function'
+                             methodName ? 'method' : 'function',
+                    resolution: match.kind
                   }
                 ));
             } else if (this.isExternalLibraryCall(objectOrClass, methodName || objectOrClass, currentNamespace)) {
