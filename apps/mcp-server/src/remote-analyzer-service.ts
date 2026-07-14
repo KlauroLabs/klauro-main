@@ -1782,6 +1782,45 @@ async function handleAccountApi(
     }
   }
 
+  // Full-CAS download for the MCP hosted-analysis mirror (hosted-analysis.ts):
+  // a project-bound repo's MCP server pulls the ENTIRE stored CAS once per
+  // hosted re-analysis and mirrors it into its local store, so every read tool
+  // serves the hosted source of truth at local speed. Callers check the cheap
+  // GET /api/projects/{id}/analysis state first and only hit this route when
+  // the mirror timestamp is older than the hosted analysis_timestamp — so no
+  // response cache here (the payload can be whale-sized and each version is
+  // downloaded at most once per client).
+  const projectCasMatch = route.match(/^\/api\/projects\/([^/]+)\/cas$/);
+  if (projectCasMatch && request.method === 'GET') {
+    if (!dataDir) throw new AccountHttpError(500, 'Analysis storage unavailable');
+    const project = await accounts.getProjectForUser(userId, decodeURIComponent(projectCasMatch[1]));
+    if (!project) throw new AccountHttpError(404, 'Project not found');
+    if (!project.analysis_id) {
+      return { statusCode: 200, body: { status: 'no_analysis', project_id: project.id } };
+    }
+    try {
+      const cas = await getAnalysis(workspacePath(dataDir, project.analysis_id));
+      const body = {
+        status: 'ready',
+        project_id: project.id,
+        analysis_id: project.analysis_id,
+        analysis_timestamp: cas.analysis_timestamp || null,
+        cas,
+      };
+      return { statusCode: 200, body, serializedBody: JSON.stringify(body) };
+    } catch (error) {
+      return {
+        statusCode: 200,
+        body: {
+          status: 'no_analysis',
+          project_id: project.id,
+          analysis_id: project.analysis_id,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      };
+    }
+  }
+
   // Semantic coverage over HTTP (docs/SEMANTIC-MODEL.md "Coverage invariants").
   // get_summary omits inline coverage on large repos (query.ts guard) and points
   // at the get_semantic_coverage MCP tool — which a web-only customer can't call.

@@ -184,6 +184,26 @@ export function buildSummary(cas: CASOutput, opts: { detail?: 'compact' | 'full'
     // markup files.
     languages: techs?.languages?.length ? techs.languages.map(l => l.name) : productTech.languages,
     frameworks: productTech.frameworks.length ? productTech.frameworks : techs?.frameworks?.map(f => f.name) || [],
+    // Honesty about scope: nested git repositories under this root are
+    // EXCLUDED from the analysis (deliberate submodule-ish boundary in the
+    // walker — orchestrator.getNestedRepoIgnorePatterns). A wrapper repo whose
+    // real code lives in nested repos must not present a handful of top-level
+    // infra files as "the codebase" with no signal that the bulk was skipped
+    // (live audit 2026-07-14: truckspy served 41 nodes with the
+    // truckspyapp/truckspyui nested repos silently missing).
+    ...(techs?.nested_repositories?.length
+      ? {
+          nested_repositories_excluded: {
+            count: techs.nested_repositories.length,
+            repositories: techs.nested_repositories.map(repo => ({
+              path: repo.path,
+              ...(repo.primary_language ? { primary_language: repo.primary_language } : {}),
+              source_files: repo.source_files,
+            })),
+            note: 'These nested git repositories were NOT analyzed as part of this codebase. Analyze each one separately (analyze_codebase on its path) or as a workspace (run_workspace_analysis) for full coverage.',
+          },
+        }
+      : {}),
     primary_domain: primaryDomain,
     description: cas.enhanced_system_purpose?.inferred_description || null,
     description_source: cas.enhanced_system_purpose?.description_source || null,

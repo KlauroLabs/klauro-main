@@ -42,6 +42,16 @@ export interface KlauroConfig {
   };
   mcp: {
     cachePath?: string;
+    /**
+     * Consumed by the hosted-analysis resolution for project-bound repos
+     * (apps/mcp-server/src/hosted-analysis.ts). true (default): a local
+     * analysis that is NOT OLDER than the hosted one is served without a
+     * download — the coherent mirror, or a deliberately newer local working
+     * analysis. false: only an exact mirror (same analysis_timestamp) is
+     * served locally; a newer-than-hosted local analysis is bypassed in favor
+     * of the hosted source of truth. Never lets a local cache OLDER than the
+     * hosted analysis shadow it, and has no effect on unbound repos.
+     */
     preferLocalCache: boolean;
   };
   policy: {

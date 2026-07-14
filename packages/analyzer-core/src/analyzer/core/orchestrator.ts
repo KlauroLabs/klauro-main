@@ -19069,6 +19069,10 @@ export class AnalyzerOrchestrator {
     for (const sig of signatures) {
       let score = 0;
       const typeEvidence: string[] = [];
+      // Distinct indicator tokens that actually matched (path/verb/entity/
+      // capability vocabulary — NOT the generic nodeTypePatterns). Used by the
+      // single-token evidence gate below.
+      const distinctSignals = new Set<string>();
 
       if (sig.indicators.pathPatterns) {
         const pathResult = await countMatches(paths, sig.indicators.pathPatterns);
@@ -19080,6 +19084,7 @@ export class AnalyzerOrchestrator {
         if (allMatched.length > 0) {
           score += cappedCount * 2 * sig.distinctiveness;
           typeEvidence.push(`Endpoints: ${allMatched.join(', ')}`);
+          for (const signal of allMatched) distinctSignals.add(signal);
         }
       }
 
@@ -19094,6 +19099,7 @@ export class AnalyzerOrchestrator {
           if (!typeEvidence.some(e => e.startsWith('Endpoints:'))) {
             typeEvidence.push(`Actions: ${allMatched.join(', ')}`);
           }
+          for (const signal of allMatched) distinctSignals.add(signal);
         }
       }
 
@@ -19102,6 +19108,7 @@ export class AnalyzerOrchestrator {
         if (result.count > 0) {
           score += result.count * 4 * sig.distinctiveness;
           typeEvidence.push(`Entities: ${result.matched.join(', ')}`);
+          for (const signal of result.matched) distinctSignals.add(signal);
         }
       }
 
@@ -19118,6 +19125,7 @@ export class AnalyzerOrchestrator {
         if (result.count > 0) {
           score += cappedCount * 3 * sig.distinctiveness;
           typeEvidence.push(`Capabilities: ${result.matched.join(', ')}`);
+          for (const signal of result.matched) distinctSignals.add(signal);
         }
       }
 
@@ -19129,6 +19137,19 @@ export class AnalyzerOrchestrator {
           score = 0;
           typeEvidence.length = 0;
         }
+      }
+
+      // Single-token evidence gate: a domain claim needs at least TWO distinct
+      // matched indicator tokens. One incidental keyword must never assert a
+      // business domain — live audit 2026-07-14: a 41-node k8s/compose-only
+      // CAS was labeled 'education-platform' on the single token
+      // 'certificate' (TLS/cert-manager vocabulary), evidence
+      // "Endpoints: certificate". Structural fallbacks (api-service /
+      // general-application / infrastructure-codebase) remain available when
+      // every signature is gated to zero.
+      if (score > 0 && distinctSignals.size < 2) {
+        score = 0;
+        typeEvidence.length = 0;
       }
 
       sig.weight = score;
@@ -19466,10 +19487,94 @@ export class AnalyzerOrchestrator {
 
     const existingEdgeIds = new Set(edges.map(e => e.id));
 
+    // Which nodes actually own outgoing call edges. Framework analyzers
+    // (Symfony, ...) mint their OWN method node ids for route handlers while
+    // the language analyzer attaches the call graph to ITS method nodes —
+    // an entry point rooted at the framework twin is a dead end even though
+    // the same method's chain exists on the language twin. Used below to
+    // bridge the two.
+    const callEdgeSources = new Set<string>();
+    for (const edge of edges) {
+      if (edge.type === 'calls' || edge.type === 'invokes' || edge.type.includes('call')) {
+        callEdgeSources.add(edge.source);
+      }
+    }
+    const findLanguageTwin = (node: CASNode, name: string, file: string): CASNode | undefined => {
+      const nodeFile = node.source?.file || file;
+      if (!nodeFile) return undefined;
+      for (const [candidateFile, fns] of functionNodesByFile) {
+        if (candidateFile !== nodeFile &&
+            !candidateFile.endsWith(nodeFile) && !nodeFile.endsWith(candidateFile)) continue;
+        const twin = fns.find(n => n.id !== node.id && n.name === name && callEdgeSources.has(n.id));
+        if (twin) return twin;
+      }
+      return undefined;
+    };
+    const bridgeToTwin = (ep: CASEntryPoint, fromNode: CASNode, twin: CASNode) => {
+      if (ep.handler) ep.handler.node_id = twin.id;
+      const edgeId = `route_calls_${fromNode.id}_${twin.id}`;
+      if (!existingEdgeIds.has(edgeId)) {
+        edges.push({
+          id: edgeId,
+          source: fromNode.id,
+          target: twin.id,
+          type: 'calls',
+          metadata: {
+            attributes: {
+              framework: ep.source_analyzer || 'web',
+              relationship: 'route_handler',
+              entry_point_type: ep.type
+            }
+          }
+        });
+        existingEdgeIds.add(edgeId);
+      }
+    };
+
     for (const ep of entryPoints) {
-      const supportedTypes = ['http', 'websocket', 'message', 'event'];
+      const supportedTypes = ['http', 'websocket', 'message', 'event', 'cli'];
       if (!supportedTypes.includes(ep.type)) continue;
-      if (!ep.handler?.method_name) continue;
+
+      // CLI commands (Symfony console etc.) root at a class-level command
+      // node with no handler method — link them to their conventional
+      // entry method when one exists in the same file (evidence: a real
+      // `execute`/`__invoke`/`run` method node extracted from that class).
+      if (!ep.handler?.method_name) {
+        if (ep.type !== 'cli') continue;
+        const commandNode = nodes.find(node => node.id === ep.source_node);
+        const commandFile = commandNode?.source?.file;
+        if (!commandNode || !commandFile) continue;
+        const fns = functionNodesByFile.get(commandFile) || [];
+        const entryMethod = ['execute', '__invoke', 'run']
+          .map(name => fns.find(n => n.name === name))
+          .find((n): n is CASNode => !!n);
+        if (entryMethod) {
+          const edgeId = `route_calls_${commandNode.id}_${entryMethod.id}`;
+          if (!existingEdgeIds.has(edgeId)) {
+            edges.push({
+              id: edgeId,
+              source: commandNode.id,
+              target: entryMethod.id,
+              type: 'calls',
+              metadata: {
+                attributes: {
+                  framework: ep.source_analyzer || 'cli',
+                  relationship: 'command_handler',
+                  entry_point_type: ep.type
+                }
+              }
+            });
+            existingEdgeIds.add(edgeId);
+          }
+          ep.handler = {
+            ...(ep.handler || {}),
+            node_id: entryMethod.id,
+            method_name: entryMethod.name,
+            file: commandFile
+          };
+        }
+        continue;
+      }
 
       const handlerName = ep.handler.method_name;
       const handlerFile = ep.handler.file || '';
@@ -19479,6 +19584,12 @@ export class AnalyzerOrchestrator {
       const sourceNode = nodes.find(node => node.id === routeNodeId);
       if ((sourceNode?.type === 'function' || sourceNode?.type === 'method') && sourceNode.name === handlerName) {
         ep.handler.node_id = sourceNode.id;
+        // Framework twin with no outgoing calls: bridge to the language
+        // analyzer's node for the SAME file+method, which carries the chain.
+        if (!callEdgeSources.has(sourceNode.id)) {
+          const twin = findLanguageTwin(sourceNode, handlerName, handlerFile);
+          if (twin) bridgeToTwin(ep, sourceNode, twin);
+        }
         continue;
       }
 
@@ -19499,7 +19610,10 @@ export class AnalyzerOrchestrator {
 
       for (const file of filesToSearch) {
         const functionsInFile = functionNodesByFile.get(file) || [];
-        const exactMatch = functionsInFile.find(n => n.name === handlerName);
+        // Among same-named twins (framework + language analyzer both minted
+        // a node for this method), prefer the one owning the call chain.
+        const exactMatch = functionsInFile.find(n => n.name === handlerName && callEdgeSources.has(n.id))
+          || functionsInFile.find(n => n.name === handlerName);
         if (exactMatch) {
           matchedFunctionNode = exactMatch;
           break;

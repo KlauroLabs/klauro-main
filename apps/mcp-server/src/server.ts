@@ -8,7 +8,8 @@ import { installGauntletWatcher, listGauntletWatchers, stopGauntletWatcher } fro
 import { runIncrementalGauntlet, listIncrementalRecords } from './gauntlet/incremental-gauntlet';
 import { appendFileSync } from 'fs';
 import * as nodePath from 'path';
-import { analyzeProjectIncremental, getAnalysis, runAnalysis } from './analyzer';
+import { analyzeProjectIncremental, getAnalysis as getStoredAnalysis, runAnalysis } from './analyzer';
+import { compareHostedFreshness, currentAnalysisSourceStamp, hostedSummaryPayload, resolutionIsStaleDegraded, resolveBoundAnalysis, resolveHostedProjectBinding } from './hosted-analysis';
 import { getAnalysisEntry, getStorageHealth, listAgenticBenchmarkReports, listAnalyses, listCrossCodebaseSystemGraphs, listWorkspaceGraphs, loadAgenticBenchmarkReport, loadCrossCodebaseSystemGraph, loadGoldenSnapshot, loadLatestAgenticBenchmarkReportByType, loadRuntimeObservations, loadWorkspaceGraph, saveAgenticBenchmarkReport, saveCrossCodebaseSystemGraph, saveGoldenSnapshot, saveRuntimeObservation, saveWorkspaceGraph } from './storage';
 import * as query from './query';
 import * as adrStore from './adr-store';
@@ -124,8 +125,20 @@ Watch for silent server staleness: \`klauro update\` overwrites the installed MC
 // continuity; every agent-entry tool should route through this instead of the
 // raw getAnalysis(path).
 async function getFreshAnalysisForAgent(projectPath: string) {
+  // Project-bound repo (.klaurorc with a prj_ id + signed-in session): the
+  // HOSTED analysis is the source of truth (docs/KLAURO-PRODUCT-MODEL.md).
+  // resolveBoundAnalysis serves it (via a coherent local mirror keyed by the
+  // hosted analysis_timestamp) and NEVER silently runs a local analysis —
+  // when the server is unreachable it degrades honestly to the local cache
+  // (stamped with a note) or fails with an explicit error. Unbound repos keep
+  // the legacy local freshness-gated path below, including auto-analyze.
+  const binding = await resolveHostedProjectBinding(projectPath).catch(() => null);
+  if (binding) {
+    return (await resolveBoundAnalysis(binding)).cas;
+  }
+
   try {
-    const cas = await getAnalysis(projectPath);
+    const cas = await getStoredAnalysis(projectPath);
     const summary = freshness.summarizeAnalysisFreshness(projectPath, cas.analysis_timestamp);
     if (!summary || summary.staleness === 'fresh') return cas;
   } catch {
@@ -133,6 +146,24 @@ async function getFreshAnalysisForAgent(projectPath: string) {
   }
 
   return (await analyzeProjectIncremental(projectPath)).output;
+}
+
+/**
+ * Bound-aware analysis read used by every direct tool handler in this file
+ * (the former raw import of analyzer.getAnalysis). For a project-bound repo
+ * the hosted analysis wins (same resolution as getFreshAnalysisForAgent);
+ * track-scoped reads (in-flight / other-branch) are local-only concepts and
+ * bypass hosted resolution, as does any unbound repo — those paths are
+ * byte-for-byte the legacy local-store behavior.
+ */
+async function getAnalysis(projectPath: string, options?: { track?: import('./track').AnalysisTrack }) {
+  if (!options?.track) {
+    const binding = await resolveHostedProjectBinding(projectPath).catch(() => null);
+    if (binding) {
+      return (await resolveBoundAnalysis(binding)).cas;
+    }
+  }
+  return getStoredAnalysis(projectPath, options);
 }
 
 /**
@@ -392,7 +423,10 @@ function describeScopeForResponse(scope: AnalysisScope): { mode: 'workspace' | '
 // mutated.
 function withFreshnessStamp<T>(data: T): T {
   if (data && typeof data === 'object' && !Array.isArray(data)) {
-    return { ...data, freshness_checked_at: new Date().toISOString(), ...serverUpdateStampFields() };
+    // analysis_source: provenance of the served analysis for project-bound
+    // repos (hosted / local-mirror / local-cache-degraded + honest note when
+    // the hosted service was unavailable). Empty for unbound repos.
+    return { ...data, freshness_checked_at: new Date().toISOString(), ...currentAnalysisSourceStamp(), ...serverUpdateStampFields() };
   }
   return data;
 }
@@ -1725,13 +1759,39 @@ function registerTools(server: McpServer) {
     'get_analysis_freshness',
     {
       title: 'Get Analysis Freshness',
-      description: 'Check whether stored CAS is fresh relative to source file mtimes and incremental state.',
+      description: 'Check whether stored CAS is fresh. For a project-bound repo (.klaurorc with a hosted prj_ id) freshness is judged against the HOSTED analysis timestamp (the source of truth), with the file-mtime scan as secondary local detail; unbound repos keep the local mtime/incremental view.',
       inputSchema: {
         path: z.string().describe('Project path'),
       } as any,
     } as any,
     async ({ path }: any) => withErrorHandling(async () => {
-      return json(await freshness.getAnalysisFreshness(path));
+      const report = await freshness.getAnalysisFreshness(path);
+      // Bound repo: the authoritative comparison is local mirror vs HOSTED
+      // analysis timestamp — a coherent local mirror of a fresh hosted
+      // analysis is 'fresh' even if file mtimes moved, and a July-4 local
+      // cache is 'stale' the moment the hosted analysis is newer, regardless
+      // of mtimes. The mtime-based scan stays in the report as local detail.
+      const binding = await resolveHostedProjectBinding(path).catch(() => null);
+      if (!binding) return json(report);
+      const hosted = await compareHostedFreshness(binding);
+      if (hosted.reachable && hosted.status) {
+        const status = hosted.status === 'no-local-cache' ? 'no-analysis' : hosted.status;
+        return json({
+          ...report,
+          status,
+          hosted,
+          recommendation: hosted.status === 'stale'
+            ? `Local cache (${hosted.local_analysis_timestamp || 'none'}) is older than the hosted analysis (${hosted.hosted_analysis_timestamp}); the next read tool call will download and mirror the hosted analysis.`
+            : hosted.status === 'no-local-cache'
+              ? 'No local mirror yet; the next read tool call will download and mirror the hosted analysis.'
+              : 'Local mirror matches or is newer than the hosted analysis; CAS-backed context is current.',
+        });
+      }
+      return json({
+        ...report,
+        hosted,
+        recommendation: `${report.recommendation} Note: hosted analysis state was unreachable (${hosted.reason || 'unknown'}); this report reflects the LOCAL cache only.`,
+      });
     })
   );
 
@@ -1805,10 +1865,57 @@ function registerTools(server: McpServer) {
       } as any,
     } as any,
     async ({ path, track, detail, runtime, exclude_sections }: any) => withErrorHandling(async () => {
+      const filter = await resolveSectionFilterForProject(path, { runtime, exclude_sections });
+      if (!track) {
+        // Project-bound repo: the hosted analysis is the source of truth. When
+        // the FULL hosted CAS cannot be mirrored (e.g. the deployed server
+        // predates GET /api/projects/{id}/cas) but the hosted state IS
+        // reachable, serve the hosted summary payload directly rather than a
+        // local cache that is older than the hosted analysis — the orient
+        // surface must never present a stale cache as current.
+        const binding = await resolveHostedProjectBinding(path).catch(() => null);
+        if (binding) {
+          let resolution;
+          try {
+            resolution = await resolveBoundAnalysis(binding);
+          } catch (error) {
+            // No local cache AND no full-CAS download (offline, or a server
+            // build without the /cas endpoint): the hosted summary alone is
+            // still the truthful orient answer when the state is reachable.
+            const hosted = await hostedSummaryPayload(binding);
+            if (!hosted) throw error;
+            const payload: Record<string, unknown> = withFreshnessStamp({ ...hosted });
+            payload.analysis_source = {
+              path,
+              origin: 'hosted-summary',
+              project_id: binding.projectId,
+              server_url: binding.serverUrl,
+              note: `full hosted CAS could not be mirrored (${error instanceof Error ? error.message : String(error)}); serving the hosted summary directly`,
+              resolved_at: new Date().toISOString(),
+            };
+            return json(payload);
+          }
+          if (resolutionIsStaleDegraded(resolution)) {
+            const hosted = await hostedSummaryPayload(binding);
+            if (hosted) {
+              const payload: Record<string, unknown> = withFreshnessStamp({ ...hosted });
+              payload.analysis_source = {
+                path,
+                origin: 'hosted-summary',
+                project_id: binding.projectId,
+                server_url: binding.serverUrl,
+                note: `${resolution.note || 'full hosted CAS unavailable'}; serving the hosted summary directly — drill-down tools may reflect the older local cache until the hosted CAS can be mirrored`,
+                resolved_at: new Date().toISOString(),
+              };
+              return json(payload);
+            }
+          }
+          return json(withFreshnessStamp(query.buildSummary(resolution.cas, { detail, excludeSeams: filter.isExcluded('seams') })));
+        }
+      }
       // track-scoped reads (working/committed/incoming) bypass the freshness gate:
       // getFreshAnalysisForAgent only knows about the default track's CAS.
       const cas = track ? await getAnalysis(path, { track }) : await getFreshAnalysisForAgent(path);
-      const filter = await resolveSectionFilterForProject(path, { runtime, exclude_sections });
       return json(withFreshnessStamp(query.buildSummary(cas, { detail, excludeSeams: filter.isExcluded('seams') })));
     })
   );

@@ -205,6 +205,7 @@ async function ensureStorageDir(): Promise<string> {
   if (!orphanedTmpSweepStarted) {
     orphanedTmpSweepStarted = true;
     void pruneOrphanedTmpFiles().catch(() => undefined);
+    void pruneOrphanedLockOnlyDirs().catch(() => undefined);
   }
   return storagePath;
 }
@@ -242,6 +243,52 @@ export async function pruneOrphanedTmpFiles(options: { maxAgeMs?: number; root?:
   };
 
   await sweep(root, 0);
+  return { removed };
+}
+
+const DEFAULT_ORPHANED_LOCK_MAX_AGE_MS = 60 * 60 * 1000;
+
+/**
+ * Remove per-project store directories that contain ONLY a stale
+ * `analysis.lock`. withProjectAnalysisLock ensures the project dir and writes
+ * the lock BEFORE any analysis artifact exists; a process killed in that
+ * window leaves a lock-only directory behind forever (observed in the wild:
+ * ~/.klauro/analyses/f7701b18…-1da636e01772 holding nothing but
+ * analysis.lock). The lock itself would be broken as stale on the next
+ * acquire for the SAME project, but a one-off aborted path never gets a next
+ * acquire — so sweep them here, gated on the same staleness rules as
+ * acquireStorageLock (dead pid on this host, or older than the age cap).
+ */
+export async function pruneOrphanedLockOnlyDirs(options: { maxAgeMs?: number; root?: string } = {}): Promise<{ removed: string[] }> {
+  const root = options.root || getStoragePath();
+  const maxAgeMs = options.maxAgeMs ?? DEFAULT_ORPHANED_LOCK_MAX_AGE_MS;
+  const removed: string[] = [];
+
+  let entries: fs.Dirent[];
+  try {
+    entries = await fs.readdir(root, { withFileTypes: true });
+  } catch {
+    return { removed };
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const dirPath = path.join(root, entry.name);
+    let children: string[];
+    try {
+      children = await fs.readdir(dirPath);
+    } catch {
+      continue;
+    }
+    if (children.length !== 1 || children[0] !== 'analysis.lock') continue;
+    const lockPath = path.join(dirPath, 'analysis.lock');
+    const state = await readStorageLockState(lockPath);
+    // Unreadable lock file (racing writer) is left alone; only a demonstrably
+    // stale lock (dead pid on this host / other-host leftovers / too old) is
+    // reclaimed, mirroring acquireStorageLock's rules.
+    if (state && !isStorageLockStale(state, maxAgeMs)) continue;
+    await fs.remove(dirPath).catch(() => undefined);
+    removed.push(dirPath);
+  }
   return { removed };
 }
 
@@ -364,7 +411,15 @@ export async function acquireStorageLock(lockPath: string, options: StorageLockO
         },
       };
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      const code = (error as NodeJS.ErrnoException).code;
+      // ENOENT: the parent directory vanished between the caller's ensureDir
+      // and this open — a concurrent releaser prunes empty (artifact-less)
+      // project dirs (see withProjectAnalysisLock's cleanup). Recreate and retry.
+      if (code === 'ENOENT') {
+        await fs.ensureDir(path.dirname(lockPath));
+        continue;
+      }
+      if (code !== 'EEXIST') throw error;
     }
 
     const existing = await readStorageLockState(lockPath);
@@ -415,6 +470,16 @@ export async function withProjectAnalysisLock<T>(projectPath: string, fn: () => 
     return await fn();
   } finally {
     await lock.release();
+    // Don't leave a lock-only directory behind when the analysis produced no
+    // artifacts (e.g. it threw before writing anything): an empty project dir
+    // here would otherwise persist as store noise forever (the orphaned
+    // analysis.lock-only entry pattern — see pruneOrphanedLockOnlyDirs).
+    try {
+      const remaining = await fs.readdir(projectDir);
+      if (remaining.length === 0) await fs.remove(projectDir);
+    } catch {
+      // best-effort cleanup only
+    }
   }
 }
 
