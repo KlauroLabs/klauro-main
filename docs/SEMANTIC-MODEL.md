@@ -91,9 +91,19 @@ processes, queues, and sync/async boundaries as needed.
 A meaningful change in what the system knows, decides, validates, performs, or
 produces. A step is NOT a function and NOT a summarized code block:
 
-- **Step ↔ code is many-to-many.** One step may span several functions plus a
-  branch inside another; one large function may contain several steps; a
-  generic `authorizeRequest()` may serve hundreds of steps.
+- **Step ↔ code is many-to-many. THIS IS ESSENTIAL.** One step may span
+  several functions plus a branch inside another; one large function may
+  contain several steps; a generic `authorizeRequest()` may serve hundreds of
+  steps. A segmentation that emits one step per traced function (named
+  "Process (fnName)") is a placeholder, not the model — a 30-line controller
+  method that validates, mutates, and persists is THREE steps inside ONE
+  function.
+- **Framework semantics locate steps.** The framework layer already knows
+  where the meaningful actions are: a validator/form boundary IS a Validate
+  step; an ORM flush/save IS a Persist step (with a state-change effect); a
+  serializer/response boundary IS a Respond step; a queue/messenger dispatch
+  IS an async handoff. Framework-analyzer facts are first-class step-
+  segmentation AND ICELOT-facet evidence, not just inventory.
 - Mappings are typed: `StepCodeMapping { step_id, code_region, relationship,
   contribution, confidence }`, relationship ∈ `implements |
   partially_implements | initiates | completes | validates | branches |
@@ -118,6 +128,32 @@ Per the determinism boundary: deterministic facets (Input=signatures,
 Effects=writes/integrations from the graph, Output=return/produced entities,
 Telemetry=observed calls) are Camp-B facts; Logic and interpretive reframing
 are AI-only, evidence-gated, with provenance (`description_source`).
+
+## Communication types — async / sync / passive (seam classification)
+
+Every seam (integration/interface edge between components or systems) carries
+one of three COMMUNICATION TYPES. These are semantic categories with different
+consistency/staleness postures (the CAP trade-off lives here), not transport
+labels:
+
+- **Sync** — a direct call that triggers a synchronous process and waits on
+  its result (HTTP/API call, RPC, SOAP, in-process request/response). The
+  caller observes the effect immediately; failure is surfaced to the caller.
+- **Async** — a message/event handed off fire-and-forget (queue publish,
+  event dispatch, webhook emission, messenger/job dispatch). The effect
+  happens LATER in a continuation flow (see Flow: async continuation ≠ new
+  flow); failure handling is the consumer's contract, not the caller's.
+- **Passive** — a data drop the downstream system simply expects to be there
+  (Kafka/stream consumption, DB replication/WAL, shared tables/files, poll-a-
+  bucket). No call happens at all; the interface IS the data. Staleness is
+  intrinsic — reads are eventually consistent by construction.
+
+ICELOT binds to this: a step/flow crossing an async seam carries the handoff
+as an Effect (integration) and the continuation as flow structure; a passive
+seam implies a `consistency` constraint on the READING side ("reads here may
+be stale — data arrives by stream/replication"). A library-internal operator
+call (rxjs `map`, ORM helper) is NOT a seam of any type — seams are
+component/system boundaries, never in-library plumbing.
 
 ## Coverage invariants — "everything rolls up" must be measurable
 
