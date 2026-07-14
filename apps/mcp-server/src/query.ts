@@ -90,6 +90,13 @@ export function buildOrientCapsule(cas: CASOutput) {
       ),
       data_entities: dimension((cas.data_entities?.length || 0) > 0, cas.data_entities?.length || 0, 'get_data_entities'),
       capabilities: dimension((cas.system_capabilities?.length || 0) > 0, cas.system_capabilities?.length || 0, 'get_summary'),
+      // Behavior/registration surfaces (mcp_tool/rpc/command/event/message
+      // engines) — navigation, not product purpose (docs/SEMANTIC-MODEL.md).
+      // Structurally separate from `capabilities`: never core, never ranked,
+      // never in top_capabilities, but still a real pullable dimension so
+      // agents can find e.g. "the 207-tool MCP surface" without it crowding
+      // out domain capabilities.
+      behavior_surfaces: dimension((cas.behavior_surfaces?.length || 0) > 0, cas.behavior_surfaces?.length || 0, 'get_summary(detail=full)'),
       tests: dimension((cas.test_suites?.length || 0) > 0, cas.test_suites?.length || 0, 'get_test_summary'),
     },
     hint: 'Availability + counts only — call the named tool to pull each dimension. Heavy content is intentionally omitted from this capsule.',
@@ -271,6 +278,18 @@ export function buildSummary(cas: CASOutput, opts: { detail?: 'compact' | 'full'
         .sort((a, b) => b.signals.total_score - a.signals.total_score)
         .slice(0, 10)
         .map(c => c.name) : [],
+    // NAVIGATION TIER, not purpose (SURFACES ARE NOT CAPABILITIES —
+    // docs/SEMANTIC-MODEL.md purpose test): registration/behavior surfaces
+    // (command / event-subscriber / message-handler / mcp_tool engines) are
+    // listed separately, unranked, and never mixed into capabilities /
+    // top_capabilities counts — agents use them to FIND handlers, not to
+    // learn what the product is for. Omitted when the repo has none.
+    ...(cas.behavior_surfaces?.length ? {
+      behavior_surfaces: cas.behavior_surfaces.map(surface => ({
+        name: surface.structural_label || surface.name,
+        entry_points: surface.operations?.length || 0,
+      })),
+    } : {}),
     analyzers: cas.analyzer_contributions.map(c => c.analyzer_name),
     errors: cas.analysis_errors?.length || 0,
     // Compact communication-seam one-liner (N sync / N async / N passive) so the
@@ -405,6 +424,21 @@ export function getSystemOverview(cas: CASOutput, opts: SystemOverviewFilter = {
       operation_count: capability.operations?.length || 0,
       related_entities: capability.related_entities,
       related_domains: capability.related_domains,
+    })) || [],
+    // Behavior/registration surfaces (mcp_tool/rpc/command/event/message
+    // engines) — the navigation tier, NOT product-purpose capabilities
+    // (docs/SEMANTIC-MODEL.md). Deliberately separate from system_capabilities
+    // so a surface can never rank/outrank a domain capability, while
+    // remaining fully browsable in full-detail get_summary.
+    behavior_surfaces_count: cas.behavior_surfaces?.length || 0,
+    behavior_surfaces: cas.behavior_surfaces?.slice(0, 25).map(surface => ({
+      id: surface.id,
+      name: surface.name,
+      structural_label: surface.structural_label,
+      description: surface.description,
+      operation_count: surface.operations?.length || 0,
+      related_entities: surface.related_entities,
+      related_domains: surface.related_domains,
     })) || [],
     repository_links: cas.repository_links || cas.cross_repository_links || [],
     disclosure: cas.disclosure || null,
@@ -1690,15 +1724,35 @@ function rankLineageSites<T extends { file?: string }>(sites: T[]): T[] {
 
 export function getDataLineage(
   cas: CASOutput,
-  opts: { entityId?: string; sensitiveOnly?: boolean; limit?: number; offset?: number } = {}
+  opts: { entityId?: string; entityName?: string; sensitiveOnly?: boolean; limit?: number; offset?: number } = {}
 ) {
   const lineageNotice = cas.data_lineage === undefined
     ? analysisVersionNotice(cas, 'data lineage')
     : undefined;
   const lineage = cas.data_lineage || [];
 
-  if (opts.entityId) {
-    const entity = lineage.find(item => item.entity_id === opts.entityId) || null;
+  // `entityName` is an alias accepted for callers that pass a display name
+  // (e.g. "Invoice") rather than the internal entity_id — this was previously
+  // silently ignored, returning the identical unfiltered listing regardless
+  // of what was passed. Resolve by entity_id first (exact), then by
+  // entity_name case-insensitively. A filter that resolves to nothing now
+  // returns an explicit not-found reason instead of silently falling through
+  // to the unfiltered listing.
+  const requestedFilter = opts.entityId || opts.entityName;
+  if (requestedFilter) {
+    let entity = lineage.find(item => item.entity_id === requestedFilter) || null;
+    if (!entity) {
+      const wanted = requestedFilter.toLowerCase();
+      entity = lineage.find(item => item.entity_name.toLowerCase() === wanted) || null;
+    }
+    if (!entity) {
+      const known = lineage.map(item => item.entity_name).slice(0, 20);
+      return {
+        entity: null,
+        error: `Entity '${requestedFilter}' not found in data lineage. Known entities (up to 20): ${known.join(', ') || 'none'}.`,
+        analysis_version_notice: lineageNotice,
+      };
+    }
     return { entity, analysis_version_notice: lineageNotice };
   }
 
@@ -3479,6 +3533,40 @@ export function getCodingContext(
 }
 
 /**
+ * Resolve "Class::method" / "Class.method" / "Class#method" syntax — agents
+ * often paste a target straight from a stack trace or another tool's naming
+ * convention, and node ids don't encode that shape directly. Each member
+ * node carries a `parent` pointing at its containing class/interface node,
+ * which is the robust join: find class node(s) by name, then a method/function
+ * node among them whose `parent` equals the class node's id. Falls back to
+ * the id-embedding convention used by method nodes
+ * (`method_class_<file>_<Class>_<i>_<method>_<j>`, see flow-concepts.ts) when
+ * no `parent` link is present on this analyzer's output. An honest miss
+ * returns undefined rather than guessing across classes with the same method
+ * name.
+ */
+function resolveClassMember(cas: CASOutput, className: string, memberName: string): CASNode | undefined {
+  const memberNodes = cas.nodes.filter(n =>
+    (n.type === 'method' || n.type === 'function') && n.name === memberName
+  );
+  if (memberNodes.length === 0) return undefined;
+
+  const classCandidates = cas.nodes.filter(n =>
+    (n.type === 'class' || n.type === 'interface' || n.type === 'struct') && n.name === className
+  );
+  for (const classNode of classCandidates) {
+    const member = memberNodes.find(n => n.parent === classNode.id);
+    if (member) return member;
+  }
+
+  // Fall back to id-embedding convention when no parent link resolved.
+  const idScoped = memberNodes.find(n => n.id.includes(`_${className}_`));
+  if (idScoped) return idScoped;
+
+  return undefined;
+}
+
+/**
  * getInterfaceSignature — the I/L/S/O join (SPEC-INTELLIGENCE-CAPITALIZATION.md
  * concept #2). Every entity (function -> flow -> capability -> project ->
  * workspace) has the same contract shape: Input (what it requires), Logic
@@ -3537,14 +3625,35 @@ export function getInterfaceSignature(
   // -- function/flow/capability level: resolve target node the same way
   // getCodingContext does (node id, file path, or search query). --
   let targetNode: CASNode | undefined;
-  if (target.includes('/') || target.includes('.')) {
-    const fileNodes = cas.nodes.filter(n => n.source?.file?.endsWith(target) || n.id === target);
-    targetNode = fileNodes.find(n => n.type === 'class' || n.type === 'module' || n.type === 'function') || fileNodes[0];
-  } else {
-    targetNode = cas.nodes.find(n => n.id === target);
-    if (!targetNode) {
-      const searchResults = searchNodes(cas, target, { limit: 1 });
-      if (searchResults.length > 0) targetNode = cas.nodes.find(n => n.id === searchResults[0].id);
+
+  // Class::method / Class#method syntax (unambiguous separators — agents
+  // commonly paste this straight from a stack trace or another tool) is
+  // tried first, before the file-path/id/search fallbacks below.
+  const classMemberSeparatorMatch = target.match(/^([\w$]+)\s*(?:::|#)\s*([\w$]+)$/);
+  if (classMemberSeparatorMatch) {
+    targetNode = resolveClassMember(cas, classMemberSeparatorMatch[1], classMemberSeparatorMatch[2]);
+  }
+
+  if (!targetNode) {
+    if (target.includes('/') || target.includes('.')) {
+      const fileNodes = cas.nodes.filter(n => n.source?.file?.endsWith(target) || n.id === target);
+      targetNode = fileNodes.find(n => n.type === 'class' || n.type === 'module' || n.type === 'function') || fileNodes[0];
+    } else {
+      targetNode = cas.nodes.find(n => n.id === target);
+      if (!targetNode) {
+        const searchResults = searchNodes(cas, target, { limit: 1 });
+        if (searchResults.length > 0) targetNode = cas.nodes.find(n => n.id === searchResults[0].id);
+      }
+    }
+  }
+
+  // Class.method syntax is ambiguous with a bare file name (e.g. "utils.ts"),
+  // so it is only tried as a last resort once the id/file/search resolution
+  // above has come up empty.
+  if (!targetNode && !classMemberSeparatorMatch) {
+    const dotMatch = target.match(/^([\w$]+)\.([\w$]+)$/);
+    if (dotMatch) {
+      targetNode = resolveClassMember(cas, dotMatch[1], dotMatch[2]);
     }
   }
 
@@ -3678,6 +3787,14 @@ export function getFlowConcepts(
      *  nameStep hook (description_source flips to 'ai'); flow keys overlay the
      *  flow-level description. Absent -> fully deterministic output. */
     aiDescriptions?: Map<string, { description: string }>;
+    /** Which caller surface is asking — affects only the phrasing of the
+     *  truncation gap hint below. 'mcp' (default): this function's own
+     *  `maxFlows` param is a first-class tool arg an MCP caller can pass
+     *  directly. 'http': the caller is an HTTP route (e.g. /conceptual) that
+     *  may or may not forward a max_flows query param — the hint must name
+     *  the actual mechanism (query param, with its bound) rather than assume
+     *  a bare function-argument surface that doesn't exist for HTTP callers. */
+    surface?: 'mcp' | 'http';
   } = {}
 ) {
   // Only apply the default cap when browsing all flows (no target filter).
@@ -3793,10 +3910,17 @@ export function getFlowConcepts(
     gaps.push(`No entry point matched target "${opts.target}" — check get_entry_points/get_route_table for valid ids/paths.`);
   }
   if (truncated) {
-    gaps.push(
-      `Showing ${flows.length}/${totalFlowsAvailable} flows (default cap ${DEFAULT_MAX_FLOWS} when browsing all entry points). ` +
-      `Pass max_flows to see more, or target to narrow to a specific entry point/route/name.`
-    );
+    // Report the cap that was ACTUALLY applied (effectiveMaxFlows), not the
+    // module default — a caller (e.g. the /conceptual HTTP route) may pass
+    // its own explicit maxFlows, and stating DEFAULT_MAX_FLOWS there would be
+    // false ("default cap 15" while the real cap in effect was 20).
+    const appliedCapNotice = opts.maxFlows && opts.maxFlows > 0
+      ? `cap ${effectiveMaxFlows}`
+      : `default cap ${effectiveMaxFlows} when browsing all entry points`;
+    const moreHint = opts.surface === 'http'
+      ? 'Pass a max_flows query param (bounded, max 50) to see more, or target to narrow to a specific entry point/route/name.'
+      : 'Pass max_flows to see more, or target to narrow to a specific entry point/route/name.';
+    gaps.push(`Showing ${flows.length}/${totalFlowsAvailable} flows (${appliedCapNotice}). ${moreHint}`);
   }
 
   // Cross-link each flow/step to the STRUCTURAL perspectives (architectural
