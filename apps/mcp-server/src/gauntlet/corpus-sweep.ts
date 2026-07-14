@@ -333,15 +333,27 @@ async function main() {
   const root = expandHome(process.env.CORPUS_SWEEP_ROOT || '~/dev');
   const maxProjects = Number(process.env.CORPUS_SWEEP_MAX_PROJECTS || 60);
   const onlyLeads = process.env.CORPUS_SWEEP_ONLY_LEADS === '1';
+  // CORPUS_SWEEP_EXCLUDE: comma-separated path substrings — any lead or
+  // discovered target whose resolved path contains one is skipped (logged, not
+  // silent). Lets a sweep honor "avoid these workspaces" mandates without
+  // editing the lead lists.
+  const excludes = (process.env.CORPUS_SWEEP_EXCLUDE || '')
+    .split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+  const isExcluded = (dir: string) => {
+    const p = path.resolve(expandHome(dir)).toLowerCase();
+    const hit = excludes.find((e) => p.includes(e));
+    if (hit) console.error(`[corpus-sweep] EXCLUDED (${hit}): ${dir}`);
+    return Boolean(hit);
+  };
 
   const projectResults: ProjectResult[] = [];
   const workspaceResults: WorkspaceResult[] = [];
 
-  console.error(`[corpus-sweep] root=${root} maxProjects=${maxProjects} onlyLeads=${onlyLeads}`);
+  console.error(`[corpus-sweep] root=${root} maxProjects=${maxProjects} onlyLeads=${onlyLeads}${excludes.length ? ` exclude=${excludes.join(',')}` : ''}`);
 
   // ---- Lead smoke test first (priority targets) ----
   console.error('[corpus-sweep] === LEAD SMOKE TEST ===');
-  for (const dir of LEAD_PROJECTS) {
+  for (const dir of LEAD_PROJECTS.filter((d) => !isExcluded(d))) {
     const exists = await fs.pathExists(dir);
     if (!exists) {
       console.error(`[corpus-sweep] LEAD MISSING: ${dir}`);
@@ -357,7 +369,7 @@ async function main() {
     projectResults.push(r);
   }
 
-  for (const dir of LEAD_WORKSPACES) {
+  for (const dir of LEAD_WORKSPACES.filter((d) => !isExcluded(d))) {
     const exists = await fs.pathExists(dir);
     if (!exists) {
       console.error(`[corpus-sweep] LEAD WORKSPACE MISSING: ${dir}`);
@@ -390,8 +402,8 @@ async function main() {
 
     // De-dup: skip any project/workspace already covered by a lead target.
     const leadPaths = new Set([...LEAD_PROJECTS, ...LEAD_WORKSPACES].map((p) => path.resolve(p)));
-    const remainingProjects = projects.filter((p) => !leadPaths.has(path.resolve(p.dirPath)));
-    const remainingWorkspaces = workspaces.filter((w) => !leadPaths.has(path.resolve(w.dirPath)));
+    const remainingProjects = projects.filter((p) => !leadPaths.has(path.resolve(p.dirPath)) && !isExcluded(p.dirPath));
+    const remainingWorkspaces = workspaces.filter((w) => !leadPaths.has(path.resolve(w.dirPath)) && !isExcluded(w.dirPath));
 
     let toRun = remainingProjects;
     if (toRun.length > maxProjects) {
