@@ -185,6 +185,77 @@ describe('SymfonyAnalyzer', () => {
       expect(entries[0].trigger.path).toBe('/api/web/reports/{id}');
       expect(entries[0].handler.method_name).toBe('show');
     });
+
+    it('extracts uppercase FOSRestBundle verb shortcuts (#[Rest\\POST], #[Rest\\DELETE])', async () => {
+      // Regression: truckspy's KeyValueController/NotificationSettingsV2Controller use
+      // the fully-uppercase HTTP-verb spelling (#[Rest\POST], #[Rest\DELETE]) rather than
+      // the capitalized form (#[Rest\Post]); the case-sensitive attribute matcher silently
+      // dropped these routes.
+      await writeFile('src/Controller/Api/Common/KeyValueController.php', [
+        '<?php',
+        'namespace App\\Controller\\Api\\Common;',
+        'use FOS\\RestBundle\\Controller\\Annotations as Rest;',
+        '',
+        'class KeyValueController',
+        '{',
+        '    #[Rest\\POST(""), Rest\\View]',
+        '    public function store(): array',
+        '    {',
+        '    }',
+        '',
+        '    #[Rest\\DELETE("/{id}")]',
+        '    public function delete(string $id): void',
+        '    {',
+        '    }',
+        '}',
+      ].join('\n'));
+
+      const contribution = await analyze();
+      const entries = httpEntries(contribution);
+
+      expect(entries.map((e: any) => `${e.trigger.method} ${e.trigger.path}`).sort()).toEqual([
+        'DELETE /{id}',
+        'POST /',
+      ]);
+    });
+
+    it('extracts FOSRestBundle Link/Unlink relation verbs from grouped attributes', async () => {
+      // Regression: truckspy's MaintenanceController uses #[Rest\Link(...)] and
+      // #[Rest\Unlink(...)] (FOSRestBundle's relation-linking pseudo-verbs) grouped with
+      // a trailing #[Rest\View] in the same attribute bracket; Link/Unlink were entirely
+      // absent from the verb attribute list.
+      await writeFile('src/Controller/Api/Customer/MaintenanceController.php', [
+        '<?php',
+        'namespace App\\Controller\\Api\\Customer;',
+        'use FOS\\RestBundle\\Controller\\Annotations as Rest;',
+        '',
+        "#[Rest\\Route('/maintenance')]",
+        'class MaintenanceController',
+        '{',
+        '    #[Rest\\Link("/work-orders/{orderId}/attach/{issueId}"), Rest\\View]',
+        '    public function attachIssueToRepairOrder(string $orderId, string $issueId): void',
+        '    {',
+        '    }',
+        '',
+        '    #[Rest\\Unlink("/work-orders/{orderId}/attach/{issueId}"), Rest\\View]',
+        '    public function detachIssueToRepairOrder(string $orderId, string $issueId): void',
+        '    {',
+        '    }',
+        '}',
+      ].join('\n'));
+
+      const contribution = await analyze();
+      const entries = httpEntries(contribution);
+
+      expect(entries.map((e: any) => `${e.trigger.method} ${e.trigger.path}`).sort()).toEqual([
+        'LINK /maintenance/work-orders/{orderId}/attach/{issueId}',
+        'UNLINK /maintenance/work-orders/{orderId}/attach/{issueId}',
+      ]);
+      expect(entries.map((e: any) => e.handler.method_name).sort()).toEqual([
+        'attachIssueToRepairOrder',
+        'detachIssueToRepairOrder',
+      ]);
+    });
   });
 
   describe('annotation routes', () => {

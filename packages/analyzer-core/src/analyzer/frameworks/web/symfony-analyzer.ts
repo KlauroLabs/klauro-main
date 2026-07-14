@@ -1635,12 +1635,17 @@ export class SymfonyAnalyzer extends BaseAnalyzer {
     const isClassLevel = (index: number) => classDeclIndex >= 0 && index < classDeclIndex;
     const hasFosRest = content.includes('FOS\\RestBundle');
 
-    const attributeNamePattern = /(?:#\[|,)\s*((?:[A-Za-z_]\w*\\)*)(Route|Get|Post|Put|Patch|Delete|Head|Options)\s*(?=[(,\]])/g;
+    // FOSRestBundle verb shortcuts are commonly written uppercase (#[Rest\POST(...)],
+    // #[Rest\DELETE(...)]) as well as capitalized (#[Rest\Post(...)]); match case-
+    // insensitively and normalize below. FOSRestBundle also defines Link/Unlink
+    // pseudo-HTTP-verb attributes for relation endpoints (#[Rest\Link(...)],
+    // #[Rest\Unlink(...)]) which were previously invisible to route extraction.
+    const attributeNamePattern = /(?:#\[|,)\s*((?:[A-Za-z_]\w*\\)*)(Route|Get|Post|Put|Patch|Delete|Head|Options|Link|Unlink)\s*(?=[(,\]])/gi;
     let match: RegExpExecArray | null;
     while ((match = attributeNamePattern.exec(content)) !== null) {
       const prefix = match[1];
       const attributeName = match[2];
-      const isVerb = attributeName !== 'Route';
+      const isVerb = attributeName.toLowerCase() !== 'route';
 
       if (isVerb) {
         if (!hasFosRest) continue;
@@ -1674,10 +1679,10 @@ export class SymfonyAnalyzer extends BaseAnalyzer {
       });
     }
 
-    const annotationRoutePattern = /@(?:(\w+)\\)?(Route|Get|Post|Put|Patch|Delete|Head|Options)\s*\(\s*["']([^"']*)["']([^)]*)\)/g;
+    const annotationRoutePattern = /@(?:(\w+)\\)?(Route|Get|Post|Put|Patch|Delete|Head|Options|Link|Unlink)\s*\(\s*["']([^"']*)["']([^)]*)\)/gi;
     while ((match = annotationRoutePattern.exec(content)) !== null) {
       const attributeName = match[2];
-      const isVerb = attributeName !== 'Route';
+      const isVerb = attributeName.toLowerCase() !== 'route';
       if (isVerb && !hasFosRest) continue;
 
       const routePath = match[3];
