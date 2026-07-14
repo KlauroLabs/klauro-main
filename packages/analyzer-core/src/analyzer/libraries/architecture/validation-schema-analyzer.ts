@@ -3,6 +3,7 @@ import { CASContribution, CASEdge, CASLibrary, CASNode } from '../../../types/ca
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import { cachedGlob as glob } from '../../core/glob-cache';
+import { createYieldBudget } from '../../core/event-loop-yield';
 
 type ValidationLibrary = 'zod' | 'yup' | 'class-validator' | 'joi' | 'ajv' | 'marshmallow' | 'cerberus';
 
@@ -164,7 +165,12 @@ export class ValidationSchemaAnalyzer extends BaseAnalyzer {
     const contracts: ValidationContract[] = [];
     const handlerUsages: HandlerUsage[] = [];
 
+    // Budget-yield per file: with the shared file-read cache warm the await
+    // resolves in a microtask (no event-loop hop), so this scan ran as one
+    // multi-second synchronous block on a whale repo. Results unchanged.
+    const maybeYield = createYieldBudget();
     for (const relativeFile of files) {
+      await maybeYield();
       const absoluteFile = path.join(projectPath, relativeFile);
       const content = await this.safeRead(absoluteFile);
       if (!content || !this.fileMayContainValidation(content)) continue;

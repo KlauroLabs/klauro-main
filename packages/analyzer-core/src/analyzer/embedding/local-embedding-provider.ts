@@ -1,4 +1,5 @@
 import { EmbeddingProvider, EmbeddingProviderOptions } from './types';
+import { createYieldBudget } from '../core/event-loop-yield';
 
 const LOCAL_MODEL = 'klauro-local-hash-v1';
 
@@ -19,7 +20,16 @@ export class LocalEmbeddingProvider implements EmbeddingProvider {
       return [];
     }
 
-    return texts.map(text => this.embedText(text));
+    // Budget-yield between texts: hashing a whale batch synchronously was a
+    // measured >1s event-loop stall (the analyzer shares its process with the
+    // HTTP server). Order and results are unchanged.
+    const maybeYield = createYieldBudget();
+    const vectors: Float32Array[] = [];
+    for (const text of texts) {
+      vectors.push(this.embedText(text));
+      await maybeYield();
+    }
+    return vectors;
   }
 
   private embedText(text: string): Float32Array {

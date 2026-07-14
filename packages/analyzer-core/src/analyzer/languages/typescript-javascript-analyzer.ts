@@ -403,12 +403,17 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
 
       tsStart = Date.now();
       this.resetProcessTimings();
+      // Budget-yield in the whale-scaling post-parse passes below: on a 2.7k-file
+      // repo the phase1/phase2/call-graph stretch was a measured >2s contiguous
+      // event-loop stall at the end of this analyzer. Order/results unchanged.
+      const maybeYieldTail = createYieldBudget();
       const deferredCallGraphData: Array<{ extractedFunctions: any[]; relativePath: string }> = [];
       for (const { relativePath, fullPath, content, extraction } of preloadedFiles) {
         const extractedFunctions = this.processTreeSitterExtraction(relativePath, fullPath, content, extraction, nodes, edges, entryPoints, exitPoints);
         if (extractedFunctions.length > 0) {
           deferredCallGraphData.push({ extractedFunctions, relativePath });
         }
+        await maybeYieldTail();
       }
       tsTimings['processFiles_phase1'] = Date.now() - tsStart;
 
@@ -437,16 +442,19 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
       tsStart = Date.now();
       for (const { extractedFunctions, relativePath } of deferredCallGraphData) {
         this.integrateEnhancedCallGraphDataIndexed(extractedFunctions, nodes, edges, entryPoints, exitPoints, relativePath);
+        await maybeYieldTail();
       }
       tsTimings['processFiles_phase2'] = Date.now() - tsStart;
 
       tsStart = Date.now();
       this.detectServerEntryPoints(sourceFiles, nodes, entryPoints, context.projectPath);
       tsTimings['detectEntryPoints'] = Date.now() - tsStart;
+      await yieldToEventLoop();
 
       tsStart = Date.now();
       this.buildEnhancedCallGraph(nodes, edges, entryPoints, exitPoints);
       tsTimings['buildCallGraph'] = Date.now() - tsStart;
+      await yieldToEventLoop();
 
       tsStart = Date.now();
       const categories = this.buildCategories();

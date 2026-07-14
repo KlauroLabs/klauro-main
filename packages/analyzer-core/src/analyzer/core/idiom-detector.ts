@@ -1,5 +1,6 @@
 import { globSync } from 'glob';
 import * as nodePath from 'path';
+import { yieldToEventLoop } from './event-loop-yield';
 import type {
   CASAnalysisFact,
   CASBehavioralInvariant,
@@ -93,23 +94,32 @@ const MIGRATION_PATH = /(^|\/)(migrations?|db\/migrate|prisma\/migrations)(\/|$)
 const SCHEMA_PATH = /(^|\/)(schema|models?|entities?|database|prisma)(\/|$)|(\.prisma|schema\.sql)$/i;
 const CONFIG_PATH = /(^|\/)(\.env|config|configs|settings)(\/|$)|(^|\/)(package\.json|tsconfig\.json|pyproject\.toml|Cargo\.toml|go\.mod|composer\.json|pubspec\.yaml|appsettings\.json)$/i;
 
-export function detectCodebaseIdioms(input: IdiomDetectionInput): IdiomDetectionResult {
+export async function detectCodebaseIdioms(input: IdiomDetectionInput): Promise<IdiomDetectionResult> {
+  // Yield between detector families: each sweeps every node (several run
+  // regexes over node source), which on a whale (76k nodes) added up to a
+  // measured >2s synchronous event-loop stall inside pp_traceability. The
+  // hops change no detector's input, order, or output.
   const files = buildFileInventory(input);
-  const detectedDrafts = [
-    ...detectNamingIdioms(input),
-    ...detectFileOrganizationIdioms(input, files),
-    ...detectModuleBoundaryIdioms(input),
-    ...detectDependencyInjectionIdioms(input),
-    ...detectDataAccessIdioms(input, files),
-    ...detectErrorHandlingIdioms(input),
-    ...detectValidationIdioms(input),
-    ...detectAuthTenantIdioms(input),
-    ...detectLoggingIdioms(input),
-    ...detectTestingIdioms(input, files),
-    ...detectMigrationIdioms(input, files),
-    ...detectAsyncStyleIdioms(input),
-    ...detectConfigurationIdioms(input, files),
+  const detectors: Array<() => IdiomDraft[]> = [
+    () => detectNamingIdioms(input),
+    () => detectFileOrganizationIdioms(input, files),
+    () => detectModuleBoundaryIdioms(input),
+    () => detectDependencyInjectionIdioms(input),
+    () => detectDataAccessIdioms(input, files),
+    () => detectErrorHandlingIdioms(input),
+    () => detectValidationIdioms(input),
+    () => detectAuthTenantIdioms(input),
+    () => detectLoggingIdioms(input),
+    () => detectTestingIdioms(input, files),
+    () => detectMigrationIdioms(input, files),
+    () => detectAsyncStyleIdioms(input),
+    () => detectConfigurationIdioms(input, files),
   ];
+  const detectedDrafts: IdiomDraft[] = [];
+  for (const detector of detectors) {
+    detectedDrafts.push(...detector());
+    await yieldToEventLoop();
+  }
   const drafts = [
     ...detectedDrafts,
     ...detectFallbackIdioms(input, files, detectedDrafts),

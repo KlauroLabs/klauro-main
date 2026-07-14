@@ -8,6 +8,7 @@ import { classifyGuardKind, isAuthenticationGuardName } from '../../core/guard-c
 import * as path from 'path';
 import * as fs from 'fs-extra';
 import { cachedGlob as glob } from '../../core/glob-cache';
+import { createYieldBudget } from '../../core/event-loop-yield';
 import { cachedEstreeParse as parse } from '../../core/estree-parse-cache';
 
 interface ExpressApplication {
@@ -224,7 +225,11 @@ export class ExpressAnalyzer extends BaseAnalyzer {
     projectPath: string,
     nodes: CASNode[]
   ): Promise<ExpressApplication | null> {
+    // Budget-yield per file: cached reads resolve in a microtask (no
+    // event-loop hop), so these scans blocked multi-second on a whale repo.
+    const maybeYield = createYieldBudget();
     for (const file of files) {
+      await maybeYield();
       const fullPath = path.join(projectPath, file);
       const content = await fs.readFile(fullPath, 'utf-8');
 
@@ -296,7 +301,11 @@ export class ExpressAnalyzer extends BaseAnalyzer {
   ): Promise<ExpressRouter[]> {
     const routers: ExpressRouter[] = [];
 
+    // Budget-yield per file: cached reads resolve in a microtask (no
+    // event-loop hop), so these scans blocked multi-second on a whale repo.
+    const maybeYield = createYieldBudget();
     for (const file of files) {
+      await maybeYield();
       const fullPath = path.join(projectPath, file);
       const content = await fs.readFile(fullPath, 'utf-8');
 
@@ -434,7 +443,11 @@ export class ExpressAnalyzer extends BaseAnalyzer {
   ): Promise<ExpressMiddleware[]> {
     const middleware: ExpressMiddleware[] = [];
 
+    // Budget-yield per file: cached reads resolve in a microtask (no
+    // event-loop hop), so these scans blocked multi-second on a whale repo.
+    const maybeYield = createYieldBudget();
     for (const file of files) {
+      await maybeYield();
       const fullPath = path.join(projectPath, file);
       const content = await fs.readFile(fullPath, 'utf-8');
 
@@ -485,7 +498,11 @@ export class ExpressAnalyzer extends BaseAnalyzer {
   ): Promise<ExpressController[]> {
     const controllers: ExpressController[] = [];
 
+    // Budget-yield per file: cached reads resolve in a microtask (no
+    // event-loop hop), so these scans blocked multi-second on a whale repo.
+    const maybeYield = createYieldBudget();
     for (const file of files) {
+      await maybeYield();
       const fullPath = path.join(projectPath, file);
       const content = await fs.readFile(fullPath, 'utf-8');
 
@@ -561,7 +578,11 @@ export class ExpressAnalyzer extends BaseAnalyzer {
   ): Promise<ExpressModel[]> {
     const models: ExpressModel[] = [];
 
+    // Budget-yield per file: cached reads resolve in a microtask (no
+    // event-loop hop), so these scans blocked multi-second on a whale repo.
+    const maybeYield = createYieldBudget();
     for (const file of files) {
+      await maybeYield();
       const fullPath = path.join(projectPath, file);
       const content = await fs.readFile(fullPath, 'utf-8');
 
@@ -623,7 +644,11 @@ export class ExpressAnalyzer extends BaseAnalyzer {
   ): Promise<ExpressService[]> {
     const services: ExpressService[] = [];
 
+    // Budget-yield per file: cached reads resolve in a microtask (no
+    // event-loop hop), so these scans blocked multi-second on a whale repo.
+    const maybeYield = createYieldBudget();
     for (const file of files) {
+      await maybeYield();
       const fullPath = path.join(projectPath, file);
       const content = await fs.readFile(fullPath, 'utf-8');
 
@@ -673,7 +698,11 @@ export class ExpressAnalyzer extends BaseAnalyzer {
   ): Promise<ExpressView[]> {
     const views: ExpressView[] = [];
 
+    // Budget-yield per file: cached reads resolve in a microtask (no
+    // event-loop hop), so these scans blocked multi-second on a whale repo.
+    const maybeYield = createYieldBudget();
     for (const file of files) {
+      await maybeYield();
       const fullPath = path.join(projectPath, file);
       const content = await fs.readFile(fullPath, 'utf-8');
 

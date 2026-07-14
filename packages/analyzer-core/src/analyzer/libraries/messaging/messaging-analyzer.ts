@@ -3,6 +3,7 @@ import { CASNode, CASEdge, CASEntryPoint, CASContribution, CASExitPoint, FileAna
 import * as path from 'path';
 import * as fs from 'fs-extra';
 import { cachedGlob as glob } from '../../core/glob-cache';
+import { createYieldBudget } from '../../core/event-loop-yield';
 
 type MessagingSystem =
   | 'kafkajs'
@@ -155,8 +156,13 @@ export class MessagingAnalyzer extends BaseAnalyzer {
     }
 
     const markerRe = /(kafkajs|node-rdkafka|amqplib|from\s+['"]nats['"]|require\(['"]nats['"]\)|ioredis|from\s+['"]redis['"]|require\(['"]redis['"]\)|bullmq|bee-queue|@aws-sdk\/client-sqs|@aws-sdk\/client-sns|confluent_kafka|from\s+kafka\b|import\s+pika\b|from\s+celery\b|@KafkaListener|KafkaTemplate|@RabbitListener|RabbitTemplate|Sidekiq::Worker|perform_async|github\.com\/segmentio\/kafka-go|github\.com\/nats-io\/nats\.go)/;
+    // Budget-yield per file: with the shared file-read cache warm the await
+    // resolves in a microtask (no event-loop hop), so this scan ran as one
+    // multi-second synchronous block on a whale repo. Results unchanged.
+    const maybeYield = createYieldBudget();
     const relevant: string[] = [];
     for (const file of files) {
+      await maybeYield();
       let content: string;
       try {
         content = await fs.readFile(path.join(projectPath, file), 'utf-8');

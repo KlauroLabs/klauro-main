@@ -23,13 +23,13 @@ const repoRoot = path.resolve(__dirname, '..');
 const fixturesRoot = path.join(repoRoot, 'fixtures', 'idioms');
 const fixtureNames = ['nestjs-api', 'react-app', 'python-api', 'rust-service', 'mixed-monorepo'];
 
-test('detectCodebaseIdioms extracts local conventions across representative fixture repos', () => {
+test('detectCodebaseIdioms extracts local conventions across representative fixture repos', async () => {
   const aggregateCategories = new Set<string>();
-  const results = new Map<string, ReturnType<typeof detectCodebaseIdioms>>();
+  const results = new Map<string, Awaited<ReturnType<typeof detectCodebaseIdioms>>>();
 
   for (const fixtureName of fixtureNames) {
     const input = buildDetectionInput(fixtureName);
-    const result = detectCodebaseIdioms(input);
+    const result = await detectCodebaseIdioms(input);
     results.set(fixtureName, result);
 
     assert.ok(result.idioms.length >= 3, `${fixtureName} should expose several repo-local idioms`);
@@ -68,9 +68,9 @@ test('detectCodebaseIdioms extracts local conventions across representative fixt
   assert.ok(results.get('mixed-monorepo')!.idioms.some(idiom => idiom.category === 'module-boundary'));
 });
 
-test('idiom MCP helpers return compact, target-filterable context with examples', () => {
+test('idiom MCP helpers return compact, target-filterable context with examples', async () => {
   const input = buildDetectionInput('nestjs-api');
-  const result = detectCodebaseIdioms(input);
+  const result = await detectCodebaseIdioms(input);
   const cas = casFromDetection('nestjs-api', input, result);
 
   const all = getCodebaseIdioms(cas, { limit: 5 });
@@ -94,7 +94,7 @@ test('idiom MCP helpers return compact, target-filterable context with examples'
   assert.ok(context.validation.some(item => item.includes('validate_codebase_idioms')));
 });
 
-test('idiom detection normalizes absolute analyzer paths into project-relative examples', () => {
+test('idiom detection normalizes absolute analyzer paths into project-relative examples', async () => {
   const input = buildDetectionInput('rust-service');
   input.nodes = input.nodes.map(item => ({
     ...item,
@@ -103,7 +103,7 @@ test('idiom detection normalizes absolute analyzer paths into project-relative e
       : item.source,
   }));
 
-  const result = detectCodebaseIdioms(input);
+  const result = await detectCodebaseIdioms(input);
   const serialized = JSON.stringify(result.idioms);
 
   assert.doesNotMatch(serialized, new RegExp(input.projectPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
@@ -114,7 +114,7 @@ test('idiom detection normalizes absolute analyzer paths into project-relative e
   ));
 });
 
-test('idiom agent context synthesizes compact guidance when stored idiom guidance is empty', () => {
+test('idiom agent context synthesizes compact guidance when stored idiom guidance is empty', async () => {
   const cas = {
     codebase_idioms: [
       {
@@ -146,9 +146,9 @@ test('idiom agent context synthesizes compact guidance when stored idiom guidanc
   assert.ok(context.validation.some(item => item.includes('constructor') || item.includes('provider')));
 });
 
-test('idiom agent context falls back to file/global idioms when target id has no direct idiom match', () => {
+test('idiom agent context falls back to file/global idioms when target id has no direct idiom match', async () => {
   const input = buildDetectionInput('nestjs-api');
-  const result = detectCodebaseIdioms(input);
+  const result = await detectCodebaseIdioms(input);
   const cas = casFromDetection('nestjs-api', input, result);
 
   const context = buildIdiomContextForAgent(cas, {
@@ -162,9 +162,9 @@ test('idiom agent context falls back to file/global idioms when target id has no
   assert.ok(context.avoid.length > 0);
 });
 
-test('validateCodebaseIdioms flags non-idiomatic diffs that still could be functionally correct', () => {
+test('validateCodebaseIdioms flags non-idiomatic diffs that still could be functionally correct', async () => {
   const input = buildDetectionInput('nestjs-api');
-  const result = detectCodebaseIdioms(input);
+  const result = await detectCodebaseIdioms(input);
   const cas = casFromDetection('nestjs-api', input, result);
   const validation = validateCodebaseIdioms(cas, input.projectPath, {
     includeWorkingTree: false,
@@ -234,7 +234,7 @@ function buildDetectionInput(fixtureName: string): IdiomDetectionInput {
 function casFromDetection(
   fixtureName: string,
   input: IdiomDetectionInput,
-  result: ReturnType<typeof detectCodebaseIdioms>
+  result: Awaited<ReturnType<typeof detectCodebaseIdioms>>
 ): CASOutput {
   return {
     cas_version: '1.9.0',

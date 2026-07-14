@@ -131,7 +131,7 @@ import { cachedGlob as glob, beginGlobRun, endGlobRun } from './glob-cache';
 // Event-loop yields between analysis phases: the analyzer runs in-process with
 // the HTTP server, so long synchronous phases starve every request (incl.
 // /health) — see event-loop-yield.ts for the measured 524-starvation story.
-import { yieldToEventLoop } from './event-loop-yield';
+import { yieldToEventLoop, createYieldBudget } from './event-loop-yield';
 import { globSync } from 'glob';
 import * as path from 'path';
 
@@ -497,14 +497,19 @@ export class AnalyzerOrchestrator {
       const phase = new EmbeddingPhase(this.embeddingPhaseConfig);
       await phase.run(output, projectPath);
     }
-    this.compactSourceRaw(output);
-    relativizeProjectPaths(output, projectPath);
+    await this.compactSourceRaw(output);
+    await yieldToEventLoop();
+    await relativizeProjectPaths(output, projectPath);
   }
 
-  private compactSourceRaw(output: CASOutput): void {
+  private async compactSourceRaw(output: CASOutput): Promise<void> {
+    // Budget-yield inside the per-node loop: on a whale (76k nodes) this
+    // string-slicing sweep was part of a measured >1s finalize stall.
+    const maybeYield = createYieldBudget();
     const omitRaw = output.nodes.length > 10_000;
     const maxRawChars = 2_000;
     for (const node of output.nodes) {
+      await maybeYield();
       if (!node.source?.raw) continue;
       if (omitRaw) {
         const { raw: _raw, ...source } = node.source;
@@ -1281,7 +1286,7 @@ export class AnalyzerOrchestrator {
       });
 
       for (const { registration, result, executionTime } of successfulResults) {
-        this.mergeAnalysisResult(
+        await this.mergeAnalysisResult(
           { allNodes, allEdges, allEntryPoints, allExitPoints },
           result,
           { analyzerId: registration.id, analysisErrors }
@@ -1429,9 +1434,14 @@ export class AnalyzerOrchestrator {
     }
 
     phaseStart = Date.now();
+    // Yield between builders: this phase measured a >1s contiguous stall on a
+    // whale (76k nodes); the hops split it without changing any computation.
     const architectureSummary = this.buildArchitectureSummary(projectPath, allNodes, allEntryPoints, allExitPoints, contributions);
+    await yieldToEventLoop();
     const routeTable = this.buildRouteTable(allEntryPoints);
+    await yieldToEventLoop();
     const databaseSchema = this.buildDatabaseSchema(allNodes, allLibraries, projectPath, allEdges);
+    await yieldToEventLoop();
     const externalServices = this.buildExternalServices(allNodes, allExitPoints, allLibraries);
     logTiming('pp_architecture', phaseStart);
     await yieldToEventLoop();
@@ -1501,8 +1511,9 @@ export class AnalyzerOrchestrator {
     phaseStart = Date.now();
     const changeRiskSummary = this.buildChangeRiskSummary(changeRisks);
     const stabilitySummary = this.buildStabilitySummary(temporalStability);
-    const systemCapabilities = this.buildSystemCapabilities(allEntryPoints, dataEntities, allNodes, allEdges, projectPath);
-    const systemPurpose = this.inferSystemPurpose(allEntryPoints, dataEntities, systemCapabilities, allNodes);
+    const systemCapabilities = await this.buildSystemCapabilities(allEntryPoints, dataEntities, allNodes, allEdges, projectPath);
+    await yieldToEventLoop();
+    const systemPurpose = await this.inferSystemPurpose(allEntryPoints, dataEntities, systemCapabilities, allNodes);
     logTiming('pp_capabilities', phaseStart);
     await yieldToEventLoop();
 
@@ -1526,8 +1537,10 @@ export class AnalyzerOrchestrator {
     // coverage pass must be able to consume it. Same inputs, same result as the
     // former later call site — buildTestSuites reads only nodes/entryPoints/
     // edges/projectPath, all final by this point.
-    const testSuites = this.buildTestSuites(allNodes, allEntryPoints, projectPath, allEdges);
-    const flowCoverage = this.buildFlowCoverage(allNodes, allEntryPoints, callChains, testSuites);
+    const testSuites = await this.buildTestSuites(allNodes, allEntryPoints, projectPath, allEdges);
+    await yieldToEventLoop();
+    const flowCoverage = await this.buildFlowCoverage(allNodes, allEntryPoints, callChains, testSuites);
+    await yieldToEventLoop();
     const testGaps = this.buildTestGaps(flowCoverage, allNodes);
     logTiming('pp_flowCoverage', phaseStart);
     await yieldToEventLoop();
@@ -1609,6 +1622,7 @@ export class AnalyzerOrchestrator {
 
     phaseStart = Date.now();
     const productEntryPointsForPurpose = this.filterPrimaryProductEntryPoints(allEntryPoints, allNodes, projectPath);
+    await yieldToEventLoop();
     const entryPointSummary = this.summarizeEntryPoints(productEntryPointsForPurpose);
     const projectTextSignal = this.extractProjectTextSignal(projectPath);
     const frameworkNames = this.frameworkNamesForPurpose(contributions, allNodes, projectPath);
@@ -1620,11 +1634,13 @@ export class AnalyzerOrchestrator {
     const comprehensionJourneys = this.filterPrimaryProductJourneys(
       userJourneyResult.journeys, allEntryPoints, allNodes, projectPath
     );
+    await yieldToEventLoop();
     const comprehensionDataEntities = this.filterPrimaryProductDataEntities(dataEntities, allNodes, projectPath);
     const terminalSignal = buildTerminalSignal({
       journeys: comprehensionJourneys,
       systemCapabilities,
     });
+    await yieldToEventLoop();
 
     const enhancedSystemPurpose = this.buildEnhancedSystemPurpose(
       systemPurpose,
@@ -1737,10 +1753,17 @@ export class AnalyzerOrchestrator {
     await yieldToEventLoop();
 
     phaseStart = Date.now();
+    // Yield between builders: pp_traceability measured a 3.3s contiguous stall
+    // on a whale; hops between the (independent, order-preserved) builders
+    // split it without changing any output.
     const runtime = this.buildRuntime(projectPath, allEntryPoints, allExitPoints, externalServices, configuration, callChains);
+    await yieldToEventLoop();
     const repositoryLinks = this.buildRepositoryLinks(projectPath, allNodes, allEntryPoints, allExitPoints, externalServices, allLibraries, databaseSchema, configuration);
+    await yieldToEventLoop();
     const runtimeStaticLinks = this.buildRuntimeStaticLinks(allNodes, allEntryPoints, allExitPoints, callChains, externalServices);
+    await yieldToEventLoop();
     const distributionUnits = this.buildDistributionUnits(projectPath, allNodes);
+    await yieldToEventLoop();
     const deployableEvidence: DeployableEvidence[] = collectDeployableEvidence({
       projectPath,
       nodes: allNodes,
@@ -1748,7 +1771,8 @@ export class AnalyzerOrchestrator {
       exitPoints: allExitPoints,
       displayName: options?.displayName,
     });
-    const analysisFacts = this.buildAnalysisFacts(
+    await yieldToEventLoop();
+    const analysisFacts = await this.buildAnalysisFacts(
       allNodes,
       allEdges,
       allEntryPoints,
@@ -1760,7 +1784,8 @@ export class AnalyzerOrchestrator {
       repositoryLinks,
       contributions
     );
-    const idiomDetection = detectCodebaseIdioms({
+    await yieldToEventLoop();
+    const idiomDetection = await detectCodebaseIdioms({
       projectPath,
       nodes: allNodes,
       edges: allEdges,
@@ -1775,6 +1800,7 @@ export class AnalyzerOrchestrator {
       configuration,
       analysisFacts,
     });
+    await yieldToEventLoop();
     const systemHealth = this.buildSystemHealth(
       architectureSummary,
       implementationHealth,
@@ -1784,6 +1810,7 @@ export class AnalyzerOrchestrator {
       callChains,
       runtime
     );
+    await yieldToEventLoop();
     const validation = this.buildValidation(allNodes, allEdges, allEntryPoints, allExitPoints, runtimeStaticLinks, analysisFacts);
     logTiming('pp_traceability', phaseStart);
     await yieldToEventLoop();
@@ -2629,12 +2656,13 @@ export class AnalyzerOrchestrator {
     const securitySummary = this.buildSecuritySummary(securityBoundaries, nodes, productEntryPointsForSecurity);
     const temporalStability = this.buildTemporalStability(nodes, gitAnalyzer);
     const stabilitySummary = this.buildStabilitySummary(temporalStability);
-    const testSuites = this.buildTestSuites(nodes, entryPoints, projectPath, edges);
+    const testSuites = await this.buildTestSuites(nodes, entryPoints, projectPath, edges);
     const behavioralInvariants = this.buildBehavioralInvariants(nodes, edges, entryPoints, databaseSchema, dataEntities, securityBoundaries, testSuites, projectPath);
     const behavioralInvariantSummary = this.buildBehavioralInvariantSummary(behavioralInvariants);
 
-    const systemCapabilities = this.buildSystemCapabilities(entryPoints, dataEntities, nodes, edges, projectPath);
-    const systemPurpose = this.inferSystemPurpose(entryPoints, dataEntities, systemCapabilities, nodes);
+    const systemCapabilities = await this.buildSystemCapabilities(entryPoints, dataEntities, nodes, edges, projectPath);
+    await yieldToEventLoop();
+    const systemPurpose = await this.inferSystemPurpose(entryPoints, dataEntities, systemCapabilities, nodes);
 
     const callGraphBuilder = new CallGraphBuilder(nodes, edges, exitPoints);
     const callChains = this.buildCallChains(nodes, edges, entryPoints, exitPoints, callGraphBuilder, systemCapabilities);
@@ -2643,7 +2671,7 @@ export class AnalyzerOrchestrator {
     this.deriveParentFromContainsEdges(nodes, edges);
     this.enrichNodePerspectives(nodes, previousOutput.perspectives || []);
 
-    const flowCoverage = this.buildFlowCoverage(nodes, entryPoints, callChains, testSuites);
+    const flowCoverage = await this.buildFlowCoverage(nodes, entryPoints, callChains, testSuites);
     const testGaps = this.buildTestGaps(flowCoverage, nodes);
 
     const domainExtractor = new DomainExtractor();
@@ -2710,7 +2738,7 @@ export class AnalyzerOrchestrator {
       exitPoints,
       displayName: options?.displayName,
     });
-    const analysisFacts = this.buildAnalysisFacts(
+    const analysisFacts = await this.buildAnalysisFacts(
       nodes,
       edges,
       entryPoints,
@@ -2723,7 +2751,7 @@ export class AnalyzerOrchestrator {
       previousOutput.analyzer_contributions
     );
     const decorators = this.buildAllDecorators(nodes);
-    const idiomDetection = detectCodebaseIdioms({
+    const idiomDetection = await detectCodebaseIdioms({
       projectPath,
       nodes,
       edges,
@@ -5027,7 +5055,7 @@ export class AnalyzerOrchestrator {
       this.normalizeFilePaths(result, relPrefix);
     }
 
-    this.mergeAnalysisResult(
+    await this.mergeAnalysisResult(
       { allNodes: accumulators.allNodes, allEdges: accumulators.allEdges, allEntryPoints: accumulators.allEntryPoints, allExitPoints: accumulators.allExitPoints },
       result,
       { analyzerId: registration.id, analysisErrors: accumulators.analysisErrors }
@@ -5200,7 +5228,7 @@ export class AnalyzerOrchestrator {
     items.push(...deduped);
   }
 
-  private mergeAnalysisResult(
+  private async mergeAnalysisResult(
     target: {
       allNodes: CASNode[];
       allEdges: CASEdge[];
@@ -5209,7 +5237,11 @@ export class AnalyzerOrchestrator {
     },
     source: CASContribution,
     options?: { analyzerId?: string; analysisErrors?: CASAnalysisError[] }
-  ): void {
+  ): Promise<void> {
+    // Budget-yield inside the merge loops: merging a whale contribution
+    // (76k nodes / 96k edges from the TS analyzer) was a measured multi-second
+    // event-loop stall. Iteration order and merge semantics are unchanged.
+    const maybeYield = createYieldBudget();
     const contributingAnalyzer = options?.analyzerId || source.analyzer_metadata?.analyzer_id || 'unknown analyzer';
     const existingNodeIds = new Set(target.allNodes.map(n => n.id));
     const existingEdgesById = new Map(target.allEdges.map(e => [e.id, e]));
@@ -5223,6 +5255,7 @@ export class AnalyzerOrchestrator {
       .map(ep => ep.id));
 
     for (const node of source.nodes || []) {
+      await maybeYield();
       if (existingNodeIds.has(node.id)) {
         const existingNode = target.allNodes.find(n => n.id === node.id);
         if (existingNode) {
@@ -5265,6 +5298,7 @@ export class AnalyzerOrchestrator {
     );
     const edgeWarnedIds = new Set<string>();
     for (const edge of edgesToMerge) {
+      await maybeYield();
       const existing = existingEdgesById.get(edge.id);
       if (!existing) {
         target.allEdges.push(edge);
@@ -12218,16 +12252,16 @@ export class AnalyzerOrchestrator {
     }
 
     let sourceTextFound = false;
-    const sourceFiles = (this.safeGlobSync('**/*.{ts,tsx,js,jsx,mjs,cjs,py,rs,go,java,cs,php,dart}', {
+    // Single glob pass (this ran the IDENTICAL sync glob twice — once for the
+    // .length probe, once for the value — doubling a whale-repo scan that
+    // blocks the event loop; same pattern+ignore ⇒ same result, so reuse it).
+    const globbedSourceFiles = this.safeGlobSync('**/*.{ts,tsx,js,jsx,mjs,cjs,py,rs,go,java,cs,php,dart}', {
       cwd: projectPath,
       nodir: true,
       ignore: this.getProjectTextSourceIgnorePatterns(),
-    }).length > 0
-      ? this.safeGlobSync('**/*.{ts,tsx,js,jsx,mjs,cjs,py,rs,go,java,cs,php,dart}', {
-        cwd: projectPath,
-        nodir: true,
-        ignore: this.getProjectTextSourceIgnorePatterns(),
-      })
+    });
+    const sourceFiles = (globbedSourceFiles.length > 0
+      ? globbedSourceFiles
       : this.scanProjectTextSourceFiles(projectPath)
     ).slice(0, 80);
     for (const file of sourceFiles) {
@@ -14952,12 +14986,23 @@ export class AnalyzerOrchestrator {
     };
   }
 
-  private buildFlowCoverage(
+  private async buildFlowCoverage(
     nodes: CASNode[],
     entryPoints: CASEntryPoint[],
     callChains: CASCallChain[],
     testSuites?: CASTestSuite[]
-  ): CASFlowCoverage[] {
+  ): Promise<CASFlowCoverage[]> {
+    // Budget-yield in the whale-scaling sweeps (76k-node/chain loops were a
+    // measured ~1.8s event-loop stall); order and results unchanged.
+    const maybeYield = createYieldBudget();
+    // First-occurrence node index replacing the per-segment `nodes.find` scan
+    // (O(chains × path × nodes) — the measured stall). Array.find returns the
+    // FIRST id match, so the index keeps the first occurrence: same node
+    // object, same results, linear time.
+    const nodesByIdFirst = new Map<string, CASNode>();
+    for (const node of nodes) {
+      if (!nodesByIdFirst.has(node.id)) nodesByIdFirst.set(node.id, node);
+    }
     const flowCoverage: CASFlowCoverage[] = [];
 
     const testedNodes = new Set<string>();
@@ -15016,6 +15061,7 @@ export class AnalyzerOrchestrator {
     }
 
     for (const chain of callChains) {
+      await maybeYield();
       if (!chain.call_path || chain.call_path.length === 0) continue;
 
       const chainNodeIds = chain.call_path.map(s => s.node_id);
@@ -15030,7 +15076,7 @@ export class AnalyzerOrchestrator {
             assertion_count: 0
           });
         } else {
-          const node = nodes.find(n => n.id === nodeId);
+          const node = nodesByIdFirst.get(nodeId);
           const isSecurityRelated = node?.name?.toLowerCase().includes('auth') ||
             node?.name?.toLowerCase().includes('password');
 
@@ -15273,13 +15319,20 @@ export class AnalyzerOrchestrator {
     };
   }
 
-  private buildSystemCapabilities(
+  private async buildSystemCapabilities(
     entryPoints: CASEntryPoint[],
     dataEntities: CASDataEntity[],
     nodes: CASNode[],
     edges: CASEdge[],
     projectPath?: string
-  ): SystemCapability[] {
+  ): Promise<SystemCapability[]> {
+    // Event-loop hygiene: this pass was the single worst measured stall on a
+    // whale re-analysis (6.7s sync on a 76k-node repo — product-path minimatch
+    // per node plus per-group criticality/terminal scans). The budget yields
+    // below split it into <50ms slices without reordering any computation, so
+    // the in-process HTTP server (/health, reads) stays responsive. Results
+    // are byte-identical: yields never change iteration order or inputs.
+    const maybeYield = createYieldBudget();
     const capabilities: SystemCapability[] = [];
     const isProductNode = (node: CASNode) => projectPath
       ? this.isPrimaryProductNodeForProject(node, projectPath)
@@ -15287,7 +15340,11 @@ export class AnalyzerOrchestrator {
     const isProductPath = (filePath: string) => projectPath
       ? this.isPrimaryProductPathForProject(filePath, projectPath)
       : this.isPrimaryProductPath(filePath);
-    const productNodes = nodes.filter(node => isProductNode(node));
+    const productNodes: CASNode[] = [];
+    for (const node of nodes) {
+      if (isProductNode(node)) productNodes.push(node);
+      await maybeYield();
+    }
     const productNodeIds = new Set(productNodes.map(node => node.id));
     const productEntryPoints = entryPoints.filter(ep =>
       (!ep.source_node || productNodeIds.has(ep.source_node)) &&
@@ -15311,6 +15368,7 @@ export class AnalyzerOrchestrator {
     }>();
 
     for (const ep of productEntryPoints) {
+      await maybeYield();
       if (ep.type === 'test') continue;
       if ((ep as any).metadata?.inferred_orientation_only) continue;
       if (!this.isCapabilityBearingEntryPoint(ep)) continue;
@@ -15339,7 +15397,10 @@ export class AnalyzerOrchestrator {
       usedCapabilityIds.add(candidate);
       return candidate;
     };
-    resourceGroups.forEach((group, resourceKey) => {
+    // for..of over entries() preserves Map.forEach's insertion-order iteration
+    // exactly; the yield between groups is the only difference.
+    for (const [resourceKey, group] of resourceGroups.entries()) {
+      await maybeYield();
       const operations = group.entryPoints.map(ep => ({
         entry_point_id: ep.id,
         entry_point_type: ep.type,
@@ -15408,8 +15469,9 @@ export class AnalyzerOrchestrator {
         criticality,
         criticality_factors: factors
       });
-    });
+    }
 
+    await maybeYield();
     for (const capability of this.buildInfrastructureCapabilitiesFromNodes(productNodes, productEntryPoints)) {
       capabilities.push({
         ...capability,
@@ -15423,7 +15485,8 @@ export class AnalyzerOrchestrator {
     // operations, terminal entities, data-entity CRUD) and interpreted by AI — never
     // fabricated from a product-name lookup table.
 
-    const terminalCapabilities = this.buildTerminalCapabilities(
+    await maybeYield();
+    const terminalCapabilities = await this.buildTerminalCapabilities(
       productDataEntities,
       productNodes,
       productEdges,
@@ -15446,7 +15509,8 @@ export class AnalyzerOrchestrator {
     // surfaces + shared-prefix families). A cluster whose reachable entities
     // substantially overlap an existing entity-anchored capability MERGES into
     // it (never duplicates); only entity-free behavior clusters stand alone.
-    const behaviorCapabilities = this.buildBehaviorCapabilities(
+    await maybeYield();
+    const behaviorCapabilities = await this.buildBehaviorCapabilities(
       productEntryPoints,
       productNodes,
       productEdges,
@@ -15454,6 +15518,7 @@ export class AnalyzerOrchestrator {
       projectPath
     );
     for (const candidate of behaviorCapabilities) {
+      await maybeYield();
       if (this.mergeBehaviorCapabilityIntoExisting(candidate, capabilities)) continue;
       capabilities.push({
         ...candidate,
@@ -15461,6 +15526,7 @@ export class AnalyzerOrchestrator {
       });
     }
 
+    await maybeYield();
     const nonRedundantCapabilities = capabilities.filter(capability =>
       !this.isRedundantCoveredCapability(capability, capabilities)
     );
@@ -16199,13 +16265,16 @@ export class AnalyzerOrchestrator {
     return false;
   }
 
-  private buildTerminalCapabilities(
+  private async buildTerminalCapabilities(
     dataEntities: CASDataEntity[],
     nodes: CASNode[],
     edges: CASEdge[],
     existingDomains: Set<string>,
     projectPath?: string
-  ): SystemCapability[] {
+  ): Promise<SystemCapability[]> {
+    // Budget-yield in the whale-scaling loops (76k-node candidate scan was a
+    // measured multi-second stall); iteration order/results unchanged.
+    const maybeYield = createYieldBudget();
     const nodesById = new Map(nodes.map(node => [node.id, node]));
     // Repo-wide identity/observability evidence share: the evidence-based
     // exception that lets an actual auth/observability PRODUCT keep those
@@ -16264,6 +16333,7 @@ export class AnalyzerOrchestrator {
     }
 
     for (const node of nodes) {
+      await maybeYield();
       if (!this.isCapabilityCandidateNode(node, projectPath)) continue;
       const hasChildren = (node.children?.length || 0) > 0;
       const isTerminal = !hasChildren && (incoming.get(node.id) || 0) > 0 && (outgoing.get(node.id) || 0) <= 1;
@@ -16306,6 +16376,7 @@ export class AnalyzerOrchestrator {
     // capabilities read as "what this produces" rather than CRUD over records.
     const terminalAnchorScore = new Map<SystemCapability, number>();
     for (const [key, group] of groups) {
+      await maybeYield();
       const uniqueNodes = Array.from(new Map(group.nodes.map(node => [node.id, node])).values());
       const uniqueEntities = Array.from(new Map(group.entities.map(entity => [entity.id, entity])).values());
       if (uniqueNodes.length + uniqueEntities.length === 0) continue;
@@ -16490,13 +16561,16 @@ export class AnalyzerOrchestrator {
    * this to FEW high-evidence flagship capabilities — this pass adds flagships,
    * it must never add plumbing.
    */
-  private buildBehaviorCapabilities(
+  private async buildBehaviorCapabilities(
     entryPoints: CASEntryPoint[],
     nodes: CASNode[],
     edges: CASEdge[],
     dataEntities: CASDataEntity[],
     projectPath?: string
-  ): SystemCapability[] {
+  ): Promise<SystemCapability[]> {
+    // Budget-yield in the whale-scaling loops (entry-point subject scan +
+    // per-surface reachability); iteration order/results unchanged.
+    const maybeYield = createYieldBudget();
     const nodesById = new Map(nodes.map(node => [node.id, node]));
 
     // Node types that are plain code structure: they carry no registration
@@ -16529,6 +16603,7 @@ export class AnalyzerOrchestrator {
 
     const surfaces = new Map<string, BehaviorSurface>();
     for (const ep of entryPoints) {
+      await maybeYield();
       const type = String(ep.type || '').toLowerCase();
       if (type === 'test' || type === 'file' || type === 'lifecycle') continue;
       if ((ep as any).metadata?.inferred_orientation_only) continue;
@@ -16731,6 +16806,7 @@ export class AnalyzerOrchestrator {
 
     const candidates: Array<{ capability: SystemCapability; evidence: number }> = [];
     for (const surface of surfaces.values()) {
+      await maybeYield();
       const total = surface.entries.length;
       if (total < AnalyzerOrchestrator.BEHAVIOR_FAMILY_MIN_ENTRIES) continue;
 
@@ -18479,12 +18555,16 @@ export class AnalyzerOrchestrator {
     return items.map(item => this.signalTokens(item));
   }
 
-  private inferSystemPurpose(
+  private async inferSystemPurpose(
     entryPoints: CASEntryPoint[],
     dataEntities: CASDataEntity[],
     capabilities: SystemCapability[],
     nodes: CASNode[]
-  ): SystemPurpose {
+  ): Promise<SystemPurpose> {
+    // Budget-yield in the whale-scaling sweeps below (product-node minimatch
+    // filter + signature matching over every node-name token list was a
+    // measured multi-second stall). Order and scoring unchanged.
+    const maybeYield = createYieldBudget();
     interface SystemSignature {
       type: string;
       description: string;
@@ -18919,7 +18999,11 @@ export class AnalyzerOrchestrator {
       }
     ];
 
-    const productNodes = nodes.filter(node => this.isPrimaryProductNode(node));
+    const productNodes: CASNode[] = [];
+    for (const node of nodes) {
+      if (this.isPrimaryProductNode(node)) productNodes.push(node);
+      await maybeYield();
+    }
     const productNodeIds = new Set(productNodes.map(node => node.id));
     const productEntryPoints = entryPoints.filter(ep =>
       (!ep.source_node || productNodeIds.has(ep.source_node)) &&
@@ -18956,16 +19040,20 @@ export class AnalyzerOrchestrator {
     }
 
     const paths = this.tokenizeSignalItems(productEntryPoints.map(ep => ep.trigger?.path || ep.name));
+    await yieldToEventLoop();
     const nodeNames = this.tokenizeSignalItems(productNodes.map(n => n.name));
+    await yieldToEventLoop();
     const namespaceNames = this.tokenizeSignalItems(productNodes.filter(n => n.type === 'namespace').map(n => n.name));
     const entityNames = this.tokenizeSignalItems(productDataEntities.map(de => de.name));
     const capabilityNames = this.tokenizeSignalItems(productCapabilities.map(c => c.name));
+    await yieldToEventLoop();
     const nodeTypeList = this.tokenizeSignalItems(productNodes.map(n => n.type));
 
-    const countMatches = (items: string[][], patterns: string[]): { count: number; matched: string[] } => {
+    const countMatches = async (items: string[][], patterns: string[]): Promise<{ count: number; matched: string[] }> => {
       const matched: string[] = [];
       let count = 0;
       for (const tokens of items) {
+        await maybeYield();
         for (const pattern of patterns) {
           if (this.matchesSignalPattern(tokens, pattern)) {
             if (!matched.includes(pattern)) {
@@ -18983,9 +19071,9 @@ export class AnalyzerOrchestrator {
       const typeEvidence: string[] = [];
 
       if (sig.indicators.pathPatterns) {
-        const pathResult = countMatches(paths, sig.indicators.pathPatterns);
-        const nodeNameResult = countMatches(nodeNames, sig.indicators.pathPatterns);
-        const nsResult = countMatches(namespaceNames, sig.indicators.pathPatterns);
+        const pathResult = await countMatches(paths, sig.indicators.pathPatterns);
+        const nodeNameResult = await countMatches(nodeNames, sig.indicators.pathPatterns);
+        const nsResult = await countMatches(namespaceNames, sig.indicators.pathPatterns);
         const allMatched = [...new Set([...pathResult.matched, ...nodeNameResult.matched, ...nsResult.matched])];
         const totalCount = pathResult.count + nodeNameResult.count + nsResult.count;
         const cappedCount = Math.min(totalCount, allMatched.length * 5);
@@ -18996,8 +19084,8 @@ export class AnalyzerOrchestrator {
       }
 
       if (sig.indicators.verbPatterns) {
-        const pathResult = countMatches(paths, sig.indicators.verbPatterns);
-        const nodeNameResult = countMatches(nodeNames, sig.indicators.verbPatterns);
+        const pathResult = await countMatches(paths, sig.indicators.verbPatterns);
+        const nodeNameResult = await countMatches(nodeNames, sig.indicators.verbPatterns);
         const allMatched = [...new Set([...pathResult.matched, ...nodeNameResult.matched])];
         const totalCount = pathResult.count + nodeNameResult.count;
         const cappedCount = Math.min(totalCount, allMatched.length * 5);
@@ -19010,7 +19098,7 @@ export class AnalyzerOrchestrator {
       }
 
       if (sig.indicators.entityPatterns) {
-        const result = countMatches(entityNames, sig.indicators.entityPatterns);
+        const result = await countMatches(entityNames, sig.indicators.entityPatterns);
         if (result.count > 0) {
           score += result.count * 4 * sig.distinctiveness;
           typeEvidence.push(`Entities: ${result.matched.join(', ')}`);
@@ -19018,14 +19106,14 @@ export class AnalyzerOrchestrator {
       }
 
       if (sig.indicators.nodeTypePatterns) {
-        const result = countMatches(nodeTypeList, sig.indicators.nodeTypePatterns);
+        const result = await countMatches(nodeTypeList, sig.indicators.nodeTypePatterns);
         if (result.count > 0) {
           score += result.matched.length * 2;
         }
       }
 
       if (sig.indicators.capabilityPatterns) {
-        const result = countMatches(capabilityNames, sig.indicators.capabilityPatterns);
+        const result = await countMatches(capabilityNames, sig.indicators.capabilityPatterns);
         const cappedCount = Math.min(result.count, result.matched.length * 5);
         if (result.count > 0) {
           score += cappedCount * 3 * sig.distinctiveness;
@@ -19079,32 +19167,32 @@ export class AnalyzerOrchestrator {
     const cliEntryPoints = productEntryPoints.filter(ep => ep.type === 'cli');
     const httpEntryPoints = productEntryPoints.filter(ep => ep.type === 'http');
     const pageEntryPoints = productEntryPoints.filter(ep => ep.type === 'page' || ep.type === 'route');
-    const desktopUiSignals = countMatches([...nodeNames, ...paths], ['window', 'viewmodel', 'xaml', 'modal']);
+    const desktopUiSignals = await countMatches([...nodeNames, ...paths], ['window', 'viewmodel', 'xaml', 'modal']);
     const nameEntityCapabilityPathTokens = [...nodeNames, ...entityNames, ...capabilityNames, ...paths];
     const hasDominantDesktopUi =
       ['desktop-application', 'medical-device-software', 'clinical-testing-platform', 'hardware-device-software'].includes(topMatch.type) ||
       desktopUiSignals.count >= 5;
-    const clinicalSignals = countMatches(
+    const clinicalSignals = await countMatches(
       nameEntityCapabilityPathTokens,
       ['patient', 'muscle', 'device', 'measurement', 'force', 'inclinometry', 'grip', 'pinch', 'rehabilitation']
     );
-    const fleetSignals = countMatches(
+    const fleetSignals = await countMatches(
       nameEntityCapabilityPathTokens,
       ['fleet', 'vehicle', 'driver', 'fuel', 'maintenance', 'dispatch', 'telematics', 'odometer', 'ifta', 'trip', 'booking']
     );
-    const zeroTrustSignals = countMatches(
+    const zeroTrustSignals = await countMatches(
       nameEntityCapabilityPathTokens,
       ['zero trust', 'policy', 'policies', 'resource', 'resources', 'agent', 'agents', 'device', 'devices', 'grant', 'grants', 'scan', 'credential', 'vulnerability', 'cve']
     );
-    const traySignals = countMatches(
+    const traySignals = await countMatches(
       nameEntityCapabilityPathTokens,
       ['tray', 'tray icon', 'menu', 'submenu', 'system tray', 'port forward', 'portfwd']
     );
-    const tradingSignals = countMatches(
+    const tradingSignals = await countMatches(
       nameEntityCapabilityPathTokens,
       ['solana', 'arbitrage', 'trade', 'trading', 'swap', 'token', 'market', 'price', 'dex', 'cex', 'jupiter', 'raydium', 'bundle', 'liquidity']
     );
-    const devtoolsSignals = countMatches(
+    const devtoolsSignals = await countMatches(
       nameEntityCapabilityPathTokens,
       ['analyzer', 'static analysis', 'code analysis', 'codebase analysis', 'codebase graph', 'codemod']
     );
@@ -19205,11 +19293,11 @@ export class AnalyzerOrchestrator {
     // capabilities. Workflow/task/approval vocabulary alone must keep losing
     // to this gate: a page-tree CMS contains a moderation workflow engine,
     // not the other way around.
-    const cmsEntitySignals = countMatches(
+    const cmsEntitySignals = await countMatches(
       entityNames,
       ['page', 'document', 'revision', 'rendition', 'collection', 'redirect', 'snippet', 'locale', 'site', 'media']
     );
-    const cmsPublishingSignals = countMatches(
+    const cmsPublishingSignals = await countMatches(
       nameEntityCapabilityPathTokens,
       ['publish', 'unpublish', 'draft', 'moderation', 'preview', 'revision']
     );
@@ -20086,7 +20174,10 @@ export class AnalyzerOrchestrator {
     return score;
   }
 
-  private buildTestSuites(nodes: CASNode[], entryPoints: CASEntryPoint[], projectPath: string, edges: CASEdge[] = []): CASTestSuite[] {
+  private async buildTestSuites(nodes: CASNode[], entryPoints: CASEntryPoint[], projectPath: string, edges: CASEdge[] = []): Promise<CASTestSuite[]> {
+    // Budget-yield in the whale-scaling sweeps (part of a measured ~1.8s
+    // pp_flowCoverage stall on a 76k-node repo); order and results unchanged.
+    const maybeYield = createYieldBudget();
     const testSuites: CASTestSuite[] = [];
     const addedSuiteIds = new Set<string>();
     const childrenByParent = new Map<string, CASNode[]>();
@@ -20131,6 +20222,7 @@ export class AnalyzerOrchestrator {
 
     if (suiteNodes.length > 0) {
       for (const suite of suiteNodes) {
+        await maybeYield();
         const suiteFile = suite.source?.file || '';
         const fileNodes = nodesByFile.get(suiteFile) || [];
         const suiteChildren = childrenByParent.get(suite.id) || [];
@@ -20180,6 +20272,7 @@ export class AnalyzerOrchestrator {
     );
 
     for (const testModule of testModules) {
+      await maybeYield();
       const moduleFile = testModule.source?.file || '';
       const moduleChildren = childrenByParent.get(testModule.id) || [];
       const fileNodes = moduleFile ? nodesByFile.get(moduleFile) || [] : [];
@@ -21224,7 +21317,7 @@ export class AnalyzerOrchestrator {
     architectureSummary: CASArchitectureSummary,
     implementationHealth: CASImplementationHealth,
     changeRiskSummary: CASChangeRiskSummary,
-    idiomDetection: ReturnType<typeof detectCodebaseIdioms>,
+    idiomDetection: Awaited<ReturnType<typeof detectCodebaseIdioms>>,
     nodes: CASNode[],
     callChains: CASCallChain[],
     runtime: CASRuntime
@@ -22094,7 +22187,7 @@ export class AnalyzerOrchestrator {
     return links;
   }
 
-  private buildAnalysisFacts(
+  private async buildAnalysisFacts(
     nodes: CASNode[],
     edges: CASEdge[],
     entryPoints: CASEntryPoint[],
@@ -22105,7 +22198,10 @@ export class AnalyzerOrchestrator {
     runtimeLinks: CASRuntimeStaticLink[],
     repositoryLinks: CASCrossRepositoryLink[],
     contributions: any[]
-  ): CASAnalysisFact[] {
+  ): Promise<CASAnalysisFact[]> {
+    // Budget-yield in the fact loops (whale-scaling; part of a measured >2s
+    // pp_traceability stall). Order and emitted facts unchanged.
+    const maybeYield = createYieldBudget();
     const analyzerName = contributions[0]?.analyzer_name || 'AnalyzerOrchestrator';
     const facts: CASAnalysisFact[] = [];
     const exhaustiveFacts = nodes.length + edges.length <= 50_000;
@@ -22113,6 +22209,7 @@ export class AnalyzerOrchestrator {
     const edgesForFacts = exhaustiveFacts ? edges : this.selectRepresentativeFactEdges(edges, nodesForFacts, 10_000);
 
     for (const node of nodesForFacts) {
+      await maybeYield();
       if (!node.source?.file) continue;
       facts.push({
         id: `fact_node_${node.id}`,
@@ -22134,6 +22231,7 @@ export class AnalyzerOrchestrator {
     }
 
     for (const edge of edgesForFacts) {
+      await maybeYield();
       const location = edge.metadata?.locations?.[0];
       facts.push({
         id: `fact_edge_${edge.id}`,

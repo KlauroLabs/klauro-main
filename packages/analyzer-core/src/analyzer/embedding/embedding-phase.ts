@@ -4,6 +4,7 @@ import * as crypto from 'node:crypto';
 import type { CASNode, CASOutput, CASEmbeddingIndex } from '../../types/cas.types';
 import type { EmbeddingProvider, VectorStore, NodeEmbeddingRecord, VectorStoreMeta } from './types';
 import { composeEmbeddingDocument, EMBEDDING_DOCUMENT_VERSION } from './embedding-document';
+import { createYieldBudget } from '../core/event-loop-yield';
 
 export interface EmbeddingPhaseConfig {
   provider: EmbeddingProvider;
@@ -24,11 +25,17 @@ export class EmbeddingPhase {
       await this.captureSource(output.nodes, projectPath);
 
       const nodeById = new Map(output.nodes.map(node => [node.id, node]));
-      const documents = output.nodes.map(node =>
-        composeEmbeddingDocument(node, node.parent ? nodeById.get(node.parent) : undefined, {
+      // Budget-yield while composing documents: one synchronous .map over a
+      // whale's 76k nodes was a measured >1s event-loop stall. Same order,
+      // same documents.
+      const maybeYieldDocs = createYieldBudget();
+      const documents: ReturnType<typeof composeEmbeddingDocument>[] = [];
+      for (const node of output.nodes) {
+        documents.push(composeEmbeddingDocument(node, node.parent ? nodeById.get(node.parent) : undefined, {
           maxDocumentChars: this.config.maxDocumentChars,
-        }),
-      );
+        }));
+        await maybeYieldDocs();
+      }
 
       const storedHashes = await store.listHashes(analysisId);
       const liveIds = new Set(output.nodes.map(node => node.id));
@@ -135,7 +142,11 @@ export class EmbeddingPhase {
   private async captureSource(nodes: CASNode[], projectPath: string): Promise<void> {
     const fileLines = new Map<string, string[] | null>();
 
+    // Budget-yield: with warm fileLines cache entries the loop runs without a
+    // single real await, so a whale sweep blocked the event loop for seconds.
+    const maybeYield = createYieldBudget();
     for (const node of nodes) {
+      await maybeYield();
       if (node.source?.raw) continue;
       const file = node.source?.file;
       const startLine = node.source?.line;

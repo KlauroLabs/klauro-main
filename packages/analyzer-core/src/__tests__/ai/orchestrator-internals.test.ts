@@ -22,7 +22,7 @@ function exitPoint(partial: Partial<CASExitPoint>): CASExitPoint {
 }
 
 describe('orchestrator exit-point filtering', () => {
-  it('keeps a genuine third-party SDK exit point', () => {
+  it('keeps a genuine third-party SDK exit point', async () => {
     const ep = exitPoint({
       type: 'sdk',
       name: 'Call to forward',
@@ -31,20 +31,20 @@ describe('orchestrator exit-point filtering', () => {
     expect(orch.isValidExitPoint(ep)).toBe(true);
   });
 
-  it('keeps a database exit point', () => {
+  it('keeps a database exit point', async () => {
     expect(orch.isValidExitPoint(exitPoint({ type: 'database', name: 'SELECT users' }))).toBe(true);
   });
 
-  it('drops a stdlib path.* call mistaken for a file exit point', () => {
+  it('drops a stdlib path.* call mistaken for a file exit point', async () => {
     const ep = exitPoint({ type: 'file', name: 'path.join', target: { resource: 'path.join' } });
     expect(orch.isValidExitPoint(ep)).toBe(false);
   });
 
-  it('drops fs.* stdlib noise', () => {
+  it('drops fs.* stdlib noise', async () => {
     expect(orch.isValidExitPoint(exitPoint({ type: 'file', name: 'fs.readFileSync' }))).toBe(false);
   });
 
-  it('drops an "sdk" exit point that targets a local relative module', () => {
+  it('drops an "sdk" exit point that targets a local relative module', async () => {
     const ep = exitPoint({
       type: 'sdk',
       name: 'Call to loadConfig',
@@ -54,7 +54,7 @@ describe('orchestrator exit-point filtering', () => {
     expect(orch.isValidExitPoint(ep)).toBe(false);
   });
 
-  it('drops an "sdk" exit point whose library resolution fell back to the call target', () => {
+  it('drops an "sdk" exit point whose library resolution fell back to the call target', async () => {
     const ep = exitPoint({
       type: 'sdk',
       name: 'Call to skillRepository.findByName',
@@ -63,7 +63,7 @@ describe('orchestrator exit-point filtering', () => {
     expect(orch.isValidExitPoint(ep)).toBe(false);
   });
 
-  it('rejects an unknown exit-point type', () => {
+  it('rejects an unknown exit-point type', async () => {
     expect(orch.isValidExitPoint(exitPoint({ type: 'nonsense' as any }))).toBe(false);
   });
 });
@@ -85,7 +85,7 @@ describe('orchestrator test-suite fallback discovery', () => {
     fs.writeFileSync(full, content);
   };
 
-  it('creates CAS test suites from executable source test files when analyzer nodes are missing', () => {
+  it('creates CAS test suites from executable source test files when analyzer nodes are missing', async () => {
     write('alpha_engine/tests/unit/test_risk_manager.py', [
       'def test_blocks_oversized_position():',
       '    assert True',
@@ -96,9 +96,9 @@ describe('orchestrator test-suite fallback discovery', () => {
       '  @Test fun extractsWakeWord() {}',
       '}',
     ].join('\n'));
-    write('fixtures/demo/tests/ignored.test.ts', "test('fixture smoke', () => {});\n");
+    write('fixtures/demo/tests/ignored.test.ts', "test('fixture smoke', async () => {});\n");
 
-    const suites = orch.buildTestSuites([], [], root);
+    const suites = await orch.buildTestSuites([], [], root);
 
     expect(suites.map((suite: any) => suite.file_path).sort()).toEqual([
       'alpha_engine/tests/unit/test_risk_manager.py',
@@ -123,7 +123,7 @@ describe('isLocalModuleSpecifier', () => {
 });
 
 describe('normalizeNodeMetrics', () => {
-  it('derives lines_of_code from the source span', () => {
+  it('derives lines_of_code from the source span', async () => {
     const nodes: CASNode[] = [
       { id: 'n1', name: 'f', type: 'function', source: { line: 10, end_line: 30 }, metadata: {} } as CASNode,
     ];
@@ -131,7 +131,7 @@ describe('normalizeNodeMetrics', () => {
     expect(nodes[0].metadata!.metrics!.lines_of_code).toBe(21);
   });
 
-  it('consolidates attribute-stashed complexity into complexity.cyclomatic', () => {
+  it('consolidates attribute-stashed complexity into complexity.cyclomatic', async () => {
     const nodes: CASNode[] = [
       { id: 'n1', name: 'f', type: 'function', metadata: { attributes: { complexity: 7 } } } as CASNode,
     ];
@@ -139,7 +139,7 @@ describe('normalizeNodeMetrics', () => {
     expect(nodes[0].metadata!.complexity!.cyclomatic).toBe(7);
   });
 
-  it('does not overwrite an existing canonical cyclomatic value', () => {
+  it('does not overwrite an existing canonical cyclomatic value', async () => {
     const nodes: CASNode[] = [
       {
         id: 'n1',
@@ -154,12 +154,12 @@ describe('normalizeNodeMetrics', () => {
 });
 
 describe('computeMaintainabilityIndex', () => {
-  it('returns undefined when no code unit carries metrics', () => {
+  it('returns undefined when no code unit carries metrics', async () => {
     const nodes: CASNode[] = [{ id: 'n1', name: 'f', type: 'function', metadata: {} } as CASNode];
     expect(orch.computeMaintainabilityIndex(nodes)).toBeUndefined();
   });
 
-  it('returns a 0-100 score for function nodes with metrics', () => {
+  it('returns a 0-100 score for function nodes with metrics', async () => {
     const nodes: CASNode[] = [
       {
         id: 'n1',
@@ -174,7 +174,7 @@ describe('computeMaintainabilityIndex', () => {
     expect(mi).toBeLessThanOrEqual(100);
   });
 
-  it('ignores file/module nodes so their line spans do not skew the average', () => {
+  it('ignores file/module nodes so their line spans do not skew the average', async () => {
     const nodes: CASNode[] = [
       {
         id: 'file1',
@@ -188,13 +188,13 @@ describe('computeMaintainabilityIndex', () => {
 });
 
 describe('calculateQualityMetrics', () => {
-  it('never fabricates a maintainability index when data is absent', () => {
+  it('never fabricates a maintainability index when data is absent', async () => {
     const nodes: CASNode[] = [{ id: 'n1', name: 'f', type: 'function', metadata: {} } as CASNode];
     const q = orch.calculateQualityMetrics(nodes);
     expect(q.maintainability_index).toBeUndefined();
   });
 
-  it('computes documentation coverage', () => {
+  it('computes documentation coverage', async () => {
     const nodes: CASNode[] = [
       { id: 'n1', name: 'a', type: 'function', description: 'documented', metadata: {} } as CASNode,
       { id: 'n2', name: 'b', type: 'function', metadata: {} } as CASNode,
@@ -306,7 +306,7 @@ describe('detectLibrariesFromManifests pyproject.toml parsing', () => {
   // Regression: a TOML group/extras KEY (`dev`, `test`, `ml`) inside
   // [project.optional-dependencies] or [tool.poetry.group.<name>.dependencies]
   // was mistaken for a package, producing a spurious CASLibrary named "dev".
-  it('does not emit a "dev" library from optional-dependencies/poetry group keys, and keeps the real packages', () => {
+  it('does not emit a "dev" library from optional-dependencies/poetry group keys, and keeps the real packages', async () => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-pyproject-dev-'));
     fs.writeFileSync(
       path.join(root, 'pyproject.toml'),
@@ -358,7 +358,7 @@ describe('architecture and capability inference', () => {
     signature: partial.signature,
   } as CASNode);
 
-  it('detects MVC, Repository, Service Layer, and inventory from product source only', () => {
+  it('detects MVC, Repository, Service Layer, and inventory from product source only', async () => {
     const nodes: CASNode[] = [
       node({ id: 'user-controller', name: 'UsersController', type: 'controller', source: { file: 'src/users/users.controller.ts' } }),
       node({ id: 'user-service', name: 'UsersService', type: 'service', source: { file: 'src/users/users.service.ts' } }),
@@ -386,7 +386,7 @@ describe('architecture and capability inference', () => {
     expect(summary.pattern_balance?.status).toBe('balanced');
   });
 
-  it('identifies an MCP analyzer monorepo ahead of incidental legacy framework analyzers', () => {
+  it('identifies an MCP analyzer monorepo ahead of incidental legacy framework analyzers', async () => {
     // A real MCP tool server exposes its capability as MCP tool registrations: 'mcp_tool' nodes
     // plus 'message' entry points (produced by the mcp-tool-registration-analyzer). This dominant
     // MCP entry surface — not a mere dependency on the SDK or an "Analyzer"-named class — is what
@@ -420,7 +420,7 @@ describe('architecture and capability inference', () => {
     expect(summary.system_type).toBe('MCP analyzer monorepo');
   });
 
-  it('classifies a crypto/NestJS API that merely imports the MCP SDK as an API service, not an MCP analyzer', () => {
+  it('classifies a crypto/NestJS API that merely imports the MCP SDK as an API service, not an MCP analyzer', async () => {
     // Regression: soon-lens is a NestJS crypto-market API that depends on @modelcontextprotocol/sdk
     // (a few agent-preflight endpoints) and ships "Analyzer"-named service classes, yet its dominant
     // entry surface is HUNDREDS of HTTP routes. It must classify as the API service it is — the
@@ -465,7 +465,7 @@ describe('architecture and capability inference', () => {
     expect(['API service', 'Backend service']).toContain(summary.system_type);
   });
 
-  it('uses dominant product shape instead of tiny framework contributions for API services', () => {
+  it('uses dominant product shape instead of tiny framework contributions for API services', async () => {
     const nodes: CASNode[] = [
       node({ id: 'orders-controller', name: 'OrdersController', type: 'controller', source: { file: 'src/orders/orders.controller.ts' } }),
       node({ id: 'orders-service', name: 'OrdersService', type: 'service', source: { file: 'src/orders/orders.service.ts' } }),
@@ -489,7 +489,7 @@ describe('architecture and capability inference', () => {
     expect(summary.system_type).toBe('API service');
   });
 
-  it('classifies Symfony backend apps with template view-models as backend services, not desktop apps', () => {
+  it('classifies Symfony backend apps with template view-models as backend services, not desktop apps', async () => {
     const nodes: CASNode[] = [
       node({ id: 'webhook-controller', name: 'WebhookController', type: 'controller', source: { file: 'src/Controller/WebhookController.php' } }),
       node({ id: 'invoice-service', name: 'InvoiceService', type: 'service', source: { file: 'src/Service/BillingSystem/InvoiceService.php' } }),
@@ -515,7 +515,7 @@ describe('architecture and capability inference', () => {
     expect(summary.system_type).not.toBe('Desktop application');
   });
 
-  it('identifies infrastructure and desktop product shapes before falling back to CLI entry points', () => {
+  it('identifies infrastructure and desktop product shapes before falling back to CLI entry points', async () => {
     const infrastructureSummary = orch.buildArchitectureSummary([
       node({ id: 'tf-main', name: 'main.tf', type: 'infrastructure_file', source: { file: 'main.tf' } }),
       node({ id: 'tf-vpc', name: 'aws_vpc.main', type: 'infrastructure_resource', source: { file: 'main.tf' } }),
@@ -540,7 +540,7 @@ describe('architecture and capability inference', () => {
     expect(desktopSummary.system_type).toBe('Desktop application');
   });
 
-  it('identifies Electron desktop apps even when they embed local HTTP services', () => {
+  it('identifies Electron desktop apps even when they embed local HTTP services', async () => {
     const summary = orch.buildArchitectureSummary([
       node({ id: 'electron-config', name: 'electron.vite.config.ts', type: 'file', source: { file: 'electron.vite.config.ts' } }),
       node({ id: 'main', name: 'ElectronMain', type: 'class', source: { file: 'src/main/index.ts' } }),
@@ -558,7 +558,7 @@ describe('architecture and capability inference', () => {
     expect(summary.system_type).toBe('Desktop application');
   });
 
-  it('identifies Flutter mobile apps before generic view folder desktop heuristics', () => {
+  it('identifies Flutter mobile apps before generic view folder desktop heuristics', async () => {
     const summary = orch.buildArchitectureSummary([
       node({ id: 'main-dart', name: 'main.dart', type: 'file', source: { file: 'lib/main.dart' }, metadata: { language: 'dart' } }),
       node({ id: 'settings-screen', name: 'SettingsScreen', type: 'mobile_screen', source: { file: 'lib/views/settings_screen.dart' }, metadata: { language: 'dart' } }),
@@ -576,7 +576,7 @@ describe('architecture and capability inference', () => {
     expect(summary.system_type).toBe('Mobile application');
   });
 
-  it('identifies mobile plus API repos without falling through to desktop platform runners', () => {
+  it('identifies mobile plus API repos without falling through to desktop platform runners', async () => {
     const summary = orch.buildArchitectureSummary([
       node({ id: 'main-dart', name: 'main.dart', type: 'file', source: { file: 'app/lib/main.dart' }, metadata: { language: 'dart' } }),
       node({ id: 'home-screen', name: 'HomeScreen', type: 'mobile_screen', source: { file: 'app/lib/views/home_screen.dart' }, metadata: { language: 'dart' } }),
@@ -596,7 +596,7 @@ describe('architecture and capability inference', () => {
     expect(summary.system_type).toBe('Mobile + API application');
   });
 
-  it('does not classify multi-app API monorepos as MCP servers just because one app is mcp-api', () => {
+  it('does not classify multi-app API monorepos as MCP servers just because one app is mcp-api', async () => {
     const summary = orch.buildArchitectureSummary([
       node({ id: 'admin-controller', name: 'AdminController', type: 'controller', source: { file: 'apps/admin-api/src/app/admin.controller.ts' } }),
       node({ id: 'user-controller', name: 'UserController', type: 'controller', source: { file: 'apps/user-api/src/app/user.controller.ts' } }),
@@ -615,7 +615,7 @@ describe('architecture and capability inference', () => {
     expect(summary.system_type).toBe('API monorepo');
   });
 
-  it('does not classify ordinary src/infrastructure folders as cloud infrastructure', () => {
+  it('does not classify ordinary src/infrastructure folders as cloud infrastructure', async () => {
     const summary = orch.buildArchitectureSummary([
       node({ id: 'main', name: 'main.rs', type: 'file', source: { file: 'src/main.rs' } }),
       node({ id: 'client', name: 'ZeroSlotClient', type: 'service', source: { file: 'src/infrastructure/services/zeroslot.rs' } }),
@@ -632,7 +632,7 @@ describe('architecture and capability inference', () => {
     expect(summary.system_type).toBe('CLI application');
   });
 
-  it('identifies tiny script-entry repos as CLI applications even without explicit entry point extraction', () => {
+  it('identifies tiny script-entry repos as CLI applications even without explicit entry point extraction', async () => {
     const summary = orch.buildArchitectureSummary([
       node({ id: 'main', name: 'main.js', type: 'file', source: { file: 'main.js' } }),
       node({ id: 'strategy', name: 'TradeStrategy', type: 'class', source: { file: 'strategy.js' } }),
@@ -641,7 +641,7 @@ describe('architecture and capability inference', () => {
     expect(summary.system_type).toBe('CLI application');
   });
 
-  it('identifies TSX entry files as frontend surface before script-entry CLI fallback', () => {
+  it('identifies TSX entry files as frontend surface before script-entry CLI fallback', async () => {
     const summary = orch.buildArchitectureSummary([
       node({ id: 'main', name: 'main.tsx', type: 'file', source: { file: 'src/main.tsx' } }),
       node({ id: 'wallet-page', name: 'WalletsPage', type: 'function', source: { file: 'src/pages/WalletsPage.tsx' } }),
@@ -650,7 +650,7 @@ describe('architecture and capability inference', () => {
     expect(summary.system_type).toBe('Frontend application');
   });
 
-  it('infers CLI command contracts as behavior-level invariants', () => {
+  it('infers CLI command contracts as behavior-level invariants', async () => {
     const invariants = (orch as any).buildBehavioralInvariants([
       node({ id: 'main-command', name: 'run', type: 'command', source: { file: 'src/index.ts' } }),
     ], [], [{
@@ -666,7 +666,7 @@ describe('architecture and capability inference', () => {
     expect(invariants.find((invariant: any) => invariant.id === 'invariant_cli_entrypoint_contracts')?.scope.entry_point_ids).toContain('cli-run');
   });
 
-  it('infers script entry file contracts when a tiny repo has no explicit entry point', () => {
+  it('infers script entry file contracts when a tiny repo has no explicit entry point', async () => {
     const invariants = (orch as any).buildBehavioralInvariants([
       node({ id: 'main-file', name: 'main.js', type: 'file', source: { file: 'main.js' } }),
     ], [], [], { entities: [], relationships: [] }, [], [], [], '/tmp/script-app');
@@ -676,7 +676,7 @@ describe('architecture and capability inference', () => {
     expect(cliInvariant.scope.file_paths).toContain('main.js');
   });
 
-  it('infers UI route contracts as behavior-level invariants for frontend apps', () => {
+  it('infers UI route contracts as behavior-level invariants for frontend apps', async () => {
     const invariants = (orch as any).buildBehavioralInvariants([
       node({ id: 'page-file', name: 'page.tsx', type: 'file', source: { file: 'src/app/contact/page.tsx' } }),
       node({ id: 'contact-page', name: 'ContactPage', type: 'function', source: { file: 'src/app/contact/page.tsx' } }),
@@ -695,7 +695,7 @@ describe('architecture and capability inference', () => {
     expect(uiInvariant.scope.file_paths).toContain('src/app/contact/page.tsx');
   });
 
-  it('does not treat normal layered concept families as duplicate implementations', () => {
+  it('does not treat normal layered concept families as duplicate implementations', async () => {
     const nodes: CASNode[] = [
       node({ id: 'user-controller', name: 'UsersController', type: 'controller', source: { file: 'src/users/users.controller.ts' } }),
       node({ id: 'user-service', name: 'UsersService', type: 'service', source: { file: 'src/users/users.service.ts' } }),
@@ -707,7 +707,7 @@ describe('architecture and capability inference', () => {
     expect(orch.detectDuplicateConceptSignals(nodes)).toEqual([]);
   });
 
-  it('flags same-role duplicate concept owners without penalizing adjacent layers', () => {
+  it('flags same-role duplicate concept owners without penalizing adjacent layers', async () => {
     const nodes: CASNode[] = [
       node({ id: 'billing-service', name: 'BillingService', type: 'service', source: { file: 'src/billing/billing.service.ts' } }),
       node({ id: 'billing-manager', name: 'BillingManager', type: 'service', source: { file: 'src/payments/billing.manager.ts' } }),
@@ -723,7 +723,7 @@ describe('architecture and capability inference', () => {
     }]);
   });
 
-  it('infers capabilities from terminal business nodes and entities without routes', () => {
+  it('infers capabilities from terminal business nodes and entities without routes', async () => {
     const nodes: CASNode[] = [
       node({ id: 'invoice-entity', name: 'Invoice', type: 'entity', source: { file: 'src/billing/invoice.entity.ts' } }),
       node({ id: 'invoice-service', name: 'InvoiceSettlementService', type: 'service', source: { file: 'src/billing/invoice-settlement.service.ts' } }),
@@ -743,7 +743,7 @@ describe('architecture and capability inference', () => {
       relationships: [],
     } as any];
 
-    const capabilities = orch.buildSystemCapabilities([], entities, nodes, edges);
+    const capabilities = await orch.buildSystemCapabilities([], entities, nodes, edges);
 
     // The deterministic structural_label carries the "<Domain> Settlement"
     // grammar; the display name is the terminal-grounded subject ("Invoice")
@@ -756,7 +756,7 @@ describe('architecture and capability inference', () => {
     expect(capabilities.map((capability: any) => capability.related_domains).flat()).not.toContain('flutter');
   });
 
-  it('prefers terminal business names over absolute path noise when inferring capabilities', () => {
+  it('prefers terminal business names over absolute path noise when inferring capabilities', async () => {
     const nodes: CASNode[] = [
       node({
         id: 'transaction-service',
@@ -775,7 +775,7 @@ describe('architecture and capability inference', () => {
       { id: 'e1', source: 'transaction-service', target: 'transaction-method', type: 'calls' },
     ];
 
-    const capabilities = orch.buildSystemCapabilities([], [], nodes, edges);
+    const capabilities = await orch.buildSystemCapabilities([], [], nodes, edges);
     const labels = capabilities.map((capability: any) => capability.structural_label);
     const names = capabilities.map((capability: any) => capability.name);
     const relatedDomains = capabilities.map((capability: any) => capability.related_domains).flat();
@@ -790,7 +790,7 @@ describe('architecture and capability inference', () => {
     expect(relatedDomains).not.toContain('clients');
   });
 
-  it('anchors terminal capabilities on business objects instead of action verbs', () => {
+  it('anchors terminal capabilities on business objects instead of action verbs', async () => {
     const nodes: CASNode[] = [
       node({ id: 'report-handler', name: 'GenerateReportHandler', type: 'handler', source: { file: 'src/reports/generate-report.handler.ts' } }),
       node({ id: 'portfolio-use-case', name: 'RebalancePortfolioUseCase', type: 'usecase', source: { file: 'src/portfolio/rebalance-portfolio.use-case.ts' } }),
@@ -801,7 +801,7 @@ describe('architecture and capability inference', () => {
       { id: 'e1', source: 'invoice-service', target: 'invoice-method', type: 'calls' },
     ];
 
-    const capabilities = orch.buildSystemCapabilities([], [], nodes, edges);
+    const capabilities = await orch.buildSystemCapabilities([], [], nodes, edges);
     const domains = capabilities.map((capability: any) => capability.related_domains).flat();
     const labels = capabilities.map((capability: any) => capability.structural_label);
     const names = capabilities.map((capability: any) => capability.name);
@@ -816,7 +816,7 @@ describe('architecture and capability inference', () => {
     expect(names.some((name: string) => /^(Generate|Rebalance|Settle)\b/.test(name))).toBe(false);
   });
 
-  it('does not treat blockchain token domains as identity authentication', () => {
+  it('does not treat blockchain token domains as identity authentication', async () => {
     const nodes: CASNode[] = [
       node({ id: 'balance', name: 'getAssociatedTokenAddress', type: 'function', source: { file: 'src/solana/token-accounts.ts' } }),
       node({ id: 'wallet', name: 'readTokenBalance', type: 'function', source: { file: 'src/solana/token-accounts.ts' } }),
@@ -825,14 +825,14 @@ describe('architecture and capability inference', () => {
       { id: 'e1', source: 'wallet', target: 'balance', type: 'calls' },
     ];
 
-    const capabilities = orch.buildSystemCapabilities([], [], nodes, edges);
+    const capabilities = await orch.buildSystemCapabilities([], [], nodes, edges);
     const names = capabilities.map((capability: any) => capability.name);
 
     expect(names).toContain('Token Balance Discovery');
     expect(names.some((name: string) => /Authentication/.test(name))).toBe(false);
   });
 
-  it('filters DTO and source-support terminal buckets out of primary capabilities', () => {
+  it('filters DTO and source-support terminal buckets out of primary capabilities', async () => {
     const nodes: CASNode[] = [
       node({ id: 'dto', name: 'CreateVehicleDto', type: 'class', source: { file: 'src/vehicles/dto/create-vehicle.dto.ts' } }),
       node({ id: 'constants', name: 'Constants', type: 'object', source: { file: 'src/config/constants.ts' } }),
@@ -856,7 +856,7 @@ describe('architecture and capability inference', () => {
       relationships: [],
     } as any];
 
-    const capabilities = orch.buildSystemCapabilities([], entities, nodes, edges);
+    const capabilities = await orch.buildSystemCapabilities([], entities, nodes, edges);
     const labels = capabilities.map((capability: any) => capability.structural_label);
     const names = capabilities.map((capability: any) => capability.name);
 
@@ -871,7 +871,7 @@ describe('architecture and capability inference', () => {
     expect(labels).not.toContain('Support Capability');
   });
 
-  it('expands common source abbreviations before naming capabilities', () => {
+  it('expands common source abbreviations before naming capabilities', async () => {
     const nodes: CASNode[] = [
       node({ id: 'loc-service', name: 'LocService', type: 'service', source: { file: 'src/locations/loc.service.php' } }),
       node({ id: 'loc-method', name: 'syncLoc', type: 'method', source: { file: 'src/locations/loc.service.php' } }),
@@ -880,7 +880,7 @@ describe('architecture and capability inference', () => {
       { id: 'e1', source: 'loc-service', target: 'loc-method', type: 'calls' },
     ];
 
-    const capabilities = orch.buildSystemCapabilities([], [], nodes, edges);
+    const capabilities = await orch.buildSystemCapabilities([], [], nodes, edges);
     const labels = capabilities.map((capability: any) => capability.structural_label);
     const names = capabilities.map((capability: any) => capability.name);
     const domains = capabilities.flatMap((capability: any) => capability.related_domains);
@@ -894,7 +894,7 @@ describe('architecture and capability inference', () => {
     expect(labels).not.toContain('Loc Capability');
   });
 
-  it('uses product-surface capability names and filters helper buckets when analyzing Klauro itself', () => {
+  it('uses product-surface capability names and filters helper buckets when analyzing Klauro itself', async () => {
     const klauroRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-self-naming-'));
     fs.writeFileSync(
       path.join(klauroRoot, 'package.json'),
@@ -908,7 +908,7 @@ describe('architecture and capability inference', () => {
     ];
 
     try {
-      const capabilities = orch.buildSystemCapabilities([], [], nodes, [], klauroRoot);
+      const capabilities = await orch.buildSystemCapabilities([], [], nodes, [], klauroRoot);
       const names = capabilities.map((capability: any) => capability.name);
 
       expect(names).toEqual(expect.arrayContaining(['Agent Context', 'Runtime Telemetry', 'Proposal Preview']));
@@ -921,7 +921,7 @@ describe('architecture and capability inference', () => {
     }
   });
 
-  it('never applies Klauro product capability names to a foreign repository', () => {
+  it('never applies Klauro product capability names to a foreign repository', async () => {
     const foreignRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-foreign-naming-'));
     fs.writeFileSync(
       path.join(foreignRoot, 'package.json'),
@@ -950,7 +950,7 @@ describe('architecture and capability inference', () => {
     ];
 
     try {
-      const capabilities = orch.buildSystemCapabilities([], entities, nodes, edges, foreignRoot);
+      const capabilities = await orch.buildSystemCapabilities([], entities, nodes, edges, foreignRoot);
       const names = capabilities.map((capability: any) => capability.name);
 
       expect(names.length).toBeGreaterThan(0);
@@ -981,7 +981,7 @@ describe('architecture and capability inference', () => {
     }
   });
 
-  it('derives route-backed rails capabilities when projectPath scopes the product checks', () => {
+  it('derives route-backed rails capabilities when projectPath scopes the product checks', async () => {
     const projectRoot = '/repo/apps/mcp-server/fixtures/analysis-truth/rails-work-orders';
     const routesFile = `${projectRoot}/config/routes.rb`;
     const controllerFile = 'app/controllers/work_orders_controller.rb';
@@ -1027,10 +1027,10 @@ describe('architecture and capability inference', () => {
       lifecycle: { created_by: ['work-orders-create-action'], read_by: [], updated_by: [], deleted_by: [] },
     } as any];
 
-    const withoutProject = orch.buildSystemCapabilities(entryPoints, entities, nodes, []);
+    const withoutProject = await orch.buildSystemCapabilities(entryPoints, entities, nodes, []);
     expect(withoutProject.flatMap((capability: any) => capability.operations.map((op: any) => op.entry_point_type))).not.toContain('http');
 
-    const capabilities = orch.buildSystemCapabilities(entryPoints, entities, nodes, [], projectRoot);
+    const capabilities = await orch.buildSystemCapabilities(entryPoints, entities, nodes, [], projectRoot);
     const routeCapability = capabilities.find((capability: any) =>
       capability.operations.some((op: any) => op.entry_point_type === 'http')
     );
@@ -1039,7 +1039,7 @@ describe('architecture and capability inference', () => {
     expect(actions).toEqual(expect.arrayContaining(['List', 'Create', 'Update', 'Delete']));
   });
 
-  it('filters parser and framework utility labels out of key capability summaries', () => {
+  it('filters parser and framework utility labels out of key capability summaries', async () => {
     expect(orch.isGenericCapabilityDisplayName('Has Management')).toBe(true);
     expect(orch.isGenericCapabilityDisplayName('Serializers Management')).toBe(true);
     expect(orch.isGenericCapabilityDisplayName('Manage Capability')).toBe(true);
@@ -1087,7 +1087,7 @@ describe('architecture and capability inference', () => {
     expect(orch.isGenericCapabilityDisplayName('Product Management')).toBe(false);
   });
 
-  it('infers CLI and message capability domains from command names instead of transport labels', () => {
+  it('infers CLI and message capability domains from command names instead of transport labels', async () => {
     const cliKey = orch.inferResourceKey({
       id: 'entry-cli',
       type: 'cli',
@@ -1118,7 +1118,7 @@ describe('architecture and capability inference', () => {
     expect(orch.inferResourceName({ type: 'message' } as any, messageKey)).toBe('Invoice Requested Handlers');
   });
 
-  it('does not auto-generate entity descriptions during the default analysis pass', () => {
+  it('does not auto-generate entity descriptions during the default analysis pass', async () => {
     const nodes: CASNode[] = [
       node({ id: 'driver-entity', name: 'Driver', type: 'entity', source: { file: 'src/fleet/driver.entity.ts' } }),
       node({ id: 'driver-name', name: 'licenseNumber', type: 'property', parent: 'driver-entity', signature: { return_type: 'string' } as any }),
@@ -1137,7 +1137,7 @@ describe('architecture and capability inference', () => {
     expect(entities[0].description_generation).toBeUndefined();
   });
 
-  it('excludes nested fixture entities from product data entities while preserving fixture-root analysis', () => {
+  it('excludes nested fixture entities from product data entities while preserving fixture-root analysis', async () => {
     const projectRoot = '/repo/apps/mcp-server';
     const nodes: CASNode[] = [
       node({
@@ -1161,7 +1161,7 @@ describe('architecture and capability inference', () => {
     expect(fixtureEntities.map((entity: any) => entity.name)).toEqual(['User']);
   });
 
-  it('scopes high-level purpose facts to product entry points and frameworks', () => {
+  it('scopes high-level purpose facts to product entry points and frameworks', async () => {
     const projectRoot = '/repo/apps/mcp-server';
     const nodes: CASNode[] = [
       node({
@@ -1191,7 +1191,7 @@ describe('architecture and capability inference', () => {
     expect(orch.frameworkNamesForPurpose(contributions, nodes, projectRoot)).toEqual([]);
   });
 
-  it('strips analyzer display-name artifacts and admits only framework-analyzer application surfaces', () => {
+  it('strips analyzer display-name artifacts and admits only framework-analyzer application surfaces', async () => {
     const projectRoot = '/repo/arb_engine';
     const contributions = [
       { analyzer_id: 'rust', analyzer_type: 'language', analyzer_name: 'Rust Analyzer' },
@@ -1358,7 +1358,7 @@ describe('architecture and capability inference', () => {
     }));
   });
 
-  it('rejects AI element descriptions that add unsupported business or compliance claims', () => {
+  it('rejects AI element descriptions that add unsupported business or compliance claims', async () => {
     expect(orch.isUsefulElementDescription(
       'Driver Management handles driver assignments and improves operational efficiency while ensuring compliant fleet workflows.',
       {
@@ -1370,7 +1370,7 @@ describe('architecture and capability inference', () => {
     )).toBe(false);
   });
 
-  it('uses page route segments instead of grouping every frontend route under pages', () => {
+  it('uses page route segments instead of grouping every frontend route under pages', async () => {
     const productPage = {
       id: 'entry-product',
       type: 'page',
@@ -1390,14 +1390,14 @@ describe('architecture and capability inference', () => {
       node({ id: 'product-page', name: 'ProductPage', type: 'component', source: { file: 'src/app/product/page.tsx' } }),
       node({ id: 'company-page', name: 'CompanyPage', type: 'component', source: { file: 'src/app/company/page.tsx' } }),
     ];
-    const capabilities = orch.buildSystemCapabilities([productPage, companyPage] as any, [], nodes, []);
+    const capabilities = await orch.buildSystemCapabilities([productPage, companyPage] as any, [], nodes, []);
     const domains = capabilities.map((capability: any) => capability.related_domains).flat();
 
     expect(domains).toEqual(expect.arrayContaining(['product', 'company']));
     expect(domains).not.toContain('pages');
   });
 
-  it('strips agent tooling instructions from guide-file project text so they cannot poison domain inference', () => {
+  it('strips agent tooling instructions from guide-file project text so they cannot poison domain inference', async () => {
     const guide = [
       '# My Game',
       'A tactical role-playing game with crafting, combat, and quests.',
@@ -1414,7 +1414,7 @@ describe('architecture and capability inference', () => {
     expect(stripped).not.toMatch(/klauro|agent context|mcp/i);
   });
 
-  it('does not derive capability domains from UI or framework mechanics tokens', () => {
+  it('does not derive capability domains from UI or framework mechanics tokens', async () => {
     for (const text of ['sortByDate', 'filterColumns', 'getChildren', 'objectKeys', 'iconForStatus', 'ngrxEffects', 'provideStoreNgrx', 'toggleDropdown', 'paginationState']) {
       expect(orch.domainKeyFromText(text)).toBeUndefined();
     }
@@ -1427,7 +1427,7 @@ describe('architecture and capability inference', () => {
     expect(orch.domainKeyFromText('vehicleInspection')).toBe('vehicle-inspection');
   });
 
-  it('does not promote UI interaction and data-fetching mechanics into product capabilities', () => {
+  it('does not promote UI interaction and data-fetching mechanics into product capabilities', async () => {
     const nodes = [
       node({ id: 'approval-page', name: 'ApprovalPage', type: 'component', source: { file: 'src/views/app/pages/approvals/index.tsx' } }),
       node({ id: 'click-handler', name: 'handleClick', type: 'function', source: { file: 'src/views/app/pages/approvals/index.tsx' } }),
@@ -1465,7 +1465,7 @@ describe('architecture and capability inference', () => {
       },
     ];
 
-    const capabilities = orch.buildSystemCapabilities(entryPoints as any, [], nodes, [], '/tmp/soon-ui');
+    const capabilities = await orch.buildSystemCapabilities(entryPoints as any, [], nodes, [], '/tmp/soon-ui');
     const names = capabilities.map((capability: any) => capability.name);
     const labels = capabilities.map((capability: any) => capability.structural_label);
     const approvalCapability = capabilities.find((capability: any) => /approval/i.test(capability.name));
@@ -1482,29 +1482,29 @@ describe('architecture and capability inference', () => {
     expect(labels.join('\n')).not.toMatch(/\b(click|mutation|query|latest)\s+(management|workflow|capability)\b/i);
   });
 
-  it('does not classify marketing UI cards and video players as a gaming platform', () => {
+  it('does not classify marketing UI cards and video players as a gaming platform', async () => {
     const nodes: CASNode[] = [
       node({ id: 'video-player', name: 'VideoPlayer', type: 'component', source: { file: 'src/app/video-player.tsx' } }),
       node({ id: 'stats-card', name: 'StatsCard', type: 'component', source: { file: 'src/app/stats-section.tsx' } }),
       node({ id: 'feature-card', name: 'FeatureCard', type: 'component', source: { file: 'src/app/product/feature-stack.tsx' } }),
     ];
-    const purpose = orch.inferSystemPurpose([], [], [], nodes);
+    const purpose = await orch.inferSystemPurpose([], [], [], nodes);
 
     expect(purpose.primary_type).not.toBe('gaming-platform');
   });
 
-  it('does not classify generic preview or invariant names as developer tooling', () => {
+  it('does not classify generic preview or invariant names as developer tooling', async () => {
     const nodes: CASNode[] = [
       node({ id: 'preview-window', name: 'PreviewWindow', type: 'component', source: { file: 'src/PreviewWindow.xaml.cs' } }),
       node({ id: 'patient-invariant', name: 'PatientInvariantCheck', type: 'service', source: { file: 'src/PatientInvariantCheck.cs' } }),
       node({ id: 'patient', name: 'Patient', type: 'entity', source: { file: 'src/Patient.cs' } }),
     ];
-    const purpose = orch.inferSystemPurpose([], [], [], nodes);
+    const purpose = await orch.inferSystemPurpose([], [], [], nodes);
 
     expect(purpose.primary_type).not.toBe('devtools-platform');
   });
 
-  it('classifies page-only React/Next style surfaces as frontend applications', () => {
+  it('classifies page-only React/Next style surfaces as frontend applications', async () => {
     const entryPoints = [{
       id: 'entry-home',
       type: 'page',
@@ -1516,12 +1516,12 @@ describe('architecture and capability inference', () => {
       node({ id: 'home-page', name: 'Home', type: 'component', source: { file: 'src/app/page.tsx' } }),
       node({ id: 'content-card', name: 'ContentCard', type: 'component', source: { file: 'src/app/content-card.tsx' } }),
     ];
-    const purpose = orch.inferSystemPurpose(entryPoints as any, [], [], nodes);
+    const purpose = await orch.inferSystemPurpose(entryPoints as any, [], [], nodes);
 
     expect(purpose.primary_type).toBe('frontend-application');
   });
 
-  it('does not classify desktop GUI apps as CLI tools only because they have Main entry points', () => {
+  it('does not classify desktop GUI apps as CLI tools only because they have Main entry points', async () => {
     const entryPoints = [{
       id: 'entry-main',
       type: 'cli',
@@ -1537,24 +1537,24 @@ describe('architecture and capability inference', () => {
       node({ id: 'patient-viewmodel', name: 'PatientViewModel', type: 'class', source: { file: 'src/ViewModels/PatientViewModel.cs' } }),
       node({ id: 'report-modal', name: 'ReportModal', type: 'class', source: { file: 'src/Modals/ReportModal.xaml.cs' } }),
     ];
-    const purpose = orch.inferSystemPurpose(entryPoints as any, [], [], nodes);
+    const purpose = await orch.inferSystemPurpose(entryPoints as any, [], [], nodes);
 
     expect(purpose.primary_type).not.toBe('cli-tool');
   });
 
-  it('prefers clinical desktop signals over incidental help/tutorial content', () => {
+  it('prefers clinical desktop signals over incidental help/tutorial content', async () => {
     const nodes: CASNode[] = [
       node({ id: 'lesson-help', name: 'TutorialHelpWindow', type: 'class', source: { file: 'src/Help/TutorialHelpWindow.xaml.cs' } }),
       node({ id: 'patient-window', name: 'PatientWindow', type: 'class', source: { file: 'src/PatientWindow.xaml.cs' } }),
       node({ id: 'muscle-viewmodel', name: 'MuscleMeasurementViewModel', type: 'class', source: { file: 'src/ViewModels/MuscleMeasurementViewModel.cs' } }),
       node({ id: 'device-modal', name: 'DeviceForceModal', type: 'class', source: { file: 'src/Modals/DeviceForceModal.xaml.cs' } }),
     ];
-    const purpose = orch.inferSystemPurpose([], [], [], nodes);
+    const purpose = await orch.inferSystemPurpose([], [], [], nodes);
 
     expect(purpose.primary_type).toBe('clinical-testing-platform');
   });
 
-  it('prioritizes clinical capabilities in clinical testing summaries', () => {
+  it('prioritizes clinical capabilities in clinical testing summaries', async () => {
     expect(orch.capabilityPurposeBias('clinical-testing', { name: 'Patient Report Management', related_domains: [], related_entities: [] })).toBe(0);
     expect(orch.capabilityPurposeBias('clinical-testing', { name: 'Snack Management', related_domains: [], related_entities: [] })).toBe(1);
     expect(orch.purposeCapabilitySummary('clinical-testing', [
@@ -1564,7 +1564,7 @@ describe('architecture and capability inference', () => {
     ])).toEqual(['patient records', 'device connectivity', 'clinical reporting']);
   });
 
-  it('uses fleet-management project text to override incidental multiplayer vocabulary', () => {
+  it('uses fleet-management project text to override incidental multiplayer vocabulary', async () => {
     expect(orch.refinePurposeTypeForDomain(
       'multiplayer-application',
       'fleet-management',
@@ -1573,7 +1573,7 @@ describe('architecture and capability inference', () => {
     )).toBe('backend-service');
   });
 
-  it('adds readable titles and descriptions to test gaps', () => {
+  it('adds readable titles and descriptions to test gaps', async () => {
     const gaps = orch.buildTestGaps([], [
       node({
         id: 'driver-service',
@@ -1592,7 +1592,7 @@ describe('architecture and capability inference', () => {
     }));
   });
 
-  it('builds static change risks when git metrics are unavailable', () => {
+  it('builds static change risks when git metrics are unavailable', async () => {
     const nodes: CASNode[] = [
       node({
         id: 'invoice-controller',
@@ -1644,7 +1644,7 @@ describe('architecture and capability inference', () => {
     expect(summary.high_risk_nodes.length).toBeGreaterThan(0);
   });
 
-  it('recognizes mediator, unit-of-work, singleton, and MVVM patterns', () => {
+  it('recognizes mediator, unit-of-work, singleton, and MVVM patterns', async () => {
     const nodes: CASNode[] = [
       node({ id: 'view', name: 'CheckoutView', type: 'component', source: { file: 'src/checkout/CheckoutView.tsx' } }),
       node({ id: 'vm', name: 'CheckoutViewModel', type: 'class', source: { file: 'src/checkout/CheckoutViewModel.ts' } }),
@@ -1659,7 +1659,7 @@ describe('architecture and capability inference', () => {
     expect(names).toEqual(expect.arrayContaining(['MVVM', 'Mediator / Handler', 'Unit of Work', 'Singleton / Registry']));
   });
 
-  it('filters low-level runtime calls out of external service summaries', () => {
+  it('filters low-level runtime calls out of external service summaries', async () => {
     const exitPoints: CASExitPoint[] = [
       exitPoint({ id: 'file-exists', type: 'sdk', name: 'File.Exists', target: { sdk: 'File.Exists' } }),
       exitPoint({ id: 'string-empty', type: 'sdk', name: 'String.IsNullOrEmpty', target: { sdk: 'String.IsNullOrEmpty' } }),
@@ -1688,7 +1688,7 @@ describe('architecture and capability inference', () => {
     expect(services.map((service: any) => service.name)).toEqual(['Stripe']);
   });
 
-  it('uses React feature page folders before hook/library vocabulary for page capability keys', () => {
+  it('uses React feature page folders before hook/library vocabulary for page capability keys', async () => {
     // The full folder-name phrase is preserved rather than truncated to its
     // first word — "portfolio-analysis" is a more specific, correct key than
     // "portfolio" alone (dropping "analysis" is the truncation bug that also
@@ -1705,7 +1705,7 @@ describe('architecture and capability inference', () => {
     })).toBe('auth');
   });
 
-  it('prioritizes product capabilities over cross-cutting auth and billing cards', () => {
+  it('prioritizes product capabilities over cross-cutting auth and billing cards', async () => {
     const ordered = [
       { name: 'User Management', category: 'supporting', criticality: 'high', operations: [], related_domains: ['user'], related_entities: [] },
       { name: 'Checkout Management', category: 'supporting', criticality: 'medium', operations: [], related_domains: ['checkout'], related_entities: [] },
@@ -1721,25 +1721,25 @@ describe('architecture and capability inference', () => {
     ]);
   });
 
-  it('does not summarize the repo name as a product capability or core concept', () => {
+  it('does not summarize the repo name as a product capability or core concept', async () => {
     expect(orch.isProjectNameCapabilityName('Soon Management', '/tmp/soon-ui')).toBe(true);
     expect(orch.isProjectNameConcept('soon', '/tmp/soon-ui')).toBe(true);
     expect(orch.isProjectNameCapabilityName('Portfolio Management', '/tmp/soon-ui')).toBe(false);
   });
 
-  it('treats UI-control vocabulary as capability noise', () => {
+  it('treats UI-control vocabulary as capability noise', async () => {
     for (const token of ['buttons', 'changed', 'circular', 'color', 'combo', 'contents', 'current', 'custom', 'dispose', 'image', 'bar', 'box', 'middle', 'name', 'action', 'flow', 'runtime', 'mode', 'record', 'extract', 'assistant', 'operator', 'seed', 'dedupe', 'drawer', 'string']) {
       expect(orch.isGenericCapabilityToken(token)).toBe(true);
     }
   });
 
-  it('treats CAS harness files as non-product source', () => {
+  it('treats CAS harness files as non-product source', async () => {
     expect(orch.isPrimaryProductPath('packages/analyzer-core/cas-tests/test-hoggan-analysis.ts')).toBe(false);
     expect(orch.isPrimaryProductPath('src/test-hoggan-analysis.ts')).toBe(false);
     expect(orch.isPrimaryProductPath('packages/analyzer-core/src/analyzer/core/orchestrator.ts')).toBe(true);
   });
 
-  it('uses product subfolders instead of generic api/source areas in terminal descriptions', () => {
+  it('uses product subfolders instead of generic api/source areas in terminal descriptions', async () => {
     expect(orch.capabilitySourceAreas([], [
       { action: 'Read', path_or_command: 'src/api/sync/automation/useAutomationConfig.ts' },
       { action: 'Read', path_or_command: 'src/views/app/pages/portfolio-analysis/index.tsx' },
@@ -1748,7 +1748,7 @@ describe('architecture and capability inference', () => {
     ])).toEqual(['automation', 'portfolio analysis', 'auth']);
   });
 
-  it('accepts AI descriptions grounded in structural facts when the inferred domain seed is wrong', () => {
+  it('accepts AI descriptions grounded in structural facts when the inferred domain seed is wrong', async () => {
     const purpose = { primary_domain: 'cloud-infrastructure', core_concepts: ['terraform', 'module'] };
     const description = 'A laundry service booking application where customers schedule pickups, track washing orders, and manage delivery preferences for their household laundry.';
 
@@ -1758,7 +1758,7 @@ describe('architecture and capability inference', () => {
     }).ok).toBe(true);
   });
 
-  it('requires generated AI overviews to be paragraph-style, not a single compressed sentence', () => {
+  it('requires generated AI overviews to be paragraph-style, not a single compressed sentence', async () => {
     const purpose = { primary_domain: 'portfolio-management', core_concepts: ['portfolio', 'automation', 'market'] };
     const oneSentence = 'soon-ui is a portfolio management system that coordinates portfolio data, market discovery, and automation workflows using React and TanStack Query.';
     const paragraph = 'soon-ui is a portfolio management system that presents account holdings, market data, and automation settings through a React interface. It connects portfolio analysis, exchange setup, and recurring investment workflows so agents can understand where product behavior lives before editing.';
@@ -1768,7 +1768,7 @@ describe('architecture and capability inference', () => {
     expect(orch.validateGeneratedAIInterpretation(paragraph, purpose, { frameworks: ['React'], libraries: ['@tanstack/react-query'] }).ok).toBe(true);
   });
 
-  it('rejects AI overviews that leak the repo name as a capability concept', () => {
+  it('rejects AI overviews that leak the repo name as a capability concept', async () => {
     const purpose = { primary_domain: 'portfolio-management', core_concepts: ['portfolio', 'automation', 'market data'] };
     const leaked = 'soon-ui is a portfolio management system that coordinates portfolio, soon, market data discovery, and automation workflows using React. It presents assets, activity, and payments through portfolio screens.';
 
@@ -1779,7 +1779,7 @@ describe('architecture and capability inference', () => {
     }).reason).toBe('project-name-as-concept');
   });
 
-  it('selects distinctive domain entities ahead of generic Portfolio/Strategy/User CRUD', () => {
+  it('selects distinctive domain entities ahead of generic Portfolio/Strategy/User CRUD', async () => {
     const dataEntities = [
       { id: 'e1', name: 'Portfolio', lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] } },
       { id: 'e2', name: 'Strategy', lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] } },
@@ -1797,7 +1797,7 @@ describe('architecture and capability inference', () => {
     expect(selected.indexOf('WhaleTransaction')).toBeLessThan(selected.indexOf('UsageStats'));
   });
 
-  it('surfaces the DISTINCTIVE crypto grounding (ccxt, DexTrade, manifest description) to the comprehension prompt for a soon-lens-shaped repo', () => {
+  it('surfaces the DISTINCTIVE crypto grounding (ccxt, DexTrade, manifest description) to the comprehension prompt for a soon-lens-shaped repo', async () => {
     // The narrow ORM/@Entity view is the generic Strategy CRUD; the real
     // 202-entity catalog holds the crypto truth. The prompt facts must ground on
     // the distinctive entities + full dependency manifest + manifest description,
@@ -1849,7 +1849,7 @@ describe('architecture and capability inference', () => {
     expect(facts.manifestDescription).toBe('Soon Lens crypto intelligence and agent preflight API');
   });
 
-  it('feeds the terminal signal (ranked terminal entities/capabilities + domain seed) into the comprehension prompt as primary grounding', () => {
+  it('feeds the terminal signal (ranked terminal entities/capabilities + domain seed) into the comprehension prompt as primary grounding', async () => {
     // The terminal signal is what journeys ultimately produce — the strongest
     // "what is this product" evidence. It must reach the prompt facts.
     const localOrch = new AnalyzerOrchestrator() as any;
@@ -1879,7 +1879,7 @@ describe('architecture and capability inference', () => {
     expect(tokens).toEqual(expect.arrayContaining(['ohlcv', 'candle', 'whale', 'pricing']));
   });
 
-  it('rejects a fabricated system-type with no supporting evidence but accepts one grounded in dependencies', () => {
+  it('rejects a fabricated system-type with no supporting evidence but accepts one grounded in dependencies', async () => {
     const purpose = { primary_domain: 'crypto-market-intelligence', core_concepts: ['dex', 'ohlcv', 'whale', 'pool'] };
     const grounding = {
       systemName: 'soon-lens',
@@ -1902,7 +1902,7 @@ describe('architecture and capability inference', () => {
     expect(orch.validateGeneratedAIInterpretation(grounded, purpose, grounding).ok).toBe(true);
   });
 
-  it('does not reject a description because a gerund/participle lands in the system-type modifier window (prod: ungrounded-system-type: incorporating)', () => {
+  it('does not reject a description because a gerund/participle lands in the system-type modifier window (prod: ungrounded-system-type: incorporating)', async () => {
     // Klauro-self-shaped facts: monorepo/MCP/analyzer are all real evidence.
     const purpose = { primary_domain: 'code-analysis', core_concepts: ['monorepo', 'mcp', 'analyzer', 'parser'] };
     const grounding = {
@@ -1944,7 +1944,7 @@ describe('architecture and capability inference', () => {
     // A grounded paragraph proven valid by the fabricated-vs-grounded test above.
     const groundedParagraph = 'soon-lens is a crypto market-intelligence API built with NestJS that aggregates DexTrade and OhlcvCandle market data across exchanges. It surfaces WhaleTransaction signals and PreflightDecision risk attestations for trading agents.';
 
-    it('heals a too-long paragraph by trimming to a sentence boundary instead of rejecting (prod: hercules)', () => {
+    it('heals a too-long paragraph by trimming to a sentence boundary instead of rejecting (prod: hercules)', async () => {
       // Build an over-budget (>2000 chars) paragraph out of individually valid
       // grounded sentences.
       const filler = ' It aggregates DexTrade and OhlcvCandle market data for trading agents across venues.';
@@ -1963,7 +1963,7 @@ describe('architecture and capability inference', () => {
       expect(outcome.text.startsWith('soon-lens is a crypto market-intelligence API')).toBe(true);
     });
 
-    it('heals a single ungrounded marketing word by stripping it instead of rejecting the paragraph (prod: electripure "efficient")', () => {
+    it('heals a single ungrounded marketing word by stripping it instead of rejecting the paragraph (prod: electripure "efficient")', async () => {
       const oneWord = groundedParagraph.replace('is a crypto market-intelligence API', 'is an efficient crypto market-intelligence API');
       const verdict = orch.validateGeneratedAIInterpretation(oneWord, purpose, grounding);
       expect(verdict.reason).toBe('unsupported-marketing-language: efficient');
@@ -1980,7 +1980,7 @@ describe('architecture and capability inference', () => {
       expect(outcome.text).toMatch(/DexTrade/);
     });
 
-    it('still rejects a paragraph SATURATED with marketing language (word-deletion would gut it)', () => {
+    it('still rejects a paragraph SATURATED with marketing language (word-deletion would gut it)', async () => {
       const saturated = 'soon-lens is a seamless crypto market-intelligence API built with NestJS that seamlessly boosts productivity and business value while aggregating DexTrade and OhlcvCandle market data. It surfaces user-friendly WhaleTransaction signals, improving operational productivity and business value with a seamless PreflightDecision workflow for trading agents.';
       const verdict = orch.validateGeneratedAIInterpretation(saturated, purpose, grounding);
       expect(String(verdict.reason)).toMatch(/^unsupported-marketing-language:/);
@@ -1992,7 +1992,7 @@ describe('architecture and capability inference', () => {
       expect(String(outcome.validation.reason)).toMatch(/^unsupported-marketing-language:/);
     });
 
-    it('chains mechanical repairs: a too-long trim followed by a marketing-word strip', () => {
+    it('chains mechanical repairs: a too-long trim followed by a marketing-word strip', async () => {
       const withWord = groundedParagraph.replace('is a crypto market-intelligence API', 'is an efficient crypto market-intelligence API');
       const filler = ' It aggregates DexTrade and OhlcvCandle market data for trading agents across venues.';
       let longAndMarketing = withWord;
@@ -2006,7 +2006,7 @@ describe('architecture and capability inference', () => {
       expect(outcome.text).not.toMatch(/\befficient\b/i);
     });
 
-    it('does not mechanically repair semantic rejection reasons (they go to the AI re-prompt)', () => {
+    it('does not mechanically repair semantic rejection reasons (they go to the AI re-prompt)', async () => {
       expect(orch.mechanicallyRepairAIInterpretation(groundedParagraph, 'source-bucket-restatement')).toBeUndefined();
       // Multi-token ungrounded-system-type = wholesale fabrication, NOT a
       // word-level cleanup — stays semantic.
@@ -2016,7 +2016,7 @@ describe('architecture and capability inference', () => {
       expect(orch.mechanicallyRepairAIInterpretation(groundedParagraph, undefined)).toBeUndefined();
     });
 
-    it('heals a SINGLE ungrounded system-type modifier by stripping it and keeping the grounded type head (prod: hercules "commerce")', () => {
+    it('heals a SINGLE ungrounded system-type modifier by stripping it and keeping the grounded type head (prod: hercules "commerce")', async () => {
       const purpose = { primary_domain: 'crew-dispatch', core_concepts: ['crew', 'dispatch', 'job'] };
       const grounding = {
         systemName: 'fieldapp',
@@ -2042,7 +2042,7 @@ describe('architecture and capability inference', () => {
     });
   });
 
-  it('never enforces bare verb forms as system-type claims (prod: ungrounded-system-type: allowed)', () => {
+  it('never enforces bare verb forms as system-type claims (prod: ungrounded-system-type: allowed)', async () => {
     const purpose = { primary_domain: 'code-analysis', core_concepts: ['monorepo', 'mcp', 'analyzer', 'parser'] };
     const grounding = {
       systemName: 'klauro',
@@ -2060,7 +2060,7 @@ describe('architecture and capability inference', () => {
     expect(orch.validateGeneratedAIInterpretation(description, purpose, grounding)).toEqual({ ok: true });
   });
 
-  it('grounds an umbrella domain modifier through synonym-cluster evidence (prod: hercules "commerce" with orders/invoices/deliveries)', () => {
+  it('grounds an umbrella domain modifier through synonym-cluster evidence (prod: hercules "commerce" with orders/invoices/deliveries)', async () => {
     const purpose = { primary_domain: 'order-management', core_concepts: ['order', 'invoice', 'delivery', 'warehouse'] };
     const grounding = {
       systemName: 'hercules',
@@ -2093,7 +2093,7 @@ describe('architecture and capability inference', () => {
     expect(String(bareVerdict.reason)).toMatch(/ungrounded-system-type: commerce/);
   });
 
-  it('sentence-level sanitization never drops the OPENING sentence (prod: openclaw accepted description starting "It produces...")', () => {
+  it('sentence-level sanitization never drops the OPENING sentence (prod: openclaw accepted description starting "It produces...")', async () => {
     const purpose = { primary_domain: 'game-management', core_concepts: ['game', 'tournament', 'card', 'deck'] };
     // First sentence trips a sentence-drop rule (unsupported framework claim
     // with frameworks: []) — sanitize must NOT return a paragraph whose
@@ -2110,7 +2110,7 @@ describe('architecture and capability inference', () => {
     expect(midSanitized).toMatch(/^openclaw is a game management system/i);
   });
 
-  it('accepts framework mentions backed by detected libraries instead of framework analyzers', () => {
+  it('accepts framework mentions backed by detected libraries instead of framework analyzers', async () => {
     const purpose = { primary_domain: 'game-management', core_concepts: ['game', 'tournament', 'card', 'deck'] };
     const description = 'A game management system built with React and Prisma that coordinates game, tournament, card, and deck workflows, tracking deck construction and tournament pairings for players.';
 
@@ -2125,7 +2125,7 @@ describe('architecture and capability inference', () => {
     }).reason).toBe('unsupported-framework-claim');
   });
 
-  it('matches scoped and suffixed package names against framework claim keys', () => {
+  it('matches scoped and suffixed package names against framework claim keys', async () => {
     const purpose = { primary_domain: 'order-management', core_concepts: ['order', 'shipment'] };
     const description = 'An order management service built with Express and NestJS that records orders and shipments, links shipment updates to each order, and answers order lookups for dispatch operators.';
 
@@ -2137,7 +2137,7 @@ describe('architecture and capability inference', () => {
     }).reason).toBe('unsupported-framework-claim');
   });
 
-  it('keeps library-backed framework sentences when sanitizing rejected descriptions', () => {
+  it('keeps library-backed framework sentences when sanitizing rejected descriptions', async () => {
     const purpose = { primary_domain: 'game-management', core_concepts: ['game', 'tournament', 'card', 'deck'] };
     const description = 'A game management system that coordinates game, tournament, card, and deck workflows. It is built with React and Prisma for deck construction and tournament pairing screens.';
 
@@ -2148,14 +2148,14 @@ describe('architecture and capability inference', () => {
     })).toMatch(/built with React and Prisma/);
   });
 
-  it('treats helper verbs and generic UI actions as weak capability/domain terms', () => {
+  it('treats helper verbs and generic UI actions as weak capability/domain terms', async () => {
     for (const token of ['search', 'render', 'close', 'focus', 'normalize', 'ensure', 'path', 'clamp', 'install', 'modal', 'dialog', 'screen']) {
       expect(orch.isGenericDomainToken(token)).toBe(true);
       expect(orch.isGenericCapabilityToken(token)).toBe(true);
     }
   });
 
-  it('rejects hash/id-shaped tokens as domain vocabulary so near-empty repos never compose a "<hash>-management" domain', () => {
+  it('rejects hash/id-shaped tokens as domain vocabulary so near-empty repos never compose a "<hash>-management" domain', async () => {
     for (const token of [
       'a1b2c3d4e5f6', // long pure hex, content-hash shaped
       '9f86d081884c7d659a2feaa0c55ad015', // sha256-ish hex digest
@@ -2171,7 +2171,7 @@ describe('architecture and capability inference', () => {
     }
   });
 
-  it('does not infer core capabilities from vendored help-library JavaScript', () => {
+  it('does not infer core capabilities from vendored help-library JavaScript', async () => {
     const nodes: CASNode[] = [
       node({
         id: 'vendor-next',
@@ -2195,7 +2195,7 @@ describe('architecture and capability inference', () => {
       relationships: [],
     } as any];
 
-    const capabilities = orch.buildSystemCapabilities([], entities, nodes, []);
+    const capabilities = await orch.buildSystemCapabilities([], entities, nodes, []);
     const names = capabilities.map((capability: any) => capability.name);
     const labels = capabilities.map((capability: any) => capability.structural_label);
 
@@ -2204,7 +2204,7 @@ describe('architecture and capability inference', () => {
     expect(labels).not.toContain('Next Management');
   });
 
-  it('rejects AI system descriptions that end in generic concept lists', () => {
+  it('rejects AI system descriptions that end in generic concept lists', async () => {
     const result = orch.validateAIInterpretation(
       'An order management system built with Angular that coordinates company, offer, suggestion, and upload workflows. It connects to HTTP API Connection and apollo-angular to manage user, portal, and company data.',
       { primary_domain: 'order-management', core_concepts: ['company', 'offer', 'suggestion'] },
@@ -2214,7 +2214,7 @@ describe('architecture and capability inference', () => {
     expect(result).toEqual({ ok: false, reason: 'generic-concept-ending' });
   });
 
-  it('allows generic-looking words when they are part of a grounded multiword concept', () => {
+  it('allows generic-looking words when they are part of a grounded multiword concept', async () => {
     const result = orch.validateAIInterpretation(
       'A Solana arbitrage system that checks SPL token balances before submitting buy and sell transactions. It uses @solana/web3.js for Solana network access and focuses its decisions on trade execution and market data.',
       { primary_domain: 'solana-arbitrage', core_concepts: ['trade execution', 'token balance', 'market data'] },
@@ -2224,7 +2224,7 @@ describe('architecture and capability inference', () => {
     expect(result.ok).toBe(true);
   });
 
-  it('names the offending marketing terms in the rejection reason so repair prompts can target them', () => {
+  it('names the offending marketing terms in the rejection reason so repair prompts can target them', async () => {
     const result = orch.validateAIInterpretation(
       'The fleet system seamlessly tracks vehicles and improves productivity for dispatchers across fleet operations, covering trip assignment and vehicle status updates.',
       { primary_domain: 'fleet-management', core_concepts: ['fleet', 'vehicle', 'dispatch'] }
@@ -2236,7 +2236,7 @@ describe('architecture and capability inference', () => {
     expect(result.reason).toContain('productivity');
   });
 
-  it('allows integration claims that the deterministic project-text overview itself makes', () => {
+  it('allows integration claims that the deterministic project-text overview itself makes', async () => {
     expect(orch.validateAIInterpretation(
       'A fleet management system for commercial vehicle operations that tracks vehicles, dispatch, and maintenance, with integrations with telematics providers.',
       {
@@ -2306,7 +2306,7 @@ variable "allowed_ip_range" { type = string }
         'aws_s3_bucket_policy',
       ]));
 
-      const capabilities = orch.buildSystemCapabilities(contribution.entry_points || [], [], nodes, edges, root);
+      const capabilities = await orch.buildSystemCapabilities(contribution.entry_points || [], [], nodes, edges, root);
       expect(capabilities.map((capability: any) => capability.name)).toEqual(expect.arrayContaining([
         'Object Storage',
       ]));
@@ -2357,7 +2357,7 @@ variable "allowable_ip_range" { type = string }
     try {
       const analyzer = new TerraformAnalyzer();
       const contribution = await analyzer.analyze({ projectPath: root, config: {} } as any);
-      const capabilities = orch.buildSystemCapabilities(contribution.entry_points || [], [], contribution.nodes || [], contribution.edges || [], root);
+      const capabilities = await orch.buildSystemCapabilities(contribution.entry_points || [], [], contribution.nodes || [], contribution.edges || [], root);
       const names = capabilities.map((capability: any) => capability.name);
 
       expect(names).toEqual(expect.arrayContaining([
@@ -2381,7 +2381,7 @@ describe('domain and security classification robustness (out-of-distribution rep
     subcategories: partial.subcategories,
   } as CASNode);
 
-  it('matches whole identifier tokens only, never substrings of compound identifiers', () => {
+  it('matches whole identifier tokens only, never substrings of compound identifiers', async () => {
     expect(orch.matchesSignalPattern(orch.signalTokens('credit_card'), 'card')).toBe(false);
     expect(orch.matchesSignalPattern(orch.signalTokens('gift_card'), 'card')).toBe(false);
     expect(orch.matchesSignalPattern(orch.signalTokens('CreditCard'), 'card')).toBe(false);
@@ -2398,7 +2398,7 @@ describe('domain and security classification robustness (out-of-distribution rep
     expect(orch.matchesSignalPattern(orch.signalTokens('static-analysis runner'), 'static analysis')).toBe(true);
   });
 
-  it('does not classify commerce vocabulary (credit_card, gift_card, dashboard, return_authorization) as a gaming platform', () => {
+  it('does not classify commerce vocabulary (credit_card, gift_card, dashboard, return_authorization) as a gaming platform', async () => {
     const nodes: CASNode[] = [
       node({ id: 'cc', name: 'CreditCard', source: { file: 'app/models/spree/credit_card.rb' } }),
       node({ id: 'gc', name: 'GiftCard', source: { file: 'app/models/spree/gift_card.rb' } }),
@@ -2412,13 +2412,13 @@ describe('domain and security classification robustness (out-of-distribution rep
       node({ id: 'shipment', name: 'Shipment', source: { file: 'app/models/spree/shipment.rb' } }),
     ];
 
-    const purpose = orch.inferSystemPurpose([], [], [], nodes);
+    const purpose = await orch.inferSystemPurpose([], [], [], nodes);
 
     expect(purpose.primary_type).not.toBe('gaming-platform');
     expect(purpose.secondary_types || []).not.toContain('gaming-platform');
   });
 
-  it('still recognizes a real card game as a gaming platform with whole-token evidence', () => {
+  it('still recognizes a real card game as a gaming platform with whole-token evidence', async () => {
     const nodes: CASNode[] = [
       node({ id: 'game', name: 'Game', source: { file: 'src/game/game.ts' } }),
       node({ id: 'deck', name: 'Deck', source: { file: 'src/game/deck.ts' } }),
@@ -2428,12 +2428,12 @@ describe('domain and security classification robustness (out-of-distribution rep
       node({ id: 'board', name: 'GameBoard', source: { file: 'src/game/board.ts' } }),
     ];
 
-    const purpose = orch.inferSystemPurpose([], [], [], nodes);
+    const purpose = await orch.inferSystemPurpose([], [], [], nodes);
 
     expect(purpose.primary_type).toBe('gaming-platform');
   });
 
-  it('does not treat ReturnAuthorization domain models as authentication or authorization enforcement points', () => {
+  it('does not treat ReturnAuthorization domain models as authentication or authorization enforcement points', async () => {
     const nodes: CASNode[] = [
       node({ id: 'ra1', name: 'ReturnAuthorization', source: { file: 'app/models/spree/return_authorization.rb' }, subcategories: ['model'] }),
       node({ id: 'ra2', name: 'ReturnAuthorizationReason', source: { file: 'app/models/spree/return_authorization_reason.rb' } }),
@@ -2457,7 +2457,7 @@ describe('domain and security classification robustness (out-of-distribution rep
     expect(enforcementIds).toContain('ability');
   });
 
-  it('keeps genuine auth actors as enforcement points under token matching', () => {
+  it('keeps genuine auth actors as enforcement points under token matching', async () => {
     const nodes: CASNode[] = [
       node({ id: 'guard', name: 'JwtAuthGuard', type: 'guard', source: { file: 'src/auth/jwt-auth.guard.ts' } }),
       node({ id: 'authorizer', name: 'AuthorizationService', type: 'service', source: { file: 'src/auth/authorization.service.ts' } }),
@@ -2473,7 +2473,7 @@ describe('domain and security classification robustness (out-of-distribution rep
     expect(enforcementIds).toContain('policy');
   });
 
-  it('filters rails-ecosystem framework noise out of capability naming', () => {
+  it('filters rails-ecosystem framework noise out of capability naming', async () => {
     for (const token of ['turbo', 'stimulus', 'sprockets', 'actiontext', 'activestorage', 'activerecord', 'devise', 'sidekiq', 'hotwire', 'importmap']) {
       expect(orch.isGenericCapabilityToken(token)).toBe(true);
     }
@@ -2484,7 +2484,7 @@ describe('domain and security classification robustness (out-of-distribution rep
 });
 
 describe('capability noise floor and terminal capability labels', () => {
-  it('suppresses error, notice, and framework-plumbing capability names', () => {
+  it('suppresses error, notice, and framework-plumbing capability names', async () => {
     for (const name of [
       'Forbidden Workflow',
       'General Workflow',
@@ -2501,7 +2501,7 @@ describe('capability noise floor and terminal capability labels', () => {
     }
   });
 
-  it('keeps genuine commerce capability names', () => {
+  it('keeps genuine commerce capability names', async () => {
     for (const name of [
       'Orders Management',
       'Gift_cards Management',
@@ -2515,14 +2515,14 @@ describe('capability noise floor and terminal capability labels', () => {
     }
   });
 
-  it('labels terminal capabilities with the full domain phrase instead of a truncated first token', () => {
+  it('labels terminal capabilities with the full domain phrase instead of a truncated first token', async () => {
     const entity = (name: string): CASDataEntity => ({
       id: `entity_${name.toLowerCase()}`,
       name,
       lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] },
     } as CASDataEntity);
 
-    const capabilities = orch.buildTerminalCapabilities(
+    const capabilities = await orch.buildTerminalCapabilities(
       [entity('Wishlist'), entity('WishedItem')],
       [],
       [],
@@ -2540,14 +2540,14 @@ describe('capability noise floor and terminal capability labels', () => {
     expect(names.some((name: string) => /^Wished$/.test(name))).toBe(false);
   });
 
-  it('skips terminal capabilities whose domain duplicates an existing route domain in singular or plural form', () => {
+  it('skips terminal capabilities whose domain duplicates an existing route domain in singular or plural form', async () => {
     const entity = (name: string): CASDataEntity => ({
       id: `entity_${name.toLowerCase()}`,
       name,
       lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] },
     } as CASDataEntity);
 
-    const capabilities = orch.buildTerminalCapabilities(
+    const capabilities = await orch.buildTerminalCapabilities(
       [entity('Order'), entity('LineItem'), entity('StockItem'), entity('Stock')],
       [],
       [],
@@ -2564,7 +2564,7 @@ describe('capability noise floor and terminal capability labels', () => {
     expect(names).toContain('Stock');
   });
 
-  it('suppresses terminal helper clusters that have no entity or entry-point evidence', () => {
+  it('suppresses terminal helper clusters that have no entity or entry-point evidence', async () => {
     const helperNode = (name: string, file: string): CASNode => ({
       id: `node_${name}`,
       name,
@@ -2601,7 +2601,7 @@ describe('capability noise floor and terminal capability labels', () => {
       relationships: [],
     } as any;
 
-    const capabilities = orch.buildTerminalCapabilities([orderEntity], nodes, edges, new Set<string>());
+    const capabilities = await orch.buildTerminalCapabilities([orderEntity], nodes, edges, new Set<string>());
     const labels = capabilities.map((capability: any) => capability.structural_label);
     const names = capabilities.map((capability: { name: string }) => capability.name);
 
@@ -2639,7 +2639,7 @@ describe('evidence-driven security boundaries and summary', () => {
     handler: partial.handler,
   });
 
-  it('emits a tenant-isolation boundary only when tenant scoping evidence exists', () => {
+  it('emits a tenant-isolation boundary only when tenant scoping evidence exists', async () => {
     const tenantNodes = [
       node({ id: 'tenant-scope', name: 'set_current_tenant', type: 'method' }),
       node({ id: 'org-scope', name: 'organization_scope', type: 'method' }),
@@ -2653,7 +2653,7 @@ describe('evidence-driven security boundaries and summary', () => {
     expect(withoutTenant.map((b: any) => b.boundary_type)).not.toContain('tenant-isolation');
   });
 
-  it('does not treat Organization domain models as tenant isolation evidence', () => {
+  it('does not treat Organization domain models as tenant isolation evidence', async () => {
     const boundaries = orch.buildSecurityBoundaries([
       node({ id: 'org', name: 'Organization', type: 'entity' }),
       node({ id: 'account', name: 'Account', type: 'model' }),
@@ -2661,7 +2661,7 @@ describe('evidence-driven security boundaries and summary', () => {
     expect(boundaries.map((b: any) => b.boundary_type)).not.toContain('tenant-isolation');
   });
 
-  it('emits a rate-limiting boundary from throttle middleware evidence', () => {
+  it('emits a rate-limiting boundary from throttle middleware evidence', async () => {
     const boundaries = orch.buildSecurityBoundaries([
       node({ id: 'throttle', name: 'RequestThrottleMiddleware', type: 'middleware' }),
     ], []);
@@ -2670,7 +2670,7 @@ describe('evidence-driven security boundaries and summary', () => {
     expect(rateBoundary.enforcement_points[0].confidence).toBe('enforced');
   });
 
-  it('marks unresolved entry-point guards as assumed enforcement', () => {
+  it('marks unresolved entry-point guards as assumed enforcement', async () => {
     const nodes = [node({ id: 'auth-guard', name: 'JwtAuthGuard', type: 'guard' })];
     const entryPoints = [
       httpEntry({
@@ -2685,7 +2685,7 @@ describe('evidence-driven security boundaries and summary', () => {
     expect(confidences).toContain('assumed');
   });
 
-  it('does not mark guards as assumed when they resolve to enforcement nodes', () => {
+  it('does not mark guards as assumed when they resolve to enforcement nodes', async () => {
     const nodes = [node({ id: 'auth-guard', name: 'JwtAuthGuard', type: 'guard' })];
     const entryPoints = [
       httpEntry({
@@ -2698,7 +2698,7 @@ describe('evidence-driven security boundaries and summary', () => {
     expect(auth.enforcement_points.every((p: any) => p.confidence === 'enforced')).toBe(true);
   });
 
-  it('reports unguarded mutating entry points as missing enforcement and unprotected sensitive ops', () => {
+  it('reports unguarded mutating entry points as missing enforcement and unprotected sensitive ops', async () => {
     const nodes = [node({ id: 'auth-guard', name: 'JwtAuthGuard', type: 'guard' })];
     const entryPoints = [
       httpEntry({ id: 'ep-protected', method: 'POST', path: '/orders', security: { authenticated: true } }),
@@ -2715,7 +2715,7 @@ describe('evidence-driven security boundaries and summary', () => {
     expect(summary.assumed_vs_enforced.enforced).toBeGreaterThanOrEqual(1);
   });
 
-  it('does not classify public auth bootstrap mutations as missing auth', () => {
+  it('does not classify public auth bootstrap mutations as missing auth', async () => {
     const nodes = [node({ id: 'auth-guard', name: 'JwtAuthGuard', type: 'guard' })];
     const entryPoints = [
       httpEntry({ id: 'ep-login', source_node: 'login-handler', method: 'POST', path: '/auth/login' }),
@@ -2736,7 +2736,7 @@ describe('evidence-driven security boundaries and summary', () => {
     expect(summary.unprotected_sensitive_ops).toEqual(['open-handler']);
   });
 
-  it('reports zero unprotected sensitive ops when every mutating entry is guarded', () => {
+  it('reports zero unprotected sensitive ops when every mutating entry is guarded', async () => {
     const nodes = [node({ id: 'auth-guard', name: 'JwtAuthGuard', type: 'guard' })];
     const entryPoints = [
       httpEntry({ id: 'ep1', method: 'POST', path: '/orders', security: { authenticated: true } }),
@@ -2776,13 +2776,13 @@ describe('calibrated system health scoring', () => {
     overrides.runtime || emptyRuntime
   );
 
-  it('scores a clean repo healthy', () => {
+  it('scores a clean repo healthy', async () => {
     const health = buildHealth();
     expect(health.score).toBe(100);
     expect(health.status).toBe('healthy');
   });
 
-  it('keeps a production repo with small bounded risks out of critical', () => {
+  it('keeps a production repo with small bounded risks out of critical', async () => {
     const nodes = Array.from({ length: 500 }, (_, i) => node({ id: `n${i}`, name: `Node${i}` }));
     const complex = node({ id: 'hot', name: 'HotSpot', metadata: { complexity: { cyclomatic: 25 } } as any });
     const health = buildHealth({
@@ -2798,7 +2798,7 @@ describe('calibrated system health scoring', () => {
     expect(health.score).toBeGreaterThanOrEqual(50);
   });
 
-  it('penalizes extensive untested critical paths more than sparse ones', () => {
+  it('penalizes extensive untested critical paths more than sparse ones', async () => {
     const sparse = buildHealth({
       changeRisk: {
         high_risk_nodes: Array.from({ length: 100 }, (_, i) => `r${i}`),
@@ -2816,7 +2816,7 @@ describe('calibrated system health scoring', () => {
     expect(extensive.score).toBeLessThan(sparse.score);
   });
 
-  it('weighs incomplete implementation by its measured ratio', () => {
+  it('weighs incomplete implementation by its measured ratio', async () => {
     const partial = buildHealth({
       implementation: {
         ...{ complete_implementations: 50, partial_implementations: 50, stubs: 0, not_implemented: 0, deprecated: 0, experimental: 0 },
@@ -2834,7 +2834,7 @@ describe('calibrated system health scoring', () => {
     expect(partial.score).toBeLessThan(nearComplete.score);
   });
 
-  it('treats missing runtime telemetry as informational, not health-defining', () => {
+  it('treats missing runtime telemetry as informational, not health-defining', async () => {
     const health = buildHealth({
       runtime: { instrumentation: { missing_runtime_coverage: Array.from({ length: 100 }, (_, i) => `ep${i}`) } },
     });
@@ -2843,7 +2843,7 @@ describe('calibrated system health scoring', () => {
 });
 
 describe('language builtin exit-point exclusion from external services', () => {
-  it('drops PHP builtin External call exits from external services', () => {
+  it('drops PHP builtin External call exits from external services', async () => {
     const services = orch.buildExternalServices([], [
       exitPoint({ id: 'arr-filter', type: 'sdk', name: 'External call: array_filter' }),
       exitPoint({ id: 'arr-map', type: 'sdk', name: 'External call: array_map' }),
@@ -2877,8 +2877,8 @@ describe('content-management domain anchor (inferSystemPurpose)', () => {
     operations: [],
   });
 
-  it('classifies a page-tree CMS with revision and publishing vocabulary as content-management', () => {
-    const purpose = orch.inferSystemPurpose(
+  it('classifies a page-tree CMS with revision and publishing vocabulary as content-management', async () => {
+    const purpose = await orch.inferSystemPurpose(
       [
         httpEntry('e1', '/pages/1/unpublish/'),
         httpEntry('e2', '/pages/1/revisions/'),
@@ -2902,8 +2902,8 @@ describe('content-management domain anchor (inferSystemPurpose)', () => {
     expect(purpose.evidence.join(' ')).toContain('revision');
   });
 
-  it('does not classify a workflow engine without content entities as content-management', () => {
-    const purpose = orch.inferSystemPurpose(
+  it('does not classify a workflow engine without content entities as content-management', async () => {
+    const purpose = await orch.inferSystemPurpose(
       [
         httpEntry('e1', '/workflows/1/approve/'),
         httpEntry('e2', '/tasks/1/submit/'),
@@ -2915,8 +2915,8 @@ describe('content-management domain anchor (inferSystemPurpose)', () => {
     expect(purpose.primary_type).not.toBe('content-management');
   });
 
-  it('does not classify a commerce system without revision vocabulary as content-management', () => {
-    const purpose = orch.inferSystemPurpose(
+  it('does not classify a commerce system without revision vocabulary as content-management', async () => {
+    const purpose = await orch.inferSystemPurpose(
       [
         httpEntry('e1', '/cart'),
         httpEntry('e2', '/checkout'),
@@ -2932,7 +2932,7 @@ describe('content-management domain anchor (inferSystemPurpose)', () => {
 });
 
 describe('extractProjectTextSignal: bulk content corpora do not feed domain evidence', () => {
-  it('ignores fleet vocabulary inside content/*.md articles of a learning platform', () => {
+  it('ignores fleet vocabulary inside content/*.md articles of a learning platform', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-content-corpus-'));
     try {
       fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ name: 'knowledgebase' }));
@@ -2969,7 +2969,7 @@ describe('vendor-lib terminal capabilities require product evidence', () => {
     metadata: partial.metadata || {},
   } as CASNode);
 
-  it('drops an evidence-free Jito Capability seeded from a vendor SDK wrapper', () => {
+  it('drops an evidence-free Jito Capability seeded from a vendor SDK wrapper', async () => {
     const nodes: CASNode[] = [
       vendorNode({ id: 'jito-service', name: 'JitoService', type: 'service', source: { file: 'src/jito.rs' } }),
       vendorNode({ id: 'caller', name: 'BotRunnerHelper', type: 'class', source: { file: 'src/runner.rs' } }),
@@ -2978,28 +2978,28 @@ describe('vendor-lib terminal capabilities require product evidence', () => {
       { id: 'e1', source: 'caller', target: 'jito-service', type: 'calls' },
     ] as CASEdge[];
 
-    const capabilities = orch.buildTerminalCapabilities([], nodes, edges, new Set<string>());
+    const capabilities = await orch.buildTerminalCapabilities([], nodes, edges, new Set<string>());
     const labels = capabilities.map((capability: any) => capability.structural_label);
     // The vendor-SDK drop keys off the "Capability" structural label; assert it
     // never survives as a capability at all.
     expect(labels).not.toContain('Jito Capability');
   });
 
-  it('keeps vendor-token capabilities that carry product evidence', () => {
+  it('keeps vendor-token capabilities that carry product evidence', async () => {
     const entity: CASDataEntity = {
       id: 'entity_jito_bundle',
       name: 'JitoBundle',
       lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] },
     } as CASDataEntity;
 
-    const capabilities = orch.buildTerminalCapabilities([entity], [], [], new Set<string>());
+    const capabilities = await orch.buildTerminalCapabilities([entity], [], [], new Set<string>());
     const labels = capabilities.map((capability: any) => capability.structural_label);
     const names = capabilities.map((capability: { name: string }) => capability.name);
     expect(labels).toContain('Jito Bundle Management');
     expect(names).toContain('Jito Bundle');
   });
 
-  it('keeps non-vendor evidence-free capabilities untouched', () => {
+  it('keeps non-vendor evidence-free capabilities untouched', async () => {
     const nodes: CASNode[] = [
       vendorNode({ id: 'pricing-service', name: 'PricingService', type: 'service', source: { file: 'src/pricing.rs' } }),
       vendorNode({ id: 'caller2', name: 'BotRunnerHelper', type: 'class', source: { file: 'src/runner.rs' } }),
@@ -3008,12 +3008,12 @@ describe('vendor-lib terminal capabilities require product evidence', () => {
       { id: 'e1', source: 'caller2', target: 'pricing-service', type: 'calls' },
     ] as CASEdge[];
 
-    const capabilities = orch.buildTerminalCapabilities([], nodes, edges, new Set<string>());
+    const capabilities = await orch.buildTerminalCapabilities([], nodes, edges, new Set<string>());
     const names = capabilities.map((capability: { name: string }) => capability.name);
     expect(names.some((name: string) => name.startsWith('Pricing'))).toBe(true);
   });
 
-  it('drops terminal single-token leftovers already covered by composed capabilities', () => {
+  it('drops terminal single-token leftovers already covered by composed capabilities', async () => {
     const nodes: CASNode[] = [
       vendorNode({ id: 'balance-service', name: 'BalanceService', type: 'service', source: { file: 'src/balance.ts' } }),
       vendorNode({ id: 'balance-caller', name: 'TokenBalanceDiscovery', type: 'service', source: { file: 'src/token-balance.ts' } }),
@@ -3022,12 +3022,12 @@ describe('vendor-lib terminal capabilities require product evidence', () => {
       { id: 'e1', source: 'balance-caller', target: 'balance-service', type: 'calls' },
     ] as CASEdge[];
 
-    const capabilities = orch.buildTerminalCapabilities([], nodes, edges, new Set<string>(['token-balance']));
+    const capabilities = await orch.buildTerminalCapabilities([], nodes, edges, new Set<string>(['token-balance']));
     const names = capabilities.map((capability: { name: string }) => capability.name);
     expect(names).not.toContain('Balance Capability');
   });
 
-  it('drops entrypoint single-token leftovers already covered by composed capabilities', () => {
+  it('drops entrypoint single-token leftovers already covered by composed capabilities', async () => {
     const covered = {
       name: 'Token Balance Discovery',
       related_domains: ['token-balance'],
@@ -3062,7 +3062,7 @@ describe('linkRouteHandlers: handlerCallCandidates fallback for inline registrat
     } as unknown as CASNode;
   }
 
-  it('links an entry point to the function named in handlerCallCandidates when no direct handler match exists', () => {
+  it('links an entry point to the function named in handlerCallCandidates when no direct handler match exists', async () => {
     const nodes: CASNode[] = [
       { id: 'entry_mcp_tool_get_summary', name: 'get_summary', type: 'mcp_tool', source: { file: 'src/server.ts', line: 10, end_line: 10 } } as unknown as CASNode,
       functionNode('fn_buildSummary', 'buildSummary', 'src/query.ts'),
@@ -3094,7 +3094,7 @@ describe('linkRouteHandlers: handlerCallCandidates fallback for inline registrat
     expect((edge!.metadata as any)?.attributes?.resolution).toBe('handler_call_candidate');
   });
 
-  it('does not fabricate an edge when a candidate name is ambiguous across multiple functions', () => {
+  it('does not fabricate an edge when a candidate name is ambiguous across multiple functions', async () => {
     const nodes: CASNode[] = [
       { id: 'entry_mcp_tool_do_thing', name: 'do_thing', type: 'mcp_tool', source: { file: 'src/server.ts', line: 20, end_line: 20 } } as unknown as CASNode,
       functionNode('fn_helper_a', 'helper', 'src/a.ts'),
@@ -3123,7 +3123,7 @@ describe('linkRouteHandlers: handlerCallCandidates fallback for inline registrat
     expect(edges.length).toBe(0);
   });
 
-  it('does not add an edge when handlerCallCandidates is absent (no fabrication without evidence)', () => {
+  it('does not add an edge when handlerCallCandidates is absent (no fabrication without evidence)', async () => {
     const nodes: CASNode[] = [
       { id: 'entry_mcp_tool_unresolvable', name: 'unresolvable', type: 'mcp_tool', source: { file: 'src/server.ts', line: 30, end_line: 30 } } as unknown as CASNode,
       functionNode('fn_unrelated', 'unrelated', 'src/z.ts'),
@@ -3160,7 +3160,7 @@ describe('orchestrator technologies.languages[].files (real file count, not AST-
     return { id, name: id, type: 'function', source: { file, line: 1, end_line: 2 } } as unknown as CASNode;
   }
 
-  it('countDistinctSourceFiles dedupes many nodes down to the real file count', () => {
+  it('countDistinctSourceFiles dedupes many nodes down to the real file count', async () => {
     // 3 files, but 12 nodes total (4 nodes per file) - files must be 3, not 12.
     const nodes: CASNode[] = [
       nodeInFile('n1', 'src/a.ts'), nodeInFile('n2', 'src/a.ts'), nodeInFile('n3', 'src/a.ts'), nodeInFile('n4', 'src/a.ts'),
@@ -3172,7 +3172,7 @@ describe('orchestrator technologies.languages[].files (real file count, not AST-
     expect(nodes.length).toBe(12);
   });
 
-  it('ignores nodes without a source file rather than fabricating a count for them', () => {
+  it('ignores nodes without a source file rather than fabricating a count for them', async () => {
     const nodes: CASNode[] = [
       nodeInFile('n1', 'src/a.ts'),
       { id: 'n2', name: 'synthetic', type: 'function' } as unknown as CASNode, // no source.file
@@ -3180,12 +3180,12 @@ describe('orchestrator technologies.languages[].files (real file count, not AST-
     expect(orch.countDistinctSourceFiles(nodes)).toBe(1);
   });
 
-  it('returns 0 for an empty or undefined node list', () => {
+  it('returns 0 for an empty or undefined node list', async () => {
     expect(orch.countDistinctSourceFiles([])).toBe(0);
     expect(orch.countDistinctSourceFiles(undefined)).toBe(0);
   });
 
-  it('extractTechnologies reports files_created (distinct files), not nodes_created (AST nodes)', () => {
+  it('extractTechnologies reports files_created (distinct files), not nodes_created (AST nodes)', async () => {
     // Simulates a language contribution with 100 AST nodes spread across 7 files.
     const contributions = [{
       analyzer_id: 'typescript-javascript',
@@ -3205,7 +3205,7 @@ describe('orchestrator technologies.languages[].files (real file count, not AST-
     expect(result.languages[0].files).not.toBe(100);
   });
 
-  it('falls back to nodes_created only when files_created is absent (legacy-contribution safety net)', () => {
+  it('falls back to nodes_created only when files_created is absent (legacy-contribution safety net)', async () => {
     const contributions = [{
       analyzer_id: 'legacy',
       analyzer_name: 'Legacy Analyzer',
@@ -3243,7 +3243,7 @@ describe('orchestrator dedupeUtilNodeDuplicates (2026-07-04 references-idshapes)
     } as CASNode;
   }
 
-  it('drops a util-shaped duplicate node and redirects its edges onto the canonical node, matching across absolute vs relative source.file', () => {
+  it('drops a util-shaped duplicate node and redirects its edges onto the canonical node, matching across absolute vs relative source.file', async () => {
     const canonical = node({
       id: 'variable_src_services_api_config_ts_API_CONFIG_0',
       name: 'API_CONFIG',
@@ -3276,7 +3276,7 @@ describe('orchestrator dedupeUtilNodeDuplicates (2026-07-04 references-idshapes)
     expect(edges[0].target).toBe(canonical.id);
   });
 
-  it('leaves distinct util nodes for genuinely different declarations untouched', () => {
+  it('leaves distinct util nodes for genuinely different declarations untouched', async () => {
     const a = node({ id: 'variable_a', name: 'FOO', source: { file: 'src/a.ts' } });
     const b = node({
       id: 'util_b',
@@ -3293,7 +3293,7 @@ describe('orchestrator dedupeUtilNodeDuplicates (2026-07-04 references-idshapes)
     expect(nodes.map((n: CASNode) => n.id).sort()).toEqual(['util_b', 'variable_a']);
   });
 
-  it('collapses two util-only nodes for the same (file, name) with no canonical twin, keeping the first as survivor', () => {
+  it('collapses two util-only nodes for the same (file, name) with no canonical twin, keeping the first as survivor', async () => {
     const utilA = node({
       id: 'util_first',
       name: 'HELPER',
@@ -3356,7 +3356,7 @@ describe('entity-extraction gaps from real-repo onboarding (mtg/openclaw/hercule
       }));
     };
 
-    it('does not exclude the frontend dir when it IS the whole product (docs-only root)', () => {
+    it('does not exclude the frontend dir when it IS the whole product (docs-only root)', async () => {
       writeFrontendManifest(path.join(root, 'app'));
       fs.writeFileSync(path.join(root, 'README.md'), '# docs only');
 
@@ -3365,14 +3365,14 @@ describe('entity-extraction gaps from real-repo onboarding (mtg/openclaw/hercule
       expect(orch.isPrimaryProductPathForProject('app/prisma/schema.prisma', root)).toBe(true);
     });
 
-    it('still excludes a frontend dir bundled into a root-manifest product', () => {
+    it('still excludes a frontend dir bundled into a root-manifest product', async () => {
       writeFrontendManifest(path.join(root, 'web'));
       fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ name: 'backend', dependencies: { express: '^4.0.0' } }));
 
       expect(orch.getBundledFrontendRoots(root)).toEqual([path.join(root, 'web')]);
     });
 
-    it('still excludes a frontend dir when a sibling backend package exists', () => {
+    it('still excludes a frontend dir when a sibling backend package exists', async () => {
       writeFrontendManifest(path.join(root, 'web'));
       fs.mkdirSync(path.join(root, 'server'), { recursive: true });
       fs.writeFileSync(path.join(root, 'server', 'go.mod'), 'module example.com/server');
@@ -3381,7 +3381,7 @@ describe('entity-extraction gaps from real-repo onboarding (mtg/openclaw/hercule
     });
   });
 
-  it('surfaces Prisma schema models as persisted data entities with analyzer-parsed fields', () => {
+  it('surfaces Prisma schema models as persisted data entities with analyzer-parsed fields', async () => {
     const nodes: CASNode[] = [
       node({
         id: 'entity_prisma_deck',
@@ -3411,7 +3411,7 @@ describe('entity-extraction gaps from real-repo onboarding (mtg/openclaw/hercule
   });
 
   describe('operation-shaped and format-token shapes stay out of the entity set (openclaw gap)', () => {
-    it('excludes a params shape whose core noun is a callable in the graph', () => {
+    it('excludes a params shape whose core noun is a callable in the graph', async () => {
       const nodes: CASNode[] = [
         node({
           id: 'type_handle_commands_params',
@@ -3437,7 +3437,7 @@ describe('entity-extraction gaps from real-repo onboarding (mtg/openclaw/hercule
       expect(names).not.toContain('HandleCommands');
     });
 
-    it('excludes serialization-format tokens left over from suffix stripping', () => {
+    it('excludes serialization-format tokens left over from suffix stripping', async () => {
       const nodes: CASNode[] = [
         node({
           id: 'type_json_schema',
@@ -3457,7 +3457,7 @@ describe('entity-extraction gaps from real-repo onboarding (mtg/openclaw/hercule
     // api-response shapes surfaces its full DTO set — openclaw). The capability
     // purpose gate already recognized these shapes; the same recognition now runs
     // at the entity-surfacing layer, gated on entity KIND + name shape.
-    it('drops infra/runtime/lifecycle-shaped non-persisted DTOs but keeps domain DTOs (openclaw fallback)', () => {
+    it('drops infra/runtime/lifecycle-shaped non-persisted DTOs but keeps domain DTOs (openclaw fallback)', async () => {
       const nodes: CASNode[] = [
         // Runtime/lifecycle plumbing shapes — value-object DTOs, no persisted /
         // api-response evidence → must NOT surface as domain data entities.
@@ -3485,7 +3485,7 @@ describe('entity-extraction gaps from real-repo onboarding (mtg/openclaw/hercule
       expect(names).toContain('Profile');
     });
 
-    it('keeps an infra-NAMED shape when it carries persisted-entity evidence (kind exemption)', () => {
+    it('keeps an infra-NAMED shape when it carries persisted-entity evidence (kind exemption)', async () => {
       const nodes: CASNode[] = [
         // A persisted ORM entity that happens to be named with an infra token —
         // the gate is KIND + shape, so durable-state evidence overrides the name.
@@ -3497,7 +3497,7 @@ describe('entity-extraction gaps from real-repo onboarding (mtg/openclaw/hercule
       expect(entities.find((e: any) => e.name === 'WorkerRegistry')!.kind).toBe('persisted-entity');
     });
 
-    it('never blanks the entity model when EVERY shape reads as infrastructure', () => {
+    it('never blanks the entity model when EVERY shape reads as infrastructure', async () => {
       const nodes: CASNode[] = [
         node({ id: 'dto_daemon2', name: 'DaemonAction', type: 'dto', source: { file: 'src/runtime/daemon.ts', line: 1 } }),
         node({ id: 'p_d2', name: 'signal', type: 'property', parent: 'dto_daemon2', source: { file: 'src/runtime/daemon.ts', line: 2 } }),
@@ -3510,7 +3510,7 @@ describe('entity-extraction gaps from real-repo onboarding (mtg/openclaw/hercule
     });
   });
 
-  it('dedupes same-named ORM entities into one richest-evidence entry with merged lifecycle (hercules gap)', () => {
+  it('dedupes same-named ORM entities into one richest-evidence entry with merged lifecycle (hercules gap)', async () => {
     const nodes: CASNode[] = [
       node({
         id: 'model_fleet_user',
@@ -3548,24 +3548,24 @@ describe('entity-extraction gaps from real-repo onboarding (mtg/openclaw/hercule
 });
 
 describe('repairDanglingSentenceEndings', () => {
-  it('strips a trailing dangling preposition left by a truncated clause (the accepted Klauro description class)', () => {
+  it('strips a trailing dangling preposition left by a truncated clause (the accepted Klauro description class)', async () => {
     const text = 'Klauro is a codebase analysis platform built as a monorepo. It stores telemetry data and graph evidence for.';
     expect(orch.repairDanglingSentenceEndings(text)).toBe(
       'Klauro is a codebase analysis platform built as a monorepo. It stores telemetry data and graph evidence.'
     );
   });
 
-  it('strips stacked dangling function words back to the last content word', () => {
+  it('strips stacked dangling function words back to the last content word', async () => {
     expect(orch.repairDanglingSentenceEndings('The service records analysis runs and exposes them to agents with the.'))
       .toBe('The service records analysis runs and exposes them to agents.');
   });
 
-  it('drops a sentence gutted by the repair when other sentences remain', () => {
+  it('drops a sentence gutted by the repair when other sentences remain', async () => {
     expect(orch.repairDanglingSentenceEndings('The service runs scheduled analysis jobs across every repository. Built for and with the.'))
       .toBe('The service runs scheduled analysis jobs across every repository.');
   });
 
-  it('leaves clean prose untouched', () => {
+  it('leaves clean prose untouched', async () => {
     const clean = 'The service records analysis runs. Agents query the resulting graph to plan changes.';
     expect(orch.repairDanglingSentenceEndings(clean)).toBe(clean);
   });
@@ -3601,7 +3601,7 @@ describe('evidence-based capability category and criticality (no keyword doctrin
     capNode({ id: 'g3', name: 'serializeMember', type: 'function', metadata: { subcategories: ['auth', 'auth_strategy'] } as any }),
   ];
 
-  it('identity-mechanism capability on a NON-auth repo is supporting, never core/high', () => {
+  it('identity-mechanism capability on a NON-auth repo is supporting, never core/high', async () => {
     const userEntity = capEntity({ name: 'User' });
     const category = orch.inferTerminalCapabilityCategory(
       'user', authMechanismNodes, [userEntity], { identityShare: 0.02, observabilityShare: 0 });
@@ -3611,14 +3611,14 @@ describe('evidence-based capability category and criticality (no keyword doctrin
     expect(criticality).not.toBe('critical');
   });
 
-  it('the same identity shape on an auth PRODUCT (auth-analyzer-heavy repo evidence) may be core', () => {
+  it('the same identity shape on an auth PRODUCT (auth-analyzer-heavy repo evidence) may be core', async () => {
     const sessionResponse = capEntity({ name: 'SessionToken', kind: 'api-response', kind_source: 'framework-evidence' });
     const category = orch.inferTerminalCapabilityCategory(
       'user', authMechanismNodes, [sessionResponse], { identityShare: 0.4, observabilityShare: 0 });
     expect(category).toBe('core');
   });
 
-  it("categorizes a pricing capability by evidence, not the retired 'price' keyword", () => {
+  it("categorizes a pricing capability by evidence, not the retired 'price' keyword", async () => {
     // Bare 'price' key with one thin helper node: the retired keyword list
     // forced core (why a Django pharma portal shipped 12/12 core).
     const thin = orch.inferTerminalCapabilityCategory(
@@ -3634,7 +3634,7 @@ describe('evidence-based capability category and criticality (no keyword doctrin
     expect(priced).toBe('core');
   });
 
-  it('observability-instrumentation groups are supporting on non-observability products', () => {
+  it('observability-instrumentation groups are supporting on non-observability products', async () => {
     const otelNodes = [
       capNode({ id: 'o1', name: 'span: analyze', type: 'function', metadata: { subcategories: ['observability-instrumentation', 'span', 'otel'] } as any }),
       capNode({ id: 'o2', name: 'traces.ts observability surface', type: 'module', metadata: { subcategories: ['observability-module'] } as any }),
@@ -3643,7 +3643,7 @@ describe('evidence-based capability category and criticality (no keyword doctrin
       'trace', otelNodes, [], { identityShare: 0, observabilityShare: 0.01 })).toBe('supporting');
   });
 
-  it('bare entity possession without lifecycle breadth is not core (honest distributions)', () => {
+  it('bare entity possession without lifecycle breadth is not core (honest distributions)', async () => {
     // The retired rule was "any group with entities → core", which produced
     // 100%-core capability sets. A dangling DTO with no operating nodes is
     // not proof of product value.
@@ -3652,7 +3652,7 @@ describe('evidence-based capability category and criticality (no keyword doctrin
       { identityShare: 0, observabilityShare: 0 })).toBe('supporting');
   });
 
-  it('no hardcoded category keyword list or name-based criticality boost remains (grep)', () => {
+  it('no hardcoded category keyword list or name-based criticality boost remains (grep)', async () => {
     const source = fs.readFileSync(path.join(__dirname, '../../analyzer/core/orchestrator.ts'), 'utf8');
     // The crypto-benchmark leftover core list (trade|…|bundler|price|sol → core).
     expect(source).not.toContain('trade|token-balance|market-data');
@@ -3682,7 +3682,7 @@ describe('capability hygiene: entity-set dedup', () => {
     criticality: string; criticality_factors: string[];
   };
 
-  it('merges verb-variant capabilities over the identical entity set, keeping the core-most copy and merging evidence', () => {
+  it('merges verb-variant capabilities over the identical entity set, keeping the core-most copy and merging evidence', async () => {
     // kontinuum live case: "Tracks task reports" (core) + "Provides task
     // reports" (supporting), both anchored on the single entity TaskReport.
     // Entity refs deliberately differ in representation (id vs name) to prove
@@ -3707,7 +3707,7 @@ describe('capability hygiene: entity-set dedup', () => {
     expect(merged[0].related_domains.sort()).toEqual(['report', 'task']);
   });
 
-  it('merges a subset-entity capability with no distinct operations into the superset', () => {
+  it('merges a subset-entity capability with no distinct operations into the superset', async () => {
     const merged = orch.dedupeSystemCapabilitiesByName([
       capFixture({
         name: 'Manages user economy transactions',
@@ -3720,7 +3720,7 @@ describe('capability hygiene: entity-set dedup', () => {
     expect(merged[0].name).toBe('Manages user economy transactions');
   });
 
-  it('keeps a subset-entity capability that carries distinct operations', () => {
+  it('keeps a subset-entity capability that carries distinct operations', async () => {
     const merged = orch.dedupeSystemCapabilitiesByName([
       capFixture({ name: 'Manages orders', related_entities: ['Order', 'OrderLine'] }),
       capFixture({
@@ -3731,7 +3731,7 @@ describe('capability hygiene: entity-set dedup', () => {
     expect(merged).toHaveLength(2);
   });
 
-  it('never set-merges capabilities with no related entities', () => {
+  it('never set-merges capabilities with no related entities', async () => {
     const merged = orch.dedupeSystemCapabilitiesByName([
       capFixture({ name: 'Health checks' }),
       capFixture({ name: 'Log rotation' }),
@@ -3741,7 +3741,7 @@ describe('capability hygiene: entity-set dedup', () => {
 });
 
 describe('capability hygiene: code-artifact entity filter (evidence-first)', () => {
-  it('flags infra-role head nouns only', () => {
+  it('flags infra-role head nouns only', async () => {
     expect(orch.isCodeArtifactRoleName('RegisterTelegramHandler')).toBe(true);
     expect(orch.isCodeArtifactRoleName('ChannelHandler')).toBe(true);
     expect(orch.isCodeArtifactRoleName('InMemoryMemoryGraphAdapter')).toBe(true);
@@ -3753,7 +3753,7 @@ describe('capability hygiene: code-artifact entity filter (evidence-first)', () 
     expect(orch.isCodeArtifactRoleName('HandlerMetrics')).toBe(false);
   });
 
-  it('flags the widened suffix + verb-callable + internal-role artifact shapes (live openclaw/kontinuum)', () => {
+  it('flags the widened suffix + verb-callable + internal-role artifact shapes (live openclaw/kontinuum)', async () => {
     // Suffix roles widened beyond the original set.
     expect(orch.isCodeArtifactRoleName('HandleDirectiveOnlyCore')).toBe(true); // Core (also Handle-prefixed)
     expect(orch.isCodeArtifactRoleName('AckReactionGate')).toBe(true);        // Gate
@@ -3775,7 +3775,7 @@ describe('capability hygiene: code-artifact entity filter (evidence-first)', () 
     expect(orch.isCodeArtifactRoleName('OrderContainer')).toBe(true);  // flagged by name; kind-gate keeps a persisted OrderContainer at the call site
   });
 
-  it('derive path drops an artifact shape without persistence evidence, keeps one WITH ORM evidence', () => {
+  it('derive path drops an artifact shape without persistence evidence, keeps one WITH ORM evidence', async () => {
     const shape = (name: string, id: string, extra: Record<string, unknown> = {}): CASNode => ({
       id, name, type: 'interface',
       source: { file: `src/types/${name.toLowerCase()}.ts`, line: 1 },
@@ -3800,23 +3800,23 @@ describe('capability hygiene: code-artifact entity filter (evidence-first)', () 
     expect(names).toContain('TaskReport'); // ordinary domain shape untouched
   });
 
-  it('a code-artifact entity without persistence evidence never seeds a terminal capability', () => {
+  it('a code-artifact entity without persistence evidence never seeds a terminal capability', async () => {
     const artifactEntity: CASDataEntity = {
       id: 'entity_registertelegramhandler', name: 'RegisterTelegramHandler',
       kind: 'value-object', kind_source: 'framework-evidence',
       lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] },
     } as CASDataEntity;
-    const capabilities = orch.buildTerminalCapabilities([artifactEntity], [], [], new Set<string>());
+    const capabilities = await orch.buildTerminalCapabilities([artifactEntity], [], [], new Set<string>());
     expect(capabilities).toHaveLength(0);
   });
 
-  it('a role-suffixed entity WITH persistence evidence still anchors a capability', () => {
+  it('a role-suffixed entity WITH persistence evidence still anchors a capability', async () => {
     const persistedEntity: CASDataEntity = {
       id: 'entity_orderhandler', name: 'OrderHandler',
       kind: 'persisted-entity', kind_source: 'framework-evidence',
       lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] },
     } as CASDataEntity;
-    const capabilities = orch.buildTerminalCapabilities([persistedEntity], [], [], new Set<string>());
+    const capabilities = await orch.buildTerminalCapabilities([persistedEntity], [], [], new Set<string>());
     expect(capabilities.length).toBeGreaterThan(0);
   });
 });
@@ -3836,7 +3836,7 @@ describe('capability hygiene: post-AI-catalog reconciliation (real hosted-CAS de
     lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] },
   });
 
-  it('FLAGSHIP: re-injects a behavior-surface candidate the AI catalog dropped (Klauro 207-tool MCP surface)', () => {
+  it('FLAGSHIP: re-injects a behavior-surface candidate the AI catalog dropped (Klauro 207-tool MCP surface)', async () => {
     const cataloged = [
       cap({ name: 'Surfaces codebase analysis results', category: 'core', criticality: 'high', related_entities: ['Codebase'] }),
       cap({ name: 'Provides codebase analysis results', category: 'core', criticality: 'high', related_entities: ['AnalysisResult'] }),
@@ -3856,7 +3856,7 @@ describe('capability hygiene: post-AI-catalog reconciliation (real hosted-CAS de
     expect(out.some((c: any) => c.name === 'Surfaces codebase analysis results')).toBe(true);
   });
 
-  it('FLAGSHIP: does NOT re-inject when the catalog already covers that surface subject', () => {
+  it('FLAGSHIP: does NOT re-inject when the catalog already covers that surface subject', async () => {
     const cataloged = [cap({ name: 'Exposes MCP tools to agents', category: 'core', related_entities: ['Codebase'], related_domains: ['mcp-tool'] })];
     const behaviorCandidate = cap({
       name: 'Mcp Tool Surface', structural_label: 'Mcp Tool Surface',
@@ -3866,7 +3866,7 @@ describe('capability hygiene: post-AI-catalog reconciliation (real hosted-CAS de
     expect(out.filter((c: any) => /mcp/i.test(c.name))).toHaveLength(1); // no duplicate surface
   });
 
-  it('PURPOSE GATE: drops infra/runtime-only capabilities, keeps product ones (openclaw)', () => {
+  it('PURPOSE GATE: drops infra/runtime-only capabilities, keeps product ones (openclaw)', async () => {
     const dataEntities = [
       entity('RestartSentinel', 'request-dto'), entity('RuntimeInfo', 'request-dto'),
       entity('DaemonAction', 'request-dto'), entity('SpawnBase', 'request-dto'),
@@ -3894,14 +3894,14 @@ describe('capability hygiene: post-AI-catalog reconciliation (real hosted-CAS de
     expect(names).not.toContain('Manages System presence');
   });
 
-  it('PURPOSE GATE: an infra-shaped name with PERSISTED evidence is kept (product record)', () => {
+  it('PURPOSE GATE: an infra-shaped name with PERSISTED evidence is kept (product record)', async () => {
     const dataEntities = [entity('RuntimeConfig', 'persisted-entity')];
     const cataloged = [cap({ name: 'Manages runtime config', category: 'core', related_entities: ['RuntimeConfig'] })];
     const out = orch.reconcileCatalogedCapabilities(cataloged, [], dataEntities);
     expect(out.map((c: any) => c.name)).toContain('Manages runtime config');
   });
 
-  it('DEDUP: collapses verb-variant near-dups on the same entity set (Klauro telemetry/connections)', () => {
+  it('DEDUP: collapses verb-variant near-dups on the same entity set (Klauro telemetry/connections)', async () => {
     const cataloged = [
       cap({ name: 'Monitors codebase telemetry', related_entities: ['TelemetryData'] }),
       cap({ name: 'Manages codebase telemetry', related_entities: ['TelemetryData'] }),
@@ -3965,7 +3965,7 @@ describe('comprehension-input gates: test/fixture sources never seed meaning (li
     entryPoint('ep_fixture', 'apps/mcp-server/fixtures/nestjs-schedule/scan.service.ts', 'fixture-handler'),
   ];
 
-  it('excludes fixture/test-path journeys from comprehension inputs while the journey list itself is untouched', () => {
+  it('excludes fixture/test-path journeys from comprehension inputs while the journey list itself is untouched', async () => {
     const journeys = [
       journey('journey_product', 'ep_product', 'product-handler'),
       journey('journey_entry_mcp_tool_do_thing_integration_test_ts', 'ep_test', 'test-handler'),
@@ -3977,7 +3977,7 @@ describe('comprehension-input gates: test/fixture sources never seed meaning (li
     expect(journeys).toHaveLength(3);
   });
 
-  it('falls back to the handler node path when the entry point is unknown, and keeps journeys with no source evidence', () => {
+  it('falls back to the handler node path when the entry point is unknown, and keeps journeys with no source evidence', async () => {
     const journeys = [
       journey('journey_orphan_test', 'ep_unknown', 'test-handler'),
       journey('journey_orphan_product', 'ep_unknown', 'product-handler'),
@@ -3987,7 +3987,7 @@ describe('comprehension-input gates: test/fixture sources never seed meaning (li
     expect(filtered.map((j: any) => j.id)).toEqual(['journey_orphan_product', 'journey_no_evidence']);
   });
 
-  it('excludes fixture-sourced data entities from comprehension entity seeds', () => {
+  it('excludes fixture-sourced data entities from comprehension entity seeds', async () => {
     const entities = [
       {
         id: 'entity_order', name: 'Order', schema_source: 'src/orders/order.entity.ts',
@@ -4006,7 +4006,7 @@ describe('comprehension-input gates: test/fixture sources never seed meaning (li
     expect(filtered.map((e: any) => e.id)).toEqual(['entity_order']);
   });
 
-  it('framework list for the narrative excludes fixture-sourced, adapter-shim, and library-category frameworks', () => {
+  it('framework list for the narrative excludes fixture-sourced, adapter-shim, and library-category frameworks', async () => {
     // Only framework-type analyzers contribute a framework NAME (drops library
     // category labels); the evidence must be product-path (drops fixture apps and
     // test files); and it must be a real application surface (drops adapter shims —
@@ -4070,7 +4070,7 @@ describe('terminal-outputs prompt fact is kind-filtered (no raw node names as ou
     lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] },
   } as unknown as CASDataEntity);
 
-  it('keeps api-response/persisted entities and drops raw node names and non-output kinds', () => {
+  it('keeps api-response/persisted entities and drops raw node names and non-output kinds', async () => {
     const facts = factsWith([
       entity('AssetAnalysis', 'api-response'),
       entity('OrderQuery', 'request-dto'),
@@ -4082,14 +4082,14 @@ describe('terminal-outputs prompt fact is kind-filtered (no raw node names as ou
     expect(outputs.some(o => o.startsWith('OrderQuery'))).toBe(false);
   });
 
-  it('gives an entity with unknown kind the benefit of the doubt, but never an unresolved node name', () => {
+  it('gives an entity with unknown kind the benefit of the doubt, but never an unresolved node name', async () => {
     const facts = factsWith([entity('AssetAnalysis', undefined)]);
     const outputs = (facts.terminalOutputs as string[]) || [];
     expect(outputs.some(o => o.startsWith('AssetAnalysis'))).toBe(true);
     expect(outputs.some(o => o.startsWith('GraphExplorer'))).toBe(false);
   });
 
-  it('passes the ranked list through unchanged when no entity catalog exists to resolve against', () => {
+  it('passes the ranked list through unchanged when no entity catalog exists to resolve against', async () => {
     const facts = factsWith([]);
     const outputs = (facts.terminalOutputs as string[]) || [];
     expect(outputs.some(o => o.startsWith('AssetAnalysis'))).toBe(true);
@@ -4098,22 +4098,22 @@ describe('terminal-outputs prompt fact is kind-filtered (no raw node names as ou
 });
 
 describe('stripped-sentence grammar guard and repetition collapse (live mtg/hercules defects)', () => {
-  it('repairs the live dangling-clause stump "...graph evidence for."', () => {
+  it('repairs the live dangling-clause stump "...graph evidence for."', async () => {
     expect(orch.repairStrippedSentenceGrammar('It works by providing telemetry data and graph evidence for.'))
       .toBe('It works by providing telemetry data and graph evidence.');
   });
 
-  it('repairs the live broken-coordination stump "a robust and solution"', () => {
+  it('repairs the live broken-coordination stump "a robust and solution"', async () => {
     expect(orch.repairStrippedSentenceGrammar('The service offers a robust and solution.'))
       .toBe('The service offers a robust solution.');
   });
 
-  it('drops a sentence that cannot be restored to clause shape when other sentences remain', () => {
+  it('drops a sentence that cannot be restored to clause shape when other sentences remain', async () => {
     const text = 'The service records analysis runs for agents. Providing a the and.';
     expect(orch.repairStrippedSentenceGrammar(text)).toBe('The service records analysis runs for agents.');
   });
 
-  it('sanitizeAIInterpretation no longer manufactures a dangling "for" from a bare "insights"', () => {
+  it('sanitizeAIInterpretation no longer manufactures a dangling "for" from a bare "insights"', async () => {
     const purpose = { primary_domain: 'order-management', core_concepts: ['orders'] } as any;
     const sanitized = orch.sanitizeAIInterpretation(
       'The platform manages customer orders and produces insights.',
@@ -4124,7 +4124,7 @@ describe('stripped-sentence grammar guard and repetition collapse (live mtg/herc
     expect(sanitized).toContain('graph evidence');
   });
 
-  it('collapses the same domain-justification sentence restated 3x to one sentence', () => {
+  it('collapses the same domain-justification sentence restated 3x to one sentence', async () => {
     const text = 'The system\'s domain is inferred from its dependencies and entities. ' +
       'The system\'s domain is clearly inferred from its dependencies and entities. ' +
       'The domain of the system is inferred from its entities and dependencies.';
@@ -4132,12 +4132,12 @@ describe('stripped-sentence grammar guard and repetition collapse (live mtg/herc
     expect(collapsed.split(/(?<=[.!?])\s+/)).toHaveLength(1);
   });
 
-  it('keeps genuinely distinct sentences intact', () => {
+  it('keeps genuinely distinct sentences intact', async () => {
     const text = 'Klauro analyzes codebases into a relationship graph. Agents query the graph through MCP tools. Telemetry correlates runtime events with static structure.';
     expect(orch.collapseNearDuplicateSentences(text)).toBe(text);
   });
 
-  it('collapses the hercules-style duplicated focus clause across two sentences', () => {
+  it('collapses the hercules-style duplicated focus clause across two sentences', async () => {
     const text = 'Hercules is an order platform with a focus on managing customer data and orders. ' +
       'It is built with a focus on managing customer data and orders.';
     const collapsed = orch.collapseNearDuplicateSentences(text);
@@ -4185,7 +4185,7 @@ describe('behavior-anchored capability derivation (buildBehaviorCapabilities)', 
     };
   };
 
-  it('derives ONE surface capability from a large diverse mcp_tool registration family', () => {
+  it('derives ONE surface capability from a large diverse mcp_tool registration family', async () => {
     // 14 tools, diverse names (no dominant prefix family) — the registration
     // surface itself is the capability, exactly one.
     const toolNames = [
@@ -4195,7 +4195,7 @@ describe('behavior-anchored capability derivation (buildBehaviorCapabilities)', 
       'validate_agent_change', 'preflight_agent_change',
     ];
     const fixtures = toolNames.map((name, index) => mcpToolEntry(name, index));
-    const capabilities = localOrch.buildBehaviorCapabilities(
+    const capabilities = await localOrch.buildBehaviorCapabilities(
       fixtures.map(fixture => fixture.entry),
       fixtures.map(fixture => fixture.node),
       [],
@@ -4214,7 +4214,7 @@ describe('behavior-anchored capability derivation (buildBehaviorCapabilities)', 
     expect(capability.operations.every((operation: any) => operation.entry_point_type === 'message')).toBe(true);
   });
 
-  it('derives shared-prefix socket event families (game_*) as capabilities, ignoring DOM click/change noise', () => {
+  it('derives shared-prefix socket event families (game_*) as capabilities, ignoring DOM click/change noise', async () => {
     const events = [
       'game:action', 'game:pass-priority', 'game:pass-turn', 'game:concede',
       'game:mulligan-keep', 'game:reconnect',
@@ -4231,7 +4231,7 @@ describe('behavior-anchored capability derivation (buildBehaviorCapabilities)', 
       trigger: { event: 'click' },
     } as CASEntryPoint));
 
-    const capabilities = localOrch.buildBehaviorCapabilities(
+    const capabilities = await localOrch.buildBehaviorCapabilities(
       [...fixtures.map(fixture => fixture.entry), ...domEntries],
       [...fixtures.map(fixture => fixture.node), bNode({ id: 'dom_node', name: 'HomePage', type: 'component' })],
       [],
@@ -4252,7 +4252,7 @@ describe('behavior-anchored capability derivation (buildBehaviorCapabilities)', 
     expect(game.criticality_factors.join(' ')).toContain('socket.io');
   });
 
-  it('merges a behavior cluster into an overlapping entity-anchored capability instead of duplicating', () => {
+  it('merges a behavior cluster into an overlapping entity-anchored capability instead of duplicating', async () => {
     // Socket game family whose handlers reach the Game entity, while an
     // entity-anchored "Game" capability already exists → MERGE, not duplicate.
     const events = ['game:action', 'game:concede', 'game:pass-turn', 'game:reconnect'];
@@ -4286,7 +4286,7 @@ describe('behavior-anchored capability derivation (buildBehaviorCapabilities)', 
     } as any;
     const capabilities = [entityCapability];
 
-    const candidates = localOrch.buildBehaviorCapabilities(
+    const candidates = await localOrch.buildBehaviorCapabilities(
       fixtures.map(fixture => fixture.entry),
       [...fixtures.map(fixture => fixture.node), engineNode],
       handlerToEngine,
@@ -4303,7 +4303,7 @@ describe('behavior-anchored capability derivation (buildBehaviorCapabilities)', 
     expect(entityCapability.category).toBe('core');
   });
 
-  it('exercises count restraint: no behavior capability from small or prefix-less surfaces, hard cap overall', () => {
+  it('exercises count restraint: no behavior capability from small or prefix-less surfaces, hard cap overall', async () => {
     // 3 cli commands (below family threshold) + 5 diverse cli commands with
     // action-verb prefixes only → nothing.
     const cliEntries: CASEntryPoint[] = [
@@ -4317,18 +4317,18 @@ describe('behavior-anchored capability derivation (buildBehaviorCapabilities)', 
     } as CASEntryPoint));
     const cliNodes = cliEntries.map((entry, index) => bNode({ id: `cli_${index}`, name: entry.name, type: 'function' }));
 
-    const capabilities = localOrch.buildBehaviorCapabilities(cliEntries, cliNodes, [], []);
+    const capabilities = await localOrch.buildBehaviorCapabilities(cliEntries, cliNodes, [], []);
     expect(capabilities).toHaveLength(0);
   });
 
-  it('surfaces behavior capabilities through buildSystemCapabilities end-to-end', () => {
+  it('surfaces behavior capabilities through buildSystemCapabilities end-to-end', async () => {
     const toolNames = [
       'get_summary', 'get_call_chain', 'search_nodes', 'semantic_search',
       'analyze_codebase', 'get_route_table', 'get_entry_points', 'get_data_entities',
       'assess_change_risk', 'plan_parallel_work', 'get_coding_context', 'get_erd',
     ];
     const fixtures = toolNames.map((name, index) => mcpToolEntry(name, index));
-    const capabilities = localOrch.buildSystemCapabilities(
+    const capabilities = await localOrch.buildSystemCapabilities(
       fixtures.map(fixture => fixture.entry),
       [],
       fixtures.map(fixture => fixture.node),
@@ -4340,7 +4340,7 @@ describe('behavior-anchored capability derivation (buildBehaviorCapabilities)', 
 });
 
 describe('top-down capability evidence (C2)', () => {
-  it('extracts verbatim product framing from a README (title + opening paragraph)', () => {
+  it('extracts verbatim product framing from a README (title + opening paragraph)', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-topdown-readme-'));
     try {
       fs.writeFileSync(
@@ -4357,7 +4357,7 @@ describe('top-down capability evidence (C2)', () => {
     }
   });
 
-  it('falls back to a PRD/product doc when no README states the product, skipping bold metadata', () => {
+  it('falls back to a PRD/product doc when no README states the product, skipping bold metadata', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-topdown-prd-'));
     try {
       fs.writeFileSync(
@@ -4374,7 +4374,7 @@ describe('top-down capability evidence (C2)', () => {
     }
   });
 
-  it('does NOT treat an agent-tooling CLAUDE.md as product framing', () => {
+  it('does NOT treat an agent-tooling CLAUDE.md as product framing', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-topdown-noproductdoc-'));
     try {
       fs.writeFileSync(path.join(root, 'CLAUDE.md'), '# Instructions\n\nDo not take shortcuts. Fix things properly.\n');

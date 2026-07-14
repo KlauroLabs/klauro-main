@@ -1,5 +1,6 @@
 import * as path from 'path';
 import type { CASOutput } from '../../types/cas.types';
+import { createYieldBudget } from './event-loop-yield';
 
 const MAX_PATH_STRING_LENGTH = 1024;
 
@@ -10,7 +11,7 @@ const MAX_PATH_STRING_LENGTH = 1024;
  * `system.root_path` field is kept absolute on purpose: it is the anchor
  * consumers use to resolve relative paths back to real files.
  */
-export function relativizeProjectPaths(output: CASOutput, projectRoot: string): void {
+export async function relativizeProjectPaths(output: CASOutput, projectRoot: string): Promise<void> {
   const root = path.resolve(projectRoot);
   if (root === path.sep || root.length < 2) return;
 
@@ -18,32 +19,37 @@ export function relativizeProjectPaths(output: CASOutput, projectRoot: string): 
   prefixes.add(`${root.replace(/\\/g, '/')}/`);
 
   const rootPath = output.system?.root_path;
-  relativizeValue(output, [...prefixes]);
+  // Budget-yield during the walk: rewriting a whale CAS (76k nodes, ~250MB
+  // object graph) synchronously was a measured ~2s event-loop stall in the
+  // in-process analyzer+HTTP server. Traversal order and results unchanged.
+  await relativizeValue(output, [...prefixes], createYieldBudget());
   if (output.system && rootPath !== undefined) {
     output.system.root_path = rootPath;
   }
 }
 
-function relativizeValue(value: unknown, prefixes: string[]): void {
+async function relativizeValue(value: unknown, prefixes: string[], maybeYield: () => Promise<void>): Promise<void> {
   if (Array.isArray(value)) {
+    await maybeYield();
     for (let index = 0; index < value.length; index++) {
       const item = value[index];
       if (typeof item === 'string') {
         value[index] = relativizeString(item, prefixes);
       } else {
-        relativizeValue(item, prefixes);
+        await relativizeValue(item, prefixes, maybeYield);
       }
     }
     return;
   }
   if (!value || typeof value !== 'object') return;
+  await maybeYield();
   const record = value as Record<string, unknown>;
   for (const key of Object.keys(record)) {
     const child = record[key];
     if (typeof child === 'string') {
       record[key] = relativizeString(child, prefixes);
     } else {
-      relativizeValue(child, prefixes);
+      await relativizeValue(child, prefixes, maybeYield);
     }
   }
 }

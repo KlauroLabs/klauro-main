@@ -442,7 +442,7 @@ export async function writeJsonAtomic(filePath: string, value: unknown, options:
   const tmpPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
   try {
     try {
-      if (shouldStreamJson(value)) {
+      if (shouldStreamJson(value, options.spaces)) {
         await writeJsonStreamed(tmpPath, value);
       } else {
         await fs.writeJson(tmpPath, value, options);
@@ -569,7 +569,7 @@ async function compressJsonFile(sourcePath: string, targetPath: string, codec: J
   await fs.copy(sourcePath, targetPath, { overwrite: true });
 }
 
-function shouldStreamJson(value: unknown): boolean {
+function shouldStreamJson(value: unknown, spaces?: number): boolean {
   if (!value || typeof value !== 'object') return false;
   const candidate = value as {
     nodes?: unknown[];
@@ -587,7 +587,16 @@ function shouldStreamJson(value: unknown): boolean {
     (candidate.method_calls?.length || 0) +
     (candidate.analysis_facts?.length || 0) +
     (candidate.test_gaps?.length || 0);
-  return graphItems > 100_000;
+  // At spaces:0 the streamed writer's output is byte-identical to
+  // fs.writeJson (JSON.stringify + trailing newline — verified byte-for-byte
+  // on a 258MB whale CAS), and it yields to the event loop on stream
+  // backpressure instead of one giant synchronous JSON.stringify macrotask.
+  // Stream mid-size graphs too so analysis saves never block the in-process
+  // HTTP server for seconds. Indented writes (spaces:2 index/metadata files)
+  // keep the legacy threshold: streaming would drop their indentation, so it
+  // stays a last resort for oversized payloads only.
+  const threshold = spaces === 0 ? 10_000 : 100_000;
+  return graphItems > threshold;
 }
 
 function isJsonStringTooLargeError(error: unknown): boolean {

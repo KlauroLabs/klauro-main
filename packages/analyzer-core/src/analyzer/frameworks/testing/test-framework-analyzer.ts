@@ -4,6 +4,7 @@ import { AnalyzerError } from '../../core/errors';
 import * as path from 'path';
 import * as fs from 'fs-extra';
 import { cachedGlob as glob } from '../../core/glob-cache';
+import { createYieldBudget } from '../../core/event-loop-yield';
 
 /**
  * TestFrameworkAnalyzer — cross-language test structure + coverage map.
@@ -136,7 +137,12 @@ export class TestFrameworkAnalyzer extends BaseAnalyzer {
         nodir: true
       });
 
+      // Budget-yield per file: with the shared file-read cache warm the await
+      // resolves in a microtask (no event-loop hop), so this scan ran as one
+      // multi-second synchronous block on a whale repo. Results unchanged.
+      const maybeYield = createYieldBudget();
       for (const file of files) {
+        await maybeYield();
         const normalized = file.replace(/\\/g, '/');
         // First rule to own a file wins — Jest/Cypress own their own files
         // upstream, so we skip anything they detect via naming.

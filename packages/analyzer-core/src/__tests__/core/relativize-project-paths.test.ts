@@ -45,9 +45,9 @@ function buildOutput(): CASOutput {
 }
 
 describe('relativizeProjectPaths', () => {
-  it('rewrites absolute project paths to project-relative paths everywhere except system.root_path', () => {
+  it('rewrites absolute project paths to project-relative paths everywhere except system.root_path', async () => {
     const output = buildOutput();
-    relativizeProjectPaths(output, ROOT);
+    await relativizeProjectPaths(output, ROOT);
 
     expect(output.system.root_path).toBe(ROOT);
     expect((output.nodes[0].source as any).file).toBe('src/App.tsx');
@@ -59,9 +59,9 @@ describe('relativizeProjectPaths', () => {
     ]);
   });
 
-  it('leaves relative paths, foreign absolute paths, and multi-line code text untouched', () => {
+  it('leaves relative paths, foreign absolute paths, and multi-line code text untouched', async () => {
     const output = buildOutput();
-    relativizeProjectPaths(output, ROOT);
+    await relativizeProjectPaths(output, ROOT);
 
     expect((output.nodes[1].source as any).file).toBe('src/relative/Already.tsx');
     expect((output as any).cross_repository_links[0].source_repository.path).toBe(
@@ -70,14 +70,14 @@ describe('relativizeProjectPaths', () => {
     expect((output.nodes[0].source as any).raw).toContain(`${ROOT}/src/App.tsx`);
   });
 
-  it('is idempotent and safe for a root of the filesystem separator', () => {
+  it('is idempotent and safe for a root of the filesystem separator', async () => {
     const output = buildOutput();
-    relativizeProjectPaths(output, ROOT);
-    relativizeProjectPaths(output, ROOT);
+    await relativizeProjectPaths(output, ROOT);
+    await relativizeProjectPaths(output, ROOT);
     expect((output.nodes[0].source as any).file).toBe('src/App.tsx');
 
     const untouched = buildOutput();
-    relativizeProjectPaths(untouched, '/');
+    await relativizeProjectPaths(untouched, '/');
     expect((untouched.nodes[0].source as any).file).toBe(`${ROOT}/src/App.tsx`);
   });
 });

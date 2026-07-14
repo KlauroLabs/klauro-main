@@ -3,6 +3,7 @@ import { CASContribution, CASExitPoint, CASLibrary, CASNode } from '../../../typ
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import { cachedGlob as glob } from '../../core/glob-cache';
+import { createYieldBudget } from '../../core/event-loop-yield';
 
 type ArchitectureLibraryCategory =
   | 'orm'
@@ -416,8 +417,14 @@ export class ArchitecturalLibraryAnalyzer extends BaseAnalyzer {
 
   private async findUsages(projectPath: string, files: string[], rule: ArchitectureLibraryRule): Promise<UsageHit[]> {
     const usages: UsageHit[] = [];
+    // Budget-yield per file: with the shared analyzer file-read cache warm,
+    // `await fs.readFile` resolves in a microtask (no event-loop hop), so this
+    // loop over every candidate file × usage patterns ran as one multi-second
+    // synchronous block on a whale repo. Order and matches unchanged.
+    const maybeYield = createYieldBudget();
     const needsImportEvidence = rule.usagePatterns.some(pattern => pattern.requiresImportEvidence);
     for (const relativeFile of files) {
+      await maybeYield();
       const absoluteFile = path.join(projectPath, relativeFile);
       let content = '';
       try {

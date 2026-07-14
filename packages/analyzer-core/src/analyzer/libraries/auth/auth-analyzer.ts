@@ -3,6 +3,7 @@ import { CASEdge, CASEntryPoint, CASContribution, CASLibrary, CASNode } from '..
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import { cachedGlob as glob } from '../../core/glob-cache';
+import { createYieldBudget } from '../../core/event-loop-yield';
 
 type AuthMechanismKind = 'auth_strategy' | 'auth_policy' | 'guard';
 type PackageManager = 'npm' | 'pip' | 'bundler' | 'maven' | 'gradle' | 'rego';
@@ -227,7 +228,12 @@ export class AuthAnalyzer extends BaseAnalyzer {
     const libraries: CASLibrary[] = [];
     const sites: AuthSite[] = [];
 
+    // Budget-yield per file: with the shared file-read cache warm the await
+    // resolves in a microtask (no event-loop hop), so this scan ran as one
+    // multi-second synchronous block on a whale repo. Results unchanged.
+    const maybeYield = createYieldBudget();
     for (const file of files) {
+      await maybeYield();
       const content = await this.readFile(projectPath, file);
       if (content === null) continue;
       const imports = this.extractImports(content);

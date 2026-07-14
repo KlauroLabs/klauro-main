@@ -44,9 +44,9 @@ describe('contribution merge duplicate-id semantics', () => {
     analysisErrors = [];
   });
 
-  it('drops an identical-content duplicate entry point silently within one contribution', () => {
+  it('drops an identical-content duplicate entry point silently within one contribution', async () => {
     const target = emptyTarget();
-    orchestrator.mergeAnalysisResult(
+    await orchestrator.mergeAnalysisResult(
       target,
       contribution({ entry_points: [cliEntry(), cliEntry()] }),
       { analyzerId: 'rust', analysisErrors }
@@ -56,16 +56,16 @@ describe('contribution merge duplicate-id semantics', () => {
     expect(analysisErrors).toHaveLength(0);
   });
 
-  it('drops an identical-content duplicate entry point silently across contributions', () => {
+  it('drops an identical-content duplicate entry point silently across contributions', async () => {
     const target = emptyTarget();
-    orchestrator.mergeAnalysisResult(target, contribution({ entry_points: [cliEntry()] }), { analyzerId: 'rust', analysisErrors });
-    orchestrator.mergeAnalysisResult(target, contribution({ entry_points: [cliEntry()] }), { analyzerId: 'rust', analysisErrors });
+    await orchestrator.mergeAnalysisResult(target, contribution({ entry_points: [cliEntry()] }), { analyzerId: 'rust', analysisErrors });
+    await orchestrator.mergeAnalysisResult(target, contribution({ entry_points: [cliEntry()] }), { analyzerId: 'rust', analysisErrors });
 
     expect(target.allEntryPoints).toHaveLength(1);
     expect(analysisErrors).toHaveLength(0);
   });
 
-  it('keeps the first entry point and warns when a duplicate id carries different content', () => {
+  it('keeps the first entry point and warns when a duplicate id carries different content', async () => {
     const target = emptyTarget();
     const first = cliEntry({
       id: 'entry_http_server',
@@ -82,7 +82,7 @@ describe('contribution merge duplicate-id semantics', () => {
       metadata: { file: 'apps/api-internal/src/main.ts', port: 3030 }
     });
 
-    orchestrator.mergeAnalysisResult(
+    await orchestrator.mergeAnalysisResult(
       target,
       contribution({ entry_points: [first, second] }),
       { analyzerId: 'nestjs', analysisErrors }
@@ -98,7 +98,7 @@ describe('contribution merge duplicate-id semantics', () => {
     expect(analysisErrors[0].message).toContain('apps/api-internal/src/main.ts');
   });
 
-  it('applies the same semantics to exit points', () => {
+  it('applies the same semantics to exit points', async () => {
     const target = emptyTarget();
     const exit = {
       id: 'exit:db:src/store.rs',
@@ -108,7 +108,7 @@ describe('contribution merge duplicate-id semantics', () => {
       name: 'save'
     };
 
-    orchestrator.mergeAnalysisResult(
+    await orchestrator.mergeAnalysisResult(
       target,
       contribution({ exit_points: [exit, { ...exit }, { ...exit, name: 'save_other' }] }),
       { analyzerId: 'rust', analysisErrors }
@@ -120,12 +120,12 @@ describe('contribution merge duplicate-id semantics', () => {
     expect(analysisErrors[0].message).toContain('exit:db:src/store.rs');
   });
 
-  it('keeps the first edge and warns when a duplicate edge id carries different content', () => {
+  it('keeps the first edge and warns when a duplicate edge id carries different content', async () => {
     const target = emptyTarget();
     const edge = { id: 'edge:1', source: 'a', target: 'b', type: 'calls' };
 
-    orchestrator.mergeAnalysisResult(target, contribution({ edges: [edge] }), { analyzerId: 'rust', analysisErrors });
-    orchestrator.mergeAnalysisResult(
+    await orchestrator.mergeAnalysisResult(target, contribution({ edges: [edge] }), { analyzerId: 'rust', analysisErrors });
+    await orchestrator.mergeAnalysisResult(
       target,
       contribution({ edges: [{ ...edge }, { ...edge, type: 'imports' }] }),
       { analyzerId: 'react', analysisErrors }
@@ -137,7 +137,7 @@ describe('contribution merge duplicate-id semantics', () => {
     expect(analysisErrors[0].message).toContain('edge:1');
   });
 
-  it('treats key order as identical content', () => {
+  it('treats key order as identical content', async () => {
     const target = emptyTarget();
     const reordered = {
       description: 'Program entry point',
@@ -148,7 +148,7 @@ describe('contribution merge duplicate-id semantics', () => {
       id: 'entry:main:bin/agent/build.rs'
     };
 
-    orchestrator.mergeAnalysisResult(
+    await orchestrator.mergeAnalysisResult(
       target,
       contribution({ entry_points: [cliEntry(), reordered] }),
       { analyzerId: 'rust', analysisErrors }

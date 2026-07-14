@@ -3,6 +3,7 @@ import { CASEdge, CASContribution, CASLibrary, CASNode } from '../../../types/ca
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import { cachedGlob as glob } from '../../core/glob-cache';
+import { createYieldBudget } from '../../core/event-loop-yield';
 
 type ObservabilityKind = 'telemetry' | 'span' | 'metric' | 'logger';
 
@@ -296,7 +297,12 @@ export class ObservabilityAnalyzer extends BaseAnalyzer {
     const hits: InstrumentationHit[] = [];
     const applicableFiles = files.filter(file => ruleDef.fileExtensions.some(ext => file.endsWith(`.${ext}`)));
 
+    // Budget-yield per file: with the shared file-read cache warm the await
+    // resolves in a microtask (no event-loop hop), so this scan ran as one
+    // multi-second synchronous block on a whale repo. Results unchanged.
+    const maybeYield = createYieldBudget();
     for (const relativeFile of applicableFiles) {
+      await maybeYield();
       const content = await this.readTextFileIfExists(path.join(projectPath, relativeFile));
       if (!content || !this.fileReferencesRule(content, ruleDef)) continue;
 
