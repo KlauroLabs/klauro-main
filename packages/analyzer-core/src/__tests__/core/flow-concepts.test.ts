@@ -970,32 +970,41 @@ describe('C1 step_graph — sequence backbone + evidence-gated edge kinds', () =
 
   test('a step on a throw path upgrades the edge INTO it to an error edge (reuses error-constraint evidence)', () => {
     const cas = buildFixtureCas();
-    // n_validateOrder declares a throw + an uncaught chain reaches it — the exact
-    // shape extractErrorConstraints reads. The validate step then carries a
+    // n_saveOrder declares a throw + an uncaught chain reaches it — the exact
+    // shape extractErrorConstraints reads. The persist step then carries a
     // kind:error constraint, so the edge leading into it is an error edge.
-    (cas.nodes.find(n => n.id === 'n_validateOrder') as any).signature = { throws: ['ValidationError'] };
+    // (n_validateOrder is deliberately NOT the throwing node here: under
+    // role-based segmentation it MERGES with the entry-point handler — both
+    // are 'validate' role, docs/SEMANTIC-MODEL.md's merge rule — into the
+    // flow's INITIATING step, which by construction has no incoming edge to
+    // upgrade. n_saveOrder's 'persist' role keeps it a distinct, non-initial
+    // step, so the edge-upgrade rule stays fully exercised.)
+    (cas.nodes.find(n => n.id === 'n_saveOrder') as any).signature = { throws: ['PersistenceError'] };
     (cas as any).call_chains = [
       {
         id: 'chain_createOrder',
         chain_type: 'entry-to-exit',
         entry_point: { node_id: 'n_handleCreateOrder', method_name: 'handleCreateOrder', entry_point_id: 'ep_createOrder' },
-        exit_point: { node_id: 'n_saveOrder', method_name: 'saveOrder', exit_point_id: 'xp_saveOrder' },
+        exit_point: { node_id: 'n_notifyWarehouse', method_name: 'notifyWarehouse', exit_point_id: 'xp_notifyWarehouse' },
         call_path: [
           { call_id: 'c1', node_id: 'n_handleCreateOrder', method_name: 'handleCreateOrder', depth: 0 },
           { call_id: 'c2', node_id: 'n_validateOrder', method_name: 'validateOrder', depth: 1 },
           { call_id: 'c3', node_id: 'n_saveOrder', method_name: 'saveOrder', depth: 2 },
+          { call_id: 'c4', node_id: 'n_notifyWarehouse', method_name: 'notifyWarehouse', depth: 3 },
         ],
-        characteristics: { total_calls: 3, max_depth: 2, has_external_calls: false, has_database_calls: true, has_async_calls: false },
+        characteristics: { total_calls: 4, max_depth: 3, has_external_calls: true, has_database_calls: true, has_async_calls: false },
       },
     ];
     const flow = computeFlowConcepts(cas)[0];
-    const validateStep = flow.steps.find(s => s.functions.some(f => f.function_id === 'n_validateOrder'))!;
-    // sanity: the validate step really carries the error constraint we key on.
-    expect(validateStep.contract.constraints.some(c => c.kind === 'error')).toBe(true);
-    const errEdge = flow.step_graph!.edges.find(e => e.to_step_id === validateStep.step_id);
+    const persistStep = flow.steps.find(s => s.functions.some(f => f.function_id === 'n_saveOrder'))!;
+    // sanity: the persist step really carries the error constraint we key on,
+    // and it is NOT the flow's initiating step (so an incoming edge exists).
+    expect(persistStep.contract.constraints.some(c => c.kind === 'error')).toBe(true);
+    expect(persistStep.step_id).not.toBe(flow.steps[0].step_id);
+    const errEdge = flow.step_graph!.edges.find(e => e.to_step_id === persistStep.step_id);
     expect(errEdge).toBeDefined();
     expect(errEdge!.kind).toBe('error');
-    expect(errEdge!.evidence).toMatch(/ValidationError|throwing node/);
+    expect(errEdge!.evidence).toMatch(/PersistenceError|throwing node/);
   });
 
   test('step_graph is byte-stable run-to-run (determinism)', () => {
@@ -1120,5 +1129,238 @@ describe('C1 async continuations — publish→consume seam stitches the SAME en
   test('stitchContinuations is a no-op on a <2-flow set and returns the same array', () => {
     const one = [{ flow_id: 'x', entry_point: 'ep' } as FlowConcept];
     expect(stitchContinuations(one, buildPublishConsumeFixtureCas())).toBe(one);
+  });
+});
+
+/**
+ * SEMANTIC SEGMENTATION (docs/SEMANTIC-MODEL.md, Step doctrine): "Step ↔ code
+ * is many-to-many … a segmentation that emits one step per traced function
+ * (named 'Process (fnName)') is a placeholder, not the model." This battery
+ * exercises the role-based segmentation/naming rewrite directly: the
+ * MERGE rule (many functions, same role -> one step), the SPLIT rule (one
+ * function, multiple roles -> many steps), async dispatch, evidence-named
+ * Process steps, the honest zero-evidence fallback, and the acceptance case
+ * from a POST /bookings-style flow (Validate -> Create <Entity> [with a
+ * state_change] -> Respond, never "2x Process").
+ */
+describe('role-based step segmentation (Step doctrine rewrite)', () => {
+  test('ACCEPTANCE CASE: booking-creation flow segments as Validate -> Create <Entity> (state_change) -> Respond, not 2x Process', () => {
+    const nodes: CASNode[] = [
+      node({ id: 'n_handleCreateBooking', name: 'handleCreateBooking', type: 'controller', category: 'entry' }),
+      node({ id: 'n_createBooking', name: 'createBooking', type: 'function', category: 'business' }),
+      node({ id: 'n_respondBooking', name: 'finishRequest', type: 'function', category: 'business' }),
+    ];
+    const edges: CASEdge[] = [
+      { id: 'e1', source: 'n_handleCreateBooking', target: 'n_createBooking', type: 'calls' },
+      { id: 'e2', source: 'n_createBooking', target: 'n_respondBooking', type: 'calls' },
+    ];
+    const entry_points: CASEntryPoint[] = [{
+      id: 'ep_createBooking', source_node: 'n_handleCreateBooking', type: 'http', name: 'createBooking',
+      trigger: { method: 'POST', path: '/bookings' },
+      handler: { node_id: 'n_handleCreateBooking', method_name: 'handleCreateBooking' },
+      security: { authenticated: true },
+      input: { validation: ['start/end dates must be valid'] },
+    }];
+    const exit_points: CASExitPoint[] = [
+      { id: 'xp_respond', source_node: 'n_respondBooking', type: 'api', name: 'finishRequest', target: { resource: '/bookings' } } as CASExitPoint,
+    ];
+    const data_lineage: CASEntityLineage[] = [{
+      entity_id: 'entity_booking', entity_name: 'Booking', sensitive_fields: [],
+      writers: [{ node_id: 'n_createBooking' } as any], readers: [],
+      external_recipients: [], boundaries_crossed: [], journeys_carrying: [],
+      exposure: { unguarded_paths: 0, external_transfer: false, sensitive: false },
+    }];
+    const call_chains = [{
+      id: 'chain_createBooking',
+      chain_type: 'entry-to-exit',
+      entry_point: { node_id: 'n_handleCreateBooking', method_name: 'handleCreateBooking', entry_point_id: 'ep_createBooking' },
+      exit_point: { node_id: 'n_respondBooking', method_name: 'finishRequest', exit_point_id: 'xp_respond' },
+      call_path: [
+        { call_id: 'c1', node_id: 'n_handleCreateBooking', method_name: 'handleCreateBooking', depth: 0 },
+        { call_id: 'c2', node_id: 'n_createBooking', method_name: 'createBooking', depth: 1 },
+        { call_id: 'c3', node_id: 'n_respondBooking', method_name: 'finishRequest', depth: 2 },
+      ],
+      characteristics: { total_calls: 2, max_depth: 2, has_external_calls: false, has_database_calls: false, has_async_calls: false },
+    }];
+    const cas = {
+      cas_version: '1.0.0', analysis_timestamp: new Date().toISOString(), analysis_id: 'test-booking',
+      system: { name: 'test-system' } as any,
+      nodes, edges, entry_points, exit_points, data_lineage, data_entities: [],
+      system_capabilities: [], analyzer_contributions: [], call_chains,
+    } as unknown as CASOutput;
+
+    const flow = computeFlowConcepts(cas)[0];
+    expect(flow.steps.length).toBe(3);
+    expect(flow.steps.map(s => s.name)).toEqual(['Validate Request', 'Create Booking', 'Respond']);
+    // never the old placeholder shape:
+    expect(flow.steps.some(s => /^Process \(/.test(s.name))).toBe(false);
+    const persistStep = flow.steps[1];
+    expect(persistStep.contract.side_effects.state_changes).toContain('Booking updated');
+  });
+
+  test('MERGE: many functions with the SAME role collapse into ONE step', () => {
+    const nodes: CASNode[] = [
+      node({ id: 'n_root', name: 'handleSync', type: 'controller', category: 'entry' }),
+      node({ id: 'n_save1', name: 'saveShipment', type: 'function', category: 'data' }),
+      node({ id: 'n_save2', name: 'saveManifest', type: 'function', category: 'data' }),
+      node({ id: 'n_save3', name: 'saveInvoice', type: 'function', category: 'data' }),
+    ];
+    const edges: CASEdge[] = [
+      { id: 'e1', source: 'n_root', target: 'n_save1', type: 'calls' },
+      { id: 'e2', source: 'n_save1', target: 'n_save2', type: 'calls' },
+      { id: 'e3', source: 'n_save2', target: 'n_save3', type: 'calls' },
+    ];
+    const entry_points: CASEntryPoint[] = [{
+      id: 'ep_sync', source_node: 'n_root', type: 'http', name: 'sync',
+      trigger: { method: 'POST', path: '/sync' },
+      handler: { node_id: 'n_root', method_name: 'handleSync' },
+    }];
+    const exit_points: CASExitPoint[] = [
+      { id: 'xp1', source_node: 'n_save1', type: 'database', name: 'saveShipment', target: { resource: 'shipments' } } as CASExitPoint,
+      { id: 'xp2', source_node: 'n_save2', type: 'database', name: 'saveManifest', target: { resource: 'manifests' } } as CASExitPoint,
+      { id: 'xp3', source_node: 'n_save3', type: 'database', name: 'saveInvoice', target: { resource: 'invoices' } } as CASExitPoint,
+    ];
+    const cas = {
+      cas_version: '1.0.0', analysis_timestamp: new Date().toISOString(), analysis_id: 'test-merge',
+      system: { name: 'test-system' } as any,
+      nodes, edges, entry_points, exit_points, data_lineage: [], data_entities: [],
+      system_capabilities: [], analyzer_contributions: [],
+    } as unknown as CASOutput;
+
+    const flow = computeFlowConcepts(cas)[0];
+    // n_root has no role-indicating facts -> its own 'process' step; the three
+    // persist writers all share role 'persist' and MERGE into one step.
+    const persistStep = flow.steps.find(s => s.functions.some(f => f.function_id === 'n_save1'))!;
+    expect(persistStep.functions.map(f => f.function_id)).toEqual(
+      expect.arrayContaining(['n_save1', 'n_save2', 'n_save3'])
+    );
+    expect(persistStep.functions.length).toBe(3);
+  });
+
+  test('SPLIT: one function whose OWN facts ground multiple roles yields multiple steps mapped to the SAME node', () => {
+    const nodes: CASNode[] = [
+      node({ id: 'n_root', name: 'handleAndPersist', type: 'controller', category: 'entry' }),
+    ];
+    const entry_points: CASEntryPoint[] = [{
+      id: 'ep_thing', source_node: 'n_root', type: 'http', name: 'thing',
+      trigger: { method: 'POST', path: '/thing' },
+      handler: { node_id: 'n_root', method_name: 'handleAndPersist' },
+      security: { authenticated: true, guards: ['AuthGuard'] },
+    }];
+    const exit_points: CASExitPoint[] = [
+      { id: 'xp_db', source_node: 'n_root', type: 'database', name: 'handleAndPersist', target: { resource: 'things' } } as CASExitPoint,
+    ];
+    const cas = {
+      cas_version: '1.0.0', analysis_timestamp: new Date().toISOString(), analysis_id: 'test-split',
+      system: { name: 'test-system' } as any,
+      nodes, edges: [], entry_points, exit_points, data_lineage: [], data_entities: [],
+      system_capabilities: [], analyzer_contributions: [],
+    } as unknown as CASOutput;
+
+    const flow = computeFlowConcepts(cas)[0];
+    // ONE function (n_root), grounded for BOTH 'validate' (entry auth guard)
+    // AND 'persist' (its own database exit) -> TWO steps, both mapped back to
+    // the same node.
+    expect(flow.steps.length).toBe(2);
+    expect(flow.steps.every(s => s.functions.some(f => f.function_id === 'n_root'))).toBe(true);
+    expect(flow.steps.map(s => s.name)).toEqual(['Validate Request', 'Persist Data']);
+    // each step's own code_mappings independently ground the relationship for
+    // the shared node — the many-to-many point (D1).
+    const validateMappings = (flow.steps[0].code_mappings || []).filter(m => m.code_region.node_id === 'n_root');
+    const persistMappings = (flow.steps[1].code_mappings || []).filter(m => m.code_region.node_id === 'n_root');
+    expect(validateMappings.some(m => m.relationship === 'validates')).toBe(true);
+    expect(persistMappings.some(m => m.relationship === 'causes_effect')).toBe(true);
+  });
+
+  test('ASYNC DISPATCH: a message/event exit grounds a Publish/Dispatch step, distinct from an outbound API call', () => {
+    const nodes: CASNode[] = [
+      node({ id: 'n_root', name: 'handleOrderPaid', type: 'controller', category: 'entry' }),
+      node({ id: 'n_publish', name: 'publishOrderShipped', type: 'function', category: 'business' }),
+    ];
+    const edges: CASEdge[] = [{ id: 'e1', source: 'n_root', target: 'n_publish', type: 'calls' }];
+    const entry_points: CASEntryPoint[] = [{
+      id: 'ep_paid', source_node: 'n_root', type: 'event', name: 'orderPaid',
+      trigger: { event: 'order.paid' },
+      handler: { node_id: 'n_root', method_name: 'handleOrderPaid' },
+    }];
+    const exit_points: CASExitPoint[] = [
+      { id: 'xp_event', source_node: 'n_publish', type: 'event', name: 'publishOrderShipped', target: { resource: 'order.shipped' } } as CASExitPoint,
+    ];
+    const cas = {
+      cas_version: '1.0.0', analysis_timestamp: new Date().toISOString(), analysis_id: 'test-dispatch',
+      system: { name: 'test-system' } as any,
+      nodes, edges, entry_points, exit_points, data_lineage: [], data_entities: [],
+      system_capabilities: [], analyzer_contributions: [],
+    } as unknown as CASOutput;
+
+    const flow = computeFlowConcepts(cas)[0];
+    const dispatchStep = flow.steps.find(s => s.functions.some(f => f.function_id === 'n_publish'))!;
+    expect(dispatchStep.name).toBe('Publish order.shipped');
+  });
+
+  test('EVIDENCE-NAMED Process step: a business-logic node with no exits/lineage-writes still gets a verb+entity name, never a bare "Process (fnName)"', () => {
+    const nodes: CASNode[] = [
+      node({ id: 'n_root', name: 'handleQuote', type: 'controller', category: 'entry' }),
+      node({ id: 'n_calc', name: 'calculateShippingCost', type: 'function', category: 'business' }),
+    ];
+    const edges: CASEdge[] = [{ id: 'e1', source: 'n_root', target: 'n_calc', type: 'calls' }];
+    const entry_points: CASEntryPoint[] = [{
+      id: 'ep_quote', source_node: 'n_root', type: 'http', name: 'quote',
+      trigger: { method: 'GET', path: '/quote' },
+      handler: { node_id: 'n_root', method_name: 'handleQuote' },
+    }];
+    const data_lineage: CASEntityLineage[] = [{
+      entity_id: 'entity_shippingrate', entity_name: 'ShippingRate', sensitive_fields: [],
+      writers: [], readers: [{ node_id: 'n_calc' } as any],
+      external_recipients: [], boundaries_crossed: [], journeys_carrying: [],
+      exposure: { unguarded_paths: 0, external_transfer: false, sensitive: false },
+    }];
+    const cas = {
+      cas_version: '1.0.0', analysis_timestamp: new Date().toISOString(), analysis_id: 'test-process-named',
+      system: { name: 'test-system' } as any,
+      nodes, edges, entry_points, exit_points: [], data_lineage, data_entities: [],
+      system_capabilities: [], analyzer_contributions: [],
+    } as unknown as CASOutput;
+
+    const flow = computeFlowConcepts(cas)[0];
+    const calcStep = flow.steps.find(s => s.functions.some(f => f.function_id === 'n_calc'))!;
+    expect(calcStep.name).toBe('Calculate ShippingRate');
+    expect(calcStep.name).not.toMatch(/^Process \(/);
+  });
+
+  test('HONEST FALLBACK: a chain with zero role-indicating facts still yields a sane step, never a fabricated role, and reports a gap', () => {
+    const nodes: CASNode[] = [
+      node({ id: 'n_root', name: 'handleMystery', type: 'controller', category: 'entry' }),
+      node({ id: 'n_opaque', name: 'doThing123', type: 'function', category: 'business' }),
+    ];
+    const edges: CASEdge[] = [{ id: 'e1', source: 'n_root', target: 'n_opaque', type: 'calls' }];
+    const entry_points: CASEntryPoint[] = [{
+      id: 'ep_mystery', source_node: 'n_root', type: 'http', name: 'mystery',
+      trigger: { method: 'GET', path: '/mystery' },
+      handler: { node_id: 'n_root', method_name: 'handleMystery' },
+    }];
+    const cas = {
+      cas_version: '1.0.0', analysis_timestamp: new Date().toISOString(), analysis_id: 'test-fallback',
+      system: { name: 'test-system' } as any,
+      nodes, edges, entry_points, exit_points: [], data_lineage: [], data_entities: [],
+      system_capabilities: [], analyzer_contributions: [],
+    } as unknown as CASOutput;
+
+    const flow = computeFlowConcepts(cas)[0];
+    // no crash, a sane (non-empty) step set:
+    expect(flow.steps.length).toBeGreaterThan(0);
+    const opaqueStep = flow.steps.find(s => s.functions.some(f => f.function_id === 'n_opaque'))!;
+    expect(opaqueStep).toBeDefined();
+    // honest — not a fabricated role label, just the conservative fallback:
+    expect(opaqueStep.name).toBe('Process (doThing123)');
+    expect(flow.gaps).toBeDefined();
+    expect(flow.gaps!.some(g => /no validate\/persist\/dispatch\/call\/respond\/entity\/verb evidence/.test(g))).toBe(true);
+  });
+
+  test('DETERMINISM: segmentation + naming is byte-stable run-to-run for the same CAS', () => {
+    const cas = buildFixtureCas();
+    const a = JSON.stringify(computeFlowConcepts(cas));
+    const b = JSON.stringify(computeFlowConcepts(buildFixtureCas()));
+    expect(a).toBe(b);
   });
 });

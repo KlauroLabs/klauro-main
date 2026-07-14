@@ -19,9 +19,15 @@ import type {
  * Fixture: handleCreateOrder(req) -> validateOrder (guard, reads Order)
  *          -> saveOrder (writes Order, db exit) -> notifyWarehouse (webhook
  *          exit, its OWN last-step guard + declared throws).
- * Segmentation yields 4 steps (entry/logic, validate, persist, external), so
- * initiating (step 0) ≠ gating guard (step 1) ≠ terminal (step 3) are all
- * distinct — every reframe rule is separately observable.
+ * Role-based segmentation (docs/SEMANTIC-MODEL.md Step doctrine) MERGES
+ * handleCreateOrder (Validate role — its own entry_point security/validation
+ * facts) with the adjacent validateOrder (Validate role — guard-clause name
+ * pattern) into ONE initiating Validate step ("a validator/form boundary IS a
+ * Validate step" regardless of how many functions realize it). Segmentation
+ * yields 3 steps (Validate [handleCreateOrder + validateOrder], Persist
+ * [saveOrder], Call [notifyWarehouse]), so initiating (step 0) ≠ gating guard
+ * (also step 0 here — it's the SAME step, see test (a)) ≠ terminal (step 2)
+ * stay distinct enough for every reframe rule to be separately observable.
  */
 function node(overrides: Partial<CASNode> & { id: string; name: string; type: string }): CASNode {
   return { qualified_name: overrides.name, ...overrides } as CASNode;
@@ -160,16 +166,23 @@ describe('D2 — flow-level ICELOT is a REFRAME, not a union', () => {
   });
 
   test('(a) flow Input = INITIATING input only; interior inputs demoted to internal_inputs_count', () => {
-    // initiating step's params ARE the flow input…
-    expect(flow.contract.input).toContain('req: CreateOrderRequest');
-    // …interior step inputs are NOT unioned up (validateOrder's param + its
-    // entity read live on step 1, not the flow):
-    expect(flow.contract.input).not.toContain('order: Order');
-    expect(flow.contract.input).not.toContain('reads Order');
-    // …but they are honestly counted, and remain on their own step.
-    expect(flow.contract.internal_inputs_count).toBeGreaterThanOrEqual(2);
+    // The initiating step is now the MERGED Validate step (handleCreateOrder's
+    // own auth/validation facts + the adjacent validateOrder's guard-clause
+    // validation collapse into ONE step per the Step doctrine's merge rule —
+    // same semantic role, sequential nodes) — so ITS params/reads honestly ARE
+    // the flow input, not demoted:
+    expect(flow.contract.input).toEqual(
+      expect.arrayContaining(['req: CreateOrderRequest', 'order: Order', 'reads Order'])
+    );
+    // …interior (non-initiating, non-terminal) step input is still demoted,
+    // never unioned up — here just notifyWarehouse's own param (saveOrder's
+    // own param duplicates the initiating step's already-counted 'order: Order'):
+    expect(flow.contract.input).not.toContain('saved: SavedOrder');
+    expect(flow.contract.internal_inputs_count).toBe(1);
     const validateStep = flow.steps.find(s => s.functions.some(f => f.function_id === 'n_validateOrder'))!;
     expect(validateStep.contract.input).toContain('reads Order');
+    // validateOrder's step IS the merged initiating step (step 0).
+    expect(validateStep).toBe(flow.steps[0]);
   });
 
   test('(b) flow Output = TERMINAL output only; intermediate returns demoted to internal_outputs_count', () => {
@@ -309,7 +322,7 @@ describe('D2 — AI-reframe plug point + determinism', () => {
   test('provenance lists are sorted: (facet, value) order, sorted step ids', () => {
     const flow = computeFlowConcepts(buildCas())[0];
     const prov = flow.contract.facet_provenance!;
-    const keys = prov.map(p => `${p.facet} ${p.value}`);
+    const keys = prov.map(p => `${p.facet}\u0000${p.value}`);
     expect(keys).toEqual([...keys].sort());
     for (const p of prov) {
       expect(p.contributed_by_step_ids).toEqual([...p.contributed_by_step_ids!].sort());

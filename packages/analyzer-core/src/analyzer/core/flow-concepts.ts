@@ -317,7 +317,7 @@ export interface FlowStep {
   /**
    * Provenance of `name`/`description` — the ICELOT doctrine seam made
    * explicit. 'deterministic-label' = the structural template label
-   * (nameStepDeterministically), a FACT-shaped label, never interpretation.
+   * (nameStepForRole), a FACT-shaped label, never interpretation.
    * 'ai' = the interpretive naming/description pass (opts.nameStep, fed by
    * the query layer from the persisted AI element-description store) replaced
    * the label. The deterministic label always remains the fallback: when the
@@ -519,8 +519,6 @@ export interface ComputeFlowConceptsOptions {
   nameStep?: (step: FlowStep, ctx: { flowEntryPoint: CASEntryPoint }) => { name?: string; description?: string } | undefined;
 }
 
-type StepCharacter = 'validate' | 'logic' | 'persist' | 'external' | 'respond';
-
 export interface ChainNode {
   node: CASNode;
   depth: number;
@@ -544,35 +542,159 @@ const VALIDATE_NAME_RE = /\b(validate|guard|check|assert|sanitize|verify|authori
 const RESPOND_NAME_RE = /\b(respond|render|reply|serialize|format|toJson|toResponse|present)/i;
 
 /**
- * Classify a function node's dominant side-effect character using facts
- * already on the CAS: its own exit_points (by source_node), whether it
- * writes/reads a data_lineage entity, and a light name-based fallback for
- * validate/respond framing (the same kind of name-signal capability-detector
- * already relies on for semantic grouping — not a new heuristic category).
+ * SEMANTIC STEP ROLE (docs/SEMANTIC-MODEL.md, Step: "Framework semantics
+ * locate steps … a validator/form boundary IS a Validate step; an ORM
+ * flush/save IS a Persist step … a serializer/response boundary IS a Respond
+ * step; a queue/messenger dispatch IS an async handoff"). This REPLACES the
+ * old one-role-per-node `StepCharacter` model: a SINGLE node can carry
+ * MULTIPLE roles at once (a controller that both authenticates AND validates
+ * input is 'validate'; a repository call that both writes AND is named
+ * `createOrder` is still 'persist', just NAMED from the verb — see
+ * nameStepForRole). `deriveNodeRoleOccurrences` below is what makes the
+ * doctrine's SPLIT rule possible: it returns every role a node's OWN facts
+ * support, not just the dominant one.
  */
-function classifyStepCharacter(
-  node: CASNode,
-  exitPointsByNode: Map<string, CASExitPoint[]>,
-  lineageByNode: Map<string, { writes: CASEntityLineage[]; reads: CASEntityLineage[] }>
-): StepCharacter {
-  const ownExits = exitPointsByNode.get(node.id) || [];
-  const lineage = lineageByNode.get(node.id);
+export type StepRole = 'validate' | 'persist' | 'dispatch' | 'call_external' | 'respond' | 'process';
 
-  if (ownExits.some(ep => ep.type === 'database' || ep.type === 'cache')) return 'persist';
-  if (lineage && lineage.writes.length > 0) return 'persist';
-  if (ownExits.some(ep => ['api', 'webhook', 'sdk', 'message', 'event', 'analytics'].includes(ep.type))) return 'external';
-  if (VALIDATE_NAME_RE.test(node.name)) return 'validate';
-  if (RESPOND_NAME_RE.test(node.name)) return 'respond';
-  return 'logic';
+/** Fixed precedence for (a) ordering the roles a single SPLIT node emits, and
+ *  (b) the same-role-in-a-row MERGE test in segmentIntoStepsByRole. Mirrors
+ *  the natural request lifecycle (Validate -> Persist -> Dispatch -> Call ->
+ *  Respond), with 'process' last as the evidence-named fallback role. */
+const ROLE_PRIORITY: StepRole[] = ['validate', 'persist', 'dispatch', 'call_external', 'respond', 'process'];
+
+/** One role a single node's OWN facts ground — the SPLIT unit
+ *  (docs/SEMANTIC-MODEL.md: "ONE node whose facts show MULTIPLE roles … yields
+ *  MULTIPLE steps, each mapped back to that same node"). `evidence` is always
+ *  the concrete CAS fact that produced it — never fabricated. */
+interface RoleOccurrence {
+  node: CASNode;
+  role: StepRole;
+  evidence: string;
 }
 
-const CHARACTER_LABEL: Record<StepCharacter, string> = {
-  validate: 'Validate',
-  logic: 'Process',
-  persist: 'Persist',
-  external: 'Call',
-  respond: 'Respond',
-};
+/**
+ * Derive EVERY semantic role a node's own facts ground — the doctrine's
+ * "framework semantics locate steps" rule, applied per node. A node can
+ * return MULTIPLE occurrences (the SPLIT case: e.g. a controller action that
+ * both carries an auth guard AND resolves the flow's HTTP response is both
+ * 'validate' and 'respond'). Facts consulted, all already on the CAS:
+ *   - VALIDATE   — the node's OWN entry_point security (auth/guards/roles) or
+ *                  input.validation facts (structural, doctrine-cited); a
+ *                  validate/guard/check/assert/verify/authoriz name pattern
+ *                  is only a FALLBACK when no structural fact fired.
+ *   - PERSIST    — the node's own exit_points of kind database/cache/file, or
+ *                  data_lineage writes (an ORM flush/save boundary).
+ *   - DISPATCH   — the node's own exit_points of kind message/event — an
+ *                  async handoff (queue/messenger dispatch), never a sync call.
+ *   - CALL_EXTERNAL — the node's own exit_points of kind api/webhook/sdk,
+ *                  UNLESS that exact exit IS this flow's own resolved response
+ *                  terminus (that is 'respond', not an outbound call).
+ *   - RESPOND    — the node resolves the flow's own terminus as an api/
+ *                  navigation exit (the response/serializer boundary), or a
+ *                  respond/render/serialize name pattern as a fallback.
+ * A node with NONE of the above facts gets exactly one 'process' occurrence
+ * (the HONEST FALLBACK — segmentIntoStepsByRole/nameStepForRole still name it
+ * from whatever entity/verb evidence exists, never a fabricated role label).
+ * Occurrences are returned in ROLE_PRIORITY order so segmentation and naming
+ * are deterministic run-to-run.
+ */
+function deriveNodeRoleOccurrences(
+  node: CASNode,
+  exitPointsByNode: Map<string, CASExitPoint[]>,
+  lineageByNode: Map<string, { writes: CASEntityLineage[]; reads: CASEntityLineage[] }>,
+  entryPointsByNode: Map<string, CASEntryPoint[]>,
+  /** The flow's resolved terminus (terminal-chain flows only) — grounds the
+   *  respond-vs-call distinction. Both undefined on entry-point-rooted flows
+   *  with no resolved terminus (honest omission, not fabrication). */
+  terminusNodeId?: string,
+  terminusKind?: string
+): RoleOccurrence[] {
+  const occurrences: RoleOccurrence[] = [];
+  const ownExits = exitPointsByNode.get(node.id) || [];
+  const lineage = lineageByNode.get(node.id);
+  const eps = entryPointsByNode.get(node.id) || [];
+
+  // VALIDATE — the node's own entry_point auth/validation facts (structural);
+  // a name-pattern fallback only when no structural fact fired.
+  let validateEvidence: string | undefined;
+  for (const ep of eps) {
+    const hasAuth = Boolean(ep.security?.authenticated)
+      || (ep.security?.guards || []).length > 0
+      || (ep.security?.authorized_roles || ep.security?.roles || []).length > 0;
+    if (hasAuth && !validateEvidence) {
+      validateEvidence = `entry point "${ep.name}" security facts (auth guard)`;
+    }
+    if ((ep.input?.validation || []).length > 0 && !validateEvidence) {
+      validateEvidence = `entry point "${ep.name}" input.validation rules`;
+    }
+  }
+  if (!validateEvidence && VALIDATE_NAME_RE.test(node.name)) {
+    validateEvidence = `function name "${node.name}" matches validate/guard naming pattern`;
+  }
+  if (validateEvidence) occurrences.push({ node, role: 'validate', evidence: validateEvidence });
+
+  // PERSIST — an ORM flush/save boundary: own db/cache/file exit, or a
+  // data_lineage write.
+  const dbExit = ownExits.find(e => e.type === 'database' || e.type === 'cache' || e.type === 'file');
+  const writesEntity = lineage && lineage.writes.length > 0 ? lineage.writes[0] : undefined;
+  if (dbExit || writesEntity) {
+    const evidence = dbExit
+      ? `exit point ${dbExit.id} (${dbExit.type}) on node "${node.name}"`
+      : `data_lineage "${writesEntity!.entity_name}" writers include node "${node.name}"`;
+    occurrences.push({ node, role: 'persist', evidence });
+  }
+
+  // DISPATCH — a queue/messenger dispatch: own message/event exit (async
+  // handoff; the continuation is a DIFFERENT flow segment, see stitchContinuations).
+  const dispatchExit = ownExits.find(e => e.type === 'message' || e.type === 'event');
+  if (dispatchExit) {
+    occurrences.push({
+      node, role: 'dispatch',
+      evidence: `exit point ${dispatchExit.id} (${dispatchExit.type}) on node "${node.name}"`,
+    });
+  }
+
+  // CALL_EXTERNAL — an outbound api/webhook/sdk exit, UNLESS it IS this flow's
+  // own resolved response terminus (that's 'respond', not an outbound call).
+  const isResponseTerminus = Boolean(
+    terminusNodeId !== undefined && node.id === terminusNodeId
+    && terminusKind && ['api', 'navigation'].includes(terminusKind)
+  );
+  const callExit = ownExits.find(e => ['api', 'webhook', 'sdk'].includes(e.type));
+  if (callExit && !isResponseTerminus) {
+    occurrences.push({
+      node, role: 'call_external',
+      evidence: `exit point ${callExit.id} (${callExit.type}) on node "${node.name}"`,
+    });
+  }
+
+  // RESPOND — the serializer/response boundary: resolves the flow's own
+  // terminus, or a respond/render/serialize name pattern as a fallback.
+  if (isResponseTerminus) {
+    occurrences.push({
+      node, role: 'respond',
+      evidence: `node resolves the flow's terminus exit point (${terminusKind})`,
+    });
+  } else if (RESPOND_NAME_RE.test(node.name)) {
+    occurrences.push({
+      node, role: 'respond',
+      evidence: `function name "${node.name}" matches respond/render naming pattern`,
+    });
+  }
+
+  // HONEST FALLBACK: zero role-indicating facts. Still yields a sane step
+  // (never crashes, never fabricates a role) — nameStepForRole's 'process'
+  // branch further tries entity/verb evidence before falling back to a bare
+  // function-name label.
+  if (occurrences.length === 0) {
+    occurrences.push({
+      node, role: 'process',
+      evidence: `no validate/persist/dispatch/call/respond facts found for node "${node.name}"`,
+    });
+  }
+
+  return occurrences.sort((a, b) => ROLE_PRIORITY.indexOf(a.role) - ROLE_PRIORITY.indexOf(b.role));
+}
 
 /** Layer used as a secondary segmentation boundary (in addition to side-effect
  *  character): a jump between architectural layers is itself a step boundary
@@ -677,25 +799,64 @@ export function traceForwardChain(
 }
 
 /**
- * Segment a traced chain into cohesive steps: draw a boundary whenever the
- * side-effect CHARACTER changes, or the architectural LAYER changes. A run
- * of contiguous nodes with the same (character, layer) pair is one step.
+ * SEMANTIC SEGMENTATION (docs/SEMANTIC-MODEL.md, Step doctrine): draw step
+ * boundaries by ROLE, not by function. Every node in the chain contributes
+ * one or more ROLE OCCURRENCES (deriveNodeRoleOccurrences — evidence-gated,
+ * never fabricated); this walks the chain in order, flattens every node's
+ * occurrences (in ROLE_PRIORITY order), and then:
+ *   - MERGE: a run of CONSECUTIVE occurrences sharing the same role collapses
+ *     into ONE step, however many functions it spans (many-functions : one-step
+ *     — "a validator/form boundary IS a Validate step" whether that's one
+ *     function or three).
+ *   - SPLIT: a single node whose OWN facts ground multiple roles emits
+ *     multiple ADJACENT occurrences for that node (in ROLE_PRIORITY order —
+ *     e.g. validate before persist), which — because they carry DIFFERENT
+ *     roles — never merge with each other. The same node then legitimately
+ *     maps into multiple steps (one-function : many-steps), each via its own
+ *     StepCodeMapping (deriveStepCodeMappings re-derives relationships per
+ *     node independently of this grouping, so a split node's two steps still
+ *     each carry the correct typed mapping).
+ * A chain with zero role-indicating facts anywhere still yields sane
+ * 'process' steps (the HONEST FALLBACK; see deriveNodeRoleOccurrences) —
+ * never crashes, never invents a role label.
  */
-function segmentIntoSteps(
+function segmentIntoStepsByRole(
   chain: ChainNode[],
   exitPointsByNode: Map<string, CASExitPoint[]>,
-  lineageByNode: Map<string, { writes: CASEntityLineage[]; reads: CASEntityLineage[] }>
-): Array<{ character: StepCharacter; layer: string; nodes: CASNode[] }> {
-  const segments: Array<{ character: StepCharacter; layer: string; nodes: CASNode[] }> = [];
-
+  lineageByNode: Map<string, { writes: CASEntityLineage[]; reads: CASEntityLineage[] }>,
+  entryPointsByNode: Map<string, CASEntryPoint[]>,
+  terminusNodeId?: string,
+  terminusKind?: string
+): Array<{ role: StepRole; nodes: CASNode[]; evidences: string[] }> {
+  const occurrences: RoleOccurrence[] = [];
   for (const { node } of chain) {
-    const character = classifyStepCharacter(node, exitPointsByNode, lineageByNode);
-    const layer = layerOf(node);
+    occurrences.push(
+      ...deriveNodeRoleOccurrences(node, exitPointsByNode, lineageByNode, entryPointsByNode, terminusNodeId, terminusKind)
+    );
+  }
+
+  // MERGE test: same role, always — EXCEPT the 'process' fallback role, which
+  // additionally requires the same architectural LAYER (layerOf). Once a
+  // node's OWN facts ground a real role (validate/persist/dispatch/
+  // call_external/respond), doctrine says framework semantics locate the
+  // step and merging across layers is correct (the acceptance case: a
+  // controller's auth check + a service-level validator collapse into ONE
+  // Validate step). 'process' carries no such fact — it is the honest
+  // catch-all for nodes with no role-indicating evidence at all — so two
+  // unrelated business-logic hops in DIFFERENT layers (e.g. a bare
+  // dispatching controller and an unrelated downstream helper) stay distinct
+  // steps rather than collapsing into one undifferentiated blob.
+  const segments: Array<{ role: StepRole; nodes: CASNode[]; evidences: string[] }> = [];
+  for (const occ of occurrences) {
     const last = segments[segments.length - 1];
-    if (last && last.character === character && last.layer === layer) {
-      last.nodes.push(node);
+    const sameRole = last && last.role === occ.role;
+    const layerOk = !sameRole || occ.role !== 'process'
+      || layerOf(last!.nodes[last!.nodes.length - 1]) === layerOf(occ.node);
+    if (last && sameRole && layerOk) {
+      last.nodes.push(occ.node);
+      last.evidences.push(occ.evidence);
     } else {
-      segments.push({ character, layer, nodes: [node] });
+      segments.push({ role: occ.role, nodes: [occ.node], evidences: [occ.evidence] });
     }
   }
 
@@ -780,38 +941,133 @@ function externalServiceForNodes(nodeIds: Set<string>, exitPointsByNode: Map<str
   return undefined;
 }
 
-function nameStepDeterministically(
-  character: StepCharacter,
+/** Dispatch/publish target for a DISPATCH-role segment — the channel/event
+ *  name from the node's own message/event exit point (never a name pattern:
+ *  this is only called on nodes that already grounded 'dispatch' via a real
+ *  exit fact in deriveNodeRoleOccurrences). */
+function dispatchTargetForNodes(nodeIds: Set<string>, exitPointsByNode: Map<string, CASExitPoint[]>): string | undefined {
+  for (const id of nodeIds) {
+    const eps = exitPointsByNode.get(id) || [];
+    const ev = eps.find(e => e.type === 'message' || e.type === 'event');
+    if (ev) return ev.target?.service_id || ev.target?.resource || ev.name;
+  }
+  return undefined;
+}
+
+/** CRUD-shaped verbs a PERSIST-role writer's own name can carry — grounds the
+ *  "Create/Update/Delete <Entity>" naming the doctrine's acceptance case asks
+ *  for (a `saveOrder`/`createBooking`-style write gets a MORE SPECIFIC name
+ *  than the generic 'Persist <Entity>' fallback, when the writer's own name
+ *  carries the verb). Also reused by the 'process' fallback naming below for
+ *  the broader business-verb vocabulary. Deterministic name-pattern
+ *  extraction on the SAME writer node the persist role's exit/lineage fact
+ *  already grounded — not a new unrelated heuristic. */
+const CRUD_VERB_RE = /^(create|update|delete|remove|save|register|reserve|cancel|approve|reject|complete|submit|book|schedule)/i;
+const PROCESS_VERB_RE = /^(create|update|delete|remove|save|register|reserve|cancel|approve|reject|complete|submit|book|schedule|process|handle|apply|assign|generate|calculate|build|prepare|charge|refund|transfer|assign)/i;
+
+function verbForNode(node: CASNode, re: RegExp): string | undefined {
+  const m = re.exec(node.name);
+  return m ? m[1] : undefined;
+}
+
+function titleizeWord(w: string): string {
+  return w.length ? w[0].toUpperCase() + w.slice(1).toLowerCase() : w;
+}
+
+/**
+ * NAMING (docs/SEMANTIC-MODEL.md, Step): deterministic, byte-stable,
+ * evidence-grounded action phrases. `grounded: false` marks the ONE honest
+ * fallback case — a 'process' segment with no entity/verb evidence at all —
+ * so callers can surface it as a gap instead of silently pretending the label
+ * is meaningful.
+ */
+function nameStepForRole(
+  role: StepRole,
   nodes: CASNode[],
   exitPointsByNode: Map<string, CASExitPoint[]>,
   lineage: CASEntityLineage[]
-): { name: string; description: string } {
+): { name: string; description: string; grounded: boolean } {
   const nodeIds = new Set(nodes.map(n => n.id));
-  const label = CHARACTER_LABEL[character];
+  const fnNames = nodes.map(n => n.name).join(', ');
 
-  if (character === 'persist') {
+  if (role === 'validate') {
     const entity = dominantEntityForNodes(nodeIds, lineage);
-    const name = entity ? `Persist ${entity}` : 'Persist Data';
-    return { name, description: entity
-      ? `Writes ${entity} to storage (${nodes.map(n => n.name).join(', ')}).`
-      : `Persists state via ${nodes.map(n => n.name).join(', ')}.` };
+    const name = entity ? `Validate ${entity}` : 'Validate Request';
+    return { name, description: `Guards/validates ${entity ? `${entity} ` : ''}input via ${fnNames}.`, grounded: true };
   }
-  if (character === 'external') {
+
+  if (role === 'persist') {
+    const entity = dominantEntityForNodes(nodeIds, lineage);
+    // A writer whose OWN name carries a CRUD verb (createOrder, saveBooking,
+    // cancelReservation, …) gets the MORE SPECIFIC evidence-named form —
+    // this is what the doctrine's acceptance case asks for: "Create <Entity>"
+    // rather than the generic "Persist <Entity>" when that evidence exists.
+    const verbNode = nodes.find(n => verbForNode(n, CRUD_VERB_RE));
+    const verb = verbNode ? verbForNode(verbNode, CRUD_VERB_RE) : undefined;
+    if (verb && entity) {
+      return {
+        name: `${titleizeWord(verb)} ${entity}`,
+        description: `Writes ${entity} to storage via ${fnNames} (verb "${verb}" on "${verbNode!.name}").`,
+        grounded: true,
+      };
+    }
+    const name = entity ? `Persist ${entity}` : 'Persist Data';
+    return {
+      name,
+      description: entity ? `Writes ${entity} to storage (${fnNames}).` : `Persists state via ${fnNames}.`,
+      grounded: true,
+    };
+  }
+
+  if (role === 'dispatch') {
+    const target = dispatchTargetForNodes(nodeIds, exitPointsByNode);
+    const name = target ? `Publish ${target}` : 'Publish Event';
+    return {
+      name,
+      description: `Publishes an async handoff${target ? ` to ${target}` : ''} via ${fnNames}.`,
+      grounded: true,
+    };
+  }
+
+  if (role === 'call_external') {
     const service = externalServiceForNodes(nodeIds, exitPointsByNode);
     const name = service ? `Call ${service}` : 'Call External Service';
-    return { name, description: service
-      ? `Calls external service ${service} via ${nodes.map(n => n.name).join(', ')}.`
-      : `Reaches outside the process via ${nodes.map(n => n.name).join(', ')}.` };
+    return {
+      name,
+      description: service ? `Calls external service ${service} via ${fnNames}.` : `Reaches outside the process via ${fnNames}.`,
+      grounded: true,
+    };
   }
-  if (character === 'validate') {
-    return { name: 'Validate Request', description: `Guards/validates input via ${nodes.map(n => n.name).join(', ')}.` };
+
+  if (role === 'respond') {
+    return { name: 'Respond', description: `Formats/returns the result via ${fnNames}.`, grounded: true };
   }
-  if (character === 'respond') {
-    return { name: 'Respond', description: `Formats/returns the result via ${nodes.map(n => n.name).join(', ')}.` };
-  }
+
+  // role === 'process' — the evidence-named fallback the doctrine requires:
+  // "NEVER a bare 'Process (fnName)' placeholder name". Try entity + verb
+  // (e.g. "Reserve Inventory"), then entity alone, then verb alone, and only
+  // fall back to a bare function-name label when the node truly carries no
+  // entity/verb evidence at all (the HONEST FALLBACK — flagged ungrounded).
   const entity = dominantEntityForNodes(nodeIds, lineage);
-  const name = entity ? `Process ${entity}` : `${label} (${nodes[0]?.name || 'step'})`;
-  return { name, description: `Core logic via ${nodes.map(n => n.name).join(', ')}.` };
+  const verbNode = nodes.find(n => verbForNode(n, PROCESS_VERB_RE));
+  const verb = verbNode ? verbForNode(verbNode, PROCESS_VERB_RE) : undefined;
+  if (verb && entity) {
+    return { name: `${titleizeWord(verb)} ${entity}`, description: `Core logic via ${fnNames} (verb "${verb}" on "${verbNode!.name}").`, grounded: true };
+  }
+  if (entity) {
+    return { name: `Process ${entity}`, description: `Core logic touching ${entity} via ${fnNames}.`, grounded: true };
+  }
+  if (verb) {
+    return { name: titleizeWord(verb), description: `Core logic (verb "${verb}" on "${verbNode!.name}") via ${fnNames}.`, grounded: true };
+  }
+  const name = nodes.length === 1
+    ? `Process (${nodes[0].name})`
+    : `Process (${nodes.length} functions: ${nodes.slice(0, 3).map(n => n.name).join(', ')}${nodes.length > 3 ? ', …' : ''})`;
+  return {
+    name,
+    description: `No entity/verb evidence found for this segment; conservative grouping of ${fnNames}.`,
+    grounded: false,
+  };
 }
 
 function buildLineageIndex(cas: CASOutput): Map<string, { writes: CASEntityLineage[]; reads: CASEntityLineage[] }> {
@@ -2254,7 +2510,9 @@ function buildTerminalFlows(
       if (!hay.includes(t)) continue;
     }
 
-    const segments = segmentIntoSteps(chainNodes, exitPointsByNode, lineageByNode);
+    const segments = segmentIntoStepsByRole(
+      chainNodes, exitPointsByNode, lineageByNode, entryPointsByNode, terminusNodeId, exit?.type
+    );
 
     const gaps: string[] = [];
     if (chainNodes.length >= maxFunctions) {
@@ -2264,12 +2522,15 @@ function buildTerminalFlows(
       gaps.push('Some call_path nodes did not resolve in the graph and were skipped from this flow.');
     }
     if (segments.length === 1) {
-      gaps.push('Entire terminal chain classified as a single step — no side-effect or layer boundary detected between entry and terminus.');
+      gaps.push('Entire terminal chain classified as a single step — no role boundary detected between entry and terminus.');
     }
 
     const flowEntryScope = new Set([chain.entry_point.entry_point_id, chain.entry_point.node_id].filter(Boolean) as string[]);
     const steps: FlowStep[] = segments.map((seg, i) => {
-      const { name, description } = nameStepDeterministically(seg.character, seg.nodes, exitPointsByNode, allLineage);
+      const { name, description, grounded } = nameStepForRole(seg.role, seg.nodes, exitPointsByNode, allLineage);
+      if (!grounded) {
+        gaps.push(`Step "${name}" carries no validate/persist/dispatch/call/respond/entity/verb evidence — honest fallback grouping used, not a fabricated role.`);
+      }
       const contract = buildContract(seg.nodes, cas, exitPointsByNode, entryPointsByNode, flowEntryScope);
 
       let functions: FlowStep['functions'];
@@ -2654,7 +2915,7 @@ function computeEntryPointFlows(
       if (!hasExit && !hasLineage && !hasSurface) continue;
     }
 
-    const segments = segmentIntoSteps(chain, exitPointsByNode, lineageByNode);
+    const segments = segmentIntoStepsByRole(chain, exitPointsByNode, lineageByNode, entryPointsByNode);
 
     const gaps: string[] = [];
     if (synthesizedRootIds.has(ep.id)) {
@@ -2664,12 +2925,15 @@ function computeEntryPointFlows(
       gaps.push(`Call chain truncated at maxFunctionsPerFlow=${maxFunctions}; some downstream steps may be missing.`);
     }
     if (segments.length === 1) {
-      gaps.push('Entire chain classified as a single step — no side-effect or layer boundary detected; segmentation is coarse for this flow.');
+      gaps.push('Entire chain classified as a single step — no role boundary detected; segmentation is coarse for this flow.');
     }
 
     const flowEntryScope = new Set([ep.id, ep.handler?.node_id || ep.source_node].filter(Boolean) as string[]);
     const steps: FlowStep[] = segments.map((seg, i) => {
-      const { name, description } = nameStepDeterministically(seg.character, seg.nodes, exitPointsByNode, allLineage);
+      const { name, description, grounded } = nameStepForRole(seg.role, seg.nodes, exitPointsByNode, allLineage);
+      if (!grounded) {
+        gaps.push(`Step "${name}" carries no validate/persist/dispatch/call/respond/entity/verb evidence — honest fallback grouping used, not a fabricated role.`);
+      }
       const contract = buildContract(seg.nodes, cas, exitPointsByNode, entryPointsByNode, flowEntryScope);
 
       // sub-section detection: only meaningful when the step maps to a
