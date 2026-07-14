@@ -218,6 +218,16 @@ export class DockerComposeAnalyzer extends ContainerTopologyAnalyzer {
     const edges: CASEdge[] = [];
     const entryPoints: CASEntryPoint[] = [];
     const exitPoints: CASExitPoint[] = [];
+    // ANY service declared in this same compose file — built or pulled-image
+    // — already gets its own representation: an own-built service is app
+    // topology (edges only, no exit point); a pulled-image service already
+    // emits its OWN direct "External service <name>" exit point below (from
+    // the exposed-ports loop). A depends_on/env reference pointing at either
+    // would just duplicate that existing signal under a second, differently
+    // shaped label ("Compose dependency X -> Y") — noise, not new evidence.
+    // Only a reference to a name this file never declares as a service (no
+    // other evidence of it at all) is worth its own exit point.
+    const allServiceNames = new Set(services.map(s => s.name));
 
     for (const service of services) {
       const nodeId = `compose_service_${this.sanitizeId(relativeFile)}_${this.sanitizeId(service.name)}`;
@@ -278,25 +288,35 @@ export class DockerComposeAnalyzer extends ContainerTopologyAnalyzer {
           'runtime',
           { topology_surface: 'docker-compose', dependency_kind: 'compose-service' }
         ));
-        exitPoints.push(this.createExitPoint(
-          `exit_compose_dep_${this.sanitizeId(relativeFile)}_${this.sanitizeId(service.name)}_${this.sanitizeId(dependency)}`,
-          nodeId,
-          'api',
-          `Compose dependency ${service.name} -> ${dependency}`,
-          `Compose service ${service.name} depends on ${dependency}.`,
-          { service_id: dependency, endpoint: `http://${dependency}`, resource: dependency },
-          { action: 'service-dependency', async: false },
-          {
-            topology_surface: 'docker-compose',
-            deployment_service_name: dependency,
-            service_aliases: [dependency],
-          }
-        ));
+        // Only emit the exit point when the dependency does NOT name another
+        // service declared in this same file — that target already has its
+        // own representation (own-topology edge, or its own direct external-
+        // service exit point below), so this would just be a duplicate.
+        if (!allServiceNames.has(dependency)) {
+          exitPoints.push(this.createExitPoint(
+            `exit_compose_dep_${this.sanitizeId(relativeFile)}_${this.sanitizeId(service.name)}_${this.sanitizeId(dependency)}`,
+            nodeId,
+            'api',
+            `Compose dependency ${service.name} -> ${dependency}`,
+            `Compose service ${service.name} depends on ${dependency}.`,
+            { service_id: dependency, endpoint: `http://${dependency}`, resource: dependency },
+            { action: 'service-dependency', async: false },
+            {
+              topology_surface: 'docker-compose',
+              deployment_service_name: dependency,
+              service_aliases: [dependency],
+            }
+          ));
+        }
       }
 
       for (const [key, value] of Object.entries(service.environment)) {
         const targetService = inferServiceReference(key, value);
         if (!targetService) continue;
+        // Same duplicate-signal guard as the depends_on loop above: an env
+        // var pointing at a service already declared in this file is
+        // already represented elsewhere, not new evidence.
+        if (allServiceNames.has(targetService)) continue;
         exitPoints.push(this.createExitPoint(
           `exit_compose_env_${this.sanitizeId(relativeFile)}_${this.sanitizeId(service.name)}_${this.sanitizeId(key)}`,
           nodeId,
@@ -624,7 +644,15 @@ function parseComposeServicesFromYaml(content: string): ComposeService[] {
 
 function composeBuildContext(value: unknown): string | undefined {
   if (typeof value === 'string') return value;
-  if (value && typeof value === 'object' && !Array.isArray(value)) return stringValue((value as any).context);
+  // Object-form `build:` (context/dockerfile/args) still means "this
+  // compose file builds the service" even when `context` is omitted — compose
+  // defaults an omitted context to the compose file's own directory. Losing
+  // the object here (falling through to undefined) made `Boolean(service.build)`
+  // false and misclassified an own-built service as a pulled/external image
+  // (e.g. `build: { dockerfile: docker/php.Dockerfile }` with no `context`).
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return stringValue((value as any).context) || '.';
+  }
   return undefined;
 }
 

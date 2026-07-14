@@ -139,6 +139,34 @@ function exitModality(exit: CASExitPoint): { modality: SeamModality; confidence:
   }
 }
 
+/**
+ * True when an exit point is IN-LIBRARY plumbing rather than a real seam —
+ * "a library-internal operator call (rxjs `map`, ORM helper) is NOT a seam
+ * of any type — seams are component/system boundaries, never in-library
+ * plumbing" (SEMANTIC-MODEL.md, "Communication types"). Evidence-based, never
+ * a name blocklist: a call only reaches `type: 'sdk'` with `metadata.library`
+ * set once the analyzer has resolved the callee through an IMPORT to a known
+ * package (see typescript-javascript-analyzer.ts's `importSourceMap`/
+ * `getLibraryForType` resolution) — that resolution IS "target resolves to
+ * ... an import from a known library". What distinguishes an in-library
+ * operator from a genuine SDK-to-remote-service call on the SAME shape of
+ * exit point is whether the call names a distinct external RESOURCE
+ * (`target.service_id` / `target.resource` — a provider/queue/bucket
+ * identity, as SOAP/WSDL and REST exit points always carry) versus carrying
+ * no resource identity at all, where `target.endpoint` is just the call
+ * site's own operator/method name echoed back (`endpoint === operation.action`,
+ * e.g. `takeUntilDestroyed`/`map` — evidence the exit machinery had nothing
+ * but the in-process call site itself to describe, i.e. no counterparty).
+ */
+function isLibraryPlumbingExit(exit: CASExitPoint): boolean {
+  if (exit.type !== 'sdk') return false;
+  if (!(exit.metadata as any)?.library) return false; // no resolved-import evidence
+  if (exit.target?.service_id || exit.target?.resource) return false; // named external resource -> real seam
+  const endpoint = exit.target?.endpoint;
+  const action = exit.operation?.action;
+  return !endpoint || endpoint === action;
+}
+
 /** Top-level component key for a file path — the deployable that owns it when
  *  one exists, else the two-segment module root (apps/foo, libs/bar/…) so nodes
  *  in a monorepo group meaningfully rather than by leaf file. Mirrors
@@ -228,6 +256,7 @@ export function classifyCommunicationSeams(
   // (1) EXIT-POINT seams: each external interaction, classified sync/async, from
   // the owning component to the named external target.
   for (const exit of output.exit_points || []) {
+    if (isLibraryPlumbingExit(exit)) continue;
     const verdict = exitModality(exit);
     if (!verdict) continue;
     const file = (exit.metadata as any)?.file || fileForNode(exit.source_node, nodeFile);

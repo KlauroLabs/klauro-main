@@ -39,6 +39,40 @@ function queueExit(sourceNode: string, file: string): CASExitPoint {
   } as CASExitPoint;
 }
 
+/** An in-library operator call (rxjs `map` inside `.pipe(...)`) as the TS
+ *  analyzer emits it for a resolved-import 'sdk' exit point: no distinct
+ *  resource identity, `target.endpoint` is just the call site's own name
+ *  echoed back (`endpoint === operation.action`). This is library-internal
+ *  plumbing, never a seam. */
+function rxjsOperatorExit(sourceNode: string, file: string, operator: string): CASExitPoint {
+  return {
+    id: `exit_sdk_${operator}`,
+    source_node: sourceNode,
+    type: 'sdk',
+    name: `Call to ${operator}`,
+    target: { sdk: 'rxjs', endpoint: operator },
+    operation: { action: operator, async: false },
+    metadata: { file, library: 'rxjs' },
+  } as CASExitPoint;
+}
+
+/** A real SOAP/WSDL exit point (soap-wsdl-analyzer.ts shape): resolved
+ *  through a known "library" (the SOAP client class), but with a distinct
+ *  external RESOURCE identity (the WSDL service name + real host endpoint)
+ *  — a genuine system boundary that must survive the in-library-plumbing
+ *  filter. */
+function soapExit(sourceNode: string, file: string): CASExitPoint {
+  return {
+    id: 'exit_soap_1',
+    source_node: sourceNode,
+    type: 'sdk',
+    name: 'SOAP call: CardManagementWS::GetCard',
+    target: { service_id: 'CardManagementWS', resource: 'CardManagementWS', endpoint: 'https://ws.efsllc.com/CardManagementWS' },
+    operation: { action: 'GetCard', async: false },
+    metadata: { file, library: 'SoapClient' },
+  } as CASExitPoint;
+}
+
 function queueConsumer(sourceNode: string, file: string): CASEntryPoint {
   return {
     id: 'entry_msg_1',
@@ -154,6 +188,36 @@ describe('communication-seams classifier', () => {
     const sync = r.seams.find(s => s.modality === 'sync')!;
     expect(sync.source).not.toBe('POST /pay/charge');
     expect(sync.source).toBe('apps/checkout'); // clean module root, not the route label
+  });
+
+  it('excludes an in-library operator call (rxjs `map`/`takeUntilDestroyed`) from seams entirely', () => {
+    const r = classifyCommunicationSeams({
+      nodes: [node('fn_component', 'apps/checkout/src/checkout.component.ts')],
+      exit_points: [
+        rxjsOperatorExit('fn_component', 'apps/checkout/src/checkout.component.ts', 'map'),
+        rxjsOperatorExit('fn_component', 'apps/checkout/src/checkout.component.ts', 'takeUntilDestroyed'),
+      ],
+      entry_points: [],
+      data_lineage: [],
+      data_entities: [],
+      deployable_evidence: [],
+    });
+    expect(r.seams).toHaveLength(0);
+    expect(r.inventory.counts.total).toBe(0);
+  });
+
+  it('keeps a real SDK/SOAP exit point with a distinct external resource identity as a SYNC seam', () => {
+    const r = classifyCommunicationSeams({
+      nodes: [node('fn_soap', 'apps/billing/src/wex-client.php')],
+      exit_points: [soapExit('fn_soap', 'apps/billing/src/wex-client.php')],
+      entry_points: [],
+      data_lineage: [],
+      data_entities: [],
+      deployable_evidence: [],
+    });
+    const sync = r.seams.filter(s => s.modality === 'sync');
+    expect(sync).toHaveLength(1);
+    expect(sync[0].target).toBe('CardManagementWS');
   });
 
   it('rolls up to a deployable-level inventory when deployables exist', () => {

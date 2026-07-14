@@ -3174,6 +3174,21 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     if (target.includes('.')) {
       const parts = target.split('.');
       const method = parts.pop() || '';
+      // A generic `.request(verb, url, ...)` call (Angular HttpClient /
+      // axios-style config object aside, this is the positional-args form)
+      // carries the REAL HTTP verb as its FIRST string argument — the URL is
+      // the SECOND. Treating "the first quoted string in the expression" as
+      // the endpoint (the fetch/get/post/etc branch below) mislabels the verb
+      // itself as the target: `this.http.request('LINK', url)` became
+      // exit-point name "REQUEST LINK" (method=REQUEST, endpoint=LINK)
+      // instead of "LINK <url>". Pull every string literal and, for this one
+      // method name, assign the first two positionally (verb, endpoint)
+      // instead of taking only the first as the endpoint.
+      if (method.toLowerCase() === 'request') {
+        const literals = this.extractStringLiteralsFromExpression(callExpression);
+        if (literals.length >= 2) return { method: literals[0], endpoint: literals[1] };
+        if (literals.length === 1) return { method, endpoint: literals[0] };
+      }
       const endpoint = this.extractEndpointFromExpression(callExpression);
       return { method, endpoint };
     }
@@ -3189,6 +3204,20 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     if (templateMatch) return templateMatch[1];
 
     return undefined;
+  }
+
+  /** Every quoted/template string literal appearing in a call expression, in
+   *  source order — used where argument POSITION carries meaning (e.g. a
+   *  generic `.request(verb, url)` call) and a single "first match" isn't
+   *  enough to tell the verb apart from the endpoint. */
+  private extractStringLiteralsFromExpression(callExpression: string): string[] {
+    const literals: string[] = [];
+    const re = /['"`]([^'"`]*)['"`]/g;
+    let match: RegExpExecArray | null;
+    while ((match = re.exec(callExpression)) !== null) {
+      literals.push(match[1]);
+    }
+    return literals;
   }
 
   private parseRepositoryCall(target: string): { repository: string; method: string } | null {
