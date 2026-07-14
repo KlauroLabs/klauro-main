@@ -21,6 +21,8 @@ import { buildAgentBootstrapPrompt } from './agent-bootstrap';
  * it (the point).
  */
 const NON_TOOL_TOKENS = new Set<string>([
+  'behavior_surfaces',
+  'top_capabilities',
   // CAS field / response-shape keys referenced in prose
   'ai_enrichment',
   'entry_points',
