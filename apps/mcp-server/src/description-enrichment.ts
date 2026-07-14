@@ -7,6 +7,7 @@ import { getAIConfig } from '../../../packages/analyzer-core/src/config/ai.confi
 import { validateElementDescription } from '../../../packages/analyzer-core/src/ai/element-description-validator';
 import type { CASOutput, CASNode } from '../../../packages/analyzer-core/src/types/cas.types';
 import { computeFlowConcepts, type FlowConcept, type FlowStep } from '../../../packages/analyzer-core/src/analyzer/core/flow-concepts';
+import { buildEntityRelationIndex } from './semantic-roles';
 import { getProjectStorageDir, loadAnalysis, saveAnalysis } from './storage';
 
 export type DescriptionTargetKind = 'node' | 'service' | 'entity' | 'capability' | 'entry_point' | 'exit_point' | 'flow';
@@ -591,10 +592,26 @@ async function promptFacts(projectPath: string, kind: DescriptionTargetKind, tar
     };
   }
   if (kind === 'entity') {
+    // FULL evidence bundle (user doctrine: entity descriptions are authored
+    // LAST, grounded in fields + ORM relations + lineage + the capabilities/
+    // journeys that use the entity — never a bare field list). `target` here
+    // is the CASDataEntity itself; the ORM relation graph and capability
+    // membership live elsewhere on the CAS and are joined in by name/id.
+    const relations = cas ? buildEntityRelationIndex(cas).byEntityNameLower.get(String(target.name || '').toLowerCase()) || [] : [];
+    const servingCapabilities = (cas?.system_capabilities || [])
+      .filter(capability => (capability.related_entities || []).includes(target.id))
+      .map(capability => capability.name);
     return {
       fields: (target.fields || []).slice(0, 15).map((field: any) => field.name),
-      relationships: (target.relationships || []).slice(0, 10),
+      relations: relations.slice(0, 10).map(rel => `${rel.relationType}${rel.field ? ` (${rel.field})` : ''} -> ${rel.targetName}`),
       schema_source: target.schema_source,
+      lifecycle_summary: {
+        created_by_count: target.lifecycle?.created_by?.length || 0,
+        read_by_count: target.lifecycle?.read_by?.length || 0,
+        updated_by_count: target.lifecycle?.updated_by?.length || 0,
+        deleted_by_count: target.lifecycle?.deleted_by?.length || 0,
+      },
+      serves_capabilities: servingCapabilities.slice(0, 8),
     };
   }
   return target;

@@ -1720,7 +1720,9 @@ export class AnalyzerOrchestrator {
         comprehensionDataEntities,
         projectTextSignal,
         comprehensionJourneys,
-        deployableEvidence.length
+        deployableEvidence.length,
+        allNodes,
+        allEdges
       );
       const aiDuration = Date.now() - aiPhaseStart;
       const aiGeneration = enhancedSystemPurpose.description_generation;
@@ -2854,7 +2856,9 @@ export class AnalyzerOrchestrator {
         incrComprehensionDataEntities,
         incrProjectTextSignal,
         incrComprehensionJourneys,
-        deployableEvidence.length
+        deployableEvidence.length,
+        nodes,
+        edges
       );
     } else if (
       previousOutput.enhanced_system_purpose?.inferred_description &&
@@ -7665,7 +7669,7 @@ export class AnalyzerOrchestrator {
     if (/^(database|request external|shutil|subprocess|re|pathlib|os|sys|typing|datetime|uuid)$/.test(lower)) return false;
     if (value.includes('${')) return false;
     if (/[()[\]{}]|=>/.test(value) || /^_?\w+\./.test(value) && /^_?(ctx|context|db|repository|repo|service|client)\./i.test(value)) return false;
-    if (/^(get|post|put|patch|delete|fetch)\s+/i.test(value) && !/^https?:\/\//i.test(value)) return false;
+    if (/^(get|post|put|patch|delete|fetch|head|options|link|unlink|connect|trace|request)\s+/i.test(value) && !/^https?:\/\//i.test(value)) return false;
     if (/^(file|directory|path|string|math|console|task|timer|thread|datetime|timespan|guid|uri|regex|stream|streamwriter|streamreader|enumerable|linq)(\.|$)/i.test(value)) return false;
     if (/\.ctor$/i.test(value)) return false;
     if (/^system(\.|$)/i.test(value)) return false;
@@ -9342,7 +9346,13 @@ export class AnalyzerOrchestrator {
     // Deterministic deployable-unit count (collectDeployableEvidence). Grounds
     // architecture-shape claims (microservices/monolith/...) in the description
     // gate; undefined = topology unknown = shape claims are uncorroborated.
-    deployableCount?: number
+    deployableCount?: number,
+    // Full node/edge graph — needed ONLY for the entity-description LAST-stage
+    // pass below (ORM relation evidence). Optional so any other caller of this
+    // method is unaffected; the entity pass simply gets no relation evidence
+    // when omitted.
+    nodes: CASNode[] = [],
+    edges: CASEdge[] = []
   ): Promise<void> {
     this.setElementDescriptionGrounding(
       enhancedSystemPurpose.primary_domain,
@@ -9767,6 +9777,31 @@ export class AnalyzerOrchestrator {
         budgetMs
       );
     }
+
+    // ---- ENTITY DESCRIPTIONS — authored LAST, after everything else this
+    // pass has established (the finalized capability catalog, domain, and the
+    // caller's already-computed journeys) is available as evidence. AI-only-
+    // or-absent: applyAIElementDescriptions/applyElementDescription never
+    // write a deterministic description — a skip/failure leaves
+    // description_source unset and records an honest description_generation
+    // status (see docs/cas/DETERMINISM-BOUNDARY.md). Runs as its own batch
+    // pass (capabilities: []) so it never re-describes capabilities already
+    // handled above; `systemCapabilities` is still passed as
+    // allCapabilitiesForEvidence so entity targets see which capabilities
+    // serve them.
+    if (dataEntities.length > 0) {
+      await this.applyAIElementDescriptions([], dataEntities, {
+        systemName,
+        enhancedSystemPurpose,
+        projectTextSignal,
+        frameworks,
+        includeEntities: true,
+        nodes,
+        edges,
+        allCapabilitiesForEvidence: systemCapabilities,
+        userJourneys,
+      });
+    }
   }
 
   /**
@@ -10092,6 +10127,15 @@ export class AnalyzerOrchestrator {
       projectTextSignal?: ProjectTextSignal;
       frameworks?: string[];
       includeEntities?: boolean;
+      // Full evidence bundle for entity descriptions (LAST-stage pass): ORM
+      // relation graph, the FULL capability set (not just the ones this call
+      // is describing — an entity-only call still needs to know which
+      // already-cataloged capabilities serve it), and journeys. All optional
+      // so existing capability-only callers are unaffected.
+      nodes?: CASNode[];
+      edges?: CASEdge[];
+      allCapabilitiesForEvidence?: SystemCapability[];
+      userJourneys?: CASUserJourney[];
     }
   ): Promise<void> {
     this.setElementDescriptionGrounding(
@@ -10100,9 +10144,14 @@ export class AnalyzerOrchestrator {
       context.enhancedSystemPurpose?.inferred_description || context.projectTextSignal?.summary
     );
     const entityNamesById = new Map(entities.map(entity => [entity.id, entity.name]));
+    const entityTargetContext = context.includeEntities ? {
+      relationsByName: this.buildEntityRelationsByName(context.nodes || [], context.edges || []),
+      capabilitiesByEntityId: this.buildCapabilitiesByEntityId(context.allCapabilitiesForEvidence || capabilities),
+      journeysByEntityName: this.buildJourneysByEntityName(context.userJourneys || []),
+    } : undefined;
     const allTargets = [
       ...capabilities.map(capability => this.capabilityDescriptionTarget(capability, entityNamesById)),
-      ...(context.includeEntities ? entities.map(entity => this.entityDescriptionTarget(entity)) : []),
+      ...(context.includeEntities ? entities.map(entity => this.entityDescriptionTarget(entity, entityTargetContext)) : []),
     ];
     const configuredLimit = Number(process.env.KLAURO_AI_ELEMENT_DESCRIPTION_LIMIT || '');
     const targets = Number.isFinite(configuredLimit) && configuredLimit > 0
@@ -10316,6 +10365,29 @@ export class AnalyzerOrchestrator {
           // fallback. If no AI-authored, grounded description survives, the
           // element description is left unset (never a 'deterministic' provenance).
           const description = originalValidation.ok ? originalDescription : repairedValidation.ok ? repairedDescription : individualDescription;
+          // E1 (observational): one comprehension-decision record per element,
+          // with a decision_type/prompt_version specific to entities vs.
+          // capabilities so the semantic dataset can distinguish the two gates
+          // — see docs/SEMANTIC-MODEL.md. NEVER changes the outcome above.
+          recordSemanticDecision({
+            ts: Date.now(),
+            decision_type: target.kind === 'entity' ? 'entity_description' : 'capability_description',
+            prompt_version: target.kind === 'entity' ? 'entity_description.v1' : 'capability_description.v1',
+            input_evidence_digest: {
+              targetId: target.id,
+              fieldsCount: target.fields?.length || 0,
+              relatedEntitiesCount: target.relatedEntities?.length || 0,
+              relatedDomainsCount: target.relatedDomains?.length || 0,
+              evidenceSummaryCount: target.evidenceSummary?.length || 0,
+              lifecycle: target.lifecycle,
+            },
+            raw_output_excerpt: description,
+            parse_ok: Boolean(originalDescription),
+            gate_verdict: description ? 'accepted' : 'rejected',
+            gate_reason: description ? undefined : (repairedValidation.reason || 'generated-description-failed-quality-gate'),
+            mechanical_corrections: description && description !== originalDescription ? ['repair-reprompt'] : [],
+            final_outcome: description ? 'ai' : 'error',
+          });
           if (description) {
             this.applyElementDescription(
               target.id,
@@ -10334,6 +10406,18 @@ export class AnalyzerOrchestrator {
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
+        for (const target of batch) {
+          recordSemanticDecision({
+            ts: Date.now(),
+            decision_type: target.kind === 'entity' ? 'entity_description' : 'capability_description',
+            prompt_version: target.kind === 'entity' ? 'entity_description.v1' : 'capability_description.v1',
+            input_evidence_digest: { targetId: target.id },
+            parse_ok: false,
+            gate_verdict: 'rejected',
+            gate_reason: message,
+            final_outcome: 'error',
+          });
+        }
         this.recordElementDescriptionGenerationByIds(batch.map(target => target.id), capabilities, entities, undefined, 'ai_failed', true, message, budgetMs);
       } finally {
         if (timeoutHandle) clearTimeout(timeoutHandle);
@@ -10427,7 +10511,28 @@ export class AnalyzerOrchestrator {
     ]).has(token);
   }
 
-  private entityDescriptionTarget(entity: CASDataEntity): DescriptionTarget {
+  /**
+   * FULL evidence bundle for an entity description — authored LAST in the
+   * pipeline (docs/cas/DETERMINISM-BOUNDARY.md / user doctrine: entity
+   * descriptions are meaning, produced only here, grounded in everything else
+   * comprehension has already established): the entity's own fields, its ORM
+   * relations to other entities, the lineage nodes that read/write it, the
+   * capabilities it serves, and the journeys it appears in. `context` is
+   * optional so existing manual single-entity callers (description-
+   * enrichment.ts's own entity path) keep working without it; the LAST-stage
+   * batch pass below always supplies it.
+   */
+  private entityDescriptionTarget(
+    entity: CASDataEntity,
+    context?: {
+      relationsByName?: Map<string, Array<{ targetName: string; relationType: string; field?: string }>>;
+      capabilitiesByEntityId?: Map<string, string[]>;
+      journeysByEntityName?: Map<string, string[]>;
+    }
+  ): DescriptionTarget {
+    const relations = context?.relationsByName?.get(entity.name.toLowerCase()) || [];
+    const servingCapabilities = context?.capabilitiesByEntityId?.get(entity.id) || [];
+    const journeys = context?.journeysByEntityName?.get(entity.name.toLowerCase()) || [];
     return {
       id: entity.id,
       name: entity.name,
@@ -10441,7 +10546,83 @@ export class AnalyzerOrchestrator {
         updates: entity.lifecycle.updated_by.length,
         deletes: entity.lifecycle.deleted_by.length,
       },
+      evidenceSummary: [
+        ...relations.slice(0, 8).map(rel => `relates to ${rel.targetName} (${rel.relationType}${rel.field ? ` via ${rel.field}` : ''})`),
+        ...servingCapabilities.slice(0, 6).map(name => `serves capability: ${name}`),
+        ...journeys.slice(0, 6).map(name => `appears in journey: ${name}`),
+      ],
+      // Related-entity/domain vocabulary for the prompt AND the grounding gate
+      // (relatedDomains legitimizes marketing-flagged words the same way it
+      // does for capabilities — see validateElementDescription).
+      relatedEntities: relations.map(rel => rel.targetName),
+      relatedDomains: servingCapabilities,
     };
+  }
+
+  /**
+   * ORM relation graph keyed by SOURCE entity name (lowercased) — the same
+   * `references`-edge convention every ORM analyzer emits (Doctrine, TypeORM,
+   * Prisma, MikroORM, Eloquent, …; see buildDatabaseSchema's "Edge-based
+   * relations" pass and DoctrineAnalyzer.emitEntityGraph). Named entity, not
+   * node id, because a CASDataEntity's id scheme differs from its originating
+   * graph node's id.
+   */
+  private buildEntityRelationsByName(
+    nodes: CASNode[],
+    edges: CASEdge[]
+  ): Map<string, Array<{ targetName: string; relationType: string; field?: string }>> {
+    const byName = new Map<string, Array<{ targetName: string; relationType: string; field?: string }>>();
+    const nodesById = new Map<string, CASNode>();
+    for (const node of nodes) {
+      if (!nodesById.has(node.id)) nodesById.set(node.id, node);
+    }
+    for (const edge of edges) {
+      const relationType = (edge.metadata as any)?.attributes?.relationType as string | undefined;
+      if (!relationType) continue;
+      const source = nodesById.get(edge.source);
+      const target = nodesById.get(edge.target);
+      if (!source?.name || !target?.name) continue;
+      const key = source.name.toLowerCase();
+      const evidence = { targetName: target.name, relationType, field: (edge.metadata as any)?.attributes?.field };
+      const list = byName.get(key);
+      if (list) list.push(evidence);
+      else byName.set(key, [evidence]);
+    }
+    return byName;
+  }
+
+  /** Which capabilities (by name) reference each entity id, via
+   *  `capability.related_entities`. */
+  private buildCapabilitiesByEntityId(capabilities: SystemCapability[]): Map<string, string[]> {
+    const byEntityId = new Map<string, string[]>();
+    for (const capability of capabilities) {
+      for (const entityId of capability.related_entities || []) {
+        const list = byEntityId.get(entityId);
+        if (list) list.push(capability.name);
+        else byEntityId.set(entityId, [capability.name]);
+      }
+    }
+    return byEntityId;
+  }
+
+  /** Which journeys (by name) touch each entity, keyed by entity NAME
+   *  (lowercased) — journeys reference entities by name in
+   *  terminal_effects.entities_written/read and terminal_entities[].name. */
+  private buildJourneysByEntityName(journeys: CASUserJourney[]): Map<string, string[]> {
+    const byEntityName = new Map<string, string[]>();
+    const add = (entityName: string | undefined, journeyName: string) => {
+      const key = String(entityName || '').toLowerCase().trim();
+      if (!key) return;
+      const list = byEntityName.get(key);
+      if (list) { if (!list.includes(journeyName)) list.push(journeyName); }
+      else byEntityName.set(key, [journeyName]);
+    };
+    for (const journey of journeys) {
+      for (const name of journey.terminal_effects?.entities_written || []) add(name, journey.name);
+      for (const name of journey.terminal_effects?.entities_read || []) add(name, journey.name);
+      for (const terminal of journey.terminal_entities || []) add(terminal.name, journey.name);
+    }
+    return byEntityName;
   }
 
   private parseDescriptionBatch(raw: string): Map<string, string> | null {
@@ -13771,6 +13952,20 @@ export class AnalyzerOrchestrator {
       };
     }
 
+    // PLURAL/SINGULAR PHANTOM DEDUPE. The ORM path and the DTO-derived path
+    // above mint entities from different anchor kinds (an `@Entity class
+    // Device` vs. a `DevicesResponseDto`/`DevicesController` accessor
+    // surface): the same domain noun can surface twice under different
+    // surface forms of its name ("Device" AND "Devices"). A stem match alone
+    // is not sufficient evidence to merge — "Order" and "Ordering" are
+    // legitimately different concepts — so this only folds two entities
+    // together when they ALSO share backing evidence (same schema/class
+    // source file, or an overlapping lifecycle accessor node — i.e. the same
+    // reader/writer touches both surfaced shapes).
+    const dedupedEntities = this.dedupePluralSingularEntities(entities);
+    entities.length = 0;
+    entities.push(...dedupedEntities);
+
     // Deflate the surfaced entity set to the product's real DOMAIN objects using
     // the deterministic KIND fact (framework evidence, never name/casing). The
     // domain surface is what the system PERSISTS (persisted-entity) and what it
@@ -13869,6 +14064,88 @@ export class AnalyzerOrchestrator {
   /** Lightweight English singularizer for matching method-name nouns to entities. */
   private singularizeNoun(token: string): string {
     return token.replace(/ies$/, 'y').replace(/(ses|xes|zes|ches|shes)$/, match => match.slice(0, -2)).replace(/s$/, '');
+  }
+
+  /**
+   * Dedupe PLURAL/SINGULAR phantom entities that share backing evidence.
+   * Groups entities by singularized name stem, then — within a group that
+   * actually contains more than one distinct surface form ("Device" AND
+   * "Devices", not just two copies of "Device") — merges a pair only when
+   * `entitiesShareBackingEvidence` confirms they are the SAME underlying
+   * record (same schema/class source, or an overlapping lifecycle accessor).
+   * A bare stem match with no shared evidence is left as two separate
+   * entities, since the stem alone cannot distinguish "Order" from
+   * "Ordering" or "Trailer" from "Trailering". The richer entity (more
+   * fields, tie -> has a schema_source) is kept, mirroring mergeOrmEntity's
+   * exact-id merge above; lifecycle sets are unioned so no accessor evidence
+   * already attributed to either surfaced shape is lost.
+   */
+  private dedupePluralSingularEntities(entities: CASDataEntity[]): CASDataEntity[] {
+    const groups = new Map<string, CASDataEntity[]>();
+    for (const entity of entities) {
+      const stem = this.singularizeNoun(entity.name.toLowerCase().replace(/[^a-z0-9]+/g, ''));
+      if (!stem) continue;
+      const bucket = groups.get(stem);
+      if (bucket) bucket.push(entity);
+      else groups.set(stem, [entity]);
+    }
+
+    const dropped = new Set<CASDataEntity>();
+    for (const group of groups.values()) {
+      if (group.length < 2) continue;
+      const distinctSurfaceForms = new Set(group.map(entity => entity.name.toLowerCase()));
+      if (distinctSurfaceForms.size < 2) continue; // exact-name collisions already merged upstream
+
+      for (let i = 0; i < group.length; i++) {
+        for (let j = i + 1; j < group.length; j++) {
+          const a = group[i];
+          const b = group[j];
+          if (dropped.has(a) || dropped.has(b)) continue;
+          if (a.name.toLowerCase() === b.name.toLowerCase()) continue;
+          if (!this.entitiesSharePluralSingularEvidence(a, b)) continue;
+
+          const richer =
+            (b.fields?.length || 0) > (a.fields?.length || 0) ||
+            ((b.fields?.length || 0) === (a.fields?.length || 0) && Boolean(b.schema_source) && !a.schema_source)
+              ? b : a;
+          const other = richer === a ? b : a;
+          richer.lifecycle = {
+            created_by: [...new Set([...richer.lifecycle.created_by, ...other.lifecycle.created_by])],
+            read_by: [...new Set([...richer.lifecycle.read_by, ...other.lifecycle.read_by])],
+            updated_by: [...new Set([...richer.lifecycle.updated_by, ...other.lifecycle.updated_by])],
+            deleted_by: [...new Set([...richer.lifecycle.deleted_by, ...other.lifecycle.deleted_by])],
+          };
+          dropped.add(other);
+        }
+      }
+    }
+    // Always return a NEW array (never the same reference as `entities`) —
+    // callers reuse the `entities` binding in place (`entities.length = 0;
+    // entities.push(...deduped)`), which would truncate the result out from
+    // under itself if this returned the identical array object.
+    return dropped.size > 0 ? entities.filter(entity => !dropped.has(entity)) : [...entities];
+  }
+
+  /**
+   * Backing-evidence test for a candidate plural/singular merge: the SAME
+   * schema/class source file (the same table/class surfaced under two
+   * names), or an overlapping lifecycle accessor (the same reader/writer
+   * node touches both — the same lineage cluster). A bare stem match with
+   * neither signal stays separate.
+   */
+  private entitiesSharePluralSingularEvidence(a: CASDataEntity, b: CASDataEntity): boolean {
+    if (a.schema_source && b.schema_source && a.schema_source === b.schema_source) return true;
+    const nodesOf = (entity: CASDataEntity) => new Set([
+      ...entity.lifecycle.created_by,
+      ...entity.lifecycle.read_by,
+      ...entity.lifecycle.updated_by,
+      ...entity.lifecycle.deleted_by,
+    ]);
+    const aNodes = nodesOf(a);
+    for (const id of nodesOf(b)) {
+      if (aNodes.has(id)) return true;
+    }
+    return false;
   }
 
   /**

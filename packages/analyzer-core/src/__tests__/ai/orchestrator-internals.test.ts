@@ -3547,6 +3547,228 @@ describe('entity-extraction gaps from real-repo onboarding (mtg/openclaw/hercule
   });
 });
 
+describe('dedupePluralSingularEntities (plural/singular phantom entity dedupe)', () => {
+  const node = (partial: Partial<CASNode>): CASNode => ({
+    id: partial.id || partial.name || 'node',
+    name: partial.name || 'Node',
+    type: partial.type || 'class',
+    source: partial.source || { file: `src/${partial.name || 'node'}.ts`, line: 1 },
+    metadata: partial.metadata || {},
+    subcategories: partial.subcategories,
+    parent: partial.parent,
+    signature: partial.signature,
+  } as CASNode);
+
+  const emptyLifecycle = (): CASDataEntity['lifecycle'] => ({ created_by: [], read_by: [], updated_by: [], deleted_by: [] });
+
+  it('merges a plural/singular pair that shares the SAME schema/class source file', () => {
+    const device = {
+      id: 'entity_device', name: 'Device', schema_source: 'src/entities/device.ts',
+      fields: [{ name: 'id', type: 'string', is_sensitive: false }, { name: 'serial', type: 'string', is_sensitive: false }],
+      lifecycle: emptyLifecycle(),
+    } as CASDataEntity;
+    const devices = {
+      id: 'entity_devices', name: 'Devices', schema_source: 'src/entities/device.ts',
+      fields: [{ name: 'items', type: 'array', is_sensitive: false }],
+      lifecycle: { ...emptyLifecycle(), read_by: ['svc_list_devices'] },
+    } as CASDataEntity;
+
+    const merged: CASDataEntity[] = orch.dedupePluralSingularEntities([device, devices]);
+    expect(merged).toHaveLength(1);
+    // Richer copy (more fields: 2 vs 1) survives.
+    expect(merged[0].name).toBe('Device');
+    // Lifecycle from the dropped duplicate is unioned in, not lost.
+    expect(merged[0].lifecycle.read_by).toContain('svc_list_devices');
+  });
+
+  it('merges a plural/singular pair that shares an overlapping LIFECYCLE ACCESSOR (lineage cluster) despite different source files', () => {
+    const vehicle = {
+      id: 'entity_vehicle', name: 'Vehicle', schema_source: 'src/entities/vehicle.ts',
+      fields: [{ name: 'id', type: 'string', is_sensitive: false }],
+      lifecycle: { ...emptyLifecycle(), created_by: ['svc_fleet'] },
+    } as CASDataEntity;
+    const vehicles = {
+      id: 'entity_vehicles', name: 'Vehicles', schema_source: 'src/dto/vehicles-response.dto.ts',
+      fields: [{ name: 'plate', type: 'string', is_sensitive: false }, { name: 'vin', type: 'string', is_sensitive: false }],
+      // Same accessor node id as `vehicle` above — same reader/writer touches both.
+      lifecycle: { ...emptyLifecycle(), created_by: ['svc_fleet'] },
+    } as CASDataEntity;
+
+    const merged: CASDataEntity[] = orch.dedupePluralSingularEntities([vehicle, vehicles]);
+    expect(merged).toHaveLength(1);
+    // Richer copy (2 fields vs 1) survives — the DTO-derived shape this time.
+    expect(merged[0].name).toBe('Vehicles');
+    expect(merged[0].schema_source).toBe('src/dto/vehicles-response.dto.ts');
+  });
+
+  it('does NOT merge a plural/singular pair with no shared backing evidence (stem match alone is insufficient)', () => {
+    const trailer = {
+      id: 'entity_trailer', name: 'Trailer', schema_source: 'src/entities/trailer.ts',
+      fields: [{ name: 'id', type: 'string', is_sensitive: false }],
+      lifecycle: { ...emptyLifecycle(), created_by: ['svc_fleet_ops'] },
+    } as CASDataEntity;
+    const trailers = {
+      id: 'entity_trailers', name: 'Trailers', schema_source: 'src/dto/trailers-summary.dto.ts',
+      fields: [{ name: 'count', type: 'number', is_sensitive: false }],
+      // Disjoint accessor evidence — different reader/writer, no schema overlap.
+      lifecycle: { ...emptyLifecycle(), read_by: ['svc_analytics_export'] },
+    } as CASDataEntity;
+
+    const result: CASDataEntity[] = orch.dedupePluralSingularEntities([trailer, trailers]);
+    expect(result).toHaveLength(2);
+    expect(result.map((e: any) => e.name).sort()).toEqual(['Trailer', 'Trailers']);
+  });
+
+  it('leaves entities with no stem collision untouched', () => {
+    const invoice = { id: 'entity_invoice', name: 'Invoice', lifecycle: emptyLifecycle() } as CASDataEntity;
+    const client = { id: 'entity_client', name: 'Client', lifecycle: emptyLifecycle() } as CASDataEntity;
+    const result: CASDataEntity[] = orch.dedupePluralSingularEntities([invoice, client]);
+    expect(result).toHaveLength(2);
+  });
+
+  it('end-to-end via buildDataEntities: an ORM Device entity and a DevicesResponseDto-derived shape collapse to one entity when they share a lifecycle accessor', () => {
+    const nodes: CASNode[] = [
+      node({ id: 'entity_orm_device', name: 'Device', type: 'entity', source: { file: 'src/entities/device.ts', line: 1 }, subcategories: ['entity'] }),
+      node({ id: 'prop_device_id', name: 'id', type: 'property', parent: 'entity_orm_device', source: { file: 'src/entities/device.ts', line: 2 } }),
+      node({ id: 'prop_device_serial', name: 'serial', type: 'property', parent: 'entity_orm_device', source: { file: 'src/entities/device.ts', line: 3 } }),
+      // Tagged api-response subcategory so the derived shape survives the
+      // domain-KIND filter regardless of dedupe — otherwise this fixture would
+      // pass even without the dedupe fix (a plain value-object shape is
+      // already dropped by the kind filter, masking the phantom).
+      node({
+        id: 'dto_devices_response', name: 'DevicesResponseDto', type: 'dto',
+        source: { file: 'src/devices/devices-response.dto.ts', line: 1 },
+        subcategories: ['api-response'],
+      }),
+      node({ id: 'prop_devices_items', name: 'items', type: 'property', parent: 'dto_devices_response', source: { file: 'src/devices/devices-response.dto.ts', line: 2 } }),
+      // A CRUD-verbed accessor whose object noun ("Devices") singularizes to the
+      // SAME stem ("device") as both surfaced shapes — buildEntityAccessorIndexByNoun
+      // attributes it to both, giving the two shapes a shared lifecycle accessor.
+      node({ id: 'svc_list_devices', name: 'listDevices', type: 'method', source: { file: 'src/devices/devices.controller.ts', line: 1 } }),
+    ];
+
+    const names = (orch.buildDataEntities(nodes, []) as CASDataEntity[]).map(e => e.name.toLowerCase());
+    // Exactly one surfaced shape for the "device" stem — the plural DTO-derived
+    // phantom must not survive alongside the real ORM entity.
+    const deviceShaped = names.filter(name => name === 'device' || name === 'devices');
+    expect(deviceShaped).toHaveLength(1);
+  });
+});
+
+describe('entity description evidence bundle (entity descriptions authored LAST)', () => {
+  const node = (partial: Partial<CASNode>): CASNode => ({
+    id: partial.id || partial.name || 'node',
+    name: partial.name || 'Node',
+    type: partial.type || 'class',
+    source: partial.source || { file: `src/${partial.name || 'node'}.ts`, line: 1 },
+    metadata: partial.metadata || {},
+    subcategories: partial.subcategories,
+    parent: partial.parent,
+    signature: partial.signature,
+  } as CASNode);
+
+  const emptyLifecycle = (): CASDataEntity['lifecycle'] => ({ created_by: [], read_by: [], updated_by: [], deleted_by: [] });
+
+  it('buildEntityRelationsByName resolves references edges to real entity names, keyed by SOURCE name', () => {
+    const nodes: CASNode[] = [
+      node({ id: 'entity_doctrine_deviceconnectionbind', name: 'DeviceConnectionBind', type: 'entity' }),
+      node({ id: 'entity_doctrine_device', name: 'Device', type: 'entity' }),
+      node({ id: 'entity_doctrine_connection', name: 'Connection', type: 'entity' }),
+    ];
+    const edges: CASEdge[] = [
+      {
+        id: 'rel_1', source: 'entity_doctrine_deviceconnectionbind', target: 'entity_doctrine_device', type: 'references',
+        metadata: { attributes: { relationType: 'ManyToOne', field: 'entity' } },
+      } as unknown as CASEdge,
+      {
+        id: 'rel_2', source: 'entity_doctrine_deviceconnectionbind', target: 'entity_doctrine_connection', type: 'references',
+        metadata: { attributes: { relationType: 'ManyToOne', field: 'connection' } },
+      } as unknown as CASEdge,
+    ];
+
+    const byName = orch.buildEntityRelationsByName(nodes, edges) as Map<string, Array<{ targetName: string; relationType: string; field?: string }>>;
+    const relations = byName.get('deviceconnectionbind');
+    expect(relations).toHaveLength(2);
+    expect(relations!.map(r => r.targetName).sort()).toEqual(['Connection', 'Device']);
+    expect(relations!.find(r => r.targetName === 'Device')?.field).toBe('entity');
+  });
+
+  it('buildCapabilitiesByEntityId maps each entity id to the names of capabilities that reference it', () => {
+    const capabilities = [
+      { id: 'cap_billing', name: 'Billing Management', related_entities: ['entity_invoice', 'entity_customer'] },
+      { id: 'cap_dispatch', name: 'Dispatch Management', related_entities: ['entity_customer'] },
+    ] as any[];
+    const byEntityId = orch.buildCapabilitiesByEntityId(capabilities) as Map<string, string[]>;
+    expect(byEntityId.get('entity_invoice')).toEqual(['Billing Management']);
+    expect(byEntityId.get('entity_customer')?.sort()).toEqual(['Billing Management', 'Dispatch Management']);
+  });
+
+  it('buildJourneysByEntityName maps each entity name to the journeys that write/read/terminate on it', () => {
+    const journeys = [
+      {
+        id: 'journey_1', name: 'Create Booking', journey_kind: 'user-facing', entry_point_id: 'ep_1',
+        entry: { type: 'http', name: 'POST /bookings' }, steps: [],
+        terminal_effects: { entities_written: ['Booking'], entities_read: [], external_services: [], messages_emitted: [] },
+        terminal_entities: [{ name: 'Booking', access: 'created', terminal_kind: 'entity' }],
+        security_boundaries: [],
+      },
+      {
+        id: 'journey_2', name: 'View Booking', journey_kind: 'user-facing', entry_point_id: 'ep_2',
+        entry: { type: 'http', name: 'GET /bookings/:id' }, steps: [],
+        terminal_effects: { entities_written: [], entities_read: ['Booking'], external_services: [], messages_emitted: [] },
+        terminal_entities: [],
+        security_boundaries: [],
+      },
+    ] as any[];
+    const byEntityName = orch.buildJourneysByEntityName(journeys) as Map<string, string[]>;
+    expect(byEntityName.get('booking')?.sort()).toEqual(['Create Booking', 'View Booking']);
+  });
+
+  it('entityDescriptionTarget assembles the FULL evidence bundle: fields, ORM relations, lifecycle, serving capabilities, journeys', () => {
+    const entity = {
+      id: 'entity_doctrine_deviceconnectionbind',
+      name: 'DeviceConnectionBind',
+      schema_source: 'src/Entity/DeviceConnectionBind.php',
+      fields: [{ name: 'remoteId', type: 'string', is_sensitive: false }],
+      lifecycle: { ...emptyLifecycle(), created_by: ['sync_worker'], read_by: ['sync_worker', 'admin_ui'] },
+    } as CASDataEntity;
+
+    const relationsByName = new Map([
+      ['deviceconnectionbind', [
+        { targetName: 'Device', relationType: 'ManyToOne', field: 'entity' },
+        { targetName: 'Connection', relationType: 'ManyToOne', field: 'connection' },
+      ]],
+    ]);
+    const capabilitiesByEntityId = new Map([['entity_doctrine_deviceconnectionbind', ['Integration Sync Management']]]);
+    const journeysByEntityName = new Map([['deviceconnectionbind', ['Sync Device From Provider']]]);
+
+    const target = orch.entityDescriptionTarget(entity, { relationsByName, capabilitiesByEntityId, journeysByEntityName });
+
+    expect(target.kind).toBe('entity');
+    expect(target.fields).toEqual(['remoteId:string']);
+    expect(target.lifecycle).toEqual({ creates: 1, reads: 2, updates: 0, deletes: 0 });
+    expect(target.evidenceSummary).toEqual(expect.arrayContaining([
+      expect.stringContaining('relates to Device (ManyToOne via entity)'),
+      expect.stringContaining('relates to Connection (ManyToOne via connection)'),
+      expect.stringContaining('serves capability: Integration Sync Management'),
+      expect.stringContaining('appears in journey: Sync Device From Provider'),
+    ]));
+    expect(target.relatedEntities?.sort()).toEqual(['Connection', 'Device']);
+    expect(target.relatedDomains).toEqual(['Integration Sync Management']);
+  });
+
+  it('entityDescriptionTarget degrades gracefully with no context (fields/lifecycle only, no evidence fabricated)', () => {
+    const entity = {
+      id: 'entity_plain', name: 'PlainEntity', lifecycle: emptyLifecycle(),
+    } as CASDataEntity;
+    const target = orch.entityDescriptionTarget(entity);
+    expect(target.kind).toBe('entity');
+    expect(target.evidenceSummary).toEqual([]);
+    expect(target.relatedEntities).toEqual([]);
+    expect(target.relatedDomains).toEqual([]);
+  });
+});
+
 describe('repairDanglingSentenceEndings', () => {
   it('strips a trailing dangling preposition left by a truncated clause (the accepted Klauro description class)', async () => {
     const text = 'Klauro is a codebase analysis platform built as a monorepo. It stores telemetry data and graph evidence for.';

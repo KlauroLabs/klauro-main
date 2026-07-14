@@ -53,6 +53,21 @@ interface OrmAttributeMatch {
   args: string;
 }
 
+/** A `trait Xxx { ... }` declaration found anywhere in the project, resolved
+ *  once up front so any entity class that `use`s it can pull in ORM
+ *  fields/relations declared INSIDE the trait (e.g. a shared
+ *  `ConnectionBindTrait` that carries the `#[ManyToOne(targetEntity:
+ *  Connection::class)] protected $connection` relation every *ConnectionBind
+ *  subclass inherits — invisible to a parser that only walks the class's own
+ *  body). `content`/`bodyOffset` are the TRAIT'S OWN file/offset, kept
+ *  separate from the entity class's, so line numbers resolved from
+ *  `collectPrecedingAttributeText` stay correct. */
+interface DoctrineTraitInfo {
+  content: string;
+  body: string;
+  bodyOffset: number;
+}
+
 /**
  * Doctrine ORM analyzer.
  *
@@ -168,9 +183,12 @@ export class DoctrineAnalyzer extends BaseAnalyzer {
     const entities: DoctrineEntity[] = [];
     const fileContents = new Map<string, string>();
 
-    // Pass 1: parse every Doctrine entity in the project. Needed up front
-    // (not per-file) because relation targetEntity resolution and write-site
-    // entity binding both need the FULL project-wide entity name set.
+    // Pass 0: read every PHP file's content once. Needed up front (not
+    // interleaved with entity parsing) so the trait registry below sees
+    // trait declarations regardless of which file is scanned first — a
+    // `ConnectionBindTrait` used by `DeviceConnectionBind.php` commonly lives
+    // in a different directory (src/Model/Connection/) than the entity that
+    // consumes it.
     for (const file of sourceFiles) {
       let content: string;
       try {
@@ -179,11 +197,24 @@ export class DoctrineAnalyzer extends BaseAnalyzer {
         continue;
       }
       fileContents.set(file, content);
+    }
+
+    // Every `trait Xxx { ... }` declaration in the project, keyed by trait
+    // name. A class's OWN ORM attributes only cover properties declared
+    // directly in its body — properties declared inside a `use`d trait
+    // (a common Symfony/Doctrine idiom for shared bind/audit columns) are
+    // invisible to a body-only scan without this.
+    const traitInfoByName = this.collectTraitInfo(fileContents);
+
+    // Pass 1: parse every Doctrine entity in the project. Needed up front
+    // (not per-file) because relation targetEntity resolution and write-site
+    // entity binding both need the FULL project-wide entity name set.
+    for (const [file, content] of fileContents) {
       if (!/ORM\\Entity\b|@ORM\\Entity\b/.test(content)) {
         continue;
       }
       const relativePath = path.relative(context.projectPath, file);
-      entities.push(...this.parseEntities(content, relativePath));
+      entities.push(...this.parseEntities(content, relativePath, traitInfoByName));
     }
 
     this.emitEntityGraph(entities, nodes, edges);
@@ -263,7 +294,11 @@ export class DoctrineAnalyzer extends BaseAnalyzer {
 
     const entities: DoctrineEntity[] = [];
     if (/ORM\\Entity\b|@ORM\\Entity\b/.test(content)) {
-      entities.push(...this.parseEntities(content, context.relativePath));
+      // Single-file scope has no visibility into trait declarations that may
+      // live in other files (same limitation as the cross-file relation/
+      // write-site gaps noted below) — pass an empty registry rather than
+      // guess; full analysis re-derives the complete picture.
+      entities.push(...this.parseEntities(content, context.relativePath, new Map()));
     }
 
     // Single-file scope: relation edges to entities defined in other files,
@@ -292,7 +327,7 @@ export class DoctrineAnalyzer extends BaseAnalyzer {
   // Entity / field / relation extraction
   // ---------------------------------------------------------------------
 
-  private parseEntities(content: string, filePath: string): DoctrineEntity[] {
+  private parseEntities(content: string, filePath: string, traitInfoByName: Map<string, DoctrineTraitInfo>): DoctrineEntity[] {
     const entities: DoctrineEntity[] = [];
     const namespace = this.extractNamespace(content);
     const classRe = /\bclass\s+(\w+)/g;
@@ -329,6 +364,22 @@ export class DoctrineAnalyzer extends BaseAnalyzer {
 
       if (body !== null) {
         this.parseMembers(content, body, bodyStart, fields, relations, lifecycleCallbacks);
+
+        // Fold in ORM fields/relations declared inside any `use`d trait. A
+        // property the subclass ALSO declares directly wins (skip the trait's
+        // copy) so an explicit override is never shadowed by the shared default.
+        for (const traitName of this.extractUsedTraitNames(body)) {
+          const traitInfo = traitInfoByName.get(traitName);
+          if (!traitInfo) continue;
+          const traitFields: DoctrineField[] = [];
+          const traitRelations: DoctrineRelationField[] = [];
+          const traitLifecycle: string[] = [];
+          this.parseMembers(traitInfo.content, traitInfo.body, traitInfo.bodyOffset, traitFields, traitRelations, traitLifecycle);
+          const alreadyDeclared = new Set([...fields.map(f => f.name), ...relations.map(r => r.name)]);
+          for (const f of traitFields) if (!alreadyDeclared.has(f.name)) fields.push(f);
+          for (const r of traitRelations) if (!alreadyDeclared.has(r.name)) relations.push(r);
+          lifecycleCallbacks.push(...traitLifecycle.filter(cb => !lifecycleCallbacks.includes(cb)));
+        }
       }
 
       const line = content.slice(0, match.index).split('\n').length;
@@ -755,6 +806,53 @@ export class DoctrineAnalyzer extends BaseAnalyzer {
         { orm: 'Doctrine', entity: site.entityName, operation: site.op, file: site.filePath, line: site.line }
       );
     });
+  }
+
+  // ---------------------------------------------------------------------
+  // Trait-declared ORM member support
+  // ---------------------------------------------------------------------
+
+  /** Scan every file's content once for `trait Xxx { ... }` declarations,
+   *  keyed by trait name (first declaration wins on a same-name collision —
+   *  real projects don't declare two traits with the same bare name). Each
+   *  entry keeps its OWN file's content + body offset so line numbers stay
+   *  correct when its members are parsed independently of the consuming
+   *  entity class. */
+  private collectTraitInfo(fileContents: Map<string, string>): Map<string, DoctrineTraitInfo> {
+    const traits = new Map<string, DoctrineTraitInfo>();
+    const traitRe = /\btrait\s+(\w+)/g;
+    for (const content of fileContents.values()) {
+      traitRe.lastIndex = 0;
+      let m: RegExpExecArray | null;
+      while ((m = traitRe.exec(content)) !== null) {
+        const name = m[1];
+        if (traits.has(name)) continue;
+        const bodyOpen = content.indexOf('{', traitRe.lastIndex);
+        if (bodyOpen === -1) continue;
+        const body = this.extractBalanced(content, bodyOpen, '{', '}');
+        if (body === null) continue;
+        traits.set(name, { content, body, bodyOffset: bodyOpen + 1 });
+      }
+    }
+    return traits;
+  }
+
+  /** Bare trait names from `use TraitName;` / `use Ns\TraitName, OtherTrait;`
+   *  statements inside a class body. Deliberately simple: only the plain
+   *  `use A, B;` form (no conflict-resolution `{ ... }` block) is matched —
+   *  PHP closures (`function () use ($x) { ... }`) never match because they
+   *  are followed by `(`, not an identifier, so this cannot mis-fire there. */
+  private extractUsedTraitNames(classBody: string): string[] {
+    const names = new Set<string>();
+    const useRe = /\buse\s+([A-Za-z_\\][\w\\]*(?:\s*,\s*[A-Za-z_\\][\w\\]*)*)\s*;/g;
+    let m: RegExpExecArray | null;
+    while ((m = useRe.exec(classBody)) !== null) {
+      for (const raw of m[1].split(',')) {
+        const name = raw.trim().split('\\').pop();
+        if (name) names.add(name);
+      }
+    }
+    return [...names];
   }
 
   // ---------------------------------------------------------------------

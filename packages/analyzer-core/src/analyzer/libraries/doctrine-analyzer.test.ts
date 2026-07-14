@@ -234,6 +234,83 @@ async function makeProject(): Promise<string> {
     ''
   ].join('\n'));
 
+  // ConnectionBind fixture — mirrors the real truckspy shape: the `connection`
+  // ManyToOne relation is declared inside a shared TRAIT (used by every
+  // *ConnectionBind subclass), while the domain-entity `entity` relation is
+  // declared directly on the concrete subclass. A body-only scan sees only
+  // the second relation; the trait-aware scan added here must see both, so
+  // downstream entity classification has the evidence to tell an
+  // integration-sync join record apart from a real domain entity.
+  const modelConnectionDir = path.join(dir, 'src', 'Model', 'Connection');
+  await fs.ensureDir(modelConnectionDir);
+  await fs.writeFile(path.join(modelConnectionDir, 'ConnectionBindTrait.php'), [
+    '<?php',
+    'namespace App\\Model\\Connection;',
+    '',
+    'use App\\Entity\\Connection;',
+    'use Doctrine\\ORM\\Mapping as ORM;',
+    '',
+    'trait ConnectionBindTrait',
+    '{',
+    "    #[ORM\\ManyToOne(targetEntity: Connection::class)]",
+    '    protected ?Connection $connection = null;',
+    '',
+    '    #[ORM\\Column(type: Types::STRING, nullable: true)]',
+    '    protected ?string $remoteId = null;',
+    '}',
+    ''
+  ].join('\n'));
+
+  await fs.writeFile(path.join(entityDir, 'Connection.php'), [
+    '<?php',
+    'namespace App\\Entity;',
+    'use Doctrine\\ORM\\Mapping as ORM;',
+    '#[ORM\\Entity, ORM\\Table(name: "integration.tbl_connection")]',
+    'class Connection',
+    '{',
+    '    #[ORM\\Column(type: Types::STRING)]',
+    '    private ?string $type = null;',
+    '',
+    '    #[ORM\\Column(type: Types::ARRAY, nullable: true)]',
+    '    private ?array $auth = [];',
+    '',
+    '    #[ORM\\Column(type: Types::BOOLEAN)]',
+    '    private bool $enabled = true;',
+    '}',
+    ''
+  ].join('\n'));
+
+  await fs.writeFile(path.join(entityDir, 'Device.php'), [
+    '<?php',
+    'namespace App\\Entity;',
+    'use Doctrine\\ORM\\Mapping as ORM;',
+    '#[ORM\\Entity, ORM\\Table(name: "tbl_device")]',
+    'class Device',
+    '{',
+    '    #[ORM\\Column(type: Types::STRING)]',
+    '    private ?string $serial = null;',
+    '}',
+    ''
+  ].join('\n'));
+
+  await fs.writeFile(path.join(entityDir, 'DeviceConnectionBind.php'), [
+    '<?php',
+    'namespace App\\Entity;',
+    '',
+    'use App\\Model\\Connection\\ConnectionBindTrait;',
+    'use Doctrine\\ORM\\Mapping as ORM;',
+    '',
+    '#[ORM\\Entity, ORM\\Table(name: "integration.tbl_device_connection_bind")]',
+    'class DeviceConnectionBind',
+    '{',
+    '    use ConnectionBindTrait;',
+    '',
+    "    #[ORM\\ManyToOne(targetEntity: Device::class)]",
+    '    protected ?Device $entity = null;',
+    '}',
+    ''
+  ].join('\n'));
+
   return dir;
 }
 
@@ -249,8 +326,11 @@ test('DoctrineAnalyzer extracts a grouped-attribute entity (Booking regression)'
     const entityNames = entities.map(n => n.name).sort();
     assert.deepEqual(
       entityNames,
-      ['Booking', 'BookingProfile', 'Customer', 'LegacyInvoice', 'Stop', 'Tag', 'Vendor'].sort(),
-      `expected all 6 entities including Booking, got ${JSON.stringify(entityNames)}`
+      [
+        'Booking', 'BookingProfile', 'Connection', 'Customer', 'Device', 'DeviceConnectionBind',
+        'LegacyInvoice', 'Stop', 'Tag', 'Vendor',
+      ].sort(),
+      `expected all entities including Booking, got ${JSON.stringify(entityNames)}`
     );
 
     const booking = entities.find(n => n.name === 'Booking')!;
@@ -385,6 +465,45 @@ test('DoctrineAnalyzer emits persist/remove write facts bound to entities', asyn
     const writeEdges = result.edges.filter(e => ['creates', 'updates', 'deletes'].includes(e.type));
     assert.ok(writeEdges.some(e => e.target === 'entity_doctrine_booking'));
     assert.ok(writeEdges.some(e => e.target === 'entity_doctrine_customer'));
+  } finally {
+    await fs.remove(dir);
+  }
+});
+
+test('DoctrineAnalyzer resolves an ORM relation declared inside a used TRAIT (ConnectionBind regression)', async () => {
+  const dir = await makeProject();
+  try {
+    const analyzer = new DoctrineAnalyzer();
+    const result = await analyzer.analyze({ projectPath: dir });
+
+    const bind = result.nodes.find(n => n.type === 'entity' && n.name === 'DeviceConnectionBind');
+    assert.ok(bind, 'DeviceConnectionBind entity must be extracted');
+
+    const fields = (bind!.metadata as any).fields as Array<{ name: string; type: string; relation: boolean; relationType?: string }>;
+    const relationsByName = Object.fromEntries(fields.filter(f => f.relation).map(f => [f.name, f]));
+
+    // The `entity` relation is declared directly on the subclass — always
+    // visible even without trait support.
+    assert.equal(relationsByName.entity?.type, 'Device');
+    assert.equal(relationsByName.entity?.relationType, 'ManyToOne');
+
+    // The `connection` relation is declared INSIDE ConnectionBindTrait, which
+    // DeviceConnectionBind only `use`s — this is the regression this fixture
+    // targets. Without trait-aware parsing this relation is invisible, and
+    // an entity classifier can never see that the shape pairs a domain
+    // entity (Device) with a connection/integration entity (Connection).
+    assert.equal(relationsByName.connection?.type, 'Connection', 'expected the trait-declared "connection" relation to be resolved');
+    assert.equal(relationsByName.connection?.relationType, 'ManyToOne');
+
+    // A non-relation field declared in the trait (`remoteId`) must also be
+    // folded in.
+    const nonRelationNames = fields.filter(f => !f.relation).map(f => f.name);
+    assert.ok(nonRelationNames.includes('remoteId'), 'expected the trait-declared remoteId column to be folded in');
+
+    const relationEdges = result.edges.filter(e => e.type === 'references' && e.source === bind!.id);
+    const relationTargets = new Set(relationEdges.map(e => e.target));
+    assert.ok(relationTargets.has('entity_doctrine_device'));
+    assert.ok(relationTargets.has('entity_doctrine_connection'));
   } finally {
     await fs.remove(dir);
   }

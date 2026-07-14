@@ -22,7 +22,7 @@
  * carries the evidence that drove the decision. Nothing is fabricated.
  */
 
-import type { CASDomainConcept, CASDataEntity } from '../../../packages/analyzer-core/src/types/cas.types';
+import type { CASDomainConcept, CASDataEntity, CASNode, CASEdge } from '../../../packages/analyzer-core/src/types/cas.types';
 
 export type SemanticRole = 'core' | 'supporting' | 'infrastructure';
 
@@ -222,8 +222,139 @@ function roleFromConcepts(concepts: CASDomainConcept[] | undefined): { role?: Se
   };
 }
 
+/** A single ORM relation, resolved to real node names, keyed by the
+ *  RELATION SOURCE entity's own name (lowercased) — the join key
+ *  `classifyEntityRole` uses to look up "what does this entity relate to". */
+export interface EntityRelationEvidence {
+  targetName: string;
+  relationType: string;
+  field?: string;
+}
+
+export interface EntityRelationIndex {
+  byEntityNameLower: Map<string, EntityRelationEvidence[]>;
+}
+
+/**
+ * Build an entity-name-keyed relation index from the CAS node/edge graph.
+ * ORM analyzers (Doctrine, TypeORM, Prisma, MikroORM, Eloquent, …) all emit
+ * cross-entity relations as `references` edges carrying
+ * `metadata.attributes.relationType` — the same convention the
+ * database_schema ERD summary already reads (see buildDatabaseSchema's
+ * "Edge-based relations" pass in orchestrator.ts). Keyed by NAME rather than
+ * node id because a `CASDataEntity` (data_entities[]) and its originating
+ * graph NODE (nodes[], the edge endpoint) carry different id schemes — the
+ * entity name is the only reliable join key between the two.
+ */
+export function buildEntityRelationIndex(cas: { nodes?: CASNode[]; edges?: CASEdge[] }): EntityRelationIndex {
+  const byEntityNameLower = new Map<string, EntityRelationEvidence[]>();
+  const nodesById = new Map<string, CASNode>();
+  for (const node of cas.nodes || []) {
+    if (!nodesById.has(node.id)) nodesById.set(node.id, node);
+  }
+  for (const edge of cas.edges || []) {
+    const relationType = (edge.metadata as any)?.attributes?.relationType as string | undefined;
+    if (!relationType) continue;
+    const source = nodesById.get(edge.source);
+    const target = nodesById.get(edge.target);
+    if (!source?.name || !target?.name) continue;
+    const key = source.name.toLowerCase();
+    const list = byEntityNameLower.get(key);
+    const evidence: EntityRelationEvidence = {
+      targetName: target.name,
+      relationType,
+      field: (edge.metadata as any)?.attributes?.field,
+    };
+    if (list) list.push(evidence);
+    else byEntityNameLower.set(key, [evidence]);
+  }
+  return { byEntityNameLower };
+}
+
+/** Field-name vocabulary that corroborates a relation TARGET being an
+ *  external-integration/connection hub (credential/provider-shaped storage)
+ *  rather than a domain record — e.g. Doctrine's `Connection` entity storing
+ *  `auth`/`type`/`enabled` for a third-party sync provider. */
+function hasIntegrationCredentialFieldShape(fields: CASDataEntity['fields'] | undefined): boolean {
+  const vocab = new Set(['auth', 'credential', 'credentials', 'token', 'apikey', 'api', 'key', 'secret', 'oauth', 'webhook', 'access', 'refresh']);
+  return (fields || []).some(field => {
+    const words = String(field.name || '')
+      .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter(Boolean);
+    // Require at least two matching tokens (e.g. "api"+"key", "access"+"token")
+    // OR one unambiguous single-word hit (auth/credential/secret/oauth/webhook)
+    // so a lone "key" (a primary-key field) never trips this alone.
+    const unambiguous = new Set(['auth', 'credential', 'credentials', 'oauth', 'webhook']);
+    if (words.some(word => unambiguous.has(word))) return true;
+    return words.filter(word => vocab.has(word)).length >= 2;
+  });
+}
+
+/** Name-based signal that a relation TARGET (not the entity being
+ *  classified) is a connection/integration hub. This is evidence about a
+ *  DIFFERENT entity than the one under classification — not the name-pattern
+ *  the caller is asked to avoid on the classified entity itself — and is
+ *  only ever combined with the structural relation-pairing test below, never
+ *  used alone. */
+function isConnectionIntegrationTargetName(name: string): boolean {
+  return /\b(connection|integration|oauth|webhook)\b/i.test(name);
+}
+
+/**
+ * Evidence-first integration-sync JOIN RECORD detection. An entity whose ORM
+ * relations pair it to BOTH (a) another entity present in this codebase's own
+ * domain-entity set and (b) a connection/integration hub entity (by name
+ * and/or credential-field shape) is a sync/bind record joining the two — not
+ * a core domain entity in its own right, regardless of what its own name
+ * looks like (a name ending in "ConnectionBind" is corroboration only, never
+ * required and never sufficient alone). Real example: truckspy's
+ * `DeviceConnectionBind` ManyToOne-relates to both `Device` (a real domain
+ * entity) and `Connection` (a `type`/`auth`/`enabled`-shaped integration
+ * hub) — the SAME structural shape repeats across 14 `*ConnectionBind`
+ * entities, each pairing a different domain entity with `Connection`.
+ */
+export function classifyIntegrationSyncEntity(
+  entityName: string,
+  relations: EntityRelationIndex,
+  domainEntityNamesLower: Set<string>,
+  fieldsByNameLower?: Map<string, CASDataEntity['fields']>,
+): { isIntegrationSync: boolean; evidence: string[] } {
+  const own = relations.byEntityNameLower.get(entityName.toLowerCase()) || [];
+  if (own.length < 2) return { isIntegrationSync: false, evidence: [] };
+
+  const isConnectionTarget = (rel: EntityRelationEvidence) =>
+    isConnectionIntegrationTargetName(rel.targetName) ||
+    hasIntegrationCredentialFieldShape(fieldsByNameLower?.get(rel.targetName.toLowerCase()));
+
+  const connectionRelations = own.filter(isConnectionTarget);
+  const domainRelations = own.filter(rel =>
+    !isConnectionTarget(rel) && domainEntityNamesLower.has(rel.targetName.toLowerCase())
+  );
+
+  if (connectionRelations.length === 0 || domainRelations.length === 0) {
+    return { isIntegrationSync: false, evidence: [] };
+  }
+
+  return {
+    isIntegrationSync: true,
+    evidence: [
+      `ORM relation "${domainRelations[0].field || domainRelations[0].relationType}" pairs this entity with domain entity "${domainRelations[0].targetName}"`,
+      `ORM relation "${connectionRelations[0].field || connectionRelations[0].relationType}" pairs this entity with connection/integration entity "${connectionRelations[0].targetName}" — integration-sync join record, not a core domain entity`,
+    ],
+  };
+}
+
 /**
  * Classify a data ENTITY. Evidence, strongest-first:
+ *   0. STRUCTURAL relation-pairing evidence: an entity whose ORM relations
+ *      pair a domain entity with a connection/integration hub is an
+ *      integration-sync join record (demoted to infrastructure) — this
+ *      outranks the domain-concept/name signals below, the same way flow
+ *      classification's structural terminus evidence outranks its name
+ *      fallback, because the relation SHAPE is stronger evidence than a
+ *      name-derived concept guess.
  *   1. domain-concept classification (reused terminal/domain signal), if a
  *      concept references this entity by name;
  *   2. lifecycle shape — a single owning writer (created/updated by one node)
@@ -234,9 +365,27 @@ function roleFromConcepts(concepts: CASDomainConcept[] | undefined): { role?: Se
  */
 export function classifyEntityRole(
   entity: Pick<CASDataEntity, 'id' | 'name' | 'lifecycle'>,
-  index: DomainConceptIndex
+  index: DomainConceptIndex,
+  relationContext?: {
+    relations: EntityRelationIndex;
+    domainEntityNamesLower: Set<string>;
+    fieldsByNameLower?: Map<string, CASDataEntity['fields']>;
+  }
 ): RoleClassification {
   const evidence: string[] = [];
+
+  if (relationContext) {
+    const syncCheck = classifyIntegrationSyncEntity(
+      entity.name,
+      relationContext.relations,
+      relationContext.domainEntityNamesLower,
+      relationContext.fieldsByNameLower,
+    );
+    if (syncCheck.isIntegrationSync) {
+      return { role: 'infrastructure', role_evidence: syncCheck.evidence };
+    }
+  }
+
   const conceptHit = roleFromConcepts(conceptsForEntity(entity, index));
 
   const created = entity.lifecycle?.created_by?.length || 0;

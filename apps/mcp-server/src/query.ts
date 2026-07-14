@@ -19,6 +19,7 @@ import type { CASProductMap } from '../../../packages/analyzer-core/src/types/ca
 import { buildSystemFitSummary, buildCommunicationSeamSummary } from './context-fabric';
 import {
   buildDomainConceptIndex,
+  buildEntityRelationIndex,
   classifyEntityRole,
   classifyFlowRole,
   type SemanticRole,
@@ -1194,9 +1195,22 @@ export function getDataEntities(
   // entity's own lifecycle shape. Additive; omitted (`unknown`) when
   // unclassifiable. See docs/SPEC-CONCEPTUAL-LAYER.md role vocabulary.
   const conceptIndex = buildDomainConceptIndex(cas.domain_concepts);
+  // Relation-pairing evidence for the integration-sync join-record check
+  // (classifyEntityRole step 0): built once from the ORM relation graph
+  // (cas.nodes/cas.edges), keyed by entity name, plus the set of domain
+  // entity names in THIS dataset and their field lists — so a *ConnectionBind
+  // -shaped entity can be told apart from a real domain entity without any
+  // hardcoded per-entity name list.
+  const relationIndex = buildEntityRelationIndex(cas);
+  const domainEntityNamesLower = new Set((cas.data_entities || []).map(e => e.name.toLowerCase()));
+  const fieldsByNameLower = new Map((cas.data_entities || []).map(e => [e.name.toLowerCase(), e.fields]));
   const roleByEntityId = new Map<string, { role?: SemanticRole; role_evidence: string[] }>();
   for (const e of entities) {
-    roleByEntityId.set(e.id, classifyEntityRole(e, conceptIndex));
+    roleByEntityId.set(e.id, classifyEntityRole(e, conceptIndex, {
+      relations: relationIndex,
+      domainEntityNamesLower,
+      fieldsByNameLower,
+    }));
   }
 
   // Optional role filter — apply BEFORE pagination so counts stay honest.

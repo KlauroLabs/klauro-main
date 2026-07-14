@@ -1,9 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import type { CASOutput, CASDataEntity, CASDomainConcept } from '../../../packages/analyzer-core/src/types/cas.types';
+import type { CASOutput, CASDataEntity, CASDomainConcept, CASNode, CASEdge } from '../../../packages/analyzer-core/src/types/cas.types';
 import {
   buildDomainConceptIndex,
+  buildEntityRelationIndex,
   classifyEntityRole,
+  classifyIntegrationSyncEntity,
   classifyFlowRole,
   roleFromName,
   isEntityFlowInfrastructureName,
@@ -84,6 +86,104 @@ test('classifyEntityRole: no concept -> name + lifecycle fallback', () => {
   assert.equal(classifyEntityRole(entity('CountryLookup', { read_by: ['a', 'b'] }), index).role, 'infrastructure');
   // Ambiguous supporting noun (session): supporting.
   assert.equal(classifyEntityRole(entity('Session', { created_by: ['n1'] }), index).role, 'supporting');
+});
+
+// ---------------------------------------------------------------------------
+// Entity classification — ConnectionBind-shaped integration-sync records
+// ---------------------------------------------------------------------------
+
+function entityNode(name: string): CASNode {
+  return { id: `entity_doctrine_${name.toLowerCase()}`, name, type: 'entity', level: 3 } as CASNode;
+}
+
+function relationEdge(sourceId: string, targetId: string, relationType: string, field: string): CASEdge {
+  return {
+    id: `rel_${sourceId}_${field}`,
+    source: sourceId,
+    target: targetId,
+    type: 'references',
+    category: 'database',
+    metadata: { attributes: { relationType, field } },
+  } as unknown as CASEdge;
+}
+
+test('classifyIntegrationSyncEntity: relation pairing a domain entity + a connection entity -> integration-sync', () => {
+  const nodes = [entityNode('DeviceConnectionBind'), entityNode('Device'), entityNode('Connection')];
+  const edges = [
+    relationEdge('entity_doctrine_deviceconnectionbind', 'entity_doctrine_device', 'ManyToOne', 'entity'),
+    relationEdge('entity_doctrine_deviceconnectionbind', 'entity_doctrine_connection', 'ManyToOne', 'connection'),
+  ];
+  const relations = buildEntityRelationIndex({ nodes, edges });
+  const domainNames = new Set(['deviceconnectionbind', 'device', 'connection']);
+
+  const result = classifyIntegrationSyncEntity('DeviceConnectionBind', relations, domainNames);
+  assert.equal(result.isIntegrationSync, true);
+  assert.ok(result.evidence.some(e => /domain entity "Device"/.test(e)));
+  assert.ok(result.evidence.some(e => /connection\/integration entity "Connection"/.test(e)));
+});
+
+test('classifyIntegrationSyncEntity: connection target identified by credential FIELD shape, not just name', () => {
+  // Target entity is named "ExternalAccount" (no "connection"/"integration"
+  // substring) but carries auth/token-shaped fields — structural corroboration
+  // instead of a name match.
+  const nodes = [entityNode('DriverExternalBind'), entityNode('Driver'), entityNode('ExternalAccount')];
+  const edges = [
+    relationEdge('entity_doctrine_driverexternalbind', 'entity_doctrine_driver', 'ManyToOne', 'entity'),
+    relationEdge('entity_doctrine_driverexternalbind', 'entity_doctrine_externalaccount', 'ManyToOne', 'account'),
+  ];
+  const relations = buildEntityRelationIndex({ nodes, edges });
+  const domainNames = new Set(['driverexternalbind', 'driver', 'externalaccount']);
+  const fieldsByNameLower = new Map<string, CASDataEntity['fields']>([
+    ['externalaccount', [{ name: 'authToken', type: 'string', is_sensitive: true }]],
+  ]);
+
+  const result = classifyIntegrationSyncEntity('DriverExternalBind', relations, domainNames, fieldsByNameLower);
+  assert.equal(result.isIntegrationSync, true);
+});
+
+test('classifyIntegrationSyncEntity: a single relation (no pairing) is NOT integration-sync', () => {
+  const nodes = [entityNode('Booking'), entityNode('Customer')];
+  const edges = [relationEdge('entity_doctrine_booking', 'entity_doctrine_customer', 'ManyToOne', 'customer')];
+  const relations = buildEntityRelationIndex({ nodes, edges });
+  const domainNames = new Set(['booking', 'customer']);
+
+  const result = classifyIntegrationSyncEntity('Booking', relations, domainNames);
+  assert.equal(result.isIntegrationSync, false);
+});
+
+test('classifyIntegrationSyncEntity: two relations to plain domain entities (no connection pairing) stays false', () => {
+  // A stem match alone (both targets are ordinary domain nouns) must not
+  // trigger the integration-sync classification — neither target is a
+  // connection/integration hub by name OR field shape.
+  const nodes = [entityNode('Shipment'), entityNode('Vehicle'), entityNode('Driver')];
+  const edges = [
+    relationEdge('entity_doctrine_shipment', 'entity_doctrine_vehicle', 'ManyToOne', 'vehicle'),
+    relationEdge('entity_doctrine_shipment', 'entity_doctrine_driver', 'ManyToOne', 'driver'),
+  ];
+  const relations = buildEntityRelationIndex({ nodes, edges });
+  const domainNames = new Set(['shipment', 'vehicle', 'driver']);
+
+  const result = classifyIntegrationSyncEntity('Shipment', relations, domainNames);
+  assert.equal(result.isIntegrationSync, false);
+});
+
+test('classifyEntityRole: integration-sync relation evidence demotes a *ConnectionBind entity even though its lifecycle looks core (single-owner writer)', () => {
+  const nodes = [entityNode('DeviceConnectionBind'), entityNode('Device'), entityNode('Connection')];
+  const edges = [
+    relationEdge('entity_doctrine_deviceconnectionbind', 'entity_doctrine_device', 'ManyToOne', 'entity'),
+    relationEdge('entity_doctrine_deviceconnectionbind', 'entity_doctrine_connection', 'ManyToOne', 'connection'),
+  ];
+  const relations = buildEntityRelationIndex({ nodes, edges });
+  const domainEntityNamesLower = new Set(['deviceconnectionbind', 'device', 'connection']);
+  const index = buildDomainConceptIndex([]);
+
+  // Single-owner writer would normally read as a core-entity lifecycle signal
+  // (see semantic-roles.ts line ~261) — the relation-pairing evidence must
+  // win regardless.
+  const bind = entity('DeviceConnectionBind', { created_by: ['syncWorker'], updated_by: ['syncWorker'] });
+  const result = classifyEntityRole(bind, index, { relations, domainEntityNamesLower });
+  assert.equal(result.role, 'infrastructure');
+  assert.ok(result.role_evidence.some(e => /integration-sync/.test(e)));
 });
 
 // ---------------------------------------------------------------------------
