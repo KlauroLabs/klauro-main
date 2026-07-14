@@ -916,3 +916,181 @@ describe('applyFlowRoleToCapabilityRelationships — rule (c), operational upgra
     expect(() => applyFlowRoleToCapabilityRelationships({}, 'infrastructure')).not.toThrow();
   });
 });
+
+// ---------------------------------------------------------------------------
+// PACKET C1 — flow STEP GRAPH (branch / error / compensation edges over the
+// sequence backbone) + ASYNC CONTINUATIONS / SUBFLOWS. docs/SEMANTIC-MODEL.md
+// (Flow): "Flow = semantic step GRAPH … the ordered step list is a PROJECTION
+// of that graph"; "Async continuation ≠ new flow." All deterministic,
+// evidence-gated, additive to FlowConcept.
+// ---------------------------------------------------------------------------
+import { stitchContinuations } from '../../analyzer/core/flow-concepts';
+
+describe('C1 step_graph — sequence backbone + evidence-gated edge kinds', () => {
+  test('a multi-step flow carries a step_graph whose backbone matches the ordered steps', () => {
+    const flow = computeFlowConcepts(buildFixtureCas())[0];
+    expect(flow.step_graph).toBeDefined();
+    // one backbone edge per consecutive step pair, in step order.
+    expect(flow.step_graph!.edges.length).toBe(flow.steps.length - 1);
+    for (let i = 0; i < flow.steps.length - 1; i++) {
+      expect(flow.step_graph!.edges[i].from_step_id).toBe(flow.steps[i].step_id);
+      expect(flow.step_graph!.edges[i].to_step_id).toBe(flow.steps[i + 1].step_id);
+    }
+  });
+
+  test('no branch/error/compensation evidence → every edge is a plain sequence edge (honest, not fabricated)', () => {
+    const flow = computeFlowConcepts(buildFixtureCas())[0];
+    for (const e of flow.step_graph!.edges) {
+      expect(e.kind).toBe('sequence');
+      expect(e.evidence).toBeUndefined(); // sequence edges carry no evidence string
+    }
+  });
+
+  test('a conditional call edge out of a step upgrades its outgoing edge to a branch edge', () => {
+    const cas = buildFixtureCas();
+    // mark the validateOrder -> saveOrder call edge conditional (real CAS fact).
+    cas.edges.find(e => e.id === 'e2')!.metadata = { conditional: true };
+    const flow = computeFlowConcepts(cas)[0];
+    const validateStepId = flow.steps.find(s => s.functions.some(f => f.function_id === 'n_validateOrder'))!.step_id;
+    const branchEdge = flow.step_graph!.edges.find(e => e.from_step_id === validateStepId);
+    expect(branchEdge).toBeDefined();
+    expect(branchEdge!.kind).toBe('branch');
+    expect(branchEdge!.evidence).toMatch(/conditional/i);
+  });
+
+  test('a step on a throw path upgrades the edge INTO it to an error edge (reuses error-constraint evidence)', () => {
+    const cas = buildFixtureCas();
+    // n_validateOrder declares a throw + an uncaught chain reaches it — the exact
+    // shape extractErrorConstraints reads. The validate step then carries a
+    // kind:error constraint, so the edge leading into it is an error edge.
+    (cas.nodes.find(n => n.id === 'n_validateOrder') as any).signature = { throws: ['ValidationError'] };
+    (cas as any).call_chains = [
+      {
+        id: 'chain_createOrder',
+        chain_type: 'entry-to-exit',
+        entry_point: { node_id: 'n_handleCreateOrder', method_name: 'handleCreateOrder', entry_point_id: 'ep_createOrder' },
+        exit_point: { node_id: 'n_saveOrder', method_name: 'saveOrder', exit_point_id: 'xp_saveOrder' },
+        call_path: [
+          { call_id: 'c1', node_id: 'n_handleCreateOrder', method_name: 'handleCreateOrder', depth: 0 },
+          { call_id: 'c2', node_id: 'n_validateOrder', method_name: 'validateOrder', depth: 1 },
+          { call_id: 'c3', node_id: 'n_saveOrder', method_name: 'saveOrder', depth: 2 },
+        ],
+        characteristics: { total_calls: 3, max_depth: 2, has_external_calls: false, has_database_calls: true, has_async_calls: false },
+      },
+    ];
+    const flow = computeFlowConcepts(cas)[0];
+    const validateStep = flow.steps.find(s => s.functions.some(f => f.function_id === 'n_validateOrder'))!;
+    // sanity: the validate step really carries the error constraint we key on.
+    expect(validateStep.contract.constraints.some(c => c.kind === 'error')).toBe(true);
+    const errEdge = flow.step_graph!.edges.find(e => e.to_step_id === validateStep.step_id);
+    expect(errEdge).toBeDefined();
+    expect(errEdge!.kind).toBe('error');
+    expect(errEdge!.evidence).toMatch(/ValidationError|throwing node/);
+  });
+
+  test('step_graph is byte-stable run-to-run (determinism)', () => {
+    const a = computeFlowConcepts(buildFixtureCas())[0].step_graph;
+    const b = computeFlowConcepts(buildFixtureCas())[0].step_graph;
+    expect(a).toEqual(b);
+  });
+});
+
+/**
+ * Fixture with a PUBLISH → CONSUME seam: a terminal flow (POST /orders) ends at
+ * an EVENT exit `order.created`; a separate EVENT entry point consumes
+ * `order.created`. The publisher flow must CONTINUE INTO the consumer flow (same
+ * end-to-end flow), and the consumer becomes a reusable subflow.
+ */
+function buildPublishConsumeFixtureCas(consumerChannel = 'order.created'): CASOutput {
+  const nodes: CASNode[] = [
+    node({ id: 'n_placeOrder', name: 'placeOrder', type: 'controller', category: 'entry' }),
+    node({ id: 'n_emitOrderCreated', name: 'emitOrderCreated', type: 'function', category: 'business' }),
+    node({ id: 'n_orderWorker', name: 'onOrderCreated', type: 'function', category: 'business' }),
+    node({ id: 'n_persistOrder', name: 'persistOrderProjection', type: 'function', category: 'data' }),
+  ];
+  const edges: CASEdge[] = [
+    { id: 'pe1', source: 'n_placeOrder', target: 'n_emitOrderCreated', type: 'calls' },
+    { id: 'pe2', source: 'n_orderWorker', target: 'n_persistOrder', type: 'calls' },
+  ];
+  const entry_points: CASEntryPoint[] = [
+    {
+      id: 'ep_place', source_node: 'n_placeOrder', type: 'http', name: 'placeOrder',
+      trigger: { method: 'POST', path: '/orders' },
+      handler: { node_id: 'n_placeOrder', method_name: 'placeOrder' },
+    },
+    {
+      id: 'ep_worker', source_node: 'n_orderWorker', type: 'event', name: 'onOrderCreated',
+      trigger: { event: consumerChannel },
+      handler: { node_id: 'n_orderWorker', method_name: 'onOrderCreated' },
+    },
+  ];
+  const exit_points: CASExitPoint[] = [
+    { id: 'xp_orderCreated', source_node: 'n_emitOrderCreated', type: 'event', name: 'orderCreated', target: { resource: 'order.created' } } as CASExitPoint,
+  ];
+  const call_chains = [
+    {
+      id: 'chain_place',
+      chain_type: 'entry-to-exit',
+      entry_point: { node_id: 'n_placeOrder', method_name: 'placeOrder', entry_point_id: 'ep_place' },
+      exit_point: { node_id: 'n_emitOrderCreated', method_name: 'emitOrderCreated', exit_point_id: 'xp_orderCreated' },
+      call_path: [
+        { call_id: 'pc1', node_id: 'n_placeOrder', method_name: 'placeOrder', depth: 0 },
+        { call_id: 'pc2', node_id: 'n_emitOrderCreated', method_name: 'emitOrderCreated', depth: 1 },
+      ],
+      characteristics: { total_calls: 2, max_depth: 1, has_external_calls: true, has_database_calls: false, has_async_calls: true },
+    },
+  ];
+  return {
+    cas_version: '1.0.0', analysis_timestamp: new Date().toISOString(),
+    analysis_id: 'test-publish-consume', system: { name: 'test-system' } as any,
+    nodes, edges, entry_points, exit_points,
+    call_chains,
+    data_lineage: [], data_entities: [], system_capabilities: [],
+    analyzer_contributions: [],
+  } as unknown as CASOutput;
+}
+
+describe('C1 async continuations — publish→consume seam stitches the SAME end-to-end flow', () => {
+  const flows = computeFlowConcepts(buildPublishConsumeFixtureCas());
+  const publisher = flows.find(f => f.terminus?.exit_point_id === 'xp_orderCreated')!;
+  const consumer = flows.find(f => f.entry_point === 'ep_worker')!;
+
+  test('both the publisher (terminal) and consumer (entry-point) flows exist', () => {
+    expect(publisher).toBeDefined();
+    expect(publisher.terminus!.kind).toBe('event');
+    expect(consumer).toBeDefined();
+  });
+
+  test('the publisher CONTINUES INTO the consumer', () => {
+    expect(publisher.continuations).toBeDefined();
+    expect(publisher.continuations).toContain(consumer.flow_id);
+  });
+
+  test('the consumer is a reusable subflow with a back-ref to the publisher', () => {
+    expect(consumer.is_subflow).toBe(true);
+    expect(consumer.continued_from).toEqual([publisher.flow_id]);
+    // the publisher is NOT itself a subflow (nothing continues into it).
+    expect(publisher.is_subflow).toBeUndefined();
+    expect(publisher.continued_from).toBeUndefined();
+  });
+
+  test('no seam match → no continuation stitched (evidence-gated, never fabricated)', () => {
+    const flows2 = computeFlowConcepts(buildPublishConsumeFixtureCas('order.shipped'));
+    for (const f of flows2) {
+      expect(f.continuations).toBeUndefined();
+      expect(f.continued_from).toBeUndefined();
+      expect(f.is_subflow).toBeUndefined();
+    }
+  });
+
+  test('deterministic: continuation edges are byte-stable run-to-run', () => {
+    const again = computeFlowConcepts(buildPublishConsumeFixtureCas());
+    const againPub = again.find(f => f.terminus?.exit_point_id === 'xp_orderCreated')!;
+    expect(againPub.continuations).toEqual(publisher.continuations);
+  });
+
+  test('stitchContinuations is a no-op on a <2-flow set and returns the same array', () => {
+    const one = [{ flow_id: 'x', entry_point: 'ep' } as FlowConcept];
+    expect(stitchContinuations(one, buildPublishConsumeFixtureCas())).toBe(one);
+  });
+});

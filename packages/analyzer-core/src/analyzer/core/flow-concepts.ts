@@ -196,6 +196,46 @@ export interface CapabilityFlowRelationship {
   rationale: string;
 }
 
+/**
+ * A single edge of a flow's STEP GRAPH (docs/SEMANTIC-MODEL.md, Flow section:
+ * "Flow = semantic step GRAPH … the ordered step list shown to humans is a
+ * PROJECTION of that graph, not its structure"). Edges connect the flow's
+ * ordered `steps` by step_id. Kind is derived from EVIDENCE the CAS already
+ * carries — never fabricated:
+ *   - 'sequence'     — default ordering (step i → step i+1); the honest backbone
+ *                      when no stronger evidence exists.
+ *   - 'branch'       — the FROM step has a conditional control-flow successor
+ *                      (a call edge flagged metadata.conditional, or a
+ *                      method_call whose execution_context.is_conditional set).
+ *   - 'error'        — the TO step is on a throw/catch path: it carries an
+ *                      already-computed kind:'error' constraint (reuses the
+ *                      error-contract evidence). Transitioning here enters
+ *                      error-handling territory.
+ *   - 'compensation' — the FROM step is itself on an error path AND the TO step
+ *                      reverts state (a data_entities.lifecycle.deleted_by node
+ *                      runs in it) — a rollback/cleanup after a failure edge.
+ */
+export type FlowEdgeKind = 'sequence' | 'branch' | 'error' | 'compensation';
+
+export interface FlowStepEdge {
+  from_step_id: string;
+  to_step_id: string;
+  kind: FlowEdgeKind;
+  /** The concrete CAS fact that upgraded this edge above 'sequence' (the
+   *  conditional edge/call, the error-constraint evidence, the state-revert
+   *  signal). Omitted for a plain 'sequence' backbone edge — never fabricated. */
+  evidence?: string;
+}
+
+export interface FlowStepGraph {
+  /** Backbone edges over the flow's ordered `steps` (which remain the default
+   *  human PROJECTION). One edge per consecutive step pair, its kind upgraded
+   *  from 'sequence' to branch/error/compensation where evidence exists. A flow
+   *  with no branch/error/compensation evidence is just the sequence chain —
+   *  honest, not fabricated. */
+  edges: FlowStepEdge[];
+}
+
 export interface FlowConcept {
   flow_id: string;
   name: string;
@@ -243,6 +283,24 @@ export interface FlowConcept {
     /** The node at the terminus (last node on the chain that emits the exit). */
     node_id: string;
   };
+  /** The flow's semantic STEP GRAPH over `steps` — branches, error paths, and
+   *  compensations layered on the sequence backbone (docs/SEMANTIC-MODEL.md:
+   *  the ordered `steps` list is a PROJECTION of this graph). Deterministic,
+   *  evidence-gated. Omitted when the flow has <2 steps (no edge to draw). */
+  step_graph?: FlowStepGraph;
+  /** Flow ids this flow CONTINUES INTO via an async handoff: this flow's
+   *  terminus is a publish/emit whose channel matches a consumer flow's entry
+   *  point — a continuation segment of the SAME end-to-end flow, not a new flow
+   *  (docs/SEMANTIC-MODEL.md: "Async continuation ≠ new flow"). Evidence-gated
+   *  on a real publish↔consume seam match; omitted (never []) when none. */
+  continuations?: string[];
+  /** Back-ref of `continuations`: flow ids that CONTINUE INTO this flow (this
+   *  flow is the async consumer they hand off to). Omitted when none. */
+  continued_from?: string[];
+  /** True when this flow is a reusable continuation segment — a consumer reached
+   *  by an async publish from ≥1 other flow (it has `continued_from`). Omitted
+   *  (never false) otherwise. */
+  is_subflow?: boolean;
   /** Honest caveats about this specific flow's segmentation/derivation. */
   gaps?: string[];
 }
@@ -1273,6 +1331,249 @@ function flowIntentForEntryPoint(ep: CASEntryPoint): string {
   return `Handles ${ep.type} entry "${via}"${ep.description ? `: ${ep.description}` : ''}`;
 }
 
+// ---------------------------------------------------------------------------
+// STEP GRAPH (C1) — the ordered `steps` list is a PROJECTION of a step GRAPH
+// (docs/SEMANTIC-MODEL.md, Flow). We layer branch/error/compensation edge kinds
+// onto the sequence backbone, each gated on a fact the CAS already computed.
+// ---------------------------------------------------------------------------
+
+/** Node ids that make a CONDITIONAL control-flow successor — the deterministic
+ *  ground for a 'branch' step-graph edge. Two already-computed CAS facts feed
+ *  it: a call EDGE flagged `metadata.conditional`, and a method_call whose
+ *  `execution_context.is_conditional` is set. Keyed by the SOURCE/caller node →
+ *  the concrete evidence string. Facts only; a node with no conditional
+ *  successor never appears (no fabrication). Computed once per CAS. */
+function buildConditionalOutIndex(cas: CASOutput): Map<string, string> {
+  const index = new Map<string, string>();
+  for (const edge of cas.edges || []) {
+    if (edge.metadata?.conditional === true && !index.has(edge.source)) {
+      index.set(edge.source, `call edge ${edge.id} (${edge.source} -> ${edge.target}) is conditional (edge.metadata.conditional)`);
+    }
+  }
+  for (const mc of cas.method_calls || []) {
+    const caller = mc.caller_node;
+    if (!caller || index.has(caller)) continue;
+    if (mc.execution_context?.is_conditional) {
+      const name = mc.call_details?.method_name || mc.target_node || '';
+      index.set(caller, `method call ${name} from ${caller} is made in a conditional context (execution_context.is_conditional)`.replace(/\s+/g, ' ').trim());
+    }
+  }
+  return index;
+}
+
+/** Node ids that DELETE an entity (data_entities.lifecycle.deleted_by) — the
+ *  structural ground for a 'compensation' step (a state-reverting cleanup that
+ *  follows a failure edge). Facts only. Computed once per CAS. */
+function buildDeleterNodeIds(cas: CASOutput): Set<string> {
+  const ids = new Set<string>();
+  for (const entity of cas.data_entities || []) {
+    for (const id of entity.lifecycle?.deleted_by || []) ids.add(id);
+  }
+  return ids;
+}
+
+/** Sane cap on step-graph edges (steps are already function-capped, so this is
+ *  a defensive bound only — a pathological flow never emits an unbounded graph). */
+const STEP_GRAPH_EDGE_CAP = 250;
+
+/**
+ * Build the step GRAPH for a flow: the sequence backbone (step i → step i+1),
+ * each edge upgraded to branch/error/compensation where the CAS carries the
+ * evidence. `segmentNodes[i]` are the nodes of `steps[i]` (aligned by index —
+ * both come from the same `segments` array). Returns undefined for a <2-step
+ * flow (no edge to draw). Deterministic: edges are in step order; each edge's
+ * kind is chosen by a fixed precedence (compensation > error > branch >
+ * sequence) so the same CAS yields byte-identical graphs run-to-run.
+ */
+function buildStepGraph(
+  steps: FlowStep[],
+  segmentNodes: CASNode[][],
+  conditionalOut: Map<string, string>,
+  deleterNodeIds: Set<string>
+): FlowStepGraph | undefined {
+  if (steps.length < 2) return undefined;
+  const edges: FlowStepEdge[] = [];
+  const limit = Math.min(steps.length - 1, STEP_GRAPH_EDGE_CAP);
+  for (let i = 0; i < limit; i++) {
+    const from = steps[i];
+    const to = steps[i + 1];
+    const fromNodes = segmentNodes[i] || [];
+    const toNodes = segmentNodes[i + 1] || [];
+
+    // error: the TO step is on a throw/catch path — reuse the already-computed
+    // kind:'error' constraint (extractErrorConstraints), scoped to this flow.
+    const toErr = to.contract.constraints.find(c => c.kind === 'error');
+    // branch: any node in the FROM step has a conditional control-flow successor.
+    let branchEv: string | undefined;
+    for (const n of fromNodes) {
+      const ev = conditionalOut.get(n.id);
+      if (ev) { branchEv = ev; break; }
+    }
+    // compensation: the FROM step is itself on an error path AND the TO step
+    // reverts state (a delete-lifecycle node runs in it) — a cleanup after the
+    // failure. Structural + evidence-gated; deliberately conservative.
+    const fromIsError = from.contract.constraints.some(c => c.kind === 'error');
+    const revertsState = toNodes.some(n => deleterNodeIds.has(n.id));
+
+    let kind: FlowEdgeKind = 'sequence';
+    let evidence: string | undefined;
+    if (fromIsError && revertsState) {
+      kind = 'compensation';
+      evidence = `follows an error-carrying step and reverts state (a data_entities.lifecycle.deleted_by node runs in "${to.name}")`;
+    } else if (toErr) {
+      kind = 'error';
+      evidence = toErr.evidence;
+    } else if (branchEv) {
+      kind = 'branch';
+      evidence = branchEv;
+    }
+    edges.push(evidence
+      ? { from_step_id: from.step_id, to_step_id: to.step_id, kind, evidence }
+      : { from_step_id: from.step_id, to_step_id: to.step_id, kind });
+  }
+  return { edges };
+}
+
+// ---------------------------------------------------------------------------
+// ASYNC CONTINUATIONS (C1) — an event/message PUBLISH whose channel matches a
+// CONSUMER entry point is a continuation of the SAME end-to-end flow (and the
+// consumer is a reusable subflow). docs/SEMANTIC-MODEL.md: "Async continuation
+// ≠ new flow". Evidence-gated on a real publish↔consume seam match.
+// ---------------------------------------------------------------------------
+
+/** Normalize an async channel/target string for publish↔consume matching.
+ *  Lowercases, trims, strips surrounding quotes, drops non-alphanumerics so
+ *  "order.created", "Order.Created", and "order_created" collapse to one key.
+ *  Generic seam FALLBACK tokens ('external', 'channel') and single-char noise
+ *  are treated as non-channels (→ '') so they can never stitch unrelated flows. */
+function normalizeChannelKey(raw: string | undefined): string {
+  if (raw === undefined || raw === null) return '';
+  const trimmed = String(raw).trim().toLowerCase().replace(/^['"]+|['"]+$/g, '');
+  if (trimmed === 'external' || trimmed === 'channel') return '';
+  const key = trimmed.replace(/[^a-z0-9]/g, '');
+  return key.length < 2 ? '' : key;
+}
+
+/**
+ * Pair publisher EXIT points to consumer ENTRY points by matching channel keys —
+ * the deterministic publish↔consume seam graph. Prefers the pre-computed
+ * `cas.communication_seams` (the seam graph the deployable inventory already
+ * builds — producer messaging seams carry `metadata.exit_point` + target=channel;
+ * consumer messaging seams carry `metadata.entry_point` + source=channel), and
+ * falls back to deriving the SAME pairing from `cas.exit_points` (message/event)
+ * and `cas.entry_points` (message/event) when seams aren't populated. Either way
+ * the evidence is a real publish-target ↔ consume-channel match. Returns
+ * {exitId, entryId, channel} triples, sorted, deduped — never fabricated.
+ */
+function pairPublishConsumeSeams(cas: CASOutput): Array<{ exitId: string; entryId: string; channel: string }> {
+  const pairs: Array<{ exitId: string; entryId: string; channel: string }> = [];
+  const seen = new Set<string>();
+  const add = (exitId: string, entryId: string, channel: string) => {
+    if (!exitId || !entryId) return;
+    const key = `${exitId}\u0000${entryId}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    pairs.push({ exitId, entryId, channel });
+  };
+
+  // --- Preferred: the classified communication_seams graph. ---
+  const seams = cas.communication_seams?.seams;
+  if (seams && seams.length > 0) {
+    const consumersByChannel = new Map<string, string[]>();
+    for (const s of seams) {
+      const entryId = (s.metadata as Record<string, unknown> | undefined)?.entry_point;
+      if (s.kind !== 'messaging' || typeof entryId !== 'string') continue;
+      const channel = normalizeChannelKey(s.source);
+      if (!channel) continue;
+      if (!consumersByChannel.has(channel)) consumersByChannel.set(channel, []);
+      consumersByChannel.get(channel)!.push(entryId);
+    }
+    if (consumersByChannel.size > 0) {
+      for (const s of seams) {
+        const exitId = (s.metadata as Record<string, unknown> | undefined)?.exit_point;
+        if (s.kind !== 'messaging' || typeof exitId !== 'string') continue;
+        const channel = normalizeChannelKey(s.target);
+        if (!channel) continue;
+        for (const entryId of consumersByChannel.get(channel) || []) add(exitId, entryId, channel);
+      }
+      if (pairs.length > 0) {
+        pairs.sort((a, b) => a.exitId.localeCompare(b.exitId) || a.entryId.localeCompare(b.entryId));
+        return pairs;
+      }
+    }
+  }
+
+  // --- Fallback: derive the same pairing from the raw exit/entry facts. ---
+  const consumersByChannel = new Map<string, string[]>();
+  for (const ep of cas.entry_points || []) {
+    if (ep.type !== 'message' && ep.type !== 'event') continue;
+    const channel = normalizeChannelKey(ep.trigger?.event || ep.name);
+    if (!channel) continue;
+    if (!consumersByChannel.has(channel)) consumersByChannel.set(channel, []);
+    consumersByChannel.get(channel)!.push(ep.id);
+  }
+  if (consumersByChannel.size === 0) return pairs;
+  for (const exit of cas.exit_points || []) {
+    if (exit.type !== 'message' && exit.type !== 'event') continue;
+    const target = exit.target?.service_id || exit.target?.resource || exit.target?.endpoint || exit.name;
+    const channel = normalizeChannelKey(target);
+    if (!channel) continue;
+    for (const entryId of consumersByChannel.get(channel) || []) add(exit.id, entryId, channel);
+  }
+  pairs.sort((a, b) => a.exitId.localeCompare(b.exitId) || a.entryId.localeCompare(b.entryId));
+  return pairs;
+}
+
+/**
+ * Stitch async continuations across the full flow set: when a flow's terminus
+ * is an event/message PUBLISH whose channel matches a CONSUMER flow's entry
+ * point (via pairPublishConsumeSeams), the publisher CONTINUES INTO the consumer
+ * (`continuations`) and the consumer is a reusable subflow (`continued_from` +
+ * `is_subflow`). Mutates in place; a no-op when there are <2 flows or no seam
+ * pair matches. Deterministic: continuation lists are sorted, byte-stable.
+ */
+export function stitchContinuations(flows: FlowConcept[], cas: CASOutput): FlowConcept[] {
+  if (flows.length < 2) return flows;
+  const pairs = pairPublishConsumeSeams(cas);
+  if (pairs.length === 0) return flows;
+
+  // A publisher flow's terminus resolves an exit_point_id; a consumer flow is
+  // rooted at the consumer entry point (flow.entry_point === ep.id). First flow
+  // wins for a given key (stable: flows are already sorted).
+  const flowByTerminusExit = new Map<string, FlowConcept>();
+  const flowByEntryPoint = new Map<string, FlowConcept>();
+  for (const f of flows) {
+    if (f.terminus?.exit_point_id && !flowByTerminusExit.has(f.terminus.exit_point_id)) {
+      flowByTerminusExit.set(f.terminus.exit_point_id, f);
+    }
+    if (!flowByEntryPoint.has(f.entry_point)) flowByEntryPoint.set(f.entry_point, f);
+  }
+
+  const contByPub = new Map<string, Set<string>>();
+  const fromByCon = new Map<string, Set<string>>();
+  for (const { exitId, entryId } of pairs) {
+    const pub = flowByTerminusExit.get(exitId);
+    const con = flowByEntryPoint.get(entryId);
+    if (!pub || !con || pub.flow_id === con.flow_id) continue;
+    if (!contByPub.has(pub.flow_id)) contByPub.set(pub.flow_id, new Set());
+    contByPub.get(pub.flow_id)!.add(con.flow_id);
+    if (!fromByCon.has(con.flow_id)) fromByCon.set(con.flow_id, new Set());
+    fromByCon.get(con.flow_id)!.add(pub.flow_id);
+  }
+  if (contByPub.size === 0) return flows;
+
+  for (const f of flows) {
+    const cont = contByPub.get(f.flow_id);
+    if (cont && cont.size) f.continuations = [...cont].sort();
+    const from = fromByCon.get(f.flow_id);
+    if (from && from.size) {
+      f.continued_from = [...from].sort();
+      f.is_subflow = true;
+    }
+  }
+  return flows;
+}
+
 /**
  * TERMINAL-CHAIN FLOWS — the primary flow-derivation path. A flow is a logical
  * unit over the compile graph ANCHORED ON A TERMINAL CHAIN: a pre-computed
@@ -1307,6 +1608,8 @@ function buildTerminalFlows(cas: CASOutput, opts: ComputeFlowConceptsOptions): F
   const entryHandlerNodeIdByEpId = buildEntryHandlerNodeIdByEpId(cas);
   const exitPointsByNode = buildExitPointIndex(cas);
   const lineageByNode = buildLineageIndex(cas);
+  const conditionalOut = buildConditionalOutIndex(cas);
+  const deleterNodeIds = buildDeleterNodeIds(cas);
   const exitById = new Map((cas.exit_points || []).map(e => [e.id, e]));
   const entryById = new Map((cas.entry_points || []).map(e => [e.id, e]));
 
@@ -1425,6 +1728,11 @@ function buildTerminalFlows(cas: CASOutput, opts: ComputeFlowConceptsOptions): F
       return step;
     });
 
+    // STEP GRAPH: the ordered `steps` are a PROJECTION of a graph — layer
+    // branch/error/compensation edges on the sequence backbone (segments align
+    // 1:1 with steps by index).
+    const stepGraph = buildStepGraph(steps, segments.map(s => s.nodes), conditionalOut, deleterNodeIds);
+
     const allNodeIds = new Set(chainNodes.map(c => c.node.id));
 
     // Terminus ICELOT enrichment: the exit the chain ends at IS a produced
@@ -1491,6 +1799,7 @@ function buildTerminalFlows(cas: CASOutput, opts: ComputeFlowConceptsOptions): F
       contract,
       steps,
       terminus,
+      step_graph: stepGraph,
       gaps: gaps.length ? gaps : undefined,
     });
     void rootNode; // rootNode resolution kept for symmetry / future naming; not required.
@@ -1534,27 +1843,38 @@ export function computeFlowConcepts(cas: CASOutput, opts: ComputeFlowConceptsOpt
   // already covered by a terminal-anchored flow contributes no second flow
   // (terminal wins — it carries the terminus). Entry-point flows in the union
   // are significance-filtered (non-test, non-trivial) so the count stays sane.
-  if (terminalFlows.length === 0) return computeEntryPointFlows(cas, opts);
-  if (opts.maxFlows && opts.maxFlows > 0 && terminalFlows.length >= opts.maxFlows) return terminalFlows;
+  let flows: FlowConcept[];
+  if (terminalFlows.length === 0) {
+    flows = computeEntryPointFlows(cas, opts);
+  } else if (opts.maxFlows && opts.maxFlows > 0 && terminalFlows.length >= opts.maxFlows) {
+    flows = terminalFlows;
+  } else {
+    // Covered keys: the terminal flow's entry_point is entry_point_id when the
+    // chain resolved one, else the raw root node id — exclude BOTH forms so an
+    // entry-point-rooted flow for the same root never duplicates it.
+    const coveredEntryKeys = new Set<string>();
+    const entryById = new Map((cas.entry_points || []).map(e => [e.id, e]));
+    for (const flow of terminalFlows) {
+      coveredEntryKeys.add(flow.entry_point);
+      const ep = entryById.get(flow.entry_point);
+      if (ep) coveredEntryKeys.add(ep.handler?.node_id || ep.source_node);
+    }
 
-  // Covered keys: the terminal flow's entry_point is entry_point_id when the
-  // chain resolved one, else the raw root node id — exclude BOTH forms so an
-  // entry-point-rooted flow for the same root never duplicates it.
-  const coveredEntryKeys = new Set<string>();
-  const entryById = new Map((cas.entry_points || []).map(e => [e.id, e]));
-  for (const flow of terminalFlows) {
-    coveredEntryKeys.add(flow.entry_point);
-    const ep = entryById.get(flow.entry_point);
-    if (ep) coveredEntryKeys.add(ep.handler?.node_id || ep.source_node);
+    const remaining = opts.maxFlows && opts.maxFlows > 0 ? opts.maxFlows - terminalFlows.length : undefined;
+    const entryFlows = computeEntryPointFlows(
+      cas,
+      { ...opts, maxFlows: remaining },
+      { excludeEntryKeys: coveredEntryKeys, significantOnly: true }
+    );
+    flows = [...terminalFlows, ...entryFlows];
   }
 
-  const remaining = opts.maxFlows && opts.maxFlows > 0 ? opts.maxFlows - terminalFlows.length : undefined;
-  const entryFlows = computeEntryPointFlows(
-    cas,
-    { ...opts, maxFlows: remaining },
-    { excludeEntryKeys: coveredEntryKeys, significantOnly: true }
-  );
-  return [...terminalFlows, ...entryFlows];
+  // ASYNC CONTINUATION STITCHING (C1): a publisher flow whose terminus is an
+  // event/message publish CONTINUES INTO the consumer flow whose entry matches
+  // the seam channel — the SAME end-to-end flow, and the consumer is a reusable
+  // subflow. Runs over the full union (publisher may be terminal, consumer
+  // entry-point-rooted). Evidence-gated + deterministic; no-op when no pair.
+  return stitchContinuations(flows, cas);
 }
 
 /**
@@ -1611,6 +1931,8 @@ function computeEntryPointFlows(
 
   const exitPointsByNode = buildExitPointIndex(cas);
   const lineageByNode = buildLineageIndex(cas);
+  const conditionalOut = buildConditionalOutIndex(cas);
+  const deleterNodeIds = buildDeleterNodeIds(cas);
 
   const entryPointsByNode = new Map<string, CASEntryPoint[]>();
   for (const ep of cas.entry_points || []) {
@@ -1707,6 +2029,10 @@ function computeEntryPointFlows(
       return step;
     });
 
+    // STEP GRAPH: ordered `steps` are a PROJECTION — layer branch/error/
+    // compensation edges on the sequence backbone (segments align 1:1 by index).
+    const stepGraph = buildStepGraph(steps, segments.map(s => s.nodes), conditionalOut, deleterNodeIds);
+
     const allNodeIds = new Set(chain.map(c => c.node.id));
     // M:N capability relationships (role on the EDGE); capability_id stays the
     // primary relationship's capability for back-compat.
@@ -1742,6 +2068,7 @@ function computeEntryPointFlows(
       entities: flowEntities,
       contract: aggregateFlowContract(steps),
       steps,
+      step_graph: stepGraph,
       gaps: gaps.length ? gaps : undefined,
     });
   }
