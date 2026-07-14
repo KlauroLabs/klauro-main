@@ -104,6 +104,56 @@ export interface ContractTelemetry {
   last_seen?: string;
 }
 
+/** AI-REFRAME PLUG POINT (D2, docs/SEMANTIC-MODEL.md ICELOT): the interpretive
+ *  Logic summary of a unit — "Logic and interpretive reframing are AI-only,
+ *  evidence-gated, with provenance". This field is AI-ONLY-OR-ABSENT
+ *  (docs/cas/DETERMINISM-BOUNDARY.md): the deterministic pass NEVER populates
+ *  it under any circumstances; only the query-layer AI enrichment pass may set
+ *  it, and every claim in `text` must be backed by the `evidence_refs` it
+ *  cites (facet values / node ids / constraint rules already on the contract). */
+export interface LogicSummary {
+  text: string;
+  description_source: 'ai';
+  /** Refs into the deterministic evidence the summary reframes — facet entry
+   *  values, node/step ids, or constraint rules. Never empty: an AI summary
+   *  with nothing to cite must be rejected, not stored. */
+  evidence_refs: string[];
+}
+
+/** Which facet a provenance record annotates. */
+export type ProvenanceFacet =
+  | 'input'
+  | 'output'
+  | 'state_change'
+  | 'external_integration'
+  | 'constraint'
+  | 'telemetry';
+
+/**
+ * FACET PROVENANCE (D2, docs/SEMANTIC-MODEL.md "Evidence and confidence —
+ * everywhere"): where a facet ENTRY came from, so the chain flow facet → step
+ * → code fact is walkable. At the STEP level `contributed_by_step_ids` is
+ * absent (the step itself is the contributor) and `evidence` is the concrete
+ * code-level fact (signature / exit point / data_lineage membership) that
+ * produced the entry. At the FLOW level `contributed_by_step_ids` names the
+ * step(s) whose contracts contributed the entry, and `evidence` is LIFTED from
+ * the contributing step's own facet evidence — never re-derived, never
+ * fabricated. `source` is always 'deterministic' here: an AI pass that wants
+ * to reframe a facet plugs in via `logic_summary` / `description_source`, not
+ * by writing provenance records.
+ */
+export interface FacetProvenance {
+  facet: ProvenanceFacet;
+  /** The exact facet entry this annotates (the input/output/effect string, or
+   *  the constraint's `rule`). */
+  value: string;
+  /** FLOW level only: step_id(s) whose contract contributed this entry, sorted. */
+  contributed_by_step_ids?: string[];
+  source: 'deterministic';
+  /** The concrete fact that produced the entry. */
+  evidence: string;
+}
+
 export interface ILSOContract {
   input: string[];
   logic: string;
@@ -122,6 +172,41 @@ export interface ILSOContract {
    *  (undefined) when there is no runtime data — the pure/static analyzer never
    *  populates this; it is joined at the query layer from persisted telemetry. */
   telemetry?: ContractTelemetry;
+  /** Per-entry provenance for input/output/effect facet entries (constraints
+   *  carry their evidence inline and additionally surface here at the FLOW
+   *  level so the step attribution is walkable). Sorted (facet, value);
+   *  omitted when no entries carry evidence. Additive — serialization spreads. */
+  facet_provenance?: FacetProvenance[];
+  /** AI-reframe plug point — see LogicSummary. ABSENT in deterministic runs. */
+  logic_summary?: LogicSummary;
+}
+
+/**
+ * FLOW-level contract (D2 aggregation/reframe rules): the flow's ICELOT is a
+ * REFRAME of its steps' facets, never a simple union (docs/SEMANTIC-MODEL.md):
+ *   Input  = the flow's INITIATING input only (the entry step's contract —
+ *            entry-point signature params + entry-step reads); interior step
+ *            inputs are DEMOTED to `internal_inputs_count`, not unioned.
+ *   Output = the flow's TERMINAL output (last step's output, plus the resolved
+ *            terminus emission folded in by the terminal path); intermediate
+ *            returns are demoted to `internal_outputs_count`.
+ *   Effects = union deduped by target, each stamped with the contributing
+ *            step(s) via `facet_provenance`.
+ *   Constraints = entry-scoped error constraints + step constraints that GATE
+ *            the whole flow (a guard on a non-terminal step gates everything
+ *            after it; a guard on the last step gates nothing downstream and
+ *            stays step-level only).
+ *   Telemetry = joined end-to-end at the query layer (unchanged), stamped
+ *            with provenance when attached.
+ */
+export interface FlowILSOContract extends ILSOContract {
+  /** Distinct interior-step input entries demoted from flow-level Input
+   *  (present only when > 0 — never zero-filled). They remain fully visible
+   *  on their own steps' contracts. */
+  internal_inputs_count?: number;
+  /** Distinct non-terminal-step output entries demoted from flow-level Output
+   *  (present only when > 0). */
+  internal_outputs_count?: number;
 }
 
 export interface FlowStep {
@@ -262,8 +347,10 @@ export interface FlowConcept {
   /** Data entities the flow's functions read or write (by name), from
    *  data_lineage membership across all of the flow's functions. */
   entities: string[];
-  /** Flow-level I/L/S/O + Constraints, aggregated over steps. */
-  contract: ILSOContract;
+  /** Flow-level I/L/S/O + Constraints — a REFRAME of the steps' facets, not a
+   *  union (FlowILSOContract: initiating input, terminal output, deduped
+   *  effects with step provenance, flow-gating constraints). */
+  contract: FlowILSOContract;
   steps: FlowStep[];
   /**
    * The TERMINAL this flow is anchored on — what the system actually produces
@@ -900,20 +987,38 @@ function buildContract(
     constraints.push(c);
   };
 
+  // STEP-LEVEL facet provenance (D2): every input/output/effect entry carries
+  // the concrete code fact that produced it (first fact wins for a deduped
+  // entry — stable, since node iteration order is the segment order). The
+  // evidence is a fact ALREADY AT HAND at extraction time, never re-derived.
+  const provenanceByKey = new Map<string, FacetProvenance>();
+  const recordEvidence = (facet: ProvenanceFacet, value: string, evidence: string) => {
+    const key = `${facet}\u0000${value}`;
+    if (provenanceByKey.has(key)) return;
+    provenanceByKey.set(key, { facet, value, source: 'deterministic', evidence });
+  };
+
   const nodeIds = new Set(nodes.map(n => n.id));
 
   for (const node of nodes) {
     for (const p of node.signature?.parameters || []) {
-      input.add(p.type ? `${p.name}: ${p.type}` : p.name);
+      const v = p.type ? `${p.name}: ${p.type}` : p.name;
+      input.add(v);
+      recordEvidence('input', v, `node "${node.name}" signature.parameters`);
     }
-    if (node.signature?.return_type) output.add(node.signature.return_type);
+    if (node.signature?.return_type) {
+      output.add(node.signature.return_type);
+      recordEvidence('output', node.signature.return_type, `node "${node.name}" signature.return_type`);
+    }
 
     for (const ep of exitPointsByNode.get(node.id) || []) {
       const label = ep.target?.service_id || ep.target?.resource || `${ep.type}:${ep.name}`;
       if (ep.type === 'database' || ep.type === 'cache' || ep.type === 'file') {
         stateChanges.add(label);
+        recordEvidence('state_change', label, `exit point ${ep.id} (${ep.type}) on node "${node.name}"`);
       } else {
         externalIntegrations.add(label);
+        recordEvidence('external_integration', label, `exit point ${ep.id} (${ep.type}) on node "${node.name}"`);
       }
     }
 
@@ -927,10 +1032,22 @@ function buildContract(
   for (const entry of cas.data_lineage || []) {
     const writesHere = entry.writers.some(w => nodeIds.has(w.node_id));
     const readsHere = entry.readers.some(r => nodeIds.has(r.node_id));
-    if (writesHere) stateChanges.add(`${entry.entity_name} updated`);
-    if (readsHere) input.add(`reads ${entry.entity_name}`);
+    if (writesHere) {
+      stateChanges.add(`${entry.entity_name} updated`);
+      recordEvidence('state_change', `${entry.entity_name} updated`,
+        `data_lineage "${entry.entity_name}" writers include a node in this unit`);
+    }
+    if (readsHere) {
+      input.add(`reads ${entry.entity_name}`);
+      recordEvidence('input', `reads ${entry.entity_name}`,
+        `data_lineage "${entry.entity_name}" readers include a node in this unit`);
+    }
     if (writesHere || readsHere) {
-      for (const rec of entry.external_recipients) externalIntegrations.add(rec.service);
+      for (const rec of entry.external_recipients) {
+        externalIntegrations.add(rec.service);
+        recordEvidence('external_integration', rec.service,
+          `data_lineage "${entry.entity_name}" external_recipients names ${rec.service}`);
+      }
     }
   }
 
@@ -938,6 +1055,7 @@ function buildContract(
   for (const c of extractStructuralConstraints(nodeIds, cas, ownEntryPoints, exitPointsByNode, scopeEntryPointIds)) addConstraint(c);
 
   const logicNames = nodes.map(n => n.name);
+  const facetProvenance = sortFacetProvenance([...provenanceByKey.values()]);
   return {
     input: [...input],
     logic: logicNames.length > 1 ? logicNames.join(' -> ') : (logicNames[0] || ''),
@@ -947,41 +1065,151 @@ function buildContract(
     },
     output: [...output],
     constraints,
+    ...(facetProvenance.length > 0 ? { facet_provenance: facetProvenance } : {}),
   };
 }
 
-/** Aggregate step contracts up to a flow-level contract: union I/O/side
- *  effects/constraints, logic = ordered step name summary. */
-function aggregateFlowContract(steps: FlowStep[]): ILSOContract {
-  const input = new Set<string>();
-  const output = new Set<string>();
+/** Defensive bound on provenance records per contract — facet arrays are
+ *  already capped by maxFunctionsPerFlow, so this only guards pathology. */
+const FACET_PROVENANCE_CAP = 200;
+
+/** Deterministic order for provenance records: (facet, value) — byte-stable
+ *  run-to-run regardless of extraction order. Capped sanely. */
+function sortFacetProvenance(entries: FacetProvenance[]): FacetProvenance[] {
+  const sorted = [...entries].sort((a, b) =>
+    a.facet.localeCompare(b.facet) || a.value.localeCompare(b.value));
+  return sorted.length > FACET_PROVENANCE_CAP ? sorted.slice(0, FACET_PROVENANCE_CAP) : sorted;
+}
+
+/** Evidence a step's own contract recorded for a facet entry, when present —
+ *  the LIFT source for flow-level provenance (flow facet → step → code fact). */
+function stepFacetEvidence(step: FlowStep, facet: ProvenanceFacet, value: string): string | undefined {
+  return step.contract.facet_provenance?.find(p => p.facet === facet && p.value === value)?.evidence;
+}
+
+/**
+ * Aggregate step contracts up to the flow-level contract — the D2 REFRAME
+ * rules (docs/SEMANTIC-MODEL.md ICELOT: "a flow's ICELOT aggregates its steps
+ * and adds flow-level semantics … never a simple union"):
+ *
+ *   (a) Input  = the INITIATING step's input only (the entry-point handler
+ *       segment — its signature params + its own reads). Interior step inputs
+ *       are demoted to `internal_inputs_count`, never unioned up.
+ *   (b) Output = the TERMINAL step's output only (what survives to the end of
+ *       the chain; the terminal path additionally folds the resolved terminus
+ *       emission in afterwards). Intermediate returns are demoted to
+ *       `internal_outputs_count`.
+ *   (c) Effects = union deduped by target (they OUTLIVE the flow regardless of
+ *       which step caused them), each stamped in `facet_provenance` with the
+ *       contributing step id(s) and the step's own code-fact evidence.
+ *   (d) Constraints = only constraints that GATE the flow: 'error' constraints
+ *       (already entry-scoped to this flow's chains) always stay; any other
+ *       constraint is promoted only when a NON-TERMINAL step enforces it (a
+ *       guard on step 1 gates everything after it — a guard on the last step
+ *       gates nothing downstream and stays step-level). A single-step flow's
+ *       constraints gate the whole flow trivially.
+ *   (e) Telemetry is joined end-to-end at the query layer (attachTelemetryToFlows).
+ *
+ * Every flow-level facet entry gets a `facet_provenance` record —
+ * {facet, value, contributed_by_step_ids (sorted), source:'deterministic',
+ * evidence lifted from the step} — so the chain flow → step → code is
+ * walkable. Deterministic: provenance sorted (facet, value), step ids sorted,
+ * capped at FACET_PROVENANCE_CAP.
+ */
+function aggregateFlowContract(steps: FlowStep[]): FlowILSOContract {
+  const provenanceByKey = new Map<string, FacetProvenance & { contributed_by_step_ids: string[] }>();
+  const record = (facet: ProvenanceFacet, value: string, stepId: string, evidence: string) => {
+    const key = `${facet}\u0000${value}`;
+    const existing = provenanceByKey.get(key);
+    if (existing) {
+      if (!existing.contributed_by_step_ids.includes(stepId)) existing.contributed_by_step_ids.push(stepId);
+      return;
+    }
+    provenanceByKey.set(key, { facet, value, contributed_by_step_ids: [stepId], source: 'deterministic', evidence });
+  };
+
+  const lastIdx = steps.length - 1;
+  const initiating = steps[0];
+  const terminal = steps[lastIdx];
+
+  // (a) Input = initiating input only; interior inputs demoted to a count.
+  const input = [...initiating.contract.input];
+  const inputSet = new Set(input);
+  for (const v of input) {
+    record('input', v, initiating.step_id,
+      stepFacetEvidence(initiating, 'input', v) ?? `initiating step "${initiating.name}" contract input`);
+  }
+  const interiorInputs = new Set<string>();
+  for (const step of steps.slice(1)) {
+    for (const v of step.contract.input) if (!inputSet.has(v)) interiorInputs.add(v);
+  }
+
+  // (b) Output = terminal output only; intermediate returns demoted to a count.
+  const output = [...terminal.contract.output];
+  const outputSet = new Set(output);
+  for (const v of output) {
+    record('output', v, terminal.step_id,
+      stepFacetEvidence(terminal, 'output', v) ?? `terminal step "${terminal.name}" contract output`);
+  }
+  const interiorOutputs = new Set<string>();
+  for (const step of steps.slice(0, lastIdx)) {
+    for (const v of step.contract.output) if (!outputSet.has(v)) interiorOutputs.add(v);
+  }
+
+  // (c) Effects = union deduped by target, stamped with contributing step(s).
   const stateChanges = new Set<string>();
   const externalIntegrations = new Set<string>();
+  for (const step of steps) {
+    for (const v of step.contract.side_effects.state_changes) {
+      stateChanges.add(v);
+      record('state_change', v, step.step_id,
+        stepFacetEvidence(step, 'state_change', v) ?? `step "${step.name}" contract side_effects.state_changes`);
+    }
+    for (const v of step.contract.side_effects.external_integrations) {
+      externalIntegrations.add(v);
+      record('external_integration', v, step.step_id,
+        stepFacetEvidence(step, 'external_integration', v) ?? `step "${step.name}" contract side_effects.external_integrations`);
+    }
+  }
+
+  // (d) Constraints that gate the flow. 'error' kind is already entry-scoped
+  // to this flow's own chains (extractErrorConstraints) — always flow-level.
+  // Everything else promotes only from a step with downstream steps to gate
+  // (or from the only step of a single-step flow).
   const constraints: FacetConstraint[] = [];
   const constraintKeys = new Set<string>();
-
-  for (const step of steps) {
-    for (const v of step.contract.input) input.add(v);
-    for (const v of step.contract.output) output.add(v);
-    for (const v of step.contract.side_effects.state_changes) stateChanges.add(v);
-    for (const v of step.contract.side_effects.external_integrations) externalIntegrations.add(v);
+  for (let i = 0; i < steps.length; i++) {
+    const step = steps[i];
+    const gatesDownstream = i < lastIdx || steps.length === 1;
     for (const c of step.contract.constraints) {
+      if (c.kind !== 'error' && !gatesDownstream) continue;
       const key = `${c.kind}::${c.rule}`;
-      if (constraintKeys.has(key)) continue;
-      constraintKeys.add(key);
-      constraints.push(c);
+      if (!constraintKeys.has(key)) {
+        constraintKeys.add(key);
+        constraints.push(c);
+      }
+      record('constraint', c.rule, step.step_id, c.evidence);
     }
   }
 
   return {
-    input: [...input],
+    input,
     logic: steps.map(s => s.name).join(' -> '),
     side_effects: {
       state_changes: [...stateChanges],
       external_integrations: [...externalIntegrations],
     },
-    output: [...output],
+    output,
     constraints,
+    ...(interiorInputs.size > 0 ? { internal_inputs_count: interiorInputs.size } : {}),
+    ...(interiorOutputs.size > 0 ? { internal_outputs_count: interiorOutputs.size } : {}),
+    ...(provenanceByKey.size > 0
+      ? {
+          facet_provenance: sortFacetProvenance(
+            [...provenanceByKey.values()].map(p => ({ ...p, contributed_by_step_ids: [...p.contributed_by_step_ids].sort() }))
+          ),
+        }
+      : {}),
   };
 }
 
@@ -1745,17 +1973,41 @@ function buildTerminalFlows(cas: CASOutput, opts: ComputeFlowConceptsOptions): F
       const produces = exit.target?.service_id || exit.target?.resource || exit.target?.endpoint
         || exit.name || exit.type;
       terminus = { exit_point_id: exit.id, kind: exit.type, produces, node_id: terminusNodeId };
+      // Provenance for terminus-folded facet entries: attributed to the step
+      // whose functions contain the terminus node (the last step is the
+      // fallback when the terminus node was skipped from the resolved path);
+      // evidence = the resolved exit point itself (a fact already at hand).
+      const terminusStep = [...steps].reverse().find(s => s.functions.some(f => f.function_id === terminusNodeId)) || steps[steps.length - 1];
+      const terminusEvidence = `terminal chain ${chain.id} resolves exit point ${exit.id} (${exit.type} → ${produces})`;
+      const stampTerminus = (facet: ProvenanceFacet, value: string) => {
+        const existing = contract.facet_provenance?.find(p => p.facet === facet && p.value === value);
+        if (existing) return; // a step already contributed this exact entry with real evidence.
+        const entry: FacetProvenance = {
+          facet, value, contributed_by_step_ids: [terminusStep.step_id],
+          source: 'deterministic', evidence: terminusEvidence,
+        };
+        contract.facet_provenance = sortFacetProvenance([...(contract.facet_provenance || []), entry]);
+      };
       const label = `${exit.type}:${produces}`;
       if (exit.type === 'database' || exit.type === 'cache' || exit.type === 'file') {
-        if (!contract.side_effects.state_changes.includes(label)) contract.side_effects.state_changes.push(label);
+        if (!contract.side_effects.state_changes.includes(label)) {
+          contract.side_effects.state_changes.push(label);
+          stampTerminus('state_change', label);
+        }
       } else {
-        if (!contract.side_effects.external_integrations.includes(label)) contract.side_effects.external_integrations.push(label);
+        if (!contract.side_effects.external_integrations.includes(label)) {
+          contract.side_effects.external_integrations.push(label);
+          stampTerminus('external_integration', label);
+        }
         // api / webhook / event terminals are the flow's response/emission —
         // record what it emits in Output too (deterministic, evidence-gated on
         // the resolved exit point).
         if (['api', 'webhook', 'event', 'navigation'].includes(exit.type)) {
           const out = exit.data?.output_type || `${exit.type} ${produces}`;
-          if (!contract.output.includes(out)) contract.output.push(out);
+          if (!contract.output.includes(out)) {
+            contract.output.push(out);
+            stampTerminus('output', out);
+          }
         }
       }
     }
@@ -2169,14 +2421,32 @@ export function attachTelemetryToFlows(flows: FlowConcept[], metrics: RuntimeMet
 
   for (const flow of flows) {
     const flowNodeIds = new Set<string>();
+    const telemetryStepIds: string[] = [];
     for (const step of flow.steps) {
       const stepNodeIds = step.functions.map(f => f.function_id);
       for (const id of stepNodeIds) flowNodeIds.add(id);
       const stepTel = telemetryForUnit(index, stepNodeIds);
-      if (stepTel) step.contract.telemetry = stepTel;
+      if (stepTel) {
+        step.contract.telemetry = stepTel;
+        telemetryStepIds.push(step.step_id);
+      }
     }
     const flowTel = telemetryForUnit(index, flowNodeIds, [flow.entry_point]);
-    if (flowTel) flow.contract.telemetry = flowTel;
+    if (flowTel) {
+      flow.contract.telemetry = flowTel;
+      // Facet provenance for the end-to-end telemetry join (facet 'telemetry'):
+      // which steps carried matching observations, and the observation source.
+      // Deterministic — real observations only; never stamped when no match.
+      const entry: FacetProvenance = {
+        facet: 'telemetry',
+        value: flowTel.static_id,
+        contributed_by_step_ids: [...telemetryStepIds].sort(),
+        source: 'deterministic',
+        evidence: `runtime observations (source: ${flowTel.source}) matched this flow's entry point / nodes`,
+      };
+      const existing = (flow.contract.facet_provenance || []).filter(p => !(p.facet === 'telemetry' && p.value === entry.value));
+      flow.contract.facet_provenance = sortFacetProvenance([...existing, entry]);
+    }
   }
   return flows;
 }
