@@ -203,6 +203,15 @@ export function validateElementDescription(
       return { ok: false, reason: 'inventory-list-description' };
     }
   }
+  if (subject.kind === 'capability') {
+    const scaffoldReason = capabilityDescriptionScaffoldReason(cleaned, subject.name, [
+      ...(subject.relatedEntities || []),
+      ...(subject.relatedDomains || []),
+      ...(subject.fields || []).map(field => field.split(':')[0]),
+      ...(subject.domainVocabulary || []),
+    ]);
+    if (scaffoldReason) return { ok: false, reason: scaffoldReason };
+  }
   if (FILLER_PHRASE_PATTERN.test(cleaned)) return { ok: false, reason: 'generic-structural-phrase' };
   if (/\borientation entry\b/i.test(cleaned)) return { ok: false, reason: 'source-bucket-restatement' };
   if (subject.kind === 'capability' && /\bcoordinates?\s+(?:scripts?|functions?|helpers?|files?|modules?|operations?)\b/i.test(cleaned)) {
@@ -254,6 +263,85 @@ export function validateElementDescription(
   }
   if (!subjectTokens.some(token => lower.includes(token))) return { ok: false, reason: 'target-not-grounded' };
   return { ok: true };
+}
+
+/**
+ * TEMPLATE-SCAFFOLD lint for capability descriptions (live truckspy audit:
+ * 12/12 domain capabilities read "Lets users <verb> <noun>" — the exact noun
+ * already in the capability name — and surface capabilities read "The X
+ * Surface capability owns the Y lifecycle...". Both are scaffolds that add
+ * NOTHING over the name). Two rejections:
+ *
+ *  1. 'owns-lifecycle-template' — the literal "<...> capability owns the
+ *     <...> lifecycle" house template (prompt-vocabulary leak, not product
+ *     meaning).
+ *  2. 'lets-users-scaffold-restatement' — a "lets users <verb> <noun>"
+ *     sentence whose content past the scaffold carries NO information beyond
+ *     the subject's own name tokens and generic scaffold verbs. This is an
+ *     information-gain check, NOT a ban on the phrase "lets users": "Portfolio
+ *     Management lets users track their crypto holdings — balances, allocation,
+ *     and performance across connected wallets" passes (holdings/balances/
+ *     wallets are new information); "Vehicle Management lets users manage
+ *     vehicles" is rejected (nothing past the name).
+ *  3. 'lets-users-scaffold-ungrounded' — when grounding vocabulary is supplied
+ *     (entity names, domains, fields), the informative content past the
+ *     scaffold must anchor at least one token in that EVIDENCE — otherwise the
+ *     sentence is free-floating template filler ("lets users store, retrieve,
+ *     and organize their knowledge and skills") that no fact supports. This is
+ *     evidence-grounding, not a vocabulary blocklist: the same sentence passes
+ *     when the capability's entities actually carry those concepts.
+ *
+ * Exported so the orchestrator can re-queue catalog-authored capability
+ * descriptions that shipped scaffold-shaped (they bypass this validator on the
+ * catalog path).
+ */
+export function capabilityDescriptionScaffoldReason(
+  description: string,
+  subjectName: string,
+  groundingTokens: string[] = [],
+): string | undefined {
+  const cleaned = (description || '').trim();
+  if (!cleaned) return undefined;
+  if (/\b(?:capability|surface)\s+owns\b/i.test(cleaned) ||
+    /\bowns the\b[^.]{0,60}\blifecycle\b/i.test(cleaned)) {
+    return 'owns-lifecycle-template';
+  }
+  const letsScaffold = /\blets?\s+(?:the\s+)?(?:its\s+)?(?:product(?:'s)?\s+)?(?:users?|operators?|teams?|agents?|customers?|engineers?)\s+(.+)$/i.exec(cleaned);
+  if (!letsScaffold) return undefined;
+  const scaffoldVerbs = new Set([
+    'manage', 'manages', 'managing', 'track', 'tracks', 'tracking', 'view', 'views', 'viewing',
+    'create', 'creates', 'creating', 'update', 'updates', 'updating', 'delete', 'deletes',
+    'handle', 'handles', 'handling', 'access', 'accesses', 'accessing', 'work', 'works',
+    'organize', 'organizes', 'maintain', 'maintains', 'control', 'controls', 'oversee', 'oversees',
+    'record', 'records', 'data', 'information', 'items', 'lists', 'list', 'details', 'entries',
+    'their', 'them', 'these', 'those', 'with', 'within', 'related', 'associated', 'relevant',
+    'system', 'systems', 'product', 'products', 'application', 'operations', 'workflows',
+  ]);
+  const nameStems = new Set(
+    splitGroundingSource(subjectName)
+      .filter(token => token.length >= 3)
+      .map(token => token.slice(0, 5)),
+  );
+  const informative = letsScaffold[1]
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(token =>
+      token.length >= 4 &&
+      !scaffoldVerbs.has(token) &&
+      !nameStems.has(token.slice(0, 5)));
+  if (informative.length === 0) return 'lets-users-scaffold-restatement';
+  if (groundingTokens.length > 0) {
+    const groundedStems = new Set(
+      groundingTokens
+        .flatMap(value => splitGroundingSource(String(value || '')))
+        .filter(token => token.length >= 3)
+        .map(token => token.slice(0, 5)),
+    );
+    if (!informative.some(token => groundedStems.has(token.slice(0, 5)))) {
+      return 'lets-users-scaffold-ungrounded';
+    }
+  }
+  return undefined;
 }
 
 function isGenericAnalyzerCapabilityName(name: string): boolean {

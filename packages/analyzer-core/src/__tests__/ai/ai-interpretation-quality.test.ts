@@ -158,8 +158,43 @@ describe('shared element description validator', () => {
         { name: description.split(' ').slice(0, 3).join(' '), kind: 'capability', relatedDomains: ['analysis'] },
       );
       expect(result.ok).toBe(false);
-      expect(['generic-structural-phrase', 'implementation-surface-restatement', 'too-short']).toContain(result.reason);
+      expect(['generic-structural-phrase', 'implementation-surface-restatement', 'too-short', 'lets-users-scaffold-ungrounded', 'lets-users-scaffold-restatement']).toContain(result.reason);
     }
+  });
+
+  it('rejects the no-information "Lets users <verb> <noun>" scaffold (live truckspy: 12/12 domain capabilities)', () => {
+    const result = validateElementDescription(
+      'Vehicle Management lets users manage vehicles and their related information.',
+      { name: 'Vehicle Management', kind: 'capability', relatedDomains: ['vehicle'] },
+    );
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('lets-users-scaffold-restatement');
+  });
+
+  it('keeps a "lets users" sentence whose concrete content is grounded in the capability entities', () => {
+    const result = validateElementDescription(
+      'Portfolio Management lets users track their crypto holdings — balances, allocation, and performance across connected wallets.',
+      { name: 'Portfolio Management', kind: 'capability', relatedDomains: ['portfolio'], relatedEntities: ['PortfolioHolding', 'Wallet'] },
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  it('rejects a "lets users" sentence whose content grounds in NO capability evidence (free-floating template filler)', () => {
+    const result = validateElementDescription(
+      'Memory Management lets users store, retrieve, and organize their knowledge and skills.',
+      { name: 'Memory Management', kind: 'capability', relatedDomains: ['memory'], relatedEntities: ['MemoryEntry', 'AgentSession'] },
+    );
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('lets-users-scaffold-ungrounded');
+  });
+
+  it('rejects the "capability owns the ... lifecycle" surface template (live truckspy surface capabilities)', () => {
+    const result = validateElementDescription(
+      'The Dispatch Surface capability owns the trip assignment lifecycle from creation to completion.',
+      { name: 'Dispatch Surface', kind: 'capability', relatedDomains: ['dispatch'] },
+    );
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('owns-lifecycle-template');
   });
 
   it('rejects legal-contract hallucinations for schema or API contract capabilities', () => {

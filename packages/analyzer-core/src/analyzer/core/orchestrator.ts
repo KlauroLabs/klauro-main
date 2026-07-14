@@ -122,7 +122,7 @@ import { aiService } from '../../ai/ai-service';
 import { recordSemanticDecision } from '../../ai/semantic-dataset';
 import { setAICacheProjectScope } from '../../ai/ai-cache';
 import { aiConfig, getAIConfig } from '../../config/ai.config';
-import { validateElementDescription as validateSharedElementDescription } from '../../ai/element-description-validator';
+import { validateElementDescription as validateSharedElementDescription, capabilityDescriptionScaffoldReason } from '../../ai/element-description-validator';
 import { filterPlausibleExternalServices, isCommandShapedLabel, isHostnameLikeServiceName } from '../../ai/external-service-plausibility';
 
 export type { CASOutput } from '../../types/cas.types';
@@ -1685,6 +1685,19 @@ export class AnalyzerOrchestrator {
     phaseStart = Date.now();
     const nestedRepositories = await this.describeNestedRepositories(projectPath);
 
+    // Deployable evidence is collected BEFORE the AI phase (it is a pure
+    // function of nodes/entry/exit points, all final by here) so the
+    // description gate can corroborate architecture-shape claims
+    // (microservices vs a single deployable) against deterministic topology.
+    const deployableEvidence: DeployableEvidence[] = collectDeployableEvidence({
+      projectPath,
+      nodes: allNodes,
+      entryPoints: allEntryPoints,
+      exitPoints: allExitPoints,
+      displayName: options?.displayName,
+    });
+    await yieldToEventLoop();
+
     // The single blocking AI phase, wrapped so it can run inline (default) or be
     // deferred and run later against the produced CAS. It mutates the same
     // enhancedSystemPurpose / systemCapabilities references that `output` holds,
@@ -1706,7 +1719,8 @@ export class AnalyzerOrchestrator {
         dependencyNamesForAI,
         comprehensionDataEntities,
         projectTextSignal,
-        comprehensionJourneys
+        comprehensionJourneys,
+        deployableEvidence.length
       );
       const aiDuration = Date.now() - aiPhaseStart;
       const aiGeneration = enhancedSystemPurpose.description_generation;
@@ -1764,14 +1778,8 @@ export class AnalyzerOrchestrator {
     await yieldToEventLoop();
     const distributionUnits = this.buildDistributionUnits(projectPath, allNodes);
     await yieldToEventLoop();
-    const deployableEvidence: DeployableEvidence[] = collectDeployableEvidence({
-      projectPath,
-      nodes: allNodes,
-      entryPoints: allEntryPoints,
-      exitPoints: allExitPoints,
-      displayName: options?.displayName,
-    });
-    await yieldToEventLoop();
+    // deployableEvidence collected earlier (hoisted above the AI phase so the
+    // description gate can corroborate architecture-shape claims).
     const analysisFacts = await this.buildAnalysisFacts(
       allNodes,
       allEdges,
@@ -2838,7 +2846,8 @@ export class AnalyzerOrchestrator {
         this.libraryNamesForInterpretation(libraries),
         incrComprehensionDataEntities,
         incrProjectTextSignal,
-        incrComprehensionJourneys
+        incrComprehensionJourneys,
+        deployableEvidence.length
       );
     } else if (
       previousOutput.enhanced_system_purpose?.inferred_description &&
@@ -8828,7 +8837,7 @@ export class AnalyzerOrchestrator {
               // benefits from its reliability; opt in via DEEPINFRA_STRUCTURED_MODEL
               // or OPENAI_STRUCTURED_MODEL.
               model: process.env.DEEPINFRA_STRUCTURED_MODEL || process.env.OPENAI_STRUCTURED_MODEL || undefined,
-              task: `You are cataloging the BUSINESS VALUE of a codebase. You are given BOTTOM-UP facts (user journeys, data entities, candidate route areas, external services) AND, when available, a top_down_signals block — the product's OWN words about what it is (README title/overview, manifest self-description, product terminology). Return ONLY valid JSON: {"capabilities":[{"name":"...","description":"...","category":"core|supporting","entities":["..."],"journeys":["..."]}]}. Rules: (1) THE PURPOSE TEST — every capability you name must be a product/user/operational ability that would appear in a product description, a user objective, a business offering, or an operational responsibility. If it would not, it is NOT a capability; drop it. Name capabilities as what the product lets its USERS or OPERATORS DO in plain product language (e.g. "Trade cryptocurrency", "Play Commander matches"), NEVER as a mechanism or a supporting noun ("Wallet interaction", "Manage sessions"). (2) USE top_down_signals as the primary arbiter of what the product IS BUILT FOR: the capability the product's own title/overview/terminology names is a core capability even if the bottom-up entities under-represent it — let this evidence RAISE the built-for capability to the top. (3) THE PURPOSE-TEST EXCLUSION — do NOT emit supporting/infrastructural concerns as capabilities (authentication, access control/permissions, session/token handling, logging/telemetry, notifications, caching, message brokering, generic CRUD, health checks, config, database) UNLESS top_down_signals shows the product IS that kind of product (an auth product sells access control; a codebase-analysis or game product does not). Absent top-down evidence that the product sells it, such a concern is at most "supporting", never "core", and is usually dropped. (4) MERGE related route areas and journeys into real capabilities; do not emit one per route. (5) category="core" only for the capabilities that ARE the product's value proposition (those corroborated by top_down_signals rank first); "supporting" for necessary-but-not-the-value. (6) entities/journeys must be names copied from the supplied facts. (7) Each description is ONE concise sentence, 8-16 words — no clauses, no lists. Return 6 to 12 capabilities, ordered most-core first.`,
+              task: `You are cataloging the BUSINESS VALUE of a codebase. You are given BOTTOM-UP facts (user journeys, data entities, candidate route areas, external services) AND, when available, a top_down_signals block — the product's OWN words about what it is (README title/overview, manifest self-description, product terminology). Return ONLY valid JSON: {"capabilities":[{"name":"...","description":"...","category":"core|supporting","entities":["..."],"journeys":["..."]}]}. Rules: (1) THE PURPOSE TEST — every capability you name must be a product/user/operational ability that would appear in a product description, a user objective, a business offering, or an operational responsibility. If it would not, it is NOT a capability; drop it. Name capabilities as what the product lets its USERS or OPERATORS DO in plain product language (e.g. "Trade cryptocurrency", "Play Commander matches"), NEVER as a mechanism or a supporting noun ("Wallet interaction", "Manage sessions"). (2) USE top_down_signals as the primary arbiter of what the product IS BUILT FOR: the capability the product's own title/overview/terminology names is a core capability even if the bottom-up entities under-represent it — let this evidence RAISE the built-for capability to the top. (3) THE PURPOSE-TEST EXCLUSION — do NOT emit supporting/infrastructural concerns as capabilities (authentication, access control/permissions, session/token handling, logging/telemetry, notifications, caching, message brokering, generic CRUD, health checks, config, database) UNLESS top_down_signals shows the product IS that kind of product (an auth product sells access control; a codebase-analysis or game product does not). Absent top-down evidence that the product sells it, such a concern is at most "supporting", never "core", and is usually dropped. (4) MERGE related route areas and journeys into real capabilities; do not emit one per route. (5) category="core" only for the capabilities that ARE the product's value proposition (those corroborated by top_down_signals rank first); "supporting" for necessary-but-not-the-value. (6) entities/journeys must be names copied from the supplied facts. (7) Each description is ONE concise sentence, 8-16 words — no clauses, no lists — that names the CONCRETE records, decisions, or workflows the capability owns and why they matter, using the supplied entity/journey vocabulary. NEVER the empty template "Lets users <verb> <noun>" that only restates the capability name, and never the words "capability"/"lifecycle" as prose scaffolding — a description that adds no information beyond the name is rejected. Return 6 to 12 capabilities, ordered most-core first.`,
               style: 'Write like a product engineer or PM. Plain language. No markdown. Value verbs (lets, gives, tracks, surfaces, exposes, manages, monitors, secures, settles, enforces). No CRUD verbs, no "lifecycle", no route counts, no file paths, no marketing fluff. Each description names the concrete user-facing concept the entities point to.',
               product: {
                 name: input.systemName,
@@ -8890,7 +8899,7 @@ export class AnalyzerOrchestrator {
       recordSemanticDecision({
         ts: Date.now(),
         decision_type: 'capability_catalog',
-        prompt_version: 'capability_catalog.v1',
+        prompt_version: 'capability_catalog.v2',
         input_evidence_digest: catalogEvidenceDigest,
         raw_output_excerpt: raw,
         parse_ok: false,
@@ -9049,7 +9058,7 @@ export class AnalyzerOrchestrator {
     recordSemanticDecision({
       ts: Date.now(),
       decision_type: 'capability_catalog',
-      prompt_version: 'capability_catalog.v1',
+      prompt_version: 'capability_catalog.v2',
       input_evidence_digest: { ...catalogEvidenceDigest, parsed: catalog.length, kept: out.length },
       raw_output_excerpt: raw,
       parse_ok: true,
@@ -9214,7 +9223,11 @@ export class AnalyzerOrchestrator {
     libraryNames: string[] = [],
     dataEntities: CASDataEntity[] = [],
     projectTextSignal: ProjectTextSignal = { concepts: [], evidence: [] },
-    userJourneys: CASUserJourney[] = []
+    userJourneys: CASUserJourney[] = [],
+    // Deterministic deployable-unit count (collectDeployableEvidence). Grounds
+    // architecture-shape claims (microservices/monolith/...) in the description
+    // gate; undefined = topology unknown = shape claims are uncorroborated.
+    deployableCount?: number
   ): Promise<void> {
     this.setElementDescriptionGrounding(
       enhancedSystemPurpose.primary_domain,
@@ -9327,8 +9340,18 @@ export class AnalyzerOrchestrator {
     const entityNamesById = new Map(dataEntities.map(entity => [entity.id, entity.name]));
     const capabilityTargets = elementsEnabled
       // Capabilities produced by aiExtractCapabilityCatalog already carry a
-      // grounded AI description; only describe any that don't.
-      ? systemCapabilities.filter(capability => capability.description_source !== 'ai').slice(0, elementLimit).map(capability => this.capabilityDescriptionTarget(capability, entityNamesById))
+      // grounded AI description; only describe any that don't — PLUS any whose
+      // catalog description shipped as a no-information template ("Lets users
+      // <verb> <noun>" / "capability owns the ... lifecycle"): those bypass the
+      // element validator on the catalog path, so re-queue them here for an
+      // AI re-description under the scaffold-banning style contract.
+      ? systemCapabilities.filter(capability =>
+        capability.description_source !== 'ai' ||
+        Boolean(capabilityDescriptionScaffoldReason(capability.description || '', capability.name, [
+          ...(capability.related_entities || []).map(id => entityNamesById.get(id) || id),
+          ...(capability.related_domains || []),
+        ]))
+      ).slice(0, elementLimit).map(capability => this.capabilityDescriptionTarget(capability, entityNamesById))
       : [];
 
     const aiStartedAt = Date.now();
@@ -9353,7 +9376,7 @@ export class AnalyzerOrchestrator {
       raw = await Promise.race([
         aiService.generateComponentDescription({
           additionalContext: {
-            task: 'You are writing the Klauro CAS human/agent orientation. Based ONLY on the supplied facts and descriptionContract, return ONLY valid JSON with this shape: {"system_description":"...","domain":"...","descriptions":[{"id":"...","description":"..."}],"quality_check":{"used_facts":["..."],"unsupported_claims":[]}}. Before writing, follow descriptionContract.evidence_priority in order. system_description must be ONE rich paragraph of 4 to 6 full sentences that answers, in order, the four questions in descriptionContract.system_description_shape: (1) WHAT IT IS — the system type/domain, inferred from the supplied dependencies, distinctiveEntities, and project text; (2) WHAT IT DOES — the concrete product workflows and the terminalOutputs it produces for its consumers; (3) HOW IT WORKS — the concrete mechanism that produces those outputs, naming at least one supplied mechanism fact (a framework the system is built with from the allowedFrameworks fact list, a library, a near-terminal stage, or the dataflow from a capability through its entities to a terminal output) — never a circular restatement of the capability or output lists;(4) HOW IT IS BUILT — the architecture, the frameworks the system is built with, and third-party integrations, drawing only on the supplied allowedFrameworks fact list, entities, integrations, and dependencies. Never write internal fact-list key names (such as the literal phrase "allowed frameworks") in the prose. Infer the domain from the real dependencies and integrations (for example a codebase depending on ccxt/web3/ethers is a crypto/blockchain system) — NEVER from a keyword in the project name. Anchor WHAT IT DOES and HOW IT WORKS on what the system PRODUCES (terminalOutputs / api-response entities), not on mid-chain create/update/delete of records. domain must be one lowercase kebab-case label of 2 to 4 concrete product nouns from the facts. descriptions must include one grounded sentence per item in items; each sentence must name the concrete record, lifecycle, workflow, model, or boundary that item owns.',
+            task: 'You are writing the Klauro CAS human/agent orientation. Based ONLY on the supplied facts and descriptionContract, return ONLY valid JSON with this shape: {"system_description":"...","domain":"...","descriptions":[{"id":"...","description":"..."}],"quality_check":{"used_facts":["..."],"unsupported_claims":[]}}. Before writing, follow descriptionContract.evidence_priority in order. system_description must be ONE rich paragraph of 4 to 6 full sentences that answers, in order, the four questions in descriptionContract.system_description_shape: (1) WHAT IT IS — the system type/domain, inferred from the supplied dependencies, distinctiveEntities, and project text; (2) WHAT IT DOES — the concrete product workflows and the terminalOutputs it produces for its consumers; (3) HOW IT WORKS — the DATAFLOW that produces those outputs: what enters the system, what transformations or decisions the capabilities apply to the entities, and what terminal records/outputs result — never a package or library name in this sentence, and never a circular restatement of the capability or output lists;(4) HOW IT IS BUILT — the build shape and third-party integrations from the supplied facts: a framework from the allowedFrameworks fact list may appear only as product-shaping context (e.g. "a Symfony backend"), never as an inventory of package names ("leveraging libraries such as ..." is forbidden), and an architecture shape (monolith/microservices/event-driven/serverless) may be claimed only when the supplied deployable/topology facts corroborate it. Never write internal fact-list key names (such as the literal phrase "allowed frameworks") in the prose. Infer the domain from the real dependencies and integrations (for example a codebase depending on ccxt/web3/ethers is a crypto/blockchain system) — NEVER from a keyword in the project name. Anchor WHAT IT DOES and HOW IT WORKS on what the system PRODUCES (terminalOutputs / api-response entities), not on mid-chain create/update/delete of records. domain must be one lowercase kebab-case label of 2 to 4 concrete product nouns from the facts. descriptions must include one grounded sentence per item in items; each sentence must name the concrete record, lifecycle, workflow, model, or boundary that item owns.',
             style: 'Use precise engineering/product language. No markdown. No headings. No colon-prefixed inventory labels. No marketing. No vague placeholders. Do not describe source mechanics; translate them into product purpose. If a claim cannot be supported by a supplied fact, omit it and list it in quality_check.unsupported_claims instead of writing it.',
             descriptionContract: descriptionPromptContract,
             primaryDomain: enhancedSystemPurpose.primary_domain,
@@ -9361,6 +9384,14 @@ export class AnalyzerOrchestrator {
             dependencies: libraryNames,
             items: capabilityTargets,
             ...structuralFacts,
+            // Deterministic deployment topology: grounds (and bounds) any
+            // architecture-shape wording in HOW IT IS BUILT.
+            ...(typeof deployableCount === 'number' ? {
+              deployableUnits: deployableCount,
+              deployableTopologyInstruction: deployableCount >= 3
+                ? `The system ships ${deployableCount} separately deployable units; architecture-shape wording must match that topology.`
+                : 'The system ships as a single (or frontend+backend pair of) deployable unit(s); never describe it as microservices, service-oriented, or distributed.',
+            } : {}),
             ...(unanalyzedLanguages.length > 0 ? {
               unanalyzedLanguages,
               languageCoverageInstruction: `This static analysis covers only the analyzed languages; ${unanalyzedLanguages[0].name} (${unanalyzedLanguages[0].share_of_source}% of source files) was not analyzed. system_description must state that this analysis covers only the analyzed languages and must name ${unanalyzedLanguages[0].name} as the dominant unanalyzed language.`,
@@ -9378,7 +9409,7 @@ export class AnalyzerOrchestrator {
       recordSemanticDecision({
         ts: Date.now(),
         decision_type: 'system_description',
-        prompt_version: 'system_description.v1',
+        prompt_version: 'system_description.v2',
         input_evidence_digest: semanticEvidenceDigest,
         parse_ok: false,
         gate_verdict: 'rejected',
@@ -9408,6 +9439,7 @@ export class AnalyzerOrchestrator {
       projectTextSummary: projectTextSignal.manifestDescription || projectTextSignal.summary,
       projectTextConcepts: projectTextSignal.concepts,
       isKlauroSelfProject: this.isKlauroSelfProject(this.activeAnalysisProjectPath),
+      deployableCount,
     };
 
     const combined = this.parseCombinedInterpretation(raw);
@@ -9461,7 +9493,7 @@ export class AnalyzerOrchestrator {
         const repairRaw = await Promise.race([
           aiService.generateComponentDescription({
             additionalContext: {
-              task: 'Repair the rejected parts of the previous answer. Return ONLY valid JSON with the same shape: {"system_description":"...","domain":"...","descriptions":[{"id":"...","description":"..."}]}. Fix only what was rejected: write a grounded system_description that is ONE paragraph of 4 to 6 full sentences (at least 240 characters) answering, in order, what the system is, what it does (anchored on the terminalOutputs it produces), how it works, and how it is built — if it was rejected, and one grounded sentence per rejected item. Infer the domain from the real dependencies/integrations, never from a name. Mention integrations or external services only by the exact names listed in externalServices; if none are listed, do not mention integrations at all.',
+              task: 'Repair the rejected parts of the previous answer. Return ONLY valid JSON with the same shape: {"system_description":"...","domain":"...","descriptions":[{"id":"...","description":"..."}]}. Fix only what was rejected: write a grounded system_description that is ONE paragraph of 4 to 6 full sentences (at least 240 characters) answering, in order, what the system is, what it does (anchored on the terminalOutputs it produces), how it works (the dataflow: what enters, what transformations/decisions happen, what terminal outputs result — never package or library names), and how it is built (frameworks only as product-shaping context, never a package inventory; architecture shapes like microservices only when the supplied deployable/topology facts corroborate them) — if it was rejected, and one grounded sentence per rejected item. Infer the domain from the real dependencies/integrations, never from a name. Mention integrations or external services only by the exact names listed in externalServices; if none are listed, do not mention integrations at all.',
               style: 'Use descriptionContract as the acceptance test. No markdown. No marketing language. No raw labels like "Key capabilities:" or "Data model:". Do not invent features, company names, domains, compliance, scale, productivity, user-experience claims, or integrations beyond the facts. If the previous answer was rejected as source-bucket-restatement, rewrite it as product behavior. Do not use interaction surfaces, HTTP endpoints, HTTP workflows, API workflows, route workflows, WebSocket workflows, route surfaces, page routes, CLI commands, schedule surfaces, script-based, script-driven, internal script, internal files, source files, file-based entry points, or file entry point.',
               descriptionContract: descriptionPromptContract,
               rejected_system_description: validation.ok ? undefined : cleaned,
@@ -9518,7 +9550,7 @@ export class AnalyzerOrchestrator {
       recordSemanticDecision({
         ts: Date.now(),
         decision_type: 'system_description',
-        prompt_version: 'system_description.v1',
+        prompt_version: 'system_description.v2',
         input_evidence_digest: semanticEvidenceDigest,
         raw_output_excerpt: cleaned,
         parse_ok: true,
@@ -9534,7 +9566,7 @@ export class AnalyzerOrchestrator {
     recordSemanticDecision({
       ts: Date.now(),
       decision_type: 'system_description',
-      prompt_version: 'system_description.v1',
+      prompt_version: 'system_description.v2',
       input_evidence_digest: semanticEvidenceDigest,
       raw_output_excerpt: cleaned,
       parse_ok: true,
@@ -10014,7 +10046,7 @@ export class AnalyzerOrchestrator {
           aiService.generateComponentDescription({
             additionalContext: {
             task: 'Return ONLY valid JSON with this shape: {"descriptions":[{"id":"...","description":"..."}]}. For each CAPABILITY answer in plain product language: what does this capability let the product\'s users or operators DO, and what does it MEAN in THIS product? For each ENTITY answer what real-world concept it represents to the product. Lead with the product meaning, grounded in the related entities (relatedEntities) and the product domain (system.domain, system.concepts) — name the concrete user-facing concept the entities point to (e.g. crypto holdings, invoices, access policies, market signals, devices). Do NOT describe the CRUD mechanism, lifecycle, records, routes, or files; those are plumbing, not the capability. Use currentDescription ONLY for the underlying facts, never as a template to rephrase. Example: for a "Portfolio Management" capability touching Portfolio/PortfolioHolding/PortfolioPerformance entities in a crypto product, write "Portfolio Management lets users track their crypto holdings — balances, allocation, and performance across connected wallets and exchanges." not "creates and updates portfolio records".',
-              style: 'No markdown. Write like a product engineer explaining the feature to a new teammate or PM. Prefer verbs that convey user/product value: lets, gives, helps, tracks, surfaces, exposes, manages, monitors, secures, connects, settles, enforces. Avoid plumbing verbs (creates, updates, deletes, reads, processes, handles, coordinates) and avoid fluff (seamless, robust, efficient, business value, streamline, insights, productivity, compliant). Do not mention files, routes, operation counts, or "lifecycle". Name the concrete product concept the entities represent. Stay grounded; do not invent behavior beyond the supplied entities, domain, and evidence.',
+              style: 'No markdown. Write like a product engineer explaining the feature to a new teammate or PM. Every description must say WHAT concrete records, decisions, or workflows the item owns and WHY that matters — a scaffold that only restates the name is rejected: never a bare "Lets users <verb> <noun>" whose verb/noun repeat the capability name (banned exactly like "supports"/"handles"), and never "The X capability owns the Y lifecycle". Prefer verbs that convey user/product value: gives, helps, tracks, surfaces, exposes, manages, monitors, secures, connects, settles, enforces. Avoid plumbing verbs (creates, updates, deletes, reads, processes, handles, coordinates) and avoid fluff (seamless, robust, efficient, business value, streamline, insights, productivity, compliant). Do not mention files, routes, operation counts, or "lifecycle". Name the concrete product concept the entities represent. Stay grounded; do not invent behavior beyond the supplied entities, domain, and evidence.',
               descriptionContract: this.buildAIElementDescriptionPromptContract(context.systemName, context.enhancedSystemPurpose, context.projectTextSignal),
               system: {
                 name: context.systemName,
@@ -10059,7 +10091,7 @@ export class AnalyzerOrchestrator {
               aiService.generateComponentDescription({
                 additionalContext: {
                   task: 'Repair rejected descriptions. Return ONLY valid JSON with this shape: {"descriptions":[{"id":"...","description":"..."}]}. Rewrite each item in plain PRODUCT language: what does this capability let the product\'s users or operators DO, or what concept does this entity represent in the product? Lead with the meaning, grounded in item.relatedEntities and the product domain (system.domain, system.concepts). Name the concrete user-facing concept the entities point to; do NOT describe CRUD, lifecycle, records, routes, or files. Good examples: "Portfolio Management lets users track their crypto holdings — balances, allocation, and performance across connected wallets and exchanges." "Invoice Management gives users their billing invoices and payment history for the subscription they pay for." "Access Enforcement decides which users and devices may reach a protected resource, based on identity, device posture, and policy." "Whale Analysis surfaces large on-chain transactions so users can spot market-moving moves." Use the subject noun and explain what it means to users.',
-                  style: 'No markdown. Write like a product engineer explaining the feature to a teammate. Prefer value verbs: lets, gives, helps, tracks, surfaces, exposes, manages, monitors, secures, connects, settles, enforces, decides. Avoid plumbing verbs (creates, updates, deletes, reads, processes, handles, coordinates) and fluff (functionality, module, component, various, robust, efficient, business value, compliant, insights, streamline). Do not mention files, routes, operation counts, or "lifecycle". Name the concrete product concept implied by the item name, domain, and entities; do not invent behavior beyond the evidence.',
+                  style: 'No markdown. Write like a product engineer explaining the feature to a teammate. Say WHAT concrete records, decisions, or workflows the item owns and WHY that matters — never a bare "Lets users <verb> <noun>" that restates the name, and never "The X capability owns the Y lifecycle". Prefer value verbs: gives, helps, tracks, surfaces, exposes, manages, monitors, secures, connects, settles, enforces, decides. Avoid plumbing verbs (creates, updates, deletes, reads, processes, handles, coordinates) and fluff (functionality, module, component, various, robust, efficient, business value, compliant, insights, streamline). Do not mention files, routes, operation counts, or "lifecycle". Name the concrete product concept implied by the item name, domain, and entities; do not invent behavior beyond the evidence.',
                   system: {
                     name: context.systemName,
                     domain: context.enhancedSystemPurpose?.primary_domain || context.projectTextSignal?.primaryDomain,
@@ -10560,6 +10592,8 @@ export class AnalyzerOrchestrator {
       projectTextSummary?: string;
       projectTextConcepts?: string[];
       isKlauroSelfProject?: boolean;
+      /** Deterministic deployable-unit count; corroborates architecture-shape claims. */
+      deployableCount?: number;
     } = {},
   ): { ok: boolean; reason?: string } {
     const base = this.validateAIInterpretation(description, enhancedSystemPurpose, facts);
@@ -11029,6 +11063,8 @@ export class AnalyzerOrchestrator {
       projectTextSummary?: string;
       projectTextConcepts?: string[];
       isKlauroSelfProject?: boolean;
+      /** Deterministic deployable-unit count; corroborates architecture-shape claims. */
+      deployableCount?: number;
     } = {},
   ): { ok: boolean; reason?: string } {
     const cleaned = this.cleanGeneratedDescriptionText(description);
@@ -11165,6 +11201,20 @@ export class AnalyzerOrchestrator {
     if (/(?:^|\s)(?:@\/|~\/|\.{1,2}\/|\/)[\w./-]+/.test(description)) {
       return { ok: false, reason: 'source-path-pollution' };
     }
+    // Relative source paths and file tokens ("src/api/auth.ts") slip past the
+    // leading-slash pattern above; a weak model asked for dataflow reaches for
+    // file names as "mechanism". js-family extensions are excluded from the
+    // bare-token form because package names legitimately carry them (web3.js,
+    // next.js) — a js file only trips the lint when written as a path.
+    if (/(?:^|[\s("'])[\w.-]+\/[\w./-]+\.(?:ts|tsx|js|jsx|mjs|cjs|py|php|rb|go|rs|java|cs|dart|swift|kt|sql|tf|tfvars|hcl|yaml|yml)\b/i.test(description) ||
+      /\b[\w-]+\.(?:ts|tsx|jsx|py|php|rb|cs|dart|swift|kt|sql|tf|tfvars|hcl)\b/i.test(description)) {
+      return { ok: false, reason: 'source-file-restatement' };
+    }
+    // Two-plus lowerCamelCase identifiers ("conceptNode, extractReviewItems,
+    // saveEdge") are function/variable names, not product language.
+    if ((description.match(/\b[a-z][a-z0-9]+[A-Z][A-Za-z0-9]*\b/g) || []).length >= 2) {
+      return { ok: false, reason: 'implementation-identifier-restatement' };
+    }
     if (/\bevent emitter operations?\b/i.test(description) || /\bexternal services?\b/i.test(description)) {
       return { ok: false, reason: 'generic-integration-restatement' };
     }
@@ -11208,6 +11258,13 @@ export class AnalyzerOrchestrator {
     if (/\b(Key capabilities|Data model|Entry points|Integrations):/i.test(description)) {
       return { ok: false, reason: 'raw-fact-list-format' };
     }
+    // Prompt-internal fact-list vocabulary echoed as prose ("produces terminal
+    // outputs such as ..." — live kontinuum). Narrow to the template forms so a
+    // genuine terminal/CLI product's "terminal output" prose is untouched.
+    if (/\b(?:produces?|producing|produce)\s+terminal\s+(?:records?|outputs?)\b/i.test(description) ||
+      /\bterminal\s+outputs?\s+such\s+as\b/i.test(description)) {
+      return { ok: false, reason: 'fact-list-vocabulary-echo' };
+    }
     const allowedFrameworks = this.frameworkClaimAllowList(facts);
     const mentionedFrameworks = [
       ['nestjs', /\bnest\s*js\b|\bnestjs\b/i],
@@ -11229,6 +11286,10 @@ export class AnalyzerOrchestrator {
     ].filter(([, pattern]) => (pattern as RegExp).test(cleaned));
     if (mentionedFrameworks.some(([key]) => !this.frameworkClaimIsAllowed(String(key), allowedFrameworks))) {
       return { ok: false, reason: 'unsupported-framework-claim' };
+    }
+    const ungroundedShapes = this.ungroundedArchitectureShapeClaims(cleaned, facts);
+    if (ungroundedShapes.length > 0) {
+      return { ok: false, reason: `ungrounded-architecture-claim: ${ungroundedShapes.join(', ')}` };
     }
     const integrationsPattern = /\b(external services?|integrations?|integrates with|connects to|connected to|calls out to)\b/i;
     const overviewClaimsIntegrations = integrationsPattern.test(enhancedSystemPurpose.inferred_description || '');
@@ -11323,10 +11384,110 @@ export class AnalyzerOrchestrator {
     );
   }
 
+  /**
+   * ARCHITECTURE-SHAPE CLAIM GATE (live truckspy audit: the description shipped
+   * "built with a MICROSERVICES architecture" for a repo whose evidence is ONE
+   * Symfony compose service + an Angular SPA). An architecture-shape word in the
+   * prose is a CLAIM about deployment topology and must be corroborated by the
+   * deterministic facts, exactly like framework names and external services:
+   *  - microservices / service-oriented / distributed: >= 3 deployable units.
+   *  - monolith: a KNOWN deployable topology of 1-2 units (unknown topology is
+   *    not corroboration — the claim is stripped, never guessed).
+   *  - event-driven: messaging/broker evidence among libraries/externalServices.
+   *  - serverless: FaaS evidence among libraries/externalServices.
+   * This is an evidence gate on a topology claim (grounding), not a keyword
+   * meaning-classifier: no shape is banned, each must be earned by facts.
+   * Returns the shape labels that are claimed but NOT corroborated.
+   */
+  private ungroundedArchitectureShapeClaims(
+    text: string,
+    facts: { libraries?: string[]; externalServices?: string[]; deployableCount?: number } = {},
+  ): string[] {
+    const deployableCount = typeof facts.deployableCount === 'number' ? facts.deployableCount : undefined;
+    const infraEvidence = [...(facts.libraries || []), ...(facts.externalServices || [])].join(' ').toLowerCase();
+    const messagingEvidence = /(kafka|rabbitmq|amqp|nats\b|sqs|sns|pub[-/]?sub|eventbridge|kinesis|celery|bullmq|\bbull\b|mqtt|zeromq|activemq|event[- ]?bus)/i.test(infraEvidence);
+    const serverlessEvidence = /(serverless|lambda|azure[- ]functions|cloud[- ]functions|cloudflare[- ]workers|firebase[- ]functions|faas)/i.test(infraEvidence);
+    const claims: Array<{ shape: string; pattern: RegExp; corroborated: boolean }> = [
+      { shape: 'microservices', pattern: /\bmicro-?services?\b/i, corroborated: (deployableCount ?? 0) >= 3 },
+      { shape: 'service-oriented', pattern: /\bservice-oriented\b/i, corroborated: (deployableCount ?? 0) >= 3 },
+      { shape: 'distributed', pattern: /\bdistributed\s+(?:architecture|system|services)\b/i, corroborated: (deployableCount ?? 0) >= 3 },
+      { shape: 'monolith', pattern: /\bmonolith(?:ic)?\b/i, corroborated: deployableCount !== undefined && deployableCount >= 1 && deployableCount <= 2 },
+      { shape: 'event-driven', pattern: /\bevent-driven\b/i, corroborated: messagingEvidence },
+      { shape: 'serverless', pattern: /\bserverless\b/i, corroborated: serverlessEvidence },
+    ];
+    return claims
+      .filter(claim => claim.pattern.test(text) && !claim.corroborated)
+      .map(claim => claim.shape);
+  }
+
+  /**
+   * Clause-level strip for an ungrounded architecture-shape claim (repair, not
+   * rewrite: only the AI's own offending clause is deleted; grammar stumps are
+   * healed by repairStrippedSentenceGrammar downstream, per the mechanism-clause
+   * strip pattern). Handles the two live shapes: an attached participial clause
+   * ("..., built with a microservices architecture, ...") and the bare
+   * adjective/noun mention ("a microservices architecture" / "is monolithic").
+   */
+  private stripUngroundedArchitectureShapeClauses(text: string, shapes: string[]): string {
+    let stripped = text;
+    const shapeWordPattern: Record<string, string> = {
+      'microservices': 'micro-?services?',
+      'service-oriented': 'service-oriented',
+      'distributed': 'distributed',
+      'monolith': 'monolith(?:ic)?',
+      'event-driven': 'event-driven',
+      'serverless': 'serverless',
+    };
+    for (const shape of shapes) {
+      const word = shapeWordPattern[shape];
+      if (!word) continue;
+      // Attached clause: ", built with a microservices architecture" /
+      // "following an event-driven design" — drop the whole clause.
+      stripped = stripped.replace(
+        new RegExp(`,?\\s*(?:and\\s+)?(?:built|structured|designed|implemented|organized|deployed|architected)\\s+(?:with|as|on|around|using|following)\\s+(?:a|an|the)?\\s*${word}(?:-based|-oriented|-style)?\\s+(?:architecture|design|approach|pattern|structure|model)\\b`, 'gi'),
+        ''
+      );
+      stripped = stripped.replace(
+        new RegExp(`,?\\s*(?:and\\s+)?(?:following|adopting|using)\\s+(?:a|an|the)?\\s*${word}(?:-based|-oriented|-style)?\\s+(?:architecture|design|approach|pattern|structure|model)\\b`, 'gi'),
+        ''
+      );
+      // Noun-phrase mention: "a microservices architecture" -> "" ; bare
+      // adjective before a head noun: "a microservices backend" -> "a backend".
+      stripped = stripped.replace(
+        new RegExp(`\\b(?:a|an|the)\\s+${word}(?:-based|-oriented|-style)?\\s+(?:architecture|design|approach|pattern|structure|model)\\b`, 'gi'),
+        ''
+      );
+      stripped = stripped.replace(new RegExp(`\\b${word}(?:-based|-oriented|-style)?\\b`, 'gi'), '');
+    }
+    if (stripped === text) return text;
+    const repaired = this.repairStrippedSentenceGrammar(this.cleanGeneratedDescriptionText(
+      stripped
+        // Excise a copula clause the strip gutted ("and its architecture is
+        // [microservices], with ..." -> join the survivors directly).
+        .replace(/,?\s*(?:and\s+)?(?:its|the|a|an)?\s*architecture\s+(?:is|was|being)\s*(?=,|\.|with\b)/gi, '')
+        .replace(/\ban(\s+(?:tool|system|service|platform|pipeline|dashboard|suite|toolkit|server|gateway|framework|library|backend|frontend)s?\b)/gi, 'a$1')
+        .replace(/\s+,/g, ',')
+        .replace(/,(?:\s*,)+/g, ',')
+        .replace(/,\s*(?:and\s*)?\./g, '.')
+        .replace(/\s+\./g, '.')
+        .replace(/\s{2,}/g, ' ')
+    ));
+    // Stripping the shape word can gut a copula predicate ("its architecture
+    // is, with 11 deployable units" — live kontinuum). A sentence whose
+    // is/are lost its complement has nothing left to say; drop it whole when
+    // other sentences remain rather than shipping the stump.
+    const sentences = repaired.split(/(?<=[.!?])\s+/).map(sentence => sentence.trim()).filter(Boolean);
+    if (sentences.length > 1) {
+      const kept = sentences.filter(sentence => !/\b(?:is|are|was|were)\s*(?:,|\.|!|\?|$)/i.test(sentence));
+      if (kept.length > 0 && kept.length < sentences.length) return kept.join(' ').trim();
+    }
+    return repaired;
+  }
+
   private sanitizeAIInterpretation(
     description: string,
     enhancedSystemPurpose: EnhancedSystemPurpose,
-    facts: { frameworks?: string[]; libraries?: string[]; databaseEntities?: string[]; externalServices?: string[] } = {},
+    facts: { frameworks?: string[]; libraries?: string[]; databaseEntities?: string[]; externalServices?: string[]; deployableCount?: number } = {},
   ): string {
     const wordSanitized = this.cleanGeneratedDescriptionText(description)
       .replace(/\bfacilitates\b/gi, 'links')
@@ -11357,6 +11518,11 @@ export class AnalyzerOrchestrator {
       .replace(/\binternal scripts?\b/gi, 'system')
       .replace(/\bpredefined scripts?\b/gi, 'configured strategies')
       .replace(/\bevent emitter operations?\b/gi, 'domain events')
+      // Fact-list vocabulary echo: "terminal outputs/records" is prompt-internal
+      // wording, not product language (live kontinuum: "produces terminal
+      // outputs such as ...").
+      .replace(/\bterminal (?:records?(?: and outputs?)?|outputs?(?: and records?)?)\b/gi, 'outputs')
+      .replace(/\bnear-terminal stages?\b/gi, 'late-stage steps')
       .replace(/\band external services?\b/gi, '')
       .replace(/\bexternal services?\b/gi, 'named integrations')
       .replace(/\bserver routes?\b/gi, 'request behavior')
@@ -11419,11 +11585,18 @@ export class AnalyzerOrchestrator {
       .replace(/\bA\s+(audio|access|api|analytics|arbitrage|infrastructure)\b/g, 'An $1')
       .replace(/\s+/g, ' ')
       .trim();
+    // Architecture-shape claims not corroborated by the deterministic topology
+    // facts (deployable count, messaging/FaaS evidence) are stripped at clause
+    // level — repair of the AI's own text, never a deterministic rewrite.
+    const ungroundedShapes = this.ungroundedArchitectureShapeClaims(wordSanitized, facts);
+    const shapeSanitized = ungroundedShapes.length > 0
+      ? this.stripUngroundedArchitectureShapeClauses(wordSanitized, ungroundedShapes)
+      : wordSanitized;
     // Word-level substitutions/deletions above can leave grammatical stumps
     // ("…graph evidence for.", "a robust and solution") and the model pads
     // paragraphs by restating the same domain sentence 2-3x — repair grammar
     // and collapse near-duplicate sentences before sentence-level filtering.
-    const cleaned = this.collapseNearDuplicateSentences(this.repairStrippedSentenceGrammar(wordSanitized));
+    const cleaned = this.collapseNearDuplicateSentences(this.repairStrippedSentenceGrammar(shapeSanitized));
     const sentences = cleaned
       .split(/(?<=[.!?])\s+/)
       .map(sentence => sentence.trim())
@@ -11461,6 +11634,12 @@ export class AnalyzerOrchestrator {
 
     const keep = sentences.filter(sentence => {
       if (unsupportedFrameworkPatterns.some(pattern => pattern.test(sentence))) return false;
+      // Source-file tokens / lowerCamel identifier lists are implementation
+      // mechanics, never product prose (mirrors the validate-side lint;
+      // js-family bare tokens exempt so web3.js/next.js package names survive).
+      if (/(?:^|[\s("'])[\w.-]+\/[\w./-]+\.(?:ts|tsx|js|jsx|mjs|cjs|py|php|rb|go|rs|java|cs|dart|swift|kt|sql|tf|tfvars|hcl|yaml|yml)\b/i.test(sentence) ||
+        /\b[\w-]+\.(?:ts|tsx|jsx|py|php|rb|cs|dart|swift|kt|sql|tf|tfvars|hcl)\b/i.test(sentence)) return false;
+      if ((sentence.match(/\b[a-z][a-z0-9]+[A-Z][A-Za-z0-9]*\b/g) || []).length >= 2) return false;
       if (/\b(external services?|integrations?|integrates with|connects to|connected to|calls out to)\b/i.test(sentence) &&
         !this.mentionsKnownExternalService(sentence, facts.externalServices || [])) return false;
       if (/\b(?:controller|service|repository) outputs?\b/i.test(sentence)) return false;
@@ -11694,7 +11873,7 @@ export class AnalyzerOrchestrator {
     projectTextSignal: ProjectTextSignal
   ): Record<string, unknown> {
     return {
-      version: 'klauro-ai-description-contract-v11-mechanism-grounded-how-it-works',
+      version: 'klauro-ai-description-contract-v12-dataflow-how-it-works',
       goal: 'Produce a specific, accurate, defensible product/architecture paragraph from CAS facts only, answering four questions in order: what the system is, what it does, how it works, and how it is built.',
       systemName,
       suppliedPrimaryDomain: enhancedSystemPurpose.primary_domain,
@@ -11717,28 +11896,31 @@ export class AnalyzerOrchestrator {
         'One paragraph, 4 to 6 sentences, no bullets. Answer these four questions in order:',
         'WHAT IT IS: name the system type/domain — "<domain/artifact-type> that <core purpose>." Ground the type in dependencies, distinctiveEntities, or project text.',
         'WHAT IT DOES: name the concrete product workflows and the terminalOutputs it produces for its consumers/operators/agents — anchor on what it PRODUCES, not on record CRUD.',
-        'HOW IT WORKS: describe the concrete MECHANISM that produces those outputs — name at least one real supplied mechanism fact (a framework the system is built with from the supplied allowedFrameworks fact list, a package from libraries, a nearTerminalStage, or the dataflow from a capability through its entities to a terminal output). NEVER write a circular restatement such as "works by leveraging its capabilities to produce these terminal outputs" — a how-it-works sentence that only re-lists the capabilities or the outputs says nothing and will be rejected.',
-        'HOW IT IS BUILT: name the architecture, the frameworks the system is built with, and third-party integrations, drawing only on the supplied allowedFrameworks fact list, entities, integrations, and dependencies; include boundary/tests/risk only when supplied facts support it.',
+        'HOW IT WORKS: describe the DATAFLOW through the product — what enters the system (the supplied entry workflows), what transformations or decisions happen to it (the supplied capabilities acting on the supplied entities, the nearTerminalStages), and what terminal records or outputs result (the supplied terminalOutputs). This sentence is about the movement of the product\'s data IN PRODUCT TERMS: do not name any package, library, or dependency identifier in it, never name source files/paths or function/method identifiers (describe the records and decisions, not the code symbols), and never write a circular restatement such as "works by leveraging its capabilities to produce these terminal outputs" — a how-it-works sentence that only re-lists the capabilities or the outputs says nothing and will be rejected.',
+        'HOW IT IS BUILT: state the concrete build shape from the supplied facts — a framework from the supplied allowedFrameworks fact list may appear here ONLY as product-shaping context (e.g. "a Symfony backend serving an Angular single-page frontend"), never as a list of package names, and never phrased as "leveraging/utilizing frameworks and libraries such as ...". Name third-party integrations only by the exact names in externalServices. Claim an architecture shape (monolith, microservices, event-driven, serverless, distributed) ONLY when the supplied deployable/topology facts corroborate it — with a single deployable unit never claim microservices. Include boundary/tests/risk only when supplied facts support it.',
       ],
       required_grounding: [
         'Mention at least two concrete supplied product nouns from capabilities, domainConcepts, projectTextConcepts, terminalOutputs, distinctiveEntities, or databaseEntities.',
         'The system-type/domain you name (e.g. "crypto market-intelligence API", "identity service") MUST be traceable to a supplied fact — a dependency in libraries, a distinctiveEntity, an externalService, a domainConcept, or manifestDescription. Never name a system-type with no supporting supplied fact.',
-        'Name a framework only if it appears in the supplied allowedFrameworks fact list; in prose call them the frameworks the system is built with, never the literal phrase "allowed frameworks".',
+        'A framework name may appear only if it is in the supplied allowedFrameworks fact list, only in HOW IT IS BUILT, and only as product-shaping context ("a Symfony backend") — naming a framework or package is never required and never a substitute for describing the dataflow; in prose call them the frameworks the system is built with, never the literal phrase "allowed frameworks".',
         'Mention integrations only by exact names listed in externalServices.',
         'Preserve suppliedPrimaryDomain unless supplied facts clearly support a more specific label.',
       ],
       forbidden_claims: [
-        'Do not write circular mechanism claims — "works by leveraging its capabilities to produce these terminal outputs" (or any how-it-works sentence that merely restates the capability list or the output list) is forbidden; the mechanism sentence must name a concrete framework, package, stage, or dataflow from the supplied facts.',
+        'Do not write circular mechanism claims — "works by leveraging its capabilities to produce these terminal outputs" (or any how-it-works sentence that merely restates the capability list or the output list) is forbidden; the how-it-works sentence must describe the dataflow from the supplied facts: what enters, what transformations/decisions happen, what terminal records/outputs result.',
+        'Do not name packages, libraries, or dependency identifiers (anything like @scope/package or an npm/pip/composer package name) in the how-it-works sentence, and never anywhere as an inventory ("leveraging the framework and libraries such as X and Y", "utilizing frameworks like Z") — dependency names are build facts for grounding, not prose content.',
+        'Do not claim an architecture shape — microservices, monolith, event-driven, serverless, service-oriented, distributed — unless the supplied deployable/topology facts corroborate it; a system with one deployable backend is not microservices no matter how its code is organized.',
         'Do not restate the same justification sentence more than once; each sentence must add new grounded information.',
         'Do not invent customers, business outcomes, compliance, scale, performance, revenue, quality, or integrations.',
         'Do not use source-mechanic language: entry points, endpoints, routes, pages, CLI commands, source files, internal files, handlers, operations, query processing, state stores, or interaction surfaces.',
-        'Do not leak internal prompt/fact-list vocabulary into prose: never write "allowed frameworks", "allowedFrameworks", "supplied facts", "distinctiveEntities", "terminalOutputs", or any other fact-list key name — describe the frameworks as the ones the system is built with, in plain product language.',
+        'Do not leak internal prompt/fact-list vocabulary into prose: never write "allowed frameworks", "allowedFrameworks", "supplied facts", "distinctiveEntities", "terminalOutputs", "terminal outputs", "near-terminal stage", or any other fact-list key name — name the actual records/results the system produces, in plain product language.',
         'Do not use generic filler: manages data, supports workflows, handles operations, records/lists, screen state, workflow state, product context, insights, streamline, efficient, compliant, productivity, business value.',
         'Do not let examples, tests, docs, or sample apps override human-authored project identity.',
       ],
       item_description_shape: [
         'One sentence per item.',
-        'Name the concrete record, lifecycle, workflow, model, or boundary.',
+        'Say WHAT concrete records, decisions, or workflows the item owns and WHY that matters in this product — the words "capability" and "lifecycle" are internal vocabulary and must not appear as prose scaffolding ("The X capability owns the Y lifecycle" is forbidden).',
+        'Never the no-information template "Lets users <verb> <noun>" where the verb/noun merely restate the item name — every description must add concrete product information beyond the name.',
         'Use relatedEntities and relatedDomains before operation names.',
         'Translate source areas into product purpose; do not repeat file paths or command verbs.',
       ],
@@ -11760,7 +11942,7 @@ export class AnalyzerOrchestrator {
     projectTextSignal: ProjectTextSignal = { concepts: [], evidence: [] }
   ): Record<string, unknown> {
     return {
-      version: 'klauro-ai-element-description-contract-v2-product-meaning',
+      version: 'klauro-ai-element-description-contract-v3-no-scaffold-templates',
       goal: 'Describe each capability/entity by what it MEANS in this product — what it lets the product\'s users or operators do, or what real concept it represents — grounded in the data entities it manages and the product domain. A capability is product value, not CRUD plumbing; describe the value, not the mechanism.',
       systemName,
       productDomain: enhancedSystemPurpose?.primary_domain,
@@ -11779,6 +11961,7 @@ export class AnalyzerOrchestrator {
         'Lead with product meaning/value. Do NOT lead with or center on create/update/delete, lifecycle, records, routes, or file mechanics.',
       ],
       forbidden_claims: [
+        'Do not write no-information scaffolds: a bare "Lets users <verb> <noun>" whose verb/noun merely restate the item name, or "The X capability owns the Y lifecycle" — every sentence must add concrete records/decisions/workflows and why they matter, beyond what the name already says.',
         'Do not describe the item as a CRUD lifecycle or as creating/updating/deleting records, and do not restate route counts or file paths — that is plumbing, not the capability. Describe what it MEANS to users.',
         'Do not restate the supplied currentDescription; use it only for the underlying facts.',
         'Do not use marketing fluff: seamless, robust, efficient, compliant, productivity, business value, streamline, insights.',
@@ -13659,7 +13842,7 @@ export class AnalyzerOrchestrator {
     const hasAny = (...verbs: string[]) => words.some(word => verbs.includes(word));
     if (hasAny('create', 'creates', 'created', 'add', 'adds', 'added', 'insert', 'inserts', 'register', 'registers')) return 'create';
     if (hasAny('get', 'gets', 'find', 'finds', 'read', 'reads', 'fetch', 'fetches', 'list', 'lists', 'show', 'index', 'load', 'loads', 'query', 'search')) return 'read';
-    if (hasAny('update', 'updates', 'set', 'sets', 'modify', 'modifies', 'save', 'saves', 'patch', 'edit', 'edits')) return 'update';
+    if (hasAny('update', 'updates', 'set', 'sets', 'modify', 'modifies', 'save', 'saves', 'patch', 'edit', 'edits', 'persist', 'persists', 'store', 'stores', 'upsert', 'upserts')) return 'update';
     if (hasAny('delete', 'deletes', 'remove', 'removes', 'destroy', 'destroys', 'revoke', 'revokes')) return 'delete';
     return undefined;
   }
@@ -19544,7 +19727,14 @@ export class AnalyzerOrchestrator {
         const commandNode = nodes.find(node => node.id === ep.source_node);
         const commandFile = commandNode?.source?.file;
         if (!commandNode || !commandFile) continue;
-        const fns = functionNodesByFile.get(commandFile) || [];
+        // Analyzers disagree on absolute vs relative paths — match by suffix.
+        const fns: CASNode[] = [];
+        for (const [candidateFile, candidates] of functionNodesByFile) {
+          if (candidateFile === commandFile ||
+              candidateFile.endsWith(commandFile) || commandFile.endsWith(candidateFile)) {
+            fns.push(...candidates);
+          }
+        }
         const entryMethod = ['execute', '__invoke', 'run']
           .map(name => fns.find(n => n.name === name))
           .find((n): n is CASNode => !!n);

@@ -4479,3 +4479,125 @@ describe('top-down capability evidence (C2)', () => {
     }
   });
 });
+
+describe('architecture-shape claim gate (live truckspy: "microservices" shipped for a one-backend compose repo)', () => {
+  const purpose = { primary_domain: 'fleet-management', core_concepts: ['vehicle', 'driver', 'trip'] };
+  const base = 'A fleet management platform that tracks vehicles, drivers, and trips for dispatch operators. It records trip assignments and produces driver activity reports for fleet managers.';
+
+  it('rejects a microservices claim when the deterministic topology is a single deployable', async () => {
+    const description = `${base} It is built with a microservices architecture serving the dispatch workflows.`;
+    const result = orch.validateAIInterpretation(description, purpose, { deployableCount: 1 });
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('ungrounded-architecture-claim: microservices');
+  });
+
+  it('rejects a microservices claim when the topology is UNKNOWN (no deployable facts = no corroboration)', async () => {
+    const description = `${base} It is built with a microservices architecture serving the dispatch workflows.`;
+    const result = orch.validateAIInterpretation(description, purpose, {});
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('ungrounded-architecture-claim: microservices');
+  });
+
+  it('keeps a microservices claim corroborated by a multi-deployable topology', async () => {
+    const description = `${base} It is built with a microservices architecture serving the dispatch workflows.`;
+    expect(orch.validateAIInterpretation(description, purpose, { deployableCount: 4 }).ok).toBe(true);
+  });
+
+  it('gates monolith claims on a KNOWN small topology and event-driven claims on messaging evidence', async () => {
+    const monolith = `${base} It ships as a monolithic backend behind one deployment.`;
+    expect(orch.validateAIInterpretation(monolith, purpose, { deployableCount: 1 }).ok).toBe(true);
+    expect(orch.validateAIInterpretation(monolith, purpose, {}).reason).toBe('ungrounded-architecture-claim: monolith');
+    expect(orch.validateAIInterpretation(monolith, purpose, { deployableCount: 5 }).reason).toBe('ungrounded-architecture-claim: monolith');
+
+    const eventDriven = `${base} Trip updates flow through an event-driven pipeline before reports are produced.`;
+    expect(orch.validateAIInterpretation(eventDriven, purpose, { deployableCount: 1, libraries: ['kafkajs'] }).ok).toBe(true);
+    expect(orch.validateAIInterpretation(eventDriven, purpose, { deployableCount: 1, libraries: ['lodash'] }).reason).toBe('ungrounded-architecture-claim: event-driven');
+  });
+
+  it('sanitize STRIPS the ungrounded architecture clause (repair of AI text, never a rewrite) and grammar survives', async () => {
+    const description = `${base} It is built with a microservices architecture, integrating trip records with driver activity reporting.`;
+    const sanitized = orch.sanitizeAIInterpretation(description, purpose, { deployableCount: 1 });
+    expect(sanitized).not.toMatch(/micro-?services/i);
+    expect(sanitized).toMatch(/^A fleet management platform/);
+    // No grammatical stump left behind by the clause strip.
+    expect(sanitized).not.toMatch(/\b(?:with|a|an|the)\s*[.,]/i);
+    // Grounded topology keeps the clause untouched.
+    expect(orch.sanitizeAIInterpretation(description, purpose, { deployableCount: 4 })).toMatch(/microservices/i);
+  });
+
+  it('acceptAIInterpretationCandidate heals an otherwise-grounded paragraph by stripping the ungrounded shape claim', async () => {
+    const description = `${base} It is built with a microservices architecture for the dispatch workflows.`;
+    const outcome = orch.acceptAIInterpretationCandidate(description, purpose, { deployableCount: 1 });
+    expect(outcome.validation.ok).toBe(true);
+    expect(outcome.text).not.toMatch(/micro-?services/i);
+  });
+});
+
+describe('description prompt contract: how-it-works is dataflow, never a package inventory (live truckspy: "leveraging ... @angular/core and @google-cloud/storage")', () => {
+  const purpose = { primary_domain: 'fleet-management', core_concepts: ['vehicle', 'driver'], primary_type: 'platform' };
+
+  it('the contract requires dataflow in HOW IT WORKS and forbids package names there', async () => {
+    const contract = orch.buildAIDescriptionPromptContract(purpose, 'truckspy', { concepts: [], evidence: [] });
+    expect(contract.version).toContain('v12-dataflow-how-it-works');
+    const shape: string[] = contract.system_description_shape;
+    const howItWorks = shape.find(line => line.startsWith('HOW IT WORKS'))!;
+    expect(howItWorks).toMatch(/DATAFLOW/);
+    expect(howItWorks).toMatch(/do not name any package, library, or dependency identifier/i);
+    // The old contract literally REQUIRED naming "a package from libraries" as
+    // the mechanism slot — that requirement must be gone from the whole contract.
+    expect(JSON.stringify(contract)).not.toContain('a package from libraries');
+  });
+
+  it('the contract confines framework names to product-shaping context and gates architecture shapes on topology facts', async () => {
+    const contract = orch.buildAIDescriptionPromptContract(purpose, 'truckspy', { concepts: [], evidence: [] });
+    const built = (contract.system_description_shape as string[]).find(line => line.startsWith('HOW IT IS BUILT'))!;
+    expect(built).toMatch(/product-shaping context/);
+    expect(built).toMatch(/never claim microservices/i);
+    const forbidden = (contract.forbidden_claims as string[]).join(' ');
+    expect(forbidden).toMatch(/leveraging the framework and libraries such as/i);
+    expect(forbidden).toMatch(/architecture shape/i);
+  });
+});
+
+describe('system-description code-symbol lint (live kontinuum: "coordinating internal src/api/auth.ts ... conceptNode, extractReviewItems, saveEdge")', () => {
+  const purpose = { primary_domain: 'personal-intelligence', core_concepts: ['concept', 'memory', 'agent'] };
+
+  it('rejects relative source-file tokens the leading-slash path lint missed', async () => {
+    const description = 'kontinuum is a personal intelligence system that organizes concepts and memory for its users. It works by coordinating src/api/auth.ts and src/api/remote-tools.ts to produce concept records.';
+    expect(orch.validateAIInterpretation(description, purpose, {}).reason).toBe('source-file-restatement');
+  });
+
+  it('rejects lowerCamelCase identifier lists as implementation restatement', async () => {
+    const description = 'kontinuum is a personal intelligence system that organizes concepts and memory for its users. It produces terminal records such as conceptNode, extractReviewItems, and saveEdge for agents.';
+    expect(orch.validateAIInterpretation(description, purpose, {}).reason).toBe('implementation-identifier-restatement');
+  });
+
+  it('sanitize drops a non-opening code-symbol sentence and keeps the product prose', async () => {
+    const description = 'kontinuum is a personal intelligence system that organizes concepts, memory, and agent workflows for its users. It works by coordinating src/api/auth.ts and src/api/remote-tools.ts to produce concept records. It maintains concept and memory records that agents review before acting.';
+    const sanitized = orch.sanitizeAIInterpretation(description, purpose, {});
+    expect(sanitized).not.toMatch(/src\/api/);
+    expect(sanitized).toMatch(/^kontinuum is a personal intelligence system/);
+    expect(sanitized).toMatch(/concept and memory records/);
+  });
+});
+
+describe('architecture-strip grammar + fact-list vocabulary echo (live kontinuum round-3 residuals)', () => {
+  const purpose = { primary_domain: 'personal-intelligence', core_concepts: ['memory', 'concept', 'agent'] };
+
+  it('excises the gutted copula clause after stripping an ungrounded shape word', async () => {
+    const description = 'Kontinuum is a personal intelligence substrate that manages memory, concepts, and agent workflows. Kontinuum is built with Node.js and React, and its architecture is microservices, with 11 separately deployable units.';
+    const sanitized = orch.sanitizeAIInterpretation(description, purpose, { frameworks: ['React'], libraries: ['react'], deployableCount: 2 });
+    expect(sanitized).not.toMatch(/micro-?services/i);
+    expect(sanitized).not.toMatch(/\bis\s*,/);
+    expect(sanitized).toMatch(/deployable units/);
+  });
+
+  it('rejects the "produces terminal outputs such as" fact-list echo and sanitize heals it', async () => {
+    const description = 'Kontinuum is a personal intelligence substrate that manages memory, concepts, and agent workflows for its users. It produces terminal outputs such as memory intake summaries, concept catalogs, and graph explorer views.';
+    expect(orch.validateAIInterpretation(description, purpose, {}).reason).toBe('fact-list-vocabulary-echo');
+    const sanitized = orch.sanitizeAIInterpretation(description, purpose, {});
+    expect(sanitized).not.toMatch(/terminal outputs/i);
+    expect(sanitized).toMatch(/produces outputs such as memory intake/);
+    expect(orch.validateAIInterpretation(sanitized, purpose, {}).ok).toBe(true);
+  });
+});
