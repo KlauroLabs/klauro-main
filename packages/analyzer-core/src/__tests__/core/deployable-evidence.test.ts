@@ -94,7 +94,7 @@ describe('collectDeployableEvidence', () => {
     expect(container!.entrypoint_member).toBe('my-service');
   });
 
-  test('Tier 1: compose service node yields a compose-service candidate', () => {
+  test('Tier 1: compose service node WITH a build context yields a compose-service candidate', () => {
     projectPath = tempProject();
     const nodes: CASNode[] = [
       {
@@ -105,7 +105,7 @@ describe('collectDeployableEvidence', () => {
         metadata: {
           topology_surface: 'docker-compose',
           deployment_service_name: 'web',
-          image: 'nginx:latest',
+          build: '.',
           ports: [{ host: '8080', container: '80' }],
         } as any,
       },
@@ -116,6 +116,83 @@ describe('collectDeployableEvidence', () => {
     expect(compose).toBeDefined();
     expect(compose!.name).toBe('web');
     expect(compose!.ports).toEqual([80]);
+  });
+
+  // Defect class: over-splitting on image-only backing services (truckspy
+  // prod repro — a 6-node Redis cluster + rabbitmq + a bare-image nginx
+  // reported as 8 separate "deployables" of the repo that merely runs a
+  // client against them). A compose service with no `build:` context ships
+  // someone else's pre-built image; it is a runtime DEPENDENCY, not a
+  // ship/run artifact of this workspace, and must never become Tier-1
+  // DeployableEvidence (see SPEC-DEPLOYABLE-DETECTION.md §2 and
+  // container-topology-analyzer.ts's own external-service exit-point
+  // handling for the same class of node).
+  test('Tier 1: image-only compose service (no build context) yields NO compose-service candidate', () => {
+    projectPath = tempProject();
+    const nodes: CASNode[] = [
+      {
+        id: 'compose_service_redis',
+        name: 'Compose service: redis',
+        type: 'compose_service',
+        source: { file: 'docker-compose.yml', line: 10 },
+        metadata: {
+          topology_surface: 'docker-compose',
+          deployment_service_name: 'redis',
+          image: 'redis:7.4-alpine',
+          ports: [{ host: '6379', container: '6379' }],
+        } as any,
+      },
+    ];
+
+    const result = collectDeployableEvidence({ projectPath, nodes, entryPoints: [], exitPoints: [] });
+    expect(result.find(item => item.kind === 'compose-service')).toBeUndefined();
+  });
+
+  test('Tier 1: multiple image-only sibling services (redis cluster shape) yield ZERO compose-service candidates, not one-per-node', () => {
+    projectPath = tempProject();
+    const redisNode = (name: string, index: number): CASNode => ({
+      id: `compose_service_${name}`,
+      name: `Compose service: ${name}`,
+      type: 'compose_service',
+      source: { file: 'docker-compose.yml', line: 10 + index },
+      metadata: {
+        topology_surface: 'docker-compose',
+        deployment_service_name: name,
+        image: 'redis:7.4-alpine',
+      } as any,
+    });
+    const nodes: CASNode[] = [
+      redisNode('redis', 0),
+      redisNode('redis-node-1', 1),
+      redisNode('redis-node-2', 2),
+      redisNode('redis-cluster-creator', 3),
+    ];
+
+    const result = collectDeployableEvidence({ projectPath, nodes, entryPoints: [], exitPoints: [] });
+    expect(result.filter(item => item.kind === 'compose-service')).toHaveLength(0);
+  });
+
+  test('Tier 1: compose build context resolves relative to the compose FILE dir, not the project root', () => {
+    projectPath = tempProject();
+    const nodes: CASNode[] = [
+      {
+        id: 'compose_service_php',
+        name: 'Compose service: php',
+        type: 'compose_service',
+        source: { file: 'app/compose.yml', line: 2 },
+        metadata: {
+          topology_surface: 'docker-compose',
+          deployment_service_name: 'php',
+          build: '.',
+        } as any,
+      },
+    ];
+
+    const result = collectDeployableEvidence({ projectPath, nodes, entryPoints: [], exitPoints: [] });
+    const compose = result.find(item => item.kind === 'compose-service');
+    expect(compose).toBeDefined();
+    // `build: .` in app/compose.yml means "app/", not the repo root.
+    expect(compose!.root_path).toBe('app');
   });
 
   test('Tier 1: distribution artifact (installer) node yields an installer candidate', () => {
@@ -431,5 +508,81 @@ describe('collectDeployableEvidence', () => {
     // installer's membership. (Evidence layer: absence of it from any ships_paths.)
     const allShipsPaths = result.flatMap(item => item.ships_paths ?? []);
     expect(allShipsPaths).not.toContain('worker');
+  });
+});
+
+// Defect class: K8s resource kinds treated as independent ship units. A
+// Service/ServiceAccount/Ingress/ConfigMap/Secret/HPA is wiring, identity,
+// routing, or config ATTACHED to a workload (Deployment/StatefulSet/
+// DaemonSet/CronJob/Job) — it is evidence for that workload's boundary, not
+// a ship unit of its own. Only workload kinds may become Tier-1
+// DeployableEvidence for a plain (non-Helm) k8s manifest.
+describe('collectDeployableEvidence — k8s resource-kind rollup', () => {
+  let projectPath: string;
+
+  afterEach(() => {
+    if (projectPath) fs.removeSync(projectPath);
+  });
+
+  function k8sNode(kind: string, name: string, file = 'k8s/backend.yaml'): CASNode {
+    return {
+      id: `k8s_${kind.toLowerCase()}_${name}`,
+      name: `${kind}: ${name}`,
+      type: `kubernetes_${kind.toLowerCase()}`,
+      source: { file, line: 1 },
+      metadata: {
+        topology_surface: 'kubernetes',
+        kubernetes_kind: kind,
+        deployment_service_name: name,
+      } as any,
+    };
+  }
+
+  test('a plain (non-Helm) Deployment is a Tier-1 k8s deployable', () => {
+    projectPath = tempProject();
+    const nodes = [k8sNode('Deployment', 'backend')];
+    const result = collectDeployableEvidence({ projectPath, nodes, entryPoints: [], exitPoints: [] });
+    const deployment = result.find(item => item.kind === 'k8s');
+    expect(deployment).toBeDefined();
+    expect(deployment!.name).toBe('backend');
+  });
+
+  test('Service/ServiceAccount/Ingress/ConfigMap/Secret/HPA siblings of a Deployment do NOT each become a separate deployable', () => {
+    projectPath = tempProject();
+    const nodes = [
+      k8sNode('Deployment', 'backend'),
+      k8sNode('Service', 'backend'),
+      k8sNode('ServiceAccount', 'backend'),
+      k8sNode('Ingress', 'backend'),
+      k8sNode('ConfigMap', 'backend-config'),
+      k8sNode('Secret', 'backend-secret'),
+      k8sNode('HorizontalPodAutoscaler', 'backend'),
+    ];
+    const result = collectDeployableEvidence({ projectPath, nodes, entryPoints: [], exitPoints: [] });
+    const k8sDeployables = result.filter(item => item.kind === 'k8s');
+    // Exactly one ship unit — the workload — not seven.
+    expect(k8sDeployables).toHaveLength(1);
+    expect(k8sDeployables[0].name).toBe('backend');
+    // The non-workload siblings are cited as attached evidence, not dropped silently.
+    expect(k8sDeployables[0].evidence.some(e => e.includes('attached resources'))).toBe(true);
+    expect(k8sDeployables[0].evidence.join(' ')).toContain('Service');
+  });
+
+  test('a Helm-origin kubernetes_* node contributes NO separate k8s deployable (the chart itself is the ship unit, via deploy-manifests.ts)', () => {
+    projectPath = tempProject();
+    const nodes: CASNode[] = [
+      {
+        id: 'helm_template_resource_1',
+        name: 'Deployment: backend-deployment',
+        type: 'kubernetes_deployment',
+        source: { file: 'charts/backend/templates/deployment.yaml', line: 1 },
+        metadata: {
+          language: 'Helm',
+          attributes: { topology_surface: 'helm', kubernetes_kind: 'Deployment', chart_name: 'backend' },
+        } as any,
+      },
+    ];
+    const result = collectDeployableEvidence({ projectPath, nodes, entryPoints: [], exitPoints: [] });
+    expect(result.filter(item => item.kind === 'k8s')).toHaveLength(0);
   });
 });

@@ -233,6 +233,59 @@ test('HelmAnalyzer.analyze extracts chart, values, and templated Deployment+Serv
 
     const installEntry = cas.entry_points.find(e => e.name.includes('helm install'));
     assert.ok(installEntry, 'helm install cli entry point exists');
+
+    // Render-or-fallback: a `{{ .Chart.Name }}` metadata.name never survives
+    // raw into a node's display name (the hash-shaped-tokens-leak-into-labels
+    // class, Helm variant — see SPEC-DEPLOYABLE-DETECTION.md defect log).
+    assert.ok(!deployment!.name.includes('{{'), `deployment name must not contain a raw template token, got: ${deployment!.name}`);
+    assert.ok(!service!.name.includes('{{'), `service name must not contain a raw template token, got: ${service!.name}`);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('HelmAnalyzer.analyze resolves unrenderable `{{ include ... }}` names to a stable chart+kind fallback, honoring fullnameOverride', async () => {
+  const dir = tempDir('helm-test');
+  try {
+    fs.writeFileSync(dir + '/Chart.yaml', 'apiVersion: v2\nname: backend\nversion: 0.1.0\n');
+    fs.writeFileSync(dir + '/values.yaml', 'fullnameOverride: truckspyapp-backend\n');
+
+    fs.mkdirSync(path.join(dir, 'templates'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'templates', 'deployment.yaml'), [
+      'apiVersion: apps/v1',
+      'kind: Deployment',
+      'metadata:',
+      '  name: {{ include "backend.fullname" . }}',
+      'spec:',
+      '  template:',
+      '    spec:',
+      '      containers:',
+      '        - name: app',
+      '',
+    ].join('\n'));
+    fs.writeFileSync(path.join(dir, 'templates', 'serviceaccount.yaml'), [
+      'apiVersion: v1',
+      'kind: ServiceAccount',
+      'metadata:',
+      '  name: {{ include "backend.serviceAccountName" . }}',
+      '',
+    ].join('\n'));
+
+    const analyzer = new HelmAnalyzer();
+    const cas = await analyzer.analyze({ projectPath: dir });
+
+    const deployment = cas.nodes.find(n => n.type === 'kubernetes_deployment');
+    const serviceAccount = cas.nodes.find(n => n.type === 'kubernetes_serviceaccount');
+    assert.ok(deployment, 'templated Deployment resource extracted');
+    assert.ok(serviceAccount, 'templated ServiceAccount resource extracted');
+
+    // No raw `{{ }}` tokens anywhere in the resolved names.
+    assert.ok(!deployment!.name.includes('{{'));
+    assert.ok(!serviceAccount!.name.includes('{{'));
+    // Fallback is stable and grounded in real evidence (fullnameOverride +
+    // resource kind), not the unresolved template expression.
+    assert.equal(deployment!.name, 'Deployment: truckspyapp-backend-deployment');
+    assert.equal(serviceAccount!.name, 'ServiceAccount: truckspyapp-backend-serviceaccount');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

@@ -751,7 +751,7 @@ export class HelmAnalyzer extends IacAnalyzer {
       const chartRoot = context.relativePath.split('/templates/')[0];
       const chartFile = `${chartRoot}/Chart.yaml`;
       const chartName = await this.readChartName(context.projectPath, chartFile);
-      const result = await this.analyzeTemplateFile(context.projectPath, context.relativePath, chartName || chartRoot);
+      const result = await this.analyzeTemplateFile(context.projectPath, context.relativePath, chartName || chartRoot, chartName || chartRoot);
       return this.fileResult(context, result.nodes, result.edges, result.entryPoints, result.exitPoints);
     }
     return this.fileResult(context, [], [], [], []);
@@ -853,9 +853,28 @@ export class HelmAnalyzer extends IacAnalyzer {
       });
     }
 
+    // Common Helm naming overrides (`nameOverride` / `fullnameOverride` in
+    // values.yaml) — when a template resource's `metadata.name` is an
+    // unrendered `{{ ... }}` expression, these give a real, stable identifier
+    // to fall back to instead of the raw template token (see
+    // resolveTemplateName / the render-or-fallback doctrine below).
+    let nameOverride: string | undefined;
+    let fullnameOverride: string | undefined;
+    if (await fs.pathExists(path.join(projectPath, valuesFile))) {
+      try {
+        const valuesContent = await fs.readFile(path.join(projectPath, valuesFile), 'utf8');
+        nameOverride = /^nameOverride:\s*["']?([^"'\n#]+?)["']?\s*(?:#.*)?$/m.exec(valuesContent)?.[1]?.trim() || undefined;
+        fullnameOverride = /^fullnameOverride:\s*["']?([^"'\n#]+?)["']?\s*(?:#.*)?$/m.exec(valuesContent)?.[1]?.trim() || undefined;
+      } catch {
+        // unreadable values.yaml — no overrides available, fallback naming
+        // still works from chartName + kind alone.
+      }
+    }
+    const chartBaseName = fullnameOverride || nameOverride || chartName;
+
     const templateFiles = await this.readFiles(projectPath, [`${chartRoot}/templates/**/*.yaml`, `${chartRoot}/templates/**/*.yml`]);
     for (const templateFile of templateFiles) {
-      const templateResult = await this.analyzeTemplateFile(projectPath, templateFile, chartName);
+      const templateResult = await this.analyzeTemplateFile(projectPath, templateFile, chartName, chartBaseName);
       for (const node of templateResult.nodes) {
         nodes.push(node);
         edges.push({
@@ -884,7 +903,7 @@ export class HelmAnalyzer extends IacAnalyzer {
     ));
   }
 
-  private async analyzeTemplateFile(projectPath: string, templateFile: string, chartName: string) {
+  private async analyzeTemplateFile(projectPath: string, templateFile: string, chartName: string, chartBaseName: string = chartName) {
     const content = await fs.readFile(path.join(projectPath, templateFile), 'utf8');
     const resources = this.extractTemplateResources(content);
     const nodes: CASNode[] = [];
@@ -893,10 +912,18 @@ export class HelmAnalyzer extends IacAnalyzer {
     const exitPoints: CASExitPoint[] = [];
 
     for (const resource of resources) {
+      // Render-or-fallback: an un-rendered `{{ ... }}` Helm template
+      // expression is never a usable name (the "hash-shaped-tokens-leak-
+      // into-labels" class, Helm variant — see SPEC-DEPLOYABLE-DETECTION.md
+      // §defect log). When the declared name can't be resolved statically,
+      // derive a stable one from the chart's base name (fullnameOverride /
+      // nameOverride / chart name) + resource kind instead of shipping the
+      // raw token.
+      const resolvedName = resolveTemplateResourceName(resource.nameExpr, resource.kind, chartBaseName);
       const nodeId = generateNodeId('helm_template_resource', templateFile, `${resource.kind}:${resource.nameExpr}:${resource.line}`);
       nodes.push({
         id: nodeId,
-        name: `${resource.kind}: ${resource.nameExpr}`,
+        name: `${resource.kind}: ${resolvedName}`,
         qualified_name: `${templateFile}#${resource.kind}`,
         type: `kubernetes_${resource.kind.toLowerCase()}`,
         category: 'infrastructure',
@@ -995,4 +1022,22 @@ export class HelmAnalyzer extends IacAnalyzer {
 
 function cleanScalar(value: string): string {
   return value.trim().replace(/^["']|["']$/g, '').replace(/\s*#.*$/, '').trim();
+}
+
+/** True when a Helm `metadata.name` value is an unrendered Go-template
+ *  expression (`{{ include "chart.fullname" . }}`, `{{ $val.name }}`, ...)
+ *  rather than a literal string. */
+function isUnrenderedTemplateExpression(nameExpr: string): boolean {
+  return nameExpr.includes('{{') || nameExpr.includes('}}');
+}
+
+/** Render-or-fallback naming for a Helm template resource. Never returns a
+ *  raw `{{ ... }}` token: when the declared name is a template expression we
+ *  can't statically evaluate, derive a stable name from the chart's base
+ *  name (fullnameOverride / nameOverride / chart name, passed in as
+ *  `chartBaseName`) plus the resource kind, e.g. `backend-deployment`. */
+function resolveTemplateResourceName(nameExpr: string, kind: string, chartBaseName: string): string {
+  if (!isUnrenderedTemplateExpression(nameExpr)) return nameExpr;
+  const base = chartBaseName.trim() || 'chart';
+  return `${base}-${kind.toLowerCase()}`;
 }

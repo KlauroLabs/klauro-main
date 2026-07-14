@@ -4,6 +4,14 @@ import type { DeployableEvidence } from '../../../../types/cas.types';
 import type { EvidenceCollectionContext, EvidenceProvider } from '../types';
 import { arrayOf, formatPort, numericPorts, safeDeployableName } from '../util';
 
+/** K8s resource kinds that actually RUN a workload (a scheduled pod running
+ *  container images) — the only kinds that count as independent Tier-1 ship
+ *  declarations. Service/ServiceAccount/Ingress/ConfigMap/Secret/HPA/
+ *  Certificate/etc. are wiring, identity, routing, or config resources
+ *  ATTACHED to a workload; they are evidence for that workload's boundary,
+ *  never ship units in their own right (SPEC-DEPLOYABLE-DETECTION.md §2). */
+const WORKLOAD_KUBERNETES_KINDS = new Set(['Deployment', 'StatefulSet', 'DaemonSet', 'CronJob', 'Job']);
+
 /** A real bundle-member name (bin/crate/service name), as opposed to a
  *  base-image `FROM` ref, a registry image ref, or a CLI-flag/prose token that
  *  can leak in from a loosely-matched COPY/RUN line. `ships_paths` must carry
@@ -202,14 +210,37 @@ function collect(ctx: EvidenceCollectionContext): DeployableEvidence[] {
     if (node.type === 'compose_service') {
       const metadata = (node.metadata || {}) as Record<string, any>;
       const file = node.source?.file || '';
+
+      // A compose service with no `build:` context ships someone else's
+      // pre-built image (redis, rabbitmq, postgres, nginx:alpine, ...) — it
+      // is a DEPENDENCY this workspace runs against, not a ship/run artifact
+      // OF this workspace (see SPEC-DEPLOYABLE-DETECTION.md §2: "a deployable
+      // is an independent SHIP/RUN artifact"). container-topology-analyzer.ts
+      // already records these as external-service exit points; emitting a
+      // Tier-1 DeployableEvidence for every image-only service over-splits
+      // the deployable count (e.g. a 6-node Redis cluster becoming 6+
+      // "deployables" of the repo that merely runs a Redis client against
+      // it). Only services this repo actually BUILDS are ship declarations.
+      if (!metadata.build) continue;
+
       const evidence: string[] = [`compose service: ${metadata.deployment_service_name || node.name} (${file})`];
       if (metadata.image) evidence.push(`image: ${metadata.image}`);
-      if (metadata.build) evidence.push(`build: ${metadata.build}`);
+      evidence.push(`build: ${metadata.build}`);
       const ports: Array<{ host?: string; container: string }> = Array.isArray(metadata.ports) ? metadata.ports : [];
       if (ports.length) evidence.push(`ports: ${ports.map(formatPort).join(', ')}`);
 
+      // A compose `build: context` path is relative to the COMPOSE FILE's
+      // directory, not the project root — `context: .` in
+      // truckspyapp/compose.yml means "truckspyapp/", not the repo root.
+      // Resolving it against path.dirname(file) keeps two same-named build
+      // contexts in different compose files (or a nested-app compose file)
+      // from colliding on the same evidence root_path.
+      const composeDir = path.dirname(file) || '.';
+      const buildContext = String(metadata.build);
+      const rootPath = path.normalize(path.join(composeDir === '.' ? '' : composeDir, buildContext)) || '.';
+
       out.push({
-        root_path: metadata.build ? String(metadata.build) : path.dirname(file) || '.',
+        root_path: rootPath,
         name: String(metadata.deployment_service_name || node.name),
         tier: 1,
         kind: 'compose-service',
@@ -220,12 +251,50 @@ function collect(ctx: EvidenceCollectionContext): DeployableEvidence[] {
 
     if (typeof node.type === 'string' && node.type.startsWith('kubernetes_')) {
       const metadata = (node.metadata || {}) as Record<string, any>;
+      const attributes = (metadata.attributes || {}) as Record<string, any>;
       const file = node.source?.file || '';
-      const evidence: string[] = [`kubernetes ${metadata.kubernetes_kind || node.type}: ${metadata.deployment_service_name || node.name} (${file})`];
+      const kind = String(metadata.kubernetes_kind || attributes.kubernetes_kind || '');
+
+      // A Helm chart already contributes exactly ONE Tier-1 ship declaration
+      // for the whole chart (deploy-manifests.ts's collectHelm, keyed on
+      // Chart.yaml + templates/). Every individual rendered resource inside
+      // that chart's templates/ (Deployment, Service, ServiceAccount,
+      // Ingress, ...) is a NODE emitted by HelmAnalyzer for graph detail, not
+      // a second independent ship unit — counting them here on top of the
+      // chart-level evidence is what over-splits one Helm-deployed app into
+      // N+1 "deployables". Skip Helm-origin kubernetes_* nodes entirely.
+      const isHelmOrigin = metadata.language === 'Helm' || attributes.topology_surface === 'helm';
+      if (isHelmOrigin) continue;
+
+      // Among PLAIN (non-Helm) k8s manifest resources, only WORKLOAD kinds
+      // are ship/run declarations. Service/ServiceAccount/Ingress/ConfigMap/
+      // Secret/HorizontalPodAutoscaler are wiring, identity, and routing
+      // resources attached to a workload — evidence for that workload's
+      // boundary, never independent ship units of their own (see
+      // SPEC-DEPLOYABLE-DETECTION.md doctrine: "a deployable is an
+      // independent SHIP/RUN artifact").
+      if (!WORKLOAD_KUBERNETES_KINDS.has(kind)) continue;
+
+      const evidence: string[] = [`kubernetes ${kind || node.type}: ${metadata.deployment_service_name || node.name} (${file})`];
       const images: string[] = arrayOf(metadata.images);
       if (images.length) evidence.push(`images: ${images.join(', ')}`);
       const ports: string[] = arrayOf(metadata.ports);
       if (ports.length) evidence.push(`ports: ${ports.join(', ')}`);
+
+      // Roll sibling wiring/identity/routing resources declared in the SAME
+      // manifest file into this workload's evidence trail (citations, not
+      // separate ship units) — Service/Ingress/ServiceAccount are evidence
+      // FOR this boundary per the doctrine above.
+      const siblingCitations = nodes
+        .filter(sibling =>
+          sibling !== node &&
+          typeof sibling.type === 'string' &&
+          sibling.type.startsWith('kubernetes_') &&
+          (sibling.source?.file || '') === file &&
+          !WORKLOAD_KUBERNETES_KINDS.has(String((sibling.metadata as any)?.kubernetes_kind || (sibling.metadata as any)?.attributes?.kubernetes_kind || '')),
+        )
+        .map(sibling => `${(sibling.metadata as any)?.kubernetes_kind || sibling.type}: ${(sibling.metadata as any)?.deployment_service_name || sibling.name}`);
+      if (siblingCitations.length) evidence.push(`attached resources: ${siblingCitations.join(', ')}`);
 
       out.push({
         root_path: path.dirname(file) || '.',
