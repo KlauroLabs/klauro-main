@@ -2,6 +2,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import type { CASEntryPoint, CASExitPoint, CASNode, CASOutput, CASTemporalStability } from '../../../packages/analyzer-core/src/types/cas.types';
 import { aiService } from '../../../packages/analyzer-core/src/ai/ai-service';
+import { recordSemanticDecision } from '../../../packages/analyzer-core/src/ai/semantic-dataset';
 import { ungroundedMarketingMatches } from '../../../packages/analyzer-core/src/ai/element-description-validator';
 import { describeConfiguredAIProvider } from '../../../packages/analyzer-core/src/config/ai.config';
 import {
@@ -1171,6 +1172,27 @@ export async function enrichWorkspaceAnalysisNarrative(graph: WorkspaceAnalysisG
           generated_at: now,
           degraded_reason: `Workspace AI enrichment was rejected by the WAS quality gate: ${narrativeGate.reason}`,
         };
+    // E1 (observational): the workspace narrative gate decision. Compact digest
+    // only — codebase/capability/domain counts, never source or secrets.
+    recordSemanticDecision({
+      ts: Date.now(),
+      decision_type: 'workspace_narrative',
+      prompt_version: 'workspace_narrative.v1',
+      provider: graph.ai_enrichment.provider,
+      model: graph.ai_enrichment.model,
+      input_evidence_digest: {
+        codebases: graph.codebases.length,
+        workspace_capabilities: graph.workspace_capabilities.length,
+        workspace_domains: graph.workspace_domains.length,
+        merged_core_capabilities: mergedCoreNames.length,
+      },
+      raw_output_excerpt: narrativeDescription,
+      parse_ok: true,
+      gate_verdict: narrativeGate.accepted ? 'accepted' : 'degraded',
+      gate_reason: narrativeGate.accepted ? undefined : narrativeGate.reason,
+      confidence: graph.workspace_narrative.confidence,
+      final_outcome: narrativeGate.accepted ? 'ai' : 'degraded',
+    });
     graph.workspace_domains = invalidateDuplicateWorkspaceDomainDescriptions(applyAiDomainDescriptions(graph.workspace_domains, parsed.domain_items || [], now));
     graph.workspace_capabilities = applyAiCapabilityDescriptions(graph.workspace_capabilities, parsed.capability_items || [], now);
     graph.workspace_capabilities = invalidateDuplicateWorkspaceCapabilityDescriptions(graph.workspace_capabilities);
@@ -1205,6 +1227,32 @@ export async function enrichWorkspaceAnalysisNarrative(graph: WorkspaceAnalysisG
       if (!stillMissingDefaultDescriptions) break;
     }
     finalizeRequiredWorkspaceAiSemantics(graph, now);
+    // E1 (observational): per-item (domain/capability) description gate outcomes,
+    // summarized by ai/degraded counts. Compact — no descriptions persisted.
+    {
+      const aiCount = (items: Array<{ description_source?: string }>) => items.filter(item => item.description_source === 'ai').length;
+      const domainsAi = aiCount(graph.workspace_domains);
+      const capsAi = aiCount(graph.workspace_capabilities);
+      const totalItems = graph.workspace_domains.length + graph.workspace_capabilities.length;
+      const totalAi = domainsAi + capsAi;
+      recordSemanticDecision({
+        ts: Date.now(),
+        decision_type: 'workspace_item_descriptions',
+        prompt_version: 'workspace_item_descriptions.v1',
+        provider: graph.ai_enrichment.provider,
+        model: graph.ai_enrichment.model,
+        input_evidence_digest: {
+          domains: graph.workspace_domains.length,
+          capabilities: graph.workspace_capabilities.length,
+          domains_ai: domainsAi,
+          capabilities_ai: capsAi,
+        },
+        parse_ok: true,
+        gate_verdict: totalItems > 0 && totalAi === totalItems ? 'accepted' : totalAi > 0 ? 'degraded' : 'rejected',
+        gate_reason: totalAi < totalItems ? `${totalItems - totalAi}-items-not-ai-sourced` : undefined,
+        final_outcome: totalAi > 0 ? 'ai' : 'degraded',
+      });
+    }
     await enforceWorkspaceNarrativeProductValueSummary(graph);
     // FINAL persist seam: finalize/sync can copy a counterpart's text without
     // re-guarding, so strip once more after all comprehension writes complete.

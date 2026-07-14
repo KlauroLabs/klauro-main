@@ -5,6 +5,7 @@ import { FallbackProvider } from './providers/fallback-provider';
 import { AICache } from './ai-cache';
 import { ComponentNode, ArchitectureBlueprint, RiskArea } from '../types';
 import { prompts } from './ai-prompts';
+import { recordSemanticDecision } from './semantic-dataset';
 import * as winston from 'winston';
 
 export interface AIProvider {
@@ -311,14 +312,56 @@ export class AIService {
           throw new Error('provider returned empty content');
         }
         this.updateUsageStats(entry.name, true, Date.now() - startTime);
+        recordSemanticDecision({
+          ts: Date.now(),
+          decision_type: 'ai_provider_attempt',
+          provider: entry.name,
+          model: perProviderContext.additionalContext?.model as string | undefined,
+          input_evidence_digest: {
+            context_keys: Object.keys(context.additionalContext || {}).length,
+            wants_structured: wantsStructured,
+          },
+          raw_output_excerpt: description,
+          parse_ok: true,
+          gate_verdict: 'accepted',
+          final_outcome: 'ai',
+        });
         return description;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         this.logger.warn(`Chain provider ${entry.name} failed (${message}); trying next`);
         this.updateUsageStats(entry.name, false, Date.now() - startTime);
         errors.push(`${entry.name}: ${message}`);
+        recordSemanticDecision({
+          ts: Date.now(),
+          decision_type: 'ai_provider_attempt',
+          provider: entry.name,
+          input_evidence_digest: {
+            context_keys: Object.keys(context.additionalContext || {}).length,
+            wants_structured: wantsStructured,
+          },
+          parse_ok: false,
+          gate_verdict: 'rejected',
+          gate_reason: message,
+          // A single provider failure falls through to the next — degraded, not
+          // terminal. The aggregate throw below records the terminal 'error'.
+          final_outcome: 'degraded',
+        });
       }
     }
+    recordSemanticDecision({
+      ts: Date.now(),
+      decision_type: 'ai_provider_attempt',
+      input_evidence_digest: {
+        context_keys: Object.keys(context.additionalContext || {}).length,
+        wants_structured: wantsStructured,
+        providers_tried: this.providerChain.length,
+      },
+      parse_ok: false,
+      gate_verdict: 'rejected',
+      gate_reason: errors.join(' | '),
+      final_outcome: 'error',
+    });
     throw new Error(`All AI providers in the chain failed: ${errors.join(' | ')}`);
   }
 

@@ -118,6 +118,7 @@ import { AnalysisRunLog } from './run-log';
 import { withAnalyzerFileReadCache, getDebugCacheStats } from './analyzer-file-read-cache';
 import { EmbeddingPhase, type EmbeddingPhaseConfig } from '../embedding/embedding-phase';
 import { aiService } from '../../ai/ai-service';
+import { recordSemanticDecision } from '../../ai/semantic-dataset';
 import { setAICacheProjectScope } from '../../ai/ai-cache';
 import { aiConfig, getAIConfig } from '../../config/ai.config';
 import { validateElementDescription as validateSharedElementDescription } from '../../ai/element-description-validator';
@@ -8737,7 +8738,29 @@ export class AnalyzerOrchestrator {
     if (process.env.KLAURO_DEBUG_CATALOG) {
       console.error('[catalog-debug] raw.length=', (raw || '').length, 'parsed=', catalog.length, 'rawHead=', JSON.stringify(String(raw || '').slice(0, 300)));
     }
-    if (!catalog.length) return [];
+    // E1 (observational): compact evidence digest for the capability catalog decision.
+    const catalogEvidenceDigest = {
+      systemName: input.systemName,
+      journeys: journeys.length,
+      entities: entities.length,
+      candidateAreas: candidateAreas.length,
+      services: services.length,
+      hasTopDown,
+    };
+    if (!catalog.length) {
+      recordSemanticDecision({
+        ts: Date.now(),
+        decision_type: 'capability_catalog',
+        prompt_version: 'capability_catalog.v1',
+        input_evidence_digest: catalogEvidenceDigest,
+        raw_output_excerpt: raw,
+        parse_ok: false,
+        gate_verdict: 'degraded',
+        gate_reason: 'empty-or-unparseable-catalog',
+        final_outcome: 'degraded',
+      });
+      return [];
+    }
 
     const entityIdByName = new Map(input.dataEntities.map(entity => [entity.name.toLowerCase(), entity.id]));
     const entityNameById = new Map(input.dataEntities.map(entity => [entity.id, entity.name]));
@@ -8820,6 +8843,17 @@ export class AnalyzerOrchestrator {
         criticality_factors: ['ai-extracted-from-journeys-and-entities'],
       });
     }
+    recordSemanticDecision({
+      ts: Date.now(),
+      decision_type: 'capability_catalog',
+      prompt_version: 'capability_catalog.v1',
+      input_evidence_digest: { ...catalogEvidenceDigest, parsed: catalog.length, kept: out.length },
+      raw_output_excerpt: raw,
+      parse_ok: true,
+      gate_verdict: out.length > 0 ? 'accepted' : 'degraded',
+      gate_reason: out.length === 0 ? 'all-candidates-dropped-as-ungrounded' : undefined,
+      final_outcome: out.length > 0 ? 'ai' : 'degraded',
+    });
     return out.slice(0, 16);
   }
 
@@ -9095,6 +9129,21 @@ export class AnalyzerOrchestrator {
       : [];
 
     const aiStartedAt = Date.now();
+    // E1 (observational): compact evidence digest for the semantic dataset. Sizes/
+    // counts/key names only — NO source, NO secrets. See docs/SEMANTIC-MODEL.md.
+    const semanticEvidenceDigest = {
+      systemName,
+      frameworks: frameworks.length,
+      libraries: libraryNames.length,
+      databaseEntities: databaseEntities.length,
+      externalServices: externalServices.length,
+      dataEntities: dataEntities.length,
+      systemCapabilities: systemCapabilities.length,
+      userJourneys: userJourneys.length,
+      capabilityTargets: capabilityTargets.length,
+      unanalyzedLanguages: unanalyzedLanguages.length,
+      hasProjectText: Boolean(projectTextSignal.manifestDescription || projectTextSignal.summary),
+    };
     let timeoutHandle: NodeJS.Timeout | undefined;
     let raw: string;
     try {
@@ -9123,6 +9172,16 @@ export class AnalyzerOrchestrator {
       if (timeoutHandle) clearTimeout(timeoutHandle);
       const message = error instanceof Error ? error.message : String(error);
       this.recordDescriptionGeneration(enhancedSystemPurpose, 'ai', 'ai_failed', true, message, budgetMs);
+      recordSemanticDecision({
+        ts: Date.now(),
+        decision_type: 'system_description',
+        prompt_version: 'system_description.v1',
+        input_evidence_digest: semanticEvidenceDigest,
+        parse_ok: false,
+        gate_verdict: 'rejected',
+        gate_reason: message,
+        final_outcome: 'error',
+      });
       throw new Error(`Klauro comprehension failed (AI provider): ${message}. Comprehension is AI-only; there is no deterministic fallback.`);
     }
     if (timeoutHandle) clearTimeout(timeoutHandle);
@@ -9253,11 +9312,34 @@ export class AnalyzerOrchestrator {
     // substitute — if it still fails the grounding gate after repair, throw.
     if (!validation.ok) {
       this.recordDescriptionGeneration(enhancedSystemPurpose, 'ai', 'ai_rejected', true, validation.reason || 'generated-description-failed-quality-gate', budgetMs);
+      recordSemanticDecision({
+        ts: Date.now(),
+        decision_type: 'system_description',
+        prompt_version: 'system_description.v1',
+        input_evidence_digest: semanticEvidenceDigest,
+        raw_output_excerpt: cleaned,
+        parse_ok: true,
+        gate_verdict: 'rejected',
+        gate_reason: validation.reason || 'generated-description-failed-quality-gate',
+        final_outcome: 'error',
+      });
       throw new Error(`Klauro comprehension produced an ungrounded system description that failed the grounding gate (${validation.reason || 'unknown-rejection'}). Comprehension is AI-only; there is no deterministic fallback.`);
     }
 
     enhancedSystemPurpose.inferred_description = cleaned;
     this.recordDescriptionGeneration(enhancedSystemPurpose, 'ai', 'ai_applied', true, undefined, budgetMs);
+    recordSemanticDecision({
+      ts: Date.now(),
+      decision_type: 'system_description',
+      prompt_version: 'system_description.v1',
+      input_evidence_digest: semanticEvidenceDigest,
+      raw_output_excerpt: cleaned,
+      parse_ok: true,
+      gate_verdict: 'accepted',
+      gate_reason: rejectedElements.size > 0 ? `elements-rejected:${rejectedElements.size}` : undefined,
+      mechanical_corrections: cleaned.trim() !== (combined.systemDescription || '').trim() ? ['sanitize/trim'] : [],
+      final_outcome: 'ai',
+    });
 
     // Apply the AI domain label directly, grounded in the evidence bundle. The
     // model infers the domain from real dependencies/integrations; we normalize
