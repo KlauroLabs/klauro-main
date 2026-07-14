@@ -130,6 +130,7 @@ import {
   SqlxAnalyzer,
   EntAnalyzer,
   DapperAnalyzer,
+  DoctrineAnalyzer,
 } from '../../../packages/analyzer-core/src/analyzer/libraries/orm';
 import { ProtobufAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/protobuf-analyzer';
 import { SoapWsdlAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/soap-wsdl-analyzer';
@@ -669,6 +670,7 @@ export function createOrchestrator(): AnalyzerOrchestrator {
     { id: 'sqlx', name: 'sqlx Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['sqlx'], files: ['Cargo.toml'] }, requires: ['rust'], analyzer: new SqlxAnalyzer() },
     { id: 'ent', name: 'ent Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['entgo.io/ent'], files: ['go.mod'] }, requires: ['go'], analyzer: new EntAnalyzer() },
     { id: 'dapper', name: 'Dapper Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['Dapper'] }, requires: ['csharp'], analyzer: new DapperAnalyzer() },
+    { id: 'doctrine', name: 'Doctrine ORM Analyzer', type: 'library', version: '1.0.0', detectPatterns: { files: ['composer.json'], dependencies: ['doctrine/orm', 'doctrine/doctrine-bundle', 'doctrine/persistence', 'doctrine/annotations'], content: [/ORM\\Entity\b/, /@ORM\\Entity\b/] }, requires: ['php'], analyzer: new DoctrineAnalyzer() },
     { id: 'ai-stack', name: 'AI/LLM Stack Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['langchain', '@langchain/core', 'llamaindex', 'ai', '@ai-sdk/openai', 'openai', '@anthropic-ai/sdk', '@modelcontextprotocol/sdk', 'langgraph', 'crewai', '@pinecone-database/pinecone', 'weaviate-ts-client', 'chromadb', 'qdrant'] }, requires: ['typescript-javascript'], analyzer: new AIStackAnalyzer() },
     { id: 'workflow', name: 'Workflow/Queue Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['@temporalio/client', '@temporalio/worker', 'celery', 'sidekiq', 'bullmq', 'bull', 'kafkajs', 'amqplib', 'nats', 'kafka-python', 'confluent-kafka', 'kafka-go', 'nats.go', 'rdkafka', 'async-nats', 'spring-kafka', 'Confluent.Kafka'] }, requires: ['typescript-javascript'], analyzer: new WorkflowAnalyzer() },
     { id: 'async-messaging', name: 'Async Messaging Analyzer', type: 'library', version: '1.0.0', detectPatterns: { dependencies: ['kafkajs', 'node-rdkafka', 'amqplib', 'amqp-connection-manager', '@nestjs/microservices', 'nats', 'ioredis', 'redis', 'bullmq', 'bee-queue', '@aws-sdk/client-sqs', '@aws-sdk/client-sns', 'confluent-kafka', 'kafka-python', 'pika', 'celery', 'spring-kafka', 'spring-rabbit', 'sidekiq', 'github.com/segmentio/kafka-go', 'github.com/nats-io/nats.go'], content: [/producer\.send\s*\(\s*\{[\s\S]{0,200}?topic\s*:/, /\.sendToQueue\s*\(/, /\.publish\s*\(\s*['"`][^'"`]+['"`]/, /@KafkaListener|@RabbitListener/, /@MessagePattern|@EventPattern/, /Sidekiq::Worker/] }, analyzer: new MessagingAnalyzer() },

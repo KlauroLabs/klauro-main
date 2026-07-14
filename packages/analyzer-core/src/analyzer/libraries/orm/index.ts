@@ -11,3 +11,4 @@ export { GormAnalyzer } from './gorm-analyzer';
 export { SqlxAnalyzer } from './sqlx-analyzer';
 export { EntAnalyzer } from './ent-analyzer';
 export { DapperAnalyzer } from './dapper-analyzer';
+export { DoctrineAnalyzer } from './doctrine-analyzer';
