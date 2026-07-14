@@ -890,7 +890,7 @@ export class PHPAnalyzer extends BaseAnalyzer {
     fileComments: CASComment[],
     nodes: CASNode[],
     edges: CASEdge[],
-    _entryPoints: any[]
+    entryPoints: any[]
   ): Promise<void> {
     const classId = `class_${this.sanitizeId(cls.namespace)}_${this.sanitizeId(cls.name)}`;
     const classComments = fileComments.filter(c =>
@@ -934,6 +934,45 @@ export class PHPAnalyzer extends BaseAnalyzer {
       classId,
       'contains'
     ));
+
+    // Symfony console command entry point — evidence: the class extends a
+    // `Command` type (any namespace ending in \Command, or bare `Command`)
+    // AND the class body carries at least one console-specific marker
+    // (#[AsCommand], $defaultName, or a configure()-time ->setName() call).
+    // A bare `...Command` class with none of those markers is NOT claimed as
+    // a console entry point (no fabrication — could be an unrelated DTO/value
+    // object named "...Command", e.g. a CQRS command bus message).
+    const extendsCommandClass = !!cls.extendsClass && /(^|\\)Command$/.test(cls.extendsClass);
+    if (extendsCommandClass) {
+      // PHP 8 attributes (`#[AsCommand(...)]`) sit on the line(s) directly
+      // ABOVE the class declaration, not inside cls.lineStart..lineEnd — a
+      // few lines of lookback catches the attribute (and any docblock above
+      // it) without pulling in the previous class/function's body.
+      const attributeLookback = Math.max(1, cls.lineStart - 5);
+      const classBody = lines.slice(attributeLookback - 1, cls.lineEnd);
+      const commandName = this.extractPhpConsoleCommandName(classBody);
+      if (commandName !== undefined) {
+        const entryId = `entry_cli_${classId}`;
+        entryPoints.push(this.createEntryPoint(
+          entryId,
+          classId,
+          'cli',
+          commandName || `Console command: ${cls.name}`,
+          commandName
+            ? `Symfony console command "${commandName}" (${cls.name}).`
+            : `Symfony console command class ${cls.name} (no static command-name evidence found).`,
+          { pattern: commandName || undefined },
+          undefined,
+          {
+            framework: 'symfony',
+            kind: 'command',
+            file: fullPath,
+            commandName: commandName || undefined,
+            className: cls.name
+          }
+        ));
+      }
+    }
 
     for (const property of cls.properties) {
       const propertyId = `property_${classId}_${this.sanitizeId(property.name)}`;
@@ -1005,7 +1044,8 @@ export class PHPAnalyzer extends BaseAnalyzer {
         })
         .withSignature({
           parameters: method.parameters,
-          return_type: method.returnType
+          return_type: method.returnType,
+          throws: this.buildPhpSignatureThrows(methodBody, methodDocs)
         })
         .withParent(classId)
         .withDocumentation(methodDocs)
@@ -1124,7 +1164,8 @@ export class PHPAnalyzer extends BaseAnalyzer {
         })
         .withSignature({
           parameters: method.parameters,
-          return_type: method.returnType
+          return_type: method.returnType,
+          throws: this.buildPhpSignatureThrows([], methodDocs)
         })
         .withParent(interfaceId)
         .withDocumentation(methodDocs)
@@ -1286,7 +1327,8 @@ export class PHPAnalyzer extends BaseAnalyzer {
         })
         .withSignature({
           parameters: method.parameters,
-          return_type: method.returnType
+          return_type: method.returnType,
+          throws: this.buildPhpSignatureThrows(methodBody, methodDocs)
         })
         .withParent(traitId)
         .withDocumentation(methodDocs)
@@ -1413,7 +1455,8 @@ export class PHPAnalyzer extends BaseAnalyzer {
         })
         .withSignature({
           parameters: method.parameters,
-          return_type: method.returnType
+          return_type: method.returnType,
+          throws: this.buildPhpSignatureThrows(methodBody, methodDocs)
         })
         .withParent(enumId)
         .withDocumentation(methodDocs)
@@ -1466,7 +1509,8 @@ export class PHPAnalyzer extends BaseAnalyzer {
       })
       .withSignature({
         parameters: func.parameters,
-        return_type: func.returnType
+        return_type: func.returnType,
+        throws: this.buildPhpSignatureThrows(funcBody, funcDocs)
       })
       .withDocumentation(funcDocs)
       .withComments(funcComments.length > 0 ? funcComments : undefined)
@@ -3007,7 +3051,8 @@ export class PHPAnalyzer extends BaseAnalyzer {
                   line: call.line,
                   callType: call.class ? 'static' : call.method ? 'method' : 'function',
                   targetClass: call.class,
-                  targetMethod: call.method || call.function
+                  targetMethod: call.method || call.function,
+                  ...(call.isConditional ? { conditional: true, is_conditional: true } : {})
                 }
               ));
           } else if (this.isExternalLibraryCall(call.class || call.function || '', call.method || '', currentNamespace)) {
@@ -3266,6 +3311,7 @@ export class PHPAnalyzer extends BaseAnalyzer {
 
       const lines = content.split('\n');
       const currentNamespace = this.extractNamespace(content) || 'global';
+      const conditionalLines = this.computePhpConditionalLines(lines);
       const callerForLine = (line: number) => methodsInFile.find(n =>
         n.source?.line !== undefined && n.source.line <= line &&
         n.source?.end_line !== undefined && n.source.end_line >= line
@@ -3321,7 +3367,8 @@ export class PHPAnalyzer extends BaseAnalyzer {
                     objectOrClass === 'self' || objectOrClass === 'static' ? 'static' :
                       objectOrClass === '$this' ? 'internal' :
                         methodName ? 'method' : 'function',
-                resolution: match.kind
+                resolution: match.kind,
+                ...(conditionalLines[i] ? { conditional: true, is_conditional: true } : {})
               }
             ));
           } else if (this.isExternalLibraryCall(objectOrClass, methodName || objectOrClass, currentNamespace)) {
@@ -3361,6 +3408,7 @@ export class PHPAnalyzer extends BaseAnalyzer {
     const content = await this.readFileCached(fullPath);
     const lines = content.split('\n');
     const currentNamespace = this.extractNamespace(content) || 'global';
+    const conditionalLines = this.computePhpConditionalLines(lines);
     const edgeIds = new Set(edges.map(edge => edge.id));
     const exitIds = new Set(exitPoints.map(exit => exit.id));
     const classIds = new Set(classNodes.map(node => node.id));
@@ -3469,7 +3517,8 @@ export class PHPAnalyzer extends BaseAnalyzer {
                              objectOrClass === 'self' || objectOrClass === 'static' ? 'static' :
                              objectOrClass === '$this' ? 'internal' :
                              methodName ? 'method' : 'function',
-                    resolution: match.kind
+                    resolution: match.kind,
+                    ...(conditionalLines[i] ? { conditional: true, is_conditional: true } : {})
                   }
                 ));
             } else if (this.isExternalLibraryCall(objectOrClass, methodName || objectOrClass, currentNamespace)) {
@@ -3899,6 +3948,102 @@ export class PHPAnalyzer extends BaseAnalyzer {
     return 'general';
   }
 
+  /**
+   * `signature.throws` evidence for a PHP method/function — the fact
+   * extractErrorConstraints (flow-concepts.ts) reads to derive C1's 'error'
+   * step-graph edges. Two evidence sources, merged and deduped:
+   *   1. `throw new <Class>(...)` statements found in the method body.
+   *   2. `@throws <Type>` docblock tags (already parsed into
+   *      documentation.exceptions[].type by extractDocumentationFromPhpDoc).
+   * Mirrors the TS analyzer's buildSignatureThrows merge contract. Returns
+   * undefined (not an empty array) when neither source yields a type — no
+   * fabrication for methods that never throw.
+   */
+  private buildPhpSignatureThrows(bodyLines: string[], docs?: CASDocumentation): string[] | undefined {
+    const types = new Set<string>();
+    for (const line of bodyLines) {
+      for (const m of line.matchAll(/throw\s+new\s+\\?([\w\\]+)\s*\(/g)) {
+        types.add(m[1]);
+      }
+    }
+    for (const exc of docs?.exceptions || []) {
+      if (exc?.type) types.add(exc.type.replace(/^\\/, ''));
+    }
+    return types.size > 0 ? Array.from(types) : undefined;
+  }
+
+  /**
+   * Line-scan classifier for PHP branch/conditional evidence — a call site
+   * whose line sits inside an if/elseif/else/switch/match block, or contains
+   * an inline ternary that resolves on the same line, is the deterministic
+   * ground for a 'branch' step-graph edge (flow-concepts.ts
+   * buildConditionalOutIndex, which reads edge.metadata.conditional).
+   * A brace-depth stack tracks nested conditional blocks across lines;
+   * string-literal contents are blanked first so quoted braces/`?`/`:` never
+   * perturb the depth count. Facts only — a call outside any of these blocks
+   * gets no conditional evidence.
+   */
+  private computePhpConditionalLines(lines: string[]): boolean[] {
+    const conditional: boolean[] = new Array(lines.length).fill(false);
+    const stack: boolean[] = [];
+    let pendingConditional = false;
+    // Matches an if/elseif/else/switch/match construct opening a block —
+    // covers `} elseif (...) {`, `} else {`, `switch (...) {`, `match (...) {`.
+    const openerRe = /(?:^|[{};])\s*\}?\s*(elseif|else\s+if|if|else|switch|match)\s*[\(\{:]/;
+    for (let i = 0; i < lines.length; i++) {
+      // Blank out string-literal contents so quoted `{`, `}`, `?`, `:` never
+      // perturb the depth/ternary scan (best-effort: no multi-line strings).
+      const stripped = lines[i].replace(/'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*"/g, m => ' '.repeat(m.length));
+
+      if (openerRe.test(stripped)) pendingConditional = true;
+
+      // Inline ternary `cond ? a : b` resolved entirely on one line — exclude
+      // the null-coalescing `??` operator and PHP8 nullsafe `?->`.
+      const ternaryBody = stripped.replace(/\?\?/g, '  ').replace(/\?->/g, '   ');
+      if (/\?(?!:)[^?:{}]*:(?!:)/.test(ternaryBody)) conditional[i] = true;
+
+      for (const ch of stripped) {
+        if (ch === '{') {
+          stack.push(pendingConditional);
+          pendingConditional = false;
+        } else if (ch === '}') {
+          stack.pop();
+        }
+      }
+      if (stack.some(Boolean)) conditional[i] = true;
+    }
+    return conditional;
+  }
+
+  /**
+   * Symfony console-command-name evidence from a Command subclass body.
+   * Checked in priority order: `#[AsCommand('x')]` / `#[AsCommand(name: 'x')]`
+   * attribute (Symfony's AsCommand takes the name as either the first
+   * positional constructor arg or the named `name:` arg — both real,
+   * measured live in truckspyapp: `#[AsCommand('app:cron')]` outnumbers the
+   * named form there), `protected static $defaultName = 'x'`, `->setName('x')`
+   * inside configure(). Returns undefined when NONE of the three markers are
+   * present (the class is not actually wired as a runnable command — no
+   * fabrication); returns '' when a marker is present but the name literal
+   * could not be parsed (still real evidence the class IS a command).
+   */
+  private extractPhpConsoleCommandName(classBody: string[]): string | undefined {
+    const text = classBody.join('\n');
+    const asCommand = text.match(/#\[\s*AsCommand\s*\(\s*(?:name\s*:\s*)?['"]([^'"]+)['"]/);
+    if (asCommand) return asCommand[1];
+    const defaultName = text.match(/(?:protected|public)\s+static\s+\$defaultName\s*=\s*['"]([^'"]+)['"]/);
+    if (defaultName) return defaultName[1];
+    const setName = text.match(/->setName\s*\(\s*['"]([^'"]+)['"]/);
+    if (setName) return setName[1];
+    // Marker-only evidence: an AsCommand attribute / $defaultName / setName()
+    // call exists but the literal itself couldn't be parsed (e.g. built from
+    // a constant).
+    if (/#\[\s*AsCommand\s*\(/.test(text) || /\$defaultName\s*=/.test(text) || /->setName\s*\(/.test(text)) {
+      return '';
+    }
+    return undefined;
+  }
+
   private extractDocumentationFromPhpDoc(docComment?: string): CASDocumentation | undefined {
     if (!docComment) return undefined;
 
@@ -3943,6 +4088,14 @@ export class PHPAnalyzer extends BaseAnalyzer {
     const exampleMatch = cleanDoc.match(/@example\s*(.*?)(?=@|$)/s);
     if (exampleMatch) {
       docs.examples = [{ code: exampleMatch[1].trim(), language: 'php' }];
+    }
+
+    // Extract @throws tags — evidence for signature.throws (buildPhpSignatureThrows)
+    // and extractErrorConstraints' `throws <ErrorType>` facet rule.
+    const throwsMatches = cleanDoc.matchAll(/@throws\s+([^\s]+)(?:\s+(.*))?/g);
+    for (const match of throwsMatches) {
+      if (!docs.exceptions) docs.exceptions = [];
+      docs.exceptions.push({ type: match[1], description: match[2] });
     }
 
     return docs;

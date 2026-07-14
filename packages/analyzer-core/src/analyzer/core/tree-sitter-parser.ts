@@ -92,6 +92,39 @@ function getFieldText(node: any, fieldName: string): string | undefined {
   return child?.text;
 }
 
+/** PHP tree-sitter node types that make an ancestor a conditional branch
+ *  construct (docs/SEMANTIC-MODEL.md 'branch' step-graph edge ground):
+ *  if/elseif/else bodies+conditions, switch/case, match arms, and inline
+ *  ternary. Verified against tree-sitter-php's node-types.json. */
+const PHP_CONDITIONAL_NODE_TYPES = new Set([
+  'if_statement',
+  'else_clause',
+  'else_if_clause',
+  'switch_statement',
+  'case_statement',
+  'match_expression',
+  'match_conditional_expression',
+  'match_default_expression',
+  'conditional_expression'
+]);
+
+/** True when `node` (a call expression) has a conditional-construct ancestor
+ *  within its own enclosing function/method — evidence-first ground for the
+ *  `isConditional` flag on a PHP call. Stops at the enclosing function
+ *  boundary so a call is never attributed to an outer function's branch. */
+function isPhpCallConditional(node: any): boolean {
+  let cur = node.parent;
+  while (cur) {
+    if (PHP_CONDITIONAL_NODE_TYPES.has(cur.type)) return true;
+    if (cur.type === 'function_definition' || cur.type === 'method_declaration' ||
+        cur.type === 'anonymous_function_creation_expression' || cur.type === 'arrow_function') {
+      break;
+    }
+    cur = cur.parent;
+  }
+  return false;
+}
+
 export class TreeSitterParser {
   private parsers: Map<string, any> = new Map();
 
@@ -304,13 +337,14 @@ export class TreeSitterParser {
       ]);
       const callExpressions = collectByTypes(root, callTypes);
 
-      const calls: Array<{ class?: string; method?: string; function?: string; receiver?: string; line: number }> = [];
+      const calls: Array<{ class?: string; method?: string; function?: string; receiver?: string; line: number; isConditional?: boolean }> = [];
 
       for (const expr of callExpressions) {
         const line = expr.startPosition.row + 1;
         const containingClass = classRanges.find(
           c => expr.startPosition.row >= c.startRow && expr.startPosition.row <= c.endRow
         );
+        const isConditional = isPhpCallConditional(expr) || undefined;
 
         if (expr.type === 'function_call_expression') {
           const func = expr.childForFieldName('function');
@@ -318,7 +352,8 @@ export class TreeSitterParser {
             calls.push({
               function: func.text,
               line,
-              class: containingClass?.name
+              class: containingClass?.name,
+              isConditional
             });
           }
         } else if (expr.type === 'member_call_expression') {
@@ -332,7 +367,8 @@ export class TreeSitterParser {
               class: containingClass?.name,
               method: name.text,
               receiver,
-              line
+              line,
+              isConditional
             });
           }
         } else if (expr.type === 'scoped_call_expression') {
@@ -342,7 +378,8 @@ export class TreeSitterParser {
             calls.push({
               class: scope?.text,
               method: name.text,
-              line
+              line,
+              isConditional
             });
           }
         }

@@ -872,9 +872,18 @@ export class HelmAnalyzer extends IacAnalyzer {
     }
     const chartBaseName = fullnameOverride || nameOverride || chartName;
 
+    let valuesContentForCronJobs: string | undefined;
+    if (await fs.pathExists(path.join(projectPath, valuesFile))) {
+      try {
+        valuesContentForCronJobs = await fs.readFile(path.join(projectPath, valuesFile), 'utf8');
+      } catch {
+        valuesContentForCronJobs = undefined;
+      }
+    }
+
     const templateFiles = await this.readFiles(projectPath, [`${chartRoot}/templates/**/*.yaml`, `${chartRoot}/templates/**/*.yml`]);
     for (const templateFile of templateFiles) {
-      const templateResult = await this.analyzeTemplateFile(projectPath, templateFile, chartName, chartBaseName);
+      const templateResult = await this.analyzeTemplateFile(projectPath, templateFile, chartName, chartBaseName, valuesContentForCronJobs);
       for (const node of templateResult.nodes) {
         nodes.push(node);
         edges.push({
@@ -903,7 +912,7 @@ export class HelmAnalyzer extends IacAnalyzer {
     ));
   }
 
-  private async analyzeTemplateFile(projectPath: string, templateFile: string, chartName: string, chartBaseName: string = chartName) {
+  private async analyzeTemplateFile(projectPath: string, templateFile: string, chartName: string, chartBaseName: string = chartName, valuesContent?: string) {
     const content = await fs.readFile(path.join(projectPath, templateFile), 'utf8');
     const resources = this.extractTemplateResources(content);
     const nodes: CASNode[] = [];
@@ -911,7 +920,64 @@ export class HelmAnalyzer extends IacAnalyzer {
     const entryPoints: CASEntryPoint[] = [];
     const exitPoints: CASExitPoint[] = [];
 
+    // Helm CronJob-via-values evidence (see findHelmCronJobsValuesKey): when
+    // this template ranges over a `.Values.<key>` list to emit CronJob docs,
+    // resolve the real per-job schedule/command from values.yaml instead of
+    // the single ambiguous templated resource extractTemplateResources sees.
+    const cronJobsValuesKey = findHelmCronJobsValuesKey(content);
+    const helmValuesCronJobs = cronJobsValuesKey && valuesContent
+      ? parseHelmValuesListJobs(valuesContent, cronJobsValuesKey)
+      : [];
+
     for (const resource of resources) {
+      if (resource.kind === 'CronJob' && helmValuesCronJobs.length > 0) {
+        // Emit ONE node per values.yaml job entry (real, distinct identities)
+        // instead of a single node for the templated resource — the source
+        // template only appears once in text, but Helm's range renders N
+        // CronJobs, one per values entry.
+        for (const job of helmValuesCronJobs) {
+          const jobLabel = job.name || 'cron-job';
+          const jobNodeId = generateNodeId('helm_template_resource', templateFile, `CronJob:${jobLabel}:${resource.line}`);
+          nodes.push({
+            id: jobNodeId,
+            name: `CronJob: ${jobLabel}-cron-job`,
+            qualified_name: `${templateFile}#CronJob:${jobLabel}`,
+            type: 'kubernetes_cronjob',
+            category: 'infrastructure',
+            level: 3,
+            analyzers: [this.id],
+            primaryAnalyzer: this.id,
+            description: job.schedule
+              ? `Helm template renders a Kubernetes CronJob "${jobLabel}" for chart ${chartName}, scheduled "${job.schedule}".`
+              : `Helm template renders a Kubernetes CronJob "${jobLabel}" for chart ${chartName}.`,
+            source: { file: templateFile, line: resource.line, end_line: resource.line },
+            metadata: {
+              language: 'Helm',
+              attributes: {
+                topology_surface: 'helm',
+                kubernetes_kind: 'CronJob',
+                chart_name: chartName,
+                ports: resource.ports,
+                schedule: job.schedule,
+                command: job.command,
+              },
+            } as any,
+          });
+          exitPoints.push({
+            id: generateNodeId('exit', templateFile, `${jobNodeId}:workload`),
+            source_node: jobNodeId,
+            source_analyzer: this.id,
+            type: 'api',
+            name: `CronJob workload (${chartName}: ${jobLabel})`,
+            description: `CronJob ${jobLabel} runs the ${chartName} workload container image(s).`,
+            target: { service_id: chartName, resource: 'CronJob' },
+            operation: { action: 'run', async: true },
+            connected_nodes: [jobNodeId],
+            metadata: { language: 'Helm', kubernetes_kind: 'CronJob' },
+          });
+        }
+        continue;
+      }
       // Render-or-fallback: an un-rendered `{{ ... }}` Helm template
       // expression is never a usable name (the "hash-shaped-tokens-leak-
       // into-labels" class, Helm variant — see SPEC-DEPLOYABLE-DETECTION.md
@@ -1040,4 +1106,77 @@ function resolveTemplateResourceName(nameExpr: string, kind: string, chartBaseNa
   if (!isUnrenderedTemplateExpression(nameExpr)) return nameExpr;
   const base = chartBaseName.trim() || 'chart';
   return `${base}-${kind.toLowerCase()}`;
+}
+
+interface HelmValuesCronJob {
+  name?: string;
+  schedule?: string;
+  command?: string;
+  enabled: boolean;
+}
+
+/**
+ * Helm's `{{- range $key, $val := .Values.<key> }} ... kind: CronJob ...`
+ * pattern (truckspyapp/infra/backend/templates/cron-jobs.yaml is the live
+ * example) renders schedule/command from a values.yaml LIST, not literal
+ * template text — extractTemplateResources sees the un-rendered `{{ }}`
+ * expressions and can't recover them. This finds the `.Values.<key>` name
+ * the CronJob template ranges over (co-occurring with `kind: CronJob` in the
+ * same file), so the caller can resolve the real per-job schedule/command
+ * from values.yaml instead of a single ambiguous templated node.
+ */
+function findHelmCronJobsValuesKey(templateContent: string): string | undefined {
+  if (!/kind:\s*CronJob/.test(templateContent)) return undefined;
+  const match = templateContent.match(/range\s+\$\w+\s*,\s*\$\w+\s*:=\s*\.Values\.(\w+)/);
+  return match?.[1];
+}
+
+/**
+ * Parses a top-level `values.yaml` list under `key:` into individual job
+ * records — evidence-first: only `name`/`schedule`/`command`/`enabled`
+ * fields actually present as literal scalars are captured (no fabrication
+ * for templated or absent fields). `command` supports the inline-array form
+ * (`command: [ "bin/console", "app:cron" ]`); a block-list form is not
+ * parsed (rare for this key in practice) and simply yields no command for
+ * that entry, which then contributes no scheduling evidence downstream.
+ */
+function parseHelmValuesListJobs(valuesContent: string, key: string): HelmValuesCronJob[] {
+  const lines = valuesContent.split(/\r?\n/);
+  const startIdx = lines.findIndex(line => new RegExp(`^${key}:\\s*(?:#.*)?$`).test(line));
+  if (startIdx === -1) return [];
+
+  const block: string[] = [];
+  for (let i = startIdx + 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.trim() === '' || /^\s*#/.test(line)) continue;
+    if (/^\S/.test(line)) break; // next top-level key
+    block.push(line);
+  }
+
+  const jobs: HelmValuesCronJob[] = [];
+  let current: HelmValuesCronJob | null = null;
+  for (const raw of block) {
+    const itemStart = raw.match(/^\s*-\s*name:\s*(.+?)\s*(?:#.*)?$/);
+    if (itemStart) {
+      if (current) jobs.push(current);
+      current = { name: cleanScalar(itemStart[1]), enabled: true };
+      continue;
+    }
+    if (!current) continue;
+    const scheduleMatch = raw.match(/^\s+schedule:\s*(.+?)\s*(?:#.*)?$/);
+    if (scheduleMatch) current.schedule = cleanScalar(scheduleMatch[1]);
+    const commandMatch = raw.match(/^\s+command:\s*\[(.+?)\]\s*(?:#.*)?$/);
+    if (commandMatch) {
+      current.command = commandMatch[1]
+        .split(',')
+        .map(part => cleanScalar(part))
+        .filter(Boolean)
+        .join(' ');
+    }
+    const enabledMatch = raw.match(/^\s+enabled:\s*(true|false)\s*(?:#.*)?$/);
+    if (enabledMatch) current.enabled = enabledMatch[1] === 'true';
+  }
+  if (current) jobs.push(current);
+
+  return jobs.filter(job => job.enabled !== false);
 }

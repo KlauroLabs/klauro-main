@@ -62,6 +62,10 @@ const METHOD_LIKE_TYPES = /(^|[_\s])(method|function|action)([_\s]|$)/;
 const USER_FACING_ENTRY_TYPES = new Set(['http', 'websocket', 'cli', 'page', 'route']);
 const SCHEDULED_ENTRY_TYPES = new Set(['schedule']);
 const SKIPPED_ENTRY_TYPES = new Set(['test']);
+// Entry types eligible for the k8s CronJob -> command scheduling-evidence
+// link (see buildCronScheduleIndex / findCronSchedule below). Only `cli` —
+// an HTTP/websocket/page entry is never "run by a CronJob".
+const CRON_LINKABLE_ENTRY_TYPES = new Set(['cli']);
 
 // A shell/batch/build-script file rooted at a CLI entry is OPERATIONAL plumbing
 // (deploy / install / release / smoke / build), NOT a user-facing product
@@ -77,6 +81,40 @@ const SKIPPED_ENTRY_TYPES = new Set(['test']);
 const OPERATIONAL_SCRIPT_ENTRY_FILE = /\.(sh|bash|zsh|ps1|bat|cmd)$|(^|\/)(makefile|justfile)$/i;
 function isOperationalScriptEntry(file: string | undefined): boolean {
   return OPERATIONAL_SCRIPT_ENTRY_FILE.test(String(file || ''));
+}
+
+/**
+ * kubernetes_cronjob nodes' `command` + `schedule` evidence, indexed by the
+ * raw container command line — the ground truth for reclassifying a linked
+ * CLI entry point's journey_kind as 'scheduled'. Two producers, two metadata
+ * shapes: container-topology-analyzer.ts (raw K8s manifests) sets flat
+ * `node.metadata.schedule`/`.command`; iac-analyzer.ts (Helm charts) nests
+ * facts under `node.metadata.attributes.*` — both are checked so either
+ * evidence source is honored. Both facts must be present (a CronJob with no
+ * resolvable schedule or command contributes nothing — no fabrication).
+ */
+function buildCronScheduleIndex(nodes: CASNode[]): Map<string, string> {
+  const index = new Map<string, string>();
+  for (const node of nodes) {
+    if (node.type !== 'kubernetes_cronjob') continue;
+    const meta = (node.metadata as any) || {};
+    const schedule = meta.schedule ?? meta.attributes?.schedule;
+    const command = meta.command ?? meta.attributes?.command;
+    if (!schedule || !command || typeof command !== 'string') continue;
+    index.set(command, schedule);
+  }
+  return index;
+}
+
+/** True evidence link: the CronJob's container command LINE contains the
+ *  console command's declared name (e.g. container command
+ *  "bin/console app:cron:process" contains commandName "app:cron:process").
+ *  Returns the CronJob's schedule expression on a match, else undefined. */
+function findCronSchedule(commandName: string, index: Map<string, string>): string | undefined {
+  for (const [commandLine, schedule] of index) {
+    if (commandLine.includes(commandName)) return schedule;
+  }
+  return undefined;
 }
 
 const RISK_ORDER: Record<string, number> = { low: 0, medium: 1, high: 2, critical: 3 };
@@ -215,6 +253,8 @@ export function buildUserJourneys(input: UserJourneyInput, options: UserJourneyO
     riskByNode.set(risk.node_id, risk);
   }
 
+  const cronScheduleIndex = buildCronScheduleIndex(input.nodes);
+
   const entryPointIsHandlerOrSource = (entryPoint: CASEntryPoint, nodeId: string) =>
     entryPoint.source_node === nodeId || entryPoint.handler?.node_id === nodeId;
 
@@ -291,7 +331,19 @@ export function buildUserJourneys(input: UserJourneyInput, options: UserJourneyO
     const entryFile = entryPoint.handler?.file
       || graph.nodesById.get(entryPoint.handler?.node_id || '')?.source?.file
       || graph.nodesById.get(entryPoint.source_node || '')?.source?.file;
-    const journeyKind: CASUserJourney['journey_kind'] = SCHEDULED_ENTRY_TYPES.has(entryPoint.type)
+    // CLI-command -> CronJob evidence: an entry whose console command name
+    // (php-analyzer.ts extractPhpConsoleCommandName / CASEntryPoint.metadata.commandName)
+    // is referenced by a kubernetes_cronjob workload's container command/args
+    // is REALLY scheduled — the schedule lives in the k8s manifest, not the
+    // code. `cron` in the class/file name is corroboration only; this is the
+    // deterministic ground truth. A bare CLI command with no such reference
+    // stays CLI/system (no fabrication from naming alone).
+    const entryCommandName = String((entryPoint.metadata as any)?.commandName || '').trim();
+    const cronSchedule = CRON_LINKABLE_ENTRY_TYPES.has(entryPoint.type) && entryCommandName
+      ? findCronSchedule(entryCommandName, cronScheduleIndex)
+      : undefined;
+
+    const journeyKind: CASUserJourney['journey_kind'] = (SCHEDULED_ENTRY_TYPES.has(entryPoint.type) || cronSchedule)
       ? 'scheduled'
       : (USER_FACING_ENTRY_TYPES.has(entryPoint.type) && !isOperationalScriptEntry(entryFile))
         ? 'user-facing'
@@ -310,7 +362,12 @@ export function buildUserJourneys(input: UserJourneyInput, options: UserJourneyO
           type: entryPoint.type,
           name: entryPoint.name,
           method: entryPoint.trigger?.method,
-          path_or_trigger: entryPoint.trigger?.path || entryPoint.trigger?.pattern || entryPoint.trigger?.event || entryPoint.trigger?.schedule,
+          // cronSchedule (k8s CronJob evidence) wins over the entry's own
+          // trigger.pattern (the bare command name, e.g. "app:cron") — once a
+          // journey is classified 'scheduled' the cron expression is the more
+          // specific, more useful trigger to surface.
+          path_or_trigger: cronSchedule || entryPoint.trigger?.path || entryPoint.trigger?.pattern
+            || entryPoint.trigger?.event || entryPoint.trigger?.schedule,
           handler_node_id: entryPoint.handler?.node_id,
         },
         steps,

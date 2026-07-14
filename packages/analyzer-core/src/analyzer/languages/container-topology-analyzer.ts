@@ -31,6 +31,14 @@ interface KubernetesDocument {
   serviceNames: string[];
   env: Record<string, string>;
   ingressBackends: Array<{ host?: string; path?: string; service: string; port?: string }>;
+  /** CronJob-only: `spec.schedule`, the cron expression — the deterministic
+   *  ground for classifying a linked command entry point as `scheduled`
+   *  (journey-builder.ts CRON_COMMAND_ENTRY_TYPES). */
+  schedule?: string;
+  /** Workload container `command` + `args`, concatenated into one evidence
+   *  string (e.g. `bin/console app:cron:process`) — the deterministic ground
+   *  for linking a CronJob to the console-command entry point it runs. */
+  command?: string;
 }
 
 abstract class ContainerTopologyAnalyzer extends BaseAnalyzer {
@@ -420,6 +428,8 @@ export class KubernetesManifestAnalyzer extends ContainerTopologyAnalyzer {
         environment_keys: Object.keys(document.env),
         env: document.env,
         ingress_backends: document.ingressBackends,
+        schedule: document.schedule,
+        command: document.command,
         subcategories: ['container-topology', 'kubernetes', document.kind.toLowerCase()],
       }));
 
@@ -723,6 +733,11 @@ function parseKubernetesDocuments(content: string): KubernetesDocument[] {
       serviceNames: collectMatches(lines, /^\s*(?:app|app\.kubernetes\.io\/name|service):\s*([A-Za-z0-9_.-]+)/),
       env: collectKubernetesEnv(lines),
       ingressBackends: [],
+      schedule: kind === 'CronJob' ? firstMatch(lines, /^\s*schedule:\s*["']?([^"'#\n]+?)["']?\s*(?:#.*)?$/) : undefined,
+      // command/args are left unextracted on this malformed-YAML fallback
+      // path — a bare `- item` line regex is too ambiguous with ports/env
+      // list entries to trust as command evidence (no fabrication).
+      command: undefined,
     });
     offset += lines.length;
   }
@@ -762,12 +777,27 @@ function parseKubernetesDocumentsFromYaml(content: string): KubernetesDocument[]
         serviceNames: extractServiceNames(kind, name, spec, metadata),
         env: extractContainerEnv(containers),
         ingressBackends: extractIngressBackends(spec),
+        schedule: kind === 'CronJob' ? stringValue(spec.schedule) : undefined,
+        command: extractContainerCommand(containers),
       });
     });
   } catch {
     return [];
   }
   return resources;
+}
+
+/** `command` + `args` of every container, concatenated into one evidence
+ *  string (e.g. `bin/console app:cron:process --env=prod`) — the ground
+ *  truth for linking a workload's container invocation to the console
+ *  command / entry point it runs. Absent when neither is set. */
+function extractContainerCommand(containers: Record<string, any>[]): string | undefined {
+  const parts: string[] = [];
+  for (const container of containers) {
+    if (Array.isArray(container.command)) parts.push(...container.command.map(stringValue).filter((v): v is string => Boolean(v)));
+    if (Array.isArray(container.args)) parts.push(...container.args.map(stringValue).filter((v): v is string => Boolean(v)));
+  }
+  return parts.length > 0 ? parts.join(' ') : undefined;
 }
 
 const SUPPORTED_KUBERNETES_KINDS = new Set([

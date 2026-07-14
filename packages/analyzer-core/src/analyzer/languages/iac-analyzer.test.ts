@@ -290,3 +290,90 @@ test('HelmAnalyzer.analyze resolves unrenderable `{{ include ... }}` names to a 
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// Helm CronJob-via-values evidence (real pattern from
+// truckspyapp/infra/backend/templates/cron-jobs.yaml: a template ranges over
+// `.Values.cronJobs` to emit N CronJob docs whose schedule/command are only
+// literal in values.yaml, never in the rendered template text).
+// ---------------------------------------------------------------------------
+
+test('HelmAnalyzer.analyze resolves per-job schedule/command from a `.Values.cronJobs` range, one node per values entry', async () => {
+  const dir = tempDir('helm-cronjobs-test');
+  try {
+    fs.writeFileSync(path.join(dir, 'Chart.yaml'), 'apiVersion: v2\nname: backend\nversion: 0.1.0\nappVersion: "1.0.0"\n');
+    fs.writeFileSync(path.join(dir, 'values.yaml'), [
+      'cronJobs:',
+      '',
+      '    # Example cron job',
+      '  - name: main-cron',
+      '    schedule: "* * * * *"',
+      '    command: [ "bin/console", "app:cron" ]',
+      '    enabled: true',
+      '    concurrencyPolicy: "Allow"',
+      '',
+      '  - name: run-report-complete',
+      '    schedule: "0 6 * * *"',
+      '    command: [ "bin/console", "app:report:complete" ]',
+      '    enabled: true',
+      '',
+      '  - name: disabled-job',
+      '    schedule: "0 7 * * *"',
+      '    command: [ "bin/console", "app:disabled" ]',
+      '    enabled: false',
+      '',
+    ].join('\n'));
+
+    fs.mkdirSync(path.join(dir, 'templates'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'templates', 'cron-jobs.yaml'), [
+      '{{- range $key, $val := .Values.cronJobs }}',
+      '{{- if $val.enabled }}',
+      '{{- with $ -}}',
+      'apiVersion: batch/v1',
+      'kind: CronJob',
+      'metadata:',
+      '  name: {{ $val.name }}-cron-job',
+      'spec:',
+      '  schedule: {{ $val.schedule | quote }}',
+      '  jobTemplate:',
+      '    spec:',
+      '      template:',
+      '        spec:',
+      '          containers:',
+      '            - name: {{ $val.name }}-cron-job-container',
+      '              command: {{- range $val.command }}',
+      '                - {{ . | quote }}',
+      '              {{- end }}',
+      '          restartPolicy: Never',
+      '{{- end }}',
+      '---',
+      '{{- end }}',
+      '{{- end }}',
+      '',
+    ].join('\n'));
+
+    const analyzer = new HelmAnalyzer();
+    const cas = await analyzer.analyze({ projectPath: dir });
+
+    const cronJobNodes = cas.nodes.filter(n => n.type === 'kubernetes_cronjob');
+    // Only the two ENABLED values entries become nodes — the disabled one
+    // must not be fabricated as a schedulable job.
+    assert.equal(cronJobNodes.length, 2,
+      `expected exactly 2 enabled CronJob nodes, got: ${JSON.stringify(cronJobNodes.map(n => n.name))}`);
+
+    const mainCron = cronJobNodes.find(n => n.name.includes('main-cron'));
+    assert.ok(mainCron, 'main-cron node exists');
+    assert.equal((mainCron!.metadata as any)?.attributes?.schedule, '* * * * *');
+    assert.equal((mainCron!.metadata as any)?.attributes?.command, 'bin/console app:cron');
+
+    const reportCron = cronJobNodes.find(n => n.name.includes('run-report-complete'));
+    assert.ok(reportCron, 'run-report-complete node exists');
+    assert.equal((reportCron!.metadata as any)?.attributes?.schedule, '0 6 * * *');
+    assert.equal((reportCron!.metadata as any)?.attributes?.command, 'bin/console app:report:complete');
+
+    assert.ok(!cronJobNodes.some(n => n.name.includes('disabled-job')),
+      'the enabled:false job must not appear');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

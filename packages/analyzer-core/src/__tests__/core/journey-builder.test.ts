@@ -235,6 +235,78 @@ describe('buildUserJourneys', () => {
     expect(journeys[0].journey_kind).toBe('user-facing');
   });
 
+  it('reclassifies a CLI console-command entry as scheduled when a kubernetes_cronjob references its command (k8s CronJob evidence)', () => {
+    // The scheduling evidence lives in the k8s manifest (container command +
+    // spec.schedule), NOT in the PHP source — CronJob->command referencing
+    // is the real evidence; "cron" in the class name is corroboration only.
+    const cronJobNode: CASNode = {
+      id: 'n_cronjob',
+      name: 'CronJob: booking-cron',
+      type: 'kubernetes_cronjob',
+      metadata: {
+        schedule: '*/15 * * * *',
+        command: 'bin/console app:cron:process-bookings',
+      },
+    } as CASNode;
+
+    const consoleCommandEntry: CASEntryPoint = {
+      id: 'entry_cli_process_bookings',
+      source_node: 'n_service',
+      type: 'cli',
+      name: 'app:cron:process-bookings',
+      handler: { node_id: 'n_service', method_name: 'execute' },
+      metadata: { framework: 'symfony', kind: 'command', commandName: 'app:cron:process-bookings' },
+    } as CASEntryPoint;
+
+    const { journeys } = buildUserJourneys({
+      ...baseInput,
+      nodes: [...nodes, cronJobNode],
+      entryPoints: [consoleCommandEntry],
+      callChains: [
+        chain('chain_cron', 'n_service', 'entry_cli_process_bookings', [['n_service', 0], ['n_repo', 1]]),
+      ],
+    });
+
+    expect(journeys).toHaveLength(1);
+    expect(journeys[0].journey_kind).toBe('scheduled');
+    expect(journeys[0].entry.path_or_trigger).toBe('*/15 * * * *');
+  });
+
+  it('leaves a bare CLI console command with NO CronJob reference un-rescheduled (no fabrication from naming alone)', () => {
+    const unrelatedCronJobNode: CASNode = {
+      id: 'n_cronjob_unrelated',
+      name: 'CronJob: other-job',
+      type: 'kubernetes_cronjob',
+      metadata: {
+        schedule: '0 3 * * *',
+        command: 'bin/console app:other:job',
+      },
+    } as CASNode;
+
+    const consoleCommandEntry: CASEntryPoint = {
+      id: 'entry_cli_manual_import',
+      source_node: 'n_service',
+      type: 'cli',
+      name: 'app:manual:import',
+      handler: { node_id: 'n_service', method_name: 'execute' },
+      metadata: { framework: 'symfony', kind: 'command', commandName: 'app:manual:import' },
+    } as CASEntryPoint;
+
+    const { journeys } = buildUserJourneys({
+      ...baseInput,
+      nodes: [...nodes, unrelatedCronJobNode],
+      entryPoints: [consoleCommandEntry],
+      callChains: [
+        chain('chain_manual', 'n_service', 'entry_cli_manual_import', [['n_service', 0], ['n_repo', 1]]),
+      ],
+    });
+
+    expect(journeys).toHaveLength(1);
+    // No CronJob evidence references this command -> stays the default CLI
+    // classification (user-facing), never 'scheduled'.
+    expect(journeys[0].journey_kind).not.toBe('scheduled');
+  });
+
   it('falls back to call edges when no call chains exist for an entry point', () => {
     const { journeys } = buildUserJourneys({ ...baseInput, callChains: [] });
     expect(journeys).toHaveLength(1);

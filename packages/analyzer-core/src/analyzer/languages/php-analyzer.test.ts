@@ -4,6 +4,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { PHPAnalyzer } from './php-analyzer';
+import { computeFlowConcepts } from '../core/flow-concepts';
 
 /**
  * Cross-service call-graph resolution fixtures: Symfony DI interface binding,
@@ -260,6 +261,196 @@ test('services.yaml alias binds an otherwise-ambiguous interface', async () => {
       edges.some(e => e.from === 'NotifyController.send' && e.to === 'SmsNotifier.notify'),
       `expected alias-bound NotifyController.send -> SmsNotifier.notify, got: ${JSON.stringify(edges.filter(e => e.from.startsWith('NotifyController')))}`
     );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+/**
+ * Branch/error evidence fixtures (C1 step-graph edges): a PHP call site
+ * inside an if-block must be stamped with the same `conditional` evidence
+ * shape the TS analyzer emits (flow-concepts.ts buildConditionalOutIndex
+ * reads edge.metadata.conditional / method_calls execution_context.is_conditional),
+ * and a method that throws (body `throw new X` or `@throws` docblock) must
+ * populate node.signature.throws (extractErrorConstraints reads it). A call
+ * NOT inside a conditional gets no such flag — no fabrication.
+ */
+function writeConditionalFixtureProject(): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'php-analyzer-conditional-'));
+  const src = (p: string, content: string) => {
+    const full = path.join(dir, p);
+    fs.mkdirSync(path.dirname(full), { recursive: true });
+    fs.writeFileSync(full, content);
+  };
+
+  src('src/Service/BookingService.php', `<?php
+namespace App\\Service;
+
+class BookingService
+{
+    /**
+     * @throws NotFoundException
+     */
+    public function book(string $name): void
+    {
+        if (!$this->validate($name)) {
+            $this->reject($name);
+            throw new BookingException('invalid booking');
+        }
+        $this->persist($name);
+    }
+
+    public function validate(string $name): bool
+    {
+        return $name !== '';
+    }
+
+    public function reject(string $name): void
+    {
+    }
+
+    public function persist(string $name): void
+    {
+    }
+}
+`);
+
+  return dir;
+}
+
+for (const forceFastFallback of [false, true]) {
+  const label = forceFastFallback ? 'fast-fallback (regex) path' : 'AST path';
+
+  test(`call inside an if-block is stamped conditional [${label}]`, async () => {
+    const dir = writeConditionalFixtureProject();
+    try {
+      const cas = await analyzeFixture(dir, { forceFastFallback });
+      const byId = new Map((cas as any).nodes.map((n: any) => [n.id, n]));
+      const callEdgesRaw = (cas as any).edges.filter((e: any) => e.type === 'calls');
+      const named = (id: string) => byId.get(id)?.name;
+
+      const rejectEdge = callEdgesRaw.find((e: any) => named(e.source) === 'book' && named(e.target) === 'reject');
+      const persistEdge = callEdgesRaw.find((e: any) => named(e.source) === 'book' && named(e.target) === 'persist');
+
+      assert.ok(rejectEdge, `expected a call edge book -> reject, got: ${JSON.stringify(callEdgesRaw.map((e: any) => [named(e.source), named(e.target)]))}`);
+      assert.equal(rejectEdge.metadata?.conditional, true,
+        `book -> reject sits inside an if-block and must carry metadata.conditional=true, got metadata: ${JSON.stringify(rejectEdge.metadata)}`);
+
+      assert.ok(persistEdge, 'expected a call edge book -> persist');
+      assert.notEqual(persistEdge.metadata?.conditional, true,
+        `book -> persist sits OUTSIDE the if-block and must NOT be flagged conditional, got metadata: ${JSON.stringify(persistEdge.metadata)}`);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test(`method_calls execution_context.is_conditional reflects the same evidence [${label}]`, async () => {
+    const dir = writeConditionalFixtureProject();
+    try {
+      const cas = await analyzeFixture(dir, { forceFastFallback });
+      const orchestratorLike = cas as any;
+      // method_calls is an orchestrator-level derived fact; only assert it
+      // when the fixture's analyzer output includes it (some direct-analyzer
+      // runs skip cross-cutting derivation the orchestrator normally adds).
+      if (!orchestratorLike.method_calls) return;
+      const byId = new Map(orchestratorLike.nodes.map((n: any) => [n.id, n]));
+      const bookNode = orchestratorLike.nodes.find((n: any) => n.name === 'book');
+      const mc = orchestratorLike.method_calls.find((m: any) =>
+        m.caller_node === bookNode?.id && byId.get(m.target_node)?.name === 'reject');
+      assert.ok(mc, 'expected a method_call for book -> reject');
+      assert.equal(mc.execution_context?.is_conditional, true);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test(`signature.throws is populated from body throw + @throws docblock [${label}]`, async () => {
+    const dir = writeConditionalFixtureProject();
+    try {
+      const cas = await analyzeFixture(dir, { forceFastFallback });
+      const bookNode = (cas as any).nodes.find((n: any) => n.name === 'book');
+      assert.ok(bookNode, 'expected a node for method book');
+      const throws = bookNode.signature?.throws || [];
+      assert.ok(throws.includes('BookingException'),
+        `expected signature.throws to include the body 'throw new BookingException(...)', got: ${JSON.stringify(throws)}`);
+      assert.ok(throws.includes('NotFoundException'),
+        `expected signature.throws to include the @throws NotFoundException docblock tag, got: ${JSON.stringify(throws)}`);
+
+      const validateNode = (cas as any).nodes.find((n: any) => n.name === 'validate');
+      assert.ok(validateNode, 'expected a node for method validate');
+      assert.ok(!validateNode.signature?.throws || validateNode.signature.throws.length === 0,
+        `validate() never throws — signature.throws must stay empty/absent, got: ${JSON.stringify(validateNode.signature?.throws)}`);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+}
+
+/**
+ * C1 end-to-end: a PHP-only fixture, run through the real PHPAnalyzer and
+ * fed straight into computeFlowConcepts, must yield BOTH a 'branch' and an
+ * 'error' step_graph edge — proving the php-analyzer facts (edge.metadata.conditional,
+ * node.signature.throws) are the exact shape flow-concepts.ts consumes, not
+ * just present in isolation. `handleBooking` is a standalone PHP function,
+ * which php-analyzer always emits as an entry point (no framework-detection
+ * dependency), so the flow is reachable without extra route-attribute setup.
+ */
+test('PHP fixture flow carries a branch edge AND an error edge end-to-end through computeFlowConcepts', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'php-analyzer-c1-integration-'));
+  try {
+    const full = path.join(dir, 'src/booking.php');
+    fs.mkdirSync(path.dirname(full), { recursive: true });
+    fs.writeFileSync(full, `<?php
+namespace App;
+
+class BookingService
+{
+    public function book(string $name): void
+    {
+        if (!$this->validate($name)) {
+            $this->reject($name);
+            throw new BookingException('invalid booking');
+        }
+        $this->persist($name);
+    }
+
+    public function validate(string $name): bool
+    {
+        return $name !== '';
+    }
+
+    public function reject(string $name): void
+    {
+    }
+
+    public function persist(string $name): void
+    {
+    }
+}
+
+function handleBooking(string $name): void
+{
+    $service = new BookingService();
+    $service->book($name);
+}
+`);
+
+    const analyzer = new PHPAnalyzer();
+    const cas = await analyzer.analyze({ projectPath: dir });
+
+    const entry = (cas.entry_points || []).find((e: any) => e.metadata?.functionName === 'handleBooking');
+    assert.ok(entry, `expected an entry point for handleBooking, got: ${JSON.stringify(cas.entry_points)}`);
+
+    const flows = computeFlowConcepts(cas as any);
+    const flow = flows.find(f => f.entry_point === entry!.id) || flows[0];
+    assert.ok(flow, `expected at least one flow, got: ${JSON.stringify(flows)}`);
+    assert.ok(flow.step_graph, 'expected the flow to carry a step_graph');
+
+    const kinds = flow.step_graph!.edges.map(e => e.kind);
+    assert.ok(kinds.includes('branch'),
+      `expected a 'branch' step_graph edge (from BookingService::book's conditional call), got kinds: ${JSON.stringify(kinds)}, edges: ${JSON.stringify(flow.step_graph!.edges)}`);
+    assert.ok(kinds.includes('error'),
+      `expected an 'error' step_graph edge (from BookingService::book's signature.throws), got kinds: ${JSON.stringify(kinds)}, edges: ${JSON.stringify(flow.step_graph!.edges)}`);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
