@@ -160,8 +160,6 @@ export class PHPAnalyzer extends BaseAnalyzer {
   private astRunner: TreeSitterParser;
   private astCache = new Map<string, PHPASTNode>();
   private fileContentCache = new Map<string, string>();
-  private todoCounter = 0;
-  private commentCounter = 0;
 
   constructor() {
     super(
@@ -2999,7 +2997,7 @@ export class PHPAnalyzer extends BaseAnalyzer {
   private extractDocumentationFromPHPDoc(content: string, lineIndex: number): CASDocumentation | undefined {
     const lines = content.split('\n');
     const docs: CASDocumentation = {
-      id: `doc_${++this.commentCounter}`,
+      id: `doc_${lineIndex}`,
       format: 'phpdoc',
       raw: '',
       location: {
@@ -3080,6 +3078,7 @@ export class PHPAnalyzer extends BaseAnalyzer {
 
   private extractCommentsFromFile(content: string, filePath: string): CASComment[] {
     const comments: CASComment[] = [];
+    let commentSeq = 0;
     const lines = content.split('\n');
 
     for (let i = 0; i < lines.length; i++) {
@@ -3091,7 +3090,7 @@ export class PHPAnalyzer extends BaseAnalyzer {
         const style = line.includes('//') ? '//' : '#';
         const purpose = this.classifyCommentPurpose(text);
         comments.push({
-          id: `comment_${++this.commentCounter}`,
+          id: `comment_${filePath}_${++commentSeq}`,
           type: 'single-line',
           style,
           text,
@@ -3137,7 +3136,7 @@ export class PHPAnalyzer extends BaseAnalyzer {
         if (foundEnd) {
           const purpose = this.classifyCommentPurpose(multiLineText);
           comments.push({
-            id: `comment_${++this.commentCounter}`,
+            id: `comment_${filePath}_${++commentSeq}`,
             type: 'multi-line',
             style: '/* */',
             text: multiLineText.trim(),
@@ -3194,6 +3193,7 @@ export class PHPAnalyzer extends BaseAnalyzer {
 
   private extractTodosFromComments(comments: CASComment[], context: string): CASTodo[] {
     const todos: CASTodo[] = [];
+    let todoSeq = 0;
 
     comments.forEach(comment => {
       if (comment.markers?.is_todo || comment.markers?.is_fixme || comment.markers?.is_hack) {
@@ -3209,7 +3209,7 @@ export class PHPAnalyzer extends BaseAnalyzer {
         const category = this.categorizeTodo(comment.text);
 
         todos.push({
-          id: `todo_${++this.todoCounter}`,
+          id: `todo_${comment.location.file}_${comment.location.line}_${++todoSeq}`,
           type,
           text: comment.text,
           priority,

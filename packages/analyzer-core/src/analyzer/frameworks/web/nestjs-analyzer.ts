@@ -330,7 +330,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
           // Extract CAS v1.4.0 features for the module
           const moduleClassNode = this.findModuleClassNode(ast);
           const moduleDocumentation = moduleClassNode ? this.extractDocumentation(moduleClassNode, content) : undefined;
-          const moduleComments = moduleClassNode ? this.extractComments(moduleClassNode, content) : [];
+          const moduleComments = moduleClassNode ? this.extractComments(moduleClassNode, content, fullPath) : [];
           const moduleTodos = this.extractTodos(moduleComments);
           const moduleImplementationStatus = moduleClassNode ? this.detectImplementationStatus(moduleClassNode, content) : undefined;
 
@@ -537,7 +537,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
             // Extract CAS v1.4.0 features for the route handler
             const handlerNode = this.findControllerHandlerMethod(ast, route.handlerName);
             const routeDocumentation = handlerNode ? this.extractDocumentation(handlerNode, content) : undefined;
-            const routeComments = handlerNode ? this.extractComments(handlerNode, content) : [];
+            const routeComments = handlerNode ? this.extractComments(handlerNode, content, controllerInfo.filePath) : [];
             const routeTodos = this.extractTodos(routeComments);
             const routeImplementationStatus = handlerNode ? this.detectImplementationStatus(handlerNode, content) : undefined;
 
@@ -3437,7 +3437,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
     return doc;
   }
 
-  private extractComments(node: any, content: string): CASComment[] {
+  private extractComments(node: any, content: string, filePath: string): CASComment[] {
     const comments: CASComment[] = [];
     const lines = content.split('\n');
 
@@ -3453,13 +3453,15 @@ export class NestJSAnalyzer extends BaseAnalyzer {
       if (singleLineMatch) {
         const text = singleLineMatch[1].trim();
         const comment: CASComment = {
-          id: `comment_${++this.commentCounter}`,
+          // Stable order-independent id: at most one comment per source line,
+          // so file+line identifies it regardless of file visit order.
+          id: `comment_${filePath}_${i + 1}`,
           type: 'single-line',
           style: '//',
           text,
           purpose: this.classifyCommentPurpose(text),
           location: {
-            file: node.loc?.filename || '',
+            file: filePath,
             line: i + 1
           },
           markers: {
@@ -3489,6 +3491,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
 
   private extractTodos(comments: CASComment[]): CASTodo[] {
     const todos: CASTodo[] = [];
+    let todoSeq = 0;
 
     for (const comment of comments) {
       if (comment.markers?.is_todo || comment.markers?.is_fixme || comment.markers?.is_hack) {
@@ -3508,7 +3511,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
         }
 
         const todo: CASTodo = {
-          id: `todo_${++this.todoCounter}`,
+          id: `todo_${comment.location.file}_${comment.location.line}_${++todoSeq}`,
           type,
           text: text.replace(/^(TODO|FIXME|HACK|NOTE|WARNING|XXX)\s*(\([^)]+\))?\s*:?\s*/i, '').trim(),
           priority,
@@ -3542,8 +3545,6 @@ export class NestJSAnalyzer extends BaseAnalyzer {
   }
 
 
-  private commentCounter = 0;
-  private todoCounter = 0;
 
   private findModuleClassNode(ast: TSESTree.Program): any {
     let moduleNode: any = null;

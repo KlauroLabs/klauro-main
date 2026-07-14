@@ -98,8 +98,6 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
   private isTypeScriptProject = false;
   private callGraphExtractor!: EnhancedCallGraphExtractor;
   private tsExtractor = new TreeSitterTSExtractor();
-  private todoCounter = 0;
-  private commentCounter = 0;
   private importSourceMap = new Map<string, string>();
   /** local import name -> original exported name, for `import { Account as Acct }`
    *  so a receiver typed `Acct` resolves to the class `Account`. */
@@ -702,7 +700,9 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
         if (!m) continue;
         const todoType = m[1].toUpperCase() as CASTodo['type'];
         fileTodos.push({
-          id: `todo_${this.todoCounter++}`,
+          // Stable order-independent id: the line scan emits at most one todo
+          // per source line, so file+line identifies it.
+          id: `todo_${relativePath}_${i + 1}`,
           type: todoType,
           text: (m[2] || '').trim() || lines[i].trim(),
           priority: todoType === 'FIXME' || todoType === 'HACK' ? 'high' : todoType === 'WARNING' ? 'medium' : 'low',
@@ -711,8 +711,10 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
       }
       // Comments in the canonical CASComment shape (text/location/purpose), not the
       // ad-hoc {content,line,file} shape the readers don't understand.
-      const fileComments: CASComment[] = extraction.comments.map(c => ({
-        id: `comment_${this.commentCounter++}`,
+      const fileComments: CASComment[] = extraction.comments.map((c, ci) => ({
+        // Stable order-independent id: ci is the comment's position within this
+        // file's (deterministic) extraction order — a file+position fact.
+        id: `comment_${relativePath}_${ci + 1}`,
         type: (c.type === 'block' ? 'block' : c.type === 'jsdoc' ? 'docstring' : 'single-line') as CASComment['type'],
         style: (c.type === 'block' || c.type === 'jsdoc' ? '/* */' : '//') as CASComment['style'],
         text: c.text,
@@ -786,7 +788,9 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
         if (!m) continue;
         const todoType = m[1].toUpperCase() as CASTodo['type'];
         fileTodos.push({
-          id: `todo_${this.todoCounter++}`,
+          // Stable order-independent id: the line scan emits at most one todo
+          // per source line, so file+line identifies it.
+          id: `todo_${relativePath}_${i + 1}`,
           type: todoType,
           text: (m[2] || '').trim() || lines[i].trim(),
           priority: todoType === 'FIXME' || todoType === 'HACK' ? 'high' : todoType === 'WARNING' ? 'medium' : 'low',
@@ -795,8 +799,10 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
       }
       // Comments in the canonical CASComment shape (text/location/purpose), not the
       // ad-hoc {content,line,file} shape the readers don't understand.
-      const fileComments: CASComment[] = extraction.comments.map(c => ({
-        id: `comment_${this.commentCounter++}`,
+      const fileComments: CASComment[] = extraction.comments.map((c, ci) => ({
+        // Stable order-independent id: ci is the comment's position within this
+        // file's (deterministic) extraction order — a file+position fact.
+        id: `comment_${relativePath}_${ci + 1}`,
         type: (c.type === 'block' ? 'block' : c.type === 'jsdoc' ? 'docstring' : 'single-line') as CASComment['type'],
         style: (c.type === 'block' || c.type === 'jsdoc' ? '/* */' : '//') as CASComment['style'],
         text: c.text,
@@ -968,7 +974,8 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     const text = match?.[2] || comment.text;
 
     return {
-      id: `todo_${this.todoCounter++}`,
+      // Stable order-independent id derived from file+line facts.
+      id: `todo_${filePath}_${comment.line}`,
       type: todoType,
       text: text.trim(),
       priority: todoType === 'FIXME' || todoType === 'HACK' ? 'high' : todoType === 'WARNING' ? 'medium' : 'low',
@@ -2209,7 +2216,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     content: string,
     lines: string[]
   ): void {
-    const functions = this.findFunctionsInAST(ast, content, lines);
+    const functions = this.findFunctionsInAST(ast, content, lines, filePath);
     const fileId = `file_${filePath.replace(/[^a-zA-Z0-9]/g, '_')}`;
 
     functions.forEach((func, index) => {
@@ -2263,7 +2270,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     content: string,
     lines: string[]
   ): void {
-    const classes = this.findClassesInAST(ast, content, lines);
+    const classes = this.findClassesInAST(ast, content, lines, filePath);
     const fileId = `file_${filePath.replace(/[^a-zA-Z0-9]/g, '_')}`;
 
     classes.forEach((cls, index) => {
@@ -2533,7 +2540,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     });
   }
 
-  private findFunctionsInAST(ast: TSESTree.Program, content: string, lines: string[]): FunctionInfo[] {
+  private findFunctionsInAST(ast: TSESTree.Program, content: string, lines: string[], filePath: string): FunctionInfo[] {
     const functions: FunctionInfo[] = [];
     const visited = new WeakSet();
 
@@ -2545,7 +2552,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
 
       if (node.type === 'FunctionDeclaration' && node.id) {
         const jsdoc = this.extractJSDoc(node, content, lines);
-        const comments = this.extractNodeComments(node, content, lines);
+        const comments = this.extractNodeComments(node, content, lines, filePath);
         const todos = this.extractTodosFromComments(comments, node.loc?.start.line?.toString() || '');
         const status = this.detectImplementationStatus(node, content);
 
@@ -2573,7 +2580,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
         node.declarations.forEach((decl: any) => {
           if (decl.init?.type === 'ArrowFunctionExpression' && decl.id?.name) {
             const jsdoc = this.extractJSDoc(node, content, lines);
-            const comments = this.extractNodeComments(decl.init, content, lines);
+            const comments = this.extractNodeComments(decl.init, content, lines, filePath);
             const todos = this.extractTodosFromComments(comments, decl.init.loc?.start.line?.toString() || '');
             const status = this.detectImplementationStatus(decl.init, content);
 
@@ -2600,7 +2607,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
 
       if (node.type === 'MethodDefinition') {
         const jsdoc = this.extractJSDoc(node, content, lines);
-        const comments = this.extractNodeComments(node, content, lines);
+        const comments = this.extractNodeComments(node, content, lines, filePath);
         const todos = this.extractTodosFromComments(comments, node.loc?.start.line?.toString() || '');
         const status = this.detectImplementationStatus(node.value, content);
 
@@ -2635,7 +2642,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
         const keyName = node.key?.name || node.key?.value;
         if (keyName) {
           const jsdoc = this.extractJSDoc(node, content, lines);
-          const comments = this.extractNodeComments(node, content, lines);
+          const comments = this.extractNodeComments(node, content, lines, filePath);
           const todos = this.extractTodosFromComments(comments, node.loc?.start.line?.toString() || '');
           const status = this.detectImplementationStatus(node.value, content);
 
@@ -2672,7 +2679,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     return functions;
   }
 
-  private findClassesInAST(ast: TSESTree.Program, content: string, lines: string[]): ClassInfo[] {
+  private findClassesInAST(ast: TSESTree.Program, content: string, lines: string[], filePath: string): ClassInfo[] {
     const classes: ClassInfo[] = [];
     const visited = new WeakSet();
 
@@ -2684,13 +2691,13 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
 
       if (node.type === 'ClassDeclaration' && node.id) {
         const classJsdoc = this.extractJSDoc(node, content, lines);
-        const classComments = this.extractNodeComments(node, content, lines);
+        const classComments = this.extractNodeComments(node, content, lines, filePath);
 
         const methods = node.body.body
           .filter((member: any) => member.type === 'MethodDefinition')
           .map((method: any) => {
             const methodJsdoc = this.extractJSDoc(method, content, lines);
-            const methodComments = this.extractNodeComments(method, content, lines);
+            const methodComments = this.extractNodeComments(method, content, lines, filePath);
             const methodTodos = this.extractTodosFromComments(methodComments, method.loc?.start.line?.toString() || '');
             const methodStatus = this.detectImplementationStatus(method.value, content);
 
@@ -4459,7 +4466,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     return doc;
   }
 
-  private extractNodeComments(node: any, content: string, lines: string[]): CASComment[] {
+  private extractNodeComments(node: any, content: string, lines: string[], filePath: string): CASComment[] {
     const comments: CASComment[] = [];
     if (!node.loc) return comments;
 
@@ -4475,7 +4482,10 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
         const text = singleLineMatch[1].trim();
         const purpose = this.classifyCommentPurpose(text);
         comments.push({
-          id: `comment_${++this.commentCounter}`,
+          // Stable order-independent id: at most one single-line comment per
+          // source line, so file+line+kind identifies it regardless of the
+          // order files (or nodes) are visited in.
+          id: `comment_${filePath}_${i}_single`,
           type: 'single-line',
           style: '//',
           text,
@@ -4495,7 +4505,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
         if (!text.includes('/**')) {
           const purpose = this.classifyCommentPurpose(text);
           comments.push({
-            id: `comment_${++this.commentCounter}`,
+            id: `comment_${filePath}_${i}_block`,
             type: 'block',
             style: '/* */',
             text,
@@ -4524,7 +4534,9 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
         const text = singleLineMatch[1].trim();
         const purpose = this.classifyCommentPurpose(text);
         comments.push({
-          id: `comment_${++this.commentCounter}`,
+          // Stable order-independent id: one comment per source line here, so
+          // file+line identifies it regardless of file visit order.
+          id: `comment_${filePath}_${index + 1}`,
           type: 'single-line',
           style: '//',
           text,
@@ -4566,6 +4578,10 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
 
   private extractTodosFromComments(comments: CASComment[], context: string): CASTodo[] {
     const todos: CASTodo[] = [];
+    // Stable order-independent ids: seq follows the (deterministic, per-file)
+    // comment order of this call, so ids derive from file+position, not the
+    // cross-file visit order a run-global counter would capture.
+    let todoSeq = 0;
 
     comments.forEach(comment => {
       if (comment.markers?.is_todo || comment.markers?.is_fixme || comment.markers?.is_hack) {
@@ -4579,7 +4595,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
                         comment.markers?.is_fixme ? 'medium' : 'low';
 
         todos.push({
-          id: `todo_${++this.todoCounter}`,
+          id: `todo_${comment.location.file}_${comment.location.line}_${++todoSeq}`,
           type,
           text: comment.text,
           priority,

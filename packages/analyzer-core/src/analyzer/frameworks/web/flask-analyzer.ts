@@ -90,8 +90,6 @@ interface FlaskForm {
 }
 
 export class FlaskAnalyzer extends BaseAnalyzer {
-  private todoCounter = 0;
-  private commentCounter = 0;
 
   constructor() {
     super(
@@ -1865,6 +1863,7 @@ export class FlaskAnalyzer extends BaseAnalyzer {
     if (!content || content.trim().length === 0) return [];
 
     const comments: CASComment[] = [];
+    let commentSeq = 0;
     const lines = content.split('\n');
 
     for (let i = 0; i < lines.length; i++) {
@@ -1876,7 +1875,7 @@ export class FlaskAnalyzer extends BaseAnalyzer {
         const commentText = trimmedLine.substring(1).trim();
         if (commentText.length > 0) {
           const comment: CASComment = {
-            id: `comment_${++this.commentCounter}`,
+            id: `comment_${filePath}_${++commentSeq}`,
             type: 'single-line',
             style: '#',
             text: commentText,
@@ -1903,7 +1902,7 @@ export class FlaskAnalyzer extends BaseAnalyzer {
         const commentText = docstringMatch[1].trim();
         if (commentText.length > 0) {
           const comment: CASComment = {
-            id: `comment_${++this.commentCounter}`,
+            id: `comment_${filePath}_${++commentSeq}`,
             type: 'docstring',
             style: '"""',
             text: commentText,
@@ -1930,6 +1929,7 @@ export class FlaskAnalyzer extends BaseAnalyzer {
 
   private extractTodos(comments: CASComment[]): CASTodo[] {
     const todos: CASTodo[] = [];
+    let todoSeq = 0;
 
     for (const comment of comments) {
       if (comment.markers?.is_todo || comment.markers?.is_fixme || comment.markers?.is_hack) {
@@ -1949,7 +1949,7 @@ export class FlaskAnalyzer extends BaseAnalyzer {
         }
 
         const todo: CASTodo = {
-          id: `todo_${++this.todoCounter}`,
+          id: `todo_${comment.location.file}_${comment.location.line}_${++todoSeq}`,
           type,
           text: text.replace(/^(TODO|FIXME|HACK|NOTE|WARNING|XXX)\s*(\([^)]+\))?\s*:?\s*/i, '').trim(),
           priority,

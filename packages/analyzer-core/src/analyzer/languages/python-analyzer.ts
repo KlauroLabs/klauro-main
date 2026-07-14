@@ -123,8 +123,6 @@ export class PythonAnalyzer extends BaseAnalyzer {
   private pipenvProject = false;
   private methodCalls: PythonMethodCall[] = [];
   private libraryCalls: PythonLibraryCall[] = [];
-  private commentCounter = 0;
-  private todoCounter = 0;
 
   constructor() {
     super(
@@ -1816,6 +1814,7 @@ export class PythonAnalyzer extends BaseAnalyzer {
 
   private extractCommentsFromFile(content: string, filePath: string): CASComment[] {
     const comments: CASComment[] = [];
+    let commentSeq = 0;
     const lines = content.split('\n');
 
     lines.forEach((line, index) => {
@@ -1824,7 +1823,7 @@ export class PythonAnalyzer extends BaseAnalyzer {
         const text = singleLineMatch[1].trim();
         const purpose = this.classifyCommentPurpose(text);
         comments.push({
-          id: `comment_${++this.commentCounter}`,
+          id: `comment_${filePath}_${++commentSeq}`,
           type: 'single-line',
           style: '#',
           text,
@@ -1844,6 +1843,7 @@ export class PythonAnalyzer extends BaseAnalyzer {
 
   private extractCommentsFromContent(content: string, filePath: string, lineOffset: number = 0): CASComment[] {
     const comments: CASComment[] = [];
+    let commentSeq = 0;
     const lines = content.split('\n');
 
     lines.forEach((line, index) => {
@@ -1852,7 +1852,7 @@ export class PythonAnalyzer extends BaseAnalyzer {
         const text = singleLineMatch[1].trim();
         const purpose = this.classifyCommentPurpose(text);
         comments.push({
-          id: `comment_${++this.commentCounter}`,
+          id: `comment_${filePath}_${++commentSeq}`,
           type: 'single-line',
           style: '#',
           text,
@@ -1894,6 +1894,7 @@ export class PythonAnalyzer extends BaseAnalyzer {
 
   private extractTodosFromComments(comments: CASComment[], context: string): CASTodo[] {
     const todos: CASTodo[] = [];
+    let todoSeq = 0;
 
     comments.forEach(comment => {
       if (comment.markers?.is_todo || comment.markers?.is_fixme || comment.markers?.is_hack) {
@@ -1907,7 +1908,7 @@ export class PythonAnalyzer extends BaseAnalyzer {
                         comment.markers?.is_fixme ? 'medium' : 'low';
 
         todos.push({
-          id: `todo_${++this.todoCounter}`,
+          id: `todo_${comment.location.file}_${comment.location.line}_${++todoSeq}`,
           type,
           text: comment.text,
           priority,

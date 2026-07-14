@@ -53,6 +53,8 @@ function writeFixture(root: string): void {
   fs.writeFileSync(
     path.join(root, 'src', 'order-store.ts'),
     [
+      "// In-memory order store used by the HTTP layer.",
+      "// TODO: replace the Map with a persistent store",
       "export interface Order {",
       "  id: string;",
       "  customerId: string;",
@@ -292,6 +294,32 @@ describe('run-to-run stability', () => {
     const secondRun = await createPipelineOrchestrator().orchestrateAnalysis(fixtureDir);
 
     expect(firstRun.nodes.length).toBeGreaterThan(0);
+    expect(stableView(secondRun)).toEqual(stableView(firstRun));
+  });
+
+  // Regression for the comment_NNN / todo_NNN counter drift: analyzer instances
+  // used per-instance run-order counters for comment/todo ids, so a WARM
+  // re-analysis on the SAME orchestrator (the long-lived server path) minted
+  // different ids for identical input. Fresh-orchestrator double runs (the test
+  // above) never caught it because the counters reset with the instances. Ids
+  // must derive from file+position facts, so the warm second run must be
+  // byte-identical too — without normalizing any ids.
+  it('produces an identical CAS across warm re-analyses on the SAME orchestrator (counter-id regression)', async () => {
+    const orchestrator = createPipelineOrchestrator();
+    const firstRun = await orchestrator.orchestrateAnalysis(fixtureDir);
+    const secondRun = await orchestrator.orchestrateAnalysis(fixtureDir);
+
+    // Sanity: the fixture must actually exercise the comment/todo id scheme,
+    // otherwise the byte-equality below is vacuous for this defect class.
+    const commentIds = firstRun.nodes.flatMap((n) => (n.comments ?? []).map((c) => c.id));
+    const todoIds = firstRun.nodes.flatMap((n) => (n.todos ?? []).map((t) => t.id));
+    expect(commentIds.length).toBeGreaterThan(0);
+    expect(todoIds.length).toBeGreaterThan(0);
+    // Ids must be fact-derived (file-scoped), never bare run-order counters.
+    for (const id of [...commentIds, ...todoIds]) {
+      expect(id).not.toMatch(/^(comment|todo)_\d+$/);
+    }
+
     expect(stableView(secondRun)).toEqual(stableView(firstRun));
   });
 

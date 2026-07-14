@@ -108,8 +108,6 @@ interface AngularRoute {
 }
 
 export class AngularAnalyzer extends BaseAnalyzer {
-  private todoCounter = 0;
-  private commentCounter = 0;
 
   constructor() {
     super(
@@ -2053,6 +2051,7 @@ export class AngularAnalyzer extends BaseAnalyzer {
 
   private extractCommentsFromFile(content: string, filePath: string): CASComment[] {
     const comments: CASComment[] = [];
+    let commentSeq = 0;
     const lines = content.split('\n');
 
     for (let i = 0; i < lines.length; i++) {
@@ -2063,7 +2062,7 @@ export class AngularAnalyzer extends BaseAnalyzer {
         const text = singleLineMatch[1].trim();
         const purpose = this.classifyCommentPurpose(text);
         comments.push({
-          id: `comment_${++this.commentCounter}`,
+          id: `comment_${filePath}_${++commentSeq}`,
           type: 'single-line',
           style: '//',
           text,
@@ -2109,7 +2108,7 @@ export class AngularAnalyzer extends BaseAnalyzer {
         if (foundEnd) {
           const purpose = this.classifyCommentPurpose(multiLineText);
           comments.push({
-            id: `comment_${++this.commentCounter}`,
+            id: `comment_${filePath}_${++commentSeq}`,
             type: 'multi-line',
             style: '/* */',
             text: multiLineText.trim(),
@@ -2166,6 +2165,7 @@ export class AngularAnalyzer extends BaseAnalyzer {
 
   private extractTodosFromComments(comments: CASComment[], context: string): CASTodo[] {
     const todos: CASTodo[] = [];
+    let todoSeq = 0;
 
     comments.forEach(comment => {
       if (comment.markers?.is_todo || comment.markers?.is_fixme || comment.markers?.is_hack) {
@@ -2181,7 +2181,7 @@ export class AngularAnalyzer extends BaseAnalyzer {
         const category = this.categorizeTodo(comment.text);
 
         todos.push({
-          id: `todo_${++this.todoCounter}`,
+          id: `todo_${comment.location.file}_${comment.location.line}_${++todoSeq}`,
           type,
           text: comment.text,
           priority,

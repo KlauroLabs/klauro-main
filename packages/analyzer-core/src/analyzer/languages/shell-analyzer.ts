@@ -56,8 +56,6 @@ const SHELL_KEYWORDS = new Set([
 const MAX_SHEBANG_SNIFF = 400;
 
 export class ShellAnalyzer extends BaseAnalyzer {
-  private todoCounter = 0;
-  private commentCounter = 0;
 
   constructor() {
     super(
@@ -608,6 +606,7 @@ export class ShellAnalyzer extends BaseAnalyzer {
 
   private extractCommentsFromFile(content: string, filePath: string): CASComment[] {
     const comments: CASComment[] = [];
+    let commentSeq = 0;
     const lines = content.split('\n');
     for (let i = 0; i < lines.length; i++) {
       // Skip the shebang line itself.
@@ -618,7 +617,7 @@ export class ShellAnalyzer extends BaseAnalyzer {
       if (!text) continue;
       const markers = this.extractCommentMarkers(text);
       comments.push({
-        id: `comment_${++this.commentCounter}`,
+        id: `comment_${filePath}_${++commentSeq}`,
         type: 'single-line',
         style: '#',
         text,
@@ -670,6 +669,7 @@ export class ShellAnalyzer extends BaseAnalyzer {
 
   private extractTodosFromComments(comments: CASComment[], context: string): CASTodo[] {
     const todos: CASTodo[] = [];
+    let todoSeq = 0;
     for (const comment of comments) {
       if (comment.markers?.is_todo || comment.markers?.is_fixme || comment.markers?.is_hack) {
         const typeMatch = comment.text.match(/\b(TODO|FIXME|HACK|NOTE|WARNING|XXX|OPTIMIZE|REFACTOR)\b/i);
@@ -677,7 +677,7 @@ export class ShellAnalyzer extends BaseAnalyzer {
         const priority = comment.markers?.is_important ? 'high' :
           comment.markers?.is_fixme ? 'medium' : 'low';
         todos.push({
-          id: `todo_${++this.todoCounter}`,
+          id: `todo_${comment.location.file}_${comment.location.line}_${++todoSeq}`,
           type,
           text: comment.text,
           priority,

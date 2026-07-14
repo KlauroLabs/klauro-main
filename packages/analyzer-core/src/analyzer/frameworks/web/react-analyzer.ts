@@ -94,8 +94,6 @@ interface ReactUtil {
 }
 
 export class ReactAnalyzer extends BaseAnalyzer {
-  private commentCounter = 0;
-  private todoCounter = 0;
   private fileRouterCache = new Map<string, boolean>();
 
   constructor() {
@@ -2946,6 +2944,7 @@ export class ReactAnalyzer extends BaseAnalyzer {
 
   private extractCommentsFromContent(content: string, filePath: string): CASComment[] {
     const comments: CASComment[] = [];
+    let commentSeq = 0;
     const lines = content.split('\n');
 
     lines.forEach((line, index) => {
@@ -2955,7 +2954,7 @@ export class ReactAnalyzer extends BaseAnalyzer {
         const purpose = this.classifyCommentPurpose(text);
 
         comments.push({
-          id: `comment_${++this.commentCounter}`,
+          id: `comment_${filePath}_${++commentSeq}`,
           type: 'single-line',
           style: '//',
           text,
@@ -2975,7 +2974,7 @@ export class ReactAnalyzer extends BaseAnalyzer {
         const purpose = this.classifyCommentPurpose(text);
 
         comments.push({
-          id: `comment_${++this.commentCounter}`,
+          id: `comment_${filePath}_${++commentSeq}`,
           type: 'inline',
           style: '/* */',
           text,
@@ -2999,7 +2998,7 @@ export class ReactAnalyzer extends BaseAnalyzer {
 
       if (!text.startsWith('@')) {
         comments.push({
-          id: `comment_${++this.commentCounter}`,
+          id: `comment_${filePath}_${++commentSeq}`,
           type: 'multi-line',
           style: '/* */',
           text,
@@ -3019,6 +3018,7 @@ export class ReactAnalyzer extends BaseAnalyzer {
 
   private extractTodosFromContent(content: string, filePath: string, context?: string): CASTodo[] {
     const todos: CASTodo[] = [];
+    let todoSeq = 0;
     const lines = content.split('\n');
 
     lines.forEach((line, index) => {
@@ -3028,7 +3028,7 @@ export class ReactAnalyzer extends BaseAnalyzer {
         const priority = this.determineTodoPriority(type.toUpperCase(), text);
 
         todos.push({
-          id: `todo_${++this.todoCounter}`,
+          id: `todo_${filePath}_${++todoSeq}`,
           type: type.toUpperCase() as CASTodo['type'],
           text: text.trim(),
           priority,
@@ -3046,7 +3046,7 @@ export class ReactAnalyzer extends BaseAnalyzer {
 
       if (line.includes('return <div>TODO</div>') || line.includes('return <div>FIXME</div>')) {
         todos.push({
-          id: `todo_${++this.todoCounter}`,
+          id: `todo_${filePath}_${++todoSeq}`,
           type: 'TODO',
           text: 'Stub component implementation',
           priority: 'high',

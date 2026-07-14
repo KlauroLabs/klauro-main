@@ -83,11 +83,18 @@ name resolution depends on async file-processing order. This must be fixed
 (deterministic candidate selection over sorted inputs) — it is a Camp-B
 correctness bug, since a fact must not change run-to-run.
 
-Enforcement mechanisms that DO hold today: glob results are sorted before
-emission; `applyCanonicalOrdering` canonicalizes nodes/edges/entry/exit/libraries;
+Enforcement mechanisms that DO hold today: run-scoped glob results are sorted
+before emission — ENFORCED in `glob-cache.ts` since task #20 (raw async glob
+order was never deterministic; it merely looked stable while minimatch cost
+serialized the walker). Direct glob callers and `withFileTypes` walks remain
+OUTSIDE that protection and must sort their own results. Ids must derive from
+stable facts (file path + content position), never per-instance run counters —
+`comment_${++counter}`-style ids drift on WARM re-analysis in the long-lived
+server even though fresh-process runs look stable (fixed across 19 analyzers,
+task #20). `applyCanonicalOrdering` canonicalizes nodes/edges/entry/exit/libraries;
 tie-broken fallback selection; the Rust analyzer's two-phase link. Regression:
-`npx jest src/__tests__/ai/run-stability.test.ts` (must be extended to cover the
-reference-edge case above).
+`npx jest src/__tests__/ai/run-stability.test.ts` (now also asserts warm
+re-analysis byte-identity and rejects `^(comment|todo)_\d+$` ids).
 
 ## Camp C generation contract
 

@@ -84,8 +84,6 @@ const SOL_KEYWORDS = new Set([
 const EXTERNAL_CALL_MEMBERS = new Set(['call', 'delegatecall', 'staticcall', 'transfer', 'send']);
 
 export class SolidityAnalyzer extends BaseAnalyzer {
-  private todoCounter = 0;
-  private commentCounter = 0;
 
   constructor() {
     super(
@@ -939,7 +937,10 @@ export class SolidityAnalyzer extends BaseAnalyzer {
     type: CASComment['type'], style: CASComment['style'], text: string, filePath: string, line: number
   ): CASComment {
     return {
-      id: `comment_${++this.commentCounter}`,
+      // Stable order-independent id: extractCommentsFromFile emits at most one
+      // comment per source line, so file+line identifies the comment regardless
+      // of file visit order (ids derive from facts, not run-order counters).
+      id: `comment_${filePath}_${line}`,
       type,
       style,
       text,
@@ -972,6 +973,7 @@ export class SolidityAnalyzer extends BaseAnalyzer {
 
   private extractTodosFromComments(comments: CASComment[], context: string): CASTodo[] {
     const todos: CASTodo[] = [];
+    let todoSeq = 0;
     for (const comment of comments) {
       if (comment.markers?.is_todo || comment.markers?.is_fixme || comment.markers?.is_hack) {
         const typeMatch = comment.text.match(/\b(TODO|FIXME|HACK|NOTE|WARNING|XXX|OPTIMIZE|REFACTOR)\b/i);
@@ -979,7 +981,7 @@ export class SolidityAnalyzer extends BaseAnalyzer {
         const priority = comment.markers?.is_important ? 'high' :
           comment.markers?.is_fixme ? 'medium' : 'low';
         todos.push({
-          id: `todo_${++this.todoCounter}`,
+          id: `todo_${comment.location.file}_${comment.location.line}_${++todoSeq}`,
           type,
           text: comment.text,
           priority,

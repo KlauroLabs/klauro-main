@@ -308,8 +308,6 @@ export class RustAnalyzer extends BaseAnalyzer {
   private crateManifestProjectPath = '';
   private astRunner: TreeSitterParser;
   private astCache = new Map<string, RustASTNode>();
-  private todoCounter = 0;
-  private commentCounter = 0;
   private callGraphExtractor?: EnhancedRustCallGraphExtractor;
 
   constructor() {

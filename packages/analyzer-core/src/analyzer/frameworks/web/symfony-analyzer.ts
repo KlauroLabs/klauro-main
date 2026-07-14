@@ -143,8 +143,6 @@ function timeSync<T>(label: string, timings: Record<string, number>, fn: () => T
 export class SymfonyAnalyzer extends BaseAnalyzer {
   private fileContentCache = new Map<string, string>();
   private lineIndexCache = new Map<string, number[]>();
-  private todoCounter = 0;
-  private commentCounter = 0;
 
   constructor() {
     super(
@@ -2641,6 +2639,7 @@ export class SymfonyAnalyzer extends BaseAnalyzer {
 
   private extractComments(content: string, filePath: string): CASComment[] {
     const comments: CASComment[] = [];
+    let commentSeq = 0;
     const lines = content.split('\n');
 
     for (let i = 0; i < lines.length; i++) {
@@ -2650,7 +2649,7 @@ export class SymfonyAnalyzer extends BaseAnalyzer {
         const text = trimmed.substring(trimmed.startsWith('//') ? 2 : 1).trim();
         if (text.length > 0) {
           comments.push({
-            id: `comment_${++this.commentCounter}`,
+            id: `comment_${filePath}_${++commentSeq}`,
             type: 'single-line',
             style: trimmed.startsWith('//') ? '//' : '#',
             text,
@@ -2685,7 +2684,7 @@ export class SymfonyAnalyzer extends BaseAnalyzer {
 
         if (commentText.trim().length > 0) {
           comments.push({
-            id: `comment_${++this.commentCounter}`,
+            id: `comment_${filePath}_${++commentSeq}`,
             type: 'multi-line',
             style: '/* */',
             text: commentText.trim(),
@@ -2712,13 +2711,16 @@ export class SymfonyAnalyzer extends BaseAnalyzer {
     const comments: CASComment[] = [];
     const twigCommentPattern = /\{#\s*([\s\S]*?)\s*#\}/g;
 
+    // Stable order-independent ids: seq follows content order within this file,
+    // so ids derive from file+position, not cross-file visit order.
+    let commentSeq = 0;
     let match;
     while ((match = twigCommentPattern.exec(content)) !== null) {
       const text = match[1].trim();
       if (text.length > 0) {
         const line = this.lineNumberAt(content, match.index);
         comments.push({
-          id: `comment_${++this.commentCounter}`,
+          id: `comment_${filePath}_${++commentSeq}`,
           type: 'single-line',
           style: 'other',
           text,
@@ -2740,6 +2742,7 @@ export class SymfonyAnalyzer extends BaseAnalyzer {
 
   private extractTodos(comments: CASComment[]): CASTodo[] {
     const todos: CASTodo[] = [];
+    let todoSeq = 0;
 
     for (const comment of comments) {
       if (comment.markers?.is_todo || comment.markers?.is_fixme || comment.markers?.is_hack) {
@@ -2756,7 +2759,7 @@ export class SymfonyAnalyzer extends BaseAnalyzer {
           : 'medium';
 
         todos.push({
-          id: `todo_${++this.todoCounter}`,
+          id: `todo_${comment.location.file}_${comment.location.line}_${++todoSeq}`,
           type,
           text: text.replace(/^(TODO|FIXME|HACK|NOTE|WARNING|XXX)\s*(\([^)]+\))?\s*:?\s*/i, '').trim(),
           priority,

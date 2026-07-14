@@ -156,6 +156,12 @@ export function applyConventions(
   edges: CASEdge[],
   decorators: CASDecorator[] = [],
 ): ConventionsApplyResult {
+  // Determinism: the id counter is module-level; without this reset a warm
+  // re-analysis in a long-lived process would mint different ids for the same
+  // input (same defect class as the comment_NNN counters — ids must be
+  // byte-stable run-to-run). The sibling passes (consistency-model,
+  // communication-seams, infra-topology-linker) already reset at entry.
+  seq = 0;
   const result: ConventionsApplyResult = {
     entry_points: [],
     data_entities: [],
