@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as fs from 'node:fs/promises';
-import { resolveSelfUpdateTarget, isUnboundHostedProjectId } from './cli';
+import { resolveSelfUpdateTarget, isUnboundHostedProjectId, probeHostedProjectBinding } from './cli';
 import { writeProjectBindingIntoConfig, loadKlauroConfig } from './klauro-config';
 
 // --- BUG 1: `klauro update` must target the RUNNING installation's prefix ---
@@ -147,6 +147,35 @@ test('writeProjectBindingIntoConfig fills the name only when the file has none',
   } finally {
     await fs.rm(dir, { recursive: true, force: true });
   }
+});
+
+test('probeHostedProjectBinding: only a definite server 404 reports not_found (rebind trigger); 200 = bound; everything else indeterminate', async () => {
+  const fetchFor = (status: number) =>
+    (async () => ({ ok: status >= 200 && status < 300, status })) as unknown as typeof fetch;
+
+  // A live project for this account — the binding is real, never rebind.
+  assert.equal(await probeHostedProjectBinding('https://mcp.klauro.com', 'tok', 'prj_live', fetchFor(200)), 'bound');
+  // The server does not know the project for this account — the ONLY case
+  // that licenses a rebind (with explicit --workspace intent at the call site).
+  assert.equal(await probeHostedProjectBinding('https://mcp.klauro.com', 'tok', 'prj_gone', fetchFor(404)), 'not_found');
+  // Expired token / server trouble / overload: NOT evidence the binding is
+  // stale — must never trigger a rebind.
+  assert.equal(await probeHostedProjectBinding('https://mcp.klauro.com', 'tok', 'prj_x', fetchFor(401)), 'indeterminate');
+  assert.equal(await probeHostedProjectBinding('https://mcp.klauro.com', 'tok', 'prj_x', fetchFor(500)), 'indeterminate');
+  assert.equal(await probeHostedProjectBinding('https://mcp.klauro.com', 'tok', 'prj_x', fetchFor(524)), 'indeterminate');
+  // Network failure: same — leave the file untouched.
+  const netFail = (async () => { throw new Error('ECONNREFUSED'); }) as unknown as typeof fetch;
+  assert.equal(await probeHostedProjectBinding('https://mcp.klauro.com', 'tok', 'prj_x', netFail), 'indeterminate');
+});
+
+test('probeHostedProjectBinding URL-encodes the project id into GET /api/projects/{id}', async () => {
+  let requested: string | undefined;
+  const capture = (async (url: string) => {
+    requested = url;
+    return { ok: true, status: 200 };
+  }) as unknown as typeof fetch;
+  await probeHostedProjectBinding('https://mcp.klauro.com', 'tok', 'prj_a/b', capture);
+  assert.equal(requested, 'https://mcp.klauro.com/api/projects/prj_a%2Fb');
 });
 
 test('writeProjectBindingIntoConfig refuses to run without an existing .klaurorc (init owns creation)', async () => {

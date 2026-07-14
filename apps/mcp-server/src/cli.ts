@@ -1386,6 +1386,34 @@ async function runInitCommand(projectPath: string, args: ParsedArgs, options: { 
       projectStatus = 'warn';
       projectNote = ` · existing .klaurorc is UNBOUND (project.id missing) and could not self-heal (${error instanceof Error ? error.message : String(error)}) — re-run klauro init, or rm .klaurorc to start fresh`;
     }
+  } else if (token && args.workspace && args.workspace.trim()) {
+    // The id LOOKS bound (prj_…) but the caller expressed explicit placement
+    // intent (--workspace): verify it actually resolves for this account. A
+    // stale .klaurorc can carry a well-formed prj_ the server no longer knows
+    // (deleted project, or written under a different account) — keeping it
+    // verbatim just fails every upload later. Rebind ONLY on a definite
+    // server 404 AND explicit intent; a valid binding, a flaky network, or an
+    // auth hiccup all leave the file untouched (never hijack a wrong-account
+    // sign-in silently).
+    const staleId = String(loaded.config.project.id);
+    const probe = await probeHostedProjectBinding(serverUrl, token, staleId);
+    if (probe === 'not_found') {
+      try {
+        const placed = await placeHostedProjectHeadless(projectPath, serverUrl, token, args);
+        await writeProjectBindingIntoConfig(projectPath, {
+          projectId: placed.project.id,
+          workspaceId: placed.workspace.id,
+          organizationId: placed.workspace.id,
+          projectName: placed.project.name,
+          kind: 'project',
+        });
+        loaded = await loadKlauroConfig(projectPath);
+        projectNote = ` · healed stale .klaurorc: the server does not know project ${staleId} for this account — re-bound to ${placed.project.id} in workspace ${placed.workspace.name} (your other settings were kept)`;
+      } catch (error) {
+        projectStatus = 'warn';
+        projectNote = ` · existing .klaurorc binds ${staleId}, which the server does not recognize for this account, and self-heal failed (${error instanceof Error ? error.message : String(error)}) — check you are signed in to the right account, or rm .klaurorc to start fresh`;
+      }
+    }
   }
   const identity = detectWorkspaceIdentity(projectPath, loaded.config.project.id);
   record('project', projectStatus,
@@ -1610,6 +1638,34 @@ function formatConnectionReportLines(report: Awaited<ReturnType<typeof buildConn
  */
 export function isUnboundHostedProjectId(id: unknown): boolean {
   return typeof id !== 'string' || !/^prj_/.test(id);
+}
+
+/**
+ * Probe whether a .klaurorc's well-formed prj_ id actually resolves for THIS
+ * account: GET /api/projects/{id} answers 200 for a member, 404 for a project
+ * that does not exist (or belongs to someone else — the server deliberately
+ * does not distinguish). Only a definite 404 is reported as 'not_found';
+ * network failures / 5xx / auth problems are 'indeterminate' so the caller
+ * NEVER rebinds on a flaky connection or an expired token. fetchImpl is
+ * injectable (and the function exported) so the decision is unit-testable
+ * without a live server.
+ */
+export async function probeHostedProjectBinding(
+  serverUrl: string,
+  token: string,
+  projectId: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<'bound' | 'not_found' | 'indeterminate'> {
+  try {
+    const response = await fetchImpl(`${serverUrl}/api/projects/${encodeURIComponent(projectId)}`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    if (response.ok) return 'bound';
+    if (response.status === 404) return 'not_found';
+    return 'indeterminate';
+  } catch {
+    return 'indeterminate';
+  }
 }
 
 async function resolveInitOptions(projectPath: string, args: ParsedArgs): Promise<{
