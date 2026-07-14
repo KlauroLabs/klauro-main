@@ -286,7 +286,7 @@ export function buildSummary(cas: CASOutput, opts: { detail?: 'compact' | 'full'
       const nodeCount = cas.nodes?.length || 0;
       // ~2.5ms/entry-point measured; 400 EPs ≈ ~1s, comfortably inside the budget.
       if (entryCount > 400 || nodeCount > 15000) {
-        return { semantic_coverage_available: 'call get_semantic_coverage (omitted from summary: flow set too large to compute within the orient latency budget)' as const };
+        return { semantic_coverage_available: 'call get_semantic_coverage, or GET /api/projects/{id}/semantic-coverage over HTTP (omitted from summary: flow set too large to compute within the orient latency budget)' as const };
       }
       try {
         const flows = computeFlowConcepts(cas);

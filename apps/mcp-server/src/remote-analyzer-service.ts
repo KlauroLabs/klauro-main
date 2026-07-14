@@ -21,12 +21,31 @@ import { ingestAndPersist, loadPersistedRuntimeFacts } from './telemetry-fusion'
 import { backfillIngestedTelemetry, ingestTelemetryBatch, loadTelemetryObservations, summarizeRouteMetrics } from './telemetry-ingestion';
 import { buildNodeRuntimeMetrics } from './product';
 import { getAnalysis } from './analyzer';
-import { buildSummary, getProductMap, getFlowConcepts, getArchitecturalConflicts, getParadigmConformance, getPerspectives, getCicdPipelines, getCommunicationSeams, buildOrientCapsule } from './query';
+import { buildSummary, getProductMap, getFlowConcepts, getArchitecturalConflicts, getParadigmConformance, getPerspectives, getCicdPipelines, getCommunicationSeams, buildOrientCapsule, getSemanticCoverage } from './query';
 import { initSelfTelemetry, instrumentHttpHandler, mapSdkEvent } from './self-telemetry';
 import type { CasRuntimeEvent } from '../../../packages/klauro-sdk-js/src/types';
 
 const DEFAULT_PORT = 8787;
 const DEFAULT_MAX_BODY_BYTES = 100 * 1024 * 1024;
+
+/** Build-time version constant (esbuild `define` in scripts/build-bundle.mjs).
+ *  Undefined when running unbundled via tsx — fall back to package.json. */
+declare const __KLAURO_VERSION__: string | undefined;
+
+/** The running service's version, for /health (deployed-version confirmation
+ *  used to require fetching /dist/latest.json — the CLI dist manifest — which
+ *  conflates the dist artifact with the running server). Resolved once. */
+const SERVICE_VERSION: string | null = (() => {
+  try {
+    if (typeof __KLAURO_VERSION__ === 'string' && __KLAURO_VERSION__) return __KLAURO_VERSION__;
+  } catch { /* unbundled */ }
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8')) as { version?: string };
+    return pkg.version || null;
+  } catch {
+    return null;
+  }
+})();
 const SSE_HEARTBEAT_MS = 25_000;
 /**
  * Default TTL for ADVISORY claims made over the WAN coordination API
@@ -127,7 +146,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
       }
 
       if (request.method === 'GET' && route === '/health') {
-        writeJson(response, 200, { status: 'ok', service: 'klauro-remote-analyzer' });
+        writeJson(response, 200, { status: 'ok', service: 'klauro-remote-analyzer', version: SERVICE_VERSION });
         return;
       }
 
@@ -1704,6 +1723,42 @@ async function handleAccountApi(
           analysis_id: project.analysis_id,
           summary,
           product_map: productMap,
+        },
+      };
+    } catch (error) {
+      return {
+        statusCode: 200,
+        body: {
+          status: 'no_analysis',
+          project_id: project.id,
+          analysis_id: project.analysis_id,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      };
+    }
+  }
+
+  // Semantic coverage over HTTP (docs/SEMANTIC-MODEL.md "Coverage invariants").
+  // get_summary omits inline coverage on large repos (query.ts guard) and points
+  // at the get_semantic_coverage MCP tool — which a web-only customer can't call.
+  // This route serves the SAME payload so the pointer is followable from the web.
+  const projectCoverageMatch = route.match(/^\/api\/projects\/([^/]+)\/semantic-coverage$/);
+  if (projectCoverageMatch && request.method === 'GET') {
+    if (!dataDir) throw new AccountHttpError(500, 'Analysis storage unavailable');
+    const project = await accounts.getProjectForUser(userId, decodeURIComponent(projectCoverageMatch[1]));
+    if (!project) throw new AccountHttpError(404, 'Project not found');
+    if (!project.analysis_id) {
+      return { statusCode: 200, body: { status: 'no_analysis', project_id: project.id } };
+    }
+    try {
+      const cas = await getAnalysis(workspacePath(dataDir, project.analysis_id));
+      return {
+        statusCode: 200,
+        body: {
+          status: 'ready',
+          project_id: project.id,
+          analysis_id: project.analysis_id,
+          semantic_coverage: getSemanticCoverage(cas),
         },
       };
     } catch (error) {
