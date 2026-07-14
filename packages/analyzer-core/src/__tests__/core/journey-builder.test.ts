@@ -1441,3 +1441,343 @@ describe('buildUserJourneys terminal data hygiene', () => {
     }
   });
 });
+
+describe('buildUserJourneys summary by_kind over the discovered set', () => {
+  it('computes by_kind over ALL discovered journeys, not just the included top-N', () => {
+    const nodes: CASNode[] = [node('n_ctrl', 'ThingsController', 'controller')];
+    const entryPoints: CASEntryPoint[] = [];
+    const callChains: CASCallChain[] = [];
+
+    // 9 high-criticality user-facing journeys (each writes 3 entities, so they
+    // dominate the criticality ranking) plus 1 lower-signal scheduled journey.
+    for (let i = 0; i < 9; i++) {
+      entryPoints.push({
+        id: `entry_uf_${i}`,
+        source_node: 'n_ctrl',
+        type: 'http',
+        name: `POST /things_${i}`,
+        trigger: { method: 'POST', path: `/things_${i}` },
+      } as CASEntryPoint);
+      callChains.push(chain(`chain_uf_${i}`, 'n_ctrl', `entry_uf_${i}`, [['n_ctrl', 0]]));
+    }
+    entryPoints.push({
+      id: 'entry_sched',
+      source_node: 'n_ctrl',
+      type: 'schedule',
+      name: 'nightly_sweep',
+      trigger: { schedule: '0 2 * * *' },
+    } as CASEntryPoint);
+    callChains.push(chain('chain_sched', 'n_ctrl', 'entry_sched', [['n_ctrl', 0]]));
+
+    const dataEntities: CASDataEntity[] = entryPoints.map((ep, i) => ({
+      id: `entity_${i}`,
+      name: `Thing${i}`,
+      lifecycle: { created_by: ['n_ctrl'], read_by: [], updated_by: [], deleted_by: [] },
+    } as CASDataEntity));
+
+    const { summary } = buildUserJourneys(
+      { nodes, edges: [], entryPoints, exitPoints: [], callChains, dataEntities },
+      { maxJourneys: 5 }
+    );
+
+    expect(summary.total_discovered).toBe(10);
+    // The discovered set genuinely has 9 user-facing + 1 scheduled; by_kind
+    // must reflect that even though the top-5 slice may not include the
+    // scheduled journey.
+    expect(summary.by_kind['user-facing'] + summary.by_kind.scheduled).toBe(10);
+    expect(summary.by_kind.scheduled).toBe(1);
+    expect(summary.by_kind['user-facing']).toBe(9);
+  });
+
+  it('reserves a fair share of the included budget for a minority kind instead of burying it', () => {
+    const nodes: CASNode[] = [node('n_ctrl', 'ThingsController', 'controller')];
+    const entryPoints: CASEntryPoint[] = [];
+    const callChains: CASCallChain[] = [];
+    const dataEntities: CASDataEntity[] = [];
+
+    // 20 user-facing journeys with strong write signal (outrank the lone
+    // system journey on every criticality tiebreaker) and exactly ONE system
+    // journey (an operational CLI/script-rooted entry) with weaker signal.
+    for (let i = 0; i < 20; i++) {
+      entryPoints.push({
+        id: `entry_uf_${i}`,
+        source_node: 'n_ctrl',
+        type: 'http',
+        name: `POST /widgets_${i}`,
+        trigger: { method: 'POST', path: `/widgets_${i}` },
+      } as CASEntryPoint);
+      callChains.push(chain(`chain_uf_${i}`, 'n_ctrl', `entry_uf_${i}`, [['n_ctrl', 0]]));
+      dataEntities.push({
+        id: `entity_${i}`,
+        name: `Widget${i}`,
+        lifecycle: { created_by: ['n_ctrl'], read_by: [], updated_by: [], deleted_by: [] },
+      } as CASDataEntity);
+    }
+    entryPoints.push({
+      id: 'entry_system_sole',
+      source_node: 'n_ctrl',
+      type: 'cli',
+      name: 'sync-cache',
+      trigger: { pattern: 'bin/sync-cache.sh' },
+      handler: { node_id: 'n_ctrl', method_name: 'run', file: 'bin/sync-cache.sh' },
+    } as CASEntryPoint);
+    callChains.push(chain('chain_sys', 'n_ctrl', 'entry_system_sole', [['n_ctrl', 0]]));
+
+    const { journeys, summary } = buildUserJourneys(
+      { nodes, edges: [], entryPoints, exitPoints: [], callChains, dataEntities },
+      { maxJourneys: 10 }
+    );
+
+    expect(summary.total_discovered).toBe(21);
+    expect(summary.by_kind.system).toBe(1);
+    expect(summary.by_kind['user-facing']).toBe(20);
+    // The sole system journey must survive top-N selection even though a
+    // pure global criticality ranking would rank it below all 20 stronger
+    // user-facing journeys.
+    expect(journeys.some(j => j.journey_kind === 'system')).toBe(true);
+  });
+});
+
+describe('buildUserJourneys terminal effects scoped to the traced call chain', () => {
+  it('does not union in a sibling controller action reached only via containment, not the traced chain', () => {
+    const input = {
+      nodes: [
+        node('n_ctrl', 'InspectionsController', 'controller'),
+        node('n_create', 'create', 'method'),
+        node('n_destroy', 'destroy', 'method'),
+        node('n_inspection', 'Inspection', 'entity'),
+        node('n_driver', 'Driver', 'entity'),
+      ],
+      edges: [
+        // Both actions are declared (contained) by the same controller class.
+        edge('e_has1', 'n_ctrl', 'n_create', 'has_method'),
+        edge('e_has2', 'n_ctrl', 'n_destroy', 'has_method'),
+        // create -> Inspection is on the traced path.
+        edge('e_creates', 'n_create', 'n_inspection', 'creates'),
+        // destroy -> Driver belongs to the SIBLING action, never traversed by
+        // the create entry's own call chain.
+        edge('e_deletes', 'n_destroy', 'n_driver', 'deletes'),
+      ],
+      entryPoints: [{
+        id: 'entry_create_inspection',
+        source_node: 'n_ctrl',
+        type: 'http',
+        name: 'POST /inspections',
+        trigger: { method: 'POST', path: '/inspections' },
+        handler: { node_id: 'n_create', method_name: 'create' },
+      } as CASEntryPoint],
+      exitPoints: [],
+      // A real, authoritative call chain exists for this entry and it only
+      // reaches n_create -> n_inspection.
+      callChains: [
+        chain('chain_create_inspection', 'n_create', 'entry_create_inspection', [['n_create', 0], ['n_inspection', 1]]),
+      ],
+      dataEntities: [
+        { id: 'entity_inspection', name: 'Inspection', lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] } } as CASDataEntity,
+        { id: 'entity_driver', name: 'Driver', lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] } } as CASDataEntity,
+      ],
+    };
+
+    const { journeys } = buildUserJourneys(input);
+    expect(journeys).toHaveLength(1);
+    const terminalNames = journeys[0].terminal_entities.map(t => t.name);
+    expect(terminalNames).toContain('Inspection');
+    expect(terminalNames).not.toContain('Driver');
+    expect(journeys[0].terminal_effects.entities_written).not.toContain('Driver');
+  });
+
+  it('still expands contained methods as a fallback when no call chain exists for the entry', () => {
+    // Regression guard for the message-handler-class shape: no call chain
+    // evidence exists, so containment expansion remains the only way to find
+    // the handler's single contained method.
+    const input = {
+      nodes: [
+        node('n_msg_handler', 'AsyncReportHandler', 'message_handler'),
+        node('n_invoke', '__invoke', 'method'),
+        node('n_report_entity', 'Report', 'entity'),
+      ],
+      edges: [
+        edge('e_contains', 'n_msg_handler', 'n_invoke', 'has_method'),
+        edge('e_calls', 'n_invoke', 'n_report_entity', 'calls'),
+      ],
+      entryPoints: [{
+        id: 'entry_msg',
+        source_node: 'n_msg_handler',
+        type: 'message',
+        name: 'Message: ReportRequest',
+        trigger: { pattern: 'ReportRequest' },
+        metadata: { message_class: 'ReportRequest', handler: 'AsyncReportHandler' },
+      } as CASEntryPoint],
+      exitPoints: [],
+      callChains: [],
+      dataEntities: [
+        { id: 'entity_report', name: 'Report', lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] } } as CASDataEntity,
+      ],
+    };
+
+    const { journeys } = buildUserJourneys(input);
+    expect(journeys).toHaveLength(1);
+    expect(journeys[0].terminal_entities[0].name).toBe('Report');
+  });
+});
+
+describe('buildUserJourneys action-verb route naming from handler evidence', () => {
+  it('names an RPC-style /complete action route from the handler function name, not "Create complete"', () => {
+    const input = {
+      nodes: [
+        node('n_ctrl', 'MaintenanceIssuesController', 'controller'),
+        node('n_issue', 'MaintenanceIssue', 'entity'),
+      ],
+      edges: [
+        edge('e_updates', 'n_ctrl', 'n_issue', 'updates'),
+      ],
+      entryPoints: [{
+        id: 'entry_complete_issue',
+        source_node: 'n_ctrl',
+        type: 'http',
+        name: 'POST /maintenance_issues/:id/complete',
+        trigger: { method: 'POST', path: '/maintenance_issues/:id/complete' },
+        handler: { node_id: 'n_ctrl', method_name: 'completeMaintenanceIssue' },
+      } as CASEntryPoint],
+      exitPoints: [],
+      callChains: [],
+      dataEntities: [
+        { id: 'entity_issue', name: 'MaintenanceIssue', lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] } } as CASDataEntity,
+      ],
+    };
+
+    const { journeys } = buildUserJourneys(input);
+    expect(journeys).toHaveLength(1);
+    expect(journeys[0].name.startsWith('Complete maintenance issue')).toBe(true);
+    expect(journeys[0].name).not.toContain('Create complete');
+  });
+
+  it('names an /oauth/grant action route from the handler function name, not "Create grant"', () => {
+    const input = {
+      nodes: [
+        node('n_ctrl', 'OAuthController', 'controller'),
+        node('n_access', 'OAuthAccess', 'entity'),
+      ],
+      edges: [
+        edge('e_creates', 'n_ctrl', 'n_access', 'creates'),
+      ],
+      entryPoints: [{
+        id: 'entry_grant',
+        source_node: 'n_ctrl',
+        type: 'http',
+        name: 'POST /oauth/grant',
+        trigger: { method: 'POST', path: '/oauth/grant' },
+        handler: { node_id: 'n_ctrl', method_name: 'grantOAuthAccess' },
+      } as CASEntryPoint],
+      exitPoints: [],
+      callChains: [],
+      dataEntities: [
+        { id: 'entity_access', name: 'OAuthAccess', lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] } } as CASDataEntity,
+      ],
+    };
+
+    const { journeys } = buildUserJourneys(input);
+    expect(journeys).toHaveLength(1);
+    expect(journeys[0].name.startsWith('Grant oauth access')).toBe(true);
+    expect(journeys[0].name).not.toContain('Create grant');
+  });
+
+  it('keeps ordinary CRUD naming when the handler name does not share the route action word', () => {
+    const input = {
+      nodes: [
+        node('n_ctrl', 'CommentsController', 'controller'),
+        node('n_comment', 'Comment', 'entity'),
+      ],
+      edges: [
+        edge('e_creates', 'n_ctrl', 'n_comment', 'creates'),
+      ],
+      entryPoints: [{
+        id: 'entry_add_comment',
+        source_node: 'n_ctrl',
+        type: 'http',
+        name: 'POST /comments',
+        trigger: { method: 'POST', path: '/comments' },
+        handler: { node_id: 'n_ctrl', method_name: 'addComment' },
+      } as CASEntryPoint],
+      exitPoints: [],
+      callChains: [],
+      dataEntities: [
+        { id: 'entity_comment', name: 'Comment', lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] } } as CASDataEntity,
+      ],
+    };
+
+    const { journeys } = buildUserJourneys(input);
+    expect(journeys).toHaveLength(1);
+    expect(journeys[0].name.startsWith('Create comment')).toBe(true);
+  });
+});
+
+describe('buildUserJourneys coherent single guard verdict', () => {
+  it('never reports "no auth guard" when the entry point is independently authenticated, even with a named authorization guard', () => {
+    const nodes: CASNode[] = [
+      node('n_ctrl', 'GrantsController', 'controller'),
+      node('n_service', 'GrantsService', 'service'),
+    ];
+    const edges: CASEdge[] = [edge('e1', 'n_ctrl', 'n_service', 'calls')];
+    const entryPoint: CASEntryPoint = {
+      id: 'entry_grant_access',
+      source_node: 'n_ctrl',
+      type: 'http',
+      name: 'POST /grants',
+      trigger: { method: 'POST', path: '/grants' },
+      handler: { node_id: 'n_ctrl', method_name: 'grant' },
+      // Two independent, both-true security facts: the route requires
+      // authentication AND carries a named authorization guard (IsGranted).
+      // A rendered verdict must never say "guarded (authorization: X), no
+      // auth guard" when authenticated is true.
+      security: { authenticated: true, authorized_roles: [], guards: ['IsGranted'] },
+    } as CASEntryPoint;
+
+    const { journeys } = buildUserJourneys({
+      nodes,
+      edges,
+      entryPoints: [entryPoint],
+      exitPoints: [],
+      callChains: [],
+      dataEntities: [],
+    });
+
+    expect(journeys).toHaveLength(1);
+    const boundaries = journeys[0].security_boundaries;
+    const kinds = boundaries.map(b => b.kind);
+    expect(kinds).toContain('authorization');
+    expect(kinds).toContain('authentication');
+    // No duplicate/contradictory "authentication" entries and no bare
+    // "no auth guard" outcome once the authentication fact is present.
+    expect(boundaries.filter(b => b.kind === 'authentication')).toHaveLength(1);
+  });
+
+  it('still reports "no auth guard" truthfully when the entry is only authorization-guarded, not authenticated', () => {
+    const nodes: CASNode[] = [
+      node('n_ctrl', 'GrantsController', 'controller'),
+      node('n_service', 'GrantsService', 'service'),
+    ];
+    const entryPoint: CASEntryPoint = {
+      id: 'entry_grant_access_2',
+      source_node: 'n_ctrl',
+      type: 'http',
+      name: 'POST /grants2',
+      trigger: { method: 'POST', path: '/grants2' },
+      security: { authenticated: false, authorized_roles: [], guards: ['IsGranted'] },
+    } as CASEntryPoint;
+
+    const { journeys } = buildUserJourneys({
+      nodes,
+      edges: [edge('e1', 'n_ctrl', 'n_service', 'calls')],
+      entryPoints: [entryPoint],
+      exitPoints: [],
+      callChains: [],
+      dataEntities: [],
+    });
+
+    expect(journeys).toHaveLength(1);
+    const boundaries = journeys[0].security_boundaries;
+    expect(boundaries.map(b => b.kind)).toEqual(['authorization']);
+    expect(boundaries.some(b => b.kind === 'authentication')).toBe(false);
+  });
+});

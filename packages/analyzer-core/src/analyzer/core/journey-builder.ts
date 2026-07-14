@@ -341,11 +341,19 @@ export function buildUserJourneys(input: UserJourneyInput, options: UserJourneyO
     a.id.localeCompare(b.id)
   );
 
-  const included = journeys.slice(0, maxJourneys);
+  // by_kind must describe the DISCOVERED population, not the top-N slice
+  // handed back to the caller. Computing it over `included` (the old
+  // behavior) lied whenever selection skewed toward one kind — e.g. 501
+  // discovered journeys reported as "50 user_facing, 0 system, 0 scheduled"
+  // purely because a single global criticality ranking buried every
+  // system/scheduled journey outside the top 50, even though system
+  // journeys existed in the discovered set.
   const byKind: CASUserJourneySummary['by_kind'] = { 'user-facing': 0, system: 0, scheduled: 0 };
-  for (const journey of included) {
+  for (const journey of journeys) {
     byKind[journey.journey_kind] += 1;
   }
+
+  const included = selectIncludedJourneys(journeys, maxJourneys);
 
   return {
     journeys: included,
@@ -355,6 +363,52 @@ export function buildUserJourneys(input: UserJourneyInput, options: UserJourneyO
       by_kind: byKind,
     },
   };
+}
+
+/**
+ * Top-N selection over a single global ranking buries every journey of a
+ * minority kind once a majority kind fills the budget (measured live: 501
+ * discovered journeys, top 50 by criticality were ALL user-facing, dropping
+ * the repo's one genuine system journey entirely). Reserve each kind that
+ * actually exists in the discovered set a fair floor of the budget — still
+ * ranked internally by the same criticality/effect ordering — then fill any
+ * remaining budget from the global ranking so the highest-signal journeys
+ * overall still dominate once every present kind has representation.
+ */
+function selectIncludedJourneys(sortedJourneys: CASUserJourney[], maxJourneys: number): CASUserJourney[] {
+  if (sortedJourneys.length <= maxJourneys) return sortedJourneys;
+
+  const rankById = new Map<string, number>();
+  sortedJourneys.forEach((journey, index) => rankById.set(journey.id, index));
+
+  const byKind = new Map<CASUserJourney['journey_kind'], CASUserJourney[]>();
+  for (const journey of sortedJourneys) {
+    const list = byKind.get(journey.journey_kind) || [];
+    list.push(journey);
+    byKind.set(journey.journey_kind, list);
+  }
+
+  const kindsPresent = [...byKind.keys()];
+  const fairShare = Math.max(1, Math.floor(maxJourneys / kindsPresent.length));
+
+  const includedIds = new Set<string>();
+  const included: CASUserJourney[] = [];
+  for (const kind of kindsPresent) {
+    for (const journey of byKind.get(kind)!.slice(0, fairShare)) {
+      if (includedIds.has(journey.id)) continue;
+      includedIds.add(journey.id);
+      included.push(journey);
+    }
+  }
+  for (const journey of sortedJourneys) {
+    if (included.length >= maxJourneys) break;
+    if (includedIds.has(journey.id)) continue;
+    includedIds.add(journey.id);
+    included.push(journey);
+  }
+
+  included.sort((a, b) => (rankById.get(a.id)! - rankById.get(b.id)!));
+  return included.slice(0, maxJourneys);
 }
 
 function buildJourneyGraph(input: UserJourneyInput): JourneyGraph {
@@ -557,18 +611,35 @@ function collectPathNodeIds(
     }
   }
 
-  const seeds = [...pathNodeIds.keys()];
-  for (const seedId of seeds) {
-    const seedDepth = pathNodeIds.get(seedId) ?? 0;
-    const children = graph.containsBySource.get(seedId) || [];
-    let expanded = 0;
-    for (const childId of children) {
-      if (expanded >= SEED_EXPANSION_LIMIT) break;
-      const child = graph.nodesById.get(childId);
-      if (!child) continue;
-      if (!/(^|[_\s])(method|function|action)([_\s]|$)/.test(child.type)) continue;
-      addNode(childId, seedDepth + 1);
-      expanded += 1;
+  // Containment sibling-method expansion is a FALLBACK discovery mechanism
+  // for entries whose source_node is a container class with no known
+  // call-chain evidence (e.g. a message-handler class whose single contained
+  // method __invoke is never traced by a call-chain walker). It must never
+  // run when authoritative call chains already exist for this entry point:
+  // "contains"/"has_method" edges connect a class to EVERY method it
+  // declares, so seeding from a REST controller class (a common source_node
+  // shape) pulls in every sibling action -- create, update, delete, index --
+  // as if they were steps on THIS entry's own path. The subsequent BFS walk
+  // then follows each sibling's own unrelated calls, unioning terminal
+  // effects across the whole controller instead of scoping them to the
+  // journey actually traced (live leak: "Create inspection" reporting
+  // deletes of Inspection/InspectionQuestion and creates of Driver/Vehicle
+  // pulled in from sibling controller actions). When chains are present they
+  // are the ground truth for which methods this entry actually reaches.
+  if (chains.length === 0) {
+    const seeds = [...pathNodeIds.keys()];
+    for (const seedId of seeds) {
+      const seedDepth = pathNodeIds.get(seedId) ?? 0;
+      const children = graph.containsBySource.get(seedId) || [];
+      let expanded = 0;
+      for (const childId of children) {
+        if (expanded >= SEED_EXPANSION_LIMIT) break;
+        const child = graph.nodesById.get(childId);
+        if (!child) continue;
+        if (!/(^|[_\s])(method|function|action)([_\s]|$)/.test(child.type)) continue;
+        addNode(childId, seedDepth + 1);
+        expanded += 1;
+      }
     }
   }
 
@@ -996,7 +1067,18 @@ function collectSecurityBoundaries(
   for (const guard of entryGuards) {
     boundaries.set(`guard:${guard}`, { name: guard, mechanism: 'entry-guard', kind: classifyGuardKind(guard) });
   }
-  if (entryPoint.security?.authenticated && entryGuards.length === 0) {
+  // entryPoint.security.authenticated is an independent truth signal from the
+  // named guard list: a route can be gated by an authorization guard (e.g.
+  // "IsGranted") while ALSO requiring authentication, and the two facts must
+  // never be allowed to disagree in the rendered verdict. Gating this fallback
+  // on "no named guards at all" (the old check) silently dropped the
+  // authentication signal whenever any other guard existed, producing
+  // self-contradictory output like "guarded (authorization: IsGranted), no
+  // auth guard" even though the entry point IS authenticated. Only skip the
+  // fallback when a named guard already carries the 'authentication' kind
+  // itself, so we never render authentication twice.
+  const hasNamedAuthenticationGuard = entryGuards.some(guard => classifyGuardKind(guard) === 'authentication');
+  if (entryPoint.security?.authenticated && !hasNamedAuthenticationGuard) {
     boundaries.set('guard:authenticated', { name: 'authentication', mechanism: 'entry-guard', kind: 'authentication' });
   }
 
@@ -1136,6 +1218,25 @@ function describeEntryAction(entryPoint: CASEntryPoint, effects: TerminalEffects
       return resource ? `${formKind} ${resource} form` : `${formKind} form`;
     }
     const resource = humanizeResource(path);
+    // A route's final path segment is not always a resource noun: RPC-style
+    // action routes (POST /maintenance_issues/:id/complete, POST
+    // /auth/forgotpassword, POST /oauth/grant) put the ACTION verb in the
+    // tail segment, and gluing the HTTP-method verb onto it produces
+    // nonsense ("Create complete", "Create forgotpassword", "Create grant").
+    // The handler's own function name is real evidence of what the action
+    // actually is (completeMaintenanceIssue, resetForgottenPassword,
+    // grantOAuthAccess) and normally spells out the same word the URL
+    // segment abbreviates, plus the object it applies to. When the path
+    // segment is a flattened prefix of the handler name, prefer the fuller,
+    // evidence-grounded handler phrase over the generic method-verb
+    // template. This never fires for ordinary CRUD routes (POST /orders
+    // handled by createOrder) because "createorder" does not start with
+    // "order" -- only the reverse (action-in-path, elaborated-in-handler)
+    // shape matches.
+    const handlerPhrase = describeEntryActionFromHandlerName(entryPoint.handler?.method_name);
+    if (handlerPhrase && resource && isHandlerNameEvidenceForResource(handlerPhrase, resource)) {
+      return capitalizeLabel(handlerPhrase);
+    }
     const isItemPath = /[:{*]|\[/.test(path.split('/').pop() || '');
     switch (method) {
       case 'POST': return resource ? `Create ${resource}` : entryPoint.name;
@@ -1307,6 +1408,41 @@ function frontendPathSegments(path: string | undefined): string[] {
 
 function capitalizeLabel(label: string): string {
   return label.charAt(0).toUpperCase() + label.slice(1);
+}
+
+function flattenLabel(label: string): string {
+  return label.toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+/**
+ * Humanizes a handler's function name into a verb-phrase, gated to real
+ * multi-word evidence: a bare single-word handler name (e.g. "complete")
+ * carries no more information than the route segment itself and must not
+ * be treated as elaborating evidence. Framework-plumbing and helper/accessor
+ * names are excluded via the same choke point terminal naming uses, so a
+ * lifecycle method or utility accessor never becomes a journey action.
+ */
+function describeEntryActionFromHandlerName(handlerName: string | undefined): string | undefined {
+  const name = (handlerName || '').trim();
+  if (!name) return undefined;
+  if (isExcludedTerminalName(name)) return undefined;
+  const humanized = humanizeLabel(name);
+  if (!humanized || humanized.split(' ').length < 2) return undefined;
+  return humanized;
+}
+
+/**
+ * True when the route's resource segment is a flattened prefix of the
+ * handler's own humanized name -- i.e. the URL abbreviates the same action
+ * word the function name spells out in full (completeMaintenanceIssue for
+ * a /complete route). A short guard avoids spurious matches on trivial
+ * segments.
+ */
+function isHandlerNameEvidenceForResource(handlerPhrase: string, resource: string): boolean {
+  const flatHandler = flattenLabel(handlerPhrase);
+  const flatResource = flattenLabel(resource);
+  if (flatResource.length < 3) return false;
+  return flatHandler.startsWith(flatResource);
 }
 
 function describeTerminalOutcome(effects: TerminalEffects): string | undefined {
