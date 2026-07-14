@@ -1490,11 +1490,13 @@ function deriveCapabilityRelationships(args: {
    *  is skipped (behavior unchanged). */
   pathNodeIds?: Set<string>;
   /** Resolver from a capability operation's `entry_point_id` to the handler
-   *  NODE id it anchors on, restricted to REAL entry points (cas.entry_points).
-   *  Interior matching consults this so only a capability's genuine entry-point
-   *  handler counts as an interior anchor — a utility/helper node a capability
-   *  merely names is excluded, so a shared helper never blasts the edge across
-   *  every flow that happens to traverse it. */
+   *  NODE id it anchors on (real cas.entry_points). `node:`-anchored operations
+   *  resolve by stripping the prefix instead — a capability-DECLARED operation
+   *  anchor is evidence (deriveCapabilityOperationRoots trusts the same shape
+   *  to root whole flows), so a flow passing through it exercises the
+   *  capability (re-validation F3: excluding this shape made the
+   *  supporting/observability vocabulary unreachable on real CAS, where
+   *  operations are predominantly node-anchored). */
   entryHandlerNodeIdByEpId?: Map<string, string>;
 }): CapabilityFlowRelationship[] {
   const { capabilities, entryPointId, rootNodeId, entities, telemetry, pathNodeIds, entryHandlerNodeIdByEpId } = args;
@@ -1523,7 +1525,16 @@ function deriveCapabilityRelationships(args: {
     // than entity overlap, so it wins when both would fire.
     if (pathNodeIds && entryHandlerNodeIdByEpId) {
       const interiorOp = (cap.operations || []).find(op => {
-        const handlerNodeId = entryHandlerNodeIdByEpId.get(op.entry_point_id);
+        // Real entry-point anchors resolve via the handler map; `node:`-anchored
+        // operations (the common shape — capability ops anchored directly on a
+        // function/method node) resolve by stripping the prefix. Without the
+        // second form, interior matching silently never fired for node-anchored
+        // ops while the primary op-match (which handles `node:`) did — so every
+        // relationship collapsed to 'primary' (re-validation F3: 39/39 primary
+        // on a fresh hosted analysis; the supporting/observability/operational
+        // vocabulary was unreachable for node-anchored capabilities).
+        const handlerNodeId = entryHandlerNodeIdByEpId.get(op.entry_point_id)
+          ?? (op.entry_point_id?.startsWith('node:') ? op.entry_point_id.slice('node:'.length) : undefined);
         return handlerNodeId !== undefined
           && handlerNodeId !== rootNodeId
           && pathNodeIds.has(handlerNodeId);
@@ -2147,8 +2158,19 @@ export function stitchContinuations(flows: FlowConcept[], cas: CASOutput): FlowC
  * to entry-point-rooted flows without a regression on repos that don't emit
  * call_chains.
  */
-function buildTerminalFlows(cas: CASOutput, opts: ComputeFlowConceptsOptions): FlowConcept[] {
-  const chains = (cas.call_chains || []).filter(c => c.chain_type === 'entry-to-exit' && c.exit_point);
+function buildTerminalFlows(
+  cas: CASOutput,
+  opts: ComputeFlowConceptsOptions,
+  /** Internal (continuation partner derivation): restrict to chains ending at
+   *  these exit point ids. Set only by computeFlowConcepts when a seam pair's
+   *  publisher falls outside the maxFlows window — derives JUST that publisher
+   *  instead of the full uncapped set (which would blow the latency budget). */
+  onlyExitIds?: Set<string>
+): FlowConcept[] {
+  let chains = (cas.call_chains || []).filter(c => c.chain_type === 'entry-to-exit' && c.exit_point);
+  if (onlyExitIds && onlyExitIds.size > 0) {
+    chains = chains.filter(c => c.exit_point?.exit_point_id && onlyExitIds.has(c.exit_point.exit_point_id));
+  }
   if (chains.length === 0) return [];
 
   const maxDepth = opts.maxDepth && opts.maxDepth > 0 ? opts.maxDepth : DEFAULT_MAX_DEPTH;
@@ -2470,8 +2492,38 @@ export function computeFlowConcepts(cas: CASOutput, opts: ComputeFlowConceptsOpt
   // ASYNC CONTINUATION STITCHING (C1): a publisher flow whose terminus is an
   // event/message publish CONTINUES INTO the consumer flow whose entry matches
   // the seam channel — the SAME end-to-end flow, and the consumer is a reusable
-  // subflow. Runs over the full union (publisher may be terminal, consumer
-  // entry-point-rooted). Evidence-gated + deterministic; no-op when no pair.
+  // subflow. Evidence-gated + deterministic; no-op when no pair.
+  //
+  // PARTNER DERIVATION (re-validation F2): the maxFlows window is applied
+  // DURING derivation, so a seam pair whose partner flow falls outside the
+  // window used to be unstitchable — on a 3,600-entry-point repo a 20-flow
+  // window made continuations near-unobservable. Deriving the FULL uncapped
+  // union just to stitch would blow the latency budget (~9.5s on a whale), so
+  // instead: seam pairs are computed first (one cheap pass over exit/entry
+  // points), and ONLY the missing partners of in-window flows are derived —
+  // the matched consumer entry points / publisher exit chains, nothing else.
+  // Partners append past maxFlows deliberately: a continuation partner is part
+  // of the SAME end-to-end flow, not an extra window slot.
+  const pairs = pairPublishConsumeSeams(cas);
+  if (pairs.length > 0) {
+    const byExit = new Set(flows.map(f => f.terminus?.exit_point_id).filter(Boolean) as string[]);
+    const byEntry = new Set(flows.map(f => f.entry_point));
+    const missingConsumerEntryIds = new Set<string>();
+    const missingPublisherExitIds = new Set<string>();
+    for (const { exitId, entryId } of pairs) {
+      if (byExit.has(exitId) && !byEntry.has(entryId)) missingConsumerEntryIds.add(entryId);
+      if (byEntry.has(entryId) && !byExit.has(exitId)) missingPublisherExitIds.add(exitId);
+    }
+    const partnerOpts: ComputeFlowConceptsOptions = { ...opts, maxFlows: undefined };
+    if (missingConsumerEntryIds.size > 0) {
+      flows = [...flows, ...computeEntryPointFlows(cas, partnerOpts, { onlyEntryKeys: missingConsumerEntryIds })];
+    }
+    if (missingPublisherExitIds.size > 0) {
+      const partnerPublishers = buildTerminalFlows(cas, partnerOpts, missingPublisherExitIds)
+        .filter(p => !flows.some(f => f.flow_id === p.flow_id));
+      flows = [...flows, ...partnerPublishers];
+    }
+  }
   return stitchContinuations(flows, cas);
 }
 
@@ -2491,7 +2543,7 @@ export function computeFlowConcepts(cas: CASOutput, opts: ComputeFlowConceptsOpt
 function computeEntryPointFlows(
   cas: CASOutput,
   opts: ComputeFlowConceptsOptions = {},
-  unionOpts: { excludeEntryKeys?: Set<string>; significantOnly?: boolean } = {}
+  unionOpts: { excludeEntryKeys?: Set<string>; significantOnly?: boolean; onlyEntryKeys?: Set<string> } = {}
 ): FlowConcept[] {
   const maxDepth = opts.maxDepth && opts.maxDepth > 0 ? opts.maxDepth : DEFAULT_MAX_DEPTH;
   const maxFunctions = opts.maxFunctionsPerFlow && opts.maxFunctionsPerFlow > 0 ? opts.maxFunctionsPerFlow : DEFAULT_MAX_FUNCTIONS;
@@ -2506,6 +2558,13 @@ function computeEntryPointFlows(
   const synthesizedRootIds = new Set(synthesizedRoots.map(r => r.ep.id));
 
   let entryPoints: CASEntryPoint[] = [...realEntryPoints, ...synthesizedRoots.map(r => r.ep)];
+  if (unionOpts.onlyEntryKeys && unionOpts.onlyEntryKeys.size > 0) {
+    // Internal (continuation partner derivation): derive JUST these consumer
+    // entry points — they are seam-evidence-matched, so the significance
+    // filter does not apply to them.
+    const only = unionOpts.onlyEntryKeys;
+    entryPoints = entryPoints.filter(ep => only.has(ep.id) || only.has(ep.handler?.node_id || ep.source_node));
+  }
   if (unionOpts.excludeEntryKeys && unionOpts.excludeEntryKeys.size > 0) {
     const covered = unionOpts.excludeEntryKeys;
     entryPoints = entryPoints.filter(ep =>

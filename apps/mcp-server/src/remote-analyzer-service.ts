@@ -1787,6 +1787,29 @@ async function handleAccountApi(
       const url = new URL(request.url || '', 'http://localhost');
       const target = url.searchParams.get('target') || undefined;
       const flowConcepts = getFlowConcepts(cas, { target, maxFlows: 20 });
+      // Endpoint projection (re-validation F1): D2 facet_provenance + D1
+      // code_mappings inflated per-flow weight ~3-4x (whale payload 96KB+ at 20
+      // flows). The web UI renders neither yet — strip them from THIS projection
+      // only; the full data stays on the MCP tool surface (get_flow_concepts),
+      // which carries its own budget. `include=full` opts back in.
+      if (url.searchParams.get('include') !== 'full' && Array.isArray((flowConcepts as { flows?: unknown[] }).flows)) {
+        const stripContract = (contract: Record<string, unknown> | undefined) => {
+          if (!contract || typeof contract !== 'object') return contract;
+          const { facet_provenance: _fp, ...rest } = contract as Record<string, unknown>;
+          return rest;
+        };
+        (flowConcepts as { flows: Array<Record<string, unknown>> }).flows =
+          (flowConcepts as { flows: Array<Record<string, unknown>> }).flows.map(flow => ({
+            ...flow,
+            contract: stripContract(flow.contract as Record<string, unknown> | undefined),
+            steps: Array.isArray(flow.steps)
+              ? (flow.steps as Array<Record<string, unknown>>).map(step => {
+                  const { code_mappings: _cm, code_mappings_truncated: _cmt, ...rest } = step;
+                  return { ...rest, contract: stripContract(step.contract as Record<string, unknown> | undefined) };
+                })
+              : flow.steps,
+          }));
+      }
       const architectural = getArchitecturalConflicts(cas, { limit: 25 });
       const paradigms = getParadigmConformance(cas);
       const perspectives = getPerspectives(cas);

@@ -873,11 +873,20 @@ describe('capability↔flow path (a-interior) — anchor entry point realized as
     expect(rel!.role).toBe('primary');
   });
 
-  test('a utility node ref (not a real entry-point handler) never interior-links', () => {
+  test('a node:-anchored capability operation on the flow path interior-links as supporting (re-validation F3)', () => {
     const cas = buildInteriorFixtureCas();
-    // Point the capability op at an INTERNAL node ref rather than a real entry
-    // point: it is NOT in entryHandlerNodeIdByEpId, so the parent flow must not
-    // gain a spurious supporting edge from a bare utility node on its path.
+    // Point the capability op at a direct `node:` reference rather than a real
+    // entry point. Originally this shape was EXCLUDED from interior matching to
+    // keep bare utility refs from blasting edges — but real hosted CAS showed
+    // capability operations are PREDOMINANTLY node-anchored (the
+    // capability-detection pass resolves operations straight to handler/method
+    // nodes), so the exclusion made the supporting/observability vocabulary
+    // unreachable (39/39 edges 'primary' on a fresh live analysis). A
+    // capability-DECLARED operation anchor is evidence, not a guess —
+    // deriveCapabilityOperationRoots already trusts the same shape to root
+    // whole flows — and a flow passing through that anchor genuinely exercises
+    // the capability: the doctrine's own many-to-many case ("a generic
+    // authorizeRequest() may serve hundreds of steps").
     (cas.system_capabilities as SystemCapability[])[0].operations = [
       { entry_point_id: 'node:n_child', entry_point_type: 'http', action: 'do' },
     ];
@@ -885,7 +894,8 @@ describe('capability↔flow path (a-interior) — anchor entry point realized as
     const parent2 = f2.find(f => f.entry_point === 'ep_parent')!;
     const interior = (parent2.capability_relationships || []).find(r =>
       r.capability_id === 'cap_child' && /interior step/.test(r.rationale));
-    expect(interior).toBeUndefined();
+    expect(interior).toBeDefined();
+    expect(interior!.role).toBe('supporting');
   });
 });
 
@@ -1087,6 +1097,24 @@ describe('C1 async continuations — publish→consume seam stitches the SAME en
     const again = computeFlowConcepts(buildPublishConsumeFixtureCas());
     const againPub = again.find(f => f.terminus?.exit_point_id === 'xp_orderCreated')!;
     expect(againPub.continuations).toEqual(publisher.continuations);
+  });
+
+  test('a consumer OUTSIDE the maxFlows window is partner-derived and still stitched (re-validation F2)', () => {
+    // maxFlows: 1 → only the terminal publisher makes the window; the consumer
+    // entry flow would previously never exist to stitch against (the stitch ran
+    // over the CAPPED set, so on big repos continuations were unobservable).
+    // Partner derivation must derive JUST the matched consumer and append it —
+    // part of the SAME end-to-end flow, not an extra window slot.
+    const windowed = computeFlowConcepts(buildPublishConsumeFixtureCas(), { maxFlows: 1 });
+    const pub = windowed.find(f => f.terminus?.exit_point_id === 'xp_orderCreated')!;
+    expect(pub).toBeDefined();
+    const con = windowed.find(f => f.entry_point === 'ep_worker');
+    expect(con).toBeDefined();
+    expect(pub.continuations).toContain(con!.flow_id);
+    expect(con!.is_subflow).toBe(true);
+    expect(con!.continued_from).toEqual([pub.flow_id]);
+    // Only the seam-matched partner is appended — no other extra flows ride in.
+    expect(windowed.length).toBe(2);
   });
 
   test('stitchContinuations is a no-op on a <2-flow set and returns the same array', () => {
