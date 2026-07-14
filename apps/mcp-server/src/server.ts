@@ -4702,18 +4702,19 @@ function registerTools(server: McpServer) {
     'get_data_lineage',
     {
       title: 'Get Data Lineage',
-      description: 'Deterministic per-entity data lineage: which code writes and reads each data entity, which external services receive it, which security boundaries the data crosses and whether they are guarded, and which user journeys carry it. Entities are ranked by exposure (sensitive fields + unguarded paths + external transfer first). With entity_id: returns full lineage detail for one entity. Without: returns ranked summaries.',
+      description: 'Deterministic per-entity data lineage: which code writes and reads each data entity, which external services receive it, which security boundaries the data crosses and whether they are guarded, and which user journeys carry it. Entities are ranked by exposure (sensitive fields + unguarded paths + external transfer first). With entity_id (or entity, an alias that also matches by display name, case-insensitively): returns full lineage detail for one entity, or an explicit not-found error naming known entities if it does not resolve. Without either: returns ranked summaries.',
       inputSchema: {
         path: z.string().describe('Project path'),
         entity_id: z.string().optional().describe('Specific data entity ID for full lineage detail'),
+        entity: z.string().optional().describe('Alias for entity_id — also resolves by entity display name, case-insensitively (e.g. "Invoice")'),
         sensitive_only: z.boolean().optional().describe('Only return entities with sensitive fields'),
         limit: z.number().optional().describe('Max results when listing (default 25)'),
         offset: z.number().optional().describe('Skip first N results (default 0)'),
       } as any,
     } as any,
-    async ({ path, entity_id, sensitive_only, limit, offset }: any) => withErrorHandling(async () => {
+    async ({ path, entity_id, entity, sensitive_only, limit, offset }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
-      return json(query.getDataLineage(cas, { entityId: entity_id, sensitiveOnly: sensitive_only, limit, offset }));
+      return json(query.getDataLineage(cas, { entityId: entity_id, entityName: entity, sensitiveOnly: sensitive_only, limit, offset }));
     })
   );
 

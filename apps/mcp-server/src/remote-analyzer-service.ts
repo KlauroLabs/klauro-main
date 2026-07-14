@@ -883,6 +883,43 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           writeJson(response, 400, { status: 'error', error: 'tasks (non-empty array) is required' });
           return;
         }
+        // Shape-validate before handing tasks to partitionTasks: it (via
+        // inferFootprintFromIntent) calls `.match` directly on each task's
+        // `intent` with no guard, so a wrong field name (e.g. `description`
+        // instead of `intent`) previously reached that call as `undefined`
+        // and crashed with a raw, unhelpful
+        // "Cannot read properties of undefined (reading 'match')" 500. The
+        // MCP tool surface (server.ts `plan_parallel_work`) gets this check
+        // for free from its zod schema; this HTTP route has no schema layer,
+        // so it needs the same guard by hand.
+        const shapeErrors: string[] = [];
+        (body.tasks as unknown[]).forEach((t, i) => {
+          if (!t || typeof t !== 'object') {
+            shapeErrors.push(`tasks[${i}] must be an object with fields { id, intent, target_symbols?, target_paths?, flow_id?, capability_id? }`);
+            return;
+          }
+          const task = t as Record<string, unknown>;
+          if (typeof task.id !== 'string' || task.id.length === 0) {
+            shapeErrors.push(`tasks[${i}].id must be a non-empty string`);
+          }
+          if (typeof task.intent !== 'string' || task.intent.length === 0) {
+            shapeErrors.push(`tasks[${i}].intent must be a non-empty string (free-text description of the task's work — did you mean to send this as \`intent\` instead of \`description\`?)`);
+          }
+          if (task.target_symbols !== undefined && !Array.isArray(task.target_symbols)) {
+            shapeErrors.push(`tasks[${i}].target_symbols, if present, must be an array of strings`);
+          }
+          if (task.target_paths !== undefined && !Array.isArray(task.target_paths)) {
+            shapeErrors.push(`tasks[${i}].target_paths, if present, must be an array of strings`);
+          }
+        });
+        if (shapeErrors.length > 0) {
+          writeJson(response, 400, {
+            status: 'error',
+            error: 'Invalid task shape. Expected fields per task: id (string), intent (string), target_symbols? (string[]), target_paths? (string[]), flow_id? (string), capability_id? (string).',
+            details: shapeErrors,
+          });
+          return;
+        }
         const cas = body.path ? await partitionCasForPathHttp(body.path) : { nodes: [], edges: [] };
         const includeBlastRadius = body.include_blast_radius ?? true;
         const result = partitionTasks(body.tasks, cas, { includeBlastRadius });
@@ -1886,6 +1923,17 @@ async function handleAccountApi(
       const url = new URL(request.url || '', 'http://localhost');
       const target = url.searchParams.get('target') || undefined;
       const include = url.searchParams.get('include') || undefined;
+      // Honor an explicit max_flows query param (previously the gap text told
+      // callers to "Pass max_flows" but this route hardcoded maxFlows: 20 and
+      // ignored anything the caller sent — ship the param for real. Bounded to
+      // 50: this projection already strips the heavy evidence tiers below, but
+      // an unbounded HTTP request is still a bigger CAS-compute footprint than
+      // the MCP tool surface's own budgeting assumes.
+      const maxFlowsParamRaw = url.searchParams.get('max_flows');
+      const maxFlowsParam = maxFlowsParamRaw !== null ? Number(maxFlowsParamRaw) : undefined;
+      const maxFlows = maxFlowsParam !== undefined && Number.isFinite(maxFlowsParam) && maxFlowsParam > 0
+        ? Math.min(Math.floor(maxFlowsParam), 50)
+        : 20;
       // Response cache (TASK: whale-CAS /conceptual 524s): the payload below is
       // a pure function of the stored CAS + (target, include). Fresh compute on
       // a 45k-node CAS costs seconds of synchronous CPU (CAS JSON parse +
@@ -1898,7 +1946,10 @@ async function handleAccountApi(
         projectId: project.id,
         analysisId: project.analysis_id,
         version,
-        params: { target, include },
+        // maxFlows must be in the cache key: two requests differing only by
+        // max_flows produce different flow counts/truncation and must not
+        // share a cached body (would silently serve a stale-cap response).
+        params: { target, include, maxFlows: String(maxFlows) },
       });
       if (cacheKey) {
         const cached = casReadResponseCache.get(cacheKey);
@@ -1907,7 +1958,7 @@ async function handleAccountApi(
         }
       }
       const cas = await getAnalysis(workspace);
-      const flowConcepts = getFlowConcepts(cas, { target, maxFlows: 20 });
+      const flowConcepts = getFlowConcepts(cas, { target, maxFlows, surface: 'http' });
       // Endpoint projection (re-validation F1): D2 facet_provenance + D1
       // code_mappings inflated per-flow weight ~3-4x (whale payload 96KB+ at 20
       // flows). The web UI renders neither yet — strip them from THIS projection
