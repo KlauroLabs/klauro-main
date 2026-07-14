@@ -30,6 +30,7 @@ import { buildOrientCapsule } from './query';
  * (subcommand or an explicit null) at ship time, not never.
  */
 const DIMENSION_PARITY: Record<string, { cli: string | null }> = {
+  behavior_surfaces: { cli: null },
   entry_points: { cli: null },
   routes: { cli: null },
   exit_points: { cli: null },

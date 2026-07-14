@@ -94,7 +94,7 @@ test('AI capability descriptions are carried forward by capability id on AI-off 
   const previous = outputWith(
     { description_source: 'ai', description_generation: { status: 'ai_applied', attempted: true } },
     [
-      { id: 'cap_orders', name: 'Order Management', related_domains: ['order'], description: 'Order Management lets operators maintain order intake and fulfillment records for customer orders.', description_source: 'ai' },
+      { id: 'cap_orders', name: 'Order Management', related_domains: ['order'], description: 'Order Management maintains order intake and fulfillment records for customer orders.', description_source: 'ai' },
       { id: 'cap_misc', description: 'Deterministic capability text.', description_source: 'deterministic' },
     ],
   );
@@ -108,7 +108,7 @@ test('AI capability descriptions are carried forward by capability id on AI-off 
   const orders = capabilities.find(capability => capability.id === 'cap_orders')!;
   const misc = capabilities.find(capability => capability.id === 'cap_misc')!;
 
-  assert.equal(orders.description, 'Order Management lets operators maintain order intake and fulfillment records for customer orders.');
+  assert.equal(orders.description, 'Order Management maintains order intake and fulfillment records for customer orders.');
   assert.equal(orders.description_source, 'reused');
   assert.equal(misc.description, 'Other deterministic text.');
   assert.equal(misc.description_source, 'deterministic');

@@ -97,7 +97,7 @@ export function buildOrientCapsule(cas: CASOutput) {
       // never in top_capabilities, but still a real pullable dimension so
       // agents can find e.g. "the 207-tool MCP surface" without it crowding
       // out domain capabilities.
-      behavior_surfaces: dimension((cas.behavior_surfaces?.length || 0) > 0, cas.behavior_surfaces?.length || 0, 'get_summary(detail=full)'),
+      behavior_surfaces: dimension((cas.behavior_surfaces?.length || 0) > 0, cas.behavior_surfaces?.length || 0, 'get_system_overview'),
       tests: dimension((cas.test_suites?.length || 0) > 0, cas.test_suites?.length || 0, 'get_test_summary'),
     },
     hint: 'Availability + counts only — call the named tool to pull each dimension. Heavy content is intentionally omitted from this capsule.',

@@ -933,7 +933,11 @@ export function validateDescription(description: string, target: Pick<ResolvedTa
 }
 
 function capabilityDerivedGroundingTerms(target: any, cas?: CASOutput): string[] {
-  if (!isGenericAnalyzerCapabilityName(target?.name)) return [];
+  // Operation-derived concepts are legitimate grounding for ANY capability,
+  // not just generic-named ones: the description prompt feeds these behavior
+  // hints to the AI, so the scaffold gate must accept text grounded in them
+  // (a sentence built from supplied operation evidence is not "ungrounded").
+  if (!target?.operations?.length && !isGenericAnalyzerCapabilityName(target?.name)) return [];
   const terms = new Set<string>();
   for (const operation of target?.operations || []) {
     const concept = publicOperationConcept(operation, operationNode(operation, cas));
