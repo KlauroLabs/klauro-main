@@ -1435,7 +1435,10 @@ export class AnalyzerOrchestrator {
     await yieldToEventLoop();
 
     phaseStart = Date.now();
-    const systemName = options?.displayName || path.basename(projectPath);
+    // Bootstrap value; upgraded below (once projectTextSignal.productDocTitle
+    // is available) via resolveSystemDisplayName — see DEFECT (system name)
+    // note there. Never reassigned once options.displayName was supplied.
+    let systemName = options?.displayName || path.basename(projectPath);
     const progressiveLevels = this.buildProgressiveLevels(allNodes, categories);
     logTiming('pp_progressiveLevels', phaseStart);
     await yieldToEventLoop();
@@ -1642,6 +1645,12 @@ export class AnalyzerOrchestrator {
     await yieldToEventLoop();
     const entryPointSummary = this.summarizeEntryPoints(productEntryPointsForPurpose);
     const projectTextSignal = this.extractProjectTextSignal(projectPath);
+    // Upgrade the bootstrap basename-derived systemName now that the product
+    // doc title (README/PRD H1) is available — evidence-gated, never
+    // overrides an explicit options.displayName.
+    if (!options?.displayName) {
+      systemName = this.resolveSystemDisplayName(projectPath, projectTextSignal.productDocTitle) || systemName;
+    }
     const frameworkNames = this.frameworkNamesForPurpose(contributions, allNodes, projectPath);
     const dbEntityNames = databaseSchema.entities.map(e => e.name);
     const externalServiceNames = externalServices.map(svc => svc.name);
@@ -1739,7 +1748,8 @@ export class AnalyzerOrchestrator {
         comprehensionJourneys,
         deployableEvidence.length,
         allNodes,
-        allEdges
+        allEdges,
+        behaviorSurfaces
       );
       const aiDuration = Date.now() - aiPhaseStart;
       const aiGeneration = enhancedSystemPurpose.description_generation;
@@ -2661,7 +2671,10 @@ export class AnalyzerOrchestrator {
     this.normalizeNodeMetrics(nodes);
 
     const categories = previousOutput.categories || {};
-    const systemName = options?.displayName || path.basename(projectPath);
+    // Bootstrap value; upgraded below via resolveSystemDisplayName once
+    // incrProjectTextSignal.productDocTitle is available — see the DEFECT
+    // (system name) note on resolveSystemDisplayName.
+    let systemName = options?.displayName || path.basename(projectPath);
     const progressiveLevels = this.buildProgressiveLevels(nodes, categories);
     const index = this.buildIndex(nodes, entryPoints, exitPoints, previousOutput.perspectives || []);
 
@@ -2822,6 +2835,12 @@ export class AnalyzerOrchestrator {
     const incrExternalServiceNames = externalServices.map(svc => svc.name);
     const incrEntryPointSummary = this.summarizeEntryPoints(this.filterPrimaryProductEntryPoints(entryPoints, nodes, projectPath));
     const incrProjectTextSignal = this.extractProjectTextSignal(projectPath);
+    // Upgrade the bootstrap basename-derived systemName now that the product
+    // doc title is available — evidence-gated, never overrides an explicit
+    // options.displayName. Same rule as the full analysis path.
+    if (!options?.displayName) {
+      systemName = this.resolveSystemDisplayName(projectPath, incrProjectTextSignal.productDocTitle) || systemName;
+    }
     // Same comprehension-input gate as the full path: test/fixture journeys and
     // entities stay structural facts but never seed comprehension.
     const incrComprehensionJourneys = this.filterPrimaryProductJourneys(
@@ -2875,7 +2894,8 @@ export class AnalyzerOrchestrator {
         incrComprehensionJourneys,
         deployableEvidence.length,
         nodes,
-        edges
+        edges,
+        behaviorSurfaces
       );
     } else if (
       previousOutput.enhanced_system_purpose?.inferred_description &&
@@ -8885,6 +8905,36 @@ export class AnalyzerOrchestrator {
    * is linked back to the entities and operations (with file paths) that evidence
    * it, so the catalog stays navigable into the deterministic graph.
    */
+  // A behavior-surface family (mcp_tool/rpc/command/event/message registration
+  // engine, e.g. Klauro's own 207-tool MCP surface) at or above this ENTRY-POINT
+  // count IS the platform's value proposition, not incidental plumbing — see
+  // the MCP-TOOL-FAMILY MERGE note on aiExtractCapabilityCatalog below.
+  // Evidence-gated on the surface's own deterministic entry-point count, never
+  // a name/domain judgement; small surfaces (a handful of CLI commands) stay
+  // excluded so this does not resurrect the flagship-reinjection regression.
+  private static readonly LARGE_BEHAVIOR_SURFACE_OPERATION_THRESHOLD = 15;
+
+  /**
+   * TRUE entry-point count of a behavior surface. CRITICAL: a surface's
+   * `operations` array is DELIBERATELY capped at 12 in buildBehaviorCapabilities
+   * (`entries.slice(0, 12)`) for CAS size, so `operations.length` maxes out at
+   * 12 and can never distinguish Klauro's 207-tool MCP surface from a 3-command
+   * CLI. The full count survives in the surface's own evidence: its
+   * criticality_factors[0] ("`${total} ${kind} entry points form one cohesive
+   * ...`") and description ("`Behavior surface: ${total} ...`"), both authored
+   * with the real `total`. Read it from there (falling back to the capped
+   * operations length only if neither string is present) so the LARGE-surface
+   * gate keys on the genuine count. Pure evidence read — no fabrication.
+   */
+  private behaviorSurfaceEntryCount(surface: SystemCapability): number {
+    const factor = (surface.criticality_factors || [])[0] || '';
+    const factorMatch = /^\s*(\d+)\b/.exec(factor);
+    if (factorMatch) return Number(factorMatch[1]);
+    const descMatch = /Behavior surface:\s*(\d+)\b/i.exec(surface.description || '');
+    if (descMatch) return Number(descMatch[1]);
+    return (surface.operations || []).length;
+  }
+
   private async aiExtractCapabilityCatalog(input: {
     systemName: string;
     enhancedSystemPurpose: EnhancedSystemPurpose;
@@ -8892,6 +8942,13 @@ export class AnalyzerOrchestrator {
     userJourneys: CASUserJourney[];
     dataEntities: CASDataEntity[];
     candidateCapabilities: SystemCapability[];
+    // Registration/behavior surfaces (mcp_tool/rpc/command/event/message
+    // engines), passed separately from candidateCapabilities (domain-entity-
+    // anchored candidates only) per the SURFACES ARE NOT CAPABILITIES split.
+    // Used ONLY to let a large homogeneous surface family reach the ranked
+    // candidate window as ONE coarse platform-capability candidate (see
+    // LARGE_BEHAVIOR_SURFACE_OPERATION_THRESHOLD) — never re-injected wholesale.
+    behaviorSurfaces?: SystemCapability[];
     externalServices: string[];
     flowGraph: CASFlowGraph;
     projectTextSignal?: ProjectTextSignal;
@@ -8931,7 +8988,27 @@ export class AnalyzerOrchestrator {
     // terminology corroboration, own category, externally-invocable operations
     // — so the candidates the purpose test cares about are the ones that fill
     // the (now scale-aware) window. Pure evidence ordering, never name keywords.
-    const rankedCandidateAreas = this.rankCatalogPromptCandidates(input.candidateCapabilities, input.userJourneys || []);
+    // MCP-TOOL-FAMILY MERGE (before ranking): a large homogeneous registration-
+    // surface family (Klauro's own 207 mcp_tool entry points, or any product
+    // whose value IS a large tool/handler surface) was previously INVISIBLE to
+    // this prompt entirely — behavior surfaces are domain-entity-free by
+    // construction (SURFACES ARE NOT CAPABILITIES), so `candidateCapabilities`
+    // (domain candidates only) never contained a fragment for it, meaning the
+    // platform's actual built-for value never reached the AI as a candidate at
+    // any window size. Folding each qualifying LARGE surface in as ONE coarse
+    // candidate (already a single merged family, never per-tool singletons —
+    // buildBehaviorCapabilities already clusters by registration kind) lets
+    // the ranker and the AI see "provide the codebase-intelligence tool
+    // surface" as a real, evidence-backed candidate. Gated on the surface's
+    // own operation count (LARGE_BEHAVIOR_SURFACE_OPERATION_THRESHOLD), not a
+    // name — small surfaces stay excluded, so a handful of CLI commands or a
+    // single webhook handler does not re-litigate the flagship-reinjection
+    // regression this split originally fixed.
+    const largeSurfaceCandidates = (input.behaviorSurfaces || []).filter(
+      surface => this.behaviorSurfaceEntryCount(surface) >= AnalyzerOrchestrator.LARGE_BEHAVIOR_SURFACE_OPERATION_THRESHOLD
+    );
+    const candidatePoolForRanking = [...input.candidateCapabilities, ...largeSurfaceCandidates];
+    const rankedCandidateAreas = this.rankCatalogPromptCandidates(candidatePoolForRanking, input.userJourneys || []);
     const candidateWindowSize = Math.min(40, Math.max(24, Math.ceil(rankedCandidateAreas.length / 6)));
     const candidateAreas = rankedCandidateAreas
       .map(capability => capability.name)
@@ -9125,6 +9202,19 @@ export class AnalyzerOrchestrator {
         description = `${name} manages ${itemEntityNamesRaw.slice(0, 4).join(', ')}.`;
       }
       if (!name || description.length < 20) continue;
+      // VALIDITY GUARD (defect: a description-less deterministic candidate
+      // label leaking through as a "capability"): the prompt mandates a real
+      // description field per item. A catalog entry whose model output NEVER
+      // included one — its description exists here only via the entity-
+      // synthesis fallback above, or the model is non-compliant — combined
+      // with a NAME that is itself a raw deterministic label rather than
+      // AI-authored product language (a verbatim echo of one of the
+      // candidateAreas facts, a truncated evidence-list artifact like
+      // "... 2 more", or a mechanism/file-shaped token such as ".sh"/"shell
+      // script") is never emitted as a final capability — no matter how the
+      // length checks above happened to be satisfied.
+      const rawItemDescription = typeof item.description === 'string' ? item.description.trim() : '';
+      if (!rawItemDescription && this.isRawCandidateLabelName(name, candidateAreas)) continue;
       const key = name.toLowerCase();
       if (seen.has(key)) continue;
       seen.add(key);
@@ -9183,7 +9273,11 @@ export class AnalyzerOrchestrator {
     // structurally caps flow rollup (measured live: 13 caps x 3 entities left
     // 330+ HTTP flows unmapped on an 85k-node repo).
     const entityIdsByItemIndex = new Map<number, Set<string>>();
-    for (const candidate of input.candidateCapabilities) {
+    // Includes largeSurfaceCandidates too: if the AI picked up the merged
+    // platform-surface candidate (e.g. "Provide MCP codebase-intelligence
+    // tools"), its operations/entities must link back the same way a domain
+    // candidate's would, so the resulting capability stays navigable.
+    for (const candidate of candidatePoolForRanking) {
       const candidateEntityNames = candidate.related_entities.map(id => (entityNameById.get(id) || id).toLowerCase());
       const candidateTokens = discriminativeTokens(
         candidate.name.toLowerCase().split(/\s+/).filter(token => token.length > 3 && !GENERIC_CAPABILITY_NAME_TOKENS.has(token))
@@ -9388,6 +9482,31 @@ export class AnalyzerOrchestrator {
     return segments.some(segment => INFRA_SEGMENT.test(segment));
   }
 
+  /**
+   * True when `name` reads as a raw deterministic candidate label (the
+   * bottom-up fact handed to the prompt) rather than AI-authored product
+   * language ("Trade cryptocurrency", not "run_shell_script_release_sh_
+   * docker_read_2_more"). Three generic, evidence-based signals — never a
+   * project-specific keyword list:
+   *   1. Verbatim echo of one of the candidateAreas strings supplied as
+   *      facts — the model returned the input unchanged instead of
+   *      interpreting it.
+   *   2. A truncated evidence-list artifact ("... 2 more") — a label-
+   *      formatting leftover, never a capability name.
+   *   3. File/mechanism-shaped tokens (script extensions, "shell script")
+   *      leaking into the NAME — a deterministic/structural label, not
+   *      product language a PM would use.
+   */
+  private isRawCandidateLabelName(name: string, candidateAreas: string[]): boolean {
+    const trimmed = name.trim();
+    if (!trimmed) return true;
+    if (candidateAreas.some(area => area.trim().toLowerCase() === trimmed.toLowerCase())) return true;
+    if (/\b\d+\s+more$/i.test(trimmed)) return true;
+    if (/\.(sh|bash|zsh|py|rb|ts|tsx|jsx?|json|ya?ml|env|dockerfile)\b/i.test(trimmed)) return true;
+    if (/\bshell\s+script\b/i.test(trimmed)) return true;
+    return false;
+  }
+
   private parseCapabilityCatalog(raw: string): Array<Record<string, unknown>> {
     if (!raw) return [];
     let text = String(raw).trim().replace(/^```(?:json)?/i, '').replace(/```$/i, '').trim();
@@ -9446,7 +9565,16 @@ export class AnalyzerOrchestrator {
     // method is unaffected; the entity pass simply gets no relation evidence
     // when omitted.
     nodes: CASNode[] = [],
-    edges: CASEdge[] = []
+    edges: CASEdge[] = [],
+    // Registration/behavior surfaces (buildSystemCapabilities' separate
+    // `behaviorSurfaces` return value) — passed through so the capability
+    // catalog can (a) let a genuinely LARGE surface family reach the ranked
+    // candidate window as one coarse platform candidate (see
+    // LARGE_BEHAVIOR_SURFACE_OPERATION_THRESHOLD), and (b) seed the near-empty
+    // fallback when the AI catalog returns nothing AND there are no
+    // deterministic domain candidates either. Optional/defaulted so any other
+    // caller is unaffected.
+    behaviorSurfaces: SystemCapability[] = []
   ): Promise<void> {
     this.setElementDescriptionGrounding(
       enhancedSystemPurpose.primary_domain,
@@ -9507,6 +9635,7 @@ export class AnalyzerOrchestrator {
         userJourneys,
         dataEntities,
         candidateCapabilities: candidateSnapshot,
+        behaviorSurfaces,
         externalServices,
         flowGraph,
         projectTextSignal,
@@ -9515,6 +9644,29 @@ export class AnalyzerOrchestrator {
       if (extracted.length > 0) {
         const reconciled = this.reconcileCatalogedCapabilities(extracted, candidateSnapshot, dataEntities);
         systemCapabilities.splice(0, systemCapabilities.length, ...reconciled);
+      } else if (candidateSnapshot.length === 0) {
+        // GENUINE FALLBACK: the AI catalog returned nothing usable (empty, or
+        // its only item was dropped by the validity guard) AND there were no
+        // deterministic domain candidates to fall back on either — leaving
+        // system_capabilities empty would strand agents with zero navigable
+        // capabilities on a product whose real value IS a large tool/handler
+        // surface (an MCP-tool platform, a CLI-only utility, ...). Re-derive
+        // coarse domain capabilities from the dominant candidate family
+        // available: the merged LARGE behavior-surface candidate(s), gated on
+        // the same operation-count threshold used to admit them to the AI
+        // prompt. Never fabricated — these are real deterministic surfaces,
+        // just promoted out of the surfaces-only tier for this narrow
+        // total-failure case. Small/absent surfaces leave the catalog
+        // genuinely empty rather than inventing a capability.
+        const largeSurfaceCandidates = behaviorSurfaces.filter(
+          surface => this.behaviorSurfaceEntryCount(surface) >= AnalyzerOrchestrator.LARGE_BEHAVIOR_SURFACE_OPERATION_THRESHOLD
+        );
+        if (largeSurfaceCandidates.length > 0) {
+          systemCapabilities.splice(0, systemCapabilities.length, ...largeSurfaceCandidates.map(surface => ({
+            ...surface,
+            criticality_factors: Array.from(new Set([...(surface.criticality_factors || []), 'genuine-fallback-from-behavior-surface'])),
+          })));
+        }
       }
     }
 
@@ -10288,8 +10440,25 @@ export class AnalyzerOrchestrator {
       ? configuredBatchSize
       : defaultBatchSize));
     const estimatedRounds = Math.max(1, Math.ceil(targets.length / Math.max(1, batchSize * concurrency)));
-    const ROUND_LATENCY_MS = 7000;
-    const MAX_SCALED_BUDGET_MS = 45000;
+    // REPAIR-AWARE per-round latency. Measured happy-path batch latency (70B via
+    // DeepInfra, cold cache) is ~4-8s per round, but a round whose batch trips the
+    // quality gate is NOT one round-trip: it fans out to a batch-repair call PLUS
+    // one SERIAL individual-repair call per still-failing target (see the repair
+    // block below). A single gate-heavy round therefore costs several round-trips.
+    // The prior 7000ms estimate assumed zero repair overhead, so a 112-entity repo
+    // budgeted only ~21s and left ~half the entities never attempted once repairs
+    // ate the clock. 10000ms folds in modest repair headroom without ballooning the
+    // AI-phase latency for the common (low-rejection) case, where the pass still
+    // finishes well under budget and returns early.
+    const ROUND_LATENCY_MS = 10000;
+    // Ceiling for the AUTO-scaled budget (an explicit env override still wins). The
+    // entity pass is the LAST comprehension pass; on large entity sets the prior 45s
+    // cap could still truncate coverage even with repairs behaving. 75s bounds the
+    // worst case while giving big catalogs enough rounds to cover the tail; it is
+    // only ever reached on repos with many concurrency-bounded rounds, and the pass
+    // returns as soon as every target is described (it does not spend the full
+    // budget when work finishes early).
+    const MAX_SCALED_BUDGET_MS = 75000;
     const configuredBudget = Number(process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BUDGET_MS || '');
     const budgetMs = Number.isFinite(configuredBudget) && configuredBudget > 0
       ? configuredBudget
@@ -10539,7 +10708,12 @@ export class AnalyzerOrchestrator {
               evidenceSummaryCount: target.evidenceSummary?.length || 0,
               lifecycle: target.lifecycle,
             },
-            raw_output_excerpt: description,
+            // Log the model's RAW output — the accepted final when one survived,
+            // otherwise the rejected candidate that failed the gate (original,
+            // then repair, then individual-repair). Without this, a rejection
+            // logged `undefined` and the rejected text was unrecoverable, which
+            // defeats the dataset's purpose of explaining WHY the gate rejected.
+            raw_output_excerpt: description || originalDescription || repairedDescription || individualDescription,
             parse_ok: Boolean(originalDescription),
             gate_verdict: description ? 'accepted' : 'rejected',
             gate_reason: description ? undefined : (repairedValidation.reason || 'generated-description-failed-quality-gate'),
@@ -12981,6 +13155,37 @@ export class AnalyzerOrchestrator {
       .split(/\r?\n/)
       .filter(line => !/\b(klauro|unravl|mcp|claude(?:\s+code)?|codex|anthropic|cursor|copilot|coding agents?|agent operating loop|agent contexts?|analysis-focus|cas graph|codebase intelligence|query the analysis|analyze_codebase|get_summary|get_level|get_node|get_callers|get_callees|find_tests|search_nodes|get_agent_|run_answer_pack|assess_change_risk|get_coding_context)\b/i.test(line))
       .join('\n');
+  }
+
+  /**
+   * DEFECT (system name = directory basename): `path.basename(projectPath)`
+   * ("proof-of-concept") was the ONLY fallback when no explicit displayName
+   * was supplied, even when the repo names itself elsewhere. Evidence-gated
+   * priority, never fabricated: (1) an explicit caller-supplied displayName
+   * always wins; (2) the product doc's own title (README/PRD H1 — the
+   * strongest top-down self-naming evidence, already parsed once by
+   * extractProjectTextSignal as productDocTitle and reused here verbatim,
+   * never re-derived); (3) the manifest's own declared name (package.json
+   * `name`, scope-stripped and humanized — "@klauro/monorepo" -> "Monorepo");
+   * (4) the path basename as the last-resort structural fact. Returns
+   * undefined when neither doc title nor manifest name is available, so the
+   * caller keeps its existing basename-derived value.
+   */
+  private resolveSystemDisplayName(projectPath: string, productDocTitle?: string): string | undefined {
+    const cleanedTitle = String(productDocTitle || '').trim();
+    if (cleanedTitle && cleanedTitle.length <= 80) return cleanedTitle;
+    const packageJson = this.safeReadJson(path.join(projectPath, 'package.json'));
+    const manifestName = typeof packageJson?.name === 'string' ? packageJson.name.trim() : '';
+    if (!manifestName) return undefined;
+    const scopeStripped = manifestName.replace(/^@[^/]+\//, '');
+    const humanized = scopeStripped
+      .replace(/[-_]+/g, ' ')
+      .split(' ')
+      .filter(Boolean)
+      .map((word: string) => word.charAt(0).toUpperCase() + word.slice(1))
+      .join(' ')
+      .trim();
+    return humanized || undefined;
   }
 
   private extractProjectTextSignal(projectPath: string): ProjectTextSignal {

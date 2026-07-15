@@ -5092,6 +5092,303 @@ describe('top-down capability evidence (C2)', () => {
   });
 });
 
+describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung-2: caps:1 + product-name collapse)', () => {
+  it('drops a description-less raw candidate-label item instead of shipping it as the sole capability', async () => {
+    // Reproduces the live Klauro-self defect: the AI catalog stage returned a
+    // single malformed item that just echoed a deterministic candidate label
+    // back verbatim, with no description field, but WITH entities — which is
+    // what let it survive the pre-existing entity-grounded description
+    // synthesis fallback. Before the validity guard this then shipped as the
+    // sole capability and, because the caller only skips the splice when
+    // `extracted.length === 0`, it replaced every real deterministic
+    // capability with this one accidental leftover.
+    const original = (aiService as any).generateComponentDescription;
+    (aiService as any).generateComponentDescription = async () => JSON.stringify({
+      capabilities: [
+        { name: 'run_shell_script_release_sh_docker_read_2_more', entities: ['ReleaseConfig'] },
+      ],
+    });
+    try {
+      const catalog = await orch.aiExtractCapabilityCatalog({
+        systemName: 'proof-of-concept',
+        enhancedSystemPurpose: { primary_domain: 'dev-tool', core_concepts: [] },
+        frameworks: [], userJourneys: [],
+        dataEntities: [{ id: 'entity_releaseconfig', name: 'ReleaseConfig' }],
+        candidateCapabilities: [
+          { name: 'run_shell_script_release_sh_docker_read_2_more', related_entities: [], operations: [] },
+        ],
+        externalServices: [], flowGraph: { capabilities: [] },
+        projectTextSignal: { concepts: [], evidence: [] }, budgetMs: 30000,
+      });
+      expect(catalog.length).toBe(0);
+    } finally {
+      (aiService as any).generateComponentDescription = original;
+    }
+  });
+
+  it('rejects a raw candidate-label name even when entities let a description synthesize', async () => {
+    // The name-shape signal must catch the defect even when the item HAD
+    // entities (so the entity-grounded description fallback would otherwise
+    // paper over the missing description and let it through).
+    const original = (aiService as any).generateComponentDescription;
+    (aiService as any).generateComponentDescription = async () => JSON.stringify({
+      capabilities: [
+        { name: 'deploy.sh docker build 3 more', entities: ['ReleaseConfig'] },
+      ],
+    });
+    try {
+      const catalog = await orch.aiExtractCapabilityCatalog({
+        systemName: 'proof-of-concept',
+        enhancedSystemPurpose: { primary_domain: 'dev-tool', core_concepts: [] },
+        frameworks: [], userJourneys: [],
+        dataEntities: [{ id: 'entity_releaseconfig', name: 'ReleaseConfig' }],
+        candidateCapabilities: [],
+        externalServices: [], flowGraph: { capabilities: [] },
+        projectTextSignal: { concepts: [], evidence: [] }, budgetMs: 30000,
+      });
+      expect(catalog.length).toBe(0);
+    } finally {
+      (aiService as any).generateComponentDescription = original;
+    }
+  });
+
+  it('keeps a real AI-authored capability whose description was genuinely supplied', async () => {
+    // Control: the guard must not reject legitimate output.
+    const original = (aiService as any).generateComponentDescription;
+    (aiService as any).generateComponentDescription = async () => JSON.stringify({
+      capabilities: [
+        { name: 'Automate release packaging', description: 'Packages and publishes versioned release artifacts so operators can ship builds.', category: 'core', entities: ['ReleaseConfig'], journeys: [] },
+      ],
+    });
+    try {
+      const catalog = await orch.aiExtractCapabilityCatalog({
+        systemName: 'proof-of-concept',
+        enhancedSystemPurpose: { primary_domain: 'dev-tool', core_concepts: [] },
+        frameworks: [], userJourneys: [],
+        dataEntities: [{ id: 'entity_releaseconfig', name: 'ReleaseConfig' }],
+        candidateCapabilities: [
+          { name: 'Release Management', related_entities: ['entity_releaseconfig'], operations: [] },
+        ],
+        externalServices: [], flowGraph: { capabilities: [] },
+        projectTextSignal: { concepts: [], evidence: [] }, budgetMs: 30000,
+      });
+      expect(catalog.length).toBe(1);
+      expect(catalog[0].name).toBe('Automate release packaging');
+    } finally {
+      (aiService as any).generateComponentDescription = original;
+    }
+  });
+
+  it('folds a LARGE behavior-surface family into the ranked candidate window as one coarse candidate', async () => {
+    // Reproduces the live Klauro-self defect: 207 mcp_tool entry points are
+    // ALREADY one merged behaviorSurfaces candidate (buildBehaviorCapabilities
+    // clusters by registration kind), but the AI catalog previously never saw
+    // it at all — behavior surfaces never reached `candidateCapabilities`, so
+    // the platform's actual flagship value could never be named as a
+    // capability, no matter the window size.
+    const captured: any[] = [];
+    const original = (aiService as any).generateComponentDescription;
+    (aiService as any).generateComponentDescription = async (opts: any) => {
+      captured.push(opts);
+      return JSON.stringify({
+        capabilities: [
+          { name: 'Provide MCP tool surface to agents', description: 'Exposes MCP tools that let coding agents query the CAS graph before editing.', category: 'core', entities: [], journeys: [] },
+        ],
+      });
+    };
+    try {
+      // REAL evidence shape: buildBehaviorCapabilities CAPS the operations array
+      // at 12 (entries.slice(0, 12)) for CAS size, so a 207-tool surface arrives
+      // here with operations.length === 12 but criticality_factors[0] carrying
+      // the TRUE count ("207 mcp_tool entry points form one cohesive behavior
+      // surface"). The merge gate must read the true count from that evidence,
+      // NOT operations.length — otherwise it can never fire on real data.
+      const cappedOps = Array.from({ length: 12 }, (_, i) => ({
+        entry_point_id: `mcp_tool_${i}`, entry_point_type: 'mcp_tool', action: 'Call', path_or_command: `tool_${i}`,
+      }));
+      const catalog = await orch.aiExtractCapabilityCatalog({
+        systemName: 'klauro',
+        enhancedSystemPurpose: { primary_domain: 'dev-tool', core_concepts: [] },
+        frameworks: [], userJourneys: [],
+        dataEntities: [],
+        candidateCapabilities: [],
+        behaviorSurfaces: [
+          {
+            id: 'cap_mcp_tool_surface', name: 'Mcp Tool Surface',
+            description: 'Behavior surface: 207 mcp tool entry points; handlers reach 5 data entities.',
+            related_domains: ['mcp_tool'], related_entities: [], operations: cappedOps,
+            criticality_factors: ['207 mcp_tool entry points form one cohesive behavior surface'],
+          },
+        ],
+        externalServices: [], flowGraph: { capabilities: [] },
+        projectTextSignal: { concepts: [], evidence: [] }, budgetMs: 30000,
+      });
+      expect(catalog.length).toBe(1);
+      expect(catalog[0].name).toBe('Provide MCP tool surface to agents');
+      // Reached the prompt as a real candidate route area (evidence the ranker
+      // actually surfaced it, not just that the AI happened to name it) — proving
+      // the gate keyed on the TRUE 207 count, not the capped-at-12 operations.
+      const facts = captured[0]?.additionalContext?.facts;
+      expect(facts?.candidate_route_areas).toContain('Mcp Tool Surface');
+      // Operations link back so the resulting capability stays navigable.
+      expect(catalog[0].operations.length).toBeGreaterThan(0);
+    } finally {
+      (aiService as any).generateComponentDescription = original;
+    }
+  });
+
+  it('excludes a SMALL behavior surface from the ranked window (below the operation-count threshold)', async () => {
+    const captured: any[] = [];
+    const original = (aiService as any).generateComponentDescription;
+    (aiService as any).generateComponentDescription = async (opts: any) => {
+      captured.push(opts);
+      return JSON.stringify({ capabilities: [] });
+    };
+    try {
+      const fewOps = Array.from({ length: 3 }, (_, i) => ({
+        entry_point_id: `cli_${i}`, entry_point_type: 'cli', action: 'Run', path_or_command: `cmd_${i}`,
+      }));
+      await orch.aiExtractCapabilityCatalog({
+        systemName: 'small-tool',
+        enhancedSystemPurpose: { primary_domain: 'dev-tool', core_concepts: [] },
+        frameworks: [], userJourneys: [],
+        dataEntities: [],
+        candidateCapabilities: [],
+        behaviorSurfaces: [
+          {
+            id: 'cap_cli_surface', name: 'Cli Surface',
+            description: 'Behavior surface: 3 command entry points; handlers form a behavior engine with no persisted-entity surface.',
+            related_domains: ['commands'], related_entities: [], operations: fewOps,
+            criticality_factors: ['3 command entry points form one cohesive behavior surface'],
+          },
+        ],
+        externalServices: [], flowGraph: { capabilities: [] },
+        projectTextSignal: { concepts: [], evidence: [] }, budgetMs: 30000,
+      });
+      const facts = captured[0]?.additionalContext?.facts;
+      expect(facts?.candidate_route_areas || []).not.toContain('Cli Surface');
+    } finally {
+      (aiService as any).generateComponentDescription = original;
+    }
+  });
+
+  it('behaviorSurfaceEntryCount reads the TRUE count from evidence, not the capped operations array', () => {
+    // The exact real-data bug: operations capped at 12, true count 207 in the
+    // evidence strings. The gate must see 207.
+    const surface: any = {
+      id: 'cap_mcp_tool_surface', name: 'Mcp Tool Surface',
+      description: 'Behavior surface: 207 mcp tool entry points; handlers reach 5 data entities.',
+      operations: Array.from({ length: 12 }, (_, i) => ({ entry_point_id: `t_${i}` })),
+      criticality_factors: ['207 mcp_tool entry points form one cohesive behavior surface'],
+    };
+    expect(orch.behaviorSurfaceEntryCount(surface)).toBe(207);
+    // Falls back to operations.length when no evidence string carries the count.
+    expect(orch.behaviorSurfaceEntryCount({ operations: [{ entry_point_id: 'a' }, { entry_point_id: 'b' }], criticality_factors: [] })).toBe(2);
+  });
+
+  it('near-empty AI fallback re-derives from the merged LARGE surface instead of shipping zero/one accidental capability', async () => {
+    const envKeys = ['OPENAI_API_KEY', 'KLAURO_AI_INTERPRETATION', 'KLAURO_AI_INTERPRETATION_FORCE', 'KLAURO_AI_INTERPRETATION_BUDGET_MS'];
+    const saved: Record<string, string | undefined> = Object.fromEntries(envKeys.map(key => [key, process.env[key]]));
+    process.env.OPENAI_API_KEY = 'test-openai-key';
+    process.env.KLAURO_AI_INTERPRETATION = 'true';
+    process.env.KLAURO_AI_INTERPRETATION_FORCE = '1';
+    delete process.env.KLAURO_AI_INTERPRETATION_BUDGET_MS;
+    const spy = jest.spyOn(aiService, 'generateComponentDescription').mockResolvedValue(JSON.stringify({
+      system_description: 'Klauro builds CAS relationship graphs from source repositories so coding agents can reason about a codebase before touching it. It parses code into structural facts and layers comprehension over them, grounding every description in the evidence bundle it gathered. It hands this analysis context to agents over MCP.',
+      domain: '',
+      descriptions: [],
+      capabilities: [],
+    }));
+    try {
+      const purpose: any = {
+        primary_type: 'developer-tool', confidence: 0.9, evidence: [],
+        primary_domain: 'code-analysis', core_concepts: ['code', 'analysis'],
+        inferred_description: 'A code analysis service.', supporting_workflow_ids: [],
+      };
+      const cappedOps = Array.from({ length: 12 }, (_, i) => ({
+        entry_point_id: `mcp_tool_${i}`, entry_point_type: 'mcp_tool', action: 'Call', path_or_command: `tool_${i}`,
+      }));
+      const behaviorSurfaces: any[] = [
+        {
+          id: 'cap_mcp_tool_surface', name: 'Mcp Tool Surface',
+          description: 'Behavior surface: 207 mcp tool entry points; handlers reach 5 data entities.',
+          related_domains: ['mcp_tool'], related_entities: [], operations: cappedOps,
+          criticality_factors: ['207 mcp_tool entry points form one cohesive behavior surface'],
+        },
+      ];
+      const systemCapabilities: any[] = []; // no deterministic domain candidates at all
+      const userJourneys: any[] = [{ name: 'Analyze a codebase' }];
+      await orch.applyAIInterpretation(
+        purpose, 'klauro', [], [], [], [], orch.emptyFlowGraph(), [],
+        systemCapabilities, [], [], [], { concepts: [], evidence: [] }, userJourneys,
+        undefined, [], [], behaviorSurfaces
+      );
+      expect(systemCapabilities.length).toBeGreaterThan(0);
+      expect(systemCapabilities.some((capability: any) => capability.id === 'cap_mcp_tool_surface')).toBe(true);
+    } finally {
+      spy.mockRestore();
+      for (const key of envKeys) {
+        if (saved[key] === undefined) delete process.env[key];
+        else process.env[key] = saved[key];
+      }
+    }
+  });
+});
+
+describe('resolveSystemDisplayName (Klauro rung-2: system name = directory basename defect)', () => {
+  it('falls back to a scope-stripped, humanized manifest name when no doc title is supplied', () => {
+    // The caller (analyzeProject) only invokes this helper when
+    // options.displayName is ABSENT — an explicit displayName short-circuits
+    // before resolveSystemDisplayName is ever called, so that priority is a
+    // call-site contract, not something this helper itself needs to encode.
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-sysname-display-'));
+    try {
+      fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ name: '@acme/widgets' }));
+      expect(orch.resolveSystemDisplayName(root, undefined)).toBe('Widgets');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('prefers the product doc title (README H1) over the manifest name', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-sysname-doctitle-'));
+    try {
+      fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ name: '@klauro/monorepo' }));
+      expect(orch.resolveSystemDisplayName(root, 'Klauro Proof Of Concept')).toBe('Klauro Proof Of Concept');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('falls back to a scope-stripped, humanized manifest name when no doc title exists', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-sysname-manifest-'));
+    try {
+      fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ name: '@acme/widget-tracker' }));
+      expect(orch.resolveSystemDisplayName(root, undefined)).toBe('Widget Tracker');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('returns undefined (caller keeps the basename fallback) when neither doc title nor manifest name exist', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-sysname-none-'));
+    try {
+      expect(orch.resolveSystemDisplayName(root, undefined)).toBeUndefined();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('resolves the real Klauro repo to a Klauro-grounded name, not the "proof-of-concept" directory basename', () => {
+    const repoRoot = path.resolve(__dirname, '../../../../..');
+    const signal = orch.extractProjectTextSignal(repoRoot);
+    const resolved = orch.resolveSystemDisplayName(repoRoot, signal.productDocTitle);
+    expect(resolved).toBeDefined();
+    expect(resolved).not.toBe('proof-of-concept');
+    expect(String(resolved)).toMatch(/^Klauro/i);
+  });
+});
+
 describe('architecture-shape claim gate (live truckspy: "microservices" shipped for a one-backend compose repo)', () => {
   const purpose = { primary_domain: 'fleet-management', core_concepts: ['vehicle', 'driver', 'trip'] };
   const base = 'A fleet management platform that tracks vehicles, drivers, and trips for dispatch operators. It records trip assignments and produces driver activity reports for fleet managers.';

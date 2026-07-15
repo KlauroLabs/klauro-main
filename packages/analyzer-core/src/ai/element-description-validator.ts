@@ -82,6 +82,21 @@ const FILLER_PHRASE_PATTERN = new RegExp([
   '\\bcentralizes? the coordination of [^.]{0,140}\\bscripts?\\b',
 ].join('|'), 'i');
 
+/**
+ * ENTITY-KIND recalibration of the filler gate. FILLER_PHRASE_PATTERN was authored
+ * entirely from CAPABILITY-description failures — it rejects capability plumbing /
+ * mechanism-restatement scaffolds. A handful of its phrases, however, describe
+ * exactly what a state/record ENTITY legitimately IS: a Session that holds the
+ * "current product context", an AuditLog that records "state mutations", a
+ * view-model that captures "screen state" or "workflow state". For an entity these
+ * are accurate record semantics, not filler. When the subject is an entity and the
+ * ONLY filler hits are these state/record phrases, the description is not rejected.
+ * Capabilities still reject them (they remain plumbing there). This list is the
+ * intersection of FILLER_PHRASE_PATTERN with legitimate entity record/state
+ * vocabulary — nothing here is generic "X manages X" filler, which stays rejected.
+ */
+const ENTITY_LEGITIMATE_STATE_PATTERN = /\b(?:state mutations?|screen state|workflow state|current product context|surrounding product workflows?|records?, lists?, or screen state)\b/gi;
+
 const MARKETING_LANGUAGE_PATTERN = /\b(seamless(?:ly)?|robust|comprehensive|various|crucial role|plays a key role|efficient(?:ly)?|efficiency|productivity|compliant|compliance|advanced|streamline(?:s|d|ing)?|user-friendly|business value|improving operational|enhanc(?:e|es|ing)|better understanding|insights(?: into)?|structured data and insights|reduces? costs?|best practices|scalable|secure by design|user experience|strong foundation|ideal solution|best[- ]in[- ]class|state[- ]of[- ]the[- ]art|cutting[- ]edge|feature[- ]rich)\b/gi;
 
 function splitGroundingSource(value: string): string[] {
@@ -212,7 +227,16 @@ export function validateElementDescription(
     ]);
     if (scaffoldReason) return { ok: false, reason: scaffoldReason };
   }
-  if (FILLER_PHRASE_PATTERN.test(cleaned)) return { ok: false, reason: 'generic-structural-phrase' };
+  if (FILLER_PHRASE_PATTERN.test(cleaned)) {
+    // Entity recalibration: if the subject is an entity and the filler match is
+    // ENTIRELY entity-legitimate state/record vocabulary (see
+    // ENTITY_LEGITIMATE_STATE_PATTERN), it is accurate record semantics, not
+    // filler — re-test with those phrases stripped and only reject if capability-
+    // plumbing filler remains. Capabilities are unaffected (always reject).
+    const fillerRemains = subject.kind !== 'entity'
+      || FILLER_PHRASE_PATTERN.test(cleaned.replace(ENTITY_LEGITIMATE_STATE_PATTERN, ' '));
+    if (fillerRemains) return { ok: false, reason: 'generic-structural-phrase' };
+  }
   if (/\borientation entry\b/i.test(cleaned)) return { ok: false, reason: 'source-bucket-restatement' };
   if (subject.kind === 'capability' && /\bcoordinates?\s+(?:scripts?|functions?|helpers?|files?|modules?|operations?)\b/i.test(cleaned)) {
     return { ok: false, reason: 'generic-structural-phrase' };

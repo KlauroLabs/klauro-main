@@ -249,6 +249,56 @@ describe('shared element description validator', () => {
   });
 });
 
+describe('entity-kind filler recalibration (state/record vocabulary is not filler for entities)', () => {
+  // The FILLER_PHRASE_PATTERN was authored from CAPABILITY-description failures.
+  // A few of its phrases ("state mutations", "current product context", "screen
+  // state", "workflow state") describe exactly what a state/record ENTITY IS. For
+  // kind:'entity' those are accurate record semantics, not filler; for
+  // capabilities they remain plumbing and stay rejected.
+
+  it('accepts an audit-log entity that records "state mutations"', () => {
+    const result = validateElementDescription(
+      'AuditLog records who changed what and when across the platform, preserving an immutable history of state mutations for compliance.',
+      { name: 'AuditLog', kind: 'entity', relatedEntities: ['User'], domainVocabulary: ['compliance', 'fleet'] },
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  it('accepts a session entity that holds the "current product context"', () => {
+    const result = validateElementDescription(
+      'Session represents an authenticated user session, tracking the active connection, expiry, and current product context for the signed-in user.',
+      { name: 'Session', kind: 'entity', relatedEntities: ['User'] },
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  it('accepts a view-model entity describing "screen state" and "workflow state"', () => {
+    const result = validateElementDescription(
+      'ViewState holds the current screen state and workflow state the operator sees while dispatching a load.',
+      { name: 'ViewState', kind: 'entity', relatedEntities: ['Load'] },
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  it('STILL rejects genuine capability-plumbing filler for entities', () => {
+    const result = validateElementDescription(
+      'Thing manages the creation and management of internal files and supports tasks across different system components.',
+      { name: 'Thing', kind: 'entity', relatedEntities: ['Widget'] },
+    );
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('generic-structural-phrase');
+  });
+
+  it('STILL rejects state-language plumbing for capabilities (unchanged)', () => {
+    const result = validateElementDescription(
+      'State Management tracks state mutations and current product context across the app.',
+      { name: 'State Management', kind: 'capability', relatedDomains: ['state'] },
+    );
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('generic-structural-phrase');
+  });
+});
+
 describe('external service plausibility filter', () => {
   it('drops Rust types and self references that poisoned exit-point extraction', () => {
     const poisoned = ['socket', 'FuturesUnorderedBounded', 'SliceBuffer', 'Packet', 'pool', 'OffsetDateTime', 'BufferPool', 'zerac'];
