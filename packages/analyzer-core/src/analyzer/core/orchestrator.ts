@@ -21043,7 +21043,15 @@ export class AnalyzerOrchestrator {
       const survivorByKey = new Map<string, CASEdge>();
       const deduped: CASEdge[] = [];
       for (const edge of edges) {
-        const key = `${edge.source}::${edge.target}::${edge.type}`;
+        // Relation identity must survive the collapse: two ORM relations
+        // between the SAME node pair (different navigation fields / relation
+        // kinds, e.g. EF Core Order->User via Buyer AND via Approver, or a
+        // relation + its inverse both stored source->target) are distinct
+        // facts, not duplicates. Fold the metadata field that carries that
+        // identity into the key; edges without one keep the plain triple.
+        const meta = edge.metadata as Record<string, unknown> | undefined;
+        const relIdent = meta?.field ?? meta?.via ?? meta?.relation ?? meta?.relationType ?? meta?.relation_type ?? '';
+        const key = `${edge.source}::${edge.target}::${edge.type}::${String(relIdent)}`;
         const existing = survivorByKey.get(key);
         if (!existing) {
           survivorByKey.set(key, edge);
