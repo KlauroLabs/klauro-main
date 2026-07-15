@@ -3153,6 +3153,15 @@ export interface SystemCapability {
     entry_point_type: string;
     action: string;
     path_or_command?: string;
+    /** HTTP method/path this operation's real entry point declares
+     *  (orchestrator.ts's extractTrigger, mirroring CASEntryPoint.trigger) —
+     *  set only for `entry_point_type === 'http'` operations, never
+     *  fabricated for CLI/event/internal ones. Route-match evidence:
+     *  flow-concepts.ts's deriveCapabilityRelationships matches a flow's own
+     *  outbound API exit points (e.g. an Angular UI flow's per-call
+     *  HttpClient calls) against this to relate a UI flow to the backend
+     *  operation it actually calls. */
+    trigger?: { method?: string; path?: string };
   }>;
 
   related_entities: string[];

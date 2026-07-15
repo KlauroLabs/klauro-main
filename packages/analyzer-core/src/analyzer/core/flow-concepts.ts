@@ -955,6 +955,79 @@ function dispatchTargetForNodes(nodeIds: Set<string>, exitPointsByNode: Map<stri
   return undefined;
 }
 
+/**
+ * Real per-call outbound API exit points (method + resolved endpoint) on any
+ * node of this flow's path — the evidence route-matching in
+ * deriveCapabilityRelationships consumes to relate a UI flow to the backend
+ * capability operation it actually calls over the network. Only exit points
+ * with BOTH a resolved endpoint and a method survive: an exit whose endpoint
+ * couldn't be statically resolved (angular-analyzer.ts's per-call extraction
+ * marks these `endpoint: undefined` rather than fabricating a path) carries
+ * no route evidence and is correctly invisible to this match.
+ */
+function apiRouteCallsForNodes(
+  nodeIds: Set<string>,
+  exitPointsByNode: Map<string, CASExitPoint[]>
+): Array<{ method: string; path: string }> {
+  const calls: Array<{ method: string; path: string }> = [];
+  for (const id of nodeIds) {
+    const eps = exitPointsByNode.get(id) || [];
+    for (const ep of eps) {
+      if (ep.type !== 'api') continue;
+      const method = ep.operation?.method;
+      const endpoint = ep.target?.endpoint;
+      if (!method || !endpoint) continue;
+      calls.push({ method: method.toUpperCase(), path: endpoint });
+    }
+  }
+  return calls;
+}
+
+/** `:id` / `{id}` / `*` — any of the path-param syntaxes real route
+ *  extractors emit (Express/NestJS `:id`, OpenAPI/ASP.NET-style `{id}`,
+ *  wildcard `*`) match ANY concrete segment on the other side. */
+const ROUTE_PARAM_SEGMENT = /^(:[\w-]+|\{[\w-]+\}|\*)$/;
+
+function routeSegmentMatches(a: string, b: string): boolean {
+  if (ROUTE_PARAM_SEGMENT.test(a) || ROUTE_PARAM_SEGMENT.test(b)) return true;
+  return a.toLowerCase() === b.toLowerCase();
+}
+
+function normalizeRouteSegments(p: string): string[] {
+  return p.split('?')[0].split('/').filter(Boolean);
+}
+
+/**
+ * Path-param-aware route match, case-insensitive. Segment COUNT must match
+ * for a normal (full-path) comparison — a call to `/fuel/:id` and an
+ * operation trigger `/fuel/:id/history` are different routes, never treated
+ * as equal just because one is a prefix of the other.
+ *
+ * EXCEPTION: a call whose endpoint could only be resolved as a symbolic
+ * base's TAIL (angular-analyzer.ts's per-call extraction: `${base}/fuel/
+ * cards` → endpoint `/fuel/cards`, base unresolved cross-file) is naturally
+ * SHORTER than the real operation path (`/api/web/fuel/cards`) — the base
+ * prefix the call couldn't see. When the call path is strictly shorter, it
+ * is matched as a SUFFIX of the operation path instead of requiring an exact
+ * segment count, so this real, unavoidable gap (the base constant usually
+ * lives in a different file than the call site) doesn't strand every
+ * base_ref-relative call as unmatched.
+ */
+function routePathsMatch(callPath: string, opPath: string): boolean {
+  const callSegs = normalizeRouteSegments(callPath);
+  const opSegs = normalizeRouteSegments(opPath);
+  if (callSegs.length === 0 || opSegs.length === 0) return false;
+
+  if (callSegs.length === opSegs.length) {
+    return callSegs.every((seg, i) => routeSegmentMatches(seg, opSegs[i]));
+  }
+  if (callSegs.length < opSegs.length) {
+    const opTail = opSegs.slice(opSegs.length - callSegs.length);
+    return callSegs.every((seg, i) => routeSegmentMatches(seg, opTail[i]));
+  }
+  return false; // call path has MORE segments than the operation's declared route — not the same route.
+}
+
 /** CRUD-shaped verbs a PERSIST-role writer's own name can carry — grounds the
  *  "Create/Update/Delete <Entity>" naming the doctrine's acceptance case asks
  *  for (a `saveOrder`/`createBooking`-style write gets a MORE SPECIFIC name
@@ -1832,8 +1905,17 @@ function deriveCapabilityRelationships(args: {
   /** The flow root entry point's type (cli/message/event/route/http/...) —
    *  grounds surface-membership fallback edges (see below). */
   entryType?: string;
+  /** Real outbound (method, path) API calls this flow's own path nodes make
+   *  (apiRouteCallsForNodes) — e.g. an Angular UI flow's per-call HttpClient
+   *  exit points (angular-analyzer.ts). Lets a flow that never runs THROUGH a
+   *  capability's handler node (impossible across a real network boundary —
+   *  the opMatch/interiorOp anchors above only ever fire for same-process
+   *  flows) still relate to the capability whose operation it calls, via
+   *  route evidence instead. Omitted → route matching is skipped (behavior
+   *  unchanged). */
+  apiRouteCalls?: Array<{ method: string; path: string }>;
 }): CapabilityFlowRelationship[] {
-  const { capabilities, entryPointId, rootNodeId, entities, telemetry, pathNodeIds, entryHandlerNodeIdByEpId, cronSchedule, entryType } = args;
+  const { capabilities, entryPointId, rootNodeId, entities, telemetry, pathNodeIds, entryHandlerNodeIdByEpId, cronSchedule, entryType, apiRouteCalls } = args;
   const out: CapabilityFlowRelationship[] = [];
   const entityKeySet = new Set(entities.map(normalizeEntityKey));
 
@@ -1892,6 +1974,37 @@ function deriveCapabilityRelationships(args: {
           capability_id: cap.id,
           role: 'supporting',
           rationale: `capability operation "${interiorOp.action}" (entry_point_id=${interiorOp.entry_point_id}) is realized as an interior step on this flow's path`,
+        });
+        continue;
+      }
+    }
+
+    // ROUTE-MATCH: this flow's own exit points call an HTTP (method, path)
+    // that resolves to one of the capability's declared operation triggers
+    // (op.trigger.method/path — buildTrigger in capability-detector.ts
+    // mirrors a real cas.entry_points route onto the operation). Placed
+    // ABOVE entity overlap: "this UI flow calls exactly this backend
+    // operation" is direct network-boundary evidence, stronger than merely
+    // touching the same named entities the way entity-overlap infers
+    // relatedness. Placed BELOW the entry-point anchors (opMatch/interiorOp)
+    // since those are SAME-PROCESS structural anchors (the flow literally
+    // runs through the operation's own handler node) — strictly stronger
+    // than a cross-network route match, when both are available. Never a
+    // name-similarity match: purely (method, path), path-param-aware.
+    if (apiRouteCalls && apiRouteCalls.length > 0) {
+      let routeMatch: { op: SystemCapability['operations'][number]; call: { method: string; path: string } } | undefined;
+      for (const op of cap.operations || []) {
+        const opMethod = op.trigger?.method;
+        const opPath = op.trigger?.path;
+        if (!opMethod || !opPath) continue;
+        const call = apiRouteCalls.find(c => c.method === opMethod.toUpperCase() && routePathsMatch(c.path, opPath));
+        if (call) { routeMatch = { op, call }; break; }
+      }
+      if (routeMatch) {
+        out.push({
+          capability_id: cap.id,
+          role: 'supporting',
+          rationale: `flow calls ${routeMatch.call.method} ${routeMatch.call.path}, which matches capability operation "${routeMatch.op.action}"'s route (${routeMatch.op.trigger?.method} ${routeMatch.op.trigger?.path}) — this capability's operation is served by that call`,
         });
         continue;
       }
@@ -2818,6 +2931,7 @@ function buildTerminalFlows(
       entryHandlerNodeIdByEpId,
       cronSchedule: deriveCliCronSchedule(rootEp, cronScheduleIndex),
       entryType: rootEp?.type,
+      apiRouteCalls: apiRouteCallsForNodes(allNodeIds, exitPointsByNode),
     });
     const capabilityId = capabilityRelationships.find(r => r.role === 'primary')?.capability_id;
     if (capabilityRelationships.length === 0) {
@@ -3199,6 +3313,7 @@ function computeEntryPointFlows(
       entryHandlerNodeIdByEpId,
       cronSchedule: deriveCliCronSchedule(ep, cronScheduleIndex),
       entryType: ep.type,
+      apiRouteCalls: apiRouteCallsForNodes(allNodeIds, exitPointsByNode),
     });
     const capabilityId = capabilityRelationships.find(r => r.role === 'primary')?.capability_id;
     if (capabilityRelationships.length === 0) {

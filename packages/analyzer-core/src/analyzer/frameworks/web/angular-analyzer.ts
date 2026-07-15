@@ -194,7 +194,10 @@ export class AngularAnalyzer extends BaseAnalyzer {
       const routes = await this.analyzeRoutes(angularFiles, context.projectPath, nodes, edges, entryPoints, components, guards);
 
       this.buildAngularRelationships(components, services, modules, directives, pipes, guards, routes, nodes, edges);
-      this.identifyAPIConnections(services, components, exitPoints);
+      const perCallExitsFound = await this.extractPerCallApiExits(
+        context.projectPath, services, components, nodes, edges, exitPoints
+      );
+      this.identifyAPIConnections(services, components, exitPoints, perCallExitsFound);
 
       this.tagNodesWithPerspectives(nodes, edges);
       this.createPerspectives(perspectives);
@@ -1830,7 +1833,23 @@ export class AngularAnalyzer extends BaseAnalyzer {
 
   }
 
-  private identifyAPIConnections(services: AngularService[], components: AngularComponent[], exitPoints: CASExitPoint[]): void {
+  /**
+   * The single app-wide `exit_angular_api` ('various' endpoint) placeholder is
+   * only useful when per-call extraction (extractPerCallApiExits) found
+   * nothing to report — e.g. a non-HttpClient app that still imports
+   * `@angular/common/http` for types only. Once real per-call exits exist,
+   * the placeholder is redundant noise that would otherwise dilute
+   * route-matching (deriveCapabilityRelationships in flow-concepts.ts) with
+   * an endpoint that can never match a real capability operation's path.
+   */
+  private identifyAPIConnections(
+    services: AngularService[],
+    components: AngularComponent[],
+    exitPoints: CASExitPoint[],
+    perCallExitsFound: boolean
+  ): void {
+    if (perCallExitsFound) return;
+
     const hasAPIConnection = services.some(s =>
       s.dependencies.some(dep => dep.includes('Http') || dep.includes('http'))
     ) || components.some(c =>
@@ -1860,6 +1879,470 @@ export class AngularAnalyzer extends BaseAnalyzer {
         }
       ));
     }
+  }
+
+  /**
+   * PER-CALL API EXTRACTION (paper-cuts precedent: typescript-javascript-
+   * analyzer.ts's isApiCall/parseApiCall/extractStringLiteralsFromExpression
+   * solve the identical "which call is a real outbound HTTP call, and what's
+   * its (verb, endpoint)" problem for the generic TS/JS pass — this mirrors
+   * that heuristic for Angular's HttpClient convention specifically).
+   *
+   * The single synthetic `exit_angular_api` exit point (endpoint:'various')
+   * meant every truckspyui route/component flow carried ZERO evidence of
+   * WHICH backend route it calls, so deriveCapabilityRelationships
+   * (flow-concepts.ts) could never route-match a UI flow to a capability
+   * operation. This scans every Angular service/component file for real
+   * `.get/.post/.put/.patch/.delete/.request(...)` calls on an HttpClient-
+   * shaped receiver and emits one CASExitPoint PER CALL, keyed to the
+   * enclosing method's node (so a flow traced through that method carries
+   * the real (method, path) as path-node evidence).
+   *
+   * Returns true when at least one real per-call exit was extracted — the
+   * caller (identifyAPIConnections) uses this to decide whether the old
+   * app-wide 'various' placeholder is now redundant noise to drop.
+   */
+  private async extractPerCallApiExits(
+    projectPath: string,
+    services: AngularService[],
+    components: AngularComponent[],
+    nodes: CASNode[],
+    edges: CASEdge[],
+    exitPoints: CASExitPoint[]
+  ): Promise<boolean> {
+    let found = false;
+
+    for (const service of services) {
+      const fullPath = path.join(projectPath, service.filePath);
+      let content: string;
+      try {
+        content = await fs.readFile(fullPath, 'utf-8');
+      } catch {
+        continue;
+      }
+      const serviceId = this.generateId('service', service.filePath, service.name);
+      const methodIdFor = (methodName: string) =>
+        this.generateId('method', service.filePath, `${service.name}_${methodName}`);
+      const emitted = this.extractHttpCallsForOwner({
+        content,
+        fullPath,
+        ownerId: serviceId,
+        ownerName: service.name,
+        methodIdFor,
+        // Every method extractMethods() finds on a service IS node-ified in
+        // analyzeServices (one node per entry in service.methods), so the
+        // method-name -> node-id mapping above always resolves to a real
+        // node — no on-the-fly node creation needed for services.
+        createMissingMethodNode: false,
+        nodes,
+        edges
+      });
+      for (const exit of emitted) exitPoints.push(exit);
+      if (emitted.length > 0) found = true;
+    }
+
+    for (const component of components) {
+      const fullPath = path.join(projectPath, component.filePath);
+      let content: string;
+      try {
+        content = await fs.readFile(fullPath, 'utf-8');
+      } catch {
+        continue;
+      }
+      const componentId = this.generateId('component', component.filePath, component.name);
+      const methodIdFor = (methodName: string) =>
+        this.generateId('method', component.filePath, `${component.name}_${methodName}`);
+      const emitted = this.extractHttpCallsForOwner({
+        content,
+        fullPath,
+        ownerId: componentId,
+        ownerName: component.name,
+        methodIdFor,
+        // Unlike services, a component only has node-ified methods for
+        // template event handlers (analyzeComponents) — an arbitrary method
+        // making an HttpClient call (e.g. ngOnInit) has no existing node, so
+        // create one lazily here, exactly mirroring the node shape
+        // analyzeServices already builds per method.
+        createMissingMethodNode: true,
+        nodes,
+        edges
+      });
+      for (const exit of emitted) exitPoints.push(exit);
+      if (emitted.length > 0) found = true;
+    }
+
+    return found;
+  }
+
+  /** Simple HTTP verbs this pass recognizes as real outbound calls. */
+  private static readonly HTTP_VERB_TOKENS = ['get', 'post', 'put', 'patch', 'delete', 'request'];
+
+  /**
+   * Shared per-call extraction for one owner (service or component) file.
+   * Scans the WHOLE file content for HttpClient-shaped calls (receiver
+   * naming heuristic — see isHttpClientReceiver), resolves each call's
+   * (method, endpoint), attributes it to the enclosing method's node, and
+   * returns one deduped CASExitPoint per distinct (method, path) per node.
+   */
+  private extractHttpCallsForOwner(args: {
+    content: string;
+    fullPath: string;
+    ownerId: string;
+    ownerName: string;
+    methodIdFor: (methodName: string) => string;
+    createMissingMethodNode: boolean;
+    nodes: CASNode[];
+    edges: CASEdge[];
+  }): CASExitPoint[] {
+    const { content, fullPath, ownerId, ownerName, methodIdFor, createMissingMethodNode, nodes, edges } = args;
+    const exits: CASExitPoint[] = [];
+
+    const classFields = this.extractClassFieldLiterals(content);
+    const methodBodies = this.extractMethodBodies(content);
+
+    // node id -> Set of "METHOD|endpoint-or-unresolved-marker" already emitted,
+    // so a component calling the same (method, path) twice from one node
+    // collapses to a single exit point (spec: "dedupe identical (method,path)
+    // per node").
+    const seenPerNode = new Map<string, Set<string>>();
+    // methodName -> node id already created on the fly, so two calls in the
+    // same not-yet-node-ified method share one lazily-created node.
+    const lazyMethodNodeIds = new Map<string, string>();
+
+    const callRe = /(\w+)\.(get|post|put|patch|delete|request)\s*\(/gi;
+    let match: RegExpExecArray | null;
+    let callIndex = 0;
+    while ((match = callRe.exec(content)) !== null) {
+      const receiver = match[1];
+      const verbToken = match[2].toLowerCase();
+      const openParenIndex = match.index + match[0].length - 1;
+      const closeParenIndex = this.findMatchingClose(content, openParenIndex, '(', ')');
+      if (closeParenIndex === -1) continue;
+      const argsRaw = content.slice(openParenIndex + 1, closeParenIndex);
+      const args_ = this.splitTopLevelArgs(argsRaw);
+
+      if (!this.isHttpClientReceiver(receiver, verbToken, args_[0])) continue;
+
+      let httpMethod: string;
+      let urlArg: string | undefined;
+      if (verbToken === 'request') {
+        // Positional-args generic `.request(verb, url, ...)` form (Angular
+        // HttpClient): the REAL HTTP verb is the first (string-literal) arg,
+        // the url is the second — see typescript-javascript-analyzer.ts's
+        // parseApiCall for the identical precedent on the generic TS/JS pass.
+        const verbLiteral = this.classifyStringLiteral(args_[0]);
+        httpMethod = verbLiteral !== undefined ? verbLiteral.toUpperCase() : 'REQUEST';
+        urlArg = args_[1];
+      } else {
+        httpMethod = verbToken.toUpperCase();
+        urlArg = args_[0];
+      }
+
+      const resolved = urlArg !== undefined
+        ? this.classifyUrlArg(urlArg, classFields)
+        : { unresolved: true as const };
+
+      // Enclosing method (source order — methodBodies is emitted in file
+      // order and bodies never overlap after the lastIndex jump in
+      // extractMethodBodies, so the first containing range found is correct).
+      const enclosing = methodBodies.find(m => match!.index >= m.start && match!.index < m.end);
+      const methodName = enclosing?.name;
+
+      let sourceNode: string;
+      if (methodName) {
+        const existingId = methodIdFor(methodName);
+        const nodeExists = nodes.some(n => n.id === existingId);
+        if (nodeExists) {
+          sourceNode = existingId;
+        } else if (createMissingMethodNode) {
+          let lazyId = lazyMethodNodeIds.get(methodName);
+          if (!lazyId) {
+            lazyId = existingId;
+            lazyMethodNodeIds.set(methodName, lazyId);
+            nodes.push(
+              this.createNodeBuilder(lazyId, methodName, 'method')
+                .withLevel(4, 'member')
+                .withCategory('method', ['angular', 'function'])
+                .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
+                .withDescription(`Method in ${ownerName}: ${methodName}`)
+                .withParent(ownerId)
+                .withMetadata({ framework: 'angular' })
+                .build()
+            );
+            edges.push(this.createEdge(
+              this.generateEdgeId(ownerId, lazyId, 'contains'),
+              ownerId,
+              lazyId,
+              'contains',
+              'structural'
+            ));
+          }
+          sourceNode = lazyId;
+        } else {
+          sourceNode = ownerId;
+        }
+      } else {
+        sourceNode = ownerId;
+      }
+
+      const endpoint = resolved.unresolved ? undefined : resolved.endpoint;
+      const dedupeKey = `${httpMethod}|${endpoint ?? `unresolved:${(urlArg || '').slice(0, 80)}`}`;
+      let seen = seenPerNode.get(sourceNode);
+      if (!seen) {
+        seen = new Set<string>();
+        seenPerNode.set(sourceNode, seen);
+      }
+      if (seen.has(dedupeKey)) continue;
+      seen.add(dedupeKey);
+
+      const idBase = `exit_angular_api_${this.sanitizeId(ownerName)}_${this.sanitizeId(methodName || 'root')}_${httpMethod.toLowerCase()}_${callIndex++}`;
+      const metadata: Record<string, any> = {
+        type: 'REST/GraphQL API',
+        service: ownerName,
+        method_name: methodName
+      };
+      if (!resolved.unresolved && resolved.baseRef) {
+        metadata.base_ref = resolved.baseRef;
+        metadata.base_resolved = resolved.baseResolved !== false;
+      }
+      if (resolved.unresolved) {
+        metadata.endpoint_unresolved = true;
+      }
+
+      exits.push(this.createExitPoint(
+        idBase,
+        sourceNode,
+        'api',
+        endpoint ? `${httpMethod} ${endpoint}` : `${httpMethod} <dynamic endpoint>`,
+        endpoint
+          ? `HTTP ${httpMethod} call to ${endpoint} from ${ownerName}${methodName ? `.${methodName}` : ''}`
+          : `HTTP ${httpMethod} call to a dynamically constructed URL from ${ownerName}${methodName ? `.${methodName}` : ''} — endpoint not statically resolvable`,
+        {
+          service_id: 'external-api',
+          endpoint
+        },
+        {
+          action: 'read-write',
+          method: httpMethod,
+          async: true
+        },
+        metadata
+      ));
+    }
+
+    return exits;
+  }
+
+  /**
+   * HttpClient-shaped receiver heuristic (mirrors typescript-javascript-
+   * analyzer.ts's isApiCall httpClientPatterns list for consistency across
+   * analyzers). A receiver whose name itself carries 'http' is trusted
+   * outright (Angular's own convention: `private readonly http = inject
+   * (HttpClient)` / `constructor(private http: HttpClient)`, inherited
+   * across subclasses that never redeclare the field in their own file, so
+   * a TYPE-based check alone would miss most real calls). A weaker generic
+   * name ('api'/'client'/'request') additionally requires a URL-shaped first
+   * argument, to avoid false-positiving on an unrelated `.get(key)` (e.g. a
+   * Map/cache lookup) that happens to share a method name.
+   */
+  private isHttpClientReceiver(receiver: string, verbToken: string, firstArgRaw: string | undefined): boolean {
+    const httpClientPatterns = ['axios', 'api', 'http', 'apiclient', 'httpclient', 'request'];
+    const caller = receiver.toLowerCase();
+    if (!httpClientPatterns.some(p => caller.includes(p))) return false;
+    if (caller.includes('http')) return true;
+
+    if (!firstArgRaw) return false;
+    const stripped = firstArgRaw.trim().replace(/^[`'"]|[`'"]$/g, '');
+    if (/^(https?:\/\/|\/[A-Za-z0-9_\-.:[\]{}$])/.test(stripped)) return true;
+    return verbToken === 'request'; // (verb, url) positional form — url is arg[1], arg[0] is the verb literal.
+  }
+
+  /** True string-literal value ('x'/"x") — used for the .request(verb, ...) positional form. */
+  private classifyStringLiteral(arg: string | undefined): string | undefined {
+    if (!arg) return undefined;
+    const m = arg.trim().match(/^(['"])((?:[^\\]|\\.)*)\1$/);
+    return m ? m[2] : undefined;
+  }
+
+  /**
+   * Classifies a call's URL argument:
+   *  - a plain string literal -> resolved endpoint, as-is.
+   *  - a template literal whose leading text is literal (`/api/x/${id}`) ->
+   *    resolved endpoint with each `${expr}` interpolation normalized to a
+   *    `:paramName` path-param segment (route-match-ready).
+   *  - a template literal that OPENS on an interpolation (`${base}/fuel/
+   *    cards`) -> the base identifier IS a real base-URL-constant reference
+   *    even when we can't see its literal value (it may live in a different
+   *    file, e.g. `environment.apiBaseUrl` or an inherited base class field)
+   *    — resolved as the TAIL path alone (`/fuel/cards`) with `baseRef` set
+   *    to the identifier, so the flow-concepts route-match rule can still
+   *    suffix-match it against a capability operation's full route. When the
+   *    identifier DOES resolve to a known class-field string literal
+   *    (extractClassFieldLiterals — same-file `readonly pathPrefixWeb =
+   *    '/api/web/partner'` convention), the literal is prepended instead,
+   *    producing the FULL absolute path.
+   *  - anything else (a bare variable, string concatenation, a template with
+   *    no static tail evidence at all) -> unresolved. NEVER fabricated.
+   */
+  private classifyUrlArg(
+    arg: string,
+    classFields: Map<string, string>
+  ): { unresolved: true } | { unresolved: false; endpoint: string; baseRef?: string; baseResolved?: boolean } {
+    const trimmed = arg.trim();
+
+    const literal = this.classifyStringLiteral(trimmed);
+    if (literal !== undefined) return { unresolved: false, endpoint: literal };
+
+    const tplMatch = trimmed.match(/^`([\s\S]*)`$/);
+    if (tplMatch) {
+      const inner = tplMatch[1];
+      const segRe = /\$\{([^}]*)\}/g;
+      const segments: Array<{ text?: string; expr?: string }> = [];
+      let lastIndex = 0;
+      let m: RegExpExecArray | null;
+      while ((m = segRe.exec(inner)) !== null) {
+        if (m.index > lastIndex) segments.push({ text: inner.slice(lastIndex, m.index) });
+        segments.push({ expr: m[1].trim() });
+        lastIndex = segRe.lastIndex;
+      }
+      if (lastIndex < inner.length) segments.push({ text: inner.slice(lastIndex) });
+
+      if (segments.length === 0) return { unresolved: false, endpoint: inner };
+
+      if (segments[0].expr === undefined) {
+        // Leading literal text: the path itself is known; interpolations
+        // become path-param placeholders.
+        let endpoint = '';
+        for (const seg of segments) {
+          endpoint += seg.text !== undefined ? seg.text : `:${this.paramNameFromExpr(seg.expr!)}`;
+        }
+        return { unresolved: false, endpoint };
+      }
+
+      // Template OPENS on an interpolation. Build the TAIL (everything after
+      // the first `${...}`) regardless of whether the base resolves — that
+      // tail came from real literal source text at the call site.
+      const baseIdent = segments[0].expr.replace(/^this\.\s*/, '').trim();
+      let tail = '';
+      for (let i = 1; i < segments.length; i++) {
+        const seg = segments[i];
+        tail += seg.text !== undefined ? seg.text : `:${this.paramNameFromExpr(seg.expr!)}`;
+      }
+
+      const baseLiteral = classFields.get(baseIdent);
+      if (baseLiteral !== undefined) {
+        return { unresolved: false, endpoint: baseLiteral + tail, baseRef: baseIdent, baseResolved: true };
+      }
+      if (!tail) return { unresolved: true }; // no static tail at all — genuinely opaque, never fabricated.
+      const normalizedTail = tail.startsWith('/') ? tail : `/${tail}`;
+      return { unresolved: false, endpoint: normalizedTail, baseRef: baseIdent, baseResolved: false };
+    }
+
+    return { unresolved: true };
+  }
+
+  private paramNameFromExpr(expr: string): string {
+    const cleaned = expr.replace(/^this\.\s*/, '').trim();
+    return /^[A-Za-z_$][\w$]*$/.test(cleaned) ? cleaned : 'param';
+  }
+
+  /**
+   * Class-level `readonly foo = '/literal/path';` string-field assignments —
+   * the base-URL-constant convention (`private readonly pathPrefixWeb =
+   * '/api/web/partner';`) that a template-literal call like
+   * `` `${this.pathPrefixWeb}/companies` `` needs resolved to produce a real
+   * endpoint instead of being dropped as unresolvable.
+   */
+  private extractClassFieldLiterals(content: string): Map<string, string> {
+    const fields = new Map<string, string>();
+    const fieldPattern = /(?:private|protected|public)?\s*(?:static\s+)?(?:readonly\s+)?(\w+)\s*(?::\s*[\w<>[\],\s]+)?\s*=\s*(['"`])([^'"`]*)\2\s*;/g;
+    let match: RegExpExecArray | null;
+    while ((match = fieldPattern.exec(content)) !== null) {
+      const name = match[1];
+      const value = match[3];
+      if (!fields.has(name)) fields.set(name, value);
+    }
+    return fields;
+  }
+
+  /**
+   * Method-body ranges via brace-depth matching (same technique as
+   * frontend-state-analyzer.ts's extractBraceBlock) — needed (not just the
+   * name/signature extractMethods() already gives elsewhere) so a call found
+   * anywhere in the file can be attributed to its ENCLOSING method by
+   * character-offset containment. `methodPattern.lastIndex` jumps past each
+   * found body so a nested function expression inside a method isn't
+   * mis-detected as a second top-level method.
+   */
+  private extractMethodBodies(content: string): Array<{ name: string; start: number; end: number }> {
+    const results: Array<{ name: string; start: number; end: number }> = [];
+    const methodPattern = /(?:(?:private|protected|public)\s+)?(?:static\s+)?(?:async\s+)?(\w+)\s*\(([^)]*)\)\s*(?::\s*[^{]+?)?\s*\{/g;
+    let match: RegExpExecArray | null;
+    while ((match = methodPattern.exec(content)) !== null) {
+      const name = match[1];
+      if (['constructor', 'class', 'if', 'for', 'while', 'switch', 'catch'].includes(name)) continue;
+      const braceStart = match.index + match[0].length; // just past the opening '{'
+      const braceEnd = this.findMatchingClose(content, braceStart - 1, '{', '}');
+      const end = braceEnd === -1 ? content.length : braceEnd;
+      results.push({ name, start: braceStart, end });
+      methodPattern.lastIndex = end + 1;
+    }
+    return results;
+  }
+
+  /**
+   * Index of the character matching `content[openIndex]` (which must be
+   * `openCh`), tracking nesting depth and skipping over string/template
+   * literal contents so a `(`/`{` inside a quoted string never perturbs the
+   * count. Returns -1 if unterminated.
+   */
+  private findMatchingClose(content: string, openIndex: number, openCh: string, closeCh: string): number {
+    let depth = 0;
+    let inStr: string | null = null;
+    for (let i = openIndex; i < content.length; i++) {
+      const ch = content[i];
+      if (inStr) {
+        if (ch === '\\') { i++; continue; }
+        if (ch === inStr) inStr = null;
+        continue;
+      }
+      if (ch === '"' || ch === "'" || ch === '`') { inStr = ch; continue; }
+      if (ch === openCh) depth++;
+      else if (ch === closeCh) {
+        depth--;
+        if (depth === 0) return i;
+      }
+    }
+    return -1;
+  }
+
+  /**
+   * Splits a call's raw argument text on TOP-LEVEL commas only — nesting
+   * inside `()[]{}` or a quoted/template string never counts as a
+   * separator. Used to pull the URL argument (and, for `.request(verb,
+   * url)`, both positional args) out of an arbitrary-arity call.
+   */
+  private splitTopLevelArgs(argsRaw: string): string[] {
+    const args: string[] = [];
+    let depth = 0;
+    let inStr: string | null = null;
+    let current = '';
+    for (let i = 0; i < argsRaw.length; i++) {
+      const ch = argsRaw[i];
+      if (inStr) {
+        current += ch;
+        if (ch === '\\') { current += argsRaw[i + 1] ?? ''; i++; continue; }
+        if (ch === inStr) inStr = null;
+        continue;
+      }
+      if (ch === '"' || ch === "'" || ch === '`') { inStr = ch; current += ch; continue; }
+      if (ch === '(' || ch === '[' || ch === '{') { depth++; current += ch; continue; }
+      if (ch === ')' || ch === ']' || ch === '}') { depth--; current += ch; continue; }
+      if (ch === ',' && depth === 0) { args.push(current.trim()); current = ''; continue; }
+      current += ch;
+    }
+    if (current.trim()) args.push(current.trim());
+    return args;
   }
 
   private createPerspectives(perspectives: CASPerspective[]): void {

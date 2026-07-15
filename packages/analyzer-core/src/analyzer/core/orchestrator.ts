@@ -16385,7 +16385,8 @@ export class AnalyzerOrchestrator {
         entry_point_id: ep.id,
         entry_point_type: ep.type,
         action: this.inferActionFromEntryPoint(ep),
-        path_or_command: this.extractPathOrCommand(ep)
+        path_or_command: this.extractPathOrCommand(ep),
+        trigger: this.extractTrigger(ep)
       }));
 
       const relatedNodeIds = new Set<string>();
@@ -16579,6 +16580,7 @@ export class AnalyzerOrchestrator {
         entry_point_type: isEntry ? (item as CASEntryPoint).type : 'internal',
         action: isEntry ? this.inferActionFromEntryPoint(item as CASEntryPoint) : this.inferActionFromNodeName((item as CASNode).name),
         path_or_command: isEntry ? this.extractPathOrCommand(item as CASEntryPoint) : (item as CASNode).source?.file,
+        trigger: isEntry ? this.extractTrigger(item as CASEntryPoint) : undefined,
       };
     });
 
@@ -17729,6 +17731,7 @@ export class AnalyzerOrchestrator {
         entry_point_type: String(ep.type),
         action: this.inferActionFromEntryPoint(ep),
         path_or_command: this.extractPathOrCommand(ep),
+        trigger: this.extractTrigger(ep),
       }));
 
       // Framework identity ONLY when the emitting analyzer stamped one and it
@@ -19275,6 +19278,23 @@ export class AnalyzerOrchestrator {
       return ep.name;
     }
     return undefined;
+  }
+
+  /**
+   * SystemCapability operation trigger (method + path) for a real HTTP
+   * entry point — sibling of extractPathOrCommand, kept separate rather than
+   * folded into it because path_or_command is consumed generically for
+   * CLI/internal operations too (where "method" has no meaning). Only
+   * `entry_point_type === 'http'` operations get a trigger; never fabricated
+   * for other entry kinds. This is the route-match evidence
+   * flow-concepts.ts's deriveCapabilityRelationships needs to relate a
+   * frontend flow's own outbound API calls (e.g. Angular per-call HttpClient
+   * extraction) to the backend operation those calls actually invoke.
+   */
+  private extractTrigger(ep: CASEntryPoint): { method?: string; path?: string } | undefined {
+    if (ep.type !== 'http') return undefined;
+    if (!ep.trigger?.path && !ep.trigger?.method) return undefined;
+    return { method: ep.trigger?.method, path: ep.trigger?.path };
   }
 
   private calculateCriticalityFromSignals(
