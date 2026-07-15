@@ -2919,7 +2919,25 @@ function resolveStorageAnalysisId(rawId: string, accountSalt: string | undefined
  * falls back to `project_name` when no `project_path` was supplied at all.
  */
 function resolveDisplayName(projectName?: string, projectPath?: string): string | undefined {
-  return (projectPath ? path.basename(projectPath) : undefined) || projectName;
+  // The analyzer's resolveSystemDisplayName is the single source of name truth —
+  // it derives from repo CONTENT (README title, manifest name, common package
+  // scope) and only falls to a path basename as a last resort. The hosted layer
+  // must NOT force a path basename here: the client upload-path basename
+  // ("proof-of-concept") is an accident of where the user checked the repo out,
+  // not product signal, and forcing it as an explicit displayName
+  // short-circuited the analyzer's derivation (Klauro shipped as
+  // "proof-of-concept" instead of resolving "Klauro" from its @klauro/* scope,
+  // even though the fix to derive it exists). Pass through only a genuinely
+  // meaningful, non-path project name; otherwise return undefined and let the
+  // analyzer derive from content. A basename-shaped candidate is treated as
+  // no-signal so it can't override content derivation.
+  const candidate = (projectName || '').trim();
+  if (!candidate) return undefined;
+  // Reject bare path/basename-shaped candidates (a single path segment that
+  // looks like a folder name) — only a real, chosen product name overrides the
+  // analyzer. Multi-word or clearly-named values pass through.
+  const looksLikePathSegment = !/\s/.test(candidate) && candidate === path.basename(candidate);
+  return looksLikePathSegment ? undefined : candidate;
 }
 
 function safeName(value: string): string {
