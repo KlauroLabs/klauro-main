@@ -177,12 +177,30 @@ async function getAnalysis(projectPath: string, options?: { track?: import('./tr
  * facet — nothing is fabricated. Reuses `path` as the workspace key, the same
  * convention get_runtime_observations / ingest_telemetry / get_coding_context
  * already use.
+ *
+ * BUG FIX: this used to call storage.ts `loadRuntimeObservations` directly,
+ * which only reads the LEGACY runtime-observations.json store (populated by
+ * record_runtime_event / simulate_runtime_telemetry). It silently missed the
+ * `ingested` store (telemetry-ingestion.ts, populated by ingest_telemetry,
+ * the `/api/telemetry/runtime-events/:projectId` SDK route, and Klauro's own
+ * self-telemetry loop — see self-telemetry.ts) — i.e. exactly the sources of
+ * real production traffic. `get_runtime_observations` (below) already reads
+ * through `telemetryIngestion.loadTelemetryObservations`, which merges both
+ * stores and defaults to `source: 'ingested'`; this facet now does the same,
+ * plus the same lazy backfill/re-correlation upgrade, so a node that already
+ * has real ingested telemetry but was persisted before its CAS existed still
+ * shows up correlated instead of "unmatched".
  */
 async function runtimeMetricsForContract(cas: CASOutput, path: string): Promise<product.NodeRuntimeMetrics[]> {
   try {
-    const observations = await loadRuntimeObservations(path);
-    if (!observations || observations.length === 0) return [];
-    return product.buildNodeRuntimeMetrics(cas, observations);
+    const loadObservations = () => telemetryIngestion.loadTelemetryObservations(path);
+    let result = await loadObservations();
+    if (result.observations.some(observation => observation?.correlation?.status === 'unmatched')) {
+      const backfill = await telemetryIngestion.backfillIngestedTelemetry(cas, path).catch(() => null);
+      if (backfill && backfill.upgraded > 0) result = await loadObservations();
+    }
+    if (!result.observations || result.observations.length === 0) return [];
+    return product.buildNodeRuntimeMetrics(cas, result.observations);
   } catch {
     return [];
   }

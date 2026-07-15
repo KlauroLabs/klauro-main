@@ -2047,7 +2047,37 @@ async function handleAccountApi(
       // ever ran — include=full silently had no effect on the actual
       // provenance bodies, only on a no-op second strip. Forward `include`
       // through as `detail` so 'full' really means full end-to-end.
-      const flowConcepts = getFlowConcepts(cas, { target, maxFlows, surface: 'http', detail: include === 'full' ? 'full' : 'compact' });
+      // TELEMETRY facet (ICELOT facet 6): join persisted runtime metrics onto
+      // flow/step contracts, evidence-gated — omitted (not fabricated) when no
+      // observation matches. This endpoint previously never loaded or passed
+      // runtime metrics into getFlowConcepts at all, unlike the MCP
+      // `get_flow_concepts` tool (server.ts runtimeMetricsForContract), so
+      // every flow/step contract read through the web UI / cross-project HTTP
+      // surface was silently missing facet 6 even when real production
+      // telemetry existed. `workspace` is the SAME key `cas` was just loaded
+      // under, so it is also the correct key to read this project's telemetry
+      // under (loadTelemetryObservations / ingestTelemetryBatch key their
+      // store off this identical projectPath string). Computed only on the
+      // cache-miss path below (cas is already in memory here at zero extra
+      // parse cost); a cache-HIT response intentionally skips this — see the
+      // response-cache comment above this block — so it stays as fast as
+      // before for a whale CAS, at the cost of serving telemetry that is only
+      // as fresh as the last cache-invalidating CAS version bump.
+      const runtimeMetrics = await (async () => {
+        try {
+          const loadObservations = () => loadTelemetryObservations(workspace);
+          let result = await loadObservations();
+          if (result.observations.some(o => o?.correlation?.status === 'unmatched')) {
+            const backfill = await backfillIngestedTelemetry(cas, workspace).catch(() => null);
+            if (backfill && backfill.upgraded > 0) result = await loadObservations();
+          }
+          if (!result.observations || result.observations.length === 0) return [];
+          return buildNodeRuntimeMetrics(cas, result.observations);
+        } catch {
+          return [];
+        }
+      })();
+      const flowConcepts = getFlowConcepts(cas, { target, maxFlows, surface: 'http', detail: include === 'full' ? 'full' : 'compact', runtimeMetrics });
       // Endpoint projection (re-validation F1): D2 facet_provenance + D1
       // code_mappings inflated per-flow weight ~3-4x (whale payload 96KB+ at 20
       // flows). The web UI renders neither yet — strip them from THIS projection
