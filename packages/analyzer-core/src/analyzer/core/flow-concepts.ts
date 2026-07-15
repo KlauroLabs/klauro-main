@@ -1609,6 +1609,45 @@ function entitiesForNodes(nodeIds: Set<string>, cas: CASOutput): string[] {
   return [...names];
 }
 
+/** Edge types a delegation hop can cross for CLI one-hop entity association —
+ *  identical vocabulary to the capability-building one-hop pass
+ *  (orchestrator.ts buildSystemCapabilities' CALLEE_EDGE_TYPES): a controller/
+ *  command handler routinely persists one call away (live truckspy:
+ *  ElectronicLoggingDeviceController -> DataTransferManager -> persist(...)),
+ *  and 'delegates_to'/'queries' edges are NOT in traceForwardChain's
+ *  traversable set (TRAVERSABLE_EDGE_TYPES only follows calls, invokes, any
+ *  type containing "call", renders, uses), so those delegated persistence
+ *  nodes never land in a CLI
+ *  flow's own traced `allNodeIds` — entitiesForNodes then sees no touching
+ *  node and the flow carries entities:[] even though its handler clearly
+ *  delegates persistence one hop away. */
+const CLI_ONE_HOP_CALLEE_EDGE_TYPES = new Set(['calls', 'invokes', 'delegates_to', 'uses', 'queries']);
+
+/** Builds the CLI-flow one-hop entity resolver once per computeFlowConcepts
+ *  pass (memoized by root node id — many chains can share a root). Direct
+ *  callees ONLY (one hop, never recursive) — same shallowness discipline as
+ *  the capability-building pass, so entity attribution stays tight to a real
+ *  delegation edge rather than smearing across the whole reachable graph. */
+function makeCliOneHopEntities(cas: CASOutput): (nodeIds: Set<string>) => string[] {
+  const directCalleesBySource = new Map<string, Set<string>>();
+  for (const edge of cas.edges || []) {
+    if (!CLI_ONE_HOP_CALLEE_EDGE_TYPES.has(edge.type)) continue;
+    let callees = directCalleesBySource.get(edge.source);
+    if (!callees) { callees = new Set(); directCalleesBySource.set(edge.source, callees); }
+    callees.add(edge.target);
+  }
+  return (nodeIds: Set<string>): string[] => {
+    const hopIds = new Set<string>();
+    for (const nodeId of nodeIds) {
+      for (const callee of directCalleesBySource.get(nodeId) || []) {
+        if (!nodeIds.has(callee)) hopIds.add(callee);
+      }
+    }
+    if (hopIds.size === 0) return [];
+    return entitiesForNodes(hopIds, cas);
+  };
+}
+
 /**
  * Normalize an entity reference to a comparison key that reconciles the TWO
  * shapes the CAS uses for the SAME entity: the display NAME carried on
@@ -2538,6 +2577,16 @@ function buildTerminalFlows(
   // path missed the accessor node.
   const traversal = buildTraversalIndex(cas);
   const familyEntities = makeEntryFamilyEntities(cas, traversal, maxDepth, maxFunctions);
+  // CLI one-hop entity supplement (see makeCliOneHopEntities) — scoped to
+  // `cli` entry points only: an HTTP/route flow's forward chain already
+  // traverses 'calls'/'invokes'/'uses'/'renders' edges deep enough that
+  // widening to delegates_to/queries system-wide risks smearing ubiquity
+  // entities across unrelated HTTP flows (no per-flow document-frequency
+  // guard here, unlike the capability-building pass' per-resource-group DF
+  // limit) — CLI console commands are the evidenced, narrow case (live
+  // truckspy ELD: app:eld:* commands delegate FMCSA/DriverHistory persistence
+  // one hop through a manager/service).
+  const cliOneHopEntities = makeCliOneHopEntities(cas);
 
   // Deterministic order: chains sorted by id so the flow set is byte-stable
   // run-to-run (Camp-B determinism rule). `target` filter matches against the
@@ -2725,7 +2774,10 @@ function buildTerminalFlows(
     // M:N capability relationships (role on the EDGE — doctrine: flow roles
     // are relational, not intrinsic). capability_id stays populated as the
     // primary relationship's capability for back-compat.
-    const flowEntities = unionEntities(entitiesForNodes(allNodeIds, cas), familyEntities(chain.entry_point.node_id));
+    const flowEntities = unionEntities(
+      unionEntities(entitiesForNodes(allNodeIds, cas), familyEntities(chain.entry_point.node_id)),
+      rootEp?.type === 'cli' ? cliOneHopEntities(allNodeIds) : []
+    );
     const capabilityRelationships = deriveCapabilityRelationships({
       capabilities,
       entryPointId: rootEp?.id || chain.entry_point.entry_point_id,
@@ -2968,6 +3020,12 @@ function computeEntryPointFlows(
   const conditionalOut = buildConditionalOutIndex(cas);
   const deleterNodeIds = buildDeleterNodeIds(cas);
   const mappingEvidence = buildStepMappingEvidence(cas);
+  // CLI one-hop entity supplement — see buildTerminalFlows' identical setup
+  // (makeCliOneHopEntities) for why: traceForwardChain doesn't follow
+  // delegates_to/queries edges, so a CLI command's delegated persistence
+  // (live truckspy ELD) is invisible to entitiesForNodes on the flow's own
+  // traced path without this.
+  const cliOneHopEntities = makeCliOneHopEntities(cas);
 
   const entryPointsByNode = new Map<string, CASEntryPoint[]>();
   for (const ep of cas.entry_points || []) {
@@ -3094,7 +3152,10 @@ function computeEntryPointFlows(
     const allNodeIds = new Set(chain.map(c => c.node.id));
     // M:N capability relationships (role on the EDGE); capability_id stays the
     // primary relationship's capability for back-compat.
-    const flowEntities = entitiesForNodes(allNodeIds, cas);
+    const flowEntities = unionEntities(
+      entitiesForNodes(allNodeIds, cas),
+      ep.type === 'cli' ? cliOneHopEntities(allNodeIds) : []
+    );
     const capabilityRelationships = deriveCapabilityRelationships({
       capabilities,
       entryPointId: ep.id,
