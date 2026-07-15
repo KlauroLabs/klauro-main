@@ -11276,7 +11276,12 @@ export class AnalyzerOrchestrator {
     if (/^(?:it|this|the)\s+(?:software\s+)?(?:system\s+)?(?:provides|supports|handles|coordinates|manages|uses|defines|processes|produces|generates|offers|exposes|combines|includes|contains|serves|captures|tracks|stores|records|implements|analyzes|analyses)\b/i.test(cleaned)) {
       return { ok: false, reason: 'generic-pronoun-start' };
     }
-    if (this.projectNameAppearsAsConcept(cleaned, facts.systemName)) return { ok: false, reason: 'project-name-as-concept' };
+    if (this.projectNameAppearsAsConcept(cleaned, facts.systemName, [
+      ...(facts.frameworks || []),
+      ...(facts.libraries || []),
+      ...(facts.databaseEntities || []),
+      ...(facts.externalServices || []),
+    ])) return { ok: false, reason: 'project-name-as-concept' };
     return { ok: true };
   }
 
@@ -11524,12 +11529,26 @@ export class AnalyzerOrchestrator {
     return { text, validation };
   }
 
-  private projectNameAppearsAsConcept(description: string, systemName?: string): boolean {
+  private projectNameAppearsAsConcept(description: string, systemName?: string, evidenceTerms: string[] = []): boolean {
+    // A systemName token that is ALSO real grounding evidence (a framework,
+    // library, entity, or external service name) is legitimate vocabulary for
+    // the description to use — its appearance is grounding, not lazy name-
+    // restatement. Only DISTINCTIVE project-identity tokens (not shared with
+    // the tech-stack evidence) can trip this gate. Without this, a project
+    // named after its stack ("express-mongoose", "my-express-app") would have
+    // every correctly-grounded description rejected for mentioning that stack.
+    const evidenceTokens = new Set(
+      evidenceTerms.flatMap(term => String(term || '')
+        .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+        .toLowerCase()
+        .split(/[^a-z0-9]+/))
+        .filter(Boolean),
+    );
     const tokens = String(systemName || '')
       .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
       .toLowerCase()
       .split(/[^a-z0-9]+/)
-      .filter(token => token.length >= 4 && !this.isGenericCapabilityToken(token));
+      .filter(token => token.length >= 4 && !this.isGenericCapabilityToken(token) && !evidenceTokens.has(token));
     if (tokens.length === 0) return false;
     const lower = description.toLowerCase();
     return tokens.some(token => {
