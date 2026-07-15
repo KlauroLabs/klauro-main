@@ -115,7 +115,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
   /** Project root captured at analyze() start, so buildNodeIndexes can resolve
    *  import specifiers to project-relative module files. */
   private currentProjectPath = '';
-  private classFieldTypes = new Map<string, { typeName: string; library?: string }>();
+  private classFieldTypes = new Map<string, { typeName: string; library?: string; source?: 'ctor' | 'field' }>();
   private repositoryPropertyTypes = new Map<string, string>();
   private prismaModelNames = new Map<string, string>();
   private nodeById = new Map<string, CASNode>();
@@ -1137,13 +1137,41 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
           const library = this.getLibraryForType(param.type!);
           this.classFieldTypes.set(`${cls.name}.${param.name}`, {
             typeName: param.type!,
-            library
+            library,
+            source: 'ctor'
           });
           if (this.isRepositoryLikeType(param.type!)) {
             this.repositoryPropertyTypes.set(param.name, param.type!);
           }
           return param.type!;
         });
+
+      // Field-style DI (Angular/modern-TS pattern with no constructor at all):
+      // `private svc: FooService;` (typed field, base-class-injected or set
+      // elsewhere) and `private readonly svc = inject(FooService);` (Angular's
+      // `inject()` function, which tree-sitter sees only as a plain call
+      // expression — there is no type annotation to read, so the injected
+      // type name is recovered from the call argument itself). Constructor
+      // evidence always wins when both exist for the same field name (skip via
+      // `has`), and this is tagged `source: 'field'` so ambiguous resolution
+      // (see resolveDiFieldCall) applies the stricter no-constructor-evidence
+      // policy instead of the constructor-injection fan-out.
+      cls.properties.forEach(prop => {
+        const key = `${cls.name}.${prop.name}`;
+        if (this.classFieldTypes.has(key)) return;
+        let rawType = prop.type;
+        if (!rawType && prop.defaultValue) {
+          const injectMatch = /^inject\s*\(\s*([A-Za-z_$][\w$.]*)/.exec(prop.defaultValue.trim());
+          if (injectMatch) rawType = injectMatch[1];
+        }
+        const typeName = this.tsBaseTypeName(rawType);
+        if (!typeName) return;
+        const library = this.getLibraryForType(typeName);
+        this.classFieldTypes.set(key, { typeName, library, source: 'field' });
+        if (this.isRepositoryLikeType(typeName)) {
+          this.repositoryPropertyTypes.set(prop.name, typeName);
+        }
+      });
 
       const classNode = this.createNodeBuilder(
         classId,
@@ -1672,20 +1700,44 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     return undefined;
   }
 
+  /** Namespace/generic-stripped base name of a TS type expression written in source
+   *  (e.g. `Store<AppState>` -> `Store`, `Foo.Bar` -> `Bar`, `Foo | undefined` -> `Foo`),
+   *  or undefined when nothing identifier-like remains. Mirrors the PHP analyzer's
+   *  `phpBaseTypeName` — same purpose (turn a raw declared/inferred type into the bare
+   *  class name the node-lookup tables are keyed by), TS syntax instead of PHP's. */
+  private tsBaseTypeName(raw?: string): string | undefined {
+    if (!raw) return undefined;
+    let t = raw.trim().replace(/^\?/, '').split('|')[0].trim();
+    const generic = t.indexOf('<');
+    if (generic >= 0) t = t.slice(0, generic);
+    t = t.replace(/\[\]$/, '').trim();
+    const parts = t.split('.');
+    t = parts[parts.length - 1];
+    return /^[A-Za-z_$][\w$]*$/.test(t) ? t : undefined;
+  }
+
   /** Resolve `this.<field>.<method>()` / `self.<field>.<method>()` — the NestJS/Angular
-   *  constructor-injection pattern (`constructor(private readonly svc: FooService) {}`
-   *  then `this.svc.doThing()`) — directly to the target method's node id.
+   *  DI pattern, whether the field comes from constructor injection
+   *  (`constructor(private readonly svc: FooService) {}`), a typed class field with no
+   *  constructor (`private svc: FooService;`), or Angular's field-style `inject()`
+   *  (`private readonly svc = inject(FooService);`) — then `this.svc.doThing()` —
+   *  directly to the target method's node id.
    *
-   *  Evidence/type-gated: only fires when `<field>` is a recorded constructor-injected
-   *  dependency of the CALLER's own class (`classFieldTypes`, populated from constructor
-   *  parameter type annotations in `processTreeSitterClasses`) and the declared type
+   *  Evidence/type-gated: only fires when `<field>` is a recorded dependency of the
+   *  CALLER's own class (`classFieldTypes`, populated in `processTreeSitterClasses`
+   *  from constructor parameter types OR typed/inject() fields) and the declared type
    *  resolves (via `importAliasMap` for renamed imports) to a real class-like node that
-   *  declares `<method>`. Ambiguous (multiple distinct classes named `<type>` that both
-   *  declare `<method>`, e.g. an interface with more than one implementation) resolves to
-   *  ALL matching real methods rather than guessing one. Unknown type or no matching
-   *  method returns undefined (never fabricates an edge) so callers fall back to the
-   *  existing name-based resolution. */
-  private resolveDiFieldCall(target: string, func: any): string[] | undefined {
+   *  declares `<method>`. Ambiguous (multiple distinct classes sharing `<type>`'s name):
+   *    - constructor-injected fields (`source: 'ctor'`) resolve to ALL matching real
+   *      methods rather than guessing one — the established, tested fan-out policy.
+   *    - field/`inject()`-style fields (`source: 'field'`) carry no constructor
+   *      evidence, so ambiguity is only resolved when the caller's file imports the
+   *      type from one specific module (`importsByConsumerFile`, the same import-source
+   *      evidence `selectDeclarationCandidate` uses for cross-file references); with no
+   *      disambiguating import this ABSTAINS (no edge) instead of fanning out.
+   *  Unknown type or no matching method returns undefined (never fabricates an edge) so
+   *  callers fall back to the existing name-based resolution. */
+  private resolveDiFieldCall(target: string, func: any, sourceFile?: string): string[] | undefined {
     if (!target || typeof target !== 'string') return undefined;
     const parts = target.split('.');
     if (parts.length !== 3) return undefined;
@@ -1706,9 +1758,19 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     const classNodes = this.nodesByName.get(className);
     if (!classNodes) return undefined;
 
+    let candidateClassNodes = classNodes.filter(n => this.isClassLikeNode(n));
+    if (candidateClassNodes.length === 0) return undefined;
+
+    if (candidateClassNodes.length > 1 && fieldInfo.source === 'field') {
+      const resolvedModule = sourceFile ? this.importsByConsumerFile.get(sourceFile)?.get(m[1]) : undefined;
+      if (!resolvedModule) return undefined; // no disambiguating evidence -> abstain
+      const narrowed = candidateClassNodes.filter(n => n.source?.file === resolvedModule);
+      if (narrowed.length !== 1) return undefined; // still 0 or ambiguous -> abstain
+      candidateClassNodes = narrowed;
+    }
+
     const resolvedMethodIds: string[] = [];
-    for (const classNode of classNodes) {
-      if (!this.isClassLikeNode(classNode)) continue;
+    for (const classNode of candidateClassNodes) {
       const methodNode = this.methodsByParent.get(classNode.id)?.find(mm => mm.name === methodName);
       if (methodNode) resolvedMethodIds.push(methodNode.id);
     }
@@ -1797,7 +1859,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
         // resolveDiFieldCall for the evidence/type-gating rule. Only consulted when
         // typedTargetId didn't already resolve it (typedTargetId never fires for
         // `this.`/`self.` receivers, so there is no overlap in practice).
-        const diTargetIds = typedTargetId ? undefined : this.resolveDiFieldCall(call.target, func);
+        const diTargetIds = typedTargetId ? undefined : this.resolveDiFieldCall(call.target, func, filePath);
         if (call.httpMethod && call.httpPath) {
           if (sourceNodeId) {
             entryPoints.push({

@@ -162,4 +162,165 @@ describe('TypeScript DI-injected method call resolution', () => {
     }
     expect(diEdges.every(e => e.metadata?.attributes?.ambiguous === true)).toBe(true);
   });
+
+  it('resolves this.<field>.<method>() to the real callee method when the field is a typed class property with no constructor (Angular DI)', async () => {
+    const contribution = await analyzeProject({
+      'src/services/fuel.service.ts': [
+        'export class FuelService {',
+        '  getCards() {',
+        '    return [];',
+        '  }',
+        '}',
+      ].join('\n'),
+      'src/components/fuel.component.ts': [
+        "import { FuelService } from '../services/fuel.service';",
+        '',
+        'export class FuelComponent {',
+        '  private fuelService: FuelService;',
+        '',
+        '  load() {',
+        '    return this.fuelService.getCards();',
+        '  }',
+        '}',
+      ].join('\n'),
+    });
+
+    const callerMethod = methodNode(contribution, 'FuelComponent', 'load');
+    const targetMethod = methodNode(contribution, 'FuelService', 'getCards');
+    expect(callerMethod).toBeDefined();
+    expect(targetMethod).toBeDefined();
+
+    const edges = callEdges(contribution);
+    const diEdge = edges.find(e => e.source === callerMethod!.id && e.target === targetMethod!.id);
+    expect(diEdge).toBeDefined();
+  });
+
+  it("resolves this.<field>.<method>() when the field is Angular's field-style inject() with no constructor", async () => {
+    const contribution = await analyzeProject({
+      'src/services/fuel.service.ts': [
+        'export class FuelService {',
+        '  getFuelStationsArray() {',
+        '    return [];',
+        '  }',
+        '}',
+      ].join('\n'),
+      'src/components/map-data-source.ts': [
+        "import { inject } from '@angular/core';",
+        "import { FuelService } from '../services/fuel.service';",
+        '',
+        'export class FeaturedMapDataSource {',
+        '  protected readonly fuelService = inject(FuelService);',
+        '',
+        '  refresh() {',
+        '    return this.fuelService.getFuelStationsArray();',
+        '  }',
+        '}',
+      ].join('\n'),
+    });
+
+    const callerMethod = methodNode(contribution, 'FeaturedMapDataSource', 'refresh');
+    const targetMethod = methodNode(contribution, 'FuelService', 'getFuelStationsArray');
+    expect(callerMethod).toBeDefined();
+    expect(targetMethod).toBeDefined();
+
+    const edges = callEdges(contribution);
+    const diEdge = edges.find(e => e.source === callerMethod!.id && e.target === targetMethod!.id);
+    expect(diEdge).toBeDefined();
+    expect(diEdge!.metadata?.attributes?.resolution_type).toBe('di_field');
+  });
+
+  it('resolves an inject()-style field to the ONE class the import pins, when two classes share its name', async () => {
+    const contribution = await analyzeProject({
+      'src/services/impl-a/notification.service.ts': [
+        'export class NotificationService {',
+        '  notify(msg: string) {',
+        '    return msg;',
+        '  }',
+        '}',
+      ].join('\n'),
+      'src/services/impl-b/notification.service.ts': [
+        'export class NotificationService {',
+        '  notify(msg: string) {',
+        '    return msg;',
+        '  }',
+        '}',
+      ].join('\n'),
+      'src/components/toast.component.ts': [
+        "import { inject } from '@angular/core';",
+        "import { NotificationService } from '../services/impl-a/notification.service';",
+        '',
+        'export class ToastComponent {',
+        '  private readonly notificationService = inject(NotificationService);',
+        '',
+        '  fire() {',
+        '    return this.notificationService.notify("hi");',
+        '  }',
+        '}',
+      ].join('\n'),
+    });
+
+    const callerMethod = methodNode(contribution, 'ToastComponent', 'fire');
+    expect(callerMethod).toBeDefined();
+
+    const notifyMethods = (contribution.nodes || []).filter(node => {
+      if (node.type !== 'method' || node.name !== 'notify') return false;
+      const parent = (contribution.nodes || []).find(n => n.id === node.parent);
+      return parent?.name === 'NotificationService';
+    });
+    expect(notifyMethods.length).toBe(2);
+
+    const edges = callEdges(contribution);
+    const diEdges = edges.filter(
+      e => e.source === callerMethod!.id && e.metadata?.attributes?.resolution_type === 'di_field'
+    );
+
+    // Import-path evidence pins exactly ONE of the two same-named classes —
+    // resolve precisely to it, not a fan-out to both.
+    expect(diEdges.length).toBe(1);
+    const implANode = (contribution.nodes || []).find(n => n.id === diEdges[0].target);
+    const implAParent = (contribution.nodes || []).find(n => n.id === implANode?.parent);
+    expect(implAParent?.source?.file).toBe('src/services/impl-a/notification.service.ts');
+    expect(diEdges[0].metadata?.attributes?.ambiguous).toBeUndefined();
+  });
+
+  it('abstains (no edge) for an inject()-style field whose type name is ambiguous with no disambiguating import', async () => {
+    const contribution = await analyzeProject({
+      'src/services/impl-a/broadcast.service.ts': [
+        'export class BroadcastService {',
+        '  send(msg: string) {',
+        '    return msg;',
+        '  }',
+        '}',
+      ].join('\n'),
+      'src/services/impl-b/broadcast.service.ts': [
+        'export class BroadcastService {',
+        '  send(msg: string) {',
+        '    return msg;',
+        '  }',
+        '}',
+      ].join('\n'),
+      'src/components/radio.component.ts': [
+        "import { inject } from '@angular/core';",
+        '',
+        'export class RadioComponent {',
+        '  private readonly broadcastService = inject(BroadcastService);',
+        '',
+        '  fire() {',
+        '    return this.broadcastService.send("hi");',
+        '  }',
+        '}',
+      ].join('\n'),
+    });
+
+    const callerMethod = methodNode(contribution, 'RadioComponent', 'fire');
+    expect(callerMethod).toBeDefined();
+
+    const edges = callEdges(contribution);
+    const diEdges = edges.filter(
+      e => e.source === callerMethod!.id && e.metadata?.attributes?.resolution_type === 'di_field'
+    );
+
+    // No import evidence to disambiguate BroadcastService -> abstain, never guess.
+    expect(diEdges.length).toBe(0);
+  });
 });
