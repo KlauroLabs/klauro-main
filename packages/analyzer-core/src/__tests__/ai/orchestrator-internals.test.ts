@@ -5195,6 +5195,45 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
     }
   });
 
+  it('rejects a raw call-graph chain label ("Run main -> detect_frameworks") shipped as a capability (real hosted-CAS defect, v1.0.83)', async () => {
+    // Measured live on the real prod CAS (Klauro-self, v1.0.83, 2026-07-15):
+    // after the v1.0.82 guard-decouple, the SOLE system_capabilities entry
+    // became "Run main -> detect_frameworks" — a raw entry-point call-graph
+    // traversal ("Run <symbol> -> <function>"), not a domain purpose. The
+    // v1.0.82 guard only matched file-extension / "shell script" / "+N more"
+    // shapes, so this call-chain slipped through. isRawCandidateLabelName now
+    // also matches a "Run <symbol> ->" head and any arrow joined to a
+    // snake_case code identifier, collapsing the catalog to 0 so the caller
+    // routes into the near-empty fallback instead of shipping the traversal.
+    const original = (aiService as any).generateComponentDescription;
+    (aiService as any).generateComponentDescription = async () => JSON.stringify({
+      capabilities: [
+        {
+          name: 'Run main -> detect_frameworks',
+          description: 'Runs the main entry and detects frameworks.',
+          category: 'core',
+          entities: [],
+        },
+      ],
+    });
+    try {
+      const catalog = await orch.aiExtractCapabilityCatalog({
+        systemName: 'proof-of-concept',
+        enhancedSystemPurpose: { primary_domain: 'dev-tool', core_concepts: [] },
+        frameworks: [], userJourneys: [],
+        dataEntities: [],
+        candidateCapabilities: [
+          { name: 'Run main -> detect_frameworks', related_entities: [], operations: [] },
+        ],
+        externalServices: [], flowGraph: { capabilities: [] },
+        projectTextSignal: { concepts: [], evidence: [] }, budgetMs: 30000,
+      });
+      expect(catalog.length).toBe(0);
+    } finally {
+      (aiService as any).generateComponentDescription = original;
+    }
+  });
+
   it('keeps a real AI-authored capability whose description was genuinely supplied', async () => {
     // Control: the guard must not reject legitimate output.
     const original = (aiService as any).generateComponentDescription;
@@ -5456,6 +5495,33 @@ describe('resolveSystemDisplayName (Klauro rung-2: system name = directory basen
     }
   });
 
+  // REAL PROD REGRESSION (v1.0.83): the reanalyze workspace for
+  // prj_wbW33m-wfETn1N41 DOES have a root package.json — named
+  // "@klauro/monorepo" — so the manifest-name branch fired and humanized the
+  // scope-stripped word to "Monorepo", the observed live system.name. But
+  // "monorepo" is a structural descriptor of the repo shape, not the product;
+  // the SCOPE "@klauro" is the identity. A scoped generic-structural root name
+  // must prefer the scope.
+  it('prefers the scope over a generic structural root manifest name (@klauro/monorepo -> Klauro, not Monorepo)', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-sysname-monorepo-'));
+    try {
+      fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ name: '@klauro/monorepo' }));
+      expect(orch.resolveSystemDisplayName(root, undefined)).toBe('Klauro');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('leaves a genuinely product-named scoped root manifest untouched (@acme/checkout-service -> Checkout Service)', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-sysname-realname-'));
+    try {
+      fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ name: '@acme/checkout-service' }));
+      expect(orch.resolveSystemDisplayName(root, undefined)).toBe('Checkout Service');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('abstains (falls through to basename) when nested manifests span multiple unrelated scopes', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-sysname-multiscope-'));
     try {
@@ -5483,12 +5549,14 @@ describe('resolveSystemDisplayName (Klauro rung-2: system name = directory basen
   it('prefers the ROOT manifest name over the common-scope fallback when a root package.json exists', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-sysname-root-wins-'));
     try {
-      fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ name: '@klauro/monorepo' }));
+      // A genuinely product-named root manifest (NOT a generic structural word
+      // like "monorepo" — that case correctly defers to the scope; see the
+      // "@klauro/monorepo -> Klauro" test above). Root name wins outright,
+      // never overridden by the nested scope fallback.
+      fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ name: '@klauro/checkout-service' }));
       fs.mkdirSync(path.join(root, 'apps', 'app'), { recursive: true });
       fs.writeFileSync(path.join(root, 'apps', 'app', 'package.json'), JSON.stringify({ name: '@different-scope/app' }));
-      // Root manifest name wins outright — never overridden by the nested
-      // scope fallback, which only applies when there is no root manifest.
-      expect(orch.resolveSystemDisplayName(root, undefined)).toBe('Monorepo');
+      expect(orch.resolveSystemDisplayName(root, undefined)).toBe('Checkout Service');
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

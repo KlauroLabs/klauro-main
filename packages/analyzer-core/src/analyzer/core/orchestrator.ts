@@ -9526,6 +9526,16 @@ export class AnalyzerOrchestrator {
     if (/\b\d+\s+more$/i.test(trimmed)) return true;
     if (/\.(sh|bash|zsh|py|rb|ts|tsx|jsx?|json|ya?ml|env|dockerfile)\b/i.test(trimmed)) return true;
     if (/\bshell\s+script\b/i.test(trimmed)) return true;
+    // Raw call-graph / terminal-chain labels the model echoed as a capability
+    // name instead of a domain purpose: "Run main -> detect_frameworks",
+    // "handleRequest -> parseBody". A domain capability is a Title-Cased noun
+    // phrase; a function-name chain joined by an arrow — or a "Run <symbol>"
+    // mechanical entry label — is a structural traversal path, never a purpose.
+    // Two reliable tells: (a) a "Run <code-identifier>" head followed by an
+    // arrow; (b) any arrow joined to a snake_case token (domain phrases never
+    // contain snake_case — that is unambiguously a code symbol).
+    if (/(->|→|»)/.test(trimmed) && /^run\s+[a-z_$][\w$.]*/i.test(trimmed)) return true;
+    if (/(->|→|»)/.test(trimmed) && /\b[a-z][a-z0-9]*_[a-z0-9]+\b/.test(trimmed)) return true;
     return false;
   }
 
@@ -13259,6 +13269,22 @@ export class AnalyzerOrchestrator {
     const packageJson = this.safeReadJson(path.join(projectPath, 'package.json'));
     const rootManifestName = typeof packageJson?.name === 'string' ? packageJson.name.trim() : '';
     if (rootManifestName) {
+      // A scoped root manifest whose scope-stripped name is a GENERIC STRUCTURAL
+      // word ("@klauro/monorepo", "@acme/root", "@org/workspace") is not
+      // self-naming the product — the structural word describes the repo shape,
+      // while the SCOPE ("@klauro") is the product/org identity. Prefer the
+      // scope in that case ("@klauro/monorepo" -> "Klauro", not "Monorepo").
+      // A genuinely product-named root manifest ("@acme/checkout-service" ->
+      // "Checkout Service") is untouched. Unscoped generic names fall through to
+      // the common-package-scope resolver, which may still recover a real scope
+      // from nested manifests.
+      const scopeMatch = rootManifestName.match(/^@([^/]+)\//);
+      const scopeStripped = rootManifestName.replace(/^@[^/]+\//, '').trim();
+      const isGenericStructuralName = /^(mono-?repo|root|workspace|workspaces|repo|repository|source|src|main|app|apps|packages?|projects?|core|server|client|web|www|api|frontend|backend)$/i.test(scopeStripped);
+      if (scopeMatch && isGenericStructuralName) {
+        const scoped = this.humanizeScopeStrippedManifestName(scopeMatch[1]);
+        if (scoped) return scoped;
+      }
       const humanized = this.humanizeScopeStrippedManifestName(rootManifestName);
       if (humanized) return humanized;
     }
