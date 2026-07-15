@@ -2129,11 +2129,35 @@ async function handleAccountApi(
         criticality: capability.criticality,
         related_flows: flowEdgesByCapability.get(capability.id) || [],
       }));
+      // GHOST FIX (klauro-surfaces-exposure): a flow's capability_relationships
+      // may legitimately point at a behavior_surfaces entry, not just a
+      // system_capabilities one — buildTerminalFlows (flow-concepts.ts) derives
+      // relationships against system_capabilities ∪ behavior_surfaces on
+      // purpose, since a flow rooted at a registered command/event/mcp-tool
+      // handler is genuinely owned by that surface (SURFACES ARE NOT
+      // CAPABILITIES — docs/SEMANTIC-MODEL.md). Before this fix, this endpoint
+      // only serialized `capabilities` from cas.system_capabilities, so any
+      // capability_id resolving to a surface (e.g. Klauro's own
+      // cap_mcp_tool_surface, ~44 MCP-tool flows) was a dangling id a consumer
+      // could never resolve — the edge existed in flowEdgesByCapability but its
+      // node was never in the response. Serialize surfaces as their own
+      // (compact, navigation-tier) array alongside capabilities rather than
+      // merging them into `capabilities`, preserving the same tier separation
+      // get_summary/get_system_overview already enforce.
+      const behaviorSurfaces = (cas.behavior_surfaces || []).map(surface => ({
+        id: surface.id,
+        name: surface.structural_label || surface.name,
+        category: surface.category,
+        evidence_kind: surface.evidence_kind,
+        entry_points: surface.operations?.length || 0,
+        related_flows: flowEdgesByCapability.get(surface.id) || [],
+      }));
       const body = {
         status: 'ready',
         project_id: project.id,
         analysis_id: project.analysis_id,
         capabilities,
+        ...(behaviorSurfaces.length ? { behavior_surfaces: behaviorSurfaces } : {}),
         flows: flowConcepts,
         structural: {
           architectural,
