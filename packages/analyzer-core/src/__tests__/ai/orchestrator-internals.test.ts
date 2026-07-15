@@ -4845,6 +4845,90 @@ describe('architecture-shape claim gate (live truckspy: "microservices" shipped 
   });
 });
 
+describe('domain-claim gate (replaces descriptionContradictsPurposeFamily\'s hardcoded six-family table with a generic evidence gate)', () => {
+  it('keeps "fleet management platform" grounded via entity/route evidence, not just a literal domain label match (truckspy regression)', () => {
+    const description = 'A fleet management platform that tracks vehicles, drivers, and trips for dispatch operators. It records trip assignments and produces driver activity reports for fleet managers.';
+    // primary_domain is deliberately generic (not "fleet-management") — grounding
+    // comes from route/structural evidence, same corpus systemTypeIsGrounded uses.
+    const purpose = { primary_domain: 'backend-service', core_concepts: ['vehicle', 'driver', 'dispatch'] };
+    expect(orch.validateAIInterpretation(description, purpose, { structuralTokens: ['fleet'] }).ok).toBe(true);
+  });
+
+  it('rejects "fleet management platform" with zero fleet evidence (ported family: fleet)', () => {
+    const description = 'A fleet management platform that tracks vehicles, drivers, and trips for dispatch operators. It records trip assignments and produces driver activity reports for fleet managers.';
+    const result = orch.validateAIInterpretation(description, { primary_domain: 'unknown', core_concepts: [] }, {});
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('ungrounded-domain-claim: fleet management platform');
+  });
+
+  it('grounds/rejects the bare "<X> operations"/"<X> tracking" claim shape with no type-head noun (ported family: fleet — "vehicle operations", "fuel tracking")', () => {
+    const description = 'A depot tool that manages fuel tracking and vehicle operations for regional fleets. It captures route telemetry and produces daily utilization summaries for depot managers.';
+    const purpose = { primary_domain: 'unknown', core_concepts: [] };
+    expect(orch.validateAIInterpretation(description, purpose, { structuralTokens: ['fuel', 'vehicle', 'depot'] }).ok).toBe(true);
+    const rejected = orch.validateAIInterpretation(description, purpose, { structuralTokens: ['depot'] });
+    expect(rejected.ok).toBe(false);
+    expect(rejected.reason).toBe('ungrounded-domain-claim: fuel tracking, vehicle operations');
+  });
+
+  it('grounds/rejects "portfolio management system" via evidence, not a solana/trading vocabulary allow-list (ported family: portfolio/trading)', () => {
+    const description = 'soon-ui is a portfolio management system that coordinates portfolio data, market discovery, and automation workflows using React. It presents assets, activity, and payments through portfolio screens.';
+    expect(orch.validateAIInterpretation(description, { primary_domain: 'portfolio-management', core_concepts: ['portfolio'] }, { frameworks: ['React'] }).ok).toBe(true);
+    const rejected = orch.validateAIInterpretation(description, { primary_domain: 'unknown', core_concepts: [] }, { frameworks: ['React'] });
+    expect(rejected.ok).toBe(false);
+    expect(rejected.reason).toBe('ungrounded-domain-claim: portfolio management system');
+  });
+
+  it('grounds/rejects "network access management system" via evidence, not a zero-trust vocabulary allow-list (ported family: zero-trust)', () => {
+    const description = 'A network access management system that verifies device posture before granting VPN sessions. It logs each access decision and produces audit reports for security teams.';
+    expect(orch.validateAIInterpretation(description, { primary_domain: 'zero-trust-security', core_concepts: ['network', 'access'] }, {}).ok).toBe(true);
+    const rejected = orch.validateAIInterpretation(description, { primary_domain: 'unknown', core_concepts: [] }, {});
+    expect(rejected.ok).toBe(false);
+    expect(rejected.reason).toBe('ungrounded-domain-claim: network access management system');
+  });
+
+  it('grounds/rejects "clinical testing system"/"patient testing"/"clinical measurements" via evidence (ported family: clinical)', () => {
+    const description = 'A lab tool that runs clinical testing system workflows and patient testing for hospital staff. It records clinical measurements and produces result summaries for physicians.';
+    expect(orch.validateAIInterpretation(description, { primary_domain: 'clinical-testing', core_concepts: ['patient', 'clinical'] }, {}).ok).toBe(true);
+    const rejected = orch.validateAIInterpretation(description, { primary_domain: 'unknown', core_concepts: [] }, {});
+    expect(rejected.ok).toBe(false);
+    expect(rejected.reason).toBe('ungrounded-domain-claim: runs clinical testing system, patient testing, clinical measurements');
+  });
+
+  it('the sixth family (codebase-analysis / "cas graph" / "agent contexts") stays covered by the pre-existing, already-generic Klauro-self-identity checks — not folded into this frame, since those terms are internal analyzer vocabulary (a sanctioned self-identity exception), not a business-domain claim any other repo should ever legitimately make', () => {
+    const description = 'A codebase analysis system that builds a CAS graph of every module and produces agent contexts for downstream tools. It tracks relationships between files and exposes them through an MCP server.';
+    // Non-Klauro project claiming the Klauro-specific domain is rejected by the
+    // untouched, already-generic codebase-analysis-domain-without-klauro-evidence
+    // gate — no hardcoded "cas graph"/"agent contexts" vocabulary was reintroduced.
+    const result = orch.validateAIInterpretation(description, { primary_domain: 'codebase-analysis', core_concepts: [] }, { isKlauroSelfProject: false });
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('codebase-analysis-domain-without-klauro-evidence');
+  });
+
+  it('gates a domain the old six-family table NEVER covered ("restaurant order management system") — proving this is a generic evidence gate, not an expanded vocabulary list', () => {
+    const description = 'A restaurant order management system that lets diners browse menus and place table-side orders. It routes tickets to the kitchen and prints receipts for guests.';
+    const rejected = orch.validateAIInterpretation(description, { primary_domain: 'unknown', core_concepts: [] }, {});
+    expect(rejected.ok).toBe(false);
+    expect(rejected.reason).toBe('ungrounded-domain-claim: restaurant order management system');
+    const accepted = orch.validateAIInterpretation(
+      description,
+      { primary_domain: 'restaurant-ordering', core_concepts: ['restaurant', 'order', 'menu'] },
+      {}
+    );
+    expect(accepted.ok).toBe(true);
+  });
+
+  it('sanitize STRIPS the ungrounded domain-claim clause (repair of AI text, never a rewrite) and grammar survives', () => {
+    const description = 'A depot tool that manages fuel tracking and vehicle operations for regional fleets, integrating route telemetry with daily summaries.';
+    const sanitized = orch.sanitizeAIInterpretation(description, { primary_domain: 'unknown', core_concepts: [] }, {});
+    expect(sanitized).not.toMatch(/fuel tracking/i);
+    expect(sanitized).not.toMatch(/vehicle operations/i);
+    // No grammatical stump left behind by the clause strip.
+    expect(sanitized).not.toMatch(/\b(?:with|a|an|the)\s*[.,]/i);
+    // Grounded evidence keeps the clause untouched.
+    expect(orch.sanitizeAIInterpretation(description, { primary_domain: 'unknown', core_concepts: [] }, { structuralTokens: ['fuel', 'vehicle'] })).toMatch(/vehicle operations/i);
+  });
+});
+
 describe('description prompt contract: how-it-works is dataflow, never a package inventory (live truckspy: "leveraging ... @angular/core and @google-cloud/storage")', () => {
   const purpose = { primary_domain: 'fleet-management', core_concepts: ['vehicle', 'driver'], primary_type: 'platform' };
 
@@ -4911,5 +4995,108 @@ describe('architecture-strip grammar + fact-list vocabulary echo (live kontinuum
     expect(sanitized).not.toMatch(/terminal outputs/i);
     expect(sanitized).toMatch(/produces outputs such as memory intake/);
     expect(orch.validateAIInterpretation(sanitized, purpose, {}).ok).toBe(true);
+  });
+});
+
+describe('catalog completeness (live truckspy: fuel/safety/ELD rich evidence, 9-capability catalog)', () => {
+  it('http resource key skips generic audience/version tiers to reach the real resource segment', () => {
+    const ep = (path: string) => ({ type: 'http', trigger: { path }, name: `GET ${path}` });
+    // Live truckspy: EVERY route sits under /api/web|mobile|pub/..., so
+    // first-segment grouping keyed 800+ routes under the audience tier and the
+    // generic-key filter then dropped them wholesale — ELD's 30+ routes
+    // produced NO route-area capability at all.
+    expect(orch.inferResourceKey(ep('/api/web/eld/dailies'))).toBe('eld');
+    expect(orch.inferResourceKey(ep('/api/web/drive-alerts/{id}/coachable'))).toBe('drive-alerts');
+    expect(orch.inferResourceKey(ep('/api/web/fuel-card-transactions/missing-miles'))).toBe('fuel-card-transactions');
+    expect(orch.inferResourceKey(ep('/api/v2/orders'))).toBe('orders');
+    // A real first-segment resource is untouched — deeper segments never win
+    // over a non-generic first segment.
+    expect(orch.inferResourceKey(ep('/api/orders/items'))).toBe('orders');
+    expect(orch.inferResourceKey(ep('/api/users'))).toBe('users');
+  });
+
+  it('compound entity nouns attribute accessors (paginateAllDriveAlerts -> drivealert read lineage)', () => {
+    const nodes = [
+      { id: 'm_paginate', type: 'method', name: 'paginateAllDriveAlerts' },
+      { id: 'm_create', type: 'method', name: 'createFuelStationPrice' },
+    ];
+    const index = orch.buildEntityAccessorIndexByNoun(nodes);
+    // Compound noun joined-token key: the entity lookup uses the WHOLE compact
+    // name ('drivealert'), which single-token attribution never produced.
+    expect([...(index.get('drivealert')?.read || [])]).toContain('m_paginate');
+    expect([...(index.get('fuelstationprice')?.create || [])]).toContain('m_create');
+    // Single-token attribution unchanged.
+    expect([...(index.get('alert')?.read || [])]).toContain('m_paginate');
+  });
+
+  it('read-shaped repository verbs (paginate/retrieve/browse) bucket as read accessors', () => {
+    expect(orch.crudBucketFromAccessorName('paginateAllDriveAlerts')).toBe('read');
+    expect(orch.crudBucketFromAccessorName('retrieveOrders')).toBe('read');
+    expect(orch.crudBucketFromAccessorName('browseCatalog')).toBe('read');
+  });
+
+  it('prompt-window ranking: own deterministic category breaks evidence ties before name order', () => {
+    const ops12 = Array.from({ length: 12 }, (_, i) => ({
+      entry_point_id: `node:n_${i}`, entry_point_type: 'internal', action: 'Handle', path_or_command: `src/${i}.php`,
+    }));
+    // Live truckspy: 'Cleanup' (supporting) and 'Drive Alert' (core) tied on
+    // every evidence axis; alphabetical order then put the supporting plumbing
+    // group ahead of the core one in the window.
+    const cleanup = { name: 'Cleanup', category: 'supporting', related_entities: [], related_domains: ['cleanup'], operations: ops12 };
+    const driveAlert = { name: 'Drive Alert', category: 'core', related_entities: [], related_domains: ['drive-alert'], operations: ops12 };
+    const ranked = orch.rankCatalogPromptCandidates([cleanup, driveAlert] as any[], [])
+      .map((candidate: any) => candidate.name);
+    expect(ranked.indexOf('Drive Alert')).toBeLessThan(ranked.indexOf('Cleanup'));
+  });
+
+  it('catalog size guidance and window scale with the candidate pool; candidates_considered surfaces in the decision digest', async () => {
+    const captured: any[] = [];
+    const original = (aiService as any).generateComponentDescription;
+    (aiService as any).generateComponentDescription = async (args: any) => {
+      captured.push(args);
+      return JSON.stringify({ capabilities: [
+        { name: 'Manage trips', description: 'Tracks Trip records from booking through completion for dispatch operators.', category: 'core', entities: ['Trip'], journeys: [] },
+      ] });
+    };
+    try {
+      // 180-candidate pool (live truckspy scale) -> window widens past 24 and
+      // the prompt asks for proportionally more capabilities than the 6-12
+      // small-repo default.
+      const bigPool = Array.from({ length: 180 }, (_, i) => ({
+        name: `Area ${i}`, category: 'supporting', related_entities: [], related_domains: [`area-${i}`],
+        operations: [{ entry_point_id: `ep_${i}`, entry_point_type: 'http', action: 'Handle', path_or_command: `/a/${i}` }],
+      }));
+      await orch.aiExtractCapabilityCatalog({
+        systemName: 'big',
+        enhancedSystemPurpose: { primary_domain: 'fleet', core_concepts: [] },
+        frameworks: [], userJourneys: [], dataEntities: [{ id: 'entity_trip', name: 'Trip' }] as any[],
+        candidateCapabilities: bigPool as any[],
+        externalServices: [], flowGraph: { capabilities: [] } as any,
+        projectTextSignal: { concepts: [], evidence: [] } as any, budgetMs: 30000,
+      });
+      const bigCtx = captured[captured.length - 1].additionalContext;
+      expect(bigCtx.facts.candidate_route_areas.length).toBe(30); // ceil(180/6)
+      expect(bigCtx.task).toMatch(/Return 5 to 12 capabilities|Return \d+ to \d+ capabilities/);
+      const bigCounts = bigCtx.task.match(/Return (\d+) to (\d+) capabilities/);
+      expect(Number(bigCounts[2])).toBeGreaterThan(12);
+
+      // Small pool keeps the original 6-12 guidance and 24-name window bound.
+      const smallPool = bigPool.slice(0, 10);
+      await orch.aiExtractCapabilityCatalog({
+        systemName: 'small',
+        enhancedSystemPurpose: { primary_domain: 'fleet', core_concepts: [] },
+        frameworks: [], userJourneys: [], dataEntities: [{ id: 'entity_trip', name: 'Trip' }] as any[],
+        candidateCapabilities: smallPool as any[],
+        externalServices: [], flowGraph: { capabilities: [] } as any,
+        projectTextSignal: { concepts: [], evidence: [] } as any, budgetMs: 30000,
+      });
+      const smallCtx = captured[captured.length - 1].additionalContext;
+      expect(smallCtx.facts.candidate_route_areas.length).toBe(10);
+      const smallCounts = smallCtx.task.match(/Return (\d+) to (\d+) capabilities/);
+      expect(Number(smallCounts[1])).toBe(6);
+      expect(Number(smallCounts[2])).toBe(12);
+    } finally {
+      (aiService as any).generateComponentDescription = original;
+    }
   });
 });

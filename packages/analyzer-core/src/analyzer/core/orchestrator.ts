@@ -8775,7 +8775,15 @@ export class AnalyzerOrchestrator {
    *      route-area/journey vocabulary), outrank entity-less runtime anchors.
    *   2. Then by entity count (domain-record grounding depth),
    *   3. then by journey-corroboration count,
-   *   4. then by externally-invocable operation count (http/page/cli/... over
+   *   4. then by the candidate's own deterministic category (core over
+   *      supporting/admin over internal) — a real tie-break, not a name
+   *      heuristic: many candidates tie on entity/journey/op evidence (e.g. a
+   *      whole family of 12-op route groups), and without this an
+   *      alphabetically-earlier 'supporting' candidate ("Cleanup") can bump a
+   *      'core' one ("Drive Alert") out of the window on pure letter order,
+   *      which is exactly the kind of accidental cut this ranking exists to
+   *      prevent.
+   *   5. then by externally-invocable operation count (http/page/cli/... over
    *      'internal'), raw operation count last — volume alone (a plumbing
    *      family with hundreds of handlers) must never outrank grounding.
    * Deterministic tie-break by name keeps the window stable run-to-run.
@@ -8806,7 +8814,12 @@ export class AnalyzerOrchestrator {
         .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
         .toLowerCase()
         .split(/[^a-z0-9]+/)) {
-        if (token.length > 3 && !this.isGenericCapabilityToken(token)) journeyTokens.add(this.stemTerminologyToken(token));
+        // length > 2 (not > 3): 3-letter DOMAIN ACRONYMS (eld/gps/vin/pto) are
+        // real product terminology — the stricter filter made an ELD candidate
+        // permanently uncorroboratable against 9 real eld:* journeys (live
+        // truckspy). Generic 3-letter tokens (api/app/get) are already caught
+        // by isGenericCapabilityToken.
+        if (token.length > 2 && !this.isGenericCapabilityToken(token)) journeyTokens.add(this.stemTerminologyToken(token));
       }
     }
     const scored = candidates.map(candidate => {
@@ -8814,23 +8827,35 @@ export class AnalyzerOrchestrator {
         .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
         .toLowerCase()
         .split(/[^a-z0-9]+/)
-        .filter(token => token.length > 3 && !this.isGenericCapabilityToken(token))
+        .filter(token => token.length > 2 && !this.isGenericCapabilityToken(token))
         .map(token => this.stemTerminologyToken(token));
       const journeyCorroboration = new Set(subjectTokens.filter(token => journeyTokens.has(token))).size;
       const entityCount = (candidate.related_entities || []).length;
       const externalOps = (candidate.operations || [])
         .filter(operation => operation.entry_point_type && operation.entry_point_type !== 'internal').length;
-      return { candidate, grounded: entityCount > 0 || journeyCorroboration > 0 ? 0 : 1, entityCount, journeyCorroboration, externalOps };
+      const categoryRank = this.catalogCandidateCategoryRank(candidate.category);
+      return { candidate, grounded: entityCount > 0 || journeyCorroboration > 0 ? 0 : 1, entityCount, journeyCorroboration, categoryRank, externalOps };
     });
     return scored
       .sort((a, b) =>
         a.grounded - b.grounded ||
         b.entityCount - a.entityCount ||
         b.journeyCorroboration - a.journeyCorroboration ||
+        a.categoryRank - b.categoryRank ||
         b.externalOps - a.externalOps ||
         (b.candidate.operations || []).length - (a.candidate.operations || []).length ||
         a.candidate.name.localeCompare(b.candidate.name))
       .map(entry => entry.candidate);
+  }
+
+  /** Deterministic priority of a candidate's own inferred category for the
+   * catalog-prompt-window tie-break — never a name/domain judgement, purely
+   * the category `inferCapabilityCategory` already assigned upstream. */
+  private catalogCandidateCategoryRank(category: SystemCapability['category']): number {
+    if (category === 'core') return 0;
+    if (category === 'supporting') return 1;
+    if (category === 'admin') return 2;
+    return 3; // 'internal' or unset
   }
 
   /**
@@ -8875,21 +8900,35 @@ export class AnalyzerOrchestrator {
       .sort((left, right) => (right.fields?.length || 0) - (left.fields?.length || 0))
       .slice(0, 18)
       .map(entity => ({ name: entity.name, fields: (entity.fields || []).slice(0, 6).map(field => field.name) }));
-    // THE CUT (candidate window): the prompt receives a bounded candidate list
-    // (24 of possibly 150+ deterministic candidates). Taking the FIRST 24 of the
-    // criticality-sorted list systematically starved entity-rich domain
-    // candidates: entity-less runtime anchors (infra groups, high-op plumbing
-    // families) sort critical-first and monopolized the window, so genuine
-    // built-for route areas (dispatch/safety/fuel-style groups on a fleet
-    // platform) never even REACHED the AI. Rank the window by domain-evidence
-    // richness instead — related domain entities, journey-terminology
-    // corroboration, externally-invocable operations — so the candidates the
-    // purpose test cares about are the ones the catalog sees. Pure evidence
-    // ordering, never name keywords; the output cap (16) is unchanged.
-    const candidateAreas = this.rankCatalogPromptCandidates(input.candidateCapabilities, input.userJourneys || [])
+    // THE CUT (candidate window): the prompt receives a BOUNDED candidate list,
+    // never the full deterministic pool (which can run 150-400+ on a large
+    // platform repo). A FIXED window size starves scale: a platform whose
+    // deterministic pass produced 170 candidates has, by construction, far more
+    // real route-area fragments competing for the same slots than a 40-candidate
+    // repo, so a fixed cut disproportionately drops genuine built-for areas on
+    // the biggest, richest repos — exactly backwards. Scale the window with the
+    // candidate pool (bounded so prompt cost stays sane): ~1 slot per 6
+    // candidates considered, floor 24 (unchanged behavior on small/medium
+    // repos), cap 40. Ranked by domain-evidence richness (see
+    // rankCatalogPromptCandidates) — related domain entities, journey-
+    // terminology corroboration, own category, externally-invocable operations
+    // — so the candidates the purpose test cares about are the ones that fill
+    // the (now scale-aware) window. Pure evidence ordering, never name keywords.
+    const rankedCandidateAreas = this.rankCatalogPromptCandidates(input.candidateCapabilities, input.userJourneys || []);
+    const candidateWindowSize = Math.min(40, Math.max(24, Math.ceil(rankedCandidateAreas.length / 6)));
+    const candidateAreas = rankedCandidateAreas
       .map(capability => capability.name)
-      .slice(0, 24);
+      .slice(0, candidateWindowSize);
     const services = (input.externalServices || []).slice(0, 12);
+    // THE OUTPUT CAP: how many capabilities the model is told to return, and the
+    // final out.slice() cap below, must likewise scale with how much was handed
+    // to it — a fixed "6 to 12" on a repo whose window just grew to 40 candidates
+    // silently re-imposes the same starvation the window widening was meant to
+    // fix (a rich platform gets curated down to the same count as a small one).
+    // Derived purely from candidateAreas.length (deterministic evidence volume),
+    // never a name/domain judgement. Small/medium repos keep the original 6-12.
+    const catalogCountMin = Math.min(10, Math.max(6, Math.round(candidateAreas.length / 4)));
+    const catalogCountMax = Math.min(20, Math.max(12, Math.round(candidateAreas.length / 2)));
 
     // ---- TOP-DOWN EVIDENCE BUNDLE ----
     // The catalog is otherwise BOTTOM-UP (entities + route areas + journeys),
@@ -8921,7 +8960,7 @@ export class AnalyzerOrchestrator {
     // even a slow attempt completes; genuinely hung calls still fall back. Caching
     // means this latency is paid once per repo.
     const aiBudget = Math.max(75000, Math.floor(input.budgetMs * 0.6));
-    const requestCatalog = async (): Promise<string> => {
+    const requestCatalog = async (attempt: number): Promise<string> => {
       let timeoutHandle: NodeJS.Timeout | undefined;
       try {
         return await Promise.race([
@@ -8931,7 +8970,11 @@ export class AnalyzerOrchestrator {
               // benefits from its reliability; opt in via DEEPINFRA_STRUCTURED_MODEL
               // or OPENAI_STRUCTURED_MODEL.
               model: process.env.DEEPINFRA_STRUCTURED_MODEL || process.env.OPENAI_STRUCTURED_MODEL || undefined,
-              task: `You are cataloging the BUSINESS VALUE of a codebase. You are given BOTTOM-UP facts (user journeys, data entities, candidate route areas, external services) AND, when available, a top_down_signals block — the product's OWN words about what it is (README title/overview, manifest self-description, product terminology). Return ONLY valid JSON: {"capabilities":[{"name":"...","description":"...","category":"core|supporting","entities":["..."],"journeys":["..."]}]}. Rules: (1) THE PURPOSE TEST — every capability you name must be a product/user/operational ability that would appear in a product description, a user objective, a business offering, or an operational responsibility. If it would not, it is NOT a capability; drop it. Name capabilities as what the product lets its USERS or OPERATORS DO in plain product language (e.g. "Trade cryptocurrency", "Play Commander matches"), NEVER as a mechanism or a supporting noun ("Wallet interaction", "Manage sessions"). (2) USE top_down_signals as the primary arbiter of what the product IS BUILT FOR: the capability the product's own title/overview/terminology names is a core capability even if the bottom-up entities under-represent it — let this evidence RAISE the built-for capability to the top. (3) THE PURPOSE-TEST EXCLUSION — do NOT emit supporting/infrastructural concerns as capabilities (authentication, access control/permissions, session/token handling, logging/telemetry, notifications, caching, message brokering, generic CRUD, health checks, config, database) UNLESS top_down_signals shows the product IS that kind of product (an auth product sells access control; a codebase-analysis or game product does not). Absent top-down evidence that the product sells it, such a concern is at most "supporting", never "core", and is usually dropped. (4) MERGE related route areas and journeys into real capabilities; do not emit one per route. (5) category="core" only for the capabilities that ARE the product's value proposition (those corroborated by top_down_signals rank first); "supporting" for necessary-but-not-the-value. (6) entities/journeys must be names copied from the supplied facts. (7) Each description is ONE concise sentence, 8-16 words — no clauses, no lists — that names the CONCRETE records, decisions, or workflows the capability owns and why they matter, using the supplied entity/journey vocabulary. NEVER the empty template "Lets users <verb> <noun>" that only restates the capability name, and never the words "capability"/"lifecycle" as prose scaffolding — a description that adds no information beyond the name is rejected. Return 6 to 12 capabilities, ordered most-core first.`,
+              // Distinct on the retry so an under-count retry is a real
+              // resample (a byte-identical request would just replay the
+              // cached short answer) and the model is told the shortfall.
+              ...(attempt > 1 ? { retry_hint: `Previous answer returned fewer than ${catalogCountMin} capabilities for a platform whose facts name ${candidateAreas.length} distinct route areas. Cover the DISTINCT product areas in candidate_route_areas; merge related ones, but do not collapse unrelated areas.` } : {}),
+              task: `You are cataloging the BUSINESS VALUE of a codebase. You are given BOTTOM-UP facts (user journeys, data entities, candidate route areas, external services) AND, when available, a top_down_signals block — the product's OWN words about what it is (README title/overview, manifest self-description, product terminology). Return ONLY valid JSON: {"capabilities":[{"name":"...","description":"...","category":"core|supporting","entities":["..."],"journeys":["..."]}]}. Rules: (1) THE PURPOSE TEST — every capability you name must be a product/user/operational ability that would appear in a product description, a user objective, a business offering, or an operational responsibility. If it would not, it is NOT a capability; drop it. Name capabilities as what the product lets its USERS or OPERATORS DO in plain product language (e.g. "Trade cryptocurrency", "Play Commander matches"), NEVER as a mechanism or a supporting noun ("Wallet interaction", "Manage sessions"). (2) USE top_down_signals as the primary arbiter of what the product IS BUILT FOR: the capability the product's own title/overview/terminology names is a core capability even if the bottom-up entities under-represent it — let this evidence RAISE the built-for capability to the top. (3) THE PURPOSE-TEST EXCLUSION — do NOT emit supporting/infrastructural concerns as capabilities (authentication, access control/permissions, session/token handling, logging/telemetry, notifications, caching, message brokering, generic CRUD, health checks, config, database) UNLESS top_down_signals shows the product IS that kind of product (an auth product sells access control; a codebase-analysis or game product does not). Absent top-down evidence that the product sells it, such a concern is at most "supporting", never "core", and is usually dropped. (4) MERGE related route areas and journeys into real capabilities; do not emit one per route. (5) category="core" only for the capabilities that ARE the product's value proposition (those corroborated by top_down_signals rank first); "supporting" for necessary-but-not-the-value. (6) entities/journeys must be names copied from the supplied facts. (7) Each description is ONE concise sentence, 8-16 words — no clauses, no lists — that names the CONCRETE records, decisions, or workflows the capability owns and why they matter, using the supplied entity/journey vocabulary. NEVER the empty template "Lets users <verb> <noun>" that only restates the capability name, and never the words "capability"/"lifecycle" as prose scaffolding — a description that adds no information beyond the name is rejected. Return ${catalogCountMin} to ${catalogCountMax} capabilities, ordered most-core first.`,
               style: 'Write like a product engineer or PM. Plain language. No markdown. Value verbs (lets, gives, tracks, surfaces, exposes, manages, monitors, secures, settles, enforces). No CRUD verbs, no "lifecycle", no route counts, no file paths, no marketing fluff. Each description names the concrete user-facing concept the entities point to.',
               product: {
                 name: input.systemName,
@@ -8964,30 +9007,45 @@ export class AnalyzerOrchestrator {
     // Shared-inference latency is variable enough that a single attempt can exceed
     // even a generous budget. The catalog is the difference between ~13 curated
     // capabilities and 40 noisy candidates, so make TWO attempts before falling
-    // back to the deterministic candidates.
+    // back to the deterministic candidates. UNDER-COUNT is retried like a parse
+    // failure: catalogCountMin is evidence-derived (candidate-pool scale), so a
+    // model that hands a 30-route-area platform 6 capabilities is under-
+    // complying, not curating — one retry, keeping the larger result, before
+    // accepting the shortfall (never loop beyond the 2-attempt budget).
     let catalog: Array<Record<string, unknown>> = [];
     let raw = '';
     for (let attempt = 1; attempt <= 2; attempt++) {
       try {
-        raw = await requestCatalog();
-        catalog = this.parseCapabilityCatalog(raw);
+        raw = await requestCatalog(attempt);
+        const parsed = this.parseCapabilityCatalog(raw);
+        if (parsed.length > catalog.length) catalog = parsed;
       } catch (error) {
         if (process.env.KLAURO_DEBUG_CATALOG) console.error(`[catalog-debug] attempt ${attempt} failed:`, error instanceof Error ? error.message : String(error));
-        catalog = [];
       }
-      if (catalog.length) break;
+      if (catalog.length >= catalogCountMin) break;
+      if (catalog.length && process.env.KLAURO_DEBUG_CATALOG) {
+        console.error(`[catalog-debug] attempt ${attempt} under-count: got ${catalog.length}, evidence-derived min ${catalogCountMin}`);
+      }
     }
     if (process.env.KLAURO_DEBUG_CATALOG) {
       console.error('[catalog-debug] raw.length=', (raw || '').length, 'parsed=', catalog.length, 'rawHead=', JSON.stringify(String(raw || '').slice(0, 300)));
     }
-    // E1 (observational): compact evidence digest for the capability catalog decision.
+    // E1 (observational): compact evidence digest for the capability catalog
+    // decision. `candidatesConsidered` vs `candidateAreas` (the window actually
+    // handed to the prompt) makes THE CUT measurable — the gap between them is
+    // exactly how many deterministic candidates never reached the AI at all,
+    // separate from `kept` (added below) which is how many the AI itself kept.
+    // Under-surfacing at either stage is now a countable fact, not a guess.
     const catalogEvidenceDigest = {
       systemName: input.systemName,
       journeys: journeys.length,
       entities: entities.length,
+      candidatesConsidered: rankedCandidateAreas.length,
       candidateAreas: candidateAreas.length,
       services: services.length,
       hasTopDown,
+      catalogCountMin,
+      catalogCountMax,
     };
     if (!catalog.length) {
       recordSemanticDecision({
@@ -9203,7 +9261,10 @@ export class AnalyzerOrchestrator {
       gate_reason: out.length === 0 ? 'all-candidates-dropped-as-ungrounded' : undefined,
       final_outcome: out.length > 0 ? 'ai' : 'degraded',
     });
-    return out.slice(0, 16);
+    // The hard cap must never clip below what the prompt itself was told to
+    // return (catalogCountMax) — a fixed 16 silently re-truncated a scaled-up
+    // catalog right back down on large repos.
+    return out.slice(0, Math.max(16, catalogCountMax));
   }
 
   /**
@@ -9537,7 +9598,7 @@ export class AnalyzerOrchestrator {
       recordSemanticDecision({
         ts: Date.now(),
         decision_type: 'system_description',
-        prompt_version: 'system_description.v2',
+        prompt_version: 'system_description.v3',
         input_evidence_digest: semanticEvidenceDigest,
         parse_ok: false,
         gate_verdict: 'rejected',
@@ -9678,7 +9739,7 @@ export class AnalyzerOrchestrator {
       recordSemanticDecision({
         ts: Date.now(),
         decision_type: 'system_description',
-        prompt_version: 'system_description.v2',
+        prompt_version: 'system_description.v3',
         input_evidence_digest: semanticEvidenceDigest,
         raw_output_excerpt: cleaned,
         parse_ok: true,
@@ -9694,7 +9755,7 @@ export class AnalyzerOrchestrator {
     recordSemanticDecision({
       ts: Date.now(),
       decision_type: 'system_description',
-      prompt_version: 'system_description.v2',
+      prompt_version: 'system_description.v3',
       input_evidence_digest: semanticEvidenceDigest,
       raw_output_excerpt: cleaned,
       parse_ok: true,
@@ -11381,8 +11442,9 @@ export class AnalyzerOrchestrator {
       ? [domain, domain.replace(/-/g, ' '), ...domain.split('-')].filter(form => form.length > 2)
       : [];
     const groundedTerms = [...domainForms, ...concepts].filter((term): term is string => Boolean(term && term !== 'unknown'));
-    if (this.descriptionContradictsPurposeFamily(cleaned, domain, primaryType)) {
-      return { ok: false, reason: 'contradicts-primary-domain-or-purpose' };
+    const ungroundedDomainClaims = this.ungroundedDomainClaims(cleaned, groundedTerms, facts);
+    if (ungroundedDomainClaims.length > 0) {
+      return { ok: false, reason: `ungrounded-domain-claim: ${ungroundedDomainClaims.join(', ')}` };
     }
     if (groundedTerms.length > 0 && !groundedTerms.some(term => lower.includes(term))) {
       const structuralMatches = (facts.structuralTokens || []).filter(token => lower.includes(token)).length;
@@ -11629,36 +11691,152 @@ export class AnalyzerOrchestrator {
       .some(term => normalized.endsWith(term));
   }
 
-  private descriptionContradictsPurposeFamily(description: string, domain?: string, primaryType?: string): boolean {
-    const lower = description.toLowerCase();
-    const authority = `${domain || ''} ${primaryType || ''}`.toLowerCase();
-    const claims: Array<{ pattern: RegExp; allowed: RegExp }> = [
-      {
-        pattern: /\bportfolio management system\b|\bportfolio management context\b|\binvestment management system\b|\bmanaged investments?\b/,
-        allowed: /\b(portfolio-management|investment|trading-automation|solana-arbitrage|solana-trading)\b/,
-      },
-      {
-        pattern: /\btrading automation system\b|\barbitrage trading system\b|\btoken purchase execution\b/,
-        allowed: /\b(trading-automation|solana-arbitrage|solana-trading)\b/,
-      },
-      {
-        pattern: /\bzero[- ]trust\b|\bnetwork access management system\b|\bsecurity scanning tool\b/,
-        allowed: /\b(zero-trust-security|network-access-management|security-scanning-tool|network-access-platform)\b/,
-      },
-      {
-        pattern: /\bfleet management system\b|\bvehicle operations\b|\bfuel tracking\b/,
-        allowed: /\b(fleet-management|fleet-management-platform|backend-service)\b/,
-      },
-      {
-        pattern: /\bclinical testing system\b|\bpatient testing\b|\bclinical measurements?\b/,
-        allowed: /\b(clinical-testing|clinical-testing-platform|medical-device)\b/,
-      },
-      {
-        pattern: /\bcodebase analysis\b|\bcas graph\b|\bagent contexts?\b/,
-        allowed: /\b(codebase-analysis|code-analysis|developer-tool)\b/,
-      },
-    ];
-    return claims.some(claim => claim.pattern.test(lower) && !claim.allowed.test(authority));
+  /**
+   * DOMAIN-CLAIM GATE (replaces descriptionContradictsPurposeFamily, commit
+   * 9768aedfe — a hand-maintained table of six domain families [portfolio,
+   * trading, zero-trust, fleet, clinical, codebase-analysis], each with its own
+   * claim-phrase regexes and an "allowed" authority regex, including Soon-
+   * derived vocabulary ("solana-arbitrage") baked directly into the analyzer.
+   * The table also silently did NOTHING for every domain outside those six.
+   * CARDINAL RULE: never hardcode brand/keyword classifiers.
+   *
+   * This is a GENERIC claim frame, same shape as the architecture-shape gate
+   * (ungroundedArchitectureShapeClaims): a description that names a business
+   * domain via a claim frame ("<X> management system", "<X> testing platform",
+   * "<X> operations", "<X> tracking", ...) is making a claim about what the
+   * codebase is FOR. The FRAME is fixed (a bounded, generic set of claim
+   * words + type-head nouns); the subject X is whatever the model wrote — no
+   * vocabulary list. The claim is corroborated against the SAME deterministic
+   * evidence corpus systemTypeIsGrounded assembles (domain/concepts, structural
+   * tokens, library/dependency names, entity names, external services, manifest
+   * text) via token-overlap with light stemming. No domain is banned and none
+   * is privileged: "fleet management platform" passes on truckspy because
+   * fleet/vehicle/driver/dispatch evidence saturates the corpus; the identical
+   * phrase is rejected when that evidence is absent — and so is any domain the
+   * old table never covered ("restaurant ordering system").
+   */
+  private ungroundedDomainClaims(
+    text: string,
+    groundedTerms: string[],
+    facts: {
+      systemName?: string;
+      libraries?: string[];
+      databaseEntities?: string[];
+      externalServices?: string[];
+      structuralTokens?: string[];
+      projectTextSummary?: string;
+      projectTextConcepts?: string[];
+    } = {},
+  ): string[] {
+    // Frame A: "<X> <claim-word> <type-head>" ("portfolio management system",
+    // "security scanning tool", "network access management system").
+    const framedClaimPattern = /\b([a-z][a-z]{2,}(?:[- ][a-z][a-z]{2,}){0,2})\s+(?:management|automation|testing|tracking|analysis|analytics|monitoring|operations|scanning|execution|measurements?)\s+(?:systems?|platforms?|contexts?|tools?|services?|engines?|graphs?)\b/gi;
+    // Frame B: "<X> <claim-word>" with no type-head noun ("vehicle operations",
+    // "fuel tracking", "patient testing", "clinical measurements", "token
+    // purchase execution") — excluded when frame A already matched the same
+    // span so a claim is never double-counted.
+    const bareClaimPattern = /\b([a-z][a-z]{2,}(?:[- ][a-z][a-z]{2,}){0,2})\s+(?:operations|tracking|testing|measurements?|execution)\b(?!\s+(?:systems?|platforms?|contexts?|tools?|services?|engines?|graphs?))/gi;
+    const nameTokens = new Set(
+      String(facts.systemName || '')
+        .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+        .toLowerCase()
+        .split(/[^a-z0-9]+/)
+        .filter(Boolean),
+    );
+    const evidenceCorpus = [
+      ...groundedTerms,
+      ...(facts.structuralTokens || []),
+      ...(facts.libraries || []),
+      ...(facts.databaseEntities || []),
+      ...(facts.externalServices || []),
+      ...(facts.projectTextConcepts || []),
+      facts.projectTextSummary || '',
+    ]
+      .join(' ')
+      .toLowerCase();
+    const stopWords = new Set([
+      'a', 'an', 'the', 'this', 'that', 'is', 'are', 'was', 'were', 'and', 'or',
+      'for', 'with', 'its', 'their', 'our', 'main', 'core', 'general', 'basic',
+      'internal', 'primary', 'central', 'various', 'multiple', 'other', 'more',
+      'built', 'used', 'using', 'about', 'into', 'onto', 'over', 'from',
+    ]);
+    const lower = text.toLowerCase();
+    const ungrounded = new Set<string>();
+    for (const pattern of [framedClaimPattern, bareClaimPattern]) {
+      let match: RegExpExecArray | null;
+      while ((match = pattern.exec(lower)) !== null) {
+        // A greedy 1-3 word subject window can pull in a leading verb ("manages
+        // fuel tracking") rather than a genuine domain modifier; stem before
+        // the stopword/generic-token check so "manages"/"tracks"/"handles"
+        // filter out the same as their base forms do.
+        const subjectTokens = match[1]
+          .split(/[^a-z0-9]+/)
+          .filter(token => {
+            const stem = this.stemTerminologyToken(token);
+            return token.length >= 4 &&
+              !stopWords.has(token) && !stopWords.has(stem) &&
+              !nameTokens.has(token) && !nameTokens.has(stem) &&
+              !this.isGenericCapabilityToken(token) && !this.isGenericCapabilityToken(stem);
+          });
+        // No distinctive subject modifier ("the management system") is not a
+        // domain claim at all — nothing to ground.
+        if (subjectTokens.length === 0) continue;
+        const grounded = subjectTokens.some(token => {
+          const stem = this.stemTerminologyToken(token);
+          return evidenceCorpus.includes(token) || evidenceCorpus.includes(stem);
+        });
+        if (!grounded) {
+          // Report/strip the CONTENT span only: a greedy subject window can
+          // pull in a leading filler word ("that manages fuel tracking") that
+          // is not part of the claim itself — drop leading stopword/generic
+          // tokens from the reported phrase so the reason and the clause-strip
+          // stay scoped to the actual claim ("fuel tracking").
+          const rawSubjectWords = match[1].split(/\s+/);
+          let dropCount = 0;
+          while (dropCount < rawSubjectWords.length) {
+            const word = rawSubjectWords[dropCount];
+            const stem = this.stemTerminologyToken(word);
+            if (stopWords.has(word) || stopWords.has(stem) || this.isGenericCapabilityToken(word) || this.isGenericCapabilityToken(stem)) {
+              dropCount++;
+            } else {
+              break;
+            }
+          }
+          const trimmedSubject = rawSubjectWords.slice(dropCount).join(' ');
+          const suffix = match[0].slice(match[1].length);
+          ungrounded.add(`${trimmedSubject}${suffix}`.trim());
+        }
+      }
+    }
+    return Array.from(ungrounded);
+  }
+
+  /**
+   * Clause-level strip for an ungrounded domain-claim phrase, mirroring
+   * stripUngroundedArchitectureShapeClauses (repair of the AI's own text, never
+   * a rewrite): delete the exact matched phrase, then let
+   * repairStrippedSentenceGrammar heal the resulting grammar stump.
+   */
+  private stripUngroundedDomainClaimClauses(text: string, phrases: string[]): string {
+    let stripped = text;
+    for (const phrase of phrases) {
+      const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+');
+      // Attached clause: "..., a <phrase> that ..." / "built as a <phrase> for ...".
+      stripped = stripped.replace(
+        new RegExp(`,?\\s*(?:and\\s+)?(?:is|as|built|structured|designed|serves? as)?\\s*(?:a|an|the)?\\s*${escaped}\\b`, 'gi'),
+        ''
+      );
+    }
+    if (stripped === text) return text;
+    return this.repairStrippedSentenceGrammar(this.cleanGeneratedDescriptionText(
+      stripped
+        .replace(/\s+,/g, ',')
+        .replace(/,(?:\s*,)+/g, ',')
+        .replace(/,\s*(?:and\s*)?\./g, '.')
+        .replace(/\s+\./g, '.')
+        .replace(/\band\s+\./gi, '.')
+        .replace(/\s{2,}/g, ' ')
+    ));
   }
 
   private libraryNamesForInterpretation(libraries: Array<{ name?: string }>): string[] {
@@ -11891,11 +12069,24 @@ export class AnalyzerOrchestrator {
     const shapeSanitized = ungroundedShapes.length > 0
       ? this.stripUngroundedArchitectureShapeClauses(wordSanitized, ungroundedShapes)
       : wordSanitized;
+    // Domain-claim phrases ("<X> management system", "<X> operations") not
+    // corroborated by the deterministic evidence corpus are stripped the same
+    // way — clause-level repair of the AI's own text (ungroundedDomainClaims /
+    // stripUngroundedDomainClaimClauses, replacing the old hardcoded six-family
+    // descriptionContradictsPurposeFamily table).
+    const domainClaimGroundedTerms = [
+      enhancedSystemPurpose.primary_domain,
+      ...(enhancedSystemPurpose.core_concepts || []),
+    ].filter((term): term is string => Boolean(term && term !== 'unknown'));
+    const ungroundedDomainClaimPhrases = this.ungroundedDomainClaims(shapeSanitized, domainClaimGroundedTerms, facts);
+    const domainClaimSanitized = ungroundedDomainClaimPhrases.length > 0
+      ? this.stripUngroundedDomainClaimClauses(shapeSanitized, ungroundedDomainClaimPhrases)
+      : shapeSanitized;
     // Word-level substitutions/deletions above can leave grammatical stumps
     // ("…graph evidence for.", "a robust and solution") and the model pads
     // paragraphs by restating the same domain sentence 2-3x — repair grammar
     // and collapse near-duplicate sentences before sentence-level filtering.
-    const cleaned = this.collapseNearDuplicateSentences(this.repairStrippedSentenceGrammar(shapeSanitized));
+    const cleaned = this.collapseNearDuplicateSentences(this.repairStrippedSentenceGrammar(domainClaimSanitized));
     const sentences = cleaned
       .split(/(?<=[.!?])\s+/)
       .map(sentence => sentence.trim())
@@ -13879,7 +14070,11 @@ export class AnalyzerOrchestrator {
           .filter(Boolean);
         const hasAny = (...verbs: string[]) => words.some(word => verbs.includes(word));
         if (hasAny('create', 'creates', 'created', 'add', 'adds', 'added', 'insert', 'inserts')) return createdBy;
-        if (hasAny('get', 'gets', 'find', 'finds', 'read', 'reads', 'fetch', 'fetches', 'list', 'lists', 'show', 'index')) return readBy;
+        // 'paginate'/'retrieve'/'browse' are read-shaped repository/listing verbs
+        // (paginateAllDriveAlerts, retrieveOrders) — omitting them silently drops
+        // the exact methods that serve list/detail endpoints from an entity's
+        // read lineage, which starves capability candidates of entity evidence.
+        if (hasAny('get', 'gets', 'find', 'finds', 'read', 'reads', 'fetch', 'fetches', 'list', 'lists', 'show', 'index', 'paginate', 'paginates', 'paginated', 'retrieve', 'retrieves', 'browse', 'browses')) return readBy;
         if (hasAny('update', 'updates', 'set', 'sets', 'modify', 'modifies', 'save', 'saves')) return updatedBy;
         if (hasAny('delete', 'deletes', 'remove', 'removes', 'destroy', 'destroys')) return deletedBy;
         return undefined;
@@ -14201,6 +14396,29 @@ export class AnalyzerOrchestrator {
         attributedNouns.add(noun);
         bucket(noun)[op].add(node.id);
       }
+      // COMPOUND entity nouns ("DriveAlert", "FuelStation") never match the
+      // single-token attribution above: camelCase splitting breaks the method
+      // name into separate words ("drive"/"alert"), but the entity lookup key
+      // (line ~14075) is the WHOLE compact name singularized as one token
+      // ("drivealert"). Without this, paginateAllDriveAlerts — the method that
+      // actually serves a DriveAlert list endpoint — never attributes to the
+      // DriveAlert entity, starving it (and any multi-word entity) of read/write
+      // lineage. Additionally bucket contiguous 2-3 token windows joined with no
+      // separator so those compact compounds resolve too. Extra keys that never
+      // match a real entity noun are harmless — the consumer only reads keys that
+      // correspond to an actual entity name.
+      for (let i = 1; i < orderedTokens.length; i++) {
+        if (PREPOSITIONS.has(orderedTokens[i - 1])) continue;
+        for (let windowLen = 2; windowLen <= 3 && i + windowLen <= orderedTokens.length; windowLen++) {
+          const windowTokens = orderedTokens.slice(i, i + windowLen);
+          if (windowTokens.some(token => token.length < 3)) continue;
+          if (windowTokens.some((token, idx) => idx > 0 && PREPOSITIONS.has(windowTokens[idx - 1]))) continue;
+          const noun = this.singularizeNoun(windowTokens.join(''));
+          if (noun.length < 5 || attributedNouns.has(noun)) continue;
+          attributedNouns.add(noun);
+          bucket(noun)[op].add(node.id);
+        }
+      }
     }
     return index;
   }
@@ -14236,7 +14454,7 @@ export class AnalyzerOrchestrator {
     const words = name.replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
     const hasAny = (...verbs: string[]) => words.some(word => verbs.includes(word));
     if (hasAny('create', 'creates', 'created', 'add', 'adds', 'added', 'insert', 'inserts', 'register', 'registers')) return 'create';
-    if (hasAny('get', 'gets', 'find', 'finds', 'read', 'reads', 'fetch', 'fetches', 'list', 'lists', 'show', 'index', 'load', 'loads', 'query', 'search')) return 'read';
+    if (hasAny('get', 'gets', 'find', 'finds', 'read', 'reads', 'fetch', 'fetches', 'list', 'lists', 'show', 'index', 'load', 'loads', 'query', 'search', 'paginate', 'paginates', 'paginated', 'retrieve', 'retrieves', 'browse', 'browses')) return 'read';
     if (hasAny('update', 'updates', 'set', 'sets', 'modify', 'modifies', 'save', 'saves', 'patch', 'edit', 'edits', 'persist', 'persists', 'store', 'stores', 'upsert', 'upserts')) return 'update';
     if (hasAny('delete', 'deletes', 'remove', 'removes', 'destroy', 'destroys', 'revoke', 'revokes')) return 'delete';
     return undefined;
@@ -15975,6 +16193,68 @@ export class AnalyzerOrchestrator {
       usedCapabilityIds.add(candidate);
       return candidate;
     };
+    // ONE-HOP callee adjacency for entity association. Route-area entity
+    // matching requires the entity's lifecycle to name the handler node ITSELF,
+    // but controller handlers routinely delegate persistence one call away
+    // (live truckspy: ElectronicLoggingDeviceController -> DataTransferManager
+    // -> persist(FMCSADataTransfer)), leaving the whole route family 0-entity
+    // and unrankable against grounded candidates. Expanding the match set by
+    // the handler's DIRECT callees keeps the association evidence-driven (a
+    // real call edge) while staying too shallow to smear entities across
+    // unrelated groups.
+    const CALLEE_EDGE_TYPES = new Set(['calls', 'invokes', 'delegates_to', 'uses', 'queries']);
+    const directCalleesBySource = new Map<string, Set<string>>();
+    for (const edge of productEdges) {
+      if (!CALLEE_EDGE_TYPES.has(edge.type)) continue;
+      let callees = directCalleesBySource.get(edge.source);
+      if (!callees) { callees = new Set(); directCalleesBySource.set(edge.source, callees); }
+      callees.add(edge.target);
+    }
+    // PRE-PASS: per-group entity matches, split by evidence strength. `direct`
+    // = the entity's lifecycle names a handler node itself (the original,
+    // always-kept association). `hop` = matched only through a handler's direct
+    // callee. Hop matches need a document-frequency guard: a tenant-shaped
+    // entity every service touches (live truckspy: Company) hop-matches most
+    // groups at once, which grounds unrelated plumbing groups and crowds the
+    // catalog prompt window. Same DF principle as nonDiscriminative name
+    // tokens — repo-adaptive, derived from THIS repo's own match distribution,
+    // never an entity-name vocabulary.
+    const entityLifecycleIds = new Map<string, string[]>(productDataEntities.map(de => [de.id, [
+      ...de.lifecycle.created_by,
+      ...de.lifecycle.read_by,
+      ...de.lifecycle.updated_by,
+      ...de.lifecycle.deleted_by,
+    ]]));
+    const groupEntityMatches = new Map<string, { direct: Set<string>; hop: Set<string> }>();
+    const hopMatchDf = new Map<string, number>();
+    for (const [resourceKey, group] of resourceGroups.entries()) {
+      await maybeYield();
+      const handlerIds = new Set<string>();
+      for (const ep of group.entryPoints) {
+        if (ep.source_node) handlerIds.add(ep.source_node);
+        const epAny = ep as any;
+        if (epAny.handler?.node_id) handlerIds.add(epAny.handler.node_id);
+      }
+      const hopIds = new Set<string>();
+      for (const nodeId of handlerIds) {
+        for (const callee of directCalleesBySource.get(nodeId) || []) {
+          if (!handlerIds.has(callee)) hopIds.add(callee);
+        }
+      }
+      const direct = new Set<string>();
+      const hop = new Set<string>();
+      for (const de of productDataEntities) {
+        const lifecycleIds = entityLifecycleIds.get(de.id) || [];
+        if (lifecycleIds.some(id => handlerIds.has(id))) direct.add(de.id);
+        else if (lifecycleIds.some(id => hopIds.has(id))) hop.add(de.id);
+      }
+      for (const entityId of hop) hopMatchDf.set(entityId, (hopMatchDf.get(entityId) || 0) + 1);
+      groupEntityMatches.set(resourceKey, { direct, hop });
+    }
+    // Ubiquity threshold: a hop-matched entity in more than a quarter of the
+    // groups (min 4) is repo-wide plumbing for hop purposes, not a domain
+    // anchor for any one group.
+    const hopDfLimit = Math.max(4, Math.ceil(resourceGroups.size / 4));
     // for..of over entries() preserves Map.forEach's insertion-order iteration
     // exactly; the yield between groups is the only difference.
     for (const [resourceKey, group] of resourceGroups.entries()) {
@@ -15993,15 +16273,14 @@ export class AnalyzerOrchestrator {
         if (epAny.handler?.node_id) relatedNodeIds.add(epAny.handler.node_id);
       });
 
-      const relatedEntities = productDataEntities.filter(de => {
-        const entityNodeIds = [
-          ...de.lifecycle.created_by,
-          ...de.lifecycle.read_by,
-          ...de.lifecycle.updated_by,
-          ...de.lifecycle.deleted_by
-        ];
-        return entityNodeIds.some(id => relatedNodeIds.has(id));
-      });
+      // Direct handler matches always count; one-hop callee matches count only
+      // below the ubiquity threshold (see pre-pass above). relatedNodeIds
+      // itself stays handler-only — criticality/labeling below must not
+      // inflate on delegated helpers.
+      const matches = groupEntityMatches.get(resourceKey) || { direct: new Set<string>(), hop: new Set<string>() };
+      const relatedEntities = productDataEntities.filter(de =>
+        matches.direct.has(de.id) ||
+        (matches.hop.has(de.id) && (hopMatchDf.get(de.id) || 0) <= hopDfLimit));
 
       const { criticality, factors } = this.calculateCriticalityFromSignals(
         group.entryPoints,
@@ -16906,10 +17185,19 @@ export class AnalyzerOrchestrator {
         continue;
       }
       const tokens = this.domainTokensFromText(entity.name);
-      const key = tokens[0];
-      if (!key || this.domainCoveredByExistingDomain(key, existingDomains)) continue;
-      const group = ensureGroup(key, tokens);
-      group.entities.push(entity);
+      const firstTokenKey = tokens[0];
+      // COMPOUND entity names ("DriveAlert", "FuelStation") get grouped by
+      // domainKeyFromNode elsewhere in this pass as the FULL joined-token key
+      // ("drive-alert") — the capability-candidate NODES below use that same
+      // full key. Registering the entity under firstTokenKey ("drive") ONLY
+      // means a compound entity lands in a DIFFERENT bucket than the capability
+      // built from its own accessor nodes, so that capability's `entities` list
+      // stays permanently empty even though the entity and its accessors are
+      // the same domain. Register under BOTH the legacy first-token key (kept
+      // for whatever grouping already relies on it) and the full compound key
+      // when it differs, so a compound entity reaches whichever bucket its
+      // capability actually lands in.
+      const fullKey = this.domainKeyFromText(entity.name);
       const lifecycleNodes = [
         ...entity.lifecycle.created_by,
         ...entity.lifecycle.read_by,
@@ -16918,7 +17206,12 @@ export class AnalyzerOrchestrator {
       ]
         .map(id => nodesById.get(id))
         .filter((node): node is CASNode => Boolean(node));
-      group.nodes.push(...lifecycleNodes);
+      for (const key of new Set([firstTokenKey, fullKey].filter((value): value is string => Boolean(value)))) {
+        if (this.domainCoveredByExistingDomain(key, existingDomains)) continue;
+        const group = ensureGroup(key, tokens);
+        group.entities.push(entity);
+        group.nodes.push(...lifecycleNodes);
+      }
     }
 
     for (const node of nodes) {
@@ -18583,8 +18876,24 @@ export class AnalyzerOrchestrator {
     if (ep.type === 'http') {
       const path = ep.trigger?.path || '';
       const cleanPath = path.replace(/^\/api\//, '').replace(/^\//, '');
-      const firstSegment = cleanPath.split('/')[0];
-      if (firstSegment && !firstSegment.startsWith(':')) {
+      // The resource segment is the first NON-GENERIC one, not blindly the
+      // first: APIs commonly nest an audience/version tier between the api
+      // prefix and the resource (/api/web/eld/dailies, /api/mobile/eld/...,
+      // /api/v2/orders). Taking segment[0] made every such route group under
+      // the tier token ('web'/'mobile'/'v2') — a generic key the group filter
+      // then discards wholesale, so entire resource families (30+ routes)
+      // produced NO route-area capability at all. Walk forward past segments
+      // the existing generic-token classifiers reject; the first segment that
+      // survives IS the resource. Purely classifier-driven — no audience/
+      // version vocabulary of its own; falls back to the old first-segment
+      // behavior when nothing survives.
+      const segments = cleanPath.split('/').filter(segment => segment && !segment.startsWith(':') && !segment.startsWith('{'));
+      for (const segment of segments) {
+        const key = this.normalizeHttpCapabilitySegment(segment);
+        if (key !== 'general' && !this.isGenericCapabilityResourceKey(key)) return key;
+      }
+      const firstSegment = segments[0];
+      if (firstSegment) {
         return this.normalizeHttpCapabilitySegment(firstSegment);
       }
       return 'general';
