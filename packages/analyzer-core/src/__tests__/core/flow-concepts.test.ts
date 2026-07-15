@@ -821,6 +821,167 @@ describe('capability↔flow path (b) — entity overlap survives id/name format 
   });
 });
 
+// ---------------------------------------------------------------------------
+// Rule (c2): a CLI command a real (incl. Helm-templated) kubernetes_cronjob
+// schedules relates to a capability whose entities its path touches as
+// 'operational', not 'supporting' — scheduled upkeep work FOR that capability
+// (docs/SEMANTIC-MODEL.md coverage invariants: operational/maintenance are
+// exactly the roles for cron/console flows). Evidence-gated: only a real
+// container command/schedule match upgrades the role; a bare CLI command with
+// no CronJob reference stays 'supporting'.
+// ---------------------------------------------------------------------------
+function buildCronFixtureCas(includeCronJobNode = true): CASOutput {
+  const nodes: CASNode[] = [
+    node({ id: 'n_cronHandler', name: 'runReportNotifications', type: 'function', category: 'business' }),
+    node({ id: 'n_writeInvoice', name: 'writeInvoiceSummary', type: 'function', category: 'data' }),
+  ];
+  const edges: CASEdge[] = [
+    { id: 'ce1', source: 'n_cronHandler', target: 'n_writeInvoice', type: 'calls' },
+  ];
+  if (includeCronJobNode) {
+    nodes.push(node({
+      id: 'n_cronjob_reportsystem',
+      name: 'CronJob: run-report-notifications-cron-job',
+      type: 'kubernetes_cronjob',
+      category: 'infra',
+      metadata: {
+        language: 'Helm',
+        schedule: '30 */2 * * *',
+        command: 'php bin/console app:reportsystem:run-notifications',
+      } as any,
+    }));
+  }
+  const entry_points: CASEntryPoint[] = [
+    {
+      id: 'ep_cron_reportsystem', source_node: 'n_cronHandler', type: 'cli', name: 'app:reportsystem:run-notifications',
+      trigger: { pattern: 'app:reportsystem:run-notifications' },
+      handler: { node_id: 'n_cronHandler', method_name: 'execute' },
+      metadata: { commandName: 'app:reportsystem:run-notifications' } as any,
+    },
+  ];
+  const exit_points: CASExitPoint[] = [];
+  const data_lineage: CASEntityLineage[] = [
+    {
+      entity_id: 'entity_invoice', entity_name: 'Invoice', sensitive_fields: [],
+      writers: [{ node_id: 'n_writeInvoice' } as any],
+      readers: [], external_recipients: [], boundaries_crossed: [], journeys_carrying: [],
+      exposure: { unguarded_paths: 0, external_transfer: false, sensitive: false },
+    },
+  ];
+  // No capability operation references ep_cron_reportsystem — only entity
+  // overlap can relate this flow to cap_billing.
+  const system_capabilities: SystemCapability[] = [
+    {
+      id: 'cap_billing', name: 'Billing', description: 'Invoice billing', category: 'core',
+      operations: [{ entry_point_id: 'ep_other', entry_point_type: 'http', action: 'create' }],
+      related_entities: ['Invoice'], related_domains: [], criticality: 'high', criticality_factors: [],
+    },
+  ];
+  return {
+    cas_version: '1.0.0', analysis_timestamp: new Date().toISOString(), analysis_id: 'test-cron',
+    system: { name: 'test-system' } as any,
+    nodes, edges, entry_points, exit_points, data_lineage,
+    data_entities: [], system_capabilities, analyzer_contributions: [],
+  } as unknown as CASOutput;
+}
+
+describe('capability↔flow rule (c2) — CLI command scheduled by a CronJob', () => {
+  test('entity-overlap edge on a cron-scheduled CLI command → operational, rationale cites the schedule', () => {
+    const flows = computeFlowConcepts(buildCronFixtureCas());
+    const cronFlow = flows.find(f => f.entry_point === 'ep_cron_reportsystem')!;
+    const rel = cronFlow.capability_relationships?.find(r => r.capability_id === 'cap_billing');
+    expect(rel).toBeDefined();
+    expect(rel!.role).toBe('operational');
+    expect(rel!.rationale).toContain('Invoice');
+    expect(rel!.rationale).toContain('30 */2 * * *');
+    expect(rel!.rationale).toMatch(/CronJob/);
+  });
+
+  test('the SAME CLI command with no matching kubernetes_cronjob evidence stays supporting (no fabrication)', () => {
+    const flows = computeFlowConcepts(buildCronFixtureCas(false));
+    const cronFlow = flows.find(f => f.entry_point === 'ep_cron_reportsystem')!;
+    const rel = cronFlow.capability_relationships?.find(r => r.capability_id === 'cap_billing');
+    expect(rel).toBeDefined();
+    expect(rel!.role).toBe('supporting');
+  });
+
+  test('an HTTP entry point sharing the same entity overlap is never cron-upgraded (cli-only evidence)', () => {
+    const cas = buildCronFixtureCas();
+    (cas.entry_points as CASEntryPoint[])[0] = {
+      ...(cas.entry_points as CASEntryPoint[])[0],
+      type: 'http',
+      trigger: { method: 'POST', path: '/report-notifications' },
+    };
+    const flows = computeFlowConcepts(cas);
+    const flow = flows.find(f => f.entry_point === 'ep_cron_reportsystem')!;
+    const rel = flow.capability_relationships?.find(r => r.capability_id === 'cap_billing');
+    expect(rel!.role).toBe('supporting');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SAME-HANDLER primary bridge: two analyzers can register distinct CLI entry
+// points for the identical console command (e.g. a framework-detection pass
+// and a language-level class-detection pass), sharing one handler node but
+// carrying different entry_point ids. A capability operation anchored on
+// EITHER sibling entry point should designate the flow rooted at that shared
+// handler as 'primary' — real structural evidence (same handler node id),
+// never a name heuristic.
+// ---------------------------------------------------------------------------
+function buildDuplicateEntryFixtureCas(): CASOutput {
+  const nodes: CASNode[] = [
+    node({ id: 'n_liveHandler', name: 'execute', type: 'function', category: 'business' }),
+  ];
+  const entry_points: CASEntryPoint[] = [
+    // The "declared primary" entry point a capability operation cites.
+    {
+      id: 'entry_cli_class_LiveCommand', source_node: 'n_liveHandler', type: 'cli', name: 'app:live',
+      trigger: { pattern: 'app:live' },
+      handler: { node_id: 'n_liveHandler', method_name: 'execute' },
+      metadata: { commandName: 'app:live' } as any,
+    },
+    // A DUPLICATE entry point for the identical command, emitted by a second
+    // analyzer, sharing the same handler node but a different id.
+    {
+      id: 'entry_cli_app_live', source_node: 'n_liveHandler', type: 'cli', name: 'bin/console app:live',
+      trigger: { pattern: 'app:live' },
+      handler: { node_id: 'n_liveHandler', method_name: 'execute' },
+      metadata: { command_name: 'app:live' } as any,
+    },
+  ];
+  const system_capabilities: SystemCapability[] = [
+    {
+      id: 'cap_ops', name: 'Operations', description: 'Liveness checks', category: 'core',
+      operations: [{ entry_point_id: 'entry_cli_class_LiveCommand', entry_point_type: 'cli', action: 'Execute' }],
+      related_entities: [], related_domains: [], criticality: 'medium', criticality_factors: [],
+    },
+  ];
+  return {
+    cas_version: '1.0.0', analysis_timestamp: new Date().toISOString(), analysis_id: 'test-dup-entry',
+    system: { name: 'test-system' } as any,
+    nodes, edges: [], entry_points, exit_points: [], data_lineage: [],
+    data_entities: [], system_capabilities, analyzer_contributions: [],
+  } as unknown as CASOutput;
+}
+
+describe('capability↔flow same-handler primary bridge — duplicate CLI entry points', () => {
+  const flows = computeFlowConcepts(buildDuplicateEntryFixtureCas());
+
+  test('the declared entry point is primary (baseline)', () => {
+    const flow = flows.find(f => f.entry_point === 'entry_cli_class_LiveCommand')!;
+    const rel = flow.capability_relationships?.find(r => r.capability_id === 'cap_ops');
+    expect(rel!.role).toBe('primary');
+  });
+
+  test('the DUPLICATE entry point for the same handler node also resolves primary, not stranded', () => {
+    const flow = flows.find(f => f.entry_point === 'entry_cli_app_live')!;
+    const rel = flow.capability_relationships?.find(r => r.capability_id === 'cap_ops');
+    expect(rel).toBeDefined();
+    expect(rel!.role).toBe('primary');
+    expect(rel!.rationale).toContain('entry_cli_class_LiveCommand');
+  });
+});
+
 function buildInteriorFixtureCas(): CASOutput {
   // Parent flow (POST /parent) calls into the handler node of a SEPARATE entry
   // point (POST /child). A capability's operation references the CHILD entry

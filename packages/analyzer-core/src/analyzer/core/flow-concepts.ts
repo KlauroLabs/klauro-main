@@ -9,6 +9,7 @@ import type {
   SystemCapability,
 } from '../../types/cas.types';
 import { buildTerminalSignal } from './terminal-signal';
+import { buildCronScheduleIndex, findCronSchedule } from './journey-builder';
 
 /**
  * FLOW CONCEPTS — the FLOW -> STEP tier of the conceptual understanding layer
@@ -1706,6 +1707,27 @@ function telemetryExitDominance(
 }
 
 /**
+ * CLI-command -> CronJob scheduling evidence, reused from journey-builder.ts
+ * (buildCronScheduleIndex / findCronSchedule — the SAME kubernetes_cronjob
+ * `command`+`schedule` facts that make a user journey 'scheduled', 4e34b9ed).
+ * Only `cli` entry points are eligible (an HTTP/websocket/page entry is never
+ * "run by a CronJob") and only when the entry carries a resolvable console
+ * command name (CASEntryPoint.metadata.commandName — php-analyzer /
+ * extractPhpConsoleCommandName). Returns the CronJob's schedule expression on
+ * a real container-command match, else undefined — never fabricated from the
+ * command/file name alone.
+ */
+function deriveCliCronSchedule(
+  entryPoint: CASEntryPoint | undefined,
+  cronScheduleIndex: Map<string, string>
+): string | undefined {
+  if (!entryPoint || entryPoint.type !== 'cli') return undefined;
+  const commandName = String((entryPoint.metadata as any)?.commandName || '').trim();
+  if (!commandName) return undefined;
+  return findCronSchedule(commandName, cronScheduleIndex);
+}
+
+/**
  * Derive ALL capability↔flow relationship edges for one flow — DETERMINISTIC
  * (Camp-B), structural refs only, never name keywords:
  *
@@ -1716,6 +1738,16 @@ function telemetryExitDominance(
  *   (b) the flow's touched entities overlap the capability's related_entities
  *       but its entry point is NOT among the capability's operations →
  *       'supporting'; rationale cites the shared entity names.
+ *   (c2) an entity-overlap edge on a flow rooted at a CLI entry point whose
+ *       console command a real kubernetes_cronjob (incl. Helm-templated,
+ *       resolved from values.yaml) schedules → 'operational'; rationale cites
+ *       the CronJob's schedule expression (deriveCliCronSchedule, reusing
+ *       journey-builder.ts's buildCronScheduleIndex/findCronSchedule —
+ *       SAME evidence that makes a user journey 'scheduled', 4e34b9ed). A
+ *       scheduled CLI job realizing a capability's entities is operational
+ *       upkeep FOR that capability, not incidental support. Telemetry
+ *       dominance (d) is checked first — a flow whose exits are genuinely
+ *       telemetry-shaped keeps 'observability' even when cron-scheduled.
  *   (d) an entity-overlap edge on a flow whose exits are dominated by
  *       telemetry exit kinds → 'observability'; rationale cites the exit
  *       facts. (An operation ref still wins: realizing an operation of the
@@ -1754,16 +1786,34 @@ function deriveCapabilityRelationships(args: {
    *  supporting/observability vocabulary unreachable on real CAS, where
    *  operations are predominantly node-anchored). */
   entryHandlerNodeIdByEpId?: Map<string, string>;
+  /** This flow's CLI cron-schedule evidence (deriveCliCronSchedule), when the
+   *  flow's entry point is a CLI command a real kubernetes_cronjob schedules.
+   *  Undefined for every non-CLI / unscheduled flow — never fabricated. */
+  cronSchedule?: string;
 }): CapabilityFlowRelationship[] {
-  const { capabilities, entryPointId, rootNodeId, entities, telemetry, pathNodeIds, entryHandlerNodeIdByEpId } = args;
+  const { capabilities, entryPointId, rootNodeId, entities, telemetry, pathNodeIds, entryHandlerNodeIdByEpId, cronSchedule } = args;
   const out: CapabilityFlowRelationship[] = [];
   const entityKeySet = new Set(entities.map(normalizeEntityKey));
 
   for (const cap of capabilities) {
-    const opMatch = (cap.operations || []).find(op =>
-      (entryPointId !== undefined && op.entry_point_id === entryPointId) ||
-      (rootNodeId !== undefined && (op.entry_point_id === `node:${rootNodeId}` || op.entry_point_id === rootNodeId))
-    );
+    const opMatch = (cap.operations || []).find(op => {
+      if (entryPointId !== undefined && op.entry_point_id === entryPointId) return true;
+      if (rootNodeId !== undefined && (op.entry_point_id === `node:${rootNodeId}` || op.entry_point_id === rootNodeId)) return true;
+      // SAME-HANDLER bridge: two analyzers can emit distinct CLI entry points
+      // for the SAME console command (e.g. a framework-detection pass and a
+      // language-level class-detection pass both registering it), sharing one
+      // handler node but carrying different entry_point ids. A capability
+      // operation anchored on either sibling entry point still designates
+      // THIS flow as primary once resolved to the identical handler node —
+      // real structural evidence (entryHandlerNodeIdByEpId), not a name
+      // heuristic. Without this, a duplicate entry point stays stranded even
+      // though its own sibling is already the capability's declared primary.
+      if (rootNodeId !== undefined && entryHandlerNodeIdByEpId) {
+        const handlerNodeId = entryHandlerNodeIdByEpId.get(op.entry_point_id);
+        if (handlerNodeId !== undefined && handlerNodeId === rootNodeId) return true;
+      }
+      return false;
+    });
     if (opMatch) {
       out.push({
         capability_id: cap.id,
@@ -1813,6 +1863,20 @@ function deriveCapabilityRelationships(args: {
         capability_id: cap.id,
         role: 'observability',
         rationale: `flow touches this capability's related entities (${sharedList}) and ${telemetry.evidence}`,
+      });
+    } else if (cronSchedule) {
+      // Rule (c2): a CLI command a real CronJob schedules, whose path touches
+      // this capability's entities, is SCHEDULED OPERATIONAL work for that
+      // capability (docs/SEMANTIC-MODEL.md coverage invariants: operational/
+      // maintenance are exactly the roles for cron/console flows) — not
+      // incidental 'supporting'. Telemetry dominance is checked first: a
+      // cron job whose own exits are genuinely telemetry-shaped keeps
+      // 'observability' (a more specific signal about what the flow itself
+      // is), never demoted to 'operational' by its trigger alone.
+      out.push({
+        capability_id: cap.id,
+        role: 'operational',
+        rationale: `flow touches entities in this capability's related_entities (${sharedList}); its CLI entry point is scheduled by a CronJob (${cronSchedule}) — scheduled operational work for this capability, not a direct operation`,
       });
     } else {
       out.push({
@@ -2455,6 +2519,10 @@ function buildTerminalFlows(
   const mappingEvidence = buildStepMappingEvidence(cas);
   const exitById = new Map((cas.exit_points || []).map(e => [e.id, e]));
   const entryById = new Map((cas.entry_points || []).map(e => [e.id, e]));
+  // Rule (c2) evidence: real kubernetes_cronjob command/schedule facts (incl.
+  // Helm-templated ones resolved from values.yaml), indexed once for every
+  // flow this pass derives (see deriveCliCronSchedule).
+  const cronScheduleIndex = buildCronScheduleIndex(cas.nodes || []);
 
   const entryPointsByNode = new Map<string, CASEntryPoint[]>();
   for (const ep of cas.entry_points || []) {
@@ -2666,6 +2734,7 @@ function buildTerminalFlows(
       telemetry: telemetryExitDominance(allNodeIds, exitPointsByNode, terminus?.kind),
       pathNodeIds: allNodeIds,
       entryHandlerNodeIdByEpId,
+      cronSchedule: deriveCliCronSchedule(rootEp, cronScheduleIndex),
     });
     const capabilityId = capabilityRelationships.find(r => r.role === 'primary')?.capability_id;
     if (capabilityRelationships.length === 0) {
@@ -2838,6 +2907,8 @@ function computeEntryPointFlows(
   // read system_capabilities directly.
   const capabilities = [...(cas.system_capabilities || []), ...(cas.behavior_surfaces || [])];
   const entryHandlerNodeIdByEpId = buildEntryHandlerNodeIdByEpId(cas);
+  // Rule (c2) evidence: see buildTerminalFlows' identical index (deriveCliCronSchedule).
+  const cronScheduleIndex = buildCronScheduleIndex(cas.nodes || []);
 
   const realEntryPoints = cas.entry_points || [];
   const realRootNodeIds = new Set(realEntryPoints.map(ep => ep.handler?.node_id || ep.source_node));
@@ -3034,6 +3105,7 @@ function computeEntryPointFlows(
       telemetry: telemetryExitDominance(allNodeIds, exitPointsByNode),
       pathNodeIds: allNodeIds,
       entryHandlerNodeIdByEpId,
+      cronSchedule: deriveCliCronSchedule(ep, cronScheduleIndex),
     });
     const capabilityId = capabilityRelationships.find(r => r.role === 'primary')?.capability_id;
     if (capabilityRelationships.length === 0) {

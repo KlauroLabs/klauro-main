@@ -93,7 +93,7 @@ function isOperationalScriptEntry(file: string | undefined): boolean {
  * evidence source is honored. Both facts must be present (a CronJob with no
  * resolvable schedule or command contributes nothing — no fabrication).
  */
-function buildCronScheduleIndex(nodes: CASNode[]): Map<string, string> {
+export function buildCronScheduleIndex(nodes: CASNode[]): Map<string, string> {
   const index = new Map<string, string>();
   for (const node of nodes) {
     if (node.type !== 'kubernetes_cronjob') continue;
@@ -110,7 +110,7 @@ function buildCronScheduleIndex(nodes: CASNode[]): Map<string, string> {
  *  console command's declared name (e.g. container command
  *  "bin/console app:cron:process" contains commandName "app:cron:process").
  *  Returns the CronJob's schedule expression on a match, else undefined. */
-function findCronSchedule(commandName: string, index: Map<string, string>): string | undefined {
+export function findCronSchedule(commandName: string, index: Map<string, string>): string | undefined {
   for (const [commandLine, schedule] of index) {
     if (commandLine.includes(commandName)) return schedule;
   }

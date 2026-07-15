@@ -160,6 +160,12 @@ describe('computeSemanticCoverage', () => {
     expect(capless.some(n => /health/i.test(n))).toBe(true);
   });
 
+  test('the capability-less health flow is diagnosed no-entity-evidence (it touches no entities at all)', () => {
+    const health = cov.unmapped.flows.find(f => /health/i.test(f.name))!;
+    expect(health.reason).toContain('no-entity-evidence');
+    expect(health.reason).toContain('flow touches no entities this repo tracks');
+  });
+
   test('ratios are byte-stable run-to-run (deterministic, Camp-B)', () => {
     const again = computeSemanticCoverage(cas, computeFlowConcepts(cas));
     expect(JSON.stringify(again)).toBe(JSON.stringify(cov));
@@ -188,5 +194,47 @@ describe('computeSemanticCoverage', () => {
     expect(empty.reachable_code_to_steps.total).toBe(7);
     expect(empty.reachable_code_to_steps.mapped).toBe(0);
     expect(empty.reachable_code_to_steps.ratio).toBe(0);
+  });
+});
+
+/**
+ * Reason differentiation (WHY a flow is unmapped, not just THAT it is):
+ * no-entity-evidence — the flow's path touches no tracked entity at all;
+ * no-capability-match — it DOES touch real entities, but none of them
+ * belong to any capability's related_entities, and no operation cites it.
+ */
+describe('computeSemanticCoverage — unmapped.flows reason differentiation', () => {
+  test('a flow touching real entities that no capability declares is no-capability-match, distinct from no-entity-evidence', () => {
+    const cas = buildFixtureCas();
+    // A third, capability-less flow that DOES touch a real, tracked entity
+    // ("Widget") — but no capability's related_entities includes it.
+    (cas.nodes as CASNode[]).push(
+      node({ id: 'n_widgetHandler', name: 'handleWidget', type: 'controller', category: 'entry' }),
+      node({ id: 'n_saveWidget', name: 'saveWidget', type: 'function', category: 'data' }),
+    );
+    (cas.edges as CASEdge[]).push({ id: 'ew1', source: 'n_widgetHandler', target: 'n_saveWidget', type: 'calls' });
+    (cas.entry_points as CASEntryPoint[]).push({
+      id: 'ep_widget', source_node: 'n_widgetHandler', type: 'http', name: 'widget',
+      trigger: { method: 'POST', path: '/widgets' },
+      handler: { node_id: 'n_widgetHandler', method_name: 'handleWidget' },
+    } as CASEntryPoint);
+    (cas.data_lineage as CASEntityLineage[]).push({
+      entity_id: 'entity_widget', entity_name: 'Widget', sensitive_fields: [],
+      writers: [{ node_id: 'n_saveWidget' } as any], readers: [],
+      external_recipients: [], boundaries_crossed: [], journeys_carrying: [],
+      exposure: { unguarded_paths: 0, external_transfer: false, sensitive: false },
+    });
+
+    const flows = computeFlowConcepts(cas);
+    const cov = computeSemanticCoverage(cas, flows);
+
+    const health = cov.unmapped.flows.find(f => /health/i.test(f.name))!;
+    expect(health.reason).toContain('no-entity-evidence');
+
+    const widget = cov.unmapped.flows.find(f => /widget/i.test(f.name))!;
+    expect(widget).toBeDefined();
+    expect(widget.reason).toContain('no-capability-match');
+    expect(widget.reason).toContain('Widget');
+    expect(widget.reason).not.toContain('no-entity-evidence');
   });
 });

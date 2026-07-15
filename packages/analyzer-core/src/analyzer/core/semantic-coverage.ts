@@ -243,10 +243,21 @@ export function computeSemanticCoverage(
     if ((flow.capability_relationships?.length || 0) > 0) {
       mappedFlows++;
     } else {
+      // WHY it's unmapped, not just THAT it is (honest orphan diagnosis):
+      // no-entity-evidence — the flow's traced path touches no entity this
+      // repo tracks at all, so entity overlap could never fire (the common
+      // shape for a dead-end console command / DI-dispatched job whose
+      // work happens through an interface with no resolvable lineage);
+      // no-capability-match — the flow DOES touch real entities, but none
+      // of them belong to any capability's related_entities, and no
+      // capability operation references its entry point either.
+      const reason = flow.entities.length > 0
+        ? `flow touches entities (${flow.entities.slice(0, 5).join(', ')}${flow.entities.length > 5 ? ', …' : ''}) but none belong to any capability's related_entities, and no capability operation references its entry point (no-capability-match)`
+        : 'flow touches no entities this repo tracks, and no capability operation references its entry point (no-entity-evidence)';
       capablessFlows.push({
         flow_id: flow.flow_id,
         name: flow.name,
-        reason: 'no capability operation references this flow\'s entry point and it shares no entity with any capability',
+        reason,
       });
     }
   }
