@@ -1371,11 +1371,17 @@ export class AnalyzerOrchestrator {
 
     phaseStart = Date.now();
     this.dedupeUtilNodeDuplicates(allNodes, allEdges);
+    // Full node-twin merge (file+class+member identity) BEFORE
+    // linkRouteHandlers, so the route-handler twin-bridge below sees an
+    // already-unified graph (its own bridgeToTwin path becomes a no-op
+    // belt-and-suspenders fallback for whatever this pass didn't cover).
+    this.resolveNodeTwins(allNodes, allEdges, allEntryPoints, allExitPoints);
     this.applyCanonicalOrdering(allNodes, allEdges, allEntryPoints, allExitPoints, allLibraries);
     this.linkRouteHandlers(allNodes, allEdges, allEntryPoints);
     this.linkHookUsageFetchers(allNodes, allEdges);
     this.addDiscoveredEntryPoints(projectPath, allNodes, allEntryPoints, allEdges);
     this.dedupeHttpEntryPoints(allEntryPoints);
+    this.dedupeEntryPointTwins(allEntryPoints);
     this.normalizeNodeMetrics(allNodes);
     this.applyCanonicalOrdering(allNodes, allEdges, allEntryPoints, allExitPoints, allLibraries);
     logTiming('pp_linkRouteHandlers', phaseStart);
@@ -20845,6 +20851,215 @@ export class AnalyzerOrchestrator {
   }
 
   /**
+   * Merge same-element NODE twins minted by different analyzer passes for the
+   * exact same source construct (the #27 twin-node family). Framework
+   * analyzers (e.g. angular-analyzer.ts: `generateId('method', file,
+   * \`${service.name}_${method.name}\`)`) mint their OWN id for a class
+   * member, while the language analyzer (typescript-javascript-analyzer.ts:
+   * `method_${classId}_${method.name}_${methodIndex}`) mints an entirely
+   * independent id scheme for the SAME method — two node ids for one source
+   * construct. Confirmed concretely on truckspyui: `FuelService
+   * .getFuelStationsArray`'s per-call API exit point lands on the angular
+   * twin while its DI `calls` edges land on the TS twin, so flow tracing
+   * (which follows `calls` edges from the TS twin) never reaches the exit
+   * hanging off the angular twin — route-matched flows starve even though
+   * both facts are real and about the same method.
+   *
+   * This is a full MERGE, not a bridge edge (contrast `linkRouteHandlers`'s
+   * `bridgeToTwin`, which adds one alias edge for a single route->handler
+   * hop): a method twin can carry MANY independent kinds of evidence on
+   * either side (exit points, calls edges, entry points, metadata, tags) that
+   * one bridge edge cannot reunify. Every edge/entry-point/exit-point
+   * reference to the loser id is remapped onto the survivor and the loser is
+   * dropped from `nodes`, so every consumer (flow tracing, get_callers,
+   * lineage) sees ONE node carrying ALL the evidence.
+   *
+   * Two passes, so member identity can lean on an already-unified parent id
+   * instead of re-deriving class-name equality per method:
+   *
+   *  1. Container twins: class-like nodes (TS/generic `class` vs framework
+   *     `angular_service`/`angular_component`/`angular_directive`/
+   *     `angular_pipe`/`angular_guard`/`controller`/`service`/`command`)
+   *     sharing (normalized file, name) are merged first. (`command` covers
+   *     the sibling ENTRY twin case: php-analyzer.ts's generic `class` node
+   *     and symfony-analyzer.ts's own `command` node for the same Symfony
+   *     console-command class — merging them here unifies both twins'
+   *     `entry_point.source_node`, so the CLI entry-twin dedupe pass below
+   *     can key on it.)
+   *  2. Member twins: `method`/`function` nodes sharing (normalized file,
+   *     PARENT node id, name) are merged next — after pass 1 both twins'
+   *     `.parent` already points at the same unified container id, so pass 2
+   *     needs no name-based class matching of its own.
+   *
+   * Identity is always file + parent + name, never name alone — a same-named
+   * method in a genuinely different class or file is never merged. The
+   * survivor is the twin that owns outgoing call-graph edges (the one flow
+   * tracing/get_callers actually follow); ties break on more total evidence,
+   * then a deterministic id compare so output stays byte-stable across runs.
+   */
+  private resolveNodeTwins(
+    nodes: CASNode[],
+    edges: CASEdge[],
+    entryPoints: CASEntryPoint[],
+    exitPoints: CASExitPoint[]
+  ): void {
+    // Mirrors dedupeUtilNodeDuplicates's normalizeFile below: collapse an
+    // absolute-vs-workspace-relative source.file discrepancy between
+    // analyzers onto the same `src/...`-rooted suffix.
+    const normalizeFile = (file: string | undefined): string => {
+      if (!file) return '';
+      const idx = file.indexOf('src/');
+      if (idx === -1) return file;
+      const boundaryIdx = file.lastIndexOf('/src/');
+      return boundaryIdx !== -1 ? file.slice(boundaryIdx + 1) : file.slice(idx);
+    };
+
+    const callEdgeSources = new Set<string>();
+    for (const edge of edges) {
+      if (edge.type === 'calls' || edge.type === 'invokes' || edge.type.includes('call')) {
+        callEdgeSources.add(edge.source);
+      }
+    }
+
+    const richness = (n: CASNode): number =>
+      (callEdgeSources.has(n.id) ? 100 : 0) +
+      (n.metadata ? Object.keys(n.metadata).length : 0) +
+      (n.tags?.length || 0) +
+      (n.subcategories?.length || 0) +
+      (n.signature ? 2 : 0) +
+      (n.documentation ? 1 : 0);
+
+    const pickSurvivor = (group: CASNode[]): CASNode =>
+      [...group].sort((a, b) =>
+        richness(b) - richness(a) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
+      )[0];
+
+    const applyRedirect = (redirect: Map<string, string>): void => {
+      if (redirect.size === 0) return;
+      for (const edge of edges) {
+        const s = redirect.get(edge.source);
+        if (s) edge.source = s;
+        const t = redirect.get(edge.target);
+        if (t) edge.target = t;
+      }
+      for (const node of nodes) {
+        if (node.parent && redirect.has(node.parent)) {
+          node.parent = redirect.get(node.parent)!;
+        }
+      }
+      for (const ep of entryPoints) {
+        if (ep.source_node && redirect.has(ep.source_node)) ep.source_node = redirect.get(ep.source_node)!;
+        if (ep.handler?.node_id && redirect.has(ep.handler.node_id)) {
+          ep.handler.node_id = redirect.get(ep.handler.node_id)!;
+        }
+      }
+      for (const xp of exitPoints) {
+        if (xp.source_node && redirect.has(xp.source_node)) xp.source_node = redirect.get(xp.source_node)!;
+        if (xp.data?.transformation_node && redirect.has(xp.data.transformation_node)) {
+          xp.data.transformation_node = redirect.get(xp.data.transformation_node)!;
+        }
+        if (Array.isArray(xp.connected_nodes)) {
+          xp.connected_nodes = xp.connected_nodes.map(id => redirect.get(id) || id);
+        }
+      }
+    };
+
+    const mergeGroup = (group: CASNode[], removals: Set<string>, redirect: Map<string, string>): void => {
+      if (group.length < 2) return;
+      const survivor = pickSurvivor(group);
+      for (const loser of group) {
+        if (loser.id === survivor.id) continue;
+        redirect.set(loser.id, survivor.id);
+        removals.add(loser.id);
+        // Fold the loser's evidence onto the survivor additively — same
+        // never-drop-evidence policy as mergeAnalysisResult's node
+        // collaboration merge (existing keys on the survivor win ties).
+        if (loser.metadata) survivor.metadata = { ...loser.metadata, ...survivor.metadata };
+        if (loser.tags?.length) survivor.tags = [...new Set([...(survivor.tags || []), ...loser.tags])];
+        if (loser.subcategories?.length) {
+          survivor.subcategories = [...new Set([...(survivor.subcategories || []), ...loser.subcategories])];
+        }
+        if (loser.analyzers?.length) {
+          survivor.analyzers = [...new Set([...(survivor.analyzers || []), ...loser.analyzers])];
+        }
+        if (!survivor.description && loser.description) survivor.description = loser.description;
+        if (!survivor.signature && loser.signature) survivor.signature = loser.signature;
+      }
+    };
+
+    const runPass = (groups: Map<string, CASNode[]>): void => {
+      const removals = new Set<string>();
+      const redirect = new Map<string, string>();
+      for (const group of groups.values()) mergeGroup(group, removals, redirect);
+      if (removals.size === 0) return;
+      applyRedirect(redirect);
+      for (let i = nodes.length - 1; i >= 0; i--) {
+        if (removals.has(nodes[i].id)) nodes.splice(i, 1);
+      }
+    };
+
+    // Pass 1: container twins (file, name).
+    const CONTAINER_TYPES = new Set([
+      'class', 'controller', 'service', 'command',
+      'angular_service', 'angular_component', 'angular_directive', 'angular_pipe', 'angular_guard',
+    ]);
+    {
+      const groups = new Map<string, CASNode[]>();
+      for (const node of nodes) {
+        if (!CONTAINER_TYPES.has(node.type)) continue;
+        const key = `${normalizeFile(node.source?.file)}::${node.name}`;
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key)!.push(node);
+      }
+      runPass(groups);
+    }
+
+    // Pass 2: member twins (file, parent, name) — orphan top-level functions
+    // (no `.parent`) are out of scope: with no class context to key on, a
+    // (file, name) match alone risks merging two genuinely different
+    // functions in the same file, which the file+class+member identity rule
+    // above forbids.
+    const MEMBER_TYPES = new Set(['method', 'function']);
+    {
+      const groups = new Map<string, CASNode[]>();
+      for (const node of nodes) {
+        if (!MEMBER_TYPES.has(node.type)) continue;
+        if (!node.parent) continue;
+        const key = `${normalizeFile(node.source?.file)}::${node.parent}::${node.name}`;
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key)!.push(node);
+      }
+      runPass(groups);
+    }
+
+    // Both passes can leave structurally-duplicate edges behind (e.g. two
+    // `contains` edges from the same now-unified container to the same
+    // now-unified method). Edge ids in this codebase already embed
+    // source+target+relationship (addCallEdge-style dedup upstream), so a
+    // post-redirect (source,target,type) collision is a genuine duplicate,
+    // not two independent facts — collapse it, folding any metadata the
+    // dropped copy carried that the survivor lacks.
+    if (edges.length > 0) {
+      const survivorByKey = new Map<string, CASEdge>();
+      const deduped: CASEdge[] = [];
+      for (const edge of edges) {
+        const key = `${edge.source}::${edge.target}::${edge.type}`;
+        const existing = survivorByKey.get(key);
+        if (!existing) {
+          survivorByKey.set(key, edge);
+          deduped.push(edge);
+          continue;
+        }
+        if (edge.metadata) {
+          existing.metadata = { ...edge.metadata, ...existing.metadata };
+        }
+      }
+      edges.length = 0;
+      edges.push(...deduped);
+    }
+  }
+
+  /**
    * Collapse duplicate declaration nodes in place, in particular the `*_util`
    * nodes react-analyzer.ts's analyzeUtils/extractUtils emits for EVERY
    * FunctionDeclaration/VariableDeclarator in any file whose path merely looks
@@ -20964,6 +21179,70 @@ export class AnalyzerOrchestrator {
       if (!existing) { bestByKey.set(key, entry); continue; }
       const loser = richness(entry) > richness(existing) ? existing : entry;
       const winner = loser === existing ? entry : existing;
+      bestByKey.set(key, winner);
+      removals.add(loser);
+    }
+    if (removals.size === 0) return;
+    for (let i = entryPoints.length - 1; i >= 0; i--) {
+      if (removals.has(entryPoints[i])) entryPoints.splice(i, 1);
+    }
+  }
+
+  /**
+   * Collapse ENTRY-POINT twins across ALL entry types (cli/message/event/
+   * websocket, not just http/route — `dedupeHttpEntryPoints` above already
+   * covers http/route by method+path+file). Sibling of the node-twin family
+   * fixed by `resolveNodeTwins`: a framework-specific analyzer and a generic
+   * language analyzer can each independently register the SAME handler as
+   * its own entry point. Concretely on truckspyapp: php-analyzer.ts (generic,
+   * evidence-based) and symfony-analyzer.ts (framework-specific) both detect
+   * the same Symfony console-command class and each mint their OWN `cli`
+   * entry point for it — 130 groups / 263 entries, none of it a real second
+   * command.
+   *
+   * Must run AFTER `resolveNodeTwins` (which merges the underlying
+   * `class`/`command` container nodes so both entries' `source_node` already
+   * agree) and after `linkRouteHandlers` (which resolves `handler.node_id`
+   * for cli entries from `source_node`). Identity is (type, source_node,
+   * trigger signature) — never source_node alone, so a class that
+   * legitimately registers >1 distinct trigger (e.g. a subscriber handling
+   * two different events) keeps both entries. Keeps the richer record (the
+   * one with a resolved handler / security / more descriptive text),
+   * folding the dropped twin's metadata onto the survivor so no fact —
+   * handler resolution, validation, docs — is silently lost.
+   */
+  private dedupeEntryPointTwins(entryPoints: CASEntryPoint[]): void {
+    const triggerSignature = (entry: CASEntryPoint): string => {
+      const t = entry.trigger || {};
+      const method = (entry.metadata?.method || t.method || '').toString().toUpperCase();
+      const path = (entry.metadata?.path || t.path || t.pattern || t.event || t.schedule || '').toString();
+      return `${method}::${path}`;
+    };
+    const keyOf = (entry: CASEntryPoint) =>
+      `${entry.type}::${entry.source_node}::${triggerSignature(entry)}`;
+    const richness = (entry: CASEntryPoint): number =>
+      (entry.handler?.node_id ? 3 : 0) +
+      (entry.handler?.file ? 1 : 0) +
+      (entry.security ? 2 : 0) +
+      (entry.input?.validation?.length ? 2 : 0) +
+      (entry.description ? 1 : 0) +
+      (entry.metadata ? Object.keys(entry.metadata).length : 0);
+
+    const bestByKey = new Map<string, CASEntryPoint>();
+    const removals = new Set<CASEntryPoint>();
+    for (const entry of entryPoints) {
+      if (!entry.source_node) continue; // no identity to key on — leave untouched.
+      const key = keyOf(entry);
+      const existing = bestByKey.get(key);
+      if (!existing) { bestByKey.set(key, entry); continue; }
+      const loser = richness(entry) > richness(existing) ? existing : entry;
+      const winner = loser === existing ? entry : existing;
+      // Fold the loser's evidence onto the survivor additively before it's
+      // dropped — never silently lose a fact one twin carried and the other
+      // didn't (same policy as resolveNodeTwins/mergeAnalysisResult).
+      if (loser.metadata) winner.metadata = { ...loser.metadata, ...winner.metadata };
+      if (!winner.handler?.node_id && loser.handler?.node_id) winner.handler = loser.handler;
+      if (!winner.description && loser.description) winner.description = loser.description;
       bestByKey.set(key, winner);
       removals.add(loser);
     }

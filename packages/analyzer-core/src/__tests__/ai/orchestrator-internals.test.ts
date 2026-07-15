@@ -3462,6 +3462,168 @@ describe('orchestrator dedupeUtilNodeDuplicates (2026-07-04 references-idshapes)
   });
 });
 
+describe('orchestrator resolveNodeTwins (task #27: analyzer twin nodes/entries)', () => {
+  function node(partial: Partial<CASNode>): CASNode {
+    return {
+      id: partial.id || 'node_1',
+      name: partial.name || 'thing',
+      type: partial.type || 'variable',
+      source: partial.source,
+      ...partial,
+    } as CASNode;
+  }
+
+  it('merges an Angular-twin method and a TS-twin method for the SAME class+method, reunifying the exit point and the calls edge onto ONE node', () => {
+    // Angular analyzer's own id scheme (generateId('method', file, `${service}_${method}`)).
+    const angularService = node({
+      id: 'service_ui_src_fuel_fuel_service_ts_FuelService_a1b2c3d4',
+      name: 'FuelService',
+      type: 'angular_service',
+      source: { file: 'ui/src/fuel/fuel.service.ts', line: 1 },
+    });
+    const angularMethod = node({
+      id: 'method_ui_src_fuel_fuel_service_ts_FuelService_getFuelStationsArray_e5f6a7b8',
+      name: 'getFuelStationsArray',
+      type: 'method',
+      parent: angularService.id,
+      source: { file: 'ui/src/fuel/fuel.service.ts', line: 1 },
+    });
+    // TS analyzer's independent id scheme (method_${classId}_${name}_${index}).
+    const tsClass = node({
+      id: 'class_ui_src_fuel_fuel_service_ts_FuelService_0',
+      name: 'FuelService',
+      type: 'class',
+      source: { file: 'ui/src/fuel/fuel.service.ts', line: 1 },
+    });
+    const tsMethod = node({
+      id: 'method_class_ui_src_fuel_fuel_service_ts_FuelService_0_getFuelStationsArray_3',
+      name: 'getFuelStationsArray',
+      type: 'method',
+      parent: tsClass.id,
+      source: { file: 'ui/src/fuel/fuel.service.ts', line: 42 },
+    });
+
+    const nodes = [angularService, angularMethod, tsClass, tsMethod];
+    // DI `calls` edges land on the TS twin (8983dff7).
+    const callsEdge: CASEdge = {
+      id: 'injection_caller_0_ts_method',
+      source: 'caller_0',
+      target: tsMethod.id,
+      type: 'calls',
+    } as CASEdge;
+    const edges = [callsEdge];
+    // The per-call API exit point hangs off the ANGULAR twin (9d4181bb).
+    const exitPoints: CASExitPoint[] = [
+      exitPoint({ id: 'exit_1', source_node: angularMethod.id, type: 'api' as any }),
+    ];
+    const entryPoints: CASEntryPoint[] = [];
+
+    orch.resolveNodeTwins(nodes, edges, entryPoints, exitPoints);
+
+    // Both container twins AND both method twins collapse to one node each.
+    expect(nodes.filter((n: CASNode) => n.type === 'method')).toHaveLength(1);
+    expect(nodes.filter((n: CASNode) => n.type === 'class' || n.type === 'angular_service')).toHaveLength(1);
+
+    const survivingMethod = nodes.find((n: CASNode) => n.type === 'method')!;
+    // The survivor is the twin that owned the calls edge (the TS twin) —
+    // flow tracing follows calls edges, so it must win.
+    expect(survivingMethod.id).toBe(tsMethod.id);
+    // The exit point that used to hang off the angular twin now hangs off
+    // the SAME node the calls edge targets.
+    expect(exitPoints[0].source_node).toBe(survivingMethod.id);
+    expect(callsEdge.target).toBe(survivingMethod.id);
+  });
+
+  it('does NOT merge two methods with the same name in genuinely different classes (identity requires file+class+member, not name alone)', () => {
+    const classA = node({ id: 'class_a', name: 'FuelService', type: 'class', source: { file: 'src/a/fuel.service.ts' } });
+    const methodA = node({ id: 'method_a', name: 'getFuelStationsArray', type: 'method', parent: classA.id, source: { file: 'src/a/fuel.service.ts' } });
+    const classB = node({ id: 'class_b', name: 'FuelService', type: 'class', source: { file: 'src/b/fuel.service.ts' } });
+    const methodB = node({ id: 'method_b', name: 'getFuelStationsArray', type: 'method', parent: classB.id, source: { file: 'src/b/fuel.service.ts' } });
+
+    const nodes = [classA, methodA, classB, methodB];
+    const edges: CASEdge[] = [];
+    const entryPoints: CASEntryPoint[] = [];
+    const exitPoints: CASExitPoint[] = [];
+
+    orch.resolveNodeTwins(nodes, edges, entryPoints, exitPoints);
+
+    expect(nodes).toHaveLength(4);
+  });
+
+  it('does NOT merge two methods with different names in the same class+file', () => {
+    const cls = node({ id: 'class_a', name: 'FuelService', type: 'class', source: { file: 'src/fuel.service.ts' } });
+    const m1 = node({ id: 'method_a', name: 'getFuelStationsArray', type: 'method', parent: cls.id, source: { file: 'src/fuel.service.ts' } });
+    const m2 = node({ id: 'method_b', name: 'getFuelPrices', type: 'method', parent: cls.id, source: { file: 'src/fuel.service.ts' } });
+
+    const nodes = [cls, m1, m2];
+    const edges: CASEdge[] = [];
+
+    orch.resolveNodeTwins(nodes, edges, [], []);
+
+    expect(nodes).toHaveLength(3);
+  });
+});
+
+describe('orchestrator dedupeEntryPointTwins (task #27: entry-point twins)', () => {
+  it('collapses a php-analyzer generic-class CLI entry and a symfony-analyzer command CLI entry for the SAME (now-unified) source_node, keeping the richer record', () => {
+    // After resolveNodeTwins unifies the php-analyzer `class` node and the
+    // symfony-analyzer `command` node for the same class, both twin entry
+    // points share one source_node.
+    const sharedSourceNode = 'command_survivor_0';
+    const entryA: CASEntryPoint = {
+      id: 'entry_cli_class_id',
+      source_node: sharedSourceNode,
+      type: 'cli',
+      name: 'Console command: ImportOrdersCommand',
+      trigger: { pattern: 'app:import-orders' },
+      metadata: { framework: 'symfony', kind: 'command' },
+    } as CASEntryPoint;
+    const entryB: CASEntryPoint = {
+      id: 'entry_cli_app_import_orders',
+      source_node: sharedSourceNode,
+      type: 'cli',
+      name: 'bin/console app:import-orders',
+      description: 'Console command: app:import-orders',
+      trigger: { pattern: 'app:import-orders' },
+      handler: { node_id: 'method_execute_0', method_name: 'execute' },
+      metadata: { command_name: 'app:import-orders' },
+    } as CASEntryPoint;
+
+    const entryPoints = [entryA, entryB];
+    orch.dedupeEntryPointTwins(entryPoints);
+
+    expect(entryPoints).toHaveLength(1);
+    // The richer record (resolved handler + description) survives.
+    expect(entryPoints[0].handler?.node_id).toBe('method_execute_0');
+    // Evidence from the dropped twin (framework/kind attributes) is folded in.
+    expect(entryPoints[0].metadata?.framework).toBe('symfony');
+    expect(entryPoints[0].metadata?.command_name).toBe('app:import-orders');
+  });
+
+  it('keeps two entries for the same source_node when they are genuinely different triggers (e.g. a subscriber handling two distinct events)', () => {
+    const shared = 'event_subscriber_0';
+    const entryA: CASEntryPoint = {
+      id: 'entry_event_a',
+      source_node: shared,
+      type: 'event',
+      name: 'Event: order.created',
+      trigger: { event: 'order.created' },
+    } as CASEntryPoint;
+    const entryB: CASEntryPoint = {
+      id: 'entry_event_b',
+      source_node: shared,
+      type: 'event',
+      name: 'Event: order.cancelled',
+      trigger: { event: 'order.cancelled' },
+    } as CASEntryPoint;
+
+    const entryPoints = [entryA, entryB];
+    orch.dedupeEntryPointTwins(entryPoints);
+
+    expect(entryPoints).toHaveLength(2);
+  });
+});
+
 describe('entity-extraction gaps from real-repo onboarding (mtg/openclaw/hercules)', () => {
   const node = (partial: Partial<CASNode>): CASNode => ({
     id: partial.id || partial.name || 'node',
