@@ -1647,8 +1647,14 @@ export class AnalyzerOrchestrator {
     const projectTextSignal = this.extractProjectTextSignal(projectPath);
     // Upgrade the bootstrap basename-derived systemName now that the product
     // doc title (README/PRD H1) is available — evidence-gated, never
-    // overrides an explicit options.displayName.
-    if (!options?.displayName) {
+    // overrides a MEANINGFUL explicit options.displayName. The hosted upload
+    // path (remote-analyzer-service.ts resolveDisplayName) always populates
+    // options.displayName from path.basename() of the client's project path
+    // when one is present — that is itself just the bare directory name, not
+    // a deliberate override, so it must still be eligible for the upgrade
+    // below (otherwise this whole resolver is dead code on every hosted
+    // analysis, since displayName is essentially never undefined there).
+    if (this.systemDisplayNameIsBareBasename(options?.displayName, projectPath)) {
       systemName = this.resolveSystemDisplayName(projectPath, projectTextSignal.productDocTitle) || systemName;
     }
     const frameworkNames = this.frameworkNamesForPurpose(contributions, allNodes, projectPath);
@@ -2836,9 +2842,11 @@ export class AnalyzerOrchestrator {
     const incrEntryPointSummary = this.summarizeEntryPoints(this.filterPrimaryProductEntryPoints(entryPoints, nodes, projectPath));
     const incrProjectTextSignal = this.extractProjectTextSignal(projectPath);
     // Upgrade the bootstrap basename-derived systemName now that the product
-    // doc title is available — evidence-gated, never overrides an explicit
-    // options.displayName. Same rule as the full analysis path.
-    if (!options?.displayName) {
+    // doc title is available — evidence-gated, never overrides a MEANINGFUL
+    // explicit options.displayName. Same rule as the full analysis path (see
+    // the comment there on why a bare-basename displayName must still be
+    // eligible for the upgrade).
+    if (this.systemDisplayNameIsBareBasename(options?.displayName, projectPath)) {
       systemName = this.resolveSystemDisplayName(projectPath, incrProjectTextSignal.productDocTitle) || systemName;
     }
     // Same comprehension-input gate as the full path: test/fixture journeys and
@@ -9202,19 +9210,33 @@ export class AnalyzerOrchestrator {
         description = `${name} manages ${itemEntityNamesRaw.slice(0, 4).join(', ')}.`;
       }
       if (!name || description.length < 20) continue;
-      // VALIDITY GUARD (defect: a description-less deterministic candidate
-      // label leaking through as a "capability"): the prompt mandates a real
-      // description field per item. A catalog entry whose model output NEVER
-      // included one — its description exists here only via the entity-
-      // synthesis fallback above, or the model is non-compliant — combined
-      // with a NAME that is itself a raw deterministic label rather than
-      // AI-authored product language (a verbatim echo of one of the
-      // candidateAreas facts, a truncated evidence-list artifact like
-      // "... 2 more", or a mechanism/file-shaped token such as ".sh"/"shell
-      // script") is never emitted as a final capability — no matter how the
-      // length checks above happened to be satisfied.
-      const rawItemDescription = typeof item.description === 'string' ? item.description.trim() : '';
-      if (!rawItemDescription && this.isRawCandidateLabelName(name, candidateAreas)) continue;
+      // VALIDITY GUARD (defect: a raw deterministic candidate label leaking
+      // through as a "capability"): a NAME that is itself a raw deterministic
+      // label rather than AI-authored product language (a verbatim echo of
+      // one of the candidateAreas facts, a truncated evidence-list artifact
+      // like "... 2 more", or a mechanism/file-shaped token such as ".sh"/
+      // "shell script") is never emitted as a final capability — no matter
+      // how the length checks above happened to be satisfied.
+      //
+      // DEFECT (measured live on the real hosted CAS, v1.0.81-dev, 45k-node
+      // Klauro-self analysis, 2026-07-15): this guard used to only fire when
+      // the model supplied NO description (`!rawItemDescription && ...`).
+      // That let a raw label sail through untouched the moment the model
+      // paired it with ANY description text, however low-value — exactly
+      // what happened: name "Run Shell script: release.sh -> Docker read
+      // (+2 more)" (a verbatim candidateAreas echo AND ".sh"-shaped) shipped
+      // as the SOLE system_capabilities entry because the model attached the
+      // description "Triggers a Docker read for release.sh and other
+      // scripts." (itself just paraphrasing the label, not real product
+      // language). A raw-label-shaped name is never a real capability
+      // regardless of whether a description was supplied, so the check must
+      // run unconditionally — this is also what makes `extracted.length`
+      // correctly fall to 0 in that scenario, which is what routes the
+      // caller into the already-built near-empty fallback (deterministic
+      // candidates, then the merged large-behavior-surface re-derivation —
+      // see the `else` branch in applyAIInterpretation) instead of shipping
+      // the bad single item.
+      if (this.isRawCandidateLabelName(name, candidateAreas)) continue;
       const key = name.toLowerCase();
       if (seen.has(key)) continue;
       seen.add(key);
@@ -13198,18 +13220,53 @@ export class AnalyzerOrchestrator {
    * always wins; (2) the product doc's own title (README/PRD H1 — the
    * strongest top-down self-naming evidence, already parsed once by
    * extractProjectTextSignal as productDocTitle and reused here verbatim,
-   * never re-derived); (3) the manifest's own declared name (package.json
-   * `name`, scope-stripped and humanized — "@klauro/monorepo" -> "Monorepo");
-   * (4) the path basename as the last-resort structural fact. Returns
-   * undefined when neither doc title nor manifest name is available, so the
-   * caller keeps its existing basename-derived value.
+   * never re-derived); (3) the ROOT manifest's own declared name
+   * (package.json `name`, scope-stripped and humanized — "@klauro/monorepo"
+   * -> "Monorepo"); (4) NEW — COMMON-PACKAGE-SCOPE fallback: when the repo
+   * has no root manifest/README (an uploaded snapshot can genuinely lack
+   * root-level files while still containing nested package manifests — see
+   * prj_wbW33m-wfETn1N41, whose uploaded workspace has no root package.json
+   * or README but does have apps/app/package.json, apps/api/package.json,
+   * packages/analyzer-core/package.json, ... all scoped "@klauro/..."),
+   * scan nested manifests for a single DOMINANT npm scope and use it as the
+   * product/org name ("@klauro/app" + "@klauro/analyzer-core" + ... ->
+   * "Klauro"). Requires >=1 scoped manifest and abstains (returns undefined)
+   * when manifests span multiple unrelated scopes, so we never fabricate a
+   * name from an unscoped or genuinely multi-vendor tree; (5) the path
+   * basename as the last-resort structural fact. Returns undefined when no
+   * step above yields a name, so the caller keeps its existing
+   * basename-derived value.
    */
+  /**
+   * True when `displayName` is either absent or textually indistinguishable
+   * from `path.basename(projectPath)` (case-insensitive) — i.e. it carries no
+   * information beyond "we didn't have a real name so we used the folder
+   * name". Compares against both the raw projectPath basename and a
+   * trailing-slash-stripped variant so `/x/proof-of-concept/` still matches
+   * `proof-of-concept`. A caller-supplied displayName that differs from the
+   * basename (an explicit product name from project settings, say) is never
+   * touched by this — it still wins outright, matching the original rule.
+   */
+  private systemDisplayNameIsBareBasename(displayName: string | undefined, projectPath: string): boolean {
+    if (!displayName) return true;
+    const basename = path.basename(projectPath.replace(/[/\\]+$/, ''));
+    return displayName.trim().toLowerCase() === basename.trim().toLowerCase();
+  }
+
   private resolveSystemDisplayName(projectPath: string, productDocTitle?: string): string | undefined {
     const cleanedTitle = String(productDocTitle || '').trim();
     if (cleanedTitle && cleanedTitle.length <= 80) return cleanedTitle;
     const packageJson = this.safeReadJson(path.join(projectPath, 'package.json'));
-    const manifestName = typeof packageJson?.name === 'string' ? packageJson.name.trim() : '';
-    if (!manifestName) return undefined;
+    const rootManifestName = typeof packageJson?.name === 'string' ? packageJson.name.trim() : '';
+    if (rootManifestName) {
+      const humanized = this.humanizeScopeStrippedManifestName(rootManifestName);
+      if (humanized) return humanized;
+    }
+    return this.resolveCommonPackageScopeName(projectPath);
+  }
+
+  /** "@scope/pkg-name" -> "Pkg Name" (scope-stripped, kebab/underscore split, title-cased). */
+  private humanizeScopeStrippedManifestName(manifestName: string): string | undefined {
     const scopeStripped = manifestName.replace(/^@[^/]+\//, '');
     const humanized = scopeStripped
       .replace(/[-_]+/g, ' ')
@@ -13219,6 +13276,73 @@ export class AnalyzerOrchestrator {
       .join(' ')
       .trim();
     return humanized || undefined;
+  }
+
+  /**
+   * Evidence-based fallback for repos whose root has no manifest/README to
+   * self-name from (see resolveSystemDisplayName doc). Scans nested
+   * package.json manifests (bounded depth, same discovery-ignore rules as
+   * the rest of project-text extraction, so node_modules/dist/fixtures/etc.
+   * never contribute) for their declared npm `name` field, extracts the
+   * scope of each ("@klauro/app" -> "klauro"), and returns the humanized
+   * scope ONLY when every scoped manifest agrees on a single scope — the
+   * scope IS the product/org name in that case. Multiple distinct scopes,
+   * or zero scoped manifests, abstain (undefined) rather than guess.
+   */
+  private resolveCommonPackageScopeName(projectPath: string): string | undefined {
+    const manifestFiles = this.collectNestedPackageJsonFiles(projectPath);
+    if (manifestFiles.length === 0) return undefined;
+
+    const scopeCounts = new Map<string, number>();
+    for (const absFile of manifestFiles) {
+      const json = this.safeReadJson(absFile);
+      const name = typeof json?.name === 'string' ? json.name.trim() : '';
+      const scopeMatch = name.match(/^@([^/]+)\//);
+      if (!scopeMatch) continue;
+      const scope = scopeMatch[1].toLowerCase();
+      scopeCounts.set(scope, (scopeCounts.get(scope) || 0) + 1);
+    }
+    if (scopeCounts.size !== 1) return undefined; // no scoped manifests, or multiple unrelated scopes
+    const [dominantScope] = [...scopeCounts.keys()];
+    return this.humanizeScopeStrippedManifestName(dominantScope);
+  }
+
+  /**
+   * Bounded-depth `fs.readdirSync` walk for nested package.json files —
+   * deliberately NOT glob-based. `glob` is jest-mocked to a no-op in this
+   * package's test setup (src/__tests__/setup.ts), which every OTHER
+   * glob-consuming helper in this file already routes around via its own
+   * manual-scan fallback (see scanProjectTextSourceFiles); this walk is that
+   * same fallback pattern, so it works identically in tests and in
+   * production rather than silently returning [] under test. Skips the same
+   * noise directories dependency-manifest.ts's collectManifestFiles ignores.
+   */
+  private collectNestedPackageJsonFiles(projectPath: string, maxDepth = 8, maxFiles = 500): string[] {
+    const ignoredDir = /^(node_modules|dist|build|out|coverage|vendor|vendors|target|\.git|\.next|\.turbo|\.cache|\.terraform|\.worktrees|fixtures|__fixtures__|testdata)$/;
+    const found: string[] = [];
+    const stack: Array<{ dir: string; depth: number }> = [{ dir: projectPath, depth: 0 }];
+    while (stack.length > 0 && found.length < maxFiles) {
+      const { dir, depth } = stack.pop()!;
+      if (depth > maxDepth) continue;
+      let entries: fs.Dirent[];
+      try {
+        entries = fs.readdirSync(dir, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+      for (const entry of entries) {
+        if (entry.isDirectory()) {
+          if (entry.name.startsWith('.') || ignoredDir.test(entry.name)) continue;
+          stack.push({ dir: path.join(dir, entry.name), depth: depth + 1 });
+          continue;
+        }
+        if (entry.isFile() && entry.name === 'package.json') {
+          found.push(path.join(dir, entry.name));
+          if (found.length >= maxFiles) break;
+        }
+      }
+    }
+    return found;
   }
 
   private extractProjectTextSignal(projectPath: string): ProjectTextSignal {

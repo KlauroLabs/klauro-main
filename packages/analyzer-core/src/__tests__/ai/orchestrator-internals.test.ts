@@ -5152,6 +5152,49 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
     }
   });
 
+  it('rejects a raw candidate-label name EVEN WHEN the model supplies a real description for it (real hosted-CAS defect, v1.0.81-dev)', async () => {
+    // Measured live on the real prod CAS (Klauro-self, 45k nodes, 2026-07-15):
+    // the model paired a verbatim candidateAreas echo — "Run Shell script:
+    // release.sh -> Docker read (+2 more)" — with a real, non-empty
+    // description ("Triggers a Docker read for release.sh and other
+    // scripts."), which let it slip past the old `!rawItemDescription &&
+    // isRawCandidateLabelName(...)` guard (that guard only fired when NO
+    // description was supplied) and ship as the SOLE system_capabilities
+    // entry on the real deployed system. A raw-label-shaped name is never a
+    // real capability regardless of whether a description was attached — the
+    // guard must run unconditionally so this collapses to catalog.length===0
+    // and routes the caller into the near-empty fallback (deterministic
+    // candidates, then the merged large-behavior-surface re-derivation)
+    // instead of shipping the bad single item.
+    const original = (aiService as any).generateComponentDescription;
+    (aiService as any).generateComponentDescription = async () => JSON.stringify({
+      capabilities: [
+        {
+          name: 'Run Shell script: release.sh -> Docker read (+2 more)',
+          description: 'Triggers a Docker read for release.sh and other scripts.',
+          category: 'core',
+          entities: ['ReleaseConfig'],
+        },
+      ],
+    });
+    try {
+      const catalog = await orch.aiExtractCapabilityCatalog({
+        systemName: 'proof-of-concept',
+        enhancedSystemPurpose: { primary_domain: 'dev-tool', core_concepts: [] },
+        frameworks: [], userJourneys: [],
+        dataEntities: [{ id: 'entity_releaseconfig', name: 'ReleaseConfig' }],
+        candidateCapabilities: [
+          { name: 'Run Shell script: release.sh -> Docker read (+2 more)', related_entities: [], operations: [] },
+        ],
+        externalServices: [], flowGraph: { capabilities: [] },
+        projectTextSignal: { concepts: [], evidence: [] }, budgetMs: 30000,
+      });
+      expect(catalog.length).toBe(0);
+    } finally {
+      (aiService as any).generateComponentDescription = original;
+    }
+  });
+
   it('keeps a real AI-authored capability whose description was genuinely supplied', async () => {
     // Control: the guard must not reject legitimate output.
     const original = (aiService as any).generateComponentDescription;
@@ -5386,6 +5429,99 @@ describe('resolveSystemDisplayName (Klauro rung-2: system name = directory basen
     expect(resolved).toBeDefined();
     expect(resolved).not.toBe('proof-of-concept');
     expect(String(resolved)).toMatch(/^Klauro/i);
+  });
+
+  // COMMON-PACKAGE-SCOPE FALLBACK: the uploaded prod snapshot for
+  // prj_wbW33m-wfETn1N41 (the real hosted Klauro-self analysis) genuinely has
+  // NO root package.json and NO README — the ONLY package.json node in that
+  // CAS is apps/app/package.json (name "@klauro/app") — yet the repo's nested
+  // manifests (apps/app, apps/api, packages/analyzer-core, ...) all declare
+  // the SAME "@klauro" scope, which is itself real, evidence-based top-down
+  // naming signal even without a root file. This is what let the real
+  // deployed system.name regress to the bare directory basename
+  // "proof-of-concept" instead of "Klauro".
+  it('falls back to the common npm scope when no root manifest/README exists but nested manifests share one scope', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-sysname-scope-'));
+    try {
+      fs.mkdirSync(path.join(root, 'apps', 'app'), { recursive: true });
+      fs.mkdirSync(path.join(root, 'apps', 'api'), { recursive: true });
+      fs.mkdirSync(path.join(root, 'packages', 'analyzer-core'), { recursive: true });
+      fs.writeFileSync(path.join(root, 'apps', 'app', 'package.json'), JSON.stringify({ name: '@klauro/app' }));
+      fs.writeFileSync(path.join(root, 'apps', 'api', 'package.json'), JSON.stringify({ name: '@klauro/api' }));
+      fs.writeFileSync(path.join(root, 'packages', 'analyzer-core', 'package.json'), JSON.stringify({ name: '@klauro/analyzer-core' }));
+      // No root package.json, no README — mirrors the real uploaded snapshot.
+      expect(orch.resolveSystemDisplayName(root, undefined)).toBe('Klauro');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('abstains (falls through to basename) when nested manifests span multiple unrelated scopes', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-sysname-multiscope-'));
+    try {
+      fs.mkdirSync(path.join(root, 'vendor-a'), { recursive: true });
+      fs.mkdirSync(path.join(root, 'vendor-b'), { recursive: true });
+      fs.writeFileSync(path.join(root, 'vendor-a', 'package.json'), JSON.stringify({ name: '@acme/left-pad' }));
+      fs.writeFileSync(path.join(root, 'vendor-b', 'package.json'), JSON.stringify({ name: '@totally-unrelated-org/right-pad' }));
+      expect(orch.resolveSystemDisplayName(root, undefined)).toBeUndefined();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('abstains when nested manifests exist but none are scoped', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-sysname-unscoped-'));
+    try {
+      fs.mkdirSync(path.join(root, 'apps', 'app'), { recursive: true });
+      fs.writeFileSync(path.join(root, 'apps', 'app', 'package.json'), JSON.stringify({ name: 'app' }));
+      expect(orch.resolveSystemDisplayName(root, undefined)).toBeUndefined();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('prefers the ROOT manifest name over the common-scope fallback when a root package.json exists', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-sysname-root-wins-'));
+    try {
+      fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ name: '@klauro/monorepo' }));
+      fs.mkdirSync(path.join(root, 'apps', 'app'), { recursive: true });
+      fs.writeFileSync(path.join(root, 'apps', 'app', 'package.json'), JSON.stringify({ name: '@different-scope/app' }));
+      // Root manifest name wins outright — never overridden by the nested
+      // scope fallback, which only applies when there is no root manifest.
+      expect(orch.resolveSystemDisplayName(root, undefined)).toBe('Monorepo');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('reproduces the real prod snapshot shape (only a nested apps/app/package.json, no root files) and resolves to Klauro', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-sysname-prod-shape-'));
+    try {
+      fs.mkdirSync(path.join(root, 'apps', 'app'), { recursive: true });
+      fs.writeFileSync(path.join(root, 'apps', 'app', 'package.json'), JSON.stringify({ name: '@klauro/app' }));
+      const signal = orch.extractProjectTextSignal(root);
+      expect(signal.productDocTitle).toBeUndefined();
+      expect(orch.resolveSystemDisplayName(root, signal.productDocTitle)).toBe('Klauro');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('systemDisplayNameIsBareBasename (caller-supplied displayName that is itself just the folder name)', () => {
+  it('treats an absent displayName as bare', () => {
+    expect(orch.systemDisplayNameIsBareBasename(undefined, '/tmp/proof-of-concept')).toBe(true);
+  });
+
+  it('treats a displayName equal to the projectPath basename as bare (case-insensitive)', () => {
+    expect(orch.systemDisplayNameIsBareBasename('proof-of-concept', '/tmp/proof-of-concept')).toBe(true);
+    expect(orch.systemDisplayNameIsBareBasename('Proof-Of-Concept', '/tmp/proof-of-concept')).toBe(true);
+    expect(orch.systemDisplayNameIsBareBasename('proof-of-concept', '/tmp/proof-of-concept/')).toBe(true);
+  });
+
+  it('treats a displayName that differs from the basename as a deliberate explicit name (not bare)', () => {
+    expect(orch.systemDisplayNameIsBareBasename('Klauro', '/tmp/proof-of-concept')).toBe(false);
+    expect(orch.systemDisplayNameIsBareBasename('My Custom Project Name', '/data/workspaces/prj_abc123')).toBe(false);
   });
 });
 
