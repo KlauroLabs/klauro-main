@@ -1358,6 +1358,144 @@ describe('architecture and capability inference', () => {
     }));
   });
 
+  it('entity description pass batches evidence-richest entities FIRST (priority ordering), not catalog order', async () => {
+    const previousOpenAI = process.env.OPENAI_API_KEY;
+    const previousElementDescriptions = process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS;
+    const previousBatchSize = process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BATCH_SIZE;
+    process.env.OPENAI_API_KEY = 'test-openai-key';
+    delete process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS;
+    process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BATCH_SIZE = '4';
+
+    // aiService.generateComponentDescription returns a JSON string the
+    // orchestrator parses — match the real contract.
+    const spy = jest.spyOn(aiService, 'generateComponentDescription').mockImplementation(async (args: any) => JSON.stringify({
+      descriptions: args.additionalContext.items.map((item: any) => ({
+        id: item.id,
+        description: `${item.name} tracks fleet identity records referenced across dispatch, billing, and safety workflows.`,
+      })),
+    }));
+
+    // Catalog order deliberately puts the LEAST-connected entities first and
+    // the most domain-central one (DriveAlert-equivalent: capability member +
+    // journey participant + ORM-related + lineage-heavy) last, mirroring the
+    // real truckspyapp bug (AdminFunction got described, domain-central
+    // DriveAlert did not, because the pass walked catalog order).
+    const entities: CASDataEntity[] = [
+      { id: 'entity_admin', name: 'AdminFunction', lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] } },
+      { id: 'entity_lookup_a', name: 'LookupA', lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] } },
+      { id: 'entity_lookup_b', name: 'LookupB', lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] } },
+      { id: 'entity_lookup_c', name: 'LookupC', lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] } },
+      {
+        id: 'entity_alert',
+        name: 'DriveAlert',
+        lifecycle: { created_by: ['svc_a', 'svc_b'], read_by: ['svc_c'], updated_by: ['svc_a'], deleted_by: [] },
+      },
+    ];
+    const nodes: any[] = [
+      { id: 'entity_doctrine_drivealert', name: 'DriveAlert', type: 'entity', level: 3 },
+      { id: 'entity_doctrine_driver', name: 'Driver', type: 'entity', level: 3 },
+    ];
+    const edges: any[] = [{
+      id: 'rel_1', source: 'entity_doctrine_drivealert', target: 'entity_doctrine_driver',
+      type: 'references', metadata: { attributes: { relationType: 'ManyToOne', field: 'driver' } },
+    }];
+    const allCapabilitiesForEvidence: any[] = [{
+      id: 'cap_alerts', name: 'Alert Monitoring', related_entities: ['entity_alert'], related_domains: [], operations: [],
+    }];
+    const userJourneys: any[] = [{
+      id: 'journey_alert', name: 'Driver Alert Journey',
+      terminal_effects: { entities_written: ['DriveAlert'], entities_read: [] },
+    }];
+
+    let firstBatchIds: string[] = [];
+    try {
+      await orch.applyAIElementDescriptions([], entities, {
+        systemName: 'fleet-api',
+        enhancedSystemPurpose: {
+          primary_type: 'backend-service', confidence: 0.9, evidence: [],
+          primary_domain: 'fleet-management', core_concepts: ['driver', 'fleet'],
+          inferred_description: 'A fleet management backend for driver workflows.',
+          supporting_workflow_ids: [],
+        },
+        frameworks: ['NestJS'],
+        includeEntities: true,
+        nodes, edges, allCapabilitiesForEvidence, userJourneys,
+      });
+      // The FIRST provider call's batch (call order == cursor order for
+      // concurrency >= batch count, see runWithConcurrency) must lead with
+      // the richest-evidence entity, not the catalog-order entity. Read
+      // before mockRestore() below, which clears mock.calls.
+      firstBatchIds = (spy.mock.calls[0][0] as any).additionalContext.items.map((item: any) => item.id);
+    } finally {
+      spy.mockRestore();
+      if (previousOpenAI === undefined) delete process.env.OPENAI_API_KEY; else process.env.OPENAI_API_KEY = previousOpenAI;
+      if (previousElementDescriptions === undefined) delete process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS; else process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS = previousElementDescriptions;
+      if (previousBatchSize === undefined) delete process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BATCH_SIZE; else process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BATCH_SIZE = previousBatchSize;
+    }
+
+    expect(firstBatchIds[0]).toBe('entity_alert');
+    expect(entities.find(e => e.id === 'entity_alert')!.description_source).toBe('ai');
+  });
+
+  it('records honest entity_description_coverage (described/total + stopped_reason) when the wall-clock budget cuts the pass short', async () => {
+    const previousOpenAI = process.env.OPENAI_API_KEY;
+    const previousElementDescriptions = process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS;
+    const previousBatchSize = process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BATCH_SIZE;
+    const previousConcurrency = process.env.KLAURO_AI_CONCURRENCY;
+    const previousBudget = process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BUDGET_MS;
+    process.env.OPENAI_API_KEY = 'test-openai-key';
+    delete process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS;
+    process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BATCH_SIZE = '1';
+    process.env.KLAURO_AI_CONCURRENCY = '1';
+    process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BUDGET_MS = '50';
+
+    const spy = jest.spyOn(aiService, 'generateComponentDescription').mockImplementation(async (args: any) => {
+      await new Promise(resolve => setTimeout(resolve, 30));
+      return JSON.stringify({
+        descriptions: args.additionalContext.items.map((item: any) => ({
+          id: item.id,
+          description: `${item.name} tracks fleet identity records referenced across dispatch, billing, and safety workflows.`,
+        })),
+      });
+    });
+
+    const entities: CASDataEntity[] = Array.from({ length: 5 }, (_, i) => ({
+      id: `entity_${i}`,
+      name: `Fixture${i}`,
+      lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] },
+    }));
+    const enhancedSystemPurpose: any = {
+      primary_type: 'backend-service', confidence: 0.9, evidence: [],
+      primary_domain: 'fleet-management', core_concepts: ['fleet'],
+      inferred_description: 'A fleet management backend.',
+      supporting_workflow_ids: [],
+    };
+
+    try {
+      await orch.applyAIElementDescriptions([], entities, {
+        systemName: 'fleet-api',
+        enhancedSystemPurpose,
+        frameworks: ['NestJS'],
+        includeEntities: true,
+      });
+    } finally {
+      spy.mockRestore();
+      if (previousOpenAI === undefined) delete process.env.OPENAI_API_KEY; else process.env.OPENAI_API_KEY = previousOpenAI;
+      if (previousElementDescriptions === undefined) delete process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS; else process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS = previousElementDescriptions;
+      if (previousBatchSize === undefined) delete process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BATCH_SIZE; else process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BATCH_SIZE = previousBatchSize;
+      if (previousConcurrency === undefined) delete process.env.KLAURO_AI_CONCURRENCY; else process.env.KLAURO_AI_CONCURRENCY = previousConcurrency;
+      if (previousBudget === undefined) delete process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BUDGET_MS; else process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BUDGET_MS = previousBudget;
+    }
+
+    const coverage = enhancedSystemPurpose.entity_description_coverage;
+    expect(coverage).toBeDefined();
+    expect(coverage.total).toBe(5);
+    expect(coverage.described).toBeGreaterThan(0);
+    expect(coverage.described).toBeLessThan(5);
+    expect(coverage.stopped_reason).toBe('budget-exhausted');
+    expect(coverage.priority_ordered).toBe(true);
+  });
+
   it('rejects AI element descriptions that add unsupported business or compliance claims', async () => {
     expect(orch.isUsefulElementDescription(
       'Driver Management handles driver assignments and improves operational efficiency while ensuring compliant fleet workflows.',

@@ -335,6 +335,17 @@ interface DescriptionTarget {
     updates: number;
     deletes: number;
   };
+  /**
+   * Evidence-richness score used ONLY to order entity targets before batching
+   * (see applyAIElementDescriptions) — never sent to the AI provider and
+   * never affects which description is accepted. Higher means more evidence
+   * (lineage + relations + capability membership + journey participation)
+   * grounds the description, so when the wall-clock budget cuts a pass short
+   * the entities dropped are the least-connected ones, not an arbitrary
+   * catalog-order suffix. Unset for capability targets (capabilities keep
+   * their existing catalog order).
+   */
+  priorityScore?: number;
 }
 
 interface EntityPropertyIndex {
@@ -10210,41 +10221,105 @@ export class AnalyzerOrchestrator {
       capabilitiesByEntityId: this.buildCapabilitiesByEntityId(context.allCapabilitiesForEvidence || capabilities),
       journeysByEntityName: this.buildJourneysByEntityName(context.userJourneys || []),
     } : undefined;
+    // PRIORITY ORDERING (evidence-richness first): entity targets are sorted
+    // by priorityScore — descending, so the most domain-central entities
+    // (capability membership + journey participation + ORM relations +
+    // lineage) are batched FIRST. When the wall-clock budget below cuts the
+    // pass short, it drops the tail of this ordering — the least-connected
+    // entities — instead of an arbitrary catalog-order suffix (previously a
+    // budget cutoff could describe a peripheral entity like AdminFunction
+    // while a domain-central one like DriveAlert never got reached). Sorting
+    // only the entity slice, never the capability targets ahead of it.
+    const entityTargets = context.includeEntities
+      ? entities.map(entity => this.entityDescriptionTarget(entity, entityTargetContext))
+          .sort((a, b) => (b.priorityScore ?? 0) - (a.priorityScore ?? 0))
+      : [];
     const allTargets = [
       ...capabilities.map(capability => this.capabilityDescriptionTarget(capability, entityNamesById)),
-      ...(context.includeEntities ? entities.map(entity => this.entityDescriptionTarget(entity, entityTargetContext)) : []),
+      ...entityTargets,
     ];
     const configuredLimit = Number(process.env.KLAURO_AI_ELEMENT_DESCRIPTION_LIMIT || '');
     const targets = Number.isFinite(configuredLimit) && configuredLimit > 0
       ? allTargets.slice(0, configuredLimit)
       : allTargets;
 
-    if (targets.length === 0) return;
+    // BUDGET/BATCH scaling: a flat 15s @ batch-of-4 only gets through ~6
+    // batches (~24 targets) regardless of how many entities the repo has —
+    // on a 112-entity repo that is 23/112 coverage, flat, no matter the repo
+    // size. Both levers below scale with the actual target count so a larger
+    // catalog gets meaningfully more coverage in roughly the same number of
+    // AI round trips, rather than the same fixed handful of round trips
+    // regardless of size:
+    //  - batchSize grows toward the provider's per-call cap (12) so each
+    //    round trip covers more targets (batching across the AI phase,
+    //    not just increasing wall-clock);
+    //  - budgetMs grows with the number of concurrency-bounded rounds the
+    //    scaled batch size still needs, capped well under the ~35s the
+    //    comprehension pass (KLAURO_AI_INTERPRETATION_BUDGET_MS, 20s) plus
+    //    this entity pass already spend sequentially per analysis today, so
+    //    the overall AI-phase latency budget for one analysis run doesn't
+    //    balloon on large repos.
+    const concurrency = aiConcurrencyLimit();
+    const configuredBatchSize = Number(process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BATCH_SIZE || '');
+    const defaultBatchSize = Math.max(4, Math.min(12, Math.ceil(targets.length / Math.max(1, concurrency * 3))));
+    const batchSize = Math.max(1, Math.min(12, Number.isFinite(configuredBatchSize) && configuredBatchSize > 0
+      ? configuredBatchSize
+      : defaultBatchSize));
+    const estimatedRounds = Math.max(1, Math.ceil(targets.length / Math.max(1, batchSize * concurrency)));
+    const ROUND_LATENCY_MS = 7000;
+    const MAX_SCALED_BUDGET_MS = 45000;
+    const configuredBudget = Number(process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BUDGET_MS || '');
+    const budgetMs = Number.isFinite(configuredBudget) && configuredBudget > 0
+      ? configuredBudget
+      : Math.min(MAX_SCALED_BUDGET_MS, Math.max(15000, estimatedRounds * ROUND_LATENCY_MS));
+
+    const recordEntityCoverage = (
+      described: number,
+      attempted: number,
+      effectiveBudgetMs: number,
+      effectiveBatchSize: number,
+      stoppedReason?: string
+    ): void => {
+      if (!context.includeEntities || !context.enhancedSystemPurpose) return;
+      context.enhancedSystemPurpose.entity_description_coverage = {
+        total: entities.length,
+        described,
+        attempted,
+        budget_ms: effectiveBudgetMs,
+        batch_size: effectiveBatchSize,
+        priority_ordered: true,
+        stopped_reason: described < entities.length ? stoppedReason : undefined,
+      };
+    };
+
+    if (targets.length === 0) {
+      recordEntityCoverage(0, 0, budgetMs, batchSize, 'no-targets');
+      return;
+    }
 
     if (process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS === 'false' || process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS === '0') {
       this.recordElementDescriptionGeneration(capabilities, entities, undefined, 'ai_skipped', false, 'disabled-by-env');
+      recordEntityCoverage(0, 0, budgetMs, batchSize, 'disabled-by-env');
       return;
     }
     if (!aiConfig.features.naturalLanguageDescriptions) {
       this.recordElementDescriptionGeneration(capabilities, entities, undefined, 'ai_skipped', false, 'feature-disabled');
+      recordEntityCoverage(0, 0, budgetMs, batchSize, 'feature-disabled');
       return;
     }
     if (!this.hasAIInterpretationProviderConfigured()) {
       this.recordElementDescriptionGeneration(capabilities, entities, undefined, 'ai_skipped', false, 'no-ai-provider-configured');
+      recordEntityCoverage(0, 0, budgetMs, batchSize, 'no-ai-provider-configured');
       return;
     }
 
-    const configuredBudget = Number(process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BUDGET_MS || '');
-    const budgetMs = Number.isFinite(configuredBudget) && configuredBudget > 0
-      ? configuredBudget
-      : 15000;
     if (budgetMs <= 0) {
       this.recordElementDescriptionGeneration(capabilities, entities, undefined, 'ai_skipped', false, 'budget-disabled', budgetMs);
+      recordEntityCoverage(0, 0, budgetMs, batchSize, 'budget-disabled');
       return;
     }
 
     const startedAt = Date.now();
-    const batchSize = Math.max(1, Math.min(12, Number(process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BATCH_SIZE || '4')));
     const byId = new Map<string, DescriptionTarget>(targets.map(target => [target.id, target]));
 
     // Each batch's prompt depends only on its own items, so the batches are
@@ -10256,7 +10331,7 @@ export class AnalyzerOrchestrator {
     const batches: DescriptionTarget[][] = [];
     for (let i = 0; i < targets.length; i += batchSize) batches.push(targets.slice(i, i + batchSize));
 
-    await runWithConcurrency(batches, aiConcurrencyLimit(), async (batch) => {
+    await runWithConcurrency(batches, concurrency, async (batch) => {
       if (Date.now() - startedAt >= budgetMs) {
         this.recordElementDescriptionGenerationByIds(batch.map(target => target.id), capabilities, entities, undefined, 'ai_skipped', false, 'budget-exhausted', budgetMs);
         return;
@@ -10484,6 +10559,24 @@ export class AnalyzerOrchestrator {
         if (timeoutHandle) clearTimeout(timeoutHandle);
       }
     });
+
+    // HONESTY: roll up what this pass actually achieved. `described` reads
+    // back from the entities themselves (description_source === 'ai') rather
+    // than re-deriving from batch bookkeeping, so it reflects the real
+    // end-state even if a later step in this same pass overwrote a value.
+    // `attempted` distinguishes "we sent it to the AI and it was
+    // rejected/failed" from "the budget ran out before we ever tried" — both
+    // count against `described` but only the former is an AI-quality gap.
+    const describedCount = entities.filter(entity => entity.description_source === 'ai').length;
+    const attemptedCount = entities.filter(entity => entity.description_generation?.attempted).length;
+    const anyBudgetExhausted = entities.some(entity => entity.description_generation?.reason === 'budget-exhausted');
+    recordEntityCoverage(
+      describedCount,
+      attemptedCount,
+      budgetMs,
+      batchSize,
+      anyBudgetExhausted ? 'budget-exhausted' : (describedCount < entities.length ? 'quality-gate-rejections' : undefined)
+    );
   }
 
   private capabilityDescriptionTarget(capability: SystemCapability, entityNamesById?: Map<string, string>): DescriptionTarget {
@@ -10594,6 +10687,10 @@ export class AnalyzerOrchestrator {
     const relations = context?.relationsByName?.get(entity.name.toLowerCase()) || [];
     const servingCapabilities = context?.capabilitiesByEntityId?.get(entity.id) || [];
     const journeys = context?.journeysByEntityName?.get(entity.name.toLowerCase()) || [];
+    const creates = entity.lifecycle.created_by.length;
+    const reads = entity.lifecycle.read_by.length;
+    const updates = entity.lifecycle.updated_by.length;
+    const deletes = entity.lifecycle.deleted_by.length;
     return {
       id: entity.id,
       name: entity.name,
@@ -10601,12 +10698,7 @@ export class AnalyzerOrchestrator {
       currentDescription: entity.description,
       source: entity.schema_source,
       fields: (entity.fields || []).slice(0, 12).map(field => `${field.name}:${field.type}${field.is_sensitive ? ':sensitive' : ''}`),
-      lifecycle: {
-        creates: entity.lifecycle.created_by.length,
-        reads: entity.lifecycle.read_by.length,
-        updates: entity.lifecycle.updated_by.length,
-        deletes: entity.lifecycle.deleted_by.length,
-      },
+      lifecycle: { creates, reads, updates, deletes },
       evidenceSummary: [
         ...relations.slice(0, 8).map(rel => `relates to ${rel.targetName} (${rel.relationType}${rel.field ? ` via ${rel.field}` : ''})`),
         ...servingCapabilities.slice(0, 6).map(name => `serves capability: ${name}`),
@@ -10617,6 +10709,20 @@ export class AnalyzerOrchestrator {
       // does for capabilities — see validateElementDescription).
       relatedEntities: relations.map(rel => rel.targetName),
       relatedDomains: servingCapabilities,
+      // Evidence-richness score for pre-batch priority ordering (see
+      // applyAIElementDescriptions / DescriptionTarget.priorityScore doc).
+      // Capability membership and journey participation are weighted highest
+      // — they mean this entity is a first-class participant in the system's
+      // already-established comprehension (a domain-central entity like
+      // DriveAlert), not just a table with traffic. ORM relations come next
+      // (structurally connected), and raw lifecycle writer/reader counts are
+      // the weakest signal (a busy CRUD table isn't necessarily meaningful).
+      priorityScore:
+        servingCapabilities.length * 4 +
+        journeys.length * 3 +
+        relations.length * 2 +
+        (creates + updates) * 1 +
+        Math.min(reads, 5) * 0.5,
     };
   }
 

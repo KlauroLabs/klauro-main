@@ -236,6 +236,23 @@ export interface EntityRelationIndex {
 }
 
 /**
+ * Structural (non-ORM-relation) edge TYPES that also count as relation
+ * evidence for a class-shaped entity: `implements an interface` / `uses a
+ * trait` is a genuine structural relationship between the entity and
+ * whatever it composes, even when no ORM `references` edge exists for it.
+ * This matters for trait-composed join records (Doctrine's
+ * `ConnectionBindTrait`/`ConnectionBindInterface` pattern, and equivalents
+ * in other ORMs/languages): the field a trait contributes (e.g. a
+ * `connection` association) is real on the class but is not always
+ * re-emitted as its own `references` edge with `relationType` metadata by
+ * the analyzer that walks the trait body — so relying on `references` edges
+ * alone silently drops this relation. `implements`/`uses_trait` edges ARE
+ * already emitted for every class regardless, so reusing them costs nothing
+ * and only ever ADDS evidence a `references`-only reading would miss.
+ */
+const STRUCTURAL_COMPOSITION_EDGE_TYPES = new Set(['implements', 'uses_trait']);
+
+/**
  * Build an entity-name-keyed relation index from the CAS node/edge graph.
  * ORM analyzers (Doctrine, TypeORM, Prisma, MikroORM, Eloquent, …) all emit
  * cross-entity relations as `references` edges carrying
@@ -245,6 +262,12 @@ export interface EntityRelationIndex {
  * node id because a `CASDataEntity` (data_entities[]) and its originating
  * graph NODE (nodes[], the edge endpoint) carry different id schemes — the
  * entity name is the only reliable join key between the two.
+ *
+ * Also folds in `implements`/`uses_trait` structural edges (see
+ * STRUCTURAL_COMPOSITION_EDGE_TYPES) tagged with the edge's own type as the
+ * `relationType` — evidence a trait/interface-composed relation exists even
+ * when the analyzer never re-emitted it as a `references` edge. This never
+ * shrinks the evidence a caller sees, only adds to it.
  */
 export function buildEntityRelationIndex(cas: { nodes?: CASNode[]; edges?: CASEdge[] }): EntityRelationIndex {
   const byEntityNameLower = new Map<string, EntityRelationEvidence[]>();
@@ -253,7 +276,8 @@ export function buildEntityRelationIndex(cas: { nodes?: CASNode[]; edges?: CASEd
     if (!nodesById.has(node.id)) nodesById.set(node.id, node);
   }
   for (const edge of cas.edges || []) {
-    const relationType = (edge.metadata as any)?.attributes?.relationType as string | undefined;
+    const relationType = (edge.metadata as any)?.attributes?.relationType as string | undefined
+      || (STRUCTURAL_COMPOSITION_EDGE_TYPES.has(edge.type) ? edge.type : undefined);
     if (!relationType) continue;
     const source = nodesById.get(edge.source);
     const target = nodesById.get(edge.target);
@@ -297,9 +321,16 @@ function hasIntegrationCredentialFieldShape(fields: CASDataEntity['fields'] | un
  *  DIFFERENT entity than the one under classification — not the name-pattern
  *  the caller is asked to avoid on the classified entity itself — and is
  *  only ever combined with the structural relation-pairing test below, never
- *  used alone. */
+ *  used alone.
+ *
+ *  Splits camelCase/PascalCase before testing so a compound identifier with
+ *  no natural word boundary (a trait/interface name like
+ *  `ConnectionBindInterface` or `ConnectionBindTrait` — the shape
+ *  STRUCTURAL_COMPOSITION_EDGE_TYPES relations resolve to) still matches:
+ *  `\bconnection\b` alone never fires inside one unbroken run of letters. */
 function isConnectionIntegrationTargetName(name: string): boolean {
-  return /\b(connection|integration|oauth|webhook)\b/i.test(name);
+  const spaced = String(name || '').replace(/([a-z0-9])([A-Z])/g, '$1 $2');
+  return /\b(connection|integration|oauth|webhook)\b/i.test(spaced);
 }
 
 /**

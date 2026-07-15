@@ -107,6 +107,18 @@ function relationEdge(sourceId: string, targetId: string, relationType: string, 
   } as unknown as CASEdge;
 }
 
+/** `implements`/`uses_trait` edge — no `relationType` metadata at all, the
+ *  shape trait-composed relations actually arrive in (see
+ *  STRUCTURAL_COMPOSITION_EDGE_TYPES in semantic-roles.ts). */
+function structuralEdge(sourceId: string, targetId: string, type: 'implements' | 'uses_trait'): CASEdge {
+  return {
+    id: `${type}_${sourceId}_${targetId}`,
+    source: sourceId,
+    target: targetId,
+    type,
+  } as unknown as CASEdge;
+}
+
 test('classifyIntegrationSyncEntity: relation pairing a domain entity + a connection entity -> integration-sync', () => {
   const nodes = [entityNode('DeviceConnectionBind'), entityNode('Device'), entityNode('Connection')];
   const edges = [
@@ -120,6 +132,37 @@ test('classifyIntegrationSyncEntity: relation pairing a domain entity + a connec
   assert.equal(result.isIntegrationSync, true);
   assert.ok(result.evidence.some(e => /domain entity "Device"/.test(e)));
   assert.ok(result.evidence.some(e => /connection\/integration entity "Connection"/.test(e)));
+});
+
+test('classifyIntegrationSyncEntity: trait/interface-composed connection relation (no ORM references edge to the hub at all) still demotes — real truckspyapp shape', () => {
+  // Real truckspyapp shape (BookingConnectionBind and 15 siblings): the class
+  // implements a *ConnectionBindInterface and uses a *ConnectionBindTrait —
+  // the trait is what actually contributes the `connection` association —
+  // but the Doctrine analyzer never re-emits that trait-contributed field as
+  // its own `references` edge with relationType metadata. Only ONE ORM
+  // `references` edge exists (to the real domain entity, Booking). Relying on
+  // `references` edges alone (own.length < 2 gate) would always read this as
+  // "single relation, not integration-sync" and leave every one of these 16
+  // entities classified core. The `implements`/`uses_trait` edges — which the
+  // analyzer DOES always emit — must be enough evidence on their own.
+  const nodes = [
+    entityNode('BookingConnectionBind'),
+    entityNode('Booking'),
+    { id: 'interface_connectionbindinterface', name: 'ConnectionBindInterface', type: 'interface', level: 3 } as CASNode,
+    { id: 'trait_connectionbindtrait', name: 'ConnectionBindTrait', type: 'trait', level: 3 } as CASNode,
+  ];
+  const edges = [
+    relationEdge('entity_doctrine_bookingconnectionbind', 'entity_doctrine_booking', 'ManyToOne', 'entity'),
+    structuralEdge('entity_doctrine_bookingconnectionbind', 'interface_connectionbindinterface', 'implements'),
+    structuralEdge('entity_doctrine_bookingconnectionbind', 'trait_connectionbindtrait', 'uses_trait'),
+  ];
+  const relations = buildEntityRelationIndex({ nodes, edges });
+  const domainNames = new Set(['bookingconnectionbind', 'booking']);
+
+  const result = classifyIntegrationSyncEntity('BookingConnectionBind', relations, domainNames);
+  assert.equal(result.isIntegrationSync, true);
+  assert.ok(result.evidence.some(e => /domain entity "Booking"/.test(e)));
+  assert.ok(result.evidence.some(e => /connection\/integration entity "ConnectionBind(Interface|Trait)"/.test(e)));
 });
 
 test('classifyIntegrationSyncEntity: connection target identified by credential FIELD shape, not just name', () => {
@@ -250,4 +293,40 @@ test('getDataEntities surfaces role, role_evidence, role_breakdown and supports 
   const coreOnly: any = getDataEntities(cas, { role: 'core' });
   assert.equal(coreOnly.total, 2);
   assert.ok(coreOnly.entities.every((e: any) => e.role === 'core'));
+});
+
+test('getDataEntities: a *ConnectionBind entity (trait/interface-composed, no ORM references edge to the connection hub) reads infrastructure end-to-end, not core — the live /entities path', () => {
+  // Reproduces the real truckspyapp CAS shape end to end: BookingConnectionBind
+  // has product vocabulary in its name ("booking" -> productDomainSignal > 0)
+  // so the name-fallback classifier alone would call it core, and the ORM
+  // relation graph carries only one `references` edge (to the domain entity
+  // Booking) — the second (to Connection) only exists as `implements`/
+  // `uses_trait` structural edges. Before the semantic-roles.ts fix this
+  // entity read role:"core" on the live /entities surface; the assertion
+  // below is what GET /api/projects/{id}/entities actually serves.
+  const cas = casWith(
+    [
+      entity('BookingConnectionBind', { created_by: ['method_createConnectionBind'] }),
+      entity('Booking', { created_by: ['method_createBooking'], read_by: ['n1'] }),
+    ],
+    []
+  );
+  cas.nodes = [
+    entityNode('BookingConnectionBind'),
+    entityNode('Booking'),
+    { id: 'interface_connectionbindinterface', name: 'ConnectionBindInterface', type: 'interface', level: 3 } as CASNode,
+    { id: 'trait_connectionbindtrait', name: 'ConnectionBindTrait', type: 'trait', level: 3 } as CASNode,
+  ];
+  cas.edges = [
+    relationEdge('entity_doctrine_bookingconnectionbind', 'entity_doctrine_booking', 'ManyToOne', 'entity'),
+    structuralEdge('entity_doctrine_bookingconnectionbind', 'interface_connectionbindinterface', 'implements'),
+    structuralEdge('entity_doctrine_bookingconnectionbind', 'trait_connectionbindtrait', 'uses_trait'),
+  ];
+
+  const result: any = getDataEntities(cas);
+  const byName = new Map(result.entities.map((e: any) => [e.name, e]));
+  assert.equal((byName.get('BookingConnectionBind') as any).role, 'infrastructure');
+  assert.ok((byName.get('BookingConnectionBind') as any).role_evidence.some((e: string) => /integration-sync/.test(e)));
+  // Booking itself is unaffected — it keeps its own (name-fallback) role.
+  assert.notEqual((byName.get('Booking') as any).role, 'infrastructure');
 });

@@ -2818,6 +2818,40 @@ export interface CASDescriptionGeneration {
   may_be_stale?: boolean;
 }
 
+/**
+ * Aggregate honesty record for the entity-description LAST-stage AI pass
+ * (orchestrator.ts applyAIElementDescriptions, includeEntities: true; see
+ * docs/cas/DETERMINISM-BOUNDARY.md). Per-entity outcome already lives on each
+ * `CASDataEntity.description_generation`; this is the roll-up so a caller can
+ * answer "how much of the entity catalog actually got described, and why not
+ * more" without walking every entity. Written even when coverage is partial
+ * or zero — never omitted just because the number is unflattering.
+ */
+export interface CASEntityDescriptionCoverage {
+  /** Entities eligible for description in this pass (dataEntities.length). */
+  total: number;
+  /** Entities that received an AI-authored description (description_source
+   *  === 'ai') by the end of this pass. */
+  described: number;
+  /** Entities the pass actually sent to the AI provider (vs. skipped before
+   *  ever being attempted, e.g. because the wall-clock budget ran out before
+   *  their batch started). */
+  attempted: number;
+  /** Effective wall-clock budget for this pass, in ms (see
+   *  KLAURO_AI_ELEMENT_DESCRIPTION_BUDGET_MS / the evidence-scaled default). */
+  budget_ms: number;
+  /** Effective batch size used (see KLAURO_AI_ELEMENT_DESCRIPTION_BATCH_SIZE
+   *  / the evidence-scaled default). */
+  batch_size: number;
+  /** Entities were ordered by evidence richness (lineage + relation +
+   *  capability + journey signal) before batching, so a budget cutoff drops
+   *  the least-connected entities first, not an arbitrary suffix. */
+  priority_ordered: boolean;
+  /** Why coverage stopped short of `total`, when it did. Absent when
+   *  `described === total`. */
+  stopped_reason?: string;
+}
+
 export interface CASAnalysisPhase {
   id: string;
   name: string;
@@ -3386,6 +3420,11 @@ export interface EnhancedSystemPurpose extends SystemPurpose {
   description_generation?: CASDescriptionGeneration;
   primary_workflow_id?: string;
   supporting_workflow_ids: string[];
+  /** Roll-up honesty record for the entity-description LAST-stage AI pass —
+   *  see CASEntityDescriptionCoverage. Set whenever that pass runs (even a
+   *  zero-coverage skip records why), never fabricated when the pass never
+   *  ran (e.g. no data entities in this repo). */
+  entity_description_coverage?: CASEntityDescriptionCoverage;
 }
 
 export interface CASCapability {
