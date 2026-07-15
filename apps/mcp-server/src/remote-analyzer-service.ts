@@ -21,7 +21,8 @@ import { ingestAndPersist, loadPersistedRuntimeFacts } from './telemetry-fusion'
 import { backfillIngestedTelemetry, ingestTelemetryBatch, loadTelemetryObservations, summarizeRouteMetrics } from './telemetry-ingestion';
 import { buildNodeRuntimeMetrics } from './product';
 import { getAnalysis } from './analyzer';
-import { buildSummary, getProductMap, getFlowConcepts, getArchitecturalConflicts, getParadigmConformance, getPerspectives, getCicdPipelines, getCommunicationSeams, buildOrientCapsule, getSemanticCoverage } from './query';
+import { buildSummary, getProductMap, getFlowConcepts, getArchitecturalConflicts, getParadigmConformance, getPerspectives, getCicdPipelines, getCommunicationSeams, buildOrientCapsule, getSemanticCoverage, getDataEntities } from './query';
+import type { SemanticRole } from './semantic-roles';
 import { getAnalysisFileFingerprint } from './storage';
 import { descriptionStorePath } from './description-enrichment';
 import { ResponseCache, responseCacheKey } from './response-cache';
@@ -1910,6 +1911,84 @@ async function handleAccountApi(
     }
   }
 
+  // Domain data entities over HTTP (E1 entity_description.v1 — see orchestrator
+  // applyAIInterpretation's last-stage entity pass, ecf8a604). The compact
+  // GET /api/projects/{id}/analysis summary exposes database_entities as a
+  // bare name array (query.ts buildSummary) — no field, role, relation, or
+  // description data at all — so a web-only customer had no way to read what
+  // the entity-description pass produced. This route reuses getDataEntities
+  // (query.ts), the SAME projection the get_data_entities MCP tool serves,
+  // paginated (default limit 25) so a whale repo's 100+ entities don't blow
+  // the response budget in one shot.
+  const projectEntitiesMatch = route.match(/^\/api\/projects\/([^/]+)\/entities$/);
+  if (projectEntitiesMatch && request.method === 'GET') {
+    if (!dataDir) throw new AccountHttpError(500, 'Analysis storage unavailable');
+    const project = await accounts.getProjectForUser(userId, decodeURIComponent(projectEntitiesMatch[1]));
+    if (!project) throw new AccountHttpError(404, 'Project not found');
+    if (!project.analysis_id) {
+      return { statusCode: 200, body: { status: 'no_analysis', project_id: project.id } };
+    }
+    try {
+      const workspace = workspacePath(dataDir, project.analysis_id);
+      const url = new URL(request.url || '', 'http://localhost');
+      const entityName = url.searchParams.get('entity_name') || undefined;
+      const role = (url.searchParams.get('role') || undefined) as SemanticRole | undefined;
+      const limitParamRaw = url.searchParams.get('limit');
+      const limitParam = limitParamRaw !== null ? Number(limitParamRaw) : undefined;
+      // Bounded to 100: the compact-per-entity projection (10 fields + 10
+      // relations sampled, no lifecycle/invariant detail beyond counts) keeps
+      // per-entity weight small, but an unbounded HTTP request is still a
+      // bigger CAS-compute footprint than the MCP tool surface's own budget
+      // assumes (mirrors the /conceptual max_flows precedent above).
+      const limit = limitParam !== undefined && Number.isFinite(limitParam) && limitParam > 0
+        ? Math.min(Math.floor(limitParam), 100)
+        : 25;
+      const offsetParamRaw = url.searchParams.get('offset');
+      const offsetParam = offsetParamRaw !== null ? Number(offsetParamRaw) : undefined;
+      const offset = offsetParam !== undefined && Number.isFinite(offsetParam) && offsetParam >= 0
+        ? Math.floor(offsetParam)
+        : 0;
+      // Response cache: pure function of the stored CAS + (entity_name, role,
+      // limit, offset) — a hit skips the CAS load + role-classification pass
+      // entirely.
+      const version = await storedAnalysisVersion(workspace);
+      const cacheKey = version === null ? null : responseCacheKey({
+        endpoint: 'entities',
+        projectId: project.id,
+        analysisId: project.analysis_id,
+        version,
+        params: { entityName: entityName || '', role: role || '', limit: String(limit), offset: String(offset) },
+      });
+      if (cacheKey) {
+        const cached = casReadResponseCache.get(cacheKey);
+        if (cached !== undefined) {
+          return { statusCode: 200, body: JSON.parse(cached), serializedBody: cached };
+        }
+      }
+      const cas = await getAnalysis(workspace);
+      const dataEntities = getDataEntities(cas, { entityName, role, limit, offset });
+      const body = {
+        status: 'ready',
+        project_id: project.id,
+        analysis_id: project.analysis_id,
+        ...dataEntities,
+      };
+      const serializedBody = JSON.stringify(body);
+      if (cacheKey) casReadResponseCache.set(cacheKey, serializedBody);
+      return { statusCode: 200, body, serializedBody };
+    } catch (error) {
+      return {
+        statusCode: 200,
+        body: {
+          status: 'no_analysis',
+          project_id: project.id,
+          analysis_id: project.analysis_id,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      };
+    }
+  }
+
   const projectConceptualMatch = route.match(/^\/api\/projects\/([^/]+)\/conceptual$/);
   if (projectConceptualMatch && request.method === 'GET') {
     if (!dataDir) throw new AccountHttpError(500, 'Analysis storage unavailable');
@@ -1958,7 +2037,17 @@ async function handleAccountApi(
         }
       }
       const cas = await getAnalysis(workspace);
-      const flowConcepts = getFlowConcepts(cas, { target, maxFlows, surface: 'http' });
+      // BUG FIX: `include=full` is meant to inline the heavy evidence tiers
+      // (contract facet_provenance, step code_mappings) — the caller-facing
+      // strip below already skips its OWN post-processing when include=full,
+      // but that strip only removes what's still present. getFlowConcepts
+      // itself defaults to `detail: 'compact'` (opts.detail !== 'full') and
+      // was never told which mode this caller wants, so it unconditionally
+      // stripped facet_provenance/code_mappings before the HTTP-layer strip
+      // ever ran — include=full silently had no effect on the actual
+      // provenance bodies, only on a no-op second strip. Forward `include`
+      // through as `detail` so 'full' really means full end-to-end.
+      const flowConcepts = getFlowConcepts(cas, { target, maxFlows, surface: 'http', detail: include === 'full' ? 'full' : 'compact' });
       // Endpoint projection (re-validation F1): D2 facet_provenance + D1
       // code_mappings inflated per-flow weight ~3-4x (whale payload 96KB+ at 20
       // flows). The web UI renders neither yet — strip them from THIS projection

@@ -1235,10 +1235,21 @@ export function getDataEntities(
       id: e.id,
       name: e.name,
       schema_source: e.schema_source,
+      // E1 entity_description.v1 (orchestrator applyAIInterpretation, last-stage
+      // pass over the full evidence bundle): AI-only-or-absent, never a
+      // deterministic placeholder — description stays undefined when the pass
+      // hasn't run or the AI enrichment is skipped/degraded for this entity.
+      description: e.description,
+      description_source: e.description_source,
       role: classification?.role,
       role_evidence: classification?.role_evidence,
       field_count: e.fields?.length || 0,
       fields: (e.fields || []).slice(0, 10),
+      // ORM relation evidence (references edges carrying relationType),
+      // keyed by name in relationIndex — same evidence classifyEntityRole
+      // already consumes for role classification, now surfaced directly so a
+      // caller doesn't have to re-derive the entity graph itself.
+      relations: (relationIndex.byEntityNameLower.get(e.name.toLowerCase()) || []).slice(0, 10),
       lifecycle_summary: {
         created_by_count: e.lifecycle?.created_by?.length || 0,
         read_by_count: e.lifecycle?.read_by?.length || 0,
