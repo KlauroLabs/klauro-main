@@ -9169,6 +9169,14 @@ export class AnalyzerOrchestrator {
     const discriminativeTokens = (tokens: string[]) => new Set(tokens.filter(token => !nonDiscriminative.has(token)));
     const itemTokens = staged.map(item => discriminativeTokens(item.nameTokensAll));
     const opsByItemIndex = new Map<number, SystemCapability['operations']>();
+    // Matched candidates contribute their ENTITY anchors too, not just ops:
+    // the AI names ~3 entities per capability, but the deterministic
+    // candidates it covers carry the full evidence — and downstream flow
+    // relationship matching (entity overlap in deriveCapabilityRelationships)
+    // runs against the STORED capability anchors. Sampling the anchors
+    // structurally caps flow rollup (measured live: 13 caps x 3 entities left
+    // 330+ HTTP flows unmapped on an 85k-node repo).
+    const entityIdsByItemIndex = new Map<number, Set<string>>();
     for (const candidate of input.candidateCapabilities) {
       const candidateEntityNames = candidate.related_entities.map(id => (entityNameById.get(id) || id).toLowerCase());
       const candidateTokens = discriminativeTokens(
@@ -9188,6 +9196,8 @@ export class AnalyzerOrchestrator {
         if (scores[index] !== best) continue;
         if (!opsByItemIndex.has(index)) opsByItemIndex.set(index, []);
         opsByItemIndex.get(index)!.push(...candidate.operations);
+        if (!entityIdsByItemIndex.has(index)) entityIdsByItemIndex.set(index, new Set());
+        for (const id of candidate.related_entities || []) entityIdsByItemIndex.get(index)!.add(id);
       }
     }
 
@@ -9224,7 +9234,13 @@ export class AnalyzerOrchestrator {
     for (let index = 0; index < staged.length; index++) {
       const { name, key, description, category, relatedEntities, journeys } = staged[index];
       const operations = opsByItemIndex.get(index) || [];
-      const dedupedOps = Array.from(new Map(operations.map(op => [op.entry_point_id, op])).values()).slice(0, 12);
+      // Anchor lists are MATCHING evidence, not display samples — flow
+      // relationship derivation op-matches against them, so a 12-op sample on
+      // a capability owning 50 routes strands the other 38 flows. 64 covers
+      // the largest real route-areas measured; the query layer can compact
+      // for display if size ever matters.
+      const dedupedOps = Array.from(new Map(operations.map(op => [op.entry_point_id, op])).values()).slice(0, 64);
+      const candidateEntityIds = entityIdsByItemIndex.get(index) || new Set<string>();
       // Drop ungrounded filler: a capability that resolved to NO entity and NO
       // operation has zero evidence in the deterministic facts — it is a model
       // guess ("Monitors System Health", "Secures Communication"), not a
@@ -9255,7 +9271,7 @@ export class AnalyzerOrchestrator {
         description_generation: { status: 'ai_applied', attempted: true, generated_at: new Date().toISOString() },
         category,
         operations: dedupedOps,
-        related_entities: relatedEntities,
+        related_entities: Array.from(new Set([...relatedEntities, ...candidateEntityIds])),
         related_domains: Array.isArray(journeys) ? journeys.map((value: unknown) => String(value || '')).filter(Boolean).slice(0, 6) : [],
         criticality: category === 'core' ? 'high' : 'medium',
         criticality_factors: ['ai-extracted-from-journeys-and-entities'],

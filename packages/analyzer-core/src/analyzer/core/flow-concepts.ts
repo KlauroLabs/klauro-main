@@ -1829,8 +1829,11 @@ function deriveCapabilityRelationships(args: {
    *  flow's entry point is a CLI command a real kubernetes_cronjob schedules.
    *  Undefined for every non-CLI / unscheduled flow — never fabricated. */
   cronSchedule?: string;
+  /** The flow root entry point's type (cli/message/event/route/http/...) —
+   *  grounds surface-membership fallback edges (see below). */
+  entryType?: string;
 }): CapabilityFlowRelationship[] {
-  const { capabilities, entryPointId, rootNodeId, entities, telemetry, pathNodeIds, entryHandlerNodeIdByEpId, cronSchedule } = args;
+  const { capabilities, entryPointId, rootNodeId, entities, telemetry, pathNodeIds, entryHandlerNodeIdByEpId, cronSchedule, entryType } = args;
   const out: CapabilityFlowRelationship[] = [];
   const entityKeySet = new Set(entities.map(normalizeEntityKey));
 
@@ -1923,6 +1926,33 @@ function deriveCapabilityRelationships(args: {
         role: 'supporting',
         rationale: `flow touches entities in this capability's related_entities (${sharedList}) but its entry point is not among the capability's operations`,
       });
+    }
+  }
+
+  // SURFACE-MEMBERSHIP FALLBACK: behavior surfaces are the registration
+  // registries for entry KINDS (command/message/event/route), but their
+  // `operations` list is a capped SAMPLE (12) — op-matching against it strands
+  // every registered flow past the sample (measured live: an AI-on catalog of
+  // 13 purposeful capabilities left 437/896 flows unmapped, mostly CLI/route
+  // flows whose only home IS a surface). Membership evidence is structural:
+  // a surface whose sampled operations are homogeneously one entry_point_type
+  // registers every entry of that type, by construction of
+  // buildBehaviorCapabilities. Fallback-only (never dilutes a real
+  // capability edge): applied when nothing else related, with the cron rule
+  // upgrading scheduled CLI work to 'operational'.
+  if (out.length === 0 && entryType) {
+    for (const cap of capabilities) {
+      if ((cap as { evidence_kind?: string }).evidence_kind !== 'behavior-surface') continue;
+      const opTypes = new Set((cap.operations || []).map(op => op.entry_point_type));
+      if (opTypes.size !== 1 || !opTypes.has(entryType)) continue;
+      out.push({
+        capability_id: cap.id,
+        role: cronSchedule ? 'operational' : 'supporting',
+        rationale: cronSchedule
+          ? `registered on the "${cap.name}" behavior surface (entry type ${entryType}); scheduled by a CronJob (${cronSchedule}) — operational surface work`
+          : `registered on the "${cap.name}" behavior surface (entry type ${entryType}) — no core capability references this flow`,
+      });
+      break; // one surface per entry type by construction
     }
   }
 
@@ -2787,6 +2817,7 @@ function buildTerminalFlows(
       pathNodeIds: allNodeIds,
       entryHandlerNodeIdByEpId,
       cronSchedule: deriveCliCronSchedule(rootEp, cronScheduleIndex),
+      entryType: rootEp?.type,
     });
     const capabilityId = capabilityRelationships.find(r => r.role === 'primary')?.capability_id;
     if (capabilityRelationships.length === 0) {
@@ -3167,6 +3198,7 @@ function computeEntryPointFlows(
       pathNodeIds: allNodeIds,
       entryHandlerNodeIdByEpId,
       cronSchedule: deriveCliCronSchedule(ep, cronScheduleIndex),
+      entryType: ep.type,
     });
     const capabilityId = capabilityRelationships.find(r => r.role === 'primary')?.capability_id;
     if (capabilityRelationships.length === 0) {
