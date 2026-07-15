@@ -9644,24 +9644,38 @@ export class AnalyzerOrchestrator {
       if (extracted.length > 0) {
         const reconciled = this.reconcileCatalogedCapabilities(extracted, candidateSnapshot, dataEntities);
         systemCapabilities.splice(0, systemCapabilities.length, ...reconciled);
-      } else if (candidateSnapshot.length === 0) {
-        // GENUINE FALLBACK: the AI catalog returned nothing usable (empty, or
-        // its only item was dropped by the validity guard) AND there were no
-        // deterministic domain candidates to fall back on either — leaving
-        // system_capabilities empty would strand agents with zero navigable
-        // capabilities on a product whose real value IS a large tool/handler
-        // surface (an MCP-tool platform, a CLI-only utility, ...). Re-derive
-        // coarse domain capabilities from the dominant candidate family
-        // available: the merged LARGE behavior-surface candidate(s), gated on
-        // the same operation-count threshold used to admit them to the AI
-        // prompt. Never fabricated — these are real deterministic surfaces,
-        // just promoted out of the surfaces-only tier for this narrow
-        // total-failure case. Small/absent surfaces leave the catalog
-        // genuinely empty rather than inventing a capability.
-        const largeSurfaceCandidates = behaviorSurfaces.filter(
-          surface => this.behaviorSurfaceEntryCount(surface) >= AnalyzerOrchestrator.LARGE_BEHAVIOR_SURFACE_OPERATION_THRESHOLD
+      } else {
+        // The AI catalog returned nothing usable (empty response / all items
+        // dropped by the validity guard). The surviving DETERMINISTIC
+        // candidates must NOT be shipped as-is: a raw terminal-chain / shell-
+        // script label ("Run Shell script: release.sh -> Docker read (+2 more)")
+        // is never a real capability, even when the pipeline later synthesized a
+        // description for it — so it must pass the same validity guard the AI
+        // items do. (Measured live on Klauro-self v1.0.81: the AI catalog
+        // returned empty on the 45k-node CAS, and this exact shell-script
+        // leftover survived as the sole "capability" with 43 flows dangling a
+        // ghost cap_mcp_tool_surface ref, because the old `else if
+        // (candidateSnapshot.length === 0)` guard left non-empty deterministic
+        // sets untouched.)
+        const validDeterministic = candidateSnapshot.filter(
+          capability => !this.isRawCandidateLabelName(String(capability.name || ''), [])
         );
-        if (largeSurfaceCandidates.length > 0) {
+        if (validDeterministic.length > 0) {
+          systemCapabilities.splice(0, systemCapabilities.length, ...validDeterministic);
+        } else {
+          // No valid deterministic candidates remain → re-derive coarse domain
+          // capabilities from the dominant candidate family: the merged LARGE
+          // behavior-surface(s) (an MCP-tool platform, a CLI-only utility, ...),
+          // gated on the same operation-count threshold used to admit them to
+          // the AI prompt. Materializing the surface as a capability also
+          // resolves flows that reference it (no dangling ghost ids). Never
+          // fabricated — real deterministic surfaces promoted out of the
+          // surfaces-only tier for this narrow total-failure case; an
+          // absent/small surface leaves the catalog genuinely empty rather than
+          // inventing or keeping a garbage capability.
+          const largeSurfaceCandidates = behaviorSurfaces.filter(
+            surface => this.behaviorSurfaceEntryCount(surface) >= AnalyzerOrchestrator.LARGE_BEHAVIOR_SURFACE_OPERATION_THRESHOLD
+          );
           systemCapabilities.splice(0, systemCapabilities.length, ...largeSurfaceCandidates.map(surface => ({
             ...surface,
             criticality_factors: Array.from(new Set([...(surface.criticality_factors || []), 'genuine-fallback-from-behavior-surface'])),
