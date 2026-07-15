@@ -20974,7 +20974,22 @@ export class AnalyzerOrchestrator {
         // Fold the loser's evidence onto the survivor additively — same
         // never-drop-evidence policy as mergeAnalysisResult's node
         // collaboration merge (existing keys on the survivor win ties).
-        if (loser.metadata) survivor.metadata = { ...loser.metadata, ...survivor.metadata };
+        if (loser.metadata) {
+          // Additive fold: survivor wins scalar collisions, but ARRAY values
+          // union (dedupe by JSON identity) — last-write-wins on arrays
+          // silently drops the loser's evidence (measured: EF Core relations
+          // 3 -> 1 when the entity twin's relations array lost to the class
+          // twin's shorter one).
+          const folded: Record<string, unknown> = { ...loser.metadata, ...survivor.metadata };
+          for (const [k, lv] of Object.entries(loser.metadata)) {
+            const sv = (survivor.metadata as Record<string, unknown> | undefined)?.[k];
+            if (Array.isArray(lv) && Array.isArray(sv)) {
+              const seen = new Set(sv.map(v => JSON.stringify(v)));
+              folded[k] = [...sv, ...lv.filter(v => !seen.has(JSON.stringify(v)))];
+            }
+          }
+          survivor.metadata = folded as typeof survivor.metadata;
+        }
         if (loser.tags?.length) survivor.tags = [...new Set([...(survivor.tags || []), ...loser.tags])];
         if (loser.subcategories?.length) {
           survivor.subcategories = [...new Set([...(survivor.subcategories || []), ...loser.subcategories])];
@@ -21050,7 +21065,9 @@ export class AnalyzerOrchestrator {
         // facts, not duplicates. Fold the metadata field that carries that
         // identity into the key; edges without one keep the plain triple.
         const meta = edge.metadata as Record<string, unknown> | undefined;
-        const relIdent = meta?.field ?? meta?.via ?? meta?.relation ?? meta?.relationType ?? meta?.relation_type ?? '';
+        const attrs = meta?.attributes as Record<string, unknown> | undefined;
+        const relIdent = meta?.field ?? meta?.via ?? meta?.relation ?? meta?.relationType ?? meta?.relation_type
+          ?? attrs?.relationType ?? attrs?.relation ?? attrs?.property ?? attrs?.kind ?? '';
         const key = `${edge.source}::${edge.target}::${edge.type}::${String(relIdent)}`;
         const existing = survivorByKey.get(key);
         if (!existing) {
