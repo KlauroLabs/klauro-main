@@ -2118,6 +2118,29 @@ describe('architecture and capability inference', () => {
       expect(outcome.text).toMatch(/DexTrade/);
     });
 
+    it('heals a HYPHENATED single ungrounded modifier ("third-party") instead of misparsing it as a two-token fabrication (prod: Qwen3 on rpg-server hard-failed enrichment)', async () => {
+      // The reason payload joins multi-token phrases with '-', so a hyphenated
+      // single word is ambiguous by splitting alone. It appears VERBATIM in the
+      // description — that evidence marks it as ONE modifier to strip.
+      const stripped = orch.mechanicallyRepairAIInterpretation(
+        'soon-lens is a third-party crypto market-intelligence API aggregating DexTrade market data for trading agents.',
+        'ungrounded-system-type: third-party'
+      );
+      expect(stripped).toBeDefined();
+      expect(stripped).not.toMatch(/third-party/i);
+      expect(stripped).toMatch(/crypto market-intelligence API/);
+    });
+
+    it('still treats a joined multi-token fabrication as NOT mechanically fixable when the hyphenated form is absent from the text', async () => {
+      // 'solana-arbitrage' as a payload for a description that never contains
+      // the literal hyphenated word = two joined tokens = wholesale
+      // fabrication = semantic re-prompt, exactly as before.
+      expect(orch.mechanicallyRepairAIInterpretation(
+        'soon-lens is a solana arbitrage engine aggregating market data.',
+        'ungrounded-system-type: solana-arbitrage'
+      )).toBeUndefined();
+    });
+
     it('still rejects a paragraph SATURATED with marketing language (word-deletion would gut it)', async () => {
       const saturated = 'soon-lens is a seamless crypto market-intelligence API built with NestJS that seamlessly boosts productivity and business value while aggregating DexTrade and OhlcvCandle market data. It surfaces user-friendly WhaleTransaction signals, improving operational productivity and business value with a seamless PreflightDecision workflow for trading agents.';
       const verdict = orch.validateGeneratedAIInterpretation(saturated, purpose, grounding);

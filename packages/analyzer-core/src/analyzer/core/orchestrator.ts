@@ -11752,9 +11752,22 @@ export class AnalyzerOrchestrator {
       // Reason payload joins modifier tokens with '-'; only a SINGLE flagged
       // token is a deterministic word-level edit (delete the modifier, keep
       // the grounded head noun). Two-plus tokens = fabricated phrase =
-      // semantic re-prompt.
-      const flaggedTokens = ungroundedType[1].split('-').map(token => token.trim()).filter(Boolean);
-      if (flaggedTokens.length !== 1 || !/^[a-z0-9]+$/i.test(flaggedTokens[0])) return undefined;
+      // semantic re-prompt. AMBIGUITY (real prod failure, Qwen3 on rpg-server):
+      // a HYPHENATED single modifier ('third-party', 'e-commerce') is
+      // indistinguishable from two joined tokens by splitting alone — it
+      // misparsed as 2 tokens, skipped this repair, and hard-failed the whole
+      // enrichment once the AI-repair budget was gone. Evidence disambiguates:
+      // when the payload appears VERBATIM as a hyphenated word in the
+      // description, it IS one modifier — strip it like any single token.
+      const rawPayload = ungroundedType[1].trim();
+      const payloadEscaped = rawPayload.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const isVerbatimHyphenatedModifier =
+        /^[a-z0-9]+(?:-[a-z0-9]+)+$/i.test(rawPayload) &&
+        new RegExp(`\\b${payloadEscaped}\\b`, 'i').test(description);
+      const flaggedTokens = isVerbatimHyphenatedModifier
+        ? [rawPayload]
+        : ungroundedType[1].split('-').map(token => token.trim()).filter(Boolean);
+      if (flaggedTokens.length !== 1 || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/i.test(flaggedTokens[0])) return undefined;
       const escaped = flaggedTokens[0].replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       const stripped = description.replace(new RegExp(`\\b${escaped}[- ]`, 'gi'), '');
       // Stripping one conjunct of a coordination leaves stumps like "a robust
