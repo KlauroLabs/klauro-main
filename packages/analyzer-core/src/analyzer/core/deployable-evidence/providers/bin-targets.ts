@@ -1,6 +1,6 @@
 import * as fs from 'fs-extra';
 import * as path from 'path';
-import type { CASEntryPoint, DeployableEvidence } from '../../../../types/cas.types';
+import type { CASEntryPoint, CASNode, DeployableEvidence } from '../../../../types/cas.types';
 import type { EvidenceCollectionContext, EvidenceProvider } from '../types';
 import { IGNORE_GLOBS, safeDeployableName, safeGlobSync } from '../util';
 
@@ -120,6 +120,38 @@ function collectBinTargets(ctx: EvidenceCollectionContext): DeployableEvidence[]
   return out;
 }
 
+/**
+ * Resolve the best repo-relative file path for an entry point's handler.
+ *
+ * `entry.handler.file` is sometimes recorded relative to the sub-package/app
+ * scan root that produced it rather than the full monorepo-relative path
+ * (e.g. `src/routes/auth.ts` instead of `packages/analyzer-core/src/routes/auth.ts`)
+ * — observed when a per-package analysis pass gets merged into a wider
+ * workspace CAS: the corresponding `CASNode.source.file` for the SAME
+ * handler carries the correctly-prefixed path (that field gets rewritten
+ * during the merge; `entry_points[].handler.file` does not). Rather than
+ * hardcode any app/package name, cross-check against the node graph already
+ * on `ctx` and prefer the node's path when it is a proper superset of the
+ * handler's recorded file — i.e. it disagrees only by a missing prefix, not
+ * by pointing somewhere unrelated. Falls back to `entry.handler.file`
+ * whenever no corroborating node is found or the two paths fully agree.
+ */
+function resolveHandlerFile(entry: CASEntryPoint, nodesById: Map<string, CASNode>): string | undefined {
+  const handlerFile = entry.handler?.file;
+  const nodeId = entry.handler?.node_id || entry.source_node;
+  const node = nodeId ? nodesById.get(nodeId) : undefined;
+  const nodeFile = node?.source?.file;
+
+  if (!nodeFile) return handlerFile;
+  if (!handlerFile) return nodeFile;
+  if (nodeFile === handlerFile) return handlerFile;
+  // Only trust the node's file as a correction when it is a path-segment
+  // superset of the handler's file (ends with "/<handlerFile>") — this is
+  // the specific "missing prefix" shape, not an unrelated disagreement.
+  if (nodeFile.endsWith(`/${handlerFile}`)) return nodeFile;
+  return handlerFile;
+}
+
 function extractPortFromEntryPoint(entry: CASEntryPoint): number | undefined {
   const p = entry.trigger?.path || '';
   const match = p.match(/:(\d{2,5})\b/);
@@ -201,6 +233,7 @@ function collectServerEntries(ctx: EvidenceCollectionContext): DeployableEvidenc
   const { displayName, projectPath } = ctx;
   const byRoot = new Map<string, DeployableEvidence>();
   const entryPoints = (ctx.cas.entry_points || []) as CASEntryPoint[];
+  const nodesById = new Map<string, CASNode>((ctx.nodes || []).map(n => [n.id, n]));
 
   const rootName = (rootPath: string): string =>
     rootPath === '' || rootPath === '.'
@@ -209,7 +242,7 @@ function collectServerEntries(ctx: EvidenceCollectionContext): DeployableEvidenc
 
   for (const entry of entryPoints) {
     if (entry.type !== 'http') continue;
-    const handlerFile = entry.handler?.file;
+    const handlerFile = resolveHandlerFile(entry, nodesById);
     if (!handlerFile) continue;
     const rootPath = serverEntryRoot(handlerFile);
 

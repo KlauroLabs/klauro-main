@@ -1,4 +1,4 @@
-import type { CASEntryPoint, DeployableEvidence } from '../../types/cas.types';
+import type { CASEntryPoint, CASNode, DeployableEvidence } from '../../types/cas.types';
 
 /**
  * Entry Point <-> Deployable attribution + description backfill.
@@ -96,16 +96,36 @@ function normalizePath(p: string): string {
  * Extract the best-effort source file path for an entry point.
  *
  * Prefers `handler.file` (already a clean repo-relative path emitted by the
- * analyzers). Falls back to parsing a real, slash-delimited path with a
- * recognizable file extension out of `source_node` or `id` — several
- * analyzers (rust, cli-frameworks) embed the untouched path there. If no
- * real path can be recovered (e.g. ids that mangle path separators into
- * underscores, with no way to reliably reverse that), returns undefined —
- * callers must not guess a path in that case.
+ * analyzers) — but `handler.file` is sometimes recorded relative to the
+ * sub-package/app scan root that produced it rather than the full
+ * monorepo-relative path (e.g. a per-package analysis pass merged into a
+ * wider workspace CAS: `src/routes/auth.ts` instead of
+ * `packages/analyzer-core/src/routes/auth.ts`). When `nodesById` is supplied
+ * and the entry's handler/source node carries a `source.file` that is a
+ * proper path-segment superset of `handler.file` (same evidence, missing
+ * prefix — not an unrelated path), that corrected path is preferred so it
+ * stays consistent with `deployable-evidence.ts`'s root_path correction (see
+ * `bin-targets.ts`'s `resolveHandlerFile`); this keeps root-prefix matching
+ * below working against the SAME path both evidence and attribution use.
+ * Falls back to parsing a real, slash-delimited path with a recognizable
+ * file extension out of `source_node` or `id` — several analyzers (rust,
+ * cli-frameworks) embed the untouched path there. If no real path can be
+ * recovered (e.g. ids that mangle path separators into underscores, with no
+ * way to reliably reverse that), returns undefined — callers must not guess
+ * a path in that case.
  */
-export function extractEntryPointFilePath(ep: CASEntryPoint): string | undefined {
+export function extractEntryPointFilePath(ep: CASEntryPoint, nodesById?: Map<string, CASNode>): string | undefined {
   if (ep.handler?.file) {
-    return normalizePath(ep.handler.file);
+    const handlerFile = ep.handler.file;
+    if (nodesById) {
+      const nodeId = ep.handler.node_id || ep.source_node;
+      const node = nodeId ? nodesById.get(nodeId) : undefined;
+      const nodeFile = node?.source?.file;
+      if (nodeFile && nodeFile !== handlerFile && nodeFile.endsWith(`/${handlerFile}`)) {
+        return normalizePath(nodeFile);
+      }
+    }
+    return normalizePath(handlerFile);
   }
 
   const candidates = [ep.source_node, ep.id];
@@ -162,18 +182,28 @@ function isPathPrefix(rootPath: string, filePath: string): boolean {
  * Entry points whose file can't be resolved, or that match no root, are
  * returned unchanged (deployable_id / deployable_name left unset) — this
  * function never guesses.
+ *
+ * `nodes` is optional and additive (existing callers are unaffected): when
+ * supplied, it lets `extractEntryPointFilePath` correct a `handler.file`
+ * that was recorded relative to a sub-package scan root instead of the full
+ * monorepo-relative path, keeping this matcher in sync with the same
+ * correction `deployable-evidence.ts` applies to `root_path` (see
+ * `bin-targets.ts`'s `resolveHandlerFile`). Without it, attribution still
+ * works exactly as before.
  */
 export function attachDeployable(
   entryPoints: CASEntryPoint[],
   deployableEvidence: DeployableEvidence[] | undefined,
+  nodes?: CASNode[],
 ): CASEntryPointWithDeployable[] {
   const roots = buildDeployableRoots(deployableEvidence);
   if (roots.length === 0) {
     return entryPoints.map(ep => ({ ...ep }));
   }
+  const nodesById = nodes ? new Map(nodes.map(n => [n.id, n])) : undefined;
 
   return entryPoints.map(ep => {
-    const filePath = extractEntryPointFilePath(ep);
+    const filePath = extractEntryPointFilePath(ep, nodesById);
     if (!filePath) {
       return { ...ep };
     }

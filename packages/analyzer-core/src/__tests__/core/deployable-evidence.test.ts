@@ -267,6 +267,78 @@ describe('collectDeployableEvidence', () => {
     expect(serverEntry!.root_path).toBe('src');
   });
 
+  test('Tier 2: server-entry root_path is corrected to the full monorepo-relative path when handler.file was recorded relative to a sub-package scan root', () => {
+    // Regression lock for the root_path truncation bug: a per-package
+    // analysis pass can emit `entry.handler.file` relative to that
+    // sub-package's own scan root (e.g. "src/routes/auth.ts") instead of the
+    // full monorepo-relative path ("apps/billing-service/src/routes/auth.ts"),
+    // while the corresponding CASNode.source.file for the SAME handler
+    // carries the correctly-prefixed path (real observed case: an
+    // "apps/mcp-server" analysis merged into a wider workspace CAS left
+    // `deployable_evidence[].root_path` as a bare "src" instead of
+    // "apps/mcp-server/src"). collectServerEntries must prefer the node's
+    // evidence-grounded path when it is a proper prefix-superset of the
+    // handler's recorded file, not the truncated one.
+    projectPath = tempProject();
+    const nodes: CASNode[] = [
+      {
+        id: 'node_1',
+        name: 'GET /health',
+        type: 'route',
+        source: { file: 'apps/billing-service/src/routes/health.ts', line: 10 },
+      },
+    ];
+    const entryPoints: CASEntryPoint[] = [
+      {
+        id: 'entry_1',
+        source_node: 'node_1',
+        type: 'http',
+        name: 'GET /health',
+        trigger: { method: 'GET', path: '/health' },
+        // Truncated relative to the sub-package's own scan root, not the repo root.
+        handler: { node_id: 'node_1', method_name: 'health', file: 'src/routes/health.ts', line: 10 },
+      },
+    ];
+
+    const result = collectDeployableEvidence({ projectPath, nodes, entryPoints, exitPoints: [] });
+    const serverEntry = result.find(item => item.kind === 'server-entry');
+    expect(serverEntry).toBeDefined();
+    // Corrected: apps/<app>/src, not a bare "src".
+    expect(serverEntry!.root_path).toBe('apps/billing-service/src');
+    expect(serverEntry!.name).toBe('src');
+  });
+
+  test('Tier 2: server-entry root_path is left as the handler.file dirname when no corroborating node path exists (no fabrication)', () => {
+    // Same shape as above, but the node lookup misses (no node, or the node's
+    // source.file doesn't agree with handler.file as a prefix superset) — the
+    // fix must never fabricate a correction, only apply one it can evidence.
+    projectPath = tempProject();
+    const nodes: CASNode[] = [
+      {
+        id: 'node_1',
+        name: 'GET /health',
+        type: 'route',
+        // Unrelated path — NOT a superset of handler.file — must not be used.
+        source: { file: 'apps/unrelated-service/other.ts', line: 1 },
+      },
+    ];
+    const entryPoints: CASEntryPoint[] = [
+      {
+        id: 'entry_1',
+        source_node: 'node_1',
+        type: 'http',
+        name: 'GET /health',
+        trigger: { method: 'GET', path: '/health' },
+        handler: { node_id: 'node_1', method_name: 'health', file: 'src/routes/health.ts', line: 10 },
+      },
+    ];
+
+    const result = collectDeployableEvidence({ projectPath, nodes, entryPoints, exitPoints: [] });
+    const serverEntry = result.find(item => item.kind === 'server-entry');
+    expect(serverEntry).toBeDefined();
+    expect(serverEntry!.root_path).toBe('src');
+  });
+
   test('Tier 2: a server with many HTTP routes yields ONE server-entry deployable, not one per route', () => {
     projectPath = tempProject();
     // Regression lock for the over-count bug: collectServerEntries used to

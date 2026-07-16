@@ -4139,7 +4139,7 @@ function registerTools(server: McpServer) {
       // call is the exact getFlowConcepts cost the old /conceptual path paid.
       let eps: any[] = result.entry_points || [];
       eps = ensureEntryPointDescription(eps);                                             // description coverage (was 28% missing)
-      eps = attachDeployable(eps, cas.deployable_evidence);                               // per-deployable attribution
+      eps = attachDeployable(eps, cas.deployable_evidence, cas.nodes);                     // per-deployable attribution
       eps = attachEntryPointSecurity(eps, cas.security_boundaries, cas.security_contexts); // per-entry security (boundary/context join)
       eps = attachInteractionReach(eps, cas.communication_seams as any);                  // external vs internal reach
       // TELEMETRY facet: join persisted runtime metrics by id/node/route. Also
