@@ -9403,17 +9403,40 @@ export class AnalyzerOrchestrator {
     // family evidence outnumbers it 3x (severe undercount — 3 caps against 9+
     // distinct families is a collapse, not a judgment call). The ===1 case
     // keeps its original >=2-family threshold; still ONE bounded extra call.
-    if (catalog.length >= 1 && catalog.length <= 3) {
+    // EFFECTIVE count, not raw count (rung-5 washup, measured live on the E1
+    // dataset): the model returned 9 CRUD-per-route items ("Create location
+    // event", "Update location event", "Delete recurring event"...) spanning
+    // only 3 distinct entity sets — reconcileCatalogedCapabilities' entity-set
+    // dedupe correctly collapses same-set duplicates AFTER this check, so the
+    // persisted catalog was 3 thin caps while the raw count (9) satisfied the
+    // minimum and the nudge never fired. Estimate the post-dedupe size here as
+    // the number of DISTINCT normalized entity sets among parsed items (items
+    // with no entities each count as their own set — nothing merges them).
+    const effectiveSize = (items: Array<Record<string, unknown>>): number => {
+      const sets = new Set(items.map((item, index) => {
+        const entities = Array.isArray(item.entities)
+          ? (item.entities as unknown[]).map(value => String(value || '').trim().toLowerCase()).filter(Boolean).sort()
+          : [];
+        return entities.length > 0 ? entities.join('|') : `__no_entities_${index}`;
+      }));
+      return Math.min(items.length, sets.size);
+    };
+    const effectiveCatalogSize = effectiveSize(catalog);
+    if (effectiveCatalogSize >= 1 && effectiveCatalogSize <= 3) {
       const distinctFamilies = Array.from(new Set(
         rankedCandidateAreas.map(candidate => String(candidate.name || '').trim()).filter(Boolean)
       )).slice(0, 10);
-      const familyThreshold = catalog.length === 1 ? 2 : catalog.length * 3;
+      const familyThreshold = effectiveCatalogSize === 1 ? 2 : effectiveCatalogSize * 3;
       if (distinctFamilies.length >= familyThreshold) {
         try {
-          const nudgeHint = `Previous answer collapsed this platform into only ${catalog.length} capabilit${catalog.length === 1 ? 'y' : 'ies'}. The deterministic evidence names ${distinctFamilies.length} DISTINCT candidate route-area families: ${distinctFamilies.map(family => `"${family}"`).join(', ')}. Return ONE grounded, purpose-phrased capability PER distinct family listed above — merge two families only when they are genuinely the same product ability, never collapse all of them into one item.`;
+          const nudgeHint = `Previous answer collapsed this platform into only ${effectiveCatalogSize} distinct capabilit${effectiveCatalogSize === 1 ? 'y' : 'ies'} (several items were per-route CRUD variants of the same ability and merge together). The deterministic evidence names ${distinctFamilies.length} DISTINCT candidate route-area families: ${distinctFamilies.map(family => `"${family}"`).join(', ')}. Return ONE grounded, purpose-phrased capability PER distinct family listed above — a purpose (e.g. "Manage shift scheduling"), never a per-route CRUD verb ("Create X", "Update X") — merge two families only when they are genuinely the same product ability, never collapse all of them into one item.`;
           const nudgeRaw = await requestCatalog(3, nudgeHint);
           const nudgeParsed = this.parseCapabilityCatalog(nudgeRaw);
-          if (nudgeParsed.length > catalog.length) {
+          // Compare EFFECTIVE sizes, not raw lengths: a CRUD-collapsed 9-item
+          // catalog and a 9-family nudge result have equal raw length, but the
+          // nudge result survives entity-set dedupe 3x better — that is the
+          // whole point of the retry.
+          if (effectiveSize(nudgeParsed) > effectiveCatalogSize) {
             catalog = nudgeParsed;
             raw = nudgeRaw;
           }

@@ -5269,7 +5269,7 @@ describe('thin-catalog nudge (defect #33 — catalog VARIANCE: v1.0.83 returned 
       expect(nudgeHint).toMatch(/Widget route area/);
       expect(nudgeHint).toMatch(/Gadget route area/);
       expect(nudgeHint).toMatch(/Gizmo route area/);
-      expect(nudgeHint).toMatch(/only 1 capability/i);
+      expect(nudgeHint).toMatch(/only 1 distinct capability/i);
       // The richer (3-item) nudge result replaces the thin 1-item result.
       expect(catalog.length).toBe(3);
       expect(catalog.map((c: any) => c.name).sort()).toEqual(['Manage gadgets', 'Manage gizmos', 'Manage widgets']);
@@ -5368,8 +5368,60 @@ describe('thin-catalog nudge (defect #33 — catalog VARIANCE: v1.0.83 returned 
       expect(captured.length).toBe(3); // two regular attempts + the severe-undercount nudge
       const nudgeArg = captured[2];
       const hint = String(nudgeArg?.additionalContext?.retry_hint || JSON.stringify(nudgeArg));
-      expect(hint).toContain('only 3 capabilities');
+      expect(hint).toContain('only 3 distinct capabilities');
       expect(catalog.length).toBe(9);
+    } finally {
+      (aiService as any).generateComponentDescription = original;
+    }
+  });
+
+  it('nudges a CRUD-per-route collapse: 9 raw items over 3 entity sets is EFFECTIVELY 3 (rung-5 washup: entity-set dedupe ran after the count check, so 9 sailed through and persisted as 3)', async () => {
+    const nouns = ['Widget', 'Gadget', 'Gizmo', 'Sprocket', 'Flange', 'Rotor', 'Stator', 'Bearing', 'Camshaft'];
+    const manyFamilies = nouns.map((noun, index) => ({
+      name: `${noun} route area`,
+      related_entities: [`entity_${noun.toLowerCase()}`],
+      operations: [{ entry_point_id: `ep_${index}`, entry_point_type: 'http', action: 'Manage' }],
+    }));
+    const crudTrio = (noun: string) => (['Create', 'Update', 'Delete'].map(verb => ({
+      name: `${verb} ${noun.toLowerCase()}`,
+      description: `Lets users ${verb.toLowerCase()} ${noun.toLowerCase()} records in the system for later review.`,
+      category: 'core', entities: [noun], journeys: [],
+    })));
+    const original = (aiService as any).generateComponentDescription;
+    const captured: any[] = [];
+    (aiService as any).generateComponentDescription = async (arg: any) => {
+      captured.push(arg);
+      // First attempt: NINE items but only THREE distinct entity sets (a CRUD
+      // trio per entity) — raw count (9) satisfies the minimum so the regular
+      // retry loop stops after ONE call; only the effective count (3) reveals
+      // the collapse. The nudge attempt returns one purpose cap per family —
+      // note its RAW length equals the first attempt's (9 vs 9): only the
+      // effective-size comparison accepts it.
+      if (captured.length === 1) {
+        return JSON.stringify({ capabilities: [...crudTrio('Widget'), ...crudTrio('Gadget'), ...crudTrio('Gizmo')] });
+      }
+      return JSON.stringify({
+        capabilities: nouns.map(noun => ({
+          name: `Manage ${noun.toLowerCase()}s`,
+          description: `Tracks ${noun} records from creation through retirement for operators.`,
+          category: 'core', entities: [noun], journeys: [],
+        })),
+      });
+    };
+    try {
+      const catalog = await orch.aiExtractCapabilityCatalog({
+        ...baseInput,
+        candidateCapabilities: manyFamilies,
+        dataEntities: nouns.map(noun => ({ id: `entity_${noun.toLowerCase()}`, name: noun })),
+      });
+      expect(captured.length).toBe(2); // one satisfying regular attempt + the effective-count nudge
+      const hint = String(captured[1]?.additionalContext?.retry_hint || '');
+      expect(hint).toContain('only 3 distinct capabilities');
+      expect(hint).toMatch(/per-route CRUD/);
+      // The nudge result REPLACED the CRUD catalog (equal raw length — only
+      // the effective-size acceptance makes this true).
+      expect(catalog.length).toBe(9);
+      expect(catalog.every((item: any) => String(item.name).startsWith('Manage '))).toBe(true);
     } finally {
       (aiService as any).generateComponentDescription = original;
     }
