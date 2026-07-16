@@ -191,16 +191,47 @@ async function getAnalysis(projectPath: string, options?: { track?: import('./tr
  * has real ingested telemetry but was persisted before its CAS existed still
  * shows up correlated instead of "unmatched".
  */
+/**
+ * Candidate telemetry storage keys for `path`: the literal caller-supplied
+ * path, PLUS (when different) the root path the CAS itself records it was
+ * analyzed from (`cas.system.root_path`). Telemetry is persisted per
+ * project-path bucket (see `getProjectStorageDir`/`projectSlug` in storage.ts,
+ * a hash of the literal path string), so an ingest source that used the
+ * ANALYZED root as its project id — the natural, most-common wiring for any
+ * self-instrumented or SDK-instrumented service, not specific to any one
+ * project — lands observations under a key the caller's own `path` argument
+ * may not literally match (e.g. a hosted-bound caller path vs the root the
+ * hosted analysis itself was produced from). Trying both is a strict,
+ * evidence-gated widening: a project with no such alternate root, or whose
+ * root already equals `path`, behaves exactly as before.
+ */
+function telemetryProjectPathCandidates(cas: CASOutput, path: string): string[] {
+  const candidates = [path];
+  const root = (cas as unknown as { system?: { root_path?: string } })?.system?.root_path;
+  if (root && typeof root === 'string' && root.trim() && root !== path) candidates.push(root);
+  return candidates;
+}
+
 async function runtimeMetricsForContract(cas: CASOutput, path: string): Promise<product.NodeRuntimeMetrics[]> {
   try {
-    const loadObservations = () => telemetryIngestion.loadTelemetryObservations(path);
-    let result = await loadObservations();
-    if (result.observations.some(observation => observation?.correlation?.status === 'unmatched')) {
-      const backfill = await telemetryIngestion.backfillIngestedTelemetry(cas, path).catch(() => null);
-      if (backfill && backfill.upgraded > 0) result = await loadObservations();
+    const candidateKeys = telemetryProjectPathCandidates(cas, path);
+    const loadObservations = async () => {
+      const sets = await Promise.all(candidateKeys.map(key => telemetryIngestion.loadTelemetryObservations(key)));
+      const byId = new Map<string, product.RuntimeObservation>();
+      for (const set of sets) {
+        for (const observation of set.observations) byId.set(observation.id, observation);
+      }
+      return [...byId.values()];
+    };
+    let observations = await loadObservations();
+    if (observations.some(observation => observation?.correlation?.status === 'unmatched')) {
+      const backfills = await Promise.all(
+        candidateKeys.map(key => telemetryIngestion.backfillIngestedTelemetry(cas, key).catch(() => null))
+      );
+      if (backfills.some(backfill => backfill && backfill.upgraded > 0)) observations = await loadObservations();
     }
-    if (!result.observations || result.observations.length === 0) return [];
-    return product.buildNodeRuntimeMetrics(cas, result.observations);
+    if (!observations || observations.length === 0) return [];
+    return product.buildNodeRuntimeMetrics(cas, observations);
   } catch {
     return [];
   }

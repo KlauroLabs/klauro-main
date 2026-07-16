@@ -238,6 +238,86 @@ function volumeFor(event: TelemetryEvent): number {
   return attributeVolume > 0 ? Math.round(attributeVolume) : 1;
 }
 
+/**
+ * Container/workspace mount roots the Klauro analyzer INFRASTRUCTURE itself
+ * uses to place source on disk — `WORKDIR /app` in the analyzer container
+ * image (Dockerfile.analyzer) and `<dataDir>/workspaces/<analysisId>/` for a
+ * per-project analysis workspace (remote-analyzer-service.ts `workspacePath`).
+ * These are structural facts of HOW Klauro's hosted analyzer mounts ANY
+ * project's source (not of any single analyzed project's own code), so
+ * stripping them is generic across every project that runs through this
+ * infrastructure, not specific to Klauro's own repo.
+ *
+ * A process that instruments ITSELF (e.g. a runtime process emitting
+ * telemetry from wherever its own source happens to be mounted) and the CAS
+ * for the same code produced by analyzing it under a DIFFERENT mount (its own
+ * upload workspace) both name the same repo-relative file/route; only the
+ * mount-root prefix differs. `pathsCompatible` (a pure literal-suffix check)
+ * cannot bridge two DIFFERENT absolute prefixes even when both resolve to the
+ * same file, so this strips known mount roots down to a repo-relative form
+ * before falling back to a bounded common-suffix comparison.
+ */
+const KNOWN_MOUNT_ROOT_PATTERNS: RegExp[] = [
+  /^\/app\//,
+  /^\/data\/workspaces\/[^/]+\//,
+];
+
+function stripKnownMountRoot(value: string): string {
+  const normalized = value.replace(/\\/g, '/');
+  for (const pattern of KNOWN_MOUNT_ROOT_PATTERNS) {
+    if (pattern.test(normalized)) return normalized.replace(pattern, '');
+  }
+  return normalized;
+}
+
+function pathSegments(value: string): string[] {
+  return value.replace(/\\/g, '/').split('/').filter(Boolean);
+}
+
+/**
+ * Bounded fallback for two ABSOLUTE paths that share no literal suffix
+ * relationship (so `pathsCompatible` returns false) because each is rooted
+ * under a DIFFERENT mount — e.g. `/data/workspaces/prj_x/apps/api/src/foo.ts`
+ * (an analysis workspace root) vs `/app/apps/api/src/foo.ts` (a container
+ * runtime mount). Requires the trailing directory+filename CHAIN to agree for
+ * at least 3 segments and at least half of the shorter path's segments, so a
+ * bare shared filename (e.g. two unrelated `index.ts`) is never enough.
+ */
+function sharesDeepPathTail(left: string, right: string): boolean {
+  const leftSegments = pathSegments(left);
+  const rightSegments = pathSegments(right);
+  const minDepth = Math.min(leftSegments.length, rightSegments.length);
+  if (minDepth === 0) return false;
+  let common = 0;
+  while (
+    common < minDepth &&
+    leftSegments[leftSegments.length - 1 - common] === rightSegments[rightSegments.length - 1 - common]
+  ) {
+    common += 1;
+  }
+  return common >= 3 && common >= Math.ceil(minDepth / 2);
+}
+
+/**
+ * Generic file-identity check for telemetry<->CAS correlation: same as
+ * `pathsCompatible` for the literal-suffix case (repo-relative vs
+ * absolute-with-extra-prefix), PLUS two mount-root-aware fallbacks for paths
+ * that are absolute under two DIFFERENT roots — strip known analyzer mount
+ * roots (see `KNOWN_MOUNT_ROOT_PATTERNS`) and compare, then fall back to a
+ * bounded shared-tail comparison. Strictly additive: never returns false
+ * where `pathsCompatible` would have returned true.
+ */
+function filesLikelySameSource(left: string, right: string): boolean {
+  if (pathsCompatible(left, right)) return true;
+  const strippedLeft = stripKnownMountRoot(left);
+  const strippedRight = stripKnownMountRoot(right);
+  if (strippedLeft !== left || strippedRight !== right) {
+    if (strippedLeft === strippedRight) return true;
+    if (pathsCompatible(strippedLeft, strippedRight)) return true;
+  }
+  return sharesDeepPathTail(left, right);
+}
+
 function resolveHintNode(cas: CASOutput, event: TelemetryEvent): CASNode | undefined {
   const frames = stackFramesOf(event);
   const fileHints = [
@@ -248,7 +328,7 @@ function resolveHintNode(cas: CASOutput, event: TelemetryEvent): CASNode | undef
   for (const file of fileHints) {
     const frame = frames.find(candidate => candidate.file === file);
     const candidates = (cas.nodes || []).filter(node =>
-      node.source?.file && pathsCompatible(node.source.file, file));
+      node.source?.file && filesLikelySameSource(node.source.file, file));
     if (candidates.length === 0) continue;
 
     const functionHint = frame?.function || event.function_hint;

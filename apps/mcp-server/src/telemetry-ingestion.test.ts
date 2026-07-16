@@ -258,6 +258,89 @@ test('stack frame and file hints resolve events onto CAS nodes', async () => {
   });
 });
 
+test('#32: an observation keyed by a container-absolute source path joins a node keyed by a workspace-absolute path (self-telemetry key-identity fix)', async () => {
+  await withTempStorage(async root => {
+    // Reproduce the real defect shape observed on the deployed Klauro-self
+    // project: the CAS node's file is recorded under the analysis WORKSPACE
+    // root (e.g. `/data/workspaces/<analysis-id>/...`, per
+    // remote-analyzer-service.ts `workspacePath`), while a self-instrumented
+    // runtime process emits telemetry stack/file hints from wherever ITS OWN
+    // process happens to be mounted (e.g. `/app/...`, per
+    // Dockerfile.analyzer `WORKDIR /app`). Neither is a literal suffix of the
+    // other, so the old `pathsCompatible`-only join left every such
+    // observation `unmatched` and facet-6 (telemetry) empty for the node.
+    const cas = buildCas(root);
+    cas.nodes = [{
+      id: 'node-create-invoice-workspace',
+      name: 'createInvoice',
+      type: 'method',
+      source: {
+        file: '/data/workspaces/prj_test123456789012/apps/mcp-server/src/billing.service.ts',
+        line: 20,
+        end_line: 40,
+      },
+    } as any];
+    cas.entry_points = [];
+    cas.runtime_static_links = [];
+
+    const result = await ingestTelemetryBatch(cas, root, [{
+      kind: 'error',
+      error: {
+        type: 'RuntimeError',
+        message: 'boom',
+        stack_top_frames: [{
+          file: '/app/apps/mcp-server/src/billing.service.ts',
+          line: 25,
+          function: 'createInvoice',
+        }],
+      },
+    }, {
+      kind: 'log',
+      file_hint: '/app/apps/mcp-server/src/billing.service.ts',
+      function_hint: 'createInvoice',
+    }], { persist: true });
+
+    assert.equal(result.correlation_summary.unmatched, 0, 'container-absolute hints now correlate onto the workspace-absolute node');
+    for (const observation of result.observations) {
+      assert.ok(
+        observation.correlation.matches.some(match => match.id === 'node-create-invoice-workspace'),
+        'each observation resolves to the CAS node despite the differing mount-root prefix'
+      );
+    }
+
+    // The telemetry facet (buildNodeRuntimeMetrics) now produces a populated,
+    // node-correlated entry instead of an unmatched-route bucket.
+    const stored = await loadTelemetryObservations(root, { source: 'ingested' });
+    const metrics = buildNodeRuntimeMetrics(cas, stored.observations);
+    const nodeMetric = metrics.find(m => m.static_id === 'node-create-invoice-workspace');
+    assert.ok(nodeMetric, 'facet-6 node metric exists for the workspace-keyed node');
+    assert.notEqual(nodeMetric!.type, 'unmatched');
+  });
+});
+
+test('pathsCompatible-only join stays a no-op regression guard: unrelated absolute paths do not spuriously match', async () => {
+  await withTempStorage(async root => {
+    const cas = buildCas(root);
+    cas.nodes = [{
+      id: 'node-unrelated',
+      name: 'unrelatedHandler',
+      type: 'method',
+      source: { file: '/data/workspaces/prj_a/packages/utils/src/index.ts', line: 1, end_line: 5 },
+    } as any];
+    cas.entry_points = [];
+    cas.runtime_static_links = [];
+
+    // Shares only the bare filename with the node above (no deep directory
+    // chain in common) — must NOT be treated as the same file.
+    const result = await ingestTelemetryBatch(cas, root, [{
+      kind: 'log',
+      file_hint: '/opt/other-service/index.ts',
+    }], { persist: false });
+
+    assert.equal(result.correlation_summary.unmatched, 1, 'a bare shared filename alone must not spuriously correlate');
+  });
+});
+
 test('ingested error volume drives operational priorities with ingested provenance and resolvable static target', async () => {
   await withTempStorage(async root => {
     const cas = buildCas(root);
