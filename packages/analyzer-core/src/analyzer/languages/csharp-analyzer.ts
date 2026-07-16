@@ -2674,7 +2674,13 @@ export class CSharpAnalyzer extends BaseAnalyzer {
       'Console', 'String', 'Int32', 'Double', 'Decimal', 'DateTime', 'TimeSpan',
       'Math', 'Array', 'List', 'Dictionary', 'HashSet', 'Queue', 'Stack',
       'File', 'Directory', 'Path', 'Stream', 'StreamReader', 'StreamWriter',
-      'Task', 'HttpClient', 'WebRequest', 'JsonSerializer'
+      'Task', 'HttpClient', 'WebRequest', 'JsonSerializer',
+      // Device / hardware I/O BCL types — a bare `SerialPort` receiver (e.g.
+      // `SerialPort.GetPortNames()`, `new SerialPort(...)`) is a real external
+      // call to System.IO.Ports, but bare has no dotted prefix so the generic
+      // rules below miss it. Recognizing it lets an exit point be emitted, which
+      // the communication-seam layer then classifies as a device_io seam.
+      'SerialPort'
     ];
 
     const frameworkTypes = [
@@ -2692,6 +2698,7 @@ export class CSharpAnalyzer extends BaseAnalyzer {
 
   private identifyCSharpLibrary(className: string): string {
     if (className.startsWith('System.Collections')) return 'System.Collections';
+    if (className.startsWith('System.IO.Ports')) return 'System.IO.Ports';
     if (className.startsWith('System.IO')) return 'System.IO';
     if (className.startsWith('System.Net')) return 'System.Net';
     if (className.startsWith('System.Threading')) return 'System.Threading';
@@ -2713,7 +2720,8 @@ export class CSharpAnalyzer extends BaseAnalyzer {
       'Dictionary': 'System.Collections.Generic',
       'DbContext': 'Entity Framework Core',
       'Controller': 'ASP.NET Core MVC',
-      'ILogger': 'Microsoft.Extensions.Logging'
+      'ILogger': 'Microsoft.Extensions.Logging',
+      'SerialPort': 'System.IO.Ports'
     };
 
     return standardTypes[className] || 'External Library';
