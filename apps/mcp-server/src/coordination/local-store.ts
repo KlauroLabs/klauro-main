@@ -66,6 +66,24 @@ import type { AgentPresence, WorkClaim, WorkClaimStatus } from './types';
 export interface ClaimLogEntry extends WorkClaim {
   /** ISO timestamp the local store received/appended this entry (store-assigned). */
   logged_at: string;
+  /**
+   * Event kind for this log line (W5, SPEC-COORDINATION-FABRIC-V3 §6.3/§8:
+   * write-hook auto-announce). Additive and OPTIONAL — every existing reader
+   * of `claims.jsonl` (`reduceClaimLog`/`deriveActiveClaims`/`derivePresence`
+   * in `./presence`, `compactIfNeeded` above, and every MCP/CLI surface in
+   * server.ts / remote-analyzer-service.ts / fab.ts) was written against
+   * `WorkClaim`'s existing fields only and never switches on `kind` — an
+   * absent or unrecognized `kind` is silently treated exactly as a plain
+   * claim entry, so old code paths are unaffected by this field's existence.
+   * Absent (undefined) = a normal claim/edit-lock/release entry (unchanged
+   * meaning). `'unclaimed-edit'` = a write-hook observation that a path
+   * changed under NO active claim (see `recordUnclaimedEdit` below) — these
+   * entries are ALWAYS logged with `status: 'released'` so they can never be
+   * picked up by `deriveActiveClaims`/`derivePresence`/`checkEditLock`'s
+   * active-claim view; they are a pure event-log record for visibility, not
+   * a claim on anything.
+   */
+  kind?: 'claim' | 'unclaimed-edit';
 }
 
 /** A same-machine edit-lock overlap finding for `checkEditLock`. */
@@ -301,7 +319,7 @@ async function primeCacheAfterWrite(logPath: string, entries: ClaimLogEntry[]): 
  */
 async function appendClaimLocked(
   workspaceId: string,
-  claim: Omit<WorkClaim, 'seq'> & { seq?: number },
+  claim: Omit<WorkClaim, 'seq'> & { seq?: number; kind?: ClaimLogEntry['kind'] },
   existing: ClaimLogEntry[]
 ): Promise<ClaimLogEntry> {
   const nextSeq = existing.reduce((max, e) => Math.max(max, e.seq), 0) + 1;
@@ -417,7 +435,7 @@ async function compactIfNeeded(
  */
 export async function withWorkspaceLock<T>(
   workspaceId: string,
-  fn: (ctx: { log: ClaimLogEntry[]; append: (claim: Omit<WorkClaim, 'seq'> & { seq?: number }) => Promise<ClaimLogEntry> }) => Promise<T>
+  fn: (ctx: { log: ClaimLogEntry[]; append: (claim: Omit<WorkClaim, 'seq'> & { seq?: number; kind?: ClaimLogEntry['kind'] }) => Promise<ClaimLogEntry> }) => Promise<T>
 ): Promise<T> {
   const dir = getStoreDir(workspaceId);
   ensureDirSync(dir);
@@ -436,7 +454,7 @@ export async function withWorkspaceLock<T>(
  */
 export async function appendClaim(
   workspaceId: string,
-  claim: Omit<WorkClaim, 'seq'> & { seq?: number }
+  claim: Omit<WorkClaim, 'seq'> & { seq?: number; kind?: ClaimLogEntry['kind'] }
 ): Promise<ClaimLogEntry> {
   const dir = getStoreDir(workspaceId);
   ensureDirSync(dir);
@@ -595,6 +613,96 @@ export async function checkEditLock(
     }
   }
   return conflicts;
+}
+
+/**
+ * Record that `path` changed on disk with NO active claim covering it (W5,
+ * SPEC-COORDINATION-FABRIC-V3 §6.3/§8: "when the changed path is covered by
+ * NO active claim, record an 'unclaimed-edit' event ... so drift is VISIBLE
+ * the moment it happens instead of at merge"). This is a pure event-log
+ * record, never a claim: `status` is always `'released'` and `kind` is always
+ * `'unclaimed-edit'`, so it can never be picked up by
+ * `deriveActiveClaims`/`derivePresence`/`checkEditLock` — those keep behaving
+ * exactly as before this function existed. `claim_id` includes a timestamp +
+ * random suffix (unlike every other claim_id scheme in this module) because
+ * each occurrence is its own history entry, not something later occurrences
+ * should LWW-supersede — a fleet needs to see EVERY unclaimed edit to `path`,
+ * not just the latest.
+ */
+export async function recordUnclaimedEdit(
+  workspaceId: string,
+  changedPath: string,
+  options: { detectedBy?: string } = {}
+): Promise<ClaimLogEntry> {
+  const now = new Date().toISOString();
+  return appendClaim(workspaceId, {
+    claim_id: `unclaimed-edit:${workspaceId}:${changedPath}:${now}:${Math.random().toString(36).slice(2, 8)}`,
+    workspace_id: workspaceId,
+    agent_id: options.detectedBy ?? 'unknown',
+    agent_kind: 'other',
+    scope: { repo: workspaceId, paths: [changedPath], symbols: [] },
+    intent: 'unclaimed-edit',
+    status: 'released',
+    created_at: now,
+    ttl_ms: 0,
+    heartbeat_at: now,
+    kind: 'unclaimed-edit',
+  });
+}
+
+/** Result of `releaseAgentWithReason`: the released entries, plus (only when
+ *  nothing was released) an explicit, never-silent reason why. */
+export interface ReleaseOutcome {
+  released: ClaimLogEntry[];
+  /**
+   * Present ONLY when `released.length === 0` (W5, SPEC-COORDINATION-FABRIC-V3
+   * §6.3/§8 "fixing the release/complete semantics defect", carried over from
+   * v2 §6 finding #4 / v3 §6.3 `released_count: 0`). `releaseAgent` itself is
+   * already race-safe and truthful about WHICH claims it released (see the
+   * module header SCALE note + the `releaseAgent race-safe` test) — the
+   * remaining defect is that a caller-facing `released_count: 0` is
+   * ambiguous: it could mean "already released" (legitimate no-op, e.g. a
+   * double-release), "never claimed anything here" (also legitimate), or
+   * "you targeted the wrong workspace_id and the real claim is active
+   * elsewhere" (the silent-failure mode `findAgentInOtherWorkspaces` exists
+   * to catch). This function distinguishes all three so `released_count: 0`
+   * is NEVER returned to a caller without an explanation attached.
+   */
+  reason?: string;
+}
+
+/**
+ * `releaseAgent`, plus an explicit `reason` whenever `released.length === 0`
+ * — never a silent zero. Callers that need to distinguish "nothing to
+ * release" from "you're looking in the wrong workspace" (server.ts's
+ * `fab_release_work` MCP tool, remote-analyzer-service.ts's
+ * `/v1/coordination/release`, `fab.ts release`) should call this instead of
+ * `releaseAgent` directly and surface `reason` in their response. Does not
+ * change `releaseAgent`'s own behavior or return shape — purely additive.
+ */
+export async function releaseAgentWithReason(
+  workspaceId: string,
+  agentId: string
+): Promise<ReleaseOutcome> {
+  const released = await releaseAgent(workspaceId, agentId);
+  if (released.length > 0) return { released };
+
+  const log = await readClaimLog(workspaceId);
+  const everClaimedHere = log.some((e) => e.workspace_id === workspaceId && e.agent_id === agentId);
+  if (!everClaimedHere) {
+    const elsewhere = await findAgentInOtherWorkspaces(agentId, workspaceId);
+    return {
+      released,
+      reason:
+        elsewhere.length > 0
+          ? `No claim was ever recorded for agent "${agentId}" in workspace "${workspaceId}", but it IS active under: ${elsewhere.join(', ')}. This usually means a workspace-id mismatch ($FAB_WS / .klaurorc fabric.workspace / KLAURO_COORD_DIR) — the real claim is still active and unreleased there.`
+          : `No claim was ever recorded for agent "${agentId}" in workspace "${workspaceId}" — nothing to release.`,
+    };
+  }
+  return {
+    released,
+    reason: `Agent "${agentId}" has no ACTIVE claims left in workspace "${workspaceId}" (already released, superseded, or TTL-expired) — this release is a no-op, not an error.`,
+  };
 }
 
 /**

@@ -65,7 +65,7 @@ import { attachInteractionReach } from '../../../packages/analyzer-core/src/anal
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import { loadStoredConnectorAuth, normalizeServerUrl } from './connector-auth';
 import { arbitrate, detectCollisions, getGrants, heartbeatGrant, releaseGrant, requestGrant, type AgentKind, type CasEdgeRef, type WasCapabilityRef, type WorkClaim } from './coordination';
-import { attributeChange, appendClaim, checkEditLock, getActiveClaims, getPresence, readClaimLog, releaseAgent, watch } from './coordination/local-store';
+import { attributeChange, appendClaim, checkEditLock, getActiveClaims, getPresence, readClaimLog, releaseAgentWithReason, watch } from './coordination/local-store';
 import { remoteActive, remoteCheck, remoteClaim, remoteRelease } from './coordination/remote-transport';
 import { resolveFabricSettings } from './coordination/fabric-config';
 import { deriveActiveClaims } from './coordination/presence';
@@ -6202,13 +6202,20 @@ function registerTools(server: McpServer) {
           degradeWarning = `Remote fabric release failed (${msg}) — released LOCAL claims only; any remote claim will linger until its TTL expires. Re-release once the service is reachable.`;
         }
       }
-      const released = await releaseAgent(ws, agent_id);
+      // releaseAgentWithReason instead of bare releaseAgent: a released_count
+      // of 0 was silently ambiguous between "double-release no-op" and
+      // "workspace-id mismatch — your claim is still ACTIVE elsewhere" (V3
+      // §6.3 finding: fab_release_work returned released_count:0 for a claim
+      // definitely made). The reason names which, incl. where the live claim is.
+      const outcome = await releaseAgentWithReason(ws, agent_id);
+      const released = outcome.released;
       return json({
         status: 'released',
         tier: 'local',
         workspace: ws,
         agent_id,
         released_count: released.length,
+        ...(outcome.reason ? { reason: outcome.reason } : {}),
         released: released.map((r) => ({ claim_id: r.claim_id, intent: r.intent, paths: r.scope.paths })),
         // degradeWarning = remote release failed; settings.localReason = remote
         // was never configured (so "released local only" is expected, not a

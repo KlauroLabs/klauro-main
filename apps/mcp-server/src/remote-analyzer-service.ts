@@ -12,7 +12,7 @@ import { isDirectCliInvocation } from './cli-invocation';
 import { AccountHttpError, AccountStore } from './account-store';
 import { AccountWorkspaceAnalysisScheduler } from './account-workspace-analysis';
 import { getGrants, heartbeatGrant, releaseGrant, requestGrant, type AgentKind } from './coordination';
-import { appendClaim, checkEditLock, getActiveClaims, getPresence, getStoreDir, readClaimLog, releaseAgent } from './coordination/local-store';
+import { appendClaim, checkEditLock, getActiveClaims, getPresence, getStoreDir, readClaimLog, releaseAgentWithReason } from './coordination/local-store';
 import { deriveActiveClaims } from './coordination/presence';
 import { appendSecurityAudit, assertSameTenant, defaultSecretDenyPatterns, getSecurityStoreDir, redactInFlightChanges, TenantMismatchError } from './coordination/security';
 import { detectConceptualConflicts, type AgentInFlightState, type ConceptualConflict, type ConflictCas, type SymbolChange } from './coordination/conceptual-conflict';
@@ -656,7 +656,11 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
         // in this workspace" — same releaseAgent semantics as the local fabric,
         // applied to the server-side per-workspace claim log.
         if (!body.claim_id) {
-          const released = await releaseAgent(body.workspace, body.agent_id);
+          // releaseAgentWithReason: a released_count of 0 must say WHY
+          // (double-release no-op vs never-claimed vs workspace-id mismatch
+          // with the live claim elsewhere) — V3 §6.3's released_count:0 finding.
+          const outcome = await releaseAgentWithReason(body.workspace, body.agent_id);
+          const released = outcome.released;
           broadcastCoordinationEvent(body.workspace, 'release', {
             agent_id: body.agent_id,
             released_count: released.length,
@@ -668,6 +672,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
             mode: 'advisory',
             agent_id: body.agent_id,
             released_count: released.length,
+            ...(outcome.reason ? { reason: outcome.reason } : {}),
             released: released.map((r) => ({ claim_id: r.claim_id, intent: r.intent, paths: r.scope.paths })),
             server_time: new Date().toISOString(),
           });

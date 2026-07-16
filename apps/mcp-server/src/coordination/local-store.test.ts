@@ -13,7 +13,9 @@ import {
   getActiveClaims,
   getPresence,
   readClaimLog,
+  recordUnclaimedEdit,
   releaseAgent,
+  releaseAgentWithReason,
   releaseEdit,
   watch,
 } from './local-store';
@@ -368,6 +370,130 @@ test('appendClaim recovers after a torn trailing line left by a mid-write crash'
 
   const active = await getActiveClaims('ws-torn');
   assert.deepEqual(active.map((c) => c.agent_id).sort(), ['agent-a', 'agent-c']);
+
+  await fsp.rm(dir, { recursive: true, force: true });
+});
+
+// ---------------------------------------------------------------------------
+// W5 (SPEC-COORDINATION-FABRIC-V3 §6.3/§8): release/complete semantics —
+// released_count must be truthful and NEVER silent when it is 0.
+// ---------------------------------------------------------------------------
+
+test('releaseAgentWithReason: claim then release through the SAME path fab_release_work uses reports released_count 1, no reason', async () => {
+  // Mirrors exactly what server.ts's `fab_claim_work` / `fab_release_work`
+  // tools do: appendClaim with claim_id `${ws}:${agent_id}`, then release.
+  const dir = await freshCoordDir();
+  const now = new Date().toISOString();
+  await appendClaim('ws-test', {
+    claim_id: 'ws-test:agent-x',
+    workspace_id: 'ws-test',
+    agent_id: 'agent-x',
+    agent_kind: 'claude',
+    scope: { repo: 'ws-test', paths: ['src/foo.ts'], symbols: [] },
+    intent: 'W5 repro',
+    status: 'active',
+    created_at: now,
+    ttl_ms: 60_000,
+    heartbeat_at: now,
+  });
+
+  const outcome = await releaseAgentWithReason('ws-test', 'agent-x');
+  assert.equal(outcome.released.length, 1, 'the claim that was definitely made is definitely released');
+  assert.equal(outcome.reason, undefined, 'a genuine release never carries a reason');
+
+  await fsp.rm(dir, { recursive: true, force: true });
+});
+
+test('releaseAgentWithReason: double-release reports 0 + an explicit no-op reason (never silent)', async () => {
+  const dir = await freshCoordDir();
+  await appendClaim('ws-test', makeClaim({ claim_id: 'ws-test:agent-a', agent_id: 'agent-a' }));
+
+  const first = await releaseAgentWithReason('ws-test', 'agent-a');
+  assert.equal(first.released.length, 1);
+  assert.equal(first.reason, undefined);
+
+  const second = await releaseAgentWithReason('ws-test', 'agent-a');
+  assert.equal(second.released.length, 0);
+  assert.match(second.reason ?? '', /no-op, not an error/, 'double-release explains itself as a legitimate no-op');
+
+  await fsp.rm(dir, { recursive: true, force: true });
+});
+
+test('releaseAgentWithReason: an agent that never claimed anything gets an explicit reason, not a bare 0', async () => {
+  const dir = await freshCoordDir();
+  await fsp.mkdir(path.join(dir, 'ws-test'), { recursive: true });
+
+  const outcome = await releaseAgentWithReason('ws-test', 'agent-never-existed');
+  assert.equal(outcome.released.length, 0);
+  assert.match(outcome.reason ?? '', /No claim was ever recorded/);
+
+  await fsp.rm(dir, { recursive: true, force: true });
+});
+
+test('releaseAgentWithReason: wrong-workspace release surfaces WHERE the real claim is active', async () => {
+  const dir = await freshCoordDir();
+  const now = new Date().toISOString();
+  await appendClaim('poc', {
+    claim_id: 'poc:agent-z',
+    workspace_id: 'poc',
+    agent_id: 'agent-z',
+    agent_kind: 'claude',
+    scope: { repo: 'poc', paths: ['src/foo.ts'], symbols: [] },
+    intent: 'work',
+    status: 'active',
+    created_at: now,
+    ttl_ms: 60_000,
+    heartbeat_at: now,
+  });
+
+  const outcome = await releaseAgentWithReason('deployable-detection-build', 'agent-z');
+  assert.equal(outcome.released.length, 0);
+  assert.match(outcome.reason ?? '', /workspace-id mismatch/);
+  assert.match(outcome.reason ?? '', /poc/);
+
+  // The real claim is untouched by the failed release attempt.
+  const stillActive = await getActiveClaims('poc');
+  assert.equal(stillActive.length, 1);
+
+  await fsp.rm(dir, { recursive: true, force: true });
+});
+
+// ---------------------------------------------------------------------------
+// recordUnclaimedEdit (W5): additive jsonl format, never enters active-claim views.
+// ---------------------------------------------------------------------------
+
+test('recordUnclaimedEdit logs an event that reduceClaimLog/deriveActiveClaims/derivePresence never surface as active', async () => {
+  const dir = await freshCoordDir();
+  const entry = await recordUnclaimedEdit('ws-test', 'src/surprise.ts', { detectedBy: 'write-hook' });
+  assert.equal(entry.kind, 'unclaimed-edit');
+  assert.equal(entry.status, 'released');
+
+  const active = await getActiveClaims('ws-test');
+  assert.equal(active.length, 0, 'an unclaimed-edit event is never an active claim');
+
+  const presence = await getPresence('ws-test');
+  assert.equal(presence.length, 0, 'an unclaimed-edit event never appears in the presence roster');
+
+  // But it IS visible in the raw log for anyone building an awareness/audit view.
+  const log = await readClaimLog('ws-test');
+  assert.equal(log.filter((e) => e.kind === 'unclaimed-edit').length, 1);
+
+  await fsp.rm(dir, { recursive: true, force: true });
+});
+
+test('recordUnclaimedEdit: existing readers tolerate the new field (jsonl format compatibility)', async () => {
+  // A "reader that doesn't know about `kind`" is simulated by re-parsing the
+  // raw log through JSON.parse and feeding it straight into reduceClaimLog —
+  // exactly what every pre-W5 consumer of claims.jsonl does. It must not
+  // throw, and must not misclassify the unclaimed-edit line as an active claim.
+  const dir = await freshCoordDir();
+  await appendClaim('ws-test', makeClaim({ claim_id: 'ws-test:agent-a', agent_id: 'agent-a' }));
+  await recordUnclaimedEdit('ws-test', 'src/mystery.ts');
+
+  const log = await readClaimLog('ws-test');
+  assert.equal(log.length, 2);
+  const active = await getActiveClaims('ws-test');
+  assert.deepEqual(active.map((c) => c.agent_id), ['agent-a']);
 
   await fsp.rm(dir, { recursive: true, force: true });
 });
