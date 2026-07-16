@@ -268,11 +268,20 @@ export interface CASLayerStatus {
   layer: 'L0' | 'L1' | 'L2' | 'L3' | 'L4' | 'L5';
   name: string;
   /**
-   * 'pending' = not landed yet; 'ready' = landed. 'error' is L5-only: the AI
-   * comprehension pass was dispatched and FAILED (model call or grounding gate
-   * threw). It exists so a stuck/failed L5 is VISIBLE — comprehension is
-   * AI-only (docs/cas/DETERMINISM-BOUNDARY.md) and must never sit 'pending'
-   * forever nor fall back to a deterministic substitute.
+   * 'pending' = not landed yet; 'ready' = landed; 'error' = this layer was
+   * dispatched and FAILED, carrying the reason in `error`.
+   *
+   * On L5 that means the AI comprehension pass failed (model call or grounding
+   * gate threw) — comprehension is AI-only (docs/cas/DETERMINISM-BOUNDARY.md)
+   * and must never sit 'pending' forever nor fall back to a deterministic
+   * substitute; the structure is still real, so the project reads 'ready' with
+   * a degraded ai_enrichment indicator.
+   *
+   * On a STRUCTURAL layer (L1..L4) it means the deterministic analysis itself
+   * crashed, so there is no usable structure and the project reads 'failed'.
+   * (Formerly 'error' was L5-only, which left a crashed background analysis
+   * sitting 'pending' — i.e. "populating" — forever with errors:0. Same rule,
+   * same reason: a failure must be VISIBLE and terminal, never an infinite wait.)
    */
   status: 'pending' | 'ready' | 'error';
   /** ISO timestamp this layer's status last changed, when known. */

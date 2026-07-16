@@ -918,9 +918,14 @@ async function runUpdateCommand(args: ParsedArgs): Promise<void> {
  * local-store wording.
  */
 export interface HostedAnalysisState {
-  status: 'ready' | 'populating' | 'no_analysis';
+  /** 'failed' = a structural layer errored: the analysis crashed server-side.
+   *  Distinct from 'populating' so a crashed run is visible, not an endless
+   *  "in progress" (prod 2026-07-16: a torn deploy killed every analysis and
+   *  status read 'populating' forever). */
+  status: 'ready' | 'populating' | 'failed' | 'no_analysis';
   project_id?: string;
   analysis_id?: string;
+  analysis_error?: string;
   summary?: { name?: string | null; analysis_timestamp?: string | null };
 }
 
@@ -948,6 +953,13 @@ export function buildAnalysisStatusLine(input: {
   const { hosted, local } = input;
   if (hosted?.status === 'populating') {
     return `Analysis: server analysis in progress (populating)${input.hostedProjectId ? ` · hosted project ${input.hostedProjectId}` : ''} — results appear shortly`;
+  }
+  // A crashed server-side analysis must SAY SO (and what to do), never masquerade
+  // as "in progress" — zero dead ends: every error a customer can hit says the
+  // next step.
+  if (hosted?.status === 'failed') {
+    const why = hosted.analysis_error ? ` — ${hosted.analysis_error}` : '';
+    return `Analysis: server analysis FAILED${input.hostedProjectId ? ` · hosted project ${input.hostedProjectId}` : ''}${why} · retry with \`klauro analyze .\`; if it persists run \`klauro support-bundle .\``;
   }
   if (hosted?.status === 'ready') {
     const system = hosted.summary?.name || local.system || 'analyzed';

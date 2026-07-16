@@ -23,7 +23,8 @@ import { buildNodeRuntimeMetrics } from './product';
 import { getAnalysis } from './analyzer';
 import { buildSummary, getProductMap, getFlowConcepts, getArchitecturalConflicts, getParadigmConformance, getPerspectives, getCicdPipelines, getCommunicationSeams, buildOrientCapsule, getSemanticCoverage, getDataEntities } from './query';
 import type { SemanticRole } from './semantic-roles';
-import { getAnalysisFileFingerprint } from './storage';
+import { getAnalysisFileFingerprint, loadAnalysis, saveAnalysis } from './storage';
+import { clearFreshnessSummaryCache } from './freshness';
 import { descriptionStorePath } from './description-enrichment';
 import { ResponseCache, responseCacheKey } from './response-cache';
 import { initSelfTelemetry, instrumentHttpHandler, mapSdkEvent } from './self-telemetry';
@@ -387,6 +388,9 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
             } catch (error) {
               const detail = error instanceof Error ? error.message : String(error);
               console.error(`[Klauro] async analyze failed for ${acceptedAnalysisId}: ${detail}`);
+              // Make the failure VISIBLE to pollers instead of leaving the
+              // ladder 'pending' forever (see markBackgroundAnalysisFailed).
+              await markBackgroundAnalysisFailed(acceptedWorkspace, detail);
               await appendAuditLog(dataDir, {
                 event: 'analyze_async_failed',
                 analysis_id: acceptedAnalysisId,
@@ -1784,20 +1788,40 @@ async function handleAccountApi(
       const ladderLayers = cas.layers_ready?.layers || [];
       const hasPendingLayer = ladderLayers.some(layer => layer.status === 'pending');
       const erroredLayers = ladderLayers.filter(layer => layer.status === 'error');
-      const status = cas.layers_ready && !cas.layers_ready.complete && hasPendingLayer
-        ? 'populating'
-        : 'ready';
-      const aiDegraded = cas.ai_enrichment === 'error' || (erroredLayers.length > 0 && !hasPendingLayer);
+      // A STRUCTURAL layer (L1..L4) in 'error' means the deterministic analysis
+      // itself crashed — there is no usable structure, so this is neither
+      // 'populating' (nothing is still coming) nor 'ready' (nothing landed).
+      // Report it as the terminal 'failed' it is, with the reason. Before this,
+      // a crashed background analysis left L1..L5 'pending' and read
+      // 'populating' FOREVER with errors:0 (prod, 2026-07-16: a torn deploy
+      // killed every analysis and no surface said so). L5 stays separate: its
+      // failure degrades comprehension only, the structure is still real.
+      const structuralErrors = erroredLayers.filter(layer => layer.layer !== 'L5');
+      const status = structuralErrors.length > 0
+        ? 'failed'
+        : cas.layers_ready && !cas.layers_ready.complete && hasPendingLayer
+          ? 'populating'
+          : 'ready';
+      const aiDegraded = cas.ai_enrichment === 'error'
+        || (erroredLayers.some(layer => layer.layer === 'L5') && !hasPendingLayer);
       return {
         statusCode: 200,
         body: {
           status,
+          ...(structuralErrors.length > 0
+            ? {
+                analysis_error:
+                  structuralErrors.find(layer => layer.error)?.error ||
+                  'The analysis failed before structure could be produced.',
+                failed_layers: structuralErrors.map(layer => layer.layer),
+              }
+            : {}),
           ...(aiDegraded
             ? {
                 ai_enrichment: 'error',
                 ai_enrichment_error:
                   cas.ai_enrichment_error ||
-                  erroredLayers.find(layer => layer.error)?.error ||
+                  erroredLayers.find(layer => layer.layer === 'L5' && layer.error)?.error ||
                   'AI comprehension pass failed; comprehension is AI-only (no deterministic fallback)',
               }
             : {}),
@@ -2322,6 +2346,9 @@ async function handleAccountApi(
       } catch (error) {
         const detail = error instanceof Error ? error.message : String(error);
         console.error(`[Klauro] async reanalyze failed for ${analysisId}: ${detail}`);
+        // Make the failure VISIBLE to pollers instead of leaving the ladder
+        // 'pending' forever (see markBackgroundAnalysisFailed).
+        await markBackgroundAnalysisFailed(workspace, detail);
         if (dataDirForBackground) {
           await appendAuditLog(dataDirForBackground, {
             event: 'reanalyze_async_failed',
@@ -2918,6 +2945,46 @@ function resolveStorageAnalysisId(rawId: string, accountSalt: string | undefined
  * repo) that basename is the STAGING directory, not the real project. Only
  * falls back to `project_name` when no `project_path` was supplied at all.
  */
+/**
+ * Mark a background analysis as FAILED, visibly and terminally.
+ *
+ * The async analyze/reanalyze paths return 202 immediately and finish the real
+ * work in the background. Their catch blocks used to only console.error +
+ * audit-log, which left the persisted L0 CAS with L1..L5 still 'pending' — and
+ * the status endpoint reports 'populating' while ANY layer is pending. So a
+ * crashed analysis sat "populating" FOREVER with errors:0: an infinite wait
+ * rather than a failure. Measured on 2026-07-16, when a torn deploy made every
+ * analysis die with a ReferenceError and no surface anywhere said so.
+ *
+ * This mirrors the L5 precedent (a failed AI pass marks ai_enrichment='error'
+ * so it is a VISIBLE terminal state, never a silent stay-pending) and applies
+ * the same rule to the structural layers: flip every still-pending layer to
+ * 'error' carrying the reason, so the ladder stops claiming work is coming and
+ * callers can see what broke. Best-effort: never throws (it runs inside a
+ * catch — it must not mask the original failure).
+ */
+async function markBackgroundAnalysisFailed(workspacePath: string, detail: string): Promise<void> {
+  try {
+    const cas = await loadAnalysis(workspacePath, { preferCache: false }).catch(() => null);
+    if (!cas?.layers_ready?.layers?.length) return;
+    const failedAt = new Date().toISOString();
+    let changed = false;
+    for (const layer of cas.layers_ready.layers) {
+      if (layer.status !== 'pending') continue;
+      layer.status = 'error';
+      layer.error = detail.slice(0, 500);
+      layer.completed_at = failedAt;
+      changed = true;
+    }
+    if (!changed) return;
+    cas.layers_ready.complete = false;
+    await saveAnalysis(workspacePath, cas);
+    clearFreshnessSummaryCache();
+  } catch {
+    /* best-effort: a failure to record the failure must never mask it */
+  }
+}
+
 function resolveDisplayName(projectName?: string, projectPath?: string): string | undefined {
   // Pass through the best explicit project name available. The analyzer's
   // resolveSystemDisplayName is CONTENT-FIRST — it derives the name from the

@@ -147,3 +147,83 @@ test('bound repo with server-only analysis: MCP resolution downloads via /cas an
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+/**
+ * A background analysis that CRASHES must be a VISIBLE terminal state, not an
+ * infinite "populating".
+ *
+ * Real incident (2026-07-16): a torn deploy made every hosted analyze/reanalyze
+ * die with a ReferenceError. The async catch only console.error'd, so the
+ * persisted L0 CAS kept L1..L5 'pending' — and the state endpoint reports
+ * 'populating' while ANY layer is pending. Result: status sat "populating"
+ * FOREVER with errors:0 while 100% of analyses were broken. This is the twin of
+ * the L5 precedent (l5-enrichment-regression.test.ts): a failure must surface.
+ */
+test('a background analysis that crashed reports status=failed with the reason (never populating forever)', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-failed-status-'));
+  const remoteData = path.join(root, 'remote-data');
+  const previousRemoteData = process.env.KLAURO_REMOTE_ANALYZER_DATA;
+  const previousStorage = process.env.KLAURO_STORAGE_PATH;
+  process.env.KLAURO_REMOTE_ANALYZER_DATA = remoteData;
+  process.env.KLAURO_STORAGE_PATH = path.join(root, 'shared-store');
+
+  const server = createRemoteAnalyzerHttpServer({ dataDir: remoteData });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const port = (server.address() as { port: number }).port;
+  const serverUrl = `http://127.0.0.1:${port}`;
+
+  try {
+    const registerRes = await request(port, 'POST', '/api/auth/register', {
+      email: 'failed@example.com', password: 'password-1234', workspace_name: 'Failed WS',
+    });
+    const token = JSON.parse(registerRes.body).token as string;
+    const workspaceId = JSON.parse((await request(port, 'GET', '/api/workspaces', undefined, token)).body).workspaces[0].id as string;
+    const projectRes = await request(port, 'POST', `/api/workspaces/${workspaceId}/projects`, {
+      name: 'crashed-repo', repo_url: 'https://github.com/example/crashed-repo',
+    }, token);
+    const project = JSON.parse(projectRes.body).project as { id: string };
+
+    const repo = path.join(root, 'crashed-repo');
+    fs.mkdirSync(repo, { recursive: true });
+    git(repo, ['init', '-b', 'main']);
+    git(repo, ['config', 'user.email', 'test@example.com']);
+    git(repo, ['config', 'user.name', 'Test User']);
+    fs.writeFileSync(path.join(repo, 'app.py'), 'def handler():\n    return 1\n');
+    fs.writeFileSync(path.join(repo, '.klaurorc'), JSON.stringify({
+      version: 1, project: { id: project.id, name: 'crashed-repo' }, analyzer: { serverUrl },
+    }, null, 2));
+    git(repo, ['add', '.']);
+    git(repo, ['commit', '-m', 'initial commit']);
+    const pushed = await analyzeCodebaseRemotely({ projectPath: repo, serverUrl, token, wait: true });
+    assert.equal(pushed.status, 'success');
+
+    // Reproduce what markBackgroundAnalysisFailed persists when the background
+    // analysis throws: the still-pending structural layers flip to 'error'.
+    const serverWorkspace = path.join(remoteData, 'workspaces', project.id);
+    const stored = await loadAnalysis(serverWorkspace);
+    assert.ok(stored, 'hosted CAS must exist after push');
+    stored!.layers_ready = {
+      complete: false,
+      generated_at: new Date().toISOString(),
+      layers: [
+        { layer: 'L0', name: 'Index / inventory', status: 'ready', fields: ['l0_index'] },
+        { layer: 'L1', name: 'Nodes, entry points, routes', status: 'error', error: 'ReferenceError: someSymbol is not defined', fields: ['nodes'] },
+        { layer: 'L5', name: 'AI enrichment', status: 'error', error: 'boom', fields: ['enhanced_system_purpose'] },
+      ],
+    } as never;
+    await saveAnalysis(serverWorkspace, stored!);
+
+    const stateRes = await request(port, 'GET', `/api/projects/${encodeURIComponent(project.id)}/analysis`, undefined, token);
+    const state = JSON.parse(stateRes.body) as { status?: string; analysis_error?: string; failed_layers?: string[] };
+    assert.equal(state.status, 'failed', 'a crashed structural layer must report failed, NOT populating/ready');
+    assert.match(String(state.analysis_error), /ReferenceError/, 'the failure reason must be surfaced to the caller');
+    assert.deepEqual(state.failed_layers, ['L1'], 'the failed structural layer must be named (L5 is comprehension-only)');
+  } finally {
+    await new Promise<void>(resolve => server.close(() => resolve()));
+    if (previousRemoteData === undefined) delete process.env.KLAURO_REMOTE_ANALYZER_DATA;
+    else process.env.KLAURO_REMOTE_ANALYZER_DATA = previousRemoteData;
+    if (previousStorage === undefined) delete process.env.KLAURO_STORAGE_PATH;
+    else process.env.KLAURO_STORAGE_PATH = previousStorage;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

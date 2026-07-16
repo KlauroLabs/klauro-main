@@ -26,6 +26,7 @@ KLAURO_URL="${KLAURO_URL:-https://mcp.klauro.com}"
 WITH_RELEASE=""
 SKIP_APP_BUILD=0
 DO_VERIFY=1
+ALLOW_DIRTY=0
 
 for arg in "$@"; do
   case "$arg" in
@@ -33,11 +34,45 @@ for arg in "$@"; do
     --with-release=*)      WITH_RELEASE="${arg#*=}" ;;
     --skip-app-build)      SKIP_APP_BUILD=1 ;;
     --no-verify)           DO_VERIFY=0 ;;
+    --allow-dirty)         ALLOW_DIRTY=1 ;;
     -h|--help)
       sed -n '2,19p' "$0"; exit 0 ;;
     *) echo "unknown flag: $arg (see --help)"; exit 2 ;;
   esac
 done
+
+# --- guard: never ship a DIRTY working tree --------------------------------
+# This deploy rsyncs the WORKING TREE (the api container runs raw TS via tsx),
+# so whatever is on disk right now IS production. Uncommitted work is therefore
+# shipped verbatim — including a file another process is still HALF-WAY THROUGH
+# WRITING.
+#
+# REAL INCIDENT (2026-07-16): a concurrent session was mid-edit in
+# orchestrator.ts (adding deriveEntryPointContractAndCapability + its call
+# sites). A deploy rsynced that half-written file, so production got the USE
+# (`entry_points: entryPointsWithContractAndCapability`) with NO definition and
+# no method => every hosted analyze/reanalyze died with
+# "ReferenceError: entryPointsWithContractAndCapability is not defined".
+# health/version checks passed the whole time, so the deploy reported success
+# while 100% of analyses were broken. Both the local tree and HEAD were fine —
+# only the deployed copy was torn.
+#
+# A committed tree is an atomic, reviewable snapshot; the working tree is not.
+# Refuse by default. `--allow-dirty` is the deliberate escape hatch (local
+# experiments against a throwaway box), never the norm.
+if [ "$ALLOW_DIRTY" != "1" ]; then
+  DIRTY="$(git -C "$APP_DIR" status --porcelain 2>/dev/null || true)"
+  if [ -n "$DIRTY" ]; then
+    echo "ERROR: refusing to deploy a DIRTY working tree — this deploy ships the tree verbatim," >&2
+    echo "       so uncommitted (or half-written) files would go straight to production." >&2
+    echo "       A concurrent editor mid-write once shipped a torn file and broke ALL analyses." >&2
+    echo "" >&2
+    echo "$DIRTY" | sed 's/^/         /' >&2
+    echo "" >&2
+    echo "       Commit (or stash) the above, then re-run. To override: --allow-dirty" >&2
+    exit 1
+  fi
+fi
 
 # --- creds -----------------------------------------------------------------
 if [ -f "$APP_DIR/.env" ]; then set -a; . "$APP_DIR/.env"; set +a; fi
@@ -127,4 +162,27 @@ if [ -n "$WITH_RELEASE" ] && [ "$DIST_VER" != "$LOCAL_VER" ]; then
   echo "    !! Released $LOCAL_VER but hosted /dist reports $DIST_VER — upload/mount mismatch." >&2
   exit 1
 fi
+
+# --- smoke: actually RUN one analysis in the container (fail loud) ----------
+# Everything above is a LIVENESS probe. On 2026-07-16 all of it passed green
+# while 100% of hosted analyses were dying on a ReferenceError from a torn
+# orchestrator.ts. Liveness != the product working. This runs a real (tiny,
+# AI-off) analysis inside the api container and fails the deploy if the
+# analyzer is broken — the check that would have caught that outage at deploy
+# time instead of hours later.
+echo "==> Smoke: running one real analysis inside the api container"
+rsync -az -e "$SSH" "$APP_DIR/infrastructure/vps/analysis-smoke.mjs" "$DEST:/opt/klauro/analysis-smoke.mjs"
+if ! $SSH "$DEST" '
+  set -e
+  docker cp /opt/klauro/analysis-smoke.mjs klauro-api-1:/tmp/analysis-smoke.mjs >/dev/null
+  docker exec -e KLAURO_AI_INTERPRETATION=false -w /app/apps/mcp-server klauro-api-1 \
+    npx tsx /tmp/analysis-smoke.mjs
+'; then
+  echo "    !! ANALYSIS SMOKE FAILED — the deployed analyzer cannot complete an analysis." >&2
+  echo "    !! /health is green but the product is BROKEN. Do not leave this deployed." >&2
+  echo "    !! Most likely a torn/partial sync (deploy ships the working tree) or a real" >&2
+  echo "    !! runtime bug in the analysis path. Check 'docker logs klauro-api-1'." >&2
+  exit 1
+fi
+
 echo "==> Deploy verified. $KLAURO_URL is live (dist $DIST_VER)."

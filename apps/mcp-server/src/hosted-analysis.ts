@@ -51,10 +51,16 @@ export interface HostedAnalysisStateSummary {
 
 /** Payload of GET /api/projects/{id}/analysis (remote-analyzer-service.ts). */
 export interface HostedAnalysisState {
-  status: 'ready' | 'populating' | 'no_analysis';
+  /** 'failed' = a structural layer (L1..L4) errored: the analysis crashed and
+   *  no structure exists. Distinct from 'populating' (still coming) so a
+   *  crashed run is a visible terminal state, never an infinite wait. */
+  status: 'ready' | 'populating' | 'failed' | 'no_analysis';
   project_id?: string;
   analysis_id?: string;
   summary?: HostedAnalysisStateSummary;
+  /** Set when status === 'failed': why the analysis could not be produced. */
+  analysis_error?: string;
+  failed_layers?: string[];
   error?: string;
 }
 
