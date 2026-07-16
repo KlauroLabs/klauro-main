@@ -14639,7 +14639,8 @@ export class AnalyzerOrchestrator {
         n.type === 'model' ||
         n.subcategories?.includes('entity') ||
         (n.type === 'class' && n.source?.file?.includes('/entities/')) ||
-        (this.isDtoLikeDataShapeNode(n) && n.source?.file?.includes('/entities/'))
+        (this.isDtoLikeDataShapeNode(n) && n.source?.file?.includes('/entities/')) ||
+        this.isPocoEntityClassNode(n)
       )
     );
 
@@ -15286,6 +15287,40 @@ export class AnalyzerOrchestrator {
 	        (right.fields?.length || 0) - (left.fields?.length || 0))
 	      .slice(0, 60);
 	  }
+
+  /**
+   * A plain-old class that is a DATA ENTITY, not a behavior class — the hand-rolled
+   * DAL / domain-model pattern (no ORM annotation, no DbSet). Two case-INSENSITIVE
+   * evidence gates, both required:
+   *   (1) LOCATION: the class lives in an entity-ish namespace or folder
+   *       (*.Entities / *.Models / *.Domain). The old gate matched a
+   *       case-SENSITIVE '/entities/' path literal, so C#'s conventional
+   *       capitalized `Entities` folder (and the namespace, which it never even
+   *       read) were both missed — the real defect that left Hoggan's 18 POCO
+   *       entities (namespace `hoggan.DAL.Entities`) out of the ERD entirely.
+   *   (2) DATA-SHAPED: properties dominate methods. A POCO carries data via
+   *       public auto-properties with few/no methods; this guards against a
+   *       Service / ViewModel / Window that happens to sit near an entity
+   *       namespace (those are behavior classes — many methods / commands).
+   * Generic across .NET and any OO language whose analyzer emits class nodes with
+   * namespace + property/method counts on metadata.attributes. Evidence-gated:
+   * never promotes a class lacking BOTH signals, so it only widens real coverage.
+   */
+  private isPocoEntityClassNode(node: CASNode): boolean {
+    if (node.type !== 'class') return false;
+    if (node.subcategories?.includes('abstract')) return false;
+    const attrs = (node.metadata?.attributes || {}) as Record<string, unknown>;
+    const namespace = String(attrs.namespace || '');
+    const file = String(node.source?.file || '').replace(/\\/g, '/');
+    const entityNamespace = /(^|\.)(entities|models|domain)(\.|$)/i.test(namespace);
+    const entityFolder = /(^|\/)(entities|models|domain)(\/|$)/i.test(file);
+    if (!entityNamespace && !entityFolder) return false;
+    const propertyCount = Number(attrs.propertyCount || 0);
+    const methodCount = Number(attrs.methodCount || 0);
+    // At least one data property, and properties at least match methods (a POCO;
+    // a Service/ViewModel is method-dominant and fails this).
+    return propertyCount >= 1 && propertyCount >= methodCount;
+  }
 
   private isDtoLikeDataShapeNode(node: CASNode, propertyIndex?: EntityPropertyIndex): boolean {
     if (node.type === 'dto') return true;

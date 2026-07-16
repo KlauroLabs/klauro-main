@@ -3710,6 +3710,42 @@ describe('entity-extraction gaps from real-repo onboarding (mtg/openclaw/hercule
     expect((entities[0].fields || []).map((field: any) => field.name)).toEqual(['id', 'name', 'ownerId']);
   });
 
+  it('surfaces a hand-rolled POCO domain entity (C# DAL, capitalized Entities namespace, property-dominant) — real Hoggan ERD gap', () => {
+    // REGRESSION (real Hoggan C# CAS, v1.0.85): /entities returned 0 despite 18
+    // POCO classes in `hoggan.DAL.Entities` (Patient, Protocols, ...). The gate
+    // matched a case-SENSITIVE '/entities/' path literal and never read the
+    // namespace, so C#'s conventional capitalized `Entities` folder was missed.
+    const nodes: CASNode[] = [
+      node({
+        id: 'class_hoggan_dal_entities_protocols', name: 'Protocols', type: 'class',
+        source: { file: 'hoggan.DAL/Entities/Protocols.cs', line: 1 },
+        metadata: { attributes: { namespace: 'hoggan.DAL.Entities', propertyCount: 2, methodCount: 0 } },
+      }),
+      node({ id: 'prop_id', name: 'Id', type: 'property', parent: 'class_hoggan_dal_entities_protocols', source: { file: 'hoggan.DAL/Entities/Protocols.cs', line: 2 } }),
+      node({ id: 'prop_name', name: 'Name', type: 'property', parent: 'class_hoggan_dal_entities_protocols', source: { file: 'hoggan.DAL/Entities/Protocols.cs', line: 3 } }),
+      // GUARD 1 (wrong location): a Service in a non-entity namespace must NOT be an entity.
+      node({
+        id: 'class_hoggan_bll_patientservice', name: 'PatientService', type: 'class',
+        source: { file: 'hoggan.BLL/Services/PatientService.cs', line: 1 },
+        metadata: { attributes: { namespace: 'hoggan.BLL.Services', propertyCount: 0, methodCount: 8 } },
+      }),
+      // GUARD 2 (right location, wrong shape): a method-dominant helper IN the
+      // Entities namespace must NOT be an entity (behavior, not data).
+      node({
+        id: 'class_hoggan_dal_entities_protocolbuilder', name: 'ProtocolBuilder', type: 'class',
+        source: { file: 'hoggan.DAL/Entities/ProtocolBuilder.cs', line: 1 },
+        metadata: { attributes: { namespace: 'hoggan.DAL.Entities', propertyCount: 1, methodCount: 9 } },
+      }),
+    ];
+    const entities = orch.buildDataEntities(nodes, []);
+    const names = entities.map((e: any) => e.name);
+    expect(names).toContain('Protocols');
+    expect(names).not.toContain('PatientService');
+    expect(names).not.toContain('ProtocolBuilder');
+    const protocols = entities.find((e: any) => e.name === 'Protocols');
+    expect((protocols.fields || []).map((f: any) => f.name)).toEqual(expect.arrayContaining(['Id', 'Name']));
+  });
+
   describe('operation-shaped and format-token shapes stay out of the entity set (openclaw gap)', () => {
     it('excludes a params shape whose core noun is a callable in the graph', async () => {
       const nodes: CASNode[] = [
