@@ -45,12 +45,23 @@ services:
       options:
         max-size: "50m"
         max-file: "5"
+    # Defect #24: gives compose (and deploy.sh) a real signal for "the new api
+    # container is actually serving requests", not just "the process started".
+    # Used below so caddy only (re)starts against an api that is up, and by
+    # deploy.sh to gate the post-recreate `docker compose restart caddy`.
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:8787/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
 
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped
     depends_on:
-      - api
+      api:
+        condition: service_healthy
     ports:
       - "80:80"
       - "443:443"

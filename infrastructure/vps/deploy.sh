@@ -129,6 +129,32 @@ rsync -az -e "$SSH" infrastructure/vps/docker-compose.yml "$DEST:/opt/klauro/doc
 echo "==> Rebuilding + restarting containers on $VPS_HOST"
 $SSH "$DEST" 'cd /opt/klauro && docker compose up -d --build --remove-orphans'
 
+# --- guard: force Caddy to re-resolve the (possibly recreated) api container -
+# Defect #24 (observed twice on prod): `docker compose up -d --build` recreates
+# the api container with a NEW IP on Docker's bridge network, but caddy is
+# NOT restarted by compose (its own image/config didn't change), so it can
+# keep talking to the OLD, now-unowned IP -> requests hang -> Cloudflare 524s
+# for up to ~30 minutes even though the new api is perfectly healthy inside
+# the network. The Caddyfile's `dynamic a` upstream (see infrastructure/vps/
+# Caddyfile) should self-heal this within its refresh interval, but this
+# restart is cheap, deterministic insurance layered on top: wait for api's
+# own healthcheck to go healthy, THEN bounce caddy so it starts every
+# connection fresh against the current IP. This is the automated form of the
+# documented manual fix (`docker restart klauro-caddy-1`).
+echo "==> Waiting for api container health, then restarting caddy (defect #24 guard)"
+API_HEALTHY=0
+for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+  STATUS="$($SSH "$DEST" 'docker inspect -f "{{.State.Health.Status}}" klauro-api-1 2>/dev/null' || echo "")"
+  if [ "$STATUS" = "healthy" ]; then API_HEALTHY=1; break; fi
+  echo "    (api health: ${STATUS:-unknown}, retry $i/12)"; sleep 5
+done
+if [ "$API_HEALTHY" = "1" ]; then
+  $SSH "$DEST" 'cd /opt/klauro && docker compose restart caddy'
+else
+  echo "    !! api never reported healthy — restarting caddy anyway is pointless, skipping." >&2
+  echo "    !! Check 'docker compose logs api' on the VPS; the smoke/verify steps below will fail loud." >&2
+fi
+
 # --- verify the LIVE surfaces (fail loud) ----------------------------------
 if [ "$DO_VERIFY" = "0" ]; then
   echo "==> --no-verify: skipping post-deploy checks. Done."

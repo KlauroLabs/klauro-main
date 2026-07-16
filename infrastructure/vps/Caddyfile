@@ -24,5 +24,29 @@ app.klauro.com {
 
 mcp.klauro.com {
 	encode gzip zstd
-	reverse_proxy api:8787
+
+	# Defect #24: a plain `reverse_proxy api:8787` resolves the `api` hostname to
+	# a container IP ONCE (at config load / first dial) and then reuses that
+	# address+pooled connections. Every deploy recreates the `api` container
+	# (`docker compose up -d --build`), which gets a NEW IP from Docker's
+	# embedded DNS (127.0.0.11) — but Caddy's static upstream had cached the
+	# OLD one. The old IP is unowned on the bridge network, so requests to it
+	# hang (no RST) rather than fail fast -> Cloudflare eventually reports 524,
+	# even though the new api container is perfectly healthy. `docker restart
+	# klauro-caddy-1` "fixes" it only because a restart forces a fresh
+	# resolution.
+	#
+	# Fix: `dynamic a` makes this a DYNAMIC upstream — Caddy re-resolves the
+	# `api` name against Docker's embedded resolver on the refresh interval
+	# below instead of caching a single address for the process lifetime, so a
+	# container recreate is picked up within seconds instead of requiring a
+	# manual/blunt caddy restart.
+	reverse_proxy {
+		dynamic a {
+			name api
+			port 8787
+			resolvers 127.0.0.11
+			refresh 5s
+		}
+	}
 }
