@@ -9671,6 +9671,13 @@ export class AnalyzerOrchestrator {
     // contain snake_case — that is unambiguously a code symbol).
     if (/(->|→|»)/.test(trimmed) && /^run\s+[a-z_$][\w$.]*/i.test(trimmed)) return true;
     if (/(->|→|»)/.test(trimmed) && /\b[a-z][a-z0-9]*_[a-z0-9]+\b/.test(trimmed)) return true;
+    // Mechanical program-entry labels the model echoed as a capability: "Run
+    // .NET Main entry point", "Run the Main entry point", "Execute application
+    // entry point". Naming the runtime entry point IS the structural fact, not a
+    // user purpose — a real capability describes WHAT the program does once it
+    // starts, never "run the entry point". Measured live on the Hoggan C# CAS
+    // (v1.0.85) where "Run .NET Main entry point" shipped as 1 of 5 caps.
+    if (/^(run|execute|invoke|start)\b/i.test(trimmed) && /\b(entry\s*point|main\s+method)\b/i.test(trimmed)) return true;
     return false;
   }
 

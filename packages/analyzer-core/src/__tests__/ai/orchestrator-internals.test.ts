@@ -5420,6 +5420,37 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
     }
   });
 
+  it('rejects a mechanical program-entry label ("Run .NET Main entry point") shipped as a capability (real Hoggan C# CAS, v1.0.85)', async () => {
+    // Measured live on the real prod CAS (Hoggan C#/WPF desktop, v1.0.85,
+    // 2026-07-16): "Run .NET Main entry point" shipped as 1 of 5 caps. Naming
+    // the runtime entry point is a structural fact, never a user purpose — a
+    // real capability says what the program DOES once it starts. Same class as
+    // the call-chain labels above; isRawCandidateLabelName now also matches a
+    // "Run/Execute/Start ... entry point / main method" mechanical head.
+    const original = (aiService as any).generateComponentDescription;
+    (aiService as any).generateComponentDescription = async () => JSON.stringify({
+      capabilities: [
+        { name: 'Run .NET Main entry point', description: 'Runs the .NET Main entry point of the application.', category: 'core', entities: [] },
+      ],
+    });
+    try {
+      const catalog = await orch.aiExtractCapabilityCatalog({
+        systemName: 'Hoggan Scientific',
+        enhancedSystemPurpose: { primary_domain: 'medical-device', core_concepts: [] },
+        frameworks: ['WPF'], userJourneys: [],
+        dataEntities: [],
+        candidateCapabilities: [
+          { name: 'Run .NET Main entry point', related_entities: [], operations: [] },
+        ],
+        externalServices: [], flowGraph: { capabilities: [] },
+        projectTextSignal: { concepts: [], evidence: [] }, budgetMs: 30000,
+      });
+      expect(catalog.length).toBe(0);
+    } finally {
+      (aiService as any).generateComponentDescription = original;
+    }
+  });
+
   it('keeps a real AI-authored capability whose description was genuinely supplied', async () => {
     // Control: the guard must not reject legitimate output.
     const original = (aiService as any).generateComponentDescription;
