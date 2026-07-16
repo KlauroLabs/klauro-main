@@ -4,6 +4,9 @@ import type * as http from 'node:http';
 import * as os from 'node:os';
 import * as nodePath from 'node:path';
 import * as fs from 'node:fs';
+import * as fsExtra from 'fs-extra';
+import { getAnalysis } from './analyzer';
+import { loadTelemetryObservations, type TelemetryEvent } from './telemetry-ingestion';
 
 const REQUIRE = () => import('./self-telemetry');
 
@@ -16,6 +19,31 @@ function withEnv(value: string | undefined, fn: () => void): void {
   } finally {
     if (prev === undefined) delete process.env.KLAURO_SELF_TELEMETRY;
     else process.env.KLAURO_SELF_TELEMETRY = prev;
+  }
+}
+
+async function withCanonicalEnv(value: string | undefined, fn: () => void | Promise<void>): Promise<void> {
+  const prev = process.env.KLAURO_SELF_TELEMETRY_CANONICAL_PROJECT;
+  if (value === undefined) delete process.env.KLAURO_SELF_TELEMETRY_CANONICAL_PROJECT;
+  else process.env.KLAURO_SELF_TELEMETRY_CANONICAL_PROJECT = value;
+  try {
+    await fn();
+  } finally {
+    if (prev === undefined) delete process.env.KLAURO_SELF_TELEMETRY_CANONICAL_PROJECT;
+    else process.env.KLAURO_SELF_TELEMETRY_CANONICAL_PROJECT = prev;
+  }
+}
+
+async function withTempStorage(run: (storage: string) => Promise<void>): Promise<void> {
+  const storage = await fsExtra.mkdtemp(nodePath.join(os.tmpdir(), 'klauro-self-telemetry-storage-'));
+  const previousStorage = process.env.KLAURO_STORAGE_PATH;
+  process.env.KLAURO_STORAGE_PATH = storage;
+  try {
+    await run(storage);
+  } finally {
+    if (previousStorage === undefined) delete process.env.KLAURO_STORAGE_PATH;
+    else process.env.KLAURO_STORAGE_PATH = previousStorage;
+    await fsExtra.remove(storage);
   }
 }
 
@@ -117,4 +145,98 @@ test('maybeBootstrapSelfAnalysis: runs at most ONCE per process (run-once guard)
   const missing2 = nodePath.join(os.tmpdir(), `klauro-bootstrap-none2-${Date.now()}`);
   await mod.maybeBootstrapSelfAnalysis(missing2);
   assert.ok(true, 'bootstrap is crash-proof and run-once');
+});
+
+// ---------------------------------------------------------------------------
+// GAP #32 part 2 — canonical-bucket mirror (self-telemetry key identity)
+// ---------------------------------------------------------------------------
+
+test('selfCanonicalProjectPath: unset/blank => null (no-op)', async () => {
+  const { selfCanonicalProjectPath } = await REQUIRE();
+  await withCanonicalEnv(undefined, () => assert.equal(selfCanonicalProjectPath(), null));
+  await withCanonicalEnv('   ', () => assert.equal(selfCanonicalProjectPath(), null));
+});
+
+test('selfCanonicalProjectPath: returns the trimmed override when set', async () => {
+  const { selfCanonicalProjectPath } = await REQUIRE();
+  await withCanonicalEnv('  /data/workspaces/prj_example  ', () => {
+    assert.equal(selfCanonicalProjectPath(), '/data/workspaces/prj_example');
+  });
+});
+
+test('mirrorToCanonicalBucket: WITHOUT the env set, behavior is exactly current (no second write, no throw)', async () => {
+  await withTempStorage(async () => {
+    const { mirrorToCanonicalBucket } = await REQUIRE();
+    const primary = nodePath.join(os.tmpdir(), 'klauro-primary-noop');
+    const events: TelemetryEvent[] = [{ kind: 'request', method: 'GET', route: '/x', status: 200, duration_ms: 5 }];
+    await withCanonicalEnv(undefined, async () => {
+      await mirrorToCanonicalBucket(primary, events);
+    });
+    // Nothing to check in the canonical bucket because there is no canonical
+    // path configured — this must be a true no-op, not an error.
+    assert.ok(true, 'no-op did not throw');
+  });
+});
+
+test('mirrorToCanonicalBucket: WITH the env set, an ingested observation lands in BOTH buckets', async () => {
+  await withTempStorage(async () => {
+    const { mirrorToCanonicalBucket } = await REQUIRE();
+    const primary = nodePath.join(os.tmpdir(), 'klauro-primary-dual');
+    const canonical = '/data/workspaces/prj_test_canonical';
+    const events: TelemetryEvent[] = [
+      { kind: 'request', method: 'GET', route: '/dual-key-route', status: 200, duration_ms: 7 },
+    ];
+
+    await withCanonicalEnv(canonical, async () => {
+      await mirrorToCanonicalBucket(primary, events);
+    });
+
+    const canonicalObservations = await loadTelemetryObservations(canonical);
+    assert.equal(canonicalObservations.observations.length, 1, 'canonical bucket should receive the mirrored observation');
+    assert.equal(canonicalObservations.observations[0].event.route, '/dual-key-route');
+
+    const primaryObservations = await loadTelemetryObservations(primary);
+    assert.equal(primaryObservations.observations.length, 0, 'mirrorToCanonicalBucket never writes the primary bucket itself — that is the caller\'s job');
+  });
+});
+
+test('mirrorToCanonicalBucket: identical canonical/primary path is a no-op (nothing to mirror into)', async () => {
+  await withTempStorage(async () => {
+    const { mirrorToCanonicalBucket } = await REQUIRE();
+    const samePath = nodePath.join(os.tmpdir(), 'klauro-same-path');
+    const events: TelemetryEvent[] = [{ kind: 'request', method: 'GET', route: '/same', status: 200, duration_ms: 3 }];
+
+    await withCanonicalEnv(samePath, async () => {
+      await mirrorToCanonicalBucket(samePath, events);
+    });
+
+    const observations = await loadTelemetryObservations(samePath);
+    assert.equal(observations.observations.length, 0, 'no duplicate write when canonical === primary');
+  });
+});
+
+test('mirrorToCanonicalBucket: NEVER bootstrap-analyzes the canonical path', async () => {
+  await withTempStorage(async () => {
+    const { mirrorToCanonicalBucket } = await REQUIRE();
+    const primary = nodePath.join(os.tmpdir(), 'klauro-primary-bootstrap-guard');
+    const canonical = '/data/workspaces/prj_bootstrap_guard_test';
+    const events: TelemetryEvent[] = [{ kind: 'request', method: 'GET', route: '/y', status: 200, duration_ms: 4 }];
+
+    await withCanonicalEnv(canonical, async () => {
+      await mirrorToCanonicalBucket(primary, events);
+    });
+
+    // If mirrorToCanonicalBucket had ever called analyzeProject/maybeBootstrapSelfAnalysis
+    // for the canonical path, an analysis would now exist for it. It must not:
+    // getAnalysis for a never-analyzed, non-existent path must still reject.
+    await assert.rejects(
+      () => getAnalysis(canonical),
+      'mirroring must never trigger analysis of the canonical path (would risk a whale re-analysis on every request batch)',
+    );
+
+    // The observation itself must still have persisted (unmatched, since no CAS).
+    const canonicalObservations = await loadTelemetryObservations(canonical);
+    assert.equal(canonicalObservations.observations.length, 1);
+    assert.equal(canonicalObservations.observations[0].correlation.status, 'unmatched');
+  });
 });

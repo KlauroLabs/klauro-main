@@ -23,6 +23,15 @@ services:
       # ENDPOINT is left UNSET on purpose → in-process transport (no network hop).
       KLAURO_SELF_TELEMETRY: "1"
       KLAURO_SELF_TELEMETRY_PROJECT: /app/apps/mcp-server/src
+      # GAP #32 part 2: the canonical hosted Klauro-self analysis lives under a
+      # DIFFERENT workspace path (this project's own /data/workspaces bucket)
+      # than the in-container source dir the self-loop bootstraps against
+      # above. Mirror every self-loop observation into that bucket too, so
+      # facet-6 (get_runtime_observations / node-metrics / route telemetry)
+      # queries against the canonical project see real self-telemetry instead
+      # of an empty bucket. Never triggers a bootstrap analysis of this path —
+      # only KLAURO_SELF_TELEMETRY_PROJECT above ever does that.
+      KLAURO_SELF_TELEMETRY_CANONICAL_PROJECT: /data/workspaces/prj_wbW33m-wfETn1N41
     expose:
       - "8787"
     volumes:
