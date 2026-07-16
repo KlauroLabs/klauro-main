@@ -4344,6 +4344,40 @@ describe('capability hygiene: entity-set dedup', () => {
     expect(merged[0].related_domains.sort()).toEqual(['report', 'task']);
   });
 
+  it('keeps two DIFFERENT purposes over the SAME entity set (rung-5 washup: exact-set dedupe collapsed 6 purpose caps to 3), while still merging a CRUD verb-variant pair', async () => {
+    const merged = orch.dedupeSystemCapabilitiesByName([
+      // Same entity set {Task, TaskList}, DIFFERENT purpose subjects — both live.
+      capFixture({
+        name: 'Lets users manage tasks and task lists', category: 'core',
+        related_entities: ['entity_task', 'entity_tasklist'], related_domains: ['task'],
+        operations: [{ entry_point_id: 'ep1', entry_point_type: 'http', action: 'manage' }],
+      }),
+      capFixture({
+        name: 'Lets users manage duplicate routine tasks', category: 'core',
+        related_entities: ['entity_task', 'entity_tasklist'], related_domains: ['task'],
+        operations: [{ entry_point_id: 'ep2', entry_point_type: 'http', action: 'duplicate' }],
+      }),
+      // Same entity set {LocationEvent}, SAME subject after CRUD-verb strip — merged.
+      capFixture({
+        name: 'Create location event', category: 'core',
+        related_entities: ['entity_locationevent'], related_domains: ['event'],
+        operations: [{ entry_point_id: 'ep3', entry_point_type: 'http', action: 'create' }],
+      }),
+      capFixture({
+        name: 'Update location event', category: 'supporting',
+        related_entities: ['entity_locationevent'], related_domains: ['event'],
+        operations: [{ entry_point_id: 'ep4', entry_point_type: 'http', action: 'update' }],
+      }),
+    ]);
+    const names = merged.map((c: any) => c.name).sort();
+    expect(names).toHaveLength(3);
+    expect(names).toContain('Lets users manage tasks and task lists');
+    expect(names).toContain('Lets users manage duplicate routine tasks');
+    // The CRUD pair merged into one (the core copy wins), evidence unioned.
+    const locationEvent = merged.find((c: any) => /location event/i.test(c.name));
+    expect(locationEvent.operations).toHaveLength(2);
+  });
+
   it('merges a subset-entity capability with no distinct operations into the superset', async () => {
     const merged = orch.dedupeSystemCapabilitiesByName([
       capFixture({

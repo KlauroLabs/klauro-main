@@ -17827,13 +17827,38 @@ export class AnalyzerOrchestrator {
     // genuine entity-anchored capability whose records it happens to touch.
     const isSurfaceCap = (capability: SystemCapability) => capability.evidence_kind === 'behavior-surface';
 
-    // Pass 1 — exact entity-set identity.
+    // Subject-phrase normalizer (shared by pass 1 and pass 3): the capability
+    // name minus its leading value-verb (incl. CRUD verbs and a "lets users /
+    // allows users to" preamble) and trailing near-synonym result noun — what
+    // remains is the PURPOSE SUBJECT. Two caps with the same entity set but
+    // different subjects are different product abilities.
+    const subjectPhraseOf = (capability: SystemCapability): string =>
+      String(capability.name || '')
+        .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+        .toLowerCase()
+        // optional "lets users / allows users to / enables users to" preamble
+        .replace(/^\s*(?:lets|allows|enables)\s+users\s+(?:to\s+)?/i, '')
+        // leading value-verb (incl. CRUD verbs so per-route variants share a subject)
+        .replace(/^\s*(provides?|surfaces?|tracks?|exposes?|manages?|monitors?|secures?|handles?|enforces?|settles?|delivers?|renders?|displays?|shows?|creates?|updates?|deletes?|lists?|views?|adds?|removes?|edits?)\s+/i, '')
+        // trailing near-synonym result nouns so results/insights/data/info collapse
+        .replace(/\s+(results?|insights?|data|info|information|details?|records?|entries?|items?)\s*$/i, '')
+        .replace(/[^a-z0-9]+/g, ' ')
+        .trim();
+
+    // Pass 1 — entity-set identity AND same purpose subject. Exact-set alone
+    // over-merged (rung-5 washup, measured live via E1: Qwen returned 6
+    // purpose-phrased caps, three PAIRS shared entity sets — "manage tasks and
+    // task lists" vs "manage duplicate routine tasks" both {Task,TaskList} —
+    // and pass 1 collapsed 6 -> 3). Two capabilities over the SAME records are
+    // the same ability only when their subjects agree ("create location event"
+    // / "update location event" -> both "location event": merge); different
+    // subjects are different product abilities and both survive.
     const bySetKey = new Map<string, SystemCapability>();
     for (const capability of capabilities) {
       if (isSurfaceCap(capability)) continue;
       const set = entitySetOf(capability);
       if (set.size === 0) continue;
-      const key = [...set].sort().join('|');
+      const key = `${[...set].sort().join('|')}::${subjectPhraseOf(capability)}`;
       const existing = bySetKey.get(key);
       if (!existing) {
         bySetKey.set(key, capability);
@@ -17877,16 +17902,7 @@ export class AnalyzerOrchestrator {
     // synonym noun) matches, and the loser adds no distinct operation.
     const primaryEntityOf = (capability: SystemCapability): string =>
       normalizeEntityRef((capability.related_entities || [])[0] || '');
-    const subjectPhraseOf = (capability: SystemCapability): string =>
-      String(capability.name || '')
-        .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
-        .toLowerCase()
-        // leading value-verb
-        .replace(/^\s*(provides?|surfaces?|tracks?|exposes?|manages?|monitors?|secures?|handles?|enforces?|settles?|delivers?|renders?|displays?|shows?)\s+/i, '')
-        // trailing near-synonym result nouns so results/insights/data/info collapse
-        .replace(/\s+(results?|insights?|data|info|information|details?|records?|entries?|items?)\s*$/i, '')
-        .replace(/[^a-z0-9]+/g, ' ')
-        .trim();
+    // (subjectPhraseOf is hoisted above pass 1 — shared normalizer.)
     const survivors = capabilities.filter(capability => !removed.has(capability) && !isSurfaceCap(capability));
     for (const capability of survivors) {
       if (removed.has(capability)) continue;
