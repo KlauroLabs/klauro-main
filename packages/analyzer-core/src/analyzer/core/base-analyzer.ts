@@ -180,6 +180,7 @@ export abstract class BaseAnalyzer {
     exitPoints: CASExitPoint[] = [],
     additionalMetadata: Record<string, any> = {}
   ): CASContribution {
+    this.backfillEntryPointHandlers(nodes, entryPoints);
     const { categories, ...metadataWithoutCategories } = additionalMetadata;
 
     const analyzerMetadata: CASAnalyzerContribution = {
@@ -208,6 +209,39 @@ export abstract class BaseAnalyzer {
     }
 
     return contribution;
+  }
+
+  /**
+   * Generic, evidence-gated handler backfill: an entry point's `source_node`
+   * already points at the real node it was derived from (a route, a page, an
+   * event binding's owning component, a message consumer, ...). When that
+   * node carries a real `source.file` (from `createNode`/`withSource`, never
+   * fabricated), mirror it onto `entry_point.handler` so "jump to the code"
+   * and deployable-path attribution (which resolves handler.file against
+   * deployable roots) work without every analyzer having to pass `handler`
+   * explicitly. Applies to ANY analyzer via createContribution/
+   * createFileAnalysisResult — not hardcoded to a specific framework/library.
+   * Never invents a path: an entry point whose backing node has no source
+   * location is left with `handler` unset.
+   */
+  private backfillEntryPointHandlers(nodes: CASNode[], entryPoints: CASEntryPoint[]): void {
+    if (!entryPoints?.length || !nodes?.length) return;
+
+    let nodeById: Map<string, CASNode> | null = null;
+    for (const entryPoint of entryPoints) {
+      if (entryPoint.handler) continue; // analyzer already set an explicit handler — respect it
+
+      nodeById ??= new Map(nodes.map(node => [node.id, node] as const));
+      const node = nodeById.get(entryPoint.source_node);
+      if (!node?.source?.file) continue; // no real backing source — never fabricate one
+
+      entryPoint.handler = {
+        node_id: node.id,
+        method_name: node.name || entryPoint.name,
+        file: node.source.file,
+        ...(node.source.line !== undefined ? { line: node.source.line } : {})
+      };
+    }
   }
 
   protected abstract getCapabilities(): string[];
@@ -517,6 +551,7 @@ export abstract class BaseAnalyzer {
     imports: string[],
     exports: string[]
   ): FileAnalysisResult {
+    this.backfillEntryPointHandlers(nodes, entryPoints);
     return {
       filePath: relativePath,
       contentHash,

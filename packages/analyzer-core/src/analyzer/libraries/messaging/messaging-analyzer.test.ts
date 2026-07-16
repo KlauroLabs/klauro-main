@@ -147,9 +147,21 @@ test('MessagingAnalyzer emits broker channel nodes, producer exits, consumer ent
     const kafkaTopic = nodes.find(node => node.type === 'topic' && node.name === 'orders.created' && (node.metadata as any)?.system === 'kafkajs');
     assert.ok(kafkaTopic, 'expected a KafkaJS topic node');
     assert.ok(exitPoints.find(exit => exit.type === 'message' && (exit.metadata as any)?.channel === 'orders.created'), 'expected a KafkaJS producer exit point');
-    assert.ok(entryPoints.find(entry => entry.type === 'message' && (entry.metadata as any)?.channel === 'orders.created'), 'expected a KafkaJS consumer entry point');
+    const kafkaConsumerEntry = entryPoints.find(entry => entry.type === 'message' && (entry.metadata as any)?.channel === 'orders.created');
+    assert.ok(kafkaConsumerEntry, 'expected a KafkaJS consumer entry point');
     assert.ok(edges.find(edge => edge.type === 'produces' && edge.target === kafkaTopic!.id), 'expected producer -> Kafka topic edge');
     assert.ok(edges.find(edge => edge.type === 'consumes' && edge.source === kafkaTopic!.id), 'expected Kafka topic -> consumer edge');
+
+    // The message entry point's `source_node` is the consumer node, which
+    // BaseAnalyzer.createNode already grounds in a real `source.file`/`line`
+    // (kafka.ts, the `consumer.subscribe(...)` call site). The generic
+    // handler backfill in BaseAnalyzer.createContribution should mirror that
+    // onto entry_point.handler without the analyzer passing it explicitly.
+    const consumerNode = nodes.find(node => node.id === kafkaConsumerEntry!.source_node);
+    assert.ok(consumerNode?.source?.file, 'expected the backing consumer node to carry a real source file');
+    assert.equal(kafkaConsumerEntry!.handler?.node_id, consumerNode!.id);
+    assert.equal(kafkaConsumerEntry!.handler?.file, consumerNode!.source!.file);
+    assert.equal(kafkaConsumerEntry!.handler?.line, consumerNode!.source!.line);
 
     const emailQueue = nodes.find(node => node.type === 'queue' && node.name === 'emails' && (node.metadata as any)?.system === 'bullmq');
     assert.ok(emailQueue, 'expected a BullMQ queue node');
