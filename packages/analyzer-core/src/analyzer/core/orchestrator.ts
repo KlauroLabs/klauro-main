@@ -1755,7 +1755,8 @@ export class AnalyzerOrchestrator {
         deployableEvidence.length,
         allNodes,
         allEdges,
-        behaviorSurfaces
+        behaviorSurfaces,
+        allEntryPoints
       );
       const aiDuration = Date.now() - aiPhaseStart;
       const aiGeneration = enhancedSystemPurpose.description_generation;
@@ -2903,7 +2904,8 @@ export class AnalyzerOrchestrator {
         deployableEvidence.length,
         nodes,
         edges,
-        behaviorSurfaces
+        behaviorSurfaces,
+        entryPoints
       );
     } else if (
       previousOutput.enhanced_system_purpose?.inferred_description &&
@@ -8943,6 +8945,104 @@ export class AnalyzerOrchestrator {
     return (surface.operations || []).length;
   }
 
+  /**
+   * MODULE SPLIT (defect #33 — catalog VARIANCE, single-large-surface case):
+   * the near-empty-fallback branch in applyAIInterpretation promotes a
+   * qualifying LARGE behavior surface (a homogeneous registration family with
+   * no dominant name-prefix sub-family — e.g. Klauro's own 215-tool MCP
+   * surface, whose tool names are too diverse for buildBehaviorCapabilities'
+   * own family split to fire) straight into `system_capabilities` as ONE
+   * merged blob. That is honest (never fabricated) but is exactly the "1 thin
+   * item" shape the user wants eliminated: a 45k-node CAS should not reduce to
+   * a single capability just because its dominant family lacks a shared name
+   * prefix.
+   *
+   * A second, GENERIC grouping signal survives even when name-prefix grouping
+   * fails: the MODULE (handler file) each entry point is registered in. A
+   * real large surface is near-never authored in one file — Klauro's own MCP
+   * tools live across apps/mcp-server/src/tools/*.ts, one file per tool
+   * family. This groups the surface's full entry-point set (recovered from
+   * the raw `entryPoints`/`nodes` facts — the surface's own capped
+   * `operations` sample only carries 12 of e.g. 215 and has no file evidence)
+   * by handler file, and — ONLY when that yields >= 2 groups that each clear
+   * the same BEHAVIOR_FAMILY_MIN_ENTRIES bar the deterministic family split
+   * already uses — emits one capability per module group instead of one
+   * merged blob. Falls back to the original single surface, unmodified, when
+   * entry points can't be resolved or module grouping doesn't clear the bar
+   * (never invents groups to force a split). Evidence-gated on file paths and
+   * entry-point counts only — no name/domain keyword judgement, so this is
+   * generic to any repo whose dominant large surface is module-shaped.
+   */
+  private splitLargeBehaviorSurfaceByModule(
+    surface: SystemCapability,
+    entryPoints: CASEntryPoint[],
+    nodes: CASNode[]
+  ): SystemCapability[] {
+    const epType = surface.operations?.[0]?.entry_point_type;
+    if (!epType || !entryPoints.length) return [surface];
+
+    const nodesById = new Map(nodes.map(node => [node.id, node]));
+    const moduleOf = (ep: CASEntryPoint): string | undefined => {
+      const file = ep.handler?.file || nodesById.get(ep.source_node || '')?.source?.file;
+      if (!file) return undefined;
+      const dir = path.dirname(file);
+      // Last directory segment is the module label ("tools" from
+      // apps/mcp-server/src/tools/foo.ts); files sitting directly at the
+      // project root (dir === '.') fall back to the file's own basename so
+      // they don't all collapse into one meaningless "." group.
+      return dir === '.' || dir === '' ? path.basename(file) : path.basename(dir);
+    };
+
+    const groups = new Map<string, CASEntryPoint[]>();
+    for (const ep of entryPoints) {
+      if (String(ep.type) !== epType) continue;
+      const moduleKey = moduleOf(ep);
+      if (!moduleKey) continue;
+      const bucket = groups.get(moduleKey);
+      if (bucket) bucket.push(ep);
+      else groups.set(moduleKey, [ep]);
+    }
+
+    const qualifying = [...groups.entries()]
+      .filter(([, entries]) => entries.length >= AnalyzerOrchestrator.BEHAVIOR_FAMILY_MIN_ENTRIES)
+      .sort((left, right) => right[1].length - left[1].length);
+    // Need real plurality (>= 2 groups) to justify a split at all, and the
+    // qualifying groups must actually cover a meaningful share of the surface
+    // — a handful of stray files next to one dominant module is not a split,
+    // it is noise.
+    const coveredCount = qualifying.reduce((sum, [, entries]) => sum + entries.length, 0);
+    const totalCount = this.behaviorSurfaceEntryCount(surface);
+    if (qualifying.length < 2 || (totalCount > 0 && coveredCount / totalCount < 0.5)) return [surface];
+
+    const kindLabel = this.humanizeDomainKey(String(epType).replace(/[_-]+/g, ' '));
+    return qualifying.slice(0, AnalyzerOrchestrator.BEHAVIOR_CAPABILITY_MAX).map(([moduleKey, entries]) => {
+      const moduleLabel = this.humanizeDomainKey(moduleKey.replace(/[_-]+/g, ' '));
+      const operations = entries.slice(0, 12).map(ep => ({
+        entry_point_id: ep.id,
+        entry_point_type: String(ep.type),
+        action: this.inferActionFromEntryPoint(ep),
+        path_or_command: this.extractPathOrCommand(ep),
+        trigger: this.extractTrigger(ep),
+      }));
+      const exampleNames = entries.slice(0, 3).map(ep => String(ep.trigger?.event || ep.name || '').trim()).filter(Boolean);
+      return {
+        ...surface,
+        id: `cap_pending_${moduleKey.replace(/[^a-z0-9]+/gi, '_').toLowerCase()}`,
+        name: /\bSurface$/i.test(surface.name || '')
+          ? String(surface.name).replace(/\bSurface$/i, `${moduleLabel} Surface`)
+          : `${moduleLabel} ${surface.name || kindLabel}`,
+        description: `Behavior surface module: ${entries.length} ${kindLabel.toLowerCase()} entry points registered under '${moduleKey}'` +
+          (exampleNames.length > 0 ? ` (e.g. ${exampleNames.join(', ')})` : '') + '.',
+        operations,
+        criticality_factors: Array.from(new Set([
+          ...(surface.criticality_factors || []),
+          `${entries.length} ${epType} entry points share the '${moduleKey}' handler module`,
+          'module-split-from-behavior-surface',
+        ])),
+      };
+    });
+  }
+
   private async aiExtractCapabilityCatalog(input: {
     systemName: string;
     enhancedSystemPurpose: EnhancedSystemPurpose;
@@ -9062,7 +9162,7 @@ export class AnalyzerOrchestrator {
     // even a slow attempt completes; genuinely hung calls still fall back. Caching
     // means this latency is paid once per repo.
     const aiBudget = Math.max(75000, Math.floor(input.budgetMs * 0.6));
-    const requestCatalog = async (attempt: number): Promise<string> => {
+    const requestCatalog = async (attempt: number, hintOverride?: string): Promise<string> => {
       let timeoutHandle: NodeJS.Timeout | undefined;
       try {
         return await Promise.race([
@@ -9075,7 +9175,9 @@ export class AnalyzerOrchestrator {
               // Distinct on the retry so an under-count retry is a real
               // resample (a byte-identical request would just replay the
               // cached short answer) and the model is told the shortfall.
-              ...(attempt > 1 ? { retry_hint: `Previous answer returned fewer than ${catalogCountMin} capabilities for a platform whose facts name ${candidateAreas.length} distinct route areas. Cover the DISTINCT product areas in candidate_route_areas; merge related ones, but do not collapse unrelated areas.` } : {}),
+              // `hintOverride` (the THIN-CATALOG NUDGE below) takes priority
+              // over the generic under-count hint when supplied.
+              ...((hintOverride || attempt > 1) ? { retry_hint: hintOverride || `Previous answer returned fewer than ${catalogCountMin} capabilities for a platform whose facts name ${candidateAreas.length} distinct route areas. Cover the DISTINCT product areas in candidate_route_areas; merge related ones, but do not collapse unrelated areas.` } : {}),
               task: `You are cataloging the BUSINESS VALUE of a codebase. You are given BOTTOM-UP facts (user journeys, data entities, candidate route areas, external services) AND, when available, a top_down_signals block — the product's OWN words about what it is (README title/overview, manifest self-description, product terminology). Return ONLY valid JSON: {"capabilities":[{"name":"...","description":"...","category":"core|supporting","entities":["..."],"journeys":["..."]}]}. Rules: (1) THE PURPOSE TEST — every capability you name must be a product/user/operational ability that would appear in a product description, a user objective, a business offering, or an operational responsibility. If it would not, it is NOT a capability; drop it. Name capabilities as what the product lets its USERS or OPERATORS DO in plain product language (e.g. "Trade cryptocurrency", "Play Commander matches"), NEVER as a mechanism or a supporting noun ("Wallet interaction", "Manage sessions"). (2) USE top_down_signals as the primary arbiter of what the product IS BUILT FOR: the capability the product's own title/overview/terminology names is a core capability even if the bottom-up entities under-represent it — let this evidence RAISE the built-for capability to the top. (3) THE PURPOSE-TEST EXCLUSION — do NOT emit supporting/infrastructural concerns as capabilities (authentication, access control/permissions, session/token handling, logging/telemetry, notifications, caching, message brokering, generic CRUD, health checks, config, database) UNLESS top_down_signals shows the product IS that kind of product (an auth product sells access control; a codebase-analysis or game product does not). Absent top-down evidence that the product sells it, such a concern is at most "supporting", never "core", and is usually dropped. (4) MERGE related route areas and journeys into real capabilities; do not emit one per route. (5) category="core" only for the capabilities that ARE the product's value proposition (those corroborated by top_down_signals rank first); "supporting" for necessary-but-not-the-value. (6) entities/journeys must be names copied from the supplied facts. (7) Each description is ONE concise sentence, 8-16 words — no clauses, no lists — that names the CONCRETE records, decisions, or workflows the capability owns and why they matter, using the supplied entity/journey vocabulary. NEVER the empty template "Lets users <verb> <noun>" that only restates the capability name, and never the words "capability"/"lifecycle" as prose scaffolding — a description that adds no information beyond the name is rejected. Return ${catalogCountMin} to ${catalogCountMax} capabilities, ordered most-core first.`,
               style: 'Write like a product engineer or PM. Plain language. No markdown. Value verbs (lets, gives, tracks, surfaces, exposes, manages, monitors, secures, settles, enforces). No CRUD verbs, no "lifecycle", no route counts, no file paths, no marketing fluff. Each description names the concrete user-facing concept the entities point to.',
               product: {
@@ -9127,6 +9229,39 @@ export class AnalyzerOrchestrator {
       if (catalog.length >= catalogCountMin) break;
       if (catalog.length && process.env.KLAURO_DEBUG_CATALOG) {
         console.error(`[catalog-debug] attempt ${attempt} under-count: got ${catalog.length}, evidence-derived min ${catalogCountMin}`);
+      }
+    }
+
+    // THIN-CATALOG NUDGE (defect #33 — catalog VARIANCE, measured live: v1.0.83
+    // returned exactly ONE usable item on the 45k-node Klauro-self CAS, v1.0.84
+    // returned 6, same CAS/prompt/facts, pure inference luck). A catalog.length
+    // of exactly 1 is qualitatively different from 0 (which already routes into
+    // the near-empty fallback chain in applyAIInterpretation, below): the model
+    // DID engage and DID pass the validity guard, it just collapsed several
+    // genuinely distinct route-area families into one item. Rather than accept
+    // a lone item on a CAS whose deterministic pass already computed multiple
+    // DISTINCT families (rankedCandidateAreas — the same evidence already
+    // ranked and windowed above, no new hardcoding), spend ONE more attempt
+    // that ENUMERATES those families by name and requires one grounded
+    // capability per family. Bounded to a single extra call (never loops) and
+    // only fires when there is real distinct-family evidence to enumerate —
+    // an under-2-family repo has nothing to nudge toward and is left alone.
+    if (catalog.length === 1) {
+      const distinctFamilies = Array.from(new Set(
+        rankedCandidateAreas.map(candidate => String(candidate.name || '').trim()).filter(Boolean)
+      )).slice(0, 10);
+      if (distinctFamilies.length >= 2) {
+        try {
+          const nudgeHint = `Previous answer collapsed this platform into a single capability. The deterministic evidence names ${distinctFamilies.length} DISTINCT candidate route-area families: ${distinctFamilies.map(family => `"${family}"`).join(', ')}. Return ONE grounded, purpose-phrased capability PER distinct family listed above — merge two families only when they are genuinely the same product ability, never collapse all of them into one item.`;
+          const nudgeRaw = await requestCatalog(3, nudgeHint);
+          const nudgeParsed = this.parseCapabilityCatalog(nudgeRaw);
+          if (nudgeParsed.length > catalog.length) {
+            catalog = nudgeParsed;
+            raw = nudgeRaw;
+          }
+        } catch (error) {
+          if (process.env.KLAURO_DEBUG_CATALOG) console.error('[catalog-debug] thin-catalog nudge failed:', error instanceof Error ? error.message : String(error));
+        }
       }
     }
     if (process.env.KLAURO_DEBUG_CATALOG) {
@@ -9606,7 +9741,14 @@ export class AnalyzerOrchestrator {
     // fallback when the AI catalog returns nothing AND there are no
     // deterministic domain candidates either. Optional/defaulted so any other
     // caller is unaffected.
-    behaviorSurfaces: SystemCapability[] = []
+    behaviorSurfaces: SystemCapability[] = [],
+    // Raw entry points — needed ONLY by the near-empty-fallback MODULE SPLIT
+    // below (splitLargeBehaviorSurfaceByModule), to recover the handler
+    // file/module each large-surface entry point lives in (a SystemCapability's
+    // own `operations` sample is capped at 12 of e.g. 215 and carries no file
+    // evidence). Optional/defaulted so any other caller is unaffected; the
+    // split simply no-ops (keeps the single merged surface) when omitted.
+    entryPoints: CASEntryPoint[] = []
   ): Promise<void> {
     this.setElementDescriptionGrounding(
       enhancedSystemPurpose.primary_domain,
@@ -9708,7 +9850,16 @@ export class AnalyzerOrchestrator {
           const largeSurfaceCandidates = behaviorSurfaces.filter(
             surface => this.behaviorSurfaceEntryCount(surface) >= AnalyzerOrchestrator.LARGE_BEHAVIOR_SURFACE_OPERATION_THRESHOLD
           );
-          systemCapabilities.splice(0, systemCapabilities.length, ...largeSurfaceCandidates.map(surface => ({
+          // MODULE SPLIT (defect #33): a lone qualifying surface would
+          // otherwise ship as ONE merged blob (see splitLargeBehaviorSurfaceByModule
+          // doc comment) — split it by handler module when the evidence
+          // supports it, so this fallback yields multiple grounded
+          // capabilities instead of a single thin one whenever the large
+          // surface's handlers are genuinely spread across modules.
+          const splitSurfaceCandidates = largeSurfaceCandidates.flatMap(
+            surface => this.splitLargeBehaviorSurfaceByModule(surface, entryPoints, nodes)
+          );
+          systemCapabilities.splice(0, systemCapabilities.length, ...splitSurfaceCandidates.map(surface => ({
             ...surface,
             criticality_factors: Array.from(new Set([...(surface.criticality_factors || []), 'genuine-fallback-from-behavior-surface'])),
           })));

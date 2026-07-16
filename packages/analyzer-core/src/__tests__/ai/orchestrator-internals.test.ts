@@ -5092,6 +5092,192 @@ describe('top-down capability evidence (C2)', () => {
   });
 });
 
+describe('thin-catalog nudge (defect #33 — catalog VARIANCE: v1.0.83 returned 1 item, v1.0.84 returned 6 on the SAME 45k-node CAS)', () => {
+  const dataEntities = [
+    { id: 'entity_widget', name: 'Widget' },
+    { id: 'entity_gadget', name: 'Gadget' },
+    { id: 'entity_gizmo', name: 'Gizmo' },
+  ];
+  // Raw deterministic candidate labels — these are the "families" the nudge
+  // must enumerate. Deliberately worded DIFFERENTLY from the AI-authored
+  // output names below: an AI item whose name verbatim-echoes one of these
+  // is rejected by isRawCandidateLabelName (see that guard), so the fixture
+  // must exercise the nudge without tripping it.
+  const candidateCapabilities = [
+    { name: 'Widget route area', related_entities: ['entity_widget'], operations: [{ entry_point_id: 'ep_w_1', entry_point_type: 'http', action: 'Manage' }] },
+    { name: 'Gadget route area', related_entities: ['entity_gadget'], operations: [{ entry_point_id: 'ep_g_1', entry_point_type: 'http', action: 'Manage' }] },
+    { name: 'Gizmo route area', related_entities: ['entity_gizmo'], operations: [{ entry_point_id: 'ep_z_1', entry_point_type: 'http', action: 'Manage' }] },
+  ];
+  const baseInput = {
+    systemName: 'thin-catalog-fixture',
+    enhancedSystemPurpose: { primary_domain: 'widgets', core_concepts: [] },
+    frameworks: [], userJourneys: [],
+    dataEntities,
+    candidateCapabilities,
+    externalServices: [], flowGraph: { capabilities: [] } as any,
+    projectTextSignal: { concepts: [], evidence: [] } as any, budgetMs: 30000,
+  };
+
+  it('spends one extra targeted attempt when the catalog collapses to a single item, enumerating the distinct deterministic families, and keeps the richer result', async () => {
+    const original = (aiService as any).generateComponentDescription;
+    const captured: any[] = [];
+    let callCount = 0;
+    (aiService as any).generateComponentDescription = async (arg: any) => {
+      callCount++;
+      captured.push(arg);
+      if (callCount <= 2) {
+        // Both regular attempts collapse everything into one merged item —
+        // exactly the measured v1.0.83 shape.
+        return JSON.stringify({
+          capabilities: [
+            { name: 'Manage all product records', description: 'Owns Widget, Gadget, and Gizmo records across the whole platform.', category: 'core', entities: ['Widget'], journeys: [] },
+          ],
+        });
+      }
+      // Third call = the thin-catalog nudge. It must be told the distinct
+      // families by name, and this time returns one grounded capability PER
+      // family — the measured v1.0.84 shape.
+      return JSON.stringify({
+        capabilities: [
+          { name: 'Manage widgets', description: 'Tracks Widget records from creation through retirement for operators.', category: 'core', entities: ['Widget'], journeys: [] },
+          { name: 'Manage gadgets', description: 'Tracks Gadget records and their configuration state for operators.', category: 'core', entities: ['Gadget'], journeys: [] },
+          { name: 'Manage gizmos', description: 'Tracks Gizmo records and their assembly status for operators.', category: 'core', entities: ['Gizmo'], journeys: [] },
+        ],
+      });
+    };
+    try {
+      const catalog = await orch.aiExtractCapabilityCatalog(baseInput);
+      expect(callCount).toBe(3);
+      // The nudge call's retry_hint enumerates the real distinct families by
+      // name (evidence already computed deterministically, not invented).
+      const nudgeHint = captured[2]?.additionalContext?.retry_hint;
+      expect(nudgeHint).toMatch(/Widget route area/);
+      expect(nudgeHint).toMatch(/Gadget route area/);
+      expect(nudgeHint).toMatch(/Gizmo route area/);
+      expect(nudgeHint).toMatch(/single capability/i);
+      // The richer (3-item) nudge result replaces the thin 1-item result.
+      expect(catalog.length).toBe(3);
+      expect(catalog.map((c: any) => c.name).sort()).toEqual(['Manage gadgets', 'Manage gizmos', 'Manage widgets']);
+    } finally {
+      (aiService as any).generateComponentDescription = original;
+    }
+  });
+
+  it('does NOT spend the extra attempt when the catalog is already rich (control: healthy multi-item result is left untouched)', async () => {
+    const original = (aiService as any).generateComponentDescription;
+    let callCount = 0;
+    (aiService as any).generateComponentDescription = async () => {
+      callCount++;
+      return JSON.stringify({
+        capabilities: [
+          { name: 'Manage widgets', description: 'Tracks Widget records from creation through retirement for operators.', category: 'core', entities: ['Widget'], journeys: [] },
+          { name: 'Manage gadgets', description: 'Tracks Gadget records and their configuration state for operators.', category: 'core', entities: ['Gadget'], journeys: [] },
+          { name: 'Manage gizmos', description: 'Tracks Gizmo records and their assembly status for operators.', category: 'core', entities: ['Gizmo'], journeys: [] },
+        ],
+      });
+    };
+    try {
+      const catalog = await orch.aiExtractCapabilityCatalog(baseInput);
+      // catalogCountMin floors at 6 here, so both regular attempts run (2
+      // calls) — the point under test is that catalog.length (3) !== 1, so
+      // the thin-catalog nudge must NOT fire a 3rd call.
+      expect(callCount).toBe(2);
+      expect(catalog.length).toBe(3);
+    } finally {
+      (aiService as any).generateComponentDescription = original;
+    }
+  });
+
+  it('does NOT spend the extra attempt on a genuine 1-family repo (nothing to nudge toward)', async () => {
+    const original = (aiService as any).generateComponentDescription;
+    let callCount = 0;
+    (aiService as any).generateComponentDescription = async () => {
+      callCount++;
+      return JSON.stringify({
+        capabilities: [
+          { name: 'Manage widgets', description: 'Tracks Widget records from creation through retirement for operators.', category: 'core', entities: ['Widget'], journeys: [] },
+        ],
+      });
+    };
+    try {
+      const catalog = await orch.aiExtractCapabilityCatalog({
+        ...baseInput,
+        // Only ONE distinct deterministic family — the nudge has nothing
+        // evidence-backed to enumerate, so it must not fire.
+        candidateCapabilities: [candidateCapabilities[0]],
+        dataEntities: [dataEntities[0]],
+      });
+      expect(callCount).toBe(2); // the two regular attempts only, no nudge call
+      expect(catalog.length).toBe(1);
+    } finally {
+      (aiService as any).generateComponentDescription = original;
+    }
+  });
+});
+
+describe('splitLargeBehaviorSurfaceByModule (defect #33 — catalog VARIANCE, single-large-surface fallback split)', () => {
+  const mkEntry = (name: string, file: string, index: number): CASEntryPoint => ({
+    id: `entry_${name}_${index}`,
+    source_node: `node_${name}_${index}`,
+    type: 'message',
+    name,
+    trigger: { event: name },
+    handler: { node_id: `node_${name}_${index}`, method_name: name, file },
+  } as CASEntryPoint);
+
+  const mkSurface = (total: number, opsSource: CASEntryPoint[]): any => ({
+    id: 'cap_mcp_tool_surface',
+    name: 'Mcp Tool Surface',
+    description: `Behavior surface: ${total} mcp tool entry points`,
+    category: 'internal',
+    operations: opsSource.slice(0, 12).map(ep => ({ entry_point_id: ep.id, entry_point_type: 'message', action: 'Process' })),
+    related_entities: [],
+    related_domains: ['mcp_tool'],
+    criticality: 'medium',
+    criticality_factors: [`${total} message entry points form one cohesive behavior surface`],
+  });
+
+  it('splits one merged blob into multiple module-grounded capabilities when handlers span distinct modules (Klauro-self shape: tools/ graph/ analysis/)', () => {
+    const toolsEntries = Array.from({ length: 6 }, (_, i) => mkEntry(`tool_${i}`, 'src/tools/registry.ts', i));
+    const graphEntries = Array.from({ length: 5 }, (_, i) => mkEntry(`graph_${i}`, 'src/graph/api.ts', i));
+    const analysisEntries = Array.from({ length: 4 }, (_, i) => mkEntry(`analysis_${i}`, 'src/analysis/engine.ts', i));
+    const entryPoints = [...toolsEntries, ...graphEntries, ...analysisEntries];
+    const surface = mkSurface(entryPoints.length, entryPoints);
+
+    const result = orch.splitLargeBehaviorSurfaceByModule(surface, entryPoints, []);
+
+    expect(result.length).toBe(3);
+    const names = result.map((r: any) => r.name);
+    expect(names.some((n: string) => /tools/i.test(n))).toBe(true);
+    expect(names.some((n: string) => /graph/i.test(n))).toBe(true);
+    expect(names.some((n: string) => /analysis/i.test(n))).toBe(true);
+    // Each split capability's operations only reference ITS OWN module's
+    // entry points — no cross-module bleed.
+    for (const capability of result) {
+      const ids = capability.operations.map((operation: any) => operation.entry_point_id);
+      const modulesTouched = new Set(ids.map((id: string) => id.replace(/^entry_/, '').split('_')[0]));
+      expect(modulesTouched.size).toBe(1);
+    }
+  });
+
+  it('leaves a genuinely single-module surface unsplit rather than manufacturing groups', () => {
+    const entries = Array.from({ length: 15 }, (_, i) => mkEntry(`tool_${i}`, 'src/tools/registry.ts', i));
+    const surface = mkSurface(entries.length, entries);
+
+    const result = orch.splitLargeBehaviorSurfaceByModule(surface, entries, []);
+
+    expect(result.length).toBe(1);
+    expect(result[0]).toBe(surface); // unchanged reference — no fabricated split
+  });
+
+  it('no-ops (returns the surface unchanged) when raw entry points are unavailable', () => {
+    const entries = Array.from({ length: 6 }, (_, i) => mkEntry(`tool_${i}`, 'src/tools/registry.ts', i));
+    const surface = mkSurface(15, entries);
+    const result = orch.splitLargeBehaviorSurfaceByModule(surface, [], []);
+    expect(result).toEqual([surface]);
+  });
+});
+
 describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung-2: caps:1 + product-name collapse)', () => {
   it('drops a description-less raw candidate-label item instead of shipping it as the sole capability', async () => {
     // Reproduces the live Klauro-self defect: the AI catalog stage returned a
