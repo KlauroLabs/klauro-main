@@ -5543,6 +5543,48 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
     }
   });
 
+  it('sanitizes arrow-chain journey echoes to their purpose head instead of shipping the trace (real rpg/server Python CAS, v1.0.96)', async () => {
+    // Measured live: the model echoed JOURNEY names verbatim as capability
+    // names — all six caps were "action -> outcome" traces ("Create attack ->
+    // Currency created"). The head is a genuine purpose phrase; the arrow tail
+    // is trace noise. Rejecting outright would collapse the catalog (the
+    // deterministic fallback candidates are the same journey names) — so the
+    // head is KEPT and the tail dropped. A head that is not a purpose phrase
+    // (single word / code-shaped) still rejects the item.
+    const original = (aiService as any).generateComponentDescription;
+    (aiService as any).generateComponentDescription = async () => JSON.stringify({
+      capabilities: [
+        { name: 'Create attack -> Currency created', description: 'Players create attacks which generate currency rewards for combat.', category: 'core', entities: ['Currency'] },
+        { name: 'Update quest objective -> Quest updated', description: 'Players progress quests by completing objectives across the world.', category: 'core', entities: ['Quest'] },
+        { name: 'x -> y', description: 'A meaningless single-letter trace that has no purpose head at all.', category: 'core', entities: [] },
+      ],
+    });
+    try {
+      const catalog = await orch.aiExtractCapabilityCatalog({
+        systemName: 'Sundered World',
+        enhancedSystemPurpose: { primary_domain: 'game-automation', core_concepts: [] },
+        frameworks: ['fastapi'], userJourneys: [],
+        dataEntities: [
+          { id: 'entity_currency', name: 'Currency' },
+          { id: 'entity_quest', name: 'Quest' },
+        ],
+        candidateCapabilities: [
+          { name: 'Create attack -> Currency created', related_entities: ['entity_currency'], operations: [] },
+          { name: 'Update quest objective -> Quest updated', related_entities: ['entity_quest'], operations: [] },
+        ],
+        externalServices: [], flowGraph: { capabilities: [] },
+        projectTextSignal: { concepts: [], evidence: [] }, budgetMs: 30000,
+      });
+      const names = catalog.map((c: any) => c.name);
+      expect(names).toContain('Create attack');
+      expect(names).toContain('Update quest objective');
+      expect(names.some((n: string) => /->|→/.test(n))).toBe(false);
+      expect(names.some((n: string) => n === 'x' || n === 'x -> y')).toBe(false);
+    } finally {
+      (aiService as any).generateComponentDescription = original;
+    }
+  });
+
   it('keeps a real AI-authored capability whose description was genuinely supplied', async () => {
     // Control: the guard must not reject legitimate output.
     const original = (aiService as any).generateComponentDescription;

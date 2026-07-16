@@ -9476,7 +9476,9 @@ export class AnalyzerOrchestrator {
     };
     const staged: StagedCatalogItem[] = [];
     for (const item of catalog) {
-      const name = String(item.name || '').replace(/\s+/g, ' ').trim();
+      // `let`: the arrow-chain sanitization below may rewrite the name to its
+      // purpose-phrase head ("Create attack -> Currency created" -> "Create attack").
+      let name = String(item.name || '').replace(/\s+/g, ' ').trim();
       const itemEntityNamesRaw = (Array.isArray(item.entities) ? item.entities : []).map((value: unknown) => String(value || '')).filter(Boolean);
       // Strip route/path/JSON mechanism leakage the model sometimes emits despite
       // the prompt; rebuild from the entities the capability touches if too thin.
@@ -9521,6 +9523,32 @@ export class AnalyzerOrchestrator {
       // candidates, then the merged large-behavior-surface re-derivation —
       // see the `else` branch in applyAIInterpretation) instead of shipping
       // the bad single item.
+      // ARROW-CHAIN SANITIZATION (measured live on the real rpg/server Python
+      // CAS, v1.0.96, 2026-07-16): the model echoed JOURNEY names verbatim as
+      // capability names — "Create attack -> Currency created", "Update quest
+      // objective -> Quest updated" — six of six. An arrow-joined
+      // "action -> outcome" is a journey TRACE, not a purpose — but rejecting
+      // the item outright would be worse (the deterministic fallback
+      // candidates are the same journey names, so the catalog would collapse
+      // to zero): the HEAD segment is a genuine verb-phrase purpose ("Create
+      // attack"), only the arrow tail is trace noise. So: keep the head, drop
+      // the tail — and only when the head reads like a purpose phrase
+      // (multi-word, alphabetic, no code-ish tokens); otherwise reject.
+      // This runs BEFORE the raw-label guard on purpose: a journey-shaped name
+      // often IS a verbatim echo of a candidate area, and the echo check would
+      // reject the whole item before the salvageable head is ever considered.
+      // Mechanical traces stay rejected here (same tells the guard uses):
+      // a "Run <symbol>" head or any snake_case code token means trace, not
+      // purpose — never salvage those.
+      if (/(->|→|»)/.test(name)) {
+        if (/^run\s+[a-z_$][\w$.]*/i.test(name) || /\b[a-z][a-z0-9]*_[a-z0-9]+\b/.test(name)) continue;
+        const head = name.split(/->|→|»/)[0].trim().replace(/[:\-–—\s]+$/, '');
+        const headIsPurposePhrase =
+          /^[A-Za-z][A-Za-z0-9' ]+$/.test(head) &&
+          head.split(/\s+/).length >= 2;
+        if (!headIsPurposePhrase || this.isRawCandidateLabelName(head, candidateAreas)) continue;
+        name = head;
+      }
       if (this.isRawCandidateLabelName(name, candidateAreas)) continue;
       const key = name.toLowerCase();
       if (seen.has(key)) continue;
