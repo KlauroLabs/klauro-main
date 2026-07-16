@@ -73,6 +73,28 @@ function soapExit(sourceNode: string, file: string): CASExitPoint {
   } as CASExitPoint;
 }
 
+/** A .NET `System.IO.Ports.SerialPort` call as the C# analyzer's generic
+ *  "external library call" extraction emits it (csharp-analyzer.ts
+ *  `identifyCSharpLibrary` / `isExternalLibraryCall`): `type: 'sdk'`, the
+ *  class name lands on `target.sdk`/`metadata.targetClass`, and — because
+ *  there is no remote SERVICE to name — `target.resource`/`target.endpoint`
+ *  are both absent. That absence is exactly what the in-library-plumbing
+ *  filter (`isLibraryPlumbingExit`) uses to drop rxjs-operator-style noise,
+ *  so without the device-I/O carve-out this exit point would be silently
+ *  discarded even though it's a real hardware boundary. */
+function serialPortExit(sourceNode: string, file: string, method: string, async = false): CASExitPoint {
+  return {
+    id: `exit_call_${method}`,
+    source_node: sourceNode,
+    type: 'sdk',
+    name: `External call: SerialPort.${method}`,
+    description: 'Library call to External Library',
+    target: { sdk: 'SerialPort' },
+    operation: { action: method, async },
+    metadata: { file, targetClass: 'SerialPort', targetMethod: method, library: 'External Library' },
+  } as CASExitPoint;
+}
+
 function queueConsumer(sourceNode: string, file: string): CASEntryPoint {
   return {
     id: 'entry_msg_1',
@@ -218,6 +240,63 @@ describe('communication-seams classifier', () => {
     const sync = r.seams.filter(s => s.modality === 'sync');
     expect(sync).toHaveLength(1);
     expect(sync[0].target).toBe('CardManagementWS');
+  });
+
+  it('surfaces a SerialPort call as a device-I/O seam instead of dropping it as library plumbing', () => {
+    const r = classifyCommunicationSeams({
+      nodes: [node('fn_connect', 'hoggan.DeviceConnection/Zach/Comport.cs')],
+      exit_points: [serialPortExit('fn_connect', 'hoggan.DeviceConnection/Zach/Comport.cs', 'Open')],
+      entry_points: [],
+      data_lineage: [],
+      data_entities: [],
+      deployable_evidence: [],
+    });
+    expect(r.seams).toHaveLength(1);
+    const seam = r.seams[0];
+    expect(seam.kind).toBe('device_io');
+    expect(seam.modality).toBe('sync');
+    expect(seam.target).toBe('SerialPort');
+    expect(seam.metadata?.device_io).toBe(true);
+    expect(r.inventory.counts.total).toBe(1);
+  });
+
+  it('honors an explicit async flag on a device-I/O exit (fire-and-forget write)', () => {
+    const r = classifyCommunicationSeams({
+      nodes: [node('fn_send', 'hoggan.DeviceConnection/Zach/Comport.cs')],
+      exit_points: [serialPortExit('fn_send', 'hoggan.DeviceConnection/Zach/Comport.cs', 'WriteAsync', true)],
+      entry_points: [],
+      data_lineage: [],
+      data_entities: [],
+      deployable_evidence: [],
+    });
+    expect(r.seams).toHaveLength(1);
+    expect(r.seams[0].modality).toBe('async');
+    expect(r.seams[0].kind).toBe('device_io');
+  });
+
+  it('still drops a non-device library call with the same shape as library plumbing (control)', () => {
+    // Same exit shape (no target.resource/endpoint, metadata.library set) but
+    // the resolved class name carries no serial/USB/HID signal — must remain
+    // filtered as in-library plumbing, proving the carve-out is evidence-gated
+    // on the device-I/O signal, not on "no resource identity" alone.
+    const nonDeviceExit: CASExitPoint = {
+      id: 'exit_call_ToString',
+      source_node: 'fn_format',
+      type: 'sdk',
+      name: 'External call: StringBuilder.ToString',
+      target: {},
+      operation: { action: 'ToString', async: false },
+      metadata: { file: 'apps/checkout/format.cs', targetClass: 'StringBuilder', library: 'External Library' },
+    } as CASExitPoint;
+    const r = classifyCommunicationSeams({
+      nodes: [node('fn_format', 'apps/checkout/format.cs')],
+      exit_points: [nonDeviceExit],
+      entry_points: [],
+      data_lineage: [],
+      data_entities: [],
+      deployable_evidence: [],
+    });
+    expect(r.seams).toHaveLength(0);
   });
 
   it('rolls up to a deployable-level inventory when deployables exist', () => {

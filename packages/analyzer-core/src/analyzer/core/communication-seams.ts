@@ -43,8 +43,11 @@ export interface CommunicationSeam {
   modality: SeamModality;
   /** 0..1 — how sure we are of the modality, from the driving fact. */
   confidence: number;
-  /** The kind of fact this seam derives from. */
-  kind: 'exit_point' | 'messaging' | 'passive_state' | 'cross_repo_contract';
+  /** The kind of fact this seam derives from. `device_io` is an `exit_point`
+   *  whose resolved library/class identifier names a serial/USB/HID device
+   *  API — a physical-hardware boundary, called out distinctly from generic
+   *  in-process `sdk` calls so it reads as its own seam class. */
+  kind: 'exit_point' | 'messaging' | 'passive_state' | 'cross_repo_contract' | 'device_io';
   /** Component that initiates / writes. */
   source: string;
   /** Component that serves / reads / the external target. */
@@ -160,11 +163,74 @@ function exitModality(exit: CASExitPoint): { modality: SeamModality; confidence:
  */
 function isLibraryPlumbingExit(exit: CASExitPoint): boolean {
   if (exit.type !== 'sdk') return false;
+  if (isDeviceIOExit(exit)) return false; // hardware boundary — never plumbing, see below
   if (!(exit.metadata as any)?.library) return false; // no resolved-import evidence
   if (exit.target?.service_id || exit.target?.resource) return false; // named external resource -> real seam
   const endpoint = exit.target?.endpoint;
   const action = exit.operation?.action;
   return !endpoint || endpoint === action;
+}
+
+/**
+ * Generic signals for DEVICE / HARDWARE I/O — a class of real external seam
+ * the plumbing filter above would otherwise discard. A serial/USB/HID call
+ * resolves to a "library" the same way an in-process helper does (no
+ * `target.service_id`/`resource`, since there's no remote service to name),
+ * so `isLibraryPlumbingExit` would normally treat it as noise. But the
+ * counterparty here is PHYSICAL HARDWARE, not an in-process operator — a real
+ * component/system boundary per SEMANTIC-MODEL.md ("seams are component/
+ * system boundaries, never in-library plumbing"), exactly like a DB or HTTP
+ * seam, just to a device instead of a service.
+ *
+ * Matched on the RESOLVED library/class/target identifier the exit point
+ * already carries (never a project/company/product name — evidence-gated on
+ * the I/O API surface itself) so this fires for any language/analyzer whose
+ * exit-point extraction names a serial/USB/HID API: .NET
+ * `System.IO.Ports.SerialPort`, Python `pyserial` (`serial.Serial`), Node's
+ * `serialport` package, Java jSerialComm/RXTX, native `libusb`/`WinUsb`/HID
+ * bindings (`hidapi`/`HidSharp`). Deliberately narrow to serial/USB/HID
+ * device-I/O identifiers — not a broad industrial-protocol list — so it
+ * stays evidence-gated rather than guessing at "device-shaped" names.
+ */
+const DEVICE_IO_SIGNAL =
+  /serial\s*port|system\.io\.ports|\bpyserial\b|\blibusb\b|\bwinusb\b|\bhidapi\b|\bhidsharp\b|\busb\b|\bhid\b/i;
+
+function deviceIOSignalText(exit: CASExitPoint): string {
+  const meta = exit.metadata as any;
+  return [
+    exit.target?.sdk,
+    exit.target?.resource,
+    exit.target?.endpoint,
+    meta?.targetClass,
+    meta?.library,
+    exit.name,
+    exit.description,
+  ]
+    .filter(Boolean)
+    .join(' ');
+}
+
+/** True when an `sdk`-type exit point's resolved library/class identifier
+ *  names a serial/USB/HID device-I/O API — evidence-gated on the actual API
+ *  surface the analyzer resolved, never on a project/module name. */
+function isDeviceIOExit(exit: CASExitPoint): boolean {
+  if (exit.type !== 'sdk') return false;
+  return DEVICE_IO_SIGNAL.test(deviceIOSignalText(exit));
+}
+
+/**
+ * Modality for a DEVICE/HARDWARE I/O exit. A serial/USB/HID call is a
+ * persistent, driver-mediated channel to physical hardware — the closest
+ * existing bucket is SYNC (the caller issues a command/read and blocks on
+ * the device's reply), the same reasoning `exitModality` applies to a direct
+ * DB read. Honor an explicit async flag the same way the 'sdk' branch does,
+ * for a fire-and-forget write or an event subscription on incoming device
+ * data.
+ */
+function deviceIOModality(exit: CASExitPoint): { modality: SeamModality; confidence: number } {
+  return exit.operation?.async === true
+    ? { modality: 'async', confidence: 0.75 }
+    : { modality: 'sync', confidence: 0.65 };
 }
 
 /** Top-level component key for a file path — the deployable that owns it when
@@ -257,26 +323,29 @@ export function classifyCommunicationSeams(
   // the owning component to the named external target.
   for (const exit of output.exit_points || []) {
     if (isLibraryPlumbingExit(exit)) continue;
-    const verdict = exitModality(exit);
+    const isDevice = isDeviceIOExit(exit);
+    const verdict = isDevice ? deviceIOModality(exit) : exitModality(exit);
     if (!verdict) continue;
     const file = (exit.metadata as any)?.file || fileForNode(exit.source_node, nodeFile);
     const source = componentOf(file);
     const target =
       exit.target?.service_id ||
       exit.target?.resource ||
+      exit.target?.sdk ||
       exit.target?.endpoint ||
       exit.name ||
       'external';
+    const typeLabel = isDevice ? 'device' : exit.type;
     seams.push({
-      id: nextId(exit.type),
+      id: nextId(isDevice ? 'device' : exit.type),
       modality: verdict.modality,
       confidence: verdict.confidence,
-      kind: exit.type === 'message' || exit.type === 'event' ? 'messaging' : 'exit_point',
+      kind: isDevice ? 'device_io' : (exit.type === 'message' || exit.type === 'event' ? 'messaging' : 'exit_point'),
       source,
       target: String(target),
       evidence: `exit:${exit.id} type=${exit.type} async=${exit.operation?.async ?? 'n/a'}`,
-      summary: `${source} --${verdict.modality}--> ${String(target)} (${exit.type})`,
-      metadata: { exit_type: exit.type, exit_point: exit.id },
+      summary: `${source} --${verdict.modality}--> ${String(target)} (${typeLabel})`,
+      metadata: { exit_type: exit.type, exit_point: exit.id, ...(isDevice ? { device_io: true } : {}) },
     });
   }
 
