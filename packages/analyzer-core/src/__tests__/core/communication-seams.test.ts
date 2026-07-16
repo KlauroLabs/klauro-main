@@ -242,6 +242,26 @@ describe('communication-seams classifier', () => {
     expect(sync[0].target).toBe('CardManagementWS');
   });
 
+  it('does NOT count a WPF/UI event handler as a messaging seam, but DOES count a real message consumer (Hoggan 263-phantom-seams guard)', () => {
+    const uiClick: CASEntryPoint = {
+      id: 'entry_ui_click_1', source_node: 'fn_onSave', type: 'event', name: 'OnSave',
+      trigger: { event: 'Click' },
+      handler: { node_id: 'fn_onSave', method_name: 'OnSave', file: 'hoggan.windows.presentation/MainWindow.xaml.cs' },
+      metadata: { entry_type: 'ui_event_handler', framework: 'wpf' },
+    } as CASEntryPoint;
+    const r = classifyCommunicationSeams({
+      nodes: [node('fn_onSave', 'hoggan.windows.presentation/MainWindow.xaml.cs'), node('fn_process', 'apps/reporting/email.worker.ts')],
+      exit_points: [],
+      entry_points: [uiClick, queueConsumer('fn_process', 'apps/reporting/email.worker.ts')],
+      data_lineage: [], data_entities: [], deployable_evidence: [],
+    });
+    const messaging = r.seams.filter(s => s.kind === 'messaging');
+    // Only the real message-queue consumer becomes a messaging seam; the UI Click handler does not.
+    expect(messaging).toHaveLength(1);
+    expect(messaging[0].evidence).toContain('entry_msg_1');
+    expect(r.seams.some(s => s.evidence.includes('entry_ui_click_1'))).toBe(false);
+  });
+
   it('surfaces a SerialPort call as a device-I/O seam instead of dropping it as library plumbing', () => {
     const r = classifyCommunicationSeams({
       nodes: [node('fn_connect', 'hoggan.DeviceConnection/Zach/Comport.cs')],

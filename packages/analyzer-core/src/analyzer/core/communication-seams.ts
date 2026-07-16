@@ -353,6 +353,22 @@ export function classifyCommunicationSeams(
   // consume side of an async seam. They complete a producer's fire-and-forget.
   for (const ep of output.entry_points || []) {
     if (ep.type !== 'message' && ep.type !== 'event') continue;
+    // EXCLUDE UI/desktop event handlers: a WPF Click / DOM onClick / Loaded /
+    // SelectionChanged handler is an INBOUND user-interaction entry point, not
+    // the consume side of an external async message channel — there is no
+    // in-codebase producer completing a fire-and-forget, the user/OS triggers
+    // it. A message-broker/event-bus consumer (Kafka/SQS/webhook) is the real
+    // messaging seam. Evidence-gated on the entry's own tag (analyzers mark UI
+    // handlers as entry_type 'ui_event_handler') plus a known-UI-event-name
+    // fallback, so a genuine message consumer is never dropped. Without this,
+    // surfacing a desktop app's full UI handler set inflates messaging seams by
+    // one-per-button (Hoggan: 263 phantom async seams from WPF Click handlers).
+    const epMeta = (ep.metadata || {}) as Record<string, unknown>;
+    const triggerEvent = String(ep.trigger?.event || ep.name || '');
+    const isUiEventHandler =
+      epMeta.entry_type === 'ui_event_handler' ||
+      /^(?:on)?(?:Click|DoubleClick|Loaded|Unloaded|Closing|Closed|MouseDown|MouseUp|MouseMove|MouseEnter|MouseLeave|MouseWheel|SelectionChanged|TextChanged|ValueChanged|Checked|Unchecked|GotFocus|LostFocus|KeyDown|KeyUp|KeyPress|Drop|DragEnter|DragLeave|DragOver|Scroll|Resize|Submit|Change|Input|Focus|Blur|Hover)$/i.test(triggerEvent);
+    if (isUiEventHandler) continue;
     const file = ep.handler?.file || fileForNode(ep.source_node, nodeFile);
     const consumer = componentOf(file);
     const channel = ep.trigger?.event || ep.name || 'channel';
