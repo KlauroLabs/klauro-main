@@ -2885,6 +2885,62 @@ describe('evidence-driven security boundaries and summary', () => {
     expect(summary.unprotected_sensitive_ops).toEqual([]);
     expect(summary.assumed_vs_enforced.missing).toBe(0);
   });
+
+  it('lifts a route behind auth middleware onto the boundary via the guards edge (the real route-surface bridge), while an unprotected route stays out', async () => {
+    // Mirrors auth-analyzer.ts's actual output shape: a mechanism node, a
+    // route/handler node it protects, and a `guards` edge (category
+    // 'security') from mechanism -> route with `metadata.target_entry_point`
+    // pointing at the entry point id — exactly what entry-point-security.ts
+    // needs to join against `ep.handler.node_id`.
+    const nodes = [
+      node({ id: 'auth_passport_mechanism', name: 'Passport strategy', type: 'auth_strategy' as any }),
+    ];
+    const protectedEntry = httpEntry({
+      id: 'entry_protected_route',
+      source_node: 'protected_route_handler',
+      method: 'GET',
+      path: '/oauth/callback',
+      handler: { node_id: 'protected_route_handler', method_name: 'GET /oauth/callback' },
+    });
+    const openEntry = httpEntry({
+      id: 'entry_open_route',
+      source_node: 'open_route_handler',
+      method: 'GET',
+      path: '/public/health',
+      handler: { node_id: 'open_route_handler', method_name: 'GET /public/health' },
+    });
+    const edges = [
+      {
+        id: 'edge_guards_1',
+        source: 'auth_passport_mechanism',
+        target: 'protected_route_handler',
+        type: 'guards',
+        category: 'security',
+        metadata: { library: 'passport', mechanism: 'Passport strategy', target_entry_point: 'entry_protected_route' },
+      },
+    ] as any;
+
+    const boundaries = orch.buildSecurityBoundaries(nodes, [protectedEntry, openEntry], undefined, edges);
+    const auth = boundaries.find((b: any) => b.boundary_type === 'authentication');
+    const enforcementIds = auth.enforcement_points.map((p: any) => p.node_id);
+    const enforcedIds = auth.enforcement_points
+      .filter((p: any) => p.confidence === 'enforced')
+      .map((p: any) => p.node_id);
+
+    // The protected route's own handler node is now an enforcement point —
+    // this is the join entry-point-security.ts matches on.
+    expect(enforcedIds).toContain('protected_route_handler');
+    // The unprotected route's handler was never touched by a guards edge or
+    // an authenticated entry point, so it must never show up as protected.
+    expect(enforcementIds).not.toContain('open_route_handler');
+
+    const contexts = orch.buildSecurityContexts(nodes, [protectedEntry, openEntry], edges);
+    const authContext = contexts.find((c: any) => c.id === 'security_ctx_authentication');
+    expect(authContext.scope.node_ids).toContain('protected_route_handler');
+    expect(authContext.scope.entry_points).toContain('entry_protected_route');
+    expect(authContext.scope.node_ids).not.toContain('open_route_handler');
+    expect(authContext.scope.entry_points).not.toContain('entry_open_route');
+  });
 });
 
 describe('calibrated system health scoring', () => {

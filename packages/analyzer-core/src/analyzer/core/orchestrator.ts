@@ -1579,7 +1579,7 @@ export class AnalyzerOrchestrator {
     await yieldToEventLoop();
     phaseStart = Date.now();
     const productEntryPointsForSecurity = this.filterPrimaryProductEntryPoints(allEntryPoints, allNodes, projectPath);
-    const securityBoundaries = this.buildSecurityBoundaries(allNodes, allEntryPoints, projectPath);
+    const securityBoundaries = this.buildSecurityBoundaries(allNodes, allEntryPoints, projectPath, allEdges);
     logTiming('pp_securityBoundaries', phaseStart);
     await yieldToEventLoop();
     phaseStart = Date.now();
@@ -2805,7 +2805,7 @@ export class AnalyzerOrchestrator {
     );
     const dataSummary = this.buildDataSummary(dataEntities, nodes);
     const productEntryPointsForSecurity = this.filterPrimaryProductEntryPoints(entryPoints, nodes, projectPath);
-    const securityBoundaries = this.buildSecurityBoundaries(nodes, entryPoints, projectPath);
+    const securityBoundaries = this.buildSecurityBoundaries(nodes, entryPoints, projectPath, edges);
     const securitySummary = this.buildSecuritySummary(securityBoundaries, nodes, productEntryPointsForSecurity);
     const temporalStability = this.buildTemporalStability(nodes, gitAnalyzer);
     const stabilitySummary = this.buildStabilitySummary(temporalStability);
@@ -16168,7 +16168,7 @@ export class AnalyzerOrchestrator {
     return 'low';
   }
 
-  private buildSecurityBoundaries(nodes: CASNode[], entryPoints: CASEntryPoint[], projectPath?: string): CASSecurityBoundary[] {
+  private buildSecurityBoundaries(nodes: CASNode[], entryPoints: CASEntryPoint[], projectPath?: string, edges: CASEdge[] = []): CASSecurityBoundary[] {
     const boundaries: CASSecurityBoundary[] = [];
     const effectiveNodes = projectPath
       ? nodes.filter(node => this.isPrimaryProductNodeForProject(node, projectPath))
@@ -16178,6 +16178,29 @@ export class AnalyzerOrchestrator {
       : entryPoints.filter(ep =>
         (!ep.handler?.file || this.isPrimaryProductPath(ep.handler.file))
       );
+
+    // ROUTE-SURFACE BRIDGE: auth-analyzer.ts (and any other per-site framework
+    // analyzer following the same contract) emits `guards`/`authorizes` edges
+    // of category 'security' directly from an auth mechanism node to the
+    // route/handler node it protects (edge.target === that entry point's
+    // `handler.node_id`), with `metadata.mechanism` naming the mechanism. This
+    // is real call-site evidence — "this specific route is wrapped by this
+    // specific guard" — unlike name-vocabulary matching, which can only ever
+    // find the mechanism's OWN declaration node, never the handler it protects.
+    // Scoped to nodes that still exist in `effectiveNodes` so project-scoped
+    // security boundaries don't leak edges from outside the product.
+    const effectiveNodeIds = new Set(effectiveNodes.map(n => n.id));
+    const securityEdges = edges.filter(e =>
+      e.category === 'security' &&
+      (e.type === 'guards' || e.type === 'authorizes') &&
+      (effectiveNodeIds.size === 0 || effectiveNodeIds.has(e.target) || effectiveNodeIds.has(e.source))
+    );
+    const guardEdges = securityEdges.filter(e => e.type === 'guards');
+    const authorizeEdges = securityEdges.filter(e => e.type === 'authorizes');
+    const mechanismLabel = (edge: CASEdge): string => {
+      const meta = (edge.metadata as any) || {};
+      return meta.mechanism || meta.library ? `${meta.library ? `${meta.library}: ` : ''}${meta.mechanism || 'guard'}` : 'Guard edge';
+    };
 
     const securityNodes = effectiveNodes.filter(n => this.hasSecurityEnforcementSemantics(n));
     const enforcementNameIndex = new Set<string>();
@@ -16197,7 +16220,8 @@ export class AnalyzerOrchestrator {
     ];
     const evidenceAuthNodes = securityNodes.filter(n =>
       this.hasAuthAnalyzerEvidence(n) && !this.hasAuthorizationAnalyzerEvidence(n));
-    const authNodes = evidenceAuthNodes.length > 0
+    const authNodesAreEvidenceBased = evidenceAuthNodes.length > 0;
+    const authNodes = authNodesAreEvidenceBased
       ? evidenceAuthNodes
       : securityNodes.filter(n => {
         const tokens = this.signalTokens(n.name);
@@ -16206,7 +16230,15 @@ export class AnalyzerOrchestrator {
 
     const authenticatedEntryPoints = effectiveEntryPoints.filter(ep => ep.security?.authenticated);
 
-    if (authNodes.length > 0 || authenticatedEntryPoints.length > 0) {
+    if (authNodes.length > 0 || authenticatedEntryPoints.length > 0 || guardEdges.length > 0) {
+      // Confidence is honest about its own basis: a node the auth analyzer
+      // TAGGED (auth_strategy/auth_policy/guard, or a route it marked
+      // auth-protected) is 'enforced' — real per-site evidence. A node found
+      // only by the name-vocabulary fallback (no framework analyzer
+      // recognized this repo's auth library at all) is 'assumed' — a plausible
+      // guess from spelling, not verified enforcement. Previously both were
+      // asserted 'enforced' uniformly, which is exactly the overconfidence
+      // `assumed_vs_enforced` is supposed to catch.
       const enforcementPoints: Array<{
         node_id: string;
         mechanism: string;
@@ -16214,25 +16246,53 @@ export class AnalyzerOrchestrator {
       }> = authNodes.map(g => ({
         node_id: g.id,
         mechanism: this.inferAuthMechanism(g),
-        confidence: 'enforced' as const
+        confidence: authNodesAreEvidenceBased ? 'enforced' as const : 'assumed' as const
       }));
+      const seenNodeIds = new Set(enforcementPoints.map(p => p.node_id));
 
-      const unresolvedGuards = new Map<string, string>();
-      for (const ep of authenticatedEntryPoints) {
-        for (const guard of ep.security?.guards || []) {
-          const guardKey = guard.toLowerCase();
-          if (unresolvedGuards.has(guardKey)) continue;
-          const guardTokens = this.signalTokens(guard);
-          const resolved = enforcementNameIndex.has(guardKey) ||
-            guardTokens.some(token => enforcementNameIndex.has(token));
-          if (!resolved) unresolvedGuards.set(guardKey, ep.handler?.node_id || ep.source_node);
-        }
+      // Route-surface bridge: `guards` edges point straight at the protected
+      // route/handler node (edge.target), which is exactly what an entry
+      // point's `handler.node_id` is built from in auth-analyzer.ts — so this
+      // is the join entry-point-security.ts needs, emitted at the source
+      // instead of guessed downstream.
+      for (const edge of guardEdges) {
+        if (!edge.target || seenNodeIds.has(edge.target)) continue;
+        seenNodeIds.add(edge.target);
+        enforcementPoints.push({
+          node_id: edge.target,
+          mechanism: mechanismLabel(edge),
+          confidence: 'enforced'
+        });
       }
-      for (const [guardName, nodeId] of [...unresolvedGuards.entries()].slice(0, 25)) {
+
+      // Every authenticated entry point gets ITS OWN handler/source node
+      // represented as an enforcement point — not just one representative
+      // node per unique guard NAME (the previous dedup key), which silently
+      // dropped every entry point after the first to share a guard string.
+      // Confidence is 'enforced' when the declared guard name resolves to a
+      // separately-evidenced security node (or the node is already a guard-edge
+      // target above); otherwise 'assumed' — the route-level auth flag is
+      // still analyzer-sourced, but the specific mechanism is unverified.
+      const perEntryPointCap = 500;
+      let addedFromEntryPoints = 0;
+      for (const ep of authenticatedEntryPoints) {
+        if (addedFromEntryPoints >= perEntryPointCap) break;
+        const nodeId = ep.handler?.node_id || ep.source_node;
+        if (!nodeId || seenNodeIds.has(nodeId)) continue;
+        const guards = ep.security?.guards || [];
+        const resolved = guards.some(guard => {
+          const guardKey = guard.toLowerCase();
+          const guardTokens = this.signalTokens(guard);
+          return enforcementNameIndex.has(guardKey) || guardTokens.some(token => enforcementNameIndex.has(token));
+        });
+        seenNodeIds.add(nodeId);
+        addedFromEntryPoints++;
         enforcementPoints.push({
           node_id: nodeId,
-          mechanism: `Declared guard "${guardName}" (marker only; no resolved enforcement code)`,
-          confidence: 'assumed'
+          mechanism: guards.length > 0
+            ? `Guard "${guards.join(', ')}"${resolved ? '' : ' (marker only; no separately resolved enforcement code)'}`
+            : 'Entry point authentication marker',
+          confidence: resolved ? 'enforced' : 'assumed'
         });
       }
 
@@ -16274,7 +16334,8 @@ export class AnalyzerOrchestrator {
     // vocabulary only when no policy-engine evidence exists.
     const permissionVocabulary = ['role', 'roles', 'permission', 'permissions', 'crud', 'access', 'pundit', 'cancan', 'cancancan'];
     const evidencePermissionNodes = securityNodes.filter(n => this.hasAuthorizationAnalyzerEvidence(n));
-    const permissionNodes = evidencePermissionNodes.length > 0
+    const permissionNodesAreEvidenceBased = evidencePermissionNodes.length > 0;
+    const permissionNodes = permissionNodesAreEvidenceBased
       ? evidencePermissionNodes
       : securityNodes.filter(n => {
         const tokens = this.signalTokens(n.name);
@@ -16282,16 +16343,33 @@ export class AnalyzerOrchestrator {
           this.nameTokensIndicateAuthorizationActor(tokens);
       });
 
-    if (permissionNodes.length > 0) {
+    if (permissionNodes.length > 0 || authorizeEdges.length > 0) {
+      // Same honesty rule as boundary_auth above: policy-engine/auth_policy
+      // evidence is 'enforced'; a bare name-vocabulary match (Ability,
+      // OrderPolicy, ...) is a plausible guess, not verified enforcement.
+      const authzEnforcementPoints: CASSecurityBoundary['enforcement_points'] = permissionNodes.map(g => ({
+        node_id: g.id,
+        mechanism: this.inferAuthzMechanism(g),
+        confidence: permissionNodesAreEvidenceBased ? 'enforced' as const : 'assumed' as const
+      }));
+      const seenAuthzNodeIds = new Set(authzEnforcementPoints.map(p => p.node_id));
+      // Same route-surface bridge as boundary_auth: `authorizes` edges point
+      // at the protected route/handler node, not just the policy declaration.
+      for (const edge of authorizeEdges) {
+        if (!edge.target || seenAuthzNodeIds.has(edge.target)) continue;
+        seenAuthzNodeIds.add(edge.target);
+        authzEnforcementPoints.push({
+          node_id: edge.target,
+          mechanism: mechanismLabel(edge),
+          confidence: 'enforced'
+        });
+      }
+
       boundaries.push({
         id: 'boundary_authz',
         name: 'Authorization Boundary',
         boundary_type: 'authorization',
-        enforcement_points: permissionNodes.map(g => ({
-          node_id: g.id,
-          mechanism: this.inferAuthzMechanism(g),
-          confidence: 'enforced' as const
-        })),
+        enforcement_points: authzEnforcementPoints,
         trust_transition: {
           from_trust_level: 'partially-trusted',
           to_trust_level: 'trusted'
@@ -16485,8 +16563,26 @@ export class AnalyzerOrchestrator {
     return undefined;
   }
 
+  /**
+   * The generic architecture-library-usage analyzer (architectural-library-analyzer.ts)
+   * emits `library_${category}_usage` nodes for EVERY line in ANY file that merely
+   * imports a category's package and matches a coarse regex (e.g. any file that
+   * depends on `passport` and mentions the word "role" or "permission" ANYWHERE,
+   * including comments/tests/unrelated code). These are file-level "this repo
+   * depends on an auth library" facts with `subcategories: ['architecture-defining-library','auth']`
+   * — real for describing library usage, but NOT evidence that the specific line
+   * enforces access control. Conflating them with auth-analyzer.ts's real
+   * per-route mechanism nodes (auth_strategy/auth_policy/guard, or routes tagged
+   * auth-protected with `security_source`) is what let unrelated files (and their
+   * test entry points) get treated as security enforcement points. Excluded here.
+   */
+  private isGenericLibraryUsageNode(node: CASNode): boolean {
+    return typeof node.type === 'string' && /^library_.*_usage$/.test(node.type);
+  }
+
   /** True when a framework/library analyzer tagged this node as an auth mechanism. */
   private hasAuthAnalyzerEvidence(node: CASNode): boolean {
+    if (this.isGenericLibraryUsageNode(node)) return false;
     if (this.authMechanismKindOf(node)) return true;
     const metaSubs = ((node.metadata as any)?.subcategories || []) as string[];
     if (metaSubs.includes('auth') || metaSubs.includes('auth-protected')) return true;
@@ -16497,6 +16593,7 @@ export class AnalyzerOrchestrator {
 
   /** True when a framework/library analyzer tagged this node as an authorization (policy) mechanism. */
   private hasAuthorizationAnalyzerEvidence(node: CASNode): boolean {
+    if (this.isGenericLibraryUsageNode(node)) return false;
     if (this.authMechanismKindOf(node) === 'auth_policy') return true;
     // Spring Security / Pundit / OPA policy engines flag policy_engine on the node.
     if ((node.metadata as any)?.policy_engine === true) return true;
@@ -16549,6 +16646,14 @@ export class AnalyzerOrchestrator {
     // name. This is the evidence path — the name-keyword vocabulary below is a
     // legacy last-resort for nodes no analyzer tagged.
     if (this.hasAuthAnalyzerEvidence(node)) return true;
+    // A test node whose description happens to mention "guard"/"permission"
+    // (e.g. "reports permission-denied subdirectories without throwing", or a
+    // test verifying a Solidity `onlyOwner`/guard detector) is a test ABOUT
+    // security code, not enforcement code itself — the name-keyword fallback
+    // below has no way to tell those apart, so test nodes are excluded from it
+    // up front rather than let every security-adjacent test masquerade as a
+    // boundary enforcement point.
+    if (node.type === 'test' || node.category === 'test' || this.isTestFileNode(node)) return false;
     const subcategories = (node.subcategories || []).map(s => s.toLowerCase());
     if (node.type === 'guard' || node.type === 'middleware') return true;
     if (['guard', 'middleware', 'permission', 'policy', 'before_action', 'before_filter', 'ability'].some(s => subcategories.includes(s))) {
@@ -25049,10 +25154,46 @@ export class AnalyzerOrchestrator {
     const contexts: CASSecurityContext[] = [];
     const securityKeywords = ['auth', 'guard', 'middleware', 'permission', 'role', 'token', 'jwt', 'session', 'encrypt', 'decrypt', 'hash', 'password', 'credential', 'security', 'validate', 'sanitize'];
 
+    // KEYWORD-FALLBACK HYGIENE: this vocabulary scan is a last resort for
+    // repos no framework analyzer recognized, and it MUST NOT run on prose
+    // about security code — a test named "reports permission-denied
+    // subdirectories" or a benchmark harness named `passesTokenPolicy` is
+    // ABOUT auth/permissions/tokens, not enforcement code, and previously got
+    // swept in wholesale (this is the false-positive class a peer flagged via
+    // get_security_overview: minhash-clone-detection tests classified as
+    // "encryption" off the substring "hash" inside "minhash"). Two fixes:
+    // (1) exclude test/benchmark nodes outright, (2) match whole NAME TOKENS
+    // (signalTokens splits camelCase/snake_case) instead of raw substrings,
+    // so "minhash" is one token that never equals "hash".
+    // `isTestFileNode` catches the FILE-node case too (a `file` node named
+    // `container-topology-hash-identity.test.ts` isn't `type === 'test'`, but
+    // its path is unmistakably a test file) — a node-type check alone misses
+    // that and still let test-suite files leak into the encryption context.
+    const isTestOrBenchmarkNode = (n: CASNode): boolean =>
+      n.type === 'test' || n.category === 'test' ||
+      (n.subcategories || []).some(s => s.toLowerCase() === 'benchmark') ||
+      this.isTestFileNode(n);
     const securityNodes = nodes.filter(n => {
-      const nameLower = n.name.toLowerCase();
-      return securityKeywords.some(kw => nameLower.includes(kw));
+      if (isTestOrBenchmarkNode(n)) return false;
+      const nameTokens = this.signalTokens(n.name);
+      return securityKeywords.some(kw => nameTokens.includes(kw));
     });
+
+    // ROUTE-SURFACE BRIDGE (mirrors buildSecurityBoundaries): `guards`/`authorizes`
+    // edges of category 'security' point straight at the protected route/handler
+    // node (edge.target) and, via metadata.target_entry_point, straight at the
+    // entry point id itself — real per-route evidence that a security-context
+    // scope built from mechanism-declaration nodes alone can never express,
+    // since a mechanism's own node id is never the route it protects.
+    const securityEdges = edges.filter(e =>
+      e.category === 'security' && (e.type === 'guards' || e.type === 'authorizes')
+    );
+    const guardEdges = securityEdges.filter(e => e.type === 'guards');
+    const authorizeEdges = securityEdges.filter(e => e.type === 'authorizes');
+    const edgeTargetEntryPointIds = (edgeSet: CASEdge[]): string[] =>
+      edgeSet
+        .map(e => (e.metadata as any)?.target_entry_point as string | undefined)
+        .filter((id): id is string => Boolean(id));
 
     // Prefer framework/library-analyzer evidence for the auth node set. Only fall
     // back to the name substrings when the auth analyzer produced no evidence.
@@ -25060,11 +25201,11 @@ export class AnalyzerOrchestrator {
     const authNodes = evidenceAuthNodes.length > 0
       ? evidenceAuthNodes
       : securityNodes.filter(n => {
-        const name = n.name.toLowerCase();
-        return name.includes('auth') || name.includes('login') || name.includes('session') || name.includes('token');
+        const tokens = this.signalTokens(n.name);
+        return ['auth', 'login', 'session', 'token'].some(kw => tokens.includes(kw));
       });
 
-    if (authNodes.length > 0) {
+    if (authNodes.length > 0 || guardEdges.length > 0) {
       const methods = new Set<string>();
       for (const node of authNodes) {
         // The method is derived from the analyzer's OWN mechanism identity
@@ -25075,15 +25216,24 @@ export class AnalyzerOrchestrator {
       }
       if (methods.size === 0) methods.add('custom');
 
+      const authNodeIds = new Set(authNodes.map(n => n.id));
+      for (const edge of guardEdges) {
+        if (edge.target) authNodeIds.add(edge.target);
+      }
+      const authEntryPointIds = new Set(
+        entryPoints
+          .filter(ep => ep.metadata?.requires_auth || ep.metadata?.guards?.length)
+          .map(ep => ep.id)
+      );
+      for (const id of edgeTargetEntryPointIds(guardEdges)) authEntryPointIds.add(id);
+
       contexts.push({
         id: 'security_ctx_authentication',
         name: 'Authentication',
         type: 'authentication',
         scope: {
-          node_ids: authNodes.map(n => n.id),
-          entry_points: entryPoints
-            .filter(ep => ep.metadata?.requires_auth || ep.metadata?.guards?.length)
-            .map(ep => ep.id)
+          node_ids: Array.from(authNodeIds),
+          entry_points: Array.from(authEntryPointIds)
         },
         requirements: {
           authentication: {
@@ -25098,11 +25248,11 @@ export class AnalyzerOrchestrator {
     const authzNodes = evidenceAuthzNodes.length > 0
       ? evidenceAuthzNodes
       : securityNodes.filter(n => {
-        const name = n.name.toLowerCase();
-        return name.includes('role') || name.includes('permission') || name.includes('guard') || name.includes('authorize') || name.includes('policy');
+        const tokens = this.signalTokens(n.name);
+        return ['role', 'roles', 'permission', 'permissions', 'guard', 'guards', 'authorize', 'policy'].some(kw => tokens.includes(kw));
       });
 
-    if (authzNodes.length > 0) {
+    if (authzNodes.length > 0 || authorizeEdges.length > 0) {
       const roles = new Set<string>();
       const permissions = new Set<string>();
       for (const node of authzNodes) {
@@ -25115,12 +25265,19 @@ export class AnalyzerOrchestrator {
         }
       }
 
+      const authzNodeIds = new Set(authzNodes.map(n => n.id));
+      for (const edge of authorizeEdges) {
+        if (edge.target) authzNodeIds.add(edge.target);
+      }
+      const authzEntryPointIds = new Set(edgeTargetEntryPointIds(authorizeEdges));
+
       contexts.push({
         id: 'security_ctx_authorization',
         name: 'Authorization',
         type: 'authorization',
         scope: {
-          node_ids: authzNodes.map(n => n.id)
+          node_ids: Array.from(authzNodeIds),
+          ...(authzEntryPointIds.size > 0 ? { entry_points: Array.from(authzEntryPointIds) } : {})
         },
         requirements: {
           authorization: {
@@ -25132,8 +25289,24 @@ export class AnalyzerOrchestrator {
     }
 
     const encryptionNodes = securityNodes.filter(n => {
-      const name = n.name.toLowerCase();
-      return name.includes('encrypt') || name.includes('decrypt') || name.includes('hash') || name.includes('cipher');
+      const tokens = this.signalTokens(n.name);
+      // Whole-token match: "minhash" (clone-detection) is one token and never
+      // equals "hash" here, unlike the previous `.includes('hash')` substring
+      // check that misclassified minhash-clone-detection tests as encryption.
+      // "encrypt"/"decrypt"/"cipher" are unambiguous crypto verbs — one hit is
+      // enough. "hash" alone is NOT: this codebase's own `contentHash`,
+      // `gitCommitHash`, `computeFileHash`, `casContentHash` are
+      // content-addressing/dedup, not encryption, and there is no dedicated
+      // crypto-library analyzer (unlike auth) to evidence-gate this the way
+      // `hasAuthAnalyzerEvidence` does — so a bare hash token only counts when
+      // it co-occurs with a credential-ish token, keeping the generic
+      // (non-repo-specific) signal "hashing a secret" apart from "hashing
+      // content for identity/caching".
+      const unambiguousCrypto = ['encrypt', 'encrypts', 'encrypted', 'encryption', 'decrypt', 'decrypts', 'decrypted', 'decryption', 'cipher'];
+      if (unambiguousCrypto.some(kw => tokens.includes(kw))) return true;
+      const hashTokens = ['hash', 'hashed', 'hashing'];
+      const credentialTokens = ['password', 'passwd', 'secret', 'credential', 'credentials', 'token', 'pii', 'ssn'];
+      return hashTokens.some(kw => tokens.includes(kw)) && credentialTokens.some(kw => tokens.includes(kw));
     });
 
     if (encryptionNodes.length > 0) {
