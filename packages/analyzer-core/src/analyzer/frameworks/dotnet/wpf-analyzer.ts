@@ -90,6 +90,15 @@ interface WpfDeviceConnection {
   methods: Array<{ name: string; returnType?: string; parameters: string[] }>;
 }
 
+/** A code-behind method wired to a WPF UI event, either via XAML
+ *  (`Click="OnSave"`) or code (`SaveButton.Click += OnSave`). This is the
+ *  real user-initiated interaction surface of a WPF app — the analogue of an
+ *  HTTP route handler for a desktop app. */
+interface WpfEventHandlerBinding {
+  event: string;
+  method: string;
+}
+
 export class WPFAnalyzer extends BaseAnalyzer {
   constructor() {
     super(
@@ -170,9 +179,9 @@ export class WPFAnalyzer extends BaseAnalyzer {
         nodir: true
       });
 
-      const windows = await this.analyzeWindows(csFiles, xamlFiles, context.projectPath, existingNodes, newNodes, enhancedNodes, edges);
-      const userControls = await this.analyzeUserControls(csFiles, xamlFiles, context.projectPath, existingNodes, newNodes, enhancedNodes, edges);
-      const viewModels = await this.analyzeViewModels(csFiles, context.projectPath, existingNodes, newNodes, enhancedNodes, edges);
+      const windows = await this.analyzeWindows(csFiles, xamlFiles, context.projectPath, existingNodes, newNodes, enhancedNodes, edges, entryPoints);
+      const userControls = await this.analyzeUserControls(csFiles, xamlFiles, context.projectPath, existingNodes, newNodes, enhancedNodes, edges, entryPoints);
+      const viewModels = await this.analyzeViewModels(csFiles, context.projectPath, existingNodes, newNodes, enhancedNodes, edges, windows, entryPoints);
       const services = await this.analyzeServices(csFiles, context.projectPath, existingNodes, newNodes, enhancedNodes, edges);
       const converters = await this.analyzeConverters(csFiles, context.projectPath, existingNodes, newNodes, enhancedNodes, edges);
 
@@ -183,6 +192,7 @@ export class WPFAnalyzer extends BaseAnalyzer {
       this.buildConverterRelationships(converters, windows, userControls, edges);
       this.identifyEntryPoints(windows, entryPoints, newNodes);
       await this.identifyServiceEntryPoints(csFiles, context.projectPath, existingNodes, newNodes, entryPoints);
+      await this.identifyAppStartupEntryPoints(csFiles, context.projectPath, existingNodes, newNodes, enhancedNodes, entryPoints);
       await this.analyzeReportGeneration(csFiles, xamlFiles, context.projectPath, existingNodes, newNodes, enhancedNodes, edges, exitPoints);
       this.identifyExitPoints(services, exitPoints, existingNodes);
 
@@ -222,7 +232,8 @@ export class WPFAnalyzer extends BaseAnalyzer {
     existingNodes: CASNode[],
     newNodes: CASNode[],
     enhancedNodes: CASNode[],
-    edges: CASEdge[]
+    edges: CASEdge[],
+    entryPoints: CASEntryPoint[]
   ): Promise<WpfWindow[]> {
     const windows: WpfWindow[] = [];
 
@@ -334,6 +345,18 @@ export class WPFAnalyzer extends BaseAnalyzer {
               .withMetadata({ attributes: { relationship: 'code-behind-to-xaml' } })
               .build());
           }
+
+          // Real WPF entry surface: user-initiated UI events (Click/Loaded/
+          // Closing/...) wired to a code-behind method, either in XAML
+          // (Click="OnSave") or in code (SaveButton.Click += OnSave). This is
+          // evidence-gated on the same known-event-token pattern used for
+          // eventHandlers above — arbitrary methods are never promoted, only
+          // methods a WPF event is structurally wired to.
+          this.emitUiEventHandlerEntryPoints(
+            windowId, windowName, file, fullPath,
+            this.extractEventHandlerBindings(content, xamlContent),
+            content, newNodes, edges, entryPoints
+          );
         }
       } catch {}
     }
@@ -348,7 +371,8 @@ export class WPFAnalyzer extends BaseAnalyzer {
     existingNodes: CASNode[],
     newNodes: CASNode[],
     enhancedNodes: CASNode[],
-    edges: CASEdge[]
+    edges: CASEdge[],
+    entryPoints: CASEntryPoint[]
   ): Promise<WpfUserControl[]> {
     const controls: WpfUserControl[] = [];
 
@@ -423,6 +447,15 @@ export class WPFAnalyzer extends BaseAnalyzer {
               .build();
             newNodes.push(node);
           }
+
+          // UserControls also carry user-initiated UI events (e.g. Loaded,
+          // a button Click inside the control's own code-behind) — same
+          // evidence-gated extraction as Windows.
+          this.emitUiEventHandlerEntryPoints(
+            controlId, controlName, file, fullPath,
+            this.extractEventHandlerBindings(content, xamlContent),
+            content, newNodes, edges, entryPoints
+          );
         }
       } catch {}
     }
@@ -436,9 +469,21 @@ export class WPFAnalyzer extends BaseAnalyzer {
     existingNodes: CASNode[],
     newNodes: CASNode[],
     enhancedNodes: CASNode[],
-    edges: CASEdge[]
+    edges: CASEdge[],
+    windows: WpfWindow[],
+    entryPoints: CASEntryPoint[]
   ): Promise<WpfViewModel[]> {
     const viewModels: WpfViewModel[] = [];
+
+    // Evidence pool for gating command entry points: command names actually
+    // bound from XAML (Command="{Binding SomeCommand}") or declared as an
+    // ICommand-typed property in a window's own code-behind. Cross-file
+    // structural evidence, not a name heuristic — see WpfWindow.commands
+    // (populated by extractCommands from both code and XAML).
+    const xamlBoundCommandNames = new Set<string>();
+    for (const window of windows) {
+      for (const cmd of window.commands) xamlBoundCommandNames.add(cmd);
+    }
 
     for (const file of csFiles) {
       const fullPath = path.join(projectPath, file);
@@ -532,6 +577,35 @@ export class WPFAnalyzer extends BaseAnalyzer {
               this.generateEdgeId(vmId, cmdId, 'has-command'),
               vmId, cmdId, 'has-command'
             ).build());
+
+            // ICommand handlers exposed by a ViewModel are a real WPF
+            // interaction entry point (bound via {Binding SomeCommand} in
+            // XAML and invoked on Execute). Evidence-gated: only wired
+            // commands are promoted — either the constructor resolved a
+            // concrete Execute target (executeMethod), or the command name
+            // is structurally bound from a window's XAML — never every
+            // ICommand-typed property regardless of wiring.
+            const isWired = !!cmd.executeMethod || xamlBoundCommandNames.has(cmd.name);
+            if (isWired) {
+              entryPoints.push(this.createEntryPoint(
+                this.generateId('entry', file, `command_${vmName}_${cmd.name}`),
+                cmdId,
+                'command',
+                `${vmName}.${cmd.name}`,
+                `ICommand exposed by ${vmName}${cmd.executeMethod ? ` (executes ${cmd.executeMethod})` : ''}`,
+                { event: cmd.name },
+                undefined,
+                {
+                  framework: 'wpf',
+                  entry_type: 'view_model_command',
+                  command_type: cmd.type,
+                  view_model: vmName,
+                  execute_method: cmd.executeMethod,
+                  xaml_bound: xamlBoundCommandNames.has(cmd.name)
+                },
+                { node_id: cmdId, method_name: cmd.executeMethod || cmd.name, file }
+              ));
+            }
           }
         }
       } catch {}
@@ -997,6 +1071,92 @@ export class WPFAnalyzer extends BaseAnalyzer {
     return nsMatch ? nsMatch[1] : 'global';
   }
 
+  /** WPF app startup: a class deriving from `Application` overriding
+   *  `OnStartup`, or a `Main(...)` entry method (App.xaml.cs / App.g.cs /
+   *  Program.cs) — the process-level entry point, analogous to an ASP.NET
+   *  Program.cs `Main` or an Electron main-process bootstrap. Generic on the
+   *  `: Application` base-class + method-signature evidence, not on any file
+   *  or class name. */
+  private async identifyAppStartupEntryPoints(
+    csFiles: string[],
+    projectPath: string,
+    existingNodes: CASNode[],
+    newNodes: CASNode[],
+    enhancedNodes: CASNode[],
+    entryPoints: CASEntryPoint[]
+  ): Promise<void> {
+    for (const file of csFiles) {
+      const fullPath = path.join(projectPath, file);
+      try {
+        const content = await fs.readFile(fullPath, 'utf-8');
+
+        const appClassPattern = /class\s+(\w+)\s*:\s*(?:System\.Windows\.)?Application\b/;
+        const appMatch = appClassPattern.exec(content);
+        const mainPattern = /(?:private|public|internal)?\s*static\s+(?:async\s+)?(?:void|Task|int)\s+Main\s*\(/;
+        const mainMatch = mainPattern.exec(content);
+
+        if (!appMatch && !mainMatch) continue;
+
+        const onStartupPattern = /(?:protected|public)\s+override\s+(?:async\s+)?void\s+OnStartup\s*\(/;
+        const onStartupMatch = onStartupPattern.exec(content);
+
+        // Prefer OnStartup when an Application subclass overrides it;
+        // otherwise fall back to Main (Program.cs-style bootstrap or an
+        // Application subclass that relies on the default startup URI).
+        const startupMatch = onStartupMatch || mainMatch;
+        if (!startupMatch) continue;
+        const methodName = onStartupMatch ? 'OnStartup' : 'Main';
+
+        const appName = appMatch ? appMatch[1] : path.basename(file, '.cs');
+        const nodeId = this.generateId('app_startup', file, appName);
+        const line = this.findLineNumber(content, startupMatch[0]);
+
+        const existingNode = appMatch ? existingNodes.find(n => n.name === appName && n.type === 'class') : undefined;
+        let sourceNodeId = nodeId;
+
+        if (existingNode) {
+          existingNode.type = 'app_startup';
+          if (!existingNode.metadata) existingNode.metadata = {};
+          existingNode.metadata.attributes = {
+            ...existingNode.metadata.attributes,
+            framework: 'wpf',
+            startup_method: methodName
+          };
+          if (!existingNode.analyzers) existingNode.analyzers = [];
+          if (!existingNode.analyzers.includes(this.analyzerId)) {
+            existingNode.analyzers.push(this.analyzerId);
+          }
+          enhancedNodes.push(existingNode);
+          sourceNodeId = existingNode.id;
+        } else {
+          newNodes.push(
+            this.createNodeBuilder(nodeId, appName, 'app_startup')
+              .withLevel(2, this.getLevelName(2))
+              .withSource({ file: fullPath, line })
+              .withMetadata({
+                framework: 'wpf',
+                attributes: { startup_method: methodName, is_application_subclass: !!appMatch }
+              })
+              .withAnalyzers([this.analyzerId], this.analyzerId)
+              .build()
+          );
+        }
+
+        entryPoints.push(this.createEntryPoint(
+          this.generateId('entry', file, `app_startup_${appName}`),
+          sourceNodeId,
+          'lifecycle',
+          `${appName}.${methodName}`,
+          `WPF application startup entry point`,
+          { event: 'app-startup' },
+          undefined,
+          { framework: 'wpf', entry_type: 'app_startup', startup_method: methodName },
+          { node_id: sourceNodeId, method_name: methodName, file }
+        ));
+      } catch {}
+    }
+  }
+
   private async analyzeReportGeneration(
     csFiles: string[],
     xamlFiles: string[],
@@ -1192,7 +1352,15 @@ export class WPFAnalyzer extends BaseAnalyzer {
   }
 
   private findMatchingXaml(csFile: string, xamlFiles: string[]): string | undefined {
-    const baseName = csFile.replace(/\.cs$/, '').replace(/\.xaml\.cs$/, '');
+    // The common WPF code-behind convention is "X.xaml.cs" pairing with
+    // "X.xaml". Strip ".xaml.cs" as one suffix first — chaining
+    // .replace(/\.cs$/) then .replace(/\.xaml\.cs$/) never both match
+    // (the first already consumes the ".cs" the second is looking for),
+    // which silently starved every downstream XAML-content read (bindings,
+    // event handlers, commands, data context) for the code-behind case.
+    const baseName = csFile.endsWith('.xaml.cs')
+      ? csFile.slice(0, -'.xaml.cs'.length)
+      : csFile.replace(/\.cs$/, '');
     return xamlFiles.find(x => {
       const xamlBase = x.replace(/\.xaml$/, '');
       return xamlBase === baseName;
@@ -1306,6 +1474,101 @@ export class WPFAnalyzer extends BaseAnalyzer {
     }
 
     return handlers;
+  }
+
+  /** Same known-WPF-event-token evidence as extractEventHandlers, but keeps
+   *  the (event, method) pairing so each handler can be surfaced as its own
+   *  entry point instead of collapsed into a flat name list. */
+  private extractEventHandlerBindings(csContent: string, xamlContent: string): WpfEventHandlerBinding[] {
+    const bindings: WpfEventHandlerBinding[] = [];
+    const seen = new Set<string>();
+
+    const codeHandlerPattern = /(Click|MouseDown|KeyDown|Loaded|Closed|Closing|SelectionChanged|TextChanged|Checked|Unchecked)\s*\+=\s*(?:new\s+\w+\()?([\w]+)/g;
+    let match;
+    while ((match = codeHandlerPattern.exec(csContent)) !== null) {
+      const key = `${match[1]}:${match[2]}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        bindings.push({ event: match[1], method: match[2] });
+      }
+    }
+
+    if (xamlContent) {
+      const xamlHandlerPattern = /(Click|MouseDown|KeyDown|Loaded|Closed|Closing|SelectionChanged|TextChanged|Checked|Unchecked)\s*=\s*"(\w+)"/g;
+      while ((match = xamlHandlerPattern.exec(xamlContent)) !== null) {
+        const key = `${match[1]}:${match[2]}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          bindings.push({ event: match[1], method: match[2] });
+        }
+      }
+    }
+
+    return bindings;
+  }
+
+  /** Emit an `event_handler` node + `handles-event` edge (mirroring the
+   *  Blazor framework analyzer's convention for @onclick handlers) plus a
+   *  CAS entry point for each WPF UI event binding, so a Window/UserControl's
+   *  user-initiated interaction surface is navigable and can seed flows the
+   *  same way an HTTP route or MCP tool registration does. */
+  private emitUiEventHandlerEntryPoints(
+    parentId: string,
+    parentName: string,
+    filePath: string,
+    fullPath: string,
+    bindings: WpfEventHandlerBinding[],
+    csContent: string,
+    newNodes: CASNode[],
+    edges: CASEdge[],
+    entryPoints: CASEntryPoint[]
+  ): void {
+    for (const binding of bindings) {
+      const handlerId = this.generateId('event_handler', filePath, `${parentName}_${binding.event}_${binding.method}`);
+      const declPattern = new RegExp(`(?:private|public|protected|internal)\\s+(?:async\\s+)?void\\s+${binding.method}\\s*\\(`);
+      const declMatch = declPattern.exec(csContent);
+      const resolvedToCodeMethod = !!declMatch;
+      const line = declMatch ? this.findLineNumber(csContent, declMatch[0]) : undefined;
+
+      const handlerNode = this.createNodeBuilder(handlerId, `${binding.event}=${binding.method}`, 'event_handler')
+        .withLevel(4, this.getLevelName(4))
+        .withSource({ file: fullPath, line: line || 1 })
+        .withParent(parentId)
+        .withMetadata({
+          framework: 'wpf',
+          attributes: {
+            event: binding.event,
+            method: binding.method,
+            resolved_to_code_method: resolvedToCodeMethod
+          }
+        })
+        .withAnalyzers([this.analyzerId], this.analyzerId)
+        .build();
+      newNodes.push(handlerNode);
+
+      edges.push(this.createEdgeBuilder(
+        this.generateEdgeId(parentId, handlerId, `handles-${binding.event}`),
+        parentId, handlerId, 'handles-event'
+      ).withMetadata({ attributes: { event: binding.event, method: binding.method } }).build());
+
+      entryPoints.push(this.createEntryPoint(
+        this.generateId('entry', filePath, `ui_event_${parentName}_${binding.event}_${binding.method}`),
+        handlerId,
+        'event',
+        `${parentName}.${binding.method}`,
+        `WPF UI event handler: ${binding.event} -> ${binding.method}`,
+        { event: binding.event },
+        undefined,
+        {
+          framework: 'wpf',
+          entry_type: 'ui_event_handler',
+          owner: parentName,
+          event: binding.event,
+          resolved_to_code_method: resolvedToCodeMethod
+        },
+        { node_id: handlerId, method_name: binding.method, file: filePath }
+      ));
+    }
   }
 
   private extractCommands(csContent: string, xamlContent: string): string[] {
@@ -1500,7 +1763,10 @@ export class WPFAnalyzer extends BaseAnalyzer {
       'dependency-property-analysis',
       'converter-analysis',
       'xaml-parsing',
-      'service-detection'
+      'service-detection',
+      'app-startup-detection',
+      'ui-event-handler-entry-points',
+      'view-model-command-entry-points'
     ];
   }
 
