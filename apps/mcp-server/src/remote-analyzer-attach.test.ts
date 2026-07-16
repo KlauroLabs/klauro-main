@@ -1,4 +1,4 @@
-import test from 'node:test';
+import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as http from 'node:http';
@@ -7,6 +7,19 @@ import * as path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { createRemoteAnalyzerHttpServer } from './remote-analyzer-service';
 import { analyzeCodebaseRemotely } from './remote-sync-client';
+import { aiService } from '../../../packages/analyzer-core/src/ai/ai-service';
+
+// The attach flow runs full analysis rebuilds (AccountWorkspaceAnalysisScheduler
+// -> enrichWorkspaceAnalysisNarrative), which lazily connects the process-wide
+// `aiService` singleton to Redis (packages/analyzer-core/src/ai/ai-cache.ts) the
+// first time it's touched. That connection is a deliberate long-lived resource
+// for a real server process, so the product only tears it down via the
+// explicit aiService.close() API (never automatically) — nothing else in this
+// test's HTTP-server-per-test teardown reaches it, so without this the ioredis
+// socket keeps the process alive forever after the last subtest finishes.
+after(async () => {
+  await aiService.close();
+});
 
 /**
  * §THE-SEAM — covers the fix in remote-analyzer-service.ts
