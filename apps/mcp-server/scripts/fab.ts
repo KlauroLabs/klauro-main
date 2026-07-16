@@ -9,6 +9,14 @@
  *   npx tsx apps/mcp-server/scripts/fab.ts announce <agentId> <comma,files>
  *   npx tsx apps/mcp-server/scripts/fab.ts check <agentId> <comma,paths>
  *   npx tsx apps/mcp-server/scripts/fab.ts release <agentId>
+ *   npx tsx apps/mcp-server/scripts/fab.ts watch [agentId]
+ *
+ * `watch` (W5, SPEC-COORDINATION-FABRIC-V3 §8) is a foreground process for a
+ * human running a fleet from a terminal: it starts the local write-hook
+ * (auto-announce/record real edits against active claims) for the resolved
+ * repo root + workspace, plus the in-flight publisher when a remote fabric is
+ * configured, and prints announced/unclaimed/published events to stdout until
+ * Ctrl-C.
  *
  * REMOTE MODE (cross-machine, docs/FABRIC-REMOTE.md) is CONFIG-DRIVEN: run
  * `klauro init` once inside the repo (it enables the fabric by default as
@@ -42,7 +50,11 @@ import {
   RemoteFabricError,
   REMOTE_ADVISORY_DEFAULT_TTL_MS,
 } from '../src/coordination/remote-transport';
-import { resolveFabricSettings } from '../src/coordination/fabric-config';
+import { resolveFabricSettings, findFabricProjectRoot } from '../src/coordination/fabric-config';
+import { startWriteHook } from '../src/coordination/write-hook';
+import { startInFlightWatcher } from '../src/coordination/in-flight-sync';
+import { buildWorkingTreeChangeContext } from '../src/remote-source';
+import type { InFlightDiffFile } from '../src/coordination/security';
 
 function csv(s: string | undefined): string[] {
   return (s || '').split(',').map((x) => x.trim()).filter(Boolean);
@@ -221,8 +233,71 @@ async function main() {
       }
       break;
     }
+    case 'watch': {
+      // fab.ts watch [agentId] — the human-in-a-terminal counterpart to the
+      // MCP-server lifecycle activation in server.ts's `advisoryFabricSettings`
+      // (W5, SPEC-COORDINATION-FABRIC-V3 §8): a foreground process that keeps
+      // the write-hook running for as long as the terminal is open, printing
+      // announced/unclaimed events as they happen. Unlike the MCP-server path,
+      // this is opt-in by construction (a human runs it) so it does NOT gate
+      // on `shouldActivateWriteHook`/fabric.enabled — running `fab watch` IS
+      // the opt-in.
+      const root = findFabricProjectRoot(process.cwd())?.root ?? process.cwd();
+      console.log(
+        `fab watch: observing ${root} for workspace "${WS}" ` +
+          `[${REMOTE ? `remote ${REMOTE.baseUrl}` : 'local only'}] — Ctrl-C to stop`
+      );
+      const hookHandle = startWriteHook(root, WS, {
+        onAnnounce: (e) => console.log(`[announce] ${e.agentId} <- ${e.path} (claim ${e.claimId})`),
+        onUnclaimedEdit: (e) => console.log(`[unclaimed] ${e.path}`),
+        onError: (err) => console.error(`[write-hook error] ${err instanceof Error ? err.message : String(err)}`),
+      });
+      // Cross-machine in-flight publishing (WS-B) only makes sense when a
+      // remote fabric is actually configured — with no remote there is
+      // nowhere to publish to, so `fab watch` stays local-only (write-hook)
+      // exactly like every other command in this file.
+      let inFlightHandle: { stop: () => void } | undefined;
+      if (REMOTE) {
+        inFlightHandle = startInFlightWatcher(
+          root,
+          REMOTE.baseUrl,
+          REMOTE.token,
+          WS,
+          agentId || 'fab-watch',
+          async (): Promise<InFlightDiffFile[]> => {
+            try {
+              const ctx = await buildWorkingTreeChangeContext(root);
+              return ctx.changed_files
+                .filter((f): f is typeof ctx.changed_files[number] & { status: 'added' | 'modified'; content: string } =>
+                  f.status !== 'deleted'
+                )
+                .map((f) => ({ path: f.path, content: f.content }));
+            } catch {
+              // Best-effort: e.g. .klaurorc upload.allowDirtyTreeSync=false,
+              // or not a git repo. Publish nothing rather than crash the watch loop.
+              return [];
+            }
+          },
+          {
+            onPublished: (r) => console.log(`[in-flight] published ${r.kept_files} file(s), ${r.dropped_files} dropped`),
+            onError: (err) => console.error(`[in-flight error] ${err instanceof Error ? err.message : String(err)}`),
+          }
+        );
+      }
+      await new Promise<void>((resolve) => {
+        const stop = () => {
+          hookHandle.close();
+          inFlightHandle?.stop();
+          console.log('\nfab watch: stopped.');
+          resolve();
+        };
+        process.once('SIGINT', stop);
+        process.once('SIGTERM', stop);
+      });
+      break;
+    }
     default:
-      console.error('usage: fab.ts active|claim|announce|check|release ...');
+      console.error('usage: fab.ts active|claim|announce|check|release|watch ...');
       process.exit(1);
   }
 }

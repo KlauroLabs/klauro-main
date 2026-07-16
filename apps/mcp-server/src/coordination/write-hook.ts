@@ -177,3 +177,77 @@ export function startWriteHook(
     },
   };
 }
+
+/**
+ * Module-level registry of running write-hooks keyed by workspace id. Both
+ * production callers of `ensureWriteHookStarted` — the MCP-server lifecycle
+ * wiring (server.ts, one process per session) and `fab watch`
+ * (scripts/fab.ts, one process per terminal) — share this singleton so
+ * activation is idempotent for the life of the process without either caller
+ * having to track its own state. Exported (rather than private) so a test can
+ * pass its own `Map` for isolation instead of touching the shared singleton.
+ */
+export const DEFAULT_WRITE_HOOK_REGISTRY: Map<string, WriteHookHandle> = new Map();
+
+/**
+ * Idempotent-by-workspace activation: start a write-hook for `workspaceId`
+ * rooted at `workspaceRoot` unless one is already running for that workspace
+ * id in `registry`, in which case the existing handle is returned untouched
+ * (a repeat call — e.g. once per `fab_*` MCP tool invocation — is a no-op,
+ * not a second watcher on the same tree). This is the activation primitive
+ * both W5 production callers use; see `shouldActivateWriteHook` for the
+ * "should I call this at all" gate.
+ */
+export function ensureWriteHookStarted(
+  workspaceRoot: string,
+  workspaceId: string,
+  options: WriteHookOptions = {},
+  registry: Map<string, WriteHookHandle> = DEFAULT_WRITE_HOOK_REGISTRY
+): WriteHookHandle {
+  const existing = registry.get(workspaceId);
+  if (existing) return existing;
+  const handle = startWriteHook(workspaceRoot, workspaceId, options);
+  registry.set(workspaceId, handle);
+  return handle;
+}
+
+/**
+ * Stop every write-hook in `registry` (default: the module singleton) and
+ * clear it. Call once on process shutdown (server.ts registers this against
+ * `process.on('exit', ...)`). Safe to call more than once — `close()` on an
+ * already-closed handle is a no-op per `startWriteHook`'s own contract, and
+ * clearing an already-empty registry is a no-op too.
+ */
+export function closeAllWriteHooks(registry: Map<string, WriteHookHandle> = DEFAULT_WRITE_HOOK_REGISTRY): void {
+  for (const handle of registry.values()) {
+    try {
+      handle.close();
+    } catch {
+      // already closed — nothing to do.
+    }
+  }
+  registry.clear();
+}
+
+/**
+ * Should the MCP-server lifecycle (or `fab watch`) auto-start a write-hook
+ * for this resolved fabric configuration? Gate, per the task: an explicit
+ * `.klaurorc` `fabric.enabled: true` (the repo ran `klauro init` / `klauro
+ * fabric on` — see fabric-config.ts) OR the `KLAURO_WRITE_HOOK=1` escape
+ * hatch (forces activation without a `.klaurorc`, e.g. local dev/tests).
+ *
+ * A workspace with NO `.klaurorc` fabric section at all (the local default —
+ * `resolveFabricSettings` falls back to workspace `'poc'`) stays INERT: no
+ * fs.watch, no behavior change, byte-for-byte the pre-activation server —
+ * matching fabric-config.ts's own stated invariant ("no config + no env =
+ * byte-for-byte the original local behavior"). Opting a repo into ambient
+ * awareness is exactly what `klauro fabric on`/`klauro init` already means;
+ * this gate reuses that existing signal rather than inventing a new one.
+ */
+export function shouldActivateWriteHook(
+  settings: { fabric?: { enabled?: boolean } },
+  env: NodeJS.ProcessEnv = process.env
+): boolean {
+  if (settings.fabric?.enabled === true) return true;
+  return env.KLAURO_WRITE_HOOK === '1';
+}

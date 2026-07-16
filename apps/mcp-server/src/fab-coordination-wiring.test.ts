@@ -4,6 +4,7 @@ import * as fs from 'fs-extra';
 import * as os from 'os';
 import * as path from 'path';
 import { createServer } from './server';
+import { DEFAULT_WRITE_HOOK_REGISTRY, closeAllWriteHooks } from './coordination/write-hook';
 
 /**
  * Verifies the ADVISORY coordination-fabric MCP tools (CLI-parity for
@@ -193,5 +194,65 @@ test('fab workspace default chain: .klaurorc fabric.workspace > $FAB_WS > "poc"'
     });
     const listedConfig = payload(await list({}));
     assert.equal(listedConfig.workspace, 'config-ws', '.klaurorc fabric.workspace beats $FAB_WS');
+  });
+});
+
+/**
+ * W5 MCP-server lifecycle activation (SPEC-COORDINATION-FABRIC-V3 §8): every
+ * fab_* tool call resolves fabric settings via `advisoryFabricSettings`
+ * (server.ts), which is now also the write-hook activation choke-point. These
+ * tests drive that path through the REAL registered tool (not a private
+ * helper — the wiring itself is what's under test) and inspect the shared
+ * `DEFAULT_WRITE_HOOK_REGISTRY` write-hook.ts exports for exactly that
+ * reason. Every test closes what it started so the module singleton never
+ * leaks a live `fs.watch` handle past its own test.
+ */
+test('W5 activation: a fabric.enabled:true workspace auto-starts the write-hook exactly once (idempotent)', async () => {
+  await withHermeticFabricEnv(async (root) => {
+    // A deliberately unreachable endpoint: activation must not depend on the
+    // remote call itself succeeding — resolveFabricSettings only needs to see
+    // `fabric.enabled: true` to flip `shouldActivateWriteHook` on, and the
+    // fab_claim_work call is expected to warn-and-degrade to LOCAL exactly
+    // like any other remote failure (fab-coordination's own advisory-degrade
+    // contract), never crash.
+    await fs.writeJson(path.join(root, '.klaurorc'), {
+      version: 1,
+      kind: 'project',
+      project: { name: 'w5-activation-fixture' },
+      fabric: { enabled: true, endpoint: 'http://127.0.0.1:1', workspace: 'w5-ws' },
+    });
+
+    const before = DEFAULT_WRITE_HOOK_REGISTRY.size;
+    try {
+      const server = createServer();
+      const claim = getToolHandler(server, 'fab_claim_work');
+
+      await claim({ agent_id: 'agent-w5', intent: 'w5 activation', paths: ['a.ts'], workspace: 'w5-ws' });
+      assert.equal(DEFAULT_WRITE_HOOK_REGISTRY.size, before + 1, 'write-hook started for the fabric-enabled workspace');
+      assert.ok(DEFAULT_WRITE_HOOK_REGISTRY.has('w5-ws'));
+
+      // A second call for the SAME workspace must not start a second watcher.
+      await claim({ agent_id: 'agent-w5', intent: 'w5 activation again', paths: ['a.ts'], workspace: 'w5-ws' });
+      assert.equal(DEFAULT_WRITE_HOOK_REGISTRY.size, before + 1, 'repeat calls are idempotent — no second watcher');
+    } finally {
+      closeAllWriteHooks(DEFAULT_WRITE_HOOK_REGISTRY);
+    }
+  });
+});
+
+test('W5 activation: a workspace with no fabric config (or fabric.enabled:false) never starts a write-hook', async () => {
+  await withHermeticFabricEnv(async () => {
+    const before = DEFAULT_WRITE_HOOK_REGISTRY.size;
+    try {
+      const server = createServer();
+      const claim = getToolHandler(server, 'fab_claim_work');
+
+      // No .klaurorc at all -> local default ('poc'-style fallback workspace).
+      await claim({ agent_id: 'agent-w5b', intent: 'no fabric config', paths: ['b.ts'], workspace: 'w5-ws-unconfigured' });
+      assert.equal(DEFAULT_WRITE_HOOK_REGISTRY.size, before, 'no write-hook without an opted-in fabric config');
+      assert.ok(!DEFAULT_WRITE_HOOK_REGISTRY.has('w5-ws-unconfigured'));
+    } finally {
+      closeAllWriteHooks(DEFAULT_WRITE_HOOK_REGISTRY);
+    }
   });
 });

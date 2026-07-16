@@ -5,7 +5,13 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 
 import { appendClaim, getActiveClaims, readClaimLog } from './local-store';
-import { startWriteHook } from './write-hook';
+import {
+  startWriteHook,
+  ensureWriteHookStarted,
+  closeAllWriteHooks,
+  shouldActivateWriteHook,
+  type WriteHookHandle,
+} from './write-hook';
 
 /** Point KLAURO_COORD_DIR at a fresh temp dir per test so tests don't collide. */
 async function freshCoordDir(): Promise<string> {
@@ -179,4 +185,91 @@ test('write-hook: close() stops the watcher (no leaked handle)', async () => {
 
   await fsp.rm(coordDir, { recursive: true, force: true });
   await fsp.rm(root, { recursive: true, force: true });
+});
+
+// -- W5 activation primitives (ensureWriteHookStarted / closeAllWriteHooks /
+// shouldActivateWriteHook) — the pieces server.ts's `advisoryFabricSettings`
+// and `fab watch` both call, tested directly per the task's own guidance
+// ("extract the activation into a small exported helper ... and test THAT").
+// Every test below passes its OWN registry Map (never the module-level
+// `DEFAULT_WRITE_HOOK_REGISTRY` singleton) so tests never leak state into
+// each other or into the shared registry a real server process would use.
+
+test('ensureWriteHookStarted: idempotent by workspace id — a second call returns the SAME handle, not a second watcher', async (t) => {
+  const coordDir = await freshCoordDir();
+  const root = await freshWorkspaceRoot();
+  const ws = 'ws-ensure-idempotent';
+  const registry = new Map<string, WriteHookHandle>();
+
+  const announced: Array<{ path: string; agentId: string; claimId: string }> = [];
+  const first = ensureWriteHookStarted(root, ws, { debounceMs: 30, onAnnounce: (e) => announced.push(e) }, registry);
+  const second = ensureWriteHookStarted(root, ws, { debounceMs: 30, onAnnounce: (e) => announced.push(e) }, registry);
+  t.after(() => closeAllWriteHooks(registry));
+
+  assert.equal(first, second, 'a repeat call for the same workspace id must return the existing handle, not start a new watcher');
+  assert.equal(registry.size, 1);
+
+  await fsp.rm(coordDir, { recursive: true, force: true });
+  await fsp.rm(root, { recursive: true, force: true });
+});
+
+test('ensureWriteHookStarted: different workspace ids each get their own handle', async (t) => {
+  const coordDir = await freshCoordDir();
+  const root = await freshWorkspaceRoot();
+  const registry = new Map<string, WriteHookHandle>();
+
+  const a = ensureWriteHookStarted(root, 'ws-ensure-a', { debounceMs: 30 }, registry);
+  const b = ensureWriteHookStarted(root, 'ws-ensure-b', { debounceMs: 30 }, registry);
+  t.after(() => closeAllWriteHooks(registry));
+
+  assert.notEqual(a, b);
+  assert.equal(registry.size, 2);
+
+  await fsp.rm(coordDir, { recursive: true, force: true });
+  await fsp.rm(root, { recursive: true, force: true });
+});
+
+test('closeAllWriteHooks: closes every handle in the registry, clears it, and stops further events', async () => {
+  const coordDir = await freshCoordDir();
+  const root = await freshWorkspaceRoot();
+  const ws = 'ws-close-all';
+  const registry = new Map<string, WriteHookHandle>();
+
+  const events: unknown[] = [];
+  ensureWriteHookStarted(
+    root,
+    ws,
+    { debounceMs: 20, onAnnounce: (e) => events.push(e), onUnclaimedEdit: (e) => events.push(e) },
+    registry
+  );
+  assert.equal(registry.size, 1);
+
+  closeAllWriteHooks(registry);
+  assert.equal(registry.size, 0, 'registry is cleared after closeAllWriteHooks');
+
+  // Calling it again on an already-empty registry must not throw.
+  closeAllWriteHooks(registry);
+
+  await fsp.writeFile(path.join(root, 'after-close-all.ts'), 'export const v = 5;\n', 'utf8');
+  await new Promise((r) => setTimeout(r, 150));
+  assert.equal(events.length, 0, 'no events after closeAllWriteHooks');
+
+  await fsp.rm(coordDir, { recursive: true, force: true });
+  await fsp.rm(root, { recursive: true, force: true });
+});
+
+test('shouldActivateWriteHook: gates on .klaurorc fabric.enabled or the KLAURO_WRITE_HOOK=1 escape hatch, inert otherwise', () => {
+  assert.equal(shouldActivateWriteHook({ fabric: { enabled: true } }, {}), true, 'fabric.enabled:true activates');
+  assert.equal(shouldActivateWriteHook({ fabric: { enabled: false } }, {}), false, 'an explicit `klauro fabric off` stays inert');
+  assert.equal(shouldActivateWriteHook({}, {}), false, 'no .klaurorc fabric section at all (local default) stays inert');
+  assert.equal(
+    shouldActivateWriteHook({}, { KLAURO_WRITE_HOOK: '1' }),
+    true,
+    'the KLAURO_WRITE_HOOK=1 escape hatch activates even with no fabric config'
+  );
+  assert.equal(
+    shouldActivateWriteHook({}, { KLAURO_WRITE_HOOK: '0' }),
+    false,
+    'any value other than the literal "1" does not activate'
+  );
 });

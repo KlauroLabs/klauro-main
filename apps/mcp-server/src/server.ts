@@ -68,6 +68,7 @@ import { arbitrate, detectCollisions, getGrants, heartbeatGrant, releaseGrant, r
 import { attributeChange, appendClaim, checkEditLock, getActiveClaims, getPresence, readClaimLog, releaseAgentWithReason, watch } from './coordination/local-store';
 import { remoteActive, remoteCheck, remoteClaim, remoteRelease } from './coordination/remote-transport';
 import { resolveFabricSettings } from './coordination/fabric-config';
+import { ensureWriteHookStarted, closeAllWriteHooks, shouldActivateWriteHook } from './coordination/write-hook';
 import { deriveActiveClaims } from './coordination/presence';
 import { detectConceptualConflicts, type AgentInFlightState, type ConceptualConflict, type ConflictCas, type SymbolChange } from './coordination/conceptual-conflict';
 import { detectConceptualConflictsFromSubstrate } from './coordination/in-flight-substrate';
@@ -426,7 +427,18 @@ interface RegisteredToolEntry {
   handler: (...args: any[]) => any;
 }
 
+// W5 (SPEC-COORDINATION-FABRIC-V3 §8): registered once per process (guarded
+// below), NOT once per createServer() call — tests construct createServer()
+// repeatedly and must not stack up duplicate 'exit' listeners. Closing every
+// write-hook on process exit is the shutdown half of the activation in
+// `advisoryFabricSettings` below; `closeAllWriteHooks` is itself idempotent.
+let writeHookShutdownRegistered = false;
+
 export function createServer(): McpServer {
+  if (!writeHookShutdownRegistered) {
+    writeHookShutdownRegistered = true;
+    process.on('exit', () => closeAllWriteHooks());
+  }
   const toolProfile = resolveToolProfile();
   const server = new McpServer(
     { name: 'klauro', version: getBuildIdentity().version },
@@ -5932,7 +5944,28 @@ function registerTools(server: McpServer) {
     } catch {
       // Registry unreadable: fall back to the cwd/env chain only (unchanged behavior).
     }
-    return resolveFabricSettings({ searchDirs, cwd: process.cwd(), explicitWorkspace: workspace });
+    const settings = await resolveFabricSettings({ searchDirs, cwd: process.cwd(), explicitWorkspace: workspace });
+    // W5 MCP-server lifecycle activation (SPEC-COORDINATION-FABRIC-V3 §8):
+    // this is the choke-point where the long-lived MCP server process
+    // resolves "which repo, which workspace id" for a fabric-aware call —
+    // the natural place to make awareness ambient with zero extra opt-in
+    // beyond the `klauro fabric on`/`klauro init` the workspace already ran.
+    // `shouldActivateWriteHook` keeps a never-opted-in workspace fully inert;
+    // `ensureWriteHookStarted` is idempotent per workspace id, so repeated
+    // fab_* calls in one session start the watcher at most once. Never
+    // crashes the caller — `startWriteHook` itself never throws, and any
+    // async error inside the watcher only reaches `onError` below.
+    if (shouldActivateWriteHook(settings)) {
+      const root = settings.configPath ? nodePath.dirname(settings.configPath) : (searchDirs[0] ?? process.cwd());
+      ensureWriteHookStarted(root, settings.workspace, {
+        onError: (err) => {
+          process.stderr.write(
+            `Klauro write-hook (workspace ${settings.workspace}): ${err instanceof Error ? err.message : String(err)}\n`
+          );
+        },
+      });
+    }
+    return settings;
   };
 
   /**
