@@ -656,11 +656,20 @@ export interface CASEntryPoint {
     schema?: string;
     validation?: string[];
     example?: any;
+    // entry-point-enrichment.ts (flow-contract join): structured inputs derived
+    // from the entry point's flow ICELOT contract when not otherwise set.
+    fields?: Array<{ name?: string; type: string }>;
+    is_positional_only?: boolean;
   };
   output?: {
     type?: string;
     schema?: string;
     status_codes?: number[];
+    // entry-point-enrichment.ts: is_named_type marks a return that is a
+    // class/interface/type (its `type` is the bare name, linkable to a
+    // definition elsewhere); is_void marks a no-value return.
+    is_named_type?: boolean;
+    is_void?: boolean;
   };
   security?: {
     authenticated?: boolean;
@@ -670,7 +679,22 @@ export interface CASEntryPoint {
     permissions?: string[];
     rate_limit?: string;
     redirect_if_unauthorized?: string;
+    // entry-point-security.ts: confidence of the security-boundary/context join —
+    // 'enforced' when a matching enforcement point was itself 'enforced', else
+    // 'assumed'. Absent = no security evidence was joined (do NOT read as public).
+    enforcement?: 'enforced' | 'assumed';
   };
+  // entry-point-enrichment.ts (capability join): the capabilities this entry
+  // point serves, via its flow. Many-to-many with a per-tie role — an entry
+  // point may serve zero, one, or many capabilities (cross-cutting like auth).
+  capabilities?: Array<{ capability_id: string; capability_name: string; role: string }>;
+  // entry-point-enrichment.ts: reachable from outside the deployable ('external')
+  // or only internally ('internal'); 'unknown' when there is no signal.
+  interaction_reach?: 'external' | 'internal' | 'unknown';
+  // entry-point-deployable.ts: the deployable this entry point belongs to
+  // (longest-path-prefix match of its file against deployable_evidence roots).
+  deployable_id?: string;
+  deployable_name?: string;
   connected_nodes?: string[];
   metadata?: Record<string, any>;
 }
