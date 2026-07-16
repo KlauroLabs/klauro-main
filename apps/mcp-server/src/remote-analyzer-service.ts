@@ -15,7 +15,8 @@ import { getGrants, heartbeatGrant, releaseGrant, requestGrant, type AgentKind }
 import { appendClaim, checkEditLock, getActiveClaims, getPresence, getStoreDir, readClaimLog, releaseAgent } from './coordination/local-store';
 import { deriveActiveClaims } from './coordination/presence';
 import { appendSecurityAudit, assertSameTenant, defaultSecretDenyPatterns, getSecurityStoreDir, redactInFlightChanges, TenantMismatchError } from './coordination/security';
-import { detectConceptualConflicts, type AgentInFlightState, type ConflictCas, type SymbolChange } from './coordination/conceptual-conflict';
+import { detectConceptualConflicts, type AgentInFlightState, type ConceptualConflict, type ConflictCas, type SymbolChange } from './coordination/conceptual-conflict';
+import { detectConceptualConflictsFromSubstrate } from './coordination/in-flight-substrate';
 import { partitionTasks, type PartitionCas, type PartitionTask } from './coordination/partitioner';
 import { ingestAndPersist, loadPersistedRuntimeFacts } from './telemetry-fusion';
 import { backfillIngestedTelemetry, ingestTelemetryBatch, loadTelemetryObservations, summarizeRouteMetrics } from './telemetry-ingestion';
@@ -857,7 +858,29 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
         const others = await otherAgentConceptualStatesHttp(body.workspace, body.agent_id);
         const cas = await conceptualConflictCasForWorkspaceHttp(body.workspace);
         const requesterState: AgentInFlightState = { agent_id: body.agent_id, intent: body.intent || '', changes: requesterChanges };
-        const allConflicts = detectConceptualConflicts([requesterState, ...others], cas);
+        const gitBasedConflicts = detectConceptualConflicts([requesterState, ...others], cas);
+        // W0 SUBSTRATE PATH (SPEC-COORDINATION-FABRIC-V3 §3) — same additive
+        // merge as the MCP tool in server.ts: attributed committed-vs-in-flight
+        // track deltas, never git-diff-derived; dedupe by (kind, agents, symbol);
+        // no in-flight track / no claims => no-op, never a request failure.
+        let substrateConflicts: ConceptualConflict[] = [];
+        let substrateInfo: { participants: number; unattributed: number } | undefined;
+        try {
+          const substrate = await detectConceptualConflictsFromSubstrate(body.workspace, cas);
+          substrateConflicts = substrate.conflicts;
+          substrateInfo = {
+            participants: substrate.attributed.participants.length,
+            unattributed: substrate.attributed.unattributed.length,
+          };
+        } catch {
+          /* substrate unavailable — additive path only */
+        }
+        const conflictDedupeKey = (c: ConceptualConflict) => `${c.kind}|${[...c.agents].sort().join(',')}|${c.symbol}`;
+        const seenConflicts = new Set(gitBasedConflicts.map(conflictDedupeKey));
+        const allConflicts = [
+          ...gitBasedConflicts,
+          ...substrateConflicts.filter((c) => !seenConflicts.has(conflictDedupeKey(c))),
+        ];
         const conflicts = allConflicts.filter((c) => c.agents.includes(body.agent_id));
 
         broadcastCoordinationEvent(body.workspace, 'conceptual-conflict-report', {
@@ -869,6 +892,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           workspace: body.workspace,
           agent_id: body.agent_id,
           other_agents_considered: others.length,
+          substrate: substrateInfo,
           conflicts,
         });
         return;

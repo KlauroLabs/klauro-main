@@ -70,6 +70,7 @@ import { remoteActive, remoteCheck, remoteClaim, remoteRelease } from './coordin
 import { resolveFabricSettings } from './coordination/fabric-config';
 import { deriveActiveClaims } from './coordination/presence';
 import { detectConceptualConflicts, type AgentInFlightState, type ConceptualConflict, type ConflictCas, type SymbolChange } from './coordination/conceptual-conflict';
+import { detectConceptualConflictsFromSubstrate } from './coordination/in-flight-substrate';
 import { computeAdvisoryOverlap, type AdvisoryOverlapFinding } from './context-fabric';
 import { captureInFlightChanges } from './coordination/in-flight-capture';
 import { planIntentMerge } from './coordination/intent-merge';
@@ -5680,7 +5681,34 @@ function registerTools(server: McpServer) {
       const others = await otherAgentConceptualStates(workspace, agent_id);
       const cas = await conceptualConflictCasForWorkspace(workspace);
       const requesterState: AgentInFlightState = { agent_id, intent, changes: requesterChanges };
-      const allConflicts = detectConceptualConflicts([requesterState, ...others], cas);
+      const gitBasedConflicts = detectConceptualConflicts([requesterState, ...others], cas);
+
+      // W0 SUBSTRATE PATH (SPEC-COORDINATION-FABRIC-V3 §3): attributed
+      // per-participant deltas from the committed vs. in-flight CAS TRACKS,
+      // attributed via active claim scope — never git-diff-derived (on a
+      // shared tree every participant's "own diff" is the union of everyone's;
+      // that's the attribution collapse §3.2). Additive: runs ALONGSIDE the
+      // git-ambient path so the substrate can prove itself in production
+      // without removing the shipped detector feed; findings dedupe by
+      // (kind, agents, symbol). No in-flight track / no claims => no-op.
+      let substrateConflicts: ConceptualConflict[] = [];
+      let substrateInfo: { participants: number; unattributed: number } | undefined;
+      try {
+        const substrate = await detectConceptualConflictsFromSubstrate(workspace, cas);
+        substrateConflicts = substrate.conflicts;
+        substrateInfo = {
+          participants: substrate.attributed.participants.length,
+          unattributed: substrate.attributed.unattributed.length,
+        };
+      } catch {
+        /* substrate unavailable — never a hard failure of this tool call */
+      }
+      const conflictDedupeKey = (c: ConceptualConflict) => `${c.kind}|${[...c.agents].sort().join(',')}|${c.symbol}`;
+      const seenConflicts = new Set(gitBasedConflicts.map(conflictDedupeKey));
+      const allConflicts = [
+        ...gitBasedConflicts,
+        ...substrateConflicts.filter((c) => !seenConflicts.has(conflictDedupeKey(c))),
+      ];
       const conflicts = allConflicts.filter((c) => c.agents.includes(agent_id));
 
       return json({
@@ -5689,6 +5717,7 @@ function registerTools(server: McpServer) {
         agent_id,
         ambient_changes_captured: ambientChanges.length,
         other_agents_considered: others.length,
+        substrate: substrateInfo,
         conflicts,
         note: others.length === 0
           ? 'No other agent has reported or ambiently surfaced conceptual changes yet for this workspace; your report (self-reported + ambient) is now persisted so THEIR next check_conceptual_conflicts/check_collision call can detect conflicts with you.'
