@@ -1645,18 +1645,21 @@ export class AnalyzerOrchestrator {
     await yieldToEventLoop();
     const entryPointSummary = this.summarizeEntryPoints(productEntryPointsForPurpose);
     const projectTextSignal = this.extractProjectTextSignal(projectPath);
-    // Upgrade the bootstrap basename-derived systemName now that the product
-    // doc title (README/PRD H1) is available — evidence-gated, never
-    // overrides a MEANINGFUL explicit options.displayName. The hosted upload
-    // path (remote-analyzer-service.ts resolveDisplayName) always populates
-    // options.displayName from path.basename() of the client's project path
-    // when one is present — that is itself just the bare directory name, not
-    // a deliberate override, so it must still be eligible for the upgrade
-    // below (otherwise this whole resolver is dead code on every hosted
-    // analysis, since displayName is essentially never undefined there).
-    if (this.systemDisplayNameIsBareBasename(options?.displayName, projectPath)) {
-      systemName = this.resolveSystemDisplayName(projectPath, projectTextSignal.productDocTitle) || systemName;
-    }
+    // Name priority (CONTENT-FIRST): the content-derived name — README/PRD H1
+    // title, then the root manifest name, then a common package scope — is the
+    // strongest, most deliberate self-naming signal and always OUTRANKS a
+    // caller-supplied displayName. On the hosted path options.displayName is
+    // frequently just a checkout-folder basename ("proof-of-concept") threaded
+    // from the client path or the project record, so it must never win over a
+    // real content name. When the repo has NO root self-naming file (common for
+    // C#/non-npm stacks — e.g. Hoggan, whose reanalyze passes the project
+    // record's "Hoggan Scientific" as the displayName), the explicit displayName
+    // is the next fallback, above the bare workspace basename. (The old gate
+    // compared displayName to basename(WORKSPACE), which in the split-workspace
+    // architecture never matches a client-derived name, so it wrongly kept weak
+    // names like "proof-of-concept" and dropped real ones like "Hoggan
+    // Scientific".)
+    systemName = this.resolveSystemDisplayName(projectPath, projectTextSignal.productDocTitle) || systemName;
     const frameworkNames = this.frameworkNamesForPurpose(contributions, allNodes, projectPath);
     const dbEntityNames = databaseSchema.entities.map(e => e.name);
     const externalServiceNames = externalServices.map(svc => svc.name);
@@ -2842,14 +2845,12 @@ export class AnalyzerOrchestrator {
     const incrExternalServiceNames = externalServices.map(svc => svc.name);
     const incrEntryPointSummary = this.summarizeEntryPoints(this.filterPrimaryProductEntryPoints(entryPoints, nodes, projectPath));
     const incrProjectTextSignal = this.extractProjectTextSignal(projectPath);
-    // Upgrade the bootstrap basename-derived systemName now that the product
-    // doc title is available — evidence-gated, never overrides a MEANINGFUL
-    // explicit options.displayName. Same rule as the full analysis path (see
-    // the comment there on why a bare-basename displayName must still be
-    // eligible for the upgrade).
-    if (this.systemDisplayNameIsBareBasename(options?.displayName, projectPath)) {
-      systemName = this.resolveSystemDisplayName(projectPath, incrProjectTextSignal.productDocTitle) || systemName;
-    }
+    // CONTENT-FIRST name priority — same rule as the full analysis path: the
+    // content-derived name (README/PRD title, root manifest, common package
+    // scope) outranks a caller-supplied displayName (often a checkout-folder
+    // basename), which in turn is the fallback above the bare workspace
+    // basename.
+    systemName = this.resolveSystemDisplayName(projectPath, incrProjectTextSignal.productDocTitle) || systemName;
     // Same comprehension-input gate as the full path: test/fixture journeys and
     // entities stay structural facts but never seed comprehension.
     const incrComprehensionJourneys = this.filterPrimaryProductJourneys(
