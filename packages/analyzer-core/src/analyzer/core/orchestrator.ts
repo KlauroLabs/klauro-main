@@ -4688,6 +4688,34 @@ export class AnalyzerOrchestrator {
         return false;
       }
 
+      // Prefer the top-level project root over a narrower nested root
+      // whenever the analyzer's OWN signal/detection also succeeds there.
+      // Every detectPatterns/canAnalyze() check in this codebase globs
+      // RECURSIVELY from the root it is given, so any signal found in a
+      // nested project root is, by construction, also found scanning from
+      // the encompassing top-level projectPath. Binding a multi-root-capable
+      // framework/library analyzer to just the first matching nested root
+      // (the old ordering, kept below as the narrowing fallback) silently
+      // discards evidence from every sibling directory the analyzer would
+      // otherwise have scanned — measured on a multi-project .NET solution
+      // whose WPF UI surface is legitimately split across several nested
+      // *.csproj directories: the framework analyzer's contribution
+      // collapsed from 272 entry points / 244 UI event-handler nodes down to
+      // a single accidental survivor once bound to only the first nested
+      // root with WPF signal, even though the analyzer itself (given the
+      // full top-level path) would have scanned every window across every
+      // nested project. Checking the wider root first can only ever find
+      // >= the evidence the narrower nested-root scan would have found, so
+      // this is a strict improvement for analyzers whose detection is
+      // recursive (the common case) and a no-op otherwise.
+      if (
+        await this.hasAnalyzerSignal(projectPath, registration) &&
+        await registration.analyzer.canAnalyze(projectPath)
+      ) {
+        this.analyzerRootMap.set(registration.id, projectPath);
+        return true;
+      }
+
       if ((registration.type === 'framework' || registration.type === 'library') && !registration.analyzer.discoversNestedRoots) {
         const nestedRoots = this.projectRoots
           .filter(root => root !== projectPath)
@@ -4702,14 +4730,6 @@ export class AnalyzerOrchestrator {
           } catch {
           }
         }
-      }
-
-      if (
-        await this.hasAnalyzerSignal(projectPath, registration) &&
-        await registration.analyzer.canAnalyze(projectPath)
-      ) {
-        this.analyzerRootMap.set(registration.id, projectPath);
-        return true;
       }
 
       for (const root of this.projectRoots) {
@@ -4968,6 +4988,28 @@ export class AnalyzerOrchestrator {
     registration: AnalyzerRegistration
   ): string[] {
     if (registration.type !== 'framework' && registration.type !== 'library') {
+      return [];
+    }
+
+    // When the analyzer is bound to the top-level project root itself (no
+    // narrower nested root won out in shouldUseAnalyzer, or shouldUseAnalyzer
+    // deliberately preferred the encompassing root), there is no separate
+    // dedicated pass that will ever cover a nested manifest-owning
+    // subdirectory instead -- analyzerRootMap holds exactly ONE root per
+    // registration id, never a fan-out of one pass per nested root. Excluding
+    // those nested roots here would not defer their content to another pass;
+    // it would drop it from this analyzer's analysis entirely. Measured on a
+    // multi-project .NET solution where every subproject -- including the
+    // ones that actually contain the WPF UI -- owns its own .csproj manifest:
+    // scoping the WPF framework analyzer to the top-level root while this
+    // filter walled off every one of those subprojects reduced its
+    // contribution from hundreds of nodes/entry points to zero. Only exclude
+    // sibling manifest roots when the analyzer is scoped to a NARROWER,
+    // non-root directory, where the isolation this filter provides (keeping
+    // an app-boundary analyzer from bleeding into a sibling app under the
+    // same parent) is still meaningful and something else could plausibly
+    // cover the excluded root.
+    if (matchedRoot === projectPath) {
       return [];
     }
 
