@@ -253,6 +253,42 @@ test('project is a SUBDIRECTORY of a larger git repo: committed-HEAD snapshot is
   }
 });
 
+test('project dir has NO committed content but the repo is dirty: falls back to the working tree instead of an empty snapshot (real rpg/server dead-end)', async () => {
+  // REGRESSION (real customer-path dead-end, 2026-07-16): a brand-new project
+  // directory the user has not committed yet (rpg/server — 127 .py files, none
+  // tracked at HEAD) inside an otherwise-dirty repo produced an EMPTY snapshot
+  // and the "requires a source snapshot with files" 400. Cause: a dirty tree
+  // routes to the committed-HEAD snapshot (correct: a SHARED analysis must not
+  // read one dev's dirty tree), but HEAD has NOTHING for this project, so the
+  // snapshot came back empty and the run refused. When there is no committed
+  // content to prefer, the working tree is the only source of truth — fall back.
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-uncommitted-proj-'));
+  try {
+    spawnSync('git', ['init'], { cwd: root, encoding: 'utf8' });
+    // Commit something ELSEWHERE so the repo has a HEAD (and is dirty below).
+    fs.writeFileSync(path.join(root, 'OTHER.md'), '# other\n');
+    gitCommitAll(root, 'baseline');
+    // Make the repo dirty (a deletion elsewhere) — this is what routes to HEAD.
+    fs.rmSync(path.join(root, 'OTHER.md'));
+    // The project subdir exists on disk but was NEVER committed.
+    const project = path.join(root, 'server');
+    fs.mkdirSync(path.join(project, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(project, 'main.py'), 'app = 1\n');
+    fs.writeFileSync(path.join(project, 'src', 'routes.py'), 'ROUTES = []\n');
+    await writeDefaultKlauroConfig(project, { force: true });
+
+    const snapshot = await buildSourceSnapshot(project);
+    assert.equal(snapshot.snapshot_source, 'working-tree', 'no committed content => working-tree is the only truth');
+    assert.ok(snapshot.files.length > 0, 'must not return an empty snapshot (the dead-end)');
+    const main = snapshot.files.find(file => file.path === 'main.py');
+    assert.ok(main, 'uncommitted project file is present');
+    assert.equal(main.content, 'app = 1\n');
+    assert.ok(snapshot.files.some(file => file.path === 'src/routes.py'), 'nested uncommitted file is present');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('git repo with no commits yet: snapshot falls back to the working tree (no refusal)', async () => {
   await withFixtureWorkspace(async workspace => {
     spawnSync('git', ['init'], { cwd: workspace.repo, encoding: 'utf8' });

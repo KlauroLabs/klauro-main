@@ -262,7 +262,18 @@ export async function buildSourceSnapshot(projectPath: string): Promise<SourceSn
     // content (git-archive semantics, read straight from git objects). The dirty
     // working tree is never touched, stashed, or included; uncommitted work flows
     // through the separate in-flight track (buildWorkingTreeChangeContext).
-    return buildHeadSourceSnapshot(root, loaded, head);
+    const headSnapshot = await buildHeadSourceSnapshot(root, loaded, head);
+    // ...UNLESS the project has NO committed content at HEAD. A brand-new
+    // project directory the user hasn't committed yet (very common in a first
+    // session — e.g. a `server/` subdir added but never committed) yields an
+    // EMPTY head snapshot, and returning it is a customer-facing dead-end
+    // ("Remote analyze requires a source snapshot with files") with no hint
+    // that the cause is "nothing here is committed". The committed-HEAD rule
+    // exists to keep a SHARED analysis off one developer's dirty tree — but
+    // when there is nothing committed to prefer, the working tree is the only
+    // source of truth, so fall back to it (same path a non-git repo takes)
+    // instead of refusing.
+    if (headSnapshot.files.length > 0) return headSnapshot;
   }
   const files: RemoteSourceFile[] = [];
   await walkConfiguredSourceFiles(root, loaded, async absolutePath => {
