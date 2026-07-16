@@ -1,5 +1,26 @@
 # SPEC — Coordination Fabric v2 (Concurrent Work + Awareness + Semantic Reconciliation)
 
+> ## ⚠️ SUPERSEDED BY [SPEC-COORDINATION-FABRIC-V3.md](./SPEC-COORDINATION-FABRIC-V3.md) — READ V3 FIRST
+>
+> The **mechanics** below remain valid. The **framing is wrong on six counts**, and the
+> framing is what readers act on. Specifically, do NOT act on:
+> - **§1.5's metric hierarchy** ("collisions prevented is *table stakes*") — collision-prevention
+>   is not a lower rung, it is the **wrong axis**. The north star is the **free flow of work**.
+>   Lean INTO collision.
+> - **§7's closing promise** ("a fleet that never steps on itself") — defensive framing. The
+>   promise is a fleet that **flows**.
+> - **§6's phase ordering** — "Integrate-on-write / per-edit re-analysis" is listed as P4 of 6.
+>   It is the **substrate (P0)**: the fabric must be built ON the analysis, with in-flight
+>   reanalysis. Nothing else is sound without it (v3 §3).
+> - **§1.7 primitive 5** ("intent-aware merge / merge-as-art") — the ceiling is **mergeless
+>   work** (v3 §5), not cleverer reconciliation.
+> - **§6's status table** — STALE. It says P6 (work-partitioner) is "not yet built";
+>   `plan_parallel_work` is shipped and is the strongest tool in the set. See v3 §8.
+>
+> Evidence that this framing actively misleads: an agent read this doc and built a
+> *defensive, serialized* fleet — banning its own agents from the hot file and deferring real
+> work to avoid collisions that a single awareness call showed did not exist (v3 §6.4).
+>
 > **Status: PARTIALLY IMPLEMENTED** as of 2026-07-02. Motivated by a live 6-agent
 > battle-test on one feature (deployable-detection build, workspace
 > `deployable-detection-build`). v1 = [[SPEC-COORDINATION-FABRIC]] (advisory
