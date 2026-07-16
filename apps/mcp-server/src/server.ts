@@ -59,6 +59,9 @@ import { pruneKlauroStorage } from './storage-maintenance';
 import { resolveWorkspaceInputPaths, type WorkspaceSkippedInput } from './workspace-inputs';
 import { RESPONSE_BUDGET_BYTES, boundToolPayload, boundToolText, serializeToolResponse } from './response-budget';
 import { getBuildIdentity, checkServerStaleness } from '../../../packages/analyzer-core/src/analyzer/core/build-identity';
+import { attachEntryPointSecurity } from '../../../packages/analyzer-core/src/analyzer/core/entry-point-security';
+import { attachDeployable, ensureEntryPointDescription } from '../../../packages/analyzer-core/src/analyzer/core/entry-point-deployable';
+import { attachInteractionReach } from '../../../packages/analyzer-core/src/analyzer/core/entry-point-enrichment';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import { loadStoredConnectorAuth, normalizeServerUrl } from './connector-auth';
 import { arbitrate, detectCollisions, getGrants, heartbeatGrant, releaseGrant, requestGrant, type AgentKind, type CasEdgeRef, type WasCapabilityRef, type WorkClaim } from './coordination';
@@ -235,6 +238,142 @@ async function runtimeMetricsForContract(cas: CASOutput, path: string): Promise<
   } catch {
     return [];
   }
+}
+
+/**
+ * GAP #32 fix — telemetry -> ENTRY-POINT keying.
+ *
+ * `product.buildNodeRuntimeMetrics` (the read-side rollup `runtimeMetricsForContract`
+ * returns) already groups a runtime observation under whatever the RICHEST key
+ * available is: a resolved CAS static/node id when correlation succeeded, else the
+ * raw `method + route` the observation carried (see `buildNodeRuntimeMetrics`'
+ * grouping key, apps/mcp-server/src/product.ts). But `get_entry_points` — unlike
+ * `get_flow_concepts`/`get_coding_context` (which resolve a single node and pick up
+ * `product.buildNodeRuntimeMetrics`' output via a node-id join) — never consulted
+ * runtime metrics at all: it returned bare `cas.entry_points` slices, so an entry
+ * point's own request_count/error_rate/p50-p95-p99 never appeared anywhere, even
+ * when a metric existed for its exact route+method.
+ *
+ * The deeper reason a route-level join is the right key (not just node id): a very
+ * common real-world telemetry source — Klauro's own self-telemetry loop
+ * (self-telemetry.ts) among others — emits one runtime event per completed HTTP
+ * request carrying method+route+status+duration, and correlation against a CAS
+ * node is BEST-EFFORT (stack-frame/file-hint matching, see telemetry-ingestion.ts
+ * `resolveHintNode` and product.ts `correlateRuntimeEvent`). When that correlation
+ * misses or lands on the wrong node (e.g. a differing container mount root that
+ * `filesLikelySameSource` still can't bridge), the observation is still carrying a
+ * perfectly good method+route — the SAME identity the entry point's own
+ * `trigger.method`/`trigger.path` already records. Keying the entry-point join off
+ * the route (normalized, with light param-wildcard tolerance so `/invoices/:id` and
+ * `/invoices/123` are treated as the same entry) closes that gap without requiring
+ * node-level correlation to succeed at all.
+ *
+ * Matching precedence per entry point (first hit wins, so an exact CAS-level
+ * correlation is always preferred over the route fallback):
+ *   1. entry point id === metric static_id / entry_point_id
+ *   2. entry point handler.node_id or source_node === metric node_id
+ *   3. entry point trigger.method + trigger.path routes-compatible with the
+ *      metric's method + route (case-insensitive, trailing-slash-insensitive,
+ *      `:param`/`{param}` segments treated as wildcards)
+ *
+ * Backward compatible: an entry point with no matching metric (or when there are
+ * no runtime metrics at all) is returned completely unchanged — no `telemetry` key
+ * is ever added, so existing consumers that don't expect the field see no diff.
+ * This is also where any OTHER optional per-entry-point field an analyzer pass may
+ * have added (`input`, `output`, `security`, `capabilities`, `interaction_reach`,
+ * `deployable_id`, `deployable_name`) passes through untouched: entry points are
+ * spread verbatim (`{ ...ep, telemetry }`), never reconstructed field-by-field, so
+ * an absent optional field simply never appears in the spread and a present one
+ * always does — safe whether or not those analyzer-side fields exist yet.
+ */
+export function normalizeEntryRoute(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/^https?:\/\/[^/]+/, '')
+    .replace(/\?.*$/, '')
+    .replace(/\$\{[^}]*\}/g, ':param')
+    .replace(/:[a-z0-9_]+/g, ':param')
+    .replace(/\{[^}]+\}/g, ':param')
+    .replace(/\/+/g, '/')
+    .replace(/\/$/, '') || '/';
+}
+
+function entryRouteSegments(route: string): string[] {
+  return route.split('/').filter(Boolean);
+}
+
+/** Bounded route-compatibility check: exact match, wildcard-segment match when
+ *  either side carries a `:param` segment, or a literal suffix relationship
+ *  (mirrors product.ts' internal `routesCompatible`, duplicated locally in
+ *  minimal form since that helper isn't exported and this file may not modify
+ *  product.ts). */
+export function entryRoutesCompatible(left: string, right: string): boolean {
+  if (!left || !right) return false;
+  if (left === right) return true;
+  if (left.includes(':param') || right.includes(':param')) {
+    const leftParts = entryRouteSegments(left);
+    const rightParts = entryRouteSegments(right);
+    if (leftParts.length === rightParts.length) {
+      return leftParts.every((part, index) => part === rightParts[index] || part === ':param' || rightParts[index] === ':param');
+    }
+    return false;
+  }
+  return left.endsWith(right) || right.endsWith(left);
+}
+
+/** Locate the runtime metric (if any) that identifies THIS entry point, by id,
+ *  handler/source node, then normalized route+method. Returns undefined (never
+ *  fabricated) when nothing matches. */
+export function matchTelemetryForEntryPoint(
+  entryPoint: Record<string, any>,
+  runtimeMetrics: product.NodeRuntimeMetrics[],
+): product.NodeRuntimeMetrics | undefined {
+  if (!runtimeMetrics || runtimeMetrics.length === 0) return undefined;
+  const ids = [entryPoint?.id, entryPoint?.handler?.node_id, entryPoint?.source_node].filter(
+    (value): value is string => Boolean(value)
+  );
+  const entryRoute = entryPoint?.trigger?.path ? normalizeEntryRoute(String(entryPoint.trigger.path)) : undefined;
+  const entryMethod = entryPoint?.trigger?.method ? String(entryPoint.trigger.method).toUpperCase() : undefined;
+
+  return runtimeMetrics.find(metric => {
+    if (metric.static_id && ids.includes(metric.static_id)) return true;
+    if (metric.entry_point_id && ids.includes(metric.entry_point_id)) return true;
+    if (metric.node_id && ids.includes(metric.node_id)) return true;
+    if (!entryRoute || !metric.route) return false;
+    const metricMethod = metric.method ? metric.method.toUpperCase() : undefined;
+    if (entryMethod && metricMethod && entryMethod !== metricMethod) return false;
+    return entryRoutesCompatible(entryRoute, normalizeEntryRoute(metric.route));
+  });
+}
+
+/**
+ * Attach the per-entry-point `telemetry` facet ({request_count, error_rate,
+ * p50, p95, p99}) when a runtime metric identifies that entry (see
+ * `matchTelemetryForEntryPoint` above for the join precedence). Evidence-gated
+ * and additive: entries with no match, or when `runtimeMetrics` is empty, are
+ * returned byte-for-byte as passed in.
+ */
+export function attachEntryPointTelemetry<T extends Record<string, any>>(
+  entryPoints: T[],
+  runtimeMetrics: product.NodeRuntimeMetrics[],
+): T[] {
+  if (!runtimeMetrics || runtimeMetrics.length === 0 || !Array.isArray(entryPoints) || entryPoints.length === 0) {
+    return entryPoints;
+  }
+  return entryPoints.map(entryPoint => {
+    const match = matchTelemetryForEntryPoint(entryPoint, runtimeMetrics);
+    if (!match) return entryPoint;
+    return {
+      ...entryPoint,
+      telemetry: {
+        request_count: match.request_count,
+        error_rate: match.error_rate,
+        ...(match.latency?.p50_ms != null ? { p50: match.latency.p50_ms } : {}),
+        ...(match.latency?.p95_ms != null ? { p95: match.latency.p95_ms } : {}),
+        ...(match.latency?.p99_ms != null ? { p99: match.latency.p99_ms } : {}),
+      },
+    };
+  });
 }
 
 export type ToolProfile = 'core' | 'core-no-pillars' | 'full';
@@ -3980,7 +4119,7 @@ function registerTools(server: McpServer) {
     'get_entry_points',
     {
       title: 'Get Entry Points',
-      description: 'All system entry points (HTTP endpoints, CLI commands, WebSocket handlers, event listeners, scheduled tasks, etc.). Optionally filter by type. Paginated (default 50).',
+      description: 'All system entry points (HTTP endpoints, CLI commands, WebSocket handlers, event listeners, scheduled tasks, etc.). Optionally filter by type. Paginated (default 50). Each entry point carries a `telemetry` facet (request_count/error_rate/p50/p95/p99) when real runtime observations identify it — by resolved static/node id, or by its own route+method when only route-level telemetry exists (GAP #32 fix; omitted, never fabricated, when nothing matches). Other optional per-entry fields an analysis may carry (input, output, security, capabilities, interaction_reach, deployable_id, deployable_name) pass through unchanged when present.',
       inputSchema: {
         path: z.string().describe('Project path'),
         type: z.string().optional().describe('Filter by type: http, websocket, cli, event, schedule, page, route, message, file, test'),
@@ -3990,7 +4129,27 @@ function registerTools(server: McpServer) {
     } as any,
     async ({ path, type, limit, offset }: any) => withErrorHandling(async () => {
       const cas = await getAnalysis(path);
-      return json(query.getEntryPoints(cas, { type, limit, offset }));
+      const result = query.getEntryPoints(cas, { type, limit, offset });
+      // ENTRY-POINT ANALYSIS-GAP ENRICHMENT (query-time — keeps the stored CAS
+      // canonical, mirrors the getFlowConcepts/telemetry query-time pattern).
+      // Every join here reads ONLY CAS-level data (boundaries, deployable
+      // evidence, seams) with no flow derivation, so the hot path stays cheap.
+      // Contract/capability enrichment (which needs derived flows) is
+      // deliberately NOT wired here — deriving all flows per get_entry_points
+      // call is the exact getFlowConcepts cost the old /conceptual path paid.
+      let eps: any[] = result.entry_points || [];
+      eps = ensureEntryPointDescription(eps);                                             // description coverage (was 28% missing)
+      eps = attachDeployable(eps, cas.deployable_evidence);                               // per-deployable attribution
+      eps = attachEntryPointSecurity(eps, cas.security_boundaries, cas.security_contexts); // per-entry security (boundary/context join)
+      eps = attachInteractionReach(eps, cas.communication_seams as any);                  // external vs internal reach
+      // TELEMETRY facet: join persisted runtime metrics by id/node/route. Also
+      // where any optional per-entry field passes through untouched (entries are
+      // spread verbatim, never rebuilt field-by-field).
+      const runtimeMetrics = await runtimeMetricsForContract(cas, path);
+      return json({
+        ...result,
+        entry_points: attachEntryPointTelemetry(eps, runtimeMetrics),
+      });
     })
   );
 
