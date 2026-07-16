@@ -37,4 +37,8 @@ ENV NODE_OPTIONS=--max-old-space-size=6144
 
 EXPOSE 8787
 
-CMD ["npm", "run", "start"]
+# Exec-form tsx DIRECTLY — `npm run` wraps the process so PID 1 signals
+# (SIGTERM from docker stop / recreate) don't reach the node process, which
+# both defeats the graceful-shutdown handler in src/index.ts and makes npm
+# report a non-zero exit when its child dies by signal (defect #24 companion).
+CMD ["/app/node_modules/.bin/tsx", "src/index.ts"]
