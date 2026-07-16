@@ -5246,7 +5246,7 @@ describe('thin-catalog nudge (defect #33 — catalog VARIANCE: v1.0.83 returned 
       expect(nudgeHint).toMatch(/Widget route area/);
       expect(nudgeHint).toMatch(/Gadget route area/);
       expect(nudgeHint).toMatch(/Gizmo route area/);
-      expect(nudgeHint).toMatch(/single capability/i);
+      expect(nudgeHint).toMatch(/only 1 capability/i);
       // The richer (3-item) nudge result replaces the thin 1-item result.
       expect(catalog.length).toBe(3);
       expect(catalog.map((c: any) => c.name).sort()).toEqual(['Manage gadgets', 'Manage gizmos', 'Manage widgets']);
@@ -5301,6 +5301,52 @@ describe('thin-catalog nudge (defect #33 — catalog VARIANCE: v1.0.83 returned 
       });
       expect(callCount).toBe(2); // the two regular attempts only, no nudge call
       expect(catalog.length).toBe(1);
+    } finally {
+      (aiService as any).generateComponentDescription = original;
+    }
+  });
+
+  it('nudges a SEVERE undercount too: 3 thin caps against 9+ distinct families (rung-5 washup: 3 caps on a 34-entity/309-route Rails app)', async () => {
+    // Nine distinct deterministic families — the washup shape in miniature.
+    const nouns = ['Widget', 'Gadget', 'Gizmo', 'Sprocket', 'Flange', 'Rotor', 'Stator', 'Bearing', 'Camshaft'];
+    const manyFamilies = nouns.map((noun, index) => ({
+      name: `${noun} route area`,
+      related_entities: [`entity_${noun.toLowerCase()}`],
+      operations: [{ entry_point_id: `ep_${index}`, entry_point_type: 'http', action: 'Manage' }],
+    }));
+    const original = (aiService as any).generateComponentDescription;
+    const captured: any[] = [];
+    (aiService as any).generateComponentDescription = async (arg: any) => {
+      captured.push(arg);
+      // First two attempts collapse to 3 thin items; the nudge attempt returns 9.
+      if (captured.length <= 2) {
+        return JSON.stringify({
+          capabilities: [
+            { name: 'Create record', description: 'Creates a record in the system for operators to review later.', category: 'core', entities: ['Widget'], journeys: [] },
+            { name: 'Update item', description: 'Updates an item in the system when operators change details.', category: 'core', entities: ['Gadget'], journeys: [] },
+            { name: 'List things', description: 'Lists things stored in the system so operators can browse them.', category: 'supporting', entities: ['Gizmo'], journeys: [] },
+          ],
+        });
+      }
+      return JSON.stringify({
+        capabilities: nouns.map(noun => ({
+          name: `Manage ${noun.toLowerCase()}s`,
+          description: `Tracks ${noun} records from creation through retirement for operators.`,
+          category: 'core', entities: [noun], journeys: [],
+        })),
+      });
+    };
+    try {
+      const catalog = await orch.aiExtractCapabilityCatalog({
+        ...baseInput,
+        candidateCapabilities: manyFamilies,
+        dataEntities: nouns.map(noun => ({ id: `entity_${noun.toLowerCase()}`, name: noun })),
+      });
+      expect(captured.length).toBe(3); // two regular attempts + the severe-undercount nudge
+      const nudgeArg = captured[2];
+      const hint = String(nudgeArg?.additionalContext?.retry_hint || JSON.stringify(nudgeArg));
+      expect(hint).toContain('only 3 capabilities');
+      expect(catalog.length).toBe(9);
     } finally {
       (aiService as any).generateComponentDescription = original;
     }

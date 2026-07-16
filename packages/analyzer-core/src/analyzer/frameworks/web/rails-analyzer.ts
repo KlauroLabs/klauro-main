@@ -538,7 +538,12 @@ export class RailsAnalyzer extends BaseAnalyzer {
       validations,
       scopes,
       callbacks,
-      abstract: /self\.abstract_class\s*=\s*true/.test(content)
+      // Two abstract-base idioms: the classic `self.abstract_class = true` and
+      // Rails 7.1+'s `primary_abstract_class` (the generated ApplicationRecord
+      // uses the latter). Missing the second made ApplicationRecord — a class
+      // with no table and no fields of its own that every model merely
+      // inherits from — surface as a DOMAIN ENTITY in the ERD (rung-5 washup).
+      abstract: /self\.abstract_class\s*=\s*true|^\s*primary_abstract_class\b/m.test(content)
     };
   }
 

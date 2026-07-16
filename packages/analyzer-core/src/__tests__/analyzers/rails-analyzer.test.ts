@@ -90,6 +90,20 @@ describe('RailsAnalyzer', () => {
       expect(invoice!.stiParent).toBeUndefined();
     });
 
+    it('marks a primary_abstract_class base (Rails 7.1+ ApplicationRecord idiom) as abstract (rung-5 washup: ApplicationRecord surfaced as a domain ENTITY)', () => {
+      const models = analyzer.extractModels([
+        // The exact generated shape in washup's app/models/application_record.rb.
+        { file: 'app/models/application_record.rb', content: 'class ApplicationRecord < ActiveRecord::Base\n  primary_abstract_class\nend\n' },
+        { file: 'app/models/user.rb', content: 'class User < ApplicationRecord\nend\n' },
+      ]);
+
+      const base = models.find(model => model.name === 'ApplicationRecord');
+      const user = models.find(model => model.name === 'User');
+      expect(base!.abstract).toBe(true);
+      expect(user!.abstract).toBe(false);
+      expect(user!.tableName).toBe('users');
+    });
+
     it('does not treat plain service classes as models', () => {
       const models = analyzer.extractModels([
         { file: 'app/models/event.rb', content: 'class Event < ApplicationRecord\nend\n' },

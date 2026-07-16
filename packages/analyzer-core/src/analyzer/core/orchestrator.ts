@@ -9396,13 +9396,21 @@ export class AnalyzerOrchestrator {
     // capability per family. Bounded to a single extra call (never loops) and
     // only fires when there is real distinct-family evidence to enumerate —
     // an under-2-family repo has nothing to nudge toward and is left alone.
-    if (catalog.length === 1) {
+    // TRIGGER (widened for rung-5 washup, measured live): the original nudge
+    // fired only at exactly 1, so a Rails app with 34 entities + 309 routes
+    // that came back with THREE thin caps ("Create record"...) sailed through
+    // untouched. A catalog of 2-3 now also nudges when the deterministic
+    // family evidence outnumbers it 3x (severe undercount — 3 caps against 9+
+    // distinct families is a collapse, not a judgment call). The ===1 case
+    // keeps its original >=2-family threshold; still ONE bounded extra call.
+    if (catalog.length >= 1 && catalog.length <= 3) {
       const distinctFamilies = Array.from(new Set(
         rankedCandidateAreas.map(candidate => String(candidate.name || '').trim()).filter(Boolean)
       )).slice(0, 10);
-      if (distinctFamilies.length >= 2) {
+      const familyThreshold = catalog.length === 1 ? 2 : catalog.length * 3;
+      if (distinctFamilies.length >= familyThreshold) {
         try {
-          const nudgeHint = `Previous answer collapsed this platform into a single capability. The deterministic evidence names ${distinctFamilies.length} DISTINCT candidate route-area families: ${distinctFamilies.map(family => `"${family}"`).join(', ')}. Return ONE grounded, purpose-phrased capability PER distinct family listed above — merge two families only when they are genuinely the same product ability, never collapse all of them into one item.`;
+          const nudgeHint = `Previous answer collapsed this platform into only ${catalog.length} capabilit${catalog.length === 1 ? 'y' : 'ies'}. The deterministic evidence names ${distinctFamilies.length} DISTINCT candidate route-area families: ${distinctFamilies.map(family => `"${family}"`).join(', ')}. Return ONE grounded, purpose-phrased capability PER distinct family listed above — merge two families only when they are genuinely the same product ability, never collapse all of them into one item.`;
           const nudgeRaw = await requestCatalog(3, nudgeHint);
           const nudgeParsed = this.parseCapabilityCatalog(nudgeRaw);
           if (nudgeParsed.length > catalog.length) {
