@@ -289,6 +289,68 @@ test('project dir has NO committed content but the repo is dirty: falls back to 
   }
 });
 
+test('EMPTY directory: buildSourceSnapshot throws a self-diagnosing error naming the path and zero counts (#37)', async () => {
+  // REGRESSION (#37 — zero dead ends): the raw "requires a source snapshot with
+  // files" 400 names no cause. When the directory genuinely has no files at
+  // all, the client-side error must say so explicitly, before ever reaching
+  // the server, with a concrete "check the path" next step.
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-empty-dir-'));
+  try {
+    // No .klaurorc/.klauroignore written here on purpose: writing one would add
+    // the .klaurorc file itself to the snapshot (it is intentionally in
+    // IMPORTANT_EXTENSIONLESS so declared conventions reach the remote
+    // analyzer), which would make the directory not-actually-empty and defeat
+    // this test. loadKlauroConfig works fine with no config file present
+    // (falls back to defaults), so the directory here is genuinely empty.
+
+    await assert.rejects(
+      () => buildSourceSnapshot(root),
+      (error: Error) => {
+        assert.ok(error.message.includes(root), 'error names the checked path');
+        assert.match(error.message, /candidates BEFORE ignores: 0/);
+        assert.match(error.message, /candidates AFTER ignores: 0/);
+        assert.match(error.message, /NEXT STEP.*check.*path/is, 'error tells the customer to check the path');
+        return true;
+      }
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('ALL-EXCLUDED directory: buildSourceSnapshot names the exclusion source/pattern and before/after counts (#37)', async () => {
+  // REGRESSION (#37 — zero dead ends): a directory whose only files are all
+  // matched by .klauroignore is indistinguishable from an empty directory in
+  // the raw server 400. The diagnostic must show files WERE found (before
+  // count > 0) but all were excluded (after count 0), naming the .klauroignore
+  // pattern responsible so the customer can loosen it instead of guessing.
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-all-excluded-'));
+  try {
+    // No .klaurorc written (same reason as the empty-directory test above): it
+    // would itself count as an included file. Only a .klauroignore is present
+    // (loadKlauroConfig picks it up with no .klaurorc needed), so the ONLY
+    // files under this directory are the two under secrets/, both excluded.
+    fs.writeFileSync(path.join(root, '.klauroignore'), 'secrets/**\n');
+    fs.mkdirSync(path.join(root, 'secrets'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'secrets', 'main.py'), 'X = 1\n');
+    fs.writeFileSync(path.join(root, 'secrets', 'util.py'), 'Y = 2\n');
+
+    await assert.rejects(
+      () => buildSourceSnapshot(root),
+      (error: Error) => {
+        assert.match(error.message, /candidates BEFORE ignores: 3/, 'counts the 2 secrets/*.py files plus the .klauroignore file itself');
+        assert.match(error.message, /candidates AFTER ignores: 0/);
+        assert.match(error.message, /\.klauroignore pattern "secrets\/\*\*"/, 'names the exact ignore source + pattern');
+        assert.match(error.message, /2 file\(s\)/, 'names the exclusion count');
+        assert.match(error.message, /NEXT STEP.*(Loosen|excluded)/is, 'error tells the customer to loosen the ignore rule');
+        return true;
+      }
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('git repo with no commits yet: snapshot falls back to the working tree (no refusal)', async () => {
   await withFixtureWorkspace(async workspace => {
     spawnSync('git', ['init'], { cwd: workspace.repo, encoding: 'utf8' });

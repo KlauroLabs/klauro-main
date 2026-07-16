@@ -221,6 +221,19 @@ const EXTRA_INCLUDED_EXTENSIONS = new Set([
   // directly by SoapWsdlAnalyzer, not by a programming-language parser.
   '.wsdl',
   '.xsd',
+  // Product documentation (README/PRD/docs): the analyzer's TOP-DOWN naming and
+  // description grounding read these — resolveSystemDisplayName takes the
+  // README/PRD H1 as the strongest self-naming evidence, and
+  // extractProjectTextSignal seeds description/concept grounding from product
+  // docs. Because markdown is not a registered SOURCE extension, every hosted
+  // snapshot silently dropped it — so hosted analyses could never see a README
+  // and content-first naming was dead on arrival server-side (measured twice on
+  // real projects, 2026-07-16: Klauro-self "no README in prod snapshot", and
+  // rpg/server named "server" hosted while the same repo resolved
+  // "Sundered World - Simulation Server" from its README locally).
+  '.md',
+  '.markdown',
+  '.rst',
 ]);
 
 const IMPORTANT_EXTENSIONLESS = new Set([
@@ -256,8 +269,11 @@ const IMPORTANT_EXTENSIONLESS = new Set([
 export async function buildSourceSnapshot(projectPath: string): Promise<SourceSnapshot> {
   const root = path.resolve(projectPath);
   const loaded = await loadKlauroConfig(root);
+  const isGit = isGitRepository(root);
   const head = readGitHead(root);
-  if (isGitRepository(root) && head && listGitChanges(root).length > 0) {
+  const dirty = isGit && head ? listGitChanges(root).length > 0 : false;
+  let fellBackFromEmptyHead = false;
+  if (isGit && head && dirty) {
     // Dirty working tree: the shared analysis still runs — on the COMMITTED HEAD
     // content (git-archive semantics, read straight from git objects). The dirty
     // working tree is never touched, stashed, or included; uncommitted work flows
@@ -274,12 +290,24 @@ export async function buildSourceSnapshot(projectPath: string): Promise<SourceSn
     // source of truth, so fall back to it (same path a non-git repo takes)
     // instead of refusing.
     if (headSnapshot.files.length > 0) return headSnapshot;
+    fellBackFromEmptyHead = true;
   }
   const files: RemoteSourceFile[] = [];
+  const diagnostics = newWalkDiagnostics();
   await walkConfiguredSourceFiles(root, loaded, async absolutePath => {
     const file = await readRemoteSourceFile(root, absolutePath, loaded);
     if (file) files.push(file);
-  });
+  }, [], diagnostics);
+
+  if (files.length === 0) {
+    throw buildEmptySnapshotDiagnostic(root, loaded, {
+      isGit,
+      hasHead: Boolean(head),
+      dirty,
+      fellBackFromEmptyHead,
+      diagnostics,
+    });
+  }
 
   return {
     project_name: loaded.config.project.name || path.basename(root),
@@ -288,6 +316,93 @@ export async function buildSourceSnapshot(projectPath: string): Promise<SourceSn
     files: files.sort((left, right) => left.path.localeCompare(right.path)),
     manifest: buildManifest(root, loaded, files),
   };
+}
+
+/** Cheap counters accumulated DURING the existing source walk (no second scan):
+ *  how many files were seen before any ignore rule applied, how many survived,
+ *  and — per exclusion reason/pattern — how many files it accounted for. Used
+ *  only to build a self-diagnosing error when the final snapshot is empty. */
+interface WalkDiagnostics {
+  candidatesBeforeIgnores: number;
+  candidatesAfterIgnores: number;
+  exclusionCounts: Map<string, number>;
+}
+
+function newWalkDiagnostics(): WalkDiagnostics {
+  return { candidatesBeforeIgnores: 0, candidatesAfterIgnores: 0, exclusionCounts: new Map() };
+}
+
+function recordExclusion(diagnostics: WalkDiagnostics | undefined, key: string): void {
+  if (!diagnostics) return;
+  diagnostics.exclusionCounts.set(key, (diagnostics.exclusionCounts.get(key) || 0) + 1);
+}
+
+function topExclusions(diagnostics: WalkDiagnostics, limit = 3): Array<[string, number]> {
+  return Array.from(diagnostics.exclusionCounts.entries())
+    .sort((left, right) => right[1] - left[1])
+    .slice(0, limit);
+}
+
+function buildEmptySnapshotDiagnostic(
+  root: string,
+  loaded: LoadedKlauroConfig,
+  info: { isGit: boolean; hasHead: boolean; dirty: boolean; fellBackFromEmptyHead: boolean; diagnostics: WalkDiagnostics }
+): Error {
+  const { diagnostics } = info;
+  const lines: string[] = [];
+  lines.push(`Remote analyze requires a source snapshot with files, but the snapshot built for "${root}" is empty. Here is exactly what was checked:`);
+
+  // Snapshot mode chosen and why.
+  let modeLine: string;
+  if (!info.isGit) {
+    modeLine = 'snapshot mode: working-tree (not a git repository, so there is no committed HEAD to prefer)';
+  } else if (!info.hasHead) {
+    modeLine = 'snapshot mode: working-tree (git repository has no HEAD commit yet)';
+  } else if (!info.dirty) {
+    modeLine = 'snapshot mode: working-tree (working tree is clean, so it matches HEAD)';
+  } else if (info.fellBackFromEmptyHead) {
+    modeLine = 'snapshot mode: working-tree (working tree is dirty; the committed-HEAD snapshot was tried first but had 0 tracked files under this path, so it fell back to the working tree)';
+  } else {
+    modeLine = 'snapshot mode: working-tree';
+  }
+  lines.push(`  - ${modeLine}`);
+
+  if (info.isGit && info.hasHead) {
+    const headCount = listGitTrackedPathsAtHead(root).length;
+    lines.push(`  - committed-HEAD tracked-file count under this path: ${headCount}`);
+  }
+
+  lines.push(`  - working-tree candidates BEFORE ignores: ${diagnostics.candidatesBeforeIgnores}`);
+  lines.push(`  - working-tree candidates AFTER ignores: ${diagnostics.candidatesAfterIgnores}`);
+
+  const ignoreSources: string[] = [];
+  if (loaded.ignorePath) ignoreSources.push(`.klauroignore (${loaded.ignorePath})`);
+  if ((loaded.config.source.exclude || []).length > 0) ignoreSources.push('.klaurorc source.exclude');
+  ignoreSources.push('default directory/file exclusions (node_modules, .git, dist, .env*, etc.)');
+  lines.push(`  - ignore sources in effect: ${ignoreSources.join(', ')}`);
+
+  const top = topExclusions(diagnostics);
+  if (top.length > 0) {
+    lines.push('  - top exclusion reasons:');
+    for (const [reason, count] of top) {
+      lines.push(`      ${reason}: ${count} file(s)`);
+    }
+  }
+
+  lines.push('');
+  if (diagnostics.candidatesBeforeIgnores === 0) {
+    lines.push(`NEXT STEP: no files were found under "${root}" at all (before any ignore rule was applied). Check that this is the right path — an empty or wrong directory is the likely cause.`);
+  } else if (diagnostics.candidatesAfterIgnores === 0) {
+    const [topReason] = top;
+    const hint = topReason ? ` (top excluder: ${topReason[0]}, ${topReason[1]} file(s))` : '';
+    lines.push(`NEXT STEP: ${diagnostics.candidatesBeforeIgnores} file(s) were found, but every one was excluded${hint}. Loosen .klauroignore or .klaurorc source.exclude, or verify source.include covers your files.`);
+  } else if (info.fellBackFromEmptyHead) {
+    lines.push('NEXT STEP: this should not happen — the working-tree fallback exists specifically to avoid an empty snapshot. Please report this as a Klauro bug with this error text.');
+  } else {
+    lines.push('NEXT STEP: Klauro analyzes your working tree — an empty result here is unexpected. Please report this as a Klauro bug with this error text.');
+  }
+
+  return new Error(lines.join('\n'));
 }
 
 /**
@@ -547,7 +662,8 @@ async function walkConfiguredSourceFiles(
   root: string,
   loaded: LoadedKlauroConfig,
   visit: (absolutePath: string) => Promise<void>,
-  exclusions: UploadManifestExclusion[] = []
+  exclusions: UploadManifestExclusion[] = [],
+  diagnostics?: WalkDiagnostics
 ): Promise<void> {
   for (const sourceRoot of loaded.config.source.roots || ['.']) {
     const absoluteRoot = safeJoin(root, sourceRoot);
@@ -555,7 +671,7 @@ async function walkConfiguredSourceFiles(
       exclusions.push({ path: sourceRoot, reason: 'unsafe source root' });
       continue;
     }
-    await walkSourceFiles(root, absoluteRoot, loaded, visit, exclusions);
+    await walkSourceFiles(root, absoluteRoot, loaded, visit, exclusions, diagnostics);
   }
 }
 
@@ -564,7 +680,8 @@ async function walkSourceFiles(
   currentDirectory: string,
   loaded: LoadedKlauroConfig,
   visit: (absolutePath: string) => Promise<void>,
-  exclusions: UploadManifestExclusion[]
+  exclusions: UploadManifestExclusion[],
+  diagnostics?: WalkDiagnostics
 ): Promise<void> {
   const entries = await fs.readdir(currentDirectory, { withFileTypes: true });
   for (const entry of entries) {
@@ -572,23 +689,33 @@ async function walkSourceFiles(
     const relativePath = normalizeRelativePath(path.relative(root, absolutePath));
     if (entry.isSymbolicLink() && !loaded.config.source.followSymlinks) {
       exclusions.push({ path: relativePath, reason: 'symlink excluded' });
+      recordExclusion(diagnostics, 'symlink excluded');
       continue;
     }
     if (entry.isDirectory() && EXCLUDED_DIRECTORIES.has(entry.name)) {
       exclusions.push({ path: `${relativePath}/`, reason: 'default directory exclusion' });
-      continue;
-    }
-    if (entry.isDirectory() && patternListMatches(relativePath, allExcludePatterns(loaded))) {
-      exclusions.push({ path: `${relativePath}/`, reason: 'excluded by pattern' });
+      recordExclusion(diagnostics, `default directory exclusion: ${entry.name}/`);
       continue;
     }
     if (entry.isDirectory()) {
-      await walkSourceFiles(root, absolutePath, loaded, visit, exclusions);
+      const matchedDirPattern = findMatchingPattern(relativePath, allExcludePatterns(loaded));
+      if (matchedDirPattern) {
+        exclusions.push({ path: `${relativePath}/`, reason: 'excluded by pattern' });
+        recordExclusion(diagnostics, `.klauroignore/source.exclude pattern "${matchedDirPattern}"`);
+        continue;
+      }
+    }
+    if (entry.isDirectory()) {
+      await walkSourceFiles(root, absolutePath, loaded, visit, exclusions, diagnostics);
     } else if (entry.isFile()) {
-      if (await shouldIncludeRelativePath(root, relativePath, loaded)) {
+      if (diagnostics) diagnostics.candidatesBeforeIgnores++;
+      const verbose = await shouldIncludeRelativePathVerbose(root, relativePath, loaded);
+      if (verbose.included) {
+        if (diagnostics) diagnostics.candidatesAfterIgnores++;
         await visit(absolutePath);
       } else {
         exclusions.push({ path: relativePath, reason: 'excluded by source policy' });
+        recordExclusion(diagnostics, verbose.reason);
       }
     }
   }
@@ -614,25 +741,53 @@ async function shouldIncludeRelativePath(
   // caller supplies the git-blob size to keep the max-file-bytes gate working.
   sizeOverride?: number
 ): Promise<boolean> {
+  return (await shouldIncludeRelativePathVerbose(root, relativePath, loaded, sizeOverride)).included;
+}
+
+type IncludeVerdict = { included: true } | { included: false; reason: string };
+
+/**
+ * Same inclusion gate as shouldIncludeRelativePath, but reports WHY a file was
+ * dropped (which ignore source / pattern / rule) instead of a bare boolean —
+ * used to build a self-diagnosing error when a snapshot ends up empty. Kept as
+ * the single source of truth (shouldIncludeRelativePath is a thin wrapper) so
+ * there is exactly one inclusion-rule implementation, not two to keep in sync.
+ */
+async function shouldIncludeRelativePathVerbose(
+  root: string,
+  relativePath: string,
+  loaded: LoadedKlauroConfig,
+  sizeOverride?: number
+): Promise<IncludeVerdict> {
   const normalized = normalizeRelativePath(relativePath);
-  if (!normalized || normalized.startsWith('../') || path.isAbsolute(normalized)) return false;
+  if (!normalized || normalized.startsWith('../') || path.isAbsolute(normalized)) {
+    return { included: false, reason: 'unsafe path (outside project root)' };
+  }
   const parts = normalized.split('/');
-  if (parts.some(part => EXCLUDED_DIRECTORIES.has(part))) return false;
+  const excludedDirPart = parts.find(part => EXCLUDED_DIRECTORIES.has(part));
+  if (excludedDirPart) return { included: false, reason: `default directory exclusion: ${excludedDirPart}/` };
   const base = parts[parts.length - 1];
-  if (EXCLUDED_FILES.has(base)) return false;
-  if (/^\.env\./.test(base)) return false;
-  if (/\.lockb$/.test(base)) return false;
-  if (patternListMatches(normalized, allExcludePatterns(loaded))) return false;
-  if (!patternListMatches(normalized, loaded.config.source.include || ['**/*'])) return false;
+  if (EXCLUDED_FILES.has(base)) return { included: false, reason: `default file exclusion: ${base}` };
+  if (/^\.env\./.test(base)) return { included: false, reason: 'default file exclusion: .env.*' };
+  if (/\.lockb$/.test(base)) return { included: false, reason: 'default file exclusion: *.lockb' };
+
+  const matchedIgnorePattern = findMatchingPattern(normalized, loaded.ignorePatterns || []);
+  if (matchedIgnorePattern) return { included: false, reason: `.klauroignore pattern "${matchedIgnorePattern}"` };
+  const matchedExcludePattern = findMatchingPattern(normalized, loaded.config.source.exclude || []);
+  if (matchedExcludePattern) return { included: false, reason: `.klaurorc source.exclude pattern "${matchedExcludePattern}"` };
+
+  if (!patternListMatches(normalized, loaded.config.source.include || ['**/*'])) {
+    return { included: false, reason: 'not matched by .klaurorc source.include patterns' };
+  }
 
   if (sizeOverride != null) {
-    if (sizeOverride > loaded.config.source.maxFileBytes) return false;
+    if (sizeOverride > loaded.config.source.maxFileBytes) return { included: false, reason: 'file exceeds source.maxFileBytes' };
   } else {
     try {
       const stat = await fs.stat(path.join(root, normalized));
-      if (stat.size > loaded.config.source.maxFileBytes) return false;
+      if (stat.size > loaded.config.source.maxFileBytes) return { included: false, reason: 'file exceeds source.maxFileBytes' };
     } catch {
-      return false;
+      return { included: false, reason: 'file not readable (stat failed)' };
     }
   }
 
@@ -641,10 +796,11 @@ async function shouldIncludeRelativePath(
   // drift behind the languages the analyzer supports (the stale hardcoded list
   // dropped Kotlin/.kt, Ruby/.rb, C# .csproj manifests, Swift, C++, etc.).
   if (isRegisteredSourceExtension(base) || isRegisteredManifest(base) || IMPORTANT_EXTENSIONLESS.has(base)) {
-    return true;
+    return { included: true };
   }
   const ext = base.slice(base.lastIndexOf('.'));
-  return EXTRA_INCLUDED_EXTENSIONS.has(ext);
+  if (EXTRA_INCLUDED_EXTENSIONS.has(ext)) return { included: true };
+  return { included: false, reason: 'not a registered source/manifest file type' };
 }
 
 /** List every file path tracked at the HEAD commit (`git ls-tree -r HEAD`) —
@@ -946,6 +1102,12 @@ function allExcludePatterns(loaded: LoadedKlauroConfig): string[] {
 
 function patternListMatches(filePath: string, patterns: string[]): boolean {
   return patterns.some(pattern => globLikeMatches(filePath, pattern));
+}
+
+/** Same test as patternListMatches, but returns the first pattern that matched
+ *  (for diagnostics) instead of a bare boolean. */
+function findMatchingPattern(filePath: string, patterns: string[]): string | undefined {
+  return patterns.find(pattern => globLikeMatches(filePath, pattern));
 }
 
 function globLikeMatches(filePath: string, pattern: string): boolean {
