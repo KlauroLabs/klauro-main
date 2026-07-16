@@ -739,7 +739,17 @@ function readRevParse(root: string, ref: string): string | undefined {
 
 function readFileAtRef(root: string, ref: string, relativePath: string): string | null {
   try {
-    return execFileSync('git', ['show', `${ref}:${relativePath}`], {
+    // `git show <ref>:<path>` resolves <path> from the REPO ROOT, but every path
+    // we pass here comes from `git ls-tree`/`git diff` run with cwd=root, which
+    // — when root is a SUBDIRECTORY of the repo — emits paths relative to that
+    // subdir (git strips the cwd prefix). Reading those subdir-relative paths as
+    // root-relative made `git show` miss every file ("path 'sub/foo' exists, but
+    // not 'foo'"), so a project that is a subfolder of a larger git repo (a very
+    // common shape) produced an EMPTY snapshot and a "requires a source snapshot
+    // with files" dead-end. The `:./` form resolves relative to cwd, matching
+    // how the paths were produced; when root IS the repo toplevel it is
+    // identical to the bare form, so this is safe for both shapes.
+    return execFileSync('git', ['show', `${ref}:./${relativePath}`], {
       cwd: root,
       encoding: 'utf8',
       maxBuffer: 1024 * 1024 * 20,

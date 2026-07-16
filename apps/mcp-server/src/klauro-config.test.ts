@@ -214,6 +214,45 @@ test('clean tree: shared snapshot behavior is unchanged (working-tree walk)', as
   });
 });
 
+test('project is a SUBDIRECTORY of a larger git repo: committed-HEAD snapshot is non-empty (real Hoggan dead-end)', async () => {
+  // REGRESSION (real customer-path dead-end, 2026-07-16): analyzing a project
+  // that lives in a subfolder of a bigger git repo (git toplevel is an ANCESTOR
+  // of the project root — e.g. Hoggan's "Hoggan Scientific" under
+  // "HogganScientific-Rebuild") produced an EMPTY snapshot and the
+  // "requires a source snapshot with files" 400. Cause: `git ls-tree` runs with
+  // cwd=projectRoot and emits SUBDIR-relative paths (git strips the cwd prefix),
+  // but `git show HEAD:<path>` resolves from the REPO ROOT — so every read
+  // missed and no file content survived. Fixed by reading `HEAD:./<path>`
+  // (cwd-relative), matching how the paths were produced.
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-subdir-repo-'));
+  try {
+    // Git repo at the OUTER dir; the project lives one level down in "app-pkg".
+    spawnSync('git', ['init'], { cwd: root, encoding: 'utf8' });
+    const project = path.join(root, 'app-pkg');
+    fs.mkdirSync(path.join(project, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'ROOT_README.md'), '# outer repo\n');
+    fs.writeFileSync(path.join(project, 'src', 'Service.cs'), 'public class Service {}\n');
+    fs.writeFileSync(path.join(project, 'Project.csproj'), '<Project Sdk="Microsoft.NET.Sdk" />\n');
+    await writeDefaultKlauroConfig(project, { force: true });
+    gitCommitAll(root, 'baseline'); // commit from the git toplevel
+    // Dirty the tree so buildSourceSnapshot routes through the committed-HEAD
+    // path (the branch that had the bug), exactly as the real repo did.
+    fs.writeFileSync(path.join(project, 'src', 'Uncommitted.cs'), '// scratch\n');
+
+    const snapshot = await buildSourceSnapshot(project);
+    assert.equal(snapshot.snapshot_source, 'committed-head');
+    assert.ok(snapshot.files.length > 0, 'subdir project must produce a non-empty snapshot');
+    // Paths are project-root-relative (the prefix "app-pkg/" is NOT present).
+    const service = snapshot.files.find(file => file.path === 'src/Service.cs');
+    assert.ok(service, 'tracked subdir source file is present with a project-relative path');
+    assert.equal(service.content, 'public class Service {}\n', 'file content read correctly via HEAD:./<path>');
+    assert.ok(!snapshot.files.some(file => file.path.startsWith('app-pkg/')), 'no repo-root-prefixed paths leak in');
+    assert.ok(!snapshot.files.some(file => file.path === 'ROOT_README.md' || file.path === '../ROOT_README.md'), 'files outside the project subdir are excluded');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('git repo with no commits yet: snapshot falls back to the working tree (no refusal)', async () => {
   await withFixtureWorkspace(async workspace => {
     spawnSync('git', ['init'], { cwd: workspace.repo, encoding: 'utf8' });
