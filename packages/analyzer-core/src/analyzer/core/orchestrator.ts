@@ -95,7 +95,14 @@ import { ChangeDetector } from './change-detector';
 import { getBuildIdentity } from './build-identity';
 import { buildUserJourneys } from './journey-builder';
 import { buildTerminalSignal, type TerminalSignal } from './terminal-signal';
-import { TRACEABLE_NODE_TYPES } from './flow-concepts';
+import { TRACEABLE_NODE_TYPES, computeFlowConcepts } from './flow-concepts';
+import {
+  attachFlowContract,
+  attachCapability,
+  type FlowLike,
+  type CapabilityLike,
+  type EntryPointLike,
+} from './entry-point-enrichment';
 import { selectProductFrameworkNames, analyzerTypeMap } from './framework-comprehension';
 import { buildParadigmConformance } from './paradigm-conformance';
 import { buildArchitecturalConflicts } from './architectural-conflicts';
@@ -1123,6 +1130,81 @@ export class AnalyzerOrchestrator {
     return output;
   }
 
+  /**
+   * ANALYSIS-TIME contract + capability enrichment for `entry_points`
+   * (docs/SPEC-CONCEPTUAL-LAYER.md ICELOT join). `attachFlowContract` /
+   * `attachCapability` (entry-point-enrichment.ts) are pure deterministic
+   * joins; the flows/capabilities they join against are derived HERE, ONCE
+   * per analysis, via `computeFlowConcepts` — the same terminal-chain-anchored
+   * derivation the query-layer `get_flow_concepts` tool uses, but run at
+   * analysis time so contract/capability PERSIST into the stored CAS instead
+   * of being recomputed on every query. `cas.system_capabilities` does NOT
+   * carry `related_flows` — it is INVERTED here from each flow's own
+   * `capability_relationships` (capability -> {flow_id, role}), which is the
+   * real M:N model (a flow may relate to multiple capabilities).
+   *
+   * EVIDENCE-GATED: any failure (or zero derivable flows) leaves `entryPoints`
+   * untouched — never fabricates input/output/capabilities.
+   */
+  private deriveEntryPointContractAndCapability(
+    entryPoints: CASEntryPoint[],
+    cas: Pick<
+      CASOutput,
+      'nodes' | 'edges' | 'entry_points' | 'exit_points' | 'call_chains' | 'data_lineage' | 'system_capabilities' | 'behavior_surfaces'
+    >
+  ): CASEntryPoint[] {
+    try {
+      const flows = computeFlowConcepts(cas as CASOutput, {});
+      if (flows.length === 0) return entryPoints;
+
+      const flowLikes: FlowLike[] = flows.map((flow) => ({
+        flow_id: flow.flow_id,
+        entry_point: flow.entry_point,
+        contract: { input: flow.contract.input, output: flow.contract.output },
+      }));
+
+      const capNameById = new Map<string, string>();
+      for (const cap of cas.system_capabilities || []) capNameById.set(cap.id, cap.name);
+      for (const surf of cas.behavior_surfaces || []) capNameById.set(surf.id, surf.name);
+
+      const capsById = new Map<string, CapabilityLike & { related_flows: Array<{ flow_id: string; role?: string }> }>();
+      const addRelation = (capabilityId: string, flowId: string, role: string | undefined) => {
+        let entry = capsById.get(capabilityId);
+        if (!entry) {
+          entry = { id: capabilityId, name: capNameById.get(capabilityId) || capabilityId, related_flows: [] };
+          capsById.set(capabilityId, entry);
+        }
+        entry.related_flows.push({ flow_id: flowId, role });
+      };
+
+      for (const flow of flows) {
+        const relationships = flow.capability_relationships || [];
+        if (relationships.length > 0) {
+          for (const rel of relationships) addRelation(rel.capability_id, flow.flow_id, rel.role);
+        } else if (flow.capability_id) {
+          // Back-compat single link only (no capability_relationships derived).
+          addRelation(flow.capability_id, flow.flow_id, undefined);
+        }
+      }
+
+      const capabilities: CapabilityLike[] = Array.from(capsById.values());
+
+      // Structural cast: CASEntryPoint's `input.fields` is optional (real CAS
+      // shape) while EntryPointLike's normalized EntryPointInputShape.fields
+      // is required — a type-level-only mismatch (runtime shape always
+      // supplies the array; attachFlowContract never omits it). Cast at this
+      // boundary rather than loosening the shared CASEntryPoint type, which
+      // would touch a contract other consumers/peers depend on.
+      const withContract = attachFlowContract(entryPoints as unknown as EntryPointLike[], flowLikes);
+      const withCapability = attachCapability(withContract, flowLikes, capabilities);
+      return withCapability as unknown as CASEntryPoint[];
+    } catch {
+      // Never let enrichment failure break the analysis — leave entry points
+      // exactly as they were (evidence-gated, no fabrication on error).
+      return entryPoints;
+    }
+  }
+
   private async executeAnalysis(projectPath: string, analysisId: string, runLog: AnalysisRunLog, options?: OrchestrateAnalysisOptions): Promise<CASOutput> {
     const startTime = Date.now();
     const timings: Record<string, number> = {};
@@ -1862,6 +1944,20 @@ export class AnalyzerOrchestrator {
     logTiming('pp_traceability', phaseStart);
     await yieldToEventLoop();
 
+    phaseStart = Date.now();
+    const entryPointsWithContractAndCapability = this.deriveEntryPointContractAndCapability(allEntryPoints, {
+      nodes: allNodes,
+      edges: allEdges,
+      entry_points: allEntryPoints,
+      exit_points: allExitPoints,
+      call_chains: callChains,
+      data_lineage: dataLineage,
+      system_capabilities: systemCapabilities,
+      behavior_surfaces: behaviorSurfaces,
+    });
+    logTiming('pp_entryPointContractCapability', phaseStart);
+    await yieldToEventLoop();
+
     const totalTime = Date.now() - startTime;
     if (process.env.KLAURO_DEBUG_ANALYSIS_TIMINGS === '1') {
       console.error(`[Klauro] Analysis completed in ${totalTime}ms. Breakdown:`, JSON.stringify(timings, null, 2));
@@ -1896,7 +1992,7 @@ export class AnalyzerOrchestrator {
       database_schema: (databaseSchema.entities.length > 0 || databaseSchema.relationships_summary.length > 0) ? databaseSchema : undefined,
       nodes: allNodes,
       edges: allEdges,
-      entry_points: allEntryPoints,
+      entry_points: entryPointsWithContractAndCapability,
       exit_points: allExitPoints,
       behaviors: allBehaviors.length > 0 ? allBehaviors : undefined,
       patterns: allPatterns.length > 0 ? allPatterns : undefined,
@@ -2942,6 +3038,17 @@ export class AnalyzerOrchestrator {
       }
     }
 
+    const entryPointsWithContractAndCapability = this.deriveEntryPointContractAndCapability(entryPoints, {
+      nodes,
+      edges,
+      entry_points: entryPoints,
+      exit_points: exitPoints,
+      call_chains: callChains,
+      data_lineage: dataLineage,
+      system_capabilities: systemCapabilities,
+      behavior_surfaces: behaviorSurfaces,
+    });
+
     const rebuiltOutput: CASOutput = {
       ...previousOutput,
       analysis_timestamp: new Date().toISOString(),
@@ -2956,7 +3063,7 @@ export class AnalyzerOrchestrator {
       }),
       nodes,
       edges,
-      entry_points: entryPoints,
+      entry_points: entryPointsWithContractAndCapability,
       exit_points: exitPoints,
       progressive_levels: progressiveLevels,
       index,
