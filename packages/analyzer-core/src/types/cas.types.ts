@@ -8,10 +8,23 @@ export interface CASOutput {
    * changes are not masked by cached derived layers on unchanged target files.
    */
   analyzer_build?: string;
+  /**
+   * Stage fingerprints (see analyzer/core/stage-fingerprint.ts): scoped hashes
+   * of the parser/language-analyzer layer and the graph/derived-facts layer,
+   * respectively. Incremental analysis compares these instead of the blanket
+   * `analyzer_build` stamp so a release that never touches the parse/graph
+   * pipeline (e.g. MCP-tool-only or WAS-only changes) does not force a full
+   * rebuild just because the whole-monorepo build identity moved.
+   */
+  parser_fingerprint?: string;
+  derived_fingerprint?: string;
   analysis_timestamp: string;
   analysis_id: string;
   system: CASSystem;
   analysis_phases?: CASAnalysisPhase[];
+  /** Compact per-run timing breakdown (total + coarse stage buckets + per-
+   *  analyzer ms). Instrumentation only — see CASAnalysisTimings. */
+  timings?: CASAnalysisTimings;
   architecture_summary?: CASArchitectureSummary;
   route_table?: CASRouteTableEntry[];
   database_schema?: CASDatabaseSchema;
@@ -2900,6 +2913,39 @@ export interface CASAnalysisPhase {
   requires_ai?: boolean;
   generated_at?: string;
   notes?: string[];
+  /** Wall-clock start of the orchestrator work this catalog phase describes,
+   *  aggregated from the underlying per-phase timing records (earliest start
+   *  among the matched phases). Absent when the phase did not run in this
+   *  analysis (e.g. `deferred-element-descriptions`, which is on-demand only). */
+  started_at?: string;
+  /** Summed wall-clock duration (ms) of the underlying phases this catalog
+   *  entry describes. Instrumentation only — does not affect what gets
+   *  analyzed, only what gets reported about how long it took. */
+  duration_ms?: number;
+}
+
+/**
+ * Compact per-run timing breakdown, attached to `CASOutput.timings`. Built
+ * from the SAME per-phase wall-clock measurements the orchestrator already
+ * takes for its internal debug logging (`KLAURO_DEBUG_ANALYSIS_TIMINGS`) and
+ * the analysis-run log (run-log.ts) — this just makes that data visible on
+ * the CAS itself so a stuck/slow analysis can be attributed without shelling
+ * into `~/.klauro/logs/analysis-runs.jsonl`. Instrumentation only.
+ */
+export interface CASAnalysisTimings {
+  /** Total wall-clock ms from the start of orchestration to when this block
+   *  was computed (initial synchronous landing, or again after deferred AI
+   *  enrichment completes). */
+  total_ms: number;
+  /** Coarsest stage buckets that already exist as function-call boundaries in
+   *  the orchestrator's main path: scan (analyzer detection), parse (language
+   *  + framework/library analyzers), graph (relationship/index/architecture
+   *  building), decorators (node-level enrichment passes), ai_enrichment (the
+   *  AI interpretation pass), save (embedding + final metadata). */
+  stages?: Record<string, number>;
+  /** analyzer_id -> execution_time_ms, lifted from `analyzer_contributions`
+   *  (already measured per-analyzer; not re-measured here). */
+  analyzers?: Record<string, number>;
 }
 
 /**

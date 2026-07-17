@@ -1,12 +1,14 @@
 import { spawn, spawnSync } from 'child_process';
-import { readFileSync, writeFileSync } from 'fs';
+import { readFileSync, readdirSync, statSync, writeFileSync } from 'fs';
 import { chmodSync } from 'fs';
 import { build } from 'esbuild';
+import { createHash } from 'crypto';
 import { createRequire } from 'module';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const analyzerCoreRoot = path.resolve(packageRoot, '..', '..', 'packages', 'analyzer-core');
 
 function resolveGitSha() {
   const revParse = spawnSync('git', ['rev-parse', '--short=12', 'HEAD'], { cwd: packageRoot, encoding: 'utf8' });
@@ -21,6 +23,97 @@ function resolveGitSha() {
 const buildGitSha = resolveGitSha();
 const buildTime = new Date().toISOString();
 const packageVersion = JSON.parse(readFileSync(path.join(packageRoot, 'package.json'), 'utf8')).version || '1.0.0';
+
+// --- Stage fingerprints (see packages/analyzer-core/src/analyzer/core/stage-fingerprint.ts) ---
+// Baked into the bundle as compile-time constants because the shipped bundle
+// has no source tree to walk at runtime (server.cjs is a single flattened
+// file). Must mirror the dev-channel file lists in stage-fingerprint.ts
+// exactly, or a dev-checkout analysis and a bundled analysis of the same
+// commit would disagree on whether the parse/graph pipeline changed.
+function walkSourceFiles(dir, exts) {
+  const out = [];
+  let entries;
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return out;
+  }
+  for (const entry of entries) {
+    if (entry.name === 'node_modules') continue;
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      out.push(...walkSourceFiles(full, exts));
+    } else if (exts.some(ext => entry.name.endsWith(ext)) && !entry.name.endsWith('.test.ts') && !entry.name.endsWith('.test.tsx')) {
+      out.push(full);
+    }
+  }
+  return out.sort();
+}
+
+function hashSourceFiles(paths) {
+  const hash = createHash('sha256');
+  for (const filePath of paths) {
+    hash.update(filePath);
+    try {
+      hash.update(readFileSync(filePath));
+    } catch {
+      hash.update('MISSING');
+    }
+  }
+  return hash.digest('hex').slice(0, 16);
+}
+
+function hashBinaryIdentities(dir) {
+  let entries;
+  try {
+    entries = readdirSync(dir).filter(f => f.endsWith('.wasm')).sort();
+  } catch {
+    return 'no-grammars';
+  }
+  const hash = createHash('sha256');
+  for (const name of entries) {
+    let size = -1;
+    try {
+      size = statSync(path.join(dir, name)).size;
+    } catch {
+      // leave size at -1
+    }
+    hash.update(`${name}:${size}`);
+  }
+  return hash.digest('hex').slice(0, 16);
+}
+
+const analyzerSrcDir = path.join(analyzerCoreRoot, 'src', 'analyzer');
+const analyzerCoreDir = path.join(analyzerSrcDir, 'core');
+
+const PARSER_LAYER_DIRS = [
+  path.join(analyzerSrcDir, 'languages'),
+  path.join(analyzerSrcDir, 'ast'),
+];
+const PARSER_LAYER_FILES = [
+  path.join(analyzerCoreDir, 'tree-sitter-parser.ts'),
+  path.join(analyzerCoreDir, 'native-parse.ts'),
+  path.join(analyzerCoreDir, 'generic-tree-sitter-analyzer.ts'),
+  path.join(analyzerCoreDir, 'estree-parse-cache.ts'),
+  path.join(analyzerCoreDir, 'analyzer-file-read-cache.ts'),
+  path.join(analyzerSrcDir, 'enhanced-call-graph-extractor.ts'),
+  path.join(analyzerSrcDir, 'enhanced-rust-call-graph-extractor.ts'),
+];
+
+const parserSourceHash = hashSourceFiles(
+  [...PARSER_LAYER_DIRS.flatMap(dir => walkSourceFiles(dir, ['.ts', '.tsx'])), ...PARSER_LAYER_FILES].sort()
+);
+const grammarHash = hashBinaryIdentities(path.join(analyzerCoreRoot, 'vendored-grammars'));
+const parserFingerprint = `${parserSourceHash}-${grammarHash}`.slice(0, 16);
+
+const parserFileSet = new Set(PARSER_LAYER_FILES);
+const derivedFiles = walkSourceFiles(analyzerSrcDir, ['.ts', '.tsx']).filter(filePath => {
+  if (parserFileSet.has(filePath)) return false;
+  if (filePath === path.join(analyzerCoreDir, 'stage-fingerprint.ts')) return false;
+  if (filePath === path.join(analyzerCoreDir, 'build-identity.ts')) return false;
+  return !PARSER_LAYER_DIRS.some(dir => filePath.startsWith(dir + path.sep));
+});
+const derivedFingerprint = hashSourceFiles(derivedFiles);
 
 const NATIVE_PACKAGES = [
   'tree-sitter',
@@ -75,6 +168,8 @@ const sharedOptions = {
     __KLAURO_GIT_SHA__: JSON.stringify(buildGitSha),
     __KLAURO_BUILD_TIME__: JSON.stringify(buildTime),
     __KLAURO_VERSION__: JSON.stringify(packageVersion),
+    __KLAURO_PARSER_FINGERPRINT__: JSON.stringify(parserFingerprint),
+    __KLAURO_DERIVED_FINGERPRINT__: JSON.stringify(derivedFingerprint),
   },
 };
 
@@ -205,4 +300,4 @@ const handshake = {
 };
 writeFileSync(path.join(packageRoot, 'dist', 'handshake.json'), JSON.stringify(handshake));
 const toolCount = profile => handshake[profile].methods['tools/list'].result.tools.length;
-console.log(`Built dist/index.cjs (bootstrap), dist/server.cjs, dist/cli.cjs, dist/handshake.json (core: ${toolCount('core')} tools, full: ${toolCount('full')} tools, build ${packageVersion}+${buildGitSha} at ${buildTime})`);
+console.log(`Built dist/index.cjs (bootstrap), dist/server.cjs, dist/cli.cjs, dist/handshake.json (core: ${toolCount('core')} tools, full: ${toolCount('full')} tools, build ${packageVersion}+${buildGitSha} at ${buildTime}, parser-fp ${parserFingerprint}, derived-fp ${derivedFingerprint})`);

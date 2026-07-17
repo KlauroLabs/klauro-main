@@ -3,6 +3,7 @@ import {
   CASOutput,
   CASNestedRepository,
   CASAnalysisPhase,
+  CASAnalysisTimings,
   CASContribution,
   CASProgressiveLevels,
   CASCategories,
@@ -93,6 +94,7 @@ import { deriveConsistencyModel, toCommunicationSeams } from './consistency-mode
 import { collectCoverageGaps } from './coverage-gaps';
 import { ChangeDetector } from './change-detector';
 import { getBuildIdentity } from './build-identity';
+import { getStageFingerprints } from './stage-fingerprint';
 import { buildUserJourneys } from './journey-builder';
 import { buildTerminalSignal, type TerminalSignal } from './terminal-signal';
 import { TRACEABLE_NODE_TYPES, computeFlowConcepts } from './flow-concepts';
@@ -1208,8 +1210,15 @@ export class AnalyzerOrchestrator {
   private async executeAnalysis(projectPath: string, analysisId: string, runLog: AnalysisRunLog, options?: OrchestrateAnalysisOptions): Promise<CASOutput> {
     const startTime = Date.now();
     const timings: Record<string, number> = {};
+    // Per-phase started_at/duration_ms, keyed the same as `timings` — the raw
+    // material for `output.timings` and the started_at/duration_ms stamped
+    // onto `analysis_phases` below (see buildTimingsBlock/stampPhaseTimings).
+    // Purely additive bookkeeping alongside the existing `timings` map and
+    // runLog.recordPhase call; never influences what gets analyzed.
+    const phaseTimingRecords: Record<string, { started_at: string; duration_ms: number }> = {};
     const logTiming = (phase: string, start: number) => {
       timings[phase] = Date.now() - start;
+      phaseTimingRecords[phase] = { started_at: new Date(start).toISOString(), duration_ms: timings[phase] };
       runLog.recordPhase(phase, start, timings[phase]);
       if (process.env.KLAURO_DEBUG_ANALYZER_PHASES === '1') {
         console.error(`[Klauro] phase ${phase} completed in ${timings[phase]}ms`);
@@ -1848,6 +1857,15 @@ export class AnalyzerOrchestrator {
         allEntryPoints
       );
       const aiDuration = Date.now() - aiPhaseStart;
+      // Overwrite the near-zero stamp `logTiming('pp_aiInterpretation', ...)`
+      // records right below when AI is deferred (this function didn't run at
+      // that point) with the REAL duration, whether that happens inline here
+      // or later via enrichAnalysisAI's deferred closure re-invoking this same
+      // function. See phaseTimingRecords / buildTimingsBlock.
+      phaseTimingRecords['pp_aiInterpretation'] = {
+        started_at: new Date(aiPhaseStart).toISOString(),
+        duration_ms: aiDuration,
+      };
       const aiGeneration = enhancedSystemPurpose.description_generation;
       runLog.recordAi({
         provider_configured: this.hasAIInterpretationProviderConfigured(),
@@ -1970,6 +1988,8 @@ export class AnalyzerOrchestrator {
     const output = {
       cas_version: CAS_VERSION,
       analyzer_build: getBuildIdentity().version,
+      parser_fingerprint: getStageFingerprints().parser_fingerprint,
+      derived_fingerprint: getStageFingerprints().derived_fingerprint,
       analysis_timestamp: new Date().toISOString(),
       analysis_id: analysisId,
       system: {
@@ -2208,6 +2228,12 @@ export class AnalyzerOrchestrator {
             embeddingEnabled: Boolean(this.embeddingPhaseConfig),
             runtimeSignals: runtimeStaticLinks.length,
           });
+          // runAiInterpretation() just overwrote phaseTimingRecords['pp_aiInterpretation']
+          // with the REAL AI duration (it ran near-zero at the initial synchronous
+          // landing above, since AI was deferred) — re-stamp/rebuild timings now
+          // so the enriched CAS reports the actual AI cost, not the stub.
+          this.stampPhaseTimings(output.analysis_phases, phaseTimingRecords);
+          output.timings = this.buildTimingsBlock(phaseTimingRecords, Date.now() - startTime, contributions);
           output.system_purpose = {
             ...systemPurpose,
             primary_type: enhancedSystemPurpose.primary_type,
@@ -2226,6 +2252,16 @@ export class AnalyzerOrchestrator {
     await this.applyEmbeddingPhase(output, projectPath);
     logTiming('pp_embeddingAndFinalize', phaseStart);
     await yieldToEventLoop();
+
+    // Instrumentation only (no output-shape/content change to what gets
+    // analyzed): stamp started_at/duration_ms onto the already-built
+    // analysis_phases catalog, and attach the compact timings block, now that
+    // every phase in this run (including the embedding pass just above) has
+    // been recorded. See phaseTimingRecords / buildTimingsBlock / stampPhaseTimings.
+    if (output.analysis_phases) {
+      this.stampPhaseTimings(output.analysis_phases, phaseTimingRecords);
+    }
+    output.timings = this.buildTimingsBlock(phaseTimingRecords, Date.now() - startTime, contributions);
 
     const sourceFiles = new Set<string>();
     for (const node of output.nodes) {
@@ -2266,7 +2302,11 @@ export class AnalyzerOrchestrator {
       // Distinguish an analyzer-build/version bump (engine or deriver code
       // changed) from a persisted-output/schema drift so agents can see WHY the
       // fast path was bypassed. File-change rebuilds are logged separately below.
-      const trigger = schemaRebuildReason.startsWith('Analyzer build changed')
+      // 'Parser-layer fingerprint changed' / 'Derived-layer fingerprint changed'
+      // / legacy 'Analyzer build changed' (unstamped previous outputs, pre
+      // stage-fingerprint) all share the 'analyzer-version' trigger label —
+      // the schemaRebuildReason string itself says WHICH layer moved.
+      const trigger = /^(Parser-layer fingerprint changed|Derived-layer fingerprint changed|Analyzer build changed)/.test(schemaRebuildReason)
         ? 'analyzer-version'
         : 'persisted-output-schema';
       console.error(`[Klauro] incremental full rebuild (${trigger}): ${schemaRebuildReason}`);
@@ -2383,14 +2423,53 @@ export class AnalyzerOrchestrator {
     // Analyzer-code / version identity. When the engine itself changes (a fix or
     // a new deriver) but the target files are unchanged, the incremental fast
     // path would otherwise reuse the persisted DERIVED artifacts (ERD, flow
-    // concepts, error contracts, entrenchment, ...) and serve stale output. The
-    // stamp is deterministic and reproducible (base package version + git sha),
-    // so this only fires when the analyzer build actually differs — never on an
-    // unchanged engine.
+    // concepts, error contracts, entrenchment, ...) and serve stale output.
+    //
+    // This used to compare `analyzer_build` (base package version + git sha of
+    // the WHOLE monorepo) directly: ANY commit — including MCP-tool-only or
+    // WAS-only releases that never touch the parse/graph pipeline — moved that
+    // stamp and forced a full rebuild of every analyzed project. Stage
+    // fingerprints (see stage-fingerprint.ts) narrow the check to the two file
+    // sets that can actually change parsed/derived output:
+    //
+    //   - parser_fingerprint: parser + language-analyzer layer. A mismatch
+    //     forces a full rebuild — parsed node/edge shape may differ for any
+    //     file, and we have no mechanism to selectively re-parse.
+    //   - derived_fingerprint: graph/decorator/derived-facts layer. A mismatch
+    //     also forces a full rebuild today (we do not yet cache raw per-file
+    //     analyzer contributions separately from the derived facts built on
+    //     top of them, so there is no cheaper "keep parse, redo derive" path
+    //     to take) — but this is a much narrower trigger than the whole-repo
+    //     build identity, since routine MCP-tool/WAS releases don't touch it.
+    //
+    // Legacy previous outputs stamped before this scheme (no parser_fingerprint
+    // / derived_fingerprint persisted) cannot be proven equivalent at the layer
+    // level, so they still fall back to the old whole-build comparison —
+    // NEVER reuse on ambiguity.
     const currentAnalyzerBuild = getBuildIdentity().version;
     const previousAnalyzerBuild = previousOutput.analyzer_build;
-    if (previousAnalyzerBuild !== currentAnalyzerBuild) {
-      return `Analyzer build changed (${previousAnalyzerBuild || 'unstamped'} -> ${currentAnalyzerBuild})`;
+    const previousParserFingerprint = previousOutput.parser_fingerprint;
+    const previousDerivedFingerprint = previousOutput.derived_fingerprint;
+
+    if (!previousParserFingerprint || !previousDerivedFingerprint) {
+      if (previousAnalyzerBuild !== currentAnalyzerBuild) {
+        return `Analyzer build changed (${previousAnalyzerBuild || 'unstamped'} -> ${currentAnalyzerBuild}, no stage fingerprints on persisted output)`;
+      }
+    } else {
+      const currentFingerprints = getStageFingerprints();
+      if (previousParserFingerprint !== currentFingerprints.parser_fingerprint) {
+        return `Parser-layer fingerprint changed (${previousParserFingerprint} -> ${currentFingerprints.parser_fingerprint})`;
+      }
+      if (previousDerivedFingerprint !== currentFingerprints.derived_fingerprint) {
+        return `Derived-layer fingerprint changed (${previousDerivedFingerprint} -> ${currentFingerprints.derived_fingerprint})`;
+      }
+      // Both stage fingerprints match: the analyzer_build stamp is allowed to
+      // differ (a release outside the parse/graph pipeline) without forcing a
+      // full rebuild here. The ordinary file-diff-driven incremental path
+      // below still governs whether any work is needed at all.
+      if (process.env.KLAURO_DEBUG_INCREMENTAL_PHASES === '1' && previousAnalyzerBuild !== currentAnalyzerBuild) {
+        console.error(`[Klauro] analyzer_build changed (${previousAnalyzerBuild} -> ${currentAnalyzerBuild}) but both stage fingerprints matched — skipping forced full rebuild`);
+      }
     }
     if (previousOutput.cas_version !== CAS_VERSION) {
       return `CAS version changed (${previousOutput.cas_version || 'unknown'} -> ${CAS_VERSION})`;
@@ -2772,6 +2851,11 @@ export class AnalyzerOrchestrator {
     previousOutput: CASOutput,
     options?: IncrementalAnalysisOptions
   ): Promise<CASOutput> {
+    // Instrumentation only: this incremental-rebuild path has no per-phase
+    // breakdown wired (unlike executeAnalysis's phaseTimingRecords), but a
+    // total wall-clock figure is cheap and still answers "how long did the
+    // rebuild take" for a stuck/slow incremental run. See CASAnalysisTimings.
+    const derivedDataStartTime = Date.now();
     const gitAnalyzer = new GitAnalyzer(projectPath);
     const filePathsForGit = nodes
       .filter((n): n is CASNode & { source: { file: string } } => !!n.source?.file)
@@ -3064,6 +3148,11 @@ export class AnalyzerOrchestrator {
       analysis_timestamp: new Date().toISOString(),
       analysis_id: analysisId,
       enhanced_system_purpose: enhancedSystemPurpose,
+      // No per-phase breakdown on this path (see derivedDataStartTime comment
+      // above) — total only. Deliberately does not carry forward
+      // previousOutput.timings, which described a different (often much
+      // larger, full-analysis) run.
+      timings: { total_ms: Date.now() - derivedDataStartTime },
       analysis_phases: this.buildAnalysisPhases({
         hasAIProvider: this.hasAIInterpretationProviderConfigured(),
         systemDescriptionSource: enhancedSystemPurpose.description_source,
@@ -11684,6 +11773,133 @@ export class AnalyzerOrchestrator {
       budget_ms: Number.isFinite(budgetMs) ? budgetMs : undefined,
       generated_at: new Date().toISOString(),
     };
+  }
+
+  /**
+   * Coarse stage bucket a raw per-call timing-phase name (as passed to the
+   * `logTiming` closure in executeAnalysis) belongs to, using the SAME
+   * function-call boundaries the orchestrator's main path already has —
+   * no restructuring, just naming what already runs where. Shared by
+   * `buildTimingsBlock` (the compact 6-bucket `output.timings.stages`) and
+   * `stampPhaseTimings` (which further folds these into the 5-entry
+   * `analysis_phases` catalog). Instrumentation only.
+   */
+  private static readonly TIMING_STAGE_OF = (phase: string): string | undefined => {
+    if (phase === 'detectAnalyzers') return 'scan';
+    // NOTE: 'languageAnalyzers' is a WRAPPER around the per-language
+    // `language_<id>` calls right above it in executeAnalysis — its window
+    // fully contains theirs. Deliberately excluded here (returns undefined)
+    // so its duration is not double-counted on top of the language_* entries
+    // it wraps; frameworkAnalyzers has no such nested per-analyzer timing, so
+    // it stands on its own.
+    if (phase === 'frameworkAnalyzers' || phase.startsWith('language_')) return 'parse';
+    if (phase === 'pp_aiInterpretation' || phase === 'pp_enhancedPurpose') return 'ai_enrichment';
+    if (phase === 'pp_enrichNodes' || phase === 'pp_testData') return 'decorators';
+    if (phase === 'pp_finalMetadata' || phase === 'pp_embeddingAndFinalize') return 'save';
+    if (phase.startsWith('pp_')) return 'graph';
+    return undefined;
+  };
+
+  /**
+   * Which `analysis_phases` catalog entry (buildAnalysisPhases) a raw timing
+   * phase's work counts toward, matched against each catalog entry's own
+   * documented `outputs` (e.g. core-graph produces nodes/edges/entry_points/
+   * architecture_summary/progressive_levels; agent-context produces
+   * system_capabilities/domain_concepts/flow_graph/call_chains/test_suites/
+   * change_risks/codebase_idioms/behavioral_invariants). Phases with no match
+   * (e.g. `deferred-element-descriptions`, which never runs on this path) are
+   * simply left unstamped.
+   */
+  private static readonly ANALYSIS_PHASE_OF = (phase: string): string | undefined => {
+    // 'languageAnalyzers' deliberately excluded — see the identical note on
+    // TIMING_STAGE_OF above; its window fully contains the language_* entries
+    // matched here, so counting both would double-count that duration.
+    if (
+      phase === 'detectAnalyzers' || phase === 'frameworkAnalyzers' ||
+      phase.startsWith('language_') ||
+      ['pp_linkRouteHandlers', 'pp_liftValidation', 'pp_progressiveLevels', 'pp_buildIndex', 'pp_architecture', 'pp_enrichNodes'].includes(phase)
+    ) return 'core-graph';
+    if (phase === 'pp_aiInterpretation' || phase === 'pp_enhancedPurpose') return 'ai-system-narrative';
+    if (phase === 'pp_embeddingAndFinalize' || phase === 'pp_finalMetadata') return 'semantic-runtime-context';
+    if ([
+      'pp_capabilities', 'pp_domainConcepts', 'pp_dataEntities', 'pp_dataSummary', 'pp_securityBoundaries',
+      'pp_securitySummary', 'pp_flowSummary', 'pp_flowCoverage', 'pp_workflows', 'pp_userJourneys',
+      'pp_enhanceRisks', 'pp_testData', 'pp_buildIntents', 'pp_gitAnalysis', 'pp_dependencyManifest',
+      'pp_detectPatterns', 'pp_traceability', 'pp_entryPointContractCapability', 'pp_methodCalls',
+      'pp_callGraph', 'pp_flowGraph',
+    ].includes(phase)) return 'agent-context';
+    return undefined;
+  };
+
+  /**
+   * Builds the compact `output.timings` block: total wall-clock ms, the
+   * coarse 6-bucket stage breakdown, and a per-analyzer ms map lifted
+   * straight from `analyzer_contributions` (already measured, not
+   * re-measured here). Called once when `output` initially lands, and again
+   * from the deferred-AI-enrichment closure once the real AI duration is
+   * known. Read-only over its inputs; never mutates analysis output facts.
+   */
+  private buildTimingsBlock(
+    phaseTimings: Record<string, { started_at: string; duration_ms: number }>,
+    totalMs: number,
+    contributions: Array<{ analyzer_id: string; execution_time_ms?: number }>
+  ): CASAnalysisTimings {
+    const stages: Record<string, number> = { scan: 0, parse: 0, graph: 0, decorators: 0, ai_enrichment: 0, save: 0 };
+    for (const [phase, record] of Object.entries(phaseTimings)) {
+      const stage = AnalyzerOrchestrator.TIMING_STAGE_OF(phase);
+      if (stage) stages[stage] = (stages[stage] || 0) + record.duration_ms;
+    }
+    const analyzers: Record<string, number> = {};
+    for (const contribution of contributions) {
+      if (typeof contribution.execution_time_ms === 'number') {
+        analyzers[contribution.analyzer_id] = contribution.execution_time_ms;
+      }
+    }
+    return {
+      total_ms: totalMs,
+      stages,
+      analyzers: Object.keys(analyzers).length > 0 ? analyzers : undefined,
+    };
+  }
+
+  /** Aggregates a group of raw timing-phase records into a single
+   *  started_at (earliest) / duration_ms (sum) pair, or `{}` when none of the
+   *  named phases ran in this analysis. */
+  private phaseGroupTiming(
+    phaseTimings: Record<string, { started_at: string; duration_ms: number }>,
+    matches: (phase: string) => boolean
+  ): { started_at?: string; duration_ms?: number } {
+    let earliestMs: number | undefined;
+    let total = 0;
+    let matched = false;
+    for (const [phase, record] of Object.entries(phaseTimings)) {
+      if (!matches(phase)) continue;
+      matched = true;
+      total += record.duration_ms;
+      const startMs = Date.parse(record.started_at);
+      if (!Number.isNaN(startMs) && (earliestMs === undefined || startMs < earliestMs)) earliestMs = startMs;
+    }
+    if (!matched) return {};
+    return { started_at: earliestMs !== undefined ? new Date(earliestMs).toISOString() : undefined, duration_ms: total };
+  }
+
+  /**
+   * Stamps started_at/duration_ms onto the already-built `analysis_phases`
+   * catalog entries, in place, using the real per-phase timing data captured
+   * during this run. MOTIVATION: analysis_phases previously carried only
+   * status/generated_at — a stuck or slow analysis could not be attributed to
+   * any specific stage. Purely additive (two new optional fields); never
+   * changes an entry's status, description, or any other existing field.
+   */
+  private stampPhaseTimings(
+    phases: CASAnalysisPhase[],
+    phaseTimings: Record<string, { started_at: string; duration_ms: number }>
+  ): void {
+    for (const phase of phases) {
+      const timing = this.phaseGroupTiming(phaseTimings, (raw) => AnalyzerOrchestrator.ANALYSIS_PHASE_OF(raw) === phase.id);
+      if (timing.duration_ms !== undefined) phase.duration_ms = timing.duration_ms;
+      if (timing.started_at !== undefined) phase.started_at = timing.started_at;
+    }
   }
 
   private buildAnalysisPhases(input: {

@@ -1753,32 +1753,56 @@ async function handleAccountApi(
     if (!dataDir) throw new AccountHttpError(500, 'Analysis storage unavailable');
     const dataDirForBackground = dataDir;
     const workspaceAttemptPath = workspaceAttemptRecordPath(dataDirForBackground, workspaceId);
-    const workspaceAttemptStartedAt = new Date().toISOString();
+    // Queue visibility (instrumentation only — nothing here gates or
+    // serializes execution, behavior is unchanged): queued_at/queue_position
+    // are captured NOW, at accept time, before the actual work has a chance to
+    // run; started_at is captured separately below, inside the setImmediate
+    // callback, once execution genuinely begins. Previously a single
+    // `started_at` stamped at accept time stood in for both, which reads as
+    // "started" even while the request is still sitting behind other
+    // in-flight work on this single-threaded process (the exact ambiguity
+    // that hid a whale rebuild for 90+ minutes — see CASAnalysisTimings).
+    const workspaceQueuedAt = new Date().toISOString();
+    const workspaceQueuePosition = inFlightReanalyzeCount;
+    inFlightReanalyzeCount += 1;
     setImmediate(async () => {
+      const workspaceAttemptStartedAt = new Date().toISOString();
       await writeAttemptRecord(workspaceAttemptPath, {
         state: 'in-progress',
         trigger: 'reanalyze',
+        queued_at: workspaceQueuedAt,
+        queue_position: workspaceQueuePosition,
         started_at: workspaceAttemptStartedAt,
       });
       await workspaceAnalyses.rebuild(workspaceId).then(
         async () => {
+          const workspaceAttemptFinishedAt = new Date().toISOString();
           await writeAttemptRecord(workspaceAttemptPath, {
             state: 'succeeded',
             trigger: 'reanalyze',
+            queued_at: workspaceQueuedAt,
+            queue_position: workspaceQueuePosition,
             started_at: workspaceAttemptStartedAt,
-            finished_at: new Date().toISOString(),
+            finished_at: workspaceAttemptFinishedAt,
+            duration_ms: Date.parse(workspaceAttemptFinishedAt) - Date.parse(workspaceAttemptStartedAt),
           });
+          inFlightReanalyzeCount = Math.max(0, inFlightReanalyzeCount - 1);
         },
         async error => {
           const detail = error instanceof Error ? error.message : String(error);
           console.error(`[Klauro] async workspace reanalyze failed for ${workspaceId}: ${detail}`);
+          const workspaceAttemptFinishedAt = new Date().toISOString();
           await writeAttemptRecord(workspaceAttemptPath, {
             state: 'failed',
             trigger: 'reanalyze',
+            queued_at: workspaceQueuedAt,
+            queue_position: workspaceQueuePosition,
             started_at: workspaceAttemptStartedAt,
-            finished_at: new Date().toISOString(),
+            finished_at: workspaceAttemptFinishedAt,
+            duration_ms: Date.parse(workspaceAttemptFinishedAt) - Date.parse(workspaceAttemptStartedAt),
             reason: detail.slice(0, 300),
           });
+          inFlightReanalyzeCount = Math.max(0, inFlightReanalyzeCount - 1);
           if (dataDirForBackground) {
             await appendAuditLog(dataDirForBackground, {
               event: 'workspace_reanalyze_async_failed',
@@ -2378,11 +2402,20 @@ async function handleAccountApi(
     }
 
     const attemptRecordPath = projectAttemptRecordPath(workspace);
+    // Queue visibility (instrumentation only, see the workspace-reanalyze
+    // handler above for the full rationale): queued_at/queue_position are
+    // captured NOW, at accept time; started_at is captured separately below,
+    // inside the setImmediate callback, once execution genuinely begins.
+    const attemptQueuedAt = new Date().toISOString();
+    const attemptQueuePosition = inFlightReanalyzeCount;
+    inFlightReanalyzeCount += 1;
     setImmediate(async () => {
       const attemptStartedAt = new Date().toISOString();
       await writeAttemptRecord(attemptRecordPath, {
         state: 'in-progress',
         trigger: 'reanalyze',
+        queued_at: attemptQueuedAt,
+        queue_position: attemptQueuePosition,
         started_at: attemptStartedAt,
       });
       try {
@@ -2428,12 +2461,17 @@ async function handleAccountApi(
           }, 'local_commit_submission').catch(() => {});
         }
         workspaceAnalyses?.notifyProjectAnalysisLanded(workspaceIdForBackground);
+        const attemptFinishedAt = new Date().toISOString();
         await writeAttemptRecord(attemptRecordPath, {
           state: 'succeeded',
           trigger: 'reanalyze',
+          queued_at: attemptQueuedAt,
+          queue_position: attemptQueuePosition,
           started_at: attemptStartedAt,
-          finished_at: new Date().toISOString(),
+          finished_at: attemptFinishedAt,
+          duration_ms: Date.parse(attemptFinishedAt) - Date.parse(attemptStartedAt),
         });
+        inFlightReanalyzeCount = Math.max(0, inFlightReanalyzeCount - 1);
       } catch (error) {
         const detail = error instanceof Error ? error.message : String(error);
         console.error(`[Klauro] async reanalyze failed for ${analysisId}: ${detail}`);
@@ -2445,13 +2483,18 @@ async function handleAccountApi(
         // The attempt record below is what actually makes THIS failure
         // visible in that (the common) case.
         await markBackgroundAnalysisFailed(workspace, detail);
+        const attemptFinishedAt = new Date().toISOString();
         await writeAttemptRecord(attemptRecordPath, {
           state: 'failed',
           trigger: 'reanalyze',
+          queued_at: attemptQueuedAt,
+          queue_position: attemptQueuePosition,
           started_at: attemptStartedAt,
-          finished_at: new Date().toISOString(),
+          finished_at: attemptFinishedAt,
+          duration_ms: Date.parse(attemptFinishedAt) - Date.parse(attemptStartedAt),
           reason: detail.slice(0, 300),
         });
+        inFlightReanalyzeCount = Math.max(0, inFlightReanalyzeCount - 1);
         if (dataDirForBackground) {
           await appendAuditLog(dataDirForBackground, {
             event: 'reanalyze_async_failed',
@@ -2989,10 +3032,35 @@ type ReanalyzeAttemptState = 'in-progress' | 'succeeded' | 'failed';
 interface ReanalyzeAttemptRecord {
   state: ReanalyzeAttemptState;
   trigger: 'reanalyze';
+  /** When the request was accepted (202'd), before the background work has
+   *  necessarily started executing — see `started_at` below. */
+  queued_at?: string;
+  /** How many other reanalyze attempts on this process were already between
+   *  accepted-and-finished when THIS one was queued. Not a real scheduler
+   *  position (nothing here gates or serializes execution) — an observability
+   *  counter that correlates with real contention on a single-threaded event
+   *  loop with CPU-bound analyzer work. See inFlightReanalyzeCount. */
+  queue_position?: number;
+  /** When this attempt's background work actually began executing (captured
+   *  inside the deferred callback, NOT at accept time) — previously conflated
+   *  with queued_at/accept time, which hid how long a request sat waiting
+   *  its turn on a busy process. */
   started_at: string;
   finished_at?: string;
+  /** finished_at - started_at, in ms. Absent while state is 'in-progress'. */
+  duration_ms?: number;
   reason?: string;
 }
+
+// Lightweight, ADDITIVE-ONLY observability counter — not a concurrency gate.
+// Nothing here serializes, throttles, or otherwise changes when/how a
+// reanalyze actually executes; it only counts how many reanalyze attempts on
+// this process are currently between "accepted" and "finished" so
+// `queue_position` can answer "how many were already in flight when this one
+// queued." MOTIVATION: a 705-file repo sat 'in-progress' for 90+ minutes
+// behind a concurrent whale rebuild with zero attributable signal — see
+// ReanalyzeAttemptRecord.queue_position and CASAnalysisTimings (orchestrator).
+let inFlightReanalyzeCount = 0;
 
 async function writeAttemptRecord(filePath: string, record: ReanalyzeAttemptRecord): Promise<void> {
   try {
