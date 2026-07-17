@@ -35,6 +35,53 @@ const BUILD_SHAPE_WORDS = new Set(['prebuilt', 'local', 'remote', 'release', 'de
 
 const PLATFORM_OR_BUILD_SHAPE_WORDS = new Set([...REAL_PLATFORM_WORDS, ...BUILD_SHAPE_WORDS]);
 
+/** Generic packaging/output NOUNS: describe the SHAPE of a build's output
+ *  (the artifacts it produces, a catch-all bucket, a shared/common location),
+ *  never a product's own identity. Real-repo defect (2026-07 hosted
+ *  reanalysis of a Rust multi-binary workspace): a packaging script whose
+ *  own name was nothing but one of these words (or a build-shape word
+ *  immediately concatenated with one, e.g. a script literally named
+ *  "buildbinaries") minted a standalone Tier-1 installer unit named "base" /
+ *  "buildbinaries" — a script's own generic-output-shaped name is not a ship
+ *  identity any more than a bare platform word is. Kept separate from
+ *  BUILD_SHAPE_WORDS (which describe HOW something was built) since these
+ *  describe WHAT KIND of generic bucket it landed in. */
+const GENERIC_OUTPUT_NOUN_WORDS = new Set([
+  'base', 'binaries', 'binary', 'artifacts', 'artifact', 'output', 'outputs',
+  'dist', 'distribution', 'common', 'shared', 'core', 'misc', 'target', 'targets',
+  'files', 'scripts',
+]);
+
+const NOISE_WORDS = new Set([...PLATFORM_OR_BUILD_SHAPE_WORDS, ...GENERIC_OUTPUT_NOUN_WORDS]);
+
+/**
+ * True when `token` — a single word with NO internal separator (so the
+ * separator-based tokenizer in isRealProductNameToken/cleanScriptDisplayName
+ * never got a chance to split it) — is itself nothing but a concatenation of
+ * two or more known noise words (build-shape, platform, or generic-output-
+ * noun), e.g. "buildbinaries" = "build" + "binaries". Shape-based, not a
+ * literal-string special case: greedily peels the LONGEST matching noise word
+ * off the front and requires the ENTIRE token to be consumed by at least two
+ * such words before calling it noise, so a real product name that merely
+ * starts with a noise-shaped prefix (e.g. "basecamp" -> "base" + "camp", and
+ * "camp" is not a noise word) is never rejected — only a token that fully
+ * decomposes into noise, with nothing product-shaped left over, is.
+ */
+function isNoiseCompoundToken(token: string): boolean {
+  const lower = token.toLowerCase();
+  if (lower.length < 6) return false; // shortest real compound: "base"+"..." etc — avoid false positives on short real words
+  const noiseWords = [...NOISE_WORDS].sort((a, b) => b.length - a.length);
+  let remaining = lower;
+  let piecesConsumed = 0;
+  while (remaining.length > 0) {
+    const hit = noiseWords.find(word => remaining.startsWith(word));
+    if (!hit) return false;
+    remaining = remaining.slice(hit.length);
+    piecesConsumed += 1;
+  }
+  return piecesConsumed >= 2;
+}
+
 /** Verb-phrase prefixes: a candidate product name that reads as an ACTION
  *  ("resolve version", "build windows installer", "get app name") is a
  *  helper-function/variable-purpose description that leaked through into
@@ -72,9 +119,14 @@ function isRealProductNameToken(value: string): boolean {
   if (/\$\{[A-Za-z0-9_]+\}|\$[A-Za-z_][A-Za-z0-9_]*/.test(trimmed)) return false; // rejects unresolved $VAR/${VAR} template remnants
   if (VERB_PHRASE_PREFIX.test(trimmed)) return false;
   const tokens = trimmed.split(/\s+/).filter(Boolean);
-  // Every token is a platform/build-shape word ("windows", "windows prebuilt")
-  // -> names a target/shape, never a product.
-  if (tokens.every(token => PLATFORM_OR_BUILD_SHAPE_WORDS.has(token.toLowerCase()))) return false;
+  // Every token is a platform/build-shape/generic-output-noun word ("windows",
+  // "windows prebuilt", "base") -> names a target/shape/bucket, never a
+  // product.
+  if (tokens.every(token => NOISE_WORDS.has(token.toLowerCase()))) return false;
+  // A single un-separated token that fully decomposes into noise words
+  // concatenated together ("buildbinaries" = "build" + "binaries") is the
+  // same class of non-identity, just missing the separator a tokenizer needs.
+  if (tokens.length === 1 && isNoiseCompoundToken(tokens[0])) return false;
   return true;
 }
 

@@ -69,8 +69,9 @@ export function collectDeployableEvidence(input: CollectDeployableEvidenceInput)
   }
 
   const deduped = dedupe(results);
-  resolveEvidenceBundling(deduped);
-  return deduped;
+  const consolidated = mergeDuplicateNamedInstallerLeaves(deduped);
+  resolveEvidenceBundling(consolidated);
+  return consolidated;
 }
 
 function dedupe(items: DeployableEvidence[]): DeployableEvidence[] {
@@ -85,12 +86,29 @@ function dedupe(items: DeployableEvidence[]): DeployableEvidence[] {
   return out;
 }
 
-/** Normalizes a bundle-member token for comparison (case/whitespace/separator
- *  only) — mirrors installer.ts's normalizeIdentityToken so a ships_paths
- *  entry like "client-service" matches a candidate named "client_service" or
- *  "Client Service" without over-matching unrelated tokens. */
+/** Normalizes a bundle-member token for comparison (case/whitespace/separator/
+ *  extension only — MATCHING purposes only, never used for a display name).
+ *  Separators are stripped entirely (not just canonicalized to one form) so a
+ *  ships_paths entry like "client-service" matches a candidate named
+ *  "client_service", "Client Service", OR the squashed "clientservice" — real
+ *  packaging scripts and installer manifests frequently rewrite a crate/bin's
+ *  hyphenated name into a squashed identifier (env var / NSIS section name /
+ *  shell-safe token) with no separator at all, and a normalization that only
+ *  canonicalizes separators (case/whitespace/hyphen/underscore -> one form)
+ *  still fails that squashed-vs-hyphenated comparison (2026-07 hosted defect:
+ *  a Cargo bin named "drop-server" and an installer-declared binary name
+ *  "dropserver" never matched, so the same logical service surfaced twice —
+ *  once via bin-targets, once as an unbundled installer/script-derived twin).
+ *  A trailing ship-artifact extension (.exe/.msi/.dmg/...) is stripped too:
+ *  it identifies which PLATFORM artifact ships (kept in installer.ts's own
+ *  identity key), not which BINARY/service it is, so it must never block a
+ *  member-name match. */
 function normalizeMemberToken(value: string): string {
-  return value.trim().toLowerCase().replace(/[\s_-]+/g, '-');
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/\.(exe|msi|dmg|pkg|deb|rpm|appimage)$/i, '')
+    .replace(/[\s_-]+/g, '');
 }
 
 /** Does a Tier-1 `ships_paths` entry (a bin/crate/service name a
@@ -107,6 +125,94 @@ function evidenceNameMatchesShippedToken(shipped: string, candidate: DeployableE
   const rootBase = (candidate.root_path || '').split(/[\\/]/).filter(Boolean).pop() || '';
   if (rootBase && normalizeMemberToken(rootBase) === norm) return true;
   return false;
+}
+
+/**
+ * A Tier-1 "installer" row is a genuine multi-service ship-unit HEAD only
+ * when its `ships_paths` names two or more distinct members — that's real
+ * positive bundling evidence (SPEC-DEPLOYABLE-DETECTION.md §3/§4). A Tier-1
+ * installer row with zero or one `ships_paths` entries is instead a "leaf"
+ * identity declaration (a per-component installer-script node, an NSIS
+ * Section/File directive, a single-binary artifact record) that names
+ * exactly ONE thing — the same thing another provider (bin-targets, most
+ * commonly) already produced a concrete row for. Real repos never need two
+ * top-level rows for one crate/service; the leaf is redundant, not additive.
+ */
+function isInstallerBundleHead(item: DeployableEvidence): boolean {
+  return item.tier === 1 && item.kind === 'installer' && (item.ships_paths?.length ?? 0) >= 2;
+}
+
+/**
+ * Merges duplicate-named Tier-1 installer LEAVES (see isInstallerBundleHead)
+ * into whichever OTHER row already names the exact same identity (matched via
+ * normalizeMemberToken — case/separator/extension-insensitive), rather than
+ * letting both stand as separate top-level rows. This is the fix for a real
+ * hosted defect (2026-07, Rust cargo-workspace repo with shell + NSIS
+ * installers): a crate compiled via Cargo `[[bin]]` (e.g. "drop-server")
+ * surfaced TWICE — once as the concrete bin-targets row, once as an unbundled
+ * installer-derived row naming the identical service under a squashed/
+ * hyphen-stripped variant ("dropserver") or, for names with no hyphen at all,
+ * an EXACT duplicate ("client" appearing as both a `kind: 'bin'` row and a
+ * `kind: 'installer'` row).
+ *
+ * Evidence-gated, never name-similarity-gated: the merge fires ONLY on an
+ * exact normalized-identity match between the leaf and another row — never on
+ * fuzzy/partial name similarity — and a leaf that matches nothing keeps
+ * standing alone (the SPEC's "never merge on absence of evidence" rule
+ * applies here too: no match found means no merge performed).
+ *
+ * Survivor selection prefers concrete runnable-entry evidence over an
+ * installer leaf's identity-only evidence ("the cargo/bin evidence — the
+ * strongest tier — wins as the surviving row"): a `kind: 'bin'` or
+ * `kind: 'server-entry'` row always wins over a `kind: 'installer'` leaf;
+ * between two installer leaves, the one with more accumulated evidence wins
+ * (a tie-break only, since both name the same thing either way). The merged
+ * survivor keeps its own tier/kind/name — only the leaf's evidence and
+ * ships_paths are unioned in — so downstream consumers see one row per
+ * logical service, still eligible to `bundled_into` a real multi-member
+ * installer head via the normal resolveEvidenceBundling pass below.
+ */
+function mergeDuplicateNamedInstallerLeaves(items: DeployableEvidence[]): DeployableEvidence[] {
+  const heads = new Set(items.filter(isInstallerBundleHead));
+  const leaves = items.filter(item => item.tier === 1 && item.kind === 'installer' && !heads.has(item));
+  if (!leaves.length) return items;
+
+  const removed = new Set<DeployableEvidence>();
+
+  const survivorRank = (item: DeployableEvidence): number => {
+    if (item.kind === 'bin') return 0;
+    if (item.kind === 'server-entry') return 1;
+    return 2; // another installer leaf — tie-break by evidence richness only
+  };
+
+  for (const leaf of leaves) {
+    if (removed.has(leaf)) continue;
+    const leafKey = normalizeMemberToken(leaf.name);
+    if (!leafKey) continue;
+
+    let bestMatch: DeployableEvidence | undefined;
+    for (const other of items) {
+      if (other === leaf || removed.has(other) || heads.has(other)) continue;
+      if (normalizeMemberToken(other.name) !== leafKey) continue;
+      if (!bestMatch) { bestMatch = other; continue; }
+      const otherRank = survivorRank(other);
+      const bestRank = survivorRank(bestMatch);
+      if (otherRank < bestRank) { bestMatch = other; continue; }
+      if (otherRank === bestRank && other.evidence.length > bestMatch.evidence.length) bestMatch = other;
+    }
+    if (!bestMatch) continue; // matches nothing — never merge on absence of evidence
+
+    // The leaf itself may outrank the match it found (e.g. two installer
+    // leaves, this one richer) — merge into whichever of the two survives.
+    const survivor = survivorRank(bestMatch) <= survivorRank(leaf) ? bestMatch : leaf;
+    const loser = survivor === bestMatch ? leaf : bestMatch;
+
+    survivor.evidence = [...new Set([...survivor.evidence, ...loser.evidence, `merged-duplicate-identity:${loser.kind}:${loser.name}`])];
+    survivor.ships_paths = [...new Set([...(survivor.ships_paths || []), ...(loser.ships_paths || [])])];
+    removed.add(loser);
+  }
+
+  return removed.size ? items.filter(item => !removed.has(item)) : items;
 }
 
 /**

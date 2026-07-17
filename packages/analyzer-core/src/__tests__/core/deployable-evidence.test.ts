@@ -1173,4 +1173,155 @@ describe('collectDeployableEvidence: evidence-gated bundling resolution (SPEC-DE
       expect(serverEntry).toBeDefined();
     });
   });
+
+  // --- Cross-provider duplicate-identity regression coverage (2026-07 hosted
+  // reanalysis of a Rust cargo-workspace repo with shell + NSIS installers,
+  // v1.0.111, 49 deployable rows). Real defect: the same logical service
+  // surfaced as TWO unbundled top-level rows — a concrete `kind: 'bin'` row
+  // from bin-targets (the Cargo `[[bin]]` name, sometimes hyphenated) and an
+  // unbundled `kind: 'installer'` twin naming the identical service under a
+  // squashed/hyphen-stripped or exactly-equal variant (an NSIS/installer
+  // per-component identity record) — plus junk standalone units named after
+  // nothing but a build script's own generic-output-shaped basename
+  // ("base", "buildbinaries").
+  describe('cross-provider duplicate-identity consolidation (multi-binary cargo workspace + installer twins)', () => {
+    function cargoCrate(binName: string): string {
+      return ['[package]', `name = "${binName}"`, 'version = "0.1.0"', '', '[[bin]]', `name = "${binName}"`, 'path = "src/main.rs"', ''].join('\n');
+    }
+
+    test('a Cargo [[bin]] crate and an installer-declared squashed/exact-name twin merge into ONE row, still bundled into the real installer head', () => {
+      projectPath = tempProject();
+
+      // Five Cargo workspace member crates — "drop-server" is the
+      // hyphenated one whose installer-side twin gets squashed ("dropserver");
+      // the other four have no hyphen so their twin is an EXACT name repeat.
+      const crates = ['drop-server', 'client', 'coordinator', 'agent', 'gateway'];
+      for (const crate of crates) {
+        fs.mkdirSync(path.join(projectPath, 'crates', crate), { recursive: true });
+        fs.writeFileSync(path.join(projectPath, 'crates', crate, 'Cargo.toml'), cargoCrate(crate));
+      }
+
+      // A real bundling installer script — the same shell-script-derived
+      // ships_paths mechanism covered by existing tests above, referencing
+      // every crate by its correct hyphenated cargo package name. This is
+      // the genuine multi-member ship-unit HEAD (ships_paths.length >= 2)
+      // and must remain the single surviving installer row.
+      fs.mkdirSync(path.join(projectPath, 'scripts'), { recursive: true });
+      fs.writeFileSync(
+        path.join(projectPath, 'scripts', 'build-installer.sh'),
+        crates.map(c => `cargo build --release -p ${c}`).join('\n') +
+          '\n' +
+          crates.map(c => `cp target/release/${c} dist/`).join('\n') +
+          '\n',
+      );
+
+      // Synthetic per-component distribution-artifact nodes — the shape an
+      // NSIS/installer parser emits for each referenced binary section, one
+      // per crate, each naming exactly ONE thing (ships_paths.length === 1,
+      // never a bundle head). "drop-server" is squashed to "dropserver"; the
+      // rest repeat their bin name verbatim. Each gets its OWN source file —
+      // installer.ts's cross-collector merge already collapses same-FILE
+      // installer records regardless of name, so distinct files are what
+      // keep these as independent per-component identity records (as
+      // distinct NSIS Section blocks / per-platform scripts would be) rather
+      // than trivially pre-merging before the fix under test ever runs.
+      const distArtifactNode = (idSuffix: string, overrides: Record<string, any>): CASNode => ({
+        id: `nsis_${idSuffix}`,
+        name: `Installer component: ${idSuffix}`,
+        type: 'distribution_installer',
+        source: { file: `installer/sections/${idSuffix}.nsi`, line: 1 },
+        metadata: {
+          topology_surface: 'distribution-artifacts',
+          artifact_kind: 'installer',
+          distribution_role: 'installer',
+          binary_names: [],
+          ...overrides,
+        } as any,
+      });
+      const nodes: CASNode[] = [
+        distArtifactNode('drop_server', { product_name: 'dropserver', binary_names: ['dropserver'] }),
+        distArtifactNode('client', { product_name: 'client', binary_names: ['client'] }),
+        distArtifactNode('coordinator', { product_name: 'coordinator', binary_names: ['coordinator'] }),
+        distArtifactNode('agent', { product_name: 'agent', binary_names: ['agent'] }),
+        distArtifactNode('gateway', { product_name: 'gateway', binary_names: ['gateway'] }),
+        // Junk: a build script whose own name is nothing but a generic
+        // output-shaped noun / noise compound — must never mint a standalone
+        // unit at all (no real ship-artifact identity).
+        distArtifactNode('junk_base', { product_name: 'base' }),
+        distArtifactNode('junk_buildbinaries', { product_name: 'buildbinaries' }),
+      ];
+
+      const result = collectDeployableEvidence({ projectPath, nodes, entryPoints: [], exitPoints: [] });
+
+      // Exactly one row per crate (kind: 'bin') — no unbundled installer twin
+      // survives alongside it.
+      const bins = result.filter(item => item.kind === 'bin');
+      expect(new Set(bins.map(b => b.name))).toEqual(new Set(crates));
+      expect(bins).toHaveLength(crates.length);
+
+      // Every bin row is bundled into the ONE real multi-member installer
+      // head, including "drop-server" (which required the hyphen/squash-
+      // insensitive normalization fix to match its "dropserver" ships_paths
+      // twin's now-merged identity, and — independently — the head's own
+      // ships_paths, which already spelled it correctly).
+      for (const bin of bins) {
+        expect(bin.bundled_into).toBe('build-installer');
+      }
+
+      // No standalone installer row survives for any of the five crates —
+      // each per-component installer/NSIS node merged into its bin row
+      // instead of standing alone.
+      const installerRows = result.filter(item => item.kind === 'installer');
+      expect(installerRows.map(i => i.name)).toEqual(['build-installer']);
+
+      // Junk generic-output-noun / noise-compound names never mint a row at
+      // all — not even a badly-named one.
+      expect(result.some(item => item.name === 'base')).toBe(false);
+      expect(result.some(item => item.name === 'buildbinaries')).toBe(false);
+
+      // Total row count: one per crate + the one real installer head. No
+      // duplicate/phantom rows.
+      expect(result).toHaveLength(crates.length + 1);
+    });
+
+    function soloInstallerNode(id: string, overrides: Record<string, any>): CASNode {
+      return {
+        id,
+        name: `Installer node: ${id}`,
+        type: 'distribution_installer',
+        source: { file: `installer/${id}.nsi`, line: 1 },
+        metadata: {
+          topology_surface: 'distribution-artifacts',
+          artifact_kind: 'installer',
+          distribution_role: 'installer',
+          binary_names: [],
+          ...overrides,
+        } as any,
+      };
+    }
+
+    test('an installer leaf that matches NOTHING else stays standalone (never merge on absence of evidence)', () => {
+      projectPath = tempProject();
+      const nodes: CASNode[] = [
+        soloInstallerNode('nsis_standalone', { product_name: 'StandaloneUtility', binary_names: ['standaloneutility'] }),
+      ];
+      const result = collectDeployableEvidence({ projectPath, nodes, entryPoints: [], exitPoints: [] });
+      const installer = result.find(item => item.kind === 'installer');
+      expect(installer).toBeDefined();
+      expect(installer!.name).toBe('StandaloneUtility');
+      expect(installer!.bundled_into).toBeUndefined();
+    });
+
+    test('a genuine single-member installer (ships exactly one real binary) is untouched when no duplicate-named row exists', () => {
+      projectPath = tempProject();
+      const nodes: CASNode[] = [
+        soloInstallerNode('nsis_myapp', { product_name: 'MyApp', binary_names: ['myapp.exe'] }),
+      ];
+      const result = collectDeployableEvidence({ projectPath, nodes, entryPoints: [], exitPoints: [] });
+      const installer = result.find(item => item.kind === 'installer');
+      expect(installer).toBeDefined();
+      expect(installer!.name).toBe('MyApp');
+      expect(installer!.ships_paths).toEqual(['myapp.exe']);
+    });
+  });
 });
