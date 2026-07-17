@@ -63,7 +63,7 @@ const VERB_PHRASE_PREFIX = /^(resolve|build|get|set|run|make|install|uninstall|u
  *  already rejects a captured name when a `${VAR}`/`$VAR` inside it fails to
  *  resolve, but whatever still gets through (a different extraction path, a
  *  future analyzer, hand-built metadata) must not mint a unit named e.g.
- *  "Zerac $BINARY_NAME" — an unresolved template remnant is never a real
+ *  "Acme $BINARY_NAME" — an unresolved template remnant is never a real
  *  product name, regardless of how it arrived here. */
 function isRealProductNameToken(value: string): boolean {
   const trimmed = value.trim();

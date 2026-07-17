@@ -408,14 +408,14 @@ function productNameFromFile(file: string): string | undefined {
 
 /** Resolve `${VAR}` and bare `$VAR` NSIS/shell-style template references —
  *  whether the ENTIRE captured value is a template reference (`"${APPNAMEANDVERSION}"`)
- *  or a bare `$VAR` sits INSIDE a larger captured string (`"Zerac $BINARY_NAME"`,
+ *  or a bare `$VAR` sits INSIDE a larger captured string (`"Acme $BINARY_NAME"`,
  *  a product-name capture with an unresolved shell variable mid-string that the
  *  old `^\$\{...\}$`-only match let straight through since the `$` isn't at the
  *  start) — against `!define VAR value` (or `set VAR=value` / `VAR=value`)
  *  directives found in the same file/script. Every `${VAR}`/`$VAR` occurrence in
  *  `value` must resolve; if even one does not, the whole value is REJECTED
  *  (undefined) rather than partially substituted or leaked verbatim — a
- *  half-resolved "Zerac $BINARY_NAME" string is exactly the kind of
+ *  half-resolved "Acme $BINARY_NAME" string is exactly the kind of
  *  template-var-shaped identity this guards against. */
 function resolveTemplateVar(value: string, content: string): string | undefined {
   if (!/\$[A-Za-z_{]/.test(value)) return value;
