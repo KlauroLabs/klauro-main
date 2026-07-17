@@ -59,13 +59,20 @@ export interface KlauroConfig {
     allowedAnalyzerHosts: string[];
     requireSelfHosted: boolean;
     /**
-     * When true, LOCAL analysis is refused: the `analyze_codebase` MCP tool
-     * throws and directs the caller to `analyze_codebase_remote` instead, so all
-     * heavy analysis + storage happen on the hosted analyzer (prod) rather than
-     * on-machine. The symmetric counterpart to `requireSelfHosted` (which gates
-     * the REMOTE path): this gates the LOCAL path. Default false (local allowed).
+     * Gate the LOCAL analysis path (the `analyze_codebase` MCP tool — the CLI
+     * `analyze` command is already remote-only). TRI-STATE:
+     *   true      → always refuse local; redirect to analyze_codebase_remote.
+     *   false     → always allow local (explicit opt-out, e.g. a dev repo).
+     *   undefined → DERIVE: refuse when the repo is bound to a hosted project
+     *               (project.id set), allow otherwise. This makes every real
+     *               customer remote-only by default (heavy work + storage on the
+     *               hosted analyzer, never on-machine) WITHOUT dead-ending an
+     *               unbound/OSS/offline repo that has no remote to redirect to.
+     * Env `KLAURO_ALLOW_LOCAL_ANALYSIS=1` force-allows regardless (dev/CI/gauntlet
+     * hatch, and the "prod is down, I must unblock locally" case).
+     * Symmetric counterpart to `requireSelfHosted`, which gates the REMOTE path.
      */
-    requireRemoteAnalyzer: boolean;
+    requireRemoteAnalyzer?: boolean;
     blockUntrackedFiles: boolean;
   };
   embedding: {
@@ -289,7 +296,9 @@ export function defaultKlauroConfig(projectPath: string): KlauroConfig {
       allowRemoteAnalyzer: true,
       allowedAnalyzerHosts: [],
       requireSelfHosted: false,
-      requireRemoteAnalyzer: false,
+      // requireRemoteAnalyzer intentionally UNSET (undefined) → derived per repo
+      // in assertLocalAnalysisAllowed: bound-to-hosted repos are remote-only,
+      // unbound/OSS repos keep local. Set explicitly in .klaurorc to override.
       blockUntrackedFiles: false,
     },
     embedding: {
@@ -548,21 +557,45 @@ export function resolveAnalysisId(loaded: LoadedKlauroConfig, fallback: string, 
 }
 
 /**
- * Gate the LOCAL analysis path. When `policy.requireRemoteAnalyzer=true`, the
- * on-machine `analyze_codebase` tool must refuse so that all heavy analysis and
- * storage happen on the hosted analyzer (prod). The thrown message names the
- * exact tool to call instead, so an agent is redirected, never dead-ended —
- * "prod exclusively" becomes an enforced guarantee rather than prompt discipline.
- * Symmetric counterpart to assertRemoteAnalyzerAllowed (which gates the remote path).
+ * True when this repo is BOUND to a hosted Klauro project — i.e. a real
+ * customer/workspace repo (klauro init / signup wrote a project.id), as opposed
+ * to an unbound OSS/dev/offline checkout. This is the signal that "prod
+ * exclusively" should apply by default: a bound repo has a hosted analyzer to
+ * run on; an unbound one has nowhere to redirect to.
+ */
+export function isBoundToHostedProject(loaded: LoadedKlauroConfig): boolean {
+  return Boolean(loaded.config.project?.id);
+}
+
+/**
+ * Gate the LOCAL analysis path (the `analyze_codebase` MCP tool; the CLI
+ * `analyze` command is already remote-only). Keeps heavy analysis + storage on
+ * the hosted analyzer for real customers, WITHOUT dead-ending unbound repos.
+ * Resolution order:
+ *   1. Env KLAURO_ALLOW_LOCAL_ANALYSIS truthy → ALLOW (dev/CI/gauntlet hatch).
+ *   2. policy.requireRemoteAnalyzer === true  → REFUSE (explicit).
+ *   3. policy.requireRemoteAnalyzer === false → ALLOW (explicit opt-out).
+ *   4. undefined → DERIVE: bound-to-hosted-project → REFUSE, else ALLOW.
+ * The thrown message names the exact tool + hosted URL, so a caller is
+ * redirected to analyze_codebase_remote, never dead-ended.
  */
 export function assertLocalAnalysisAllowed(loaded: LoadedKlauroConfig): void {
-  if (loaded.config.policy.requireRemoteAnalyzer) {
-    const url = loaded.config.analyzer.serverUrl || DEFAULT_KLAURO_CLOUD_URL;
-    throw new Error(
-      `Local analysis is blocked by .klaurorc policy.requireRemoteAnalyzer=true. ` +
-      `Use analyze_codebase_remote (analyzes on the hosted analyzer at ${url} and caches the CAS locally) instead of analyze_codebase.`
-    );
-  }
+  const envHatch = process.env.KLAURO_ALLOW_LOCAL_ANALYSIS;
+  if (envHatch && envHatch !== '0' && envHatch.toLowerCase() !== 'false') return;
+
+  const explicit = loaded.config.policy.requireRemoteAnalyzer;
+  const remoteRequired = explicit === undefined ? isBoundToHostedProject(loaded) : explicit;
+  if (!remoteRequired) return;
+
+  const url = loaded.config.analyzer.serverUrl || DEFAULT_KLAURO_CLOUD_URL;
+  const reason = explicit === true
+    ? 'policy.requireRemoteAnalyzer=true'
+    : 'this repo is bound to a hosted Klauro project (analysis runs on the hosted analyzer by default)';
+  throw new Error(
+    `Local analysis is blocked: ${reason}. ` +
+    `Use analyze_codebase_remote (analyzes on the hosted analyzer at ${url} and caches the CAS locally) instead of analyze_codebase. ` +
+    `To deliberately run local anyway, set KLAURO_ALLOW_LOCAL_ANALYSIS=1 or .klaurorc policy.requireRemoteAnalyzer=false.`
+  );
 }
 
 export function assertRemoteAnalyzerAllowed(loaded: LoadedKlauroConfig, serverUrl?: string): void {

@@ -214,6 +214,76 @@ test('clean tree: shared snapshot behavior is unchanged (working-tree walk)', as
   });
 });
 
+test('build-out-<name>/ vendored dump is excluded from both snapshot modes + surfaced in the manifest; building-blocks/ and bin/ are unaffected (first-session papercut)', async () => {
+  // REGRESSION (real first-session customer path): a repo carried a top-level
+  // build-out-drop-server/ dir — a 14,140-file vendored build dump — that the
+  // exact-name EXCLUDED_DIRECTORIES set never matched (it only matches whole
+  // segment names like 'build', not 'build-out-<anything>'), so a first-session
+  // upload silently carried the whole vendored tree unless the customer
+  // hand-wrote a .klauroignore. Fixed by EXCLUDED_DIRECTORY_PATTERNS in
+  // remote-source.ts (output-shape patterns, anchored, alongside the exact set).
+  await withFixtureWorkspace(async workspace => {
+    spawnSync('git', ['init'], { cwd: workspace.repo, encoding: 'utf8' });
+    await writeDefaultKlauroConfig(workspace.repo, { force: true });
+
+    // The vendored dump: name embeds a service name, so no exact-name match.
+    fs.mkdirSync(path.join(workspace.repo, 'build-out-drop-server'), { recursive: true });
+    fs.writeFileSync(path.join(workspace.repo, 'build-out-drop-server', 'vendored.rs'), 'fn vendored() {}\n');
+
+    // Negative control: a real source dir that merely STARTS WITH "build" — the
+    // ^build-out anchor must not catch it.
+    fs.mkdirSync(path.join(workspace.repo, 'building-blocks'), { recursive: true });
+    fs.writeFileSync(path.join(workspace.repo, 'building-blocks', 'lib.rs'), 'pub fn lib() {}\n');
+
+    // Negative control: 'bin' must stay included (real source in several
+    // ecosystems per the existing NOTE in EXCLUDED_DIRECTORIES) — unchanged.
+    fs.mkdirSync(path.join(workspace.repo, 'bin'), { recursive: true });
+    fs.writeFileSync(path.join(workspace.repo, 'bin', 'main.rs'), 'fn main() {}\n');
+
+    gitCommitAll(workspace.repo, 'baseline with vendored build-out dump');
+
+    // 1. Working-tree snapshot (clean tree).
+    const workingTreeSnapshot = await buildSourceSnapshot(workspace.repo);
+    assert.equal(workingTreeSnapshot.snapshot_source, 'working-tree');
+    assert.ok(
+      !workingTreeSnapshot.files.some(file => file.path.startsWith('build-out-drop-server/')),
+      'vendored build-out dump excluded from the working-tree snapshot'
+    );
+    assert.ok(
+      workingTreeSnapshot.files.some(file => file.path === 'building-blocks/lib.rs'),
+      'building-blocks/ (real source) stays included'
+    );
+    assert.ok(
+      workingTreeSnapshot.files.some(file => file.path === 'bin/main.rs'),
+      'bin/ (real source) stays included, unchanged'
+    );
+
+    // 2. Committed-HEAD snapshot: dirty the tree elsewhere to route through the
+    // HEAD-snapshot path, exactly as the other committed-HEAD regression tests do.
+    fs.appendFileSync(path.join(workspace.repo, 'app', 'main.py'), '\n# dirty\n');
+    const headSnapshot = await buildSourceSnapshot(workspace.repo);
+    assert.equal(headSnapshot.snapshot_source, 'committed-head');
+    assert.ok(
+      !headSnapshot.files.some(file => file.path.startsWith('build-out-drop-server/')),
+      'vendored build-out dump excluded from the committed-HEAD snapshot'
+    );
+    assert.ok(
+      headSnapshot.files.some(file => file.path === 'building-blocks/lib.rs'),
+      'building-blocks/ stays included at HEAD'
+    );
+    assert.ok(headSnapshot.files.some(file => file.path === 'bin/main.rs'), 'bin/ stays included at HEAD');
+
+    // 3. Upload manifest surfaces the excluded dir with a distinct, visible reason.
+    const manifest = await buildUploadManifest(workspace.repo);
+    assert.ok(!manifest.included_files.some(file => file.path.startsWith('build-out-drop-server/')));
+    const exclusionEntry = manifest.excluded.find(entry => entry.path.startsWith('build-out-drop-server'));
+    assert.ok(exclusionEntry, 'excluded vendored dir is surfaced in the manifest, not silently dropped');
+    assert.equal(exclusionEntry?.reason, 'vendored-output-shape');
+    assert.ok(manifest.included_files.some(file => file.path === 'building-blocks/lib.rs'));
+    assert.ok(manifest.included_files.some(file => file.path === 'bin/main.rs'));
+  });
+});
+
 test('project is a SUBDIRECTORY of a larger git repo: committed-HEAD snapshot is non-empty (real Hoggan dead-end)', async () => {
   // REGRESSION (real customer-path dead-end, 2026-07-16): analyzing a project
   // that lives in a subfolder of a bigger git repo (git toplevel is an ANCESTOR
@@ -469,31 +539,58 @@ test('remote analyzer policy (allowRemoteAnalyzer / allowedAnalyzerHosts) is enf
   assert.doesNotThrow(() => assertRemoteAnalyzerAllowed(loaded, 'https://allowed.example.test'));
 });
 
-test('prod-exclusive: policy.requireRemoteAnalyzer refuses local analysis and names the remote tool', () => {
+test('prod-exclusive: assertLocalAnalysisAllowed tri-state (explicit true/false) + redirect message', () => {
+  delete process.env.KLAURO_ALLOW_LOCAL_ANALYSIS;
   const config = defaultKlauroConfig('/tmp/example-project');
   config.analyzer.serverUrl = 'https://mcp.klauro.com';
   const loaded: LoadedKlauroConfig = { config, ignorePatterns: [] };
 
-  // Default: local analysis allowed.
-  assert.equal(config.policy.requireRemoteAnalyzer, false);
-  assert.doesNotThrow(() => assertLocalAnalysisAllowed(loaded));
+  // Default is UNSET (derive), not false.
+  assert.equal(config.policy.requireRemoteAnalyzer, undefined);
 
-  // Enforced: local analysis refused, and the error redirects to the remote
-  // tool AND names the hosted server (redirected, never dead-ended).
+  // Explicit true → refuse, and the error redirects to the remote tool AND
+  // names the hosted server (redirected, never dead-ended).
   config.policy.requireRemoteAnalyzer = true;
   assert.throws(() => assertLocalAnalysisAllowed(loaded), /requireRemoteAnalyzer=true/);
   assert.throws(() => assertLocalAnalysisAllowed(loaded), /analyze_codebase_remote/);
   assert.throws(() => assertLocalAnalysisAllowed(loaded), /mcp\.klauro\.com/);
+
+  // Explicit false → allow (deliberate opt-out).
+  config.policy.requireRemoteAnalyzer = false;
+  assert.doesNotThrow(() => assertLocalAnalysisAllowed(loaded));
 });
 
-test('requireRemoteAnalyzer round-trips through a raw .klaurorc policy block (deep-merge)', () => {
-  const merged = defaultKlauroConfig('/tmp/example-project');
-  // Simulate what mergeConfig does for a user .klaurorc that sets only this one
-  // policy field — the deep-merge must carry it without dropping sibling defaults.
-  const userPolicy = { requireRemoteAnalyzer: true };
-  const applied = { ...merged.policy, ...userPolicy };
-  assert.equal(applied.requireRemoteAnalyzer, true);
-  assert.equal(applied.allowRemoteAnalyzer, true); // sibling default preserved
+test('prod-exclusive: undefined derives from binding — bound repo refuses, unbound allows', () => {
+  delete process.env.KLAURO_ALLOW_LOCAL_ANALYSIS;
+
+  // Unbound (no project.id) → local ALLOWED (nothing to redirect to; no dead-end).
+  const unbound = defaultKlauroConfig('/tmp/example-project');
+  assert.equal(unbound.policy.requireRemoteAnalyzer, undefined);
+  assert.equal(unbound.project.id, undefined);
+  assert.doesNotThrow(() => assertLocalAnalysisAllowed({ config: unbound, ignorePatterns: [] }));
+
+  // Bound to a hosted project (project.id set) → local REFUSED by default,
+  // with the binding named in the reason.
+  const bound = defaultKlauroConfig('/tmp/example-project');
+  bound.project.id = 'prj_example';
+  assert.throws(() => assertLocalAnalysisAllowed({ config: bound, ignorePatterns: [] }), /bound to a hosted Klauro project/);
+  assert.throws(() => assertLocalAnalysisAllowed({ config: bound, ignorePatterns: [] }), /analyze_codebase_remote/);
+});
+
+test('prod-exclusive: KLAURO_ALLOW_LOCAL_ANALYSIS env hatch force-allows even a bound/required repo', () => {
+  const bound = defaultKlauroConfig('/tmp/example-project');
+  bound.project.id = 'prj_example';
+  bound.policy.requireRemoteAnalyzer = true; // even the strongest signal
+  const loaded: LoadedKlauroConfig = { config: bound, ignorePatterns: [] };
+  try {
+    process.env.KLAURO_ALLOW_LOCAL_ANALYSIS = '1';
+    assert.doesNotThrow(() => assertLocalAnalysisAllowed(loaded));
+    // '0' / 'false' are NOT a hatch.
+    process.env.KLAURO_ALLOW_LOCAL_ANALYSIS = '0';
+    assert.throws(() => assertLocalAnalysisAllowed(loaded));
+  } finally {
+    delete process.env.KLAURO_ALLOW_LOCAL_ANALYSIS;
+  }
 });
 
 test('validateConventions accepts well-formed conventions of every kind', () => {
