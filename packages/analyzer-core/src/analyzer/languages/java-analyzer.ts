@@ -115,12 +115,12 @@ export class JavaAnalyzer extends BaseAnalyzer {
   // named samples, examples, fixtures, testdata) tuned for JS/Python-style
   // repos where those words only ever name vendored sample code. Java's
   // package-to-directory convention turns them into common REAL package
-  // segments instead: org.springframework.samples.petclinic physically lives
-  // under a directory path containing org, springframework, samples,
-  // petclinic in turn, so a blanket "any samples directory" exclusion
-  // silently drops 100 percent of that codebase's real source (every
-  // controller, entity, and service - not a corner case, the entire Spring
-  // PetClinic reference app). Strip just those directory-name patterns for
+  // segments instead: a benchmarked Spring Boot demo app's package
+  // (org.springframework.samples.<app>) physically lives under a directory
+  // path containing org, springframework, samples, <app> in turn, so a
+  // blanket "any samples directory" exclusion silently drops 100 percent of
+  // that codebase's real source (every controller, entity, and service -
+  // not a corner case, the entire reference app). Strip just those directory-name patterns for
   // Java's own glob calls; the rest of the shared denylist (target, vendor,
   // node_modules, ...) still applies since those never collide with a Java
   // package name.

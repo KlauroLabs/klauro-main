@@ -197,8 +197,8 @@ export function buildSummary(cas: CASOutput, opts: { detail?: 'compact' | 'full'
     // walker — orchestrator.getNestedRepoIgnorePatterns). A wrapper repo whose
     // real code lives in nested repos must not present a handful of top-level
     // infra files as "the codebase" with no signal that the bulk was skipped
-    // (live audit 2026-07-14: truckspy served 41 nodes with the
-    // truckspyapp/truckspyui nested repos silently missing).
+    // (live audit 2026-07-14: a benchmarked repo served 41 nodes with its
+    // nested app/ui sub-repos silently missing).
     ...(techs?.nested_repositories?.length
       ? {
           nested_repositories_excluded: {

@@ -3151,11 +3151,11 @@ function resolveDisplayName(projectName?: string, projectPath?: string): string 
   // (Klauro -> "Klauro" via its @klauro/* scope), while a real chosen project
   // name survives as the fallback above the bare workspace basename. The
   // reanalyze call site threads the project record's name through the
-  // projectPath arg (e.g. "Hoggan Scientific" for a C#/non-npm repo that has no
+  // projectPath arg (e.g. "Acme Scientific" for a C#/non-npm repo that has no
   // root self-naming file) — basename() returns it unchanged, so it reaches the
   // analyzer and wins when there is no stronger content signal. (An earlier
   // version returned undefined for basename-shaped names; that DROPPED
-  // "Hoggan Scientific" on the reanalyze path — where it arrives via projectPath,
+  // "Acme Scientific" on the reanalyze path — where it arrives via projectPath,
   // not projectName — leaving the system named after the raw workspace id.)
   const name = (projectName || '').trim();
   if (name) return name;

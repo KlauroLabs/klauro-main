@@ -25,7 +25,7 @@ export interface LanguageSpec {
    * 'class'. Markup/style grammars whose "class-like" blocks are NOT semantic
    * classes must override this so they never pollute type==='class' consumers
    * (entity gates, inventory class counts, arch heuristics). Measured live:
-   * spring-petclinic's ONE petclinic.css produced 2543 'class' nodes (each CSS
+   * a benchmarked Spring Boot repo's ONE bundled stylesheet produced 2543 'class' nodes (each CSS
    * selector block) — 40x the repo's real Java classes — skewing every
    * class-count signal in the analysis. The nodes stay in the graph (breadth
    * coverage keeps them); only their type label is honest now.

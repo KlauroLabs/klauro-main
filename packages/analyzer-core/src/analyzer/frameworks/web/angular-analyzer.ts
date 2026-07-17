@@ -1889,7 +1889,7 @@ export class AngularAnalyzer extends BaseAnalyzer {
    * that heuristic for Angular's HttpClient convention specifically).
    *
    * The single synthetic `exit_angular_api` exit point (endpoint:'various')
-   * meant every truckspyui route/component flow carried ZERO evidence of
+   * meant every route/component flow in a benchmarked Angular UI carried ZERO evidence of
    * WHICH backend route it calls, so deriveCapabilityRelationships
    * (flow-concepts.ts) could never route-match a UI flow to a capability
    * operation. This scans every Angular service/component file for real

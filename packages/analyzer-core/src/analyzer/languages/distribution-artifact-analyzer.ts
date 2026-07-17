@@ -252,7 +252,7 @@ function parseInstaller(file: string, content: string): ParsedDistributionArtifa
  *  own output via `OutFile "Name.exe"`; WiX/MSI-style installers name binary
  *  components via `<File Source="...">`/`Name="....exe"`. Extracting from
  *  those specific directives instead of the whole document yields the real
- *  shipped binaries (client.exe, zeracd.exe, ZeracInstaller.exe) with none of
+ *  shipped binaries (measured on a multi-binary installer: client.exe, a daemon .exe, an installer .exe) with none of
  *  the scripting-language noise. */
 function installerBinaryNamesFromText(text: string): string[] {
   const names = new Set<string>();

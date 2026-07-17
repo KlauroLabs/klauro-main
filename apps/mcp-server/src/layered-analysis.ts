@@ -160,7 +160,7 @@ export function buildLayersReady(
     // prior output verbatim (same analysis_timestamp) and only re-stamps the
     // ladder — if generated_at defaulted to `new Date()` it would advance while
     // the content stayed frozen, so the read served a fresh-looking timestamp on
-    // stale content (the soon-lens 2026-07-07 reanalyze: content 16:12,
+    // stale content (a benchmarked repo's 2026-07-07 reanalyze: content 16:12,
     // generated_at 23:21). Callers pass the CAS analysis_timestamp so the
     // freshness marker never lies about content age; wall-clock is only the
     // fallback when no content timestamp is available.

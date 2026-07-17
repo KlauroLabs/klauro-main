@@ -8,7 +8,7 @@ import { parse, TSESTree } from '@typescript-eslint/typescript-estree';
  * WHY: estree is the slowest parser in the stack, and the SAME source files
  * get re-parsed by multiple consumers in one analysis run — the language
  * phase's AST path plus each framework analyzer that walks ESTree (react,
- * angular, nestjs, express, vue). Measured on soon-lens (757 files) that
+ * angular, nestjs, express, vue). Measured on a benchmarked 757-file TS/JS repo that
  * re-parsing was a large share of the 13s framework phase. Caching by
  * (content hash + parse-option signature) makes the parse happen at most once
  * per distinct file content, no matter how many analyzers consume it.

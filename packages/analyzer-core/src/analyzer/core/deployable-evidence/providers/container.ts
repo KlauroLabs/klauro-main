@@ -230,8 +230,8 @@ function collect(ctx: EvidenceCollectionContext): DeployableEvidence[] {
       if (ports.length) evidence.push(`ports: ${ports.map(formatPort).join(', ')}`);
 
       // A compose `build: context` path is relative to the COMPOSE FILE's
-      // directory, not the project root — `context: .` in
-      // truckspyapp/compose.yml means "truckspyapp/", not the repo root.
+      // directory, not the project root — `context: .` in a nested app's
+      // compose.yml means that app's own subdirectory, not the repo root.
       // Resolving it against path.dirname(file) keeps two same-named build
       // contexts in different compose files (or a nested-app compose file)
       // from colliding on the same evidence root_path.

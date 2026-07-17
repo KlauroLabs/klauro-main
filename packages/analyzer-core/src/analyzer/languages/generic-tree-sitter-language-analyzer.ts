@@ -149,7 +149,7 @@ export class GenericTreeSitterLanguageAnalyzer extends BaseAnalyzer {
       // The emitted node TYPE honors the spec's classNodeLabel: markup/style
       // grammars (css rule_sets, html elements) are "class-like" for coverage
       // but are NOT semantic classes — labeling them 'class' let ONE bundled
-      // stylesheet outnumber a repo's real classes 40:1 (petclinic.css: 2543
+      // stylesheet outnumber a repo's real classes 40:1 (a benchmarked Spring Boot repo's stylesheet: 2543
       // selector "classes" vs 62 Java files) and skew every type==='class'
       // consumer. Nodes stay in the graph; only the label is honest.
       const classLabel = LANGUAGE_SPECS[file.grammar]?.classNodeLabel || 'class';

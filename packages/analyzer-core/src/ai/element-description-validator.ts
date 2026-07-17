@@ -290,7 +290,7 @@ export function validateElementDescription(
 }
 
 /**
- * TEMPLATE-SCAFFOLD lint for capability descriptions (live truckspy audit:
+ * TEMPLATE-SCAFFOLD lint for capability descriptions (live audit on a benchmarked PHP monolith:
  * 12/12 domain capabilities read "Lets users <verb> <noun>" — the exact noun
  * already in the capability name — and surface capabilities read "The X
  * Surface capability owns the Y lifecycle...". Both are scaffolds that add

@@ -4020,7 +4020,7 @@ export class PHPAnalyzer extends BaseAnalyzer {
    * Checked in priority order: `#[AsCommand('x')]` / `#[AsCommand(name: 'x')]`
    * attribute (Symfony's AsCommand takes the name as either the first
    * positional constructor arg or the named `name:` arg — both real,
-   * measured live in truckspyapp: `#[AsCommand('app:cron')]` outnumbers the
+   * measured live on a benchmarked PHP monolith: `#[AsCommand('app:cron')]` outnumbers the
    * named form there), `protected static $defaultName = 'x'`, `->setName('x')`
    * inside configure(). Returns undefined when NONE of the three markers are
    * present (the class is not actually wired as a runnable command — no

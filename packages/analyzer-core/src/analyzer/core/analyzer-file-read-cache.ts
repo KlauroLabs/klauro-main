@@ -20,8 +20,8 @@ const fsExtra: { readFile: (path: string, options?: unknown) => Promise<string |
  * every one independently `glob()`s the project directory AND re-reads every
  * matched source file from disk with its own `fs.readFile` call, even though
  * many analyzers scan the exact same file set the TypeScript/JavaScript
- * language analyzer already read moments earlier. On soon-lens (757 TS/JS
- * files) this cost 10-18s PER analyzer for ~20 analyzers running over the
+ * language analyzer already read moments earlier. On a benchmarked 757-file TS/JS
+ * repo this cost 10-18s PER analyzer for ~20 analyzers running over the
  * same files, dwarfing the actual parse/regex work most of them do.
  *
  * Fix: cache file content by (absolute path + encoding) for the lifetime of

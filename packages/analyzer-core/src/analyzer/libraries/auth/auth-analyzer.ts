@@ -57,8 +57,8 @@ const AUTH_RULES: AuthRule[] = [
   rule('passport', 'Passport strategy', 'auth_strategy', ['npm'], ['passport', '@nestjs/passport', '@nestjs/jwt', 'passport-jwt'], [/^passport$/, /^passport-/, /^@nestjs\/(?:passport|jwt)$/], [
     /\bpassport\.use\s*\(/,
     /\bpassport\.authenticate\s*\(/,
-    // NestJS passport idioms — corpus-depth sweep: NestJS APIs (zerac-api,
-    // legacy/api) use @UseGuards(AuthGuard(...)) + PassportStrategy subclasses,
+    // NestJS passport idioms — corpus-depth sweep: benchmarked NestJS APIs
+    // use @UseGuards(AuthGuard(...)) + PassportStrategy subclasses,
     // never bare passport.use/authenticate; auth ran with ZERO nodes on them.
     // Import-gated on passport/@nestjs/passport/@nestjs/jwt.
     /@UseGuards\s*\(\s*(?:new\s+)?[A-Za-z]*AuthGuard/,

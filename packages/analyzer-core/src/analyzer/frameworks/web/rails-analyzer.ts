@@ -542,7 +542,7 @@ export class RailsAnalyzer extends BaseAnalyzer {
       // Rails 7.1+'s `primary_abstract_class` (the generated ApplicationRecord
       // uses the latter). Missing the second made ApplicationRecord — a class
       // with no table and no fields of its own that every model merely
-      // inherits from — surface as a DOMAIN ENTITY in the ERD (rung-5 washup).
+      // inherits from — surface as a DOMAIN ENTITY in the ERD (rung-5, seen on a benchmarked Rails repo).
       abstract: /self\.abstract_class\s*=\s*true|^\s*primary_abstract_class\b/m.test(content)
     };
   }

@@ -5990,9 +5990,9 @@ const CRYPTO_RPC_PORTS = new Set([
 const CRYPTO_CHAIN_PATTERN = /\b(ethereum|eth|bitcoin|btc|solana|sol|polygon|matic|bsc|binance smart chain|avalanche|avax|arbitrum|optimism|cosmos|near|geth|erigon|besu|reth|nethermind)\b/i;
 const CRYPTO_NODE_PATTERN = /\b(?:[a-z]+[-_ ]?node|blockchains?|validator|rpc[-_ ]?node)\b/i;
 // STRONG, *cryptocurrency-specific* vocabulary used as the term-only trigger.
-// Deliberately excludes false friends: bare "crypto" (cryptography — Zerac's
-// zerac_crypto::IdentityKey signing), "swap" (memory/network swap), "stake"
-// (stakeholder), "mint"/"signer". Soon is detected primarily by its blockchain
+// Deliberately excludes false friends: bare "crypto" (cryptography — a
+// benchmarked repo's own_crypto::IdentityKey signing), "swap" (memory/network swap), "stake"
+// (stakeholder), "mint"/"signer". A benchmarked crypto repo is detected primarily by its blockchain
 // RPC ports and blockchain-node deployables, so this gate can stay strict.
 const CRYPTO_STRONG_PATTERNS: RegExp[] = [
   /\bblockchain\b/, /\bblockchains\b/, /\bweb3\b/, /\bon-?chain\b/, /\bdefi\b/,
@@ -6119,8 +6119,8 @@ export function detectWorkspaceCryptoProfile(
 
   // Strong gate: a blockchain RPC port or blockchain-node deployable is decisive
   // on its own; otherwise require at least two *strong* crypto terms. Weak
-  // finance/auth vocabulary alone never asserts crypto (prevents the Zerac /
-  // Klauro false positives).
+  // finance/auth vocabulary alone never asserts crypto (prevents false
+  // positives on benchmarked non-crypto repos).
   const isCrypto = portSignal || nodeSignal || strongSignal >= 2;
   if (!isCrypto) {
     return { isCrypto: false, score: 0, label: '', chains: [], rpc_ports: [], evidence: [] };
@@ -11053,7 +11053,7 @@ function applicationSurfaceCandidatesFromEvidenceRoots(
     // it truly ships (a Dockerfile, a package manifest with a bin entry
     // recognized elsewhere, etc.); until then, creating an app from a bare
     // runnable/package signal alone risks exactly the over-production this
-    // fix must avoid (see the zerac-api=4 regression guardrail).
+    // fix must avoid (see the benchmarked-NestJS-API=4 regression guardrail).
     if (entry.tier !== 1) continue;
 
     // AMBIGUOUS-ROOT GUARD: if this root_path aggregates more than one
@@ -11069,7 +11069,7 @@ function applicationSurfaceCandidatesFromEvidenceRoots(
     // PACKAGING-ARTIFACT GUARD: this root's own Tier-1 evidence already
     // names >= 2 OTHER real apps elsewhere in the repo as ships_paths (e.g.
     // a top-level installer/ directory holding an .nsi script whose `File`
-    // directives ship client.exe + zeracd.exe — two ALREADY-DISCOVERED
+    // directives ship client.exe + a daemon.exe — two ALREADY-DISCOVERED
     // deployables). That makes this root a PACKAGING/BUNDLING artifact for
     // those apps, not a distinct ship unit in its own right, mirroring the
     // root_path==='.' root-bundle principle in resolveDeployables (a shared
@@ -11220,8 +11220,8 @@ function deriveDeployableEvidenceFallback(repository: CrossCodebaseInput): Deplo
  *  apps carry path_hint like "bin/client-service"), or by the app's own
  *  resolved evidence name when passed — a Cargo bin crate's FOLDER name and
  *  its Cargo `[package] name` frequently differ (e.g. folder bin/client-service,
- *  package/binary "zeracd"); the ships_paths/entrypoint always names the real
- *  compiled BINARY, so an installer/Dockerfile that ships "zeracd" would never
+ *  package/binary "daemon"); the ships_paths/entrypoint always names the real
+ *  compiled BINARY, so an installer/Dockerfile that ships "daemon" would never
  *  match an app that's only known by its folder name without this. */
 function bundleNameMatches(shipped: string, app: SystemApplication, resolvedName?: string): boolean {
   const cleanShipped = cleanApplicationName(shipped);
@@ -11499,7 +11499,7 @@ function resolveDeployables(applications: SystemApplication[], repositories: Cro
       // own resolved evidence NAME (resolution.name) as well as app.name —
       // a Cargo bin crate's folder name and its actual `[package] name` /
       // compiled binary name frequently differ (e.g. folder client-service,
-      // package "zeracd"), and ships_paths always names the real binary.
+      // package "daemon"), and ships_paths always names the real binary.
       const bundleTarget = appsForRepo.find(other => {
         if (other.id === app.id) return false;
         const otherResolution = resolutions.get(other.id);
@@ -12215,7 +12215,7 @@ function safeRepositoryFallbackName(repository: CrossCodebaseInput): string {
  *  cause (kept for anyone tracing this further): a value in the chain
  *  (`cas.system?.name`, or a raw endpoint-derived alias) can legitimately be
  *  a workspace/analysis-id basename or a WSDL/HTTP endpoint host — this is
- *  the general backstop, not a truckspy-specific patch. */
+ *  the general backstop, not a single-benchmarked-repo-specific patch. */
 function sanitizeDeployableName(candidate: string, repository: CrossCodebaseInput): string {
   const cleaned = cleanApplicationName(candidate);
   if (isUnsafeDeployableName(cleaned)) return safeRepositoryFallbackName(repository);

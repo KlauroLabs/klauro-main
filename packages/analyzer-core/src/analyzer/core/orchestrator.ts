@@ -1226,8 +1226,8 @@ export class AnalyzerOrchestrator {
 
     // Perf: 120+ framework/library analyzers each independently glob() the
     // project and fs.readFile() every matched source file, even though many
-    // of them scan the exact same file set (measured: soon-lens, 757 TS/JS
-    // files, ~20 analyzers each spending 10-18s re-reading files the
+    // of them scan the exact same file set (measured on a benchmarked 757-file TS/JS
+    // repo, ~20 analyzers each spending 10-18s re-reading files the
     // TypeScript/JavaScript analyzer already read moments earlier). This
     // transparently caches file content by absolute path for the duration of
     // detectAnalyzers()+languageAnalyzers+frameworkAnalyzers (every phase
@@ -1734,12 +1734,12 @@ export class AnalyzerOrchestrator {
     // frequently just a checkout-folder basename ("proof-of-concept") threaded
     // from the client path or the project record, so it must never win over a
     // real content name. When the repo has NO root self-naming file (common for
-    // C#/non-npm stacks — e.g. Hoggan, whose reanalyze passes the project
-    // record's "Hoggan Scientific" as the displayName), the explicit displayName
+    // C#/non-npm stacks — e.g. a benchmarked C# client repo, whose reanalyze passes the project
+    // record's "Acme Scientific" as the displayName), the explicit displayName
     // is the next fallback, above the bare workspace basename. (The old gate
     // compared displayName to basename(WORKSPACE), which in the split-workspace
     // architecture never matches a client-derived name, so it wrongly kept weak
-    // names like "proof-of-concept" and dropped real ones like "Hoggan
+    // names like "proof-of-concept" and dropped real ones like "Acme
     // Scientific".)
     systemName = this.resolveSystemDisplayName(projectPath, projectTextSignal.productDocTitle) || systemName;
     const frameworkNames = this.frameworkNamesForPurpose(contributions, allNodes, projectPath);
@@ -4949,7 +4949,7 @@ export class AnalyzerOrchestrator {
             // like 'aws-lambda' spuriously matched an unrelated short dep such
             // as 'ws', so framework analyzers (mediator/cron/tanstack) ran a
             // full-repo scan to contribute ZERO nodes — ~19s of pure waste on
-            // soon-lens. Non-npm manifests (go.mod/Cargo/requirements) still
+            // a benchmarked repo. Non-npm manifests (go.mod/Cargo/requirements) still
             // match via the raw-content scan below, so no ecosystem regresses.
             if (loweredNeedles.some(needle => dependencyNames.some(dep => dep.includes(needle)))) {
               return true;
@@ -6472,12 +6472,12 @@ export class AnalyzerOrchestrator {
     // evidence (a data layer or a recognized controller surface) means this is
     // a server — even one that ALSO ships an installer/.deb/.rpm/systemd unit,
     // or happens to have an incidental "views/" template directory (a plain Go
-    // net/http app rendering HTML, e.g. miniflux, is not a desktop app just
+    // net/http app rendering HTML, e.g. a benchmarked Go RSS-reader server, is not a desktop app just
     // because its template folder is named "views"). Distribution packaging
     // and view-folder naming are not desktop-surface evidence once the entry
     // surface itself proves this is a server; only the ABSENCE of a real
     // server surface lets desktop-shaped file/framework evidence (WPF/xaml,
-    // Electron main/preload, viewmodels with no HTTP entries — e.g. Hoggan)
+    // Electron main/preload, viewmodels with no HTTP entries — e.g. a benchmarked C#/WPF desktop repo)
     // stand.
     const hasRealServerSurface = httpEntryPoints.length >= 5 && (hasDataSurface || counts.controllers.length > 0);
     const hasScriptEntrySurface = productFiles.some(file =>
@@ -6498,7 +6498,7 @@ export class AnalyzerOrchestrator {
     // MCP tool registration is the PRIMARY entry type when there is a real body of MCP tools AND
     // they out-weigh the HTTP entry surface. `mcpEntrySignal > httpEntryPoints.length * 2` keeps
     // an incidental HTTP health/preflight route from disqualifying a true MCP tool server while
-    // preventing a route-heavy product (soon-lens: 10 message vs 280 http) from ever qualifying.
+    // preventing a route-heavy product (a benchmarked repo: 10 message vs 280 http) from ever qualifying.
     const mcpIsPrimaryEntrySurface =
       mcpEntrySignal >= 5 &&
       mcpEntrySignal > httpEntryPoints.length * 2;
@@ -9025,8 +9025,8 @@ export class AnalyzerOrchestrator {
         .split(/[^a-z0-9]+/)) {
         // length > 2 (not > 3): 3-letter DOMAIN ACRONYMS (eld/gps/vin/pto) are
         // real product terminology — the stricter filter made an ELD candidate
-        // permanently uncorroboratable against 9 real eld:* journeys (live
-        // truckspy). Generic 3-letter tokens (api/app/get) are already caught
+        // permanently uncorroboratable against 9 real eld:* journeys (live on
+        // a benchmarked fleet-management repo). Generic 3-letter tokens (api/app/get) are already caught
         // by isGenericCapabilityToken.
         if (token.length > 2 && !this.isGenericCapabilityToken(token)) journeyTokens.add(this.stemTerminologyToken(token));
       }
@@ -9408,14 +9408,14 @@ export class AnalyzerOrchestrator {
     // capability per family. Bounded to a single extra call (never loops) and
     // only fires when there is real distinct-family evidence to enumerate —
     // an under-2-family repo has nothing to nudge toward and is left alone.
-    // TRIGGER (widened for rung-5 washup, measured live): the original nudge
+    // TRIGGER (widened for rung-5, measured live on a benchmarked repo): the original nudge
     // fired only at exactly 1, so a Rails app with 34 entities + 309 routes
     // that came back with THREE thin caps ("Create record"...) sailed through
     // untouched. A catalog of 2-3 now also nudges when the deterministic
     // family evidence outnumbers it 3x (severe undercount — 3 caps against 9+
     // distinct families is a collapse, not a judgment call). The ===1 case
     // keeps its original >=2-family threshold; still ONE bounded extra call.
-    // EFFECTIVE count, not raw count (rung-5 washup, measured live on the E1
+    // EFFECTIVE count, not raw count (rung-5, measured live on the E1
     // dataset): the model returned 9 CRUD-per-route items ("Create location
     // event", "Update location event", "Delete recurring event"...) spanning
     // only 3 distinct entity sets — reconcileCatalogedCapabilities' entity-set
@@ -9862,8 +9862,8 @@ export class AnalyzerOrchestrator {
    * above only sees `related_entities`; a capability the AI catalog anchored
    * purely on OPERATIONS (e.g. "Manage shell scripts", "Deploy and manage
    * binaries") carries no entity anchor at all and used to sail straight
-   * through (`anchors.length === 0 → return false`). Measured live on the
-   * zerac/poc CAS (a Rust ZTNA product, v1.0.104): the repo ships 47
+   * through (`anchors.length === 0 → return false`). Measured live on
+   * a benchmarked Rust ZTNA product's CAS (v1.0.104): the repo ships 47
    * distribution_shell_script + 11 release-script + 10 installer nodes, and
    * the AI catalog anchored two caps on them — pure build/ship plumbing, not a
    * product purpose. `entry_point_type` alone can't distinguish this (a
@@ -9993,7 +9993,7 @@ export class AnalyzerOrchestrator {
     // .NET Main entry point", "Run the Main entry point", "Execute application
     // entry point". Naming the runtime entry point IS the structural fact, not a
     // user purpose — a real capability describes WHAT the program does once it
-    // starts, never "run the entry point". Measured live on the Hoggan C# CAS
+    // starts, never "run the entry point". Measured live on a benchmarked C# CAS
     // (v1.0.85) where "Run .NET Main entry point" shipped as 1 of 5 caps.
     if (/^(run|execute|invoke|start)\b/i.test(trimmed) && /\b(entry\s*point|main\s+method)\b/i.test(trimmed)) return true;
     return false;
@@ -12121,7 +12121,7 @@ export class AnalyzerOrchestrator {
     // "security-scanning-tool") immediately preceding a system-type head noun:
     // "security-scanning tool", "crypto market-intelligence api", "portfolio
     // management system". EVERY such phrase whose modifiers are not just the
-    // system name / filler is enforced — a "soon-lens system" phrase (only the
+    // system name / filler is enforced — a "<repo-name> system" phrase (only the
     // name as modifier) is skipped, but a later "security-scanning tool" is not.
     const typeHead = '(?:tool|system|service|platform|application|app|api|engine|framework|library|server|gateway|pipeline|dashboard|suite|toolkit|sdk)';
     const phrasePattern = new RegExp(`\\b((?:[a-z][a-z0-9]*(?:[- ][a-z][a-z0-9]*){0,3})[- ])${typeHead}s?\\b`, 'gi');
@@ -12566,7 +12566,7 @@ export class AnalyzerOrchestrator {
    * evidence corpus systemTypeIsGrounded assembles (domain/concepts, structural
    * tokens, library/dependency names, entity names, external services, manifest
    * text) via token-overlap with light stemming. No domain is banned and none
-   * is privileged: "fleet management platform" passes on truckspy because
+   * is privileged: "fleet management platform" passes on a benchmarked fleet-management repo because
    * fleet/vehicle/driver/dispatch evidence saturates the corpus; the identical
    * phrase is rejected when that evidence is absent — and so is any domain the
    * old table never covered ("restaurant ordering system").
@@ -12718,7 +12718,7 @@ export class AnalyzerOrchestrator {
   }
 
   /**
-   * ARCHITECTURE-SHAPE CLAIM GATE (live truckspy audit: the description shipped
+   * ARCHITECTURE-SHAPE CLAIM GATE (live audit on a benchmarked repo: the description shipped
    * "built with a MICROSERVICES architecture" for a repo whose evidence is ONE
    * Symfony compose service + an Angular SPA). An architecture-shape word in the
    * prose is a CLAIM about deployment topology and must be corroborated by the
@@ -13131,7 +13131,7 @@ export class AnalyzerOrchestrator {
     // segment of each journey (what it ultimately writes/produces) reveals what
     // the app is FOR, while the generic mid-chain CRUD (Portfolio/Strategy/
     // UsageStats) it shares with every app is down-ranked by proximity decay.
-    // For soon-lens the terminal entities are DexTrade/WhaleTransaction/
+    // For a benchmarked repo the terminal entities are DexTrade/WhaleTransaction/
     // OhlcvCandle/PreflightDecision (crypto). We feed the ranked terminal
     // entities, near-terminal stages, terminal capabilities, AND the weighted
     // domain_seed_text — all raw facts; the AI infers the domain, no label here.
@@ -15174,7 +15174,7 @@ export class AnalyzerOrchestrator {
     // PRODUCES for consumers (api-response). Inbound request-dto contracts and
     // internal value-object plumbing shapes are real code but not domain entities;
     // in DTO-heavy frameworks (NestJS + class-validator, FastAPI, gRPC) they vastly
-    // outnumber the domain objects and inflate the count (soon-lens: 202). Every
+    // outnumber the domain objects and inflate the count (a benchmarked repo: 202). Every
     // entity is kind-tagged above (tagDataEntityKind on both the ORM and DTO paths),
     // so this filter — not the earlier kind ranking, which only ORDERS — is what
     // makes the tagging actually reduce the count. Undefined kind (no discriminating
@@ -15628,8 +15628,8 @@ export class AnalyzerOrchestrator {
    *       (*.Entities / *.Models / *.Domain). The old gate matched a
    *       case-SENSITIVE '/entities/' path literal, so C#'s conventional
    *       capitalized `Entities` folder (and the namespace, which it never even
-   *       read) were both missed — the real defect that left Hoggan's 18 POCO
-   *       entities (namespace `hoggan.DAL.Entities`) out of the ERD entirely.
+   *       read) were both missed — the real defect that left a benchmarked C# repo's 18 POCO
+   *       entities (namespace `<Client>.DAL.Entities`) out of the ERD entirely.
    *   (2) DATA-SHAPED: properties dominate methods. A POCO carries data via
    *       public auto-properties with few/no methods; this guards against a
    *       Service / ViewModel / Window that happens to sit near an entity
@@ -15657,7 +15657,7 @@ export class AnalyzerOrchestrator {
   /**
    * Go (and other plain-struct languages) has no class/decorator-based ORM
    * convention — a domain record is just `type Feed struct { ID int64 ... }`
-   * with the SQL living elsewhere (e.g. miniflux: internal/model/*.go structs,
+   * with the SQL living elsewhere (e.g. a benchmarked Go RSS-reader server: internal/model/*.go structs,
    * internal/storage/*.go SQL — 339 struct nodes, database_entities was always
    * [] because every entity gate above only recognizes 'entity'/'model' types,
    * classes under /entities/, or POCO CLASSES). Sibling to isPocoEntityClassNode:
@@ -17372,7 +17372,7 @@ export class AnalyzerOrchestrator {
     // ONE-HOP callee adjacency for entity association. Route-area entity
     // matching requires the entity's lifecycle to name the handler node ITSELF,
     // but controller handlers routinely delegate persistence one call away
-    // (live truckspy: ElectronicLoggingDeviceController -> DataTransferManager
+    // (live on a benchmarked fleet-management repo: ElectronicLoggingDeviceController -> DataTransferManager
     // -> persist(FMCSADataTransfer)), leaving the whole route family 0-entity
     // and unrankable against grounded candidates. Expanding the match set by
     // the handler's DIRECT callees keeps the association evidence-driven (a
@@ -17390,7 +17390,7 @@ export class AnalyzerOrchestrator {
     // = the entity's lifecycle names a handler node itself (the original,
     // always-kept association). `hop` = matched only through a handler's direct
     // callee. Hop matches need a document-frequency guard: a tenant-shaped
-    // entity every service touches (live truckspy: Company) hop-matches most
+    // entity every service touches (live on a benchmarked fleet-management repo: Company) hop-matches most
     // groups at once, which grounds unrelated plumbing groups and crowds the
     // catalog prompt window. Same DF principle as nonDiscriminative name
     // tokens — repo-adaptive, derived from THIS repo's own match distribution,
@@ -17986,7 +17986,7 @@ export class AnalyzerOrchestrator {
         .trim();
 
     // Pass 1 — entity-set identity AND same purpose subject. Exact-set alone
-    // over-merged (rung-5 washup, measured live via E1: Qwen returned 6
+    // over-merged (rung-5, measured live via E1: Qwen returned 6
     // purpose-phrased caps, three PAIRS shared entity sets — "manage tasks and
     // task lists" vs "manage duplicate routine tasks" both {Task,TaskList} —
     // and pass 1 collapsed 6 -> 3). Two capabilities over the SAME records are
@@ -18654,7 +18654,7 @@ export class AnalyzerOrchestrator {
     // is analyzer-stamped evidence of a named registration surface.
     //
     // 'enum_variant' belongs here, not as a registration kind. Measured live on
-    // the zerac/poc CAS (Rust ZTNA product, v1.0.104): the Rust analyzer emits
+    // a benchmarked Rust ZTNA product's CAS (v1.0.104): the Rust analyzer emits
     // each clap `#[derive(Subcommand)]` enum variant as its own 'enum_variant'
     // node PLUS a real 'cli' entry point rooted on that node
     // (rust-analyzer.ts's subcommand-variant extraction). Before this fix, the
@@ -21530,7 +21530,7 @@ export class AnalyzerOrchestrator {
    * metadata.attributes.fields), but nothing ever connected those to the
    * controller entry points that consume them — so on NestJS repos every entry
    * point had empty `input.validation` and the flow-concepts deriver never
-   * grounded a kind='validation' constraint (zerac-api: 581 entry points / 0
+   * grounded a kind='validation' constraint (a benchmarked NestJS API: 581 entry points / 0
    * with validation, 0/400 flows with a validation constraint).
    *
    * Resolution is evidence-gated, not name-heuristic: for each http/ws/message
@@ -21937,7 +21937,7 @@ export class AnalyzerOrchestrator {
    * member, while the language analyzer (typescript-javascript-analyzer.ts:
    * `method_${classId}_${method.name}_${methodIndex}`) mints an entirely
    * independent id scheme for the SAME method — two node ids for one source
-   * construct. Confirmed concretely on truckspyui: `FuelService
+   * construct. Confirmed concretely on a benchmarked Angular UI: `FuelService
    * .getFuelStationsArray`'s per-call API exit point lands on the angular
    * twin while its DI `calls` edges land on the TS twin, so flow tracing
    * (which follows `calls` edges from the TS twin) never reaches the exit
@@ -22298,11 +22298,11 @@ export class AnalyzerOrchestrator {
    * covers http/route by method+path+file). Sibling of the node-twin family
    * fixed by `resolveNodeTwins`: a framework-specific analyzer and a generic
    * language analyzer can each independently register the SAME handler as
-   * its own entry point. Concretely on truckspyapp: php-analyzer.ts (generic,
+   * its own entry point. Concretely on a benchmarked PHP monolith: php-analyzer.ts (generic,
    * evidence-based) and symfony-analyzer.ts (framework-specific) both detect
    * the same Symfony console-command class and each mint their OWN `cli`
    * entry point for it — 130 groups / 263 entries, none of it a real second
-   * command.
+   * command. (Concretely on a benchmarked PHP monolith.)
    *
    * Must run AFTER `resolveNodeTwins` (which merges the underlying
    * `class`/`command` container nodes so both entries' `source_node` already

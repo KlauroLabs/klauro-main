@@ -1117,7 +1117,7 @@ interface HelmValuesCronJob {
 
 /**
  * Helm's `{{- range $key, $val := .Values.<key> }} ... kind: CronJob ...`
- * pattern (truckspyapp/infra/backend/templates/cron-jobs.yaml is the live
+ * pattern (a benchmarked repo's infra/backend/templates/cron-jobs.yaml is the live
  * example) renders schedule/command from a values.yaml LIST, not literal
  * template text — extractTemplateResources sees the un-rendered `{{ }}`
  * expressions and can't recover them. This finds the `.Values.<key>` name

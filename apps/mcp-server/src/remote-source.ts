@@ -194,7 +194,7 @@ const EXCLUDED_FILES = new Set([
 // and access_control composition; container/CI YAML for topology). Without this
 // allowlist those files are silently dropped from every remote (analyzeForBench /
 // production) analysis even though a direct, on-disk analyzer run picks them up fine —
-// found via a route composition audit: truckspy's config/routes.yaml prefix mapping
+// found via a route composition audit on a benchmarked Symfony repo: its config/routes.yaml prefix mapping
 // never reached the server, so Symfony route paths reported only the local fragment
 // (e.g. "/{id}/api-token" instead of "/api/customer/{id}/api-token").
 const EXTRA_INCLUDED_EXTENSIONS = new Set([

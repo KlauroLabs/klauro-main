@@ -1062,7 +1062,7 @@ export class TreeSitterTSExtractor {
   // before the function/class/property they annotate — tree-sitter does NOT nest them
   // inside that node's `body`/`class_body`, so identifiers referenced in decorator
   // arguments (e.g. a spread-imported error-list constant, or a DI token array element)
-  // were entirely invisible to the reference/call graph. Measured on zerac-api: a
+  // were entirely invisible to the reference/call graph. Measured on a benchmarked NestJS API: a
   // decorator-array-spread constant resolved 1/18 real consumers before this fix
   // (every site was a decorator argument). Only decorator ARGUMENTS are scanned here —
   // the decorator's own callee name (e.g. `AllowAnonymous` in `@AllowAnonymous()`) is
@@ -1098,7 +1098,7 @@ export class TreeSitterTSExtractor {
 
   // The decorator invocation itself (`@AllowAnonymous()`, `@InternalGet(...)`) is a
   // genuine cross-file usage of the imported decorator factory/function — e.g.
-  // `AllowAnonymous` re-exported through a barrel (`@zerac-api/auth`) and applied to 23
+  // `AllowAnonymous` re-exported through a barrel (`@<scope>/auth`) and applied to 23
   // route handlers project-wide resolved 0/23 before this fix, because extractDecorators
   // only ever kept the bare name string for display, never fed it through the
   // identifier-reference path. Recorded the same conservative way as a bare read
@@ -1358,7 +1358,7 @@ export class TreeSitterTSExtractor {
     // `abstract class Foo extends Base` parses as `abstract_class_declaration`, a
     // DIFFERENT node type from plain `class_declaration` in tree-sitter-typescript —
     // discovered while diagnosing the callers-completeness gap (an abstract base class
-    // like zerac-api's AgentAccessServiceBase/CheckAccess/AccessMutation chain was
+    // like a benchmarked NestJS API's AgentAccessServiceBase/CheckAccess/AccessMutation chain was
     // invisible to extractClasses entirely, not just to reference resolution). Include
     // it here so abstract classes get nodes, methods, heritage, and (via
     // extractClassLevelReferences) reference edges at all.
@@ -1479,7 +1479,7 @@ export class TreeSitterTSExtractor {
   // heritage clause's type identifiers (`extends Base`, `implements I1, I2`). Heritage
   // uses `type_identifier` nodes, not `identifier` — a distinct node type the body scan
   // never looks for, and one that sits outside any method body regardless. Measured on
-  // zerac-api: `class CheckAccess extends AgentAccessServiceBase` produced ZERO
+  // a benchmarked NestJS API: `class CheckAccess extends AgentAccessServiceBase` produced ZERO
   // resolvable references before this fix (0 decl candidates even), because the base
   // class was never linked as a read of the imported binding.
   private extractClassLevelReferences(cls: any, heritage: any, className: string): TSExtractedCall[] {

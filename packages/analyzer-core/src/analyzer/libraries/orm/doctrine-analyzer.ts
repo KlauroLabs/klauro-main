@@ -79,7 +79,7 @@ interface DoctrineTraitInfo {
  *     literal adjacency check that fails on the PHP 8 GROUPED attribute form
  *     `#[\n    ORM\Entity(repositoryClass: BookingRepository::class),\n
  *     ORM\Table(...)\n]` (the `#[` and `ORM\Entity` are on different lines).
- *     This is exactly why truckspy's `src/Entity/Booking.php` was invisible —
+ *     This is exactly why a benchmarked Symfony repo's `src/Entity/Booking.php` was invisible —
  *     it uses the grouped form — while `BookingConnectionBind.php` (inline
  *     `#[ORM\Entity, ORM\Table(...)]`) was extracted.
  *  2. `extractEntityFields()`/`extractEntityRelations()` required
@@ -87,7 +87,7 @@ interface DoctrineTraitInfo {
  *     IMMEDIATELY before the visibility modifier with nothing between. Real
  *     code frequently stacks a SECOND unrelated attribute group in between
  *     (`#[ORM\Column(...)]#[JMS\Type('string')] private ...`, seen
- *     repeatedly in truckspy's Company entity) or groups multiple ORM
+ *     repeatedly in a benchmarked Symfony repo's Company entity) or groups multiple ORM
  *     attributes together (`#[ORM\ManyToOne(...), ORM\JoinColumn(...)]`),
  *     both of which the adjacency regex misses — hence "thin fields".
  *
@@ -224,8 +224,8 @@ export class DoctrineAnalyzer extends BaseAnalyzer {
     //
     // NOT gated on `EntityManagerInterface`/`getEntityManager()` being
     // visible in the SAME file: the dominant real-world Symfony/Doctrine
-    // idiom (Symfony's own recommended practice, and what truckspy's
-    // BaseRepository does) wraps the EntityManager in domain-repository
+    // idiom (Symfony's own recommended practice, and what a benchmarked
+    // Symfony repo's BaseRepository does) wraps the EntityManager in domain-repository
     // `persist()`/`remove()` methods, so the actual call sites live in
     // SERVICE classes that call `$this->bookingRepository->persist($booking)`
     // and never mention EntityManagerInterface at all. Requiring that import

@@ -94,10 +94,10 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
    * denylist excludes any `samples/**`, `examples/**`, `fixtures/**`, or
    * `testdata/**` directory to skip vendored example code in JS/Python repos,
    * but Java's package-to-directory convention turns those into common REAL
-   * package segments (e.g. `org.springframework.samples.petclinic`). Left
+   * package segments (e.g. `org.springframework.samples.<app>`). Left
    * unfiltered, this analyzer's own java-file glob silently excludes every
    * controller/entity/service in a codebase using that package name — which is
-   * exactly the reference Spring PetClinic app this analyzer targets.
+   * exactly the shape of a benchmarked Spring Boot reference app this analyzer targets.
    */
   private getJavaIgnorePatterns(context: AnalysisContext | { projectPath: string }): string[] {
     const unsafeForJavaPackages = /^(\*\*\/)?(samples|examples|fixtures|testdata)\/\*\*$/;
@@ -641,7 +641,7 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
   /**
    * A class needs no access modifier to be a valid, fully-functional Spring
    * bean/controller/entity — package-private (default-visibility) classes are
-   * a routine, idiomatic choice (the reference Spring PetClinic app itself
+   * a routine, idiomatic choice (a benchmarked Spring Boot reference app itself
    * declares its `@RestController`s as bare `class OwnerResource { ... }`,
    * no `public`). The previous `public\s+class` requirement silently dropped
    * every non-public component: 0 controllers/services/entities detected on

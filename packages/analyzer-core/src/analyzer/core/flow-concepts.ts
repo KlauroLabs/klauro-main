@@ -1685,7 +1685,7 @@ function entitiesForNodes(nodeIds: Set<string>, cas: CASOutput): string[] {
 /** Edge types a delegation hop can cross for CLI one-hop entity association —
  *  identical vocabulary to the capability-building one-hop pass
  *  (orchestrator.ts buildSystemCapabilities' CALLEE_EDGE_TYPES): a controller/
- *  command handler routinely persists one call away (live truckspy:
+ *  command handler routinely persists one call away (live on a benchmarked fleet-management repo:
  *  ElectronicLoggingDeviceController -> DataTransferManager -> persist(...)),
  *  and 'delegates_to'/'queries' edges are NOT in traceForwardChain's
  *  traversable set (TRAVERSABLE_EDGE_TYPES only follows calls, invokes, any
@@ -2726,8 +2726,8 @@ function buildTerminalFlows(
   // widening to delegates_to/queries system-wide risks smearing ubiquity
   // entities across unrelated HTTP flows (no per-flow document-frequency
   // guard here, unlike the capability-building pass' per-resource-group DF
-  // limit) — CLI console commands are the evidenced, narrow case (live
-  // truckspy ELD: app:eld:* commands delegate FMCSA/DriverHistory persistence
+  // limit) — CLI console commands are the evidenced, narrow case (live on
+  // a benchmarked fleet-management repo's ELD module: app:eld:* commands delegate FMCSA/DriverHistory persistence
   // one hop through a manager/service).
   const cliOneHopEntities = makeCliOneHopEntities(cas);
 
@@ -2735,7 +2735,7 @@ function buildTerminalFlows(
   // computeEntryPointFlows' identical class-rank sort below): this is the
   // PRIMARY flow path whenever the CAS carries entry-to-exit call chains, and
   // it used to sort purely by `chain.id` — a byte-stable but
-  // significance-blind order. On a test-heavy CAS (live miniflux measurement:
+  // significance-blind order. On a test-heavy CAS (live measurement on a benchmarked Go RSS-reader server:
   // entry_points_by_type http:213 vs test:1234) a lexicographic chain-id sort
   // interleaves test-rooted chains into the front of the array with no regard
   // for entry type, so the maxFlows window (and therefore total_available/
@@ -3187,7 +3187,7 @@ function computeEntryPointFlows(
   // CLI one-hop entity supplement — see buildTerminalFlows' identical setup
   // (makeCliOneHopEntities) for why: traceForwardChain doesn't follow
   // delegates_to/queries edges, so a CLI command's delegated persistence
-  // (live truckspy ELD) is invisible to entitiesForNodes on the flow's own
+  // (live on a benchmarked fleet-management repo's ELD module) is invisible to entitiesForNodes on the flow's own
   // traced path without this.
   const cliOneHopEntities = makeCliOneHopEntities(cas);
 

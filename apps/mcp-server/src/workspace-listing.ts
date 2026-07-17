@@ -80,9 +80,9 @@ function clamp(n: number | undefined, def: number, max: number): number {
 
 /**
  * Reduce a run-stamped workspace name to its logical workspace.
- * e.g. 'gauntlet-soon-mqnrvdut-qgek0' -> 'soon',
- *      'spot-zerac-ai-quality-1781948679890' -> 'zerac',
- *      'soon-workspace' -> 'soon'.
+ * e.g. 'gauntlet-acme-mqnrvdut-qgek0' -> 'acme',
+ *      'spot-acme-ai-quality-1781948679890' -> 'acme',
+ *      'acme-workspace' -> 'acme'.
  * Runs of the same workspace must collapse to one entry; this is the key.
  */
 export function normalizeWorkspaceName(name: string): string {
@@ -104,10 +104,10 @@ export function normalizeWorkspaceName(name: string): string {
   }
   // A bare numeric timestamp stamp (-<digits>) plus trailing qualifiers.
   n = n.replace(/-\d{10,}(?:-[a-z0-9]+)*$/, '');
-  // drop an -ai-<variant> qualifier (spot-zerac-ai-quality-...)
+  // drop an -ai-<variant> qualifier (spot-acme-ai-quality-...)
   n = n.replace(/-ai-[a-z0-9]+$/, '');
   n = n.replace(/-ai$/, '');
-  // collapse a doubled product token (zerac-zerac -> zerac) only at the head
+  // collapse a doubled product token (acme-acme -> acme) only at the head
   const parts = n.split('-');
   if (parts.length >= 2 && parts[0] === parts[1]) n = parts.slice(1).join('-');
   return n || (name || '').toLowerCase();

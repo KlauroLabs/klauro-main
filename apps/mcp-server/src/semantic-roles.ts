@@ -340,7 +340,7 @@ function isConnectionIntegrationTargetName(name: string): boolean {
  * and/or credential-field shape) is a sync/bind record joining the two — not
  * a core domain entity in its own right, regardless of what its own name
  * looks like (a name ending in "ConnectionBind" is corroboration only, never
- * required and never sufficient alone). Real example: truckspy's
+ * required and never sufficient alone). Real example: a benchmarked fleet-management repo's
  * `DeviceConnectionBind` ManyToOne-relates to both `Device` (a real domain
  * entity) and `Connection` (a `type`/`auth`/`enabled`-shaped integration
  * hub) — the SAME structural shape repeats across 14 `*ConnectionBind`

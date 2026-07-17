@@ -362,7 +362,7 @@ export function classifyCommunicationSeams(
     // handlers as entry_type 'ui_event_handler') plus a known-UI-event-name
     // fallback, so a genuine message consumer is never dropped. Without this,
     // surfacing a desktop app's full UI handler set inflates messaging seams by
-    // one-per-button (Hoggan: 263 phantom async seams from WPF Click handlers).
+    // one-per-button (measured on a benchmarked C#/WPF desktop repo: 263 phantom async seams from WPF Click handlers).
     const epMeta = (ep.metadata || {}) as Record<string, unknown>;
     const triggerEvent = String(ep.trigger?.event || ep.name || '');
     const isUiEventHandler =

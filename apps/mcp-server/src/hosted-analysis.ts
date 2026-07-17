@@ -13,7 +13,7 @@ import { loadAnalysis, saveAnalysis } from './storage';
  * store held for the path — even when the repo carried a `.klaurorc` binding
  * it to a hosted prj_ project whose server-side analysis was newer — and,
  * worse, silently ran a LOCAL analysis when the store was empty. Live audit
- * (2026-07-14, truckspy): a July-4 local cache shadowed a 20-minute-old
+ * (2026-07-14, on a benchmarked repo): a July-4 local cache shadowed a 20-minute-old
  * hosted analysis, and with the cache cleared the server auto-ran a 41-node
  * local analysis (nested repos skipped) and presented it as the codebase.
  *
