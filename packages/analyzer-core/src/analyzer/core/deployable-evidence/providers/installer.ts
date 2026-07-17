@@ -11,6 +11,64 @@ import { arrayOf, IGNORE_GLOBS, safeGlobSync } from '../util';
  *  one. */
 const SHIP_ARTIFACT_EXTENSION = /\.(exe|msi|dmg|pkg|deb|rpm|appimage)$/i;
 
+/** Bare platform/architecture words that name a TARGET, never a PRODUCT.
+ *  Real-repo defect (2026-07 hosted reanalysis of a Rust multi-binary
+ *  workspace): rows named "windows" and "windows prebuilt" — a script's
+ *  APP_NAME/PLATFORM-style variable happened to hold a platform word, which
+ *  installerArtifactIdentity accepted as a product name because it was
+ *  merely non-empty. A platform word alone (or qualified only by another
+ *  platform/build-shape word like "prebuilt") never identifies WHAT ships,
+ *  only WHERE/HOW — it must never stand alone as an installer identity. */
+const REAL_PLATFORM_WORDS = new Set([
+  'windows', 'win', 'win32', 'win64', 'macos', 'mac', 'osx', 'darwin',
+  'linux', 'unix', 'x86', 'x64', 'x86_64', 'arm', 'arm64', 'aarch64', 'universal',
+]);
+
+/** Build-SHAPE words: describe how/where something was built (prebuilt vs.
+ *  from-source, a local vs. remote fetch, a release vs. debug profile), never
+ *  what platform it targets nor what it's called. Kept separate from
+ *  REAL_PLATFORM_WORDS so cleanScriptDisplayName's "exactly one real
+ *  platform" detection isn't confused by a co-occurring build-shape word
+ *  (e.g. "build-windows-installer-prebuilt" must resolve to ONE platform,
+ *  "windows" — "prebuilt" is noise to strip, not a second platform). */
+const BUILD_SHAPE_WORDS = new Set(['prebuilt', 'local', 'remote', 'release', 'debug', 'build']);
+
+const PLATFORM_OR_BUILD_SHAPE_WORDS = new Set([...REAL_PLATFORM_WORDS, ...BUILD_SHAPE_WORDS]);
+
+/** Verb-phrase prefixes: a candidate product name that reads as an ACTION
+ *  ("resolve version", "build windows installer", "get app name") is a
+ *  helper-function/variable-purpose description that leaked through into
+ *  product_name, not a product's actual name. Real-repo defect: a row named
+ *  "resolve version" — the productName fallback resolved to a helper
+ *  script's own filename (`resolve-version.sh`) after no APP_NAME/
+ *  ProductName directive was found in its content, because that script isn't
+ *  an installer/product at all, merely a version-resolution utility whose
+ *  content incidentally matched an installer-role keyword. */
+const VERB_PHRASE_PREFIX = /^(resolve|build|get|set|run|make|install|uninstall|update|check|verify|clean|copy|package|bundle|zip|fetch|prepare|generate|create|deploy|configure|setup|validate|test|start|stop|restart|load|save|write|read|parse|compute|calculate|print|log|assert|ensure|wait|retry|list|show|find|search|sign|notarize|publish|download|upload)\b/i;
+
+/** True when `value` is shaped like a real product/artifact name, as opposed
+ *  to a parse-artifact fragment (assignment/comparison leftovers like "="),
+ *  a bare platform/build-shape word ("windows", "local"), or a verb phrase
+ *  describing an action rather than naming a product ("resolve version").
+ *  This is the identity-layer half of the "reject non-artifact-shaped
+ *  identities" fix (see installer-identity iteration 2): the extraction
+ *  layer (distribution-artifact-analyzer.ts) was tightened to stop
+ *  CAPTURING junk like "=" in the first place, but this filter is kept as
+ *  defense-in-depth for whatever still gets through — a manifest/analyzer
+ *  producing a legitimately weird productName should fail closed here rather
+ *  than mint a phantom installer unit. */
+function isRealProductNameToken(value: string): boolean {
+  const trimmed = value.trim();
+  if (trimmed.length < 3) return false;
+  if (!/^[A-Za-z]/.test(trimmed)) return false; // rejects "=", "==", digits-only, punctuation
+  if (VERB_PHRASE_PREFIX.test(trimmed)) return false;
+  const tokens = trimmed.split(/\s+/).filter(Boolean);
+  // Every token is a platform/build-shape word ("windows", "windows prebuilt")
+  // -> names a target/shape, never a product.
+  if (tokens.every(token => PLATFORM_OR_BUILD_SHAPE_WORDS.has(token.toLowerCase()))) return false;
+  return true;
+}
+
 /** Normalizes a display NAME for comparison (case/whitespace only). Deliberately
  *  does NOT strip a ship-artifact extension — the extension is part of what
  *  distinguishes one platform's artifact from another's (see
@@ -38,10 +96,17 @@ function installerArtifactIdentity(metadata: Record<string, any>): { key: string
   const binaryNames: string[] = arrayOf(metadata.binary_names);
   const shipArtifact = binaryNames.find(name => SHIP_ARTIFACT_EXTENSION.test(name));
   if (shipArtifact) {
-    return { key: `artifact:${normalizeIdentityToken(shipArtifact)}`, name: String(metadata.product_name || shipArtifact) };
+    // A ship-artifact FILENAME is unambiguous positive evidence on its own —
+    // it never needs the product-name-shape gate below. The declared
+    // product_name is still preferred for `name` when present, but only when
+    // it is itself real-product-shaped; a junk product_name must not win out
+    // over the perfectly good artifact filename.
+    const declaredName = String(metadata.product_name || '');
+    const name = isRealProductNameToken(declaredName) ? declaredName : shipArtifact;
+    return { key: `artifact:${normalizeIdentityToken(shipArtifact)}`, name };
   }
   const productName = String(metadata.product_name || '').trim();
-  if (!productName) return undefined;
+  if (!productName || !isRealProductNameToken(productName)) return undefined;
   const platforms: string[] = arrayOf(metadata.platforms).map(String).sort();
   return { key: `product:${normalizeIdentityToken(productName)}::${platforms.join(',')}`, name: productName };
 }
@@ -181,6 +246,61 @@ function resolveIndirectCargoPackageMembers(content: string): string[] {
   return members;
 }
 
+/** Turn "windows"/"mac"/"macos"/"linux" into "Windows"/"Mac"/"macOS"/"Linux"
+ *  for display. Kept intentionally tiny (not a general title-caser) since it
+ *  only ever renders a platform token already drawn from REAL_PLATFORM_WORDS. */
+function capitalizePlatformWord(word: string): string {
+  if (word === 'macos' || word === 'osx') return 'macOS';
+  if (word === 'mac') return 'Mac';
+  return word.charAt(0).toUpperCase() + word.slice(1);
+}
+
+/** Derive a clean, product-shaped display name for a packaging SCRIPT file,
+ *  instead of echoing its raw basename verbatim. Real-repo defect (2026-07
+ *  hosted reanalysis): scripts named `build-windows-installer-prebuilt.sh`
+ *  and `build-mac-installer.sh` each minted their OWN standalone installer
+ *  row named after their literal filename — the scripts' names, not the
+ *  platform artifact they build. Strips build/packaging verb and
+ *  build-shape tokens (build/installer/setup/prebuilt/package/bundle) and,
+ *  when the remaining/removed tokens name exactly one platform, renders
+ *  "<Platform> Installer" so multiple scripts that build the SAME platform's
+ *  artifact converge on the SAME name (and therefore the same merged unit
+ *  via mergeCrossCollectorInstallerUnits's name-equality merge) instead of
+ *  minting one phantom unit per script. */
+function cleanScriptDisplayName(relativeFile: string): string {
+  const base = path.basename(relativeFile, path.extname(relativeFile));
+  const STRIP_TOKENS = /^(installer|install|uninstall|uninstaller|setup|manifest|package|bundle)$/i;
+  const tokens = base.split(/[-_\s]+/).filter(Boolean);
+  const platformTokens: string[] = [];
+  const kept: string[] = [];
+  for (const token of tokens) {
+    const lower = token.toLowerCase();
+    // Real platform words (windows/mac/linux/...) are the ONLY thing that
+    // can populate platformTokens — build-shape words (prebuilt/build/
+    // release/debug/local/remote) are noise to strip, never a second
+    // "platform" that would otherwise defeat the exactly-one-platform check
+    // below (see BUILD_SHAPE_WORDS doc comment).
+    if (REAL_PLATFORM_WORDS.has(lower)) {
+      platformTokens.push(lower);
+      continue;
+    }
+    if (STRIP_TOKENS.test(token) || BUILD_SHAPE_WORDS.has(lower)) continue;
+    kept.push(token);
+  }
+  const uniquePlatforms = [...new Set(platformTokens)];
+  if (uniquePlatforms.length === 1 && kept.length === 0) {
+    return `${capitalizePlatformWord(uniquePlatforms[0])} Installer`;
+  }
+  const joined = kept.join(' ').trim();
+  if (joined && isRealProductNameToken(joined)) {
+    return uniquePlatforms.length === 1 ? `${joined} (${capitalizePlatformWord(uniquePlatforms[0])})` : joined;
+  }
+  // Nothing product-shaped survived stripping — fall back to the raw
+  // basename rather than fabricating a name; downstream cross-collector
+  // merge / bundling still functions off ships_paths evidence.
+  return base;
+}
+
 /** Installers / packaging shell scripts (e.g. build-installer.sh) that bundle
  *  multiple binaries into one distribution artifact. Reads `cargo build -p X`
  *  args plus `cp target/release/<bin> ...` copy targets to recover real
@@ -222,7 +342,7 @@ function collectFromInstallerScripts(ctx: EvidenceCollectionContext): Deployable
 
     out.push({
       root_path: '.',
-      name: path.basename(relativeFile, path.extname(relativeFile)),
+      name: cleanScriptDisplayName(relativeFile),
       tier: 1,
       kind: 'installer',
       evidence: [

@@ -99,9 +99,20 @@ export function isIdentifierShapedRepoBasename(basename: string): boolean {
  * identity (deployable_evidence[].name, service_aliases, etc). Guard it:
  * reject a hash-shaped basename and fall back to a stable, honest
  * placeholder instead of fabricating or emitting the hash.
+ *
+ * Uses `isIdentifierShapedRepoBasename` (not the narrower
+ * `isHashOrIdShapedToken` alone): a real-workspace defect (2026-07 hosted
+ * reanalysis of a Rust multi-binary repo) showed a root Dockerfile's
+ * deployable NAME landing as the literal storage id "prj_wbW33m-wfETn1N41".
+ * That token is NOT pure-hex/UUID/no-vowel-blob shaped as a WHOLE string —
+ * `isHashOrIdShapedToken` alone (which only tests the raw string as one
+ * unit) missed it — but it IS a known hosted-id-prefixed, dash-segmented
+ * identifier, which `isIdentifierShapedRepoBasename` catches via its
+ * `prj_`/`wsp_`/... prefix check and per-token (dash/underscore-split) hash
+ * check. Every caller of this function inherits the fix for free.
  */
 export function safeDeployableName(basename: string): string {
-  if (isHashOrIdShapedToken(basename)) return 'unnamed-service';
+  if (isIdentifierShapedRepoBasename(basename)) return 'unnamed-service';
   return basename;
 }
 

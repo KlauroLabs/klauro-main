@@ -84,4 +84,31 @@ describe('DistributionArtifactAnalyzer', () => {
     const productName = (node!.metadata as any).product_name as string | undefined;
     expect(productName).toBe('MyApp 2.0');
   });
+
+  test('an unquoted comparison against APP_NAME ("APP_NAME == ...") does not leak "=" as product_name', async () => {
+    // Real-repo defect (2026-07 hosted reanalysis, Rust multi-binary
+    // workspace): the old APP_NAME capture regex (`[^"'\n]+` with no
+    // required leading letter) matched the trailing `= ` fragment left over
+    // from an unquoted `APP_NAME == "windows"` comparison, producing a
+    // product_name of literally "=" that then became a standalone phantom
+    // installer deployable.
+    projectPath = tempProject();
+    fs.writeFileSync(
+      path.join(projectPath, 'build-installer.sh'),
+      [
+        '#!/bin/bash',
+        'set -e',
+        'if [ APP_NAME=="windows" ]; then',
+        '  makensis installer.nsi',
+        'fi',
+      ].join('\n')
+    );
+
+    const contribution = await analyzer.analyze({ projectPath });
+    const node = (contribution.nodes ?? []).find(n => (n.metadata as any)?.artifact_kind === 'installer');
+    expect(node).toBeDefined();
+    const productName = (node!.metadata as any).product_name as string | undefined;
+    expect(productName).not.toBe('=');
+    if (productName) expect(productName.trim()).not.toBe('=');
+  });
 });

@@ -223,8 +223,12 @@ function parseServiceUnit(file: string, content: string): ParsedDistributionArti
 }
 
 function parseInstaller(file: string, content: string): ParsedDistributionArtifact {
-  const rawName = firstRegex(content, /^\s*Name\s+"([^"]+)"/m)
-    || firstRegex(content, /VIAddVersionKey\s+"ProductName"\s+"([^"]+)"/i);
+  // Capture must start with a letter OR a template-var sigil ('$', as in
+  // "${APPNAMEANDVERSION}" — resolved/dropped later by resolveTemplateVar) —
+  // never punctuation/operator leftovers. See parseScript's rawName comment
+  // for the "=" assignment-scrape defect this class of guard fixes.
+  const rawName = firstRegex(content, /^\s*Name\s+"([A-Za-z$][^"]*)"/m)
+    || firstRegex(content, /VIAddVersionKey\s+"ProductName"\s+"([A-Za-z$][^"]*)"/i);
   const productName = (rawName && resolveTemplateVar(rawName, content))
     || productNameFromFile(file);
   return {
@@ -276,8 +280,21 @@ function installerBinaryNamesFromText(text: string): string[] {
 
 function parseScript(file: string, content: string, kind: DistributionArtifactKind): ParsedDistributionArtifact | undefined {
   if (!looksLikeDistributionScript(content) && !/install|installer|release|manifest|deploy/i.test(file)) return undefined;
-  const rawName = firstRegex(content, /APP_NAME[:=]\s*["']?([^"'\n]+)["']?/)
-    || firstRegex(content, /ProductName["']?\s*[,=]\s*["']([^"']+)["']/i);
+  // Capture groups are anchored to start with a LETTER or a template-var
+  // sigil ('$', for `APP_NAME="${VAR}"`-style indirection resolved below by
+  // resolveTemplateVar) — never `[^"'\n]+` alone. Real-repo defect (2026-07
+  // hosted reanalysis, Rust multi-binary workspace): a script containing an
+  // unquoted comparison like `APP_NAME=="windows"` matched `APP_NAME[:=]`
+  // against the assignment-shaped first `=` of `==`, then the old
+  // unanchored `[^"'\n]+` capture greedily consumed the leftover `=` up to
+  // the next quote — yielding a productName of literally "=" (trimmed),
+  // which then became a standalone installer deployable identity. Requiring
+  // the first captured character to be a letter/`$` rejects that fragment
+  // (and any other assignment/operator-shaped leftover) outright, so the
+  // "no rawName" path falls through to productNameFromFile(file) instead of
+  // leaking punctuation as a name.
+  const rawName = firstRegex(content, /APP_NAME[:=]\s*["']?([A-Za-z$][^"'\n]*)["']?/)
+    || firstRegex(content, /ProductName["']?\s*[,=]\s*["']([A-Za-z$][^"']*)["']/i);
   const productName = (rawName && resolveTemplateVar(rawName, content))
     || productNameFromFile(file);
   const role = /installer/i.test(file) || /\b(makensis|msiexec|dmg|pkgbuild|create-dmg)\b/i.test(content)

@@ -220,6 +220,153 @@ describe('collectDeployableEvidence', () => {
     expect(installer!.ships_paths).toEqual(['myapp.exe']);
   });
 
+  // --- Real-shape junk-identity regression coverage (2026-07 hosted
+  // reanalysis of a Rust multi-binary workspace, installer-identity
+  // iteration 2). Each case reproduces one of the observed junk installer
+  // rows and asserts it no longer mints a standalone unit / is not named
+  // after the junk value.
+
+  function installerNode(overrides: Partial<Record<string, any>>, id = 'distribution_artifact_junk'): CASNode {
+    return {
+      id,
+      name: 'Installer node',
+      type: 'distribution_installer',
+      source: { file: 'scripts/some-script.sh', line: 1 },
+      metadata: {
+        topology_surface: 'distribution-artifacts',
+        artifact_kind: 'installer',
+        distribution_role: 'installer',
+        binary_names: [],
+        ...overrides,
+      } as any,
+    } as CASNode;
+  }
+
+  test('an assignment/comparison scrape ("=") never mints a standalone installer unit', () => {
+    projectPath = tempProject();
+    const nodes = [installerNode({ product_name: '=' })];
+    const result = collectDeployableEvidence({ projectPath, nodes, entryPoints: [], exitPoints: [] });
+    expect(result.some(item => item.kind === 'installer')).toBe(false);
+  });
+
+  test('a verb-phrase productName ("resolve version") is rejected, not minted as an installer unit', () => {
+    projectPath = tempProject();
+    const nodes = [installerNode({ product_name: 'resolve version' })];
+    const result = collectDeployableEvidence({ projectPath, nodes, entryPoints: [], exitPoints: [] });
+    expect(result.some(item => item.kind === 'installer')).toBe(false);
+  });
+
+  test('a bare platform word ("windows") is rejected, not minted as an installer unit', () => {
+    projectPath = tempProject();
+    const nodes = [installerNode({ product_name: 'windows' })];
+    const result = collectDeployableEvidence({ projectPath, nodes, entryPoints: [], exitPoints: [] });
+    expect(result.some(item => item.kind === 'installer')).toBe(false);
+  });
+
+  test('a platform word qualified only by a build-shape word ("windows prebuilt") is rejected', () => {
+    projectPath = tempProject();
+    const nodes = [installerNode({ product_name: 'windows prebuilt' })];
+    const result = collectDeployableEvidence({ projectPath, nodes, entryPoints: [], exitPoints: [] });
+    expect(result.some(item => item.kind === 'installer')).toBe(false);
+  });
+
+  test('a bare build-shape word ("local") is rejected, not minted as an installer unit', () => {
+    projectPath = tempProject();
+    const nodes = [installerNode({ product_name: 'local' })];
+    const result = collectDeployableEvidence({ projectPath, nodes, entryPoints: [], exitPoints: [] });
+    expect(result.some(item => item.kind === 'installer')).toBe(false);
+  });
+
+  test('a genuine product name is still accepted (positive control)', () => {
+    projectPath = tempProject();
+    const nodes = [installerNode({ product_name: 'Zerac', binary_names: ['Zerac.exe'], platforms: ['windows'] })];
+    const result = collectDeployableEvidence({ projectPath, nodes, entryPoints: [], exitPoints: [] });
+    const installer = result.find(item => item.kind === 'installer');
+    expect(installer).toBeDefined();
+    expect(installer!.name).toBe('Zerac');
+  });
+
+  test('a distinct-platform ship artifact filename is still accepted even with no productName (positive control)', () => {
+    projectPath = tempProject();
+    const nodes = [installerNode({ binary_names: ['MyApp.dmg'] })];
+    const result = collectDeployableEvidence({ projectPath, nodes, entryPoints: [], exitPoints: [] });
+    const installer = result.find(item => item.kind === 'installer');
+    expect(installer).toBeDefined();
+    expect(installer!.name).toBe('MyApp.dmg');
+  });
+
+  test('script-basename echoes ("build-windows-installer-prebuilt.sh") collapse into a clean platform-named unit, not their raw filename', () => {
+    projectPath = tempProject();
+    fs.writeFileSync(
+      path.join(projectPath, 'build-windows-installer-prebuilt.sh'),
+      '#!/bin/bash\ncargo build --release -p client\ncp target/release/client dist/\n'
+    );
+
+    const result = collectDeployableEvidence({ projectPath, nodes: [], entryPoints: [], exitPoints: [] });
+    const installer = result.find(item => item.kind === 'installer');
+    expect(installer).toBeDefined();
+    expect(installer!.name).toBe('Windows Installer');
+    expect(installer!.name).not.toBe('build-windows-installer-prebuilt');
+  });
+
+  test('script-basename echo ("build-mac-installer.sh") collapses to "Mac Installer"', () => {
+    projectPath = tempProject();
+    fs.writeFileSync(
+      path.join(projectPath, 'build-mac-installer.sh'),
+      '#!/bin/bash\ncargo build --release -p client\ncp target/release/client dist/\n'
+    );
+
+    const result = collectDeployableEvidence({ projectPath, nodes: [], entryPoints: [], exitPoints: [] });
+    const installer = result.find(item => item.kind === 'installer');
+    expect(installer).toBeDefined();
+    expect(installer!.name).toBe('Mac Installer');
+  });
+
+  test('two scripts building the SAME platform (windows) converge on one merged unit, not two', () => {
+    projectPath = tempProject();
+    fs.writeFileSync(
+      path.join(projectPath, 'build-windows-installer.sh'),
+      '#!/bin/bash\ncargo build --release -p client\ncp target/release/client dist/\n'
+    );
+    fs.writeFileSync(
+      path.join(projectPath, 'build-windows-installer-prebuilt.sh'),
+      '#!/bin/bash\ncargo build --release -p daemon\ncp target/release/daemon dist/\n'
+    );
+
+    const result = collectDeployableEvidence({ projectPath, nodes: [], entryPoints: [], exitPoints: [] });
+    const installers = result.filter(item => item.kind === 'installer' && item.name === 'Windows Installer');
+    expect(installers).toHaveLength(1);
+    expect(installers[0].ships_paths).toEqual(expect.arrayContaining(['client', 'daemon']));
+  });
+
+  test('root-container display name never leaks a project/storage hash id (prj_... shape)', () => {
+    projectPath = tempProject();
+    // Root-level plain Dockerfile with no named stem, no dir-derived identity
+    // (project root itself), and no service_aliases -- falls back to the
+    // displayName/basename path exercised by dockerfileDeployableName.
+    fs.writeFileSync(path.join(projectPath, 'Dockerfile'), 'FROM rust:1.75\nCOPY target/release/coordinator /usr/local/bin/\nENTRYPOINT ["/usr/local/bin/coordinator"]\n');
+
+    const result = collectDeployableEvidence({
+      projectPath,
+      nodes: [
+        {
+          id: 'dockerfile_root',
+          name: 'Dockerfile',
+          type: 'container_image_definition',
+          source: { file: 'Dockerfile', line: 1 },
+          metadata: { base_images: ['rust:1.75'], command: 'coordinator' } as any,
+        } as CASNode,
+      ],
+      entryPoints: [],
+      exitPoints: [],
+      displayName: 'prj_wbW33m-wfETn1N41',
+    });
+    const container = result.find(item => item.kind === 'container');
+    expect(container).toBeDefined();
+    expect(container!.name).not.toBe('prj_wbW33m-wfETn1N41');
+    expect(container!.name).not.toMatch(/^prj_/);
+  });
+
   test('Tier 2: Cargo [[bin]] target is detected from Cargo.toml', () => {
     projectPath = tempProject();
     fs.writeFileSync(
