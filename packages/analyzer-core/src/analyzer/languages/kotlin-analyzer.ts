@@ -7,6 +7,7 @@ import { parseWasm, hasWasmGrammar } from '../core/wasm-tree-sitter';
 import * as fs from 'fs-extra';
 import { cachedGlob as glob } from '../core/glob-cache';
 import * as path from 'path';
+import { XMLParser } from 'fast-xml-parser';
 
 type KotlinTypeKind =
   | 'class'
@@ -18,6 +19,13 @@ type KotlinTypeKind =
   | 'annotation-class'
   | 'abstract-class';
 
+interface KotlinDataField {
+  name: string;
+  type: string;
+  annotations: string[];
+  line: number;
+}
+
 interface KotlinType {
   name: string;
   kind: KotlinTypeKind;
@@ -26,6 +34,9 @@ interface KotlinType {
   annotations: string[];
   lineStart: number;
   lineEnd: number;
+  // Primary-constructor val/var properties, populated only for `data class` —
+  // these are the component/copy() fields, i.e. the DTO's actual data shape.
+  dataFields?: KotlinDataField[];
 }
 
 interface KotlinFunction {
@@ -68,8 +79,42 @@ const KOTLIN_CALL_KEYWORDS = new Set([
 const ANDROID_ACTIVITY_BASES = new Set([
   'ComponentActivity', 'AppCompatActivity', 'Activity', 'FragmentActivity',
 ]);
+const ANDROID_MANIFEST_GLOB = ['**/AndroidManifest.xml'];
+// Manifest component kinds resolved to entry points, and the CAS entry-point
+// `type` each maps to: Activity is a UI screen ('page', matching the existing
+// supertype-detected Activity entry below); Service has no UI but a component
+// lifecycle bound by the OS ('lifecycle', matching the Ktor module precedent);
+// BroadcastReceiver reacts to system/app broadcast events ('event'); Provider
+// exposes structured data to other processes via a query-style API ('api').
+const MANIFEST_COMPONENT_ENTRY_TYPES: Record<string, CASEntryPoint['type']> = {
+  activity: 'page',
+  service: 'lifecycle',
+  receiver: 'event',
+  provider: 'api',
+};
+// Kotlin `data class` fields whose types are EXCLUSIVELY Compose theming
+// value types (Color/Dp/...) describe a design-token/theme shape, not a
+// domain DTO — excluded from data-entity emission even though the class is
+// structurally a data class.
+const COMPOSE_THEME_ONLY_TYPES = new Set([
+  'Color', 'Dp', 'TextUnit', 'Shape', 'FontFamily', 'Painter', 'ImageVector',
+  'Brush', 'PaddingValues', 'Modifier', 'TextStyle', 'Typography',
+]);
 
 export class KotlinAnalyzer extends BaseAnalyzer {
+  // android:name / android:authorities attributes live under the "android"
+  // XML namespace — removeNSPrefix strips that prefix so `android:name`
+  // parses to the plain `name` key, same convention as soap-wsdl-analyzer's
+  // WSDL/XSD parser.
+  private readonly manifestParser = new XMLParser({
+    ignoreAttributes: false,
+    attributeNamePrefix: '',
+    removeNSPrefix: true,
+    parseTagValue: false,
+    parseAttributeValue: false,
+    trimValues: true,
+  });
+
   constructor() {
     super('kotlin', 'Kotlin Language Analyzer', '1.0.0', 'language');
   }
@@ -173,6 +218,7 @@ export class KotlinAnalyzer extends BaseAnalyzer {
       this.emitInheritanceEdges(fileInfos, nodes, edges);
       this.emitImportEdges(fileInfos, nodes, edges, exitPoints);
       await this.emitCallEdges(fileInfos, nodes, edges);
+      await this.emitManifestEntryPoints(context, fileInfos, entryPoints);
 
       const warnings = this.collectAnalysisWarnings();
       const composeCount = nodes.filter(n => n.tags?.includes('compose-fn')).length;
@@ -182,7 +228,10 @@ export class KotlinAnalyzer extends BaseAnalyzer {
         framework_specific: {
           language: 'kotlin',
           filesAnalyzed: fileInfos.length,
-          typesFound: nodes.filter(n => n.type === 'class' || n.type === 'interface').length,
+          // 'dto' covers data classes reclassified as data-entity shapes (see
+          // emitFileNodes) — still a Kotlin TYPE, just carrying a more precise
+          // node.type than plain 'class' for downstream entity derivation.
+          typesFound: nodes.filter(n => n.type === 'class' || n.type === 'interface' || n.type === 'dto').length,
           functionsFound: nodes.filter(n => n.type === 'function' || n.type === 'method').length,
           composeFunctions: composeCount,
           suspendFunctions: suspendCount,
@@ -261,6 +310,9 @@ export class KotlinAnalyzer extends BaseAnalyzer {
       const annotations = this.collectPrecedingAnnotations(lines, i);
       const lineEnd = this.findBlockEnd(lines, i);
       const supertypes = this.extractSupertypes(lines, i, lineEnd);
+      const dataFields = decl.kind === 'data-class'
+        ? this.extractDataClassFields(lines, i)
+        : undefined;
 
       types.push({
         name: decl.name,
@@ -270,6 +322,7 @@ export class KotlinAnalyzer extends BaseAnalyzer {
         annotations,
         lineStart: i + 1,
         lineEnd,
+        dataFields,
       });
     }
     return types;
@@ -377,6 +430,104 @@ export class KotlinAnalyzer extends BaseAnalyzer {
     }
     if (current) out.push(current);
     return out;
+  }
+
+  // Extract the primary-constructor `val`/`var` properties of a `data class`
+  // declaration — these ARE the class's component/copy() fields, i.e. its
+  // actual data shape (`data class Session(val id: String, val ttl: Int)`).
+  // Best-effort, regex-based like the rest of this file: never fabricates a
+  // field it can't parse — an unparseable param is silently skipped, not
+  // guessed at.
+  private extractDataClassFields(lines: string[], startIndex: number): KotlinDataField[] {
+    // Join a generous forward window so a multi-line constructor parameter
+    // list still parses as one balanced-paren string; comments/strings are
+    // stripped first so a stray '(' or ')' inside a string/comment can't
+    // desync the depth count. Track each source line's starting offset in the
+    // joined string so a field's char position can be mapped back to a real
+    // source line (never fabricated: falls back to the decl line if unmapped).
+    const windowEnd = Math.min(lines.length, startIndex + 80);
+    const lineStartOffsets: number[] = [];
+    let joined = '';
+    for (let i = startIndex; i < windowEnd; i++) {
+      lineStartOffsets.push(joined.length);
+      joined += this.stripStringsAndComments(lines[i]) + '\n';
+    }
+    const lineForOffset = (offset: number): number => {
+      let line = startIndex;
+      for (let i = 0; i < lineStartOffsets.length; i++) {
+        if (lineStartOffsets[i] <= offset) line = startIndex + i;
+        else break;
+      }
+      return line + 1;
+    };
+
+    const openIdx = joined.indexOf('(');
+    if (openIdx === -1) return [];
+
+    let depth = 0;
+    let endIdx = -1;
+    for (let c = openIdx; c < joined.length; c++) {
+      if (joined[c] === '(') depth++;
+      else if (joined[c] === ')') {
+        depth--;
+        if (depth === 0) { endIdx = c; break; }
+      }
+    }
+    if (endIdx === -1) return [];
+
+    const paramsSection = joined.slice(openIdx + 1, endIdx);
+    const fields: KotlinDataField[] = [];
+    let searchCursor = 0;
+    for (const rawPart of this.splitTopLevel(paramsSection, ',')) {
+      const partStartInSection = searchCursor;
+      searchCursor += rawPart.length + 1; // +1 for the consumed comma separator
+      const part = rawPart.trim();
+      if (!part) continue;
+
+      const annotations = [...part.matchAll(/@([A-Za-z_][A-Za-z0-9_]*)/g)].map(m => m[1]);
+      const withoutAnnotations = part.replace(/@[A-Za-z_][A-Za-z0-9_]*(\([^)]*\))?/g, '').trim();
+      if (!withoutAnnotations) continue;
+
+      // Split off a default value (`= expr`) at top nesting level before
+      // matching the declaration, so `= SomeType(...)` in the default can't
+      // be mistaken for the property's own type.
+      const declPart = this.splitTopLevel(withoutAnnotations, '=')[0]?.trim();
+      if (!declPart) continue;
+
+      const declMatch = declPart.match(
+        /^(?:private\s+|protected\s+|internal\s+|public\s+|override\s+|crossinline\s+|noinline\s+|vararg\s+)*(?:val|var)\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.+)$/
+      );
+      if (!declMatch) continue; // not a val/var property (e.g. a plain ctor param) — skip, never fabricate
+
+      const nameOffsetInPart = part.indexOf(declMatch[1]);
+      const absoluteOffset = openIdx + 1 + partStartInSection + Math.max(0, nameOffsetInPart);
+
+      fields.push({
+        name: declMatch[1],
+        type: declMatch[2].trim().replace(/\s+/g, ' '),
+        annotations,
+        line: lineForOffset(absoluteOffset),
+      });
+    }
+    return fields;
+  }
+
+  // A data class qualifies as a data-entity shape when it carries at least
+  // two component fields (excludes single-property wrappers, e.g. `data class
+  // Id(val value: String)`) and isn't a Compose theming/design-token shape
+  // (ui/theme package, or every field typed as a Compose-only value type like
+  // Color/Dp). Evidence-gated, never name-based.
+  private isEntityShapedDataClass(info: KotlinFileInfo, fields: KotlinDataField[]): boolean {
+    if (fields.length < 2) return false;
+
+    const pkg = info.packageName.toLowerCase();
+    const file = info.relativePath.toLowerCase().replace(/\\/g, '/');
+    if (/(^|\.)ui\.theme(\.|$)/.test(pkg) || /(^|\/)ui\/theme(\/|$)/.test(file)) return false;
+
+    const bareType = (t: string) => t.replace(/[?]/g, '').replace(/<.*$/, '').trim().split('.').pop() || t;
+    if (fields.every(f => COMPOSE_THEME_ONLY_TYPES.has(bareType(f.type)))) return false;
+
+    return true;
   }
 
   private extractFunctions(lines: string[], types: KotlinType[]): KotlinFunction[] {
@@ -523,7 +674,15 @@ export class KotlinAnalyzer extends BaseAnalyzer {
     // Type nodes (class-like).
     for (const type of info.types) {
       const typeId = this.typeId(info.relativePath, type.name);
-      const nodeType = type.kind === 'interface' ? 'interface' : 'class';
+      const dataFields = type.dataFields || [];
+      // A `data class` whose fields are a real DTO shape (>=2 properties, not
+      // a Compose theme/design-token record) is emitted as node.type 'dto' —
+      // the same node-type signal the TypeScript/JS analyzer already uses for
+      // DTO-like classes — so the orchestrator's generic data-entity
+      // derivation (isDtoLikeDataShapeNode) picks it up without any
+      // Kotlin-specific entity logic downstream.
+      const isDataEntity = type.kind === 'data-class' && this.isEntityShapedDataClass(info, dataFields);
+      const nodeType = isDataEntity ? 'dto' : (type.kind === 'interface' ? 'interface' : 'class');
       const node = this.createNodeBuilder(typeId, type.name, nodeType)
         .withLevel(2, 'Class/Interface')
         .withCategory('structures', ['kotlin-types'])
@@ -537,9 +696,10 @@ export class KotlinAnalyzer extends BaseAnalyzer {
             packageName: info.packageName,
             supertypes: type.supertypes,
             visibility: type.visibility,
+            ...(type.kind === 'data-class' ? { propertyCount: dataFields.length, methodCount: 0 } : {}),
           },
         })
-        .withTags([`kotlin-kind:${type.kind}`])
+        .withTags([`kotlin-kind:${type.kind}`, ...(isDataEntity ? ['kotlin-data-entity'] : [])])
         .build();
       node.qualified_name = info.packageName ? `${info.packageName}.${type.name}` : type.name;
       nodes.push(node);
@@ -559,6 +719,50 @@ export class KotlinAnalyzer extends BaseAnalyzer {
           undefined,
           { file: info.relativePath, line: type.lineStart, base: activityBase, language: 'kotlin' }
         ));
+      }
+
+      // Data-entity fields: one 'property' node per component field, parented
+      // to the class node — this is the shape buildEntityPropertyIndex/
+      // buildDataEntities walks (node.parent + node.type==='property') to
+      // populate a CASDataEntity's `fields`. Without these, a 'dto'-typed
+      // node with zero matched property nodes contributes no field evidence
+      // and gets filtered out entirely (dataShapeNodeHasFieldEvidence).
+      if (isDataEntity) {
+        for (const field of dataFields) {
+          const propertyId = this.propertyId(info.relativePath, type.name, field.name);
+          const serializationAnnotations = field.annotations.filter(a =>
+            a === 'SerialName' || a === 'SerializedName' || a === 'Serializable'
+          );
+          const propertyNode = this.createNodeBuilder(propertyId, field.name, 'property')
+            .withLevel(3, 'Field/Property')
+            .withCategory('structures', ['kotlin-fields'])
+            .withSource({ file: info.fullPath, line: field.line, end_line: field.line })
+            .withMetadata({
+              language: 'kotlin',
+              attributes: {
+                type: field.type,
+                ownerType: type.name,
+                ...(field.annotations.length > 0 ? { annotations: field.annotations } : {}),
+                ...(serializationAnnotations.length > 0 ? { serialization: serializationAnnotations } : {}),
+              },
+            })
+            // buildDataEntities (orchestrator) reads a property's type off
+            // signature.return_type first (metadata.type / attributes.type
+            // are only consulted by other, ERD-specific call sites) — set it
+            // here so the field's type actually surfaces on the derived
+            // CASDataEntity instead of collapsing to 'unknown'.
+            .withSignature({ return_type: field.type })
+            .withParent(typeId)
+            .build();
+          nodes.push(propertyNode);
+
+          edges.push(this.createEdge(
+            `${typeId}_contains_${propertyId}`,
+            typeId,
+            propertyId,
+            'contains'
+          ));
+        }
       }
     }
 
@@ -710,6 +914,154 @@ export class KotlinAnalyzer extends BaseAnalyzer {
             { resource: imp.importPath, sdk: imp.simpleName },
             undefined,
             { importPath: imp.importPath, line: imp.lineNumber, language: 'kotlin' }
+          ));
+        }
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // AndroidManifest.xml component entry points
+  // ---------------------------------------------------------------------------
+
+  /** Normalize a fast-xml-parser child that may be absent, a single object, or
+   *  an array (repeated sibling tags) into an array. */
+  private toArray<T>(value: T | T[] | undefined | null): T[] {
+    if (value === undefined || value === null) return [];
+    return Array.isArray(value) ? value : [value];
+  }
+
+  /** Resolve a manifest `android:name` value (relative ".Foo", bare "Foo", or
+   *  fully-qualified "com.app.Foo") against the manifest's declared package,
+   *  per the standard Android manifest-merger rule. */
+  private resolveManifestClassName(rawName: string, manifestPackage: string): string {
+    if (rawName.startsWith('.')) return manifestPackage ? `${manifestPackage}${rawName}` : rawName.slice(1);
+    if (!rawName.includes('.')) return manifestPackage ? `${manifestPackage}.${rawName}` : rawName;
+    return rawName;
+  }
+
+  /** Parse every AndroidManifest.xml in the project and emit an entry point
+   *  for each declared <activity>/<service>/<receiver>/<provider> whose
+   *  android:name resolves to a class this analyzer parsed. Never fabricates:
+   *  a component whose name can't be resolved (custom base, ambiguous simple
+   *  name across packages, or genuinely not part of this analysis) is skipped
+   *  with a debug warning, not a phantom entry point. Activities already
+   *  entry-pointed via the ANDROID_ACTIVITY_BASES supertype check (above) are
+   *  not duplicated — the manifest is instead the fallback for components
+   *  whose base class isn't one of the known Activity bases, or that aren't
+   *  Activities at all (Service/Receiver/Provider never get a supertype-based
+   *  entry point, since only Activity subclassing is a reliable structural
+   *  signal for the other three).
+   */
+  private async emitManifestEntryPoints(
+    context: AnalysisContext,
+    fileInfos: KotlinFileInfo[],
+    entryPoints: CASEntryPoint[]
+  ): Promise<void> {
+    let manifestFiles: string[] = [];
+    try {
+      manifestFiles = await glob(ANDROID_MANIFEST_GLOB, {
+        cwd: context.projectPath,
+        ignore: this.getIgnorePatterns(context),
+        nodir: true,
+      });
+    } catch {
+      return;
+    }
+    if (manifestFiles.length === 0) return;
+
+    // Qualified-name and simple-name (may be ambiguous across packages)
+    // indexes over every type this analyzer parsed, so a manifest name can be
+    // resolved to the exact class node it describes.
+    const byQualifiedName = new Map<string, { info: KotlinFileInfo; type: KotlinType }>();
+    const bySimpleName = new Map<string, Array<{ info: KotlinFileInfo; type: KotlinType }>>();
+    for (const info of fileInfos) {
+      for (const type of info.types) {
+        const entry = { info, type };
+        if (info.packageName) byQualifiedName.set(`${info.packageName}.${type.name}`, entry);
+        const bucket = bySimpleName.get(type.name);
+        if (bucket) bucket.push(entry); else bySimpleName.set(type.name, [entry]);
+      }
+    }
+    const alreadyEntryPointed = new Set(entryPoints.map(ep => ep.source_node));
+
+    for (const manifestPath of manifestFiles.sort()) {
+      const fullManifestPath = path.join(context.projectPath, manifestPath);
+      let content: string;
+      try {
+        content = await fs.readFile(fullManifestPath, 'utf-8');
+      } catch {
+        continue;
+      }
+
+      let parsed: any;
+      try {
+        parsed = this.manifestParser.parse(content);
+      } catch {
+        this.addAnalysisWarning(`Kotlin: failed to parse AndroidManifest.xml at ${manifestPath}`);
+        continue;
+      }
+
+      const manifestPackage = String(parsed?.manifest?.package || '');
+      const application = parsed?.manifest?.application;
+      if (!application) continue;
+
+      for (const [componentTag, entryType] of Object.entries(MANIFEST_COMPONENT_ENTRY_TYPES)) {
+        for (const component of this.toArray(application[componentTag])) {
+          const rawName = typeof component === 'object' ? component?.name : undefined;
+          if (!rawName || typeof rawName !== 'string') continue;
+
+          const qualified = this.resolveManifestClassName(rawName, manifestPackage);
+          let resolved = byQualifiedName.get(qualified);
+          if (!resolved) {
+            const simpleName = qualified.split('.').pop() || qualified;
+            const candidates = bySimpleName.get(simpleName);
+            if (candidates && candidates.length === 1) resolved = candidates[0];
+          }
+          if (!resolved) {
+            this.addAnalysisWarning(
+              `Kotlin: manifest <${componentTag} android:name="${rawName}"> in ${manifestPath} did not resolve to a parsed class — skipped`
+            );
+            continue;
+          }
+
+          const { info, type } = resolved;
+          const typeId = this.typeId(info.relativePath, type.name);
+          if (alreadyEntryPointed.has(typeId)) continue;
+          alreadyEntryPointed.add(typeId);
+
+          const componentLabel = componentTag.charAt(0).toUpperCase() + componentTag.slice(1);
+          const baseType = type.supertypes[0];
+
+          let actions: string[] | undefined;
+          if (componentTag === 'receiver') {
+            const collected: string[] = [];
+            for (const filter of this.toArray(component['intent-filter'])) {
+              for (const action of this.toArray(filter?.action)) {
+                const actionName = typeof action === 'object' ? action?.name : undefined;
+                if (typeof actionName === 'string') collected.push(actionName);
+              }
+            }
+            if (collected.length > 0) actions = collected;
+          }
+
+          entryPoints.push(this.createEntryPoint(
+            `entry_${typeId}`,
+            typeId,
+            entryType,
+            `Android ${componentLabel}: ${type.name}`,
+            `Android manifest-declared ${componentLabel}${baseType ? ` (extends ${baseType})` : ''}`,
+            actions ? { pattern: type.name, event: actions.join(',') } : { pattern: type.name },
+            undefined,
+            {
+              file: info.relativePath,
+              line: type.lineStart,
+              base: baseType,
+              language: 'kotlin',
+              component: componentTag,
+              manifestFile: manifestPath,
+              ...(actions ? { actions } : {}),
+            }
           ));
         }
       }
@@ -965,6 +1317,10 @@ export class KotlinAnalyzer extends BaseAnalyzer {
 
   private functionId(relativePath: string, name: string, line: number): string {
     return `function_${this.sanitizeId(relativePath)}_${this.sanitizeId(name)}_${line}`;
+  }
+
+  private propertyId(relativePath: string, ownerName: string, fieldName: string): string {
+    return `property_${this.sanitizeId(relativePath)}_${this.sanitizeId(ownerName)}_${this.sanitizeId(fieldName)}`;
   }
 
   protected getLevelName(level: number): string {
