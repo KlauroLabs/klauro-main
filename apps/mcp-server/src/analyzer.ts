@@ -142,6 +142,7 @@ import * as path from 'path';
 import { fork, type ChildProcess } from 'child_process';
 import {
   getAnalysisRunLogPath,
+  readRecentRunRecords,
   type AnalysisRunFinalRecord,
   type AnalysisRunRecord,
   type AnalysisRunStartRecord,
@@ -161,7 +162,8 @@ import {
   saveFileCache,
   loadFileCache,
   getProjectStorageDir,
-  withProjectAnalysisLock
+  withProjectAnalysisLock,
+  withProjectAnalysisLockIfAvailable
 } from './storage';
 import { loadKlauroConfig, validateEmbeddingConfig, validateConventions, type KlauroConventions } from './klauro-config';
 import { clearFreshnessSummaryCache } from './freshness';
@@ -1089,7 +1091,7 @@ export async function analyzeProject(projectPath: string, displayName?: string):
     await backfillIngestedTelemetry(result, projectPath).catch(() => undefined);
 
     return result;
-  }, sizeHint));
+  }, sizeHint, projectPath));
 }
 
 /**
@@ -1151,7 +1153,7 @@ export async function analyzeProjectDeferred(projectPath: string, displayName?: 
     await saveAnalysisSnapshot(projectPath, result);
 
     return result;
-  }, sizeHint));
+  }, sizeHint, projectPath));
 
   // Nothing to enrich (no AI provider, or already enriched) → done.
   if (output.ai_enrichment !== 'pending') {
@@ -1166,7 +1168,7 @@ export async function analyzeProjectDeferred(projectPath: string, displayName?: 
     await saveAnalysis(projectPath, output);
     clearFreshnessSummaryCache();
     await saveAnalysisSnapshot(projectPath, output);
-  }, output.nodes.length)).catch(async (error: unknown) => {
+  }, output.nodes.length, projectPath)).catch(async (error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
     // Comprehension is AI-only (docs/cas/DETERMINISM-BOUNDARY.md). A failed AI
     // pass is a VISIBLE terminal state, never a silent stay-pending: mark
@@ -1185,7 +1187,7 @@ export async function analyzeProjectDeferred(projectPath: string, displayName?: 
         await saveAnalysis(projectPath, output);
         clearFreshnessSummaryCache();
         await saveAnalysisSnapshot(projectPath, output);
-      }));
+      }, undefined, projectPath));
     } catch (saveError) {
       const saveMessage = saveError instanceof Error ? saveError.message : String(saveError);
       console.error(`[Klauro] failed to persist ai_enrichment='error' for ${projectPath} (${saveMessage})`);
@@ -1235,10 +1237,14 @@ export async function analyzeProjectLayered(projectPath: string, displayName?: s
   const l0Promise = (async () => {
     const l0Index = await computeL0Index(projectPath);
     const l0Cas = buildL0OnlyCas(projectPath, displayName, l0Index);
-    // Best-effort: if a fuller analysis is already mid-save under the project
-    // lock, skip the L0 stub rather than block seconds-scale availability on
-    // it — the fuller save that follows supersedes it moments later anyway.
-    await withProjectAnalysisLock(projectPath, async () => {
+    // Best-effort, zero-wait: if a fuller analysis is already queued/running
+    // under the project lock, skip the L0 stub immediately rather than block
+    // seconds-scale availability on it (previously this waited out the FULL
+    // lock timeout — up to 120s in prod — before giving up anyway, since the
+    // fuller save always supersedes the L0 stub moments later regardless).
+    // withProjectAnalysisLockIfAvailable only ever short-circuits a lock held
+    // by a LIVE holder; a genuinely stale lock is still reclaimed as before.
+    const lockAttempt = await withProjectAnalysisLockIfAvailable(projectPath, async () => {
       const existing = await loadAnalysis(projectPath, { preferCache: true }).catch(() => null);
       // Never regress a more-complete stored analysis back down to an L0-only
       // stub (e.g. a re-analyze racing an already-fresh CAS on disk).
@@ -1250,7 +1256,11 @@ export async function analyzeProjectLayered(projectPath: string, displayName?: s
     }).catch((error: unknown) => {
       const message = error instanceof Error ? error.message : String(error);
       console.error(`[Klauro] L0 index save failed for ${projectPath} (${message}); continuing to full analysis`);
+      return { acquired: false as const };
     });
+    if (!lockAttempt.acquired) {
+      console.error(`[Klauro] L0 index save skipped for ${projectPath}: analysis.lock is already held by an in-progress analysis; the full analysis will supersede the L0 index anyway`);
+    }
     return l0Cas;
   })();
 
@@ -1740,6 +1750,78 @@ async function estimateProjectSizeHint(projectPath: string): Promise<number> {
   return Number.POSITIVE_INFINITY;
 }
 
+// --- Wall-clock watchdog --------------------------------------------------
+//
+// Incident (2026-07-17): two analyses hung for 3+ CPU-hours inside a lane
+// (a catastrophic-regex pathology fixed separately) and were completely
+// invisible — last_attempt read 'in-progress' forever, both lane permits
+// stayed occupied so every OTHER queued analysis on the box starved behind
+// them too, and nothing alarmed. This watchdog makes that failure mode
+// visible and non-permanent.
+//
+// HONESTY CONSTRAINT: this cannot preempt a hang caused by a synchronous/
+// native computation (e.g. a runaway regex) — there is no way to abort that
+// from JS once it has started. What it CAN do, and all it claims to do, is
+// stop WAITING on `fn`: free its lane permit so other work can proceed, and
+// write a visible 'watchdog-timeout' failure so the hang is surfaced instead
+// of silently occupying a lane forever. If `fn` later actually completes (the
+// stuck computation eventually returns), that late settlement is logged —
+// never silently re-applied over the failure record already written
+// (last-write-wins if a caller re-persists, but it is never silent).
+//
+// Cascade note: withLanePermit is normally called from INSIDE
+// withProjectAnalysisLock (project.analysis.lock wraps the lane permit), so
+// rejecting early here also unwinds that outer lock's `finally` and releases
+// analysis.lock — before the zombie computation underneath has actually
+// stopped touching that project's storage. This is accepted, not
+// accidental: the alternative (holding analysis.lock hostage to a hang
+// forever) is worse, and the product already tolerates last-write-wins on
+// this path (see above) rather than promising strict serialization against
+// a run that cannot be preempted.
+const DEFAULT_ANALYSIS_WATCHDOG_MS = 30 * 60_000; // 30 minutes
+
+function getAnalysisWatchdogMs(): number {
+  const raw = process.env.KLAURO_ANALYSIS_WATCHDOG_MS;
+  const parsed = raw !== undefined && raw !== '' ? Number(raw) : NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_ANALYSIS_WATCHDOG_MS;
+}
+
+/** Thrown by withLanePermit when `fn` exceeds KLAURO_ANALYSIS_WATCHDOG_MS
+ *  without settling. Callers' existing failure handling (writeAttemptRecord /
+ *  markBackgroundAnalysisFailed in remote-analyzer-service.ts) treats this
+ *  exactly like any other analysis failure — the message always contains the
+ *  literal 'watchdog-timeout' so it's greppable in that reason field. */
+export class AnalysisWatchdogTimeoutError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'AnalysisWatchdogTimeoutError';
+  }
+}
+
+/** Best-effort "what was it last doing" signal for the watchdog's log line.
+ *  The run log (packages/.../core/run-log.ts) only writes a run's `phases`
+ *  array when the run finishes (complete or failed) — a hung run never gets
+ *  there, so there is no live "current phase" to read. What IS available is
+ *  the run-start record for this project, if one was written and no
+ *  completion record for the same run_id has landed yet. Never throws. */
+function describeLastRunLogState(projectPath: string): string {
+  try {
+    const records = readRecentRunRecords();
+    const finishedRunIds = new Set(
+      records.filter((r): r is AnalysisRunFinalRecord => r.event === 'run-complete' || r.event === 'run-failed')
+        .map(r => r.run_id)
+    );
+    const openStarts = records
+      .filter((r): r is AnalysisRunStartRecord => r.event === 'run-start' && r.project_path === projectPath && !finishedRunIds.has(r.run_id));
+    const latest = openStarts[openStarts.length - 1];
+    if (!latest) return 'no open run-log entry found (run log records phases only at completion, so a hung run has nothing further to show)';
+    return `run ${latest.run_id} started at ${latest.started_at}, never reached run-complete/run-failed (run log has no live in-progress phase, only phases-at-completion)`;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return `run log unreadable (${message})`;
+  }
+}
+
 /**
  * Run fn bounded to KLAURO_ANALYSIS_CONCURRENCY concurrent analyses (default
  * 2). Extra callers queue for a free permit, smallest-project-first with
@@ -1750,14 +1832,68 @@ async function estimateProjectSizeHint(projectPath: string): Promise<number> {
  * errors propagate to the caller as before (see the `finally` below) —
  * a crashing analysis releases its permit like any other and never blocks
  * the pool.
+ *
+ * Also races `fn` against a wall-clock watchdog (KLAURO_ANALYSIS_WATCHDOG_MS,
+ * default 30 min) — see the "Wall-clock watchdog" comment above for exactly
+ * what it can and cannot do. `projectPath` (when passed) is used only in the
+ * watchdog's log lines and to look up the project's run-log entries.
  */
-async function withLanePermit<T>(fn: () => Promise<T>, sizeHint: number = Number.POSITIVE_INFINITY): Promise<T> {
+async function withLanePermit<T>(
+  fn: () => Promise<T>,
+  sizeHint: number = Number.POSITIVE_INFINITY,
+  projectPath: string = 'analysis'
+): Promise<T> {
   await acquireLanePermit(sizeHint);
-  try {
-    return await fn();
-  } finally {
+  let permitReleased = false;
+  const releasePermitOnce = (): void => {
+    if (permitReleased) return;
+    permitReleased = true;
     releaseLanePermit();
-  }
+  };
+
+  const startedAtMs = Date.now();
+  const watchdogMs = getAnalysisWatchdogMs();
+  let watchdogFired = false;
+  const innerPromise = fn();
+
+  let rejectWatchdog!: (error: Error) => void;
+  const watchdogPromise = new Promise<never>((_, reject) => { rejectWatchdog = reject; });
+  const timer = setTimeout(() => {
+    watchdogFired = true;
+    const elapsedMinutes = Math.round((Date.now() - startedAtMs) / 60_000);
+    console.error(
+      `[Klauro] ANALYSIS WATCHDOG FIRED: ${projectPath} has been running ${elapsedMinutes}m, exceeding ` +
+      `KLAURO_ANALYSIS_WATCHDOG_MS=${watchdogMs}ms. Last known state: ${describeLastRunLogState(projectPath)}. ` +
+      `Releasing its lane permit and marking the attempt failed (reason contains 'watchdog-timeout'). ` +
+      `NOTE: this does NOT stop the underlying computation — a JS process stuck in a synchronous/native ` +
+      `hang (e.g. catastrophic regex) cannot be preempted from here; this only stops WAITING on it.`
+    );
+    releasePermitOnce();
+    rejectWatchdog(new AnalysisWatchdogTimeoutError(
+      `watchdog-timeout: ${projectPath} exceeded ${watchdogMs}ms without completing`
+    ));
+  }, watchdogMs);
+  // Deliberately left ref'd (the default): this timer firing is exactly the
+  // signal we need even when nothing else is keeping the process alive
+  // (e.g. a lightweight one-off analysis run) — unref'd, an idle event loop
+  // could "resolve" before a stuck fn() ever gets flagged.
+
+  innerPromise
+    .then(() => {
+      if (watchdogFired) {
+        console.error(`[Klauro] LATE COMPLETION: ${projectPath} finished successfully AFTER its watchdog already marked the attempt failed and freed the lane. Last-write-wins if this result is re-persisted, but the earlier failure was not silently overwritten.`);
+      }
+    }, () => {
+      if (watchdogFired) {
+        console.error(`[Klauro] LATE COMPLETION: ${projectPath} finished (with its own error) AFTER its watchdog already marked the attempt failed and freed the lane.`);
+      }
+    })
+    .finally(() => {
+      clearTimeout(timer);
+      releasePermitOnce();
+    });
+
+  return Promise.race([innerPromise, watchdogPromise]);
 }
 
 /**
@@ -1767,8 +1903,12 @@ async function withLanePermit<T>(fn: () => Promise<T>, sizeHint: number = Number
  * analyzeProjectIncremental); analyzeProjectDeferred manages its own
  * dedicated instance across two phases and uses withLanePermit directly.
  */
-function withAnalysisLane<T>(fn: (orch: AnalyzerOrchestrator) => Promise<T>, sizeHint?: number): Promise<T> {
-  return withLanePermit(() => fn(createOrchestrator()), sizeHint);
+function withAnalysisLane<T>(
+  fn: (orch: AnalyzerOrchestrator) => Promise<T>,
+  sizeHint?: number,
+  describe?: string
+): Promise<T> {
+  return withLanePermit(() => fn(createOrchestrator()), sizeHint, describe);
 }
 
 /** Test-only: reset lane pool state (e.g. after changing
@@ -1782,8 +1922,8 @@ export function __resetAnalysisLanesForTests(): void {
 /** Test-only: exercise the lane pool directly without a real analysis
  *  pipeline (used to verify concurrency, ordering, and crash isolation with
  *  fake slow/failing functions). */
-export function __withLanePermitForTests<T>(fn: () => Promise<T>, sizeHint?: number): Promise<T> {
-  return withLanePermit(fn, sizeHint);
+export function __withLanePermitForTests<T>(fn: () => Promise<T>, sizeHint?: number, describe?: string): Promise<T> {
+  return withLanePermit(fn, sizeHint, describe);
 }
 
 /** Test-only: current in-use permit count, for asserting overlap/exclusivity
@@ -1801,7 +1941,7 @@ export async function analyzeProjectIncremental(projectPath: string, displayName
   const sizeHint = await estimateProjectSizeHint(projectPath);
   return withProjectAnalysisLock(
     projectPath,
-    () => withAnalysisLane((orch) => runIncrementalAnalysis(projectPath, orch, displayName), sizeHint),
+    () => withAnalysisLane((orch) => runIncrementalAnalysis(projectPath, orch, displayName), sizeHint, projectPath),
   );
 }
 

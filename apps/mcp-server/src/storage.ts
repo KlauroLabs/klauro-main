@@ -470,16 +470,66 @@ export async function withProjectAnalysisLock<T>(projectPath: string, fn: () => 
     return await fn();
   } finally {
     await lock.release();
-    // Don't leave a lock-only directory behind when the analysis produced no
-    // artifacts (e.g. it threw before writing anything): an empty project dir
-    // here would otherwise persist as store noise forever (the orphaned
-    // analysis.lock-only entry pattern — see pruneOrphanedLockOnlyDirs).
-    try {
-      const remaining = await fs.readdir(projectDir);
-      if (remaining.length === 0) await fs.remove(projectDir);
-    } catch {
-      // best-effort cleanup only
-    }
+    await removeProjectDirIfEmpty(projectDir);
+  }
+}
+
+async function removeProjectDirIfEmpty(projectDir: string): Promise<void> {
+  // Don't leave a lock-only directory behind when the analysis produced no
+  // artifacts (e.g. it threw before writing anything): an empty project dir
+  // here would otherwise persist as store noise forever (the orphaned
+  // analysis.lock-only entry pattern — see pruneOrphanedLockOnlyDirs).
+  try {
+    const remaining = await fs.readdir(projectDir);
+    if (remaining.length === 0) await fs.remove(projectDir);
+  } catch {
+    // best-effort cleanup only
+  }
+}
+
+export type ProjectAnalysisLockAttempt<T> =
+  | { acquired: true; value: T }
+  | { acquired: false };
+
+/**
+ * Zero-wait variant of withProjectAnalysisLock: if analysis.lock is currently
+ * held by a live (non-stale) holder, this returns `{ acquired: false }`
+ * immediately instead of waiting out the full lock timeout. Built for the L0
+ * fast-path index save (see analyzeProjectLayered in analyzer.ts) — that save
+ * is a nice-to-have seconds-scale availability optimization, not load-bearing:
+ * a full analysis already queued/running on this same project will supersede
+ * whatever the L0 stub would have written moments later anyway, so it is
+ * never worth blocking on a busy lock. Reclaiming a genuinely stale lock still
+ * happens (that's not "waiting", it's dead-holder cleanup), so this only ever
+ * short-circuits the case that used to burn the full KLAURO_ANALYSIS_LOCK_WAIT_MS
+ * (default 10 min, but a shorter override was seen stalling 120s in prod)
+ * before giving up.
+ */
+export async function withProjectAnalysisLockIfAvailable<T>(
+  projectPath: string,
+  fn: () => Promise<T>
+): Promise<ProjectAnalysisLockAttempt<T>> {
+  const projectDir = getProjectStorageDir(projectPath);
+  await fs.ensureDir(projectDir);
+  let lock: StorageLockHandle;
+  try {
+    lock = await acquireStorageLock(path.join(projectDir, 'analysis.lock'), {
+      waitMs: 0,
+      staleMs: parsePositiveIntegerEnv('KLAURO_ANALYSIS_LOCK_STALE_MS', 60 * 60_000),
+      purpose: `Analysis of ${projectPath}`,
+    });
+  } catch {
+    // Lock is actively held by a live (non-stale) holder — a zero-wait miss,
+    // not a failure. Caller's fallback (the full analysis pipeline) is
+    // expected to supersede whatever this attempt would have written.
+    return { acquired: false };
+  }
+  try {
+    const value = await fn();
+    return { acquired: true, value };
+  } finally {
+    await lock.release();
+    await removeProjectDirIfEmpty(projectDir);
   }
 }
 

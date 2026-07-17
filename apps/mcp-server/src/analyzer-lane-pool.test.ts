@@ -5,6 +5,7 @@ import {
   __setMemoryGuardOverrideForTests,
   __withLanePermitForTests,
   __getLanePermitsInUseForTests,
+  AnalysisWatchdogTimeoutError,
 } from './analyzer';
 
 function sleep(ms: number): Promise<void> {
@@ -163,6 +164,64 @@ test('same-project exclusivity is unaffected: at most one lane permit in use for
       assert.equal(__getLanePermitsInUseForTests(), 1);
     });
     assert.equal(__getLanePermitsInUseForTests(), 0);
+  });
+});
+
+test('watchdog fires on a never-resolving job: releases the permit and rejects with watchdog-timeout', async () => {
+  __resetAnalysisLanesForTests();
+  await withEnv({ KLAURO_ANALYSIS_CONCURRENCY: '1', KLAURO_ANALYSIS_WATCHDOG_MS: '20' }, async () => {
+    let neverResolvingSettled = false;
+    // Deliberately never resolves/rejects — models the catastrophic-regex
+    // hang: a lane execution that will not return control on its own.
+    const hungJob = __withLanePermitForTests<string>(
+      () => new Promise<string>(() => { /* never settles */ }),
+      undefined,
+      'hung-project',
+    );
+    hungJob.then(() => { neverResolvingSettled = true; }, () => { neverResolvingSettled = true; });
+
+    await assert.rejects(
+      hungJob,
+      (error: Error) => error instanceof AnalysisWatchdogTimeoutError && error.message.includes('watchdog-timeout') && error.message.includes('hung-project'),
+    );
+    assert.equal(neverResolvingSettled, true);
+
+    // The watchdog must have freed the lane even though the hung job's own
+    // promise is still pending underneath (it never resolves) — a follow-up
+    // job must be admitted immediately, not starve behind the zombie.
+    const startedAt = Date.now();
+    const result = await __withLanePermitForTests(async () => 'next-job-ok');
+    assert.equal(result, 'next-job-ok');
+    assert.ok(Date.now() - startedAt < 500, 'lane must be free immediately after the watchdog fires, not blocked by the still-hung job');
+  });
+});
+
+test('a late completion after the watchdog already fired is logged, not resurrected, and never crashes the process', async () => {
+  __resetAnalysisLanesForTests();
+  await withEnv({ KLAURO_ANALYSIS_CONCURRENCY: '1', KLAURO_ANALYSIS_WATCHDOG_MS: '15' }, async () => {
+    let resolveLate!: (value: string) => void;
+    const lateJob = __withLanePermitForTests<string>(
+      () => new Promise<string>((resolve) => { resolveLate = resolve; }),
+      undefined,
+      'late-completer',
+    );
+
+    await assert.rejects(lateJob, AnalysisWatchdogTimeoutError);
+
+    const originalConsoleError = console.error;
+    let sawLateCompletionLog = false;
+    console.error = ((...args: unknown[]) => {
+      if (String(args[0] ?? '').includes('LATE COMPLETION')) sawLateCompletionLog = true;
+    }) as typeof console.error;
+    try {
+      // The underlying computation "eventually finishes" — must not throw an
+      // unhandled rejection or otherwise crash the process; it just logs.
+      resolveLate('finished-after-all');
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    } finally {
+      console.error = originalConsoleError;
+    }
+    assert.equal(sawLateCompletionLog, true, 'expected a LATE COMPLETION log line for the post-watchdog settlement');
   });
 });
 

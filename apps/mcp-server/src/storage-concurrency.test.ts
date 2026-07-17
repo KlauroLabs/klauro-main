@@ -6,9 +6,11 @@ import { spawn } from 'child_process';
 import { test } from 'node:test';
 import {
   acquireStorageLock,
+  getProjectStorageDir,
   listAnalyses,
   pruneOrphanedTmpFiles,
   writeJsonAtomic,
+  withProjectAnalysisLockIfAvailable,
 } from './storage';
 
 const APP_DIR = path.resolve(__dirname, '..');
@@ -218,6 +220,52 @@ test('lock acquisition is bounded: a held lock yields a clear in-progress error,
   );
   assert.ok(Date.now() - startedAt < 5_000, 'bounded wait took far longer than the cap');
   await fs.remove(root);
+});
+
+test('withProjectAnalysisLockIfAvailable skips immediately (no stall) when analysis.lock is held', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-l0-yield-'));
+  const projectPath = path.join(root, 'project');
+  const previous = process.env.KLAURO_STORAGE_PATH;
+  process.env.KLAURO_STORAGE_PATH = path.join(root, 'storage');
+  try {
+    const projectDir = getProjectStorageDir(projectPath);
+    const lockPath = path.join(projectDir, 'analysis.lock');
+    await fs.ensureDir(projectDir);
+    // Hold the lock as a LIVE (this process's own pid), non-stale holder —
+    // the scenario the L0 fast-path needs to yield on immediately rather
+    // than waiting out the full analysis-lock timeout (previously up to
+    // 120s in prod) before giving up anyway.
+    await fs.writeFile(lockPath, JSON.stringify({
+      pid: process.pid,
+      hostname: os.hostname(),
+      acquired_at: new Date().toISOString(),
+    }));
+
+    const startedAt = Date.now();
+    const result = await withProjectAnalysisLockIfAvailable(projectPath, async () => 'should-not-run');
+    const elapsedMs = Date.now() - startedAt;
+
+    assert.equal(result.acquired, false, 'expected a zero-wait miss while the lock is held');
+    assert.ok(elapsedMs < 2_000, `expected a near-instant skip, took ${elapsedMs}ms`);
+  } finally {
+    restoreEnv('KLAURO_STORAGE_PATH', previous);
+    await fs.remove(root);
+  }
+});
+
+test('withProjectAnalysisLockIfAvailable acquires and runs fn when the lock is free', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-l0-free-'));
+  const projectPath = path.join(root, 'project');
+  const previous = process.env.KLAURO_STORAGE_PATH;
+  process.env.KLAURO_STORAGE_PATH = path.join(root, 'storage');
+  try {
+    const result = await withProjectAnalysisLockIfAvailable(projectPath, async () => 42);
+    assert.equal(result.acquired, true);
+    if (result.acquired) assert.equal(result.value, 42);
+  } finally {
+    restoreEnv('KLAURO_STORAGE_PATH', previous);
+    await fs.remove(root);
+  }
 });
 
 test('writeJsonAtomic removes its tmp file when the write throws', async () => {

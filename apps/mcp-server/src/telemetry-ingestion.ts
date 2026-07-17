@@ -805,5 +805,20 @@ async function writeJsonAtomic(filePath: string, value: unknown): Promise<void> 
   await fs.mkdirp(path.dirname(filePath));
   const tmpPath = path.join(os.tmpdir(), `klauro-telemetry-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.json`);
   await fs.writeJson(tmpPath, value, { spaces: 2 });
-  await fs.move(tmpPath, filePath, { overwrite: true });
+  try {
+    await fs.move(tmpPath, filePath, { overwrite: true });
+  } catch (error) {
+    // Residual TOCTOU: withProjectAnalysisLock's release path removes the
+    // project's storage dir if it finds it empty at that instant (see
+    // storage.ts removeProjectDirIfEmpty) — a self-telemetry write racing
+    // that check can have its just-created ingested-telemetry/ parent
+    // directory removed between the mkdirp above and this move/chmod,
+    // reproducing the same ENOENT one directory level up. One mkdirp+retry
+    // is enough: by the time this runs again, the directory is either back
+    // (because something else is also actively writing into it, same as
+    // us) or genuinely gone for good (nothing left to reconcile with).
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    await fs.mkdirp(path.dirname(filePath));
+    await fs.move(tmpPath, filePath, { overwrite: true });
+  }
 }
