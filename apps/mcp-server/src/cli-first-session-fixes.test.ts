@@ -229,3 +229,20 @@ test('install.sh: KLAURO_SKIP_NODE_CHECK=1 bypasses the ceiling (documented esca
   assert.equal(run.status, 0, run.output);
   assert.equal(run.npmCalled, true);
 });
+
+// ---------------------------------------------------------------------------
+// Unknown flags must error by name, never fall through to the positional path
+// slot (an unrecognized `--flag` otherwise becomes a directory to "connect"
+// and dies with a baffling ENOENT on a folder literally named --flag).
+// ---------------------------------------------------------------------------
+import { parseArgs } from './cli';
+
+test('parseArgs: an unknown --flag errors by name instead of becoming the path', () => {
+  assert.throws(() => parseArgs(['init', '--headless']), /Unknown option: --headless/);
+  assert.throws(() => parseArgs(['init', '--no-such-flag']), /Unknown option: --no-such-flag/);
+});
+
+test('parseArgs: a real positional path still lands in the path slot', () => {
+  const parsed = parseArgs(['init', '/tmp/some-repo']);
+  assert.equal(parsed.path, '/tmp/some-repo');
+});

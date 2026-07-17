@@ -2048,7 +2048,7 @@ async function withLogHandling<T>(json: boolean, quiet: boolean, fn: () => Promi
   }
 }
 
-function parseArgs(argv: string[]): ParsedArgs {
+export function parseArgs(argv: string[]): ParsedArgs {
   const parsed: ParsedArgs = {
     command: argv[0],
     path: undefined,
@@ -2191,6 +2191,12 @@ function parseArgs(argv: string[]): ParsedArgs {
       parsed.task.success_criteria = [...(parsed.task.success_criteria || []), argv[++i]];
     } else if (arg === '--response-profile') {
       parsed.task.response_profile = argv[++i] as AgentTask['response_profile'];
+    } else if (arg.startsWith('-')) {
+      // An unrecognized flag must never fall through to the positional-path
+      // slot: `init --sometypo` would otherwise "connect" a directory literally
+      // named --sometypo and die with a baffling ENOENT instead of naming the
+      // real problem.
+      throw new Error(`Unknown option: ${arg} (run \`klauro help\` for the supported flags)`);
     } else if (!parsed.path) {
       parsed.path = arg;
     } else {
