@@ -65,7 +65,7 @@ import { attachInteractionReach } from '../../../packages/analyzer-core/src/anal
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import { loadStoredConnectorAuth, normalizeServerUrl } from './connector-auth';
 import { arbitrate, detectCollisions, getGrants, heartbeatGrant, releaseGrant, requestGrant, type AgentKind, type CasEdgeRef, type WasCapabilityRef, type WorkClaim } from './coordination';
-import { attributeChange, appendClaim, checkEditLock, getActiveClaims, getPresence, readClaimLog, releaseAgentWithReason, watch } from './coordination/local-store';
+import { attributeChange, appendClaim, checkEditLock, extendClaim, getActiveClaims, getPresence, readClaimLog, readSurprisesFor, releaseAgentWithReason, watch } from './coordination/local-store';
 import { remoteActive, remoteCheck, remoteClaim, remoteRelease } from './coordination/remote-transport';
 import { resolveFabricSettings } from './coordination/fabric-config';
 import { ensureWriteHookStarted, closeAllWriteHooks, shouldActivateWriteHook } from './coordination/write-hook';
@@ -524,7 +524,7 @@ const GATEWAY_TOOL_GROUPS: Array<{ label: string; tools: string[] }> = [
   { label: 'Coverage Intelligence', tools: ['get_coverage_gaps'] },
   { label: 'Change history', tools: ['get_changes_since', 'get_changes_between', 'get_changes_for_node', 'get_changes_for_file', 'get_changes_for_entry_point', 'get_change_summary', 'get_hot_spots', 'get_analysis_at', 'get_analysis_snapshots'] },
   { label: 'Watch mode', tools: ['start_watch', 'stop_watch', 'get_watch_status', 'list_watches', 'poll_watch_changes', 'install_gauntlet_watcher', 'list_gauntlet_watchers', 'stop_gauntlet_watcher', 'run_incremental_gauntlet'] },
-  { label: 'Multi-agent coordination', tools: ['claim_work', 'release_work', 'heartbeat_work', 'get_active_agents', 'check_collision', 'check_conceptual_conflicts', 'get_in_flight_changes', 'plan_intent_merge', 'plan_parallel_work', 'subscribe_workspace', 'fab_claim_work', 'fab_check_collision', 'fab_release_work', 'fab_list_active_work'] },
+  { label: 'Multi-agent coordination', tools: ['claim_work', 'release_work', 'heartbeat_work', 'get_active_agents', 'check_collision', 'check_conceptual_conflicts', 'get_in_flight_changes', 'plan_intent_merge', 'plan_parallel_work', 'subscribe_workspace', 'fab_claim_work', 'fab_extend', 'fab_check_collision', 'fab_release_work', 'fab_list_active_work'] },
 ];
 
 function buildGatewayDescription(registry: Map<string, RegisteredToolEntry>, profile: ToolProfile): string {
@@ -6176,6 +6176,42 @@ function registerTools(server: McpServer) {
   );
 
   server.registerTool(
+    'fab_extend',
+    {
+      title: 'Fab: Extend Claim (advisory)',
+      description: 'Extend an ACTIVE advisory claim mid-task ("I also need to touch X — safe?") without losing claim identity: same claim_id, union of old+new paths/symbols, original intent and created_at preserved. The overlap scan runs against the ADDED scope only and is surfaced inline — extension always succeeds, never denied. Local-tier only until the remote transport gains an extend endpoint; when a remote fabric is configured the response says so explicitly.',
+      inputSchema: {
+        agent_id: z.string().describe('Agent whose active advisory claim to extend'),
+        add_paths: z.array(z.string()).optional().describe('Paths to append to the claim scope'),
+        add_symbols: z.array(z.string()).optional().describe('Symbol/node ids to append to the claim scope'),
+        workspace: z.string().optional().describe('Workspace id (defaults to the repo .klaurorc fabric.workspace from `klauro init`, then $FAB_WS, else "poc")'),
+      } as any,
+    } as any,
+    async ({ agent_id, add_paths, add_symbols, workspace }: any) => withErrorHandling(async () => {
+      const settings = await advisoryFabricSettings(workspace);
+      const ws = settings.workspace;
+      const outcome = await extendClaim(ws, `${ws}:${agent_id}`, add_paths || [], add_symbols || []);
+      const remoteNote = settings.remote
+        ? 'Remote fabric is configured but claim extension is LOCAL-ONLY for now — agents on other machines still see the pre-extension scope.'
+        : settings.localReason;
+      return json({
+        status: 'extended',
+        tier: 'local',
+        workspace: ws,
+        agent_id,
+        seq: outcome.claim.seq,
+        intent: outcome.claim.intent,
+        paths: outcome.claim.scope.paths,
+        symbols: outcome.claim.scope.symbols,
+        conflicts: outcome.conflicts,
+        warning: [remoteNote, outcome.conflicts.length
+          ? `ADVISORY: ${outcome.conflicts.length} other agent(s) overlap the ADDED scope — coordinate before writing.`
+          : undefined].filter(Boolean).join(' ') || undefined,
+      });
+    })
+  );
+
+  server.registerTool(
     'fab_check_collision',
     {
       title: 'Fab: Check Collision (advisory)',
@@ -6302,18 +6338,22 @@ function registerTools(server: McpServer) {
       description: 'List active ADVISORY fabric claims (the awareness surface for fab_claim_work). For the ENFORCED grant/lease state and its FIFO queue, use get_active_agents instead. List every active advisory claim in a workspace on this host (CLI-parity for `fab.ts active`): each agent\'s intent, claimed paths, and symbols. The awareness surface — call before starting work to see who else is here and what they are touching.',
       inputSchema: {
         workspace: z.string().optional().describe('Workspace id (defaults to the repo .klaurorc fabric.workspace from `klauro init`, then $FAB_WS, else "poc")'),
+        agent_id: z.string().optional().describe('When provided, also returns surprise events addressed to this agent (contract divergences a peer\'s in-flight change caused in scope you depend on)'),
       } as any,
     } as any,
-    async ({ workspace }: any) => withErrorHandling(async () => {
+    async ({ workspace, agent_id }: any) => withErrorHandling(async () => {
       const settings = await advisoryFabricSettings(workspace);
       const ws = settings.workspace;
       const remote = settings.remote;
+      // Surprise events live in the local claim log regardless of tier.
+      const surprises = agent_id ? await readSurprisesFor(ws, agent_id) : undefined;
       let degradeNote: string | undefined;
       if (remote) {
         try {
           const res = await remoteActive(remote, ws);
           return json({
             workspace: ws,
+            surprises,
             tier: 'remote',
             remote_url: remote.baseUrl,
             count: res.count,
