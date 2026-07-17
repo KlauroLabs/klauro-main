@@ -56,11 +56,20 @@ const VERB_PHRASE_PREFIX = /^(resolve|build|get|set|run|make|install|uninstall|u
  *  CAPTURING junk like "=" in the first place, but this filter is kept as
  *  defense-in-depth for whatever still gets through — a manifest/analyzer
  *  producing a legitimately weird productName should fail closed here rather
- *  than mint a phantom installer unit. */
+ *  than mint a phantom installer unit.
+ *
+ *  Belt-and-suspenders against unresolved shell/NSIS template variables: the
+ *  extraction layer (distribution-artifact-analyzer.ts's resolveTemplateVar)
+ *  already rejects a captured name when a `${VAR}`/`$VAR` inside it fails to
+ *  resolve, but whatever still gets through (a different extraction path, a
+ *  future analyzer, hand-built metadata) must not mint a unit named e.g.
+ *  "Zerac $BINARY_NAME" — an unresolved template remnant is never a real
+ *  product name, regardless of how it arrived here. */
 function isRealProductNameToken(value: string): boolean {
   const trimmed = value.trim();
   if (trimmed.length < 3) return false;
   if (!/^[A-Za-z]/.test(trimmed)) return false; // rejects "=", "==", digits-only, punctuation
+  if (/\$\{[A-Za-z0-9_]+\}|\$[A-Za-z_][A-Za-z0-9_]*/.test(trimmed)) return false; // rejects unresolved $VAR/${VAR} template remnants
   if (VERB_PHRASE_PREFIX.test(trimmed)) return false;
   const tokens = trimmed.split(/\s+/).filter(Boolean);
   // Every token is a platform/build-shape word ("windows", "windows prebuilt")

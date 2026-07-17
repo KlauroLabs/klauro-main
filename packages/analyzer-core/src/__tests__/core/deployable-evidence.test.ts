@@ -277,6 +277,25 @@ describe('collectDeployableEvidence', () => {
     expect(result.some(item => item.kind === 'installer')).toBe(false);
   });
 
+  test('an unresolved $VAR template remnant in product_name never mints a standalone installer unit (belt-and-suspenders)', () => {
+    // Belt half of the template-var-guard fix: even if a candidate product_name
+    // still carrying an unresolved shell/NSIS variable reaches this layer
+    // (bypassing the extraction-layer resolveTemplateVar rejection in
+    // distribution-artifact-analyzer.ts), isRealProductNameToken must fail
+    // closed rather than mint a unit identified by e.g. "Zerac $BINARY_NAME".
+    projectPath = tempProject();
+    const nodes = [installerNode({ product_name: 'Zerac $BINARY_NAME' })];
+    const result = collectDeployableEvidence({ projectPath, nodes, entryPoints: [], exitPoints: [] });
+    expect(result.some(item => item.kind === 'installer')).toBe(false);
+  });
+
+  test('an unresolved ${VAR}-braced remnant in product_name never mints a standalone installer unit', () => {
+    projectPath = tempProject();
+    const nodes = [installerNode({ product_name: 'Zerac ${BINARY_NAME}' })];
+    const result = collectDeployableEvidence({ projectPath, nodes, entryPoints: [], exitPoints: [] });
+    expect(result.some(item => item.kind === 'installer')).toBe(false);
+  });
+
   test('a genuine product name is still accepted (positive control)', () => {
     projectPath = tempProject();
     const nodes = [installerNode({ product_name: 'Zerac', binary_names: ['Zerac.exe'], platforms: ['windows'] })];
@@ -365,6 +384,40 @@ describe('collectDeployableEvidence', () => {
     expect(container).toBeDefined();
     expect(container!.name).not.toBe('prj_wbW33m-wfETn1N41');
     expect(container!.name).not.toMatch(/^prj_/);
+    // A hash/storage-id-shaped displayName has no honest name to fall through
+    // to, so it lands on the stable placeholder.
+    expect(container!.name).toBe('unnamed-service');
+  });
+
+  test('root-container display name uses the RESOLVED system name, not "unnamed-service" (#46)', () => {
+    projectPath = tempProject();
+    // Same shape as the prior test (root Dockerfile, no named stem, no
+    // service_aliases) but with a resolved product-title-like displayName —
+    // the kind resolveSystemDisplayName produces from a README/manifest name,
+    // as opposed to a raw checkout-folder basename or storage id. This must
+    // pass straight through safeDeployableName and NOT collapse to the
+    // 'unnamed-service' last-resort placeholder.
+    fs.writeFileSync(path.join(projectPath, 'Dockerfile'), 'FROM rust:1.75\nCOPY target/release/coordinator /usr/local/bin/\nENTRYPOINT ["/usr/local/bin/coordinator"]\n');
+
+    const result = collectDeployableEvidence({
+      projectPath,
+      nodes: [
+        {
+          id: 'dockerfile_root',
+          name: 'Dockerfile',
+          type: 'container_image_definition',
+          source: { file: 'Dockerfile', line: 1 },
+          metadata: { base_images: ['rust:1.75'], command: 'coordinator' } as any,
+        } as CASNode,
+      ],
+      entryPoints: [],
+      exitPoints: [],
+      displayName: 'Acme Scientific',
+    });
+    const container = result.find(item => item.kind === 'container');
+    expect(container).toBeDefined();
+    expect(container!.name).toBe('Acme Scientific');
+    expect(container!.name).not.toBe('unnamed-service');
   });
 
   test('Tier 2: Cargo [[bin]] target is detected from Cargo.toml', () => {
@@ -727,6 +780,60 @@ describe('collectDeployableEvidence', () => {
     // installer's membership. (Evidence layer: absence of it from any ships_paths.)
     const allShipsPaths = result.flatMap(item => item.ships_paths ?? []);
     expect(allShipsPaths).not.toContain('worker');
+  });
+
+  test('bundling inherits the template-var-guard: an unresolved $VAR product name mints no unit, so the bins it would have named stay independent', () => {
+    // Same shape as the zerac/poc worked example above, except the installer's
+    // product_name still carries an unresolved shell variable (the observed
+    // live defect: "Zerac $BINARY_NAME"). Because installerArtifactIdentity/
+    // isRealProductNameToken now rejects that as an identity, NO installer unit
+    // is minted at all — and since a rejected identity mints no unit, it has no
+    // ships_paths to bundle client/client-service into. Both bins must surface
+    // as independent Tier-2 candidates rather than disappearing into a phantom
+    // "Zerac $BINARY_NAME" unit.
+    projectPath = tempProject();
+    fs.writeFileSync(
+      path.join(projectPath, 'Cargo.toml'),
+      [
+        '[package]',
+        'name = "some-poc"',
+        'version = "0.1.0"',
+        '',
+        '[[bin]]',
+        'name = "client"',
+        'path = "src/client/main.rs"',
+        '',
+        '[[bin]]',
+        'name = "client-service"',
+        'path = "src/client-service/main.rs"',
+        '',
+      ].join('\n')
+    );
+    const nodes: CASNode[] = [
+      {
+        id: 'installer_tainted',
+        name: 'Installer: Tainted',
+        type: 'distribution_installer',
+        source: { file: 'installer/install.sh', line: 1 },
+        metadata: {
+          topology_surface: 'distribution-artifacts',
+          artifact_kind: 'installer',
+          distribution_role: 'installer',
+          product_name: 'Zerac $BINARY_NAME',
+          binary_names: ['client', 'client-service'],
+        } as any,
+      },
+    ];
+
+    const result = collectDeployableEvidence({ projectPath, nodes, entryPoints: [], exitPoints: [] });
+
+    // No installer unit minted at all — the identity was rejected outright.
+    expect(result.some(item => item.kind === 'installer')).toBe(false);
+
+    // Both bins remain independent Tier-2 candidates, un-bundled.
+    const bins = result.filter(item => item.kind === 'bin');
+    expect(new Set(bins.map(b => b.name))).toEqual(new Set(['client', 'client-service']));
+    for (const bin of bins) expect(bin.bundled_into).toBeUndefined();
   });
 });
 

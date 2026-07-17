@@ -111,4 +111,51 @@ describe('DistributionArtifactAnalyzer', () => {
     expect(productName).not.toBe('=');
     if (productName) expect(productName.trim()).not.toBe('=');
   });
+
+  test('a bare $VAR embedded in a product-name capture resolves against a nearby assignment', async () => {
+    // Live-repo defect: an installer unit captured as "Zerac $BINARY_NAME" — a
+    // product-name capture with an UNRESOLVED bare shell variable (no braces)
+    // mid-string. The letter-leading capture guard admits it ("Z..." starts
+    // with a letter), so resolution must reach into the bare-$VAR case too,
+    // not just the braced "${VAR}" shape already handled above.
+    projectPath = tempProject();
+    fs.writeFileSync(
+      path.join(projectPath, 'build-installer.sh'),
+      [
+        '#!/bin/bash',
+        'BINARY_NAME=zeracd',
+        'APP_NAME="Zerac $BINARY_NAME"',
+        'makensis installer.nsi',
+      ].join('\n')
+    );
+
+    const contribution = await analyzer.analyze({ projectPath });
+    const node = (contribution.nodes ?? []).find(n => (n.metadata as any)?.artifact_kind === 'installer');
+    expect(node).toBeDefined();
+    const productName = (node!.metadata as any).product_name as string | undefined;
+    expect(productName).toBe('Zerac zeracd');
+  });
+
+  test('a bare $VAR embedded in a product-name capture with NO resolvable assignment is rejected as an identity', async () => {
+    projectPath = tempProject();
+    fs.writeFileSync(
+      path.join(projectPath, 'build-installer.sh'),
+      [
+        '#!/bin/bash',
+        'APP_NAME="Zerac $BINARY_NAME"',
+        'makensis installer.nsi',
+      ].join('\n')
+    );
+
+    const contribution = await analyzer.analyze({ projectPath });
+    const node = (contribution.nodes ?? []).find(n => (n.metadata as any)?.artifact_kind === 'installer');
+    expect(node).toBeDefined();
+    const productName = (node!.metadata as any).product_name as string | undefined;
+    // The unresolved bare-$VAR value must never leak verbatim into product_name.
+    if (productName !== undefined) expect(productName).not.toMatch(/\$[A-Za-z_]/);
+    // With no resolvable assignment, the raw-template rawName is rejected and the
+    // file-basename fallback (both "build" and "installer" being strip-tokens)
+    // yields nothing product-shaped either — no identity survives at all.
+    expect(productName).toBeUndefined();
+  });
 });

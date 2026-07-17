@@ -406,25 +406,48 @@ function productNameFromFile(file: string): string | undefined {
   return clean || undefined;
 }
 
-/** Resolve a `${VAR}` NSIS/shell-style template reference against `!define VAR value`
- *  (or `set VAR=value` / `VAR=value`) directives found in the same file. Returns
- *  undefined if the variable has no resolvable definition, so callers can drop
- *  the unresolved name instead of leaking raw template text like
- *  "${APPNAMEANDVERSION}" into a deployable name. */
+/** Resolve `${VAR}` and bare `$VAR` NSIS/shell-style template references —
+ *  whether the ENTIRE captured value is a template reference (`"${APPNAMEANDVERSION}"`)
+ *  or a bare `$VAR` sits INSIDE a larger captured string (`"Zerac $BINARY_NAME"`,
+ *  a product-name capture with an unresolved shell variable mid-string that the
+ *  old `^\$\{...\}$`-only match let straight through since the `$` isn't at the
+ *  start) — against `!define VAR value` (or `set VAR=value` / `VAR=value`)
+ *  directives found in the same file/script. Every `${VAR}`/`$VAR` occurrence in
+ *  `value` must resolve; if even one does not, the whole value is REJECTED
+ *  (undefined) rather than partially substituted or leaked verbatim — a
+ *  half-resolved "Zerac $BINARY_NAME" string is exactly the kind of
+ *  template-var-shaped identity this guards against. */
 function resolveTemplateVar(value: string, content: string): string | undefined {
-  const match = value.match(/^\$\{([A-Za-z0-9_]+)\}$/);
-  if (!match) return isUnresolvedTemplateText(value) ? undefined : value;
-  const varName = match[1];
-  const defineMatch = content.match(new RegExp(`^\\s*!define\\s+${escapeRegex(varName)}\\s+"?([^"\\n\\r]+?)"?\\s*$`, 'm'))
-    || content.match(new RegExp(`^\\s*(?:set\\s+)?${escapeRegex(varName)}\\s*=\\s*"?([^"\\n\\r]+?)"?\\s*$`, 'mi'));
-  const resolved = defineMatch?.[1]?.trim();
-  if (!resolved || isUnresolvedTemplateText(resolved)) return undefined;
-  return resolved;
+  if (!/\$[A-Za-z_{]/.test(value)) return value;
+  let allResolved = true;
+  const substituted = value.replace(/\$\{([A-Za-z0-9_]+)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g, (match, braced, bare) => {
+    const varName = braced || bare;
+    const resolved = resolveVarDefinition(varName, content);
+    if (resolved === undefined || isUnresolvedTemplateText(resolved)) {
+      allResolved = false;
+      return match;
+    }
+    return resolved;
+  });
+  if (!allResolved) return undefined;
+  const trimmed = substituted.trim();
+  return trimmed || undefined;
 }
 
-/** True if `value` still contains unresolved `${...}` template text. */
+/** Look up a single variable's definition via `!define VAR value` (NSIS) or
+ *  `[set] VAR=value` (shell) directives in `content`. Returns undefined when
+ *  no resolvable definition exists. */
+function resolveVarDefinition(varName: string, content: string): string | undefined {
+  const defineMatch = content.match(new RegExp(`^\\s*!define\\s+${escapeRegex(varName)}\\s+"?([^"\\n\\r]+?)"?\\s*$`, 'm'))
+    || content.match(new RegExp(`^\\s*(?:set\\s+)?${escapeRegex(varName)}\\s*=\\s*"?([^"\\n\\r]+?)"?\\s*$`, 'mi'));
+  return defineMatch?.[1]?.trim();
+}
+
+/** True if `value` still contains unresolved `${...}` or bare `$VAR` template
+ *  text — a shell/NSIS variable reference that never got substituted with a
+ *  real value and must never leak into a deployable identity or binary name. */
 function isUnresolvedTemplateText(value: string): boolean {
-  return /\$\{[A-Za-z0-9_]+\}/.test(value);
+  return /\$\{[A-Za-z0-9_]+\}|\$[A-Za-z_][A-Za-z0-9_]*/.test(value);
 }
 
 function productNameFromService(description: string): string | undefined {
