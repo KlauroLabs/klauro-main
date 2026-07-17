@@ -419,3 +419,67 @@ test('detectConceptualConflictsFromSubstrate: no conflict when participants\' at
 
   await env.cleanup();
 });
+
+test('detectConceptualConflictsFromSubstrate: W4 step 2 fold — a write-hook-TIEBROKEN delta (no active claim) now participates in contract-divergence detection', async () => {
+  const env = await freshEnv();
+  const workspace = path.join(env.storageDir, 'proj-tiebreak-fold');
+
+  const main = makeCas({
+    timestamp: '2026-01-01T00:00:00.000Z',
+    nodes: [
+      { id: 'sym:getUser', name: 'getUser', file: 'src/auth.ts', return_type: 'User | null' },
+      { id: 'sym:renderProfile', name: 'renderProfile', file: 'src/profile.ts', return_type: 'string' },
+    ],
+    edges: [{ source: 'sym:renderProfile', target: 'sym:getUser', type: 'calls' }],
+  });
+  const inflight = makeCas({
+    timestamp: '2026-01-01T00:05:00.000Z',
+    nodes: [
+      { id: 'sym:getUser', name: 'getUser', file: 'src/auth.ts', return_type: 'User' }, // agent-a: drops nullability (claim-attributed)
+      { id: 'sym:renderProfile', name: 'renderProfile', file: 'src/profile.ts', return_type: 'string', line: 12 }, // agent-b: touches the caller (NOT claim-attributed)
+    ],
+    edges: [{ source: 'sym:renderProfile', target: 'sym:getUser', type: 'calls' }],
+  });
+  await saveAnalysis(workspace, main, 'main');
+  await saveAnalysis(workspace, inflight, 'in-flight');
+
+  // agent-a holds a real active claim over src/auth.ts -> shows up in `participants`.
+  await appendClaim(workspace, makeClaim(workspace, {
+    claim_id: 'claim-a', agent_id: 'agent-a', intent: 'make getUser non-null',
+    scope: { repo: workspace, paths: ['src/auth.ts'], symbols: [] },
+  }));
+  // agent-b has NO active claim over src/profile.ts at all -- only a write-hook
+  // announced-edit whose lease has since expired (ttlMs: 0). getActiveClaims
+  // will never see it, so src/profile.ts's delta can ONLY be resolved via the
+  // write-hook tiebreaker (attributed.tiebroken), never attributed.participants.
+  await announceEdit(workspace, 'agent-b', ['src/profile.ts'], { intent: 'add avatar to renderProfile', ttlMs: 0 });
+
+  const cas: ConflictCas = {
+    nodes: [
+      { id: 'sym:getUser', name: 'getUser' },
+      { id: 'sym:renderProfile', name: 'renderProfile' },
+    ],
+    edges: [{ source: 'sym:renderProfile', target: 'sym:getUser', type: 'calls' }],
+  };
+
+  const attributed = await getAttributedInFlightState(workspace);
+  assert.equal(attributed.participants.length, 1, 'only agent-a has an active claim');
+  assert.equal(attributed.participants[0].agent_id, 'agent-a');
+  const tb = attributed.tiebroken.find((t) => t.symbol_id === 'sym:renderProfile');
+  assert.ok(tb, 'renderProfile must be resolved via the write-hook tiebreaker, not a claim');
+  assert.equal(tb!.agent_id, 'agent-b');
+
+  // BEFORE the W4 step 2 fold, `detectConceptualConflictsFromSubstrate` built its
+  // `states` from `attributed.participants` ONLY -- with just 1 participant, the
+  // `states.length < 2` guard fired and this call returned zero conflicts no
+  // matter what the tiebroken bucket held, even though agent-b's tiebroken edit
+  // is a real, honestly-attributed caller edit. AFTER the fold, the tiebroken
+  // delta contributes its own AgentInFlightState entry, so the two-participant
+  // contract-divergence detector has something to compare against.
+  const result = await detectConceptualConflictsFromSubstrate(workspace, cas);
+  const contractDivergence = result.conflicts.filter((c) => c.kind === 'contract-divergence');
+  assert.equal(contractDivergence.length, 1, 'the tiebroken delta must now be visible to the conflict detector');
+  assert.deepEqual([...contractDivergence[0].agents].sort(), ['agent-a', 'agent-b']);
+
+  await env.cleanup();
+});

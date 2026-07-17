@@ -83,7 +83,36 @@ export interface ClaimLogEntry extends WorkClaim {
    * active-claim view; they are a pure event-log record for visibility, not
    * a claim on anything.
    */
-  kind?: 'claim' | 'unclaimed-edit';
+  kind?: 'claim' | 'unclaimed-edit' | 'surprise';
+  /**
+   * Present only when `kind === 'surprise'` (W4 step 2, SPEC-COORDINATION-FABRIC-V3
+   * §5/§9 "surprise -> 0" pushed from a metric into an ambient event): a
+   * `contract-divergence` finding from `planIntentMergeFromSubstrate` that
+   * PASSES textual merge, persisted so the affected participant can learn of
+   * it via the log instead of first learning at merge time. Like
+   * `unclaimed-edit`, always logged with `status: 'released'` so it can never
+   * be picked up as an active claim — pure event-log visibility, not a claim
+   * on anything. `agent_id` on the entry is the AFFECTED agent (the one this
+   * surprise is addressed to), matching `unclaimed-edit`'s convention of
+   * using `agent_id` as "who this event is about."
+   */
+  surprise?: SurpriseDetail;
+}
+
+/**
+ * One contract-divergence surprise (W4 step 2): `changer` altered `symbol`'s
+ * contract while `affected`'s concurrent, claim/write-hook-attributed edit
+ * touches a caller that still assumes the old contract — a finding that
+ * passes textual merge, so git would land it silently. Persisted addressed to
+ * `affected` (see `ClaimLogEntry.surprise`) so the ambient awareness surface
+ * can deliver it without `affected` having to re-run `plan_intent_merge`
+ * itself and read `surprises[]` proactively.
+ */
+export interface SurpriseDetail {
+  symbol: string;
+  changer: string;
+  affected: string;
+  explanation: string;
 }
 
 /** A same-machine edit-lock overlap finding for `checkEditLock`. */
@@ -319,7 +348,7 @@ async function primeCacheAfterWrite(logPath: string, entries: ClaimLogEntry[]): 
  */
 async function appendClaimLocked(
   workspaceId: string,
-  claim: Omit<WorkClaim, 'seq'> & { seq?: number; kind?: ClaimLogEntry['kind'] },
+  claim: Omit<WorkClaim, 'seq'> & { seq?: number; kind?: ClaimLogEntry['kind']; surprise?: ClaimLogEntry['surprise'] },
   existing: ClaimLogEntry[]
 ): Promise<ClaimLogEntry> {
   const nextSeq = existing.reduce((max, e) => Math.max(max, e.seq), 0) + 1;
@@ -435,7 +464,7 @@ async function compactIfNeeded(
  */
 export async function withWorkspaceLock<T>(
   workspaceId: string,
-  fn: (ctx: { log: ClaimLogEntry[]; append: (claim: Omit<WorkClaim, 'seq'> & { seq?: number; kind?: ClaimLogEntry['kind'] }) => Promise<ClaimLogEntry> }) => Promise<T>
+  fn: (ctx: { log: ClaimLogEntry[]; append: (claim: Omit<WorkClaim, 'seq'> & { seq?: number; kind?: ClaimLogEntry['kind']; surprise?: ClaimLogEntry['surprise'] }) => Promise<ClaimLogEntry> }) => Promise<T>
 ): Promise<T> {
   const dir = getStoreDir(workspaceId);
   ensureDirSync(dir);
@@ -454,7 +483,7 @@ export async function withWorkspaceLock<T>(
  */
 export async function appendClaim(
   workspaceId: string,
-  claim: Omit<WorkClaim, 'seq'> & { seq?: number; kind?: ClaimLogEntry['kind'] }
+  claim: Omit<WorkClaim, 'seq'> & { seq?: number; kind?: ClaimLogEntry['kind']; surprise?: ClaimLogEntry['surprise'] }
 ): Promise<ClaimLogEntry> {
   const dir = getStoreDir(workspaceId);
   ensureDirSync(dir);
@@ -650,6 +679,74 @@ export async function recordUnclaimedEdit(
   });
 }
 
+/** Deterministic claim_id for a surprise, so re-planning the same finding
+ *  DEDUPES against the log instead of appending a duplicate every time
+ *  `plan_intent_merge` re-runs (unlike `recordUnclaimedEdit`'s
+ *  timestamp-suffixed id, which deliberately wants every occurrence visible —
+ *  a surprise is the same fact re-observed, not a new event each time). */
+function surpriseClaimId(workspaceId: string, detail: Pick<SurpriseDetail, 'symbol' | 'changer' | 'affected'>): string {
+  return `surprise:${workspaceId}:${detail.symbol}:${detail.changer}:${detail.affected}`;
+}
+
+/**
+ * Persist a `contract-divergence` surprise (W4 step 2, SPEC-COORDINATION-FABRIC-V3
+ * §5/§9) to the claim log, addressed to `detail.affected`, so that participant
+ * learns of it ambiently instead of first at merge time — "kills
+ * learn-at-merge-time." Deduped by `(symbol, changer, affected)`: if this
+ * exact finding was already persisted (any time in the log's history — the
+ * dedup check reads the FULL log, not just active entries), this is a no-op
+ * and returns `null` rather than appending a duplicate on every re-plan.
+ * Never a claim: always `status: 'released'`, `kind: 'surprise'`.
+ */
+export async function persistSurprise(
+  workspaceId: string,
+  detail: SurpriseDetail
+): Promise<ClaimLogEntry | null> {
+  const dir = getStoreDir(workspaceId);
+  ensureDirSync(dir);
+  return withLock(workspaceId, async () => {
+    let existing = await readClaimLog(workspaceId);
+    existing = await compactIfNeeded(workspaceId, existing);
+    const claimId = surpriseClaimId(workspaceId, detail);
+    const alreadyLogged = existing.some((e) => e.kind === 'surprise' && e.claim_id === claimId);
+    if (alreadyLogged) return null;
+
+    const now = new Date().toISOString();
+    return appendClaimLocked(
+      workspaceId,
+      {
+        claim_id: claimId,
+        workspace_id: workspaceId,
+        agent_id: detail.affected,
+        agent_kind: 'other',
+        scope: { repo: workspaceId, paths: [], symbols: [detail.symbol] },
+        intent: `surprise: ${detail.explanation}`,
+        status: 'released',
+        created_at: now,
+        ttl_ms: 0,
+        heartbeat_at: now,
+        kind: 'surprise',
+        surprise: detail,
+      },
+      existing
+    );
+  });
+}
+
+/**
+ * Every surprise currently persisted for `agentId` in `workspaceId` — the
+ * ambient-delivery read side of `persistSurprise`. Reads the full log (a
+ * surprise is never superseded/expired the way an active claim is; once
+ * persisted, it stays visible history), filters to `kind === 'surprise'`
+ * entries addressed to `agentId`.
+ */
+export async function readSurprisesFor(workspaceId: string, agentId: string): Promise<SurpriseDetail[]> {
+  const log = await readClaimLog(workspaceId);
+  return log
+    .filter((e): e is ClaimLogEntry & { surprise: SurpriseDetail } => e.kind === 'surprise' && e.agent_id === agentId && !!e.surprise)
+    .map((e) => e.surprise);
+}
+
 /** Result of `releaseAgentWithReason`: the released entries, plus (only when
  *  nothing was released) an explicit, never-silent reason why. */
 export interface ReleaseOutcome {
@@ -703,6 +800,143 @@ export async function releaseAgentWithReason(
     released,
     reason: `Agent "${agentId}" has no ACTIVE claims left in workspace "${workspaceId}" (already released, superseded, or TTL-expired) — this release is a no-op, not an error.`,
   };
+}
+
+/**
+ * W6 — scoped primitives (SPEC-COORDINATION-FABRIC-V3 §6.3/§8: "diff/isolate
+ * ONLY my claimed paths, so participants never reach for `git stash`"). Direct
+ * answer to the stash-clobber incident (§6.3/§3.2): one agent's tree-global
+ * `git stash` swept a peer's uncommitted edits because git has no concept of
+ * "whose paths these are" — only the fabric's claim log does. `planScopedGitOp`
+ * is the pure lookup a CLI verb (`fab diff`/`fab stash`, scripts/fab.ts) uses to
+ * find the SAFE scope for a git operation instead of defaulting to the whole
+ * tree: the union of `agentId`'s own active claim paths, plus every OTHER active
+ * agent's claims (so the caller can decide what a whole-tree fallback would put
+ * at risk). Read-only — takes no claim, never blocks; the CLI verb decides what
+ * to do with the plan (§2: awareness, never enforcement).
+ */
+export interface ScopedGitOpPlan {
+  /** Union of `agentId`'s own active claim paths — the safe scope for a git op. Empty if the agent holds no active claim. */
+  paths: string[];
+  /** Every OTHER active agent's claims at decision time (what a whole-tree op would put at risk). */
+  peers: WorkClaim[];
+}
+
+export async function planScopedGitOp(workspaceId: string, agentId: string): Promise<ScopedGitOpPlan> {
+  const active = await getActiveClaims(workspaceId);
+  const paths = [...new Set(active.filter((c) => c.agent_id === agentId).flatMap((c) => c.scope.paths))];
+  const peers = active.filter((c) => c.agent_id !== agentId);
+  return { paths, peers };
+}
+
+/**
+ * W6 — tree-global-op warning (SPEC-COORDINATION-FABRIC-V3 §6.3/§8). Fires
+ * (returns non-empty `peers`, and prints via `print`) only when OTHER agents
+ * currently hold active claims — i.e. only when a tree-global git operation
+ * (`git stash`/`checkout`/`reset`/`clean` with no pathspec) could actually
+ * clobber someone else's uncommitted work. This is an AWARENESS affordance,
+ * never a block (§2 "informed concurrency"): it always returns normally and
+ * never throws or prevents the caller from proceeding; the caller (a `fab`
+ * verb, or any tree-global git wrapper) decides what to do with the warning.
+ * Exported from `write-hook.ts` too (its "public surface") so any tree-global
+ * wrapper that already imports write-hook helpers can reach this without a
+ * second import of local-store.
+ */
+export async function warnIfTreeGlobalOp(
+  workspaceId: string,
+  agentId: string,
+  options: { print?: (message: string) => void } = {}
+): Promise<{ peers: WorkClaim[] }> {
+  const active = await getActiveClaims(workspaceId);
+  const peers = active.filter((c) => c.agent_id !== agentId);
+  if (peers.length > 0) {
+    const print = options.print ?? ((m: string) => console.error(m));
+    print(
+      `WARNING: ${peers.length} other agent(s) hold active claims on this tree — a tree-global git operation ` +
+        `(stash/checkout/reset/clean with no pathspec) can sweep up their uncommitted work: ` +
+        peers.map((p) => `${p.agent_id} (${p.intent}) -> ${JSON.stringify(p.scope.paths)}`).join('; ') +
+        `. Advisory only — never a block — but scope the operation to your own claimed paths where possible.`
+    );
+  }
+  return { peers };
+}
+
+/**
+ * W7 — claim extension (SPEC-COORDINATION-FABRIC-V3 §6.3/§8: "I also need to
+ * touch X — safe?"). Direct answer to the incident where an agent doing the
+ * CORRECT fix needed 3 files outside its declared claim, with no affordance to
+ * extend scope — it either under-fixed or went dark. Appends an LWW-superseding
+ * entry under the SAME `claim_id` (so the claim's identity — who, what, since
+ * when — is preserved, not replaced) whose `scope` is the UNION of the prior
+ * scope and `addPaths`/`addSymbols`. Runs the identical overlap scan `appendClaim`
+ * callers already run before claiming (belt-and-suspenders): conflicts are
+ * returned INLINE, never denied — the extension always succeeds (§2/§4: awareness
+ * is never gated). The whole read-decide-append sequence runs under ONE
+ * `withWorkspaceLock` acquisition (same reasoning as `releaseAgent`'s own
+ * comment above) so a concurrent extend/claim on the identical `claim_id`
+ * cannot interleave an unseen append between this call's read and its append.
+ */
+export async function extendClaim(
+  workspaceId: string,
+  claimId: string,
+  addPaths: string[],
+  addSymbols: string[] = []
+): Promise<{ claim: ClaimLogEntry; conflicts: EditLockConflict[] }> {
+  return withWorkspaceLock(workspaceId, async ({ log, append }) => {
+    const nowMs = Date.now();
+    const activeSet = deriveActiveClaims(log, nowMs);
+    const prior = activeSet.find((c) => c.workspace_id === workspaceId && c.claim_id === claimId);
+    if (!prior) {
+      throw new Error(
+        `extendClaim: no ACTIVE claim "${claimId}" in workspace "${workspaceId}" — nothing to extend ` +
+          `(already released/superseded/expired, or never claimed).`
+      );
+    }
+
+    const mergedPaths = [...new Set([...prior.scope.paths, ...addPaths])];
+    const mergedSymbols = [...new Set([...prior.scope.symbols, ...addSymbols])];
+
+    // Same overlap scan `checkEditLock` runs — but ONLY against the newly
+    // ADDED scope (the prior scope was already scanned when it was first
+    // claimed/extended; re-flagging it here would just be noise on every
+    // heartbeat/re-extend).
+    const conflicts: EditLockConflict[] = [];
+    for (const claim of activeSet) {
+      if (claim.agent_id === prior.agent_id) continue;
+      const overlapping: string[] = [];
+      for (const p of addPaths) {
+        for (const cp of claim.scope.paths) {
+          if (pathsOverlap(p, cp)) overlapping.push(cp);
+        }
+      }
+      if (overlapping.length > 0) {
+        conflicts.push({
+          agent_id: claim.agent_id,
+          claim_id: claim.claim_id,
+          paths: addPaths,
+          overlapping_paths: [...new Set(overlapping)],
+        });
+      }
+    }
+
+    const now = new Date().toISOString();
+    const entry = await append({
+      claim_id: claimId,
+      workspace_id: workspaceId,
+      agent_id: prior.agent_id,
+      agent_kind: prior.agent_kind,
+      scope: { ...prior.scope, paths: mergedPaths, symbols: mergedSymbols },
+      intent: prior.intent,
+      status: 'active',
+      created_at: prior.created_at,
+      ttl_ms: prior.ttl_ms,
+      heartbeat_at: now,
+      base_commit: prior.base_commit,
+      branch: prior.branch,
+      org_id: prior.org_id,
+    });
+    return { claim: entry, conflicts };
+  });
 }
 
 /**

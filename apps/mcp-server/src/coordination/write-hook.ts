@@ -32,7 +32,17 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 import { EXCLUDED_DIRECTORIES } from '../remote-source';
-import { announceEdit, attributeChange, recordUnclaimedEdit } from './local-store';
+import { announceEdit, attributeChange, recordUnclaimedEdit, warnIfTreeGlobalOp } from './local-store';
+
+/**
+ * W6 re-export (SPEC-COORDINATION-FABRIC-V3 §6.3/§8): the write-hook's public
+ * surface is where `fab.ts` and any future tree-global git wrapper already
+ * import claim-log helpers from for the awareness path, so the tree-global-op
+ * warning is re-exported here too rather than requiring a second import of
+ * `./local-store` for one function. Defined once in `local-store.ts` (single
+ * source of truth) — this is purely a re-export, not a second implementation.
+ */
+export { warnIfTreeGlobalOp };
 
 export interface WriteHookAnnounceEvent {
   path: string;

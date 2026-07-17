@@ -621,6 +621,20 @@ export async function getAttributedInFlightState(
  * are unattributable (unclaimed or claim-overlapping) simply contributes no
  * `AgentInFlightState` entry, rather than being silently folded into
  * whoever happens to be asking.
+ *
+ * W4 STEP 2 FOLD (§8 W3, "the detectors themselves are good" + W4 step 1's
+ * `tiebroken` bucket): this used to consume ONLY `attributed.participants` —
+ * a write-hook-tiebroken delta (resolved to exactly one agent via the event
+ * log, W4 step 1) contributed NOTHING here, so a symbol whose only evidence
+ * was a tiebreak was invisible to every detector even though it IS honestly
+ * attributed to one real agent (just not via a currently-active claim).
+ * `tiebroken` deltas are now folded in at the SAME weight as claim-attributed
+ * ones — same `AgentInFlightState` shape, one entry per distinct `agent_id`
+ * (an agent can appear via both `participants` and `tiebroken` at once; their
+ * changes are merged onto the same state entry rather than producing two
+ * competing entries for one agent_id). `unattributed` deltas (resolved to
+ * neither a claim nor a tiebreak) remain excluded — still honest, never
+ * guessed.
  */
 export async function detectConceptualConflictsFromSubstrate(
   workspace: string,
@@ -628,13 +642,30 @@ export async function detectConceptualConflictsFromSubstrate(
   options: DetectConceptualConflictsOptions = {}
 ): Promise<{ conflicts: ConceptualConflict[]; attributed: AttributedInFlightState }> {
   const attributed = await getAttributedInFlightState(workspace);
-  if (!attributed.available || attributed.participants.length === 0) {
+  if (!attributed.available) {
     return { conflicts: [], attributed };
   }
 
-  const states: AgentInFlightState[] = attributed.participants
-    .filter((p) => p.delta.changes.length > 0)
-    .map((p) => ({ agent_id: p.agent_id, intent: p.intent, changes: p.delta.changes }));
+  const stateByAgent = new Map<string, AgentInFlightState>();
+  for (const p of attributed.participants) {
+    if (p.delta.changes.length === 0) continue;
+    const existing = stateByAgent.get(p.agent_id);
+    if (existing) {
+      existing.changes.push(...p.delta.changes);
+    } else {
+      stateByAgent.set(p.agent_id, { agent_id: p.agent_id, intent: p.intent, changes: [...p.delta.changes] });
+    }
+  }
+  for (const t of attributed.tiebroken) {
+    const existing = stateByAgent.get(t.agent_id);
+    if (existing) {
+      existing.changes.push(t.change);
+    } else {
+      stateByAgent.set(t.agent_id, { agent_id: t.agent_id, intent: `write-hook tiebreak (${t.via})`, changes: [t.change] });
+    }
+  }
+
+  const states: AgentInFlightState[] = [...stateByAgent.values()];
 
   if (states.length < 2) {
     // Need at least two participants with attributed changes for any

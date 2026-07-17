@@ -7,7 +7,7 @@ import * as path from 'node:path';
 import { planIntentMerge, planIntentMergeFromSubstrate, shouldUseSubstratePlan } from './intent-merge';
 import type { AgentInFlightState, ConflictCas } from './conceptual-conflict';
 import { saveAnalysis } from '../storage';
-import { appendClaim } from './local-store';
+import { appendClaim, readSurprisesFor } from './local-store';
 import type { WorkClaim } from './types';
 
 const cas: ConflictCas = {
@@ -413,6 +413,96 @@ test('planIntentMergeFromSubstrate: SPEC §3.2 regression — a shared-tree delt
   // vice versa — a git-ambient union would have put both agents on both symbols.
   assert.deepEqual(aEntry.agents, ['agent-a']);
   assert.deepEqual(bEntry.agents, ['agent-b']);
+
+  await env.cleanup();
+});
+
+// ---------------------------------------------------------------------------
+// W4 step 2: surprise push — planIntentMergeFromSubstrate persists each
+// contract-divergence surprise to the claim log, addressed to the affected
+// agent, deduped on re-plan.
+// ---------------------------------------------------------------------------
+
+/** Build a workspace with a genuine contract-divergence: agent-a drops
+ *  getUser's nullability, agent-b concurrently edits renderProfile, a real
+ *  caller (per the CAS "calls" edge) of getUser. */
+async function setupContractDivergenceWorkspace(workspace: string): Promise<ConflictCas> {
+  const main = makeCas({
+    timestamp: '2026-01-01T00:00:00.000Z',
+    nodes: [
+      { id: 'sym:getUser', name: 'getUser', file: 'src/auth.ts', return_type: 'User | null' },
+      { id: 'sym:renderProfile', name: 'renderProfile', file: 'src/profile.ts', return_type: 'string' },
+    ],
+    edges: [{ source: 'sym:renderProfile', target: 'sym:getUser', type: 'calls' }],
+  });
+  const inflight = makeCas({
+    timestamp: '2026-01-01T00:05:00.000Z',
+    nodes: [
+      { id: 'sym:getUser', name: 'getUser', file: 'src/auth.ts', return_type: 'User' }, // agent-a: drops nullability
+      { id: 'sym:renderProfile', name: 'renderProfile', file: 'src/profile.ts', return_type: 'string', line: 12 }, // agent-b: touches the caller
+    ],
+    edges: [{ source: 'sym:renderProfile', target: 'sym:getUser', type: 'calls' }],
+  });
+  await saveAnalysis(workspace, main, 'main');
+  await saveAnalysis(workspace, inflight, 'in-flight');
+
+  await appendClaim(workspace, makeClaim(workspace, {
+    claim_id: 'claim-a', agent_id: 'agent-a', intent: 'make getUser non-null',
+    scope: { repo: workspace, paths: ['src/auth.ts'], symbols: [] },
+  }));
+  await appendClaim(workspace, makeClaim(workspace, {
+    claim_id: 'claim-b', agent_id: 'agent-b', intent: 'add avatar to renderProfile',
+    scope: { repo: workspace, paths: ['src/profile.ts'], symbols: [] },
+  }));
+
+  return {
+    nodes: [
+      { id: 'sym:getUser', name: 'getUser' },
+      { id: 'sym:renderProfile', name: 'renderProfile' },
+    ],
+    edges: [{ source: 'sym:renderProfile', target: 'sym:getUser', type: 'calls' }],
+  };
+}
+
+test('planIntentMergeFromSubstrate: a contract-divergence surprise is persisted once, addressed to the AFFECTED agent, and deduped on re-plan', async () => {
+  const env = await freshEnv();
+  const workspace = path.join(env.storageDir, 'proj-surprise-1');
+  const cas = await setupContractDivergenceWorkspace(workspace);
+
+  const plan = await planIntentMergeFromSubstrate(workspace, cas);
+  assert.ok(plan.surprises.length >= 1, 'the contract-divergence finding must surface as a surprise');
+  const surprise = plan.surprises.find((s) => s.symbol === 'sym:getUser')!;
+  assert.ok(surprise);
+  assert.deepEqual([...surprise.agents].sort(), ['agent-a', 'agent-b']);
+
+  // agent-b (the caller-editor) is the one who'd learn of this at merge time —
+  // it must be persisted addressed to agent-b, never agent-a (the changer).
+  const forChanger = await readSurprisesFor(workspace, 'agent-a');
+  const forAffected = await readSurprisesFor(workspace, 'agent-b');
+  assert.equal(forChanger.length, 0, 'the surprise must not be addressed to the agent who MADE the contract change');
+  assert.equal(forAffected.length, 1);
+  assert.equal(forAffected[0].symbol, 'sym:getUser');
+  assert.equal(forAffected[0].changer, 'agent-a');
+  assert.equal(forAffected[0].affected, 'agent-b');
+
+  // Re-planning the identical scenario must NOT append a second entry for the
+  // same (symbol, changer, affected) — dedup, not spam.
+  await planIntentMergeFromSubstrate(workspace, cas);
+  const afterReplan = await readSurprisesFor(workspace, 'agent-b');
+  assert.equal(afterReplan.length, 1, 're-planning the same finding must dedupe, not append a duplicate');
+
+  await env.cleanup();
+});
+
+test('readSurprisesFor: returns nothing for an unrelated agent (surprises are addressed, not broadcast)', async () => {
+  const env = await freshEnv();
+  const workspace = path.join(env.storageDir, 'proj-surprise-2');
+  const cas = await setupContractDivergenceWorkspace(workspace);
+
+  await planIntentMergeFromSubstrate(workspace, cas);
+
+  const forBystander = await readSurprisesFor(workspace, 'agent-z');
+  assert.deepEqual(forBystander, []);
 
   await env.cleanup();
 });

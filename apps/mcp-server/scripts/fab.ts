@@ -10,6 +10,31 @@
  *   npx tsx apps/mcp-server/scripts/fab.ts check <agentId> <comma,paths>
  *   npx tsx apps/mcp-server/scripts/fab.ts release <agentId>
  *   npx tsx apps/mcp-server/scripts/fab.ts watch [agentId]
+ *   npx tsx apps/mcp-server/scripts/fab.ts diff <agentId>
+ *   npx tsx apps/mcp-server/scripts/fab.ts stash <agentId>
+ *   npx tsx apps/mcp-server/scripts/fab.ts extend <agentId> <comma,addPaths> [comma,addSymbols]
+ *
+ * `diff`/`stash` (W6, SPEC-COORDINATION-FABRIC-V3 §6.3/§8: "scoped primitives")
+ * are the direct answer to the stash-clobber incident (§3.2/§6.3): one agent's
+ * tree-global `git stash` swept a peer's uncommitted work because git has no
+ * concept of "whose paths these are." Both are LIMITED to `agentId`'s own
+ * active claim paths (never the whole tree) — `diff` runs `git diff -- <paths>`
+ * scoped to them; `stash` runs `git stash push -- <paths>` scoped to them, and
+ * REFUSES (prints a clear message, exits non-zero) only in the one dangerous
+ * case: `agentId` holds NO claimed paths to scope to AND other agents are
+ * currently active, i.e. the exact whole-tree-fallback scenario that caused the
+ * incident. This is a guardrail on the DESTRUCTIVE whole-tree command, not a
+ * claim/edit-lock arbitration — every other awareness surface in this file
+ * still never denies a claim.
+ *
+ * `extend` (W7, SPEC-COORDINATION-FABRIC-V3 §6.3/§8: "I also need to touch
+ * X — is that safe?") appends scope onto `agentId`'s ACTIVE work-claim
+ * (`<workspace>:<agentId>`, the id `claim` uses) without losing claim
+ * identity — same claim_id, union of old+new paths/symbols. Runs the same
+ * overlap scan `claim` does against the ADDED scope only, and surfaces
+ * conflicts inline; the extension always succeeds (never denied). LOCAL-ONLY
+ * for now (see the `extend` case below) — a remote-fabric mirror is proposed,
+ * not yet wired (see the artifact diff referenced in the W6/W7 build report).
  *
  * `watch` (W5, SPEC-COORDINATION-FABRIC-V3 §8) is a foreground process for a
  * human running a fleet from a terminal: it starts the local write-hook
@@ -33,6 +58,8 @@
  * system keeps working. No config + no env = byte-for-byte the original
  * local behavior.
  */
+import { spawnSync } from 'node:child_process';
+
 import {
   appendClaim,
   getActiveClaims,
@@ -41,6 +68,9 @@ import {
   releaseAgent,
   findAgentInOtherWorkspaces,
   getStoreDir,
+  planScopedGitOp, // W6 — scope diff/stash to the caller's own claim paths
+  warnIfTreeGlobalOp, // W6 — awareness print before a tree-global git op
+  extendClaim, // W7 — mid-task claim-scope extension
 } from '../src/coordination/local-store';
 import {
   remoteActive,
@@ -233,6 +263,99 @@ async function main() {
       }
       break;
     }
+    case 'diff': {
+      // fab diff <agentId> — `git diff` LIMITED to agentId's own active claim
+      // paths (W6). Never falls back to a whole-tree diff silently: if the
+      // agent holds no claim, say so and let the caller decide (awareness,
+      // never a guess at scope).
+      const plan = await planScopedGitOp(WS, agentId);
+      if (plan.paths.length === 0) {
+        console.error(
+          `No active claim paths for "${agentId}" in workspace "${WS}" — nothing to scope \`git diff\` to. ` +
+            `Claim paths first (\`fab claim\`), or run \`git diff\` directly if you want the whole tree.`
+        );
+        process.exitCode = 1;
+        break;
+      }
+      const root = findFabricProjectRoot(process.cwd())?.root ?? process.cwd();
+      const res = spawnSync('git', ['diff', '--', ...plan.paths], { cwd: root, encoding: 'utf8' });
+      process.stdout.write(res.stdout || '');
+      if (res.stderr) process.stderr.write(res.stderr);
+      process.exitCode = res.status ?? 0;
+      break;
+    }
+    case 'stash': {
+      // fab stash <agentId> — `git stash push` LIMITED to agentId's own active
+      // claim paths (W6). REFUSES only the one dangerous case: no claim paths
+      // to scope to AND other agents are active — the exact whole-tree-fallback
+      // that swept a peer's uncommitted work in the incident this exists to
+      // answer. Otherwise the stash is already scoped by construction, so it
+      // cannot touch anyone else's files regardless of who else is active.
+      const plan = await planScopedGitOp(WS, agentId);
+      if (plan.paths.length === 0) {
+        if (plan.peers.length > 0) {
+          console.error(
+            `REFUSING: "${agentId}" holds no active claim paths to scope a stash to, and ${plan.peers.length} ` +
+              `other agent(s) hold active claims on this tree (${plan.peers
+                .map((p) => `${p.agent_id}:${JSON.stringify(p.scope.paths)}`)
+                .join(', ')}). A whole-tree \`git stash\` here would sweep up their uncommitted work — this is ` +
+              `exactly the incident that nearly clobbered a peer's edits. Claim paths first (\`fab claim\`), or run ` +
+              `\`git stash\` yourself if you have already coordinated and are certain this is safe.`
+          );
+          process.exitCode = 1;
+          break;
+        }
+        console.error(
+          `No active claim paths for "${agentId}" and no other agents are currently active — nothing to scope. ` +
+            `Run \`git stash\` directly if you intend a whole-tree stash.`
+        );
+        process.exitCode = 1;
+        break;
+      }
+      // Still print the awareness warning even for a SCOPED stash — peers may
+      // be active elsewhere in the tree and benefit from knowing a stash just
+      // happened, even though this one cannot touch their paths.
+      await warnIfTreeGlobalOp(WS, agentId);
+      const root = findFabricProjectRoot(process.cwd())?.root ?? process.cwd();
+      const res = spawnSync('git', ['stash', 'push', '--', ...plan.paths], { cwd: root, encoding: 'utf8' });
+      console.log(res.stdout?.trim() || `stashed ${plan.paths.length} claimed path(s) for ${agentId}: ${JSON.stringify(plan.paths)}`);
+      if (res.stderr) process.stderr.write(res.stderr);
+      process.exitCode = res.status ?? 0;
+      break;
+    }
+    case 'extend': {
+      // extend <agentId> <comma,addPaths> [comma,addSymbols] — W7 mid-task
+      // claim-scope extension. Targets the same claim_id `claim` uses
+      // (`<workspace>:<agentId>`); LOCAL-ONLY today (see module header).
+      const claimId = `${WS}:${agentId}`;
+      const addPaths = csv(a3);
+      const addSymbols = csv(a4);
+      if (REMOTE) {
+        console.error(
+          `NOTE: \`extend\` is LOCAL-ONLY for now — this workspace has a remote fabric configured, but the ` +
+            `extension below only lands in the LOCAL claim log. Peers on OTHER machines will not see this scope ` +
+            `growth until the remote mirror is wired (see the W6/W7 build report's proposed server.ts diff).`
+        );
+      }
+      try {
+        const outcome = await extendClaim(WS, claimId, addPaths, addSymbols);
+        console.log(
+          `extended seq=${outcome.claim.seq} ${agentId} -> paths=${JSON.stringify(outcome.claim.scope.paths)} ` +
+            `symbols=${JSON.stringify(outcome.claim.scope.symbols)}`
+        );
+        if (outcome.conflicts.length) {
+          console.error(
+            `WARNING: ${outcome.conflicts.length} other agent(s) already claim overlapping paths in the ADDED ` +
+              `scope (extend still succeeded — coordinate before writing):`
+          );
+          for (const c of outcome.conflicts) console.error(`  ${c.agent_id} overlaps ${JSON.stringify(c.overlapping_paths)}`);
+        }
+      } catch (err) {
+        console.error(err instanceof Error ? err.message : String(err));
+        process.exitCode = 1;
+      }
+      break;
+    }
     case 'watch': {
       // fab.ts watch [agentId] — the human-in-a-terminal counterpart to the
       // MCP-server lifecycle activation in server.ts's `advisoryFabricSettings`
@@ -297,7 +420,7 @@ async function main() {
       break;
     }
     default:
-      console.error('usage: fab.ts active|claim|announce|check|release|watch ...');
+      console.error('usage: fab.ts active|claim|announce|check|release|watch|diff|stash|extend ...');
       process.exit(1);
   }
 }

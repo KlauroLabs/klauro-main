@@ -74,6 +74,7 @@ import {
   type SymbolChangeKind,
 } from './conceptual-conflict';
 import { getAttributedInFlightState } from './in-flight-substrate';
+import { persistSurprise } from './local-store';
 
 export interface AutoMergeableEntry {
   symbol: string;
@@ -114,6 +115,32 @@ export interface SurpriseEntry {
   symbol: string;
   agents: string[];
   explanation: string;
+}
+
+/**
+ * Push each computed surprise into the claim log, addressed to the AFFECTED
+ * participant (W4 step 2: "kills learn-at-merge-time" — see
+ * `local-store.ts persistSurprise`). `contract-divergence` findings always
+ * carry `agents` as `[changer, affected]` (the detector's own construction —
+ * `detectContractDivergence` pushes `[agentA.agent_id, agentB.agent_id]`
+ * where A changed the contract and B is the caller-editor who'd be surprised
+ * at merge time); a malformed entry with fewer than 2 agents is skipped
+ * rather than guessed. Best-effort and non-fatal: a storage hiccup here must
+ * never fail the merge-plan call itself, since the CALLER already has the
+ * metrics in `surprises[]` regardless of whether persistence succeeds.
+ */
+async function pushSurprisesToLog(workspace: string, surprises: SurpriseEntry[]): Promise<void> {
+  await Promise.all(
+    surprises.map(async (s) => {
+      const [changer, affected] = s.agents;
+      if (!changer || !affected) return; // malformed — never guess who's affected.
+      try {
+        await persistSurprise(workspace, { symbol: s.symbol, changer, affected, explanation: s.explanation });
+      } catch {
+        // best-effort ambient delivery; the caller already has surprises[] from the returned plan.
+      }
+    })
+  );
 }
 
 export interface MergePlan {
@@ -434,6 +461,12 @@ export async function planIntentMergeFromSubstrate(
 
   const plan = planIntentMerge(states, cas, options);
 
+  // W4 step 2: persist each surprise to the claim log, addressed to the
+  // affected participant — see `pushSurprisesToLog`. Only meaningful on the
+  // substrate path (this function), since `planIntentMerge` itself stays a
+  // pure, IO-free function per this module's own contract.
+  await pushSurprisesToLog(workspace, plan.surprises);
+
   return {
     ...plan,
     attribution: {
@@ -452,3 +485,8 @@ export async function planIntentMergeFromSubstrate(
 }
 
 export type { AgentInFlightState, ConceptualConflict, ConflictCas, SymbolChange };
+
+/** Re-exported so callers of the merge-plan surface don't need a second
+ *  import from local-store.ts just to read back what `planIntentMergeFromSubstrate`
+ *  persisted — see `local-store.ts` for the read-side implementation. */
+export { persistSurprise, readSurprisesFor, type SurpriseDetail } from './local-store';
