@@ -6468,6 +6468,18 @@ export class AnalyzerOrchestrator {
     const hasFrontendSurface = counts.components.length + counts.pages.length + pageEntryPoints.length > 0 || hasFrontendFileSurface;
     const hasApiSurface = counts.controllers.length + httpEntryPoints.length > 0;
     const hasDataSurface = counts.repositories.length + counts.entities.length > 0;
+    // A real HTTP entry surface (a handful of routes or more) plus backend
+    // evidence (a data layer or a recognized controller surface) means this is
+    // a server — even one that ALSO ships an installer/.deb/.rpm/systemd unit,
+    // or happens to have an incidental "views/" template directory (a plain Go
+    // net/http app rendering HTML, e.g. miniflux, is not a desktop app just
+    // because its template folder is named "views"). Distribution packaging
+    // and view-folder naming are not desktop-surface evidence once the entry
+    // surface itself proves this is a server; only the ABSENCE of a real
+    // server surface lets desktop-shaped file/framework evidence (WPF/xaml,
+    // Electron main/preload, viewmodels with no HTTP entries — e.g. Hoggan)
+    // stand.
+    const hasRealServerSurface = httpEntryPoints.length >= 5 && (hasDataSurface || counts.controllers.length > 0);
     const hasScriptEntrySurface = productFiles.some(file =>
       /(^|\/)(main|index|cli|script|bot|runner)\.(cjs|mjs|js|jsx|ts|tsx|py|rb|php|rs|go)$/.test(file) ||
       /(^|\/)(bin|cli|cmd|commands|scripts?|jobs|workers)\//.test(file)
@@ -6519,7 +6531,7 @@ export class AnalyzerOrchestrator {
     if (hasBackendFramework && hasApiSurface) {
       return hasDataSurface ? 'Backend service' : 'HTTP service';
     }
-    if (hasDesktopSurface) {
+    if (hasDesktopSurface && !hasRealServerSurface) {
       return 'Desktop application';
     }
     if (hasMcpSurface) {
@@ -14872,7 +14884,8 @@ export class AnalyzerOrchestrator {
         n.subcategories?.includes('entity') ||
         (n.type === 'class' && n.source?.file?.includes('/entities/')) ||
         (this.isDtoLikeDataShapeNode(n) && n.source?.file?.includes('/entities/')) ||
-        this.isPocoEntityClassNode(n)
+        this.isPocoEntityClassNode(n) ||
+        this.isPlainStructEntityNode(n)
       )
     );
 
@@ -15552,6 +15565,36 @@ export class AnalyzerOrchestrator {
     // At least one data property, and properties at least match methods (a POCO;
     // a Service/ViewModel is method-dominant and fails this).
     return propertyCount >= 1 && propertyCount >= methodCount;
+  }
+
+  /**
+   * Go (and other plain-struct languages) has no class/decorator-based ORM
+   * convention — a domain record is just `type Feed struct { ID int64 ... }`
+   * with the SQL living elsewhere (e.g. miniflux: internal/model/*.go structs,
+   * internal/storage/*.go SQL — 339 struct nodes, database_entities was always
+   * [] because every entity gate above only recognizes 'entity'/'model' types,
+   * classes under /entities/, or POCO CLASSES). Sibling to isPocoEntityClassNode:
+   * same "lives in an entity-ish dir" + "data-shaped, not behavior-shaped" test,
+   * generalized to the 'struct' node type and widened to the model/schema
+   * directory family plain-struct languages actually use. A struct in a
+   * handler/server/config package (no entity-ish path segment) never qualifies,
+   * regardless of its field/method shape — this is evidence-gated on location,
+   * not name alone.
+   */
+  private isPlainStructEntityNode(node: CASNode): boolean {
+    if (node.type !== 'struct') return false;
+    if (node.subcategories?.includes('abstract')) return false;
+    const file = String(node.source?.file || '').replace(/\\/g, '/');
+    const entityFolder = /(^|\/)(models?|entities|domain|schema)(\/|$)/i.test(file);
+    if (!entityFolder) return false;
+    const attrs = (node.metadata?.attributes || {}) as Record<string, unknown>;
+    const fieldCount = Number(attrs.fieldCount || 0);
+    const methodCount = Number(attrs.methodCount || 0);
+    // At least one field, and fields at least match methods (a data record;
+    // a struct with a receiver-heavy method set attached — e.g. a service or
+    // client wrapper struct that merely holds a couple of config fields — is
+    // behavior-dominant and fails this).
+    return fieldCount >= 1 && fieldCount >= methodCount;
   }
 
   private isDtoLikeDataShapeNode(node: CASNode, propertyIndex?: EntityPropertyIndex): boolean {

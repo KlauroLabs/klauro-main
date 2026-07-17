@@ -558,6 +558,47 @@ describe('architecture and capability inference', () => {
     expect(summary.system_type).toBe('Desktop application');
   });
 
+  it('classifies a Go net/http server with an incidental "views/" template dir as a server, not desktop (real miniflux gap)', async () => {
+    // REGRESSION (real miniflux CAS): 60+ HTTP routes, Caddy/Traefik reverse-proxy
+    // configs, Dockerfiles, and systemd/.deb/.rpm packaging in-tree still resolved
+    // to 'Desktop application'. Root cause: hasDesktopSurface's file heuristic
+    // `/(^|\/)(views|windows|viewmodels)\//` matched miniflux's plain HTML template
+    // folder `internal/template/templates/views/*.html` — a generic web-template
+    // convention, not desktop-specific — and installer/systemd packaging was read
+    // as desktop evidence. A server that SHIPS installers is still a server: a
+    // real HTTP entry surface (>= a handful of routes) plus backend/controller
+    // evidence must outrank that.
+    const controllerNodes: CASNode[] = Array.from({ length: 6 }, (_, i) => node({
+      id: `handler-${i}`, name: `ShowFeed${i}Handler`, type: 'controller',
+      source: { file: `internal/ui/handler.go` },
+    }));
+    const modelNode = node({
+      id: 'model-feed', name: 'Feed', type: 'entity',
+      source: { file: 'internal/model/feed.go' },
+    });
+    const viewNode = node({
+      id: 'view-feeds', name: 'feeds.html', type: 'component',
+      source: { file: 'internal/template/templates/views/feeds.html' },
+    });
+    const httpEntryPoints = Array.from({ length: 10 }, (_, i) => ({
+      id: `entry-http-${i}`,
+      type: 'http',
+      name: `GET /feed/${i}`,
+      source_node: `handler-${i % 6}`,
+      handler: { node_id: `handler-${i % 6}`, file: 'internal/ui/handler.go' },
+      trigger: { method: 'GET', path: `/feed/${i}` },
+    }));
+
+    const summary = orch.buildArchitectureSummary(
+      [...controllerNodes, modelNode, viewNode],
+      httpEntryPoints as any,
+      [],
+      [],
+    );
+
+    expect(summary.system_type).not.toBe('Desktop application');
+  });
+
   it('identifies Flutter mobile apps before generic view folder desktop heuristics', async () => {
     const summary = orch.buildArchitectureSummary([
       node({ id: 'main-dart', name: 'main.dart', type: 'file', source: { file: 'lib/main.dart' }, metadata: { language: 'dart' } }),
@@ -3823,6 +3864,49 @@ describe('entity-extraction gaps from real-repo onboarding (mtg/openclaw/hercule
     expect(names).not.toContain('ProtocolBuilder');
     const protocols = entities.find((e: any) => e.name === 'Protocols');
     expect((protocols.fields || []).map((f: any) => f.name)).toEqual(expect.arrayContaining(['Id', 'Name']));
+  });
+
+  it('surfaces a plain Go struct in internal/model as a domain data entity with fields (real miniflux gap)', () => {
+    // REGRESSION (real miniflux CAS): database_entities was [] despite 339 Go
+    // struct nodes, because Go has no class/decorator ORM convention — a
+    // domain record is `type Feed struct { ID int64; UserID int64; Title
+    // string }` in internal/model/feed.go, and every entity gate only
+    // recognized 'entity'/'model' node types, /entities/ path classes, or
+    // isPocoEntityClassNode (type === 'class' only). 'struct' never qualified.
+    const nodes: CASNode[] = [
+      node({
+        id: 'struct_model_feed', name: 'Feed', type: 'struct',
+        source: { file: 'internal/model/feed.go', line: 10 },
+        metadata: { language: 'go', attributes: { packageName: 'model', fieldCount: 3, methodCount: 0 } },
+      }),
+      node({ id: 'field_struct_model_feed_id', name: 'ID', type: 'field', parent: 'struct_model_feed', source: { file: 'internal/model/feed.go', line: 11 }, metadata: { attributes: { type: 'int64' } } }),
+      node({ id: 'field_struct_model_feed_userid', name: 'UserID', type: 'field', parent: 'struct_model_feed', source: { file: 'internal/model/feed.go', line: 12 }, metadata: { attributes: { type: 'int64' } } }),
+      node({ id: 'field_struct_model_feed_title', name: 'Title', type: 'field', parent: 'struct_model_feed', source: { file: 'internal/model/feed.go', line: 13 }, metadata: { attributes: { type: 'string' } } }),
+      // GUARD 1 (wrong location): a struct in a handler package must NOT be an entity,
+      // even though it has fields and no methods (e.g. a request/response wrapper
+      // struct local to a handler file).
+      node({
+        id: 'struct_ui_loginform', name: 'loginForm', type: 'struct',
+        source: { file: 'internal/ui/handler.go', line: 40 },
+        metadata: { language: 'go', attributes: { packageName: 'ui', fieldCount: 2, methodCount: 0 } },
+      }),
+      // GUARD 2 (right location, wrong shape): a method-dominant struct in the
+      // model-ish dir (e.g. a small client/service wrapper struct) must NOT be
+      // promoted — behavior, not data.
+      node({
+        id: 'struct_model_storeclient', name: 'storeClient', type: 'struct',
+        source: { file: 'internal/model/client.go', line: 5 },
+        metadata: { language: 'go', attributes: { packageName: 'model', fieldCount: 1, methodCount: 6 } },
+      }),
+    ];
+
+    const entities = orch.buildDataEntities(nodes, []);
+    const names = entities.map((e: any) => e.name);
+    expect(names).toContain('Feed');
+    expect(names).not.toContain('loginForm');
+    expect(names).not.toContain('storeClient');
+    const feed = entities.find((e: any) => e.name === 'Feed');
+    expect((feed.fields || []).map((f: any) => f.name)).toEqual(expect.arrayContaining(['ID', 'UserID', 'Title']));
   });
 
   describe('operation-shaped and format-token shapes stay out of the entity set (openclaw gap)', () => {
