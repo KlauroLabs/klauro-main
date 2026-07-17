@@ -155,8 +155,19 @@ function resolveIndirectCargoPackageMembers(content: string): string[] {
     }
     if (!targetPosition) continue;
 
-    // Resolve real values from literal call sites: `funcName "literal" ...`
-    const callRegex = new RegExp(`\\b${funcName}\\s+((?:"[^"]*"|'[^']*'|\\S+)\\s*){0,6}`, 'g');
+    // Resolve real values from literal call sites: `funcName "literal" ...`.
+    // The inter-token/leading separator is deliberately HORIZONTAL whitespace
+    // only (`[^\S\n]`, not `\s`), never a bare newline: with `\s*` the token
+    // repetition greedily crosses line boundaries and swallows a SECOND,
+    // unrelated call to the same function on the next line into the SAME
+    // match (e.g. `build_binary "client")\nSERVICE_BINARY=$(build_binary
+    // "client-service")` collapsing into one match whose args become
+    // `['client', ')', 'SERVICE_BINARY=$(build_binary', 'client-service', ...]`),
+    // so `matchAll` never produces a distinct match for the second call site
+    // and its member is silently dropped. Real shell call sites are one
+    // statement per line; bounding the token run to the current line fixes
+    // this without weakening the quoted-arg / bare-token matching itself.
+    const callRegex = new RegExp(`\\b${funcName}[^\\S\\n]+((?:"[^"]*"|'[^']*'|\\S+)[^\\S\\n]*){0,6}`, 'g');
     for (const callMatch of content.matchAll(callRegex)) {
       // Skip the definition site itself (immediately followed by `()`).
       if (new RegExp(`\\b${funcName}\\s*\\(\\)`).test(callMatch[0])) continue;

@@ -4093,4 +4093,16 @@ export interface DeployableEvidence {
   ships_paths?: string[];   // Tier-1 only: what this artifact packages/COPYs/bundles (membership names, e.g. bin/crate names)
   ports?: number[];
   entrypoint_member?: string; // Tier-1 only: which of ships_paths is the primary/ENTRYPOINT of a multi-member bundle
+  /** Tier-2/3 only: name of the Tier-1 ship unit this candidate is bundled
+   *  into, set by evidence-gated bundling resolution (see
+   *  resolveEvidenceBundling in deployable-evidence.ts) when a sibling
+   *  Tier-1 row's `ships_paths` positively names this candidate — never set
+   *  on absence of evidence alone (SPEC-DEPLOYABLE-DETECTION.md §3/§4). This
+   *  lets a single-codebase `deployable_evidence` result carry membership
+   *  directly, independent of the multi-repo workspace resolver
+   *  (apps/mcp-server/src/cross-codebase-analysis.ts's SystemApplication
+   *  layer performs the equivalent resolution again for the cross-codebase
+   *  case, setting its own `bundled_into` on SystemApplication).
+   */
+  bundled_into?: string;
 }

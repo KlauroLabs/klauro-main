@@ -658,3 +658,98 @@ describe('collectDeployableEvidence — k8s resource-kind rollup', () => {
     expect(result.filter(item => item.kind === 'k8s')).toHaveLength(0);
   });
 });
+
+describe('collectDeployableEvidence: evidence-gated bundling resolution (SPEC-DEPLOYABLE-DETECTION.md acceptance case)', () => {
+  let projectPath: string;
+
+  afterEach(() => {
+    if (projectPath) fs.removeSync(projectPath);
+  });
+
+  test('a client app whose installer bundles a background client-service binary resolves to ONE ship unit with the service bundled_into it', () => {
+    // The spec's own acceptance case (§6 worked example / §7 fixture 1): a
+    // Rust multi-binary workspace with two [[bin]] crates (client,
+    // client-service) and a build-installer.sh that builds+ships both. Before
+    // this fix, deployable_evidence rows for "client" and "client-service"
+    // were both Tier-2 `bin` candidates with no cross-reference to the
+    // installer's ships_paths at all — bundled_into never populated on ANY
+    // row, regardless of how positive the ships_paths signal was upstream.
+    projectPath = tempProject();
+    fs.writeFileSync(
+      path.join(projectPath, 'Cargo.toml'),
+      [
+        '[workspace]',
+        'members = ["client", "client-service"]',
+        '',
+        '[[bin]]',
+        'name = "client"',
+        'path = "client/src/main.rs"',
+        '',
+        '[[bin]]',
+        'name = "client-service"',
+        'path = "client-service/src/main.rs"',
+        '',
+      ].join('\n'),
+    );
+    fs.writeFileSync(
+      path.join(projectPath, 'build-installer.sh'),
+      [
+        '#!/bin/bash',
+        'cargo build --release -p client',
+        'cargo build --release -p client-service',
+        'cp target/release/client dist/',
+        'cp target/release/client-service dist/',
+      ].join('\n') + '\n',
+    );
+
+    const result = collectDeployableEvidence({ projectPath, nodes: [], entryPoints: [], exitPoints: [] });
+
+    const installer = result.find(item => item.kind === 'installer');
+    expect(installer).toBeDefined();
+    expect(installer!.tier).toBe(1);
+    expect(installer!.ships_paths).toEqual(expect.arrayContaining(['client', 'client-service']));
+
+    const clientBin = result.find(item => item.kind === 'bin' && item.name === 'client');
+    const clientServiceBin = result.find(item => item.kind === 'bin' && item.name === 'client-service');
+    expect(clientBin).toBeDefined();
+    expect(clientServiceBin).toBeDefined();
+
+    // ONE ship unit (the installer); client-service resolves as a MEMBER
+    // bundled into it — never a second standalone deployable.
+    expect(clientServiceBin!.bundled_into).toBe(installer!.name);
+    expect(clientServiceBin!.evidence.some(e => e.includes('bundled-into'))).toBe(true);
+    // "client" itself is also a member of the same installer unit; whichever
+    // of the two members is chosen as PRIMARY is a downstream (workspace-
+    // resolver) concern, not this collector's — the collector's job is only
+    // to surface the positive bundling evidence per row.
+    expect(clientBin!.bundled_into).toBe(installer!.name);
+  });
+
+  test('negative case: two sibling bin candidates with NO installer/Dockerfile referencing either stay separate (no merge on absence of evidence)', () => {
+    projectPath = tempProject();
+    fs.writeFileSync(
+      path.join(projectPath, 'Cargo.toml'),
+      [
+        '[workspace]',
+        'members = ["tool-a", "tool-b"]',
+        '',
+        '[[bin]]',
+        'name = "tool-a"',
+        'path = "tool-a/src/main.rs"',
+        '',
+        '[[bin]]',
+        'name = "tool-b"',
+        'path = "tool-b/src/main.rs"',
+        '',
+      ].join('\n'),
+    );
+
+    const result = collectDeployableEvidence({ projectPath, nodes: [], entryPoints: [], exitPoints: [] });
+    const toolA = result.find(item => item.kind === 'bin' && item.name === 'tool-a');
+    const toolB = result.find(item => item.kind === 'bin' && item.name === 'tool-b');
+    expect(toolA).toBeDefined();
+    expect(toolB).toBeDefined();
+    expect(toolA!.bundled_into).toBeUndefined();
+    expect(toolB!.bundled_into).toBeUndefined();
+  });
+});
