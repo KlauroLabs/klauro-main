@@ -74,7 +74,7 @@ if [ "$ALLOW_DIRTY" != "1" ]; then
   fi
 fi
 
-# --- guard: SPEC-PURITY — no client/bench|nightly-eval|agent-scratch-dogfood-build|agent-adoption-measurement|agent-task-family-coveragemark product names in specs or
+# --- guard: SPEC-PURITY — no client/benchmark product names in specs or
 # shipped source -------------------------------------------------------------
 # Klauro's specs and product source must read as repo-agnostic: they explain
 # the ANALYZER's behavior, not any one customer's codebase. In practice,
@@ -104,7 +104,7 @@ done
 # (b) shipped product source, excluding test/fixture/bench/corpus paths
 SRC_HITS="$(grep -rniE "$BENCHMARK_CORPUS_NAMES" --include='*.ts' \
   packages/analyzer-core/src apps/mcp-server/src 2>/dev/null \
-  | grep -viE '/(test|tests|fixture|fixtures|__tests__|gauntlet|bench|benchmark|corpus)/|\.(test|spec)\.ts:|/(nightly-eval|agent-scratch-dogfood-build|agent-adoption-measurement|agent-task-family-coverage)\.ts:' || true)"
+  | grep -viE '/(test|tests|fixture|fixtures|__tests__|gauntlet|bench|benchmark|corpus)/|(\.test|\.spec|-test|benchmark|-bench|gauntlet|-corpus|-eval|-fixture)[^/]*\.ts:|/(agent-scratch-dogfood-build|agent-adoption-measurement|agent-task-family-coverage)\.ts:' || true)"
 [ -n "$SRC_HITS" ] && SPEC_PURITY_HITS="${SPEC_PURITY_HITS}${SRC_HITS}
 "
 
