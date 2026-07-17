@@ -88,6 +88,22 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
     );
   }
 
+  /**
+   * See JavaAnalyzer.getJavaIgnorePatterns (packages/analyzer-core/src/analyzer/
+   * languages/java-analyzer.ts) for the full rationale: the shared base-analyzer
+   * denylist excludes any `samples/**`, `examples/**`, `fixtures/**`, or
+   * `testdata/**` directory to skip vendored example code in JS/Python repos,
+   * but Java's package-to-directory convention turns those into common REAL
+   * package segments (e.g. `org.springframework.samples.petclinic`). Left
+   * unfiltered, this analyzer's own java-file glob silently excludes every
+   * controller/entity/service in a codebase using that package name — which is
+   * exactly the reference Spring PetClinic app this analyzer targets.
+   */
+  private getJavaIgnorePatterns(context: AnalysisContext | { projectPath: string }): string[] {
+    const unsafeForJavaPackages = /^(\*\*\/)?(samples|examples|fixtures|testdata)\/\*\*$/;
+    return this.getIgnorePatterns(context as AnalysisContext).filter(p => !unsafeForJavaPackages.test(p));
+  }
+
   async canAnalyze(projectPath: string): Promise<boolean> {
     try {
       const pomPath = path.join(projectPath, 'pom.xml');
@@ -111,7 +127,7 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
 
       const javaFiles = await glob(['**/*.java'], {
         cwd: projectPath,
-        ignore: [...this.getIgnorePatterns({ projectPath }), '**/*.class'],
+        ignore: [...this.getJavaIgnorePatterns({ projectPath }), '**/*.class'],
         nodir: true
       });
 
@@ -137,7 +153,7 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
     try {
       const javaFiles = await glob(['**/*.java'], {
         cwd: context.projectPath,
-        ignore: [...this.getIgnorePatterns(context), '**/*.class', '**/test/**'],
+        ignore: [...this.getJavaIgnorePatterns(context), '**/*.class', '**/test/**'],
         nodir: true
       });
 
@@ -541,7 +557,15 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
               attributes: {
                 table,
                 relationships: relationships.length,
-                fields: fields.length
+                // The orchestrator's buildDataEntities() promotes a 'model'-type
+                // node into a database_entities entry with real field evidence by
+                // reading metadata.attributes.fields as an ARRAY of {name,type}
+                // (its fallback path for schema-file-style analyzers that don't
+                // emit one node per field, which is how this analyzer works).
+                // Storing `fields.length` (a number) here made that Array.isArray
+                // check fail silently, so every JPA entity surfaced with zero
+                // fields even once the entity node itself was detected.
+                fields
               }
             })
             .build();
@@ -614,19 +638,56 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
     return null;
   }
 
+  /**
+   * A class needs no access modifier to be a valid, fully-functional Spring
+   * bean/controller/entity — package-private (default-visibility) classes are
+   * a routine, idiomatic choice (the reference Spring PetClinic app itself
+   * declares its `@RestController`s as bare `class OwnerResource { ... }`,
+   * no `public`). The previous `public\s+class` requirement silently dropped
+   * every non-public component: 0 controllers/services/entities detected on
+   * any codebase that follows this common style. Optional modifiers in any
+   * order/combination (public|protected|abstract|final|static, though real
+   * Java only uses valid combinations) now match, matching how JavaAnalyzer's
+   * own `extractClasses` already treats modifiers as optional.
+   */
   private extractClassName(content: string): string | null {
-    const classMatch = content.match(/public\s+class\s+(\w+)/);
+    const classMatch = content.match(/(?:\b(?:public|protected|private|abstract|final|static)\s+)*class\s+(\w+)/);
     return classMatch ? classMatch[1] : null;
   }
 
+  /** Parse the string literal out of an annotation's parenthesized arguments,
+   *  tolerating the `value = "..."` / `path = "..."` forms Spring allows in
+   *  addition to the bare positional `@Xyz("...")` form — both are common in
+   *  real code (`@GetMapping(value = "/{ownerId}")`) and the bare-literal-only
+   *  match previously used here silently treated any `value=`/`path=` mapping
+   *  as if the annotation had no path at all. */
+  private extractAnnotationPathLiteral(rawArgs: string | undefined): string {
+    if (!rawArgs) return '';
+    const literalMatch = rawArgs.match(/(?:(?:value|path)\s*=\s*)?["']([^"']+)["']/);
+    return literalMatch ? literalMatch[1] : '';
+  }
+
   private extractRequestMapping(content: string): string {
-    const mappingMatch = content.match(/@RequestMapping\s*\(\s*["']([^"']+)["']/);
-    return mappingMatch ? mappingMatch[1] : '';
+    // Class-level @RequestMapping precedes the `class` keyword; restricting the
+    // search to that header (rather than the whole file) keeps a method-level
+    // @RequestMapping from being mistaken for the class-level base path.
+    const classDeclIdx = content.search(/\bclass\s+\w/);
+    const header = classDeclIdx >= 0 ? content.slice(0, classDeclIdx) : content;
+    const mappingMatch = header.match(/@RequestMapping\s*\(([^)]*)\)/);
+    return mappingMatch ? this.extractAnnotationPathLiteral(mappingMatch[1]) : '';
   }
 
   private extractEndpoints(content: string): SpringEndpoint[] {
     const endpoints: SpringEndpoint[] = [];
-    const methodPattern = /@(Get|Post|Put|Delete|Patch)Mapping\s*(?:\(\s*["']([^"']+)["'])?[\s\S]*?public\s+\w+\s+(\w+)\s*\([^)]*\)/g;
+    // Return type must allow generics/arrays (`Optional<Owner>`, `List<Owner>`,
+    // `ResponseEntity<List<Pet>>`, `Owner[]`) in addition to a bare type/`void` —
+    // real handler methods routinely wrap their response, and the previous
+    // `\w+`-only return type silently dropped every endpoint whose handler
+    // returned a generic type (i.e. nearly all of them: `findOwner`/`findAll`
+    // in the reference app both return `Optional<Owner>`/`List<Owner>`).
+    // The mapping's own arguments are captured whole (group 2) so both the
+    // bare-literal and `value=`/`path=` forms can be parsed uniformly.
+    const methodPattern = /@(Get|Post|Put|Delete|Patch)Mapping\s*(?:\(([^)]*)\))?[\s\S]*?\b(?:public|protected)\s+(?:static\s+)?[\w.]+(?:<[^;{}]*>)?(?:\[\])*\s+(\w+)\s*\([^)]*\)/g;
     // A class-level @PreAuthorize/@Secured/@RolesAllowed (declared above the class
     // declaration) protects every endpoint. Method-level ones protect only their
     // own endpoint. Class-level = a security annotation appearing before `class`.
@@ -638,7 +699,7 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
     let prevEnd = 0;
     while ((match = methodPattern.exec(content)) !== null) {
       const method = match[1].toLowerCase();
-      const path = match[2] || '';
+      const path = this.extractAnnotationPathLiteral(match[2]);
       const handlerName = match[3];
 
       // Per-endpoint auth: a security annotation in the window from the previous

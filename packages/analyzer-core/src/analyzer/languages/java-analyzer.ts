@@ -90,13 +90,13 @@ export class JavaAnalyzer extends BaseAnalyzer {
     try {
       const javaFiles = await glob(['**/*.java'], {
         cwd: projectPath,
-        ignore: this.getIgnorePatterns({ projectPath }),
+        ignore: this.getJavaIgnorePatterns({ projectPath }),
         nodir: true
       });
 
       const buildFiles = await glob(['pom.xml', 'build.gradle', 'gradle.build'], {
         cwd: projectPath,
-        ignore: this.getIgnorePatterns({ projectPath }),
+        ignore: this.getJavaIgnorePatterns({ projectPath }),
         nodir: true
       });
 
@@ -110,10 +110,29 @@ export class JavaAnalyzer extends BaseAnalyzer {
     return true;
   }
 
+  // getIgnorePatterns() on the shared base analyzer carries a generic
+  // "documentation and example scaffolding" denylist (directories literally
+  // named samples, examples, fixtures, testdata) tuned for JS/Python-style
+  // repos where those words only ever name vendored sample code. Java's
+  // package-to-directory convention turns them into common REAL package
+  // segments instead: org.springframework.samples.petclinic physically lives
+  // under a directory path containing org, springframework, samples,
+  // petclinic in turn, so a blanket "any samples directory" exclusion
+  // silently drops 100 percent of that codebase's real source (every
+  // controller, entity, and service - not a corner case, the entire Spring
+  // PetClinic reference app). Strip just those directory-name patterns for
+  // Java's own glob calls; the rest of the shared denylist (target, vendor,
+  // node_modules, ...) still applies since those never collide with a Java
+  // package name.
+  private getJavaIgnorePatterns(context: AnalysisContext | { projectPath: string }): string[] {
+    const unsafeForJavaPackages = /^(\*\*\/)?(samples|examples|fixtures|testdata)\/\*\*$/;
+    return this.getIgnorePatterns(context as AnalysisContext).filter(p => !unsafeForJavaPackages.test(p));
+  }
+
   async getRelevantFiles(projectPath: string): Promise<string[]> {
     const files = await glob(['**/*.java'], {
       cwd: projectPath,
-      ignore: [...this.getIgnorePatterns({ projectPath }), '**/test/**', '**/*Test.java'],
+      ignore: [...this.getJavaIgnorePatterns({ projectPath }), '**/test/**', '**/*Test.java'],
       nodir: true
     });
     return files.sort();
@@ -167,7 +186,7 @@ export class JavaAnalyzer extends BaseAnalyzer {
 
       const javaFiles = await glob(['**/*.java'], {
         cwd: context.projectPath,
-        ignore: [...this.getIgnorePatterns(context), '**/test/**', '**/*Test.java'],
+        ignore: [...this.getJavaIgnorePatterns(context), '**/test/**', '**/*Test.java'],
         nodir: true
       });
       javaFiles.sort();
@@ -1910,7 +1929,7 @@ export class JavaAnalyzer extends BaseAnalyzer {
   private async analyzeCallGraph(projectPath: string, nodes: CASNode[], edges: CASEdge[], exitPoints: CASExitPoint[]): Promise<void> {
     const javaFiles = await glob(['**/*.java'], {
       cwd: projectPath,
-      ignore: this.getIgnorePatterns({ projectPath }),
+      ignore: this.getJavaIgnorePatterns({ projectPath }),
       nodir: true
     });
     javaFiles.sort();
