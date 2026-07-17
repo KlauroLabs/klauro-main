@@ -1065,6 +1065,9 @@ export async function analyzeProject(projectPath: string, displayName?: string):
     throw new Error(`Project path does not exist: ${projectPath}`);
   }
 
+  // Measured BEFORE acquiring a lane permit so the queue can order by size —
+  // acquiring first would defeat the point (the job would already be running).
+  const sizeHint = await estimateProjectSizeHint(projectPath);
   return withProjectAnalysisLock(projectPath, () => withAnalysisLane(async (orch) => {
     orch.configureEmbedding(await buildEmbeddingPhaseConfig(projectPath));
     const conventions = await loadConventionsForAnalysis(projectPath);
@@ -1086,7 +1089,7 @@ export async function analyzeProject(projectPath: string, displayName?: string):
     await backfillIngestedTelemetry(result, projectPath).catch(() => undefined);
 
     return result;
-  }));
+  }, sizeHint));
 }
 
 /**
@@ -1130,6 +1133,8 @@ export async function analyzeProjectDeferred(projectPath: string, displayName?: 
   // phase and the background AI phase so other analyses can use that slot
   // while this one's enrichment is deferred/queued.
   const dedicatedOrch = createOrchestrator();
+  // Measured BEFORE acquiring a lane permit so the queue can order by size.
+  const sizeHint = await estimateProjectSizeHint(projectPath);
 
   const output = await withProjectAnalysisLock(projectPath, () => withLanePermit(async () => {
     dedicatedOrch.configureEmbedding(await buildEmbeddingPhaseConfig(projectPath));
@@ -1146,7 +1151,7 @@ export async function analyzeProjectDeferred(projectPath: string, displayName?: 
     await saveAnalysisSnapshot(projectPath, result);
 
     return result;
-  }));
+  }, sizeHint));
 
   // Nothing to enrich (no AI provider, or already enriched) → done.
   if (output.ai_enrichment !== 'pending') {
@@ -1161,7 +1166,7 @@ export async function analyzeProjectDeferred(projectPath: string, displayName?: 
     await saveAnalysis(projectPath, output);
     clearFreshnessSummaryCache();
     await saveAnalysisSnapshot(projectPath, output);
-  })).catch(async (error: unknown) => {
+  }, output.nodes.length)).catch(async (error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
     // Comprehension is AI-only (docs/cas/DETERMINISM-BOUNDARY.md). A failed AI
     // pass is a VISIBLE terminal state, never a silent stay-pending: mark
@@ -1554,53 +1559,200 @@ function buildChangeHistoryEntry(result: IncrementalAnalysisResult): ChangeHisto
 // unbounded parallelism would thrash the VPS; a fixed number of permits queues
 // extra work FIFO instead of running it all at once.
 //
-// Server-side config only (KLAURO_ANALYSIS_LANES) — not customer-facing.
+// Server-side config only (KLAURO_ANALYSIS_CONCURRENCY, with the older
+// KLAURO_ANALYSIS_LANES name kept as a fallback so any existing deploy config
+// keeps working) — not customer-facing.
 const DEFAULT_ANALYSIS_LANES = 2;
 
 function getAnalysisLaneCount(): number {
-  const raw = process.env.KLAURO_ANALYSIS_LANES;
+  const raw = process.env.KLAURO_ANALYSIS_CONCURRENCY ?? process.env.KLAURO_ANALYSIS_LANES;
   if (raw === undefined || raw === '') return DEFAULT_ANALYSIS_LANES;
   const parsed = Number(raw);
   return Number.isFinite(parsed) && parsed >= 1 ? Math.floor(parsed) : DEFAULT_ANALYSIS_LANES;
 }
 
-// Simple counting semaphore: `permitsInUse` vs. the configured lane count,
-// with a FIFO wait queue for callers beyond capacity. Lane-count changes take
-// effect for the next acquire (safe — the count only changes between
-// test runs / config reloads, never assumed constant mid-batch).
-let permitsInUse = 0;
-let laneWaiters: Array<() => void> = [];
+// --- Memory guard --------------------------------------------------------
+//
+// A whale analysis (tens of thousands of nodes) already holds significant
+// heap; admitting a SECOND concurrent one under memory pressure risks an OOM
+// that takes the whole process (and every in-flight analysis) down with it.
+// This guard only ever reduces the effective lane count to 1 — it never
+// blocks a lone in-flight analysis, so a single whale always makes forward
+// progress regardless of memory pressure. Container cgroup usage is
+// authoritative when readable (this process runs in a container with a real
+// memory ceiling); RSS-vs-fixed-threshold is the fallback for environments
+// (dev laptops, `tsc`/test runs) where cgroup files aren't present.
+const DEFAULT_MEMORY_RSS_LIMIT_BYTES = 5 * 1024 * 1024 * 1024; // 5GB
+const DEFAULT_MEMORY_CONTAINER_RATIO = 0.7; // 70% of the container limit
 
-function acquireLanePermit(): Promise<void> {
-  if (permitsInUse < getAnalysisLaneCount()) {
+function getMemoryRssLimitBytes(): number {
+  const raw = process.env.KLAURO_ANALYSIS_MEMORY_RSS_LIMIT_BYTES;
+  const parsed = raw !== undefined && raw !== '' ? Number(raw) : NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_MEMORY_RSS_LIMIT_BYTES;
+}
+
+function getMemoryContainerRatio(): number {
+  const raw = process.env.KLAURO_ANALYSIS_MEMORY_CONTAINER_RATIO;
+  const parsed = raw !== undefined && raw !== '' ? Number(raw) : NaN;
+  return Number.isFinite(parsed) && parsed > 0 && parsed <= 1 ? parsed : DEFAULT_MEMORY_CONTAINER_RATIO;
+}
+
+/** Reads cgroup v2 then v1 memory usage/limit. Returns null if neither is
+ *  readable or the limit is effectively "unlimited" (cgroup v1 reports huge
+ *  sentinel values for no limit) — callers fall back to the RSS check. */
+function readContainerMemory(): { usage: number; limit: number } | null {
+  try {
+    const limit = Number(nodeFs.readFileSync('/sys/fs/cgroup/memory.max', 'utf8').trim());
+    const usage = Number(nodeFs.readFileSync('/sys/fs/cgroup/memory.current', 'utf8').trim());
+    if (Number.isFinite(limit) && limit > 0 && Number.isFinite(usage)) return { usage, limit };
+  } catch { /* not cgroup v2, or unreadable outside a container */ }
+  try {
+    const limit = Number(nodeFs.readFileSync('/sys/fs/cgroup/memory/memory.limit_in_bytes', 'utf8').trim());
+    const usage = Number(nodeFs.readFileSync('/sys/fs/cgroup/memory/memory.usage_in_bytes', 'utf8').trim());
+    // cgroup v1's "no limit" sentinel is close to 2^63 bytes; anything above
+    // 1TB is treated as unlimited so it falls through to the RSS check.
+    if (Number.isFinite(limit) && limit > 0 && limit < 1024 ** 4 && Number.isFinite(usage)) {
+      return { usage, limit };
+    }
+  } catch { /* not cgroup v1, or unreadable outside a container */ }
+  return null;
+}
+
+/** Test-only override so tests can force tight/loose memory deterministically
+ *  instead of depending on the actual host's memory state. */
+let memoryGuardOverrideForTests: (() => boolean) | null = null;
+
+function isMemoryTight(): boolean {
+  if (memoryGuardOverrideForTests) return memoryGuardOverrideForTests();
+  const container = readContainerMemory();
+  if (container) return container.usage / container.limit > getMemoryContainerRatio();
+  return process.memoryUsage().rss > getMemoryRssLimitBytes();
+}
+
+/** Test-only: force the memory guard to report tight (`true`), loose
+ *  (`false`), or restore real measurement (`null`). */
+export function __setMemoryGuardOverrideForTests(override: boolean | null): void {
+  memoryGuardOverrideForTests = override === null ? null : () => override;
+}
+
+// --- Size-aware, starvation-bounded wait queue ---------------------------
+//
+// Counting semaphore: `permitsInUse` vs. the configured lane count. Callers
+// beyond capacity queue with a size hint (smaller project = smaller hint) so
+// a freed slot goes to the SMALLEST waiting job, not strict FIFO — a small
+// repo's re-analyze should never sit behind a whale's 40-minute rebuild just
+// because it asked second. Pure shortest-job-first can starve the whale
+// forever if smaller jobs keep arriving, so any waiter old enough
+// (KLAURO_ANALYSIS_QUEUE_MAX_WAIT_MS, default 15 minutes) is promoted ahead
+// of size ordering — every waiter's worst case is bounded wait, not
+// indefinite wait.
+const DEFAULT_QUEUE_MAX_WAIT_MS = 15 * 60 * 1000;
+
+function getQueueMaxWaitMs(): number {
+  const raw = process.env.KLAURO_ANALYSIS_QUEUE_MAX_WAIT_MS;
+  const parsed = raw !== undefined && raw !== '' ? Number(raw) : NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_QUEUE_MAX_WAIT_MS;
+}
+
+interface LaneWaiter {
+  resolve: () => void;
+  /** Smaller = higher priority. Unknown-size jobs use +Infinity so known
+   *  small jobs are never made to wait behind an unmeasured one; age-based
+   *  promotion still bounds their worst-case wait. */
+  sizeHint: number;
+  enqueuedAt: number;
+}
+
+let permitsInUse = 0;
+let laneWaiters: LaneWaiter[] = [];
+
+/** Picks the waiter that should get the next freed permit: the oldest
+ *  waiter past the starvation threshold if any, otherwise the smallest
+ *  sizeHint (ties broken by earliest arrival). Returns -1 if the queue is
+ *  empty. */
+function pickNextWaiterIndex(): number {
+  if (laneWaiters.length === 0) return -1;
+  const now = Date.now();
+  const maxWaitMs = getQueueMaxWaitMs();
+
+  let promotedIdx = -1;
+  let promotedEnqueuedAt = Infinity;
+  for (let i = 0; i < laneWaiters.length; i++) {
+    const waiter = laneWaiters[i];
+    if (now - waiter.enqueuedAt >= maxWaitMs && waiter.enqueuedAt < promotedEnqueuedAt) {
+      promotedIdx = i;
+      promotedEnqueuedAt = waiter.enqueuedAt;
+    }
+  }
+  if (promotedIdx !== -1) return promotedIdx;
+
+  let bestIdx = 0;
+  for (let i = 1; i < laneWaiters.length; i++) {
+    const candidate = laneWaiters[i];
+    const best = laneWaiters[bestIdx];
+    if (
+      candidate.sizeHint < best.sizeHint ||
+      (candidate.sizeHint === best.sizeHint && candidate.enqueuedAt < best.enqueuedAt)
+    ) {
+      bestIdx = i;
+    }
+  }
+  return bestIdx;
+}
+
+function acquireLanePermit(sizeHint: number): Promise<void> {
+  const capacity = getAnalysisLaneCount();
+  // The memory guard only ever caps the SECOND+ concurrent slot at 1 — a lone
+  // in-flight analysis is never gated by it.
+  const effectiveCapacity = permitsInUse >= 1 && isMemoryTight() ? 1 : capacity;
+  if (permitsInUse < effectiveCapacity) {
     permitsInUse += 1;
     return Promise.resolve();
   }
   return new Promise<void>((resolve) => {
-    laneWaiters.push(resolve);
+    laneWaiters.push({ resolve, sizeHint, enqueuedAt: Date.now() });
   });
 }
 
 function releaseLanePermit(): void {
-  const nextWaiter = laneWaiters.shift();
-  if (nextWaiter) {
-    // Hand the freed permit straight to the next waiter (permitsInUse stays
+  const idx = pickNextWaiterIndex();
+  if (idx !== -1) {
+    // Hand the freed permit straight to the chosen waiter (permitsInUse stays
     // the same — it never actually dropped below capacity).
-    nextWaiter();
+    const [waiter] = laneWaiters.splice(idx, 1);
+    waiter.resolve();
     return;
   }
   permitsInUse = Math.max(0, permitsInUse - 1);
 }
 
+/** Best-effort size hint for queue ordering: the previously-analyzed node
+ *  count for this project (cheap cached read), or +Infinity when there is no
+ *  previous analysis to measure from (a cold/first-ever analysis is never
+ *  assumed small — see the queue-ordering comment above). Never throws: a
+ *  failed read just falls back to the unknown-size default. */
+async function estimateProjectSizeHint(projectPath: string): Promise<number> {
+  try {
+    const previous = await loadAnalysis(projectPath, { preferCache: true });
+    const nodeCount = previous?.nodes?.length;
+    if (typeof nodeCount === 'number' && Number.isFinite(nodeCount)) return nodeCount;
+  } catch { /* no previous analysis, or unreadable — treat as unknown-size */ }
+  return Number.POSITIVE_INFINITY;
+}
+
 /**
- * Run fn bounded to KLAURO_ANALYSIS_LANES concurrent analyses (default 2).
- * Extra callers queue FIFO for a free permit — this is what replaces the old
- * process-wide withGlobalAnalysisLock mutex, so a batch of N<=lanes
- * independent-project analyses runs in parallel instead of serially, while
- * still bounding memory pressure on the host.
+ * Run fn bounded to KLAURO_ANALYSIS_CONCURRENCY concurrent analyses (default
+ * 2). Extra callers queue for a free permit, smallest-project-first with
+ * age-based starvation promotion (see the comments above) — this is what
+ * replaces the old process-wide withGlobalAnalysisLock mutex, so a batch of
+ * N<=lanes independent-project analyses runs in parallel instead of
+ * serially, while still bounding memory pressure on the host. `fn`'s own
+ * errors propagate to the caller as before (see the `finally` below) —
+ * a crashing analysis releases its permit like any other and never blocks
+ * the pool.
  */
-async function withLanePermit<T>(fn: () => Promise<T>): Promise<T> {
-  await acquireLanePermit();
+async function withLanePermit<T>(fn: () => Promise<T>, sizeHint: number = Number.POSITIVE_INFINITY): Promise<T> {
+  await acquireLanePermit(sizeHint);
   try {
     return await fn();
   } finally {
@@ -1615,14 +1767,29 @@ async function withLanePermit<T>(fn: () => Promise<T>): Promise<T> {
  * analyzeProjectIncremental); analyzeProjectDeferred manages its own
  * dedicated instance across two phases and uses withLanePermit directly.
  */
-function withAnalysisLane<T>(fn: (orch: AnalyzerOrchestrator) => Promise<T>): Promise<T> {
-  return withLanePermit(() => fn(createOrchestrator()));
+function withAnalysisLane<T>(fn: (orch: AnalyzerOrchestrator) => Promise<T>, sizeHint?: number): Promise<T> {
+  return withLanePermit(() => fn(createOrchestrator()), sizeHint);
 }
 
-/** Test-only: reset lane pool state (e.g. after changing KLAURO_ANALYSIS_LANES). */
+/** Test-only: reset lane pool state (e.g. after changing
+ *  KLAURO_ANALYSIS_CONCURRENCY / KLAURO_ANALYSIS_LANES). */
 export function __resetAnalysisLanesForTests(): void {
   permitsInUse = 0;
   laneWaiters = [];
+  memoryGuardOverrideForTests = null;
+}
+
+/** Test-only: exercise the lane pool directly without a real analysis
+ *  pipeline (used to verify concurrency, ordering, and crash isolation with
+ *  fake slow/failing functions). */
+export function __withLanePermitForTests<T>(fn: () => Promise<T>, sizeHint?: number): Promise<T> {
+  return withLanePermit(fn, sizeHint);
+}
+
+/** Test-only: current in-use permit count, for asserting overlap/exclusivity
+ *  without timing-dependent sleeps. */
+export function __getLanePermitsInUseForTests(): number {
+  return permitsInUse;
 }
 
 export async function analyzeProjectIncremental(projectPath: string, displayName?: string): Promise<IncrementalAnalysisResult> {
@@ -1630,9 +1797,11 @@ export async function analyzeProjectIncremental(projectPath: string, displayName
     throw new Error(`Project path does not exist: ${projectPath}`);
   }
 
+  // Measured BEFORE acquiring a lane permit so the queue can order by size.
+  const sizeHint = await estimateProjectSizeHint(projectPath);
   return withProjectAnalysisLock(
     projectPath,
-    () => withAnalysisLane((orch) => runIncrementalAnalysis(projectPath, orch, displayName)),
+    () => withAnalysisLane((orch) => runIncrementalAnalysis(projectPath, orch, displayName), sizeHint),
   );
 }
 
