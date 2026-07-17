@@ -1006,4 +1006,171 @@ describe('collectDeployableEvidence: evidence-gated bundling resolution (SPEC-DE
     expect(toolA!.bundled_into).toBeUndefined();
     expect(toolB!.bundled_into).toBeUndefined();
   });
+
+  describe('Android Gradle: one ship unit, not sibling root-aggregator/module-dir rows', () => {
+    function writeSingleModuleAndroidApp(projectPath: string, displayName: string): void {
+      // Standard Android Studio template shape: root build.gradle.kts only
+      // version-pins the plugins (never applies them), settings.gradle.kts
+      // includes the single `app` module, and app/build.gradle.kts actually
+      // applies com.android.application.
+      fs.writeFileSync(
+        path.join(projectPath, 'build.gradle.kts'),
+        [
+          'plugins {',
+          '    id("com.android.application") version "8.2.0" apply false',
+          '    id("org.jetbrains.kotlin.android") version "1.9.0" apply false',
+          '}',
+        ].join('\n') + '\n',
+      );
+      fs.writeFileSync(
+        path.join(projectPath, 'settings.gradle.kts'),
+        [
+          `rootProject.name = "${displayName}"`,
+          'include(":app")',
+        ].join('\n') + '\n',
+      );
+      fs.mkdirpSync(path.join(projectPath, 'app', 'src', 'main'));
+      fs.writeFileSync(
+        path.join(projectPath, 'app', 'build.gradle.kts'),
+        [
+          'plugins {',
+          '    id("com.android.application")',
+          '    id("org.jetbrains.kotlin.android")',
+          '}',
+          'android {',
+          '    namespace = "com.example.app"',
+          '    defaultConfig {',
+          '        applicationId = "com.example.app"',
+          '    }',
+          '}',
+        ].join('\n') + '\n',
+      );
+      fs.writeFileSync(
+        path.join(projectPath, 'app', 'src', 'main', 'AndroidManifest.xml'),
+        [
+          '<manifest xmlns:android="http://schemas.android.com/apk/res/android">',
+          '  <application>',
+          '    <activity android:name=".MainActivity">',
+          '      <intent-filter>',
+          '        <action android:name="android.intent.action.MAIN" />',
+          '        <category android:name="android.intent.category.LAUNCHER" />',
+          '      </intent-filter>',
+          '    </activity>',
+          '  </application>',
+          '</manifest>',
+        ].join('\n') + '\n',
+      );
+    }
+
+    test('single-module com.android.application repo yields exactly ONE application unit named from displayName, plus root/settings/module rows bundled into it', () => {
+      projectPath = tempProject();
+      writeSingleModuleAndroidApp(projectPath, 'MyProductApp');
+
+      const result = collectDeployableEvidence({
+        projectPath,
+        nodes: [],
+        entryPoints: [],
+        exitPoints: [],
+        displayName: 'MyProductApp',
+      });
+
+      // Exactly one application-kind (tier 1, kind 'bin') unit, never a
+      // second one for the root build.gradle.kts's `apply false` declaration.
+      const appUnits = result.filter(item => item.tier === 1 && item.kind === 'bin');
+      expect(appUnits).toHaveLength(1);
+      expect(appUnits[0].name).toBe('MyProductApp');
+      expect(appUnits[0].root_path).toBe('app');
+
+      // The jvm.ts generic Tier-3 package-identity scan still emits rows for
+      // the root build file, the settings file, and the module's own build
+      // file — but they must all resolve as MEMBERS of the one app unit, not
+      // stand as sibling deployables.
+      const packageRows = result.filter(item => item.tier === 3 && item.kind === 'package');
+      expect(packageRows.length).toBeGreaterThan(0);
+      for (const row of packageRows) {
+        expect(row.bundled_into).toBe('MyProductApp');
+      }
+    });
+
+    test('multi-module android repo (app + 2 library modules) yields one app unit + libraries not promoted to ship units', () => {
+      projectPath = tempProject();
+      writeSingleModuleAndroidApp(projectPath, 'MultiModuleApp');
+      // Rewrite settings to include the two extra library modules too.
+      fs.writeFileSync(
+        path.join(projectPath, 'settings.gradle.kts'),
+        [
+          'rootProject.name = "MultiModuleApp"',
+          'include(":app")',
+          'include(":core-ui")',
+          'include(":core-data")',
+        ].join('\n') + '\n',
+      );
+      for (const lib of ['core-ui', 'core-data']) {
+        fs.mkdirpSync(path.join(projectPath, lib));
+        fs.writeFileSync(
+          path.join(projectPath, lib, 'build.gradle.kts'),
+          ['plugins {', '    id("com.android.library")', '}'].join('\n') + '\n',
+        );
+      }
+
+      const result = collectDeployableEvidence({
+        projectPath,
+        nodes: [],
+        entryPoints: [],
+        exitPoints: [],
+        displayName: 'MultiModuleApp',
+      });
+
+      const appUnits = result.filter(item => item.tier === 1 && item.kind === 'bin');
+      expect(appUnits).toHaveLength(1);
+      expect(appUnits[0].name).toBe('MultiModuleApp');
+
+      // Libraries stay their own tier-3 package rows, never promoted to a
+      // ship unit and never bundled into the app (they are real distinct
+      // modules, not aggregator duplicates of the app's own module tree).
+      const coreUi = result.find(item => item.root_path === 'core-ui');
+      const coreData = result.find(item => item.root_path === 'core-data');
+      expect(coreUi).toBeDefined();
+      expect(coreData).toBeDefined();
+      expect(coreUi!.tier).toBe(3);
+      expect(coreData!.tier).toBe(3);
+      expect(coreUi!.bundled_into).toBeUndefined();
+      expect(coreData!.bundled_into).toBeUndefined();
+    });
+
+    test('plain JVM gradle service repo (no android plugin anywhere) is unchanged: no mobile-provider rows at all', () => {
+      projectPath = tempProject();
+      fs.writeFileSync(
+        path.join(projectPath, 'settings.gradle.kts'),
+        'rootProject.name = "my-service"\n',
+      );
+      fs.writeFileSync(
+        path.join(projectPath, 'build.gradle.kts'),
+        [
+          'buildscript {',
+          '    dependencies {',
+          '        classpath("org.springframework.boot:spring-boot-gradle-plugin:3.2.0")',
+          '    }',
+          '}',
+          'application {',
+          '    mainClass.set("com.example.Main")',
+          '}',
+        ].join('\n') + '\n',
+      );
+
+      const result = collectDeployableEvidence({
+        projectPath,
+        nodes: [],
+        entryPoints: [],
+        exitPoints: [],
+        displayName: 'my-service',
+      });
+
+      // No Android app/library evidence of any kind should be produced.
+      expect(result.some(item => item.evidence.some(e => /com\.android\.(application|library)/.test(e)))).toBe(false);
+      // The Spring Boot service is still detected normally (jvm.ts unaffected).
+      const serverEntry = result.find(item => item.kind === 'server-entry');
+      expect(serverEntry).toBeDefined();
+    });
+  });
 });

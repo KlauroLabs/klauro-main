@@ -44,7 +44,133 @@ function androidAppModuleName(
       // fall through to dir name
     }
   }
-  return path.basename(gradleDir) === '.' ? safeDeployableName(displayName || path.basename(projectPath)) : path.basename(gradleDir);
+  // Prefer the resolved display name (ctx.displayName) over a bare module
+  // directory basename ('app') for the SHIP unit — a directory name is a
+  // dir-shaped label, never the product's real identity, and the module dir
+  // is frequently just the generic Android Studio default ('app') that tells
+  // an agent/reader nothing. This only applies to the actual application
+  // module (this function is only called from the isApp branch below);
+  // library modules keep their own directory-derived name.
+  if (displayName) return safeDeployableName(displayName);
+  return path.basename(gradleDir) === '.' ? safeDeployableName(path.basename(projectPath)) : path.basename(gradleDir);
+}
+
+/** True when `content` actually APPLIES `pluginId` in this module, as
+ *  opposed to merely DECLARING/pinning it for subprojects. Modern Android
+ *  Gradle Plugin projects put every subproject plugin in the ROOT
+ *  build.gradle(.kts) with `apply false`:
+ *    plugins {
+ *      id("com.android.application") version "8.2.0" apply false
+ *      id("com.android.library") version "8.2.0" apply false
+ *    }
+ *  A naive substring test against `com.android.application` matches this
+ *  root declaration too, minting a phantom Android-app ship unit at the repo
+ *  root for the standard single/multi-module Android Studio template — the
+ *  root project itself never applies the plugin, it only version-pins it for
+ *  whichever module (`app/build.gradle.kts`) actually applies it without a
+ *  version. Real application happens via `id("<pluginId>")` /
+ *  `id '<pluginId>'` / `apply plugin: '<pluginId>'` NOT immediately
+ *  qualified by `apply false` on the same declaration. */
+function isPluginApplied(content: string, pluginId: string): boolean {
+  const escaped = pluginId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const declarationRegexes = [
+    new RegExp(`\\bid\\s*\\(\\s*["']${escaped}["']\\s*\\)([^\\n]*)`, 'g'),
+    new RegExp(`\\bid\\s+["']${escaped}["']([^\\n]*)`, 'g'),
+  ];
+  for (const regex of declarationRegexes) {
+    for (const match of content.matchAll(regex)) {
+      if (!/\bapply\s+false\b/.test(match[1] || '')) return true;
+    }
+  }
+  return new RegExp(`apply\\s+plugin:\\s*['"]${escaped}['"]`).test(content);
+}
+
+/** Walk from `gradleDir` up toward the repo root looking for the nearest
+ *  settings.gradle(.kts) — mirrors jvm.ts's nearestModuleRoot walk-up
+ *  pattern, kept local since this file doesn't import from jvm.ts (providers
+ *  stay independent/pure). */
+function findEnclosingSettingsFile(projectPath: string, gradleDir: string): string | undefined {
+  let dir = gradleDir;
+  while (true) {
+    for (const name of ['settings.gradle.kts', 'settings.gradle']) {
+      const candidate = path.join(dir, name);
+      if (fs.existsSync(path.join(projectPath, candidate))) return candidate;
+    }
+    if (dir === '.' || dir === '') break;
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return undefined;
+}
+
+/** Module tokens a settings.gradle(.kts) `include(...)` declares, e.g.
+ *  `include(":app")` / `include ':app', ':lib'` -> ['app', 'lib']. Handles
+ *  both Groovy and Kotlin DSL, single- or multi-argument `include(...)`. Only
+ *  the final path segment is kept (Gradle's `:feature:app` still maps to a
+ *  directory named `app`), matching how deployable-evidence.ts's
+ *  evidenceNameMatchesShippedToken already compares by basename. */
+function parseIncludedGradleModules(content: string): string[] {
+  const modules = new Set<string>();
+  for (const call of content.matchAll(/include\s*\(([^)]*)\)|include\s+((?:['"][^'"]*['"]\s*,?\s*)+)/g)) {
+    const args = call[1] ?? call[2] ?? '';
+    for (const m of args.matchAll(/['"]:?([^'":]+)['"]/g)) {
+      const segments = m[1].split(':').filter(Boolean);
+      if (segments.length) modules.add(segments[segments.length - 1]);
+    }
+  }
+  return [...modules];
+}
+
+/**
+ * Positive containment evidence for the "one ship unit, not five sibling
+ * rows" fix (SPEC-DEPLOYABLE-DETECTION.md merge doctrine): a repo-root
+ * build.gradle(.kts) and settings.gradle(.kts) are workspace-aggregator
+ * artifacts, not distinct shipped things, when they describe the SAME module
+ * tree as this Android app module — jvm.ts's generic Tier-3 package-identity
+ * scan (every build.gradle(.kts)/settings.gradle(.kts) in the repo) still
+ * emits a row for each of them (root build file, this module's build file,
+ * the settings file), independent of ecosystem. Rather than teach the
+ * generic evidence-bundling pass Gradle-specific parsing, this reads the
+ * enclosing settings.gradle(.kts) directly, confirms it actually
+ * `include`s THIS module (never on path-ancestry/name-similarity alone —
+ * requires the settings file's declared module list to name this
+ * directory), and returns the exact name tokens (module dir basename,
+ * declared `rootProject.name`, and the resolved display name) those sibling
+ * Tier-3 rows are named with. Populating this app unit's `ships_paths` with
+ * those tokens lets the EXISTING generic `resolveEvidenceBundling` pass in
+ * deployable-evidence.ts (originally built for Dockerfile/installer member
+ * lists) fold them in via `bundled_into`, with zero Gradle-specific code
+ * needed in the shared cross-provider merge layer.
+ */
+function rootAggregatorShipsPaths(
+  projectPath: string,
+  gradleDir: string,
+  displayName: string | undefined,
+): string[] | undefined {
+  const moduleBase = path.basename(gradleDir);
+  const tokens = new Set<string>();
+  if (gradleDir !== '.') tokens.add(moduleBase);
+
+  const settingsFile = findEnclosingSettingsFile(projectPath, gradleDir);
+  if (!settingsFile) return tokens.size ? [...tokens] : undefined;
+
+  let settingsContent = '';
+  try {
+    settingsContent = fs.readFileSync(path.join(projectPath, settingsFile), 'utf8');
+  } catch {
+    return tokens.size ? [...tokens] : undefined;
+  }
+
+  const includedModules = parseIncludedGradleModules(settingsContent);
+  const isIncluded = gradleDir === '.' || includedModules.some(m => m.toLowerCase() === moduleBase.toLowerCase());
+  if (!isIncluded) return tokens.size ? [...tokens] : undefined; // no positive containment evidence -> don't guess
+
+  const rootProjectNameMatch = settingsContent.match(/rootProject\.name\s*=\s*['"]([^'"]+)['"]/);
+  if (rootProjectNameMatch) tokens.add(rootProjectNameMatch[1]);
+  if (displayName) tokens.add(displayName);
+
+  return tokens.size ? [...tokens] : undefined;
 }
 
 function collectAndroid(ctx: EvidenceCollectionContext): DeployableEvidence[] {
@@ -72,8 +198,8 @@ function collectAndroid(ctx: EvidenceCollectionContext): DeployableEvidence[] {
     }
     const gradleDir = path.dirname(gradleFile);
 
-    const isApp = /com\.android\.application/.test(content);
-    const isLib = /com\.android\.library/.test(content);
+    const isApp = isPluginApplied(content, 'com.android.application');
+    const isLib = isPluginApplied(content, 'com.android.library');
     if (!isApp && !isLib) continue;
 
     let manifestPath: string | undefined;
@@ -96,12 +222,19 @@ function collectAndroid(ctx: EvidenceCollectionContext): DeployableEvidence[] {
       const evidence = [`build.gradle applies com.android.application (${gradleFile}) — the APK/AAB is the ship unit for Android`];
       if (manifestPath) evidence.push(`AndroidManifest.xml: ${manifestPath}`);
       if (hasLauncherActivity) evidence.push('AndroidManifest.xml declares a MAIN/LAUNCHER activity');
+      const shipsPaths = rootAggregatorShipsPaths(projectPath, gradleDir, displayName);
+      if (shipsPaths) {
+        evidence.push(
+          `settings/root Gradle files describing this same module tree (${shipsPaths.join(', ')}) roll up into this ship unit`,
+        );
+      }
       out.push({
         root_path: gradleDir,
         name,
         tier: 1,
         kind: 'bin',
         evidence,
+        ships_paths: shipsPaths,
       });
     } else if (isLib) {
       out.push({
