@@ -47,16 +47,28 @@
  * active claim's declared scope (paths/symbols) — zero claims covering it,
  * or two-or-more claims covering it, are BOTH treated as unattributable and
  * surfaced in the `unattributed` bucket, never guessed or silently assigned
- * to whichever participant happens to be asking. Symbols outside every
- * active claim's scope remain unattributed until a real write-hook (§8 W5,
- * "auto-announce real edits") exists to attribute edits AS THEY HAPPEN
- * rather than after the fact from a merged snapshot. This module does not
- * fake that; it reports the honest gap.
+ * to whichever participant happens to be asking.
+ *
+ * W4 STEP 1 ADDITION (docs/SPEC-COORDINATION-FABRIC-V3.md §8 W4, "re-base
+ * on W0"): the write-hook (write-hook.ts, §8 W5) is now built and gives a
+ * SECOND attribution source that W0 didn't have when this module was first
+ * written — `announceEdit`/`recordUnclaimedEdit` claim-log entries name the
+ * agent that actually touched a path, AS IT HAPPENED, independent of whether
+ * a claim currently covers that path. `getAttributedInFlightState` now
+ * consults that event log as a TIEBREAKER for anything that would otherwise
+ * land in `unattributed`: if the full claim log (not just currently-active
+ * claims — a write-hook announcement is still informative evidence after its
+ * TTL expires or it gets superseded) shows exactly ONE distinct agent ever
+ * announced/was-detected touching the delta's file, the delta is resolved to
+ * that agent and reported in `tiebroken` (never folded into `participants`,
+ * since it doesn't correspond to a live claim). Two-or-more distinct agents,
+ * or zero, stay honestly in `unattributed` — this is a tiebreaker, not a
+ * guesser.
  */
 
 import type { CASNode, CASOutput } from '../../../../packages/analyzer-core/src/types/cas.types';
 import { loadAnalysis } from '../storage';
-import { getActiveClaims } from './local-store';
+import { getActiveClaims, readClaimLog, type ClaimLogEntry } from './local-store';
 import type { WorkClaim } from './types';
 import {
   detectConceptualConflicts,
@@ -361,13 +373,37 @@ export interface AttributedParticipantState {
   delta: InFlightSemanticDelta;
 }
 
+/**
+ * A delta resolved via the write-hook's event log (announced-edit or
+ * unclaimed-edit-with-a-named-detector) rather than an active claim's scope —
+ * the SECOND attribution source (W4 step 1). Kept separate from
+ * `AttributedParticipantState` because it does not correspond to a live
+ * claim (the announcing claim may since have expired/been superseded), and
+ * separate from `unattributed` because it IS resolved to exactly one agent.
+ */
+export interface TiebrokenSymbolDelta extends SemanticSymbolDelta {
+  agent_id: string;
+  /** 'announced-edit' = a claim-log entry (any status) whose scope covers this file names the
+   *  agent (announceEdit / a regular claim / the write-hook's auto-announce all produce these).
+   *  'unclaimed-edit' = a `recordUnclaimedEdit` event log entry for this exact file named a real
+   *  agent via `detectedBy` (not the 'unknown' default). */
+  via: 'announced-edit' | 'unclaimed-edit';
+  /** The pre-shaped SymbolChange for this delta, ready to fold into an `AgentInFlightState` for
+   *  `planIntentMerge`/`detectConceptualConflicts`, same shape `AttributedParticipantState.delta.changes` uses. */
+  change: SymbolChange;
+}
+
 export interface AttributedInFlightState {
   workspace: string;
   available: boolean;
   reason?: string;
   participants: AttributedParticipantState[];
+  /** Deltas resolved via the write-hook's announced-edit/unclaimed-edit event log when no single
+   *  active claim covered them (W4 step 1 — the 2nd attribution source; see `TiebrokenSymbolDelta`). */
+  tiebroken: TiebrokenSymbolDelta[];
   /** Changes present in the raw in-flight delta that could not be honestly attributed to exactly one
-   *  active participant (see `UnattributedSymbolDelta.reason`). Never silently assigned. */
+   *  active participant NOR resolved by the write-hook tiebreaker (see `UnattributedSymbolDelta.reason`).
+   *  Never silently assigned. */
   unattributed: UnattributedSymbolDelta[];
 }
 
@@ -390,6 +426,92 @@ function claimCoversSymbol(claim: WorkClaim, delta: SemanticSymbolDelta): boolea
   return false;
 }
 
+// ---------------------------------------------------------------------------
+// Write-hook event log tiebreaker (W4 step 1 — the 2nd attribution source)
+// ---------------------------------------------------------------------------
+
+/**
+ * Every distinct agent_id the FULL claim log (all statuses — an expired or
+ * superseded announcement is still evidence of who wrote there, unlike
+ * `getActiveClaims`) names for `file`, split by which kind of event named it:
+ *  - `announced`: any log entry (kind !== 'unclaimed-edit' — i.e. an ordinary
+ *    claim OR an `announceEdit` edit-lock, which is what the write-hook's
+ *    auto-announce path produces) whose scope.paths covers `file`.
+ *  - `unclaimedNamed`: a `recordUnclaimedEdit` ('unclaimed-edit') entry for
+ *    this exact file whose `agent_id` is a real detected agent, not the
+ *    'unknown' default (an anonymous unclaimed-edit event names nobody, so it
+ *    is never a tiebreak candidate).
+ */
+function tiebreakCandidatesForFile(
+  log: ClaimLogEntry[],
+  file: string
+): { announced: Set<string>; unclaimedNamed: Set<string> } {
+  const announced = new Set<string>();
+  const unclaimedNamed = new Set<string>();
+  for (const entry of log) {
+    const paths = entry.scope?.paths ?? [];
+    if (!paths.some((p) => fileWithinScopePath(file, p))) continue;
+    if (entry.kind === 'unclaimed-edit') {
+      if (entry.agent_id && entry.agent_id !== 'unknown') unclaimedNamed.add(entry.agent_id);
+    } else {
+      announced.add(entry.agent_id);
+    }
+  }
+  return { announced, unclaimedNamed };
+}
+
+/**
+ * Resolve as many `unattributed` deltas as honestly possible using the
+ * write-hook's event log as a tiebreaker (W4 step 1). Returns the deltas that
+ * WERE resolved (`tiebroken`) separately from the ones that remain genuinely
+ * unattributable (`stillUnattributed`) — a delta with 0 or 2+ distinct naming
+ * agents in the event log is left alone, never guessed.
+ */
+async function applyWriteHookTiebreaker(
+  workspace: string,
+  raw: InFlightSemanticDelta,
+  unattributed: UnattributedSymbolDelta[]
+): Promise<{ tiebroken: TiebrokenSymbolDelta[]; stillUnattributed: UnattributedSymbolDelta[] }> {
+  if (unattributed.length === 0) return { tiebroken: [], stillUnattributed: [] };
+
+  let log: ClaimLogEntry[] = [];
+  try {
+    log = await readClaimLog(workspace);
+  } catch {
+    // No claim log at all (fresh workspace) — nothing to tiebreak with; every
+    // unattributed delta stays that way. Never a hard failure of this path.
+    return { tiebroken: [], stillUnattributed: unattributed };
+  }
+
+  const changesBySymbolId = new Map(raw.changes.map((c) => [c.symbol_id, c]));
+  const tiebroken: TiebrokenSymbolDelta[] = [];
+  const stillUnattributed: UnattributedSymbolDelta[] = [];
+
+  for (const u of unattributed) {
+    const change = u.file ? changesBySymbolId.get(u.symbol_id) : undefined;
+    if (!u.file || !change) {
+      stillUnattributed.push(u);
+      continue;
+    }
+    const { announced, unclaimedNamed } = tiebreakCandidatesForFile(log, u.file);
+    const combined = new Set<string>([...announced, ...unclaimedNamed]);
+    if (combined.size === 1) {
+      const agentId = [...combined][0];
+      const { reason: _reason, overlapping_agents: _overlapping, ...delta } = u;
+      tiebroken.push({
+        ...delta,
+        agent_id: agentId,
+        via: announced.has(agentId) ? 'announced-edit' : 'unclaimed-edit',
+        change,
+      });
+    } else {
+      stillUnattributed.push(u);
+    }
+  }
+
+  return { tiebroken, stillUnattributed };
+}
+
 /**
  * Attribute a workspace's whole-tree in-flight semantic delta to its
  * currently-active claims (`local-store.ts` `getActiveClaims` — NEVER
@@ -410,15 +532,18 @@ export async function getAttributedInFlightState(
   ]);
 
   if (!raw.available) {
-    return { workspace, available: false, reason: raw.reason, participants: [], unattributed: [] };
+    return { workspace, available: false, reason: raw.reason, participants: [], tiebroken: [], unattributed: [] };
   }
   if (claims.length === 0) {
+    const wholeTreeUnattributed = raw.symbols.map((s): UnattributedSymbolDelta => ({ ...s, reason: 'unclaimed' as const }));
+    const { tiebroken, stillUnattributed } = await applyWriteHookTiebreaker(workspace, raw, wholeTreeUnattributed);
     return {
       workspace,
       available: true,
       reason: 'no active claims in this workspace — the in-flight delta exists but nobody has claimed any scope to attribute it to',
       participants: [],
-      unattributed: raw.symbols.map((s) => ({ ...s, reason: 'unclaimed' as const })),
+      tiebroken,
+      unattributed: stillUnattributed,
     };
   }
 
@@ -463,7 +588,7 @@ export async function getAttributedInFlightState(
     };
   });
 
-  const unattributed: UnattributedSymbolDelta[] = raw.symbols
+  const unattributedBeforeTiebreak: UnattributedSymbolDelta[] = raw.symbols
     .map((d): UnattributedSymbolDelta | null => {
       const covering = coveringAgentsBySymbol.get(d.symbol_id) ?? [];
       if (covering.length === 1) return null;
@@ -472,7 +597,9 @@ export async function getAttributedInFlightState(
     })
     .filter((d): d is UnattributedSymbolDelta => d !== null);
 
-  return { workspace, available: true, participants, unattributed };
+  const { tiebroken, stillUnattributed } = await applyWriteHookTiebreaker(workspace, raw, unattributedBeforeTiebreak);
+
+  return { workspace, available: true, participants, tiebroken, unattributed: stillUnattributed };
 }
 
 // ---------------------------------------------------------------------------

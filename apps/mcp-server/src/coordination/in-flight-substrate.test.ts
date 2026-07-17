@@ -5,7 +5,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 
 import { saveAnalysis } from '../storage';
-import { appendClaim } from './local-store';
+import { appendClaim, announceEdit, recordUnclaimedEdit } from './local-store';
 import type { WorkClaim } from './types';
 import type { ConflictCas } from './conceptual-conflict';
 import {
@@ -286,6 +286,91 @@ test('detectConceptualConflictsFromSubstrate: catches attributed contract-diverg
   const contractDivergence = result.conflicts.filter((c) => c.kind === 'contract-divergence');
   assert.equal(contractDivergence.length, 1);
   assert.deepEqual([...contractDivergence[0].agents].sort(), ['agent-a', 'agent-b']);
+
+  await env.cleanup();
+});
+
+test('getAttributedInFlightState: unclaimed symbol resolved via write-hook announced-edit event -> tiebroken, not unattributed', async () => {
+  const env = await freshEnv();
+  const workspace = path.join(env.storageDir, 'proj-f');
+
+  const main = makeCas({
+    timestamp: '2026-01-01T00:00:00.000Z',
+    nodes: [{ id: 'sym:helper', name: 'helper', file: 'src/helper.ts', return_type: 'void' }],
+  });
+  const inflight = makeCas({
+    timestamp: '2026-01-01T00:05:00.000Z',
+    nodes: [{ id: 'sym:helper', name: 'helper', file: 'src/helper.ts', return_type: 'string' }],
+  });
+  await saveAnalysis(workspace, main, 'main');
+  await saveAnalysis(workspace, inflight, 'in-flight');
+
+  // No active claim covers src/helper.ts, but the write-hook auto-announced an
+  // edit there for agent-c (announceEdit), and the claim has since expired
+  // (ttlMs: 0) -- getActiveClaims won't see it, but the FULL claim log still
+  // names agent-c, which is the tiebreaker evidence.
+  await announceEdit(workspace, 'agent-c', ['src/helper.ts'], { intent: 'write-hook: refactor helper', ttlMs: 0 });
+
+  const attributed = await getAttributedInFlightState(workspace);
+  assert.equal(attributed.unattributed.find((u) => u.symbol_id === 'sym:helper'), undefined, 'should be resolved, not left unattributed');
+  const tb = attributed.tiebroken.find((t) => t.symbol_id === 'sym:helper');
+  assert.ok(tb, 'sym:helper should be tiebroken via the write-hook event');
+  assert.equal(tb!.agent_id, 'agent-c');
+  assert.equal(tb!.via, 'announced-edit');
+  assert.equal(tb!.change.symbol_id, 'sym:helper');
+
+  await env.cleanup();
+});
+
+test('getAttributedInFlightState: unclaimed symbol with NO write-hook event stays honestly unattributed', async () => {
+  const env = await freshEnv();
+  const workspace = path.join(env.storageDir, 'proj-g');
+
+  const main = makeCas({
+    timestamp: '2026-01-01T00:00:00.000Z',
+    nodes: [{ id: 'sym:orphan', name: 'orphan', file: 'src/orphan.ts', return_type: 'void' }],
+  });
+  const inflight = makeCas({
+    timestamp: '2026-01-01T00:05:00.000Z',
+    nodes: [{ id: 'sym:orphan', name: 'orphan', file: 'src/orphan.ts', return_type: 'string' }],
+  });
+  await saveAnalysis(workspace, main, 'main');
+  await saveAnalysis(workspace, inflight, 'in-flight');
+  // Some OTHER active claim exists (so we take the "claims.length > 0" branch), but nothing
+  // covers src/orphan.ts, and there is no write-hook event for it at all.
+  await appendClaim(workspace, makeClaim(workspace, { claim_id: 'claim-x', agent_id: 'agent-x', scope: { repo: workspace, paths: ['src/unrelated.ts'], symbols: [] } }));
+
+  const attributed = await getAttributedInFlightState(workspace);
+  assert.equal(attributed.tiebroken.length, 0);
+  const u = attributed.unattributed.find((d) => d.symbol_id === 'sym:orphan');
+  assert.ok(u, 'orphan should remain unattributed with no claim and no write-hook event');
+  assert.equal(u!.reason, 'unclaimed');
+
+  await env.cleanup();
+});
+
+test('getAttributedInFlightState: an anonymous unclaimed-edit event (detectedBy unset) does NOT count as a tiebreaker', async () => {
+  const env = await freshEnv();
+  const workspace = path.join(env.storageDir, 'proj-h');
+
+  const main = makeCas({
+    timestamp: '2026-01-01T00:00:00.000Z',
+    nodes: [{ id: 'sym:mystery2', name: 'mystery2', file: 'src/mystery2.ts', return_type: 'void' }],
+  });
+  const inflight = makeCas({
+    timestamp: '2026-01-01T00:05:00.000Z',
+    nodes: [{ id: 'sym:mystery2', name: 'mystery2', file: 'src/mystery2.ts', return_type: 'string' }],
+  });
+  await saveAnalysis(workspace, main, 'main');
+  await saveAnalysis(workspace, inflight, 'in-flight');
+  // recordUnclaimedEdit with no detectedBy -> agent_id defaults to 'unknown', which must NOT
+  // resolve a tiebreak (an anonymous observation names nobody).
+  await recordUnclaimedEdit(workspace, 'src/mystery2.ts');
+
+  const attributed = await getAttributedInFlightState(workspace);
+  assert.equal(attributed.tiebroken.length, 0);
+  const u = attributed.unattributed.find((d) => d.symbol_id === 'sym:mystery2');
+  assert.ok(u, 'an anonymous unclaimed-edit event must not silently attribute the symbol');
 
   await env.cleanup();
 });

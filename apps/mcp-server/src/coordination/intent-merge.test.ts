@@ -1,8 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import * as fsp from 'node:fs/promises';
+import * as os from 'node:os';
+import * as path from 'node:path';
 
-import { planIntentMerge } from './intent-merge';
+import { planIntentMerge, planIntentMergeFromSubstrate, shouldUseSubstratePlan } from './intent-merge';
 import type { AgentInFlightState, ConflictCas } from './conceptual-conflict';
+import { saveAnalysis } from '../storage';
+import { appendClaim } from './local-store';
+import type { WorkClaim } from './types';
 
 const cas: ConflictCas = {
   nodes: [
@@ -163,4 +169,250 @@ test('symbol touched by a single agent is trivially auto_mergeable', () => {
   assert.equal(plan.summary.conflicts, 0);
   assert.equal(plan.summary.duplicates, 0);
   assert.equal(plan.auto_mergeable[0].agents.length, 1);
+});
+
+// ---------------------------------------------------------------------------
+// Mergeless metrics (V3 §5/§9): merge_decisions_required, surprises
+// ---------------------------------------------------------------------------
+
+test('mergeless metrics: contract-divergence -> surprises>0 and merge_decisions_required>0', () => {
+  const states: AgentInFlightState[] = [
+    {
+      agent_id: 'agent-a',
+      intent: 'make getUser non-null now that auth guarantees a session',
+      changes: [
+        {
+          symbol_id: 'sym:getUser',
+          name: 'getUser',
+          file: 'src/auth.ts',
+          change_kind: 'nullability',
+          before: { nullable: true },
+          after: { nullable: false },
+        },
+      ],
+    },
+    {
+      agent_id: 'agent-b',
+      intent: 'add profile picture rendering to renderProfile',
+      changes: [
+        { symbol_id: 'sym:renderProfile', name: 'renderProfile', file: 'src/profile.ts', change_kind: 'body' },
+      ],
+    },
+  ];
+
+  const plan = planIntentMerge(states, cas);
+  assert.ok(plan.merge_decisions_required > 0);
+  assert.ok(plan.surprises.length > 0);
+  assert.equal(plan.surprises[0].symbol, 'sym:getUser');
+  assert.deepEqual([...plan.surprises[0].agents].sort(), ['agent-a', 'agent-b']);
+});
+
+test('mergeless metrics: fully orthogonal fleet -> merge_decisions_required=0, surprises=[]', () => {
+  const states: AgentInFlightState[] = [
+    {
+      agent_id: 'agent-a',
+      intent: 'add caching to billingHandler',
+      changes: [
+        { symbol_id: 'sym:billingHandler', name: 'billingHandler', file: 'src/billing.ts', change_kind: 'body' },
+      ],
+    },
+    {
+      agent_id: 'agent-b',
+      intent: 'add profile picture rendering to renderProfile',
+      changes: [
+        { symbol_id: 'sym:renderProfile', name: 'renderProfile', file: 'src/profile.ts', change_kind: 'body' },
+      ],
+    },
+  ];
+
+  const plan = planIntentMerge(states, cas);
+  assert.equal(plan.merge_decisions_required, 0);
+  assert.deepEqual(plan.surprises, []);
+});
+
+// ---------------------------------------------------------------------------
+// shouldUseSubstratePlan — the W4 selection rule
+// ---------------------------------------------------------------------------
+
+test('shouldUseSubstratePlan: auto-selects substrate at >1 active participant, git-ambient at <=1', () => {
+  assert.equal(shouldUseSubstratePlan(0), false);
+  assert.equal(shouldUseSubstratePlan(1), false);
+  assert.equal(shouldUseSubstratePlan(2), true);
+  assert.equal(shouldUseSubstratePlan(5), true);
+});
+
+test('shouldUseSubstratePlan: explicit flag always wins over the participant count', () => {
+  assert.equal(shouldUseSubstratePlan(5, false), false);
+  assert.equal(shouldUseSubstratePlan(0, true), true);
+});
+
+// ---------------------------------------------------------------------------
+// planIntentMergeFromSubstrate — W4 step 1: re-based on the W0 substrate
+// ---------------------------------------------------------------------------
+
+async function freshEnv(): Promise<{ storageDir: string; coordDir: string; cleanup: () => Promise<void> }> {
+  const storageDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'klauro-intent-merge-storage-'));
+  const coordDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'klauro-intent-merge-coord-'));
+  process.env.KLAURO_STORAGE_PATH = storageDir;
+  process.env.KLAURO_COORD_DIR = coordDir;
+  return {
+    storageDir,
+    coordDir,
+    cleanup: async () => {
+      await fsp.rm(storageDir, { recursive: true, force: true });
+      await fsp.rm(coordDir, { recursive: true, force: true });
+    },
+  };
+}
+
+function makeCas(opts: {
+  timestamp: string;
+  nodes: Array<{ id: string; name: string; file?: string; return_type?: string; line?: number }>;
+  edges?: Array<{ source: string; target: string; type: string }>;
+}): any {
+  return {
+    cas_version: '1.0.0',
+    analysis_timestamp: opts.timestamp,
+    analysis_id: `analysis_${opts.timestamp}`,
+    system: { id: 'sys-1', name: 'test-project', type: 'application', root_path: '/tmp/test-project' },
+    nodes: opts.nodes.map((n) => ({
+      id: n.id,
+      name: n.name,
+      type: 'function',
+      source: { file: n.file, line: n.line },
+      signature: n.return_type !== undefined ? { return_type: n.return_type, parameters: [] } : undefined,
+    })),
+    edges: (opts.edges ?? []).map((e) => ({ id: `${e.source}->${e.target}:${e.type}`, ...e })),
+    entry_points: [],
+    exit_points: [],
+    call_chains: [],
+    system_capabilities: [],
+    analyzer_contributions: [],
+  };
+}
+
+function makeClaim(workspace: string, overrides: Partial<WorkClaim> = {}): Omit<WorkClaim, 'seq'> {
+  const now = new Date().toISOString();
+  return {
+    claim_id: overrides.claim_id ?? `claim-${overrides.agent_id ?? 'a'}`,
+    workspace_id: workspace,
+    agent_id: 'agent-a',
+    agent_kind: 'claude',
+    scope: { repo: workspace, paths: [], symbols: [] },
+    intent: 'working',
+    status: 'active',
+    created_at: now,
+    ttl_ms: 60_000,
+    heartbeat_at: now,
+    ...overrides,
+  };
+}
+
+test('planIntentMergeFromSubstrate: disjoint claims + distinct deltas -> each attributed correctly, merge_decisions_required=0', async () => {
+  const env = await freshEnv();
+  const workspace = path.join(env.storageDir, 'proj-im-1');
+
+  const main = makeCas({
+    timestamp: '2026-01-01T00:00:00.000Z',
+    nodes: [
+      { id: 'sym:billingHandler', name: 'billingHandler', file: 'src/billing.ts', return_type: 'void' },
+      { id: 'sym:renderProfile', name: 'renderProfile', file: 'src/profile.ts', return_type: 'string' },
+    ],
+  });
+  const inflight = makeCas({
+    timestamp: '2026-01-01T00:05:00.000Z',
+    nodes: [
+      { id: 'sym:billingHandler', name: 'billingHandler', file: 'src/billing.ts', return_type: 'Promise<void>' }, // agent-a
+      { id: 'sym:renderProfile', name: 'renderProfile', file: 'src/profile.ts', return_type: 'HtmlString' }, // agent-b
+    ],
+  });
+  await saveAnalysis(workspace, main, 'main');
+  await saveAnalysis(workspace, inflight, 'in-flight');
+
+  await appendClaim(workspace, makeClaim(workspace, {
+    claim_id: 'claim-a', agent_id: 'agent-a', intent: 'add caching to billingHandler',
+    scope: { repo: workspace, paths: ['src/billing.ts'], symbols: [] },
+  }));
+  await appendClaim(workspace, makeClaim(workspace, {
+    claim_id: 'claim-b', agent_id: 'agent-b', intent: 'add avatar to renderProfile',
+    scope: { repo: workspace, paths: ['src/profile.ts'], symbols: [] },
+  }));
+
+  const substrateCas: ConflictCas = {
+    nodes: [
+      { id: 'sym:billingHandler', name: 'billingHandler' },
+      { id: 'sym:renderProfile', name: 'renderProfile' },
+    ],
+    edges: [],
+  };
+
+  const plan = await planIntentMergeFromSubstrate(workspace, substrateCas);
+  assert.equal(plan.attribution.source, 'substrate');
+  assert.equal(plan.attribution.participants, 2);
+  assert.equal(plan.attribution.unattributed, 0);
+  assert.equal(plan.merge_decisions_required, 0);
+  assert.equal(plan.needs_resolution.length, 0);
+  assert.equal(plan.duplicate_work.length, 0);
+  assert.equal(plan.auto_mergeable.length, 2);
+  // Each symbol's rationale should name only ITS OWN agent, never the other's.
+  const billing = plan.auto_mergeable.find((e) => e.symbol === 'sym:billingHandler')!;
+  const profile = plan.auto_mergeable.find((e) => e.symbol === 'sym:renderProfile')!;
+  assert.deepEqual(billing.agents, ['agent-a']);
+  assert.deepEqual(profile.agents, ['agent-b']);
+
+  await env.cleanup();
+});
+
+test('planIntentMergeFromSubstrate: SPEC §3.2 regression — a shared-tree delta ambient git would union is split by claim scope, not credited to the wrong agent', async () => {
+  const env = await freshEnv();
+  const workspace = path.join(env.storageDir, 'proj-im-2');
+
+  // A SINGLE shared working tree with edits from two agents in two different
+  // files. Ambient `git diff` run by either agent's process would see BOTH
+  // changes (the union) and, per §3.2, `plan_intent_merge`'s old git-ambient
+  // path would have credited whichever agent asked with BOTH edits. The
+  // substrate path must split this by claim scope instead.
+  const main = makeCas({
+    timestamp: '2026-01-01T00:00:00.000Z',
+    nodes: [
+      { id: 'sym:a', name: 'aFn', file: 'src/a.ts', return_type: 'number' },
+      { id: 'sym:b', name: 'bFn', file: 'src/b.ts', return_type: 'number' },
+    ],
+  });
+  const inflight = makeCas({
+    timestamp: '2026-01-01T00:05:00.000Z',
+    nodes: [
+      { id: 'sym:a', name: 'aFn', file: 'src/a.ts', return_type: 'string' }, // only agent-a's real edit
+      { id: 'sym:b', name: 'bFn', file: 'src/b.ts', return_type: 'string' }, // only agent-b's real edit
+    ],
+  });
+  await saveAnalysis(workspace, main, 'main');
+  await saveAnalysis(workspace, inflight, 'in-flight');
+
+  await appendClaim(workspace, makeClaim(workspace, {
+    claim_id: 'claim-a', agent_id: 'agent-a', intent: 'edit aFn',
+    scope: { repo: workspace, paths: ['src/a.ts'], symbols: [] },
+  }));
+  await appendClaim(workspace, makeClaim(workspace, {
+    claim_id: 'claim-b', agent_id: 'agent-b', intent: 'edit bFn',
+    scope: { repo: workspace, paths: ['src/b.ts'], symbols: [] },
+  }));
+
+  const substrateCas: ConflictCas = {
+    nodes: [{ id: 'sym:a', name: 'aFn' }, { id: 'sym:b', name: 'bFn' }],
+    edges: [],
+  };
+
+  const plan = await planIntentMergeFromSubstrate(workspace, substrateCas);
+  assert.equal(plan.attribution.participants, 2);
+  assert.equal(plan.merge_decisions_required, 0, 'genuinely disjoint work must never be reported as a merge decision');
+
+  const aEntry = plan.auto_mergeable.find((e) => e.symbol === 'sym:a')!;
+  const bEntry = plan.auto_mergeable.find((e) => e.symbol === 'sym:b')!;
+  // The regression itself: agent-a must NOT be credited with sym:b (agent-b's edit), and
+  // vice versa — a git-ambient union would have put both agents on both symbols.
+  assert.deepEqual(aEntry.agents, ['agent-a']);
+  assert.deepEqual(bEntry.agents, ['agent-b']);
+
+  await env.cleanup();
 });

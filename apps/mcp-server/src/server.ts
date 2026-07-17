@@ -74,7 +74,7 @@ import { detectConceptualConflicts, type AgentInFlightState, type ConceptualConf
 import { detectConceptualConflictsFromSubstrate } from './coordination/in-flight-substrate';
 import { computeAdvisoryOverlap, type AdvisoryOverlapFinding } from './context-fabric';
 import { captureInFlightChanges } from './coordination/in-flight-capture';
-import { planIntentMerge } from './coordination/intent-merge';
+import { planIntentMerge, planIntentMergeFromSubstrate, shouldUseSubstratePlan } from './coordination/intent-merge';
 import { partitionTasks, groupTasksByConcept, type PartitionCas, type PartitionTask } from './coordination/partitioner';
 import {
   buildConceptIndex,
@@ -5762,10 +5762,11 @@ function registerTools(server: McpServer) {
     'plan_intent_merge',
     {
       title: 'Plan Intent Merge',
-      description: 'THE ART OF MERGE (Fabric-v2 #1, §1.7 SPEC-COORDINATION-FABRIC-V2 primitive 5): when agents finish overlapping work, reconcile by INTENT rather than by textual 3-way diff. Git only asks "do the lines overlap?" — two changes that are textually disjoint merge silently even when they are jointly incoherent (see check_conceptual_conflicts), and two changes on the same lines conflict mechanically even when they are perfectly compatible in intent (e.g. one agent adding retry and another adding logging to the same function body). This tool answers the higher-level question for every symbol touched by the fleet: do the changes COHERE? It reuses the SAME persisted conceptual-conflict state check_conceptual_conflicts/check_collision already populate (each active agent\'s self-reported + ambiently-captured changes for this workspace) — call check_conceptual_conflicts/check_collision at least once per agent first so their changes are on record, or pass `states` explicitly to plan a merge without touching persisted state. Returns a MergePlan: auto_mergeable (compatible intents that compose, with a rationale naming both agents\' intents — includes symbols only one agent touched), needs_resolution (a genuine conceptual conflict was detected — NOT auto-merged even though it would pass a textual merge cleanly; a human or agent must decide), duplicate_work (the fleet did the same thing twice; keep one), and a summary count. Use this at the end of a shared editing session to get a single reconciliation verdict instead of re-deriving it from a pile of individual conflict findings.',
+      description: 'THE ART OF MERGE (Fabric-v2 #1, §1.7 SPEC-COORDINATION-FABRIC-V2 primitive 5; re-based on the W0 substrate per SPEC-COORDINATION-FABRIC-V3 §8 W4): when agents finish overlapping work, reconcile by INTENT rather than by textual 3-way diff. Git only asks "do the lines overlap?" — two changes that are textually disjoint merge silently even when they are jointly incoherent (see check_conceptual_conflicts), and two changes on the same lines conflict mechanically even when they are perfectly compatible in intent (e.g. one agent adding retry and another adding logging to the same function body). This tool answers the higher-level question for every symbol touched by the fleet: do the changes COHERE? SELECTION RULE (attribution path, §3.2): with more than one active participant currently claiming work in `workspace`, this defaults to the SUBSTRATE path — per-participant deltas attributed from the live committed-vs-in-flight analysis via active claim scope, with the write-hook\'s announced-edit/unclaimed-edit event log as a tiebreaker, NEVER from ambient git diff (on a shared tree, "my own git diff" is the union of everyone\'s — the exact failure that over-attributed 4 agents with 1 agent\'s edit). At <=1 active participant (or when you pass `states` explicitly), it uses the original git-ambient/self-reported capture path (check_conceptual_conflicts/check_collision\'s persisted state), which is sound at that scale. Pass `use_substrate` to force either path explicitly. Returns a MergePlan: auto_mergeable (compatible intents that compose, with a rationale naming both agents\' intents — includes symbols only one agent touched), needs_resolution (a genuine conceptual conflict was detected — NOT auto-merged even though it would pass a textual merge cleanly; a human or agent must decide), duplicate_work (the fleet did the same thing twice; keep one), merge_decisions_required and surprises (the V3 §5/§9 mergeless metrics — genuine cross-participant decisions and contract changes a participant hasn\'t seen yet; the goal is driving both to 0), and — on the substrate path only — `attribution` (participants/tiebroken/unattributed counts) and `unattributed_symbols` (changes nobody could be honestly credited with yet). Use this at the end of a shared editing session to get a single reconciliation verdict instead of re-deriving it from a pile of individual conflict findings.',
       inputSchema: {
         workspace: z.string().describe('Workspace or project id/path'),
         agent_id: z.string().describe('Your stable agent/session id (excluded from "other agents" lookup; included if you pass it in `states`)'),
+        use_substrate: z.boolean().optional().describe('Force the attribution path: true = substrate (claim-scope + write-hook tiebreaker, never git diff), false = git-ambient. Omit to auto-select from the live active-participant count (substrate when >1).'),
         states: z.array(z.object({
           agent_id: z.string(),
           intent: z.string(),
@@ -5794,11 +5795,42 @@ function registerTools(server: McpServer) {
         })).optional().describe('Explicit agent states to plan a merge over. Omit to use every OTHER active agent\'s persisted conceptual-conflict state for `workspace` (from check_conceptual_conflicts/check_collision) plus your own ambient working-tree changes.'),
       } as any,
     } as any,
-    async ({ workspace, agent_id, states }: any) => withErrorHandling(async () => {
+    async ({ workspace, agent_id, states, use_substrate }: any) => withErrorHandling(async () => {
       const cas = await conceptualConflictCasForWorkspace(workspace);
+      const explicitStates = Array.isArray(states) && states.length > 0;
+
+      // W4 step 1 selection rule (SPEC-COORDINATION-FABRIC-V3 §8 W4, §3.2):
+      // explicit `states` always takes the git-ambient/self-reported shape the
+      // caller handed us (they opted out of substrate attribution by supplying
+      // their own state); otherwise auto-select the substrate path once more
+      // than one participant is active on this workspace's claim log — the
+      // git-ambient path is sound only at <=1 (§3.2's attribution collapse).
+      let useSubstrate = typeof use_substrate === 'boolean' ? use_substrate : undefined;
+      if (!explicitStates && useSubstrate === undefined) {
+        try {
+          const activeClaims = await getActiveClaims(workspace);
+          const activeParticipantCount = new Set(activeClaims.map((c) => c.agent_id)).size;
+          useSubstrate = shouldUseSubstratePlan(activeParticipantCount);
+        } catch {
+          useSubstrate = false; // no claim log readable — fall back to the original path rather than fail the call.
+        }
+      }
+
+      if (!explicitStates && useSubstrate) {
+        const plan = await planIntentMergeFromSubstrate(workspace, cas);
+        return json({
+          workspace,
+          attribution_source: 'substrate',
+          agents_considered: plan.attribution.participants + plan.attribution.tiebroken,
+          plan,
+          note: plan.attribution.participants === 0 && plan.attribution.tiebroken === 0
+            ? 'Substrate path selected (>1 active participant) but nothing was attributable yet (no in-flight delta, or no active claims cover it) — see unattributed_symbols.'
+            : undefined,
+        });
+      }
 
       let planStates: AgentInFlightState[];
-      if (Array.isArray(states) && states.length > 0) {
+      if (explicitStates) {
         planStates = states as AgentInFlightState[];
       } else {
         const others = await otherAgentConceptualStates(workspace, agent_id);
@@ -5811,6 +5843,7 @@ function registerTools(server: McpServer) {
       const plan = planIntentMerge(planStates, cas);
       return json({
         workspace,
+        attribution_source: 'git-ambient',
         agents_considered: [...new Set(planStates.map((s) => s.agent_id))],
         plan,
         note: planStates.length === 0
