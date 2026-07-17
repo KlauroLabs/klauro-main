@@ -650,6 +650,60 @@ fn main() {
       command_type: 'subcommand_enum',
     });
   });
+
+  test('emits clap Subcommand variants as cli_command registration nodes, not enum_variant', async () => {
+    setupMockFileSystem(workspaceFiles(), createMockCargoToml(['clap']));
+
+    const result = await analyzer.analyze(testContext);
+
+    const connectNode = result.nodes!.find((n: any) => n.id === 'cli_command:bin/agent/src/main.rs:Connect');
+    expect(connectNode).toBeDefined();
+    expect(connectNode!.type).toBe('cli_command');
+
+    const disconnectNode = result.nodes!.find((n: any) => n.id === 'cli_command:bin/agent/src/main.rs:Disconnect');
+    expect(disconnectNode).toBeDefined();
+    expect(disconnectNode!.type).toBe('cli_command');
+
+    // No enum_variant node should be emitted for a clap-derived enum's
+    // variants — that node type is reserved for plain (non-clap) enums.
+    const staleVariantNodes = result.nodes!.filter((n: any) =>
+      n.type === 'enum_variant' && (n.name === 'Connect' || n.name === 'Disconnect'));
+    expect(staleVariantNodes).toHaveLength(0);
+
+    // The Connect/Disconnect entry point still resolves to the (now
+    // cli_command-typed) variant node — behavior for consumers is unchanged.
+    const connectEntry = result.entry_points!.find((ep: any) =>
+      ep.id === 'entry:cli:bin/agent/src/main.rs:subcommand:Connect');
+    expect(connectEntry!.source_node).toBe('cli_command:bin/agent/src/main.rs:Connect');
+  });
+
+  test('plain (non-clap) enums keep enum_variant-shaped node emission unaffected', async () => {
+    const plainEnumSource = `
+enum Color {
+    Red,
+    Green,
+    Blue,
+}
+
+fn main() {}
+`;
+    setupMockFileSystem([
+      createMockRustFile('src/main.rs', plainEnumSource),
+    ], createMockCargoToml([]));
+
+    const result = await analyzer.analyze(testContext);
+
+    // extractEnums emits one 'enum' node for the declaration; this analyzer
+    // does not (and still does not, after this change) emit a per-variant
+    // node for enums with no clap Subcommand/Parser/Args framing.
+    const enumNode = result.nodes!.find((n: any) => n.id === 'enum:src/main.rs:Color');
+    expect(enumNode).toBeDefined();
+    expect(enumNode!.type).toBe('enum');
+
+    const anyVariantNode = result.nodes!.find((n: any) =>
+      n.type === 'cli_command' || n.type === 'enum_variant');
+    expect(anyVariantNode).toBeUndefined();
+  });
 });
 
 describe('Pattern detection with reclassified structs', () => {

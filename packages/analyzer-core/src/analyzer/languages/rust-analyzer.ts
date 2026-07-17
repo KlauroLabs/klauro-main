@@ -1976,15 +1976,28 @@ export class RustAnalyzer extends BaseAnalyzer {
           }
         }
 
+        // A variant reached here always sits inside an enum this loop already
+        // gated on `hasSubcommandDerive`/`hasSubcommandAttr` (see the `if`
+        // above), i.e. the enum carries the clap CLI-entry framing. Such a
+        // variant is a CLI-COMMAND REGISTRATION, not a bare type-system fact,
+        // so it is emitted with the same node type ('cli_command') and id
+        // scheme as the sibling enum/struct-level registration node created
+        // above — never 'enum_variant', which is reserved for plain enum
+        // variants with no clap framing (not reachable through this branch;
+        // kept only as a documented fallback should that framing ever be
+        // widened to cover non-CLI enums).
+        const isClapRegistration = hasSubcommandDerive || hasSubcommandAttr;
+        const variantNodeType = isClapRegistration ? 'cli_command' : 'enum_variant';
+
         for (let j = i; j <= enumEnd; j++) {
           const variantLine = lines[j].trim();
           const variantMatch = variantLine.match(/^(\w+)(?:\s*\{|\s*\(|\s*,|\s*$)/);
           if (variantMatch && !variantLine.startsWith('enum') && !variantLine.startsWith('pub enum')) {
             const variantName = variantMatch[1];
 	          if (variantName && variantName !== '{' && variantName !== '}') {
-	            const variantNodeId = `enum_variant:${relativePath}:${variantName}`;
+	            const variantNodeId = `${variantNodeType}:${relativePath}:${variantName}`;
 	            if (!nodes.some(node => node.id === variantNodeId)) {
-	              nodes.push(this.createNode(variantNodeId, variantName, 'enum_variant', 4, relativePath, j + 1, j + 1, {
+	              nodes.push(this.createNode(variantNodeId, variantName, variantNodeType, 4, relativePath, j + 1, j + 1, {
 	                commandType: 'subcommand_variant'
 	              }));
 	            }
