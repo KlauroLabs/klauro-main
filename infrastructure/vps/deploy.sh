@@ -74,7 +74,7 @@ if [ "$ALLOW_DIRTY" != "1" ]; then
   fi
 fi
 
-# --- guard: SPEC-PURITY — no client/benchmark product names in specs or
+# --- guard: SPEC-PURITY — no client/bench|nightly-eval|agent-scratch-dogfood-build|agent-adoption-measurement|agent-task-family-coveragemark product names in specs or
 # shipped source -------------------------------------------------------------
 # Klauro's specs and product source must read as repo-agnostic: they explain
 # the ANALYZER's behavior, not any one customer's codebase. In practice,

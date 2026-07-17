@@ -2288,7 +2288,7 @@ function printHelp(): void {
     '  klauro remote-analyze .',
     '  klauro remote-sync .',
     '  klauro proposal-preview . --plan "Add a health endpoint" --proposed-files proposed-files.json',
-    '  klauro greenfield-guidance --plan "Create a portfolio reporting service" --reference-path ~/dev/zerac/zerac-api',
+    '  klauro greenfield-guidance --plan "Create a portfolio reporting service" --reference-path ~/dev/your-org/reference-repo',
     '  klauro greenfield-build-context /tmp/new-app --plan "Build an operations command center" --json',
     '  klauro greenfield-preview --plan-file plan.md --proposed-files proposed-files.json',
     '  klauro workspace-analysis ~/dev/soon/soon-ui --reference-path ~/dev/soon/soon-sync --target soon-workspace',

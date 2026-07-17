@@ -2369,7 +2369,12 @@ function internalLibraries(cas: CASOutput): Array<{ name: string; version?: stri
   return (cas.libraries || [])
     .filter(library => {
       const name = library.name.toLowerCase();
-      return name.startsWith('@') || name.includes('klauro') || name.includes('zerac') || name.includes('soon') || name.includes('kadra');
+      // INTERNAL = evidence-based, never a hardcoded product list: a scoped
+      // package (@org/...) or a library whose name shares the repo's own
+      // identity token (the leading word of the CAS system name — the repo
+      // naming itself is the evidence that a like-named library is first-party).
+      const selfToken = String(cas.system?.name || '').toLowerCase().replace(/[^a-z0-9].*$/, '');
+      return name.startsWith('@') || (selfToken.length >= 4 && name.includes(selfToken));
     })
     .map(library => ({ name: library.name, version: library.version }));
 }

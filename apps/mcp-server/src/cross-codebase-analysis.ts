@@ -11957,7 +11957,10 @@ function hasLikelyExternalTemplatedBase(endpoint: string | undefined): boolean {
   const raw = String(endpoint || '');
   const template = raw.match(/\$\{([^}]+)}/)?.[1] || '';
   if (!template) return false;
-  if (/\b(API_HOST|BASE_URL|SOON|LENS|SYNC|LINK|ZERAC|SERVICE|INTERNAL|PUBLIC_API)\b/i.test(template)) return false;
+  // Generic service-shaped template tokens only — never product names. A
+  // first-party templated host almost always carries a HOST/URL/API/SERVICE
+  // token (); judging by brand names was hardcoding.
+  if (/\b(API_HOST|BASE_URL|SERVICE|INTERNAL|PUBLIC_API|HOST|URL|ENDPOINT|API|SYNC|LINK)\b/i.test(template)) return false;
   return true;
 }
 
