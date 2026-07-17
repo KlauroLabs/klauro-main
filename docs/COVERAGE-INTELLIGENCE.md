@@ -87,8 +87,8 @@ unhandled. Drives the next fix waves.
 
 | Repo | codebase_type | confidence | nodes | entry points | unknown-deps | low-extraction | zero-entry | unhandled-node-type |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| WashUp-React | web-frontend | 0.50 | 584 | 21 | 2 | 12 | 0 | 0 |
-| washup | web-backend | 0.54 | 6701 | 316 | 0 | 67 | 0 | 0 |
+| repo-a-frontend | web-frontend | 0.50 | 584 | 21 | 2 | 12 | 0 | 0 |
+| repo-a-backend | web-backend | 0.54 | 6701 | 316 | 0 | 67 | 0 | 0 |
 | admin-portal-ui | web-frontend | 0.50 | 4082 | 445 | 1 | 23 | 0 | 0 |
 | electron-app | desktop | 0.45 | 43 | 1 | 10 | 1 | 0 | 0 |
 | yisda-desktop | desktop | 0.30 | 754 | 53 | 0 | 9 | 0 | 0 |

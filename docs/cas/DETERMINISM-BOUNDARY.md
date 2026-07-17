@@ -122,7 +122,7 @@ re-analysis byte-identity and rejects `^(comment|todo)_\d+$` ids).
 3. Structural builders never read `description`/`inferred_description`.
 4. Run-stability test passes AND is extended to assert identical edge sets
    across separate processes (the open defect above).
-5. On soon-lens the domain + description read as a crypto-exchange system
-   (grounded in `ccxt`/`web3`/`blockchains/`), answering what-is / does /
-   how-works / how-built; on klauro they read as an AI code-analysis tool — same
-   pipeline, zero hardcoding.
+5. On a crypto-exchange-shaped codebase the domain + description read as a
+   crypto-exchange system (grounded in `ccxt`/`web3`/`blockchains/`), answering
+   what-is / does / how-works / how-built; on klauro they read as an AI
+   code-analysis tool — same pipeline, zero hardcoding.

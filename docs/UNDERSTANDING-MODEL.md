@@ -83,7 +83,7 @@ facet is simply **absent** when no observation matches the unit.
 - `get_coding_context` — the contract (including the telemetry facet) for one
   resolved **node**.
 
-## Worked example — `POST /web/gateway` (zerac-api)
+## Worked example — `POST /web/gateway` (reference NestJS monorepo)
 
 Analyzed live via `analyzeForBench`. The "Gateway" flow grounds every facet in
 real evidence:
@@ -105,7 +105,7 @@ real evidence:
     // 4. SYSTEM EFFECTS — split
     "side_effects": {
       "state_changes": ["database", "Gateway updated", "User updated", "Network updated"],
-      "external_integrations": ["sdk:Call to validate", "curl", "MikroORM", "@zerac-api/auth", "..."]
+      "external_integrations": ["sdk:Call to validate", "curl", "MikroORM", "@app/auth", "..."]
     },
     // 2. OUTPUT — real DTOs
     "output": ["Promise<Gateway>", "Promise<Network>", "Promise<Gateway | null>", "..."],

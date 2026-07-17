@@ -55,7 +55,8 @@ does not have to climb the stack to get value; `get_summary` alone is useful, bu
 3. **Entry points.** HTTP routes, CLI commands, message/queue consumers, scheduled jobs,
    MCP tools, raw socket servers — each becomes a flow root. v1.0.13–v1.0.14 closed the
    biggest historical gap here: monorepo blindness (Nx/Turborepo `apps/*` misclassified as
-   independent projects, zerac-api entry points 12→519) and missing Fastify/cron detectors.
+   independent projects, a reference multi-service monorepo's entry points 12→519) and missing
+   Fastify/cron detectors.
 4. **Flows/capabilities.** `get_flow_concepts` computes the behavioral hierarchy over the
    CAS graph (detailed in Layer 3 below). `system_capabilities` are extracted structurally
    and ranked by terminal-entity proximity (the last-in-chain entity reveals the domain —
@@ -67,7 +68,7 @@ does not have to climb the stack to get value; `get_summary` alone is useful, bu
 
 **Honest gaps (kernel):** `get_callers` blast-radius completeness is a recurring theme —
 fixed for function-call edges and several cross-file-reference shapes as of v1.0.20 ("grep
-parity" claimed, measured on two symbols on zerac-api), but the independent
+parity" claimed, measured on two symbols on a reference multi-service monorepo), but the independent
 `docs/IMPACT-BENCHMARK.md` re-run on 2026-07-04 found `get_callers` still missing 100% of
 real cross-file consumers of plain exported constants/entity classes on two different repos
 and languages (PHP, TypeScript) — read that gap as **not yet independently re-verified

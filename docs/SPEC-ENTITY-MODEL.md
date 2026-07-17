@@ -1,8 +1,8 @@
 # Entity Model: Org / Workspace / Project / User + Monorepo Handling
 
-Status: design study, not yet implemented. Grounded against two real monorepos on
-this machine (`/Users/michaelshattuck/dev/zerac/zerac-api`,
-`/Users/michaelshattuck/dev/unravl/proof-of-concept`) and the current
+Status: design study, not yet implemented. Grounded against two real monorepos —
+a 4-deployable NestJS backend monorepo and
+`/Users/michaelshattuck/dev/unravl/proof-of-concept` — and the current
 `account-store.ts` schema. All claims below are backed by tool calls made
 during this study; see "Validation evidence" for exact outputs.
 
@@ -31,9 +31,9 @@ This is exactly the "apps/* = deployable, packages|libs/* = library" heuristic
 the proposed model calls for, and it already exists, running today, wired into
 `run_workspace_analysis` / `get_workspace_capability_map`.
 
-### What it gets right (validated against zerac-api)
+### What it gets right (validated against a reference monorepo)
 
-Running `run_workspace_analysis(paths: ["zerac-api"])` against the real
+Running `run_workspace_analysis` against a real
 4-deployable NestJS monorepo produced **exactly the 4 real deployables**,
 correctly separated from 6 pieces of noise (docker-compose services, the repo
 root, a loose script):
@@ -47,13 +47,13 @@ root, a loose script):
 | `app:app-base` | false | service | `docker-compose.base.yml` |
 | `app:minio`/`postgres`/`redis` | false | service | `docker-compose.yml` (infra) |
 | `app:application` | false | service | loose script |
-| `app:zerac-api` | true* | service | repo-root fallback |
+| `app:reference-monorepo` | true* | service | repo-root fallback |
 
 (*the repo-root fallback entry is a duplicate/umbrella surface, not a 5th real
 deployable — see gap G1 below.)
 
-Note the founder's brief assumed zerac-api has 2 deployables (user-api,
-admin-api); the real repo has **4** (`admin-api`, `user-api`, `mcp-api`,
+Note the founder's brief assumed the reference monorepo has 2 deployables
+(user-api, admin-api); the real repo has **4** (`admin-api`, `user-api`, `mcp-api`,
 `internal-api`, confirmed via `nest-cli.json`'s `projects` map and `ls apps/`).
 The model below is designed for N deployables, not 2.
 
@@ -72,12 +72,12 @@ Same pattern held on the proof-of-concept repo itself: `run_workspace_analysis`
 on this repo correctly isolated `apps/api`, `apps/app`, `apps/marketing-site`,
 `apps/mcp-server` as the 4 deployables and `packages/analyzer-core` as a
 library (deployable: false), plus 2 `application_links` between deployables
-(vs. zerac-api's 0 — see gap G2).
+(vs. the reference monorepo's 0 — see gap G2).
 
 ### G1 — Gap: no first-class "shared library" edge between deployables
 
 This is the real, material gap, and it is the one thing the founder's brief
-explicitly asked to validate. `zerac-api`'s WAS output has:
+explicitly asked to validate. The reference monorepo's WAS output has:
 
 ```
 composition.package_link_count: 0
@@ -109,11 +109,12 @@ change `libs/business/auth`, which of my 4 deployables break?"
 
 ### G2 — `application_link_count` is inconsistent/underpowered
 
-proof-of-concept found 2 application_links, zerac-api found 0, despite
-zerac-api obviously having HTTP calls between its NestJS apps (they share a
+proof-of-concept found 2 application_links, the reference monorepo found 0,
+despite it obviously having HTTP calls between its NestJS apps (they share a
 Postgres db and dispatch background jobs via BullMQ across admin-api and
-internal-api). `composition.reasons` for zerac-api says "4 deployable(s) are
-isolated and should not be forced into the system graph" — i.e. the linker
+internal-api). `composition.reasons` for the reference monorepo says "4
+deployable(s) are isolated and should not be forced into the system graph" —
+i.e. the linker
 correctly refused to *guess* links without evidence, which is the right
 conservative default, but it means the runtime/db-sharing signal that *does*
 exist (both apps hit the same Postgres via TypeORM, same Redis) isn't being
@@ -293,17 +294,17 @@ real gap, not a UI polish item.
    Land as a new field on the WAS deployable/application_link output, sourced
    from existing per-CAS import resolution.
 2. **G2 — promote shared-database/shared-queue signals to application_links.**
-   zerac-api's 4 deployables share Postgres + Redis + BullMQ queues but
-   produced 0 application_links; the exit-point data to detect this already
-   exists per `get_exit_points(path, type: database|message)`, it's just not
-   cross-referenced across deployables within one repo run.
+   The reference monorepo's 4 deployables share Postgres + Redis + BullMQ
+   queues but produced 0 application_links; the exit-point data to detect
+   this already exists per `get_exit_points(path, type: database|message)`,
+   it's just not cross-referenced across deployables within one repo run.
 3. **Deployable-scoped analysis/query surface.** Today all repo-level MCP
    tools (`get_summary`, `get_route_table`, `get_entry_points`, etc.) take a
    `path`, which can already be pointed at a subdirectory
    (`resolve_agent_analysis` returned `apps/mcp-server` as a valid descendant
    analysis with its own node/edge counts during this study) — so this may be
    *mostly* solved already via path-scoped queries. Worth confirming whether
-   `get_route_table(path: "zerac-api/apps/admin-api")` returns admin-api-only
+   `get_route_table(path: "<repo>/apps/admin-api")` returns admin-api-only
    routes or falls back to the whole-repo analysis; not tested in this study
    and should be validated before assuming it's a gap.
 4. A stable `deployable_id` naming scheme survives repo moves/renames
@@ -331,21 +332,23 @@ real gap, not a UI polish item.
 
 ## 6. Validation evidence (for reproducibility)
 
-- `resolve_agent_analysis(zerac-api)` — pre-existing CAS analysis, 11,378
-  nodes, 512 entry points, `profile_kind: backend-service`.
-- `run_workspace_analysis(paths: ["zerac-api"])`, saved as
-  `zerac-api-entity-model-study` — 10 applications, 4 marked
+- `resolve_agent_analysis` on the reference monorepo — pre-existing CAS
+  analysis, 11,378 nodes, 512 entry points, `profile_kind: backend-service`.
+- `run_workspace_analysis(paths: [<reference monorepo>])`, saved as
+  `reference-monorepo-entity-model-study` — 10 applications, 4 marked
   `deployable: true` (admin-api, user-api, mcp-api, internal-api), matching
   `ls apps/` and `nest-cli.json`'s `projects` map exactly.
-- `get_shared_components(zerac-api)` — returned only intra-app React
-  component reuse inside `apps/internal-api/client`, confirming no
+- `get_shared_components` on the reference monorepo — returned only intra-app
+  React component reuse inside `apps/internal-api/client`, confirming no
   cross-deployable library-sharing surface exists today (G1).
-- `get_cross_repo_links(paths: ["zerac-api"])` — `links: []`, confirming G1/G2
-  from a second angle (cross_repo_links tool, not just WAS composition).
+- `get_cross_repo_links(paths: [<reference monorepo>])` — `links: []`,
+  confirming G1/G2 from a second angle (cross_repo_links tool, not just WAS
+  composition).
 - `run_workspace_analysis(paths: ["proof-of-concept"])`, saved as
   `poc-entity-model-study` — 9 applications, 4 deployables (api, app,
   marketing-site, mcp-server), 1 library (analyzer-core), 2
-  application_links (unlike zerac-api's 0 — inconsistency noted as G2).
+  application_links (unlike the reference monorepo's 0 — inconsistency noted
+  as G2).
 - Direct read of `apps/mcp-server/src/account-store.ts` (full file, 392
   lines) and grep of `/api/*` route registrations in
   `remote-analyzer-service.ts` for the current-state schema in Section 2.

@@ -334,8 +334,8 @@ the live ingest path, not simulation.) **Deps.** none. **Tier.** `sonnet`.
   contract-drift silently skips them. Fix: capture interface/type shapes for drift.
 - `get_user_journeys` LIST form strips `steps` → agents need a 2nd call. Add steps to list or a
   detail flag.
-- Multi-repo "treat these N repos as one product" ergonomics (zerac feedback) — one command to
-  fuse a workspace.
+- Multi-repo "treat these N repos as one product" ergonomics (agent feedback from a multi-repo
+  workspace user) — one command to fuse a workspace.
 **Build.** Extend `buildCrossCodebaseSystemGraph` + `product.ts` drift; the entity-shape capture
 in the TS analyzer. **Acceptance.** Contract-drift catches an interface-typed field change across
 repos (new fixture). **Deps.** none. **Tier.** `sonnet`.

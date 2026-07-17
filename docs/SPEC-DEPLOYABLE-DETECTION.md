@@ -42,17 +42,17 @@ hardcoded brand/keyword categorizer"). Folder convention is a naming
 convention, not evidence of ship/run behavior. It fails in both directions:
 
 - **False splits.** A folder-per-binary layout produces N "deployables" when
-  the real ship unit is 1. Motivating case: **zerac/poc** — 8 Rust `[[bin]]`
-  crates under `crates/*` and `apps/*`, but only 1-2 real deployables: a
-  single installer script bundles the `client` binary and the
+  the real ship unit is 1. Motivating shape: a Rust multi-binary workspace —
+  8 Rust `[[bin]]` crates under `crates/*` and `apps/*`, but only 1-2 real
+  deployables: a single installer script bundles a `client` binary and a
   `client-service` binary together into one shipped product. Folder-name
   detection reports 8 siblings; reality is 1 ship unit with an internal
   client/service split.
-- **False merges / missed splits.** **zerac-api** has 4 independently
-  deployed `apps/*` services plus shared `libs/*` packages. Folder detection
-  gets the top-level shape right by luck (apps vs libs), but has no
-  mechanism to notice when two `apps/*` entries are actually bundled by a
-  single Docker Compose stack or CI deploy job (i.e., it can't correctly
+- **False merges / missed splits.** A multi-service workspace with 4
+  independently deployed `apps/*` services plus shared `libs/*` packages.
+  Folder detection gets the top-level shape right by luck (apps vs libs), but
+  has no mechanism to notice when two `apps/*` entries are actually bundled by
+  a single Docker Compose stack or CI deploy job (i.e., it can't correctly
   *merge* even when merging would be right), and no mechanism to demote an
   `apps/*` folder that has no runnable entry, no Dockerfile, and no CI job
   (i.e., it can't correctly *decline to count* a folder as deployable).
@@ -94,7 +94,8 @@ fact.
     `now.json`), `Procfile`
   - Installer scripts (`install.sh`, NSIS/Inno/pkg scripts, `package.json`
     `"pkg"`/`electron-builder` config) that bundle multiple binaries into
-    one distributable — this is the zerac/poc client+client-service case
+    one distributable — this is the Rust multi-binary client+client-service
+    case
   - CI/CD deploy jobs (`.github/workflows/*deploy*`, `.gitlab-ci.yml` deploy
     stage) — a single job that builds+pushes+deploys N artifacts together is
     evidence they ship as one unit
@@ -243,24 +244,24 @@ one `deployable:true` produces an unusable list.
 
 ## 6. Worked examples
 
-- **zerac/poc**: 8 `[[bin]]` crates (Tier-2) under `crates/*` and `apps/*`.
-  One installer script (Tier-1, `kind: installer-script`) names `client` and
-  `client-service` in its bundle list. Result: `client` becomes the ship
-  unit, `client-service` gets `bundled_into: client`'s id with
-  `boundary_evidence` citing the installer script line. The remaining ~6
-  bin crates have no Tier-1 evidence and no coupling to `client` → they stay
-  separate deployables (or, if genuinely dev-only tools, get demoted by
-  existing `looksLikeInternalUtilityApplication` heuristics — out of scope
-  for this spec). Net: 1 ship unit with 2 members + N separate tool
-  deployables, not 8 flat siblings.
-- **zerac-api**: 4 `apps/*` each with their own Dockerfile (Tier-1, distinct
-  `ships_paths` — none references another app) → 4 separate deployables,
-  correctly not merged. `libs/*` packages have only Tier-3 package-identity
-  evidence and are referenced via imports by the 4 apps but have no Tier-1
-  artifact of their own and no IPC coupling (they're compiled in, not
-  processes) → they roll up as non-deployable library surfaces attributed
-  to whichever app(s) import them, per existing `deployable: false`
-  semantics for `packages/`/`libs/` roots.
+- **Rust multi-binary workspace**: 8 `[[bin]]` crates (Tier-2) under
+  `crates/*` and `apps/*`. One installer script (Tier-1, `kind:
+  installer-script`) names `client` and `client-service` in its bundle
+  list. Result: `client` becomes the ship unit, `client-service` gets
+  `bundled_into: client`'s id with `boundary_evidence` citing the installer
+  script line. The remaining ~6 bin crates have no Tier-1 evidence and no
+  coupling to `client` → they stay separate deployables (or, if genuinely
+  dev-only tools, get demoted by existing `looksLikeInternalUtilityApplication`
+  heuristics — out of scope for this spec). Net: 1 ship unit with 2 members
+  + N separate tool deployables, not 8 flat siblings.
+- **Multi-service workspace**: 4 `apps/*` each with their own Dockerfile
+  (Tier-1, distinct `ships_paths` — none references another app) → 4
+  separate deployables, correctly not merged. `libs/*` packages have only
+  Tier-3 package-identity evidence and are referenced via imports by the 4
+  apps but have no Tier-1 artifact of their own and no IPC coupling (they're
+  compiled in, not processes) → they roll up as non-deployable library
+  surfaces attributed to whichever app(s) import them, per existing
+  `deployable: false` semantics for `packages/`/`libs/` roots.
 - **next-fullstack** (single Next.js app, one Dockerfile, one Vercel
   config): 1 Tier-1 root, no competing Tier-2 candidates outside it → 1
   deployable.
@@ -275,18 +276,19 @@ one `deployable:true` produces an unusable list.
 
 ## 6a. Real-repo results (as measured this session)
 
-- **zerac-api**: confirmed 4 real deployables (per `bae5aca6`), matching §6's
-  worked example — 4 `apps/*` each with its own Dockerfile, no merges.
-- **zerac/poc**: the shipped-gate (`f8ef1aed`) was motivated by zerac/poc
-  over-producing **18** "deployables" pre-fix (folder-name detection counting
-  every runnable bin). **Verified post-fix (2026-07-02, live probe through
-  `analyzeForBench` + `buildCrossCodebaseSystemGraph`): 18 → 4 top-level
-  deployables** (`agent`, `dropserver`, `gateway`, `version`) + 47 non-deployable
-  libs — the unshipped test/demo/utility bins (`btm-test`, `hello`,
-  `magic-cast-demo`, `memory-clear`, `packet_sniffer`, `zerac-ngrok`, …)
-  correctly collapsed. **Two honest residuals remain** (tracked, not yet fixed):
-  (1) `version` is a false-positive deployable (a utility that spuriously matches
-  a ship artifact); (2) multi-artifact primary attribution inverts — it shows
+- **Multi-service workspace shape**: confirmed 4 real deployables (per
+  `bae5aca6`), matching §6's worked example — 4 `apps/*` each with its own
+  Dockerfile, no merges.
+- **Rust multi-binary workspace shape**: the shipped-gate (`f8ef1aed`) was
+  motivated by a real workspace of this shape over-producing **18**
+  "deployables" pre-fix (folder-name detection counting every runnable bin).
+  **Verified post-fix (2026-07-02, live probe through `analyzeForBench` +
+  `buildCrossCodebaseSystemGraph`): 18 → 4 top-level deployables** (an agent,
+  a drop-server, a gateway, and a version utility) + 47 non-deployable libs —
+  the unshipped test/demo/utility bins correctly collapsed. **Two honest
+  residuals remain** (tracked, not yet fixed): (1) the version utility is a
+  false-positive deployable (a utility that spuriously matches a ship
+  artifact); (2) multi-artifact primary attribution inverts — it shows
   `client → agent` (agent primary) whereas the product-owner ground truth is
   client-primary-bundles-client-service. So: the gross error (18) is fixed and
   the shipped-gate generalizes to a messy real repo, but the specific
@@ -307,11 +309,12 @@ reported passing individually — py 3/3, jvm 2/2, native 2/2, tier1 4/4 as of
 `658e8990`; re-run the suite directly for current counts rather than trusting
 this doc's numbers as they age):
 
-1. **Bundle-via-installer** (zerac/poc shape): N runnable bins, 1 installer
-   script bundling 2 of them → 1 ship unit with 2 members + N-2 separate.
-2. **Independent-siblings-with-own-Dockerfiles** (zerac-api shape): N
-   `apps/*` each with a distinct Dockerfile, no cross-references → N
-   separate deployables, 0 merges.
+1. **Bundle-via-installer** (Rust multi-binary workspace shape): N runnable
+   bins, 1 installer script bundling 2 of them → 1 ship unit with 2 members
+   + N-2 separate.
+2. **Independent-siblings-with-own-Dockerfiles** (multi-service workspace
+   shape): N `apps/*` each with a distinct Dockerfile, no cross-references →
+   N separate deployables, 0 merges.
 3. **Single-app** (next-fullstack shape): 1 Dockerfile/Vercel config, no
    competing Tier-2 roots → 1 deployable.
 4. **Ambiguous-no-evidence**: 2 sibling folders, both Tier-2 only

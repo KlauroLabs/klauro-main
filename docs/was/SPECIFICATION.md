@@ -164,16 +164,16 @@ These views are retrieval profiles. They MUST NOT create separate truths or infe
 - WAS SHOULD expose CAS distribution units at overview and evidence levels when they affect how agents should plan changes. A member deployable change SHOULD prompt agent guidance to inspect installer, release, service, desktop-entry, signing, or deployment artifacts before finalizing.
 - WAS SHOULD expose workspace entity concepts and paths when repo-level CAS provides data entities, workflows, capabilities, lineage, or cross-repo flow evidence. Entity paths MUST cite repo-level CAS lineage/workflow/capability facts and SHOULD include `get_data_lineage` drilldown calls.
 
-## 8. Zerac/Soon/Klauro Acceptance Examples
+## 8. Acceptance Examples (workspace shapes)
 
 A conforming Workspace analysis should be able to express:
 
-- Zerac admin UI uses/administers the admin API; client UI uses the user API.
-- Zerac MCP API is an agent or machine-to-machine control surface when CAS exposes MCP routes/modules/decorators.
-- Zerac client/coordinator/agent flows include direct P2P/holepunch behavior and coordinator relay/fallback when CAS exposes those interface and runtime facts.
-- Zerac drop-server is a broker when CAS shows it receiving agent/device messages and calling API surfaces.
+- an admin UI uses/administers the admin API; a client UI uses the user API.
+- an MCP API is an agent or machine-to-machine control surface when CAS exposes MCP routes/modules/decorators.
+- a workspace whose repos expose peer-to-peer/holepunch runtime facts plus a relay/coordinator service should express both the direct client/coordinator/agent P2P flows and the coordinator relay/fallback when CAS exposes those interface and runtime facts.
+- a unit that receives agent/device messages and calls API surfaces is a broker.
 - Redis can be reported as declared-but-unused when deployment/config facts exist but no source-level usage facts exist.
-- Soon UI, Sync, Lens, Link, and related apps should be connected by concrete API, MCP, WebSocket, SDK, message, or runtime evidence.
+- a family of related UI/sync/link apps should be connected by concrete API, MCP, WebSocket, SDK, message, or runtime evidence.
 - Klauro should dogfood itself by connecting MCP server, analyzer-core, marketing/deployable surfaces, hosted analyzer/runtime components, and stored analysis artifacts where CAS exposes those facts.
 
 ## 9. Validation
