@@ -2731,10 +2731,29 @@ function buildTerminalFlows(
   // one hop through a manager/service).
   const cliOneHopEntities = makeCliOneHopEntities(cas);
 
-  // Deterministic order: chains sorted by id so the flow set is byte-stable
-  // run-to-run (Camp-B determinism rule). `target` filter matches against the
-  // entry method, exit target, and resolved entry-point route/name.
-  const sorted = [...chains].sort((a, b) => a.id.localeCompare(b.id));
+  // SIGNIFICANCE-FIRST WINDOW ORDER (flow-flooding fix, mirrors
+  // computeEntryPointFlows' identical class-rank sort below): this is the
+  // PRIMARY flow path whenever the CAS carries entry-to-exit call chains, and
+  // it used to sort purely by `chain.id` — a byte-stable but
+  // significance-blind order. On a test-heavy CAS (live miniflux measurement:
+  // entry_points_by_type http:213 vs test:1234) a lexicographic chain-id sort
+  // interleaves test-rooted chains into the front of the array with no regard
+  // for entry type, so the maxFlows window (and therefore total_available/
+  // role_breakdown, which are computed over that same probed window in
+  // getFlowConcepts) filled almost entirely with test flows, drowning the 213
+  // real HTTP flows. Tests remain first-class structural facts — nothing is
+  // dropped, excluded chains are still reachable via a wider maxFlows/target —
+  // this only reorders the window so product entries are seen first.
+  // Deterministic: a pure stable class sort (real/synthesized entries before
+  // test entries) over facts already on each chain, tie-broken by the
+  // original id sort so output stays byte-stable within a class.
+  const entryClassRank = (chain: CASCallChain): number => {
+    const ep = chain.entry_point.entry_point_id ? entryById.get(chain.entry_point.entry_point_id) : undefined;
+    return ep?.type === 'test' ? 1 : 0;
+  };
+  const sorted = [...chains].sort((a, b) =>
+    (entryClassRank(a) - entryClassRank(b)) || a.id.localeCompare(b.id)
+  );
 
   const flows: FlowConcept[] = [];
 

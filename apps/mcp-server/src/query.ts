@@ -3890,9 +3890,29 @@ export function getFlowConcepts(
       capability_linked: Boolean(f.capability_id),
     };
   };
-  const roleByFlowId = new Map<string, { role?: SemanticRole; role_evidence: string[] }>();
+  // FLOW-FLOODING FIX: a flow rooted at a `test` entry point is a real
+  // structural fact (get_test_summary depends on the underlying entry point
+  // staying in the graph) but must never be counted into the product
+  // core/supporting/infrastructure vocabulary — a test-heavy CAS would
+  // otherwise either drown those buckets in test noise or (via the
+  // conservative "supporting" name fallback) silently misclassify test flows
+  // as product surface. Give it its own honest 'test' bucket instead, decided
+  // BEFORE the name/domain-concept classifier runs (entry type is a stronger,
+  // cheaper signal than name matching). Doctrine: tests stay in the graph and
+  // in entry_points; they just never dominate — see
+  // filterPrimaryProductEntryPoints/filterPrimaryProductJourneys in
+  // orchestrator.ts for the same doctrine applied to comprehension surfaces.
+  const roleByFlowId = new Map<string, { role?: SemanticRole | 'test'; role_evidence: string[] }>();
   for (const f of probedFlows) {
-    const classification = classifyFlowRole(f, flowConceptIndex, structuralRoleEvidence(f));
+    const structural = structuralRoleEvidence(f);
+    if (structural.entry_type === 'test') {
+      roleByFlowId.set(f.flow_id, {
+        role: 'test',
+        role_evidence: ['entry point type is test — excluded from product role classification, retained as a structural fact'],
+      });
+      continue;
+    }
+    const classification = classifyFlowRole(f, flowConceptIndex, structural);
     roleByFlowId.set(f.flow_id, classification);
     // Rule (c) of the capability↔flow relational-role derivation
     // (docs/SEMANTIC-MODEL.md — roles live on the EDGE): an entity-overlap
@@ -3912,11 +3932,21 @@ export function getFlowConcepts(
   const truncated = effectiveMaxFlows !== undefined && probedFlows.length > effectiveMaxFlows;
   const flows = truncated ? probedFlows.slice(0, effectiveMaxFlows) : probedFlows;
 
-  const roleBreakdown: Record<'core' | 'supporting' | 'infrastructure' | 'unknown', number> =
-    { core: 0, supporting: 0, infrastructure: 0, unknown: 0 };
+  const roleBreakdown: Record<'core' | 'supporting' | 'infrastructure' | 'test' | 'unknown', number> =
+    { core: 0, supporting: 0, infrastructure: 0, test: 0, unknown: 0 };
   for (const f of probedFlows) {
     roleBreakdown[roleByFlowId.get(f.flow_id)?.role || 'unknown']++;
   }
+  // Honest product-vs-test denominator, independent of the (possibly capped)
+  // probe window above: a cheap O(entry_points) pass over facts already
+  // loaded, so total_available staying dominated by test count is visible
+  // rather than silently implied. Additive field — existing consumers reading
+  // total_available/role_breakdown are unaffected.
+  const testEntryPointTotal = (cas.entry_points || []).filter(ep => ep.type === 'test').length;
+  const entryPointTotals = {
+    product: (cas.entry_points || []).length - testEntryPointTotal,
+    test: testEntryPointTotal,
+  };
   // True total when we didn't truncate is just what we got; when we did,
   // it's at least effectiveMaxFlows+1 (we don't re-probe uncapped here —
   // entry_points.length is the authoritative upper bound for "all flows").
@@ -3946,6 +3976,11 @@ export function getFlowConcepts(
       ? 'Pass a max_flows query param (bounded, max 50) to see more, or target to narrow to a specific entry point/route/name.'
       : 'Pass max_flows to see more, or target to narrow to a specific entry point/route/name.';
     gaps.push(`Showing ${flows.length}/${totalFlowsAvailable} flows (${appliedCapNotice}). ${moreHint}`);
+    if (entryPointTotals.test > entryPointTotals.product) {
+      gaps.push(
+        `total_available is dominated by test entry points (${entryPointTotals.test} test vs ${entryPointTotals.product} product) — see entry_point_totals; the returned window is ordered product-first so this page should still be product-shaped.`
+      );
+    }
   }
 
   // Cross-link each flow/step to the STRUCTURAL perspectives (architectural
@@ -4042,6 +4077,10 @@ export function getFlowConcepts(
     total_available: totalFlowsAvailable,
     truncated,
     role_breakdown: roleBreakdown,
+    // Honest product-vs-test split of ALL entry points on the CAS (not just
+    // the probed window) — additive, so total_available dominated by test
+    // count is legible instead of silently implied.
+    entry_point_totals: entryPointTotals,
     gaps: gaps.length ? gaps : undefined,
   };
 }
