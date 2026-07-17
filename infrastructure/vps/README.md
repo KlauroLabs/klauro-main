@@ -139,3 +139,30 @@ non-root `gate` user — jest in particular needs to create its own
 `node_modules/.cache/jest` dir. `chown 1000:1000` the affected `node_modules/`
 dir once, or re-run the install as a non-root user, rather than repeating this
 per gate invocation.
+
+## Spec-purity gate
+
+`deploy.sh` refuses to deploy if benchmark/client corpus names (e.g. `zerac`,
+`soon-lens`, `truckspy`, `hoggan`, `washup`, `miniflux`, `petclinic`) show up
+in the product's specs/doctrine docs (`docs/SPEC*.md`, `docs/was/`,
+`docs/cas/`, `docs/ARCHITECTURE.md`, `docs/UNDERSTANDING-MODEL.md`,
+`docs/COVERAGE-INTELLIGENCE.md`) or in shipped product source
+(`packages/analyzer-core/src`, `apps/mcp-server/src`, `*.ts`), skipping
+`test`/`tests`/`fixture`/`fixtures`/`__tests__`/`gauntlet`/`bench`/`benchmark`/
+`corpus` paths where corpus-specific detail belongs.
+
+Klauro's specs and product source are meant to be product-agnostic — they
+describe the analyzer, not any one client's codebase — but comments and doc
+prose keep leaking the names of whatever repo was being debugged at the time
+straight into permanent product artifacts. This gate runs alongside the
+dirty-tree guard, before any VPS interaction, and prints every offending line
+with file:line context when it fires.
+
+The pattern list lives in ONE place — the `BENCHMARK_CORPUS_NAMES` variable
+near the top of the guard in `deploy.sh` — with a comment describing how to
+extend it: add the new benchmark/client repo's name there (and nowhere else)
+the next time one starts showing up in commit messages or comments.
+
+As of 2026-07-17 the gate correctly fires against the current tree (a purge
+of existing violations is in progress); that is expected until the purge
+lands, not a bug in the gate.

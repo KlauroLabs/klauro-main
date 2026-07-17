@@ -74,6 +74,53 @@ if [ "$ALLOW_DIRTY" != "1" ]; then
   fi
 fi
 
+# --- guard: SPEC-PURITY — no client/benchmark product names in specs or
+# shipped source -------------------------------------------------------------
+# Klauro's specs and product source must read as repo-agnostic: they explain
+# the ANALYZER's behavior, not any one customer's codebase. In practice,
+# comments and doc prose keep leaking the names of the benchmark/client repos
+# used to find bugs (zerac, soon-lens, truckspy, Hoggan, ...) straight into
+# docs/SPEC*.md and orchestrator.ts. That's a doctrine violation two ways: it
+# leaks client identity into a product artifact, and it silently rots the
+# specs into a diary of one corpus instead of a description of the product.
+#
+# BENCHMARK_CORPUS_NAMES is the single list to extend when a new benchmark/
+# client repo enters the corpus and starts showing up in commit messages —
+# add its name (lowercase, `|`-separated, regex-escaped if needed) here and
+# nowhere else. Keep entries specific enough to avoid false positives on
+# common English words.
+BENCHMARK_CORPUS_NAMES='zerac|soon-lens|truckspy|hoggan|washup|miniflux|petclinic'
+
+echo "==> Checking spec/source purity (no benchmark-corpus names: $BENCHMARK_CORPUS_NAMES)"
+SPEC_PURITY_HITS=""
+# (a) doctrine/spec docs
+SPEC_DOC_PATHS="docs/ARCHITECTURE.md docs/UNDERSTANDING-MODEL.md docs/COVERAGE-INTELLIGENCE.md"
+for p in docs/SPEC*.md docs/was/ docs/cas/ $SPEC_DOC_PATHS; do
+  [ -e "$p" ] || continue
+  HIT="$(grep -rniE "$BENCHMARK_CORPUS_NAMES" "$p" 2>/dev/null || true)"
+  [ -n "$HIT" ] && SPEC_PURITY_HITS="${SPEC_PURITY_HITS}${HIT}
+"
+done
+# (b) shipped product source, excluding test/fixture/bench/corpus paths
+SRC_HITS="$(grep -rniE "$BENCHMARK_CORPUS_NAMES" --include='*.ts' \
+  packages/analyzer-core/src apps/mcp-server/src 2>/dev/null \
+  | grep -viE '/(test|tests|fixture|fixtures|__tests__|gauntlet|bench|benchmark|corpus)/' || true)"
+[ -n "$SRC_HITS" ] && SPEC_PURITY_HITS="${SPEC_PURITY_HITS}${SRC_HITS}
+"
+
+if [ -n "$SPEC_PURITY_HITS" ]; then
+  echo "ERROR: SPEC-PURITY gate failed — benchmark/client corpus names found in specs or" >&2
+  echo "       product source (rule: spec/doctrine and product source must be" >&2
+  echo "       product-agnostic — move corpus references to benchmark records or fixtures)." >&2
+  echo "" >&2
+  echo "$SPEC_PURITY_HITS" | sed '/^$/d; s/^/         /' >&2
+  echo "" >&2
+  echo "       Fix by rewording the offending comments/docs generically, or by moving the" >&2
+  echo "       corpus-specific detail into a test/fixture/gauntlet/bench/corpus path (which" >&2
+  echo "       this gate excludes). Refusing to deploy." >&2
+  exit 1
+fi
+
 # --- creds -----------------------------------------------------------------
 if [ -f "$APP_DIR/.env" ]; then set -a; . "$APP_DIR/.env"; set +a; fi
 if [ -z "${VPS_HOST:-}" ] || [ -z "${VPS_USER:-}" ] || [ -z "${VPS_PASSWORD:-}" ]; then
