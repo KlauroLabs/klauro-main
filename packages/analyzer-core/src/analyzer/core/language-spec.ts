@@ -20,6 +20,17 @@ export interface LanguageSpec {
   functionNodeTypes: string[];
   /** AST node types that declare a class/struct/interface/object. */
   classNodeTypes: string[];
+  /**
+   * Optional: the CAS node TYPE emitted for classNodeTypes matches. Defaults to
+   * 'class'. Markup/style grammars whose "class-like" blocks are NOT semantic
+   * classes must override this so they never pollute type==='class' consumers
+   * (entity gates, inventory class counts, arch heuristics). Measured live:
+   * spring-petclinic's ONE petclinic.css produced 2543 'class' nodes (each CSS
+   * selector block) — 40x the repo's real Java classes — skewing every
+   * class-count signal in the analysis. The nodes stay in the graph (breadth
+   * coverage keeps them); only their type label is honest now.
+   */
+  classNodeLabel?: string;
   /** AST node types representing a call expression. */
   callNodeTypes: string[];
   /** AST node types representing an import/use/require statement. */
@@ -494,6 +505,7 @@ export const LANGUAGE_SPECS: Record<string, LanguageSpec> = {
     grammar: 'css',
     functionNodeTypes: [],
     classNodeTypes: ['rule_set'],
+    classNodeLabel: 'style_rule',
     callNodeTypes: [],
     importNodeTypes: ['import_statement'],
     resolveName: (node: any) => firstDescByType(node, 'selectors').replace(/\s+/g, ' ').trim(),
@@ -504,6 +516,7 @@ export const LANGUAGE_SPECS: Record<string, LanguageSpec> = {
     grammar: 'html',
     functionNodeTypes: [],
     classNodeTypes: ['element'],
+    classNodeLabel: 'markup_element',
     callNodeTypes: [],
     importNodeTypes: ['script_element'],
     resolveName: (node: any) => {

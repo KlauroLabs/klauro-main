@@ -146,9 +146,16 @@ export class GenericTreeSitterLanguageAnalyzer extends BaseAnalyzer {
         declaredFunctions.set(fn.name, list);
       }
 
+      // The emitted node TYPE honors the spec's classNodeLabel: markup/style
+      // grammars (css rule_sets, html elements) are "class-like" for coverage
+      // but are NOT semantic classes — labeling them 'class' let ONE bundled
+      // stylesheet outnumber a repo's real classes 40:1 (petclinic.css: 2543
+      // selector "classes" vs 62 Java files) and skew every type==='class'
+      // consumer. Nodes stay in the graph; only the label is honest.
+      const classLabel = LANGUAGE_SPECS[file.grammar]?.classNodeLabel || 'class';
       for (const cls of extract.classes) {
         const id = this.declId('class', file.relativePath, cls.name, cls.line);
-        const node = this.createNodeBuilder(id, cls.name, 'class')
+        const node = this.createNodeBuilder(id, cls.name, classLabel)
           .withLevel(3, 'Class/Type')
           .withCategory('types', [`${file.grammar}-types`])
           .withSource({ file: file.fullPath, line: cls.line })
