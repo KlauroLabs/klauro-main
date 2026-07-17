@@ -951,7 +951,7 @@ export function buildCrossCodebaseSystemGraph(
   resolveDeployables(applications, repositories);
   const distributionUnits = buildWorkspaceDistributionUnits(repositories, applications, codebases);
   const allLinks = buildLinks(interfaces);
-  const runtimeLinks = buildRuntimeLinks(runtimeComponents, interfaces, allLinks);
+  const runtimeLinks = buildRuntimeLinks(runtimeComponents, interfaces, allLinks, repositories);
   const applicationLinks = buildApplicationLinks(allLinks, runtimeLinks, interfaces, runtimeComponents, applications, codebases, repositories);
   const sharedCodeRollup = buildSharedCodeRollup(repositories, applications, applicationLinks);
   let systemInsights = inferSystemInsights(codebases, applications, interfaces, applicationLinks, runtimeComponents, runtimeLinks, distributionUnits);
@@ -9524,6 +9524,7 @@ function buildRuntimeLinks(
   components: SystemRuntimeComponent[],
   interfaces: SystemInterface[],
   links: SystemLink[],
+  repositories: CrossCodebaseInput[],
 ): SystemRuntimeLink[] {
   const componentByRef = new Map<string, SystemRuntimeComponent>();
   const componentByAlias = new Map<string, SystemRuntimeComponent[]>();
@@ -9557,7 +9558,163 @@ function buildRuntimeLinks(
     });
   }
 
+  // GENERIC TOPOLOGY LINK RESOLUTION (fixes runtime_links being permanently
+  // empty): the loop above only fires when BOTH sides of an already-matched
+  // interface pair carry topology_surface, which never happens in practice —
+  // infra-declared exits (compose/k8s references to a sibling service) carry
+  // topology_surface, but the code-level route/handler they actually reach
+  // almost never does (it's sourced from an entry-point analyzer, not an
+  // infra one). That made deployable-to-deployable runtime links unreachable
+  // on every workspace, even when the infra evidence unambiguously names the
+  // sibling deployable (compose service name, container/host name, declared
+  // port). Two additional, evidence-gated sources restore this signal without
+  // requiring a matched interface PAIR:
+  //  1. Explicit dependency edges the container-topology analyzer already
+  //     emits between sibling service nodes (compose depends_on, etc).
+  //  2. A consumer/publisher interface whose own host/port evidence names a
+  //     sibling runtime component directly (service alias or port overlap),
+  //     even when that sibling never exposed a matching provider interface.
+  // Unmatched interfaces stay unmatched and counted either way — nothing here
+  // fabricates a link without cited evidence.
+  runtimeLinks.push(...buildComposeDependencyRuntimeLinks(repositories, components));
+  runtimeLinks.push(...buildTopologyRuntimeLinks(components, interfaces));
+
   return dedupeRuntimeLinks(runtimeLinks);
+}
+
+/** Deployable-to-deployable runtime links sourced directly from the explicit
+ *  dependency edges a topology analyzer already emits between sibling
+ *  runtime-service nodes (e.g. docker-compose `depends_on`). This is the
+ *  highest-confidence, most direct evidence of a runtime relationship: the
+ *  infra manifest itself declares service A depends on service B. Generic
+ *  across any repo whose topology analyzer emits such edges — no names are
+ *  assumed beyond what the edge/node evidence already carries. */
+function buildComposeDependencyRuntimeLinks(
+  repositories: CrossCodebaseInput[],
+  components: SystemRuntimeComponent[],
+): SystemRuntimeLink[] {
+  const componentByNodeId = new Map<string, SystemRuntimeComponent>();
+  for (const component of components) {
+    for (const ref of component.refs) componentByNodeId.set(`${component.codebase_id}:${ref.id}`, component);
+  }
+  const links: SystemRuntimeLink[] = [];
+  for (const repository of repositories) {
+    const id = codebaseId(repository.path);
+    for (const edge of repository.cas.edges || []) {
+      if (!isComposeDependencyEdge(edge)) continue;
+      const sourceComponent = componentByNodeId.get(`${id}:${edge.source}`);
+      const targetComponent = componentByNodeId.get(`${id}:${edge.target}`);
+      if (!sourceComponent || !targetComponent || sourceComponent.id === targetComponent.id) continue;
+      links.push({
+        id: `runtime:compose-dependency:${slugify(edge.id || `${edge.source}:${edge.target}`)}`,
+        codebase_id: id,
+        source_component_id: sourceComponent.id,
+        target_component_id: targetComponent.id,
+        kind: 'http-call',
+        mode: 'sync',
+        confidence: adjustLinkConfidence(0.82, 'topology-backed'),
+        evidence: [
+          `compose-dependency:${sourceComponent.name} depends_on ${targetComponent.name}`,
+          `topology-backed:${id}:${edge.id || edge.source}`,
+        ],
+      });
+    }
+  }
+  return links;
+}
+
+function isComposeDependencyEdge(edge: CASOutput['edges'][number]): boolean {
+  const type = String((edge as any).type || (edge as any).relationship_type || '').toLowerCase();
+  if (type !== 'depends_on') return false;
+  const metadata = ((edge as any).metadata || {}) as Record<string, unknown>;
+  return metadata.dependency_kind === 'compose-service' || metadata.topology_surface === 'docker-compose';
+}
+
+/** Deployable-to-deployable runtime links sourced from a consumer/publisher
+ *  interface's own host/port evidence (e.g. a compose EXTERNAL-SERVICE exit
+ *  naming `http://sibling:port`) matched directly against a sibling runtime
+ *  component's declared service aliases and ports — independent of whether
+ *  that sibling ever exposed a matching provider interface (most don't: a
+ *  worker/service consumed only via infra reference commonly has no HTTP
+ *  route evidence of its own). Generic: matches on the same alias/port
+ *  evidence already extracted onto SystemRuntimeComponent, no hardcoded
+ *  names. */
+function buildTopologyRuntimeLinks(
+  components: SystemRuntimeComponent[],
+  interfaces: SystemInterface[],
+): SystemRuntimeLink[] {
+  const componentByAlias = new Map<string, SystemRuntimeComponent[]>();
+  const componentByApplication = new Map<string, SystemRuntimeComponent[]>();
+  for (const component of components) {
+    for (const alias of normalizeAliases(component.service_aliases)) {
+      const key = `${component.codebase_id}:${alias}`;
+      componentByAlias.set(key, [...(componentByAlias.get(key) || []), component]);
+    }
+    const appKey = `${component.codebase_id}:${component.application_id}`;
+    componentByApplication.set(appKey, [...(componentByApplication.get(appKey) || []), component]);
+  }
+
+  const links: SystemRuntimeLink[] = [];
+  const seen = new Set<string>();
+  for (const item of interfaces) {
+    if (item.role !== 'consumer' && item.role !== 'publisher') continue;
+    const targetAliases = normalizeAliases(item.service_aliases, serviceAliasesFromEndpoint(item.endpoint))
+      .filter(alias => isUsefulApplicationAlias(alias) && !isIpAddressToken(alias));
+    if (!targetAliases.length) continue;
+
+    const targetComponents = new Map<string, SystemRuntimeComponent>();
+    for (const alias of targetAliases) {
+      for (const component of componentByAlias.get(`${item.codebase_id}:${alias}`) || []) {
+        targetComponents.set(component.id, component);
+      }
+    }
+    if (!targetComponents.size) continue;
+
+    const sourceComponents = componentByApplication.get(`${item.codebase_id}:${item.application_id}`) || [];
+    if (!sourceComponents.length) continue;
+    const port = concreteEndpointPort(item.endpoint);
+
+    for (const sourceComponent of sourceComponents) {
+      for (const targetComponent of targetComponents.values()) {
+        if (sourceComponent.id === targetComponent.id) continue;
+        if (port && targetComponent.ports.length && !targetComponent.ports.includes(port)) continue;
+        const key = `${sourceComponent.id}->${targetComponent.id}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        links.push({
+          id: `runtime:topology:${slugify(item.id)}:${slugify(targetComponent.id)}`,
+          codebase_id: item.codebase_id,
+          source_component_id: sourceComponent.id,
+          target_component_id: targetComponent.id,
+          kind: item.kind === 'message' ? 'message-flow' : item.kind === 'stream' ? 'stream-flow' : 'http-call',
+          mode: item.mode,
+          confidence: adjustLinkConfidence(0.78, 'topology-backed'),
+          evidence: [
+            `topology-backed:${item.codebase_id}:${item.name}`,
+            `compose-service:${targetComponent.name}`,
+            ...item.refs.slice(0, 2).map(ref => `consumer:${ref.file || ref.name || ref.id}`),
+          ],
+        });
+      }
+    }
+  }
+  return links;
+}
+
+function isIpAddressToken(value: string): boolean {
+  return /^\d{1,3}(?:\.\d{1,3}){3}$/.test(value);
+}
+
+function concreteEndpointPort(endpoint: string | undefined): string | undefined {
+  const value = String(endpoint || '').trim();
+  if (!value || value.includes('${')) return undefined;
+  try {
+    const url = /^https?:\/\//i.test(value) ? new URL(value) : new URL(`http://${value}`);
+    return url.port || undefined;
+  } catch {
+    const match = value.match(/:(\d+)/);
+    return match ? match[1] : undefined;
+  }
 }
 
 function buildApplicationLinks(
@@ -10727,7 +10884,26 @@ function buildApplications(
 
   suppressWorkspaceContainerRoots(normalized, repositories, codebaseById);
 
-  return normalized.sort((left, right) => left.codebase_id.localeCompare(right.codebase_id) || left.name.localeCompare(right.name));
+  // ADMISSION GATE (fixes level-one application-list noise): every
+  // crates/<name> or packages/<name> (and equally, an unremarkable src/bin/
+  // <name> folder) directory unconditionally minted its own SystemApplication
+  // above, purely from matching a path shape — with no check that the
+  // directory actually surfaces as an application (a route/entry point, a
+  // runtime/deployment component, or any other positive evidence beyond "a
+  // folder exists here"). Per the WAS spec, passive data/library packages and
+  // structurally inert directories stay OUT of level-one application lists;
+  // real deployables/services (already flagged `deployable: true`, or a
+  // non-package/codebase kind reached only via a real keyword/path signal)
+  // are unaffected. This does not touch interfaces, runtime components, or
+  // any other evidence already gathered — it only withholds the top-level
+  // "application" label from a bare directory that never accumulated any.
+  const admitted = normalized.filter(app => {
+    if (app.deployable) return true;
+    if (app.kind !== 'package' && app.kind !== 'codebase') return true;
+    return app.interface_ids.length > 0 || app.runtime_component_ids.length > 0;
+  });
+
+  return admitted.sort((left, right) => left.codebase_id.localeCompare(right.codebase_id) || left.name.localeCompare(right.name));
 }
 
 /** A monorepo CONTAINER root (root package.json with a `workspaces` field, a

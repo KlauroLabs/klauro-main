@@ -2248,3 +2248,185 @@ test('DEFECT4: bare entity/class-name domains rejected; core-concept domains kep
   assert.equal(isUncorroboratedEntityNameDomain('Agents', { evidence: ['core_concept:agent', 'domain_concept:concept_agents'] }, entityNames), false);
   assert.equal(isUncorroboratedEntityNameDomain('Orders', { evidence: ['primary_domain:orders', 'entity:Order'] }, new Set(['order'])), false);
 });
+
+// DEFECT-#45: runtime_links was permanently empty on every workspace because
+// it only fired when a MATCHED interface pair had topology_surface on BOTH
+// sides — but a real provider (a code-level route/handler) essentially never
+// carries topology_surface; only infra-declared exits do. The fixture below
+// mirrors the real shape: a compose-declared depends_on edge between two
+// sibling compose services, plus a genuine code-level http-api provider (no
+// topology_surface metadata, unlike the unrealistic all-topology fixtures
+// elsewhere in this file) that a sibling's own exit reaches by host:port.
+test('DEFECT-#45: resolves runtime_links from compose depends_on edges and interface host:port evidence, without fabricating unmatched interfaces', () => {
+  const system = cas({
+    system: { id: 'compose-system', name: 'compose-system', type: 'application', root_path: '/tmp/compose-system' },
+    nodes: [
+      {
+        id: 'compose_service_gateway',
+        name: 'Compose service: gateway',
+        type: 'compose_service',
+        metadata: {
+          topology_surface: 'docker-compose',
+          deployment_service_name: 'gateway',
+          service_aliases: ['gateway'],
+          ports: ['8080'],
+        },
+      } as any,
+      {
+        id: 'compose_service_widgets',
+        name: 'Compose service: widgets',
+        type: 'compose_service',
+        metadata: {
+          topology_surface: 'docker-compose',
+          deployment_service_name: 'widgets',
+          service_aliases: ['widgets'],
+          ports: ['4000'],
+        },
+      } as any,
+      {
+        id: 'compose_service_orphan',
+        name: 'Compose service: orphan',
+        type: 'compose_service',
+        metadata: {
+          topology_surface: 'docker-compose',
+          deployment_service_name: 'orphan',
+          service_aliases: ['orphan'],
+          ports: ['9999'],
+        },
+      } as any,
+      // Real code-level route handler for the widgets service — NOT infra
+      // metadata, so (correctly) no topology_surface here.
+      { id: 'widgets-route-fn', name: 'listWidgets', type: 'function', source: { file: 'apps/widgets/src/routes.ts', line: 8 } } as any,
+      // A code-level outbound call site inside gateway that reaches widgets
+      // by concrete host:port (e.g. a fetch/reqwest call), also with no
+      // topology_surface — this is what a real cross-service call looks like.
+      { id: 'gateway-client-fn', name: 'callWidgets', type: 'function', source: { file: 'apps/gateway/src/client.ts', line: 3 } } as any,
+    ],
+    // Real Tier-1 ship evidence (a Dockerfile per service) so gateway/widgets
+    // resolve as actual deployables — matching the real repo shape, where
+    // every compose-declared, independently-built service ships its own
+    // artifact — rather than exercising an unrelated deployable-resolution
+    // path this fixture isn't testing.
+    deployable_evidence: [
+      { root_path: 'apps/gateway', name: 'gateway', tier: 1, kind: 'container', evidence: ['docker/gateway.dockerfile'] },
+      { root_path: 'apps/widgets', name: 'widgets', tier: 1, kind: 'container', evidence: ['docker/widgets.dockerfile'] },
+    ] as any,
+    edges: [
+      // The container-topology analyzer's own depends_on edge between two
+      // sibling compose-service nodes — the highest-confidence generic
+      // evidence of a runtime relationship.
+      {
+        id: 'edge_compose_dep_gateway_widgets',
+        source: 'compose_service_gateway',
+        target: 'compose_service_widgets',
+        type: 'DEPENDS_ON',
+        metadata: { topology_surface: 'docker-compose', dependency_kind: 'compose-service' },
+      } as any,
+    ],
+    entry_points: [{
+      id: 'entry:widgets-list',
+      source_node: 'widgets-route-fn',
+      type: 'http',
+      name: 'GET /widgets',
+      trigger: { method: 'GET', path: '/widgets' },
+    }] as any,
+    exit_points: [
+      // gateway's code calls widgets directly by host:port (no depends_on
+      // edge covers this one — exercises the interface-alias/port path).
+      {
+        id: 'exit:gateway-widgets',
+        source_node: 'gateway-client-fn',
+        type: 'api',
+        name: 'call widgets',
+        target: { endpoint: 'http://widgets:4000/widgets', service_id: 'widgets' },
+        operation: { method: 'GET' },
+      },
+      // gateway references a host with no sibling evidence anywhere —
+      // must stay unmatched and counted, never fabricated into a link.
+      {
+        id: 'exit:gateway-unknown',
+        source_node: 'gateway-client-fn',
+        type: 'api',
+        name: 'call unknown-service',
+        target: { endpoint: 'http://unknown-service:1234/ping', service_id: 'unknown-service' },
+        operation: { method: 'GET' },
+      },
+    ] as any,
+  });
+
+  const graph = buildCrossCodebaseSystemGraph('compose-workspace', [
+    { path: '/tmp/compose-system', name: 'compose-system', cas: system },
+  ], { generatedAt: '2026-01-01T00:00:00.000Z' });
+
+  const componentById = new Map(graph.runtime_topology.components.map(component => [component.id, component]));
+  const gatewayComponent = graph.runtime_topology.components.find(component => component.service_aliases.includes('gateway'));
+  const widgetsComponent = graph.runtime_topology.components.find(component => component.service_aliases.includes('widgets'));
+  const orphanComponent = graph.runtime_topology.components.find(component => component.service_aliases.includes('orphan'));
+  assert.ok(gatewayComponent, 'gateway compose service should surface as a runtime component');
+  assert.ok(widgetsComponent, 'widgets compose service should surface as a runtime component');
+
+  // 1) compose depends_on edge resolves into a runtime_link, not just an
+  //    unresolved interface.
+  const dependsOnLink = graph.runtime_links.find(link =>
+    link.source_component_id === gatewayComponent!.id && link.target_component_id === widgetsComponent!.id);
+  assert.ok(dependsOnLink, 'runtime_links must not be permanently empty — a compose depends_on edge is direct evidence');
+  assert.ok(dependsOnLink!.evidence.some(line => /compose-dependency/.test(line)), 'evidence must cite the compose dependency, not be fabricated');
+
+  // 2) a code-level exit naming a sibling by host:port also resolves, even
+  //    though no depends_on edge covers this specific pair.
+  const hostPortLink = graph.runtime_links.find(link => {
+    const source = componentById.get(link.source_component_id);
+    const target = componentById.get(link.target_component_id);
+    return source?.service_aliases.includes('gateway') && target?.service_aliases.includes('widgets');
+  });
+  assert.ok(hostPortLink, 'a host:port-addressed cross-service call must resolve into a runtime_link');
+
+  // 3) the corresponding application-level link is also promoted (the WAS
+  //    consumer surface most agents actually read).
+  const appNames = new Map(graph.applications.map(app => [app.id, app.name]));
+  assert.ok(graph.application_links.some(link =>
+    appNames.get(link.source_application_id) === 'gateway' && appNames.get(link.target_application_id) === 'widgets'));
+
+  // 4) never fabricated: the orphan compose service and the truly unknown
+  //    host have no evidence connecting them to gateway, so no link exists
+  //    for either, and the unknown-host interface stays counted as unmatched.
+  assert.ok(!graph.runtime_links.some(link =>
+    link.source_component_id === orphanComponent?.id || link.target_component_id === orphanComponent?.id));
+  assert.ok(graph.unmatched_interfaces.some(item => /unknown-service/i.test(item.name)));
+});
+
+// DEFECT-#45b: buildApplications() minted a SystemApplication for every
+// crates/<name> (or bin/<name>) directory purely from a path-shape match,
+// with no check that the directory ever surfaced any application evidence
+// (an interface, a runtime component). That produced dozens of zero-evidence
+// "applications" — pure noise in the level-one list. A package/codebase-kind
+// entry now requires at least one interface or runtime component (or an
+// explicit deployable determination) to be admitted; entries with real
+// evidence, or already flagged deployable, are unaffected.
+test('DEFECT-#45b: package/codebase directories without application evidence are not admitted as applications', () => {
+  const system = cas({
+    system: { id: 'crates-system', name: 'crates-system', type: 'application', root_path: '/tmp/crates-system' },
+    nodes: [
+      // A pure library crate: a path-shape match only, no route/entry point,
+      // no runtime component — must NOT become a level-one application.
+      { id: 'lib-node', name: 'helpers', type: 'function', source: { file: 'crates/text-helpers/src/lib.rs', line: 1 } } as any,
+      // A crate that DOES surface a real entry point — must still be kept.
+      { id: 'worker-node', name: 'runJob', type: 'function', source: { file: 'crates/job-runner/src/main.rs', line: 1 } } as any,
+    ],
+    entry_points: [{
+      id: 'entry:job-runner',
+      source_node: 'worker-node',
+      type: 'http',
+      name: 'GET /run',
+      trigger: { method: 'GET', path: '/run' },
+    }] as any,
+  });
+
+  const graph = buildCrossCodebaseSystemGraph('crates-workspace', [
+    { path: '/tmp/crates-system', name: 'crates-system', cas: system },
+  ], { generatedAt: '2026-01-01T00:00:00.000Z' });
+
+  const appNames = new Set(graph.applications.map(app => app.name));
+  assert.ok(!appNames.has('text-helpers'), 'a zero-evidence crate directory must not mint an application');
+  assert.ok(appNames.has('job-runner'), 'a crate with a real entry point must still be admitted');
+});
