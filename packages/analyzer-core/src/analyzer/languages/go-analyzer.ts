@@ -1593,16 +1593,67 @@ export class GoAnalyzer extends BaseAnalyzer {
    * `router.HandleFunc("/path", h).Methods("GET", ...)`. Both name the verb + path
    * explicitly — the route fact embeddings/structural indexers can't produce.
    */
+  /**
+   * Blank out Go `//` line and `/* *​/` block comments, preserving string/rune
+   * literals (so a route path containing "//" or a `*` stays intact) and
+   * newline positions (so line-based reasoning elsewhere is unaffected).
+   */
+  private stripGoComments(src: string): string {
+    let out = '';
+    let i = 0;
+    const n = src.length;
+    let quote: string | null = null;
+    while (i < n) {
+      const c = src[i];
+      if (quote) {
+        out += c;
+        if (c === '\\' && quote !== '`' && i + 1 < n) {
+          out += src[i + 1];
+          i += 2;
+          continue;
+        }
+        if (c === quote) quote = null;
+        i++;
+        continue;
+      }
+      if (c === '"' || c === '`' || c === "'") {
+        quote = c;
+        out += c;
+        i++;
+        continue;
+      }
+      if (c === '/' && src[i + 1] === '/') {
+        while (i < n && src[i] !== '\n') i++;
+        continue;
+      }
+      if (c === '/' && src[i + 1] === '*') {
+        i += 2;
+        while (i < n && !(src[i] === '*' && src[i + 1] === '/')) {
+          out += src[i] === '\n' ? '\n' : ' ';
+          i++;
+        }
+        i += 2;
+        continue;
+      }
+      out += c;
+      i++;
+    }
+    return out;
+  }
+
   private extractGoHttpRoutes(content: string, fileId: string, relativePath: string, entryPoints: any[]): void {
     // Gate on a web-framework signal so an arbitrary `cfg.GET("key")` call in
     // non-routing code can't masquerade as a route.
     if (!/gin-gonic\/gin|labstack\/echo|gofiber\/fiber|gorilla\/mux|net\/http|chi\b|\bRouter\b/.test(content)) return;
+    // Strip comments before matching so a commented-out route registration
+    // (`// mux.HandleFunc("GET /debug", h)`) can't masquerade as a live route.
+    content = this.stripGoComments(content);
     const seen = new Set<string>();
     const push = (method: string, rawPath: string, authed = false) => {
       const m = method.toUpperCase();
       // Gorilla `{id}` / `{id:[0-9]+}` and Gin `:id` both canonicalize to `:id`.
       const path = rawPath
-        .replace(/\{(\w+)(?::[^}]*)?\}/g, ':$1')
+        .replace(/\{(\w+)(?:\.\.\.|:[^}]*)?\}/g, ':$1')
         .replace(/\/+$/,'') || '/';
       const key = `${m} ${path}`;
       if (seen.has(key)) return;
@@ -1675,12 +1726,54 @@ export class GoAnalyzer extends BaseAnalyzer {
     }
 
     // Gorilla mux: `r.HandleFunc("/users", h).Methods("GET", "POST")`. Capture the
-    // receiver so a subrouter's PathPrefix is prepended.
+    // receiver so a subrouter's PathPrefix is prepended. Verbs may be quoted
+    // string literals or `net/http` constants (`http.MethodGet`) — idiomatic
+    // modern Go favors the constant form, so both must resolve to the same verb.
+    const httpMethodConst: Record<string, string> = {
+      MethodGet: 'GET', MethodPost: 'POST', MethodPut: 'PUT', MethodDelete: 'DELETE',
+      MethodPatch: 'PATCH', MethodHead: 'HEAD', MethodOptions: 'OPTIONS',
+      MethodConnect: 'CONNECT', MethodTrace: 'TRACE',
+    };
     const gorillaRe = /\b(\w+)\.HandleFunc\s*\(\s*"([^"]+)"[^)]*\)\s*\.Methods\s*\(([^)]*)\)/g;
     while ((m = gorillaRe.exec(content)) !== null) {
       const path = resolvePrefix(m[1]) + m[2];
       const authed = inheritsAuth(m[1]);
-      for (const verb of m[3].matchAll(/"([A-Za-z]+)"/g)) push(verb[1], path, authed);
+      for (const verb of m[3].matchAll(/"([A-Za-z]+)"|\bhttp\.(Method\w+)/g)) {
+        const v = verb[1] || httpMethodConst[verb[2]];
+        if (v) push(v, path, authed);
+      }
+    }
+
+    // Whole-handler auth wrap: `return authMw.handle(otherMw.handle(mux))` (or
+    // `return middleware.validateAPIKeyAuth(mux)`) protects every route
+    // registered on that mux var — the net/http-stdlib equivalent of a Gin/Echo
+    // group's `.Use()`. Match the `return`-statement's innermost bare
+    // identifier as the wrapped var, and check the wrapper call names (which
+    // may be dotted, e.g. `middleware.validateAPIKeyAuth`) for an auth verb.
+    const wholeHandlerAuthed = new Set<string>();
+    for (const ret of content.matchAll(/\breturn\s+([^\n;]+?);?\s*(?:\n|$)/g)) {
+      const expr = ret[1];
+      const innermost = expr.match(/\(\s*(\w+)\s*\)\)*\s*$/);
+      if (!innermost) continue;
+      const wrapperCalls = [...expr.matchAll(/([A-Za-z_][\w.]*)\s*\(/g)].map(w => w[1]);
+      if (wrapperCalls.some(name => isAuthenticationGuardName(name))) {
+        wholeHandlerAuthed.add(innermost[1]);
+      }
+    }
+
+    // Go 1.22+ stdlib `http.ServeMux` enhanced routing patterns:
+    // `mux.HandleFunc("GET /v1/entries/{entryID}", handler.getEntriesHandler)`.
+    // The verb lives inside the pattern string itself — neither the Gin/Echo
+    // builder shape (verb as a separate method call) nor the Gorilla
+    // `.Methods()` chain above can see this. Handler can be a struct-method
+    // value (`handler.getX`) or an inline func literal; neither affects the
+    // match since only the pattern string is captured.
+    const stdlibPatternRe = /\b(\w+)\.HandleFunc\s*\(\s*"(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\s+([^"\s]+)"/g;
+    while ((m = stdlibPatternRe.exec(content)) !== null) {
+      const recv = m[1];
+      const path = resolvePrefix(recv) + m[3];
+      const authed = inheritsAuth(recv) || wholeHandlerAuthed.has(recv);
+      push(m[2], path, authed);
     }
   }
 
