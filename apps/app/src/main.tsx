@@ -98,6 +98,25 @@ function App() {
   const selectedWorkspace = route.type !== 'home' ? data?.workspaces.find(workspace => workspace.id === route.workspaceId) : undefined;
   const selectedProject = route.type === 'project' ? projects.find(project => project.id === route.projectId) : undefined;
 
+  // Real auth gate: an unauthenticated visitor must NEVER see the dashboard
+  // shell (sidebar, workspace list, "Add Workspace", sign-out) behind the
+  // sign-in overlay — that renders a signed-in-looking product to someone who
+  // isn't signed in. Without a token the ENTIRE tree below (shell + all
+  // modals except auth) is unreachable; only the auth view mounts.
+  if (!token) {
+    return (
+      <>
+        <AuthModal
+          error={error}
+          onError={setError}
+          onLogin={async input => saveSession((await signIn(input.email, input.password)).token)}
+          onRegister={async input => saveSession((await registerAccount(input)).token)}
+        />
+        <div className="api-chip">API {apiBaseUrl}</div>
+      </>
+    );
+  }
+
   return (
     <>
       <div className="shell">
@@ -153,14 +172,9 @@ function App() {
         </main>
       </div>
 
-      {modal === 'auth' && (
-        <AuthModal
-          error={error}
-          onError={setError}
-          onLogin={async input => saveSession((await signIn(input.email, input.password)).token)}
-          onRegister={async input => saveSession((await registerAccount(input)).token)}
-        />
-      )}
+      {/* modal 'auth' is unreachable here: the !token early-return above owns
+          that view exclusively so an authenticated session can never render
+          a second, redundant sign-in form under the dashboard shell. */}
       {modal === 'workspace' && (
         <WorkspaceModal
           onClose={() => setModal(null)}
