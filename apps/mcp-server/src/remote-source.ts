@@ -178,6 +178,49 @@ export const EXCLUDED_DIRECTORIES = new Set([
   'obj',
 ]);
 
+// Doctrine: EXCLUDED_DIRECTORIES above matches exact segment names only, so a
+// vendored build-output dir whose name embeds a project/service name (e.g.
+// `build-out-drop-server/`) slips through and gets uploaded wholesale — seen for
+// real as a 14,140-file vendored dump on a first-session customer repo. This list
+// adds a small set of PATTERNS for output *shapes*, not name guesses: every entry
+// here is a directory shape that build tooling produces and that nobody hand-names
+// a source directory after. Keep additions conservative and anchored — a miss
+// (some vendored dir slips through) is recoverable via .klauroignore; a false
+// positive (real source silently dropped) is not.
+export const EXCLUDED_DIRECTORY_PATTERNS: RegExp[] = [
+  // Generic "build-out" drop dirs, e.g. `build-out-drop-server/`, `build-out/`.
+  // Anchored at the start so `building-blocks/` and `buildings/` (real source
+  // dir names that merely start with "build") do NOT match.
+  /^build-out(-|$)/,
+  // Vendored-artifact staging dirs distinct from the already-excluded plain
+  // `build`/`dist` (which some ecosystems also use as a *source* dir name).
+  /^\.?build-artifacts?$/,
+  // CMake out-of-source build dirs, e.g. `cmake-build-debug`, `cmake-build-release`.
+  /^cmake-build-[a-z]+$/,
+  // Xcode's derived-data cache (build products, indexes, logs) — never source.
+  /^DerivedData$/,
+];
+
+/**
+ * Single point of truth for "is this directory NAME a default exclusion" —
+ * exact-name set first, then the vendored-output-shape patterns above. Returns
+ * which rule matched so callers can surface a precise manifest/exclusion reason
+ * instead of collapsing both classes into one generic message.
+ */
+function matchExcludedDirectoryName(name: string): { excluded: boolean; matchedPattern?: string } {
+  if (EXCLUDED_DIRECTORIES.has(name)) return { excluded: true };
+  const matched = EXCLUDED_DIRECTORY_PATTERNS.find(pattern => pattern.test(name));
+  return matched ? { excluded: true, matchedPattern: matched.source } : { excluded: false };
+}
+
+/** Collapse a verbose per-file inclusion reason into the coarse category the
+ * upload manifest surfaces to the customer — 'vendored-output-shape' gets its
+ * own label (so it's visibly distinct from an ordinary ignore-pattern miss)
+ * instead of disappearing into the generic 'excluded by source policy' bucket. */
+function manifestExclusionReason(verboseReason: string): string {
+  return verboseReason.startsWith('vendored-output-shape') ? 'vendored-output-shape' : 'excluded by source policy';
+}
+
 const EXCLUDED_FILES = new Set([
   '.env',
   '.env.local',
@@ -536,8 +579,9 @@ export async function buildUploadManifest(projectPath: string, mode: 'full' | 'd
         excluded.push({ path: normalized, reason: 'unsafe path' });
         continue;
       }
-      if (!(await shouldIncludeRelativePath(root, normalized, loaded))) {
-        excluded.push({ path: normalized, reason: 'excluded by source policy' });
+      const verdict = await shouldIncludeRelativePathVerbose(root, normalized, loaded);
+      if (!verdict.included) {
+        excluded.push({ path: normalized, reason: manifestExclusionReason(verdict.reason) });
         continue;
       }
       if (change.status === 'deleted') continue;
@@ -548,12 +592,13 @@ export async function buildUploadManifest(projectPath: string, mode: 'full' | 'd
   } else {
     await walkConfiguredSourceFiles(root, loaded, async absolutePath => {
       const normalized = normalizeRelativePath(path.relative(root, absolutePath));
-      if (await shouldIncludeRelativePath(root, normalized, loaded)) {
+      const verdict = await shouldIncludeRelativePathVerbose(root, normalized, loaded);
+      if (verdict.included) {
         const stat = await fs.stat(absolutePath);
         const content = await fs.readFile(absolutePath, 'utf8');
         included.push({ path: normalized, bytes: stat.size, hash: hashContent(content) });
       } else {
-        excluded.push({ path: normalized, reason: 'excluded by source policy' });
+        excluded.push({ path: normalized, reason: manifestExclusionReason(verdict.reason) });
       }
     }, excluded);
   }
@@ -692,10 +737,19 @@ async function walkSourceFiles(
       recordExclusion(diagnostics, 'symlink excluded');
       continue;
     }
-    if (entry.isDirectory() && EXCLUDED_DIRECTORIES.has(entry.name)) {
-      exclusions.push({ path: `${relativePath}/`, reason: 'default directory exclusion' });
-      recordExclusion(diagnostics, `default directory exclusion: ${entry.name}/`);
-      continue;
+    if (entry.isDirectory()) {
+      const dirMatch = matchExcludedDirectoryName(entry.name);
+      if (dirMatch.excluded) {
+        const reason = dirMatch.matchedPattern ? 'vendored-output-shape' : 'default directory exclusion';
+        exclusions.push({ path: `${relativePath}/`, reason });
+        recordExclusion(
+          diagnostics,
+          dirMatch.matchedPattern
+            ? `vendored-output-shape pattern "${dirMatch.matchedPattern}": ${entry.name}/`
+            : `default directory exclusion: ${entry.name}/`
+        );
+        continue;
+      }
     }
     if (entry.isDirectory()) {
       const matchedDirPattern = findMatchingPattern(relativePath, allExcludePatterns(loaded));
@@ -764,8 +818,14 @@ async function shouldIncludeRelativePathVerbose(
     return { included: false, reason: 'unsafe path (outside project root)' };
   }
   const parts = normalized.split('/');
-  const excludedDirPart = parts.find(part => EXCLUDED_DIRECTORIES.has(part));
-  if (excludedDirPart) return { included: false, reason: `default directory exclusion: ${excludedDirPart}/` };
+  for (const part of parts) {
+    const dirMatch = matchExcludedDirectoryName(part);
+    if (dirMatch.excluded) {
+      return dirMatch.matchedPattern
+        ? { included: false, reason: `vendored-output-shape pattern "${dirMatch.matchedPattern}": ${part}/` }
+        : { included: false, reason: `default directory exclusion: ${part}/` };
+    }
+  }
   const base = parts[parts.length - 1];
   if (EXCLUDED_FILES.has(base)) return { included: false, reason: `default file exclusion: ${base}` };
   if (/^\.env\./.test(base)) return { included: false, reason: 'default file exclusion: .env.*' };
