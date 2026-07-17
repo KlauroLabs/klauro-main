@@ -80,3 +80,62 @@ ssh root@74.208.212.208 'docker restart klauro-caddy-1'
 Confirm first that api is actually healthy internally before restarting
 caddy — restarting caddy while api is genuinely down just changes the error
 mode, it doesn't fix anything.
+
+## Devgate (test-in-prod gates)
+
+`/opt/klauro/devgate` on the VPS is a full repo tree (rsynced, `npm install
+--include=dev` already run) used to run the real test suites against
+production-identical infra — per the run-in-production-only rule, gates run
+on the VPS, never on a contributor's Mac.
+
+Running the bare `klauro/api:alpha` image directly against that tree pollutes
+results with two environment artifacts that have nothing to do with the code
+under test: it has no `git` (anything shelling out to git fails with
+`spawnSync git ENOENT`), and it runs as root (permission-bit assertions, e.g.
+"permission-denied subdirectories", can never trip since root bypasses every
+check). `gate.Dockerfile` builds a small `klauro-gate` image on top of the
+current api image that fixes both — adds `git` + `procps`, and renames the
+base image's existing uid-1000 `node` user to `gate` so tests run as a real
+non-root user with git configured.
+
+**Sync the tree** (from the dev machine — devgate has no self-sync mode,
+deliberately: syncing FROM a live agent's working tree via this repo's own
+tooling risks the exact torn-file problem `deploy.sh` guards against, see
+above):
+```bash
+rsync -az --exclude node_modules --exclude .git ./ root@74.208.212.208:/opt/klauro/devgate/
+ssh root@74.208.212.208 'cd /opt/klauro/devgate && npm install --include=dev'
+```
+
+**Run a gate** via `gate.sh <workspace> <cmd...>` (builds/rebuilds
+`klauro-gate` automatically if missing):
+```bash
+ssh root@74.208.212.208 'cd /opt/klauro/devgate && \
+  infrastructure/vps/gate.sh apps/mcp-server \
+  "../../node_modules/.bin/tsx --test src/some.test.ts"'
+
+ssh root@74.208.212.208 'cd /opt/klauro/devgate && \
+  infrastructure/vps/gate.sh packages/analyzer-core \
+  "node_modules/.bin/jest -t \"some test name\""'
+```
+
+**Rebuild after every deploy.** `klauro-gate` is built FROM whatever
+`klauro/api:alpha` currently is; a deploy recreates that image, so re-run with
+`infrastructure/vps/gate.sh --rebuild <workspace> <cmd...>` (or `docker rmi
+klauro-gate`) afterward — otherwise gates silently run against a stale base.
+
+**Known residual artifact:** `KLAURO_STORAGE_PATH=/data/storage` and
+`KLAURO_REMOTE_ANALYZER_DATA=/data` are baked into the api image for
+production (a real writable bind mount there). The gate container has neither,
+so `gate.sh` overrides both to a writable `/tmp/klauro-gate-*` path per run —
+without that override, any code path that falls back to the baked default
+instead of a test's own override throws `EACCES: permission denied, mkdir
+'/data'`.
+
+**Playground ownership:** the very first `npm install --include=dev` on
+`/opt/klauro/devgate` ran as root, so some `node_modules/` (and their
+`node_modules/.cache`) subtrees are root-owned and not writable by the
+non-root `gate` user — jest in particular needs to create its own
+`node_modules/.cache/jest` dir. `chown 1000:1000` the affected `node_modules/`
+dir once, or re-run the install as a non-root user, rather than repeating this
+per gate invocation.
