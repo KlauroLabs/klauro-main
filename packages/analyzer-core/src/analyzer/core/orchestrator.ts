@@ -1811,7 +1811,11 @@ export class AnalyzerOrchestrator {
       nodes: allNodes,
       entryPoints: allEntryPoints,
       exitPoints: allExitPoints,
-      displayName: options?.displayName,
+      // Resolved system name (resolveSystemDisplayName already ran above),
+      // not the raw options?.displayName — see the DEFECT (system name) note
+      // near resolveSystemDisplayName for why the caller-supplied value must
+      // not win here.
+      displayName: systemName,
     });
     await yieldToEventLoop();
 
@@ -2884,12 +2888,22 @@ export class AnalyzerOrchestrator {
     const repositoryLinks = this.buildRepositoryLinks(projectPath, nodes, entryPoints, exitPoints, externalServices, libraries, databaseSchema, configuration);
     const runtimeStaticLinks = this.buildRuntimeStaticLinks(nodes, entryPoints, exitPoints, callChains, externalServices);
     const distributionUnits = this.buildDistributionUnits(projectPath, nodes);
+    // CONTENT-FIRST name priority — same rule as the full analysis path: the
+    // content-derived name (README/PRD title, root manifest, common package
+    // scope) outranks a caller-supplied displayName (often a checkout-folder
+    // basename), which in turn is the fallback above the bare workspace
+    // basename. Resolved BEFORE deployableEvidence collection (hoisted from
+    // further below) so collectDeployableEvidence receives the resolved system
+    // name rather than the raw bootstrap displayName — see the DEFECT
+    // (system name) note above.
+    const incrProjectTextSignal = this.extractProjectTextSignal(projectPath);
+    systemName = this.resolveSystemDisplayName(projectPath, incrProjectTextSignal.productDocTitle) || systemName;
     const deployableEvidence: DeployableEvidence[] = collectDeployableEvidence({
       projectPath,
       nodes,
       entryPoints,
       exitPoints,
-      displayName: options?.displayName,
+      displayName: systemName,
     });
     const analysisFacts = await this.buildAnalysisFacts(
       nodes,
@@ -2940,13 +2954,9 @@ export class AnalyzerOrchestrator {
     const incrDbEntityNames = databaseSchema.entities.map(e => e.name);
     const incrExternalServiceNames = externalServices.map(svc => svc.name);
     const incrEntryPointSummary = this.summarizeEntryPoints(this.filterPrimaryProductEntryPoints(entryPoints, nodes, projectPath));
-    const incrProjectTextSignal = this.extractProjectTextSignal(projectPath);
-    // CONTENT-FIRST name priority — same rule as the full analysis path: the
-    // content-derived name (README/PRD title, root manifest, common package
-    // scope) outranks a caller-supplied displayName (often a checkout-folder
-    // basename), which in turn is the fallback above the bare workspace
-    // basename.
-    systemName = this.resolveSystemDisplayName(projectPath, incrProjectTextSignal.productDocTitle) || systemName;
+    // incrProjectTextSignal and systemName resolution were hoisted above the
+    // deployableEvidence collection (see the DEFECT note there); kept as a
+    // reference here so `systemName` below reads the already-resolved value.
     // Same comprehension-input gate as the full path: test/fixture journeys and
     // entities stay structural facts but never seed comprehension.
     const incrComprehensionJourneys = this.filterPrimaryProductJourneys(
