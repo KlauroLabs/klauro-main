@@ -9810,11 +9810,25 @@ export class AnalyzerOrchestrator {
     cataloged: SystemCapability[],
     candidates: SystemCapability[],
     dataEntities: CASDataEntity[],
+    entryPoints: CASEntryPoint[] = [],
+    nodes: CASNode[] = [],
   ): SystemCapability[] {
     const entityById = new Map(dataEntities.map(entity => [entity.id, entity]));
     // Defense-in-depth: a behavior-surface item must never enter the ranked
     // catalog through this path, however it got into `cataloged`/`candidates`.
     const result = [...cataloged].filter(capability => capability.evidence_kind !== 'behavior-surface');
+
+    // entry_point_id -> its source node's `type`, used by the infrastructure
+    // purpose gate to see PAST a generic entry_point_type (e.g. 'cli'/'pipeline'
+    // is shared by real product commands and by distribution/CI plumbing alike)
+    // straight to the underlying node evidence (distribution_shell_script,
+    // ci_pipeline, ...).
+    const nodesById = new Map(nodes.map(node => [node.id, node]));
+    const nodeTypeByEntryPointId = new Map<string, string>();
+    for (const ep of entryPoints) {
+      const sourceNode = ep.source_node ? nodesById.get(ep.source_node) : undefined;
+      if (sourceNode?.type) nodeTypeByEntryPointId.set(ep.id, sourceNode.type);
+    }
 
     // (1) PURPOSE GATE. Drop capabilities whose ONLY anchors are runtime/
     // lifecycle-shaped entities with no product (persisted/api-response)
@@ -9822,7 +9836,7 @@ export class AnalyzerOrchestrator {
     // description?"). Evidence-gated on the entity's KIND + shape, never a
     // capability-name keyword blocklist.
     const purposeGated = result.filter(capability => {
-      if (!this.isInfrastructureOnlyCapability(capability, entityById)) return true;
+      if (!this.isInfrastructureOnlyCapability(capability, entityById, nodeTypeByEntryPointId)) return true;
       return false;
     });
     // Never let the gate empty the catalog; if everything read as infra (a pure
@@ -9843,22 +9857,95 @@ export class AnalyzerOrchestrator {
    * capability anchored ONLY on such shapes is infrastructure, not a product
    * capability. Gated on entity KIND + name shape (evidence), not on the
    * capability's own name.
+   *
+   * SECOND ANCHOR PATH — operations/distribution-CI evidence. The entity path
+   * above only sees `related_entities`; a capability the AI catalog anchored
+   * purely on OPERATIONS (e.g. "Manage shell scripts", "Deploy and manage
+   * binaries") carries no entity anchor at all and used to sail straight
+   * through (`anchors.length === 0 → return false`). Measured live on the
+   * zerac/poc CAS (a Rust ZTNA product, v1.0.104): the repo ships 47
+   * distribution_shell_script + 11 release-script + 10 installer nodes, and
+   * the AI catalog anchored two caps on them — pure build/ship plumbing, not a
+   * product purpose. `entry_point_type` alone can't distinguish this (a
+   * distribution release script and a real product CLI command both surface
+   * as `type: 'cli'`), so this resolves each operation's `entry_point_id` back
+   * to its SOURCE NODE type via `nodeTypeByEntryPointId` (built in
+   * `reconcileCatalogedCapabilities` from the entry-point/node graph) and
+   * checks that node-type evidence instead: `distribution_*`/`ci_*` node types
+   * (distribution-artifact-analyzer.ts / ci-pipeline-analyzer.ts output —
+   * shell/installer/release scripts, CI pipelines/stages/jobs) are build/ship
+   * machinery, never a product interaction surface.
+   *
+   * A capability is demoted on this path only when EVERY resolvable operation
+   * anchor is distribution/CI-shaped — the same "ALL anchors infra" rule as
+   * the entity path. The moment even one operation resolves to a real product
+   * entry point (an http route, or a cli/command backed by ordinary code —
+   * anything NOT `distribution_*`/`ci_*`-shaped), the capability is kept outright: a
+   * deployment-tooling product (e.g. an installer builder) legitimately has
+   * deploy/release capabilities anchored on real entry points, and that
+   * evidence must never be overridden by a coincidental name match.
+   *
+   * NAME FALLBACK — used ONLY when there is no entity anchor AND no resolvable
+   * operation anchor at all (nothing to check evidence against). In that
+   * narrow case a name that reads as build/distribution machinery as its
+   * SUBJECT ("Manage shell scripts", "Run CI pipeline") is a corroborating
+   * signal, never the primary test.
    */
   private isInfrastructureOnlyCapability(
     capability: SystemCapability,
     entityById: Map<string, CASDataEntity>,
+    nodeTypeByEntryPointId?: Map<string, string>,
   ): boolean {
     const anchors = (capability.related_entities || [])
       .map(id => entityById.get(id))
       .filter((entity): entity is CASDataEntity => Boolean(entity));
-    // No resolvable entity anchor → this gate does not apply (a behavior-surface
-    // or operation-only capability is judged elsewhere).
-    if (anchors.length === 0) return false;
-    return anchors.every(entity => {
+
+    const operationNodeTypes = nodeTypeByEntryPointId
+      ? (capability.operations || [])
+          .map(op => nodeTypeByEntryPointId.get(op.entry_point_id))
+          .filter((type): type is string => Boolean(type))
+      : [];
+    const isDistributionOrCiNodeType = (type: string) => /^(distribution_|ci_)/.test(type);
+    const hasRealOperationAnchor = operationNodeTypes.some(type => !isDistributionOrCiNodeType(type));
+    // Any real product entry point anchor (http route, ordinary-code-backed
+    // cli/command, ...) present among the operations → never demote, no matter
+    // what the entity anchors or the name look like.
+    if (hasRealOperationAnchor) return false;
+    const operationsAllDistributionOrCi = operationNodeTypes.length > 0
+      && operationNodeTypes.every(isDistributionOrCiNodeType);
+
+    // No resolvable entity anchor AND no resolvable operation anchor → nothing
+    // to check evidence against; fall back to the name as a corroborating
+    // signal only.
+    if (anchors.length === 0 && operationNodeTypes.length === 0) {
+      return this.isInfrastructureMachineryName(capability.name);
+    }
+
+    const entityAnchorsAllInfra = anchors.length > 0 && anchors.every(entity => {
       // Real product record / produced response → product evidence, keep.
       if (entity.kind === 'persisted-entity' || entity.kind === 'api-response') return false;
       return this.isInfrastructureShapedEntityName(entity.name);
     });
+
+    return entityAnchorsAllInfra || operationsAllDistributionOrCi;
+  }
+
+  /**
+   * True when `name` reads as build/distribution machinery AS ITS SUBJECT —
+   * "Manage shell scripts", "Deploy and manage binaries", "Run CI pipeline" —
+   * rather than merely containing an infra-adjacent word in passing. Used only
+   * as the last-resort signal in `isInfrastructureOnlyCapability` when no
+   * entity or operation anchor evidence is available at all; never a
+   * standalone keyword blocklist elsewhere.
+   */
+  private isInfrastructureMachineryName(name: string): boolean {
+    const trimmed = String(name || '').trim();
+    if (!trimmed) return false;
+    const verb = '(?:manage|deploy|run|build|release|install|execute|configure|orchestrate|maintain|publish|package)';
+    const subject = '(?:shell\\s+scripts?|batch\\s+scripts?|powershell\\s+scripts?|binari(?:es|y)|installers?|' +
+      'release\\s+scripts?|deploy(?:ment)?\\s+scripts?|build\\s+scripts?|docker\\s+images?|container\\s+images?|' +
+      'ci(?:\\/cd)?\\s+pipelines?|continuous\\s+integration\\s+pipelines?|build\\s+pipelines?)';
+    return new RegExp(`^${verb}\\b(?:\\s+and\\s+${verb}\\b)?.{0,20}\\b${subject}\\b`, 'i').test(trimmed);
   }
 
   private isInfrastructureShapedEntityName(name: string): boolean {
@@ -10054,7 +10141,7 @@ export class AnalyzerOrchestrator {
         budgetMs,
       });
       if (extracted.length > 0) {
-        const reconciled = this.reconcileCatalogedCapabilities(extracted, candidateSnapshot, dataEntities);
+        const reconciled = this.reconcileCatalogedCapabilities(extracted, candidateSnapshot, dataEntities, entryPoints, nodes);
         systemCapabilities.splice(0, systemCapabilities.length, ...reconciled);
       } else {
         // The AI catalog returned nothing usable (empty response / all items
@@ -18565,11 +18652,26 @@ export class AnalyzerOrchestrator {
     // Node types that are plain code structure: they carry no registration
     // evidence. Any OTHER node type on an entry's source node (e.g. 'mcp_tool')
     // is analyzer-stamped evidence of a named registration surface.
+    //
+    // 'enum_variant' belongs here, not as a registration kind. Measured live on
+    // the zerac/poc CAS (Rust ZTNA product, v1.0.104): the Rust analyzer emits
+    // each clap `#[derive(Subcommand)]` enum variant as its own 'enum_variant'
+    // node PLUS a real 'cli' entry point rooted on that node
+    // (rust-analyzer.ts's subcommand-variant extraction). Before this fix, the
+    // family key below (`registrationKind || type`) picked the NODE type
+    // ('enum_variant') over the entry TYPE ('cli') whenever the node type
+    // wasn't in this set — so 12 genuine CLI subcommands formed a bogus "Enum
+    // Variant Surface" instead of joining "Cli Command Surface". An enum
+    // variant is a TYPE-SYSTEM fact (which case of the enum this is), never
+    // itself an interaction/registration surface — the surface is whatever the
+    // entry TYPE says it is (cli, event, ...). Including it here makes the kind
+    // fall back to the entry type for every enum_variant-sourced entry.
     const genericNodeTypes = new Set([
       'function', 'method', 'class', 'module', 'file', 'component',
       'functional_component', 'variable', 'interface', 'constant',
       'constant_util', 'type', 'service', 'controller', 'handler', 'hook_usage',
       'import', 'property', 'test', 'dto', 'entity', 'page', 'route', 'hook',
+      'enum_variant',
     ]);
     // Entry types that describe BEHAVIOR being invoked (commands, events,
     // messages, jobs) rather than resource-shaped HTTP/page surfaces the

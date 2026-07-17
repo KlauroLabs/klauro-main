@@ -4675,6 +4675,87 @@ describe('capability hygiene: post-AI-catalog reconciliation (real hosted-CAS de
     expect(out.filter((c: any) => /telemetry/i.test(c.name))).toHaveLength(1);
     expect(out.filter((c: any) => /connections/i.test(c.name))).toHaveLength(1);
   });
+
+  // R8-B: distribution/CI infra-echo capabilities (zerac/poc, a Rust ZTNA
+  // product, v1.0.104 — 47 distribution_shell_script + 11 release-script + 10
+  // installer nodes anchored two AI-catalog capabilities: "Manage shell
+  // scripts" and "Deploy and manage binaries"). These have NO entity anchors
+  // at all (the purpose gate's original entity-only path never applies to
+  // them), so the gate must also see the OPERATION anchors' underlying node
+  // evidence (distribution_*/ci_* node types), not just entry_point_type
+  // (which a real product 'cli'/'pipeline' entry point shares).
+  const distNode = (id: string, type: string): CASNode =>
+    ({ id, name: id, type, source: { file: `scripts/${id}` } } as unknown as CASNode);
+  const realNode = (id: string): CASNode =>
+    ({ id, name: id, type: 'function', source: { file: `src/${id}.rs` } } as unknown as CASNode);
+  const entryPoint = (id: string, sourceNode: string, type: string): CASEntryPoint =>
+    ({ id, source_node: sourceNode, type, name: id } as unknown as CASEntryPoint);
+
+  it('PURPOSE GATE (R8-B): a capability anchored ONLY on distribution/CI operations is demoted, even with no entity anchor', async () => {
+    const nodes = [
+      distNode('dist_release_sh', 'distribution_shell_script'),
+      distNode('ci_deploy_job', 'ci_job'),
+    ];
+    const entryPoints = [
+      entryPoint('entry_dist_release', 'dist_release_sh', 'cli'),
+      entryPoint('entry_ci_deploy', 'ci_deploy_job', 'pipeline'),
+    ];
+    const cataloged = [
+      cap({
+        name: 'Manage shell scripts', category: 'core',
+        operations: [
+          { entry_point_id: 'entry_dist_release', entry_point_type: 'cli', action: 'runs' },
+          { entry_point_id: 'entry_ci_deploy', entry_point_type: 'pipeline', action: 'runs' },
+        ],
+      }),
+      // A real product capability alongside it, so the "never let the gate
+      // empty the catalog" safeguard doesn't restore the demoted one.
+      cap({ name: 'Manages Voice interactions', category: 'core', related_entities: ['ChannelSetup'] }),
+    ];
+    const out = orch.reconcileCatalogedCapabilities(cataloged, [], [], entryPoints, nodes);
+    expect(out.map((c: any) => c.name)).not.toContain('Manage shell scripts');
+    expect(out.map((c: any) => c.name)).toContain('Manages Voice interactions');
+  });
+
+  it('PURPOSE GATE (R8-B): a deployment-tool product capability with a REAL cli/http anchor is kept, despite an infra-sounding name', async () => {
+    const nodes = [
+      distNode('dist_release_sh', 'distribution_shell_script'),
+      realNode('deploy_cmd'),
+    ];
+    const entryPoints = [
+      entryPoint('entry_dist_release', 'dist_release_sh', 'cli'),
+      // The product's OWN "deploy" command — ordinary code, not a
+      // distribution/CI artifact — is a real product entry point.
+      entryPoint('entry_deploy_cmd', 'deploy_cmd', 'cli'),
+    ];
+    const cataloged = [
+      cap({
+        name: 'Deploy and manage binaries', category: 'core',
+        operations: [
+          { entry_point_id: 'entry_dist_release', entry_point_type: 'cli', action: 'runs' },
+          { entry_point_id: 'entry_deploy_cmd', entry_point_type: 'cli', action: 'runs' },
+        ],
+      }),
+    ];
+    const out = orch.reconcileCatalogedCapabilities(cataloged, [], [], entryPoints, nodes);
+    expect(out.map((c: any) => c.name)).toContain('Deploy and manage binaries');
+  });
+
+  it('PURPOSE GATE (R8-B): name fallback only applies when there is no resolvable entity OR operation anchor at all', async () => {
+    // No entities, no entry-point/node maps supplied at all (operations
+    // reference an entry_point_id but there's nothing to resolve it against)
+    // -> falls back to the name-as-machinery-subject signal.
+    const cataloged = [
+      cap({ name: 'Manage shell scripts', category: 'core', operations: [] }),
+      cap({ name: 'Run CI pipeline', category: 'core', operations: [] }),
+      cap({ name: 'Manages Voice interactions', category: 'core', operations: [] }),
+    ];
+    const out = orch.reconcileCatalogedCapabilities(cataloged, [], []);
+    const names = out.map((c: any) => c.name);
+    expect(names).not.toContain('Manage shell scripts');
+    expect(names).not.toContain('Run CI pipeline');
+    expect(names).toContain('Manages Voice interactions');
+  });
 });
 
 describe('comprehension-input gates: test/fixture sources never seed meaning (live Klauro-self leak)', () => {
@@ -5093,6 +5174,60 @@ describe('behavior-anchored capability derivation (buildBehaviorCapabilities)', 
 
     const capabilities = await localOrch.buildBehaviorCapabilities(cliEntries, cliNodes, [], []);
     expect(capabilities).toHaveLength(0);
+  });
+
+  it('R8-C: enum_variant-backed cli entries (Rust clap #[derive(Subcommand)] variants) never form their own "Enum Variant Surface" — they fall in with the real cli family', async () => {
+    // Reproduces the zerac/poc CAS (Rust ZTNA product, v1.0.104): rust-analyzer.ts
+    // emits each clap Subcommand enum variant as its own 'enum_variant' node
+    // PLUS a real 'cli' entry point rooted on it. Before the fix, 'enum_variant'
+    // wasn't in genericNodeTypes, so the family key picked the NODE type over
+    // the entry TYPE and these 12 diverse subcommands formed a bogus "Enum
+    // Variant Surface" standing next to the real "...Cli...Surface" family
+    // built from ordinary-function-backed cli commands sharing the 'policy'
+    // prefix.
+    const enumVariantNames = [
+      'connect', 'disconnect', 'login', 'logout', 'enroll', 'revoke',
+      'diagnose', 'upgrade', 'version', 'reload', 'inspect', 'quarantine',
+    ];
+    const enumVariantEntries: CASEntryPoint[] = enumVariantNames.map((name, index) => ({
+      id: `entry_variant_${index}`,
+      source_node: `variant_${index}`,
+      type: 'cli',
+      name,
+    } as CASEntryPoint));
+    const enumVariantNodes = enumVariantNames.map((name, index) =>
+      bNode({ id: `variant_${index}`, name, type: 'enum_variant' as any }));
+
+    const policyEntries: CASEntryPoint[] = ['policy_get', 'policy_set', 'policy_list', 'policy_delete']
+      .map((name, index) => ({
+        id: `entry_policy_${index}`,
+        source_node: `policy_fn_${index}`,
+        type: 'cli',
+        name,
+      } as CASEntryPoint));
+    const policyNodes = policyEntries.map((entry, index) =>
+      bNode({ id: `policy_fn_${index}`, name: entry.name, type: 'function' }));
+
+    const capabilities = await localOrch.buildBehaviorCapabilities(
+      [...enumVariantEntries, ...policyEntries],
+      [...enumVariantNodes, ...policyNodes],
+      [],
+      []
+    );
+
+    const labels = capabilities.map((capability: any) => capability.structural_label);
+    // No enum_variant-keyed family/surface ever forms.
+    expect(labels.join(' ')).not.toMatch(/enum.?variant/i);
+    // The real cli family (shared 'policy' prefix, ordinary function nodes)
+    // still forms its cli-kind surface.
+    expect(labels.some((label: string) => /cli/i.test(label) && /policy/i.test(label))).toBe(true);
+    // Every operation on every surviving capability is a genuine cli entry —
+    // none is anchored on the enum_variant node family.
+    for (const capability of capabilities) {
+      for (const operation of capability.operations) {
+        expect(operation.entry_point_type).toBe('cli');
+      }
+    }
   });
 
   it('surfaces behavior capabilities into behavior_surfaces (not system_capabilities) through buildSystemCapabilities end-to-end', async () => {
