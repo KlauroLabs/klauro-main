@@ -24,7 +24,7 @@ import { buildNodeRuntimeMetrics } from './product';
 import { getAnalysis } from './analyzer';
 import { buildSummary, getProductMap, getFlowConcepts, getArchitecturalConflicts, getParadigmConformance, getPerspectives, getCicdPipelines, getCommunicationSeams, buildOrientCapsule, getSemanticCoverage, getDataEntities } from './query';
 import type { SemanticRole } from './semantic-roles';
-import { getAnalysisFileFingerprint, loadAnalysis, saveAnalysis } from './storage';
+import { getAnalysisFileFingerprint, loadAnalysis, saveAnalysis, writeJsonAtomic } from './storage';
 import { clearFreshnessSummaryCache } from './freshness';
 import { descriptionStorePath } from './description-enrichment';
 import { ResponseCache, responseCacheKey } from './response-cache';
@@ -1699,10 +1699,20 @@ async function handleAccountApi(
     }
     const record = await workspaceAnalyses.load(workspaceId);
     const pending = workspaceAnalyses.isPending(workspaceId);
+    // Additive last-attempt visibility (defect #41): a background reanalyze
+    // that throws leaves `record` untouched (still the OLD graph, or absent),
+    // so surface the last reanalyze attempt's lifecycle alongside it.
+    const workspaceLastAttempt = dataDir
+      ? await readAttemptRecord(workspaceAttemptRecordPath(dataDir, workspaceId))
+      : null;
     if (!record) {
       return {
         statusCode: 200,
-        body: { status: pending ? 'pending' : 'none', workspace_id: workspaceId },
+        body: {
+          status: pending ? 'pending' : 'none',
+          workspace_id: workspaceId,
+          ...(workspaceLastAttempt ? { last_attempt: workspaceLastAttempt } : {}),
+        },
       };
     }
     return {
@@ -1719,6 +1729,7 @@ async function handleAccountApi(
         // was attached to server-side WAS rebuilds.
         enrichment: record.enrichment,
         analysis: record.graph,
+        ...(workspaceLastAttempt ? { last_attempt: workspaceLastAttempt } : {}),
       },
     };
   }
@@ -1739,19 +1750,44 @@ async function handleAccountApi(
     // work is scheduled, so a user can only reanalyze their own workspace.
     await accounts.listProjects(userId, workspaceId);
     if (!workspaceAnalyses) throw new AccountHttpError(500, 'Workspace analysis storage unavailable');
+    if (!dataDir) throw new AccountHttpError(500, 'Analysis storage unavailable');
     const dataDirForBackground = dataDir;
-    setImmediate(() => {
-      workspaceAnalyses.rebuild(workspaceId).catch(async error => {
-        const detail = error instanceof Error ? error.message : String(error);
-        console.error(`[Klauro] async workspace reanalyze failed for ${workspaceId}: ${detail}`);
-        if (dataDirForBackground) {
-          await appendAuditLog(dataDirForBackground, {
-            event: 'workspace_reanalyze_async_failed',
-            workspace_id: workspaceId,
-            error: detail.slice(0, 500),
-          }).catch(() => {});
-        }
+    const workspaceAttemptPath = workspaceAttemptRecordPath(dataDirForBackground, workspaceId);
+    const workspaceAttemptStartedAt = new Date().toISOString();
+    setImmediate(async () => {
+      await writeAttemptRecord(workspaceAttemptPath, {
+        state: 'in-progress',
+        trigger: 'reanalyze',
+        started_at: workspaceAttemptStartedAt,
       });
+      await workspaceAnalyses.rebuild(workspaceId).then(
+        async () => {
+          await writeAttemptRecord(workspaceAttemptPath, {
+            state: 'succeeded',
+            trigger: 'reanalyze',
+            started_at: workspaceAttemptStartedAt,
+            finished_at: new Date().toISOString(),
+          });
+        },
+        async error => {
+          const detail = error instanceof Error ? error.message : String(error);
+          console.error(`[Klauro] async workspace reanalyze failed for ${workspaceId}: ${detail}`);
+          await writeAttemptRecord(workspaceAttemptPath, {
+            state: 'failed',
+            trigger: 'reanalyze',
+            started_at: workspaceAttemptStartedAt,
+            finished_at: new Date().toISOString(),
+            reason: detail.slice(0, 300),
+          });
+          if (dataDirForBackground) {
+            await appendAuditLog(dataDirForBackground, {
+              event: 'workspace_reanalyze_async_failed',
+              workspace_id: workspaceId,
+              error: detail.slice(0, 500),
+            }).catch(() => {});
+          }
+        },
+      );
     });
     return {
       statusCode: 202,
@@ -1796,8 +1832,9 @@ async function handleAccountApi(
     if (!project.analysis_id) {
       return { statusCode: 200, body: { status: 'no_analysis', project_id: project.id } };
     }
+    const analysisWorkspace = workspacePath(dataDir, project.analysis_id);
     try {
-      const cas = await getAnalysis(workspacePath(dataDir, project.analysis_id));
+      const cas = await getAnalysis(analysisWorkspace);
       const summary = buildSummary(cas, { detail: 'compact' });
       const productMap = getProductMap(cas);
       // Progressive availability (task #112): a project attached during its
@@ -1833,10 +1870,20 @@ async function handleAccountApi(
           : 'ready';
       const aiDegraded = cas.ai_enrichment === 'error'
         || (erroredLayers.some(layer => layer.layer === 'L5') && !hasPendingLayer);
+      // Additive last-attempt visibility (defect #41): a reanalyze of an
+      // already-'ready' analysis that throws leaves the CAS above completely
+      // untouched (no pending layer for markBackgroundAnalysisFailed to flip),
+      // so `status` alone would still read 'ready' with no signal a fresher
+      // attempt failed. Surface the sidecar attempt record alongside it —
+      // lets a poller see last_attempt.state==='failed' (with reason) or
+      // 'in-progress' (with started_at, resolving the "still running or
+      // dead?" ambiguity) even though `summary` is unchanged from before.
+      const lastAttempt = await readAttemptRecord(projectAttemptRecordPath(analysisWorkspace));
       return {
         statusCode: 200,
         body: {
           status,
+          ...(lastAttempt ? { last_attempt: lastAttempt } : {}),
           ...(structuralErrors.length > 0
             ? {
                 analysis_error:
@@ -1861,6 +1908,7 @@ async function handleAccountApi(
         },
       };
     } catch (error) {
+      const lastAttemptOnError = await readAttemptRecord(projectAttemptRecordPath(analysisWorkspace));
       return {
         statusCode: 200,
         body: {
@@ -1868,6 +1916,7 @@ async function handleAccountApi(
           project_id: project.id,
           analysis_id: project.analysis_id,
           error: error instanceof Error ? error.message : String(error),
+          ...(lastAttemptOnError ? { last_attempt: lastAttemptOnError } : {}),
         },
       };
     }
@@ -2328,7 +2377,14 @@ async function handleAccountApi(
       baseCommitForResponse = snapshot.base_commit;
     }
 
+    const attemptRecordPath = projectAttemptRecordPath(workspace);
     setImmediate(async () => {
+      const attemptStartedAt = new Date().toISOString();
+      await writeAttemptRecord(attemptRecordPath, {
+        state: 'in-progress',
+        trigger: 'reanalyze',
+        started_at: attemptStartedAt,
+      });
       try {
         const layered = await analyzeProjectLayered(workspace, displayName);
         // Wait for the full deterministic pipeline (L1-L4) so the persisted CAS
@@ -2372,12 +2428,30 @@ async function handleAccountApi(
           }, 'local_commit_submission').catch(() => {});
         }
         workspaceAnalyses?.notifyProjectAnalysisLanded(workspaceIdForBackground);
+        await writeAttemptRecord(attemptRecordPath, {
+          state: 'succeeded',
+          trigger: 'reanalyze',
+          started_at: attemptStartedAt,
+          finished_at: new Date().toISOString(),
+        });
       } catch (error) {
         const detail = error instanceof Error ? error.message : String(error);
         console.error(`[Klauro] async reanalyze failed for ${analysisId}: ${detail}`);
         // Make the failure VISIBLE to pollers instead of leaving the ladder
-        // 'pending' forever (see markBackgroundAnalysisFailed).
+        // 'pending' forever (see markBackgroundAnalysisFailed). NOTE:
+        // markBackgroundAnalysisFailed only flips layers still 'pending' — a
+        // reanalyze of an already-'ready' analysis has NO pending layer left
+        // to flip, so it is a no-op there and the CAS keeps reading 'ready'.
+        // The attempt record below is what actually makes THIS failure
+        // visible in that (the common) case.
         await markBackgroundAnalysisFailed(workspace, detail);
+        await writeAttemptRecord(attemptRecordPath, {
+          state: 'failed',
+          trigger: 'reanalyze',
+          started_at: attemptStartedAt,
+          finished_at: new Date().toISOString(),
+          reason: detail.slice(0, 300),
+        });
         if (dataDirForBackground) {
           await appendAuditLog(dataDirForBackground, {
             event: 'reanalyze_async_failed',
@@ -2895,6 +2969,60 @@ function workspacePath(dataDir: string, analysisId: string): string {
 
 function makeAnalysisId(value: string): string {
   return crypto.createHash('sha256').update(value).digest('hex').slice(0, 24);
+}
+
+// --- Reanalyze last-attempt visibility (defect #41) -------------------------
+// A background reanalyze that throws BEFORE writing any CAS (or that reuses an
+// already-'ready' analysis, so markBackgroundAnalysisFailed has no 'pending'
+// layer left to flip to 'error' — see its doc comment) leaves GET
+// /api/projects/:id/analysis serving the OLD analysis at status:'ready',
+// errors:0, with nothing indicating a newer attempt failed. Measured live
+// twice on 2026-07-16 (an AI grounding gate hard-failure, and earlier a torn
+// deploy). Fix: persist a tiny sidecar recording the LAST reanalyze attempt's
+// lifecycle (in-progress / succeeded / failed + reason), independent of
+// whatever the CAS itself says, and surface it additively on the analysis
+// response so a poller can see a failed/in-flight attempt even when the
+// served CAS is untouched. Best-effort: never throws, never blocks the
+// reanalyze it is describing.
+type ReanalyzeAttemptState = 'in-progress' | 'succeeded' | 'failed';
+
+interface ReanalyzeAttemptRecord {
+  state: ReanalyzeAttemptState;
+  trigger: 'reanalyze';
+  started_at: string;
+  finished_at?: string;
+  reason?: string;
+}
+
+async function writeAttemptRecord(filePath: string, record: ReanalyzeAttemptRecord): Promise<void> {
+  try {
+    await writeJsonAtomic(filePath, record);
+  } catch {
+    /* best-effort: last-attempt visibility must never mask or block reanalyze */
+  }
+}
+
+async function readAttemptRecord(filePath: string): Promise<ReanalyzeAttemptRecord | null> {
+  try {
+    if (!(await fs.pathExists(filePath))) return null;
+    return await fs.readJson(filePath);
+  } catch {
+    return null;
+  }
+}
+
+// Project reanalyze: one attempt record per analysis workspace (the same
+// directory the CAS itself lives in), so it travels with the analysis it
+// describes and needs no extra dataDir plumbing.
+function projectAttemptRecordPath(workspace: string): string {
+  return path.join(workspace, '.reanalyze-attempt.json');
+}
+
+// Workspace (multi-repo WAS) reanalyze: no per-workspace CAS directory of our
+// own to piggyback on (see account-workspace-analysis.ts, out of scope here),
+// so the sidecar lives under its own directory keyed by workspace id.
+function workspaceAttemptRecordPath(dataDir: string, workspaceId: string): string {
+  return path.join(dataDir, 'workspace-attempts', `${safeName(workspaceId)}.json`);
 }
 
 /**
