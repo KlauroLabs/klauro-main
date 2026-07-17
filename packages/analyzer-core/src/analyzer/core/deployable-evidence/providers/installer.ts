@@ -11,21 +11,29 @@ import { arrayOf, IGNORE_GLOBS, safeGlobSync } from '../util';
  *  one. */
 const SHIP_ARTIFACT_EXTENSION = /\.(exe|msi|dmg|pkg|deb|rpm|appimage)$/i;
 
+/** Normalizes a display NAME for comparison (case/whitespace only). Deliberately
+ *  does NOT strip a ship-artifact extension — the extension is part of what
+ *  distinguishes one platform's artifact from another's (see
+ *  installerArtifactIdentity) and must never be normalized away when used in
+ *  an identity key. */
 function normalizeIdentityToken(value: string): string {
-  return value.replace(SHIP_ARTIFACT_EXTENSION, '').trim().toLowerCase().replace(/[\s_-]+/g, ' ');
+  return value.trim().toLowerCase().replace(/[\s_-]+/g, ' ');
 }
 
 /** Resolve the artifact identity a distribution-artifact node's metadata
  *  actually names, so multiple nodes that reference the SAME shipped
  *  artifact (e.g. a build script and a release script that both prepare the
  *  same "MyApp.exe") merge into one unit, while nodes naming no artifact at
- *  all resolve to `undefined` and create nothing. Keyed primarily on a
- *  resolved ship-artifact filename (.exe/.msi/.dmg/.pkg/.deb/.rpm/
- *  .AppImage) when one is present — that is unambiguous positive evidence of
- *  a specific built artifact. Falls back to the declared product name
- *  qualified by platform, so per-platform installers for the same product
- *  (a Windows .exe vs a macOS .dmg vs a Linux .deb) still resolve to
- *  DIFFERENT identities and are never silently collapsed into one. */
+ *  all resolve to `undefined` and create nothing. Keyed primarily on the
+ *  resolved ship-artifact filename INCLUDING its extension (.exe/.msi/.dmg/
+ *  .pkg/.deb/.rpm/.AppImage) when one is present — that is unambiguous
+ *  positive evidence of a specific built artifact, and the extension must be
+ *  kept in the key (not stripped) so per-platform installers for the same
+ *  product (a Windows "MyApp.exe" vs a macOS "MyApp.dmg" vs a Linux
+ *  "MyApp.deb") resolve to DIFFERENT identities and are never silently
+ *  collapsed into one just because they share a product name. Falls back to
+ *  the declared product name qualified by platform when no ship-artifact
+ *  filename is resolvable. */
 function installerArtifactIdentity(metadata: Record<string, any>): { key: string; name: string } | undefined {
   const binaryNames: string[] = arrayOf(metadata.binary_names);
   const shipArtifact = binaryNames.find(name => SHIP_ARTIFACT_EXTENSION.test(name));
