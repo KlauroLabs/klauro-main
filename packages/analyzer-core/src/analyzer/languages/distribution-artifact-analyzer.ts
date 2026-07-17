@@ -406,6 +406,12 @@ function productNameFromFile(file: string): string | undefined {
   return clean || undefined;
 }
 
+/** A real product-name capture is never this long; a value past this length
+ *  is an extraction artifact (e.g. an unquoted/unterminated line swallowed to
+ *  EOF, see MAX_TEMPLATE_VALUE_LENGTH's call site) and is rejected outright
+ *  rather than fed through the per-$VAR resolution below. */
+const MAX_TEMPLATE_VALUE_LENGTH = 500;
+
 /** Resolve `${VAR}` and bare `$VAR` NSIS/shell-style template references —
  *  whether the ENTIRE captured value is a template reference (`"${APPNAMEANDVERSION}"`)
  *  or a bare `$VAR` sits INSIDE a larger captured string (`"Acme $BINARY_NAME"`,
@@ -416,13 +422,28 @@ function productNameFromFile(file: string): string | undefined {
  *  `value` must resolve; if even one does not, the whole value is REJECTED
  *  (undefined) rather than partially substituted or leaked verbatim — a
  *  half-resolved "Acme $BINARY_NAME" string is exactly the kind of
- *  template-var-shaped identity this guards against. */
+ *  template-var-shaped identity this guards against.
+ *
+ *  PERFORMANCE (regex-hang-hunt, 2026-07): this used to look up each $VAR
+ *  occurrence via a fresh whole-`content` regex scan (resolveVarDefinition
+ *  building a `new RegExp` per call). That is O(occurrences-in-value x
+ *  content-length) — fine for a short product-name string, but `value` here
+ *  is only as short as the capture regex upstream makes it, and an unquoted/
+ *  unterminated line can swallow the rest of a long file into one `value`
+ *  with thousands of distinct $VAR references. Against a real multi-hundred-
+ *  KB script that is hours of single-threaded, log-silent regex churn on the
+ *  analysis worker. Fixed two ways: (1) reject oversized values outright
+ *  (they were never a real product name anyway), (2) resolve every var
+ *  through ONE linear pass over `content` (buildVarDefinitions) instead of a
+ *  rescan per occurrence, so cost is O(content-length + occurrences). */
 function resolveTemplateVar(value: string, content: string): string | undefined {
   if (!/\$[A-Za-z_{]/.test(value)) return value;
+  if (value.length > MAX_TEMPLATE_VALUE_LENGTH) return undefined;
+  const defs = buildVarDefinitions(content);
   let allResolved = true;
   const substituted = value.replace(/\$\{([A-Za-z0-9_]+)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g, (match, braced, bare) => {
     const varName = braced || bare;
-    const resolved = resolveVarDefinition(varName, content);
+    const resolved = defs.get(varName);
     if (resolved === undefined || isUnresolvedTemplateText(resolved)) {
       allResolved = false;
       return match;
@@ -434,13 +455,22 @@ function resolveTemplateVar(value: string, content: string): string | undefined 
   return trimmed || undefined;
 }
 
-/** Look up a single variable's definition via `!define VAR value` (NSIS) or
- *  `[set] VAR=value` (shell) directives in `content`. Returns undefined when
- *  no resolvable definition exists. */
-function resolveVarDefinition(varName: string, content: string): string | undefined {
-  const defineMatch = content.match(new RegExp(`^\\s*!define\\s+${escapeRegex(varName)}\\s+"?([^"\\n\\r]+?)"?\\s*$`, 'm'))
-    || content.match(new RegExp(`^\\s*(?:set\\s+)?${escapeRegex(varName)}\\s*=\\s*"?([^"\\n\\r]+?)"?\\s*$`, 'mi'));
-  return defineMatch?.[1]?.trim();
+/** Collect every `!define VAR value` (NSIS) and `[set] VAR=value` (shell)
+ *  directive in `content` in one linear pass, keyed by variable name. Replaces
+ *  the old per-$VAR dynamic-regex whole-file rescan (see resolveTemplateVar's
+ *  PERFORMANCE note) — this runs once per productName resolution regardless
+ *  of how many distinct $VAR references it contains. `!define` directives are
+ *  applied AFTER the assignment pass so they win ties, matching the original
+ *  `!define || set/assign` priority when both forms define the same name. */
+function buildVarDefinitions(content: string): Map<string, string> {
+  const defs = new Map<string, string>();
+  for (const m of content.matchAll(/^\s*(?:set\s+)?([A-Za-z0-9_]+)\s*=\s*"?([^"\n\r]+?)"?\s*$/gim)) {
+    defs.set(m[1], m[2].trim());
+  }
+  for (const m of content.matchAll(/^\s*!define\s+([A-Za-z0-9_]+)\s+"?([^"\n\r]+?)"?\s*$/gm)) {
+    defs.set(m[1], m[2].trim());
+  }
+  return defs;
 }
 
 /** True if `value` still contains unresolved `${...}` or bare `$VAR` template
