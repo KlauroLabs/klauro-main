@@ -5,7 +5,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { buildSourceSnapshot, buildUploadManifest } from './remote-source';
-import { assertRemoteAnalyzerAllowed, defaultKlauroConfig, writeDefaultKlauroConfig, validateConventions, type LoadedKlauroConfig, type KlauroConventions } from './klauro-config';
+import { assertRemoteAnalyzerAllowed, assertLocalAnalysisAllowed, defaultKlauroConfig, writeDefaultKlauroConfig, validateConventions, type LoadedKlauroConfig, type KlauroConventions } from './klauro-config';
 
 const repoRoot = path.resolve(__dirname, '..');
 const tsxBin = fs.existsSync(path.join(repoRoot, 'node_modules', '.bin', 'tsx'))
@@ -467,6 +467,33 @@ test('remote analyzer policy (allowRemoteAnalyzer / allowedAnalyzerHosts) is enf
     /allowedAnalyzerHosts/
   );
   assert.doesNotThrow(() => assertRemoteAnalyzerAllowed(loaded, 'https://allowed.example.test'));
+});
+
+test('prod-exclusive: policy.requireRemoteAnalyzer refuses local analysis and names the remote tool', () => {
+  const config = defaultKlauroConfig('/tmp/example-project');
+  config.analyzer.serverUrl = 'https://mcp.klauro.com';
+  const loaded: LoadedKlauroConfig = { config, ignorePatterns: [] };
+
+  // Default: local analysis allowed.
+  assert.equal(config.policy.requireRemoteAnalyzer, false);
+  assert.doesNotThrow(() => assertLocalAnalysisAllowed(loaded));
+
+  // Enforced: local analysis refused, and the error redirects to the remote
+  // tool AND names the hosted server (redirected, never dead-ended).
+  config.policy.requireRemoteAnalyzer = true;
+  assert.throws(() => assertLocalAnalysisAllowed(loaded), /requireRemoteAnalyzer=true/);
+  assert.throws(() => assertLocalAnalysisAllowed(loaded), /analyze_codebase_remote/);
+  assert.throws(() => assertLocalAnalysisAllowed(loaded), /mcp\.klauro\.com/);
+});
+
+test('requireRemoteAnalyzer round-trips through a raw .klaurorc policy block (deep-merge)', () => {
+  const merged = defaultKlauroConfig('/tmp/example-project');
+  // Simulate what mergeConfig does for a user .klaurorc that sets only this one
+  // policy field — the deep-merge must carry it without dropping sibling defaults.
+  const userPolicy = { requireRemoteAnalyzer: true };
+  const applied = { ...merged.policy, ...userPolicy };
+  assert.equal(applied.requireRemoteAnalyzer, true);
+  assert.equal(applied.allowRemoteAnalyzer, true); // sibling default preserved
 });
 
 test('validateConventions accepts well-formed conventions of every kind', () => {

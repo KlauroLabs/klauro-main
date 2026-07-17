@@ -42,7 +42,7 @@ import { runMachineAgentProof } from './machine-gauntlet';
 import { analyzeCodebaseRemotely, syncWorkingTreeRemotely } from './remote-sync-client';
 import { getAgentRevisionTracks } from './agent-revision-tracks';
 import { buildUploadManifest } from './remote-source';
-import { loadKlauroConfig, writeDefaultKlauroConfig, validateConventions, type KlauroConventions } from './klauro-config';
+import { loadKlauroConfig, writeDefaultKlauroConfig, validateConventions, assertLocalAnalysisAllowed, type KlauroConventions } from './klauro-config';
 import { resolveSectionFilterForProject } from './context-filter';
 import * as fs from 'node:fs/promises';
 import { buildGithubImportPlan } from './github-import';
@@ -1237,7 +1237,7 @@ function registerTools(server: McpServer) {
     'analyze_codebase',
     {
       title: 'Analyze Codebase',
-      description: 'Run full CAS analysis on a local directory path. Detects languages, frameworks, and libraries. Stores results for querying. Progressive availability: the deterministic structure (nodes, edges, entry points, routes, call graph) is ready to query the moment this returns; AI-written descriptions enrich in the background. The result carries ai_enrichment (pending|ready|disabled|synchronous) — start working off the structure immediately rather than waiting for prose.',
+      description: 'Run full CAS analysis on a local directory path (analysis runs ON THIS MACHINE). Detects languages, frameworks, and libraries. Stores results for querying. Progressive availability: the deterministic structure (nodes, edges, entry points, routes, call graph) is ready to query the moment this returns; AI-written descriptions enrich in the background. The result carries ai_enrichment (pending|ready|disabled|synchronous) — start working off the structure immediately rather than waiting for prose. NOTE: if .klaurorc sets policy.requireRemoteAnalyzer=true this tool refuses and directs you to analyze_codebase_remote (which analyzes on the hosted analyzer instead) — that is the prod-exclusive setup.',
       inputSchema: {
         path: z.string().describe('Absolute path to the project directory'),
         force_full: z.boolean().optional().describe('Force full rebuild even if incremental is possible'),
@@ -1245,6 +1245,10 @@ function registerTools(server: McpServer) {
       } as any,
     } as any,
     async ({ path, force_full, analysis_focus }: any) => withErrorHandling(async () => {
+      // Prod-exclusive guard: if .klaurorc sets policy.requireRemoteAnalyzer, the
+      // on-machine analyzer must refuse and redirect to analyze_codebase_remote,
+      // so heavy analysis + storage stay on the hosted analyzer (never local).
+      assertLocalAnalysisAllowed(await loadKlauroConfig(path));
       const focus: AnalysisFocus = analysis_focus || 'agent-fast';
       return withAnalysisFocus(focus, async () => {
       const previousEntry = await getAnalysisEntry(path);

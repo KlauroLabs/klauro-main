@@ -58,6 +58,14 @@ export interface KlauroConfig {
     allowRemoteAnalyzer: boolean;
     allowedAnalyzerHosts: string[];
     requireSelfHosted: boolean;
+    /**
+     * When true, LOCAL analysis is refused: the `analyze_codebase` MCP tool
+     * throws and directs the caller to `analyze_codebase_remote` instead, so all
+     * heavy analysis + storage happen on the hosted analyzer (prod) rather than
+     * on-machine. The symmetric counterpart to `requireSelfHosted` (which gates
+     * the REMOTE path): this gates the LOCAL path. Default false (local allowed).
+     */
+    requireRemoteAnalyzer: boolean;
     blockUntrackedFiles: boolean;
   };
   embedding: {
@@ -281,6 +289,7 @@ export function defaultKlauroConfig(projectPath: string): KlauroConfig {
       allowRemoteAnalyzer: true,
       allowedAnalyzerHosts: [],
       requireSelfHosted: false,
+      requireRemoteAnalyzer: false,
       blockUntrackedFiles: false,
     },
     embedding: {
@@ -536,6 +545,24 @@ export function resolveAnalyzerUrl(loaded: LoadedKlauroConfig, explicitUrl?: str
 
 export function resolveAnalysisId(loaded: LoadedKlauroConfig, fallback: string, explicitId?: string): string {
   return explicitId || loaded.config.project.id || fallback;
+}
+
+/**
+ * Gate the LOCAL analysis path. When `policy.requireRemoteAnalyzer=true`, the
+ * on-machine `analyze_codebase` tool must refuse so that all heavy analysis and
+ * storage happen on the hosted analyzer (prod). The thrown message names the
+ * exact tool to call instead, so an agent is redirected, never dead-ended —
+ * "prod exclusively" becomes an enforced guarantee rather than prompt discipline.
+ * Symmetric counterpart to assertRemoteAnalyzerAllowed (which gates the remote path).
+ */
+export function assertLocalAnalysisAllowed(loaded: LoadedKlauroConfig): void {
+  if (loaded.config.policy.requireRemoteAnalyzer) {
+    const url = loaded.config.analyzer.serverUrl || DEFAULT_KLAURO_CLOUD_URL;
+    throw new Error(
+      `Local analysis is blocked by .klaurorc policy.requireRemoteAnalyzer=true. ` +
+      `Use analyze_codebase_remote (analyzes on the hosted analyzer at ${url} and caches the CAS locally) instead of analyze_codebase.`
+    );
+  }
 }
 
 export function assertRemoteAnalyzerAllowed(loaded: LoadedKlauroConfig, serverUrl?: string): void {
