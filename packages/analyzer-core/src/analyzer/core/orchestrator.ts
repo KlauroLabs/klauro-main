@@ -9422,14 +9422,24 @@ export class AnalyzerOrchestrator {
       return Math.min(items.length, sets.size);
     };
     const effectiveCatalogSize = effectiveSize(catalog);
-    if (effectiveCatalogSize >= 1 && effectiveCatalogSize <= 3) {
-      const distinctFamilies = Array.from(new Set(
-        rankedCandidateAreas.map(candidate => String(candidate.name || '').trim()).filter(Boolean)
-      )).slice(0, 10);
+    // Trigger ceiling SCALES with the repo's own family evidence (#33 margin,
+    // measured on the Klauro whale: a 4-cap result on a 45k-node repo with 20+
+    // distinct route-area families sailed past the fixed <=3 cutoff — 4 caps
+    // against 20 families is the same collapse as 3 against 9). Ceiling =
+    // max(3, families/3): small repos keep the original behavior exactly; a
+    // family-rich repo also nudges a 4-6 cap undercount. Family count for the
+    // TRIGGER is uncapped; the slice(0,10) below only bounds what the hint
+    // enumerates. Still ONE bounded extra call, never a loop.
+    const allDistinctFamilies = Array.from(new Set(
+      rankedCandidateAreas.map(candidate => String(candidate.name || '').trim()).filter(Boolean)
+    ));
+    const nudgeCeiling = Math.max(3, Math.floor(allDistinctFamilies.length / 3));
+    if (effectiveCatalogSize >= 1 && effectiveCatalogSize <= nudgeCeiling) {
+      const distinctFamilies = allDistinctFamilies.slice(0, 10);
       const familyThreshold = effectiveCatalogSize === 1 ? 2 : effectiveCatalogSize * 3;
-      if (distinctFamilies.length >= familyThreshold) {
+      if (allDistinctFamilies.length >= familyThreshold) {
         try {
-          const nudgeHint = `Previous answer collapsed this platform into only ${effectiveCatalogSize} distinct capabilit${effectiveCatalogSize === 1 ? 'y' : 'ies'} (several items were per-route CRUD variants of the same ability and merge together). The deterministic evidence names ${distinctFamilies.length} DISTINCT candidate route-area families: ${distinctFamilies.map(family => `"${family}"`).join(', ')}. Return ONE grounded, purpose-phrased capability PER distinct family listed above — a purpose (e.g. "Manage shift scheduling"), never a per-route CRUD verb ("Create X", "Update X") — merge two families only when they are genuinely the same product ability, never collapse all of them into one item.`;
+          const nudgeHint = `Previous answer collapsed this platform into only ${effectiveCatalogSize} distinct capabilit${effectiveCatalogSize === 1 ? 'y' : 'ies'} (several items were per-route CRUD variants of the same ability and merge together). The deterministic evidence names ${allDistinctFamilies.length} DISTINCT candidate route-area families${allDistinctFamilies.length > distinctFamilies.length ? ` (top ${distinctFamilies.length} listed)` : ''}: ${distinctFamilies.map(family => `"${family}"`).join(', ')}. Return ONE grounded, purpose-phrased capability PER distinct family listed above — a purpose (e.g. "Manage shift scheduling"), never a per-route CRUD verb ("Create X", "Update X") — merge two families only when they are genuinely the same product ability, never collapse all of them into one item.`;
           const nudgeRaw = await requestCatalog(3, nudgeHint);
           const nudgeParsed = this.parseCapabilityCatalog(nudgeRaw);
           // Compare EFFECTIVE sizes, not raw lengths: a CRUD-collapsed 9-item

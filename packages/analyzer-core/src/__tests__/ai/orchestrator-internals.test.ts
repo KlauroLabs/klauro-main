@@ -5312,6 +5312,51 @@ describe('thin-catalog nudge (defect #33 — catalog VARIANCE: v1.0.83 returned 
     }
   });
 
+  it('scales the nudge ceiling with family evidence (#33 margin: a 5-cap result on a 16-family repo is the same collapse as 3-on-9)', async () => {
+    const nouns = ['Widget', 'Gadget', 'Gizmo', 'Sprocket', 'Flange', 'Rotor', 'Stator', 'Bearing', 'Camshaft', 'Piston', 'Valve', 'Gasket', 'Pulley', 'Spindle', 'Bracket', 'Housing'];
+    const sixteenFamilies = nouns.map((noun, index) => ({
+      name: `${noun} route area`,
+      related_entities: [`entity_${noun.toLowerCase()}`],
+      operations: [{ entry_point_id: `ep_${index}`, entry_point_type: 'http', action: 'Manage' }],
+    }));
+    const fiveCaps = nouns.slice(0, 5).map(noun => ({
+      name: `Manage ${noun.toLowerCase()}s`,
+      description: `Tracks ${noun} records from creation through retirement for operators.`,
+      category: 'core', entities: [noun], journeys: [],
+    }));
+    const original = (aiService as any).generateComponentDescription;
+    const captured: any[] = [];
+    (aiService as any).generateComponentDescription = async (arg: any) => {
+      captured.push(arg);
+      // Both regular attempts return FIVE caps (five distinct entity sets —
+      // effectively 5, above the old fixed <=3 cutoff). With 16 families the
+      // scaled ceiling is max(3, floor(16/3)=5) = 5, so the nudge fires; the
+      // nudge attempt returns one purpose cap per family.
+      if (captured.length <= 2) return JSON.stringify({ capabilities: fiveCaps });
+      return JSON.stringify({
+        capabilities: nouns.map(noun => ({
+          name: `Manage ${noun.toLowerCase()}s`,
+          description: `Tracks ${noun} records and their operating state for teams.`,
+          category: 'core', entities: [noun], journeys: [],
+        })),
+      });
+    };
+    try {
+      const catalog = await orch.aiExtractCapabilityCatalog({
+        ...baseInput,
+        candidateCapabilities: sixteenFamilies,
+        dataEntities: nouns.map(noun => ({ id: `entity_${noun.toLowerCase()}`, name: noun })),
+      });
+      expect(captured.length).toBe(3); // scaled ceiling admitted the 5-cap undercount
+      const hint = String(captured[2]?.additionalContext?.retry_hint || '');
+      expect(hint).toContain('16 DISTINCT candidate route-area families');
+      expect(hint).toContain('(top 10 listed)');
+      expect(catalog.length).toBe(16);
+    } finally {
+      (aiService as any).generateComponentDescription = original;
+    }
+  });
+
   it('does NOT spend the extra attempt when the catalog is already rich (control: healthy multi-item result is left untouched)', async () => {
     const original = (aiService as any).generateComponentDescription;
     let callCount = 0;
