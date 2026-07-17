@@ -74,11 +74,15 @@ export class KotlinAnalyzer extends BaseAnalyzer {
     super('kotlin', 'Kotlin Language Analyzer', '1.0.0', 'language');
   }
 
+  // Kotlin shares Java's JVM package-to-directory convention, so a package like
+  // org.example.samples.<app> is a real source path, not vendored scaffolding —
+  // route every glob call through BaseAnalyzer.getPackageDirSafeIgnorePatterns()
+  // (see its doc comment for the full rationale) instead of getIgnorePatterns().
   async canAnalyze(projectPath: string): Promise<boolean> {
     try {
       const files = await glob(KOTLIN_GLOBS, {
         cwd: projectPath,
-        ignore: this.getIgnorePatterns({ projectPath }),
+        ignore: this.getPackageDirSafeIgnorePatterns({ projectPath }),
         nodir: true,
       });
       return files.length > 0;
@@ -94,7 +98,7 @@ export class KotlinAnalyzer extends BaseAnalyzer {
   async getRelevantFiles(projectPath: string): Promise<string[]> {
     const files = await glob(KOTLIN_GLOBS, {
       cwd: projectPath,
-      ignore: this.getIgnorePatterns({ projectPath }),
+      ignore: this.getPackageDirSafeIgnorePatterns({ projectPath }),
       nodir: true,
     });
     return files.sort();
@@ -144,7 +148,7 @@ export class KotlinAnalyzer extends BaseAnalyzer {
     try {
       let kotlinFiles = await glob(KOTLIN_GLOBS, {
         cwd: context.projectPath,
-        ignore: this.getIgnorePatterns(context),
+        ignore: this.getPackageDirSafeIgnorePatterns(context),
         nodir: true,
       });
       kotlinFiles.sort();

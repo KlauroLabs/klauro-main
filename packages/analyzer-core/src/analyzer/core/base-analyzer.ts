@@ -384,6 +384,31 @@ export abstract class BaseAnalyzer {
     return defaultIgnore;
   }
 
+  /**
+   * getIgnorePatterns() carries a generic "documentation and example scaffolding"
+   * denylist (directories literally named samples, examples, fixtures, testdata)
+   * tuned for JS/Python-style repos where those words only ever name vendored
+   * sample code. JVM-family languages (Java, Kotlin, Scala, Groovy, ...) use a
+   * package-to-directory convention that turns those same words into common REAL
+   * package segments instead: a package like org.springframework.samples.<app>
+   * physically lives under a directory path containing org, springframework,
+   * samples, <app> in turn, so a blanket "any samples directory" exclusion
+   * silently drops 100 percent of that codebase's real source (every
+   * controller, entity, and service — not a corner case, the entire app).
+   *
+   * Any analyzer whose files can be laid out under a JVM-style reversed-domain
+   * package path should glob against this set instead of getIgnorePatterns()
+   * directly. It strips only the four directory-name patterns that collide with
+   * package segments; the rest of the shared denylist (target, vendor,
+   * node_modules, ...) still applies since those never collide with a package
+   * name. Non-JVM callers must keep using getIgnorePatterns() unfiltered — a
+   * JS repo's samples/ directory should stay excluded.
+   */
+  protected getPackageDirSafeIgnorePatterns(context: AnalysisContext): string[] {
+    const unsafeForPackageDirs = /^(\*\*\/)?(samples|examples|fixtures|testdata)\/\*\*$/;
+    return this.getIgnorePatterns(context).filter(p => !unsafeForPackageDirs.test(p));
+  }
+
   protected createNodeBuilder(id: string, name: string, type: string): CASNodeBuilder {
     return new CASNodeBuilder(id, name, type).withAnalyzers([this.analyzerId]);
   }

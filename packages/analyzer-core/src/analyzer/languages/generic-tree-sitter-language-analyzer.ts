@@ -46,6 +46,20 @@ function extensionToGrammar(): Map<string, string> {
   return map;
 }
 
+// Grammar ids (from LANGUAGE_REGISTRY) that are JVM-family languages not owned by a
+// deep analyzer. JVM languages lay source out by reversed-domain package directory
+// (org/example/samples/Widget.groovy), so a directory literally named
+// samples/examples/fixtures/testdata is commonly a REAL package segment, not vendored
+// scaffolding — same reasoning as JavaAnalyzer/KotlinAnalyzer (see BaseAnalyzer.
+// getPackageDirSafeIgnorePatterns's doc comment). Kotlin never reaches this walker
+// (it has its own deep analyzer); Scala is nominally routed to JavaAnalyzer in
+// LanguageAnalyzers (languages/index.ts) so it never reaches this walker's extension
+// map either — 'scala' is still listed here so the safe routing applies automatically
+// if that ownership ever changes. Only JVM-family grammars' globs get the safe ignore
+// set; every other breadth grammar (zig, haskell, lua, ...) keeps the full denylist
+// unfiltered — a JS repo's samples/ directory must stay excluded.
+const JVM_FAMILY_GRAMMAR_IDS = new Set(['scala', 'groovy']);
+
 interface BreadthFile {
   relativePath: string;
   fullPath: string;
@@ -250,17 +264,32 @@ export class GenericTreeSitterLanguageAnalyzer extends BaseAnalyzer {
   ): Promise<BreadthFile[]> {
     const map = extensionToGrammar();
     if (map.size === 0) return [];
-    const ignore = this.getIgnorePatterns(context);
-    const extGlobs = [...new Set([...map.keys()].map(ext => `**/*${ext}`))];
-    const matched = await glob(extGlobs, { cwd: projectPath, ignore, nodir: true });
-    const out: BreadthFile[] = [];
-    for (const rel of matched) {
-      const ext = path.extname(rel).toLowerCase();
-      const grammar = map.get(ext);
-      if (!grammar) continue;
-      out.push({ relativePath: rel, fullPath: path.join(projectPath, rel), grammar });
-      if (stopEarly) return out;
+
+    const jvmExts: string[] = [];
+    const otherExts: string[] = [];
+    for (const [ext, grammar] of map) {
+      (JVM_FAMILY_GRAMMAR_IDS.has(grammar) ? jvmExts : otherExts).push(ext);
     }
+
+    const out: BreadthFile[] = [];
+    const collect = async (exts: string[], ignore: string[]): Promise<boolean> => {
+      if (exts.length === 0) return false;
+      const extGlobs = [...new Set(exts.map(ext => `**/*${ext}`))];
+      const matched = await glob(extGlobs, { cwd: projectPath, ignore, nodir: true });
+      for (const rel of matched) {
+        const ext = path.extname(rel).toLowerCase();
+        const grammar = map.get(ext);
+        if (!grammar) continue;
+        out.push({ relativePath: rel, fullPath: path.join(projectPath, rel), grammar });
+        if (stopEarly) return true;
+      }
+      return false;
+    };
+
+    // JVM-family extensions (scala, groovy, ...) glob against the package-dir-safe
+    // denylist; everything else keeps the full denylist unfiltered.
+    if (await collect(jvmExts, this.getPackageDirSafeIgnorePatterns(context))) return out;
+    if (await collect(otherExts, this.getIgnorePatterns(context))) return out;
     return out;
   }
 

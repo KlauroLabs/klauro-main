@@ -89,19 +89,20 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
   }
 
   /**
-   * See JavaAnalyzer.getJavaIgnorePatterns (packages/analyzer-core/src/analyzer/
-   * languages/java-analyzer.ts) for the full rationale: the shared base-analyzer
-   * denylist excludes any `samples/**`, `examples/**`, `fixtures/**`, or
-   * `testdata/**` directory to skip vendored example code in JS/Python repos,
-   * but Java's package-to-directory convention turns those into common REAL
-   * package segments (e.g. `org.springframework.samples.<app>`). Left
-   * unfiltered, this analyzer's own java-file glob silently excludes every
-   * controller/entity/service in a codebase using that package name — which is
-   * exactly the shape of a benchmarked Spring Boot reference app this analyzer targets.
+   * See BaseAnalyzer.getPackageDirSafeIgnorePatterns (packages/analyzer-core/src/
+   * analyzer/core/base-analyzer.ts) for the full rationale: the shared denylist
+   * excludes any `samples/**`, `examples/**`, `fixtures/**`, or `testdata/**`
+   * directory to skip vendored example code in JS/Python repos, but Java's
+   * package-to-directory convention turns those into common REAL package
+   * segments (e.g. `org.springframework.samples.<app>`). Left unfiltered, this
+   * analyzer's own java-file glob silently excludes every controller/entity/
+   * service in a codebase using that package name — which is exactly the shape
+   * of a benchmarked Spring Boot reference app this analyzer targets. This thin
+   * wrapper only exists to keep this file's `{ projectPath }`-only call sites
+   * (outside a full AnalysisContext) working.
    */
   private getJavaIgnorePatterns(context: AnalysisContext | { projectPath: string }): string[] {
-    const unsafeForJavaPackages = /^(\*\*\/)?(samples|examples|fixtures|testdata)\/\*\*$/;
-    return this.getIgnorePatterns(context as AnalysisContext).filter(p => !unsafeForJavaPackages.test(p));
+    return this.getPackageDirSafeIgnorePatterns(context as AnalysisContext);
   }
 
   async canAnalyze(projectPath: string): Promise<boolean> {

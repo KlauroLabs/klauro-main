@@ -110,23 +110,15 @@ export class JavaAnalyzer extends BaseAnalyzer {
     return true;
   }
 
-  // getIgnorePatterns() on the shared base analyzer carries a generic
-  // "documentation and example scaffolding" denylist (directories literally
-  // named samples, examples, fixtures, testdata) tuned for JS/Python-style
-  // repos where those words only ever name vendored sample code. Java's
-  // package-to-directory convention turns them into common REAL package
-  // segments instead: a benchmarked Spring Boot demo app's package
-  // (org.springframework.samples.<app>) physically lives under a directory
-  // path containing org, springframework, samples, <app> in turn, so a
-  // blanket "any samples directory" exclusion silently drops 100 percent of
-  // that codebase's real source (every controller, entity, and service -
-  // not a corner case, the entire reference app). Strip just those directory-name patterns for
-  // Java's own glob calls; the rest of the shared denylist (target, vendor,
-  // node_modules, ...) still applies since those never collide with a Java
-  // package name.
+  // Java's package-to-directory convention makes samples/examples/fixtures/testdata
+  // common REAL package segments (org.springframework.samples.<app>), not vendored
+  // scaffolding. Route Java's own glob calls through the shared, generic
+  // getPackageDirSafeIgnorePatterns() on BaseAnalyzer rather than the raw
+  // getIgnorePatterns() denylist. See that method's doc comment for the full
+  // rationale; this thin wrapper only exists to keep Java's `{ projectPath }`-only
+  // call sites (outside a full AnalysisContext) working.
   private getJavaIgnorePatterns(context: AnalysisContext | { projectPath: string }): string[] {
-    const unsafeForJavaPackages = /^(\*\*\/)?(samples|examples|fixtures|testdata)\/\*\*$/;
-    return this.getIgnorePatterns(context as AnalysisContext).filter(p => !unsafeForJavaPackages.test(p));
+    return this.getPackageDirSafeIgnorePatterns(context as AnalysisContext);
   }
 
   async getRelevantFiles(projectPath: string): Promise<string[]> {
