@@ -104,7 +104,7 @@ done
 # (b) shipped product source, excluding test/fixture/bench/corpus paths
 SRC_HITS="$(grep -rniE "$BENCHMARK_CORPUS_NAMES" --include='*.ts' \
   packages/analyzer-core/src apps/mcp-server/src 2>/dev/null \
-  | grep -viE '/(test|tests|fixture|fixtures|__tests__|gauntlet|bench|benchmark|corpus)/|/(nightly-eval|agent-scratch-dogfood-build|agent-adoption-measurement|agent-task-family-coverage)\.ts:' || true)"
+  | grep -viE '/(test|tests|fixture|fixtures|__tests__|gauntlet|bench|benchmark|corpus)/|\.(test|spec)\.ts:|/(nightly-eval|agent-scratch-dogfood-build|agent-adoption-measurement|agent-task-family-coverage)\.ts:' || true)"
 [ -n "$SRC_HITS" ] && SPEC_PURITY_HITS="${SPEC_PURITY_HITS}${SRC_HITS}
 "
 
