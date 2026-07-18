@@ -22,6 +22,17 @@ interface SwiftFunction {
   ownerName?: string;
 }
 
+// A body-level `let`/`var` declaration with an explicit type — i.e. an
+// actual stored property (the type's real data shape), not a computed
+// property (which has a `{ get ... }` body instead of a stored value).
+interface SwiftStoredProperty {
+  name: string;
+  type: string;
+  // Leading property-wrapper attribute names, e.g. `@Published var x` -> ['Published'].
+  annotations: string[];
+  line: number;
+}
+
 interface SwiftType {
   name: string;
   kind: SwiftTypeKind;
@@ -34,6 +45,15 @@ interface SwiftType {
   lineStart: number;
   lineEnd: number;
   functions: SwiftFunction[];
+  // Stored (non-computed) properties declared directly in the type body —
+  // the class/struct's actual data shape, analogous to a Kotlin data class's
+  // primary-constructor fields. Populated for every type (cheap to compute);
+  // only consulted for entity-shape classification below.
+  storedProperties: SwiftStoredProperty[];
+  // True when the body declares a nested `enum CodingKeys` — positive,
+  // structural evidence the type participates in custom Codable
+  // (de)serialization, carried into entity metadata when present.
+  hasCodingKeysEnum: boolean;
 }
 
 interface SwiftImport {
@@ -69,6 +89,14 @@ const SWIFT_KEYWORDS = new Set([
   'where', 'as', 'is', 'async', 'await', 'defer', 'fallthrough', 'some', 'any',
   'print', 'and', 'or', 'not',
 ]);
+// Conformances that mark a `@main` type as a CLI command entry (swift-argument-parser)
+// rather than a generic app-lifecycle entry.
+const CLI_COMMAND_CONFORMANCES = new Set(['ParsableCommand', 'AsyncParsableCommand']);
+// Structurally excluded from data-entity classification even when a struct
+// has >=2 stored properties: a CLI command's own option/argument struct
+// isn't a payload/domain shape, and Error conformers are diagnostic types,
+// not data entities.
+const NON_ENTITY_CONFORMANCES = new Set(['Scene', 'Error', 'ParsableCommand', 'AsyncParsableCommand']);
 
 export class SwiftAnalyzer extends BaseAnalyzer {
   constructor() {
@@ -173,7 +201,10 @@ export class SwiftAnalyzer extends BaseAnalyzer {
       }
 
       const warnings = this.collectAnalysisWarnings();
-      const typeCount = nodes.filter(n => n.type === 'class' || n.type === 'interface').length;
+      // 'dto' covers structs reclassified as data-entity shapes (see
+      // emitFileNodes) — still a Swift TYPE, just carrying a more precise
+      // node.type than plain 'class' for downstream entity derivation.
+      const typeCount = nodes.filter(n => n.type === 'class' || n.type === 'interface' || n.type === 'dto').length;
       const functionCount = nodes.filter(n => n.type === 'function' || n.type === 'method').length;
       const viewCount = nodes.filter(n => n.tags?.includes('swiftui-view')).length;
 
@@ -239,6 +270,8 @@ export class SwiftAnalyzer extends BaseAnalyzer {
         const hasMain = pendingMainAttr || /@main\b/.test(trimmed);
         const functions = this.extractMembersAtBodyLevel(lines, i + 1, lineEnd, typeDecl.name);
         const conformances = typeDecl.conformances;
+        const { properties: storedProperties, hasCodingKeysEnum } =
+          this.extractStoredProperties(lines, i + 1, lineEnd);
         types.push({
           name: typeDecl.name,
           kind: typeDecl.kind,
@@ -250,6 +283,8 @@ export class SwiftAnalyzer extends BaseAnalyzer {
           lineStart: i + 1,
           lineEnd,
           functions,
+          storedProperties,
+          hasCodingKeysEnum,
         });
         pendingMainAttr = false;
         i = lineEnd - 1; // skip the body; functions already captured
@@ -372,6 +407,92 @@ export class SwiftAnalyzer extends BaseAnalyzer {
       }
     }
     return functions;
+  }
+
+  // Collect stored (non-computed) properties directly in the type body (one
+  // brace level deep) plus whether the body declares a nested `CodingKeys`
+  // enum. Best-effort/regex-based like the rest of this file: a declaration
+  // this can't confidently classify as stored (vs. computed) is skipped, not
+  // guessed at — never fabricates a field.
+  private extractStoredProperties(
+    lines: string[],
+    start: number,
+    end: number
+  ): { properties: SwiftStoredProperty[]; hasCodingKeysEnum: boolean } {
+    const properties: SwiftStoredProperty[] = [];
+    let hasCodingKeysEnum = false;
+    let depth = 0;
+    let bodyEntered = false;
+    for (let i = start - 1; i < end && i < lines.length; i++) {
+      const stripped = this.stripStringsAndComments(lines[i]);
+      const trimmed = stripped.trim();
+
+      if (bodyEntered && depth === 1 && trimmed) {
+        if (/^((private|fileprivate|internal|public)\s+)?enum\s+CodingKeys\b/.test(trimmed)) {
+          hasCodingKeysEnum = true;
+        }
+        const prop = this.matchStoredPropertyDeclaration(trimmed);
+        if (prop) properties.push({ ...prop, line: i + 1 });
+      }
+
+      for (const ch of stripped) {
+        if (ch === '{') { depth++; bodyEntered = true; }
+        else if (ch === '}') depth--;
+      }
+    }
+    return { properties, hasCodingKeysEnum };
+  }
+
+  // Matches a body-level `let`/`var name: Type` declaration and returns its
+  // name/type/leading-attribute (property-wrapper) names. Returns undefined
+  // for anything that isn't a plain stored declaration with an explicit
+  // type — in particular a computed property or property-observer block
+  // (`var x: Int { get { ... } }` / `{ didSet { ... } }`), recognized by the
+  // type being immediately followed by `{` rather than `=` or end-of-line.
+  private matchStoredPropertyDeclaration(
+    trimmed: string
+  ): { name: string; type: string; annotations: string[] } | undefined {
+    const annotations: string[] = [];
+    let working = trimmed;
+    const attrRe = /^@([A-Za-z_][A-Za-z0-9_]*)(\([^)]*\))?\s+/;
+    let attrMatch: RegExpMatchArray | null;
+    while ((attrMatch = working.match(attrRe))) {
+      annotations.push(attrMatch[1]);
+      working = working.slice(attrMatch[0].length);
+    }
+    working = working.replace(
+      /^((private|fileprivate|internal|public|open|static|final|lazy|weak|unowned)\s+)+/,
+      ''
+    );
+
+    const declMatch = working.match(/^(?:let|var)\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*([^={]+?)\s*(=|\{|$)/);
+    if (!declMatch) return undefined;
+
+    const terminator = declMatch[3];
+    if (terminator === '{') return undefined; // computed property / observer — not stored data
+
+    const type = declMatch[2].trim();
+    if (!type) return undefined;
+
+    return { name: declMatch[1], type: type.replace(/\s+/g, ' '), annotations };
+  }
+
+  // A struct qualifies as a data-entity shape when it carries at least two
+  // stored properties (excludes single-property wrappers, e.g.
+  // `struct Id { let value: String }`), isn't SwiftUI View/Scene/App UI
+  // surface, isn't an Error/CLI-command struct, and doesn't live under a
+  // ui/theme-ish path (design tokens, not a domain DTO). Evidence-gated on
+  // structure/conformance/path, never name-based.
+  private isEntityShapedType(info: SwiftFileInfo, type: SwiftType): boolean {
+    if (type.kind !== 'struct') return false;
+    if (type.storedProperties.length < 2) return false;
+    if (type.isSwiftUIView || type.isAppConformer) return false;
+    if (type.conformances.some(c => NON_ENTITY_CONFORMANCES.has(c))) return false;
+
+    const fileLower = info.relativePath.toLowerCase().replace(/\\/g, '/');
+    if (/(^|\/)(ui\/)?theme(s)?(\/|$)/.test(fileLower)) return false;
+
+    return true;
   }
 
   private matchFunctionDeclaration(trimmed: string): { name: string; access?: SwiftAccess; isStatic: boolean; isInit: boolean } | undefined {
@@ -573,10 +694,20 @@ export class SwiftAnalyzer extends BaseAnalyzer {
         }
         continue;
       }
-      // protocol -> 'interface' (mirrors java/csharp); everything else -> 'class'.
-      const nodeType = type.kind === 'protocol' ? 'interface' : 'class';
-      const tags = [`analyzer:${this.analyzerId}`, `swift-${type.kind}`];
+      // protocol -> 'interface'; an entity-shaped struct (>=2 stored
+      // properties, non-UI, non-theme — see isEntityShapedType) -> 'dto' so
+      // the orchestrator's generic data-entity derivation
+      // (isDtoLikeDataShapeNode) picks it up unchanged; everything else -> 'class'.
+      const isDataEntity = this.isEntityShapedType(info, type);
+      const nodeType = type.kind === 'protocol' ? 'interface' : (isDataEntity ? 'dto' : 'class');
+      const tags = [`analyzer:${this.analyzerId}`, `swift-${type.kind}`, ...(isDataEntity ? ['swift-data-entity'] : [])];
       if (type.isSwiftUIView) tags.push('swiftui-view');
+
+      const serialization: string[] = [];
+      if (type.hasCodingKeysEnum) serialization.push('CodingKeys');
+      if (type.conformances.some(c => c === 'Codable' || c === 'Encodable' || c === 'Decodable')) {
+        serialization.push('Codable');
+      }
 
       const node = this.createNodeBuilder(typeId, type.name, nodeType)
         .withLevel(2, this.getLevelName(2))
@@ -594,6 +725,8 @@ export class SwiftAnalyzer extends BaseAnalyzer {
             isApp: type.isAppConformer,
             file: info.relativePath,
             methodCount: type.functions.length,
+            ...(isDataEntity ? { propertyCount: type.storedProperties.length } : {}),
+            ...(serialization.length > 0 ? { serialization } : {}),
           }
         })
         .build();
@@ -606,6 +739,45 @@ export class SwiftAnalyzer extends BaseAnalyzer {
         typeId,
         'contains'
       ));
+
+      // Data-entity fields: one 'property' node per stored property, parented
+      // to the type node — the shape buildEntityPropertyIndex/
+      // buildDataEntities (orchestrator) walks (node.parent + node.type ===
+      // 'property') to populate a CASDataEntity's `fields`. Without these, a
+      // 'dto'-typed node with zero matched property nodes contributes no
+      // field evidence and gets filtered out (dataShapeNodeHasFieldEvidence).
+      if (isDataEntity) {
+        for (const field of type.storedProperties) {
+          const propertyId = this.propertyId(info.relativePath, type.name, field.name);
+          const propertyNode = this.createNodeBuilder(propertyId, field.name, 'property')
+            .withLevel(3, this.getLevelName(3))
+            .withCategory('structures', ['swift-fields'])
+            .withSource({ file: info.fullPath, line: field.line, end_line: field.line })
+            .withMetadata({
+              language: 'swift',
+              attributes: {
+                type: field.type,
+                ownerType: type.name,
+                ...(field.annotations.length > 0 ? { annotations: field.annotations } : {}),
+              },
+            })
+            // buildDataEntities (orchestrator) reads a property's type off
+            // signature.return_type first — set it here so the field's type
+            // surfaces on the derived CASDataEntity instead of collapsing to
+            // 'unknown'.
+            .withSignature({ return_type: field.type })
+            .withParent(typeId)
+            .build();
+          nodes.push(propertyNode);
+
+          edges.push(this.createEdge(
+            `${typeId}_contains_${propertyId}`,
+            typeId,
+            propertyId,
+            'contains'
+          ));
+        }
+      }
 
       for (const fn of type.functions) {
         const fnId = this.functionId(info.relativePath, type.name, fn.name, fn.lineStart);
@@ -638,17 +810,32 @@ export class SwiftAnalyzer extends BaseAnalyzer {
         ));
       }
 
-      // Entry points: @main attribute or App conformer.
+      // Entry points: @main attribute or App conformer only. A public type
+      // declaration is API surface (already visible as a 'class'/'interface'/
+      // 'dto' node with access_modifier:'public') — NOT an entry point on its
+      // own; emitting one per public struct/class made every public type in
+      // the repo look like a way in, drowning the real entries. The real
+      // entry shapes here: a SwiftUI App/AppDelegate-adapter (@main or App
+      // conformance) -> 'lifecycle'; a swift-argument-parser command (@main
+      // on a ParsableCommand/AsyncParsableCommand) -> 'cli'.
       if (type.hasMainAttribute || type.isAppConformer) {
+        const isCliCommand = type.hasMainAttribute &&
+          !type.isAppConformer &&
+          type.conformances.some(c => CLI_COMMAND_CONFORMANCES.has(c));
+
         const reasons: string[] = [];
         if (type.hasMainAttribute) reasons.push('@main');
         if (type.isAppConformer) reasons.push('App');
+        if (isCliCommand) reasons.push('ParsableCommand');
+
         entryPoints.push(this.createEntryPoint(
           `entry_${typeId}`,
           typeId,
-          'lifecycle',
-          `App entry point: ${type.name}`,
-          `Swift application entry point (${reasons.join(', ')})`,
+          isCliCommand ? 'cli' : 'lifecycle',
+          isCliCommand ? `CLI command: ${type.name}` : `App entry point: ${type.name}`,
+          isCliCommand
+            ? 'Swift command-line entry point (swift-argument-parser @main command)'
+            : `Swift application entry point (${reasons.join(', ')})`,
           undefined,
           undefined,
           {
@@ -658,18 +845,6 @@ export class SwiftAnalyzer extends BaseAnalyzer {
             isMain: type.hasMainAttribute,
             isApp: type.isAppConformer,
           }
-        ));
-      } else if (type.access === 'public' || type.access === 'open') {
-        // Public library surface is a usable entry point.
-        entryPoints.push(this.createEntryPoint(
-          `entry_${typeId}`,
-          typeId,
-          'lifecycle',
-          `Public ${type.kind}: ${type.name}`,
-          `Public Swift API surface (${type.kind})`,
-          undefined,
-          undefined,
-          { file: info.relativePath, line: type.lineStart, access: type.access }
         ));
       }
     }
@@ -698,12 +873,13 @@ export class SwiftAnalyzer extends BaseAnalyzer {
       ));
     }
 
-    // main.swift top-level entry point.
+    // main.swift top-level entry point — the executable target's actual
+    // process entry, so this is a CLI entry (not a generic lifecycle hook).
     if (info.hasTopLevelMain) {
       entryPoints.push(this.createEntryPoint(
         `entry_${fileId}_main`,
         fileId,
-        'lifecycle',
+        'cli',
         `Top-level entry: ${baseName}`,
         'Swift main.swift top-level executable entry point',
         undefined,
@@ -868,6 +1044,10 @@ export class SwiftAnalyzer extends BaseAnalyzer {
     return `func_${this.sanitizeId(relativePath)}_${this.sanitizeId(owner)}_${this.sanitizeId(name)}_${line}`;
   }
 
+  private propertyId(relativePath: string, ownerName: string, fieldName: string): string {
+    return `property_${this.sanitizeId(relativePath)}_${this.sanitizeId(ownerName)}_${this.sanitizeId(fieldName)}`;
+  }
+
   protected getLevelName(level: number): string {
     switch (level) {
       case 1: return 'File/Module';
@@ -888,6 +1068,7 @@ export class SwiftAnalyzer extends BaseAnalyzer {
       'swift-imports',
       'swift-call-graph',
       'swift-entry-points',
+      'swift-data-entities',
     ];
   }
 }
