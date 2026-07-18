@@ -72,6 +72,18 @@ fi
 # hits `EACCES: permission denied, mkdir '/data'` — a third env artifact,
 # alongside missing-git and root, discovered while proving this image.
 # Point both at a writable per-run tmp path instead.
+
+# Fourth env artifact: tool caches under the bind-mounted tree. rsync/npm on
+# the host leave node_modules/.cache (jest haste maps) and vite's config
+# bundle temp dir owned by whatever uid synced them; the non-root `gate` user
+# then hits EACCES on the first jest/vite run of a fresh sync. Pre-open the
+# cache dirs for the target workspace before every run — idempotent, scoped
+# to caches only (never the source tree).
+for cache_dir in "$DEVGATE_DIR/$WORKSPACE/node_modules/.cache" "$DEVGATE_DIR/node_modules/.cache"; do
+  mkdir -p "$cache_dir" 2>/dev/null || true
+  chmod -R a+rwX "$cache_dir" 2>/dev/null || true
+done
+
 exec docker run --rm \
   --user gate \
   -e NODE_ENV=development \
