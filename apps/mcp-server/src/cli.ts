@@ -785,6 +785,46 @@ export function resolveSelfUpdateTarget(options: {
   return { npmBin: exists(execNpm) ? execNpm : 'npm', prefix, prefixSource };
 }
 
+/**
+ * Which node ACTUALLY drives the native build: target.nodeBin when the
+ * resolved prefix carries its own node, else this process's node. Exported
+ * (was inlined in runUpdateCommand) so the node-range gate is unit-testable
+ * against a real fake-node shim on disk, the same way install.sh's gate is
+ * tested — instead of only being exercisable via a full `npm install -g`.
+ */
+export function detectBuildNodeVersion(
+  target: { nodeBin?: string },
+  options: { processVersion?: string } = {},
+): string {
+  const fallback = options.processVersion ?? process.version;
+  if (!target.nodeBin) return fallback;
+  const out = (spawnSync(target.nodeBin, ['-v'], { encoding: 'utf8', timeout: 10000 }).stdout || '').trim();
+  return out || fallback;
+}
+
+/**
+ * Field bug (2026-07, #59): pinning npm's OWN argv0 to target.nodeBin is not
+ * enough. npm still spawns node-gyp (and other lifecycle scripts) as a CHILD
+ * process, and those children resolve `node` via `#!/usr/bin/env node` against
+ * inherited PATH — on a multi-node machine (homebrew node 26 first in PATH,
+ * nvm node 22 owning the actual install) the top-level npm process correctly
+ * ran under node 22 while the COMPILE (node-gyp) still resolved PATH's node
+ * 26, so the build failed even though the gate above had already judged the
+ * install "supported". Fix: when the prefix carries its own node, prepend
+ * that node's directory to PATH for the whole npm install so every `env node`
+ * resolution downstream — not just npm's own argv0 — finds the right binary.
+ * Exported for unit testing.
+ */
+export function buildUpdateSpawnEnv(
+  target: { nodeBin?: string },
+  baseEnv: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  if (!target.nodeBin) return baseEnv;
+  const dir = path.dirname(target.nodeBin);
+  const existingPath = baseEnv.PATH ?? '';
+  return { ...baseEnv, PATH: existingPath ? `${dir}${path.delimiter}${existingPath}` : dir };
+}
+
 async function runUpdateCommand(args: ParsedArgs): Promise<void> {
   // Resolve the server that hosts the tarball: explicit flag, then the stored
   // login default, then KLAURO_URL, then the public default.
@@ -836,9 +876,7 @@ async function runUpdateCommand(args: ParsedArgs): Promise<void> {
   // node-gyp compiles the native tree-sitter deps against the node that RUNS
   // npm — target.nodeBin when the prefix carries its own node, else this
   // process's node — so gate on that version, before anything downloads.
-  const buildNodeVersion = target.nodeBin
-    ? (spawnSync(target.nodeBin, ['-v'], { encoding: 'utf8', timeout: 10000 }).stdout || '').trim() || process.version
-    : process.version;
+  const buildNodeVersion = detectBuildNodeVersion(target);
   const buildNodeMajor = Number.parseInt(buildNodeVersion.replace(/^v/, '').split('.')[0], 10);
   const nodeSupport = checkNodeSupportedForNativeBuild(buildNodeMajor, manifest);
   if (!nodeSupport.ok && process.env.KLAURO_SKIP_NODE_CHECK !== '1') {
@@ -862,17 +900,23 @@ async function runUpdateCommand(args: ParsedArgs): Promise<void> {
   // isn't recognized noise) are still surfaced in full.
   // When the prefix carries its own node, run npm THROUGH it (npm's `env
   // node` shebang would otherwise pick PATH's node and node-gyp would build
-  // the native deps against the wrong ABI — the original field failure).
+  // the native deps against the wrong ABI — the original field failure) AND
+  // pin PATH to that node's directory (buildUpdateSpawnEnv) so lifecycle
+  // children npm spawns for the native build (node-gyp) inherit the same
+  // resolution instead of falling through to whatever node PATH had first.
   const installArgs = ['install', '-g', tarballUrl, '--force', '--prefix', target.prefix];
+  const installEnv = buildUpdateSpawnEnv(target);
   const result = target.nodeBin
     ? spawnSync(target.nodeBin, [target.npmBin, ...installArgs], {
       stdio: ['inherit', 'pipe', 'pipe'],
       encoding: 'utf8',
+      env: installEnv,
     })
     : spawnSync(target.npmBin, installArgs, {
       stdio: ['inherit', 'pipe', 'pipe'],
       encoding: 'utf8',
       shell: process.platform === 'win32',
+      env: installEnv,
     });
   const npmOutput = filterNpmNoise(`${result.stdout || ''}${result.stderr || ''}`);
   if (npmOutput) process.stdout.write(npmOutput.endsWith('\n') ? npmOutput : `${npmOutput}\n`);

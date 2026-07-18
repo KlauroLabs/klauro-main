@@ -4,7 +4,14 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import * as fs from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
-import { checkNodeSupportedForNativeBuild, buildAnalysisStatusLine, DEFAULT_MAX_NODE, DEFAULT_MIN_NODE } from './cli';
+import {
+  checkNodeSupportedForNativeBuild,
+  buildAnalysisStatusLine,
+  DEFAULT_MAX_NODE,
+  DEFAULT_MIN_NODE,
+  detectBuildNodeVersion,
+  buildUpdateSpawnEnv,
+} from './cli';
 import { isNetworkUnreachableError, requireConnectorEntitlement, unreachableServerError } from './connector-auth';
 
 // ---------------------------------------------------------------------------
@@ -43,6 +50,93 @@ test('checkNodeSupportedForNativeBuild: the hosted manifest widens the range wit
   const gated = checkNodeSupportedForNativeBuild(26, manifest);
   assert.equal(gated.ok, false);
   assert.match(gated.message || '', /18-24/);
+});
+
+// ---------------------------------------------------------------------------
+// #59 regression: `klauro update` must gate on the node that ACTUALLY drives
+// the native build (target.nodeBin when the resolved prefix carries its own
+// node), and every child process npm spawns during the install (node-gyp
+// included) must resolve `node` to that SAME binary — not whatever happens
+// to be first on PATH — or the gate can pass while the compile still runs
+// under an unsupported node.
+// ---------------------------------------------------------------------------
+
+async function writeFakeNodeShim(dir: string, version: string): Promise<string> {
+  const nodePath = path.join(dir, 'node');
+  await fs.writeFile(nodePath, `#!/bin/sh\necho "${version}"\n`, { mode: 0o755 });
+  return nodePath;
+}
+
+test('detectBuildNodeVersion: reads the RESOLVED prefix node, not process.version, when nodeBin is set', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-update-node-'));
+  try {
+    const nodeBin = await writeFakeNodeShim(dir, 'v22.11.0');
+    const version = detectBuildNodeVersion({ nodeBin }, { processVersion: 'v26.4.0' });
+    assert.equal(version, 'v22.11.0', 'must use the prefix node, not the unrelated process.version fallback');
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('detectBuildNodeVersion: falls back to processVersion when no nodeBin was resolved', () => {
+  assert.equal(detectBuildNodeVersion({ nodeBin: undefined }, { processVersion: 'v20.9.0' }), 'v20.9.0');
+});
+
+test('detectBuildNodeVersion + checkNodeSupportedForNativeBuild: an unsupported ACTIVE node is refused with the actionable message even when process.version looks fine', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-update-node-'));
+  try {
+    // Simulates the field bug: the process running `klauro update` reports a
+    // supported version, but the prefix that actually owns the install (and
+    // will run npm/node-gyp) carries an unsupported node.
+    const nodeBin = await writeFakeNodeShim(dir, 'v26.4.0');
+    const version = detectBuildNodeVersion({ nodeBin }, { processVersion: 'v22.11.0' });
+    const major = Number.parseInt(version.replace(/^v/, '').split('.')[0], 10);
+    const result = checkNodeSupportedForNativeBuild(major, null);
+    assert.equal(result.ok, false);
+    assert.match(result.message || '', /Klauro currently supports Node 18-22; you have 26/);
+    assert.match(result.message || '', /nvm install 22|volta install node@22/);
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('detectBuildNodeVersion + checkNodeSupportedForNativeBuild: a supported resolved node proceeds past the gate', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-update-node-'));
+  try {
+    const nodeBin = await writeFakeNodeShim(dir, 'v20.15.0');
+    const version = detectBuildNodeVersion({ nodeBin });
+    const major = Number.parseInt(version.replace(/^v/, '').split('.')[0], 10);
+    assert.equal(checkNodeSupportedForNativeBuild(major, null).ok, true);
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('buildUpdateSpawnEnv: prepends the resolved node\'s directory to PATH so child `env node` lookups (node-gyp) resolve to it first', () => {
+  const env = buildUpdateSpawnEnv({ nodeBin: '/opt/nvm/versions/node/v22.11.0/bin/node' }, { PATH: '/usr/local/bin:/usr/bin' });
+  assert.equal(env.PATH, '/opt/nvm/versions/node/v22.11.0/bin:/usr/local/bin:/usr/bin');
+});
+
+test('buildUpdateSpawnEnv: leaves env untouched when no nodeBin was resolved (npm run via PATH as before)', () => {
+  const baseEnv = { PATH: '/usr/local/bin:/usr/bin' };
+  assert.equal(buildUpdateSpawnEnv({ nodeBin: undefined }, baseEnv), baseEnv);
+});
+
+test('buildUpdateSpawnEnv: an actual `env node` child process resolves the prefix node first, proving the PATH fix closes the #59 gap', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-update-path-'));
+  try {
+    const nodeBin = await writeFakeNodeShim(dir, 'v22.11.0');
+    // A decoy "node" earlier in the base PATH simulates the homebrew node 26
+    // that caused the field failure: unfixed, `env node` would find this one.
+    const decoyDir = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-update-decoy-'));
+    await writeFakeNodeShim(decoyDir, 'v26.4.0');
+    const env = buildUpdateSpawnEnv({ nodeBin }, { PATH: `${decoyDir}:${process.env.PATH ?? ''}` });
+    const result = spawnSync('env', ['node'], { encoding: 'utf8', env });
+    assert.equal((result.stdout || '').trim(), 'v22.11.0', 'child `env node` must resolve the prefix node, not the decoy earlier on PATH');
+    await fs.rm(decoyDir, { recursive: true, force: true });
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
 });
 
 // ---------------------------------------------------------------------------
