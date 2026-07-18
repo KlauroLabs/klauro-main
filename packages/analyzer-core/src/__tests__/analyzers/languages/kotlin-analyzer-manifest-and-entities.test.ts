@@ -165,6 +165,49 @@ describe('KotlinAnalyzer: AndroidManifest.xml component entry points', () => {
 
     expect(entryPoints.some(ep => ep.name.includes('Ghost'))).toBe(false);
   });
+
+  it('warns when the project looks like Android (an Activity subclass exists) but no AndroidManifest.xml was found', async () => {
+    // Regression for the "silent zero" symptom that made the hosted-snapshot
+    // defect (remote-source.ts dropping AndroidManifest.xml) invisible: this
+    // glob previously just `return`ed with no signal when it found no manifest,
+    // so a real Android project with the file present locally but stripped from
+    // the hosted snapshot looked identical to a project that was never Android
+    // at all. No AndroidManifest.xml is written here.
+    await writeFile(
+      'src/main/kotlin/com/example/app/MainActivity.kt',
+      [
+        'package com.example.app',
+        '',
+        'import androidx.activity.ComponentActivity',
+        '',
+        'class MainActivity : ComponentActivity() {',
+        '    fun onReady() {}',
+        '}',
+        '',
+      ].join('\n')
+    );
+
+    const analyzer = new KotlinAnalyzer();
+    const contribution = await analyzer.analyze({ projectPath: tmpDir } as any);
+
+    expect((contribution.analyzer_metadata as { warnings?: string[] }).warnings || []).toEqual(
+      expect.arrayContaining([expect.stringContaining('no AndroidManifest.xml was found')])
+    );
+  });
+
+  it('does not warn about a missing manifest for a plain (non-Android) Kotlin project', async () => {
+    await writeFile(
+      'src/main/kotlin/com/example/app/PlainClass.kt',
+      ['package com.example.app', '', 'class PlainClass {', '    fun run() {}', '}', ''].join('\n')
+    );
+
+    const analyzer = new KotlinAnalyzer();
+    const contribution = await analyzer.analyze({ projectPath: tmpDir } as any);
+
+    expect((contribution.analyzer_metadata as { warnings?: string[] }).warnings || []).not.toEqual(
+      expect.arrayContaining([expect.stringContaining('AndroidManifest.xml')])
+    );
+  });
 });
 
 describe('KotlinAnalyzer: data class -> data-entity fields', () => {

@@ -968,7 +968,26 @@ export class KotlinAnalyzer extends BaseAnalyzer {
     } catch {
       return;
     }
-    if (manifestFiles.length === 0) return;
+    if (manifestFiles.length === 0) {
+      // Silent zero was the actual production symptom (2026-07-17): a real
+      // Android/Compose repo's AndroidManifest.xml never reached the hosted
+      // snapshot (remote-source.ts had no inclusion rule for it), so this glob
+      // found nothing and returned with no signal at all — the CAS looked
+      // identical to a non-Android Kotlin project. Detect the Android-shaped
+      // case (an Activity-base subclass was parsed, so this IS an Android app)
+      // and surface a warning instead of staying silent, so a missing manifest
+      // is visible in the analysis output rather than only discoverable by
+      // diffing against a local run.
+      const looksAndroid = fileInfos.some(info =>
+        info.types.some(type => type.supertypes.some(base => ANDROID_ACTIVITY_BASES.has(base)))
+      );
+      if (looksAndroid) {
+        this.addAnalysisWarning(
+          'Kotlin: this looks like an Android project (found an Activity subclass) but no AndroidManifest.xml was found — manifest-declared services/receivers/providers will not appear as entry points'
+        );
+      }
+      return;
+    }
 
     // Qualified-name and simple-name (may be ambiguous across packages)
     // indexes over every type this analyzer parsed, so a manifest name can be

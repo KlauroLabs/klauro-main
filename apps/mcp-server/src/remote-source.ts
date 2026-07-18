@@ -279,6 +279,28 @@ const EXTRA_INCLUDED_EXTENSIONS = new Set([
   '.rst',
 ]);
 
+// Platform MANIFEST files that a framework analyzer reads directly by exact
+// basename, not by extension — deliberately NOT a blanket ".xml" inclusion.
+// Blanket .xml would flood every hosted snapshot with build-tool/IDE/generated
+// XML (a Java/Gradle monorepo's own module descriptors, Maven site reports,
+// Android build intermediates, etc.) that no analyzer consumes, recreating
+// the same "vendored dump reaches the server" defect class EXCLUDED_DIRECTORY_PATTERNS
+// exists to prevent. Named by exact basename instead: kotlin-analyzer.ts globs
+// **/AndroidManifest.xml and resolves its <activity>/<service>/<receiver>/
+// <provider> declarations to entry points — same defect class as the
+// routes/.yaml/.md notes above: canAnalyze()/the glob reads this file directly
+// on disk, but the remote snapshot walker had no rule keeping it, so every
+// hosted analysis of an Android app silently lost service/receiver/provider
+// entry points (found 2026-07-17: a real Android/Compose repo's
+// NodeForegroundService + InstallResultReceiver never reached the hosted CAS —
+// zero manifest entry points, zero warnings — while local on-disk analysis of
+// the identical repo found both). Add to this set ONLY when a specific
+// analyzer is confirmed to read the file by exact name; do not widen to a
+// pattern or extension.
+const PLATFORM_MANIFEST_BASENAMES = new Set([
+  'AndroidManifest.xml',
+]);
+
 const IMPORTANT_EXTENSIONLESS = new Set([
   'Dockerfile',
   'Makefile',
@@ -855,7 +877,7 @@ async function shouldIncludeRelativePathVerbose(
   // analyzable source/manifest — so the snapshot we send to the product can never
   // drift behind the languages the analyzer supports (the stale hardcoded list
   // dropped Kotlin/.kt, Ruby/.rb, C# .csproj manifests, Swift, C++, etc.).
-  if (isRegisteredSourceExtension(base) || isRegisteredManifest(base) || IMPORTANT_EXTENSIONLESS.has(base)) {
+  if (isRegisteredSourceExtension(base) || isRegisteredManifest(base) || IMPORTANT_EXTENSIONLESS.has(base) || PLATFORM_MANIFEST_BASENAMES.has(base)) {
     return { included: true };
   }
   const ext = base.slice(base.lastIndexOf('.'));
