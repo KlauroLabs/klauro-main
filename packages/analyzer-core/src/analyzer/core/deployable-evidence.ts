@@ -274,8 +274,8 @@ function resolveEvidenceBundling(items: DeployableEvidence[]): void {
 }
 
 /** Strips a registry host + tag/digest off an image reference and returns
- *  just the final path segment — `registry.example.com/team/zerac-base:1.2`
- *  -> `zerac-base`. Matching input for normalizeMemberToken, never a display
+ *  just the final path segment — `registry.example.com/team/acme-base:1.2`
+ *  -> `acme-base`. Matching input for normalizeMemberToken, never a display
  *  name. */
 function stripImageTagAndRegistry(ref: string): string {
   const withoutDigest = ref.split('@')[0];
