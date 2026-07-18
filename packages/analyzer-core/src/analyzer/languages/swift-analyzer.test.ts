@@ -163,6 +163,50 @@ test('SwiftAnalyzer: @main ParsableCommand is a cli entry, not lifecycle', async
   }
 });
 
+async function makePlainMainStructProject(): Promise<string> {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'swift-analyzer-plain-main-test-'));
+  const sources = path.join(dir, 'Sources', 'helper-cli');
+  await fs.ensureDir(sources);
+
+  // A second executable's @main type that is NEITHER a SwiftUI App/Scene NOR
+  // a swift-argument-parser command — just a plain struct with its own
+  // static main(). Regression fixture for the defect where this fell through
+  // to 'lifecycle' ("App entry point: ...") because the old check gated
+  // 'cli' on ParsableCommand conformance instead of on the absence of
+  // App/Scene.
+  await fs.writeFile(path.join(sources, 'HelperMain.swift'), `import Foundation
+
+@main
+struct HelperMain {
+    static func main() {
+        print("helper running")
+    }
+}
+`, 'utf-8');
+
+  return dir;
+}
+
+test('SwiftAnalyzer: plain @main struct (no App/Scene, no ParsableCommand) is a cli entry, not lifecycle', async () => {
+  const projectPath = await makePlainMainStructProject();
+  try {
+    const analyzer = new SwiftAnalyzer();
+    const cas = await analyzer.analyze({ projectPath });
+    const nodes = cas.nodes || [];
+    const entryPoints = cas.entry_points || [];
+
+    const helperMain = nodes.find(n => n.name === 'HelperMain');
+    assert.ok(helperMain, 'HelperMain type node exists');
+
+    const entry = entryPoints.find(ep => ep.source_node === helperMain!.id);
+    assert.ok(entry, '@main HelperMain registered as an entry point');
+    assert.strictEqual(entry!.type, 'cli', 'a plain @main struct with no App/Scene conformance is a cli process entry, not lifecycle');
+    assert.strictEqual(entryPoints.length, 1, 'exactly one entry point for the plain @main struct');
+  } finally {
+    await fs.remove(projectPath);
+  }
+});
+
 async function makeExecutableMainProject(): Promise<string> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'swift-analyzer-exe-test-'));
   const sources = path.join(dir, 'Sources', 'tool');

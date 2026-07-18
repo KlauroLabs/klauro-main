@@ -9727,8 +9727,13 @@ export class AnalyzerOrchestrator {
       entityNameSet: Set<string>;
       nameTokensAll: string[];
       journeys: unknown;
+      nameRepairedFromBareNoun?: boolean;
     };
     const staged: StagedCatalogItem[] = [];
+    // E1-attributable counters for the bare-noun guard below — surfaced in the
+    // capability_catalog decision record so a rejection is never a silent drop.
+    let bareNounRepaired = 0;
+    let bareNounRejected = 0;
     for (const item of catalog) {
       // `let`: the arrow-chain sanitization below may rewrite the name to its
       // purpose-phrase head ("Create attack -> Currency created" -> "Create attack").
@@ -9804,6 +9809,26 @@ export class AnalyzerOrchestrator {
         name = head;
       }
       if (this.isRawCandidateLabelName(name, candidateAreas)) continue;
+      // BARE-NOUN GUARD (defect: a raw module/type token — "Gateway",
+      // "Wizard", "Exec Approval" — shipping as a "capability" because it
+      // happened to attach a description, same class of bug the raw-label
+      // echo guard above targets but for a NAME shape the echo check cannot
+      // see: a single/two-word noun phrase with no leading purpose verb.
+      // Same repair-before-reject shape as the arrow-chain salvage above:
+      // when the item is actually grounded (it names real entities), repair
+      // to a purpose-headed "Manage <noun>" rather than losing a genuine
+      // family; otherwise demote (the surviving `continue` routes this
+      // candidate out, same as every other guard here — if that empties the
+      // catalog entirely, applyDeterministicCapabilityFallback's own guard
+      // takes over below).
+      let itemBareNounRepaired = false;
+      if (this.isBareNounCapabilityLabel(name)) {
+        const repaired = this.deriveManagePurposeLabel(name, itemEntityNamesRaw.length > 0);
+        if (!repaired) { bareNounRejected++; continue; }
+        name = repaired;
+        itemBareNounRepaired = true;
+        bareNounRepaired++;
+      }
       const key = name.toLowerCase();
       if (seen.has(key)) continue;
       seen.add(key);
@@ -9821,6 +9846,7 @@ export class AnalyzerOrchestrator {
         entityNameSet: new Set(itemEntityNames),
         nameTokensAll: key.split(/\s+/).filter(token => token.length > 3 && !GENERIC_CAPABILITY_NAME_TOKENS.has(token)),
         journeys: item.journeys,
+        nameRepairedFromBareNoun: itemBareNounRepaired,
       });
     }
 
@@ -9921,7 +9947,7 @@ export class AnalyzerOrchestrator {
         .map(token => this.stemTerminologyToken(token));
 
     for (let index = 0; index < staged.length; index++) {
-      const { name, key, description, category, relatedEntities, journeys } = staged[index];
+      const { name, key, description, category, relatedEntities, journeys, nameRepairedFromBareNoun } = staged[index];
       const operations = opsByItemIndex.get(index) || [];
       // Anchor lists are MATCHING evidence, not display samples — flow
       // relationship derivation op-matches against them, so a 12-op sample on
@@ -9963,18 +9989,28 @@ export class AnalyzerOrchestrator {
         related_entities: Array.from(new Set([...relatedEntities, ...candidateEntityIds])),
         related_domains: Array.isArray(journeys) ? journeys.map((value: unknown) => String(value || '')).filter(Boolean).slice(0, 6) : [],
         criticality: category === 'core' ? 'high' : 'medium',
-        criticality_factors: ['ai-extracted-from-journeys-and-entities'],
+        criticality_factors: nameRepairedFromBareNoun
+          ? ['ai-extracted-from-journeys-and-entities', 'bare-noun-purpose-repaired']
+          : ['ai-extracted-from-journeys-and-entities'],
       });
     }
     recordSemanticDecision({
       ts: Date.now(),
       decision_type: 'capability_catalog',
       prompt_version: 'capability_catalog.v2',
-      input_evidence_digest: { ...catalogEvidenceDigest, parsed: catalog.length, kept: out.length },
+      input_evidence_digest: {
+        ...catalogEvidenceDigest,
+        parsed: catalog.length,
+        kept: out.length,
+        bareNounRepaired,
+        bareNounRejected,
+      },
       raw_output_excerpt: raw,
       parse_ok: true,
       gate_verdict: out.length > 0 ? 'accepted' : 'degraded',
-      gate_reason: out.length === 0 ? 'all-candidates-dropped-as-ungrounded' : undefined,
+      gate_reason: out.length === 0
+        ? (bareNounRejected > 0 ? 'all-candidates-dropped-as-ungrounded:bare-noun-labels' : 'all-candidates-dropped-as-ungrounded')
+        : undefined,
       final_outcome: out.length > 0 ? 'ai' : 'degraded',
     });
     // The hard cap must never clip below what the prompt itself was told to
@@ -10159,6 +10195,88 @@ export class AnalyzerOrchestrator {
   }
 
   /**
+   * Purpose-verb vocabulary used only to test whether a capability label
+   * OPENS with an action ("Manage sessions") vs. is a bare module/type noun
+   * echoed as-is ("Session"). Reuses the same infinitive forms the
+   * behavior-anchored naming path already treats as action prefixes
+   * (BEHAVIOR_ACTION_VERB_PREFIXES) plus the higher-level "purpose" verbs the
+   * capability-catalog prompt itself asks for. Generic English verbs only —
+   * never a project-specific or brand vocabulary.
+   */
+  // NOTE: intentionally NOT built by spreading BEHAVIOR_ACTION_VERB_PREFIXES —
+  // that set is declared later in the class body, and static field
+  // initializers run in declaration order, so spreading it here at
+  // class-definition time would silently capture an empty/undefined set.
+  // Duplicated as a flat literal instead (same infinitive-verb vocabulary,
+  // still generic English verbs only, never project-specific).
+  private static readonly CAPABILITY_PURPOSE_VERBS = new Set<string>([
+    'get', 'set', 'fetch', 'list', 'find', 'load', 'show', 'view', 'read',
+    'create', 'add', 'new', 'update', 'edit', 'delete', 'remove', 'save',
+    'submit', 'send', 'sync', 'run', 'execute', 'process', 'handle', 'make',
+    'build', 'init', 'initialize', 'validate', 'check', 'resolve', 'generate',
+    'start', 'stop', 'open', 'close', 'enable', 'disable', 'apply', 'compute',
+    'manage', 'provide', 'support', 'expose', 'monitor', 'track',
+    'secure', 'detect', 'analyze', 'analyse', 'orchestrate', 'coordinate',
+    'schedule', 'transform', 'render', 'display', 'authenticate', 'authorize',
+    'notify', 'report', 'export', 'import', 'connect', 'synchronize',
+    'discover', 'configure', 'deploy', 'migrate', 'ingest', 'stream', 'route',
+    'dispatch', 'reconcile', 'audit', 'log', 'cache', 'queue', 'persist',
+  ]);
+
+  /**
+   * True when `name` is a BARE NOUN label — a single module/type token
+   * ("Gateway", "Wizard", "Exec") or a two-word noun phrase with no leading
+   * purpose verb ("Exec Approval") — rather than a purpose-headed capability
+   * name ("Manage Gateway Connections", "Detect patterns"). The capability
+   * doctrine requires every name to read as a PURPOSE a PM would write, never
+   * a type/module identifier surfaced verbatim.
+   *
+   * DEFECT (measured live on a real analyzed Swift macOS repo, v1.0.116): 24
+   * of the system_capabilities entries were exactly this shape — single
+   * module/type nouns ("Gateway", "Wizard", "Connect", "Channels", "Device",
+   * "Exec", "Agent", "Poll", "Claw", "Canvas", "Cron", "Frame", "Mac", "Pair",
+   * "Hint", "Session", ...) with no leading verb at all. They trace back to
+   * `terminalGroundedCapabilityName`, which strips a trailing invented
+   * behavior suffix ("Management"/"Handling"/...) from the structural label
+   * and returns the bare subject whenever no produced/persisted entity is
+   * available to append — leaving exactly a type/module name with nothing
+   * else.
+   *
+   * Deliberately narrow (only 1 token, or 2 tokens both non-verb-headed) so a
+   * legitimate short label like "Detect patterns" (verb + object) — or any
+   * 3+ word phrase — is never rejected. A single word IS always flagged
+   * regardless of whether it happens to be verb-shaped ("Connect", "Poll"):
+   * a lone word with no object is not a purpose statement.
+   */
+  private isBareNounCapabilityLabel(name: string): boolean {
+    const words = String(name || '').trim().split(/\s+/).filter(Boolean);
+    if (words.length === 0 || words.length > 2) return false;
+    if (words.length === 1) return true;
+    const first = words[0].toLowerCase().replace(/[^a-z]/g, '');
+    if (AnalyzerOrchestrator.CAPABILITY_PURPOSE_VERBS.has(first)) return false;
+    // Strip a common inflection (managing/manages/managed) so the base verb
+    // still registers without a project-specific inflection table.
+    const stem = first.replace(/(ing|ed|es|s)$/, '');
+    if (AnalyzerOrchestrator.CAPABILITY_PURPOSE_VERBS.has(stem)) return false;
+    return true;
+  }
+
+  /**
+   * Repairs a bare-noun candidate into a purpose-headed name ("Gateway" ->
+   * "Manage Gateway") the same way the arrow-chain guard above salvages a
+   * head phrase instead of dropping the whole item outright — but ONLY when
+   * `hasAnchorEvidence` says the underlying operations/entities actually
+   * ground this subject as a real capability. Returns undefined (demote —
+   * let the caller drop the candidate) when there is nothing to ground the
+   * derived purpose in.
+   */
+  private deriveManagePurposeLabel(subject: string, hasAnchorEvidence: boolean): string | undefined {
+    const trimmed = subject.trim();
+    if (!trimmed || !hasAnchorEvidence) return undefined;
+    return `Manage ${trimmed}`;
+  }
+
+  /**
    * True when `name` reads as a raw deterministic candidate label (the
    * bottom-up fact handed to the prompt) rather than AI-authored product
    * language ("Trade cryptocurrency", not "run_shell_script_release_sh_
@@ -10252,9 +10370,28 @@ export class AnalyzerOrchestrator {
     nodes: CASNode[],
     systemCapabilities: SystemCapability[]
   ): void {
-    const validDeterministic = candidateSnapshot.filter(
-      capability => !this.isRawCandidateLabelName(String(capability.name || ''), [])
-    );
+    // BARE-NOUN GUARD applies here too, defense-in-depth: these deterministic
+    // candidates ship untouched when the AI catalog never ran (or returned
+    // nothing), so a bare module/type noun like "Gateway" that survived the
+    // structural-label naming pass (terminalGroundedCapabilityName) must be
+    // repaired or dropped here — same as the AI-catalog-item guard above,
+    // just with `related_entities`/`operations` as the anchor evidence
+    // instead of a catalog item's raw `entities` field.
+    const validDeterministic = candidateSnapshot
+      .filter(capability => !this.isRawCandidateLabelName(String(capability.name || ''), []))
+      .map(capability => {
+        const name = String(capability.name || '');
+        if (!this.isBareNounCapabilityLabel(name)) return capability;
+        const hasAnchorEvidence = (capability.related_entities?.length || 0) > 0 || (capability.operations?.length || 0) > 0;
+        const repaired = this.deriveManagePurposeLabel(name, hasAnchorEvidence);
+        if (!repaired) return undefined;
+        return {
+          ...capability,
+          name: repaired,
+          criticality_factors: Array.from(new Set([...(capability.criticality_factors || []), 'bare-noun-purpose-repaired'])),
+        };
+      })
+      .filter((capability): capability is SystemCapability => Boolean(capability));
     if (validDeterministic.length > 0) {
       systemCapabilities.splice(0, systemCapabilities.length, ...validDeterministic);
       return;
@@ -10882,6 +11019,26 @@ export class AnalyzerOrchestrator {
     for (const capability of systemCapabilities) {
       if (capability.description_source === 'ai' || capability.description_source === 'manual') continue;
       capability.description_generation = { status: 'ai_skipped', attempted: false, reason };
+    }
+    // BARE-NOUN GUARD, structure-only path: comprehension is being skipped
+    // entirely (no AI pass is coming to overwrite the placeholder name), so a
+    // capability still carrying its raw structural placeholder (name_source
+    // unset — see terminalGroundedCapabilityName) must be repaired NOW or it
+    // ships as a bare module/type noun ("Gateway", "Wizard") with nothing to
+    // fix it later. Repair to "Manage <noun>" when the candidate has real
+    // anchor evidence (related entities/operations); otherwise leave as-is —
+    // there is no richer AI-authored alternative to fall back to here, and an
+    // unadorned but still evidence-backed noun is more honest than inventing
+    // a purpose with nothing behind it.
+    for (const capability of systemCapabilities) {
+      if (capability.name_source === 'ai' || capability.name_source === 'manual') continue;
+      const name = String(capability.name || '');
+      if (!this.isBareNounCapabilityLabel(name)) continue;
+      const hasAnchorEvidence = (capability.related_entities?.length || 0) > 0 || (capability.operations?.length || 0) > 0;
+      const repaired = this.deriveManagePurposeLabel(name, hasAnchorEvidence);
+      if (!repaired) continue;
+      capability.name = repaired;
+      capability.criticality_factors = Array.from(new Set([...(capability.criticality_factors || []), 'bare-noun-purpose-repaired']));
     }
     for (const entity of dataEntities) {
       if (entity.description_source === 'ai' || entity.description_source === 'manual') continue;
@@ -20025,6 +20182,16 @@ export class AnalyzerOrchestrator {
     if (/\b(Infrastructure|Connectivity|Integration)$/.test(structuralLabel)) return structuralLabel;
 
     // Strip only a TRAILING invented behavior suffix; keep the domain subject.
+    // NOTE: the bare subject returned below (e.g. "Invoice", "Gateway") is a
+    // deliberate PLACEHOLDER — name_source stays unset ("awaiting-ai-
+    // comprehension") — meant to be overwritten by the AI naming pass with a
+    // purpose-headed display name. It is intentionally NOT purpose-headed
+    // itself; repairing it here would just be a different unauthored guess.
+    // The bare-noun guard belongs at the point where a placeholder like this
+    // is about to ship AS THE FINAL name with no further AI pass coming —
+    // see the bare-noun guard in recordComprehensionSkipped (structure-only
+    // runs) and applyDeterministicCapabilityFallback (AI ran but produced
+    // nothing usable) below, not here.
     const words = structuralLabel.trim().split(/\s+/);
     while (words.length > 1 &&
       AnalyzerOrchestrator.INVENTED_CAPABILITY_SUFFIXES.has((words[words.length - 1] || '').toLowerCase())) {

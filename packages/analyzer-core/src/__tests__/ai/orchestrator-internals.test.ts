@@ -6244,6 +6244,114 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
       }
     }
   });
+
+  it('bare-noun capability names: repairs a grounded single-noun label, drops an ungrounded noun phrase, and keeps verb-headed labels untouched', async () => {
+    // Reproduces the live defect measured on a real analyzed Swift macOS repo
+    // (v1.0.116): 24 of the system_capabilities entries were single/two-word
+    // module-or-type nouns ("Gateway", "Wizard", "Exec", ...) with no leading
+    // purpose verb at all — the AI catalog attached SOME description to each,
+    // so the pre-existing raw-echo guard (isRawCandidateLabelName) never
+    // caught them; they are not an echo of a candidateAreas string, just a
+    // bare noun the model itself chose as the "capability name".
+    const original = (aiService as any).generateComponentDescription;
+    (aiService as any).generateComponentDescription = async () => JSON.stringify({
+      capabilities: [
+        // Bare single noun, but grounded in a real entity -> repaired to a
+        // purpose-headed "Manage <noun>" name instead of shipping as-is.
+        { name: 'Gateway', entities: ['Gateway'] },
+        // Bare two-word noun phrase (both nouns, no leading verb) with NO
+        // anchor evidence at all -> demoted (dropped), not invented a purpose
+        // for with nothing behind it. Explicit description so it is the
+        // bare-noun guard doing the dropping, not the empty-description gate.
+        { name: 'Exec Approval', description: 'Handles gateway related exec approval processing tasks for the system.', entities: [] },
+        // Verb-headed two-word label (verb + object) -> never flagged, kept verbatim.
+        { name: 'Detect patterns', entities: ['Pattern'] },
+        // "Manage Sessions" is verb-headed ("manage") -> never flagged, kept verbatim.
+        { name: 'Manage Sessions', entities: ['Session'] },
+      ],
+    });
+    try {
+      const catalog = await orch.aiExtractCapabilityCatalog({
+        systemName: 'proof-of-concept',
+        enhancedSystemPurpose: { primary_domain: 'dev-tool', core_concepts: [] },
+        frameworks: [], userJourneys: [],
+        dataEntities: [
+          { id: 'entity_gateway', name: 'Gateway' },
+          { id: 'entity_pattern', name: 'Pattern' },
+          { id: 'entity_session', name: 'Session' },
+        ],
+        candidateCapabilities: [],
+        externalServices: [], flowGraph: { capabilities: [] },
+        projectTextSignal: { concepts: [], evidence: [] }, budgetMs: 30000,
+      });
+      const names = catalog.map((capability: any) => capability.name);
+      expect(names).toContain('Manage Gateway');
+      expect(names).not.toContain('Gateway');
+      expect(names).not.toContain('Exec Approval');
+      expect(names).toContain('Detect patterns');
+      expect(names).toContain('Manage Sessions');
+      expect(catalog.find((capability: any) => capability.name === 'Manage Gateway')?.criticality_factors)
+        .toEqual(expect.arrayContaining(['bare-noun-purpose-repaired']));
+    } finally {
+      (aiService as any).generateComponentDescription = original;
+    }
+  });
+
+  it('isBareNounCapabilityLabel / deriveManagePurposeLabel: unit behavior', () => {
+    // Single bare token -> always flagged, regardless of whether it happens
+    // to be verb-shaped ("Connect", "Poll") — a lone word with no object is
+    // not a purpose statement.
+    expect(orch.isBareNounCapabilityLabel('Gateway')).toBe(true);
+    expect(orch.isBareNounCapabilityLabel('Connect')).toBe(true);
+    expect(orch.isBareNounCapabilityLabel('Session')).toBe(true);
+    // Two bare nouns, no leading verb -> flagged.
+    expect(orch.isBareNounCapabilityLabel('Exec Approval')).toBe(true);
+    // Verb-headed two-word label -> never flagged.
+    expect(orch.isBareNounCapabilityLabel('Detect patterns')).toBe(false);
+    expect(orch.isBareNounCapabilityLabel('Manage Sessions')).toBe(false);
+    // 3+ word phrases are out of scope for this narrow guard even with no
+    // obvious leading verb (conservative: avoid false positives there).
+    expect(orch.isBareNounCapabilityLabel('Data Export Wizard')).toBe(false);
+
+    expect(orch.deriveManagePurposeLabel('Gateway', true)).toBe('Manage Gateway');
+    expect(orch.deriveManagePurposeLabel('Gateway', false)).toBeUndefined();
+  });
+
+  it('recordComprehensionSkipped (structure-only path, no AI pass coming): repairs a grounded bare-noun capability name in place', () => {
+    const purpose: any = { description_generation: undefined };
+    const systemCapabilities: any[] = [
+      { id: 'cap_gateway', name: 'Gateway', related_entities: ['entity_gateway'], operations: [], criticality_factors: ['x'] },
+      { id: 'cap_exec', name: 'Exec', related_entities: [], operations: [], criticality_factors: [] },
+      { id: 'cap_detect', name: 'Detect patterns', related_entities: [], operations: [], criticality_factors: [] },
+      { id: 'cap_ai_named', name: 'Wizard', name_source: 'ai', related_entities: ['e1'], operations: [], criticality_factors: [] },
+    ];
+    orch.recordComprehensionSkipped(purpose, systemCapabilities, [], 'disabled-by-env');
+
+    expect(systemCapabilities.find(c => c.id === 'cap_gateway')?.name).toBe('Manage Gateway');
+    expect(systemCapabilities.find(c => c.id === 'cap_gateway')?.criticality_factors).toEqual(expect.arrayContaining(['bare-noun-purpose-repaired']));
+    // No anchor evidence at all (no related entities, no operations) -> left as-is, never invented a purpose with nothing behind it.
+    expect(systemCapabilities.find(c => c.id === 'cap_exec')?.name).toBe('Exec');
+    // Verb-headed label -> untouched.
+    expect(systemCapabilities.find(c => c.id === 'cap_detect')?.name).toBe('Detect patterns');
+    // Already AI-named -> never touched by the structure-only repair pass.
+    expect(systemCapabilities.find(c => c.id === 'cap_ai_named')?.name).toBe('Wizard');
+  });
+
+  it('applyDeterministicCapabilityFallback: repairs a grounded bare-noun deterministic candidate instead of shipping it verbatim', () => {
+    const candidateSnapshot: any[] = [
+      { id: 'cap_gateway', name: 'Gateway', related_entities: ['entity_gateway'], operations: [], criticality_factors: [] },
+      { id: 'cap_wizard', name: 'Wizard', related_entities: [], operations: [], criticality_factors: [] },
+    ];
+    const systemCapabilities: any[] = [];
+    orch.applyDeterministicCapabilityFallback(candidateSnapshot, [], [], [], systemCapabilities);
+
+    const names = systemCapabilities.map((capability: any) => capability.name);
+    expect(names).toContain('Manage Gateway');
+    // "Wizard" has zero related_entities and zero operations — no anchor
+    // evidence to ground a repair — so it is dropped rather than shipped
+    // bare or given an invented purpose.
+    expect(names).not.toContain('Wizard');
+  });
 });
 
 describe('resolveSystemDisplayName (Klauro rung-2: system name = directory basename defect)', () => {

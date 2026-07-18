@@ -90,8 +90,14 @@ const SWIFT_KEYWORDS = new Set([
   'print', 'and', 'or', 'not',
 ]);
 // Conformances that mark a `@main` type as a CLI command entry (swift-argument-parser)
-// rather than a generic app-lifecycle entry.
+// rather than a generic app-lifecycle entry. Stronger evidence than the
+// App/Scene-absence rule below, but not the only way to reach 'cli' — see
+// the entry-point classification comment where it's used.
 const CLI_COMMAND_CONFORMANCES = new Set(['ParsableCommand', 'AsyncParsableCommand']);
+// Conformances that mark a `@main` type as the app's UI/process LIFECYCLE
+// (SwiftUI's `App` protocol, or a `Scene` builder occasionally carrying
+// `@main` directly) rather than a plain process entry point.
+const APP_LIFECYCLE_CONFORMANCES = new Set(['App', 'Scene']);
 // Structurally excluded from data-entity classification even when a struct
 // has >=2 stored properties: a CLI command's own option/argument struct
 // isn't a payload/domain shape, and Error conformers are diagnostic types,
@@ -815,18 +821,31 @@ export class SwiftAnalyzer extends BaseAnalyzer {
       // 'dto' node with access_modifier:'public') — NOT an entry point on its
       // own; emitting one per public struct/class made every public type in
       // the repo look like a way in, drowning the real entries. The real
-      // entry shapes here: a SwiftUI App/AppDelegate-adapter (@main or App
-      // conformance) -> 'lifecycle'; a swift-argument-parser command (@main
-      // on a ParsableCommand/AsyncParsableCommand) -> 'cli'.
+      // entry shapes here: a SwiftUI App/AppDelegate-adapter (@main + App/
+      // Scene conformance) -> 'lifecycle'; any OTHER @main type -> 'cli' —
+      // @main marks the process's actual entry point (a static main(), or
+      // swift-argument-parser's synthesized one), and the only thing that
+      // makes that entry a UI *lifecycle* hook instead of a plain process
+      // entry is adopting App/Scene. A swift-argument-parser command
+      // (ParsableCommand/AsyncParsableCommand conformance) is STRONGER
+      // evidence for the same 'cli' outcome, not a separate requirement —
+      // DEFECT (measured live on a real 2-executable Swift macOS repo,
+      // v1.0.116): the second executable's @main type (a plain struct with
+      // its own static main(), not conforming to ParsableCommand/
+      // AsyncParsableCommand at all) fell through to 'lifecycle' ("App
+      // entry point: <Name>") because the old check gated 'cli' on
+      // ParsableCommand conformance specifically instead of on the absence
+      // of App/Scene.
       if (type.hasMainAttribute || type.isAppConformer) {
-        const isCliCommand = type.hasMainAttribute &&
-          !type.isAppConformer &&
-          type.conformances.some(c => CLI_COMMAND_CONFORMANCES.has(c));
+        const isAppLifecycle = type.isAppConformer ||
+          type.conformances.some(c => APP_LIFECYCLE_CONFORMANCES.has(c));
+        const isParsableCommand = type.conformances.some(c => CLI_COMMAND_CONFORMANCES.has(c));
+        const isCliCommand = type.hasMainAttribute && !isAppLifecycle;
 
         const reasons: string[] = [];
         if (type.hasMainAttribute) reasons.push('@main');
-        if (type.isAppConformer) reasons.push('App');
-        if (isCliCommand) reasons.push('ParsableCommand');
+        if (isAppLifecycle) reasons.push(type.isAppConformer ? 'App' : 'Scene');
+        if (isCliCommand && isParsableCommand) reasons.push('ParsableCommand');
 
         entryPoints.push(this.createEntryPoint(
           `entry_${typeId}`,
@@ -834,7 +853,9 @@ export class SwiftAnalyzer extends BaseAnalyzer {
           isCliCommand ? 'cli' : 'lifecycle',
           isCliCommand ? `CLI command: ${type.name}` : `App entry point: ${type.name}`,
           isCliCommand
-            ? 'Swift command-line entry point (swift-argument-parser @main command)'
+            ? (isParsableCommand
+              ? 'Swift command-line entry point (swift-argument-parser @main command)'
+              : 'Swift command-line entry point (@main process entry, no App/Scene conformance)')
             : `Swift application entry point (${reasons.join(', ')})`,
           undefined,
           undefined,
