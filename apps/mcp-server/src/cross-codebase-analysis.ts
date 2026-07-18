@@ -9210,7 +9210,15 @@ function extractInterfaces(repository: CrossCodebaseInput, id: string): SystemIn
       const method = normalizeHttpMethod(exitPoint.operation?.method || exitPoint.operation?.action) || 'FETCH';
       interfaces.push({
         ...base,
-        application_id: applicationId(id, inferApplicationName(repository, exitRefs(cas, exitPoint), sourceNodeServiceAliases(cas, exitPoint.source_node), endpoint)),
+        // Never fall back to the TARGET endpoint's host to name this (consumer)
+        // application: the endpoint identifies the other end of the call, not
+        // this repo's own identity. Passing it through here previously let a
+        // same-shaped target name (e.g. "admin-api") silently become the
+        // consumer's own application id whenever the caller's file path gave
+        // no apps/packages/bin hint — masking the correct consumer identity
+        // (e.g. "admin-ui") entirely, so downstream links pointed a phantom
+        // same-name app at the real target instead of the real consumer.
+        application_id: applicationId(id, inferApplicationName(repository, exitRefs(cas, exitPoint), sourceNodeServiceAliases(cas, exitPoint.source_node), '')),
         id: interfaceId(id, 'consumer-http', exitPoint.id),
         kind: 'http-api',
         role: 'consumer',
@@ -9770,7 +9778,7 @@ function buildApplicationLinks(
     const target = interfaceById.get(link.target_interface_id);
     if (!source || !target) continue;
   }
-  applicationLinks.push(...inferNamedApplicationLinks(applications, codebases, interfaces));
+  applicationLinks.push(...inferPackageDeclaredApplicationLinks(applications, codebases));
   applicationLinks.push(...inferInternalDependencyLinks(repositories, applications));
   return enrichApplicationLinks(
     dedupeApplicationLinks(applicationLinks).filter(link => shouldRetainWorkspaceApplicationLink(link, applications)),
@@ -9907,17 +9915,11 @@ function isMajorApplicationBoundary(app: SystemApplication): boolean {
   return /(?:^|\/)(apps|packages|bin|libs)\//.test(hint) || app.runtime_component_ids.length > 0;
 }
 
-function inferNamedApplicationLinks(
+function inferPackageDeclaredApplicationLinks(
   applications: SystemApplication[],
   codebases: SystemCodebase[],
-  interfaces: SystemInterface[],
 ): SystemApplicationLink[] {
   const links: SystemApplicationLink[] = [];
-  const allApps = applications.filter(app => app.deployable || app.kind !== 'codebase');
-  const interfaceByApp = new Map<string, SystemInterface[]>();
-  for (const item of interfaces) {
-    interfaceByApp.set(item.application_id, [...(interfaceByApp.get(item.application_id) || []), item]);
-  }
   const codebaseById = new Map(codebases.map(codebase => [codebase.id, codebase]));
 
   const add = (
@@ -9944,27 +9946,10 @@ function inferNamedApplicationLinks(
     });
   };
 
-  for (const ui of allApps.filter(isUiApplication)) {
-    const kind = ui.name.includes('admin') ? 'admin'
-      : ui.name.includes('internal') ? 'internal'
-        : 'user';
-    const matchingApi = findNamedApi(applications, kind)
-      || (kind === 'user' ? findNamedApi(applications, 'client') : undefined);
-    const uiInterfaces = interfaceByApp.get(ui.id) || [];
-    const configEvidence = uiInterfaces
-      .flatMap(item => item.refs.map(ref => ref.file || item.name))
-      .filter(value => /api|config|env|fetch|client/i.test(value))
-      .slice(0, 4);
-    if (matchingApi) {
-      const directEvidence = uiInterfaces.some(item => interfaceMentionsApplication(item, matchingApi));
-      const evidenceQuality: WorkspaceLinkEvidenceQuality = directEvidence ? 'route-shape-inferred' : 'name-inferred';
-      add(ui, matchingApi, 'http-call', 'sync', directEvidence ? 0.72 : 0.62, evidenceQuality, [
-        `${ui.name} matches ${matchingApi.name} by UI/API naming`,
-        ...configEvidence,
-      ]);
-    }
-  }
-
+  // Manifest-declared dependency, not name vocabulary: codebase.packages comes from the
+  // codebase's own package.json/dependency manifest (see directPackages()), and the match
+  // requires the declared package name to equal (or path-end with) the candidate app's own
+  // normalized name. This is real evidence of a declared install, not a keyword guess.
   const packageApps = applications.filter(app => app.kind === 'package' || app.path_hint?.includes('packages/'));
   for (const app of applications) {
     if (app.kind === 'package') continue;
@@ -9986,30 +9971,7 @@ function inferNamedApplicationLinks(
     }
   }
 
-  const operationalClients = allApps.filter(app => /(?:^|[-_\s])(agent|client-service|gateway)(?:[-_\s]|$)/i.test(app.name));
-  const operationalBrokers = allApps.filter(app => /(?:^|[-_\s])(drop[-_\s]?server|broker|relay|coordinator)(?:[-_\s]|$)/i.test(app.name));
-  for (const source of operationalClients) {
-    for (const target of operationalBrokers) {
-      if (source.id === target.id || source.codebase_id !== target.codebase_id) continue;
-      const sameRuntimeFamily = source.runtime_component_ids.length > 0 && target.runtime_component_ids.length > 0;
-      const evidenceQuality: WorkspaceLinkEvidenceQuality = sameRuntimeFamily ? 'topology-backed' : 'name-inferred';
-      add(source, target, 'http-call', 'async', sameRuntimeFamily ? 0.78 : 0.58, evidenceQuality, [
-        `${source.name} and ${target.name} are operational peer surfaces in ${codebaseById.get(source.codebase_id)?.name || source.codebase_id}`,
-        source.path_hint || source.name,
-        target.path_hint || target.name,
-      ]);
-    }
-  }
-
   return links;
-}
-
-function interfaceMentionsApplication(item: SystemInterface, app: SystemApplication): boolean {
-  const needles = normalizeAliases(app.name, app.service_aliases, applicationNameFromId(app.id))
-    .map(cleanApplicationName)
-    .filter(alias => alias.length >= 3);
-  const haystack = cleanApplicationName(`${item.name} ${item.endpoint || ''} ${item.key || ''} ${(item.service_aliases || []).join(' ')}`);
-  return needles.some(alias => haystack.includes(alias));
 }
 
 function inferSystemInsights(
@@ -12538,10 +12500,6 @@ function isDeployableApplication(name: string, pathHint: string | undefined, ali
 
 function isPackagePathHint(pathHint: string | undefined): boolean {
   return /(?:^|\/)(packages|crates|libs)\//.test(pathHint || '');
-}
-
-function isUiApplication(app: SystemApplication): boolean {
-  return /(admin|client|user|internal).*(ui|web|client)|(?:ui|web|client).*(admin|client|user|internal)/i.test(app.name);
 }
 
 function findNamedApi(applications: SystemApplication[], kind: string): SystemApplication | undefined {

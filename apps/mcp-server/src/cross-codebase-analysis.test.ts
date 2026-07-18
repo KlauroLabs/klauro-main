@@ -534,7 +534,7 @@ test('keeps infra overlay mappings tied to deployable names, not dependency alia
   assert.ok(coordinatorMapping?.resource_names.includes('coordinator'));
 });
 
-test('keeps UI/API name pairings as inference unless source endpoints identify the target', () => {
+test('does not link a UI to an API on name similarity alone; requires endpoint evidence', () => {
   const api = cas({
     system: { id: 'admin-api', name: 'admin-api', type: 'service', root_path: '/tmp/admin-api' },
     nodes: [{ id: 'route', name: 'listUsers', type: 'function', source: { file: 'src/users.ts', line: 1 } } as any],
@@ -556,19 +556,53 @@ test('keeps UI/API name pairings as inference unless source endpoints identify t
     { path: '/tmp/admin-ui', name: 'admin-ui', cas: ui },
   ], { generatedAt: '2026-01-01T00:00:00.000Z' });
   const appNames = new Map(graph.applications.map(app => [app.id, app.name]));
+
+  // Sharing "admin" naming with no exit-point/endpoint evidence must NOT produce a link:
+  // link inference is evidence-only now, there is no name-vocabulary fallback.
+  assert.ok(!graph.application_links.some(candidate =>
+    appNames.get(candidate.source_application_id) === 'admin-ui' &&
+    appNames.get(candidate.target_application_id) === 'admin-api'
+  ));
+});
+
+test('links a UI to an API once a real endpoint call is present (source-backed, not name-inferred)', () => {
+  const api = cas({
+    system: { id: 'admin-api', name: 'admin-api', type: 'service', root_path: '/tmp/admin-api' },
+    nodes: [{ id: 'route', name: 'listUsers', type: 'function', source: { file: 'src/users.ts', line: 1 } } as any],
+    entry_points: [{
+      id: 'entry:users',
+      source_node: 'route',
+      type: 'http',
+      name: 'GET /users',
+      trigger: { method: 'GET', path: '/users' },
+    }],
+  });
+  const ui = cas({
+    system: { id: 'admin-ui', name: 'admin-ui', type: 'application', root_path: '/tmp/admin-ui' },
+    nodes: [{ id: 'config', name: 'ApiConfig', type: 'module', source: { file: 'src/api/config.ts', line: 1 } } as any],
+    exit_points: [{
+      id: 'exit:admin-users',
+      source_node: 'config',
+      type: 'api',
+      name: 'fetch users',
+      target: { endpoint: 'http://admin-api/users' },
+      operation: { method: 'GET' },
+    }],
+  });
+
+  const graph = buildCrossCodebaseSystemGraph('admin-workspace', [
+    { path: '/tmp/admin-api', name: 'admin-api', cas: api },
+    { path: '/tmp/admin-ui', name: 'admin-ui', cas: ui },
+  ], { generatedAt: '2026-01-01T00:00:00.000Z' });
+  const appNames = new Map(graph.applications.map(app => [app.id, app.name]));
   const link = graph.application_links.find(candidate =>
     appNames.get(candidate.source_application_id) === 'admin-ui' &&
     appNames.get(candidate.target_application_id) === 'admin-api'
   );
 
   assert.ok(link);
-  assert.equal(link.evidence_quality, 'name-inferred');
-  assert.ok(link.confidence < 0.7);
-  assert.ok(graph.workspace_workflows.some(workflow =>
-    workflow.deployable_ids.includes(link.source_application_id) &&
-    workflow.deployable_ids.includes(link.target_application_id) &&
-    workflow.evidence_quality === 'name-inferred'
-  ));
+  assert.equal(link.evidence_quality, 'source-backed');
+  assert.ok(link.confidence >= 0.7);
 });
 
 test('AI enrichment updates workspace narrative, domains, and primary capability descriptions without adding graph facts', async () => {
