@@ -29,9 +29,27 @@ export const LanguageAnalyzers = {
   javascript: 'TypeScriptJavaScriptAnalyzer',
   typescript: 'TypeScriptJavaScriptAnalyzer',
   java: 'JavaAnalyzer',
-  scala: 'JavaAnalyzer',
+  // scala intentionally NOT mapped here: it used to point at JavaAnalyzer, which
+  // only globs **/*.java — that made extensionToGrammar() (in
+  // generic-tree-sitter-language-analyzer.ts) treat scala as deep-owned and exclude
+  // it from the breadth walker, while JavaAnalyzer never picked it up either, so
+  // .scala/.sc/.sbt produced ZERO nodes anywhere. Scala has its own
+  // LANGUAGE_REGISTRY entry + LANGUAGE_SPECS grammar and is JVM-family-safe-ignore
+  // aware (JVM_FAMILY_GRAMMAR_IDS in the breadth analyzer) — leaving it unmapped
+  // here lets the generic tree-sitter walker own it for real.
   csharp: 'CSharpAnalyzer',
-  fsharp: 'CSharpAnalyzer',
+  // fsharp intentionally NOT mapped here: same defect class as scala above —
+  // CSharpAnalyzer only globs **/*.cs, never **/*.fs/.fsi/.fsx, so mapping fsharp
+  // to it as "deep-owned" excluded it from the breadth walker while never
+  // analyzing it either (zero coverage). fsharp has its own registry entry +
+  // LANGUAGE_SPECS grammar, so leaving it unmapped routes it to the breadth
+  // walker instead.
+  // vb is deliberately left deep-owned to CSharpAnalyzer below even though
+  // CSharpAnalyzer never globs *.vb either (also zero coverage today): vb has NO
+  // LANGUAGE_REGISTRY entry / tree-sitter grammar, so unmapping it would not
+  // route it anywhere — it would just silently disappear from
+  // SUPPORTED_LANGUAGES. Needs a real vb grammar before this can be fixed the
+  // same way; tracked as a known gap, not fixed here.
   vb: 'CSharpAnalyzer',
   go: 'GoAnalyzer',
   rust: 'RustAnalyzer',
@@ -39,7 +57,12 @@ export const LanguageAnalyzers = {
   ruby: 'RubyAnalyzer',
   dart: 'DartAnalyzer',
   terraform: 'TerraformAnalyzer',
-  hcl: 'TerraformAnalyzer',
+  // hcl intentionally NOT mapped here: same defect class again — TerraformAnalyzer's
+  // file walk only matches .tf/.tfvars/.tfplan (plus backend .conf), never
+  // .hcl/.nomad, so mapping hcl to it as "deep-owned" excluded it from the breadth
+  // walker while never analyzing it either (zero coverage). hcl has its own
+  // registry entry + LANGUAGE_SPECS grammar, so leaving it unmapped routes it to
+  // the breadth walker instead.
   cloudformation: 'CloudFormationAnalyzer',
   c: 'CCppAnalyzer',
   cpp: 'CCppAnalyzer',
@@ -144,14 +167,21 @@ export const ANALYZER_METADATA = [
   },
   {
     name: 'JavaAnalyzer',
-    languages: ['java', 'scala'],
+    // 'scala' intentionally excluded — see the comment on LanguageAnalyzers above;
+    // JavaAnalyzer never globbed *.scala, so scala routes to the generic
+    // tree-sitter breadth walker instead of being falsely claimed here.
+    languages: ['java'],
     frameworks: ['spring-boot', 'spring-mvc', 'hibernate', 'junit', 'maven', 'gradle'],
     priority: 90,
     category: 'language'
   },
   {
     name: 'CSharpAnalyzer',
-    languages: ['csharp', 'fsharp', 'vb'],
+    // 'fsharp' intentionally excluded — see the comment on LanguageAnalyzers above;
+    // CSharpAnalyzer never globbed *.fs/.fsi/.fsx, so fsharp routes to the generic
+    // tree-sitter breadth walker instead of being falsely claimed here. 'vb' stays
+    // (no breadth grammar exists for it yet, so it remains a known zero-coverage gap).
+    languages: ['csharp', 'vb'],
     frameworks: ['asp.net-core', 'entity-framework', 'blazor', 'xamarin', 'maui', 'xunit', 'nunit'],
     priority: 90,
     category: 'language'
@@ -193,7 +223,10 @@ export const ANALYZER_METADATA = [
   },
   {
     name: 'TerraformAnalyzer',
-    languages: ['terraform', 'hcl'],
+    // 'hcl' intentionally excluded — see the comment on LanguageAnalyzers above;
+    // TerraformAnalyzer's file walk never matched *.hcl/.nomad, so hcl routes to
+    // the generic tree-sitter breadth walker instead of being falsely claimed here.
+    languages: ['terraform'],
     frameworks: ['terraform', 'opentofu'],
     priority: 85,
     category: 'language'

@@ -52,12 +52,13 @@ function extensionToGrammar(): Map<string, string> {
 // samples/examples/fixtures/testdata is commonly a REAL package segment, not vendored
 // scaffolding — same reasoning as JavaAnalyzer/KotlinAnalyzer (see BaseAnalyzer.
 // getPackageDirSafeIgnorePatterns's doc comment). Kotlin never reaches this walker
-// (it has its own deep analyzer); Scala is nominally routed to JavaAnalyzer in
-// LanguageAnalyzers (languages/index.ts) so it never reaches this walker's extension
-// map either — 'scala' is still listed here so the safe routing applies automatically
-// if that ownership ever changes. Only JVM-family grammars' globs get the safe ignore
-// set; every other breadth grammar (zig, haskell, lua, ...) keeps the full denylist
-// unfiltered — a JS repo's samples/ directory must stay excluded.
+// (it has its own deep analyzer). Scala USED TO be nominally routed to JavaAnalyzer
+// in LanguageAnalyzers (languages/index.ts), which made extensionToGrammar() treat
+// it as deep-owned and skip it — but JavaAnalyzer only ever globbed *.java, so scala
+// source produced zero nodes anywhere (fixed: scala is no longer deep-mapped, so it
+// now reaches this walker for real). Only JVM-family grammars' globs get the safe
+// ignore set; every other breadth grammar (zig, haskell, lua, ...) keeps the full
+// denylist unfiltered — a JS repo's samples/ directory must stay excluded.
 const JVM_FAMILY_GRAMMAR_IDS = new Set(['scala', 'groovy']);
 
 interface BreadthFile {

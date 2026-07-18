@@ -16,9 +16,11 @@ import { GenericTreeSitterLanguageAnalyzer } from '../../../analyzer/languages/g
  * `samples`/`examples`/`fixtures`/`testdata` are commonly real package
  * segments, not vendored scaffolding. The walker now globs JVM-family
  * extensions through BaseAnalyzer.getPackageDirSafeIgnorePatterns() while
- * every other breadth grammar keeps the full denylist unfiltered. (Scala is
- * nominally owned by JavaAnalyzer per languages/index.ts, so it never reaches
- * this walker at all today — that's a pre-existing gap, not covered here.)
+ * every other breadth grammar keeps the full denylist unfiltered. (Scala used
+ * to be nominally owned by JavaAnalyzer per languages/index.ts, which meant it
+ * never reached this walker at all — see
+ * generic-tree-sitter-scala-breadth.test.ts for the fixture proving that gap
+ * is now fixed.)
  */
 describe('GenericTreeSitterLanguageAnalyzer JVM-family package-dir-safe ignore routing', () => {
   let tmpDir: string;
