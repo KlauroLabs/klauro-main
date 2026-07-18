@@ -1,4 +1,4 @@
-import test from 'node:test';
+import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -9,6 +9,14 @@ import { createRemoteAnalyzerHttpServer } from './remote-analyzer-service';
 import { analyzeBranchDiffRemotely } from './remote-sync-client';
 import { buildBranchDiffContext } from './remote-source';
 import { loadAnalysis } from './storage';
+import { shutdownAnalysisWorker } from './analyzer';
+
+// See the matching comment in remote-sync.test.ts: the remote-analyzer HTTP
+// handlers now dispatch through analyzer.ts's worker-fork isolation, whose
+// persistent worker singleton otherwise keeps `node --test` from exiting.
+after(() => {
+  shutdownAnalysisWorker();
+});
 
 function git(repo: string, args: string[]): void {
   execFileSync('git', args, { cwd: repo, stdio: 'ignore' });

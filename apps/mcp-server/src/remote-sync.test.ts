@@ -1,4 +1,4 @@
-import test from 'node:test';
+import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as http from 'node:http';
@@ -7,7 +7,20 @@ import * as path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { createRemoteAnalyzerHttpServer } from './remote-analyzer-service';
 import { analyzeCodebaseRemotely, syncWorkingTreeRemotely } from './remote-sync-client';
-import { getAnalysis } from './analyzer';
+import { getAnalysis, shutdownAnalysisWorker } from './analyzer';
+
+// The remote-analyzer HTTP handlers now dispatch through analyzer.ts's
+// worker-fork isolation (runAnalysis -> dispatchWorkerJob, see the 2026-07-18
+// incident comment above runIncrementalAnalysisIsolated in
+// remote-analyzer-service.ts) instead of running in-process. The forked
+// worker is a persistent singleton meant to outlive individual requests in a
+// long-running server, but that means it also outlives this test file's own
+// assertions and keeps `node --test` from exiting once nothing else is
+// holding the event loop open. Explicitly tear it down; a no-op if this file
+// never actually triggered a real (non-error, authorized) analyze/sync call.
+after(() => {
+  shutdownAnalysisWorker();
+});
 
 const repoRoot = path.resolve(__dirname, '..');
 const fixturePath = path.join(repoRoot, 'fixtures', 'analysis-truth', 'fastapi-sqlalchemy');

@@ -3,7 +3,7 @@ import * as http from 'node:http';
 import * as fs from 'fs-extra';
 import * as path from 'node:path';
 import { gunzipSync } from 'node:zlib';
-import { analyzeProjectIncremental, analyzeProjectDeferred, analyzeProjectLayered } from './analyzer';
+import { analyzeProjectIncremental, analyzeProjectDeferred, analyzeProjectLayered, runAnalysis } from './analyzer';
 import type { RemoteAnalyzeDiffRequest, RemoteAnalyzeRequest, RemoteAnalyzeResponse, RemoteGreenfieldPreviewRequest, RemoteProjectRevision, RemoteProjectRevisionsResponse, RemoteProposalPreviewRequest, RemoteSyncRequest } from './remote-analyzer-protocol';
 import type { BranchDiffContext, RemoteFileChange, SourceManifest } from './remote-source';
 import { buildSourceSnapshot } from './remote-source';
@@ -2662,6 +2662,44 @@ function anonymizeClient(clientId: string): string {
   return crypto.createHash('sha256').update(clientId).digest('hex').slice(0, 16);
 }
 
+// Incident (2026-07-18): handleAnalyze/handleAnalyzeDiff/handleSync used to call
+// analyzeProjectIncremental() DIRECTLY, running the full incremental-or-rebuild
+// analysis (parsing, embedding, everything) IN-PROCESS inside the same node
+// process as the HTTP listener. analyzer.ts already has a purpose-built
+// isolation mechanism for exactly this (runAnalysis() -> dispatchWorkerJob(),
+// a forked child capped at KLAURO_ANALYSIS_HEAP_MB via --max-old-space-size,
+// whose crash/OOM is caught and reported as a clean run-failed record — "The
+// MCP server itself is unaffected") but these three HTTP handlers never used
+// it, because the worker's IPC round-trip only returns an AnalysisRunSummary
+// (stats), not the full CASOutput these handlers must return in `cas`.
+//
+// Observed effect: a version-triggered full rebuild of a large monorepo grew
+// the MAIN api process's heap past the host's total RAM (7.7GiB, no
+// container memory limit configured), and the kernel's HOST-WIDE OOM killer
+// (constraint=CONSTRAINT_NONE in dmesg — not a cgroup-limit kill, so
+// `docker inspect`'s .State.OOMKilled never reported it) SIGKILLed the node
+// process directly — no chance to log anything. Docker's `restart:
+// unless-stopped` policy revived the container, the stored analysis was
+// still on the old cas_version (the killed rebuild never finished), so the
+// next sync/analyze call re-triggered the same rebuild — repeating every
+// ~5-7 minutes, indefinitely, and the rebuild never completes.
+//
+// Fix: dispatch through runAnalysis() (worker-isolated, heap-capped) and
+// re-load the full CASOutput from storage afterward via getAnalysis() —
+// the worker already persisted it via saveAnalysis/saveAnalysisSnapshot
+// inside analyzeProjectIncremental, so this is a cheap disk read, not a
+// second analysis. A worker OOM now surfaces as a normal thrown error from
+// runAnalysis() (existing callers' try/catch already handle "analysis
+// failed"), not a dead API process.
+async function runIncrementalAnalysisIsolated(
+  workspace: string,
+  displayName: string | undefined,
+): Promise<{ output: Awaited<ReturnType<typeof analyzeProjectIncremental>>['output']; changeReport: RemoteAnalyzeResponse['change_report']; wasFullRebuild: boolean }> {
+  const summary = await runAnalysis(workspace, { displayName });
+  const output = await getAnalysis(workspace);
+  return { output, changeReport: summary.changeReport, wasFullRebuild: summary.wasFullRebuild };
+}
+
 async function handleAnalyze(dataDir: string, request: RemoteAnalyzeRequest, deferAiEnrichment = false, accountSalt?: string): Promise<RemoteAnalyzeResponse> {
   if (!request.snapshot?.files?.length) throw new Error('Remote analyze requires a source snapshot with files');
   const rawAnalysisId = request.project_id || makeAnalysisId(request.project_path || request.snapshot.project_name);
@@ -2688,9 +2726,9 @@ async function handleAnalyze(dataDir: string, request: RemoteAnalyzeRequest, def
     };
   }
 
-  let result: Awaited<ReturnType<typeof analyzeProjectIncremental>>;
+  let result: Awaited<ReturnType<typeof runIncrementalAnalysisIsolated>>;
   try {
-    result = await analyzeProjectIncremental(workspace, displayName);
+    result = await runIncrementalAnalysisIsolated(workspace, displayName);
   } catch (error) {
     // Comprehension is AI-only and THROWS when a hosted AI provider is not
     // available (docs/cas/DETERMINISM-BOUNDARY.md). The remote analyze edge is
@@ -2742,7 +2780,7 @@ async function handleAnalyzeDiff(dataDir: string, request: RemoteAnalyzeDiffRequ
   let changeReport: RemoteAnalyzeResponse['change_report'];
   let analysisType: 'full' | 'incremental' = 'incremental';
   try {
-    const result = await analyzeProjectIncremental(workspace, displayName);
+    const result = await runIncrementalAnalysisIsolated(workspace, displayName);
     cas = result.output;
     changeReport = result.changeReport;
     analysisType = result.wasFullRebuild ? 'full' : 'incremental';
@@ -2849,7 +2887,7 @@ async function handleSync(dataDir: string, request: RemoteSyncRequest, accountSa
 
   await applyChanges(workspace, request.changes.changed_files || []);
   const displayName = resolveDisplayName(request.changes.project_name, request.project_path);
-  const result = await analyzeProjectIncremental(workspace, displayName);
+  const result = await runIncrementalAnalysisIsolated(workspace, displayName);
   return {
     status: 'success',
     analysis_id: analysisId,

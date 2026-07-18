@@ -32,6 +32,31 @@ services:
       # of an empty bucket. Never triggers a bootstrap analysis of this path —
       # only KLAURO_SELF_TELEMETRY_PROJECT above ever does that.
       KLAURO_SELF_TELEMETRY_CANONICAL_PROJECT: /data/workspaces/prj_wbW33m-wfETn1N41
+      # Incident (2026-07-18): a version-triggered full rebuild of a large
+      # monorepo (the async POST /reanalyze path's analyzeProjectLayered call —
+      # see the "ASYNC REANALYZE" comment in remote-analyzer-service.ts — still
+      # runs the heavy analysis IN-PROCESS via setImmediate, not through the
+      # worker-fork isolation analyzer.ts already has for other paths) grew
+      # this MAIN api process's heap past the host's total RAM (7.7GiB, no
+      # container memory limit configured). The kernel's HOST-WIDE OOM killer
+      # (dmesg: constraint=CONSTRAINT_NONE, i.e. not a cgroup-limit kill, so
+      # `docker inspect`'s .State.OOMKilled never reports it) SIGKILLed the
+      # node process directly, with zero log output, and docker's `restart:
+      # unless-stopped` policy silently revived it — repeating every ~5-7
+      # minutes since the killed rebuild never persists a completed
+      # cas_version, so the next freshness check re-triggers it.
+      # This heap ceiling does NOT fix that (the layered reanalyze path still
+      # needs worker isolation — tracked separately), but it bounds the blast
+      # radius (the process fails at ~4GB instead of exhausting the whole
+      # host, which could otherwise take down unrelated host processes too)
+      # AND makes the failure VISIBLE: V8 logs "FATAL ERROR: Reached heap
+      # limit ... JavaScript heap out of memory" to stderr before terminating,
+      # instead of the silent, unloggable SIGKILL this incident exhibited.
+      # Sized to match the existing worker heap ceiling (KLAURO_ANALYSIS_HEAP_MB
+      # in /opt/klauro/.env, applied via --max-old-space-size in analyzer.ts's
+      # spawnAnalysisWorker) so both the in-process and forked paths fail at
+      # the same, already-proven-safe threshold.
+      NODE_OPTIONS: --max-old-space-size=4096
     expose:
       - "8787"
     volumes:
