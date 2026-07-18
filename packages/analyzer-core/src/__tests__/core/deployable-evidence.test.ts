@@ -1325,3 +1325,224 @@ describe('collectDeployableEvidence: evidence-gated bundling resolution (SPEC-DE
     });
   });
 });
+
+// --- Compose<->container identity join + build-stage exclusion (2026-07
+// hosted CAS shape, v1.0.112: a compose-based Rust workspace). Real defect:
+// each service surfaced as an UNMERGED trio (compose-service + container +
+// bin), plus junk Tier-1 rows for pure build-infra Dockerfiles (a shared
+// FROM base other Dockerfiles build on top of, and a multi-stage
+// "build-only, copy the binaries out" builder image).
+describe('collectDeployableEvidence: compose<->container identity join + build-stage exclusion', () => {
+  let projectPath: string;
+
+  afterEach(() => {
+    if (projectPath) fs.removeSync(projectPath);
+  });
+
+  function serviceDockerfile(crate: string): string {
+    return [
+      'FROM zerac-base:latest',
+      `COPY target/release/${crate} /usr/local/bin/${crate}`,
+      `ENTRYPOINT ["/usr/local/bin/${crate}"]`,
+    ].join('\n') + '\n';
+  }
+
+  function composeServiceNode(name: string): CASNode {
+    return {
+      id: `compose_service_${name}`,
+      name: `Compose service: ${name}`,
+      type: 'compose_service',
+      source: { file: 'docker-compose.yml', line: 1 },
+      metadata: {
+        topology_surface: 'docker-compose',
+        deployment_service_name: name,
+        build: '.',
+      } as any,
+    };
+  }
+
+  function containerNode(dockerfileStem: string, baseImages: string[]): CASNode {
+    return {
+      id: `dockerfile_${dockerfileStem}`,
+      name: `Docker image definition: docker/${dockerfileStem}.Dockerfile`,
+      type: 'container_image_definition',
+      source: { file: `docker/${dockerfileStem}.Dockerfile`, line: 1 },
+      metadata: {
+        topology_surface: 'dockerfile',
+        base_images: baseImages,
+      } as any,
+    };
+  }
+
+  test('real-shape fixture: 5 compose services join 1:1 with their Dockerfiles, drop-server/dropserver merge, Base/BuildBinaries are excluded from ship units, zero junk Tier-1', () => {
+    projectPath = tempProject();
+
+    const services = ['client', 'coordinator', 'agent', 'gateway', 'drop-server'];
+    const dockerfileStems: Record<string, string> = {
+      client: 'Client',
+      coordinator: 'Coordinator',
+      agent: 'Agent',
+      gateway: 'Gateway',
+      'drop-server': 'DropServer', // twin naming style: compose "drop-server" <-> Dockerfile stem "DropServer"/"dropserver"
+    };
+
+    fs.mkdirpSync(path.join(projectPath, 'docker'));
+    for (const svc of services) {
+      fs.writeFileSync(path.join(projectPath, 'docker', `${dockerfileStems[svc]}.Dockerfile`), serviceDockerfile(svc));
+    }
+    fs.writeFileSync(path.join(projectPath, 'docker', 'Base.Dockerfile'), 'FROM debian:bookworm-slim\n');
+    fs.writeFileSync(
+      path.join(projectPath, 'docker', 'BuildBinaries.Dockerfile'),
+      [
+        'FROM rust:1.79 AS builder',
+        'RUN cargo build --release -p coordinator',
+        'RUN cargo build --release -p drop-server',
+        'FROM scratch',
+        'COPY --from=builder /app/target/release/coordinator /coordinator',
+        'COPY --from=builder /app/target/release/drop-server /drop-server',
+      ].join('\n') + '\n',
+    );
+
+    fs.writeFileSync(
+      path.join(projectPath, 'Cargo.toml'),
+      [
+        '[package]',
+        'name = "workspace"',
+        'version = "0.1.0"',
+        '',
+        ...services.flatMap(svc => ['[[bin]]', `name = "${svc}"`, `path = "src/${svc}/main.rs"`, '']),
+      ].join('\n'),
+    );
+
+    const nodes: CASNode[] = [
+      ...services.map(composeServiceNode),
+      ...services.map(svc => containerNode(dockerfileStems[svc], ['zerac-base:latest'])),
+      containerNode('Base', ['debian:bookworm-slim']),
+      containerNode('BuildBinaries', ['rust:1.79', 'scratch']),
+    ];
+
+    const result = collectDeployableEvidence({ projectPath, nodes, entryPoints: [], exitPoints: [] });
+
+    // Exactly one Tier-1 row per real service — the compose-service/container
+    // trio collapsed into ONE row, not three.
+    const tier1 = result.filter(item => item.tier === 1);
+    expect(tier1).toHaveLength(services.length);
+    expect(new Set(tier1.map(item => item.name))).toEqual(new Set(services));
+    for (const unit of tier1) {
+      expect(unit.kind).toBe('compose-service');
+      expect(unit.evidence.some(e => e.startsWith('compose service:'))).toBe(true);
+      expect(unit.evidence.some(e => e.startsWith('Dockerfile:'))).toBe(true);
+      expect(unit.evidence.some(e => e.includes('merged-container-identity'))).toBe(true);
+    }
+
+    // No junk Tier-1 row for the build-infra Dockerfiles.
+    expect(tier1.some(item => item.name === 'base' || item.name === 'Base')).toBe(false);
+    expect(tier1.some(item => item.name === 'buildbinaries' || item.name === 'BuildBinaries')).toBe(false);
+
+    // Base.Dockerfile (used as FROM base, no build output of its own) is
+    // excluded outright — not even a demoted row.
+    expect(result.some(item => /base/i.test(item.name) && item.kind === 'container')).toBe(false);
+
+    // BuildBinaries.Dockerfile (multi-stage builder, no runtime entrypoint,
+    // builds 2 real members) is demoted to a Tier-3 build-image citation,
+    // never a Tier-1 ship unit.
+    const buildImage = result.find(item => item.kind === 'build-image');
+    expect(buildImage).toBeDefined();
+    expect(buildImage!.tier).toBe(3);
+    expect(buildImage!.evidence.some(e => e.includes('coordinator') && e.includes('drop-server'))).toBe(true);
+
+    // Every Cargo [[bin]] bundles into its OWN joined service unit.
+    const bins = result.filter(item => item.kind === 'bin');
+    expect(bins).toHaveLength(services.length);
+    for (const bin of bins) {
+      expect(bin.bundled_into).toBe(bin.name);
+    }
+  });
+
+  test('negative: a compose service backed by an IMAGE (no build) never merges with an unrelated Dockerfile of the same name coincidence', () => {
+    projectPath = tempProject();
+    fs.mkdirpSync(path.join(projectPath, 'docker'));
+    fs.writeFileSync(path.join(projectPath, 'docker', 'Worker.Dockerfile'), serviceDockerfile('worker'));
+
+    const nodes: CASNode[] = [
+      {
+        id: 'compose_service_redis',
+        name: 'Compose service: redis',
+        type: 'compose_service',
+        source: { file: 'docker-compose.yml', line: 1 },
+        metadata: {
+          topology_surface: 'docker-compose',
+          deployment_service_name: 'redis',
+          image: 'redis:7.4-alpine', // no `build:` -> pulled image, not a ship declaration
+        } as any,
+      },
+      containerNode('Worker', ['zerac-base:latest']),
+    ];
+
+    const result = collectDeployableEvidence({ projectPath, nodes, entryPoints: [], exitPoints: [] });
+    // The image-only compose service never became a row at all; the
+    // unrelated "worker" container stands alone, untouched.
+    expect(result.some(item => item.kind === 'compose-service')).toBe(false);
+    const container = result.find(item => item.kind === 'container');
+    expect(container).toBeDefined();
+    expect(container!.name).toBe('worker');
+  });
+
+  test('negative: a standalone Dockerfile repo with no compose file at all is unaffected by the join/exclusion passes', () => {
+    projectPath = tempProject();
+    fs.writeFileSync(path.join(projectPath, 'Dockerfile'), serviceDockerfile('solo-app'));
+
+    const nodes: CASNode[] = [
+      {
+        id: 'dockerfile_solo',
+        name: 'Docker image definition: Dockerfile',
+        type: 'container_image_definition',
+        source: { file: 'Dockerfile', line: 1 },
+        metadata: { topology_surface: 'dockerfile', base_images: ['zerac-base:latest'], service_aliases: ['solo-app'] } as any,
+      },
+    ];
+
+    const result = collectDeployableEvidence({ projectPath, nodes, entryPoints: [], exitPoints: [] });
+    const container = result.find(item => item.kind === 'container');
+    expect(container).toBeDefined();
+    expect(container!.tier).toBe(1);
+    expect(container!.name).toBe('solo-app');
+  });
+
+  test('bin->service rebundling wins over a weaker installer-only bundle when a real compose-service unit shares the identity', () => {
+    // The joined compose-service unit has no ships_paths of its own here
+    // (no matching container was found to fold in), so resolveEvidenceBundling's
+    // ships_paths-only pass can't use it as a bundling source at all — an
+    // unrelated installer row that DOES carry positive ships_paths evidence
+    // for "worker" claims the bin first. rebundleBinsIntoServiceUnits must
+    // still re-point it at the real service unit by name identity.
+    projectPath = tempProject();
+    fs.writeFileSync(
+      path.join(projectPath, 'Cargo.toml'),
+      ['[package]', 'name = "workspace"', 'version = "0.1.0"', '', '[[bin]]', 'name = "worker"', 'path = "src/worker/main.rs"', ''].join('\n'),
+    );
+
+    const nodes: CASNode[] = [
+      composeServiceNode('worker'),
+      {
+        id: 'installer_legacy',
+        name: 'Installer: LegacyPackaging',
+        type: 'distribution_installer',
+        source: { file: 'installer/legacy.nsi', line: 1 },
+        metadata: {
+          topology_surface: 'distribution-artifacts',
+          artifact_kind: 'installer',
+          distribution_role: 'installer',
+          product_name: 'LegacyPackaging',
+          binary_names: ['worker'],
+        } as any,
+      },
+    ];
+
+    const result = collectDeployableEvidence({ projectPath, nodes, entryPoints: [], exitPoints: [] });
+    const workerBin = result.find(item => item.kind === 'bin' && item.name === 'worker');
+    expect(workerBin).toBeDefined();
+    expect(workerBin!.bundled_into).toBe('worker');
+    expect(workerBin!.bundled_into).not.toBe('LegacyPackaging');
+  });
+});

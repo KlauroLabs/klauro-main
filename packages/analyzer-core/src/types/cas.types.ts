@@ -4134,11 +4134,18 @@ export interface DeployableEvidence {
   root_path: string;        // dir owning this candidate (build context / manifest dir / crate dir)
   name: string;
   tier: 1 | 2 | 3;          // 1=ship declaration, 2=runnable entry, 3=package identity
-  kind: 'container' | 'compose-service' | 'k8s' | 'serverless' | 'installer' | 'ci-deploy' | 'bin' | 'server-entry' | 'package';
+  kind: 'container' | 'compose-service' | 'k8s' | 'serverless' | 'installer' | 'ci-deploy' | 'bin' | 'server-entry' | 'package' | 'build-image';
   evidence: string[];       // concrete: file paths, manifest keys, port bindings
   ships_paths?: string[];   // Tier-1 only: what this artifact packages/COPYs/bundles (membership names, e.g. bin/crate names)
   ports?: number[];
   entrypoint_member?: string; // Tier-1 only: which of ships_paths is the primary/ENTRYPOINT of a multi-member bundle
+  /** Container-kind only: the Dockerfile's own `FROM` base image references
+   *  (registry/tag included, as written), extracted as a structured field so
+   *  CAS-level consolidation (deployable-evidence.ts's build-stage-exclusion
+   *  pass) can cross-reference "is this Dockerfile used as a base by another
+   *  Dockerfile in this repo" without re-parsing the file — the human-
+   *  readable `FROM ...` line stays in `evidence` too. */
+  base_images?: string[];
   /** Tier-2/3 only: name of the Tier-1 ship unit this candidate is bundled
    *  into, set by evidence-gated bundling resolution (see
    *  resolveEvidenceBundling in deployable-evidence.ts) when a sibling

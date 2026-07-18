@@ -204,6 +204,11 @@ function collect(ctx: EvidenceCollectionContext): DeployableEvidence[] {
         ships_paths: shipsPaths.length ? shipsPaths : undefined,
         ports: numericPorts(exposedPorts),
         entrypoint_member: dockerfileMembers.entrypointMember,
+        // Structured FROM-base facts (see DeployableEvidence.base_images) so
+        // the CAS-level consolidation pass can detect "this Dockerfile is
+        // itself only a base/builder image for OTHER Dockerfiles in this
+        // repo" without re-reading/re-parsing any file.
+        base_images: baseImages.length ? baseImages : undefined,
       });
     }
 

@@ -1,3 +1,4 @@
+import * as path from 'path';
 import type { CASEntryPoint, CASExitPoint, CASNode, CASOutput, DeployableEvidence } from '../../types/cas.types';
 import { getProviders } from './deployable-evidence/registry';
 import type { EvidenceCollectionContext, EvidenceProvider } from './deployable-evidence/types';
@@ -70,8 +71,25 @@ export function collectDeployableEvidence(input: CollectDeployableEvidenceInput)
 
   const deduped = dedupe(results);
   const consolidated = mergeDuplicateNamedInstallerLeaves(deduped);
-  resolveEvidenceBundling(consolidated);
-  return consolidated;
+  // Compose<->container identity join must run BEFORE the ships_paths
+  // bundling pass: a real service is currently three unmerged rows (compose-
+  // service, container, bin), and folding compose+container into ONE Tier-1
+  // row first gives the bin-bundling pass below a single strong unit to
+  // match against, instead of two weaker/duplicate ones.
+  const joined = joinComposeAndContainerUnits(consolidated);
+  // Build-infra Dockerfiles (base images other Dockerfiles FROM, and
+  // multi-stage "build only" builder images) are demoted/excluded next, so
+  // their ships_paths never participate in the bundling pass below as if
+  // they were a real ship unit.
+  const classified = classifyBuildStageContainers(joined);
+  resolveEvidenceBundling(classified);
+  // Re-point any bin/server-entry candidate at a REAL joined service unit
+  // (compose-service/container/k8s) when one matches by identity, even when
+  // resolveEvidenceBundling already bundled it into a weaker installer unit
+  // (e.g. an installer whose product-name resolution failed and fell back
+  // to "unnamed-service") — real service identity always wins.
+  rebundleBinsIntoServiceUnits(classified);
+  return classified;
 }
 
 function dedupe(items: DeployableEvidence[]): DeployableEvidence[] {
@@ -252,5 +270,227 @@ function resolveEvidenceBundling(items: DeployableEvidence[]): void {
       ];
       break;
     }
+  }
+}
+
+/** Strips a registry host + tag/digest off an image reference and returns
+ *  just the final path segment — `registry.example.com/team/zerac-base:1.2`
+ *  -> `zerac-base`. Matching input for normalizeMemberToken, never a display
+ *  name. */
+function stripImageTagAndRegistry(ref: string): string {
+  const withoutDigest = ref.split('@')[0];
+  const withoutTag = withoutDigest.includes(':') ? withoutDigest.split(':')[0] : withoutDigest;
+  const segments = withoutTag.split('/').filter(Boolean);
+  return segments[segments.length - 1] || withoutTag;
+}
+
+/** Does this Tier-1 unit's ENTRYPOINT/CMD-derived member name agree with
+ *  `name`? Real corroboration signal for the compose<->container join and
+ *  the bin->service rebundling pass below — not name-similarity, an actual
+ *  extracted runtime fact (container.ts's parseDockerfileMembers). */
+function entrypointTokenMatchesName(entrypointMember: string | undefined, name: string): boolean {
+  if (!entrypointMember || !name) return false;
+  return normalizeMemberToken(path.basename(entrypointMember)) === normalizeMemberToken(name);
+}
+
+/** Does `containerRootPath` live inside (or at) `composeRootPath`? A compose
+ *  service's `build:` context is the operator-facing boundary; a Dockerfile
+ *  the compose file actually builds commonly lives in a subdirectory of that
+ *  context (e.g. `docker/Client.Dockerfile` under a root build context) —
+ *  real structural corroboration for the identity join below, independent of
+ *  naming. `path.relative` starting with `..` means containerRootPath is
+ *  OUTSIDE composeRootPath's tree. */
+function isDockerfileWithinBuildContext(composeRootPath: string, containerRootPath: string): boolean {
+  const rel = path.relative(composeRootPath || '.', containerRootPath || '.');
+  return !path.isAbsolute(rel) && !rel.startsWith('..');
+}
+
+/**
+ * Joins a compose-service Tier-1 row with the container Tier-1 row for the
+ * SAME Dockerfile it builds. Real hosted defect (2026-07, compose-based Rust
+ * workspace, v1.0.112): every service surfaced as an UNMERGED trio — a
+ * `compose-service` row, a `container` row (from the Dockerfile the service
+ * builds), and a `bin` row (the Cargo crate it runs) — instead of one Tier-1
+ * ship unit. This join folds the first two together (the bin join is
+ * `rebundleBinsIntoServiceUnits` below).
+ *
+ * Evidence-gated, never name-only: normalized-name equality between the
+ * compose service name and the container's derived name (via
+ * `normalizeMemberToken` — hyphen/case/separator-insensitive, so
+ * `drop-server` <-> `dropserver` still match) is REQUIRED, but two unrelated
+ * services could coincidentally share a name, so a second, structural
+ * corroboration signal must ALSO agree: either the Dockerfile physically
+ * lives inside the compose service's own build-context directory
+ * (`isDockerfileWithinBuildContext`), or the Dockerfile's own ENTRYPOINT/CMD
+ * names the same service (`entrypointTokenMatchesName`). Neither signal
+ * alone is name-similarity — both are facts already extracted elsewhere
+ * (compose `build:` context, container.ts's Dockerfile ENTRYPOINT/CMD
+ * parse).
+ *
+ * Survivor is the compose-service row — the operator-facing name/definition
+ * — with the container's evidence, ships_paths, ports, entrypoint_member and
+ * base_images folded in; the container row is removed. A compose service
+ * with no matching container (or a container matching nothing) is left
+ * untouched (never merge on absence of evidence).
+ */
+function joinComposeAndContainerUnits(items: DeployableEvidence[]): DeployableEvidence[] {
+  const composeRows = items.filter(item => item.tier === 1 && item.kind === 'compose-service');
+  const containerRows = items.filter(item => item.tier === 1 && item.kind === 'container');
+  if (!composeRows.length || !containerRows.length) return items;
+
+  const merged = new Set<DeployableEvidence>();
+
+  for (const compose of composeRows) {
+    const composeKey = normalizeMemberToken(compose.name);
+    if (!composeKey) continue;
+
+    const match = containerRows.find(container => {
+      if (merged.has(container)) return false;
+      if (normalizeMemberToken(container.name) !== composeKey) return false;
+      const pathAgrees = isDockerfileWithinBuildContext(compose.root_path, container.root_path);
+      const entrypointAgrees = entrypointTokenMatchesName(container.entrypoint_member, compose.name);
+      return pathAgrees || entrypointAgrees;
+    });
+    if (!match) continue;
+
+    compose.evidence = [...new Set([...compose.evidence, ...match.evidence, `merged-container-identity:${match.name}`])];
+    const unionShipsPaths = [...new Set([...(compose.ships_paths || []), ...(match.ships_paths || [])])];
+    compose.ships_paths = unionShipsPaths.length ? unionShipsPaths : undefined;
+    if (!compose.entrypoint_member && match.entrypoint_member) compose.entrypoint_member = match.entrypoint_member;
+    const unionBaseImages = [...new Set([...(compose.base_images || []), ...(match.base_images || [])])];
+    compose.base_images = unionBaseImages.length ? unionBaseImages : undefined;
+    const unionPorts = [...new Set([...(compose.ports || []), ...(match.ports || [])])];
+    compose.ports = unionPorts.length ? unionPorts : undefined;
+    merged.add(match);
+  }
+
+  return merged.size ? items.filter(item => !merged.has(item)) : items;
+}
+
+/**
+ * Demotes/excludes BUILD-INFRA Dockerfiles from the Tier-1 ship-unit list. A
+ * Dockerfile that never runs anything itself (no ENTRYPOINT/CMD evidence —
+ * `hasRuntimeEntrypoint` below) and is either:
+ *  (a) the FROM base another Dockerfile in this same repo builds on top of
+ *      (`usedAsBaseElsewhere` — cross-references every OTHER container row's
+ *      structured `base_images` field, never a keyword/name heuristic), or
+ *  (b) a multi-stage "build only, copy the binaries out" builder image
+ *      (`isBuilderShape` — multiple FROM stages AND multiple built/copied
+ *      members AND no primary entrypoint of its own)
+ * is plumbing FOR other ship units, never an independent one of its own
+ * (SPEC-DEPLOYABLE-DETECTION.md: "a deployable is an independent SHIP/RUN
+ * artifact"). Real hosted shape (2026-07): a `Base.Dockerfile` (FROM debian,
+ * no entrypoint, every other service Dockerfile FROMs it) and a
+ * `BuildBinaries.Dockerfile` (FROM rust + scratch, builds/copies multiple
+ * services' binaries, no runtime entrypoint) both surfaced as junk Tier-1
+ * "deployables" alongside the real services.
+ *
+ * A container WITH its own entrypoint/cmd is NEVER touched by either
+ * check — only the plumbing-shaped rows above. When demoted, the row is
+ * kept at Tier-3 kind `build-image` (a citation, not a ship unit) IF its own
+ * evidence positively names the unit(s) it builds for (its `ships_paths`);
+ * a bare FROM-base row with no build output of its own names nothing beyond
+ * itself and is dropped outright rather than kept as an unexplained row.
+ */
+function classifyBuildStageContainers(items: DeployableEvidence[]): DeployableEvidence[] {
+  const containers = items.filter(item => item.tier === 1 && item.kind === 'container');
+  if (!containers.length) return items;
+
+  // Cross-reference set for "is this a FROM base for something else": every
+  // Tier-1 row carrying `base_images`, not just rows still shaped `kind:
+  // 'container'` — joinComposeAndContainerUnits (above) already folded a
+  // real service's own container row into its compose-service row by this
+  // point, moving that base_images evidence onto the compose-service-kind
+  // survivor. Restricting this lookup to `containers` would blind the check
+  // to every already-joined service, since none of them are `kind:
+  // 'container'` anymore.
+  const baseImageSources = items.filter(item => item.tier === 1 && (item.base_images?.length ?? 0) > 0);
+
+  const hasRuntimeEntrypoint = (item: DeployableEvidence): boolean =>
+    Boolean(item.entrypoint_member) || item.evidence.some(e => e.startsWith('entrypoint/cmd:'));
+
+  const usedAsBaseElsewhere = (candidate: DeployableEvidence): boolean => {
+    const candidateKey = normalizeMemberToken(candidate.name);
+    if (!candidateKey || candidateKey.length < 3) return false;
+    return baseImageSources.some(other => {
+      if (other === candidate) return false;
+      return (other.base_images || []).some(ref => {
+        const token = normalizeMemberToken(stripImageTagAndRegistry(ref));
+        if (!token) return false;
+        return token === candidateKey || token.includes(candidateKey) || candidateKey.includes(token);
+      });
+    });
+  };
+
+  const isBuilderShape = (candidate: DeployableEvidence): boolean =>
+    !hasRuntimeEntrypoint(candidate) &&
+    (candidate.ships_paths?.length ?? 0) >= 2 &&
+    (candidate.base_images?.length ?? 0) >= 2;
+
+  const out: DeployableEvidence[] = [];
+  for (const item of items) {
+    const isBuildInfra =
+      item.tier === 1 &&
+      item.kind === 'container' &&
+      !hasRuntimeEntrypoint(item) &&
+      (usedAsBaseElsewhere(item) || isBuilderShape(item));
+
+    if (!isBuildInfra) {
+      out.push(item);
+      continue;
+    }
+
+    const namedTargets = item.ships_paths || [];
+    if (!namedTargets.length) continue; // names nothing beyond itself — drop outright
+
+    out.push({
+      ...item,
+      tier: 3,
+      kind: 'build-image',
+      bundled_into: namedTargets.length === 1 ? namedTargets[0] : item.bundled_into,
+      evidence: [
+        ...item.evidence,
+        namedTargets.length === 1
+          ? `build-infra: excluded from ship-unit tier (builds for ${namedTargets[0]})`
+          : `build-infra: excluded from ship-unit tier (builds for ${namedTargets.join(', ')})`,
+      ],
+    });
+  }
+  return out;
+}
+
+/**
+ * Bin -> service bundling: a Tier-2 `bin`/`server-entry` candidate whose
+ * normalized name matches a joined ship unit's own name, or whose token
+ * agrees with that unit's ENTRYPOINT/CMD member (e.g. a Cargo bin
+ * `drop-server` compiled into a Dockerfile `ENTRYPOINT ["/bin/drop-server"]`),
+ * belongs to THAT unit — real, evidence-grounded service identity — and this
+ * must WIN over the weaker "swept into an installer whose product-name
+ * resolution failed" (`unnamed-service`) bundling `resolveEvidenceBundling`
+ * may already have set purely from a positive-but-generic `ships_paths` hit.
+ * Only re-points an EXISTING `bundled_into` when a stronger service-identity
+ * match is found; a candidate matching no service unit at all is left
+ * exactly as resolveEvidenceBundling set it (never merge on absence).
+ */
+function rebundleBinsIntoServiceUnits(items: DeployableEvidence[]): void {
+  const serviceUnits = items.filter(
+    item => item.tier === 1 && (item.kind === 'compose-service' || item.kind === 'container' || item.kind === 'k8s'),
+  );
+  if (!serviceUnits.length) return;
+
+  for (const candidate of items) {
+    if (candidate.tier === 1) continue;
+    const candidateKey = normalizeMemberToken(candidate.name);
+    if (!candidateKey) continue;
+
+    const unit = serviceUnits.find(
+      u => normalizeMemberToken(u.name) === candidateKey || entrypointTokenMatchesName(u.entrypoint_member, candidate.name),
+    );
+    if (!unit || unit.name === candidate.bundled_into) continue;
+
+    candidate.bundled_into = unit.name;
+    candidate.evidence = [
+      ...new Set([...candidate.evidence, `bundled-into:${unit.name}`, 'positive-bundling-evidence:service-identity-match']),
+    ];
   }
 }
