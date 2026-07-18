@@ -1285,6 +1285,13 @@ export async function analyzeProjectLayered(projectPath: string, displayName?: s
         const incremental = await analyzeProjectIncremental(projectPath, displayName);
         deferred = { output: incremental.output, enrichment: Promise.resolve() };
       } catch (error) {
+        // The loop-breaker's refusal must NOT be swallowed by this fallback:
+        // analyzeProjectDeferred always runs a full rebuild unconditionally,
+        // with no version-mismatch guard of its own, so falling back here
+        // would immediately repeat the exact doomed rebuild the guard just
+        // refused — defeating it entirely. Propagate it as a hard failure of
+        // this layered pass instead.
+        if (error instanceof AnalysisLoopBreakerError) throw error;
         const message = error instanceof Error ? error.message : String(error);
         console.error(`[Klauro] warm incremental pass failed for ${projectPath} (${message}); falling back to full deferred analysis`);
         deferred = await analyzeProjectDeferred(projectPath, displayName);
@@ -1814,6 +1821,14 @@ interface InternalRebuildAttemptRecord {
   finished_at?: string;
   duration_ms?: number;
   reason?: string;
+  /**
+   * The exact (stored -> current) cas_version pair this attempt was rebuilding
+   * for. Recorded so a LATER attempt can tell whether it is about to retry the
+   * SAME rebuild that already failed (loop-breaker below) versus a genuinely
+   * new one (e.g. a subsequent deploy bumped the version again).
+   */
+  stored_version?: string;
+  current_version?: string;
 }
 
 function internalRebuildAttemptPath(projectPath: string): string {
@@ -1825,6 +1840,100 @@ async function writeInternalRebuildAttempt(projectPath: string, record: Internal
     await writeJsonAtomic(internalRebuildAttemptPath(projectPath), record);
   } catch {
     /* best-effort: attempt visibility must never mask or block the rebuild it describes */
+  }
+}
+
+async function readInternalRebuildAttempt(projectPath: string): Promise<InternalRebuildAttemptRecord | null> {
+  try {
+    if (!nodeFs.existsSync(internalRebuildAttemptPath(projectPath))) return null;
+    return await fs.readJson(internalRebuildAttemptPath(projectPath));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Thrown by guardAgainstDoomedVersionRebuild when it refuses to auto-retrigger
+ * a version-bump full rebuild that already failed with a worker-oom/watchdog
+ * reason for this EXACT (stored_version -> current_version) pair. This is the
+ * infinite-crash-loop breaker (incident 2026-07-18): a huge monorepo's full
+ * rebuild balloons the worker past its heap cap, the worker dies, the
+ * container/process restarts, and the very next request re-triggers the SAME
+ * doomed rebuild — forever, with each cycle reading as "in-progress" rather
+ * than a repeating failure. Once one attempt for a given version pair has
+ * already failed for a memory/watchdog reason, every SUBSEQUENT request for
+ * that pair fails fast with this error instead of repeating the crash; a
+ * human or agent must explicitly re-trigger (e.g. after raising
+ * KLAURO_ANALYSIS_HEAP_MB or fixing the underlying hang) to clear it. A
+ * failure for any OTHER reason (a real code bug, a transient I/O error) does
+ * NOT trip this guard — only the memory/hang signature that caused the
+ * original incident.
+ */
+export class AnalysisLoopBreakerError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'AnalysisLoopBreakerError';
+  }
+}
+
+function isDoomedRebuildReason(reason: string | undefined): boolean {
+  if (!reason) return false;
+  return /worker-oom|reached heap limit|javascript heap out of memory|fatal error|watchdog-timeout|killed by signal|exhausting its heap/i.test(reason);
+}
+
+async function guardAgainstDoomedVersionRebuild(
+  projectPath: string,
+  versionInfo: { stored_version?: string; current_version: string },
+): Promise<void> {
+  if (!versionInfo.stored_version || versionInfo.stored_version === versionInfo.current_version) return;
+  const previousAttempt = await readInternalRebuildAttempt(projectPath);
+  if (
+    previousAttempt?.state === 'failed' &&
+    previousAttempt.stored_version === versionInfo.stored_version &&
+    previousAttempt.current_version === versionInfo.current_version &&
+    isDoomedRebuildReason(previousAttempt.reason)
+  ) {
+    const message = [
+      `loop-breaker: refusing to auto-retrigger the version-rebuild for ${projectPath}`,
+      `(stored_version=${versionInfo.stored_version} -> current_version=${versionInfo.current_version}).`,
+      `The previous attempt (finished ${previousAttempt.finished_at ?? previousAttempt.started_at}) already FAILED`,
+      `with a worker-oom/watchdog reason: ${previousAttempt.reason}.`,
+      `Auto-retriggering an identical rebuild would repeat the same crash indefinitely`,
+      `(the 2026-07-18 infinite-crash-loop incident). Leaving the failed attempt record in place;`,
+      `a human or agent must explicitly re-trigger (e.g. a force_full reanalyze) after addressing`,
+      `the cause (raise KLAURO_ANALYSIS_HEAP_MB, reduce analysis_focus, or fix the hang).`,
+    ].join(' ');
+    console.error(`[Klauro] ${message}`);
+    throw new AnalysisLoopBreakerError(message);
+  }
+}
+
+/**
+ * Pre-flight, side-effect-free check for callers (remote-analyzer-service.ts's
+ * async /v1/analyze and /reanalyze continuations) that need to know BEFORE
+ * writing their own 'in-progress' attempt record whether this project's next
+ * rebuild is a doomed repeat. This matters because those callers write to the
+ * SAME sidecar file (`.reanalyze-attempt.json`, see internalRebuildAttemptPath
+ * / projectAttemptRecordPath) that carries the loop-breaker's evidence: if a
+ * caller unconditionally overwrote it with a fresh 'in-progress' record before
+ * dispatching, the failed+versioned record the guard depends on would be gone
+ * by the time guardAgainstDoomedVersionRebuild (running inside the dispatched
+ * worker) got a chance to read it, and the doomed rebuild would proceed anyway.
+ * Returns the loop-breaker's message (safe to use directly as an attempt
+ * record's `reason`) when the next rebuild would be doomed, or null when it is
+ * safe to proceed (including: no stored analysis yet, no version mismatch, or
+ * a mismatch whose prior failure wasn't a memory/watchdog cause).
+ */
+export async function checkDoomedVersionRebuild(projectPath: string): Promise<string | null> {
+  try {
+    const previousOutput = await loadAnalysis(projectPath, { preferCache: true }).catch(() => null);
+    if (!previousOutput) return null;
+    const versionInfo = getAnalysisVersionInfo(previousOutput);
+    await guardAgainstDoomedVersionRebuild(projectPath, versionInfo);
+    return null;
+  } catch (error) {
+    if (error instanceof AnalysisLoopBreakerError) return error.message;
+    return null;
   }
 }
 
@@ -1983,12 +2092,7 @@ export function __withOuterWorkerWatchdogForTests(
  *  currently on disk for `projectPath`, without needing a real version-bumped
  *  CAS on disk to trigger one. */
 export async function __readInternalRebuildAttemptForTests(projectPath: string): Promise<InternalRebuildAttemptRecord | null> {
-  try {
-    if (!nodeFs.existsSync(internalRebuildAttemptPath(projectPath))) return null;
-    return await fs.readJson(internalRebuildAttemptPath(projectPath));
-  } catch {
-    return null;
-  }
+  return readInternalRebuildAttempt(projectPath);
 }
 
 /** Test-only: current in-use permit count, for asserting overlap/exclusivity
@@ -2071,11 +2175,20 @@ async function runIncrementalAnalysis(projectPath: string, orch: AnalyzerOrchest
   const likelyVersionRebuild = versionInfo.stored_version !== versionInfo.current_version;
   const attemptStartedAt = new Date();
   if (likelyVersionRebuild) {
+    // Loop-breaker (incident 2026-07-18): refuse to auto-retrigger the SAME
+    // version-bump rebuild that already died from a worker-oom/watchdog cause
+    // last time. Thrown BEFORE the 'in-progress' record below so a repeated
+    // doomed rebuild never overwrites the informative 'failed' record with a
+    // fresh 'in-progress' one that would just fail again — the failed record
+    // stays exactly as it was until a human/agent clears the underlying cause.
+    await guardAgainstDoomedVersionRebuild(projectPath, versionInfo);
     await writeInternalRebuildAttempt(projectPath, {
       state: 'in-progress',
       trigger: 'version-rebuild',
       started_at: attemptStartedAt.toISOString(),
       reason: `stored cas_version ${versionInfo.stored_version} differs from the running server's cas_version ${versionInfo.current_version}`,
+      stored_version: versionInfo.stored_version,
+      current_version: versionInfo.current_version,
     });
   }
 
@@ -2101,6 +2214,8 @@ async function runIncrementalAnalysis(projectPath: string, orch: AnalyzerOrchest
         finished_at: new Date().toISOString(),
         duration_ms: Date.now() - attemptStartedAt.getTime(),
         reason: error instanceof Error ? error.message : String(error),
+        stored_version: versionInfo.stored_version,
+        current_version: versionInfo.current_version,
       });
     }
     throw error;
@@ -2115,6 +2230,8 @@ async function runIncrementalAnalysis(projectPath: string, orch: AnalyzerOrchest
       finished_at: new Date().toISOString(),
       duration_ms: Date.now() - attemptStartedAt.getTime(),
       reason: result.fullRebuildReason,
+      stored_version: versionInfo.stored_version,
+      current_version: versionInfo.current_version,
     });
   }
 
@@ -2231,6 +2348,49 @@ export function summarizeIncrementalAnalysis(projectPath: string, result: Increm
   };
 }
 
+/**
+ * A phase-completion event for a dispatched 'layered' worker job. Deliberately
+ * tiny — id, status, and (on failure) a truncated-free error string — never
+ * the CASOutput itself: the worker persists every phase to storage as it
+ * lands, so the parent reloads (getAnalysis) whatever it needs instead of
+ * carrying it over IPC. `l0` = the fast index/inventory pre-pass; `rest` = the
+ * L1-4 deterministic pipeline; `enrichment` = the L5 AI-comprehension tail.
+ */
+export interface LayeredJobPhaseEvent {
+  phase: 'l0' | 'rest' | 'enrichment';
+  status: 'succeeded' | 'failed';
+  error?: string;
+}
+
+/** Small terminal summary for a completed 'layered' worker job — counts and
+ *  the final AI-enrichment state, not the CAS itself (see LayeredJobPhaseEvent). */
+export interface LayeredRunSummary {
+  name: string;
+  nodes: number;
+  edges: number;
+  entryPoints: number;
+  analyzersRun: number;
+  errors: number;
+  casVersion?: string;
+  aiEnrichment: CASOutput['ai_enrichment'];
+  aiEnrichmentError?: string;
+}
+
+export function summarizeLayeredAnalysis(projectPath: string, output: CASOutput): LayeredRunSummary {
+  const base = summarizeOutput(projectPath, output);
+  return {
+    name: base.name,
+    nodes: base.nodes,
+    edges: base.edges,
+    entryPoints: base.entryPoints,
+    analyzersRun: base.analyzersRun,
+    errors: base.errors,
+    casVersion: base.casVersion,
+    aiEnrichment: output.ai_enrichment,
+    aiEnrichmentError: output.ai_enrichment_error,
+  };
+}
+
 export interface RunAnalysisOptions {
   forceFull?: boolean;
   /**
@@ -2265,10 +2425,26 @@ interface WorkerAnalyzeRequest {
   env: Record<string, string>;
 }
 
-interface WorkerResultMessage {
+// The 'layered' job kind dispatches analyzeProjectLayered's ENTIRE progressive
+// pipeline (L0 -> L1-4 -> L5 AI enrichment) into the forked child — see
+// analysis-worker.ts's executeLayeredAnalysis. The parent never receives the
+// CASOutput itself over IPC, only the small phase-completion messages below
+// plus a final LayeredRunSummary; it reloads from storage (getAnalysis) for
+// anything it needs, exactly as the sync analyze/diff/sync routes already do
+// (275e9dc7). This is what lets the whole layered pass — including the L5 AI
+// tail, which can run for minutes — happen OUTSIDE the API process's heap.
+interface WorkerLayeredRequest {
+  type: 'layered';
+  id: number;
+  projectPath: string;
+  displayName?: string;
+  env: Record<string, string>;
+}
+
+interface WorkerResultMessage<T = AnalysisRunSummary> {
   type: 'result';
   id: number;
-  summary: AnalysisRunSummary;
+  summary: T;
 }
 
 interface WorkerErrorMessage {
@@ -2278,20 +2454,36 @@ interface WorkerErrorMessage {
   stackTop?: string;
 }
 
-type WorkerResponse = WorkerResultMessage | WorkerErrorMessage;
+// Sent zero or more times per 'layered' job, BEFORE its terminal
+// result/error message — the parent uses these to drive attempt-record
+// lifecycle transitions (queued -> in-progress -> succeeded/failed) without
+// waiting for the whole pipeline (including L5 AI enrichment) to finish. Never
+// removes the job from `pending`; only the terminal result/error message does.
+interface WorkerPhaseMessage extends LayeredJobPhaseEvent {
+  type: 'phase';
+  id: number;
+}
 
-interface PendingWorkerJob {
+type WorkerResponse = WorkerResultMessage | WorkerErrorMessage | WorkerPhaseMessage;
+
+interface PendingWorkerJob<T = AnalysisRunSummary> {
   projectPath: string;
   startedAtMs: number;
-  resolve: (summary: AnalysisRunSummary) => void;
+  resolve: (summary: T) => void;
   reject: (error: Error) => void;
+  /** Only set for 'layered' jobs; invoked on each phase message, job stays pending. */
+  onPhase?: (event: LayeredJobPhaseEvent) => void;
 }
 
 interface WorkerHandle {
   child: ChildProcess;
   heap: AnalysisHeapResolution;
   stderrTail: string;
-  pending: Map<number, PendingWorkerJob>;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- holds both
+  // AnalysisRunSummary ('analyze' jobs) and LayeredRunSummary ('layered' jobs)
+  // pending entries in one map keyed by job id; each dispatch site knows its
+  // own concrete T via the resolve/reject closures it constructs.
+  pending: Map<number, PendingWorkerJob<any>>;
 }
 
 const WORKER_STDERR_TAIL_CHARS = 4096;
@@ -2335,6 +2527,13 @@ function spawnAnalysisWorker(heap: AnalysisHeapResolution): WorkerHandle {
   child.on('message', (message: WorkerResponse) => {
     const job = handle.pending.get(message.id);
     if (!job) return;
+    if (message.type === 'phase') {
+      // Lifecycle update only — the job stays pending until a terminal
+      // result/error message arrives (which may be long after, e.g. once L5
+      // AI enrichment settles).
+      job.onPhase?.({ phase: message.phase, status: message.status, error: message.error });
+      return;
+    }
     handle.pending.delete(message.id);
     if (message.type === 'result') {
       job.resolve(message.summary);
@@ -2516,6 +2715,39 @@ function dispatchWorkerJob(projectPath: string, options: RunAnalysisOptions): Pr
   });
 }
 
+export interface RunLayeredAnalysisOptions {
+  displayName?: string;
+  /** Fired on each phase-completion message (l0/rest/enrichment); see
+   *  LayeredJobPhaseEvent. The job stays outstanding until the terminal
+   *  result/error — callers use this purely for lifecycle bookkeeping
+   *  (e.g. updating an attempt-record sidecar), never for the CAS itself. */
+  onPhase?: (event: LayeredJobPhaseEvent) => void;
+}
+
+function dispatchLayeredWorkerJob(projectPath: string, options: RunLayeredAnalysisOptions): Promise<LayeredRunSummary> {
+  const handle = ensureAnalysisWorker();
+  const id = nextWorkerJobId++;
+  return new Promise<LayeredRunSummary>((resolve, reject) => {
+    handle.pending.set(id, { projectPath, startedAtMs: Date.now(), resolve, reject, onPhase: options.onPhase });
+    const request: WorkerLayeredRequest = {
+      type: 'layered',
+      id,
+      projectPath,
+      displayName: options.displayName,
+      env: collectKlauroEnvSnapshot(),
+    };
+    handle.child.send(request, (error) => {
+      if (error) {
+        const job = handle.pending.get(id);
+        if (job) {
+          handle.pending.delete(id);
+          reject(new Error(`Failed to dispatch layered analysis to worker: ${error.message}`));
+        }
+      }
+    });
+  });
+}
+
 /**
  * OUTER wall-clock watchdog for the worker-DISPATCH path, mirroring
  * withLanePermit's watchdog (see the "Wall-clock watchdog" comment above) one
@@ -2536,10 +2768,10 @@ function dispatchWorkerJob(projectPath: string, options: RunAnalysisOptions): Pr
  * of a stale/absent record. The child process itself is left running (not
  * killed) — the same last-write-wins tolerance the inner watchdog documents.
  */
-async function withOuterWorkerWatchdog(
+async function withOuterWorkerWatchdog<T>(
   projectPath: string,
-  run: () => Promise<AnalysisRunSummary>
-): Promise<AnalysisRunSummary> {
+  run: () => Promise<T>
+): Promise<T> {
   const startedAtMs = Date.now();
   const attemptStartedAtIso = new Date(startedAtMs).toISOString();
   const watchdogMs = getAnalysisWatchdogMs();
@@ -2597,6 +2829,71 @@ export async function runAnalysis(projectPath: string, options: RunAnalysisOptio
     return runAnalysisInProcess(projectPath, options);
   }
   const run = workerJobChain.then(() => withOuterWorkerWatchdog(projectPath, () => dispatchWorkerJob(projectPath, options)));
+  workerJobChain = run.catch(() => undefined);
+  return run;
+}
+
+/**
+ * Worker-isolated entrypoint for the progressive/layered pipeline (task:
+ * layered-worker-isolation, 2026-07-18). This is the layered counterpart of
+ * runAnalysis: instead of the API process itself running
+ * analyzeProjectLayered's L0 -> L1-4 -> L5 phases in-process (the ONE
+ * remaining unprotected path after 275e9dc7 wired analyze/diff/sync through
+ * runAnalysis), the whole pipeline — including the L5 AI enrichment tail —
+ * runs inside the same heap-capped forked worker, so a huge monorepo's full
+ * rebuild can only exhaust the WORKER's bounded heap, never the API server's,
+ * and a worker OOM/crash surfaces as a normal thrown error here instead of
+ * silently killing the process that also serves live traffic.
+ *
+ * `options.onPhase` fires as each phase lands (persisted to storage by the
+ * worker itself) so callers can drive their own attempt-record lifecycle
+ * (queued -> in-progress -> succeeded/failed) without waiting on the full
+ * pipeline; callers needing the actual CASOutput reload it via getAnalysis
+ * once the relevant phase has succeeded — this function's own resolved value
+ * is only the small LayeredRunSummary (counts + final ai_enrichment state),
+ * never the CAS itself, matching the IPC-payload discipline the worker
+ * protocol was designed around (see WorkerPhaseMessage/analysis-worker.ts).
+ *
+ * Rides the SAME outer wall-clock watchdog as runAnalysis (a wedged/hung
+ * child that never reports back is marked failed at the parent level, same
+ * honesty constraint — see withOuterWorkerWatchdog) and the same shared
+ * workerJobChain, so a layered job and a plain analyze job never run
+ * concurrently against the one forked child.
+ */
+export async function runLayeredAnalysis(
+  projectPath: string,
+  options: RunLayeredAnalysisOptions = {},
+): Promise<LayeredRunSummary> {
+  if (analysisRunsInProcess()) {
+    // In-process fallback (tests / KLAURO_ANALYSIS_IN_PROCESS=1): drive
+    // analyzeProjectLayered directly in THIS process, still firing onPhase
+    // for parity with the worker-dispatched path so callers don't need to
+    // special-case which mode they're in.
+    const layered = await analyzeProjectLayered(projectPath, options.displayName);
+    try {
+      await layered.l0;
+      options.onPhase?.({ phase: 'l0', status: 'succeeded' });
+    } catch (error) {
+      options.onPhase?.({ phase: 'l0', status: 'failed', error: error instanceof Error ? error.message : String(error) });
+    }
+    let deferred: DeferredAnalysisResult;
+    try {
+      deferred = await layered.rest;
+      options.onPhase?.({ phase: 'rest', status: 'succeeded' });
+    } catch (error) {
+      options.onPhase?.({ phase: 'rest', status: 'failed', error: error instanceof Error ? error.message : String(error) });
+      throw error;
+    }
+    await deferred.enrichment.catch(() => undefined);
+    const aiEnrichment = deferred.output.ai_enrichment;
+    options.onPhase?.({
+      phase: 'enrichment',
+      status: aiEnrichment === 'error' ? 'failed' : 'succeeded',
+      error: aiEnrichment === 'error' ? deferred.output.ai_enrichment_error : undefined,
+    });
+    return summarizeLayeredAnalysis(projectPath, deferred.output);
+  }
+  const run = workerJobChain.then(() => withOuterWorkerWatchdog(projectPath, () => dispatchLayeredWorkerJob(projectPath, options)));
   workerJobChain = run.catch(() => undefined);
   return run;
 }

@@ -3,7 +3,7 @@ import * as http from 'node:http';
 import * as fs from 'fs-extra';
 import * as path from 'node:path';
 import { gunzipSync } from 'node:zlib';
-import { analyzeProjectIncremental, analyzeProjectDeferred, analyzeProjectLayered, runAnalysis } from './analyzer';
+import { analyzeProjectIncremental, analyzeProjectDeferred, checkDoomedVersionRebuild, runAnalysis, runLayeredAnalysis } from './analyzer';
 import type { RemoteAnalyzeDiffRequest, RemoteAnalyzeRequest, RemoteAnalyzeResponse, RemoteGreenfieldPreviewRequest, RemoteProjectRevision, RemoteProjectRevisionsResponse, RemoteProposalPreviewRequest, RemoteSyncRequest } from './remote-analyzer-protocol';
 import type { BranchDiffContext, RemoteFileChange, SourceManifest } from './remote-source';
 import { buildSourceSnapshot } from './remote-source';
@@ -336,28 +336,57 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
             let attachedEarly = false;
             try {
               const displayName = resolveDisplayName(body.snapshot.project_name, body.project_path);
-              const layered = await analyzeProjectLayered(acceptedWorkspace, displayName);
 
-              // Progressive availability (task #112): attach the project +
-              // notify WAS the moment L0 (the fast index/inventory pre-pass)
-              // is persisted, not after the full deterministic pipeline
-              // finishes. This is what makes the web app show the project
-              // populating within seconds instead of after the full ~1-2.5min
-              // pass — the account-project record only needs an analysis_id
-              // to resolve to SOME stored CAS at acceptedWorkspace, and
-              // whichever layer is currently on disk there is what queries see
-              // (honestly, via that CAS's own layers_ready manifest).
-              await layered.l0;
-              try {
-                await linkAnalysisToAccountProject(accounts, backgroundClientId, body.project_id, acceptedAnalysisId, body.snapshot?.manifest?.git_remote);
-                attachedEarly = true;
-                void notifyProjectAnalysisLandedForAnalysisId(acceptedAnalysisId);
-              } catch (attachError) {
-                const detail = attachError instanceof Error ? attachError.message : String(attachError);
-                console.error(`[Klauro] early L0 project attach failed for ${acceptedAnalysisId}: ${detail}`);
-              }
+              // Loop-breaker pre-check (see analyzer.ts's
+              // checkDoomedVersionRebuild): the workspace was just wiped
+              // above, so this is almost always a cold first build with no
+              // previous analysis to compare a cas_version against — the
+              // check is a fast no-op in that common case, but guards the
+              // rarer case (e.g. a re-push before the wipe landed) the same
+              // way the /reanalyze path below does.
+              const doomed = await checkDoomedVersionRebuild(acceptedWorkspace);
+              if (doomed) throw new Error(doomed);
 
-              const deferred = await layered.rest;
+              // The layered pipeline (L0 index -> L1-4 deterministic pass ->
+              // L5 AI enrichment) now runs INSIDE the heap-capped analysis
+              // worker (see analyzer.ts's runLayeredAnalysis), not in this API
+              // process — this is the fix for the 2026-07-18 incident where a
+              // huge monorepo's in-process rebuild ballooned past the host's
+              // RAM and got kernel-OOM-killed. This function's own resolved
+              // value is only a small counts summary; the CAS itself is
+              // reloaded from storage (getAnalysis) once each phase lands,
+              // matching the 275e9dc7 pattern used by the sync routes.
+              let l0Attach: Promise<void> | null = null;
+              const summary = await runLayeredAnalysis(acceptedWorkspace, {
+                displayName,
+                onPhase: (event) => {
+                  // Progressive availability (task #112): attach the project +
+                  // notify WAS the moment L0 (the fast index/inventory
+                  // pre-pass) is persisted, not after the full deterministic
+                  // pipeline finishes. This is what makes the web app show
+                  // the project populating within seconds instead of after
+                  // the full ~1-2.5min pass — the account-project record only
+                  // needs an analysis_id to resolve to SOME stored CAS at
+                  // acceptedWorkspace, and whichever layer is currently on
+                  // disk there is what queries see (honestly, via that CAS's
+                  // own layers_ready manifest).
+                  if (event.phase === 'l0' && event.status === 'succeeded' && !l0Attach) {
+                    l0Attach = (async () => {
+                      try {
+                        await linkAnalysisToAccountProject(accounts, backgroundClientId, body.project_id, acceptedAnalysisId, body.snapshot?.manifest?.git_remote);
+                        attachedEarly = true;
+                        void notifyProjectAnalysisLandedForAnalysisId(acceptedAnalysisId);
+                      } catch (attachError) {
+                        const detail = attachError instanceof Error ? attachError.message : String(attachError);
+                        console.error(`[Klauro] early L0 project attach failed for ${acceptedAnalysisId}: ${detail}`);
+                      }
+                    })();
+                  }
+                },
+              });
+              if (l0Attach) await l0Attach;
+
+              const output = await getAnalysis(acceptedWorkspace);
               const backgroundResult: RemoteAnalyzeResponse = {
                 status: 'success',
                 analysis_id: acceptedAnalysisId,
@@ -365,7 +394,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
                 analysis_type: 'full',
                 base_commit: body.snapshot.base_commit,
                 manifest: body.snapshot.manifest,
-                cas: deferred.output,
+                cas: output,
               };
               await appendProjectRevision(dataDir, backgroundResult, 'local_commit_submission');
               // Attach again (idempotent) in case the early L0 attach above
@@ -381,8 +410,8 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
                 organization_id: body.organization_id,
                 files: body.snapshot.manifest?.file_count,
                 bytes: body.snapshot.manifest?.total_bytes,
-                nodes: deferred.output.nodes.length,
-                edges: deferred.output.edges.length,
+                nodes: summary.nodes,
+                edges: summary.edges,
                 mode: 'async',
               });
               void notifyProjectAnalysisLandedForAnalysisId(acceptedAnalysisId);
@@ -2462,6 +2491,41 @@ async function handleAccountApi(
     inFlightReanalyzeCount += 1;
     setImmediate(async () => {
       const attemptStartedAt = new Date().toISOString();
+
+      // Loop-breaker pre-check (analyzer.ts's checkDoomedVersionRebuild) MUST
+      // run BEFORE the 'in-progress' write just below — both this handler and
+      // analyzer.ts's internal version-rebuild tracking share the exact same
+      // sidecar file (see ReanalyzeAttemptRecord.stored_version's doc
+      // comment). Writing 'in-progress' first would erase the failed +
+      // version-stamped record the guard depends on before it ever got read,
+      // so a doomed rebuild would repeat every time regardless of the guard
+      // living inside analyzeProjectIncremental.
+      const doomedReason = await checkDoomedVersionRebuild(workspace).catch(() => null);
+      if (doomedReason) {
+        console.error(`[Klauro] async reanalyze REFUSED for ${analysisId}: ${doomedReason}`);
+        await markBackgroundAnalysisFailed(workspace, doomedReason);
+        await writeAttemptRecord(attemptRecordPath, {
+          state: 'failed',
+          trigger: 'reanalyze',
+          queued_at: attemptQueuedAt,
+          queue_position: attemptQueuePosition,
+          started_at: attemptStartedAt,
+          finished_at: attemptStartedAt,
+          duration_ms: 0,
+          reason: doomedReason.slice(0, 300),
+        });
+        inFlightReanalyzeCount = Math.max(0, inFlightReanalyzeCount - 1);
+        if (dataDirForBackground) {
+          await appendAuditLog(dataDirForBackground, {
+            event: 'reanalyze_async_failed',
+            analysis_id: analysisId,
+            project_id: project.id,
+            error: doomedReason.slice(0, 500),
+          }).catch(() => {});
+        }
+        return;
+      }
+
       await writeAttemptRecord(attemptRecordPath, {
         state: 'in-progress',
         trigger: 'reanalyze',
@@ -2469,46 +2533,140 @@ async function handleAccountApi(
         queue_position: attemptQueuePosition,
         started_at: attemptStartedAt,
       });
-      try {
-        const layered = await analyzeProjectLayered(workspace, displayName);
-        // Wait for the full deterministic pipeline (L1-L4) so the persisted CAS
-        // is a real analysis, not just the L0 stub, before appending a revision.
-        const deferred = await layered.rest;
-        const backgroundResult: RemoteAnalyzeResponse = {
-          status: 'success',
-          analysis_id: analysisId,
-          analysis_revision: Date.now(),
-          analysis_type: 'full',
-          base_commit: baseCommitForResponse,
-          manifest: manifestForResponse,
-          cas: deferred.output,
-        };
-        if (dataDirForBackground) {
-          await appendProjectRevision(dataDirForBackground, backgroundResult, 'local_commit_submission');
-        }
-        // This route is already project-scoped, so the owning workspace is known
-        // directly — no analysis_id lookup needed.
-        workspaceAnalyses?.notifyProjectAnalysisLanded(workspaceIdForBackground);
+
+      // Real-content check, done AFTER the write above (not a bare
+      // fs.pathExists earlier in this callback): writeAttemptRecord persists
+      // the sidecar via writeJsonAtomic, which calls
+      // fs.ensureDir(path.dirname(...)) as a side effect — since the sidecar
+      // lives INSIDE the workspace directory itself
+      // (projectAttemptRecordPath), that ensureDir silently RECREATES a
+      // workspace directory that was genuinely removed between accept and
+      // background-start (e.g. an operator/tooling deleting a stale
+      // snapshot). A bare existence check anywhere in this callback would be
+      // defeated by that recreate — regardless of exactly when the deletion
+      // raced in, this directory would read back as "exists" once
+      // ensureDir has run. Checking for REAL content (anything besides the
+      // sidecar we just wrote) instead of bare existence survives that
+      // recreate: an operator-deleted workspace reads back as containing
+      // ONLY the sidecar (or nothing at all, if the deletion raced in AFTER
+      // this write and removed it too), either way caught here — and
+      // reported the same honest "no snapshot" failure analyzeProjectLayered
+      // itself would have surfaced when this ran fully in-process, now
+      // independent of the extra latency the worker-isolation/loop-breaker
+      // dispatch path introduces before the analysis itself would notice.
+      const attemptSidecarName = path.basename(attemptRecordPath);
+      const workspaceEntries = await fs.readdir(workspace).catch(() => [] as string[]);
+      if (!workspaceEntries.some(name => name !== attemptSidecarName)) {
+        const detail = `Project path does not exist: ${workspace}`;
+        console.error(`[Klauro] async reanalyze failed for ${analysisId}: ${detail}`);
+        await markBackgroundAnalysisFailed(workspace, detail);
+        const attemptFinishedAt = new Date().toISOString();
+        await writeAttemptRecord(attemptRecordPath, {
+          state: 'failed',
+          trigger: 'reanalyze',
+          queued_at: attemptQueuedAt,
+          queue_position: attemptQueuePosition,
+          started_at: attemptStartedAt,
+          finished_at: attemptFinishedAt,
+          duration_ms: Date.parse(attemptFinishedAt) - Date.parse(attemptStartedAt),
+          reason: detail.slice(0, 300),
+        });
+        inFlightReanalyzeCount = Math.max(0, inFlightReanalyzeCount - 1);
         if (dataDirForBackground) {
           await appendAuditLog(dataDirForBackground, {
-            event: 'reanalyze',
+            event: 'reanalyze_async_failed',
             analysis_id: analysisId,
             project_id: project.id,
-            nodes: deferred.output.nodes.length,
-            edges: deferred.output.edges.length,
-            mode: 'async',
+            error: detail.slice(0, 500),
           }).catch(() => {});
         }
-        // Let the L5 AI-comprehension pass finish + re-stamp layers_ready. Its
-        // failure is a VISIBLE terminal state (L5 'error'), never a hang.
-        await deferred.enrichment.catch(() => {});
-        // Re-append the enriched revision + re-notify WAS so pollers and the
-        // workspace rollup see the comprehension-complete CAS, not just L1-L4.
+        return;
+      }
+
+      try {
+        // The layered pipeline (L0 -> L1-4 -> L5 AI enrichment) now runs
+        // INSIDE the heap-capped analysis worker (analyzer.ts's
+        // runLayeredAnalysis), not in this API process — see the 2026-07-18
+        // incident notes on runLayeredAnalysis. This function's own resolved
+        // value is only a small counts summary; the landed CAS is reloaded
+        // from storage (getAnalysis) at each phase boundary, matching the
+        // 275e9dc7 pattern the sync routes already use.
+        let l14RevisionAppended: Promise<void> | null = null;
+        await runLayeredAnalysis(workspace, {
+          displayName,
+          onPhase: (event) => {
+            // Best-effort phase-lifecycle visibility; never blocks the
+            // pipeline itself, and never regresses a later phase's state with
+            // a stale earlier one (each write carries its own timestamp).
+            void writeAttemptRecord(attemptRecordPath, {
+              state: event.status === 'succeeded' ? 'in-progress' : 'failed',
+              trigger: 'reanalyze',
+              queued_at: attemptQueuedAt,
+              queue_position: attemptQueuePosition,
+              started_at: attemptStartedAt,
+              ...(event.status === 'failed' ? {
+                finished_at: new Date().toISOString(),
+                reason: `${event.phase}-phase-failed: ${event.error ?? 'unknown error'}`.slice(0, 300),
+              } : {}),
+            }).catch(() => {});
+
+            // Wait for the full deterministic pipeline (L1-L4) so the
+            // persisted CAS is a real analysis, not just the L0 stub, before
+            // appending a revision — mirrors the pre-worker-isolation
+            // behavior exactly, just reloaded from disk instead of held
+            // in-memory across the IPC boundary.
+            if (event.phase === 'rest' && event.status === 'succeeded' && !l14RevisionAppended) {
+              l14RevisionAppended = (async () => {
+                try {
+                  const landedOutput = await getAnalysis(workspace);
+                  const backgroundResult: RemoteAnalyzeResponse = {
+                    status: 'success',
+                    analysis_id: analysisId,
+                    analysis_revision: Date.now(),
+                    analysis_type: 'full',
+                    base_commit: baseCommitForResponse,
+                    manifest: manifestForResponse,
+                    cas: landedOutput,
+                  };
+                  if (dataDirForBackground) {
+                    await appendProjectRevision(dataDirForBackground, backgroundResult, 'local_commit_submission');
+                    await appendAuditLog(dataDirForBackground, {
+                      event: 'reanalyze',
+                      analysis_id: analysisId,
+                      project_id: project.id,
+                      nodes: landedOutput.nodes.length,
+                      edges: landedOutput.edges.length,
+                      mode: 'async',
+                    }).catch(() => {});
+                  }
+                  // This route is already project-scoped, so the owning
+                  // workspace is known directly — no analysis_id lookup needed.
+                  workspaceAnalyses?.notifyProjectAnalysisLanded(workspaceIdForBackground);
+                } catch (revisionError) {
+                  const detail = revisionError instanceof Error ? revisionError.message : String(revisionError);
+                  console.error(`[Klauro] reanalyze L1-4 revision append failed for ${analysisId}: ${detail}`);
+                }
+              })();
+            }
+          },
+        });
+        if (l14RevisionAppended) await l14RevisionAppended;
+
+        // The L5 AI-comprehension pass has now settled (successfully, or with
+        // a VISIBLE terminal 'error' state on the CAS — never a silent hang;
+        // see summary.aiEnrichment). Re-append the (possibly enriched, or
+        // honestly-errored) final CAS + re-notify so pollers and the
+        // workspace rollup see it, not just the L1-L4 revision above.
+        const finalOutput = await getAnalysis(workspace);
         if (dataDirForBackground) {
           await appendProjectRevision(dataDirForBackground, {
-            ...backgroundResult,
+            status: 'success',
+            analysis_id: analysisId,
             analysis_revision: Date.now(),
-            cas: deferred.output,
+            analysis_type: 'full',
+            base_commit: baseCommitForResponse,
+            manifest: manifestForResponse,
+            cas: finalOutput,
           }, 'local_commit_submission').catch(() => {});
         }
         workspaceAnalyses?.notifyProjectAnalysisLanded(workspaceIdForBackground);
@@ -2534,6 +2692,12 @@ async function handleAccountApi(
         // The attempt record below is what actually makes THIS failure
         // visible in that (the common) case.
         await markBackgroundAnalysisFailed(workspace, detail);
+        // Preserve stored_version/current_version if this crash's own
+        // phase-message write (or the worker's internal
+        // writeInternalRebuildAttempt, same shared file) already stamped
+        // them — overwriting them away here would blind the loop-breaker to
+        // a repeat of this exact doomed rebuild on the NEXT request.
+        const existingAttempt = await readAttemptRecord(attemptRecordPath);
         const attemptFinishedAt = new Date().toISOString();
         await writeAttemptRecord(attemptRecordPath, {
           state: 'failed',
@@ -2544,6 +2708,10 @@ async function handleAccountApi(
           finished_at: attemptFinishedAt,
           duration_ms: Date.parse(attemptFinishedAt) - Date.parse(attemptStartedAt),
           reason: detail.slice(0, 300),
+          ...(existingAttempt?.stored_version ? {
+            stored_version: existingAttempt.stored_version,
+            current_version: existingAttempt.current_version,
+          } : {}),
         });
         inFlightReanalyzeCount = Math.max(0, inFlightReanalyzeCount - 1);
         if (dataDirForBackground) {
@@ -3139,6 +3307,19 @@ interface ReanalyzeAttemptRecord {
   /** finished_at - started_at, in ms. Absent while state is 'in-progress'. */
   duration_ms?: number;
   reason?: string;
+  /**
+   * Present only for a version-bump full rebuild. This sidecar file
+   * (projectAttemptRecordPath) is the SAME on-disk path analyzer.ts's
+   * internal version-rebuild tracking writes to (internalRebuildAttemptPath —
+   * see its doc comment for why they're deliberately unified), so these
+   * fields let analyzer.ts's loop-breaker (guardAgainstDoomedVersionRebuild)
+   * recognize a later request as a repeat of THIS exact doomed rebuild. Any
+   * writer here that overwrites a 'failed'+versioned record MUST preserve
+   * these two fields (see the reanalyze catch block below) — clobbering them
+   * with a version-less record would blind the loop-breaker.
+   */
+  stored_version?: string;
+  current_version?: string;
 }
 
 // Lightweight, ADDITIVE-ONLY observability counter — not a concurrency gate.
