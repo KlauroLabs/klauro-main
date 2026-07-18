@@ -8,7 +8,7 @@ import { validateElementDescription } from '../../../packages/analyzer-core/src/
 import type { CASOutput, CASNode } from '../../../packages/analyzer-core/src/types/cas.types';
 import { computeFlowConcepts, type FlowConcept, type FlowStep } from '../../../packages/analyzer-core/src/analyzer/core/flow-concepts';
 import { buildEntityRelationIndex } from './semantic-roles';
-import { getProjectStorageDir, loadAnalysis, saveAnalysis } from './storage';
+import { getProjectStorageDir, loadAnalysis, saveAnalysis, getAnalysisFileFingerprint } from './storage';
 
 export type DescriptionTargetKind = 'node' | 'service' | 'entity' | 'capability' | 'entry_point' | 'exit_point' | 'flow';
 
@@ -56,25 +56,159 @@ export async function generateElementDescription(input: {
   generated_at: string;
   stored: boolean;
 }> {
+  const cas = await loadAnalysis(input.projectPath);
+  if (!cas) throw new Error(`No analysis found for: ${input.projectPath}. Run analyze_codebase first.`);
+
+  const result = await applyElementDescriptionToCas(input.projectPath, cas, input);
+  await saveAnalysis(input.projectPath, cas);
+  return result;
+}
+
+/**
+ * In-memory enrichment session: one load, N description applications against
+ * the SAME cas object, and bounded persists — instead of the naive per-target
+ * pattern (load full CAS, apply one description, save full CAS, reload full
+ * CAS to read it back) that a batch caller like the narrative-enrichment
+ * runner used to repeat once per target. On a large CAS (tens of thousands of
+ * nodes) that per-target reload is a full brotli-decompress + JSON.parse of
+ * the whole analysis file, thousands of times over, which is what turned a
+ * documentation backfill into multi-CPU-hour "hangs" — see
+ * analysis-narrative-enrichment-runner.ts for the caller-side fix.
+ *
+ * Staleness: a concurrent analyze_codebase/reanalyze can replace the on-disk
+ * CAS mid-session (new analysis_id, new file). persistEnrichmentSession
+ * detects this via the file fingerprint (mtimeMs:size) captured at open time
+ * and after each of *this* session's own writes; if the fingerprint changed
+ * out from under us, we abort rather than silently overwrite a newer analysis
+ * with an in-memory copy built from a stale one.
+ */
+export interface EnrichmentSession {
+  projectPath: string;
+  cas: CASOutput;
+  analysisId: string | undefined;
+  /** Fingerprint of the on-disk file as of the last successful read or write
+   *  this session performed; used to detect a concurrent replacement. */
+  lastKnownFingerprint: string | null;
+  dirty: boolean;
+  pendingCount: number;
+  lastPersistedAt: number;
+  /** Set once a staleness conflict is detected; the session stops accepting
+   *  further persists (callers should re-open a fresh session). */
+  aborted: boolean;
+  abortReason?: string;
+}
+
+export interface EnrichmentSessionOptions {
+  /** Persist after this many applied descriptions accumulate unsaved. Default 25. */
+  persistEveryCount?: number;
+  /** Persist after this many ms have elapsed since the last persist. Default 10_000. */
+  persistEveryMs?: number;
+}
+
+const DEFAULT_PERSIST_EVERY_COUNT = 25;
+const DEFAULT_PERSIST_EVERY_MS = 10_000;
+
+export async function openEnrichmentSession(projectPath: string): Promise<EnrichmentSession | null> {
+  const cas = await loadAnalysis(projectPath, { preferCache: true });
+  if (!cas) return null;
+  const fingerprint = await getAnalysisFileFingerprint(projectPath);
+  return {
+    projectPath,
+    cas,
+    analysisId: cas.analysis_id,
+    lastKnownFingerprint: fingerprint,
+    dirty: false,
+    pendingCount: 0,
+    lastPersistedAt: Date.now(),
+    aborted: false,
+  };
+}
+
+export async function generateElementDescriptionInSession(
+  session: EnrichmentSession,
+  input: { target: string; targetKind?: DescriptionTargetKind; instructions?: string },
+  options?: EnrichmentSessionOptions,
+): Promise<{
+  status: 'success';
+  target: Omit<ResolvedTarget, 'target' | 'fingerprint' | 'context'>;
+  description: string;
+  generated_at: string;
+  stored: boolean;
+}> {
+  if (session.aborted) {
+    throw new Error(`Enrichment session for ${session.projectPath} was aborted (${session.abortReason || 'unknown reason'}); open a fresh session.`);
+  }
+  const result = await applyElementDescriptionToCas(session.projectPath, session.cas, input);
+  session.dirty = true;
+  session.pendingCount += 1;
+
+  const dueByCount = session.pendingCount >= (options?.persistEveryCount ?? DEFAULT_PERSIST_EVERY_COUNT);
+  const dueByTime = Date.now() - session.lastPersistedAt >= (options?.persistEveryMs ?? DEFAULT_PERSIST_EVERY_MS);
+  if (dueByCount || dueByTime) {
+    await persistEnrichmentSession(session);
+  }
+  return result;
+}
+
+/**
+ * Flushes the session's in-memory CAS to disk if dirty, first checking that
+ * nothing else has replaced the on-disk analysis since this session last read
+ * or wrote it. On a detected conflict, marks the session aborted and throws
+ * instead of merging/overwriting — the caller's in-memory copy was built from
+ * a now-superseded analysis and cannot be trusted to merge correctly.
+ */
+export async function persistEnrichmentSession(session: EnrichmentSession): Promise<{ persisted: boolean }> {
+  if (session.aborted) return { persisted: false };
+  if (!session.dirty) return { persisted: false };
+
+  const currentFingerprint = await getAnalysisFileFingerprint(session.projectPath);
+  if (session.lastKnownFingerprint !== null && currentFingerprint !== session.lastKnownFingerprint) {
+    session.aborted = true;
+    session.abortReason = `on-disk analysis changed underneath this session (expected fingerprint ${session.lastKnownFingerprint}, found ${currentFingerprint}) — likely a concurrent analyze/reanalyze`;
+    throw new Error(`Aborting enrichment session for ${session.projectPath}: ${session.abortReason}`);
+  }
+
+  await saveAnalysis(session.projectPath, session.cas);
+  session.lastKnownFingerprint = await getAnalysisFileFingerprint(session.projectPath);
+  session.dirty = false;
+  session.pendingCount = 0;
+  session.lastPersistedAt = Date.now();
+  return { persisted: true };
+}
+
+/** Final flush; safe to call even if nothing is pending or the session already aborted. */
+export async function closeEnrichmentSession(session: EnrichmentSession): Promise<{ persisted: boolean }> {
+  if (session.aborted || !session.dirty) return { persisted: false };
+  return persistEnrichmentSession(session);
+}
+
+async function applyElementDescriptionToCas(
+  projectPath: string,
+  cas: CASOutput,
+  input: { target: string; targetKind?: DescriptionTargetKind; instructions?: string },
+): Promise<{
+  status: 'success';
+  target: Omit<ResolvedTarget, 'target' | 'fingerprint' | 'context'>;
+  description: string;
+  generated_at: string;
+  stored: boolean;
+}> {
   if (!hasAIProviderConfigured()) {
     throw new Error('AI descriptions require hosted Klauro AI enrichment: configure DEEPINFRA_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY, Azure OpenAI, or a non-local OPENAI_BASE_URL on the hosted analyzer service.');
   }
 
-  const cas = await loadAnalysis(input.projectPath);
-  if (!cas) throw new Error(`No analysis found for: ${input.projectPath}. Run analyze_codebase first.`);
-
-  const resolved = await resolveTarget(input.projectPath, cas, input.target, input.targetKind);
+  const resolved = await resolveTarget(projectPath, cas, input.target, input.targetKind);
   if (!resolved) {
     throw new Error(`Could not find ${input.targetKind || 'analysis element'} matching: ${input.target}`);
   }
 
-  setAICacheProjectScope(input.projectPath);
+  setAICacheProjectScope(projectPath);
   const generated = await generateUsefulDescription(cas, resolved, input.instructions);
   const { description } = generated;
 
   const generatedAt = new Date().toISOString();
   const key = descriptionKey(resolved.kind, resolved.id);
-  const store = await loadDescriptionStore(input.projectPath);
+  const store = await loadDescriptionStore(projectPath);
   store.entries[key] = {
     key,
     target_kind: resolved.kind,
@@ -87,10 +221,9 @@ export async function generateElementDescription(input: {
     source: 'ai',
   };
   store.updated_at = generatedAt;
-  await saveDescriptionStore(input.projectPath, store);
+  await saveDescriptionStore(projectPath, store);
 
   applyDescriptionToTarget(resolved.target, description, generatedAt, generated.attempts > 1 ? 'manual-trigger-repaired' : 'manual-trigger');
-  await saveAnalysis(input.projectPath, cas);
 
   return {
     status: 'success',

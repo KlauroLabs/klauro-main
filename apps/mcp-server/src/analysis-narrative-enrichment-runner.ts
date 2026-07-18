@@ -2,9 +2,15 @@ import * as fs from 'fs-extra';
 import * as path from 'path';
 import { isDirectCliInvocation } from './cli-invocation';
 import { getDescriptionEnrichmentTargets, reviewAnalysisUsefulnessStatic, type DescriptionEnrichmentTarget } from './analysis-usefulness-review';
-import { generateElementDescription, validateDescription, type DescriptionTargetKind } from './description-enrichment';
+import {
+  generateElementDescriptionInSession,
+  validateDescription,
+  openEnrichmentSession,
+  closeEnrichmentSession,
+  type DescriptionTargetKind,
+  type EnrichmentSession,
+} from './description-enrichment';
 import { withAnalysisFocus } from './analysis-focus';
-import { loadAnalysis } from './storage';
 import { runAnalysis } from './analyzer';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import { aiService } from '../../../packages/analyzer-core/src/ai/ai-service';
@@ -105,8 +111,13 @@ export async function runAnalysisNarrativeEnrichmentRunner(options: {
       break;
     }
     const projectPath = String(review.path || '');
-    const cas = await loadAnalysis(projectPath);
-    if (!cas) continue;
+    // One load for the whole repo's target batch, not one per target: this
+    // session's in-memory cas is mutated directly by each description
+    // generation and only flushed to disk on a bounded cadence (see
+    // description-enrichment.ts openEnrichmentSession/persistEnrichmentSession).
+    let session: EnrichmentSession | null = await openEnrichmentSession(projectPath);
+    if (!session) continue;
+    let cas = session.cas;
 
     const before = reviewAnalysisUsefulnessStatic(cas, projectPath, String(review.repo || path.basename(projectPath)), 'ui-overview');
     const beforeTargets = getDescriptionEnrichmentTargets(cas, projectPath);
@@ -121,6 +132,7 @@ export async function runAnalysisNarrativeEnrichmentRunner(options: {
     const targets = filteredTargets.slice(0, perRepoLimit);
     queuedTargets += targets.length;
 
+    try {
     for (let targetIndex = 0; targetIndex < targets.length; targetIndex += 1) {
       const target = targets[targetIndex];
       if (options.maxTargets && results.length >= options.maxTargets) break;
@@ -128,6 +140,29 @@ export async function runAnalysisNarrativeEnrichmentRunner(options: {
         stoppedEarly = true;
         stopReason = `max-runtime-seconds:${options.maxRuntimeSeconds}`;
         break reviewLoop;
+      }
+      if (!session || session.aborted) {
+        // Lost the in-memory session (a system refresh failed to reopen one,
+        // or a concurrent analyze/reanalyze replaced the CAS mid-batch and
+        // persistEnrichmentSession aborted rather than clobber it). Stop this
+        // repo's batch here rather than continuing against nothing/stale
+        // state; the remaining targets stay queued for a future run.
+        results.push({
+          repo: String(review.repo || path.basename(projectPath)),
+          path: projectPath,
+          target_kind: target.target_kind,
+          target: target.target,
+          target_id: target.target_id,
+          priority: target.priority,
+          before_description_score: descriptionGateScore(before),
+          before_remaining_targets: beforeTargets.length,
+          status: 'failed',
+          after_description_score: descriptionGateScore(before),
+          after_remaining_targets: beforeTargets.length,
+          target_removed_from_queue: false,
+          error: session?.abortReason ? `enrichment session aborted: ${session.abortReason}` : 'enrichment session unavailable after system refresh',
+        });
+        break;
       }
       const base = {
         repo: String(review.repo || cas.system?.name || path.basename(projectPath)),
@@ -157,8 +192,16 @@ export async function runAnalysisNarrativeEnrichmentRunner(options: {
           continue;
         }
         try {
+          // runAnalysis regenerates and saves a brand-new CAS on disk under
+          // this same session's nose; the in-memory session.cas is now stale
+          // by construction (different analysis_id), so drop it without a
+          // final persist (nothing pending is lost — this branch never wrote
+          // through the session) and re-open fresh from what runAnalysis just
+          // saved before continuing the batch.
           await withAnalysisFocus('ui-overview', () => runAnalysis(projectPath, { forceFull: false }));
-          const afterCas = await loadAnalysis(projectPath);
+          session = await openEnrichmentSession(projectPath);
+          const afterCas = session?.cas ?? null;
+          cas = afterCas ?? cas;
           const after = afterCas
             ? reviewAnalysisUsefulnessStatic(afterCas, projectPath, base.repo, 'ui-overview')
             : before;
@@ -185,6 +228,7 @@ export async function runAnalysisNarrativeEnrichmentRunner(options: {
             targets.splice(targetIndex + 1, staleTailLength, ...refreshedTail);
             queuedTargets += refreshedTail.length - staleTailLength;
           }
+          if (!session) break;
         } catch (error) {
           results.push({
             ...base,
@@ -199,8 +243,11 @@ export async function runAnalysisNarrativeEnrichmentRunner(options: {
       }
 
       try {
-        const generated = await withAnalysisFocus('ui-overview', () => generateDescriptionForRunnerTarget(projectPath, target));
-        const afterCas = await loadAnalysis(projectPath);
+        const generated = await withAnalysisFocus('ui-overview', () => generateDescriptionForRunnerTarget(session!, target));
+        // No reload: generateElementDescriptionInSession mutated session.cas
+        // in place, so it already reflects this target's applied description
+        // (and any prior ones in this batch) without a disk round-trip.
+        const afterCas = session.cas;
         const after = afterCas
           ? reviewAnalysisUsefulnessStatic(afterCas, projectPath, base.repo, 'ui-overview')
           : before;
@@ -231,7 +278,23 @@ export async function runAnalysisNarrativeEnrichmentRunner(options: {
           target_removed_from_queue: false,
           error: errorMessage(error),
         });
+        // A thrown persistEnrichmentSession abort means the on-disk analysis
+        // was replaced underneath us; stop this repo's batch rather than
+        // keep applying descriptions to an in-memory cas nobody will read.
+        if (session?.aborted) break;
       }
+    }
+    } finally {
+      // Bounded persistence means the session can be carrying unflushed
+      // descriptions when the target loop ends (normal completion, maxTargets
+      // cutoff, or a mid-repo `break reviewLoop`); flush them here so a run
+      // never silently drops generated descriptions it already paid AI cost
+      // for. No-ops if already flushed, aborted, or nothing is pending. Swallow
+      // (rather than throw from) a conflict detected only at this final flush
+      // so it can never mask an in-flight loop-control exception (e.g. the
+      // max-runtime `break reviewLoop` above) — the next run's queue still
+      // covers whatever this flush failed to persist.
+      if (session) await closeEnrichmentSession(session).catch(() => undefined);
     }
   }
 
@@ -313,13 +376,12 @@ function findRemainingTarget(targets: DescriptionEnrichmentTarget[], original: D
     || targets.find(target => target.target_kind === original.target_kind && normalizeTargetName(target.target) === normalizeTargetName(original.target));
 }
 
-async function generateDescriptionForRunnerTarget(projectPath: string, target: DescriptionEnrichmentTarget) {
+async function generateDescriptionForRunnerTarget(session: EnrichmentSession, target: DescriptionEnrichmentTarget) {
   const attempts = descriptionGenerationAttempts(target);
   let lastError: unknown;
   for (const attempt of attempts) {
     try {
-      return await generateElementDescription({
-        projectPath,
+      return await generateElementDescriptionInSession(session, {
         target: attempt.target,
         targetKind: attempt.targetKind,
         instructions: attempt.instructions,
