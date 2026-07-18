@@ -57,7 +57,7 @@ import { WarpAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frame
 import { TonicAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/rust/tonic-analyzer';
 import { DrogonAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/cpp/drogon-analyzer';
 import { CrowAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/cpp/crow-analyzer';
-import { VaporAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/swift';
+import { VaporAnalyzer, SwiftPlatformAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/swift';
 import { GoRouterAnalyzer, ShelfAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/dart';
 import { Http4sAnalyzer, PlayAnalyzer, AkkaHttpAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/scala';
 import { KemalAnalyzer } from '../../../packages/analyzer-core/src/analyzer/frameworks/crystal';
@@ -600,6 +600,7 @@ export function createOrchestrator(): AnalyzerOrchestrator {
     { id: 'drogon', name: 'Drogon Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { files: ['CMakeLists.txt', '**/*.cpp', '**/*.h'], content: [/#include\s*[<"]drogon\//, /ADD_METHOD_TO\s*\(/, /app\s*\(\s*\)\s*\.\s*registerHandler\s*\(/] }, requires: ['c-cpp'], analyzer: new DrogonAnalyzer() },
     { id: 'crow', name: 'Crow Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { files: ['CMakeLists.txt', '**/*.cpp', '**/*.h'], content: [/#include\s*[<"]crow(?:\.h|\/[^">]*)?[>"]/, /CROW_ROUTE\s*\(/] }, requires: ['c-cpp'], analyzer: new CrowAnalyzer() },
     { id: 'vapor', name: 'Vapor Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['vapor'], files: ['Package.swift', '**/*.swift'], content: [/import\s+Vapor/, /\.grouped\s*\(/, /\.(get|post|put|delete|patch)\s*\(/] }, requires: ['swift'], analyzer: new VaporAnalyzer() },
+    { id: 'swift-platform', name: 'Swift Platform Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { files: ['Package.swift', '**/*.swift'], content: [/import\s+SwiftUI/, /import\s+AppKit/, /import\s+UIKit/, /platforms\s*:\s*\[/] }, requires: ['swift'], analyzer: new SwiftPlatformAnalyzer() },
     { id: 'mojolicious', name: 'Mojolicious Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['Mojolicious'], files: ['cpanfile', 'Makefile.PL', '**/*.pl', '**/*.pm'], content: [/use\s+Mojolicious/, /^\s*(get|post|put|patch|del|options|any)\s+['"]/m, /->(get|post|put|patch|del|options|any|under)\s*\(/] }, requires: ['perl'], analyzer: new MojoliciousAnalyzer() },
     { id: 'gorouter', name: 'GoRouter Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['go_router'], files: ['pubspec.yaml', '**/*.dart'], content: [/GoRouter\s*\(/, /GoRoute\s*\(/, /package:go_router/] }, requires: ['dart'], analyzer: new GoRouterAnalyzer() },
     { id: 'shelf', name: 'Shelf/shelf_router Analyzer', type: 'framework', version: '1.0.0', detectPatterns: { dependencies: ['shelf', 'shelf_router'], files: ['pubspec.yaml', '**/*.dart'], content: [/package:shelf_router\//, /package:shelf\//, /Router\s*\(\s*\)/] }, requires: ['dart'], analyzer: new ShelfAnalyzer() },

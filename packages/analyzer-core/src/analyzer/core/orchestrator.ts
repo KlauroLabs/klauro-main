@@ -6190,6 +6190,17 @@ export class AnalyzerOrchestrator {
         frameworks.set(frameworkName, {
           confidence: contrib.confidence || 1.0
         });
+
+        // A framework-type analyzer can be a detector for MULTIPLE distinct
+        // frameworks/libraries in one pass (e.g. a Swift platform analyzer
+        // reporting SwiftUI + AppKit + declared SwiftPM platform targets, the
+        // same way a language analyzer's framework_specific already expands
+        // into several names below). Reuse the same boolean-leaf expansion so
+        // those facts surface in system.frameworks instead of being folded
+        // into one generic analyzer-name entry.
+        if (contrib.framework_specific) {
+          this.extractFrameworksFromSpec(contrib.framework_specific, frameworks);
+        }
       }
     });
 
@@ -6592,18 +6603,55 @@ export class AnalyzerOrchestrator {
     const frameworkNames = contributions
       .filter(contribution => contribution.analyzer_type === 'framework')
       .map(contribution => String(contribution.analyzer_name || '').toLowerCase());
+    // Boolean facts reported inside a framework-type contribution's
+    // framework_specific bundle (e.g. the Swift Platform Analyzer's
+    // swiftui/appkit/uikit/apple-platform-* flags). frameworkNames above only
+    // ever carries the fixed analyzer display name ("Swift Platform
+    // Analyzer"), never the concrete UI-framework/platform facts it detected —
+    // those live one level down, so architecture classification needs its own
+    // read of them.
+    const frameworkSpecificFlags = new Set<string>();
+    for (const contribution of contributions) {
+      if (contribution.analyzer_type !== 'framework') continue;
+      const spec = contribution.framework_specific;
+      if (!spec || typeof spec !== 'object') continue;
+      for (const [key, value] of Object.entries(spec)) {
+        if (value === true) frameworkSpecificFlags.add(key.toLowerCase());
+      }
+    }
     const hasAppsAndPackages = productFiles.some(file => /(^|\/)apps\//.test(file)) &&
       productFiles.some(file => /(^|\/)(packages|libs)\//.test(file));
     const hasInfrastructureSurface = productFiles.some(file => /\.(tf|tfvars|hcl)$/i.test(file) || /(^|\/)(terraform|opentofu|pulumi|helm|k8s|charts)\//.test(file)) ||
       frameworkNames.some(name => /\b(terraform|opentofu|pulumi|helm|kubernetes|cloudformation)\b/.test(name));
+    // Apple-platform evidence: `import AppKit`/`import SwiftUI` (with no
+    // `import UIKit`) plus a Package.swift `platforms:` array declaring
+    // `.macOS` names a genuine macOS desktop UI surface — the same evidentiary
+    // role WPF/xaml and Electron main/preload play below, just sourced from
+    // the Swift Platform Analyzer instead of file-path shape.
+    const hasAppleDesktopFrameworkEvidence =
+      frameworkSpecificFlags.has('appkit') || frameworkSpecificFlags.has('swiftui');
+    // `import UIKit` (iOS/iPadOS/tvOS-only) is the corresponding mobile-only
+    // signal; a target that imports both AppKit/SwiftUI and UIKit is an
+    // honest multiplatform/Catalyst app and reports both facts rather than
+    // being forced into one bucket.
+    const hasAppleMobileFrameworkEvidence = frameworkSpecificFlags.has('uikit');
     const hasDesktopSurface = frameworkNames.some(name => /\b(wpf|winforms|electron|tauri|desktop)\b/.test(name)) ||
+      hasAppleDesktopFrameworkEvidence ||
       productFiles.some(file =>
         /\.(xaml|csproj)$/i.test(file) ||
         /(^|\/)(views|windows|viewmodels)\//.test(file) ||
         /(^|\/)(electron\.vite\.config\.[jt]s|src\/(main|preload|renderer)\/|main\/index\.[jt]s|preload\/index\.[jt]s|renderer\/index\.html)/.test(file)
       );
     const hasMobileSurface = frameworkNames.some(name => /\b(flutter|react native|ios|android)\b/.test(name)) ||
-      productFiles.some(file => /\.(dart|swift|kt)$/i.test(file) || /(^|\/)(android|ios|lib\/screens)\//.test(file));
+      hasAppleMobileFrameworkEvidence ||
+      productFiles.some(file => /\.(dart|kt)$/i.test(file) || /(^|\/)(android|ios|lib\/screens)\//.test(file)) ||
+      // A bare `.swift` extension is NOT platform evidence by itself — Swift
+      // ships iOS apps, macOS desktop apps (AppKit/SwiftUI), and server code
+      // (Vapor) alike. It only counts as mobile-shaped when there is no
+      // Apple-desktop evidence to the contrary (a macOS/AppKit or SwiftUI
+      // project with no UIKit import must not be misclassified as mobile
+      // merely because it happens to be written in Swift).
+      (productFiles.some(file => /\.swift$/i.test(file)) && !hasAppleDesktopFrameworkEvidence);
     const hasBackendFramework = frameworkNames.some(name =>
       /\b(symfony|laravel|django|fastapi|spring|asp\.?net|nestjs)\b/.test(name)
     );

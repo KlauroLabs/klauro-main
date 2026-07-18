@@ -637,6 +637,65 @@ describe('architecture and capability inference', () => {
     expect(summary.system_type).toBe('Mobile + API application');
   });
 
+  it('classifies a SwiftPM macOS/AppKit menu-bar app as Desktop application, with SwiftUI/AppKit in frameworks', async () => {
+    const nodes: CASNode[] = [
+      node({ id: 'app-entry', name: 'MenuBarApp', type: 'class', source: { file: 'Sources/App/MenuBarApp.swift' } }),
+      node({ id: 'status-item', name: 'StatusItemController', type: 'class', source: { file: 'Sources/App/StatusItemController.swift' } }),
+    ];
+    const contributions = [
+      {
+        analyzer_type: 'framework',
+        analyzer_name: 'Swift Platform Analyzer',
+        nodes_created: 0,
+        confidence: 1,
+        framework_specific: {
+          swiftui: true,
+          appkit: true,
+          'apple-platform-macos': true,
+        },
+      },
+    ];
+
+    const summary = orch.buildArchitectureSummary(nodes, [], [], contributions);
+
+    expect(summary.system_type).toBe('Desktop application');
+    expect(summary.system_type).not.toBe('Mobile application');
+    expect(summary.system_type).not.toBe('Mobile + API application');
+
+    // system.frameworks: a framework-type contribution's boolean
+    // framework_specific facts (swiftui/appkit) must surface as their own
+    // technology-inventory entries, not be folded into one generic
+    // "Swift Platform Analyzer" bucket.
+    const technologies = orch.extractTechnologies(contributions, []);
+    const frameworkNames = (technologies.frameworks || []).map((f: any) => f.name);
+    expect(frameworkNames).toContain('swiftui');
+    expect(frameworkNames).toContain('appkit');
+  });
+
+  it('classifies a SwiftPM iOS/UIKit app as Mobile application, not Desktop', async () => {
+    const nodes: CASNode[] = [
+      node({ id: 'app-delegate', name: 'AppDelegate', type: 'class', source: { file: 'Sources/App/AppDelegate.swift' } }),
+      node({ id: 'root-screen', name: 'RootScreen', type: 'class', source: { file: 'Sources/App/RootScreen.swift' } }),
+    ];
+    const contributions = [
+      {
+        analyzer_type: 'framework',
+        analyzer_name: 'Swift Platform Analyzer',
+        nodes_created: 0,
+        confidence: 1,
+        framework_specific: {
+          uikit: true,
+          'apple-platform-ios': true,
+        },
+      },
+    ];
+
+    const summary = orch.buildArchitectureSummary(nodes, [], [], contributions);
+
+    expect(summary.system_type).toBe('Mobile application');
+    expect(summary.system_type).not.toBe('Desktop application');
+  });
+
   it('does not classify multi-app API monorepos as MCP servers just because one app is mcp-api', async () => {
     const summary = orch.buildArchitectureSummary([
       node({ id: 'admin-controller', name: 'AdminController', type: 'controller', source: { file: 'apps/admin-api/src/app/admin.controller.ts' } }),
