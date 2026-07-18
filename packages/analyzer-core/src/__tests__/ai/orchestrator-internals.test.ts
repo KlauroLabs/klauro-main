@@ -6337,6 +6337,103 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
     expect(systemCapabilities.find(c => c.id === 'cap_ai_named')?.name).toBe('Wizard');
   });
 
+  it('finalizeSystemCapabilityNames (final-assembly guard): repairs placeholders the AI naming pass never renamed, drops only ungrounded ones', () => {
+    // Reproduces the live re-verify defect (v1.0.117, real Swift macOS CAS):
+    // the AI naming pass RAN but did not cover/rename every candidate, so
+    // terminalGroundedCapabilityName's deliberate bare-subject placeholder
+    // (name_source unset, criticality factors like "Inferred from N terminal
+    // or parent business node(s)") survived to the final CAS as the shipped
+    // name — 25 caps like "Gateway"/"Wizard"/"Exec Approval". The final-
+    // assembly sweep is the last line of defense: AI-authored names are never
+    // touched; unset bare-noun placeholders with anchor evidence are repaired
+    // in place; only anchorless ones are dropped.
+    const systemCapabilities: any[] = [
+      // AI-authored name — untouched even though it is a single word.
+      { id: 'cap_ai', name: 'Wizard', name_source: 'ai', related_entities: ['e1'], operations: [], criticality_factors: [] },
+      // Un-renamed placeholder with entity anchors -> repaired.
+      { id: 'cap_gateway', name: 'Gateway', related_entities: ['e_gw1', 'e_gw2'], operations: [], criticality_factors: ['Inferred from 3 terminal or parent business node(s)'] },
+      // Un-renamed two-noun placeholder with operation anchors -> repaired.
+      { id: 'cap_exec', name: 'Exec Approval', related_entities: [], operations: [{ entry_point_id: 'ep1', entry_point_type: 'cli', action: 'Execute' }], criticality_factors: [] },
+      // Un-renamed placeholder with NO anchors at all -> dropped.
+      { id: 'cap_hint', name: 'Hint', related_entities: [], operations: [], criticality_factors: [] },
+      // Verb-headed placeholder -> untouched (not bare-noun-shaped).
+      { id: 'cap_detect', name: 'Detect patterns', related_entities: [], operations: [], criticality_factors: [] },
+    ];
+    orch.finalizeSystemCapabilityNames(systemCapabilities);
+
+    const byId = (id: string) => systemCapabilities.find((capability: any) => capability.id === id);
+    expect(byId('cap_ai')?.name).toBe('Wizard');
+    expect(byId('cap_gateway')?.name).toBe('Manage Gateway');
+    expect(byId('cap_gateway')?.criticality_factors).toEqual(expect.arrayContaining(['bare-noun-purpose-repaired']));
+    expect(byId('cap_exec')?.name).toBe('Manage Exec Approval');
+    expect(byId('cap_hint')).toBeUndefined();
+    expect(byId('cap_detect')?.name).toBe('Detect patterns');
+    // Idempotent: a second sweep changes nothing.
+    const snapshot = JSON.parse(JSON.stringify(systemCapabilities));
+    orch.finalizeSystemCapabilityNames(systemCapabilities);
+    expect(systemCapabilities).toEqual(snapshot);
+  });
+
+  it('end-to-end: a bare-noun placeholder that survives the whole AI phase ships repaired, never verbatim', async () => {
+    // Simulates the AI-pass-skipped-renaming case end-to-end through
+    // applyAIInterpretation: the model engages but returns an empty
+    // capabilities list, so the catalog never splices AI-authored names over
+    // the deterministic candidates — the placeholder would have shipped as
+    // the final name. Both the deterministic fallback and the final-assembly
+    // sweep now stand in the way; the observable contract is simply that NO
+    // bare-noun name reaches the end of the AI phase.
+    const envKeys = ['OPENAI_API_KEY', 'KLAURO_AI_INTERPRETATION', 'KLAURO_AI_INTERPRETATION_FORCE', 'KLAURO_AI_INTERPRETATION_BUDGET_MS'];
+    const saved: Record<string, string | undefined> = Object.fromEntries(envKeys.map(key => [key, process.env[key]]));
+    process.env.OPENAI_API_KEY = 'test-openai-key';
+    process.env.KLAURO_AI_INTERPRETATION = 'true';
+    process.env.KLAURO_AI_INTERPRETATION_FORCE = '1';
+    delete process.env.KLAURO_AI_INTERPRETATION_BUDGET_MS;
+    // The system-description text and purpose are copied from the known-good
+    // near-empty-fallback test above (they pass the grounding gate); this test
+    // is about the CAPABILITY names, not the description.
+    const spy = jest.spyOn(aiService, 'generateComponentDescription').mockResolvedValue(JSON.stringify({
+      system_description: 'Klauro builds CAS relationship graphs from source repositories so coding agents can reason about a codebase before touching it. It parses code into structural facts and layers comprehension over them, grounding every description in the evidence bundle it gathered. It hands this analysis context to agents over MCP.',
+      domain: '',
+      descriptions: [],
+      capabilities: [],
+    }));
+    try {
+      const purpose: any = {
+        primary_type: 'developer-tool', confidence: 0.9, evidence: [],
+        primary_domain: 'code-analysis', core_concepts: ['code', 'analysis'],
+        inferred_description: 'A code analysis service.', supporting_workflow_ids: [],
+      };
+      const systemCapabilities: any[] = [
+        // The exact live shape: terminal-grounded placeholder, name_source
+        // unset, entity-anchored.
+        { id: 'cap_gateway', name: 'Gateway', related_entities: ['entity_gateway'], operations: [], criticality_factors: ['Inferred from 2 terminal or parent business node(s)'] },
+        { id: 'cap_session', name: 'Session', related_entities: ['entity_session'], operations: [], criticality_factors: ['Backed by 1 data entity node(s)'] },
+      ];
+      await orch.applyAIInterpretation(
+        purpose, 'klauro', [], [], [], [], orch.emptyFlowGraph(), [],
+        systemCapabilities, [], [],
+        [
+          { id: 'entity_gateway', name: 'Gateway', type: 'entity', fields: [], lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] }, relationships: [] },
+          { id: 'entity_session', name: 'Session', type: 'entity', fields: [], lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] }, relationships: [] },
+        ],
+        { concepts: [], evidence: [] }, [{ name: 'Connect a gateway' }],
+        undefined, [], [], [], []
+      );
+      expect(systemCapabilities.length).toBeGreaterThan(0);
+      for (const capability of systemCapabilities) {
+        expect(orch.isBareNounCapabilityLabel(String(capability.name || ''))).toBe(false);
+      }
+      const names = systemCapabilities.map((capability: any) => capability.name);
+      expect(names).toEqual(expect.arrayContaining(['Manage Gateway', 'Manage Session']));
+    } finally {
+      spy.mockRestore();
+      for (const key of envKeys) {
+        if (saved[key] === undefined) delete process.env[key];
+        else process.env[key] = saved[key];
+      }
+    }
+  });
+
   it('applyDeterministicCapabilityFallback: repairs a grounded bare-noun deterministic candidate instead of shipping it verbatim', () => {
     const candidateSnapshot: any[] = [
       { id: 'cap_gateway', name: 'Gateway', related_entities: ['entity_gateway'], operations: [], criticality_factors: [] },

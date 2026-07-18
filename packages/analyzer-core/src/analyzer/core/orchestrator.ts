@@ -1996,6 +1996,14 @@ export class AnalyzerOrchestrator {
     await yieldToEventLoop();
 
     phaseStart = Date.now();
+    // Final-assembly bare-noun sweep — BEFORE the entry-point/capability
+    // linking below so a dropped capability never leaves a dangling reference.
+    // Covers the deferred-AI path (the CAS is assembled BEFORE the deferred
+    // enrichment closure runs, so placeholder names would ship in the interim
+    // CAS); the inline path already swept at the end of applyAIInterpretation
+    // — the sweep is idempotent. A deferred AI run later mutates these same
+    // references and re-sweeps on completion.
+    this.finalizeSystemCapabilityNames(systemCapabilities);
     const entryPointsWithContractAndCapability = this.deriveEntryPointContractAndCapability(allEntryPoints, {
       nodes: allNodes,
       edges: allEdges,
@@ -3185,6 +3193,13 @@ export class AnalyzerOrchestrator {
         }
       }
     }
+
+    // Final-assembly bare-noun sweep for the incremental path: the reuse
+    // branch above carries names forward without an AI naming pass, and the
+    // AI branch may not have covered every candidate — either way, no further
+    // pass is coming before this rebuilt CAS ships. Idempotent (the AI branch
+    // already swept inside applyAIInterpretation).
+    this.finalizeSystemCapabilityNames(systemCapabilities);
 
     const entryPointsWithContractAndCapability = this.deriveEntryPointContractAndCapability(entryPoints, {
       nodes,
@@ -10408,6 +10423,76 @@ export class AnalyzerOrchestrator {
     })));
   }
 
+  /**
+   * FINAL-ASSEMBLY bare-noun guard: the last line of defense before
+   * system_capabilities ships into the CAS. The three upstream guard sites
+   * (AI-catalog item loop, recordComprehensionSkipped, and
+   * applyDeterministicCapabilityFallback) each cover a specific path, but the
+   * live re-verify (v1.0.117, real Swift macOS CAS — 25 caps like "Gateway",
+   * "Wizard", "Exec Approval", all name_source UNSET with terminal/entity
+   * criticality factors) proved a path they all miss: the AI naming pass RAN
+   * but did not cover/rename every candidate, so the deliberate structural
+   * placeholder from terminalGroundedCapabilityName survived to the final CAS
+   * as the shipped name. terminalGroundedCapabilityName itself stays
+   * untouched (its bare-subject placeholder contract is correct); THIS sweep
+   * runs at final assembly, after the AI pass has had its chance:
+   *  - name_source 'ai'/'manual'/'reused' -> authored name, never touched;
+   *  - unset + bare-noun label + anchor evidence (related entities or
+   *    operations) -> repaired in place to "Manage <subject>" and tagged
+   *    'bare-noun-purpose-repaired';
+   *  - unset + bare-noun label + NO anchor evidence -> dropped (nothing to
+   *    ground a purpose in), attributed via the E1 record below.
+   * Idempotent: a repaired name is verb-headed, so re-running is a no-op.
+   * Every repair/drop is E1-attributable via one 'capability_finalization'
+   * semantic-decision record (observational only, env-gated off by default).
+   */
+  private finalizeSystemCapabilityNames(systemCapabilities: SystemCapability[]): void {
+    let repaired = 0;
+    const dropped: string[] = [];
+    const kept: SystemCapability[] = [];
+    for (const capability of systemCapabilities) {
+      if (capability.name_source === 'ai' || capability.name_source === 'manual' || capability.name_source === 'reused') {
+        kept.push(capability);
+        continue;
+      }
+      const name = String(capability.name || '');
+      if (!this.isBareNounCapabilityLabel(name)) {
+        kept.push(capability);
+        continue;
+      }
+      const hasAnchorEvidence = (capability.related_entities?.length || 0) > 0 || (capability.operations?.length || 0) > 0;
+      const repairedName = this.deriveManagePurposeLabel(name, hasAnchorEvidence);
+      if (!repairedName) {
+        dropped.push(name);
+        continue;
+      }
+      capability.name = repairedName;
+      capability.criticality_factors = Array.from(new Set([...(capability.criticality_factors || []), 'bare-noun-purpose-repaired']));
+      repaired++;
+      kept.push(capability);
+    }
+    if (dropped.length > 0) {
+      systemCapabilities.splice(0, systemCapabilities.length, ...kept);
+    }
+    if (repaired > 0 || dropped.length > 0) {
+      recordSemanticDecision({
+        ts: Date.now(),
+        decision_type: 'capability_finalization',
+        input_evidence_digest: {
+          total: kept.length + dropped.length,
+          bareNounRepaired: repaired,
+          bareNounDropped: dropped.length,
+          droppedNames: dropped.slice(0, 10),
+        },
+        parse_ok: true,
+        gate_verdict: 'accepted',
+        gate_reason: 'bare-noun-final-assembly-guard',
+        mechanical_corrections: repaired > 0 ? ['bare-noun-purpose-repaired'] : undefined,
+        final_outcome: 'degraded',
+      });
+    }
+  }
+
   private async applyAIInterpretation(
     enhancedSystemPurpose: EnhancedSystemPurpose,
     systemName: string,
@@ -10997,6 +11082,13 @@ export class AnalyzerOrchestrator {
       enhancedSystemPurpose.ai_phase_stopped_reason = enhancedSystemPurpose.ai_phase_stopped_reason || 'phase-budget-exhausted';
       enhancedSystemPurpose.ai_phase_nodes_at_stop = nodes.length;
     }
+
+    // The AI naming pass above has now had its chance; anything still carrying
+    // a bare-noun structural placeholder (name_source unset — the AI catalog
+    // did not cover/rename it) would otherwise ship that placeholder as the
+    // final name. See finalizeSystemCapabilityNames for the live defect this
+    // closes.
+    this.finalizeSystemCapabilityNames(systemCapabilities);
   }
 
   /**
