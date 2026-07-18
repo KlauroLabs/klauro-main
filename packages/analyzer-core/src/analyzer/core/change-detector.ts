@@ -45,6 +45,65 @@ const CORE_CONFIG_PATTERNS = CORE_CONFIG_FILES.flatMap(pattern =>
     : [pattern, `**/${pattern}`]
 );
 
+// Shape-based: files whose PRESENCE OR CONTENT define facts that a
+// project-level analyzer PASS joins across the whole codebase — a platform
+// manifest joined against every declared component/class, a container/topology
+// descriptor whose service boundaries are assembled from every service
+// definition, or a build/settings file that determines module membership.
+// Changing only the source file that such a pass reads is NOT the same as
+// changing the pass's full input scope: a single-file incremental re-analysis
+// re-parses the changed file but cannot re-run the project-level JOIN that
+// consumes it, so the join's output goes stale with zero warnings. Any change
+// to one of these forces an unconditional full rebuild — unlike
+// CORE_CONFIG_FILES below, this check is NOT gated by
+// shouldFullRebuildForCoreConfigChange()/agent-fast focus, because skipping it
+// reproduces exactly the staleness this list exists to prevent.
+const PROJECT_SCOPE_TRIGGER_FILES = [
+  'AndroidManifest.xml',
+  'Dockerfile*',
+  'docker-compose*.yml',
+  'docker-compose*.yaml',
+  'compose.yml',
+  'compose.yaml',
+  'settings.gradle',
+  'settings.gradle.kts',
+  '*.csproj',
+  'Cargo.toml',
+  'go.mod',
+  'package.json',
+  'pom.xml',
+];
+
+const PROJECT_SCOPE_TRIGGER_PATTERNS = PROJECT_SCOPE_TRIGGER_FILES.flatMap(pattern =>
+  pattern.startsWith('**/') || pattern.includes('/')
+    ? [pattern]
+    : [pattern, `**/${pattern}`]
+);
+
+/**
+ * Basename-shape glob matcher supporting `*` (any run of characters) and `?`
+ * (any single character), with all other characters treated literally. Used
+ * for PROJECT_SCOPE_TRIGGER_FILES so multi-wildcard shapes like
+ * `docker-compose*.yml` match correctly (unlike the single-`*`-only regex
+ * used for the legacy CORE_CONFIG_FILES check below).
+ */
+function basenameMatchesGlob(basename: string, pattern: string): boolean {
+  const escaped = pattern
+    .split(/([*?])/)
+    .map(part => {
+      if (part === '*') return '.*';
+      if (part === '?') return '.';
+      return part.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+    })
+    .join('');
+  return new RegExp(`^${escaped}$`).test(basename);
+}
+
+function matchesProjectScopeTrigger(file: string): boolean {
+  const basename = path.basename(file);
+  return PROJECT_SCOPE_TRIGGER_FILES.some(pattern => basenameMatchesGlob(basename, pattern));
+}
+
 const SOURCE_EXTENSIONS = [
   '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs',
   '.py', '.pyw',
@@ -192,6 +251,14 @@ export class ChangeDetector {
         if (coreConfigChanged && this.shouldFullRebuildForCoreConfigChange()) {
           return this.createFullRebuildChangeSet(`Core configuration changed: ${coreConfigChanged}`);
         }
+        const projectScopeTrigger = this.checkProjectScopeTrigger([
+          ...detectedChanges.added,
+          ...detectedChanges.modified,
+          ...detectedChanges.deleted,
+        ]);
+        if (projectScopeTrigger) {
+          return this.createFullRebuildChangeSet(`project-scope trigger changed: ${projectScopeTrigger}`);
+        }
         const enriched = await this.enrichWithDependencies(detectedChanges, previousState);
         if (this.shouldTriggerFullRebuild(enriched, previousState)) {
           return this.createFullRebuildChangeSet(enriched.reason || 'Threshold exceeded');
@@ -226,6 +293,7 @@ export class ChangeDetector {
     const patterns = [
       ...SOURCE_EXTENSIONS.map(ext => `**/*${ext}`),
       ...CORE_CONFIG_PATTERNS,
+      ...PROJECT_SCOPE_TRIGGER_PATTERNS,
     ];
 
     const matches = await glob(patterns, {
@@ -550,6 +618,20 @@ export class ChangeDetector {
       };
     }
 
+    const projectScopeTrigger = this.checkProjectScopeTrigger([...added, ...modified, ...deleted]);
+    if (projectScopeTrigger) {
+      return {
+        added,
+        modified,
+        deleted,
+        affectedFiles: [],
+        affectedNodeIds: new Set<string>(),
+        requiresFullRebuild: true,
+        reason: `project-scope trigger changed: ${projectScopeTrigger}`,
+        detectionMethod: 'hash',
+      };
+    }
+
     return {
       added,
       modified,
@@ -748,7 +830,24 @@ export class ChangeDetector {
   }
 
   private isTrackedAnalysisFile(file: string): boolean {
-    return this.isSourceFile(file) || this.checkCoreConfigChanges([file]) !== null;
+    return this.isSourceFile(file) ||
+      this.checkCoreConfigChanges([file]) !== null ||
+      matchesProjectScopeTrigger(file);
+  }
+
+  /**
+   * Returns the first changed file matching PROJECT_SCOPE_TRIGGER_FILES, or
+   * null. Unlike checkCoreConfigChanges, callers must NOT gate this behind
+   * shouldFullRebuildForCoreConfigChange() — see the comment on
+   * PROJECT_SCOPE_TRIGGER_FILES above.
+   */
+  private checkProjectScopeTrigger(changedFiles: string[]): string | null {
+    for (const file of changedFiles) {
+      if (matchesProjectScopeTrigger(file)) {
+        return file;
+      }
+    }
+    return null;
   }
 
   private async computeFileHash(filePath: string): Promise<string> {
