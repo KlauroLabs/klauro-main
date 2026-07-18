@@ -950,7 +950,8 @@ export function buildCrossCodebaseSystemGraph(
   const applications = buildApplications(codebases, interfaces, runtimeComponents, repositories);
   resolveDeployables(applications, repositories);
   const distributionUnits = buildWorkspaceDistributionUnits(repositories, applications, codebases);
-  const allLinks = buildLinks(interfaces);
+  const appByIdForLinks = new Map(applications.map(app => [app.id, app]));
+  const allLinks = buildLinks(interfaces, appByIdForLinks);
   const runtimeLinks = buildRuntimeLinks(runtimeComponents, interfaces, allLinks, repositories);
   const applicationLinks = buildApplicationLinks(allLinks, runtimeLinks, interfaces, runtimeComponents, applications, codebases, repositories);
   const sharedCodeRollup = buildSharedCodeRollup(repositories, applications, applicationLinks);
@@ -9443,7 +9444,7 @@ function extractRuntimeComponents(repository: CrossCodebaseInput, id: string): S
     });
 }
 
-function buildLinks(interfaces: SystemInterface[]): SystemLink[] {
+function buildLinks(interfaces: SystemInterface[], appById: Map<string, SystemApplication>): SystemLink[] {
   const links: SystemLink[] = [];
   const providers = interfaces.filter(item => item.role === 'provider' || item.role === 'listener' || item.role === 'shared');
   const consumers = interfaces.filter(item => item.role === 'consumer' || item.role === 'publisher' || item.role === 'shared');
@@ -9453,7 +9454,7 @@ function buildLinks(interfaces: SystemInterface[]): SystemLink[] {
     const consumerLinks: SystemLink[] = [];
     for (const provider of providers) {
       if (consumer.codebase_id === provider.codebase_id && !canLinkWithinSameCodebase(consumer, provider)) continue;
-      const match = matchInterfaces(consumer, provider);
+      const match = matchInterfaces(consumer, provider, appById);
       if (!match) continue;
       if (match.kind === 'shared-data' && consumer.id.localeCompare(provider.id) > 0) continue;
       const evidenceQuality = linkEvidenceQuality(consumer, provider, match.kind);
@@ -9974,6 +9975,23 @@ function inferPackageDeclaredApplicationLinks(
   return links;
 }
 
+/** Generic declared-technology names (not product/app-name vocabulary) that
+ *  identify a codebase as rendering a UI. Sourced from `codebase.frameworks`,
+ *  which itself comes from CAS `technologies.frameworks` — real manifest/
+ *  import evidence, not a guess from the app's own name. */
+const FRONTEND_FRAMEWORK_NAMES = new Set([
+  'react', 'next', 'next.js', 'nextjs', 'vue', 'vue.js', 'vuejs', 'nuxt', 'nuxt.js',
+  'angular', 'angularjs', 'svelte', 'sveltekit', 'solid', 'solid-js', 'solidjs',
+  'ember', 'ember.js', 'preact', 'lit', 'stencil', 'qwik', 'astro', 'remix',
+  'gatsby', 'alpine.js', 'alpinejs', 'backbone', 'backbone.js', 'knockout',
+  'polymer', 'flutter', 'swiftui', 'jetpack compose', 'compose',
+]);
+
+function hasFrontendFrameworkEvidence(codebase: SystemCodebase | undefined): boolean {
+  if (!codebase) return false;
+  return codebase.frameworks.some(framework => FRONTEND_FRAMEWORK_NAMES.has(framework.trim().toLowerCase()));
+}
+
 function inferSystemInsights(
   codebases: SystemCodebase[],
   applications: SystemApplication[],
@@ -9984,6 +10002,7 @@ function inferSystemInsights(
   distributionUnits: WorkspaceDistributionUnit[] = [],
 ): SystemInsight[] {
   const appById = new Map(applications.map(app => [app.id, app]));
+  const codebaseById = new Map(codebases.map(codebase => [codebase.id, codebase]));
   const codebaseIds = new Set(codebases.map(codebase => codebase.id));
   const visibleAppIds = new Set(applications.filter(app => shouldExposeInWorkspaceOverview(app, applications)).map(app => app.id));
   const sourceBackedLinks = applicationLinks.filter(link =>
@@ -10028,12 +10047,22 @@ function inferSystemInsights(
     const outLinks = topologyAwareOutgoing.get(app.id) || [];
     const name = app.name.toLowerCase();
     if (distributionMemberIds.has(app.id)) continue;
-    const brokerNamedSurface = /drop|broker|queue|relay|coordinator|gateway|client-service/.test(name);
+    // Evidence-based broker surface: the app both publishes/consumes and
+    // listens/provides on a queue-, topic-, or stream-shaped interface (CAS
+    // entry/exit-point evidence), rather than matching product-shaped name
+    // vocabulary (formerly /drop|broker|queue|relay|coordinator|gateway|
+    // client-service/ against the app name).
+    const appInterfacesForBroker = interfacesByApp.get(app.id) || [];
+    const emitsOnQueueLikeSurface = appInterfacesForBroker.some(item =>
+      (item.kind === 'message' || item.kind === 'stream') && (item.role === 'publisher' || item.role === 'consumer'));
+    const receivesOnQueueLikeSurface = appInterfacesForBroker.some(item =>
+      (item.kind === 'message' || item.kind === 'stream') && (item.role === 'listener' || item.role === 'provider'));
+    const queueEvidenceSurface = emitsOnQueueLikeSurface && receivesOnQueueLikeSurface;
     const topologyBrokerSurface = inLinks.length > 0 &&
       outLinks.length > 0 &&
       app.kind !== 'app' &&
       !/api$|ui|web|frontend|client$/.test(name);
-    if ((brokerNamedSurface || topologyBrokerSurface) && (inLinks.length + outLinks.length) >= 2) {
+    if ((queueEvidenceSurface || topologyBrokerSurface) && (inLinks.length + outLinks.length) >= 2) {
       const sourceBackedIn = inLinks.filter(applicationLinkHasSourceBackedEvidence);
       const sourceBackedOut = outLinks.filter(applicationLinkHasSourceBackedEvidence);
       const hasSourceBackedBridge = sourceBackedIn.length > 0 && sourceBackedOut.length > 0;
@@ -10044,14 +10073,17 @@ function inferSystemInsights(
         : `${app.name} has deployment topology links with ${peers.slice(0, 4).join(', ')}`;
       insights.push({
         id: `insight:broker:${slugify(app.id)}`,
-        type: /relay|coordinator|gateway/.test(name) ? 'relay-or-fallback-path' : 'broker-service',
+        // queue/topic evidence => confident broker-service; topology-only
+        // (links present but no queue-shaped interface evidence) => the
+        // weaker relay-or-fallback-path type.
+        type: queueEvidenceSurface ? 'broker-service' : 'relay-or-fallback-path',
         title,
         description: hasSourceBackedBridge
           ? `${app.name} has both inbound and outbound source-backed workspace links, so agents should treat it as part of the communication path while preserving each link's evidence quality.`
           : `${app.name} is connected by deployment topology, but WAS should not claim source-level brokering until source-backed incoming and outgoing paths are present.`,
         application_ids: [app.id, ...new Set([...inLinks.map(link => link.source_application_id), ...outLinks.map(link => link.target_application_id)])],
         codebase_ids: [...new Set([app.codebase_id, ...inLinks.map(link => link.source_codebase_id), ...outLinks.map(link => link.target_codebase_id)])],
-        confidence: hasSourceBackedBridge ? (/drop|relay|coordinator|gateway/.test(name) ? 0.86 : 0.72) : 0.62,
+        confidence: hasSourceBackedBridge ? (queueEvidenceSurface ? 0.86 : 0.72) : 0.62,
         evidence: [...inLinks, ...outLinks].slice(0, 8).flatMap(link => link.evidence),
       });
     }
@@ -10079,37 +10111,46 @@ function inferSystemInsights(
     });
   }
 
-  for (const ui of applications.filter(app => visibleAppIds.has(app.id) && /(admin|client|user|internal).*(ui|web|client)|(?:ui|web|client).*(admin|client|user|internal)/i.test(app.name))) {
-    const uiKind = ui.name.includes('admin') ? 'admin' : ui.name.includes('internal') ? 'internal' : 'user';
-    const api = findNamedApi(applications.filter(candidate => candidate.id !== ui.id && visibleAppIds.has(candidate.id)), uiKind);
+  // Evidence-based UI/API pairing: "UI-ish" is declared frontend-framework
+  // evidence on the app's own codebase (technologies.frameworks facts, not
+  // app-name vocabulary); "pairs with" requires an actual topology-aware
+  // workspace link from the UI to an app that itself has provider http-api
+  // interface evidence. This replaces a name-only regex
+  // (/(admin|client|user|internal).*(ui|web|client)|.../) plus a same-word
+  // API name lookup (findNamedApi), which fabricated an admin/internal/user
+  // pairing distinction with no structural signal behind it — that
+  // distinction is dropped rather than kept as a name guess.
+  for (const ui of applications.filter(app => visibleAppIds.has(app.id) && hasFrontendFrameworkEvidence(codebaseById.get(app.codebase_id)))) {
+    const uiOutLinks = topologyAwareOutgoing.get(ui.id) || [];
+    const apiLink = uiOutLinks.find(link => {
+      const target = appById.get(link.target_application_id);
+      if (!target || !visibleAppIds.has(target.id)) return false;
+      return (interfacesByApp.get(target.id) || []).some(item => item.role === 'provider' && item.kind === 'http-api');
+    });
+    if (!apiLink) continue;
+    const api = appById.get(apiLink.target_application_id);
     if (!api) continue;
     insights.push({
       id: `insight:ui-api:${slugify(ui.id)}:${slugify(api.id)}`,
       type: 'ui-api-pairing',
       title: `${ui.name} pairs with ${api.name}`,
-      description: `${ui.name} is the ${uiKind} UI/client surface and ${api.name} is the matching API surface. Changes to either side should validate route contracts and auth expectations together.`,
+      description: `${ui.name} has frontend-framework evidence and a workspace link to ${api.name}, which exposes provider HTTP interfaces. Changes to either side should validate route contracts and auth expectations together.`,
       application_ids: [ui.id, api.id],
       codebase_ids: [...new Set([ui.codebase_id, api.codebase_id])],
-      confidence: 0.74,
-      evidence: [ui.path_hint || ui.name, api.path_hint || api.name],
+      confidence: applicationLinkHasSourceBackedEvidence(apiLink) ? 0.78 : 0.66,
+      evidence: [ui.path_hint || ui.name, api.path_hint || api.name, ...apiLink.evidence.slice(0, 4)],
     });
   }
 
-  const agentApps = applications.filter(app => visibleAppIds.has(app.id) && /\bagent\b|gateway|client-service|drop-server|coordinator/.test(app.name));
-  const mcpApps = applications.filter(app => visibleAppIds.has(app.id) && /\bmcp\b/.test(app.name));
-  for (const mcp of mcpApps) {
-    if (!agentApps.length) continue;
-    insights.push({
-      id: `insight:mcp-agent:${slugify(mcp.id)}`,
-      type: 'mcp-agent-surface',
-      title: `${mcp.name} appears to be an MCP-facing control surface for agent workflows`,
-      description: `${mcp.name} is name-backed as an MCP surface and appears alongside agent/coordinator/gateway surfaces. Treat it as an agent-facing integration candidate unless repo-level CAS confirms a different protocol role.`,
-      application_ids: [mcp.id, ...agentApps.map(app => app.id).slice(0, 8)],
-      codebase_ids: [...new Set([mcp.codebase_id, ...agentApps.map(app => app.codebase_id)])],
-      confidence: 0.58,
-      evidence: [mcp.path_hint || mcp.name, ...agentApps.map(app => app.path_hint || app.name).slice(0, 6)],
-    });
-  }
+  // The former mcp-agent-surface insight matched app names against
+  // /\bagent\b|gateway|client-service|drop-server|coordinator/ (agentApps)
+  // and /\bmcp\b/ (mcpApps) and asserted an "MCP-facing control surface for
+  // agent workflows" purely from that name coincidence. There is no
+  // structural CAS/WAS evidence (interface kind, runtime component, protocol
+  // fact) for "agent-ness" anywhere in this analyzer, so per the
+  // evidence-or-delete rule this insight is deleted outright rather than kept
+  // as a name guess — and drop-server/client-service were client-product
+  // deployable names that had to go regardless.
 
   for (const app of applications.filter(app => visibleAppIds.has(app.id))) {
     const appInterfaces = interfacesByApp.get(app.id) || [];
@@ -10432,10 +10473,10 @@ function httpLinkSelectionRank(link: SystemLink, interfaceById: Map<string, Syst
   return rank;
 }
 
-function matchInterfaces(source: SystemInterface, target: SystemInterface): Pick<SystemLink, 'kind' | 'mode' | 'confidence'> | null {
+function matchInterfaces(source: SystemInterface, target: SystemInterface, appById: Map<string, SystemApplication>): Pick<SystemLink, 'kind' | 'mode' | 'confidence'> | null {
   if (source.kind === 'http-api' && source.role === 'consumer' && target.kind === 'http-api' && target.role === 'provider') {
     if (source.codebase_id !== target.codebase_id && source.topology_surface && target.topology_surface) return null;
-    if (!apiAudienceCompatible(source, target)) return null;
+    if (!apiAudienceCompatible(source, target, appById)) return null;
     if (serviceAliasesOverlap(source, target)) {
       if (!hostOnlyHttpInterface(source) && !hostOnlyHttpInterface(target) && !httpCompatible(source, target)) return null;
       return { kind: 'http-call', mode: source.mode === 'async' ? 'async' : target.mode, confidence: 0.88 };
@@ -10585,7 +10626,20 @@ function hostMatchesSourceInterface(item: SystemInterface, host: string): boolea
   return cleanApplicationName(applicationNameFromId(item.application_id)) === normalizedHost;
 }
 
-function apiAudienceCompatible(source: SystemInterface, target: SystemInterface): boolean {
+/** Evidence that a consumer application is a service-tier deployable rather
+ *  than a browser/UI surface: it has a runtime component actually wired to it
+ *  (compose service, bin, process — structural topology evidence), or its
+ *  application kind (itself resolved from path/manifest evidence upstream,
+ *  see `applicationKind`) is a backend kind. Replaces a name regex
+ *  (agent|gateway|coordinator|broker|relay|drop|drop-server|worker|daemon|
+ *  service) matched against the consumer's own application name. */
+function isServiceTierDeployableEvidence(app: SystemApplication | undefined): boolean {
+  if (!app) return false;
+  if (app.kind === 'app') return false;
+  return app.runtime_component_ids.length > 0 || app.kind === 'service' || app.kind === 'worker' || app.kind === 'runtime-service';
+}
+
+function apiAudienceCompatible(source: SystemInterface, target: SystemInterface, appById: Map<string, SystemApplication>): boolean {
   const sourceName = cleanApplicationName(applicationNameFromId(source.application_id));
   const targetName = cleanApplicationName(applicationNameFromId(target.application_id));
   const sourceText = `${source.name} ${source.endpoint || ''} ${source.key || ''}`.toLowerCase();
@@ -10596,7 +10650,7 @@ function apiAudienceCompatible(source: SystemInterface, target: SystemInterface)
   const explicitPrivilegedIntent = /\b(admin|internal|partner-portal|impersonat|service\/agents|metrics\/service|m2m|machine-to-machine)\b/.test(sourceText);
   if (clientFacingSource && privilegedTarget && !explicitPrivilegedIntent) return false;
 
-  const operationalSource = /(?:^|[-_])(agent|gateway|coordinator|broker|relay|drop|drop-server|worker|daemon|service)(?:[-_]|$)/.test(sourceName);
+  const operationalSource = isServiceTierDeployableEvidence(appById.get(source.application_id));
   const userTarget = /(?:^|[-_])(user|public|client)(?:[-_]|$)/.test(targetName);
   const operationalRoute = /\b(service\/agents|metrics\/service|agent|gateway|traffic|keepalive|registry|register-service-account)\b/.test(sourceText);
   if (operationalSource && userTarget && operationalRoute) return false;
@@ -12428,7 +12482,14 @@ function applicationNameFromFile(file: string | undefined): string {
   const rustServiceModule = normalized.match(/(?:^|\/)crates\/[^/]+\/src\/([^/.]+)\.rs$/i);
   if (rustServiceModule?.[1] && !/^(lib|main|mod|types?|models?|schema|error|config|utils?)$/i.test(rustServiceModule[1])) {
     const moduleName = rustServiceModule[1].replace(/_/g, '-');
-    if (/(api|server|service|worker|agent|client|coordinator|gateway|broker|relay|drop|sync|scheduler)/i.test(moduleName)) return moduleName;
+    // No CAS/bin/entry-point evidence is reachable at this layer (this
+    // function only sees a file path string), so a full evidence-based gate
+    // for "is this module an app surface" isn't available here. Keep only
+    // the minimal generic subset that isn't a product-shaped guess; the
+    // operational/product vocabulary this used to gate on (agent,
+    // coordinator, gateway, broker, relay, drop, drop-server, sync,
+    // scheduler) is dropped rather than kept as a name guess.
+    if (/(api|server|service|worker|client)/i.test(moduleName)) return moduleName;
   }
   const patterns = [
     /(?:^|\/)apps\/([^/]+)\//i,
@@ -12500,11 +12561,6 @@ function isDeployableApplication(name: string, pathHint: string | undefined, ali
 
 function isPackagePathHint(pathHint: string | undefined): boolean {
   return /(?:^|\/)(packages|crates|libs)\//.test(pathHint || '');
-}
-
-function findNamedApi(applications: SystemApplication[], kind: string): SystemApplication | undefined {
-  return applications.find(candidate => candidate.name.includes(`${kind}-api`))
-    || applications.find(candidate => candidate.name.includes(kind) && candidate.name.includes('api'));
 }
 
 function runtimeApplicationDisplayName(name: string): string {

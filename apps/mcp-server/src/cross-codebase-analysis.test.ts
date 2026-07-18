@@ -431,7 +431,11 @@ test('workspace analysis composes completed CAS outputs without source reads', (
     unit.component_deployable_ids.some((id: string) => /client-service/.test(id))
   ));
   assert.ok(overview.external_dependencies.some((dependency: any) => dependency.name === 'redis' && dependency.used === false));
-  assert.ok(graph.system_insights.some(insight => insight.type === 'mcp-agent-surface'));
+  // mcp-agent-surface used to fire from name coincidence alone (an app named
+  // "mcp-*" alongside apps named "agent"/"coordinator"/etc). There is no
+  // structural evidence for "agent-ness" anywhere in CAS/WAS, so the insight
+  // was deleted (evidence-or-delete) rather than kept as a name guess.
+  assert.ok(!graph.system_insights.some(insight => insight.type === 'mcp-agent-surface'));
   assert.ok(graph.system_insights.some(insight => insight.type === 'declared-unused-infrastructure' && /redis/i.test(insight.title)));
   assert.ok(graph.system_insights.some(insight => insight.type === 'provider-api-without-source-consumers' && /internal-api/i.test(insight.title)));
 });
