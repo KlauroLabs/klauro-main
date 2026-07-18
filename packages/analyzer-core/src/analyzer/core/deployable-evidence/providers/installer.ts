@@ -258,9 +258,37 @@ function collectFromDistributionArtifactNodes(ctx: EvidenceCollectionContext): D
  *  that same parameter, then resolves the parameter's real values from every
  *  literal-string call site of that function elsewhere in the script
  *  (`funcname "literal" ...`), attributing position N's literal as a member. */
+/** Real shell function bodies are never remotely this large (the biggest
+ *  legitimate installer scripts in the wild run a few KB total); this bounds
+ *  funcBodyRegex's body-search window so an UNCLOSED `{` (no matching `\n}`
+ *  anywhere in the rest of the file — adversarial-but-legitimate content, not
+ *  a crafted attack) costs at most one bounded scan instead of a scan to EOF.
+ *  See funcBodyRegex's own PERFORMANCE note for the full story. */
+const MAX_FUNC_BODY_SEARCH_CHARS = 2_000;
+
 function resolveIndirectCargoPackageMembers(content: string): string[] {
   const members: string[] = [];
-  const funcBodyRegex = /(?:^|\n)\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(\)\s*\{([\s\S]*?)\n\}/g;
+  // PERFORMANCE (regex-hang-hunt, 2026-07, second escape of the class fixed in
+  // 43ac675e): the lazy `[\s\S]*?` here used to have NO upper bound, so it
+  // scanned forward looking for `\n}` all the way to EOF whenever a `name() {`
+  // header had no matching close later in the file. That is fine for a single
+  // header near EOF, but a script shape with MANY such headers scattered
+  // through the file (e.g. large generated/embedded content with many `{` and
+  // sparse or absent `\n}` closings) makes EVERY header's lazy scan re-walk
+  // most of the remaining content: O(headers x remaining-length), quadratic
+  // in file size. Measured directly: doubling a pathological input's size
+  // roughly QUADRUPLED matchAll's running time (500->8000 "unclosed function"
+  // lines: 1.4ms -> 244ms, consistent with O(n^2)). Bounding the body-search
+  // window to MAX_FUNC_BODY_SEARCH_CHARS caps each header's worst-case scan to
+  // a constant, making the whole matchAll linear in file size regardless of
+  // how many headers never find a close — a header whose body would exceed
+  // the cap simply fails to match here (same effect as "not a resolvable
+  // indirect-cargo function"), which is correct: no real installer function
+  // is anywhere close to MAX_FUNC_BODY_SEARCH_CHARS long.
+  const funcBodyRegex = new RegExp(
+    `(?:^|\\n)\\s*([A-Za-z_][A-Za-z0-9_]*)\\s*\\(\\)\\s*\\{([\\s\\S]{0,${MAX_FUNC_BODY_SEARCH_CHARS}}?)\\n\\}`,
+    'g',
+  );
   for (const funcMatch of content.matchAll(funcBodyRegex)) {
     const funcName = funcMatch[1];
     const body = funcMatch[2];
