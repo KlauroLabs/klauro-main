@@ -38,7 +38,57 @@ set -euo pipefail
 DEVGATE_DIR="/opt/klauro/devgate"
 BASE_IMAGE="klauro/api:alpha"
 GATE_IMAGE="klauro-gate"
+GATE_LABEL="klauro-gate=1"
 DOCKERFILE_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# Stale-container reaping: killed/wedged gate invocations (Ctrl-C'd runs,
+# timed-out CI jobs, agent sessions that got killed before the `docker run`
+# returned) leave klauro-gate containers behind. --rm only cleans up a
+# container that exits normally; it does nothing for a container that's still
+# RUNNING when its parent process dies, or one whose --rm cleanup itself got
+# interrupted. Left unchecked these accumulate and starve the host (14 seen in
+# the wild) until someone notices and kills them by hand.
+#
+# Filter by the explicit label below (set on every `docker run` at the bottom
+# of this script), never by name-guessing or image ancestry alone — a label is
+# exact and survives image rebuilds.
+GATE_MAX_AGE_MIN="${GATE_MAX_AGE_MIN:-30}"
+GATE_TIMEOUT_S="${GATE_TIMEOUT_S:-1800}"
+
+reap_stale_containers() {
+  local max_age_min="$1"
+  local now age_min cid started
+
+  # Exited (or otherwise dead) klauro-gate containers: always safe to remove,
+  # regardless of age.
+  local exited
+  exited="$(docker ps -a --filter "label=$GATE_LABEL" --filter "status=exited" -q)"
+  if [ -n "$exited" ]; then
+    echo "==> reaping $(echo "$exited" | wc -l | tr -d ' ') exited klauro-gate container(s)" >&2
+    echo "$exited" | xargs -r docker rm >/dev/null 2>&1 || true
+  fi
+
+  # Running klauro-gate containers older than the threshold: these are the
+  # wedged/orphaned ones. Kill + remove.
+  # (VPS is Linux/GNU coreutils, so `date -d` is available directly — no
+  # BSD-date fallback needed here.)
+  now="$(date +%s)"
+  docker ps --filter "label=$GATE_LABEL" --filter "status=running" -q | while read -r cid; do
+    [ -z "$cid" ] && continue
+    started="$(docker inspect -f '{{.State.StartedAt}}' "$cid" 2>/dev/null || true)"
+    [ -z "$started" ] && continue
+    local started_epoch
+    started_epoch="$(date -u -d "$started" +%s 2>/dev/null || echo "$now")"
+    age_min=$(( (now - started_epoch) / 60 ))
+    if [ "$age_min" -ge "$max_age_min" ]; then
+      echo "==> reaping stale running klauro-gate container $cid (age ${age_min}m >= ${max_age_min}m)" >&2
+      docker kill "$cid" >/dev/null 2>&1 || true
+      docker rm -f "$cid" >/dev/null 2>&1 || true
+    fi
+  done
+}
+
+reap_stale_containers "$GATE_MAX_AGE_MIN"
 
 REBUILD=0
 if [ "${1:-}" = "--rebuild" ]; then
@@ -84,7 +134,29 @@ for cache_dir in "$DEVGATE_DIR/$WORKSPACE/node_modules/.cache" "$DEVGATE_DIR/nod
   chmod -R a+rwX "$cache_dir" 2>/dev/null || true
 done
 
-exec docker run --rm \
+# Hard timeout on the run itself: a wedged gate command (hung test, deadlock)
+# should not be able to sit forever waiting for someone to notice — that's
+# exactly how the 14-container pileup happened. `timeout` sends SIGTERM to
+# `docker run`; `--init` on the container makes an init process PID 1 inside
+# the container so that signal actually reaches the gated command instead of
+# being swallowed by a shell that never forwards signals to its children.
+#
+# We don't rely solely on signal propagation for cleanup, though: if `docker
+# run` itself is killed (e.g. timeout's --kill-after fires) before it can
+# process --rm, the container would be orphaned — the exact failure mode this
+# fix exists to close. So we capture the container id via --cidfile and
+# explicitly kill+rm it after timeout, belt-and-suspenders with --rm.
+#
+# Distinct exit code (124, timeout's own convention) + explicit message so a
+# timed-out gate is never confused with a real test failure.
+CIDFILE="$(mktemp -u)"
+rm -f "$CIDFILE"
+
+set +e
+timeout --signal=TERM --kill-after=10s "${GATE_TIMEOUT_S}s" \
+  docker run --rm --init \
+  --cidfile "$CIDFILE" \
+  --label "$GATE_LABEL" \
   --user gate \
   -e NODE_ENV=development \
   -e KLAURO_STORAGE_PATH=/tmp/klauro-gate-storage \
@@ -93,3 +165,18 @@ exec docker run --rm \
   -w "/gate/$WORKSPACE" \
   "$GATE_IMAGE" \
   sh -c "$CMD"
+STATUS=$?
+set -e
+
+if [ "$STATUS" -eq 124 ] || [ "$STATUS" -eq 137 ]; then
+  if [ -s "$CIDFILE" ]; then
+    docker kill "$(cat "$CIDFILE")" >/dev/null 2>&1 || true
+    docker rm -f "$(cat "$CIDFILE")" >/dev/null 2>&1 || true
+  fi
+  rm -f "$CIDFILE"
+  echo "==> gate.sh: command exceeded GATE_TIMEOUT_S=${GATE_TIMEOUT_S}s, killed and removed" >&2
+  exit 124
+fi
+
+rm -f "$CIDFILE"
+exit "$STATUS"
