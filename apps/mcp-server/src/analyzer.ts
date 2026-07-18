@@ -163,7 +163,8 @@ import {
   loadFileCache,
   getProjectStorageDir,
   withProjectAnalysisLock,
-  withProjectAnalysisLockIfAvailable
+  withProjectAnalysisLockIfAvailable,
+  writeJsonAtomic
 } from './storage';
 import { loadKlauroConfig, validateEmbeddingConfig, validateConventions, type KlauroConventions } from './klauro-config';
 import { clearFreshnessSummaryCache } from './freshness';
@@ -1786,6 +1787,47 @@ function getAnalysisWatchdogMs(): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_ANALYSIS_WATCHDOG_MS;
 }
 
+// --- Internal/boot rebuild attempt visibility ------------------------------
+// Defect (2026-07-17): an internal, analyzer-version-triggered full rebuild —
+// entered via analyzeProjectIncremental -> orchestrateIncrementalAnalysis's
+// schemaRebuildReason branch, typically first hit right after a fresh deploy
+// when a watch session (watcher.ts) or an agent's freshness check
+// (getFreshAnalysisForAgent) re-analyzes a project whose stored cas_version
+// predates the running server — ran for 65+ minutes with NO visible attempt
+// record anywhere: unlike the HTTP-driven reanalyze paths in
+// remote-analyzer-service.ts (ReanalyzeAttemptRecord, trigger:'reanalyze'),
+// nothing wrote a sidecar for this internally-triggered path, so a poller of
+// GET /api/projects/:id/analysis saw only the OLD analysis with no sign that
+// a newer (possibly hung) attempt was in flight.
+//
+// Mirrors remote-analyzer-service.ts's ReanalyzeAttemptRecord shape and path
+// convention (`<projectPath>/.reanalyze-attempt.json`) so that existing
+// last-attempt surface picks these up too, without this module importing
+// from remote-analyzer-service.ts — only the on-disk shape/path is shared,
+// kept deliberately decoupled. Written ONLY when a version mismatch is
+// plausible (see likelyVersionRebuild in runIncrementalAnalysis below), never
+// on the common no-op incremental pass, so this adds no IO to the hot path.
+interface InternalRebuildAttemptRecord {
+  state: 'in-progress' | 'succeeded' | 'failed';
+  trigger: 'version-rebuild';
+  started_at: string;
+  finished_at?: string;
+  duration_ms?: number;
+  reason?: string;
+}
+
+function internalRebuildAttemptPath(projectPath: string): string {
+  return path.join(projectPath, '.reanalyze-attempt.json');
+}
+
+async function writeInternalRebuildAttempt(projectPath: string, record: InternalRebuildAttemptRecord): Promise<void> {
+  try {
+    await writeJsonAtomic(internalRebuildAttemptPath(projectPath), record);
+  } catch {
+    /* best-effort: attempt visibility must never mask or block the rebuild it describes */
+  }
+}
+
 /** Thrown by withLanePermit when `fn` exceeds KLAURO_ANALYSIS_WATCHDOG_MS
  *  without settling. Callers' existing failure handling (writeAttemptRecord /
  *  markBackgroundAnalysisFailed in remote-analyzer-service.ts) treats this
@@ -1926,6 +1968,29 @@ export function __withLanePermitForTests<T>(fn: () => Promise<T>, sizeHint?: num
   return withLanePermit(fn, sizeHint, describe);
 }
 
+/** Test-only: exercise the OUTER worker-dispatch watchdog directly, without a
+ *  real forked child process (which cannot be made to hang deterministically
+ *  from a test). Verifies the same fire/free/mark/late-completion semantics
+ *  as withLanePermit's inner watchdog, one layer further out. */
+export function __withOuterWorkerWatchdogForTests(
+  projectPath: string,
+  run: () => Promise<AnalysisRunSummary>
+): Promise<AnalysisRunSummary> {
+  return withOuterWorkerWatchdog(projectPath, run);
+}
+
+/** Test-only: read back whatever internal-rebuild attempt record (if any) is
+ *  currently on disk for `projectPath`, without needing a real version-bumped
+ *  CAS on disk to trigger one. */
+export async function __readInternalRebuildAttemptForTests(projectPath: string): Promise<InternalRebuildAttemptRecord | null> {
+  try {
+    if (!nodeFs.existsSync(internalRebuildAttemptPath(projectPath))) return null;
+    return await fs.readJson(internalRebuildAttemptPath(projectPath));
+  } catch {
+    return null;
+  }
+}
+
 /** Test-only: current in-use permit count, for asserting overlap/exclusivity
  *  without timing-dependent sleeps. */
 export function __getLanePermitsInUseForTests(): number {
@@ -1995,18 +2060,63 @@ async function runIncrementalAnalysis(projectPath: string, orch: AnalyzerOrchest
     return freshResult;
   }
 
+  // Additive attempt-record visibility (see the "Internal/boot rebuild attempt
+  // visibility" comment above the Wall-clock watchdog section): if the stored
+  // analysis predates the running server's cas_version, orchestrateIncrementalAnalysis
+  // is about to enter its schemaRebuildReason branch and run a FULL rebuild —
+  // exactly the case that was measured hanging 65+ minutes with zero visible
+  // record anywhere. Only this (rare) predicted case pays for the sidecar
+  // write; the common no-op incremental pass never touches it.
+  const versionInfo = getAnalysisVersionInfo(previousOutput);
+  const likelyVersionRebuild = versionInfo.stored_version !== versionInfo.current_version;
+  const attemptStartedAt = new Date();
+  if (likelyVersionRebuild) {
+    await writeInternalRebuildAttempt(projectPath, {
+      state: 'in-progress',
+      trigger: 'version-rebuild',
+      started_at: attemptStartedAt.toISOString(),
+      reason: `stored cas_version ${versionInfo.stored_version} differs from the running server's cas_version ${versionInfo.current_version}`,
+    });
+  }
+
   let phaseStartedAt = Date.now();
-  const result = await orch.orchestrateIncrementalAnalysis(
-    projectPath,
-    previousOutput,
-    previousState,
-    {
-      loadCache: (hash) => loadFileCache(projectPath, hash),
-      saveCache: (hash, fileResult) => saveFileCache(projectPath, hash, fileResult),
-      displayName
+  let result: Awaited<ReturnType<typeof orch.orchestrateIncrementalAnalysis>>;
+  try {
+    result = await orch.orchestrateIncrementalAnalysis(
+      projectPath,
+      previousOutput,
+      previousState,
+      {
+        loadCache: (hash) => loadFileCache(projectPath, hash),
+        saveCache: (hash, fileResult) => saveFileCache(projectPath, hash, fileResult),
+        displayName
+      }
+    );
+  } catch (error) {
+    if (likelyVersionRebuild) {
+      await writeInternalRebuildAttempt(projectPath, {
+        state: 'failed',
+        trigger: 'version-rebuild',
+        started_at: attemptStartedAt.toISOString(),
+        finished_at: new Date().toISOString(),
+        duration_ms: Date.now() - attemptStartedAt.getTime(),
+        reason: error instanceof Error ? error.message : String(error),
+      });
     }
-  );
+    throw error;
+  }
   debug('orchestrate-incremental', phaseStartedAt);
+
+  if (likelyVersionRebuild) {
+    await writeInternalRebuildAttempt(projectPath, {
+      state: 'succeeded',
+      trigger: 'version-rebuild',
+      started_at: attemptStartedAt.toISOString(),
+      finished_at: new Date().toISOString(),
+      duration_ms: Date.now() - attemptStartedAt.getTime(),
+      reason: result.fullRebuildReason,
+    });
+  }
 
   if (result.wasFullRebuild && result.output !== previousOutput) {
     // A full rebuild inside the incremental path bypasses the orchestrator's
@@ -2406,11 +2516,87 @@ function dispatchWorkerJob(projectPath: string, options: RunAnalysisOptions): Pr
   });
 }
 
+/**
+ * OUTER wall-clock watchdog for the worker-DISPATCH path, mirroring
+ * withLanePermit's watchdog (see the "Wall-clock watchdog" comment above) one
+ * layer further out. analyzeProjectIncremental's own lane permit + watchdog
+ * only exist INSIDE the forked analysis-worker child process (analysis-worker.ts
+ * -> executeAnalysis -> analyzeProjectIncremental) — from THIS process's point
+ * of view, dispatchWorkerJob just awaits child.send()/a 'message' event with
+ * NO timeout of its own. Measured live: a boot-triggered version-change
+ * rebuild (see runIncrementalAnalysis's likelyVersionRebuild) ran 65+ minutes,
+ * exceeding even the inner 30-minute watchdog, and nothing here ever noticed —
+ * the caller (watcher.ts's debounced file-watch loop, or an MCP tool handler's
+ * force_full reanalyze) just hung indefinitely with no error, no log, and no
+ * attempt record (the child that would have written the terminal one is
+ * presumed stuck). Same honesty constraint as the inner watchdog: this cannot
+ * preempt the child if it is genuinely wedged in a synchronous/native hang —
+ * it only stops WAITING on it, logs, and writes a best-effort failed attempt
+ * record so a poller of GET /api/projects/:id/analysis sees the truth instead
+ * of a stale/absent record. The child process itself is left running (not
+ * killed) — the same last-write-wins tolerance the inner watchdog documents.
+ */
+async function withOuterWorkerWatchdog(
+  projectPath: string,
+  run: () => Promise<AnalysisRunSummary>
+): Promise<AnalysisRunSummary> {
+  const startedAtMs = Date.now();
+  const attemptStartedAtIso = new Date(startedAtMs).toISOString();
+  const watchdogMs = getAnalysisWatchdogMs();
+  let watchdogFired = false;
+  const innerPromise = run();
+
+  let rejectWatchdog!: (error: Error) => void;
+  const watchdogPromise = new Promise<never>((_, reject) => { rejectWatchdog = reject; });
+  const timer = setTimeout(() => {
+    // Async IIFE so the attempt-record write can be AWAITED before rejecting
+    // — a caller/test that awaits this watchdog's rejection must see the
+    // terminal record already on disk, not racing a fire-and-forget write.
+    (async () => {
+      watchdogFired = true;
+      const elapsedMinutes = Math.round((Date.now() - startedAtMs) / 60_000);
+      console.error(
+        `[Klauro] OUTER ANALYSIS WATCHDOG FIRED: ${projectPath} (worker-dispatched) has been running ${elapsedMinutes}m, ` +
+        `exceeding KLAURO_ANALYSIS_WATCHDOG_MS=${watchdogMs}ms at the parent-process level. The forked analysis worker's ` +
+        `OWN inner watchdog never reported back (message loss, or the child is wedged in a synchronous/native hang its ` +
+        `own timer cannot preempt). Marking this attempt failed (reason contains 'watchdog-timeout') and writing a ` +
+        `terminal attempt record so a poller sees the truth instead of a stale/absent one. NOTE: this does NOT stop the ` +
+        `underlying child process — it is left running, matching the inner watchdog's own honesty constraint.`
+      );
+      await writeInternalRebuildAttempt(projectPath, {
+        state: 'failed',
+        trigger: 'version-rebuild',
+        started_at: attemptStartedAtIso,
+        finished_at: new Date().toISOString(),
+        duration_ms: Date.now() - startedAtMs,
+        reason: `watchdog-timeout: ${projectPath} (worker-dispatched) exceeded ${watchdogMs}ms without completing`,
+      }).catch(() => undefined);
+      rejectWatchdog(new AnalysisWatchdogTimeoutError(
+        `watchdog-timeout: ${projectPath} (worker-dispatched) exceeded ${watchdogMs}ms without completing`
+      ));
+    })();
+  }, watchdogMs);
+
+  innerPromise
+    .then(() => {
+      if (watchdogFired) {
+        console.error(`[Klauro] LATE COMPLETION: ${projectPath} (worker-dispatched) finished successfully AFTER the outer watchdog already marked the attempt failed.`);
+      }
+    }, () => {
+      if (watchdogFired) {
+        console.error(`[Klauro] LATE COMPLETION: ${projectPath} (worker-dispatched) finished (with its own error) AFTER the outer watchdog already marked the attempt failed.`);
+      }
+    })
+    .finally(() => clearTimeout(timer));
+
+  return Promise.race([innerPromise, watchdogPromise]);
+}
+
 export async function runAnalysis(projectPath: string, options: RunAnalysisOptions = {}): Promise<AnalysisRunSummary> {
   if (analysisRunsInProcess()) {
     return runAnalysisInProcess(projectPath, options);
   }
-  const run = workerJobChain.then(() => dispatchWorkerJob(projectPath, options));
+  const run = workerJobChain.then(() => withOuterWorkerWatchdog(projectPath, () => dispatchWorkerJob(projectPath, options)));
   workerJobChain = run.catch(() => undefined);
   return run;
 }

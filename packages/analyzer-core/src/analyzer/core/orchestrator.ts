@@ -187,6 +187,28 @@ function aiConcurrencyLimit(): number {
   return Number.isFinite(configured) && configured > 0 ? Math.floor(configured) : 5;
 }
 
+// ---- AI-phase OVERALL wall-clock budget -----------------------------------
+// LIVE EVIDENCE: on a 47k-node CAS the AI-enrichment phase (capability catalog
+// extraction + system description + entity descriptions, each of which already
+// carries its OWN internal per-call/per-round budget/timeout) was observed
+// burning 1-3+ CPU-hours in aggregate — fetch-brotli response decompression +
+// JSON.parse + GC across many large AI calls. Each sub-stage's own budget only
+// bounds THAT stage; nothing previously bounded the SUM across all of them for
+// one analysis run. KLAURO_AI_PHASE_BUDGET_MS is that outer ceiling: once it
+// expires, applyAIInterpretation stops issuing any NEW AI call (an already
+// in-flight call is allowed to finish — it is never aborted mid-request) and
+// marks whatever stage was cut short honestly (ai_phase_status='partial' on
+// EnhancedSystemPurpose, surfaced as CASOutput.ai_enrichment='partial' /
+// ai_phase_budget). Default 15 minutes: generous enough that a normal analysis
+// (typically well under a minute of AI time) never notices it, while capping
+// the worst-case pathological run to a bounded, honestly-reported number.
+const DEFAULT_AI_PHASE_BUDGET_MS = 15 * 60_000;
+
+function getAiPhaseBudgetMs(): number {
+  const configured = Number(process.env.KLAURO_AI_PHASE_BUDGET_MS || '');
+  return Number.isFinite(configured) && configured > 0 ? configured : DEFAULT_AI_PHASE_BUDGET_MS;
+}
+
 // Code-layer / folder / structural names that are never meaningful capability
 // "owners". Used to drop ownership clauses like "owned by lib and entities".
 const CAPABILITY_STRUCTURAL_AREA_NAMES = new Set([
@@ -1128,7 +1150,14 @@ export class AnalyzerOrchestrator {
       output.ai_enrichment = 'error';
       throw error;
     }
-    output.ai_enrichment = 'ready';
+    // `run()` (the deferred closure in executeAnalysis) already stamps
+    // ai_enrichment='partial' when the AI-phase budget cut the pass short
+    // (KLAURO_AI_PHASE_BUDGET_MS) — never overwrite that honest status with
+    // 'ready'. Any other outcome (including no phase-budget engagement at
+    // all) defaults to 'ready' as before.
+    if (output.ai_enrichment !== 'partial') {
+      output.ai_enrichment = 'ready';
+    }
     return output;
   }
 
@@ -2241,8 +2270,33 @@ export class AnalyzerOrchestrator {
             evidence: enhancedSystemPurpose.evidence || systemPurpose.evidence,
           };
           output.product_map = buildProductMap(output);
+          // HONESTY: the AI-phase wall-clock budget (KLAURO_AI_PHASE_BUDGET_MS)
+          // may have cut this pass short (see applyAIInterpretation). enrichAnalysisAI
+          // (the caller of this closure) defaults to 'ready' after this closure
+          // returns, but never downgrades an explicit 'partial' back to 'ready' —
+          // so stamp it here whenever the phase reports it was cut short.
+          if (enhancedSystemPurpose.ai_phase_status === 'partial') {
+            output.ai_enrichment = 'partial';
+            output.ai_phase_budget = {
+              reason: enhancedSystemPurpose.ai_phase_stopped_reason || 'phase-budget-exhausted',
+              budget_ms: getAiPhaseBudgetMs(),
+              nodes_at_stop: enhancedSystemPurpose.ai_phase_nodes_at_stop ?? output.nodes.length,
+            };
+          }
         });
       }
+    } else if (enhancedSystemPurpose.ai_phase_status === 'partial') {
+      // AI ran inline (not deferred) but the AI-phase wall-clock budget
+      // (KLAURO_AI_PHASE_BUDGET_MS) cut it short — honest partial status
+      // instead of the usual 'synchronous' annotation, so a caller of the
+      // plain analyzeAnalysis()/analyzeProject() path (no deferral) sees the
+      // same truth a deferred-path caller would.
+      output.ai_enrichment = 'partial';
+      output.ai_phase_budget = {
+        reason: enhancedSystemPurpose.ai_phase_stopped_reason || 'phase-budget-exhausted',
+        budget_ms: getAiPhaseBudgetMs(),
+        nodes_at_stop: enhancedSystemPurpose.ai_phase_nodes_at_stop ?? output.nodes.length,
+      };
     } else {
       // Pure annotation: AI ran inline exactly as before, nothing else changes.
       output.ai_enrichment = 'synchronous';
@@ -10132,6 +10186,43 @@ export class AnalyzerOrchestrator {
    * then STRUCTURE-ONLY — comprehension fields are left UNSET (never seeded with a
    * deterministic substitute) so Camp-B structure still returns.
    */
+  /**
+   * The deterministic-candidates-only fallback for the capability catalog:
+   * used both when the AI catalog call ran but returned nothing usable, and
+   * (new) when the OVERALL AI-phase budget expired before the catalog call
+   * was even attempted. Extracted so both call sites share one implementation
+   * — see the "AI catalog returned nothing usable" comment at its original
+   * call site for why a raw terminal-chain/shell-script label must never ship
+   * as-is, and the "MODULE SPLIT" comment for why a lone qualifying large
+   * behavior surface is split by handler module rather than shipped as one
+   * merged blob.
+   */
+  private applyDeterministicCapabilityFallback(
+    candidateSnapshot: SystemCapability[],
+    behaviorSurfaces: SystemCapability[],
+    entryPoints: CASEntryPoint[],
+    nodes: CASNode[],
+    systemCapabilities: SystemCapability[]
+  ): void {
+    const validDeterministic = candidateSnapshot.filter(
+      capability => !this.isRawCandidateLabelName(String(capability.name || ''), [])
+    );
+    if (validDeterministic.length > 0) {
+      systemCapabilities.splice(0, systemCapabilities.length, ...validDeterministic);
+      return;
+    }
+    const largeSurfaceCandidates = behaviorSurfaces.filter(
+      surface => this.behaviorSurfaceEntryCount(surface) >= AnalyzerOrchestrator.LARGE_BEHAVIOR_SURFACE_OPERATION_THRESHOLD
+    );
+    const splitSurfaceCandidates = largeSurfaceCandidates.flatMap(
+      surface => this.splitLargeBehaviorSurfaceByModule(surface, entryPoints, nodes)
+    );
+    systemCapabilities.splice(0, systemCapabilities.length, ...splitSurfaceCandidates.map(surface => ({
+      ...surface,
+      criticality_factors: Array.from(new Set([...(surface.criticality_factors || []), 'genuine-fallback-from-behavior-surface'])),
+    })));
+  }
+
   private async applyAIInterpretation(
     enhancedSystemPurpose: EnhancedSystemPurpose,
     systemName: string,
@@ -10212,6 +10303,31 @@ export class AnalyzerOrchestrator {
       return;
     }
 
+    // ---- OVERALL AI-phase wall-clock budget (KLAURO_AI_PHASE_BUDGET_MS) ----
+    // See the "AI-phase OVERALL wall-clock budget" comment near
+    // getAiPhaseBudgetMs(). This is a SEPARATE, OUTER ceiling from budgetMs
+    // above (which only bounds the system-description call/repair loop) and
+    // from aiExtractCapabilityCatalog's/applyAIElementDescriptions' own
+    // internal budgets — those bound ONE stage each; this bounds their SUM for
+    // this analysis run. Checked before every stage below; once expired, no
+    // NEW AI call is issued for the remainder of this pass (an already
+    // in-flight call is never aborted), and whatever was produced before the
+    // cutoff is kept and marked honestly via ai_phase_status='partial'.
+    const aiPhaseBudgetMs = getAiPhaseBudgetMs();
+    const aiPhaseStartedAt = Date.now();
+    const aiPhaseDeadlineAt = aiPhaseStartedAt + aiPhaseBudgetMs;
+    let aiPhaseBudgetExhausted = false;
+    const aiPhaseRemainingMs = (): number => aiPhaseDeadlineAt - Date.now();
+    const markAiPhaseBudgetExhausted = (stage: string): void => {
+      if (aiPhaseBudgetExhausted) return;
+      aiPhaseBudgetExhausted = true;
+      console.error(
+        `[Klauro] AI phase budget exhausted (KLAURO_AI_PHASE_BUDGET_MS=${aiPhaseBudgetMs}ms) before ${stage}; ` +
+        `nodes=${nodes.length}, edges=${edges.length}, elapsed=${Date.now() - aiPhaseStartedAt}ms. Stopping further ` +
+        `AI calls for this analysis pass; results already produced are kept as-is.`
+      );
+    };
+
     // AI EXTRACTS the capability catalog (the business value) from the Camp-B
     // fact bundle — user journeys, entities, route areas, services. On success,
     // replaces systemCapabilities in place, each linked back to its evidence.
@@ -10226,6 +10342,10 @@ export class AnalyzerOrchestrator {
       // the separate `behaviorSurfaces` list by buildSystemCapabilities and
       // never reach this candidate snapshot or the AI catalog prompt at all.
       const candidateSnapshot = systemCapabilities.map(capability => ({ ...capability }));
+      if (aiPhaseRemainingMs() <= 0) {
+        markAiPhaseBudgetExhausted('capability catalog extraction');
+        this.applyDeterministicCapabilityFallback(candidateSnapshot, behaviorSurfaces, entryPoints, nodes, systemCapabilities);
+      } else {
       const extracted = await this.aiExtractCapabilityCatalog({
         systemName,
         enhancedSystemPurpose,
@@ -10237,7 +10357,7 @@ export class AnalyzerOrchestrator {
         externalServices,
         flowGraph,
         projectTextSignal,
-        budgetMs,
+        budgetMs: Math.max(1, Math.min(budgetMs, aiPhaseRemainingMs())),
       });
       if (extracted.length > 0) {
         const reconciled = this.reconcileCatalogedCapabilities(extracted, candidateSnapshot, dataEntities, entryPoints, nodes);
@@ -10255,39 +10375,8 @@ export class AnalyzerOrchestrator {
         // ghost cap_mcp_tool_surface ref, because the old `else if
         // (candidateSnapshot.length === 0)` guard left non-empty deterministic
         // sets untouched.)
-        const validDeterministic = candidateSnapshot.filter(
-          capability => !this.isRawCandidateLabelName(String(capability.name || ''), [])
-        );
-        if (validDeterministic.length > 0) {
-          systemCapabilities.splice(0, systemCapabilities.length, ...validDeterministic);
-        } else {
-          // No valid deterministic candidates remain → re-derive coarse domain
-          // capabilities from the dominant candidate family: the merged LARGE
-          // behavior-surface(s) (an MCP-tool platform, a CLI-only utility, ...),
-          // gated on the same operation-count threshold used to admit them to
-          // the AI prompt. Materializing the surface as a capability also
-          // resolves flows that reference it (no dangling ghost ids). Never
-          // fabricated — real deterministic surfaces promoted out of the
-          // surfaces-only tier for this narrow total-failure case; an
-          // absent/small surface leaves the catalog genuinely empty rather than
-          // inventing or keeping a garbage capability.
-          const largeSurfaceCandidates = behaviorSurfaces.filter(
-            surface => this.behaviorSurfaceEntryCount(surface) >= AnalyzerOrchestrator.LARGE_BEHAVIOR_SURFACE_OPERATION_THRESHOLD
-          );
-          // MODULE SPLIT (defect #33): a lone qualifying surface would
-          // otherwise ship as ONE merged blob (see splitLargeBehaviorSurfaceByModule
-          // doc comment) — split it by handler module when the evidence
-          // supports it, so this fallback yields multiple grounded
-          // capabilities instead of a single thin one whenever the large
-          // surface's handlers are genuinely spread across modules.
-          const splitSurfaceCandidates = largeSurfaceCandidates.flatMap(
-            surface => this.splitLargeBehaviorSurfaceByModule(surface, entryPoints, nodes)
-          );
-          systemCapabilities.splice(0, systemCapabilities.length, ...splitSurfaceCandidates.map(surface => ({
-            ...surface,
-            criticality_factors: Array.from(new Set([...(surface.criticality_factors || []), 'genuine-fallback-from-behavior-surface'])),
-          })));
-        }
+        this.applyDeterministicCapabilityFallback(candidateSnapshot, behaviorSurfaces, entryPoints, nodes, systemCapabilities);
+      }
       }
     }
 
@@ -10365,6 +10454,27 @@ export class AnalyzerOrchestrator {
       unanalyzedLanguages: unanalyzedLanguages.length,
       hasProjectText: Boolean(projectTextSignal.manifestDescription || projectTextSignal.summary),
     };
+    if (aiPhaseBudgetExhausted || aiPhaseRemainingMs() <= 0) {
+      markAiPhaseBudgetExhausted('system description generation');
+      this.recordComprehensionSkipped(enhancedSystemPurpose, systemCapabilities, dataEntities, 'phase-budget-exhausted');
+      if (capabilityTargets.length > 0) {
+        this.recordElementDescriptionGenerationByIds(
+          capabilityTargets.map(target => target.id),
+          systemCapabilities,
+          [],
+          undefined,
+          'ai_skipped',
+          false,
+          'phase-budget-exhausted',
+          budgetMs
+        );
+      }
+      enhancedSystemPurpose.ai_phase_status = 'partial';
+      enhancedSystemPurpose.ai_phase_stopped_reason = 'phase-budget-exhausted';
+      enhancedSystemPurpose.ai_phase_nodes_at_stop = nodes.length;
+      return;
+    }
+
     let timeoutHandle: NodeJS.Timeout | undefined;
     let raw: string;
     try {
@@ -10482,8 +10592,12 @@ export class AnalyzerOrchestrator {
     for (let repairAttempt = 0; repairAttempt < 2; repairAttempt++) {
       if (validation.ok && rejectedElements.size === 0) break;
       if (Date.now() - aiStartedAt >= budgetMs) break;
+      if (aiPhaseRemainingMs() <= 0) {
+        markAiPhaseBudgetExhausted('description repair loop');
+        break;
+      }
       try {
-        const remainingMs = Math.max(1, budgetMs - (Date.now() - aiStartedAt));
+        const remainingMs = Math.max(1, Math.min(budgetMs - (Date.now() - aiStartedAt), aiPhaseRemainingMs()));
         let repairTimeoutHandle: NodeJS.Timeout | undefined;
         const repairRaw = await Promise.race([
           aiService.generateComponentDescription({
@@ -10657,17 +10771,46 @@ export class AnalyzerOrchestrator {
     // allCapabilitiesForEvidence so entity targets see which capabilities
     // serve them.
     if (dataEntities.length > 0) {
-      await this.applyAIElementDescriptions([], dataEntities, {
-        systemName,
-        enhancedSystemPurpose,
-        projectTextSignal,
-        frameworks,
-        includeEntities: true,
-        nodes,
-        edges,
-        allCapabilitiesForEvidence: systemCapabilities,
-        userJourneys,
-      });
+      if (aiPhaseBudgetExhausted || aiPhaseRemainingMs() <= 0) {
+        markAiPhaseBudgetExhausted('entity descriptions');
+        for (const entity of dataEntities) {
+          if (entity.description_source === 'ai' || entity.description_source === 'manual') continue;
+          entity.description_generation = { status: 'ai_skipped', attempted: false, reason: 'phase-budget-exhausted' };
+        }
+        enhancedSystemPurpose.entity_description_coverage = {
+          total: dataEntities.length,
+          described: dataEntities.filter(entity => entity.description_source === 'ai').length,
+          attempted: 0,
+          budget_ms: 0,
+          batch_size: 0,
+          priority_ordered: true,
+          stopped_reason: 'phase-budget-exhausted',
+        };
+      } else {
+        await this.applyAIElementDescriptions([], dataEntities, {
+          systemName,
+          enhancedSystemPurpose,
+          projectTextSignal,
+          frameworks,
+          includeEntities: true,
+          nodes,
+          edges,
+          allCapabilitiesForEvidence: systemCapabilities,
+          userJourneys,
+          aiPhaseDeadlineAt,
+        });
+      }
+    }
+
+    // ---- Final honest phase status. 'partial' was already stamped by the two
+    // early-return exhaustion paths above (system description / capability
+    // catalog); this covers the entity-description exhaustion case (which
+    // falls through to here rather than returning early, since it is the last
+    // stage) and the normal complete case.
+    enhancedSystemPurpose.ai_phase_status = aiPhaseBudgetExhausted ? 'partial' : 'complete';
+    if (aiPhaseBudgetExhausted) {
+      enhancedSystemPurpose.ai_phase_stopped_reason = enhancedSystemPurpose.ai_phase_stopped_reason || 'phase-budget-exhausted';
+      enhancedSystemPurpose.ai_phase_nodes_at_stop = nodes.length;
     }
   }
 
@@ -11003,6 +11146,14 @@ export class AnalyzerOrchestrator {
       edges?: CASEdge[];
       allCapabilitiesForEvidence?: SystemCapability[];
       userJourneys?: CASUserJourney[];
+      // Absolute Date.now()-space deadline for the OVERALL AI-phase budget
+      // (KLAURO_AI_PHASE_BUDGET_MS — see applyAIInterpretation's caller). When
+      // supplied, this pass's own auto-scaled budgetMs is clamped so it never
+      // outlives the phase, even though this pass's own internal
+      // KLAURO_AI_ELEMENT_DESCRIPTION_BUDGET_MS ceiling (75s) is smaller in the
+      // common case. Optional so any other caller of this method (none today
+      // besides applyAIInterpretation's two call sites) is unaffected.
+      aiPhaseDeadlineAt?: number;
     }
   ): Promise<void> {
     this.setElementDescriptionGrounding(
@@ -11081,9 +11232,18 @@ export class AnalyzerOrchestrator {
     // budget when work finishes early).
     const MAX_SCALED_BUDGET_MS = 75000;
     const configuredBudget = Number(process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BUDGET_MS || '');
-    const budgetMs = Number.isFinite(configuredBudget) && configuredBudget > 0
+    const unclampedBudgetMs = Number.isFinite(configuredBudget) && configuredBudget > 0
       ? configuredBudget
       : Math.min(MAX_SCALED_BUDGET_MS, Math.max(15000, estimatedRounds * ROUND_LATENCY_MS));
+    // Clamp to the OUTER AI-phase deadline (KLAURO_AI_PHASE_BUDGET_MS), when the
+    // caller supplied one — this pass's own 75s ceiling is smaller in the common
+    // case, but a phase that already spent most of its budget on the capability
+    // catalog / system description must not let this LAST stage still run its
+    // full local budget on top. See applyAIInterpretation's aiPhaseDeadlineAt.
+    const phaseClamped = typeof context.aiPhaseDeadlineAt === 'number';
+    const budgetMs = phaseClamped
+      ? Math.max(0, Math.min(unclampedBudgetMs, context.aiPhaseDeadlineAt! - Date.now()))
+      : unclampedBudgetMs;
 
     const recordEntityCoverage = (
       described: number,
@@ -11126,8 +11286,9 @@ export class AnalyzerOrchestrator {
     }
 
     if (budgetMs <= 0) {
-      this.recordElementDescriptionGeneration(capabilities, entities, undefined, 'ai_skipped', false, 'budget-disabled', budgetMs);
-      recordEntityCoverage(0, 0, budgetMs, batchSize, 'budget-disabled');
+      const reason = phaseClamped ? 'phase-budget-exhausted' : 'budget-disabled';
+      this.recordElementDescriptionGeneration(capabilities, entities, undefined, 'ai_skipped', false, reason, budgetMs);
+      recordEntityCoverage(0, 0, budgetMs, batchSize, reason);
       return;
     }
 

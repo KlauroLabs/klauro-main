@@ -231,7 +231,7 @@ export interface CASOutput {
    *    deterministic substitute — this is a visible terminal failure, NOT a
    *    silent stay-pending. No 'ai' description was applied on this copy.
    */
-  ai_enrichment?: 'pending' | 'ready' | 'disabled' | 'synchronous' | 'error';
+  ai_enrichment?: 'pending' | 'ready' | 'disabled' | 'synchronous' | 'error' | 'partial';
 
   /**
    * When ai_enrichment === 'error', the UNDERLYING failure reason from the AI
@@ -242,6 +242,25 @@ export interface CASOutput {
    * analyzer container's stderr. Absent unless ai_enrichment === 'error'.
    */
   ai_enrichment_error?: string;
+
+  /**
+   * Present when ai_enrichment === 'partial': the AI comprehension phase's
+   * OVERALL wall-clock budget (KLAURO_AI_PHASE_BUDGET_MS, default 15 minutes)
+   * expired before every AI stage (capability catalog, system description,
+   * entity descriptions) got a chance to run. This is NOT a failure — whatever
+   * the phase already produced before the cutoff is kept exactly as-is (never
+   * discarded, never re-attempted), and simply no further AI calls were issued
+   * once the budget expired (an in-flight call is allowed to finish, never
+   * killed mid-request). `nodes_at_stop` is the graph size at the moment the
+   * budget was exhausted, so an operator can see whether this is a genuinely
+   * large repo hitting the budget rather than a pathological single call. See
+   * EnhancedSystemPurpose.entity_description_coverage for per-entity detail.
+   */
+  ai_phase_budget?: {
+    reason: string;
+    budget_ms: number;
+    nodes_at_stop: number;
+  };
 
   /**
    * Progressive-layering manifest (see analyzer/core/layered-analysis.ts /
@@ -3513,6 +3532,22 @@ export interface EnhancedSystemPurpose extends SystemPurpose {
    *  zero-coverage skip records why), never fabricated when the pass never
    *  ran (e.g. no data entities in this repo). */
   entity_description_coverage?: CASEntityDescriptionCoverage;
+  /** Overall AI-phase wall-clock status (KLAURO_AI_PHASE_BUDGET_MS, default 15
+   *  minutes): 'complete' when every AI stage (capability catalog, system
+   *  description, entity descriptions) got a chance to run before the phase
+   *  deadline; 'partial' when the phase budget expired first and one or more
+   *  stages were skipped or cut short (see ai_phase_stopped_reason /
+   *  ai_phase_nodes_at_stop, and CASOutput.ai_phase_budget for the copy
+   *  surfaced at the top level). Absent when the phase-budget mechanism never
+   *  engaged (comprehension disabled / no provider — see
+   *  description_generation.reason for that case instead). */
+  ai_phase_status?: 'complete' | 'partial';
+  /** Why ai_phase_status is 'partial' (e.g. 'phase-budget-exhausted'). Absent
+   *  when ai_phase_status is 'complete' or unset. */
+  ai_phase_stopped_reason?: string;
+  /** Node-graph size observed at the moment the AI phase budget expired, for
+   *  the one-line operator log and for CASOutput.ai_phase_budget.nodes_at_stop. */
+  ai_phase_nodes_at_stop?: number;
 }
 
 export interface CASCapability {
