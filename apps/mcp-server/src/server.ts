@@ -5469,7 +5469,14 @@ function registerTools(server: McpServer) {
     } as any,
     async ({ workspace, claim_id, agent_id }: any) => withErrorHandling(async () => {
       if (!agent_id) return json({ status: 'error', error: 'agent_id is required to release a grant', claim_id });
-      await releaseGrant(workspace, agent_id, claim_id);
+      const outcome = await releaseGrant(workspace, agent_id, claim_id);
+      if (!outcome.released) {
+        return json({
+          status: 'not_found',
+          claim_id,
+          reason: `No ACTIVE enforced grant "${claim_id}" held by agent "${agent_id}" in workspace "${workspace}" — already released/expired, an unknown id, or (if this id came back from fab_claim_work / an ADVISORY claim) the wrong tool: use fab_release_work for advisory claims instead.`,
+        });
+      }
       return json({ status: 'released', claim_id });
     })
   );

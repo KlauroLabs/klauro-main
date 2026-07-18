@@ -12,7 +12,7 @@ import { isDirectCliInvocation } from './cli-invocation';
 import { AccountHttpError, AccountStore } from './account-store';
 import { AccountWorkspaceAnalysisScheduler } from './account-workspace-analysis';
 import { getGrants, heartbeatGrant, releaseGrant, requestGrant, type AgentKind } from './coordination';
-import { appendClaim, checkEditLock, getActiveClaims, getPresence, getStoreDir, readClaimLog, releaseAgentWithReason } from './coordination/local-store';
+import { appendClaim, checkEditLock, getActiveClaims, getPresence, getStoreDir, readClaimLog, releaseAgentWithReason, releaseClaimById } from './coordination/local-store';
 import { deriveActiveClaims } from './coordination/presence';
 import { appendSecurityAudit, assertSameTenant, defaultSecretDenyPatterns, getSecurityStoreDir, redactInFlightChanges, TenantMismatchError } from './coordination/security';
 import { detectConceptualConflicts, type AgentInFlightState, type ConceptualConflict, type ConflictCas, type SymbolChange } from './coordination/conceptual-conflict';
@@ -678,13 +678,64 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           });
           return;
         }
-        await releaseGrant(body.workspace, body.agent_id, body.claim_id);
-        broadcastCoordinationEvent(body.workspace, 'release', {
+        // #57 dogfood fix: a `claim_id` alone does NOT tell us which of the
+        // TWO release semantics to apply — both an ADVISORY claim (appendClaim,
+        // stored under its own exact claim_id, e.g. "wsp_x:agent_y") and an
+        // ENFORCED grant (grant-manager, stored wrapped as "grant:<ws>:<id>")
+        // live in the SAME per-workspace claims.jsonl (grant-manager.ts's own
+        // header: "grants are NOT a new store"). The old code assumed
+        // claim_id-present === "this is an enforced grant" and went straight
+        // to releaseGrant()/grantClaimId-wrapped lookup — which can never match
+        // an advisory claim's unwrapped id. That silently no-op'd (releaseGrant
+        // found no `prior` and returned) while this handler still answered
+        // `{status:'released'}` unconditionally: a false-positive success, and
+        // the advisory claim stayed active (and visible in
+        // /v1/coordination/active) until its TTL. Reproduced live against
+        // mcp.klauro.com 2026-07-18: claim(mode:advisory) -> release(claim_id
+        // echoed back) -> GET /active still showed the claim as active.
+        //
+        // Fix: try BOTH tiers by exact claim_id, in the order a caller is more
+        // likely to have meant (advisory claims are the more common HTTP path —
+        // fab_claim_work parity — and their ids are never ambiguous with a
+        // grant-manager id, which is always `grant_<...>` under the wrapped
+        // form). Report which tier matched; if NEITHER matches, say so honestly
+        // instead of claiming success.
+        const advisoryReleased = await releaseClaimById(body.workspace, body.agent_id, body.claim_id);
+        if (advisoryReleased) {
+          broadcastCoordinationEvent(body.workspace, 'release', {
+            claim_id: body.claim_id,
+            agent_id: body.agent_id,
+            status: 'released',
+            mode: 'advisory',
+          });
+          writeJson(response, 200, { status: 'released', claim_id: body.claim_id, mode: 'advisory', tier: 'claim-log' });
+          return;
+        }
+        const grantOutcome = await releaseGrant(body.workspace, body.agent_id, body.claim_id);
+        if (grantOutcome.released) {
+          broadcastCoordinationEvent(body.workspace, 'release', {
+            claim_id: body.claim_id,
+            agent_id: body.agent_id,
+            status: 'released',
+            mode: 'grant',
+          });
+          writeJson(response, 200, { status: 'released', claim_id: body.claim_id, mode: 'grant', tier: 'grant-manager' });
+          return;
+        }
+        // Checked both tiers of the SAME store and found nothing active under
+        // this exact claim_id for this agent_id — never silently report
+        // "released" (the #57 defect). Mirrors releaseAgentWithReason's
+        // never-a-silent-zero contract for the release-all path above.
+        writeJson(response, 200, {
+          status: 'not_found',
           claim_id: body.claim_id,
           agent_id: body.agent_id,
-          status: 'released',
+          reason:
+            `No ACTIVE claim "${body.claim_id}" for agent "${body.agent_id}" in workspace "${body.workspace}" ` +
+            `— checked both the advisory claim log and the enforced grant-manager store. Already released/` +
+            `superseded/expired, an unknown/mistyped id, or a workspace-id mismatch. To release EVERY advisory ` +
+            `claim this agent holds regardless of claim_id, call again with no claim_id.`,
         });
-        writeJson(response, 200, { status: 'released', claim_id: body.claim_id });
         return;
       }
 

@@ -613,6 +613,42 @@ export async function releaseAgent(workspaceId: string, agentId: string): Promis
 }
 
 /**
+ * Release exactly ONE active claim by its EXACT `claim_id`, scoped to
+ * `agentId` (defensive: never release a claim that belongs to someone else
+ * just because the id string matched). This is the single shared lookup that
+ * BOTH the advisory claim log AND the enforced grant-manager markers live in
+ * (grant-manager.ts's header: "grants are NOT a new store... appended to the
+ * same same-machine claim log local-store.ts already owns") — grant-manager's
+ * own `releaseGrant` wraps its `grantId` argument in `grant:<ws>:<id>` before
+ * looking it up, which only ever matches claim_ids IT wrote. A caller passing
+ * back the exact `claim_id` an ADVISORY claim's response handed them (e.g.
+ * `wsp_x:agent_y`, or a caller-supplied custom `claim_id`) has no matching
+ * lookup at all today — this fills that gap so a single release-by-id call
+ * works regardless of which path originally created the claim, without the
+ * caller needing to know or guess which "mode" it was claimed under.
+ * Returns the released entry, or `undefined` if no ACTIVE claim with that
+ * exact id (and agent) exists (caller decides what "not found" means: already
+ * released, expired, wrong id, or — most likely for this exact-id lookup —
+ * an enforced-grant id that needs the wrapped form instead).
+ */
+export async function releaseClaimById(
+  workspaceId: string,
+  agentId: string,
+  claimId: string
+): Promise<ClaimLogEntry | undefined> {
+  return withWorkspaceLock(workspaceId, async ({ log, append }) => {
+    const nowMs = Date.now();
+    const active = deriveActiveClaims(log, nowMs).find(
+      (c) => c.workspace_id === workspaceId && c.agent_id === agentId && c.claim_id === claimId
+    );
+    if (!active) return undefined;
+    const now = new Date(nowMs).toISOString();
+    const { seq: _priorSeq, ...rest } = active;
+    return append({ ...rest, status: 'released', heartbeat_at: now });
+  });
+}
+
+/**
  * Same-machine silent-clobber guard: does any OTHER active agent hold an
  * edit-lock (or any active claim) whose paths path-prefix-overlap `paths`?
  * Pass `excludeAgent` to exclude the calling agent's own claims.

@@ -374,18 +374,30 @@ function sameStringSet(a: string[], b: string[]): boolean {
  * `requestGrant` cannot interleave between "mark released" and "promote the
  * next queued entry", which would otherwise risk a promoted grant briefly
  * appearing to conflict with a fresh request that read between the two steps.
+ *
+ * Returns `{ released: false }` (never throws, never silently reported as
+ * success by a caller that doesn't check) when `grantId` doesn't resolve to
+ * any entry this agent holds — e.g. already released, expired, unknown id, or
+ * (the #57 dogfood defect) a `claim_id` from an ADVISORY claim (which this
+ * store's grant-marker lookup — `grant:<ws>:<grantId>` — was never going to
+ * match, since advisory claims aren't wrapped in that prefix). Callers MUST
+ * check `released` before reporting success to a client; see
+ * `remote-analyzer-service.ts`'s `/v1/coordination/release` handler, which
+ * tries `releaseClaimById` (the unwrapped/advisory form) first and only
+ * falls back to this enforced-grant form second, reporting honestly if
+ * NEITHER matches instead of unconditionally responding "released".
  */
 export async function releaseGrant(
   workspaceId: string,
   agentId: string,
   grantId: string
-): Promise<void> {
-  await withWorkspaceLock(workspaceId, async ({ log, append }) => {
+): Promise<{ released: boolean }> {
+  return withWorkspaceLock(workspaceId, async ({ log, append }) => {
     const nowMs = Date.now();
     const prior = [...log]
       .reverse()
       .find((e) => e.claim_id === grantClaimId(workspaceId, grantId) && e.agent_id === agentId);
-    if (!prior) return; // nothing to release (already gone/unknown grant).
+    if (!prior) return { released: false }; // nothing to release (already gone/unknown grant).
 
     const now = new Date(nowMs).toISOString();
     await append({
@@ -402,6 +414,7 @@ export async function releaseGrant(
     });
 
     await advanceQueueLocked(workspaceId, log, append, nowMs);
+    return { released: true };
   });
 }
 

@@ -128,6 +128,68 @@ test('two-machine advisory flow: A claims -> B check sees conflict -> B claim wa
   }
 });
 
+test('#57 regression: releasing an ADVISORY claim by its echoed claim_id actually releases it (not a false "released")', async () => {
+  // Repro (live, mcp.klauro.com, 2026-07-18, pre-fix): POST /v1/coordination/claim
+  // {mode:'advisory', ...} -> granted, response includes claim_id. POSTing that
+  // SAME claim_id back to /v1/coordination/release used to fall into the
+  // ENFORCED grant-manager release path (releaseGrant), whose lookup wraps the
+  // id as `grant:<ws>:<claim_id>` — which never matches an advisory claim's
+  // unwrapped stored claim_id. releaseGrant found nothing and no-op'd, but the
+  // route still answered `{status:'released'}` unconditionally: a false
+  // success, with the claim silently remaining active until its 30m TTL.
+  const boot = await bootService();
+  const config = { baseUrl: boot.baseUrl, token: TOKEN };
+  const ws = 'ws-issue-57';
+  try {
+    const claimed = await remoteClaim(config, {
+      workspace: ws,
+      agentId: 'agent-57',
+      intent: 'repro #57',
+      paths: ['src/x.ts'],
+    });
+    assert.equal(claimed.verdict, 'granted');
+    assert.ok(claimed.claim_id, 'advisory claim response must carry a claim_id');
+
+    const releaseRes = await fetch(`${boot.baseUrl}/v1/coordination/release`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${TOKEN}` },
+      body: JSON.stringify({ workspace: ws, agent_id: 'agent-57', claim_id: claimed.claim_id }),
+    });
+    assert.equal(releaseRes.status, 200);
+    const releaseBody = (await releaseRes.json()) as { status: string; mode?: string; tier?: string };
+    assert.equal(releaseBody.status, 'released', 'must actually release, not silently no-op');
+    assert.equal(releaseBody.mode, 'advisory', 'must match the tier the claim actually lives in');
+    assert.equal(releaseBody.tier, 'claim-log');
+
+    // The proof that matters: the claim must be GONE from the active set, not
+    // just reported gone.
+    const active = await remoteActive(config, ws);
+    assert.equal(active.count, 0, 'the advisory claim must no longer be active after release');
+  } finally {
+    boot.server.close();
+    boot.restoreEnv();
+  }
+});
+
+test('release with an unknown claim_id is reported honestly, never as a false "released"', async () => {
+  const boot = await bootService();
+  const ws = 'ws-issue-57-not-found';
+  try {
+    const releaseRes = await fetch(`${boot.baseUrl}/v1/coordination/release`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${TOKEN}` },
+      body: JSON.stringify({ workspace: ws, agent_id: 'agent-ghost', claim_id: 'no-such-claim' }),
+    });
+    assert.equal(releaseRes.status, 200);
+    const body = (await releaseRes.json()) as { status: string; reason?: string };
+    assert.equal(body.status, 'not_found');
+    assert.ok(body.reason && body.reason.length > 0, 'a not_found response must explain why, never a silent zero');
+  } finally {
+    boot.server.close();
+    boot.restoreEnv();
+  }
+});
+
 test('re-claiming the same agent refreshes (heartbeat) rather than duplicating', async () => {
   const boot = await bootService();
   const config = { baseUrl: boot.baseUrl, token: TOKEN };
