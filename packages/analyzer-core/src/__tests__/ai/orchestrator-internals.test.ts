@@ -6451,6 +6451,165 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
   });
 });
 
+describe('domain grounding gate: dependency-name salience (live defect — a menu-bar utility labeled "security-scanning-tool" off its dependency list)', () => {
+  it('evaluateAIDomainCandidate rejects a label grounded ONLY in dependency-name vocabulary', () => {
+    const purpose: any = {
+      primary_domain: '',
+      inferred_description: 'A scanner toolkit for automation.',
+      core_concepts: [],
+    };
+    const verdict = orch.evaluateAIDomainCandidate(
+      'scanner-toolkit',
+      purpose,
+      ['scanner-toolkit-core', 'other-unrelated-lib'],
+      { concepts: [], evidence: [] }
+    );
+    expect(verdict.accepted).toBe(false);
+    expect(verdict.reason).toBe('dependency-name-only-grounded');
+  });
+
+  it('evaluateAIDomainCandidate accepts the SAME label/dependency overlap once manifestDescription independently grounds it', () => {
+    const purpose: any = {
+      primary_domain: '',
+      inferred_description: 'A scanner toolkit for automation.',
+      core_concepts: [],
+    };
+    const verdict = orch.evaluateAIDomainCandidate(
+      'scanner-toolkit',
+      purpose,
+      ['scanner-toolkit-core', 'other-unrelated-lib'],
+      { concepts: [], evidence: [], manifestDescription: 'A scanner toolkit for local network device discovery.' }
+    );
+    expect(verdict.accepted).toBe(true);
+    expect(verdict.reason).not.toBe('dependency-name-only-grounded');
+  });
+
+  it('evaluateAIDomainCandidate accepts a label grounded in README/manifest text even when unrelated generic-infra dependencies are present', () => {
+    // Reproduces the reported shape: dependencies are an auto-updater
+    // framework and a logging library (generic infra, no domain-specific
+    // token overlap with the label at all) — real product framing from
+    // manifestDescription must win, not the dependency list.
+    const purpose: any = {
+      primary_domain: '',
+      inferred_description: 'A menu bar utility companion app.',
+      core_concepts: ['menu bar', 'utility'],
+    };
+    const verdict = orch.evaluateAIDomainCandidate(
+      'menu-bar-utility',
+      purpose,
+      ['sparkle-auto-updater', 'cocoalumberjack-logger'],
+      { concepts: [], evidence: [], manifestDescription: 'A macOS menu bar utility companion app for quick actions.' }
+    );
+    expect(verdict.accepted).toBe(true);
+  });
+
+  it('applyAIInterpretation: a lone AI domain candidate that is dependency-name-only-grounded is unseeded, not auto-accepted for being first (closes the pre-seed gate bypass)', async () => {
+    // Before this fix, the FIRST AI domain candidate was seeded onto
+    // primary_domain before the gate ran (so the description gate could
+    // ground against SOME domain), and the loop iteration for that seeded
+    // candidate stamped domain_source unconditionally — the gate verdict was
+    // computed but never checked. A single ungrounded AI domain guess always
+    // shipped regardless of what evaluateAIDomainCandidate concluded.
+    //
+    // This test's domain candidate ("relationship-graph") and dependency
+    // ("relationship-graph-sdk") deliberately share vocabulary with the
+    // AI's own accepted system_description text too (so the OTHER,
+    // unrelated description-grounding gate and the tautological
+    // self-grounding check in isGroundedAIDomainLabel both pass cleanly) —
+    // isolating the assertion to the NEW dependency-name-salience check:
+    // the label's only real support is the dependency name; there is no
+    // independent README/manifest/terminal evidence for it, so it must
+    // still be rejected and the pre-seed must not bypass that rejection.
+    const envKeys = ['OPENAI_API_KEY', 'KLAURO_AI_INTERPRETATION', 'KLAURO_AI_INTERPRETATION_FORCE', 'KLAURO_AI_INTERPRETATION_BUDGET_MS'];
+    const saved: Record<string, string | undefined> = Object.fromEntries(envKeys.map(key => [key, process.env[key]]));
+    process.env.OPENAI_API_KEY = 'test-openai-key';
+    process.env.KLAURO_AI_INTERPRETATION = 'true';
+    process.env.KLAURO_AI_INTERPRETATION_FORCE = '1';
+    delete process.env.KLAURO_AI_INTERPRETATION_BUDGET_MS;
+    const spy = jest.spyOn(aiService, 'generateComponentDescription').mockResolvedValue(JSON.stringify({
+      system_description: 'Klauro builds CAS relationship graphs from source repositories so coding agents can reason about a codebase before touching it. It parses code into structural facts and layers comprehension over them, grounding every description in the evidence bundle it gathered. It hands this analysis context to agents over MCP.',
+      domain: 'relationship-graph',
+      descriptions: [],
+      capabilities: [],
+    }));
+    try {
+      const purpose: any = {
+        primary_type: 'developer-tool', confidence: 0.9, evidence: [],
+        primary_domain: '', core_concepts: [], inferred_description: '', supporting_workflow_ids: [],
+      };
+      await orch.applyAIInterpretation(
+        purpose, 'klauro', [], [], [], [], orch.emptyFlowGraph(), [],
+        [], [],
+        ['relationship-graph-sdk'],
+        [], { concepts: [], evidence: [] }, [],
+        undefined, [], [], [], []
+      );
+      expect(purpose.primary_domain).toBe('');
+      expect(purpose.domain_rejected_candidates).toEqual(
+        expect.arrayContaining([expect.objectContaining({ label: 'relationship-graph', reason: 'dependency-name-only-grounded' })])
+      );
+    } finally {
+      spy.mockRestore();
+      for (const key of envKeys) {
+        if (saved[key] === undefined) delete process.env[key];
+        else process.env[key] = saved[key];
+      }
+    }
+  });
+
+  it('prompt construction: dependency names are positioned AFTER manifestDescription in the additionalContext payload and carry an explicit demotion instruction', async () => {
+    const envKeys = ['OPENAI_API_KEY', 'KLAURO_AI_INTERPRETATION', 'KLAURO_AI_INTERPRETATION_FORCE', 'KLAURO_AI_INTERPRETATION_BUDGET_MS'];
+    const saved: Record<string, string | undefined> = Object.fromEntries(envKeys.map(key => [key, process.env[key]]));
+    process.env.OPENAI_API_KEY = 'test-openai-key';
+    process.env.KLAURO_AI_INTERPRETATION = 'true';
+    process.env.KLAURO_AI_INTERPRETATION_FORCE = '1';
+    delete process.env.KLAURO_AI_INTERPRETATION_BUDGET_MS;
+    const original = (aiService as any).generateComponentDescription;
+    const captured: any[] = [];
+    (aiService as any).generateComponentDescription = async (arg: any) => {
+      captured.push(arg);
+      return JSON.stringify({
+        system_description: 'Klauro builds CAS relationship graphs from source repositories so coding agents can reason about a codebase before touching it. It parses code into structural facts and layers comprehension over them, grounding every description in the evidence bundle it gathered. It hands this analysis context to agents over MCP.',
+        domain: '',
+        descriptions: [],
+        capabilities: [],
+      });
+    };
+    try {
+      const purpose: any = {
+        primary_type: 'developer-tool', confidence: 0.9, evidence: [],
+        primary_domain: '', core_concepts: [], inferred_description: '', supporting_workflow_ids: [],
+      };
+      await orch.applyAIInterpretation(
+        purpose, 'menu-companion', [], [], [], [], orch.emptyFlowGraph(), [],
+        [], [],
+        ['sparkle-auto-updater', 'cocoalumberjack-logger'],
+        [],
+        { concepts: [], evidence: [], manifestDescription: 'A macOS menu bar utility companion app for quick actions.' },
+        [],
+        undefined, [], [], [], []
+      );
+    } catch {
+      // Ignore any downstream description-acceptance error — this test only
+      // inspects prompt construction, not gate outcomes.
+    } finally {
+      (aiService as any).generateComponentDescription = original;
+      for (const key of envKeys) {
+        if (saved[key] === undefined) delete process.env[key];
+        else process.env[key] = saved[key];
+      }
+    }
+    expect(captured.length).toBeGreaterThan(0);
+    const additionalContext = captured[0].additionalContext;
+    expect(String(additionalContext.dependencySignalInstruction || '')).toEqual(expect.stringContaining('LAST-resort'));
+    const serialized = JSON.stringify(additionalContext);
+    const manifestIndex = serialized.indexOf('"manifestDescription"');
+    const dependenciesIndex = serialized.indexOf('"dependencies"');
+    expect(manifestIndex).toBeGreaterThan(-1);
+    expect(dependenciesIndex).toBeGreaterThan(manifestIndex);
+  });
+});
+
 describe('resolveSystemDisplayName (Klauro rung-2: system name = directory basename defect)', () => {
   it('falls back to a scope-stripped, humanized manifest name when no doc title is supplied', () => {
     // The caller (analyzeProject) only invokes this helper when

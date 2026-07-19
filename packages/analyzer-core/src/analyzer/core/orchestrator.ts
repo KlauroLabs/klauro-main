@@ -10751,14 +10751,28 @@ export class AnalyzerOrchestrator {
       raw = await Promise.race([
         aiService.generateComponentDescription({
           additionalContext: {
-            task: 'You are writing the Klauro CAS human/agent orientation. Based ONLY on the supplied facts and descriptionContract, return ONLY valid JSON with this shape: {"system_description":"...","domain":"...","descriptions":[{"id":"...","description":"..."}],"quality_check":{"used_facts":["..."],"unsupported_claims":[]}}. Before writing, follow descriptionContract.evidence_priority in order. system_description must be ONE rich paragraph of 4 to 6 full sentences that answers, in order, the four questions in descriptionContract.system_description_shape: (1) WHAT IT IS — the system type/domain, inferred from the supplied dependencies, distinctiveEntities, and project text; (2) WHAT IT DOES — the concrete product workflows and the terminalOutputs it produces for its consumers; (3) HOW IT WORKS — the DATAFLOW that produces those outputs: what enters the system, what transformations or decisions the capabilities apply to the entities, and what terminal records/outputs result — never a package or library name in this sentence, and never a circular restatement of the capability or output lists;(4) HOW IT IS BUILT — the build shape and third-party integrations from the supplied facts: a framework from the allowedFrameworks fact list may appear only as product-shaping context (e.g. "a Symfony backend"), never as an inventory of package names ("leveraging libraries such as ..." is forbidden), and an architecture shape (monolith/microservices/event-driven/serverless) may be claimed only when the supplied deployable/topology facts corroborate it. Never write internal fact-list key names (such as the literal phrase "allowed frameworks") in the prose. Infer the domain from the real dependencies and integrations (for example a codebase depending on ccxt/web3/ethers is a crypto/blockchain system) — NEVER from a keyword in the project name. Anchor WHAT IT DOES and HOW IT WORKS on what the system PRODUCES (terminalOutputs / api-response entities), not on mid-chain create/update/delete of records. domain must be one lowercase kebab-case label of 2 to 4 concrete product nouns from the facts. descriptions must include one grounded sentence per item in items; each sentence must name the concrete record, lifecycle, workflow, model, or boundary that item owns.',
+            task: 'You are writing the Klauro CAS human/agent orientation. Based ONLY on the supplied facts and descriptionContract, return ONLY valid JSON with this shape: {"system_description":"...","domain":"...","descriptions":[{"id":"...","description":"..."}],"quality_check":{"used_facts":["..."],"unsupported_claims":[]}}. Before writing, follow descriptionContract.evidence_priority in order. system_description must be ONE rich paragraph of 4 to 6 full sentences that answers, in order, the four questions in descriptionContract.system_description_shape: (1) WHAT IT IS — the system type/domain, inferred FIRST from readmeProductTitle/readmeProductOverview/manifestDescription (the product\'s own framing) and from distinctiveEntities/terminalOutputs (what it produces), and only THEN from dependencies when no stronger signal exists; (2) WHAT IT DOES — the concrete product workflows and the terminalOutputs it produces for its consumers; (3) HOW IT WORKS — the DATAFLOW that produces those outputs: what enters the system, what transformations or decisions the capabilities apply to the entities, and what terminal records/outputs result — never a package or library name in this sentence, and never a circular restatement of the capability or output lists;(4) HOW IT IS BUILT — the build shape and third-party integrations from the supplied facts: a framework from the allowedFrameworks fact list may appear only as product-shaping context (e.g. "a Symfony backend"), never as an inventory of package names ("leveraging libraries such as ..." is forbidden), and an architecture shape (monolith/microservices/event-driven/serverless) may be claimed only when the supplied deployable/topology facts corroborate it. Never write internal fact-list key names (such as the literal phrase "allowed frameworks") in the prose. The declared dependencies (in the "dependencies" fact, listed AFTER the product-framing and entity facts on purpose) are SUPPORTING evidence only, never the primary domain signal: a domain-SPECIFIC integration dependency (e.g. a codebase depending on ccxt/web3/ethers) may indicate a crypto/blockchain system when no stronger product-framing fact contradicts it, but generic infrastructure/tooling dependencies — loggers, auto-update/distribution frameworks, IPC/RPC transports, test/build tooling, serialization libs — are never domain evidence on their own and must NOT be read as implying a security, monitoring, or scanning product unless readmeProductTitle/readmeProductOverview/manifestDescription/distinctiveEntities/terminalOutputs independently support that framing. NEVER infer the domain from a keyword in the project name. Anchor WHAT IT DOES and HOW IT WORKS on what the system PRODUCES (terminalOutputs / api-response entities), not on mid-chain create/update/delete of records. domain must be one lowercase kebab-case label of 2 to 4 concrete product nouns from the facts. descriptions must include one grounded sentence per item in items; each sentence must name the concrete record, lifecycle, workflow, model, or boundary that item owns.',
             style: 'Use precise engineering/product language. No markdown. No headings. No colon-prefixed inventory labels. No marketing. No vague placeholders. Do not describe source mechanics; translate them into product purpose. If a claim cannot be supported by a supplied fact, omit it and list it in quality_check.unsupported_claims instead of writing it.',
             descriptionContract: descriptionPromptContract,
             primaryDomain: enhancedSystemPurpose.primary_domain,
             coreConcepts: promptCoreConcepts,
-            dependencies: libraryNames,
             items: capabilityTargets,
             ...structuralFacts,
+            // `dependencies` (== libraries) is placed AFTER structuralFacts on
+            // purpose: structuralFacts already carries readmeProductTitle/
+            // readmeProductOverview/manifestDescription/distinctiveEntities/
+            // terminalOutputs ahead of it, so raw dependency names never
+            // out-rank product-framing evidence in prompt position. A prior
+            // version threaded a duplicate `dependencies: libraryNames` key at
+            // the TOP of this object (ahead of manifestDescription/README/
+            // terminal evidence) — that duplicate raw-dependency-name salience
+            // is the suspected cause of a live misfire where a macOS menu-bar
+            // utility (deps: an auto-updater + a logging library) was labeled
+            // "security-scanning-tool": the dependency list had more positional
+            // and textual weight than the product's own self-description. See
+            // dependencySignalInstruction below for the explicit demotion.
+            dependencies: libraryNames,
+            dependencySignalInstruction: 'dependencies lists the declared package names for grounding only — treat it as the LAST-resort domain signal, after readmeProductTitle/readmeProductOverview/manifestDescription/distinctiveEntities/terminalOutputs. Generic infrastructure/tooling dependencies (loggers, auto-updaters, IPC/RPC transports, test/build tooling) are never domain evidence by themselves.',
             // Deterministic deployment topology: grounds (and bounds) any
             // architecture-shape wording in HOW IT IS BUILT.
             ...(typeof deployableCount === 'number' ? {
@@ -10872,7 +10886,7 @@ export class AnalyzerOrchestrator {
         const repairRaw = await Promise.race([
           aiService.generateComponentDescription({
             additionalContext: {
-              task: 'Repair the rejected parts of the previous answer. Return ONLY valid JSON with the same shape: {"system_description":"...","domain":"...","descriptions":[{"id":"...","description":"..."}]}. Fix only what was rejected: write a grounded system_description that is ONE paragraph of 4 to 6 full sentences (at least 240 characters) answering, in order, what the system is, what it does (anchored on the terminalOutputs it produces), how it works (the dataflow: what enters, what transformations/decisions happen, what terminal outputs result — never package or library names), and how it is built (frameworks only as product-shaping context, never a package inventory; architecture shapes like microservices only when the supplied deployable/topology facts corroborate them) — if it was rejected, and one grounded sentence per rejected item. Infer the domain from the real dependencies/integrations, never from a name. Mention integrations or external services only by the exact names listed in externalServices; if none are listed, do not mention integrations at all.',
+              task: 'Repair the rejected parts of the previous answer. Return ONLY valid JSON with the same shape: {"system_description":"...","domain":"...","descriptions":[{"id":"...","description":"..."}]}. Fix only what was rejected: write a grounded system_description that is ONE paragraph of 4 to 6 full sentences (at least 240 characters) answering, in order, what the system is, what it does (anchored on the terminalOutputs it produces), how it works (the dataflow: what enters, what transformations/decisions happen, what terminal outputs result — never package or library names), and how it is built (frameworks only as product-shaping context, never a package inventory; architecture shapes like microservices only when the supplied deployable/topology facts corroborate them) — if it was rejected, and one grounded sentence per rejected item. Infer the domain FIRST from readmeProductTitle/readmeProductOverview/manifestDescription/distinctiveEntities/terminalOutputs; dependencies are supporting evidence only (generic infrastructure/tooling dependencies are never domain evidence on their own) — never infer a domain from a name. Mention integrations or external services only by the exact names listed in externalServices; if none are listed, do not mention integrations at all.',
               style: 'Use descriptionContract as the acceptance test. No markdown. No marketing language. No raw labels like "Key capabilities:" or "Data model:". Do not invent features, company names, domains, compliance, scale, productivity, user-experience claims, or integrations beyond the facts. If the previous answer was rejected as source-bucket-restatement, rewrite it as product behavior. Do not use interaction surfaces, HTTP endpoints, HTTP workflows, API workflows, route workflows, WebSocket workflows, route surfaces, page routes, CLI commands, schedule surfaces, script-based, script-driven, internal script, internal files, source files, file-based entry points, or file entry point.',
               descriptionContract: descriptionPromptContract,
               rejected_system_description: validation.ok ? undefined : cleaned,
@@ -10882,8 +10896,12 @@ export class AnalyzerOrchestrator {
                 .map(target => ({ ...target, rejection_reason: rejectedElements.get(target.id) })),
               primaryDomain: enhancedSystemPurpose.primary_domain,
               coreConcepts: promptCoreConcepts,
-              dependencies: libraryNames,
               ...structuralFacts,
+              // See main-pass comment above: dependencies placed AFTER
+              // structuralFacts (README/manifest/distinctiveEntities/terminal
+              // evidence) on purpose, with an explicit demotion instruction.
+              dependencies: libraryNames,
+              dependencySignalInstruction: 'dependencies lists the declared package names for grounding only — treat it as the LAST-resort domain signal, after readmeProductTitle/readmeProductOverview/manifestDescription/distinctiveEntities/terminalOutputs. Generic infrastructure/tooling dependencies (loggers, auto-updaters, IPC/RPC transports, test/build tooling) are never domain evidence by themselves.',
             },
           }),
           new Promise<string>((_, reject) => {
@@ -10967,7 +10985,25 @@ export class AnalyzerOrchestrator {
       // The pre-seeded first candidate: stamp its AI provenance if a grounded
       // domain hasn't been applied yet.
       if (label === enhancedSystemPurpose.primary_domain && !domainApplied) {
-        const verdict = this.evaluateAIDomainCandidate(label, enhancedSystemPurpose);
+        const verdict = this.evaluateAIDomainCandidate(label, enhancedSystemPurpose, libraryNames, projectTextSignal);
+        if (!verdict.accepted) {
+          // The pre-seed (applied before description generation, purely so
+          // the description grounding gate could ground against SOME domain
+          // — see firstDomainCandidate above) failed its own domain-grounding
+          // gate. Being first is not a grounding argument: unseed it rather
+          // than shipping an ungrounded label with 'ai' provenance just
+          // because no deterministic domain existed to compare it against.
+          // (Previously this branch stamped domain_source unconditionally —
+          // the verdict was computed but never checked — so a lone AI domain
+          // candidate always shipped regardless of the gate; this closes
+          // that gap.)
+          enhancedSystemPurpose.primary_domain = '';
+          enhancedSystemPurpose.domain_rejected_candidates = [
+            ...(enhancedSystemPurpose.domain_rejected_candidates || []),
+            { label, reason: verdict.reason },
+          ];
+          continue;
+        }
         enhancedSystemPurpose.domain_source = verdict.refined ? 'ai-refined' : 'ai';
         enhancedSystemPurpose.primary_type = this.refinePurposeTypeForDomain(
           enhancedSystemPurpose.primary_type,
@@ -10979,7 +11015,7 @@ export class AnalyzerOrchestrator {
         continue;
       }
       if (label === enhancedSystemPurpose.primary_domain) continue;
-      const verdict = this.evaluateAIDomainCandidate(label, enhancedSystemPurpose);
+      const verdict = this.evaluateAIDomainCandidate(label, enhancedSystemPurpose, libraryNames, projectTextSignal);
       if (verdict.accepted) {
         enhancedSystemPurpose.primary_domain = label;
         enhancedSystemPurpose.domain_source = verdict.refined ? 'ai-refined' : 'ai';
@@ -11322,7 +11358,9 @@ export class AnalyzerOrchestrator {
 
   private evaluateAIDomainCandidate(
     label: string,
-    enhancedSystemPurpose: EnhancedSystemPurpose
+    enhancedSystemPurpose: EnhancedSystemPurpose,
+    libraryNames: string[] = [],
+    projectTextSignal: ProjectTextSignal = { concepts: [], evidence: [] }
   ): { accepted: boolean; refined: boolean; reason: string } {
     if (!this.isGroundedAIDomainLabel(label, enhancedSystemPurpose)) {
       return { accepted: false, refined: false, reason: 'not-grounded-in-facts' };
@@ -11360,6 +11398,45 @@ export class AnalyzerOrchestrator {
       for (const stage of this.activeTerminalSignal?.ranked_stages || []) {
         for (const token of this.humanizePascalName(stage.name).toLowerCase().split(/[^a-z0-9]+/)) {
           if (token.length > 2) terminalVocabulary.add(stem(token));
+        }
+      }
+    }
+
+    // Dependency-name-salience guard (EVIDENCE-SHAPE check, not a keyword
+    // categorizer — it never inspects WHICH dependency or WHICH domain was
+    // named, only which FACT CATEGORY grounds the label's tokens). A domain
+    // label whose every meaningful token is explainable ONLY by a raw
+    // dependency/package name — and finds no independent support in the
+    // terminal-write vocabulary above, the repo's own README title/overview,
+    // or its manifest description — is rejected. Live defect this backstops:
+    // a macOS menu-bar utility (deps: an auto-updater framework + a logging
+    // library, no security-specific dependency at all) shipped primary_domain
+    // "security-scanning-tool" with nothing but the dependency list behind
+    // it — the deterministic-domain self-comparison below (currentTokens vs
+    // labelTokens) is a no-op on a first-ever AI domain seed (primary_domain
+    // IS the candidate at that point), so this check does not rely on
+    // currentTokens at all; it only asks whether independent, non-dependency
+    // evidence exists.
+    if (labelTokens.length > 0) {
+      const tokenize = (text: string): string[] =>
+        String(text || '').toLowerCase().split(/[^a-z0-9]+/).filter(token => token.length > 2);
+      const dependencyTokens = new Set<string>();
+      for (const name of libraryNames) {
+        for (const token of tokenize(name)) dependencyTokens.add(stem(token));
+      }
+      if (dependencyTokens.size > 0) {
+        const independentEvidenceTokens = new Set<string>();
+        for (const token of terminalVocabulary) independentEvidenceTokens.add(token);
+        for (const token of tokenize(projectTextSignal.manifestDescription || '')) independentEvidenceTokens.add(stem(token));
+        for (const token of tokenize(projectTextSignal.productDocTitle || '')) independentEvidenceTokens.add(stem(token));
+        for (const token of tokenize(projectTextSignal.productDocSummary || '')) independentEvidenceTokens.add(stem(token));
+        for (const token of tokenize((projectTextSignal.concepts || []).join(' '))) independentEvidenceTokens.add(stem(token));
+        const dependencyOnlyGrounded = labelTokens.every(token => {
+          const stemmed = stem(token);
+          return dependencyTokens.has(stemmed) && !independentEvidenceTokens.has(stemmed);
+        });
+        if (dependencyOnlyGrounded) {
+          return { accepted: false, refined: false, reason: 'dependency-name-only-grounded' };
         }
       }
     }
@@ -13912,14 +13989,29 @@ export class AnalyzerOrchestrator {
         'productIdentity/productIdentityInstruction when present',
         'readmeProductTitle and readmeProductOverview when present; the repo\'s own README title and opening statement of what it is are top-down product framing — authoritative for WHAT the product is built for',
         'manifestDescription when present; the repo\'s own self-description is authoritative product framing',
-        'libraries — the declared dependencies are the strongest signal of what this IS (e.g. ccxt/web3/@triton-one/yellowstone-grpc => a crypto/DEX/blockchain system); infer the domain from them',
         'distinctiveEntities — the domain-specific data shapes that define the product (e.g. DexTrade/WhaleTransaction/OhlcvCandle/AssetAnalysis); PREFER these over generic User/Account/Portfolio/Strategy CRUD, which every app has and which the entry-route journeys over-emphasize',
         'authoritativeProductFrame when present; it overrides examples, tests, docs, sample apps, and incidental code vocabulary',
         'projectTextDomain, projectTextSummary, and projectTextConcepts from human-authored repo text',
-        'terminalOutputs, terminalCapabilities, nearTerminalStages, and terminalDomainSeed — the terminal segment of the product journeys; corroborating evidence, but note it can over-index on the generic record a chain writes (Portfolio/Strategy) rather than the domain-specific analysis it produces, so it must NOT override libraries/distinctiveEntities',
+        'terminalOutputs, terminalCapabilities, nearTerminalStages, and terminalDomainSeed — the terminal segment of the product journeys; corroborating evidence, but note it can over-index on the generic record a chain writes (Portfolio/Strategy) rather than the domain-specific analysis it produces',
+        // `libraries`/`dependencies` is intentionally ranked LAST among
+        // fact-based signals (below README/manifest/distinctiveEntities/
+        // terminal evidence, above only the deterministic fallback): it is
+        // SUPPORTING evidence, never the primary domain signal. A live
+        // misfire labeled a macOS menu-bar utility (deps: an auto-updater
+        // framework + a logging library) "security-scanning-tool" — the
+        // dependency list out-weighed the product's own framing. Only a
+        // domain-SPECIFIC integration dependency (e.g. ccxt/web3/
+        // @triton-one/yellowstone-grpc => crypto/DEX/blockchain) may name a
+        // domain from libraries alone, and only when no stronger fact above
+        // contradicts it. Generic infrastructure/tooling dependencies —
+        // loggers, auto-update/distribution frameworks, IPC/RPC transports,
+        // test/build tooling, serialization libs — are NEVER domain evidence
+        // by themselves and must never be read as implying a security,
+        // monitoring, or scanning product absent independent support.
+        'libraries/dependencies — supporting evidence only; see dependencySignalInstruction',
         'artifactTypeInstruction when the repo is a library, SDK, CLI, or boilerplate',
         'capabilities and domainConcepts',
-        'databaseEntities, externalServices, frameworks, and libraries',
+        'databaseEntities, externalServices, and frameworks',
         'deterministicOverview as a fallback only when it does not conflict with stronger evidence',
       ],
       system_description_shape: [
