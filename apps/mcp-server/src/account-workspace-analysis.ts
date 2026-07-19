@@ -1,6 +1,7 @@
 import * as fs from 'fs-extra';
 import * as path from 'node:path';
 import { getAnalysis } from './analyzer';
+import { writeJsonAtomic } from './storage';
 import { buildCrossCodebaseSystemGraph, enrichWorkspaceAnalysisNarrative, workspaceAiEnrichmentEnabled, type CrossCodebaseInput, type CrossCodebaseSystemGraph } from './cross-codebase-analysis';
 import type { AccountStore } from './account-store';
 
@@ -189,7 +190,17 @@ export class AccountWorkspaceAnalysisScheduler {
     // whole method already runs in the background (debounced timer or the
     // 202-answered reanalyze route), so the enrichment never blocks an HTTP
     // response.
-    await fs.writeJson(this.recordPath(workspaceId), record, { spaces: 2 });
+    //
+    // ATOMIC (regression fix): this record is multi-MB and re-persisted more
+    // than once per rebuild; a plain fs.writeJson truncates-then-streams in
+    // place, so any concurrent GET /api/workspaces/:id/analysis during the
+    // write reads a torn/partial file — load() swallows the parse error into
+    // `null`, the route answers with NO `analysis` object at all, and a
+    // consumer counting fields (applications, runtime_links) reads them all
+    // as ZERO exactly at rebuild time, while the on-disk record settles
+    // healthy moments later. writeJsonAtomic (temp file + rename, the same
+    // primitive the analysis store already uses) closes that window.
+    await writeJsonAtomic(this.recordPath(workspaceId), record);
 
     if (!workspaceAiEnrichmentEnabled()) {
       // Honest terminal state, mirroring run_workspace_analysis's
@@ -202,7 +213,7 @@ export class AccountWorkspaceAnalysisScheduler {
         started_at: record.enrichment?.started_at,
         completed_at: new Date().toISOString(),
       };
-      await fs.writeJson(this.recordPath(workspaceId), record, { spaces: 2 });
+      await writeJsonAtomic(this.recordPath(workspaceId), record);
       return;
     }
 
@@ -236,7 +247,7 @@ export class AccountWorkspaceAnalysisScheduler {
         completed_at: new Date().toISOString(),
       };
     }
-    await fs.writeJson(this.recordPath(workspaceId), record, { spaces: 2 });
+    await writeJsonAtomic(this.recordPath(workspaceId), record);
   }
 
   private workspacePathFor(analysisId: string): string {

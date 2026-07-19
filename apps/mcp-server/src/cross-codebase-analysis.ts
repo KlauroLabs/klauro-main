@@ -11848,12 +11848,32 @@ function linkDasUnits(applications: SystemApplication[], repositories: CrossCode
     if (!das.promoted || das.das_index.units.length === 0) continue;
 
     for (const app of appsForRepo) {
-      if (app.bundled_into) continue; // the bundle primary carries the link for its members.
       const appRoot = app.path_hint || app.name;
-      const match = das.das_index.units.find(unit =>
+      // IDENTITY-FIRST MATCH ORDER (regression fix, verified on a real
+      // hosted compose+installer repo): the single mixed-predicate find()
+      // this replaces returned the FIRST unit satisfying ANY predicate in
+      // unit-array order, so a unit whose bundled MEMBER root contains the
+      // app's own path (e.g. a name-resolution-failed generic container
+      // whose Dockerfile bundles bin/<service>) beat the unit that IS this
+      // app by name (its own compose-service unit) purely by array
+      // position — the service's WAS row drilled down into the wrong unit.
+      // A unit bearing the app's own cleaned name is the strongest identity
+      // evidence and must win; root/member containment stays as fallback.
+      const nameMatch = das.das_index.units.find(unit => cleanApplicationName(app.name) === cleanApplicationName(unit.name));
+      // A bundled-member app normally leaves the link to its bundle primary
+      // — but when the DAS itself promoted a unit under this app's OWN name,
+      // the two layers disagree (workspace bundling folded it, DAS ships it
+      // standalone) and the identity evidence still holds: tag the app with
+      // its own unit rather than hiding the linkage. Root-containment
+      // fallbacks stay primary-only (containment under a shared root is not
+      // identity), so members without a same-name unit still defer.
+      if (app.bundled_into) {
+        if (nameMatch) app.source_das_unit_id = nameMatch.id;
+        continue;
+      }
+      const match = nameMatch || das.das_index.units.find(unit =>
         rootMatches(appRoot, unit.root_path) ||
-        unit.member_root_paths.some(memberRoot => rootMatches(appRoot, memberRoot)) ||
-        cleanApplicationName(app.name) === cleanApplicationName(unit.name));
+        unit.member_root_paths.some(memberRoot => rootMatches(appRoot, memberRoot)));
       if (match) app.source_das_unit_id = match.id;
     }
   }

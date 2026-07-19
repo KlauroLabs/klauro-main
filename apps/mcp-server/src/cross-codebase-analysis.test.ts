@@ -2650,3 +2650,86 @@ test('LIVE-SHAPE: runtime_links survive a bare top-level-directory consumer (no 
   // audience-compat fixes landing together.
   assert.ok(graph.runtime_links.length >= 2, `expected at least 2 runtime_links (compose-dependency + host:port on distinct pairs), got ${graph.runtime_links.length}`);
 });
+
+// LIVE-SHAPE E2E (P1 follow-up): a member CAS with tier-1 ship units must
+// NEVER produce an empty workspace applications list, and the WAS-to-DAS
+// drilldown (source_das_unit_id) must resolve each service to its OWN unit.
+// Shape mirrors a real hosted compose+installer repo where the drilldown
+// regressed: every deployable-evidence row's root_path is the repo root
+// ('.', compose file and Dockerfiles all at root), a DAS-promoted repo
+// (>= 2 tier-qualified units), and — the two defect triggers —
+//  (1) a name-resolution-FAILED generic container unit whose bundled member
+//      root is bin/<service>: with the old single mixed-predicate find(),
+//      that unit sat earlier in the units array and captured the service's
+//      source_das_unit_id via member-root containment, beating the unit that
+//      IS the service by name;
+//  (2) service apps that workspace-level bundling folded into a sibling
+//      (bundled_into set) while the DAS promoted them as standalone units —
+//      the old unconditional bundled-skip left their das linkage empty.
+test('LIVE-SHAPE E2E: tier-1 member CAS never yields empty applications, and das units link by name identity over member-root containment', () => {
+  const system = cas({
+    // Unique analysis_id: getCachedDeployableAnalyses keys its LRU on
+    // analysis_id, and the shared cas() helper stamps every fixture with the
+    // same 'analysis' id — without this override the DAS pass would replay a
+    // PREVIOUS fixture's cached units into this test.
+    analysis_id: 'fleet2-analysis',
+    system: { id: 'fleet2', name: 'fleet2-system', type: 'application', root_path: '/tmp/fleet2' },
+    nodes: [
+      {
+        id: 'compose_service_coordinator',
+        name: 'Compose service: coordinator',
+        type: 'compose_service',
+        metadata: { topology_surface: 'docker-compose', deployment_service_name: 'coordinator', service_aliases: ['coordinator'], ports: ['9000'] },
+      } as any,
+      {
+        id: 'compose_service_agent',
+        name: 'Compose service: agent',
+        type: 'compose_service',
+        metadata: { topology_surface: 'docker-compose', deployment_service_name: 'agent', service_aliases: ['agent'], ports: ['7000'] },
+      } as any,
+      { id: 'coordinator-fn', name: 'serve', type: 'function', source: { file: 'bin/coordinator/src/main.rs', line: 1 } } as any,
+      { id: 'agent-fn', name: 'run', type: 'function', source: { file: 'bin/agent/src/main.rs', line: 1 } } as any,
+    ],
+    // All roots '.', as compose/Dockerfiles at the repo root really produce.
+    // The 'unnamed-service' container is the name-resolution-failed unit
+    // whose member root contains bin/coordinator — defect trigger (1). It is
+    // listed FIRST so the old array-order find() would capture coordinator.
+    deployable_evidence: [
+      { root_path: '.', name: 'unnamed-service', tier: 1, kind: 'container', evidence: ['Coordinator.Dockerfile'], ships_paths: ['bin/coordinator'], entrypoint_member: 'coordinator' },
+      { root_path: '.', name: 'coordinator', tier: 1, kind: 'compose-service', evidence: ['docker-compose.yml: coordinator'] },
+      { root_path: '.', name: 'agent', tier: 1, kind: 'compose-service', evidence: ['docker-compose.yml: agent'] },
+      { root_path: 'bin/coordinator', name: 'coordinator', tier: 2, kind: 'bin', evidence: ['Cargo.toml [[bin]] coordinator'], bundled_into: 'unnamed-service' },
+      { root_path: 'bin/agent', name: 'agent', tier: 2, kind: 'bin', evidence: ['Cargo.toml [[bin]] agent'], bundled_into: 'agent' },
+    ] as any,
+    entry_points: [
+      { id: 'entry:coord', source_node: 'coordinator-fn', type: 'http', name: 'POST /register', trigger: { method: 'POST', path: '/register' } },
+      { id: 'entry:agent', source_node: 'agent-fn', type: 'http', name: 'GET /status', trigger: { method: 'GET', path: '/status' } },
+    ] as any,
+  });
+
+  const graph = buildCrossCodebaseSystemGraph('fleet2-workspace', [
+    { path: '/tmp/fleet2', name: 'fleet2-system', cas: system },
+  ], { generatedAt: '2026-01-01T00:00:00.000Z' });
+
+  // THE FLOOR: a member CAS carrying tier-1 ship units must never build into
+  // an empty applications list — this is the end-to-end invariant the
+  // sub-function suites cannot see (they test seams, not the full pipeline).
+  assert.ok(graph.applications.length > 0, 'applications must never be empty when the member CAS has tier-1 ship units');
+  assert.equal(graph.summary.applications, graph.applications.length, 'summary must count the same applications list that persists');
+
+  const coordinatorApp = graph.applications.find(app => app.name === 'coordinator');
+  const agentApp = graph.applications.find(app => app.name === 'agent');
+  assert.ok(coordinatorApp, 'coordinator service must surface as an application');
+  assert.ok(agentApp, 'agent service must surface as an application');
+
+  // Defect (1): name identity must outrank member-root containment — the
+  // coordinator app links to its OWN unit, not the generic container that
+  // bundles its bin.
+  assert.ok(coordinatorApp!.source_das_unit_id, 'coordinator must carry a das unit link on a promoted repo');
+  assert.match(coordinatorApp!.source_das_unit_id!, /compose-service.*coordinator/, `coordinator must link to its own unit, got ${coordinatorApp!.source_das_unit_id}`);
+
+  // Defect (2): even if workspace bundling folded agent into a sibling, a
+  // DAS unit under agent's own name is identity evidence and must link.
+  assert.ok(agentApp!.source_das_unit_id, 'agent must carry a das unit link on a promoted repo');
+  assert.match(agentApp!.source_das_unit_id!, /agent/, `agent must link to its own unit, got ${agentApp!.source_das_unit_id}`);
+});
