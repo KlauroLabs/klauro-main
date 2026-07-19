@@ -2468,3 +2468,185 @@ test('DEFECT-#45b: package/codebase directories without application evidence are
   assert.ok(!appNames.has('text-helpers'), 'a zero-evidence crate directory must not mint an application');
   assert.ok(appNames.has('job-runner'), 'a crate with a real entry point must still be admitted');
 });
+
+// LIVE-SHAPE REGRESSION: a real multi-service compose workspace (agent /
+// coordinator style) reported runtime_links=24 on one build and 0 on the
+// very next, with the member CAS's own DEPENDS_ON edges verified intact.
+//
+// ROOT CAUSE (confirmed by this fixture, NOT the compose<->container
+// identity join — that hypothesis was tested and disproven; see below):
+// eb74c5b6 correctly stopped a consumer HTTP interface whose caller path has
+// no recognized apps/packages/crates/bin/services/*.Dockerfile shape from
+// being misnamed after its call TARGET's host (extractInterfaces' consumer-
+// http application_id, cross-codebase-analysis.ts ~9213, now passes '' —
+// not `endpoint` — into inferApplicationName). But inferApplicationName's
+// own fallback chain for that exact shapeless case (cross-codebase-
+// analysis.ts ~12539) runs out to the bare repository/system name when
+// applicationNameFromFile finds no shape AND the node carries no
+// service_aliases — a very common real shape being a bare top-level
+// per-service directory with no wrapping prefix (`agent/src/client.ts`,
+// not `apps/agent/src/client.ts`). That bare-repo-name pseudo-application
+// is never a real SystemRuntimeComponent's application_id (every runtime
+// component's identity is its OWN compose-service/container alias, e.g.
+// "agent", never the whole codebase's name), so buildTopologyRuntimeLinks'
+// `componentByApplication.get(...)` lookup (cross-codebase-analysis.ts
+// ~9697) returns nothing and the link is silently dropped.
+//
+// Before the fix, the same shapeless consumer accidentally resolved to its
+// call TARGET's own alias instead — a real misattribution bug, but one that
+// (for any consumer/target pair that wasn't itself a same-name self-call)
+// still pointed at a REAL sibling runtime component, so the lookup
+// succeeded and produced a wrongly-attributed-but-real link, which is what
+// inflated the pre-fix count. Once the misattribution was removed, this
+// class of caller stopped resolving to any component at all.
+//
+// This fixture also carries an unmerged compose-service + container
+// deployable_evidence row PER service (the compose<->container identity
+// join from 8c38d383, which DEFECT-#45's fixture never exercised) to prove
+// that hypothesis is NOT the cause — the join fires here and the links
+// still resolve once the fallback below is in place.
+//
+// THE FIX: buildTopologyRuntimeLinks now falls back, when the
+// application_id-keyed lookup misses, to resolving the source component via
+// the interface's own caller-file leading path segment matched against a
+// REAL declared service alias in the same codebase (callerAliasesFromRefs) —
+// evidence-gated on the caller's own location, never the call's target.
+test('LIVE-SHAPE: runtime_links survive a bare top-level-directory consumer (no apps/ prefix) plus the compose<->container identity join', () => {
+  const system = cas({
+    system: { id: 'fleet-system', name: 'fleet-system', type: 'application', root_path: '/tmp/fleet-system' },
+    nodes: [
+      {
+        id: 'compose_service_agent',
+        name: 'Compose service: agent',
+        type: 'compose_service',
+        metadata: {
+          topology_surface: 'docker-compose',
+          deployment_service_name: 'agent',
+          service_aliases: ['agent'],
+          ports: ['7000'],
+        },
+      } as any,
+      {
+        id: 'compose_service_coordinator',
+        name: 'Compose service: coordinator',
+        type: 'compose_service',
+        metadata: {
+          topology_surface: 'docker-compose',
+          deployment_service_name: 'coordinator',
+          service_aliases: ['coordinator'],
+          ports: ['9000'],
+        },
+      } as any,
+      // Real code-level provider route for coordinator — no topology_surface,
+      // matching the real shape (code-level providers never carry it).
+      { id: 'coordinator-route-fn', name: 'registerAgent', type: 'function', source: { file: 'apps/coordinator/src/routes.ts', line: 12 } } as any,
+      // agent's own outbound call site, living directly under a BARE
+      // top-level per-service directory (agent/src/client.ts) — a common
+      // docker-compose monorepo convention with no wrapping apps/packages/
+      // crates/bin/services/ prefix, so applicationNameFromFile's
+      // directory-shape patterns don't recognize it at all. This is exactly
+      // the shape eb74c5b6 exposed: previously such a shapeless consumer's
+      // application_id fell back to naming itself after the endpoint host
+      // (e.g. "coordinator") instead of "agent" — eb74c5b6 correctly fixed
+      // that misattribution, but left this shapeless case with nothing to
+      // fall back to except the bare repository name.
+      { id: 'agent-client-fn', name: 'callCoordinator', type: 'function', source: { file: 'agent/src/client.ts', line: 5 } } as any,
+      // A THIRD sibling, reachable only via host:port evidence (no
+      // depends_on edge covers it) — proves the topology host:port path
+      // resolves independently of the compose-dependency-edge path, rather
+      // than the two coincidentally landing on the same pair and deduping
+      // into one link (which would mask either path silently breaking).
+      {
+        id: 'compose_service_cache',
+        name: 'Compose service: cache',
+        type: 'compose_service',
+        metadata: {
+          topology_surface: 'docker-compose',
+          deployment_service_name: 'cache',
+          service_aliases: ['cache'],
+          ports: ['6380'],
+        },
+      } as any,
+    ],
+    // LIVE SHAPE: both an unmerged compose-service row AND a container row
+    // per service, as a real repo's deployable-evidence provider set emits
+    // before joinComposeAndContainerUnits runs — DEFECT-#45's fixture never
+    // included the compose-service-kind row, so it never exercised the join.
+    deployable_evidence: [
+      { root_path: 'apps/agent', name: 'agent', tier: 1, kind: 'compose-service', evidence: ['docker-compose.yml: agent'] },
+      { root_path: 'apps/agent', name: 'agent', tier: 1, kind: 'container', evidence: ['apps/agent/Dockerfile'], entrypoint_member: 'agent' },
+      { root_path: 'apps/coordinator', name: 'coordinator', tier: 1, kind: 'compose-service', evidence: ['docker-compose.yml: coordinator'] },
+      { root_path: 'apps/coordinator', name: 'coordinator', tier: 1, kind: 'container', evidence: ['apps/coordinator/Dockerfile'], entrypoint_member: 'coordinator' },
+    ] as any,
+    edges: [
+      {
+        id: 'edge_compose_dep_agent_coordinator',
+        source: 'compose_service_agent',
+        target: 'compose_service_coordinator',
+        type: 'DEPENDS_ON',
+        metadata: { topology_surface: 'docker-compose', dependency_kind: 'compose-service' },
+      } as any,
+    ],
+    entry_points: [{
+      id: 'entry:coordinator-register',
+      source_node: 'coordinator-route-fn',
+      type: 'http',
+      name: 'POST /agents/register',
+      trigger: { method: 'POST', path: '/agents/register' },
+    }] as any,
+    exit_points: [
+      {
+        id: 'exit:agent-coordinator',
+        source_node: 'agent-client-fn',
+        type: 'api',
+        name: 'register with coordinator',
+        target: { endpoint: 'http://coordinator:9000/agents/register', service_id: 'coordinator' },
+        operation: { method: 'POST' },
+      },
+      // Reaches the cache sibling by host:port only — no depends_on edge for
+      // this pair, exercising the topology/host-port resolution path
+      // distinctly from the compose-dependency-edge path above.
+      {
+        id: 'exit:agent-cache',
+        source_node: 'agent-client-fn',
+        type: 'api',
+        name: 'call cache',
+        target: { endpoint: 'http://cache:6380/get', service_id: 'cache' },
+        operation: { method: 'GET' },
+      },
+    ] as any,
+  });
+
+  const graph = buildCrossCodebaseSystemGraph('fleet-workspace', [
+    { path: '/tmp/fleet-system', name: 'fleet-system', cas: system },
+  ], { generatedAt: '2026-01-01T00:00:00.000Z' });
+
+  const componentById = new Map(graph.runtime_topology.components.map(component => [component.id, component]));
+  const agentComponent = graph.runtime_topology.components.find(component => component.service_aliases.includes('agent'));
+  const coordinatorComponent = graph.runtime_topology.components.find(component => component.service_aliases.includes('coordinator'));
+  const cacheComponent = graph.runtime_topology.components.find(component => component.service_aliases.includes('cache'));
+  assert.ok(agentComponent, 'agent compose service should still surface as a runtime component after the identity join');
+  assert.ok(coordinatorComponent, 'coordinator compose service should still surface as a runtime component after the identity join');
+  assert.ok(cacheComponent, 'cache compose service should still surface as a runtime component after the identity join');
+
+  // The compose depends_on edge must still resolve into a runtime_link post-join.
+  const dependsOnLink = graph.runtime_links.find(link =>
+    link.source_component_id === agentComponent!.id && link.target_component_id === coordinatorComponent!.id);
+  assert.ok(dependsOnLink, 'runtime_links must survive the compose<->container identity join — a compose depends_on edge is direct evidence regardless of deployable-evidence row merging');
+  assert.ok(dependsOnLink!.evidence.some(line => /compose-dependency/.test(line)));
+
+  // The host:port-addressed call (agent -> cache, no depends_on edge for this
+  // pair) must also resolve independently, with the CONSUMER resolving to
+  // its own (agent) application identity, not the target's.
+  const agentApp = graph.applications.find(app => app.name === 'agent');
+  assert.ok(agentApp, 'agent must resolve to its own application identity (eb74c5b6), not be swallowed by the coordinator/cache target name');
+  const hostPortLink = graph.runtime_links.find(link =>
+    link.source_component_id === agentComponent!.id && link.target_component_id === cacheComponent!.id);
+  assert.ok(hostPortLink, 'a host:port-addressed cross-service call must resolve into a runtime_link post-join, on a pair distinct from the compose-dependency edge');
+
+  // Never regress below the pre-join link count for this shape: exactly the
+  // permanent floor DEFECT-#45 established, now proven to survive the
+  // compose<->container identity join plus the consumer-naming and
+  // audience-compat fixes landing together.
+  assert.ok(graph.runtime_links.length >= 2, `expected at least 2 runtime_links (compose-dependency + host:port on distinct pairs), got ${graph.runtime_links.length}`);
+});

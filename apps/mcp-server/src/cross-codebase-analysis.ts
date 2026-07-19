@@ -9694,7 +9694,40 @@ function buildTopologyRuntimeLinks(
     }
     if (!targetComponents.size) continue;
 
-    const sourceComponents = componentByApplication.get(`${item.codebase_id}:${item.application_id}`) || [];
+    let sourceComponents = componentByApplication.get(`${item.codebase_id}:${item.application_id}`) || [];
+    if (!sourceComponents.length) {
+      // FALLBACK (regression fix): eb74c5b6 correctly stopped a consumer
+      // whose caller path has no recognized apps/packages/crates/bin/
+      // services shape from being misnamed after its call TARGET's host —
+      // but inferApplicationName's own fallback chain for that same
+      // shapeless case runs out to the bare repository/system name (no
+      // apps/-style directory, no service_aliases metadata, no endpoint to
+      // fall back to since eb74c5b6 intentionally passes ''), and that bare
+      // repo name is never a real SystemRuntimeComponent's application_id
+      // (each runtime component's identity is its OWN compose-service/
+      // container alias, never the whole codebase's name). Before the fix,
+      // the same shapeless consumer accidentally resolved to its call
+      // TARGET's alias, which IS a real component identity, so this lookup
+      // still found (a wrongly-attributed but real) source component for
+      // any call whose misattributed name didn't equal its own target —
+      // that accidental resilience is what silently produced the runtime
+      // topology links now lost.
+      // A common real-world shape this hits: a per-service directory at the
+      // codebase root with no wrapping apps/services/ prefix (e.g.
+      // `agent/src/client.ts`), which applicationNameFromFile's patterns
+      // don't recognize. Resolve the SOURCE identity directly and
+      // evidence-gated: the caller's own leading path segment, matched
+      // against a REAL declared service alias of a runtime component in the
+      // same codebase — never a guess, and never the call's target name.
+      const callerAliases = callerAliasesFromRefs(item.refs);
+      const candidates = new Map<string, SystemRuntimeComponent>();
+      for (const alias of callerAliases) {
+        for (const component of componentByAlias.get(`${item.codebase_id}:${alias}`) || []) {
+          candidates.set(component.id, component);
+        }
+      }
+      sourceComponents = [...candidates.values()];
+    }
     if (!sourceComponents.length) continue;
     const port = concreteEndpointPort(item.endpoint);
 
@@ -9727,6 +9760,23 @@ function buildTopologyRuntimeLinks(
 
 function isIpAddressToken(value: string): boolean {
   return /^\d{1,3}(?:\.\d{1,3}){3}$/.test(value);
+}
+
+/** The leading path segment of each ref's source file, lowercased — a
+ *  generic, evidence-based candidate for "which bare top-level directory
+ *  does this call site live under" (e.g. `agent/src/client.ts` -> `agent`).
+ *  Used only as a fallback identity signal in buildTopologyRuntimeLinks,
+ *  and only counts when it also matches a real runtime component's own
+ *  declared service alias — never surfaced as an application name on its
+ *  own. */
+function callerAliasesFromRefs(refs: CrossCodebaseRef[]): string[] {
+  const aliases = new Set<string>();
+  for (const ref of refs) {
+    const file = String(ref.file || '').replace(/\\/g, '/').replace(/^\.\//, '');
+    const segment = file.split('/')[0];
+    if (segment) aliases.add(segment.toLowerCase());
+  }
+  return [...aliases];
 }
 
 function concreteEndpointPort(endpoint: string | undefined): string | undefined {
