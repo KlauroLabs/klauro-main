@@ -27,6 +27,7 @@ import * as runtimeSdk from './runtime-sdk';
 import * as agentDoctor from './agent-doctor';
 import * as workspaceGraph from './workspace-graph';
 import * as crossCodebaseAnalysis from './cross-codebase-analysis';
+import { getCachedDeployableAnalyses, scopeCasToDasUnit, type DasScopeParam } from './deployable-analysis';
 import * as agentDefaults from './agent-defaults';
 import * as integrationDepth from './integration-depth';
 import * as invariantValidation from './invariant-validation';
@@ -597,6 +598,26 @@ function enableToolCallLogging(server: McpServer): void {
       }
       return handler(...args);
     }) as any);
+}
+
+/**
+ * get_summary's DAS wiring (docs/SPEC-DEPLOYABLE-ANALYSIS.md §6): scope the
+ * summary to one DAS unit when `scope` is given (throws a helpful error for
+ * an unknown id or a non-promoted repo, surfaced by withErrorHandling like
+ * any other tool error), otherwise return the rollup summary with a
+ * `das_index` attached when the repo has promoted — the discovery path a
+ * caller uses to learn a scope exists before ever passing one.
+ */
+function buildSummaryWithDasIndex(
+  cas: CASOutput,
+  scope: DasScopeParam | undefined,
+  opts: { detail?: 'compact' | 'full'; excludeSeams?: boolean }
+): Record<string, unknown> {
+  const scopedCas = scopeCasToDasUnit(cas, scope);
+  const summary = query.buildSummary(scopedCas, opts);
+  if (scope) return summary;
+  const das = getCachedDeployableAnalyses(cas);
+  return das.promoted ? { ...summary, das_index: das.das_index } : summary;
 }
 
 function json(data: unknown): { content: Array<{ type: 'text'; text: string }> } {
@@ -1214,6 +1235,19 @@ const EXCLUDE_SECTIONS_PARAM = z
   .array(z.string())
   .optional()
   .describe('Named sections to omit regardless of runtime mode, e.g. ["runtime","seams","topology"] (aliases like "telemetry","communication_seams" accepted). Excluded sections are skipped, not blanked.');
+
+// DAS retrieval scope (docs/SPEC-DEPLOYABLE-ANALYSIS.md §6): on a promoted
+// repo (>= 2 tier-qualified ship units, see deployable-analysis.ts), scope a
+// repo-level tool to exactly one das_unit_id's sliced facts instead of the
+// whole-repo rollup. Omitted on any repo (promoted or not) preserves today's
+// behavior unchanged. Mirrors get_workspace_agent_context's task-scoped
+// pattern one level down (spec §6).
+const DAS_SCOPE_PARAM = z
+  .object({
+    das_unit_id: z.string().describe('A das_unit_id from get_summary\'s das_index (only present on a promoted repo).'),
+  })
+  .optional()
+  .describe('Scope this call to one DAS unit (see das_index on get_summary). Omit to query the whole repo/rollup.');
 
 // Fold env (KLAURO_CONTEXT_RUNTIME) and the .klaurorc context.runtime default
 // into the task's `runtime` field before it reaches getAgentContext (which only
@@ -2069,9 +2103,10 @@ function registerTools(server: McpServer) {
         detail: z.enum(['compact', 'full']).optional().describe("'compact' (default) omits the static analysis_phases prose and trims architectural_patterns guidance to keep replayed-context cost low; 'full' restores the complete payload."),
         runtime: CONTEXT_RUNTIME_PARAM,
         exclude_sections: EXCLUDE_SECTIONS_PARAM,
+        scope: DAS_SCOPE_PARAM,
       } as any,
     } as any,
-    async ({ path, track, detail, runtime, exclude_sections }: any) => withErrorHandling(async () => {
+    async ({ path, track, detail, runtime, exclude_sections, scope }: any) => withErrorHandling(async () => {
       const filter = await resolveSectionFilterForProject(path, { runtime, exclude_sections });
       if (!track) {
         // Project-bound repo: the hosted analysis is the source of truth. When
@@ -2117,13 +2152,13 @@ function registerTools(server: McpServer) {
               return json(payload);
             }
           }
-          return json(withFreshnessStamp(query.buildSummary(resolution.cas, { detail, excludeSeams: filter.isExcluded('seams') })));
+          return json(withFreshnessStamp(buildSummaryWithDasIndex(resolution.cas, scope, { detail, excludeSeams: filter.isExcluded('seams') })));
         }
       }
       // track-scoped reads (working/committed/incoming) bypass the freshness gate:
       // getFreshAnalysisForAgent only knows about the default track's CAS.
       const cas = track ? await getAnalysis(path, { track }) : await getFreshAnalysisForAgent(path);
-      return json(withFreshnessStamp(query.buildSummary(cas, { detail, excludeSeams: filter.isExcluded('seams') })));
+      return json(withFreshnessStamp(buildSummaryWithDasIndex(cas, scope, { detail, excludeSeams: filter.isExcluded('seams') })));
     })
   );
 
@@ -4000,21 +4035,23 @@ function registerTools(server: McpServer) {
         limit: z.number().optional().describe('Max results (default 8 in compact detail, 25 in full)'),
         mode: z.enum(['lexical', 'semantic', 'hybrid']).optional().describe('Retrieval mode. hybrid (default) and semantic blend embedding similarity with structural re-ranking; lexical matches names and descriptions only.'),
         detail: z.enum(['compact', 'full']).optional().describe("'compact' (default) returns a single final score per hit, drops graph_context, and lowers the default limit to 8; 'full' restores the semantic/lexical/structural score breakdown, graph_context, and the historical limit of 25."),
+        scope: DAS_SCOPE_PARAM,
       } as any,
     } as any,
-    async ({ path, query: q, type, category, level, limit, mode, detail }: any) => withErrorHandling(async () => {
+    async ({ path, query: q, type, category, level, limit, mode, detail, scope }: any) => withErrorHandling(async () => {
       const resolvedMode = mode || 'hybrid';
       const resolvedDetail = detail || 'compact';
+      const scopedGetCas = async (p: string) => scopeCasToDasUnit(await getFreshAnalysisForAgent(p), scope);
       if (resolvedMode === 'lexical') {
         // searchNodes returns a bare array (existing contract) — not stamped
         // with freshness_checked_at to avoid a breaking shape change; the
         // freshness guarantee still applies, it's just not observable on this
         // particular branch the way it is on object-shaped responses.
-        const cas = await getFreshAnalysisForAgent(path);
+        const cas = await scopedGetCas(path);
         const resolvedLimit = limit || (resolvedDetail === 'full' ? 25 : 8);
         return json(query.searchNodes(cas, q, { type, category, level, limit: resolvedLimit }));
       }
-      return json(withFreshnessStamp(await semanticSearch(path, q, { type, category, level, limit, detail: resolvedDetail, getCas: getFreshAnalysisForAgent })));
+      return json(withFreshnessStamp(await semanticSearch(path, q, { type, category, level, limit, detail: resolvedDetail, getCas: scopedGetCas })));
     })
   );
 
@@ -4101,10 +4138,11 @@ function registerTools(server: McpServer) {
       inputSchema: {
         path: z.string().describe('Project path'),
         file_path: z.string().describe('Relative file path within the project'),
+        scope: DAS_SCOPE_PARAM,
       } as any,
     } as any,
-    async ({ path, file_path }: any) => withErrorHandling(async () => {
-      const cas = await getAnalysis(path);
+    async ({ path, file_path, scope }: any) => withErrorHandling(async () => {
+      const cas = scopeCasToDasUnit(await getAnalysis(path), scope);
       return json(query.getFileNodes(cas, file_path, path));
     })
   );
@@ -4142,10 +4180,11 @@ function registerTools(server: McpServer) {
         type: z.string().optional().describe('Filter by type: http, websocket, cli, event, schedule, page, route, message, file, test'),
         limit: z.number().optional().describe('Max results (default 50)'),
         offset: z.number().optional().describe('Skip first N results (default 0)'),
+        scope: DAS_SCOPE_PARAM,
       } as any,
     } as any,
-    async ({ path, type, limit, offset }: any) => withErrorHandling(async () => {
-      const cas = await getAnalysis(path);
+    async ({ path, type, limit, offset, scope }: any) => withErrorHandling(async () => {
+      const cas = scopeCasToDasUnit(await getAnalysis(path), scope);
       const result = query.getEntryPoints(cas, { type, limit, offset });
       // ENTRY-POINT ANALYSIS-GAP ENRICHMENT (query-time — keeps the stored CAS
       // canonical, mirrors the getFlowConcepts/telemetry query-time pattern).
@@ -4721,10 +4760,11 @@ function registerTools(server: McpServer) {
         limit: z.number().optional().describe('Max results (default 25)'),
         offset: z.number().optional().describe('Skip first N results (default 0)'),
         role: z.enum(['core', 'supporting', 'infrastructure']).optional().describe('Filter to entities with this semantic role (applied before pagination so total/role_breakdown stay honest).'),
+        scope: DAS_SCOPE_PARAM,
       } as any,
     } as any,
-    async ({ path, entity_name, limit, offset, role }: any) => withErrorHandling(async () => {
-      const cas = await getAnalysis(path);
+    async ({ path, entity_name, limit, offset, role, scope }: any) => withErrorHandling(async () => {
+      const cas = scopeCasToDasUnit(await getAnalysis(path), scope);
       return json(query.getDataEntities(cas, { entityName: entity_name, limit, offset, role }));
     })
   );

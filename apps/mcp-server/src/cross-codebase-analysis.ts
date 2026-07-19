@@ -5,6 +5,7 @@ import { aiService } from '../../../packages/analyzer-core/src/ai/ai-service';
 import { recordSemanticDecision } from '../../../packages/analyzer-core/src/ai/semantic-dataset';
 import { ungroundedMarketingMatches } from '../../../packages/analyzer-core/src/ai/element-description-validator';
 import { describeConfiguredAIProvider } from '../../../packages/analyzer-core/src/config/ai.config';
+import { getCachedDeployableAnalyses } from './deployable-analysis';
 import {
   isInfrastructureSemanticName,
   isRuntimeEndpointSemanticName,
@@ -113,6 +114,19 @@ export interface SystemApplication {
   /** Why this application is/isn't a standalone deployable: tier reached,
    *  artifact evidence, and (if merged) the positive bundling evidence. */
   boundary_evidence?: string[];
+  /** Present only when this application's owning CAS has promoted to a
+   *  Deployable-Analysis Workspace (docs/SPEC-DEPLOYABLE-ANALYSIS.md §1) and
+   *  this application resolves to one of its DAS units: the three-hop
+   *  provenance `workspace -> CAS (codebase_id) -> DAS (this id)` (spec §4).
+   *  A caller drills into the unit's own sliced capabilities/flows/entities
+   *  via the owning codebase's repo-level tools with `scope: { das_unit_id }`
+   *  (spec §6) instead of a new workspace-level endpoint. Additive and
+   *  optional: absent whenever the owning CAS has not promoted (the common
+   *  single-ship-unit case), so every other field on this row is populated
+   *  identically regardless of provenance — a WAS consumer never has to
+   *  branch on this field to read a deployable's facts, only to decide how
+   *  much drilldown depth to trust (spec §4's "silent to the schema"). */
+  source_das_unit_id?: string;
 }
 
 export type WorkspaceDeployable = SystemApplication;
@@ -949,6 +963,7 @@ export function buildCrossCodebaseSystemGraph(
   const runtimeComponents = repositories.flatMap(repository => extractRuntimeComponents(repository, codebaseId(repository.path)));
   const applications = buildApplications(codebases, interfaces, runtimeComponents, repositories);
   resolveDeployables(applications, repositories);
+  linkDasUnits(applications, repositories);
   const distributionUnits = buildWorkspaceDistributionUnits(repositories, applications, codebases);
   const appByIdForLinks = new Map(applications.map(app => [app.id, app]));
   const allLinks = buildLinks(interfaces, appByIdForLinks);
@@ -11733,6 +11748,64 @@ function resolveDeployables(applications: SystemApplication[], repositories: Cro
     }
 
     applyShippedGate(appsForRepo, resolutions, rootBundleTargets);
+  }
+}
+
+/**
+ * WAS consumption of DAS units (docs/SPEC-DEPLOYABLE-ANALYSIS.md §4). When a
+ * member CAS has promoted (>= 2 tier-qualified ship units, deployable-
+ * analysis.ts's shouldPromote), tag each matching `SystemApplication` with the
+ * DAS unit id it corresponds to, so a `WorkspaceDeployable` built from this
+ * row carries three-hop provenance (`workspace -> CAS -> DAS`) a reader can
+ * follow via the owning codebase's repo-level tools with
+ * `scope: { das_unit_id }`. Runs AFTER `resolveDeployables` so every
+ * application's `path_hint`/`bundled_into` resolution is already final.
+ *
+ * Matching is identity-based, not positional: a DAS unit's `root_path` /
+ * `member_root_paths` (bundled members) is compared against the app's own
+ * resolved root (`path_hint || name`), the same root-containment tolerance
+ * `resolveDeployables` itself uses for evidence-to-app matching immediately
+ * above, falling back to a cleaned-name match for a root that resolved
+ * through a fuzzy/folder-heuristic path with no exact root string. A bundled-
+ * member application (`app.bundled_into` set) is skipped — its primary
+ * carries the link, exactly as a DAS unit's own bundled evidence rows are
+ * represented by one unit, not one per member.
+ *
+ * Purely additive: never restructures `applications`, never runs when the
+ * owning CAS has no `deployable_evidence` (buildDeployableAnalyses simply
+ * returns `promoted: false` and this function is a no-op for that repo, the
+ * same single-ship-unit terminal state the CAS-level promotion gate treats as
+ * valid and common).
+ */
+function linkDasUnits(applications: SystemApplication[], repositories: CrossCodebaseInput[]): void {
+  const rootMatches = (appRoot: string, unitRoot: string): boolean => {
+    if (!appRoot || !unitRoot) return false;
+    if (appRoot === unitRoot) return true;
+    return appRoot.startsWith(`${unitRoot}/`) || unitRoot.startsWith(`${appRoot}/`);
+  };
+
+  for (const repository of repositories) {
+    const projectId = codebaseId(repository.path);
+    const appsForRepo = applications.filter(app => app.codebase_id === projectId);
+    if (appsForRepo.length === 0) continue;
+
+    let das;
+    try {
+      das = getCachedDeployableAnalyses(repository.cas);
+    } catch {
+      continue; // Malformed/legacy CAS shape: no DAS link, never a hard failure for the workspace build.
+    }
+    if (!das.promoted || das.das_index.units.length === 0) continue;
+
+    for (const app of appsForRepo) {
+      if (app.bundled_into) continue; // the bundle primary carries the link for its members.
+      const appRoot = app.path_hint || app.name;
+      const match = das.das_index.units.find(unit =>
+        rootMatches(appRoot, unit.root_path) ||
+        unit.member_root_paths.some(memberRoot => rootMatches(appRoot, memberRoot)) ||
+        cleanApplicationName(app.name) === cleanApplicationName(unit.name));
+      if (match) app.source_das_unit_id = match.id;
+    }
   }
 }
 

@@ -696,34 +696,120 @@ export function resolveDasScope(cas: CASOutput, dasUnitId: string): DasUnitSlice
   return units.find(u => u.das_unit_id === dasUnitId);
 }
 
+// ---------------------------------------------------------------------------
+// PHASE 2 — in-process cache + product-surface scope resolution
+// ---------------------------------------------------------------------------
+
+/**
+ * `buildDeployableAnalyses` is pure over `cas` (spec §2.1 step 4: "MUST be
+ * reproducible from its parent CAS's own facts") but re-derives the full
+ * reachability closure + shared-code attribution pass on every call. Repeated
+ * MCP calls against the SAME analysis (get_summary, then get_entry_points,
+ * then a scoped get_file_nodes, ...) would otherwise pay that cost once per
+ * tool call instead of once per analysis. A tiny recency-ordered LRU (not a
+ * persistence layer — phase-1's "recompute-on-request" posture is unchanged,
+ * see the module doc comment) makes repeat calls within one analysis's
+ * lifetime cheap without introducing a stored DAS artifact. Keyed on
+ * `analysis_id` (stable per stored analysis) with a content-shaped fallback
+ * for CAS objects built in-memory without one (e.g. test fixtures, proposal
+ * previews) so the cache degrades to "no reuse" instead of throwing.
+ */
+const DAS_CACHE_LIMIT = 32;
+const dasAnalysisCache = new Map<string, BuildDeployableAnalysesResult>();
+
+function dasCacheKey(cas: CASOutput): string {
+  if (cas.analysis_id) return cas.analysis_id;
+  return `${cas.system?.name || 'unknown'}:${cas.analysis_timestamp || ''}:${cas.nodes?.length ?? 0}:${(cas.edges || []).length}`;
+}
+
+export function getCachedDeployableAnalyses(cas: CASOutput): BuildDeployableAnalysesResult {
+  const key = dasCacheKey(cas);
+  const cached = dasAnalysisCache.get(key);
+  if (cached) {
+    // Touch recency: delete+re-set moves this key to the Map's MRU end
+    // (insertion order is iteration order), so eviction below stays LRU.
+    dasAnalysisCache.delete(key);
+    dasAnalysisCache.set(key, cached);
+    return cached;
+  }
+  const result = buildDeployableAnalyses(cas);
+  dasAnalysisCache.set(key, result);
+  if (dasAnalysisCache.size > DAS_CACHE_LIMIT) {
+    const oldestKey = dasAnalysisCache.keys().next().value;
+    if (oldestKey !== undefined) dasAnalysisCache.delete(oldestKey);
+  }
+  return result;
+}
+
+export interface DasScopeParam {
+  das_unit_id: string;
+}
+
+/**
+ * Spec §6's retrieval contract: resolve an optional `scope: { das_unit_id }`
+ * against a repo-level CAS for a product-surface tool (get_summary,
+ * get_entry_points, get_file_nodes, get_data_entities, search_nodes). Returns
+ * the parent `cas` unchanged when `scope` is omitted (existing callers that
+ * don't know about DAS keep working unchanged, per spec §6). When a concrete
+ * `das_unit_id` is given, returns a CASOutput-shaped object with the DAS
+ * unit's sliced fields (nodes/edges/entry_points/exit_points/data_entities/
+ * capabilities/...) overlaid on the parent CAS's own fields — repo-rollup-only
+ * facts with no unit-scoped meaning (conventions, idioms, test_summary,
+ * architecture_summary, ...) pass through from the parent CAS unchanged (spec
+ * §3's "stays at repo level"), while everything the DAS slice actually
+ * projects governs the scoped view, so counts/nodes/entries reported back
+ * reflect the UNIT, never the rollup.
+ *
+ * Throws (surfaced by the caller's withErrorHandling as a normal tool error,
+ * never a silent empty result) when:
+ *  - the CAS hasn't promoted (single ship unit, or no qualifying evidence) —
+ *    scope is not applicable and the caller should omit it; and
+ *  - `das_unit_id` doesn't match any current unit — names the ids that DO
+ *    exist so a caller can self-correct instead of guessing again.
+ */
+export function scopeCasToDasUnit(cas: CASOutput, scope: DasScopeParam | undefined): CASOutput {
+  if (!scope) return cas;
+  const { promoted, das_index, units } = getCachedDeployableAnalyses(cas);
+  if (!promoted) {
+    throw new Error(
+      'This analysis has not promoted to a Deployable-Analysis Workspace (it resolves fewer than 2 tier-qualified ship units), so scope.das_unit_id does not apply. Omit scope to query the whole repo.'
+    );
+  }
+  const unit = units.find(u => u.das_unit_id === scope.das_unit_id);
+  if (!unit) {
+    const available = das_index.units.map(u => `${u.id} (${u.name})`).join(', ') || 'none';
+    throw new Error(`Unknown scope.das_unit_id '${scope.das_unit_id}'. Available DAS units for this analysis: ${available}.`);
+  }
+  return { ...cas, ...unit.slice } as CASOutput;
+}
+
 /*
  * ---------------------------------------------------------------------------
- * PHASE-2 OPEN ITEMS (deliberately out of scope here — see the task report):
+ * PHASE-3 OPEN ITEMS (deliberately out of scope here — see the task report):
  *
- *  1. Persistence. This module recomputes on every call (spec §9 open
- *     question 2's cheapest-honest-start option: VIEW, not a stored
- *     artifact). Incremental re-slicing (spec §5's "only the DAS units whose
- *     reachability closure intersects the changed file's node set re-slice")
- *     requires a stored per-unit node-id-set to diff against; phase 1 has no
- *     such store, so every call is a full re-derivation over the parent CAS.
+ *  1. Persistence. This module still recomputes on every cache miss (spec §9
+ *     open question 2's cheapest-honest-start option: VIEW, not a stored
+ *     artifact). getCachedDeployableAnalyses only avoids re-derivation WITHIN
+ *     one analysis's lifetime; a change to the underlying CAS (re-analysis)
+ *     naturally misses the cache because `analysis_id`/`analysis_timestamp`
+ *     change too, so nothing goes stale — but true incremental re-slicing
+ *     (spec §5) still requires a stored per-unit node-id-set to diff against,
+ *     which phase 1/2 do not build.
  *
- *  2. WAS consumption (spec §4). cross-codebase-analysis.ts's
- *     buildApplications/resolveDeployables does not yet call
- *     buildDeployableAnalyses or read a `source_das_unit_id` — that three-hop
- *     workspace -> CAS -> DAS wiring is unbuilt.
- *
- *  3. UI/API presentation (spec §9 open question 3) — unresolved by design;
- *     phase 1 ships the retrieval primitive (resolveDasScope) so either
- *     answer is buildable on top without a schema change.
- *
- *  4. Deeper per-unit layers this module does NOT yet project: behavioral
+ *  2. Deeper per-unit layers this module does NOT yet project: behavioral
  *     invariants, security boundaries, flow_coverage/test_gaps, temporal
  *     stability, idiom violations scoped to a unit's own files. All of these
  *     are structurally sliceable by the same reachable-node-id-set /
  *     reachable-file-set technique already used here for data entities and
  *     lineage; deferred for scope, not because they resist the technique.
+ *     Correspondingly, `scope` is only wired onto get_summary,
+ *     get_entry_points, get_file_nodes, get_data_entities, and search_nodes
+ *     in phase 2 — every other repo-level tool (get_route_table,
+ *     get_security_overview, get_flow_concepts, get_behavioral_invariants,
+ *     get_test_summary, ...) is a phase-3 candidate once its own scoped
+ *     projection exists.
  *
- *  5. True flow/capability RE-DERIVATION (spec §2.1 step 3's stated ideal:
+ *  3. True flow/capability RE-DERIVATION (spec §2.1 step 3's stated ideal:
  *     "runs the existing [capability/flow] algorithm with a restricted
  *     evidence set") vs. this phase's cheaper approximation (FILTERING the
  *     already-derived repo-level capabilities/flows down to the ones whose
