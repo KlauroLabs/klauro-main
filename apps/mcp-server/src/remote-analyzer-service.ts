@@ -1762,9 +1762,60 @@ async function handleAccountApi(
       return { statusCode: 200, body: { projects: await accounts.listProjects(userId, workspaceId) } };
     }
     if (request.method === 'POST') {
-      const body = await readJsonBody<{ name: string; repo_url?: string; local_path?: string; analysis_id?: string }>(request, maxBodyBytes);
-      return { statusCode: 201, body: { project: await accounts.createProject(userId, workspaceId, body) } };
+      // Same endpoint, two shapes: { project_id } attaches (moves) an EXISTING
+      // project into this workspace; { name, ... } creates a brand-new one
+      // (unchanged behavior). AccountProject.workspace_id is a single required
+      // foreign key, not a join table, so "attach" here is necessarily a MOVE
+      // out of whatever workspace the project previously belonged to — see
+      // AccountStore.attachProjectToWorkspace for the membership gates.
+      const body = await readJsonBody<{
+        name?: string;
+        repo_url?: string;
+        local_path?: string;
+        analysis_id?: string;
+        project_id?: string;
+      }>(request, maxBodyBytes);
+      if (body.project_id) {
+        const result = await accounts.attachProjectToWorkspace(userId, workspaceId, body.project_id);
+        // Rebuild is scheduled through the SAME background path POST
+        // /api/workspaces/{id}/reanalyze uses, for the target workspace (whose
+        // membership just grew) and, since this is a move rather than an
+        // additive attach, for the source workspace too (whose membership just
+        // shrank and whose cached WAS is now stale). Idempotent re-attach is a
+        // true no-op: no workspace's membership changed, so nothing is scheduled.
+        if (!result.already_attached) {
+          scheduleWorkspaceReanalyze(workspaceAnalyses, dataDir, workspaceId);
+          if (result.moved_from_workspace_id) scheduleWorkspaceReanalyze(workspaceAnalyses, dataDir, result.moved_from_workspace_id);
+        }
+        return {
+          statusCode: 200,
+          body: {
+            attached: true,
+            already_attached: result.already_attached,
+            project: result.project,
+            semantics: 'move',
+            ...(result.moved_from_workspace_id ? { moved_from_workspace_id: result.moved_from_workspace_id } : {}),
+            was_rebuild: result.already_attached ? 'unchanged' : 'scheduled',
+          },
+        };
+      }
+      if (!body.name) throw new AccountHttpError(400, 'name is required to create a new project');
+      return {
+        statusCode: 201,
+        body: { project: await accounts.createProject(userId, workspaceId, body as { name: string; repo_url?: string; local_path?: string; analysis_id?: string }) },
+      };
     }
+    // No DELETE /api/workspaces/{id}/projects/{projectId} (detach) here by
+    // design: AccountProject.workspace_id is a required single foreign key —
+    // there is no "no workspace" state for a project to fall back to, and no
+    // structurally distinct "default" workspace to return it to (the
+    // workspace created at registration is a plain AccountWorkspace like any
+    // other). Detaching a project would have to either delete it or leave it
+    // pointing at a workspace_id that no longer has it as a member, both of
+    // which violate the existing model rather than working within it. If a
+    // detach target is needed later, attach the project to a different
+    // workspace instead (POST here with { project_id }) — that is a supported
+    // move.
   }
 
   const workspaceAnalysisMatch = route.match(/^\/api\/workspaces\/([^/]+)\/analysis$/);
@@ -1829,70 +1880,7 @@ async function handleAccountApi(
     // listProjects throws 404 for non-members BEFORE any workspace-scoped
     // work is scheduled, so a user can only reanalyze their own workspace.
     await accounts.listProjects(userId, workspaceId);
-    if (!workspaceAnalyses) throw new AccountHttpError(500, 'Workspace analysis storage unavailable');
-    if (!dataDir) throw new AccountHttpError(500, 'Analysis storage unavailable');
-    const dataDirForBackground = dataDir;
-    const workspaceAttemptPath = workspaceAttemptRecordPath(dataDirForBackground, workspaceId);
-    // Queue visibility (instrumentation only — nothing here gates or
-    // serializes execution, behavior is unchanged): queued_at/queue_position
-    // are captured NOW, at accept time, before the actual work has a chance to
-    // run; started_at is captured separately below, inside the setImmediate
-    // callback, once execution genuinely begins. Previously a single
-    // `started_at` stamped at accept time stood in for both, which reads as
-    // "started" even while the request is still sitting behind other
-    // in-flight work on this single-threaded process (the exact ambiguity
-    // that hid a whale rebuild for 90+ minutes — see CASAnalysisTimings).
-    const workspaceQueuedAt = new Date().toISOString();
-    const workspaceQueuePosition = inFlightReanalyzeCount;
-    inFlightReanalyzeCount += 1;
-    setImmediate(async () => {
-      const workspaceAttemptStartedAt = new Date().toISOString();
-      await writeAttemptRecord(workspaceAttemptPath, {
-        state: 'in-progress',
-        trigger: 'reanalyze',
-        queued_at: workspaceQueuedAt,
-        queue_position: workspaceQueuePosition,
-        started_at: workspaceAttemptStartedAt,
-      });
-      await workspaceAnalyses.rebuild(workspaceId).then(
-        async () => {
-          const workspaceAttemptFinishedAt = new Date().toISOString();
-          await writeAttemptRecord(workspaceAttemptPath, {
-            state: 'succeeded',
-            trigger: 'reanalyze',
-            queued_at: workspaceQueuedAt,
-            queue_position: workspaceQueuePosition,
-            started_at: workspaceAttemptStartedAt,
-            finished_at: workspaceAttemptFinishedAt,
-            duration_ms: Date.parse(workspaceAttemptFinishedAt) - Date.parse(workspaceAttemptStartedAt),
-          });
-          inFlightReanalyzeCount = Math.max(0, inFlightReanalyzeCount - 1);
-        },
-        async error => {
-          const detail = error instanceof Error ? error.message : String(error);
-          console.error(`[Klauro] async workspace reanalyze failed for ${workspaceId}: ${detail}`);
-          const workspaceAttemptFinishedAt = new Date().toISOString();
-          await writeAttemptRecord(workspaceAttemptPath, {
-            state: 'failed',
-            trigger: 'reanalyze',
-            queued_at: workspaceQueuedAt,
-            queue_position: workspaceQueuePosition,
-            started_at: workspaceAttemptStartedAt,
-            finished_at: workspaceAttemptFinishedAt,
-            duration_ms: Date.parse(workspaceAttemptFinishedAt) - Date.parse(workspaceAttemptStartedAt),
-            reason: detail.slice(0, 300),
-          });
-          inFlightReanalyzeCount = Math.max(0, inFlightReanalyzeCount - 1);
-          if (dataDirForBackground) {
-            await appendAuditLog(dataDirForBackground, {
-              event: 'workspace_reanalyze_async_failed',
-              workspace_id: workspaceId,
-              error: detail.slice(0, 500),
-            }).catch(() => {});
-          }
-        },
-      );
-    });
+    scheduleWorkspaceReanalyze(workspaceAnalyses, dataDir, workspaceId);
     return {
       statusCode: 202,
       body: { status: 'accepted', workspace_id: workspaceId },
@@ -3361,6 +3349,85 @@ function projectAttemptRecordPath(workspace: string): string {
 // so the sidecar lives under its own directory keyed by workspace id.
 function workspaceAttemptRecordPath(dataDir: string, workspaceId: string): string {
   return path.join(dataDir, 'workspace-attempts', `${safeName(workspaceId)}.json`);
+}
+
+// Shared background-rebuild trigger for POST /api/workspaces/{id}/reanalyze
+// AND the project-attach endpoint (both in handleAccountApi below): recomputes
+// the server-side WAS for `workspaceId` from the stored member analyses (with
+// AI narrative enrichment) and persists it, answering the same
+// async-then-poll shape as POST /api/projects/{id}/reanalyze (see GET
+// /api/workspaces/{id}/analysis for status polling). Callers must already
+// have verified workspace membership (listProjects throws 404 for
+// non-members) before calling this. A standalone function (not a closure over
+// createRemoteAnalyzerHttpServer's locals) because handleAccountApi — where
+// both call sites live — is its own top-level function, not nested inside
+// createRemoteAnalyzerHttpServer; dataDir/workspaceAnalyses are threaded
+// through as the same params handleAccountApi already receives.
+function scheduleWorkspaceReanalyze(
+  workspaceAnalyses: AccountWorkspaceAnalysisScheduler | undefined,
+  dataDir: string | undefined,
+  workspaceId: string,
+): void {
+  if (!workspaceAnalyses) throw new AccountHttpError(500, 'Workspace analysis storage unavailable');
+  if (!dataDir) throw new AccountHttpError(500, 'Analysis storage unavailable');
+  const dataDirForBackground = dataDir;
+  const workspaceAttemptPath = workspaceAttemptRecordPath(dataDirForBackground, workspaceId);
+  // Queue visibility (instrumentation only — nothing here gates or
+  // serializes execution, behavior is unchanged): queued_at/queue_position
+  // are captured NOW, at accept time, before the actual work has a chance to
+  // run; started_at is captured separately below, inside the setImmediate
+  // callback, once execution genuinely begins.
+  const workspaceQueuedAt = new Date().toISOString();
+  const workspaceQueuePosition = inFlightReanalyzeCount;
+  inFlightReanalyzeCount += 1;
+  setImmediate(async () => {
+    const workspaceAttemptStartedAt = new Date().toISOString();
+    await writeAttemptRecord(workspaceAttemptPath, {
+      state: 'in-progress',
+      trigger: 'reanalyze',
+      queued_at: workspaceQueuedAt,
+      queue_position: workspaceQueuePosition,
+      started_at: workspaceAttemptStartedAt,
+    });
+    await workspaceAnalyses.rebuild(workspaceId).then(
+      async () => {
+        const workspaceAttemptFinishedAt = new Date().toISOString();
+        await writeAttemptRecord(workspaceAttemptPath, {
+          state: 'succeeded',
+          trigger: 'reanalyze',
+          queued_at: workspaceQueuedAt,
+          queue_position: workspaceQueuePosition,
+          started_at: workspaceAttemptStartedAt,
+          finished_at: workspaceAttemptFinishedAt,
+          duration_ms: Date.parse(workspaceAttemptFinishedAt) - Date.parse(workspaceAttemptStartedAt),
+        });
+        inFlightReanalyzeCount = Math.max(0, inFlightReanalyzeCount - 1);
+      },
+      async error => {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.error(`[Klauro] async workspace reanalyze failed for ${workspaceId}: ${detail}`);
+        const workspaceAttemptFinishedAt = new Date().toISOString();
+        await writeAttemptRecord(workspaceAttemptPath, {
+          state: 'failed',
+          trigger: 'reanalyze',
+          queued_at: workspaceQueuedAt,
+          queue_position: workspaceQueuePosition,
+          started_at: workspaceAttemptStartedAt,
+          finished_at: workspaceAttemptFinishedAt,
+          duration_ms: Date.parse(workspaceAttemptFinishedAt) - Date.parse(workspaceAttemptStartedAt),
+          reason: detail.slice(0, 300),
+        });
+        inFlightReanalyzeCount = Math.max(0, inFlightReanalyzeCount - 1);
+        if (dataDirForBackground) {
+          await appendAuditLog(dataDirForBackground, {
+            event: 'workspace_reanalyze_async_failed',
+            workspace_id: workspaceId,
+            error: detail.slice(0, 500),
+          }).catch(() => {});
+        }
+      },
+    );
+  });
 }
 
 /**

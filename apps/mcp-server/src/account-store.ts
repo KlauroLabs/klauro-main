@@ -335,6 +335,37 @@ export class AccountStore {
     );
   }
 
+  /**
+   * Attach (move) an existing project into `targetWorkspaceId`. `workspace_id`
+   * on AccountProject is a single required foreign key, not a join table —
+   * this model supports exactly one workspace per project, so "attach" is
+   * necessarily a MOVE out of whatever workspace the project previously
+   * belonged to, never an additive membership. Callers must be a member of
+   * BOTH the project's current workspace and the target workspace (the same
+   * requireMembership-throws-404 gate used elsewhere, so a non-member gets
+   * "not found" rather than a distinguishing 403 that would leak existence).
+   * Idempotent: attaching a project that is already in the target workspace
+   * is a no-op and reports `already_attached: true`.
+   */
+  async attachProjectToWorkspace(userId: string, targetWorkspaceId: string, projectId: string): Promise<{
+    project: AccountProject;
+    already_attached: boolean;
+    moved_from_workspace_id?: string;
+  }> {
+    const db = await this.load();
+    requireMembership(db, userId, targetWorkspaceId);
+    const project = db.projects.find(candidate => candidate.id === projectId);
+    if (!project) throw httpError(404, 'Project not found');
+    requireMembership(db, userId, project.workspace_id);
+    if (project.workspace_id === targetWorkspaceId) {
+      return { project, already_attached: true };
+    }
+    const previousWorkspaceId = project.workspace_id;
+    project.workspace_id = targetWorkspaceId;
+    await this.save(db);
+    return { project, already_attached: false, moved_from_workspace_id: previousWorkspaceId };
+  }
+
   async setProjectAnalysisId(userId: string, projectId: string, analysisId: string): Promise<AccountProject> {
     const db = await this.load();
     const project = db.projects.find(candidate => candidate.id === projectId);

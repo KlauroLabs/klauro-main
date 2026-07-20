@@ -245,6 +245,8 @@ async function main(): Promise<void> {
     'cross-codebase-get',
     'cross-codebase-list',
     'support-bundle',
+    'account-workspaces',
+    'account-workspace-attach',
   ].includes(args.command)) {
     throw new Error(`Unknown command: ${args.command}`);
   }
@@ -258,10 +260,10 @@ async function main(): Promise<void> {
   // terminal who obviously knows where they are; it is not a safe default for
   // scripted/agent invocations.
   const pathWasExplicit = Boolean(args.path);
-  if (!args.path && ['init', 'index', 'analyze', 'upload-manifest', 'install-agent', 'github-import-plan', 'agent-tracks'].includes(args.command)) {
+  if (!args.path && ['init', 'index', 'analyze', 'upload-manifest', 'install-agent', 'github-import-plan', 'agent-tracks', 'account-workspace-attach'].includes(args.command)) {
     args.path = '.';
   }
-  if (!args.path && !['greenfield-preview', 'greenfield-guidance', 'greenfield-build-context', 'preview-get', 'compare-iterations', 'workspace-analysis', 'workspace-get', 'workspace-list', 'cross-codebase-analysis', 'cross-codebase-get', 'cross-codebase-list', 'support-bundle'].includes(args.command)) {
+  if (!args.path && !['greenfield-preview', 'greenfield-guidance', 'greenfield-build-context', 'preview-get', 'compare-iterations', 'workspace-analysis', 'workspace-get', 'workspace-list', 'cross-codebase-analysis', 'cross-codebase-get', 'cross-codebase-list', 'support-bundle', 'account-workspaces'].includes(args.command)) {
     throw new Error(`${args.command} requires a project path`);
   }
 
@@ -473,6 +475,64 @@ async function main(): Promise<void> {
   if (args.command === 'workspace-list' || args.command === 'cross-codebase-list') {
     const graphs = await listCrossCodebaseSystemGraphs();
     process.stdout.write(args.json ? `${JSON.stringify(graphs, null, 2)}\n` : formatWorkspaceAnalysisList(graphs));
+    return;
+  }
+
+  // "account-workspace-*" (not "workspace-*") to avoid colliding with the
+  // pre-existing local cross-codebase WAS graph commands above
+  // (workspace-analysis/-get/-list), which are a completely different concept
+  // (a locally-saved multi-repo analysis graph, no server account involved).
+  // These two talk to the hosted AccountStore workspace/project model
+  // (account-store.ts) instead: `id + name` listing, and attaching an
+  // already-analyzed, already-`klauro init`-connected project to a different
+  // hosted workspace.
+  if (args.command === 'account-workspaces') {
+    const auth = loadStoredConnectorAuth();
+    const serverUrl = normalizeServerUrl(args.serverUrl || auth.defaultServerUrl);
+    const token = connectorToken(undefined, serverUrl);
+    if (!token) throw new Error(`Klauro account required for ${serverUrl}. Run \`klauro login\` first.`);
+    const workspaces = await listRemoteWorkspaces(serverUrl, token);
+    if (args.json) {
+      process.stdout.write(`${JSON.stringify({ workspaces }, null, 2)}\n`);
+    } else if (!workspaces.length) {
+      process.stdout.write('No workspaces.\n');
+    } else {
+      process.stdout.write(workspaces
+        .map(workspace => `${workspace.id}  ${workspace.name}${workspace.project_count !== undefined ? ` (${workspace.project_count} project${workspace.project_count === 1 ? '' : 's'})` : ''}`)
+        .join('\n') + '\n');
+    }
+    return;
+  }
+
+  if (args.command === 'account-workspace-attach') {
+    if (!args.workspace) throw new Error('account-workspace-attach requires --workspace <id-or-name>');
+    const loaded = await loadKlauroConfig(projectPath);
+    const boundProjectId = loaded.config.project.id;
+    if (!boundProjectId) {
+      throw new Error(`${projectPath} is not connected to a hosted Klauro project yet. Run \`klauro init\` first, then retry account-workspace-attach.`);
+    }
+    const serverUrl = normalizeServerUrl(args.serverUrl || loaded.config.analyzer.serverUrl);
+    const token = connectorToken(undefined, serverUrl);
+    if (!token) throw new Error(`Klauro account required for ${serverUrl}. Run \`klauro login\` first.`);
+    const workspaces = await listRemoteWorkspaces(serverUrl, token);
+    const targetWorkspace = resolveWorkspaceTarget(workspaces, args.workspace);
+    const result = await attachRemoteProject(serverUrl, token, targetWorkspace.id, boundProjectId);
+    if (args.json) {
+      process.stdout.write(`${JSON.stringify({ ...result, workspace: targetWorkspace }, null, 2)}\n`);
+      return;
+    }
+    if (result.already_attached) {
+      process.stdout.write(`Project "${result.project.name}" is already attached to workspace "${targetWorkspace.name}". No change made, no rebuild scheduled.\n`);
+      return;
+    }
+    process.stdout.write([
+      `Attached project "${result.project.name}" to workspace "${targetWorkspace.name}".`,
+      // Honest about the model: AccountProject.workspace_id is a single required
+      // foreign key, not a join table, so this is a MOVE — the project left
+      // whatever workspace it was previously in, it did not gain a second one.
+      'This is a move, not an additional membership: a project belongs to exactly one workspace at a time.',
+      `Workspace analysis for "${targetWorkspace.name}" is rebuilding in the background now that its membership changed (was_rebuild: ${result.was_rebuild}).`,
+    ].join('\n') + '\n');
     return;
   }
 
@@ -2020,6 +2080,39 @@ async function createRemoteProject(serverUrl: string, token: string, workspaceId
   return payload.project;
 }
 
+interface AttachProjectResult {
+  attached: boolean;
+  already_attached: boolean;
+  project: RemoteProjectChoice;
+  semantics?: string;
+  moved_from_workspace_id?: string;
+  was_rebuild: string;
+}
+
+/** POSTs { project_id } to the SAME route createRemoteProject uses — the server tells the two shapes apart. */
+async function attachRemoteProject(serverUrl: string, token: string, workspaceId: string, projectId: string): Promise<AttachProjectResult> {
+  return remoteJson<AttachProjectResult>(serverUrl, token, `/api/workspaces/${encodeURIComponent(workspaceId)}/projects`, { project_id: projectId });
+}
+
+/**
+ * Resolve `klauro account-workspace-attach --workspace <target>` where target
+ * may be an id (`wsp_...`, matched exactly first since ids never collide with
+ * resolveNamedChoice's name-based matching) or a name/prefix (delegated to the
+ * same resolveNamedChoice ambiguity handling used for the `klauro init`
+ * workspace/project prompts, so "matches 2 things" errors read the same way
+ * everywhere in the CLI).
+ */
+export function resolveWorkspaceTarget(workspaces: RemoteWorkspaceChoice[], target: string): RemoteWorkspaceChoice {
+  const byId = workspaces.find(workspace => workspace.id === target);
+  if (byId) return byId;
+  const resolved = resolveNamedChoice(workspaces, target);
+  if ('match' in resolved) return resolved.match;
+  if ('ambiguous' in resolved) {
+    throw new Error(`"${target}" matches multiple workspaces: ${resolved.ambiguous.map(workspace => `"${workspace.name}"`).join(', ')} — use the workspace id instead (see \`klauro account-workspaces\`).`);
+  }
+  throw new Error(`No workspace found matching "${target}". Run \`klauro account-workspaces\` to list them.`);
+}
+
 async function remoteJson<T>(serverUrl: string, token: string, route: string, body?: unknown): Promise<T> {
   let response: Response;
   try {
@@ -2313,6 +2406,8 @@ function printHelp(): void {
     '  klauro workspace-analysis /path/to/repo-a [--reference-path /path/to/repo-b] [--reference-path /path/to/repo-c] [--target name] [--json] [--refresh]',
     '  klauro workspace-get --preview-id id-or-name [--detail-level overview|connections|evidence|full] [--json]',
     '  klauro workspace-list [--json]',
+    '  klauro account-workspaces [--server-url url] [--json]   (hosted account workspaces you belong to: id + name)',
+    '  klauro account-workspace-attach --workspace id-or-name [/path/to/repo] [--server-url url] [--json]   (attach/move an already-init\'d project into another hosted workspace)',
     '  klauro proposal-preview /path/to/repo --plan-file plan.md [--diff-file changes.patch] [--proposed-files files.json] [--server-url app-url] [--json]',
     '  klauro greenfield-guidance --plan-file plan.md [--reference-path /existing/repo] [--proposed-files files.json] [--json]',
     '  klauro greenfield-build-context [/empty/or/current/project] --plan-file plan.md [--reference-path /existing/repo] [--proposed-files files.json] [--json]',
@@ -2342,6 +2437,8 @@ function printHelp(): void {
     '  klauro greenfield-build-context /tmp/new-app --plan "Build an operations command center" --json',
     '  klauro greenfield-preview --plan-file plan.md --proposed-files proposed-files.json',
     '  klauro workspace-analysis ~/dev/soon/soon-ui --reference-path ~/dev/soon/soon-sync --target soon-workspace',
+    '  klauro account-workspaces',
+    '  klauro account-workspace-attach --workspace "Acme Team" .',
     '  klauro agent-start ~/dev/klauro/proof-of-concept --task-type debug --target auth',
     '  npm --silent run agent-start -- . --json',
     '  npm --silent run agent-install -- . --json',
