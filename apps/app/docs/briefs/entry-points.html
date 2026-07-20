@@ -1,0 +1,659 @@
+<title>Entry Points — Design Brief</title>
+<style>
+  :root {
+    --ground: #F6F8FB; --surface: #FFFFFF; --surface-2: #FBFCFE; --border: #E3E8F0;
+    --border-strong: #CFD6E2; --ink: #1A2230; --ink-soft: #3C4658; --ink-mute: #64708440; --muted: #647084;
+    --accent: #4C60CE; --accent-soft: #EEF0FB; --sync: #2F72C4; --sync-soft: #E8F1FA;
+    --async: #8250D4; --async-soft: #F1EAFA; --passive: #0E9488; --passive-soft: #E1F4F1;
+    --good: #167A3C; --warn: #B45309; --warn-soft: #FBF0E2;
+    --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+    --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", "Menlo", monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --ground: #0E1219; --surface: #161B24; --surface-2: #12171F; --border: #262E3B;
+      --border-strong: #333C4B; --ink: #E7ECF4; --ink-soft: #BAC3D2; --ink-mute: #8b96a636; --muted: #8A96A8;
+      --accent: #8593EC; --accent-soft: #1C2236; --sync: #5EA0E6; --sync-soft: #142236;
+      --async: #B18BEC; --async-soft: #221833; --passive: #3FC7B8; --passive-soft: #10231F;
+      --good: #4CB877; --warn: #E0A85B; --warn-soft: #2A2013;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground: #0E1219; --surface: #161B24; --surface-2: #12171F; --border: #262E3B;
+    --border-strong: #333C4B; --ink: #E7ECF4; --ink-soft: #BAC3D2; --ink-mute: #8b96a636; --muted: #8A96A8;
+    --accent: #8593EC; --accent-soft: #1C2236; --sync: #5EA0E6; --sync-soft: #142236;
+    --async: #B18BEC; --async-soft: #221833; --passive: #3FC7B8; --passive-soft: #10231F;
+    --good: #4CB877; --warn: #E0A85B; --warn-soft: #2A2013;
+  }
+  :root[data-theme="light"] {
+    --ground: #F6F8FB; --surface: #FFFFFF; --surface-2: #FBFCFE; --border: #E3E8F0;
+    --border-strong: #CFD6E2; --ink: #1A2230; --ink-soft: #3C4658; --ink-mute: #64708440; --muted: #647084;
+    --accent: #4C60CE; --accent-soft: #EEF0FB; --sync: #2F72C4; --sync-soft: #E8F1FA;
+    --async: #8250D4; --async-soft: #F1EAFA; --passive: #0E9488; --passive-soft: #E1F4F1;
+    --good: #167A3C; --warn: #B45309; --warn-soft: #FBF0E2;
+  }
+
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--ground); color: var(--ink); font-family: var(--sans); line-height: 1.6; -webkit-font-smoothing: antialiased; }
+  .wrap { max-width: 880px; margin: 0 auto; padding: clamp(28px, 5vw, 72px) clamp(20px, 5vw, 44px) 120px; }
+
+  .eyebrow { font-family: var(--mono); font-size: 12px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--accent); margin: 0 0 14px; }
+  h1 { font-family: var(--serif); font-weight: 600; font-size: clamp(30px, 5vw, 44px); line-height: 1.08; letter-spacing: -0.01em; margin: 0 0 18px; text-wrap: balance; }
+  .lede { font-size: clamp(17px, 2.2vw, 19px); color: var(--ink-soft); max-width: 62ch; margin: 0 0 8px; }
+  .meta-row { display: flex; flex-wrap: wrap; gap: 8px 10px; margin-top: 26px; font-family: var(--mono); font-size: 12.5px; color: var(--muted); }
+  .meta-row span { background: var(--surface); border: 1px solid var(--border); border-radius: 999px; padding: 5px 12px; }
+
+  h2 { font-family: var(--serif); font-weight: 600; font-size: clamp(22px, 3vw, 28px); letter-spacing: -0.01em; margin: 0 0 6px; text-wrap: balance; }
+  .section { margin-top: clamp(48px, 7vw, 76px); }
+  .section > .kicker { font-family: var(--mono); font-size: 11.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--muted); margin: 0 0 20px; display: flex; align-items: center; gap: 12px; }
+  .section > .kicker::after { content: ""; flex: 1; height: 1px; background: var(--border); }
+  p { margin: 0 0 16px; max-width: 66ch; }
+  p.tight { margin-bottom: 8px; }
+  strong { color: var(--ink); font-weight: 650; }
+  a { color: var(--accent); }
+  em { color: var(--ink-soft); }
+  .term { font-family: var(--mono); font-size: 0.86em; background: var(--ink-mute); padding: 1px 6px; border-radius: 5px; color: var(--ink-soft); white-space: nowrap; }
+
+  .families { display: grid; gap: 16px; margin-top: 24px; }
+  .fam { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 24px 24px 22px; position: relative; overflow: hidden; }
+  .fam::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 4px; background: var(--fc); }
+  .fam.sync { --fc: var(--sync); --fcs: var(--sync-soft); }
+  .fam.async { --fc: var(--async); --fcs: var(--async-soft); }
+  .fam.passive { --fc: var(--passive); --fcs: var(--passive-soft); }
+  .fam-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 4px; }
+  .fam-head h3 { font-size: 19px; margin: 0; font-weight: 650; letter-spacing: -0.01em; }
+  .fam-tag { font-family: var(--mono); font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--fc); background: var(--fcs); padding: 3px 9px; border-radius: 6px; font-weight: 600; }
+  .fam-metaphor { color: var(--muted); font-size: 14.5px; font-style: italic; margin-bottom: 12px; }
+  .fam p { margin-bottom: 14px; font-size: 15px; }
+  .fam-channels { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 12px; }
+  .chip { font-size: 13px; border: 1px solid var(--border-strong); border-radius: 8px; padding: 5px 10px; background: var(--surface-2); display: inline-flex; align-items: center; gap: 7px; }
+  .chip b { font-family: var(--mono); font-weight: 700; color: var(--fc); font-size: 12px; }
+  .fam-also { font-size: 13.5px; color: var(--muted); margin: 0; }
+  .fam-also b { color: var(--ink-soft); font-weight: 600; }
+
+  .fieldtable { width: 100%; border-collapse: collapse; margin: 0; font-size: 14.5px; }
+  .fieldtable th, .fieldtable td { text-align: left; padding: 12px 14px; vertical-align: top; border-bottom: 1px solid var(--border); }
+  .fieldtable thead th { font-family: var(--mono); font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); font-weight: 600; border-bottom: 1px solid var(--border-strong); }
+  .fieldtable td:first-child { font-weight: 600; white-space: nowrap; width: 34%; }
+  .fieldtable td:first-child small { display: block; font-weight: 400; color: var(--muted); font-family: var(--mono); font-size: 11.5px; margin-top: 3px; }
+  .tablewrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
+  .fieldtable tbody tr:last-child td { border-bottom: none; }
+
+  /* Taxonomy */
+  .taxo { display: grid; gap: 18px; margin-top: 24px; }
+  .taxo-group { border: 1px solid var(--border); border-radius: 12px; overflow: hidden; background: var(--surface); }
+  .taxo-group > .th { display: flex; align-items: center; gap: 9px; padding: 12px 18px; background: var(--gcs); border-bottom: 1px solid var(--border); }
+  .taxo-group.sync { --gc: var(--sync); --gcs: var(--sync-soft); }
+  .taxo-group.async { --gc: var(--async); --gcs: var(--async-soft); }
+  .taxo-group.passive { --gc: var(--passive); --gcs: var(--passive-soft); }
+  .taxo-group.special { --gc: var(--muted); --gcs: var(--ink-mute); }
+  .taxo-group > .th b { font-size: 14.5px; font-weight: 650; }
+  .taxo-group > .th .fam-tag { margin-left: auto; }
+  .taxo-item { display: grid; grid-template-columns: 210px 1fr; gap: 6px 16px; padding: 10px 18px; border-top: 1px solid var(--border); font-size: 14px; }
+  .taxo-item:first-of-type { border-top: none; }
+  .taxo-item .n { font-weight: 600; color: var(--ink); }
+  .taxo-item .d { color: var(--muted); }
+  @media (max-width: 560px) { .taxo-item { grid-template-columns: 1fr; gap: 2px; } }
+
+  /* Capability ladder */
+  .ladder { display: flex; align-items: stretch; gap: 0; margin: 22px 0 8px; border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+  .ladder .rung { flex: 1; padding: 16px 18px; background: var(--surface); }
+  .ladder .rung + .rung { border-left: 1px solid var(--border); }
+  .ladder .rung .lbl { font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); margin: 0 0 5px; }
+  .ladder .rung .v { font-size: 14.5px; font-weight: 650; color: var(--ink); margin: 0 0 3px; }
+  .ladder .rung .s { font-size: 12.5px; color: var(--muted); margin: 0; }
+  .ladder .rung.c1 { background: var(--sync-soft); }
+  .ladder .rung.c2 { background: var(--accent-soft); }
+  .ladder .rung.c3 { background: var(--passive-soft); }
+
+  /* Dimension list */
+  .dims { display: grid; gap: 10px; margin-top: 22px; }
+  .dim { display: grid; grid-template-columns: 200px 1fr; gap: 6px 18px; padding: 13px 16px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); font-size: 14px; align-items: baseline; }
+  .dim .n { font-weight: 650; color: var(--ink); }
+  .dim .n .flag { display: inline-block; font-family: var(--mono); font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--warn); background: var(--warn-soft); padding: 1px 6px; border-radius: 4px; margin-top: 5px; }
+  .dim .d { color: var(--ink-soft); }
+  @media (max-width: 560px) { .dim { grid-template-columns: 1fr; gap: 3px; } }
+
+  /* Telemetry tiles */
+  .tele { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin: 22px 0 8px; }
+  .tele .t { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px 18px; }
+  .tele .t .k { font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); margin: 0 0 8px; }
+  .tele .t .v { font-size: 26px; font-weight: 680; letter-spacing: -0.01em; color: var(--ink); margin: 0; font-variant-numeric: tabular-nums; }
+  .tele .t .v small { font-size: 14px; font-weight: 500; color: var(--muted); }
+  .tele .t .s { font-size: 12.5px; color: var(--muted); margin: 4px 0 0; }
+  .tele .t.alert .v { color: var(--warn); }
+
+  /* Nesting / orientation map */
+  .nest { margin-top: 22px; border: 1px solid var(--border); border-radius: 12px; overflow: hidden; background: var(--surface); }
+  .nrow { display: flex; align-items: center; gap: 11px; padding: 13px 18px; border-top: 1px solid var(--border); }
+  .nrow:first-child { border-top: none; }
+  .nrow .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; background: var(--dc, var(--muted)); }
+  .nrow .nm { font-weight: 650; font-size: 15px; }
+  .nrow .ds { color: var(--muted); font-size: 13.5px; }
+  .nrow.l0 { --dc: var(--muted); }
+  .nrow.l1 { --dc: var(--ink-soft); }
+  .nrow.l2 { --dc: var(--sync); background: var(--sync-soft); }
+  .nrow.l3 { --dc: var(--accent); }
+  .nrow.l4 { --dc: var(--passive); }
+  .nrow .nm .you { font-family: var(--mono); font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--sync); background: color-mix(in srgb, var(--sync) 14%, transparent); padding: 1.5px 7px; border-radius: 5px; margin-left: 8px; vertical-align: middle; }
+  .crosscut { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; align-items: baseline; }
+  .crosscut .lead { font-size: 13.5px; color: var(--muted); }
+  .crosscut .cc { font-size: 13px; border: 1px dashed var(--border-strong); border-radius: 8px; padding: 4px 11px; background: var(--surface-2); }
+  .actions { list-style: none; padding: 0; margin: 20px 0 0; display: grid; gap: 9px; }
+  .actions li { display: flex; gap: 12px; align-items: baseline; font-size: 14.5px; }
+  .actions li b { color: var(--ink); font-weight: 650; }
+  .actions li::before { content: "▸"; color: var(--accent); font-size: 12px; flex: none; }
+
+  /* Worked field examples */
+  .examples { display: grid; gap: 14px; margin-top: 22px; }
+  .ex { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 18px 20px 20px; }
+  .ex-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 3px; }
+  .ex-head h4 { margin: 0; font-size: 16px; font-weight: 650; }
+  .ex-head .src { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+  .ex > .fills { font-size: 14px; color: var(--ink-soft); margin: 0 0 15px; max-width: 64ch; }
+  .cases { display: grid; gap: 11px; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); }
+  .case { background: var(--surface-2); border: 1px solid var(--border); border-radius: 9px; padding: 12px 14px 13px; }
+  .case .who { font-family: var(--mono); font-size: 12px; color: var(--accent); margin: 0 0 9px; word-break: break-word; }
+  .kv { display: flex; align-items: baseline; gap: 8px; font-size: 13px; padding: 3.5px 0; border-top: 1px dotted var(--border); }
+  .kv:first-of-type { border-top: none; }
+  .kv .k { font-family: var(--mono); color: var(--ink); font-weight: 600; }
+  .kv .t { color: var(--muted); flex: 1; }
+  .tag { font-size: 10.5px; font-family: var(--mono); text-transform: uppercase; letter-spacing: 0.05em; padding: 1.5px 6px; border-radius: 5px; white-space: nowrap; }
+  .tag.req { color: var(--warn); background: var(--warn-soft); }
+  .tag.opt { color: var(--muted); background: var(--ink-mute); }
+  .case .note { font-size: 13px; color: var(--ink-soft); margin: 0; line-height: 1.5; }
+  .case .note b { color: var(--ink); font-weight: 600; }
+  .codes { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 9px; }
+  .code { font-family: var(--mono); font-size: 11.5px; padding: 2px 7px; border-radius: 5px; }
+  .code.ok { color: var(--good); background: color-mix(in srgb, var(--good) 12%, transparent); }
+  .code.bad { color: var(--warn); background: var(--warn-soft); }
+  .state { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-family: var(--mono); font-weight: 600; padding: 3px 9px; border-radius: 6px; margin-bottom: 9px; }
+  .state.public { color: var(--warn); background: var(--warn-soft); }
+  .state.protected { color: var(--good); background: color-mix(in srgb, var(--good) 12%, transparent); }
+
+  .callout { background: var(--surface); border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: 10px; padding: 18px 20px; margin: 18px 0; font-size: 15px; }
+  .callout h4 { margin: 0 0 6px; font-size: 15px; font-weight: 650; }
+  .callout p { margin: 0; font-size: 14.5px; color: var(--ink-soft); }
+
+  /* Flow strip */
+  .flowstrip { display: flex; align-items: stretch; gap: 0; margin: 24px 0 8px; border: 1px solid var(--border); border-radius: 12px; overflow: hidden; background: var(--surface); }
+  .flowstrip .cell { padding: 18px 20px; flex: 1; min-width: 0; }
+  .flowstrip .cell + .cell { border-left: 1px solid var(--border); }
+  .flowstrip .lbl { font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); margin: 0 0 6px; }
+  .flowstrip .val { font-size: 14px; margin: 0; color: var(--ink-soft); }
+  .flowstrip .val b { color: var(--ink); font-weight: 650; display: block; font-size: 15px; margin-bottom: 2px; }
+  .flowstrip .cell.entry { background: var(--sync-soft); }
+  .flowstrip .cell.flow { background: var(--accent-soft); }
+  .arrow { align-self: center; padding: 0 2px; color: var(--accent); font-family: var(--mono); font-size: 18px; }
+
+  ol.realities { list-style: none; counter-reset: r; padding: 0; margin: 22px 0 0; display: grid; gap: 14px; }
+  ol.realities li { counter-increment: r; display: grid; grid-template-columns: 40px 1fr; gap: 4px 16px; align-items: start; }
+  ol.realities li::before { content: counter(r, decimal-leading-zero); grid-row: span 2; font-family: var(--mono); font-size: 13px; color: var(--accent); font-weight: 600; background: var(--accent-soft); border-radius: 8px; height: 34px; width: 34px; display: flex; align-items: center; justify-content: center; }
+  ol.realities li h4 { margin: 4px 0 2px; font-size: 15.5px; font-weight: 650; }
+  ol.realities li p { margin: 0; font-size: 14.5px; color: var(--ink-soft); }
+
+  .xlate { width: 100%; border-collapse: collapse; margin-top: 18px; font-size: 14px; }
+  .xlate th, .xlate td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  .xlate thead th { font-family: var(--mono); font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); }
+  .xlate td:first-child { font-family: var(--mono); font-size: 12.5px; color: var(--async); white-space: nowrap; }
+  .xlate td:nth-child(2) { font-weight: 600; }
+
+  .foot { margin-top: 70px; padding-top: 22px; border-top: 1px solid var(--border); font-size: 13px; color: var(--muted); font-family: var(--mono); }
+
+  @media (max-width: 620px) {
+    .fieldtable td:first-child { white-space: normal; }
+    ol.realities li { grid-template-columns: 34px 1fr; }
+    .flowstrip { flex-direction: column; }
+    .flowstrip .cell + .cell { border-left: none; border-top: 1px solid var(--border); }
+    .arrow { transform: rotate(90deg); padding: 4px 0; }
+  }
+</style>
+
+<div class="wrap">
+
+  <p class="eyebrow">Design Brief · Klauro</p>
+  <h1>Entry points: every way into a running system</h1>
+  <p class="lede">A plain-language guide to a body of data Klauro produces, written so you can decide how and where to present it. It describes what the information <em>is</em> and the shape it comes in — the presentation is yours to design.</p>
+  <div class="meta-row">
+    <span>Audience: design</span>
+    <span>Scope: one deployable at a time</span>
+    <span>Tests: out of scope</span>
+    <span>Numbers: from a live analysis</span>
+  </div>
+
+  <!-- WHAT THIS IS -->
+  <div class="section">
+    <p class="kicker">Start here</p>
+    <h2>What we're describing</h2>
+    <p>Klauro analyzes a codebase and, among many things, finds every <strong>entry point</strong> — every place where something <em>outside</em> a running program can reach in and make it do work. One quick way to picture it: if a deployable (one independently running piece of software — an API server, a web app, a background worker) is a building, the entry points are the doors. That's the last we'll lean on the metaphor — from here we just call them <strong>entry points</strong>.</p>
+    <p>A system typically has more entry points than people expect, and they're not all the same <em>kind</em>. Some you knock on and wait for an answer. Some are mail slots — you drop something off and walk away. Some trip on their own when the environment changes. The job of this information is to make that full set <strong>legible at a glance</strong> — how many, of what kinds, how they're reached, whether they're protected, and what each one sets in motion.</p>
+    <div class="callout">
+      <h4>Who looks at this, and why</h4>
+      <p>An engineer or architect new to a system asking <em>"how is this thing reached — what's its usage surface?"</em> · A security reviewer asking <em>"what's exposed to the public versus protected behind a login?"</em> · Anyone gauging integration points or blast radius before making a change. The through-line: <strong>the surface area of contact between this system and the outside world.</strong></p>
+    </div>
+    <p>One thing to hold onto: this is always <strong>per deployable</strong>. A web app's entry points are pages and button clicks; an API server's are tool calls and messages. The same system can contain both, and they look nothing alike. The viewer is always looking at <em>one</em> deployable, with the ability to switch to another.</p>
+  </div>
+
+  <!-- THE FAMILIES -->
+  <div class="section">
+    <p class="kicker">The mental model</p>
+    <h2>Three families of entry point</h2>
+    <p>This is the most important structure in the dataset. Every entry point falls into one of three families based on <em>how the interaction behaves</em> — a split Klauro already computes. The counts are from a real analysis, tests excluded.</p>
+
+    <div class="families">
+      <div class="fam sync">
+        <div class="fam-head"><h3>Request &amp; wait</h3><span class="fam-tag">Synchronous</span></div>
+        <div class="fam-metaphor">The front counter — someone asks, and waits for the answer.</div>
+        <p>A caller sends a request and holds the line until the system responds. The most familiar kind, and usually the one people mean by "the API."</p>
+        <div class="fam-channels">
+          <span class="chip"><b>495</b> UI interactions</span>
+          <span class="chip"><b>207</b> Tool calls (MCP)</span>
+          <span class="chip"><b>10</b> Command-line commands</span>
+          <span class="chip"><b>3</b> Web / HTTP endpoints</span>
+        </div>
+        <p class="fam-also"><b>Also in this family:</b> live socket connections (WebSocket), query APIs (GraphQL, gRPC), pages &amp; routes.</p>
+      </div>
+
+      <div class="fam async">
+        <div class="fam-head"><h3>Send &amp; forget</h3><span class="fam-tag">Asynchronous</span></div>
+        <div class="fam-metaphor">The mail slot and the alarm clock — something arrives; the system reacts; nobody's on the line.</div>
+        <p>A message, event, or timer arrives and the system does work in response, but there's no caller waiting for a reply. This is how systems talk to <em>each other</em> and to schedules.</p>
+        <div class="fam-channels">
+          <span class="chip"><b>228</b> Messages / streams</span>
+          <span class="chip"><b>1</b> Scheduled jobs</span>
+        </div>
+        <p class="fam-also"><b>Also in this family:</b> published events &amp; topics, incoming webhooks.</p>
+      </div>
+
+      <div class="fam passive">
+        <div class="fam-head"><h3>Reacts on its own</h3><span class="fam-tag">Passive</span></div>
+        <div class="fam-metaphor">The motion-sensor lights — no one calls them; the environment trips them.</div>
+        <p>Nothing external "calls" these. The system's own runtime or operating environment triggers them — the app starting up or shutting down, a file appearing in a watched folder, a hardware signal. Easy to overlook, which is exactly why surfacing them earns its keep.</p>
+        <p class="fam-also"><b>In this family:</b> startup &amp; shutdown lifecycle, file watchers, hardware / timer signals.</p>
+      </div>
+    </div>
+    <p style="margin-top:22px">The mix <em>is</em> the system's character: a heavy tool-call surface says "built for AI agents"; a heavy message surface says "event-driven backend"; a heavy pages-and-clicks surface says "user-facing web app." A reviewer reads the shape before reading a single row.</p>
+  </div>
+
+  <!-- COMPLETE TAXONOMY -->
+  <div class="section">
+    <p class="kicker">The full vocabulary</p>
+    <h2>Every kind of entry point</h2>
+    <p>The three families hold a <strong>fixed, complete set</strong> of kinds — Klauro recognizes them all, even ones a given system won't have. Here's the whole vocabulary, so nothing you might meet is a surprise. Any one deployable uses a handful; the rest simply read as zero. You don't need a distinct treatment for all of these on day one — but you should know the full list exists before deciding how to name and mark them.</p>
+
+    <div class="taxo">
+      <div class="taxo-group sync">
+        <div class="th"><b>Request &amp; wait</b><span class="fam-tag">Synchronous</span></div>
+        <div class="taxo-item"><span class="n">Web / HTTP endpoint</span><span class="d">A URL the system answers, with a verb (GET, POST…).</span></div>
+        <div class="taxo-item"><span class="n">API operation</span><span class="d">A declared API call, often one of many under a shared spec.</span></div>
+        <div class="taxo-item"><span class="n">Web route / page</span><span class="d">A page or route a browser loads directly.</span></div>
+        <div class="taxo-item"><span class="n">GraphQL query</span><span class="d">A single GraphQL field or mutation.</span></div>
+        <div class="taxo-item"><span class="n">gRPC / RPC method</span><span class="d">A remote procedure call — a method, not a web path.</span></div>
+        <div class="taxo-item"><span class="n">Live socket (WebSocket)</span><span class="d">A persistent two-way connection held open.</span></div>
+        <div class="taxo-item"><span class="n">Command-line command</span><span class="d">A subcommand run in a terminal.</span></div>
+        <div class="taxo-item"><span class="n">Desktop app command</span><span class="d">A command a desktop UI calls into its own backend.</span></div>
+        <div class="taxo-item"><span class="n">In-app message (IPC)</span><span class="d">A call from a desktop UI to its background process.</span></div>
+        <div class="taxo-item"><span class="n">UI interaction</span><span class="d">A button or form handler in a web app. (See the note below.)</span></div>
+      </div>
+
+      <div class="taxo-group async">
+        <div class="th"><b>Send &amp; forget</b><span class="fam-tag">Asynchronous</span></div>
+        <div class="taxo-item"><span class="n">Message / queue</span><span class="d">An item pulled from a queue and handled.</span></div>
+        <div class="taxo-item"><span class="n">Pub/sub topic</span><span class="d">A subscription to a broadcast topic.</span></div>
+        <div class="taxo-item"><span class="n">Event stream</span><span class="d">A handler on a continuous stream of records.</span></div>
+        <div class="taxo-item"><span class="n">Published event</span><span class="d">An event the system emits or reacts to internally.</span></div>
+        <div class="taxo-item"><span class="n">Incoming webhook</span><span class="d">An HTTP callback another service posts to you.</span></div>
+        <div class="taxo-item"><span class="n">Scheduled job</span><span class="d">A timed, recurring trigger (a cron schedule).</span></div>
+        <div class="taxo-item"><span class="n">Pipeline task / run</span><span class="d">A data-pipeline step, or a whole pipeline run.</span></div>
+      </div>
+
+      <div class="taxo-group passive">
+        <div class="th"><b>Reacts on its own</b><span class="fam-tag">Passive</span></div>
+        <div class="taxo-item"><span class="n">Startup / shutdown</span><span class="d">Runs as the app boots or stops.</span></div>
+        <div class="taxo-item"><span class="n">Lifecycle hook</span><span class="d">Runs at a defined moment in the app's life.</span></div>
+        <div class="taxo-item"><span class="n">File watcher</span><span class="d">Fires when a file appears or changes.</span></div>
+        <div class="taxo-item"><span class="n">Hardware interrupt</span><span class="d">A timer or hardware signal (embedded systems).</span></div>
+        <div class="taxo-item"><span class="n">Driver hook</span><span class="d">A kernel or driver callback (embedded systems).</span></div>
+      </div>
+
+      <div class="taxo-group special">
+        <div class="th"><b>Specialized</b><span class="fam-tag">Data / ML</span></div>
+        <div class="taxo-item"><span class="n">ML training entry</span><span class="d">The start of a model training loop. Rare outside ML systems.</span></div>
+        <div class="taxo-item"><span class="n">Notebook cell</span><span class="d">An ordered cell in a data notebook. Rare outside data work.</span></div>
+      </div>
+    </div>
+    <div class="callout">
+      <h4>One kind lives in two families</h4>
+      <p>An <em>event</em> can be either: a UI click is request-and-wait; a published or consumed event is send-and-forget. Context decides which family it belongs to — worth knowing if you build anything that keys off the family.</p>
+    </div>
+  </div>
+
+  <!-- EVERY ENTRY POINT OPENS A FLOW -->
+  <div class="section">
+    <p class="kicker">The key relationship</p>
+    <h2>Every entry point opens into a flow</h2>
+    <p>An entry point is not the end of the story — it's the <em>beginning</em> of one. The moment an entry point fires, the system runs a <strong>flow</strong>: the ordered sequence of steps that entry point sets in motion. There is one flow behind every entry point, and it's the answer to the question a list of entry points immediately provokes — <em>"okay, but what does it actually do?"</em></p>
+    <p>So the entry point and its flow are a pair: the entry point is <strong>how you get in</strong>, the flow is <strong>what happens next</strong>. The natural interaction is to move from one to the other — select an entry point, and drop into the flow it triggers.</p>
+
+    <div class="flowstrip">
+      <div class="cell entry">
+        <p class="lbl">Entry point</p>
+        <p class="val"><b>POST /v1/analyze</b>A web request arrives, protected by an access token.</p>
+      </div>
+      <div class="arrow">→</div>
+      <div class="cell flow">
+        <p class="lbl">The flow it opens</p>
+        <p class="val"><b>Analyze a codebase</b>Validate the request → load the workspace → run the analysis → save the result.</p>
+      </div>
+    </div>
+    <p style="margin-top:8px">Each flow carries its own detail, ready for a deeper view: what it <strong>takes in</strong>, the <strong>data it touches</strong>, the <strong>outside services it calls</strong> along the way, what it <strong>returns</strong>, and where it <strong>ends</strong>. That richness lives on the flow, not the entry point — so however this is presented, leave a door open from each entry point into its flow rather than trying to show everything in one place.</p>
+    <div class="callout">
+      <h4>Why this matters for the design</h4>
+      <p>It means an entry-point view is a <em>starting surface</em>, not a terminal one. The reader lands here to get oriented — the counts, the kinds, what's protected — then follows the thread inward to a specific flow. Designing the step <em>from</em> entry point <em>into</em> flow is as important as the catalog itself.</p>
+    </div>
+  </div>
+
+  <!-- CAPABILITIES -->
+  <div class="section">
+    <p class="kicker">One rung higher</p>
+    <h2>Most entry points ladder up to a capability — but not cleanly</h2>
+    <p>There's one more link, and it's the subtlest one in the brief. If a flow is <em>what happens</em> when an entry point fires, a <strong>capability</strong> is <em>why it exists</em> — the business thing the system does. Klauro names these too (in this analysis: "Analyze a codebase," "Detect patterns," "Trace and monitor"). So the ladder runs entry point → flow → capability:</p>
+
+    <div class="ladder">
+      <div class="rung c1"><p class="lbl">Entry point</p><p class="v">POST /v1/analyze</p><p class="s">How you get in</p></div>
+      <div class="arrow">→</div>
+      <div class="rung c2"><p class="lbl">Flow</p><p class="v">Validate → load → analyze → save</p><p class="s">What happens</p></div>
+      <div class="arrow">→</div>
+      <div class="rung c3"><p class="lbl">Capability</p><p class="v">Analyze a codebase</p><p class="s">Why it exists</p></div>
+    </div>
+
+    <p style="margin-top:8px">But that last link is <strong>not one-to-one, and not universal</strong> — this is the part to design carefully around, because a naive "each entry point belongs to one capability" will misrepresent the system. Three things are true:</p>
+    <ol class="realities" style="margin-top:10px">
+      <li>
+        <h4>It's many-to-many, with a role each way</h4>
+        <p>One capability is realized by many flows; one flow can serve several capabilities. And a flow carries a <em>role</em> for each tie — it's the <strong>primary</strong> flow that realizes one capability, and merely <strong>supporting</strong> for others.</p>
+      </li>
+      <li>
+        <h4>Cross-cutting entry points belong to (almost) everything</h4>
+        <p><strong>Authentication is the clearest case</strong> — the auth flow isn't the point of any single capability; it <em>supports</em> nearly all of them. Same for logging, validation, rate-limiting. These recur across many capabilities by design, so an entry point can legitimately map to a long list, not one.</p>
+      </li>
+      <li>
+        <h4>Some entry points serve no capability at all</h4>
+        <p>Build and deploy scripts, health checks, internal plumbing — real entry points whose flow has a role of <strong>infrastructure</strong>. They ladder up to nothing on the business side, and that's correct, not a gap.</p>
+      </li>
+    </ol>
+
+    <p style="margin-top:16px">With that understood, capabilities unlock a <strong>second way to organize the same entry points</strong> — by <em>purpose</em> instead of by <em>mechanism</em>. Rather than "here are 207 tool calls," it becomes: "the <em>Analyze a codebase</em> capability can be triggered five ways." That's usually the question a person actually arrives with — <em>"how do I make it do X?"</em> — and it surfaces health signals a flat list can't: a capability with <strong>no</strong> entry point (built but untriggerable), or a capability reachable only <strong>one</strong> way (a single point of entry).</p>
+    <div class="callout">
+      <h4>What this means for a by-capability view</h4>
+      <p>Design it to hold three shapes at once: an entry point that belongs to <strong>one</strong> capability, one that belongs to <strong>many</strong> (auth, health), and one that belongs to <strong>none</strong> (infrastructure). A layout that assumes a tidy one-to-one will break on the first cross-cutting entry point — and every real system has them.</p>
+    </div>
+  </div>
+
+  <!-- PER ITEM DATA -->
+  <div class="section">
+    <p class="kicker">Grain of the data</p>
+    <h2>What we know about a single entry point</h2>
+    <p>For each individual entry point, this is the information available to show. Some of it is for anyone; some is for a technical reader who wants to jump into the code. You can choose what to reveal, to whom, and when.</p>
+    <div class="tablewrap">
+      <table class="fieldtable">
+        <thead><tr><th>What it is</th><th>What it tells the reader</th></tr></thead>
+        <tbody>
+          <tr><td>Name &amp; description<small>name · description</small></td><td>A human-readable label and a plain sentence on what this entry point is for. The primary thing a person reads.</td></tr>
+          <tr><td>Its address<small>trigger</small></td><td>How you actually reach it: a web address and verb (<span class="term">POST /v1/analyze</span>), a tool name, a command, a schedule (<em>"every night at 2am"</em>), or the name of an event it listens for.</td></tr>
+          <tr><td>Whether it's protected<small>security</small></td><td>Does reaching it require a login or a permission, or is it open to anyone — and who's allowed. The heart of the security lens.</td></tr>
+          <tr><td>What it expects<small>input</small></td><td>The shape of what you send in, and whether the system checks it before acting.</td></tr>
+          <tr><td>What it returns<small>output</small></td><td>The shape of the response and its status — for request-and-wait entry points.</td></tr>
+          <tr><td>The flow it opens<small>flow</small></td><td>The behavior it triggers — the way through to "what actually happens." (See the section above.)</td></tr>
+          <tr><td>Where it lives in code<small>handler · file · line</small></td><td>The exact file and line the entry point leads to. For a developer to jump straight there; hide it from non-technical views.</td></tr>
+          <tr><td>Kind &amp; how we found it<small>type · source</small></td><td>Which channel it is and how it was detected. Mostly useful for grouping, not for reading.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- WHAT FILLS THE FIELDS -->
+  <div class="section">
+    <p class="kicker">Made concrete</p>
+    <h2>What those fields actually contain</h2>
+    <p>Several fields above are abstract until you see them filled in — and the important thing is that <strong>their content changes with the kind of entry point</strong>. A web endpoint's inputs are body fields with types; a command's are flags; a scheduled job has none. Here's the real content to expect, so you know what any container for these has to hold. (Examples use Klauro's own API.)</p>
+
+    <div class="examples">
+
+      <!-- INPUT -->
+      <div class="ex">
+        <div class="ex-head"><h4>What it expects</h4><span class="src">the “input”</span></div>
+        <p class="fills">Usually a list of named inputs, each with a type and a required-or-optional marker. For some kinds it's command flags or a message payload instead — and for others, nothing at all. A field's type can be a plain value (text, number) <em>or</em> a named type with its own definition — the same range as returns, below. Your container needs to hold a short list of “name · type · required?”, read well when the list is empty, and let a named type link deeper.</p>
+        <div class="cases">
+          <div class="case">
+            <p class="who">Web endpoint · POST /v1/analyze</p>
+            <div class="kv"><span class="k">project_path</span><span class="t">text</span><span class="tag req">required</span></div>
+            <div class="kv"><span class="k">snapshot</span><span class="t">file bundle</span><span class="tag req">required</span></div>
+            <div class="kv"><span class="k">branch</span><span class="t">text</span><span class="tag opt">optional</span></div>
+          </div>
+          <div class="case">
+            <p class="who">Command · klauro analyze</p>
+            <div class="kv"><span class="k">path</span><span class="t">text</span><span class="tag req">required</span></div>
+            <div class="kv"><span class="k">--with-ai</span><span class="t">on / off</span><span class="tag opt">optional</span></div>
+            <div class="kv"><span class="k">--budget</span><span class="t">number</span><span class="tag opt">optional</span></div>
+          </div>
+          <div class="case">
+            <p class="who">Scheduled job · nightly refresh</p>
+            <p class="note"><b>Nothing.</b> It takes no input — it just fires on its timer. Many async and passive entry points look like this; the empty state is a real, common case.</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- OUTPUT -->
+      <div class="ex">
+        <div class="ex-head"><h4>What it returns</h4><span class="src">the “output”</span></div>
+        <p class="fills">This one has the most range, so it's worth spelling out. A return value can be a <strong>named type</strong> — a class or interface that has its own definition elsewhere, which means the return can be a <em>link deeper</em>, not just a label. Or a loose object with inline fields. Or a plain value. Or a list. Or one of several things. Or nothing at all. On top of that, request-and-wait entry points also carry <strong>outcome codes</strong> (the success and the failures). Your container has to hold all of these gracefully — and treat a named type as something the reader can follow, the way they follow a flow.</p>
+        <div class="cases">
+          <div class="case">
+            <p class="who">The forms a return can take</p>
+            <div class="kv"><span class="k">Named type</span><span class="t">a class or interface — e.g. <b>AnalysisResult</b> — with its own definition to open</span></div>
+            <div class="kv"><span class="k">Object shape</span><span class="t">inline fields — { stdout: text, code: number }</span></div>
+            <div class="kv"><span class="k">Plain value</span><span class="t">true / false, a number, a piece of text</span></div>
+            <div class="kv"><span class="k">A list</span><span class="t">many of any of the above</span></div>
+            <div class="kv"><span class="k">One of several</span><span class="t">a result <em>or</em> nothing; one of a few named types</span></div>
+            <div class="kv"><span class="k">Nothing</span><span class="t">void — it returns no value (common for send-and-forget)</span></div>
+          </div>
+          <div class="case">
+            <p class="who">Web endpoint · POST /v1/analyze</p>
+            <div class="kv"><span class="k">Returns</span><span class="t">an <b>AnalysisResult</b> — a named type you can open</span></div>
+            <p class="lbl" style="font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin:12px 0 0">Outcome codes</p>
+            <div class="codes">
+              <span class="code ok">202 Accepted</span>
+              <span class="code bad">401 Not signed in</span>
+              <span class="code bad">400 Bad request</span>
+            </div>
+            <p class="note" style="margin-top:11px">A message handler, by contrast, returns <b>nothing</b> — its result is the work it does. You see that by following its flow.</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- SECURITY -->
+      <div class="ex">
+        <div class="ex-head"><h4>Whether it's protected</h4><span class="src">the “security”</span></div>
+        <p class="fills">This is more layered than a lock icon. First the plain state — <strong>open to anyone</strong> or <strong>protected</strong>. Then, when protected, four separate things, and an entry point may carry any mix: <strong>how you prove who you are</strong> (the method — an access token / JWT, a login session, an API key, a sign-in provider, a client certificate); <strong>who's allowed</strong> (the roles — the RBAC layer); <strong>what permissions, scopes, or claims</strong> a caller must carry; and <strong>any limits</strong> (a rate cap). Your container needs an at-a-glance state, plus a home for each layer when it's present.</p>
+        <div class="cases">
+          <div class="case">
+            <p class="who">GET /health</p>
+            <span class="state public">● Open to anyone</span>
+            <p class="note">Public — no login needed. Anyone who can reach the system can call it.</p>
+          </div>
+          <div class="case">
+            <p class="who">POST /v1/analyze</p>
+            <span class="state protected">● Protected</span>
+            <div class="kv"><span class="k">Method</span><span class="t">access token (JWT)</span></div>
+            <div class="kv"><span class="k">Role</span><span class="t">workspace member</span></div>
+            <div class="kv"><span class="k">Must have</span><span class="t">the claim “owns this project”</span></div>
+            <div class="kv"><span class="k">Limit</span><span class="t">capped request rate</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ADDRESS -->
+      <div class="ex">
+        <div class="ex-head"><h4>Its address</h4><span class="src">the “trigger”</span></div>
+        <p class="fills">The one other field whose content shifts entirely with the kind — there's no single format. It's a verb and a web path, or a tool name, or a full command line, or a schedule in words, or the name of an event. Whatever holds it can't assume a fixed shape.</p>
+        <div class="cases">
+          <div class="case">
+            <div class="kv"><span class="k">Web endpoint</span><span class="t">POST /v1/analyze</span></div>
+            <div class="kv"><span class="k">Tool call</span><span class="t">analyze_codebase</span></div>
+            <div class="kv"><span class="k">Command</span><span class="t">klauro analyze ./project --with-ai</span></div>
+          </div>
+          <div class="case">
+            <div class="kv"><span class="k">Scheduled</span><span class="t">every day at 02:00 UTC</span></div>
+            <div class="kv"><span class="k">Message</span><span class="t">on event “analysis.completed”</span></div>
+            <div class="kv"><span class="k">File watcher</span><span class="t">when a file lands in /uploads</span></div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <div class="callout">
+      <h4>Security may deserve its own view — worth settling early</h4>
+      <p>Security is the one dimension rich and cross-cutting enough that it might not belong <em>inside</em> the entry-point view at all. Beyond the per-entry summary above, Klauro computes it at the system level: the <strong>boundaries</strong> a request crosses (an "authentication boundary," enforced by middleware), whether each is <strong>actually enforced or only assumed</strong>, and — the part a reviewer cares most about — a list of <strong>sensitive operations left unprotected</strong>. That's a whole story of its own. A reasonable shape: a dedicated security view that aggregates boundaries, enforcement, roles, and the unprotected-surface risk list, while the entry-point view keeps a compact per-entry summary that links into it. Whether security lives here, there, or both is a real fork to decide up front.</p>
+    </div>
+  </div>
+
+  <!-- TELEMETRY -->
+  <div class="section">
+    <p class="kicker">The live layer</p>
+    <h2>What we know once it's running</h2>
+    <p>Everything so far is read from the code without running it — static. But an entry point also has a life <em>at runtime</em>, and Klauro can capture it: how often it's actually called, how often it fails, and how fast it responds. This is a different kind of data — streamed from the running system — and it turns the catalog from a map into a <strong>health view</strong>. It's the one part of the picture that's about the present moment, not the code.</p>
+    <p>For a single entry point, the runtime picture looks like this:</p>
+    <div class="tele">
+      <div class="t"><p class="k">Traffic</p><p class="v">12.4k</p><p class="s">calls in the last day</p></div>
+      <div class="t alert"><p class="k">Errors</p><p class="v">2.1<small>%</small></p><p class="s">share of calls that failed</p></div>
+      <div class="t"><p class="k">Typical speed</p><p class="v">40<small>ms</small></p><p class="s">median response (p50)</p></div>
+      <div class="t"><p class="k">Worst case</p><p class="v">210<small>ms</small></p><p class="s">slow tail (p95 / p99)</p></div>
+    </div>
+    <p style="margin-top:8px">Small as it is, that changes what the view can answer:</p>
+    <ul class="q" style="margin-top:6px">
+      <li><strong>Live vs. dormant</strong> — which entry points are actually used, and which are built but never called (dead weight, or a security surface no one's watching).</li>
+      <li><strong>The hot paths</strong> — the handful of entry points carrying most of the traffic, worth the most care.</li>
+      <li><strong>The trouble spots</strong> — high error rate or a slow tail, the ones to look at first.</li>
+    </ul>
+    <div class="callout">
+      <h4>It's only there when the system is reporting</h4>
+      <p>This data exists only for a deployment that's <em>running and instrumented</em> — a system Klauro has analyzed but that isn't sending telemetry shows none of it. So treat the live layer as <strong>present sometimes, absent others</strong>: the static picture always stands on its own, and the runtime numbers enrich it when they're there. Design the entry-point row to look complete without them, and better with them.</p>
+    </div>
+  </div>
+
+  <!-- OTHER DIMENSIONS -->
+  <div class="section">
+    <p class="kicker">More ways to cut it</p>
+    <h2>Other dimensions you could organize by</h2>
+    <p>The three families and the capability view are the two big organizing ideas, but the same entry points carry several other dimensions. Any one could be a grouping, a filter, a sort, or a color. These are the ones grounded in real data — a few need data we're still filling in, marked accordingly.</p>
+    <div class="dims">
+      <div class="dim"><span class="n">Protected vs. public</span><span class="d">Behind a login versus open to anyone — the security lens. The most compelling cut for a reviewer.</span></div>
+      <div class="dim"><span class="n">External vs. internal</span><span class="d">Reachable from outside the system, or only by sibling deployables. This is the true "attack surface" — what the outside world can actually touch.</span></div>
+      <div class="dim"><span class="n">Used vs. dormant<span class="flag">needs data</span></span><span class="d">How often each entry point is actually hit, from live traffic — the live doors, the dead ones, the error-prone ones. Turns a static catalog into a health view.</span></div>
+      <div class="dim"><span class="n">Registration surface</span><span class="d">Klauro already pre-groups entry points that are wired up the same way (e.g. "the tool-call surface") — a ready-made grouping you can lean on.</span></div>
+      <div class="dim"><span class="n">Resource / domain</span><span class="d">The noun a set of endpoints clusters around — everything under "projects," everything under "workspaces." A familiar way to browse an API.</span></div>
+      <div class="dim"><span class="n">First-party vs. framework</span><span class="d">Did a developer write this, or is it a framework default (a health check, a lifecycle hook)? Separates the signal from the boilerplate.</span></div>
+      <div class="dim"><span class="n">Reach / blast radius</span><span class="d">How much of the system sits behind an entry point — which doors open onto the most.</span></div>
+    </div>
+    <div class="callout">
+      <h4>The mirror image: exit points</h4>
+      <p>Entry points are how the system is <em>reached</em>. The same analysis also finds <strong>exit points</strong> — how the deployable reaches <em>out</em>: to databases, other services, message buses, caches. In this analysis there are <strong>1,227</strong> of them (802 database, 331 libraries/SDKs, 58 outbound APIs, 20 messages). Ways-in and ways-out together are the <em>complete</em> surface of contact between this system and everything around it. Whether that belongs on the same view or a neighbouring one is your call — but it's worth knowing the other half exists.</p>
+    </div>
+  </div>
+
+  <!-- DATA SHAPE -->
+  <div class="section">
+    <p class="kicker">Design around these</p>
+    <h2>The shape of the real data</h2>
+    <p>Five facts about how this data actually looks — the ones most likely to make a naive treatment fall apart.</p>
+    <ol class="realities">
+      <li>
+        <h4>The count ranges wildly</h4>
+        <p>A small service might have a dozen entry points; a large one, a couple of thousand. This analysis has <strong>737</strong> (excluding tests). The design has to feel right at both a dozen and two thousand — which usually means summarize-first, with search and grouping to reach any single one, not a scroll of everything.</p>
+      </li>
+      <li>
+        <h4>The distribution is extremely lopsided</h4>
+        <p>A couple of channels hold hundreds of entry points; many hold one or two. If every category gets equal visual weight the result feels wrong — the big surfaces need room to breathe and the long tail needs a compact treatment. A one-item group shouldn't claim the same real estate as a two-hundred-item one.</p>
+      </li>
+      <li>
+        <h4>The names aren't always friendly</h4>
+        <p>Roughly a third of entry points are labeled with raw code names — <span class="term">main</span>, <span class="term">handleRequest</span>, <span class="term">do_thing</span> — not clean phrases like "Analyze a codebase." Your treatment of the name has to hold a tidy sentence <em>and</em> a terse code token without looking broken, and probably show the address right alongside so a cryptic name isn't the only handle.</p>
+      </li>
+      <li>
+        <h4>Detail varies by kind</h4>
+        <p>A web endpoint naturally carries a rich contract — inputs, outputs, who's allowed. A lifecycle hook carries almost nothing but a name. Whatever you design has to look intentional both when an entry point is detail-rich and when it's a bare label. Plan the sparse case first.</p>
+      </li>
+      <li>
+        <h4>The character shifts hard per deployable</h4>
+        <p>Switch from the web app to the API server and the whole complexion changes — pages-and-clicks become tool-calls-and-messages. This isn't one flat list with a filter; it's a context the viewer stands inside. Switching deployables should feel like changing rooms, not re-sorting a table.</p>
+      </li>
+    </ol>
+    <div class="callout">
+      <h4>Don't forget the in-between states</h4>
+      <p>The happy path — a rich, fully-populated entry point — is the easy case to design. The ones that decide whether this feels solid: a deployable with <strong>no entry points found</strong>; an analysis <strong>still running</strong>; an entry point with only a name and address and <strong>nothing else</strong>; <strong>no telemetry</strong> because the system isn't reporting. Each of these is common, not exceptional. A design that only looks right when everything's present will look broken most of the time.</p>
+    </div>
+  </div>
+
+  <!-- ORIENTATION MAP -->
+  <div class="section">
+    <p class="kicker">The whole picture</p>
+    <h2>How it all fits together</h2>
+    <p>Every piece named in this brief nests inside the next. Seeing the whole structure at once makes the rest easier to hold — and shows where the viewer is standing when they look at entry points.</p>
+    <div class="nest">
+      <div class="nrow l0"><span class="dot"></span><span class="nm">System</span><span class="ds">— the whole product or codebase</span></div>
+      <div class="nrow l1" style="padding-left:34px"><span class="dot"></span><span class="nm">Deployable</span><span class="ds">— one independently running piece (API server, web app, worker)</span></div>
+      <div class="nrow l2" style="padding-left:50px"><span class="dot"></span><span class="nm">Entry point<span class="you">you are here</span></span><span class="ds">— a way in, grouped by family &amp; channel</span></div>
+      <div class="nrow l3" style="padding-left:66px"><span class="dot"></span><span class="nm">Flow</span><span class="ds">— what happens when it fires</span></div>
+      <div class="nrow l4" style="padding-left:82px"><span class="dot"></span><span class="nm">Capability</span><span class="ds">— the purpose it serves (many-to-many)</span></div>
+    </div>
+    <div class="crosscut">
+      <span class="lead">Two things describe every entry point but aren't levels — they cut across:</span>
+      <span class="cc"><strong>Security</strong> — who may enter</span>
+      <span class="cc"><strong>Telemetry</strong> — how it behaves live</span>
+    </div>
+
+    <p style="margin-top:26px"><strong>And what a person does from here.</strong> Worth deciding whether this is a reference to read or a tool to operate — the data supports either. From a single entry point, the natural moves:</p>
+    <ul class="actions">
+      <li><b>Get oriented</b> — read the counts, the families, what's protected, what's live.</li>
+      <li><b>Follow it inward</b> — open the flow it triggers, to see what actually happens.</li>
+      <li><b>Jump to the code</b> — for a technical viewer, straight to the file and line.</li>
+      <li><b>See its purpose</b> — the capability it serves, and what else serves that capability.</li>
+      <li><b>Cross to security</b> — from a protected entry point into the fuller security picture.</li>
+      <li><b>Slice the whole set</b> — group, filter, or sort by any of the dimensions above.</li>
+    </ul>
+  </div>
+
+  <!-- APPENDIX -->
+  <div class="section">
+    <p class="kicker">Reference</p>
+    <h2>Engineer-speak ↔ plain English</h2>
+    <p>If you end up talking with the engineering team, these are the terms they'll use for the things named plainly above. You never need to put these words in front of a user — it's just a decoder ring.</p>
+    <div class="tablewrap">
+      <table class="xlate">
+        <thead><tr><th>They say</th><th>It means</th></tr></thead>
+        <tbody>
+          <tr><td>entry point</td><td>A way into the running system (the subject of this brief)</td></tr>
+          <tr><td>deployable</td><td>One independently running piece of software</td></tr>
+          <tr><td>modality</td><td>The sync / async / passive split — the three families</td></tr>
+          <tr><td>flow</td><td>The sequence of steps one entry point sets in motion</td></tr>
+          <tr><td>capability</td><td>The business purpose a flow serves — the "why"</td></tr>
+          <tr><td>exit point</td><td>A way the system reaches out (database, API, queue) — the mirror of an entry point</td></tr>
+          <tr><td>behavior surface</td><td>A pre-grouped set of entry points wired up the same way</td></tr>
+          <tr><td>trigger</td><td>The address — how an entry point is reached</td></tr>
+          <tr><td>handler</td><td>The code an entry point leads to</td></tr>
+          <tr><td>MCP tool</td><td>A command exposed for AI agents to call</td></tr>
+          <tr><td>HTTP / REST route</td><td>A web address the system answers</td></tr>
+          <tr><td>message / event / topic</td><td>Something that arrives to be reacted to</td></tr>
+          <tr><td>schedule / cron</td><td>A timed, recurring trigger</td></tr>
+          <tr><td>lifecycle</td><td>App startup / shutdown handlers</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <p class="foot">Klauro · Entry-point analysis · Counts from a live CAS analysis, test entry points excluded · Plain-language design handoff</p>
+
+</div>
