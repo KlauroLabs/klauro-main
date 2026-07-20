@@ -269,6 +269,67 @@ export interface ConceptualResponse {
   };
 }
 
+/** One deployable/application row in the workspace's cross-repo topology
+ *  (WAS applications[]). `merged_into` marks a cross-member duplicate whose
+ *  identity was folded into another member's row — that survivor's
+ *  `also_declared_by` carries this row's codebase_id back for provenance.
+ *  `source_das_unit_id` is present only once the owning codebase has
+ *  promoted to a Deployable-Analysis Workspace. */
+export interface WorkspaceApplication {
+  id: string;
+  codebase_id: string;
+  name: string;
+  kind?: string;
+  deployable?: boolean;
+  ports?: string[];
+  source_das_unit_id?: string;
+  merged_into?: string;
+  also_declared_by?: string[];
+  [key: string]: unknown;
+}
+
+export interface WorkspaceRuntimeComponent {
+  id: string;
+  codebase_id: string;
+  application_id: string;
+  name: string;
+  kind?: string;
+  [key: string]: unknown;
+}
+
+export interface WorkspaceRuntimeLink {
+  id: string;
+  codebase_id: string;
+  source_component_id: string;
+  target_component_id: string;
+  kind?: string;
+  evidence?: string[];
+  [key: string]: unknown;
+}
+
+/** Terminal-honest AI narrative state for a workspace analysis. 'ai' = the
+ *  narrative was actually AI-written; anything else means it was NOT, with
+ *  `reason`/`error` saying why — never silently swallowed. */
+export interface WorkspaceEnrichment {
+  status: 'pending' | 'ai' | 'degraded' | 'skipped' | 'error';
+  reason?: string;
+  error?: string;
+  started_at?: string;
+  completed_at?: string;
+}
+
+/** Sidecar lifecycle record for the last reanalyze attempt on this workspace,
+ *  visible even when the served analysis itself is untouched (a failed
+ *  attempt must never be swallowed — see remote-analyzer-service.ts). */
+export interface WorkspaceLastAttempt {
+  state: 'in-progress' | 'succeeded' | 'failed';
+  trigger?: string;
+  started_at?: string;
+  finished_at?: string;
+  duration_ms?: number;
+  reason?: string;
+}
+
 export interface WorkspaceAnalysisResponse {
   status: 'ready' | 'pending' | 'none';
   workspace_id: string;
@@ -276,6 +337,8 @@ export interface WorkspaceAnalysisResponse {
   generated_at?: string;
   member_project_ids?: string[];
   member_project_names?: string[];
+  enrichment?: WorkspaceEnrichment;
+  last_attempt?: WorkspaceLastAttempt;
   analysis?: {
     workspace_narrative?: {
       title?: string;
@@ -304,7 +367,9 @@ export interface WorkspaceAnalysisResponse {
       languages?: string[];
       frameworks?: string[];
     }>;
-    applications?: Array<{ id: string; name?: string; kind?: string; codebase_id?: string }>;
+    applications?: WorkspaceApplication[];
+    runtime_components?: WorkspaceRuntimeComponent[];
+    runtime_links?: WorkspaceRuntimeLink[];
     application_links?: Array<{
       id: string;
       kind?: string;
@@ -328,6 +393,15 @@ export interface WorkspaceAnalysisResponse {
     };
     [key: string]: unknown;
   };
+}
+
+export interface AttachProjectResult {
+  attached: true;
+  already_attached: boolean;
+  project: Project;
+  semantics: 'move';
+  moved_from_workspace_id?: string;
+  was_rebuild: 'scheduled' | 'unchanged';
 }
 
 const configuredBase = import.meta.env.VITE_KLAURO_API_URL as string | undefined;
@@ -436,6 +510,60 @@ export function getProjectAnalysis(token: string, projectId: string): Promise<Pr
 
 export function getWorkspaceAnalysis(token: string, workspaceId: string): Promise<WorkspaceAnalysisResponse> {
   return apiRequest(`/api/workspaces/${encodeURIComponent(workspaceId)}/analysis`, token);
+}
+
+/**
+ * Attach an EXISTING project to this workspace. AccountProject.workspace_id
+ * is a single required foreign key, not a join table, so the server always
+ * treats this as a MOVE out of whatever workspace the project previously
+ * belonged to (see remote-analyzer-service.ts POST /api/workspaces/{id}/projects).
+ * `was_rebuild: 'scheduled'` means the server has kicked off a background WAS
+ * rebuild for this workspace (and the source workspace, if the project moved
+ * from one) — callers should poll getWorkspaceAnalysis until generated_at
+ * advances rather than assuming the move is instantly reflected.
+ */
+export function attachProjectToWorkspace(token: string, workspaceId: string, projectId: string): Promise<AttachProjectResult> {
+  return apiRequest(`/api/workspaces/${encodeURIComponent(workspaceId)}/projects`, token, {
+    method: 'POST',
+    body: JSON.stringify({ project_id: projectId }),
+  });
+}
+
+/**
+ * Kick off a fresh server-side WAS rebuild (with AI narrative enrichment) for
+ * this workspace, from its already-stored member analyses. Answers 202
+ * immediately; the caller must poll getWorkspaceAnalysis for the result.
+ * This is the surface for a "Rebuild analysis" action when enrichment landed
+ * degraded/errored.
+ */
+export function reanalyzeWorkspace(token: string, workspaceId: string): Promise<{ status: 'accepted'; workspace_id: string }> {
+  return apiRequest(`/api/workspaces/${encodeURIComponent(workspaceId)}/reanalyze`, token, {
+    method: 'POST',
+  });
+}
+
+/**
+ * Bounded poll of GET /api/workspaces/{id}/analysis until `generated_at`
+ * advances past `sinceGeneratedAt` (a rebuild landed) or `maxAttempts` is
+ * exhausted (honest "still rebuilding" rather than an infinite spinner).
+ * Returns the last response seen either way.
+ */
+export async function pollWorkspaceAnalysisUntilAdvanced(
+  token: string,
+  workspaceId: string,
+  sinceGeneratedAt: string | undefined,
+  options: { maxAttempts?: number; intervalMs?: number } = {},
+): Promise<WorkspaceAnalysisResponse> {
+  const maxAttempts = options.maxAttempts ?? 20;
+  const intervalMs = options.intervalMs ?? 3000;
+  let last = await getWorkspaceAnalysis(token, workspaceId);
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    if (last.status === 'ready' && last.generated_at && last.generated_at !== sinceGeneratedAt) return last;
+    if (last.last_attempt?.state === 'failed') return last;
+    await new Promise(resolve => setTimeout(resolve, intervalMs));
+    last = await getWorkspaceAnalysis(token, workspaceId);
+  }
+  return last;
 }
 
 export function getProjectConceptual(token: string, projectId: string, target?: string): Promise<ConceptualResponse> {
