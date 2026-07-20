@@ -127,6 +127,29 @@ export interface SystemApplication {
    *  branch on this field to read a deployable's facts, only to decide how
    *  much drilldown depth to trust (spec §4's "silent to the schema"). */
   source_das_unit_id?: string;
+  /** Set when this application row was identified as a duplicate of ANOTHER
+   *  WORKSPACE MEMBER's application row for the same logical app — the
+   *  monorepo + extracted-subrepo shape: a monorepo member's CAS emits an
+   *  application row from an `apps/<name>` (or services/cmd/bin/crates/
+   *  packages/libs) SUBDIR, and a separate workspace member is a standalone
+   *  project uploaded FROM that same subdir with its own, richer CAS. Distinct
+   *  from `bundled_into` (an intra-repo ship-artifact bundling decision made
+   *  by resolveDeployables from ONE codebase's own deployable evidence) — this
+   *  is a cross-member identity merge decided by
+   *  mergeCrossMemberSubdirApplications from two independent MEMBER CASes.
+   *  The id of the SystemApplication (belonging to the OTHER, standalone
+   *  member) this row was merged into; that row's `also_declared_by` carries
+   *  this row's codebase_id for provenance. Never over-merges on name alone —
+   *  requires containment evidence (this row's path_hint tail matches the
+   *  other member's own project-root basename) AND normalized name identity.
+   *  Excluded from workspace-level exposure (shouldExposeInWorkspaceOverview)
+   *  so the same logical app never surfaces as two separate deployables. */
+  merged_into?: string;
+  /** Codebase ids of OTHER workspace members whose application row was folded
+   *  into THIS one via mergeCrossMemberSubdirApplications (evidence union,
+   *  provenance kept — see `merged_into` above). Present only on the
+   *  surviving (standalone-member) row of a cross-member subdir merge. */
+  also_declared_by?: string[];
 }
 
 export type WorkspaceDeployable = SystemApplication;
@@ -964,6 +987,7 @@ export function buildCrossCodebaseSystemGraph(
   const applications = buildApplications(codebases, interfaces, runtimeComponents, repositories);
   resolveDeployables(applications, repositories);
   linkDasUnits(applications, repositories);
+  mergeCrossMemberSubdirApplications(applications, codebases, repositories);
   const distributionUnits = buildWorkspaceDistributionUnits(repositories, applications, codebases);
   const appByIdForLinks = new Map(applications.map(app => [app.id, app]));
   const allLinks = buildLinks(interfaces, appByIdForLinks);
@@ -5580,6 +5604,7 @@ function compactWorkspaceNextMcpCalls<T extends { tool?: string; args?: Record<s
 }
 
 function shouldExposeInWorkspaceOverview(app: SystemApplication, applications: SystemApplication[]): boolean {
+  if (app.merged_into) return false; // cross-member duplicate (monorepo subdir row folded into the standalone member's own row)
   if (isExternalRuntimeDependency(app.name, app.kind)) return false;
   if (isRawInfrastructureOrImageSurface(app)) return false;
   if (!app.deployable && app.kind === 'codebase') return false;
@@ -11875,6 +11900,124 @@ function linkDasUnits(applications: SystemApplication[], repositories: CrossCode
         rootMatches(appRoot, unit.root_path) ||
         unit.member_root_paths.some(memberRoot => rootMatches(appRoot, memberRoot)));
       if (match) app.source_das_unit_id = match.id;
+    }
+  }
+}
+
+/** CROSS-MEMBER IDENTITY MERGE: monorepo + extracted-subrepo co-membership
+ *  (task #66 live shape). One workspace member is a monorepo whose CAS emits
+ *  an application row from an `apps/<name>` (or services/cmd/bin/crates/
+ *  packages/libs) SUBDIR — one row per platform app, named after the subdir.
+ *  A SEPARATE workspace member is a standalone project uploaded FROM that
+ *  same subdir (its own repo root, its own dedicated — typically richer —
+ *  CAS). Without this pass the WAS shows two rows for the same logical app:
+ *  the coarse subdir-derived row from the monorepo and the standalone
+ *  member's own row.
+ *
+ *  Runs AFTER resolveDeployables/linkDasUnits so every application's
+ *  path_hint/bundled_into/source_das_unit_id is already final; purely
+ *  additive/annotating like linkDasUnits — it never removes an application
+ *  from the array (interfaces/runtime components/links keep resolving by
+ *  id), it only marks the monorepo's subdir row `merged_into` the standalone
+ *  member's row so `shouldExposeInWorkspaceOverview` drops it from the
+ *  visible deployables/overview, and folds its evidence into the survivor.
+ *
+ *  Evidence-gated with TWO INDEPENDENT signals, never name-only (per
+ *  SPEC-DEPLOYABLE-DETECTION.md's evidence-first posture):
+ *   (a) normalized name identity — the monorepo's subdir app name (or its
+ *       path_hint tail) matches the candidate member's own application name;
+ *   (b) structural/containment agreement — the monorepo row's path_hint tail
+ *       equals the OTHER member's own project-root basename (the accepted
+ *       "parent row's path tail matches the child's root basename" form of
+ *       signal (b); this is also literally how the candidate member is
+ *       discovered in the first place, so it is never satisfied vacuously by
+ *       name alone — a same-name app in an unrelated member whose root isn't
+ *       named after that subdir never reaches the name check).
+ *  Two members that merely share an app name (e.g. both have an "api") with
+ *  no member rooted at a matching subdir basename never merge. A monorepo
+ *  subdir app with no corresponding standalone member is left untouched.
+ *
+ *  Ownership: the STANDALONE member's row wins (assumed the richer, dedicated
+ *  CAS) — when more than one candidate row in that member matches, the one
+ *  with the most interface/runtime-component/port/evidence signal is picked
+ *  as the survivor, same scoring idiom isWeakerDuplicateApplicationSurface
+ *  uses for same-codebase duplicates. */
+function mergeCrossMemberSubdirApplications(
+  applications: SystemApplication[],
+  codebases: SystemCodebase[],
+  repositories: CrossCodebaseInput[],
+): void {
+  if (codebases.length < 2) return;
+
+  const repoPathByCodebaseId = new Map(repositories.map(repository => [codebaseId(repository.path), repository.path]));
+  const rootBasenameByCodebaseId = new Map<string, string>();
+  for (const codebase of codebases) {
+    const repoPath = repoPathByCodebaseId.get(codebase.id) || codebase.path || '';
+    const segments = String(repoPath).replace(/\\/g, '/').split('/').filter(Boolean);
+    rootBasenameByCodebaseId.set(codebase.id, segments[segments.length - 1] || '');
+  }
+
+  const nameKey = (value: string | undefined): string => cleanApplicationName(value).replace(/[-_]/g, '').toLowerCase();
+  const pathTail = (pathHint: string | undefined): string => {
+    const segments = String(pathHint || '').split('/').filter(Boolean);
+    return segments[segments.length - 1] || '';
+  };
+  const evidenceScore = (app: SystemApplication): number =>
+    app.interface_ids.length + app.runtime_component_ids.length * 2 + app.ports.length + (app.evidence || []).length;
+
+  for (const parentApp of applications) {
+    if (parentApp.merged_into) continue;
+    // Only a real monorepo app-root surface is eligible as the "subdir row"
+    // side of this merge — a bare codebase-level synthetic root or a
+    // route-fragment path_hint carries no containment evidence to check.
+    if (!isRealDeployableSurfacePathHint(parentApp.path_hint)) continue;
+    const tail = pathTail(parentApp.path_hint);
+    if (!tail) continue;
+    const tailKey = nameKey(tail);
+    if (!tailKey) continue;
+
+    for (const memberCodebase of codebases) {
+      if (memberCodebase.id === parentApp.codebase_id) continue;
+
+      // Containment evidence: this member's OWN project root is named after
+      // the subdir the parent row was derived from — the live shape's core
+      // signal (also doubles as the accepted path-tail form of signal (b)).
+      const memberRootBasename = rootBasenameByCodebaseId.get(memberCodebase.id) || '';
+      if (!memberRootBasename || nameKey(memberRootBasename) !== tailKey) continue;
+
+      // Signal (a): normalized name identity against the member's own
+      // application row(s) for this same logical app — never merge on the
+      // containment/path-shape signal alone.
+      const candidates = applications.filter(app =>
+        app.codebase_id === memberCodebase.id &&
+        !app.merged_into &&
+        (nameKey(app.name) === nameKey(parentApp.name) || nameKey(app.name) === tailKey));
+      if (candidates.length === 0) continue;
+
+      const survivor = [...candidates].sort((left, right) => evidenceScore(right) - evidenceScore(left))[0];
+      if (!survivor || survivor.id === parentApp.id) continue;
+
+      survivor.also_declared_by = mergeStrings(survivor.also_declared_by || [], [parentApp.codebase_id]);
+      survivor.interface_ids = mergeStrings(survivor.interface_ids, parentApp.interface_ids);
+      survivor.runtime_component_ids = mergeStrings(survivor.runtime_component_ids, parentApp.runtime_component_ids);
+      survivor.ports = mergeStrings(survivor.ports, parentApp.ports);
+      survivor.service_aliases = mergeStrings(survivor.service_aliases, parentApp.service_aliases);
+      survivor.evidence = mergeStrings(survivor.evidence || [], [
+        `cross-member-duplicate-absorbed:${parentApp.codebase_id}:${parentApp.id}`,
+        ...(parentApp.evidence || []),
+      ]);
+      survivor.boundary_evidence = mergeStrings(survivor.boundary_evidence || [], [
+        `absorbed-monorepo-subdir-application:${parentApp.codebase_id}${parentApp.path_hint ? `:${parentApp.path_hint}` : ''}`,
+      ]);
+      if (!survivor.description && parentApp.description) survivor.description = parentApp.description;
+
+      parentApp.merged_into = survivor.id;
+      parentApp.boundary_evidence = mergeStrings(parentApp.boundary_evidence || [], [
+        `cross-member-duplicate:merged-into:${survivor.codebase_id}:${survivor.name}`,
+        `containment-evidence:subdir-path-tail-matches-member-root:${tail}`,
+        `name-identity-evidence:${nameKey(parentApp.name)}`,
+      ]);
+      break; // matched to one member codebase; stop scanning others for this row
     }
   }
 }

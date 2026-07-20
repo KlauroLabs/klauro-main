@@ -2733,3 +2733,123 @@ test('LIVE-SHAPE E2E: tier-1 member CAS never yields empty applications, and das
   assert.ok(agentApp!.source_das_unit_id, 'agent must carry a das unit link on a promoted repo');
   assert.match(agentApp!.source_das_unit_id!, /agent/, `agent must link to its own unit, got ${agentApp!.source_das_unit_id}`);
 });
+
+// TASK #66 LIVE SHAPE: monorepo + extracted-subrepo co-membership. One
+// workspace member is a monorepo whose CAS emits application rows from
+// apps/<name> SUBDIRS (one row per platform app, named after the subdir).
+// Two OTHER members are standalone projects uploaded FROM two of those same
+// subdirs, each with its own dedicated CAS. Without mergeCrossMemberSubdir
+// Applications the WAS shows a duplicate row for each: the coarse
+// subdir-derived row from the monorepo and the standalone member's own row.
+test('cross-member identity merge: monorepo subdir apps fold into standalone-member rows, never over-merge', () => {
+  const monorepo = cas({
+    system: { id: 'monorepo', name: 'monorepo', type: 'application', root_path: '/tmp/monorepo' },
+    nodes: [
+      { id: 'mobile-node', name: 'MobileEntry', type: 'component', source: { file: 'apps/mobile-app/src/App.tsx', line: 1 } } as any,
+      { id: 'web-node', name: 'WebEntry', type: 'component', source: { file: 'apps/web-app/src/App.tsx', line: 1 } } as any,
+      // Negative: a subdir app with NO corresponding standalone member in the
+      // workspace — must be left completely untouched by the merge pass.
+      { id: 'admin-node', name: 'AdminPanel', type: 'component', source: { file: 'apps/admin-panel/src/App.tsx', line: 1 } } as any,
+    ],
+  });
+
+  const mobileApp = cas({
+    system: { id: 'mobile-app', name: 'mobile-app', type: 'application', root_path: '/tmp/mobile-app' },
+    nodes: [
+      { id: 'mobile-screen', name: 'HomeScreen', type: 'component', source: { file: 'src/screens/Home.tsx', line: 1 } } as any,
+      { id: 'mobile-api-node', name: 'fetchProfile', type: 'function', source: { file: 'src/api/profile.ts', line: 1 } } as any,
+    ],
+    entry_points: [{
+      id: 'entry:mobile-launch',
+      source_node: 'mobile-screen',
+      type: 'http',
+      name: 'GET /profile',
+      trigger: { method: 'GET', path: '/profile' },
+    }] as any,
+    exit_points: [{
+      id: 'exit:mobile-fetch',
+      source_node: 'mobile-api-node',
+      type: 'api',
+      name: 'fetch profile',
+      target: { endpoint: 'http://accounts-api/api/profile', service_id: 'accounts-api' },
+      operation: { method: 'GET' },
+    }] as any,
+  });
+
+  const webApp = cas({
+    system: { id: 'web-app', name: 'web-app', type: 'application', root_path: '/tmp/web-app' },
+    nodes: [
+      { id: 'web-page', name: 'Dashboard', type: 'component', source: { file: 'src/pages/Dashboard.tsx', line: 1 } } as any,
+    ],
+    entry_points: [{
+      id: 'entry:web-dashboard',
+      source_node: 'web-page',
+      type: 'http',
+      name: 'GET /dashboard',
+      trigger: { method: 'GET', path: '/dashboard' },
+    }] as any,
+  });
+
+  // Negative: two DIFFERENT, unrelated monorepos each have an apps/api subdir
+  // (so both surface an app literally named "api") but NEITHER workspace
+  // member's own project root is named "api" — no containment evidence
+  // exists anywhere, so these must never merge with each other on name alone.
+  const otherTool = cas({
+    system: { id: 'other-tool', name: 'other-tool', type: 'service', root_path: '/tmp/other-tool' },
+    nodes: [
+      { id: 'other-api-node', name: 'ApiHandler', type: 'function', source: { file: 'apps/api/src/handler.ts', line: 1 } } as any,
+    ],
+  });
+  const monorepoTwo = cas({
+    system: { id: 'monorepo-two', name: 'monorepo-two', type: 'application', root_path: '/tmp/monorepo-two' },
+    nodes: [
+      { id: 'api-node-2', name: 'ApiEntry', type: 'component', source: { file: 'apps/api/src/index.ts', line: 1 } } as any,
+    ],
+  });
+
+  const graph = buildCrossCodebaseSystemGraph('mixed-workspace', [
+    { path: '/tmp/monorepo', name: 'monorepo', cas: monorepo },
+    { path: '/tmp/mobile-app', name: 'mobile-app', cas: mobileApp },
+    { path: '/tmp/web-app', name: 'web-app', cas: webApp },
+    { path: '/tmp/other-tool', name: 'other-tool', cas: otherTool },
+    { path: '/tmp/monorepo-two', name: 'monorepo-two', cas: monorepoTwo },
+  ], { generatedAt: '2026-01-01T00:00:00.000Z' });
+
+  const monorepoCodebaseId = graph.codebases.find(codebase => codebase.name === 'monorepo')!.id;
+  const mobileCodebaseId = graph.codebases.find(codebase => codebase.name === 'mobile-app')!.id;
+  const webCodebaseId = graph.codebases.find(codebase => codebase.name === 'web-app')!.id;
+
+  // (1) One row per logical app, owned by the standalone member; the
+  // monorepo's subdir row is merged into it with provenance kept.
+  const mobileRows = graph.applications.filter(app => app.name === 'mobile-app');
+  const visibleMobileRows = mobileRows.filter(app => !app.merged_into);
+  assert.equal(visibleMobileRows.length, 1, `expected exactly one visible mobile-app row, got ${visibleMobileRows.length}`);
+  assert.equal(visibleMobileRows[0].codebase_id, mobileCodebaseId, 'the surviving row must belong to the standalone mobile-app member');
+  assert.ok(visibleMobileRows[0].also_declared_by?.includes(monorepoCodebaseId), 'survivor must record the monorepo as also_declared_by');
+
+  const mergedMonorepoMobileRow = mobileRows.find(app => app.codebase_id === monorepoCodebaseId);
+  assert.ok(mergedMonorepoMobileRow, 'the monorepo subdir row must still exist in applications (graph integrity — interfaces/links keep resolving)');
+  assert.equal(mergedMonorepoMobileRow!.merged_into, visibleMobileRows[0].id, 'the monorepo row must be merged into the standalone member row');
+
+  const webRows = graph.applications.filter(app => app.name === 'web-app');
+  const visibleWebRows = webRows.filter(app => !app.merged_into);
+  assert.equal(visibleWebRows.length, 1, `expected exactly one visible web-app row, got ${visibleWebRows.length}`);
+  assert.equal(visibleWebRows[0].codebase_id, webCodebaseId, 'the surviving row must belong to the standalone web-app member');
+
+  // Merged monorepo rows must not surface in the deployables/overview list;
+  // the standalone member's row must.
+  assert.ok(!graph.deployables.some(app => app.id === mergedMonorepoMobileRow!.id), 'merged monorepo subdir row must not surface in the deployables overview');
+  assert.ok(graph.deployables.some(app => app.id === visibleMobileRows[0].id), 'the standalone member row must surface in the deployables overview');
+
+  // (2) Never over-merge: same-name "api" apps in two different, unrelated
+  // monorepos, with no member rooted at "api", must stay separate.
+  const apiRows = graph.applications.filter(app => app.name === 'api');
+  assert.ok(apiRows.length >= 2, 'sanity: both unrelated repos must surface their own api app');
+  assert.ok(apiRows.every(app => !app.merged_into), 'same-name apps with no matching standalone member root must never merge');
+
+  // (3) A monorepo subdir app with no corresponding standalone member
+  // (admin-panel) is left completely untouched.
+  const adminRow = graph.applications.find(app => app.name === 'admin-panel');
+  assert.ok(adminRow, 'admin-panel subdir row must still exist');
+  assert.equal(adminRow!.merged_into, undefined, 'admin-panel has no standalone member and must never merge');
+});
