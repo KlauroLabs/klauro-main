@@ -141,7 +141,11 @@ export interface SystemApplication {
    *  member) this row was merged into; that row's `also_declared_by` carries
    *  this row's codebase_id for provenance. Never over-merges on name alone —
    *  requires containment evidence (this row's path_hint tail matches the
-   *  other member's own project-root basename) AND normalized name identity.
+   *  other member's own project NAME identity — see mergeCrossMemberSubdir
+   *  Applications; a hosted member's `codebase_id`/path is an opaque
+   *  workspace-storage id, e.g. `/data/workspaces/prj_XXXX`, never the app
+   *  name, so name identity — not path basename — is the containment key)
+   *  AND normalized name identity of the application row itself.
    *  Excluded from workspace-level exposure (shouldExposeInWorkspaceOverview)
    *  so the same logical app never surfaces as two separate deployables. */
   merged_into?: string;
@@ -11926,15 +11930,24 @@ function linkDasUnits(applications: SystemApplication[], repositories: CrossCode
  *  SPEC-DEPLOYABLE-DETECTION.md's evidence-first posture):
  *   (a) normalized name identity — the monorepo's subdir app name (or its
  *       path_hint tail) matches the candidate member's own application name;
- *   (b) structural/containment agreement — the monorepo row's path_hint tail
- *       equals the OTHER member's own project-root basename (the accepted
- *       "parent row's path tail matches the child's root basename" form of
- *       signal (b); this is also literally how the candidate member is
- *       discovered in the first place, so it is never satisfied vacuously by
- *       name alone — a same-name app in an unrelated member whose root isn't
- *       named after that subdir never reaches the name check).
+ *   (b) member-ownership agreement — the monorepo row's path_hint tail
+ *       matches the OTHER member's own declared NAME identity (project name
+ *       / CAS system name — see identityKeysByCodebaseId below), the
+ *       accepted "parent row's path tail matches the child's root" form of
+ *       signal (b). NOT the member's storage path: a hosted workspace member
+ *       lives at an opaque id-shaped root (e.g. /data/workspaces/prj_XXXX),
+ *       so codebase.path/codebase_id carry no name information at all — only
+ *       a local dev checkout's directory happens to be named after its repo.
+ *       This is also literally how the candidate member is discovered in the
+ *       first place, so it is never satisfied vacuously by name alone — a
+ *       same-name app in an unrelated member whose declared name isn't that
+ *       subdir never reaches the name check. (a) and (b) stay independent
+ *       even when their values coincide (the live shape's normal case): (a)
+ *       tests the parent app row's name against the candidate app row's
+ *       name, (b) tests the parent row's path shape against the CANDIDATE
+ *       MEMBER's identity, a different fact from a different source.
  *  Two members that merely share an app name (e.g. both have an "api") with
- *  no member rooted at a matching subdir basename never merge. A monorepo
+ *  no member whose declared name matches that subdir never merge. A monorepo
  *  subdir app with no corresponding standalone member is left untouched.
  *
  *  Ownership: the STANDALONE member's row wins (assumed the richer, dedicated
@@ -11949,15 +11962,35 @@ function mergeCrossMemberSubdirApplications(
 ): void {
   if (codebases.length < 2) return;
 
-  const repoPathByCodebaseId = new Map(repositories.map(repository => [codebaseId(repository.path), repository.path]));
-  const rootBasenameByCodebaseId = new Map<string, string>();
-  for (const codebase of codebases) {
-    const repoPath = repoPathByCodebaseId.get(codebase.id) || codebase.path || '';
-    const segments = String(repoPath).replace(/\\/g, '/').split('/').filter(Boolean);
-    rootBasenameByCodebaseId.set(codebase.id, segments[segments.length - 1] || '');
-  }
-
   const nameKey = (value: string | undefined): string => cleanApplicationName(value).replace(/[-_]/g, '').toLowerCase();
+
+  // HOSTED-PATH REGRESSION (live verification on v1.0.122): a hosted member's
+  // codebase.path is an opaque workspace-storage root — e.g.
+  // /data/workspaces/prj_9Mfi2xKq7Lm — NEVER the app/project name, unlike a
+  // local dev checkout where the directory is usually named after the repo.
+  // Deriving containment from the path basename (the original version of
+  // this function) is silently vacuous in production: it never matches any
+  // real subdir tail, so the merge never fires on a real hosted workspace.
+  // The member's real identity for containment purposes is its declared
+  // project NAME, not its storage path — build the identity-key set per
+  // codebase from every name-shaped fact reachable for that member
+  // (SystemCodebase.name, which toSystemCodebase already prefers
+  // repository.name / cas.system.name over the path basename; plus the raw
+  // repository.name and the CAS's own system.name directly, in case they
+  // diverge from the sanitized codebase.name), normalized the same way as
+  // application names so "android" / "Android" / "android-app" all collide
+  // correctly against a project literally named "android".
+  const repositoryByCodebaseId = new Map(repositories.map(repository => [codebaseId(repository.path), repository]));
+  const identityKeysByCodebaseId = new Map<string, Set<string>>();
+  for (const codebase of codebases) {
+    const repository = repositoryByCodebaseId.get(codebase.id);
+    const keys = new Set<string>();
+    for (const candidate of [codebase.name, repository?.name, repository?.cas.system?.name]) {
+      const key = nameKey(candidate);
+      if (key) keys.add(key);
+    }
+    identityKeysByCodebaseId.set(codebase.id, keys);
+  }
   const pathTail = (pathHint: string | undefined): string => {
     const segments = String(pathHint || '').split('/').filter(Boolean);
     return segments[segments.length - 1] || '';
@@ -11979,11 +12012,17 @@ function mergeCrossMemberSubdirApplications(
     for (const memberCodebase of codebases) {
       if (memberCodebase.id === parentApp.codebase_id) continue;
 
-      // Containment evidence: this member's OWN project root is named after
-      // the subdir the parent row was derived from — the live shape's core
-      // signal (also doubles as the accepted path-tail form of signal (b)).
-      const memberRootBasename = rootBasenameByCodebaseId.get(memberCodebase.id) || '';
-      if (!memberRootBasename || nameKey(memberRootBasename) !== tailKey) continue;
+      // Containment evidence / signal (b): this member's own declared NAME
+      // identity (project name / CAS system name — never its storage path)
+      // matches the subdir the parent row was derived from. This answers
+      // WHICH member owns the subdir; signal (a) below independently checks
+      // that the parent row's OWN app name agrees — for the live shape the
+      // child's app-row name and its project name coincide, which is fine:
+      // (a) is about the app row's name, (b) is about member ownership, and
+      // they're checked against different things (parentApp.name vs. the
+      // member's identity-key set) even when the values happen to match.
+      const memberIdentityKeys = identityKeysByCodebaseId.get(memberCodebase.id);
+      if (!memberIdentityKeys || !memberIdentityKeys.has(tailKey)) continue;
 
       // Signal (a): normalized name identity against the member's own
       // application row(s) for this same logical app — never merge on the
@@ -12014,7 +12053,7 @@ function mergeCrossMemberSubdirApplications(
       parentApp.merged_into = survivor.id;
       parentApp.boundary_evidence = mergeStrings(parentApp.boundary_evidence || [], [
         `cross-member-duplicate:merged-into:${survivor.codebase_id}:${survivor.name}`,
-        `containment-evidence:subdir-path-tail-matches-member-root:${tail}`,
+        `containment-evidence:subdir-path-tail-matches-member-project-name:${tail}`,
         `name-identity-evidence:${nameKey(parentApp.name)}`,
       ]);
       break; // matched to one member codebase; stop scanning others for this row

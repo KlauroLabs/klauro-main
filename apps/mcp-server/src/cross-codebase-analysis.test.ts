@@ -2741,9 +2741,21 @@ test('LIVE-SHAPE E2E: tier-1 member CAS never yields empty applications, and das
 // subdirs, each with its own dedicated CAS. Without mergeCrossMemberSubdir
 // Applications the WAS shows a duplicate row for each: the coarse
 // subdir-derived row from the monorepo and the standalone member's own row.
+//
+// REGRESSION-SHAPE NOTE (caught on live v1.0.122 verification): every member
+// root below is an OPAQUE, id-shaped hosted workspace-storage path
+// (/data/workspaces/prj_XXXX...), never a directory literally named after
+// the project — that's the real shape a hosted upload lands at. An earlier
+// version of this fixture used human-named local-dev-style paths
+// (/tmp/mobile-app), which made a path-BASENAME containment check pass in
+// the fixture while being silently vacuous in production (no hosted member's
+// storage path is ever named after its app). Fixtures for cross-member
+// identity/containment logic must model the hosted id-shaped path form, not
+// a convenient local-dev directory name, or they can pass while the real
+// signal never fires.
 test('cross-member identity merge: monorepo subdir apps fold into standalone-member rows, never over-merge', () => {
   const monorepo = cas({
-    system: { id: 'monorepo', name: 'monorepo', type: 'application', root_path: '/tmp/monorepo' },
+    system: { id: 'monorepo', name: 'monorepo', type: 'application', root_path: '/data/workspaces/prj_7GfQ2xNcRt1' },
     nodes: [
       { id: 'mobile-node', name: 'MobileEntry', type: 'component', source: { file: 'apps/mobile-app/src/App.tsx', line: 1 } } as any,
       { id: 'web-node', name: 'WebEntry', type: 'component', source: { file: 'apps/web-app/src/App.tsx', line: 1 } } as any,
@@ -2754,7 +2766,7 @@ test('cross-member identity merge: monorepo subdir apps fold into standalone-mem
   });
 
   const mobileApp = cas({
-    system: { id: 'mobile-app', name: 'mobile-app', type: 'application', root_path: '/tmp/mobile-app' },
+    system: { id: 'mobile-app', name: 'mobile-app', type: 'application', root_path: '/data/workspaces/prj_9Mfi2xKq7Lm' },
     nodes: [
       { id: 'mobile-screen', name: 'HomeScreen', type: 'component', source: { file: 'src/screens/Home.tsx', line: 1 } } as any,
       { id: 'mobile-api-node', name: 'fetchProfile', type: 'function', source: { file: 'src/api/profile.ts', line: 1 } } as any,
@@ -2777,7 +2789,7 @@ test('cross-member identity merge: monorepo subdir apps fold into standalone-mem
   });
 
   const webApp = cas({
-    system: { id: 'web-app', name: 'web-app', type: 'application', root_path: '/tmp/web-app' },
+    system: { id: 'web-app', name: 'web-app', type: 'application', root_path: '/data/workspaces/prj_3JpQaXov4Wd' },
     nodes: [
       { id: 'web-page', name: 'Dashboard', type: 'component', source: { file: 'src/pages/Dashboard.tsx', line: 1 } } as any,
     ],
@@ -2792,27 +2804,27 @@ test('cross-member identity merge: monorepo subdir apps fold into standalone-mem
 
   // Negative: two DIFFERENT, unrelated monorepos each have an apps/api subdir
   // (so both surface an app literally named "api") but NEITHER workspace
-  // member's own project root is named "api" — no containment evidence
+  // member's own declared project NAME is "api" — no containment evidence
   // exists anywhere, so these must never merge with each other on name alone.
   const otherTool = cas({
-    system: { id: 'other-tool', name: 'other-tool', type: 'service', root_path: '/tmp/other-tool' },
+    system: { id: 'other-tool', name: 'other-tool', type: 'service', root_path: '/data/workspaces/prj_5RxV8oYtc1s' },
     nodes: [
       { id: 'other-api-node', name: 'ApiHandler', type: 'function', source: { file: 'apps/api/src/handler.ts', line: 1 } } as any,
     ],
   });
   const monorepoTwo = cas({
-    system: { id: 'monorepo-two', name: 'monorepo-two', type: 'application', root_path: '/tmp/monorepo-two' },
+    system: { id: 'monorepo-two', name: 'monorepo-two', type: 'application', root_path: '/data/workspaces/prj_1KpXeUzB0hM' },
     nodes: [
       { id: 'api-node-2', name: 'ApiEntry', type: 'component', source: { file: 'apps/api/src/index.ts', line: 1 } } as any,
     ],
   });
 
   const graph = buildCrossCodebaseSystemGraph('mixed-workspace', [
-    { path: '/tmp/monorepo', name: 'monorepo', cas: monorepo },
-    { path: '/tmp/mobile-app', name: 'mobile-app', cas: mobileApp },
-    { path: '/tmp/web-app', name: 'web-app', cas: webApp },
-    { path: '/tmp/other-tool', name: 'other-tool', cas: otherTool },
-    { path: '/tmp/monorepo-two', name: 'monorepo-two', cas: monorepoTwo },
+    { path: '/data/workspaces/prj_7GfQ2xNcRt1', name: 'monorepo', cas: monorepo },
+    { path: '/data/workspaces/prj_9Mfi2xKq7Lm', name: 'mobile-app', cas: mobileApp },
+    { path: '/data/workspaces/prj_3JpQaXov4Wd', name: 'web-app', cas: webApp },
+    { path: '/data/workspaces/prj_5RxV8oYtc1s', name: 'other-tool', cas: otherTool },
+    { path: '/data/workspaces/prj_1KpXeUzB0hM', name: 'monorepo-two', cas: monorepoTwo },
   ], { generatedAt: '2026-01-01T00:00:00.000Z' });
 
   const monorepoCodebaseId = graph.codebases.find(codebase => codebase.name === 'monorepo')!.id;
