@@ -87,10 +87,24 @@ graph stage (deterministic, no AI), plus a `structural_importance_meta` block
 4. AI-description spend targeting: enrich high-structural-importance elements first — same spend,
    visibly better coverage of what agents actually ask about (D4-adjacent).
 
-**Gate:** on the self-CAS and 3 corpus repos of different shapes, (a) zero UI
-event-handler chains in the top-10 capability ranking (today: present), (b)
-rank correlation of top-50 structural-importance nodes vs. agent-queried nodes from telemetry
-≥ baseline keyword ranking, (c) byte-stable across two runs.
+**Peer-review correction:** seeding the restart distribution from non-test
+entry points does *not* by itself demote UI-handler chains — a click handler
+*is* an entry point and receives restart mass like any other. The actual
+mechanism the shipped implementation (39431fda) relies on is downstream, in
+`flow-scorer.ts`: flow/capability ranking aggregates structural-importance
+mass over each capability's *implementing and downstream* nodes, so a shallow
+handler chain (little reachable downstream graph) accumulates low mass on its
+own — the ranking demotes it by aggregate downstream mass, not by excluding
+its seed.
+
+**Gate (empirical, not assumed):** measured on the self-CAS and 3 corpus repos
+of different shapes, after deploy — (a) zero UI event-handler chains in the
+top-10 capability ranking, (b) rank correlation of top-50 structural-importance
+nodes vs. agent-queried nodes from telemetry ≥ baseline keyword ranking, (c)
+byte-stable across two runs. **If (a) fails:** re-tune seed weighting (e.g.
+down-weight UI-originating entry points specifically) or fall back to a
+uniform-restart distribution with entry-point-personalized results kept only
+as a side-by-side comparison, not the shipped ranking.
 
 **Effort:** M. **Deps:** none. Pure graph stage addition.
 
@@ -128,25 +142,45 @@ with a full edge-list scan per expansion (`partitioner.ts`), and
 
 **Algorithm:** condense the call graph to its DAG of strongly connected
 components (Tarjan, O(V+E)), then a 2-hop labeling (pruned landmark labeling)
-over the condensation. Build cost O(E·√V)-ish empirically; label size small on
-sparse call DAGs; query "can X reach Y" and "all nodes reachable from X within
-the label cover" in effectively O(1) / O(answer). At 500k nodes this is the
-standard published regime for pruned landmark labeling. Rebuilt per CAS
-revision in the graph stage; incremental runs rebuild only when call edges
-changed (stage fingerprints already exist).
+over the condensation for **boolean reachability** ("can X reach Y") in
+O(label) time — label size small on sparse call DAGs. **Affected-set
+enumeration** ("all nodes reachable from X") is a distinct primitive, answered
+by BFS over the condensation's prebuilt adjacency in O(answer) — it is not
+derived from the boolean labels themselves. Build cost O(E·√V)-ish empirically
+for the labels; the condensation adjacency is built once alongside them.
+Rebuilt per CAS revision in the graph stage; incremental runs rebuild only
+when call edges changed (stage fingerprints already exist).
+
+**Peer-review correction:** the two query types have different complexity and
+different winners, and prior text conflated them. Labels give cheap *boolean*
+answers only; enumeration is always O(answer) regardless of labeling. The
+shipped implementation (765fc79f) measured enumeration via condensation BFS
+running **~3x slower** than a prebuilt-adjacency BFS at 54k nodes — labels'
+real win there is eliminating the per-query edge-scan/rebuild cost of the old
+one-hop approach, not a big-O advantage over BFS. Labels win outright (68x) on
+*boolean* reachability queries, where the alternative is a full traversal per
+query. Consumer-to-primitive mapping: `assess_change_risk` and the fabric
+partitioner's blast-radius expansion (`coordination/partitioner.ts`) both need
+the full affected set, so they consume **enumeration**
+(`ReachabilityIndex.affectedSet`, BFS-backed); anything that only needs a
+yes/no answer (e.g. "is Y in X's blast radius") should consume the **boolean**
+label query instead of enumerating and checking membership.
 
 **Consumers / gain:**
 1. Fabric (D5): `partitionTasks` / `check_collision` replace 1-hop expansion
-   with true transitive blast radius at the same latency — collisions between
-   tasks three hops apart on one call chain become visible.
-2. Product: `assess_change_risk`, `get_call_chain`, impact analysis get
-   O(1)-ish transitive queries instead of per-query walks.
+   with true transitive blast radius (via enumeration) at the same latency —
+   collisions between tasks three hops apart on one call chain become
+   visible.
+2. Product: `assess_change_risk`, `get_call_chain` get transitive queries
+   instead of per-query walks — `get_call_chain` path-existence checks use the
+   boolean label query; `assess_change_risk` impact analysis uses enumeration.
 3. A's structural importance and B's communities can consume the same condensation for free.
 
 **Gate:** (a) equivalence test — index answers match brute-force BFS on 10k
-random pairs across self + 3 corpus repos; (b) fabric gauntlet scenario where
-two tasks collide only transitively flips from missed to flagged; (c) query
-p95 < 5ms on the self-CAS; build < 10% of graph-stage time.
+random pairs across self + 3 corpus repos, for both the boolean and
+enumeration primitives; (b) fabric gauntlet scenario where two tasks collide
+only transitively flips from missed to flagged; (c) boolean query p95 < 5ms on
+the self-CAS; build < 10% of graph-stage time.
 
 **Effort:** M. **Deps:** none. Unblocks the strongest version of F.
 
@@ -290,6 +324,48 @@ number attached yet); calibration Brier score improves over identity mapping.
 
 **Effort:** M (prereq S). **Deps:** E1 data volume; B helps.
 
+## Workstream H — Submodular context selection (STRATEGIC)
+
+**Feeds:** everything the CAS already exposes about a target — callers/callees
+(call graph), contracts/interfaces, tests (`get_test_summary`/`find_tests`),
+declared conventions/idioms, importance-weighted neighbors (A's
+structural-importance mass), and the reachability index (C) for cheap
+neighbor/impact expansion. No new data collection; this workstream is
+selection logic over facts that already exist.
+
+**Algorithm:** mathematically select the smallest context bundle that
+preserves the task's necessary truth under a hard token budget, instead of
+today's bounded heuristics (fixed-depth neighbor walks, fixed top-N lists).
+Frame it as a coverage function over task-relevant facts (the target's
+callers/callees, contracts, tests, conventions, importance-weighted
+neighbors): this coverage function is monotone submodular (diminishing returns
+as facts are added — a second caller-of-a-caller adds less unique coverage
+than the first), which licenses greedy selection with the classical
+(1 − 1/e) approximation guarantee vs. the optimal bundle. The token budget
+makes this the knapsack-constrained variant of submodular maximization
+(value-per-token greedy, not value-per-item), for which the same guarantee
+family holds with the standard cost-benefit greedy modification.
+
+**Consumers / expected gain:** `get_coding_context`, `get_agent_context`, and
+MCP context-assembly responses generally — replaces today's bounded-heuristic
+context assembly with a bundle sized to the budget and provably close to
+optimal coverage, rather than "first N items in some fixed order." Directly
+targets a known defect: the dogfood verdict measured an 11x token cost for
+Klauro-assisted tasks, attributed to replay amplification and over-broad
+context assembly (`klauro-dogfood-verdict.md`) — submodular selection is the
+mathematical fix for the over-broad half of that defect.
+
+**Gate:** token count per equal-outcome task, measured against the current
+heuristic context assembly on the existing agent-quality benchmark harness
+(`run_agent_quality_benchmark`) — target a measurable token reduction with
+task-outcome quality not regressing (equal or better pass rate on the same
+benchmark tasks). No token savings claim ships without this side-by-side.
+
+**Effort:** M. **Deps:** best with A (importance-weighted neighbors) and C
+(cheap neighbor/impact expansion for candidate generation); none of the CAS
+data it needs is missing — everything required is already stored (facts,
+importance scores, reachability index).
+
 ---
 
 ## Build order
@@ -307,7 +383,10 @@ Plus the E1 production enable (S, day one — it's a config flag).
 
 **Second wave:** B (Leiden + architecture score — S, composes with A),
 G (critical path — S, coordinates with the execution-architecture lane),
-D (distinctiveness gate — composes with A's spend targeting).
+D (distinctiveness gate — composes with A's spend targeting), H (submodular
+context selection — M, once A and C's wave-1 gates are verified; H's
+candidate generation and neighbor weighting depend on both being real,
+deployed signals rather than assumptions).
 
 **Third wave:** E ensembling + calibration, once E1 volume exists and B's
 anchors are in.
