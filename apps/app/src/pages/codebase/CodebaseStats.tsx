@@ -4,20 +4,16 @@
 // apps/app/docs/DESIGN-NOTES.md) — built with an honest "—" value rather
 // than invented numbers, per LANE-COMMON's DESIGN FIDELITY RULE.
 import { Box, Stack, Typography } from '@mui/material';
-import HubOutlinedIcon from '@mui/icons-material/HubOutlined';
-import CodeOutlinedIcon from '@mui/icons-material/CodeOutlined';
-import GroupOutlinedIcon from '@mui/icons-material/GroupOutlined';
-import HistoryOutlinedIcon from '@mui/icons-material/HistoryOutlined';
-import type { SvgIconComponent } from '@mui/icons-material';
+import { DecorativeStatIcon, type DecorativeStat } from '../../components/icons/DecorativeStatIcon';
 
 interface StatCardProps {
   label: string;
   value: string;
   caption: string;
-  icon: SvgIconComponent;
+  stat: DecorativeStat;
 }
 
-function StatCard({ label, value, caption, icon: Icon }: StatCardProps) {
+function StatCard({ label, value, caption, stat }: StatCardProps) {
   return (
     <Stack
       direction="row"
@@ -39,7 +35,7 @@ function StatCard({ label, value, caption, icon: Icon }: StatCardProps) {
           <Typography variant="caption" color="text.disabled">{caption}</Typography>
         </Stack>
       </Stack>
-      <Icon sx={{ color: 'text.disabled', fontSize: 28 }} />
+      <DecorativeStatIcon stat={stat} size={28} />
     </Stack>
   );
 }
@@ -58,25 +54,25 @@ export function CodebaseStats({ capabilityCount, entryPointCount, totalFiles }: 
           label="Capabilities"
           value={capabilityCount !== undefined ? String(capabilityCount) : '—'}
           caption="Core business domains"
-          icon={HubOutlinedIcon}
+          stat="capabilities"
         />
         <StatCard
           label="Entry points"
           value={entryPointCount !== undefined ? String(entryPointCount) : '—'}
           caption="HTTP + event triggers"
-          icon={CodeOutlinedIcon}
+          stat="entryPoints"
         />
         <StatCard
           label="Contributors"
           value="—"
           caption="Not available yet"
-          icon={GroupOutlinedIcon}
+          stat="contributors"
         />
         <StatCard
           label="Codebase age"
           value="—"
           caption={totalFiles !== undefined ? `${totalFiles} files` : 'Not available yet'}
-          icon={HistoryOutlinedIcon}
+          stat="age"
         />
       </Stack>
     </Box>

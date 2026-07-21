@@ -5,12 +5,12 @@
 // Figma shows no other add/attach affordance on this screen.
 import { useMemo, useState } from 'react';
 import { Chip, Grid, IconButton, Menu, MenuItem, Stack, Tooltip, Typography } from '@mui/material';
-import LayersOutlined from '@mui/icons-material/LayersOutlined';
-import SwapHorizOutlined from '@mui/icons-material/SwapHorizOutlined';
 import AddIcon from '@mui/icons-material/Add';
 import { EmptyState } from '../../layout/EmptyState';
 import { RepositoryCard } from './RepositoryCard';
 import { AttachProjectDialog } from './AttachProjectDialog';
+import { StatGlyphIcon } from '../../components/icons/StatGlyphIcon';
+import { UtilityGlyphIcon } from '../../components/icons/UtilityGlyphIcon';
 import {
   contributorsForProject,
   inputForCodebase,
@@ -64,7 +64,7 @@ export function RepositoriesSection({ workspaceId, codebases, inputs, contributo
     <Stack spacing={3}>
       <Stack direction="row" sx={{ justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 2 }}>
         <Stack direction="row" spacing={1.5} sx={{ alignItems: 'center' }}>
-          <LayersOutlined fontSize="small" sx={{ color: 'text.secondary' }} />
+          <StatGlyphIcon glyph="repositories" size={18} />
           <Typography variant="h6" component="h2">
             Repositories
           </Typography>
@@ -76,7 +76,7 @@ export function RepositoriesSection({ workspaceId, codebases, inputs, contributo
           <Chip
             size="small"
             variant="outlined"
-            icon={<span style={{ display: 'flex' }}>🏷</span>}
+            icon={<UtilityGlyphIcon glyph="tag" />}
             label={tagFilter ?? 'Tags'}
             onClick={event => setTagsMenuAnchor(event.currentTarget)}
             onDelete={tagFilter ? () => setTagFilter(null) : undefined}
@@ -96,7 +96,7 @@ export function RepositoriesSection({ workspaceId, codebases, inputs, contributo
           <Chip
             size="small"
             variant="outlined"
-            icon={<SwapHorizOutlined fontSize="small" />}
+            icon={<UtilityGlyphIcon glyph="sort" />}
             label={sortKey === 'name' ? 'Sort: Name' : 'Sort: Last analyzed'}
             onClick={event => setSortMenuAnchor(event.currentTarget)}
           />

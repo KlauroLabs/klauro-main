@@ -9,6 +9,7 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { Box, Button, Paper, Stack, TextField, Typography, Alert, ToggleButton, ToggleButtonGroup } from '@mui/material';
 import { useAuth } from '../../auth/AuthProvider';
 import { apiBaseUrl } from '../../api';
+import { Logo } from '../../components/Logo';
 
 type Mode = 'sign-in' | 'register';
 
@@ -61,12 +62,7 @@ export function AuthPage() {
       <Paper sx={{ p: 4, width: '100%', maxWidth: 420 }}>
         <Stack spacing={3}>
           <Stack spacing={0.5}>
-            <Stack direction="row" spacing={1} sx={{ alignItems: 'center' }}>
-              <Box sx={{ width: 24, height: 24, borderRadius: '6px', bgcolor: 'primary.main' }} />
-              <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
-                klauro
-              </Typography>
-            </Stack>
+            <Logo variant="lockup" size={22} />
             <Typography variant="h3" component="h1">
               {mode === 'sign-in' ? 'Sign in to Klauro' : 'Create your account'}
             </Typography>

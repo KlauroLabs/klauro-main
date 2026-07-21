@@ -1,14 +1,30 @@
+import { useMemo } from 'react';
 import { Box, Grid, Paper, Stack, Typography } from '@mui/material';
 import type { FlowConcept } from '../../api';
-import { tokens } from '../../theme';
+import { GraphCanvas } from '../../components/diagram/GraphCanvas';
+import { computeGraphNodeLayout, filterEdgesToKnownNodes, type GraphNode } from '../../components/diagram/graphLayout';
 
 /**
- * "System Connection Map" (Figma node 1748:7243-pattern reused inside Flow
- * Overview) — reduced to a simple, static SVG per LANE-COMMON's stroke
- * system ("simple SVG/flex chain") rather than the interactive pan/zoom
- * node graph Figma's Workspace screen shows elsewhere; see
- * apps/app/docs/DESIGN-NOTES.md for the scope note (zoom/pan controls
- * deliberately not built).
+ * "System Connection Map" (Figma node 1982:6611 inside Flow Overview,
+ * reusing the same "Architecture Diagram" panel component the Repo overview
+ * screen uses — confirmed via get_metadata: both carry the same 40px icon +
+ * 164px labeled button pair top-right; the badge-title header variant is a
+ * `hidden="true"` Figma layer in both places, so the real visible header is
+ * the plain "Last updated" one this build already used).
+ *
+ * FULL-DIAGRAM VIEW (clickables-diagrams lane): this panel is already
+ * rendered at full width inline on the Flow Overview page — Figma shows no
+ * separate route for it (unlike the Architecture section, which has an
+ * explicit, separately-labeled "See full Architecture" link elsewhere on
+ * its card). The button pair's own label text isn't resolvable from Figma
+ * metadata (component-instance text override, not captured at this file's
+ * size), but by position/reuse it matches the Architecture panel's in-place
+ * action pair, not a "navigate away" affordance — elsewhere in this file,
+ * navigation always has its own distinct, clearly-labeled link. So "the
+ * fuller rendering" this lane owes is upgrading the diagram FROM the static
+ * hub-spoke SVG TO the same real zoom/pan GraphCanvas every other diagram in
+ * the app now uses (see apps/app/docs/briefs/diagrams.md) — in place, no new
+ * route invented. See apps/app/docs/DESIGN-NOTES.md for this reasoning.
  *
  * The legend groups Figma showed alongside the map — Entities, Used by,
  * Services, External Systems, Downstream Flows — map onto FlowConcept as
@@ -65,44 +81,45 @@ function LegendGroup({ label, items, gapNote }: { label: string; items: string[]
   );
 }
 
-/** Static geometry-only node/edge diagram — center flow node, entity and
- *  external-system satellites, straight construction-weight strokes. */
+/** Hub-and-spoke node/edge diagram — flow node in its own column, entity and
+ *  external-system satellites in theirs, real zoom/pan via the shared
+ *  GraphCanvas (graphLayout.ts's column layout used as a 3-column hub/spoke
+ *  shape: flow / entities / external systems). No click-through: `entities`
+ *  and `external_integrations` are plain name strings on FlowConcept, not
+ *  ids, so there's nowhere real to navigate — see the module doc above. */
 function ConnectionDiagram({ flowName, entities, externalSystems }: { flowName: string; entities: string[]; externalSystems: string[] }) {
-  const left = entities.slice(0, 4);
-  const right = externalSystems.slice(0, 4);
-  const height = Math.max(left.length, right.length, 1) * 44 + 40;
-  const centerY = height / 2;
+  const nodes: GraphNode[] = useMemo(() => {
+    const flowNode: GraphNode = { id: '__flow__', label: flowName, cluster: 'Flow' };
+    const entityNodes: GraphNode[] = entities.map((name, i) => ({ id: `entity:${i}:${name}`, label: name, cluster: 'Entities' }));
+    const externalNodes: GraphNode[] = externalSystems.map((name, i) => ({ id: `external:${i}:${name}`, label: name, cluster: 'External systems' }));
+    return [flowNode, ...entityNodes, ...externalNodes];
+  }, [flowName, entities, externalSystems]);
+
+  const edges = useMemo(
+    () => [
+      ...entities.map((name, i) => ({ id: `e:${i}`, source: '__flow__', target: `entity:${i}:${name}` })),
+      ...externalSystems.map((name, i) => ({ id: `x:${i}`, source: '__flow__', target: `external:${i}:${name}` })),
+    ],
+    [entities, externalSystems],
+  );
+
+  const layout = useMemo(
+    () => computeGraphNodeLayout(nodes, { nodeWidth: 140, minHeight: 44, maxHeight: 44, clusterThreshold: 0 }),
+    [nodes],
+  );
+  const nodeIds = useMemo(() => new Set(layout.nodes.map(n => n.id)), [layout.nodes]);
+  const visibleEdges = useMemo(() => filterEdgesToKnownNodes(edges, nodeIds), [edges, nodeIds]);
 
   return (
-    <Box component="svg" viewBox={`0 0 360 ${height}`} width="100%" height={height} role="img" aria-label={`Connections for ${flowName}`}>
-      <rect x="140" y={centerY - 20} width="80" height="40" rx="6" fill="none" stroke={tokens.wireframe} strokeWidth={1.25} />
-      <text x="180" y={centerY + 5} textAnchor="middle" fontSize="11" fill={tokens.textPrimary}>{truncate(flowName, 12)}</text>
-
-      {left.map((label, i) => {
-        const y = 20 + i * 44 + 20;
-        return (
-          <g key={label}>
-            <line x1="60" y1={y} x2="140" y2={centerY} stroke={tokens.construction} strokeWidth={0.75} />
-            <rect x="0" y={y - 14} width="60" height="28" rx="4" fill="none" stroke={tokens.construction} strokeWidth={0.75} />
-            <text x="30" y={y + 4} textAnchor="middle" fontSize="9" fill={tokens.secondaryText}>{truncate(label, 8)}</text>
-          </g>
-        );
-      })}
-
-      {right.map((label, i) => {
-        const y = 20 + i * 44 + 20;
-        return (
-          <g key={label}>
-            <line x1="220" y1={centerY} x2="300" y2={y} stroke={tokens.construction} strokeWidth={0.75} />
-            <rect x="300" y={y - 14} width="60" height="28" rx="4" fill="none" stroke={tokens.construction} strokeWidth={0.75} />
-            <text x="330" y={y + 4} textAnchor="middle" fontSize="9" fill={tokens.secondaryText}>{truncate(label, 8)}</text>
-          </g>
-        );
-      })}
+    <Box sx={{ height: 320 }}>
+      <GraphCanvas
+        nodes={layout.nodes}
+        edges={visibleEdges}
+        clusters={layout.clusters}
+        contentWidth={layout.width}
+        contentHeight={layout.height}
+        ariaLabel={`Connections for ${flowName}`}
+      />
     </Box>
   );
-}
-
-function truncate(value: string, max: number): string {
-  return value.length > max ? `${value.slice(0, max - 1)}…` : value;
 }

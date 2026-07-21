@@ -25,6 +25,7 @@ function lazyPage(area: string, loader: () => Promise<{ [key: string]: Component
 
 const DashboardPage = lazyPage('Dashboard', () => import('./pages/dashboard/DashboardPage'), 'DashboardPage');
 const WorkspacePage = lazyPage('Workspace', () => import('./pages/workspace/WorkspacePage'), 'WorkspacePage');
+const WorkspaceMapPage = lazyPage('Workspace system map', () => import('./pages/workspace/WorkspaceMapPage'), 'WorkspaceMapPage');
 const CodebasePage = lazyPage('Codebase overview', () => import('./pages/codebase/CodebasePage'), 'CodebasePage');
 const CodebaseOverview = lazyPage('Overview', () => import('./pages/codebase/CodebaseOverview'), 'CodebaseOverview');
 const CodebaseCapabilities = lazyPage('Capabilities', () => import('./pages/codebase/CodebaseCapabilities'), 'CodebaseCapabilities');
@@ -66,6 +67,7 @@ export const router = createBrowserRouter([
     children: [
       { index: true, element: <DashboardPage /> },
       { path: 'workspaces/:workspaceId', element: <WorkspacePage /> },
+      { path: 'workspaces/:workspaceId/map', element: <WorkspaceMapPage /> },
       {
         path: 'codebases/:projectId',
         element: <CodebasePage />,

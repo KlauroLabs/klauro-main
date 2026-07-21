@@ -4,18 +4,24 @@
 // confidence/category that only fit a full-page density. Data:
 // AnalysisSummary's architecture_type / architectural_patterns /
 // architectural_inventory_counts / pattern_balance (query.ts buildSummary —
-// see casSummary.ts's ExtendedAnalysisSummary).
+// see casSummary.ts's ExtendedAnalysisSummary). The diagram panel (added by
+// the clickables-diagrams lane) is the ADD-the-diagram target LANE-COMMON
+// called out — it replaces the placeholder box that used to sit here; see
+// apps/app/docs/briefs/diagrams.md.
 import { Box, Chip, LinearProgress, Paper, Stack, Typography } from '@mui/material';
 import { useParams } from 'react-router-dom';
 import { LoadingState } from '../../layout/LoadingState';
 import { ErrorState } from '../../layout/ErrorState';
 import { EmptyState } from '../../layout/EmptyState';
 import { useProjectSummary } from '../../hooks/useProjectSummary';
+import { useDasIndex } from '../../hooks/useDasUnits';
 import { asExtendedSummary } from './casSummary';
+import { ArchitectureDiagram } from './sections/ArchitectureDiagram';
 
 export function CodebaseArchitecture() {
   const { projectId } = useParams<{ projectId: string }>();
   const summaryQuery = useProjectSummary(projectId);
+  const dasIndex = useDasIndex(projectId);
 
   if (!projectId) return null;
   if (summaryQuery.isLoading) return <LoadingState label="Loading architecture…" />;
@@ -36,6 +42,11 @@ export function CodebaseArchitecture() {
         <Typography variant="caption" color="text.disabled">System type</Typography>
         <Typography variant="h3" sx={{ mt: 0.5 }}>{summary.architecture_type || 'Not yet determined'}</Typography>
       </Paper>
+
+      <Box>
+        <Typography variant="subtitle1" sx={{ mb: 2 }}>Architecture diagram</Typography>
+        <ArchitectureDiagram projectId={projectId} evidence={dasIndex.evidence} />
+      </Box>
 
       <Box>
         <Typography variant="subtitle1" sx={{ mb: 2 }}>Detected patterns</Typography>

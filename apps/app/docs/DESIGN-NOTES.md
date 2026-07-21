@@ -615,3 +615,287 @@ the List page's "N linked" CAPABILITIES column already surfaces the count with o
 honest), just not rendered as its own role/rationale panel. Flagging this as a real conflict between
 the task brief and the binding design-fidelity directive for design to resolve — not silently
 dropped and not silently added.
+
+## clickables-diagrams lane — interactive-element sweep + full-diagram views
+
+Full data-source brief for everything diagram-shaped: `apps/app/docs/briefs/diagrams.md`.
+
+### Sweep table — every interactive/clickable element across the 5 designed frames
+
+Frames pulled via `get_design_context`/`get_metadata` (file `Ux2aXXgq4jzD9T4TZaDAw8`). Elements
+already verified wired by their owning page lane (confirmed here by re-reading their code, not
+re-guessed) are marked accordingly rather than re-litigated; this lane's own fixes are marked
+**FIXED** with the destination.
+
+| Frame | Element | Wired? | Destination |
+|---|---|---|---|
+| Home (1698:13626) | "Jump Back In" card arrow (`arrow-narrow-up-right`) | Yes (page-dashboard) | last-opened codebase/workspace route |
+| Home | Workspace row arrow (`arrow-narrow-up-right`) x4 | Yes (`WorkspaceCard.tsx`, `RouterLink`) | `/workspaces/:id` |
+| Home | Sidebar nav items / "Add Workspace" / settings | Yes (ui-scaffold `AppShell`) | respective routes |
+| Home | Search / notifications / avatar dropdown (topbar) | Yes (ui-scaffold) | topbar actions |
+| Workspace (1748:6595) | System Map zoom-control row (`cursor`/`grid`/`minus`/`plus`) | **FIXED** (was decorative "not yet interactive") | `/workspaces/:workspaceId/map` (new WorkspaceMapPage) |
+| Workspace | Repository card arrow (`arrow-narrow-up-right`) x4+ | Yes (`RepositoryCard.tsx`) | `/codebases/:id` |
+| Workspace | Repositories filter badges (tag/type dropdowns) | Yes (page-workspace, `RepositoriesSection.tsx`) | in-page filter |
+| Workspace | Breadcrumb / search / notifications / avatar | Yes (ui-scaffold) | topbar actions |
+| Repo overview (1647:37709) | Section 01–05 "See all" links | Yes (`SectionHeader` `seeAllHref`, all 5 sections) | `/codebases/:id/<section>` |
+| Repo overview | Section 04 Architecture Diagram panel | **FIXED** (was a static dashed placeholder) | real `deployable_evidence` diagram, card preview → opens `/codebases/:id/architecture` on click |
+| Repo overview | Architecture panel's 40px icon + 164px labeled button pair (`1742:6106`) | Not wired — label text unresolvable from Figma metadata (component-instance override, file too large to force full code) | see note below |
+| Repo overview | Reanalyze button (header) | Yes (page-codebase, `CodebaseHeader.tsx`) | triggers reanalysis |
+| Repo overview | Capability/Flow/Entity row click-throughs | Yes (respective section components) | detail routes |
+| Flow List (2030:31178) | Row click → flow detail | Yes (page-flows) | `/codebases/:id/flows/:flowId` |
+| Flow List | "Tags" filter | Yes (page-flows, reinterpreted as entry-modality filter — see existing note above) | in-page filter |
+| Flow List | Search / sort controls | Yes (page-flows) | in-page |
+| Flow Overview (1982:5977) | System Connection Map | **FIXED** (was a bespoke static SVG) | now real zoom/pan `GraphCanvas`, same route (no separate full view — see diagrams.md) |
+| Flow Overview | System Connection Map's 40px icon + 164px labeled button pair (`1982:8400`) | Not wired — same unresolvable-label issue as the Architecture panel's pair | see note below |
+| Flow Overview | Entry Points card link | Yes (page-flows) | `/codebases/:id/entry-points/:epId` |
+| Flow Overview | Step inspector row selection | Yes (page-flows) | in-page step switch |
+| All frames | Sidebar navigation items, star/favorite icon, notifications bell | Yes (ui-scaffold `AppShell`) | respective routes / no-op placeholders already logged by ui-scaffold |
+
+### Diagram-panel button pair (`1742:6106` Repo overview, `1982:8400` Flow Overview) — unresolved label, not wired
+Both the Architecture Diagram panel and the System Connection Map panel carry the same button
+pair top-right: a 40×40 icon-only button and a 164×40 labeled button (`Buttons/Button`
+instances). Figma's `get_design_context`/`get_metadata` response for these frames is large
+enough that both calls fell back to sparse metadata (node tree only, no resolved
+component-instance text), so the labeled button's actual text is unrecoverable without a
+narrower, per-instance fetch this lane didn't have budget for. What IS verifiable: this same
+pair sits in the SAME relative position on every diagram-family panel in the file, while EVERY
+confirmed "navigate to a different route" affordance elsewhere in these two frames (the section
+"See all" links, the flow-detail entry-point card link) is a distinct, separately-labeled
+element — never this icon+button pair. Treating the pair as an in-panel action (e.g. regenerate/
+toggle) rather than a hidden second navigation affordance is the reading consistent with the
+rest of the file; it was left unwired rather than guessed at, and is flagged here as a genuine
+open question for design rather than silently assumed either way.
+
+### SystemMapCard's zoom row wired to the full map, not made a real zoomable preview
+The System Map card's chip-list/relationship-list preview (see the existing note above — no
+layout coordinates exist for `runtime_components`, so a pixel-faithful in-card diagram was never
+buildable) has no spatial canvas to zoom into. Rather than leave the zoom-control row permanently
+decorative, it now opens `/workspaces/:workspaceId/map` — the real `GraphCanvas` where zoom/pan
+is actually meaningful. This is a deliberate interpretation of LANE-COMMON's "SystemMapCard's
+zoom/expand → the full map route" instruction, since Figma shows no separate "expand" icon
+distinct from the zoom row itself on this card.
+
+### Architecture diagram — real data, narrower edge set than "communication seams" implies
+The previous placeholder's rationale (`apps/app/docs/briefs/architecture.md`, "no live component/
+connection topology to draw it from today") undercounted what's actually reachable:
+`deployable_evidence` (with its `bundled_into` field) IS on the HTTP `/cas` payload and IS a
+real, evidence-backed relationship — just narrower than a full communication-seam graph (see
+`apps/app/docs/briefs/diagrams.md`'s "Data realities" for the full accounting of what's still
+missing: true service-to-service seam edges, which remain MCP-only via
+`get_communication_seams`). This note supersedes that one claim in architecture.md without
+editing that file directly (owned by the page-codebase lane).
+
+### Perspective lenses — capability/data/runtime facets left out, not fabricated
+Per the user-directed scope addition (`docs/SPEC-CONCEPTUAL-LAYER.md` / `docs/
+UNDERSTANDING-MODEL.md` / `get_unified_perspectives`'s facet shape), the two full-diagram views
+now carry a Structural (default) lens plus one or two more derived from real fields (Domain and
+Exposure on the system map; Exposure on the architecture diagram — see
+`apps/app/docs/briefs/diagrams.md` for the full table and field citations). Capability/
+conceptual, data/entity, and runtime/telemetry lenses were investigated and left out: each would
+need a join key (application-to-capability, application-to-entity-footprint,
+per-node runtime metrics) that doesn't exist on the HTTP payloads these diagrams already read.
+`get_unified_perspectives` itself (`apps/mcp-server/src/query.ts`) is MCP-only and composes only
+two facets (behavioral flows + structural conflicts/paradigms) — not a five-facet node/edge
+graph — so it was not a usable data source for a diagram lens as-is.
+
+### Remote coordination fabric degraded to local for this lane's session
+`fab_claim_work` and `fab_list_active_work` both returned "Remote fabric responded 521" and
+degraded to the local-only awareness tier for the duration of this lane's work — agents on other
+machines would not have seen this lane's claim. Flagging as an infrastructure finding, not a
+silent gap: the claim itself still succeeded locally and no peer collision was observed.
+
+## data-wiring-repair lane
+
+DATA layer sweep across the whole app: which hooks feed which designed elements, fixing elements
+that render empty despite the CAS actually carrying the data, and producing one authoritative
+gap table replacing this file's scattered per-lane guesses. Scope: `src/hooks/`,
+`src/pages/codebase/`, `src/pages/deployable/`, plus the two `src/pages/dashboard/` files this
+required (`JumpBackInCard.tsx`, `CodebasePage.tsx` — no dashboard-lane claim was active this
+session; disjoint from the concurrently-active `logo-favicon` lane's `src/assets/`/`Logo.tsx`/
+favicon/`index.html` claim).
+
+### CORRECTION — Dependencies section did NOT have "zero API surface"
+The page-codebase lane's original entry above ("Dependencies section has NO web-API route at
+all — data gap") checked the wrong layer: it grepped `remote-analyzer-service.ts` for a
+dedicated `/dependencies` REST route and found none, and concluded from that alone that no HTTP
+path reaches external-service/library data at all. But `GET /api/projects/:id/cas` — already
+fetched by this same page's Architecture section for `deployable_evidence` — carries
+`external_services` and `libraries`/`dependency_manifest` too (`CASOutput`,
+`packages/analyzer-core/src/types/cas.types.ts`); the page-integrations lane's
+`useExternalServices.ts`/`useLibraries.ts` already read exactly those fields and render real data
+on `/codebases/:projectId/integrations`. There was no missing backend route, only a preview
+section and a derived full-page route that never called the hooks that already existed.
+**Fixed**: `DependenciesSection.tsx` (preview: external-service chips + a library-count caption)
+and `CodebaseDependencies.tsx` (full page: now reuses page-integrations' own
+`ExternalServicesList`/`LibrariesList` components directly, one source of truth, not a second
+rendering of the same facts) both now call `useExternalServices`/`useLibraries`. The permanent
+empty state is gone; an honest empty state remains for the real case of a codebase with neither.
+
+### CORRECTION — monorepo/deployable structure was already wired, by a different lane
+This lane's task brief named "monorepo understanding missing" as a second gap to fix, citing
+`cas.deployable_evidence` + `dasIndex.ts`. Checked `ArchitectureSection.tsx` (Repo overview's
+section 04, already reusing `useDasIndex`) and found the clickables-diagrams lane had already
+wired `ArchitectureDiagram` to real `deployable_evidence` nodes/`bundled_into` edges, clickable
+into `/codebases/:id/deployables/:dasUnitId` for promoted units (see that lane's own entry
+above, "Architecture diagram — real data, narrower edge set..."). The Figma "Repo overview" frame
+has no separate deployable-count/monorepo-structure element beyond the Architecture section (see
+the 4-card stat row's fixed Capabilities/Entry points/Contributors/Codebase age set, and the
+element-coverage checklist above) — so per the DESIGN FIDELITY RULE there is nothing left to add
+here without inventing a new element the frame doesn't show. No changes made; flagging that the
+brief's #2 was already satisfied to avoid a second lane re-deriving the same diagram.
+
+### Fixed — "Jump Back In" Capabilities and Last Opened
+Of the four data gaps the page-dashboard lane logged for this card (Lines, Capabilities,
+Contributors, Last Opened):
+- **Capabilities** — wired. `AnalysisSummary.capabilities` is on the exact same
+  `GET /api/projects/:id/analysis` response `useProjectSummary` already fetches for
+  `CodebaseOverview`; `JumpBackInCard` now calls the same hook directly (react-query dedupes by
+  query key, so opening the featured project doesn't double-fetch).
+- **Last Opened** — wired, as real client-side data rather than a repurposed analysis timestamp
+  (the page-dashboard lane's note explicitly rejected that repurposing, correctly — an analysis
+  timestamp is not "when you looked at it"). New `useRecentProjectViews.ts`
+  (`recordProjectOpened`/`getLastOpenedAt`, a thin `localStorage` map keyed by project id).
+  `CodebasePage.tsx` (the shell every `/codebases/:projectId/*` child route mounts under) calls
+  `recordProjectOpened` once per visit; `JumpBackInCard` reads it back through
+  `formatRelativeTime`. Honest "—" for a project this browser has never actually opened
+  (first-ever visit, a different device, or a cleared local store) — never a fabricated time.
+- **Lines** and **Contributors** — confirmed true gaps, not wired. See the gap table below for
+  why (no field exists for Lines anywhere; Contributors exists only as a *workspace*-level
+  aggregate that would need a second, heavier fetch this route has no workspace id to make).
+
+### Authoritative gap table
+Verified against real field/route definitions (`packages/analyzer-core/src/types/cas.types.ts`,
+`apps/mcp-server/src/remote-analyzer-service.ts`, `apps/mcp-server/src/cross-codebase-analysis.ts`,
+and `apps/app/src/api.ts`'s response types) rather than re-guessed. The web app's own
+`GET /api/projects/:id/*` / `GET /api/workspaces/:id/*` HTTP surface could not be hit directly
+this session — the bearer token in `~/.klauro/auth.json` (the one this lane's charter names as
+safe to use) returned `"Sign in required"` on every route including `/api/me`, for this account.
+Per the standing CARDINAL rule against `klauro login` clobbering the user's session, no re-auth
+was attempted; findings below come from reading the served-field definitions and the analyzer
+route source directly; a human should re-check `~/.klauro/auth.json` token freshness.
+
+| Element | Screen | Status | Source |
+|---|---|---|---|
+| Dependencies section (chips) | Repo overview §05 | **Fixed** — fed now | `useExternalServices`/`useLibraries` off `cas.external_services`/`cas.libraries` |
+| Full Dependencies page | `/codebases/:id/dependencies` | **Fixed** — fed now | same hooks, reuses page-integrations' list components |
+| Architecture diagram (deployable/monorepo structure) | Repo overview §04 | Already fed (prior lane) | `useDasIndex` over `cas.deployable_evidence`, clickable into DAS unit routes |
+| Jump Back In — Capabilities | Home | **Fixed** — fed now | `useProjectSummary(project.id).summary.capabilities` |
+| Jump Back In — Last Opened | Home | **Fixed** — fed now (client-side) | `useRecentProjectViews.ts`, `localStorage`, recorded by `CodebasePage` |
+| Jump Back In — Lines | Home | True gap | no lines-of-code field anywhere in `AnalysisSummary`/`ProjectRevision`/`CASSystem` |
+| Jump Back In — Contributors | Home | True gap (access-cost, not absence) | real field exists only workspace-scoped (`WorkspaceActivitySummary.contributors[].projects[]`, `cross-codebase-analysis.ts`); this route has no workspace id and would need a full `GET /api/workspaces/:id/analysis` fetch per card to join it |
+| Codebase Stats — Contributors | Repo overview stat row | True gap (same as above) | same workspace-scoped field, same missing-workspace-id problem on `/codebases/:id` |
+| Codebase Stats — Codebase age | Repo overview stat row | True gap | no repo-age/commit-history field on `AnalysisSummary`/`CASSystem`; `total_files` (real) is the fallback caption already shown |
+| System Complexity score/trend | Workspace | True gap (page-workspace's scope, confirmed not mine to fix) | no `complexity_score`/`complexity_trend` field on the served WAS graph |
+| Change Activity itemized feed | Home + Workspace | True gap (page-dashboard's scope, confirmed) | `get_changes_since`/`get_changes_between` are MCP-only, not on REST; no author/title attribution anywhere either |
+| Flow List telemetry columns (AVG USER/MONTH, AVG BUGS/MONTH, EXECUTION TIME) | Flow List | True gap (page-flows' scope, confirmed) | `FlowConcept` carries no usage/defect/latency metrics; not joined onto `/conceptual` |
+| Entry point telemetry (request_count/error_rate/p50-99) | Entry point detail | True gap (entry-points lane's scope, confirmed) | ingestion exists (`ingest_telemetry`) but isn't joined onto served CAS entry points |
+
+Every "confirmed" row above was re-checked against the cited source this session, not just
+copy-forwarded from the earlier entry — none had flipped to available.
+
+## fidelity-repair lane (2026-07-20)
+
+User reviewed the live, signed-in app against the Figma and flagged three concrete violations:
+cramped stat rows, missing engineered-geometry icon language (plain MUI icons / colored-box
+placeholders instead of Figma's outlined symbol set), and elements added beyond the Figma frame
+(a repo-type badge styled where Figma designs something else, on the codebase overview). This
+pass re-pulled `get_screenshot` + `get_design_context` for all 5 frames and fixed every concretely
+evidenced violation found; each fix cites the exact Figma node it was checked against.
+
+### Icon library added — `src/components/icons/`
+Figma's actual vector icon nodes (coins-swap-02, activity, users-03, layers-two-01, etc.) export
+through the Figma MCP bridge as rasterized boolean-group PNGs, not path data (confirmed: zero
+`<svg>`/`<path>` in any `get_design_context` response pulled this session) — so they can't be
+losslessly traced. Following `EntryKindIcon.tsx`'s established precedent (stroke-only, one weight,
+`#B7BCC7` wireframe color, engineered fresh at the same visual geometry), added:
+- `StatGlyphIcon.tsx` — small (14-20px) stat-row glyphs: lines, capabilities, flows, entities,
+  contributors, repositories, workspace. Replaces MUI `LayersIcon`/`FolderIcon`/`GroupIcon` on
+  `JumpBackInCard`, `WorkspaceCard` (dashboard), `WorkspaceHeader`'s 5-stat row, `RepositoryCard`,
+  `RepositoriesSection`, and `CapabilityCard`'s flow/entity mini-stats.
+- `CapabilityGlyphIcon.tsx` — the 6-glyph capability-card rotation (coinsSwap/activity/
+  dollarCircle/speedometer/barChart/fileSearch), replacing the MUI Outlined-icon cycle on
+  `CapabilityCard.tsx`. Note: the bordered-box + accent-color treatment the build already had
+  actually matched Figma (confirmed via `get_design_context` on node 1647:37727) — only the glyph
+  rendering itself was wrong, not the surrounding chrome; kept the existing accent rotation since
+  no capability-taxonomy field exists to pick a glyph by meaning (see the "Capability cards merge
+  TWO independent sources" entry above).
+- `DecorativeStatIcon.tsx` — the 4-card Repo-overview stat row's larger (28px) decorative glyphs
+  (codepen/file-code-02/bezier-curve-03/intersect-square, confirmed via `get_metadata` on node
+  1647:40214), replacing generic MUI `HubOutlined`/`CodeOutlined`/`GroupOutlined`/`HistoryOutlined`.
+- `SystemComplexityGlyph.tsx` — a decorative geometric radial/orbit construction for the Workspace
+  "System Complexity" card's empty state (Figma node 1748:6595, "Group 294"), replacing a plain
+  MUI `HubOutlined` stand-in. This is the "decorative geometric line illustration" LANE-COMMON.md
+  calls for and the build previously had none of.
+- `UtilityGlyphIcon.tsx` — filter-badge glyphs (tag, sort). Fixes a real defect, not just a
+  style gap: `RepositoriesSection.tsx`'s "Tags" filter chip was rendering a raw 🏷 emoji as its
+  icon (`icon={<span>🏷</span>}`) — about as far from "engineered outline symbol" as possible.
+  Replaced with `tag`/`sort` glyphs matching Figma's tag-03/switch-horizontal-01 (node 1748:6595,
+  "Frame 1597881679").
+- `GithubMarkIcon.tsx` — built for the GitHub badge fix below; not yet wired everywhere pending
+  data (see removal note).
+
+### Removed for fidelity: `CodebaseHeader`'s repo-type badge
+`CodebaseHeader.tsx` rendered `<Chip size="small" label={type} />` next to the codebase title
+(showing e.g. "service"). `get_design_context` on node 1647:40202 (Repo overview header) shows
+Figma designs a bordered rounded-16 pill here containing a GitHub mark + the literal text
+"GitHub" — a repo-source link badge, not a type label; `AnalysisSummary.type` doesn't appear
+anywhere on this frame. **Removed for fidelity, was:** `{type ? <Chip size="small" label={type} />
+: null}` in `CodebaseHeader.tsx`, and the `type={summary.type}` prop passed from
+`CodebaseOverview.tsx`. Not replaced with a real GitHub badge yet — data gap: `Project.repo_url`
+(api.ts:24) exists but no route this page fetches (`GET /api/projects/:id/analysis`, the only
+per-project call `CodebaseOverview` makes) carries it, so there's no honest way to populate the
+correct badge today. `GithubMarkIcon.tsx` was still built so a future pass can wire the real pill
+the moment `repo_url` is reachable here, rather than leaving the wrong element in place while
+that gap closes.
+
+### Spacing fixed to Figma's exact 8px-grid values (was eyeballed)
+Every number below was read off `get_design_context`'s Tailwind gap classes for the cited node,
+not re-eyeballed:
+- `JumpBackInCard.tsx` stat row (node 1864:9867): icon-to-text gap is 8px, value-to-label gap is
+  4px (was: no icons at all, flat 4px run for value+label — see icon fix above). Stat-group gap
+  (32px) was already correct.
+- `WorkspaceCard.tsx` (dashboard, node 1864:9736): stat-group gap corrected 16px -> 24px; icon
+  fixed at 8px-to-text, value-label split to 4px (was a flat 8px run with no icon).
+- `WorkspaceHeader.tsx` 5-stat row (node 1807:6879, "Frame 1597881835"): stat-group gap corrected
+  24px -> **16px** (this is the one Figma actually specifies tighter than the dashboard's — not a
+  copy-paste of the Home screen's 32px/24px numbers); icon-to-text 8px, value-to-label 4px (was a
+  flat 6px run with a plain MUI icon).
+- `CapabilityCard.tsx` mini-stats (node 1647:37735): value-to-label gap corrected 8px -> 4px.
+- `CodebaseStats.tsx` 4-card row gap (24px) and `CapabilityCard`'s outer paddings/gaps (32px card
+  padding, 16px icon-title gap, 24px description-to-stats gap) were already correct — verified
+  against node 1647:37727, no change needed.
+
+### Element-coverage checklist refresh (this pass)
+
+**Home (1698:13626)** — re-verified against `get_screenshot`/`get_design_context`: greeting
+header, search bar, Jump Back In card (badge/title/workspace/stat row/Last Opened/open button),
+Workspace list (icon/name/domain/stat pair/open button), Change Activity panel — all present,
+spacing+icons now match. No elements beyond the frame found this pass.
+
+**Workspace (1748:6595)** — re-verified: status dot, title+badge, description, 5-stat row, System
+Map card (shell), System Complexity card (shell, now with the decorative glyph), Change Activity
+panel, Repositories section (title/icon/subtitle/Tags+Sort+Add controls/card grid) — all present.
+Repository cards' tag chips ARE Figma-designed (confirmed via screenshot: "Jest"/"Flask"/"FastAPI"
+pills on every card) — NOT a fidelity violation despite surface resemblance to the codebase-
+overview issue; left as-is.
+
+**Repo overview (1647:37709)** — re-verified header, 4-stat row, and Capabilities section (§01)
+against `get_design_context`; type badge removed (see above), icons swapped (see above). Sections
+02-05 (Critical Flows / Key Entities / Architecture / Dependencies) were NOT re-audited element-
+by-element this pass beyond their existing DESIGN-NOTES entries above — `get_metadata` on this
+frame surfaced that Figma's Critical Flows section (§02) is actually a full step-pipeline
+visualization with per-step badges (a "Badge" component: glyph + text + help-icon, node
+1726:5054) that the current `CriticalFlowsSection.tsx` (a simple row list) doesn't build — this is
+a diagram-shaped gap, not a spacing/icon-language one, and overlaps the `clickables-diagrams`
+peer lane's claimed scope. Flagged here rather than rebuilt, to avoid a collision.
+
+**Flow List (2030:31178) / Flow Overview (1982:5977)** — spot-checked via fresh `get_screenshot`
+pulls; the page-flows lane's icon language (engineered network-node title icon, colored role
+pills) already reads as faithful to the design language on inspection. Not re-audited element-by-
+element (out of this lane's primary evidence — the user's cited examples were dashboard/codebase-
+overview) beyond confirming no emoji/MUI-icon-language violations are visible on either screen.
+
+### Verification
+`npm run typecheck && npm run build && npm test` all green (190 tests, 0 failures) after every
+change in this pass; no existing test asserted on the removed type-chip's text, so none needed
+updating for that removal. NUL-byte count on every file touched this pass: 0.

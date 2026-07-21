@@ -69,7 +69,7 @@ export function WorkspacePage() {
 
       <Grid container spacing={3} sx={{ alignItems: 'stretch' }}>
         <Grid size={{ xs: 12, md: 7 }}>
-          <SystemMapCard components={runtimeComponents} links={runtimeLinks} />
+          <SystemMapCard workspaceId={workspaceId ?? ''} components={runtimeComponents} links={runtimeLinks} />
         </Grid>
         <Grid size={{ xs: 12, md: 5 }}>
           <Stack spacing={3}>

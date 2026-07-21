@@ -4,8 +4,8 @@
 // computes a complexity score or trend delta — built as the exact card shell
 // with an honest empty state in place of the metric. See DESIGN-NOTES.md.
 import { Box, Stack, Typography } from '@mui/material';
-import HubOutlined from '@mui/icons-material/HubOutlined';
 import { EmptyState } from '../../layout/EmptyState';
+import { SystemComplexityGlyph } from '../../components/icons/SystemComplexityGlyph';
 
 export function SystemComplexityCard() {
   return (
@@ -20,7 +20,7 @@ export function SystemComplexityCard() {
           </Typography>
         </Stack>
         <Stack direction="row" spacing={3} sx={{ alignItems: 'center' }}>
-          <HubOutlined sx={{ fontSize: 56, color: 'text.disabled' }} />
+          <SystemComplexityGlyph size={72} />
           <EmptyState title="Not computed yet" description="A workspace-level complexity score isn't produced by the current analysis." />
         </Stack>
       </Stack>

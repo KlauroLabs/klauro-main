@@ -13,6 +13,7 @@ import { EmptyState } from '../../layout/EmptyState';
 import { useProjectSummary } from '../../hooks/useProjectSummary';
 import { useProjectConceptual } from '../../hooks/useProjectConceptual';
 import { useReanalyzeProject } from '../../hooks/useReanalyze';
+import { useDasIndex } from '../../hooks/useDasUnits';
 import { CodebaseHeader } from './CodebaseHeader';
 import { CodebaseStats } from './CodebaseStats';
 import { CapabilitiesSection } from './sections/CapabilitiesSection';
@@ -27,6 +28,7 @@ export function CodebaseOverview() {
   const summaryQuery = useProjectSummary(projectId);
   const conceptualQuery = useProjectConceptual(projectId);
   const reanalyze = useReanalyzeProject();
+  const dasIndex = useDasIndex(projectId);
 
   if (!projectId) return null;
 
@@ -54,7 +56,6 @@ export function CodebaseOverview() {
     <Box>
       <CodebaseHeader
         name={summary.name || projectId}
-        type={summary.type}
         description={summary.description}
         analysisTimestamp={summary.analysis_timestamp}
         onReanalyze={() => reanalyze.mutate({ id: projectId, name: summary.name || projectId })}
@@ -73,6 +74,7 @@ export function CodebaseOverview() {
           projectId={projectId}
           systemType={summary.architecture_type}
           patterns={summary.architectural_patterns ?? architectureSummary?.architectural_patterns ?? []}
+          deployableEvidence={dasIndex.evidence}
         />
         <DependenciesSection projectId={projectId} />
       </Stack>

@@ -2,6 +2,10 @@ import { Box, Chip, IconButton, Stack, Typography } from '@mui/material';
 import ArrowOutwardIcon from '@mui/icons-material/ArrowOutward';
 import { Link as RouterLink } from 'react-router-dom';
 import type { Project } from '../../api';
+import { StatGlyphIcon, type StatGlyph } from '../../components/icons/StatGlyphIcon';
+import { useProjectSummary } from '../../hooks/useProjectSummary';
+import { getLastOpenedAt } from '../../hooks/useRecentProjectViews';
+import { formatRelativeTime } from './formatRelativeTime';
 
 export interface JumpBackInTarget {
   project: Project;
@@ -11,14 +15,26 @@ export interface JumpBackInTarget {
 
 /**
  * Figma "Home" (node 1698-13626): "Jump Back In" section — one card for the
- * most recently touched project. The design's stat row (Lines / Capabilities
- * / Contributors) and "Last Opened" timestamp all depend on data this page
- * doesn't have yet (no lines-of-code metric, no per-user view history, no
- * contributor count in the API surface — see apps/app/docs/DESIGN-NOTES.md).
- * Built with the exact shape from Figma; unavailable stats render an honest
- * "—" rather than a fabricated number.
+ * most recently touched project. Of the design's stat row (Lines /
+ * Capabilities / Contributors) and "Last Opened" timestamp:
+ * - **Capabilities** IS available (`AnalysisSummary.capabilities` via the
+ *   same `useProjectSummary` hook CodebaseOverview already uses) — wired
+ *   below, react-query-deduped against CodebaseOverview's identical query
+ *   key the moment this project has actually been opened once.
+ * - **Last Opened** is now real, client-side data (`useRecentProjectViews.ts`
+ *   — recorded by `CodebasePage` on every visit); honest "—" until this
+ *   browser has actually opened the project once.
+ * - **Lines** and **Contributors** remain true gaps — no lines-of-code
+ *   metric or contributor count exists anywhere in the API surface this page
+ *   can reach without a full per-workspace analysis fetch (see
+ *   apps/app/docs/DESIGN-NOTES.md for the full accounting).
  */
 export function JumpBackInCard({ target }: { target: JumpBackInTarget }) {
+  const summaryQuery = useProjectSummary(target.project.id);
+  const capabilities = summaryQuery.data?.status === 'ready' ? summaryQuery.data.summary?.capabilities : undefined;
+  const lastOpenedAt = getLastOpenedAt(target.project.id);
+  const lastOpenedLabel = formatRelativeTime(lastOpenedAt);
+
   return (
     <Box
       sx={{
@@ -42,12 +58,12 @@ export function JumpBackInCard({ target }: { target: JumpBackInTarget }) {
             </Typography>
           </Stack>
           <Stack direction="row" spacing={4}>
-            <JumpBackInStat label="Lines" value="—" />
-            <JumpBackInStat label="Capabilities" value="—" />
-            <JumpBackInStat label="Contributors" value="—" />
+            <JumpBackInStat glyph="lines" label="Lines" value="—" />
+            <JumpBackInStat glyph="capabilities" label="Capabilities" value={capabilities !== undefined ? String(capabilities) : '—'} />
+            <JumpBackInStat glyph="contributors" label="Contributors" value="—" />
           </Stack>
           <Typography variant="caption" color="text.disabled">
-            Last Opened —
+            Last Opened {lastOpenedLabel ?? '—'}
           </Typography>
         </Stack>
         <IconButton
@@ -64,15 +80,18 @@ export function JumpBackInCard({ target }: { target: JumpBackInTarget }) {
   );
 }
 
-function JumpBackInStat({ label, value }: { label: string; value: string }) {
+function JumpBackInStat({ glyph, label, value }: { glyph: StatGlyph; label: string; value: string }) {
   return (
-    <Stack direction="row" spacing={0.5} sx={{ alignItems: 'center' }}>
-      <Typography variant="caption" sx={{ fontWeight: 600 }}>
-        {value}
-      </Typography>
-      <Typography variant="caption" color="text.secondary">
-        {label}
-      </Typography>
+    <Stack direction="row" spacing={1} sx={{ alignItems: 'center' }}>
+      <StatGlyphIcon glyph={glyph} />
+      <Stack direction="row" spacing={0.5} sx={{ alignItems: 'center' }}>
+        <Typography variant="caption" sx={{ fontWeight: 600 }}>
+          {value}
+        </Typography>
+        <Typography variant="caption" color="text.secondary">
+          {label}
+        </Typography>
+      </Stack>
     </Stack>
   );
 }

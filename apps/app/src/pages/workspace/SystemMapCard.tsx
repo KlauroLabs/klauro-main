@@ -3,13 +3,19 @@
 // 1597881791"). The Figma mock lays nodes out at fixed x/y canvas
 // coordinates; the WAS graph carries no layout coordinates for
 // runtime_components, so a pixel-faithful spatial diagram isn't data-driven
-// buildable. Built instead as: the exact card shell (title, subtitle, zoom
-// control row) with the node set shown as a wrapped row of labeled chips and
-// the edges (runtime_links) as a compact "A -> B" relationship list below —
-// this is the "runtime_links as first-class relationship list" requirement,
-// housed inside the one designed element that represents system topology
-// rather than as a second, undesigned section. See DESIGN-NOTES.md.
+// buildable AS A CARD-SIZED PREVIEW. Built instead as: the exact card shell
+// (title, subtitle, zoom control row) with the node set shown as a wrapped
+// row of labeled chips and the edges (runtime_links) as a compact "A -> B"
+// relationship list below — this is the "runtime_links as first-class
+// relationship list" requirement, housed inside the one designed element
+// that represents system topology rather than as a second, undesigned
+// section. The zoom-control row (previously decorative, "not yet
+// interactive") now opens the real deterministic-layout diagram at
+// /workspaces/:workspaceId/map (WorkspaceMapPage) — that route is where
+// zoom/pan is actually meaningful, since this card's own preview has no
+// spatial layout to zoom into. See DESIGN-NOTES.md.
 import { Box, Chip, Stack, Tooltip, Typography } from '@mui/material';
+import { useNavigate } from 'react-router-dom';
 import NearMeOutlined from '@mui/icons-material/NearMeOutlined';
 import GridViewOutlined from '@mui/icons-material/GridViewOutlined';
 import RemoveCircleOutlined from '@mui/icons-material/RemoveCircleOutlined';
@@ -19,12 +25,15 @@ import { EmptyState } from '../../layout/EmptyState';
 import type { WorkspaceRuntimeComponent, WorkspaceRuntimeLink } from '../../api';
 
 export interface SystemMapCardProps {
+  workspaceId: string;
   components: WorkspaceRuntimeComponent[];
   links: WorkspaceRuntimeLink[];
 }
 
-export function SystemMapCard({ components, links }: SystemMapCardProps) {
+export function SystemMapCard({ workspaceId, components, links }: SystemMapCardProps) {
+  const navigate = useNavigate();
   const nameById = new Map(components.map(component => [component.id, component.name]));
+  const openFullMap = () => navigate(`/workspaces/${workspaceId}/map`);
 
   return (
     <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1.5, p: 4, height: '100%' }}>
@@ -71,15 +80,28 @@ export function SystemMapCard({ components, links }: SystemMapCardProps) {
         <Stack
           direction="row"
           spacing={1}
-          sx={{ alignItems: 'center', justifyContent: 'center', border: 1, borderColor: 'divider', borderRadius: 5, py: 0.5, px: 1, width: 'fit-content', mx: 'auto' }}
+          onClick={openFullMap}
+          sx={{
+            alignItems: 'center',
+            justifyContent: 'center',
+            border: 1,
+            borderColor: 'divider',
+            borderRadius: 5,
+            py: 0.5,
+            px: 1,
+            width: 'fit-content',
+            mx: 'auto',
+            cursor: 'pointer',
+            '&:hover': { borderColor: 'primary.main' },
+          }}
         >
-          <Tooltip title="Select (not yet interactive)">
-            <NearMeOutlined fontSize="small" sx={{ color: 'text.disabled' }} />
+          <Tooltip title="Open the full, zoomable system map">
+            <NearMeOutlined fontSize="small" sx={{ color: 'text.secondary' }} />
           </Tooltip>
-          <GridViewOutlined fontSize="small" sx={{ color: 'text.disabled' }} />
-          <RemoveCircleOutlined fontSize="small" sx={{ color: 'text.disabled' }} />
-          <Typography variant="caption" color="text.disabled">100%</Typography>
-          <AddCircleOutlined fontSize="small" sx={{ color: 'text.disabled' }} />
+          <GridViewOutlined fontSize="small" sx={{ color: 'text.secondary' }} />
+          <RemoveCircleOutlined fontSize="small" sx={{ color: 'text.secondary' }} />
+          <Typography variant="caption" color="text.secondary">100%</Typography>
+          <AddCircleOutlined fontSize="small" sx={{ color: 'text.secondary' }} />
         </Stack>
       </Stack>
     </Box>

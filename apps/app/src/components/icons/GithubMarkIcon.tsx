@@ -1,0 +1,14 @@
+/**
+ * GitHub mark used inside the "GitHub" pill badge next to a codebase's title
+ * (Figma "Repo overview", node 1647:37709, "Frame 1597881663" -> "Badge" —
+ * confirmed via get_design_context: a bordered rounded-16 pill, vector mark
+ * + "GitHub" text, NOT a repo-type label. See CodebaseHeader.tsx and
+ * apps/app/docs/DESIGN-NOTES.md for the fidelity fix this replaces.)
+ */
+export function GithubMarkIcon({ size = 13 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="currentColor" role="img" aria-hidden="true">
+      <path d="M8 0C3.58 0 0 3.64 0 8.13c0 3.6 2.29 6.65 5.47 7.72.4.08.55-.18.55-.4 0-.2-.01-.86-.01-1.56-2.01.37-2.53-.5-2.69-.96-.09-.23-.48-.96-.82-1.15-.28-.15-.68-.53-.01-.54.63-.01 1.08.59 1.23.83.72 1.23 1.87.88 2.33.67.07-.53.28-.88.51-1.08-1.78-.2-3.64-.91-3.64-4.02 0-.89.31-1.62.82-2.19-.08-.2-.36-1.03.08-2.15 0 0 .67-.22 2.2.84a7.4 7.4 0 0 1 4 0c1.53-1.06 2.2-.84 2.2-.84.44 1.12.16 1.95.08 2.15.51.57.82 1.29.82 2.19 0 3.12-1.87 3.82-3.65 4.02.29.26.54.76.54 1.53 0 1.11-.01 2-.01 2.27 0 .22.15.48.55.4A8.13 8.13 0 0 0 16 8.13C16 3.64 12.42 0 8 0Z" />
+    </svg>
+  );
+}

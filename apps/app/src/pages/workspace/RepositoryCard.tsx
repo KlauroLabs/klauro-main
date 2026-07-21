@@ -7,11 +7,11 @@
 // than as a second undesigned list. See DESIGN-NOTES.md for what a codebase
 // row can't carry here (per-repo narrative text, real avatar photos).
 import { Avatar, AvatarGroup, Box, Chip, IconButton, Stack, Tooltip, Typography } from '@mui/material';
-import LayersOutlined from '@mui/icons-material/LayersOutlined';
 import ArrowOutwardIcon from '@mui/icons-material/ArrowOutward';
 import { Link as RouterLink } from 'react-router-dom';
 import { formatRelativeTime } from '../dashboard/formatRelativeTime';
 import { initials, type WorkspaceContributor, type WorkspaceInputRef } from './workspaceHelpers';
+import { StatGlyphIcon } from '../../components/icons/StatGlyphIcon';
 
 export interface RepositoryCardProps {
   name: string;
@@ -28,7 +28,7 @@ export function RepositoryCard({ name, projectId, tags, input, contributors }: R
       <Stack direction="row" sx={{ justifyContent: 'space-between', alignItems: 'flex-start' }}>
         <Stack direction="row" spacing={1.5} sx={{ alignItems: 'center' }}>
           <Box sx={{ width: 36, height: 36, borderRadius: 1, border: 1, borderColor: 'divider', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <LayersOutlined fontSize="small" />
+            <StatGlyphIcon glyph="repositories" size={20} />
           </Box>
           <Typography variant="h6" component="h3">
             {name}

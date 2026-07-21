@@ -1,20 +1,29 @@
 // Section 04 — Architecture (Figma "Repo overview", node 1647:38159): system
 // type + a visual "Architecture Diagram" panel + pattern list. The diagram
-// itself (Figma's node-link "System Connection Map") has no live data source
-// wired yet — built as an honest placeholder panel rather than a fabricated
-// graph; see apps/app/docs/DESIGN-NOTES.md. "See all" -> /architecture.
+// panel (Figma's node-link "Architecture Diagram") now renders real
+// deployable_evidence nodes/bundled_into edges via the shared
+// ArchitectureDiagram component (clickables-diagrams lane) — see
+// apps/app/docs/briefs/diagrams.md for the data source and
+// apps/app/docs/DESIGN-NOTES.md for what's still a gap (true communication-
+// seam edges). "See all" -> /architecture.
 import { Box, Chip, Paper, Stack, Typography } from '@mui/material';
-import AccountTreeOutlinedIcon from '@mui/icons-material/AccountTreeOutlined';
+import { useNavigate } from 'react-router-dom';
 import { SectionHeader } from './SectionHeader';
+import { ArchitectureDiagram } from './ArchitectureDiagram';
 import type { ArchitecturalPatternSummary } from '../casSummary';
+import type { DeployableEvidence } from '../../deployable/dasTypes';
 
 export interface ArchitectureSectionProps {
   projectId: string;
   systemType?: string | null;
   patterns: ArchitecturalPatternSummary[];
+  deployableEvidence: DeployableEvidence[];
 }
 
-export function ArchitectureSection({ projectId, systemType, patterns }: ArchitectureSectionProps) {
+export function ArchitectureSection({ projectId, systemType, patterns, deployableEvidence }: ArchitectureSectionProps) {
+  const navigate = useNavigate();
+  const openFull = () => navigate(`/codebases/${projectId}/architecture`);
+
   return (
     <Box component="section" sx={{ mb: 6 }}>
       <SectionHeader
@@ -29,25 +38,7 @@ export function ArchitectureSection({ projectId, systemType, patterns }: Archite
           <Stack direction="row" spacing={1} sx={{ alignItems: 'center' }}>
             <Typography variant="subtitle1">{systemType || 'Architecture style not yet determined'}</Typography>
           </Stack>
-          <Box
-            sx={{
-              height: 220,
-              border: '0.75px dashed',
-              borderColor: 'divider',
-              borderRadius: 1.5,
-              display: 'flex',
-              flexDirection: 'column',
-              alignItems: 'center',
-              justifyContent: 'center',
-              gap: 1,
-              color: 'text.disabled',
-            }}
-          >
-            <AccountTreeOutlinedIcon sx={{ fontSize: 28 }} />
-            <Typography variant="caption">
-              Architecture diagram — no live component/connection data wired yet
-            </Typography>
-          </Box>
+          <ArchitectureDiagram projectId={projectId} evidence={deployableEvidence} compact onOpenFull={openFull} />
           {patterns.length > 0 ? (
             <Stack spacing={1}>
               <Typography variant="caption" color="text.disabled">Detected patterns</Typography>

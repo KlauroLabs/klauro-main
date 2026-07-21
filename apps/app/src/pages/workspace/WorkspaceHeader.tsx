@@ -5,15 +5,10 @@
 // Breadcrumb + topbar chrome live in AppShell, not here (see CodebaseHeader's
 // identical note for the Repo overview screen).
 import { Box, Chip, Stack, Tooltip, Typography } from '@mui/material';
-import LayersOutlined from '@mui/icons-material/LayersOutlined';
-import CategoryOutlined from '@mui/icons-material/CategoryOutlined';
-import AccountTreeOutlined from '@mui/icons-material/AccountTreeOutlined';
-import StorageOutlined from '@mui/icons-material/StorageOutlined';
-import GroupOutlined from '@mui/icons-material/GroupOutlined';
-import type { ReactNode } from 'react';
 import type { WorkspaceAnalysisResponse } from '../../api';
 import { formatCount } from './workspaceHelpers';
 import { formatRelativeTime } from '../dashboard/formatRelativeTime';
+import { StatGlyphIcon, type StatGlyph } from '../../components/icons/StatGlyphIcon';
 
 type WorkspaceGraph = NonNullable<WorkspaceAnalysisResponse['analysis']>;
 
@@ -72,27 +67,34 @@ export function WorkspaceHeader({ name, narrative, generatedAt, enrichmentStatus
         </Typography>
       )}
 
-      <Stack direction="row" spacing={3} sx={{ flexWrap: 'wrap' }}>
-        <Stat icon={<LayersOutlined fontSize="inherit" />} value={stats.repositories} label="Repositories" />
-        <Stat icon={<CategoryOutlined fontSize="inherit" />} value={stats.capabilities} label="Capabilities" />
-        <Stat icon={<AccountTreeOutlined fontSize="inherit" />} value={stats.flows} label="Flows" />
-        <Stat icon={<StorageOutlined fontSize="inherit" />} value={stats.entities} label="Entities" />
-        <Stat icon={<GroupOutlined fontSize="inherit" />} value={stats.contributors} label="Contributors" />
+      {/* Figma's stat row (node 1748:6595, "Frame 1597881835") gaps stat
+          groups 16px apart, each with an 8px icon-to-text gap and a 4px
+          value-to-label gap — not a flat spacing run. */}
+      <Stack direction="row" spacing={2} sx={{ flexWrap: 'wrap' }}>
+        <Stat glyph="repositories" value={stats.repositories} label="Repositories" />
+        <Stat glyph="capabilities" value={stats.capabilities} label="Capabilities" />
+        <Stat glyph="flows" value={stats.flows} label="Flows" />
+        <Stat glyph="entities" value={stats.entities} label="Entities" />
+        <Stat glyph="contributors" value={stats.contributors} label="Contributors" />
       </Stack>
     </Stack>
   );
 }
 
-function Stat({ icon, value, label }: { icon: ReactNode; value: number | undefined; label: string }) {
+function Stat({ glyph, value, label }: { glyph: StatGlyph; value: number | undefined; label: string }) {
   return (
-    <Stack direction="row" spacing={0.75} sx={{ alignItems: 'center' }}>
-      <Box sx={{ display: 'flex', color: 'text.secondary', fontSize: 16 }}>{icon}</Box>
-      <Typography variant="caption" sx={{ fontWeight: 600 }}>
-        {formatCount(value)}
-      </Typography>
-      <Typography variant="caption" color="text.secondary">
-        {label}
-      </Typography>
+    <Stack direction="row" spacing={1} sx={{ alignItems: 'center' }}>
+      <Box sx={{ display: 'flex' }}>
+        <StatGlyphIcon glyph={glyph} size={16} />
+      </Box>
+      <Stack direction="row" spacing={0.5} sx={{ alignItems: 'center' }}>
+        <Typography variant="caption" sx={{ fontWeight: 600 }}>
+          {formatCount(value)}
+        </Typography>
+        <Typography variant="caption" color="text.secondary">
+          {label}
+        </Typography>
+      </Stack>
     </Stack>
   );
 }

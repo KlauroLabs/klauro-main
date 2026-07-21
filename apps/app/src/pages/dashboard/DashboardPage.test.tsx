@@ -4,6 +4,7 @@ import { renderWithProviders } from '../../test/renderWithProviders';
 import { DashboardPage } from './DashboardPage';
 import * as workspacesHooks from '../../hooks/useWorkspaces';
 import * as workspaceAnalysisHooks from '../../hooks/useWorkspaceAnalysis';
+import * as projectSummaryHooks from '../../hooks/useProjectSummary';
 import * as authHooks from '../../auth/AuthProvider';
 import type { AppStateData } from '../../api';
 
@@ -65,6 +66,14 @@ describe('DashboardPage', () => {
       isError: false,
       data: undefined,
     } as ReturnType<typeof workspaceAnalysisHooks.useWorkspaceAnalysis>);
+    // JumpBackInCard's Capabilities stat (data-wiring-repair lane) reads
+    // useProjectSummary directly — mocked here for the same reason
+    // useWorkspaceAnalysis is, so this suite never issues a real fetch.
+    vi.spyOn(projectSummaryHooks, 'useProjectSummary').mockReturnValue({
+      isLoading: false,
+      isError: false,
+      data: undefined,
+    } as ReturnType<typeof projectSummaryHooks.useProjectSummary>);
   });
 
   it('renders a loading state', () => {

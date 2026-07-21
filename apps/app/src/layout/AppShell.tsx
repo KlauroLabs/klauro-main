@@ -40,6 +40,7 @@ import {
 import { NavItem } from './NavItem';
 import { useAuth } from '../auth/AuthProvider';
 import { useWorkspaces } from '../hooks/useWorkspaces';
+import { Logo } from '../components/Logo';
 
 const drawerWidth = 258;
 
@@ -68,19 +69,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         <Stack sx={{ height: '100%', justifyContent: 'space-between' }}>
           <Stack>
             <Stack direction="row" sx={{ alignItems: 'center', justifyContent: 'space-between', px: 2, py: 3 }}>
-              <Stack direction="row" spacing={1} sx={{ alignItems: 'center' }}>
-                <Box
-                  sx={{
-                    width: 24,
-                    height: 24,
-                    borderRadius: '6px',
-                    bgcolor: 'primary.main',
-                  }}
-                />
-                <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
-                  klauro
-                </Typography>
-              </Stack>
+              <Logo variant="lockup" size={20} />
             </Stack>
             <Divider />
             <List sx={{ px: 1, py: 1 }}>

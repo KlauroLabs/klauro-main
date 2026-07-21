@@ -5,6 +5,9 @@ import { CodebaseOverview } from './CodebaseOverview';
 import * as summaryHooks from '../../hooks/useProjectSummary';
 import * as conceptualHooks from '../../hooks/useProjectConceptual';
 import * as reanalyzeHooks from '../../hooks/useReanalyze';
+import * as dasHooks from '../../hooks/useDasUnits';
+import * as externalServicesHooks from '../../hooks/useExternalServices';
+import * as librariesHooks from '../../hooks/useLibraries';
 
 const routeProps = { route: '/codebases/p1', path: '/codebases/:projectId' };
 
@@ -33,6 +36,30 @@ describe('CodebaseOverview', () => {
       mutate: vi.fn(),
       isPending: false,
     } as unknown as ReturnType<typeof reanalyzeHooks.useReanalyzeProject>);
+    // ArchitectureSection's diagram (clickables-diagrams lane) reads
+    // deployable_evidence via useDasIndex — mocked here the same way
+    // summary/conceptual are, so this test doesn't need an AuthProvider.
+    vi.spyOn(dasHooks, 'useDasIndex').mockReturnValue({
+      evidence: [],
+      units: [],
+      promoted: false,
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof dasHooks.useDasIndex>);
+    // DependenciesSection (page-codebase) reuses the integrations lane's
+    // hooks (useExternalServices/useLibraries) — both built on useProjectCas
+    // — mocked the same way for the same reason as useDasIndex above.
+    vi.spyOn(externalServicesHooks, 'useExternalServices').mockReturnValue({
+      externalServices: [],
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof externalServicesHooks.useExternalServices>);
+    vi.spyOn(librariesHooks, 'useLibraries').mockReturnValue({
+      libraries: [],
+      dependencyManifest: undefined,
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof librariesHooks.useLibraries>);
   });
 
   it('renders a loading state', () => {

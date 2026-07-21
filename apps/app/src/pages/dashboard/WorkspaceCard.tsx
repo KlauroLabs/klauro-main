@@ -1,12 +1,9 @@
-import type { ReactNode } from 'react';
 import { Box, IconButton, Stack, Typography } from '@mui/material';
-import LayersIcon from '@mui/icons-material/Layers';
-import FolderIcon from '@mui/icons-material/FolderOutlined';
-import GroupIcon from '@mui/icons-material/GroupOutlined';
 import ArrowOutwardIcon from '@mui/icons-material/ArrowOutward';
 import { Link as RouterLink } from 'react-router-dom';
 import type { Workspace } from '../../api';
 import { useWorkspaceAnalysis } from '../../hooks/useWorkspaceAnalysis';
+import { StatGlyphIcon, type StatGlyph } from '../../components/icons/StatGlyphIcon';
 
 /**
  * One row in the Figma "Home" (node 1698-13626) "Workspace" list: icon,
@@ -34,7 +31,7 @@ export function WorkspaceCard({ workspace }: { workspace: Workspace }) {
       <Stack direction="row" sx={{ alignItems: 'center', justifyContent: 'space-between' }}>
         <Stack direction="row" spacing={3} sx={{ alignItems: 'center' }}>
           <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 1, display: 'flex' }}>
-            <LayersIcon fontSize="small" />
+            <StatGlyphIcon glyph="workspace" size={20} />
           </Box>
           <Stack spacing={1}>
             <Typography variant="h6" component="span">
@@ -48,9 +45,9 @@ export function WorkspaceCard({ workspace }: { workspace: Workspace }) {
           </Stack>
         </Stack>
         <Stack direction="row" spacing={3} sx={{ alignItems: 'center' }}>
-          <Stack direction="row" spacing={2}>
-            <WorkspaceStat icon={<FolderIcon fontSize="inherit" />} value={workspace.project_count} label="Repositories" />
-            <WorkspaceStat icon={<GroupIcon fontSize="inherit" />} value={workspace.user_count} label="Contributors" />
+          <Stack direction="row" spacing={3}>
+            <WorkspaceStat glyph="repositories" value={workspace.project_count} label="Repositories" />
+            <WorkspaceStat glyph="contributors" value={workspace.user_count} label="Contributors" />
           </Stack>
           <IconButton
             component={RouterLink}
@@ -67,16 +64,18 @@ export function WorkspaceCard({ workspace }: { workspace: Workspace }) {
   );
 }
 
-function WorkspaceStat({ icon, value, label }: { icon: ReactNode; value: number; label: string }) {
+function WorkspaceStat({ glyph, value, label }: { glyph: StatGlyph; value: number; label: string }) {
   return (
     <Stack direction="row" spacing={1} sx={{ alignItems: 'center' }}>
-      {icon}
-      <Typography variant="caption" sx={{ fontWeight: 600 }}>
-        {value}
-      </Typography>
-      <Typography variant="caption" color="text.secondary">
-        {label}
-      </Typography>
+      <StatGlyphIcon glyph={glyph} />
+      <Stack direction="row" spacing={0.5} sx={{ alignItems: 'center' }}>
+        <Typography variant="caption" sx={{ fontWeight: 600 }}>
+          {value}
+        </Typography>
+        <Typography variant="caption" color="text.secondary">
+          {label}
+        </Typography>
+      </Stack>
     </Stack>
   );
 }
