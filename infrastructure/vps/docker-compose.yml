@@ -34,14 +34,6 @@ services:
       # survives container recreation. The server also warns loudly at startup
       # if this ever regresses (warnIfEphemeralCoordDir).
       KLAURO_COORD_DIR: /data/coordination
-      # Durable coordination board (incident 2026-07-21): without this the
-      # server's claim log defaults to ~/.klauro/coordination on the
-      # container's EPHEMERAL overlay filesystem — every restart erased the
-      # board (claims, seq, epoch) while the persistent /data volume sat
-      # unused. /data is the mounted /opt/klauro/data volume, so the board
-      # survives container recreation. The server also warns loudly at startup
-      # if this ever regresses (warnIfEphemeralCoordDir).
-      KLAURO_COORD_DIR: /data/coordination
       KLAURO_SELF_TELEMETRY_PROJECT: /data/workspaces/prj_wbW33m-wfETn1N41
       # One analysis worker at a time fits the 8GB host without competing heaps;
       # two parser workers use bounded parallelism inside that isolated job.
