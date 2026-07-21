@@ -1,8 +1,6 @@
 /**
- * fab.ts — a thin CLI over the REAL coordination local-store, so parallel
- * agents on one feature coordinate through the actual fabric (~/.klauro/
- * coordination). This is a live dogfood of claim_work / edit-lock / collision
- * on a real multi-agent build, not a simulation.
+ * fab.ts — a thin CLI over the real coordination local-store, so parallel
+ * agents on one feature coordinate through the actual fabric (~/.klauro/coordination).
  *
  *   npx tsx apps/mcp-server/scripts/fab.ts active
  *   npx tsx apps/mcp-server/scripts/fab.ts claim <agentId> "<intent>" <comma,paths> [symbols]
@@ -14,49 +12,26 @@
  *   npx tsx apps/mcp-server/scripts/fab.ts stash <agentId>
  *   npx tsx apps/mcp-server/scripts/fab.ts extend <agentId> <comma,addPaths> [comma,addSymbols]
  *
- * `diff`/`stash` (W6, SPEC-COORDINATION-FABRIC-V3 §6.3/§8: "scoped primitives")
- * are the direct answer to the stash-clobber incident (§3.2/§6.3): one agent's
- * tree-global `git stash` swept a peer's uncommitted work because git has no
- * concept of "whose paths these are." Both are LIMITED to `agentId`'s own
- * active claim paths (never the whole tree) — `diff` runs `git diff -- <paths>`
- * scoped to them; `stash` runs `git stash push -- <paths>` scoped to them, and
- * REFUSES (prints a clear message, exits non-zero) only in the one dangerous
- * case: `agentId` holds NO claimed paths to scope to AND other agents are
- * currently active, i.e. the exact whole-tree-fallback scenario that caused the
- * incident. This is a guardrail on the DESTRUCTIVE whole-tree command, not a
- * claim/edit-lock arbitration — every other awareness surface in this file
- * still never denies a claim.
+ * `diff`/`stash` must stay limited to agentId's own active claim paths, never
+ * the whole tree — a tree-global `git stash` can sweep a peer's uncommitted
+ * work, since git has no concept of "whose paths these are." `stash` refuses
+ * (exits non-zero) only when agentId holds no claimed paths and other agents
+ * are active — the dangerous whole-tree-fallback case. This is a guardrail on
+ * the destructive whole-tree command only; every other surface here never denies a claim.
  *
- * `extend` (W7, SPEC-COORDINATION-FABRIC-V3 §6.3/§8: "I also need to touch
- * X — is that safe?") appends scope onto `agentId`'s ACTIVE work-claim
- * (`<workspace>:<agentId>`, the id `claim` uses) without losing claim
- * identity — same claim_id, union of old+new paths/symbols. Runs the same
- * overlap scan `claim` does against the ADDED scope only, and surfaces
- * conflicts inline; the extension always succeeds (never denied). LOCAL-ONLY
- * for now (see the `extend` case below) — a remote-fabric mirror is proposed,
- * not yet wired (see the artifact diff referenced in the W6/W7 build report).
+ * `extend` appends scope onto agentId's active work-claim without losing
+ * claim identity (same claim_id, union of old+new paths/symbols); conflicts
+ * surface inline, extension always succeeds. Local-only for now.
  *
- * `watch` (W5, SPEC-COORDINATION-FABRIC-V3 §8) is a foreground process for a
- * human running a fleet from a terminal: it starts the local write-hook
- * (auto-announce/record real edits against active claims) for the resolved
- * repo root + workspace, plus the in-flight publisher when a remote fabric is
- * configured, and prints announced/unclaimed/published events to stdout until
- * Ctrl-C.
+ * `watch` is a foreground process for a human running a fleet from a
+ * terminal: starts the local write-hook plus the in-flight publisher when a
+ * remote fabric is configured, prints events to stdout until Ctrl-C.
  *
- * REMOTE MODE (cross-machine, docs/FABRIC-REMOTE.md) is CONFIG-DRIVEN: run
- * `klauro init` once inside the repo (it enables the fabric by default as
- * part of connecting the project) and every command above goes over
- * HTTPS to the coordination API persisted in the repo's .klaurorc
- * (`fabric.endpoint` / `fabric.workspace`; the Bearer token comes from the
- * same ~/.klauro/auth.json store `klauro init`/`login` maintain) — so agents
- * on different machines coordinate through one shared per-workspace claim
- * log with ZERO per-shell env setup. Full precedence lives in
- * coordination/fabric-config.ts (explicit > .klaurorc > FAB_REMOTE_URL/FAB_WS
- * env escape hatch for CI > local default). Server `seq`/`server_time` are
- * authoritative. Network failure NEVER crashes a command: it warns loudly and
- * degrades to the LOCAL fabric (same-machine peers only) so the advisory
- * system keeps working. No config + no env = byte-for-byte the original
- * local behavior.
+ * Remote mode (cross-machine, docs/FABRIC-REMOTE.md) is config-driven: `klauro
+ * init` persists fabric.endpoint/fabric.workspace into .klaurorc, and every
+ * command above goes over HTTPS with zero per-shell env setup. Network
+ * failure never crashes a command — it warns loudly and degrades to the local
+ * fabric so the advisory system keeps working.
  */
 import { spawnSync } from 'node:child_process';
 
