@@ -1,12 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
+import type { CoChangeIndex } from '../../../packages/analyzer-core/src/analyzer/core/co-change-index';
+import type { WorkClaim } from './coordination/types';
 import {
   buildCommunicationSeamSummary,
   buildConsistencyFlags,
   buildBundledDeployables,
   buildRuntimeTopologySummary,
   buildSystemFitSummary,
+  computeAdvisoryOverlap,
 } from './context-fabric';
 
 function baseCas(overrides: Partial<CASOutput> = {}): CASOutput {
@@ -166,4 +169,116 @@ test('buildSystemFitSummary weaves the vertical and names a bundled ship-unit', 
   assert.ok(fit.communication_seams);
   assert.ok(fit.consistency);
   assert.ok(fit.detail_tools.includes('get_product_map'));
+});
+
+// ---------------------------------------------------------------------------
+// computeAdvisoryOverlap — predictive (git-history co-change) layer, §F
+// ---------------------------------------------------------------------------
+
+function claim(overrides: Partial<WorkClaim> & { paths: string[] }): WorkClaim {
+  return {
+    claim_id: overrides.claim_id ?? `ws:${overrides.agent_id ?? 'peer'}`,
+    seq: 1,
+    workspace_id: 'ws',
+    agent_id: overrides.agent_id ?? 'peer',
+    agent_kind: 'claude',
+    scope: { repo: 'ws', paths: overrides.paths, symbols: [] },
+    intent: overrides.intent ?? 'peer work',
+    status: 'active',
+    created_at: new Date().toISOString(),
+    ttl_ms: 6 * 60 * 60 * 1000,
+    heartbeat_at: new Date().toISOString(),
+  } as WorkClaim;
+}
+
+test('computeAdvisoryOverlap: no coChangeIndex passed -> no predicted-co-change findings (unchanged behavior)', () => {
+  const others = [claim({ agent_id: 'peer1', paths: ['b.ts'] })];
+  const findings = computeAdvisoryOverlap({ agent_id: 'me', paths: ['a.ts'] }, others, undefined, {});
+  assert.deepEqual(findings, []);
+});
+
+test('computeAdvisoryOverlap: proposal predicts into a peer claim\'s actual path -> labeled prediction with probability', () => {
+  const coChangeIndex: CoChangeIndex = {
+    'a.ts': [{ file: 'b.ts', probability: 0.82, support: 12, lift: 4.1 }],
+  };
+  const others = [claim({ agent_id: 'peer1', paths: ['b.ts'], intent: 'edit b' })];
+  const findings = computeAdvisoryOverlap(
+    { agent_id: 'me', paths: ['a.ts'] },
+    others,
+    undefined,
+    { coChangeThreshold: 0.5 },
+    undefined,
+    coChangeIndex,
+  );
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0].reason, 'predicted-co-change');
+  assert.equal(findings[0].agent_id, 'peer1');
+  assert.ok(findings[0].prediction, 'prediction must be labeled, never conflated with a fact-based finding');
+  assert.equal(findings[0].prediction!.probability, 0.82);
+  assert.equal(findings[0].prediction!.file_a, 'a.ts');
+  assert.equal(findings[0].prediction!.file_b, 'b.ts');
+});
+
+test('computeAdvisoryOverlap: below-threshold co-change probability produces no finding', () => {
+  const coChangeIndex: CoChangeIndex = {
+    'a.ts': [{ file: 'b.ts', probability: 0.3, support: 4, lift: 2.2 }],
+  };
+  const others = [claim({ agent_id: 'peer1', paths: ['b.ts'] })];
+  const findings = computeAdvisoryOverlap(
+    { agent_id: 'me', paths: ['a.ts'] },
+    others,
+    undefined,
+    { coChangeThreshold: 0.5 },
+    undefined,
+    coChangeIndex,
+  );
+  assert.deepEqual(findings, []);
+});
+
+test('computeAdvisoryOverlap: checks the reverse direction too (peer\'s files predict into the proposal\'s paths)', () => {
+  const coChangeIndex: CoChangeIndex = {
+    'b.ts': [{ file: 'a.ts', probability: 0.7, support: 9, lift: 3 }],
+  };
+  const others = [claim({ agent_id: 'peer1', paths: ['b.ts'] })];
+  const findings = computeAdvisoryOverlap(
+    { agent_id: 'me', paths: ['a.ts'] },
+    others,
+    undefined,
+    { coChangeThreshold: 0.5 },
+    undefined,
+    coChangeIndex,
+  );
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0].reason, 'predicted-co-change');
+});
+
+test('computeAdvisoryOverlap: a literal path overlap (hard fact) outranks and absorbs the predictive finding for the same claim', () => {
+  const coChangeIndex: CoChangeIndex = {
+    'a.ts': [{ file: 'a.ts', probability: 0.99, support: 50, lift: 10 }],
+  };
+  const others = [claim({ agent_id: 'peer1', paths: ['a.ts'] })];
+  const findings = computeAdvisoryOverlap(
+    { agent_id: 'me', paths: ['a.ts'] },
+    others,
+    { nodes: [], edges: [] },
+    { coChangeThreshold: 0.5 },
+    undefined,
+    coChangeIndex,
+  );
+  assert.equal(findings.length, 1, 'one finding per conflicting claim, not two');
+  assert.equal(findings[0].reason, 'path', 'the real path overlap outranks the predictive layer for the same claim');
+});
+
+test('computeAdvisoryOverlap: predictive layer never throws when the index has no relevant entries', () => {
+  const coChangeIndex: CoChangeIndex = {};
+  const others = [claim({ agent_id: 'peer1', paths: ['z.ts'] })];
+  const findings = computeAdvisoryOverlap(
+    { agent_id: 'me', paths: ['a.ts'] },
+    others,
+    undefined,
+    {},
+    undefined,
+    coChangeIndex,
+  );
+  assert.deepEqual(findings, []);
 });

@@ -24,6 +24,7 @@ import type {
 import { partitionTasks, type PartitionCas, type PartitionTask } from './coordination/partitioner';
 import type { WorkClaim } from './coordination/types';
 import type { CrossCodebaseSystemGraph } from './cross-codebase-analysis';
+import type { CoChangeIndex } from '../../../packages/analyzer-core/src/analyzer/core/co-change-index';
 
 // ---------------------------------------------------------------------------
 // Communication seams — one-line modality summary + a couple of top edges
@@ -394,6 +395,23 @@ export function buildSystemFitSummary(cas: CASOutput): SystemFitSummary | undefi
 //       route/message/db surface) overlaps another claim touching the linked
 //       counterpart — the contract surface two repos share.
 //
+// PREDICTIVE (GIT-HISTORY) LAYER (docs/SPEC-MATHEMATICAL-INTELLIGENCE.md §F,
+// "Fabric co-change prediction"): the layers above are all PRESENT-TENSE
+// facts — a symbol, path, or contract BOTH claims literally or structurally
+// touch RIGHT NOW. Git history carries a different, complementary signal:
+// files that have HISTORICALLY changed together, even when nothing in today's
+// CAS/WAS connects them (a config file and the code that reads it; a schema
+// and its migration; parallel-language twins with no shared symbol). When a
+// `CoChangeIndex` (packages/analyzer-core/.../co-change-index.ts — top-K
+// Laplace-smoothed conditional co-change probabilities per file) is supplied,
+// `computeAdvisoryOverlap` expands the proposed claim's paths into a
+// PREDICTED footprint (claimed paths ∪ high-probability co-change partners)
+// and checks it against every other active claim's ACTUAL paths (and vice
+// versa). A hit is reported with reason 'predicted-co-change' and a
+// `prediction` field carrying the probability — ADVISORY ONLY, and clearly
+// labeled AS a prediction (never conflated with the CAS/WAS "this literally
+// overlaps" findings above) so a peer agent can weigh and ignore it freely.
+//
 // GRACEFULLY DEGRADING (WAS -> CAS -> string, never throw): when no WAS graph
 // is passed, the cross-repo layer is simply skipped and the result is the
 // CAS-backed set below. When no CAS is available either (`cas` undefined / an
@@ -429,8 +447,18 @@ export interface AdvisoryOverlapFinding {
    *                      (one the lib, the other a cross-repo consumer of it),
    *                      via the WAS shared_code_rollup blast radius.
    *  - 'cross-repo-contract'    : both claims touch two ends of a frozen/shared
-   *                      cross-repo interface link (WAS interfaces + links). */
-  reason: 'path' | 'symbol' | 'blast-radius' | 'cross-repo-shared-code' | 'cross-repo-contract';
+   *                      cross-repo interface link (WAS interfaces + links).
+   *  - 'predicted-co-change'    : NOT a present-tense fact — git history says
+   *                      a file either claim touches has historically
+   *                      co-changed with a file the other touches, above the
+   *                      caller's probability threshold. See `prediction`. */
+  reason: 'path' | 'symbol' | 'blast-radius' | 'cross-repo-shared-code' | 'cross-repo-contract' | 'predicted-co-change';
+  /** Present only for reason 'predicted-co-change' — the evidence behind the
+   *  prediction, so callers can render "predicted (73% probability, based on
+   *  42 historical co-commits)" rather than a bare label. Never present for
+   *  any other reason (those are facts, not predictions, and are not
+   *  conflated with this field). */
+  prediction?: { probability: number; support: number; file_a: string; file_b: string };
   /** True when the finding came from the CAS (reason 'blast-radius' or 'symbol')
    *  — visible only because the single-repo analysis was consulted. */
   cas_derived: boolean;
@@ -458,9 +486,14 @@ export interface AdvisoryOverlapOptions {
    *  scan). */
   includeBlastRadius?: boolean;
   /** Cap on findings returned (highest-signal first: cross-repo, then symbol,
-   *  then blast-radius, then path). Default 25 — advisory awareness, not a full
-   *  report. */
+   *  then blast-radius, then path, then predicted co-change). Default 25 —
+   *  advisory awareness, not a full report. */
   limit?: number;
+  /** Minimum co-change probability to treat a partner file as part of the
+   *  proposed claim's PREDICTED footprint. Default 0.5 — see the module
+   *  header's "PREDICTIVE (GIT-HISTORY) LAYER" note. Only consulted when
+   *  `coChangeIndex` is passed to `computeAdvisoryOverlap`. */
+  coChangeThreshold?: number;
 }
 
 const REASON_RANK: Record<AdvisoryOverlapFinding['reason'], number> = {
@@ -469,6 +502,7 @@ const REASON_RANK: Record<AdvisoryOverlapFinding['reason'], number> = {
   symbol: 2,
   'blast-radius': 3,
   path: 4,
+  'predicted-co-change': 5,
 };
 
 /**
@@ -492,6 +526,7 @@ export function computeAdvisoryOverlap(
   cas: PartitionCas | undefined,
   opts: AdvisoryOverlapOptions = {},
   was?: CrossCodebaseSystemGraph | undefined,
+  coChangeIndex?: CoChangeIndex | undefined,
 ): AdvisoryOverlapFinding[] {
   const others = activeClaims.filter(
     (c) => c.status === 'active' && c.agent_id !== proposal.agent_id,
@@ -581,6 +616,17 @@ export function computeAdvisoryOverlap(
       }
     } catch {
       // Cross-repo layer failed — same-repo findings above are preserved.
+    }
+  }
+
+  // ---- Predictive layer: git-history co-change (§F) ----
+  if (coChangeIndex) {
+    try {
+      for (const f of computePredictedCoChangeOverlap(proposal, [...byClaimId.values()], coChangeIndex, opts.coChangeThreshold ?? 0.5)) {
+        record(f);
+      }
+    } catch {
+      // Predictive layer failed — every fact-based finding above is preserved.
     }
   }
 
@@ -722,6 +768,82 @@ function computeCrossRepoOverlap(
         shared_surface: [`${link.kind}:${link.id}`, ...shared],
       });
     }
+  }
+
+  return out;
+}
+
+/**
+ * Predictive (git-history) overlap: does the proposed claim's PREDICTED
+ * footprint — its literal paths plus every co-change partner at or above
+ * `threshold` — intersect any other active claim's ACTUAL claimed paths, or
+ * vice versa (the other claim's predicted footprint hitting the proposal's
+ * actual paths)? Checked both directions because either agent's history-based
+ * expansion could be the one that reveals the coupling.
+ *
+ * Deliberately narrow scope vs. the CAS/WAS layers above: this never expands
+ * BOTH sides' footprints simultaneously and intersects the two predicted
+ * sets — that would compound two probabilistic expansions into a much
+ * noisier, harder-to-explain finding. Anchoring one side to ACTUAL claimed
+ * paths keeps every finding traceable to "you two, in reality, are touching
+ * X and Y, and X→Y is a strong historical pair" — one real fact, one
+ * prediction, never two predictions compounded.
+ */
+function computePredictedCoChangeOverlap(
+  proposal: AdvisoryClaimProposal,
+  others: WorkClaim[],
+  coChangeIndex: CoChangeIndex,
+  threshold: number,
+): AdvisoryOverlapFinding[] {
+  const out: AdvisoryOverlapFinding[] = [];
+  const proposalPaths = proposal.paths ?? [];
+  if (proposalPaths.length === 0) return out;
+
+  const bestPartnerAbove = (file: string, candidates: string[]): { file: string; probability: number; support: number } | undefined => {
+    let best: { file: string; probability: number; support: number } | undefined;
+    for (const partner of coChangeIndex[file] ?? []) {
+      if (partner.probability < threshold) continue;
+      if (!candidates.includes(partner.file)) continue;
+      if (!best || partner.probability > best.probability) {
+        best = { file: partner.file, probability: partner.probability, support: partner.support };
+      }
+    }
+    return best;
+  };
+
+  for (const claim of others) {
+    const claimPaths = claim.scope.paths ?? [];
+    if (claimPaths.length === 0) continue;
+
+    let best: { fileA: string; fileB: string; probability: number; support: number } | undefined;
+
+    // Direction 1: proposal's files predict into the claim's actual paths.
+    for (const pFile of proposalPaths) {
+      const hit = bestPartnerAbove(pFile, claimPaths);
+      if (hit && (!best || hit.probability > best.probability)) {
+        best = { fileA: pFile, fileB: hit.file, probability: hit.probability, support: hit.support };
+      }
+    }
+    // Direction 2: the claim's files predict into the proposal's actual paths.
+    for (const cFile of claimPaths) {
+      const hit = bestPartnerAbove(cFile, proposalPaths);
+      if (hit && (!best || hit.probability > best.probability)) {
+        best = { fileA: cFile, fileB: hit.file, probability: hit.probability, support: hit.support };
+      }
+    }
+
+    if (!best) continue;
+    out.push({
+      agent_id: claim.agent_id,
+      claim_id: claim.claim_id,
+      intent: claim.intent,
+      overlapping_paths: [],
+      overlapping_symbols: [],
+      reason: 'predicted-co-change',
+      cas_derived: false,
+      was_derived: false,
+      prediction: { probability: best.probability, support: best.support, file_a: best.fileA, file_b: best.fileB },
+    });
   }
 
   return out;

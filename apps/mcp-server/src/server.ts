@@ -74,6 +74,7 @@ import { deriveActiveClaims } from './coordination/presence';
 import { detectConceptualConflicts, type AgentInFlightState, type ConceptualConflict, type ConflictCas, type SymbolChange } from './coordination/conceptual-conflict';
 import { detectConceptualConflictsFromSubstrate } from './coordination/in-flight-substrate';
 import { computeAdvisoryOverlap, type AdvisoryOverlapFinding } from './context-fabric';
+import { getOrComputeCoChangeIndex } from '../../../packages/analyzer-core/src/analyzer/core/co-change-index';
 import { captureInFlightChanges } from './coordination/in-flight-capture';
 import { planIntentMerge, planIntentMergeFromSubstrate, shouldUseSubstratePlan } from './coordination/intent-merge';
 import { partitionTasks, groupTasksByConcept, type PartitionCas, type PartitionTask } from './coordination/partitioner';
@@ -946,6 +947,27 @@ async function partitionCasForPath(path: string): Promise<PartitionCas> {
   }
 }
 
+/**
+ * Best-effort git-history co-change index for a repo path
+ * (docs/SPEC-MATHEMATICAL-INTELLIGENCE.md §F —
+ * packages/analyzer-core/.../co-change-index.ts). Reads/writes a compact
+ * `.klauro/co-change-index.json` sidecar, cached in-process and invalidated
+ * on HEAD movement (see `getOrComputeCoChangeIndex`'s own doc) — cheap enough
+ * to call on every fab_claim_work/fab_check_collision/plan_parallel_work
+ * without re-walking history each time. `path` may be a logical workspace id
+ * with no real git checkout (the common non-repo case); `getOrComputeCoChangeIndex`
+ * degrades to `null` for that rather than throwing, mirroring
+ * `partitionCasForPath`'s graceful degradation above. ADVISORY input only —
+ * never gates or blocks any caller.
+ */
+function coChangeIndexForPath(path: string) {
+  try {
+    return getOrComputeCoChangeIndex(path) ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 async function withErrorHandling(fn: () => Promise<{ content: Array<{ type: 'text'; text: string }> }>): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
   try {
     return await fn();
@@ -1163,7 +1185,7 @@ function registerTools(server: McpServer) {
     'analyze_codebase',
     {
       title: 'Analyze Codebase',
-      description: 'Run full CAS analysis on a local directory path (analysis runs ON THIS MACHINE). Detects languages, frameworks, and libraries. Stores results for querying. Progressive availability: the deterministic structure (nodes, edges, entry points, routes, call graph) is ready to query the moment this returns; AI-written descriptions enrich in the background. The result carries ai_enrichment (pending|ready|disabled|synchronous) — start working off the structure immediately rather than waiting for prose. NOTE: this runs LOCALLY. Repos BOUND to a hosted Klauro project are remote-only by default — this tool refuses and directs you to analyze_codebase_remote (heavy work + storage on the hosted analyzer). Override with .klaurorc policy.requireRemoteAnalyzer=false or env KLAURO_ALLOW_LOCAL_ANALYSIS=1. Unbound/OSS repos run local as before.',
+      description: 'Development-only full CAS analysis on this machine. Customer agents should use analyze_codebase_remote; the installed client uploads source changes and the hosted analyzer performs all heavy parsing and enrichment. This tool refuses unless KLAURO_ALLOW_LOCAL_ANALYSIS=1 is explicitly set for analyzer development or gauntlet execution.',
       inputSchema: {
         path: z.string().describe('Absolute path to the project directory'),
         force_full: z.boolean().optional().describe('Force full rebuild even if incremental is possible'),
@@ -5800,7 +5822,7 @@ function registerTools(server: McpServer) {
     'plan_parallel_work',
     {
       title: 'Plan Parallel Work',
-      description: 'THE ACCELERANT (P6, §1.5 SPEC-COORDINATION-FABRIC-V2): given a pending task list, compute the MAXIMALLY-PARALLEL non-conflicting batching up front — the automated version of the decompose -> disjoint-claims -> fan-out loop a human orchestrator runs by hand. Everything else in this coordination group (claim_work/check_collision/check_conceptual_conflicts) reacts to overlap AFTER agents are already mid-flight; this tool runs BEFORE any agent starts, so a fleet can be routed to avoid most collisions rather than merely surviving them. Pass `tasks` with each task\'s declared `target_symbols`/`target_paths` when known; when a task declares neither, pass `path` (the repo) so the CAS-backed heuristic (`inferFootprintFromIntent`) can match real identifiers/file mentions in its free-text `intent` — deterministic pattern matching against ground truth, not AI, and a task matching nothing real stays visible in `unpartitionable` rather than being silently dropped or guessed at. THE GRAPH-AWARE ADVANTAGE: with `path` supplied and `include_blast_radius` left at its default (true), two tasks whose LITERAL targets are disjoint but whose CAS call-graph blast radii intersect (one edits a function, the other edits a real caller or callee of it) are still separated into different batches — a file/path-only partitioner cannot see this. CONCEPTUAL BATCHING (§4 SPEC-CONCEPTUAL-LAYER.md): pass each task\'s `flow_id`/`capability_id` (declared, or read off get_flow_concepts) to additionally group tasks by CONCEPTUAL blast radius — `concept_groups` in the response clusters tasks by the flow/capability they belong to, a second, coarser-grained disjointness signal on top of the file/symbol `batches` (different flows are conceptually disjoint even before any file-level analysis runs). Returns `batches` (each an array of task_ids meant to run FULLY PARALLEL, in fixed greedy-coloring order), `parallelism_factor` (tasks / batches — higher is more parallel), `conflict_edges` (each with a\'symbol\'/\'path\'/\'blast-radius\' reason), `footprint_source` (declared vs inferred per task id), `unpartitionable` (tasks with no derivable footprint at all, still included in a batch, never dropped), `concept_groups` (tasks clustered by flow_id/capability_id, when declared), and a human-readable `summary` line. Call this before dispatching parallel work to a fleet of agents whenever you have more than one pending task for the same workspace.',
+      description: 'THE ACCELERANT (P6, §1.5 SPEC-COORDINATION-FABRIC-V2): given a pending task list, compute the MAXIMALLY-PARALLEL non-conflicting batching up front — the automated version of the decompose -> disjoint-claims -> fan-out loop a human orchestrator runs by hand. Everything else in this coordination group (claim_work/check_collision/check_conceptual_conflicts) reacts to overlap AFTER agents are already mid-flight; this tool runs BEFORE any agent starts, so a fleet can be routed to avoid most collisions rather than merely surviving them. Pass `tasks` with each task\'s declared `target_symbols`/`target_paths` when known; when a task declares neither, pass `path` (the repo) so the CAS-backed heuristic (`inferFootprintFromIntent`) can match real identifiers/file mentions in its free-text `intent` — deterministic pattern matching against ground truth, not AI, and a task matching nothing real stays visible in `unpartitionable` rather than being silently dropped or guessed at. THE GRAPH-AWARE ADVANTAGE: with `path` supplied and `include_blast_radius` left at its default (true), two tasks whose LITERAL targets are disjoint but whose CAS call-graph blast radii intersect (one edits a function, the other edits a real caller or callee of it) are still separated into different batches — a file/path-only partitioner cannot see this. CONCEPTUAL BATCHING (§4 SPEC-CONCEPTUAL-LAYER.md): pass each task\'s `flow_id`/`capability_id` (declared, or read off get_flow_concepts) to additionally group tasks by CONCEPTUAL blast radius — `concept_groups` in the response clusters tasks by the flow/capability they belong to, a second, coarser-grained disjointness signal on top of the file/symbol `batches` (different flows are conceptually disjoint even before any file-level analysis runs). Returns `batches` (each an array of task_ids meant to run FULLY PARALLEL, in fixed greedy-coloring order), `parallelism_factor` (tasks / batches — higher is more parallel), `conflict_edges` (each with a\'symbol\'/\'path\'/\'blast-radius\' reason), `footprint_source` (declared vs inferred per task id), `unpartitionable` (tasks with no derivable footprint at all, still included in a batch, never dropped), `concept_groups` (tasks clustered by flow_id/capability_id, when declared), and a human-readable `summary` line. PREDICTIVE CO-CHANGE LAYER (§F SPEC-MATHEMATICAL-INTELLIGENCE.md, ADVISORY): when `path` is a real git checkout, this also consults a git-history co-change index (top-K files historically edited together) and reports `predicted_conflicts` — task pairs with no hard structural conflict whose files have historically co-changed above a probability threshold. These SOFTLY influence which batch each task lands in (preferring to separate high-probability pairs when another batch slot exists) but never reduce parallelism below what the hard conflicts alone require, and never force full serialization for co-change alone — each entry states its `probability` explicitly so you can tell a prediction from a fact and disregard it if you disagree. Call this before dispatching parallel work to a fleet of agents whenever you have more than one pending task for the same workspace.',
       inputSchema: {
         tasks: z.array(z.object({
           id: z.string(),
@@ -5825,8 +5847,15 @@ function registerTools(server: McpServer) {
       }));
 
       const cas = path ? await partitionCasForPath(path) : { nodes: [], edges: [] };
+      // Git-history co-change index (§F, best-effort; undefined when `path`
+      // is absent or not a real git checkout — the soft-ordering layer below
+      // then simply doesn't apply, same graceful degradation as the CAS).
+      const coChangeIndex = path ? coChangeIndexForPath(path) : undefined;
       const includeBlastRadius = include_blast_radius ?? true;
-      const result = partitionTasks(partitionTasksInput, cas, { includeBlastRadius: includeBlastRadius });
+      const result = partitionTasks(partitionTasksInput, cas, {
+        includeBlastRadius: includeBlastRadius,
+        coChangeIndex,
+      });
 
       const batchSummaries = result.batches.map(
         (b) => `batch ${b.batch_index + 1} runs [${b.task_ids.join(', ')}] in parallel`
@@ -5834,7 +5863,10 @@ function registerTools(server: McpServer) {
       const conceptSummary = result.concept_groups?.length
         ? ` | ${result.concept_groups.length} conceptual group(s): ${result.concept_groups.map((g) => `${g.kind}:${g.concept_id}=[${g.task_ids.join(', ')}]`).join('; ')}`
         : '';
-      const summary = `${partitionTasksInput.length} tasks -> ${result.batches.length} parallel batch${result.batches.length === 1 ? '' : 'es'}, factor ${result.parallelism_factor.toFixed(2)}; ${batchSummaries.join('; ')}${conceptSummary}`;
+      const coChangeSummary = result.predicted_conflicts?.length
+        ? ` | ${result.predicted_conflicts.length} predicted co-change pair(s) (advisory): ${result.predicted_conflicts.map((p) => `${p.a}~${p.b}=${(p.probability * 100).toFixed(0)}% (${p.separated ? 'separated' : 'co-batched'})`).join('; ')}`
+        : '';
+      const summary = `${partitionTasksInput.length} tasks -> ${result.batches.length} parallel batch${result.batches.length === 1 ? '' : 'es'}, factor ${result.parallelism_factor.toFixed(2)}; ${batchSummaries.join('; ')}${conceptSummary}${coChangeSummary}`;
 
       return json({
         ...result,
@@ -5964,12 +5996,16 @@ function registerTools(server: McpServer) {
       } catch {
         was = undefined;
       }
+      // Git-history co-change index (best-effort; absent => predictive layer
+      // skipped). §F — see coChangeIndexForPath's doc.
+      const coChangeIndex = coChangeIndexForPath(ws);
       const findings = computeAdvisoryOverlap(
         { agent_id: agentId, paths: claimPaths, symbols: claimSymbols },
         active,
         cas,
         {},
         was,
+        coChangeIndex,
       );
       // `paths` mirrors EditLockConflict semantics (local-store.ts): the
       // CONFLICTING HOLDER's claimed scope, not the proposing caller's own
