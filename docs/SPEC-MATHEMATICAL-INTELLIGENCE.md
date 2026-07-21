@@ -60,33 +60,36 @@ Known defects these workstreams target:
 `type: 'test'` (mandatory — 88% of self entry points are tests and would
 poison the seed set); `exit_points[]` for absorption-aware variants later.
 
-**Algorithm:** Personalized PageRank, power iteration, seeded uniformly over
+**Algorithm:** Structural Importance — seeded random-walk centrality by power iteration (personalized PageRank-style formulation; that name is an implementation citation only — every product/API/field name is "structural importance"), seeded uniformly over
 non-test entry points, damping 0.85, fixed node order, convergence at L1 <
-1e-8 or 100 iterations. Complexity O(iters × E): ~6M edge-ops at 62k edges,
+1e-8 (cap 150 iterations — the walk contracts by ~damping per step, so 1e-8
+needs up to ~114 on chain shapes). Complexity O(iters × E): ~9M edge-ops at 62k edges,
 sub-second; ~50M at 500k edges, still seconds. Plus approximate betweenness by
 Brandes sampling with k deterministic pivot sources (k=256, seeded by node-id
 hash), O(kE) — exact Brandes O(VE) is ruled out at 500k nodes.
 
-**Stored as:** two new optional per-node fields, `centrality: { ppr: number;
-betweenness_approx: number }`, computed in the graph stage (deterministic,
-no AI), plus a `centrality_meta` block (seed count, iterations, converged).
+**Stored as:** a new optional per-node field, `structural_importance: number`
+(normalized [0,1]; a later `betweenness_approx` may join it), computed in the
+graph stage (deterministic, no AI), plus a `structural_importance_meta` block
+(seed count, iterations, converged). SHIPPED:
+`analyzer/core/structural-importance.ts`.
 
 **Consumers / expected gain:**
 1. `flow-scorer.ts`: delete the three keyword pattern sets; rank capabilities
-   by aggregate PPR mass of their operation nodes (fixes D1 at the root — a
-   UI change-handler chain has near-zero PPR mass; a chain through the graph
+   by aggregate structural-importance mass of their operation nodes (fixes D1 at the root — a
+   UI change-handler chain has near-zero structural-importance mass; a chain through the graph
    core does not).
-2. Semantic-step eligibility: a reachable node with PPR above a percentile
+2. Semantic-step eligibility: a reachable node with structural importance above a percentile
    threshold and no step is a *ranked* coverage gap — turns D2's flat 47.4%
    into a prioritized worklist instead of an undifferentiated number.
 3. `get_hot_spots` / risk: churn × centrality is the canonical hotspot
    definition; today hotspots use churn alone.
-4. AI-description spend targeting: enrich high-PPR elements first — same spend,
+4. AI-description spend targeting: enrich high-structural-importance elements first — same spend,
    visibly better coverage of what agents actually ask about (D4-adjacent).
 
 **Gate:** on the self-CAS and 3 corpus repos of different shapes, (a) zero UI
 event-handler chains in the top-10 capability ranking (today: present), (b)
-rank correlation of top-50 PPR nodes vs. agent-queried nodes from telemetry
+rank correlation of top-50 structural-importance nodes vs. agent-queried nodes from telemetry
 ≥ baseline keyword ranking, (c) byte-stable across two runs.
 
 **Effort:** M. **Deps:** none. Pure graph stage addition.
@@ -138,7 +141,7 @@ changed (stage fingerprints already exist).
    tasks three hops apart on one call chain become visible.
 2. Product: `assess_change_risk`, `get_call_chain`, impact analysis get
    O(1)-ish transitive queries instead of per-query walks.
-3. A's PPR and B's communities can consume the same condensation for free.
+3. A's structural importance and B's communities can consume the same condensation for free.
 
 **Gate:** (a) equivalence test — index answers match brute-force BFS on 10k
 random pairs across self + 3 corpus repos; (b) fabric gauntlet scenario where
@@ -250,7 +253,7 @@ lifecycle") scores near-zero distinctiveness and near-zero evidence overlap
 (ba7f915a, 13f9c597) with no pattern list to maintain. O(total tokens).
 
 **Consumers / gain:** description gate (reject/regenerate below threshold);
-`get_description_enrichment_targets` ranking (low-distinctiveness × high-PPR
+`get_description_enrichment_targets` ranking (low-distinctiveness × high-structural-importance
 first — composes with A); a corpus-wide description-quality score per repo.
 
 **Gate:** on a labeled set of 200 descriptions (accepted/rejected by the

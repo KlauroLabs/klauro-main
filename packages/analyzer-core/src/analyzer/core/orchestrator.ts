@@ -112,7 +112,6 @@ import { buildArchitecturalConflicts } from './architectural-conflicts';
 import { buildDataLineage } from './data-lineage';
 import { isLanguageBuiltinName, isLanguageBuiltinExitPoint, isLanguageBuiltinDomainToken, isCapabilityNoiseToken, isVendorLibDomainToken } from './language-builtins';
 import { buildProductMap } from './product-map';
-import { buildReachabilityIndexFromCas } from './reachability-index';
 import { relativizeProjectPaths } from './relativize-project-paths';
 import { isRegisteredManifest, isRegisteredSourceExtension, isPackageBoundaryManifest } from './language-registry';
 import { discoverWorkspaceGlobRootsWithoutManifest } from './workspace-globs';
@@ -129,6 +128,7 @@ import {
 import { CallChainAnalyzer } from './call-chain-analyzer';
 import { CapabilityDependencyBuilder } from './capability-dependency-builder';
 import { FlowScorer } from './flow-scorer';
+import { computeStructuralImportance, StructuralImportanceResult } from './structural-importance';
 import { FlowGraphBuilder } from './flow-graph-builder';
 import { GitAnalyzer } from './git-analyzer';
 import { detectCodebaseIdioms } from './idiom-detector';
@@ -1749,6 +1749,11 @@ export class AnalyzerOrchestrator {
     await yieldToEventLoop();
 
     phaseStart = Date.now();
+    const structuralImportance = this.computeAndStampStructuralImportance(allNodes, allEdges, allEntryPoints);
+    logTiming('pp_structuralImportance', phaseStart);
+    await yieldToEventLoop();
+
+    phaseStart = Date.now();
     const flowGraph = this.buildFlowGraph(
       allEntryPoints,
       callChains,
@@ -1757,7 +1762,8 @@ export class AnalyzerOrchestrator {
       domainConcepts,
       dataEntities,
       databaseSchema,
-      systemPurpose
+      systemPurpose,
+      structuralImportance.scores
     );
     logTiming('pp_flowGraph', phaseStart);
     await yieldToEventLoop();
@@ -1967,20 +1973,6 @@ export class AnalyzerOrchestrator {
     logTiming('pp_methodCalls', phaseStart);
     await yieldToEventLoop();
 
-    // Reachability index (Workstream C, docs/SPEC-MATHEMATICAL-INTELLIGENCE.md):
-    // Tarjan SCC condensation + pruned landmark labeling over the directed
-    // call graph ('calls' edges + resolved method_calls). Deterministic,
-    // byte-stable, O(V+E)-ish build; consumers get near-O(1) transitive
-    // reachability / affected-set queries instead of per-query walks.
-    phaseStart = Date.now();
-    const reachabilityIndex = buildReachabilityIndexFromCas({
-      nodes: allNodes,
-      edges: allEdges,
-      method_calls: methodCalls,
-    });
-    logTiming('pp_reachabilityIndex', phaseStart);
-    await yieldToEventLoop();
-
     phaseStart = Date.now();
     const allDecorators = this.buildAllDecorators(allNodes);
     const documentationSummary = this.buildDocumentationSummary(allNodes);
@@ -2171,9 +2163,9 @@ export class AnalyzerOrchestrator {
       enhanced_system_purpose: enhancedSystemPurpose,
       flow_graph: flowGraph,
       flow_summary: enhancedFlowSummary,
+      structural_importance_meta: structuralImportance.meta,
       change_risks: enhancedChangeRisks.length > 0 ? enhancedChangeRisks : undefined,
       method_calls: methodCalls.length > 0 ? methodCalls : undefined,
-      reachability_index: reachabilityIndex.stats.nodes > 0 ? reachabilityIndex : undefined,
       decorators: allDecorators.length > 0 ? allDecorators : undefined,
       documentation_summary: documentationSummary,
       todos_summary: todosSummary,
@@ -3050,6 +3042,8 @@ export class AnalyzerOrchestrator {
     workflowDetector.classifyWorkflows(workflows, domainConcepts);
     const workflowGraph = workflowDetector.buildDependencyGraph(workflows, callChains, nodes);
 
+    const structuralImportance = this.computeAndStampStructuralImportance(nodes, edges, entryPoints);
+
     const flowGraph = this.buildFlowGraph(
       entryPoints,
       callChains,
@@ -3058,7 +3052,8 @@ export class AnalyzerOrchestrator {
       domainConcepts,
       dataEntities,
       databaseSchema,
-      systemPurpose
+      systemPurpose,
+      structuralImportance.scores
     );
 
     const enhancedChangeRisks = this.enhanceChangeRisks(changeRisks, callGraphBuilder, callChains, entryPoints);
@@ -3278,18 +3273,6 @@ export class AnalyzerOrchestrator {
       behavior_surfaces: behaviorSurfaces,
     });
 
-    // Reachability index rebuilt over the FRESH node/edge graph (method_calls
-    // are carried forward from previousOutput on this path — pairs whose
-    // endpoints no longer exist are dropped by the builder). Cheap relative to
-    // the rest of this rebuild and keeps the index consistent with the graph
-    // it ships next to; a stale carried-forward index would silently answer
-    // reachability over the previous revision's call graph.
-    const rebuiltReachabilityIndex = buildReachabilityIndexFromCas({
-      nodes,
-      edges,
-      method_calls: previousOutput.method_calls,
-    });
-
     const rebuiltOutput: CASOutput = {
       ...previousOutput,
       analysis_timestamp: new Date().toISOString(),
@@ -3324,7 +3307,6 @@ export class AnalyzerOrchestrator {
       flow_summary: enhancedFlowSummary,
       change_risks: enhancedChangeRisks.length > 0 ? enhancedChangeRisks : undefined,
       change_risk_summary: changeRiskSummary,
-      reachability_index: rebuiltReachabilityIndex.stats.nodes > 0 ? rebuiltReachabilityIndex : undefined,
       data_entities: dataEntities.length > 0 ? dataEntities : undefined,
       data_summary: dataSummary,
       behavioral_invariants: behavioralInvariants.length > 0 ? behavioralInvariants : undefined,
@@ -3354,6 +3336,7 @@ export class AnalyzerOrchestrator {
       data_lineage: dataLineage.length > 0 ? dataLineage : undefined,
       domain_concepts: domainConcepts.length > 0 ? domainConcepts : undefined,
       flow_graph: flowGraph,
+      structural_importance_meta: structuralImportance.meta,
       configuration,
       runtime,
       runtime_static_links: runtimeStaticLinks.length > 0 ? runtimeStaticLinks : undefined,
@@ -12651,7 +12634,7 @@ export class AnalyzerOrchestrator {
       'pp_securitySummary', 'pp_flowSummary', 'pp_flowCoverage', 'pp_workflows', 'pp_userJourneys',
       'pp_enhanceRisks', 'pp_testData', 'pp_buildIntents', 'pp_gitAnalysis', 'pp_dependencyManifest',
       'pp_detectPatterns', 'pp_traceability', 'pp_entryPointContractCapability', 'pp_methodCalls',
-      'pp_callGraph', 'pp_flowGraph', 'pp_reachabilityIndex',
+      'pp_callGraph', 'pp_flowGraph', 'pp_structuralImportance',
     ].includes(phase)) return 'agent-context';
     return undefined;
   };
@@ -15670,6 +15653,29 @@ export class AnalyzerOrchestrator {
       .sort((a, b) => b.count - a.count);
   }
 
+  /**
+   * Structural Importance stage (deterministic, additive): computes seeded
+   * random-walk centrality over the call graph and stamps each node's
+   * normalized [0,1] score onto `node.structural_importance`. MUST NOT add,
+   * remove, or retype nodes/edges/entry points — parity is an invariant.
+   * Runs on both the full and the incremental post-process paths so every CAS
+   * revision carries scores.
+   */
+  private computeAndStampStructuralImportance(
+    nodes: CASNode[],
+    edges: CASEdge[],
+    entryPoints: CASEntryPoint[]
+  ): StructuralImportanceResult {
+    const result = computeStructuralImportance(nodes, edges, entryPoints);
+    for (const node of nodes) {
+      const score = result.scores.get(node.id);
+      if (score !== undefined) {
+        node.structural_importance = score;
+      }
+    }
+    return result;
+  }
+
   private buildFlowGraph(
     entryPoints: CASEntryPoint[],
     callChains: CASCallChain[],
@@ -15678,7 +15684,8 @@ export class AnalyzerOrchestrator {
     domainConcepts: CASDomainConcept[],
     dataEntities: CASDataEntity[],
     databaseSchema: CASDatabaseSchema,
-    systemPurpose: SystemPurpose
+    systemPurpose: SystemPurpose,
+    importanceByNode?: Map<string, number>
   ): CASFlowGraph {
     const capabilityDetector = new CapabilityDetector();
     const capabilities = capabilityDetector.detectCapabilities(
@@ -15718,7 +15725,7 @@ export class AnalyzerOrchestrator {
     }
 
     const scorer = new FlowScorer();
-    scorer.scoreCapabilities(capabilities, domainConcepts, systemPurpose);
+    scorer.scoreCapabilities(capabilities, domainConcepts, systemPurpose, importanceByNode);
 
     const graphBuilder = new FlowGraphBuilder();
     return graphBuilder.buildFlowGraph(capabilities, dependencies, systemPurpose);

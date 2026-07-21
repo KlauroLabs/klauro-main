@@ -664,6 +664,13 @@ function descriptionNodeScore(node: any, degree: Map<string, number>): number {
   if (node.type === 'controller') score += 5;
   if (node.type === 'repository') score += 4;
   if (node.type === 'component') score += 3;
+  // Structural importance (normalized [0,1], deterministic graph layer) is the
+  // PRIMARY enrichment ordering when the CAS carries it: highest-importance
+  // elements get described first. Ordering only — never a cutoff; the degree/
+  // type terms remain the fallback and the tiebreaker for pre-layer analyses.
+  if (typeof node.structural_importance === 'number') {
+    score += node.structural_importance * 1000;
+  }
   return score;
 }
 
@@ -685,14 +692,27 @@ function descriptionEntityScore(entity: any): number {
 }
 
 function highValueDescriptionEntryPoints(cas: CASOutput): any[] {
+  // Structural importance of the entry point's handler/source node orders the
+  // enrichment queue (ordering only, never a cutoff) — security/criticality
+  // remain as secondary terms and the pre-layer fallback.
+  const importanceById = new Map<string, number>();
+  for (const node of cas.nodes || []) {
+    if (typeof (node as any).structural_importance === 'number') {
+      importanceById.set(node.id, (node as any).structural_importance);
+    }
+  }
   return [...(cas.entry_points || [])]
     .filter(entryPoint => clean(entryPoint.name) || clean(entryPoint.trigger?.path))
-    .sort((left, right) => descriptionEntryPointScore(right) - descriptionEntryPointScore(left))
+    .sort((left, right) => descriptionEntryPointScore(right, importanceById) - descriptionEntryPointScore(left, importanceById))
     .slice(0, 4);
 }
 
-function descriptionEntryPointScore(entryPoint: any): number {
-  return (entryPoint.security?.requires_auth === false ? 20 : 0) +
+function descriptionEntryPointScore(entryPoint: any, importanceById?: Map<string, number>): number {
+  const importance = importanceById
+    ? Math.max(importanceById.get(entryPoint.handler?.node_id) || 0, importanceById.get(entryPoint.source_node) || 0)
+    : 0;
+  return importance * 1000 +
+    (entryPoint.security?.requires_auth === false ? 20 : 0) +
     (entryPoint.criticality === 'critical' ? 10 : entryPoint.criticality === 'high' ? 6 : 0) +
     (entryPoint.trigger?.type === 'http' ? 3 : 0);
 }
@@ -1665,6 +1685,10 @@ function capabilityPriority(capability: any): number {
     ...(Array.isArray(capability?.related_domains) ? capability.related_domains : []),
   ].length;
   score += Math.min(20, links);
+  // Structural-importance mass (signals.centrality_score, 0-100, computed by
+  // the deterministic graph layer via flow-scorer) breaks capability ordering
+  // toward what the call graph says matters — ordering only, never a cutoff.
+  score += Math.round((capability?.signals?.centrality_score || 0) / 2);
   return score;
 }
 

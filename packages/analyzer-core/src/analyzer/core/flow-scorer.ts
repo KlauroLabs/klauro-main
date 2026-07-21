@@ -4,47 +4,33 @@ import {
   SystemPurpose
 } from '../../types/cas.types';
 
-const INFRASTRUCTURE_PATTERNS = new Set([
-  'health', 'metrics', 'config', 'log', 'logging', 'auth',
-  'session', 'cache', 'middleware', 'guard', 'interceptor',
-  'filter', 'pipe', 'exception', 'error', 'init', 'setup',
-  'bootstrap', 'configure', 'utility', 'helper', 'common',
-  'status', 'ping', 'version', 'debug', 'trace'
-]);
-
-const SUPPORTING_PATTERNS = new Set([
-  'subscription', 'billing', 'payment', 'invoice', 'receipt',
-  'email', 'notification', 'alert', 'message', 'sms',
-  'webhook', 'callback', 'schedule', 'job', 'queue',
-  'audit', 'history', 'archive', 'backup', 'restore',
-  'preference', 'setting', 'option', 'flag', 'toggle',
-  'link', 'connect', 'disconnect', 'account', 'profile',
-  'permission', 'role', 'access', 'invite', 'member'
-]);
-
-const HIGH_VALUE_PATTERNS = new Set([
-  'analyze', 'process', 'execute', 'run', 'compute', 'calculate',
-  'transform', 'generate', 'build', 'compile', 'evaluate',
-  'validate', 'verify', 'scan', 'detect', 'extract', 'parse',
-  'render', 'export', 'import', 'sync', 'migrate', 'deploy',
-  'publish', 'submit', 'approve', 'reject', 'review',
-  'trade', 'invest', 'withdraw', 'deposit', 'transfer',
-  'trigger', 'autopilot', 'portfolio', 'rebalance', 'allocate',
-  'swap', 'exchange', 'convert', 'stake', 'unstake', 'claim',
-  'checkout', 'purchase', 'order', 'fulfill', 'ship', 'refund',
-  'aggregate', 'summarize', 'report', 'forecast', 'predict',
-  'optimize', 'recommend', 'rank', 'score', 'classify'
-]);
-
+/**
+ * Capability ranking — importance-driven, evidence-only.
+ *
+ * CONSTRAINTS:
+ * - NO keyword/vocabulary sets. The former implementation ranked with three
+ *   hardcoded English word lists and a `centrality_score` wired to 0 — the
+ *   cause of "UI click handler surfaces as a core flow". Ranking evidence is
+ *   now structural: per-node structural-importance mass (seeded random-walk
+ *   centrality over the call graph, structural-importance.ts), repo-derived
+ *   domain-concept alignment, entry/exit coverage, and complexity profile.
+ * - Deterministic: same capabilities + same importance map → same scores and
+ *   classifications. Ties break by capability id.
+ * - Repo-agnostic: every signal is computed from THIS repo's extracted facts
+ *   (domain concepts come from domain-extractor, not a fixed vocabulary).
+ */
 export class FlowScorer {
   scoreCapabilities(
     capabilities: CASCapability[],
     domainConcepts: CASDomainConcept[],
-    systemPurpose?: SystemPurpose
+    systemPurpose?: SystemPurpose,
+    importanceByNode?: Map<string, number>
   ): void {
     const coreConcepts = domainConcepts
       .filter(c => c.classification === 'core')
       .map(c => c.name.toLowerCase());
+
+    const importanceMass = this.computeImportanceMass(capabilities, importanceByNode);
 
     for (const cap of capabilities) {
       const signals = {
@@ -58,12 +44,21 @@ export class FlowScorer {
       cap.signals = signals;
     }
 
-    this.scoreCentrality(capabilities);
+    if (importanceMass) {
+      for (const cap of capabilities) {
+        cap.signals.centrality_score = importanceMass.get(cap.id) || 0;
+      }
+    } else {
+      // No structural-importance layer on this CAS (pre-layer analysis or an
+      // edge-less graph) — fall back to the dependency-topology heuristic so
+      // centrality never silently reads 0 across the board.
+      this.scoreCentralityFromDependencies(capabilities);
+    }
 
     for (const cap of capabilities) {
       cap.signals.total_score =
-        cap.signals.domain_concept_score * 0.40 +
-        cap.signals.centrality_score * 0.30 +
+        cap.signals.centrality_score * 0.40 +
+        cap.signals.domain_concept_score * 0.30 +
         cap.signals.coverage_score * 0.15 +
         cap.signals.complexity_score * 0.15;
     }
@@ -71,21 +66,55 @@ export class FlowScorer {
     this.classifyCapabilities(capabilities);
   }
 
+  /**
+   * Aggregate structural-importance mass per capability: the sum of the
+   * normalized importance of every unique node its operations implement,
+   * rescaled so the heaviest capability scores 100. A UI event-handler chain
+   * with no downstream mass sums to ~0; a chain through the graph core does
+   * not — the structural fix for keyword-era misranking.
+   */
+  private computeImportanceMass(
+    capabilities: CASCapability[],
+    importanceByNode?: Map<string, number>
+  ): Map<string, number> | undefined {
+    if (!importanceByNode || importanceByNode.size === 0) return undefined;
+
+    const rawMass = new Map<string, number>();
+    let maxMass = 0;
+    for (const cap of capabilities) {
+      const nodeIds = new Set<string>();
+      for (const operation of cap.operations || []) {
+        for (const nodeId of operation.implementing_nodes || []) {
+          nodeIds.add(nodeId);
+        }
+      }
+      let mass = 0;
+      // Deterministic accumulation order (float addition is order-sensitive).
+      for (const nodeId of [...nodeIds].sort()) {
+        mass += importanceByNode.get(nodeId) || 0;
+      }
+      rawMass.set(cap.id, mass);
+      if (mass > maxMass) maxMass = mass;
+    }
+
+    if (maxMass <= 0) return undefined;
+
+    const scaled = new Map<string, number>();
+    for (const [id, mass] of rawMass) {
+      scaled.set(id, Math.round((mass / maxMass) * 100));
+    }
+    return scaled;
+  }
+
+  /** Alignment with THIS repo's extracted core domain concepts plus structural
+   *  operation-pattern evidence. No fixed vocabulary. */
   private scoreDomainAlignment(cap: CASCapability, coreConcepts: string[]): number {
     const name = cap.name.toLowerCase();
     let score = 0;
 
     for (const concept of coreConcepts) {
       if (name.includes(concept) || concept.includes(name.replace(/\s+/g, ''))) {
-        score += 30;
-        break;
-      }
-    }
-
-    const nameParts = name.split(/[\s\-_]+/);
-    for (const part of nameParts) {
-      if (HIGH_VALUE_PATTERNS.has(part)) {
-        score += 35;
+        score += 40;
         break;
       }
     }
@@ -99,20 +128,6 @@ export class FlowScorer {
     }
     if (actionPatterns.includes('pipeline')) {
       score += 20;
-    }
-
-    for (const part of nameParts) {
-      if (INFRASTRUCTURE_PATTERNS.has(part)) {
-        score -= 35;
-        break;
-      }
-    }
-
-    for (const part of nameParts) {
-      if (SUPPORTING_PATTERNS.has(part)) {
-        score -= 20;
-        break;
-      }
     }
 
     const hasCrudOnly = actionPatterns.includes('crud') &&
@@ -132,7 +147,9 @@ export class FlowScorer {
     return Math.max(0, Math.min(100, score));
   }
 
-  private scoreCentrality(capabilities: CASCapability[]): void {
+  /** Dependency-topology fallback used ONLY when no structural-importance map
+   *  exists: how depended-upon and service-connected a capability is. */
+  private scoreCentralityFromDependencies(capabilities: CASCapability[]): void {
     for (const cap of capabilities) {
       let centralityScore = 0;
 
@@ -226,11 +243,14 @@ export class FlowScorer {
     return Math.min(100, score);
   }
 
+  /** Rank-and-threshold classification over the evidence-driven total score.
+   *  No name-based overrides: a capability is infrastructure because it lacks
+   *  structural mass/coverage, never because of what it is called. */
   private classifyCapabilities(capabilities: CASCapability[]): void {
     if (capabilities.length === 0) return;
 
     const sorted = [...capabilities].sort((a, b) =>
-      b.signals.total_score - a.signals.total_score
+      (b.signals.total_score - a.signals.total_score) || a.id.localeCompare(b.id)
     );
 
     const primaryCutoff = Math.max(1, Math.ceil(sorted.length * 0.25));
@@ -241,11 +261,6 @@ export class FlowScorer {
 
     for (let i = 0; i < sorted.length; i++) {
       const cap = sorted[i];
-      const capNameLower = cap.name.toLowerCase();
-      const nameParts = capNameLower.split(/[\s\-_]+/);
-
-      const isInfrastructure = nameParts.some(part => INFRASTRUCTURE_PATTERNS.has(part));
-      const isSupporting = nameParts.some(part => SUPPORTING_PATTERNS.has(part));
 
       const actionPatterns = cap.operation_patterns || [];
       const hasCrudOnly = actionPatterns.includes('crud') &&
@@ -254,13 +269,7 @@ export class FlowScorer {
         !actionPatterns.includes('pipeline') &&
         cap.operations.filter(o => o.pattern === 'action').length === 0;
 
-      if (isInfrastructure) {
-        cap.classification = 'infrastructure';
-        cap.criticality = 'low';
-      } else if (isSupporting && cap.signals.total_score < 70) {
-        cap.classification = 'supporting';
-        cap.criticality = 'medium';
-      } else if (i < primaryCutoff && cap.signals.total_score >= PRIMARY_MIN_SCORE && !hasCrudOnly) {
+      if (i < primaryCutoff && cap.signals.total_score >= PRIMARY_MIN_SCORE && !hasCrudOnly) {
         cap.classification = 'primary';
         cap.criticality = cap.signals.total_score > 60 ? 'critical' : 'high';
       } else if (i < supportingCutoff || cap.signals.total_score >= SUPPORTING_MIN_SCORE) {
@@ -295,7 +304,7 @@ export class FlowScorer {
 
   getTopCapabilities(capabilities: CASCapability[], count: number = 5): CASCapability[] {
     return [...capabilities]
-      .sort((a, b) => b.signals.total_score - a.signals.total_score)
+      .sort((a, b) => (b.signals.total_score - a.signals.total_score) || a.id.localeCompare(b.id))
       .slice(0, count);
   }
 

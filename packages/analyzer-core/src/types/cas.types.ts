@@ -57,14 +57,10 @@ export interface CASOutput {
    *  parity with codebase-memory's community detection; Klauro layers domain
    *  meaning on top. */
   communities?: CASCommunity[];
-  /**
-   * Reachability index over the directed call graph (SCC condensation +
-   * pruned landmark labeling; see CASReachabilityIndex / analyzer/core/
-   * reachability-index.ts). Built in the graph stage; consumers use it for
-   * near-O(1) transitive reachability and affected-set queries instead of
-   * per-query traversals, falling back to traversal when absent (older CAS).
-   */
-  reachability_index?: CASReachabilityIndex;
+  /** Provenance of the per-node `structural_importance` scores (seed count,
+   *  iterations, convergence). Deterministic layer — same CAS revision, same
+   *  scores. Absent on CAS outputs produced before the layer existed. */
+  structural_importance_meta?: CASStructuralImportanceMeta;
   categories?: CASCategories;
   tags?: CASTag[];
   index?: CASIndex;
@@ -495,6 +491,11 @@ export interface CASNode {
   description_source?: 'deterministic' | 'ai' | 'manual' | 'reused';
   description_generation?: CASDescriptionGeneration;
   tags?: string[];
+  /** Structural importance — deterministic seeded random-walk centrality over
+   *  the call graph, normalized [0,1] (1 = most important node in this CAS).
+   *  Computed in the graph stage from structure only, NEVER AI-derived.
+   *  See analyzer/core/structural-importance.ts. */
+  structural_importance?: number;
   documentation?: CASDocumentation; // New in v1.4.0
   comments?: CASComment[]; // New in v1.4.0
   implementation_status?: CASImplementationStatus; // New in v1.4.0
@@ -811,43 +812,22 @@ export interface CASCommunity {
   internal_edges: number;
 }
 
-/**
- * Persisted reachability index over the directed call graph (Workstream C,
- * docs/SPEC-MATHEMATICAL-INTELLIGENCE.md): Tarjan SCC condensation + pruned
- * 2-hop landmark labeling, built at analysis time by
- * analyzer/core/reachability-index.ts and rehydrated with
- * `ReachabilityIndex.from()` for near-O(1) "can A reach B" and O(answer)
- * affected-set queries. Contains ONLY graph-shape facts (no timestamps) —
- * byte-stable across identical runs. Only nodes incident to at least one
- * call edge participate (node absent from `node_ids` = reaches only itself),
- * keeping the stored size proportional to the call graph, not the CAS.
- * All *_offsets/* arrays are CSR (compressed sparse row) form: entries for
- * component c live at positions [offsets[c], offsets[c+1]).
- */
-export interface CASReachabilityIndex {
-  version: 1;
-  /** Sorted node ids; array position = compact node index. */
-  node_ids: string[];
-  /** comp_of[i] = SCC component of node_ids[i] (components canonically
-   *  numbered by minimum member index). */
-  comp_of: number[];
-  comp_count: number;
-  /** Condensation DAG (caller->callee direction), CSR, deduped, sorted. */
-  comp_adj_offsets: number[];
-  comp_adj_targets: number[];
-  /** 2-hop labels: canReach(a,b) = same comp OR label_out(comp a) intersects
-   *  label_in(comp b). Entries sorted ascending per component. */
-  label_out_offsets: number[];
-  label_out: number[];
-  label_in_offsets: number[];
-  label_in: number[];
-  stats: {
-    nodes: number;
-    edges: number;
-    comps: number;
-    largest_scc: number;
-    label_entries: number;
-  };
+/** Provenance block for the per-node structural-importance scores. Contains
+ *  only run-shape facts (never timestamps/durations) so serialization stays
+ *  byte-stable across identical runs. */
+export interface CASStructuralImportanceMeta {
+  algorithm: 'seeded-random-walk-power-iteration';
+  damping: number;
+  epsilon: number;
+  max_iterations: number;
+  iterations: number;
+  converged: boolean;
+  /** Number of seed nodes the walk restarts at — non-test entry-point nodes
+   *  (mandatory filtering: most entry points on test-heavy repos are tests). */
+  seed_count: number;
+  seed_source: 'entry-points' | 'uniform';
+  node_count: number;
+  edge_count: number;
 }
 
 export interface CASPattern {

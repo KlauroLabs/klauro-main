@@ -59,6 +59,12 @@ export interface UnmappedCodeUnit {
   id: string;
   name: string;
   type: string;
+  /** Structural importance of the unmapped node (normalized [0,1], from the
+   *  deterministic graph layer) — EXPOSED so coverage consumers can work the
+   *  unmapped gap highest-importance-first. Prioritization only: presence or
+   *  absence never changes what counts as unmapped. Absent on CAS outputs
+   *  produced before the structural-importance layer existed. */
+  structural_importance?: number;
   /** Deterministic classification of WHY this reachable node maps to no step. */
   reason:
     | 'reachable-with-effects-uncaptured' // has exit points / lineage writes — likely incomplete extraction or an undiscovered flow
@@ -231,10 +237,19 @@ export function computeSemanticCoverage(
         id: node.id,
         name: node.name,
         type: node.type,
+        ...(typeof node.structural_importance === 'number'
+          ? { structural_importance: node.structural_importance }
+          : {}),
         reason: classifyUnmappedReason(node, exitPointsByNode, lineageWriters),
       });
     }
   }
+  // Highest-importance gaps first (deterministic: importance desc, id asc) so
+  // the capped list is a prioritized worklist instead of an arbitrary slice.
+  // Ordering only — counts and membership are untouched.
+  unmappedCode.sort((a, b) =>
+    ((b.structural_importance || 0) - (a.structural_importance || 0)) || a.id.localeCompare(b.id)
+  );
 
   // --- flows_to_capabilities ---
   let mappedFlows = 0;
