@@ -388,6 +388,10 @@ export interface CapabilityFlowRelationship {
   capability_id: string;
   role: CapabilityFlowRole;
   rationale: string;
+  /** Which structural anchor produced this edge. Entity-overlap edges are the
+   *  weakest tier and are subject to the blanket-linkage prune
+   *  (pruneBlanketCapabilityRelationships); anchor-based edges never are. */
+  evidence?: 'operation' | 'interior-step' | 'route' | 'entity-overlap' | 'surface-membership';
 }
 
 /**
@@ -2054,6 +2058,7 @@ function deriveCapabilityRelationships(args: {
         capability_id: cap.id,
         role: 'primary',
         rationale: `capability operation "${opMatch.action}" (entry_point_id=${opMatch.entry_point_id}) references this flow's entry point`,
+        evidence: 'operation',
       });
       continue;
     }
@@ -2085,6 +2090,7 @@ function deriveCapabilityRelationships(args: {
           capability_id: cap.id,
           role: 'supporting',
           rationale: `capability operation "${interiorOp.action}" (entry_point_id=${interiorOp.entry_point_id}) is realized as an interior step on this flow's path`,
+          evidence: 'interior-step',
         });
         continue;
       }
@@ -2116,6 +2122,7 @@ function deriveCapabilityRelationships(args: {
           capability_id: cap.id,
           role: 'supporting',
           rationale: `flow calls ${routeMatch.call.method} ${routeMatch.call.path}, which matches capability operation "${routeMatch.op.action}"'s route (${routeMatch.op.trigger?.method} ${routeMatch.op.trigger?.path}) — this capability's operation is served by that call`,
+          evidence: 'route',
         });
         continue;
       }
@@ -2129,6 +2136,7 @@ function deriveCapabilityRelationships(args: {
         capability_id: cap.id,
         role: 'observability',
         rationale: `flow touches this capability's related entities (${sharedList}) and ${telemetry.evidence}`,
+        evidence: 'entity-overlap',
       });
     } else if (cronSchedule) {
       // Rule (c2): a CLI command a real CronJob schedules, whose path touches
@@ -2143,12 +2151,14 @@ function deriveCapabilityRelationships(args: {
         capability_id: cap.id,
         role: 'operational',
         rationale: `flow touches entities in this capability's related_entities (${sharedList}); its CLI entry point is scheduled by a CronJob (${cronSchedule}) — scheduled operational work for this capability, not a direct operation`,
+        evidence: 'entity-overlap',
       });
     } else {
       out.push({
         capability_id: cap.id,
         role: 'supporting',
         rationale: `flow touches entities in this capability's related_entities (${sharedList}) but its entry point is not among the capability's operations`,
+        evidence: 'entity-overlap',
       });
     }
   }
@@ -2175,6 +2185,7 @@ function deriveCapabilityRelationships(args: {
         rationale: cronSchedule
           ? `registered on the "${cap.name}" behavior surface (entry type ${entryType}); scheduled by a CronJob (${cronSchedule}) — operational surface work`
           : `registered on the "${cap.name}" behavior surface (entry type ${entryType}) — no core capability references this flow`,
+        evidence: 'surface-membership',
       });
       break; // one surface per entry type by construction
     }
@@ -3309,7 +3320,58 @@ export function computeFlowConcepts(cas: CASOutput, opts: ComputeFlowConceptsOpt
       flows = [...flows, ...partnerPublishers];
     }
   }
-  return stitchContinuations(flows, cas);
+  return pruneBlanketCapabilityRelationships(stitchContinuations(flows, cas));
+}
+
+/** A capability must relate to at least this many flows via entity overlap
+ *  before blanket detection can apply (small flow sets can't distinguish a
+ *  blanket from a genuinely central capability). */
+const BLANKET_LINKAGE_MIN_FLOWS = 12;
+/** Entity-overlap edges spanning at least this fraction of ALL flows mark the
+ *  capability's entity anchors as non-discriminative. */
+const BLANKET_LINKAGE_FRACTION = 0.8;
+
+/**
+ * BLANKET-LINKAGE PRUNE: entity overlap is the weakest relationship tier — a
+ * capability whose related_entities set is broad enough to overlap (nearly)
+ * EVERY flow's entities is not evidence of relatedness, it is evidence the
+ * anchor set does not discriminate (measured live on the v1.0.126 Klauro
+ * self-CAS: 3 capabilities each carried the IDENTICAL 175/175 related_flows,
+ * all via entity overlap). Anchor-based edges (operation / interior-step /
+ * route / surface-membership) are never pruned; only entity-overlap edges of
+ * capabilities that overlap >= BLANKET_LINKAGE_FRACTION of all flows are
+ * dropped. Mutates the flows in place and returns them.
+ */
+export function pruneBlanketCapabilityRelationships(flows: FlowConcept[]): FlowConcept[] {
+  const totalFlows = flows.length;
+  if (totalFlows < BLANKET_LINKAGE_MIN_FLOWS) return flows;
+  const overlapFlowCountByCap = new Map<string, number>();
+  for (const flow of flows) {
+    for (const rel of flow.capability_relationships || []) {
+      if (rel.evidence !== 'entity-overlap') continue;
+      overlapFlowCountByCap.set(rel.capability_id, (overlapFlowCountByCap.get(rel.capability_id) || 0) + 1);
+    }
+  }
+  const blanketCapIds = new Set(
+    [...overlapFlowCountByCap.entries()]
+      .filter(([, count]) => count >= totalFlows * BLANKET_LINKAGE_FRACTION)
+      .map(([capId]) => capId)
+  );
+  if (blanketCapIds.size === 0) return flows;
+  for (const flow of flows) {
+    const rels = flow.capability_relationships;
+    if (!rels || rels.length === 0) continue;
+    const kept = rels.filter(rel => !(rel.evidence === 'entity-overlap' && blanketCapIds.has(rel.capability_id)));
+    if (kept.length === rels.length) continue;
+    flow.capability_relationships = kept.length > 0 ? kept : undefined;
+    if (kept.length === 0) {
+      flow.gaps = [
+        ...(flow.gaps || []),
+        'Entity-overlap capability links pruned as blanket linkage — the capability related to nearly every flow via entity overlap alone (non-discriminative anchors), which is not evidence of a specific relationship.',
+      ];
+    }
+  }
+  return flows;
 }
 
 /**

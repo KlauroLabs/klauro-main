@@ -2049,6 +2049,7 @@ export class AnalyzerOrchestrator {
     // — the sweep is idempotent. A deferred AI run later mutates these same
     // references and re-sweeps on completion.
     this.finalizeSystemCapabilityNames(systemCapabilities);
+    this.finalizeFlowGraphCapabilities(flowGraph);
     const entryPointsWithContractAndCapability = this.deriveEntryPointContractAndCapability(allEntryPoints, {
       nodes: allNodes,
       edges: allEdges,
@@ -3245,6 +3246,7 @@ export class AnalyzerOrchestrator {
     // pass is coming before this rebuilt CAS ships. Idempotent (the AI branch
     // already swept inside applyAIInterpretation).
     this.finalizeSystemCapabilityNames(systemCapabilities);
+    this.finalizeFlowGraphCapabilities(flowGraph);
 
     const entryPointsWithContractAndCapability = this.deriveEntryPointContractAndCapability(entryPoints, {
       nodes,
@@ -9505,6 +9507,11 @@ export class AnalyzerOrchestrator {
     flowGraph: CASFlowGraph;
     projectTextSignal?: ProjectTextSignal;
     budgetMs: number;
+    /** Set by the post-reconcile quality retry (applyAIInterpretation): the
+     *  concrete quality failure the previous cycle's RECONCILED output showed.
+     *  Bounds this invocation to ONE model call (the caller owns the retry
+     *  budget) and disables the internal thin-catalog nudge. */
+    qualityNudge?: string;
   }): Promise<SystemCapability[]> {
     const purpose = input.enhancedSystemPurpose || ({} as EnhancedSystemPurpose);
     // Bundle sizes are tuned to keep the per-repo extraction call small enough to
@@ -9662,9 +9669,10 @@ export class AnalyzerOrchestrator {
     // accepting the shortfall (never loop beyond the 2-attempt budget).
     let catalog: Array<Record<string, unknown>> = [];
     let raw = '';
-    for (let attempt = 1; attempt <= 2; attempt++) {
+    const maxInitialAttempts = input.qualityNudge ? 1 : 2;
+    for (let attempt = 1; attempt <= maxInitialAttempts; attempt++) {
       try {
-        raw = await requestCatalog(attempt);
+        raw = await requestCatalog(attempt, input.qualityNudge);
         const parsed = this.parseCapabilityCatalog(raw);
         if (parsed.length > catalog.length) catalog = parsed;
       } catch (error) {
@@ -9728,7 +9736,7 @@ export class AnalyzerOrchestrator {
       rankedCandidateAreas.map(candidate => String(candidate.name || '').trim()).filter(Boolean)
     ));
     const nudgeCeiling = Math.max(3, Math.floor(allDistinctFamilies.length / 3));
-    if (effectiveCatalogSize >= 1 && effectiveCatalogSize <= nudgeCeiling) {
+    if (!input.qualityNudge && effectiveCatalogSize >= 1 && effectiveCatalogSize <= nudgeCeiling) {
       const distinctFamilies = allDistinctFamilies.slice(0, 10);
       const familyThreshold = effectiveCatalogSize === 1 ? 2 : effectiveCatalogSize * 3;
       if (allDistinctFamilies.length >= familyThreshold) {
@@ -10302,6 +10310,8 @@ export class AnalyzerOrchestrator {
     'notify', 'report', 'export', 'import', 'connect', 'synchronize',
     'discover', 'configure', 'deploy', 'migrate', 'ingest', 'stream', 'route',
     'dispatch', 'reconcile', 'audit', 'log', 'cache', 'queue', 'persist',
+    'store', 'serve', 'correlate', 'collect', 'record', 'validate',
+    'generate', 'search', 'index',
   ]);
 
   /**
@@ -10355,6 +10365,80 @@ export class AnalyzerOrchestrator {
     const trimmed = subject.trim();
     if (!trimmed || !hasAnchorEvidence) return undefined;
     return `Manage ${trimmed}`;
+  }
+
+  /**
+   * True when `description` is the structural grouping template
+   * ("<Label>: <pattern> operation via <type>" / "<Label>: N operations
+   * (crud, query)") rather than authored prose. Template-shaped only — a real
+   * sentence that happens to contain "operation" never matches.
+   */
+  private isStructuralPlaceholderCapabilityDescription(description: string): boolean {
+    const trimmed = String(description || '').trim();
+    if (!trimmed) return false;
+    return /^[^:]{1,80}:\s+(?:[a-z]+\s+operation\s+via\s+\S+\s*$|\d+\s+operations?\s*\()/i.test(trimmed);
+  }
+
+  /**
+   * Deterministic evidence rebuild for a placeholder description: names the
+   * capability's REAL operations (entry-point names, humanized) and entry
+   * kinds. Facts only — no interpretive claim. Returns undefined when there
+   * are no operations to ground a sentence in.
+   */
+  private rebuildCapabilityDescriptionFromOperations(
+    operations: Array<{ name?: string; action?: string; entry_point_type?: string; trigger?: { type?: string; method?: string; path?: string } }>
+  ): string | undefined {
+    const labels = Array.from(new Set(
+      operations
+        .map(op => String(op.name || op.action || '').trim())
+        .filter(Boolean)
+        .map(label => this.humanizeDomainKey(label.replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase()))
+    ));
+    if (labels.length === 0) return undefined;
+    const kinds = Array.from(new Set(
+      operations.map(op => String(op.entry_point_type || op.trigger?.type || '').trim()).filter(Boolean)
+    ));
+    const kindLabel = kinds.length === 1 ? ` ${kinds[0]}` : '';
+    const sample = labels.slice(0, 3).join(', ');
+    const suffix = labels.length > 3 ? ` and ${labels.length - 3} more` : '';
+    return `Covers ${labels.length}${kindLabel} operation${labels.length === 1 ? '' : 's'}: ${sample}${suffix}.`;
+  }
+
+  /**
+   * FINAL-ASSEMBLY sweep for `flow_graph.capabilities` — the structural
+   * grouping catalog CapabilityDetector emits. The bare-noun/placeholder
+   * guards only covered system_capabilities, so a grouping keyed on a raw
+   * token shipped names like "Active"/"Hot" with descriptions like
+   * "Active: query operation via message" (measured live on the v1.0.126
+   * Klauro self-CAS: 163/177 flow-graph capabilities were this shape).
+   * Repairs in place, evidence-grounded only:
+   *  - a bare-noun name whose single dominant operation label is verb-headed
+   *    adopts that operation's humanized label ("Get Hot Spots"); otherwise
+   *    "Manage <subject>" when operations/entry points ground the subject;
+   *  - a template description is rebuilt from the group's real operations.
+   * Never drops entries (flow_graph dependencies reference them by id).
+   */
+  private finalizeFlowGraphCapabilities(flowGraph: CASFlowGraph | undefined): void {
+    for (const capability of flowGraph?.capabilities || []) {
+      const name = String(capability.name || '');
+      if (this.isBareNounCapabilityLabel(name)) {
+        const opLabels = (capability.operations || [])
+          .map(op => String(op.name || '').trim())
+          .filter(Boolean)
+          .map(label => this.humanizeDomainKey(label.replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase()));
+        const verbHeaded = opLabels.find(label => {
+          const words = label.split(/\s+/);
+          return words.length >= 2 && !this.isBareNounCapabilityLabel(label);
+        });
+        const hasAnchorEvidence = (capability.operations?.length || 0) > 0 || (capability.entry_points?.length || 0) > 0;
+        const repaired = verbHeaded || this.deriveManagePurposeLabel(name, hasAnchorEvidence);
+        if (repaired) capability.name = repaired;
+      }
+      if (this.isStructuralPlaceholderCapabilityDescription(capability.description)) {
+        const rebuilt = this.rebuildCapabilityDescriptionFromOperations(capability.operations || []);
+        if (rebuilt) capability.description = rebuilt;
+      }
+    }
   }
 
   /**
@@ -10490,6 +10574,117 @@ export class AnalyzerOrchestrator {
   }
 
   /**
+   * Post-reconcile quality verdict for the AI capability catalog (defect #33,
+   * catalog VARIANCE). Runs on the RECONCILED output — the exact list that
+   * would ship — because the pre-reconcile checks inside
+   * aiExtractCapabilityCatalog cannot see what reconciliation/guards later
+   * drop (measured live on the v1.0.126 Klauro self-CAS: 3 generic page-view
+   * capabilities shipped as the whole catalog). Returns the concrete failure,
+   * or undefined when the catalog is acceptable. Deterministic-evidence
+   * checks only — never product/name vocabulary:
+   *  - collapse: <=3 capabilities against a candidate pool with 2x+ more
+   *    distinct deterministic families;
+   *  - bare-noun names or structural template descriptions surviving.
+   */
+  private catalogQualityFailure(reconciled: SystemCapability[], distinctFamilyCount: number): string | undefined {
+    if (reconciled.length === 0) return 'empty catalog after reconciliation';
+    if (reconciled.length <= 3 && distinctFamilyCount >= Math.max(6, reconciled.length * 2)) {
+      return `catalog collapse: ${reconciled.length} capabilities against ${distinctFamilyCount} distinct deterministic candidate families`;
+    }
+    const bareNouns = reconciled.filter(capability => this.isBareNounCapabilityLabel(String(capability.name || '')));
+    if (bareNouns.length > 0) {
+      return `bare-noun capability names survived reconciliation: ${bareNouns.slice(0, 3).map(capability => `"${capability.name}"`).join(', ')}`;
+    }
+    const placeholders = reconciled.filter(capability => this.isStructuralPlaceholderCapabilityDescription(capability.description));
+    if (placeholders.length > 0) {
+      return `structural template descriptions survived reconciliation: ${placeholders.slice(0, 3).map(capability => `"${capability.name}"`).join(', ')}`;
+    }
+    return undefined;
+  }
+
+  /**
+   * POST-RECONCILE QUALITY RETRY (defect #33, catalog VARIANCE): runs the AI
+   * capability catalog, reconciles it, and gates the RECONCILED output with
+   * catalogQualityFailure — a failing cycle is retried (up to 3 cycles total)
+   * with a nudge naming the concrete failure, BEFORE the caller degrades to
+   * the deterministic fallback. Keeps the largest reconciled result across
+   * cycles and logs which path won (E1 'capability_catalog_quality' record +
+   * one console line). Returns [] when every cycle produced nothing — the
+   * caller then applies applyDeterministicCapabilityFallback.
+   */
+  private async runCapabilityCatalogWithQualityGate(args: {
+    systemName: string;
+    enhancedSystemPurpose: EnhancedSystemPurpose;
+    frameworks: string[];
+    userJourneys: CASUserJourney[];
+    dataEntities: CASDataEntity[];
+    candidateSnapshot: SystemCapability[];
+    behaviorSurfaces: SystemCapability[];
+    externalServices: string[];
+    flowGraph: CASFlowGraph;
+    projectTextSignal: ProjectTextSignal;
+    entryPoints: CASEntryPoint[];
+    nodes: CASNode[];
+    budgetMs: number;
+    aiPhaseRemainingMs: () => number;
+  }): Promise<SystemCapability[]> {
+    const distinctFamilyCount = new Set(
+      args.candidateSnapshot.map(capability => String(capability.name || '').trim()).filter(Boolean)
+    ).size;
+    let reconciled: SystemCapability[] = [];
+    let qualityFailure: string | undefined;
+    let cyclesRun = 0;
+    for (let cycle = 1; cycle <= 3; cycle++) {
+      if (cycle > 1 && args.aiPhaseRemainingMs() <= 0) break;
+      cyclesRun = cycle;
+      const cycleNudge = cycle === 1 ? undefined
+        : `Previous catalog failed a quality check (${qualityFailure}). Return a FULL catalog of purposeful capabilities: one per distinct product area the facts support, each named as a purpose a PM would write (verb-headed, never a bare noun or a page/view label), each description stating why the ability exists.`;
+      const extracted = await this.aiExtractCapabilityCatalog({
+        systemName: args.systemName,
+        enhancedSystemPurpose: args.enhancedSystemPurpose,
+        frameworks: args.frameworks,
+        userJourneys: args.userJourneys,
+        dataEntities: args.dataEntities,
+        candidateCapabilities: args.candidateSnapshot,
+        behaviorSurfaces: args.behaviorSurfaces,
+        externalServices: args.externalServices,
+        flowGraph: args.flowGraph,
+        projectTextSignal: args.projectTextSignal,
+        budgetMs: Math.max(1, Math.min(args.budgetMs, args.aiPhaseRemainingMs())),
+        ...(cycleNudge ? { qualityNudge: cycleNudge } : {}),
+      });
+      const cycleReconciled = extracted.length > 0
+        ? this.reconcileCatalogedCapabilities(extracted, args.candidateSnapshot, args.dataEntities, args.entryPoints, args.nodes)
+        : [];
+      if (cycleReconciled.length > reconciled.length) reconciled = cycleReconciled;
+      qualityFailure = this.catalogQualityFailure(reconciled, distinctFamilyCount);
+      if (!qualityFailure) break;
+    }
+    const catalogPath = reconciled.length > 0
+      ? (qualityFailure ? 'ai-below-quality-bar' : 'ai')
+      : 'deterministic-fallback';
+    console.error(
+      `[Klauro] capability catalog path: ${catalogPath} (cycles=${cyclesRun}, capabilities=${reconciled.length}, families=${distinctFamilyCount}${qualityFailure ? `, last_failure=${qualityFailure}` : ''})`
+    );
+    recordSemanticDecision({
+      ts: Date.now(),
+      decision_type: 'capability_catalog_quality',
+      input_evidence_digest: {
+        cycles: cyclesRun,
+        capabilities: reconciled.length,
+        distinctFamilies: distinctFamilyCount,
+        path: catalogPath,
+        lastFailure: qualityFailure,
+      },
+      parse_ok: true,
+      gate_verdict: qualityFailure ? 'degraded' : 'accepted',
+      gate_reason: qualityFailure,
+      final_outcome: reconciled.length > 0 ? (qualityFailure ? 'degraded' : 'ai') : 'degraded',
+    });
+    return reconciled;
+  }
+
+  /**
    * FINAL-ASSEMBLY bare-noun guard: the last line of defense before
    * system_capabilities ships into the CAS. The three upstream guard sites
    * (AI-catalog item loop, recordComprehensionSkipped, and
@@ -10516,6 +10711,20 @@ export class AnalyzerOrchestrator {
     let repaired = 0;
     const dropped: string[] = [];
     const kept: SystemCapability[] = [];
+    // Placeholder-DESCRIPTION sweep runs on every entry regardless of
+    // name_source: an AI-authored NAME never legitimizes a structural
+    // template description ("X: query operation via message") — rebuild it
+    // from the capability's own operations, or leave it for the element
+    // description pass when there is nothing to ground a rebuild in.
+    for (const capability of systemCapabilities) {
+      if (capability.description_source === 'ai' || capability.description_source === 'manual' || capability.description_source === 'reused') continue;
+      if (!this.isStructuralPlaceholderCapabilityDescription(capability.description)) continue;
+      const rebuilt = this.rebuildCapabilityDescriptionFromOperations(capability.operations || []);
+      if (!rebuilt) continue;
+      capability.description = rebuilt;
+      capability.description_source = 'deterministic';
+      capability.criticality_factors = Array.from(new Set([...(capability.criticality_factors || []), 'placeholder-description-rebuilt']));
+    }
     for (const capability of systemCapabilities) {
       if (capability.name_source === 'ai' || capability.name_source === 'manual' || capability.name_source === 'reused') {
         kept.push(capability);
@@ -10682,21 +10891,23 @@ export class AnalyzerOrchestrator {
         markAiPhaseBudgetExhausted('capability catalog extraction');
         this.applyDeterministicCapabilityFallback(candidateSnapshot, behaviorSurfaces, entryPoints, nodes, systemCapabilities);
       } else {
-      const extracted = await this.aiExtractCapabilityCatalog({
+      const reconciled = await this.runCapabilityCatalogWithQualityGate({
         systemName,
         enhancedSystemPurpose,
         frameworks,
         userJourneys,
         dataEntities,
-        candidateCapabilities: candidateSnapshot,
+        candidateSnapshot,
         behaviorSurfaces,
         externalServices,
         flowGraph,
         projectTextSignal,
-        budgetMs: Math.max(1, Math.min(budgetMs, aiPhaseRemainingMs())),
+        entryPoints,
+        nodes,
+        budgetMs,
+        aiPhaseRemainingMs,
       });
-      if (extracted.length > 0) {
-        const reconciled = this.reconcileCatalogedCapabilities(extracted, candidateSnapshot, dataEntities, entryPoints, nodes);
+      if (reconciled.length > 0) {
         systemCapabilities.splice(0, systemCapabilities.length, ...reconciled);
       } else {
         // The AI catalog returned nothing usable (empty response / all items
@@ -11199,6 +11410,7 @@ export class AnalyzerOrchestrator {
     // final name. See finalizeSystemCapabilityNames for the live defect this
     // closes.
     this.finalizeSystemCapabilityNames(systemCapabilities);
+    this.finalizeFlowGraphCapabilities(flowGraph);
   }
 
   /**
