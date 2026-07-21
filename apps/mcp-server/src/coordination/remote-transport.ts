@@ -70,6 +70,12 @@ const REQUEST_TIMEOUT_MS = Number(process.env.FAB_REMOTE_TIMEOUT_MS || 10_000);
 export interface RemoteClaimResult {
   claim_id: string;
   seq: number;
+  /** Writer-owned per-claim version echoed/minted by the board (durable-board protocol). Absent from pre-version servers. */
+  version?: number;
+  /** Board epoch — clients holding a cursor reset it when this changes. Absent from pre-epoch servers. */
+  epoch?: string;
+  /** Compaction retention floor — a cursor below this has missed events. */
+  min_retained_seq?: number;
   verdict: 'granted';
   mode: 'advisory';
   ttl_ms: number;
@@ -112,6 +118,10 @@ export interface RemoteActiveResult {
   workspace: string;
   count: number;
   max_seq: number;
+  /** Board epoch (durable-board protocol) — cursor holders reset on change. Absent from pre-epoch servers. */
+  epoch?: string;
+  /** Compaction retention floor — a cursor below this has missed events. */
+  min_retained_seq?: number;
   server_time: string;
   active: RemoteActiveClaim[];
 }

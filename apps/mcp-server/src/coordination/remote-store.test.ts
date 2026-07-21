@@ -7,12 +7,12 @@ import * as http from 'node:http';
 import type { AddressInfo } from 'node:net';
 
 import {
-  __resetRetryQueueForTests,
+  __resetRemoteSyncForTests,
   fetchRemoteState,
-  flushRetryQueue,
-  getRetryQueueSize,
+  flushRemoteSync,
   mergeRemotePeers,
   publishClaim,
+  reconcileRemoteCursor,
   RemoteStoreError,
   syncClaim,
 } from './remote-store';
@@ -41,6 +41,13 @@ function makeClaim(overrides: Partial<WorkClaim> = {}): WorkClaim {
     heartbeat_at: now,
     ...overrides,
   };
+}
+
+/** makeClaim WITHOUT a store-assigned seq — lets appendClaim/syncClaim assign the next real seq
+ *  (the durable-sync tests need distinct seqs per entry; makeClaim's fixed `seq: 1` would collide). */
+function makeUnseqClaim(overrides: Partial<WorkClaim> = {}): Omit<WorkClaim, 'seq'> {
+  const { seq: _seq, ...rest } = makeClaim(overrides);
+  return rest;
 }
 
 /** A tiny throwaway HTTP server standing in for remote-analyzer-service.ts's coordination routes. */
@@ -240,70 +247,142 @@ test('mergeRemotePeers drops released claims and handles an undefined remote sta
   assert.equal(merged[0].claim_id, 'still-active');
 });
 
-test('retry queue: flushRetryQueue drains a queued entry once its target becomes reachable (fails once, then drains)', async () => {
-  const dir = await freshCoordDir();
-  __resetRetryQueueForTests();
+// ---------------------------------------------------------------------------
+// Writer-owned version LWW (wave 1 item 2): cross-store merge must key on the
+// writer's per-claim version, never on cross-domain seq.
+// ---------------------------------------------------------------------------
 
-  // Start a server that fails the first request (simulating the remote being
-  // down at enqueue time) then succeeds thereafter (simulating recovery).
-  let requestCount = 0;
+test('mergeRemotePeers: a fresher remote entry (higher version, LOW seq) beats a stale local entry with HIGH seq', async () => {
+  const staleLocal = makeClaim({ claim_id: 'shared', seq: 900, version: 1, intent: 'stale scope' });
+  const fresherRemote = makeClaim({ claim_id: 'shared', seq: 12, version: 2, intent: 'fresh scope' });
+
+  const merged = mergeRemotePeers(
+    [staleLocal],
+    { workspace: 'ws-test', max_seq: 12, claims: [fresherRemote], presence: [] }
+  );
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].intent, 'fresh scope', 'writer-owned version must win over cross-domain seq');
+});
+
+test('mergeRemotePeers: entries without version fall back to seq LWW (legacy behavior)', async () => {
+  const versioned = makeClaim({ claim_id: 'shared', seq: 1, version: 5, intent: 'versioned' });
+  const legacy = makeClaim({ claim_id: 'shared', seq: 2, intent: 'legacy-newer-seq' });
+  const merged = mergeRemotePeers([versioned], { workspace: 'ws-test', max_seq: 2, claims: [legacy], presence: [] });
+  assert.equal(merged[0].intent, 'legacy-newer-seq', 'mixed version/no-version pairs use the legacy seq rule');
+});
+
+test('reconcileRemoteCursor resets on epoch change and on a cursor ahead of max_seq', () => {
+  const changed = reconcileRemoteCursor({ epoch: 'epoch_a', seq: 40 }, { epoch: 'epoch_b', max_seq: 100 });
+  assert.equal(changed.reset, true);
+  assert.equal(changed.seq, 0);
+
+  const future = reconcileRemoteCursor({ epoch: 'epoch_a', seq: 500 }, { epoch: 'epoch_a', max_seq: 20 });
+  assert.equal(future.reset, true, 'a cursor past max_seq means the board was reset');
+  assert.equal(future.seq, 0);
+
+  const fine = reconcileRemoteCursor({ epoch: 'epoch_a', seq: 5 }, { epoch: 'epoch_a', max_seq: 20 });
+  assert.equal(fine.reset, false);
+  assert.equal(fine.seq, 5);
+});
+
+// ---------------------------------------------------------------------------
+// Durable remote sync (wave 1 item 4): the cursor over the local log replaces
+// the in-memory retry queue — resumable across restarts/outages of any length.
+// ---------------------------------------------------------------------------
+
+test('durable sync: a publish that fails while the remote is down is re-published by a later flush (nothing dropped)', async () => {
+  const dir = await freshCoordDir();
+  __resetRemoteSyncForTests();
+
+  let up = false;
+  const seen: string[] = [];
   const server = await startThrowawayServer(async (_req, body) => {
-    requestCount += 1;
-    if (requestCount === 1) return { status: 503, body: { error: 'temporarily unavailable' } };
+    if (!up) return { status: 503, body: { error: 'temporarily unavailable' } };
+    seen.push(body.claim_id);
     return { status: 200, body: { claim_id: body.claim_id, seq: 1, verdict: 'granted' } };
   });
 
-  const claim = makeClaim({ claim_id: 'flaky-remote' });
-  const first = await syncClaim('ws-test', claim, { baseUrl: server.baseUrl, token: 't' });
-  assert.ok(first.remoteError, 'first publish should fail (server returns 503)');
-  assert.equal(first.remoteQueued, true);
-  assert.equal(getRetryQueueSize(), 1);
+  const first = await syncClaim('ws-test', makeUnseqClaim({ claim_id: 'outage-claim' }), { baseUrl: server.baseUrl, token: 't' });
+  assert.ok(first.remoteError, 'publish should fail while the server is down');
+  assert.equal(first.remoteQueued, true, 'the entry stays ahead of the durable cursor — never dropped');
 
-  // Force the queued entry to be due right now (ignore backoff) and drain it —
-  // the server now succeeds (requestCount > 1), so the queue should empty.
-  const drainResult = await flushRetryQueue(Date.now() + 60_000);
-  assert.equal(drainResult.flushed, 1, 'the queued entry should succeed on retry now that the server recovered');
-  assert.equal(drainResult.requeued, 0);
-  assert.equal(getRetryQueueSize(), 0, 'queue should be empty after a successful drain');
+  up = true;
+  __resetRemoteSyncForTests(); // clear the in-memory backoff so the next flush runs immediately.
+  const flush = await flushRemoteSync('ws-test', { baseUrl: server.baseUrl, token: 't' });
+  assert.equal(flush.published, 1, 'the backlog entry is published once the remote recovers');
+  assert.deepEqual(seen, ['outage-claim']);
+  assert.equal(flush.pending, 0);
+
+  // The cursor is DURABLE: a second flush (fresh call, as after a process
+  // restart — the cursor comes from remote-sync.json, not memory) republishes nothing.
+  const again = await flushRemoteSync('ws-test', { baseUrl: server.baseUrl, token: 't' });
+  assert.equal(again.published, 0, 'already-acked entries are not re-published after the cursor persisted');
 
   await server.close();
-  __resetRetryQueueForTests();
   await fsp.rm(dir, { recursive: true, force: true });
 });
 
-test('retry queue: entries are dropped (not retried forever) once RETRY_MAX_ATTEMPTS is exceeded', async () => {
+test('durable sync: an OLD claim version is never flushed after a NEWER one exists (no stale-scope resurrection)', async () => {
   const dir = await freshCoordDir();
-  __resetRetryQueueForTests();
-  const claim = makeClaim({ claim_id: 'always-fails' });
+  __resetRemoteSyncForTests();
 
-  const first = await syncClaim('ws-test', claim, { baseUrl: 'http://127.0.0.1:1' });
-  assert.equal(first.remoteQueued, true);
+  // Remote down: two successive versions of the same claim pile up locally.
+  const v1 = await syncClaim('ws-test', makeUnseqClaim({ claim_id: 'evolving', intent: 'old scope' }), { baseUrl: 'http://127.0.0.1:1' });
+  __resetRemoteSyncForTests();
+  const v2 = await syncClaim('ws-test', makeUnseqClaim({ claim_id: 'evolving', intent: 'new scope' }), { baseUrl: 'http://127.0.0.1:1' });
+  assert.ok((v2.local.version ?? 0) > (v1.local.version ?? 0), 'local store mints monotonic writer-owned versions');
 
-  // Drive the queue through repeated failed drains (target stays unreachable)
-  // until the entry is dropped rather than retried forever.
-  let lastResult = { flushed: 0, requeued: 0, dropped: 0 };
-  for (let i = 0; i < 10 && getRetryQueueSize() > 0; i++) {
-    lastResult = await flushRetryQueue(Date.now() + 60_000 * (i + 1));
-  }
-  assert.equal(getRetryQueueSize(), 0, 'entry should eventually be dropped, not retried forever');
-  assert.ok(lastResult.dropped >= 1, 'the final drain should report the entry as dropped');
+  const published: Array<{ claim_id: string; version?: number; intent: string }> = [];
+  const server = await startThrowawayServer(async (_req, body) => {
+    published.push({ claim_id: body.claim_id, version: body.version, intent: body.intent });
+    return { status: 200, body: { claim_id: body.claim_id, seq: 1, verdict: 'granted' } };
+  });
 
-  __resetRetryQueueForTests();
+  __resetRemoteSyncForTests();
+  const flush = await flushRemoteSync('ws-test', { baseUrl: server.baseUrl });
+  assert.equal(flush.published, 1, 'only the NEWEST version of the claim is published');
+  assert.equal(flush.skipped, 1, 'the superseded old version is skipped, never resurrected');
+  assert.equal(published.length, 1);
+  assert.equal(published[0].intent, 'new scope');
+  assert.equal(published[0].version, v2.local.version, 'writer-owned version is echoed through publish');
+
+  await server.close();
   await fsp.rm(dir, { recursive: true, force: true });
 });
 
-test('retry queue: local write is never blocked or lost even when the remote is permanently unreachable', async () => {
+test('durable sync: a release entry propagates its status through publish (write-through releases stay releases)', async () => {
   const dir = await freshCoordDir();
-  __resetRetryQueueForTests();
-  const claim = makeClaim({ claim_id: 'local-always-safe' });
+  __resetRemoteSyncForTests();
+
+  const bodies: any[] = [];
+  const server = await startThrowawayServer(async (_req, body) => {
+    bodies.push(body);
+    return { status: 200, body: { claim_id: body.claim_id, seq: 1, verdict: 'granted' } };
+  });
+
+  await syncClaim('ws-test', makeUnseqClaim({ claim_id: 'lifecycle' }), { baseUrl: server.baseUrl });
+  await syncClaim('ws-test', makeUnseqClaim({ claim_id: 'lifecycle', status: 'released' }), { baseUrl: server.baseUrl });
+
+  assert.equal(bodies.length, 2);
+  assert.equal(bodies[0].status, 'active');
+  assert.equal(bodies[1].status, 'released', 'the release must cross the wire as a release, not re-appear active');
+
+  await server.close();
+  await fsp.rm(dir, { recursive: true, force: true });
+});
+
+test('durable sync: local write is never blocked or lost even when the remote is permanently unreachable', async () => {
+  const dir = await freshCoordDir();
+  __resetRemoteSyncForTests();
+  const claim = makeUnseqClaim({ claim_id: 'local-always-safe' });
 
   const result = await syncClaim('ws-test', claim, { baseUrl: 'http://127.0.0.1:1' });
   assert.equal(result.local.claim_id, 'local-always-safe', 'local write must succeed regardless of remote reachability');
+  assert.equal(result.remoteQueued, true, 'entry remains pending on the durable cursor — never dropped');
 
   const log = await readClaimLog('ws-test');
   assert.equal(log.length, 1);
   assert.equal(log[0].claim_id, 'local-always-safe');
 
-  __resetRetryQueueForTests();
   await fsp.rm(dir, { recursive: true, force: true });
 });

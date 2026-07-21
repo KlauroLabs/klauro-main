@@ -13,7 +13,7 @@ import { isDirectCliInvocation } from './cli-invocation';
 import { AccountHttpError, AccountStore, type AccountProject } from './account-store';
 import { AccountWorkspaceAnalysisScheduler } from './account-workspace-analysis';
 import { getGrants, heartbeatGrant, releaseGrant, requestGrant, type AgentKind } from './coordination';
-import { appendClaim, checkEditLock, getActiveClaims, getPresence, getStoreDir, readClaimLog, releaseAgentWithReason, releaseClaimById } from './coordination/local-store';
+import { appendClaim, checkEditLock, describeCursorGap, getActiveClaims, getBoardInfo, getPresence, getStoreDir, readClaimLog, releaseAgentWithReason, releaseClaimById, warnIfEphemeralCoordDir, type ClaimLogEntry } from './coordination/local-store';
 import { deriveActiveClaims } from './coordination/presence';
 import { appendSecurityAudit, assertSameTenant, defaultSecretDenyPatterns, getSecurityStoreDir, redactInFlightChanges, TenantMismatchError } from './coordination/security';
 import { detectConceptualConflicts, type AgentInFlightState, type ConceptualConflict, type ConflictCas, type SymbolChange } from './coordination/conceptual-conflict';
@@ -118,6 +118,12 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
   const rateLimitPerMinute = options.rateLimitPerMinute ?? Number(process.env.KLAURO_ANALYZER_RATE_LIMIT_PER_MINUTE || 120);
   const deferAiEnrichment = options.deferAiEnrichment === true;
   const buckets = new Map<string, RateLimitBucket>();
+  // Ops guard (durable board, wave 1): the 2026-07-21 incident was this server
+  // writing its coordination board to the container's ephemeral overlay FS
+  // (KLAURO_COORD_DIR unset) while the persistent /data volume went unused —
+  // restart erased every claim and reset seq. Warn LOUDLY at startup whenever
+  // the coord dir is not under this server's persistent data root.
+  warnIfEphemeralCoordDir({ dataRoot: dataDir });
   const accounts = new AccountStore(dataDir);
   // Server-side auto-refreshed Workspace Analysis (WAS): rebuilds are
   // debounced/coalesced per account workspace and run async — see
@@ -601,6 +607,15 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
            *  never queues, always succeeds, returns overlap warnings inline).
            *  Absent/'grant' = the ENFORCED grant path below (unchanged). */
           mode?: 'advisory' | 'grant';
+          /** Durable-board protocol (write-through replication from a client's
+           *  local log): lifecycle status + writer-owned per-claim version +
+           *  event kind, echoed VERBATIM into this board so cross-store LWW
+           *  keys on the writer's version (never this board's arrival seq) and
+           *  a replicated RELEASE stays a release. Absent on plain advisory
+           *  claims from older clients — legacy behavior unchanged. */
+          status?: 'active' | 'released';
+          version?: number;
+          kind?: ClaimLogEntry['kind'];
         }>(request, maxBodyBytes);
 
         // ADVISORY fabric path (cross-machine mirror of fab.ts claim /
@@ -627,13 +642,20 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
             agent_kind: body.agent_kind || 'other',
             scope: { repo: workspace, paths: claimPaths, symbols: body.symbols || [], capability: body.capability },
             intent: body.intent,
-            status: 'active',
+            // Durable-board protocol: honor a replicated lifecycle status and
+            // ECHO the writer-owned version verbatim (appendClaim preserves a
+            // supplied version; only mints one when absent). Legacy callers
+            // send neither — behavior identical to before.
+            status: body.status === 'released' ? 'released' : 'active',
+            version: typeof body.version === 'number' ? body.version : undefined,
+            kind: body.kind,
             created_at: now,
             ttl_ms: body.ttl_ms ?? REMOTE_ADVISORY_DEFAULT_TTL_MS,
             heartbeat_at: now,
             base_commit: body.base_commit,
             branch: body.branch,
           });
+          const board = await getBoardInfo(workspace);
           broadcastCoordinationEvent(workspace, 'claim', {
             claim_id: entry.claim_id,
             agent_id: body.agent_id,
@@ -643,6 +665,9 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           writeJson(response, 200, {
             claim_id: entry.claim_id,
             seq: entry.seq,
+            version: entry.version,
+            epoch: board.epoch,
+            min_retained_seq: board.min_retained_seq,
             verdict: 'granted',
             mode: 'advisory',
             ttl_ms: entry.ttl_ms,
@@ -834,10 +859,13 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
         }
         const log = await readClaimLog(workspace);
         const active = await getActiveClaims(workspace);
+        const board = await getBoardInfo(workspace);
         writeJson(response, 200, {
           workspace,
           count: active.length,
           max_seq: log.reduce((max, entry) => Math.max(max, entry.seq), 0),
+          epoch: board.epoch,
+          min_retained_seq: board.min_retained_seq,
           server_time: new Date().toISOString(),
           active: active.map((c) => ({
             claim_id: c.claim_id,
@@ -872,11 +900,20 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
         const claims = await getActiveClaims(workspace);
         const presence = await getPresence(workspace);
         const grants = await getGrants(workspace);
+        const board = await getBoardInfo(workspace);
         const holderCtx = await describeGrantHolders(workspace, grants.active.map((g) => g.agent_id));
         const maxSeq = log.reduce((max, entry) => Math.max(max, entry.seq), 0);
+        // Compaction delivery floor: a `since` cursor below min_retained_seq
+        // can no longer get a complete replay — say so EXPLICITLY (gap notice),
+        // never silence. Epoch lets the client detect a board reset and drop
+        // its cursor instead of polling a "future" seq forever.
+        const gap = Number.isFinite(since) ? describeCursorGap(since as number, board) : undefined;
         writeJson(response, 200, {
           workspace,
           max_seq: maxSeq,
+          epoch: board.epoch,
+          min_retained_seq: board.min_retained_seq,
+          ...(gap ? { gap } : {}),
           claims: Number.isFinite(since) ? claims.filter((c) => c.seq > (since as number)) : claims,
           presence,
           grants: grants.active.map((g) => ({ ...g, intent: holderCtx[g.agent_id]?.intent, lease_status: holderCtx[g.agent_id]?.lease_status })),
@@ -908,7 +945,10 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
 
         const claims = await getActiveClaims(workspace);
         const presence = await getPresence(workspace);
-        response.write(`event: state\ndata: ${JSON.stringify({ workspace, claims, presence })}\n\n`);
+        const board = await getBoardInfo(workspace);
+        response.write(
+          `event: state\ndata: ${JSON.stringify({ workspace, epoch: board.epoch, min_retained_seq: board.min_retained_seq, claims, presence })}\n\n`
+        );
 
         let subscribers = coordinationSubscribers.get(workspace);
         if (!subscribers) {

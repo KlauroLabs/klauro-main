@@ -16,16 +16,33 @@ export function isExpired(claim: WorkClaim, nowMs: number): boolean {
 
 /**
  * Reduce an append-only claim log (any order, possibly containing multiple
- * entries per `claim_id`) to the latest entry per `claim_id`, by highest `seq`
- * (last-writer-wins). Ties broken by `created_at` recency, then insertion order.
+ * entries per `claim_id`) to the latest entry per `claim_id` (last-writer-wins).
+ *
+ * Precedence per claim_id (Coordination Engine wave 1):
+ *  1. WRITER-OWNED `version`, when BOTH entries carry one — the only key that
+ *     is comparable ACROSS stores (a local log and a remote board have
+ *     incomparable seq domains: a stale local seq 900 must never beat a
+ *     fresher remote seq 12 for the same claim).
+ *  2. `seq` — the LEGACY rule, used whenever either entry predates the
+ *     `version` field. Within one board's own log this is still correct
+ *     (seq is that board's arrival order).
+ *  3. Ties broken by `created_at` recency, then insertion order.
  */
 export function reduceClaimLog(log: WorkClaim[]): WorkClaim[] {
   const latest = new Map<string, WorkClaim>();
   for (const claim of log) {
     const existing = latest.get(claim.claim_id);
-    if (!existing || claim.seq > existing.seq) {
+    if (!existing) {
       latest.set(claim.claim_id, claim);
-    } else if (claim.seq === existing.seq) {
+      continue;
+    }
+    const bothVersioned = typeof claim.version === 'number' && typeof existing.version === 'number';
+    const cmp = bothVersioned
+      ? (claim.version as number) - (existing.version as number)
+      : claim.seq - existing.seq;
+    if (cmp > 0) {
+      latest.set(claim.claim_id, claim);
+    } else if (cmp === 0) {
       const claimTime = Date.parse(claim.created_at);
       const existingTime = Date.parse(existing.created_at);
       if (claimTime >= existingTime) latest.set(claim.claim_id, claim);

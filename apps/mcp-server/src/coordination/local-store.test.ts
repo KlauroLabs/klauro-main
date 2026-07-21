@@ -5,19 +5,25 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 
 import {
+  __clearCachesForTests,
   announceEdit,
   appendClaim,
   attributeChange,
+  checkCoordDirDurability,
   checkEditLock,
+  describeCursorGap,
   findAgentInOtherWorkspaces,
   getActiveClaims,
+  getBoardInfo,
   getPresence,
   readClaimLog,
   recordUnclaimedEdit,
   releaseAgent,
   releaseAgentWithReason,
   releaseEdit,
+  warnIfEphemeralCoordDir,
   watch,
+  withWorkspaceLock,
 } from './local-store';
 import type { WorkClaim } from './types';
 
@@ -503,4 +509,134 @@ test('recordUnclaimedEdit: existing readers tolerate the new field (jsonl format
   assert.deepEqual(active.map((c) => c.agent_id), ['agent-a']);
 
   await fsp.rm(dir, { recursive: true, force: true });
+});
+
+// ---------------------------------------------------------------------------
+// Coordination Engine wave 1 — durable board (epoch + boot sweep), writer-owned
+// versions, released_count defect, lockfile hardening.
+// ---------------------------------------------------------------------------
+
+test('board epoch: minted once, stable across appends, and atomic under two racing first-writers', async () => {
+  const dir = await freshCoordDir();
+
+  // Two racing first-writers on a fresh board — epoch minting happens under
+  // the workspace lock, so exactly ONE epoch may exist afterwards.
+  await Promise.all([
+    appendClaim('ws-test', makeClaim({ claim_id: 'race-a', agent_id: 'agent-a' })),
+    appendClaim('ws-test', makeClaim({ claim_id: 'race-b', agent_id: 'agent-b' })),
+  ]);
+  const first = await getBoardInfo('ws-test');
+  assert.ok(first.epoch.length > 0, 'a board mints an epoch at creation');
+  assert.equal(first.min_retained_seq, 1, 'a board that never evicted anything retains from seq 1');
+
+  await appendClaim('ws-test', makeClaim({ claim_id: 'later', agent_id: 'agent-c' }));
+  const second = await getBoardInfo('ws-test');
+  assert.equal(second.epoch, first.epoch, 'epoch is board identity — stable across writes');
+
+  await fsp.rm(dir, { recursive: true, force: true });
+});
+
+test('boot sweep: a server restart over a populated board preserves claims, seq, and epoch', async () => {
+  const dir = await freshCoordDir();
+  await appendClaim('ws-test', makeClaim({ claim_id: 'survivor-1', agent_id: 'agent-a' }));
+  await appendClaim('ws-test', makeClaim({ claim_id: 'survivor-2', agent_id: 'agent-b' }));
+  const beforeEpoch = (await getBoardInfo('ws-test')).epoch;
+  const beforeLog = await readClaimLog('ws-test');
+  const beforeMaxSeq = beforeLog.reduce((m, e) => Math.max(m, e.seq), 0);
+
+  // "Restart": drop every in-memory cache so the next reads come purely from disk.
+  __clearCachesForTests();
+
+  const afterLog = await readClaimLog('ws-test');
+  assert.equal(afterLog.length, beforeLog.length, 'restart must not lose log entries');
+  const active = await getActiveClaims('ws-test');
+  assert.deepEqual(active.map((c) => c.claim_id).sort(), ['survivor-1', 'survivor-2'], 'claims survive a restart');
+  assert.equal((await getBoardInfo('ws-test')).epoch, beforeEpoch, 'epoch survives a restart — clients keep their cursors');
+
+  // seq keeps counting from where it was — never resets to 1 (the 2026-07-21 failure mode).
+  const next = await appendClaim('ws-test', makeClaim({ claim_id: 'post-restart', agent_id: 'agent-c' }));
+  assert.equal(next.seq, beforeMaxSeq + 1, 'seq continues monotonically across a restart');
+
+  await fsp.rm(dir, { recursive: true, force: true });
+});
+
+test('writer-owned version: appendClaim mints a monotonic per-claim version; a supplied version is preserved verbatim', async () => {
+  const dir = await freshCoordDir();
+  const v1 = await appendClaim('ws-test', makeClaim({ claim_id: 'versioned' }));
+  const v2 = await appendClaim('ws-test', makeClaim({ claim_id: 'versioned', intent: 'updated' }));
+  const other = await appendClaim('ws-test', makeClaim({ claim_id: 'different', agent_id: 'agent-b' }));
+  assert.equal(v1.version, 1);
+  assert.equal(v2.version, 2, 'same claim_id increments its own version');
+  assert.equal(other.version, 1, 'versions are PER-CLAIM, not per-board');
+
+  const echoed = await appendClaim('ws-test', { ...makeClaim({ claim_id: 'replicated' }), version: 7 });
+  assert.equal(echoed.version, 7, 'a replicated entry keeps its writer-owned version — receivers never re-assign');
+
+  await fsp.rm(dir, { recursive: true, force: true });
+});
+
+test('releaseAgent releases a TTL-expired claim (v3 §6.3 released_count:0 defect)', async () => {
+  const dir = await freshCoordDir();
+  // A claim that was definitely made, whose TTL lapsed before the agent released.
+  await appendClaim('ws-test', makeClaim({ claim_id: 'ws-test:agent-a', agent_id: 'agent-a', ttl_ms: 1 }));
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal((await getActiveClaims('ws-test')).length, 0, 'precondition: the claim is TTL-expired');
+
+  const outcome = await releaseAgentWithReason('ws-test', 'agent-a');
+  assert.equal(outcome.released.length, 1, 'release must close out the expired-but-still-latest-active claim, not report 0');
+  assert.equal(outcome.reason, undefined, 'a real release carries no zero-explanation');
+  assert.equal(outcome.released[0].status, 'released');
+
+  // Double-release is now the legitimate no-op with an explanation.
+  const again = await releaseAgentWithReason('ws-test', 'agent-a');
+  assert.equal(again.released.length, 0);
+  assert.ok(again.reason, 'a zero release always says why');
+
+  await fsp.rm(dir, { recursive: true, force: true });
+});
+
+test('lockfile hardening: a critical section longer than the old stale window is not stolen (no duplicate seq)', async (t) => {
+  const dir = await freshCoordDir();
+  // Hold the workspace lock ~6.5s — longer than the pre-hardening 5s stale
+  // window. The heartbeat must keep the lockfile fresh so a concurrent writer
+  // WAITS instead of reclaiming the lock and double-assigning seq.
+  const slowHolder = withWorkspaceLock('ws-test', async ({ append }) => {
+    await new Promise((r) => setTimeout(r, 6_500));
+    return append(makeClaim({ claim_id: 'slow-writer', agent_id: 'agent-slow' }));
+  });
+  await new Promise((r) => setTimeout(r, 100)); // let the holder acquire first.
+  const contender = appendClaim('ws-test', makeClaim({ claim_id: 'contender', agent_id: 'agent-fast' }));
+
+  const [slowEntry, fastEntry] = await Promise.all([slowHolder, contender]);
+  assert.notEqual(slowEntry.seq, fastEntry.seq, 'two writers must never share a seq');
+  const log = await readClaimLog('ws-test');
+  const seqs = log.map((e) => e.seq);
+  assert.equal(new Set(seqs).size, seqs.length, 'every seq in the log is unique');
+
+  await fsp.rm(dir, { recursive: true, force: true });
+});
+
+test('coord-dir durability guard: flags a containerized coord dir outside the data root; quiet on a bare host', async () => {
+  const dir = await freshCoordDir(); // KLAURO_COORD_DIR now points at a tmp dir.
+  const badInContainer = checkCoordDirDurability({ dataRoot: '/data', isContainer: true });
+  assert.equal(badInContainer.durable, false);
+  assert.ok(badInContainer.warning && badInContainer.warning.includes('KLAURO_COORD_DIR'));
+
+  const okOnHost = checkCoordDirDurability({ dataRoot: '/data', isContainer: false });
+  assert.equal(okOnHost.durable, true, 'a host-side home-dir store is persistent — no false alarm');
+
+  const goodInContainer = checkCoordDirDurability({ dataRoot: path.dirname(dir), isContainer: true });
+  assert.equal(goodInContainer.durable, true, 'coord dir under the data root is fine in a container');
+
+  const printed: string[] = [];
+  warnIfEphemeralCoordDir({ dataRoot: '/data', isContainer: true, print: (m) => printed.push(m) });
+  assert.equal(printed.length, 1, 'the guard warns loudly when the board is ephemeral');
+
+  await fsp.rm(dir, { recursive: true, force: true });
+});
+
+test('describeCursorGap: explicit notice below the retention floor, silence at/above it', () => {
+  assert.ok(describeCursorGap(3, { min_retained_seq: 10 }), 'a cursor below the floor gets an explicit gap notice');
+  assert.equal(describeCursorGap(9, { min_retained_seq: 10 }), undefined, 'cursor at floor-1 is complete');
+  assert.equal(describeCursorGap(15, { min_retained_seq: 10 }), undefined);
 });

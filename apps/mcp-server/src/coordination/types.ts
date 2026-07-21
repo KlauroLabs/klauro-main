@@ -58,6 +58,19 @@ export interface ConceptualCoordinate {
 export interface WorkClaim {
   claim_id: string;
   seq: number;
+  /**
+   * WRITER-OWNED monotonic per-claim version (Coordination Engine wave 1).
+   * Assigned by the store that first records the claim on behalf of its writer
+   * (local-store's appendClaim: max prior version for this claim_id + 1) and
+   * ECHOED VERBATIM through every publish/replication hop — never re-assigned
+   * by a receiver. Conflict resolution for the same `claim_id` across stores
+   * keys on THIS field, not on `seq`: `seq` is a per-board arrival counter and
+   * two boards' seq domains are incomparable (a stale local entry at seq 900
+   * must not beat a fresher remote entry at seq 12). LEGACY: entries without
+   * `version` (written before this field existed) fall back to seq-based LWW —
+   * see `reduceClaimLog` in presence.ts.
+   */
+  version?: number;
   workspace_id: string;
   agent_id: string;
   agent_kind: AgentKind;

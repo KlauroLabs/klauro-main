@@ -66,7 +66,7 @@ import { attachInteractionReach } from '../../../packages/analyzer-core/src/anal
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import { loadStoredConnectorAuth, normalizeServerUrl } from './connector-auth';
 import { arbitrate, detectCollisions, getGrants, heartbeatGrant, releaseGrant, requestGrant, type AgentKind, type CasEdgeRef, type WasCapabilityRef, type WorkClaim } from './coordination';
-import { attributeChange, appendClaim, checkEditLock, extendClaim, getActiveClaims, getPresence, readClaimLog, readSurprisesFor, releaseAgentWithReason, watch } from './coordination/local-store';
+import { attributeChange, appendClaim, checkEditLock, extendClaim, getActiveClaims, getBoardInfo, getPresence, readClaimLog, readSurprisesFor, releaseAgentWithReason, watch } from './coordination/local-store';
 import { remoteActive, remoteCheck, remoteClaim, remoteRelease } from './coordination/remote-transport';
 import { resolveFabricSettings } from './coordination/fabric-config';
 import { ensureWriteHookStarted, closeAllWriteHooks, shouldActivateWriteHook } from './coordination/write-hook';
@@ -6062,7 +6062,7 @@ function registerTools(server: McpServer) {
           });
           return json({
             status: 'claimed', tier: 'remote', remote_url: remote.baseUrl,
-            workspace: ws, agent_id, seq: res.seq, intent,
+            workspace: ws, agent_id, seq: res.seq, epoch: res.epoch, intent,
             paths: claimPaths, symbols: claimSymbols,
             ttl_ms: res.ttl_ms, server_time: res.server_time,
             conflicts: res.conflicts, warning: res.warning,
@@ -6095,6 +6095,7 @@ function registerTools(server: McpServer) {
         ttl_ms: ttl_ms ?? 6 * 60 * 60 * 1000,
         heartbeat_at: now,
       });
+      const board = await getBoardInfo(ws);
       const overlapWarning = conflicts.length
         ? `ADVISORY: ${conflicts.length} other agent(s) overlap your scope (${conflicts
             .map((c) => `${c.agent_id}:${c.reason}`)
@@ -6111,6 +6112,7 @@ function registerTools(server: McpServer) {
         workspace: ws,
         agent_id,
         seq: entry.seq,
+        epoch: board.epoch,
         intent,
         paths: entry.scope.paths,
         symbols: entry.scope.symbols,
@@ -6304,6 +6306,8 @@ function registerTools(server: McpServer) {
             remote_url: remote.baseUrl,
             count: res.count,
             max_seq: res.max_seq,
+            epoch: res.epoch,
+            min_retained_seq: res.min_retained_seq,
             server_time: res.server_time,
             active: res.active.map((c) => ({
               agent_id: c.agent_id,
@@ -6321,9 +6325,12 @@ function registerTools(server: McpServer) {
         }
       }
       const active = await getActiveClaims(ws);
+      const board = await getBoardInfo(ws);
       return json({
         workspace: ws,
         tier: 'local',
+        epoch: board.epoch,
+        min_retained_seq: board.min_retained_seq,
         // Never silent: if remote was expected but we fell back, degradeNote
         // carries the runtime cause (unreachable/401); otherwise settings.localReason
         // explains why local is the resolved tier (not configured / disabled /

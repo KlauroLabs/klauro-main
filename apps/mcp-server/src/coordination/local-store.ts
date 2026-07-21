@@ -27,7 +27,7 @@ import * as fsp from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-import { deriveActiveClaims, derivePresence } from './presence';
+import { deriveActiveClaims, derivePresence, reduceClaimLog } from './presence';
 import type { AgentPresence, WorkClaim, WorkClaimStatus } from './types';
 
 /** One line of `claims.jsonl`: a `WorkClaim` plus store-assigned bookkeeping. */
@@ -93,7 +93,19 @@ export interface ChangeAttribution {
 }
 
 const DEFAULT_TTL_MS = 5 * 60 * 1000; // 5 minutes — soft edit-locks are short-lived.
-const LOCK_STALE_MS = 5000; // treat a lockfile older than this as abandoned.
+/**
+ * Lockfile heartbeat/staleness (Coordination Engine wave 1, lockfile hardening).
+ * While a lock is HELD, the holder touches (utimes) the lockfile every
+ * LOCK_HEARTBEAT_MS; a waiter only reclaims a lock whose mtime is older than
+ * LOCK_STALE_MS. The stale window is deliberately >> the heartbeat interval so
+ * a long critical section (e.g. a compaction rewrite that takes >5s) can never
+ * have its lock stolen mid-operation by a waiter — the pre-hardening failure
+ * mode was two writers both inside the section assigning duplicate `seq`.
+ * A crashed holder stops heartbeating, so reclaim still happens within
+ * LOCK_STALE_MS — liveness is preserved, only theft-under-load is gone.
+ */
+const LOCK_HEARTBEAT_MS = 1000;
+const LOCK_STALE_MS = 15_000; // must stay >> LOCK_HEARTBEAT_MS (see above).
 
 /** Compact once the log exceeds this many entries (tunable via env for testing/tuning). */
 const COMPACT_THRESHOLD_ENTRIES = Number(process.env.KLAURO_COORD_COMPACT_THRESHOLD || 500);
@@ -202,11 +214,132 @@ async function withLock<T>(workspaceId: string, fn: () => Promise<T>): Promise<T
       await new Promise((r) => setTimeout(r, 5 + Math.random() * 15));
     }
   }
+  // Heartbeat the lockfile while held: a critical section longer than the old
+  // fixed stale window (e.g. a large compaction) previously got its lock
+  // reclaimed by a waiter mid-write → two concurrent writers → duplicate seq.
+  // Touching mtime every LOCK_HEARTBEAT_MS keeps the lock visibly live for as
+  // long as the holder is actually running; `unref()` so a held interval never
+  // pins the process open.
+  const heartbeat = setInterval(() => {
+    const now = new Date();
+    void fsp.utimes(lockPath, now, now).catch(() => {
+      // lockfile vanished (crash-cleanup raced us) — nothing to keep alive;
+      // the finally below tolerates the same condition.
+    });
+  }, LOCK_HEARTBEAT_MS);
+  heartbeat.unref?.();
   try {
     return await fn();
   } finally {
+    clearInterval(heartbeat);
     await fsp.rm(lockPath, { force: true });
   }
+}
+
+// ---------------------------------------------------------------------------
+// Board meta (`board.json` beside `claims.jsonl`) — Coordination Engine wave 1.
+// Carries the BOARD EPOCH (minted once, atomically under the workspace lock,
+// at board creation: a client whose stored cursor belongs to a different epoch
+// resets instead of silently missing everything after a board wipe/reset) and
+// the COMPACTION RETENTION FLOOR (`min_retained_seq`: the smallest seq for
+// which the log is still complete — a reader whose cursor is below it MISSED
+// events and must be told so explicitly, never silence), plus a bounded set of
+// evicted surprise ids so `persistSurprise`'s dedup stays consistent with the
+// retention floor (eviction must not cause re-append loops).
+// ---------------------------------------------------------------------------
+
+export interface BoardMeta {
+  /** Board identity, minted at creation. Changes only when the board is destroyed/recreated. */
+  epoch: string;
+  created_at: string;
+  /**
+   * Smallest seq S such that every entry with seq >= S is still present in the
+   * log (nothing at or above it has been compacted away). 1 for a board that
+   * has never evicted anything. Monotonically non-decreasing.
+   */
+  min_retained_seq: number;
+  /**
+   * claim_ids of `kind:'surprise'` entries that compaction evicted — kept
+   * (bounded) so persistSurprise's dedup check still sees them after they
+   * leave the log. Without this, eviction + re-plan = infinite re-append loop.
+   */
+  evicted_surprise_ids?: string[];
+}
+
+const EVICTED_SURPRISE_IDS_MAX = 500;
+
+function getBoardMetaPath(workspaceId: string): string {
+  return path.join(getStoreDir(workspaceId), 'board.json');
+}
+
+function mintEpoch(): string {
+  return `epoch_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+async function readBoardMetaFile(workspaceId: string): Promise<BoardMeta | undefined> {
+  try {
+    const raw = await fsp.readFile(getBoardMetaPath(workspaceId), 'utf8');
+    const parsed = JSON.parse(raw) as Partial<BoardMeta>;
+    if (!parsed || typeof parsed.epoch !== 'string') return undefined;
+    return {
+      epoch: parsed.epoch,
+      created_at: typeof parsed.created_at === 'string' ? parsed.created_at : new Date(0).toISOString(),
+      min_retained_seq: typeof parsed.min_retained_seq === 'number' ? parsed.min_retained_seq : 1,
+      evicted_surprise_ids: Array.isArray(parsed.evicted_surprise_ids) ? parsed.evicted_surprise_ids : undefined,
+    };
+  } catch {
+    return undefined; // absent or unreadable — caller mints under the lock.
+  }
+}
+
+/** Atomic (tmp+rename) meta write. Must be called while HOLDING the workspace lock. */
+async function writeBoardMetaLocked(workspaceId: string, meta: BoardMeta): Promise<void> {
+  const metaPath = getBoardMetaPath(workspaceId);
+  const tmpPath = `${metaPath}.tmp-${process.pid}-${Date.now()}`;
+  await fsp.writeFile(tmpPath, JSON.stringify(meta, null, 2) + '\n', 'utf8');
+  await fsp.rename(tmpPath, metaPath);
+}
+
+/**
+ * Read-or-mint the board meta while HOLDING the workspace lock. Minting under
+ * the lock is what makes epoch creation atomic: two racing first-writers both
+ * queue on the same lockfile, the first mints, the second re-reads and sees it.
+ */
+async function ensureBoardMetaLocked(workspaceId: string): Promise<BoardMeta> {
+  const existing = await readBoardMetaFile(workspaceId);
+  if (existing) return existing;
+  const meta: BoardMeta = { epoch: mintEpoch(), created_at: new Date().toISOString(), min_retained_seq: 1 };
+  await writeBoardMetaLocked(workspaceId, meta);
+  return meta;
+}
+
+/**
+ * Public read of the board identity + retention floor, minting the meta (under
+ * the workspace lock) if this board has never had one — so every response
+ * surface can carry `{epoch, seq}` unconditionally. Cheap: one small-file read
+ * on the common path; the lock is taken only on first-ever access per board.
+ */
+export async function getBoardInfo(workspaceId: string): Promise<BoardMeta> {
+  const existing = await readBoardMetaFile(workspaceId);
+  if (existing) return existing;
+  ensureDirSync(getStoreDir(workspaceId));
+  return withLock(workspaceId, () => ensureBoardMetaLocked(workspaceId));
+}
+
+/**
+ * Pure gap-notice helper (compaction delivery floor): a reader resuming from
+ * `cursorSeq` against a board whose `min_retained_seq` is above it can no
+ * longer be given a complete replay — entries in (cursorSeq, min_retained_seq)
+ * may have been compacted away. Returns an explicit human-readable notice
+ * (never silence), or undefined when the cursor is safe.
+ */
+export function describeCursorGap(cursorSeq: number, meta: Pick<BoardMeta, 'min_retained_seq'>): string | undefined {
+  if (cursorSeq >= meta.min_retained_seq - 1) return undefined;
+  return (
+    `missed events since seq ${cursorSeq}: this board has compacted entries below seq ` +
+    `${meta.min_retained_seq}, so events in (${cursorSeq}, ${meta.min_retained_seq}) can no longer be replayed. ` +
+    `Re-read the full current state instead of resuming from this cursor.`
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -310,9 +443,18 @@ async function appendClaimLocked(
   existing: ClaimLogEntry[]
 ): Promise<ClaimLogEntry> {
   const nextSeq = existing.reduce((max, e) => Math.max(max, e.seq), 0) + 1;
+  // WRITER-OWNED per-claim version (see types.ts `WorkClaim.version`): when the
+  // caller supplies one (a replicated entry echoing its origin store's version)
+  // it is preserved VERBATIM — a receiving store never re-assigns it. When
+  // absent, this store IS the writer's store and mints the next monotonic
+  // version for this claim_id. Cross-store LWW keys on this, never on seq.
+  const nextVersion =
+    claim.version ??
+    existing.reduce((max, e) => (e.claim_id === claim.claim_id ? Math.max(max, e.version ?? 0) : max), 0) + 1;
   const entry: ClaimLogEntry = {
     ...claim,
     seq: claim.seq ?? nextSeq,
+    version: nextVersion,
     logged_at: new Date().toISOString(),
   };
   const logPath = getLogPath(workspaceId);
@@ -361,10 +503,22 @@ async function compactIfNeeded(
   workspaceId: string,
   existing: ClaimLogEntry[]
 ): Promise<ClaimLogEntry[]> {
+  // Ensure the board epoch exists on every locked write path — minting is
+  // atomic here because compactIfNeeded is only ever called under the
+  // workspace lock (two racing first-writers serialize on the lockfile).
+  const meta = await ensureBoardMetaLocked(workspaceId);
   if (existing.length <= COMPACT_THRESHOLD_ENTRIES) return existing;
 
   const nowMs = Date.now();
-  const activeIds = new Set(deriveActiveClaims(existing, nowMs).map((c) => c.claim_id));
+  const activeClaims = deriveActiveClaims(existing, nowMs);
+  const activeIds = new Set(activeClaims.map((c) => c.claim_id));
+  // DELIVERY-FLOOR PROTECTION: entries ADDRESSED to agents that still hold an
+  // active (unexpired) claim are undelivered-in-the-worst-case — the addressee
+  // is demonstrably still working and may not have drained them yet. Evicting
+  // them would silently destroy addressed events (surprises). Protection is
+  // naturally bounded by claim TTL: once the addressee's claims expire or are
+  // released, the entries become evictable again on a later compaction.
+  const activeAgents = new Set(activeClaims.map((c) => c.agent_id));
   // LWW-latest entry per claim_id (mirrors reduceClaimLog's own tie-break),
   // since a compacted log must still resolve to the identical active-set on
   // its next read — we're only trimming SUPERSEDED history, never rewriting
@@ -375,19 +529,42 @@ async function compactIfNeeded(
     if (!prior || e.seq > prior.seq) latestById.set(e.claim_id, e);
   }
   const activeEntries = [...latestById.values()].filter((e) => activeIds.has(e.claim_id));
-  const inactiveEntries = [...latestById.values()]
+  const inactive = [...latestById.values()]
     .filter((e) => !activeIds.has(e.claim_id))
-    .sort((a, b) => b.seq - a.seq)
-    .slice(0, COMPACT_KEEP_RELEASED);
+    .sort((a, b) => b.seq - a.seq);
+  const protectedAddressed = inactive.filter(
+    (e) => (e.kind === 'surprise' || e.kind === 'unclaimed-edit') && activeAgents.has(e.agent_id)
+  );
+  const protectedIds = new Set(protectedAddressed.map((e) => e.claim_id));
+  const inactiveEntries = inactive.filter((e) => !protectedIds.has(e.claim_id)).slice(0, COMPACT_KEEP_RELEASED);
 
-  const compacted = [...activeEntries, ...inactiveEntries].sort((a, b) => a.seq - b.seq);
+  const compacted = [...activeEntries, ...protectedAddressed, ...inactiveEntries].sort((a, b) => a.seq - b.seq);
   if (compacted.length >= existing.length) return existing; // nothing to gain; skip the rewrite.
+
+  // RETENTION FLOOR bookkeeping (must land with the rewrite, same critical
+  // section): min_retained_seq = highest evicted seq + 1 — the smallest seq at
+  // and above which the log is still complete. Readers below it get an
+  // explicit gap notice (describeCursorGap), never silence. Evicted SURPRISE
+  // ids are remembered (bounded) so persistSurprise's dedup survives eviction
+  // and can't re-append the same finding in a loop.
+  const keptSeqs = new Set(compacted.map((e) => e.seq));
+  const evicted = existing.filter((e) => !keptSeqs.has(e.seq));
+  const maxEvictedSeq = evicted.reduce((max, e) => Math.max(max, e.seq), 0);
+  const evictedSurpriseIds = evicted.filter((e) => e.kind === 'surprise').map((e) => e.claim_id);
+  const nextMeta: BoardMeta = {
+    ...meta,
+    min_retained_seq: Math.max(meta.min_retained_seq, maxEvictedSeq + 1),
+    evicted_surprise_ids: [...new Set([...(meta.evicted_surprise_ids ?? []), ...evictedSurpriseIds])].slice(
+      -EVICTED_SURPRISE_IDS_MAX
+    ),
+  };
 
   const logPath = getLogPath(workspaceId);
   const tmpPath = `${logPath}.compact-${process.pid}-${nowMs}`;
   const body = compacted.map((e) => JSON.stringify(e)).join('\n') + (compacted.length > 0 ? '\n' : '');
   await fsp.writeFile(tmpPath, body, 'utf8');
   await fsp.rename(tmpPath, logPath); // atomic on the same filesystem — no window where readers see a truncated file.
+  await writeBoardMetaLocked(workspaceId, nextMeta);
   await primeCacheAfterWrite(logPath, compacted);
   return compacted;
 }
@@ -535,13 +712,24 @@ export async function releaseAgent(workspaceId: string, agentId: string): Promis
   return withLock(workspaceId, async () => {
     let existing = await readClaimLog(workspaceId);
     existing = await compactIfNeeded(workspaceId, existing);
-    const active = deriveActiveClaims(existing, Date.now()).filter(
-      (c) => c.workspace_id === workspaceId && c.agent_id === agentId
+    // THE released_count:0 DEFECT (fabric v3 spec §6.3): selecting via
+    // deriveActiveClaims silently EXCLUDED claims whose TTL had lapsed —
+    // status still 'active' on the log, merely heartbeat-expired. An agent
+    // that worked past its TTL (remote advisory default is 30min; a long lane
+    // easily exceeds it) then released got released_count: 0 "for a claim
+    // that was definitely made". Release is the agent's authoritative "I am
+    // done": it must close out EVERY latest-status-'active' claim the agent
+    // holds, expired or not — releasing an expired claim is harmless (it was
+    // already invisible to peers) and it makes the record truthful, which
+    // outcome records (wave 3) build on. Repro: local-store.test.ts
+    // "releaseAgent releases a TTL-expired claim (v3 §6.3 released_count:0)".
+    const mine = reduceClaimLog(existing).filter(
+      (c) => c.status === 'active' && c.workspace_id === workspaceId && c.agent_id === agentId
     );
     const now = new Date().toISOString();
     const released: ClaimLogEntry[] = [];
-    for (const c of active) {
-      const { seq: _priorSeq, ...rest } = c;
+    for (const c of mine) {
+      const { seq: _priorSeq, version: _priorVersion, ...rest } = c as ClaimLogEntry;
       released.push(
         await appendClaimLocked(workspaceId, { ...rest, status: 'released', heartbeat_at: now }, existing)
       );
@@ -565,12 +753,16 @@ export async function releaseClaimById(
 ): Promise<ClaimLogEntry | undefined> {
   return withWorkspaceLock(workspaceId, async ({ log, append }) => {
     const nowMs = Date.now();
-    const active = deriveActiveClaims(log, nowMs).find(
-      (c) => c.workspace_id === workspaceId && c.agent_id === agentId && c.claim_id === claimId
+    // Latest-status-'active' regardless of TTL expiry — same released_count:0
+    // fix as releaseAgent (a TTL-expired claim is still the agent's to close).
+    const active = reduceClaimLog(log).find(
+      (c) => c.status === 'active' && c.workspace_id === workspaceId && c.agent_id === agentId && c.claim_id === claimId
     );
     if (!active) return undefined;
     const now = new Date(nowMs).toISOString();
-    const { seq: _priorSeq, ...rest } = active;
+    // Strip seq AND version so the release entry gets the next writer-owned
+    // version (an echoed stale version would LWW-tie with the entry it closes).
+    const { seq: _priorSeq, version: _priorVersion, ...rest } = active as ClaimLogEntry;
     return append({ ...rest, status: 'released', heartbeat_at: now });
   });
 }
@@ -671,7 +863,15 @@ export async function persistSurprise(
     let existing = await readClaimLog(workspaceId);
     existing = await compactIfNeeded(workspaceId, existing);
     const claimId = surpriseClaimId(workspaceId, detail);
-    const alreadyLogged = existing.some((e) => e.kind === 'surprise' && e.claim_id === claimId);
+    // Dedup must be CONSISTENT WITH THE RETENTION FLOOR: the log alone is not
+    // enough once compaction can evict delivered surprises — a re-plan after
+    // eviction would re-append the same finding forever (append → evict →
+    // re-append loop). The board meta's bounded evicted_surprise_ids set keeps
+    // the dedup key visible after the entry itself has left the log.
+    const meta = await ensureBoardMetaLocked(workspaceId);
+    const alreadyLogged =
+      existing.some((e) => e.kind === 'surprise' && e.claim_id === claimId) ||
+      (meta.evicted_surprise_ids ?? []).includes(claimId);
     if (alreadyLogged) return null;
 
     const now = new Date().toISOString();
@@ -951,4 +1151,87 @@ export function watch(workspaceId: string, cb: () => void): () => void {
     dirWatcher.close();
     fileWatcher?.close();
   };
+}
+
+// ---------------------------------------------------------------------------
+// Ops guard — coord-dir durability (Coordination Engine wave 1, durable board).
+// Root cause of the 2026-07-21 board wipe: the api container never set
+// KLAURO_COORD_DIR, so the server's claim log lived at ~/.klauro/coordination
+// on the container's EPHEMERAL overlay filesystem while the persistent /data
+// volume sat unused — a restart erased the board and reset seq. The compose
+// fix is one env var; THIS guard makes the misconfiguration loud instead of
+// silent if it ever regresses.
+// ---------------------------------------------------------------------------
+
+export interface CoordDirDurabilityReport {
+  coord_root: string;
+  /** False when the heuristic says the coord dir will not survive a restart. */
+  durable: boolean;
+  warning?: string;
+}
+
+/**
+ * Heuristic durability check for the coordination root:
+ *  - When a persistent `dataRoot` is configured (the server's data dir, e.g.
+ *    the container's mounted /data), the coord root is expected to live UNDER
+ *    it — anywhere else (notably the overlay-FS home dir) is flagged.
+ *  - Additionally, running inside a container (/.dockerenv) with no
+ *    KLAURO_COORD_DIR set means the default home-dir path is overlay-backed —
+ *    flagged even when no dataRoot was passed.
+ * Pure report; use `warnIfEphemeralCoordDir` to also print loudly.
+ */
+export function checkCoordDirDurability(options: { dataRoot?: string; isContainer?: boolean } = {}): CoordDirDurabilityReport {
+  const coordRoot = path.resolve(getCoordRoot());
+  const inContainer = options.isContainer ?? fs.existsSync('/.dockerenv');
+  if (options.dataRoot) {
+    const dataRoot = path.resolve(options.dataRoot);
+    const under = coordRoot === dataRoot || coordRoot.startsWith(dataRoot + path.sep);
+    if (!under && inContainer) {
+      return {
+        coord_root: coordRoot,
+        durable: false,
+        warning:
+          `coordination store at ${coordRoot} is OUTSIDE the configured data root ${dataRoot} and this process ` +
+          `is running in a container — the board lives on the ephemeral overlay FS and WILL BE ERASED on ` +
+          `restart (claims, seq, epoch). Set KLAURO_COORD_DIR to a path under the data root ` +
+          `(e.g. ${path.join(dataRoot, 'coordination')}).`,
+      };
+    }
+    // Outside a container, a coord root off the data root (typically the
+    // default ~/.klauro/coordination) is host-durable — not a defect, so no
+    // loud warning on every bare-host dev/test run.
+    return { coord_root: coordRoot, durable: true };
+  }
+  if (inContainer && !process.env.KLAURO_COORD_DIR) {
+    return {
+      coord_root: coordRoot,
+      durable: false,
+      warning:
+        `KLAURO_COORD_DIR is unset in a container: the coordination board defaults to ${coordRoot} on the ` +
+        `ephemeral overlay FS and WILL BE ERASED on restart (claims, seq, epoch). Set KLAURO_COORD_DIR to a ` +
+        `mounted volume path (e.g. /data/coordination).`,
+    };
+  }
+  return { coord_root: coordRoot, durable: true };
+}
+
+/** Run `checkCoordDirDurability` and print any warning LOUDLY (stderr). Returns the report. */
+export function warnIfEphemeralCoordDir(
+  options: { dataRoot?: string; isContainer?: boolean; print?: (message: string) => void } = {}
+): CoordDirDurabilityReport {
+  const report = checkCoordDirDurability(options);
+  if (!report.durable && report.warning) {
+    const print = options.print ?? ((m: string) => console.error(m));
+    print(`[coordination/local-store] DURABILITY WARNING: ${report.warning}`);
+  }
+  return report;
+}
+
+/**
+ * Test-only: drop every in-memory cache so the next read comes entirely from
+ * disk — simulates a fresh process ("server restart") over the same store for
+ * boot-sweep regression tests. Never call from production code.
+ */
+export function __clearCachesForTests(): void {
+  parsedLogCache.clear();
 }

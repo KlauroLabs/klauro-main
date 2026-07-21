@@ -16,7 +16,10 @@
  * already-built pure core in `./presence` — nothing here reimplements it.
  */
 
-import { appendClaim, type ClaimLogEntry } from './local-store';
+import * as fsp from 'node:fs/promises';
+import * as path from 'node:path';
+
+import { appendClaim, getBoardInfo, getStoreDir, readClaimLog, type ClaimLogEntry } from './local-store';
 import { reduceClaimLog } from './presence';
 import type { AgentPresence, WorkClaim } from './types';
 
@@ -41,6 +44,34 @@ export interface RemoteState {
   max_seq: number;
   claims: WorkClaim[];
   presence: AgentPresence[];
+  /** Board epoch (durable-board protocol) — a cursor from a different epoch must reset. Absent from pre-epoch servers. */
+  epoch?: string;
+  /** Compaction retention floor — a cursor below it has MISSED events (see `gap`). */
+  min_retained_seq?: number;
+  /** Explicit gap notice when the caller's `since` cursor is below `min_retained_seq` — never silence. */
+  gap?: string;
+}
+
+/**
+ * Client-side cursor reconciliation for `{epoch, seq}` cursors over a remote
+ * board (durable-board protocol): the cursor RESETS when the board's epoch
+ * changed (board wiped/recreated — the old seq domain is meaningless) OR when
+ * the cursor is ahead of the board's max_seq (a board reset without an epoch
+ * bump, e.g. a pre-epoch server; a cursor "in the future" would otherwise see
+ * nothing forever — the observed 2026-07-21 failure mode).
+ */
+export function reconcileRemoteCursor(
+  stored: { epoch?: string; seq: number } | undefined,
+  board: { epoch?: string; max_seq: number }
+): { seq: number; epoch?: string; reset: boolean; reason?: string } {
+  if (!stored) return { seq: 0, epoch: board.epoch, reset: false };
+  if (stored.epoch && board.epoch && stored.epoch !== board.epoch) {
+    return { seq: 0, epoch: board.epoch, reset: true, reason: `board epoch changed (${stored.epoch} -> ${board.epoch}) — cursor reset to 0` };
+  }
+  if (stored.seq > board.max_seq) {
+    return { seq: 0, epoch: board.epoch, reset: true, reason: `cursor ${stored.seq} is ahead of board max_seq ${board.max_seq} (board was reset) — cursor reset to 0` };
+  }
+  return { seq: stored.seq, epoch: board.epoch ?? stored.epoch, reset: false };
 }
 
 /** Raised when a remote coordination HTTP call fails (network error or non-2xx). */
@@ -70,7 +101,7 @@ function joinUrl(baseUrl: string, route: string): string {
 export async function publishClaim(
   baseUrl: string,
   token: string | undefined,
-  claim: WorkClaim
+  claim: WorkClaim & { kind?: ClaimLogEntry['kind'] }
 ): Promise<PublishClaimResult> {
   let response: Response;
   try {
@@ -89,6 +120,16 @@ export async function publishClaim(
         base_commit: claim.base_commit,
         branch: claim.branch,
         claim_id: claim.claim_id,
+        // Writer-owned version + lifecycle status ECHOED VERBATIM to the
+        // receiver (durable-board protocol): the remote board must merge this
+        // entry by the writer's own per-claim version, never by its own
+        // arrival seq, and must honor a 'released' status (previously status
+        // never crossed the wire, so a write-through of a release entry
+        // re-appeared remotely as an ACTIVE claim). Old servers ignore the
+        // extra fields — backward compatible.
+        status: claim.status,
+        version: claim.version,
+        kind: claim.kind,
       }),
     });
   } catch (err) {
@@ -146,145 +187,192 @@ export interface SyncClaimResult {
   local: ClaimLogEntry;
   /** The remote publish result, if a remote tier was configured and the publish succeeded (either immediately or via an opportunistic flush of a prior queued entry — see `remoteQueued`). */
   remote?: PublishClaimResult;
-  /** Set when a remote tier was configured but publishing failed — logged + queued, non-fatal. */
+  /** Set when a remote tier was configured but publishing failed — logged, non-fatal; the DURABLE sync cursor resumes it on any later call. */
   remoteError?: string;
-  /** True when the remote publish failed and was enqueued for retry (i.e. `remoteError` is set and the entry is now in the retry queue, not dropped). False if it was dropped (queue full / attempts exhausted). */
+  /** True when the remote publish failed and the entry remains ahead of the durable sync cursor (it WILL be re-published — resumable across restarts and outages of any length; nothing is dropped). */
   remoteQueued?: boolean;
 }
 
 /**
- * §WS-K bounded in-memory retry queue for `syncClaim`'s remote-publish leg.
- * Local writes are always authoritative and never blocked by this queue —
- * it exists purely to catch up cross-machine propagation after a transient
- * remote outage without re-announcing failures forever or growing unbounded.
+ * DURABLE remote sync (Coordination Engine wave 1) — replaces the former §WS-K
+ * bounded in-memory retry queue (which was lost on process exit, dropped the
+ * oldest entry past 200, gave up after ~5 attempts, AND could flush an OLD
+ * claim version after a NEWER one had already landed remotely, resurrecting
+ * stale scope). The local append-only claim log is already the durable record,
+ * so the retry state collapses to ONE number: a per-(workspace, baseUrl) sync
+ * cursor (`last_acked_seq`) persisted beside the log in `remote-sync.json`.
+ * Publish everything after the cursor, in seq order — resumable across process
+ * restarts and outages of ANY length, nothing ever dropped.
  *
- * Deterministic by design: capped size (drop-oldest on overflow, never
- * silently grows), capped attempts per entry (then dropped — the local store
- * remains the source of truth, so a permanently-unreachable remote never
- * loses data, only cross-machine visibility), and backoff is computed from
- * `attempts` (exponential) plus bounded jitter so retries of many entries
- * don't stampede the remote in lockstep.
+ * Version discipline on the flush path: an entry is SKIPPED (cursor still
+ * advances past it) when the log already holds a HIGHER writer-owned version
+ * for the same claim_id — publishing it could only resurrect a superseded
+ * state; the newer entry (later in this same flush, or already remote) is the
+ * truth. LEGACY entries without `version` are published as-is (seq order alone
+ * protects them, matching the documented pre-version behavior).
+ *
+ * Coordination entries only: `kind: 'surprise'` / `'unclaimed-edit'` events are
+ * locally-addressed and are not published (the cursor advances past them);
+ * unrelated telemetry queues are untouched by design.
+ *
+ * In-memory backoff (not durability): after a failed flush the base URL is
+ * marked not-due for an exponentially growing window so opportunistic flushes
+ * during an outage don't hammer the remote. The DURABILITY lives in the
+ * cursor file; the backoff state can be lost freely.
  */
-const RETRY_QUEUE_MAX_SIZE = 200;
-const RETRY_MAX_ATTEMPTS = 5;
-const RETRY_BASE_DELAY_MS = 500;
-const RETRY_MAX_DELAY_MS = 30_000;
-const RETRY_JITTER_MS = 250;
-
-interface RetryQueueEntry {
-  workspaceId: string;
-  claim: ClaimLogEntry;
-  remote: RemoteSyncOptions;
-  attempts: number;
-  /** Entry becomes eligible for retry once `Date.now() >= nextAttemptAt`. */
-  nextAttemptAt: number;
+interface SyncCursorFile {
+  cursors: Record<string, { epoch?: string; last_acked_seq: number }>;
 }
 
-/** Keyed by `${baseUrl}::${claim_id}` so re-queuing the same claim updates in place rather than duplicating. */
-const retryQueue = new Map<string, RetryQueueEntry>();
-
-function retryQueueKey(baseUrl: string, claimId: string): string {
-  return `${baseUrl}::${claimId}`;
+function syncCursorPath(workspaceId: string): string {
+  return path.join(getStoreDir(workspaceId), 'remote-sync.json');
 }
 
-/** Exponential backoff with a cap and bounded jitter, keyed off the attempt count so far. */
-function computeBackoffMs(attempts: number): number {
-  const exponential = Math.min(RETRY_MAX_DELAY_MS, RETRY_BASE_DELAY_MS * 2 ** Math.max(0, attempts - 1));
-  const jitter = Math.random() * RETRY_JITTER_MS;
-  return exponential + jitter;
+async function readSyncCursors(workspaceId: string): Promise<SyncCursorFile> {
+  try {
+    const raw = await fsp.readFile(syncCursorPath(workspaceId), 'utf8');
+    const parsed = JSON.parse(raw) as SyncCursorFile;
+    if (parsed && typeof parsed === 'object' && parsed.cursors && typeof parsed.cursors === 'object') return parsed;
+  } catch {
+    // absent/corrupt — start over from seq 0 (safe: re-publishing is idempotent
+    // under LWW-by-version on the receiver).
+  }
+  return { cursors: {} };
+}
+
+async function writeSyncCursor(
+  workspaceId: string,
+  baseUrl: string,
+  cursor: { epoch?: string; last_acked_seq: number }
+): Promise<void> {
+  const file = await readSyncCursors(workspaceId);
+  file.cursors[baseUrl] = cursor;
+  const target = syncCursorPath(workspaceId);
+  const tmp = `${target}.tmp-${process.pid}-${Date.now()}`;
+  await fsp.writeFile(tmp, JSON.stringify(file, null, 2) + '\n', 'utf8');
+  await fsp.rename(tmp, target);
+}
+
+const FLUSH_BACKOFF_BASE_MS = 500;
+const FLUSH_BACKOFF_MAX_MS = 30_000;
+const flushBackoff = new Map<string, { attempts: number; nextAttemptAt: number }>();
+
+function backoffKey(workspaceId: string, baseUrl: string): string {
+  return `${workspaceId}::${baseUrl}`;
+}
+
+export interface RemoteSyncFlushResult {
+  /** Entries successfully published this call. */
+  published: number;
+  /** Entries the cursor advanced past WITHOUT publishing (superseded version, or a local-only event kind). */
+  skipped: number;
+  /** Entries still ahead of the cursor after this call (0 unless a failure stopped the flush). */
+  pending: number;
+  /** The cursor after this call. */
+  last_acked_seq: number;
+  /** Set when the flush stopped early on a publish failure — the cursor holds; the next call resumes. */
+  error?: string;
+  /** Publish results by local seq, for callers that need the outcome of a specific entry (syncClaim). */
+  results: Map<number, PublishClaimResult>;
 }
 
 /**
- * Enqueue a failed remote publish for retry. Bounded: if the queue is at
- * capacity, the OLDEST entry (by `nextAttemptAt`, a reasonable proxy for
- * insertion order since entries are scheduled forward from "now") is dropped
- * to make room — deterministic, never unbounded growth. Returns whether the
- * entry ended up queued (vs. dropped because attempts were already exhausted
- * or the queue is saturated even after eviction, which cannot happen given
- * drop-oldest always frees exactly one slot, but is handled defensively).
+ * Publish every coordination entry after the durable sync cursor for
+ * `(workspaceId, remote.baseUrl)`, in seq order. Safe to call opportunistically
+ * and often: no-op when nothing is pending or the backoff window from a prior
+ * failure hasn't elapsed. Never throws. Board-epoch aware: if the local board's
+ * epoch differs from the cursor's stored epoch (board recreated), or the cursor
+ * is ahead of the log's max seq, the cursor RESETS and the current state is
+ * re-published (idempotent under receiver-side LWW-by-version).
  */
-function enqueueRetry(workspaceId: string, claim: ClaimLogEntry, remote: RemoteSyncOptions, priorAttempts: number): boolean {
-  const attempts = priorAttempts + 1;
-  if (attempts > RETRY_MAX_ATTEMPTS) return false;
-
-  const key = retryQueueKey(remote.baseUrl, claim.claim_id);
-  if (!retryQueue.has(key) && retryQueue.size >= RETRY_QUEUE_MAX_SIZE) {
-    let oldestKey: string | undefined;
-    let oldestAt = Infinity;
-    for (const [k, entry] of retryQueue) {
-      if (entry.nextAttemptAt < oldestAt) {
-        oldestAt = entry.nextAttemptAt;
-        oldestKey = k;
-      }
-    }
-    if (oldestKey) retryQueue.delete(oldestKey);
+export async function flushRemoteSync(
+  workspaceId: string,
+  remote: RemoteSyncOptions,
+  nowMs: number = Date.now()
+): Promise<RemoteSyncFlushResult> {
+  const results = new Map<number, PublishClaimResult>();
+  const bk = backoffKey(workspaceId, remote.baseUrl);
+  const backoff = flushBackoff.get(bk);
+  if (backoff && nowMs < backoff.nextAttemptAt) {
+    return { published: 0, skipped: 0, pending: -1, last_acked_seq: -1, error: 'backing off after a prior failure', results };
   }
 
-  retryQueue.set(key, {
-    workspaceId,
-    claim,
-    remote,
-    attempts,
-    nextAttemptAt: Date.now() + computeBackoffMs(attempts),
-  });
-  return true;
-}
+  const board = await getBoardInfo(workspaceId);
+  const log = await readClaimLog(workspaceId);
+  const maxSeq = log.reduce((max, e) => Math.max(max, e.seq), 0);
 
-/**
- * Drain every due entry in the retry queue, attempting `publishClaim` for
- * each. Entries not yet due (still backing off) are left in place. A
- * successful publish removes the entry; a failure re-enqueues it with
- * incremented `attempts`/backoff (or drops it once `RETRY_MAX_ATTEMPTS` is
- * exceeded). Safe to call opportunistically and often — it's a no-op when
- * the queue is empty or nothing is due yet. Never throws.
- */
-export async function flushRetryQueue(nowMs: number = Date.now()): Promise<{ flushed: number; requeued: number; dropped: number }> {
-  let flushed = 0;
-  let requeued = 0;
-  let dropped = 0;
+  const file = await readSyncCursors(workspaceId);
+  const stored = file.cursors[remote.baseUrl];
+  const reconciled = reconcileRemoteCursor(
+    stored ? { epoch: stored.epoch, seq: stored.last_acked_seq } : undefined,
+    { epoch: board.epoch, max_seq: maxSeq }
+  );
+  let lastAcked = reconciled.seq;
 
-  const due = [...retryQueue.entries()].filter(([, entry]) => entry.nextAttemptAt <= nowMs);
-  for (const [key, entry] of due) {
+  // Highest writer-owned version per claim_id across the WHOLE log — the
+  // stale-flush guard: never publish an entry a newer version supersedes.
+  const latestVersion = new Map<string, number>();
+  for (const e of log) {
+    if (typeof e.version !== 'number') continue;
+    const prior = latestVersion.get(e.claim_id);
+    if (prior === undefined || e.version > prior) latestVersion.set(e.claim_id, e.version);
+  }
+
+  const pendingEntries = log.filter((e) => e.seq > lastAcked).sort((a, b) => a.seq - b.seq);
+  let published = 0;
+  let skipped = 0;
+  let error: string | undefined;
+
+  for (const entry of pendingEntries) {
+    const isLocalOnlyEvent = entry.kind === 'surprise' || entry.kind === 'unclaimed-edit';
+    const newest = latestVersion.get(entry.claim_id);
+    const superseded = typeof entry.version === 'number' && newest !== undefined && entry.version < newest;
+    if (isLocalOnlyEvent || superseded) {
+      skipped += 1;
+      lastAcked = entry.seq;
+      continue;
+    }
     try {
-      await publishClaim(entry.remote.baseUrl, entry.remote.token, entry.claim);
-      retryQueue.delete(key);
-      flushed += 1;
-    } catch {
-      retryQueue.delete(key);
-      const requeuedOk = enqueueRetry(entry.workspaceId, entry.claim, entry.remote, entry.attempts);
-      if (requeuedOk) requeued += 1;
-      else dropped += 1;
+      const result = await publishClaim(remote.baseUrl, remote.token, entry);
+      results.set(entry.seq, result);
+      published += 1;
+      lastAcked = entry.seq;
+    } catch (err) {
+      error = err instanceof Error ? err.message : String(err);
+      break; // hold the cursor here; the next call resumes from this entry.
     }
   }
 
-  return { flushed, requeued, dropped };
+  await writeSyncCursor(workspaceId, remote.baseUrl, { epoch: board.epoch, last_acked_seq: lastAcked });
+
+  if (error) {
+    const attempts = (backoff?.attempts ?? 0) + 1;
+    flushBackoff.set(bk, {
+      attempts,
+      nextAttemptAt: nowMs + Math.min(FLUSH_BACKOFF_MAX_MS, FLUSH_BACKOFF_BASE_MS * 2 ** (attempts - 1)) + Math.random() * 250,
+    });
+  } else {
+    flushBackoff.delete(bk);
+  }
+
+  const pending = log.filter((e) => e.seq > lastAcked).length;
+  return { published, skipped, pending, last_acked_seq: lastAcked, error, results };
 }
 
-/** Current retry-queue size (for tests/diagnostics). */
-export function getRetryQueueSize(): number {
-  return retryQueue.size;
-}
-
-/** Clears the retry queue (test-only helper — avoids cross-test bleed since the queue is module-level state). */
-export function __resetRetryQueueForTests(): void {
-  retryQueue.clear();
+/** Test-only: clears the in-memory flush backoff (the durable cursor file is per-test-dir anyway). */
+export function __resetRemoteSyncForTests(): void {
+  flushBackoff.clear();
 }
 
 /**
  * Write-through: append `claim` to the LOCAL store FIRST (instant, authoritative
- * for same-host peers), then best-effort publish to the REMOTE tier if
- * `remote` options are supplied. A remote network failure is caught, logged,
- * and enqueued on the bounded retry queue (§WS-K) — it never throws and never
- * blocks/undoes the local write (§1.1 invariant).
- *
- * Every call also opportunistically drains any due entries already in the
- * retry queue before attempting its own publish (best-effort, failures there
- * are swallowed by `flushRetryQueue` itself) — so a run of successful syncs
- * after an outage naturally catches the backlog back up without a separate
- * poller. The local store is always the source of truth for same-machine
- * peers regardless of remote reachability, so no data is ever lost — only
- * cross-machine propagation is delayed until the queue drains or a claim's
- * attempts are exhausted.
+ * for same-host peers), then publish through the DURABLE sync cursor if
+ * `remote` options are supplied — one `flushRemoteSync` pass that first drains
+ * any backlog (in seq order, so an outage's claims land before this one) and
+ * then this entry itself. A remote failure is caught and logged; the entry
+ * stays ahead of the cursor and WILL be re-published on any later call, across
+ * restarts and outages of any length (§1.1 invariant: the remote leg never
+ * throws and never blocks/undoes the local write; nothing is ever dropped).
  */
 export async function syncClaim(
   workspaceId: string,
@@ -297,23 +385,19 @@ export async function syncClaim(
     return { local };
   }
 
-  // Opportunistic drain: catch up any backlog before adding to it. Best-effort
-  // and non-blocking in the sense that its own failures never propagate here.
-  await flushRetryQueue();
+  const flush = await flushRemoteSync(workspaceId, remote);
+  const own = flush.results.get(local.seq);
+  if (own) return { local, remote: own };
 
-  try {
-    const result = await publishClaim(remote.baseUrl, remote.token, local);
-    return { local, remote: result };
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    const queued = enqueueRetry(workspaceId, local, remote, 0);
+  const message = flush.error ?? 'publish deferred (superseded by a newer version, or backlog still draining)';
+  if (flush.error) {
     // eslint-disable-next-line no-console
     console.error(
-      `[coordination/remote-store] syncClaim: remote publish failed, local write kept (${message})` +
-        (queued ? ' — queued for retry' : ' — retry queue full/exhausted, dropped')
+      `[coordination/remote-store] syncClaim: remote publish failed, local write kept (${message}) — ` +
+        `durable sync cursor holds at seq ${flush.last_acked_seq}; resumes on the next call`
     );
-    return { local, remoteError: message, remoteQueued: queued };
   }
+  return { local, remoteError: message, remoteQueued: true };
 }
 
 /**
