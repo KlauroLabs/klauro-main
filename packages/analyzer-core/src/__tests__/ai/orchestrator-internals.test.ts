@@ -1815,6 +1815,24 @@ describe('architecture and capability inference', () => {
     expect(purpose.primary_type).not.toBe('clinical-testing-platform');
   });
 
+  it('does not flip an agent-coordination codebase to fleet-management-platform on incidental generic vocabulary (cardinal: no hardcoded brand/keyword categorizer — "fleet"/"dispatch"/"driver"/"maintenance" are generic coordination/software words, not fleet-operations evidence; live self-analysis defect: Klauro\'s own "fleets of agents" language scored fleet-management-platform 0.84 with zero real vehicle/telematics evidence)', async () => {
+    const nodes: CASNode[] = [
+      node({ id: 'agent-fleet-roster', name: 'AgentFleetRoster', type: 'class', source: { file: 'src/coordination/AgentFleetRoster.ts' } }),
+      node({ id: 'task-dispatch-queue', name: 'TaskDispatchQueue', type: 'class', source: { file: 'src/coordination/TaskDispatchQueue.ts' } }),
+      node({ id: 'webdriver-session', name: 'WebDriverSession', type: 'class', source: { file: 'src/testing/WebDriverSession.ts' } }),
+      node({ id: 'code-maintenance-scheduler', name: 'CodeMaintenanceScheduler', type: 'class', source: { file: 'src/maintenance/CodeMaintenanceScheduler.ts' } }),
+    ];
+    const purpose = await orch.inferSystemPurpose([], [], [], nodes);
+
+    // 'fleet' (AgentFleetRoster), 'dispatch' (TaskDispatchQueue), 'driver'
+    // (WebDriverSession), 'maintenance' (CodeMaintenanceScheduler) hit all 4 of
+    // the fleet-signature vocabulary count threshold, but NONE of them is
+    // genuinely fleet-operations evidence — no 'vehicle'/'telematics'/
+    // 'odometer'/'ifta' anchor exists anywhere in this fixture. Must never be
+    // misread as this specific dedicated override.
+    expect(purpose.primary_type).not.toBe('fleet-management-platform');
+  });
+
   it('prioritizes clinical capabilities in clinical testing summaries', async () => {
     expect(orch.capabilityPurposeBias('clinical-testing', { name: 'Patient Report Management', related_domains: [], related_entities: [] })).toBe(0);
     expect(orch.capabilityPurposeBias('clinical-testing', { name: 'Snack Management', related_domains: [], related_entities: [] })).toBe(1);
@@ -7432,5 +7450,46 @@ describe('catalog completeness (live truckspy: fuel/safety/ELD rich evidence, 9-
     } finally {
       (aiService as any).generateComponentDescription = original;
     }
+  });
+});
+
+describe('stripInstructionShapedTails: generic output-hygiene net for leaked prompt directives (live defect: enhanced_system_purpose.inferred_description ended with the languageCoverageInstruction directive echoed verbatim, twice, instead of the model writing its own sentence)', () => {
+  it('drops a "must state ... must name ... as" instruction-shaped sentence appended to real prose', () => {
+    const withLeak = 'Klauro is a coordination fabric that analyzes codebases and serves precomputed facts to agents. This static analysis covers only the analyzed languages; Kotlin (12% of source files) was not analyzed. system_description must state that this analysis covers only the analyzed languages and must name Kotlin as the dominant unanalyzed language.';
+    const cleaned = orch.stripInstructionShapedTails(withLeak);
+    expect(cleaned).not.toMatch(/must state/i);
+    expect(cleaned).not.toMatch(/must name/i);
+    expect(cleaned).toMatch(/^Klauro is a coordination fabric/);
+  });
+
+  it('drops the leaked instruction sentence even when doubled', () => {
+    const doubled = 'Klauro is a coordination fabric for fleets of agents. system_description must state that this analysis covers only the analyzed languages and must name Kotlin as the dominant unanalyzed language. system_description must state that this analysis covers only the analyzed languages and must name Kotlin as the dominant unanalyzed language.';
+    const cleaned = orch.stripInstructionShapedTails(doubled);
+    expect(cleaned).not.toMatch(/must state/i);
+    expect(cleaned).toBe('Klauro is a coordination fabric for fleets of agents.');
+  });
+
+  it('drops a "you should" second-person directive sentence', () => {
+    const withLeak = 'The system ingests events and writes them to a durable log. You should mention that the log is append-only in your answer.';
+    const cleaned = orch.stripInstructionShapedTails(withLeak);
+    expect(cleaned).not.toMatch(/you should/i);
+    expect(cleaned).toBe('The system ingests events and writes them to a durable log.');
+  });
+
+  it('leaves ordinary single-sentence text unchanged (no false-positive on a lone sentence)', () => {
+    const text = 'The system must validate every incoming request before it is queued.';
+    expect(orch.stripInstructionShapedTails(text)).toBe(text);
+  });
+
+  it('falls back to the original text rather than returning empty when every sentence is instruction-shaped', () => {
+    const allInstruction = 'You should mention the coverage gap. You must state the dominant language explicitly.';
+    expect(orch.stripInstructionShapedTails(allInstruction)).toBe(allInstruction);
+  });
+
+  it('is wired into cleanGeneratedDescriptionText so every AI-generated description (system and element alike) gets the same net', () => {
+    const withLeak = 'Klauro serves precomputed analysis facts over MCP. system_description must state that this analysis covers only the analyzed languages and must name Kotlin as the dominant unanalyzed language.';
+    const cleaned = orch.cleanGeneratedDescriptionText(withLeak);
+    expect(cleaned).not.toMatch(/must state/i);
+    expect(cleaned).not.toMatch(/must name/i);
   });
 });

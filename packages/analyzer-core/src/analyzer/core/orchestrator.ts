@@ -10849,7 +10849,15 @@ export class AnalyzerOrchestrator {
             } : {}),
             ...(unanalyzedLanguages.length > 0 ? {
               unanalyzedLanguages,
-              languageCoverageInstruction: `This static analysis covers only the analyzed languages; ${unanalyzedLanguages[0].name} (${unanalyzedLanguages[0].share_of_source}% of source files) was not analyzed. system_description must state that this analysis covers only the analyzed languages and must name ${unanalyzedLanguages[0].name} as the dominant unanalyzed language.`,
+              // FACT, not an instruction about what the text "must" say — a
+              // prior version phrased this as a directive ("system_description
+              // must state that ... and must name X as the dominant unanalyzed
+              // language") and the model echoed that directive verbatim
+              // (twice) into the stored, customer-facing description instead
+              // of writing its own sentence. Give the model the coverage fact
+              // plus a paraphrased example to adapt, never wording to repeat.
+              languageCoverageFact: `Coverage gap: ${unanalyzedLanguages[0].name} makes up ${unanalyzedLanguages[0].share_of_source}% of source files and was not parsed by this static analysis.`,
+              languageCoverageInstruction: `Work this coverage gap into system_description as one clause of ordinary prose, in your own words — for example "...though analysis coverage does not extend to its ${unanalyzedLanguages[0].name} portion." Never copy or restate this instruction text itself.`,
             } : {}),
           },
         }),
@@ -12254,7 +12262,7 @@ export class AnalyzerOrchestrator {
   }
 
   private cleanGeneratedDescriptionText(description: string): string {
-    return (description || '')
+    return this.stripInstructionShapedTails((description || '')
       .replace(/^```(?:text|markdown|json)?/i, '')
       .replace(/```$/i, '')
       .replace(/\*\*([^*]+)\*\*/g, '$1')
@@ -12279,7 +12287,40 @@ export class AnalyzerOrchestrator {
       .replace(/^["']|["']$/g, '')
       .replace(/\bA\s+(audio|access|api|analytics|arbitrage|infrastructure)\b/g, 'An $1')
       .replace(/([.!?])\s+([a-z])/g, (_match, punct, letter) => `${punct} ${letter.toUpperCase()}`)
-      .trim();
+      .trim());
+  }
+
+  /**
+   * Deterministic output-hygiene post-filter, applied to EVERY AI-generated
+   * description (system_description and element descriptions alike, via
+   * cleanGeneratedDescriptionText) — never vocabulary/domain-specific. A live
+   * defect (2026-07-20, quality-iter-1): a prompt instruction phrased as a
+   * directive about the text itself ("system_description must state that ...
+   * and must name X as the dominant unanalyzed language") got echoed verbatim
+   * — twice — into the stored, customer-facing description instead of being
+   * followed. The prompt-shape fix (languageCoverageFact/Instruction above)
+   * addresses the root cause; this is the belt-and-suspenders net for ANY
+   * instruction-shaped sentence that leaks through from ANY prompt, present or
+   * future — it targets the SHAPE of self-referential directive language
+   * ("must state", "must name X as Y", "you should ..."), not any specific
+   * vocabulary or fact.
+   */
+  private stripInstructionShapedTails(text: string): string {
+    if (!text) return text;
+    const instructionShaped = /\bmust\s+(?:state|name|mention|specify|note|acknowledge|include)\b|\bshould\s+(?:state|name|mention|specify|note|acknowledge)\b|\byou should\b/i;
+    const sentences = text
+      .split(/(?<=[.!?])\s+/)
+      .map(sentence => sentence.trim())
+      .filter(Boolean);
+    if (sentences.length <= 1) return text;
+    const kept = sentences.filter(sentence => !instructionShaped.test(sentence));
+    if (kept.length === sentences.length) return text;
+    // If every sentence was instruction-shaped, fall back unchanged rather
+    // than returning an empty description — downstream grounding/length gates
+    // will reject empty text and trigger the AI repair loop, which is the
+    // correct outcome for a wholesale-garbage candidate.
+    if (kept.length === 0) return text;
+    return kept.join(' ');
   }
 
   private recordElementDescriptionGeneration(
@@ -22483,8 +22524,22 @@ export class AnalyzerOrchestrator {
       };
     }
 
+    // ANCHOR-GATED (same live self-analysis defect class as the clinical
+    // override above, 2026-07-20 — quality-iter-1): 'fleet'/'driver'/
+    // 'dispatch'/'maintenance'/'trip'/'booking' are generic words that show up
+    // incidentally in any coordination/scheduling codebase (Klauro's own docs
+    // talk about "fleets of agents", work "dispatch", code "maintenance") and
+    // previously counted as their OWN anchor via /vehicle|fleet|driver/ — so a
+    // vocabulary-only overlap on Klauro's own repo racked up 4 matches
+    // (fleet, dispatch, driver, maintenance) with ZERO genuine fleet-operations
+    // evidence and got stamped 'fleet-management-platform' at a hardcoded 0.84
+    // floor. Require an anchor from vocabulary that is actually
+    // fleet-distinctive (vehicle/telematics/odometer/ifta) — words that don't
+    // plausibly appear outside real fleet-operations software — never from
+    // 'fleet' or 'driver' themselves.
+    const hasFleetAnchor = fleetSignals.matched.some(signal => /vehicle|telematics|odometer|ifta/.test(signal));
     if (fleetSignals.matched.length >= 4 &&
-      fleetSignals.matched.some(signal => /vehicle|fleet|driver/.test(signal)) &&
+      hasFleetAnchor &&
       topMatch.type !== 'medical-device-software' &&
       topMatch.type !== 'clinical-testing-platform') {
       return {
