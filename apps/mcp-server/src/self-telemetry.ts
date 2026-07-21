@@ -11,11 +11,10 @@
  *   KLAURO_SELF_TELEMETRY_ENDPOINT=<origin>    optional; when set, events POST
  *       over HTTP instead of routing in-process into the local ingest store.
  *   KLAURO_SELF_TELEMETRY_CANONICAL_PROJECT=<path>  optional; mirrors every
- *       observation into this bucket too (never triggers its own bootstrap analysis).
+ *       observation into this bucket too (never triggers source analysis).
  *
- * Bootstrap: on enable, if the self-project has no analysis yet, triggers one
- * bounded async analysis so node-level correlation works out of the box —
- * runs at most once per process.
+ * Telemetry never triggers analysis. It correlates against the existing
+ * canonical uploaded CAS, or persists honestly unmatched until that CAS exists.
  *
  * Captures one event per completed inbound HTTP request (method, normalized
  * route, status, duration); 5xx as 'error', else 'request'.
@@ -30,7 +29,6 @@ import * as nodePath from 'node:path';
 import * as klauroTelemetry from '../../../packages/klauro-sdk-js/src/index';
 import { klauroHttp } from '../../../packages/klauro-sdk-js/src/middleware/http';
 import type { CasRuntimeEvent } from '../../../packages/klauro-sdk-js/src/types';
-import { getAnalysis, analyzeProject } from './analyzer';
 import { loadAnalysis } from './storage';
 import { ingestTelemetryBatch, type TelemetryEvent } from './telemetry-ingestion';
 
@@ -77,15 +75,11 @@ export function selfTelemetryEnabled(): boolean {
 }
 
 /**
- * Resolve the mcp-server package's own `src` directory by walking UP from this
- * module's location until we hit `.../apps/mcp-server/src`. This path is
- * guaranteed present in the running process — the container image copies
- * `apps/mcp-server` to `/app/apps/mcp-server` (see apps/api/Dockerfile) — unlike
- * the host-only deploy path (`/opt/klauro/source`) that is never mounted into the
- * container. Using the mcp-server `src` dir (not the whole monorepo) keeps the
- * bootstrap analysis BOUNDED and holds the very HTTP-handler nodes this loop
- * correlates against. Returns null only if the layout is unrecognizable, in
- * which case the caller falls back to process.cwd().
+ * Resolve the mcp-server package's own `src` directory for development-only
+ * self-telemetry when no canonical project key was configured. Production must
+ * set KLAURO_SELF_TELEMETRY_PROJECT to the uploaded project identity. This
+ * helper never authorizes or starts analysis; unmatched observations remain
+ * durable until an existing CAS can correlate them.
  */
 export function resolveSelfSourceDir(): string | null {
   try {
@@ -110,27 +104,16 @@ export function resolveSelfSourceDir(): string | null {
 /**
  * The Klauro source path the self-loop attaches events to (also the read key for
  * `get_runtime_observations` / node-metrics). Precedence:
- *   1. KLAURO_SELF_TELEMETRY_PROJECT — but only when it EXISTS in this process.
+ *   1. KLAURO_SELF_TELEMETRY_PROJECT, retained as the canonical project key
+ *      even before its CAS exists so unmatched events can be backfilled later.
  *   2. the mcp-server's own `src` dir, discovered from this module's location.
  *   3. process.cwd() as a last resort.
- * A KLAURO_SELF_TELEMETRY_PROJECT that is absent at runtime (e.g. a host path in
- * a container) is IGNORED: a path that isn't present can never be analyzed, so
- * keying to it would leave the self-loop permanently uncorrelated. Exported for
- * tests.
+ * Production sets the override to the uploaded project path; source discovery
+ * remains a development fallback only and never triggers analysis.
  */
 export function selfProjectPath(): string {
   const override = process.env.KLAURO_SELF_TELEMETRY_PROJECT?.trim();
-  if (override) {
-    try {
-      if (nodeFs.existsSync(override)) return override;
-      process.stderr.write(
-        `Klauro self-telemetry: KLAURO_SELF_TELEMETRY_PROJECT=${override} is absent in this process; ` +
-          `falling back to the in-process source dir so the self-loop can bootstrap+correlate.\n`,
-      );
-    } catch {
-      /* fall through to discovery */
-    }
-  }
+  if (override) return override;
   return resolveSelfSourceDir() || process.cwd();
 }
 
@@ -139,8 +122,7 @@ export function selfProjectPath(): string {
  * under KLAURO_SELF_TELEMETRY_PROJECT are invisible to a facet-6 query
  * resolving the canonical hosted project at a different workspace path.
  * KLAURO_SELF_TELEMETRY_CANONICAL_PROJECT closes that gap by mirroring every
- * self-loop observation into a second bucket, in addition to (never instead
- * of) the primary one the bootstrap/correlation loop depends on.
+ * self-loop observation into a second bucket, in addition to the primary one.
  */
 export function selfCanonicalProjectPath(): string | null {
   const raw = process.env.KLAURO_SELF_TELEMETRY_CANONICAL_PROJECT?.trim();
@@ -152,7 +134,7 @@ export function selfCanonicalProjectPath(): string | null {
  * so a facet-6 query against the canonical hosted project surfaces these
  * observations too. Mirror only, never a move — the primary bucket is
  * unaffected. No-op when the canonical env is unset/blank/identical to
- * primary. Must never trigger a bootstrap analysis for the canonical path —
+ * primary. Must never trigger source analysis for the canonical path —
  * read-only best-effort correlation, falling back to unmatched. Fire-and-forget:
  * every failure is swallowed, must never affect the primary ingest's result.
  */
@@ -184,54 +166,6 @@ export async function mirrorToCanonicalBucket(
 }
 
 let installed = false;
-let bootstrapStarted = false;
-
-/**
- * Ensure an analysis of the self-project EXISTS so node-level correlation works
- * out of the box. Runs at most ONCE per process (bootstrapStarted guard) and
- * only when the self-project has no analysis yet. Fully async / non-blocking:
- * the returned promise is fire-and-forget from initSelfTelemetry — boot and
- * request handling never wait on it. Crash-proof: every failure is swallowed to
- * stderr. Bounded: the target is the mcp-server `src` dir, not the whole
- * monorepo. Once the analysis lands, analyzeProject's own backfill upgrades the
- * already-persisted `unmatched` self-observations to node-level automatically.
- */
-export async function maybeBootstrapSelfAnalysis(projectPath: string): Promise<void> {
-  if (bootstrapStarted) return;
-  bootstrapStarted = true;
-  try {
-    // Fast existence check: if an analysis already exists, do nothing (idempotent
-    // across reboots — the analysis is persisted on the data volume).
-    try {
-      await getAnalysis(projectPath);
-      return; // already analyzed → nothing to bootstrap
-    } catch {
-      /* no analysis yet → fall through and create one */
-    }
-
-    if (!nodeFs.existsSync(projectPath)) {
-      process.stderr.write(
-        `Klauro self-telemetry bootstrap skipped: project path ${projectPath} does not exist.\n`,
-      );
-      return;
-    }
-
-    process.stderr.write(
-      `Klauro self-telemetry: no analysis for ${projectPath}; running ONE bootstrap analysis so node-level self-telemetry correlates.\n`,
-    );
-    const startedAt = Date.now();
-    await analyzeProject(projectPath, SELF_LOOP_NAME);
-    process.stderr.write(
-      `Klauro self-telemetry bootstrap analysis complete for ${projectPath} in ${Date.now() - startedAt}ms; ` +
-        `backfill upgraded pre-analysis observations to node-level.\n`,
-    );
-  } catch (err) {
-    process.stderr.write(
-      `Klauro self-telemetry bootstrap failed (self-loop still emits raw observations): ${err instanceof Error ? err.message : String(err)}\n`,
-    );
-  }
-}
-
 /**
  * Initialize the self-telemetry SDK client. No-op (and returns false) when the
  * gate is unset or when init fails for any reason. Never throws.
@@ -265,16 +199,6 @@ export function initSelfTelemetry(): boolean {
       `Klauro self-telemetry ENABLED (service=${SERVICE_NAME}, loop=${SELF_LOOP_NAME}, ` +
         `project=${projectPath}, transport=${endpointOverride ? `http:${endpointOverride}` : 'in-process'}).\n`,
     );
-
-    // Bootstrap the self-project's analysis so node-level correlation works out of
-    // the box. Fire-and-forget: NEVER awaited here — boot and request handling
-    // must not block on it. Guarded to run at most once and only when no analysis
-    // exists. Only meaningful for the in-process transport (the self-loop owns the
-    // local store); when an HTTP endpoint override routes events to another box,
-    // that box owns correlation, so skip.
-    if (!endpointOverride) {
-      void maybeBootstrapSelfAnalysis(projectPath);
-    }
 
     return true;
   } catch (err) {

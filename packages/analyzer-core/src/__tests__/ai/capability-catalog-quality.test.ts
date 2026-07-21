@@ -158,7 +158,6 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     entryPoints: [],
     nodes: [],
     budgetMs: 1000,
-    aiPhaseRemainingMs: () => 60000,
   });
 
   it('retries a collapsed catalog with a quality nudge and keeps the passing retry result', async () => {

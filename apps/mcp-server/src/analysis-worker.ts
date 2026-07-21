@@ -74,6 +74,10 @@ function sendPhase(id: number, phase: LayeredJobPhaseEvent['phase'], status: Lay
   process.send!({ type: 'phase', id, phase, status, error });
 }
 
+function sendProgress(id: number, event: { sequence: number; phase: string; completedAt: string }): void {
+  process.send!({ type: 'progress', id, ...event });
+}
+
 /**
  * Runs analyzeProjectLayered's full progressive pipeline (L0 -> L1-4 -> L5 AI
  * enrichment) IN THIS CHILD, reporting each phase's completion back to the
@@ -85,15 +89,21 @@ function sendPhase(id: number, phase: LayeredJobPhaseEvent['phase'], status: Lay
  * continuation lives only on that instance, see analyzeProjectDeferred's own
  * comment), so splitting it into a second dispatch would mean either
  * serializing a second worker round-trip for no benefit or re-implementing
- * that orchestrator handoff — and the AI-phase budget (458494ef) and the
- * worker's own heap cap already bound how long/how much memory this tail can
- * consume, so keeping it in-child costs nothing extra. The child is kept
- * alive (jobChain, see below) until enrichment settles or the OUTER watchdog
- * (analyzer.ts's withOuterWorkerWatchdog, one layer up in the parent) gives up
- * waiting on it.
+ * that orchestrator handoff. The worker's heap cap bounds memory, while
+ * provider-level retries and timeouts handle individual AI requests. The child
+ * remains alive (jobChain, see below) until every required enrichment stage
+ * settles; parent-side elapsed-time alarms observe slow work but never publish
+ * an incomplete CAS or abandon a still-running writer.
  */
 async function executeLayeredAnalysis(request: WorkerLayeredRequest): Promise<LayeredRunSummary> {
-  const layered = await analyzeProjectLayered(request.projectPath, request.displayName);
+  if (process.env.KLAURO_TEST_ANALYSIS_WORKER_STALL === 'before-start') {
+    await new Promise<void>(() => undefined);
+  }
+  const layered = await analyzeProjectLayered(
+    request.projectPath,
+    request.displayName,
+    event => sendProgress(request.id, event),
+  );
 
   try {
     await layered.l0;

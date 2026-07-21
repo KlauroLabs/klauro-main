@@ -1,5 +1,6 @@
 import { AnalyzerOrchestrator } from '../../analyzer/core/orchestrator';
 import { aiService } from '../../ai/ai-service';
+import { aiConfig } from '../../config/ai.config';
 import { validateElementDescription } from '../../ai/element-description-validator';
 import { filterPlausibleExternalServices, isPlausibleExternalServiceName, isHostnameLikeServiceName } from '../../ai/external-service-plausibility';
 
@@ -718,149 +719,56 @@ describe('element description grounding parity with the system validator', () =>
   });
 });
 
-describe('AI-phase OVERALL wall-clock budget (KLAURO_AI_PHASE_BUDGET_MS)', () => {
-  // LIVE EVIDENCE (see the "AI-phase OVERALL wall-clock budget" comment near
-  // getAiPhaseBudgetMs() in orchestrator.ts): on a 47k-node CAS the AI-phase
-  // burned 1-3+ CPU-hours because nothing bounded the SUM of the capability
-  // catalog + system description + entity description sub-budgets. These
-  // tests exercise the new outer ceiling directly against applyAIInterpretation.
-  const envKeys = [
-    'OPENAI_API_KEY', 'KLAURO_AI_INTERPRETATION', 'KLAURO_AI_INTERPRETATION_FORCE',
-    'KLAURO_AI_PHASE_BUDGET_MS', 'KLAURO_AI_INTERPRETATION_BUDGET_MS',
-    'KLAURO_AI_ELEMENT_DESCRIPTION_BUDGET_MS',
-  ];
-  let saved: Record<string, string | undefined>;
-
-  beforeEach(() => {
-    saved = Object.fromEntries(envKeys.map(key => [key, process.env[key]]));
+describe('AI enrichment completeness is independent of aggregate elapsed time', () => {
+  it('attempts every required batch after the obsolete aggregate budget has elapsed', async () => {
+    const envKeys = [
+      'OPENAI_API_KEY', 'KLAURO_AI_ELEMENT_DESCRIPTION_BUDGET_MS',
+      'KLAURO_AI_ELEMENT_DESCRIPTION_BATCH_SIZE', 'KLAURO_AI_CONCURRENCY',
+      'KLAURO_AI_ELEMENT_DESCRIPTIONS', 'KLAURO_AI_PHASE_BUDGET_MS',
+    ];
+    const saved = Object.fromEntries(envKeys.map(key => [key, process.env[key]]));
+    const descriptionsEnabled = aiConfig.features.naturalLanguageDescriptions;
     process.env.OPENAI_API_KEY = 'test-openai-key';
-    process.env.KLAURO_AI_INTERPRETATION = 'true';
-    process.env.KLAURO_AI_INTERPRETATION_FORCE = '1';
-  });
-
-  afterEach(() => {
-    for (const key of envKeys) {
-      if (saved[key] === undefined) delete process.env[key];
-      else process.env[key] = saved[key];
-    }
-  });
-
-  function freshPurpose(): any {
-    return {
-      primary_type: 'developer-tool',
-      confidence: 0.9,
-      evidence: [],
-      primary_domain: 'code-analysis',
-      core_concepts: ['code', 'analysis'],
-      inferred_description: 'A code analysis service.',
-      supporting_workflow_ids: [],
-    };
-  }
-
-  it('when the capability-catalog call alone consumes the whole phase budget, applies its result but skips system description and entity descriptions', async () => {
-    // The phase clock only starts INSIDE applyAIInterpretation (a fresh call
-    // always gets a fresh deadline), so "already exhausted" is exercised the
-    // way it happens for real: an earlier stage's OWN in-flight AI call
-    // outlasts the phase budget, and the NEXT stage sees the expired deadline.
-    // Phase budget (300ms) vs. the mocked catalog call's delay (3000ms) is a
-    // 10x margin, deterministic under CI/VM jitter.
-    process.env.KLAURO_AI_PHASE_BUDGET_MS = '300';
-    const spy = jest.spyOn(aiService, 'generateComponentDescription').mockImplementation(async () => {
-      await new Promise(resolve => setTimeout(resolve, 3000));
-      // >= any catalogCountMin (capped at 10) so aiExtractCapabilityCatalog's
-      // under-count retry never fires a second call — exactly one AI call
-      // happens in this test, the capability catalog.
-      const capabilities = Array.from({ length: 10 }, (_, i) => ({
-        name: `Capability ${i}`,
-        description: `Capability ${i} lets operators manage a distinct product area end to end.`,
-        category: i === 0 ? 'core' : 'supporting',
-        entities: [],
-        journeys: [],
-      }));
-      return JSON.stringify({ capabilities });
+    process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BUDGET_MS = '1000';
+    process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BATCH_SIZE = '1';
+    process.env.KLAURO_AI_CONCURRENCY = '1';
+    process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS = 'true';
+    process.env.KLAURO_AI_PHASE_BUDGET_MS = '1';
+    aiConfig.features.naturalLanguageDescriptions = true;
+    const spy = jest.spyOn(aiService, 'generateComponentDescription').mockImplementation(async (context: any) => {
+      await new Promise(resolve => setTimeout(resolve, 20));
+      const item = context.additionalContext.items[0];
+      return JSON.stringify({ descriptions: [{
+        id: item.id,
+        description: `${item.name} represents a domain record used by the product's operational workflows and decisions.`,
+      }] });
     });
-    const purpose = freshPurpose();
-    const systemCapabilities: any[] = [{
-      id: 'cap_x', name: 'Widget Management', operations: [], related_domains: [], related_entities: [], criticality_factors: [],
-    }];
-    const dataEntities: any[] = [{ id: 'entity_widget', name: 'Widget', fields: [] }];
+    const lifecycle = { created_by: [], read_by: [], updated_by: [], deleted_by: [] };
+    const entities: any[] = [
+      { id: 'entity_one', name: 'First Record', fields: [], lifecycle },
+      { id: 'entity_two', name: 'Second Record', fields: [], lifecycle },
+    ];
 
-    let callCount = 0;
     try {
-      await orch.applyAIInterpretation(
-        purpose, 'analysis-api', [], [], [], [], orch.emptyFlowGraph(), [],
-        systemCapabilities, [], [], dataEntities
-      );
-    } finally {
-      // Read the call count BEFORE mockRestore(): mockRestore() does
-      // everything mockReset() does (including clearing .mock.calls), so
-      // asserting on the spy after restoring would always read 0.
-      callCount = spy.mock.calls.length;
-      spy.mockRestore();
-    }
-
-    // Exactly one AI call happened (the capability catalog); it was allowed
-    // to finish (never aborted mid-request) and its result was applied. By
-    // the time execution reached the system-description stage, the phase
-    // deadline had already passed, so that stage — and the entity-description
-    // stage after it — were both skipped, honestly, rather than attempted.
-    expect(callCount).toBe(1);
-    expect(purpose.ai_phase_status).toBe('partial');
-    expect(purpose.ai_phase_stopped_reason).toBe('phase-budget-exhausted');
-    expect(purpose.description_generation.status).toBe('ai_skipped');
-    expect(purpose.description_generation.reason).toBe('phase-budget-exhausted');
-    // The system description was never attempted, so no fabricated text landed.
-    expect(purpose.inferred_description).toBe('A code analysis service.');
-    expect(dataEntities[0].description_generation.status).toBe('ai_skipped');
-    expect(dataEntities[0].description_generation.reason).toBe('phase-budget-exhausted');
-    // Nothing already produced was discarded/faked — description_source stays unset.
-    expect(dataEntities[0].description_source).toBeUndefined();
-  }, 10000);
-
-  it('when the system description call alone outlasts the phase budget, still applies the description but skips entity descriptions honestly', async () => {
-    // Phase budget (300ms) is deliberately much shorter than the mocked call's
-    // own delay (3000ms) so the deadline is unambiguously passed by the time
-    // the entity-description stage is reached — a large (10x) margin keeps
-    // this deterministic rather than timing-sensitive under CI/VM jitter.
-    process.env.KLAURO_AI_PHASE_BUDGET_MS = '300';
-    delete process.env.KLAURO_AI_INTERPRETATION_BUDGET_MS;
-    const spy = jest.spyOn(aiService, 'generateComponentDescription').mockImplementation(async () => {
-      await new Promise(resolve => setTimeout(resolve, 3000));
-      return JSON.stringify({
-        system_description: 'Klauro builds CAS relationship graphs from source repositories so coding agents can reason about a codebase before touching it. It parses code into structural facts — call graphs, routes, entities, and tests — and layers comprehension over them. The pipeline resolves references, derives capabilities, and grounds every description in the evidence bundle it gathered. It is built in TypeScript and hands this analysis context to agents over MCP, keeping facts deterministic and meaning model-authored.',
-        domain: '',
-        descriptions: [],
+      await (orch as any).applyAIElementDescriptions([], entities, {
+        systemName: 'analysis-api',
+        includeEntities: true,
+        enhancedSystemPurpose: {
+          primary_domain: 'code-analysis',
+          core_concepts: ['code', 'analysis'],
+          inferred_description: 'A code analysis service.',
+        },
       });
-    });
-    const purpose = freshPurpose();
-    const dataEntities: any[] = [{ id: 'entity_widget', name: 'Widget', fields: [] }];
-
-    let callCount = 0;
-    try {
-      // Empty systemCapabilities/userJourneys: skip the capability-catalog
-      // stage so exactly ONE provider call (the system description) happens
-      // before the entity-description stage sees the expired deadline.
-      await orch.applyAIInterpretation(
-        purpose, 'analysis-api', [], [], [], [], orch.emptyFlowGraph(), [],
-        [], [], [], dataEntities
-      );
+      expect(spy).toHaveBeenCalledTimes(2);
+      expect(entities.every(entity => entity.description_generation?.attempted)).toBe(true);
+      expect(entities.some(entity => entity.description_generation?.reason === 'budget-exhausted')).toBe(false);
     } finally {
-      // Read the call count BEFORE mockRestore(): mockRestore() does
-      // everything mockReset() does (including clearing .mock.calls), so
-      // asserting on the spy after restoring would always read 0.
-      callCount = spy.mock.calls.length;
       spy.mockRestore();
+      aiConfig.features.naturalLanguageDescriptions = descriptionsEnabled;
+      for (const key of envKeys) {
+        if (saved[key] === undefined) delete process.env[key];
+        else process.env[key] = saved[key];
+      }
     }
-
-    expect(callCount).toBe(1);
-    // The system description that was already in flight when the budget
-    // expired is kept — never discarded — even though the phase is 'partial'.
-    expect(purpose.description_generation.status).toBe('ai_applied');
-    expect(purpose.ai_phase_status).toBe('partial');
-    expect(purpose.ai_phase_stopped_reason).toBe('phase-budget-exhausted');
-    expect(purpose.ai_phase_nodes_at_stop).toBe(0);
-    expect(dataEntities[0].description_generation.status).toBe('ai_skipped');
-    expect(dataEntities[0].description_generation.reason).toBe('phase-budget-exhausted');
-    expect(purpose.entity_description_coverage.stopped_reason).toBe('phase-budget-exhausted');
-  }, 10000);
+  });
 });

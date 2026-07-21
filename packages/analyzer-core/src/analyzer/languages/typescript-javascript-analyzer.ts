@@ -14,6 +14,8 @@ import { cachedEstreeParse as parse } from '../core/estree-parse-cache';
 import { cachedGlob as glob } from '../core/glob-cache';
 import { yieldToEventLoop, createYieldBudget } from '../core/event-loop-yield';
 import * as crypto from 'crypto';
+import { availableParallelism } from 'node:os';
+import { Worker } from 'node:worker_threads';
 
 const BUILTIN_NOT_EXIT_POINTS = new Set([
   'Math', 'JSON', 'Array', 'Object', 'String', 'Number', 'Boolean',
@@ -497,6 +499,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     projectPath: string
   ): Promise<Array<{ relativePath: string; fullPath: string; content: string; extraction: TSFileExtraction }>> {
     const results: Array<{ relativePath: string; fullPath: string; content: string; extraction: TSFileExtraction }> = [];
+    const loadedFiles: Array<{ relativePath: string; fullPath: string; content: string }> = [];
 
     for (let i = 0; i < sourceFiles.length; i += PARALLEL_BATCH_SIZE) {
       const batch = sourceFiles.slice(i, i + PARALLEL_BATCH_SIZE);
@@ -530,37 +533,107 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
         })
       );
 
-      const maybeYield = createYieldBudget();
       for (const loaded of loadedBatch) {
         if (loaded === null) continue;
-        try {
-          const extraction = this.tsExtractor.extractFromSource(loaded.content, loaded.fullPath);
-          if (extraction.hasSyntaxErrors) {
-            // Real tree-sitter ERROR nodes are almost always localized to one
-            // construct (an unsupported grammar edge case, a literal
-            // control/NUL byte) rather than the whole file — cite where, so
-            // this reads as an honest, scoped diagnostic instead of a
-            // blanket "this file might be badly broken" alarm (quality-iter-1
-            // #9: two flags on real, valid analyzer-core source turned out to
-            // be exactly this — an `import('m').T[]` array-suffixed inline
-            // import-type and an intentional embedded NUL byte used as a hash
-            // separator, both localized single-token parser limitations).
-            const locations = extraction.syntaxErrorLocations || [];
-            const locationSuffix = locations.length > 0
-              ? ` (near line${locations.length > 1 ? 's' : ''} ${locations.map(l => l.line).join(', ')}: ${locations.map(l => JSON.stringify(l.snippet)).join(', ')})`
-              : '';
-            this.addAnalysisWarning(`${loaded.relativePath} contains syntax errors; extraction may be partial${locationSuffix}`);
-          }
-          results.push({ ...loaded, extraction });
-        } catch (error) {
-          this.addAnalysisWarning(`${loaded.relativePath} could not be parsed: ${(error as Error).message}`);
-          console.warn(`Failed to parse ${loaded.relativePath}:`, error);
-        }
-        await maybeYield();
+        loadedFiles.push(loaded);
       }
       await yieldToEventLoop();
     }
 
+    let extractions: Array<TSFileExtraction | Error>;
+    try {
+      extractions = await this.extractTreeSitterFilesInWorkers(loadedFiles);
+    } catch (error) {
+      console.warn(`Tree-sitter worker pool unavailable; using sequential extraction: ${(error as Error).message}`);
+      extractions = await this.extractTreeSitterFilesSequentially(loadedFiles);
+    }
+
+    for (let i = 0; i < loadedFiles.length; i++) {
+      const loaded = loadedFiles[i];
+      const extraction = extractions[i];
+      if (extraction instanceof Error) {
+        this.addAnalysisWarning(`${loaded.relativePath} could not be parsed: ${extraction.message}`);
+        continue;
+      }
+      if (extraction.hasSyntaxErrors) {
+        const locations = extraction.syntaxErrorLocations || [];
+        const locationSuffix = locations.length > 0
+          ? ` (near line${locations.length > 1 ? 's' : ''} ${locations.map(l => l.line).join(', ')}: ${locations.map(l => JSON.stringify(l.snippet)).join(', ')})`
+          : '';
+        this.addAnalysisWarning(`${loaded.relativePath} contains syntax errors; extraction may be partial${locationSuffix}`);
+      }
+      results.push({ ...loaded, extraction });
+    }
+
+    return results;
+  }
+
+  private async extractTreeSitterFilesSequentially(
+    files: Array<{ fullPath: string; content: string }>
+  ): Promise<Array<TSFileExtraction | Error>> {
+    const extracted: Array<TSFileExtraction | Error> = [];
+    const maybeYield = createYieldBudget();
+    for (const file of files) {
+      try {
+        extracted.push(this.tsExtractor.extractFromSource(file.content, file.fullPath));
+      } catch (error) {
+        extracted.push(error instanceof Error ? error : new Error(String(error)));
+      }
+      await maybeYield();
+    }
+    return extracted;
+  }
+
+  private async extractTreeSitterFilesInWorkers(
+    files: Array<{ fullPath: string; content: string }>
+  ): Promise<Array<TSFileExtraction | Error>> {
+    const configured = Number(process.env.KLAURO_TS_PARSE_WORKERS || '');
+    const workerCount = Math.max(1, Math.min(
+      files.length,
+      Number.isFinite(configured) && configured > 0
+        ? Math.floor(configured)
+        : Math.min(2, Math.max(1, availableParallelism() - 1))
+    ));
+    if (workerCount === 1 || files.length < 40 || process.env.JEST_WORKER_ID) {
+      return this.extractTreeSitterFilesSequentially(files);
+    }
+
+    const bundledWorkerPath = path.join(__dirname, 'tree-sitter-ts-worker.cjs');
+    const sourceWorkerPath = path.join(__dirname, '..', 'core', 'tree-sitter-ts-worker.ts');
+    const workerPath = fs.existsSync(bundledWorkerPath)
+      ? bundledWorkerPath
+      : sourceWorkerPath;
+    const results = new Array<TSFileExtraction | Error>(files.length);
+    let nextTask = 0;
+
+    const runWorker = (): Promise<void> => new Promise((resolve, reject) => {
+      const worker = new Worker(workerPath, { execArgv: process.execArgv });
+      let activeTask: number | undefined;
+      const dispatch = (): void => {
+        if (nextTask >= files.length) {
+          void worker.terminate().then(() => resolve(), reject);
+          return;
+        }
+        activeTask = nextTask++;
+        worker.postMessage({
+          id: activeTask,
+          content: files[activeTask].content,
+          filePath: files[activeTask].fullPath,
+        });
+      };
+      worker.on('message', (message: { id: number; extraction?: TSFileExtraction; error?: string }) => {
+        results[message.id] = message.error ? new Error(message.error) : message.extraction!;
+        activeTask = undefined;
+        dispatch();
+      });
+      worker.on('error', reject);
+      worker.on('exit', code => {
+        if (code !== 0 && activeTask !== undefined) reject(new Error(`tree-sitter worker exited with code ${code}`));
+      });
+      dispatch();
+    });
+
+    await Promise.all(Array.from({ length: workerCount }, runWorker));
     return results;
   }
 
@@ -1640,21 +1713,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
       }
 
       const classNodes = this.nodesByName.get(expectedClassName);
-      if (!classNodes) {
-        for (const [name, nodes] of this.nodesByName) {
-          if (name.toLowerCase().includes(propertyName.toLowerCase())) {
-            for (const node of nodes) {
-              if (this.isClassLikeNode(node)) {
-                const methods = this.methodsByParent.get(node.id);
-                if (methods) {
-                  const methodNode = methods.find(m => m.name === methodName);
-                  if (methodNode) return methodNode.id;
-                }
-              }
-            }
-          }
-        }
-      } else {
+      if (classNodes) {
         for (const classNode of classNodes) {
           if (this.isClassLikeNode(classNode)) {
             const methods = this.methodsByParent.get(classNode.id);

@@ -284,13 +284,7 @@ describe('deterministic/AI boundary', () => {
     expect(structuralView(enabledRun)).toEqual(structuralView(disabledRun));
   });
 
-  // Entity descriptions are authored LAST — after the capability catalog,
-  // domain, and journeys this pass already established — grounded in the
-  // full evidence bundle (fields, ORM relations, lifecycle, serving
-  // capabilities, journeys), AI-only-or-absent (never a deterministic
-  // template), and instrumented into the E1 semantic dataset under a prompt
-  // version distinct from the system_description gate.
-  it('authors entity descriptions LAST, AI-only-or-absent, with an E1 decision record under a fresh prompt_version', async () => {
+  it('keeps entity prose out of the required first pass and marks it for explicit lazy enrichment', async () => {
     const describeSpy = jest.spyOn(aiService, 'generateComponentDescription');
     const semanticDatasetDir = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-semantic-dataset-'));
 
@@ -335,28 +329,30 @@ describe('deterministic/AI boundary', () => {
     const dataEntities = enabledRun.data_entities || [];
     expect(dataEntities.length).toBeGreaterThan(0);
     for (const entity of dataEntities) {
-      // AI-only-or-absent: whatever the outcome, provenance is never 'deterministic'.
-      expect(entity.description_source).not.toBe('deterministic');
-      if (entity.description_source) expect(entity.description_source).toBe('ai');
-      // Honest generation status recorded either way (accepted, rejected, or skipped).
-      expect(entity.description_generation?.status).toBeDefined();
+      expect(entity.description_source).toBeUndefined();
+      expect(entity.description_generation).toEqual(expect.objectContaining({
+        status: 'ai_skipped',
+        attempted: false,
+        reason: 'manual-trigger-only',
+      }));
     }
+    expect(describeSpy.mock.calls.some(call => {
+      const items = (call[0] as any)?.additionalContext?.items;
+      return Array.isArray(items) && items.length > 0 && items.every((item: any) => item?.kind === 'entity');
+    })).toBe(false);
+    expect(enabledRun.enhanced_system_purpose?.entity_description_coverage).toEqual(expect.objectContaining({
+      total: dataEntities.length,
+      attempted: 0,
+      budget_ms: 0,
+      stopped_reason: 'manual-trigger-only',
+    }));
 
-    // E1: at least one entity_description decision record, under its OWN
-    // fresh prompt_version (never reusing system_description's).
     const dayFile = path.join(semanticDatasetDir, `${new Date().toISOString().slice(0, 10)}.jsonl`);
     const rows = fs.readFileSync(dayFile, 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
     const entityDecisions = rows.filter((row: any) => row.decision_type === 'entity_description');
-    expect(entityDecisions.length).toBeGreaterThan(0);
-    for (const decision of entityDecisions) {
-      expect(decision.prompt_version).toBe('entity_description.v1');
-    }
+    expect(entityDecisions).toHaveLength(0);
     const systemDecisions = rows.filter((row: any) => row.decision_type === 'system_description');
     expect(systemDecisions.length).toBeGreaterThan(0);
-    for (const decision of systemDecisions) {
-      // Distinct gate — never conflated with the entity prompt version.
-      expect(decision.prompt_version).not.toBe('entity_description.v1');
-    }
 
     fs.rmSync(semanticDatasetDir, { recursive: true, force: true });
   });

@@ -26,7 +26,9 @@ function reportGrammarHealth(): void {
           `Dirs: [${h.dirs.join(', ')}]. Breadth coverage is degraded.\n`,
       );
     } else {
-      process.stderr.write(`Klauro: ${h.count} tree-sitter grammars available (e.g. ${h.sample.join(', ')}).\n`);
+      if (process.env.KLAURO_DEBUG_STARTUP === '1') {
+        process.stderr.write(`Klauro: ${h.count} tree-sitter grammars available (e.g. ${h.sample.join(', ')}).\n`);
+      }
     }
   } catch (err) {
     process.stderr.write(`Klauro: grammar self-check failed: ${err instanceof Error ? err.message : err}\n`);

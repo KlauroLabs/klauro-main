@@ -81,7 +81,7 @@ if (depsPresent) {
 }
 
 step('Locating the server bundle');
-const distComplete = ['index.cjs', 'server.cjs', 'cli.cjs', 'analysis-worker.cjs', 'handshake.json']
+const distComplete = ['index.cjs', 'server.cjs', 'cli.cjs', 'analysis-worker.cjs', 'tree-sitter-ts-worker.cjs', 'handshake.json']
   .every(file => fs.existsSync(path.join(packageRoot, 'dist', file)));
 const buildAction = decideBuildAction({ distComplete, rebuildRequested: options.rebuild });
 if (!buildAction.build) {

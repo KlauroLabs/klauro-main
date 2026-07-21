@@ -1537,7 +1537,7 @@ describe('architecture and capability inference', () => {
     expect(entities.find(e => e.id === 'entity_alert')!.description_source).toBe('ai');
   });
 
-  it('records honest entity_description_coverage (described/total + stopped_reason) when the wall-clock budget cuts the pass short', async () => {
+  it('uses per-batch timeouts without truncating later requested entity descriptions', async () => {
     const previousOpenAI = process.env.OPENAI_API_KEY;
     const previousElementDescriptions = process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS;
     const previousBatchSize = process.env.KLAURO_AI_ELEMENT_DESCRIPTION_BATCH_SIZE;
@@ -1590,9 +1590,9 @@ describe('architecture and capability inference', () => {
     const coverage = enhancedSystemPurpose.entity_description_coverage;
     expect(coverage).toBeDefined();
     expect(coverage.total).toBe(5);
-    expect(coverage.described).toBeGreaterThan(0);
-    expect(coverage.described).toBeLessThan(5);
-    expect(coverage.stopped_reason).toBe('budget-exhausted');
+    expect(coverage.attempted).toBe(5);
+    expect(coverage.described).toBe(5);
+    expect(coverage.stopped_reason).toBeUndefined();
     expect(coverage.priority_ordered).toBe(true);
   });
 

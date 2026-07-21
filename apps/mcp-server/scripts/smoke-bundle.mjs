@@ -114,7 +114,7 @@ const core = await probeProfile('core');
 assertCheck(core.initializeMs !== null && core.initializeMs <= maxStartupMs,
   `core: initialize answered in ${core.initializeMs?.toFixed(0)}ms (limit ${maxStartupMs}ms)`, failures);
 assertCheck(core.instructions, 'core: instructions field present', failures);
-assertCheck(core.toolNames.length === 13, `core: exactly 13 tools (got ${core.toolNames.length})`, failures);
+assertCheck(core.toolNames.length === 14, `core: exactly 14 tools (got ${core.toolNames.length})`, failures);
 assertCheck(core.toolNames.includes('klauro_query'), 'core: klauro_query gateway tool present', failures);
 assertCheck(core.handoverToolCount === core.toolNames.length,
   `core: real server answers tools/list after handover with same count (got ${core.handoverToolCount})`, failures);

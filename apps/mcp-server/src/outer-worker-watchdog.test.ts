@@ -6,7 +6,6 @@ import * as path from 'path';
 import {
   __withOuterWorkerWatchdogForTests,
   __readInternalRebuildAttemptForTests,
-  AnalysisWatchdogTimeoutError,
   analyzeProjectIncremental,
 } from './analyzer';
 import { saveAnalysis, loadAnalysis } from './storage';
@@ -36,61 +35,20 @@ async function withEnv<T>(vars: Record<string, string | undefined>, fn: () => Pr
   }
 }
 
-test('outer worker watchdog fires on a never-resolving dispatch and writes a failed attempt record', async () => {
+test('outer slow-analysis alarm preserves the worker result and does not manufacture a failure', async () => {
   const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-outer-watchdog-'));
   try {
     await withEnv({ KLAURO_ANALYSIS_WATCHDOG_MS: '20' }, async () => {
-      let neverResolvingSettled = false;
-      const hungDispatch = __withOuterWorkerWatchdogForTests(
+      const slowDispatch = __withOuterWorkerWatchdogForTests(
         projectDir,
-        () => new Promise(() => { /* models a stuck/wedged child: never settles */ }),
+        async () => {
+          await new Promise(resolve => setTimeout(resolve, 35));
+          return { nodes: 1 } as any;
+        },
       );
-      hungDispatch.then(() => { neverResolvingSettled = true; }, () => { neverResolvingSettled = true; });
-
-      await assert.rejects(
-        hungDispatch,
-        (error: Error) => error instanceof AnalysisWatchdogTimeoutError
-          && error.message.includes('watchdog-timeout')
-          && error.message.includes(projectDir),
-      );
-      assert.equal(neverResolvingSettled, true);
-
+      assert.deepEqual(await slowDispatch, { nodes: 1 });
       const attempt = await __readInternalRebuildAttemptForTests(projectDir);
-      assert.ok(attempt, 'expected a terminal attempt record after the outer watchdog fired');
-      assert.equal(attempt!.state, 'failed');
-      assert.equal(attempt!.trigger, 'version-rebuild');
-      assert.match(attempt!.reason || '', /watchdog-timeout/);
-      assert.ok(attempt!.finished_at, 'a terminal record must carry finished_at, not stay open-ended');
-    });
-  } finally {
-    fs.rmSync(projectDir, { recursive: true, force: true });
-  }
-});
-
-test('a late completion after the outer watchdog fired is logged, not resurrected', async () => {
-  const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-outer-watchdog-late-'));
-  try {
-    await withEnv({ KLAURO_ANALYSIS_WATCHDOG_MS: '15' }, async () => {
-      let resolveLate!: (value: any) => void;
-      const lateDispatch = __withOuterWorkerWatchdogForTests(
-        projectDir,
-        () => new Promise((resolve) => { resolveLate = resolve; }),
-      );
-
-      await assert.rejects(lateDispatch, AnalysisWatchdogTimeoutError);
-
-      const originalConsoleError = console.error;
-      let sawLateCompletionLog = false;
-      console.error = ((...args: unknown[]) => {
-        if (String(args[0] ?? '').includes('LATE COMPLETION')) sawLateCompletionLog = true;
-      }) as typeof console.error;
-      try {
-        resolveLate({ nodes: 1 } as any);
-        await new Promise((resolve) => setTimeout(resolve, 20));
-      } finally {
-        console.error = originalConsoleError;
-      }
-      assert.equal(sawLateCompletionLog, true, 'expected a LATE COMPLETION log line for the post-watchdog settlement');
+      assert.equal(attempt, null);
     });
   } finally {
     fs.rmSync(projectDir, { recursive: true, force: true });

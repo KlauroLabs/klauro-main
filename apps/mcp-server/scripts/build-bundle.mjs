@@ -189,6 +189,13 @@ await build({
 
 await build({
   ...sharedOptions,
+  entryPoints: ['../../packages/analyzer-core/src/analyzer/core/tree-sitter-ts-worker.ts'],
+  outfile: 'dist/tree-sitter-ts-worker.cjs',
+  plugins: [nativeExternals],
+});
+
+await build({
+  ...sharedOptions,
   entryPoints: ['src/bootstrap.ts'],
   outfile: 'dist/index.cjs',
   external: ['./server.cjs'],

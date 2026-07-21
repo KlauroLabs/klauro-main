@@ -112,6 +112,7 @@ import { buildArchitecturalConflicts } from './architectural-conflicts';
 import { buildDataLineage } from './data-lineage';
 import { isLanguageBuiltinName, isLanguageBuiltinExitPoint, isLanguageBuiltinDomainToken, isCapabilityNoiseToken, isVendorLibDomainToken } from './language-builtins';
 import { buildProductMap } from './product-map';
+import { buildReachabilityIndexFromCas } from './reachability-index';
 import { relativizeProjectPaths } from './relativize-project-paths';
 import { isRegisteredManifest, isRegisteredSourceExtension, isPackageBoundaryManifest } from './language-registry';
 import { discoverWorkspaceGlobRootsWithoutManifest } from './workspace-globs';
@@ -195,28 +196,6 @@ function aiConcurrencyLimit(): number {
   return Number.isFinite(configured) && configured > 0 ? Math.floor(configured) : 5;
 }
 
-// ---- AI-phase OVERALL wall-clock budget -----------------------------------
-// LIVE EVIDENCE: on a 47k-node CAS the AI-enrichment phase (capability catalog
-// extraction + system description + entity descriptions, each of which already
-// carries its OWN internal per-call/per-round budget/timeout) was observed
-// burning 1-3+ CPU-hours in aggregate — fetch-brotli response decompression +
-// JSON.parse + GC across many large AI calls. Each sub-stage's own budget only
-// bounds THAT stage; nothing previously bounded the SUM across all of them for
-// one analysis run. KLAURO_AI_PHASE_BUDGET_MS is that outer ceiling: once it
-// expires, applyAIInterpretation stops issuing any NEW AI call (an already
-// in-flight call is allowed to finish — it is never aborted mid-request) and
-// marks whatever stage was cut short honestly (ai_phase_status='partial' on
-// EnhancedSystemPurpose, surfaced as CASOutput.ai_enrichment='partial' /
-// ai_phase_budget). Default 15 minutes: generous enough that a normal analysis
-// (typically well under a minute of AI time) never notices it, while capping
-// the worst-case pathological run to a bounded, honestly-reported number.
-const DEFAULT_AI_PHASE_BUDGET_MS = 15 * 60_000;
-
-function getAiPhaseBudgetMs(): number {
-  const configured = Number(process.env.KLAURO_AI_PHASE_BUDGET_MS || '');
-  return Number.isFinite(configured) && configured > 0 ? configured : DEFAULT_AI_PHASE_BUDGET_MS;
-}
-
 // Code-layer / folder / structural names that are never meaningful capability
 // "owners". Used to drop ownership clauses like "owned by lib and entities".
 const CAPABILITY_STRUCTURAL_AREA_NAMES = new Set([
@@ -249,6 +228,12 @@ export interface AnalyzerRegistration {
   analyzer: BaseAnalyzer;
 }
 
+export interface AnalysisProgressEvent {
+  sequence: number;
+  phase: string;
+  completedAt: string;
+}
+
 export interface IncrementalAnalysisOptions {
   loadCache?: (contentHash: string) => Promise<FileAnalysisResult | null>;
   saveCache?: (contentHash: string, result: FileAnalysisResult) => Promise<void>;
@@ -260,6 +245,7 @@ export interface IncrementalAnalysisOptions {
    * a hash workspace basename never leaks into deployable/system names.
    */
   displayName?: string;
+  onProgress?: (event: AnalysisProgressEvent) => void;
 }
 
 /**
@@ -419,6 +405,12 @@ interface DiscoveredEntryPointCandidate {
  * Options for a full analysis run.
  */
 export interface OrchestrateAnalysisOptions {
+  /**
+   * Monotonic execution progress for hosted worker supervision. Emitted only
+   * after a real analyzer/post-processing phase completes; consumers must not
+   * treat elapsed wall time as progress.
+   */
+  onProgress?: (event: AnalysisProgressEvent) => void;
   /**
    * When true, the slow AI interpretation phase is SKIPPED inline: the
    * deterministic CAS is returned immediately with `ai_enrichment='pending'`
@@ -1154,14 +1146,7 @@ export class AnalyzerOrchestrator {
       output.ai_enrichment = 'error';
       throw error;
     }
-    // `run()` (the deferred closure in executeAnalysis) already stamps
-    // ai_enrichment='partial' when the AI-phase budget cut the pass short
-    // (KLAURO_AI_PHASE_BUDGET_MS) — never overwrite that honest status with
-    // 'ready'. Any other outcome (including no phase-budget engagement at
-    // all) defaults to 'ready' as before.
-    if (output.ai_enrichment !== 'partial') {
-      output.ai_enrichment = 'ready';
-    }
+    output.ai_enrichment = 'ready';
     return output;
   }
 
@@ -1294,10 +1279,16 @@ export class AnalyzerOrchestrator {
     // Purely additive bookkeeping alongside the existing `timings` map and
     // runLog.recordPhase call; never influences what gets analyzed.
     const phaseTimingRecords: Record<string, { started_at: string; duration_ms: number }> = {};
+    let progressSequence = 0;
     const logTiming = (phase: string, start: number) => {
       timings[phase] = Date.now() - start;
       phaseTimingRecords[phase] = { started_at: new Date(start).toISOString(), duration_ms: timings[phase] };
       runLog.recordPhase(phase, start, timings[phase]);
+      options?.onProgress?.({
+        sequence: ++progressSequence,
+        phase,
+        completedAt: new Date().toISOString(),
+      });
       if (process.env.KLAURO_DEBUG_ANALYZER_PHASES === '1') {
         console.error(`[Klauro] phase ${phase} completed in ${timings[phase]}ms`);
       }
@@ -1973,6 +1964,20 @@ export class AnalyzerOrchestrator {
     logTiming('pp_methodCalls', phaseStart);
     await yieldToEventLoop();
 
+    // Reachability index (Workstream C, docs/SPEC-MATHEMATICAL-INTELLIGENCE.md):
+    // Tarjan SCC condensation + pruned landmark labeling over the directed
+    // call graph ('calls' edges + resolved method_calls). Deterministic,
+    // byte-stable, O(V+E)-ish build; consumers get near-O(1) transitive
+    // reachability / affected-set queries instead of per-query walks.
+    phaseStart = Date.now();
+    const reachabilityIndex = buildReachabilityIndexFromCas({
+      nodes: allNodes,
+      edges: allEdges,
+      method_calls: methodCalls,
+    });
+    logTiming('pp_reachabilityIndex', phaseStart);
+    await yieldToEventLoop();
+
     phaseStart = Date.now();
     const allDecorators = this.buildAllDecorators(allNodes);
     const documentationSummary = this.buildDocumentationSummary(allNodes);
@@ -2166,6 +2171,7 @@ export class AnalyzerOrchestrator {
       structural_importance_meta: structuralImportance.meta,
       change_risks: enhancedChangeRisks.length > 0 ? enhancedChangeRisks : undefined,
       method_calls: methodCalls.length > 0 ? methodCalls : undefined,
+      reachability_index: reachabilityIndex.stats.nodes > 0 ? reachabilityIndex : undefined,
       decorators: allDecorators.length > 0 ? allDecorators : undefined,
       documentation_summary: documentationSummary,
       todos_summary: todosSummary,
@@ -2335,33 +2341,8 @@ export class AnalyzerOrchestrator {
             evidence: enhancedSystemPurpose.evidence || systemPurpose.evidence,
           };
           output.product_map = buildProductMap(output);
-          // HONESTY: the AI-phase wall-clock budget (KLAURO_AI_PHASE_BUDGET_MS)
-          // may have cut this pass short (see applyAIInterpretation). enrichAnalysisAI
-          // (the caller of this closure) defaults to 'ready' after this closure
-          // returns, but never downgrades an explicit 'partial' back to 'ready' —
-          // so stamp it here whenever the phase reports it was cut short.
-          if (enhancedSystemPurpose.ai_phase_status === 'partial') {
-            output.ai_enrichment = 'partial';
-            output.ai_phase_budget = {
-              reason: enhancedSystemPurpose.ai_phase_stopped_reason || 'phase-budget-exhausted',
-              budget_ms: getAiPhaseBudgetMs(),
-              nodes_at_stop: enhancedSystemPurpose.ai_phase_nodes_at_stop ?? output.nodes.length,
-            };
-          }
         });
       }
-    } else if (enhancedSystemPurpose.ai_phase_status === 'partial') {
-      // AI ran inline (not deferred) but the AI-phase wall-clock budget
-      // (KLAURO_AI_PHASE_BUDGET_MS) cut it short — honest partial status
-      // instead of the usual 'synchronous' annotation, so a caller of the
-      // plain analyzeAnalysis()/analyzeProject() path (no deferral) sees the
-      // same truth a deferred-path caller would.
-      output.ai_enrichment = 'partial';
-      output.ai_phase_budget = {
-        reason: enhancedSystemPurpose.ai_phase_stopped_reason || 'phase-budget-exhausted',
-        budget_ms: getAiPhaseBudgetMs(),
-        nodes_at_stop: enhancedSystemPurpose.ai_phase_nodes_at_stop ?? output.nodes.length,
-      };
     } else {
       // Pure annotation: AI ran inline exactly as before, nothing else changes.
       output.ai_enrichment = 'synchronous';
@@ -2430,7 +2411,7 @@ export class AnalyzerOrchestrator {
         : 'persisted-output-schema';
       console.error(`[Klauro] incremental full rebuild (${trigger}): ${schemaRebuildReason}`);
       this.invalidateProjectDiscovery(projectPath);
-      const output = await this.orchestrateAnalysis(projectPath, { displayName: options?.displayName });
+      const output = await this.orchestrateAnalysis(projectPath, { displayName: options?.displayName, onProgress: options?.onProgress });
       const state = this.buildIncrementalState(projectPath, output, changeDetector);
       const changeReport = this.buildChangeReport(
         previousOutput,
@@ -2445,7 +2426,7 @@ export class AnalyzerOrchestrator {
     }
 
     if (!previousState) {
-      const output = previousOutput?.analysis_id ? previousOutput : await this.orchestrateAnalysis(projectPath, { displayName: options?.displayName });
+      const output = previousOutput?.analysis_id ? previousOutput : await this.orchestrateAnalysis(projectPath, { displayName: options?.displayName, onProgress: options?.onProgress });
       const state = this.buildIncrementalState(projectPath, output, changeDetector);
       const changeReport = this.buildChangeReport(previousOutput, output, changeSet);
       return { output, state, changeReport, wasFullRebuild: true, fullRebuildReason: 'No previous analysis state' };
@@ -2453,7 +2434,7 @@ export class AnalyzerOrchestrator {
 
     if (changeSet.requiresFullRebuild) {
       this.invalidateProjectDiscovery(projectPath);
-      const output = await this.orchestrateAnalysis(projectPath, { displayName: options?.displayName });
+      const output = await this.orchestrateAnalysis(projectPath, { displayName: options?.displayName, onProgress: options?.onProgress });
       const state = this.buildIncrementalState(projectPath, output, changeDetector);
       const changeReport = this.buildChangeReport(previousOutput, output, changeSet);
       return { output, state, changeReport, wasFullRebuild: true, fullRebuildReason: changeSet.reason };
@@ -3273,6 +3254,18 @@ export class AnalyzerOrchestrator {
       behavior_surfaces: behaviorSurfaces,
     });
 
+    // Reachability index rebuilt over the FRESH node/edge graph (method_calls
+    // are carried forward from previousOutput on this path — pairs whose
+    // endpoints no longer exist are dropped by the builder). Cheap relative to
+    // the rest of this rebuild and keeps the index consistent with the graph
+    // it ships next to; a stale carried-forward index would silently answer
+    // reachability over the previous revision's call graph.
+    const rebuiltReachabilityIndex = buildReachabilityIndexFromCas({
+      nodes,
+      edges,
+      method_calls: previousOutput.method_calls,
+    });
+
     const rebuiltOutput: CASOutput = {
       ...previousOutput,
       analysis_timestamp: new Date().toISOString(),
@@ -3307,6 +3300,7 @@ export class AnalyzerOrchestrator {
       flow_summary: enhancedFlowSummary,
       change_risks: enhancedChangeRisks.length > 0 ? enhancedChangeRisks : undefined,
       change_risk_summary: changeRiskSummary,
+      reachability_index: rebuiltReachabilityIndex.stats.nodes > 0 ? rebuiltReachabilityIndex : undefined,
       data_entities: dataEntities.length > 0 ? dataEntities : undefined,
       data_summary: dataSummary,
       behavioral_invariants: behavioralInvariants.length > 0 ? behavioralInvariants : undefined,
@@ -10467,15 +10461,14 @@ export class AnalyzerOrchestrator {
    * `description_source`/`domain_source` are only ever 'ai' / 'manual' / 'reused'.
    *
    * The only non-throwing exit is when comprehension is explicitly turned OFF
-   * (KLAURO_AI_INTERPRETATION=false, feature disabled, or budget<=0): the run is
+   * (KLAURO_AI_INTERPRETATION=false or the feature is disabled): the run is
    * then STRUCTURE-ONLY — comprehension fields are left UNSET (never seeded with a
    * deterministic substitute) so Camp-B structure still returns.
    */
   /**
-   * The deterministic-candidates-only fallback for the capability catalog:
-   * used both when the AI catalog call ran but returned nothing usable, and
-   * (new) when the OVERALL AI-phase budget expired before the catalog call
-   * was even attempted. Extracted so both call sites share one implementation
+   * The deterministic-candidates-only fallback for the capability catalog,
+   * used when the AI catalog call ran but returned nothing usable. Extracted
+   * so all fallback call sites share one implementation
    * — see the "AI catalog returned nothing usable" comment at its original
    * call site for why a raw terminal-chain/shell-script label must never ship
    * as-is, and the "MODULE SPLIT" comment for why a lone qualifying large
@@ -10580,7 +10573,6 @@ export class AnalyzerOrchestrator {
     entryPoints: CASEntryPoint[];
     nodes: CASNode[];
     budgetMs: number;
-    aiPhaseRemainingMs: () => number;
   }): Promise<SystemCapability[]> {
     const distinctFamilyCount = new Set(
       args.candidateSnapshot.map(capability => String(capability.name || '').trim()).filter(Boolean)
@@ -10589,7 +10581,6 @@ export class AnalyzerOrchestrator {
     let qualityFailure: string | undefined;
     let cyclesRun = 0;
     for (let cycle = 1; cycle <= 3; cycle++) {
-      if (cycle > 1 && args.aiPhaseRemainingMs() <= 0) break;
       cyclesRun = cycle;
       const cycleNudge = cycle === 1 ? undefined
         : `Previous catalog failed a quality check (${qualityFailure}). Return a FULL catalog of purposeful capabilities: one per distinct product area the facts support, each named as a purpose a PM would write (verb-headed, never a bare noun or a page/view label), each description stating why the ability exists.`;
@@ -10604,7 +10595,7 @@ export class AnalyzerOrchestrator {
         externalServices: args.externalServices,
         flowGraph: args.flowGraph,
         projectTextSignal: args.projectTextSignal,
-        budgetMs: Math.max(1, Math.min(args.budgetMs, args.aiPhaseRemainingMs())),
+        budgetMs: args.budgetMs,
         ...(cycleNudge ? { qualityNudge: cycleNudge } : {}),
       });
       const cycleReconciled = extracted.length > 0
@@ -10802,31 +10793,6 @@ export class AnalyzerOrchestrator {
       return;
     }
 
-    // ---- OVERALL AI-phase wall-clock budget (KLAURO_AI_PHASE_BUDGET_MS) ----
-    // See the "AI-phase OVERALL wall-clock budget" comment near
-    // getAiPhaseBudgetMs(). This is a SEPARATE, OUTER ceiling from budgetMs
-    // above (which only bounds the system-description call/repair loop) and
-    // from aiExtractCapabilityCatalog's/applyAIElementDescriptions' own
-    // internal budgets — those bound ONE stage each; this bounds their SUM for
-    // this analysis run. Checked before every stage below; once expired, no
-    // NEW AI call is issued for the remainder of this pass (an already
-    // in-flight call is never aborted), and whatever was produced before the
-    // cutoff is kept and marked honestly via ai_phase_status='partial'.
-    const aiPhaseBudgetMs = getAiPhaseBudgetMs();
-    const aiPhaseStartedAt = Date.now();
-    const aiPhaseDeadlineAt = aiPhaseStartedAt + aiPhaseBudgetMs;
-    let aiPhaseBudgetExhausted = false;
-    const aiPhaseRemainingMs = (): number => aiPhaseDeadlineAt - Date.now();
-    const markAiPhaseBudgetExhausted = (stage: string): void => {
-      if (aiPhaseBudgetExhausted) return;
-      aiPhaseBudgetExhausted = true;
-      console.error(
-        `[Klauro] AI phase budget exhausted (KLAURO_AI_PHASE_BUDGET_MS=${aiPhaseBudgetMs}ms) before ${stage}; ` +
-        `nodes=${nodes.length}, edges=${edges.length}, elapsed=${Date.now() - aiPhaseStartedAt}ms. Stopping further ` +
-        `AI calls for this analysis pass; results already produced are kept as-is.`
-      );
-    };
-
     // AI EXTRACTS the capability catalog (the business value) from the Camp-B
     // fact bundle — user journeys, entities, route areas, services. On success,
     // replaces systemCapabilities in place, each linked back to its evidence.
@@ -10841,10 +10807,6 @@ export class AnalyzerOrchestrator {
       // the separate `behaviorSurfaces` list by buildSystemCapabilities and
       // never reach this candidate snapshot or the AI catalog prompt at all.
       const candidateSnapshot = systemCapabilities.map(capability => ({ ...capability }));
-      if (aiPhaseRemainingMs() <= 0) {
-        markAiPhaseBudgetExhausted('capability catalog extraction');
-        this.applyDeterministicCapabilityFallback(candidateSnapshot, behaviorSurfaces, entryPoints, nodes, systemCapabilities);
-      } else {
       const reconciled = await this.runCapabilityCatalogWithQualityGate({
         systemName,
         enhancedSystemPurpose,
@@ -10859,7 +10821,6 @@ export class AnalyzerOrchestrator {
         entryPoints,
         nodes,
         budgetMs,
-        aiPhaseRemainingMs,
       });
       if (reconciled.length > 0) {
         systemCapabilities.splice(0, systemCapabilities.length, ...reconciled);
@@ -10877,7 +10838,6 @@ export class AnalyzerOrchestrator {
         // (candidateSnapshot.length === 0)` guard left non-empty deterministic
         // sets untouched.)
         this.applyDeterministicCapabilityFallback(candidateSnapshot, behaviorSurfaces, entryPoints, nodes, systemCapabilities);
-      }
       }
     }
 
@@ -10939,7 +10899,6 @@ export class AnalyzerOrchestrator {
       ).slice(0, elementLimit).map(capability => this.capabilityDescriptionTarget(capability, entityNamesById))
       : [];
 
-    const aiStartedAt = Date.now();
     // E1 (observational): compact evidence digest for the semantic dataset. Sizes/
     // counts/key names only — NO source, NO secrets. See docs/SEMANTIC-MODEL.md.
     const semanticEvidenceDigest = {
@@ -10955,27 +10914,6 @@ export class AnalyzerOrchestrator {
       unanalyzedLanguages: unanalyzedLanguages.length,
       hasProjectText: Boolean(projectTextSignal.manifestDescription || projectTextSignal.summary),
     };
-    if (aiPhaseBudgetExhausted || aiPhaseRemainingMs() <= 0) {
-      markAiPhaseBudgetExhausted('system description generation');
-      this.recordComprehensionSkipped(enhancedSystemPurpose, systemCapabilities, dataEntities, 'phase-budget-exhausted');
-      if (capabilityTargets.length > 0) {
-        this.recordElementDescriptionGenerationByIds(
-          capabilityTargets.map(target => target.id),
-          systemCapabilities,
-          [],
-          undefined,
-          'ai_skipped',
-          false,
-          'phase-budget-exhausted',
-          budgetMs
-        );
-      }
-      enhancedSystemPurpose.ai_phase_status = 'partial';
-      enhancedSystemPurpose.ai_phase_stopped_reason = 'phase-budget-exhausted';
-      enhancedSystemPurpose.ai_phase_nodes_at_stop = nodes.length;
-      return;
-    }
-
     let timeoutHandle: NodeJS.Timeout | undefined;
     let raw: string;
     try {
@@ -11114,13 +11052,8 @@ export class AnalyzerOrchestrator {
     // here (healed above / below via acceptAIInterpretationCandidate).
     for (let repairAttempt = 0; repairAttempt < 2; repairAttempt++) {
       if (validation.ok && rejectedElements.size === 0) break;
-      if (Date.now() - aiStartedAt >= budgetMs) break;
-      if (aiPhaseRemainingMs() <= 0) {
-        markAiPhaseBudgetExhausted('description repair loop');
-        break;
-      }
       try {
-        const remainingMs = Math.max(1, Math.min(budgetMs - (Date.now() - aiStartedAt), aiPhaseRemainingMs()));
+        const remainingMs = budgetMs;
         let repairTimeoutHandle: NodeJS.Timeout | undefined;
         const repairRaw = await Promise.race([
           aiService.generateComponentDescription({
@@ -11304,59 +11237,34 @@ export class AnalyzerOrchestrator {
       );
     }
 
-    // ---- ENTITY DESCRIPTIONS — authored LAST, after everything else this
-    // pass has established (the finalized capability catalog, domain, and the
-    // caller's already-computed journeys) is available as evidence. AI-only-
-    // or-absent: applyAIElementDescriptions/applyElementDescription never
-    // write a deterministic description — a skip/failure leaves
-    // description_source unset and records an honest description_generation
-    // status (see docs/cas/DETERMINISM-BOUNDARY.md). Runs as its own batch
-    // pass (capabilities: []) so it never re-describes capabilities already
-    // handled above; `systemCapabilities` is still passed as
-    // allCapabilitiesForEvidence so entity targets see which capabilities
-    // serve them.
-    if (dataEntities.length > 0) {
-      if (aiPhaseBudgetExhausted || aiPhaseRemainingMs() <= 0) {
-        markAiPhaseBudgetExhausted('entity descriptions');
-        for (const entity of dataEntities) {
-          if (entity.description_source === 'ai' || entity.description_source === 'manual') continue;
-          entity.description_generation = { status: 'ai_skipped', attempted: false, reason: 'phase-budget-exhausted' };
-        }
-        enhancedSystemPurpose.entity_description_coverage = {
-          total: dataEntities.length,
-          described: dataEntities.filter(entity => entity.description_source === 'ai').length,
-          attempted: 0,
-          budget_ms: 0,
-          batch_size: 0,
-          priority_ordered: true,
-          stopped_reason: 'phase-budget-exhausted',
-        };
-      } else {
-        await this.applyAIElementDescriptions([], dataEntities, {
-          systemName,
-          enhancedSystemPurpose,
-          projectTextSignal,
-          frameworks,
-          includeEntities: true,
-          nodes,
-          edges,
-          allCapabilitiesForEvidence: systemCapabilities,
-          userJourneys,
-          aiPhaseDeadlineAt,
-        });
-      }
+    // Entity descriptions are a lazy enrichment layer, not part of the
+    // required first-pass comprehension contract. Their structural facts,
+    // relations, flows, and capability links are already complete; generating
+    // prose for every entity here added an unbounded catalog-sized AI tail to
+    // every cold analysis. The existing generate_element_description surface
+    // performs this same evidence-grounded work on demand and persists its
+    // evidence fingerprint for invalidation.
+    for (const entity of dataEntities) {
+      if (entity.description_source === 'ai' || entity.description_source === 'manual') continue;
+      entity.description_generation = {
+        status: 'ai_skipped',
+        attempted: false,
+        reason: 'manual-trigger-only',
+      };
     }
+    enhancedSystemPurpose.entity_description_coverage = {
+      total: dataEntities.length,
+      described: dataEntities.filter(entity => entity.description_source === 'ai' || entity.description_source === 'manual').length,
+      attempted: 0,
+      budget_ms: 0,
+      batch_size: 0,
+      priority_ordered: true,
+      stopped_reason: dataEntities.length > 0 ? 'manual-trigger-only' : undefined,
+    };
 
-    // ---- Final honest phase status. 'partial' was already stamped by the two
-    // early-return exhaustion paths above (system description / capability
-    // catalog); this covers the entity-description exhaustion case (which
-    // falls through to here rather than returning early, since it is the last
-    // stage) and the normal complete case.
-    enhancedSystemPurpose.ai_phase_status = aiPhaseBudgetExhausted ? 'partial' : 'complete';
-    if (aiPhaseBudgetExhausted) {
-      enhancedSystemPurpose.ai_phase_stopped_reason = enhancedSystemPurpose.ai_phase_stopped_reason || 'phase-budget-exhausted';
-      enhancedSystemPurpose.ai_phase_nodes_at_stop = nodes.length;
-    }
+    // The required first-pass comprehension contract is complete. Lazy entity
+    // and node prose does not make the CAS structurally or semantically partial.
+    enhancedSystemPurpose.ai_phase_status = 'complete';
 
     // The AI naming pass above has now had its chance; anything still carrying
     // a bare-noun structural placeholder (name_source unset — the AI catalog
@@ -11760,14 +11668,6 @@ export class AnalyzerOrchestrator {
       edges?: CASEdge[];
       allCapabilitiesForEvidence?: SystemCapability[];
       userJourneys?: CASUserJourney[];
-      // Absolute Date.now()-space deadline for the OVERALL AI-phase budget
-      // (KLAURO_AI_PHASE_BUDGET_MS — see applyAIInterpretation's caller). When
-      // supplied, this pass's own auto-scaled budgetMs is clamped so it never
-      // outlives the phase, even though this pass's own internal
-      // KLAURO_AI_ELEMENT_DESCRIPTION_BUDGET_MS ceiling (75s) is smaller in the
-      // common case. Optional so any other caller of this method (none today
-      // besides applyAIInterpretation's two call sites) is unaffected.
-      aiPhaseDeadlineAt?: number;
     }
   ): Promise<void> {
     this.setElementDescriptionGrounding(
@@ -11849,15 +11749,7 @@ export class AnalyzerOrchestrator {
     const unclampedBudgetMs = Number.isFinite(configuredBudget) && configuredBudget > 0
       ? configuredBudget
       : Math.min(MAX_SCALED_BUDGET_MS, Math.max(15000, estimatedRounds * ROUND_LATENCY_MS));
-    // Clamp to the OUTER AI-phase deadline (KLAURO_AI_PHASE_BUDGET_MS), when the
-    // caller supplied one — this pass's own 75s ceiling is smaller in the common
-    // case, but a phase that already spent most of its budget on the capability
-    // catalog / system description must not let this LAST stage still run its
-    // full local budget on top. See applyAIInterpretation's aiPhaseDeadlineAt.
-    const phaseClamped = typeof context.aiPhaseDeadlineAt === 'number';
-    const budgetMs = phaseClamped
-      ? Math.max(0, Math.min(unclampedBudgetMs, context.aiPhaseDeadlineAt! - Date.now()))
-      : unclampedBudgetMs;
+    const budgetMs = unclampedBudgetMs;
 
     const recordEntityCoverage = (
       described: number,
@@ -11900,36 +11792,28 @@ export class AnalyzerOrchestrator {
     }
 
     if (budgetMs <= 0) {
-      const reason = phaseClamped ? 'phase-budget-exhausted' : 'budget-disabled';
+      const reason = 'budget-disabled';
       this.recordElementDescriptionGeneration(capabilities, entities, undefined, 'ai_skipped', false, reason, budgetMs);
       recordEntityCoverage(0, 0, budgetMs, batchSize, reason);
       return;
     }
 
-    const startedAt = Date.now();
     const byId = new Map<string, DescriptionTarget>(targets.map(target => [target.id, target]));
 
     // Each batch's prompt depends only on its own items, so the batches are
     // independent and run concurrently (bounded) rather than one-after-another.
-    // The shared wall-clock budget is still enforced: every batch (and every
-    // repair inside it) times out at `startedAt + budgetMs`, so parallelism only
-    // collapses latency — it never runs past the budget nor changes which
-    // descriptions are produced or where they land (results are keyed by id).
+    // Every provider attempt has its own timeout. There is deliberately no
+    // shared shrinking clock that can cause later required batches to vanish.
     const batches: DescriptionTarget[][] = [];
     for (let i = 0; i < targets.length; i += batchSize) batches.push(targets.slice(i, i + batchSize));
 
     await runWithConcurrency(batches, concurrency, async (batch) => {
-      if (Date.now() - startedAt >= budgetMs) {
-        this.recordElementDescriptionGenerationByIds(batch.map(target => target.id), capabilities, entities, undefined, 'ai_skipped', false, 'budget-exhausted', budgetMs);
-        return;
-      }
-
       let timeoutHandle: NodeJS.Timeout | undefined;
       try {
         const timeoutPromise = new Promise<string>((_, reject) => {
           timeoutHandle = setTimeout(
             () => reject(new Error('AI element description budget exceeded')),
-            Math.max(1, budgetMs - (Date.now() - startedAt))
+            budgetMs
           );
         });
         const raw = await Promise.race([
@@ -11967,14 +11851,13 @@ export class AnalyzerOrchestrator {
           return !description || !this.validateElementDescription(description, byId.get(target.id) || target).ok;
         });
         let repaired: Map<string, string> | null = null;
-        if (failedTargets.length > 0 && Date.now() - startedAt < budgetMs) {
-          const remainingMs = Math.max(1, budgetMs - (Date.now() - startedAt));
+        if (failedTargets.length > 0) {
           let repairTimeoutHandle: NodeJS.Timeout | undefined;
           try {
             const repairTimeoutPromise = new Promise<string>((_, reject) => {
               repairTimeoutHandle = setTimeout(
                 () => reject(new Error('AI element description repair budget exceeded')),
-                remainingMs
+                budgetMs
               );
             });
             const repairRaw = await Promise.race([
@@ -12019,11 +11902,10 @@ export class AnalyzerOrchestrator {
           const repairedValidation = repairedDescription
             ? this.validateElementDescription(repairedDescription, byId.get(target.id) || target)
             : { ok: false, reason: 'no-batch-repair' };
-          if (repairedValidation.ok || Date.now() - startedAt >= budgetMs) continue;
+          if (repairedValidation.ok) continue;
 
           let individualTimeoutHandle: NodeJS.Timeout | undefined;
           try {
-            const remainingMs = Math.max(1, budgetMs - (Date.now() - startedAt));
             const individualRaw = await Promise.race([
               aiService.generateComponentDescription({
                 additionalContext: {
@@ -12058,7 +11940,7 @@ export class AnalyzerOrchestrator {
               new Promise<string>((_, reject) => {
                 individualTimeoutHandle = setTimeout(
                   () => reject(new Error('AI element description individual repair budget exceeded')),
-                  remainingMs
+                  budgetMs
                 );
               }),
             ]);
@@ -12161,13 +12043,12 @@ export class AnalyzerOrchestrator {
     // count against `described` but only the former is an AI-quality gap.
     const describedCount = entities.filter(entity => entity.description_source === 'ai').length;
     const attemptedCount = entities.filter(entity => entity.description_generation?.attempted).length;
-    const anyBudgetExhausted = entities.some(entity => entity.description_generation?.reason === 'budget-exhausted');
     recordEntityCoverage(
       describedCount,
       attemptedCount,
       budgetMs,
       batchSize,
-      anyBudgetExhausted ? 'budget-exhausted' : (describedCount < entities.length ? 'quality-gate-rejections' : undefined)
+      describedCount < entities.length ? 'quality-gate-rejections' : undefined
     );
   }
 
@@ -12634,7 +12515,7 @@ export class AnalyzerOrchestrator {
       'pp_securitySummary', 'pp_flowSummary', 'pp_flowCoverage', 'pp_workflows', 'pp_userJourneys',
       'pp_enhanceRisks', 'pp_testData', 'pp_buildIntents', 'pp_gitAnalysis', 'pp_dependencyManifest',
       'pp_detectPatterns', 'pp_traceability', 'pp_entryPointContractCapability', 'pp_methodCalls',
-      'pp_callGraph', 'pp_flowGraph', 'pp_structuralImportance',
+      'pp_callGraph', 'pp_flowGraph', 'pp_reachabilityIndex', 'pp_structuralImportance',
     ].includes(phase)) return 'agent-context';
     return undefined;
   };

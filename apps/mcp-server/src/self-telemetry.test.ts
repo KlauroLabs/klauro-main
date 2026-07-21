@@ -120,31 +120,13 @@ test('selfProjectPath: honors an EXISTING override', async () => {
   });
 });
 
-test('selfProjectPath: IGNORES an override that is absent in-process, falls back to src dir', async () => {
-  const { selfProjectPath, resolveSelfSourceDir } = await REQUIRE();
+test('selfProjectPath preserves canonical project identity even before its CAS exists', async () => {
+  const { selfProjectPath } = await REQUIRE();
   const missing = nodePath.join(os.tmpdir(), `klauro-nonexistent-${Date.now()}-${Math.random().toString(36).slice(2)}`);
   assert.equal(fs.existsSync(missing), false);
   withProjectEnv(missing, () => {
-    // The old default (process.cwd()) is wrong in a container; the fix keys to the
-    // in-process source dir instead so bootstrap+correlation can happen.
-    assert.equal(selfProjectPath(), resolveSelfSourceDir(), 'absent override must fall back to the in-process src dir');
+    assert.equal(selfProjectPath(), missing, 'telemetry stays keyed to the configured project and persists unmatched until CAS backfill');
   });
-});
-
-test('maybeBootstrapSelfAnalysis: runs at most ONCE per process (run-once guard)', async () => {
-  // Fresh module instance so the module-level bootstrapStarted flag is pristine.
-  const mod = await import(`./self-telemetry?bootstrap-guard=${Date.now()}`);
-  const missing = nodePath.join(os.tmpdir(), `klauro-bootstrap-none-${Date.now()}`);
-  assert.equal(fs.existsSync(missing), false);
-  // First call: path doesn't exist → skips analysis but SETS the guard. Must not throw.
-  await mod.maybeBootstrapSelfAnalysis(missing);
-  // Second call: guard is set → returns immediately, still crash-proof.
-  await mod.maybeBootstrapSelfAnalysis(missing);
-  // A third call against a DIFFERENT (also-missing) path is still a no-op because
-  // the once-guard already fired — proving it never re-analyzes on every boot.
-  const missing2 = nodePath.join(os.tmpdir(), `klauro-bootstrap-none2-${Date.now()}`);
-  await mod.maybeBootstrapSelfAnalysis(missing2);
-  assert.ok(true, 'bootstrap is crash-proof and run-once');
 });
 
 // ---------------------------------------------------------------------------

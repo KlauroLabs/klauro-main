@@ -38,6 +38,7 @@ export declare function evaluateBundleState(input: {
   cliExists?: boolean;
   handshakeExists: boolean;
   workerExists?: boolean;
+  parserWorkerExists?: boolean;
   bundleMtimeMs: number | null;
   newestSourceMtimeMs: number | null;
   packageRoot: string;

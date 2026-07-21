@@ -38,15 +38,16 @@ export function evaluateNodeVersion(versionString, minimumMajor = MINIMUM_NODE_M
 }
 
 export function evaluateBundleState(input) {
-  const { bundleExists, serverExists, cliExists, handshakeExists, workerExists, bundleMtimeMs, newestSourceMtimeMs, packageRoot } = input;
+  const { bundleExists, serverExists, cliExists, handshakeExists, workerExists, parserWorkerExists, bundleMtimeMs, newestSourceMtimeMs, packageRoot } = input;
   const buildFix = `Run: npm --prefix ${packageRoot} run build (skip while a live run is using dist/).`;
-  if (!bundleExists || !serverExists || cliExists === false || !handshakeExists || workerExists === false) {
+  if (!bundleExists || !serverExists || cliExists === false || !handshakeExists || workerExists === false || parserWorkerExists === false) {
     const missing = [
       !bundleExists ? 'dist/index.cjs' : null,
       !serverExists ? 'dist/server.cjs' : null,
       cliExists === false ? 'dist/cli.cjs' : null,
       !handshakeExists ? 'dist/handshake.json' : null,
       workerExists === false ? 'dist/analysis-worker.cjs' : null,
+      parserWorkerExists === false ? 'dist/tree-sitter-ts-worker.cjs' : null,
     ].filter(Boolean).join(', ');
     return checkResult('bundle', 'fail', `Bundle incomplete: missing ${missing}.`, buildFix);
   }
@@ -103,6 +104,7 @@ export function inspectBundle({ packageRoot, sourceDirs }) {
     cliExists: fs.existsSync(path.join(packageRoot, 'dist', 'cli.cjs')),
     handshakeExists: fs.existsSync(handshakePath),
     workerExists: fs.existsSync(path.join(packageRoot, 'dist', 'analysis-worker.cjs')),
+    parserWorkerExists: fs.existsSync(path.join(packageRoot, 'dist', 'tree-sitter-ts-worker.cjs')),
     bundleMtimeMs: bundleExists ? fs.statSync(bundlePath).mtimeMs : null,
     newestSourceMtimeMs,
     packageRoot,

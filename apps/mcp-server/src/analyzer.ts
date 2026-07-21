@@ -1,4 +1,4 @@
-import { AnalyzerOrchestrator } from '../../../packages/analyzer-core/src/analyzer/core/orchestrator';
+import { AnalyzerOrchestrator, type AnalysisProgressEvent } from '../../../packages/analyzer-core/src/analyzer/core/orchestrator';
 import type { CASOutput, IncrementalState, ChangeReport, ChangeHistoryEntry } from '../../../packages/analyzer-core/src/types/cas.types';
 import { TypeScriptJavaScriptAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/typescript-javascript-analyzer';
 import { PythonAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/python-analyzer';
@@ -1122,7 +1122,11 @@ export interface DeferredAnalysisResult {
  * (logging only) so a failed enrichment can never crash the process — the
  * deterministic CAS stays stored.
  */
-export async function analyzeProjectDeferred(projectPath: string, displayName?: string): Promise<DeferredAnalysisResult> {
+export async function analyzeProjectDeferred(
+  projectPath: string,
+  displayName?: string,
+  onProgress?: (event: AnalysisProgressEvent) => void,
+): Promise<DeferredAnalysisResult> {
   if (!(await fs.pathExists(projectPath))) {
     throw new Error(`Project path does not exist: ${projectPath}`);
   }
@@ -1147,7 +1151,7 @@ export async function analyzeProjectDeferred(projectPath: string, displayName?: 
     const previousOutput = await loadAnalysis(projectPath, { preferCache: true }).catch(() => null);
     const result = await applyStoredElementDescriptions(projectPath, preservePreviousAIDescriptions(
       previousOutput,
-      await dedicatedOrch.orchestrateAnalysis(projectPath, { deferAiEnrichment: true, displayName, conventions, packGlobs })
+      await dedicatedOrch.orchestrateAnalysis(projectPath, { deferAiEnrichment: true, displayName, conventions, packGlobs, onProgress })
     ));
 
     await saveAnalysis(projectPath, result);
@@ -1229,7 +1233,11 @@ export interface LayeredAnalysisResult {
  * analyzeProjectDeferred/analyzeProject would have produced on their own —
  * this only changes WHEN facts become queryable, never what they are.
  */
-export async function analyzeProjectLayered(projectPath: string, displayName?: string): Promise<LayeredAnalysisResult> {
+export async function analyzeProjectLayered(
+  projectPath: string,
+  displayName?: string,
+  onProgress?: (event: AnalysisProgressEvent) => void,
+): Promise<LayeredAnalysisResult> {
   if (!(await fs.pathExists(projectPath))) {
     throw new Error(`Project path does not exist: ${projectPath}`);
   }
@@ -1283,7 +1291,7 @@ export async function analyzeProjectLayered(projectPath: string, displayName?: s
     let deferred: DeferredAnalysisResult;
     if (hasCompletePrevious) {
       try {
-        const incremental = await analyzeProjectIncremental(projectPath, displayName);
+        const incremental = await analyzeProjectIncremental(projectPath, displayName, onProgress);
         deferred = { output: incremental.output, enrichment: Promise.resolve() };
       } catch (error) {
         // The loop-breaker's refusal must NOT be swallowed by this fallback:
@@ -1295,10 +1303,10 @@ export async function analyzeProjectLayered(projectPath: string, displayName?: s
         if (error instanceof AnalysisLoopBreakerError) throw error;
         const message = error instanceof Error ? error.message : String(error);
         console.error(`[Klauro] warm incremental pass failed for ${projectPath} (${message}); falling back to full deferred analysis`);
-        deferred = await analyzeProjectDeferred(projectPath, displayName);
+        deferred = await analyzeProjectDeferred(projectPath, displayName, onProgress);
       }
     } else {
-      deferred = await analyzeProjectDeferred(projectPath, displayName);
+      deferred = await analyzeProjectDeferred(projectPath, displayName, onProgress);
     }
 
     // Stamp the full ladder onto the landed CAS: L1-L4 are ready the moment
@@ -1746,28 +1754,23 @@ async function estimateProjectSizeHint(projectPath: string): Promise<number> {
   return Number.POSITIVE_INFINITY;
 }
 
-// --- Wall-clock watchdog --------------------------------------------------
-//
-// Must make a hung analysis visible and non-permanent: a hang inside a lane
-// otherwise leaves last_attempt reading 'in-progress' forever and starves every
-// other queued analysis behind the occupied lane permits, with nothing alarming.
-//
-// Cannot preempt a hang caused by synchronous/native computation (e.g. a
-// runaway regex) — there is no way to abort that from JS once started. It can
-// only stop waiting on `fn`: free the lane permit and write a visible
-// 'watchdog-timeout' failure. A later actual completion of `fn` is logged,
-// never silently re-applied over the failure record already written.
-//
-// withLanePermit is normally called from inside withProjectAnalysisLock, so
-// rejecting early here also unwinds that outer lock before the zombie
-// computation has actually stopped touching the project's storage — accepted
-// as better than holding analysis.lock hostage to an unpreemptable hang forever.
+// --- Slow-analysis alarm --------------------------------------------------
+// Elapsed time is an SLO signal, never a completeness cutoff. The job keeps
+// its lock and lane until it completes or reports a real process failure.
 const DEFAULT_ANALYSIS_WATCHDOG_MS = 30 * 60_000; // 30 minutes
 
 function getAnalysisWatchdogMs(): number {
   const raw = process.env.KLAURO_ANALYSIS_WATCHDOG_MS;
   const parsed = raw !== undefined && raw !== '' ? Number(raw) : NaN;
   return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_ANALYSIS_WATCHDOG_MS;
+}
+
+const DEFAULT_ANALYSIS_STALL_MS = 10 * 60_000;
+
+function getAnalysisStallMs(): number {
+  const raw = process.env.KLAURO_ANALYSIS_STALL_MS;
+  const parsed = raw !== undefined && raw !== '' ? Number(raw) : NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_ANALYSIS_STALL_MS;
 }
 
 // --- Internal/boot rebuild attempt visibility ------------------------------
@@ -1821,7 +1824,7 @@ async function readInternalRebuildAttempt(projectPath: string): Promise<Internal
 
 /**
  * Thrown when a version-bump full rebuild already failed with a
- * worker-oom/watchdog reason for this exact (stored_version -> current_version)
+ * worker-OOM or progress-stall reason for this exact (stored_version -> current_version)
  * pair — the infinite-crash-loop breaker: without this, a restart-and-retrigger
  * cycle repeats the same doomed rebuild forever, reading as "in-progress" each
  * time rather than a repeating failure. Only trips on the memory/hang
@@ -1837,7 +1840,7 @@ export class AnalysisLoopBreakerError extends Error {
 
 function isDoomedRebuildReason(reason: string | undefined): boolean {
   if (!reason) return false;
-  return /worker-oom|reached heap limit|javascript heap out of memory|fatal error|watchdog-timeout|killed by signal|exhausting its heap/i.test(reason);
+  return /worker-oom|analysis-stalled|reached heap limit|javascript heap out of memory|fatal error|killed by signal|exhausting its heap/i.test(reason);
 }
 
 async function guardAgainstDoomedVersionRebuild(
@@ -1856,11 +1859,11 @@ async function guardAgainstDoomedVersionRebuild(
       `loop-breaker: refusing to auto-retrigger the version-rebuild for ${projectPath}`,
       `(stored_version=${versionInfo.stored_version} -> current_version=${versionInfo.current_version}).`,
       `The previous attempt (finished ${previousAttempt.finished_at ?? previousAttempt.started_at}) already FAILED`,
-      `with a worker-oom/watchdog reason: ${previousAttempt.reason}.`,
+      `with a worker-OOM/progress-stall reason: ${previousAttempt.reason}.`,
       `Auto-retriggering an identical rebuild would repeat the same crash indefinitely`,
       `(the 2026-07-18 infinite-crash-loop incident). Leaving the failed attempt record in place;`,
       `a human or agent must explicitly re-trigger (e.g. a force_full reanalyze) after addressing`,
-      `the cause (raise KLAURO_ANALYSIS_HEAP_MB, reduce analysis_focus, or fix the hang).`,
+      `the cause (raise KLAURO_ANALYSIS_HEAP_MB, repair the stalled phase, or fix the hang).`,
     ].join(' ');
     console.error(`[Klauro] ${message}`);
     throw new AnalysisLoopBreakerError(message);
@@ -1885,18 +1888,6 @@ export async function checkDoomedVersionRebuild(projectPath: string): Promise<st
   } catch (error) {
     if (error instanceof AnalysisLoopBreakerError) return error.message;
     return null;
-  }
-}
-
-/** Thrown by withLanePermit when `fn` exceeds KLAURO_ANALYSIS_WATCHDOG_MS
- *  without settling. Callers' existing failure handling (writeAttemptRecord /
- *  markBackgroundAnalysisFailed in remote-analyzer-service.ts) treats this
- *  exactly like any other analysis failure — the message always contains the
- *  literal 'watchdog-timeout' so it's greppable in that reason field. */
-export class AnalysisWatchdogTimeoutError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'AnalysisWatchdogTimeoutError';
   }
 }
 
@@ -1937,56 +1928,23 @@ async function withLanePermit<T>(
   projectPath: string = 'analysis'
 ): Promise<T> {
   await acquireLanePermit(sizeHint);
-  let permitReleased = false;
-  const releasePermitOnce = (): void => {
-    if (permitReleased) return;
-    permitReleased = true;
-    releaseLanePermit();
-  };
-
   const startedAtMs = Date.now();
   const watchdogMs = getAnalysisWatchdogMs();
-  let watchdogFired = false;
-  const innerPromise = fn();
-
-  let rejectWatchdog!: (error: Error) => void;
-  const watchdogPromise = new Promise<never>((_, reject) => { rejectWatchdog = reject; });
   const timer = setTimeout(() => {
-    watchdogFired = true;
     const elapsedMinutes = Math.round((Date.now() - startedAtMs) / 60_000);
     console.error(
-      `[Klauro] ANALYSIS WATCHDOG FIRED: ${projectPath} has been running ${elapsedMinutes}m, exceeding ` +
+      `[Klauro] SLOW ANALYSIS: ${projectPath} has been running ${elapsedMinutes}m, exceeding ` +
       `KLAURO_ANALYSIS_WATCHDOG_MS=${watchdogMs}ms. Last known state: ${describeLastRunLogState(projectPath)}. ` +
-      `Releasing its lane permit and marking the attempt failed (reason contains 'watchdog-timeout'). ` +
-      `NOTE: this does NOT stop the underlying computation — a JS process stuck in a synchronous/native ` +
-      `hang (e.g. catastrophic regex) cannot be preempted from here; this only stops WAITING on it.`
+      `The analysis remains in progress and retains its lock and lane; elapsed time never truncates or fails CAS work.`
     );
-    releasePermitOnce();
-    rejectWatchdog(new AnalysisWatchdogTimeoutError(
-      `watchdog-timeout: ${projectPath} exceeded ${watchdogMs}ms without completing`
-    ));
   }, watchdogMs);
-  // Deliberately left ref'd (the default): this timer firing is exactly the
-  // signal we need even when nothing else is keeping the process alive
-  // (e.g. a lightweight one-off analysis run) — unref'd, an idle event loop
-  // could "resolve" before a stuck fn() ever gets flagged.
-
-  innerPromise
-    .then(() => {
-      if (watchdogFired) {
-        console.error(`[Klauro] LATE COMPLETION: ${projectPath} finished successfully AFTER its watchdog already marked the attempt failed and freed the lane. Last-write-wins if this result is re-persisted, but the earlier failure was not silently overwritten.`);
-      }
-    }, () => {
-      if (watchdogFired) {
-        console.error(`[Klauro] LATE COMPLETION: ${projectPath} finished (with its own error) AFTER its watchdog already marked the attempt failed and freed the lane.`);
-      }
-    })
-    .finally(() => {
-      clearTimeout(timer);
-      releasePermitOnce();
-    });
-
-  return Promise.race([innerPromise, watchdogPromise]);
+  timer.unref();
+  try {
+    return await fn();
+  } finally {
+    clearTimeout(timer);
+    releaseLanePermit();
+  }
 }
 
 /**
@@ -2043,7 +2001,11 @@ export function __getLanePermitsInUseForTests(): number {
   return permitsInUse;
 }
 
-export async function analyzeProjectIncremental(projectPath: string, displayName?: string): Promise<IncrementalAnalysisResult> {
+export async function analyzeProjectIncremental(
+  projectPath: string,
+  displayName?: string,
+  onProgress?: (event: AnalysisProgressEvent) => void,
+): Promise<IncrementalAnalysisResult> {
   if (!(await fs.pathExists(projectPath))) {
     throw new Error(`Project path does not exist: ${projectPath}`);
   }
@@ -2052,11 +2014,16 @@ export async function analyzeProjectIncremental(projectPath: string, displayName
   const sizeHint = await estimateProjectSizeHint(projectPath);
   return withProjectAnalysisLock(
     projectPath,
-    () => withAnalysisLane((orch) => runIncrementalAnalysis(projectPath, orch, displayName), sizeHint, projectPath),
+    () => withAnalysisLane((orch) => runIncrementalAnalysis(projectPath, orch, displayName, onProgress), sizeHint, projectPath),
   );
 }
 
-async function runIncrementalAnalysis(projectPath: string, orch: AnalyzerOrchestrator, displayName?: string): Promise<IncrementalAnalysisResult> {
+async function runIncrementalAnalysis(
+  projectPath: string,
+  orch: AnalyzerOrchestrator,
+  displayName?: string,
+  onProgress?: (event: AnalysisProgressEvent) => void,
+): Promise<IncrementalAnalysisResult> {
   const debugTimings = process.env.KLAURO_DEBUG_INCREMENTAL_TIMINGS === '1';
   const debug = (label: string, startedAt: number) => {
     if (debugTimings) {
@@ -2076,7 +2043,7 @@ async function runIncrementalAnalysis(projectPath: string, orch: AnalyzerOrchest
 
   if (!previousOutput) {
     let phaseStartedAt = Date.now();
-    const result = await orch.orchestrateAnalysis(projectPath, { displayName, conventions, packGlobs });
+    const result = await orch.orchestrateAnalysis(projectPath, { displayName, conventions, packGlobs, onProgress });
     debug('initial-orchestrate-full', phaseStartedAt);
     phaseStartedAt = Date.now();
     await saveAnalysis(projectPath, result);
@@ -2091,7 +2058,8 @@ async function runIncrementalAnalysis(projectPath: string, orch: AnalyzerOrchest
       {
         loadCache: (hash) => loadFileCache(projectPath, hash),
         saveCache: (hash, fileResult) => saveFileCache(projectPath, hash, fileResult),
-        displayName
+        displayName,
+        onProgress,
       }
     );
     debug('initial-build-state', phaseStartedAt);
@@ -2144,7 +2112,8 @@ async function runIncrementalAnalysis(projectPath: string, orch: AnalyzerOrchest
       {
         loadCache: (hash) => loadFileCache(projectPath, hash),
         saveCache: (hash, fileResult) => saveFileCache(projectPath, hash, fileResult),
-        displayName
+        displayName,
+        onProgress,
       }
     );
   } catch (error) {
@@ -2304,6 +2273,11 @@ export interface LayeredJobPhaseEvent {
   error?: string;
 }
 
+interface WorkerProgressMessage extends AnalysisProgressEvent {
+  type: 'progress';
+  id: number;
+}
+
 /** Small terminal summary for a completed 'layered' worker job — counts and
  *  the final AI-enrichment state, not the CAS itself (see LayeredJobPhaseEvent). */
 export interface LayeredRunSummary {
@@ -2406,7 +2380,7 @@ interface WorkerPhaseMessage extends LayeredJobPhaseEvent {
   id: number;
 }
 
-type WorkerResponse = WorkerResultMessage | WorkerErrorMessage | WorkerPhaseMessage;
+type WorkerResponse = WorkerResultMessage | WorkerErrorMessage | WorkerPhaseMessage | WorkerProgressMessage;
 
 interface PendingWorkerJob<T = AnalysisRunSummary> {
   projectPath: string;
@@ -2415,6 +2389,10 @@ interface PendingWorkerJob<T = AnalysisRunSummary> {
   reject: (error: Error) => void;
   /** Only set for 'layered' jobs; invoked on each phase message, job stays pending. */
   onPhase?: (event: LayeredJobPhaseEvent) => void;
+  lastProgressAtMs?: number;
+  lastProgressSequence?: number;
+  lastProgressPhase?: string;
+  stallTimer?: NodeJS.Timeout;
 }
 
 interface WorkerHandle {
@@ -2469,14 +2447,25 @@ function spawnAnalysisWorker(heap: AnalysisHeapResolution): WorkerHandle {
   child.on('message', (message: WorkerResponse) => {
     const job = handle.pending.get(message.id);
     if (!job) return;
+    if (message.type === 'progress') {
+      if ((message.sequence ?? 0) > (job.lastProgressSequence ?? 0)) {
+        job.lastProgressSequence = message.sequence;
+        job.lastProgressAtMs = Date.now();
+        job.lastProgressPhase = message.phase;
+      }
+      return;
+    }
     if (message.type === 'phase') {
       // Lifecycle update only — the job stays pending until a terminal
       // result/error message arrives (which may be long after, e.g. once L5
       // AI enrichment settles).
+      job.lastProgressAtMs = Date.now();
+      job.lastProgressPhase = message.phase;
       job.onPhase?.({ phase: message.phase, status: message.status, error: message.error });
       return;
     }
     handle.pending.delete(message.id);
+    if (job.stallTimer) clearInterval(job.stallTimer);
     if (message.type === 'result') {
       job.resolve(message.summary);
     } else {
@@ -2522,8 +2511,7 @@ function buildWorkerCrashMessage(
   return [
     `Analysis worker for ${job.projectPath} ${exitDescription}${oom ? ' after exhausting its heap' : ''}.`,
     `The worker heap was ${heap.heapMb} MB (${heapSource}).`,
-    `Raise it with KLAURO_ANALYSIS_HEAP_MB=${suggestedHeap} in the MCP server environment and re-run analyze_codebase,`,
-    `or use analysis_focus: "agent-fast" to reduce memory pressure.`,
+    `Raise it with KLAURO_ANALYSIS_HEAP_MB=${suggestedHeap} in the analyzer service environment and retry the complete analysis.`,
     `The MCP server itself is unaffected; a run-failed record was written to ${getAnalysisRunLogPath()}.`,
   ].join(' ');
 }
@@ -2536,6 +2524,7 @@ function failPendingWorkerJobs(
 ): void {
   for (const [id, job] of handle.pending) {
     handle.pending.delete(id);
+    if (job.stallTimer) clearInterval(job.stallTimer);
     const message = buildWorkerCrashMessage(handle, job, code, signal, detail);
     try {
       finalizeWorkerRunFailure(job.projectPath, job.startedAtMs, message);
@@ -2670,7 +2659,42 @@ function dispatchLayeredWorkerJob(projectPath: string, options: RunLayeredAnalys
   const handle = ensureAnalysisWorker();
   const id = nextWorkerJobId++;
   return new Promise<LayeredRunSummary>((resolve, reject) => {
-    handle.pending.set(id, { projectPath, startedAtMs: Date.now(), resolve, reject, onPhase: options.onPhase });
+    const startedAtMs = Date.now();
+    const job: PendingWorkerJob<LayeredRunSummary> = {
+      projectPath,
+      startedAtMs,
+      resolve,
+      reject,
+      onPhase: options.onPhase,
+      lastProgressAtMs: startedAtMs,
+      lastProgressSequence: 0,
+      lastProgressPhase: 'dispatched',
+    };
+    const stallMs = getAnalysisStallMs();
+    job.stallTimer = setInterval(() => {
+      const active = handle.pending.get(id);
+      if (!active) return;
+      const idleMs = Date.now() - (active.lastProgressAtMs ?? active.startedAtMs);
+      if (idleMs < stallMs) return;
+
+      handle.pending.delete(id);
+      if (active.stallTimer) clearInterval(active.stallTimer);
+      const message =
+        `analysis-stalled: worker for ${projectPath} made no monotonic progress for ${idleMs}ms ` +
+        `(last phase: ${active.lastProgressPhase ?? 'unknown'}, sequence: ${active.lastProgressSequence ?? 0}). ` +
+        `Elapsed time alone is not failure; this retryable failure is based on a stopped progress counter. ` +
+        `The last durable analysis checkpoint remains authoritative.`;
+      try {
+        finalizeWorkerRunFailure(projectPath, active.startedAtMs, message);
+      } catch {
+        // Best effort; the caller still receives the retryable failure.
+      }
+      active.reject(new Error(message));
+      if (workerHandle === handle) workerHandle = null;
+      handle.child.kill('SIGKILL');
+    }, Math.max(100, Math.min(30_000, Math.floor(stallMs / 4))));
+    job.stallTimer.unref();
+    handle.pending.set(id, job);
     const request: WorkerLayeredRequest = {
       type: 'layered',
       id,
@@ -2691,69 +2715,28 @@ function dispatchLayeredWorkerJob(projectPath: string, options: RunLayeredAnalys
 }
 
 /**
- * Outer wall-clock watchdog for the worker-dispatch path, mirroring
- * withLanePermit's watchdog one layer further out — dispatchWorkerJob just
- * awaits the child's message with no timeout of its own, so a wedged child
- * whose own inner watchdog never reports back would otherwise hang the
- * caller indefinitely with no error, log, or attempt record. Same honesty
- * constraint as the inner watchdog: cannot preempt a genuinely wedged child,
- * only stops waiting and writes a best-effort failed attempt record. The
- * child process itself is left running, not killed.
+ * Parent-process slow-analysis alarm for worker dispatch. It observes elapsed
+ * time without manufacturing a failure or abandoning a live child.
  */
 async function withOuterWorkerWatchdog<T>(
   projectPath: string,
   run: () => Promise<T>
 ): Promise<T> {
   const startedAtMs = Date.now();
-  const attemptStartedAtIso = new Date(startedAtMs).toISOString();
   const watchdogMs = getAnalysisWatchdogMs();
-  let watchdogFired = false;
-  const innerPromise = run();
-
-  let rejectWatchdog!: (error: Error) => void;
-  const watchdogPromise = new Promise<never>((_, reject) => { rejectWatchdog = reject; });
   const timer = setTimeout(() => {
-    // Async IIFE so the attempt-record write can be AWAITED before rejecting
-    // — a caller/test that awaits this watchdog's rejection must see the
-    // terminal record already on disk, not racing a fire-and-forget write.
-    (async () => {
-      watchdogFired = true;
-      const elapsedMinutes = Math.round((Date.now() - startedAtMs) / 60_000);
-      console.error(
-        `[Klauro] OUTER ANALYSIS WATCHDOG FIRED: ${projectPath} (worker-dispatched) has been running ${elapsedMinutes}m, ` +
-        `exceeding KLAURO_ANALYSIS_WATCHDOG_MS=${watchdogMs}ms at the parent-process level. The forked analysis worker's ` +
-        `OWN inner watchdog never reported back (message loss, or the child is wedged in a synchronous/native hang its ` +
-        `own timer cannot preempt). Marking this attempt failed (reason contains 'watchdog-timeout') and writing a ` +
-        `terminal attempt record so a poller sees the truth instead of a stale/absent one. NOTE: this does NOT stop the ` +
-        `underlying child process — it is left running, matching the inner watchdog's own honesty constraint.`
-      );
-      await writeInternalRebuildAttempt(projectPath, {
-        state: 'failed',
-        trigger: 'version-rebuild',
-        started_at: attemptStartedAtIso,
-        finished_at: new Date().toISOString(),
-        duration_ms: Date.now() - startedAtMs,
-        reason: `watchdog-timeout: ${projectPath} (worker-dispatched) exceeded ${watchdogMs}ms without completing`,
-      }).catch(() => undefined);
-      rejectWatchdog(new AnalysisWatchdogTimeoutError(
-        `watchdog-timeout: ${projectPath} (worker-dispatched) exceeded ${watchdogMs}ms without completing`
-      ));
-    })();
+    const elapsedMinutes = Math.round((Date.now() - startedAtMs) / 60_000);
+    console.error(
+      `[Klauro] SLOW ANALYSIS: ${projectPath} (worker-dispatched) has been running ${elapsedMinutes}m, ` +
+      `exceeding KLAURO_ANALYSIS_WATCHDOG_MS=${watchdogMs}ms. The worker remains authoritative and in progress.`
+    );
   }, watchdogMs);
-
-  innerPromise
-    .then(() => {
-      if (watchdogFired) {
-        console.error(`[Klauro] LATE COMPLETION: ${projectPath} (worker-dispatched) finished successfully AFTER the outer watchdog already marked the attempt failed.`);
-      }
-    }, () => {
-      if (watchdogFired) {
-        console.error(`[Klauro] LATE COMPLETION: ${projectPath} (worker-dispatched) finished (with its own error) AFTER the outer watchdog already marked the attempt failed.`);
-      }
-    })
-    .finally(() => clearTimeout(timer));
-
-  return Promise.race([innerPromise, watchdogPromise]);
+  timer.unref();
+  try {
+    return await run();
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export async function runAnalysis(projectPath: string, options: RunAnalysisOptions = {}): Promise<AnalysisRunSummary> {

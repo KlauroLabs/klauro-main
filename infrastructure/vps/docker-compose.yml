@@ -11,27 +11,26 @@ services:
       # Dogfood Klauro's own runtime telemetry: the service emits one runtime
       # event per inbound HTTP request via @klauro/telemetry and self-ingests it
       # into the observation store, correlated against Klauro's OWN analysis.
-      # KLAURO_SELF_TELEMETRY_PROJECT keys observations to a source path that is
-      # PRESENT IN THE CONTAINER. The image copies apps/mcp-server to
-      # /app/apps/mcp-server (see apps/api/Dockerfile), so /app/apps/mcp-server/src
-      # is the mcp-server's own HTTP-handler source — analyzable and readable back
-      # via `GET /v1/telemetry/node-metrics?workspace=/app/apps/mcp-server/src`.
-      # The old host path (/opt/klauro/source) is NOT mounted into the container,
-      # so no analysis of it ever existed and node-level correlation never happened.
-      # On enable the self-loop bootstraps ONE bounded analysis of this dir if none
-      # exists, so node-level self-telemetry works out of the box.
-      # ENDPOINT is left UNSET on purpose → in-process transport (no network hop).
+      # Telemetry attaches to the canonical uploaded Klauro project. Telemetry
+      # never analyzes the source embedded in this container and never triggers
+      # analysis itself. ENDPOINT is unset intentionally for in-process ingest.
       KLAURO_SELF_TELEMETRY: "1"
-      KLAURO_SELF_TELEMETRY_PROJECT: /app/apps/mcp-server/src
-      # GAP #32 part 2: the canonical hosted Klauro-self analysis lives under a
-      # DIFFERENT workspace path (this project's own /data/workspaces bucket)
-      # than the in-container source dir the self-loop bootstraps against
-      # above. Mirror every self-loop observation into that bucket too, so
-      # facet-6 (get_runtime_observations / node-metrics / route telemetry)
-      # queries against the canonical project see real self-telemetry instead
-      # of an empty bucket. Never triggers a bootstrap analysis of this path —
-      # only KLAURO_SELF_TELEMETRY_PROJECT above ever does that.
-      KLAURO_SELF_TELEMETRY_CANONICAL_PROJECT: /data/workspaces/prj_wbW33m-wfETn1N41
+      # Durable coordination board (incident 2026-07-21): without this the
+      # server's claim log defaults to ~/.klauro/coordination on the
+      # container's EPHEMERAL overlay filesystem — every restart erased the
+      # board (claims, seq, epoch) while the persistent /data volume sat
+      # unused. /data is the mounted /opt/klauro/data volume, so the board
+      # survives container recreation. The server also warns loudly at startup
+      # if this ever regresses (warnIfEphemeralCoordDir).
+      KLAURO_COORD_DIR: /data/coordination
+      KLAURO_SELF_TELEMETRY_PROJECT: /data/workspaces/prj_wbW33m-wfETn1N41
+      # One analysis worker at a time fits the 8GB host without competing heaps;
+      # two parser workers use bounded parallelism inside that isolated job.
+      KLAURO_TS_PARSE_WORKERS: "2"
+      KLAURO_ANALYSIS_CONCURRENCY: "1"
+      # A slow analysis keeps running. Only a worker whose real phase counter
+      # stops advancing for ten minutes is recycled from its durable checkpoint.
+      KLAURO_ANALYSIS_STALL_MS: "600000"
       # Incident (2026-07-18): a version-triggered full rebuild of a large
       # monorepo (the async POST /reanalyze path's analyzeProjectLayered call —
       # see the "ASYNC REANALYZE" comment in remote-analyzer-service.ts — still

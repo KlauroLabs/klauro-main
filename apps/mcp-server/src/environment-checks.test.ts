@@ -40,6 +40,7 @@ test('evaluateBundleState fails when bundle artifacts are missing', async () => 
     bundleExists: false,
     serverExists: true,
     cliExists: false,
+    parserWorkerExists: false,
     handshakeExists: false,
     bundleMtimeMs: null,
     newestSourceMtimeMs: 1000,
@@ -48,6 +49,7 @@ test('evaluateBundleState fails when bundle artifacts are missing', async () => 
   assert.strictEqual(result.status, 'fail');
   assert.match(result.detail, /dist\/index\.cjs/);
   assert.match(result.detail, /dist\/cli\.cjs/);
+  assert.match(result.detail, /dist\/tree-sitter-ts-worker\.cjs/);
   assert.match(result.detail, /dist\/handshake\.json/);
   assert.match(result.fix || '', /npm --prefix \/srv\/klauro run build/);
 });

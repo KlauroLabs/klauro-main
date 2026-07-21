@@ -568,14 +568,12 @@ export function isBoundToHostedProject(loaded: LoadedKlauroConfig): boolean {
 }
 
 /**
- * Gate the LOCAL analysis path (the `analyze_codebase` MCP tool; the CLI
- * `analyze` command is already remote-only). Keeps heavy analysis + storage on
- * the hosted analyzer for real customers, WITHOUT dead-ending unbound repos.
+ * Gate the development-only local analysis path. Product analysis is hosted;
+ * the installed client hashes, watches, packages, and uploads source changes.
  * Resolution order:
  *   1. Env KLAURO_ALLOW_LOCAL_ANALYSIS truthy → ALLOW (dev/CI/gauntlet hatch).
- *   2. policy.requireRemoteAnalyzer === true  → REFUSE (explicit).
- *   3. policy.requireRemoteAnalyzer === false → ALLOW (explicit opt-out).
- *   4. undefined → DERIVE: bound-to-hosted-project → REFUSE, else ALLOW.
+ *   2. Everything else → REFUSE. A repo config cannot accidentally turn a
+ *      customer laptop into an analyzer host.
  * The thrown message names the exact tool + hosted URL, so a caller is
  * redirected to analyze_codebase_remote, never dead-ended.
  */
@@ -583,18 +581,11 @@ export function assertLocalAnalysisAllowed(loaded: LoadedKlauroConfig): void {
   const envHatch = process.env.KLAURO_ALLOW_LOCAL_ANALYSIS;
   if (envHatch && envHatch !== '0' && envHatch.toLowerCase() !== 'false') return;
 
-  const explicit = loaded.config.policy.requireRemoteAnalyzer;
-  const remoteRequired = explicit === undefined ? isBoundToHostedProject(loaded) : explicit;
-  if (!remoteRequired) return;
-
   const url = loaded.config.analyzer.serverUrl || DEFAULT_KLAURO_CLOUD_URL;
-  const reason = explicit === true
-    ? 'policy.requireRemoteAnalyzer=true'
-    : 'this repo is bound to a hosted Klauro project (analysis runs on the hosted analyzer by default)';
   throw new Error(
-    `Local analysis is blocked: ${reason}. ` +
+    `Local full analysis is development-only; Klauro product analysis runs on the hosted analyzer. ` +
     `Use analyze_codebase_remote (analyzes on the hosted analyzer at ${url} and caches the CAS locally) instead of analyze_codebase. ` +
-    `To deliberately run local anyway, set KLAURO_ALLOW_LOCAL_ANALYSIS=1 or .klaurorc policy.requireRemoteAnalyzer=false.`
+    `Developers and the gauntlet may deliberately override this with KLAURO_ALLOW_LOCAL_ANALYSIS=1.`
   );
 }
 

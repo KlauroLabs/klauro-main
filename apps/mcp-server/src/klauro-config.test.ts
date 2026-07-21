@@ -586,7 +586,7 @@ test('remote analyzer policy (allowRemoteAnalyzer / allowedAnalyzerHosts) is enf
   assert.doesNotThrow(() => assertRemoteAnalyzerAllowed(loaded, 'https://allowed.example.test'));
 });
 
-test('prod-exclusive: assertLocalAnalysisAllowed tri-state (explicit true/false) + redirect message', () => {
+test('product analysis stays hosted regardless of repo policy flags', () => {
   delete process.env.KLAURO_ALLOW_LOCAL_ANALYSIS;
   const config = defaultKlauroConfig('/tmp/example-project');
   config.analyzer.serverUrl = 'https://mcp.klauro.com';
@@ -595,32 +595,27 @@ test('prod-exclusive: assertLocalAnalysisAllowed tri-state (explicit true/false)
   // Default is UNSET (derive), not false.
   assert.equal(config.policy.requireRemoteAnalyzer, undefined);
 
-  // Explicit true → refuse, and the error redirects to the remote tool AND
-  // names the hosted server (redirected, never dead-ended).
+  // Both legacy policy values refuse. Only the process-level developer hatch
+  // can deliberately enable a local analyzer.
   config.policy.requireRemoteAnalyzer = true;
-  assert.throws(() => assertLocalAnalysisAllowed(loaded), /requireRemoteAnalyzer=true/);
   assert.throws(() => assertLocalAnalysisAllowed(loaded), /analyze_codebase_remote/);
   assert.throws(() => assertLocalAnalysisAllowed(loaded), /mcp\.klauro\.com/);
 
-  // Explicit false → allow (deliberate opt-out).
   config.policy.requireRemoteAnalyzer = false;
-  assert.doesNotThrow(() => assertLocalAnalysisAllowed(loaded));
+  assert.throws(() => assertLocalAnalysisAllowed(loaded), /development-only/);
 });
 
-test('prod-exclusive: undefined derives from binding — bound repo refuses, unbound allows', () => {
+test('product analysis stays hosted for bound and unbound folders', () => {
   delete process.env.KLAURO_ALLOW_LOCAL_ANALYSIS;
 
-  // Unbound (no project.id) → local ALLOWED (nothing to redirect to; no dead-end).
   const unbound = defaultKlauroConfig('/tmp/example-project');
   assert.equal(unbound.policy.requireRemoteAnalyzer, undefined);
   assert.equal(unbound.project.id, undefined);
-  assert.doesNotThrow(() => assertLocalAnalysisAllowed({ config: unbound, ignorePatterns: [] }));
+  assert.throws(() => assertLocalAnalysisAllowed({ config: unbound, ignorePatterns: [] }), /hosted analyzer/);
 
-  // Bound to a hosted project (project.id set) → local REFUSED by default,
-  // with the binding named in the reason.
   const bound = defaultKlauroConfig('/tmp/example-project');
   bound.project.id = 'prj_example';
-  assert.throws(() => assertLocalAnalysisAllowed({ config: bound, ignorePatterns: [] }), /bound to a hosted Klauro project/);
+  assert.throws(() => assertLocalAnalysisAllowed({ config: bound, ignorePatterns: [] }), /hosted analyzer/);
   assert.throws(() => assertLocalAnalysisAllowed({ config: bound, ignorePatterns: [] }), /analyze_codebase_remote/);
 });
 
