@@ -37,9 +37,16 @@
  * (a real CASOutput from query.ts, or any object shaped like ConflictCas).
  */
 
+import { ReachabilityIndex } from '../../../../packages/analyzer-core/src/analyzer/core/reachability-index';
+
 // ---------------------------------------------------------------------------
 // Input model
 // ---------------------------------------------------------------------------
+
+/** Default bounded-transitive-closure policy for blast-radius expansion —
+ *  see PartitionOptions.blastRadiusDepth / blastRadiusMaxNodes. */
+export const DEFAULT_BLAST_RADIUS_DEPTH = 4;
+export const DEFAULT_BLAST_RADIUS_MAX_NODES = 200;
 
 export interface PartitionTask {
   id: string;
@@ -106,6 +113,34 @@ export interface PartitionResult {
    * neither are omitted here (they simply aren't groupable conceptually,
    * same honesty stance as `unpartitionable` above). */
   concept_groups?: ConceptGroup[];
+  /**
+   * ADVISORY-ONLY predicted conflicts (docs/SPEC-MATHEMATICAL-INTELLIGENCE.md
+   * §F): pairs of tasks with no hard structural conflict (absent from
+   * `conflict_edges`) but whose files are historically co-changed above
+   * `coChangeThreshold`. These influenced batch ORDER as a soft preference —
+   * `colorIntoBatches` tries to keep high-probability pairs in different
+   * batches when another equally-valid batch exists — but NEVER force a task
+   * into its own batch and NEVER reduce `parallelism_factor` below what the
+   * hard conflicts alone would produce. Only present when `coChangeIndex`
+   * was supplied. Each entry states its `probability` explicitly so a caller
+   * can tell a prediction from a fact. */
+  predicted_conflicts?: PredictedConflictEdge[];
+}
+
+/** One soft, probability-labeled predicted conflict — see `predicted_conflicts`. */
+export interface PredictedConflictEdge {
+  a: string;
+  b: string;
+  /** The co-changed file pair driving this prediction. */
+  file_a: string;
+  file_b: string;
+  /** Predicted co-change probability (max of both directions in the index). */
+  probability: number;
+  /** Whether the two tasks actually landed in different batches (true when
+   *  the soft preference could be honored without sacrificing parallelism;
+   *  false when they still ended up together — e.g. only one open batch
+   *  existed, or a THIRD task's hard conflict already pinned the placement). */
+  separated: boolean;
 }
 
 /** One flow/capability's worth of conceptually co-located tasks. */
@@ -118,11 +153,75 @@ export interface ConceptGroup {
 }
 
 export interface PartitionOptions {
-  /** Expand each task's footprint by one hop of CAS call-graph edges
-   *  (callers + callees) before computing conflicts. Default true — this is
-   *  the moat: competitors partitioning by file/path alone cannot see that
-   *  two textually-disjoint edits both reach into the same contract surface. */
+  /** Expand each task's footprint along CAS call-graph edges (callers +
+   *  callees, transitively — see blastRadiusDepth) before computing
+   *  conflicts. Default true — this is the moat: competitors partitioning by
+   *  file/path alone cannot see that two textually-disjoint edits both reach
+   *  into the same contract surface. */
   includeBlastRadius?: boolean;
+  /**
+   * How many call-graph hops blast-radius expansion follows (Workstream C,
+   * docs/SPEC-MATHEMATICAL-INTELLIGENCE.md): expansion runs over the
+   * reachability index's SCC condensation, so a cycle of mutually-recursive
+   * functions counts as ONE hop-unit — the correct scheduling footprint,
+   * since mutually-recursive code is one mutual-reachability unit. Default
+   * DEFAULT_BLAST_RADIUS_DEPTH (4): deep enough that two tasks colliding
+   * only TRANSITIVELY on one call chain (invisible to the old one-hop
+   * expansion this replaces) are flagged; bounded enough that a footprint
+   * never silently absorbs the whole graph. Set 1 for the legacy
+   * direct-neighbors-only behavior. Advisory awareness, never blocking: a
+   * bigger footprint only ever adds conflict EDGES (batch ordering), it
+   * never refuses or serializes work beyond the coloring.
+   */
+  blastRadiusDepth?: number;
+  /**
+   * Advisory per-task cap on how many symbols blast-radius expansion may
+   * hold in total (default DEFAULT_BLAST_RADIUS_MAX_NODES, 200). When the
+   * cap is hit the expansion simply stops growing — the task still
+   * partitions on what was gathered. Keeps a hub-adjacent task's footprint
+   * from swallowing the graph and serializing the whole fleet.
+   */
+  blastRadiusMaxNodes?: number;
+  /**
+   * Git-history co-change index (docs/SPEC-MATHEMATICAL-INTELLIGENCE.md §F,
+   * `packages/analyzer-core/.../co-change-index.ts`): top-K co-change
+   * partners per file with a Laplace-smoothed conditional probability. When
+   * supplied, two tasks whose DECLARED footprints are structurally disjoint
+   * (no hard 'symbol'/'path'/'blast-radius' conflict) but whose files are
+   * historically coupled above `coChangeThreshold` get a SOFT preference to
+   * land in different batches — never a hard conflict, never refused
+   * parallelism (see `colorIntoBatches`' tie-break). Omit to skip this layer
+   * entirely (unchanged behavior, byte-identical to before this option
+   * existed).
+   */
+  coChangeIndex?: CoChangeIndexLike;
+  /** Minimum predicted co-change probability to treat two files as a soft
+   *  ordering preference. Default 0.5 — deliberately looser than the
+   *  aggregation module's own lift/support gates (those already filtered
+   *  noise out of the index; this threshold is purely "how confident before
+   *  we bother nudging the batch order"). */
+  coChangeThreshold?: number;
+}
+
+/** Minimal shape this module needs from `CoChangeIndex` (co-change-index.ts)
+ *  — kept structural rather than importing the analyzer-core type directly,
+ *  matching this file's existing discipline of loose/structural CAS typing
+ *  so hand-built fixtures keep working without an analyzer-core dependency. */
+export interface CoChangeIndexLike {
+  [file: string]: Array<{ file: string; probability: number; support?: number; lift?: number }>;
+}
+
+/** Look up the predicted co-change probability between two files, checking
+ *  both directions and taking the max (the index is asymmetric — top-K is
+ *  per-file, so `a` can rank in `b`'s list without the reverse). Mirrors
+ *  `lookupCoChangeProbability` in co-change-index.ts; duplicated narrowly
+ *  here (rather than imported) to keep this module dependency-free per its
+ *  "pure module: no IO" header — this is pure lookup logic, not IO. */
+function coChangeProbability(index: CoChangeIndexLike, fileA: string, fileB: string): number {
+  const forward = index[fileA]?.find((p) => p.file === fileB)?.probability;
+  const backward = index[fileB]?.find((p) => p.file === fileA)?.probability;
+  if (forward === undefined && backward === undefined) return 0;
+  return Math.max(forward ?? 0, backward ?? 0);
 }
 
 /**
@@ -154,9 +253,13 @@ export interface PartitionCas {
 }
 
 // ---------------------------------------------------------------------------
-// Blast-radius helpers (local — mirrors getCallers/getCallees from query.ts,
-// scoped to one hop over "calls" edges, the only edge kind both this module
-// and conceptual-conflict.ts need for a scheduling-grade footprint).
+// Blast-radius helpers: bounded TRANSITIVE closure over "calls" edges via the
+// reachability index (analyzer-core reachability-index.ts — a pure module,
+// so this file's "no IO" discipline holds). Replaces the previous one-hop
+// full-edge-list scan per expansion: transitive collisions (two tasks three
+// hops apart on one call chain) were invisible to one hop, and the per-task
+// edge scan was the partitioner's own instance of the exhaustive-scan defect
+// class the index exists to retire.
 // ---------------------------------------------------------------------------
 
 /** Resolve a symbol name-or-id to every matching node id in the CAS. Passes
@@ -168,15 +271,37 @@ function resolveIds(cas: PartitionCas, nameOrId: string): string[] {
   return matches.map((n) => n.id);
 }
 
-/** One hop of callers + callees (via "calls" edges) for a set of symbol ids. */
-function oneHopCallGraph(cas: PartitionCas, symbolIds: Set<string>): Set<string> {
-  const expanded = new Set(symbolIds);
-  for (const edge of cas.edges) {
-    if (edge.type !== 'calls') continue;
-    if (symbolIds.has(edge.source)) expanded.add(edge.target);
-    if (symbolIds.has(edge.target)) expanded.add(edge.source);
-  }
-  return expanded;
+/**
+ * Build the footprint expander once per partitionTasks call: an index over
+ * the CAS "calls" edges (SCC condensation, O(V+E)), then each task's
+ * expansion is a bounded both-directions closure (depth over CONDENSATION
+ * hops, capped at maxNodes symbols) instead of a full edge-list scan per
+ * task. Ids absent from the call graph pass through unchanged, preserving
+ * the old behavior for synthetic/fixture symbols.
+ */
+function buildBlastRadiusExpander(
+  cas: PartitionCas,
+  maxDepth: number,
+  maxNodes: number
+): (symbolIds: Set<string>) => Set<string> {
+  const index = ReachabilityIndex.build(
+    cas.nodes.map((n) => n.id),
+    cas.edges.filter((e) => e.type === 'calls').map((e) => [e.source, e.target] as const)
+  );
+  return (symbolIds: Set<string>) => {
+    if (symbolIds.size === 0) return new Set(symbolIds);
+    const { affected } = index.affectedSet(symbolIds, {
+      direction: 'both',
+      maxDepth,
+      maxNodes,
+      includeSeeds: true,
+    });
+    // Seeds always stay in the footprint, even when absent from the call
+    // graph (the index only knows nodes with at least one call edge).
+    const expanded = new Set(symbolIds);
+    for (const id of affected) expanded.add(id);
+    return expanded;
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -298,7 +423,7 @@ function declaredSymbolAndPathIds(
 function computeFootprint(
   task: PartitionTask,
   cas: PartitionCas,
-  includeBlastRadius: boolean,
+  expandBlastRadius: ((symbolIds: Set<string>) => Set<string>) | null,
   fallbackToInference: boolean
 ): TaskFootprint {
   let { symbolIds: declaredSymbolIds, paths } = declaredSymbolAndPathIds(task, cas);
@@ -309,7 +434,7 @@ function computeFootprint(
     for (const p of inferred.paths) paths.add(normalizePath(p));
   }
 
-  const symbols = includeBlastRadius ? oneHopCallGraph(cas, declaredSymbolIds) : declaredSymbolIds;
+  const symbols = expandBlastRadius ? expandBlastRadius(declaredSymbolIds) : declaredSymbolIds;
 
   return { task_id: task.id, symbols, paths };
 }
@@ -370,31 +495,69 @@ function classifyReason(
 
 /**
  * Greedy graph coloring: process tasks in a fixed (input) order, assign each
- * task the LOWEST-indexed batch that contains none of its conflicts. This is
- * a classic greedy coloring heuristic — not guaranteed minimum chromatic
- * number in the worst case, but deterministic, fast (O(tasks * batches *
- * avg_conflicts)), and exactly the algorithm a human orchestrator applies by
- * hand: "can this go in wave 1? no, conflicts with X. wave 2, then."
+ * task a batch that contains none of its HARD conflicts. This is a classic
+ * greedy coloring heuristic — not guaranteed minimum chromatic number in the
+ * worst case, but deterministic, fast (O(tasks * batches * avg_conflicts)),
+ * and exactly the algorithm a human orchestrator applies by hand: "can this
+ * go in wave 1? no, conflicts with X. wave 2, then."
+ *
+ * `softConflictWeights` (optional — the co-change layer, §F) never changes
+ * WHICH batches are eligible for a HARD reason (that is `conflicts`' job,
+ * unconditionally) — it only decides, among eligible batches, whether to
+ * prefer opening a FRESH batch over joining an eligible one that already
+ * holds a historically-coupled task. `maxBatches` bounds how far that
+ * preference is allowed to go: when supplied, a new batch is opened for a
+ * soft (non-zero-weight) reason only while `batches.length < maxBatches` —
+ * see `partitionTasks`' call site for how that cap is derived (never lets
+ * co-change alone push the partition all the way to full serialization).
+ * When every eligible batch ties at weight 0 (the common case — no co-change
+ * data, or no coupling at all) this reduces to the original "lowest index"
+ * behavior byte-for-byte.
  */
-function colorIntoBatches(taskIds: string[], conflicts: Map<string, Set<string>>): string[][] {
+function colorIntoBatches(
+  taskIds: string[],
+  conflicts: Map<string, Set<string>>,
+  softConflictWeights?: Map<string, Map<string, number>>,
+  maxBatches?: number
+): string[][] {
   const batches: string[][] = [];
-  const batchOf = new Map<string, number>();
 
   for (const id of taskIds) {
     const conflictsWith = conflicts.get(id) ?? new Set<string>();
-    let placed = false;
+    const softWith = softConflictWeights?.get(id);
+
+    let bestIndex = -1;
+    let bestWeight = Infinity;
     for (let i = 0; i < batches.length; i++) {
       const clashes = batches[i].some((other) => conflictsWith.has(other));
-      if (!clashes) {
-        batches[i].push(id);
-        batchOf.set(id, i);
-        placed = true;
-        break;
+      if (clashes) continue;
+      const weight = softWith
+        ? batches[i].reduce((sum, other) => sum + (softWith.get(other) ?? 0), 0)
+        : 0;
+      if (weight < bestWeight) {
+        bestWeight = weight;
+        bestIndex = i;
+        if (weight === 0) break; // Can't do better than a zero-weight batch.
       }
     }
-    if (!placed) {
+
+    if (bestIndex === -1) {
+      // No eligible existing batch at all (every one has a HARD conflict) —
+      // opening a new batch is mandatory for correctness; the soft cap never
+      // overrides a hard requirement.
       batches.push([id]);
-      batchOf.set(id, batches.length - 1);
+      continue;
+    }
+
+    const canOpenFreshForSoftReason = maxBatches === undefined || batches.length < maxBatches;
+    if (bestWeight > 0 && canOpenFreshForSoftReason) {
+      // An eligible batch exists but carries predicted-coupling risk, and
+      // there is still room (per the caller's bound) to isolate this task in
+      // a fresh batch instead — the "order lanes into different batches when
+      // possible" preference from §F.
+      batches.push([id]);
+    } else {
+      batches[bestIndex].push(id);
     }
   }
   return batches;
@@ -414,6 +577,13 @@ export function partitionTasks(
   options: PartitionOptions = {}
 ): PartitionResult {
   const includeBlastRadius = options.includeBlastRadius ?? true;
+  const blastRadiusDepth = options.blastRadiusDepth ?? DEFAULT_BLAST_RADIUS_DEPTH;
+  const blastRadiusMaxNodes = options.blastRadiusMaxNodes ?? DEFAULT_BLAST_RADIUS_MAX_NODES;
+  // One index build per call (O(V+E) over "calls" edges), shared by every
+  // task's expansion — never a per-task edge-list scan.
+  const expandBlastRadius = includeBlastRadius
+    ? buildBlastRadiusExpander(cas, blastRadiusDepth, blastRadiusMaxNodes)
+    : null;
 
   // Truly nothing to go on — neither declared nor inferable from intent.
   const unpartitionable = tasks.filter((t) => hasNoDeclaredFootprint(t) && hasNoFootprintAtAll(t, cas)).map((t) => t.id);
@@ -432,9 +602,9 @@ export function partitionTasks(
   // footprint conflicts with nothing, so it always lands in batch 0 (or
   // wherever it's first tried), which is the correct behavior: we don't drop
   // it, and we don't falsely serialize it against unrelated work either.
-  const declaredFootprints = new Map(tasks.map((t) => [t.id, computeFootprint(t, cas, false, true)]));
+  const declaredFootprints = new Map(tasks.map((t) => [t.id, computeFootprint(t, cas, null, true)]));
   const expandedFootprints = new Map(
-    tasks.map((t) => [t.id, includeBlastRadius ? computeFootprint(t, cas, true, true) : declaredFootprints.get(t.id)!])
+    tasks.map((t) => [t.id, expandBlastRadius ? computeFootprint(t, cas, expandBlastRadius, true) : declaredFootprints.get(t.id)!])
   );
 
   const conflictEdges: ConflictEdge[] = [];
@@ -457,9 +627,75 @@ export function partitionTasks(
     }
   }
 
+  // ---- Soft co-change layer (§F): only between pairs with NO hard conflict.
+  // A pair already forced apart by a real structural conflict needs no
+  // nudging; this only matters for pairs the hard-conflict pass judged safe
+  // to co-batch, where history says otherwise.
+  const coChangeIndex = options.coChangeIndex;
+  const coChangeThreshold = options.coChangeThreshold ?? 0.5;
+  const predictedConflicts: PredictedConflictEdge[] = [];
+  const softWeights = new Map<string, Map<string, number>>();
+  for (const t of tasks) softWeights.set(t.id, new Map());
+
+  if (coChangeIndex) {
+    for (let i = 0; i < tasks.length; i++) {
+      for (let j = i + 1; j < tasks.length; j++) {
+        const taskA = tasks[i];
+        const taskB = tasks[j];
+        if (conflicts.get(taskA.id)!.has(taskB.id)) continue; // already a hard conflict
+
+        const pathsA = [...declaredFootprints.get(taskA.id)!.paths];
+        const pathsB = [...declaredFootprints.get(taskB.id)!.paths];
+        if (pathsA.length === 0 || pathsB.length === 0) continue;
+
+        let best: { fileA: string; fileB: string; probability: number } | null = null;
+        for (const fa of pathsA) {
+          for (const fb of pathsB) {
+            const p = coChangeProbability(coChangeIndex, fa, fb);
+            if (p >= coChangeThreshold && (!best || p > best.probability)) {
+              best = { fileA: fa, fileB: fb, probability: p };
+            }
+          }
+        }
+        if (!best) continue;
+
+        softWeights.get(taskA.id)!.set(taskB.id, best.probability);
+        softWeights.get(taskB.id)!.set(taskA.id, best.probability);
+        predictedConflicts.push({
+          a: taskA.id,
+          b: taskB.id,
+          file_a: best.fileA,
+          file_b: best.fileB,
+          probability: best.probability,
+          separated: false, // filled in after coloring, below
+        });
+      }
+    }
+  }
+
   const taskIds = tasks.map((t) => t.id);
-  const colored = colorIntoBatches(taskIds, conflicts);
+
+  // Bound how far the soft co-change layer is allowed to push the batch
+  // count: it may open batches beyond what hard conflicts strictly require
+  // (to separate historically-coupled pairs), but NEVER all the way to full
+  // serialization (batches === tasks) — that outcome is reserved for genuine
+  // hard conflicts, matching the module's "throughput-first, never refuse
+  // parallelism" mandate. Computed from the HARD-ONLY coloring so the cap
+  // reflects this task set's actual mandatory minimum, not a guess.
+  let maxBatchesAllowed: number | undefined;
+  if (coChangeIndex && predictedConflicts.length > 0) {
+    const hardOnlyCount = colorIntoBatches(taskIds, conflicts).length;
+    maxBatchesAllowed = hardOnlyCount >= tasks.length ? hardOnlyCount : Math.max(hardOnlyCount, tasks.length - 1);
+  }
+
+  const colored = colorIntoBatches(taskIds, conflicts, coChangeIndex ? softWeights : undefined, maxBatchesAllowed);
   const batches: WorkBatch[] = colored.map((task_ids, batch_index) => ({ batch_index, task_ids }));
+
+  const batchOfTask = new Map<string, number>();
+  colored.forEach((ids, idx) => ids.forEach((id) => batchOfTask.set(id, idx)));
+  for (const edge of predictedConflicts) {
+    edge.separated = batchOfTask.get(edge.a) !== batchOfTask.get(edge.b);
+  }
 
   const parallelism_factor = batches.length === 0 ? 0 : tasks.length / batches.length;
   const conceptGroups = groupTasksByConcept(tasks);
@@ -471,6 +707,7 @@ export function partitionTasks(
     ...(unpartitionable.length > 0 ? { unpartitionable } : {}),
     footprint_source,
     ...(conceptGroups.length > 0 ? { concept_groups: conceptGroups } : {}),
+    ...(coChangeIndex ? { predicted_conflicts: predictedConflicts } : {}),
   };
 }
 

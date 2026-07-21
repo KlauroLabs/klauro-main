@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { inferFootprintFromIntent, partitionTasks, groupTasksByConcept } from './partitioner';
-import type { PartitionCas, PartitionTask } from './partitioner';
+import type { PartitionCas, PartitionTask, CoChangeIndexLike } from './partitioner';
 
 const cas: PartitionCas = {
   nodes: [
@@ -245,4 +245,210 @@ test('partitionTasks omits concept_groups entirely when no task declares flow_id
   ];
   const result = partitionTasks(tasks, cas, { includeBlastRadius: false });
   assert.equal(result.concept_groups, undefined);
+});
+
+// ---------------------------------------------------------------------------
+// Co-change soft-conflict layer (docs/SPEC-MATHEMATICAL-INTELLIGENCE.md §F)
+// ---------------------------------------------------------------------------
+
+test('predicted_conflicts is absent entirely when no coChangeIndex is supplied (unchanged behavior)', () => {
+  const tasks: PartitionTask[] = [
+    { id: 't1', intent: 'edit a', target_paths: ['a.ts'] },
+    { id: 't2', intent: 'edit b', target_paths: ['b.ts'] },
+  ];
+  const result = partitionTasks(tasks, cas, { includeBlastRadius: false });
+  assert.equal(result.predicted_conflicts, undefined);
+});
+
+test('co-change: two structurally-disjoint tasks with a high co-change pair prefer separate batches when a third slot exists', () => {
+  const coChangeIndex: CoChangeIndexLike = {
+    'a.ts': [{ file: 'b.ts', probability: 0.9, support: 20, lift: 5 }],
+  };
+  const tasks: PartitionTask[] = [
+    { id: 't1', intent: 'edit a', target_paths: ['a.ts'] },
+    { id: 't2', intent: 'edit b', target_paths: ['b.ts'] },
+    { id: 't3', intent: 'edit unrelated c', target_paths: ['c.ts'] },
+  ];
+  const result = partitionTasks(tasks, cas, { includeBlastRadius: false, coChangeIndex, coChangeThreshold: 0.5 });
+
+  // No hard conflict — but the soft layer is allowed to trade some
+  // parallelism to separate the coupled pair, as long as it stops short of
+  // full serialization (that floor is asserted in the next test).
+  assert.equal(result.conflict_edges.length, 0);
+  assert.equal(result.batches.length, 2, 't1/t2 (coupled) should split into separate batches; t3 (uncoupled) joins whichever is free');
+  assert.ok(result.parallelism_factor > 1, 'still meaningfully parallel, not forced serial');
+
+  assert.ok(result.predicted_conflicts);
+  const pc = result.predicted_conflicts!.find((e) => (e.a === 't1' && e.b === 't2') || (e.a === 't2' && e.b === 't1'));
+  assert.ok(pc, 'a.ts/b.ts pair above threshold should be reported as a prediction');
+  assert.equal(pc!.probability, 0.9);
+  assert.equal(pc!.separated, true, 'with 3 available task slots the greedy coloring can and should keep the coupled pair apart');
+});
+
+test('co-change: never blocks or forces serialization even when every task is mutually coupled', () => {
+  const coChangeIndex: CoChangeIndexLike = {
+    'a.ts': [{ file: 'b.ts', probability: 0.95, support: 20, lift: 5 }],
+  };
+  const tasks: PartitionTask[] = [
+    { id: 't1', intent: 'edit a', target_paths: ['a.ts'] },
+    { id: 't2', intent: 'edit b', target_paths: ['b.ts'] },
+  ];
+  // Only 2 tasks exist — there is no third slot to move to, so even though
+  // co-change probability is very high, the pair MUST still be allowed to
+  // run in the same (only) batch: throughput first, never refuse parallelism.
+  const result = partitionTasks(tasks, cas, { includeBlastRadius: false, coChangeIndex, coChangeThreshold: 0.5 });
+  assert.equal(result.batches.length, 1);
+  assert.equal(result.parallelism_factor, 2);
+  assert.equal(result.predicted_conflicts![0].separated, false);
+});
+
+test('co-change: below-threshold probability produces no prediction at all', () => {
+  const coChangeIndex: CoChangeIndexLike = {
+    'a.ts': [{ file: 'b.ts', probability: 0.2, support: 4, lift: 2.5 }],
+  };
+  const tasks: PartitionTask[] = [
+    { id: 't1', intent: 'edit a', target_paths: ['a.ts'] },
+    { id: 't2', intent: 'edit b', target_paths: ['b.ts'] },
+  ];
+  const result = partitionTasks(tasks, cas, { includeBlastRadius: false, coChangeIndex, coChangeThreshold: 0.5 });
+  assert.equal(result.predicted_conflicts!.length, 0);
+});
+
+test('co-change: a pair with a HARD conflict is never also reported as a soft prediction', () => {
+  const coChangeIndex: CoChangeIndexLike = {
+    'src/app.ts': [{ file: 'src/app.ts', probability: 0.99, support: 20, lift: 5 }],
+  };
+  const tasks: PartitionTask[] = [
+    { id: 't1', intent: 'edit file A', target_paths: ['src/app.ts'] },
+    { id: 't2', intent: 'edit same file A', target_paths: ['src/app.ts'] },
+  ];
+  const result = partitionTasks(tasks, cas, { includeBlastRadius: false, coChangeIndex, coChangeThreshold: 0.5 });
+  assert.equal(result.conflict_edges.length, 1, 'literal path overlap is still a hard conflict');
+  assert.equal(result.predicted_conflicts!.length, 0, 'already-hard-conflicting pairs are excluded from the soft-prediction layer');
+});
+
+test('co-change lookup checks both directions of the (asymmetric, top-K) index', () => {
+  // Only b.ts's top-K list mentions a.ts (the reverse direction) — a.ts's own
+  // list might not include b.ts if b.ts didn't make a.ts's top-K cut.
+  const coChangeIndex: CoChangeIndexLike = {
+    'b.ts': [{ file: 'a.ts', probability: 0.8, support: 15, lift: 4 }],
+  };
+  const tasks: PartitionTask[] = [
+    { id: 't1', intent: 'edit a', target_paths: ['a.ts'] },
+    { id: 't2', intent: 'edit b', target_paths: ['b.ts'] },
+    { id: 't3', intent: 'edit c', target_paths: ['c.ts'] },
+  ];
+  const result = partitionTasks(tasks, cas, { includeBlastRadius: false, coChangeIndex, coChangeThreshold: 0.5 });
+  assert.equal(result.predicted_conflicts!.length, 1);
+});
+
+// ---------------------------------------------------------------------------
+// Transitive blast radius via the reachability index (Workstream C)
+// ---------------------------------------------------------------------------
+
+/** Chain fixture: a -> b -> c -> d (plus an unrelated island x -> y). */
+const chainCas: PartitionCas = {
+  nodes: [
+    { id: 'sym:a', name: 'a' },
+    { id: 'sym:b', name: 'b' },
+    { id: 'sym:c', name: 'c' },
+    { id: 'sym:d', name: 'd' },
+    { id: 'sym:x', name: 'x' },
+    { id: 'sym:y', name: 'y' },
+  ],
+  edges: [
+    { source: 'sym:a', target: 'sym:b', type: 'calls' },
+    { source: 'sym:b', target: 'sym:c', type: 'calls' },
+    { source: 'sym:c', target: 'sym:d', type: 'calls' },
+    { source: 'sym:x', target: 'sym:y', type: 'calls' },
+  ],
+};
+
+test('TRANSITIVE collision (3 hops apart on one call chain) is flagged — invisible to one-hop', () => {
+  const tasks: PartitionTask[] = [
+    { id: 't1', intent: 'edit a', target_symbols: ['sym:a'] },
+    { id: 't2', intent: 'edit d', target_symbols: ['sym:d'] },
+  ];
+  // Legacy one-hop behavior misses it: a expands to {a,b}, d to {c,d} — disjoint.
+  const oneHop = partitionTasks(tasks, chainCas, { blastRadiusDepth: 1 });
+  assert.equal(oneHop.batches.length, 1, 'one-hop expansion cannot see the 3-hop chain collision');
+
+  // Default transitive expansion flags it as a blast-radius conflict.
+  const transitive = partitionTasks(tasks, chainCas);
+  assert.equal(transitive.batches.length, 2, 'transitive expansion must separate the chain endpoints');
+  assert.equal(transitive.conflict_edges.length, 1);
+  assert.equal(transitive.conflict_edges[0].reason, 'blast-radius');
+});
+
+test('transitive expansion never entangles unrelated islands', () => {
+  const tasks: PartitionTask[] = [
+    { id: 't1', intent: 'edit a', target_symbols: ['sym:a'] },
+    { id: 't2', intent: 'edit x', target_symbols: ['sym:x'] },
+  ];
+  const result = partitionTasks(tasks, chainCas);
+  assert.equal(result.batches.length, 1, 'disconnected call-graph islands stay fully parallel');
+  assert.equal(result.conflict_edges.length, 0);
+});
+
+test('blastRadiusDepth 1 reproduces the legacy one-hop footprint semantics (acyclic fixture parity)', () => {
+  // Old oneHopCallGraph(seed {b}) = {b} + direct callers {a} + direct
+  // callees {c} = {a,b,c}. BOTH tasks expand, so on the a->b->c->d chain:
+  //  - b vs a: conflict (a is in b's one-hop footprint).
+  //  - b vs d: conflict too — b expands to {a,b,c}, d expands to {c,d},
+  //    they meet at c (this was true of the legacy one-hop scan as well).
+  //  - a vs d: NO conflict — a{a,b} vs d{c,d} are disjoint at one hop
+  //    (asserted in the transitive-collision test above).
+  const onA: PartitionTask[] = [
+    { id: 'tb', intent: 'edit b', target_symbols: ['sym:b'] },
+    { id: 'ta', intent: 'edit a', target_symbols: ['sym:a'] },
+  ];
+  const onD: PartitionTask[] = [
+    { id: 'tb', intent: 'edit b', target_symbols: ['sym:b'] },
+    { id: 'td', intent: 'edit d', target_symbols: ['sym:d'] },
+  ];
+  const conflictsWithA = partitionTasks(onA, chainCas, { blastRadiusDepth: 1 });
+  assert.equal(conflictsWithA.conflict_edges.length, 1, 'depth-1: b\'s footprint includes direct caller a');
+  const conflictsWithD = partitionTasks(onD, chainCas, { blastRadiusDepth: 1 });
+  assert.equal(conflictsWithD.conflict_edges.length, 1, 'depth-1: b and d footprints meet at c, matching legacy one-hop');
+});
+
+test('blastRadiusMaxNodes caps the footprint (advisory, never blocking)', () => {
+  // Star: hub calls 30 leaves. A task on the hub with a tiny cap still
+  // partitions — it just stops expanding.
+  const star: PartitionCas = {
+    nodes: [
+      { id: 'sym:hub', name: 'hub' },
+      ...Array.from({ length: 30 }, (_, i) => ({ id: `sym:leaf${i}`, name: `leaf${i}` })),
+    ],
+    edges: Array.from({ length: 30 }, (_, i) => ({ source: 'sym:hub', target: `sym:leaf${i}`, type: 'calls' })),
+  };
+  const tasks: PartitionTask[] = [
+    { id: 't1', intent: 'edit hub', target_symbols: ['sym:hub'] },
+    { id: 't2', intent: 'edit leaf29', target_symbols: ['sym:leaf29'] },
+  ];
+  const capped = partitionTasks(tasks, star, { blastRadiusMaxNodes: 5 });
+  assert.ok(capped.batches.length >= 1, 'capped expansion still partitions');
+  const uncapped = partitionTasks(tasks, star);
+  assert.equal(uncapped.batches.length, 2, 'uncapped expansion sees hub -> leaf29');
+});
+
+test('mutually-recursive functions (one SCC) count as one footprint unit', () => {
+  const cyclic: PartitionCas = {
+    nodes: [
+      { id: 'sym:f', name: 'f' },
+      { id: 'sym:g', name: 'g' },
+      { id: 'sym:h', name: 'h' },
+    ],
+    edges: [
+      { source: 'sym:f', target: 'sym:g', type: 'calls' },
+      { source: 'sym:g', target: 'sym:f', type: 'calls' },
+      { source: 'sym:g', target: 'sym:h', type: 'calls' },
+    ],
+  };
+  const tasks: PartitionTask[] = [
+    { id: 't1', intent: 'edit f', target_symbols: ['sym:f'] },
+    { id: 't2', intent: 'edit g', target_symbols: ['sym:g'] },
+  ];
+  const result = partitionTasks(tasks, cyclic, { blastRadiusDepth: 1 });
+  assert.equal(result.batches.length, 2, 'f and g are mutually recursive — always one unit, always a conflict');
 });
