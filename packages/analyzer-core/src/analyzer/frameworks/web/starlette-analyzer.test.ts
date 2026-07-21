@@ -44,6 +44,40 @@ test('StarletteAnalyzer.canAnalyze detects a starlette dependency + import', asy
   await fs.remove(root);
 });
 
+test('StarletteAnalyzer.canAnalyze rejects a pyproject.toml [project.optional-dependencies] extras group named "starlette" (self-detection defect: Klauro\'s own packages/klauro-sdk-py/pyproject.toml lists django/flask/fastapi->starlette as instrumentation-target extras with an empty real dependencies array)', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'starlette-analyzer-extras-'));
+  await fs.writeFile(
+    path.join(root, 'pyproject.toml'),
+    [
+      '[project]',
+      'name = "klauro-telemetry"',
+      'dependencies = []',
+      '',
+      '[project.optional-dependencies]',
+      'fastapi = ["starlette>=0.27"]',
+    ].join('\n')
+  );
+  const analyzer = new StarletteAnalyzer();
+  assert.equal(await analyzer.canAnalyze(root), false);
+  await fs.remove(root);
+});
+
+test('StarletteAnalyzer.canAnalyze rejects a bare "from starlette import" mention with no application/routing construction (duck-typed integration-helper shape, never a real Starlette app)', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'starlette-analyzer-bare-import-'));
+  await fs.writeFile(
+    path.join(root, 'middleware.py'),
+    [
+      'def _route_of_asgi(scope):',
+      '    # Starlette/FastAPI put the matched route object under scope["route"].',
+      '    route = scope.get("route")',
+      '    return route',
+    ].join('\n')
+  );
+  const analyzer = new StarletteAnalyzer();
+  assert.equal(await analyzer.canAnalyze(root), false);
+  await fs.remove(root);
+});
+
 test('StarletteAnalyzer.canAnalyze rejects a project without starlette', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'starlette-analyzer-neg-'));
   await fs.writeFile(path.join(root, 'requirements.txt'), 'flask==3.0.0\n');

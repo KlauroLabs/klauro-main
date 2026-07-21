@@ -264,6 +264,55 @@ describe('source inventory analyzer detection', () => {
     }
   });
 
+  it('scanUnanalyzedLanguages excludes fixture-only languages from the coverage-gap report (live self-analysis defect: Klauro\'s Kotlin analyzer test fixtures under apps/mcp-server/fixtures/**/*.kt hallucinated "analysis coverage does not extend to its Kotlin portion" even though Kotlin exists only in scaffold, never real product source)', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-unanalyzed-langs-'));
+    try {
+      fs.mkdirSync(path.join(root, 'src'), { recursive: true });
+      for (let i = 0; i < 20; i++) {
+        fs.writeFileSync(path.join(root, 'src', `Service${i}.ts`), `export class Service${i} {}`);
+      }
+
+      // Kotlin exists ONLY inside fixture/scaffold directories (mirrors
+      // apps/mcp-server/fixtures/component-bench/compose-tree/App.kt etc).
+      const fixtureRoot = path.join(root, 'fixtures', 'component-bench', 'compose-tree');
+      fs.mkdirSync(fixtureRoot, { recursive: true });
+      for (let i = 0; i < 10; i++) {
+        fs.writeFileSync(path.join(fixtureRoot, `Widget${i}.kt`), `class Widget${i}`);
+      }
+      // Also a co-located Kotlin test file naming convention outside any
+      // scaffold directory (isTestFileName), which must be excluded too.
+      fs.writeFileSync(path.join(root, 'src', 'widget_test.kt'), 'class WidgetTest');
+
+      const localOrch = new AnalyzerOrchestrator() as any;
+      const unanalyzed = localOrch.scanUnanalyzedLanguages(root);
+
+      expect(unanalyzed.find((entry: any) => entry.name === 'Kotlin')).toBeUndefined();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('scanUnanalyzedLanguages still reports a real unanalyzed language living in real product source (not scaffold-only)', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-unanalyzed-langs-real-'));
+    try {
+      fs.mkdirSync(path.join(root, 'src'), { recursive: true });
+      for (let i = 0; i < 10; i++) {
+        fs.writeFileSync(path.join(root, 'src', `Service${i}.ts`), `export class Service${i} {}`);
+      }
+      fs.mkdirSync(path.join(root, 'mobile'), { recursive: true });
+      for (let i = 0; i < 5; i++) {
+        fs.writeFileSync(path.join(root, 'mobile', `Screen${i}.kt`), `class Screen${i}`);
+      }
+
+      const localOrch = new AnalyzerOrchestrator() as any;
+      const unanalyzed = localOrch.scanUnanalyzedLanguages(root);
+
+      expect(unanalyzed.find((entry: any) => entry.name === 'Kotlin')).toBeDefined();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('excludes root-level legacy reference apps from Klauro self project discovery', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-inventory-legacy-'));
     try {
@@ -1831,6 +1880,33 @@ describe('architecture and capability inference', () => {
     // 'odometer'/'ifta' anchor exists anywhere in this fixture. Must never be
     // misread as this specific dedicated override.
     expect(purpose.primary_type).not.toBe('fleet-management-platform');
+  });
+
+  it('does not flip an agent-coordination + codebase-analysis corpus to security-scanning-tool on incidental generic vocabulary (same misfire class as the fleet/clinical fixes above, 2026-07-21: Klauro\'s own fabric vocabulary — agent/agents "grant"s, codebase "scan"ning, API "credential"s, and its own security-ANALYSIS surface mentioning "vulnerability"/"cve" as things it reports on — scored security-scanning-tool 0.84 with zero evidence Klauro ships a scanning ENGINE)', async () => {
+    const nodes: CASNode[] = [
+      node({ id: 'agent-grant', name: 'AgentWorkGrant', type: 'class', source: { file: 'src/coordination/AgentWorkGrant.ts' } }),
+      node({ id: 'codebase-scan', name: 'CodebaseScanRunner', type: 'class', source: { file: 'src/analysis/CodebaseScanRunner.ts' } }),
+      node({ id: 'credential-store', name: 'ApiCredentialStore', type: 'class', source: { file: 'src/config/ApiCredentialStore.ts' } }),
+      node({ id: 'cve-report', name: 'CveOverviewReport', type: 'class', source: { file: 'src/security/CveOverviewReport.ts' } }),
+      node({ id: 'access-policy', name: 'AccessPolicyEvaluator', type: 'class', source: { file: 'src/coordination/AccessPolicyEvaluator.ts' } }),
+    ];
+    const priorPath = (orch as any).activeAnalysisProjectPath;
+    // No project path (or one with no manifest) — there is no real scanner
+    // dependency (semgrep/snyk/trivy/bandit/...) or CVE-feed integration
+    // backing these vocabulary hits.
+    (orch as any).activeAnalysisProjectPath = undefined;
+    try {
+      const purpose = await orch.inferSystemPurpose([], [], [], nodes);
+
+      // 'agent'/'grant'/'scan'/'credential'/'cve'/'policy' hit the zero-trust
+      // vocabulary count threshold, but none of it is backed by a real
+      // scanner-shaped dependency — a product that analyzes codebases
+      // (including their security posture) is not itself a security scanner.
+      expect(purpose.primary_type).not.toBe('security-scanning-tool');
+      expect(purpose.primary_type).not.toBe('network-access-platform');
+    } finally {
+      (orch as any).activeAnalysisProjectPath = priorPath;
+    }
   });
 
   it('prioritizes clinical capabilities in clinical testing summaries', async () => {

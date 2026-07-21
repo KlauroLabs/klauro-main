@@ -1,5 +1,5 @@
 import { BaseAnalyzer, CASAnalysisResult, CASNode, CASEdge, AnalysisContext, FileAnalysisContext } from './base-analyzer';
-import { SCAFFOLD_DIR_NAMES, SCAFFOLD_GLOBS } from './scaffold-paths';
+import { SCAFFOLD_DIR_NAMES, SCAFFOLD_GLOBS, isScaffoldDirName, isTestFileName } from './scaffold-paths';
 import {
   CASOutput,
   CASNestedRepository,
@@ -1761,6 +1761,7 @@ export class AnalyzerOrchestrator {
 
     phaseStart = Date.now();
     const enhancedChangeRisks = this.enhanceChangeRisks(changeRisks, callGraphBuilder, callChains, allEntryPoints);
+    this.stampChainCriticalityFromStructuralImportance(callChains, allNodes, allEntryPoints);
     const enhancedFlowSummary = this.buildEnhancedFlowSummary(callChains, allEntryPoints);
     logTiming('pp_enhanceRisks', phaseStart);
     await yieldToEventLoop();
@@ -2321,6 +2322,27 @@ export class AnalyzerOrchestrator {
         // output fields derived from those AI mutations.
         this.deferredAiEnrichments.set(output, async () => {
           await runAiInterpretation();
+          // CONSTRAINT (capability→flow linkage on the deferred path): the AI
+          // catalog pass REPLACES the system_capabilities array contents
+          // (systemCapabilities.splice in applyAIInterpretation) with fresh
+          // objects that carry no related_flows, and the analysis-time
+          // deriveEntryPointContractAndCapability already ran BEFORE this
+          // closure — so without this re-derive, every AI-authored capability
+          // ships with zero flow links (behavior_surfaces, never spliced,
+          // keep theirs). Must re-run AFTER the catalog is final.
+          output.entry_points = this.deriveEntryPointContractAndCapability(allEntryPoints, {
+            nodes: allNodes,
+            edges: allEdges,
+            entry_points: allEntryPoints,
+            exit_points: allExitPoints,
+            call_chains: callChains,
+            data_lineage: dataLineage,
+            system_capabilities: systemCapabilities,
+            behavior_surfaces: behaviorSurfaces,
+          });
+          // The AI pass can populate a previously-empty catalog; output holds
+          // `undefined` in that case (assembly gated on length), so re-point it.
+          output.system_capabilities = systemCapabilities.length > 0 ? systemCapabilities : undefined;
           output.analysis_phases = this.buildAnalysisPhases({
             hasAIProvider: this.hasAIInterpretationProviderConfigured(),
             systemDescriptionSource: enhancedSystemPurpose.description_source,
@@ -3068,6 +3090,7 @@ export class AnalyzerOrchestrator {
       entryPoints,
       userJourneys: userJourneyResult.journeys,
     });
+    this.stampChainCriticalityFromStructuralImportance(callChains, nodes, entryPoints);
     const enhancedFlowSummary = this.buildEnhancedFlowSummary(callChains, entryPoints);
     const implementationHealth = this.buildImplementationHealth(nodes);
     const configuration = this.buildAllConfiguration(nodes, exitPoints, externalServices, projectPath);
@@ -6252,9 +6275,21 @@ export class AnalyzerOrchestrator {
         if (entry.name.startsWith('.')) continue;
         if (entry.isDirectory()) {
           if (['node_modules', 'dist', 'build', 'coverage', 'vendor', 'vendors', 'tmp', 'log', 'public', 'target', '.git'].includes(entry.name)) continue;
+          // Same scaffold exclusion every other product-facing collector
+          // consults (scaffold-paths.ts): a directory literally named
+          // fixtures/__fixtures__/testdata/cas-tests/__tests__ ships sample
+          // code used to exercise the analyzed repo's OWN test harness, never
+          // real product source. Without this, a language that exists ONLY
+          // inside the analyzer's own benchmark fixtures (e.g. Klauro's own
+          // apps/mcp-server/fixtures/**/*.kt Kotlin analyzer test fixtures)
+          // gets counted as real unanalyzed source and the system description
+          // hallucinates a coverage gap ("analysis does not extend to its
+          // Kotlin portion") for a language the repo doesn't actually contain.
+          if (isScaffoldDirName(entry.name)) continue;
           stack.push({ directory: path.join(current.directory, entry.name), depth: current.depth + 1 });
           continue;
         }
+        if (isTestFileName(entry.name)) continue;
         const extension = entry.name.split('.').pop()?.toLowerCase() || '';
         if (supported.has(extension)) supportedCount += 1;
         else if (unanalyzedNames[extension]) counts.set(unanalyzedNames[extension], (counts.get(unanalyzedNames[extension]) || 0) + 1);
@@ -9266,6 +9301,70 @@ export class AnalyzerOrchestrator {
       analytics: 10
     };
     return ranks[exitPoint.type] ?? 99;
+  }
+
+  /**
+   * Chain criticality from the Structural Importance layer, RANK-based.
+   * CONSTRAINTS: deterministic (mass desc, ties by chain id); test-entry
+   * chains never rise above 'low'; thresholds are quantiles of the ranked
+   * order, NOT absolute scores — importance mass concentrates in few nodes on
+   * real graphs, so an absolute cutoff degenerates to all-low (the shipped
+   * defect this replaces: criticality was a hardcoded entry-type check, so
+   * flow_summary read {medium: <http count>, low: everything-else}). The
+   * legacy http floor ('medium') is preserved so no http chain is demoted
+   * below its prior value. No-op on a CAS without the importance layer.
+   */
+  private stampChainCriticalityFromStructuralImportance(
+    callChains: CASCallChain[],
+    nodes: CASNode[],
+    entryPoints: CASEntryPoint[]
+  ): void {
+    const importanceByNode = new Map<string, number>();
+    for (const node of nodes) {
+      if (typeof node.structural_importance === 'number' && node.structural_importance > 0) {
+        importanceByNode.set(node.id, node.structural_importance);
+      }
+    }
+    if (importanceByNode.size === 0) return;
+
+    const epTypeById = new Map(entryPoints.map(ep => [ep.id, ep.type]));
+    const chainEpType = (chain: CASCallChain): string | undefined =>
+      chain.entry_point.entry_point_id ? epTypeById.get(chain.entry_point.entry_point_id) : undefined;
+
+    const ranked: Array<{ chain: CASCallChain; mass: number }> = [];
+    for (const chain of callChains) {
+      if (chainEpType(chain) === 'test') {
+        chain.criticality = 'low';
+        chain.criticality_factors = Array.from(new Set([...(chain.criticality_factors || []), 'test-entry']));
+        continue;
+      }
+      let mass = 0;
+      for (const step of chain.call_path || []) {
+        const value = importanceByNode.get(step.node_id) || 0;
+        if (value > mass) mass = value;
+      }
+      ranked.push({ chain, mass });
+    }
+    ranked.sort((a, b) => (b.mass - a.mass) || a.chain.id.localeCompare(b.chain.id));
+
+    const positive = ranked.filter(entry => entry.mass > 0).length;
+    const criticalCut = Math.ceil(positive * 0.02);
+    const highCut = Math.ceil(positive * 0.10);
+    const mediumCut = Math.ceil(positive * 0.35);
+    ranked.forEach((entry, index) => {
+      let criticality: CASCallChain['criticality'];
+      if (entry.mass <= 0) criticality = 'low';
+      else if (index < criticalCut) criticality = 'critical';
+      else if (index < highCut) criticality = 'high';
+      else if (index < mediumCut) criticality = 'medium';
+      else criticality = 'low';
+      if (criticality === 'low' && chainEpType(entry.chain) === 'http') criticality = 'medium';
+      entry.chain.criticality = criticality;
+      entry.chain.criticality_factors = Array.from(new Set([
+        ...(entry.chain.criticality_factors || []),
+        'structural-importance-rank',
+      ]));
+    });
   }
 
   private buildEnhancedFlowSummary(
@@ -22688,16 +22787,48 @@ export class AnalyzerOrchestrator {
       };
     }
 
+    // ANCHOR-GATED (same live self-analysis defect class as fleet/clinical
+    // above, 2026-07-21): 'scan'/'credential'/'cve'/'agent'/'grant'/'policy'
+    // are generic words that show up incidentally in ANY agent-coordination +
+    // codebase-analysis product — Klauro's own fabric vocabulary talks about
+    // work "grants", advisory "claims", codebase "scan"ning, and API
+    // "credential"s, and its security-analysis surface legitimately mentions
+    // "vulnerability"/"cve" as things it REPORTS ON. A product that analyzes
+    // other codebases' security posture is not itself a security scanner, and
+    // vocabulary-only overlap on Klauro's own repo racked up 7 matches (agent,
+    // agents, grant, scan, policy, credential, cve) with ZERO evidence Klauro
+    // ships a scanning ENGINE, and got stamped 'security-scanning-tool' at a
+    // hardcoded 0.84 floor. Require the scan/credential/cve path to be backed
+    // by real scanner-shaped dependency evidence (an actual vulnerability
+    // scanner engine as a project dependency, or a CVE-feed integration
+    // manifest) — never vocabulary alone — before it can anchor the
+    // classification. The generic-token combination (policy/resource/agent/
+    // device all present) below it is unchanged: it already requires all four
+    // distinct tokens together, which the fleet/clinical fix pattern treats as
+    // sufficiently specific.
+    const SECURITY_SCANNER_DEPENDENCY_MARKERS = [
+      'semgrep', 'snyk', 'trivy', 'bandit', 'grype', 'nuclei', 'gitleaks',
+      'trufflehog', 'zaproxy', 'owasp-zap', 'dependency-check', 'safety',
+      'eslint-plugin-security', 'retire.js', 'sonarqube', 'checkov', 'tfsec',
+      'clair', 'anchore'
+    ];
+    const activeProjectPathForZeroTrustGate = this.activeAnalysisProjectPath || '';
+    const hasScanCredentialAnchor =
+      zeroTrustSignals.matched.includes('scan') &&
+      zeroTrustSignals.matched.some(signal => /credential|vulnerability|cve/.test(signal));
+    const hasSecurityScannerDependencyEvidence = activeProjectPathForZeroTrustGate
+      ? await this.manifestContainsAny(activeProjectPathForZeroTrustGate, SECURITY_SCANNER_DEPENDENCY_MARKERS)
+      : false;
     const hasZeroTrustAnchor =
       zeroTrustSignals.matched.includes('zero trust') ||
-      (zeroTrustSignals.matched.includes('scan') && zeroTrustSignals.matched.some(signal => /credential|vulnerability|cve/.test(signal))) ||
+      (hasScanCredentialAnchor && hasSecurityScannerDependencyEvidence) ||
       ['policy', 'resource', 'agent', 'device'].every(signal => zeroTrustSignals.matched.includes(signal));
     if (zeroTrustSignals.matched.length >= 4 &&
       hasZeroTrustAnchor &&
       topMatch.type !== 'medical-device-software' &&
       topMatch.type !== 'clinical-testing-platform') {
       return {
-        primary_type: zeroTrustSignals.matched.some(signal => /scan|credential|vulnerability|cve/.test(signal))
+        primary_type: (hasScanCredentialAnchor && hasSecurityScannerDependencyEvidence)
           ? 'security-scanning-tool'
           : 'network-access-platform',
         confidence: Math.max(0.84, Math.round(confidence * 100) / 100),

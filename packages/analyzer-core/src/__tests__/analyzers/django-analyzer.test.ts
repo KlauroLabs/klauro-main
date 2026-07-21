@@ -879,4 +879,47 @@ describe('DjangoAnalyzer', () => {
       expect(metadata.djangoRoots).toEqual(['backend', 'service2']);
     });
   });
+
+  describe('canAnalyze', () => {
+    let root: string;
+
+    beforeEach(() => {
+      root = fs.mkdtempSync(path.join(os.tmpdir(), 'django-analyzer-canAnalyze-'));
+    });
+
+    afterEach(() => {
+      fs.removeSync(root);
+    });
+
+    it('rejects a pyproject.toml [project.optional-dependencies] extras group named "django" (self-detection defect: Klauro\'s own packages/klauro-sdk-py/pyproject.toml lists django as an instrumentation-target extra with an empty real dependencies array)', async () => {
+      fs.writeFileSync(
+        path.join(root, 'pyproject.toml'),
+        [
+          '[project]',
+          'name = "klauro-telemetry"',
+          'dependencies = []',
+          '',
+          '[project.optional-dependencies]',
+          'django = ["django>=3.2"]',
+        ].join('\n')
+      );
+
+      expect(await analyzer.canAnalyze(root)).toBe(false);
+    });
+
+    it('detects a real PEP 621 top-level dependencies array entry', async () => {
+      fs.writeFileSync(
+        path.join(root, 'pyproject.toml'),
+        [
+          '[project]',
+          'name = "real-django-app"',
+          'dependencies = [',
+          '    "django>=4.0",',
+          ']',
+        ].join('\n')
+      );
+
+      expect(await analyzer.canAnalyze(root)).toBe(true);
+    });
+  });
 });

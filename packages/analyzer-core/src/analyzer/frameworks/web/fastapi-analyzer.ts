@@ -125,7 +125,10 @@ export class FastAPIAnalyzer extends BaseAnalyzer {
 
       if (await fs.pathExists(pyprojectPath)) {
         const pyproject = await fs.readFile(pyprojectPath, 'utf-8');
-        if (pyproject.includes('fastapi') || pyproject.includes('FastAPI')) return true;
+        // Real-dependency-only: a pyproject.toml [project.optional-dependencies]
+        // extras group named "fastapi" (an integration target the package can
+        // instrument) is not evidence the project itself is built with FastAPI.
+        if (this.pyprojectHasRealDependency(pyproject, 'fastapi')) return true;
       }
 
       const pythonFiles = await glob(['**/*.py'], {
@@ -136,7 +139,16 @@ export class FastAPIAnalyzer extends BaseAnalyzer {
 
       for (const file of pythonFiles) {
         const content = await fs.readFile(path.join(projectPath, file), 'utf-8');
-        if (content.includes('from fastapi') || content.includes('import fastapi') || content.includes('FastAPI(')) {
+        // Require an actual FastAPI application shape (app construction or a
+        // router/route registration) — never a bare `from fastapi import`/
+        // `import fastapi` alone, which a framework-agnostic ASGI middleware
+        // helper (instrumenting a CALLER's FastAPI app rather than being one)
+        // can contain without the analyzed repo itself being a FastAPI app.
+        if (
+          /\bFastAPI\s*\(/.test(content) ||
+          /\bAPIRouter\s*\(/.test(content) ||
+          /@\s*(?:app|router)\.(?:get|post|put|delete|patch|options|head)\s*\(/.test(content)
+        ) {
           return true;
         }
       }

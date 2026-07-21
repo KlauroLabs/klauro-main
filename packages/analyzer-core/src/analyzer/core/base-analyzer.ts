@@ -174,6 +174,63 @@ export abstract class BaseAnalyzer {
     }
   }
 
+  /**
+   * True when `needle` (a package name, matched case-insensitively as a
+   * substring) appears as a REAL dependency inside pyproject.toml content —
+   * `[project]`'s top-level `dependencies = [...]` array, `[tool.poetry.
+   * dependencies]`, or a `[tool.poetry.group.<name>.dependencies]` table.
+   *
+   * Deliberately excludes `[project.optional-dependencies]` (PEP 621 extras)
+   * and `[tool.poetry.extras]`: those sections name OTHER packages/frameworks
+   * a library can optionally integrate with, not what the project itself is
+   * built with or depends on. Self-detection defect this fixes: Klauro ships
+   * packages/klauro-sdk-py/pyproject.toml, a telemetry SDK whose own
+   * `dependencies = []` is empty but whose `[project.optional-dependencies]`
+   * lists integration-target extras (`django = ["django>=3.2"]`, `flask =
+   * ["flask>=2.0"]`, `fastapi = ["starlette>=0.27"]`) — packages a customer's
+   * app might use, wired up so the SDK can instrument THEIR Django/Flask/
+   * FastAPI/Starlette app, not evidence that Klauro itself is a Django/Flask/
+   * FastAPI/Starlette product. The naive `pyproject.includes(needle)`
+   * substring check every web-framework analyzer used previously (django-
+   * analyzer.ts, flask-analyzer.ts, fastapi-analyzer.ts, starlette-analyzer.ts)
+   * matched those extras-table lines directly and reported confidence-1
+   * framework detections for all four on Klauro's own ~99% TypeScript repo.
+   */
+  protected pyprojectHasRealDependency(pyprojectContent: string, needle: string): boolean {
+    const lowerNeedle = needle.toLowerCase();
+    let inRealDependencyTable = false;
+    let inTopLevelDependenciesArray = false;
+
+    for (const rawLine of pyprojectContent.split('\n')) {
+      const line = rawLine.trim();
+      const sectionMatch = line.match(/^\[(.+)\]$/);
+      if (sectionMatch) {
+        const section = sectionMatch[1].trim().toLowerCase();
+        inRealDependencyTable =
+          section === 'tool.poetry.dependencies' ||
+          /^tool\.poetry\.group\.[^.]+\.dependencies$/.test(section);
+        inTopLevelDependenciesArray = false;
+        continue;
+      }
+
+      if (/^dependencies\s*=\s*\[/.test(line)) {
+        inTopLevelDependenciesArray = true;
+      }
+
+      if (inTopLevelDependenciesArray) {
+        if (line.toLowerCase().includes(lowerNeedle)) return true;
+        if (line.includes(']')) inTopLevelDependenciesArray = false;
+        continue;
+      }
+
+      if (inRealDependencyTable && line.toLowerCase().includes(lowerNeedle)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
   protected createContribution(
     nodes: CASNode[] = [],
     edges: CASEdge[] = [],

@@ -50,6 +50,10 @@ class TestAnalyzer extends BaseAnalyzer {
   public buildContribution(nodes: any[], entryPoints: any[]): CASContribution {
     return this.createContribution(nodes, [], entryPoints, []);
   }
+
+  public exposedPyprojectHasRealDependency(pyprojectContent: string, needle: string): boolean {
+    return this.pyprojectHasRealDependency(pyprojectContent, needle);
+  }
 }
 
 test('BaseAnalyzer backfills entry_point.handler from a backing node with a real source location (UI-event-like case)', () => {
@@ -139,4 +143,74 @@ test('getPackageDirSafeIgnorePatterns keeps fixtures/testdata/__tests__ excluded
   assert.ok(patterns.includes('**/fixtures/**'), 'fixtures must stay excluded even for package-dir-safe callers');
   assert.ok(patterns.includes('**/testdata/**'), 'testdata must stay excluded even for package-dir-safe callers');
   assert.ok(patterns.includes('**/__tests__/**'), '__tests__ must stay excluded even for package-dir-safe callers');
+});
+
+// ---------------------------------------------------------------------------
+// pyprojectHasRealDependency (framework self-detection defect, 2026-07-21):
+// Klauro ships packages/klauro-sdk-py/pyproject.toml, a telemetry SDK whose
+// `dependencies = []` is empty but whose `[project.optional-dependencies]`
+// names integration targets (django/flask/fastapi->starlette) a customer
+// might use. django/flask/fastapi/starlette-analyzer.ts previously did a
+// naive `pyproject.includes('django')` substring check, which matched those
+// extras-table lines directly and reported confidence-1 Django/Flask/
+// FastAPI/Starlette detections on Klauro's own ~99% TypeScript repo.
+// ---------------------------------------------------------------------------
+
+test('pyprojectHasRealDependency ignores [project.optional-dependencies] extras groups', () => {
+  const analyzer = new TestAnalyzer();
+  const pyproject = [
+    '[project]',
+    'name = "klauro-telemetry"',
+    'dependencies = []',
+    '',
+    '[project.optional-dependencies]',
+    'fastapi = ["starlette>=0.27"]',
+    'flask = ["flask>=2.0"]',
+    'django = ["django>=3.2"]',
+  ].join('\n');
+
+  assert.equal(analyzer.exposedPyprojectHasRealDependency(pyproject, 'django'), false);
+  assert.equal(analyzer.exposedPyprojectHasRealDependency(pyproject, 'flask'), false);
+  assert.equal(analyzer.exposedPyprojectHasRealDependency(pyproject, 'fastapi'), false);
+  assert.equal(analyzer.exposedPyprojectHasRealDependency(pyproject, 'starlette'), false);
+});
+
+test('pyprojectHasRealDependency detects a real PEP 621 top-level dependencies array entry', () => {
+  const analyzer = new TestAnalyzer();
+  const pyproject = [
+    '[project]',
+    'name = "real-django-app"',
+    'dependencies = [',
+    '    "django>=4.0",',
+    '    "psycopg2",',
+    ']',
+  ].join('\n');
+
+  assert.equal(analyzer.exposedPyprojectHasRealDependency(pyproject, 'django'), true);
+});
+
+test('pyprojectHasRealDependency detects a real [tool.poetry.dependencies] entry', () => {
+  const analyzer = new TestAnalyzer();
+  const pyproject = [
+    '[tool.poetry.dependencies]',
+    'python = "^3.11"',
+    'flask = "^2.0"',
+    '',
+    '[tool.poetry.extras]',
+    'fastapi = ["starlette"]',
+  ].join('\n');
+
+  assert.equal(analyzer.exposedPyprojectHasRealDependency(pyproject, 'flask'), true);
+  assert.equal(analyzer.exposedPyprojectHasRealDependency(pyproject, 'starlette'), false);
+});
+
+test('pyprojectHasRealDependency detects a real [tool.poetry.group.<name>.dependencies] entry', () => {
+  const analyzer = new TestAnalyzer();
+  const pyproject = [
+    '[tool.poetry.group.dev.dependencies]',
+    'pytest = "^8.0"',
+    'fastapi = "^0.110"',
+  ].join('\n');
+
+  assert.equal(analyzer.exposedPyprojectHasRealDependency(pyproject, 'fastapi'), true);
 });

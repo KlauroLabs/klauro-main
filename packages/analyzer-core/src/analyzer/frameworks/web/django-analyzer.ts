@@ -223,7 +223,10 @@ export class DjangoAnalyzer extends BaseAnalyzer {
 
       if (await fs.pathExists(pyprojectPath)) {
         const pyproject = await fs.readFile(pyprojectPath, 'utf-8');
-        if (pyproject.includes('Django') || pyproject.includes('django')) return true;
+        // Real-dependency-only: a pyproject.toml [project.optional-dependencies]
+        // extras group named "django" (an integration target the package can
+        // instrument) is not evidence the project itself is built with Django.
+        if (this.pyprojectHasRealDependency(pyproject, 'django')) return true;
       }
 
       const managePyPath = path.join(projectPath, 'manage.py');

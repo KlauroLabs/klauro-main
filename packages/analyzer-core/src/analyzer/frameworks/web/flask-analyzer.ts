@@ -118,7 +118,10 @@ export class FlaskAnalyzer extends BaseAnalyzer {
 
       if (await fs.pathExists(pyprojectPath)) {
         const pyproject = await fs.readFile(pyprojectPath, 'utf-8');
-        if (pyproject.includes('Flask') || pyproject.includes('flask')) return true;
+        // Real-dependency-only: a pyproject.toml [project.optional-dependencies]
+        // extras group named "flask" (an integration target the package can
+        // instrument) is not evidence the project itself is built with Flask.
+        if (this.pyprojectHasRealDependency(pyproject, 'flask')) return true;
       }
 
       const pythonFiles = await glob(['**/*.py'], {
@@ -129,7 +132,19 @@ export class FlaskAnalyzer extends BaseAnalyzer {
 
       for (const file of pythonFiles) {
         const content = await fs.readFile(path.join(projectPath, file), 'utf-8');
-        if (content.includes('from flask') || content.includes('import flask') || content.includes('Flask(__name__)')) {
+        // Require an actual Flask APPLICATION shape (app construction or a
+        // route/blueprint registration) — never a bare `from flask import`/
+        // `import flask` alone. A lazy, function-scoped `from flask import g,
+        // request` inside a framework-agnostic integration/telemetry helper
+        // (duck-typed so it "imports nothing from the framework at module
+        // load", instrumenting a CALLER's Flask app rather than being one) is
+        // exactly this shape and must not, by itself, mark the analyzed repo
+        // as a Flask application.
+        if (
+          /\bFlask\s*\(/.test(content) ||
+          /@\s*(?:app|blueprint|bp)\.route\s*\(/.test(content) ||
+          /\bBlueprint\s*\(/.test(content)
+        ) {
           return true;
         }
       }

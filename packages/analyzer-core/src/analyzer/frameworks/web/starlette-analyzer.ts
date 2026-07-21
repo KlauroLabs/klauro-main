@@ -43,7 +43,11 @@ export class StarletteAnalyzer extends BaseAnalyzer {
 
       if (await fs.pathExists(pyprojectPath)) {
         const pyproject = await fs.readFile(pyprojectPath, 'utf-8');
-        if (/\bstarlette\b/i.test(pyproject)) return true;
+        // Real-dependency-only: a pyproject.toml [project.optional-dependencies]
+        // extras group naming "starlette" (an integration target the package
+        // can instrument, e.g. via a "fastapi" extra pulling in starlette) is
+        // not evidence the project itself is built with Starlette.
+        if (this.pyprojectHasRealDependency(pyproject, 'starlette')) return true;
       }
 
       if (await fs.pathExists(pipfilePath)) {
@@ -62,7 +66,14 @@ export class StarletteAnalyzer extends BaseAnalyzer {
         // FastAPI is built on Starlette and re-exports its symbols; only claim
         // files that reference the starlette package directly so this analyzer
         // does not double-count plain FastAPI apps that never touch Starlette API.
-        if (content.includes('from starlette') || content.includes('import starlette')) {
+        // Also require the reference be an actual application/routing shape,
+        // not a bare import — a framework-agnostic integration helper can
+        // mention "Starlette/FastAPI" in a comment or duck-type around it
+        // without the analyzed repo itself being a Starlette application.
+        if (
+          (content.includes('from starlette') || content.includes('import starlette')) &&
+          (/\bStarlette\s*\(/.test(content) || /\bRoute\s*\(/.test(content) || /\bMount\s*\(/.test(content))
+        ) {
           return true;
         }
       }
