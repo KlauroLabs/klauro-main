@@ -505,7 +505,11 @@ describe('collectDeployableEvidence', () => {
     expect(serverEntry).toBeDefined();
     // Corrected: apps/<app>/src, not a bare "src".
     expect(serverEntry!.root_path).toBe('apps/billing-service/src');
-    expect(serverEntry!.name).toBe('src');
+    // Bare-noun guard (isGenericStructuralDirName): "src" names no real unit,
+    // so the deployable name walks up to the nearest real identity-bearing
+    // segment, "billing-service" — not the meaningless "src" this used to
+    // ship as (see bin-targets.ts's rootName).
+    expect(serverEntry!.name).toBe('billing-service');
   });
 
   test('Tier 2: server-entry root_path is left as the handler.file dirname when no corroborating node path exists (no fabrication)', () => {

@@ -12,6 +12,7 @@ import {
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import { cachedGlob as glob } from '../core/glob-cache';
+import { SCAFFOLD_GLOBS } from '../core/scaffold-paths';
 
 // Shared helpers for the IaC (Ansible/Pulumi/Helm) analyzers. Terraform and
 // Kubernetes/Docker manifests already have dedicated analyzers
@@ -36,6 +37,14 @@ abstract class IacAnalyzer extends BaseAnalyzer {
   }
 
   protected getIgnorePatterns(_context: { projectPath: string }): string[] {
+    // This override previously omitted fixtures/testdata/cas-tests/__tests__
+    // entirely, so HelmAnalyzer (an IacAnalyzer subclass) walked
+    // apps/mcp-server/fixtures/deployable-detection/helm-service/templates/**
+    // as if it were the analyzed repo's own Kubernetes topology, minting a
+    // real "Helm Service (orders-service) :80" entry point + "helm install
+    // orders-service" deployable + capability from Klauro's own test
+    // fixture. SCAFFOLD_GLOBS (scaffold-paths.ts) is the shared exclusion
+    // list every collector must honor.
     return [
       '**/node_modules/**',
       '**/.git/**',
@@ -45,6 +54,7 @@ abstract class IacAnalyzer extends BaseAnalyzer {
       '**/vendor/**',
       '**/.venv/**',
       '**/__pycache__/**',
+      ...SCAFFOLD_GLOBS,
     ];
   }
 

@@ -38,6 +38,15 @@ class TestAnalyzer extends BaseAnalyzer {
     return this.createEntryPoint(id, sourceNode, 'event', name, undefined, undefined, undefined, undefined, handler);
   }
 
+  // Test-only passthroughs to the protected ignore-pattern helpers.
+  public exposedIgnorePatterns(context: AnalysisContext): string[] {
+    return this.getIgnorePatterns(context);
+  }
+
+  public exposedPackageDirSafeIgnorePatterns(context: AnalysisContext): string[] {
+    return this.getPackageDirSafeIgnorePatterns(context);
+  }
+
   public buildContribution(nodes: any[], entryPoints: any[]): CASContribution {
     return this.createContribution(nodes, [], entryPoints, []);
   }
@@ -99,4 +108,35 @@ test('BaseAnalyzer respects an explicit handler already set by the analyzer and 
   const result = contribution.entry_points![0];
 
   assert.deepEqual(result.handler, explicitHandler);
+});
+
+// ---------------------------------------------------------------------------
+// Ignore-pattern regressions (scaffold-paths.ts centralization)
+// ---------------------------------------------------------------------------
+
+test('getIgnorePatterns excludes __tests__/ alongside fixtures/testdata/cas-tests', () => {
+  const analyzer = new TestAnalyzer();
+  const patterns = analyzer.exposedIgnorePatterns({ projectPath: '/repo' });
+  assert.ok(patterns.includes('**/__tests__/**'), 'must exclude **/__tests__/**');
+  assert.ok(patterns.includes('__tests__/**'), 'must exclude __tests__/**');
+  assert.ok(patterns.includes('**/fixtures/**'), 'must still exclude **/fixtures/**');
+  assert.ok(patterns.includes('**/testdata/**'), 'must still exclude **/testdata/**');
+  assert.ok(patterns.includes('**/cas-tests/**'), 'must still exclude **/cas-tests/**');
+});
+
+test('getPackageDirSafeIgnorePatterns keeps fixtures/testdata/__tests__ excluded (only samples/examples are JVM-package-name safe)', () => {
+  const analyzer = new TestAnalyzer();
+  const patterns = analyzer.exposedPackageDirSafeIgnorePatterns({ projectPath: '/repo' });
+  // samples/examples ARE stripped — a real JVM reversed-domain package can
+  // legitimately contain a "samples" segment (org.springframework.samples.*).
+  assert.ok(!patterns.includes('**/samples/**'), 'samples must be stripped for package-dir-safe callers');
+  assert.ok(!patterns.includes('**/examples/**'), 'examples must be stripped for package-dir-safe callers');
+  // fixtures/testdata/cas-tests/__tests__ must NEVER be stripped — none of
+  // them are a plausible real JVM package segment, and stripping "fixtures"
+  // here was the root cause of KotlinAnalyzer minting a duplicate "Android
+  // Activity: MainActivity" entry point from Klauro's own
+  // apps/mcp-server/fixtures/component-bench/compose-tree/App.kt test fixture.
+  assert.ok(patterns.includes('**/fixtures/**'), 'fixtures must stay excluded even for package-dir-safe callers');
+  assert.ok(patterns.includes('**/testdata/**'), 'testdata must stay excluded even for package-dir-safe callers');
+  assert.ok(patterns.includes('**/__tests__/**'), '__tests__ must stay excluded even for package-dir-safe callers');
 });

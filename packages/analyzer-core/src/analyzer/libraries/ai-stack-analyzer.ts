@@ -3,6 +3,7 @@ import { CASNode, CASEdge, CASContribution, CASEntryPoint, CASExitPoint, FileAna
 import * as path from 'path';
 import * as fs from 'fs-extra';
 import { cachedGlob as glob } from '../core/glob-cache';
+import { isTestFileName } from '../core/scaffold-paths';
 
 /**
  * AIStackAnalyzer
@@ -101,12 +102,12 @@ export class AIStackAnalyzer extends BaseAnalyzer {
 
     // 3. Fall back to scanning a bounded set of source files for AI imports.
     const ignorePatterns = this.getIgnorePatterns({ projectPath });
-    const sourceFiles = await glob(`**/*.{${[...TS_EXTENSIONS, ...PY_EXTENSIONS].join(',')}}`, {
+    const sourceFiles = (await glob(`**/*.{${[...TS_EXTENSIONS, ...PY_EXTENSIONS].join(',')}}`, {
       cwd: projectPath,
       ignore: ignorePatterns,
       absolute: true,
       nodir: true,
-    });
+    })).filter(file => !isTestFileName(path.basename(file)));
 
     for (const file of sourceFiles.slice(0, 400)) {
       try {
@@ -153,12 +154,12 @@ export class AIStackAnalyzer extends BaseAnalyzer {
     const entryPoints: CASEntryPoint[] = [];
 
     const ignorePatterns = this.getIgnorePatterns(context);
-    let sourceFiles = await glob(`**/*.{${[...TS_EXTENSIONS, ...PY_EXTENSIONS].join(',')}}`, {
+    let sourceFiles = (await glob(`**/*.{${[...TS_EXTENSIONS, ...PY_EXTENSIONS].join(',')}}`, {
       cwd: context.projectPath,
       ignore: ignorePatterns,
       absolute: true,
       nodir: true,
-    });
+    })).filter(file => !isTestFileName(path.basename(file)));
     sourceFiles = this.capAndPrioritizeSourceFiles(sourceFiles, 'AI stack source files');
 
     const detections: AIDetection[] = [];
@@ -217,11 +218,11 @@ export class AIStackAnalyzer extends BaseAnalyzer {
   async getRelevantFiles(projectPath: string): Promise<string[]> {
     let sourceFiles: string[] = [];
     try {
-      sourceFiles = await glob(`**/*.{${[...TS_EXTENSIONS, ...PY_EXTENSIONS].join(',')}}`, {
+      sourceFiles = (await glob(`**/*.{${[...TS_EXTENSIONS, ...PY_EXTENSIONS].join(',')}}`, {
         cwd: projectPath,
         ignore: this.getIgnorePatterns({ projectPath }),
         nodir: true,
-      });
+      })).filter(file => !isTestFileName(path.basename(file)));
     } catch {
       return [];
     }

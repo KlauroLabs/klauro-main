@@ -1,6 +1,7 @@
 import { globSync as importedGlobSync } from 'glob';
 import * as fs from 'fs';
 import * as path from 'path';
+import { SCAFFOLD_GLOBS } from '../scaffold-paths';
 
 /**
  * Defensive glob resolution: under some CJS/ESM interop configurations (seen
@@ -49,16 +50,10 @@ export const IGNORE_GLOBS = [
   '**/target/**',
   '**/.klauro*/**',
   '**/vendor/**',
-  'fixtures/**',
-  '**/fixtures/**',
-  '__fixtures__/**',
-  '**/__fixtures__/**',
-  '__tests__/**',
-  '**/__tests__/**',
-  'testdata/**',
-  '**/testdata/**',
-  'cas-tests/**',
-  '**/cas-tests/**',
+  // fixtures/__fixtures__/testdata/cas-tests/__tests__ — the shared
+  // exclusion list (scaffold-paths.ts) every collector must consume, not a
+  // copy hand-maintained here.
+  ...SCAFFOLD_GLOBS,
 ];
 
 export function arrayOf(value: unknown): string[] {
@@ -142,6 +137,28 @@ export function isIdentifierShapedRepoBasename(basename: string): boolean {
 export function safeDeployableName(basename: string): string {
   if (isIdentifierShapedRepoBasename(basename)) return 'unnamed-service';
   return basename;
+}
+
+/**
+ * Generic structural directory names that carry no real service identity —
+ * "the directory source code/scripts/binaries live in", not a named unit.
+ * Real hosted defect: bin-targets.ts's collectServerEntries() names a
+ * server-entry deployable after `path.basename(rootPath)` when
+ * serverEntryRoot() collapses a route handler's path to a bare structural
+ * directory (e.g. `packages/analyzer-core/src`, `marketing-site/scripts`)
+ * rather than a named app/service directory — producing junk deployables
+ * "src"/"scripts" (kind server-entry) instead of a real service name. Any
+ * caller minting a deployable/service name from a directory basename should
+ * check this first and fall back to the repo/workspace display name instead.
+ */
+const GENERIC_STRUCTURAL_DIR_NAMES = new Set([
+  'src', 'source', 'sources', 'scripts', 'script', 'lib', 'libs', 'app', 'apps',
+  'bin', 'cmd', 'dist', 'build', 'out', 'server', 'client', 'backend', 'frontend',
+  'main', 'core', 'internal', 'pkg',
+]);
+
+export function isGenericStructuralDirName(name: string): boolean {
+  return GENERIC_STRUCTURAL_DIR_NAMES.has((name || '').trim().toLowerCase());
 }
 
 /**

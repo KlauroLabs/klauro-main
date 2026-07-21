@@ -2,7 +2,7 @@ import * as fs from 'fs-extra';
 import * as path from 'path';
 import type { CASEntryPoint, CASNode, DeployableEvidence } from '../../../../types/cas.types';
 import type { EvidenceCollectionContext, EvidenceProvider } from '../types';
-import { IGNORE_GLOBS, safeDeployableName, safeGlobSync } from '../util';
+import { IGNORE_GLOBS, isGenericStructuralDirName, safeDeployableName, safeGlobSync } from '../util';
 
 /** Cargo [[bin]] targets, package.json bin field, go main packages, src/bin/* files. */
 function collectBinTargets(ctx: EvidenceCollectionContext): DeployableEvidence[] {
@@ -235,10 +235,29 @@ function collectServerEntries(ctx: EvidenceCollectionContext): DeployableEvidenc
   const entryPoints = (ctx.cas.entry_points || []) as CASEntryPoint[];
   const nodesById = new Map<string, CASNode>((ctx.nodes || []).map(n => [n.id, n]));
 
-  const rootName = (rootPath: string): string =>
-    rootPath === '' || rootPath === '.'
-      ? safeDeployableName(displayName || path.basename(projectPath))
-      : safeDeployableName(path.basename(rootPath));
+  // A ship root's OWN basename can be a generic structural directory (src,
+  // scripts, lib, ...) that names no real unit — e.g.
+  // `apps/orders-api/src/routes/orders.ts` collapses to root
+  // `apps/orders-api/src`, whose basename "src" is meaningless even though
+  // the real service identity ("orders-api") is right there one segment up.
+  // Require evidence-named units: walk the root path from its rightmost
+  // segment inward past any generic directory names to the nearest real
+  // identity-bearing segment, only falling all the way back to the
+  // repo/workspace display name when every segment is generic (or there is
+  // no segment at all). Previously this used the bare `path.basename()`
+  // unconditionally, shipping "src"/"scripts" as the deployable name.
+  const rootName = (rootPath: string): string => {
+    if (rootPath === '' || rootPath === '.') {
+      return safeDeployableName(displayName || path.basename(projectPath));
+    }
+    const segments = rootPath.split('/').filter(Boolean);
+    for (let i = segments.length - 1; i >= 0; i--) {
+      if (!isGenericStructuralDirName(segments[i])) {
+        return safeDeployableName(segments[i]);
+      }
+    }
+    return safeDeployableName(displayName || path.basename(projectPath));
+  };
 
   for (const entry of entryPoints) {
     if (entry.type !== 'http') continue;

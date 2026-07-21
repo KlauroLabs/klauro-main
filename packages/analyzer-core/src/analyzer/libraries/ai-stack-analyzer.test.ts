@@ -115,3 +115,42 @@ test('AIStackAnalyzer detects an AI/LLM stack', async () => {
     await fs.remove(dir);
   }
 });
+
+// ---------------------------------------------------------------------------
+// Test-file exclusion regression (scaffold-paths.ts isTestFileName)
+// ---------------------------------------------------------------------------
+//
+// Open finding from the fixture-pollution audit: "ai-stack-analyzer scans
+// test files with no exclusion" — a co-located `*.test.ts`/`*.spec.ts` file
+// lives OUTSIDE any fixtures/__tests__ directory, so directory-name exclusion
+// (getIgnorePatterns) alone does not catch it; a unit test exercising the
+// analyzer's own AI-SDK detection (e.g. `agent.test.ts` calling
+// `generateText(...)` to assert on mocked output) must not itself register as
+// a product AI-app node/entry point.
+test('AIStackAnalyzer.analyze does not mint nodes/entry points from a co-located *.test.ts file', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'ai-stack-testfile-'));
+  try {
+    await fs.writeJson(path.join(dir, 'package.json'), { name: 'plain-app', dependencies: {} });
+    // A unit test file (not under any fixtures/__tests__ directory) that
+    // exercises AI-SDK-shaped code — this is TEST code, not a product AI
+    // surface.
+    await fs.writeFile(
+      path.join(dir, 'agent.test.ts'),
+      `import { generateText } from 'ai';
+test('calls generateText', async () => {
+  await generateText({ model: 'gpt-4o', prompt: 'hi' });
+});
+`
+    );
+
+    const analyzer = new AIStackAnalyzer();
+    const result = await analyzer.analyze({ projectPath: dir });
+    assert.equal(result.nodes.length, 0, `expected zero nodes from a *.test.ts-only tree, got: ${JSON.stringify(result.nodes.map(n => n.name))}`);
+    assert.equal((result.entry_points || []).length, 0, 'expected zero entry points');
+
+    const relevant = await analyzer.getRelevantFiles(dir);
+    assert.deepEqual(relevant, [], 'getRelevantFiles must not surface the co-located test file');
+  } finally {
+    await fs.remove(dir);
+  }
+});

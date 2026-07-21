@@ -126,3 +126,53 @@ describe('ExpressAnalyzer.canAnalyze import-form detection', () => {
     expect(routeEntry?.handler?.node_id).toBeDefined();
   });
 });
+
+/**
+ * Regression: `router.get(\`/oauth/${provider}/callback\`, ...)` (a
+ * backtick-delimited template-literal route path) used to leak the raw,
+ * unresolved `${provider}` expression verbatim into the route's
+ * name/trigger.path (`GET /oauth/${provider}/callback`) — the same
+ * "hash/expression-shaped tokens leak into labels" class already fixed
+ * elsewhere for id-shaped basenames. The route path must render as an honest
+ * Express-style param pattern instead (`GET /oauth/:provider/callback`).
+ */
+describe('ExpressAnalyzer template-literal route path normalization', () => {
+  let root: string;
+  let analyzer: ExpressAnalyzer;
+
+  beforeEach(async () => {
+    root = await fs.mkdtemp(path.join(os.tmpdir(), 'klauro-express-template-route-'));
+    analyzer = new ExpressAnalyzer();
+  });
+
+  afterEach(async () => {
+    await fs.rm(root, { recursive: true, force: true });
+  });
+
+  it('renders a template-literal route path as an honest :param pattern, not the raw expression', async () => {
+    await fs.writeJson(path.join(root, 'package.json'), {
+      name: 'oauth-app',
+      dependencies: { express: '^4.18.2' },
+    });
+    await fs.ensureDir(path.join(root, 'src'));
+    await fs.writeFile(path.join(root, 'src', 'server.ts'), [
+      "import express from 'express';",
+      'const app = express();',
+      '',
+      'app.get(`/oauth/${provider}/callback`, (req, res) => {',
+      '  return res.json({ ok: true });',
+      '});',
+    ].join('\n'));
+
+    expect(await analyzer.canAnalyze(root)).toBe(true);
+    const contribution = await analyzer.analyze({ projectPath: root, files: [], config: {} } as any);
+
+    const httpEntries = (contribution.entry_points || []).filter(ep => ep.type === 'http');
+    const routeEntry = httpEntries.find(ep => ep.trigger?.method === 'GET');
+    expect(routeEntry).toBeDefined();
+    expect(routeEntry?.trigger?.path).toBe('/oauth/:provider/callback');
+    expect(routeEntry?.name).toBe('GET /oauth/:provider/callback');
+    expect(routeEntry?.trigger?.path).not.toContain('${');
+    expect(routeEntry?.name).not.toContain('${');
+  });
+});

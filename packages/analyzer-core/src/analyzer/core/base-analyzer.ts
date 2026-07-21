@@ -49,6 +49,7 @@ export interface FileAnalysisContext extends AnalysisContext {
 
 import * as path from 'path';
 import * as fs from 'fs-extra';
+import { SCAFFOLD_GLOBS } from './scaffold-paths';
 
 const MAX_REPORTED_FILE_WARNINGS = 25;
 
@@ -289,14 +290,10 @@ export abstract class BaseAnalyzer {
       '**/examples/**',
       'samples/**',
       '**/samples/**',
-      'fixtures/**',
-      '**/fixtures/**',
-      '__fixtures__/**',
-      '**/__fixtures__/**',
-      'testdata/**',
-      '**/testdata/**',
-      'cas-tests/**',
-      '**/cas-tests/**',
+      // fixtures/__fixtures__/testdata/cas-tests/__tests__ — see
+      // scaffold-paths.ts (the single shared exclusion list; previously
+      // __tests__ was missing here entirely).
+      ...SCAFFOLD_GLOBS,
       'venv/**',
       '**/venv/**',
       'venv*/**',
@@ -405,7 +402,16 @@ export abstract class BaseAnalyzer {
    * JS repo's samples/ directory should stay excluded.
    */
   protected getPackageDirSafeIgnorePatterns(context: AnalysisContext): string[] {
-    const unsafeForPackageDirs = /^(\*\*\/)?(samples|examples|fixtures|testdata)\/\*\*$/;
+    // Only samples/examples collide with a real JVM reversed-domain package
+    // segment (org.springframework.samples.<app>) — fixtures/testdata/
+    // cas-tests/__tests__/__fixtures__ (see scaffold-paths.ts) are never a
+    // plausible real package name, so they must stay excluded even for
+    // package-dir-safe callers. Previously this regex also stripped
+    // "fixtures", letting KotlinAnalyzer walk
+    // apps/mcp-server/fixtures/component-bench/compose-tree/App.kt and mint a
+    // duplicate "Android Activity: MainActivity" entry point from Klauro's
+    // own test fixture.
+    const unsafeForPackageDirs = /^(\*\*\/)?(samples|examples)\/\*\*$/;
     return this.getIgnorePatterns(context).filter(p => !unsafeForPackageDirs.test(p));
   }
 

@@ -1,4 +1,5 @@
 import { BaseAnalyzer, CASAnalysisResult, CASNode, CASEdge, AnalysisContext, FileAnalysisContext } from './base-analyzer';
+import { SCAFFOLD_DIR_NAMES, SCAFFOLD_GLOBS } from './scaffold-paths';
 import {
   CASOutput,
   CASNestedRepository,
@@ -760,10 +761,11 @@ export class AnalyzerOrchestrator {
     if (relativePath === 'bin') return false;
     return new Set([
       'node_modules',
-      'fixtures',
-      '__fixtures__',
-      'testdata',
-      'cas-tests',
+      // fixtures/__fixtures__/testdata/cas-tests/__tests__ — shared
+      // exclusion list (scaffold-paths.ts); __tests__ was missing here
+      // entirely, so a jest-convention __tests__/ dir containing fixture
+      // assets could still surface as real repo structure.
+      ...SCAFFOLD_DIR_NAMES,
       'dist',
       'build',
       '.git',
@@ -963,14 +965,9 @@ export class AnalyzerOrchestrator {
   private getProjectDiscoveryIgnorePatterns(): string[] {
     const patterns = [
       '**/node_modules/**',
-      'fixtures/**',
-      '**/fixtures/**',
-      '__fixtures__/**',
-      '**/__fixtures__/**',
-      'testdata/**',
-      '**/testdata/**',
-      'cas-tests/**',
-      '**/cas-tests/**',
+      // fixtures/__fixtures__/testdata/cas-tests/__tests__ — shared
+      // exclusion list (scaffold-paths.ts); __tests__ was missing here.
+      ...SCAFFOLD_GLOBS,
       '**/dist/**',
       '**/build/**',
       '.git/**',
@@ -4174,14 +4171,9 @@ export class AnalyzerOrchestrator {
         '**/*-extracted/**',
         'examples/**',
         '**/examples/**',
-        'fixtures/**',
-        '**/fixtures/**',
-        '__fixtures__/**',
-        '**/__fixtures__/**',
-        'testdata/**',
-        '**/testdata/**',
-        'cas-tests/**',
-        '**/cas-tests/**',
+        // fixtures/__fixtures__/testdata/cas-tests/__tests__ — shared
+        // exclusion list (scaffold-paths.ts); __tests__ was missing here.
+        ...SCAFFOLD_GLOBS,
         'samples/**',
         '**/samples/**',
         'site-packages/**',

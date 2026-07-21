@@ -377,3 +377,71 @@ test('HelmAnalyzer.analyze resolves per-job schedule/command from a `.Values.cro
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// Fixture/test-scaffolding exclusion regression (scaffold-paths.ts)
+// ---------------------------------------------------------------------------
+//
+// Real defect: IacAnalyzer.getIgnorePatterns() overrode BaseAnalyzer's
+// comprehensive exclusion list with a hand-rolled 8-pattern list that omitted
+// fixtures/**, so HelmAnalyzer walked a self-analysis test fixture chart
+// (apps/mcp-server/fixtures/deployable-detection/helm-service/...) as if it
+// were the analyzed repo's own Kubernetes topology, minting a real
+// "Helm Service (orders-service) :80" entry point + "helm install
+// orders-service" deployable. A chart under any scaffold directory name
+// (fixtures/, __fixtures__/, testdata/, cas-tests/, __tests__/) must produce
+// ZERO nodes/entry points — the same bar the ticket sets for every collector.
+test('HelmAnalyzer.analyze mints zero nodes/entry points from a chart under a fixtures/ directory', async () => {
+  const dir = tempDir('helm-fixture-scaffold-test');
+  try {
+    const chartDir = path.join(dir, 'apps', 'mcp-server', 'fixtures', 'deployable-detection', 'helm-service');
+    fs.mkdirSync(path.join(chartDir, 'templates'), { recursive: true });
+    fs.writeFileSync(path.join(chartDir, 'Chart.yaml'), 'apiVersion: v2\nname: orders-service\nversion: 0.1.0\n');
+    fs.writeFileSync(path.join(chartDir, 'templates', 'service.yaml'), [
+      'apiVersion: v1',
+      'kind: Service',
+      'metadata:',
+      '  name: orders-service',
+      'spec:',
+      '  ports:',
+      '    - port: 80',
+      '',
+    ].join('\n'));
+
+    const analyzer = new HelmAnalyzer();
+    // canAnalyze must not even see the fixture chart as a reason to run.
+    assert.equal(await analyzer.canAnalyze(dir), false);
+
+    const cas = await analyzer.analyze({ projectPath: dir });
+    assert.equal(cas.nodes.length, 0, `expected zero nodes from a fixtures/-only tree, got: ${JSON.stringify(cas.nodes.map(n => n.name))}`);
+    assert.equal(cas.entry_points.length, 0, `expected zero entry points from a fixtures/-only tree, got: ${JSON.stringify(cas.entry_points.map(e => e.name))}`);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('HelmAnalyzer.analyze mints zero nodes/entry points from a chart under a __tests__/ directory', async () => {
+  const dir = tempDir('helm-tests-scaffold-test');
+  try {
+    const chartDir = path.join(dir, '__tests__', 'helm-service');
+    fs.mkdirSync(path.join(chartDir, 'templates'), { recursive: true });
+    fs.writeFileSync(path.join(chartDir, 'Chart.yaml'), 'apiVersion: v2\nname: orders-service\nversion: 0.1.0\n');
+    fs.writeFileSync(path.join(chartDir, 'templates', 'service.yaml'), [
+      'apiVersion: v1',
+      'kind: Service',
+      'metadata:',
+      '  name: orders-service',
+      'spec:',
+      '  ports:',
+      '    - port: 80',
+      '',
+    ].join('\n'));
+
+    const analyzer = new HelmAnalyzer();
+    const cas = await analyzer.analyze({ projectPath: dir });
+    assert.equal(cas.nodes.length, 0, `expected zero nodes from a __tests__/-only tree, got: ${JSON.stringify(cas.nodes.map(n => n.name))}`);
+    assert.equal(cas.entry_points.length, 0, `expected zero entry points from a __tests__/-only tree, got: ${JSON.stringify(cas.entry_points.map(e => e.name))}`);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

@@ -897,7 +897,7 @@ export class ExpressAnalyzer extends BaseAnalyzer {
     let match;
     while ((match = head.exec(content)) !== null) {
       const method = match[1];
-      const path = match[3];
+      const path = this.normalizeTemplateLiteralRoutePath(match[3]);
       const args = this.parseRemainingCallArgs(content, head.lastIndex);
       // Last arg is the route handler; everything before it is the middleware
       // chain. Keep only real identifier guards (e.g. `requireAuth`,
@@ -918,6 +918,28 @@ export class ExpressAnalyzer extends BaseAnalyzer {
     }
 
     return routes;
+  }
+
+  /**
+   * The path-matching group in `head` accepts backtick-delimited template
+   * literals too (`` router.get(`/oauth/${provider}/callback`, ...) ``), and
+   * `[^'"`]+` happily captures the raw `${provider}` interpolation along with
+   * everything else — so without this, the route's name/path leaked the
+   * literal, unresolved expression text (`GET /oauth/${provider}/callback`)
+   * into the entry point name instead of an honest route pattern. Render
+   * every `${expr}` segment as an Express-style `:expr` path param instead —
+   * the same shape a real parameterized route already uses, and the closest
+   * honest approximation of "this segment is a runtime value" without
+   * fabricating what the expression evaluates to. A bare/complex expression
+   * (e.g. `${a.b}` or `${a + b}`) is sanitized to a single identifier-safe
+   * token so the rendered pattern stays a valid-looking route path.
+   */
+  private normalizeTemplateLiteralRoutePath(path: string): string {
+    if (!path.includes('${')) return path;
+    return path.replace(/\$\{\s*([^}]*?)\s*\}/g, (_match, expr: string) => {
+      const token = (expr || '').replace(/[^a-zA-Z0-9_]+/g, '_').replace(/^_+|_+$/g, '');
+      return `:${token || 'param'}`;
+    });
   }
 
   /**
