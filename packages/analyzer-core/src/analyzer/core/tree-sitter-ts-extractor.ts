@@ -1,5 +1,47 @@
 import * as fs from 'fs';
 
+/**
+ * tree-sitter's native scanners treat a literal U+0000 byte as an end-of-input
+ * sentinel rather than an ordinary character (confirmed against
+ * tree-sitter-typescript: `` `a\0b` `` parses to an ERROR node — `UNEXPECTED '\0'`
+ * — even though the construct is valid JS/TS). Several analyzer-core modules
+ * deliberately embed a raw NUL as a collision-proof separator inside template
+ * literals used for cache/hash keys (e.g. `` `${a}\0${b}` ``); that's legitimate
+ * source, not corruption, so it must not be edited. Replace NUL with a
+ * same-length, non-NUL placeholder ONLY in the string handed to the parser —
+ * the original file content/return value seen by every other caller (hashing,
+ * embeddings, display) is untouched. Grammar-general: any parser fed through
+ * this module (or wasm-tree-sitter, which reuses this) gets the same
+ * treatment regardless of which analyzer's source triggered it.
+ */
+export function sanitizeForTreeSitterParse(source: string): string {
+  return source.indexOf('\0') === -1 ? source : source.replace(/\0/g, '�');
+}
+
+/**
+ * `abstract` is the one TS modifier keyword this tree-sitter-typescript grammar
+ * version (0.23.2) cannot disambiguate from a property/field NAME: unlike
+ * `static`/`readonly`/`public`/etc (all fine as property names), a bare
+ * `abstract` immediately followed by `:`/`?:` inside an interface body, object
+ * type, or class field produces an ERROR node and the grammar then misreads
+ * the type annotation's own identifier as the property name (e.g.
+ * `abstract?: boolean` extracts a bogus property named "boolean"). Confirmed
+ * via minimal repro: `interface X { abstract?: boolean }` -> ERROR;
+ * `interface X { static?: boolean }` -> clean. Quoting the key
+ * (`"abstract"?: boolean`) is valid TS/JS in every position (interface,
+ * object type, object literal) and sidesteps the reserved-word lexing
+ * entirely without touching real abstract-modifier usage (`abstract class`,
+ * `abstract foo(): void`, both unaffected since neither is followed directly
+ * by `:`/`?:`). Only rewrites the string handed to the parser — never the
+ * file on disk.
+ */
+const ABSTRACT_AS_PROPERTY_KEY = /([{;,\n]\s*)abstract(\??\s*:)/g;
+export function sanitizeAbstractPropertyKeyword(source: string): string {
+  return source.indexOf('abstract') === -1
+    ? source
+    : source.replace(ABSTRACT_AS_PROPERTY_KEY, (_m, pre, suf) => `${pre}"abstract"${suf}`);
+}
+
 let ParserClass: any = null;
 let tsGrammar: any = null;
 let tsxGrammar: any = null;
@@ -347,7 +389,8 @@ export class TreeSitterTSExtractor {
     this.imports.clear();
 
     const parser = this.getParser(filePath);
-    const tree = parser.parse(content);
+    const forParse = sanitizeAbstractPropertyKeyword(sanitizeForTreeSitterParse(content));
+    const tree = parser.parse(forParse);
     const root = getRootNode(tree);
 
     // extractImports/Classes/Variables/Exports each independently did a full
