@@ -1,6 +1,7 @@
 import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 import { execFileSync } from 'node:child_process';
+import { fileURLToPath, URL } from 'node:url';
 
 /**
  * Deploy-freshness build id: the current commit's short SHA when available
@@ -37,6 +38,11 @@ export default defineConfig({
   plugins: [react(), buildIdHtmlPlugin(buildId)],
   define: {
     __KLAURO_BUILD_ID__: JSON.stringify(buildId),
+  },
+  resolve: {
+    alias: {
+      '@': fileURLToPath(new URL('./src', import.meta.url)),
+    },
   },
   server: {
     port: 5174,

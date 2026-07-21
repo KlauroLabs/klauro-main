@@ -1,20 +1,11 @@
-// Full route tree (react-router-dom v7) per LANE-COMMON.md: every drilldown
-// level is deep-linkable. Page components are lazy() imports so a page
-// lane's module resolves the moment it lands on disk without touching this
-// file; a route whose module doesn't exist yet falls back to `Stub` so the
-// app always builds/runs while lanes are mid-flight (LANE-COMMON's fabric
-// in-flight-reuse goal). AppShell (sidebar/topbar) wraps every authenticated
-// route once via a layout route; /auth renders outside the shell.
 import { lazy, Suspense, type ComponentType } from 'react';
 import { createBrowserRouter, Outlet } from 'react-router-dom';
-import { AppShell } from './layout/AppShell';
-import { RequireAuth } from './auth/RequireAuth';
-import { LoadingState } from './layout/LoadingState';
-import { Stub } from './pages/Stub';
-import { AuthPage } from './pages/auth/AuthPage';
+import { AppShell } from '@/shared/layout/AppShell';
+import { RequireAuth } from '@/shared/auth/RequireAuth';
+import { LoadingState } from '@/shared/layout/LoadingState';
+import { Stub } from '@/app/Stub';
+import { AuthPage } from '@/app/Auth/AuthPage';
 
-/** Wrap a dynamic import so a missing module (page lane not landed yet)
- *  degrades to `Stub` instead of failing the whole route tree. */
 function lazyPage(area: string, loader: () => Promise<{ [key: string]: ComponentType }>, exportName: string) {
   return lazy(() =>
     loader()
@@ -23,29 +14,26 @@ function lazyPage(area: string, loader: () => Promise<{ [key: string]: Component
   );
 }
 
-const DashboardPage = lazyPage('Dashboard', () => import('./pages/dashboard/DashboardPage'), 'DashboardPage');
-const WorkspacePage = lazyPage('Workspace', () => import('./pages/workspace/WorkspacePage'), 'WorkspacePage');
-const WorkspaceMapPage = lazyPage('Workspace system map', () => import('./pages/workspace/WorkspaceMapPage'), 'WorkspaceMapPage');
-const CodebasePage = lazyPage('Codebase overview', () => import('./pages/codebase/CodebasePage'), 'CodebasePage');
-const CodebaseOverview = lazyPage('Overview', () => import('./pages/codebase/CodebaseOverview'), 'CodebaseOverview');
-const CodebaseCapabilities = lazyPage('Capabilities', () => import('./pages/codebase/CodebaseCapabilities'), 'CodebaseCapabilities');
-// page-flows lane (claimed) supersedes page-codebase's interim fallback
-// (pages/codebase/CodebaseFlows.tsx + FlowDetailPage.tsx, both left in place
-// as dead code for page-codebase to remove in a follow-up — see
-// apps/app/docs/DESIGN-NOTES.md, "page-flows lane").
-const CodebaseFlows = lazyPage('Flows', () => import('./pages/flows/FlowsListPage'), 'FlowsListPage');
-const CodebaseEntities = lazyPage('Entities', () => import('./pages/entities/EntitiesPage'), 'EntitiesPage');
-const CodebaseArchitecture = lazyPage('Architecture', () => import('./pages/codebase/CodebaseArchitecture'), 'CodebaseArchitecture');
-const CodebaseDependencies = lazyPage('Dependencies', () => import('./pages/codebase/CodebaseDependencies'), 'CodebaseDependencies');
-const CodebaseEntryPoints = lazyPage('Entry points', () => import('./pages/entry-points/EntryPointsPage'), 'EntryPointsPage');
-const CodebaseFunctions = lazyPage('Functions', () => import('./pages/functions/FunctionsPage'), 'FunctionsPage');
-const CodebaseIntegrations = lazyPage('Integrations', () => import('./pages/integrations/IntegrationsPage'), 'IntegrationsPage');
-const DeployableDetailPage = lazyPage('Deployable', () => import('./pages/deployable/DeployableDetailPage'), 'DeployableDetailPage');
-const EntryPointDetailPage = lazyPage('Entry point', () => import('./pages/entry-points/EntryPointDetailPage'), 'EntryPointDetailPage');
-const FlowDetailPage = lazyPage('Flow', () => import('./pages/flows/FlowDetailPage'), 'FlowDetailPage');
-const EntityDetailPage = lazyPage('Entity', () => import('./pages/entities/EntityDetailPage'), 'EntityDetailPage');
-const FunctionDetailPage = lazyPage('Function', () => import('./pages/functions/FunctionDetailPage'), 'FunctionDetailPage');
-const FileNodesPage = lazyPage('File', () => import('./pages/functions/FileNodesPage'), 'FileNodesPage');
+const DashboardPage = lazyPage('Dashboard', () => import('@/app/Dashboard/DashboardPage'), 'DashboardPage');
+const WorkspacePage = lazyPage('Workspace', () => import('@/app/Workspace/WorkspacePage'), 'WorkspacePage');
+const WorkspaceMapPage = lazyPage('Workspace system map', () => import('@/app/Workspace/WorkspaceMapPage'), 'WorkspaceMapPage');
+const CodebasePage = lazyPage('Codebase overview', () => import('@/app/Codebase/CodebasePage'), 'CodebasePage');
+const CodebaseOverview = lazyPage('Overview', () => import('@/app/Codebase/CodebaseOverview'), 'CodebaseOverview');
+const CodebaseCapabilities = lazyPage('Capabilities', () => import('@/app/Codebase/CodebaseCapabilities'), 'CodebaseCapabilities');
+
+const CodebaseFlows = lazyPage('Flows', () => import('@/app/Flows/FlowsListPage'), 'FlowsListPage');
+const CodebaseEntities = lazyPage('Entities', () => import('@/app/Entities/EntitiesPage'), 'EntitiesPage');
+const CodebaseArchitecture = lazyPage('Architecture', () => import('@/app/Codebase/CodebaseArchitecture'), 'CodebaseArchitecture');
+const CodebaseDependencies = lazyPage('Dependencies', () => import('@/app/Codebase/CodebaseDependencies'), 'CodebaseDependencies');
+const CodebaseEntryPoints = lazyPage('Entry points', () => import('@/app/EntryPoints/EntryPointsPage'), 'EntryPointsPage');
+const CodebaseFunctions = lazyPage('Functions', () => import('@/app/Functions/FunctionsPage'), 'FunctionsPage');
+const CodebaseIntegrations = lazyPage('Integrations', () => import('@/app/Integrations/IntegrationsPage'), 'IntegrationsPage');
+const DeployableDetailPage = lazyPage('Deployable', () => import('@/app/Deployable/DeployableDetailPage'), 'DeployableDetailPage');
+const EntryPointDetailPage = lazyPage('Entry point', () => import('@/app/EntryPoints/EntryPointDetailPage'), 'EntryPointDetailPage');
+const FlowDetailPage = lazyPage('Flow', () => import('@/app/Flows/FlowDetailPage'), 'FlowDetailPage');
+const EntityDetailPage = lazyPage('Entity', () => import('@/app/Entities/EntityDetailPage'), 'EntityDetailPage');
+const FunctionDetailPage = lazyPage('Function', () => import('@/app/Functions/FunctionDetailPage'), 'FunctionDetailPage');
+const FileNodesPage = lazyPage('File', () => import('@/app/Functions/FileNodesPage'), 'FileNodesPage');
 
 function AuthenticatedLayout() {
   return (

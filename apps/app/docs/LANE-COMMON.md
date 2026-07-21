@@ -47,7 +47,13 @@ functions, integrations), with progressive disclosure at every level.
   status/enrichment/last_attempt). Destructure the envelope in the hook layer ONCE — a past
   live incident came from reading fields at the response root.
 - **File discipline**: no file over ~200 lines; components single-purpose; shared primitives go
-  in `src/components/` (NOT per-page copies).
+  in `src/shared/components/` (NOT per-page copies). Structure follows the admin-ui exemplar:
+  `src/app/<Feature>/` for pages, `src/shared/{api,auth,hooks,components,lib,layout}` for
+  cross-feature code, `src/theme/{colors,palette,typography,components/*}.ts` split per concern.
+- **Comments**: constraint comments ONLY (things the code cannot express: envelope rules,
+  load-bearing invariants, honest-gap markers). NO lane narration, NO Figma-node citations
+  (those live in docs/DESIGN-NOTES.md), NO provenance, NO restating the next line.
+- **Tests live in apps/app/tests/** mirroring the src path — never colocated in src/.
 - Tests: vitest + @testing-library/react (harness exists). Each lane ships tests for its pages
   (loading/empty/error/data states minimum).
 
