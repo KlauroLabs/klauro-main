@@ -255,8 +255,8 @@ export async function getInFlightSemanticDelta(
   participantId: string
 ): Promise<InFlightSemanticDelta> {
   const [mainCas, inflightCas] = await Promise.all([
-    loadAnalysis(workspacePath, { track: 'main' }).catch(() => null),
-    loadAnalysis(workspacePath, { track: 'in-flight' }).catch(() => null),
+    loadAnalysis(workspacePath, { preferCache: true, track: 'main' }).catch(() => null),
+    loadAnalysis(workspacePath, { preferCache: true, track: 'in-flight' }).catch(() => null),
   ]);
 
   const mainPresent = Boolean(mainCas);

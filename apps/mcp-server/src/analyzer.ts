@@ -1388,7 +1388,7 @@ export async function getAnalysis(
   projectPath: string,
   options?: { track?: import('./track').AnalysisTrack }
 ): Promise<CASOutput> {
-  const cached = await loadAnalysis(projectPath, options?.track ? { track: options.track } : undefined);
+  const cached = await loadAnalysis(projectPath, { preferCache: true, ...(options?.track ? { track: options.track } : {}) });
   if (cached) {
     assertAnalysisVersionSupported(cached, projectPath);
     return applyStoredElementDescriptions(projectPath, cached);

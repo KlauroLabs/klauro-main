@@ -399,7 +399,7 @@ export async function getElementDescription(input: {
   invalidated_at?: string;
   invalidation_reason?: string;
 }> {
-  const cas = await loadAnalysis(input.projectPath);
+  const cas = await loadAnalysis(input.projectPath, { preferCache: true });
   if (!cas) throw new Error(`No analysis found for: ${input.projectPath}. Run analyze_codebase first.`);
   const resolved = await resolveTarget(input.projectPath, cas, input.target, input.targetKind);
   if (!resolved) return { status: 'missing' };
