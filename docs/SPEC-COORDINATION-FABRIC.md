@@ -2,7 +2,9 @@
 
 > **Status: IMPLEMENTED (v1)** (local tier + MCP tools + routes live as of e1780f62, 2026-07-02). SSE/retry/security shipped; cross-machine sync + fleet scale are follow-ons.
 >
-> **Superseded by [[SPEC-COORDINATION-FABRIC-V2]] for the coordination MODEL.**
+> **Superseded by [[SPEC-COORDINATION-FABRIC-V2]] for the coordination MODEL**
+> (itself superseded by [[SPEC-COORDINATION-FABRIC-V3]]); the build-ready upgrade set on
+> top of v3 is [SPEC-COORDINATION-ENGINE.md](./SPEC-COORDINATION-ENGINE.md).
 > This v1 doc's advisory `checkEditLock`/collision-detection framing, and its
 > "enforced arbitration" framing in later planning, are both superseded by v2
 > §1.7: the core model is **concurrent work + awareness + semantic

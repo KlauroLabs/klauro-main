@@ -3,6 +3,12 @@
 > **Status:** DRAFT for review. Supersedes SPEC-COORDINATION-FABRIC-V2.md.
 > v2 is not wrong in its mechanics — it is wrong in its **axis**. Read §1 first;
 > it is the whole point of this revision.
+>
+> **Build-ready extension:** [SPEC-COORDINATION-ENGINE.md](./SPEC-COORDINATION-ENGINE.md)
+> specs the six-upgrade Coordination Engine on top of this doc's model (structured
+> produces/consumes intent, outcome records, subscriptions, predictive footprint, durable
+> board, transitive awareness) with per-upgrade schemas, MCP surface, scale laws, and a
+> ranked build order.
 
 ---
 
