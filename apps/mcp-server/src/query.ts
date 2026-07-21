@@ -5,6 +5,7 @@ import type {
   CASTestSuite, ChangeHistoryEntry, ChangeAggregate, HeatMapData, ImpactAnalysis,
 } from '../../../packages/analyzer-core/src/types/cas.types';
 import { diffBehavior } from '../../../packages/analyzer-core/src/analyzer/core/behavior-diff';
+import { ReachabilityIndex, callEdgePairs } from '../../../packages/analyzer-core/src/analyzer/core/reachability-index';
 import { detectCommunities } from '../../../packages/analyzer-core/src/analyzer/core/community-detection';
 import { findNearClones } from '../../../packages/analyzer-core/src/analyzer/core/minhash-clone-detection';
 import { isAuthenticationGuardName } from '../../../packages/analyzer-core/src/analyzer/core/guard-classification';
@@ -1377,6 +1378,69 @@ export function getStability(cas: CASOutput, nodeId?: string) {
   };
 }
 
+/**
+ * Transitive affected set over the call graph (Workstream C,
+ * docs/SPEC-MATHEMATICAL-INTELLIGENCE.md): every node whose behavior can be
+ * affected when `nodeIds` change (direction 'upstream' = transitive callers,
+ * the blast radius; 'downstream' = transitive callees; 'both' = undirected
+ * closure). Uses the persisted reachability index when the analysis carries
+ * one (near-O(1) / O(answer)); falls back to a full BFS traversal over the
+ * SAME edge set ('calls' edges + resolved method_calls) on older CAS
+ * revisions — both paths return identical answers (parity-tested). When
+ * `maxNodes` truncates, both paths return a bounded subset and flag
+ * `truncated: true`; the untruncated closure is identical across paths.
+ */
+export function getAffectedSet(
+  cas: CASOutput,
+  nodeIds: string[],
+  opts: { direction?: 'upstream' | 'downstream' | 'both'; maxNodes?: number } = {}
+): { affected: string[]; truncated: boolean; method: 'reachability_index' | 'traversal' } {
+  const direction = opts.direction ?? 'upstream';
+  const maxNodes = opts.maxNodes ?? Infinity;
+
+  if (cas.reachability_index) {
+    const idx = ReachabilityIndex.from(cas.reachability_index);
+    const result = idx.affectedSet(nodeIds, { direction, maxNodes });
+    return { ...result, method: 'reachability_index' };
+  }
+
+  // Traversal fallback (old CAS without a persisted index): BFS over the
+  // exact edge set the index is built from, so answers match the index path.
+  const fwd = new Map<string, string[]>();
+  const rev = new Map<string, string[]>();
+  for (const [s, t] of callEdgePairs(cas)) {
+    if (s === t) continue;
+    if (!fwd.has(s)) fwd.set(s, []);
+    fwd.get(s)!.push(t);
+    if (!rev.has(t)) rev.set(t, []);
+    rev.get(t)!.push(s);
+  }
+  const seeds = new Set(nodeIds);
+  const visited = new Set<string>(seeds);
+  const queue = [...seeds];
+  while (queue.length > 0) {
+    const v = queue.shift()!;
+    const next = direction === 'downstream'
+      ? (fwd.get(v) ?? [])
+      : direction === 'upstream'
+        ? (rev.get(v) ?? [])
+        : [...(fwd.get(v) ?? []), ...(rev.get(v) ?? [])];
+    for (const w of next) {
+      if (!visited.has(w)) {
+        visited.add(w);
+        queue.push(w);
+      }
+    }
+  }
+  const affected = [...visited].filter(id => !seeds.has(id)).sort();
+  const truncated = affected.length > maxNodes;
+  return {
+    affected: truncated ? affected.slice(0, maxNodes) : affected,
+    truncated,
+    method: 'traversal',
+  };
+}
+
 export function assessChangeRisk(cas: CASOutput, nodeId: string) {
   const node = cas.nodes.find(n => n.id === nodeId);
   const risk = (cas.change_risks || []).find(r => r.node_id === nodeId);
@@ -1420,8 +1484,21 @@ export function assessChangeRisk(cas: CASOutput, nodeId: string) {
     };
   }
 
+  // Transitive blast radius (additive): full upstream closure — every node
+  // that can transitively reach this one, i.e. everything a change here can
+  // affect. Near-O(1) via the persisted reachability index when present;
+  // traversal fallback on older CAS (same edge set, same answer).
+  const affectedResult = getAffectedSet(cas, [nodeId], { direction: 'upstream' });
+  const nodeNameById = new Map(cas.nodes.map(n => [n.id, n.name]));
+  const transitiveImpact = {
+    affected_count: affectedResult.affected.length,
+    affected_sample: affectedResult.affected.slice(0, 20).map(id => ({ node_id: id, name: nodeNameById.get(id) })),
+    method: affectedResult.method,
+  };
+
   return {
     risk: risk || null,
+    transitive_impact: transitiveImpact,
     change_risk_summary: cas.change_risk_summary || null,
   };
 }

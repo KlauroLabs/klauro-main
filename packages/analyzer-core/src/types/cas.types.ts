@@ -57,6 +57,14 @@ export interface CASOutput {
    *  parity with codebase-memory's community detection; Klauro layers domain
    *  meaning on top. */
   communities?: CASCommunity[];
+  /**
+   * Reachability index over the directed call graph (SCC condensation +
+   * pruned landmark labeling; see CASReachabilityIndex / analyzer/core/
+   * reachability-index.ts). Built in the graph stage; consumers use it for
+   * near-O(1) transitive reachability and affected-set queries instead of
+   * per-query traversals, falling back to traversal when absent (older CAS).
+   */
+  reachability_index?: CASReachabilityIndex;
   categories?: CASCategories;
   tags?: CASTag[];
   index?: CASIndex;
@@ -801,6 +809,45 @@ export interface CASCommunity {
   member_ids: string[];
   size: number;
   internal_edges: number;
+}
+
+/**
+ * Persisted reachability index over the directed call graph (Workstream C,
+ * docs/SPEC-MATHEMATICAL-INTELLIGENCE.md): Tarjan SCC condensation + pruned
+ * 2-hop landmark labeling, built at analysis time by
+ * analyzer/core/reachability-index.ts and rehydrated with
+ * `ReachabilityIndex.from()` for near-O(1) "can A reach B" and O(answer)
+ * affected-set queries. Contains ONLY graph-shape facts (no timestamps) —
+ * byte-stable across identical runs. Only nodes incident to at least one
+ * call edge participate (node absent from `node_ids` = reaches only itself),
+ * keeping the stored size proportional to the call graph, not the CAS.
+ * All *_offsets/* arrays are CSR (compressed sparse row) form: entries for
+ * component c live at positions [offsets[c], offsets[c+1]).
+ */
+export interface CASReachabilityIndex {
+  version: 1;
+  /** Sorted node ids; array position = compact node index. */
+  node_ids: string[];
+  /** comp_of[i] = SCC component of node_ids[i] (components canonically
+   *  numbered by minimum member index). */
+  comp_of: number[];
+  comp_count: number;
+  /** Condensation DAG (caller->callee direction), CSR, deduped, sorted. */
+  comp_adj_offsets: number[];
+  comp_adj_targets: number[];
+  /** 2-hop labels: canReach(a,b) = same comp OR label_out(comp a) intersects
+   *  label_in(comp b). Entries sorted ascending per component. */
+  label_out_offsets: number[];
+  label_out: number[];
+  label_in_offsets: number[];
+  label_in: number[];
+  stats: {
+    nodes: number;
+    edges: number;
+    comps: number;
+    largest_scc: number;
+    label_entries: number;
+  };
 }
 
 export interface CASPattern {
