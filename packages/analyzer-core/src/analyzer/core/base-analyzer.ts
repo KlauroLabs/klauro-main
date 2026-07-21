@@ -570,6 +570,63 @@ export abstract class BaseAnalyzer {
     return crypto.createHash('sha256').update(content).digest('hex').substring(0, 16);
   }
 
+  /**
+   * Replace line-comment (`//...`) and block-comment (`/* ... *­/`) characters
+   * with spaces (newlines and string/template contents are never touched), so
+   * a plain-text regex scan cannot mistake a documentation example for real
+   * code. Shared by any regex-based library analyzer that walks raw source
+   * text for call-site patterns (mcp-tool-registration-analyzer.ts,
+   * ai-stack-analyzer.ts): a JSDoc/line-comment illustrating the exact call
+   * shape being detected (e.g. this analyzer's own header documenting
+   * `server.tool('do_thing', schema, handler)`) reads identically to a real
+   * call site and was previously extracted as one in EACH analyzer
+   * independently — mcp-tool-registration-analyzer.ts fixed its own copy of
+   * this (quality-iter-1 #8 / #2) but ai-stack-analyzer.ts ran the same
+   * `.registerTool`/`.tool(` detection unblanked, so the doc-comment example
+   * kept leaking through that second, independent pass. Centralizing here so
+   * a future regex-based detector gets comment-safety by default rather than
+   * needing its own copy-pasted fix. Tracks string/template state
+   * char-by-char so a `//` or `/*` appearing inside a string literal is left
+   * alone. Byte offsets and line numbers computed against the returned string
+   * are identical to those against the original content.
+   */
+  protected blankComments(content: string): string {
+    let out = '';
+    let i = 0;
+    const n = content.length;
+    let inLineComment = false;
+    let inBlockComment = false;
+    let inString: '"' | "'" | '`' | null = null;
+    while (i < n) {
+      const ch = content[i];
+      const next = content[i + 1];
+      if (inLineComment) {
+        if (ch === '\n') { inLineComment = false; out += ch; } else { out += ' '; }
+        i++;
+        continue;
+      }
+      if (inBlockComment) {
+        if (ch === '*' && next === '/') { inBlockComment = false; out += '  '; i += 2; continue; }
+        out += ch === '\n' ? '\n' : ' ';
+        i++;
+        continue;
+      }
+      if (inString) {
+        out += ch;
+        if (ch === '\\') { out += next ?? ''; i += 2; continue; }
+        if (ch === inString) inString = null;
+        i++;
+        continue;
+      }
+      if (ch === '"' || ch === "'" || ch === '`') { inString = ch; out += ch; i++; continue; }
+      if (ch === '/' && next === '/') { inLineComment = true; out += '  '; i += 2; continue; }
+      if (ch === '/' && next === '*') { inBlockComment = true; out += '  '; i += 2; continue; }
+      out += ch;
+      i++;
+    }
+    return out;
+  }
+
   protected createFileAnalysisResult(
     filePath: string,
     relativePath: string,

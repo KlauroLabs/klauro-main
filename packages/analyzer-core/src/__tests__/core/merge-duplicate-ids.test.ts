@@ -137,6 +137,106 @@ describe('contribution merge duplicate-id semantics', () => {
     expect(analysisErrors[0].message).toContain('edge:1');
   });
 
+  // -------------------------------------------------------------------------
+  // Cross-analyzer canonical-identity dedup (entry-point double-registration
+  // class): mcp-tool-registration-analyzer.ts and ai-stack-analyzer.ts each
+  // independently detect `.registerTool`/`.tool(` call sites and both emit a
+  // 'message'-type entry point for the SAME real MCP tool registration, but
+  // under DIFFERENT id schemes (`entry_mcp_tool_<name>_<file>_<line>` vs
+  // `entry_mcp_tool_<name>_<file>`, no line suffix) — so the id-keyed dedup
+  // above never caught them, doubling every real message-kind entry point
+  // (435 entries / 221 unique names on a fresh self-CAS). These tests pin the
+  // (type, name, handler-node) canonical-key dedup that fixes it.
+  it('dedupes the SAME MCP tool registration reported under two different ids by two analyzer passes, keeping the richer record', async () => {
+    const target = emptyTarget();
+    // The leaner ai-stack-analyzer.ts-shaped record: no method_name distinct
+    // from name, no trigger.method, sparse metadata.
+    const coarse = {
+      id: 'entry_mcp_tool_get_summary_apps-mcp-server-src-server-ts',
+      source_node: 'node:mcp_tool_get_summary_apps-mcp-server-src-server-ts',
+      source_analyzer: 'ai-stack',
+      type: 'message',
+      name: 'get_summary',
+      description: "MCP tool 'get_summary' exposed by an MCP server",
+      handler: { node_id: 'node:mcp_tool_get_summary_apps-mcp-server-src-server-ts', method_name: 'get_summary', file: 'apps/mcp-server/src/server.ts' },
+      metadata: { ai: true, mcp: true, capability: 'mcp-tool' }
+    };
+    // The richer mcp-tool-registration-analyzer.ts-shaped record for the
+    // SAME real call site: line-accurate id, a distinct handler method_name,
+    // a trigger.method, and denser metadata.
+    const rich = {
+      id: 'entry_mcp_tool_get_summary_apps-mcp-server-src-server-ts_141',
+      source_node: 'node:mcp_tool_get_summary_apps-mcp-server-src-server-ts',
+      source_analyzer: 'mcp-tool-registration',
+      type: 'message',
+      name: 'get_summary',
+      description: "MCP tool registration: get_summary (via server.registerTool())",
+      trigger: { method: 'registerTool', path: 'get_summary' },
+      handler: { node_id: 'node:mcp_tool_get_summary_apps-mcp-server-src-server-ts', method_name: 'handleGetSummary', file: 'apps/mcp-server/src/server.ts', line: 141 },
+      metadata: { registrationKind: 'registerTool', receiver: 'server', file: 'apps/mcp-server/src/server.ts', line: 141 }
+    };
+
+    await orchestrator.mergeAnalysisResult(target, contribution({ entry_points: [coarse] }), { analyzerId: 'ai-stack', analysisErrors });
+    await orchestrator.mergeAnalysisResult(target, contribution({ entry_points: [rich] }), { analyzerId: 'mcp-tool-registration', analysisErrors });
+
+    expect(target.allEntryPoints).toHaveLength(1);
+    expect(target.allEntryPoints[0].id).toBe(rich.id);
+    expect(target.allEntryPoints[0].handler.method_name).toBe('handleGetSummary');
+    expect(analysisErrors).toHaveLength(0);
+  });
+
+  it('keeps the richer record regardless of which analyzer contribution merges first', async () => {
+    const target = emptyTarget();
+    const coarse = {
+      id: 'entry_mcp_tool_do_thing_lib-ts',
+      source_node: 'node:mcp_tool_do_thing_lib-ts',
+      type: 'message',
+      name: 'do_thing',
+      handler: { node_id: 'node:mcp_tool_do_thing_lib-ts', method_name: 'do_thing', file: 'lib.ts' }
+    };
+    const rich = {
+      id: 'entry_mcp_tool_do_thing_lib-ts_12',
+      source_node: 'node:mcp_tool_do_thing_lib-ts',
+      type: 'message',
+      name: 'do_thing',
+      trigger: { method: 'tool', path: 'do_thing' },
+      handler: { node_id: 'node:mcp_tool_do_thing_lib-ts', method_name: 'runDoThing', file: 'lib.ts', line: 12 },
+      metadata: { registrationKind: 'tool', receiver: 'server' }
+    };
+
+    // Richer contribution merges FIRST this time.
+    await orchestrator.mergeAnalysisResult(target, contribution({ entry_points: [rich] }), { analyzerId: 'mcp-tool-registration', analysisErrors });
+    await orchestrator.mergeAnalysisResult(target, contribution({ entry_points: [coarse] }), { analyzerId: 'ai-stack', analysisErrors });
+
+    expect(target.allEntryPoints).toHaveLength(1);
+    expect(target.allEntryPoints[0].id).toBe(rich.id);
+    expect(analysisErrors).toHaveLength(0);
+  });
+
+  it('does NOT merge two entry points that merely share a name but resolve to different handler nodes', async () => {
+    const target = emptyTarget();
+    const first = {
+      id: 'entry_a',
+      source_node: 'node:a',
+      type: 'message',
+      name: 'do_thing',
+      handler: { node_id: 'node:a', method_name: 'do_thing', file: 'a.ts' }
+    };
+    const second = {
+      id: 'entry_b',
+      source_node: 'node:b',
+      type: 'message',
+      name: 'do_thing',
+      handler: { node_id: 'node:b', method_name: 'do_thing', file: 'b.ts' }
+    };
+
+    await orchestrator.mergeAnalysisResult(target, contribution({ entry_points: [first] }), { analyzerId: 'x', analysisErrors });
+    await orchestrator.mergeAnalysisResult(target, contribution({ entry_points: [second] }), { analyzerId: 'y', analysisErrors });
+
+    expect(target.allEntryPoints).toHaveLength(2);
+    expect(analysisErrors).toHaveLength(0);
+  });
+
   it('treats key order as identical content', async () => {
     const target = emptyTarget();
     const reordered = {

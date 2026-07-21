@@ -154,3 +154,57 @@ test('calls generateText', async () => {
     await fs.remove(dir);
   }
 });
+
+// ---------------------------------------------------------------------------
+// Comment-blanking regression (base-analyzer.ts blankComments)
+// ---------------------------------------------------------------------------
+//
+// This analyzer runs its own independent `.registerTool`/`.tool(` regex pass
+// (the "MCP tools (registered handlers — HIGH value)" section of scanFile) —
+// a SEPARATE extraction from mcp-tool-registration-analyzer.ts's dedicated
+// one. mcp-tool-registration-analyzer.ts already blanks comments before
+// scanning (quality-iter-1 #8 / quality-iter-2) so a JSDoc/line-comment
+// documenting the call shape (e.g. its own header illustrating
+// `server.tool('do_thing', schema, handler)`) is never mistaken for a real
+// registration — but this analyzer's copy of the same regex ran unblanked,
+// so a detector-source-like file (real source containing a doc-comment
+// example of an MCP registration call, not a real call) still yielded a
+// `do_thing` mcp-tool node/entry point through THIS pass even after the
+// other analyzer's fix landed.
+test('AIStackAnalyzer does not extract an MCP tool registration written inside a comment', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'ai-stack-comment-'));
+  try {
+    await fs.writeJson(path.join(dir, 'package.json'), {
+      name: 'comment-fixture',
+      dependencies: { '@modelcontextprotocol/sdk': '^1.0.0' },
+    });
+    await fs.writeFile(
+      path.join(dir, 'detector-source-like.ts'),
+      [
+        '/**',
+        ' * Example usage:',
+        " *   server.tool('do_thing', schema, handler)   // JSDoc example, not real code",
+        ' */',
+        "// server.registerTool('also_commented_out', {}, async () => ({}));",
+        'export const marker = 1;',
+        '',
+      ].join('\n')
+    );
+
+    const analyzer = new AIStackAnalyzer();
+    const result = await analyzer.analyze({ projectPath: dir });
+    assert.equal(
+      result.nodes.find(n => (n.metadata as any)?.capability === 'mcp-tool' && n.name === 'do_thing'),
+      undefined,
+      'JSDoc example must not be extracted'
+    );
+    assert.equal(
+      result.nodes.find(n => (n.metadata as any)?.capability === 'mcp-tool' && n.name === 'also_commented_out'),
+      undefined,
+      'line-commented-out call must not be extracted'
+    );
+    assert.equal((result.entry_points || []).length, 0, 'expected zero entry points from comment-only content');
+  } finally {
+    await fs.remove(dir);
+  }
+});

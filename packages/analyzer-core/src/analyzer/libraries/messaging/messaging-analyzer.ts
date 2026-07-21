@@ -4,6 +4,7 @@ import * as path from 'path';
 import * as fs from 'fs-extra';
 import { cachedGlob as glob } from '../../core/glob-cache';
 import { createYieldBudget } from '../../core/event-loop-yield';
+import { isTestFileName } from '../../core/scaffold-paths';
 
 type MessagingSystem =
   | 'kafkajs'
@@ -119,12 +120,12 @@ export class MessagingAnalyzer extends BaseAnalyzer {
       return true;
     }
 
-    const files = await glob('**/*.{ts,tsx,js,jsx,mjs,cjs,py,java,rb,go}', {
+    const files = (await glob('**/*.{ts,tsx,js,jsx,mjs,cjs,py,java,rb,go}', {
       cwd: projectPath,
       ignore: this.getIgnorePatterns({ projectPath }),
       absolute: true,
       nodir: true,
-    });
+    })).filter(file => !isTestFileName(path.basename(file)));
 
     const importRe = /(from\s+['"]kafkajs['"]|require\(['"]kafkajs['"]\)|from\s+['"]amqplib['"]|require\(['"]amqplib['"]\)|from\s+['"]amqp-connection-manager['"]|require\(['"]amqp-connection-manager['"]\)|from\s+['"]@nestjs\/microservices['"]|@MessagePattern|@EventPattern|from\s+['"]bullmq['"]|require\(['"]bullmq['"]\)|from\s+celery\b|import\s+celery\b|from\s+confluent_kafka\b|from\s+kafka\b|import\s+pika\b|@KafkaListener|KafkaTemplate|@RabbitListener|RabbitTemplate|Sidekiq::Worker|github\.com\/segmentio\/kafka-go|github\.com\/nats-io\/nats\.go)/;
     for (const file of files.slice(0, 400)) {
@@ -146,11 +147,11 @@ export class MessagingAnalyzer extends BaseAnalyzer {
   async getRelevantFiles(projectPath: string): Promise<string[]> {
     let files: string[] = [];
     try {
-      files = await glob('**/*.{ts,tsx,js,jsx,mjs,cjs,py,java,rb,go}', {
+      files = (await glob('**/*.{ts,tsx,js,jsx,mjs,cjs,py,java,rb,go}', {
         cwd: projectPath,
         ignore: this.getIgnorePatterns({ projectPath }),
         nodir: true,
-      });
+      })).filter(file => !isTestFileName(path.basename(file)));
     } catch {
       return [];
     }
@@ -177,12 +178,12 @@ export class MessagingAnalyzer extends BaseAnalyzer {
   async analyze(context: AnalysisContext): Promise<CASContribution> {
     this.resetAnalysisWarnings();
 
-    let files = await glob('**/*.{ts,tsx,js,jsx,mjs,cjs,py,java,rb,go}', {
+    let files = (await glob('**/*.{ts,tsx,js,jsx,mjs,cjs,py,java,rb,go}', {
       cwd: context.projectPath,
       ignore: this.getIgnorePatterns(context),
       absolute: true,
       nodir: true,
-    });
+    })).filter(file => !isTestFileName(path.basename(file)));
     files = this.capAndPrioritizeSourceFiles(files, 'async messaging source files');
 
     const facts = await this.processFiles(files, context.projectPath);

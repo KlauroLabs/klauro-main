@@ -190,6 +190,39 @@ describe('buildUserJourneys', () => {
     expect(journeys[0].journey_kind).toBe('scheduled');
   });
 
+  it('does not stutter the "Scheduled" prefix when the entry point name already starts with it', () => {
+    // Live junk-name defect: buildJourneyName's schedule template
+    // (`Scheduled ${humanizeLabel(entryPoint.name)}`) combined with an
+    // entry-point name that ALREADY carries a "scheduled" word (e.g. a cron
+    // handler literally named `scheduled_scan`, or upstream naming that
+    // already prefixed "Scheduled") produced "Scheduled Scheduled Scan" —
+    // flow/step names already get this hygiene via dedupeAdjacentWords in
+    // flow-concepts.ts; journey names were missing it.
+    const scheduledEntry: CASEntryPoint = {
+      id: 'entry_scheduled_scan',
+      source_node: 'n_service',
+      type: 'schedule',
+      name: 'scheduled_scheduled_scan',
+      trigger: { schedule: '*/5 * * * *' },
+      handler: { node_id: 'n_service', method_name: 'scan' },
+    } as CASEntryPoint;
+
+    const { journeys } = buildUserJourneys({
+      ...baseInput,
+      entryPoints: [scheduledEntry],
+      callChains: [
+        chain('chain_3', 'n_service', 'entry_scheduled_scan', [['n_service', 0], ['n_repo', 1]]),
+      ],
+    });
+
+    expect(journeys).toHaveLength(1);
+    // dedupeAdjacentWords only collapses the stutter in the ACTION portion of
+    // the name; the ` -> <outcome>` suffix (from baseInput's shared call
+    // chain fixture, terminating in a WorkOrder write) is unaffected.
+    expect(journeys[0].name.startsWith('Scheduled scan')).toBe(true);
+    expect(journeys[0].name).not.toMatch(/scheduled\s+scheduled/i);
+  });
+
   it('classifies a CLI entry rooted in a shell script as system (operational), not user-facing', () => {
     // Live leak: release.sh / install.sh / *-smoke.sh surfaced as user-facing/high
     // journeys. A `.sh` deploy/install/release/smoke script is an operator surface,

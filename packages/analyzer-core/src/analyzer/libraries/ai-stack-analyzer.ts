@@ -177,7 +177,20 @@ export class AIStackAnalyzer extends BaseAnalyzer {
         continue;
       }
       const relativePath = path.relative(context.projectPath, file);
-      const fileDetections = this.scanFile(content, relativePath);
+      // Blank comments before scanning: scanFile is a plain-text regex scan
+      // over call-site patterns, not an AST walk, so a JSDoc/line-comment
+      // documenting the exact shape being detected (e.g.
+      // mcp-tool-registration-analyzer.ts's own header illustrating
+      // `server.tool('do_thing', schema, handler)`) reads identically to a
+      // real registration and was extracted as one — this is the SAME
+      // do_thing self-detection class mcp-tool-registration-analyzer.ts
+      // already fixed for its own extraction (quality-iter-1 #8/#2), but this
+      // analyzer runs an independent `.registerTool`/`.tool(` regex pass
+      // (see the "MCP tools" section in scanFile below) that was never
+      // blanked, so the doc-comment example kept leaking through THIS pass
+      // even after the other analyzer's fix landed.
+      const scannable = this.blankComments(content);
+      const fileDetections = this.scanFile(scannable, relativePath);
       detections.push(...fileDetections);
     }
 
@@ -252,7 +265,10 @@ export class AIStackAnalyzer extends BaseAnalyzer {
 
     // ai-stack detections are intrinsically per-file (no cross-file relations).
     if (this.hasAIImport(content) || this.looksAIShaped(content)) {
-      const detections = this.scanFile(content, context.relativePath);
+      // See the comment at the analyze() call site: scanFile must run over
+      // comment-blanked content so a doc-comment example is never mistaken
+      // for a real registration call.
+      const detections = this.scanFile(this.blankComments(content), context.relativePath);
       this.emitDetections(detections, nodes, entryPoints);
     }
 

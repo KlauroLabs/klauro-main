@@ -5623,6 +5623,46 @@ export class AnalyzerOrchestrator {
     return file ? `${analyzer} (${file})` : analyzer;
   }
 
+  /**
+   * Semantic identity for an entry point that is independent of the literal
+   * `id` string: (type, normalized name, handler/source node). Two analyzer
+   * passes describing the SAME real registration under different id schemes
+   * (e.g. mcp-tool-registration-analyzer.ts's
+   * `mcp_tool_<name>_<file>_<line>`-suffixed id vs ai-stack-analyzer.ts's own
+   * independent `entry_mcp_tool_<name>_<file>` id — no line suffix) never
+   * collide in the id-keyed map below, so the exact-id dedup this method
+   * already did was blind to them: real MCP tools doubled up 1:1 in
+   * get_entry_points (435 message-kind entries / 221 unique names). Returns
+   * undefined when there isn't enough evidence to key on (no type, no name,
+   * or no node reference), in which case only the exact-id path applies —
+   * this must never merge two entry points that merely share a name.
+   */
+  private entryPointCanonicalKey(ep: any): string | undefined {
+    if (!ep || typeof ep !== 'object') return undefined;
+    const type = typeof ep.type === 'string' ? ep.type : undefined;
+    const name = typeof ep.name === 'string' ? ep.name.trim().toLowerCase() : '';
+    const handlerNode = ep.handler?.node_id || ep.source_node;
+    if (!type || !name || !handlerNode) return undefined;
+    return `${type}::${name}::${handlerNode}`;
+  }
+
+  /** Higher score = more evidence/detail carried by this entry point record —
+   *  used to pick which of two canonically-identical entry points to keep
+   *  (the richer one), e.g. mcp-tool-registration-analyzer.ts's dedicated
+   *  extraction (registrationKind, receiver, handlerRef, line-accurate
+   *  source) over ai-stack-analyzer.ts's coarser regex duplicate of the same
+   *  call site. */
+  private entryPointRichnessScore(ep: any): number {
+    let score = 0;
+    if (ep?.handler?.method_name && ep.handler.method_name !== ep.name) score += 2;
+    if (ep?.handler?.line !== undefined) score += 1;
+    if (ep?.trigger?.method) score += 1;
+    if (ep?.metadata && typeof ep.metadata === 'object') {
+      score += Object.values(ep.metadata).filter((v: unknown) => v !== undefined && v !== null).length;
+    }
+    return score;
+  }
+
   private appendGraphItemsUnique<T extends { id: string }>(
     target: T[],
     incoming: T[],
@@ -5631,12 +5671,37 @@ export class AnalyzerOrchestrator {
     analysisErrors?: CASAnalysisError[]
   ): void {
     const byId = new Map<string, T>(target.map(item => [item.id, item]));
+    const isEntryPoint = sectionLabel === 'entry point';
+    const byCanonicalKey = isEntryPoint
+      ? new Map<string, T>(
+          target
+            .map(item => [this.entryPointCanonicalKey(item), item] as const)
+            .filter((pair): pair is [string, T] => Boolean(pair[0]))
+        )
+      : undefined;
     const warnedIds = new Set<string>();
     for (const item of incoming) {
       const existing = byId.get(item.id);
       if (!existing) {
+        // No exact-id collision — but a second analyzer pass may still be
+        // describing the SAME real entry point under a different id. Check
+        // the semantic (type, name, handler-node) key before accepting this
+        // as genuinely new.
+        const canonicalKey = byCanonicalKey ? this.entryPointCanonicalKey(item) : undefined;
+        const canonicalExisting = canonicalKey ? byCanonicalKey!.get(canonicalKey) : undefined;
+        if (canonicalKey && canonicalExisting) {
+          if (this.entryPointRichnessScore(item) > this.entryPointRichnessScore(canonicalExisting)) {
+            const idx = target.indexOf(canonicalExisting);
+            if (idx >= 0) target[idx] = item;
+            byCanonicalKey!.set(canonicalKey, item);
+            byId.delete(canonicalExisting.id);
+            byId.set(item.id, item);
+          }
+          continue;
+        }
         target.push(item);
         byId.set(item.id, item);
+        if (canonicalKey) byCanonicalKey!.set(canonicalKey, item);
         continue;
       }
       if (this.canonicalGraphJson(existing) === this.canonicalGraphJson(item)) continue;

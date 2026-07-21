@@ -12,6 +12,7 @@ import {
   CASUserJourneyTerminalEntity
 } from '../../types/cas.types';
 import { classifyGuardKind } from './guard-classification';
+import { dedupeAdjacentWords } from './flow-concepts';
 
 export interface UserJourneyInput {
   nodes: CASNode[];
@@ -1257,8 +1258,15 @@ function journeyDiscriminator(entryPoint: CASEntryPoint): string {
 function buildJourneyName(entryPoint: CASEntryPoint, effects: TerminalEffects): string {
   const action = describeEntryAction(entryPoint, effects);
   const outcome = describeTerminalOutcome(effects);
-  if (!outcome || outcome === 'main') return action;
-  return `${action} -> ${outcome}`;
+  const name = (!outcome || outcome === 'main') ? action : `${action} -> ${outcome}`;
+  // Same name-assembly hygiene flow/step names get in flow-concepts.ts
+  // (dedupeAdjacentWords): a template prefix combining with an
+  // independently-sourced token that already carries the same word produces
+  // a stutter (`Scheduled ${humanizeLabel(entryPoint.name)}` below, when
+  // entryPoint.name itself already starts with "scheduled", yields
+  // "Scheduled Scheduled Scan"). Journeys assemble names the same
+  // prefix+token way and were missing this final collapse step.
+  return dedupeAdjacentWords(name);
 }
 
 function describeEntryAction(entryPoint: CASEntryPoint, effects: TerminalEffects): string {

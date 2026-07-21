@@ -356,3 +356,56 @@ test('MessagingAnalyzer detects NestJS microservice patterns and amqp-connection
     await fs.remove(dir);
   }
 });
+
+// ---------------------------------------------------------------------------
+// Test-file exclusion regression (scaffold-paths.ts isTestFileName)
+// ---------------------------------------------------------------------------
+//
+// Fixture-pollution class: a co-located `*.test.ts` file living OUTSIDE any
+// fixtures/__tests__ directory is invisible to directory-name exclusion
+// (getIgnorePatterns) alone. Unlike ai-stack-analyzer.ts (which already
+// filters `!isTestFileName(...)`), this analyzer's three glob call sites
+// (canAnalyze/getRelevantFiles/analyze) had no such filter at all — so this
+// very file (messaging-analyzer.test.ts), whose own fixture above wires up an
+// `order.created` NestJS @EventPattern consumer purely to exercise the
+// detector, would itself be scanned as real product messaging code on any
+// project where this package's source tree is the analysis target,
+// stitching a fixture-derived "order.created" entity into a real journey.
+test('MessagingAnalyzer.analyze does not mint nodes/entry/exit points from a co-located *.test.ts file', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'messaging-analyzer-testfile-'));
+  try {
+    await fs.writeJson(path.join(dir, 'package.json'), {
+      name: 'plain-app',
+      dependencies: { kafkajs: '^2.2.4' },
+    });
+    // A unit test file (not under any fixtures/__tests__ directory) that
+    // exercises kafka detection — this is TEST code, not a product surface.
+    await fs.writeFile(
+      path.join(dir, 'producer.test.ts'),
+      [
+        `import { Kafka } from 'kafkajs';`,
+        '',
+        `test('publishes', async () => {`,
+        `  const kafka = new Kafka({ clientId: 'test' });`,
+        `  const producer = kafka.producer();`,
+        `  await producer.send({ topic: 'order.created', messages: [] });`,
+        `});`,
+        '',
+      ].join('\n')
+    );
+
+    const analyzer = new MessagingAnalyzer();
+    const contribution = await analyzer.analyze({ projectPath: dir });
+    assert.equal(
+      (contribution.nodes || []).length, 0,
+      `expected zero nodes from a *.test.ts-only tree, got: ${JSON.stringify((contribution.nodes || []).map(n => n.name))}`
+    );
+    assert.equal((contribution.entry_points || []).length, 0, 'expected zero entry points');
+    assert.equal((contribution.exit_points || []).length, 0, 'expected zero exit points');
+
+    const relevant = await analyzer.getRelevantFiles(dir);
+    assert.deepEqual(relevant, [], 'getRelevantFiles must not surface the co-located test file');
+  } finally {
+    await fs.remove(dir);
+  }
+});

@@ -2297,7 +2297,7 @@ function deriveCapabilityOperationRoots(
  * (prefix + resolved token, verb + entity, …) is expected to route through
  * this before it becomes a flow/step `name`.
  */
-function dedupeAdjacentWords(name: string): string {
+export function dedupeAdjacentWords(name: string): string {
   const words = name.split(/\s+/).filter(Boolean);
   const out: string[] = [];
   for (const w of words) {

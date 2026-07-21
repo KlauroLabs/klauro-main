@@ -219,51 +219,6 @@ export class McpToolRegistrationAnalyzer extends BaseAnalyzer {
     });
   }
 
-  /**
-   * Replace line-comment (`//...`) and block-comment (slash-star ... star-
-   * slash) characters with spaces (never newlines removed, never
-   * string/template contents touched), so a
-   * subsequent regex scan cannot mistake a documentation example for a real
-   * registration call. Tracks string/template state char-by-char so a `//`
-   * or `/*` appearing inside a string literal is left alone.
-   */
-  private blankComments(content: string): string {
-    let out = '';
-    let i = 0;
-    const n = content.length;
-    let inLineComment = false;
-    let inBlockComment = false;
-    let inString: '"' | "'" | '`' | null = null;
-    while (i < n) {
-      const ch = content[i];
-      const next = content[i + 1];
-      if (inLineComment) {
-        if (ch === '\n') { inLineComment = false; out += ch; } else { out += ' '; }
-        i++;
-        continue;
-      }
-      if (inBlockComment) {
-        if (ch === '*' && next === '/') { inBlockComment = false; out += '  '; i += 2; continue; }
-        out += ch === '\n' ? '\n' : ' ';
-        i++;
-        continue;
-      }
-      if (inString) {
-        out += ch;
-        if (ch === '\\') { out += next ?? ''; i += 2; continue; }
-        if (ch === inString) inString = null;
-        i++;
-        continue;
-      }
-      if (ch === '"' || ch === "'" || ch === '`') { inString = ch; out += ch; i++; continue; }
-      if (ch === '/' && next === '/') { inLineComment = true; out += '  '; i += 2; continue; }
-      if (ch === '/' && next === '*') { inBlockComment = true; out += '  '; i += 2; continue; }
-      out += ch;
-      i++;
-    }
-    return out;
-  }
-
   private hasRegistrationEvidence(content: string): boolean {
     if (/\.registerTool\s*\(/.test(content) || /\.setRequestHandler\s*\(/.test(content)) {
       return true;
