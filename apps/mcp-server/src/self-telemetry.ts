@@ -31,10 +31,44 @@ import * as klauroTelemetry from '../../../packages/klauro-sdk-js/src/index';
 import { klauroHttp } from '../../../packages/klauro-sdk-js/src/middleware/http';
 import type { CasRuntimeEvent } from '../../../packages/klauro-sdk-js/src/types';
 import { getAnalysis, analyzeProject } from './analyzer';
+import { loadAnalysis } from './storage';
 import { ingestTelemetryBatch, type TelemetryEvent } from './telemetry-ingestion';
 
 const SERVICE_NAME = 'klauro-mcp-server';
 const SELF_LOOP_NAME = 'klauro-self';
+
+/** Any single ingest/CAS-load step slower than this logs to stdout — a recurring
+ * slow step must be VISIBLE in `docker logs`, never a silent CPU burn. */
+const SLOW_SELF_INGEST_MS = 1_000;
+
+/**
+ * Correlation-time CAS load for the self-loop — MUST be the cached read.
+ *
+ * This runs on every SDK flush (default every 5s, for as long as the process
+ * lives), so it must never pay a full decompress+parse of the stored CAS per
+ * call: on a large self/canonical analysis that costs multiple seconds of CPU
+ * and GB of GC churn per flush, which pins the main thread forever (observed
+ * live: readJsonMaybeCompressed + brotli slice + GC at ~100% CPU for hours).
+ * `loadAnalysis(..., { preferCache: true })` reuses the in-memory copy behind
+ * an mtime/size fingerprint check, so steady-state flushes cost one fs.stat.
+ *
+ * Correlation is best-effort: a missing/unreadable analysis returns null and
+ * the events persist as `unmatched` (never a drop, never a bootstrap). Unlike
+ * getAnalysis this skips stored-element-description application — correlation
+ * only reads structural facts, not prose.
+ */
+async function loadCorrelationCas(projectPath: string): Promise<Awaited<ReturnType<typeof loadAnalysis>>> {
+  const startedAt = Date.now();
+  const cas = await loadAnalysis(projectPath, { preferCache: true }).catch(() => null);
+  const elapsedMs = Date.now() - startedAt;
+  if (elapsedMs >= SLOW_SELF_INGEST_MS) {
+    process.stdout.write(
+      `Klauro self-telemetry: correlation CAS load for ${projectPath} took ${elapsedMs}ms ` +
+        `(cold read; subsequent flushes reuse the in-memory copy).\n`,
+    );
+  }
+  return cas;
+}
 
 /** True when the master env gate is truthy. Anything else = disabled. */
 export function selfTelemetryEnabled(): boolean {
@@ -131,13 +165,17 @@ export async function mirrorToCanonicalBucket(
     const canonicalPath = selfCanonicalProjectPath();
     if (!canonicalPath || canonicalPath === primaryProjectPath) return;
 
-    let cas: Awaited<ReturnType<typeof getAnalysis>> | null = null;
-    try {
-      cas = await getAnalysis(canonicalPath);
-    } catch {
-      cas = null; // no analysis of the canonical path yet — persist unmatched, never bootstrap here.
-    }
+    // Cached read (see loadCorrelationCas): null when no analysis of the
+    // canonical path exists yet — persist unmatched, never bootstrap here.
+    const cas = await loadCorrelationCas(canonicalPath);
+    const mirrorStartedAt = Date.now();
     await ingestTelemetryBatch(cas, canonicalPath, events, { persist: true });
+    const mirrorElapsedMs = Date.now() - mirrorStartedAt;
+    if (mirrorElapsedMs >= SLOW_SELF_INGEST_MS) {
+      process.stdout.write(
+        `Klauro self-telemetry: canonical mirror of ${events.length} event(s) into ${canonicalPath} took ${mirrorElapsedMs}ms.\n`,
+      );
+    }
   } catch (err) {
     process.stderr.write(
       `Klauro self-telemetry canonical mirror failed (primary ingest unaffected): ${err instanceof Error ? err.message : String(err)}\n`,
@@ -287,18 +325,21 @@ function localIngestFetch(projectPath: string): typeof fetch {
       const events = parseSdkBatch(init?.body);
       if (events.length > 0) {
         // Raw observations MUST persist regardless of analysis state. Try to load
-        // the CAS for correlation, but a missing analysis is NOT a drop reason:
-        // fall back to `null` so ingestTelemetryBatch stores the raw events
-        // (route/status/duration/error/timestamp) as `unmatched`. Correlation
-        // happens lazily once an analysis exists — telemetry is never lost.
-        let cas: Awaited<ReturnType<typeof getAnalysis>> | null = null;
-        try {
-          cas = await getAnalysis(projectPath);
-        } catch {
-          cas = null;
-        }
+        // the CAS for correlation (cached read — see loadCorrelationCas), but a
+        // missing analysis is NOT a drop reason: `null` makes ingestTelemetryBatch
+        // store the raw events (route/status/duration/error/timestamp) as
+        // `unmatched`. Correlation happens lazily once an analysis exists —
+        // telemetry is never lost.
+        const ingestStartedAt = Date.now();
+        const cas = await loadCorrelationCas(projectPath);
         const mapped = events.map(mapSdkEvent);
         await ingestTelemetryBatch(cas, projectPath, mapped, { persist: true });
+        const ingestElapsedMs = Date.now() - ingestStartedAt;
+        if (ingestElapsedMs >= SLOW_SELF_INGEST_MS) {
+          process.stdout.write(
+            `Klauro self-telemetry: local ingest of ${mapped.length} event(s) for ${projectPath} took ${ingestElapsedMs}ms.\n`,
+          );
+        }
         // Fire-and-forget mirror into the canonical hosted bucket (GAP #32 part 2),
         // decoupled from the primary ingest above: never awaited, never allowed to
         // affect this transport's own success/failure.
