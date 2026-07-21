@@ -89,9 +89,16 @@ test('edit-lock overlap detected via path-prefix; disjoint path not flagged', as
   const overlapExact = await checkEditLock('ws-test', ['src/auth/auth.ts']);
   assert.equal(overlapExact.length, 1);
   assert.equal(overlapExact[0].agent_id, 'agent-a');
+  // `paths` is the HOLDER's (agent-a's) claimed scope, never the proposing
+  // caller's own input paths — a fleet must see what the OTHER agent claims.
+  assert.deepEqual(overlapExact[0].paths, ['src/auth/auth.ts']);
 
   const overlapPrefix = await checkEditLock('ws-test', ['src/auth']);
   assert.equal(overlapPrefix.length, 1);
+  // Proposer's input ('src/auth') differs from the holder's actual claim
+  // ('src/auth/auth.ts') — `paths` must reflect the holder, not the proposer.
+  assert.deepEqual(overlapPrefix[0].paths, ['src/auth/auth.ts']);
+  assert.notDeepEqual(overlapPrefix[0].paths, ['src/auth']);
 
   // Disjoint path -> not flagged.
   const disjoint = await checkEditLock('ws-test', ['src/billing/billing.ts']);

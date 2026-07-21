@@ -5971,7 +5971,11 @@ function registerTools(server: McpServer) {
         {},
         was,
       );
-      return findings.map((f) => ({ ...f, paths: claimPaths }));
+      // `paths` mirrors EditLockConflict semantics (local-store.ts): the
+      // CONFLICTING HOLDER's claimed scope, not the proposing caller's own
+      // claimPaths — so a fleet sees what the other agent actually claims.
+      const pathsByClaimId = new Map(others.map((c) => [c.claim_id, c.scope.paths]));
+      return findings.map((f) => ({ ...f, paths: pathsByClaimId.get(f.claim_id) ?? claimPaths }));
     } catch {
       // Any failure — degrade to the legacy path-only conflicts, never throw.
       return editLock.map((c) => ({

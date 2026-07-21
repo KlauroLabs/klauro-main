@@ -68,7 +68,12 @@ export interface SurpriseDetail {
   explanation: string;
 }
 
-/** A same-machine edit-lock overlap finding for `checkEditLock`. */
+/**
+ * A same-machine edit-lock overlap finding for `checkEditLock`/`extendClaim`.
+ * `paths` is the CONFLICTING HOLDER's claimed scope (`claim.scope.paths`) —
+ * NOT the proposing caller's own paths — so a fleet sees what the other
+ * agent actually claims. `overlapping_paths` is the intersection.
+ */
 export interface EditLockConflict {
   agent_id: string;
   claim_id: string;
@@ -594,7 +599,7 @@ export async function checkEditLock(
       conflicts.push({
         agent_id: claim.agent_id,
         claim_id: claim.claim_id,
-        paths,
+        paths: claim.scope.paths,
         overlapping_paths: [...new Set(overlapping)],
       });
     }
@@ -865,7 +870,7 @@ export async function extendClaim(
         conflicts.push({
           agent_id: claim.agent_id,
           claim_id: claim.claim_id,
-          paths: addPaths,
+          paths: claim.scope.paths,
           overlapping_paths: [...new Set(overlapping)],
         });
       }
