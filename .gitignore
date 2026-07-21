@@ -58,6 +58,10 @@ breadth-codex*.md
 # Release packing output (klauro tarball + manifest staged for VPS upload)
 apps/mcp-server/.pack/
 
+# Deploy-time build stamp (infrastructure/vps/deploy.sh writes this on the VPS
+# copy only; a local checkout resolves its build identity from real .git)
+apps/mcp-server/.klauro-build-stamp.json
+
 # Untracked build/output artifacts
 **/tsconfig.tsbuildinfo
 logs/

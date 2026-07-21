@@ -35,7 +35,52 @@ function resolveDevBaseVersion(): string {
   return FALLBACK_BASE_VERSION;
 }
 
-function resolveDevGitSha(): string {
+/**
+ * Deploy-time stamp for a deployed-but-unbundled ("dev channel") process —
+ * `infrastructure/vps/deploy.sh` writes this next to apps/mcp-server/
+ * package.json (see resolveDevBaseVersion's manifestPath) right after
+ * rsyncing source and BEFORE `docker compose build`, since the prod
+ * Dockerfile runs the source directly via `tsx` rather than the esbuild
+ * bundle that would otherwise embed __KLAURO_GIT_SHA__/__KLAURO_BUILD_TIME__.
+ */
+export interface DevBuildStamp {
+  git_sha?: string;
+  build_time?: string;
+}
+
+function resolveBuildStampPath(): string {
+  return path.resolve(__dirname, '..', '..', '..', '..', '..', 'apps', 'mcp-server', '.klauro-build-stamp.json');
+}
+
+/** Exported for direct unit-testing against a fixture path — never called with an untrusted path in production. */
+export function readDevBuildStamp(stampPath: string): DevBuildStamp | null {
+  try {
+    const raw = JSON.parse(fs.readFileSync(stampPath, 'utf8'));
+    if (raw && typeof raw === 'object') return raw as DevBuildStamp;
+  } catch {
+    // absent/unreadable (a real dev checkout with no deploy stamp, or a
+    // torn/partial write) — fall through to the git-derived path below.
+  }
+  return null;
+}
+
+/**
+ * PRODUCTION BUG (v1.0.126 fresh self-analysis): the deployed api container
+ * runs raw TS via `tsx src/index.ts`, never the esbuild bundle — see
+ * apps/api/Dockerfile's CMD and infrastructure/vps/deploy.sh's own comment
+ * ("the api container runs raw TS via tsx"). That deploy path ALSO
+ * `rsync --exclude .git`s the source tree to the VPS (deploy.sh's "Syncing
+ * source" step), so this function's `git rev-parse` always ran with no
+ * `.git` directory in reach on prod and silently fell back to 'unknown' —
+ * hence every hosted build reporting "1.0.126-dev+unknown" instead of a real
+ * commit. Fix: prefer deploy.sh's stamped git_sha (written straight from the
+ * clean, guaranteed-git-checkout HOST tree that IS what got shipped) before
+ * ever falling back to a local git invocation — a genuine dev checkout with
+ * .git still resolves correctly since it has no stamp file and hits the
+ * fallback exactly as before.
+ */
+export function resolveDevGitSha(stamp: DevBuildStamp | null): string {
+  if (stamp?.git_sha && /^[0-9a-f]{7,40}$/.test(stamp.git_sha)) return stamp.git_sha;
   const result = spawnSync('git', ['rev-parse', '--short=12', 'HEAD'], {
     cwd: __dirname,
     encoding: 'utf8',
@@ -65,15 +110,22 @@ export function getBuildIdentity(): BuildIdentity {
     return cached;
   }
 
+  const stamp = readDevBuildStamp(resolveBuildStampPath());
   const baseVersion = resolveDevBaseVersion();
-  const gitSha = resolveDevGitSha();
+  const gitSha = resolveDevGitSha(stamp);
   cached = {
     version: `${baseVersion}-dev+${gitSha}`,
     base_version: baseVersion,
     git_sha: gitSha,
+    build_time: stamp?.build_time,
     channel: 'dev',
   };
   return cached;
+}
+
+/** Test-only: clear the module-level identity cache so tests can re-derive against a fresh stamp/env. */
+export function resetBuildIdentityCacheForTests(): void {
+  cached = undefined;
 }
 
 export function formatBuildIdentity(): string {

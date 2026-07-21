@@ -1,7 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as http from 'node:http';
-import { checkServerStaleness, resetStalenessCacheForTests } from './build-identity';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { checkServerStaleness, resetStalenessCacheForTests, readDevBuildStamp, resolveDevGitSha } from './build-identity';
 
 // Silent-staleness bug this locks: `klauro update` overwrites the installed
 // bundle on disk while an already-running MCP server process keeps executing
@@ -88,6 +91,64 @@ test('throttling: a second call within the TTL window returns the cached result 
     __test: { runningBaseVersion: '1.0.31', installedVersion: null }, // would be "not stale" if it re-ran
   });
   assert.deepEqual(second, first, 'expected the throttled cache to short-circuit the second call');
+});
+
+/**
+ * PRODUCTION BUG (fresh v1.0.126 self-analysis): the deployed api container
+ * runs raw TS via `tsx` (never the esbuild bundle that embeds
+ * __KLAURO_GIT_SHA__), and infrastructure/vps/deploy.sh's source sync
+ * excludes .git — so `resolveDevGitSha`'s `git rev-parse` fallback always ran
+ * with no .git in reach on prod and reported 'unknown', shipping
+ * "1.0.126-dev+unknown" on /health. Fix: deploy.sh now writes a
+ * `.klauro-build-stamp.json` stamp (real git sha + build time, taken from the
+ * clean host tree that IS what got shipped) BEFORE the container build, and
+ * getBuildIdentity() prefers it over the git invocation. These tests pin the
+ * stamp-reading/preference logic directly (no need to exercise the whole
+ * container/deploy path).
+ */
+test('readDevBuildStamp: parses a real stamp file written by deploy.sh', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-build-stamp-'));
+  const stampPath = path.join(dir, '.klauro-build-stamp.json');
+  fs.writeFileSync(stampPath, JSON.stringify({ git_sha: 'abc1234def56', build_time: '2026-07-21T04:00:00Z' }));
+  try {
+    const stamp = readDevBuildStamp(stampPath);
+    assert.deepEqual(stamp, { git_sha: 'abc1234def56', build_time: '2026-07-21T04:00:00Z' });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('readDevBuildStamp: a missing file returns null (never throws) — a genuine dev checkout has no stamp', () => {
+  const stamp = readDevBuildStamp('/nonexistent/path/.klauro-build-stamp.json');
+  assert.equal(stamp, null);
+});
+
+test('readDevBuildStamp: a torn/unparsable stamp file returns null rather than throwing', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-build-stamp-torn-'));
+  const stampPath = path.join(dir, '.klauro-build-stamp.json');
+  fs.writeFileSync(stampPath, '{"git_sha": "abc123'); // truncated JSON
+  try {
+    assert.equal(readDevBuildStamp(stampPath), null);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('resolveDevGitSha: a valid stamped git_sha wins over the local git invocation (the deployed-VPS shape)', () => {
+  const sha = resolveDevGitSha({ git_sha: 'deadbeefcafe', build_time: '2026-07-21T04:00:00Z' });
+  assert.equal(sha, 'deadbeefcafe', 'the whole point of the stamp is to short-circuit a git call that fails with no .git on disk');
+});
+
+test('resolveDevGitSha: a malformed stamped git_sha is rejected, falling back to the git invocation', () => {
+  const sha = resolveDevGitSha({ git_sha: 'not-a-valid-sha!!', build_time: '2026-07-21T04:00:00Z' });
+  // Falls back to running `git rev-parse` in this real (git-backed) checkout —
+  // must not blindly trust a malformed stamp value.
+  assert.match(sha, /^([0-9a-f]{7,12}|unknown)$/);
+});
+
+test('resolveDevGitSha: no stamp (null) falls back to the git invocation exactly as before', () => {
+  const sha = resolveDevGitSha(null);
+  assert.match(sha, /^([0-9a-f]{7,12}|unknown)$/);
 });
 
 test('forceRefresh bypasses the throttle cache', async () => {

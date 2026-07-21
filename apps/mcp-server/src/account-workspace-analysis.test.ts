@@ -6,7 +6,7 @@ import * as path from 'node:path';
 import * as http from 'node:http';
 import { execFileSync } from 'node:child_process';
 import { createRemoteAnalyzerHttpServer } from './remote-analyzer-service';
-import { analyzeCodebaseRemotely } from './remote-sync-client';
+import { analyzeCodebaseRemotely, syncWorkingTreeRemotely } from './remote-sync-client';
 import { aiService } from '../../../packages/analyzer-core/src/ai/ai-service';
 
 function git(repo: string, args: string[]): void {
@@ -310,6 +310,90 @@ test('workspace reanalyze returns 202, background-persists an AI-enriched narrat
     else process.env.OLLAMA_BASE_URL = previousOllamaBaseUrl;
     if (previousOllamaAuto === undefined) delete process.env.KLAURO_OLLAMA_AUTO;
     else process.env.KLAURO_OLLAMA_AUTO = previousOllamaAuto;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+/**
+ * WAS AUTO-REBUILD REGRESSION (fresh v1.0.126 self-analysis): a member CAS
+ * landed via `/v1/sync` (the incremental "dirty tree" push `sync_
+ * codebase_remote` uses once a project already has an analysis_id — the
+ * common case after the FIRST `/v1/analyze`) — but `notifyProjectAnalysisLanded`
+ * was only ever wired into `/v1/analyze` and `/api/projects/:id/reanalyze`.
+ * A workspace whose member is refreshed exclusively via `/v1/sync` after its
+ * initial push therefore never got marked dirty, and the server-side WAS sat
+ * stale until someone manually called POST /api/workspaces/{id}/reanalyze.
+ * This pins that `/v1/sync` ALSO triggers the debounced auto-rebuild, with no
+ * manual reanalyze call anywhere in the test.
+ */
+test('a member CAS landed via /v1/sync (not just /v1/analyze) still triggers the debounced WAS auto-rebuild', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-was-sync-trigger-'));
+  const remoteData = path.join(root, 'remote-data');
+  const previousRemoteData = process.env.KLAURO_REMOTE_ANALYZER_DATA;
+  const previousDebounce = process.env.KLAURO_WORKSPACE_ANALYSIS_DEBOUNCE_MS;
+  const previousInterpretation = process.env.KLAURO_AI_INTERPRETATION;
+  const previousWorkspaceAi = process.env.KLAURO_WORKSPACE_AI_ENRICHMENT;
+  process.env.KLAURO_REMOTE_ANALYZER_DATA = remoteData;
+  process.env.KLAURO_WORKSPACE_ANALYSIS_DEBOUNCE_MS = '150';
+  process.env.KLAURO_AI_INTERPRETATION = 'false';
+  process.env.KLAURO_WORKSPACE_AI_ENRICHMENT = 'false';
+
+  const server = createRemoteAnalyzerHttpServer({ dataDir: remoteData });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  assert.ok(address && typeof address === 'object');
+  const port = address.port;
+  const serverUrl = `http://127.0.0.1:${port}`;
+
+  try {
+    const registerRes = await request(port, 'POST', '/api/auth/register', {
+      email: 'owner@example.com',
+      password: 'password-1234',
+      workspace_name: 'Sync Trigger Workspace',
+    });
+    assert.equal(registerRes.statusCode, 201);
+    const token = JSON.parse(registerRes.body).token as string;
+
+    const workspacesRes = await request(port, 'GET', '/api/workspaces', undefined, token);
+    const workspaceId = JSON.parse(workspacesRes.body).workspaces[0].id as string;
+
+    const repo = makeRepo(root, 'repo-sync-trigger', 'def handler():\n    return 1\n');
+    const analyzed = await analyzeCodebaseRemotely({ projectPath: repo, serverUrl, token, wait: true });
+    const projectRes = await request(port, 'POST', `/api/workspaces/${workspaceId}/projects`, {
+      name: 'repo-sync-trigger',
+      analysis_id: analyzed.analysis_id,
+    }, token);
+    assert.equal(projectRes.statusCode, 201);
+
+    // Nothing has been synced/reanalyzed yet for this linked project — no WAS should exist.
+    const beforeRes = await request(port, 'GET', `/api/workspaces/${workspaceId}/analysis`, undefined, token);
+    assert.equal(JSON.parse(beforeRes.body).status, 'none');
+
+    // A real dirty-tree change, then an INCREMENTAL /v1/sync push — never a
+    // second /v1/analyze and never a manual /api/workspaces/:id/reanalyze
+    // call anywhere in this test.
+    fs.writeFileSync(path.join(repo, 'app.py'), 'def handler():\n    return 2\n');
+    await syncWorkingTreeRemotely({ projectPath: repo, serverUrl, token, analysisId: analyzed.analysis_id });
+
+    // The debounced auto-rebuild must fire on its own from the /v1/sync push alone.
+    await waitFor(async () => {
+      const res = await request(port, 'GET', `/api/workspaces/${workspaceId}/analysis`, undefined, token);
+      return JSON.parse(res.body).status === 'ready';
+    });
+    const readyRes = await request(port, 'GET', `/api/workspaces/${workspaceId}/analysis`, undefined, token);
+    const readyBody = JSON.parse(readyRes.body);
+    assert.equal(readyBody.status, 'ready');
+    assert.equal(readyBody.workspace_id, workspaceId);
+  } finally {
+    await new Promise<void>(resolve => server.close(() => resolve()));
+    if (previousRemoteData === undefined) delete process.env.KLAURO_REMOTE_ANALYZER_DATA;
+    else process.env.KLAURO_REMOTE_ANALYZER_DATA = previousRemoteData;
+    if (previousDebounce === undefined) delete process.env.KLAURO_WORKSPACE_ANALYSIS_DEBOUNCE_MS;
+    else process.env.KLAURO_WORKSPACE_ANALYSIS_DEBOUNCE_MS = previousDebounce;
+    if (previousInterpretation === undefined) delete process.env.KLAURO_AI_INTERPRETATION;
+    else process.env.KLAURO_AI_INTERPRETATION = previousInterpretation;
+    if (previousWorkspaceAi === undefined) delete process.env.KLAURO_WORKSPACE_AI_ENRICHMENT;
+    else process.env.KLAURO_WORKSPACE_AI_ENRICHMENT = previousWorkspaceAi;
     fs.rmSync(root, { recursive: true, force: true });
   }
 });

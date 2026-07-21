@@ -5,7 +5,7 @@ import * as path from 'node:path';
 import { gunzipSync } from 'node:zlib';
 import { analyzeProjectIncremental, analyzeProjectDeferred, checkDoomedVersionRebuild, runAnalysis, runLayeredAnalysis } from './analyzer';
 import type { AccountActivityEvent, RemoteAnalyzeDiffRequest, RemoteAnalyzeRequest, RemoteAnalyzeResponse, RemoteGreenfieldPreviewRequest, RemoteProjectRevision, RemoteProjectRevisionsResponse, RemoteProposalPreviewRequest, RemoteSyncRequest } from './remote-analyzer-protocol';
-import type { BranchDiffContext, RemoteFileChange, SourceManifest } from './remote-source';
+import type { BranchDiffContext, RemoteFileChange, RepoFacts, SourceManifest } from './remote-source';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import { buildSourceSnapshot } from './remote-source';
 import { previewCodebaseIteration, previewGreenfieldCodebase } from './proposal-preview';
@@ -381,7 +381,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
                   if (event.phase === 'l0' && event.status === 'succeeded' && !l0Attach) {
                     l0Attach = (async () => {
                       try {
-                        await linkAnalysisToAccountProject(accounts, backgroundClientId, body.project_id, acceptedAnalysisId, body.snapshot?.manifest?.git_remote);
+                        await linkAnalysisToAccountProject(accounts, backgroundClientId, body.project_id, acceptedAnalysisId, body.snapshot?.manifest?.git_remote, body.snapshot?.manifest?.repo_facts);
                         attachedEarly = true;
                         void notifyProjectAnalysisLandedForAnalysisId(acceptedAnalysisId);
                       } catch (attachError) {
@@ -395,6 +395,13 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
               if (l0Attach) await l0Attach;
 
               const output = await getAnalysis(acceptedWorkspace);
+              // repo_facts regression fix: the SYNCHRONOUS /v1/analyze path
+              // (handleAnalyze) already stamps manifest.repo_facts onto the
+              // CAS, but this async continuation (body.async===true — the
+              // default push shape for large repos) never did, so every
+              // async-pushed analysis shipped without contributors/codebase
+              // age even though the client's manifest carried them.
+              await stampRepoFacts(acceptedWorkspace, output, body.snapshot.manifest);
               const backgroundResult: RemoteAnalyzeResponse = {
                 status: 'success',
                 analysis_id: acceptedAnalysisId,
@@ -409,7 +416,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
               // failed or was skipped — never leave the landed full analysis
               // unattached because of a transient early-attach error.
               if (!attachedEarly) {
-                await linkAnalysisToAccountProject(accounts, backgroundClientId, body.project_id, acceptedAnalysisId, body.snapshot?.manifest?.git_remote);
+                await linkAnalysisToAccountProject(accounts, backgroundClientId, body.project_id, acceptedAnalysisId, body.snapshot?.manifest?.git_remote, body.snapshot?.manifest?.repo_facts);
               }
               await appendAuditLog(dataDir, {
                 event: 'analyze',
@@ -448,7 +455,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
         // though every CLI `klauro analyze` push succeeded — the analysis sat
         // orphaned under workspacePath(analysis_id). The CLI sends project_id
         // = .klaurorc project.id (prj_...), which IS the account project id.
-        await linkAnalysisToAccountProject(accounts, authorization.clientId, body.project_id, result.analysis_id, body.snapshot?.manifest?.git_remote);
+        await linkAnalysisToAccountProject(accounts, authorization.clientId, body.project_id, result.analysis_id, body.snapshot?.manifest?.git_remote, body.snapshot?.manifest?.repo_facts);
         await appendAuditLog(dataDir, {
           event: 'analyze',
           analysis_id: result.analysis_id,
@@ -517,6 +524,24 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           edges: result.cas.edges.length,
         });
         writeJson(response, 200, result);
+        // WAS AUTO-REBUILD REGRESSION FIX: /v1/analyze and /api/projects/:id/
+        // reanalyze both call notifyProjectAnalysisLandedForAnalysisId after a
+        // member CAS lands, but this route never did — so a workspace whose
+        // members only ever get refreshed via incremental `sync_codebase_remote`
+        // pushes (the common case once a project has an initial analysis_id)
+        // never marked its account workspace dirty, and the server-side WAS
+        // silently sat stale until someone manually hit POST
+        // /api/workspaces/{id}/reanalyze. Same fire-and-forget contract as the
+        // other two call sites: never blocks or affects this response.
+        void notifyProjectAnalysisLandedForAnalysisId(result.analysis_id);
+        // repo_facts persistence: a dirty-tree sync's manifest carries its own
+        // freshly-derived repo_facts (remote-source.ts deriveRepoFacts) — save
+        // it on the linked project record (if any) so a later server-side
+        // reanalyze with no client .git in reach has a last-known value to
+        // fall back on (see stampRepoFactsFromLastKnownOrMarkAbsent).
+        if (body.project_id && /^prj_/.test(body.project_id)) {
+          void accounts.setProjectRepoFacts(body.project_id, result.manifest.repo_facts).catch(() => {});
+        }
         return;
       }
 
@@ -1606,6 +1631,7 @@ async function linkAnalysisToAccountProject(
   projectId: string | undefined,
   analysisId: string | undefined,
   gitRemote: string | undefined,
+  repoFacts?: RepoFacts,
 ): Promise<void> {
   if (!analysisId) return;
   if (!clientId || !clientId.startsWith('user:')) {
@@ -1619,6 +1645,11 @@ async function linkAnalysisToAccountProject(
   if (projectId && /^prj_/.test(projectId)) {
     try {
       await accounts.setProjectAnalysisId(userId, projectId, analysisId);
+      // Persist this push's client-derived repo_facts (if any) on the project
+      // record — see AccountProject.repo_facts's doc comment. A later
+      // server-side reanalyze (no client .git in reach) re-stamps the CAS
+      // from this last-known value instead of dropping the keys.
+      await accounts.setProjectRepoFacts(projectId, repoFacts);
     } catch (error) {
       // 404 (project/workspace not found or not a member) is the expected
       // shape of "ambiguous or foreign — do not attach"; log and move on.
@@ -1641,6 +1672,7 @@ async function linkAnalysisToAccountProject(
       return; // 0 matches: no project for this remote — nothing to attach.
     }
     await accounts.setProjectAnalysisId(userId, matches[0].id, analysisId);
+    await accounts.setProjectRepoFacts(matches[0].id, repoFacts);
   } catch (error) {
     const detail = error instanceof AccountHttpError ? error.message : (error instanceof Error ? error.message : String(error));
     console.error(`[Klauro] skip analysis attach by remote "${gitRemote}" (user ${userId}): ${detail}`);
@@ -2760,6 +2792,12 @@ async function handleAccountApi(
               l14RevisionAppended = (async () => {
                 try {
                   const landedOutput = await getAnalysis(workspace);
+                  // repo_facts regression fix: this run has no client .git in
+                  // reach (server-side rebuild of the stored snapshot) — fall
+                  // back to the project's last-known client-derived repo_facts,
+                  // or stamp an honest absence reason, rather than silently
+                  // shipping the CAS without the keys.
+                  await stampRepoFactsFromLastKnownOrMarkAbsent(workspace, landedOutput, project.repo_facts);
                   const backgroundResult: RemoteAnalyzeResponse = {
                     status: 'success',
                     analysis_id: analysisId,
@@ -2799,6 +2837,7 @@ async function handleAccountApi(
         // honestly-errored) final CAS + re-notify so pollers and the
         // workspace rollup see it, not just the L1-L4 revision above.
         const finalOutput = await getAnalysis(workspace);
+        await stampRepoFactsFromLastKnownOrMarkAbsent(workspace, finalOutput, project.repo_facts);
         if (dataDirForBackground) {
           await appendProjectRevision(dataDirForBackground, {
             status: 'success',
@@ -3349,6 +3388,40 @@ async function handleSync(dataDir: string, request: RemoteSyncRequest, accountSa
 export async function stampRepoFacts(workspace: string, cas: CASOutput, manifest: SourceManifest | undefined): Promise<void> {
   if (!manifest?.repo_facts) return;
   cas.system.repo_facts = manifest.repo_facts;
+  await saveAnalysis(workspace, cas);
+}
+
+/**
+ * Server-side reanalyze counterpart to `stampRepoFacts`: `/api/projects/:id/
+ * reanalyze` and `/api/workspaces/:id/reanalyze` re-run the analyzer against
+ * the STORED snapshot already on this host — there is no client working tree
+ * in reach, so `manifest.repo_facts` is never available on these paths (the
+ * v1.0.124 regression this closes: repo_facts keys were silently omitted from
+ * every server-triggered rebuild's CAS, not just from non-git projects).
+ *
+ * Falls back to the project's last-known `repo_facts` (persisted by
+ * `linkAnalysisToAccountProject`'s repo-facts sibling whenever an `/v1/
+ * analyze` or `/v1/sync` push actually carried one) so the keys survive a
+ * server-side rebuild instead of disappearing. When NO last-known value
+ * exists either (never analyzed from a real git checkout, or a project with
+ * no linked account record), stamps an honest `repo_facts_status:
+ * {available:false, reason}` marker instead of leaving the CAS silently
+ * lacking any explanation — never fabricates a `repo_facts` value.
+ */
+export async function stampRepoFactsFromLastKnownOrMarkAbsent(
+  workspace: string,
+  cas: CASOutput,
+  lastKnownRepoFacts: RepoFacts | undefined,
+): Promise<void> {
+  if (lastKnownRepoFacts && (lastKnownRepoFacts.contributor_count !== undefined || lastKnownRepoFacts.first_commit_at || lastKnownRepoFacts.last_commit_at)) {
+    cas.system.repo_facts = lastKnownRepoFacts;
+    delete cas.system.repo_facts_status;
+  } else if (!cas.system.repo_facts) {
+    cas.system.repo_facts_status = {
+      available: false,
+      reason: 'This rebuild ran server-side against the stored snapshot (no client .git in reach), and no prior push for this project ever carried client-derived repo_facts to fall back on. Run `klauro analyze`/`klauro sync` from the repo\'s own git checkout to populate contributors and codebase age.',
+    };
+  }
   await saveAnalysis(workspace, cas);
 }
 

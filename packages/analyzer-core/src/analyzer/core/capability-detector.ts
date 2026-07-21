@@ -8,6 +8,12 @@ import {
   CASCapability,
   CASOperation
 } from '../../types/cas.types';
+import {
+  humanizeCapabilityLabel,
+  isBareNounCapabilityLabel,
+  deriveCapabilityNameFromOperations,
+  buildCapabilityDescriptionFromOperations
+} from './capability-naming';
 
 const ACTION_WORDS = new Set([
   'create', 'add', 'new', 'register', 'signup', 'submit',
@@ -399,8 +405,8 @@ export class CapabilityDetector {
 
     return {
       id: `capability_${groupKey}`,
-      name: this.formatCapabilityName(groupKey),
-      description: this.generateDescription(groupKey, operations, operationPatterns),
+      name: this.deriveCapabilityName(groupKey, operations, entryPoints),
+      description: this.generateDescription(operations, entryPoints),
 
       entry_points: entryPointIds,
       entry_point_summary: {
@@ -625,28 +631,40 @@ export class CapabilityDetector {
     return types[0] || 'unknown';
   }
 
-  private formatCapabilityName(groupKey: string): string {
-    return groupKey
-      .split('_')
-      .map(word => word.charAt(0).toUpperCase() + word.slice(1))
-      .join(' ');
-  }
-
-  private generateDescription(
+  /**
+   * PRODUCER-side evidence-grounded naming (shared implementation with the
+   * orchestrator's finalize backstop, see capability-naming.ts). A group key
+   * is a raw structural token ("hot", "cas", "spots_get") — title-casing it
+   * verbatim ships a bare-noun label, so when the humanized key is not a
+   * purpose-headed phrase the name is derived from the capability's REAL
+   * operations instead: a verb-headed operation label ("get_hot_spots" ->
+   * "Get Hot Spots") when one exists, else "Manage <subject>" grounded in
+   * the operation/entry-point evidence.
+   */
+  private deriveCapabilityName(
     groupKey: string,
     operations: CASOperation[],
-    patterns: CASCapability['operation_patterns']
+    entryPoints: CASEntryPoint[]
   ): string {
-    const name = this.formatCapabilityName(groupKey);
-    const opCount = operations.length;
-    const patternStr = patterns.length > 0 ? patterns.join(', ') : 'general';
+    const subject = humanizeCapabilityLabel(groupKey);
+    if (!isBareNounCapabilityLabel(subject)) return subject;
+    const hasAnchorEvidence = operations.length > 0 || entryPoints.length > 0;
+    return deriveCapabilityNameFromOperations(subject, operations, hasAnchorEvidence) ?? subject;
+  }
 
-    if (opCount === 1) {
-      const op = operations[0];
-      return `${name}: ${op.pattern} operation via ${op.trigger?.type || 'unknown'}`;
-    }
-
-    return `${name}: ${opCount} operations (${patternStr})`;
+  /**
+   * PRODUCER-side evidence-grounded description (shared implementation with
+   * the orchestrator's finalize backstop): names the group's REAL operations
+   * and entry kinds — never the "<pattern> operation via <type>" template.
+   */
+  private generateDescription(
+    operations: CASOperation[],
+    entryPoints: CASEntryPoint[]
+  ): string {
+    const rebuilt = buildCapabilityDescriptionFromOperations(operations);
+    if (rebuilt) return rebuilt;
+    const count = entryPoints.length;
+    return `Covers ${count} entry point${count === 1 ? '' : 's'}.`;
   }
 
   private avgDepth(chains: CASCallChain[]): number {

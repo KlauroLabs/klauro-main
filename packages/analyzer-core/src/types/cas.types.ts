@@ -223,23 +223,10 @@ export interface CASOutput {
    * and failed — a visible terminal failure, never a silent stay-pending (no
    * deterministic substitute exists; comprehension is AI-only).
    */
-  ai_enrichment?: 'pending' | 'ready' | 'disabled' | 'synchronous' | 'error' | 'partial';
+  ai_enrichment?: 'pending' | 'ready' | 'disabled' | 'synchronous' | 'error';
 
   /** When ai_enrichment === 'error', the underlying failure reason, queryable via the API. Absent otherwise. */
   ai_enrichment_error?: string;
-
-  /**
-   * Present when ai_enrichment === 'partial': the AI phase's wall-clock budget
-   * expired before every stage ran. Not a failure — whatever the phase already
-   * produced is kept as-is, never discarded or re-attempted; an in-flight call
-   * is allowed to finish, never killed mid-request. `nodes_at_stop` is the
-   * graph size when the budget was exhausted.
-   */
-  ai_phase_budget?: {
-    reason: string;
-    budget_ms: number;
-    nodes_at_stop: number;
-  };
 
   /**
    * Progressive-layering manifest. Absent on legacy stores and the plain
@@ -460,6 +447,19 @@ export interface CASSystem {
     contributor_count?: number;
     first_commit_at?: string;
     last_commit_at?: string;
+  };
+  /**
+   * Honest absence marker for `repo_facts` on builds where no client-derived
+   * value was available to stamp — e.g. a server-side `/api/projects/:id/
+   * reanalyze` or `/api/workspaces/:id/reanalyze` run against a stored
+   * snapshot with no client `.git` in reach, and no prior push for this
+   * project ever carried a manifest.repo_facts to fall back on. Set ONLY
+   * when `repo_facts` itself is absent (never both) — this is "here is why
+   * the field above is missing," never a substitute for a real value.
+   */
+  repo_facts_status?: {
+    available: false;
+    reason: string;
   };
   metadata?: Record<string, any>;
 }
@@ -3500,22 +3500,8 @@ export interface EnhancedSystemPurpose extends SystemPurpose {
    *  zero-coverage skip records why), never fabricated when the pass never
    *  ran (e.g. no data entities in this repo). */
   entity_description_coverage?: CASEntityDescriptionCoverage;
-  /** Overall AI-phase wall-clock status (KLAURO_AI_PHASE_BUDGET_MS, default 15
-   *  minutes): 'complete' when every AI stage (capability catalog, system
-   *  description, entity descriptions) got a chance to run before the phase
-   *  deadline; 'partial' when the phase budget expired first and one or more
-   *  stages were skipped or cut short (see ai_phase_stopped_reason /
-   *  ai_phase_nodes_at_stop, and CASOutput.ai_phase_budget for the copy
-   *  surfaced at the top level). Absent when the phase-budget mechanism never
-   *  engaged (comprehension disabled / no provider — see
-   *  description_generation.reason for that case instead). */
-  ai_phase_status?: 'complete' | 'partial';
-  /** Why ai_phase_status is 'partial' (e.g. 'phase-budget-exhausted'). Absent
-   *  when ai_phase_status is 'complete' or unset. */
-  ai_phase_stopped_reason?: string;
-  /** Node-graph size observed at the moment the AI phase budget expired, for
-   *  the one-line operator log and for CASOutput.ai_phase_budget.nodes_at_stop. */
-  ai_phase_nodes_at_stop?: number;
+  /** Set only after every required AI stage in this analysis layer ran. */
+  ai_phase_status?: 'complete';
 }
 
 export interface CASCapability {

@@ -2,6 +2,7 @@ import * as crypto from 'node:crypto';
 import * as fs from 'fs-extra';
 import * as path from 'node:path';
 import { detectRemoteProvider } from './remote-provider';
+import type { RepoFacts } from './remote-source';
 
 export type WorkspaceRole = 'owner' | 'admin' | 'member';
 
@@ -44,6 +45,18 @@ export interface AccountProject {
    *  (GET /api/account/activity, /api/workspaces/:id/activity). */
   moved_at?: string;
   moved_from_workspace_id?: string;
+  /**
+   * Last-known client-derived repo facts (contributor_count/first_commit_at/
+   * last_commit_at — see remote-source.ts deriveRepoFacts), persisted from
+   * whichever push actually carried a manifest.repo_facts (an `/v1/analyze`
+   * or `/v1/sync` from a client with real `.git` access). A server-side
+   * re-run against the STORED snapshot (`/api/projects/:id/reanalyze`,
+   * `/api/workspaces/:id/reanalyze`) has no client working tree to derive
+   * git facts from, so it falls back to re-stamping the CAS from THIS
+   * last-known value rather than silently dropping the keys. Absent when no
+   * push has ever carried repo_facts (never a fabricated zero).
+   */
+  repo_facts?: RepoFacts;
 }
 
 export interface AccountSession {
@@ -403,6 +416,27 @@ export class AccountStore {
       requireMembership(db, userId, project.workspace_id);
       project.analysis_id = analysisId;
       return project;
+    });
+  }
+
+  /**
+   * Persist the last client-derived repo_facts alongside the project record
+   * (see AccountProject.repo_facts's doc comment) so a later server-side
+   * reanalyze — which has no client `.git` to derive facts from — can
+   * re-stamp the CAS instead of shipping it with the keys silently absent.
+   * A no-op when `facts` is empty/undefined: never overwrites a real
+   * last-known value with nothing just because one particular push omitted
+   * it (e.g. a reanalyze-driven revision, or a client that lost git access
+   * transiently). Same "no user in flight" background-job shape as
+   * `listProjectsForWorkspace` — bypasses requireMembership by design; never
+   * wire this to an HTTP route directly with untrusted caller input.
+   */
+  async setProjectRepoFacts(projectId: string, facts: RepoFacts | undefined): Promise<void> {
+    if (!facts || (facts.contributor_count === undefined && !facts.first_commit_at && !facts.last_commit_at)) return;
+    await this.mutate(db => {
+      const project = db.projects.find(candidate => candidate.id === projectId);
+      if (!project) return; // unlinked/foreign project id — nothing to stamp, never throw here.
+      project.repo_facts = facts;
     });
   }
 

@@ -172,6 +172,23 @@ echo "==> Syncing Caddyfile + docker-compose.yml"
 rsync -az -e "$SSH" infrastructure/vps/Caddyfile "$DEST:/opt/klauro/Caddyfile"
 rsync -az -e "$SSH" infrastructure/vps/docker-compose.yml "$DEST:/opt/klauro/docker-compose.yml"
 
+# --- stamp the real build identity ------------------------------------------
+# The api container runs raw TS via `tsx` (never the esbuild bundle that would
+# embed __KLAURO_GIT_SHA__/__KLAURO_BUILD_TIME__ at build time), AND the
+# source sync above excludes .git — so build-identity.ts's `git rev-parse`
+# fallback always ran with no .git in reach on prod and silently reported
+# "unknown", shipping e.g. "1.0.126-dev+unknown" on /health forever. The dirty-
+# tree guard above already guarantees $APP_DIR's HEAD is exactly what was just
+# synced, so write that real sha (+ build time) into a small stamp file
+# BEFORE the container build below — getBuildIdentity() prefers this stamp
+# over the (on-prod, always-failing) git invocation.
+GIT_SHA="$(git -C "$APP_DIR" rev-parse --short=12 HEAD)"
+BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+echo "==> Stamping build identity ($GIT_SHA @ $BUILD_TIME)"
+$SSH "$DEST" "cat > /opt/klauro/source/apps/mcp-server/.klauro-build-stamp.json" <<STAMP
+{"git_sha": "$GIT_SHA", "build_time": "$BUILD_TIME"}
+STAMP
+
 # --- rebuild + restart -----------------------------------------------------
 echo "==> Rebuilding + restarting containers on $VPS_HOST"
 $SSH "$DEST" 'cd /opt/klauro && docker compose up -d --build --remove-orphans'

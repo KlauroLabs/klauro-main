@@ -119,6 +119,12 @@ import { CallGraphBuilder } from './call-graph-builder';
 import { DomainExtractor } from './domain-extractor';
 import { WorkflowDetector } from './workflow-detector';
 import { CapabilityDetector } from './capability-detector';
+import {
+  isBareNounCapabilityLabel as sharedIsBareNounCapabilityLabel,
+  isStructuralPlaceholderCapabilityDescription as sharedIsStructuralPlaceholderCapabilityDescription,
+  deriveCapabilityNameFromOperations as sharedDeriveCapabilityNameFromOperations,
+  buildCapabilityDescriptionFromOperations as sharedBuildCapabilityDescriptionFromOperations
+} from './capability-naming';
 import { CallChainAnalyzer } from './call-chain-analyzer';
 import { CapabilityDependencyBuilder } from './capability-dependency-builder';
 import { FlowScorer } from './flow-scorer';
@@ -10275,36 +10281,8 @@ export class AnalyzerOrchestrator {
     return segments.some(segment => INFRA_SEGMENT.test(segment));
   }
 
-  /**
-   * Purpose-verb vocabulary used only to test whether a capability label
-   * OPENS with an action ("Manage sessions") vs. is a bare module/type noun
-   * echoed as-is ("Session"). Reuses the same infinitive forms the
-   * behavior-anchored naming path already treats as action prefixes
-   * (BEHAVIOR_ACTION_VERB_PREFIXES) plus the higher-level "purpose" verbs the
-   * capability-catalog prompt itself asks for. Generic English verbs only —
-   * never a project-specific or brand vocabulary.
-   */
-  // NOTE: intentionally NOT built by spreading BEHAVIOR_ACTION_VERB_PREFIXES —
-  // that set is declared later in the class body, and static field
-  // initializers run in declaration order, so spreading it here at
-  // class-definition time would silently capture an empty/undefined set.
-  // Duplicated as a flat literal instead (same infinitive-verb vocabulary,
-  // still generic English verbs only, never project-specific).
-  private static readonly CAPABILITY_PURPOSE_VERBS = new Set<string>([
-    'get', 'set', 'fetch', 'list', 'find', 'load', 'show', 'view', 'read',
-    'create', 'add', 'new', 'update', 'edit', 'delete', 'remove', 'save',
-    'submit', 'send', 'sync', 'run', 'execute', 'process', 'handle', 'make',
-    'build', 'init', 'initialize', 'validate', 'check', 'resolve', 'generate',
-    'start', 'stop', 'open', 'close', 'enable', 'disable', 'apply', 'compute',
-    'manage', 'provide', 'support', 'expose', 'monitor', 'track',
-    'secure', 'detect', 'analyze', 'analyse', 'orchestrate', 'coordinate',
-    'schedule', 'transform', 'render', 'display', 'authenticate', 'authorize',
-    'notify', 'report', 'export', 'import', 'connect', 'synchronize',
-    'discover', 'configure', 'deploy', 'migrate', 'ingest', 'stream', 'route',
-    'dispatch', 'reconcile', 'audit', 'log', 'cache', 'queue', 'persist',
-    'store', 'serve', 'correlate', 'collect', 'record', 'validate',
-    'generate', 'search', 'index',
-  ]);
+  // Purpose-verb vocabulary now lives in capability-naming.ts (shared with
+  // the CapabilityDetector producer) — see CAPABILITY_PURPOSE_VERBS there.
 
   /**
    * True when `name` is a BARE NOUN label — a single module/type token
@@ -10332,16 +10310,7 @@ export class AnalyzerOrchestrator {
    * a lone word with no object is not a purpose statement.
    */
   private isBareNounCapabilityLabel(name: string): boolean {
-    const words = String(name || '').trim().split(/\s+/).filter(Boolean);
-    if (words.length === 0 || words.length > 2) return false;
-    if (words.length === 1) return true;
-    const first = words[0].toLowerCase().replace(/[^a-z]/g, '');
-    if (AnalyzerOrchestrator.CAPABILITY_PURPOSE_VERBS.has(first)) return false;
-    // Strip a common inflection (managing/manages/managed) so the base verb
-    // still registers without a project-specific inflection table.
-    const stem = first.replace(/(ing|ed|es|s)$/, '');
-    if (AnalyzerOrchestrator.CAPABILITY_PURPOSE_VERBS.has(stem)) return false;
-    return true;
+    return sharedIsBareNounCapabilityLabel(name);
   }
 
   /**
@@ -10366,9 +10335,7 @@ export class AnalyzerOrchestrator {
    * sentence that happens to contain "operation" never matches.
    */
   private isStructuralPlaceholderCapabilityDescription(description: string): boolean {
-    const trimmed = String(description || '').trim();
-    if (!trimmed) return false;
-    return /^[^:]{1,80}:\s+(?:[a-z]+\s+operation\s+via\s+\S+\s*$|\d+\s+operations?\s*\()/i.test(trimmed);
+    return sharedIsStructuralPlaceholderCapabilityDescription(description);
   }
 
   /**
@@ -10380,20 +10347,7 @@ export class AnalyzerOrchestrator {
   private rebuildCapabilityDescriptionFromOperations(
     operations: Array<{ name?: string; action?: string; entry_point_type?: string; trigger?: { type?: string; method?: string; path?: string } }>
   ): string | undefined {
-    const labels = Array.from(new Set(
-      operations
-        .map(op => String(op.name || op.action || '').trim())
-        .filter(Boolean)
-        .map(label => this.humanizeDomainKey(label.replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase()))
-    ));
-    if (labels.length === 0) return undefined;
-    const kinds = Array.from(new Set(
-      operations.map(op => String(op.entry_point_type || op.trigger?.type || '').trim()).filter(Boolean)
-    ));
-    const kindLabel = kinds.length === 1 ? ` ${kinds[0]}` : '';
-    const sample = labels.slice(0, 3).join(', ');
-    const suffix = labels.length > 3 ? ` and ${labels.length - 3} more` : '';
-    return `Covers ${labels.length}${kindLabel} operation${labels.length === 1 ? '' : 's'}: ${sample}${suffix}.`;
+    return sharedBuildCapabilityDescriptionFromOperations(operations);
   }
 
   /**
@@ -10403,6 +10357,10 @@ export class AnalyzerOrchestrator {
    * token shipped names like "Active"/"Hot" with descriptions like
    * "Active: query operation via message" (measured live on the v1.0.126
    * Klauro self-CAS: 163/177 flow-graph capabilities were this shape).
+   * CapabilityDetector now produces evidence-grounded names/descriptions up
+   * front via the SAME shared implementation (capability-naming.ts), so this
+   * sweep is a BACKSTOP for capabilities from other producers/older payloads
+   * and should normally find nothing to repair.
    * Repairs in place, evidence-grounded only:
    *  - a bare-noun name whose single dominant operation label is verb-headed
    *    adopts that operation's humanized label ("Get Hot Spots"); otherwise
@@ -10414,16 +10372,8 @@ export class AnalyzerOrchestrator {
     for (const capability of flowGraph?.capabilities || []) {
       const name = String(capability.name || '');
       if (this.isBareNounCapabilityLabel(name)) {
-        const opLabels = (capability.operations || [])
-          .map(op => String(op.name || '').trim())
-          .filter(Boolean)
-          .map(label => this.humanizeDomainKey(label.replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase()));
-        const verbHeaded = opLabels.find(label => {
-          const words = label.split(/\s+/);
-          return words.length >= 2 && !this.isBareNounCapabilityLabel(label);
-        });
         const hasAnchorEvidence = (capability.operations?.length || 0) > 0 || (capability.entry_points?.length || 0) > 0;
-        const repaired = verbHeaded || this.deriveManagePurposeLabel(name, hasAnchorEvidence);
+        const repaired = sharedDeriveCapabilityNameFromOperations(name, capability.operations || [], hasAnchorEvidence);
         if (repaired) capability.name = repaired;
       }
       if (this.isStructuralPlaceholderCapabilityDescription(capability.description)) {
