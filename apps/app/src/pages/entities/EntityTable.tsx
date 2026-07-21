@@ -6,6 +6,7 @@ import {
 } from '@mui/material';
 import { EvidenceKindBadge } from '../../components/entities/EvidenceKindBadge';
 import type { DataEntity } from '../../hooks/useEntities';
+import { encodeSlug } from '../../lib/slugs';
 
 const PAGE_SIZE_OPTIONS = [25, 50, 100];
 
@@ -53,7 +54,7 @@ export function EntityTable({ entities, projectId }: { entities: DataEntity[]; p
                 <TableRow
                   key={entity.id}
                   hover
-                  onClick={() => navigate(`/codebases/${projectId}/entities/${entity.id}`)}
+                  onClick={() => navigate(`/codebases/${projectId}/entities/${encodeSlug({ id: entity.id, name: entity.name })}`)}
                   sx={{ cursor: 'pointer' }}
                 >
                   <TableCell>

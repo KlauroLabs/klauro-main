@@ -3,9 +3,10 @@ import { screen } from '@testing-library/react';
 import { renderWithProviders } from '../../test/renderWithProviders';
 import { DeployableDetailPage } from './DeployableDetailPage';
 import * as hooks from '../../hooks/useDasUnits';
-import type { DasUnitSummary } from './dasIndex';
+import { encodeSlug } from '../../lib/slugs';
+import type { RemoteDasUnit } from '../../hooks/useDasUnits';
 
-const unitA: DasUnitSummary = {
+const unitA: RemoteDasUnit = {
   id: 'das:container:services-api:api',
   name: 'api',
   root_path: 'services/api',
@@ -13,9 +14,11 @@ const unitA: DasUnitSummary = {
   tier: 1,
   kind: 'container',
   boundary_evidence: ['services/api/Dockerfile'],
-  member_deployable_ids: ['dep:container:services-api:api'],
+  node_count: 12,
+  entry_point_count: 3,
+  exit_point_count: 1,
 };
-const unitB: DasUnitSummary = {
+const unitB: RemoteDasUnit = {
   id: 'das:container:services-worker:worker',
   name: 'worker',
   root_path: 'services/worker',
@@ -23,41 +26,38 @@ const unitB: DasUnitSummary = {
   tier: 1,
   kind: 'container',
   boundary_evidence: [],
-  member_deployable_ids: ['dep:container:services-worker:worker'],
+  node_count: 5,
+  entry_point_count: 0,
+  exit_point_count: 0,
 };
 
-function mockIndex(overrides: Partial<ReturnType<typeof hooks.useDasIndex>>) {
-  vi.spyOn(hooks, 'useDasIndex').mockReturnValue({
+function mockIndex(overrides: Partial<ReturnType<typeof hooks.useDasUnitIndex>>) {
+  vi.spyOn(hooks, 'useDasUnitIndex').mockReturnValue({
     isLoading: false,
     isError: false,
     promoted: false,
     units: [],
-    evidence: [],
-    nodes: [],
-    dataEntities: [],
+    orphanNodeCount: 0,
+    orphanNodeIds: [],
     ...overrides,
-  } as ReturnType<typeof hooks.useDasIndex>);
+  } as ReturnType<typeof hooks.useDasUnitIndex>);
 }
 
 function mockSlice(overrides: Partial<ReturnType<typeof hooks.useDasUnitSlice>>) {
   vi.spyOn(hooks, 'useDasUnitSlice').mockReturnValue({
     isLoading: false,
     isError: false,
-    promoted: false,
-    units: [],
-    evidence: [],
-    nodes: [],
-    dataEntities: [],
     entryPoints: [],
     capabilities: [],
     files: [],
     entities: [],
+    shipEvidence: undefined,
     ...overrides,
   } as ReturnType<typeof hooks.useDasUnitSlice>);
 }
 
 const routeProps = {
-  route: `/codebases/p1/deployables/${unitA.id}`,
+  route: `/codebases/p1/deployables/${encodeSlug(unitA)}`,
   path: '/codebases/:projectId/deployables/:dasUnitId',
 };
 
@@ -80,30 +80,37 @@ describe('DeployableDetailPage', () => {
 
   it('renders the not-promoted explanation when fewer than 2 units qualify', () => {
     mockIndex({ promoted: false, units: [] });
-    mockSlice({ promoted: false, units: [] });
+    mockSlice({});
     renderWithProviders(<DeployableDetailPage />, routeProps);
     expect(screen.getByText(/hasn't promoted/i)).toBeInTheDocument();
   });
 
-  it('renders the unit overview, ship evidence, and section stack for a promoted unit', () => {
-    mockIndex({ promoted: true, units: [unitA, unitB] });
+  it('resolves the unit slug and renders the unit overview, ship evidence, and section stack', () => {
+    mockIndex({ promoted: true, units: [unitA, unitB], orphanNodeCount: 2 });
     mockSlice({
-      promoted: true,
-      units: [unitA, unitB],
       entryPoints: [],
       capabilities: [],
       files: ['services/api/handler.ts'],
       entities: [],
+      shipEvidence: { ports: [8080] },
     });
     renderWithProviders(<DeployableDetailPage />, routeProps);
     expect(screen.getByRole('heading', { name: 'api' })).toBeInTheDocument();
     expect(screen.getByText('services/api/Dockerfile')).toBeInTheDocument();
-    expect(screen.getByText(/Orphan node count/i)).toBeInTheDocument();
+    expect(screen.getByText(/Orphan node count: 2/i)).toBeInTheDocument();
+    expect(screen.getByText('8080')).toBeInTheDocument();
+  });
+
+  it('reports zero orphans honestly rather than omitting the notice', () => {
+    mockIndex({ promoted: true, units: [unitA, unitB], orphanNodeCount: 0 });
+    mockSlice({});
+    renderWithProviders(<DeployableDetailPage />, routeProps);
+    expect(screen.getByText(/Orphan node count: 0/i)).toBeInTheDocument();
   });
 
   it('hides the picker when only one unit exists', () => {
-    mockIndex({ promoted: true, units: [unitA] });
-    mockSlice({ promoted: true, units: [unitA] });
+    mockIndex({ promoted: true, units: [unitA], orphanNodeCount: 0 });
+    mockSlice({});
     renderWithProviders(<DeployableDetailPage />, routeProps);
     expect(screen.queryByLabelText('Deployable unit')).not.toBeInTheDocument();
   });

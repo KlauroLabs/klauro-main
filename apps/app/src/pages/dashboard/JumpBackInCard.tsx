@@ -6,6 +6,7 @@ import { StatGlyphIcon, type StatGlyph } from '../../components/icons/StatGlyphI
 import { useProjectSummary } from '../../hooks/useProjectSummary';
 import { getLastOpenedAt } from '../../hooks/useRecentProjectViews';
 import { formatRelativeTime } from './formatRelativeTime';
+import { encodeSlug } from '../../lib/slugs';
 
 export interface JumpBackInTarget {
   project: Project;
@@ -21,17 +22,18 @@ export interface JumpBackInTarget {
  *   same `useProjectSummary` hook CodebaseOverview already uses) — wired
  *   below, react-query-deduped against CodebaseOverview's identical query
  *   key the moment this project has actually been opened once.
+ * - **Contributors** is now wired to `AnalysisSummary.repo_facts.
+ *   contributor_count` (e9490b69) — the same field CodebaseStats.tsx reads.
  * - **Last Opened** is now real, client-side data (`useRecentProjectViews.ts`
  *   — recorded by `CodebasePage` on every visit); honest "—" until this
  *   browser has actually opened the project once.
- * - **Lines** and **Contributors** remain true gaps — no lines-of-code
- *   metric or contributor count exists anywhere in the API surface this page
- *   can reach without a full per-workspace analysis fetch (see
- *   apps/app/docs/DESIGN-NOTES.md for the full accounting).
+ * - **Lines** remains a true gap — no lines-of-code metric exists anywhere
+ *   in the API surface this page can reach (see apps/app/docs/DESIGN-NOTES.md).
  */
 export function JumpBackInCard({ target }: { target: JumpBackInTarget }) {
   const summaryQuery = useProjectSummary(target.project.id);
   const capabilities = summaryQuery.data?.status === 'ready' ? summaryQuery.data.summary?.capabilities : undefined;
+  const contributors = summaryQuery.data?.status === 'ready' ? summaryQuery.data.summary?.repo_facts?.contributor_count : undefined;
   const lastOpenedAt = getLastOpenedAt(target.project.id);
   const lastOpenedLabel = formatRelativeTime(lastOpenedAt);
 
@@ -60,7 +62,7 @@ export function JumpBackInCard({ target }: { target: JumpBackInTarget }) {
           <Stack direction="row" spacing={4}>
             <JumpBackInStat glyph="lines" label="Lines" value="—" />
             <JumpBackInStat glyph="capabilities" label="Capabilities" value={capabilities !== undefined ? String(capabilities) : '—'} />
-            <JumpBackInStat glyph="contributors" label="Contributors" value="—" />
+            <JumpBackInStat glyph="contributors" label="Contributors" value={contributors !== undefined ? String(contributors) : '—'} />
           </Stack>
           <Typography variant="caption" color="text.disabled">
             Last Opened {lastOpenedLabel ?? '—'}
@@ -68,7 +70,7 @@ export function JumpBackInCard({ target }: { target: JumpBackInTarget }) {
         </Stack>
         <IconButton
           component={RouterLink}
-          to={`/codebases/${target.project.id}`}
+          to={`/codebases/${encodeSlug(target.project)}`}
           size="small"
           sx={{ border: 1, borderColor: 'divider' }}
           aria-label={`Open ${target.project.name}`}

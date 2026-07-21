@@ -8,6 +8,7 @@ import { EntryKindIcon } from '../../components/EntryKindIcon';
 import { KIND_META, isKnownKind } from '../../components/entryPointKinds';
 import type { EntryPoint } from '../../hooks/useEntryPoints';
 import { formatTrigger, looksLikeRawToken, securityLabel } from './formatEntryPoint';
+import { encodeSlug } from '../../lib/slugs';
 
 const PAGE_SIZE_OPTIONS = [25, 50, 100];
 
@@ -59,7 +60,7 @@ export function EntryPointTable({ entryPoints, projectId }: { entryPoints: Entry
                 <TableRow
                   key={ep.id}
                   hover
-                  onClick={() => navigate(`/codebases/${projectId}/entry-points/${ep.id}`)}
+                  onClick={() => navigate(`/codebases/${projectId}/entry-points/${encodeSlug({ id: ep.id, name: ep.name })}`)}
                   sx={{ cursor: 'pointer' }}
                 >
                   <TableCell>

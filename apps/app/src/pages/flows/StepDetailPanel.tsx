@@ -1,4 +1,5 @@
-import { Box, Chip, Paper, Stack, Typography } from '@mui/material';
+import { Box, Chip, IconButton, Paper, Stack, Typography } from '@mui/material';
+import CloseIcon from '@mui/icons-material/Close';
 import type { FlowStep } from '../../api';
 
 /** `function_id` has no single canonical shape across analyzers
@@ -18,12 +19,23 @@ function functionFileHint(functionId: string): string | null {
  * sidebar frame 1994:30203) — Step N of M, description, the functions that
  * implement it, and the step's own Inputs/Outputs (distinct from the
  * flow-level Data section: each step carries its own narrower contract).
+ * Binding behavior (LANE-COMMON item 7): this panel is rendered by the
+ * parent ONLY once a step has been explicitly selected — it never
+ * auto-opens — and the parent unmounts it on route change (a different
+ * flowId) or when `onClose` fires here.
  */
-export function StepDetailPanel({ step, index, total }: { step: FlowStep; index: number; total: number }) {
+export function StepDetailPanel({ step, index, total, onClose }: { step: FlowStep; index: number; total: number; onClose: () => void }) {
   return (
     <Paper variant="outlined" sx={{ p: 3, position: { md: 'sticky' }, top: { md: 88 } }}>
-      <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>{step.name}</Typography>
-      <Typography variant="caption" color="text.secondary">Step {index + 1} of {total}</Typography>
+      <Stack direction="row" sx={{ alignItems: 'flex-start', justifyContent: 'space-between' }}>
+        <Box>
+          <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>{step.name}</Typography>
+          <Typography variant="caption" color="text.secondary">Step {index + 1} of {total}</Typography>
+        </Box>
+        <IconButton size="small" aria-label="Close step detail" onClick={onClose}>
+          <CloseIcon fontSize="small" />
+        </IconButton>
+      </Stack>
       <Typography variant="body2" sx={{ mt: 2 }}>{step.description}</Typography>
 
       <Box sx={{ mt: 3 }}>

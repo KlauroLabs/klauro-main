@@ -17,32 +17,38 @@
 // only per-project fetch this page makes — doesn't carry it), so the real
 // GitHub badge isn't wired yet; removing the wrong element takes priority
 // over leaving a mislabeled one in place while that gap is closed.
-import { Box, Button, Stack, Typography } from '@mui/material';
+import { Box, Stack, Tooltip, Typography, Button } from '@mui/material';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import EditIcon from '@mui/icons-material/EditOutlined';
-import { formatRelativeTime } from './casSummary';
+import { describeFreshness } from '../../lib/freshness';
 
 export interface CodebaseHeaderProps {
   name: string;
   description?: string | null;
   analysisTimestamp?: string | null;
+  /** repo_facts.last_commit_at — the honest "source as of" marker (the last
+   *  real commit the analyzed snapshot reflects), distinct from when the
+   *  analysis job itself ran. See src/lib/freshness.ts. */
+  sourceAt?: string | null;
   onReanalyze?: () => void;
   reanalyzing?: boolean;
 }
 
-export function CodebaseHeader({ name, description, analysisTimestamp, onReanalyze, reanalyzing }: CodebaseHeaderProps) {
-  const relative = formatRelativeTime(analysisTimestamp);
+export function CodebaseHeader({ name, description, analysisTimestamp, sourceAt, onReanalyze, reanalyzing }: CodebaseHeaderProps) {
+  const freshness = describeFreshness(analysisTimestamp, sourceAt);
   return (
     <Stack spacing={1.5} sx={{ mb: 3 }}>
       <Stack direction="row" spacing={2} sx={{ justifyContent: 'space-between', alignItems: 'flex-start' }}>
         <Stack spacing={1}>
-          {relative ? (
-            <Stack direction="row" spacing={1} sx={{ alignItems: 'center' }}>
-              <Box sx={{ width: 6, height: 6, borderRadius: '50%', bgcolor: 'primary.main' }} />
-              <Typography variant="caption" color="text.secondary">
-                Updated {relative}
-              </Typography>
-            </Stack>
+          {freshness ? (
+            <Tooltip title={freshness.staleNotice ?? ''} arrow placement="right" disableHoverListener={!freshness.stale}>
+              <Stack direction="row" spacing={1} sx={{ alignItems: 'center', width: 'fit-content', cursor: freshness.stale ? 'default' : undefined }}>
+                <Box sx={{ width: 6, height: 6, borderRadius: '50%', bgcolor: freshness.stale ? 'warning.main' : 'primary.main' }} />
+                <Typography variant="caption" color="text.secondary">
+                  {freshness.label}
+                </Typography>
+              </Stack>
+            </Tooltip>
           ) : null}
           <Stack direction="row" spacing={1.5} sx={{ alignItems: 'center' }}>
             <Typography variant="h4" component="h1">{name}</Typography>

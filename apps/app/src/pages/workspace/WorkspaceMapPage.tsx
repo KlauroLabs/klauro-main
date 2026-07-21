@@ -6,10 +6,13 @@
 // supersedes). Same design language as the card: title/subtitle header,
 // the zoom-control row — now functionally wired via GraphCanvas rather than
 // the card's decorative "not yet interactive" icons.
-import { useMemo, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useEffect, useMemo, useState } from 'react';
+import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { Box, Stack, ToggleButton, ToggleButtonGroup, Typography } from '@mui/material';
 import { useWorkspaceAnalysis } from '../../hooks/useWorkspaceAnalysis';
+import { useWorkspaces } from '../../hooks/useWorkspaces';
+import { useResolvedWorkspaceId } from '../../hooks/useResolvedWorkspaceId';
+import { encodeSlug } from '../../lib/slugs';
 import { LoadingState } from '../../layout/LoadingState';
 import { EmptyState } from '../../layout/EmptyState';
 import { ErrorState } from '../../layout/ErrorState';
@@ -24,15 +27,27 @@ const PERSPECTIVES: Array<{ id: WorkspaceMapPerspectiveId; label: string; descri
 ];
 
 export function WorkspaceMapPage() {
-  const { workspaceId } = useParams<{ workspaceId: string }>();
+  const { workspaceId: routeParam } = useParams<{ workspaceId: string }>();
   const navigate = useNavigate();
+  const location = useLocation();
+  const workspacesQuery = useWorkspaces();
+  const resolvedId = useResolvedWorkspaceId(routeParam);
+  const workspaceId = resolvedId ?? routeParam;
   const query = useWorkspaceAnalysis(workspaceId);
   const [perspective, setPerspective] = useState<WorkspaceMapPerspectiveId>('structural');
+
+  useEffect(() => {
+    const workspace = workspacesQuery.data?.workspaces.find(w => w.id === resolvedId);
+    if (!workspace || !routeParam) return;
+    const canonical = encodeSlug(workspace);
+    if (routeParam !== canonical) navigate(`/workspaces/${canonical}/map`, { replace: true });
+  }, [workspacesQuery.data, resolvedId, routeParam, navigate, location.pathname]);
 
   const graph = query.data?.analysis;
   const applications = useMemo(() => liveApplications(graph?.applications ?? []), [graph?.applications]);
   const liveAppIds = useMemo(() => new Set(applications.map(a => a.id)), [applications]);
   const codebaseByAppId = useMemo(() => new Map(applications.map(a => [a.id, a.codebase_id])), [applications]);
+  const codebaseNameById = useMemo(() => new Map((graph?.codebases ?? []).map(c => [c.id, c.name ?? c.id])), [graph?.codebases]);
 
   const nodes = useMemo(
     () => buildWorkspaceMapNodes(applications, graph?.codebases, perspective),
@@ -92,7 +107,7 @@ export function WorkspaceMapPage() {
           ariaLabel="Workspace system map"
           onNodeClick={nodeId => {
             const codebaseId = codebaseByAppId.get(nodeId);
-            if (codebaseId) navigate(`/codebases/${codebaseId}`);
+            if (codebaseId) navigate(`/codebases/${encodeSlug({ id: codebaseId, name: codebaseNameById.get(codebaseId) ?? codebaseId })}`);
           }}
         />
       </Box>

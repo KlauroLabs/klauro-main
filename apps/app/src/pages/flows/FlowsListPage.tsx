@@ -5,6 +5,7 @@ import { PageHeader } from '../../layout/PageHeader';
 import { LoadingState } from '../../layout/LoadingState';
 import { EmptyState } from '../../layout/EmptyState';
 import { ErrorState } from '../../layout/ErrorState';
+import { useResolvedProjectId } from '../../hooks/useResolvedProjectId';
 import { useFlows } from '../../hooks/useFlows';
 import { useProjectSummary } from '../../hooks/useProjectSummary';
 import { asExtendedSummary } from '../codebase/casSummary';
@@ -22,7 +23,8 @@ import type { EntryKind } from '../../components/entryPointKinds';
  * AppShell, not built here.
  */
 export function FlowsListPage() {
-  const { projectId } = useParams<{ projectId: string }>();
+  const { projectId: routeParam } = useParams<{ projectId: string }>();
+  const projectId = useResolvedProjectId(routeParam) ?? routeParam;
   const flowsQuery = useFlows(projectId);
   const summaryQuery = useProjectSummary(projectId);
   const [filters, setFilters] = useState<FlowFilterState>({ search: '', kind: 'all', role: 'all', sort: 'name' });
@@ -89,7 +91,7 @@ export function FlowsListPage() {
           </Typography>
         ) : null}
 
-        <FlowTable flows={filtered} projectId={projectId} />
+        <FlowTable flows={filtered} projectId={routeParam ?? projectId} />
       </Stack>
     </Box>
   );

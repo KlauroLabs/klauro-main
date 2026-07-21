@@ -5,6 +5,7 @@
 import { useMemo } from 'react';
 import { useProjectConceptual } from './useProjectConceptual';
 import type { ConceptualCapability, FlowConcept } from '../api';
+import { resolveSlug } from '../lib/slugs';
 
 export interface FlowCapabilityLink {
   capability: ConceptualCapability;
@@ -12,11 +13,16 @@ export interface FlowCapabilityLink {
   rationale: string;
 }
 
+/** `flowId` is a `name~suffix` slug (src/lib/slugs.ts) or a legacy raw
+ *  `flow_id` — resolved against this fetch's own flow list, so the
+ *  `/flows/flow::chain:entry_event_...`-class raw-id URL never has to leak
+ *  past this hook. FlowDetailPage redirects to the canonical slug once this
+ *  resolves. */
 export function useFlow(projectId: string | undefined, flowId: string | undefined) {
   const query = useProjectConceptual(projectId);
 
   const flow = useMemo<FlowConcept | undefined>(
-    () => query.data?.flows?.flows.find(f => f.flow_id === flowId),
+    () => resolveSlug(flowId, (query.data?.flows?.flows ?? []).map(f => ({ ...f, id: f.flow_id }))),
     [query.data, flowId],
   );
 

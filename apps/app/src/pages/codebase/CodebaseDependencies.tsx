@@ -16,13 +16,15 @@ import { useParams } from 'react-router-dom';
 import { LoadingState } from '../../layout/LoadingState';
 import { ErrorState } from '../../layout/ErrorState';
 import { EmptyState } from '../../layout/EmptyState';
+import { useResolvedProjectId } from '../../hooks/useResolvedProjectId';
 import { useExternalServices } from '../../hooks/useExternalServices';
 import { useLibraries } from '../../hooks/useLibraries';
 import { ExternalServicesList } from '../integrations/ExternalServicesList';
 import { LibrariesList } from '../integrations/LibrariesList';
 
 export function CodebaseDependencies() {
-  const { projectId } = useParams<{ projectId: string }>();
+  const { projectId: routeParam } = useParams<{ projectId: string }>();
+  const projectId = useResolvedProjectId(routeParam) ?? routeParam;
   const servicesQuery = useExternalServices(projectId);
   const librariesQuery = useLibraries(projectId);
 

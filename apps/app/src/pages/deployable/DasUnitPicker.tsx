@@ -1,5 +1,5 @@
 import { MenuItem, Select, type SelectChangeEvent } from '@mui/material';
-import type { DasUnitSummary } from './dasIndex';
+import type { RemoteDasUnit } from '../../hooks/useDasUnits';
 
 /**
  * The das_index picker — mirrors entry-points' DeployableSwitcher (same
@@ -10,7 +10,7 @@ import type { DasUnitSummary } from './dasIndex';
  * not-promoted explanation instead of a picker with one disabled choice.
  */
 export interface DasUnitPickerProps {
-  units: DasUnitSummary[];
+  units: RemoteDasUnit[];
   value: string | undefined;
   onChange: (unitId: string) => void;
 }

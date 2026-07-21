@@ -11,6 +11,7 @@ import { useParams } from 'react-router-dom';
 import { LoadingState } from '../../layout/LoadingState';
 import { ErrorState } from '../../layout/ErrorState';
 import { EmptyState } from '../../layout/EmptyState';
+import { useResolvedProjectId } from '../../hooks/useResolvedProjectId';
 import { useProjectSummary } from '../../hooks/useProjectSummary';
 import { useProjectConceptual } from '../../hooks/useProjectConceptual';
 import { mergeCapabilities, type MergedCapability } from './casSummary';
@@ -61,7 +62,8 @@ function CapabilityRow({ capability }: { capability: MergedCapability }) {
 }
 
 export function CodebaseCapabilities() {
-  const { projectId } = useParams<{ projectId: string }>();
+  const { projectId: routeParam } = useParams<{ projectId: string }>();
+  const projectId = useResolvedProjectId(routeParam) ?? routeParam;
   const summaryQuery = useProjectSummary(projectId);
   const conceptualQuery = useProjectConceptual(projectId);
 

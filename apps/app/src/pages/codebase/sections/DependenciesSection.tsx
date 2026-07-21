@@ -19,9 +19,10 @@ import { SectionHeader } from './SectionHeader';
 import { useExternalServices } from '../../../hooks/useExternalServices';
 import { useLibraries } from '../../../hooks/useLibraries';
 
-export function DependenciesSection({ projectId }: { projectId: string }) {
+export function DependenciesSection({ projectId, slug }: { projectId: string; slug?: string }) {
   const servicesQuery = useExternalServices(projectId);
   const librariesQuery = useLibraries(projectId);
+  const linkTarget = `/codebases/${slug ?? projectId}/dependencies`;
 
   const services = servicesQuery.externalServices;
   const libraryCount = librariesQuery.libraries.length;
@@ -34,7 +35,7 @@ export function DependenciesSection({ projectId }: { projectId: string }) {
         index="05"
         title="Dependencies"
         subtitle="External services this system relies on."
-        seeAllHref={`/codebases/${projectId}/dependencies`}
+        seeAllHref={linkTarget}
         seeAllLabel="See all Dependencies"
       />
       {isEmpty ? (
@@ -54,7 +55,7 @@ export function DependenciesSection({ projectId }: { projectId: string }) {
                   <Chip
                     key={service.id}
                     component={RouterLink}
-                    to={`/codebases/${projectId}/dependencies`}
+                    to={linkTarget}
                     clickable
                     icon={<CloudOutlinedIcon sx={{ fontSize: 16 }} />}
                     label={service.name}

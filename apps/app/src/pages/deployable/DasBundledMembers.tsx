@@ -1,5 +1,5 @@
 import { Box, Stack, Typography } from '@mui/material';
-import type { DasUnitSummary } from './dasIndex';
+import type { RemoteDasUnit } from '../../hooks/useDasUnits';
 
 /**
  * Members an installer/compose unit bundles, grouped UNDER their owning
@@ -9,7 +9,7 @@ import type { DasUnitSummary } from './dasIndex';
  * members — the common case (spec §8: "8 runnable binaries, 1 installer
  * bundles 2").
  */
-export function DasBundledMembers({ unit }: { unit: DasUnitSummary }) {
+export function DasBundledMembers({ unit }: { unit: RemoteDasUnit }) {
   if (unit.member_root_paths.length === 0) return null;
   return (
     <Box sx={{ border: '1px solid', borderColor: 'divider', borderRadius: 1, p: 2.5 }}>

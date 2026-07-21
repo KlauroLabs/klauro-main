@@ -4,6 +4,7 @@ import { Box, Typography } from '@mui/material';
 import { tokens } from '../../theme';
 import { computeErdLayout } from './erdLayout';
 import type { DataEntity, DatabaseEntity } from '../../hooks/useEntities';
+import { encodeSlug } from '../../lib/slugs';
 
 /**
  * Entity-relationship diagram — construction lines, not a graph library.
@@ -102,7 +103,7 @@ export function ERDCanvas({
               style={{ cursor: 'pointer' }}
               onMouseEnter={() => setHoveredId(node.id)}
               onMouseLeave={() => setHoveredId(null)}
-              onClick={() => navigate(`/codebases/${projectId}/entities/${node.id}`)}
+              onClick={() => navigate(`/codebases/${projectId}/entities/${encodeSlug({ id: node.id, name: node.name })}`)}
             >
               <rect
                 width={node.width}

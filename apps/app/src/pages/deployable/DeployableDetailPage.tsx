@@ -5,7 +5,8 @@ import { PageHeader } from '../../layout/PageHeader';
 import { LoadingState } from '../../layout/LoadingState';
 import { EmptyState } from '../../layout/EmptyState';
 import { ErrorState } from '../../layout/ErrorState';
-import { useDasIndex, useDasUnitSlice } from '../../hooks/useDasUnits';
+import { useDasUnitIndex, useDasUnitSlice } from '../../hooks/useDasUnits';
+import { encodeSlug, resolveSlug } from '../../lib/slugs';
 import { DasUnitPicker } from './DasUnitPicker';
 import { DasUnitOverview } from './DasUnitOverview';
 import { DasShipEvidence } from './DasShipEvidence';
@@ -16,31 +17,38 @@ import { DasOrphanNotice } from './DasOrphanNotice';
 
 /**
  * The DAS drilldown — route /codebases/:projectId/deployables/:dasUnitId
- * (nested under CodebasePage, per router.tsx). das_index is the picker
- * (LANE-COMMON.md); this page is always scoped to ONE unit, same "one at a
- * time, switch to another" shape entry-points uses for repo-level
- * deployables, one rung more specific. Derived layout — no Figma screen
- * covers a DAS unit drilldown (see DESIGN-NOTES.md); mirrors the
- * entry-points catalog page's section-stack structure.
+ * (nested under CodebasePage, per router.tsx; `dasUnitId` is a
+ * `name~suffix` slug — src/lib/slugs.ts — resolved against the real
+ * das_index below, with back-compat for an old raw-id link). das_index is
+ * the picker (LANE-COMMON.md); this page is always scoped to ONE unit, same
+ * "one at a time, switch to another" shape entry-points uses for repo-level
+ * deployables, one rung more specific. Wired to the REAL DAS endpoints
+ * (GET .../das + .../cas?das_unit_id=, e9490b69) — the true reachability-
+ * closure slice, not the earlier client-side directory-prefix
+ * approximation. Derived layout — no Figma screen covers a DAS unit
+ * drilldown (see DESIGN-NOTES.md); mirrors the entry-points catalog page's
+ * section-stack structure.
  */
 export function DeployableDetailPage() {
   const { projectId, dasUnitId } = useParams<{ projectId: string; dasUnitId: string }>();
   const navigate = useNavigate();
 
-  const index = useDasIndex(projectId);
+  const index = useDasUnitIndex(projectId);
   const selectedUnit = useMemo(
-    () => index.units.find(u => u.id === dasUnitId) ?? index.units[0],
+    () => resolveSlug(dasUnitId, index.units) ?? index.units[0],
     [index.units, dasUnitId],
   );
-  const scoped = useDasUnitSlice(projectId, selectedUnit);
+  const scoped = useDasUnitSlice(projectId, selectedUnit?.id);
 
-  // Keep the URL in sync once units resolve: an unknown/missing dasUnitId
-  // falls back to the first unit and the address bar catches up, so a
-  // shared "just /deployables" link still lands somewhere real.
+  // Keep the URL in sync once units resolve: an unknown/missing/legacy-raw-id
+  // dasUnitId converges onto the canonical `name~suffix` slug for whichever
+  // unit resolved (falling back to the first unit for a bare "/deployables"
+  // link), so a shared link always lands somewhere real and canonical.
   useEffect(() => {
     if (!projectId || !selectedUnit) return;
-    if (dasUnitId !== selectedUnit.id) {
-      navigate(`/codebases/${projectId}/deployables/${selectedUnit.id}`, { replace: true });
+    const canonical = encodeSlug(selectedUnit);
+    if (dasUnitId !== canonical) {
+      navigate(`/codebases/${projectId}/deployables/${canonical}`, { replace: true });
     }
   }, [projectId, dasUnitId, selectedUnit, navigate]);
 
@@ -66,16 +74,25 @@ export function DeployableDetailPage() {
       <PageHeader
         title="Deployable"
         subtitle="One independently-shippable unit of this codebase — its entry points, entities, and the evidence that proves it ships on its own."
-        actions={<DasUnitPicker units={index.units} value={selectedUnit.id} onChange={id => navigate(`/codebases/${projectId}/deployables/${id}`)} />}
+        actions={
+          <DasUnitPicker
+            units={index.units}
+            value={selectedUnit.id}
+            onChange={id => {
+              const unit = index.units.find(u => u.id === id);
+              navigate(`/codebases/${projectId}/deployables/${unit ? encodeSlug(unit) : id}`);
+            }}
+          />
+        }
       />
 
       <Stack spacing={3} sx={{ mt: 3 }}>
         <DasUnitOverview unit={selectedUnit} />
-        <DasShipEvidence unit={selectedUnit} />
+        <DasShipEvidence evidence={scoped.shipEvidence} />
         <DasBundledMembers unit={selectedUnit} />
         <DasEntryPoints entryPoints={scoped.entryPoints} capabilities={scoped.capabilities} projectId={projectId} />
         <DasEntities entities={scoped.entities} files={scoped.files} />
-        <DasOrphanNotice />
+        <DasOrphanNotice orphanNodeCount={index.orphanNodeCount} />
       </Stack>
     </Box>
   );

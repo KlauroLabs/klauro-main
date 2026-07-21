@@ -5,6 +5,7 @@ import { FlowRoleBadge } from './FlowRoleBadge';
 import { entryKindFromFlow, linkedCapabilityCount } from './flowFormat';
 import { EntryKindIcon } from '../../components/EntryKindIcon';
 import { KIND_META } from '../../components/entryPointKinds';
+import { encodeSlug } from '../../lib/slugs';
 
 /**
  * The Flow List table (Figma node 2030:31178, "Table"). Columns match the
@@ -67,7 +68,7 @@ export function FlowTable({ flows, projectId }: { flows: FlowConcept[]; projectI
                 <TableRow
                   key={flow.flow_id}
                   hover
-                  onClick={() => navigate(`/codebases/${projectId}/flows/${encodeURIComponent(flow.flow_id)}`)}
+                  onClick={() => navigate(`/codebases/${projectId}/flows/${encodeSlug({ id: flow.flow_id, name: flow.name })}`)}
                   sx={{ cursor: 'pointer' }}
                 >
                   <TableCell>

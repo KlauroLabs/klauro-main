@@ -1,6 +1,7 @@
 import { useNavigate } from 'react-router-dom';
 import { Chip, List, ListItemButton, ListItemText, Typography } from '@mui/material';
 import type { DatabaseRelationship } from '../../hooks/useEntities';
+import { encodeSlug } from '../../lib/slugs';
 
 const TYPE_LABEL: Record<string, string> = {
   OneToOne: '1 — 1',
@@ -23,7 +24,10 @@ export function EntityRelationshipsList({
 }: {
   relationships: DatabaseRelationship[];
   projectId: string;
-  entityIdByNameLower: Map<string, string>;
+  /** name(lowercased) -> {id, name} for every entity in this codebase — used
+   *  both to gate navigation (relations to an entity the CAS didn't resolve
+   *  simply aren't clickable) and to mint the target's canonical slug. */
+  entityIdByNameLower: Map<string, { id: string; name: string }>;
 }) {
   const navigate = useNavigate();
 
@@ -38,12 +42,12 @@ export function EntityRelationshipsList({
   return (
     <List disablePadding>
       {relationships.map((rel, index) => {
-        const targetId = entityIdByNameLower.get(rel.target.toLowerCase());
+        const target = entityIdByNameLower.get(rel.target.toLowerCase());
         return (
           <ListItemButton
             key={`${rel.target}-${rel.field}-${index}`}
-            disabled={!targetId}
-            onClick={() => targetId && navigate(`/codebases/${projectId}/entities/${targetId}`)}
+            disabled={!target}
+            onClick={() => target && navigate(`/codebases/${projectId}/entities/${encodeSlug(target)}`)}
             sx={{ borderBottom: '1px solid', borderColor: 'divider', px: 0 }}
           >
             <ListItemText

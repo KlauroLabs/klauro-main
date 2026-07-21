@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
-import { useParams } from 'react-router-dom';
+import { useEffect } from 'react';
+import { useNavigate, useParams } from 'react-router-dom';
 import { Box, Chip, Grid, Stack, Typography } from '@mui/material';
 import { PageHeader } from '../../layout/PageHeader';
 import { LoadingState } from '../../layout/LoadingState';
@@ -9,6 +10,8 @@ import { EntryKindIcon } from '../../components/EntryKindIcon';
 import { KIND_META, isKnownKind } from '../../components/entryPointKinds';
 import { useEntryPoint } from '../../hooks/useEntryPoints';
 import { useEntryPointFlow } from '../../hooks/useEntryPointFlow';
+import { useResolvedProjectId } from '../../hooks/useResolvedProjectId';
+import { encodeSlug } from '../../lib/slugs';
 import { formatTrigger, looksLikeRawToken, securityLabel } from './formatEntryPoint';
 import { SecurityCard } from './sections/SecurityCard';
 import { InputCard } from './sections/InputCard';
@@ -27,9 +30,19 @@ import { TelemetryCard } from './sections/TelemetryCard';
  * Flow Overview's header-stats + stacked card-section pattern).
  */
 export function EntryPointDetailPage() {
-  const { projectId, entryPointId } = useParams<{ projectId: string; entryPointId: string }>();
-  const query = useEntryPoint(projectId, entryPointId);
+  const { projectId: routeParam, entryPointId: routeEntryPointId } = useParams<{ projectId: string; entryPointId: string }>();
+  const navigate = useNavigate();
+  const projectId = useResolvedProjectId(routeParam) ?? routeParam;
+  const query = useEntryPoint(projectId, routeEntryPointId);
   const flowQuery = useEntryPointFlow(projectId, query.entryPoint);
+
+  // `entryPointId` may be a legacy raw id or a stale slug — once useEntryPoint
+  // resolves it, converge the URL onto the canonical `name~suffix` slug.
+  useEffect(() => {
+    if (!routeParam || !routeEntryPointId || !query.entryPoint) return;
+    const canonical = encodeSlug(query.entryPoint);
+    if (routeEntryPointId !== canonical) navigate(`/codebases/${routeParam}/entry-points/${canonical}`, { replace: true });
+  }, [routeParam, routeEntryPointId, query.entryPoint, navigate]);
 
   if (!projectId) return null;
   if (query.isLoading) return <LoadingState label="Loading entry point…" />;
@@ -63,7 +76,7 @@ export function EntryPointDetailPage() {
 
       <Grid container spacing={2}>
         <Grid size={{ xs: 12, md: 6 }}>
-          <FlowCard projectId={projectId} flow={flowQuery.flow} isLoading={flowQuery.isLoading} />
+          <FlowCard projectId={routeParam ?? projectId} flow={flowQuery.flow} isLoading={flowQuery.isLoading} />
         </Grid>
         <Grid size={{ xs: 12, md: 6 }}>
           <SecurityCard entryPoint={ep} />

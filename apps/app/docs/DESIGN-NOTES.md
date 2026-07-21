@@ -899,3 +899,171 @@ overview) beyond confirming no emoji/MUI-icon-language violations are visible on
 `npm run typecheck && npm run build && npm test` all green (190 tests, 0 failures) after every
 change in this pass; no existing test asserted on the removed type-chip's text, so none needed
 updating for that removal. NUL-byte count on every file touched this pass: 0.
+
+## arch-concepts lane — architecture diagram: concepts as the default lens
+
+**User complaint**: the architecture diagram "shows seemingly everything — it should show
+framework CONCEPTS only (5-20 things: Services, Controllers, Repositories, etc.)". The prior
+implementation rendered one node per raw `deployable_evidence` row (real ship/runnable
+artifacts), which answers "what do we ship" but not "how is this built" — the wrong question for
+a diagram sitting under a "How a request moves through the system" subtitle.
+
+**Fix**: `architecture_summary.architectural_inventory` (already on the full CAS payload, GET
+`/api/projects/:id/cas`) carries exactly the concept groups the user described — models, views,
+controllers, view_models, services, repositories, clients, mediators, unit_of_work, singletons,
+scripts, packages — each keyed to an array of **node ids** (the CAS type says `string[]` but
+`orchestrator.ts`'s `buildArchitecturalInventory` fills each array with `node.id`, not names).
+This is a real, evidence-backed 5-20-ish group set, never fabricated, and was simply never wired
+into the app (it also backs `architectural_inventory_counts` on the summary route, but that's
+numbers-only — no ids to build edges from, which is why a prior comment in
+`architectureDiagramData.ts` said inventory counts "have no known relationships to each other and
+would be fabricated edges if drawn as a graph": that comment was true of the *summary's* counts,
+not of the raw CAS inventory this lane found underneath it).
+
+Concepts is now the DEFAULT lens (`ArchitectureDiagram.tsx`); Deployables (the prior
+`deployable_evidence` view, with its structural/exposure sub-toggle intact) is the second lens via
+the same `src/components/diagram/perspectives.ts` pattern. Edges in the Concepts lens are
+aggregated call-graph counts between groups (`buildConceptDiagramEdges` in
+`architectureDiagramData.ts`) — cheap to derive from the same CAS payload's `edges` array,
+counted rather than drawn node-to-node. The `packages` category is excluded as an edge endpoint
+(broad file-path-based catch-all — nearly everything would appear to "call" it, which is
+membership noise, not a relationship) but still shown as its own concept box, since its count is
+real.
+
+**Data gap — concept -> Functions page click-through**: clicking a concept node navigates to
+`/codebases/:projectId/functions?concept=<key>&nodeIds=<id1,id2,...>` (capped at 300 ids). As of
+this pass, `FunctionsPage.tsx`/`useFilteredNodes` (a different lane's files — field wiring) only
+filter by free-text search, node `type`, and `file`; they do not yet read `concept`/`nodeIds` from
+the URL. The link is real and deep-linkable today, it just lands on the unfiltered Functions page
+until that lane adds an id-list filter — a degrade, not a dead link. Worth a follow-up: extend
+`useFilteredNodes`'s `NodeFilter` with an optional `nodeIds: Set<string>` predicate and have
+`FunctionsPage` read `concept`/`nodeIds` from `useSearchParams` on mount.
+
+## ui-final-mile lane — honest freshness (analysis age vs. source age)
+
+**User complaint (real incident)**: `CodebaseHeader`'s "Updated 3 days ago" dot described only
+when the analysis job last RAN, not how current the analyzed SOURCE was. A live case: the
+analysis ran 3 days ago, but the uploaded snapshot it analyzed was last committed ~11 days
+earlier — the repo had since diverged by roughly 200 files with no hint anywhere in the UI.
+
+**Fix**: `src/lib/freshness.ts`'s `describeFreshness(analysisTimestamp, sourceAt)` combines the
+two into one label — `"Updated 3d ago"` when they coincide (or no source timestamp is available),
+`"Updated 3d ago · source as of 11d ago"` when they diverge — and flags `stale: true` past
+`STALE_SOURCE_DAYS` (7), which `CodebaseHeader` renders as a warning-colored dot with a tooltip
+naming the fix ("...may not reflect the current code — Re-Analyze to refresh it"), the same
+tooltip-on-dot pattern `WorkspaceHeader` already uses for enrichment status.
+
+`sourceAt` is `AnalysisSummary.repo_facts.last_commit_at` (client-derived git fact, e9490b69) —
+wired into `CodebaseHeader` via `CodebaseOverview`. This is the CODEBASE-level fix only.
+
+**Backend field gap — workspace-level source date**: `WorkspaceHeader`'s own "Updated X ago" dot
+(`generatedAt` = when the server-side WAS was last rebuilt) has the identical honesty problem one
+level up — a workspace can be freshly rebuilt from stale member analyses — but there is no fix
+applied here today. `WorkspaceAnalysisResponse.analysis.codebases[]` (api.ts) carries only
+`{id, name, path, primary_domain, system_type, languages, frameworks}` — no `repo_facts` per
+member codebase, so there is no per-codebase (let alone aggregate) source date reaching the
+workspace graph to compute an honest "source as of" from. Closing this needs a backend change:
+stamp each WAS `codebases[]` entry with its member CAS's `repo_facts.last_commit_at` (or at least
+the OLDEST one across members, the honest worst-case for a "does this reflect current code"
+signal) in `cross-codebase-analysis.ts`'s workspace-graph build. Flagged here rather than faked.
+
+## figma-reconcile lane — render-verified fidelity pass (local fixture + Browser-pane loop)
+
+Per the user's directive that self-certified fidelity review was insufficient ("reviewed the live
+app twice, a ton of inconsistencies"), this pass built `apps/app/scripts/fixture-server.mjs` (a
+zero-dep node http fixture API — see its header) + `VITE_KLAURO_API_URL=http://localhost:4174 npx
+vite build && npx vite preview --port 4173`, then rendered all 5 designed frames in the Browser-
+pane MCP tool against real UI code with realistic fixture data, comparing each against a fresh
+`get_screenshot` pull of its Figma frame. Fixture identity is fictional ("Meridian" workspace,
+`ledger-api`/`checkout-web`/`risk-engine` codebases) per this repo's standing corpus-naming rule —
+no real client/benchmark names in fixtures or code.
+
+### Found and fixed: AppShell sidebar/topbar added undesigned "Soon" badges — every screen
+`src/layout/AppShell.tsx`'s Inbox/Activity/Add Workspace/Members/Integrations/Billing/Help/
+Settings nav items rendered `disabled` + an invented `<Chip label="Soon">` end-adornment, and the
+topbar search/bell icons were disabled with an invented "(coming soon)" tooltip. None of this
+exists in the Figma frame (`get_screenshot` on Home/Workspace/Repo overview/Flow List/Flow
+Overview all show these items in full, undimmed, unbadged) — the DESIGN FIDELITY RULE's "do NOT
+add anything the design doesn't show" bars invented badges/dimming as much as it bars invented
+sections. **FIXED**: removed `disabled`/`ComingSoonChip` from every nav item and the topbar icon
+buttons; they now render exactly as Figma shows (visually normal, functionally inert since no
+destination page/data exists yet for them — that remains the real gap, just not decorated).
+Because AppShell wraps every route, this one fix changes the rendered appearance of all 5 frames
+simultaneously.
+
+### Found and fixed: topbar breadcrumb showed only an icon on Home, generic slugs elsewhere
+Figma's Home frame breadcrumb is plain text "Home" (no icon); every other frame shows a home icon
++ the real workspace/codebase NAME + a star/favorite icon — `Breadcrumbs()` rendered neither: Home
+showed a bare icon with no text, and non-Home routes showed a capitalized URL segment ("Workspaces"
+instead of the workspace's actual name), no star. **FIXED**: Home now renders literal "Home" text;
+`/workspaces/:slug` and `/codebases/:slug` resolve to the real name via the same `useWorkspaces()`
+aggregate AppShell already fetches (no new network call, via `resolveSlug`); a star icon was added.
+Deeper section segments (`/flows`, `/capabilities`, ...) still fall back to a capitalized slug —
+an honest approximation, not a further data gap, since no additional fetch is made for them here.
+
+### Found and fixed: Repositories card grid tag chips were uniform, not color-coded — the explicitly flagged card grid
+The user named this card grid "not pixel perfect at all." `get_screenshot` on the Workspace frame
+(1748:6595) confirms every stack-tag pill (Jest/Flask/FastAPI/NestJS/...) renders in a distinct,
+consistent color per tag, not a single neutral chip style. `RepositoryCard.tsx` rendered plain
+default `<Chip>`s. **FIXED**: added `src/pages/workspace/stackTagColor.ts` — a fixed muted palette
+(green/orange/teal/purple/pink/olive) keyed by a stable string hash of the tag name, so the same
+tag always renders the same color across every card without inventing a stack-category taxonomy
+the API doesn't provide. Wired into `RepositoryCard.tsx`'s tag chip `sx`.
+
+### Found and fixed (SEVERE — functional, not cosmetic): slug-routing regression broke data fetching on 3 of 5 designed frames
+A concurrent lane (this session, fabric-parallel) introduced `name~suffix` slug URLs
+(`src/lib/slugs.ts`, `useResolvedProjectId`) so links read human-readable instead of raw ids, with
+`CodebasePage.tsx` redirecting any raw-id/stale-slug link to the canonical slug. But most child
+routes under `/codebases/:projectId` — `CodebaseOverview.tsx`, `CodebaseCapabilities.tsx`,
+`CodebaseArchitecture.tsx`, `CodebaseDependencies.tsx`, `FlowsListPage.tsx`, `FlowDetailPage.tsx`,
+plus `DependenciesSection.tsx` and `FlowEntryPointSection.tsx` one level down — still read the RAW
+route param via `useParams()` and passed it directly to their data-fetching hooks
+(`useProjectSummary`/`useProjectConceptual`/`useProjectCas`/`useExternalServices`/...). Since the
+sidebar's own nav links now navigate with the canonical SLUG (not the raw id), and `CodebasePage`'s
+redirect converges every direct/legacy link onto that slug too, EVERY visit to Repo overview, Flow
+List, or Flow Overview beyond the very first raw-id paint fetched data using a slug string as if it
+were the real backend id — silently returning wrong-project or empty data (caught live: navigating
+to `ledger-api` rendered `risk-engine`'s "Companion service" fixture data after the slug redirect
+fired). This directly broke 3 of the 5 designed frames' actual content, not just their pixels.
+**FIXED**: every listed file now resolves `useResolvedProjectId(routeParam) ?? routeParam` for data
+fetching, while continuing to build outbound links/hrefs from the route's own `routeParam` (or a
+new `projectSlug`/`slug` prop added to `FlowEntryPointSection`/`DependenciesSection`) so emitted
+URLs stay in canonical slug form. Caught entirely by the render-verified loop this task mandated —
+would not have surfaced from a documentation-only fidelity review.
+
+### Fixture-driven bugs found in-flight (not product bugs, logged for completeness)
+Two crashes surfaced while iterating the fixture payload shape itself, not the product: (1) an
+early `ChangeActivityPanel` fixture response used `{status, activity}` instead of the real
+`{events, next_cursor}` envelope `useChangeActivity.ts` expects, crashing on `.events.length`; (2)
+`FlowConcept.contract` (the flow-level ILSO contract, distinct from each step's own) was omitted
+from the fixture's flow objects, crashing `FlowSystemEffectsSection`/`FlowDataSection` on
+`flow.contract.side_effects`. Both fixed in `scripts/fixture-server.mjs`, not app code — noted here
+only because a first-time reader of the crash trace could otherwise mistake either for a product
+defect.
+
+### Also fixed in passing (concurrent peer typecheck breakage, blocking the shared gate)
+`DeployFreshnessBanner.tsx` (landed by a concurrent lane this session) used MUI v6-era
+`<Snackbar TransitionComponent={Fade}>`; this repo's MUI is v9, which moved that prop to
+`slots={{transition: Fade}}` — a `tsc --noEmit` failure unrelated to this lane's scope but
+blocking the shared `npm run typecheck` gate every lane's report depends on. One-line fix, not a
+design/fidelity change.
+
+### Known remaining honest deviations (found, not fixed, with reason)
+- **RepositoryCard has no per-repo description text** (Figma shows a 2-line narrative under every
+  card's title) — already logged above ("what a codebase row can't carry here: per-repo narrative
+  text"); no per-codebase narrative field reaches the Workspace-level WAS graph today.
+- **Critical Flows section (Repo overview, §02) is a simple row list, not Figma's full step-
+  pipeline visualization** with per-step badges — already logged above by a prior pass as
+  overlapping the `clickables-diagrams` lane's claimed scope; not re-litigated or rebuilt this
+  pass to avoid a collision.
+- **Evidence screenshots**: Figma-side screenshots for all 5 frames were pulled via `get_screenshot`
+  and saved to `apps/app/docs/fidelity/<frame>-figma.png`. The BUILT-side half of each pair was
+  visually captured and diffed live in the Browser-pane MCP tool during this session (every frame
+  listed above was actually rendered and inspected, not inferred), but this sandboxed environment
+  has no headless-browser CLI or file-writable screenshot capability to persist those renders to
+  disk — only the Figma half of each pair exists as a file. Flagged honestly rather than fabricated
+  or silently omitted.
+
+### Verification
+`npm run typecheck && npm run build && npm test` all green (217 tests, 0 failures) after every
+change in this pass. NUL-byte count on every file touched: 0.

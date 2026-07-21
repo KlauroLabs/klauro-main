@@ -12,6 +12,8 @@ import { Link as RouterLink } from 'react-router-dom';
 import { formatRelativeTime } from '../dashboard/formatRelativeTime';
 import { initials, type WorkspaceContributor, type WorkspaceInputRef } from './workspaceHelpers';
 import { StatGlyphIcon } from '../../components/icons/StatGlyphIcon';
+import { stackTagColor } from './stackTagColor';
+import { encodeSlug } from '../../lib/slugs';
 
 export interface RepositoryCardProps {
   name: string;
@@ -23,6 +25,7 @@ export interface RepositoryCardProps {
 
 export function RepositoryCard({ name, projectId, tags, input, contributors }: RepositoryCardProps) {
   const relative = formatRelativeTime(input?.cas_generated_at);
+  const projectSlug = projectId ? encodeSlug({ id: projectId, name }) : undefined;
   return (
     <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1.5, p: 4, display: 'flex', flexDirection: 'column', gap: 2 }}>
       <Stack direction="row" sx={{ justifyContent: 'space-between', alignItems: 'flex-start' }}>
@@ -36,10 +39,10 @@ export function RepositoryCard({ name, projectId, tags, input, contributors }: R
         </Stack>
         <Tooltip title={projectId ? 'Open codebase' : 'No codebase page linked yet'}>
           <span>
-            {projectId ? (
+            {projectSlug ? (
               <IconButton
                 component={RouterLink}
-                to={`/codebases/${projectId}`}
+                to={`/codebases/${projectSlug}`}
                 size="small"
                 sx={{ border: 1, borderColor: 'divider' }}
                 aria-label={`Open ${name}`}
@@ -62,9 +65,17 @@ export function RepositoryCard({ name, projectId, tags, input, contributors }: R
       ) : null}
 
       <Stack direction="row" spacing={1} useFlexGap sx={{ flexWrap: 'wrap' }}>
-        {tags.slice(0, 4).map(tag => (
-          <Chip key={tag} size="small" label={tag} />
-        ))}
+        {tags.slice(0, 4).map(tag => {
+          const color = stackTagColor(tag);
+          return (
+            <Chip
+              key={tag}
+              size="small"
+              label={tag}
+              sx={{ bgcolor: color.bg, color: color.fg, fontWeight: 600 }}
+            />
+          );
+        })}
       </Stack>
 
       <Box sx={{ borderTop: 1, borderColor: 'divider', pt: 2, mt: 'auto' }}>

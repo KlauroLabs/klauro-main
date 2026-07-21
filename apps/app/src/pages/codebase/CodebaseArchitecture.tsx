@@ -13,15 +13,19 @@ import { useParams } from 'react-router-dom';
 import { LoadingState } from '../../layout/LoadingState';
 import { ErrorState } from '../../layout/ErrorState';
 import { EmptyState } from '../../layout/EmptyState';
+import { useResolvedProjectId } from '../../hooks/useResolvedProjectId';
 import { useProjectSummary } from '../../hooks/useProjectSummary';
 import { useDasIndex } from '../../hooks/useDasUnits';
+import { useArchitectureConcepts } from '../../hooks/useArchitectureConcepts';
 import { asExtendedSummary } from './casSummary';
 import { ArchitectureDiagram } from './sections/ArchitectureDiagram';
 
 export function CodebaseArchitecture() {
-  const { projectId } = useParams<{ projectId: string }>();
+  const { projectId: routeParam } = useParams<{ projectId: string }>();
+  const projectId = useResolvedProjectId(routeParam) ?? routeParam;
   const summaryQuery = useProjectSummary(projectId);
   const dasIndex = useDasIndex(projectId);
+  const concepts = useArchitectureConcepts(projectId);
 
   if (!projectId) return null;
   if (summaryQuery.isLoading) return <LoadingState label="Loading architecture…" />;
@@ -45,7 +49,12 @@ export function CodebaseArchitecture() {
 
       <Box>
         <Typography variant="subtitle1" sx={{ mb: 2 }}>Architecture diagram</Typography>
-        <ArchitectureDiagram projectId={projectId} evidence={dasIndex.evidence} />
+        <ArchitectureDiagram
+          projectId={projectId}
+          evidence={dasIndex.evidence}
+          conceptInventory={concepts.inventory}
+          conceptEdges={concepts.edges}
+        />
       </Box>
 
       <Box>

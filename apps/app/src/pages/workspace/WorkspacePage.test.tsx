@@ -129,6 +129,9 @@ describe('WorkspacePage', () => {
     mockAnalysis({ data: readyResponse });
     renderPage();
     expect(screen.getByText(/Last analyzed - 27m ago/)).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: /Open Backend/i })).toHaveAttribute('href', '/codebases/p1');
+    // The codebase link is a `name~suffix` slug (src/lib/slugs.ts), not the
+    // raw project id, per LANE-COMMON item 6 — RepositoryCard mints it from
+    // the codebase's own {id, name}.
+    expect(screen.getByRole('link', { name: /Open Backend/i })).toHaveAttribute('href', '/codebases/backend~p1');
   });
 });

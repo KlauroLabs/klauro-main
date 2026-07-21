@@ -105,9 +105,21 @@ export interface LayersReady {
 
 export type AiEnrichmentState = 'pending' | 'ready' | 'disabled' | 'synchronous' | 'error';
 
+/** Client-derived git facts (remote-source.ts deriveRepoFacts), stamped onto
+ *  the CAS server-side (remote-analyzer-service.ts stampRepoFacts) and
+ *  surfaced here by query.ts's buildSummary. Absent (never a zero/empty
+ *  object) when the client couldn't derive them (non-git checkout, or an
+ *  analysis produced before repo_facts existed). */
+export interface RepoFacts {
+  contributor_count?: number;
+  first_commit_at?: string;
+  last_commit_at?: string;
+}
+
 export interface AnalysisSummary {
   name?: string;
   type?: string;
+  repo_facts?: RepoFacts;
   languages?: string[];
   frameworks?: string[];
   primary_domain?: string | null;
@@ -330,6 +342,26 @@ export interface WorkspaceLastAttempt {
   reason?: string;
 }
 
+export interface ComplexitySubscore {
+  score: number;
+  inputs: Record<string, number>;
+}
+
+/** cross-codebase-analysis.ts's WorkspaceComplexity — a 60/40 blend of
+ *  member codebases' own complexity and cross-repo integration factors.
+ *  Absent when the workspace has zero member codebases (nothing to blend). */
+export interface WorkspaceComplexity {
+  composite: number;
+  member_average_composite: number;
+  subscores: {
+    application_surface: ComplexitySubscore;
+    runtime_link_density: ComplexitySubscore;
+    das_verified_fraction: ComplexitySubscore;
+  };
+  members: Array<{ codebase_id: string; composite: number }>;
+  computed_from: string[];
+}
+
 export interface WorkspaceAnalysisResponse {
   status: 'ready' | 'pending' | 'none';
   workspace_id: string;
@@ -367,6 +399,10 @@ export interface WorkspaceAnalysisResponse {
       languages?: string[];
       frameworks?: string[];
     }>;
+    /** Blend of member-codebase complexity + cross-repo integration factors
+     *  (cross-codebase-analysis.ts) — powers SystemComplexityCard. Absent on
+     *  a workspace with no member codebases yet. */
+    workspace_complexity?: WorkspaceComplexity;
     applications?: WorkspaceApplication[];
     runtime_components?: WorkspaceRuntimeComponent[];
     runtime_links?: WorkspaceRuntimeLink[];

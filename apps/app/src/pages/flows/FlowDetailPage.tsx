@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import { Box, Grid, Stack } from '@mui/material';
 import { LoadingState } from '../../layout/LoadingState';
 import { EmptyState } from '../../layout/EmptyState';
 import { ErrorState } from '../../layout/ErrorState';
 import { useFlow } from '../../hooks/useFlow';
 import { useProjectSummary } from '../../hooks/useProjectSummary';
+import { useResolvedProjectId } from '../../hooks/useResolvedProjectId';
+import { encodeSlug } from '../../lib/slugs';
 import { asExtendedSummary } from '../codebase/casSummary';
 import { formatRelativeTime } from '../dashboard/formatRelativeTime';
 import { FlowDetailHeader } from './FlowDetailHeader';
@@ -24,16 +26,30 @@ import { FlowEntryPointSection } from './FlowEntryPointSection';
  * panel is the currently-selected step's own narrower contract.
  */
 export function FlowDetailPage() {
-  const { projectId, flowId } = useParams<{ projectId: string; flowId: string }>();
+  const { projectId: routeParam, flowId } = useParams<{ projectId: string; flowId: string }>();
+  const projectId = useResolvedProjectId(routeParam) ?? routeParam;
+  const navigate = useNavigate();
   const flowQuery = useFlow(projectId, flowId);
   const summaryQuery = useProjectSummary(projectId);
+
+  // `flowId` may be a legacy raw flow_id or a stale slug — once useFlow
+  // resolves it, converge the URL onto the canonical `name~suffix` slug.
+  // The projectId segment of that URL stays the route's OWN slug
+  // (routeParam), not the resolved real id, so the emitted link is canonical.
+  useEffect(() => {
+    if (!routeParam || !flowId || !flowQuery.flow) return;
+    const canonical = encodeSlug({ id: flowQuery.flow.flow_id, name: flowQuery.flow.name });
+    if (flowId !== canonical) navigate(`/codebases/${routeParam}/flows/${canonical}`, { replace: true });
+  }, [routeParam, flowId, flowQuery.flow, navigate]);
+  // The step inspector (StepDetailPanel) opens ONLY when a step is explicitly
+  // selected — never auto-opened on load — and closes on route change
+  // (a different flowId) or an explicit close. No auto-select-first-step
+  // here; see StepChain's onSelect for the only way selectedStepId is set.
   const [selectedStepId, setSelectedStepId] = useState<string | undefined>(undefined);
 
   useEffect(() => {
-    if (flowQuery.flow && !selectedStepId) {
-      setSelectedStepId(flowQuery.flow.steps[0]?.step_id);
-    }
-  }, [flowQuery.flow, selectedStepId]);
+    setSelectedStepId(undefined);
+  }, [flowId]);
 
   if (!projectId || !flowId) return null;
   if (flowQuery.isLoading) return <LoadingState label="Loading flow…" />;
@@ -43,8 +59,8 @@ export function FlowDetailPage() {
   }
 
   const flow = flowQuery.flow;
-  const selectedStep = flow.steps.find(s => s.step_id === selectedStepId) ?? flow.steps[0];
-  const selectedIndex = flow.steps.findIndex(s => s.step_id === selectedStep?.step_id);
+  const selectedStep = selectedStepId ? flow.steps.find(s => s.step_id === selectedStepId) : undefined;
+  const selectedIndex = selectedStep ? flow.steps.findIndex(s => s.step_id === selectedStep.step_id) : -1;
   const summary = asExtendedSummary(summaryQuery.data?.summary);
   const updated = formatRelativeTime(summary?.analysis_timestamp);
 
@@ -59,11 +75,18 @@ export function FlowDetailPage() {
             <FlowConnectionMap flow={flow} />
             <FlowDataSection contract={flow.contract} />
             <FlowSystemEffectsSection sideEffects={flow.contract.side_effects} />
-            <FlowEntryPointSection projectId={projectId} entryPointId={flow.entry_point} />
+            <FlowEntryPointSection projectId={projectId} projectSlug={routeParam} entryPointId={flow.entry_point} />
           </Stack>
         </Grid>
         <Grid size={{ xs: 12, md: 4 }}>
-          {selectedStep ? <StepDetailPanel step={selectedStep} index={selectedIndex} total={flow.steps.length} /> : null}
+          {selectedStep ? (
+            <StepDetailPanel
+              step={selectedStep}
+              index={selectedIndex}
+              total={flow.steps.length}
+              onClose={() => setSelectedStepId(undefined)}
+            />
+          ) : null}
         </Grid>
       </Grid>
     </Box>

@@ -1,5 +1,6 @@
 import { useMemo } from 'react';
 import { useProjectCas } from './useProjectCas';
+import { resolveSlug } from '../lib/slugs';
 
 /**
  * Local mirror of CASDataEntity / CASDatabaseSchema
@@ -111,11 +112,15 @@ export function useDataEntities(projectId: string | undefined) {
   return { ...casQuery, entities, databaseSchema, databaseEntityByNameLower };
 }
 
-/** One entity plus its joined database_schema counterpart (if any). */
+/** One entity plus its joined database_schema counterpart (if any).
+ *  `entityId` is a `name~suffix` slug (src/lib/slugs.ts) or a legacy raw id —
+ *  resolved against this codebase's own entity list, same pattern as
+ *  useFlow.ts/useEntryPoint. EntityDetailPage redirects to the canonical
+ *  slug once this resolves. */
 export function useDataEntity(projectId: string | undefined, entityId: string | undefined) {
   const base = useDataEntities(projectId);
   const entity = useMemo(
-    () => base.entities.find(e => e.id === entityId),
+    () => resolveSlug(entityId, base.entities),
     [base.entities, entityId],
   );
   const databaseEntity = useMemo(

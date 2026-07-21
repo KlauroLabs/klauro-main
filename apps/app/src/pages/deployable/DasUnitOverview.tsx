@@ -1,5 +1,5 @@
 import { Box, Chip, Stack, Typography } from '@mui/material';
-import type { DasUnitSummary } from './dasIndex';
+import type { RemoteDasUnit } from '../../hooks/useDasUnits';
 import { TIER_LABEL, KIND_LABEL } from './dasLabels';
 
 /**
@@ -9,12 +9,12 @@ import { TIER_LABEL, KIND_LABEL } from './dasLabels';
  * product (LANE-COMMON.md) so it's rendered here, not hidden behind a
  * tooltip.
  *
- * Deliberately does NOT show node/entry/exit counts — those come only from
- * the true DAS reachability slice (get_summary with a das_unit_id scope),
- * an MCP-only surface today. See DasOrphanNotice.tsx for the same honesty
- * applied to orphan accounting.
+ * Node/entry/exit counts are the real DAS reachability-closure numbers from
+ * GET /api/projects/:id/das (deployable-analysis.ts's das_index, e9490b69) —
+ * no longer an MCP-only surface. See DasOrphanNotice.tsx for the matching
+ * orphan-count wiring.
  */
-export function DasUnitOverview({ unit }: { unit: DasUnitSummary }) {
+export function DasUnitOverview({ unit }: { unit: RemoteDasUnit }) {
   return (
     <Box sx={{ border: '1px solid', borderColor: 'divider', borderRadius: 1, p: 2.5 }}>
       <Stack direction="row" spacing={1} sx={{ alignItems: 'center', flexWrap: 'wrap' }}>
@@ -28,6 +28,12 @@ export function DasUnitOverview({ unit }: { unit: DasUnitSummary }) {
       <Typography variant="body2" component="code" color="text.secondary" sx={{ display: 'block', mt: 1, fontFamily: 'monospace' }}>
         {unit.root_path || '.'}
       </Typography>
+
+      <Stack direction="row" spacing={3} sx={{ mt: 1.5 }}>
+        <Typography variant="caption" color="text.secondary">{unit.node_count} nodes</Typography>
+        <Typography variant="caption" color="text.secondary">{unit.entry_point_count} entry points</Typography>
+        <Typography variant="caption" color="text.secondary">{unit.exit_point_count} exit points</Typography>
+      </Stack>
 
       {unit.boundary_evidence.length > 0 ? (
         <Box sx={{ mt: 2 }}>

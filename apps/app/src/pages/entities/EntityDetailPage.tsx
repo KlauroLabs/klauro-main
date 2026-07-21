@@ -1,11 +1,13 @@
-import { useMemo } from 'react';
-import { useParams } from 'react-router-dom';
+import { useEffect, useMemo } from 'react';
+import { useNavigate, useParams } from 'react-router-dom';
 import { Box, Card, CardContent, Grid, Stack, Typography } from '@mui/material';
 import { PageHeader } from '../../layout/PageHeader';
 import { LoadingState } from '../../layout/LoadingState';
 import { EmptyState } from '../../layout/EmptyState';
 import { ErrorState } from '../../layout/ErrorState';
 import { useDataEntity } from '../../hooks/useEntities';
+import { useResolvedProjectId } from '../../hooks/useResolvedProjectId';
+import { encodeSlug } from '../../lib/slugs';
 import { EvidenceKindBadge } from '../../components/entities/EvidenceKindBadge';
 import { EntityFieldsTable } from '../../components/entities/EntityFieldsTable';
 import { EntityRelationshipsList } from '../../components/entities/EntityRelationshipsList';
@@ -20,11 +22,21 @@ import { ERDCanvas } from '../../components/entities/ERDCanvas';
  * relate to, who touches it) — see docs/briefs/entities.md.
  */
 export function EntityDetailPage() {
-  const { projectId, entityId } = useParams<{ projectId: string; entityId: string }>();
-  const query = useDataEntity(projectId, entityId);
+  const { projectId: routeParam, entityId: routeEntityId } = useParams<{ projectId: string; entityId: string }>();
+  const navigate = useNavigate();
+  const projectId = useResolvedProjectId(routeParam) ?? routeParam;
+  const query = useDataEntity(projectId, routeEntityId);
+
+  // `entityId` may be a legacy raw id or a stale slug — once useDataEntity
+  // resolves it, converge the URL onto the canonical `name~suffix` slug.
+  useEffect(() => {
+    if (!routeParam || !routeEntityId || !query.entity) return;
+    const canonical = encodeSlug(query.entity);
+    if (routeEntityId !== canonical) navigate(`/codebases/${routeParam}/entities/${canonical}`, { replace: true });
+  }, [routeParam, routeEntityId, query.entity, navigate]);
 
   const entityIdByNameLower = useMemo(
-    () => new Map(query.entities.map(e => [e.name.toLowerCase(), e.id])),
+    () => new Map(query.entities.map(e => [e.name.toLowerCase(), { id: e.id, name: e.name }])),
     [query.entities],
   );
 
@@ -34,7 +46,7 @@ export function EntityDetailPage() {
     return query.entities.filter(e => e.id === query.entity!.id || relatedNames.has(e.name.toLowerCase()));
   }, [query.entity, query.databaseEntity, query.entities]);
 
-  if (!projectId || !entityId) return null;
+  if (!projectId || !routeEntityId) return null;
   if (query.isLoading) return <LoadingState label="Loading entity…" />;
   if (query.isError) return <ErrorState message="Could not load this entity." />;
 
@@ -86,7 +98,7 @@ export function EntityDetailPage() {
                 </Typography>
                 <EntityRelationshipsList
                   relationships={query.databaseEntity?.relationships ?? []}
-                  projectId={projectId}
+                  projectId={routeParam ?? projectId}
                   entityIdByNameLower={entityIdByNameLower}
                 />
               </CardContent>
@@ -97,7 +109,7 @@ export function EntityDetailPage() {
             <Card variant="outlined">
               <CardContent>
                 <Typography variant="subtitle1" sx={{ mb: 1.5 }}>Lineage</Typography>
-                <EntityLineage lifecycle={entity.lifecycle} projectId={projectId} />
+                <EntityLineage lifecycle={entity.lifecycle} projectId={routeParam ?? projectId} />
               </CardContent>
             </Card>
           </Grid>
@@ -108,7 +120,7 @@ export function EntityDetailPage() {
                 <CardContent>
                   <Typography variant="subtitle1" sx={{ mb: 1.5 }}>Neighborhood</Typography>
                   <ERDCanvas
-                    projectId={projectId}
+                    projectId={routeParam ?? projectId}
                     entities={neighborhood}
                     databaseEntityByNameLower={query.databaseEntityByNameLower}
                     focusEntityId={entity.id}

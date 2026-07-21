@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import { useProjectCas } from './useProjectCas';
 import { FAMILY_ORDER, isKnownKind, KIND_META, type EntryKind, type EntryPointFamily } from '../components/entryPointKinds';
+import { resolveSlug } from '../lib/slugs';
 
 /**
  * Local mirror of the analyzer's CASEntryPoint/CASExitPoint shape
@@ -125,10 +126,14 @@ export function useEntryPointsForDeployable(projectId: string | undefined, deplo
   return { ...base, entryPoints: scoped, familyCounts };
 }
 
+/** `entryPointId` is a `name~suffix` slug (src/lib/slugs.ts) or a legacy raw
+ *  id — resolved against this codebase's own entry point list, same pattern
+ *  as useFlow.ts. EntryPointDetailPage redirects to the canonical slug once
+ *  this resolves. */
 export function useEntryPoint(projectId: string | undefined, entryPointId: string | undefined) {
   const base = useEntryPoints(projectId);
   const entryPoint = useMemo(
-    () => base.allEntryPoints.find(ep => ep.id === entryPointId),
+    () => resolveSlug(entryPointId, base.allEntryPoints),
     [base.allEntryPoints, entryPointId],
   );
   return { ...base, entryPoint };

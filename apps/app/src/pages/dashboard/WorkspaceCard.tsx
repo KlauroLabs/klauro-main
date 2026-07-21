@@ -4,6 +4,7 @@ import { Link as RouterLink } from 'react-router-dom';
 import type { Workspace } from '../../api';
 import { useWorkspaceAnalysis } from '../../hooks/useWorkspaceAnalysis';
 import { StatGlyphIcon, type StatGlyph } from '../../components/icons/StatGlyphIcon';
+import { encodeSlug } from '../../lib/slugs';
 
 /**
  * One row in the Figma "Home" (node 1698-13626) "Workspace" list: icon,
@@ -51,7 +52,7 @@ export function WorkspaceCard({ workspace }: { workspace: Workspace }) {
           </Stack>
           <IconButton
             component={RouterLink}
-            to={`/workspaces/${workspace.id}`}
+            to={`/workspaces/${encodeSlug(workspace)}`}
             size="small"
             sx={{ border: 1, borderColor: 'divider' }}
             aria-label={`Open ${workspace.name}`}

@@ -2,6 +2,7 @@ import { Box, Button, Typography } from '@mui/material';
 import ArrowForwardIcon from '@mui/icons-material/ArrowForward';
 import { useNavigate } from 'react-router-dom';
 import type { FlowConcept } from '../../../api';
+import { encodeSlug } from '../../../lib/slugs';
 
 /**
  * The STARTING-SURFACE rule (brief): an entry point isn't the end of the
@@ -30,7 +31,7 @@ export function FlowCard({ projectId, flow, isLoading }: { projectId: string; fl
           <Button
             size="small"
             endIcon={<ArrowForwardIcon />}
-            onClick={() => navigate(`/codebases/${projectId}/flows/${flow.flow_id}`)}
+            onClick={() => navigate(`/codebases/${projectId}/flows/${encodeSlug({ id: flow.flow_id, name: flow.name })}`)}
           >
             Follow it inward
           </Button>

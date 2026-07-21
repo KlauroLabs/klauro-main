@@ -6,6 +6,8 @@ import * as summaryHooks from '../../hooks/useProjectSummary';
 import * as conceptualHooks from '../../hooks/useProjectConceptual';
 import * as reanalyzeHooks from '../../hooks/useReanalyze';
 import * as dasHooks from '../../hooks/useDasUnits';
+import * as architectureConceptsHooks from '../../hooks/useArchitectureConcepts';
+import * as entryPointsHooks from '../../hooks/useEntryPoints';
 import * as externalServicesHooks from '../../hooks/useExternalServices';
 import * as librariesHooks from '../../hooks/useLibraries';
 
@@ -46,6 +48,23 @@ describe('CodebaseOverview', () => {
       isLoading: false,
       isError: false,
     } as unknown as ReturnType<typeof dasHooks.useDasIndex>);
+    // ArchitectureSection's diagram concepts lens (arch-concepts lane) reads
+    // architecture_summary.architectural_inventory + call edges via
+    // useArchitectureConcepts — mocked the same way as useDasIndex above.
+    vi.spyOn(architectureConceptsHooks, 'useArchitectureConcepts').mockReturnValue({
+      inventory: {},
+      edges: [],
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof architectureConceptsHooks.useArchitectureConcepts>);
+    // Product-entry count (page-codebase) reads useEntryPoints — same
+    // useProjectCas-backed reason as useDasIndex/useArchitectureConcepts above.
+    vi.spyOn(entryPointsHooks, 'useEntryPoints').mockReturnValue({
+      allEntryPoints: [],
+      deployables: [],
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof entryPointsHooks.useEntryPoints>);
     // DependenciesSection (page-codebase) reuses the integrations lane's
     // hooks (useExternalServices/useLibraries) — both built on useProjectCas
     // — mocked the same way for the same reason as useDasIndex above.

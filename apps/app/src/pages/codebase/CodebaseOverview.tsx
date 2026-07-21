@@ -10,10 +10,13 @@ import { useParams } from 'react-router-dom';
 import { LoadingState } from '../../layout/LoadingState';
 import { ErrorState } from '../../layout/ErrorState';
 import { EmptyState } from '../../layout/EmptyState';
+import { useResolvedProjectId } from '../../hooks/useResolvedProjectId';
 import { useProjectSummary } from '../../hooks/useProjectSummary';
 import { useProjectConceptual } from '../../hooks/useProjectConceptual';
 import { useReanalyzeProject } from '../../hooks/useReanalyze';
 import { useDasIndex } from '../../hooks/useDasUnits';
+import { useArchitectureConcepts } from '../../hooks/useArchitectureConcepts';
+import { useEntryPoints } from '../../hooks/useEntryPoints';
 import { CodebaseHeader } from './CodebaseHeader';
 import { CodebaseStats } from './CodebaseStats';
 import { CapabilitiesSection } from './sections/CapabilitiesSection';
@@ -24,11 +27,18 @@ import { DependenciesSection } from './sections/DependenciesSection';
 import { asExtendedSummary, mergeCapabilities } from './casSummary';
 
 export function CodebaseOverview() {
-  const { projectId } = useParams<{ projectId: string }>();
+  const { projectId: routeParam } = useParams<{ projectId: string }>();
+  const projectId = useResolvedProjectId(routeParam) ?? routeParam;
   const summaryQuery = useProjectSummary(projectId);
   const conceptualQuery = useProjectConceptual(projectId);
   const reanalyze = useReanalyzeProject();
   const dasIndex = useDasIndex(projectId);
+  const concepts = useArchitectureConcepts(projectId);
+  // Product-entry count (brief mandate: tests excluded everywhere) — NOT
+  // summary.entry_points, which is a raw cas.entry_points.length that still
+  // includes type:'test' entries (query.ts). useEntryPoints already filters
+  // those out, the same source entry-points page/family-mix use.
+  const entryPointsQuery = useEntryPoints(projectId);
 
   if (!projectId) return null;
 
@@ -58,25 +68,33 @@ export function CodebaseOverview() {
         name={summary.name || projectId}
         description={summary.description}
         analysisTimestamp={summary.analysis_timestamp}
+        sourceAt={summary.repo_facts?.last_commit_at}
         onReanalyze={() => reanalyze.mutate({ id: projectId, name: summary.name || projectId })}
         reanalyzing={reanalyze.isPending}
       />
       <CodebaseStats
         capabilityCount={summary.capabilities}
-        entryPointCount={summary.entry_points}
+        entryPointCount={entryPointsQuery.allEntryPoints.length}
         totalFiles={architectureSummary?.total_files}
+        contributorCount={summary.repo_facts?.contributor_count}
+        firstCommitAt={summary.repo_facts?.first_commit_at}
       />
+      {/* Section links below build further routes (/capabilities, /flows/:id,
+          ...) — pass the URL's OWN already-canonical slug (routeParam), not the
+          resolved real id, so every emitted href stays slug-form. */}
       <Stack>
-        <CapabilitiesSection projectId={projectId} capabilities={capabilities} />
-        <CriticalFlowsSection projectId={projectId} flows={conceptual?.flows?.flows ?? []} />
-        <KeyEntitiesSection projectId={projectId} entityNames={summary.database_entities ?? []} />
+        <CapabilitiesSection projectId={routeParam ?? projectId} capabilities={capabilities} />
+        <CriticalFlowsSection projectId={routeParam ?? projectId} flows={conceptual?.flows?.flows ?? []} />
+        <KeyEntitiesSection projectId={routeParam ?? projectId} entityNames={summary.database_entities ?? []} />
         <ArchitectureSection
-          projectId={projectId}
+          projectId={routeParam ?? projectId}
           systemType={summary.architecture_type}
           patterns={summary.architectural_patterns ?? architectureSummary?.architectural_patterns ?? []}
           deployableEvidence={dasIndex.evidence}
+          conceptInventory={concepts.inventory}
+          conceptEdges={concepts.edges}
         />
-        <DependenciesSection projectId={projectId} />
+        <DependenciesSection projectId={projectId} slug={routeParam} />
       </Stack>
     </Box>
   );

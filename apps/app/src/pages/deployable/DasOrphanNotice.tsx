@@ -1,22 +1,29 @@
 import { Alert, Typography } from '@mui/material';
 
 /**
- * Orphan honesty (LANE-COMMON.md: "orphan_node_count surfaced") — but
- * orphan accounting requires the full DAS reachability closure across
- * EVERY unit at once (a node reached by no unit's slice), which is
- * computed only inside apps/mcp-server/src/deployable-analysis.ts's
- * buildDeployableAnalyses and served through the MCP get_summary tool's
- * das_index — not exposed over GET /api/projects/:id/cas today. Rather
- * than approximate a count this page cannot actually verify, this is an
- * honest gap notice. See apps/app/docs/DESIGN-NOTES.md.
+ * Orphan honesty (LANE-COMMON.md: "orphan_node_count surfaced") — now wired
+ * to the real das_index (GET /api/projects/:id/das, e9490b69), the same
+ * reachability-closure accounting the MCP get_summary tool's das_index
+ * computes (deployable-analysis.ts's buildDeployableAnalyses). Zero orphans
+ * is a real, common, GOOD outcome (every node is claimed by at least one
+ * unit) — rendered as a plain confirmation, not hidden.
  */
-export function DasOrphanNotice() {
+export function DasOrphanNotice({ orphanNodeCount }: { orphanNodeCount: number | undefined }) {
+  if (orphanNodeCount === undefined) {
+    return (
+      <Alert severity="info" variant="outlined">
+        <Typography variant="body2">
+          Orphan node count is still loading.
+        </Typography>
+      </Alert>
+    );
+  }
   return (
-    <Alert severity="info" variant="outlined">
+    <Alert severity={orphanNodeCount > 0 ? 'info' : 'success'} variant="outlined">
       <Typography variant="body2">
-        Orphan node count (nodes reached by no unit at all) is part of the das_index the MCP
-        get_summary tool computes, not yet exposed over the web API. This page can't show it
-        honestly until that route ships — see DESIGN-NOTES.md.
+        {orphanNodeCount > 0
+          ? `Orphan node count: ${orphanNodeCount} node${orphanNodeCount === 1 ? '' : 's'} reached by no deployable unit at all.`
+          : 'Orphan node count: 0 — every node in this analysis is reached by at least one deployable unit.'}
       </Typography>
     </Alert>
   );

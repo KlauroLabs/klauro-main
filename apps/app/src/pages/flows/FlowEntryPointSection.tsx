@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom';
 import { EntryKindIcon } from '../../components/EntryKindIcon';
 import { KIND_META, isKnownKind } from '../../components/entryPointKinds';
 import { useEntryPoint } from '../../hooks/useEntryPoints';
+import { encodeSlug } from '../../lib/slugs';
 import { formatTrigger } from '../entry-points/formatEntryPoint';
 
 /**
@@ -21,7 +22,18 @@ import { formatTrigger } from '../entry-points/formatEntryPoint';
  * section with a titled row) and fills it with the real entry point instead
  * of replaying that placeholder text.
  */
-export function FlowEntryPointSection({ projectId, entryPointId }: { projectId: string; entryPointId: string }) {
+export function FlowEntryPointSection({
+  projectId,
+  projectSlug,
+  entryPointId,
+}: {
+  /** Resolved backend id — used for the data fetch. */
+  projectId: string;
+  /** The route's own canonical slug — used for the outbound link so the URL
+   *  stays slug-form. Falls back to `projectId` when not supplied. */
+  projectSlug?: string;
+  entryPointId: string;
+}) {
   const navigate = useNavigate();
   const { entryPoint, isLoading } = useEntryPoint(projectId, entryPointId);
 
@@ -49,7 +61,7 @@ export function FlowEntryPointSection({ projectId, entryPointId }: { projectId: 
             <Button
               size="small"
               endIcon={<ArrowForwardIcon />}
-              onClick={() => navigate(`/codebases/${projectId}/entry-points/${entryPoint.id}`)}
+              onClick={() => navigate(`/codebases/${projectSlug ?? projectId}/entry-points/${encodeSlug({ id: entryPoint.id, name: entryPoint.name })}`)}
             >
               View entry point
             </Button>

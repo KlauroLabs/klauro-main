@@ -12,15 +12,18 @@ import { SectionHeader } from './SectionHeader';
 import { ArchitectureDiagram } from './ArchitectureDiagram';
 import type { ArchitecturalPatternSummary } from '../casSummary';
 import type { DeployableEvidence } from '../../deployable/dasTypes';
+import type { RawCallEdge } from '../../../hooks/useArchitectureConcepts';
 
 export interface ArchitectureSectionProps {
   projectId: string;
   systemType?: string | null;
   patterns: ArchitecturalPatternSummary[];
   deployableEvidence: DeployableEvidence[];
+  conceptInventory: Record<string, string[]> | undefined;
+  conceptEdges: RawCallEdge[];
 }
 
-export function ArchitectureSection({ projectId, systemType, patterns, deployableEvidence }: ArchitectureSectionProps) {
+export function ArchitectureSection({ projectId, systemType, patterns, deployableEvidence, conceptInventory, conceptEdges }: ArchitectureSectionProps) {
   const navigate = useNavigate();
   const openFull = () => navigate(`/codebases/${projectId}/architecture`);
 
@@ -38,7 +41,14 @@ export function ArchitectureSection({ projectId, systemType, patterns, deployabl
           <Stack direction="row" spacing={1} sx={{ alignItems: 'center' }}>
             <Typography variant="subtitle1">{systemType || 'Architecture style not yet determined'}</Typography>
           </Stack>
-          <ArchitectureDiagram projectId={projectId} evidence={deployableEvidence} compact onOpenFull={openFull} />
+          <ArchitectureDiagram
+            projectId={projectId}
+            evidence={deployableEvidence}
+            conceptInventory={conceptInventory}
+            conceptEdges={conceptEdges}
+            compact
+            onOpenFull={openFull}
+          />
           {patterns.length > 0 ? (
             <Stack spacing={1}>
               <Typography variant="caption" color="text.disabled">Detected patterns</Typography>

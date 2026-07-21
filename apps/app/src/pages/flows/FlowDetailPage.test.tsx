@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { screen } from '@testing-library/react';
+import { screen, fireEvent } from '@testing-library/react';
 import { renderWithProviders } from '../../test/renderWithProviders';
 import { FlowDetailPage } from './FlowDetailPage';
 import * as flowHooks from '../../hooks/useFlow';
@@ -100,5 +100,20 @@ describe('FlowDetailPage', () => {
     expect(screen.getByText('OrderResponse')).toBeInTheDocument();
     expect(screen.getByText(/Payment must be authorized before capture/)).toBeInTheDocument();
     expect(screen.getByText(/Order created/)).toBeInTheDocument();
+  });
+
+  it('does not auto-open the step detail panel on load', () => {
+    mockFlow({ flow: sampleFlow });
+    renderWithProviders(<FlowDetailPage />, routeProps);
+    expect(screen.queryByLabelText('Close step detail')).not.toBeInTheDocument();
+  });
+
+  it('opens the step detail panel only once a step is explicitly selected, and closes it on demand', () => {
+    mockFlow({ flow: sampleFlow });
+    renderWithProviders(<FlowDetailPage />, routeProps);
+    fireEvent.click(screen.getByRole('button', { name: /Validate Payment/i }));
+    expect(screen.getByLabelText('Close step detail')).toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText('Close step detail'));
+    expect(screen.queryByLabelText('Close step detail')).not.toBeInTheDocument();
   });
 });

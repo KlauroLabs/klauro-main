@@ -7,6 +7,7 @@ import { Box, Chip, Paper, Stack, Typography } from '@mui/material';
 import { Link as RouterLink } from 'react-router-dom';
 import { SectionHeader } from './SectionHeader';
 import type { FlowConcept } from '../../../api';
+import { encodeSlug } from '../../../lib/slugs';
 
 const roleOrder: Record<string, number> = { core: 0, supporting: 1, infrastructure: 2 };
 
@@ -34,7 +35,7 @@ export function CriticalFlowsSection({ projectId, flows }: { projectId: string; 
             <Paper
               key={flow.flow_id}
               component={RouterLink}
-              to={`/codebases/${projectId}/flows/${flow.flow_id}`}
+              to={`/codebases/${projectId}/flows/${encodeSlug({ id: flow.flow_id, name: flow.name })}`}
               variant="outlined"
               sx={{ p: 3, display: 'block', textDecoration: 'none', color: 'inherit' }}
             >
