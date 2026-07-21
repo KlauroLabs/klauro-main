@@ -110,6 +110,36 @@ test('stampRepoFacts: no manifest.repo_facts is a no-op (does not fabricate a va
  * /v1/sync push), or stamp an honest absence marker when there is no
  * last-known value either — never fabricate, never silently omit.
  */
+test('stampRepoFacts: client-derived manifest.repo_facts always wins, even over a pre-existing (e.g. snapshot/synthetic-derived) system.repo_facts value', async () => {
+  await withTempWorkspace(async workspace => {
+    const cas = minimalCas(workspace);
+    // Simulate some other, non-client-manifest source having already stamped
+    // a value onto the CAS before stampRepoFacts runs — analyzer-core has no
+    // git access of its own (see this file's header comment), so in
+    // production this slot should only ever be filled by a real client
+    // manifest, but the precedence must hold even if something else got here
+    // first: the real, client-derived facts must never be shadowed by a
+    // stale or synthetic value already sitting on `system`.
+    cas.system.repo_facts = { contributor_count: 1, first_commit_at: '2026-07-21T03:13:45Z', last_commit_at: '2026-07-21T03:13:45Z' };
+
+    const manifest: SourceManifest = {
+      generated_at: new Date().toISOString(),
+      root: workspace,
+      file_count: 0,
+      total_bytes: 0,
+      excluded_directories: [],
+      repo_facts: {
+        contributor_count: 5,
+        first_commit_at: '2019-03-14T00:00:00Z',
+        last_commit_at: '2026-07-20T00:00:00Z',
+      },
+    };
+
+    await stampRepoFacts(workspace, cas, manifest);
+    assert.deepEqual(cas.system.repo_facts, manifest.repo_facts, 'real client-derived facts must overwrite whatever was there before');
+  });
+});
+
 test('stampRepoFactsFromLastKnownOrMarkAbsent: falls back to the project\'s last-known repo_facts and persists it', async () => {
   await withTempWorkspace(async workspace => {
     const cas = minimalCas(workspace);

@@ -3,6 +3,17 @@ services:
     build:
       context: /opt/klauro/source
       dockerfile: apps/api/Dockerfile
+      # Deploy-path-independent build stamp (see apps/api/Dockerfile's ARG
+      # comment): `docker compose build`/`up --build` reads these from
+      # whichever shell invokes it. deploy.sh exports them from its own
+      # git checkout before calling compose; any other invocation (a bare
+      # `docker compose up -d --build` from a different checkout/worktree)
+      # gets them too as long as it exports the same two vars, and degrades
+      # to an honest "unknown" stamp — never a silently missing one — if it
+      # doesn't.
+      args:
+        KLAURO_GIT_SHA: "${KLAURO_GIT_SHA:-}"
+        KLAURO_BUILD_TIME: "${KLAURO_BUILD_TIME:-}"
     image: klauro/api:alpha
     restart: unless-stopped
     env_file:

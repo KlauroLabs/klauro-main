@@ -1148,11 +1148,11 @@ const REPO_FACTS_GIT_TIMEOUT_MS = 3000;
 /**
  * Cheap, best-effort repo-level facts read straight from git metadata:
  * contributor count (`git shortlog -sn HEAD`, one line per distinct author)
- * and the first/last commit timestamps (`git log --reverse -1` /
- * `git log -1`, ISO 8601 via `%aI`). Additive and honest — returns undefined
- * (not a zero/empty object) whenever the facts can't be derived: not a git
- * repo, no HEAD commit yet (working-tree-only project), or any of the git
- * invocations fail/timeout. Never throws.
+ * and the first/last commit timestamps (root commit via `rev-list
+ * --max-parents=0` / HEAD via `git log -1`, ISO 8601 via `%aI`). Additive and
+ * honest — returns undefined (not a zero/empty object) whenever the facts
+ * can't be derived: not a git repo, no HEAD commit yet (working-tree-only
+ * project), or any of the git invocations fail/timeout. Never throws.
  */
 function deriveRepoFacts(root: string): RepoFacts | undefined {
   if (!isGitRepository(root)) return undefined;
@@ -1175,31 +1175,98 @@ function deriveRepoFacts(root: string): RepoFacts | undefined {
     // Not derivable (e.g. shallow clone with no author history) — omit.
   }
 
-  try {
-    const firstCommitAt = execFileSync('git', ['log', '--reverse', '-1', '--format=%aI', 'HEAD'], {
-      cwd: root,
-      encoding: 'utf8',
-      timeout: REPO_FACTS_GIT_TIMEOUT_MS,
-      stdio: ['ignore', 'pipe', 'ignore'],
-    }).trim();
-    if (firstCommitAt) facts.first_commit_at = firstCommitAt;
-  } catch {
-    // Omit.
-  }
+  const firstCommitAt = readFirstCommitAt(root);
+  const lastCommitAt = readLastCommitAt(root);
+  const commitCount = readCommitCount(root);
 
-  try {
-    const lastCommitAt = execFileSync('git', ['log', '-1', '--format=%aI', 'HEAD'], {
-      cwd: root,
-      encoding: 'utf8',
-      timeout: REPO_FACTS_GIT_TIMEOUT_MS,
-      stdio: ['ignore', 'pipe', 'ignore'],
-    }).trim();
+  // Defense in depth against the exact shape of the `--reverse -1` bug this
+  // fixes (and any future regression like it): a repo that genuinely has one
+  // commit legitimately has first_commit_at === last_commit_at, but a repo
+  // with MORE than one commit never should — that combination is exactly
+  // what a broken "first commit" derivation (or a fabricated single synthetic
+  // upload-time commit) looks like from the outside. When git itself reports
+  // more than one commit yet the derived timestamps collapsed onto each
+  // other, treat both as underivable rather than shipping a pair that reads
+  // as real but isn't.
+  const timestampsCollapsed = !!firstCommitAt && !!lastCommitAt && firstCommitAt === lastCommitAt;
+  const knownMultiCommit = typeof commitCount === 'number' && commitCount > 1;
+  if (!(timestampsCollapsed && knownMultiCommit)) {
+    if (firstCommitAt) facts.first_commit_at = firstCommitAt;
     if (lastCommitAt) facts.last_commit_at = lastCommitAt;
-  } catch {
-    // Omit.
   }
 
   return Object.keys(facts).length > 0 ? facts : undefined;
+}
+
+function readLastCommitAt(root: string): string | undefined {
+  try {
+    return execFileSync('git', ['log', '-1', '--format=%aI', 'HEAD'], {
+      cwd: root,
+      encoding: 'utf8',
+      timeout: REPO_FACTS_GIT_TIMEOUT_MS,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function readCommitCount(root: string): number | undefined {
+  try {
+    const raw = execFileSync('git', ['rev-list', '--count', 'HEAD'], {
+      cwd: root,
+      encoding: 'utf8',
+      timeout: REPO_FACTS_GIT_TIMEOUT_MS,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    const count = Number(raw);
+    return Number.isFinite(count) && count >= 0 ? count : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * `git log --reverse -1` does NOT return the oldest commit: `-1`/`--max-count`
+ * truncates the default newest-first traversal to one entry before `--reverse`
+ * ever runs, so it silently returns HEAD — identical to the `last_commit_at`
+ * query. That collapsed first_commit_at === last_commit_at onto the most
+ * recent commit for every repo, indistinguishable from (and mistakable for) a
+ * single synthetic upload-time commit. Root commit(s) via `rev-list
+ * --max-parents=0` are the actual oldest point(s) in history; on histories
+ * with multiple roots (e.g. merged unrelated histories), the earliest of
+ * their dates is used.
+ */
+function readFirstCommitAt(root: string): string | undefined {
+  try {
+    const rootShas = execFileSync('git', ['rev-list', '--max-parents=0', 'HEAD'], {
+      cwd: root,
+      encoding: 'utf8',
+      timeout: REPO_FACTS_GIT_TIMEOUT_MS,
+      maxBuffer: 1024 * 1024 * 4,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim().split('\n').filter(sha => sha.length > 0);
+    if (rootShas.length === 0) return undefined;
+
+    const dates = rootShas
+      .map(sha => {
+        try {
+          return execFileSync('git', ['log', '-1', '--format=%aI', sha], {
+            cwd: root,
+            encoding: 'utf8',
+            timeout: REPO_FACTS_GIT_TIMEOUT_MS,
+            stdio: ['ignore', 'pipe', 'ignore'],
+          }).trim();
+        } catch {
+          return '';
+        }
+      })
+      .filter(date => date.length > 0);
+    if (dates.length === 0) return undefined;
+    return dates.sort()[0];
+  } catch {
+    return undefined;
+  }
 }
 
 function recommendTransfer(loaded: LoadedKlauroConfig, remoteProvider: RemoteProviderInfo | undefined, mode: 'full' | 'dirty-tree'): SourceTransferRecommendation {

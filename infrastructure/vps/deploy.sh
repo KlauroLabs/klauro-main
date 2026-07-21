@@ -188,10 +188,18 @@ echo "==> Stamping build identity ($GIT_SHA @ $BUILD_TIME)"
 $SSH "$DEST" "cat > /opt/klauro/source/apps/mcp-server/.klauro-build-stamp.json" <<STAMP
 {"git_sha": "$GIT_SHA", "build_time": "$BUILD_TIME"}
 STAMP
+# .dockerignore previously dropped that file from every Docker build context
+# (its own `.klauro*` exclusion patterns matched the stamp file too — fixed
+# with a negation entry), so this SSH-written file alone never reached the
+# image no matter which deploy path ran it. Belt-and-suspenders now that the
+# leak is fixed: also pass the same sha/time as build args, which
+# apps/api/Dockerfile stamps at IMAGE BUILD time if no file survived into the
+# context — so a build invoked any other way (not through this script) still
+# produces a real, non-"unknown" stamp as long as it exports these two vars.
 
 # --- rebuild + restart -----------------------------------------------------
 echo "==> Rebuilding + restarting containers on $VPS_HOST"
-$SSH "$DEST" 'cd /opt/klauro && docker compose up -d --build --remove-orphans'
+$SSH "$DEST" "cd /opt/klauro && KLAURO_GIT_SHA='$GIT_SHA' KLAURO_BUILD_TIME='$BUILD_TIME' docker compose up -d --build --remove-orphans"
 
 # --- guard: force Caddy to re-resolve the (possibly recreated) api container -
 # Defect #24 (observed twice on prod): `docker compose up -d --build` recreates

@@ -20,3 +20,13 @@ docs
 **/.pytest_cache
 **/.mypy_cache
 **/.ruff_cache
+
+# `**/.klauro*` / `apps/mcp-server/.klauro-*` above (meant to keep local
+# analyzer caches out of the image) also matched deploy.sh's own
+# .klauro-build-stamp.json, silently dropping it from every Docker build
+# context — deploy.sh wrote a real git sha to this file on the VPS host
+# before `docker compose build`, but the file never reached the image, so
+# apps/api/Dockerfile's COPY apps/mcp-server step always shipped a container
+# with no stamp, and build-identity.ts's getBuildIdentity() fell back to
+# "unknown" regardless of which deploy path was used. Re-include it.
+!apps/mcp-server/.klauro-build-stamp.json
