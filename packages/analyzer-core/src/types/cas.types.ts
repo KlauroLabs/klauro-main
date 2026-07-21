@@ -216,45 +216,24 @@ export interface CASOutput {
 
   /**
    * Progressive AI availability marker for the (opt-in) deferred-enrichment path.
-   * Absent on legacy/older stores. Values:
-   *  - 'synchronous': AI interpretation ran inline in the same analyze call, as
-   *    it always has (default path; pure annotation, no behavior change).
-   *  - 'pending': the deterministic analysis was returned instantly and the slow
-   *    hosted-LLM enrichment is still running in the background; descriptions on
-   *    this copy are deterministic (description_source !== 'ai').
-   *  - 'ready': the background AI enrichment completed and was applied to the
-   *    stored analysis; at least one element carries an 'ai' description.
-   *  - 'disabled': deferred enrichment was requested but AI is not available
-   *    (no provider / feature off), so no background upgrade will arrive.
-   *  - 'error': the background AI enrichment was dispatched and FAILED (the model
-   *    call or grounding gate threw). Comprehension is AI-only, so there is no
-   *    deterministic substitute — this is a visible terminal failure, NOT a
-   *    silent stay-pending. No 'ai' description was applied on this copy.
+   * Absent on legacy/older stores. 'synchronous' = AI ran inline (default path).
+   * 'pending' = deterministic analysis returned, AI enrichment still running in
+   * the background. 'ready' = background AI enrichment applied. 'disabled' = AI
+   * unavailable, no upgrade will arrive. 'error' = AI enrichment was dispatched
+   * and failed — a visible terminal failure, never a silent stay-pending (no
+   * deterministic substitute exists; comprehension is AI-only).
    */
   ai_enrichment?: 'pending' | 'ready' | 'disabled' | 'synchronous' | 'error' | 'partial';
 
-  /**
-   * When ai_enrichment === 'error', the UNDERLYING failure reason from the AI
-   * comprehension pass (the model call / grounding gate exception message,
-   * e.g. "AI interpretation budget exceeded", a provider 401/429, or a
-   * grounding-gate rejection). Populated so the real cause is queryable via the
-   * API (surfaced onto layers_ready L5.error) instead of only living in the
-   * analyzer container's stderr. Absent unless ai_enrichment === 'error'.
-   */
+  /** When ai_enrichment === 'error', the underlying failure reason, queryable via the API. Absent otherwise. */
   ai_enrichment_error?: string;
 
   /**
-   * Present when ai_enrichment === 'partial': the AI comprehension phase's
-   * OVERALL wall-clock budget (KLAURO_AI_PHASE_BUDGET_MS, default 15 minutes)
-   * expired before every AI stage (capability catalog, system description,
-   * entity descriptions) got a chance to run. This is NOT a failure — whatever
-   * the phase already produced before the cutoff is kept exactly as-is (never
-   * discarded, never re-attempted), and simply no further AI calls were issued
-   * once the budget expired (an in-flight call is allowed to finish, never
-   * killed mid-request). `nodes_at_stop` is the graph size at the moment the
-   * budget was exhausted, so an operator can see whether this is a genuinely
-   * large repo hitting the budget rather than a pathological single call. See
-   * EnhancedSystemPurpose.entity_description_coverage for per-entity detail.
+   * Present when ai_enrichment === 'partial': the AI phase's wall-clock budget
+   * expired before every stage ran. Not a failure — whatever the phase already
+   * produced is kept as-is, never discarded or re-attempted; an in-flight call
+   * is allowed to finish, never killed mid-request. `nodes_at_stop` is the
+   * graph size when the budget was exhausted.
    */
   ai_phase_budget?: {
     reason: string;
@@ -263,27 +242,18 @@ export interface CASOutput {
   };
 
   /**
-   * Progressive-layering manifest (see analyzer/core/layered-analysis.ts /
-   * apps/mcp-server/src/layered-analysis.ts). Absent on legacy/older stores and
-   * on the plain synchronous analyzeProject() path, where the full CAS lands
-   * in one shot and every layer is implicitly ready. Present when the
-   * layered/progressive entrypoint (analyzeProjectLayered) is used: each
-   * layer's `status` tracks whether the fields that layer owns are populated
-   * on THIS stored copy yet. A partial CAS (some layers 'pending') is honest
-   * about what it does not have — never fabricates facts for a layer that
-   * hasn't landed; callers should treat missing/pending-layer fields as
-   * "still computing", not "absent from the codebase".
+   * Progressive-layering manifest. Absent on legacy stores and the plain
+   * synchronous analyzeProject() path, where every layer is implicitly ready.
+   * A partial CAS (some layers 'pending') never fabricates facts for a layer
+   * that hasn't landed; callers must treat missing/pending fields as "still
+   * computing", not "absent from the codebase".
    */
   layers_ready?: CASLayersReady;
 
   /**
-   * L0 fast index/inventory (see apps/mcp-server/src/layered-analysis.ts):
-   * file count, language breakdown, and top-level directory structure from a
-   * pure filesystem walk, computed and persisted before the analyzer pipeline
-   * (L1-L4) runs. Present only on a CAS produced via the layered entrypoint,
-   * absent once superseded by the fuller structural facts L1+ derive from
-   * actual parsed nodes (the `system.technologies` field remains the
-   * authoritative post-L1 source).
+   * L0 fast index/inventory from a pure filesystem walk, computed before the
+   * analyzer pipeline (L1-L4) runs. Present only on a layered-entrypoint CAS;
+   * superseded by system.technologies once fuller L1+ facts land.
    */
   l0_index?: {
     total_files: number;
@@ -300,20 +270,12 @@ export interface CASLayerStatus {
   layer: 'L0' | 'L1' | 'L2' | 'L3' | 'L4' | 'L5';
   name: string;
   /**
-   * 'pending' = not landed yet; 'ready' = landed; 'error' = this layer was
-   * dispatched and FAILED, carrying the reason in `error`.
-   *
-   * On L5 that means the AI comprehension pass failed (model call or grounding
-   * gate threw) — comprehension is AI-only (docs/cas/DETERMINISM-BOUNDARY.md)
-   * and must never sit 'pending' forever nor fall back to a deterministic
-   * substitute; the structure is still real, so the project reads 'ready' with
-   * a degraded ai_enrichment indicator.
-   *
-   * On a STRUCTURAL layer (L1..L4) it means the deterministic analysis itself
-   * crashed, so there is no usable structure and the project reads 'failed'.
-   * (Formerly 'error' was L5-only, which left a crashed background analysis
-   * sitting 'pending' — i.e. "populating" — forever with errors:0. Same rule,
-   * same reason: a failure must be VISIBLE and terminal, never an infinite wait.)
+   * 'pending' = not landed yet; 'ready' = landed; 'error' = dispatched and
+   * failed, reason in `error`. On L5 this means AI comprehension failed — must
+   * never sit 'pending' forever, and has no deterministic substitute. On a
+   * structural layer (L1..L4) it means the deterministic analysis itself
+   * crashed. A failure must always be visible and terminal, never an infinite
+   * "pending"/"populating" wait.
    */
   status: 'pending' | 'ready' | 'error';
   /** ISO timestamp this layer's status last changed, when known. */
@@ -327,10 +289,8 @@ export interface CASLayerStatus {
 /**
  * L0 index/inventory -> L1 nodes/entry points/routes -> L2 call graph/edges ->
  * L3 entities/lineage/database schema -> L4 flows/capabilities/contracts ->
- * L5 AI enrichment (the pre-existing ai_enrichment marker, mirrored here for a
- * single place to read the whole ladder). Ordered fast -> slow; each layer is
- * additive over the previous — a later layer never retracts an earlier one's
- * facts, only supersedes L0's provisional index once L1 lands.
+ * L5 AI enrichment. Ordered fast -> slow; each layer is additive — a later
+ * layer never retracts an earlier one's facts.
  */
 export interface CASLayersReady {
   layers: CASLayerStatus[];
@@ -758,19 +718,11 @@ export interface CASEntryPoint {
 }
 
 /**
- * Single source of truth for the kinds of exit point the analyzers may emit.
- *
- * The `CASExitPoint['type']` union below is DERIVED from this array
- * (`type: typeof EXIT_POINT_TYPES[number]`), and the orchestrator's
- * `isValidExitPoint` validator MUST check membership in this same array — mirror
- * of the entry-point twin (ENTRY_POINT_TYPES above). Historically the validator
- * kept a HARDCODED, separate allowlist that drifted from this union: it REJECTED
- * 'event' (a real union member) while carrying dead kinds
- * ('http'/'grpc'/'graphql'/'queue'/'email'/'sms'/'external_api') no analyzer ever
- * emits — every exit point flows through base-analyzer's createExitPoint(), whose
- * `type` parameter is compile-locked to this union, and the only `as CASExitPoint`
- * casts emit 'sdk'. Add a new kind here and both the type and the validator pick
- * it up. See the exit-point parity guard test in analyzer-core's __tests__.
+ * Single source of truth for the kinds of exit point analyzers may emit.
+ * CASExitPoint['type'] is derived from this array, and the orchestrator's
+ * isValidExitPoint validator must check membership in this same array — a
+ * separate hardcoded allowlist WILL drift. Add a new kind here only; see the
+ * exit-point parity guard test in analyzer-core's __tests__.
  */
 export const EXIT_POINT_TYPES = [
   'database', 'api', 'file', 'message', 'event', 'cache', 'sdk',
@@ -2985,22 +2937,12 @@ export interface CASAnalysisTimings {
 }
 
 /**
- * Kind of a data entity, derived DETERMINISTICALLY from framework-analyzer
- * evidence carried on the node (subcategories / node type / metadata attributes),
- * NEVER from the entity's name or casing. This is a Camp-B structural fact.
- *
- *  - `persisted-entity`  ORM/@Entity/table-mapped record — the durable state the
- *                        system stores.
- *  - `api-response`      what the system PRODUCES for its consumers — controller
- *                        return shape / OpenAPI-or-GraphQL response / serializer
- *                        output. This kind IS the terminal set.
- *  - `request-dto`       the inbound contract — @Body / validation DTO / request
- *                        schema.
- *  - `value-object`      field-only shape with no persistence and no route/api
- *                        binding — an internal domain value, not stored or exposed.
- *
- * Consumers (flow-concepts.ts / context-fabric.ts) may rely on this union and on
- * `api-response` being the terminal-entity kind.
+ * Kind of a data entity, derived deterministically from framework-analyzer
+ * evidence on the node — never from the entity's name or casing.
+ *  - `persisted-entity`  ORM/@Entity/table-mapped durable state.
+ *  - `api-response`      controller return shape / API response — the terminal-entity kind.
+ *  - `request-dto`       inbound contract — @Body / validation DTO / request schema.
+ *  - `value-object`      field-only shape, no persistence, no route/api binding.
  */
 export type CASDataEntityKind =
   | 'persisted-entity'
@@ -3298,24 +3240,11 @@ export interface SystemCapability {
   evidence_kind?: 'behavior-surface' | 'infrastructure';
   /**
    * Inverted M:N capability<->flow edges, one {flow_id, role, rationale} per
-   * flow that relates to this capability — the same relational-role model as
-   * a flow's own `capability_relationships` (docs/SEMANTIC-MODEL.md: roles
-   * live on the EDGE, not on either endpoint), just read from the other side.
-   * Computed ONCE at analysis time in orchestrator.ts's
-   * deriveEntryPointContractAndCapability (inverting every flow's
-   * capability_relationships via computeFlowConcepts, run un-capped) and
-   * persisted here so query-time consumers (the /conceptual HTTP route, the
-   * web UI's capability list) never have to re-derive flows per request —
-   * that recompute was both the 524-class latency risk AND, when the caller
-   * applies its own maxFlows browse cap before inverting, a correctness bug:
-   * a capability whose flows didn't happen to land in the capped window
-   * silently showed 0 flows even though real relationships existed.
-   * Omitted (undefined, never []) when no flow relates to this capability —
-   * an honest "this capability has no derivable flows" reads the same on the
-   * wire as "we never computed it," which is why callers should treat an
-   * ABSENT array as "flows uncomputed for this analysis" and an EMPTY array
-   * as a genuine zero (see get_flow_concepts / the /conceptual route for the
-   * fallback-to-recompute path that disambiguates old analyses).
+   * flow related to this capability — roles live on the edge, not either
+   * endpoint (docs/SEMANTIC-MODEL.md). Computed once at analysis time,
+   * un-capped, and persisted so query-time consumers never re-derive (and
+   * mis-cap) flows per request. Must stay omitted (undefined, never []) when
+   * uncomputed — callers treat absent as "uncomputed" and empty as a genuine zero.
    */
   related_flows?: Array<{ flow_id: string; role: string; rationale: string }>;
 }

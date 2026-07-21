@@ -313,21 +313,13 @@ export function buildSummary(cas: CASOutput, opts: { detail?: 'compact' | 'full'
     // and is implicitly complete — omitted rather than a fabricated "all
     // ready" so callers can tell "not layered" apart from "layered and done".
     ...(cas.layers_ready ? { layers_ready: cas.layers_ready } : {}),
-    // SEMANTIC COVERAGE (docs/SEMANTIC-MODEL.md "Coverage invariants") — the
-    // compact projection: the three rollup ratios + unmapped COUNTS only (the
-    // full honest unmapped lists live in get_semantic_coverage). Deterministic,
-    // evidence-only; the release-gate signal that "everything rolls up" holds.
-    //
-    // LATENCY GUARD (STANDING budget gate, get_summary is L0 <2s): the coverage
-    // MATH is cheap (~37ms even on a 46k-node CAS), but it needs the full flow
-    // set, and computeFlowConcepts on a large repo is ~9.5s (measured: Klauro,
-    // 3,794 entry points / 2,194 flows). Computing that on every orient call
-    // would blow the L0 budget — so the compact field is only inlined here when
-    // the flow set is small enough to stay well under budget. Above the guard we
-    // OMIT it (never fabricate a partial/capped ratio that would disagree with the
-    // dedicated tool) and rely on get_semantic_coverage, which carries the full
-    // uncapped compute (a heavier profile, like get_flow_coverage). The gauntlet
-    // gate reads the full value, not this convenience field.
+    // Compact coverage projection: rollup ratios + unmapped counts only (the
+    // full unmapped lists live in get_semantic_coverage).
+    // Must stay under the L0 <2s budget gate: computeFlowConcepts is too slow
+    // on a large flow set, so this field is only inlined when the flow set is
+    // small enough to stay well under budget. Above that guard, omit it rather
+    // than fabricate a partial/capped ratio — callers fall back to
+    // get_semantic_coverage's full uncapped compute.
     ...(() => {
       const entryCount = cas.entry_points?.length || 0;
       const nodeCount = cas.nodes?.length || 0;
@@ -2504,19 +2496,11 @@ export function getPerspectives(cas: CASOutput) {
 }
 
 /**
- * getUnifiedPerspectives — ONE call that returns the code seen from every
- * angle at once (docs/SPEC-CONCEPTUAL-LAYER.md §3/§6): BEHAVIORAL
- * (capabilities/flows/steps, from get_flow_concepts) cross-referenced with
- * STRUCTURAL (architectural conflicts + paradigm conformance, from
- * get_architectural_conflicts/get_paradigm_conformance) — each perspective
- * annotated with links into the other, not siloed tool-by-tool. Purely a
- * composition over the three existing accessors (does not change or
- * duplicate their own outputs; get_architectural_conflicts,
- * get_paradigm_conformance, and get_flow_concepts remain independently
- * callable and unaffected). `target` narrows flows the same way
- * get_flow_concepts does (entry point id/name/route substring); omitted
- * returns all derivable flows (bounded by maxFlows, default small since this
- * composes three passes in one call).
+ * Returns behavioral (flows/capabilities) and structural (architectural
+ * conflicts + paradigm conformance) perspectives cross-referenced in one call,
+ * each annotated with links into the other. Pure composition over the three
+ * existing accessors — does not change or duplicate their own outputs.
+ * `target` narrows flows the same way get_flow_concepts does.
  */
 export function getUnifiedPerspectives(
   cas: CASOutput,
@@ -3198,20 +3182,13 @@ function levenshteinDistance(a: string, b: string): number {
 }
 
 /**
- * Builds a graceful (never a bare/dead-end) "target not found" result shared by
- * getCodingContext and getInterfaceSignature. Agents were hitting a bare
- * `{ error: "Target not found: X" }` even for real, currently-exported symbols
- * whenever the analysis was stale (the symbol was renamed/added/moved since the
- * CAS was generated) — with no signal that staleness, not a bad guess, was the
- * likely cause, and no path forward. This instead: (a) states the target wasn't
- * found in the *current* analysis (framing it as CAS-relative, not absolute),
- * (b) surfaces an analysis-age hint derived from cas.analysis_timestamp so an
- * agent can judge staleness risk without a separate freshness call (this
- * function only has the CAS, not project-path/git access, so it can't run the
- * full get_analysis_freshness git-diff scan itself — it nudges toward that tool
- * instead of guessing), (c) points at get_server_version if the tool/analysis
- * itself seems unavailable, and (d) offers fuzzy near-name matches against real
- * node names so a typo or slightly-stale name still gets somewhere useful.
+ * Builds a graceful "target not found" result shared by getCodingContext and
+ * getInterfaceSignature: (a) frames the miss as CAS-relative, not absolute —
+ * the analysis may simply be stale, not the guess wrong, (b) surfaces an
+ * analysis-age hint (this function has no git access to run the full
+ * freshness scan itself), (c) points at get_server_version if the
+ * tool/analysis itself seems unavailable, and (d) offers fuzzy near-name
+ * matches so a typo or stale name still gets somewhere useful.
  */
 function buildTargetNotFoundResult(cas: CASOutput, target: string, toolName: string) {
   const query = target.trim();

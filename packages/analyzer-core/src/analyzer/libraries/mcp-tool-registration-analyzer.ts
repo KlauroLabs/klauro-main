@@ -117,11 +117,22 @@ export class McpToolRegistrationAnalyzer extends BaseAnalyzer {
       } catch {
         continue;
       }
-      if (!this.hasRegistrationEvidence(content)) continue;
+      // Blank out comments before scanning: this is a plain-text regex scan,
+      // not an AST walk, so an illustrative code sample inside a `/** ... */`
+      // JSDoc block (this file's own header comment documents the shorthand
+      // form as `server.tool('do_thing', schema, handler)`) reads exactly
+      // like a real registration and was previously extracted as one —
+      // quality-iter-1 #8 traced the junk "Do Thing" workflow's third entry
+      // point straight back to that doc example, not real code. Blanking
+      // (space-for-non-newline-char) rather than deleting keeps every byte
+      // offset and line number produced by extractRegisterToolCalls/etc.
+      // identical to scanning the original content.
+      const scannable = this.blankComments(content);
+      if (!this.hasRegistrationEvidence(scannable)) continue;
 
-      registrations.push(...this.extractRegisterToolCalls(content, file));
-      registrations.push(...this.extractToolShorthandCalls(content, file));
-      registrations.push(...this.extractSetRequestHandlerCalls(content, file));
+      registrations.push(...this.extractRegisterToolCalls(scannable, file));
+      registrations.push(...this.extractToolShorthandCalls(scannable, file));
+      registrations.push(...this.extractSetRequestHandlerCalls(scannable, file));
     }
 
     for (const reg of registrations) {
@@ -206,6 +217,51 @@ export class McpToolRegistrationAnalyzer extends BaseAnalyzer {
       ignore: [...this.getIgnorePatterns({ projectPath }), '**/*.test.*', '**/*.spec.*', '**/__tests__/**'],
       nodir: true
     });
+  }
+
+  /**
+   * Replace line-comment (`//...`) and block-comment (slash-star ... star-
+   * slash) characters with spaces (never newlines removed, never
+   * string/template contents touched), so a
+   * subsequent regex scan cannot mistake a documentation example for a real
+   * registration call. Tracks string/template state char-by-char so a `//`
+   * or `/*` appearing inside a string literal is left alone.
+   */
+  private blankComments(content: string): string {
+    let out = '';
+    let i = 0;
+    const n = content.length;
+    let inLineComment = false;
+    let inBlockComment = false;
+    let inString: '"' | "'" | '`' | null = null;
+    while (i < n) {
+      const ch = content[i];
+      const next = content[i + 1];
+      if (inLineComment) {
+        if (ch === '\n') { inLineComment = false; out += ch; } else { out += ' '; }
+        i++;
+        continue;
+      }
+      if (inBlockComment) {
+        if (ch === '*' && next === '/') { inBlockComment = false; out += '  '; i += 2; continue; }
+        out += ch === '\n' ? '\n' : ' ';
+        i++;
+        continue;
+      }
+      if (inString) {
+        out += ch;
+        if (ch === '\\') { out += next ?? ''; i += 2; continue; }
+        if (ch === inString) inString = null;
+        i++;
+        continue;
+      }
+      if (ch === '"' || ch === "'" || ch === '`') { inString = ch; out += ch; i++; continue; }
+      if (ch === '/' && next === '/') { inLineComment = true; out += '  '; i += 2; continue; }
+      if (ch === '/' && next === '*') { inBlockComment = true; out += '  '; i += 2; continue; }
+      out += ch;
+      i++;
+    }
+    return out;
   }
 
   private hasRegistrationEvidence(content: string): boolean {

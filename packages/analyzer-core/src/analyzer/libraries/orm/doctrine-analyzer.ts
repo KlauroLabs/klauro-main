@@ -69,59 +69,23 @@ interface DoctrineTraitInfo {
 }
 
 /**
- * Doctrine ORM analyzer.
+ * Doctrine ORM analyzer. Must parse via a bracket-balanced attribute-group
+ * collector (collectPrecedingAttributeText), not adjacency regex — real
+ * Doctrine code commonly uses the PHP 8 grouped attribute form (multi-line
+ * `#[...]` groups) and stacks unrelated attribute groups between a field's ORM
+ * attribute and its visibility modifier, both of which a simple adjacency
+ * check misses. Supports both PHP 8 attribute syntax and legacy `@ORM\Xxx(...)`
+ * docblock annotations through the same code path.
  *
- * Doctrine extraction previously lived thinly inside SymfonyAnalyzer
- * (analyzeEntities/extractEntityFields/extractEntityRelations), gated by two
- * fragile substring checks that broke on real-world Doctrine code:
- *
- *  1. `isDoctrineEntity()` checked `content.includes('#[ORM\\Entity')` — a
- *     literal adjacency check that fails on the PHP 8 GROUPED attribute form
- *     `#[\n    ORM\Entity(repositoryClass: BookingRepository::class),\n
- *     ORM\Table(...)\n]` (the `#[` and `ORM\Entity` are on different lines).
- *     This is exactly why a benchmarked Symfony repo's `src/Entity/Booking.php` was invisible —
- *     it uses the grouped form — while `BookingConnectionBind.php` (inline
- *     `#[ORM\Entity, ORM\Table(...)]`) was extracted.
- *  2. `extractEntityFields()`/`extractEntityRelations()` required
- *     `#[ORM\Column(...)]` (or `#[ORM\OneToMany(...)]` etc.) to sit
- *     IMMEDIATELY before the visibility modifier with nothing between. Real
- *     code frequently stacks a SECOND unrelated attribute group in between
- *     (`#[ORM\Column(...)]#[JMS\Type('string')] private ...`, seen
- *     repeatedly in a benchmarked Symfony repo's Company entity) or groups multiple ORM
- *     attributes together (`#[ORM\ManyToOne(...), ORM\JoinColumn(...)]`),
- *     both of which the adjacency regex misses — hence "thin fields".
- *
- * This analyzer replaces that regex-adjacency approach with a
- * bracket-balanced ATTRIBUTE-GROUP COLLECTOR (`collectPrecedingAttributeText`)
- * that walks backward over every `#[...]` group (and PHPDoc `/** ... *\/`
- * block) immediately preceding a class or property declaration, regardless of
- * how many groups are stacked or how the group's contents are formatted, then
- * scans the COMBINED text for `ORM\Xxx(...)` / `@Xxx(...)` occurrences with a
- * balanced-paren argument extractor. Both PHP 8 attribute syntax and legacy
- * `@ORM\Xxx(...)` docblock annotations are supported through the same code
- * path (the same regex matches the substring `ORM\Xxx` whether it's preceded
- * by `#[` or `@`).
- *
- * Node conventions mirror TypeORMAnalyzer: entity nodes are type `'entity'`,
- * level 3, id `entity_doctrine_<name>`, with embedded `fields[]` metadata (the
- * same shape orchestrator.buildDataEntities() reads as a fallback when no
- * separate field/property nodes exist — see its `attrFields` branch). Cross-
- * entity relations become `references` edges, database-category, matching the
- * shape the ORM-evidence ERD (database_schema.relationships_summary) already
- * renders for TypeORM/Prisma/Sequelize.
- *
- * `persist()`/`remove()` call sites become `database`-category exit points
- * PLUS `creates`/`updates`/`deletes` edges into the entity node — the same
+ * Node conventions mirror TypeORMAnalyzer: entity nodes are type 'entity',
+ * level 3, id `entity_doctrine_<name>`, with embedded fields[] metadata.
+ * Cross-entity relations become `references` edges, database-category.
+ * persist()/remove() call sites become database-category exit points plus
+ * creates/updates/deletes edges into the entity node, using the same
  * write-edge vocabulary orchestrator.buildDataEntities()/data-lineage.ts
- * already recognize (WRITE_EDGE_TYPES / crudBucketFromEdgeType), so these
- * facts flow straight into get_data_lineage writers and
- * entity.lifecycle.created_by/updated_by/deleted_by without any Doctrine-
- * specific wiring on the consumer side. Call-graph / repository-binding
- * resolution (interface -> implementation, `getRepository(Entity::class)`
- * chains) is intentionally NOT duplicated here — that already lives in
- * PHPAnalyzer's PhpTypeIndex (repoClassByEntity); this analyzer owns the
- * entity/field/relation/write-fact LAYER only and exposes `repository_class`
- * on the entity node so cross-referencing by name still works.
+ * already recognize. Repository-binding resolution is intentionally not
+ * duplicated here — that lives in PHPAnalyzer's PhpTypeIndex; this analyzer
+ * owns the entity/field/relation/write-fact layer only.
  */
 export class DoctrineAnalyzer extends BaseAnalyzer {
   constructor() {

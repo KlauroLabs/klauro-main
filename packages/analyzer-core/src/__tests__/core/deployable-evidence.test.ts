@@ -1546,3 +1546,88 @@ describe('collectDeployableEvidence: compose<->container identity join + build-s
     expect(workerBin!.bundled_into).not.toBe('LegacyPackaging');
   });
 });
+
+describe('collectDeployableEvidence: analyzer-own-fixture-directory exclusion (regression: 126 deployable_evidence units on this repo\'s own self-analysis, 2026-07 quality-iter-1)', () => {
+  let projectPath: string;
+
+  afterEach(() => {
+    if (projectPath) fs.removeSync(projectPath);
+  });
+
+  function write(relative: string, content: string): void {
+    const full = path.join(projectPath, relative);
+    fs.ensureDirSync(path.dirname(full));
+    fs.writeFileSync(full, content);
+  }
+
+  test('a real-shaped root Cargo.toml bin target still yields exactly one deployable', () => {
+    projectPath = tempProject();
+    write(
+      'Cargo.toml',
+      ['[package]', 'name = "root-service"', 'version = "0.1.0"', '', '[[bin]]', 'name = "root-service"', 'path = "src/main.rs"', ''].join('\n'),
+    );
+    write('src/main.rs', 'fn main() {}\n');
+
+    const result = collectDeployableEvidence({ projectPath, nodes: [], entryPoints: [], exitPoints: [] });
+    expect(result.filter(item => item.kind === 'bin' && item.name === 'root-service').length).toBe(1);
+  });
+
+  test('a build-installer.sh under fixtures/ (the analyzer\'s OWN test fixture) never mints a deployable unit', () => {
+    projectPath = tempProject();
+    // Real repro shape: apps/mcp-server/fixtures/deployable-detection/rust-messy-workspace/build-installer.sh
+    write(
+      'fixtures/deployable-detection/rust-messy-workspace/build-installer.sh',
+      '#!/bin/sh\ncargo build --release -p messy-worker\ncp target/release/messy-worker /usr/local/bin/\n',
+    );
+
+    const result = collectDeployableEvidence({ projectPath, nodes: [], entryPoints: [], exitPoints: [] });
+    expect(result.some(item => (item.evidence || []).some(e => e.includes('build-installer.sh')))).toBe(false);
+    expect(result.length).toBe(0);
+  });
+
+  test('a Cargo.toml under __tests__/fixtures/ (the analyzer\'s OWN test fixture) never mints a deployable unit', () => {
+    projectPath = tempProject();
+    // Real repro shape: packages/analyzer-core/src/__tests__/fixtures/rust/actix-web-app
+    write(
+      '__tests__/fixtures/rust/actix-web-app/Cargo.toml',
+      ['[package]', 'name = "actix-web-app"', 'version = "0.1.0"', '', '[[bin]]', 'name = "actix-web-app"', 'path = "src/main.rs"', ''].join('\n'),
+    );
+    write('__tests__/fixtures/rust/actix-web-app/src/main.rs', 'fn main() {}\n');
+
+    const result = collectDeployableEvidence({ projectPath, nodes: [], entryPoints: [], exitPoints: [] });
+    expect(result.length).toBe(0);
+  });
+
+  test('the same real manifest shape OUTSIDE a fixture directory is still collected (exclusion is path-scoped, not manifest-shape-scoped)', () => {
+    projectPath = tempProject();
+    write(
+      'Cargo.toml',
+      ['[package]', 'name = "real-service"', 'version = "0.1.0"', '', '[[bin]]', 'name = "real-service"', 'path = "src/main.rs"', ''].join('\n'),
+    );
+    write('src/main.rs', 'fn main() {}\n');
+
+    const result = collectDeployableEvidence({ projectPath, nodes: [], entryPoints: [], exitPoints: [] });
+    expect(result.some(item => item.name === 'real-service')).toBe(true);
+  });
+
+  test('a Cargo.toml bin target under __fixtures__/, testdata/, or cas-tests/ is excluded the same way', () => {
+    projectPath = tempProject();
+    const manifest = (name: string) =>
+      ['[package]', `name = "${name}"`, 'version = "0.1.0"', '', '[[bin]]', `name = "${name}"`, 'path = "src/main.rs"', ''].join('\n');
+    write('__fixtures__/svc/Cargo.toml', manifest('fixtures-svc'));
+    write('__fixtures__/svc/src/main.rs', 'fn main() {}\n');
+    write('testdata/svc2/Cargo.toml', manifest('testdata-svc'));
+    write('testdata/svc2/src/main.rs', 'fn main() {}\n');
+    write('cas-tests/svc3/Cargo.toml', manifest('cas-tests-svc'));
+    write('cas-tests/svc3/src/main.rs', 'fn main() {}\n');
+    // One real one at the root, to prove the walk itself still runs.
+    write('Cargo.toml', manifest('root-svc'));
+    write('src/main.rs', 'fn main() {}\n');
+
+    const result = collectDeployableEvidence({ projectPath, nodes: [], entryPoints: [], exitPoints: [] });
+    expect(result.some(item => item.name === 'fixtures-svc')).toBe(false);
+    expect(result.some(item => item.name === 'testdata-svc')).toBe(false);
+    expect(result.some(item => item.name === 'cas-tests-svc')).toBe(false);
+    expect(result.some(item => item.name === 'root-svc')).toBe(true);
+  });
+});

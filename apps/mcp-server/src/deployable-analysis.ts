@@ -56,31 +56,15 @@ function isTier1ShipDeclaration(e: DeployableEvidence): boolean {
 
 /**
  * The set of DeployableEvidence rows that count toward the promotion
- * threshold — "tier-qualified ship units" per spec §1. This is a LIGHTER,
- * CAS-scoped counterpart to cross-codebase-analysis.ts's
- * buildApplications/applyShippedGate (which resolves the same concept across
- * a multi-repo WORKSPACE's SystemApplication rows): here we work directly off
- * a single CAS's own `deployable_evidence`, which already carries evidence-
- * gated bundling (`bundled_into`, set by deployable-evidence.ts's
- * resolveEvidenceBundling) — DAS does not re-run that pass, only reacts to it.
- *
- * Rule (mirrors applyShippedGate's decision table, §1 of the spec):
- *  - A row with `bundled_into` set never counts on its own — it is folded
- *    into the Tier-1 unit that named it.
- *  - Every standalone Tier-1 row counts (a real ship declaration).
- *  - A standalone Tier-2/3 row counts ONLY if it is the SOLE runnable
- *    candidate in the whole repo (the "sole-runnable exemption" — nothing
- *    else could possibly be "the" deployable) AND it is not a `server-entry`
- *    row (a per-ROUTE Tier-2 entry is an entry point, not a ship unit — same
- *    exclusion communication-seams.ts's isShipBoundary applies). Otherwise a
- *    standalone Tier-2/3 row that had no Tier-1 sibling reference it fails the
- *    shipped-gate and does not count, exactly like the acceptance example in
- *    spec §8 ("8 runnable binaries, 1 installer bundles 2, tier-qualified
- *    count = 1").
- *  - Tier-4 folder-heuristic evidence never appears in `deployable_evidence`
- *    at all (DeployableEvidence.tier is typed 1|2|3) — so it never needs an
- *    explicit exclusion here; it is a CAS-analyzer-doesn't-emit-it fact, not a
- *    filtering decision this function makes.
+ * threshold — "tier-qualified ship units" (spec §1). A CAS-scoped counterpart
+ * to cross-codebase-analysis.ts's buildApplications/applyShippedGate. Rule:
+ *  - A row with bundled_into set never counts on its own.
+ *  - Every standalone Tier-1 row counts.
+ *  - A standalone Tier-2/3 row counts only if it's the sole runnable candidate
+ *    in the repo and not a server-entry row (a per-route entry is an entry
+ *    point, not a ship unit). Otherwise it fails the shipped-gate.
+ *  - Tier-4 folder-heuristic evidence never appears in deployable_evidence at
+ *    all (DeployableEvidence.tier is typed 1|2|3), so no explicit exclusion is needed here.
  */
 export function tierQualifiedShipUnits(evidence: DeployableEvidence[] | undefined): DeployableEvidence[] {
   const items = evidence || [];
@@ -115,15 +99,10 @@ export function shouldPromote(cas: Pick<CASOutput, 'deployable_evidence'>): bool
 // ---------------------------------------------------------------------------
 
 /**
- * Deterministic id for a DeployableEvidence row, reusing the SAME identity-
- * collision-guarded construction entry-point-deployable.ts's
- * buildDeployableRoots already applies to derive `deployable_id` from
- * `(kind, root_path, name)` — spec §7 requires DAS unit ids be derived the
- * same way `SystemApplication.id` is, and this is the CAS-level analogue of
- * that identity. Re-analyzing an unchanged repo re-derives the SAME id for
- * the SAME evidence row, because the derivation is a pure function of the
- * evidence content, never of array position (collisions are index-
- * disambiguated the same way buildDeployableRoots already does).
+ * Deterministic id for a DeployableEvidence row, reusing the same
+ * identity-collision-guarded construction buildDeployableRoots applies to
+ * derive deployable_id — a pure function of evidence content, never of array
+ * position, so re-analyzing an unchanged repo re-derives the same id.
  */
 function dasUnitIds(evidence: DeployableEvidence[]): string[] {
   return buildDeployableRoots(evidence).map(root => `das:${root.deployable_id.replace(/^dep:/, '')}`);
@@ -746,26 +725,14 @@ export interface DasScopeParam {
 }
 
 /**
- * Spec §6's retrieval contract: resolve an optional `scope: { das_unit_id }`
- * against a repo-level CAS for a product-surface tool (get_summary,
- * get_entry_points, get_file_nodes, get_data_entities, search_nodes). Returns
- * the parent `cas` unchanged when `scope` is omitted (existing callers that
- * don't know about DAS keep working unchanged, per spec §6). When a concrete
- * `das_unit_id` is given, returns a CASOutput-shaped object with the DAS
- * unit's sliced fields (nodes/edges/entry_points/exit_points/data_entities/
- * capabilities/...) overlaid on the parent CAS's own fields — repo-rollup-only
- * facts with no unit-scoped meaning (conventions, idioms, test_summary,
- * architecture_summary, ...) pass through from the parent CAS unchanged (spec
- * §3's "stays at repo level"), while everything the DAS slice actually
- * projects governs the scoped view, so counts/nodes/entries reported back
- * reflect the UNIT, never the rollup.
- *
- * Throws (surfaced by the caller's withErrorHandling as a normal tool error,
- * never a silent empty result) when:
- *  - the CAS hasn't promoted (single ship unit, or no qualifying evidence) —
- *    scope is not applicable and the caller should omit it; and
- *  - `das_unit_id` doesn't match any current unit — names the ids that DO
- *    exist so a caller can self-correct instead of guessing again.
+ * Resolves an optional scope: { das_unit_id } against a repo-level CAS (spec
+ * §6). Returns the parent cas unchanged when scope is omitted. When given,
+ * returns a CASOutput-shaped object with the DAS unit's sliced fields
+ * overlaid on the parent CAS — repo-rollup-only facts with no unit-scoped
+ * meaning pass through unchanged, so counts/nodes/entries reflect the unit,
+ * never the rollup. Throws (never a silent empty result) when the CAS hasn't
+ * promoted, or when das_unit_id doesn't match any current unit — naming the
+ * ids that do exist.
  */
 export function scopeCasToDasUnit(cas: CASOutput, scope: DasScopeParam | undefined): CASOutput {
   if (!scope) return cas;
@@ -784,39 +751,16 @@ export function scopeCasToDasUnit(cas: CASOutput, scope: DasScopeParam | undefin
 }
 
 /*
- * ---------------------------------------------------------------------------
- * PHASE-3 OPEN ITEMS (deliberately out of scope here — see the task report):
- *
- *  1. Persistence. This module still recomputes on every cache miss (spec §9
- *     open question 2's cheapest-honest-start option: VIEW, not a stored
- *     artifact). getCachedDeployableAnalyses only avoids re-derivation WITHIN
- *     one analysis's lifetime; a change to the underlying CAS (re-analysis)
- *     naturally misses the cache because `analysis_id`/`analysis_timestamp`
- *     change too, so nothing goes stale — but true incremental re-slicing
- *     (spec §5) still requires a stored per-unit node-id-set to diff against,
- *     which phase 1/2 do not build.
- *
- *  2. Deeper per-unit layers this module does NOT yet project: behavioral
- *     invariants, security boundaries, flow_coverage/test_gaps, temporal
- *     stability, idiom violations scoped to a unit's own files. All of these
- *     are structurally sliceable by the same reachable-node-id-set /
- *     reachable-file-set technique already used here for data entities and
- *     lineage; deferred for scope, not because they resist the technique.
- *     Correspondingly, `scope` is only wired onto get_summary,
- *     get_entry_points, get_file_nodes, get_data_entities, and search_nodes
- *     in phase 2 — every other repo-level tool (get_route_table,
- *     get_security_overview, get_flow_concepts, get_behavioral_invariants,
- *     get_test_summary, ...) is a phase-3 candidate once its own scoped
- *     projection exists.
- *
- *  3. True flow/capability RE-DERIVATION (spec §2.1 step 3's stated ideal:
- *     "runs the existing [capability/flow] algorithm with a restricted
- *     evidence set") vs. this phase's cheaper approximation (FILTERING the
- *     already-derived repo-level capabilities/flows down to the ones whose
- *     entry points survived slicing). The filter approach is honest (never
- *     fabricates a capability) but can under- or over-scope a capability
- *     whose entry points span two units' seed sets differently than its
- *     entities do; re-deriving via the real capability builder over the
- *     subgraph is the phase-2 fix if that proves to matter in practice.
- * ---------------------------------------------------------------------------
+ * TODO (phase-3, deliberately out of scope here):
+ *  1. Persistence — true incremental re-slicing (spec §5) needs a stored
+ *     per-unit node-id-set to diff against, which this module doesn't build.
+ *  2. Deeper per-unit layers not yet projected (behavioral invariants,
+ *     security boundaries, flow_coverage/test_gaps, idiom violations scoped to
+ *     a unit) — structurally sliceable by the same technique used here, just
+ *     not wired yet; `scope` currently reaches only get_summary,
+ *     get_entry_points, get_file_nodes, get_data_entities, search_nodes.
+ *  3. True flow/capability re-derivation over the sliced subgraph (spec §2.1
+ *     step 3's ideal) vs. this phase's cheaper filter-down approximation,
+ *     which can under/over-scope a capability whose entry points and entities
+ *     span unit boundaries differently.
  */

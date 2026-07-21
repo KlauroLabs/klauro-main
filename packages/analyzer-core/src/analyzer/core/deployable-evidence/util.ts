@@ -23,6 +23,24 @@ export function safeGlobSync(pattern: string | string[], options: Record<string,
   }
 }
 
+/**
+ * Deployable evidence must never be minted from the analyzed repo's own test
+ * scaffolding — a fixture directory that ships a sample Dockerfile,
+ * build-installer.sh, or Cargo.toml (to exercise the analyzer's *own* deploy-
+ * detection providers) is not a real deployable of the host repo. This is the
+ * same shape class BaseAnalyzer.getIgnorePatterns() already denylists for
+ * source walking (fixtures/, __fixtures__/, testdata/, cas-tests/), plus
+ * __tests__/ (jest-convention test-colocation dirs that also carry fixture
+ * assets). Unlike BaseAnalyzer.getPackageDirSafeIgnorePatterns(), there is no
+ * JVM-package-dir exception here: that exception exists because JVM
+ * reversed-domain package paths can legitimately contain a directory segment
+ * literally named "samples"/"examples"/"fixtures"/"testdata" as SOURCE code
+ * (see base-analyzer.ts), but a deployable manifest (Dockerfile, Cargo.toml,
+ * package.json, install script, ...) living under such a path in THIS
+ * provider's glob is still evidence-collection over the analyzed repo's own
+ * fixtures, not source walking — so the exclusion applies unconditionally
+ * here, for every ecosystem.
+ */
 export const IGNORE_GLOBS = [
   '**/node_modules/**',
   '**/.git/**',
@@ -31,6 +49,16 @@ export const IGNORE_GLOBS = [
   '**/target/**',
   '**/.klauro*/**',
   '**/vendor/**',
+  'fixtures/**',
+  '**/fixtures/**',
+  '__fixtures__/**',
+  '**/__fixtures__/**',
+  '__tests__/**',
+  '**/__tests__/**',
+  'testdata/**',
+  '**/testdata/**',
+  'cas-tests/**',
+  '**/cas-tests/**',
 ];
 
 export function arrayOf(value: unknown): string[] {

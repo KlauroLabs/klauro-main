@@ -32,11 +32,9 @@ function normalizeEntityName(name: string): string {
  * A read-only journey writes nothing, so its terminal READS are its actual
  * subject and serve as the fallback. Non-write reads on a journey that DOES
  * write never count: "reads a shared entity somewhere along the chain" is
- * exactly the non-discriminating overlap that pasted every journey onto every
- * capability touching that entity (live: mtg's ~30 socket journeys ×every
- * economy capability, Klauro's 16 workspace journeys ×3 capabilities). A
- * journey attaches to the few capabilities anchored on what it produces,
- * not to everything it brushes against.
+ * exactly the non-discriminating overlap that pastes every journey onto every
+ * capability touching that entity. A journey attaches to the few capabilities
+ * anchored on what it produces, not to everything it brushes against.
  */
 function journeyPrimaryEntityNames(journey: CASUserJourney): Set<string> {
   const written = new Set<string>();

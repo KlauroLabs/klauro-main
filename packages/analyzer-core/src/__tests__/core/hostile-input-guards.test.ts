@@ -47,6 +47,45 @@ describe('hostile input guards', () => {
       const extraction = extractor.extractFromSource('export function ok(): number { return 1; }\n', 'ok.ts');
       expect(extraction.hasSyntaxErrors).toBe(false);
     });
+
+    // quality-iter-1 #9 verify-first: two "contains syntax errors" flags on
+    // real, valid analyzer-core source (cas.types.ts, revision.ts) were
+    // hypothesized to be a pre-parse heuristic choking on non-ASCII
+    // punctuation (an em dash in JSDoc). Reproducing against the real
+    // tree-sitter-typescript grammar shows that hypothesis was WRONG — em
+    // dashes parse fine — and finds the two ACTUAL, narrow, genuine grammar/
+    // scanner limitations instead. Both are real (not a heuristic bug): the
+    // fix here is not suppressing the flag but reporting WHERE precisely,
+    // via syntaxErrorLocations, instead of a blanket file-level claim.
+    it('does NOT flag an em dash in a JSDoc comment (the original false-positive hypothesis)', () => {
+      const extractor = new TreeSitterTSExtractor();
+      const extraction = extractor.extractFromSource(
+        '/** Ranked by confidence — a monorepo can carry more than one. */\nexport const x = 1;\n',
+        'em-dash.ts'
+      );
+      expect(extraction.hasSyntaxErrors).toBe(false);
+    });
+
+    it('genuinely flags (and localizes) an array-suffixed inline import-type: `import(\'m\').T[]`', () => {
+      const extractor = new TreeSitterTSExtractor();
+      const extraction = extractor.extractFromSource(
+        "type X = { codebase_type_signals?: import('../analyzer/core/codebase-type').CodebaseTypeSignal[]; };\n",
+        'cas.types.ts'
+      );
+      expect(extraction.hasSyntaxErrors).toBe(true);
+      expect(extraction.syntaxErrorLocations?.length).toBeGreaterThan(0);
+      expect(extraction.syntaxErrorLocations?.[0].line).toBe(1);
+    });
+
+    it('genuinely flags (and localizes) a literal embedded NUL byte inside a template literal', () => {
+      const extractor = new TreeSitterTSExtractor();
+      const source = 'const h = crypto.createHash(\'sha256\').update(`${status}\0${diff}`).digest(\'hex\');\n';
+      const extraction = extractor.extractFromSource(source, 'revision.ts');
+      expect(extraction.hasSyntaxErrors).toBe(true);
+      expect(extraction.syntaxErrorLocations?.length).toBeGreaterThan(0);
+      // The sanitized snippet must never contain a raw NUL byte itself.
+      expect(extraction.syntaxErrorLocations?.every(loc => !loc.snippet.includes('\0'))).toBe(true);
+    });
   });
 
   describe('TypeScriptJavaScriptAnalyzer file guards', () => {

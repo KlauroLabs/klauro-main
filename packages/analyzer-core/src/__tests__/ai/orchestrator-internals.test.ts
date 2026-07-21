@@ -1792,6 +1792,29 @@ describe('architecture and capability inference', () => {
     expect(purpose.primary_type).toBe('clinical-testing-platform');
   });
 
+  it('does not flip a large web/analyzer codebase to clinical-testing-platform on incidental generic vocabulary (live self-analysis defect: Klauro\'s own repo scored clinical-testing-platform 0.86 off "device"/"measurement"/"force" and generic "modal" component naming, with zero genuinely clinical evidence)', async () => {
+    const nodes: CASNode[] = [
+      node({ id: 'device-flow', name: 'DeviceCodeAuthFlow', type: 'class', source: { file: 'src/auth/DeviceCodeAuthFlow.ts' } }),
+      node({ id: 'force-refresh', name: 'ForceRefreshButton', type: 'component', source: { file: 'src/app/components/ForceRefreshButton.tsx' } }),
+      node({ id: 'measurement-util', name: 'PerformanceMeasurementUtil', type: 'class', source: { file: 'src/telemetry/PerformanceMeasurementUtil.ts' } }),
+      node({ id: 'confirm-modal', name: 'ConfirmModal', type: 'component', source: { file: 'src/app/components/ConfirmModal.tsx' } }),
+      node({ id: 'delete-modal', name: 'DeleteModal', type: 'component', source: { file: 'src/app/components/DeleteModal.tsx' } }),
+      node({ id: 'window-listener', name: 'WindowResizeListener', type: 'component', source: { file: 'src/app/components/WindowResizeListener.tsx' } }),
+    ];
+    const purpose = await orch.inferSystemPurpose([], [], [], nodes);
+
+    // No 'patient'/'muscle'/'inclinometry'/'grip'/'pinch'/'rehabilitation' anchor
+    // and no 'xaml'/'viewmodel' desktop-native evidence exists anywhere in this
+    // fixture — only generic web/telemetry vocabulary that happens to overlap
+    // with the clinical keyword list. Must never be misread as this specific
+    // dedicated-desktop-override type (the live defect: Klauro's own
+    // self-analysis got stamped exactly this type, at a hardcoded 0.86 floor,
+    // via this override — not via the general signature-scoring loop below,
+    // which has its own separate anchor/distinctiveness behavior tracked
+    // independently).
+    expect(purpose.primary_type).not.toBe('clinical-testing-platform');
+  });
+
   it('prioritizes clinical capabilities in clinical testing summaries', async () => {
     expect(orch.capabilityPurposeBias('clinical-testing', { name: 'Patient Report Management', related_domains: [], related_entities: [] })).toBe(0);
     expect(orch.capabilityPurposeBias('clinical-testing', { name: 'Snack Management', related_domains: [], related_entities: [] })).toBe(1);
@@ -1800,6 +1823,64 @@ describe('architecture and capability inference', () => {
       { name: 'Device Management', related_domains: ['device'], related_entities: [], operations: [] },
       { name: 'Report Management', related_domains: ['report'], related_entities: [], operations: [] },
     ])).toEqual(['patient records', 'device connectivity', 'clinical reporting']);
+  });
+
+  it('does not treat a lone generic clinical-vocabulary hit as strongly domain-aligned (keyword-anchor-audit site 2: capabilityPurposeBias)', async () => {
+    // "measurement"/"device"/"force"/"report"/"assessment"/"test" are generic
+    // English words present in almost any codebase. A capability whose text
+    // contains ONLY those (no patient/muscle/grip/pinch/inclinometry/
+    // rehabilitation anchor) must not score as strongly aligned (0) — it
+    // stays mildly aligned (2), never masquerading as core-clinical.
+    expect(orch.capabilityPurposeBias('clinical-testing', { name: 'Device Report Management', related_domains: [], related_entities: [] })).toBe(2);
+    expect(orch.capabilityPurposeBias('clinical-testing', { name: 'Force Assessment Test', related_domains: [], related_entities: [] })).toBe(2);
+    // A genuine distinctive anchor still returns 0.
+    expect(orch.capabilityPurposeBias('clinical-testing', { name: 'Muscle Grip Management', related_domains: [], related_entities: [] })).toBe(0);
+  });
+
+  it('does not drop an unrelated generic force/gauge capability as a duplicate of a strong clinical one, but still dedupes a genuine muscle/clinical overlap (keyword-anchor-audit site 3: isLowValueFallbackCapability)', async () => {
+    // isLowValueFallbackCapability returning true means the capability is
+    // DROPPED from the catalog as redundant with an already-strong capability
+    // it overlaps with — so a false positive here silently DELETES a real,
+    // unrelated feature just because the repo also happens to have a strong
+    // "Clinical Measurements" capability.
+    const strongClinical = { name: 'Clinical Measurements', category: 'core', criticality: 'high', operations: [{ path_or_command: '/patients', action: 'read' }, { path_or_command: '/patients', action: 'write' }], related_domains: ['clinical'], related_entities: ['patient'] };
+    // "Force" alone (physics/UI "force refresh") must NOT be dropped as a
+    // clinical-duplicate just because a strong "Clinical Measurements"
+    // capability exists elsewhere in the same repo — it is unrelated.
+    const genericForceCapability = { name: 'Force Refresh Workflow', category: 'supporting', criticality: 'low', operations: [], related_domains: ['force'], related_entities: [] };
+    // "Gauge" alone (a dashboard metrics "gauge") must NOT be dropped either.
+    // ("Refresh" pairs with it, as with the force fixture above, so this
+    // fixture isolates the strongCapabilities-merge check under audit rather
+    // than tripping the separate all-tokens-generic low-value filter, which
+    // "gauge" alone combined with an all-generic second word would hit first.)
+    const genericGaugeCapability = { name: 'Gauge Refresh Workflow', category: 'supporting', criticality: 'low', operations: [], related_domains: ['gauge'], related_entities: [] };
+    // A genuinely clinical "muscle" capability SHOULD still be recognized as
+    // overlapping (dropped as duplicate coverage) — the anchor gate only
+    // removes the generic false positives, not the real overlap.
+    const genuineMuscleCapability = { name: 'Muscle Test Workflow', category: 'supporting', criticality: 'low', operations: [], related_domains: ['muscle'], related_entities: [] };
+
+    expect(orch.isLowValueFallbackCapability(genericForceCapability, [strongClinical])).toBe(false);
+    expect(orch.isLowValueFallbackCapability(genericGaugeCapability, [strongClinical])).toBe(false);
+    expect(orch.isLowValueFallbackCapability(genuineMuscleCapability, [strongClinical])).toBe(true);
+  });
+
+  it('does not let a single generic trading-vocabulary word win top product priority (keyword-anchor-audit site 4: systemCapabilityProductPriority)', async () => {
+    // A security tool's "risk" capability and a workflow engine's "decision"
+    // capability must NOT be mistaken for trading-product core features off
+    // a single generic word, with no supporting operations/entities evidence.
+    const riskCapability = { name: 'Risk Assessment Reporting', category: 'supporting', criticality: 'medium', operations: [], related_domains: ['risk'], related_entities: [] };
+    const decisionCapability = { name: 'Decision Workflow', category: 'supporting', criticality: 'medium', operations: [], related_domains: ['decision'], related_entities: [] };
+    expect(orch.systemCapabilityProductPriority(riskCapability)).not.toBe(1);
+    expect(orch.systemCapabilityProductPriority(decisionCapability)).not.toBe(1);
+
+    // Genuine trading vocabulary co-occurrence (2+ distinct terms) still wins.
+    const genuineTradingCapability = { name: 'Risk And Price Management', category: 'supporting', criticality: 'medium', operations: [], related_domains: ['risk', 'price'], related_entities: [] };
+    expect(orch.systemCapabilityProductPriority(genuineTradingCapability)).toBe(1);
+
+    // A distinctive single term ("portfolio") still wins alone (unchanged
+    // behavior — regression guard for the existing product-priority ordering
+    // test above).
+    expect(orch.systemCapabilityProductPriority({ name: 'Portfolio Management', category: 'supporting', criticality: 'medium', operations: [], related_domains: ['portfolio'], related_entities: [] })).toBe(1);
   });
 
   it('uses fleet-management project text to override incidental multiplayer vocabulary', async () => {
@@ -3277,6 +3358,99 @@ describe('extractProjectTextSignal: bulk content corpora do not feed domain evid
   });
 });
 
+describe('extractHumanTextFromSource: signature-table files never seed concept evidence (keyword-anchor-audit site 1)', () => {
+  // Live-defect class: on self-analysis, extractHumanTextFromSource reads the
+  // analyzer's OWN source files, including this repo's domain-candidate /
+  // signature-table arrays — literal string lists like the ones backing
+  // inferConceptsFromProjectText and inferSystemPurpose's signatures. Those
+  // arrays are one bare quoted string per line and are NOT human-authored
+  // prose; reading them as "human text" would let the classifier's own
+  // vocabulary match itself and poison core_concepts with fake evidence for
+  // domains (e.g. 'clinical-testing', 'solana') the repo never actually has.
+  it('excludes a keyword/signature-table array (one bare quoted string per line) from extracted text', async () => {
+    const signatureTableSource = [
+      "const candidates = [",
+      "  'zero trust',",
+      "  'clinical testing',",
+      "  'patient',",
+      "  'muscle',",
+      "  'measurement',",
+      "  'force',",
+      "  'device',",
+      "  'solana',",
+      "  'arbitrage',",
+      "  'fleet management',",
+      "  'vehicle fleet',",
+      "  'driver',",
+      "  'telematics',",
+      "  'portfolio',",
+      "  'checkout',",
+      "  'invoice',",
+      "  'billing',",
+      "];",
+    ].join('\n');
+    expect(orch.extractHumanTextFromSource(signatureTableSource)).toBe('');
+  });
+
+  it('still extracts real human-authored prose (JSX text / UI strings) from an ordinary product source file', async () => {
+    const productSource = [
+      "export function Banner() {",
+      "  return (",
+      "    <div>",
+      "      <h1>Welcome to your patient dashboard</h1>",
+      "      <p>Review upcoming muscle testing appointments below.</p>",
+      "    </div>",
+      "  );",
+      "}",
+    ].join('\n');
+    const extracted = orch.extractHumanTextFromSource(productSource);
+    expect(extracted).toContain('Welcome to your patient dashboard');
+  });
+
+  it('does not let a self-analysis-style signature-table file compose core concepts that a real repo never earns (inferConceptsFromProjectText)', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-signature-table-self-'));
+    try {
+      fs.writeFileSync(root + '/package.json', JSON.stringify({ name: 'todo-list-app' }));
+      fs.mkdirSync(root + '/src', { recursive: true });
+      // Mirrors the shape of a real classifier signature/candidate table:
+      // one bare quoted domain-phrase per line, dozens of entries.
+      fs.writeFileSync(root + '/src/domainSignatures.ts', [
+        "const candidates = [",
+        "  'clinical testing',",
+        "  'patient',",
+        "  'muscle',",
+        "  'measurement',",
+        "  'force',",
+        "  'device',",
+        "  'solana',",
+        "  'arbitrage',",
+        "  'fleet management',",
+        "  'vehicle fleet',",
+        "  'driver',",
+        "  'telematics',",
+        "  'zero trust',",
+        "  'network',",
+        "  'gateway',",
+        "  'resource',",
+        "];",
+      ].join('\n'));
+      fs.writeFileSync(root + '/src/todo.ts', [
+        "export function addTodo(title: string) {",
+        "  return { id: crypto.randomUUID(), title, done: false };",
+        "}",
+      ].join('\n'));
+
+      const signal = orch.extractProjectTextSignal(root);
+
+      expect(signal.concepts).not.toContain('clinical-testing');
+      expect(signal.concepts).not.toContain('solana');
+      expect(signal.concepts).not.toContain('fleet-management');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('vendor-lib terminal capabilities require product evidence', () => {
   const vendorNode = (partial: Partial<CASNode>): CASNode => ({
     id: partial.id || partial.name || 'node',
@@ -3465,6 +3639,114 @@ describe('linkRouteHandlers: handlerCallCandidates fallback for inline registrat
     orch.linkRouteHandlers(nodes, edges, entryPoints);
 
     expect(edges.length).toBe(0);
+  });
+
+  // Regression tests for quality-iter-1 #6: a bare-name candidate resolution
+  // linked an MCP-tool entry point's handler straight into an unrelated
+  // Kotlin TEST FIXTURE function ("describe"), and a shell-script entry
+  // point's flow picked up a `.test.ts` helper variable ("ep") purely
+  // because "deploy" contains the substring "ep". Resolution must never
+  // cross into test/fixture source, and short-name substring matches must
+  // require real length evidence, not coincidental containment.
+  it('does not link a handlerCallCandidate to a same-named function that only exists in a test file', async () => {
+    const nodes: CASNode[] = [
+      { id: 'entry_mcp_tool_check_collision', name: 'check_collision', type: 'mcp_tool', source: { file: 'src/server.ts', line: 40, end_line: 40 } } as unknown as CASNode,
+      functionNode('fn_describe_kotlin_fixture', 'describe', 'fixtures/primitive-bench/callers/kotlin/unrelated.kt'),
+    ];
+    const edges: CASEdge[] = [];
+    const entryPoints = [{
+      id: 'entry_4',
+      name: 'check_collision',
+      type: 'message',
+      source_node: 'entry_mcp_tool_check_collision',
+      source_analyzer: 'mcp-tool-registration',
+      trigger: { method: 'registerTool', path: 'check_collision' },
+      handler: { node_id: 'entry_mcp_tool_check_collision', method_name: 'check_collision', file: 'src/server.ts' },
+      metadata: {
+        registrationKind: 'registerTool',
+        receiver: 'server',
+        file: 'src/server.ts',
+        line: 40,
+        handlerCallCandidates: ['describe'],
+      },
+    }] as any;
+
+    orch.linkRouteHandlers(nodes, edges, entryPoints);
+
+    // The ONLY project-wide match for "describe" lives in fixture source, so
+    // even though it is unique by name, it must never be counted as evidence.
+    expect(edges.length).toBe(0);
+  });
+
+  it('does not link an entry point handler to a same-named function that only exists in a *.test.ts file', async () => {
+    const nodes: CASNode[] = [
+      { id: 'entry_deploy', name: 'deploy', type: 'cli', source: { file: 'deploy.sh', line: 1, end_line: 1 } } as unknown as CASNode,
+      functionNode('fn_ep_test_helper', 'ep', 'src/formatEntryPoint.test.ts'),
+    ];
+    const edges: CASEdge[] = [];
+    const entryPoints = [{
+      id: 'entry_5',
+      name: 'deploy',
+      type: 'cli',
+      source_node: 'entry_deploy',
+      source_analyzer: 'ci-pipeline',
+      trigger: { method: 'script', path: 'deploy' },
+      handler: { node_id: 'entry_deploy', method_name: 'deploy', file: 'deploy.sh' },
+      metadata: {},
+    }] as any;
+
+    orch.linkRouteHandlers(nodes, edges, entryPoints);
+
+    expect(edges.length).toBe(0);
+  });
+
+  it('does not accept a coincidental short-name substring match even in real (non-test) source', async () => {
+    // Isolates the length-guard tightening from the test/fixture exclusion:
+    // both candidates live in ordinary production files, so this fails (or
+    // passes) purely on the substring-length change.
+    const nodes: CASNode[] = [
+      { id: 'entry_deploy_real', name: 'deploy', type: 'cli', source: { file: 'deploy.sh', line: 1, end_line: 1 } } as unknown as CASNode,
+      functionNode('fn_ep_prod', 'ep', 'src/format-entry-point.ts'),
+    ];
+    const edges: CASEdge[] = [];
+    const entryPoints = [{
+      id: 'entry_7',
+      name: 'deploy',
+      type: 'cli',
+      source_node: 'entry_deploy_real',
+      source_analyzer: 'ci-pipeline',
+      trigger: { method: 'script', path: 'deploy' },
+      handler: { node_id: 'entry_deploy_real', method_name: 'deploy', file: 'deploy.sh' },
+      metadata: {},
+    }] as any;
+
+    orch.linkRouteHandlers(nodes, edges, entryPoints);
+
+    expect(edges.length).toBe(0);
+  });
+
+  it('still allows a genuine short-name exact match (no false negative from the substring-length guard)', async () => {
+    const nodes: CASNode[] = [
+      { id: 'entry_run_ep', name: 'ep', type: 'cli', source: { file: 'src/cli.ts', line: 1, end_line: 1 } } as unknown as CASNode,
+      functionNode('fn_ep_real', 'ep', 'src/cli.ts'),
+    ];
+    const edges: CASEdge[] = [];
+    const entryPoints = [{
+      id: 'entry_6',
+      name: 'ep',
+      type: 'cli',
+      source_node: 'entry_run_ep',
+      source_analyzer: 'ci-pipeline',
+      trigger: { method: 'script', path: 'ep' },
+      handler: { node_id: 'entry_run_ep', method_name: 'ep', file: 'src/cli.ts' },
+      metadata: {},
+    }] as any;
+
+    orch.linkRouteHandlers(nodes, edges, entryPoints);
+
+    // Exact case-insensitive equality is unguarded by the length threshold —
+    // only the loose substring-containment branch is tightened.
+    expect(edges.some(e => e.target === 'fn_ep_real')).toBe(true);
   });
 });
 
@@ -5120,6 +5402,64 @@ describe('behavior-anchored capability derivation (buildBehaviorCapabilities)', 
     expect(capability.criticality).toBe('medium');
     expect(capability.operations.length).toBeGreaterThan(0);
     expect(capability.operations.every((operation: any) => operation.entry_point_type === 'message')).toBe(true);
+  });
+
+  it('clusters a large diverse mcp_tool surface by FUNCTIONAL module cohesion instead of collapsing to one bucket', async () => {
+    // Reproduces the quality-iter-1 #1 defect measured on Klauro's own
+    // self-analysis: a 400+ tool MCP surface with no dominant name-token
+    // family collapsed to ONE "Mcp Tool Surface"/"Handle mcp tool call"
+    // capability, leaving 93% of the entry points functionally invisible
+    // under it. Here: 6 distinct module directories (mirroring real product
+    // areas — fabric/capability/workspace/telemetry/patterns/history), each
+    // with tool names diverse enough to carry no shared prefix, so name-token
+    // family clustering alone still can't split them. Module-path cohesion
+    // must do it instead: ~6 candidates, one per module, not one giant bucket.
+    const moduleTools: Record<string, string[]> = {
+      fabric: ['claim_work', 'release_work', 'check_collision', 'plan_parallel_work', 'fab_extend', 'heartbeat_work'],
+      capability: ['get_capability_memory', 'get_workspace_capability_map', 'get_summary', 'get_product_map', 'get_operational_priorities', 'get_semantic_map'],
+      workspace: ['get_workspace_health', 'get_workspace_graph', 'subscribe_workspace', 'get_workspace_risk_context', 'list_workspace_analyses', 'get_workspace_freshness'],
+      telemetry: ['ingest_telemetry', 'correlate_runtime_event', 'get_runtime_trace', 'get_runtime_observations', 'record_runtime_event', 'simulate_runtime_telemetry'],
+      patterns: ['get_patterns', 'get_pattern_instances', 'get_pattern_examples', 'get_clones', 'get_dead_code', 'get_hot_spots'],
+      history: ['get_analysis_snapshots', 'compare_analysis_iterations', 'get_changes_since', 'get_changes_between', 'diff_behavior', 'get_analysis_at'],
+    };
+    const fixtures = Object.entries(moduleTools).flatMap(([area, names]) =>
+      names.map((name, index) => {
+        const nodeId = `mcp_tool_${area}_${name}_${index}`;
+        return {
+          node: bNode({ id: nodeId, name, type: 'mcp_tool' as any, source: { file: `apps/mcp-server/src/${area}/${name}.ts` } as any }),
+          entry: {
+            id: `entry_${nodeId}`,
+            source_node: nodeId,
+            type: 'message',
+            name,
+            trigger: { method: 'registerTool', path: name },
+            handler: { node_id: nodeId, method_name: name, file: `apps/mcp-server/src/${area}/${name}.ts` },
+          } as CASEntryPoint,
+        };
+      }));
+
+    const capabilities = await localOrch.buildBehaviorCapabilities(
+      fixtures.map(fixture => fixture.entry),
+      fixtures.map(fixture => fixture.node),
+      [],
+      []
+    );
+
+    // Bounded: not 1 (the old collapse) and not unbounded — one candidate per
+    // real module cluster.
+    expect(capabilities.length).toBeGreaterThanOrEqual(6);
+    const labels = capabilities.map((capability: any) => capability.structural_label);
+    for (const area of Object.keys(moduleTools)) {
+      expect(labels.some((label: string) => new RegExp(area, 'i').test(label))).toBe(true);
+    }
+    // Every tool must be accounted for under SOME capability's operations —
+    // the whole point of the fix is that entry points stop disappearing into
+    // one opaque bucket.
+    const allOperationIds = new Set(capabilities.flatMap((capability: any) =>
+      capability.operations.map((operation: any) => operation.entry_point_id)));
+    for (const fixture of fixtures) {
+      expect(allOperationIds.has(fixture.entry.id)).toBe(true);
+    }
   });
 
   it('derives shared-prefix socket event families (game_*) as capabilities, ignoring DOM click/change noise', async () => {

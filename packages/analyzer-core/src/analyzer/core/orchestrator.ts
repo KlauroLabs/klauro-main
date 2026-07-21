@@ -15019,6 +15019,24 @@ export class AnalyzerOrchestrator {
 
   private extractHumanTextFromSource(content: string): string {
     if (!content) return '';
+    // SIGNATURE-TABLE GUARD (same misfire class as the clinical-override
+    // anchor fix): a source file whose lines are predominantly bare quoted
+    // string literals (one string per line, e.g. a domain-candidate array or
+    // a signature/keyword table) is NOT human-authored prose — it is a
+    // classifier's OWN vocabulary. On self-analysis this reads THIS file (and
+    // siblings like it), so phrases such as 'clinical testing'/'patient'/
+    // 'muscle'/'solana'/'fleet management' from the very candidate lists
+    // below get extracted as "human text" and then match themselves as core
+    // concepts, poisoning inferConceptsFromProjectText with fake evidence for
+    // its own keyword vocabulary. This is an evidence-SHAPE check (bare-
+    // string-line density), not a path hardcode: it fires on any codebase
+    // with a large literal keyword/enum/i18n table, not just this repo.
+    const contentLines = content.split(/\r?\n/);
+    const nonEmptyLineCount = contentLines.filter(line => line.trim().length > 0).length;
+    const bareStringLineCount = contentLines.filter(line => /^\s*['"`][^'"`]{1,80}['"`],?\s*$/.test(line)).length;
+    if (bareStringLineCount >= 15 && nonEmptyLineCount > 0 && bareStringLineCount / nonEmptyLineCount >= 0.35) {
+      return '';
+    }
     const snippets: string[] = [];
     const stringPattern = /(["'`])((?:\\\1|(?:(?!\1).)){8,160})\1/g;
     let match: RegExpExecArray | null;
@@ -15362,7 +15380,18 @@ export class AnalyzerOrchestrator {
       ...(capability.related_entities || []),
     ].join(' ').toLowerCase();
     if (primaryDomain === 'clinical-testing') {
-      if (/\b(patient|muscle|measurement|device|force|grip|pinch|inclinometry|report|assessment|test)\b/.test(text)) return 0;
+      // ANCHOR-GATED (same misfire class as inferSystemPurpose's clinical
+      // override): 'measurement'/'device'/'force'/'report'/'assessment'/
+      // 'test' are generic English words present in almost any codebase
+      // (telemetry measurement, device-code auth, test suites, status
+      // reports). A capability whose name/domains/entities contain ONLY
+      // those generic tokens must not be scored as strongly clinical-aligned
+      // (0) — that requires a genuinely clinical-specific anchor. Generic
+      // hits still bias mildly toward the domain (2, still counted "aligned"
+      // by filterCapabilitiesForKnownDomain's <=2 threshold) rather than
+      // masquerading as core-aligned.
+      if (/\b(patient|muscle|grip|pinch|inclinometry|rehabilitation)\b/.test(text)) return 0;
+      if (/\b(measurement|device|force|report|assessment|test)\b/.test(text)) return 2;
       return 1;
     }
     if (primaryDomain === 'user-identity-management') {
@@ -18692,7 +18721,13 @@ export class AnalyzerOrchestrator {
       return strongTokens.some(token =>
         capabilityDomains.has(token) ||
         (token === 'report' && capabilityDomains.has('cover')) ||
-        (token === 'clinical' && (capabilityDomains.has('muscle') || capabilityDomains.has('force') || capabilityDomains.has('myo') || capabilityDomains.has('gauge'))) ||
+        // ANCHOR-GATED (same misfire class as inferSystemPurpose's clinical
+        // override): 'force' and 'gauge' are generic English words (physics
+        // "force", dashboard "gauge") that show up in unrelated repos with
+        // zero clinical evidence. Only 'muscle'/'myo' are genuinely
+        // clinical-specific — require one of those, never the generic pair
+        // alone, before merging a weak capability into a "clinical" strong one.
+        (token === 'clinical' && (capabilityDomains.has('muscle') || capabilityDomains.has('myo'))) ||
         (token === 'device' && capabilityDomains.has('connection'))
       );
     });
@@ -18948,6 +18983,51 @@ export class AnalyzerOrchestrator {
       }
     }
 
+    // Pass 4 — entity-EMPTY near-duplicates. Passes 1-3 above are all keyed on
+    // entitySetOf(), so a capability with no related_entities (a docs/nav
+    // capability like "View architecture diagram" vs "View architecture
+    // section" — measured live on Klauro's own self-analysis, two near-
+    // identical capabilities over the same doc-viewing flow) is invisible to
+    // all of them. Name similarity ALONE is refused as a merge key here — it
+    // would collapse genuinely distinct low-evidence capabilities that just
+    // happen to share common English words. Merge requires BOTH a
+    // near-identical purpose subject (high token overlap) AND concrete
+    // shared-flow evidence: an overlapping related_domain or a common
+    // operation source file — the same "real evidence, not vocabulary" bar
+    // every other pass in this method holds to.
+    const nameTokenSetOf = (capability: SystemCapability): Set<string> =>
+      new Set(subjectPhraseOf(capability).split(/\s+/).filter(Boolean));
+    const operationPathsOf = (capability: SystemCapability): Set<string> =>
+      new Set((capability.operations || [])
+        .map(operation => operation.path_or_command)
+        .filter((value): value is string => Boolean(value)));
+    const emptyEntityCapabilities = capabilities.filter(capability =>
+      !removed.has(capability) && !isSurfaceCap(capability) && entitySetOf(capability).size === 0);
+    for (const capability of emptyEntityCapabilities) {
+      if (removed.has(capability)) continue;
+      const tokens = nameTokenSetOf(capability);
+      if (tokens.size === 0) continue;
+      const domains = new Set((capability.related_domains || []).map(d => normalizeEntityRef(String(d))));
+      const paths = operationPathsOf(capability);
+      for (const other of emptyEntityCapabilities) {
+        if (other === capability || removed.has(other) || removed.has(capability)) continue;
+        const otherTokens = nameTokenSetOf(other);
+        if (otherTokens.size === 0) continue;
+        const overlapCount = [...tokens].filter(token => otherTokens.has(token)).length;
+        const similarity = overlapCount / Math.max(tokens.size, otherTokens.size);
+        if (similarity < 0.6) continue;
+        const otherDomains = new Set((other.related_domains || []).map(d => normalizeEntityRef(String(d))));
+        const otherPaths = operationPathsOf(other);
+        const sharedDomain = domains.size > 0 && otherDomains.size > 0 &&
+          [...domains].some(d => otherDomains.has(d));
+        const sharedPath = paths.size > 0 && otherPaths.size > 0 &&
+          [...paths].some(p => otherPaths.has(p));
+        if (!sharedDomain && !sharedPath) continue;
+        if (richness(capability) >= richness(other)) mergeInto(capability, other);
+        else mergeInto(other, capability);
+      }
+    }
+
     return capabilities.filter(capability => !removed.has(capability));
   }
 
@@ -19160,7 +19240,25 @@ export class AnalyzerOrchestrator {
     if (/\b(booking|venue|venues|hosted venue|geo code|geocode)\b/.test(text)) return 0;
     if (/\b(audio|song|track|transcript|vocal|voice|demucs|rmvpe|fcpe)\b/.test(text)) return 0;
     if (/\b(wallet|wallets|transfer|transfers|passkey|drift|solana|spl|jupiter|raydium|pump|swap)\b/.test(text)) return 0;
-    if (/\b(portfolio|asset|assets|investment|investments|automation|market|token|trade|exchange|advisory|purchase|price|currency|risk|decision|transfer|tax|dca)\b/.test(text)) {
+    // EVIDENCE-RE-ANCHORED (same misfire class as inferSystemPurpose's
+    // clinical override): "portfolio"/"asset(s)"/"investment(s)"/"advisory"/
+    // "dca" are distinctive enough alone to earn the near-top trading slot.
+    // But "market"/"token"/"trade"/"exchange"/"purchase"/"price"/"currency"/
+    // "risk"/"decision"/"transfer"/"tax"/"automation" are generic English
+    // words that occur in unrelated domains (a security scanner's "risk
+    // assessment", a workflow engine's "decision" step, a file-transfer
+    // utility's "transfer", an auth system's "token", a generic "automation"
+    // workflow). A single hit from THAT generic set must not alone earn
+    // priority 1 — require either a second independent term (real trading
+    // vocabulary co-occurs; a single unrelated word does not) or structural
+    // evidence (operations/entities) backing the lone match.
+    if (/\b(portfolio|asset|assets|investment|investments|advisory|dca)\b/.test(text)) return 1;
+    const genericTradingMatches = new Set(
+      (text.match(/\b(automation|market|token|trade|exchange|purchase|price|currency|risk|decision|transfer|tax)\b/g) || [])
+        .map(match => match.toLowerCase())
+    );
+    if (genericTradingMatches.size >= 2 ||
+      (genericTradingMatches.size === 1 && ((capability.related_entities || []).length + (capability.operations || []).length) >= 2)) {
       return 1;
     }
     if (/\b(checkout|billing|invoice|subscription|payment)\b/.test(text)) return 2;
@@ -19457,8 +19555,51 @@ export class AnalyzerOrchestrator {
   private static readonly BEHAVIOR_FAMILY_MIN_ENTRIES = 4;
   /** Minimum entries for a whole registration surface (e.g. an MCP tool server) to be one capability. */
   private static readonly BEHAVIOR_SURFACE_MIN_ENTRIES = 12;
-  /** Hard cap: behavior derivation adds FEW flagship capabilities, never bloat. */
-  private static readonly BEHAVIOR_CAPABILITY_MAX = 5;
+  /**
+   * Hard cap: behavior derivation adds a bounded handful of flagship
+   * capabilities, never bloat. Raised from 5 -> 10 alongside the module-
+   * cohesion clustering fix (buildBehaviorCapabilities): a single large,
+   * diverse registration surface (a 400+ tool MCP server) now legitimately
+   * yields several module-anchored candidates instead of collapsing into
+   * one bucket, so the overall cap needs headroom for that — still bounded,
+   * never unbounded per-surface (each surface itself caps at 12 clusters
+   * before this global sort/slice).
+   */
+  private static readonly BEHAVIOR_CAPABILITY_MAX = 10;
+
+  /**
+   * FUNCTIONAL-cohesion fallback for large registration surfaces whose entry
+   * names share no dominant token family (see buildBehaviorCapabilities): the
+   * directory a handler is DEFINED in is real evidence of how the product
+   * itself organized that registration, never a name-token guess or a
+   * hardcoded vocabulary. Walks from the handler file's deepest directory
+   * upward and returns the first segment that is not generic/structural
+   * scaffolding (src/lib/core/handlers/tools/...), mirroring the same
+   * structural-area filter capabilitySourceAreas uses for descriptions.
+   * Returns undefined when the whole path is structural (nothing to anchor
+   * on) or no handler file evidence exists at all.
+   */
+  private behaviorEntryModuleArea(ep: CASEntryPoint, nodesById: Map<string, CASNode>): string | undefined {
+    const file = (ep.handler?.file || nodesById.get(ep.source_node || '')?.source?.file || '')
+      .replace(/\\/g, '/');
+    if (!file) return undefined;
+    const parts = file.split('/').filter(Boolean);
+    parts.pop(); // drop the filename — only directory segments name a module
+    for (let i = parts.length - 1; i >= 0; i--) {
+      const words = parts[i]
+        .replace(/[._-]+/g, ' ')
+        .trim()
+        .toLowerCase()
+        .split(/\s+/)
+        .filter(Boolean);
+      if (words.length === 0) continue;
+      const area = words.join(' ');
+      if (this.isStructuralAreaName(area)) continue;
+      if (words.every(word => this.isGenericCapabilityToken(this.normalizeDomainToken(word)))) continue;
+      return area;
+    }
+    return undefined;
+  }
 
   /**
    * Structural browser-interaction grammar (NOT domain vocabulary): a DOM/UI
@@ -19808,12 +19949,66 @@ export class AnalyzerOrchestrator {
         .sort((a, b) => b[1].length - a[1].length);
       const familyCoverage = strongFamilies.reduce((sum, [, entries]) => sum + entries.length, 0) / total;
 
-      if (surface.kindEvidence === 'registration' &&
+      const isLargeDiverseSurface = surface.kindEvidence === 'registration' &&
         total >= AnalyzerOrchestrator.BEHAVIOR_SURFACE_MIN_ENTRIES &&
-        (strongFamilies.length === 0 || familyCoverage < 0.5)) {
-        // A large registration surface with no dominant sub-family (a 200+ tool
-        // MCP server whose tool names are diverse) IS one product capability.
-        candidates.push({ capability: buildCandidate(surface, undefined, surface.entries), evidence: total });
+        (strongFamilies.length === 0 || familyCoverage < 0.5);
+
+      if (isLargeDiverseSurface) {
+        // A large registration surface with no dominant NAME-token family (a
+        // 400+ tool MCP server whose tool names are diverse) still IS one or
+        // more real product capabilities — but the entries only share one
+        // MECHANISM (mcp_tool / rpc / ...), not one FUNCTION. Clustering on
+        // the mechanism alone collapses the whole surface into a single
+        // bucket (measured live on Klauro's own self-analysis: a 435-entry
+        // MCP surface -> one "Mcp Tool Surface"/"Handle mcp tool call"
+        // capability, leaving 93% of the entry points functionally
+        // unaccounted for). Fall back to FUNCTIONAL cohesion evidence
+        // instead: the source module/directory a handler is defined in —
+        // real product structure, not a name-token guess or a hardcoded
+        // vocabulary. Name-token family remains the PRIMARY key above; module
+        // clustering only covers what family clustering left uncovered.
+        const coveredByFamily = new Set(strongFamilies.flatMap(([, entries]) => entries));
+        const remainder = surface.entries.filter(entry => !coveredByFamily.has(entry));
+        const moduleMap = new Map<string, BehaviorEntry[]>();
+        for (const entry of remainder) {
+          const area = this.behaviorEntryModuleArea(entry.ep, nodesById);
+          if (!area) continue;
+          const bucket = moduleMap.get(area);
+          if (bucket) bucket.push(entry);
+          else moduleMap.set(area, [entry]);
+        }
+        const moduleClusters = [...moduleMap.entries()]
+          .filter(([, entries]) => entries.length >= AnalyzerOrchestrator.BEHAVIOR_FAMILY_MIN_ENTRIES)
+          .sort((a, b) => b[1].length - a[1].length);
+        const moduleCoverage = moduleClusters.reduce((sum, [, entries]) => sum + entries.length, 0) /
+          Math.max(remainder.length, 1);
+
+        if (moduleClusters.length >= 2 && moduleCoverage >= 0.4) {
+          for (const [area, entries] of moduleClusters.slice(0, 12)) {
+            candidates.push({ capability: buildCandidate(surface, area, entries), evidence: entries.length });
+          }
+          // Whatever module clustering still can't place stays a single
+          // residual surface ONLY when it remains large enough to carry its
+          // own evidence — never the full original surface.
+          const clustered = new Set(moduleClusters.flatMap(([, entries]) => entries));
+          const leftover = remainder.filter(entry => !clustered.has(entry));
+          if (leftover.length >= AnalyzerOrchestrator.BEHAVIOR_SURFACE_MIN_ENTRIES) {
+            candidates.push({ capability: buildCandidate(surface, undefined, leftover), evidence: leftover.length });
+          }
+        } else if (remainder.length > 0) {
+          // No functional-cohesion evidence (name-family or module) survives
+          // for the remainder: last resort is the single collapsed-surface
+          // capability, same as the pre-fix behavior — but scoped to the
+          // remainder only, since strongFamilies (if any) already got their
+          // own candidates below.
+          candidates.push({ capability: buildCandidate(surface, undefined, remainder), evidence: remainder.length });
+        }
+        // Strong name-token families found alongside a large diverse surface
+        // are real cohesion evidence too — keep them as their own candidates
+        // rather than folding them into the module/leftover buckets above.
+        for (const [prefix, entries] of strongFamilies.slice(0, 3)) {
+          candidates.push({ capability: buildCandidate(surface, prefix, entries), evidence: entries.length });
+        }
         continue;
       }
 
@@ -22217,12 +22412,32 @@ export class AnalyzerOrchestrator {
     const pageEntryPoints = productEntryPoints.filter(ep => ep.type === 'page' || ep.type === 'route');
     const desktopUiSignals = await countMatches([...nodeNames, ...paths], ['window', 'viewmodel', 'xaml', 'modal']);
     const nameEntityCapabilityPathTokens = [...nodeNames, ...entityNames, ...capabilityNames, ...paths];
+    // ANCHOR-GATED (live self-analysis defect 2026-07-20 — quality-iter-1): a
+    // 53k-node monorepo trivially racks up 5+ raw matches of the generic web
+    // vocabulary 'window'/'modal' (React ConfirmModal/DeleteModal-style
+    // component names, DOM `window` references) with ZERO real desktop-native
+    // evidence. 'viewmodel'/'xaml' are the only tokens in this list that are
+    // actually desktop/WPF-native — require one of THEM specifically, not raw
+    // count, so a large web app's incidental "modal" naming can never alone
+    // read as a dominant desktop UI.
     const hasDominantDesktopUi =
       ['desktop-application', 'medical-device-software', 'clinical-testing-platform', 'hardware-device-software'].includes(topMatch.type) ||
-      desktopUiSignals.count >= 5;
+      (desktopUiSignals.count >= 5 && desktopUiSignals.matched.some(signal => signal === 'viewmodel' || signal === 'xaml'));
     const clinicalSignals = await countMatches(
       nameEntityCapabilityPathTokens,
       ['patient', 'muscle', 'device', 'measurement', 'force', 'inclinometry', 'grip', 'pinch', 'rehabilitation']
+    );
+    // Distinctive clinical anchor: 'device'/'measurement'/'force' are generic
+    // English words that show up incidentally in any large real codebase
+    // (telemetry "measurement", "force refresh", device-code auth flows).
+    // Same live defect: Klauro's own self-analysis matched >=3 of these
+    // generic tokens with no genuinely clinical vocabulary present at all and
+    // got stamped 'clinical-testing-platform' at a hardcoded 0.86 floor. Every
+    // sibling override below (fleet/zero-trust/trading) already requires an
+    // anchor from its OWN distinctive vocabulary; this one didn't. Require the
+    // same here: at least one of the terms that is actually clinical-specific.
+    const hasClinicalAnchor = clinicalSignals.matched.some(signal =>
+      ['patient', 'muscle', 'inclinometry', 'grip', 'pinch', 'rehabilitation'].includes(signal)
     );
     const fleetSignals = await countMatches(
       nameEntityCapabilityPathTokens,
@@ -22257,7 +22472,7 @@ export class AnalyzerOrchestrator {
       };
     }
 
-    if (hasDominantDesktopUi && clinicalSignals.matched.length >= 3) {
+    if (hasDominantDesktopUi && clinicalSignals.matched.length >= 3 && hasClinicalAnchor) {
       return {
         primary_type: 'clinical-testing-platform',
         confidence: Math.max(0.86, Math.round(confidence * 100) / 100),
@@ -22501,9 +22716,16 @@ export class AnalyzerOrchestrator {
     edges: CASEdge[],
     entryPoints: CASEntryPoint[]
   ): void {
+    // Test/fixture source is never a real implementation target: a handler
+    // (route/mcp-tool/cli/etc.) is production code, so its resolved callee
+    // must be too. Without this exclusion, a same-named function that only
+    // happens to live in a *.test.ts or fixtures/ file — regardless of
+    // language — can win an otherwise-legitimate-looking match purely on
+    // name, producing a fabricated cross-file (or cross-language) edge. See
+    // isTestOrFixtureFileNode for the concrete evidence.
     const functionNodesByFile = new Map<string, CASNode[]>();
     for (const node of nodes) {
-      if (node.type === 'function' || node.type === 'method') {
+      if ((node.type === 'function' || node.type === 'method') && !this.isTestOrFixtureFileNode(node)) {
         const file = node.source?.file || '';
         if (!functionNodesByFile.has(file)) {
           functionNodesByFile.set(file, []);
@@ -22655,13 +22877,24 @@ export class AnalyzerOrchestrator {
       }
 
       if (!matchedFunctionNode) {
+        // Substring containment (`handlerName.includes(n.name)` /
+        // `n.name.includes(handlerName)`) is only meaningful evidence when
+        // the shorter side is long enough to not be a coincidental
+        // sub-sequence of common English/code words — a 2-char name like
+        // "ep" is a substring of huge numbers of unrelated identifiers
+        // ("deploy", "sleep", "keep", ...). Evidence: quality-iter-1 #6 —
+        // deploy.sh's resolved chain picked up an unrelated test-helper
+        // variable named `ep` purely because "deploy".includes("ep"). Exact
+        // case-insensitive equality has no such risk and stays unguarded.
+        const MIN_SUBSTRING_MATCH_LEN = 4;
         for (const file of filesToSearch) {
           const functionsInFile = functionNodesByFile.get(file) || [];
-          const partialMatch = functionsInFile.find(n =>
-            n.name.toLowerCase() === handlerName.toLowerCase() ||
-            n.name.includes(handlerName) ||
-            handlerName.includes(n.name)
-          );
+          const partialMatch = functionsInFile.find(n => {
+            if (n.name.toLowerCase() === handlerName.toLowerCase()) return true;
+            const shorterLen = Math.min(n.name.length, handlerName.length);
+            if (shorterLen < MIN_SUBSTRING_MATCH_LEN) return false;
+            return n.name.includes(handlerName) || handlerName.includes(n.name);
+          });
           if (partialMatch) {
             matchedFunctionNode = partialMatch;
             break;
@@ -22731,8 +22964,19 @@ export class AnalyzerOrchestrator {
         for (const candidate of candidates) {
           if (addedForThisEntryPoint >= MAX_CANDIDATE_EDGES) break;
           const bare = candidate.includes('.') ? candidate.split('.').pop()! : candidate;
+          // Exact-name uniqueness alone is not enough evidence to link across
+          // file/language boundaries: `bare` is text-scraped from an inline
+          // handler body (never scope- or import-checked), so a candidate
+          // that happens to have exactly one same-named function/method
+          // PROJECT-WIDE can still be pure coincidence when that lone match
+          // lives in test/fixture source — e.g. a common test-DSL name like
+          // `describe` matching a single Kotlin fixture function while the
+          // real handler is TypeScript. Test/fixture nodes are excluded from
+          // the candidate pool entirely (never counted, so they can't even
+          // make a genuine same-file/language match ambiguous) — see
+          // isTestOrFixtureFileNode and quality-iter-1 #6.
           const allMatches = nodes.filter(n =>
-            (n.type === 'function' || n.type === 'method') && n.name === bare
+            (n.type === 'function' || n.type === 'method') && n.name === bare && !this.isTestOrFixtureFileNode(n)
           );
           if (allMatches.length !== 1) continue;
           const target = allMatches[0];
@@ -24027,6 +24271,28 @@ export class AnalyzerOrchestrator {
       .replace(/[^a-zA-Z0-9]+/g, '_')
       .replace(/^_+|_+$/g, '')
       .toLowerCase() || 'unknown';
+  }
+
+  /**
+   * Broader than `isTestFileNode`: also excludes fixture/mock directories
+   * (`fixtures/`, `__fixtures__/`, `mocks/`, `__mocks__/`) — deliberately
+   * scoped to CALL-RESOLUTION call sites only (linkRouteHandlers and its
+   * handlerCallCandidates fallback), never to the shared `isTestFileNode`
+   * itself, whose other callers (test-suite discovery, security-node
+   * filtering) reasonably still want a narrower "is this a test file" check.
+   *
+   * Evidence: a real cross-contamination bug (quality-iter-1 #6) where a
+   * bare-name candidate resolution linked an MCP-tool entry point's handler
+   * straight to an unrelated Kotlin function living under
+   * apps/mcp-server/fixtures/... — a fixture directory that `isTestFileNode`
+   * (which only recognizes `test(s)/` and `*.test.*`/`*Test.*` naming) does
+   * not catch. Resolution must never treat fixture/mock source as a real
+   * implementation target.
+   */
+  private isTestOrFixtureFileNode(node: CASNode): boolean {
+    if (this.isTestFileNode(node)) return true;
+    const file = (node.source?.file || node.name || '').replace(/\\/g, '/');
+    return /(^|\/)(fixtures?|__fixtures__|mocks?|__mocks__)\//i.test(file);
   }
 
   private isTestFileNode(node: CASNode): boolean {

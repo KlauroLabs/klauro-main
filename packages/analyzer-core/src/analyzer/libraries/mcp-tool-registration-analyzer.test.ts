@@ -150,3 +150,46 @@ test('McpToolRegistrationAnalyzer ignores unrelated .tool() calls on non-server 
     await fs.remove(dir);
   }
 });
+
+// Regression test for quality-iter-1 #8: a documentation EXAMPLE inside this
+// analyzer's own JSDoc header (`server.tool('do_thing', schema, handler) //
+// McpServer .tool() shorthand`) read exactly like a real registration to the
+// plain-text regex scan and got extracted as a genuine mcp_tool entry point
+// — one of the three sources feeding the junk "Do Thing" workflow. A
+// registration call written INSIDE a comment (line or block) must never be
+// extracted; the same call written as real code must still be found.
+test('McpToolRegistrationAnalyzer does not extract a registration call written inside a comment', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'mcp-tool-registration-analyzer-comment-'));
+  try {
+    await fs.writeJson(path.join(dir, 'package.json'), {
+      name: 'comment-fixture',
+      dependencies: { '@modelcontextprotocol/sdk': '^1.0.0' }
+    });
+    await fs.ensureDir(path.join(dir, 'src'));
+    await fs.writeFile(path.join(dir, 'src', 'server.ts'), [
+      '/**',
+      ' * Example shorthand usage:',
+      " *   server.tool('do_thing', schema, handler)   // JSDoc example, not real code",
+      ' */',
+      "import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';",
+      "const server = new McpServer({ name: 'fixture', version: '1.0.0' });",
+      '',
+      "// server.registerTool('also_commented_out', {}, async () => ({}));",
+      '',
+      "server.registerTool('real_tool', {", // the only REAL registration in this file
+      "  description: 'Real registration',",
+      '  inputSchema: { type: \'object\' },',
+      '}, async () => ({ content: [] }));',
+      '',
+    ].join('\n'));
+
+    const analyzer = new McpToolRegistrationAnalyzer();
+    const result = await analyzer.analyze({ projectPath: dir });
+
+    assert.equal(result.nodes.find(n => n.type === 'mcp_tool' && n.name === 'do_thing'), undefined, 'JSDoc example must not be extracted');
+    assert.equal(result.nodes.find(n => n.type === 'mcp_tool' && n.name === 'also_commented_out'), undefined, 'line-commented-out call must not be extracted');
+    assert.ok(result.nodes.find(n => n.type === 'mcp_tool' && n.name === 'real_tool'), 'real registration is still extracted');
+  } finally {
+    await fs.remove(dir);
+  }
+});

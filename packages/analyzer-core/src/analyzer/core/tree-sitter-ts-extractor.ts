@@ -233,6 +233,13 @@ export interface TSExtractedExport {
   line: number;
 }
 
+export interface TSSyntaxErrorLocation {
+  /** 1-indexed line, matching how the rest of this file reports `line`. */
+  line: number;
+  /** Short, control-character-sanitized preview of the offending text — never the raw slice (which may itself contain the very non-printable bytes that broke parsing, e.g. an embedded NUL). */
+  snippet: string;
+}
+
 export interface TSFileExtraction {
   imports: TSExtractedImport[];
   functions: TSExtractedFunction[];
@@ -241,6 +248,22 @@ export interface TSFileExtraction {
   exports: TSExtractedExport[];
   comments: Array<{ type: string; text: string; line: number }>;
   hasSyntaxErrors: boolean;
+  /**
+   * WHERE `hasSyntaxErrors` came from, capped and sanitized — additive, so
+   * anything reading only the boolean is unaffected. Real tree-sitter ERROR
+   * nodes are almost always LOCALIZED (one bad construct, not the whole
+   * file): reporting the actual line(s) turns a blanket "this file is
+   * broken" warning into an honest, actionable one. Evidence: quality-iter-1
+   * #9 traced two "syntax error" flags on real, valid analyzer-core source
+   * (cas.types.ts, revision.ts) to (1) `import('m').T[]` — an array-suffixed
+   * inline import-type, valid TS that this tree-sitter-typescript grammar
+   * version cannot parse — and (2) a literal embedded NUL byte inside a
+   * template literal used deliberately as a hash separator, which this
+   * grammar's scanner also chokes on. Both are genuine (not a heuristic
+   * false positive) but file-level-scary wording overstated the blast
+   * radius of a single misparsed token.
+   */
+  syntaxErrorLocations?: TSSyntaxErrorLocation[];
 }
 
 export function treeHasSyntaxErrors(root: any): boolean {
@@ -249,6 +272,56 @@ export function treeHasSyntaxErrors(root: any): boolean {
   } catch {
     return false;
   }
+}
+
+const MAX_SYNTAX_ERROR_LOCATIONS = 3;
+const SYNTAX_ERROR_SNIPPET_MAX_LEN = 40;
+
+/** Sanitize a raw tree-sitter node text slice for safe inclusion in a log/warning
+ *  string: collapse whitespace runs, escape control characters (including the
+ *  literal NUL byte that is itself one of the two known real triggers) so the
+ *  message can never itself embed an unprintable/NUL byte, and cap length. */
+function sanitizeSyntaxErrorSnippet(raw: string): string {
+  const escaped = Array.from(raw).map(ch => {
+    const code = ch.codePointAt(0) ?? 0;
+    if (code < 0x20 || code === 0x7f) {
+      return `\\u${code.toString(16).padStart(4, '0')}`;
+    }
+    return ch;
+  }).join('');
+  const collapsed = escaped.replace(/\s+/g, ' ').trim();
+  return collapsed.length > SYNTAX_ERROR_SNIPPET_MAX_LEN
+    ? `${collapsed.slice(0, SYNTAX_ERROR_SNIPPET_MAX_LEN)}…`
+    : collapsed;
+}
+
+/** Walks the tree collecting up to MAX_SYNTAX_ERROR_LOCATIONS real ERROR/
+ *  missing-token node positions. Bounded traversal (stops once the cap is
+ *  hit) so a pathologically damaged file can't turn this into an expensive
+ *  full-tree walk on every parse. */
+export function collectSyntaxErrorLocations(root: any): TSSyntaxErrorLocation[] {
+  const locations: TSSyntaxErrorLocation[] = [];
+  if (!root) return locations;
+  const stack: any[] = [root];
+  try {
+    while (stack.length > 0 && locations.length < MAX_SYNTAX_ERROR_LOCATIONS) {
+      const node = stack.pop();
+      if (!node) continue;
+      if (node.type === 'ERROR' || node.isMissing) {
+        const line = (node.startPosition?.row ?? 0) + 1;
+        locations.push({ line, snippet: sanitizeSyntaxErrorSnippet(String(node.text ?? '')) });
+        continue; // don't descend into an already-flagged ERROR subtree
+      }
+      const childCount = node.childCount ?? 0;
+      for (let i = childCount - 1; i >= 0; i--) {
+        stack.push(node.child(i));
+      }
+    }
+  } catch {
+    // Best-effort diagnostics only — never let a traversal failure here mask
+    // the underlying hasSyntaxErrors signal, which is computed independently.
+  }
+  return locations;
 }
 
 export class TreeSitterTSExtractor {
@@ -286,6 +359,7 @@ export class TreeSitterTSExtractor {
     // per-type walk, so the extract methods produce the same output (proven by
     // node-count equality on hercules-fe).
     const buckets = this.collectRootNodeBuckets(root);
+    const hasSyntaxErrors = treeHasSyntaxErrors(root);
 
     const result: TSFileExtraction = {
       imports: this.extractImports(root, buckets.imports),
@@ -294,7 +368,10 @@ export class TreeSitterTSExtractor {
       variables: [],
       exports: [],
       comments: this.extractComments(root),
-      hasSyntaxErrors: treeHasSyntaxErrors(root)
+      hasSyntaxErrors,
+      // Only walk for locations when the boolean is already true — the
+      // common case (a healthy file) pays nothing extra.
+      syntaxErrorLocations: hasSyntaxErrors ? collectSyntaxErrorLocations(root) : undefined
     };
 
     const functions = this.extractStandaloneFunctions(root);

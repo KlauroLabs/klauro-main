@@ -1,70 +1,27 @@
 /**
- * ============================================================================
- * Klauro self-telemetry (dogfooding) — OFF BY DEFAULT, env-gated, crash-proof.
- * ============================================================================
+ * Klauro self-telemetry (dogfooding) — off by default, env-gated, crash-proof.
+ * Instruments the HTTP service to emit its own runtime telemetry via the
+ * @klauro/telemetry SDK, self-ingesting and correlating against Klauro's own CAS.
  *
- * Purpose: instrument the Klauro HTTP service so it emits ITS OWN runtime
- * telemetry via the @klauro/telemetry SDK, self-ingesting into Klauro's own
- * runtime-observation store and correlating against Klauro's own static
- * analysis (CAS). This lets us dogfood the telemetry product on Klauro itself.
+ * Env knobs (all off unless truthy):
+ *   KLAURO_SELF_TELEMETRY=1                    master gate; unset = total no-op.
+ *   KLAURO_SELF_TELEMETRY_PROJECT=<path>       projectId events attach to;
+ *       defaults to this module's own src dir. An override absent at runtime
+ *       is ignored in favor of the in-process dir (an absent path can never be analyzed).
+ *   KLAURO_SELF_TELEMETRY_ENDPOINT=<origin>    optional; when set, events POST
+ *       over HTTP instead of routing in-process into the local ingest store.
+ *   KLAURO_SELF_TELEMETRY_CANONICAL_PROJECT=<path>  optional; mirrors every
+ *       observation into this bucket too (never triggers its own bootstrap analysis).
  *
- * ---------------------------------------------------------------------------
- * ENABLE (all knobs are env, nothing changes unless the gate is truthy):
+ * Bootstrap: on enable, if the self-project has no analysis yet, triggers one
+ * bounded async analysis so node-level correlation works out of the box —
+ * runs at most once per process.
  *
- *   KLAURO_SELF_TELEMETRY=1
- *       Master gate. Unset/empty/"0"/"false" => this module is a total no-op:
- *       no SDK init, no middleware, zero behavior/perf change. Safe to ship
- *       dormant and flip on live.
+ * Captures one event per completed inbound HTTP request (method, normalized
+ * route, status, duration); 5xx as 'error', else 'request'.
  *
- *   KLAURO_SELF_TELEMETRY_PROJECT=<path>
- *       Klauro source path the events attach to. This is the projectId of the
- *       self-loop: it is the SAME path `get_runtime_observations(path=...)`
- *       reads back, and the path whose CAS the events are correlated against.
- *       Defaults to the mcp-server's OWN `src` dir (`apps/mcp-server/src`),
- *       discovered at runtime from this module's location — a path guaranteed
- *       present in the running process/container (`/app/apps/mcp-server/src`).
- *       An override that is ABSENT at runtime (e.g. a host-only deploy path in a
- *       container) is ignored in favor of that in-process dir, since a path that
- *       isn't present can never be analyzed. Logical name of the loop:
- *       "klauro-self".
- *
- *   BOOTSTRAP: on enable (in-process transport), if the self-project has no
- *       analysis yet, the loop triggers ONE bounded, async, crash-proof analysis
- *       of it so node-level correlation works out of the box. It runs at most
- *       once per process and only when no analysis exists; analyzeProject's own
- *       backfill then upgrades already-persisted observations to node-level.
- *
- *   KLAURO_SELF_TELEMETRY_ENDPOINT=<origin>
- *       Optional HTTP override. When set, events are POSTed over the wire to
- *       <origin>/api/telemetry/runtime-events/<projectId> via the SDK's normal
- *       transport (real network round-trip). When UNSET (default), events are
- *       routed IN-PROCESS straight into the local ingest store — no network,
- *       no external dependency — so the self-loop is verifiable on one box.
- *
- *   KLAURO_SELF_TELEMETRY_CANONICAL_PROJECT=<path>
- *       Optional. When set (and different from the resolved self-project
- *       path above), every self-loop observation is ALSO mirrored into this
- *       bucket, in addition to the primary bucket — see
- *       `mirrorToCanonicalBucket` below (GAP #32 part 2). Use this to make
- *       self-telemetry visible to facet-6 queries against the canonical
- *       hosted analysis of this same codebase, when that analysis lives
- *       under a different workspace path than the in-container source dir
- *       (e.g. a hosted `/data/workspaces/<project-id>` path vs. the
- *       in-container `/app/apps/mcp-server/src` this loop bootstraps
- *       against). Mirroring NEVER triggers a bootstrap analysis of the
- *       canonical path — only the primary path above ever does that.
- *
- * ---------------------------------------------------------------------------
- * WHAT IT CAPTURES: one runtime event per completed inbound HTTP request on the
- * remote-analyzer HTTP service — method, normalized route, status code, and
- * duration. 5xx responses are emitted as `error` events; everything else as
- * `request`. Events carry service_name="klauro-mcp-server" and the current
- * NODE_ENV. They correlate onto CAS route/handler nodes via the ingest path.
- *
- * SAFETY: every entry point here is wrapped so a telemetry failure can never
- * affect server boot or request handling. The SDK itself is a no-op before
- * init and never throws into the host; this module adds a second belt.
- * ============================================================================
+ * Safety: every entry point is wrapped so a telemetry failure can never affect
+ * server boot or request handling.
  */
 
 import type * as http from 'node:http';
@@ -144,29 +101,12 @@ export function selfProjectPath(): string {
 }
 
 /**
- * GAP #32 part 2 — self-telemetry key identity.
- *
- * Part 1 (commit 2e43afa7) fixed the file/node path-identity join
- * (`filesLikelySameSource` mount-root stripping in server.ts /
- * `runtimeMetricsForContract` reading `cas.system.root_path` as an alternate
- * storage key). That closed the join for callers who query with the SAME
- * project path the observations were ingested under. It does NOT help when
- * the observations were ingested under a DIFFERENT bucket than the one a
- * facet-6 query resolves for the canonical hosted project: the self-loop
- * keys every observation to `KLAURO_SELF_TELEMETRY_PROJECT`
- * (`/app/apps/mcp-server/src` in-container), while the canonical hosted
- * Klauro-self analysis lives at a distinct workspace path
- * (`/data/workspaces/<project-id>`). Two different storage buckets
- * (`getProjectStorageDir` hashes the literal path string), so the alternate-
- * key widening in server.ts has nothing to find under the canonical bucket —
- * it is empty.
- *
- * `KLAURO_SELF_TELEMETRY_CANONICAL_PROJECT` closes that gap by MIRRORING
- * every self-loop observation into a second, canonical bucket, in addition to
- * (never instead of) the primary in-process bucket that the bootstrap-
- * analysis/correlation loop above depends on. Generic: any self-hosted
- * deployment sets this to whatever bucket key its own facet-6 queries
- * resolve to — nothing here hardcodes a specific project id.
+ * Storage buckets are keyed by literal project path, so observations ingested
+ * under KLAURO_SELF_TELEMETRY_PROJECT are invisible to a facet-6 query
+ * resolving the canonical hosted project at a different workspace path.
+ * KLAURO_SELF_TELEMETRY_CANONICAL_PROJECT closes that gap by mirroring every
+ * self-loop observation into a second bucket, in addition to (never instead
+ * of) the primary one the bootstrap/correlation loop depends on.
  */
 export function selfCanonicalProjectPath(): string | null {
   const raw = process.env.KLAURO_SELF_TELEMETRY_CANONICAL_PROJECT?.trim();
@@ -174,27 +114,13 @@ export function selfCanonicalProjectPath(): string | null {
 }
 
 /**
- * Mirror an already-ingested self-telemetry batch into the CANONICAL bucket
- * (see `selfCanonicalProjectPath` above), so a facet-6 query
- * (`get_runtime_observations` / `get_route_table` telemetry /
- * `runtimeMetricsForContract`) against the canonical hosted project surfaces
- * these observations too.
- *
- * Guarantees:
- *   - Mirror only, never a move: the primary bucket (`primaryProjectPath`) is
- *     written by the caller exactly as before; this function only ADDS a
- *     second write.
- *   - No-op when the canonical env is unset, blank, or identical to the
- *     primary path (nothing to mirror into that isn't already there).
- *   - NEVER triggers `maybeBootstrapSelfAnalysis` / `analyzeProject` for the
- *     canonical path — this function only attempts a best-effort READ
- *     (`getAnalysis`) for correlation, falling back to `null` (observations
- *     persist `unmatched`) exactly like the primary in-process transport
- *     does. Mirroring must never kick off a heavy analysis of a
- *     45k-node workspace on every request batch.
- *   - Fire-and-forget / crash-proof: every failure is swallowed to stderr.
- *     A canonical-mirror failure must never affect the primary ingest's own
- *     result or request handling.
+ * Mirrors an already-ingested self-telemetry batch into the canonical bucket
+ * so a facet-6 query against the canonical hosted project surfaces these
+ * observations too. Mirror only, never a move — the primary bucket is
+ * unaffected. No-op when the canonical env is unset/blank/identical to
+ * primary. Must never trigger a bootstrap analysis for the canonical path —
+ * read-only best-effort correlation, falling back to unmatched. Fire-and-forget:
+ * every failure is swallowed, must never affect the primary ingest's result.
  */
 export async function mirrorToCanonicalBucket(
   primaryProjectPath: string,

@@ -108,6 +108,40 @@ export class JestAnalyzer extends BaseAnalyzer {
     return /\bfrom\s+['"`]vitest['"`]|\brequire\(\s*['"`]vitest['"`]\s*\)/.test(content);
   }
 
+  /**
+   * True when a `*.test.{js,ts,jsx,tsx}` / `*.spec.{js,ts,jsx,tsx}` file carries
+   * hard evidence of a DIFFERENT JS/TS test framework that the cross-language
+   * TestFrameworkAnalyzer owns (see its `rules()` table). JestAnalyzer's own
+   * file glob (`**\/*.{test,spec}.{js,ts,jsx,tsx}`) is naming-convention-only —
+   * it matches vitest/mocha/jasmine/node:test/playwright/selenium files too,
+   * since they share the exact same `*.test.ts` convention and `describe`/
+   * `it`/`test` call shape. `isVitestFile` already carried this same fix for
+   * vitest alone (corpus-depth sweep: claiming vitest files here duplicated
+   * every suite/case id TestFrameworkAnalyzer independently emits for them,
+   * via the identical `test_suite_<file>_<name>` id scheme — see
+   * TestFrameworkAnalyzer.suiteNodeId). node:test/mocha/jasmine/playwright/
+   * selenium files hit the exact same id-collision class (2026-07
+   * quality-iter-1 self-analysis: 2306/2319 analysis_errors were "Duplicate
+   * entry point id" warnings for exactly this reason) — this generalizes the
+   * guard to the full sibling-framework set instead of vitest alone.
+   */
+  static isForeignTestFrameworkFile(content: string): boolean {
+    if (JestAnalyzer.isVitestFile(content)) return true;
+    // node:test
+    if (/\bfrom\s+['"`]node:test['"`]|\brequire\(\s*['"`]node:test['"`]\s*\)/.test(content)) return true;
+    // mocha (explicit import/require; the bare-word fallback TestFrameworkAnalyzer
+    // also accepts is deliberately NOT mirrored here — too weak a signal to
+    // disqualify a file from jest ownership on its own).
+    if (/\bfrom\s+['"`]mocha['"`]|\brequire\(\s*['"`]mocha['"`]\s*\)/.test(content)) return true;
+    // jasmine
+    if (/\bfrom\s+['"`]jasmine-core['"`]|\brequire\(\s*['"`]jasmine-core['"`]\s*\)/.test(content)) return true;
+    // playwright
+    if (/\bfrom\s+['"`]@playwright\/test['"`]|\brequire\(\s*['"`]@playwright\/test['"`]\s*\)/.test(content)) return true;
+    // selenium
+    if (/\bfrom\s+['"`]selenium-webdriver['"`]|\brequire\(\s*['"`]selenium-webdriver['"`]\s*\)/.test(content)) return true;
+    return false;
+  }
+
   async canAnalyze(projectPath: string): Promise<boolean> {
     try {
       const packageJsonPath = path.join(projectPath, 'package.json');
@@ -142,11 +176,13 @@ export class JestAnalyzer extends BaseAnalyzer {
       if (testFiles.length > 0) {
         for (const file of testFiles) {
           const content = await fs.readFile(path.join(projectPath, file), 'utf-8');
-          // A vitest-importing file is NOT jest evidence — vitest repos share
-          // the *.test.ts naming + describe/it shape, and claiming them here
-          // duplicated every suite/case id the cross-language TestFramework
-          // analyzer (the rightful vitest owner) emits (corpus-depth sweep fix).
-          if (JestAnalyzer.isVitestFile(content)) continue;
+          // A file with hard evidence of a sibling JS/TS test framework (vitest,
+          // node:test, mocha, jasmine, playwright, selenium) is NOT jest evidence
+          // — those repos share the *.test.ts naming + describe/it/test shape,
+          // and claiming them here duplicated every suite/case id the
+          // cross-language TestFramework analyzer (the rightful owner) emits
+          // (corpus-depth sweep fix, generalized past vitest-only 2026-07).
+          if (JestAnalyzer.isForeignTestFrameworkFile(content)) continue;
           if (content.includes('describe(') || content.includes('test(') || content.includes('it(')) {
             return true;
           }
@@ -308,12 +344,15 @@ export class JestAnalyzer extends BaseAnalyzer {
       const fullPath = path.join(projectPath, file);
       const content = await fs.readFile(fullPath, 'utf-8');
 
-      // Vitest owns its own files (via the cross-language TestFramework
-      // analyzer). Claiming them as jest suites emitted duplicate suite/case
-      // ids for every vitest file — the orchestrator dedup then logged one
-      // PARTIAL_ANALYSIS error per suite+case (hundreds per repo in the
-      // corpus-depth sweep) and dropped one analyzer's version of each.
-      if (JestAnalyzer.isVitestFile(content)) continue;
+      // Vitest/node:test/mocha/jasmine/playwright/selenium own their own files
+      // (via the cross-language TestFramework analyzer). Claiming them as jest
+      // suites emitted duplicate suite/case ids for every such file — same
+      // `test_suite_<file>_<name>` id scheme on both sides — and the
+      // orchestrator dedup then logged one PARTIAL_ANALYSIS "Duplicate entry
+      // point id" warning per suite+case (2306/2319 analysis_errors in the
+      // 2026-07 quality-iter-1 self-analysis) and dropped one analyzer's
+      // version of each. Generalized past vitest-only.
+      if (JestAnalyzer.isForeignTestFrameworkFile(content)) continue;
 
         try {
           const jsx = this.shouldParseJsx(file, content);

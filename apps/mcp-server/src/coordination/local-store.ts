@@ -1,57 +1,25 @@
 /**
- * LOCAL tier of the two-tier coordination store (§1.1 SPEC-COORDINATION-FABRIC.md).
- *
+ * Local tier of the two-tier coordination store (§1.1 SPEC-COORDINATION-FABRIC.md).
  * Same-machine, zero-network: all agents on one host append to a shared,
  * file-backed, append-only claim log at
  * `process.env.KLAURO_COORD_DIR || ~/.klauro/coordination/<workspace_id>/claims.jsonl`.
  *
- * This module owns ONLY the store/transport concerns (file IO, atomic append,
- * fs.watch). All consistency/derivation logic is delegated to the already-built
- * pure core in `./presence` (`reduceClaimLog`, `deriveActiveClaims`,
- * `derivePresence`) and `./arbiter` — nothing here reimplements LWW.
+ * Owns only store/transport concerns (file IO, atomic append, fs.watch); all
+ * consistency/derivation logic is delegated to `./presence` and `./arbiter` —
+ * nothing here reimplements LWW.
  *
- * Concurrency: multiple OS processes may append concurrently (that's the point —
- * many agents, one host). Each append opens the file with the `a` (append) flag,
- * which on POSIX filesystems is atomic for writes below the OS pipe buffer size
- * (a single JSON-Lines claim record is always well under that). The monotonic
- * `seq` is assigned by reading the current log length under a lightweight
- * lockfile (`claims.jsonl.lock`) held only for the read-length+append critical
- * section, so `seq` assignment itself is serialized across processes even
- * though the underlying `claims.jsonl` writes are append-only.
+ * Concurrency: each append uses the `a` flag (atomic below the OS pipe buffer
+ * size). The monotonic `seq` is assigned under a lightweight lockfile held
+ * only for the read-length+append critical section.
  *
- * SCALE (100-200+ concurrent agents, docs/SPEC-GIANT-FLEET.md): two bottlenecks
- * were measured (fabric-fleet-stress.ts at N=100/200 before this change: p50
- * 1068ms/3714ms, p99 3184ms/9796ms, and 33 hard lock-timeout errors at N=200)
- * and fixed here:
- *
- * 1. **Full-log re-parse on every read.** `readClaimLog` used to
- *    `fsp.readFile` + `JSON.parse` every line, on EVERY call — including every
- *    call made INSIDE the lock-held critical section of `requestGrant`/
- *    `releaseGrant`/`getGrants` (via `withWorkspaceLock`). As the log grows,
- *    this makes each critical section O(n), so total lock-hold time across N
- *    operations trends toward O(n^2). Fixed with a process-local cache
- *    (`parsedLogCache`), keyed by absolute log path, invalidated by
- *    `(size, mtimeMs)` from a cheap `fstat` — a change to the file (this
- *    process's own append, or a sibling process's) is detected and the file
- *    is re-read; otherwise the cached, already-parsed array is returned in
- *    O(1). This is safe under `withWorkspaceLock` because the cache is
- *    revalidated against the CURRENT on-disk stat every time `readClaimLog`
- *    is called, including inside the lock — a caller can never observe a log
- *    older than what's actually on disk at call time; the cache only saves
- *    re-parsing bytes that provably haven't changed.
- * 2. **Unbounded log growth.** `claims.jsonl` only ever grew (append-only),
- *    so both the per-call parse cost AND the on-disk file size grow without
- *    bound over a long-running fleet session. Fixed with `compactIfNeeded`:
- *    once the log exceeds `COMPACT_THRESHOLD_ENTRIES`, the NEXT append (which
- *    already holds the lock and already has the full log in memory) rewrites
- *    the file to just the LWW-latest entry per `claim_id` for claims that are
- *    still `active` (grant/queue markers not yet released/expired) plus a
- *    bounded tail of the most-recent `released` entries (kept for
- *    attribution/debugging), dropping the rest of the released/superseded
- *    history. Compaction preserves each entry's original `seq` (so ordering
- *    and "distinct monotonic seq" guarantees are undisturbed) and runs inside
- *    the SAME lock-held critical section as the triggering append, so it can
- *    never race a concurrent reader/writer.
+ * Must stay O(1) per read at fleet scale: `parsedLogCache` is invalidated by
+ * (size, mtimeMs) from a cheap fstat, revalidated against the current on-disk
+ * stat on every call (including inside the lock), so a caller never observes a
+ * stale log. `compactIfNeeded` bounds on-disk growth: once the log exceeds
+ * COMPACT_THRESHOLD_ENTRIES, the next append rewrites it to the LWW-latest
+ * entry per claim_id for active claims plus a bounded tail of recent released
+ * entries, preserving each entry's original `seq`, inside the same lock-held
+ * critical section as the triggering append.
  */
 
 import * as fs from 'node:fs';
@@ -67,34 +35,19 @@ export interface ClaimLogEntry extends WorkClaim {
   /** ISO timestamp the local store received/appended this entry (store-assigned). */
   logged_at: string;
   /**
-   * Event kind for this log line (W5, SPEC-COORDINATION-FABRIC-V3 §6.3/§8:
-   * write-hook auto-announce). Additive and OPTIONAL — every existing reader
-   * of `claims.jsonl` (`reduceClaimLog`/`deriveActiveClaims`/`derivePresence`
-   * in `./presence`, `compactIfNeeded` above, and every MCP/CLI surface in
-   * server.ts / remote-analyzer-service.ts / fab.ts) was written against
-   * `WorkClaim`'s existing fields only and never switches on `kind` — an
-   * absent or unrecognized `kind` is silently treated exactly as a plain
-   * claim entry, so old code paths are unaffected by this field's existence.
-   * Absent (undefined) = a normal claim/edit-lock/release entry (unchanged
-   * meaning). `'unclaimed-edit'` = a write-hook observation that a path
-   * changed under NO active claim (see `recordUnclaimedEdit` below) — these
-   * entries are ALWAYS logged with `status: 'released'` so they can never be
-   * picked up by `deriveActiveClaims`/`derivePresence`/`checkEditLock`'s
-   * active-claim view; they are a pure event-log record for visibility, not
-   * a claim on anything.
+   * Event kind for this log line. Additive and optional — an absent or
+   * unrecognized `kind` must be treated exactly as a plain claim entry, so old
+   * readers are unaffected. `'unclaimed-edit'` = a write-hook observation that
+   * a path changed under no active claim; `'surprise'` = a contract-divergence
+   * finding that passed textual merge. Both are always logged with
+   * `status: 'released'` so they can never be picked up as an active claim —
+   * pure event-log visibility, not a claim on anything.
    */
   kind?: 'claim' | 'unclaimed-edit' | 'surprise';
   /**
-   * Present only when `kind === 'surprise'` (W4 step 2, SPEC-COORDINATION-FABRIC-V3
-   * §5/§9 "surprise -> 0" pushed from a metric into an ambient event): a
-   * `contract-divergence` finding from `planIntentMergeFromSubstrate` that
-   * PASSES textual merge, persisted so the affected participant can learn of
-   * it via the log instead of first learning at merge time. Like
-   * `unclaimed-edit`, always logged with `status: 'released'` so it can never
-   * be picked up as an active claim — pure event-log visibility, not a claim
-   * on anything. `agent_id` on the entry is the AFFECTED agent (the one this
-   * surprise is addressed to), matching `unclaimed-edit`'s convention of
-   * using `agent_id` as "who this event is about."
+   * Present only when kind === 'surprise'. `agent_id` on the entry is the
+   * affected agent (who this surprise is addressed to), matching
+   * `unclaimed-edit`'s convention.
    */
   surprise?: SurpriseDetail;
 }
@@ -392,21 +345,12 @@ async function appendClaimLocked(
 }
 
 /**
- * Rewrite `claims.jsonl` to a compacted form once it grows past
- * `COMPACT_THRESHOLD_ENTRIES` (module header SCALE note #2). Keeps:
- *   - every entry that is currently `active` (LWW-latest per claim_id) — this
- *     includes both real grants/edit-locks AND queued grant-manager markers,
- *     since both must remain visible for `deriveActiveClaims`/queue-advance
- *     to keep working exactly as before;
- *   - the `COMPACT_KEEP_RELEASED` most-recent non-active (released/expired)
- *     entries, purely for attribution/debug history — dropping the rest.
- * Every KEPT entry's original `seq` and `logged_at` are preserved verbatim,
- * so `seq` stays monotonic (no renumbering) and nothing downstream that reads
- * `seq`/`logged_at` can observe a difference from the uncompacted log, other
- * than older fully-superseded/released noise no longer being present.
- * MUST be called only from within the lock-held critical section (same
- * constraint as `appendClaimLocked`) — returns the (possibly unchanged) log
- * array to use for the remainder of that critical section.
+ * Rewrites claims.jsonl to a compacted form once it grows past
+ * COMPACT_THRESHOLD_ENTRIES: keeps every currently-active entry (LWW-latest
+ * per claim_id) plus COMPACT_KEEP_RELEASED most-recent non-active entries for
+ * attribution history. Every kept entry's original seq/logged_at must be
+ * preserved verbatim (seq stays monotonic, no renumbering). Must be called
+ * only from within the lock-held critical section.
  */
 async function compactIfNeeded(
   workspaceId: string,
@@ -444,23 +388,12 @@ async function compactIfNeeded(
 }
 
 /**
- * Public escape hatch for callers OUTSIDE this module that need to compose a
- * read-decide-append(s) sequence as ONE atomic critical section against the
- * same per-workspace lockfile `appendClaim`/`releaseAgent` use — e.g.
- * grant-manager.ts's `requestGrant` must read the active-grant set, decide
- * whether the requested scope conflicts, and append the grant/queue entry,
- * all without a concurrent `requestGrant` call being able to interleave its
- * own read in the gap (which would let two overlapping grants both see "no
- * conflict" and both get appended — the exact invariant this fabric exists to
- * enforce). `fn` receives the current log (safe to append to logically; use
- * `appendClaimWithLog` to actually persist an entry and keep the passed-in
- * array current for any further appends within the same `fn` call).
- *
- * Also runs opportunistic compaction (module header SCALE note #2) BEFORE
- * invoking `fn`, so the log a caller reasons over inside its critical section
- * is already trimmed — keeping both the read-cost and the lock-hold time for
- * every subsequent operation bounded instead of growing with total fleet
- * history.
+ * Public escape hatch for callers outside this module that need to compose a
+ * read-decide-append(s) sequence as one atomic critical section against the
+ * same per-workspace lockfile appendClaim/releaseAgent use — without this, a
+ * concurrent requestGrant call could interleave its own read in the gap and
+ * let two overlapping grants both see "no conflict" and both get appended.
+ * Also runs opportunistic compaction before invoking `fn`.
  */
 export async function withWorkspaceLock<T>(
   workspaceId: string,
@@ -613,23 +546,12 @@ export async function releaseAgent(workspaceId: string, agentId: string): Promis
 }
 
 /**
- * Release exactly ONE active claim by its EXACT `claim_id`, scoped to
- * `agentId` (defensive: never release a claim that belongs to someone else
- * just because the id string matched). This is the single shared lookup that
- * BOTH the advisory claim log AND the enforced grant-manager markers live in
- * (grant-manager.ts's header: "grants are NOT a new store... appended to the
- * same same-machine claim log local-store.ts already owns") — grant-manager's
- * own `releaseGrant` wraps its `grantId` argument in `grant:<ws>:<id>` before
- * looking it up, which only ever matches claim_ids IT wrote. A caller passing
- * back the exact `claim_id` an ADVISORY claim's response handed them (e.g.
- * `wsp_x:agent_y`, or a caller-supplied custom `claim_id`) has no matching
- * lookup at all today — this fills that gap so a single release-by-id call
- * works regardless of which path originally created the claim, without the
- * caller needing to know or guess which "mode" it was claimed under.
- * Returns the released entry, or `undefined` if no ACTIVE claim with that
- * exact id (and agent) exists (caller decides what "not found" means: already
- * released, expired, wrong id, or — most likely for this exact-id lookup —
- * an enforced-grant id that needs the wrapped form instead).
+ * Releases exactly one active claim by its exact claim_id, scoped to agentId
+ * — never release a claim belonging to someone else just because the id
+ * string matched. This is the shared lookup both the advisory claim log and
+ * the enforced grant-manager markers live in; a caller passing back an
+ * advisory claim's exact id has no matching lookup without this. Returns the
+ * released entry, or undefined if no active claim with that exact id (and agent) exists.
  */
 export async function releaseClaimById(
   workspaceId: string,
@@ -898,19 +820,13 @@ export async function warnIfTreeGlobalOp(
 }
 
 /**
- * W7 — claim extension (SPEC-COORDINATION-FABRIC-V3 §6.3/§8: "I also need to
- * touch X — safe?"). Direct answer to the incident where an agent doing the
- * CORRECT fix needed 3 files outside its declared claim, with no affordance to
- * extend scope — it either under-fixed or went dark. Appends an LWW-superseding
- * entry under the SAME `claim_id` (so the claim's identity — who, what, since
- * when — is preserved, not replaced) whose `scope` is the UNION of the prior
- * scope and `addPaths`/`addSymbols`. Runs the identical overlap scan `appendClaim`
- * callers already run before claiming (belt-and-suspenders): conflicts are
- * returned INLINE, never denied — the extension always succeeds (§2/§4: awareness
- * is never gated). The whole read-decide-append sequence runs under ONE
- * `withWorkspaceLock` acquisition (same reasoning as `releaseAgent`'s own
- * comment above) so a concurrent extend/claim on the identical `claim_id`
- * cannot interleave an unseen append between this call's read and its append.
+ * Claim extension: appends an LWW-superseding entry under the same claim_id
+ * (identity preserved, not replaced) whose scope is the union of the prior
+ * scope and addPaths/addSymbols. Conflicts are returned inline, never denied —
+ * the extension always succeeds; awareness is never gated. The whole
+ * read-decide-append sequence must run under one withWorkspaceLock
+ * acquisition so a concurrent extend/claim on the same claim_id cannot
+ * interleave an unseen append.
  */
 export async function extendClaim(
   workspaceId: string,

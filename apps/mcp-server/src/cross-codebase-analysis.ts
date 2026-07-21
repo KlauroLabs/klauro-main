@@ -127,27 +127,10 @@ export interface SystemApplication {
    *  branch on this field to read a deployable's facts, only to decide how
    *  much drilldown depth to trust (spec §4's "silent to the schema"). */
   source_das_unit_id?: string;
-  /** Set when this application row was identified as a duplicate of ANOTHER
-   *  WORKSPACE MEMBER's application row for the same logical app — the
-   *  monorepo + extracted-subrepo shape: a monorepo member's CAS emits an
-   *  application row from an `apps/<name>` (or services/cmd/bin/crates/
-   *  packages/libs) SUBDIR, and a separate workspace member is a standalone
-   *  project uploaded FROM that same subdir with its own, richer CAS. Distinct
-   *  from `bundled_into` (an intra-repo ship-artifact bundling decision made
-   *  by resolveDeployables from ONE codebase's own deployable evidence) — this
-   *  is a cross-member identity merge decided by
-   *  mergeCrossMemberSubdirApplications from two independent MEMBER CASes.
-   *  The id of the SystemApplication (belonging to the OTHER, standalone
-   *  member) this row was merged into; that row's `also_declared_by` carries
-   *  this row's codebase_id for provenance. Never over-merges on name alone —
-   *  requires containment evidence (this row's path_hint tail matches the
-   *  other member's own project NAME identity — see mergeCrossMemberSubdir
-   *  Applications; a hosted member's `codebase_id`/path is an opaque
-   *  workspace-storage id, e.g. `/data/workspaces/prj_XXXX`, never the app
-   *  name, so name identity — not path basename — is the containment key)
-   *  AND normalized name identity of the application row itself.
-   *  Excluded from workspace-level exposure (shouldExposeInWorkspaceOverview)
-   *  so the same logical app never surfaces as two separate deployables. */
+  /** Id of the OTHER workspace member's SystemApplication this row was merged
+   *  into (cross-member identity merge, distinct from `bundled_into`'s
+   *  intra-repo bundling). Requires containment + name-identity evidence, never
+   *  name alone. Excluded from shouldExposeInWorkspaceOverview. */
   merged_into?: string;
   /** Codebase ids of OTHER workspace members whose application row was folded
    *  into THIS one via mergeCrossMemberSubdirApplications (evidence union,
@@ -1645,10 +1628,8 @@ function useSmallWorkspaceAiDefaultPasses(): boolean {
 /**
  * Guard against fake quality-gate rejections: if the AI layer never actually
  * attempted generation (feature-disabled canned string, or an empty response),
- * that is an enrichment ERROR with a real cause — it must never be laundered
- * into "rejected by the WAS quality gate" (the live "Clients" workspace
- * degraded in 104ms with a gate message when no model round-trip happened).
- * Exported for tests.
+ * that is an enrichment error with a real cause — it must never be laundered
+ * into "rejected by the WAS quality gate". Exported for tests.
  */
 export function assertRealWorkspaceAiAttempt(raw: string): void {
   const text = String(raw || '').trim();
@@ -2424,12 +2405,10 @@ function workspaceNarrativeRepairPromptContext(graph: WorkspaceAnalysisGraph, re
     // distinct ai-service cache key, so a rejected cached response can never be
     // replayed as the "retry" (the 104ms instant-degrade failure mode).
     retry_attempt: attempt ?? 0,
-    // Per-CALL nonce: retry_attempt only varies within one enrichment run, so a
-    // re-analyze replayed the SAME attempt-0/1/2 cache entries and degraded in
-    // <0.35s without any real AI attempt (the live OpenClaw frame-rejection
-    // loop). A gate-rejection retry must ALWAYS be a fresh model round-trip —
-    // this applies uniformly to every rejection kind (frame, ungrounded,
-    // missing product_value_summary), not just some paths.
+    // Per-call nonce: retry_attempt alone only varies within one enrichment run,
+    // so a re-analyze would replay the same cache entries with no real AI
+    // attempt. A gate-rejection retry must always be a fresh model round-trip,
+    // uniformly across every rejection kind.
     retry_nonce: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
     ...(rejectionReason ? { rejection_feedback: `A previous draft was rejected by the WAS quality gate: ${rejectionReason}. Fix exactly this problem in the rewrite, grounding it in the supplied workspace_domains, primary_capabilities, and required_terms evidence.` } : {}),
     task: 'Return only valid JSON with keys description and product_value_summary. Rewrite the workspace description from the supplied WAS facts only.',
@@ -3256,13 +3235,10 @@ function meaningfulWorkspaceNameTokens(name: string): string[] {
 }
 
 /**
- * Non-negotiable rejection markers for a WORKSPACE narrative, checked before
- * any acceptance path. These catch the wrong-altitude/leaky prose that the
- * softer heuristics can accidentally admit (the live "Personal" workspace
- * accepted "Friends is a workspace visible flow in account
- * project-prj_yg64u7pf7lvdcppt. It is reached by DELETE/PATCH/GET/event
- * route(s) such as /API/friends/:friendshipId..." — raw project id, HTTP-method
- * dump, single-flow altitude, and an empty product_value_summary).
+ * Non-negotiable rejection markers for a workspace narrative, checked before
+ * any acceptance path — catches wrong-altitude/leaky prose the softer
+ * heuristics can accidentally admit (raw internal ids, HTTP-method dumps,
+ * single-flow altitude, an empty product_value_summary).
  * Returns the human-readable rejection reason, or null when clean.
  * Exported for tests.
  */
@@ -3354,13 +3330,11 @@ export function stripUngroundedWorkspaceMarketingLanguage(graph: WorkspaceAnalys
 }
 
 /**
- * Member-attribution gate (live "Personal"/"Clients" workspace defect): a
- * multi-member workspace narrative must never attribute one member's evidence
- * to another member — e.g. a sentence whose subject is Kontinuum claiming
- * mtg's game-economy capabilities, or the workspace framed as a single member.
- * Checkable form: member A's exclusive capability names appearing in a
- * sentence whose subject is member B (and A is not mentioned in that
- * sentence). Returns the rejection reason, or null. Exported for tests.
+ * A multi-member workspace narrative must never attribute one member's
+ * evidence to another member, nor frame the workspace as a single member.
+ * Flags member A's exclusive capability names appearing in a sentence whose
+ * subject is member B with no mention of A. Returns the rejection reason, or
+ * null. Exported for tests.
  */
 export function workspaceNarrativeMisattributionReason(graph: WorkspaceAnalysisGraph, description: string): string | null {
   const codebases = graph.codebases || [];
@@ -3399,37 +3373,28 @@ export function workspaceNarrativeMisattributionReason(graph: WorkspaceAnalysisG
       }
     }
   }
-  // GROUND-TRUTH DOMAIN ATTRIBUTION (live Personal-workspace defect: "Kontinuum
-  // … while also providing a game server" — Game Server is deterministically
-  // mtg's domain). The capability check above is evaded when the crediting
-  // sentence also NAMES the true owner ("… connected to the mtg game server"),
-  // because it exempts on any owner-name mention. The deterministic
-  // workspace_domains member→domain map is authoritative: if the sentence's
-  // subject (member A) is CREDITED with a domain the deterministic attribution
-  // assigns exclusively to a different member B, that is a misattribution even
-  // when B is named elsewhere in the same sentence.
+  // The capability check above is evaded when the crediting sentence also
+  // names the true owner, since it exempts on any owner-name mention — the
+  // deterministic workspace_domains member->domain map is authoritative
+  // regardless: crediting member A with a domain exclusively owned by member B
+  // is a misattribution even when B is named elsewhere in the sentence.
   return (
     workspaceNarrativeDomainMisattributionReason(graph, description) ||
-    // Entities and capabilities are the finer-grained ground truth: the live
-    // Personal defect credits Kontinuum with "decks" and "economy transactions"
-    // — those are mtg's ENTITIES (Deck, EconomyTransaction), never top-level
-    // DOMAINS, so the domain-level gate above never sees them. The entity map's
-    // deterministic member→entity attribution catches the paraphrase.
+    // Entities/capabilities are the finer-grained ground truth: an entity-level
+    // misattribution (e.g. crediting a member with another member's exclusive
+    // entity) never appears in the domain-level gate above.
     workspaceNarrativeEntityMisattributionReason(graph, description)
   );
 }
 
 /**
- * Deterministic member→entity attribution as ground truth (live Personal-ws
- * defect: "Kontinuum … enables users to purchase and manage decks … managing
- * user economy transactions" — Deck + EconomyTransaction are exclusively mtg's
- * entities). Mirrors the domain misattribution gate but keys on graph
- * .workspace_entities, splits camelCase entity names ("EconomyTransaction" ->
- * "economy transaction") so paraphrased prose matches, and tolerates plurals
+ * Deterministic member→entity attribution as ground truth. Mirrors the domain
+ * misattribution gate but keys on graph.workspace_entities, splits camelCase
+ * entity names so paraphrased prose matches, and tolerates plurals
  * ("decks", "economy transactions"). A mention is a MISATTRIBUTION when a
  * distinctive entity phrase owned exclusively by member B appears after a
  * crediting verb in a sentence whose subject is a different member A, and is
- * not directly owner-qualified ("mtg deck"). Exported for tests.
+ * not directly owner-qualified (an owner-name-prefixed mention). Exported for tests.
  */
 export function workspaceNarrativeEntityMisattributionReason(graph: WorkspaceAnalysisGraph, description: string): string | null {
   const codebases = graph.codebases || [];
@@ -3479,9 +3444,8 @@ export function workspaceNarrativeEntityMisattributionReason(graph: WorkspaceAna
     for (const ent of exclusiveEntities) {
       if (ent.ownerId === subject.member.id) continue;
       // Plural tolerance: match the phrase with an optional trailing "s" on the
-      // final token ("deck" -> "decks", "economy transaction" ->
-      // "economy transactions"). Capture the preceding word to exempt legitimate
-      // owner-qualified references ("mtg deck").
+      // final token. Capture the preceding word to exempt legitimate
+      // owner-qualified references (e.g. "<owner> deck").
       const phraseWithPlural = ent.normalized.replace(/\s*$/, '') + 's?';
       const re = new RegExp(`(?:\\b(\\w+)\\s+)?\\b${phraseWithPlural}\\b`, 'g');
       let match: RegExpExecArray | null;
@@ -3517,8 +3481,8 @@ const WORKSPACE_GENERIC_ENTITY_TOKENS = new Set([
  * at exactly that one member. A mention is a MISATTRIBUTION when it (a) sits
  * after a crediting verb (provides/offers/includes/serves as/…) in a sentence
  * whose subject is a DIFFERENT member, and (b) is not directly owner-qualified
- * ("mtg game server" / "mtg's game server" is legitimate description of B's
- * asset, not a credit to A). Exported for tests.
+ * (an owner-name-prefixed mention is a legitimate description of B's asset,
+ * not a credit to A). Exported for tests.
  */
 export function workspaceNarrativeDomainMisattributionReason(graph: WorkspaceAnalysisGraph, description: string): string | null {
   const codebases = graph.codebases || [];
@@ -3610,20 +3574,15 @@ export function evaluateWorkspaceNarrativeGate(
   }
   // Marketing-language lint (same mechanism as the project-tier element gate):
   // isolated instances are stripped mechanically at the persist seam; a
-  // narrative SATURATED with ungrounded marketing language is rejected outright
-  // (the live OpenClaw "comprehensive workspace… robust… ideal solution" prose).
+  // narrative saturated with ungrounded marketing language is rejected outright.
   const marketingMatches = workspaceNarrativeMarketingMatches(graph, `${description} ${String(productValueSummary ?? '')}`);
   if (marketingMatches.length >= 3) {
-    // SATURATION vs INCIDENTAL (live "Clients" 2-repo defect: a legitimate
-    // narrative that concretely describes hercules + electripure but sprinkles
-    // three generic adjectives — "comprehensive, various, robust" — was degraded
-    // to an EMPTY description instead of stripped-and-accepted, because the
-    // strip mechanism only ran on the accepted branch). Saturation means the
-    // marketing was load-bearing: once the ungrounded adjectives are removed the
-    // narrative collapses. Strip first and re-check grounding — only reject when
-    // the STRIPPED narrative no longer stands on its own (still names real
-    // semantics + behavior verbs at length). The persist seam strips the
-    // adjectives from the accepted text, so incidental marketing never survives.
+    // Saturation vs incidental: a few generic adjectives sprinkled into an
+    // otherwise concrete, grounded narrative must be stripped-and-accepted, not
+    // degraded to empty. Saturation means the marketing was load-bearing — the
+    // narrative collapses once the adjectives are removed. Strip first and
+    // re-check grounding; only reject when the stripped narrative no longer
+    // stands on its own.
     const strippedDescription = stripUngroundedWorkspaceMarketingLanguage(graph, description);
     const strippedStandsAlone =
       strippedDescription.length >= 180 &&
@@ -3981,13 +3940,10 @@ export async function withWorkspaceAiTimeout<T>(promise: Promise<T>): Promise<T>
 // vocabulary and must foreground the workspace's own member-project domains.
 export function workspaceNarrativePromptContext(graph: WorkspaceAnalysisGraph): Record<string, unknown> {
   const productName = inferWorkspaceProductName(graph.codebases, graph.name);
-  // NEVER-HARDCODE MANDATE: this prompt must not name any product-frame
-  // vocabulary of its own (the old classifier-era "secure network access" /
-  // "codebase intelligence" negative exemplars planted exactly those frames in
-  // the model's output — the live OpenClaw frame-bias degrade loop). The frame
-  // must come from the workspace's OWN evidence, so the rule below is
-  // evidence-positive and generic; the fact sheet foregrounds member-project
-  // domains/capabilities so the model has the real frame to reach for.
+  // Must never name any product-frame vocabulary of its own — planting a frame
+  // in the prompt biases the model's output toward it. The frame must come
+  // from the workspace's own evidence; the fact sheet foregrounds
+  // member-project domains/capabilities so the model has the real frame to reach for.
   return {
     compactPrompt: true,
     responseFormat: 'json',
@@ -4076,11 +4032,10 @@ function workspaceAiFactSheet(graph: WorkspaceAnalysisGraph, productName = infer
   // must_explain so the model grounds the product frame in what the members
   // actually are (e.g. a messaging-gateway) instead of grasping at a generic
   // frame when behavioral facts are thin.
-  // Each member is presented as a DISTINCT project with ITS OWN domains and
+  // Each member is presented as a distinct project with its own domains and
   // capabilities (evidence exclusive to that member), so a multi-member
   // workspace narrative can — and must — attribute behavior per member instead
-  // of pouring every member's evidence into whichever member it names first
-  // (the live "Kontinuum owns mtg's game economy" misattribution).
+  // of pouring every member's evidence into whichever member it names first.
   const memberProjects = graph.codebases.slice(0, 12).map(codebase => ({
     name: codebase.name,
     ...(codebase.primary_domain ? { primary_domain: codebase.primary_domain } : {}),
@@ -4403,9 +4358,8 @@ function extractJsonLikeArraySection(text: string, start: number): string {
  *    capitalized WORD ([A-Z][a-z]); a trailing all-caps run stays attached
  *    (macOS, userDB), because splitting it produces a bare acronym fragment.
  */
-// Known technology compound words that are ONE brand token, never a camelCase
-// boundary to split (live WAS defect: "Type Script/Java Script" in Klauro ws
-// prose). Extend as new compounds surface — these must survive prose splitting.
+// Known technology compound words that are one brand token, never a camelCase
+// boundary to split. Extend as new compounds surface — these must survive prose splitting.
 const PRESERVED_TECH_COMPOUNDS = new Set([
   'typescript', 'javascript', 'coffeescript', 'actionscript', 'postgresql',
   'graphql', 'nosql', 'mysql', 'mssql', 'sqlite', 'dynamodb', 'mongodb',
@@ -6676,8 +6630,7 @@ function singularizeDomainKey(value: string): string {
  * mechanical CRUD echo of the entity/domain name itself ("Manages Spawn bases"
  * for domain "SpawnBase") rather than an independent domain signal. A per-entity
  * "Manage <Entity>" capability is auto-derived FROM the entity, so it cannot
- * corroborate that same entity name as a business domain (live OpenClaw defect:
- * SpawnBase / NodeInvoke / GrokSearch survived on exactly these self-echoes).
+ * corroborate that same entity name as a business domain.
  */
 function isSelfEchoCapabilityForDomain(capabilityName: string, domainNormalized: string): boolean {
   const stripped = normalizeAiItemName(capabilityName)
@@ -9411,13 +9364,10 @@ function toSystemCodebase(repository: CrossCodebaseInput): SystemCodebase {
     system_type: cas.system?.type || 'application',
     primary_domain: String((cas as any).enhanced_system_purpose?.primary_domain || '').trim() || undefined,
     languages: (cas.system?.technologies?.languages || []).map(language => language.name).filter(Boolean),
-    // FIXTURE-FRAMEWORK GATE (live Klauro-ws defect: "built on top of Django,
-    // FastAPI, Flask, and Jest" — all Python/JS TEST-FIXTURE frameworks of a
-    // TypeScript product). The raw technologies inventory does not distinguish a
-    // product framework from one detected only in test fixtures/mocks/samples,
-    // so the WAS rolled them all up. Drop any framework whose ONLY node-level
-    // evidence is on non-product (test/fixture/generated) nodes and which never
-    // appears on a primary product node.
+    // The raw technologies inventory does not distinguish a product framework
+    // from one detected only in test fixtures/mocks/samples. Drop any framework
+    // whose only node-level evidence is on non-product (test/fixture/generated)
+    // nodes and which never appears on a primary product node.
     frameworks: productFrameworksFromCas(cas),
     packages,
     sdk_package_names: sdkPackageNames,
@@ -9995,29 +9945,10 @@ function buildTopologyRuntimeLinks(
 
     let sourceComponents = componentByApplication.get(`${item.codebase_id}:${item.application_id}`) || [];
     if (!sourceComponents.length) {
-      // FALLBACK (regression fix): eb74c5b6 correctly stopped a consumer
-      // whose caller path has no recognized apps/packages/crates/bin/
-      // services shape from being misnamed after its call TARGET's host —
-      // but inferApplicationName's own fallback chain for that same
-      // shapeless case runs out to the bare repository/system name (no
-      // apps/-style directory, no service_aliases metadata, no endpoint to
-      // fall back to since eb74c5b6 intentionally passes ''), and that bare
-      // repo name is never a real SystemRuntimeComponent's application_id
-      // (each runtime component's identity is its OWN compose-service/
-      // container alias, never the whole codebase's name). Before the fix,
-      // the same shapeless consumer accidentally resolved to its call
-      // TARGET's alias, which IS a real component identity, so this lookup
-      // still found (a wrongly-attributed but real) source component for
-      // any call whose misattributed name didn't equal its own target —
-      // that accidental resilience is what silently produced the runtime
-      // topology links now lost.
-      // A common real-world shape this hits: a per-service directory at the
-      // codebase root with no wrapping apps/services/ prefix (e.g.
-      // `agent/src/client.ts`), which applicationNameFromFile's patterns
-      // don't recognize. Resolve the SOURCE identity directly and
-      // evidence-gated: the caller's own leading path segment, matched
-      // against a REAL declared service alias of a runtime component in the
-      // same codebase — never a guess, and never the call's target name.
+      // Fallback for a caller path with no recognized apps/packages/crates/bin/
+      // services shape (e.g. a bare `agent/src/client.ts`): resolve the source
+      // identity from the caller's own leading path segment matched against a
+      // real declared service alias — never a guess, never the call's target name.
       const callerAliases = callerAliasesFromRefs(item.refs);
       const candidates = new Map<string, SystemRuntimeComponent>();
       for (const alias of callerAliases) {
@@ -10670,11 +10601,10 @@ function buildWorkspaceNarrative(
     source: 'ai-required-degraded',
     generated_at: generatedAt,
     confidence: codebases.length > 1 && applicationLinks.length > 0 ? 0.68 : 0.54,
-    // The title names the WORKSPACE, never a member project (live defect:
-    // "Kontinuum workspace analysis" for the Personal workspace, "Backend
-    // workspace analysis" for Clients — a member/member-token name collapsing
-    // the workspace to one member). The inferred product name is only a
-    // fallback when the workspace name itself is unusable (hash-shaped/empty).
+    // The title must name the workspace, never a member project — collapsing
+    // the workspace to one member's name is a misattribution. The inferred
+    // product name is only a fallback when the workspace name itself is
+    // unusable (hash-shaped/empty).
     title: `${workspaceNarrativeTitleName(name, productName)} workspace analysis`,
     // Comprehension is AI-only (docs/cas/DETERMINISM-BOUNDARY.md): both the
     // workspace description AND the product-value summary are left empty here and
@@ -11286,27 +11216,12 @@ function buildApplications(
   return admitted.sort((left, right) => left.codebase_id.localeCompare(right.codebase_id) || left.name.localeCompare(right.name));
 }
 
-/** A monorepo CONTAINER root (root package.json with a `workspaces` field, a
- *  pnpm-workspace.yaml/turbo.json/nx.json/lerna.json at root, or a Cargo
- *  `[workspace]` root) is not itself a deployable — it's the workspace shell
- *  around the real deployables. Suppress the root codebase's synthetic
- *  application surface ONLY when the repo also has sibling app surfaces that
- *  are actually deployable (a single-package repo whose root IS the one app
- *  must keep counting).
- *
- *  Same principle applies to a second, distinct case (BUG A): determineSystemType()
- *  (orchestrator.ts) defaults `system.type` to 'application' whenever a
- *  codebase's CAS nodes carry none of controller/component/package/module —
- *  true of ecosystems whose analyzer emits other node types (e.g. the C#
- *  analyzer emits class/method/route). That silent default then makes
- *  isDeployableApplication() fall through to `systemType === 'application'`
- *  for the synthetic repo-ROOT "codebase" surface, which has no path_hint and
- *  no real evidence of its own — inflating the deployable count by one
- *  phantom root. The root surface must NOT be counted deployable via that
- *  fallthrough alone: it's the container, not a ship unit, unless it
- *  genuinely has its own Tier-1 evidence AND no sub-app deployables exist
- *  (the true single-root-app case, where suppressing it would wrongly lose
- *  the only real deployable). */
+/** A monorepo container root (workspaces field / pnpm-workspace.yaml / turbo.json
+ *  / nx.json / lerna.json / Cargo [workspace]) is not itself a deployable — it's
+ *  the shell around the real deployables. Suppress its synthetic application
+ *  surface only when sibling app surfaces are actually deployable (a
+ *  single-package repo whose root IS the one app must keep counting), and only
+ *  when the root has no genuine Tier-1 evidence of its own. */
 function suppressWorkspaceContainerRoots(
   applications: SystemApplication[],
   repositories: CrossCodebaseInput[],
@@ -11489,36 +11404,13 @@ function applicationSurfaceFromFile(file: string | undefined): { name: string; p
   return undefined;
 }
 
-/** BUG B FIX: evidence-first app discovery, independent of the folder
- *  allowlist. applicationSurfaceCandidatesFromCas()/applicationSurfaceFromFile()
- *  above only recognize a small set of conventional monorepo roots (apps/
- *  services/cmd/bin/packages/crates/libs). A real repo using app/, core/,
- *  feature-x/, or the flat repo root for its ship-unit module is structurally
- *  invisible to that allowlist — no SystemApplication gets created there, so
- *  resolveDeployables (which only ANNOTATES apps that already exist) has
- *  nothing to attach the evidence to.
- *
- *  This creates a SystemApplication directly from each cas.deployable_evidence
- *  root that:
- *   (a) doesn't already correspond to an existing app surface (by exact
- *       path_hint, or containment — the evidence root is the same as, or a
- *       descendant/ancestor of, an existing app's path_hint), other than the
- *       repo root itself ('.'), which is always already represented by the
- *       codebase-level synthetic root app and never double-created here; and
- *   (b) is Tier-1 ONLY: a real ship/run artifact (Dockerfile, compose, k8s,
- *       serverless, installer, ci-deploy, or an ecosystem's own Tier-1 "bin"
- *       signal like com.android.application/executableTarget). Tier-2/3-only
- *       evidence never creates a new app surface on its own here — some
- *       evidence providers report root_path as a bare, de-contextualized
- *       fragment (a route handler's immediate directory rather than the real
- *       module root), so accepting Tier-2/3 signals risks fanning a single
- *       real module out into spurious phantom apps (measured regression:
- *       turborepo-2apps briefly gained a stray "src" deployable during
- *       development of this fix — see the real-repo re-validation note in
- *       the accompanying feedback file). Requiring Tier-1 keeps this
- *       evidence-first without over-producing.
- *  Guards against duplicates: an evidence root already covered by an
- *  allowlist-discovered or codebase-root app surface is skipped. */
+/** Evidence-first app discovery for ship-unit roots the folder allowlist can't
+ *  see (app/, core/, feature-x/, or a flat repo root). Creates a
+ *  SystemApplication from a cas.deployable_evidence root only when it (a) has
+ *  no existing app surface by path_hint or containment, and (b) is Tier-1 —
+ *  a real ship/run artifact. Tier-2/3-only evidence must never create a new
+ *  app surface here: some evidence providers report a bare, de-contextualized
+ *  root_path fragment, which risks fanning one real module into phantom apps. */
 function applicationSurfaceCandidatesFromEvidenceRoots(
   repository: CrossCodebaseInput,
   projectId: string,
@@ -11858,34 +11750,14 @@ function resolveDeployables(applications: SystemApplication[], repositories: Cro
     const resolutions = new Map<string, DeployableResolution>();
     for (const app of appsForRepo) {
       const rootPath = app.path_hint || app.name;
-      // DIRECTORY-DECOUPLED ENTRYPOINT MATCH: a per-service Dockerfile
-      // conventionally named after what it ships (Client.Dockerfile,
-      // Agent.Dockerfile, ...) commonly lives in a SHARED directory
-      // (docker/, deploy/, ci/) alongside its siblings, so its root_path
-      // (the directory) never equals or contains the actual app's path_hint
-      // (e.g. bin/client) — a plain root_path containment check misses it
-      // entirely. Checked FIRST (ahead of the containment match below)
-      // because it is real Tier-1 ship evidence naming this app by its own
-      // ENTRYPOINT/CMD binary, which must outrank a same-root_path Tier-2/3
-      // signal (e.g. the app's own Cargo [[bin]] entry at its path_hint) —
-      // otherwise the weaker in-place signal wins by map lookup order alone
-      // and the real Tier-1 artifact is never seen. Evidence-gated: only
-      // attaches when this evidence's own entrypoint_member resolves to
-      // THIS app specifically, so a shared directory with several sibling
-      // Dockerfiles still attributes each one to its own service. Searches
-      // the RAW evidenceList (not the root_path-collapsed evidenceByRoot
-      // map) because several distinct Tier-1 artifacts can legitimately
-      // share one root_path/directory (e.g. docker/Agent.Dockerfile +
-      // docker/Client.Dockerfile + docker/Coordinator.Dockerfile all under
-      // "docker") and the collapse intentionally keeps only one merged
-      // entry per root_path — exactly the case this match needs to see past.
-      // When several Tier-1 artifacts all resolve their entrypoint_member to
-      // this same app (e.g. a generic root-level multi-service Dockerfile
-      // AND this app's own dedicated per-service Dockerfile both default to
-      // it), prefer the MOST SPECIFIC one — a real root_path (this app's own
-      // artifact) over the generic repo root_path '.' (a shared/aggregate
-      // artifact) — so the app's identity is anchored to its own dedicated
-      // evidence rather than whichever happens to sort first.
+      // Must check entrypoint_member match before root_path containment: a
+      // per-service Dockerfile conventionally lives in a shared directory
+      // (docker/, deploy/), so root_path containment alone misses it and a
+      // weaker same-root_path Tier-2/3 signal would win by lookup order.
+      // Searches the raw evidenceList, not the root_path-collapsed map — several
+      // Tier-1 artifacts can share one root_path/directory. When multiple
+      // artifacts resolve to this app, prefer the most specific root_path over
+      // the generic repo root '.'.
       const directoryDecoupledCandidates = evidenceList.filter(candidate =>
         candidate.tier === 1 && candidate.entrypoint_member && bundleNameMatches(candidate.entrypoint_member, app));
       const directoryDecoupledMatch = directoryDecoupledCandidates.find(candidate => candidate.root_path !== '.')
@@ -12101,30 +11973,12 @@ function resolveDeployables(applications: SystemApplication[], repositories: Cro
 }
 
 /**
- * WAS consumption of DAS units (docs/SPEC-DEPLOYABLE-ANALYSIS.md §4). When a
- * member CAS has promoted (>= 2 tier-qualified ship units, deployable-
- * analysis.ts's shouldPromote), tag each matching `SystemApplication` with the
- * DAS unit id it corresponds to, so a `WorkspaceDeployable` built from this
- * row carries three-hop provenance (`workspace -> CAS -> DAS`) a reader can
- * follow via the owning codebase's repo-level tools with
- * `scope: { das_unit_id }`. Runs AFTER `resolveDeployables` so every
- * application's `path_hint`/`bundled_into` resolution is already final.
- *
- * Matching is identity-based, not positional: a DAS unit's `root_path` /
- * `member_root_paths` (bundled members) is compared against the app's own
- * resolved root (`path_hint || name`), the same root-containment tolerance
- * `resolveDeployables` itself uses for evidence-to-app matching immediately
- * above, falling back to a cleaned-name match for a root that resolved
- * through a fuzzy/folder-heuristic path with no exact root string. A bundled-
- * member application (`app.bundled_into` set) is skipped — its primary
- * carries the link, exactly as a DAS unit's own bundled evidence rows are
- * represented by one unit, not one per member.
- *
- * Purely additive: never restructures `applications`, never runs when the
- * owning CAS has no `deployable_evidence` (buildDeployableAnalyses simply
- * returns `promoted: false` and this function is a no-op for that repo, the
- * same single-ship-unit terminal state the CAS-level promotion gate treats as
- * valid and common).
+ * Tags each matching SystemApplication with its DAS unit id so a
+ * WorkspaceDeployable carries workspace -> CAS -> DAS provenance
+ * (docs/SPEC-DEPLOYABLE-ANALYSIS.md §4). Must run after resolveDeployables.
+ * Matching is identity-based (root_path/member_root_paths vs path_hint||name),
+ * not positional. Bundled-member applications are skipped — their primary
+ * carries the link. Purely additive; no-op when the CAS has no promotion.
  */
 function linkDasUnits(applications: SystemApplication[], repositories: CrossCodebaseInput[]): void {
   const rootMatches = (appRoot: string, unitRoot: string): boolean => {
@@ -12178,53 +12032,16 @@ function linkDasUnits(applications: SystemApplication[], repositories: CrossCode
   }
 }
 
-/** CROSS-MEMBER IDENTITY MERGE: monorepo + extracted-subrepo co-membership
- *  (task #66 live shape). One workspace member is a monorepo whose CAS emits
- *  an application row from an `apps/<name>` (or services/cmd/bin/crates/
- *  packages/libs) SUBDIR — one row per platform app, named after the subdir.
- *  A SEPARATE workspace member is a standalone project uploaded FROM that
- *  same subdir (its own repo root, its own dedicated — typically richer —
- *  CAS). Without this pass the WAS shows two rows for the same logical app:
- *  the coarse subdir-derived row from the monorepo and the standalone
- *  member's own row.
- *
- *  Runs AFTER resolveDeployables/linkDasUnits so every application's
- *  path_hint/bundled_into/source_das_unit_id is already final; purely
- *  additive/annotating like linkDasUnits — it never removes an application
- *  from the array (interfaces/runtime components/links keep resolving by
- *  id), it only marks the monorepo's subdir row `merged_into` the standalone
- *  member's row so `shouldExposeInWorkspaceOverview` drops it from the
- *  visible deployables/overview, and folds its evidence into the survivor.
- *
- *  Evidence-gated with TWO INDEPENDENT signals, never name-only (per
- *  SPEC-DEPLOYABLE-DETECTION.md's evidence-first posture):
- *   (a) normalized name identity — the monorepo's subdir app name (or its
- *       path_hint tail) matches the candidate member's own application name;
- *   (b) member-ownership agreement — the monorepo row's path_hint tail
- *       matches the OTHER member's own declared NAME identity (project name
- *       / CAS system name — see identityKeysByCodebaseId below), the
- *       accepted "parent row's path tail matches the child's root" form of
- *       signal (b). NOT the member's storage path: a hosted workspace member
- *       lives at an opaque id-shaped root (e.g. /data/workspaces/prj_XXXX),
- *       so codebase.path/codebase_id carry no name information at all — only
- *       a local dev checkout's directory happens to be named after its repo.
- *       This is also literally how the candidate member is discovered in the
- *       first place, so it is never satisfied vacuously by name alone — a
- *       same-name app in an unrelated member whose declared name isn't that
- *       subdir never reaches the name check. (a) and (b) stay independent
- *       even when their values coincide (the live shape's normal case): (a)
- *       tests the parent app row's name against the candidate app row's
- *       name, (b) tests the parent row's path shape against the CANDIDATE
- *       MEMBER's identity, a different fact from a different source.
- *  Two members that merely share an app name (e.g. both have an "api") with
- *  no member whose declared name matches that subdir never merge. A monorepo
- *  subdir app with no corresponding standalone member is left untouched.
- *
- *  Ownership: the STANDALONE member's row wins (assumed the richer, dedicated
- *  CAS) — when more than one candidate row in that member matches, the one
- *  with the most interface/runtime-component/port/evidence signal is picked
- *  as the survivor, same scoring idiom isWeakerDuplicateApplicationSurface
- *  uses for same-codebase duplicates. */
+/** Merges a monorepo subdir-derived application row with a standalone member
+ *  uploaded from that same subdir, so the WAS doesn't show the same logical
+ *  app twice. Must run after resolveDeployables/linkDasUnits; annotates only
+ *  (marks the subdir row merged_into the survivor), never removes rows.
+ *  Requires two INDEPENDENT evidence signals (never name-only): (a) normalized
+ *  name identity between the rows, and (b) the monorepo row's path_hint tail
+ *  matching the candidate member's own declared name identity — not its
+ *  storage path, which is opaque for hosted workspaces. The standalone
+ *  member's row wins ownership when multiple candidates match, scored by the
+ *  same isWeakerDuplicateApplicationSurface idiom used for same-codebase dupes. */
 function mergeCrossMemberSubdirApplications(
   applications: SystemApplication[],
   codebases: SystemCodebase[],
@@ -12331,49 +12148,18 @@ function mergeCrossMemberSubdirApplications(
   }
 }
 
-/** THE SHIPPED-GATE: RUNNABLE is not the same thing as SHIPPED.
- *
- *  A Cargo [[bin]] / `func main` / package.json bin is a Tier-2/3 RUNNABLE
- *  candidate — buildable, testable, sometimes even documented — but that
- *  alone does not make it a ship unit. Real repos accumulate test/demo/
- *  utility binaries (smoke-test, demo-cast, bench-tool, scratch, ...) that
- *  build fine and never appear in any Dockerfile/compose/k8s/installer/CI-
- *  deploy artifact. Flagging every one of those `deployable:true` produces
- *  an unusable deployable list (e.g. 18 "deployables" for a workspace that
- *  ships 1-3 things).
- *
- *  Runs AFTER bundling resolution (bundled_into is already set for members
- *  a Tier-1 artifact names) so this only has to decide the apps still
- *  standing on their own. A Tier-2/3 app keeps deployable:true ONLY IF:
- *   (a) it reached Tier 1 itself (owns a Dockerfile/compose/k8s/installer/
- *       CI-deploy artifact) — already true, left untouched;
- *   (b) it is bundled_into another app (a Tier-1 artifact named it) —
- *       already true, left untouched; the PRIMARY it bundles into keeps
- *       deployable:true, the member itself is not "top-level" but its
- *       deployable flag is irrelevant once bundled_into is set (callers
- *       should read topLevelDeployables()); we leave `deployable` as-is
- *       for bundled members since bundled_into already excludes them from
- *       the top-level count;
- *   (c) it is the sole runnable in the workspace, or the workspace's root
- *       app (single-package repo case) — nothing else could possibly be
- *       "the" deployable, so keep it;
- *  Otherwise: demote to deployable:false with boundary_evidence
- *  `runnable-not-shipped:no-tier1-artifact-references-it`. This is a
- *  general principle (evidence-gated), not tuned to any one repo — it
- *  fires whenever a Tier-2/3 candidate has no Tier-1 sibling that
- *  references it and there exists at least one OTHER runnable in the
- *  workspace (so a genuinely single-binary repo is never gated out).
- */
+/** RUNNABLE != SHIPPED: a Tier-2/3 runnable candidate (bin/entry/package
+ *  identity) only keeps deployable:true if it reached Tier 1 itself, is
+ *  bundled_into a Tier-1 artifact, or is the sole/root runnable in the
+ *  workspace — otherwise demote to deployable:false. Must run after bundling
+ *  resolution. Tier-4 folder-heuristic apps carry no positive evidence and are
+ *  never gated (gating must act on evidence, not its absence). Never gates a
+ *  genuinely single-binary repo (requires another runnable sibling to fire). */
 function applyShippedGate(
   appsForRepo: SystemApplication[],
   resolutions: Map<string, DeployableResolution>,
   rootBundleTargets: Map<string, { primaryAppId: string; evidence: DeployableEvidence }>,
 ): void {
-  // Tier-4 (folder-heuristic) apps carry NO real evidence either way — they
-  // exist only because tiers 1-3 were silent for that root. Gating them
-  // would punish the absence of evidence rather than act on positive
-  // evidence, so the shipped-gate only ever considers genuine Tier-2/3
-  // candidates (bin/server-entry/package identity from real manifests).
   const runnableApps = appsForRepo.filter(app => {
     const resolution = resolutions.get(app.id);
     return resolution && (resolution.tier === 2 || resolution.tier === 3);

@@ -1,69 +1,30 @@
 /**
- * In-flight substrate (W0, docs/SPEC-COORDINATION-FABRIC-V3.md §3, §8 row W0).
+ * In-flight substrate (docs/SPEC-COORDINATION-FABRIC-V3.md §3, §8 row W0).
+ * Reads the persisted `track:'in-flight'` CAS snapshot (dirty working tree)
+ * back out for coordination, instead of git-ambient capture or agent
+ * self-reports, both attribution-fragile on a shared working tree.
  *
- * v3's load-bearing claim: "the fabric is a consumer of a live, ATTRIBUTED,
- * SEMANTIC, CONTINUOUS analysis that includes uncommitted work." The seed
- * already exists — `analyzeProjectIncremental`/`saveAnalysis` persist a
- * `track:'in-flight'` CAS snapshot (dirty working tree) alongside the
- * committed `track:'main'` one (see `../track.ts`, `../storage.ts`
- * `trackSuffix`). Before this module, NOTHING read the in-flight track back
- * out for coordination purposes — `conceptual-conflict.ts`'s detectors were
- * fed exclusively from git-ambient capture (`in-flight-capture.ts`) or
- * agent self-reports, both ATTRIBUTION-FRAGILE on a shared working tree
- * (§3.2: "every participant's own diff is the union of everyone's").
+ *   1. getInFlightSemanticDelta — semantic delta between committed and
+ *      dirty-working-tree analyses (by identity, not text line). Whole-tree,
+ *      unattributed by construction.
+ *   2. getAttributedInFlightState — attributes that delta to the workspace's
+ *      currently-active claims. A symbol is attributed only when it falls in
+ *      exactly one active claim's scope.
+ *   3. detectConceptualConflictsFromSubstrate — re-bases the existing
+ *      conflict detectors on the attributed per-participant deltas from (2).
  *
- * This module is the substrate those boxes should read from instead:
+ * Honest limitation: the in-flight track is per-project, not per-participant,
+ * so a shared working tree's raw delta is still "everyone's work" until
+ * attributed. getAttributedInFlightState treats a changed symbol as
+ * attributable only when exactly one active claim covers it — zero or
+ * multiple covering claims both land in `unattributed`, never guessed.
  *
- *   1. `getInFlightSemanticDelta` — the SEMANTIC delta between a project's
- *      committed (`main`) and dirty-working-tree (`in-flight`) analyses:
- *      symbols added/removed/changed (by identity — id/name/file/type, not
- *      by text line), entry points added/changed, and the flows/capabilities
- *      those changes touch. This is whole-tree (unattributed) by
- *      construction — see honesty note below.
- *
- *   2. `getAttributedInFlightState` — ATTRIBUTES that whole-tree delta to
- *      the workspace's currently-active claims (`local-store.ts`
- *      `getActiveClaims`), never from ambient `git diff`. A symbol is
- *      attributed to a participant when it falls in exactly ONE active
- *      claim's scope (declared symbol id, or a file under a claimed path).
- *
- *   3. `detectConceptualConflictsFromSubstrate` — re-bases
- *      `detectConceptualConflicts` (unchanged; the detectors themselves are
- *      good, per §8 W3) on the attributed per-participant deltas from (2)
- *      instead of git-diff-derived `AgentInFlightState[]`, so a finding
- *      compares each participant's OWN work, by construction — not "right
- *      by luck" the way ambient git capture is (§3.2's `plan_intent_merge`
- *      example).
- *
- * HONEST LIMITATION (evidence-gated, not asserted away): the `in-flight`
- * track is PER-PROJECT (one dirty working tree → one `.inflight` analysis
- * file — see `../track.ts` `revisionToTrack`), not per-participant. On a
- * SHARED working tree with multiple concurrent participants, the raw
- * whole-tree delta from (1) is exactly the same "union of everyone's work"
- * problem §3.2 describes for `git diff` — reading the in-flight CAS instead
- * of running `git diff` ourselves does not, by itself, solve attribution.
- * What this module does about it: `getAttributedInFlightState` treats a
- * changed symbol as attributable ONLY when it falls inside EXACTLY ONE
- * active claim's declared scope (paths/symbols) — zero claims covering it,
- * or two-or-more claims covering it, are BOTH treated as unattributable and
- * surfaced in the `unattributed` bucket, never guessed or silently assigned
- * to whichever participant happens to be asking.
- *
- * W4 STEP 1 ADDITION (docs/SPEC-COORDINATION-FABRIC-V3.md §8 W4, "re-base
- * on W0"): the write-hook (write-hook.ts, §8 W5) is now built and gives a
- * SECOND attribution source that W0 didn't have when this module was first
- * written — `announceEdit`/`recordUnclaimedEdit` claim-log entries name the
- * agent that actually touched a path, AS IT HAPPENED, independent of whether
- * a claim currently covers that path. `getAttributedInFlightState` now
- * consults that event log as a TIEBREAKER for anything that would otherwise
- * land in `unattributed`: if the full claim log (not just currently-active
- * claims — a write-hook announcement is still informative evidence after its
- * TTL expires or it gets superseded) shows exactly ONE distinct agent ever
- * announced/was-detected touching the delta's file, the delta is resolved to
- * that agent and reported in `tiebroken` (never folded into `participants`,
- * since it doesn't correspond to a live claim). Two-or-more distinct agents,
- * or zero, stay honestly in `unattributed` — this is a tiebreaker, not a
- * guesser.
+ * Also consults the full claim log (including expired/superseded write-hook
+ * announcements) as a tiebreaker for anything that would otherwise be
+ * unattributed: if exactly one distinct agent ever touched the delta's file,
+ * it resolves to `tiebroken` (never folded into `participants`, since it
+ * doesn't correspond to a live claim). Two-or-more or zero agents stay in
+ * `unattributed`.
  */
 
 import type { CASNode, CASOutput } from '../../../../packages/analyzer-core/src/types/cas.types';
@@ -607,34 +568,17 @@ export async function getAttributedInFlightState(
 // ---------------------------------------------------------------------------
 
 /**
- * `detectConceptualConflicts` (conceptual-conflict.ts) is UNCHANGED by this
- * module — its five detectors stay exactly as they were (§8 W3: "the
- * detectors themselves are good"). What changes is where the input
- * `AgentInFlightState[]` comes from: instead of git-ambient capture or
- * self-reported markers (server.ts `otherAgentConceptualStates`,
- * `remote-analyzer-service.ts` `otherAgentConceptualStatesHttp` — both left
- * untouched, still valid, still the git-based path for callers that haven't
- * migrated), this reads the ATTRIBUTED per-participant deltas from
- * `getAttributedInFlightState` above. Two participants' deltas are then
- * compared as THEIR OWN attributed work — converting the "right by luck"
- * problem (§3.2) into "right by construction": a participant whose changes
- * are unattributable (unclaimed or claim-overlapping) simply contributes no
- * `AgentInFlightState` entry, rather than being silently folded into
- * whoever happens to be asking.
+ * detectConceptualConflicts (conceptual-conflict.ts) is unchanged — only the
+ * input source changes: reads the attributed per-participant deltas from
+ * getAttributedInFlightState instead of git-ambient capture or self-reported
+ * markers. A participant whose changes are unattributable contributes no
+ * AgentInFlightState entry, rather than being silently folded into whoever
+ * happens to be asking.
  *
- * W4 STEP 2 FOLD (§8 W3, "the detectors themselves are good" + W4 step 1's
- * `tiebroken` bucket): this used to consume ONLY `attributed.participants` —
- * a write-hook-tiebroken delta (resolved to exactly one agent via the event
- * log, W4 step 1) contributed NOTHING here, so a symbol whose only evidence
- * was a tiebreak was invisible to every detector even though it IS honestly
- * attributed to one real agent (just not via a currently-active claim).
- * `tiebroken` deltas are now folded in at the SAME weight as claim-attributed
- * ones — same `AgentInFlightState` shape, one entry per distinct `agent_id`
- * (an agent can appear via both `participants` and `tiebroken` at once; their
- * changes are merged onto the same state entry rather than producing two
- * competing entries for one agent_id). `unattributed` deltas (resolved to
- * neither a claim nor a tiebreak) remain excluded — still honest, never
- * guessed.
+ * Folds `tiebroken` deltas in at the same weight as claim-attributed ones —
+ * an agent can appear via both `participants` and `tiebroken`, merged onto
+ * one state entry rather than two competing entries. `unattributed` deltas
+ * remain excluded — still honest, never guessed.
  */
 export async function detectConceptualConflictsFromSubstrate(
   workspace: string,

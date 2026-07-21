@@ -536,7 +536,20 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
         try {
           const extraction = this.tsExtractor.extractFromSource(loaded.content, loaded.fullPath);
           if (extraction.hasSyntaxErrors) {
-            this.addAnalysisWarning(`${loaded.relativePath} contains syntax errors; extraction may be partial`);
+            // Real tree-sitter ERROR nodes are almost always localized to one
+            // construct (an unsupported grammar edge case, a literal
+            // control/NUL byte) rather than the whole file — cite where, so
+            // this reads as an honest, scoped diagnostic instead of a
+            // blanket "this file might be badly broken" alarm (quality-iter-1
+            // #9: two flags on real, valid analyzer-core source turned out to
+            // be exactly this — an `import('m').T[]` array-suffixed inline
+            // import-type and an intentional embedded NUL byte used as a hash
+            // separator, both localized single-token parser limitations).
+            const locations = extraction.syntaxErrorLocations || [];
+            const locationSuffix = locations.length > 0
+              ? ` (near line${locations.length > 1 ? 's' : ''} ${locations.map(l => l.line).join(', ')}: ${locations.map(l => JSON.stringify(l.snippet)).join(', ')})`
+              : '';
+            this.addAnalysisWarning(`${loaded.relativePath} contains syntax errors; extraction may be partial${locationSuffix}`);
           }
           results.push({ ...loaded, extraction });
         } catch (error) {

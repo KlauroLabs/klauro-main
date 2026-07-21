@@ -6,6 +6,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { JestAnalyzer } from '../../analyzer/frameworks/testing/jest-analyzer';
+import { TestFrameworkAnalyzer } from '../../analyzer/frameworks/testing/test-framework-analyzer';
 import { FastAPIAnalyzer } from '../../analyzer/frameworks/web/fastapi-analyzer';
 import { ReactAnalyzer } from '../../analyzer/frameworks/web/react-analyzer';
 import { ReactRouterAnalyzer } from '../../analyzer/libraries/routing/react-router-analyzer';
@@ -96,11 +97,16 @@ describe('duplicate id namespacing across files', () => {
 
     it('does not ignore source test files whose filename starts with environment or env-', async () => {
       write('src/environment-checks.test.ts', [
-        "import { test } from 'node:test';",
-        "import assert from 'node:assert/strict';",
+        // Jest-flavored globals — a node:test/vitest/mocha import here would
+        // (correctly) make JestAnalyzer skip the file as foreign-framework-owned
+        // (see isForeignTestFrameworkFile), which is not what this test guards
+        // (environment-*/env-* filename glob behavior).
+        "import { describe, it, expect } from '@jest/globals';",
         '',
-        "test('checks the runtime environment', () => {",
-        '  assert.equal(1, 1);',
+        "describe('environment checks', () => {",
+        "  it('checks the runtime environment', () => {",
+        '    expect(true).toBe(true);',
+        '  });',
         '});',
       ].join('\n'));
       write('src/config/env-preserve.test.ts', [
@@ -131,6 +137,94 @@ describe('duplicate id namespacing across files', () => {
 
       expect(environmentSuite).toBeDefined();
       expect(envHyphenSuite).toBeDefined();
+    });
+
+    it('does not claim a node:test file as a jest suite (foreign-framework guard)', async () => {
+      write('src/account-store.test.ts', [
+        "import test from 'node:test';",
+        "import assert from 'node:assert/strict';",
+        '',
+        "test('creates a record', () => {",
+        '  assert.equal(1, 1);',
+        '});',
+      ].join('\n'));
+
+      const analyzer = new JestAnalyzer() as any;
+      const result = await analyzer.analyze({ projectPath: root });
+      const claimedSuite = result.nodes.find((node: CASNode) =>
+        node.type === 'test' &&
+        node.subcategories?.includes('suite') &&
+        node.source?.file?.endsWith('src/account-store.test.ts')
+      );
+      expect(claimedSuite).toBeUndefined();
+    });
+
+    it('produces zero id collisions with TestFrameworkAnalyzer across node:test/mocha/vitest/jest files (regression: 2306/2319 Duplicate entry point id warnings, 2026-07 quality-iter-1 self-analysis)', async () => {
+      write('src/node-test-suite.test.ts', [
+        "import test from 'node:test';",
+        "import assert from 'node:assert/strict';",
+        '',
+        "test('node:test owns this file', () => {",
+        '  assert.equal(1, 1);',
+        '});',
+      ].join('\n'));
+      write('src/mocha-suite.test.ts', [
+        "import { expect } from 'chai';",
+        "// eslint-disable-next-line",
+        "require('mocha');",
+        '',
+        "describe('mocha suite', () => {",
+        "  it('mocha owns this file', () => {",
+        '    expect(true).to.equal(true);',
+        '  });',
+        '});',
+      ].join('\n'));
+      write('src/vitest-suite.test.ts', [
+        "import { describe, it, expect } from 'vitest';",
+        '',
+        "describe('vitest suite', () => {",
+        "  it('vitest owns this file', () => {",
+        '    expect(true).toBe(true);',
+        '  });',
+        '});',
+      ].join('\n'));
+      write('src/jest-suite.test.ts', [
+        "describe('jest suite', () => {",
+        "  it('jest owns this file', () => {",
+        '    expect(true).toBe(true);',
+        '  });',
+        '});',
+      ].join('\n'));
+
+      const jestAnalyzer = new JestAnalyzer() as any;
+      const testFrameworkAnalyzer = new TestFrameworkAnalyzer() as any;
+
+      const jestResult = await jestAnalyzer.analyze({ projectPath: root });
+      const testFrameworkResult = await testFrameworkAnalyzer.analyze({ projectPath: root });
+
+      const jestSuiteFiles = jestResult.nodes
+        .filter((node: CASNode) => node.type === 'test' && node.subcategories?.includes('suite'))
+        .map((node: CASNode) => node.source?.file);
+      const testFrameworkSuiteFiles = testFrameworkResult.nodes
+        .filter((node: CASNode) => node.type === 'test' && node.subcategories?.includes('suite'))
+        .map((node: CASNode) => node.source?.file);
+
+      // Each file is owned by exactly ONE of the two analyzers.
+      expect(jestSuiteFiles.some((f: string) => f?.endsWith('jest-suite.test.ts'))).toBe(true);
+      expect(jestSuiteFiles.some((f: string) => f?.endsWith('node-test-suite.test.ts'))).toBe(false);
+      expect(jestSuiteFiles.some((f: string) => f?.endsWith('mocha-suite.test.ts'))).toBe(false);
+      expect(jestSuiteFiles.some((f: string) => f?.endsWith('vitest-suite.test.ts'))).toBe(false);
+      expect(testFrameworkSuiteFiles.some((f: string) => f?.endsWith('node-test-suite.test.ts'))).toBe(true);
+      expect(testFrameworkSuiteFiles.some((f: string) => f?.endsWith('mocha-suite.test.ts'))).toBe(true);
+      expect(testFrameworkSuiteFiles.some((f: string) => f?.endsWith('vitest-suite.test.ts'))).toBe(true);
+
+      // No entry point id appears in both analyzers' output — the exact
+      // collision class the orchestrator's "Duplicate entry point id"
+      // PARTIAL_ANALYSIS warning fires on.
+      const jestEntryIds = new Set((jestResult.entry_points || []).map((e: CASEntryPoint) => e.id));
+      const testFrameworkEntryIds = (testFrameworkResult.entry_points || []).map((e: CASEntryPoint) => e.id);
+      const collisions = testFrameworkEntryIds.filter((id: string) => jestEntryIds.has(id));
+      expect(collisions).toEqual([]);
     });
   });
 

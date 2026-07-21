@@ -65,6 +65,30 @@ export class WorkflowDetector {
     return workflows;
   }
 
+  /**
+   * True when the entry point's handler resolves into test or fixture
+   * source rather than real product code. Mirrors (deliberately, not by
+   * import — this detector has no dependency on AnalyzerOrchestrator)
+   * isTestOrFixtureFileNode in core/orchestrator.ts: test-file naming
+   * conventions plus fixtures/mocks directories, which the plain
+   * `ep.type === 'test'` filter above does not catch (these entry points
+   * carry a normal 'message'/'http'/'cli' type — only their SOURCE FILE
+   * gives them away).
+   */
+  private isFixtureSourcedEntryPoint(ep: CASEntryPoint): boolean {
+    const candidates = [ep.handler?.file, this.nodeIndex.get(ep.source_node)?.source?.file]
+      .filter((f): f is string => Boolean(f));
+    return candidates.some(file => {
+      const normalized = file.replace(/\\/g, '/');
+      const name = normalized.split('/').pop() || normalized;
+      return /\.(spec|test)\.(ts|tsx|js|jsx|mjs|cjs)$/i.test(name) ||
+        /^test_.*\.py$/i.test(name) ||
+        /_test\.(py|go|rs|dart)$/i.test(name) ||
+        /(Test|Tests)\.(java|kt|cs|php)$/i.test(name) ||
+        /(^|\/)(fixtures?|__fixtures__|mocks?|__mocks__|tests?)\//i.test(normalized);
+    });
+  }
+
   private isApplicationEntryPoint(ep: CASEntryPoint): boolean {
     const applicationTypes = new Set([
       'http', 'cli', 'websocket', 'ws_handler', 'message',
@@ -85,6 +109,17 @@ export class WorkflowDetector {
     for (const ep of entryPoints) {
       if (ep.type === 'test') continue;
       if (!this.isApplicationEntryPoint(ep)) continue;
+      // A registration literal captured from a test/fixture file (e.g. an MCP
+      // tool-registration analyzer's OWN unit-test fixture string like
+      // `server.registerTool('do_thing', ...)`, or a JSDoc example snippet in
+      // real source) is analyzer scaffolding, not a real product surface —
+      // promoting it to a named business workflow is exactly the junk-name
+      // class in quality-iter-1 #8 ("Thing"/"Do Thing"/"Claw" with zero
+      // entities/services touched, sourced entirely from
+      // mcp-tool-registration-analyzer.test.ts / .integration.test.ts and a
+      // comment-embedded example in the analyzer's own .ts source). Never
+      // group these into a workflow at all.
+      if (this.isFixtureSourcedEntryPoint(ep)) continue;
 
       const groupKey = this.extractGroupKey(ep);
       const chains = chainsByEntryPoint.get(ep.id) || [];
@@ -163,9 +198,20 @@ export class WorkflowDetector {
       return resource;
     }
 
+    // Join ALL meaningful words, not just the first: for a pathless entry
+    // point (mcp-tool/cli/event) `name` is usually a specific compound
+    // identifier ("check_collision", "check_conceptual_conflicts") — taking
+    // only words[0] discarded everything after the generic lead word and
+    // collapsed distinct tools into one junk-named "Check" workflow
+    // (quality-iter-1 #8: real, unrelated tools merged under a bare-noun
+    // group with zero anchor evidence). Keeping the full compound also
+    // converges with the path-based branch above for the SAME tool reached
+    // through a second (e.g. AI-stack-detected) entry point whose trigger
+    // carries a `path` — both now key on "check_collision" instead of
+    // splitting into a specific group and a generic leftover.
     const words = this.extractMeaningfulWords(name);
     if (words.length > 0) {
-      return words[0].toLowerCase();
+      return words.map(w => w.toLowerCase()).join('_');
     }
 
     return 'misc';
@@ -345,8 +391,38 @@ export class WorkflowDetector {
     return index;
   }
 
+  /**
+   * Same purpose-bearing-anchor guard finalizeSystemCapabilityNames applies
+   * to capabilities, adapted to workflows: a single-word group name with
+   * NO anchor evidence — no entity/service touched by any of its call
+   * chains, and no chain even reaches a real exit point — has nothing
+   * grounding it as a genuine business workflow. This is a fallback net for
+   * bare-noun groups that slip past the fixture/test-source exclusion above
+   * (isFixtureSourcedEntryPoint) for whatever reason; it never fires on a
+   * multi-word name (the join fix in extractGroupKey means those already
+   * carry real specificity, e.g. "Check Collision").
+   */
+  private hasNoWorkflowAnchorEvidence(group: WorkflowGroup): boolean {
+    return group.entitiesReferenced.size === 0 &&
+      group.servicesUsed.size === 0 &&
+      group.exitPoints.size === 0;
+  }
+
+  private isBareSingleWordGroupName(name: string): boolean {
+    return name.trim().split(/\s+/).filter(Boolean).length === 1;
+  }
+
   private createWorkflow(groupKey: string, group: WorkflowGroup): CASWorkflow | null {
     if (group.entryPoints.length === 0) return null;
+
+    // Bare-noun / no-anchor-evidence guard: drop rather than ship a
+    // purpose-less workflow (quality-iter-1 #8). No "parent operation" name
+    // to fall back to exists at this point (the group's own entry points ARE
+    // the parent operations, and none of them grounds a purpose) — the
+    // honest outcome is not emitting, not guessing a name.
+    if (this.isBareSingleWordGroupName(group.name) && this.hasNoWorkflowAnchorEvidence(group)) {
+      return null;
+    }
 
     const workflowType = this.inferWorkflowType(group);
     const criticality = this.computeWorkflowCriticality(group);

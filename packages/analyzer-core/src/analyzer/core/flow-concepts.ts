@@ -497,6 +497,22 @@ export interface FlowConcept {
    *  by an async publish from ≥1 other flow (it has `continued_from`). Omitted
    *  (never false) otherwise. */
   is_subflow?: boolean;
+  /**
+   * Distinct DOM/UI event triggers that all resolve to this SAME flow (same
+   * handler root, same downstream reach) — collapsed here rather than
+   * emitted as N near-duplicate flows (flow-quality lane: 6 GraphCanvas mouse
+   * bindings — wheel/click/mouseEnter/… — all wired to the identical
+   * `clampZoom` handler used to surface as 6 templated "Handle <event> ->
+   * clampZoom" flows differing only in which DOM event fired; effect-based
+   * naming plus this collapse make them ONE flow named for the effect, e.g.
+   * "Zoom The Architecture Canvas", carrying `triggers: ["click","drag",
+   * "wheel"]`). Populated only when ≥2 real entry points collapsed into this
+   * flow; omitted (never a single-element array) otherwise — see
+   * groupEventVariantEntryPoints. Never fabricated: each string is a real
+   * `trigger.pattern`/`trigger.event`/`metadata.event` value from a grouped
+   * entry point.
+   */
+  triggers?: string[];
   /** Honest caveats about this specific flow's segmentation/derivation. */
   gaps?: string[];
 }
@@ -1067,6 +1083,21 @@ function nameStepForRole(
   exitPointsByNode: Map<string, CASExitPoint[]>,
   lineage: CASEntityLineage[]
 ): { name: string; description: string; grounded: boolean } {
+  const result = nameStepForRoleImpl(role, nodes, exitPointsByNode, lineage);
+  // Defect #3 hygiene (see dedupeAdjacentWords): a template prefix ("Validate
+  // "/"Persist "/titleized verb) combined with an independently-sourced
+  // entity/target string can land the SAME word twice back-to-back (e.g. a
+  // verb "schedule" next to an entity already named "Scheduled Scan"). Applied
+  // uniformly to every branch's output, not just the ones observed to collide.
+  return { ...result, name: dedupeAdjacentWords(result.name) };
+}
+
+function nameStepForRoleImpl(
+  role: StepRole,
+  nodes: CASNode[],
+  exitPointsByNode: Map<string, CASExitPoint[]>,
+  lineage: CASEntityLineage[]
+): { name: string; description: string; grounded: boolean } {
   const nodeIds = new Set(nodes.map(n => n.id));
   const fnNames = nodes.map(n => n.name).join(', ');
 
@@ -1148,6 +1179,80 @@ function nameStepForRole(
     description: `No entity/verb evidence found for this segment; conservative grouping of ${fnNames}.`,
     grounded: false,
   };
+}
+
+/** The real trigger label a single entry point's own facts carry — a DOM/UI
+ *  event name, a schedule expression, or (last resort) the entry's own name.
+ *  Never fabricated: picks the first populated fact in specificity order. */
+function entryPointTriggerLabel(ep: CASEntryPoint): string {
+  return (
+    ep.trigger?.pattern ||
+    ep.trigger?.event ||
+    (typeof ep.metadata?.event === 'string' ? ep.metadata.event : undefined) ||
+    ep.trigger?.schedule ||
+    ep.name
+  );
+}
+
+/**
+ * EVENT-VARIANT COLLAPSE (flow-quality lane, defect #2): multiple `event`
+ * entry points that resolve to the IDENTICAL handler root (same
+ * `handler.node_id`/`source_node`) trace the IDENTICAL downstream chain —
+ * they are not N flows that happen to look alike, they are the SAME flow
+ * reached by N different DOM/UI triggers (a canvas wired so wheel/click/
+ * mouseEnter/drag all call the same `clampZoom`-style handler). Grounded
+ * ONLY on root-node identity (a real graph fact — same node id means the
+ * traced chain, steps, and effects are byte-identical), never on name
+ * similarity or event-type heuristics, so distinct handlers that merely
+ * share a naming convention never collapse.
+ *
+ * Scoped to `type === 'event'` only: HTTP routes/CLI commands/schedules that
+ * happen to share a handler function keep their own route/command identity
+ * (that identity IS the meaningful fact there), unlike a raw DOM event name.
+ *
+ * Returns, for entry points that should be grouped:
+ *   - `primaryByRoot`: root node id -> the one entry point (earliest in the
+ *     caller's original order, so output stays deterministic) that will own
+ *     the resulting flow.
+ *   - `triggersByPrimaryId`: that primary entry point's id -> the deduped,
+ *     sorted list of every grouped member's trigger label (>= 2 entries;
+ *     never populated for a root with only one entry point).
+ *   - `groupedAwayIds`: every non-primary entry point id in a multi-member
+ *     group — the caller skips these so they don't also emit their own flow.
+ */
+function groupEventVariantEntryPoints(
+  entryPoints: CASEntryPoint[],
+  originalIndex: Map<string, number>
+): {
+  primaryByRoot: Map<string, CASEntryPoint>;
+  triggersByPrimaryId: Map<string, string[]>;
+  groupedAwayIds: Set<string>;
+} {
+  const byRoot = new Map<string, CASEntryPoint[]>();
+  for (const ep of entryPoints) {
+    if (ep.type !== 'event') continue;
+    const rootId = ep.handler?.node_id || ep.source_node;
+    if (!rootId) continue;
+    if (!byRoot.has(rootId)) byRoot.set(rootId, []);
+    byRoot.get(rootId)!.push(ep);
+  }
+
+  const primaryByRoot = new Map<string, CASEntryPoint>();
+  const triggersByPrimaryId = new Map<string, string[]>();
+  const groupedAwayIds = new Set<string>();
+  for (const [rootId, members] of byRoot) {
+    if (members.length < 2) continue;
+    const sorted = [...members].sort(
+      (a, b) => (originalIndex.get(a.id) ?? 0) - (originalIndex.get(b.id) ?? 0)
+    );
+    const primary = sorted[0];
+    primaryByRoot.set(rootId, primary);
+    const triggers = [...new Set(sorted.map(entryPointTriggerLabel).filter(Boolean))].sort();
+    triggersByPrimaryId.set(primary.id, triggers);
+    for (const ep of sorted.slice(1)) groupedAwayIds.add(ep.id);
+  }
+
+  return { primaryByRoot, triggersByPrimaryId, groupedAwayIds };
 }
 
 function buildLineageIndex(cas: CASOutput): Map<string, { writes: CASEntityLineage[]; reads: CASEntityLineage[] }> {
@@ -2167,12 +2272,41 @@ function deriveCapabilityOperationRoots(
   return roots;
 }
 
+/**
+ * Collapse immediately-ADJACENT duplicate words in an assembled name,
+ * case-insensitively — generic name-assembly hygiene (defect #3: a name
+ * template's own prefix combining with an independently-sourced token that
+ * already carries the same word, e.g. a "Scheduled " prefix template applied
+ * to an entity/handler name that already starts with "Scheduled", yielding
+ * "Scheduled Scheduled Scan"). Keeps the FIRST occurrence's casing; only
+ * strips a run of the SAME word repeated back-to-back — a legitimately
+ * repeated word elsewhere in the name (non-adjacent) is left untouched. A
+ * no-op on any name with no adjacent repeat. Not a special case for any one
+ * template: every name this file assembles from independently-derived parts
+ * (prefix + resolved token, verb + entity, …) is expected to route through
+ * this before it becomes a flow/step `name`.
+ */
+function dedupeAdjacentWords(name: string): string {
+  const words = name.split(/\s+/).filter(Boolean);
+  const out: string[] = [];
+  for (const w of words) {
+    const prev = out[out.length - 1];
+    if (prev !== undefined && prev.toLowerCase() === w.toLowerCase()) continue;
+    out.push(w);
+  }
+  return out.join(' ');
+}
+
 /** camelCase/kebab/snake -> "Title Case Words" — the one word-splitting
  *  transform every flow/step name path shares (never a keyword table, just
- *  boundary detection: case changes and separators). */
+ *  boundary detection: case changes and separators). Adjacent-duplicate
+ *  tokens are collapsed as the final step (dedupeAdjacentWords) so this
+ *  stays the single choke point every name assembled from raw identifier
+ *  text passes through. */
 function titleCaseWords(raw: string): string {
   const words = (raw || '').replace(/[-_]/g, ' ').replace(/([a-z0-9])([A-Z])/g, '$1 $2');
-  return words.split(' ').filter(Boolean).map(w => w[0].toUpperCase() + w.slice(1)).join(' ');
+  const title = words.split(' ').filter(Boolean).map(w => w[0].toUpperCase() + w.slice(1)).join(' ');
+  return dedupeAdjacentWords(title);
 }
 
 function flowNameForEntryPoint(ep: CASEntryPoint): string {
@@ -2827,9 +2961,35 @@ function buildTerminalFlows(
     (entryClassRank(a) - entryClassRank(b)) || a.id.localeCompare(b.id)
   );
 
+  // EVENT-VARIANT COLLAPSE (defect #2 — see groupEventVariantEntryPoints):
+  // applies here too when the collided handler's terminal chains ALSO resolve
+  // to real exit points (not just the entry-point-rooted union path below).
+  // One pass over `sorted` (already in the chosen output order) collects each
+  // distinct `event`-type entry point once, in that same order, so grouping's
+  // "earliest wins" tie-break matches the chain ordering above.
+  const eventEntryPoints: CASEntryPoint[] = [];
+  const seenEventEpIds = new Set<string>();
+  for (const c of sorted) {
+    const epId = c.entry_point.entry_point_id;
+    if (!epId || seenEventEpIds.has(epId)) continue;
+    const ep = entryById.get(epId);
+    if (!ep || ep.type !== 'event') continue;
+    seenEventEpIds.add(epId);
+    eventEntryPoints.push(ep);
+  }
+  const eventEntryOriginalIndex = new Map(eventEntryPoints.map((ep, i) => [ep.id, i]));
+  const { triggersByPrimaryId: terminalTriggersByPrimaryId, groupedAwayIds: terminalGroupedAwayEpIds } =
+    groupEventVariantEntryPoints(eventEntryPoints, eventEntryOriginalIndex);
+
   const flows: FlowConcept[] = [];
 
   for (const chain of sorted) {
+    if (
+      chain.entry_point.entry_point_id &&
+      terminalGroupedAwayEpIds.has(chain.entry_point.entry_point_id)
+    ) {
+      continue; // folded into its group's primary entry point's terminal flow, below.
+    }
     // Resolve the ordered chain nodes from the pre-computed call_path (this IS
     // the terminal chain — no re-tracing). Skip unresolvable path nodes rather
     // than fabricating; depth-bound and function-cap still honored so a flow's
@@ -3051,6 +3211,7 @@ function buildTerminalFlows(
       steps,
       terminus,
       step_graph: stepGraph,
+      triggers: rootEp ? terminalTriggersByPrimaryId.get(rootEp.id) : undefined,
       gaps: gaps.length ? gaps : undefined,
     });
     void rootNode; // rootNode resolution kept for symmetry / future naming; not required.
@@ -3244,6 +3405,14 @@ function computeEntryPointFlows(
     (entryOriginalIndex.get(a.id)! - entryOriginalIndex.get(b.id)!)
   );
 
+  // EVENT-VARIANT COLLAPSE (defect #2 — see groupEventVariantEntryPoints):
+  // N `event` entry points sharing one handler root are the SAME flow, not N
+  // near-duplicate ones. Non-primary members are skipped in the loop below;
+  // the primary's resulting flow carries every member's trigger label.
+  const { primaryByRoot, triggersByPrimaryId, groupedAwayIds } =
+    groupEventVariantEntryPoints(entryPoints, entryOriginalIndex);
+  void primaryByRoot;
+
   const exitPointsByNode = buildExitPointIndex(cas);
   const lineageByNode = buildLineageIndex(cas);
   const conditionalOut = buildConditionalOutIndex(cas);
@@ -3277,6 +3446,7 @@ function computeEntryPointFlows(
 
   for (const ep of entryPoints) {
     if (maxEntryFlows !== undefined && flows.length >= maxEntryFlows) break;
+    if (groupedAwayIds.has(ep.id)) continue; // folded into its group's primary entry point's flow, below.
     const rootNode = nodesById.get(ep.handler?.node_id || ep.source_node);
     if (!rootNode) continue;
 
@@ -3420,6 +3590,7 @@ function computeEntryPointFlows(
       contract: aggregateFlowContract(steps),
       steps,
       step_graph: stepGraph,
+      triggers: triggersByPrimaryId.get(ep.id),
       gaps: gaps.length ? gaps : undefined,
     });
   }

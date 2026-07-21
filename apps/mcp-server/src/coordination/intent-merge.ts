@@ -1,67 +1,30 @@
 /**
- * Intent-aware merge (Fabric-v2 #1, §1.7 SPEC-COORDINATION-FABRIC-V2 primitive
- * 5, "the art of merge"): when agents finish editing the same or related
- * code, reconcile by INTENT rather than by textual 3-way diff.
+ * Intent-aware merge: when agents finish editing the same or related code,
+ * reconcile by intent rather than textual 3-way diff. Git only answers
+ * whether lines overlap — it merges silently even when changes are jointly
+ * incoherent, and conflicts mechanically on overlap with zero understanding
+ * of whether edits are actually compatible in intent.
  *
- * Git (and any textual merge tool) answers one question: do the lines
- * overlap? If not, it merges silently — even when the two changes are
- * jointly incoherent (see conceptual-conflict.ts's whole reason for being).
- * If they DO overlap, git conflicts mechanically, with zero understanding of
- * whether the two edits are actually compatible in intent (e.g. one agent
- * adding retry and another adding logging to the same function body are
- * almost always compatible — orthogonal, additive, composable — yet a
- * textual merge on the same lines would still throw a conflict marker at a
- * human).
+ * For each symbol touched by the fleet:
+ *   - no conceptual conflict          -> auto_mergeable
+ *   - conceptual conflict detected    -> needs_resolution (never silently
+ *     auto-merged, even though it would pass a textual merge cleanly)
+ *   - duplicate-work conflict detected -> duplicate_work
  *
- * This module sits on top of the SAME AgentInFlightState[]/CAS the
- * conceptual-conflict detector consumes and answers a different, higher-level
- * question: for each symbol touched by the fleet, do the changes COHERE?
+ * Pure module: no IO. Imports from conceptual-conflict.ts rather than
+ * redefining, so this is a thin reasoning layer, not a parallel implementation.
  *
- *   - Multiple agents, no conceptual conflict          -> auto_mergeable
- *     (compatible intents that compose; includes the trivial single-agent
- *     case, since one agent editing a symbol nobody else touched always
- *     "merges" with nothing).
- *   - Multiple agents, conceptual conflict detected     -> needs_resolution
- *     (genuinely incoherent; a human or agent must decide — never silently
- *     auto-merged, even though it would pass a textual merge cleanly).
- *   - Multiple agents, duplicate-work conflict detected -> duplicate_work
- *     (same thing done twice; keep one, don't compose two copies).
+ * planIntentMerge (unchanged) takes AgentInFlightState[] from wherever the
+ * caller got it — still correct given a sound input, still right for a
+ * single-participant workspace. planIntentMergeFromSubstrate builds that same
+ * input from getAttributedInFlightState instead of ambient git diff, since a
+ * shared-tree git diff is unsound once more than one participant is on it.
+ * Symbols neither claim-attributed nor tiebreak-resolved are reported in an
+ * explicit `unattributed` bucket — never guessed, never silently folded into
+ * whichever agent happens to be asking.
  *
- * Pure module: no IO. Imports AgentInFlightState/SymbolChange/
- * detectConceptualConflicts from conceptual-conflict.ts rather than
- * redefining them, so this is a thin reasoning layer over the existing
- * detector, not a parallel implementation.
- *
- * W4 STEP 1 (docs/SPEC-COORDINATION-FABRIC-V3.md §8 W4, "re-base on W0, then
- * push from reconcile-at-the-end to never-diverge"): §3.2 proved the ORIGINAL
- * capture path here — git-ambient / self-reported `AgentInFlightState[]` — is
- * UNSOUND once more than one participant is on a shared tree ("every
- * participant's own diff is the union of everyone's"; this module's own "0
- * conflicts" verdict was correct by luck, not reasoning). `planIntentMerge`
- * itself (the pure reasoning core below — groupBySymbol + conflict
- * classification) is UNCHANGED and still correct GIVEN a sound
- * `AgentInFlightState[]` input; what changes is where that input comes from:
- *
- *   - `planIntentMerge` (unchanged): takes `AgentInFlightState[]` from
- *     WHEREVER the caller got it. Still the right function for a
- *     single-participant workspace, or a caller that already has a sound
- *     per-participant state list some other way — see `shouldUseSubstratePlan`.
- *   - `planIntentMergeFromSubstrate` (NEW): builds that same input from
- *     `getAttributedInFlightState` (in-flight-substrate.ts, W0) instead of
- *     ambient git diff — per-participant deltas attributed to active CLAIM
- *     SCOPE, with the write-hook's announced-edit/unclaimed-edit event log
- *     as a tiebreaker for anything a claim doesn't cover (W4 step 1's second
- *     attribution source). Symbols neither claim-attributed nor
- *     tiebreak-resolved are reported as an explicit, honest `unattributed`
- *     bucket on the returned plan — NEVER guessed, NEVER silently folded
- *     into whichever agent happens to be asking.
- *
- * Both paths also now compute the V3 §5/§9 MERGELESS METRICS
- * (`merge_decisions_required`, `surprises`) on every `MergePlan` — see
- * `computeMergelessMetrics` below. This step does not attempt full
- * continuous reconciliation (that is later W4 work); it is "sound
- * attribution + honest metrics," which is what makes driving those metrics
- * to 0 possible in the first place.
+ * Both paths compute the mergeless metrics (merge_decisions_required,
+ * surprises) on every MergePlan — see computeMergelessMetrics below.
  */
 
 import {

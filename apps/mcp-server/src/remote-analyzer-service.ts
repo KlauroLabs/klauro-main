@@ -40,9 +40,7 @@ const DEFAULT_MAX_BODY_BYTES = 100 * 1024 * 1024;
  *  Undefined when running unbundled via tsx — fall back to package.json. */
 declare const __KLAURO_VERSION__: string | undefined;
 
-/** The running service's version, for /health (deployed-version confirmation
- *  used to require fetching /dist/latest.json — the CLI dist manifest — which
- *  conflates the dist artifact with the running server). Resolved once. */
+/** Running service's version for /health — must reflect the deployed server, not the CLI dist manifest. */
 const SERVICE_VERSION: string | null = (() => {
   try {
     if (typeof __KLAURO_VERSION__ === 'string' && __KLAURO_VERSION__) return __KLAURO_VERSION__;
@@ -717,28 +715,11 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           });
           return;
         }
-        // #57 dogfood fix: a `claim_id` alone does NOT tell us which of the
-        // TWO release semantics to apply — both an ADVISORY claim (appendClaim,
-        // stored under its own exact claim_id, e.g. "wsp_x:agent_y") and an
-        // ENFORCED grant (grant-manager, stored wrapped as "grant:<ws>:<id>")
-        // live in the SAME per-workspace claims.jsonl (grant-manager.ts's own
-        // header: "grants are NOT a new store"). The old code assumed
-        // claim_id-present === "this is an enforced grant" and went straight
-        // to releaseGrant()/grantClaimId-wrapped lookup — which can never match
-        // an advisory claim's unwrapped id. That silently no-op'd (releaseGrant
-        // found no `prior` and returned) while this handler still answered
-        // `{status:'released'}` unconditionally: a false-positive success, and
-        // the advisory claim stayed active (and visible in
-        // /v1/coordination/active) until its TTL. Reproduced live against
-        // mcp.klauro.com 2026-07-18: claim(mode:advisory) -> release(claim_id
-        // echoed back) -> GET /active still showed the claim as active.
-        //
-        // Fix: try BOTH tiers by exact claim_id, in the order a caller is more
-        // likely to have meant (advisory claims are the more common HTTP path —
-        // fab_claim_work parity — and their ids are never ambiguous with a
-        // grant-manager id, which is always `grant_<...>` under the wrapped
-        // form). Report which tier matched; if NEITHER matches, say so honestly
-        // instead of claiming success.
+        // A claim_id alone doesn't say which store it belongs to: advisory
+        // claims and enforced grants share one claims.jsonl under different
+        // key shapes (grant ids are always `grant_<...>`). Must try both
+        // tiers by exact id and report which matched, or say so if neither did —
+        // never answer 'released' without having found and released a match.
         const advisoryReleased = await releaseClaimById(body.workspace, body.agent_id, body.claim_id);
         if (advisoryReleased) {
           broadcastCoordinationEvent(body.workspace, 'release', {
@@ -1551,34 +1532,12 @@ async function describeGrantHolders(
   return out;
 }
 
-/**
- * The account-scoping salt for `makeAnalysisId`'s fallback (bare path/name
- * hash) path — see makeAnalysisId's doc comment for the bug this closes.
- * Only a real authenticated account (`clientId === 'user:<id>'` from
- * authorizeAnalyzerRequest) yields a salt; shared-token and anonymous
- * requests (and the ip-address clientId anonymous fallback) return
- * `undefined`, preserving the pre-fix unsalted hash for those callers (there
- * is no per-account keyspace to collapse into when there is no account).
- */
+/** Only a real authenticated account yields a salt for makeAnalysisId's fallback hash — shared-token/anonymous callers have no per-account keyspace to collapse into. */
 function accountSaltFor(clientId: string | undefined): string | undefined {
   return clientId && clientId.startsWith('user:') ? clientId : undefined;
 }
 
-/**
- * §COORD-AUTH-401 — honest-cause classification for a rejected Bearer token,
- * shared by both authorize* functions below so `/v1/coordination/*` and
- * `/api/*` report the SAME reason for the SAME underlying cause (they were
- * previously indistinguishable behind one generic string, which is what made
- * a silently-evicted session — see AccountStore.mutate() — look like a
- * coordination-specific bug instead of the account-store-wide one it is).
- *  - 'no_token'      — no Authorization header/Bearer token present at all.
- *  - 'not_recognized'— a token WAS presented but no session (or the shared
- *    token) matched it: expired past its 14-day TTL, or — the actual fleet
- *    incident this classification exists for — a session record that WAS
- *    valid a moment ago and was silently dropped by a lost-update race in
- *    AccountStore (fixed by AccountStore.mutate(), but a caller still needs
- *    to be told "not your fault, re-authenticate" rather than a bare 401).
- */
+/** Shared rejection-reason classification so /v1/coordination/* and /api/* report the same cause for the same failure. */
 export type AuthRejectReason = 'no_token' | 'not_recognized';
 
 export function authRejectMessage(reason: AuthRejectReason, surface: 'coordination' | 'api'): string {
@@ -1592,13 +1551,8 @@ export function authRejectMessage(reason: AuthRejectReason, surface: 'coordinati
 async function authorizeAnalyzerRequest(accounts: AccountStore, request: http.IncomingMessage, sharedToken: string | undefined): Promise<{ authorized: boolean; clientId?: string; reason?: AuthRejectReason }> {
   const token = bearerToken(request);
   if (sharedToken && token && token === sharedToken) return { authorized: true, clientId: 'shared-token' };
-  // Always try to resolve a real account user from the Bearer token first —
-  // this is what lets linkAnalysisToAccountProject identify the pushing user
-  // (`user:<id>`) and safely attach the analysis to their project. Without
-  // this check, a server run with no KLAURO_ANALYZER_TOKEN configured (the
-  // common self-hosted/dev shape, and every /v1/* request in that mode)
-  // never even attempted to authenticate the Bearer token AccountStore-side,
-  // so every push looked anonymous and the analysis could never attach.
+  // Must attempt account auth even with no shared token configured, or every
+  // push looks anonymous and can never attach to the pushing user's project.
   if (token) {
     const user = await accounts.authenticate(token);
     if (user) return { authorized: true, clientId: `user:${user.id}` };
@@ -2434,16 +2388,8 @@ async function handleAccountApi(
         }
       }
       const cas = await getAnalysis(workspace);
-      // BUG FIX: `include=full` is meant to inline the heavy evidence tiers
-      // (contract facet_provenance, step code_mappings) — the caller-facing
-      // strip below already skips its OWN post-processing when include=full,
-      // but that strip only removes what's still present. getFlowConcepts
-      // itself defaults to `detail: 'compact'` (opts.detail !== 'full') and
-      // was never told which mode this caller wants, so it unconditionally
-      // stripped facet_provenance/code_mappings before the HTTP-layer strip
-      // ever ran — include=full silently had no effect on the actual
-      // provenance bodies, only on a no-op second strip. Forward `include`
-      // through as `detail` so 'full' really means full end-to-end.
+      // Must forward include as detail — getFlowConcepts strips facet_provenance/code_mappings
+      // by default regardless of the HTTP-layer include=full strip being skipped.
       // TELEMETRY facet (ICELOT facet 6): join persisted runtime metrics onto
       // flow/step contracts, evidence-gated — omitted (not fabricated) when no
       // observation matches. This endpoint previously never loaded or passed
@@ -2657,24 +2603,9 @@ async function handleAccountApi(
     const dataDirForBackground = dataDir;
     const workspaceIdForBackground = project.workspace_id;
 
-    // ASYNC REANALYZE (task: large-repo reanalyze never persisted). A 27k-node
-    // full rebuild (which an analyzer-build version bump forces — see
-    // orchestrator.fullRebuildReasonForPreviousOutput) + inline AI comprehension
-    // takes minutes, far exceeding the Cloudflare edge (~125s) and the client
-    // POST timeout (~30s). The OLD code awaited analyzeProjectIncremental
-    // SYNCHRONOUSLY inside this handler and only returned 200 on completion, so
-    // the connection dropped (524/000) long before the fresh analysis landed and
-    // large repos stayed frozen at their old timestamp forever.
-    //
-    // Fix: answer 202 immediately and run the full layered analysis in the
-    // background (survives client disconnect). Uses analyzeProjectLayered — the
-    // SAME entrypoint the async /v1/analyze path uses — so L0 lands in seconds,
-    // then L1-L4, then L5 AI comprehension, each stamping layers_ready as it
-    // completes and persisting via saveAnalysis. Clients poll
-    // GET /api/projects/{id}/analysis (layers_ready.L5) for completion. The
-    // version-bump full-rebuild invalidation (orchestrator ~2133) fires inside
-    // analyzeProjectIncremental/Layered exactly as before, so a fresh deploy
-    // forces a fresh FULL analysis rather than reusing stale derived artifacts.
+    // Must answer 202 and run analyzeProjectLayered in the background — a full
+    // rebuild can take minutes, well past the edge/client request timeout, so
+    // awaiting it synchronously drops the connection before the analysis lands.
     let manifestForResponse: SourceManifest;
     let baseCommitForResponse: string | undefined;
     if (sourceRoot === workspace) {
@@ -3040,35 +2971,11 @@ function anonymizeClient(clientId: string): string {
   return crypto.createHash('sha256').update(clientId).digest('hex').slice(0, 16);
 }
 
-// Incident (2026-07-18): handleAnalyze/handleAnalyzeDiff/handleSync used to call
-// analyzeProjectIncremental() DIRECTLY, running the full incremental-or-rebuild
-// analysis (parsing, embedding, everything) IN-PROCESS inside the same node
-// process as the HTTP listener. analyzer.ts already has a purpose-built
-// isolation mechanism for exactly this (runAnalysis() -> dispatchWorkerJob(),
-// a forked child capped at KLAURO_ANALYSIS_HEAP_MB via --max-old-space-size,
-// whose crash/OOM is caught and reported as a clean run-failed record — "The
-// MCP server itself is unaffected") but these three HTTP handlers never used
-// it, because the worker's IPC round-trip only returns an AnalysisRunSummary
-// (stats), not the full CASOutput these handlers must return in `cas`.
-//
-// Observed effect: a version-triggered full rebuild of a large monorepo grew
-// the MAIN api process's heap past the host's total RAM (7.7GiB, no
-// container memory limit configured), and the kernel's HOST-WIDE OOM killer
-// (constraint=CONSTRAINT_NONE in dmesg — not a cgroup-limit kill, so
-// `docker inspect`'s .State.OOMKilled never reported it) SIGKILLed the node
-// process directly — no chance to log anything. Docker's `restart:
-// unless-stopped` policy revived the container, the stored analysis was
-// still on the old cas_version (the killed rebuild never finished), so the
-// next sync/analyze call re-triggered the same rebuild — repeating every
-// ~5-7 minutes, indefinitely, and the rebuild never completes.
-//
-// Fix: dispatch through runAnalysis() (worker-isolated, heap-capped) and
-// re-load the full CASOutput from storage afterward via getAnalysis() —
-// the worker already persisted it via saveAnalysis/saveAnalysisSnapshot
-// inside analyzeProjectIncremental, so this is a cheap disk read, not a
-// second analysis. A worker OOM now surfaces as a normal thrown error from
-// runAnalysis() (existing callers' try/catch already handle "analysis
-// failed"), not a dead API process.
+// Must dispatch through runAnalysis()'s worker-isolated, heap-capped child rather
+// than running the rebuild in-process — an in-process OOM takes the whole API
+// server down with it, and the crash-loop repeats forever since the version-bump
+// invalidation never lets the stale analysis stick. Reload CASOutput from storage
+// after the worker returns (it already persisted via saveAnalysis).
 async function runIncrementalAnalysisIsolated(
   workspace: string,
   displayName: string | undefined,
@@ -3820,60 +3727,14 @@ function scheduleWorkspaceReanalyze(
 }
 
 /**
- * §P0 fix (2026-07-06 cold-customer cross-tenant bleed) — analysis storage
- * (`workspacePath(dataDir, analysisId)`) is a shared, flat directory keyed
- * ONLY by whatever id reaches this function's call sites. Before this fix,
- * every call site used `request.project_id || makeAnalysisId(request.project_path
- * || ...)` directly. Critically, the CLI/client (remote-sync-client.ts's
- * `defaultAnalysisId`) ALWAYS sends a non-empty `project_id`, even for a repo
- * never connected to any account: `resolveAnalysisId` falls back to
- * `defaultAnalysisId(projectPath) = sha256(path.resolve(projectPath))`
- * client-side whenever `.klaurorc` has no bound `project.id` yet. That value
- * is a BARE, UNSALTED hash of the local filesystem path, identical for every
- * account whose repo happens to be checked out at the same absolute path (a
- * routine occurrence on a shared devbox, CI runner, or simply two people who
- * both `git clone` to the same conventional directory name). Because the
- * client-sent value was always truthy, the server's own
- * `|| makeAnalysisId(...)` fallback never even ran: the raw client hash was
- * trusted verbatim as the on-disk storage key, so account B's very first
- * analyze silently read/overwrote account A's stored CAS at the identical
- * `workspacePath`, and any tool resolving by that id (reanalyze, MCP resolve,
- * revisions) served account A's real data to account B. That is exactly what
- * the cold-customer audit reproduced end-to-end via the live API.
- *
- * FIX: every call site that turns a client-supplied id into a storage key now
- * routes through this function instead of trusting `project_id` verbatim.
- * Rule:
- *  - `rawId` that already looks like an AccountStore project id (`prj_...`)
- *    is returned UNCHANGED: it is already globally unique (server-generated
- *    by AccountStore.createProject) and every read of it is already
- *    authorization-checked via getProjectForUser/requireMembership, so there
- *    is no collision risk and no need to re-derive it.
- *  - `rawId` that already carries this function's own `acct_` output prefix
- *    (see below) is ALSO returned unchanged. This is the idempotency case: a
- *    client legitimately round-trips the salted id it was handed back on the
- *    first `/v1/analyze` response (e.g. `analyzeCodebaseRemotely({
- *    analysisId })` on a re-push, or `/v1/sync`'s `analysis_id`) — without
- *    this check, re-salting an already-salted id on every subsequent request
- *    would compute a DIFFERENT storage key each time and break the very
- *    re-push/sync idempotency the pre-existing test suite already covers
- *    (account-workspace-analysis.test.ts's debounced-batch-push test caught
- *    this: a naive "always salt" version regressed it).
- *  - Any other `rawId` (the bare, unprefixed path/name hash — the exact
- *    collision case above) is RE-DERIVED by folding the authenticated
- *    account (`accountSalt` = `user:<id>` from authorizeAnalyzerRequest)
- *    into the hash and prefixing the result with `acct_`, so the same raw
- *    value from two different accounts maps to two different, clearly-
- *    tagged storage keys, collapsing the previously shared keyspace into a
- *    per-account one. Deterministic per (account, rawId) pair, so the SAME
- *    account's later `/v1/sync` call (which resends the id from its own
- *    `/v1/analyze` response) still resolves to the workspace its own
- *    `/v1/analyze` created — and, by the previous bullet, does not get
- *    re-salted a second time.
- *  - `accountSalt` undefined (anonymous / shared-token request, no account to
- *    namespace by) preserves the exact pre-fix unsalted hash, so
- *    self-hosted/no-auth deployments and the shared-analyzer-token flow are
- *    byte-for-byte unchanged.
+ * Every client-supplied analysis id must route through here before use as a
+ * storage key: a bare path hash is unsalted and identical across accounts
+ * checked out at the same path, so two accounts would silently share (and
+ * overwrite) one CAS. Rules: `prj_...` ids pass through unchanged (already
+ * globally unique + auth-checked); already-salted `acct_...` ids pass through
+ * unchanged (idempotency for re-push/sync — do not double-salt); anything
+ * else gets folded with `accountSalt` into a per-account `acct_` key.
+ * `accountSalt` undefined (anonymous/shared-token) preserves the raw hash.
  */
 function resolveStorageAnalysisId(rawId: string, accountSalt: string | undefined): string {
   if (/^prj_/.test(rawId) || /^acct_/.test(rawId)) return rawId;
@@ -3881,38 +3742,14 @@ function resolveStorageAnalysisId(rawId: string, accountSalt: string | undefined
 }
 
 /**
- * Real display name for a project, computed BEFORE the hash-workspace swap
- * (analysisId/workspace is a sha256-derived directory name — see
- * makeAnalysisId/workspacePath — so `path.basename(workspace)` downstream
- * would otherwise resolve to the hash).
- *
- * Prefers the basename of the real, caller-supplied `project_path` (this is
- * what the actual product client sends — see remote-sync-client.ts — and is
- * always the user's real local repo directory) over the snapshot's
- * `project_name`, because `project_name` itself falls back to
- * `path.basename(root)` of whatever directory was walked to build the
- * snapshot (see buildSourceSnapshot in remote-source.ts) — for a staged/
- * temporary source tree (e.g. a bench harness staging into a throwaway git
- * repo) that basename is the STAGING directory, not the real project. Only
- * falls back to `project_name` when no `project_path` was supplied at all.
+ * Must compute the display name before the hash-workspace swap, and prefer
+ * project_path's basename over the snapshot's project_name — the latter can
+ * resolve to a staging directory for a staged/temporary source tree.
  */
 /**
- * Mark a background analysis as FAILED, visibly and terminally.
- *
- * The async analyze/reanalyze paths return 202 immediately and finish the real
- * work in the background. Their catch blocks used to only console.error +
- * audit-log, which left the persisted L0 CAS with L1..L5 still 'pending' — and
- * the status endpoint reports 'populating' while ANY layer is pending. So a
- * crashed analysis sat "populating" FOREVER with errors:0: an infinite wait
- * rather than a failure. Measured on 2026-07-16, when a torn deploy made every
- * analysis die with a ReferenceError and no surface anywhere said so.
- *
- * This mirrors the L5 precedent (a failed AI pass marks ai_enrichment='error'
- * so it is a VISIBLE terminal state, never a silent stay-pending) and applies
- * the same rule to the structural layers: flip every still-pending layer to
- * 'error' carrying the reason, so the ladder stops claiming work is coming and
- * callers can see what broke. Best-effort: never throws (it runs inside a
- * catch — it must not mask the original failure).
+ * Marks every still-pending analysis layer 'error' so the status endpoint
+ * stops reporting 'populating' forever after a crashed background analysis.
+ * Must never throw — runs inside a catch and must not mask the original failure.
  */
 async function markBackgroundAnalysisFailed(workspacePath: string, detail: string): Promise<void> {
   try {

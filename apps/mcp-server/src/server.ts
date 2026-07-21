@@ -175,41 +175,17 @@ async function getAnalysis(projectPath: string, options?: { track?: import('./tr
 }
 
 /**
- * TELEMETRY facet (facet 6 of the uniform understanding contract): load
- * persisted runtime observations for `path` and roll them up into per-node
- * metrics (product.buildNodeRuntimeMetrics), returning them in the shape the
- * flow/coding-context telemetry join consumes. Best-effort and evidence-gated:
- * returns [] when there are no observations, so the join simply omits the
- * facet — nothing is fabricated. Reuses `path` as the workspace key, the same
- * convention get_runtime_observations / ingest_telemetry / get_coding_context
- * already use.
- *
- * BUG FIX: this used to call storage.ts `loadRuntimeObservations` directly,
- * which only reads the LEGACY runtime-observations.json store (populated by
- * record_runtime_event / simulate_runtime_telemetry). It silently missed the
- * `ingested` store (telemetry-ingestion.ts, populated by ingest_telemetry,
- * the `/api/telemetry/runtime-events/:projectId` SDK route, and Klauro's own
- * self-telemetry loop — see self-telemetry.ts) — i.e. exactly the sources of
- * real production traffic. `get_runtime_observations` (below) already reads
- * through `telemetryIngestion.loadTelemetryObservations`, which merges both
- * stores and defaults to `source: 'ingested'`; this facet now does the same,
- * plus the same lazy backfill/re-correlation upgrade, so a node that already
- * has real ingested telemetry but was persisted before its CAS existed still
- * shows up correlated instead of "unmatched".
+ * Loads persisted runtime observations for `path` and rolls them up into
+ * per-node metrics for the flow/coding-context telemetry join. Best-effort:
+ * returns [] when there are no observations rather than fabricating a facet.
+ * Must read through telemetryIngestion.loadTelemetryObservations (merges the
+ * legacy runtime-observations.json store with the ingested store) — reading
+ * only the legacy store silently misses real production traffic.
  */
 /**
- * Candidate telemetry storage keys for `path`: the literal caller-supplied
- * path, PLUS (when different) the root path the CAS itself records it was
- * analyzed from (`cas.system.root_path`). Telemetry is persisted per
- * project-path bucket (see `getProjectStorageDir`/`projectSlug` in storage.ts,
- * a hash of the literal path string), so an ingest source that used the
- * ANALYZED root as its project id — the natural, most-common wiring for any
- * self-instrumented or SDK-instrumented service, not specific to any one
- * project — lands observations under a key the caller's own `path` argument
- * may not literally match (e.g. a hosted-bound caller path vs the root the
- * hosted analysis itself was produced from). Trying both is a strict,
- * evidence-gated widening: a project with no such alternate root, or whose
- * root already equals `path`, behaves exactly as before.
+ * Telemetry may be keyed by the analyzed root path rather than the caller's
+ * literal path — try both so a project with no such alternate root behaves
+ * exactly as before.
  */
 function telemetryProjectPathCandidates(cas: CASOutput, path: string): string[] {
   const candidates = [path];
@@ -244,50 +220,14 @@ async function runtimeMetricsForContract(cas: CASOutput, path: string): Promise<
 }
 
 /**
- * GAP #32 fix — telemetry -> ENTRY-POINT keying.
- *
- * `product.buildNodeRuntimeMetrics` (the read-side rollup `runtimeMetricsForContract`
- * returns) already groups a runtime observation under whatever the RICHEST key
- * available is: a resolved CAS static/node id when correlation succeeded, else the
- * raw `method + route` the observation carried (see `buildNodeRuntimeMetrics`'
- * grouping key, apps/mcp-server/src/product.ts). But `get_entry_points` — unlike
- * `get_flow_concepts`/`get_coding_context` (which resolve a single node and pick up
- * `product.buildNodeRuntimeMetrics`' output via a node-id join) — never consulted
- * runtime metrics at all: it returned bare `cas.entry_points` slices, so an entry
- * point's own request_count/error_rate/p50-p95-p99 never appeared anywhere, even
- * when a metric existed for its exact route+method.
- *
- * The deeper reason a route-level join is the right key (not just node id): a very
- * common real-world telemetry source — Klauro's own self-telemetry loop
- * (self-telemetry.ts) among others — emits one runtime event per completed HTTP
- * request carrying method+route+status+duration, and correlation against a CAS
- * node is BEST-EFFORT (stack-frame/file-hint matching, see telemetry-ingestion.ts
- * `resolveHintNode` and product.ts `correlateRuntimeEvent`). When that correlation
- * misses or lands on the wrong node (e.g. a differing container mount root that
- * `filesLikelySameSource` still can't bridge), the observation is still carrying a
- * perfectly good method+route — the SAME identity the entry point's own
- * `trigger.method`/`trigger.path` already records. Keying the entry-point join off
- * the route (normalized, with light param-wildcard tolerance so `/invoices/:id` and
- * `/invoices/123` are treated as the same entry) closes that gap without requiring
- * node-level correlation to succeed at all.
- *
- * Matching precedence per entry point (first hit wins, so an exact CAS-level
- * correlation is always preferred over the route fallback):
- *   1. entry point id === metric static_id / entry_point_id
- *   2. entry point handler.node_id or source_node === metric node_id
- *   3. entry point trigger.method + trigger.path routes-compatible with the
- *      metric's method + route (case-insensitive, trailing-slash-insensitive,
- *      `:param`/`{param}` segments treated as wildcards)
- *
- * Backward compatible: an entry point with no matching metric (or when there are
- * no runtime metrics at all) is returned completely unchanged — no `telemetry` key
- * is ever added, so existing consumers that don't expect the field see no diff.
- * This is also where any OTHER optional per-entry-point field an analyzer pass may
- * have added (`input`, `output`, `security`, `capabilities`, `interaction_reach`,
- * `deployable_id`, `deployable_name`) passes through untouched: entry points are
- * spread verbatim (`{ ...ep, telemetry }`), never reconstructed field-by-field, so
- * an absent optional field simply never appears in the spread and a present one
- * always does — safe whether or not those analyzer-side fields exist yet.
+ * Joins runtime metrics onto entry points by route, not just node id — node
+ * correlation is best-effort and often misses, but the observation still
+ * carries the same method+route identity as the entry point's own trigger.
+ * Match precedence (first hit wins): (1) id === metric static_id/entry_point_id,
+ * (2) handler.node_id/source_node === metric node_id, (3) route-compatible
+ * method+path (case/trailing-slash-insensitive, :param/{param} as wildcards).
+ * An entry point with no matching metric is returned unchanged — no telemetry
+ * key added. Other optional per-entry fields pass through via spread, untouched.
  */
 export function normalizeEntryRoute(value: string): string {
   return value
@@ -822,51 +762,15 @@ async function describeGrantHolders(
 }
 
 /**
- * Wiring for `check_conceptual_conflicts` / `check_collision` (§1.7
- * SPEC-COORDINATION-FABRIC-V2, "ambient in-flight capture").
- *
- * UPDATED (Fabric-v2 #2): conceptual-conflict detection is no longer
- * exclusively agent-reported. `coordination/in-flight-capture.ts`'s
- * `captureInFlightChanges()` derives a `SymbolChange[]` AMBIENTLY from an
- * agent's actual git working-tree diff (`git diff --name-status HEAD` +
- * before/after content via `git show`), with full syntactic before/after
- * signature diffing for TypeScript/JavaScript files (functions, methods,
- * arrow-function bindings: signature/return-type/nullability/params) and an
- * honest "unknown-change" fallback (`body`/`delete`, no fabricated shape) for
- * every other language and for deletes we can't otherwise diff. See that
- * module's header for the full scope statement.
- *
- * `ambientChangesForWorkspace` below calls this treating `workspace` as the
- * agent's own repo working tree (the common case: `workspace` is a repo path)
- * — best-effort, silently empty if `workspace` isn't a git repo or the
- * capture throws for any reason, so a non-git workspace id degrades to
- * exactly today's agent-reported-only behavior. The ambient changes are
- * MERGED with (not a replacement for) whatever the agent explicitly reports:
- * `check_conceptual_conflicts` still accepts a `changes` argument as a
- * conscious top-up/override (e.g. it can carry before/after detail for a
- * non-TS/JS language this module can't syntactically diff), and
- * `check_collision` still accepts `changes` for the same reason. But an agent
- * that calls EITHER tool with no `changes` at all is no longer silent to the
- * fleet: its ambient TS/JS contract changes are captured and persisted the
- * same way a self-report would be, so OTHER agents' next check sees them —
- * "the fabric now sees what others are changing — conceptual conflicts
- * surface automatically."
- *
- * Persistence mechanism is unchanged from the original design: a
- * `__conceptual__` JSON marker embedded in a `WorkClaim.intent` string (the
- * same technique grant-manager.ts uses for its `__grant__` marker), appended
- * to the SAME same-machine claim log local-store.ts already owns
- * (`appendClaim`/`readClaimLog`). No new store, no edits to coordination/
- * store modules beyond the additive `InFlightSnapshot.changes` field in
- * types.ts.
- *
- * HONEST REMAINING SCOPE: this is still a same-machine, single-repo capture —
- * it reads `workspace` as one git working tree, not a fleet-wide remote view
- * of every agent's checkout. Cross-machine ambient capture (each remote
- * agent's diff arriving via `POST /v1/coordination/in-flight` populating its
- * own `InFlightSnapshot.changes`) is real, valuable follow-on work in
- * remote-analyzer-service.ts (out of this workstream's owned files) — flagged,
- * not faked here.
+ * Wiring for check_conceptual_conflicts / check_collision (§1.7
+ * SPEC-COORDINATION-FABRIC-V2, "ambient in-flight capture"). Derives ambient
+ * SymbolChange[] from the calling agent's git working-tree diff so an agent
+ * calling either tool with no explicit `changes` is not silent to the fleet;
+ * ambient changes are merged with, not a replacement for, explicit reports.
+ * Persists via the same `__conceptual__` marker technique grant-manager.ts
+ * uses for `__grant__`, appended to the existing claim log — no new store.
+ * Still same-machine/single-repo only; cross-machine ambient capture is
+ * unimplemented follow-on work, not faked here.
  */
 
 /**
@@ -991,25 +895,13 @@ async function conceptualConflictCasForWorkspace(workspace: string): Promise<Con
 }
 
 /**
- * ALWAYS-ON conceptual vocabulary for the fabric (§4 SPEC-CONCEPTUAL-LAYER.md).
- *
- * POSTURE: this is not a collision-only special mode — the fabric represents
- * every active agent's flow/step/capability scope BY DEFAULT, whether or not
- * it overlaps anyone else's. Ambient capture (`ambientChangesForWorkspace`,
- * already unconditional for every `check_collision`/`check_conceptual_conflicts`
- * call regardless of whether a collision is found) is mirrored here for
- * conceptual coordinates: `deriveConceptualCoordinate` runs for EVERY claim/
- * caller that supplies paths/symbols, disjoint or not, because awareness has
- * value with zero overlap — dedup visibility, conceptual coherence across the
- * fleet, standing readiness to notice the moment two agents' scopes DO
- * converge. Overlap/conflict classification (`compareConceptualCoordinates`)
- * is a strict SUBSET filter applied on top of this always-computed
- * representation, never a gate on whether the representation happens at all.
- *
- * Best-effort/degrading: a `workspace` with no analyzable CAS, or one whose
- * CAS has no entry_points to root flows from, yields an empty index — every
- * claim then simply carries no concept (honest degrade to file/symbol-only
- * coordination, exactly today's behavior), never a fabricated coordinate.
+ * Conceptual vocabulary for the fabric (§4 SPEC-CONCEPTUAL-LAYER.md), always
+ * computed — not gated on collision. Every claim/caller supplying paths/symbols
+ * gets a derived conceptual coordinate regardless of overlap; overlap/conflict
+ * classification is a filter applied on top, never a gate on the computation
+ * itself. Best-effort: a workspace with no analyzable CAS or no entry_points
+ * yields an empty index (honest degrade to file/symbol-only coordination),
+ * never a fabricated coordinate.
  */
 async function conceptIndexForWorkspace(workspace: string): Promise<ConceptIndex> {
   try {
@@ -5977,36 +5869,21 @@ function registerTools(server: McpServer) {
     })
   );
 
-  // -- Advisory coordination fabric over MCP (CLI-parity for fab.ts) --
-  // These four tools expose the SAME advisory, awareness-first local-store
-  // primitives that apps/mcp-server/scripts/fab.ts drives from the shell, so a
-  // fleet coordinates through the product's MCP surface instead of a private
-  // script (the "coordination fabric is CLI-only" open item). They are
-  // deliberately DISTINCT from the enforced grant surface (claim_work /
-  // check_collision / release_work / get_active_agents above, backed by the
-  // grant-manager): those take/queue an ENFORCED one-grant-per-symbol lease;
-  // these are advisory claims (appendClaim / checkEditLock / getActiveClaims /
-  // releaseAgent) that never block — a claim always succeeds, collisions are
-  // surfaced as awareness, not refusals. Same semantics as fab.ts.
+  // Advisory coordination fabric over MCP (CLI-parity for fab.ts). Distinct
+  // from the enforced grant surface (claim_work/check_collision/release_work/
+  // get_active_agents, backed by grant-manager): those take an enforced
+  // one-grant-per-symbol lease; these advisory claims never block — collisions
+  // surface as awareness, not refusals.
   //
-  // Transport + workspace resolution is CONFIG-DRIVEN (coordination/
-  // fabric-config.ts): once `klauro init` (or `klauro fabric on`) has persisted a fabric section
-  // into the repo's .klaurorc (found by walking up from this server process's
-  // cwd), these tools go remote automatically — no env vars per shell/agent.
-  // Precedence: explicit `workspace` arg > .klaurorc fabric > FAB_* env
-  // escape hatch (CI) > local fabric with the stable 'poc' fallback (never
-  // the cwd basename — that was the papercut that let a claim land under the
-  // wrong workspace).
-  // Resolve fabric settings for an advisory fab_* call. process.cwd() alone is
-  // fragile: a globally-registered MCP server whose cwd is NOT inside the repo
-  // would never find the repo's .klaurorc, so fabric silently stays LOCAL with
-  // no reason. Fix: seed the config search with the roots of already-analyzed
-  // projects (reusing the analysis registry — the same path resolution the
-  // analysis tools use), preferring one whose name/basename matches the
-  // requested workspace, so the repo's fabric config is found regardless of
-  // where the server process was launched. process.cwd() and KLAURO_FABRIC_CWD
-  // remain in the search chain (handled inside resolveFabricSettings), so the
-  // original cwd path is preserved and this only ADDS reach.
+  // Transport + workspace resolution is config-driven: once `klauro init` (or
+  // `klauro fabric on`) has persisted a fabric section into .klaurorc, these
+  // tools go remote automatically. Precedence: explicit workspace arg >
+  // .klaurorc fabric > FAB_* env escape hatch (CI) > local fabric with the
+  // stable 'poc' fallback — never the cwd basename, which can land a claim
+  // under the wrong workspace.
+  // Must seed the config search with already-analyzed project roots, not just
+  // process.cwd() — a globally-registered MCP server's cwd may not be inside
+  // the repo, which would leave fabric silently stuck local with no reason.
   const advisoryFabricSettings = async (workspace?: string) => {
     let searchDirs: string[] = [];
     try {
@@ -6029,16 +5906,9 @@ function registerTools(server: McpServer) {
       // Registry unreadable: fall back to the cwd/env chain only (unchanged behavior).
     }
     const settings = await resolveFabricSettings({ searchDirs, cwd: process.cwd(), explicitWorkspace: workspace });
-    // W5 MCP-server lifecycle activation (SPEC-COORDINATION-FABRIC-V3 §8):
-    // this is the choke-point where the long-lived MCP server process
-    // resolves "which repo, which workspace id" for a fabric-aware call —
-    // the natural place to make awareness ambient with zero extra opt-in
-    // beyond the `klauro fabric on`/`klauro init` the workspace already ran.
-    // `shouldActivateWriteHook` keeps a never-opted-in workspace fully inert;
-    // `ensureWriteHookStarted` is idempotent per workspace id, so repeated
-    // fab_* calls in one session start the watcher at most once. Never
-    // crashes the caller — `startWriteHook` itself never throws, and any
-    // async error inside the watcher only reaches `onError` below.
+    // shouldActivateWriteHook keeps a never-opted-in workspace fully inert;
+    // ensureWriteHookStarted is idempotent per workspace id and must never
+    // crash the caller — async errors inside the watcher only reach onError.
     if (shouldActivateWriteHook(settings)) {
       const root = settings.configPath ? nodePath.dirname(settings.configPath) : (searchDirs[0] ?? process.cwd());
       ensureWriteHookStarted(root, settings.workspace, {
@@ -6053,22 +5923,11 @@ function registerTools(server: McpServer) {
   };
 
   /**
-   * CAS+WAS-backed advisory overlap for the LOCAL fab_* path — the blast-radius
-   * + cross-repo upgrade over the legacy path-only `checkEditLock`. Reuses the
-   * existing analysis machinery (`partitionCasForPath` for same-repo CAS,
-   * `resolveWorkspaceAnalysisForPaths` for the workspace WAS) and hands both to
-   * `computeAdvisoryOverlap` (context-fabric.ts).
-   *
-   * Return shape is a STRICT SUPERSET of `checkEditLock`'s `EditLockConflict[]`
-   * (agent_id, claim_id, paths, overlapping_paths preserved) so existing callers
-   * — `conflicts.length`, `conflicts.map(c => c.agent_id)`, the JSON `conflicts`
-   * field — keep working unchanged; the added fields (overlapping_symbols,
-   * reason, cas_derived, was_derived, shared_surface) are pure enrichment.
-   *
-   * Advisory + non-blocking + graceful: every resolution is best-effort and
-   * `computeAdvisoryOverlap` never throws, so on any failure this degrades to
-   * the plain path-only `checkEditLock` result (never fewer signals than before,
-   * never an error, never a gate).
+   * CAS+WAS-backed advisory overlap for the local fab_* path. Return shape is a
+   * strict superset of checkEditLock's EditLockConflict[] so existing callers
+   * keep working unchanged; added fields are pure enrichment. Must degrade to
+   * the plain path-only checkEditLock result on any failure — never fewer
+   * signals than before, never an error, never a gate.
    */
   const advisoryOverlapConflicts = async (
     ws: string,

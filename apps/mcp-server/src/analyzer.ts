@@ -1557,30 +1557,17 @@ function buildChangeHistoryEntry(result: IncrementalAnalysisResult): ChangeHisto
 
 // --- Analysis lane pool ------------------------------------------------
 //
-// getOrchestrator() used to hand every analysis the SAME process-wide
-// AnalyzerOrchestrator singleton. That instance carries per-analysis mutable
-// state (activeAnalysisProjectPath, projectRoots, discovery/inventory caches,
-// embeddingPhaseConfig set via configureEmbedding()), so two analyses of
-// DIFFERENT projects running concurrently on it would interleave and clobber
-// each other — one project's analyzers could run against another's roots and
-// silently emit nothing. `withGlobalAnalysisLock` used to serialize ALL
-// analyses process-wide to avoid that, which is why a 6-repo batch ran end to
-// end (~11 min) instead of finishing in ~one slowest-repo's time.
-//
-// Fix: each concurrent analysis gets its OWN orchestrator instance (via
-// createOrchestrator(), the same factory getOrchestrator() uses for its
-// singleton — construction is just building analyzer objects and registering
-// them, no I/O, so a fresh instance per call is cheap), so there is no shared
-// mutable state between concurrently running analyses and the per-project
-// file lock (withProjectAnalysisLock) is the only serialization same-path
-// runs need. Concurrency is still bounded by a small permit pool — Node
-// analysis is CPU-bound and a 27k-node repo holds significant memory, so
-// unbounded parallelism would thrash the VPS; a fixed number of permits queues
-// extra work FIFO instead of running it all at once.
+// Each concurrent analysis must get its own orchestrator instance
+// (createOrchestrator(), cheap: construction is just building/registering
+// analyzer objects, no I/O) — a shared singleton carries per-analysis mutable
+// state (active project path, discovery/inventory caches, embedding config),
+// so concurrent analyses of different projects would interleave and clobber
+// each other's state. withProjectAnalysisLock is the only serialization
+// same-path runs need. Concurrency stays bounded by a small permit pool since
+// analysis is CPU/memory-heavy; unbounded parallelism would thrash the VPS.
 //
 // Server-side config only (KLAURO_ANALYSIS_CONCURRENCY, with the older
-// KLAURO_ANALYSIS_LANES name kept as a fallback so any existing deploy config
-// keeps working) — not customer-facing.
+// KLAURO_ANALYSIS_LANES name kept as a fallback) — not customer-facing.
 const DEFAULT_ANALYSIS_LANES = 2;
 
 function getAnalysisLaneCount(): number {
@@ -1761,32 +1748,20 @@ async function estimateProjectSizeHint(projectPath: string): Promise<number> {
 
 // --- Wall-clock watchdog --------------------------------------------------
 //
-// Incident (2026-07-17): two analyses hung for 3+ CPU-hours inside a lane
-// (a catastrophic-regex pathology fixed separately) and were completely
-// invisible — last_attempt read 'in-progress' forever, both lane permits
-// stayed occupied so every OTHER queued analysis on the box starved behind
-// them too, and nothing alarmed. This watchdog makes that failure mode
-// visible and non-permanent.
+// Must make a hung analysis visible and non-permanent: a hang inside a lane
+// otherwise leaves last_attempt reading 'in-progress' forever and starves every
+// other queued analysis behind the occupied lane permits, with nothing alarming.
 //
-// HONESTY CONSTRAINT: this cannot preempt a hang caused by a synchronous/
-// native computation (e.g. a runaway regex) — there is no way to abort that
-// from JS once it has started. What it CAN do, and all it claims to do, is
-// stop WAITING on `fn`: free its lane permit so other work can proceed, and
-// write a visible 'watchdog-timeout' failure so the hang is surfaced instead
-// of silently occupying a lane forever. If `fn` later actually completes (the
-// stuck computation eventually returns), that late settlement is logged —
-// never silently re-applied over the failure record already written
-// (last-write-wins if a caller re-persists, but it is never silent).
+// Cannot preempt a hang caused by synchronous/native computation (e.g. a
+// runaway regex) — there is no way to abort that from JS once started. It can
+// only stop waiting on `fn`: free the lane permit and write a visible
+// 'watchdog-timeout' failure. A later actual completion of `fn` is logged,
+// never silently re-applied over the failure record already written.
 //
-// Cascade note: withLanePermit is normally called from INSIDE
-// withProjectAnalysisLock (project.analysis.lock wraps the lane permit), so
-// rejecting early here also unwinds that outer lock's `finally` and releases
-// analysis.lock — before the zombie computation underneath has actually
-// stopped touching that project's storage. This is accepted, not
-// accidental: the alternative (holding analysis.lock hostage to a hang
-// forever) is worse, and the product already tolerates last-write-wins on
-// this path (see above) rather than promising strict serialization against
-// a run that cannot be preempted.
+// withLanePermit is normally called from inside withProjectAnalysisLock, so
+// rejecting early here also unwinds that outer lock before the zombie
+// computation has actually stopped touching the project's storage — accepted
+// as better than holding analysis.lock hostage to an unpreemptable hang forever.
 const DEFAULT_ANALYSIS_WATCHDOG_MS = 30 * 60_000; // 30 minutes
 
 function getAnalysisWatchdogMs(): number {
@@ -1796,25 +1771,16 @@ function getAnalysisWatchdogMs(): number {
 }
 
 // --- Internal/boot rebuild attempt visibility ------------------------------
-// Defect (2026-07-17): an internal, analyzer-version-triggered full rebuild —
-// entered via analyzeProjectIncremental -> orchestrateIncrementalAnalysis's
-// schemaRebuildReason branch, typically first hit right after a fresh deploy
-// when a watch session (watcher.ts) or an agent's freshness check
-// (getFreshAnalysisForAgent) re-analyzes a project whose stored cas_version
-// predates the running server — ran for 65+ minutes with NO visible attempt
-// record anywhere: unlike the HTTP-driven reanalyze paths in
-// remote-analyzer-service.ts (ReanalyzeAttemptRecord, trigger:'reanalyze'),
-// nothing wrote a sidecar for this internally-triggered path, so a poller of
-// GET /api/projects/:id/analysis saw only the OLD analysis with no sign that
-// a newer (possibly hung) attempt was in flight.
+// An internal, version-triggered full rebuild (schemaRebuildReason branch)
+// must leave a visible attempt record — unlike the HTTP-driven reanalyze
+// paths, nothing else writes a sidecar for this internally-triggered path, so
+// a poller would otherwise see only the old analysis with no sign a newer,
+// possibly hung, attempt is in flight.
 //
 // Mirrors remote-analyzer-service.ts's ReanalyzeAttemptRecord shape and path
-// convention (`<projectPath>/.reanalyze-attempt.json`) so that existing
-// last-attempt surface picks these up too, without this module importing
-// from remote-analyzer-service.ts — only the on-disk shape/path is shared,
-// kept deliberately decoupled. Written ONLY when a version mismatch is
-// plausible (see likelyVersionRebuild in runIncrementalAnalysis below), never
-// on the common no-op incremental pass, so this adds no IO to the hot path.
+// convention so the existing last-attempt surface picks these up too, without
+// this module importing from remote-analyzer-service.ts. Written only when a
+// version mismatch is plausible — never on the common no-op incremental pass.
 interface InternalRebuildAttemptRecord {
   state: 'in-progress' | 'succeeded' | 'failed';
   trigger: 'version-rebuild';
@@ -1854,21 +1820,13 @@ async function readInternalRebuildAttempt(projectPath: string): Promise<Internal
 }
 
 /**
- * Thrown by guardAgainstDoomedVersionRebuild when it refuses to auto-retrigger
- * a version-bump full rebuild that already failed with a worker-oom/watchdog
- * reason for this EXACT (stored_version -> current_version) pair. This is the
- * infinite-crash-loop breaker (incident 2026-07-18): a huge monorepo's full
- * rebuild balloons the worker past its heap cap, the worker dies, the
- * container/process restarts, and the very next request re-triggers the SAME
- * doomed rebuild — forever, with each cycle reading as "in-progress" rather
- * than a repeating failure. Once one attempt for a given version pair has
- * already failed for a memory/watchdog reason, every SUBSEQUENT request for
- * that pair fails fast with this error instead of repeating the crash; a
- * human or agent must explicitly re-trigger (e.g. after raising
- * KLAURO_ANALYSIS_HEAP_MB or fixing the underlying hang) to clear it. A
- * failure for any OTHER reason (a real code bug, a transient I/O error) does
- * NOT trip this guard — only the memory/hang signature that caused the
- * original incident.
+ * Thrown when a version-bump full rebuild already failed with a
+ * worker-oom/watchdog reason for this exact (stored_version -> current_version)
+ * pair — the infinite-crash-loop breaker: without this, a restart-and-retrigger
+ * cycle repeats the same doomed rebuild forever, reading as "in-progress" each
+ * time rather than a repeating failure. Only trips on the memory/hang
+ * signature; a real code bug or transient I/O error does not trip this guard.
+ * Requires an explicit re-trigger (e.g. after raising KLAURO_ANALYSIS_HEAP_MB) to clear.
  */
 export class AnalysisLoopBreakerError extends Error {
   constructor(message: string) {
@@ -1910,20 +1868,12 @@ async function guardAgainstDoomedVersionRebuild(
 }
 
 /**
- * Pre-flight, side-effect-free check for callers (remote-analyzer-service.ts's
- * async /v1/analyze and /reanalyze continuations) that need to know BEFORE
- * writing their own 'in-progress' attempt record whether this project's next
- * rebuild is a doomed repeat. This matters because those callers write to the
- * SAME sidecar file (`.reanalyze-attempt.json`, see internalRebuildAttemptPath
- * / projectAttemptRecordPath) that carries the loop-breaker's evidence: if a
- * caller unconditionally overwrote it with a fresh 'in-progress' record before
- * dispatching, the failed+versioned record the guard depends on would be gone
- * by the time guardAgainstDoomedVersionRebuild (running inside the dispatched
- * worker) got a chance to read it, and the doomed rebuild would proceed anyway.
- * Returns the loop-breaker's message (safe to use directly as an attempt
- * record's `reason`) when the next rebuild would be doomed, or null when it is
- * safe to proceed (including: no stored analysis yet, no version mismatch, or
- * a mismatch whose prior failure wasn't a memory/watchdog cause).
+ * Pre-flight, side-effect-free check for callers that must know before
+ * writing their own 'in-progress' attempt record whether the next rebuild is
+ * a doomed repeat — those callers write the same sidecar file the loop-breaker
+ * reads, so an unconditional overwrite would erase its evidence before it can
+ * be read. Returns the loop-breaker's message when the next rebuild would be
+ * doomed, or null when safe to proceed.
  */
 export async function checkDoomedVersionRebuild(projectPath: string): Promise<string | null> {
   try {
@@ -1975,20 +1925,11 @@ function describeLastRunLogState(projectPath: string): string {
 }
 
 /**
- * Run fn bounded to KLAURO_ANALYSIS_CONCURRENCY concurrent analyses (default
- * 2). Extra callers queue for a free permit, smallest-project-first with
- * age-based starvation promotion (see the comments above) — this is what
- * replaces the old process-wide withGlobalAnalysisLock mutex, so a batch of
- * N<=lanes independent-project analyses runs in parallel instead of
- * serially, while still bounding memory pressure on the host. `fn`'s own
- * errors propagate to the caller as before (see the `finally` below) —
- * a crashing analysis releases its permit like any other and never blocks
- * the pool.
- *
- * Also races `fn` against a wall-clock watchdog (KLAURO_ANALYSIS_WATCHDOG_MS,
- * default 30 min) — see the "Wall-clock watchdog" comment above for exactly
- * what it can and cannot do. `projectPath` (when passed) is used only in the
- * watchdog's log lines and to look up the project's run-log entries.
+ * Runs fn bounded to KLAURO_ANALYSIS_CONCURRENCY concurrent analyses (default
+ * 2), smallest-project-first with age-based starvation promotion. A crashing
+ * analysis releases its permit like any other and never blocks the pool.
+ * Also races fn against the wall-clock watchdog (see above). `projectPath`
+ * (when passed) is used only in watchdog log lines and run-log lookups.
  */
 async function withLanePermit<T>(
   fn: () => Promise<T>,
@@ -2750,24 +2691,14 @@ function dispatchLayeredWorkerJob(projectPath: string, options: RunLayeredAnalys
 }
 
 /**
- * OUTER wall-clock watchdog for the worker-DISPATCH path, mirroring
- * withLanePermit's watchdog (see the "Wall-clock watchdog" comment above) one
- * layer further out. analyzeProjectIncremental's own lane permit + watchdog
- * only exist INSIDE the forked analysis-worker child process (analysis-worker.ts
- * -> executeAnalysis -> analyzeProjectIncremental) — from THIS process's point
- * of view, dispatchWorkerJob just awaits child.send()/a 'message' event with
- * NO timeout of its own. Measured live: a boot-triggered version-change
- * rebuild (see runIncrementalAnalysis's likelyVersionRebuild) ran 65+ minutes,
- * exceeding even the inner 30-minute watchdog, and nothing here ever noticed —
- * the caller (watcher.ts's debounced file-watch loop, or an MCP tool handler's
- * force_full reanalyze) just hung indefinitely with no error, no log, and no
- * attempt record (the child that would have written the terminal one is
- * presumed stuck). Same honesty constraint as the inner watchdog: this cannot
- * preempt the child if it is genuinely wedged in a synchronous/native hang —
- * it only stops WAITING on it, logs, and writes a best-effort failed attempt
- * record so a poller of GET /api/projects/:id/analysis sees the truth instead
- * of a stale/absent record. The child process itself is left running (not
- * killed) — the same last-write-wins tolerance the inner watchdog documents.
+ * Outer wall-clock watchdog for the worker-dispatch path, mirroring
+ * withLanePermit's watchdog one layer further out — dispatchWorkerJob just
+ * awaits the child's message with no timeout of its own, so a wedged child
+ * whose own inner watchdog never reports back would otherwise hang the
+ * caller indefinitely with no error, log, or attempt record. Same honesty
+ * constraint as the inner watchdog: cannot preempt a genuinely wedged child,
+ * only stops waiting and writes a best-effort failed attempt record. The
+ * child process itself is left running, not killed.
  */
 async function withOuterWorkerWatchdog<T>(
   projectPath: string,
@@ -2835,31 +2766,15 @@ export async function runAnalysis(projectPath: string, options: RunAnalysisOptio
 }
 
 /**
- * Worker-isolated entrypoint for the progressive/layered pipeline (task:
- * layered-worker-isolation, 2026-07-18). This is the layered counterpart of
- * runAnalysis: instead of the API process itself running
- * analyzeProjectLayered's L0 -> L1-4 -> L5 phases in-process (the ONE
- * remaining unprotected path after 275e9dc7 wired analyze/diff/sync through
- * runAnalysis), the whole pipeline — including the L5 AI enrichment tail —
- * runs inside the same heap-capped forked worker, so a huge monorepo's full
- * rebuild can only exhaust the WORKER's bounded heap, never the API server's,
- * and a worker OOM/crash surfaces as a normal thrown error here instead of
- * silently killing the process that also serves live traffic.
- *
- * `options.onPhase` fires as each phase lands (persisted to storage by the
- * worker itself) so callers can drive their own attempt-record lifecycle
- * (queued -> in-progress -> succeeded/failed) without waiting on the full
- * pipeline; callers needing the actual CASOutput reload it via getAnalysis
- * once the relevant phase has succeeded — this function's own resolved value
- * is only the small LayeredRunSummary (counts + final ai_enrichment state),
- * never the CAS itself, matching the IPC-payload discipline the worker
- * protocol was designed around (see WorkerPhaseMessage/analysis-worker.ts).
- *
- * Rides the SAME outer wall-clock watchdog as runAnalysis (a wedged/hung
- * child that never reports back is marked failed at the parent level, same
- * honesty constraint — see withOuterWorkerWatchdog) and the same shared
- * workerJobChain, so a layered job and a plain analyze job never run
- * concurrently against the one forked child.
+ * Worker-isolated entrypoint for the progressive/layered pipeline — the
+ * layered counterpart of runAnalysis. The whole pipeline, including L5 AI
+ * enrichment, runs inside the same heap-capped forked worker, so a full
+ * rebuild can only exhaust the worker's bounded heap, never the API server's.
+ * `options.onPhase` fires as each phase lands so callers can drive their own
+ * attempt-record lifecycle without waiting on the full pipeline; the resolved
+ * value is only the small LayeredRunSummary, never the CAS itself. Rides the
+ * same outer watchdog and shared workerJobChain as runAnalysis, so a layered
+ * job and a plain analyze job never run concurrently against one forked child.
  */
 export async function runLayeredAnalysis(
   projectPath: string,

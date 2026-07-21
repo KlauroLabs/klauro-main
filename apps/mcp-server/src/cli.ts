@@ -769,28 +769,15 @@ export function filterNpmNoise(output: string): string {
 }
 
 /**
- * Resolve WHICH installation `klauro update` must upgrade: the one actually
- * running this process — NOT whatever `npm` happens to be first on PATH. On a
- * machine with several nodes (homebrew node 26 + nvm node 22, say) the
- * installed CLI lives under one global prefix while PATH's npm belongs to
- * another; updating via PATH-npm then reinstalls into the WRONG tree (and on
- * the newer node tree-sitter's node-gyp build can fail outright) while the
- * running installation silently stays stale.
- *
- * Derivation, in order:
- *  1. the running CLI script's realpath — a global install lives at
- *     <prefix>/lib/node_modules/klauro/… (posix) or <prefix>\node_modules\…
- *     (Windows), so the prefix is read straight off the path;
- *  2. fallback: the running node's own prefix (dirname(execPath)/.. on posix;
- *     on Windows the execPath directory IS the prefix) — e.g. a dev/tsx run.
- * npm is taken from the detected PREFIX's own bin when present — and, when
- * that prefix also carries its own node, npm is RUN WITH that node (nodeBin):
- * node-gyp compiles native addons against the node that runs npm, so letting
- * a PATH/homebrew node 26 drive the install would build tree-sitter for the
- * wrong ABI (or fail outright — the original field failure) even with the
- * prefix pinned. Fallbacks: npm beside the running node, then PATH npm pinned
- * by --prefix. Exported (cli.ts is otherwise entry-only) so the resolution is
- * unit-testable.
+ * Must resolve `klauro update`'s target to the installation actually running
+ * this process, never whatever npm is first on PATH — a machine with several
+ * node installs can have the CLI under one global prefix while PATH's npm
+ * belongs to another, silently reinstalling into the wrong tree. Derivation:
+ * (1) the running CLI script's realpath, (2) fallback to the running node's
+ * own prefix. npm must be run with the node from the same detected prefix —
+ * node-gyp compiles native addons against whichever node runs npm, so a
+ * mismatched node can build tree-sitter for the wrong ABI or fail outright.
+ * Exported so the resolution is unit-testable.
  */
 export function resolveSelfUpdateTarget(options: {
   execPath?: string;
@@ -949,21 +936,15 @@ async function runUpdateCommand(args: ParsedArgs): Promise<void> {
     `(${target.prefixSource === 'cli-realpath' ? 'resolved from the installed bin realpath' : 'resolved from the running node'}; npm: ${target.npmBin}${target.nodeBin ? ` run with ${target.nodeBin}` : ''})\n`,
   );
   process.stdout.write('(this may take a minute -- native tree-sitter deps compile)\n\n');
-  // --force reinstalls even when the version string is unchanged, so users
-  // always pick up fresh bits; the server sends Cache-Control: no-cache too.
-  // --prefix pins the global install to the running CLI's prefix even when a
-  // user npmrc or PATH-npm default would point elsewhere.
-  // Capture (rather than inherit) npm's output so we can filter its routine
-  // dependency-tree noise (deprecation warnings, funding nags, etc) — cold-
-  // customer feedback 2026-07-06 flagged the raw firehose as making `klauro
-  // update` feel unfinished. Real errors (non-zero exit, or any line that
-  // isn't recognized noise) are still surfaced in full.
-  // When the prefix carries its own node, run npm THROUGH it (npm's `env
-  // node` shebang would otherwise pick PATH's node and node-gyp would build
-  // the native deps against the wrong ABI — the original field failure) AND
-  // pin PATH to that node's directory (buildUpdateSpawnEnv) so lifecycle
-  // children npm spawns for the native build (node-gyp) inherit the same
-  // resolution instead of falling through to whatever node PATH had first.
+  // --force reinstalls even when the version string is unchanged. --prefix
+  // pins the global install to the running CLI's prefix even when a user
+  // npmrc or PATH-npm default would point elsewhere.
+  // Capture (rather than inherit) npm's output to filter routine dependency-
+  // tree noise; real errors (non-zero exit, or an unrecognized line) still
+  // surface in full.
+  // Must run npm through the prefix's own node when it has one, and pin PATH
+  // to that node's directory — otherwise node-gyp builds native deps against
+  // the wrong ABI.
   const installArgs = ['install', '-g', tarballUrl, '--force', '--prefix', target.prefix];
   const installEnv = buildUpdateSpawnEnv(target);
   const result = target.nodeBin
