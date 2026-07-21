@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { assertRealWorkspaceAiAttempt, buildCrossCodebaseSystemGraph, buildWorkspaceAgentContext, detectWorkspaceCryptoProfile, enforceWorkspaceNarrativeProductValueSummary, enrichWorkspaceAnalysisNarrative, evaluateWorkspaceNarrativeGate, isUncorroboratedEntityNameDomain, isVerbPhraseDomainLabel, isWorkspaceAiParseArtifactText, normalizeWorkspaceAiDescriptionText, productFrameworksFromCas, selectPreferredWorkspaceOllamaModel, selectWorkspaceAnalysisDetail, stripUngroundedWorkspaceMarketingLanguage, stripWorkspaceItemDescriptionArtifacts, withWorkspaceAiTimeout, workspaceNarrativeDomainMisattributionReason, workspaceNarrativeEntityMisattributionReason, workspaceNarrativeHardRejectReason, workspaceNarrativeMarketingMatches, workspaceNarrativeMisattributionReason, workspaceNarrativePromptContext } from './cross-codebase-analysis';
+import { assertRealWorkspaceAiAttempt, buildCrossCodebaseSystemGraph, buildWorkspaceAgentContext, computeCodebaseComplexity, computeWorkspaceComplexity, detectWorkspaceCryptoProfile, enforceWorkspaceNarrativeProductValueSummary, enrichWorkspaceAnalysisNarrative, evaluateWorkspaceNarrativeGate, isUncorroboratedEntityNameDomain, isVerbPhraseDomainLabel, isWorkspaceAiParseArtifactText, normalizeWorkspaceAiDescriptionText, productFrameworksFromCas, selectPreferredWorkspaceOllamaModel, selectWorkspaceAnalysisDetail, stripUngroundedWorkspaceMarketingLanguage, stripWorkspaceItemDescriptionArtifacts, withWorkspaceAiTimeout, workspaceNarrativeDomainMisattributionReason, workspaceNarrativeEntityMisattributionReason, workspaceNarrativeHardRejectReason, workspaceNarrativeMarketingMatches, workspaceNarrativeMisattributionReason, workspaceNarrativePromptContext } from './cross-codebase-analysis';
 import { aiService } from '../../../packages/analyzer-core/src/ai/ai-service';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 
@@ -2864,4 +2864,149 @@ test('cross-member identity merge: monorepo subdir apps fold into standalone-mem
   const adminRow = graph.applications.find(app => app.name === 'admin-panel');
   assert.ok(adminRow, 'admin-panel subdir row must still exist');
   assert.equal(adminRow!.merged_into, undefined, 'admin-panel has no standalone member and must never merge');
+});
+
+// ---------------------------------------------------------------------------
+// Deterministic, evidence-based complexity model.
+// ---------------------------------------------------------------------------
+
+function makeNodes(count: number): CASOutput['nodes'] {
+  return Array.from({ length: count }, (_, i) => ({
+    id: `node-${i}`,
+    name: `fn${i}`,
+    type: 'function',
+    source: { file: `src/f${i}.ts`, line: 1 },
+  } as any));
+}
+
+function makeEdges(count: number, nodeCount: number): CASOutput['edges'] {
+  return Array.from({ length: count }, (_, i) => ({
+    id: `edge-${i}`,
+    source: `node-${i % nodeCount}`,
+    target: `node-${(i + 1) % nodeCount}`,
+    kind: 'calls',
+  } as any));
+}
+
+test('codebase complexity: deterministic — identical input always produces the identical score', () => {
+  const buildInput = () => cas({
+    system: { id: 'svc', name: 'svc', type: 'service', root_path: '/tmp/svc' },
+    nodes: makeNodes(50),
+    edges: makeEdges(80, 50),
+    entry_points: [{ id: 'e1', source_node: 'node-0', type: 'http', name: 'GET /x', trigger: { method: 'GET', path: '/x' } } as any],
+    exit_points: [{ id: 'x1', source_node: 'node-1', type: 'database', name: 'db', target: { resource: 'db' } } as any],
+    dependencies: { manager: 'npm', packages: [{ name: 'left-pad', version: '1.0.0', direct: true }] },
+    data_entities: [{ id: 'ent1', name: 'Thing' } as any],
+    system_capabilities: [{ id: 'cap1', name: 'Do Thing', operations: [] } as any],
+  });
+
+  const graphA = buildCrossCodebaseSystemGraph('det-a', [{ path: '/tmp/svc', name: 'svc', cas: buildInput() }], { generatedAt: '2026-01-01T00:00:00.000Z', id: 'det' });
+  const graphB = buildCrossCodebaseSystemGraph('det-a', [{ path: '/tmp/svc', name: 'svc', cas: buildInput() }], { generatedAt: '2026-01-01T00:00:00.000Z', id: 'det' });
+
+  assert.ok(graphA.workspace_complexity, 'complexity must be computed when a member codebase is present');
+  assert.deepEqual(graphA.workspace_complexity, graphB.workspace_complexity, 'same input must produce the exact same complexity output, byte for byte');
+});
+
+test('codebase complexity: size subscore increases monotonically with node/edge count', () => {
+  const small = cas({
+    system: { id: 'svc', name: 'svc', type: 'service', root_path: '/tmp/svc' },
+    nodes: makeNodes(10),
+    edges: makeEdges(10, 10),
+  });
+  const large = cas({
+    system: { id: 'svc', name: 'svc', type: 'service', root_path: '/tmp/svc' },
+    nodes: makeNodes(2000),
+    edges: makeEdges(6000, 2000),
+  });
+
+  const smallGraph = buildCrossCodebaseSystemGraph('sz', [{ path: '/tmp/svc', name: 'svc', cas: small }]);
+  const largeGraph = buildCrossCodebaseSystemGraph('sz', [{ path: '/tmp/svc', name: 'svc', cas: large }]);
+  const smallComplexity = computeCodebaseComplexity(smallGraph.codebases[0], { path: '/tmp/svc', name: 'svc', cas: small });
+  const largeComplexity = computeCodebaseComplexity(largeGraph.codebases[0], { path: '/tmp/svc', name: 'svc', cas: large });
+
+  assert.ok(largeComplexity.subscores.size.score > smallComplexity.subscores.size.score, 'more nodes/edges must score strictly higher on size');
+});
+
+test('codebase complexity: coupling subscore increases monotonically with direct dependency fan-out', () => {
+  const base = { system: { id: 'svc', name: 'svc', type: 'service', root_path: '/tmp/svc' } as any, nodes: makeNodes(20), edges: makeEdges(20, 20) };
+  const lowCoupling = cas({ ...base, dependencies: { manager: 'npm', packages: [{ name: 'a', version: '1.0.0', direct: true }] } });
+  const highCoupling = cas({ ...base, dependencies: { manager: 'npm', packages: Array.from({ length: 80 }, (_, i) => ({ name: `pkg-${i}`, version: '1.0.0', direct: true })) } });
+
+  const lowGraph = buildCrossCodebaseSystemGraph('cp', [{ path: '/tmp/svc', name: 'svc', cas: lowCoupling }]);
+  const highGraph = buildCrossCodebaseSystemGraph('cp', [{ path: '/tmp/svc', name: 'svc', cas: highCoupling }]);
+  const lowComplexity = computeCodebaseComplexity(lowGraph.codebases[0], { path: '/tmp/svc', name: 'svc', cas: lowCoupling });
+  const highComplexity = computeCodebaseComplexity(highGraph.codebases[0], { path: '/tmp/svc', name: 'svc', cas: highCoupling });
+
+  assert.ok(highComplexity.subscores.coupling.score > lowComplexity.subscores.coupling.score, 'more direct dependencies must score strictly higher on coupling');
+});
+
+test('codebase complexity: surface subscore increases monotonically with entry/exit point count', () => {
+  const nodes = makeNodes(20);
+  const few = cas({
+    system: { id: 'svc', name: 'svc', type: 'service', root_path: '/tmp/svc' },
+    nodes,
+    edges: makeEdges(20, 20),
+    entry_points: [{ id: 'e1', source_node: 'node-0', type: 'http', name: 'GET /x', trigger: { method: 'GET', path: '/x' } } as any],
+  });
+  const many = cas({
+    system: { id: 'svc', name: 'svc', type: 'service', root_path: '/tmp/svc' },
+    nodes,
+    edges: makeEdges(20, 20),
+    entry_points: Array.from({ length: 40 }, (_, i) => ({ id: `e${i}`, source_node: 'node-0', type: 'http', name: `GET /x${i}`, trigger: { method: 'GET', path: `/x${i}` } } as any)),
+    exit_points: Array.from({ length: 40 }, (_, i) => ({ id: `x${i}`, source_node: 'node-0', type: 'database', name: `db${i}`, target: { resource: `db${i}` } } as any)),
+  });
+
+  const fewGraph = buildCrossCodebaseSystemGraph('sf', [{ path: '/tmp/svc', name: 'svc', cas: few }]);
+  const manyGraph = buildCrossCodebaseSystemGraph('sf', [{ path: '/tmp/svc', name: 'svc', cas: many }]);
+  const fewComplexity = computeCodebaseComplexity(fewGraph.codebases[0], { path: '/tmp/svc', name: 'svc', cas: few });
+  const manyComplexity = computeCodebaseComplexity(manyGraph.codebases[0], { path: '/tmp/svc', name: 'svc', cas: many });
+
+  assert.ok(manyComplexity.subscores.surface.score > fewComplexity.subscores.surface.score, 'more entry/exit points must score strictly higher on surface');
+});
+
+test('codebase complexity: topology subscore increases monotonically with capability/entity/deployable count', () => {
+  const base = { system: { id: 'svc', name: 'svc', type: 'service', root_path: '/tmp/svc' } as any, nodes: makeNodes(20), edges: makeEdges(20, 20) };
+  const flat = cas({ ...base, system_capabilities: [{ id: 'c1', name: 'One', operations: [] } as any] });
+  const rich = cas({ ...base, system_capabilities: Array.from({ length: 25 }, (_, i) => ({ id: `c${i}`, name: `Cap ${i}`, operations: [] } as any)) });
+
+  const flatGraph = buildCrossCodebaseSystemGraph('tp', [{ path: '/tmp/svc', name: 'svc', cas: flat }]);
+  const richGraph = buildCrossCodebaseSystemGraph('tp', [{ path: '/tmp/svc', name: 'svc', cas: rich }]);
+  const flatComplexity = computeCodebaseComplexity(flatGraph.codebases[0], { path: '/tmp/svc', name: 'svc', cas: flat });
+  const richComplexity = computeCodebaseComplexity(richGraph.codebases[0], { path: '/tmp/svc', name: 'svc', cas: rich });
+
+  assert.ok(richComplexity.subscores.topology.score > flatComplexity.subscores.topology.score, 'more capabilities must score strictly higher on topology');
+});
+
+test('workspace complexity: absent (not zero) when there are no member codebases', () => {
+  const empty = computeWorkspaceComplexity([], [], [], []);
+  assert.equal(empty, undefined, 'no member codebases means no score, not a fabricated zero');
+});
+
+test('workspace complexity: composite score aggregates member composites plus cross-repo factors', () => {
+  const svcA = cas({
+    system: { id: 'a', name: 'svc-a', type: 'service', root_path: '/tmp/svc-a' },
+    nodes: makeNodes(30),
+    edges: makeEdges(40, 30),
+  });
+  const svcB = cas({
+    system: { id: 'b', name: 'svc-b', type: 'service', root_path: '/tmp/svc-b' },
+    nodes: makeNodes(3000),
+    edges: makeEdges(9000, 3000),
+    dependencies: { manager: 'npm', packages: Array.from({ length: 60 }, (_, i) => ({ name: `pkg-${i}`, version: '1.0.0', direct: true })) },
+  });
+
+  const graph = buildCrossCodebaseSystemGraph('agg', [
+    { path: '/tmp/svc-a', name: 'svc-a', cas: svcA },
+    { path: '/tmp/svc-b', name: 'svc-b', cas: svcB },
+  ]);
+
+  assert.ok(graph.workspace_complexity, 'a workspace with member codebases must have a computed complexity');
+  const wc = graph.workspace_complexity!;
+  assert.equal(wc.members.length, 2, 'one member entry per workspace codebase');
+  // svc-b is far larger/more coupled than svc-a — its member composite must be higher.
+  const memberA = wc.members.find(m => graph.codebases.find(c => c.id === m.codebase_id)?.name === 'svc-a')!;
+  const memberB = wc.members.find(m => graph.codebases.find(c => c.id === m.codebase_id)?.name === 'svc-b')!;
+  assert.ok(memberB.composite > memberA.composite, 'the larger, more coupled member must score higher');
+  assert.equal(wc.composite, Math.round(wc.member_average_composite * 0.6 + (wc.subscores.application_surface.score + wc.subscores.runtime_link_density.score + wc.subscores.das_verified_fraction.score) / 3 * 0.4), 'composite formula must match the documented 60/40 blend');
+  assert.ok(wc.computed_from.length > 0, 'computed_from must list the exact inputs used');
 });

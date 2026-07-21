@@ -4,12 +4,13 @@ import * as fs from 'fs-extra';
 import * as path from 'node:path';
 import { gunzipSync } from 'node:zlib';
 import { analyzeProjectIncremental, analyzeProjectDeferred, checkDoomedVersionRebuild, runAnalysis, runLayeredAnalysis } from './analyzer';
-import type { RemoteAnalyzeDiffRequest, RemoteAnalyzeRequest, RemoteAnalyzeResponse, RemoteGreenfieldPreviewRequest, RemoteProjectRevision, RemoteProjectRevisionsResponse, RemoteProposalPreviewRequest, RemoteSyncRequest } from './remote-analyzer-protocol';
+import type { AccountActivityEvent, RemoteAnalyzeDiffRequest, RemoteAnalyzeRequest, RemoteAnalyzeResponse, RemoteGreenfieldPreviewRequest, RemoteProjectRevision, RemoteProjectRevisionsResponse, RemoteProposalPreviewRequest, RemoteSyncRequest } from './remote-analyzer-protocol';
 import type { BranchDiffContext, RemoteFileChange, SourceManifest } from './remote-source';
+import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import { buildSourceSnapshot } from './remote-source';
 import { previewCodebaseIteration, previewGreenfieldCodebase } from './proposal-preview';
 import { isDirectCliInvocation } from './cli-invocation';
-import { AccountHttpError, AccountStore } from './account-store';
+import { AccountHttpError, AccountStore, type AccountProject } from './account-store';
 import { AccountWorkspaceAnalysisScheduler } from './account-workspace-analysis';
 import { getGrants, heartbeatGrant, releaseGrant, requestGrant, type AgentKind } from './coordination';
 import { appendClaim, checkEditLock, getActiveClaims, getPresence, getStoreDir, readClaimLog, releaseAgentWithReason, releaseClaimById } from './coordination/local-store';
@@ -28,6 +29,7 @@ import { getAnalysisFileFingerprint, loadAnalysis, saveAnalysis, writeJsonAtomic
 import { clearFreshnessSummaryCache } from './freshness';
 import { descriptionStorePath } from './description-enrichment';
 import { ResponseCache, responseCacheKey } from './response-cache';
+import { getCachedDeployableAnalyses, scopeCasToDasUnit } from './deployable-analysis';
 import { initSelfTelemetry, instrumentHttpHandler, mapSdkEvent } from './self-telemetry';
 import type { CasRuntimeEvent } from '../../../packages/klauro-sdk-js/src/types';
 
@@ -273,7 +275,11 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
       if (route.startsWith('/api/')) {
         const apiAuthorization = await authorizeAccountApiRequest(accounts, request, token);
         if (!apiAuthorization.authorized) {
-          writeJson(response, 401, { status: 'error', error: 'Sign in required' });
+          writeJson(response, 401, {
+            status: 'error',
+            error: authRejectMessage(apiAuthorization.reason ?? 'no_token', 'api'),
+            reason: apiAuthorization.reason ?? 'no_token',
+          });
           return;
         }
         const accountResult = await handleAccountApi(accounts, apiAuthorization.userId, route, request, maxBodyBytes, apiAuthorization.sharedToken, dataDir, workspaceAnalyses);
@@ -289,7 +295,11 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
 
       const authorization = await authorizeAnalyzerRequest(accounts, request, token);
       if (!authorization.authorized) {
-        writeJson(response, 401, { status: 'error', error: 'Unauthorized remote analyzer request' });
+        writeJson(response, 401, {
+          status: 'error',
+          error: authRejectMessage(authorization.reason ?? 'no_token', 'coordination'),
+          reason: authorization.reason ?? 'no_token',
+        });
         return;
       }
 
@@ -1554,7 +1564,32 @@ function accountSaltFor(clientId: string | undefined): string | undefined {
   return clientId && clientId.startsWith('user:') ? clientId : undefined;
 }
 
-async function authorizeAnalyzerRequest(accounts: AccountStore, request: http.IncomingMessage, sharedToken: string | undefined): Promise<{ authorized: boolean; clientId?: string }> {
+/**
+ * §COORD-AUTH-401 — honest-cause classification for a rejected Bearer token,
+ * shared by both authorize* functions below so `/v1/coordination/*` and
+ * `/api/*` report the SAME reason for the SAME underlying cause (they were
+ * previously indistinguishable behind one generic string, which is what made
+ * a silently-evicted session — see AccountStore.mutate() — look like a
+ * coordination-specific bug instead of the account-store-wide one it is).
+ *  - 'no_token'      — no Authorization header/Bearer token present at all.
+ *  - 'not_recognized'— a token WAS presented but no session (or the shared
+ *    token) matched it: expired past its 14-day TTL, or — the actual fleet
+ *    incident this classification exists for — a session record that WAS
+ *    valid a moment ago and was silently dropped by a lost-update race in
+ *    AccountStore (fixed by AccountStore.mutate(), but a caller still needs
+ *    to be told "not your fault, re-authenticate" rather than a bare 401).
+ */
+export type AuthRejectReason = 'no_token' | 'not_recognized';
+
+export function authRejectMessage(reason: AuthRejectReason, surface: 'coordination' | 'api'): string {
+  const what = surface === 'coordination' ? 'remote analyzer' : 'account API';
+  if (reason === 'no_token') {
+    return `Unauthorized ${what} request: no Bearer token was presented. Run \`klauro login\` (or set KLAURO_ANALYZER_TOKEN) and retry.`;
+  }
+  return `Unauthorized ${what} request: the Bearer token was not recognized. This means EITHER it expired (session TTL is 14 days — run \`klauro login\` to refresh), OR the session was dropped by a server-side account-store issue unrelated to anything you did — retry once; if it recurs, re-run \`klauro login\` to mint a fresh session.`;
+}
+
+async function authorizeAnalyzerRequest(accounts: AccountStore, request: http.IncomingMessage, sharedToken: string | undefined): Promise<{ authorized: boolean; clientId?: string; reason?: AuthRejectReason }> {
   const token = bearerToken(request);
   if (sharedToken && token && token === sharedToken) return { authorized: true, clientId: 'shared-token' };
   // Always try to resolve a real account user from the Bearer token first —
@@ -1569,16 +1604,17 @@ async function authorizeAnalyzerRequest(accounts: AccountStore, request: http.In
     if (user) return { authorized: true, clientId: `user:${user.id}` };
   }
   if (!sharedToken) return { authorized: true, clientId: request.socket.remoteAddress || 'anonymous' };
-  return { authorized: false };
+  return { authorized: false, reason: token ? 'not_recognized' : 'no_token' };
 }
 
-async function authorizeAccountApiRequest(accounts: AccountStore, request: http.IncomingMessage, sharedToken: string | undefined): Promise<{ authorized: boolean; userId: string; sharedToken?: boolean }> {
+async function authorizeAccountApiRequest(accounts: AccountStore, request: http.IncomingMessage, sharedToken: string | undefined): Promise<{ authorized: boolean; userId: string; sharedToken?: boolean; reason?: AuthRejectReason }> {
   const token = bearerToken(request);
   if (sharedToken && token && token === sharedToken) {
     return { authorized: true, userId: 'shared-token', sharedToken: true };
   }
   const user = await accounts.authenticate(token);
-  return user ? { authorized: true, userId: user.id } : { authorized: false, userId: '' };
+  if (user) return { authorized: true, userId: user.id };
+  return { authorized: false, userId: '', reason: token ? 'not_recognized' : 'no_token' };
 }
 
 /**
@@ -1734,6 +1770,28 @@ async function handleAccountApi(
     };
   }
 
+  // Change Activity feed for the Home frame: reverse-chronological events
+  // across EVERY workspace this user belongs to. Built entirely from data
+  // already persisted for other reasons (project revisions, reanalyze
+  // attempt sidecars, the server-side WAS record) — see
+  // collectAccountActivityEvents below — so an account with no analyses yet
+  // honestly returns {events:[]}, never a fabricated placeholder.
+  if (request.method === 'GET' && route === '/api/account/activity') {
+    if (!dataDir) throw new AccountHttpError(500, 'Analysis storage unavailable');
+    const limit = clampActivityLimit(new URL(request.url || '', 'http://localhost').searchParams.get('limit'));
+    const workspaces = await accounts.listWorkspaces(userId);
+    const events: AccountActivityEvent[] = [];
+    for (const workspace of workspaces) {
+      const projects = await accounts.listProjects(userId, workspace.id);
+      for (const project of projects) {
+        events.push(...await collectProjectActivityEvents(dataDir, project, workspace.id));
+      }
+      events.push(...await collectWorkspaceActivityEvents(workspaceAnalyses, dataDir, workspace.id, workspace.name));
+    }
+    events.sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
+    return { statusCode: 200, body: { events: events.slice(0, limit), next_cursor: null } };
+  }
+
   if (request.method === 'GET' && route === '/api/workspaces') {
     return { statusCode: 200, body: { workspaces: await accounts.listWorkspaces(userId) } };
   }
@@ -1863,6 +1921,27 @@ async function handleAccountApi(
         ...(workspaceLastAttempt ? { last_attempt: workspaceLastAttempt } : {}),
       },
     };
+  }
+
+  // Workspace-scoped Change Activity (the Workspace frame's sibling of
+  // /api/account/activity above): same event sources, narrowed to this one
+  // workspace's own member projects + WAS rebuild history. Membership-gated
+  // the same way GET .../analysis is — listProjects throws 404 for
+  // non-members before any workspace-scoped data is touched.
+  const workspaceActivityMatch = route.match(/^\/api\/workspaces\/([^/]+)\/activity$/);
+  if (workspaceActivityMatch && request.method === 'GET') {
+    if (!dataDir) throw new AccountHttpError(500, 'Analysis storage unavailable');
+    const workspaceId = decodeURIComponent(workspaceActivityMatch[1]);
+    const projects = await accounts.listProjects(userId, workspaceId);
+    const limit = clampActivityLimit(new URL(request.url || '', 'http://localhost').searchParams.get('limit'));
+    const workspaceMeta = await accounts.getWorkspaceById(workspaceId);
+    const events: AccountActivityEvent[] = [];
+    for (const project of projects) {
+      events.push(...await collectProjectActivityEvents(dataDir, project, workspaceId));
+    }
+    events.push(...await collectWorkspaceActivityEvents(workspaceAnalyses, dataDir, workspaceId, workspaceMeta?.name || workspaceId));
+    events.sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
+    return { statusCode: 200, body: { workspace_id: workspaceId, events: events.slice(0, limit), next_cursor: null } };
   }
 
   // POST /api/workspaces/{id}/reanalyze — recompute the server-side WAS for
@@ -2022,6 +2101,16 @@ async function handleAccountApi(
   // the mirror timestamp is older than the hosted analysis_timestamp — so no
   // response cache here (the payload can be whale-sized and each version is
   // downloaded at most once per client).
+  //
+  // DAS-scoped variant (?das_unit_id=<id>): the web UI's deployable page was
+  // approximating deployable-analysis.ts's phase-2 scoping (getCachedDeploy-
+  // ableAnalyses / scopeCasToDasUnit) client-side because the real scoped
+  // surface — already wired into 5 MCP tools via server.ts's
+  // buildSummaryWithDasIndex-style `scope` param — was never exposed over
+  // HTTP. Unlike the full-CAS path above, a slice IS worth caching: it is a
+  // pure function of the stored CAS + das_unit_id, and (unlike the
+  // once-per-client mirror pull) a UI page can re-request the same unit
+  // repeatedly as the user navigates.
   const projectCasMatch = route.match(/^\/api\/projects\/([^/]+)\/cas$/);
   if (projectCasMatch && request.method === 'GET') {
     if (!dataDir) throw new AccountHttpError(500, 'Analysis storage unavailable');
@@ -2030,8 +2119,69 @@ async function handleAccountApi(
     if (!project.analysis_id) {
       return { statusCode: 200, body: { status: 'no_analysis', project_id: project.id } };
     }
+    const workspace = workspacePath(dataDir, project.analysis_id);
+    const url = new URL(request.url || '', 'http://localhost');
+    const dasUnitId = url.searchParams.get('das_unit_id') || undefined;
+
+    if (dasUnitId) {
+      const version = await storedAnalysisVersion(workspace);
+      const cacheKey = version === null ? null : responseCacheKey({
+        endpoint: 'das-cas-slice',
+        projectId: project.id,
+        analysisId: project.analysis_id,
+        version,
+        params: { das_unit_id: dasUnitId },
+      });
+      if (cacheKey) {
+        const cached = casReadResponseCache.get(cacheKey);
+        if (cached !== undefined) {
+          return { statusCode: 200, body: JSON.parse(cached), serializedBody: cached };
+        }
+      }
+      let cas;
+      try {
+        cas = await getAnalysis(workspace);
+      } catch (error) {
+        return {
+          statusCode: 200,
+          body: {
+            status: 'no_analysis',
+            project_id: project.id,
+            analysis_id: project.analysis_id,
+            error: error instanceof Error ? error.message : String(error),
+          },
+        };
+      }
+      // scopeCasToDasUnit throws a caller-facing Error — never a silent empty
+      // result — for a repo that hasn't promoted (fewer than 2 tier-qualified
+      // ship units) or an id that doesn't match any current unit (naming the
+      // ids that DO exist so a caller can self-correct). These are REQUEST
+      // errors, not "no analysis exists", so they surface as 4xx JSON via
+      // AccountHttpError like every other validation failure in this
+      // handler — not folded into the 200 no_analysis shape above.
+      let scopedCas;
+      try {
+        scopedCas = scopeCasToDasUnit(cas, { das_unit_id: dasUnitId });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const statusCode = message.startsWith('Unknown scope.das_unit_id') ? 404 : 400;
+        throw new AccountHttpError(statusCode, message);
+      }
+      const body = {
+        status: 'ready',
+        project_id: project.id,
+        analysis_id: project.analysis_id,
+        analysis_timestamp: scopedCas.analysis_timestamp || null,
+        das_unit_id: dasUnitId,
+        cas: scopedCas,
+      };
+      const serializedBody = JSON.stringify(body);
+      if (cacheKey) casReadResponseCache.set(cacheKey, serializedBody);
+      return { statusCode: 200, body, serializedBody };
+    }
+
     try {
-      const cas = await getAnalysis(workspacePath(dataDir, project.analysis_id));
+      const cas = await getAnalysis(workspace);
       const body = {
         status: 'ready',
         project_id: project.id,
@@ -2040,6 +2190,59 @@ async function handleAccountApi(
         cas,
       };
       return { statusCode: 200, body, serializedBody: JSON.stringify(body) };
+    } catch (error) {
+      return {
+        statusCode: 200,
+        body: {
+          status: 'no_analysis',
+          project_id: project.id,
+          analysis_id: project.analysis_id,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      };
+    }
+  }
+
+  // DAS index: units + counts + orphan accounting WITHOUT the multi-MB `cas`
+  // body — the cheap discovery call a UI makes before ever requesting a
+  // scoped slice (mirrors get_summary's das_index attachment in server.ts's
+  // buildSummaryWithDasIndex). Cacheable for the same reason the slice above
+  // is: a pure function of the stored CAS, no scope param to vary on.
+  const projectDasMatch = route.match(/^\/api\/projects\/([^/]+)\/das$/);
+  if (projectDasMatch && request.method === 'GET') {
+    if (!dataDir) throw new AccountHttpError(500, 'Analysis storage unavailable');
+    const project = await accounts.getProjectForUser(userId, decodeURIComponent(projectDasMatch[1]));
+    if (!project) throw new AccountHttpError(404, 'Project not found');
+    if (!project.analysis_id) {
+      return { statusCode: 200, body: { status: 'no_analysis', project_id: project.id } };
+    }
+    try {
+      const workspace = workspacePath(dataDir, project.analysis_id);
+      const version = await storedAnalysisVersion(workspace);
+      const cacheKey = version === null ? null : responseCacheKey({
+        endpoint: 'das-index',
+        projectId: project.id,
+        analysisId: project.analysis_id,
+        version,
+      });
+      if (cacheKey) {
+        const cached = casReadResponseCache.get(cacheKey);
+        if (cached !== undefined) {
+          return { statusCode: 200, body: JSON.parse(cached), serializedBody: cached };
+        }
+      }
+      const cas = await getAnalysis(workspace);
+      const das = getCachedDeployableAnalyses(cas);
+      const body = {
+        status: 'ready',
+        project_id: project.id,
+        analysis_id: project.analysis_id,
+        analysis_timestamp: cas.analysis_timestamp || null,
+        das_index: das.das_index,
+      };
+      const serializedBody = JSON.stringify(body);
+      if (cacheKey) casReadResponseCache.set(cacheKey, serializedBody);
+      return { statusCode: 200, body, serializedBody };
     } catch (error) {
       return {
         statusCode: 200,
@@ -2871,6 +3074,7 @@ async function handleAnalyze(dataDir: string, request: RemoteAnalyzeRequest, def
     // Progressive path: return the deterministic CAS now; the AI enrichment
     // runs in the background and upgrades the stored analysis for later fetches.
     const deferred = await analyzeProjectDeferred(workspace, displayName);
+    await stampRepoFacts(workspace, deferred.output, request.snapshot.manifest);
     return {
       status: 'success',
       analysis_id: analysisId,
@@ -2896,6 +3100,7 @@ async function handleAnalyze(dataDir: string, request: RemoteAnalyzeRequest, def
     if (!/comprehension/i.test(message)) throw error;
     console.error(`[Klauro] remote analyze: comprehension unavailable, returning structure-only CAS (${message})`);
     const deferred = await analyzeProjectDeferred(workspace, displayName);
+    await stampRepoFacts(workspace, deferred.output, request.snapshot.manifest);
     return {
       status: 'success',
       analysis_id: analysisId,
@@ -2906,6 +3111,7 @@ async function handleAnalyze(dataDir: string, request: RemoteAnalyzeRequest, def
       cas: deferred.output,
     };
   }
+  await stampRepoFacts(workspace, result.output, request.snapshot.manifest);
   return {
     status: 'success',
     analysis_id: analysisId,
@@ -3027,6 +3233,143 @@ function safeFileName(value: string): string {
   return value.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 120) || 'project';
 }
 
+function clampActivityLimit(raw: string | null): number {
+  const parsed = raw !== null ? Number(raw) : NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? Math.min(Math.floor(parsed), 200) : 50;
+}
+
+/** Two events are "the same analysis run" for the purpose of attaching a
+ *  reanalyze attempt's duration_ms onto its matching revision, if their
+ *  timestamps land within this window of each other. The revision is
+ *  stamped when the CAS is re-read from disk post-pipeline
+ *  (appendProjectRevision's `new Date().toISOString()`); the attempt
+ *  record's finished_at is stamped moments earlier at the end of the same
+ *  background run — never exactly equal, always close. */
+const ACTIVITY_DURATION_MATCH_WINDOW_MS = 5 * 60 * 1000;
+
+/**
+ * Change Activity events for one project: 'project_created' (project.created_at,
+ * always present), 'project_moved' (project.moved_at, present only after at
+ * least one attach-to-a-different-workspace — see account-store.ts), plus,
+ * when the project has a stored analysis, one 'analysis_completed' per
+ * retained revision (project-revisions/<id>.json, capped at 200 by
+ * appendProjectRevision) with a node/edge delta computed against the NEXT
+ * OLDER revision already in that same array — no extra CAS load, the counts
+ * are already on the revision record — and an 'analysis_failed' event if the
+ * most recent reanalyze attempt (the sidecar last_attempt record) ended in
+ * 'failed'. Cheap and bounded: at most one small JSON file read for
+ * revisions + one for the attempt sidecar, no getAnalysis()/CAS load at all.
+ */
+async function collectProjectActivityEvents(dataDir: string, project: AccountProject, workspaceId: string): Promise<AccountActivityEvent[]> {
+  const events: AccountActivityEvent[] = [];
+  events.push({
+    type: 'project_created',
+    at: project.created_at,
+    workspace_id: workspaceId,
+    project_id: project.id,
+    title: `${project.name} added to workspace`,
+  });
+  if (project.moved_at) {
+    events.push({
+      type: 'project_moved',
+      at: project.moved_at,
+      workspace_id: workspaceId,
+      project_id: project.id,
+      title: `${project.name} moved into this workspace`,
+      ...(project.moved_from_workspace_id ? { detail: `Previously in workspace ${project.moved_from_workspace_id}` } : {}),
+    });
+  }
+  if (!project.analysis_id) return events;
+
+  const { revisions } = await readProjectRevisions(dataDir, project.analysis_id);
+  const completedEvents: AccountActivityEvent[] = revisions.map((revision, index) => {
+    const priorRevision = revisions[index + 1]; // revisions are newest-first
+    return {
+      type: 'analysis_completed',
+      at: revision.generated_at,
+      workspace_id: workspaceId,
+      project_id: project.id,
+      title: `${project.name} analyzed`,
+      ...(revision.branch ? { detail: revision.commit ? `${revision.branch} @ ${revision.commit.slice(0, 8)}` : revision.branch } : {}),
+      ...(priorRevision ? { deltas: { nodes: revision.nodes - priorRevision.nodes, edges: revision.edges - priorRevision.edges } } : {}),
+    };
+  });
+  events.push(...completedEvents);
+
+  const lastAttempt = await readAttemptRecord(projectAttemptRecordPath(workspacePath(dataDir, project.analysis_id)));
+  if (lastAttempt?.state === 'failed' && lastAttempt.finished_at) {
+    events.push({
+      type: 'analysis_failed',
+      at: lastAttempt.finished_at,
+      workspace_id: workspaceId,
+      project_id: project.id,
+      title: `${project.name} analysis failed`,
+      ...(lastAttempt.reason ? { detail: lastAttempt.reason } : {}),
+    });
+  } else if (lastAttempt?.state === 'succeeded' && lastAttempt.finished_at && lastAttempt.duration_ms !== undefined) {
+    // Best-effort enrichment only — the attempt sidecar tracks the LAST
+    // attempt, not full history, so this can only ever annotate the most
+    // recent 'analysis_completed' event, never an older one.
+    const finishedAtMs = Date.parse(lastAttempt.finished_at);
+    const match = completedEvents.find(event => Math.abs(Date.parse(event.at) - finishedAtMs) < ACTIVITY_DURATION_MATCH_WINDOW_MS);
+    if (match) match.duration_ms = lastAttempt.duration_ms;
+  }
+  return events;
+}
+
+/**
+ * Change Activity events for one workspace's server-side WAS: 'workspace_rebuilt'
+ * from the persisted WorkspaceAnalysisRecord (account-workspace-analysis.ts)
+ * — at most ONE event since that store keeps only the latest rebuild, not a
+ * history — plus an honest 'workspace_enrichment_degraded' negative event
+ * when the AI narrative pass landed 'degraded'/'error' rather than 'ai', and
+ * a 'workspace_rebuild_failed' event from the reanalyze attempt sidecar when
+ * the last rebuild attempt itself threw. No event fabricated for a workspace
+ * that has never rebuilt (record is null) or never failed (no sidecar).
+ */
+async function collectWorkspaceActivityEvents(
+  workspaceAnalyses: AccountWorkspaceAnalysisScheduler | undefined,
+  dataDir: string,
+  workspaceId: string,
+  workspaceName: string,
+): Promise<AccountActivityEvent[]> {
+  const events: AccountActivityEvent[] = [];
+  if (workspaceAnalyses) {
+    const record = await workspaceAnalyses.load(workspaceId);
+    if (record) {
+      events.push({
+        type: 'workspace_rebuilt',
+        at: record.generated_at,
+        workspace_id: workspaceId,
+        title: `${workspaceName} workspace analysis rebuilt`,
+        detail: `${record.member_project_ids.length} member project${record.member_project_ids.length === 1 ? '' : 's'}`,
+      });
+      if (record.enrichment && (record.enrichment.status === 'degraded' || record.enrichment.status === 'error')) {
+        events.push({
+          type: 'workspace_enrichment_degraded',
+          at: record.enrichment.completed_at || record.generated_at,
+          workspace_id: workspaceId,
+          title: `${workspaceName} narrative enrichment ${record.enrichment.status}`,
+          ...(record.enrichment.reason || record.enrichment.error
+            ? { detail: record.enrichment.reason || record.enrichment.error }
+            : {}),
+        });
+      }
+    }
+  }
+  const workspaceLastAttempt = await readAttemptRecord(workspaceAttemptRecordPath(dataDir, workspaceId));
+  if (workspaceLastAttempt?.state === 'failed' && workspaceLastAttempt.finished_at) {
+    events.push({
+      type: 'workspace_rebuild_failed',
+      at: workspaceLastAttempt.finished_at,
+      workspace_id: workspaceId,
+      title: `${workspaceName} rebuild failed`,
+      ...(workspaceLastAttempt.reason ? { detail: workspaceLastAttempt.reason } : {}),
+    });
+  }
+  return events;
+}
+
 async function handleSync(dataDir: string, request: RemoteSyncRequest, accountSalt?: string): Promise<RemoteAnalyzeResponse> {
   if (!request.analysis_id) throw new Error('Remote sync requires analysis_id');
   // Same resolveStorageAnalysisId salting as /v1/analyze: the client resends
@@ -3044,16 +3387,43 @@ async function handleSync(dataDir: string, request: RemoteSyncRequest, accountSa
   await applyChanges(workspace, request.changes.changed_files || []);
   const displayName = resolveDisplayName(request.changes.project_name, request.project_path);
   const result = await runIncrementalAnalysisIsolated(workspace, displayName);
+  const manifest = request.changes.manifest || buildChangeManifest(workspace, request.changes.changed_files || []);
+  await stampRepoFacts(workspace, result.output, manifest);
   return {
     status: 'success',
     analysis_id: analysisId,
     analysis_revision: Date.now(),
     analysis_type: result.wasFullRebuild ? 'full' : 'incremental',
     base_commit: request.changes.base_commit,
-    manifest: request.changes.manifest || buildChangeManifest(workspace, request.changes.changed_files || []),
+    manifest,
     cas: result.output,
     change_report: result.changeReport,
   };
+}
+
+/**
+ * Copy the client-derived repo_facts (contributor_count/first_commit_at/
+ * last_commit_at — see remote-source.ts deriveRepoFacts) from the upload
+ * manifest onto CASOutput.system so the /analysis summary and /cas endpoints
+ * expose them automatically (both read straight off `cas.system`). The
+ * manifest already flows into every response as `manifest.repo_facts`; the
+ * CAS itself never saw it because analyzeProjectIncremental/orchestrateAnalysis
+ * has no git access into the client's original working tree (it only ever
+ * sees the uploaded file snapshot).
+ *
+ * Re-persists the stamped CAS via saveAnalysis: `output` here was already
+ * written to storage by the worker (analyzeProjectIncremental/
+ * analyzeProjectDeferred call saveAnalysis internally BEFORE this function
+ * ever sees the CAS), so mutating the in-memory object alone would only
+ * affect this one HTTP response — a later GET /api/projects/{id}/analysis
+ * (a plain disk read, not a re-analysis) would load the un-stamped copy.
+ * Additive stamp, not a re-derivation: a no-op (no re-save) when the client
+ * omitted repo_facts (non-git / no commits).
+ */
+export async function stampRepoFacts(workspace: string, cas: CASOutput, manifest: SourceManifest | undefined): Promise<void> {
+  if (!manifest?.repo_facts) return;
+  cas.system.repo_facts = manifest.repo_facts;
+  await saveAnalysis(workspace, cas);
 }
 
 async function writeSnapshot(workspace: string, files: Array<{ path: string; content: string }>): Promise<void> {

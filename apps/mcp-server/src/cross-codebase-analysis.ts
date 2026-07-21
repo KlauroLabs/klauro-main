@@ -944,6 +944,10 @@ export interface CrossCodebaseSystemGraph {
   detail_views: WorkspaceDetailViews;
   validation: WorkspaceValidation;
   quality_flags: WorkspaceQualityFlag[];
+  /** Deterministic, evidence-based complexity score (never AI, never a keyword
+   *  table — see computeCodebaseComplexity/computeWorkspaceComplexity). Absent
+   *  (not zero-filled) when the workspace has no member codebases to score. */
+  workspace_complexity?: WorkspaceComplexity;
   summary: {
     codebases: number;
     applications: number;
@@ -974,6 +978,270 @@ export interface CrossCodebaseSystemGraph {
 export type WorkspaceAnalysisGraph = CrossCodebaseSystemGraph;
 
 export const WAS_VERSION = '1.0.0';
+
+// ---------------------------------------------------------------------------
+// Complexity model (deterministic, evidence-based — never AI, never a
+// keyword table; see docs cardinal "deterministic facts + AI interpretation
+// never hardcoded categorizer"). Every number below is read straight off
+// already-computed CAS/WAS facts (graph size, entry/exit surface, seam
+// modality counts, dependency fan-out, entity/capability/deployable counts,
+// runtime-link density, DAS promotion). Same input always produces the same
+// score: no timestamps, no randomness, no AI call in this file.
+// ---------------------------------------------------------------------------
+
+/** One 0-100 subscore plus the raw evidence it was computed from, so a caller
+ *  can see WHY a number is what it is without re-deriving it. */
+export interface ComplexitySubscore {
+  score: number;
+  /** Evidence values (already-named CAS/WAS facts) this subscore averaged. */
+  inputs: Record<string, number>;
+}
+
+export interface CodebaseComplexitySubscores {
+  /** Raw graph size: node + edge counts. Log-scaled because real repos are
+   *  heavy-tailed (a 40-file service and a 4,000-file monolith both exist in
+   *  the corpus) — a linear scale would let one giant repo saturate the
+   *  scale for everyone else, while log growth says "10x the nodes is
+   *  meaningfully but not proportionally more complex to hold in your head." */
+  size: ComplexitySubscore;
+  /** How entangled the codebase is with the outside world (direct external
+   *  dependency count) and with itself (edges-per-node, i.e. average
+   *  fan-out of the call/reference graph). Both are coupling in the classic
+   *  sense: more edges per unit = more places a change can ripple to. */
+  coupling: ComplexitySubscore;
+  /** External interaction surface: entry points + exit points (how many
+   *  doors the system has) plus classified sync/async communication seams
+   *  (how many of those doors are actively talked through). Passive seams
+   *  are excluded here — shared-state coupling is a coupling concern, not a
+   *  surface-area one, so it stays out of this subscore to avoid double
+   *  counting the same fact in two buckets. */
+  surface: ComplexitySubscore;
+  /** Structural breadth: how many independently-shippable units, domain
+   *  entities, and capabilities the codebase is organized into. This is
+   *  "how many distinct things is this system, conceptually" as opposed to
+   *  `size` ("how much code is there") — a 200-node codebase with 12
+   *  capabilities and 3 deployables is topologically more complex than a
+   *  200-node codebase that is one script. */
+  topology: ComplexitySubscore;
+}
+
+export interface CodebaseComplexity {
+  codebase_id: string;
+  /** Mean of the four subscores, rounded. No subscore is weighted above the
+   *  others: nothing in the input evidence justifies claiming (without
+   *  calibration data) that e.g. coupling predicts engineering difficulty
+   *  better than surface area does, so equal weight is the honest default
+   *  rather than a tuned-looking number. */
+  composite: number;
+  subscores: CodebaseComplexitySubscores;
+  /** Exact fact names this score was computed from, for auditability. */
+  computed_from: string[];
+}
+
+export interface WorkspaceComplexitySubscores {
+  /** Log-scaled count of deployable applications across all members — more
+   *  independently-running surfaces to reason about at once. */
+  application_surface: ComplexitySubscore;
+  /** Log-scaled count of resolved cross-repo runtime links (how many wires
+   *  actually connect the members), the direct workspace-level analogue of
+   *  a single codebase's `coupling` subscore. */
+  runtime_link_density: ComplexitySubscore;
+  /** Fraction (0-100) of applications whose deployable identity was
+   *  confirmed by DAS promotion (`source_das_unit_id` set) — a proxy for how
+   *  much of the workspace is verified multi-layer shipped topology versus
+   *  single-CAS guesswork. Unlike the other subscores this is a ratio, not a
+   *  log-scaled count, because "half the fleet is DAS-verified" is already
+   *  bounded 0-100 and log-scaling a fraction would distort it. */
+  das_verified_fraction: ComplexitySubscore;
+}
+
+export interface WorkspaceComplexity {
+  /** Blend of (a) the average complexity of member codebases and (b) the
+   *  cross-repo factors above. Member average is weighted 60% because a
+   *  workspace's complexity is still primarily "how complex are the things
+   *  in it"; the 40% remainder is cross-repo integration complexity that no
+   *  single member's own score can see (how many members, how densely
+   *  wired, how much of it is verified topology). 60/40 is a documented
+   *  default, not a fitted constant — there is no labeled-complexity corpus
+   *  yet to calibrate against. */
+  composite: number;
+  member_average_composite: number;
+  subscores: WorkspaceComplexitySubscores;
+  members: Array<{ codebase_id: string; composite: number; subscores: CodebaseComplexitySubscores }>;
+  computed_from: string[];
+}
+
+/** log1p-normalized 0-100 score: monotonically increasing in `value`, with
+ *  diminishing returns past `saturation` (the point at which "yet more of
+ *  this metric" stops reading as meaningfully more complex). log1p (rather
+ *  than log) is defined at value=0, so an empty metric scores exactly 0
+ *  instead of -Infinity. */
+function logScaleScore(value: number, saturation: number): number {
+  const v = Math.max(0, value);
+  const denom = Math.log1p(Math.max(1, saturation));
+  const score = (Math.log1p(v) / denom) * 100;
+  return Math.min(100, Math.max(0, score));
+}
+
+/** Linear 0-100 score for ratios/densities that are already bounded and not
+ *  heavy-tailed (e.g. average edges-per-node rarely exceeds single digits),
+ *  so log-scaling would just compress an already-small range further. */
+function linearScaleScore(value: number, ceiling: number): number {
+  if (ceiling <= 0) return 0;
+  const v = Math.max(0, value);
+  return Math.min(100, Math.max(0, (v / ceiling) * 100));
+}
+
+function averageSubscore(scores: number[]): number {
+  if (scores.length === 0) return 0;
+  return scores.reduce((sum, s) => sum + s, 0) / scores.length;
+}
+
+/** Deterministic per-codebase complexity from CAS facts already computed
+ *  during analysis — never AI, never a keyword/brand table. Every input is
+ *  named in `computed_from` so the score is auditable. Always computable:
+ *  `codebase.graph` (node/edge/entry/exit counts) is populated for every
+ *  member, so a member never has to be skipped for lack of data — optional
+ *  richer facts (dependencies, entities, capabilities, deployable evidence,
+ *  communication seams) that a given CAS did not produce simply drop out of
+ *  their subscore's average rather than being treated as zero. */
+export function computeCodebaseComplexity(codebase: SystemCodebase, repository: CrossCodebaseInput): CodebaseComplexity {
+  const cas = repository.cas;
+  const computedFrom: string[] = [];
+
+  // size: raw graph magnitude, log-scaled (heavy-tailed across real repos).
+  const nodeCount = codebase.graph.nodes;
+  const edgeCount = codebase.graph.edges;
+  computedFrom.push('graph.nodes', 'graph.edges');
+  const size: ComplexitySubscore = {
+    score: Math.round(averageSubscore([
+      logScaleScore(nodeCount, 5000),  // 5,000 nodes: corpus-observed ceiling for a single very large repo
+      logScaleScore(edgeCount, 20000), // edges typically run ~4x nodes at this scale
+    ])),
+    inputs: { node_count: nodeCount, edge_count: edgeCount },
+  };
+
+  // coupling: external dependency fan-out + internal edge density (avg out-degree).
+  const directDependencyCount = (cas.dependencies?.packages || []).filter(pkg => pkg.direct).length;
+  const edgeDensity = nodeCount > 0 ? edgeCount / nodeCount : 0;
+  const couplingInputs: Record<string, number> = { edge_density: Number(edgeDensity.toFixed(3)) };
+  const couplingScores = [linearScaleScore(edgeDensity, 10)]; // avg out-degree of 10+ reads as densely coupled
+  if (cas.dependencies) {
+    computedFrom.push('dependencies.packages[direct]');
+    couplingInputs.direct_dependency_count = directDependencyCount;
+    couplingScores.push(logScaleScore(directDependencyCount, 150)); // 150+ direct deps: corpus-observed high end
+  }
+  computedFrom.push('graph.edges/graph.nodes');
+  const coupling: ComplexitySubscore = { score: Math.round(averageSubscore(couplingScores)), inputs: couplingInputs };
+
+  // surface: entry/exit point count + active (sync/async) communication seams.
+  const entryPoints = codebase.graph.entry_points;
+  const exitPoints = codebase.graph.exit_points;
+  computedFrom.push('graph.entry_points', 'graph.exit_points');
+  const surfaceInputs: Record<string, number> = { entry_point_count: entryPoints, exit_point_count: exitPoints };
+  const surfaceScores = [logScaleScore(entryPoints + exitPoints, 500)];
+  const seamCounts = cas.communication_seams?.inventory?.counts;
+  if (seamCounts) {
+    computedFrom.push('communication_seams.inventory.counts.sync', 'communication_seams.inventory.counts.async');
+    const activeSeams = seamCounts.sync + seamCounts.async;
+    surfaceInputs.seam_sync_count = seamCounts.sync;
+    surfaceInputs.seam_async_count = seamCounts.async;
+    surfaceScores.push(logScaleScore(activeSeams, 300)); // 300+ active seams: corpus-observed high end
+  }
+  const surface: ComplexitySubscore = { score: Math.round(averageSubscore(surfaceScores)), inputs: surfaceInputs };
+
+  // topology: how many independently-shippable units / domain entities /
+  // capabilities the codebase is organized into (structural breadth).
+  const topologyInputs: Record<string, number> = {};
+  const topologyScores: number[] = [];
+  if (cas.deployable_evidence) {
+    computedFrom.push('deployable_evidence.length');
+    topologyInputs.deployable_count = cas.deployable_evidence.length;
+    topologyScores.push(logScaleScore(cas.deployable_evidence.length, 10)); // 10+ deployables from one codebase: multi-service ceiling
+  }
+  if (cas.data_entities) {
+    computedFrom.push('data_entities.length');
+    topologyInputs.entity_count = cas.data_entities.length;
+    topologyScores.push(logScaleScore(cas.data_entities.length, 60));
+  }
+  if (cas.system_capabilities) {
+    computedFrom.push('system_capabilities.length');
+    topologyInputs.capability_count = cas.system_capabilities.length;
+    topologyScores.push(logScaleScore(cas.system_capabilities.length, 40));
+  }
+  const topology: ComplexitySubscore = { score: Math.round(averageSubscore(topologyScores)), inputs: topologyInputs };
+
+  const composite = Math.round(averageSubscore([size.score, coupling.score, surface.score, topology.score]));
+
+  return {
+    codebase_id: codebase.id,
+    composite,
+    subscores: { size, coupling, surface, topology },
+    computed_from: Array.from(new Set(computedFrom)),
+  };
+}
+
+/** Deterministic workspace-level complexity: aggregates member composites
+ *  and layers on cross-repo factors already carried by the WAS graph
+ *  (runtime_links, application count, DAS-promoted member count). Absent
+ *  (not zero) when there are no member codebases to score — an honest
+ *  "no score" beats a fabricated 0. */
+export function computeWorkspaceComplexity(
+  codebases: SystemCodebase[],
+  repositories: CrossCodebaseInput[],
+  applications: SystemApplication[],
+  runtimeLinks: SystemRuntimeLink[],
+): WorkspaceComplexity | undefined {
+  if (codebases.length === 0) return undefined;
+
+  const repositoryById = new Map(repositories.map(repository => [codebaseId(repository.path), repository]));
+  const memberComplexities = codebases
+    .map(codebase => {
+      const repository = repositoryById.get(codebase.id);
+      return repository ? computeCodebaseComplexity(codebase, repository) : undefined;
+    })
+    .filter((complexity): complexity is CodebaseComplexity => complexity !== undefined);
+  if (memberComplexities.length === 0) return undefined;
+  const members = memberComplexities.map(complexity => ({
+    codebase_id: complexity.codebase_id,
+    composite: complexity.composite,
+    subscores: complexity.subscores,
+  }));
+
+  const memberAverageComposite = Math.round(averageSubscore(members.map(member => member.composite)));
+
+  const applicationSurface: ComplexitySubscore = {
+    score: Math.round(logScaleScore(applications.length, 40)), // 40+ applications: large-fleet ceiling
+    inputs: { application_count: applications.length },
+  };
+  const runtimeLinkDensity: ComplexitySubscore = {
+    score: Math.round(logScaleScore(runtimeLinks.length, 100)), // 100+ resolved runtime links: densely-wired ceiling
+    inputs: { runtime_link_count: runtimeLinks.length },
+  };
+  const dasPromotedCount = applications.filter(app => app.source_das_unit_id).length;
+  const dasVerifiedFraction = applications.length > 0 ? (dasPromotedCount / applications.length) * 100 : 0;
+  const dasVerified: ComplexitySubscore = {
+    score: Math.round(linearScaleScore(dasVerifiedFraction, 100)),
+    inputs: { das_promoted_count: dasPromotedCount, application_count: applications.length },
+  };
+
+  const crossRepoScore = averageSubscore([applicationSurface.score, runtimeLinkDensity.score, dasVerified.score]);
+  const composite = Math.round(memberAverageComposite * 0.6 + crossRepoScore * 0.4);
+
+  return {
+    composite,
+    member_average_composite: memberAverageComposite,
+    subscores: { application_surface: applicationSurface, runtime_link_density: runtimeLinkDensity, das_verified_fraction: dasVerified },
+    members,
+    computed_from: [
+      'codebases[].graph',
+      'applications.length',
+      'runtime_links.length',
+      'applications[].source_das_unit_id',
+      ...Array.from(new Set(memberComplexities.flatMap(complexity => complexity.computed_from))),
+    ],
+  };
+}
 
 export function crossCodebaseSystemGraphId(name: string): string {
   return slugify(name || 'system-analysis') || 'system-analysis';
@@ -1033,6 +1301,7 @@ export function buildCrossCodebaseSystemGraph(
   const validation = buildWorkspaceValidation(codebases, applications, interfaces, applicationLinks, unmatchedInterfaces, inputs, health);
   const qualityFlags = buildWorkspaceQualityFlags(workspaceNarrative, capabilities, domains, entityMap.entities, codebases, interfaces, applicationLinks, unmatchedInterfaces);
   const detailViews = buildWorkspaceDetailViews(codebases, applications, distributionUnits, interfaces, runtimeComponents, runtimeLinks, applicationLinks, systemInsights, dataFlowPaths, entityMap.entities, entityMap.paths, unmatchedInterfaces, validation, workspaceNarrative, composition, ownership, activity, telemetry, health, riskAreas, capabilities, workflows, environments, infrastructureOverlay, sharedCodeRollup);
+  const workspaceComplexity = computeWorkspaceComplexity(codebases, repositories, applications, runtimeLinks);
 
   const graph: CrossCodebaseSystemGraph = {
     analysis_kind: 'workspace',
@@ -1082,6 +1351,7 @@ export function buildCrossCodebaseSystemGraph(
     detail_views: detailViews,
     validation,
     quality_flags: qualityFlags,
+    ...(workspaceComplexity ? { workspace_complexity: workspaceComplexity } : {}),
     summary: summarize(codebases, applications, distributionUnits, interfaces, runtimeComponents, runtimeLinks, applicationLinks, systemInsights, links, unmatchedInterfaces, composition, riskAreas, capabilities, workflows, domains, entityMap.entities, entityMap.paths, workflowsAll.length),
   };
   normalizeWorkspaceNextMcpCalls(graph);

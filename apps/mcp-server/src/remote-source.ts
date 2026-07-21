@@ -58,6 +58,19 @@ export interface WorkingTreeChangeContext {
   manifest: SourceManifest;
 }
 
+/**
+ * Cheap, client-derived repo-level facts — contributor count and first/last
+ * commit timestamps — read from git metadata (never file content). Additive
+ * and honest: only present when derivable from a real git history, so a
+ * non-git project or a repo with no commits simply omits this field rather
+ * than shipping a fabricated zero/empty value.
+ */
+export interface RepoFacts {
+  contributor_count?: number;
+  first_commit_at?: string;
+  last_commit_at?: string;
+}
+
 export interface SourceManifest {
   generated_at: string;
   root: string;
@@ -73,6 +86,7 @@ export interface SourceManifest {
   config_file?: string;
   ignore_file?: string;
   upload_mode?: string;
+  repo_facts?: RepoFacts;
   policy?: {
     require_manifest_review: boolean;
     allow_dirty_tree_sync: boolean;
@@ -1115,6 +1129,7 @@ function buildManifest(root: string, loaded: LoadedKlauroConfig, files: Array<{ 
     config_file: loaded.configPath,
     ignore_file: loaded.ignorePath,
     upload_mode: loaded.config.upload.mode,
+    repo_facts: deriveRepoFacts(root),
     policy: {
       require_manifest_review: loaded.config.upload.requireManifestReview,
       allow_dirty_tree_sync: loaded.config.upload.allowDirtyTreeSync,
@@ -1122,6 +1137,69 @@ function buildManifest(root: string, loaded: LoadedKlauroConfig, files: Array<{ 
       send_deleted_paths: loaded.config.upload.sendDeletedPaths,
     },
   };
+}
+
+// Cap every git subprocess this derivation shells out to so a pathological
+// repo (huge shortlog, corrupted pack) cannot stall snapshot building — a
+// timeout or non-zero exit is treated the same as "not derivable" (silent
+// skip), never a thrown error.
+const REPO_FACTS_GIT_TIMEOUT_MS = 3000;
+
+/**
+ * Cheap, best-effort repo-level facts read straight from git metadata:
+ * contributor count (`git shortlog -sn HEAD`, one line per distinct author)
+ * and the first/last commit timestamps (`git log --reverse -1` /
+ * `git log -1`, ISO 8601 via `%aI`). Additive and honest — returns undefined
+ * (not a zero/empty object) whenever the facts can't be derived: not a git
+ * repo, no HEAD commit yet (working-tree-only project), or any of the git
+ * invocations fail/timeout. Never throws.
+ */
+function deriveRepoFacts(root: string): RepoFacts | undefined {
+  if (!isGitRepository(root)) return undefined;
+  const head = readGitHead(root);
+  if (!head) return undefined;
+
+  const facts: RepoFacts = {};
+
+  try {
+    const shortlog = execFileSync('git', ['shortlog', '-sn', 'HEAD'], {
+      cwd: root,
+      encoding: 'utf8',
+      timeout: REPO_FACTS_GIT_TIMEOUT_MS,
+      maxBuffer: 1024 * 1024 * 4,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    const contributorCount = shortlog.split('\n').filter(line => line.trim().length > 0).length;
+    if (contributorCount > 0) facts.contributor_count = contributorCount;
+  } catch {
+    // Not derivable (e.g. shallow clone with no author history) — omit.
+  }
+
+  try {
+    const firstCommitAt = execFileSync('git', ['log', '--reverse', '-1', '--format=%aI', 'HEAD'], {
+      cwd: root,
+      encoding: 'utf8',
+      timeout: REPO_FACTS_GIT_TIMEOUT_MS,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    if (firstCommitAt) facts.first_commit_at = firstCommitAt;
+  } catch {
+    // Omit.
+  }
+
+  try {
+    const lastCommitAt = execFileSync('git', ['log', '-1', '--format=%aI', 'HEAD'], {
+      cwd: root,
+      encoding: 'utf8',
+      timeout: REPO_FACTS_GIT_TIMEOUT_MS,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    if (lastCommitAt) facts.last_commit_at = lastCommitAt;
+  } catch {
+    // Omit.
+  }
+
+  return Object.keys(facts).length > 0 ? facts : undefined;
 }
 
 function recommendTransfer(loaded: LoadedKlauroConfig, remoteProvider: RemoteProviderInfo | undefined, mode: 'full' | 'dirty-tree'): SourceTransferRecommendation {

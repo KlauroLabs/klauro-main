@@ -170,6 +170,13 @@ export function buildSummary(cas: CASOutput, opts: { detail?: 'compact' | 'full'
   return {
     name: cas.system?.name,
     type: cas.system?.type,
+    // Client-derived (git shortlog/log at snapshot-build time, see
+    // apps/mcp-server/src/remote-source.ts deriveRepoFacts) and stamped onto
+    // cas.system server-side (remote-analyzer-service.ts stampRepoFacts).
+    // Powers the app's Contributors / Codebase age stat cards
+    // (apps/app/src/pages/codebase/CodebaseStats.tsx). Omitted (not a
+    // zero/empty object) when the client could not derive it.
+    ...(cas.system?.repo_facts ? { repo_facts: cas.system.repo_facts } : {}),
     cas_version: versionInfo.stored_version,
     // Content-production time of THIS analysis (set by the orchestrator when it
     // actually (re)computes; a no-op incremental preserves the prior value).

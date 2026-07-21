@@ -484,6 +484,23 @@ export interface CASSystem {
     complexity_score?: number;
     maintainability_index?: number;
   };
+  /**
+   * Cheap repo-level facts (contributor count, first/last commit timestamps)
+   * derived client-side from git metadata at snapshot-build time
+   * (apps/mcp-server/src/remote-source.ts deriveRepoFacts) and stamped onto
+   * the analysis server-side from the upload manifest (remote-analyzer-service.ts
+   * handleAnalyze/handleSync). Additive and honest: absent whenever the
+   * client could not derive it (not a git repo, no commits yet) rather than
+   * a fabricated zero/empty value. analyzer-core does not itself compute
+   * this — analyzer-core has no git access — it only carries the field
+   * through the CAS shape. Powers the UI's Contributors / Codebase age
+   * elements (codebase age = now - first_commit_at).
+   */
+  repo_facts?: {
+    contributor_count?: number;
+    first_commit_at?: string;
+    last_commit_at?: string;
+  };
   metadata?: Record<string, any>;
 }
 

@@ -83,3 +83,65 @@ test('account store rejects invalid login and cross-workspace project access', a
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+// §COORD-AUTH-401 regression — TASK #68: a 10-agent fleet reported
+// /v1/coordination/* flipping from working to 401 ~30-40 min into a session,
+// with the same Bearer token freshly read from disk each time. Root cause:
+// every AccountStore mutation used to be a bare `load()` ... `save(db)` pair
+// with NO locking around the read-modify-write span — `save()`'s writeQueue
+// only serialized the physical `fs.writeJson` calls, not the critical
+// section. Two concurrent mutations (e.g. one lane's `/v1/analyze` push
+// calling setProjectAnalysisId while another lane logs in) could both load()
+// the same snapshot, mutate independently, then the second save() clobbers
+// the first — silently dropping the first mutation's session/data (a lost
+// update). This test fires a burst of concurrent session-creating (login)
+// and non-session (setProjectAnalysisId) mutations at ONE store instance —
+// the same shape a multi-lane fleet produces — and asserts every session
+// survives and authenticates. Before the AccountStore.mutate() fix, this
+// reliably lost sessions under concurrency; after the fix, none are lost.
+test('concurrent account mutations never lose a session (lost-update regression)', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-accounts-race-'));
+  const store = new AccountStore(root);
+
+  try {
+    const owner = await store.register({ email: 'fleet-owner@example.com', password: 'password-1234', workspaceName: 'Fleet' });
+    const workspace = (await store.listWorkspaces(owner.user.id))[0];
+    const project = await store.createProject(owner.user.id, workspace.id, { name: 'Coordinated Repo' });
+
+    const LANES = 25;
+    // Every lane registers its own account (each register() call is itself
+    // a multi-record mutation: user + workspace + membership + session) AND
+    // concurrently the "owner" lane hammers setProjectAnalysisId — the
+    // highest-frequency real-world write (fires on every /v1/analyze push) —
+    // to maximize interleaving against the registrations.
+    const registrations = Promise.all(
+      Array.from({ length: LANES }, (_, i) =>
+        store.register({ email: `lane-${i}@example.com`, password: 'password-1234' })),
+    );
+    const pushes = Promise.all(
+      Array.from({ length: LANES }, (_, i) =>
+        store.setProjectAnalysisId(owner.user.id, project.id, `analysis-${i}`)),
+    );
+
+    const [lanes] = await Promise.all([registrations, pushes]);
+
+    // Every lane's session must still authenticate — none silently dropped
+    // by an overwritten save().
+    for (const lane of lanes) {
+      const authed = await store.authenticate(lane.token);
+      assert.ok(authed, `session for ${lane.user.email} was lost to a concurrent-write race`);
+      assert.equal(authed?.id, lane.user.id);
+    }
+
+    // The owner's own original session (created by the very first register())
+    // must ALSO have survived every subsequent concurrent mutation.
+    assert.ok(await store.authenticate(owner.token), 'the pre-existing owner session was dropped by a concurrent mutation');
+
+    // The project write itself must have landed (whichever push happened to
+    // be last is fine — the point is the store is never left corrupt/blank).
+    const finalProject = await store.getProjectForUser(owner.user.id, project.id);
+    assert.ok(finalProject?.analysis_id?.startsWith('analysis-'));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

@@ -75,6 +75,39 @@ export interface RemoteProjectRevisionsResponse {
   revisions: RemoteProjectRevision[];
 }
 
+/**
+ * A single reverse-chronological entry in GET /api/account/activity and
+ * GET /api/workspaces/{id}/activity ("Change Activity" panel in the Home +
+ * Workspace Figma frames). Every event is derived from data ALREADY
+ * persisted for other reasons (project revisions, reanalyze attempt
+ * sidecars, the server-side WAS record) — there is no separate activity-log
+ * writer, so this type is deliberately a thin projection, not a new store.
+ */
+export interface AccountActivityEvent {
+  type:
+    | 'analysis_completed'
+    | 'analysis_failed'
+    | 'workspace_rebuilt'
+    | 'workspace_enrichment_degraded'
+    | 'workspace_rebuild_failed'
+    | 'project_created'
+    | 'project_moved';
+  /** ISO timestamp this event happened at — the sort key for the feed. */
+  at: string;
+  workspace_id?: string;
+  project_id?: string;
+  title: string;
+  detail?: string;
+  /** Node/edge count change vs. the previous stored revision, when one exists to diff against. */
+  deltas?: { nodes: number; edges: number };
+  duration_ms?: number;
+}
+
+export interface AccountActivityResponse {
+  events: AccountActivityEvent[];
+  next_cursor: null;
+}
+
 export interface RemoteProposalPreviewRequest {
   project_id?: string;
   organization_id?: string;

@@ -35,6 +35,15 @@ export interface AccountProject {
   local_path?: string;
   analysis_id?: string;
   created_at: string;
+  /** Additive, last-move-only (mirrors the ReanalyzeAttemptRecord "last
+   *  attempt, not full history" pattern): set by attachProjectToWorkspace
+   *  whenever a project MOVES into a different workspace (never on the
+   *  initial createProject, which already has created_at for that). Absent
+   *  on a project that has never moved — old records simply have no event,
+   *  never a fabricated one. Feeds the Change Activity 'project_moved' event
+   *  (GET /api/account/activity, /api/workspaces/:id/activity). */
+  moved_at?: string;
+  moved_from_workspace_id?: string;
 }
 
 export interface AccountSession {
@@ -79,54 +88,66 @@ export class AccountStore {
     const email = normalizeEmail(input.email);
     const name = cleanName(input.name || email.split('@')[0]);
     assertPassword(input.password);
-    const db = await this.load();
-    if (db.users.some(user => user.email === email)) {
-      throw httpError(409, 'A user with that email already exists');
-    }
+    // Hash BEFORE entering the mutate() critical section: bcrypt is
+    // deliberately slow, and holding the store's write queue for it would
+    // serialize every concurrent account mutation (register/login/analyze
+    // pushes) behind however long hashing takes.
+    const passwordHash = await hashPassword(input.password);
+    return this.mutate(db => {
+      // Uniqueness check now runs against the freshest snapshot INSIDE the
+      // atomic section — closes a pre-existing TOCTOU where two concurrent
+      // registrations for the same email could both pass this check before
+      // either had saved.
+      if (db.users.some(user => user.email === email)) {
+        throw httpError(409, 'A user with that email already exists');
+      }
 
-    const now = new Date().toISOString();
-    const user: AccountUser = {
-      id: id('usr'),
-      email,
-      name,
-      password_hash: await hashPassword(input.password),
-      created_at: now,
-    };
-    db.users.push(user);
+      const now = new Date().toISOString();
+      const user: AccountUser = {
+        id: id('usr'),
+        email,
+        name,
+        password_hash: passwordHash,
+        created_at: now,
+      };
+      db.users.push(user);
 
-    const workspaceName = cleanName(input.workspaceName || `${name}'s Workspace`);
-    const workspace: AccountWorkspace = {
-      id: id('wsp'),
-      name: workspaceName,
-      created_by_user_id: user.id,
-      created_at: now,
-    };
-    db.workspaces.push(workspace);
-    db.workspace_users.push({
-      workspace_id: workspace.id,
-      user_id: user.id,
-      role: 'owner',
-      created_at: now,
+      const workspaceName = cleanName(input.workspaceName || `${name}'s Workspace`);
+      const workspace: AccountWorkspace = {
+        id: id('wsp'),
+        name: workspaceName,
+        created_by_user_id: user.id,
+        created_at: now,
+      };
+      db.workspaces.push(workspace);
+      db.workspace_users.push({
+        workspace_id: workspace.id,
+        user_id: user.id,
+        role: 'owner',
+        created_at: now,
+      });
+
+      const session = createSession(user.id);
+      db.sessions.push(session.record);
+      return { token: session.token, user: publicUser(user) };
     });
-
-    const session = createSession(user.id);
-    db.sessions.push(session.record);
-    await this.save(db);
-    return { token: session.token, user: publicUser(user) };
   }
 
   async login(input: { email: string; password: string }): Promise<AccountSessionResult> {
     const email = normalizeEmail(input.email);
+    // Password verify is a read against the current snapshot, outside the
+    // write queue for the same reason as register() (bcrypt is slow).
     const db = await this.load();
     const user = db.users.find(candidate => candidate.email === email);
     if (!user || !(await verifyPassword(input.password, user.password_hash))) {
       throw httpError(401, 'Invalid email or password');
     }
-    const session = createSession(user.id);
-    db.sessions = pruneSessions(db.sessions);
-    db.sessions.push(session.record);
-    await this.save(db);
-    return { token: session.token, user: publicUser(user) };
+    return this.mutate(freshDb => {
+      const session = createSession(user.id);
+      freshDb.sessions = pruneSessions(freshDb.sessions);
+      freshDb.sessions.push(session.record);
+      return { token: session.token, user: publicUser(user) };
+    });
   }
 
   async authenticate(token: string | undefined): Promise<PublicAccountUser | null> {
@@ -166,17 +187,17 @@ export class AccountStore {
   async createWorkspace(userId: string, input: { name: string }): Promise<AccountWorkspace & { role: WorkspaceRole }> {
     const name = cleanName(input.name);
     const now = new Date().toISOString();
-    const db = await this.load();
-    const workspace: AccountWorkspace = {
-      id: id('wsp'),
-      name,
-      created_by_user_id: userId,
-      created_at: now,
-    };
-    db.workspaces.push(workspace);
-    db.workspace_users.push({ workspace_id: workspace.id, user_id: userId, role: 'owner', created_at: now });
-    await this.save(db);
-    return { ...workspace, role: 'owner' };
+    return this.mutate(db => {
+      const workspace: AccountWorkspace = {
+        id: id('wsp'),
+        name,
+        created_by_user_id: userId,
+        created_at: now,
+      };
+      db.workspaces.push(workspace);
+      db.workspace_users.push({ workspace_id: workspace.id, user_id: userId, role: 'owner', created_at: now });
+      return { ...workspace, role: 'owner' };
+    });
   }
 
   async listWorkspaceUsers(userId: string, workspaceId: string): Promise<Array<PublicAccountUser & { role: WorkspaceRole }>> {
@@ -195,25 +216,24 @@ export class AccountStore {
   async addWorkspaceUser(actorUserId: string, workspaceId: string, input: { email: string; role?: WorkspaceRole }): Promise<AccountWorkspaceUser> {
     const email = normalizeEmail(input.email);
     const role = normalizeRole(input.role || 'member');
-    const db = await this.load();
-    requireMembership(db, actorUserId, workspaceId, ['owner', 'admin']);
-    const user = db.users.find(candidate => candidate.email === email);
-    if (!user) throw httpError(404, 'No user exists with that email yet');
-    const existing = db.workspace_users.find(member => member.workspace_id === workspaceId && member.user_id === user.id);
-    if (existing) {
-      existing.role = role;
-      await this.save(db);
-      return existing;
-    }
-    const membership: AccountWorkspaceUser = {
-      workspace_id: workspaceId,
-      user_id: user.id,
-      role,
-      created_at: new Date().toISOString(),
-    };
-    db.workspace_users.push(membership);
-    await this.save(db);
-    return membership;
+    return this.mutate(db => {
+      requireMembership(db, actorUserId, workspaceId, ['owner', 'admin']);
+      const user = db.users.find(candidate => candidate.email === email);
+      if (!user) throw httpError(404, 'No user exists with that email yet');
+      const existing = db.workspace_users.find(member => member.workspace_id === workspaceId && member.user_id === user.id);
+      if (existing) {
+        existing.role = role;
+        return existing;
+      }
+      const membership: AccountWorkspaceUser = {
+        workspace_id: workspaceId,
+        user_id: user.id,
+        role,
+        created_at: new Date().toISOString(),
+      };
+      db.workspace_users.push(membership);
+      return membership;
+    });
   }
 
   async listProjects(userId: string, workspaceId: string): Promise<AccountProject[]> {
@@ -263,20 +283,20 @@ export class AccountStore {
   }
 
   async createProject(userId: string, workspaceId: string, input: { name: string; repo_url?: string; local_path?: string; analysis_id?: string }): Promise<AccountProject> {
-    const db = await this.load();
-    requireMembership(db, userId, workspaceId, ['owner', 'admin', 'member']);
-    const project: AccountProject = {
-      id: id('prj'),
-      workspace_id: workspaceId,
-      name: cleanName(input.name),
-      repo_url: optionalText(input.repo_url),
-      local_path: optionalText(input.local_path),
-      analysis_id: optionalText(input.analysis_id),
-      created_at: new Date().toISOString(),
-    };
-    db.projects.push(project);
-    await this.save(db);
-    return project;
+    return this.mutate(db => {
+      requireMembership(db, userId, workspaceId, ['owner', 'admin', 'member']);
+      const project: AccountProject = {
+        id: id('prj'),
+        workspace_id: workspaceId,
+        name: cleanName(input.name),
+        repo_url: optionalText(input.repo_url),
+        local_path: optionalText(input.local_path),
+        analysis_id: optionalText(input.analysis_id),
+        created_at: new Date().toISOString(),
+      };
+      db.projects.push(project);
+      return project;
+    });
   }
 
   async getProjectForUser(userId: string, projectId: string): Promise<AccountProject | null> {
@@ -352,28 +372,38 @@ export class AccountStore {
     already_attached: boolean;
     moved_from_workspace_id?: string;
   }> {
-    const db = await this.load();
-    requireMembership(db, userId, targetWorkspaceId);
-    const project = db.projects.find(candidate => candidate.id === projectId);
-    if (!project) throw httpError(404, 'Project not found');
-    requireMembership(db, userId, project.workspace_id);
-    if (project.workspace_id === targetWorkspaceId) {
-      return { project, already_attached: true };
-    }
-    const previousWorkspaceId = project.workspace_id;
-    project.workspace_id = targetWorkspaceId;
-    await this.save(db);
-    return { project, already_attached: false, moved_from_workspace_id: previousWorkspaceId };
+    return this.mutate(db => {
+      requireMembership(db, userId, targetWorkspaceId);
+      const project = db.projects.find(candidate => candidate.id === projectId);
+      if (!project) throw httpError(404, 'Project not found');
+      requireMembership(db, userId, project.workspace_id);
+      if (project.workspace_id === targetWorkspaceId) {
+        return { project, already_attached: true };
+      }
+      const previousWorkspaceId = project.workspace_id;
+      project.workspace_id = targetWorkspaceId;
+      project.moved_at = new Date().toISOString();
+      project.moved_from_workspace_id = previousWorkspaceId;
+      return { project, already_attached: false, moved_from_workspace_id: previousWorkspaceId };
+    });
   }
 
+  /**
+   * §COORD-AUTH-401 — the highest-frequency write in the store: called on
+   * EVERY successful `/v1/analyze` / reanalyze push (see
+   * `linkAnalysisToAccountProject` in remote-analyzer-service.ts). Before the
+   * `mutate()` fix this was the most likely single call site to race a
+   * concurrent `login`/`register` and silently drop that session — a 10-lane
+   * fleet pushing analyses every few minutes hits this constantly.
+   */
   async setProjectAnalysisId(userId: string, projectId: string, analysisId: string): Promise<AccountProject> {
-    const db = await this.load();
-    const project = db.projects.find(candidate => candidate.id === projectId);
-    if (!project) throw httpError(404, 'Project not found');
-    requireMembership(db, userId, project.workspace_id);
-    project.analysis_id = analysisId;
-    await this.save(db);
-    return project;
+    return this.mutate(db => {
+      const project = db.projects.find(candidate => candidate.id === projectId);
+      if (!project) throw httpError(404, 'Project not found');
+      requireMembership(db, userId, project.workspace_id);
+      project.analysis_id = analysisId;
+      return project;
+    });
   }
 
   private async load(): Promise<AccountDatabase> {
@@ -391,12 +421,57 @@ export class AccountStore {
     };
   }
 
-  private async save(db: AccountDatabase): Promise<void> {
-    this.writeQueue = this.writeQueue.then(async () => {
-      await fs.ensureDir(path.dirname(this.filePath));
-      await fs.writeJson(this.filePath, db, { spaces: 2 });
+  /**
+   * §COORD-AUTH-401 fix — every mutating method used to do a bare
+   * `load()` ... `save(db)` pair. `save()`'s `writeQueue` only serialized the
+   * physical `fs.writeJson` CALLS, never the read-modify-write CRITICAL
+   * SECTION around them: two concurrent mutations (e.g. one lane's
+   * `/v1/analyze` push calling `setProjectAnalysisId` while another lane
+   * `login`s) could both `load()` the same on-disk snapshot, mutate their own
+   * in-memory copy, then `save()` one after another — the SECOND save wins
+   * wholesale and silently drops whatever the FIRST save had just added
+   * (classic lost-update). Under a multi-agent fleet doing frequent
+   * account-mutating pushes, this eventually clobbers another agent's
+   * just-added *session* record, so `authenticate()` returns null for a
+   * still-valid, still-fresh Bearer token — surfacing as an unexplained 401
+   * on whichever endpoint that agent happens to call next (in practice almost
+   * always `/v1/coordination/*`, since it is polled continuously via
+   * heartbeat/claim/active while `/api/*` calls are comparatively sparse —
+   * NOT because the two surfaces use different auth: `authorizeAnalyzerRequest`
+   * and `authorizeAccountApiRequest` both defer to this same `authenticate()`).
+   *
+   * `mutate()` closes the whole load -> fn -> save critical section onto the
+   * SAME `writeQueue` used for the physical write, so no two mutations can
+   * ever interleave: each sees the previous mutation's fully-saved state.
+   * The queue bookkeeping promise itself is never allowed to reject (a
+   * validation throw inside `fn`, e.g. `httpError(404, ...)`, is caught and
+   * detached from the queue's own continuation) so one failed mutation never
+   * poisons every subsequent call.
+   */
+  private async mutate<T>(fn: (db: AccountDatabase) => T | Promise<T>): Promise<T> {
+    const task = this.writeQueue.then(async () => {
+      const db = await this.load();
+      const result = await fn(db);
+      await this.writeToDisk(db);
+      return result;
     });
-    await this.writeQueue;
+    // Keep the queue itself always-resolving (success or failure) so a
+    // rejected mutation doesn't short-circuit every mutation queued after it.
+    this.writeQueue = task.then(() => undefined, () => undefined);
+    return task;
+  }
+
+  /** Atomic on-disk write (temp file + rename): a `save()` that races a
+   *  process kill/restart (deploy, OOM, crash) must never leave a
+   *  half-written `accounts.json` — a torn write there makes EVERY session
+   *  unreadable (JSON.parse throws) until an operator manually restores from
+   *  a backup, which is a strictly worse failure mode than one lost mutation.
+   *  `fs.writeJson` directly to the target path has no such guarantee. */
+  private async writeToDisk(db: AccountDatabase): Promise<void> {
+    await fs.ensureDir(path.dirname(this.filePath));
+    const tmpPath = `${this.filePath}.tmp-${process.pid}-${Date.now()}`;
+    await fs.writeJson(tmpPath, db, { spaces: 2 });
+    await fs.rename(tmpPath, this.filePath);
   }
 }
 
