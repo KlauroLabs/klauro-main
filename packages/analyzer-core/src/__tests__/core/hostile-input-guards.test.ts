@@ -77,10 +77,31 @@ describe('hostile input guards', () => {
       expect(extraction.syntaxErrorLocations?.[0].line).toBe(1);
     });
 
-    it('genuinely flags (and localizes) a literal embedded NUL byte inside a template literal', () => {
+    // Contract change (sanitizeForTreeSitterParse): a raw NUL is a deliberate,
+    // legitimate collision-proof separator in template-literal cache/hash keys
+    // (`${a}\0${b}`) in real analyzer-core source. tree-sitter's scanner treats
+    // a literal NUL as end-of-input, so the parser-bound string (ONLY) gets a
+    // same-length placeholder substituted — valid NUL-containing TS must now
+    // parse cleanly instead of being flagged.
+    it('parses a literal embedded NUL byte inside a valid template literal cleanly (sanitized for parse only)', () => {
       const extractor = new TreeSitterTSExtractor();
       const source = 'const h = crypto.createHash(\'sha256\').update(`${status}\0${diff}`).digest(\'hex\');\n';
       const extraction = extractor.extractFromSource(source, 'revision.ts');
+      expect(extraction.hasSyntaxErrors).toBe(false);
+      expect(extraction.syntaxErrorLocations).toBeUndefined();
+      // Extraction still succeeds with content and offsets preserved: the
+      // declaration on line 1 is seen despite the NUL earlier in the string.
+      const h = extraction.variables.find(v => v.name === 'h');
+      expect(h).toBeDefined();
+      expect(h?.line).toBe(1);
+    });
+
+    it('still flags (and localizes, NUL-free) genuinely malformed source that also contains a NUL byte', () => {
+      const extractor = new TreeSitterTSExtractor();
+      // The NUL is sanitized before parsing, but the source is broken anyway —
+      // the guard must keep flagging real damage, not just NUL presence.
+      const source = 'export function ((( {{{ `${a}\0${b}` const class =>\n}}}}';
+      const extraction = extractor.extractFromSource(source, 'hostile.ts');
       expect(extraction.hasSyntaxErrors).toBe(true);
       expect(extraction.syntaxErrorLocations?.length).toBeGreaterThan(0);
       // The sanitized snippet must never contain a raw NUL byte itself.

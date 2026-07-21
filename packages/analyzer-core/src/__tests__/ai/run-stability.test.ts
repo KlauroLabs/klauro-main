@@ -27,6 +27,24 @@ const VOLATILE_KEYS = new Set([
   'execution_time_ms',
 ]);
 
+// Timing/timestamp-SHAPED keys are volatile by construction (wall-clock), so
+// exclude them structurally rather than by an ever-stale name-by-name list —
+// the per-phase timing instrumentation (timings.stages, analysis_phases
+// started/duration fields) landed after VOLATILE_KEYS was written and broke
+// byte-stability purely on clock values. Analysis FACTS (nodes/edges/content)
+// are never timing-shaped, so this cannot mask a real determinism regression.
+const VOLATILE_KEY_PATTERNS: RegExp[] = [
+  /_ms$/, // duration_ms, total_ms, execution_time_ms, ...
+  /_at$/, // started_at, completed_at, generated_at, ...
+  /_timestamp$/,
+  /^duration$/,
+  /^timings$/, // the whole timings block is wall-clock instrumentation
+];
+
+function isVolatileKey(key: string): boolean {
+  return VOLATILE_KEYS.has(key) || VOLATILE_KEY_PATTERNS.some((p) => p.test(key));
+}
+
 const savedEnv: Record<string, string | undefined> = {};
 
 let fixtureDir: string;
@@ -211,7 +229,7 @@ function stripVolatileFields(value: unknown): unknown {
   if (value && typeof value === 'object') {
     const result: Record<string, unknown> = {};
     for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
-      if (VOLATILE_KEYS.has(key)) continue;
+      if (isVolatileKey(key)) continue;
       result[key] = stripVolatileFields(entry);
     }
     return result;
