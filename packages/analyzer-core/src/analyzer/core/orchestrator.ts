@@ -1168,14 +1168,24 @@ export class AnalyzerOrchestrator {
    * joins; the flows/capabilities they join against are derived HERE, ONCE
    * per analysis, via `computeFlowConcepts` — the same terminal-chain-anchored
    * derivation the query-layer `get_flow_concepts` tool uses, but run at
-   * analysis time so contract/capability PERSIST into the stored CAS instead
-   * of being recomputed on every query. `cas.system_capabilities` does NOT
-   * carry `related_flows` — it is INVERTED here from each flow's own
-   * `capability_relationships` (capability -> {flow_id, role}), which is the
-   * real M:N model (a flow may relate to multiple capabilities).
+   * analysis time (un-capped — no maxFlows browse window applied) so
+   * contract/capability PERSIST into the stored CAS instead of being
+   * recomputed on every query.
+   *
+   * As of this fix, `cas.system_capabilities[].related_flows` (and the same
+   * field on `behavior_surfaces`) IS persisted here too — inverted from each
+   * flow's own `capability_relationships` (capability -> {flow_id, role,
+   * rationale}), the real M:N model (a flow may relate to multiple
+   * capabilities). This was the deferred half of the ~v1.0.89 entry-point
+   * enrichment wave: the inverted map was computed (`capabilities` below) but
+   * previously used ONLY to enrich entry_points via attachCapability, then
+   * discarded — query-time readers (the /conceptual HTTP route) had to
+   * re-derive it from a maxFlows-capped flow set, so any capability whose
+   * flows fell outside that window silently showed 0 flows.
    *
    * EVIDENCE-GATED: any failure (or zero derivable flows) leaves `entryPoints`
-   * untouched — never fabricates input/output/capabilities.
+   * (and system_capabilities/behavior_surfaces) untouched — never fabricates
+   * input/output/capabilities/related_flows.
    */
   private deriveEntryPointContractAndCapability(
     entryPoints: CASEntryPoint[],
@@ -1198,27 +1208,62 @@ export class AnalyzerOrchestrator {
       for (const cap of cas.system_capabilities || []) capNameById.set(cap.id, cap.name);
       for (const surf of cas.behavior_surfaces || []) capNameById.set(surf.id, surf.name);
 
-      const capsById = new Map<string, CapabilityLike & { related_flows: Array<{ flow_id: string; role?: string }> }>();
-      const addRelation = (capabilityId: string, flowId: string, role: string | undefined) => {
+      const capsById = new Map<string, { id: string; name: string; related_flows: Array<{ flow_id: string; role?: string; rationale?: string }> }>();
+      const addRelation = (capabilityId: string, flowId: string, role: string | undefined, rationale: string | undefined) => {
         let entry = capsById.get(capabilityId);
         if (!entry) {
           entry = { id: capabilityId, name: capNameById.get(capabilityId) || capabilityId, related_flows: [] };
           capsById.set(capabilityId, entry);
         }
-        entry.related_flows.push({ flow_id: flowId, role });
+        entry.related_flows.push({ flow_id: flowId, role, rationale });
       };
 
       for (const flow of flows) {
         const relationships = flow.capability_relationships || [];
         if (relationships.length > 0) {
-          for (const rel of relationships) addRelation(rel.capability_id, flow.flow_id, rel.role);
+          for (const rel of relationships) addRelation(rel.capability_id, flow.flow_id, rel.role, rel.rationale);
         } else if (flow.capability_id) {
           // Back-compat single link only (no capability_relationships derived).
-          addRelation(flow.capability_id, flow.flow_id, undefined);
+          addRelation(flow.capability_id, flow.flow_id, undefined, undefined);
         }
       }
 
       const capabilities: CapabilityLike[] = Array.from(capsById.values());
+
+      // PERSIST the inverted M:N edges onto the real system_capabilities /
+      // behavior_surfaces objects (mutated in place — these are the SAME
+      // object references `executeAnalysis` later spreads into
+      // `output.system_capabilities`, so this is the one-time analysis-time
+      // write the deferred wave never made — previously `capabilities` above
+      // was computed and used ONLY to enrich entry_points via attachCapability
+      // below, then discarded; `cas.system_capabilities[].related_flows` was
+      // never set, so every query-time reader (the /conceptual HTTP route)
+      // had to re-derive flows from scratch, capped by its own maxFlows
+      // browse window — the "most capabilities show 0 flows" bug: a
+      // capability's real flows simply weren't in whatever capped window the
+      // caller happened to compute that request. Evidence-gated same as the
+      // rest of this function: a capability/surface with no derived flow
+      // relation is left with whatever it already had (never forced to []).
+      for (const cap of cas.system_capabilities || []) {
+        const derived = capsById.get(cap.id);
+        if (derived && derived.related_flows.length > 0) {
+          cap.related_flows = derived.related_flows.map(rf => ({
+            flow_id: rf.flow_id,
+            role: rf.role || 'supporting',
+            rationale: rf.rationale || 'linked via capability_id back-compat (no capability_relationships derived for this flow)',
+          }));
+        }
+      }
+      for (const surf of cas.behavior_surfaces || []) {
+        const derived = capsById.get(surf.id);
+        if (derived && derived.related_flows.length > 0) {
+          surf.related_flows = derived.related_flows.map(rf => ({
+            flow_id: rf.flow_id,
+            role: rf.role || 'supporting',
+            rationale: rf.rationale || 'linked via capability_id back-compat (no capability_relationships derived for this flow)',
+          }));
+        }
+      }
 
       // Structural cast: CASEntryPoint's `input.fields` is optional (real CAS
       // shape) while EntryPointLike's normalized EntryPointInputShape.fields
@@ -8930,7 +8975,28 @@ export class AnalyzerOrchestrator {
       'handles',
       'routes_to',
       'implements',
-      'implemented_by'
+      'implemented_by',
+      // SPA event-entry starvation fix (flow-quality lane): react/vue/angular/
+      // svelte-analyzer.ts (and journey-builder.ts) all emit a `triggers` edge
+      // from a JSX/template event-entry point to the NAMED handler function it
+      // resolved (see react-analyzer.ts's eventHandlers loop) — but this BFS
+      // never traversed it, so a real entry-to-exit chain through that
+      // resolved handler was structurally unreachable: the walk stayed pinned
+      // at the enclosing component's own node (the entry's `source_node`,
+      // since event entries don't set `handler`), where `exitBySource` returns
+      // whatever exit point the WHOLE component happens to carry (e.g. an
+      // unrelated `useMemo`/`useNavigate` call elsewhere in the same render
+      // body) and the rank-0 early-exit stops the walk at depth 0 — a
+      // one-node "chain" whose terminus isn't even necessarily the effect of
+      // this specific event. Evidence this is real, not incidental: two
+      // different event entries on the same component (a 'click' and a
+      // 'mouseEnter' handler on the same node) resolved to the IDENTICAL
+      // terminus, which only happens when resolution is component-wide rather
+      // than handler-specific. Traversing `triggers` lets the walk continue
+      // into the actually-resolved handler function so segmentIntoStepsByRole
+      // gets the real multi-function path to segment, instead of a single
+      // component-wide node.
+      'triggers',
     ]);
     const adjacency = new Map<string, CASEdge[]>();
     for (const edge of edges) {
@@ -18788,7 +18854,29 @@ export class AnalyzerOrchestrator {
       }
     }
 
-    // Pass 2 — strict-subset near-dups with no distinct operations.
+    // Pass 2 — strict-subset AND identical-set near-dups with no distinct
+    // operations. Pass 1 requires the SAME purpose subject as well as the
+    // same entity set (by design — different subjects over the same records
+    // are usually different abilities, e.g. "create X" vs "delete X"), and
+    // pass 3 below requires the same PRIMARY (first) entity, which is
+    // order-dependent on an array that has no canonical ordering. Two
+    // capabilities can therefore carry a literally IDENTICAL entity set
+    // (same evidence, same members, order aside) and still survive both
+    // passes when subject wording differs enough (verb not in the pass-1/
+    // pass-3 leading-verb list, e.g. "Host and manage...") — live case:
+    // "Manage multiple projects in a single workspace" and "Host and manage
+    // multiple codebases and projects" both anchored on the identical
+    // {Project, Workspace, Component, CallChain, Codebase} set with fully
+    // overlapping operations, surfaced to users as two capability rows with
+    // suspiciously-identical entity counts. Rather than trust subject-phrase
+    // wording for the equal-size case, use the SAME distinguishing signal
+    // pass 2 already trusts for the strict-subset case: operations. Equal
+    // sets merge only when neither side has an operation the other lacks —
+    // i.e., no distinct behavior — which is the same "adds no distinct
+    // behavior" bar as the subset case, just with size equality now included
+    // instead of excluded. A deterministic tie-break (richness, then id)
+    // keeps the winner side stable and avoids two equal-richness capabilities
+    // trying to merge into each other in both directions.
     const anchored = [...bySetKey.values()];
     for (const capability of anchored) {
       if (removed.has(capability)) continue;
@@ -18796,12 +18884,30 @@ export class AnalyzerOrchestrator {
       const superset = anchored.find(other => {
         if (other === capability || removed.has(other)) return false;
         const otherSet = entitySetOf(other);
-        if (otherSet.size <= set.size) return false;
+        if (otherSet.size < set.size) return false;
+        if (otherSet.size === set.size) {
+          const otherRichness = richness(other);
+          const ownRichness = richness(capability);
+          if (otherRichness < ownRichness) return false;
+          if (otherRichness === ownRichness && other.id <= capability.id) return false;
+        }
         for (const name of set) {
           if (!otherSet.has(name)) return false;
         }
         const supersetOperations = new Set(other.operations.map(operationKey));
-        return capability.operations.every(operation => supersetOperations.has(operationKey(operation)));
+        if (!capability.operations.every(operation => supersetOperations.has(operationKey(operation)))) return false;
+        // For the equal-size case specifically, also require the reverse
+        // containment (neither adds an operation the other lacks) — the
+        // strict-subset case doesn't need this (the subset already can't
+        // outnumber the superset's operations by definition of "no distinct
+        // operations"), but two equal-size sets could otherwise merge on a
+        // one-directional operations check alone even when `other` itself
+        // carries a distinguishing operation `capability` lacks.
+        if (otherSet.size === set.size) {
+          const ownOperations = new Set(capability.operations.map(operationKey));
+          if (!other.operations.every(operation => ownOperations.has(operationKey(operation)))) return false;
+        }
+        return true;
       });
       if (superset) mergeInto(superset, capability);
     }

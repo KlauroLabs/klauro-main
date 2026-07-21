@@ -128,6 +128,100 @@ describe('orchestrator: analysis-time entry-point contract+capability enrichment
     expect(result[0].capabilities).toHaveLength(2);
   });
 
+  it('persists the inverted M:N edges onto system_capabilities[].related_flows (the deferred half of this wave — previously computed and thrown away, never written back to the CAS)', () => {
+    const ep = entryPoint('ep_5');
+    const flow: FlowConcept = {
+      flow_id: 'flow_5',
+      name: 'Ship Order',
+      intent: 'Ship Order',
+      entry_point: 'ep_5',
+      entities: [],
+      contract: {
+        input: [],
+        logic: 'ships an order',
+        side_effects: { state_changes: [], external_integrations: [] },
+        output: [],
+        constraints: [],
+      },
+      capability_relationships: [
+        { capability_id: 'cap_orders', role: 'primary', rationale: 'operation ref for ship' },
+        { capability_id: 'surf_mcp_tool', role: 'supporting', rationale: 'shared entity touch' },
+      ],
+      steps: [],
+    };
+    mockedComputeFlowConcepts.mockReturnValue([flow]);
+
+    const capabilities: SystemCapability[] = [
+      { id: 'cap_orders', name: 'Manage Orders' } as SystemCapability,
+      // A capability no flow relates to must be left untouched — never
+      // forced to an empty array (evidence-gated: absence stays absence).
+      { id: 'cap_untouched', name: 'Never Referenced' } as SystemCapability,
+    ];
+    const behaviorSurfaces: SystemCapability[] = [
+      { id: 'surf_mcp_tool', name: 'MCP Tool Surface' } as SystemCapability,
+    ];
+
+    orch.deriveEntryPointContractAndCapability([ep], {
+      nodes: [],
+      edges: [],
+      entry_points: [ep],
+      exit_points: [],
+      call_chains: [],
+      data_lineage: [],
+      system_capabilities: capabilities,
+      behavior_surfaces: behaviorSurfaces,
+    });
+
+    // Mutated in place — these are the SAME objects the orchestrator later
+    // spreads into output.system_capabilities/behavior_surfaces.
+    expect(capabilities[0].related_flows).toEqual([
+      { flow_id: 'flow_5', role: 'primary', rationale: 'operation ref for ship' },
+    ]);
+    expect(capabilities[1].related_flows).toBeUndefined();
+    expect(behaviorSurfaces[0].related_flows).toEqual([
+      { flow_id: 'flow_5', role: 'supporting', rationale: 'shared entity touch' },
+    ]);
+  });
+
+  it('an infrastructure/plumbing flow with no capability_relationships attaches to no capability (no fabricated back-link)', () => {
+    const ep = entryPoint('ep_6');
+    const flow: FlowConcept = {
+      flow_id: 'flow_6',
+      name: 'deploy.sh',
+      intent: 'Deploy',
+      entry_point: 'ep_6',
+      entities: [],
+      contract: {
+        input: [],
+        logic: 'deploys the service',
+        side_effects: { state_changes: [], external_integrations: [] },
+        output: [],
+        constraints: [],
+      },
+      // No capability_relationships and no capability_id — a genuinely
+      // uncategorized/infrastructure flow.
+      steps: [],
+    };
+    mockedComputeFlowConcepts.mockReturnValue([flow]);
+
+    const capabilities: SystemCapability[] = [
+      { id: 'cap_orders', name: 'Manage Orders' } as SystemCapability,
+    ];
+
+    orch.deriveEntryPointContractAndCapability([ep], {
+      nodes: [],
+      edges: [],
+      entry_points: [ep],
+      exit_points: [],
+      call_chains: [],
+      data_lineage: [],
+      system_capabilities: capabilities,
+      behavior_surfaces: [],
+    });
+
+    expect(capabilities[0].related_flows).toBeUndefined();
+  });
+
   it('is evidence-gated: leaves entry points untouched when no flows are derivable', () => {
     const ep = entryPoint('ep_3');
     mockedComputeFlowConcepts.mockReturnValue([]);

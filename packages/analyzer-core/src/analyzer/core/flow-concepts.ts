@@ -726,10 +726,16 @@ export function buildTraversalIndex(cas: CASOutput): TraversalIndex {
   // Traversable edge kinds: function-call edges (backend/service chains) AND
   // 'renders'/'uses' (frontend route -> component chains, e.g. React Router
   // handler nodes are 'react_route' entities connected to their view via
-  // 'renders', not a call edge). Both are "how the flow moves forward" —
-  // segmentation still only fires on side-effect/layer character, so this
-  // does not change what counts as a step boundary, only what is reachable.
-  const TRAVERSABLE_EDGE_TYPES = new Set(['renders', 'uses']);
+  // 'renders', not a call edge) AND 'triggers' (JSX/template event-entry ->
+  // resolved named handler function, emitted by react/vue/angular/svelte-
+  // analyzer.ts and journey-builder.ts — mirrors the identical fix in
+  // orchestrator.ts's buildCallChains relationshipTypes set; see that
+  // comment for the evidence this starved event-entry chains at the
+  // enclosing component's node instead of reaching the actual handler).
+  // All three are "how the flow moves forward" — segmentation still only
+  // fires on side-effect/layer character, so this does not change what
+  // counts as a step boundary, only what is reachable.
+  const TRAVERSABLE_EDGE_TYPES = new Set(['renders', 'uses', 'triggers']);
   const outgoingEdges = new Map<string, CASEdge[]>();
   for (const edge of cas.edges) {
     const traversable = edge.type === 'calls' || edge.type === 'invokes' || edge.type.includes('call') || TRAVERSABLE_EDGE_TYPES.has(edge.type);
@@ -2161,16 +2167,82 @@ function deriveCapabilityOperationRoots(
   return roots;
 }
 
+/** camelCase/kebab/snake -> "Title Case Words" — the one word-splitting
+ *  transform every flow/step name path shares (never a keyword table, just
+ *  boundary detection: case changes and separators). */
+function titleCaseWords(raw: string): string {
+  const words = (raw || '').replace(/[-_]/g, ' ').replace(/([a-z0-9])([A-Z])/g, '$1 $2');
+  return words.split(' ').filter(Boolean).map(w => w[0].toUpperCase() + w.slice(1)).join(' ');
+}
+
 function flowNameForEntryPoint(ep: CASEntryPoint): string {
+  // Prefer the RESOLVED HANDLER's own name over the entry's synthesized
+  // name/id when one exists — react/vue/angular/svelte-analyzer.ts stamp the
+  // event binding's target function onto entry_points[].metadata.handler_name
+  // whenever the JSX/template callback resolved to a named function (the same
+  // fact the 'triggers' edge above is grounded on). That handler name IS the
+  // purpose ("addMember", "onSubmitOrder") — leading with it instead of the
+  // owning component/event scaffolding ("App click") gives a verb-headed name
+  // ("Add Member") from a real fact, not a keyword table: same
+  // titleCaseWords split every other branch here already uses, just applied
+  // to a better-scoped source string. Falls through to the existing
+  // path/name derivation when no such fact exists.
+  const handlerName = typeof ep.metadata?.handler_name === 'string' ? ep.metadata.handler_name : undefined;
+  if (handlerName && handlerName.trim().length > 0) {
+    const title = titleCaseWords(handlerName);
+    if (title) return title;
+  }
   if (ep.trigger?.path) {
     const parts = ep.trigger.path.split('/').filter(Boolean).filter(p => !p.startsWith(':') && !p.startsWith('{'));
     const last = parts[parts.length - 1] || ep.name;
-    const words = last.replace(/[-_]/g, ' ').replace(/([a-z])([A-Z])/g, '$1 $2');
-    const title = words.split(' ').filter(Boolean).map(w => w[0].toUpperCase() + w.slice(1)).join(' ');
-    return title || ep.name;
+    const title = titleCaseWords(last);
+    return title || cleanRawFallbackName(ep.name);
   }
-  const words = ep.name.replace(/[-_]/g, ' ').replace(/([a-z])([A-Z])/g, '$1 $2');
-  return words.split(' ').filter(Boolean).map(w => w[0].toUpperCase() + w.slice(1)).join(' ') || ep.name;
+  const title = titleCaseWords(ep.name);
+  return title || cleanRawFallbackName(ep.name);
+}
+
+/**
+ * NAMING FALLBACK OF LAST RESORT: when nothing purposeful is derivable (no
+ * resolved entry point, no handler/route name — only a raw synthesized
+ * method_name/id string to work with), clean it of path segments and
+ * generated-id noise before title-casing rather than surfacing the raw token
+ * verbatim (e.g. "entry_apps_app_src_main_tsx_App_addMember_10_91766548" ->
+ * "Add Member", not the literal id). Deterministic string surgery only — no
+ * fabricated purpose, just honest presentation of whatever real word tokens
+ * survive the id's own conventions:
+ *   1. strip known analyzer id prefixes (entry_/exit_/node:/flow::/chain:/synthflow:)
+ *   2. drop leading path-shaped segments (…/src/…/<file>.<ext>_ prefix) up to
+ *      and including the last recognized source-file extension token
+ *   3. strip a trailing numeric index and/or hex-hash suffix (…_10_91766548)
+ *   4. title-case whatever underscore/camelCase words remain
+ * Falls back to the original raw string only if every token above strips
+ * away to nothing (never returns an empty name).
+ */
+function cleanRawFallbackName(raw: string): string {
+  if (!raw) return raw;
+  let s = raw.replace(/^(entry_|exit_|node:|flow::|chain:|synthflow:)+/i, '');
+
+  // Drop a leading file-path-shaped prefix: analyzer-generated ids join the
+  // relative path into the token with underscores (apps_app_src_main_tsx_App_…).
+  // A source-file extension token followed by an underscore is the boundary
+  // between "path" and "the actual name" in that convention. Anchored on a
+  // LEADING underscore (or string start) before the token too — otherwise a
+  // short token like "c"/"rs"/"go" false-positives mid-word (e.g. the "c" in
+  // "src_" would otherwise strip everything up to "main_tsx_App…", leaving
+  // that path noise in the result).
+  const EXT_TOKENS = /(^|_)(tsx|ts|jsx|js|py|rb|go|rs|java|kt|swift|php|cs|cpp|c|mjs|cjs|vue|svelte)_/i;
+  const extMatch = EXT_TOKENS.exec(s);
+  if (extMatch) {
+    s = s.slice(extMatch.index + extMatch[0].length);
+  }
+
+  // Strip trailing generated-id noise: a run of one-or-more purely
+  // numeric/hex segments at the very end (an index, a content hash, or both).
+  s = s.replace(/(?:_[0-9a-f]{4,}|_\d+)+$/i, '');
+
+  const title = titleCaseWords(s);
+  return title || titleCaseWords(raw.replace(/^(entry_|exit_|node:|flow::|chain:|synthflow:)+/i, '')) || raw;
 }
 
 function flowIntentForEntryPoint(ep: CASEntryPoint): string {
@@ -2961,7 +3033,7 @@ function buildTerminalFlows(
 
     const flowName = rootEp
       ? flowNameForEntryPoint(rootEp)
-      : titleize(chain.entry_point.method_name);
+      : cleanRawFallbackName(chain.entry_point.method_name);
     const produced = terminus ? ` → ${terminus.kind} ${terminus.produces}` : '';
     const intent = rootEp
       ? `${flowIntentForEntryPoint(rootEp)}${produced}`
@@ -2987,13 +3059,6 @@ function buildTerminalFlows(
   }
 
   return flows;
-}
-
-/** Title-case a raw method/handler name for a flow display name when there is
- *  no resolved entry point to name from. */
-function titleize(raw: string): string {
-  const words = (raw || '').replace(/[-_]/g, ' ').replace(/([a-z0-9])([A-Z])/g, '$1 $2');
-  return words.split(' ').filter(Boolean).map(w => w[0].toUpperCase() + w.slice(1)).join(' ') || raw;
 }
 
 /**

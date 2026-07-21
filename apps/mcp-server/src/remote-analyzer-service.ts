@@ -2519,12 +2519,27 @@ async function handleAccountApi(
           flowEdgesByCapability.set(rel.capability_id, list);
         }
       }
+      // PREFER the analysis-time-persisted, un-capped `related_flows` (see
+      // orchestrator.ts's deriveEntryPointContractAndCapability) over the
+      // per-request derivation above, which only sees `flowConcepts.flows` —
+      // itself capped by `maxFlows` (default 20, bounded 50 even with an
+      // explicit param). Before this, a capability whose real flows didn't
+      // land inside that capped browse window showed 0 flows here even
+      // though the relationship genuinely existed — the "most capabilities
+      // show 0 flows" bug. Only take this shortcut for the untargeted browse
+      // case: a `target` query is deliberately asking "what relates to THIS
+      // entry point," and the per-request derivation above already answers
+      // that narrowly and correctly; an older analysis that predates this
+      // fix simply has no persisted `related_flows` and falls through to the
+      // capped per-request derivation as before (degraded, not broken).
       const capabilities = (cas.system_capabilities || []).map(capability => ({
         id: capability.id,
         name: capability.name,
         category: capability.category,
         criticality: capability.criticality,
-        related_flows: flowEdgesByCapability.get(capability.id) || [],
+        related_flows: (!target && capability.related_flows && capability.related_flows.length > 0)
+          ? capability.related_flows
+          : (flowEdgesByCapability.get(capability.id) || []),
       }));
       // GHOST FIX (klauro-surfaces-exposure): a flow's capability_relationships
       // may legitimately point at a behavior_surfaces entry, not just a
@@ -2547,7 +2562,11 @@ async function handleAccountApi(
         category: surface.category,
         evidence_kind: surface.evidence_kind,
         entry_points: surface.operations?.length || 0,
-        related_flows: flowEdgesByCapability.get(surface.id) || [],
+        // Same persisted-first preference as `capabilities` above — surfaces
+        // get related_flows written by the same analysis-time pass.
+        related_flows: (!target && surface.related_flows && surface.related_flows.length > 0)
+          ? surface.related_flows
+          : (flowEdgesByCapability.get(surface.id) || []),
       }));
       const body = {
         status: 'ready',

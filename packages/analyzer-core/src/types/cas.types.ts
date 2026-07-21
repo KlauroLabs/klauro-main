@@ -3296,6 +3296,28 @@ export interface SystemCapability {
    *   fails the purpose test and is dropped from the shipped catalog.
    */
   evidence_kind?: 'behavior-surface' | 'infrastructure';
+  /**
+   * Inverted M:N capability<->flow edges, one {flow_id, role, rationale} per
+   * flow that relates to this capability — the same relational-role model as
+   * a flow's own `capability_relationships` (docs/SEMANTIC-MODEL.md: roles
+   * live on the EDGE, not on either endpoint), just read from the other side.
+   * Computed ONCE at analysis time in orchestrator.ts's
+   * deriveEntryPointContractAndCapability (inverting every flow's
+   * capability_relationships via computeFlowConcepts, run un-capped) and
+   * persisted here so query-time consumers (the /conceptual HTTP route, the
+   * web UI's capability list) never have to re-derive flows per request —
+   * that recompute was both the 524-class latency risk AND, when the caller
+   * applies its own maxFlows browse cap before inverting, a correctness bug:
+   * a capability whose flows didn't happen to land in the capped window
+   * silently showed 0 flows even though real relationships existed.
+   * Omitted (undefined, never []) when no flow relates to this capability —
+   * an honest "this capability has no derivable flows" reads the same on the
+   * wire as "we never computed it," which is why callers should treat an
+   * ABSENT array as "flows uncomputed for this analysis" and an EMPTY array
+   * as a genuine zero (see get_flow_concepts / the /conceptual route for the
+   * fallback-to-recompute path that disambiguates old analyses).
+   */
+  related_flows?: Array<{ flow_id: string; role: string; rationale: string }>;
 }
 
 export interface SystemPurpose {
