@@ -8,6 +8,7 @@ import {
   CASAnalyzerContribution,
   CASNodeBuilder,
   CASEdgeBuilder,
+  CASCategories,
   generateNodeId,
   generateEdgeId,
   FileAnalysisResult,
@@ -31,6 +32,44 @@ export {
 } from '../../types/cas.types';
 
 export type CASAnalysisResult = CASContribution;
+
+/**
+ * True only for a well-formed CASCategories tree: a plain object whose every
+ * value is a plain object of category descriptors (`{ name?, types?, ... }`).
+ * Arrays and strings are REJECTED — a flat tag list is not a categories tree,
+ * and letting one through is what produced the character-indexed
+ * `categories: {"0":{"0":"v",...}}` corruption in every stored CAS (a string
+ * reaching mergeCategories' object spread). Descriptor values are only
+ * shape-checked, never invented.
+ */
+export function isCASCategoriesShape(value: unknown): value is CASCategories {
+  if (!isPlainRecord(value)) return false;
+  const levels = Object.values(value);
+  if (levels.length === 0) return false;
+  return levels.every(level =>
+    isPlainRecord(level) &&
+    Object.values(level).every(descriptor => isPlainRecord(descriptor))
+  );
+}
+
+/** A flat `categories: ['validation', ...]` tag list, normalized to unique
+ *  non-empty strings. Anything else (including a malformed nested object)
+ *  yields an empty list rather than a fabricated tag. */
+export function normalizeCategoryTags(value: unknown): string[] {
+  const raw = Array.isArray(value)
+    ? value
+    : typeof value === 'string'
+      ? [value]
+      : [];
+  return Array.from(new Set(
+    raw.filter((tag): tag is string => typeof tag === 'string' && tag.trim().length > 0)
+      .map(tag => tag.trim())
+  ));
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
 
 export interface AnalysisContext {
   projectPath: string;
@@ -240,6 +279,17 @@ export abstract class BaseAnalyzer {
   ): CASContribution {
     this.backfillEntryPointHandlers(nodes, entryPoints);
     const { categories, ...metadataWithoutCategories } = additionalMetadata;
+    // `categories` is lifted out of the metadata bag ONLY when it is a real
+    // CASCategories tree (level -> category -> descriptor object). Most callers
+    // pass a flat tag list (`categories: ['validation','contracts']`) as plain
+    // analyzer metadata; lifting that array into `contribution.categories` fed
+    // a string where an object was expected into the orchestrator's
+    // mergeCategories spread, which then spread the STRING character by
+    // character and produced the character-indexed `{"0":{"0":"v",...}}` shape
+    // that shipped in every stored CAS. A tag list stays in analyzer_metadata,
+    // where it belongs, instead of corrupting the CAS categories tree.
+    const casCategories = isCASCategoriesShape(categories) ? categories : undefined;
+    const categoryTags = casCategories ? undefined : normalizeCategoryTags(categories);
 
     const analyzerMetadata: CASAnalyzerContribution = {
       analyzer_id: this.analyzerId,
@@ -251,7 +301,8 @@ export abstract class BaseAnalyzer {
       contributed_entry_points: entryPoints.length,
       contributed_exit_points: exitPoints.length,
       capabilities: this.getCapabilities(),
-      ...metadataWithoutCategories
+      ...metadataWithoutCategories,
+      ...(categoryTags && categoryTags.length > 0 ? { category_tags: categoryTags } : {})
     };
 
     const contribution: CASContribution = {
@@ -262,8 +313,8 @@ export abstract class BaseAnalyzer {
       analyzer_metadata: analyzerMetadata
     };
 
-    if (categories) {
-      contribution.categories = categories;
+    if (casCategories) {
+      contribution.categories = casCategories;
     }
 
     return contribution;

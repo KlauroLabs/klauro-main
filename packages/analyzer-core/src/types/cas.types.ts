@@ -3657,9 +3657,56 @@ export interface CASCapabilityDependency {
   description: string;
 }
 
+/**
+ * MATERIALIZED FLOW RECORD — the referent every `flow_id` in the CAS points at.
+ *
+ * Flows are derived (computeFlowConcepts) from the ranked terminal call chains
+ * plus entry-point-rooted chains, but until this collection existed they were
+ * never persisted: `system_capabilities[].related_flows`, `behavior_surfaces
+ * []. related_flows` and every `flow::…::stepN` id referenced flows that
+ * resolved to NOTHING in the stored CAS. This is the resolution target, and
+ * `flow_graph.flows` is its single canonical home.
+ *
+ * Deliberately a COMPACT record, not the full FlowConcept: steps, contracts and
+ * step graphs stay derived on demand by `get_flow_concepts` (persisting them
+ * would multiply CAS size for data the query layer rebuilds anyway). Everything
+ * here is evidence carried straight off the derived flow — nothing synthesized.
+ */
+export interface CASFlowRef {
+  /** Canonical flow id. `flow::<call-chain-id>` for a terminal-chain-anchored
+   *  flow, `flow::<entry-point-id>` for an entry-point-rooted one — one scheme
+   *  per flow, minted once in flow-concepts.ts and never re-derived. */
+  flow_id: string;
+  name: string;
+  intent: string;
+  /** Entry point (or root node) this flow starts at. */
+  entry_point: string;
+  /** Call chain this flow was anchored to, when it is chain-anchored. Absent
+   *  for entry-point-rooted flows (their chain dead-ends). */
+  call_chain_id?: string;
+  /** Primary capability, mirroring FlowConcept.capability_id. */
+  capability_id?: string;
+  /** Every capability related to this flow (the M:N inverse of
+   *  `system_capabilities[].related_flows`). */
+  capability_ids?: string[];
+  /** Criticality of the anchoring call chain — the same rank-based value
+   *  `flow_summary.by_criticality` counts. Absent when there is no chain. */
+  criticality?: 'critical' | 'high' | 'medium' | 'low';
+  /** Number of derived steps; the step ids are `<flow_id>::step<0..n-1>`. */
+  step_count: number;
+  terminus?: { kind: string; produces: string };
+}
+
 export interface CASFlowGraph {
   capabilities: CASCapability[];
   dependencies: CASCapabilityDependency[];
+  /**
+   * Every flow referenced anywhere in the CAS. Optional only for backward
+   * compatibility with CAS documents produced before it existed; the analyzer
+   * always populates it, and a referential-integrity invariant test asserts
+   * that no `flow_id` reference dangles.
+   */
+  flows?: CASFlowRef[];
 
   topology: {
     root_capabilities: string[];

@@ -327,7 +327,14 @@ export class AIStackAnalyzer extends BaseAnalyzer {
           : undefined;
         entryPoints.push(
           this.createEntryPoint(
-            `entry_mcp_tool_${this.sanitizeId(det.name)}_${this.sanitizeId(det.filePath)}`,
+            // Line-qualified, matching the node id (detectionNodeId) and
+            // mcp-tool-registration-analyzer's `entry_mcp_tool_<name>_<file>_<line>`.
+            // Without the line, two DISTINCT registrations of the same tool name
+            // in one file collapsed onto a single id and the second was dropped
+            // by the merge as a "differing duplicate" — real, extracted entry
+            // points lost. It also made this analyzer's id structurally unable
+            // to match the registration analyzer's for the same call site.
+            `entry_mcp_tool_${this.sanitizeId(det.name)}_${this.sanitizeId(det.filePath)}_${det.line}`,
             nodeId,
             'message',
             det.name,

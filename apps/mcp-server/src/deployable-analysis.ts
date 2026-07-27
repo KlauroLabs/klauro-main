@@ -361,6 +361,17 @@ function filterFlowGraph(flowGraph: CASFlowGraph | undefined, includedEntryPoint
   const survivingIds = new Set(survivingCaps.map(c => c.id));
   return {
     capabilities: survivingCaps,
+    // Flows are narrowed to the surviving entry points so the deployable-scoped
+    // slice keeps referential integrity: every flow_id still reachable from a
+    // surviving capability's related_flows must resolve here too.
+    ...(flowGraph.flows
+      ? {
+          flows: flowGraph.flows.filter(flow =>
+            includedEntryPointIds.has(flow.entry_point) ||
+            (flow.capability_ids || []).some(id => survivingIds.has(id)) ||
+            (flow.capability_id ? survivingIds.has(flow.capability_id) : false)),
+        }
+      : {}),
     dependencies: (flowGraph.dependencies || []).filter(d => survivingIds.has(d.from_capability) && survivingIds.has(d.to_capability)),
     topology: {
       root_capabilities: (flowGraph.topology?.root_capabilities || []).filter(id => survivingIds.has(id)),

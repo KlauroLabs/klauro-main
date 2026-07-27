@@ -48,6 +48,7 @@ import {
   CASDomainConcept,
   EnhancedSystemPurpose,
   CASFlowGraph,
+  CASFlowRef,
   CASTestSuite,
   CASTestCase,
   CASMock,
@@ -1181,11 +1182,20 @@ export class AnalyzerOrchestrator {
     cas: Pick<
       CASOutput,
       'nodes' | 'edges' | 'entry_points' | 'exit_points' | 'call_chains' | 'data_lineage' | 'system_capabilities' | 'behavior_surfaces'
-    >
+    >,
+    flowGraph?: CASFlowGraph
   ): CASEntryPoint[] {
     try {
       const flows = computeFlowConcepts(cas as CASOutput, {});
       if (flows.length === 0) return entryPoints;
+
+      // MATERIALIZE the derived flow set into `flow_graph.flows` — the
+      // resolution target for every flow_id this same pass is about to write
+      // onto system_capabilities/behavior_surfaces. Without it those
+      // references (and every `flow::…::stepN` step id) dangled: the stored
+      // CAS carried hundreds of flow_id references and no `flows` collection
+      // to resolve them against. Same derivation, same ids, persisted once.
+      if (flowGraph) this.materializeFlowGraphFlows(flowGraph, flows, cas.call_chains || []);
 
       const flowLikes: FlowLike[] = flows.map((flow) => ({
         flow_id: flow.flow_id,
@@ -2075,7 +2085,7 @@ export class AnalyzerOrchestrator {
       data_lineage: dataLineage,
       system_capabilities: systemCapabilities,
       behavior_surfaces: behaviorSurfaces,
-    });
+    }, flowGraph);
     logTiming('pp_entryPointContractCapability', phaseStart);
     await yieldToEventLoop();
 
@@ -2094,6 +2104,15 @@ export class AnalyzerOrchestrator {
       system: {
         id: `system_${systemName}`,
         name: systemName,
+        // CANONICAL at build time. `system.description` shipped as an empty
+        // string / absent in every stored CAS and each read path re-synthesized
+        // one per query from enhanced_system_purpose — different readers could
+        // therefore show different descriptions for the same analysis. It is
+        // the SAME derived description, written once, here. Evidence-gated:
+        // omitted (not empty-stringed) when no description was derived.
+        ...(enhancedSystemPurpose.inferred_description
+          ? { description: enhancedSystemPurpose.inferred_description }
+          : {}),
         type: this.determineSystemType(allNodes) as 'monorepo' | 'application' | 'library' | 'service' | 'package',
         root_path: projectPath,
         technologies: {
@@ -2339,7 +2358,7 @@ export class AnalyzerOrchestrator {
             data_lineage: dataLineage,
             system_capabilities: systemCapabilities,
             behavior_surfaces: behaviorSurfaces,
-          });
+          }, flowGraph);
           // The AI pass can populate a previously-empty catalog; output holds
           // `undefined` in that case (assembly gated on length), so re-point it.
           output.system_capabilities = systemCapabilities.length > 0 ? systemCapabilities : undefined;
@@ -2362,6 +2381,12 @@ export class AnalyzerOrchestrator {
             confidence: Math.max(systemPurpose.confidence || 0, enhancedSystemPurpose.confidence || 0),
             evidence: enhancedSystemPurpose.evidence || systemPurpose.evidence,
           };
+          // The AI pass just rewrote inferred_description; the canonical
+          // `system.description` written at assembly must follow it, or the
+          // deferred path would ship the deterministic description forever.
+          if (enhancedSystemPurpose.inferred_description) {
+            output.system.description = enhancedSystemPurpose.inferred_description;
+          }
           output.product_map = buildProductMap(output);
         });
       }
@@ -3275,7 +3300,7 @@ export class AnalyzerOrchestrator {
       data_lineage: dataLineage,
       system_capabilities: systemCapabilities,
       behavior_surfaces: behaviorSurfaces,
-    });
+    }, flowGraph);
 
     // Reachability index rebuilt over the FRESH node/edge graph (method_calls
     // are carried forward from previousOutput on this path — pairs whose
@@ -3293,6 +3318,12 @@ export class AnalyzerOrchestrator {
       ...previousOutput,
       analysis_timestamp: new Date().toISOString(),
       analysis_id: analysisId,
+      // Same canonical-description write as the full path: the incremental
+      // rebuild re-derives enhanced_system_purpose, so system.description must
+      // track it rather than carrying the previous revision's forward.
+      system: enhancedSystemPurpose.inferred_description
+        ? { ...previousOutput.system, description: enhancedSystemPurpose.inferred_description }
+        : previousOutput.system,
       enhanced_system_purpose: enhancedSystemPurpose,
       // No per-phase breakdown on this path (see derivedDataStartTime comment
       // above) — total only. Deliberately does not carry forward
@@ -5659,14 +5690,57 @@ export class AnalyzerOrchestrator {
    * undefined when there isn't enough evidence to key on (no type, no name,
    * or no node reference), in which case only the exact-id path applies —
    * this must never merge two entry points that merely share a name.
+   *
+   * WHY THE NODE-ID KEY WAS NOT ENOUGH (the duplication survived the first
+   * fix and shipped again): each analyzer mints its OWN node id for the same
+   * registration — ai-stack's `ai_mcp-tool_<name>_<file>_<line>` vs
+   * mcp-tool-registration's `mcp_tool_<name>_<file>_<line>`. Keying on the
+   * node id therefore produced two different canonical keys for one real
+   * tool, and the dedup never fired. The identity that actually holds across
+   * analyzers is the CODE LOCATION the entry point was extracted from
+   * (type + name + file + line), so that is the primary key, with the
+   * node-id key kept as the fallback for records that carry no resolvable
+   * file/line. Both are emitted; a match on EITHER means the same entry point.
    */
-  private entryPointCanonicalKey(ep: any): string | undefined {
-    if (!ep || typeof ep !== 'object') return undefined;
+  private entryPointCanonicalKeys(ep: any): string[] {
+    if (!ep || typeof ep !== 'object') return [];
     const type = typeof ep.type === 'string' ? ep.type : undefined;
     const name = typeof ep.name === 'string' ? ep.name.trim().toLowerCase() : '';
+    if (!type || !name) return [];
+
+    const keys: string[] = [];
+    const file = this.entryPointSourceFile(ep);
+    const line = this.entryPointSourceLine(ep);
+    if (file && line !== undefined) keys.push(`${type}::${name}::@${file}:${line}`);
+
     const handlerNode = ep.handler?.node_id || ep.source_node;
-    if (!type || !name || !handlerNode) return undefined;
-    return `${type}::${name}::${handlerNode}`;
+    if (handlerNode) keys.push(`${type}::${name}::${handlerNode}`);
+    return keys;
+  }
+
+  /** Normalized (leading-`./`-free, forward-slashed) file the entry point was
+   *  extracted from. Location evidence only — never fabricated. */
+  private entryPointSourceFile(ep: any): string | undefined {
+    const raw = ep?.handler?.file || ep?.metadata?.file || ep?.source?.file;
+    if (typeof raw !== 'string' || raw.trim().length === 0) return undefined;
+    return raw.replace(/\\/g, '/').replace(/^\.\//, '');
+  }
+
+  /** Source line the entry point was extracted from. Prefers explicit fields;
+   *  falls back to the trailing `_<line>` suffix analyzers append to the node
+   *  id they mint for the registration (the only line evidence ai-stack
+   *  carries on its entry-point record). Undefined when neither exists —
+   *  the location key is then simply not emitted. */
+  private entryPointSourceLine(ep: any): number | undefined {
+    for (const candidate of [ep?.handler?.line, ep?.metadata?.line, ep?.source?.line]) {
+      if (typeof candidate === 'number' && Number.isFinite(candidate)) return candidate;
+    }
+    for (const nodeId of [ep?.handler?.node_id, ep?.source_node]) {
+      if (typeof nodeId !== 'string') continue;
+      const match = /_(\d+)$/.exec(nodeId);
+      if (match) return Number(match[1]);
+    }
+    return undefined;
   }
 
   /** Higher score = more evidence/detail carried by this entry point record —
@@ -5697,37 +5771,59 @@ export class AnalyzerOrchestrator {
     const isEntryPoint = sectionLabel === 'entry point';
     const byCanonicalKey = isEntryPoint
       ? new Map<string, T>(
-          target
-            .map(item => [this.entryPointCanonicalKey(item), item] as const)
-            .filter((pair): pair is [string, T] => Boolean(pair[0]))
+          target.flatMap(item => this.entryPointCanonicalKeys(item).map(key => [key, item] as const))
         )
       : undefined;
+    const indexCanonicalKeys = (item: T): void => {
+      if (!byCanonicalKey) return;
+      for (const key of this.entryPointCanonicalKeys(item)) byCanonicalKey.set(key, item);
+    };
     const warnedIds = new Set<string>();
     for (const item of incoming) {
       const existing = byId.get(item.id);
       if (!existing) {
         // No exact-id collision — but a second analyzer pass may still be
-        // describing the SAME real entry point under a different id. Check
-        // the semantic (type, name, handler-node) key before accepting this
-        // as genuinely new.
-        const canonicalKey = byCanonicalKey ? this.entryPointCanonicalKey(item) : undefined;
-        const canonicalExisting = canonicalKey ? byCanonicalKey!.get(canonicalKey) : undefined;
-        if (canonicalKey && canonicalExisting) {
-          if (this.entryPointRichnessScore(item) > this.entryPointRichnessScore(canonicalExisting)) {
-            const idx = target.indexOf(canonicalExisting);
-            if (idx >= 0) target[idx] = item;
-            byCanonicalKey!.set(canonicalKey, item);
-            byId.delete(canonicalExisting.id);
-            byId.set(item.id, item);
-          }
+        // describing the SAME real entry point under a different id. Check the
+        // semantic keys (code location first, then handler node) before
+        // accepting this as genuinely new.
+        const canonicalKeys = byCanonicalKey ? this.entryPointCanonicalKeys(item) : [];
+        let canonicalExisting: T | undefined;
+        for (const key of canonicalKeys) {
+          const hit = byCanonicalKey!.get(key);
+          if (hit) { canonicalExisting = hit; break; }
+        }
+        if (canonicalExisting) {
+          // SAME real entry point under two id schemes. Keep ONE record, but
+          // never lose the losing record's evidence: merge the union (richer
+          // record wins field-by-field) rather than discarding it.
+          const merged = this.mergeEntryPointRecords(canonicalExisting, item) as T;
+          const idx = target.indexOf(canonicalExisting);
+          if (idx >= 0) target[idx] = merged;
+          byId.delete(canonicalExisting.id);
+          byId.set(merged.id, merged);
+          indexCanonicalKeys(merged);
           continue;
         }
         target.push(item);
         byId.set(item.id, item);
-        if (canonicalKey) byCanonicalKey!.set(canonicalKey, item);
+        indexCanonicalKeys(item);
         continue;
       }
       if (this.canonicalGraphJson(existing) === this.canonicalGraphJson(item)) continue;
+      if (isEntryPoint) {
+        // DATA LOSS FIX: an exact-id collision between two DIFFERING entry
+        // point records used to keep the first and drop the second with a
+        // warning, silently discarding real extracted evidence (two of the
+        // live analyzer warnings were exactly this). Merge the union instead —
+        // the richer record supplies conflicting scalars, and both records'
+        // metadata/capabilities/list evidence survives.
+        const merged = this.mergeEntryPointRecords(existing, item) as T;
+        const idx = target.indexOf(existing);
+        if (idx >= 0) target[idx] = merged;
+        byId.set(merged.id, merged);
+        indexCanonicalKeys(merged);
+        continue;
+      }
       if (warnedIds.has(item.id)) continue;
       warnedIds.add(item.id);
       analysisErrors?.push({
@@ -5738,6 +5834,63 @@ export class AnalyzerOrchestrator {
         recoverable: true
       });
     }
+  }
+
+  /**
+   * Union-merge two entry-point records that denote the SAME real entry point
+   * (same id, or same canonical key under two analyzers' id schemes). No
+   * record is dropped: the richer one (entryPointRichnessScore) wins for
+   * conflicting scalars, every field only one side carries is preserved, and
+   * metadata / capabilities / array evidence is unioned. Purely additive —
+   * nothing is fabricated, and `source_analyzer` records both contributors so
+   * provenance survives the merge.
+   */
+  private mergeEntryPointRecords(a: any, b: any): any {
+    const [rich, lean] = this.entryPointRichnessScore(b) > this.entryPointRichnessScore(a) ? [b, a] : [a, b];
+    const uniqueBy = <T>(items: T[], key: (item: T) => string): T[] => {
+      const seen = new Set<string>();
+      return items.filter(item => {
+        const k = key(item);
+        if (seen.has(k)) return false;
+        seen.add(k);
+        return true;
+      });
+    };
+
+    const merged: any = { ...lean, ...rich };
+    // Object-valued facets merge structurally rather than being overwritten
+    // wholesale, so the lean record's unique keys survive.
+    for (const field of ['metadata', 'trigger', 'handler', 'input', 'output', 'contract'] as const) {
+      const leanValue = lean?.[field];
+      const richValue = rich?.[field];
+      if (leanValue && richValue && typeof leanValue === 'object' && typeof richValue === 'object'
+        && !Array.isArray(leanValue) && !Array.isArray(richValue)) {
+        merged[field] = { ...leanValue, ...richValue };
+      }
+    }
+    if (Array.isArray(lean?.capabilities) || Array.isArray(rich?.capabilities)) {
+      merged.capabilities = uniqueBy(
+        [...(rich?.capabilities || []), ...(lean?.capabilities || [])],
+        (capability: any) => `${capability?.capability_id}::${capability?.role}`
+      );
+    }
+    for (const field of ['related_flows', 'security', 'validation'] as const) {
+      if (Array.isArray(lean?.[field]) || Array.isArray(rich?.[field])) {
+        merged[field] = uniqueBy(
+          [...(rich?.[field] || []), ...(lean?.[field] || [])],
+          (item: unknown) => JSON.stringify(item)
+        );
+      }
+    }
+    const analyzers = [rich?.source_analyzer, lean?.source_analyzer].filter(Boolean) as string[];
+    const uniqueAnalyzers = [...new Set(analyzers)];
+    if (uniqueAnalyzers.length > 0) {
+      merged.source_analyzer = uniqueAnalyzers[0];
+      if (uniqueAnalyzers.length > 1) {
+        merged.metadata = { ...(merged.metadata || {}), merged_from_analyzers: uniqueAnalyzers };
+      }
+    }
+    return merged;
   }
 
   private dedupeGraphItemsInPlace<T extends { id: string }>(
@@ -6159,23 +6312,50 @@ export class AnalyzerOrchestrator {
     return index;
   }
 
+  /**
+   * SHAPE-GATED merge. `categories` is a level -> category -> descriptor-object
+   * tree. A contribution that supplies anything else at either level (an array,
+   * a string, a primitive) is SKIPPED, not spread: spreading a string here is
+   * exactly what produced the character-indexed
+   * `{"0":{"0":{"0":"v","types":[],...}}}` corruption that shipped in every
+   * stored CAS (an analyzer's flat `categories: ['validation', ...]` tag list
+   * reached this merge, `Object.entries` walked the array, then the string
+   * "validation" was spread character by character into the descriptor slot).
+   * base-analyzer's createContribution now keeps tag lists out of
+   * `contribution.categories` in the first place; this stays as the last
+   * structural gate so no future analyzer can re-corrupt the tree.
+   */
   private mergeCategories(target: CASCategories, source: Partial<CASCategories>): void {
+    type CategoryDescriptor = CASCategories[string][string];
+    const isRecord = (value: unknown): value is Record<string, unknown> =>
+      Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+    const strings = (value: unknown): string[] =>
+      Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
+
+    if (!isRecord(source)) return;
     for (const [level, levelCategories] of Object.entries(source)) {
-      if (!target[level]) {
-        target[level] = {};
-      }
-      for (const [category, categoryData] of Object.entries(levelCategories || {})) {
-        if (!target[level][category]) {
-          target[level][category] = categoryData;
-        } else {
-          target[level][category] = {
-            ...target[level][category],
-            ...categoryData,
-            types: [...new Set([...(target[level][category].types || []), ...(categoryData.types || [])])],
-            frameworks: [...new Set([...(target[level][category].frameworks || []), ...(categoryData.frameworks || [])])],
-            languages: [...new Set([...(target[level][category].languages || []), ...(categoryData.languages || [])])]
-          };
+      if (!isRecord(levelCategories)) continue;
+      for (const [category, rawCategoryData] of Object.entries(levelCategories)) {
+        // Level created LAZILY, on the first descriptor that actually passes
+        // the shape gate — a level whose every entry is malformed must not
+        // leave an empty `{}` level behind in the tree.
+        if (!isRecord(rawCategoryData)) continue;
+        if (!isRecord(target[level])) {
+          target[level] = {};
         }
+        const categoryData = rawCategoryData as CategoryDescriptor;
+        const existing = target[level][category];
+        if (!isRecord(existing)) {
+          target[level][category] = categoryData;
+          continue;
+        }
+        target[level][category] = {
+          ...existing,
+          ...categoryData,
+          types: [...new Set([...strings(existing.types), ...strings(categoryData.types)])],
+          frameworks: [...new Set([...strings(existing.frameworks), ...strings(categoryData.frameworks)])],
+          languages: [...new Set([...strings(existing.languages), ...strings(categoryData.languages)])]
+        };
       }
     }
   }
@@ -6391,6 +6571,13 @@ export class AnalyzerOrchestrator {
 
     return {
       languages: Array.from(languages.entries())
+        // ZERO-EVIDENCE LANGUAGES ARE NOT REPORTED. A registered language-type
+        // analyzer that matched nothing (no files, no nodes, no source bytes)
+        // used to ship as a real language at "0 files / 0%" — the live CAS
+        // listed Caddy Reverse Proxy, Kubernetes Manifest and SOAP/WSDL for a
+        // repo containing none of them. An analyzer being registered is not
+        // evidence that the language is present; only its findings are.
+        .filter(([name, data]) => data.files > 0 || data.count > 0 || weightFor(name, data.count) > 0)
         .map(([name, data]) => ({
           name,
           percentage: data.percentage,
@@ -10551,6 +10738,74 @@ export class AnalyzerOrchestrator {
         if (rebuilt) capability.description = rebuilt;
       }
     }
+  }
+
+  /**
+   * Writes the derived flow set into `flow_graph.flows` — the single canonical
+   * home for the flows that `related_flows`, step ids and any other flow_id
+   * reference resolve against.
+   *
+   * THE DEFECT THIS CLOSES: flows were derived at analysis time (to enrich
+   * entry points and invert the capability->flow map) and then DISCARDED, so
+   * the shipped CAS carried hundreds of `flow::…` references and no
+   * collection to resolve them in — `flow_graph` had no `flows` key at all
+   * while `call_chains`/`flow_summary` proved the flows existed and were
+   * ranked. This persists them once, with the SAME ids the references use, so
+   * there is exactly one id scheme per flow and zero dangling references.
+   *
+   * Compact by design (see CASFlowRef): steps/contracts stay derived on demand
+   * by get_flow_concepts. Criticality is carried over from the anchoring call
+   * chain — the same rank-based value flow_summary counts — and simply omitted
+   * for entry-point-rooted flows that have no chain, never guessed.
+   */
+  private materializeFlowGraphFlows(
+    flowGraph: CASFlowGraph,
+    flows: Array<{
+      flow_id: string;
+      name: string;
+      intent: string;
+      entry_point: string;
+      capability_id?: string;
+      capability_relationships?: Array<{ capability_id: string }>;
+      steps?: unknown[];
+      terminus?: { kind: string; produces: string };
+    }>,
+    callChains: CASCallChain[]
+  ): void {
+    const criticalityByChainId = new Map<string, CASCallChain['criticality']>();
+    for (const chain of callChains) {
+      if (chain.criticality) criticalityByChainId.set(chain.id, chain.criticality);
+    }
+
+    const refs: CASFlowRef[] = [];
+    const seen = new Set<string>();
+    for (const flow of flows) {
+      if (!flow.flow_id || seen.has(flow.flow_id)) continue;
+      seen.add(flow.flow_id);
+
+      // `flow_id` is always `flow::<anchor-id>`; the anchor is a call chain id
+      // for terminal-anchored flows and an entry point id otherwise.
+      const anchorId = flow.flow_id.startsWith('flow::') ? flow.flow_id.slice('flow::'.length) : undefined;
+      const criticality = anchorId ? criticalityByChainId.get(anchorId) : undefined;
+      const capabilityIds = [...new Set([
+        ...(flow.capability_id ? [flow.capability_id] : []),
+        ...(flow.capability_relationships || []).map(relationship => relationship.capability_id).filter(Boolean),
+      ])];
+
+      refs.push({
+        flow_id: flow.flow_id,
+        name: flow.name,
+        intent: flow.intent,
+        entry_point: flow.entry_point,
+        ...(criticality ? { call_chain_id: anchorId, criticality } : {}),
+        ...(flow.capability_id ? { capability_id: flow.capability_id } : {}),
+        ...(capabilityIds.length > 0 ? { capability_ids: capabilityIds } : {}),
+        step_count: Array.isArray(flow.steps) ? flow.steps.length : 0,
+        ...(flow.terminus ? { terminus: { kind: flow.terminus.kind, produces: flow.terminus.produces } } : {}),
+      });
+    }
+
+    flowGraph.flows = refs;
   }
 
   /**
