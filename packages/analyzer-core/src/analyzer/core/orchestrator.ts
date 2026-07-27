@@ -2661,8 +2661,41 @@ export class AnalyzerOrchestrator {
       /\bservice records?\b/i.test(description)) {
       return true;
     }
-    if (/\bzero[- ]trust security system\b/i.test(description) && !/\bzero[- ]trust|network-access|security\b/i.test(domain)) {
-      return true;
+    // Structural staleness test (residual cleanup after c611d08c): the
+    // literal `zero[- ]trust security system` this replaced was a single
+    // remembered benchmark output, not a generalizable rule. What it was
+    // actually trying to catch is a stored description that DECLARES a
+    // system-type ("<modifier words> system/tool/platform/...", the same
+    // shape systemTypeIsGrounded enforces at generation time) whose modifier
+    // words are absent from the CURRENT classification (primary_domain /
+    // primary_type). If the current classification no longer corroborates
+    // the type the stored prose claims, the description is stale and must be
+    // re-validated -- this holds for any domain/type pair, not one phrase.
+    const primaryType = previousOutput.enhanced_system_purpose?.primary_type || '';
+    const classificationContext = `${domain} ${primaryType}`.toLowerCase();
+    // No populated classification to check against is NOT evidence of
+    // staleness -- older/foundational CAS revisions can predate primary_type
+    // or leave primary_domain unset, and a missing classification is a
+    // different, already-handled case ('missing-previous-description' /
+    // the domain-source checks elsewhere). Only a classification that is
+    // actually PRESENT and fails to corroborate the stored claim counts.
+    if (!domain.trim() && !primaryType.trim()) return false;
+    const typeClaimStopWords = new Set([
+      'a', 'an', 'the', 'this', 'that', 'and', 'or', 'for', 'with', 'its',
+      'their', 'our', 'main', 'core', 'general', 'basic', 'internal',
+      'primary', 'central', 'various', 'multiple', 'other', 'more', 'built',
+      'used', 'using', 'full', 'stack', 'based',
+    ]);
+    const typeClaimPattern = /\b((?:[a-z][a-z-]{2,}(?:[- ][a-z][a-z-]{2,}){0,2}))\s+(?:tool|system|service|platform|application|app|api|engine|framework|library|server|gateway|pipeline|dashboard|suite|toolkit|sdk)s?\b/gi;
+    let typeClaimMatch: RegExpExecArray | null;
+    while ((typeClaimMatch = typeClaimPattern.exec(description)) !== null) {
+      const modifierTokens = typeClaimMatch[1]
+        .toLowerCase()
+        .split(/[^a-z0-9]+/)
+        .filter(token => token.length >= 4 && !typeClaimStopWords.has(token));
+      if (modifierTokens.length === 0) continue;
+      const grounded = modifierTokens.some(token => classificationContext.includes(token));
+      if (!grounded) return true;
     }
     return false;
   }
@@ -13577,6 +13610,46 @@ export class AnalyzerOrchestrator {
     return { ok: true };
   }
 
+  /**
+   * The canonical, single-source-of-truth definition of "source-bucket
+   * restatement" (prose that restates the entry-point/route TAXONOMY the
+   * analyzer itself uses -- "http endpoints", "cli commands", "script-based",
+   * "page routes" -- instead of describing product behavior). Extracted so
+   * sanitizeAIInterpretation's sentence-level `keep` filter can drop just the
+   * OFFENDING sentence using this exact same definition, rather than
+   * maintaining a second, hand-copied, inevitably-drifting phrase list next
+   * to it (that drift -- near-duplicate literal phrases worded slightly
+   * differently in two places -- was itself part of the hardcoded-vocabulary
+   * problem this cleanup is fixing).
+   */
+  private matchSourceBucketRestatement(text: string): RegExpMatchArray | null {
+    return text.match(/\b(?:main interaction surfaces?|configured interaction surfaces?|interaction surfaces?|http endpoints?|route surfaces?|application routes?|page routes?|application pages?|cli commands?|command-line workflows?|schedule surfaces?|scheduled workflows?|internal script|script-based|script-driven|internal files?|source files?|entry points?|file[- ]based entry points?|file entry points?|state stores?)\b/i) ||
+      text.match(/\b(?:http|api|route|websocket|page|ui|application)(?:,?\s+(?:and\s+)?(?:http|api|route|websocket|page|ui|application))*[-\s]*(?:based\s+)?(?:workflows?|interactions?|operations?)\b/i) ||
+      text.match(/\bpage[-\s]+based operations?\b/i);
+  }
+
+  /**
+   * How many distinct source-bucket-restatement hits a sentence carries.
+   * Mirrors the file's existing mechanical-vs-semantic boundary (see
+   * mechanicallyRepairAIInterpretation / preserveForSemanticRepair: a SINGLE
+   * flagged token is a mechanical slip, MULTIPLE is a wholesale semantic
+   * restatement that needs an AI rewrite, not a silent edit). One incidental
+   * mechanism word ("script-based") in an otherwise product sentence is a
+   * mechanical drop; a sentence built ENTIRELY out of bucket vocabulary
+   * ("CLI commands and source files form the main interaction surfaces...")
+   * is restating the analyzer's own taxonomy as the product's behavior and
+   * must go back through the AI repair loop instead of being deleted, since
+   * deleting it could be discarding the paragraph's only real claim.
+   */
+  private countSourceBucketRestatements(text: string): number {
+    const patterns = [
+      /\b(?:main interaction surfaces?|configured interaction surfaces?|interaction surfaces?|http endpoints?|route surfaces?|application routes?|page routes?|application pages?|cli commands?|command-line workflows?|schedule surfaces?|scheduled workflows?|internal script|script-based|script-driven|internal files?|source files?|entry points?|file[- ]based entry points?|file entry points?|state stores?)\b/gi,
+      /\b(?:http|api|route|websocket|page|ui|application)(?:,?\s+(?:and\s+)?(?:http|api|route|websocket|page|ui|application))*[-\s]*(?:based\s+)?(?:workflows?|interactions?|operations?)\b/gi,
+      /\bpage[-\s]+based operations?\b/gi,
+    ];
+    return patterns.reduce((count, pattern) => count + (text.match(pattern) || []).length, 0);
+  }
+
   private validateAIInterpretation(
     description: string,
     enhancedSystemPurpose: EnhancedSystemPurpose,
@@ -13707,9 +13780,7 @@ export class AnalyzerOrchestrator {
     if (/\b(file\.exists|string\.isnullorempty|math\.abs|console\.|system\.)\b/i.test(description)) {
       return { ok: false, reason: 'low-level-api-pollution' };
     }
-    if (/\b(?:main interaction surfaces?|configured interaction surfaces?|interaction surfaces?|http endpoints?|route surfaces?|application routes?|page routes?|application pages?|cli commands?|command-line workflows?|schedule surfaces?|scheduled workflows?|internal script|script-based|script-driven|internal files?|source files?|entry points?|file[- ]based entry points?|file entry points?|state stores?)\b/i.test(description) ||
-      /\b(?:http|api|route|websocket|page|ui|application)(?:,?\s+(?:and\s+)?(?:http|api|route|websocket|page|ui|application))*[-\s]*(?:based\s+)?(?:workflows?|interactions?|operations?)\b/i.test(description) ||
-      /\bpage[-\s]+based operations?\b/i.test(description)) {
+    if (this.matchSourceBucketRestatement(description)) {
       return { ok: false, reason: 'source-bucket-restatement' };
     }
     if (/\b(?:react components?|express routes?|route handlers?|api routes?|framework routes?)\b/i.test(description)) {
@@ -14203,7 +14274,7 @@ export class AnalyzerOrchestrator {
       .filter(([key]) => !this.frameworkClaimIsAllowed(String(key), allowedFrameworks))
       .map(([, pattern]) => pattern as RegExp);
 
-    const keep = sentences.filter(sentence => {
+    let keep = sentences.filter(sentence => {
       if (unsupportedFrameworkPatterns.some(pattern => pattern.test(sentence))) return false;
       // Source-file tokens / lowerCamel identifier lists are implementation
       // mechanics, never product prose (mirrors the validate-side lint;
@@ -14213,19 +14284,27 @@ export class AnalyzerOrchestrator {
       if ((sentence.match(/\b[a-z][a-z0-9]+[A-Z][A-Za-z0-9]*\b/g) || []).length >= 2) return false;
       if (/\b(external services?|integrations?|integrates with|connects to|connected to|calls out to)\b/i.test(sentence) &&
         !this.mentionsKnownExternalService(sentence, facts.externalServices || [])) return false;
-      if (/\b(?:controller|service|repository) outputs?\b/i.test(sentence)) return false;
-      if (/\b(?:controller|service|repository) components?\b/i.test(sentence)) return false;
-      if (/\bdeterministic stages?\b/i.test(sentence)) return false;
-      if (/\bserver routes?\b/i.test(sentence)) return false;
-      if (/\bsdk interactions?\b/i.test(sentence)) return false;
-      if (/\bdatabase quer(?:y|ies)\b/i.test(sentence)) return false;
-      if (/\bfile existence\b/i.test(sentence)) return false;
-      if (/\bbusiness logic\b/i.test(sentence)) return false;
-      if (/\bexternal stores?\b/i.test(sentence)) return false;
-      if (/\b(route transitions?|state mutations?|exception handling|token-based access control)\b/i.test(sentence)) return false;
-      if (/\b(codebase focused|c# analysis|json processing|request\s+\d{1,3}(?:\.\d{1,3}){3}|database interactions?|command-line interfaces?|toolchain tools|processing stages?|packet-level operations?|terminal command execution|structured operations)\b/i.test(sentence)) return false;
-      if (/\b(authentication criteria|resource checks?|data lookup behavior|content-related operations|reads and writes data related|lifecycle operations?)\b/i.test(sentence)) return false;
-      if (/\bmain grounded concepts are\b/i.test(sentence)) return false;
+      // NOTE (residual cleanup after c611d08c): this filter previously carried
+      // ~15 more `if` clauses here, each a literal English phrase reactively
+      // copied from one bad output on one benchmarked repo ("database
+      // queries", "business logic", "c# analysis", "json processing",
+      // "request <ip>", "data lookup behavior", "main grounded concepts are",
+      // and siblings). That is the SAME anti-pattern as the ~85-rule rewrite
+      // table ripped out above -- ad hoc hardcoded product/tech vocabulary in
+      // product source, just at drop-granularity instead of rewrite-
+      // granularity. None of them encoded an invariant that survives
+      // generalization (they were not shapes, just remembered strings), so
+      // per the evidence-first mandate they are deleted rather than kept.
+      // What is left below is either (a) gated on the deterministic evidence
+      // bundle (frameworks/libraries/databaseEntities/externalServices,
+      // exactly like ungroundedDomainClaims/ungroundedArchitectureShapeClaims
+      // above), or (b) a structural/shape test (file extensions, camelCase
+      // identifier density, PascalCase Service/Repository/Controller/Store
+      // suffixes, code-attribute access like `.slice`/`.store`) that holds
+      // for ANY repo without naming a single domain word. A hardcoded
+      // "mechanism-noun-only sentence" blocklist to replace the deleted
+      // clauses was considered and rejected: it would just be the same
+      // literal-phrase problem restated as a set instead of a regex.
       if (/\b[A-Za-z_]\w*(?:Service|Repository|Controller|Store)\b/.test(sentence)) return false;
       if (/\b[A-Za-z_]\w*\.slice\b/i.test(sentence)) return false;
       if (/\b[a-z][\w-]*\.store\b/i.test(sentence)) return false;
@@ -14234,10 +14313,28 @@ export class AnalyzerOrchestrator {
       );
       if (!databaseDomainContext && (facts.databaseEntities || []).length === 0 && /\b(relational database|database|data store|stores entities)\b/i.test(sentence)) return false;
       if (/\buser data\b/i.test(sentence) && !groundedTerms.some(term => /\buser\b/.test(term))) return false;
-      if (/\bdesigned to be integrated with\b/i.test(sentence)) return false;
-      if (/\binteract(?:s|ing)? with (?:the )?data\b/i.test(sentence)) return false;
       return true;
     });
+
+    // Same canonical "source-bucket restatement" definition the acceptance
+    // gate (validateAIInterpretation) rejects a WHOLE paragraph for --
+    // applied per-sentence here, as a SEPARATE pass over what the other
+    // criteria already kept, so ONE incidental offending sentence ("its
+    // script-based data lookup behavior...") can be dropped without losing
+    // an otherwise-grounded paragraph. A sentence carrying MORE THAN ONE such
+    // hit is restating the analyzer's own taxonomy as the paragraph's actual
+    // content, not slipping in one stray word -- left in place so validation
+    // still rejects it and the AI repair loop rewrites it instead of
+    // silently deleting a paragraph's only substantive claim. This pass is
+    // additionally a no-op unless it can drop the sentence WITHOUT pushing
+    // the surviving paragraph below the two-sentence shape floor -- dropping
+    // it anyway would swap a specific, actionable rejection reason for a
+    // generic 'too-short'/'single-sentence' one, which is strictly worse for
+    // whatever repairs the text next.
+    const keepAfterBucketDrop = keep.filter(sentence => this.countSourceBucketRestatements(sentence) !== 1);
+    if (keepAfterBucketDrop.length >= 2 || keepAfterBucketDrop.length === keep.length) {
+      keep = keepAfterBucketDrop;
+    }
 
     if (keep.length === sentences.length) return cleaned;
     // The OPENING sentence carries the paragraph's subject ("<name> is a ...").
@@ -14249,28 +14346,25 @@ export class AnalyzerOrchestrator {
     if (keep.length === 0 || keep[0] !== sentences[0]) return cleaned;
     const sanitized = keep.join(' ').trim();
     if (!sanitized) return cleaned;
-    if (this.descriptionSentenceCount(sanitized) >= 2 && sanitized.length >= 160) return sanitized;
-    const productConcepts = this.purposeCapabilitySummary(
-      enhancedSystemPurpose.primary_domain,
-      [],
-      enhancedSystemPurpose.core_concepts || []
-    );
-    const concepts = (productConcepts.length > 0
-      ? productConcepts
-      : enhancedSystemPurpose.core_concepts || [])
-      .filter(concept => concept && !this.isGenericCapabilityToken(concept.toLowerCase()))
-      .filter(concept => !this.isInternalCodeSymbolConcept(concept))
-      .slice(0, 4);
-    const conceptSentence = concepts.length > 0
-      ? `The main grounded concepts are ${this.joinHumanList(concepts)}, which anchor the workflows and change-risk surface for this repository.`
-      : `The primary domain is ${enhancedSystemPurpose.primary_domain || 'the analyzed system'}, which anchors the workflows and change-risk surface for this repository.`;
-    return `${sanitized} ${conceptSentence}`.trim();
-  }
-
-  private isInternalCodeSymbolConcept(value: string): boolean {
-    const normalized = this.humanizePascalName(value).toLowerCase().trim();
-    return /\b(controller|service|repository|store|adapter|handler|manager)\b$/.test(normalized) ||
-      /\b(controller|service|repository|store|adapter|handler|manager)\b/.test(normalized);
+    // NOTE (residual cleanup after c611d08c): this used to fall through to a
+    // deterministic-authorship appender here -- a hand-written closing
+    // sentence ("The main grounded concepts are X, which anchor the
+    // workflows and change-risk surface for this repository.") stitched onto
+    // the AI's own paragraph whenever sanitization left it thin, and typed
+    // as if it were still AI prose. It was also self-contradicting: the
+    // `keep` filter above used to reject any sentence containing that exact
+    // phrase, so the system could both emit the sentence and treat it as
+    // invalid. There is no deterministic substitute for the AI system
+    // description in this codebase (see the throw a few hundred lines up
+    // this function's call site, in the caller that owns
+    // acceptAIInterpretationCandidate: "Comprehension is AI-only; there is
+    // no deterministic fallback."). So a too-thin sanitized result is
+    // returned AS-IS: validateGeneratedAIInterpretation already rejects
+    // anything under ~200 chars ('too-short-for-ai-paragraph') or under two
+    // sentences ('single-sentence-ai-summary'), which sends control back to
+    // the caller's bounded AI repair/regeneration loop instead of shipping
+    // fabricated prose.
+    return sanitized;
   }
 
   private mentionsKnownExternalService(text: string, externalServices: string[]): boolean {
@@ -15721,55 +15815,23 @@ export class AnalyzerOrchestrator {
       .filter(token => token.length >= 3 && !/^(app|apps|web|ui|ux|api|client|server|frontend|backend|service|services)$/.test(token));
   }
 
-  private purposeCapabilitySummary(primaryDomain: string | undefined, capabilities: SystemCapability[], conceptNames: string[] = []): string[] {
-    const text = capabilities
-      .map(capability => [
-        capability.name,
-        ...(capability.related_domains || []),
-        ...(capability.related_entities || []),
-        ...(capability.operations || []).map(operation => operation.path_or_command || operation.action || ''),
-      ].join(' '))
-      .join(' ')
-      .toLowerCase() + ' ' + conceptNames.join(' ').toLowerCase();
-    const summary: string[] = [];
-    if (primaryDomain === 'clinical-testing') {
-      if (/\bpatient/.test(text)) summary.push('patient records');
-      if (/\b(muscle|force|grip|pinch|inclinometry|measurement|assessment)\b/.test(text)) summary.push('clinical measurements');
-      if (/\b(device|connection|sensor|calibration)\b/.test(text)) summary.push('device connectivity');
-      if (/\b(report|print|cover\s*letter)\b/.test(text)) summary.push('clinical reporting');
-      return summary.slice(0, 5);
-    }
-    if (/audio|content/.test(primaryDomain || '')) {
-      if (/\b(audio|wav|sound|device|channel)\b/.test(text)) summary.push('audio workflow management');
-      if (/\b(rvc|infer|predict|voice|vocal|conversion)\b/.test(text)) summary.push('voice conversion inference');
-      if (/\b(rmvpe|fcpe|f0|pitch)\b/.test(text)) summary.push('pitch extraction');
-      if (/\b(onnx|hubert|model|checkpoint|weights?)\b/.test(text)) summary.push('model preparation');
-      if (/\b(demucs|separate|separation|track|song|transcript|caption|fingerprint)\b/.test(text)) summary.push('music content processing');
-      return summary.slice(0, 5);
-    }
-    if (primaryDomain === 'fleet-management') {
-      if (/\b(fleet|vehicle|driver|dispatch|trip)\b/.test(text)) summary.push('fleet operations');
-      if (/\b(fuel|ifta|rate|transaction)\b/.test(text)) summary.push('fuel management');
-      if (/\b(maintenance|odometer|repair|scheduled)\b/.test(text)) summary.push('vehicle maintenance');
-      if (/\b(driver|notification|message|push|email)\b/.test(text)) summary.push('driver communication');
-      return summary.slice(0, 5);
-    }
-    if (primaryDomain === 'user-identity-management') {
-      if (/\b(identity|user|account|register|registration)\b/.test(text)) summary.push('identity management');
-      if (/\b(token|jwt|session|credential|refresh)\b/.test(text)) summary.push('token lifecycle');
-      if (/\b(password|reset|recovery|forgot)\b/.test(text)) summary.push('password recovery');
-      if (/\b(authorize|authorization|permission|role|scope|access)\b/.test(text)) summary.push('access authorization');
-      return summary.slice(0, 5);
-    }
-    if (/^(solana-trading|solana-arbitrage|portfolio-management)$/.test(primaryDomain || '')) {
-      if (/\b(trade|trading|swap|execution)\b/.test(text)) summary.push('trade execution');
-      if (/\b(price|market|quote|geyser)\b/.test(text)) summary.push('market data');
-      if (/\b(portfolio|allocation|rebalance|hedge)\b/.test(text)) summary.push('portfolio allocation');
-      if (/\b(risk|limit|exposure|kill)\b/.test(text)) summary.push('risk controls');
-      return summary.slice(0, 5);
-    }
-    return summary.slice(0, 5);
-  }
+  // purposeCapabilitySummary was removed here (residual cleanup after
+  // c611d08c): its only caller was the fabricated-appender tail of
+  // sanitizeAIInterpretation, deleted above. It was itself a textbook
+  // instance of the class this cardinal rule forbids -- a primaryDomain
+  // string-literal switch (clinical-testing / fleet-management /
+  // user-identity-management / solana-trading|solana-arbitrage|portfolio-
+  // management / an audio|content regex) each mapped to a hardcoded phrase
+  // ("patient records", "fuel management", "trade execution", "voice
+  // conversion inference", ...). Those domain literals read as specific
+  // benchmark-corpus projects rather than generic categories. Its sibling
+  // capabilityPurposeBias (same primaryDomain literals, still LIVE and used
+  // by capability filtering/sorting below) and the ~40-name hardcoded
+  // capability-display-name list in isGenericCapabilityDisplayName are the
+  // same class of violation and are still in the file -- flagged as a
+  // separate finding, not fixed here (they are load-bearing for capability
+  // filtering/ranking with no test coverage in this pass, so a blind rip-out
+  // risks a silent regression rather than a repair).
 
   private capabilityPurposeBias(primaryDomain: string | undefined, capability: SystemCapability): number {
     const text = [

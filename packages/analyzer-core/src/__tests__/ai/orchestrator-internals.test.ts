@@ -1912,11 +1912,13 @@ describe('architecture and capability inference', () => {
   it('prioritizes clinical capabilities in clinical testing summaries', async () => {
     expect(orch.capabilityPurposeBias('clinical-testing', { name: 'Patient Report Management', related_domains: [], related_entities: [] })).toBe(0);
     expect(orch.capabilityPurposeBias('clinical-testing', { name: 'Snack Management', related_domains: [], related_entities: [] })).toBe(1);
-    expect(orch.purposeCapabilitySummary('clinical-testing', [
-      { name: 'Patient Management', related_domains: ['patient'], related_entities: [], operations: [] },
-      { name: 'Device Management', related_domains: ['device'], related_entities: [], operations: [] },
-      { name: 'Report Management', related_domains: ['report'], related_entities: [], operations: [] },
-    ])).toEqual(['patient records', 'device connectivity', 'clinical reporting']);
+    // purposeCapabilitySummary was removed (residual cleanup after
+    // c611d08c): its only caller was sanitizeAIInterpretation's fabricated-
+    // appender tail, and the function itself was a hardcoded primaryDomain ->
+    // phrase table (clinical-testing/fleet-management/user-identity-
+    // management/solana-*), the same class of hardcoded product vocabulary
+    // the appender's removal was fixing. capabilityPurposeBias is a separate,
+    // still-live finding (flagged, not fixed in this pass).
   });
 
   it('does not treat a lone generic clinical-vocabulary hit as strongly domain-aligned (keyword-anchor-audit site 2: capabilityPurposeBias)', async () => {
@@ -7683,5 +7685,161 @@ describe('P0 (v1.0.127): no vocabulary-substitution table on ANY description pat
       target,
     );
     expect(candidate === undefined || !/Providing a the and/.test(candidate)).toBe(true);
+  });
+});
+
+describe('P0 follow-up: the sentence-level DROP filter carries no hardcoded vocabulary blocklist either', () => {
+  // CODE only — comment lines are stripped so the doc-comments recording
+  // which clauses were deleted (and why) do not themselves trip the guard.
+  const orchestratorSource = fs.readFileSync(
+    path.join(__dirname, '../../analyzer/core/orchestrator.ts'),
+    'utf-8',
+  )
+    .split('\n')
+    .filter(line => !/^\s*(?:\/\/|\/\*|\*)/.test(line))
+    .join('\n');
+
+  // Scoped to sanitizeAIInterpretation's sentence-level `keep` filter itself
+  // (not the whole file): validateAIInterpretation carries an intentionally
+  // separate, still-live REJECTION gate using an overlapping vocabulary
+  // ("business logic", "database queries", ...) — rejecting a whole
+  // paragraph and sending it back for AI regeneration is the accepted
+  // rejection-not-fabrication pattern this cleanup keeps, and is out of
+  // scope here. What must be gone is the SANITIZE-side copy that used to
+  // silently DROP just the offending sentence on the same literal phrases.
+  const keepFilterStart = orchestratorSource.indexOf('let keep = sentences.filter(sentence => {');
+  const keepFilterEnd = orchestratorSource.indexOf('const keepAfterBucketDrop', keepFilterStart);
+  expect(keepFilterStart).toBeGreaterThan(-1);
+  expect(keepFilterEnd).toBeGreaterThan(keepFilterStart);
+  const keepFilterSource = orchestratorSource.slice(keepFilterStart, keepFilterEnd);
+
+  it('(gate a) no sentence is dropped by a hardcoded phrase match — the literal blocklist clauses are gone from the keep filter', () => {
+    // Every literal phrase c611d08c left as a residual, plus siblings in the
+    // same `keep` filter, must not appear as a live regex/string literal in
+    // that filter's CODE (comments already stripped above).
+    const forbidden = [
+      /database quer(?:y|ies)/i,
+      /business logic/i,
+      /c# analysis/i,
+      /json processing/i,
+      /data lookup behavior/i,
+      /deterministic stages/i,
+      /server routes/i,
+      /sdk interactions/i,
+      /external stores/i,
+      /route transitions/i,
+      /state mutations/i,
+      /token-based access control/i,
+      /codebase focused/i,
+      /command-line interfaces/i,
+      /toolchain tools/i,
+      /packet-level operations/i,
+      /terminal command execution/i,
+      /structured operations/i,
+      /authentication criteria/i,
+      /resource checks/i,
+      /content-related operations/i,
+      /reads and writes data related/i,
+      /lifecycle operations/i,
+      /designed to be integrated with/i,
+    ];
+    for (const pattern of forbidden) {
+      expect({ pattern: String(pattern), present: pattern.test(keepFilterSource) }).toEqual({ pattern: String(pattern), present: false });
+    }
+  });
+
+  it('(gate a, structural) the surviving sentence-level checks are shape/evidence-gated, not a second hand-copied phrase list', () => {
+    // A grounded, otherwise-clean THREE-sentence paragraph (so dropping one
+    // offending sentence still clears the two-sentence shape floor) whose
+    // middle sentence carries ONE incidental mechanism-restatement word
+    // survives sanitization with just that sentence dropped, using the SAME
+    // canonical source-bucket definition the acceptance gate itself uses
+    // (not a duplicate blocklist).
+    const purpose = { primary_domain: 'trading-analytics', core_concepts: ['trade', 'candle'] } as any;
+    const grounding = { frameworks: [], libraries: [], databaseEntities: ['OhlcvCandle'] };
+    const description = 'Atlas is a trading analytics service that aggregates OhlcvCandle records for traders. '
+      + 'Its script-based summary restates OhlcvCandle totals for dashboards. '
+      + 'Traders review the aggregated OhlcvCandle history before placing new orders.';
+    const sanitized = orch.sanitizeAIInterpretation(description, purpose, grounding);
+    expect(sanitized).not.toMatch(/script-based/i);
+    expect(sanitized).toMatch(/OhlcvCandle/);
+  });
+
+  it('(gate b) a thin sanitized description is returned AS-IS (never padded with a fabricated appended sentence), so the too-short/single-sentence gate can send it back for regeneration', () => {
+    const purpose = { primary_domain: 'order-management', core_concepts: ['order'] } as any;
+    // A single grounded sentence: sanitization has nothing to strip, and the
+    // result must not grow a second, deterministically-authored sentence.
+    const thin = 'Atlas records Order rows for dispatch operators.';
+    const sanitized = orch.sanitizeAIInterpretation(thin, purpose, {});
+    expect(sanitized).toBe(thin);
+    expect(sanitized).not.toMatch(/main grounded concepts are/i);
+    expect(sanitized).not.toMatch(/anchor the workflows and change-risk surface/i);
+    // The self-contradicting keep-rule that used to reject the appended
+    // sentence is gone from the keep filter itself (it's a different
+    // occurrence -- a stored-artifact staleness marker in
+    // previousDescriptionNeedsCurrentValidation -- that legitimately still
+    // matches this phrase to force re-validation of OLD analyses that
+    // predate this fix; that is not the contradiction being fixed here).
+    expect(keepFilterSource).not.toMatch(/main grounded concepts are/i);
+    // And the real gate this now relies on: too-short/single-sentence
+    // rejection, which sends control back to the AI repair/regeneration
+    // loop (verified end-to-end in the "throws after exhausting" /
+    // "accepts a description produced on the SECOND repair re-prompt" specs
+    // in ai-interpretation-quality.test.ts) rather than shipping fabricated
+    // prose.
+    expect(orch.validateGeneratedAIInterpretation(sanitized, purpose, {}).ok).toBe(false);
+  });
+
+  it('(gate b) purposeCapabilitySummary — the fabricated appender\'s hardcoded primaryDomain -> phrase table — no longer exists', () => {
+    expect((orch as any).purposeCapabilitySummary).toBeUndefined();
+    expect(orchestratorSource).not.toMatch(/private purposeCapabilitySummary/);
+  });
+
+  it('(gate c) the previous-description staleness predicate has no domain literals (no "zero-trust"/"security" string check)', () => {
+    expect(orchestratorSource).not.toMatch(/zero[- ]trust security system/i);
+    expect(orchestratorSource).not.toMatch(/network-access\|security/i);
+  });
+
+  it('(gate c) staleness is structural: a stored system-type claim not corroborated by the CURRENT classification triggers refresh, any domain/type pair — not one hardcoded phrase', () => {
+    // The exact case the literal used to hardcode: a stale "security system"
+    // claim whose current classification is unrelated.
+    const staleSecurityClaim = {
+      enhanced_system_purpose: {
+        inferred_description: 'Atlas is a zero-trust security system that gates every request for operators.',
+        primary_domain: 'recipe-sharing',
+      },
+    } as any;
+    expect((orch as any).previousDescriptionNeedsCurrentValidation(staleSecurityClaim)).toBe(true);
+
+    // A DIFFERENT domain/type pair the old literal never covered — proves
+    // this is a general structural rule, not the one hardcoded phrase.
+    const staleUnrelatedClaim = {
+      enhanced_system_purpose: {
+        inferred_description: 'Atlas is a clinical-testing measurement platform used by lab technicians.',
+        primary_domain: 'invoice-billing',
+      },
+    } as any;
+    expect((orch as any).previousDescriptionNeedsCurrentValidation(staleUnrelatedClaim)).toBe(true);
+
+    // When the current classification DOES corroborate the claimed type
+    // (same domain family), it is not flagged stale.
+    const corroboratedClaim = {
+      enhanced_system_purpose: {
+        inferred_description: 'Atlas is a zero-trust security system that gates every request for operators.',
+        primary_domain: 'zero-trust-network-access',
+      },
+    } as any;
+    expect((orch as any).previousDescriptionNeedsCurrentValidation(corroboratedClaim)).toBe(false);
+
+    // No classification populated at all is a different, already-handled
+    // case (missing-previous-description / domain-source gates) — not
+    // staleness by this predicate, and must not false-positive on ordinary
+    // unclassified fixtures.
+    const noClassification = {
+      enhanced_system_purpose: {
+        inferred_description: 'The order service retrieves EnterpriseOrder records for operators.',
+      },
+    } as any;
+    expect((orch as any).previousDescriptionNeedsCurrentValidation(noClassification)).toBe(false);
   });
 });
