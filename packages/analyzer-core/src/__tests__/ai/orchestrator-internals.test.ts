@@ -2376,21 +2376,21 @@ describe('architecture and capability inference', () => {
       expect(outcome.text.startsWith('soon-lens is a crypto market-intelligence API')).toBe(true);
     });
 
-    it('heals a single ungrounded marketing word by stripping it instead of rejecting the paragraph (prod: electripure "efficient")', async () => {
+    it('REJECTS a marketing word instead of deleting it mid-sentence (word-deletion shipped "is an crypto market-intelligence API" — P0 v1.0.127)', async () => {
       const oneWord = groundedParagraph.replace('is a crypto market-intelligence API', 'is an efficient crypto market-intelligence API');
       const verdict = orch.validateGeneratedAIInterpretation(oneWord, purpose, grounding);
       expect(verdict.reason).toBe('unsupported-marketing-language: efficient');
 
-      // Reason-driven mechanical strip: exactly the flagged word is removed.
-      const stripped = orch.mechanicallyRepairAIInterpretation(oneWord, verdict.reason);
-      expect(stripped).toBeDefined();
-      expect(stripped).not.toMatch(/\befficient\b/i);
-      expect(stripped).toMatch(/crypto market-intelligence API/);
+      // Marketing language is a SEMANTIC rejection: no mechanical word strip.
+      expect(orch.mechanicallyRepairAIInterpretation(oneWord, verdict.reason)).toBeUndefined();
 
+      // The paragraph stays rejected (the AI repair re-prompt regenerates it)
+      // and, critically, is never mutated into ungrammatical prose.
       const outcome = orch.acceptAIInterpretationCandidate(oneWord, purpose, grounding);
-      expect(outcome.validation.ok).toBe(true);
-      expect(outcome.text).not.toMatch(/\befficient\b/i);
-      expect(outcome.text).toMatch(/DexTrade/);
+      expect(outcome.validation.ok).toBe(false);
+      expect(String(outcome.validation.reason)).toMatch(/^unsupported-marketing-language:/);
+      expect(outcome.text).not.toMatch(/\ban\s+crypto\b/i);
+      expect(outcome.text).toBe(oneWord);
     });
 
     it('heals a HYPHENATED single ungrounded modifier ("third-party") instead of misparsing it as a two-token fabrication (prod: Qwen3 on rpg-server hard-failed enrichment)', async () => {
@@ -2428,7 +2428,7 @@ describe('architecture and capability inference', () => {
       expect(String(outcome.validation.reason)).toMatch(/^unsupported-marketing-language:/);
     });
 
-    it('chains mechanical repairs: a too-long trim followed by a marketing-word strip', async () => {
+    it('applies the too-long trim but still refuses to delete the marketing word behind it', async () => {
       const withWord = groundedParagraph.replace('is a crypto market-intelligence API', 'is an efficient crypto market-intelligence API');
       const filler = ' It aggregates DexTrade and OhlcvCandle market data for trading agents across venues.';
       let longAndMarketing = withWord;
@@ -2437,9 +2437,12 @@ describe('architecture and capability inference', () => {
       expect(orch.validateGeneratedAIInterpretation(longAndMarketing, purpose, grounding).reason).toBe('too-long');
 
       const outcome = orch.acceptAIInterpretationCandidate(longAndMarketing, purpose, grounding);
-      expect(outcome.validation.ok).toBe(true);
+      // Length is a mechanical edit and still heals; the marketing word is not
+      // excised, so the candidate stays rejected for regeneration.
       expect(outcome.text.length).toBeLessThanOrEqual(2000);
-      expect(outcome.text).not.toMatch(/\befficient\b/i);
+      expect(outcome.validation.ok).toBe(false);
+      expect(String(outcome.validation.reason)).toMatch(/^unsupported-marketing-language:/);
+      expect(outcome.text).toMatch(/\befficient\b/i);
     });
 
     it('does not mechanically repair semantic rejection reasons (they go to the AI re-prompt)', async () => {
@@ -5392,15 +5395,14 @@ describe('stripped-sentence grammar guard and repetition collapse (live mtg/herc
     expect(orch.repairStrippedSentenceGrammar(text)).toBe('The service records analysis runs for agents.');
   });
 
-  it('sanitizeAIInterpretation no longer manufactures a dangling "for" from a bare "insights"', async () => {
+  it('sanitizeAIInterpretation performs NO vocabulary substitution at all (the "insights" -> "graph evidence" rewrite that manufactured a dangling "for" is gone)', async () => {
     const purpose = { primary_domain: 'order-management', core_concepts: ['orders'] } as any;
-    const sanitized = orch.sanitizeAIInterpretation(
-      'The platform manages customer orders and produces insights.',
-      purpose,
-      {}
-    );
+    const original = 'The platform manages customer orders and produces insights.';
+    const sanitized = orch.sanitizeAIInterpretation(original, purpose, {});
     expect(sanitized.endsWith('for.')).toBe(false);
-    expect(sanitized).toContain('graph evidence');
+    expect(sanitized).not.toContain('graph evidence');
+    // The AI's own words survive verbatim; the marketing gate rejects them.
+    expect(sanitized).toBe(original);
   });
 
   it('collapses the same domain-justification sentence restated 3x to one sentence', async () => {
@@ -7416,13 +7418,14 @@ describe('architecture-strip grammar + fact-list vocabulary echo (live kontinuum
     expect(sanitized).toMatch(/deployable units/);
   });
 
-  it('rejects the "produces terminal outputs such as" fact-list echo and sanitize heals it', async () => {
+  it('REJECTS the "produces terminal outputs such as" fact-list echo for regeneration instead of rewording it', async () => {
     const description = 'Kontinuum is a personal intelligence substrate that manages memory, concepts, and agent workflows for its users. It produces terminal outputs such as memory intake summaries, concept catalogs, and graph explorer views.';
     expect(orch.validateAIInterpretation(description, purpose, {}).reason).toBe('fact-list-vocabulary-echo');
+    // "terminal outputs" -> "outputs" was a vocabulary rewrite; the echo is a
+    // semantic failure of the AI's answer and belongs to the repair re-prompt.
     const sanitized = orch.sanitizeAIInterpretation(description, purpose, {});
-    expect(sanitized).not.toMatch(/terminal outputs/i);
-    expect(sanitized).toMatch(/produces outputs such as memory intake/);
-    expect(orch.validateAIInterpretation(sanitized, purpose, {}).ok).toBe(true);
+    expect(sanitized).toBe(description);
+    expect(orch.validateAIInterpretation(sanitized, purpose, {}).ok).toBe(false);
   });
 });
 
@@ -7567,5 +7570,118 @@ describe('stripInstructionShapedTails: generic output-hygiene net for leaked pro
     const cleaned = orch.cleanGeneratedDescriptionText(withLeak);
     expect(cleaned).not.toMatch(/must state/i);
     expect(cleaned).not.toMatch(/must name/i);
+  });
+});
+
+describe('P0 (v1.0.127): no vocabulary-substitution table on ANY description path', () => {
+  // CODE only — comment lines are stripped so the doc-comments that record
+  // WHICH rules were deleted do not themselves trip the guard.
+  const orchestratorSource = fs.readFileSync(
+    path.join(__dirname, '../../analyzer/core/orchestrator.ts'),
+    'utf-8',
+  )
+    .split('\n')
+    .filter(line => !/^\s*(?:\/\/|\/\*|\*)/.test(line))
+    .join('\n');
+
+  it('never injects domain vocabulary into a description that merely mentions database queries (the "database queries" -> "data lookup behavior" -> "portfolio and wallet lookups" two-hop chain)', () => {
+    const purpose = { primary_domain: 'content-publishing', core_concepts: ['article', 'author'] } as any;
+    const description = 'Hermes is a content publishing service that stores articles and authors for editors. '
+      + 'It answers database queries for editorial dashboards and records every article revision.';
+
+    for (const text of [
+      orch.sanitizeAIInterpretation(description, purpose, {}),
+      orch.cleanGeneratedDescriptionText(description),
+    ]) {
+      expect(text).not.toMatch(/portfolio/i);
+      expect(text).not.toMatch(/wallet/i);
+      expect(text).not.toMatch(/data lookup behavior/i);
+    }
+    // Hygiene never rewords the AI's own grounded wording.
+    expect(orch.cleanGeneratedDescriptionText(description)).toBe(description);
+
+    // Element/capability path: same guarantee.
+    const target = {
+      id: 'cap_reports', name: 'Article Reports', kind: 'capability',
+      relatedEntities: ['Article'], relatedDomains: ['content-publishing'],
+    };
+    const element = orch.sanitizeElementDescriptionCandidate(
+      'Article Reports answers database queries about published articles for editors.',
+      target,
+    );
+    if (element !== undefined) {
+      expect(element).not.toMatch(/portfolio|wallet/i);
+    }
+  });
+
+  it('the orchestrator source contains no vocabulary/domain phrase-rewrite rules (regex mapping one english phrase onto another)', () => {
+    const forbidden: Array<[string, RegExp]> = [
+      ['portfolio and wallet lookups', /portfolio and wallet lookups/i],
+      ['data lookup behavior rewrite', /replace\(\s*\/\\bdatabase quer/i],
+      ['C# analysis and JSON processing', /C# analysis and JSON processing/],
+      ['REQUEST <ip> -> local service endpoints', /local service endpoints/],
+      ['best practices -> local patterns', /'local patterns'/],
+      ['entry points -> inputs/workflows', /replace\(\s*\/\\bentry points\?/i],
+      ['insights -> graph evidence', /replace\(\s*\/\\binsights\?/i],
+      ['resulting graph injection', /'query the resulting graph'/],
+      // The domain-flavoured "<X> system" -> "<primary_domain> system"
+      // substitutions (portfolio management / portfolio device library /
+      // zero-trust security / codebase analysis).
+      ['domain-flavoured "<X> system" rewrites', /replace\(\s*\/\\b(?:portfolio|zero\[- \]trust|codebase analysis)/i],
+    ];
+    for (const [label, pattern] of forbidden) {
+      expect({ label, present: pattern.test(orchestratorSource) }).toEqual({ label, present: false });
+    }
+  });
+
+  it('contains no marketing-word DELETION rule (words are never surgically removed mid-sentence)', () => {
+    // The two live deletion tables: the element-path marketing strip and the
+    // system-path `efficient`/`advanced` erasures. Both replaced empty-string.
+    expect(orchestratorSource).not.toMatch(/replace\(\s*\/\\befficient\(\?:ly\)\?\\b\/gi,\s*''\)/);
+    expect(orchestratorSource).not.toMatch(/replace\(\s*\/\\badvanced\\b\/gi,\s*''\)/);
+    expect(orchestratorSource).not.toMatch(/seamless\(\?:ly\)\?\|robust\|comprehensive/);
+  });
+
+  it('marketing language triggers rejection/regeneration on BOTH paths, never mutation', () => {
+    // System path.
+    const purpose = { primary_domain: 'order-management', core_concepts: ['order', 'shipment'] } as any;
+    const system = 'Atlas is an order management service that records orders and shipments for dispatch operators efficiently. '
+      + 'It links each shipment update to the originating order and answers order lookups for dispatch staff across depots. '
+      + 'Every order change is written back so operators can review the shipment history before dispatch.';
+    expect(String(orch.validateAIInterpretation(system, purpose, {}).reason)).toMatch(/^unsupported-marketing-language:/);
+    expect(orch.mechanicallyRepairAIInterpretation(system, 'unsupported-marketing-language: efficiently')).toBeUndefined();
+    expect(orch.sanitizeAIInterpretation(system, purpose, {})).toBe(system);
+
+    // Element path.
+    const target = {
+      id: 'cap_orders', name: 'Order Review', kind: 'capability',
+      relatedEntities: ['Order'], relatedDomains: ['order-management'],
+    };
+    const element = 'Order Review surfaces Order records and shipment status efficiently for dispatch operators.';
+    expect(String(orch.validateElementDescription(element, target).reason)).toMatch(/^unsupported-marketing-language:/);
+    expect(orch.sanitizeElementDescriptionCandidate(element, target)).toBeUndefined();
+  });
+
+  it('keeps genuine shape-based output hygiene: markdown fences, stray markers, doubled words, and instruction-shaped tails', () => {
+    expect(orch.cleanGeneratedDescriptionText('```markdown\n**Atlas** records `Order` rows.\n```'))
+      .toBe('Atlas records Order rows.');
+    expect(orch.cleanGeneratedDescriptionText('Atlas records order workflows workflows for operators.'))
+      .toBe('Atlas records order workflows for operators.');
+    const withLeak = 'Atlas records orders for operators. system_description must state that coverage is partial.';
+    expect(orch.cleanGeneratedDescriptionText(withLeak)).toBe('Atlas records orders for operators.');
+  });
+
+  it('applies the SAME hygiene stack to capability descriptions as to system descriptions (the split that shipped ungrammatical capability text)', () => {
+    const target = {
+      id: 'cap_patterns', name: 'Pattern Surfacing', kind: 'capability',
+      relatedEntities: ['Pattern'], relatedDomains: ['code-analysis'],
+    };
+    // A grammar stump reaching the capability path must be healed or dropped,
+    // exactly as on the system path — never shipped as-is.
+    const candidate = orch.sanitizeElementDescriptionCandidate(
+      'Pattern Surfacing records Pattern rows for reviewers. Providing a the and.',
+      target,
+    );
+    expect(candidate === undefined || !/Providing a the and/.test(candidate)).toBe(true);
   });
 });

@@ -91,14 +91,11 @@ describe('shared element description validator', () => {
     expect(result.reason).toBe('source-file-restatement');
   });
 
-  it('cleans broken infrastructure boilerplate grammar from system summaries', () => {
-    const cleaned = orch.cleanGeneratedDescriptionText(
-      'soon-infra is a cloud infrastructure system. The system is designed to organizes the creation and management of cloud resources via structured file-based workflows.'
-    );
-
-    expect(cleaned).toBe(
-      'soon-infra is a cloud infrastructure system. The system defines cloud resources as structured infrastructure that can be reviewed before deployment.'
-    );
+  it('cleanGeneratedDescriptionText never rewrites a sentence into different words (the hardcoded cloud-resources boilerplate substitution is gone)', () => {
+    const original = 'soon-infra is a cloud infrastructure system. The system is designed to organizes the creation and management of cloud resources via structured file-based workflows.';
+    // Hygiene only: the AI's own wording survives verbatim. Broken prose is the
+    // validators' problem (regeneration), not a phrase-substitution table's.
+    expect(orch.cleanGeneratedDescriptionText(original)).toBe(original);
   });
 
   it('rejects capability descriptions that summarize implementation functions', () => {
@@ -649,7 +646,7 @@ describe('element description grounding parity with the system validator', () =>
     expect(result.reason).toContain('efficiency');
   });
 
-  it('sanitizes removable marketing words in otherwise grounded AI descriptions', () => {
+  it('REJECTS marketing words in otherwise grounded AI descriptions instead of deleting them mid-sentence', () => {
     const localOrch = new AnalyzerOrchestrator() as any;
     const target = {
       id: 'cap_terraform',
@@ -662,7 +659,10 @@ describe('element description grounding parity with the system validator', () =>
     const text = 'ECR Registry maintains ECR repository resources and access policies efficiently for cloud infrastructure behavior.';
 
     expect(localOrch.validateElementDescription(text, target).reason).toContain('unsupported-marketing-language');
-    expect(localOrch.sanitizeElementDescriptionCandidate(text, target)).toBe('ECR Registry maintains ECR repository resources and access policies for cloud infrastructure behavior.');
+    // undefined => the caller's repair/regeneration path runs. Word-deletion
+    // here shipped ungrammatical capability text to prod (v1.0.127:
+    // "Surfaces idiomatic patterns and for codebase components").
+    expect(localOrch.sanitizeElementDescriptionCandidate(text, target)).toBeUndefined();
   });
 
   it('allows grounded multi-word marketing phrases when the domain vocabulary states them', () => {

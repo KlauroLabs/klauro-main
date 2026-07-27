@@ -12264,19 +12264,22 @@ export class AnalyzerOrchestrator {
   }
 
   private sanitizeElementDescriptionCandidate(description: string, target: DescriptionTarget): string | undefined {
-    const cleaned = this.cleanGeneratedDescriptionText(description);
+    // Same hygiene stack as the system-description path (cleanGenerated... +
+    // repairStrippedSentenceGrammar). The split — grammar repair applied to
+    // system descriptions but NOT to capability descriptions — is what let
+    // ungrammatical capability text reach production.
+    const cleaned = this.repairStrippedSentenceGrammar(this.cleanGeneratedDescriptionText(description));
     if (!cleaned) return undefined;
     const validation = this.validateElementDescription(cleaned, target);
     if (validation.ok) return cleaned;
-    if (!/^unsupported-marketing-language:/.test(validation.reason || '')) return undefined;
-
-    const sanitized = this.cleanGeneratedDescriptionText(cleaned
-      .replace(/\b(seamless(?:ly)?|robust|comprehensive|various|crucial role|plays a key role|efficient(?:ly)?|efficiency|productivity|user-friendly|business value|improving operational|enhanc(?:e|es|ing)|better understanding|insights(?: into)?|structured data and insights|reduces? costs?|best practices|scalable|secure by design|user experience)\b/gi, '')
-      .replace(/\s+,/g, ',')
-      .replace(/,\s*(?:and\s*)?\./g, '.')
-      .replace(/\s{2,}/g, ' ')
-    );
-    return this.validateElementDescription(sanitized, target).ok ? sanitized : undefined;
+    // VALIDATION, NOT MUTATION. Marketing language used to be surgically
+    // deleted mid-sentence here, which shipped ungrammatical prose to
+    // customers ("Surfaces idiomatic patterns and for codebase components"
+    // after "best practices" was excised). A rejected description is returned
+    // as undefined so the caller's repair/regeneration path produces a NEW
+    // grounded sentence — a description is either accepted whole or rewritten
+    // by the model, never edited word-by-word.
+    return undefined;
   }
 
   private isKnownCapabilityDomainNoun(token: string): boolean {
@@ -12472,6 +12475,19 @@ export class AnalyzerOrchestrator {
     });
   }
 
+  /**
+   * OUTPUT HYGIENE ONLY — shape-based, vocabulary-free, and applied to EVERY
+   * AI-generated description (system, capability, entity, entry point alike).
+   *
+   * CARDINAL: this function must never map one phrase's MEANING onto another.
+   * It removes transport artifacts the model wraps its prose in (markdown
+   * fences, bold/heading/bullet markers, backticks, stray quotes), normalizes
+   * whitespace, restores sentence-initial capitalization, collapses an
+   * accidental doubled word, and drops instruction-shaped sentences echoed
+   * back from the prompt. Nothing here inspects or rewrites domain
+   * vocabulary: a description that says the wrong thing is REJECTED by the
+   * validators and regenerated, never silently reworded.
+   */
   private cleanGeneratedDescriptionText(description: string): string {
     return this.stripInstructionShapedTails((description || '')
       .replace(/^```(?:text|markdown|json)?/i, '')
@@ -12481,22 +12497,14 @@ export class AnalyzerOrchestrator {
       .replace(/^\s*[-*]\s+/gm, '')
       .replace(/`([^`]+)`/g, '$1')
       .replace(/`/g, '')
-      .replace(/\banaly[sz]e and interact with (?:the )?data\b/gi, 'analyze and query the resulting graph')
-      .replace(/\binteract with (?:the )?data\b/gi, 'query the resulting graph')
-      .replace(/\bdesigned to be integrated with\b/gi, 'exposed through')
-      .replace(/\bis designed to organizes?\s+the\s+creation\s+and\s+management\s+of\s+cloud\s+resources\s+via\s+structured\s+file-based\s+workflows\.?/gi, 'defines cloud resources as structured infrastructure that can be reviewed before deployment.')
-      .replace(/\bexternal services? like\s+(@?[A-Za-z0-9_.@/-]+)/gi, '$1')
-      .replace(/\breact\b/g, 'React')
-      .replace(/\btanstack query\b/g, 'TanStack Query')
-      .replace(/\breact router\b/g, 'React Router')
-      .replace(/\bdotnet-host\b/gi, '.NET host')
-      .replace(/\bdotnet\b/gi, '.NET')
-      .replace(/\b([a-z][a-z -]{2,80}?)\s+workflows\s+workflows\b/gi, '$1 workflows')
+      // Accidental doubled word ("... workflows workflows ..."), shape-based:
+      // the SAME token repeated back-to-back is a generation stutter, never
+      // meaning. No word list — any repeated token collapses.
+      .replace(/\b([A-Za-z][A-Za-z-]*)(\s+)\1\b/g, '$1')
       .replace(/\s*\n+\s*/g, ' ')
       .replace(/\s+/g, ' ')
       .trim()
       .replace(/^["']|["']$/g, '')
-      .replace(/\bA\s+(audio|access|api|analytics|arbitrage|infrastructure)\b/g, 'An $1')
       .replace(/([.!?])\s+([a-z])/g, (_match, punct, letter) => `${punct} ${letter.toUpperCase()}`)
       .trim());
   }
@@ -12893,17 +12901,17 @@ export class AnalyzerOrchestrator {
   /**
    * MECHANICAL self-heal for gate rejections that are deterministic EDITS of
    * the AI's own text, not deterministic authorship (the AI-only comprehension
-   * boundary stands: trimming AI prose to a length budget or deleting a flagged
-   * marketing word edits AI output without adding a single non-AI claim).
-   * Handles exactly three reason classes:
+   * boundary stands: trimming AI prose to a length budget or removing a leaked
+   * file path edits AI output without adding a single non-AI claim).
+   * Handles exactly these reason classes:
    *  - 'too-long': trim to the last full sentence inside the 2000-char limit
    *    (prod: hercules — a valid paragraph perma-rejected for running long).
-   *  - 'unsupported-marketing-language: <words>': strip precisely the flagged
-   *    words/phrases (prod: electripure — ONE "efficient" killed an otherwise
-   *    grounded paragraph) — UNLESS the paragraph is SATURATED with marketing
-   *    language (many distinct flagged phrases or repeated occurrences), where
-   *    word-deletion would gut the text; saturation stays a semantic rejection
-   *    for the AI repair re-prompt.
+   *  - 'unsupported-marketing-language': NOT mechanically fixable. Deleting the
+   *    flagged words mid-sentence shipped ungrammatical prose to customers
+   *    ("is an crypto market-intelligence API" after "efficient" was excised;
+   *    "write more and maintainable code" in prod v1.0.127). Marketing language
+   *    is a SEMANTIC rejection handled by the AI repair re-prompt, which
+   *    regenerates a grounded sentence instead of mutilating one.
    *  - 'ungrounded-system-type: <token>' with a SINGLE flagged modifier: strip
    *    just that modifier, keeping the grounded type head ("a commerce
    *    platform" -> "a platform"; prod: hercules — the model kept re-emitting
@@ -12923,41 +12931,10 @@ export class AnalyzerOrchestrator {
       const trimmed = (lastSentenceEnd > 0 ? window.slice(0, lastSentenceEnd + 1) : window).trim();
       return trimmed && trimmed !== cleaned ? trimmed : undefined;
     }
-    const marketing = /^unsupported-marketing-language:\s*(.+)$/.exec(reason);
-    if (marketing) {
-      const flagged = Array.from(new Set(
-        marketing[1].split(',').map(phrase => phrase.trim()).filter(Boolean)
-      ));
-      if (flagged.length === 0) return undefined;
-      const flaggedPatterns = flagged.map(phrase => {
-        const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+');
-        return new RegExp(`\\b${escaped}\\b`, 'gi');
-      });
-      const totalOccurrences = flaggedPatterns.reduce(
-        (count, pattern) => count + (description.match(pattern) || []).length,
-        0
-      );
-      // SATURATION GATE: a paragraph leaning on marketing vocabulary
-      // throughout is a semantic failure, not a word-level cleanup — deleting
-      // 4+ distinct phrases (or 6+ occurrences) would leave a gutted husk that
-      // no longer says what the AI meant. Reject so the repair re-prompt (or
-      // the final throw) handles it.
-      if (flagged.length >= 4 || totalOccurrences >= 6) return undefined;
-      let stripped = description;
-      for (const pattern of flaggedPatterns) {
-        stripped = stripped.replace(pattern, '');
-      }
-      const repaired = this.repairStrippedSentenceGrammar(this.cleanGeneratedDescriptionText(
-        stripped
-          .replace(/\s+,/g, ',')
-          .replace(/,(?:\s*,)+/g, ',')
-          .replace(/,\s*(?:and\s*)?\./g, '.')
-          .replace(/\s+\./g, '.')
-          .replace(/\band\s+\./gi, '.')
-          .replace(/\s{2,}/g, ' ')
-      ));
-      return repaired && repaired !== this.cleanGeneratedDescriptionText(description) ? repaired : undefined;
-    }
+    // Marketing/vague language is NEVER word-deleted: surgical removal leaves
+    // ungrammatical text ("is an crypto market-intelligence API"). It stays a
+    // semantic rejection so the AI repair re-prompt regenerates the sentence.
+    if (/^unsupported-marketing-language:/.test(reason)) return undefined;
     const ungroundedType = /^ungrounded-system-type:\s*(.+)$/.exec(reason);
     if (ungroundedType) {
       // Reason payload joins modifier tokens with '-'; only a SINGLE flagged
@@ -13901,102 +13878,16 @@ export class AnalyzerOrchestrator {
     enhancedSystemPurpose: EnhancedSystemPurpose,
     facts: { frameworks?: string[]; libraries?: string[]; databaseEntities?: string[]; externalServices?: string[]; deployableCount?: number } = {},
   ): string {
-    const wordSanitized = this.cleanGeneratedDescriptionText(description)
-      .replace(/\bfacilitates\b/gi, 'links')
-      .replace(/\buser experience\b/gi, 'interface behavior')
-      .replace(/\bportfolio management system\b/gi, `${(enhancedSystemPurpose.primary_domain || 'domain').replace(/-/g, ' ')} system`)
-      .replace(/\bportfolio device library\b/gi, `${(enhancedSystemPurpose.primary_domain || 'domain').replace(/-/g, ' ')} library`)
-      .replace(/\bzero[- ]trust security system\b/gi, `${(enhancedSystemPurpose.primary_domain || 'domain').replace(/-/g, ' ')} system`)
-      .replace(/\bcodebase analysis system\b/gi, `${(enhancedSystemPurpose.primary_domain || 'domain').replace(/-/g, ' ')} system`)
-      .replace(/\b(?:product|photo|federated|no-code|internal-tools|publishing|commerce|scheduling|developer|knowledge)-[a-z-]+(?:platform|base)\b/gi, match => match.replace(/-/g, ' '))
-      .replace(/\bgateway between the frontend and backend\b/gi, 'interface between users and backend workflows')
-      .replace(/\breducing complexity\b/gi, 'organizing code relationships')
-      .replace(/\bwide range of clients\b/gi, 'client workflows')
-      .replace(/\becosystem\b/gi, 'toolchain')
-      .replace(/\brobust api\b/gi, 'API')
-      .replace(/\bcrucial role\b/gi, 'role')
-      .replace(/\bscalability\b/gi, 'runtime growth')
-      .replace(/\busability\b/gi, 'operator use')
-      .replace(/\bunderlying platform\b/gi, 'system')
-      .replace(/\bindispensable\b/gi, 'important')
-      .replace(/\bunified experience\b/gi, 'shared workflow')
-      .replace(/\bcomplex queries\b/gi, 'queries')
-      .replace(/\blarge datasets\b/gi, 'data sets')
-      .replace(/\bhigh-quality [a-z ]+ experience\b/gi, 'interface behavior')
-      .replace(/\bregulatory requirements?\b/gi, 'rules')
-      .replace(/\bbest practices\b/gi, 'local patterns')
-      .replace(/\bdesigned for managing\b/gi, 'manages')
-      .replace(/\bvarious applications\b/gi, 'the application')
-      .replace(/\binternal scripts?\b/gi, 'system')
-      .replace(/\bpredefined scripts?\b/gi, 'configured strategies')
-      .replace(/\bevent emitter operations?\b/gi, 'domain events')
-      // Fact-list vocabulary echo: "terminal outputs/records" is prompt-internal
-      // wording, not product language (live kontinuum: "produces terminal
-      // outputs such as ...").
-      .replace(/\bterminal (?:records?(?: and outputs?)?|outputs?(?: and records?)?)\b/gi, 'outputs')
-      .replace(/\bnear-terminal stages?\b/gi, 'late-stage steps')
-      .replace(/\band external services?\b/gi, '')
-      .replace(/\bexternal services?\b/gi, 'named integrations')
-      .replace(/\bserver routes?\b/gi, 'request behavior')
-      .replace(/\bsdk interactions?\b/gi, 'integration behavior')
-      .replace(/\bdatabase quer(?:y|ies)\b/gi, 'data lookup behavior')
-      .replace(/\bfile existence\b/gi, 'resource checks')
-      .replace(/\bbusiness logic\b/gi, 'domain behavior')
-      .replace(/\bexternal stores?\b/gi, 'state stores')
-      .replace(/\bcodebase focused on\b/gi, 'system for')
-      .replace(/\bC# analysis and JSON processing\b/gi, 'application data processing')
-      .replace(/\bREQUEST\s+\d{1,3}(?:\.\d{1,3}){3}\b/gi, 'local service endpoints')
-      .replace(/\bdatabase interactions?\b/gi, 'data persistence workflows')
-      .replace(/\bcommand-line interfaces?\b/gi, 'operator workflows')
-      .replace(/\btoolchain tools\b/gi, 'toolchain integrations')
-      .replace(/\bprocessing stages?\b/gi, 'workflow stages')
-      .replace(/\bpacket-level operations?\b/gi, 'network packet handling')
-      .replace(/\bterminal command execution\b/gi, 'operator-controlled execution')
-      .replace(/\bstructured operations\b/gi, 'structured workflows')
-      .replace(/\bauthentication criteria\b/gi, 'identity verification state')
-      .replace(/\bresource checks?\b/gi, 'asset validation')
-      .replace(/\bdata lookup behavior\b/gi, 'portfolio and wallet lookups')
-      .replace(/\bcontent-related operations\b/gi, 'content workflows')
-      .replace(/\breads and writes data related to\b/gi, 'maintains')
-      .replace(/\bscript[- ]based\b/gi, '')
-      .replace(/\bscript[- ]driven\b/gi, '')
-      .replace(/\binternal files?\b/gi, 'code paths')
-      .replace(/\bsource files?\b/gi, 'code paths')
-      .replace(/\bthe main interaction surfaces are [^.]+\.?\s*/gi, '')
-      .replace(/\bmain interaction surfaces (?:are|being) [^.]+\.?\s*/gi, '')
-      .replace(/\bconfigured interaction surfaces\b/gi, 'configured workflows')
-      .replace(/\bHTTP,?\s+route,?\s+and\s+WebSocket workflows?\b/gi, 'interactive and realtime behavior')
-      .replace(/\bAPI,?\s+route,?\s+and\s+WebSocket workflows?\b/gi, 'interactive and realtime behavior')
-      .replace(/\bHTTP endpoints?,?\s+route surfaces?,?\s+and\s+page routes?\b/gi, 'request and interface behavior')
-      .replace(/\bHTTP endpoints?\b/gi, 'request workflows')
-      .replace(/\broute surfaces?\b/gi, 'navigation behavior')
-      .replace(/\bpage routes?\b/gi, 'screen behavior')
-      .replace(/\bpage[-\s]+based operations?\b/gi, 'product workflows')
-      .replace(/\bCLI commands?\b/gi, 'operator tasks')
-      .replace(/\bschedule surfaces?\b/gi, 'recurring background work')
-      .replace(/\buses?\s+file[- ]based entry points?\s+and\s+/gi, '')
-      .replace(/\bfile[- ]based entry points?\b/gi, 'configured workflows')
-      .replace(/\bfile entry points?\b/gi, 'workflows')
-      .replace(/\bentry points?\b/gi, 'workflows')
-      .replace(/\bIt uses interaction surfaces and connects to\s+@?[\w./-]+\s+for\s+[^.]+?\s+while applying\b/gi, 'It applies')
-      .replace(/\bIt connects to\s+@?[\w./-]+\s+for\s+[^.]+?\s+while applying\b/gi, 'It applies')
-      .replace(/\benhanc(?:e|es|ing) (?:the )?analysis process\b/gi, 'adds analysis')
-      .replace(/\benhanc(?:e|es|ing) (?:the )?navigation\b/gi, 'adds navigation')
-      .replace(/\benhanc(?:e|es|ing) (?:the )?insights\b/gi, 'adds graph evidence')
-      .replace(/\bstructured data and insights\b/gi, 'structured CAS graph data')
-      // "insights into X" keeps its complement ("graph evidence for X"), but a
-      // BARE "insights" must not gain a preposition — that manufactured the
-      // live dangling stump "…telemetry data and graph evidence for."
-      .replace(/\binsights? into\b/gi, 'graph evidence for')
-      .replace(/\binsights?\b/gi, 'graph evidence')
-      .replace(/\bcomplex tasks\b/gi, 'codebase tasks')
-      .replace(/\befficient(?:ly)?\b/gi, '')
-      .replace(/\befficiency\b/gi, 'speed')
-      .replace(/\badvanced\b/gi, '')
-      .replace(/\bstreamline(?:s|d|ing)?\b/gi, 'organizes')
-      .replace(/\bA\s+(audio|access|api|analytics|arbitrage|infrastructure)\b/g, 'An $1')
-      .replace(/\s+/g, ' ')
-      .trim();
+    // OUTPUT HYGIENE ONLY. This function previously carried a ~70-rule regex
+    // phrase-rewrite table that mapped one domain phrase onto another
+    // ("database queries" -> "data lookup behavior" -> "portfolio and wallet
+    // lookups") and deleted marketing words mid-sentence without grammar
+    // repair. That was keyword-driven fabrication and ungrammatical output;
+    // it is deleted. What remains is EVIDENCE-GATED clause removal of the
+    // AI's own ungrounded claims, plus grammar/duplication repair. Vocabulary
+    // the evidence does not support is REJECTED by the validators and
+    // regenerated -- never silently reworded.
+    const wordSanitized = this.cleanGeneratedDescriptionText(description);
     // Architecture-shape claims not corroborated by the deterministic topology
     // facts (deployable count, messaging/FaaS evidence) are stripped at clause
     // level — repair of the AI's own text, never a deterministic rewrite.
