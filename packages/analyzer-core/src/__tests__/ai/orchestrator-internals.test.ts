@@ -1909,28 +1909,16 @@ describe('architecture and capability inference', () => {
     }
   });
 
-  it('prioritizes clinical capabilities in clinical testing summaries', async () => {
-    expect(orch.capabilityPurposeBias('clinical-testing', { name: 'Patient Report Management', related_domains: [], related_entities: [] })).toBe(0);
-    expect(orch.capabilityPurposeBias('clinical-testing', { name: 'Snack Management', related_domains: [], related_entities: [] })).toBe(1);
-    // purposeCapabilitySummary was removed (residual cleanup after
-    // c611d08c): its only caller was sanitizeAIInterpretation's fabricated-
-    // appender tail, and the function itself was a hardcoded primaryDomain ->
-    // phrase table (clinical-testing/fleet-management/user-identity-
-    // management/solana-*), the same class of hardcoded product vocabulary
-    // the appender's removal was fixing. capabilityPurposeBias is a separate,
-    // still-live finding (flagged, not fixed in this pass).
-  });
-
-  it('does not treat a lone generic clinical-vocabulary hit as strongly domain-aligned (keyword-anchor-audit site 2: capabilityPurposeBias)', async () => {
-    // "measurement"/"device"/"force"/"report"/"assessment"/"test" are generic
-    // English words present in almost any codebase. A capability whose text
-    // contains ONLY those (no patient/muscle/grip/pinch/inclinometry/
-    // rehabilitation anchor) must not score as strongly aligned (0) — it
-    // stays mildly aligned (2), never masquerading as core-clinical.
-    expect(orch.capabilityPurposeBias('clinical-testing', { name: 'Device Report Management', related_domains: [], related_entities: [] })).toBe(2);
-    expect(orch.capabilityPurposeBias('clinical-testing', { name: 'Force Assessment Test', related_domains: [], related_entities: [] })).toBe(2);
-    // A genuine distinctive anchor still returns 0.
-    expect(orch.capabilityPurposeBias('clinical-testing', { name: 'Muscle Grip Management', related_domains: [], related_entities: [] })).toBe(0);
+  it('capability ranking carries NO hardcoded domain bias — capabilityPurposeBias and its filter sibling are gone', async () => {
+    // Both were a primaryDomain string-literal switch (literals naming
+    // specific benchmark-corpus products) driving capability ranking and
+    // inclusion. They were also DEAD: the single caller of the sort
+    // comparator and of filterCapabilitiesForKnownDomain passed a
+    // primaryDomain that is unconditionally undefined at that structural
+    // stage, so every branch was unreachable and the bias was always 0 —
+    // deleting them is behavior-preserving on every live path.
+    expect((orch as any).capabilityPurposeBias).toBeUndefined();
+    expect((orch as any).filterCapabilitiesForKnownDomain).toBeUndefined();
   });
 
   it('does not drop an unrelated generic force/gauge capability as a duplicate of a strong clinical one, but still dedupes a genuine muscle/clinical overlap (keyword-anchor-audit site 3: isLowValueFallbackCapability)', async () => {
@@ -7793,6 +7781,85 @@ describe('P0 follow-up: the sentence-level DROP filter carries no hardcoded voca
   it('(gate b) purposeCapabilitySummary — the fabricated appender\'s hardcoded primaryDomain -> phrase table — no longer exists', () => {
     expect((orch as any).purposeCapabilitySummary).toBeUndefined();
     expect(orchestratorSource).not.toMatch(/private purposeCapabilitySummary/);
+  });
+
+  it('(gate b2) capabilityPurposeBias / filterCapabilitiesForKnownDomain — the same primaryDomain literal switch driving capability RANKING and INCLUSION — no longer exist', () => {
+    expect((orch as any).capabilityPurposeBias).toBeUndefined();
+    expect((orch as any).filterCapabilitiesForKnownDomain).toBeUndefined();
+    expect(orchestratorSource).not.toMatch(/private capabilityPurposeBias/);
+    expect(orchestratorSource).not.toMatch(/private filterCapabilitiesForKnownDomain/);
+    // The trading-domain literal group these two switched on appears nowhere
+    // else in the file, so it must be gone from CODE outright (doc-comments
+    // are stripped above). The clinical/fleet/identity literals still occur
+    // at unrelated system-type-classification sites — a broader same-class
+    // finding tracked separately, not silently re-admitted here.
+    for (const literal of ['solana-trading', 'solana-arbitrage']) {
+      expect({ literal, present: orchestratorSource.includes(literal) }).toEqual({ literal, present: false });
+    }
+    // No capability ranking or inclusion path may condition on a domain label.
+    expect(orchestratorSource).not.toMatch(/capabilityPurposeBias|filterCapabilitiesForKnownDomain/);
+  });
+
+  it('(gate b3) isGenericCapabilityDisplayName is a SHAPE test — no hardcoded product-capability allowlist', () => {
+    // The ~40-name allowlist ("Booking Lifecycle", "Cart And Checkout",
+    // "Session Replay", ...) that used to short-circuit this method named
+    // benchmark-corpus products. No producer in this codebase emits those
+    // names; they existed only to exempt specific products from the shape
+    // test. Guard the function body itself, not the whole file: the same
+    // literals still live in isStrongProductCapability (a separate,
+    // still-open finding of the same class).
+    const start = orchestratorSource.indexOf('private isGenericCapabilityDisplayName');
+    expect(start).toBeGreaterThan(-1);
+    const body = orchestratorSource.slice(start, orchestratorSource.indexOf('\n  }', start));
+    for (const literal of [
+      'Booking Lifecycle',
+      'Cart And Checkout',
+      'Product Catalog',
+      'Session Replay',
+      'Social Timelines',
+      'Federation Delivery',
+      'Realtime Data Sync',
+      'Knowledge Access Control',
+      'Project Backend Provisioning',
+    ]) {
+      expect({ literal, present: body.includes(literal) }).toEqual({ literal, present: false });
+    }
+  });
+
+  describe('(gate b3) isGenericCapabilityDisplayName characterization — allowlist removal is a 1-of-40 behavior change', () => {
+    // Every name the deleted allowlist used to exempt. 39 of the 40 are
+    // already non-generic under the pure shape test (they carry a
+    // distinguishing, non-generic subject token), so exempting them bought
+    // nothing.
+    const FORMERLY_ALLOWLISTED = [
+      'Project Backend Provisioning', 'Realtime Data Sync', 'Storage And Functions',
+      'Booking Lifecycle', 'Calendar Availability', 'Event Type Configuration',
+      'Scheduling Integrations', 'Product Catalog', 'Cart And Checkout',
+      'Order Fulfillment', 'Commerce Administration', 'Document Collaboration',
+      'Collection Organization', 'Knowledge Access Control', 'Knowledge Search',
+      'App Builder', 'Data Source Integration', 'Automation Workflows',
+      'Tenant App Administration', 'Content Publishing', 'Membership And Subscriptions',
+      'Newsletter Delivery', 'Publication Administration', 'Media Library',
+      'Backup And Upload', 'Media Intelligence', 'Sharing And Access',
+      'Social Timelines', 'Federation Delivery', 'Moderation And Safety',
+      'Notifications And Messaging', 'Table Modeling', 'Spreadsheet Views',
+      'API Data Access', 'Workspace Collaboration', 'Event Capture',
+      'Product Analytics', 'Feature Flags And Experiments', 'Session Replay',
+    ];
+
+    it.each(FORMERLY_ALLOWLISTED)('%s stays non-generic on shape alone', name => {
+      expect(orch.isGenericCapabilityDisplayName(name)).toBe(false);
+    });
+
+    it('"Authentication Services" — the ONE name that flips — is genuinely generic-shaped, and entry-point evidence still rescues it', () => {
+      // Both of its tokens are generic capability vocabulary with no
+      // distinguishing anchor, so under shape it IS generic. It only ranked
+      // as a product capability because a literal said so. The live catalog
+      // filter still keeps such a capability when it owns a real non-internal
+      // entry point, so the observable loss is limited to capabilities with
+      // no externally-reachable operation at all.
+      expect(orch.isGenericCapabilityDisplayName('Authentication Services')).toBe(true);
+    });
   });
 
   it('(gate c) the previous-description staleness predicate has no domain literals (no "zero-trust"/"security" string check)', () => {

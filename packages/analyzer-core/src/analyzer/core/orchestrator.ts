@@ -15815,69 +15815,42 @@ export class AnalyzerOrchestrator {
       .filter(token => token.length >= 3 && !/^(app|apps|web|ui|ux|api|client|server|frontend|backend|service|services)$/.test(token));
   }
 
-  // purposeCapabilitySummary was removed here (residual cleanup after
-  // c611d08c): its only caller was the fabricated-appender tail of
-  // sanitizeAIInterpretation, deleted above. It was itself a textbook
-  // instance of the class this cardinal rule forbids -- a primaryDomain
-  // string-literal switch (clinical-testing / fleet-management /
-  // user-identity-management / solana-trading|solana-arbitrage|portfolio-
-  // management / an audio|content regex) each mapped to a hardcoded phrase
-  // ("patient records", "fuel management", "trade execution", "voice
-  // conversion inference", ...). Those domain literals read as specific
-  // benchmark-corpus projects rather than generic categories. Its sibling
-  // capabilityPurposeBias (same primaryDomain literals, still LIVE and used
-  // by capability filtering/sorting below) and the ~40-name hardcoded
-  // capability-display-name list in isGenericCapabilityDisplayName are the
-  // same class of violation and are still in the file -- flagged as a
-  // separate finding, not fixed here (they are load-bearing for capability
-  // filtering/ranking with no test coverage in this pass, so a blind rip-out
-  // risks a silent regression rather than a repair).
-
-  private capabilityPurposeBias(primaryDomain: string | undefined, capability: SystemCapability): number {
-    const text = [
-      capability.name,
-      ...(capability.related_domains || []),
-      ...(capability.related_entities || []),
-    ].join(' ').toLowerCase();
-    if (primaryDomain === 'clinical-testing') {
-      // ANCHOR-GATED (same misfire class as inferSystemPurpose's clinical
-      // override): 'measurement'/'device'/'force'/'report'/'assessment'/
-      // 'test' are generic English words present in almost any codebase
-      // (telemetry measurement, device-code auth, test suites, status
-      // reports). A capability whose name/domains/entities contain ONLY
-      // those generic tokens must not be scored as strongly clinical-aligned
-      // (0) — that requires a genuinely clinical-specific anchor. Generic
-      // hits still bias mildly toward the domain (2, still counted "aligned"
-      // by filterCapabilitiesForKnownDomain's <=2 threshold) rather than
-      // masquerading as core-aligned.
-      if (/\b(patient|muscle|grip|pinch|inclinometry|rehabilitation)\b/.test(text)) return 0;
-      if (/\b(measurement|device|force|report|assessment|test)\b/.test(text)) return 2;
-      return 1;
-    }
-    if (primaryDomain === 'user-identity-management') {
-      if (/\b(identity|password|token|session|credential|authorize|authorization|permission|role|user|account|register)\b/.test(text)) return 0;
-      if (/\b(wallet|withdrawal|decrypt|encrypt|proxy|transformations?|document|collection|knowledge|affiliate|self\s*heal)\b/.test(text)) return 5;
-      return 2;
-    }
-    if (/^(solana-trading|solana-arbitrage|portfolio-management)$/.test(primaryDomain || '')) {
-      if (/\b(price|trade|trading|portfolio|risk|allocation|hedge|market|token|wallet|solana|jupiter|raydium|geyser)\b/.test(text)) return 0;
-      if (/\b(document|collection|knowledge|catalog|checkout|order fulfillment|commerce)\b/.test(text)) return 6;
-      return 2;
-    }
-    if (primaryDomain === 'fleet-management') {
-      if (/\b(fleet|fuel|vehicle|maintenance|driver|odometer|ifta|dispatch|trip|telematics|billing)\b/.test(text)) return 0;
-      if (/\b(document|collection|knowledge|catalog|checkout|commerce)\b/.test(text)) return 6;
-      return 2;
-    }
-    return 0;
-  }
+  // purposeCapabilitySummary and capabilityPurposeBias were both removed here
+  // (residual cleanup after c611d08c / 8fe31d29). Both encoded a primaryDomain
+  // string-literal switch -- literals naming specific benchmark-corpus products
+  // rather than generic categories -- mapped to a hardcoded phrase
+  // (purposeCapabilitySummary) or a hardcoded ranking bias
+  // (capabilityPurposeBias). That is the class the cardinal rule forbids:
+  // deterministic structural facts + AI interpretation, never a hardcoded
+  // domain/brand/keyword table. capabilityPurposeBias was additionally DEAD:
+  // its only two call sites were the capability sort comparator and
+  // filterCapabilitiesForKnownDomain, and the sole caller of both passed a
+  // primaryDomain that is unconditionally undefined at that structural stage,
+  // so every branch was unreachable and it always returned 0.
+  // filterCapabilitiesForKnownDomain, its domain-literal sibling, went with it
+  // for the same reason.
 
   private isCrossCuttingCapabilityName(name: string): boolean {
     return /\b(auth|authenticate|authentication|authorization|login|logout|session|token|jwt|oauth|permission|role|superuser|admin|user|users)\b/i.test(name);
   }
 
+  /**
+   * SHAPE TEST ONLY (cardinal rule: deterministic structural facts + AI
+   * interpretation, never a hardcoded domain/brand/keyword table). A ~40-name
+   * allowlist of specific product capability labels used to sit at the top of
+   * this method, exempting names like "Booking Lifecycle" / "Cart And
+   * Checkout" / "Session Replay" from the genericness test. Those literals
+   * named benchmark-corpus products, no producer in this codebase ever emits
+   * them, and 39 of the 40 were already non-generic under the shape test
+   * below, so the list bought nothing but a cardinal violation. Genericness is
+   * now decided purely by shape: a structural-noise phrase, a syntax-shaped
+   * label (brackets/quotes/colons -- a leaked code fragment), or a subject
+   * whose every token is a generic capability token with no distinguishing
+   * anchor. The residual literals below are structural English scaffolding
+   * ("console commands", "event handlers") and framework component names, not
+   * product/domain vocabulary.
+   */
   private isGenericCapabilityDisplayName(name: string): boolean {
-    if (/\b(Project Backend Provisioning|Authentication Services|Realtime Data Sync|Storage And Functions|Booking Lifecycle|Calendar Availability|Event Type Configuration|Scheduling Integrations|Product Catalog|Cart And Checkout|Order Fulfillment|Commerce Administration|Document Collaboration|Collection Organization|Knowledge Access Control|Knowledge Search|App Builder|Data Source Integration|Automation Workflows|Tenant App Administration|Content Publishing|Membership And Subscriptions|Newsletter Delivery|Publication Administration|Media Library|Backup And Upload|Media Intelligence|Sharing And Access|Social Timelines|Federation Delivery|Moderation And Safety|Notifications And Messaging|Table Modeling|Spreadsheet Views|API Data Access|Workspace Collaboration|Event Capture|Product Analytics|Feature Flags And Experiments|Session Replay)\b/i.test(name)) return false;
     if (/\b(bin\/console|console commands?|event(s)? handlers?|message handlers?|route handlers?)\b/i.test(name)) return true;
     if (/^(help management|report reporting|jobs? workflow)$/i.test(name)) return true;
     if (/^dismiss[_\s]/i.test(name)) return true;
@@ -18944,12 +18917,12 @@ export class AnalyzerOrchestrator {
     const trimmedCapabilities = this.trimLowValueFallbackCapabilities(dedupedCapabilities, projectPath);
     // Domain is comprehension (AI-only) and is not known at this structural
     // stage; the hardcoded repo-name domain override was deleted. Capability
-    // ordering therefore no longer biases on a keyword-classified domain.
-    const primaryDomain: string | undefined = undefined;
-    const domainFilteredCapabilities = this.filterCapabilitiesForKnownDomain(trimmedCapabilities, primaryDomain);
+    // ordering therefore no longer biases on a keyword-classified domain, and
+    // the domain-literal filter/bias pair (filterCapabilitiesForKnownDomain /
+    // capabilityPurposeBias) that consumed it is gone with it.
     const sortedCapabilities = this.isKlauroSelfProject(projectPath)
-      ? this.prioritizeKlauroSelfCapabilities(domainFilteredCapabilities, projectPath)
-      : domainFilteredCapabilities;
+      ? this.prioritizeKlauroSelfCapabilities(trimmedCapabilities, projectPath)
+      : trimmedCapabilities;
     const fallbackCapabilities = sortedCapabilities.length === 0
       ? this.buildRepositoryFallbackCapabilities(productNodes, productEntryPoints, projectPath)
       : [];
@@ -18958,7 +18931,6 @@ export class AnalyzerOrchestrator {
     const finalCapabilities = capabilitiesToSort.sort((a, b) => {
       const critOrder = { critical: 0, high: 1, medium: 2, low: 3 };
       return this.klauroSelfCapabilityPriority(projectPath, a) - this.klauroSelfCapabilityPriority(projectPath, b) ||
-        this.capabilityPurposeBias(primaryDomain, a) - this.capabilityPurposeBias(primaryDomain, b) ||
         this.systemCapabilityProductPriority(a) - this.systemCapabilityProductPriority(b) ||
         critOrder[a.criticality] - critOrder[b.criticality] ||
         b.operations.length - a.operations.length ||
@@ -19044,37 +19016,6 @@ export class AnalyzerOrchestrator {
       !this.isLowValueFallbackCapability(capability, strongCapabilities)
     );
     return trimmed.length >= Math.max(1, strongCapabilities.length) ? trimmed : capabilities;
-  }
-
-  private filterCapabilitiesForKnownDomain(
-    capabilities: SystemCapability[],
-    primaryDomain?: string
-  ): SystemCapability[] {
-    if (!primaryDomain) return capabilities;
-    if (!/^(user-identity-management|fleet-management|solana-trading|solana-arbitrage|portfolio-management|clinical-testing|car-wash-operations)$/.test(primaryDomain)) {
-      return capabilities;
-    }
-
-    const alignedCapabilities = capabilities.filter(capability =>
-      this.capabilityPurposeBias(primaryDomain, capability) <= 2
-    );
-    const stronglyAlignedCapabilities = capabilities.filter(capability =>
-      this.capabilityPurposeBias(primaryDomain, capability) === 0
-    );
-
-    if (primaryDomain === 'user-identity-management' && stronglyAlignedCapabilities.length >= 3) {
-      return alignedCapabilities.length >= stronglyAlignedCapabilities.length
-        ? alignedCapabilities
-        : stronglyAlignedCapabilities;
-    }
-
-    if (stronglyAlignedCapabilities.length >= 4) {
-      return alignedCapabilities.length >= stronglyAlignedCapabilities.length
-        ? alignedCapabilities
-        : stronglyAlignedCapabilities;
-    }
-
-    return capabilities;
   }
 
   private isHardLowValueCapability(capability: SystemCapability): boolean {
