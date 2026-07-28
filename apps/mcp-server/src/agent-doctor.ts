@@ -1,7 +1,8 @@
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import { evaluateAgentReadiness } from './agent-adoption';
 import { validateCASContract, type CASGoldenSnapshot, compareCASGoldenSnapshot } from './cas-contract';
-import { getAnalysisFreshness, summarizeAnalysisFreshness } from './freshness';
+import { summarizeAnalysisFreshness } from './freshness';
+import { getAnalysisFreshness } from './analysis-freshness-deep';
 import { getRuntimeEventContract } from './runtime-contract';
 import { getRuntimeSdkPackage } from './runtime-sdk';
 import { getTestDiscoveryEvidence } from './test-discovery';

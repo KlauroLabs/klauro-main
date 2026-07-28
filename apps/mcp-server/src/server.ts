@@ -24,6 +24,7 @@ import * as runtimeContract from './runtime-contract';
 import * as casContract from './cas-contract';
 import * as testDiscovery from './test-discovery';
 import * as freshness from './freshness';
+import { getAnalysisFreshness } from './analysis-freshness-deep';
 import * as runtimeSdk from './runtime-sdk';
 import * as agentDoctor from './agent-doctor';
 import * as workspaceGraph from './workspace-graph';
@@ -1886,7 +1887,7 @@ function registerTools(server: McpServer) {
       } as any,
     } as any,
     async ({ path }: any) => withErrorHandling(async () => {
-      const report = await freshness.getAnalysisFreshness(path);
+      const report = await getAnalysisFreshness(path);
       // Bound repo: the authoritative comparison is local mirror vs HOSTED
       // analysis timestamp — a coherent local mirror of a fresh hosted
       // analysis is 'fresh' even if file mtimes moved, and a July-4 local
@@ -7339,7 +7340,7 @@ function registerResources(server: McpServer) {
       const analyses = await listAnalyses();
       const entry = analyses.find(a => slugify(a.name) === params.project_name);
       if (!entry) return { contents: [{ uri: uri.href, text: JSON.stringify({ error: 'Analysis not found' }) }] };
-      return { contents: [{ uri: uri.href, text: JSON.stringify(await freshness.getAnalysisFreshness(entry.path)) }] };
+      return { contents: [{ uri: uri.href, text: JSON.stringify(await getAnalysisFreshness(entry.path)) }] };
     }
   );
 
