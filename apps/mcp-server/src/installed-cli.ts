@@ -5,6 +5,7 @@ import { buildUploadManifest } from './remote-source';
 import { clearStoredConnectorSession, connectorToken, loadStoredConnectorAuth, normalizeServerUrl, saveStoredConnectorSession } from './connector-auth';
 import { writeDefaultKlauroConfig } from './klauro-config';
 import { formatBuildIdentity, resolveManifestProjectName } from './installed-client-runtime';
+import { KLAURO_INSTALL_ONELINER, SELF_UPDATE_COMMANDS, runSelfUpdate } from './self-update';
 
 function value(flag: string): string | undefined {
   const index = process.argv.indexOf(flag);
@@ -16,6 +17,22 @@ async function main() {
   const target = path.resolve(process.argv[3] && !process.argv[3].startsWith('-') ? process.argv[3] : '.');
   const json = process.argv.includes('--json');
   if (command === 'version' || command === '--version' || command === '-v') return output({ version: formatBuildIdentity() }, json);
+  // Self-update. This MUST exist in the shipped CLI: the hosted server's
+  // protocol-mismatch remediation (HTTP 426, remote-analyzer-service.ts) tells
+  // customers to run it, and through 1.0.127 it fell through to the usage text
+  // below and exited 0 — bricking every installed client behind an instruction
+  // that did nothing. See self-update.ts.
+  if ((SELF_UPDATE_COMMANDS as readonly string[]).includes(command)) {
+    const auth = loadStoredConnectorAuth();
+    const serverUrl = normalizeServerUrl(value('--server-url') || auth.defaultServerUrl || process.env.KLAURO_URL);
+    await runSelfUpdate({
+      serverUrl,
+      checkOnly: process.argv.includes('--check'),
+      force: process.argv.includes('--force'),
+      json,
+    });
+    return;
+  }
   if (command === 'analyze' || command === 'remote-analyze') return output(await analyzeCodebaseRemotely({ projectPath: target }), json);
   if (command === 'remote-sync' || command === 'sync') return output(await syncWorkingTreeRemotely({ projectPath: target }), json);
   if (command === 'upload-manifest' || command === 'index') return output(await buildUploadManifest(target, process.argv.includes('--dirty-tree') ? 'dirty-tree' : 'full'), json);
@@ -78,8 +95,10 @@ async function main() {
     '  analyze [path]              Upload a committed source snapshot for hosted analysis',
     '  remote-sync [path]          Upload in-flight changes for hosted analysis',
     '  upload-manifest [path]      Preview source files selected for upload',
+    '  update [--check] [--force]  Install the latest hosted klauro release over this one',
     '  login --email EMAIL --password-stdin [--register]',
     '  auth-status | whoami | logout | version', '',
+    `If \`klauro update\` cannot run, reinstall from scratch: ${KLAURO_INSTALL_ONELINER}`, '',
     'Analysis, CAS/WAS construction, graphs, proposals, embeddings, and AI execute only on Klauro infrastructure.',
   ].join('\n') + '\n');
 }

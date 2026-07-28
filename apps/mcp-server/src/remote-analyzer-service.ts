@@ -6,7 +6,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { gunzipSync } from 'node:zlib';
 import { analyzeProjectIncremental, analyzeProjectDeferred, checkDoomedVersionRebuild, runAnalysis, runLayeredAnalysis } from './analyzer';
-import { REMOTE_ANALYSIS_PROTOCOL_VERSION, type AccountActivityEvent, type RemoteAnalyzeDiffRequest, type RemoteAnalyzeRequest, type RemoteAnalyzeResponse, type RemoteGreenfieldPreviewRequest, type RemoteProjectRevision, type RemoteProjectRevisionsResponse, type RemoteProposalPreviewRequest, type RemoteSyncRequest } from './remote-analyzer-protocol';
+import { REMOTE_ANALYSIS_PROTOCOL_VERSION, clientUpgradeRequiredMessage, type AccountActivityEvent, type RemoteAnalyzeDiffRequest, type RemoteAnalyzeRequest, type RemoteAnalyzeResponse, type RemoteGreenfieldPreviewRequest, type RemoteProjectRevision, type RemoteProjectRevisionsResponse, type RemoteProposalPreviewRequest, type RemoteSyncRequest } from './remote-analyzer-protocol';
 import type { BranchDiffContext, RemoteFileChange, RepoFacts, SourceManifest } from './remote-source';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import { buildSourceSnapshot } from './remote-source';
@@ -398,7 +398,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
         if (body.protocol_version !== REMOTE_ANALYSIS_PROTOCOL_VERSION) {
           writeJson(response, 426, {
             status: 'error', code: 'client_upgrade_required',
-            error: `This Klauro server requires analysis protocol ${REMOTE_ANALYSIS_PROTOCOL_VERSION}. Run klauro update and restart the MCP client.`,
+            error: clientUpgradeRequiredMessage(),
             required_protocol_version: REMOTE_ANALYSIS_PROTOCOL_VERSION,
           });
           return;
@@ -727,7 +727,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
         if (body.protocol_version !== REMOTE_ANALYSIS_PROTOCOL_VERSION) {
           writeJson(response, 426, {
             status: 'error', code: 'client_upgrade_required',
-            error: `This Klauro server requires analysis protocol ${REMOTE_ANALYSIS_PROTOCOL_VERSION}. Run klauro update and restart the MCP client.`,
+            error: clientUpgradeRequiredMessage(),
             required_protocol_version: REMOTE_ANALYSIS_PROTOCOL_VERSION,
           });
           return;

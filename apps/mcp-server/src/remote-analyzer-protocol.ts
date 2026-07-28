@@ -4,6 +4,27 @@ import type { ProposedFileInput } from './proposal-preview';
 
 export const REMOTE_ANALYSIS_PROTOCOL_VERSION = 2 as const;
 
+/**
+ * The 426 remediation text. It MUST only name commands the SHIPPED CLI
+ * actually implements — the 2026-07-27 audit found this message telling every
+ * protocol-1 client to "run klauro update" when no released CLI had an
+ * `update` command at all (it printed usage and exited 0), so the only escape
+ * was a hand-rolled `npm i -g` of the tarball. `update` exists now
+ * (self-update.ts, wired into installed-cli.ts), and the reinstall one-liner is
+ * spelled out as the fallback for clients too old to have even that.
+ *
+ * Kept next to the protocol constant, and covered by
+ * installed-cli-update-command.test.ts, so the pair can never drift again.
+ */
+export function clientUpgradeRequiredMessage(
+  requiredVersion: number = REMOTE_ANALYSIS_PROTOCOL_VERSION,
+  installOneLiner = 'curl -fsSL https://mcp.klauro.com/install.sh | sh',
+): string {
+  return `This Klauro server requires analysis protocol ${requiredVersion}. ` +
+    `Run \`klauro update\` and restart the MCP client. ` +
+    `If your klauro is too old to have an update command (before 1.0.128) or the update fails, reinstall: ${installOneLiner}`;
+}
+
 export interface RemoteAnalyzeRequest {
   protocol_version: typeof REMOTE_ANALYSIS_PROTOCOL_VERSION;
   project_id?: string;

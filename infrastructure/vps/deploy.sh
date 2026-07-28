@@ -315,6 +315,22 @@ if [ -n "$WITH_RELEASE" ] && [ "$DIST_VER" != "$LOCAL_VER" ]; then
   echo "    !! Released $LOCAL_VER but hosted /dist reports $DIST_VER — upload/mount mismatch." >&2
   exit 1
 fi
+# Client-channel gate (2026-07-27 audit). A server-only deploy leaves the
+# published CLI at whatever the last release cut. That is harmless until the
+# server tightens a client contract — and on this deploy it was NOT harmless:
+# the server started enforcing analysis protocol 2 and rejected every installed
+# (protocol-1) CLI with HTTP 426, while /dist still served the older client.
+# Customers were bricked with no reachable upgrade. The distribution channel is
+# part of the deployed product, so a version skew fails the deploy.
+if [ -z "$WITH_RELEASE" ] && [ "$DIST_VER" != "$LOCAL_VER" ]; then
+  echo "    !! Client-channel skew: deploying server $LOCAL_VER but /dist still publishes CLI $DIST_VER." >&2
+  echo "    !! Installed clients keep the OLD client contract; if this deploy tightens one (e.g. the" >&2
+  echo "    !! analysis protocol version), every installed CLI is rejected with nothing to upgrade to." >&2
+  echo "    !! Fix: cut a release first (apps/mcp-server/scripts/release.sh), then deploy," >&2
+  echo "    !! or re-run with DEPLOY_ALLOW_CLIENT_SKEW=1 if you have verified the contract is unchanged." >&2
+  [ "${DEPLOY_ALLOW_CLIENT_SKEW:-0}" = "1" ] || exit 1
+  echo "    (DEPLOY_ALLOW_CLIENT_SKEW=1 — continuing with a known client/server version skew)"
+fi
 
 # --- smoke: actually RUN one analysis in the container (fail loud) ----------
 # Everything above is a LIVENESS probe. On 2026-07-16 all of it passed green

@@ -16,6 +16,10 @@ const cachePath = path.join(packageRoot, 'node_modules', '.cache', 'klauro-test-
 const artifactTestFiles = new Set([
   'src/gauntlet/grammar-packaging.test.ts',
   'src/installed-client-boundary.test.ts',
+  // Runs the BUILT dist/cli.cjs to prove the shipped CLI implements `klauro
+  // update` (the 2026-07-27 P0: it did not, while the server's 426 told every
+  // customer to run it).
+  'src/installed-cli-update-command.test.ts',
 ]);
 
 export const TEST_GROUPS = Object.freeze({

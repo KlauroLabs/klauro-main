@@ -18,6 +18,25 @@ APP_DIR="$(cd "$(dirname "$0")/.." && pwd)"        # apps/mcp-server
 REPO_ROOT="$(cd "$APP_DIR/../.." && pwd)"          # proof-of-concept
 cd "$APP_DIR"
 
+# Clean-tree gate. build-bundle.mjs bakes `git status --porcelain` into the
+# CLI's own version string, so a release cut from a dirty tree ships a binary
+# that self-reports "<version>+<sha>-dirty" — exactly what the 2026-07-27 audit
+# found installed as 1.0.127 ("1.0.127+2235c82c0370-dirty"). A -dirty release is
+# unreproducible: nobody can tell what code a customer is running. The bump
+# commit below is not enough on its own, because it only commits package.json /
+# lockfiles and leaves every other working-tree edit in the build.
+# This mirrors the deploy.sh dirty-tree guard (2026-07-16 incident).
+if [ "${RELEASE_ALLOW_DIRTY:-0}" != "1" ]; then
+  DIRTY="$(cd "$REPO_ROOT" && git status --porcelain -uall)"
+  if [ -n "$DIRTY" ]; then
+    echo "ERROR: refusing to release from a dirty tree — the built CLI would self-report a '-dirty' version." >&2
+    echo "       Commit or stash these first (or set RELEASE_ALLOW_DIRTY=1 to override, knowingly):" >&2
+    echo "$DIRTY" | sed 's/^/         /' >&2
+    exit 1
+  fi
+  echo "==> Clean-tree gate OK (HEAD $(cd "$REPO_ROOT" && git rev-parse --short=12 HEAD))"
+fi
+
 echo "==> Bumping version ($BUMP)"
 # Bump in-place with node (the package is private, so `npm version` would try the
 # registry and 404). Accepts patch|minor|major or an explicit x.y.z string.
@@ -101,6 +120,31 @@ if [ "$INNER_VER" != "$VERSION" ]; then
   exit 1
 fi
 echo "    tarball freshness OK (inner package version $INNER_VER)"
+
+# Build-identity gate: run the PACKED cli and make it tell us who it is. The
+# version string is what a customer sees in `klauro version`, what the MCP
+# staleness check compares, and what support reads off a bug report — it must
+# carry the real HEAD sha and no '-dirty' suffix. Checking the artifact (rather
+# than trusting the clean-tree gate above) also catches a stale dist/ that
+# npm pack picked up without a rebuild.
+IDENT_TMP="$(mktemp -d)"
+tar -xzf ./.pack/klauro-latest.tgz -C "$IDENT_TMP" package/dist/cli.cjs
+PACKED_IDENT="$(node "$IDENT_TMP/package/dist/cli.cjs" version 2>/dev/null || echo unknown)"
+rm -rf "$IDENT_TMP"
+HEAD_SHA="$(cd "$REPO_ROOT" && git rev-parse --short=12 HEAD)"
+echo "    packed CLI identity: $PACKED_IDENT (HEAD $HEAD_SHA)"
+case "$PACKED_IDENT" in
+  *-dirty*)
+    echo "ERROR: packed CLI self-reports a '-dirty' build ($PACKED_IDENT). Refusing to publish an unreproducible release." >&2
+    exit 1;;
+esac
+case "$PACKED_IDENT" in
+  *"$VERSION"*"$HEAD_SHA"*) : ;;
+  *)
+    echo "ERROR: packed CLI identity '$PACKED_IDENT' does not carry version $VERSION + HEAD sha $HEAD_SHA." >&2
+    echo "       The tarball was built from different bits than HEAD. Refusing to publish." >&2
+    exit 1;;
+esac
 echo "    packed $(du -h ./.pack/klauro-latest.tgz | cut -f1) tarball, manifest version $(node -p "require('./.pack/latest.json').version")"
 
 if [ "${RELEASE_SKIP_UPLOAD:-0}" = "1" ]; then
