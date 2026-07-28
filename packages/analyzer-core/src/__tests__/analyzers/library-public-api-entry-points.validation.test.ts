@@ -6,55 +6,89 @@ import { AnalyzerOrchestrator } from '../../analyzer/core/orchestrator';
 import { TypeScriptJavaScriptAnalyzer } from '../../analyzer/languages/typescript-javascript-analyzer';
 import { CASEntryPoint } from '../../types/cas.types';
 import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 
-// Manual validation (not part of the enforced suite) — runs the REAL
-// TypeScript analyzer (real tree parsing, real is_exported tagging) against
-// a small library fixture, then feeds those real nodes through
-// addDiscoveredEntryPoints to prove the library public-API entry-point path
-// end-to-end, not just against hand-built node fixtures. Skips if the
-// scratch fixture isn't present so this never affects a plain `jest` run.
-const FIXTURE_DIR = '/private/tmp/claude-502/-Users-michaelshattuck-dev-personal/752cda05-4b18-4e71-9d99-3abd87ca92ac/scratchpad/fixture-lib';
-const describeIfFixture = fs.existsSync(FIXTURE_DIR) ? describe : describe.skip;
+// End-to-end check of the library public-API entry-point path: runs the REAL
+// TypeScript analyzer (real tree parsing, real is_exported tagging) against a
+// small library fixture, then feeds those real nodes through
+// addDiscoveredEntryPoints — proving the whole path, not just hand-built node
+// fixtures.
+//
+// The fixture is written here at run time. It previously lived at a hardcoded
+// scratchpad path belonging to one agent session, with `describe.skip` when
+// that path was absent — so it ran on no machine at all, and silently masked
+// the exported-variable defect asserted below.
+describe('validation: real TS analyzer + library entry-point expansion', () => {
+  let fixtureDir: string;
 
-describeIfFixture('validation: real TS analyzer + library entry-point expansion', () => {
+  beforeAll(() => {
+    fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), 'library-public-api-'));
+    fs.writeFileSync(
+      path.join(fixtureDir, 'package.json'),
+      JSON.stringify({ name: 'fixture-lib', version: '1.0.0', main: 'index.ts' }, null, 2)
+    );
+    fs.writeFileSync(
+      path.join(fixtureDir, 'index.ts'),
+      [
+        'export const PI_APPROX = 3.14;',
+        '',
+        'function internalRound(value: number): number {',
+        '  return Math.round(value * 100) / 100;',
+        '}',
+        '',
+        'export function add(left: number, right: number): number {',
+        '  return internalRound(left + right);',
+        '}',
+        '',
+        'export function subtract(left: number, right: number): number {',
+        '  return internalRound(left - right);',
+        '}',
+        '',
+        'export class Calculator {',
+        '  total = 0;',
+        '  addTo(value: number): number {',
+        '    this.total = add(this.total, value);',
+        '    return this.total;',
+        '  }',
+        '}',
+        ''
+      ].join('\n')
+    );
+  });
+
+  afterAll(() => {
+    if (fixtureDir) fs.rmSync(fixtureDir, { recursive: true, force: true });
+  });
+
   it('surfaces public exports as api entry points, excludes the internal helper', async () => {
     const analyzer = new TypeScriptJavaScriptAnalyzer();
-    const contribution = await analyzer.analyze({ projectPath: FIXTURE_DIR });
+    const contribution = await analyzer.analyze({ projectPath: fixtureDir });
     const nodes = contribution.nodes || [];
-
-    // eslint-disable-next-line no-console
-    console.log('=== real TS analyzer nodes ===');
-    for (const node of nodes) {
-      // eslint-disable-next-line no-console
-      console.log(`${node.type} ${node.name} is_exported=${node.metadata?.is_exported}`);
-    }
 
     const orch = new AnalyzerOrchestrator() as any;
     const entryPoints: CASEntryPoint[] = [];
-    orch.addDiscoveredEntryPoints(FIXTURE_DIR, nodes, entryPoints, contribution.edges || []);
+    orch.addDiscoveredEntryPoints(fixtureDir, nodes, entryPoints, contribution.edges || []);
 
-    // eslint-disable-next-line no-console
-    console.log('=== BEFORE/AFTER entry points ===');
-    for (const ep of entryPoints) {
-      // eslint-disable-next-line no-console
-      console.log(`[${ep.type}] ${ep.name} -> ${ep.handler?.method_name}`);
-    }
-
-    // KNOWN GAP (pre-existing, not introduced by this change): the TS
-    // analyzer's variable path (processTreeSitterVariables in
-    // typescript-javascript-analyzer.ts) sets metadata.isExported (camelCase,
-    // an ad-hoc attribute) but not metadata.is_exported (the CASNode
-    // contract field functions/classes use) — so an exported top-level
-    // `const` like PI_APPROX does not surface as an api entry point today.
-    // This test documents actual current coverage rather than asserting
-    // behavior the analyzer doesn't yet provide; fixing the variable path's
-    // metadata is a separate, disjoint change (feedback filed).
     const apiEntries = entryPoints.filter(ep => ep.type === 'api');
-    expect(apiEntries.map(ep => ep.handler?.method_name).sort()).toEqual([
-      'Calculator', 'add', 'subtract',
-    ]);
+    const exported = apiEntries.map(ep => ep.handler?.method_name).sort();
+
+    // Exported function, class AND const all belong to the public surface.
+    // PI_APPROX used to go missing because the tree-sitter variable path
+    // stamped camelCase `isExported` instead of the `is_exported` contract
+    // field that buildLibraryPublicApiEntryPoints reads.
+    expect(exported).toEqual(['Calculator', 'PI_APPROX', 'add', 'subtract']);
     expect(apiEntries.some(ep => ep.handler?.method_name === 'internalRound')).toBe(false);
-    expect(apiEntries.some(ep => ep.handler?.method_name === 'PI_APPROX')).toBe(false);
     expect(entryPoints.some(ep => ep.type === 'lifecycle')).toBe(false);
+  }, 30000);
+
+  it('tags exported variables with the is_exported CAS contract field', async () => {
+    const analyzer = new TypeScriptJavaScriptAnalyzer();
+    const contribution = await analyzer.analyze({ projectPath: fixtureDir });
+    const piNode = (contribution.nodes || []).find(node => node.name === 'PI_APPROX');
+
+    expect(piNode).toBeDefined();
+    expect(piNode?.metadata?.is_exported).toBe(true);
+    expect(piNode?.metadata).not.toHaveProperty('isExported');
   }, 30000);
 });

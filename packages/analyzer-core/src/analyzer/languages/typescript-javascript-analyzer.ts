@@ -1453,7 +1453,12 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
         {
           type: variable.type,
           kind: variable.kind,
-          isExported: variable.isExported,
+          // Contract field name is `is_exported` (CASNode), the same key the
+          // function/class paths above emit and the only one consumers read
+          // (orchestrator export_type + buildLibraryPublicApiEntryPoints).
+          // This path emitted camelCase `isExported`, which nothing read, so
+          // exported top-level consts were invisible as public API.
+          is_exported: variable.isExported,
           value: variable.value?.substring(0, 100)
         }
       ));
