@@ -1,3 +1,4 @@
+import * as os from 'os';
 import * as path from 'path';
 import { spawnSync } from 'child_process';
 import { analyzeProject, analyzeProjectIncremental, getAnalysis } from './analyzer';
@@ -2365,7 +2366,7 @@ function printHelp(): void {
     '  klauro remote-analyze /path/to/repo [--server-url url] [--analysis-id id] [--json]',
     '  klauro remote-sync /path/to/repo [--server-url url] [--analysis-id id] [--json]',
     '  klauro save-golden /path/to/repo [--json] [--refresh]',
-    '  klauro analyzer-server [--host 0.0.0.0] [--port 8787] [--data-dir .klauro-remote-analyzer]',
+    '  klauro analyzer-server [--host 0.0.0.0] [--port 8787] [--data-dir /path/to/data]  (unset: tmpdir scratch)',
     '',
     'Agent context:',
     '  klauro install-agent [/path/to/repo] [--json]',
@@ -2441,7 +2442,9 @@ async function runAnalyzerServerCommand(args: ParsedArgs): Promise<void> {
         status: 'ready',
         service: 'klauro-remote-analyzer',
         url,
-        data_dir: args.dataDir || process.env.KLAURO_REMOTE_ANALYZER_DATA || '.klauro-remote-analyzer',
+        // Mirrors createRemoteAnalyzerHttpServer's resolution: explicit flag/env,
+        // else per-user tmpdir scratch (never a cwd-relative durable dir).
+        data_dir: args.dataDir || process.env.KLAURO_REMOTE_ANALYZER_DATA || path.join(os.tmpdir(), `klauro-remote-analyzer-${typeof process.getuid === 'function' ? process.getuid() : 'user'}`),
         auth: process.env.KLAURO_ANALYZER_TOKEN ? 'bearer-token-required' : 'none',
       };
       process.stdout.write(args.json ? `${JSON.stringify(payload, null, 2)}\n` : `Klauro remote analyzer listening on ${url}\n`);

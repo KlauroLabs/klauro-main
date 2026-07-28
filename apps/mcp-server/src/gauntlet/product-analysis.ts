@@ -23,11 +23,32 @@ import { request as httpsRequest } from 'https';
 import * as os from 'os';
 import * as path from 'path';
 import { createRemoteAnalyzerHttpServer } from '../remote-analyzer-service';
+import { devDataRoot, reportDevDataDirSizeOnExit } from './dev-data';
 import { buildSourceSnapshot, EXCLUDED_DIRECTORIES } from '../remote-source';
 import { getAnalysisEntry, saveAnalysis } from '../storage';
 import type { CASOutput } from '../../../../packages/analyzer-core/src/types/cas.types';
 
 let localServerUrl: string | null = null;
+let benchDataDirCleanupRegistered = false;
+let benchStoreScoped = false;
+
+/**
+ * Dev-tooling hygiene: bench/corpus runs previously seeded every analyzed
+ * repo's FULL CAS into the user's real local store (~/.klauro/analyses grew to
+ * 29GB from corpus sweeps). A process that calls analyzeForBench is by
+ * definition a dev/bench process, so scope its ENTIRE analysis store to the
+ * one explicit dev-data dir instead — unless the caller already pointed
+ * KLAURO_STORAGE_PATH somewhere on purpose (tests, VPS). The real store is
+ * never written by a bench run. The dir's size is printed at process exit so
+ * growth is visible, and it is safe to delete wholesale at any time.
+ */
+function scopeBenchProcessToDevStore(): void {
+  if (benchStoreScoped) return;
+  benchStoreScoped = true;
+  if (process.env.KLAURO_STORAGE_PATH) return; // explicit store — respect it
+  process.env.KLAURO_STORAGE_PATH = path.join(devDataRoot(), 'analyses');
+  reportDevDataDirSizeOnExit();
+}
 
 async function ensureProductServer(): Promise<string> {
   const override = process.env.KLAURO_BENCH_ANALYZER_URL;
@@ -37,6 +58,15 @@ async function ensureProductServer(): Promise<string> {
   // harness talks to it over HTTP exactly like any client. It is the product, not
   // the engine: the harness does not reach inside it.
   const dataDir = path.join(os.tmpdir(), `klauro-bench-analyzer-${process.pid}`);
+  // Scratch hygiene: the in-process bench server's data dir (uploaded source
+  // snapshots + intermediate CASes) is tmpdir-scoped AND removed on process
+  // exit, so repeated bench runs never accumulate durable source mirrors.
+  if (!benchDataDirCleanupRegistered) {
+    benchDataDirCleanupRegistered = true;
+    process.once('exit', () => {
+      try { fs.removeSync(dataDir); } catch { /* best-effort */ }
+    });
+  }
   const server = createRemoteAnalyzerHttpServer({ dataDir });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
   const addr = server.address();
@@ -99,6 +129,7 @@ function postJson(url: string, body: unknown): Promise<any> {
  * server, and returns what comes back. No engine, no AI, no model — ever.
  */
 export async function analyzeForBench(dir: string): Promise<CASOutput> {
+  scopeBenchProcessToDevStore();
   const serverUrl = await ensureProductServer();
   // The product analyzes committed source. Fixtures aren't standalone git repos, so
   // stage them in a throwaway git repo first (the customer always has a git repo);

@@ -2,6 +2,7 @@
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import * as fs from 'fs-extra';
+import * as os from 'os';
 import * as path from 'path';
 import { analyzeForBench } from './gauntlet/product-analysis';
 import { buildGreenfieldBuildContext } from './greenfield-build-session';
@@ -1463,9 +1464,13 @@ function formatMarkdown(report: any): string {
 
 function parseArgs(argv: string[]): Args {
   const parsed: Args = {
-    outputRoot: path.join(process.env.HOME || process.cwd(), '.klauro', 'from-zero-build-context-proof'),
-    reportPath: path.join(process.cwd(), '.klauro-from-zero-build-context-proof', 'latest-report.json'),
-    markdownPath: path.join(process.cwd(), '.klauro-from-zero-build-context-proof', 'latest-report.md'),
+    // Scratch workspaces are debug dumps, not durable data (local-persistence
+    // doctrine): default under os.tmpdir(); pass --output-root to keep them.
+    outputRoot: path.join(os.tmpdir(), 'klauro-from-zero-build-context-proof'),
+    // Reports are debug output too — never dropped into the repo tree (cwd);
+    // tmpdir by default, override with the explicit flags to keep them.
+    reportPath: path.join(os.tmpdir(), 'klauro-from-zero-build-context-proof', 'latest-report.json'),
+    markdownPath: path.join(os.tmpdir(), 'klauro-from-zero-build-context-proof', 'latest-report.md'),
   };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];

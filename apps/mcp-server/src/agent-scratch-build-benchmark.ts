@@ -1,4 +1,5 @@
 import * as fs from 'fs-extra';
+import * as os from 'os';
 import * as path from 'path';
 import { analyzeForBench } from './gauntlet/product-analysis';
 import { buildGreenfieldArchitectureGuidance, type GreenfieldReferenceAnalysis } from './greenfield-guidance';
@@ -2223,7 +2224,9 @@ function formatScratchBuildMarkdown(report: ScratchBuildReport): string {
 function parseArgs(argv: string[]): Args {
   const args: Args = {
     live: false,
-    workRoot: path.join(process.env.HOME || process.cwd(), '.klauro', 'scratch-build-benchmark'),
+    // Scratch workspaces are debug dumps, not durable data (local-persistence
+    // doctrine): default under os.tmpdir(); pass --work-root to keep them.
+    workRoot: path.join(os.tmpdir(), 'klauro-scratch-build-benchmark'),
     keepWorkspaces: true,
     references: [],
     scenarioId: undefined,

@@ -2,6 +2,7 @@
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import * as fs from 'fs-extra';
+import * as os from 'os';
 import * as path from 'path';
 import { analyzeForBench } from './gauntlet/product-analysis';
 import { buildGreenfieldArchitectureGuidance, type GreenfieldReferenceAnalysis } from './greenfield-guidance';
@@ -995,7 +996,9 @@ function tail(value: string): string {
 
 function parseArgs(argv: string[]): Args {
   const args: Args = {
-    outputRoot: path.join(process.env.HOME || process.cwd(), '.klauro', 'scratch-dogfood-build'),
+    // Scratch workspaces are debug dumps, not durable data (local-persistence
+    // doctrine): default under os.tmpdir(); pass --output-root to keep them.
+    outputRoot: path.join(os.tmpdir(), 'klauro-scratch-dogfood-build'),
     reportPath: '/tmp/klauro-scratch-dogfood-build.json',
     references: [],
   };

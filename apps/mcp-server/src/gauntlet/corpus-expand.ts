@@ -18,6 +18,7 @@ import * as fs from 'fs-extra';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { analyzeForBench } from './product-analysis';
+import { devDataRoot, reportDevDataDirSizeOnExit } from './dev-data';
 import { isDirectCliInvocation } from '../cli-invocation';
 
 const execFileAsync = promisify(execFile);
@@ -116,7 +117,12 @@ async function analyzeTarget(target: ExpansionTarget, workRoot: string): Promise
 }
 
 export async function runCorpusExpansion(targets: ExpansionTarget[]): Promise<ExpansionResult[]> {
-  const workRoot = path.join(os.homedir(), '.klauro', 'gauntlet', 'corpus-expand');
+  // Corpus clones live in the one explicit dev-data dir (~/.klauro/dev), never
+  // scattered under the user's real store; the run prints the dir's size on
+  // exit so growth stays visible. Shallow clones — a few hundred MB, and the
+  // whole dev dir is regenerable scratch, safe to delete wholesale.
+  const workRoot = path.join(devDataRoot(), 'corpus-expand');
+  reportDevDataDirSizeOnExit();
   await fs.ensureDir(workRoot);
   const results: ExpansionResult[] = [];
   for (const t of targets) {

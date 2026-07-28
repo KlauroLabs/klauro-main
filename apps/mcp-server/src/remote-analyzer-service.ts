@@ -1,6 +1,7 @@
 import * as crypto from 'node:crypto';
 import * as http from 'node:http';
 import * as fs from 'fs-extra';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import { gunzipSync } from 'node:zlib';
 import { analyzeProjectIncremental, analyzeProjectDeferred, checkDoomedVersionRebuild, runAnalysis, runLayeredAnalysis } from './analyzer';
@@ -111,8 +112,50 @@ interface RateLimitBucket {
   count: number;
 }
 
+let legacyCwdDataDirSweepDone = false;
+
+/**
+ * One-shot cleanup of the LEGACY implicit data dir: before the tmpdir default,
+ * an unconfigured analyzer-server dropped its whole data tree (uploaded source
+ * mirrors + CASes, gigabytes) at `<cwd>/.klauro-remote-analyzer` — inside the
+ * repo tree when launched from a checkout. Remove it whenever it exists, looks
+ * like an analyzer data dir (workspaces/ or accounts.json inside — never an
+ * arbitrary user dir), and is not the dir this server was explicitly told to
+ * use. Best-effort and once per process.
+ */
+function removeLegacyCwdDataDir(resolvedDataDir: string): void {
+  if (legacyCwdDataDirSweepDone) return;
+  legacyCwdDataDirSweepDone = true;
+  try {
+    const legacy = path.join(process.cwd(), '.klauro-remote-analyzer');
+    if (path.resolve(legacy) === resolvedDataDir) return;
+    if (!fs.pathExistsSync(legacy)) return;
+    const looksLikeDataDir =
+      fs.pathExistsSync(path.join(legacy, 'workspaces')) || fs.pathExistsSync(path.join(legacy, 'accounts.json'));
+    if (!looksLikeDataDir) return;
+    fs.removeSync(legacy);
+    console.error(`[klauro] removed legacy analyzer data dir ${legacy} (analysis data lives on the server; unconfigured runs now use tmpdir scratch)`);
+  } catch {
+    // best-effort only — never block server startup on cleanup
+  }
+}
+
 export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOptions = {}): http.Server {
-  const dataDir = path.resolve(options.dataDir || process.env.KLAURO_REMOTE_ANALYZER_DATA || path.join(process.cwd(), '.klauro-remote-analyzer'));
+  // Data-dir doctrine: a server data dir holds full uploaded source mirrors +
+  // CASes and belongs on an EXPLICIT durable location (the VPS sets
+  // KLAURO_REMOTE_ANALYZER_DATA=/data). The old fallback —
+  // process.cwd()/.klauro-remote-analyzer — silently grew a gigabytes-scale
+  // mirror INSIDE whatever repo the dev happened to launch from (observed:
+  // apps/mcp-server/.klauro-remote-analyzer, stale since 2026-07-12 and a
+  // source of stale-source confusion in audits). Unconfigured dev/test runs
+  // now get a per-user tmpdir scratch instead; anything durable must be asked
+  // for via --data-dir / KLAURO_REMOTE_ANALYZER_DATA.
+  const dataDir = path.resolve(
+    options.dataDir
+      || process.env.KLAURO_REMOTE_ANALYZER_DATA
+      || path.join(os.tmpdir(), `klauro-remote-analyzer-${typeof process.getuid === 'function' ? process.getuid() : 'user'}`)
+  );
+  removeLegacyCwdDataDir(dataDir);
   const token = options.token ?? process.env.KLAURO_ANALYZER_TOKEN;
   const maxBodyBytes = options.maxBodyBytes || resolveMaxBodyBytes();
   const rateLimitPerMinute = options.rateLimitPerMinute ?? Number(process.env.KLAURO_ANALYZER_RATE_LIMIT_PER_MINUTE || 120);

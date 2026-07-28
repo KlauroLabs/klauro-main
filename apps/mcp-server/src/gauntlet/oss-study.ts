@@ -49,6 +49,7 @@ import * as os from 'os';
 import * as path from 'path';
 
 import { analyzeForBench } from './product-analysis';
+import { devDataRoot } from './dev-data';
 import {
   codebaseMemoryPath,
   ctagsAvailable,
@@ -74,7 +75,9 @@ export const OSS_STUDY_REPOS: OssStudyRepo[] = [
   { name: 'records', url: 'https://github.com/kennethreitz/records.git' },
 ];
 
-const CORPUS_ROOT = path.join(os.homedir(), '.klauro', 'gauntlet', 'oss-study-corpus');
+// Corpus clones live in the one explicit dev-data dir (~/.klauro/dev) —
+// regenerable scratch, safe to delete wholesale (tiny here: 4 depth-1 clones).
+const CORPUS_ROOT = path.join(devDataRoot(), 'oss-study-corpus');
 
 export type OssVerdict = 'win' | 'tie-ceiling' | 'loss';
 
