@@ -6,6 +6,7 @@ import type {
   CASExitPoint,
   CASEntityLineage,
   CASCallChain,
+  CASFlowRef,
   SystemCapability,
 } from '../../types/cas.types';
 import { buildTerminalSignal } from './terminal-signal';
@@ -483,6 +484,16 @@ export interface FlowConcept {
     /** The node at the terminus (last node on the chain that emits the exit). */
     node_id: string;
   };
+  /**
+   * Criticality of the anchoring call chain, joined from the materialized
+   * `flow_graph.flows` index (CASFlowRef.criticality — the same rank-based
+   * value `flow_summary.by_criticality` counts). Present only for
+   * chain-anchored flows: an entry-point-rooted flow has no chain, so there is
+   * no criticality to report and the field is omitted rather than invented.
+   * Before this join every flow read through get_flow_concepts / /conceptual
+   * reported `criticality: undefined` even when the CAS carried a real value.
+   */
+  criticality?: 'critical' | 'high' | 'medium' | 'low';
   /** The flow's semantic STEP GRAPH over `steps` — branches, error paths, and
    *  compensations layered on the sequence backbone (docs/SEMANTIC-MODEL.md:
    *  the ordered `steps` list is a PROJECTION of this graph). Deterministic,
@@ -528,6 +539,13 @@ export interface ComputeFlowConceptsOptions {
   maxFunctionsPerFlow?: number;
   /** Cap on number of flows returned (one per entry point, by default all). */
   maxFlows?: number;
+  /**
+   * Skip the first N flows of the RANKED order before applying `maxFlows` —
+   * the page-2 mechanism. Meaningful only on the ranked-window path (no
+   * `target`, and the CAS carries a materialized `flow_graph.flows` index);
+   * see rankStoredFlowRefs for the order it pages through.
+   */
+  offset?: number;
   /** Restrict to entry points matching this id, name, or route path substring. */
   target?: string;
   /**
@@ -3067,11 +3085,19 @@ function buildTerminalFlows(
    *  these exit point ids. Set only by computeFlowConcepts when a seam pair's
    *  publisher falls outside the maxFlows window — derives JUST that publisher
    *  instead of the full uncapped set (which would blow the latency budget). */
-  onlyExitIds?: Set<string>
+  onlyExitIds?: Set<string>,
+  /** Internal (ranked-window derivation): restrict to these call-chain ids —
+   *  the chain-anchored members of the ranked page. The rank/page decision has
+   *  already been made against the materialized flow index, so this derives
+   *  exactly that page instead of scanning until a cap trips. */
+  onlyChainIds?: Set<string>
 ): FlowConcept[] {
   let chains = (cas.call_chains || []).filter(c => c.chain_type === 'entry-to-exit' && c.exit_point);
   if (onlyExitIds && onlyExitIds.size > 0) {
     chains = chains.filter(c => c.exit_point?.exit_point_id && onlyExitIds.has(c.exit_point.exit_point_id));
+  }
+  if (onlyChainIds && onlyChainIds.size > 0) {
+    chains = chains.filter(c => onlyChainIds.has(c.id));
   }
   if (chains.length === 0) return [];
 
@@ -3416,6 +3442,119 @@ function buildTerminalFlows(
   return flows;
 }
 
+// ---------------------------------------------------------------------------
+// RANK BEFORE TRUNCATING (P0)
+// ---------------------------------------------------------------------------
+// The derivation loops above stop at `maxFlows`, so the window used to be
+// "whatever storage/entry-point order produced first" — an order that
+// correlates with SHALLOW, because the terminal-chain pass runs first and
+// terminal chains are short by construction (they stop at the exit point),
+// while the deep flows are entry-point-rooted and land at the back. Measured
+// on three real stored CASes: the first 50 flows averaged 1.1-2.2 steps while
+// the full set averaged 2.2-3.5 with maxima of 16-18, and the fully-evidenced
+// multi-constraint flows sat entirely outside the window. Every flow-quality
+// metric anyone measured was measuring the window, not the product.
+//
+// The fix is to order candidates BEFORE the cap applies, using the
+// materialized `flow_graph.flows` index (CASFlowRef) the analyzer already
+// persists for every flow: it carries step_count, criticality, terminus and
+// capability links per flow at zero derivation cost, so ranking never forces
+// the uncapped derivation the latency budget forbids on a large repo.
+
+/** Per-signal weights for the flow rank. Explicit and grep-visible so the
+ *  ordering is auditable rather than an opaque formula. Every input is a fact
+ *  already on the CAS — no keyword lists, no name matching. */
+const FLOW_RANK_WEIGHTS = {
+  /** Class gate: a product (non-test) flow always outranks a test flow. Set
+   *  above the maximum achievable sum of every other signal so it cannot be
+   *  outvoted — the same product-first doctrine the pre-existing class sorts
+   *  in buildTerminalFlows/computeEntryPointFlows encode. */
+  product: 1000,
+  /** Per step of derived depth (capped) — the signal the defect was about: a
+   *  flow with real steps answers a question, a 1-step leaf teases one. */
+  stepDepth: 12,
+  /** Flow serves a named system capability / behavior surface. */
+  capability: 120,
+  /** Flow resolves a terminus (it PRODUCES something). Deliberately weighted
+   *  BELOW ~7 steps of depth: terminus is only derivable for chain-anchored
+   *  flows, so weighting it higher would re-punish exactly the deep
+   *  entry-point-rooted flows this fix exists to surface. */
+  terminus: 80,
+  /** Anchoring chain's criticality rank (0-3). */
+  criticality: 40,
+  /** Structural importance of the flow's root node, [0,1] from
+   *  structural-importance.ts (seeded random-walk centrality over the call
+   *  graph) — the live layer, used as the fine-grained ordering signal. */
+  importance: 100,
+} as const;
+
+/** Depth past which extra steps stop adding rank — a 40-step flow is not
+ *  4x more worth reading than a 10-step one, and the cap keeps depth from
+ *  swamping capability/terminus/importance entirely. */
+const FLOW_RANK_STEP_CAP = 20;
+
+const FLOW_RANK_CRITICALITY: Record<string, number> = { critical: 3, high: 2, medium: 1, low: 0 };
+
+/**
+ * Deterministic rank score for one materialized flow ref. Pure function of
+ * facts on the CAS; identical inputs always produce an identical score.
+ */
+function scoreStoredFlowRef(
+  ref: CASFlowRef,
+  isTestRooted: boolean,
+  rootImportance: number
+): number {
+  const steps = Math.min(Math.max(ref.step_count || 0, 0), FLOW_RANK_STEP_CAP);
+  const capabilityLinked = Boolean(ref.capability_id) || Boolean(ref.capability_ids && ref.capability_ids.length);
+  return (
+    (isTestRooted ? 0 : FLOW_RANK_WEIGHTS.product) +
+    steps * FLOW_RANK_WEIGHTS.stepDepth +
+    (capabilityLinked ? FLOW_RANK_WEIGHTS.capability : 0) +
+    (ref.terminus ? FLOW_RANK_WEIGHTS.terminus : 0) +
+    (FLOW_RANK_CRITICALITY[ref.criticality || ''] ?? 0) * FLOW_RANK_WEIGHTS.criticality +
+    rootImportance * FLOW_RANK_WEIGHTS.importance
+  );
+}
+
+/**
+ * Rank every materialized flow ref, highest first. BYTE-STABLE: scores are a
+ * pure function of stored facts and ties break on `flow_id` localeCompare, so
+ * two runs over the same CAS produce the identical order (and therefore the
+ * identical page 1, page 2, … partition).
+ *
+ * Returns [] when the CAS carries no `flow_graph.flows` (pre-index analyses) —
+ * callers fall back to the legacy derive-then-cap path unchanged.
+ */
+export function rankStoredFlowRefs(cas: CASOutput): CASFlowRef[] {
+  const refs = cas.flow_graph?.flows || [];
+  if (refs.length === 0) return [];
+
+  const entryById = new Map((cas.entry_points || []).map(ep => [ep.id, ep]));
+  const importanceByNode = new Map<string, number>();
+  for (const node of cas.nodes || []) {
+    if (typeof node.structural_importance === 'number') importanceByNode.set(node.id, node.structural_importance);
+  }
+
+  const rootImportanceFor = (ref: CASFlowRef): number => {
+    const ep = entryById.get(ref.entry_point);
+    const candidates = ep ? [ep.handler?.node_id, ep.source_node] : [ref.entry_point];
+    let best = 0;
+    for (const candidate of candidates) {
+      if (!candidate) continue;
+      const score = importanceByNode.get(candidate);
+      if (typeof score === 'number' && score > best) best = score;
+    }
+    return best;
+  };
+
+  const scored = refs.map(ref => ({
+    ref,
+    score: scoreStoredFlowRef(ref, entryById.get(ref.entry_point)?.type === 'test', rootImportanceFor(ref)),
+  }));
+  scored.sort((a, b) => (b.score - a.score) || a.ref.flow_id.localeCompare(b.ref.flow_id));
+  return scored.map(s => s.ref);
+}
+
 /**
  * computeFlowConcepts — flows over the compile graph. UNION of two anchors:
  * terminal call chains (buildTerminalFlows) — a flow is a chain that runs from
@@ -3432,6 +3571,16 @@ function buildTerminalFlows(
  * `opts.nameStep` is the only AI seam and is fully inert when omitted.
  */
 export function computeFlowConcepts(cas: CASOutput, opts: ComputeFlowConceptsOptions = {}): FlowConcept[] {
+  // RANKED WINDOW (P0 rank-before-truncate) — see rankStoredFlowRefs. Applies
+  // to the BROWSE case only: no `target` (a targeted lookup is already an
+  // explicit narrow ask), a real cap or offset in play (an uncapped ask must
+  // still derive everything, so a stale index can never drop a flow), and a
+  // materialized flow_graph.flows index to rank with. Ranks first, pages
+  // second, then derives ONLY the resulting window — so the cost stays
+  // proportional to the page, not to the repo.
+  const rankedWindowFlows = computeRankedWindowFlows(cas, opts);
+  if (rankedWindowFlows) return finalizeFlows(cas, rankedWindowFlows, opts);
+
   // PRIMARY: terminal-chain-anchored flows (what the system produces).
   const terminalFlows = buildTerminalFlows(cas, opts);
 
@@ -3468,6 +3617,18 @@ export function computeFlowConcepts(cas: CASOutput, opts: ComputeFlowConceptsOpt
     flows = [...terminalFlows, ...entryFlows];
   }
 
+  return finalizeFlows(cas, flows, opts);
+}
+
+/**
+ * Shared tail of both derivation paths (legacy derive-then-cap and the ranked
+ * window): stitch async continuation partners, prune blanket capability
+ * relationships, collapse duplicate function steps, disambiguate names, and
+ * join the materialized criticality. Extracted so the ranked path can never
+ * drift from the legacy one on anything but the ORDER of the window.
+ */
+function finalizeFlows(cas: CASOutput, input: FlowConcept[], opts: ComputeFlowConceptsOptions): FlowConcept[] {
+  let flows = input;
   // ASYNC CONTINUATION STITCHING (C1): a publisher flow whose terminus is an
   // event/message publish CONTINUES INTO the consumer flow whose entry matches
   // the seam channel — the SAME end-to-end flow, and the consumer is a reusable
@@ -3503,10 +3664,94 @@ export function computeFlowConcepts(cas: CASOutput, opts: ComputeFlowConceptsOpt
       flows = [...flows, ...partnerPublishers];
     }
   }
-  return disambiguateFlowNames(
+  const finalized = disambiguateFlowNames(
     cas,
     pruneBlanketCapabilityRelationships(stitchContinuations(flows, cas)).map(collapseDuplicateFunctionSteps)
   );
+  return attachStoredCriticality(cas, finalized);
+}
+
+/**
+ * Join `criticality` from the materialized flow index onto each derived flow.
+ * The value already exists on the CAS (CASFlowRef.criticality, computed from
+ * the anchoring call chain) but was never surfaced through get_flow_concepts /
+ * /conceptual, so every flow an agent read reported `criticality: undefined`.
+ * Evidence-gated: only flows whose flow_id resolves in the index get a value;
+ * entry-point-rooted flows have no chain and stay honestly absent.
+ */
+function attachStoredCriticality(cas: CASOutput, flows: FlowConcept[]): FlowConcept[] {
+  const refs = cas.flow_graph?.flows;
+  if (!refs || refs.length === 0) return flows;
+  const criticalityById = new Map<string, CASFlowRef['criticality']>();
+  for (const ref of refs) {
+    if (ref.criticality) criticalityById.set(ref.flow_id, ref.criticality);
+  }
+  if (criticalityById.size === 0) return flows;
+  for (const flow of flows) {
+    const criticality = criticalityById.get(flow.flow_id);
+    if (criticality) flow.criticality = criticality;
+  }
+  return flows;
+}
+
+/**
+ * Derive exactly the RANKED page of flows the caller asked for, or null when
+ * this CAS/request is not eligible for the ranked path (caller falls back to
+ * the legacy derive-then-cap union, unchanged).
+ *
+ * Eligibility is deliberately narrow:
+ *  - no `target` — a targeted lookup is already an explicit narrow ask, and
+ *    ranking it would only reorder a handful of flows;
+ *  - a cap or an offset is actually in play — an uncapped ask still derives
+ *    the full union, so a `flow_graph.flows` index that lags the current
+ *    derivation can never silently DROP a flow from an "everything" request;
+ *  - the CAS carries a materialized flow index to rank with.
+ */
+function computeRankedWindowFlows(cas: CASOutput, opts: ComputeFlowConceptsOptions): FlowConcept[] | null {
+  if (opts.target) return null;
+  const limit = opts.maxFlows && opts.maxFlows > 0 ? Math.floor(opts.maxFlows) : undefined;
+  const offset = opts.offset && opts.offset > 0 ? Math.floor(opts.offset) : 0;
+  if (limit === undefined && offset === 0) return null;
+
+  const ranked = rankStoredFlowRefs(cas);
+  if (ranked.length === 0) return null;
+
+  const window = limit === undefined ? ranked.slice(offset) : ranked.slice(offset, offset + limit);
+  if (window.length === 0) return [];
+
+  // Rank position of every ref in the window — the output order. Derivation
+  // below runs in two passes (chain-anchored, entry-rooted) whose natural
+  // output order is NOT the rank order, so re-sort against this index.
+  const rankIndex = new Map<string, number>();
+  window.forEach((ref, index) => rankIndex.set(ref.flow_id, index));
+
+  const chainIds = new Set<string>();
+  const entryKeys = new Set<string>();
+  for (const ref of window) {
+    if (ref.call_chain_id) chainIds.add(ref.call_chain_id);
+    else entryKeys.add(ref.entry_point);
+  }
+
+  // Derive ONLY the window. Both passes run uncapped over their (already
+  // tiny) restricted candidate set — the cap has been applied by the slice
+  // above, so re-applying maxFlows here would truncate the page a second time.
+  const windowOpts: ComputeFlowConceptsOptions = { ...opts, maxFlows: undefined, offset: undefined };
+  const derived: FlowConcept[] = [];
+  if (chainIds.size > 0) derived.push(...buildTerminalFlows(cas, windowOpts, undefined, chainIds));
+  if (entryKeys.size > 0) {
+    derived.push(...computeEntryPointFlows(cas, windowOpts, { onlyEntryKeys: entryKeys }));
+  }
+
+  // A ref whose flow no longer derives (index lagging the current graph) just
+  // doesn't appear — honest, and the page still carries the rest. Flows the
+  // index never knew about sort to the end rather than being dropped.
+  const seen = new Set<string>();
+  const deduped = derived.filter(f => (seen.has(f.flow_id) ? false : (seen.add(f.flow_id), true)));
+  deduped.sort((a, b) =>
+    ((rankIndex.get(a.flow_id) ?? Number.MAX_SAFE_INTEGER) - (rankIndex.get(b.flow_id) ?? Number.MAX_SAFE_INTEGER)) ||
+    a.flow_id.localeCompare(b.flow_id)
+  );
+  return deduped;
 }
 
 /**

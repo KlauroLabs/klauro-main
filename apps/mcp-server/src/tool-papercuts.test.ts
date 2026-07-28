@@ -213,16 +213,28 @@ function httpRequest(port: number, method: string, route: string, body?: unknown
 function buildManyEntryPointsCas(analysisId: string, count: number): CASOutput {
   const nodes = [];
   const entryPoints = [];
+  // Materialized flow index — the ranking/pagination input the analyzer
+  // persists for every derived flow. Without it the route has no stable global
+  // order to page through and honestly says so.
+  const flowRefs = [];
   for (let i = 0; i < count; i++) {
     const nodeId = `n_handler_${i}`;
+    const key = String(i).padStart(3, '0');
     nodes.push({
-      id: nodeId, name: `handler${i}`, type: 'controller', qualified_name: `handler${i}`,
-      category: 'entry', source: { file: `src/handler${i}.ts`, line: 1 },
+      id: nodeId, name: `handler${key}`, type: 'controller', qualified_name: `handler${key}`,
+      category: 'entry', source: { file: `src/handler${key}.ts`, line: 1 },
     });
     entryPoints.push({
-      id: `ep_handler_${i}`, source_node: nodeId, type: 'http', name: `handler${i}`,
-      trigger: { method: 'POST', path: `/handler${i}` },
-      handler: { node_id: nodeId, method_name: `handler${i}`, file: `src/handler${i}.ts` },
+      id: `ep_handler_${key}`, source_node: nodeId, type: 'http', name: `handler${key}`,
+      trigger: { method: 'POST', path: `/handler${key}` },
+      handler: { node_id: nodeId, method_name: `handler${key}`, file: `src/handler${key}.ts` },
+    });
+    flowRefs.push({
+      flow_id: `flow::ep_handler_${key}`,
+      name: `Handler ${key}`,
+      intent: `handle /handler${key}`,
+      entry_point: `ep_handler_${key}`,
+      step_count: 1,
     });
   }
   return {
@@ -234,6 +246,10 @@ function buildManyEntryPointsCas(analysisId: string, count: number): CASOutput {
     edges: [],
     analyzer_contributions: [],
     entry_points: entryPoints,
+    flow_graph: {
+      capabilities: [], dependencies: [], flows: flowRefs,
+      topology: { root_capabilities: [], leaf_capabilities: [], critical_path: [], max_depth: 0 },
+    },
   } as unknown as CASOutput;
 }
 
@@ -265,8 +281,8 @@ test('/conceptual honors a max_flows query param (bounded) and its gap text refl
     const workspacesRes = await httpRequest(port, 'GET', '/api/workspaces', undefined, token);
     const workspaceId = JSON.parse(workspacesRes.body).workspaces[0].id as string;
 
-    // 25 distinct entry points -> 25 derivable flows, enough that the
-    // default HTTP cap (20) truncates. Land the CAS directly at the
+    // 40 distinct entry points -> 40 derivable flows, enough that the
+    // default HTTP cap (25) truncates AND there is a real page 2. Land the CAS directly at the
     // location the HTTP route reads from (workspacePath(dataDir, analysisId)),
     // then create the project against that same analysis_id — mirrors the
     // approach plan-parallel-work.test.ts / flow-layer-gaps.test.ts use to
@@ -279,34 +295,59 @@ test('/conceptual honors a max_flows query param (bounded) and its gap text refl
     assert.equal(createRes.statusCode, 201);
     const project = JSON.parse(createRes.body).project as { id: string; analysis_id: string };
     const workspace = path.join(remoteData, 'workspaces', project.analysis_id);
-    await saveAnalysis(workspace, buildManyEntryPointsCas(project.analysis_id, 25));
+    await saveAnalysis(workspace, buildManyEntryPointsCas(project.analysis_id, 40));
 
-    // Default (no max_flows): capped at 20, gap text names the REAL applied cap (20), not the stale "15".
+    // Default (no max_flows): capped at 25, gap text names the REAL applied cap.
     const defaultRes = await httpRequest(port, 'GET', `/api/projects/${project.id}/conceptual`, undefined, token);
     assert.equal(defaultRes.statusCode, 200);
     const defaultBody = JSON.parse(defaultRes.body);
     const defaultGap: string[] = defaultBody.flows?.gaps || [];
-    const defaultTruncationGap = defaultGap.find((g: string) => g.includes('flows'));
+    const defaultTruncationGap = defaultGap.find((g: string) => g.startsWith('Showing '));
     assert.ok(defaultTruncationGap, `expected a truncation gap, got: ${JSON.stringify(defaultGap)}`);
-    assert.ok(defaultTruncationGap.includes('cap 20'), `gap text must name the real applied cap (20), got: ${defaultTruncationGap}`);
-    assert.ok(!defaultTruncationGap.includes('cap 15'), `gap text must NOT claim the stale default cap of 15, got: ${defaultTruncationGap}`);
-    assert.ok(defaultTruncationGap.includes('max_flows query param'), `gap text must tell HTTP callers about the actual max_flows query param mechanism, got: ${defaultTruncationGap}`);
+    assert.ok(defaultTruncationGap.includes('cap 25'), `gap text must name the real applied cap (25), got: ${defaultTruncationGap}`);
+    assert.ok(!defaultTruncationGap.includes('cap 15'), `gap text must NOT claim a stale default cap, got: ${defaultTruncationGap}`);
+    // THE HINT MUST NAME A MECHANISM THAT ACTUALLY WORKS. The old text told
+    // callers to "Pass a max_flows query param (bounded, max 50)" — a remedy
+    // capped at the same number as the complaint, with no page 2 in existence.
+    assert.ok(!/max 50/.test(defaultTruncationGap), `gap text must not advertise the old capped remedy, got: ${defaultTruncationGap}`);
+    assert.ok(/offset=\d+/.test(defaultTruncationGap), `gap text must name the offset that reaches the next page, got: ${defaultTruncationGap}`);
+    assert.equal(defaultBody.flows.total_available, 40, 'total_available must be the exact flow count');
+    assert.equal(defaultBody.flows.next_offset, 25);
 
-    // Explicit max_flows=25 must actually return more flows than the default 20.
-    const explicitRes = await httpRequest(port, 'GET', `/api/projects/${project.id}/conceptual?max_flows=25`, undefined, token);
+    // Explicit max_flows=30 must actually return more flows than the default 25.
+    const explicitRes = await httpRequest(port, 'GET', `/api/projects/${project.id}/conceptual?max_flows=30`, undefined, token);
     assert.equal(explicitRes.statusCode, 200);
     const explicitBody = JSON.parse(explicitRes.body);
     const explicitFlows = explicitBody.flows?.flows;
     const defaultFlows = defaultBody.flows?.flows;
     assert.ok(Array.isArray(explicitFlows) && Array.isArray(defaultFlows), 'expected flows arrays in both responses');
-    assert.ok(explicitFlows.length > defaultFlows.length, `max_flows=25 must yield more flows than the default cap of 20 (got ${explicitFlows.length} vs ${defaultFlows.length})`);
+    assert.ok(explicitFlows.length > defaultFlows.length, `max_flows=30 must yield more flows than the default cap of 25 (got ${explicitFlows.length} vs ${defaultFlows.length})`);
+
+    // THERE IS A PAGE 2: following the advertised offset reaches flows the
+    // first page never carried, and the two pages are disjoint.
+    const pageTwoRes = await httpRequest(port, 'GET', `/api/projects/${project.id}/conceptual?offset=${defaultBody.flows.next_offset}`, undefined, token);
+    assert.equal(pageTwoRes.statusCode, 200);
+    const pageTwo = JSON.parse(pageTwoRes.body).flows;
+    assert.equal(pageTwo.offset, 25);
+    assert.equal(pageTwo.returned, 15, 'the last page carries the remaining flows');
+    assert.equal(pageTwo.next_offset, undefined, 'the last page must not advertise another one');
+    const firstIds = new Set(defaultFlows.map((f: any) => f.flow_id));
+    assert.equal(
+      pageTwo.flows.filter((f: any) => firstIds.has(f.flow_id)).length, 0,
+      'page 2 must return different flows than page 1',
+    );
+    assert.equal(
+      new Set([...defaultFlows.map((f: any) => f.flow_id), ...pageTwo.flows.map((f: any) => f.flow_id)]).size, 40,
+      'the union of the pages must be the whole flow set',
+    );
 
     // max_flows is bounded — an oversized ask is clamped, not honored verbatim.
+    // The ceiling bounds a PAGE, not what is reachable: offset reaches the rest.
     const hugeRes = await httpRequest(port, 'GET', `/api/projects/${project.id}/conceptual?max_flows=99999`, undefined, token);
     assert.equal(hugeRes.statusCode, 200);
     const hugeBody = JSON.parse(hugeRes.body);
     const hugeFlows = hugeBody.flows?.flows;
-    assert.ok(Array.isArray(hugeFlows) && hugeFlows.length <= 50, `max_flows must be bounded to <=50, got ${hugeFlows.length}`);
+    assert.ok(Array.isArray(hugeFlows) && hugeFlows.length <= 100, `max_flows must be bounded to <=100, got ${hugeFlows.length}`);
   } finally {
     await new Promise<void>(resolve => server.close(() => resolve()));
     if (previousRemoteData === undefined) delete process.env.KLAURO_REMOTE_ANALYZER_DATA;

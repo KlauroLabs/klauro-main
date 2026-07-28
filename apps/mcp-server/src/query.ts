@@ -13,7 +13,7 @@ import { buildProductMap } from '../../../packages/analyzer-core/src/analyzer/co
 import { RISKABLE_NODE_TYPES } from '../../../packages/analyzer-core/src/analyzer/core/orchestrator';
 import { buildTerminalSignal } from '../../../packages/analyzer-core/src/analyzer/core/terminal-signal';
 import { selectProductFrameworkNames, analyzerTypeMap } from '../../../packages/analyzer-core/src/analyzer/core/framework-comprehension';
-import { computeFlowConcepts, attachTelemetryToFlows, telemetryForNode, applyFlowRoleToCapabilityRelationships, type ComputeFlowConceptsOptions, type RuntimeMetricLike } from '../../../packages/analyzer-core/src/analyzer/core/flow-concepts';
+import { computeFlowConcepts, rankStoredFlowRefs, attachTelemetryToFlows, telemetryForNode, applyFlowRoleToCapabilityRelationships, type ComputeFlowConceptsOptions, type RuntimeMetricLike } from '../../../packages/analyzer-core/src/analyzer/core/flow-concepts';
 import { computeSemanticCoverage, toCompactSemanticCoverage, type SemanticCoverage } from '../../../packages/analyzer-core/src/analyzer/core/semantic-coverage';
 import { computeFlowStructuralLinks, computeConflictBehavioralLinks } from '../../../packages/analyzer-core/src/analyzer/core/structural-cross-links';
 import type { CASProductMap } from '../../../packages/analyzer-core/src/types/cas.types';
@@ -3858,7 +3858,36 @@ export function getInterfaceSignature(
 // that genuinely wants everything can still ask for it explicitly via
 // max_flows (a large explicit value, or Infinity-ish via a big number) —
 // never silent, always paginated with total/truncated/hint.
-const DEFAULT_MAX_FLOWS = 15;
+//
+// RAISED 15 -> 25 (P0 rank-before-truncate). The old number was chosen when the
+// window was significance-BLIND, so a bigger page only bought more 1-step
+// leaves; with ranking in front of the cap the page carries the flows that
+// answer a question, and the size is now set from measurement.
+//
+// MEASURED compact-projection cost per flow (`flows` JSON bytes / flow, three
+// real stored CASes, heavy evidence tiers already stripped):
+//
+//   page size |    27k-node repo |   57k-node repo |   12k-node repo
+//   ----------+------------------+-----------------+----------------
+//        15   |  10.0 KB / flow  | 12.1 KB / flow  |  6.4 KB / flow
+//        25   |   9.9 KB / flow  | 11.1 KB / flow  |  6.2 KB / flow
+//        50   |   8.5 KB / flow  |  8.8 KB / flow  |  5.6 KB / flow
+//
+// A ranked page costs ~3x MORE per flow than the old window did (~2.4-3.4 KB)
+// — precisely because it now carries deep flows instead of leaves. That cost
+// is dominated by RANKING, not by page size: going 15 -> 25 adds ~21% bytes
+// for 67% more flows, and the per-flow cost DROPS as the page extends into
+// shallower flows. 25 is where the marginal flow is still substantive.
+//
+// Interaction with the hard response budget (docs/SPEC-RESPONSE-BUDGET.md):
+// every MCP tool result is bounded to RESPONSE_BUDGET_BYTES (20,000) by
+// server.ts' enforceResponseBudget, which shrinks the largest arrays and
+// attaches an honest truncation envelope. That wrapper — not this default —
+// is what actually sizes an MCP response on a large repo, and it is now SAFE
+// for it to trim the tail of `flows`, because the tail is the lowest-ranked
+// end of a real order rather than an arbitrary one. Callers that want the
+// trimmed flows ask for them by page (`offset`), not by luck.
+const DEFAULT_MAX_FLOWS = 25;
 
 /**
  * getFlowConcepts — the FLOW -> STEP tier of the conceptual understanding
@@ -3873,6 +3902,9 @@ export function getFlowConcepts(
   cas: CASOutput,
   opts: {
     target?: string; maxDepth?: number; maxFunctionsPerFlow?: number; maxFlows?: number; includeStructural?: boolean; runtimeMetrics?: RuntimeMetricLike[]; role?: SemanticRole;
+    /** Page offset into the RANKED flow order (rankStoredFlowRefs) — the
+     *  page-2 mechanism. 0/omitted = first page. */
+    offset?: number;
     /** 'compact' (default) elides the heavy evidence tiers (contract
      *  facet_provenance, step code_mappings) with availability markers so the
      *  browse response stays inside the size budget; 'full' inlines them. */
@@ -3900,8 +3932,22 @@ export function getFlowConcepts(
     ? opts.maxFlows
     : (opts.target ? undefined : DEFAULT_MAX_FLOWS);
 
+  // PAGINATION (P0): offset into the ranked order. Only meaningful when a
+  // ranked order exists (browse case + materialized flow index) — a targeted
+  // lookup has no stable global order to page through, so an offset there is
+  // reported as unsupported in `gaps` rather than silently applied.
+  const requestedOffset = opts.offset && opts.offset > 0 ? Math.floor(opts.offset) : 0;
+  // Exact denominator for the paged view: the materialized flow index IS the
+  // full flow set (one ref per derived flow), so when it is present we know
+  // the true total without a second uncapped derivation — the honest `total`
+  // the old truncation hint could only approximate with entry_points.length.
+  const rankedTotal = (!opts.target && !opts.role) ? rankStoredFlowRefs(cas).length : 0;
+  const pagingSupported = rankedTotal > 0;
+  const offset = pagingSupported ? requestedOffset : 0;
+
   const computeOpts: ComputeFlowConceptsOptions = {
     target: opts.target,
+    offset: offset > 0 ? offset : undefined,
     maxDepth: opts.maxDepth,
     maxFunctionsPerFlow: opts.maxFunctionsPerFlow,
     // Probe one extra so we can report truncation honestly without a
@@ -4024,9 +4070,18 @@ export function getFlowConcepts(
   // When a role filter is active we computed over ALL flows, so probedFlows
   // (post-filter) is the exact filtered total — don't fall back to the
   // entry-point upper bound (which ignores the filter).
-  const totalFlowsAvailable = truncated
-    ? (opts.role ? probedFlows.length : Math.max(probedFlows.length, (cas.entry_points || []).length))
-    : probedFlows.length;
+  //
+  // When the materialized flow index is available (pagingSupported) it IS the
+  // exact total — use it instead of the entry-point upper bound, so `offset`
+  // has a denominator a caller can page against rather than an estimate.
+  const totalFlowsAvailable = pagingSupported
+    ? rankedTotal
+    : truncated
+      ? (opts.role ? probedFlows.length : Math.max(probedFlows.length, (cas.entry_points || []).length))
+      : probedFlows.length;
+  // "Is there another page" is an offset question, not just a cap question.
+  const hasMore = pagingSupported ? offset + flows.length < totalFlowsAvailable : truncated;
+  const nextOffset = hasMore && pagingSupported ? offset + flows.length : undefined;
 
   const gaps: string[] = [];
   if (!cas.entry_points || cas.entry_points.length === 0) {
@@ -4035,7 +4090,12 @@ export function getFlowConcepts(
   if (opts.target && flows.length === 0) {
     gaps.push(`No entry point matched target "${opts.target}" — check get_entry_points/get_route_table for valid ids/paths.`);
   }
-  if (truncated) {
+  if (requestedOffset > 0 && !pagingSupported) {
+    gaps.push(
+      'offset ignored: paging needs the materialized flow index (flow_graph.flows) and the untargeted/unfiltered browse view — this response has no stable global rank order to page through. Use target to narrow instead.'
+    );
+  }
+  if (hasMore) {
     // Report the cap that was ACTUALLY applied (effectiveMaxFlows), not the
     // module default — a caller (e.g. the /conceptual HTTP route) may pass
     // its own explicit maxFlows, and stating DEFAULT_MAX_FLOWS there would be
@@ -4043,10 +4103,18 @@ export function getFlowConcepts(
     const appliedCapNotice = opts.maxFlows && opts.maxFlows > 0
       ? `cap ${effectiveMaxFlows}`
       : `default cap ${effectiveMaxFlows} when browsing all entry points`;
-    const moreHint = opts.surface === 'http'
-      ? 'Pass a max_flows query param (bounded, max 50) to see more, or target to narrow to a specific entry point/route/name.'
-      : 'Pass max_flows to see more, or target to narrow to a specific entry point/route/name.';
-    gaps.push(`Showing ${flows.length}/${totalFlowsAvailable} flows (${appliedCapNotice}). ${moreHint}`);
+    // HONEST HINT (P0): the old text told HTTP callers to "Pass a max_flows
+    // query param (bounded, max 50)" — i.e. the advertised remedy was capped
+    // at the same number that caused the complaint, and there was no page 2 at
+    // all. Name the mechanism that actually reaches flow #51+.
+    const moreHint = pagingSupported
+      // Same mechanism name on both surfaces: `offset` is a real query param on
+      // the HTTP route AND a real tool arg on the MCP surface.
+      ? `Pass offset=${nextOffset} (with max_flows) for the next page — flows are ranked by significance (steps, capability link, terminus, criticality, structural importance) before the cap, so page 1 is the top of that order and later pages are strictly lower-ranked, never duplicated. Or use target to narrow to a specific entry point/route/name.`
+      : (opts.surface === 'http'
+        ? 'Pass a larger max_flows query param to see more, or target to narrow to a specific entry point/route/name.'
+        : 'Pass max_flows to see more, or target to narrow to a specific entry point/route/name.');
+    gaps.push(`Showing ${flows.length}/${totalFlowsAvailable} flows (${appliedCapNotice}${offset > 0 ? `, offset ${offset}` : ''}). ${moreHint}`);
     if (entryPointTotals.test > entryPointTotals.product) {
       gaps.push(
         `total_available is dominated by test entry points (${entryPointTotals.test} test vs ${entryPointTotals.product} product) — see entry_point_totals; the returned window is ordered product-first so this page should still be product-shaped.`
@@ -4146,7 +4214,23 @@ export function getFlowConcepts(
     // "is there more" signal instead of a silent drop.
     total: flows.length,
     total_available: totalFlowsAvailable,
-    truncated,
+    // `truncated` keeps its meaning ("there are more flows than this response
+    // carries") but is now offset-aware: on page 3 of 5 it is still true, and
+    // on the last page it is false even though a cap was applied.
+    truncated: hasMore,
+    // PAGINATION (P0). `returned`/`offset`/`next_offset` are the honest
+    // page-2 contract: next_offset is present iff another page exists, and
+    // feeding it straight back as `offset` yields the next slice of the SAME
+    // ranked order (no overlap, no gap). Omitted (never 0/null) on the last
+    // page, so "is there more" is answerable without arithmetic.
+    returned: flows.length,
+    offset,
+    next_offset: nextOffset,
+    /** How the window was chosen — so a caller knows whether `offset` is live
+     *  and what the order in front of the cap actually is. */
+    ranking: pagingSupported
+      ? 'significance: product-first, then step depth + capability link + terminus + chain criticality + structural importance; ties by flow_id (byte-stable)'
+      : 'derivation order (no materialized flow index on this analysis — offset unavailable)',
     role_breakdown: roleBreakdown,
     // Honest product-vs-test split of ALL entry points on the CAS (not just
     // the probed window) — additive, so total_available dominated by test

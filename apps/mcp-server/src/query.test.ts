@@ -220,8 +220,10 @@ test('getFlowConcepts defaults to a bounded number of flows (not one per entry p
   const cas = buildManyEntryPointsCas(200);
   const result: any = getFlowConcepts(cas, {});
 
-  // Default cap (15) must kick in, not "all 200 entry points".
-  assert.ok(result.flows.length <= 15, `expected <= 15 flows by default, got ${result.flows.length}`);
+  // Default cap (DEFAULT_MAX_FLOWS, raised 15 -> 25 once the window became
+  // significance-RANKED rather than derivation-ordered — see query.ts) must
+  // kick in, not "all 200 entry points".
+  assert.ok(result.flows.length <= 25, `expected <= 25 flows by default, got ${result.flows.length}`);
   assert.equal(result.total, result.flows.length);
   assert.equal(result.truncated, true);
   assert.ok(result.total_available >= 200, `expected total_available to reflect the real entry point count, got ${result.total_available}`);

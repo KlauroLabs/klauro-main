@@ -2038,6 +2038,28 @@ async function linkAnalysisToAccountProject(
  */
 const casReadResponseCache = new ResponseCache(8);
 
+/**
+ * /conceptual flow-page sizing (P0 rank-before-truncate).
+ *
+ * MEASURED, not guessed: with the compact projection this route already
+ * applies (facet_provenance + step code_mappings stripped), a RANKED page
+ * costs ~6-11 KB per flow on real stored CASes, against ~2.4-3.4 KB for the
+ * old significance-blind window — because a ranked page carries DEEP flows
+ * instead of 1-step leaves. That is the whole point of the fix, and it is why
+ * the numbers below come from measurement:
+ *   - the jump in payload comes from RANKING, not from page size: at the OLD
+ *     default of 20 a ranked page is already ~128-228 KB, and going 20 -> 25
+ *     adds only ~18-21% for 25% more flows, while per-flow cost keeps falling
+ *     as the page extends into shallower flows. 25 is where the marginal flow
+ *     is still substantive;
+ *   - the 100 ceiling bounds a single page's compute/transfer footprint
+ *     WITHOUT bounding what is reachable, because `offset` now pages through
+ *     the full ranked set. The old "max 50" hint advertised a remedy capped at
+ *     the same number as the complaint; the remedy is now offset.
+ */
+const CONCEPTUAL_DEFAULT_MAX_FLOWS = 25;
+const CONCEPTUAL_MAX_FLOWS_CEILING = 100;
+
 /** Test/ops probe: lets the endpoint tests assert deterministically that a
  * repeat GET was served from the cache (not merely byte-identical by luck). */
 export function getCasReadResponseCacheStats(): { hits: number; misses: number; size: number } {
@@ -2896,15 +2918,28 @@ async function handleAccountApi(
       const include = url.searchParams.get('include') || undefined;
       // Honor an explicit max_flows query param (previously the gap text told
       // callers to "Pass max_flows" but this route hardcoded maxFlows: 20 and
-      // ignored anything the caller sent — ship the param for real. Bounded to
-      // 50: this projection already strips the heavy evidence tiers below, but
-      // an unbounded HTTP request is still a bigger CAS-compute footprint than
+      // ignored anything the caller sent — ship the param for real. Bounded:
+      // this projection already strips the heavy evidence tiers below, but an
+      // unbounded HTTP request is still a bigger CAS-compute footprint than
       // the MCP tool surface's own budgeting assumes.
+      //
+      // P0 (rank before truncating): the ceiling was never the bug — the ORDER
+      // was. The window used to be whatever derivation produced first, which
+      // correlates with SHALLOW, and there was no page 2 at all, so flow #51+
+      // was unreachable through this route by any means. Flows are now RANKED
+      // by significance before the cap applies (query.getFlowConcepts ->
+      // rankStoredFlowRefs) and `offset` pages through that same ranked order,
+      // so the ceiling bounds a PAGE rather than bounding the product.
       const maxFlowsParamRaw = url.searchParams.get('max_flows');
       const maxFlowsParam = maxFlowsParamRaw !== null ? Number(maxFlowsParamRaw) : undefined;
       const maxFlows = maxFlowsParam !== undefined && Number.isFinite(maxFlowsParam) && maxFlowsParam > 0
-        ? Math.min(Math.floor(maxFlowsParam), 50)
-        : 20;
+        ? Math.min(Math.floor(maxFlowsParam), CONCEPTUAL_MAX_FLOWS_CEILING)
+        : CONCEPTUAL_DEFAULT_MAX_FLOWS;
+      const offsetParamRaw = url.searchParams.get('offset');
+      const offsetParam = offsetParamRaw !== null ? Number(offsetParamRaw) : undefined;
+      const offset = offsetParam !== undefined && Number.isFinite(offsetParam) && offsetParam > 0
+        ? Math.floor(offsetParam)
+        : 0;
       // Response cache (TASK: whale-CAS /conceptual 524s): the payload below is
       // a pure function of the stored CAS + (target, include). Fresh compute on
       // a 45k-node CAS costs seconds of synchronous CPU (CAS JSON parse +
@@ -2920,7 +2955,9 @@ async function handleAccountApi(
         // maxFlows must be in the cache key: two requests differing only by
         // max_flows produce different flow counts/truncation and must not
         // share a cached body (would silently serve a stale-cap response).
-        params: { target, include, maxFlows: String(maxFlows) },
+        // offset joins maxFlows in the cache key for the identical reason: two
+        // requests differing only by page must not share a cached body.
+        params: { target, include, maxFlows: String(maxFlows), offset: String(offset) },
       });
       if (cacheKey) {
         const cached = casReadResponseCache.get(cacheKey);
@@ -2961,7 +2998,7 @@ async function handleAccountApi(
           return [];
         }
       })();
-      const flowConcepts = getFlowConcepts(cas, { target, maxFlows, surface: 'http', detail: include === 'full' ? 'full' : 'compact', runtimeMetrics });
+      const flowConcepts = getFlowConcepts(cas, { target, maxFlows, offset, surface: 'http', detail: include === 'full' ? 'full' : 'compact', runtimeMetrics });
       // Endpoint projection (re-validation F1): D2 facet_provenance + D1
       // code_mappings inflated per-flow weight ~3-4x (whale payload 96KB+ at 20
       // flows). The web UI renders neither yet — strip them from THIS projection
