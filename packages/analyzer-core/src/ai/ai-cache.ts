@@ -63,7 +63,7 @@ export class AICache {
   private readonly CACHE_VERSION = '1.0.0';
   private readonly MAX_FALLBACK_SIZE = 1000;
   private readonly diskCacheDir: string =
-    path.join(os.homedir() || os.tmpdir(), '.klauro', 'ai-cache');
+    process.env.KLAURO_AI_CACHE_PATH?.trim() || path.join(os.homedir() || os.tmpdir(), '.klauro', 'ai-cache');
   private diskCacheEnabled = true;
 
   constructor() {

@@ -94,9 +94,20 @@ import { describeValidationRules, type ValidationContractField } from '../librar
 import { classifyCommunicationSeams, mergeSeams } from './communication-seams';
 import { deriveConsistencyModel, toCommunicationSeams } from './consistency-model';
 import { collectCoverageGaps } from './coverage-gaps';
-import { ChangeDetector } from './change-detector';
+import { ChangeDetector, PROJECT_SCOPE_TRIGGER_PATTERNS } from './change-detector';
+import {
+  computeGraphAffectedFileClosure,
+  filesRequiringIncrementalAnalysis,
+  normalizeIncrementalStateImports,
+  remapIncrementalNodeReferences,
+} from './incremental-impact';
 import { getBuildIdentity } from './build-identity';
 import { getStageFingerprints } from './stage-fingerprint';
+import {
+  PersistentAnalyzerContributionCache,
+  type AnalyzerContributionCacheEvidence,
+  stableAnalyzerCacheIdentity,
+} from './analyzer-contribution-cache';
 import { buildUserJourneys } from './journey-builder';
 import { buildTerminalSignal, type TerminalSignal } from './terminal-signal';
 import { TRACEABLE_NODE_TYPES, computeFlowConcepts } from './flow-concepts';
@@ -136,6 +147,7 @@ import { GitAnalyzer } from './git-analyzer';
 import { detectCodebaseIdioms } from './idiom-detector';
 import { AnalysisRunLog } from './run-log';
 import { withAnalyzerFileReadCache, getDebugCacheStats } from './analyzer-file-read-cache';
+import { semanticPackIdentityForProject } from '../packs/pack-loader';
 import { EmbeddingPhase, type EmbeddingPhaseConfig } from '../embedding/embedding-phase';
 import { aiService } from '../../ai/ai-service';
 import { recordSemanticDecision } from '../../ai/semantic-dataset';
@@ -153,6 +165,8 @@ import { cachedGlob as glob, beginGlobRun, endGlobRun } from './glob-cache';
 import { yieldToEventLoop, createYieldBudget } from './event-loop-yield';
 import { globSync } from 'glob';
 import * as path from 'path';
+import * as crypto from 'crypto';
+import * as nativeFs from 'node:fs/promises';
 
 /**
  * Run an async worker over `items` with a bounded number in flight at once,
@@ -227,6 +241,21 @@ export interface AnalyzerRegistration {
   requires?: string[];
   enhances?: string[];
   analyzer: BaseAnalyzer;
+}
+
+interface AnalysisMergeTarget {
+  allNodes: CASNode[];
+  allEdges: CASEdge[];
+  allEntryPoints: any[];
+  allExitPoints: any[];
+}
+
+interface AnalysisMergeIndexes {
+  nodesById: Map<string, CASNode>;
+  edgesById: Map<string, CASEdge>;
+  entryPointsById: Map<string, any>;
+  entryPointsByCanonicalKey: Map<string, any>;
+  exitPointsById: Map<string, any>;
 }
 
 export interface AnalysisProgressEvent {
@@ -355,6 +384,8 @@ interface DescriptionTarget {
   evidenceSummary?: string[];
   relatedEntities?: string[];
   relatedDomains?: string[];
+  readOnly?: boolean;
+  artifactType?: string;
   lifecycle?: {
     creates: number;
     reads: number;
@@ -463,6 +494,13 @@ export class AnalyzerOrchestrator {
   private manifestOwningProjectRoots: Set<string> = new Set();
   private analyzerRootMap: Map<string, string> = new Map();
   private manifestFileCache: Map<string, string[]> = new Map();
+  private manifestEvidenceCache: Map<string, Promise<{ dependencyNames: string[]; contents: string[] }>> = new Map();
+  private analyzerContributionCache?: PersistentAnalyzerContributionCache;
+  private analyzerContributionDigestCache = new Map<string, Promise<{ sourceIdentity: string; sourceContentHash: string }>>();
+  private analyzerContributionFileSetDigestCache = new Map<string, Promise<string>>();
+  private analyzerContributionCacheEvidence = new Map<string, AnalyzerContributionCacheEvidence>();
+  private analyzerContextEvidenceDigestCache = new WeakMap<object, string>();
+  private activeSemanticPackIdentity: readonly string[] = [];
   private nestedRepoIgnoreCache: Map<string, string[]> = new Map();
   private detectedAnalyzerCache: Map<string, DetectedAnalyzerCacheEntry> = new Map();
   private sourceFileInventoryCache: Map<string, SourceFileInventory> = new Map();
@@ -474,6 +512,7 @@ export class AnalyzerOrchestrator {
   private activeArtifactType: CASArtifactType | null = null;
   private klauroSelfProjectCache: Map<string, boolean> = new Map();
   private bundledFrontendRootsCache: Map<string, string[]> = new Map();
+  private primaryProductPathCache: Map<string, boolean> = new Map();
   /**
    * System-level grounding vocabulary (primary domain, core concepts,
    * deterministic overview) for the element description validator. Set by the
@@ -481,6 +520,7 @@ export class AnalyzerOrchestrator {
    * grounded-words-allowed treatment as the system description validator.
    */
   private elementDescriptionGroundingVocabulary: string[] = [];
+  private elementDescriptionArtifactType?: string;
   private static aiInterpretationTimeouts = 0;
   private static aiInterpretationDisabledUntil = 0;
 
@@ -533,6 +573,12 @@ export class AnalyzerOrchestrator {
 
   configureEmbedding(config: EmbeddingPhaseConfig | null): void {
     this.embeddingPhaseConfig = config;
+  }
+
+  configureAnalyzerContributionCache(rootPath?: string): void {
+    this.analyzerContributionCache = rootPath?.trim()
+      ? new PersistentAnalyzerContributionCache({ rootPath })
+      : undefined;
   }
 
   private async applyEmbeddingPhase(output: CASOutput, projectPath: string): Promise<void> {
@@ -1094,6 +1140,7 @@ export class AnalyzerOrchestrator {
     const cacheKey = path.resolve(projectPath);
     this.detectedAnalyzerCache.delete(cacheKey);
     this.manifestFileCache.delete(projectPath);
+    this.manifestEvidenceCache.delete(projectPath);
     this.nestedRepoIgnoreCache.delete(projectPath);
     this.sourceFileInventoryCache.delete(cacheKey);
   }
@@ -1109,7 +1156,9 @@ export class AnalyzerOrchestrator {
     // analyzers directly keep hitting real/mocked glob with no caching).
     const globRun = beginGlobRun();
     try {
-      return await this.executeAnalysis(projectPath, analysisId, runLog, options);
+      return await withAnalyzerFileReadCache(
+        () => this.executeAnalysis(projectPath, analysisId, runLog, options)
+      );
     } catch (error) {
       runLog.fail(error);
       throw error;
@@ -1282,17 +1331,34 @@ export class AnalyzerOrchestrator {
 
   private async executeAnalysis(projectPath: string, analysisId: string, runLog: AnalysisRunLog, options?: OrchestrateAnalysisOptions): Promise<CASOutput> {
     const startTime = Date.now();
+    const cpuUsageStart = process.cpuUsage();
     const timings: Record<string, number> = {};
     // Per-phase started_at/duration_ms, keyed the same as `timings` — the raw
     // material for `output.timings` and the started_at/duration_ms stamped
     // onto `analysis_phases` below (see buildTimingsBlock/stampPhaseTimings).
     // Purely additive bookkeeping alongside the existing `timings` map and
     // runLog.recordPhase call; never influences what gets analyzed.
-    const phaseTimingRecords: Record<string, { started_at: string; duration_ms: number }> = {};
+    const phaseTimingRecords: Record<string, { started_at: string; duration_ms: number; cpu_duration_ms?: number }> = {};
+    const phaseCpuStarts = new Map<number, NodeJS.CpuUsage[]>();
+    const startPhase = (): number => {
+      const startedAt = Date.now();
+      const starts = phaseCpuStarts.get(startedAt) || [];
+      starts.push(process.cpuUsage());
+      phaseCpuStarts.set(startedAt, starts);
+      return startedAt;
+    };
     let progressSequence = 0;
     const logTiming = (phase: string, start: number) => {
       timings[phase] = Date.now() - start;
-      phaseTimingRecords[phase] = { started_at: new Date(start).toISOString(), duration_ms: timings[phase] };
+      const starts = phaseCpuStarts.get(start);
+      const cpuStart = starts?.shift();
+      if (starts?.length === 0) phaseCpuStarts.delete(start);
+      const cpu = cpuStart ? process.cpuUsage(cpuStart) : undefined;
+      phaseTimingRecords[phase] = {
+        started_at: new Date(start).toISOString(),
+        duration_ms: timings[phase],
+        cpu_duration_ms: cpu ? Math.round((cpu.user + cpu.system) / 1000) : undefined,
+      };
       runLog.recordPhase(phase, start, timings[phase]);
       options?.onProgress?.({
         sequence: ++progressSequence,
@@ -1311,6 +1377,12 @@ export class AnalyzerOrchestrator {
     // orchestrator stays decoupled from any single pattern analyzer. When no
     // globs are provided this is a no-op and only built-in packs are consulted.
     this.applyLocalPackGlobs(options?.packGlobs ?? []);
+    this.activeSemanticPackIdentity = Object.freeze(
+      await semanticPackIdentityForProject(projectPath, options?.packGlobs ?? [])
+    );
+    this.analyzerContributionDigestCache.clear();
+    this.analyzerContributionFileSetDigestCache.clear();
+    this.analyzerContributionCacheEvidence.clear();
 
     // Perf: 120+ framework/library analyzers each independently glob() the
     // project and fs.readFile() every matched source file, even though many
@@ -1322,13 +1394,14 @@ export class AnalyzerOrchestrator {
     // that does filesystem-scanning analyzer work), with zero changes to any
     // analyzer call site — see analyzer-file-read-cache.ts for the safety
     // argument (read-only patch, scoped, always restored).
-    let phaseStart = Date.now();
+    let phaseStart = startPhase();
     const { detectedAnalyzers, context } = await withAnalyzerFileReadCache(async () => {
       const detected = await this.detectAnalyzers(projectPath);
       logTiming('detectAnalyzers', phaseStart);
       await yieldToEventLoop();
       const ctx: AnalysisContext = {
         projectPath,
+        analysisRootPath: projectPath,
         filters: await this.getAnalysisContextFilters(projectPath)
       };
       return { detectedAnalyzers: detected, context: ctx };
@@ -1346,11 +1419,17 @@ export class AnalyzerOrchestrator {
     const categories: CASCategories = {};
     const contributions: any[] = [];
     const analysisErrors: CASAnalysisError[] = [];
+    const mergeIndexes = this.createAnalysisMergeIndexes({
+      allNodes,
+      allEdges,
+      allEntryPoints,
+      allExitPoints,
+    });
 
     const accumulators = {
       allNodes, allEdges, allEntryPoints, allExitPoints,
       allBehaviors, allPatterns, allTags, allPerspectives,
-      allLibraries, categories, contributions, analysisErrors
+      allLibraries, categories, contributions, analysisErrors, mergeIndexes
     };
 
     this.collectProjectReadabilityWarnings(projectPath, analysisErrors);
@@ -1367,7 +1446,7 @@ export class AnalyzerOrchestrator {
     // set). Keeping them under one `withAnalyzerFileReadCache` means the
     // framework/library phase gets free cache hits for anything already read.
     await withAnalyzerFileReadCache(async () => {
-    phaseStart = Date.now();
+    phaseStart = startPhase();
     for (const registration of languageAnalyzers) {
       try {
         const langStart = Date.now();
@@ -1389,7 +1468,7 @@ export class AnalyzerOrchestrator {
     logTiming('languageAnalyzers', phaseStart);
     await yieldToEventLoop();
 
-    phaseStart = Date.now();
+    phaseStart = startPhase();
     if (parallelAnalyzers.length > 0) {
       const languageSnapshot: CASContribution = {
         nodes: [...allNodes],
@@ -1425,6 +1504,7 @@ export class AnalyzerOrchestrator {
           const analyzerContext: AnalysisContext = {
             ...context,
             projectPath: matchedRoot,
+            analysisRootPath: projectPath,
             filters: [
               ...(context.filters || []),
               ...scopedFilters
@@ -1432,7 +1512,7 @@ export class AnalyzerOrchestrator {
             existingAnalysis: [languageSnapshot]
           };
 
-          const result = await registration.analyzer.analyze(analyzerContext);
+          const result = await this.analyzeWithContributionCache(registration, analyzerContext, projectPath);
           const executionTime = Date.now() - analyzerStartTime;
 
           if (matchedRoot !== projectPath) {
@@ -1470,7 +1550,7 @@ export class AnalyzerOrchestrator {
         await this.mergeAnalysisResult(
           { allNodes, allEdges, allEntryPoints, allExitPoints },
           result,
-          { analyzerId: registration.id, analysisErrors }
+          { analyzerId: registration.id, analysisErrors, mergeIndexes }
         );
 
         if (result.behaviors) allBehaviors.push(...result.behaviors);
@@ -1498,6 +1578,7 @@ export class AnalyzerOrchestrator {
           analyzer_type: registration.type,
           contribution_type: registration.type,
           execution_time_ms: executionTime,
+          cache_status: this.analyzerContributionCacheEvidence.get(registration.id)?.status,
           nodes_created: result.nodes?.length || 0,
           files_created: this.countDistinctSourceFiles(result.nodes, projectPath),
           edges_created: result.edges?.length || 0,
@@ -1539,7 +1620,8 @@ export class AnalyzerOrchestrator {
       console.error('[Klauro] file-read-cache stats:', JSON.stringify(getDebugCacheStats()));
     }
 
-    phaseStart = Date.now();
+    phaseStart = startPhase();
+    this.removeTestEntryPoints(allNodes, allEdges, allEntryPoints);
     this.dedupeUtilNodeDuplicates(allNodes, allEdges);
     // Full node-twin merge (file+class+member identity) BEFORE
     // linkRouteHandlers, so the route-handler twin-bridge below sees an
@@ -1550,8 +1632,8 @@ export class AnalyzerOrchestrator {
     this.linkRouteHandlers(allNodes, allEdges, allEntryPoints);
     this.linkHookUsageFetchers(allNodes, allEdges);
     this.addDiscoveredEntryPoints(projectPath, allNodes, allEntryPoints, allEdges);
-    this.dedupeHttpEntryPoints(allEntryPoints);
-    this.dedupeEntryPointTwins(allEntryPoints);
+    this.dedupeHttpEntryPoints(allEntryPoints, projectPath);
+    this.dedupeEntryPointTwins(allEntryPoints, projectPath);
     this.normalizeNodeMetrics(allNodes);
     this.applyCanonicalOrdering(allNodes, allEdges, allEntryPoints, allExitPoints, allLibraries);
     logTiming('pp_linkRouteHandlers', phaseStart);
@@ -1587,7 +1669,7 @@ export class AnalyzerOrchestrator {
         }
       }
       if (conventionsResult.entry_points.length > 0) {
-        this.dedupeHttpEntryPoints(allEntryPoints);
+        this.dedupeHttpEntryPoints(allEntryPoints, projectPath);
       }
     } catch (error) {
       console.error('[Klauro] conventions-applier pass failed:', error);
@@ -1599,12 +1681,12 @@ export class AnalyzerOrchestrator {
     // linkRouteHandlers (needs ep.handler.node_id resolved) and the conventions
     // pass (so declared entry points are covered too). Evidence-gated on a real
     // handler param TYPE matching a real validation_contract DTO name.
-    phaseStart = Date.now();
+    phaseStart = startPhase();
     this.liftValidationToEntryPoints(allNodes, allEntryPoints);
     logTiming('pp_liftValidation', phaseStart);
     await yieldToEventLoop();
 
-    phaseStart = Date.now();
+    phaseStart = startPhase();
     // Bootstrap value; upgraded below (once projectTextSignal.productDocTitle
     // is available) via resolveSystemDisplayName — see DEFECT (system name)
     // note there. Never reassigned once options.displayName was supplied.
@@ -1613,7 +1695,7 @@ export class AnalyzerOrchestrator {
     logTiming('pp_progressiveLevels', phaseStart);
     await yieldToEventLoop();
 
-    phaseStart = Date.now();
+    phaseStart = startPhase();
     const index = this.buildIndex(allNodes, allEntryPoints, allExitPoints, allPerspectives);
     logTiming('pp_buildIndex', phaseStart);
     await yieldToEventLoop();
@@ -1623,7 +1705,7 @@ export class AnalyzerOrchestrator {
       allLibraries.push(...detectedLibraries);
     }
 
-    phaseStart = Date.now();
+    phaseStart = startPhase();
     // Yield between builders: this phase measured a >1s contiguous stall on a
     // whale (76k nodes); the hops split it without changing any computation.
     const architectureSummary = this.buildArchitectureSummary(projectPath, allNodes, allEntryPoints, allExitPoints, contributions);
@@ -1643,16 +1725,16 @@ export class AnalyzerOrchestrator {
     logTiming('pp_detectPatterns', Date.now());
     await yieldToEventLoop();
 
-    phaseStart = Date.now();
+    phaseStart = startPhase();
     const intents = this.buildIntents(allNodes);
     logTiming('pp_buildIntents', phaseStart);
     await yieldToEventLoop();
 
-    phaseStart = Date.now();
+    phaseStart = startPhase();
     const flowSummary = this.buildFlowSummary(allNodes, allEntryPoints);
     logTiming('pp_flowSummary', phaseStart);
     await yieldToEventLoop();
-    phaseStart = Date.now();
+    phaseStart = startPhase();
     const dataEntities = this.enrichCuratedProductDataEntities(
       [...this.buildDataEntities(allNodes, allEdges, projectPath), ...declaredDataEntities],
       systemName,
@@ -1661,21 +1743,21 @@ export class AnalyzerOrchestrator {
     );
     logTiming('pp_dataEntities', phaseStart);
     await yieldToEventLoop();
-    phaseStart = Date.now();
+    phaseStart = startPhase();
     const dataSummary = this.buildDataSummary(dataEntities, allNodes);
     logTiming('pp_dataSummary', phaseStart);
     await yieldToEventLoop();
-    phaseStart = Date.now();
+    phaseStart = startPhase();
     const productEntryPointsForSecurity = this.filterPrimaryProductEntryPoints(allEntryPoints, allNodes, projectPath);
     const securityBoundaries = this.buildSecurityBoundaries(allNodes, allEntryPoints, projectPath, allEdges);
     logTiming('pp_securityBoundaries', phaseStart);
     await yieldToEventLoop();
-    phaseStart = Date.now();
+    phaseStart = startPhase();
     const securitySummary = this.buildSecuritySummary(securityBoundaries, allNodes, productEntryPointsForSecurity);
     logTiming('pp_securitySummary', phaseStart);
     await yieldToEventLoop();
 
-    phaseStart = Date.now();
+    phaseStart = startPhase();
     const gitAnalyzer = new GitAnalyzer(projectPath);
     let changeRisks: CASChangeRisk[] = [];
     let temporalStability: CASTemporalStability[] = [];
@@ -1698,7 +1780,7 @@ export class AnalyzerOrchestrator {
     logTiming('pp_gitAnalysis', phaseStart);
     await yieldToEventLoop();
 
-    phaseStart = Date.now();
+    phaseStart = startPhase();
     const changeRiskSummary = this.buildChangeRiskSummary(changeRisks);
     const stabilitySummary = this.buildStabilitySummary(temporalStability);
     const { capabilities: systemCapabilities, behaviorSurfaces } = await this.buildSystemCapabilities(allEntryPoints, dataEntities, allNodes, allEdges, projectPath);
@@ -1707,20 +1789,20 @@ export class AnalyzerOrchestrator {
     logTiming('pp_capabilities', phaseStart);
     await yieldToEventLoop();
 
-    phaseStart = Date.now();
+    phaseStart = startPhase();
     const callGraphBuilder = new CallGraphBuilder(allNodes, allEdges, allExitPoints);
     const callChains = this.buildCallChains(allNodes, allEdges, allEntryPoints, allExitPoints, callGraphBuilder, systemCapabilities);
     logTiming('pp_callGraph', phaseStart);
     await yieldToEventLoop();
 
-    phaseStart = Date.now();
+    phaseStart = startPhase();
     this.enrichNodeCallGraphs(allNodes, callGraphBuilder, allEntryPoints, allExitPoints);
     this.deriveParentFromContainsEdges(allNodes, allEdges);
     this.enrichNodePerspectives(allNodes, allPerspectives);
     logTiming('pp_enrichNodes', phaseStart);
     await yieldToEventLoop();
 
-    phaseStart = Date.now();
+    phaseStart = startPhase();
     // testSuites hoisted above flow coverage: the suites' coverage.nodes_tested
     // is the only populated test-to-code join on many repos (node.testing
     // .tested_by and test-entry connected_nodes are frequently empty), so the
@@ -1735,13 +1817,13 @@ export class AnalyzerOrchestrator {
     logTiming('pp_flowCoverage', phaseStart);
     await yieldToEventLoop();
 
-    phaseStart = Date.now();
+    phaseStart = startPhase();
     const domainExtractor = new DomainExtractor();
     const domainConcepts = domainExtractor.extract(allNodes, allEntryPoints, dataEntities, allEdges, projectPath);
     logTiming('pp_domainConcepts', phaseStart);
     await yieldToEventLoop();
 
-    phaseStart = Date.now();
+    phaseStart = startPhase();
     const workflowDetector = new WorkflowDetector();
     const workflows = workflowDetector.detectWorkflows(allEntryPoints, callChains, allNodes, allEdges, allExitPoints);
     workflowDetector.classifyWorkflows(workflows, domainConcepts);
@@ -1749,12 +1831,12 @@ export class AnalyzerOrchestrator {
     logTiming('pp_workflows', phaseStart);
     await yieldToEventLoop();
 
-    phaseStart = Date.now();
+    phaseStart = startPhase();
     const structuralImportance = this.computeAndStampStructuralImportance(allNodes, allEdges, allEntryPoints);
     logTiming('pp_structuralImportance', phaseStart);
     await yieldToEventLoop();
 
-    phaseStart = Date.now();
+    phaseStart = startPhase();
     const flowGraph = this.buildFlowGraph(
       allEntryPoints,
       callChains,
@@ -1769,14 +1851,14 @@ export class AnalyzerOrchestrator {
     logTiming('pp_flowGraph', phaseStart);
     await yieldToEventLoop();
 
-    phaseStart = Date.now();
+    phaseStart = startPhase();
     const enhancedChangeRisks = this.enhanceChangeRisks(changeRisks, callGraphBuilder, callChains, allEntryPoints);
     this.stampChainCriticalityFromStructuralImportance(callChains, allNodes, allEntryPoints);
     const enhancedFlowSummary = this.buildEnhancedFlowSummary(callChains, allEntryPoints);
     logTiming('pp_enhanceRisks', phaseStart);
     await yieldToEventLoop();
 
-    phaseStart = Date.now();
+    phaseStart = startPhase();
     const userJourneyResult = buildUserJourneys({
       nodes: allNodes,
       edges: allEdges,
@@ -1817,7 +1899,7 @@ export class AnalyzerOrchestrator {
       allBehaviors.push(...this.synthesizeBehaviorsFromJourneys(userJourneyResult.journeys));
     }
 
-    phaseStart = Date.now();
+    phaseStart = startPhase();
     const productEntryPointsForPurpose = this.filterPrimaryProductEntryPoints(allEntryPoints, allNodes, projectPath);
     await yieldToEventLoop();
     const entryPointSummary = this.summarizeEntryPoints(productEntryPointsForPurpose);
@@ -1876,7 +1958,7 @@ export class AnalyzerOrchestrator {
     logTiming('pp_enhancedPurpose', phaseStart);
     await yieldToEventLoop();
 
-    phaseStart = Date.now();
+    phaseStart = startPhase();
     const unanalyzedLanguages = this.scanUnanalyzedLanguages(projectPath);
     // Full declared-dependency manifest (Camp-B FACT): every dependency name
     // across every package.json/requirements/Cargo/go.mod/pyproject under the
@@ -1890,11 +1972,34 @@ export class AnalyzerOrchestrator {
     // manifest, so the AI comprehension prompt sees the defining dependencies
     // (e.g. ccxt/web3) even when no dedicated detector recognizes them. Names
     // only; the model interprets meaning.
+    const interpretedLibraryNames = this.libraryNamesForInterpretation(allLibraries);
+    const interpretedLibrarySet = new Set(interpretedLibraryNames.map(name => name.toLowerCase()));
+    const importUseCounts = new Map<string, number>();
+    for (const node of allNodes) {
+      if (node.type !== 'import') continue;
+      const source = String((node.metadata as any)?.source || '').toLowerCase();
+      if (!source) continue;
+      const packageRoot = source.startsWith('@')
+        ? source.split('/').slice(0, 2).join('/')
+        : source.split(/[/.]/)[0];
+      importUseCounts.set(packageRoot, (importUseCounts.get(packageRoot) || 0) + 1);
+      importUseCounts.set(source, (importUseCounts.get(source) || 0) + 1);
+    }
     const dependencyNamesForAI = Array.from(new Set([
-      ...this.libraryNamesForInterpretation(allLibraries),
+      ...interpretedLibraryNames,
       ...((dependencyManifest?.dependencies || []).map(dep => dep.name)),
-    ]));
-    phaseStart = Date.now();
+    ])).sort((left, right) => {
+      const score = (name: string): number => {
+        const normalized = name.toLowerCase();
+        const root = normalized.startsWith('@')
+          ? normalized.split('/').slice(0, 2).join('/')
+          : normalized.split(/[/.]/)[0];
+        return (interpretedLibrarySet.has(normalized) ? 10_000 : 0) +
+          (importUseCounts.get(normalized) || importUseCounts.get(root) || 0);
+      };
+      return score(right) - score(left) || left.localeCompare(right);
+    }).slice(0, 48);
+    phaseStart = startPhase();
     const nestedRepositories = await this.describeNestedRepositories(projectPath);
 
     // Deployable evidence is collected BEFORE the AI phase (it is a pure
@@ -1912,6 +2017,15 @@ export class AnalyzerOrchestrator {
       // not win here.
       displayName: systemName,
     });
+    const topLevelShipUnits = deployableEvidence.filter(item =>
+      item.tier === 1 && item.kind !== 'build-image' && !item.bundled_into
+    );
+    // Tier-2 server/bin surfaces are deployable candidates, not proof that a
+    // repository ships multiple units. Only Tier-1 ship artifacts may ground
+    // deployment-topology prose or architecture-shape claims.
+    const independentlyDeployableCount = topLevelShipUnits.length > 0
+      ? topLevelShipUnits.length
+      : undefined;
     await yieldToEventLoop();
 
     // The single blocking AI phase, wrapped so it can run inline (default) or be
@@ -1936,7 +2050,7 @@ export class AnalyzerOrchestrator {
         comprehensionDataEntities,
         projectTextSignal,
         comprehensionJourneys,
-        deployableEvidence.length,
+        independentlyDeployableCount,
         allNodes,
         allEdges,
         behaviorSurfaces,
@@ -1964,13 +2078,17 @@ export class AnalyzerOrchestrator {
       });
     };
 
-    if (!deferAiEnrichment) {
-      await runAiInterpretation();
-    }
-    logTiming('pp_aiInterpretation', phaseStart);
+    const aiInterpretationStartedAt = Date.now();
+    const aiInterpretationPromise = deferAiEnrichment
+      ? undefined
+      : runAiInterpretation().then(
+        () => ({ status: 'fulfilled' as const }),
+        reason => ({ status: 'rejected' as const, reason })
+      );
+    if (deferAiEnrichment) logTiming('pp_aiInterpretation', aiInterpretationStartedAt);
     await yieldToEventLoop();
 
-    phaseStart = Date.now();
+    phaseStart = startPhase();
     const methodCalls = this.buildMethodCalls(allNodes, allEdges);
     logTiming('pp_methodCalls', phaseStart);
     await yieldToEventLoop();
@@ -1980,7 +2098,7 @@ export class AnalyzerOrchestrator {
     // call graph ('calls' edges + resolved method_calls). Deterministic,
     // byte-stable, O(V+E)-ish build; consumers get near-O(1) transitive
     // reachability / affected-set queries instead of per-query walks.
-    phaseStart = Date.now();
+    phaseStart = startPhase();
     const reachabilityIndex = buildReachabilityIndexFromCas({
       nodes: allNodes,
       edges: allEdges,
@@ -1989,7 +2107,7 @@ export class AnalyzerOrchestrator {
     logTiming('pp_reachabilityIndex', phaseStart);
     await yieldToEventLoop();
 
-    phaseStart = Date.now();
+    phaseStart = startPhase();
     const allDecorators = this.buildAllDecorators(allNodes);
     const documentationSummary = this.buildDocumentationSummary(allNodes);
     const todosSummary = this.buildTodosSummary(allNodes);
@@ -1999,7 +2117,7 @@ export class AnalyzerOrchestrator {
     logTiming('pp_finalMetadata', phaseStart);
     await yieldToEventLoop();
 
-    phaseStart = Date.now();
+    phaseStart = startPhase();
     // testSuites built earlier (hoisted above the flow-coverage pass).
     const mocks = this.buildMocks(allNodes);
     const fixtures = this.buildFixtures(allNodes);
@@ -2009,7 +2127,7 @@ export class AnalyzerOrchestrator {
     logTiming('pp_testData', phaseStart);
     await yieldToEventLoop();
 
-    phaseStart = Date.now();
+    phaseStart = startPhase();
     // Yield between builders: pp_traceability measured a 3.3s contiguous stall
     // on a whale; hops between the (independent, order-preserved) builders
     // split it without changing any output.
@@ -2021,6 +2139,12 @@ export class AnalyzerOrchestrator {
     await yieldToEventLoop();
     const distributionUnits = this.buildDistributionUnits(projectPath, allNodes);
     await yieldToEventLoop();
+    if (aiInterpretationPromise) {
+      const aiOutcome = await aiInterpretationPromise;
+      if (aiOutcome.status === 'rejected') throw aiOutcome.reason;
+      logTiming('pp_aiInterpretation', aiInterpretationStartedAt);
+      await yieldToEventLoop();
+    }
     // deployableEvidence collected earlier (hoisted above the AI phase so the
     // description gate can corroborate architecture-shape claims).
     const analysisFacts = await this.buildAnalysisFacts(
@@ -2066,7 +2190,7 @@ export class AnalyzerOrchestrator {
     logTiming('pp_traceability', phaseStart);
     await yieldToEventLoop();
 
-    phaseStart = Date.now();
+    phaseStart = startPhase();
     // Final-assembly bare-noun sweep — BEFORE the entry-point/capability
     // linking below so a dropped capability never leaves a dangling reference.
     // Covers the deferred-AI path (the CAS is assembled BEFORE the deferred
@@ -2074,7 +2198,7 @@ export class AnalyzerOrchestrator {
     // CAS); the inline path already swept at the end of applyAIInterpretation
     // — the sweep is idempotent. A deferred AI run later mutates these same
     // references and re-sweeps on completion.
-    this.finalizeSystemCapabilityNames(systemCapabilities);
+    this.finalizeSystemCapabilityNames(systemCapabilities, dataEntities);
     this.finalizeFlowGraphCapabilities(flowGraph);
     const entryPointsWithContractAndCapability = this.deriveEntryPointContractAndCapability(allEntryPoints, {
       nodes: allNodes,
@@ -2117,6 +2241,7 @@ export class AnalyzerOrchestrator {
         root_path: projectPath,
         technologies: {
           ...this.extractTechnologies(contributions, allLibraries, projectPath),
+          frameworks: frameworkNames.map(name => ({ name, confidence: 1 })),
           unanalyzed_languages: unanalyzedLanguages,
           ...(nestedRepositories.length > 0 ? { nested_repositories: nestedRepositories } : {}),
         },
@@ -2374,7 +2499,7 @@ export class AnalyzerOrchestrator {
           // landing above, since AI was deferred) — re-stamp/rebuild timings now
           // so the enriched CAS reports the actual AI cost, not the stub.
           this.stampPhaseTimings(output.analysis_phases, phaseTimingRecords);
-          output.timings = this.buildTimingsBlock(phaseTimingRecords, Date.now() - startTime, contributions);
+          output.timings = this.buildTimingsBlock(phaseTimingRecords, Date.now() - startTime, contributions, cpuUsageStart);
           output.system_purpose = {
             ...systemPurpose,
             primary_type: enhancedSystemPurpose.primary_type,
@@ -2395,7 +2520,7 @@ export class AnalyzerOrchestrator {
       output.ai_enrichment = 'synchronous';
     }
 
-    phaseStart = Date.now();
+    phaseStart = startPhase();
     await this.applyEmbeddingPhase(output, projectPath);
     logTiming('pp_embeddingAndFinalize', phaseStart);
     await yieldToEventLoop();
@@ -2408,7 +2533,7 @@ export class AnalyzerOrchestrator {
     if (output.analysis_phases) {
       this.stampPhaseTimings(output.analysis_phases, phaseTimingRecords);
     }
-    output.timings = this.buildTimingsBlock(phaseTimingRecords, Date.now() - startTime, contributions);
+    output.timings = this.buildTimingsBlock(phaseTimingRecords, Date.now() - startTime, contributions, cpuUsageStart);
 
     const sourceFiles = new Set<string>();
     for (const node of output.nodes) {
@@ -2443,6 +2568,19 @@ export class AnalyzerOrchestrator {
     this.activeAnalysisProjectPath = projectPath;
     const changeDetector = new ChangeDetector(projectPath);
     const changeSet = await changeDetector.detectChanges(previousState);
+    if (previousState) {
+      const graphAffectedFiles = computeGraphAffectedFileClosure({
+        changedFiles: [...changeSet.added, ...changeSet.modified, ...changeSet.deleted],
+        nodes: previousOutput.nodes,
+        edges: previousOutput.edges,
+        projectPath,
+      });
+      const directChanges = new Set([...changeSet.added, ...changeSet.modified, ...changeSet.deleted]);
+      changeSet.affectedFiles = [...new Set([
+        ...(changeSet.affectedFiles || []),
+        ...graphAffectedFiles,
+      ])].filter(filePath => !directChanges.has(filePath)).sort();
+    }
     const schemaRebuildReason = this.fullRebuildReasonForPreviousOutput(previousOutput);
 
     if (schemaRebuildReason) {
@@ -2654,11 +2792,30 @@ export class AnalyzerOrchestrator {
   private previousDescriptionNeedsCurrentValidation(previousOutput: CASOutput): boolean {
     const description = previousOutput.enhanced_system_purpose?.inferred_description || '';
     const domain = previousOutput.enhanced_system_purpose?.primary_domain || '';
+    const previousOperations = (previousOutput.system_capabilities || []).flatMap(capability => capability.operations || []);
+    const previousHasRead = previousOperations.some(operation =>
+      /^(?:view|read|list|get|show|access|analyze|review)$/i.test(operation.action || '') ||
+      /^(?:GET|HEAD|OPTIONS)$/i.test(operation.trigger?.method || '')
+    );
+    const previousHasMutation = previousOperations.some(operation =>
+      /^(?:create|update|delete|write|modify|submit|configure|manage|mutate)$/i.test(operation.action || '') ||
+      /^(?:POST|PUT|PATCH|DELETE)$/i.test(operation.trigger?.method || '')
+    );
     if (this.previousDescriptionHasUnsupportedExternalClaim(previousOutput)) return true;
+    if (previousHasRead && !previousHasMutation &&
+      /\b(?:creat(?:e|es|ing|ion)|updat(?:e|es|ing)|delet(?:e|es|ing|ion)|writ(?:e|es|ing)|modif(?:y|ies|ying|ication)|submits?|configur(?:e|es|ing|ation)|manag(?:e|es|ing|ement)|mutat(?:e|es|ing|ion))\b/i.test(description)) {
+      return true;
+    }
     if (/\b(?:manages|coordinates?)\s+[^.]{3,140}\s+workflows\b/i.test(description) ||
       /\bworkflows?\s+to\s+produce\s+and\s+manage\b/i.test(description) ||
       /\bmain grounded concepts are\b/i.test(description) ||
-      /\bservice records?\b/i.test(description)) {
+      /\bservice records?\b/i.test(description) ||
+      /\bhttp requests?\b|\b(?:dedicated|specific|internal|route|request)?\s*handlers?\b/i.test(description) ||
+      /\b(?:utiliz(?:e|es|ing)|leverag(?:e|es|ing))\s+(?:frameworks?|libraries?)\b/i.test(description) ||
+      /\bframeworks?\s+(?:like|such as)\b/i.test(description) ||
+      /\bbuilt\s+using\s+(?:a\s+)?combination\s+of\s+frameworks?\b/i.test(description) ||
+      /\bgraph evidence\b/i.test(description) ||
+      /\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/.test(description)) {
       return true;
     }
     // Structural staleness test (residual cleanup after c611d08c): the
@@ -2721,6 +2878,31 @@ export class AnalyzerOrchestrator {
     const detectedAnalyzers = await this.detectAnalyzers(projectPath);
     debugIncrementalPhase('detect-analyzers');
     await yieldToEventLoop();
+    const currentAnalyzerVersions = Object.fromEntries(
+      detectedAnalyzers.map(registration => [registration.id, registration.version || '1.0.0'])
+    );
+    const previousAnalyzerVersions = previousState.analyzerVersions || {};
+    const currentRegistryFingerprint = this.analyzerRegistryFingerprint(this.analyzers.values());
+    if (previousState.analyzerRegistryFingerprint !== currentRegistryFingerprint) {
+      const output = await this.orchestrateAnalysis(projectPath, { displayName: options?.displayName });
+      return {
+        output,
+        fileResults: new Map(),
+        wasFullRebuild: true,
+        fullRebuildReason: 'Analyzer registry changed',
+      };
+    }
+    const analyzerSetChanged = stableAnalyzerCacheIdentity(currentAnalyzerVersions) !==
+      stableAnalyzerCacheIdentity(previousAnalyzerVersions);
+    if (analyzerSetChanged) {
+      const output = await this.orchestrateAnalysis(projectPath, { displayName: options?.displayName });
+      return {
+        output,
+        fileResults: new Map(),
+        wasFullRebuild: true,
+        fullRebuildReason: 'Detected analyzer set or version changed',
+      };
+    }
     const incrementalAnalyzers = detectedAnalyzers.filter(
       r => r.analyzer.supportsIncrementalAnalysis?.() && r.analyzer.analyzeFileSingle
     );
@@ -2735,7 +2917,7 @@ export class AnalyzerOrchestrator {
       };
     }
 
-    const filesToAnalyze = [...changeSet.added, ...changeSet.modified];
+    const filesToAnalyze = filesRequiringIncrementalAnalysis(changeSet);
     const candidateIncrementalAnalyzers = incrementalAnalyzers.filter(registration =>
       filesToAnalyze.some(filePath => this.analyzerCanHandleFile(registration.id, filePath))
     );
@@ -2798,6 +2980,7 @@ export class AnalyzerOrchestrator {
       };
     }
 
+    const projectScopedAnalyzerIds = new Set<string>();
     const filesWithUnsupportedDerivedFacts = filesToAnalyze.filter(relativePath => {
       const record = previousState.files[relativePath];
       if (!record) return false;
@@ -2817,6 +3000,7 @@ export class AnalyzerOrchestrator {
 
         for (const analyzerId of nodeAnalyzers) {
           if (analyzerId && !coveredAnalyzers.has(analyzerId)) {
+            projectScopedAnalyzerIds.add(analyzerId);
             return true;
           }
         }
@@ -2846,8 +3030,12 @@ export class AnalyzerOrchestrator {
       }
     }
 
-    for (const modifiedFile of changeSet.modified) {
-      const record = previousState.files[modifiedFile];
+    const invalidatedFiles = new Set([
+      ...changeSet.modified,
+      ...(changeSet.affectedFiles || []),
+    ]);
+    for (const invalidatedFile of invalidatedFiles) {
+      const record = previousState.files[invalidatedFile];
       if (record) {
         record.nodeIds.forEach(id => deletedNodeIds.add(id));
         record.edgeIds.forEach(id => deletedEdgeIds.add(id));
@@ -2909,17 +3097,17 @@ export class AnalyzerOrchestrator {
             for (const { registration } of matchingPlans) {
               if (!registration.analyzer.analyzeFileSingle) continue;
 
-              const cacheKey = `${registration.id}_${contentHash}`;
+              const fileContext: FileAnalysisContext = {
+                filePath: fullPath,
+                relativePath,
+                projectPath,
+                contentHash,
+                existingAnalysis: [previousSnapshot]
+              };
+              const cacheKey = this.incrementalFileCacheKey(registration, fileContext);
               let result = options?.loadCache ? await options.loadCache(cacheKey) : null;
               if (!result) {
-                const context: FileAnalysisContext = {
-                  filePath: fullPath,
-                  relativePath,
-                  projectPath,
-                  contentHash,
-                  existingAnalysis: [previousSnapshot]
-                };
-                result = await registration.analyzer.analyzeFileSingle(context);
+                result = await registration.analyzer.analyzeFileSingle(fileContext);
 
                 if (options?.saveCache && result) {
                   await options.saveCache(cacheKey, result);
@@ -2980,26 +3168,32 @@ export class AnalyzerOrchestrator {
     debugIncrementalPhase('retain-stable-missing-facts');
     await yieldToEventLoop();
 
-    const localizedOutput = this.tryBuildLocalizedIncrementalOutput(
-      previousOutput,
-      previousState,
-      changeSet,
-      fileResults
-    );
-    debugIncrementalPhase('try-localized-output');
-    await yieldToEventLoop();
-    if (localizedOutput) {
-      return { output: localizedOutput, fileResults };
-    }
-
     if (filesWithUnsupportedDerivedFacts.length > 0) {
       const output = await this.orchestrateAnalysis(projectPath, { displayName: options?.displayName });
       return {
         output,
         fileResults: new Map(),
         wasFullRebuild: true,
-        fullRebuildReason: `Changed files have derived analyzer facts without single-file support: ${filesWithUnsupportedDerivedFacts.slice(0, 5).join(', ')}`
+        fullRebuildReason: `Changed files affect project-scoped analyzer contributions: ${[...projectScopedAnalyzerIds].sort().join(', ')}`,
       };
+    }
+
+    remapIncrementalNodeReferences({
+      projectPath,
+      previousNodes: previousOutput.nodes,
+      nodes: filteredNodes,
+      edges: filteredEdges,
+      entryPoints: filteredEntryPoints,
+      exitPoints: filteredExitPoints,
+    });
+
+    const localizedOutput = filesWithUnsupportedDerivedFacts.length === 0
+      ? this.tryBuildLocalizedIncrementalOutput(previousOutput, previousState, changeSet, fileResults)
+      : undefined;
+    debugIncrementalPhase('try-localized-output');
+    await yieldToEventLoop();
+    if (localizedOutput) {
+      return { output: localizedOutput, fileResults };
     }
 
     if (this.isStructuralNoopIncremental(previousOutput, previousState, changeSet, fileResults)) {
@@ -3041,8 +3235,22 @@ export class AnalyzerOrchestrator {
       .filter((n): n is CASNode & { source: { file: string } } => !!n.source?.file)
       .map(n => n.source.file);
     gitAnalyzer.preloadAllFileMetrics(filePathsForGit);
+    // Incremental assembly must execute the same analyzer-agnostic graph
+    // normalization contract as a cold analysis. Framework analyzers often
+    // register a route node while language analyzers own the concrete handler
+    // and cross-file call chain; linking only on the cold path silently turns
+    // an edited route into a dead end.
+    this.removeTestEntryPoints(nodes, edges, entryPoints);
+    this.dedupeUtilNodeDuplicates(nodes, edges);
+    this.resolveNodeTwins(nodes, edges, entryPoints, exitPoints);
+    this.applyCanonicalOrdering(nodes, edges, entryPoints, exitPoints, previousOutput.libraries || []);
+    this.linkRouteHandlers(nodes, edges, entryPoints);
+    this.linkHookUsageFetchers(nodes, edges);
     this.addDiscoveredEntryPoints(projectPath, nodes, entryPoints, edges);
+    this.dedupeHttpEntryPoints(entryPoints, projectPath);
+    this.dedupeEntryPointTwins(entryPoints, projectPath);
     this.normalizeNodeMetrics(nodes);
+    this.applyCanonicalOrdering(nodes, edges, entryPoints, exitPoints, previousOutput.libraries || []);
 
     const categories = previousOutput.categories || {};
     // Bootstrap value; upgraded below via resolveSystemDisplayName once
@@ -3173,6 +3381,12 @@ export class AnalyzerOrchestrator {
       exitPoints,
       displayName: systemName,
     });
+    const incrementalTopLevelShipUnits = deployableEvidence.filter(item =>
+      item.tier === 1 && item.kind !== 'build-image' && !item.bundled_into
+    );
+    const incrementalDeployableCount = incrementalTopLevelShipUnits.length > 0
+      ? incrementalTopLevelShipUnits.length
+      : undefined;
     const analysisFacts = await this.buildAnalysisFacts(
       nodes,
       edges,
@@ -3250,6 +3464,12 @@ export class AnalyzerOrchestrator {
       buildTerminalSignal({ journeys: incrComprehensionJourneys, systemCapabilities }),
       exitPoints
     );
+    const incrementalCapabilityCandidates = systemCapabilities.map(capability => ({
+      ...capability,
+      related_domains: [...(capability.related_domains || [])],
+      related_entities: [...(capability.related_entities || [])],
+      operations: [...(capability.operations || [])],
+    }));
     if (this.shouldRefreshAIInterpretation(
       previousOutput,
       systemName,
@@ -3257,7 +3477,6 @@ export class AnalyzerOrchestrator {
       incrEntryPointSummary,
       incrDbEntityNames,
       incrExternalServiceNames,
-      flowGraph,
       domainConcepts,
       systemCapabilities
     )) {
@@ -3276,12 +3495,18 @@ export class AnalyzerOrchestrator {
         incrComprehensionDataEntities,
         incrProjectTextSignal,
         incrComprehensionJourneys,
-        deployableEvidence.length,
+        incrementalDeployableCount,
         nodes,
         edges,
         behaviorSurfaces,
         entryPoints
       );
+      const stabilizedCapabilities = this.stabilizeRefreshedCapabilityCatalog(
+        previousOutput.system_capabilities || [],
+        incrementalCapabilityCandidates,
+        systemCapabilities,
+      );
+      systemCapabilities.splice(0, systemCapabilities.length, ...stabilizedCapabilities);
     } else if (
       previousOutput.enhanced_system_purpose?.inferred_description &&
       !this.previousDescriptionNeedsCurrentValidation(previousOutput)
@@ -3293,27 +3518,24 @@ export class AnalyzerOrchestrator {
         attempted: false,
         reason: previousOutput.enhanced_system_purpose.description_generation?.status,
         generated_at: new Date().toISOString(),
+        origin_source: previousOutput.enhanced_system_purpose.description_generation?.origin_source
+          || (previousOutput.enhanced_system_purpose.description_source === 'ai' ? 'ai'
+            : previousOutput.enhanced_system_purpose.description_source === 'manual' ? 'manual'
+              : previousOutput.enhanced_system_purpose.description_source === 'deterministic' ? 'deterministic'
+                : previousOutput.enhanced_system_purpose.description_generation?.reason === 'ai_applied' ? 'ai'
+                  : undefined),
       };
-      if (previousOutput.enhanced_system_purpose.domain_source === 'ai' && previousOutput.enhanced_system_purpose.primary_domain) {
+      enhancedSystemPurpose.ai_input_fingerprint = previousOutput.enhanced_system_purpose.ai_input_fingerprint;
+      if (['ai', 'ai-refined', 'reused'].includes(previousOutput.enhanced_system_purpose.domain_source || '') &&
+        previousOutput.enhanced_system_purpose.primary_domain) {
         enhancedSystemPurpose.primary_domain = previousOutput.enhanced_system_purpose.primary_domain;
         enhancedSystemPurpose.domain_source = 'reused';
       }
-      const previousCapabilities = new Map((previousOutput.system_capabilities || []).map(capability => [capability.id, capability]));
-      for (const capability of systemCapabilities) {
-        const previous = previousCapabilities.get(capability.id);
-        if (previous?.description &&
-          this.capabilityReuseSubjectsMatch(previous, capability) &&
-          (previous.description_source === 'ai' || previous.description_source === 'manual' || previous.description_source === 'reused')) {
-          capability.description = previous.description;
-          capability.description_source = 'reused';
-          capability.description_generation = {
-            status: 'reused_previous',
-            attempted: false,
-            reason: previous.description_generation?.status,
-            generated_at: new Date().toISOString(),
-          };
-        }
-      }
+      const reusedCapabilities = this.reusePreviousCapabilityCatalog(
+        previousOutput.system_capabilities || [],
+        systemCapabilities,
+      );
+      systemCapabilities.splice(0, systemCapabilities.length, ...reusedCapabilities);
     }
 
     // Final-assembly bare-noun sweep for the incremental path: the reuse
@@ -3321,7 +3543,7 @@ export class AnalyzerOrchestrator {
     // AI branch may not have covered every candidate — either way, no further
     // pass is coming before this rebuilt CAS ships. Idempotent (the AI branch
     // already swept inside applyAIInterpretation).
-    this.finalizeSystemCapabilityNames(systemCapabilities);
+    this.finalizeSystemCapabilityNames(systemCapabilities, dataEntities);
     this.finalizeFlowGraphCapabilities(flowGraph);
 
     const entryPointsWithContractAndCapability = this.deriveEntryPointContractAndCapability(entryPoints, {
@@ -3437,6 +3659,10 @@ export class AnalyzerOrchestrator {
 
     rebuiltOutput.product_map = buildProductMap(rebuiltOutput);
     return rebuiltOutput;
+  }
+
+  createIncrementalBaseline(projectPath: string, output: CASOutput): IncrementalState {
+    return this.buildIncrementalState(projectPath, output, new ChangeDetector(projectPath));
   }
 
   private buildIncrementalState(
@@ -3555,6 +3781,8 @@ export class AnalyzerOrchestrator {
       analyzerVersions[contribution.analyzer_id] = contribution.analyzer_version || '1.0.0';
     }
 
+    normalizeIncrementalStateImports(files);
+
     return {
       version: INCREMENTAL_STATE_VERSION,
       projectPath,
@@ -3562,8 +3790,22 @@ export class AnalyzerOrchestrator {
       lastAnalysisTimestamp: Date.now(),
       gitCommitHash: changeDetector.getCurrentGitCommit(),
       files,
-      analyzerVersions
+      analyzerVersions,
+      analyzerRegistryFingerprint: this.analyzerRegistryFingerprint(this.analyzers.values()),
     };
+  }
+
+  private analyzerRegistryFingerprint(registrations: Iterable<AnalyzerRegistration>): string {
+    const registry = [...registrations].map(registration => ({
+      id: registration.id,
+      name: registration.name,
+      type: registration.type,
+      version: registration.version,
+      detectPatterns: registration.detectPatterns,
+      requires: [...(registration.requires || [])].sort(),
+      enhances: [...(registration.enhances || [])].sort(),
+    })).sort((left, right) => left.id.localeCompare(right.id));
+    return crypto.createHash('sha256').update(stableAnalyzerCacheIdentity(registry)).digest('hex');
   }
 
   private updateIncrementalState(
@@ -3593,6 +3835,8 @@ export class AnalyzerOrchestrator {
         exportedSymbols: fileResult.exports
       };
     }
+
+    normalizeIncrementalStateImports(files);
 
     return {
       ...previousState,
@@ -3774,7 +4018,12 @@ export class AnalyzerOrchestrator {
     changeSet: ChangeSet,
     fileResults: Map<string, FileAnalysisResult>
   ): CASOutput | null {
-    if (changeSet.added.length > 0 || changeSet.deleted.length > 0 || changeSet.modified.length === 0) {
+    if (
+      changeSet.added.length > 0 ||
+      changeSet.deleted.length > 0 ||
+      changeSet.modified.length === 0 ||
+      (changeSet.affectedFiles || []).length > 0
+    ) {
       return null;
     }
 
@@ -3820,6 +4069,8 @@ export class AnalyzerOrchestrator {
     const edges = [...edgeById.values()];
     const entryPoints = [...entryPointById.values()];
     const exitPoints = [...exitPointById.values()];
+    this.removeTestEntryPoints(nodes, edges, entryPoints);
+    this.applyCanonicalOrdering(nodes, edges, entryPoints, exitPoints, previousOutput.libraries || []);
     debugPhase('materialize-arrays');
     const index = this.buildIndex(nodes, entryPoints, exitPoints, previousOutput.perspectives || []);
     debugPhase('build-index');
@@ -3892,29 +4143,18 @@ export class AnalyzerOrchestrator {
           return { allowed: false, reason: `export set changed with added behavioral node for ${filePath}` };
         }
       }
-      const canPreserveDerivedFacts = true;
-
       const previousEntryPoints = record.entryPointIds
         .map(id => previousEntryPointsById.get(id))
         .filter((entryPoint): entryPoint is CASEntryPoint => Boolean(entryPoint));
       if (!this.sameFingerprint(previousEntryPoints, result.entryPoints, entryPoint => this.entryPointFingerprint(entryPoint))) {
-        const entryPointsStayOnExistingNodes = result.entryPoints.every(entryPoint =>
-          previousNodeIds.has(entryPoint.source_node) ||
-          Boolean(entryPoint.handler?.node_id && previousNodeIds.has(entryPoint.handler.node_id))
-        );
-        if (!(canPreserveDerivedFacts && entryPointsStayOnExistingNodes)) {
-          return { allowed: false, reason: `entry point fingerprint changed for ${filePath}` };
-        }
+        return { allowed: false, reason: `entry point fingerprint changed for ${filePath}` };
       }
 
       const previousExitPoints = record.exitPointIds
         .map(id => previousExitPointsById.get(id))
         .filter((exitPoint): exitPoint is CASExitPoint => Boolean(exitPoint));
       if (!this.sameFingerprint(previousExitPoints, result.exitPoints, exitPoint => this.exitPointFingerprint(exitPoint))) {
-        const exitPointsStayOnExistingNodes = result.exitPoints.every(exitPoint => previousNodeIds.has(exitPoint.source_node));
-        if (!(canPreserveDerivedFacts && exitPointsStayOnExistingNodes)) {
-          return { allowed: false, reason: `exit point fingerprint changed for ${filePath}` };
-        }
+        return { allowed: false, reason: `exit point fingerprint changed for ${filePath}` };
       }
 
       const previousBehavioralEdges = record.edgeIds
@@ -3923,12 +4163,7 @@ export class AnalyzerOrchestrator {
         .filter(edge => this.isBehavioralIncrementalEdge(edge));
       const currentBehavioralEdges = result.edges.filter(edge => this.isBehavioralIncrementalEdge(edge));
       if (!this.sameFingerprint(previousBehavioralEdges, currentBehavioralEdges, edge => this.edgeFingerprint(edge))) {
-        const behavioralEdgesStayOnExistingNodes = currentBehavioralEdges.every(edge =>
-          previousNodeIds.has(edge.source) && previousNodeIds.has(edge.target)
-        );
-        if (!(canPreserveDerivedFacts && behavioralEdgesStayOnExistingNodes)) {
-          return { allowed: false, reason: `behavioral edge fingerprint changed for ${filePath}` };
-        }
+        return { allowed: false, reason: `behavioral edge fingerprint changed for ${filePath}` };
       }
     }
 
@@ -4235,6 +4470,7 @@ export class AnalyzerOrchestrator {
       '**/*.php',
       '**/*.dart',
       '**/*.prisma',
+      ...PROJECT_SCOPE_TRIGGER_PATTERNS,
       ...coreConfigPatterns
     ];
     return globSync(patterns, {
@@ -5234,44 +5470,40 @@ export class AnalyzerOrchestrator {
 
   private async manifestContainsAny(projectPath: string, needles: string[]): Promise<boolean> {
     const loweredNeedles = needles.map(needle => needle.toLowerCase());
-    const matches = await this.getManifestFiles(projectPath);
-
-    for (const match of matches.slice(0, 160)) {
-        const fullPath = path.join(projectPath, match);
-        try {
-          if (path.basename(match) === 'package.json') {
-            const packageJson = await fs.readJson(fullPath);
-            const deps = {
-              ...packageJson.dependencies,
-              ...packageJson.devDependencies,
-              ...packageJson.peerDependencies,
-              ...packageJson.optionalDependencies
-            };
-            const dependencyNames = Object.keys(deps).map(dep => dep.toLowerCase());
-            // Match a needle only when a real dependency NAME contains it
-            // (`dep.includes(needle)` — catches ecosystem families like
-            // react/react-dom and scoped @aws-sdk/*). The reverse direction
-            // (`needle.includes(dep)`) was a false-positive engine: a marker
-            // like 'aws-lambda' spuriously matched an unrelated short dep such
-            // as 'ws', so framework analyzers (mediator/cron/tanstack) ran a
-            // full-repo scan to contribute ZERO nodes — ~19s of pure waste on
-            // a benchmarked repo. Non-npm manifests (go.mod/Cargo/requirements) still
-            // match via the raw-content scan below, so no ecosystem regresses.
-            if (loweredNeedles.some(needle => dependencyNames.some(dep => dep.includes(needle)))) {
-              return true;
+    let evidencePromise = this.manifestEvidenceCache.get(projectPath);
+    if (!evidencePromise) {
+      evidencePromise = (async () => {
+        const dependencyNames = new Set<string>();
+        const contents: string[] = [];
+        const matches = await this.getManifestFiles(projectPath);
+        for (const match of matches.slice(0, 160)) {
+          const fullPath = path.join(projectPath, match);
+          try {
+            const content = await fs.readFile(fullPath, 'utf8');
+            contents.push(content.toLowerCase());
+            if (path.basename(match) === 'package.json') {
+              const packageJson = JSON.parse(content);
+              const deps = {
+                ...packageJson.dependencies,
+                ...packageJson.devDependencies,
+                ...packageJson.peerDependencies,
+                ...packageJson.optionalDependencies,
+              };
+              for (const dependency of Object.keys(deps)) dependencyNames.add(dependency.toLowerCase());
             }
+          } catch {
           }
-
-          const content = await fs.readFile(fullPath, 'utf8');
-          const lowerContent = content.toLowerCase();
-          if (loweredNeedles.some(needle => lowerContent.includes(needle))) {
-            return true;
-          }
-        } catch {
         }
+        return { dependencyNames: [...dependencyNames], contents };
+      })();
+      this.manifestEvidenceCache.set(projectPath, evidencePromise);
     }
 
-    return false;
+    const evidence = await evidencePromise;
+    if (loweredNeedles.some(needle => evidence.dependencyNames.some(dependency => dependency.includes(needle)))) {
+      return true;
+    }
+    return loweredNeedles.some(needle => evidence.contents.some(content => content.includes(needle)));
   }
 
   private async hasFileSignal(
@@ -5530,6 +5762,141 @@ export class AnalyzerOrchestrator {
     });
   }
 
+  private async analyzeWithContributionCache(
+    registration: AnalyzerRegistration,
+    context: AnalysisContext,
+    analysisRootPath: string
+  ): Promise<CASContribution> {
+    if (!this.analyzerContributionCache) return registration.analyzer.analyze(context);
+
+    const source = await this.analyzerContributionSourceIdentity(registration, context.projectPath, analysisRootPath);
+    const fingerprints = getStageFingerprints();
+    const lookup = await this.analyzerContributionCache.getOrCompute({
+      ...source,
+      analyzer: {
+        id: registration.id,
+        version: registration.version,
+        type: registration.type,
+        implementationFingerprint: registration.type === 'language'
+          ? fingerprints.parser_fingerprint
+          : `${fingerprints.parser_fingerprint}:${fingerprints.derived_fingerprint}`,
+      },
+      relevantConfig: {
+        filters: context.filters || [],
+        analysisRoot: path.relative(analysisRootPath, context.projectPath).replace(/\\/g, '/') || '.',
+        includeTests: context.includeTests,
+        maxDepth: context.maxDepth,
+        targetLevel: context.targetLevel,
+        analysisFocus: process.env.KLAURO_ANALYSIS_FOCUS || '',
+        maxFilesPerAnalyzer: process.env.KLAURO_MAX_FILES_PER_ANALYZER || '',
+        upstreamEvidenceHash: this.analyzerContextEvidenceHash(context),
+      },
+      semanticPackIdentity: this.activeSemanticPackIdentity,
+    }, () => registration.analyzer.analyze(context));
+
+    this.analyzerContributionCacheEvidence.set(registration.id, lookup.evidence);
+    if (!lookup.contribution) {
+      throw new Error(`Analyzer contribution cache returned no contribution for ${registration.id}`);
+    }
+    return lookup.contribution;
+  }
+
+  private analyzerContextEvidenceHash(context: AnalysisContext): string {
+    const contributions = context.existingAnalysis || [];
+    if (contributions.length === 0) return 'none';
+
+    const contributionHashes = contributions.map(contribution => {
+      const cached = this.analyzerContextEvidenceDigestCache.get(contribution);
+      if (cached) return cached;
+      const digest = crypto.createHash('sha256')
+        .update(stableAnalyzerCacheIdentity(contribution))
+        .digest('hex');
+      this.analyzerContextEvidenceDigestCache.set(contribution, digest);
+      return digest;
+    });
+
+    return crypto.createHash('sha256').update(contributionHashes.join('\0')).digest('hex');
+  }
+
+  private incrementalFileCacheKey(
+    registration: AnalyzerRegistration,
+    context: FileAnalysisContext
+  ): string {
+    const fingerprints = getStageFingerprints();
+    return crypto.createHash('sha256').update(stableAnalyzerCacheIdentity({
+      analyzer: {
+        id: registration.id,
+        version: registration.version,
+        type: registration.type,
+        implementationFingerprint: registration.type === 'language'
+          ? fingerprints.parser_fingerprint
+          : `${fingerprints.parser_fingerprint}:${fingerprints.derived_fingerprint}`,
+      },
+      relativePath: context.relativePath,
+      contentHash: context.contentHash,
+      filters: context.filters || [],
+      upstreamEvidenceHash: this.analyzerContextEvidenceHash(context),
+      semanticPackIdentity: this.activeSemanticPackIdentity,
+    })).digest('hex');
+  }
+
+  private analyzerContributionSourceIdentity(
+    registration: AnalyzerRegistration,
+    analyzerRootPath: string,
+    analysisRootPath: string
+  ): Promise<{ sourceIdentity: string; sourceContentHash: string }> {
+    const resolvedAnalyzerRoot = path.resolve(analyzerRootPath);
+    const resolvedAnalysisRoot = path.resolve(analysisRootPath);
+    const cacheKey = `${registration.id}\0${resolvedAnalyzerRoot}`;
+    let pending = this.analyzerContributionDigestCache.get(cacheKey);
+    if (pending) return pending;
+
+    pending = (async () => {
+      const relevant = await registration.analyzer.getRelevantFiles?.(resolvedAnalyzerRoot);
+      const manifests = await this.getManifestFiles(resolvedAnalyzerRoot);
+      const inventory = relevant && relevant.length > 0
+        ? [...relevant, ...manifests]
+        : (await this.getSourceFileInventory(resolvedAnalyzerRoot)).files;
+      const files = [...new Set(inventory.map(file => {
+        const absolute = path.isAbsolute(file) ? file : path.join(resolvedAnalyzerRoot, file);
+        return path.resolve(absolute);
+      }))].sort();
+      const fileSetKey = crypto.createHash('sha256')
+        .update(resolvedAnalyzerRoot)
+        .update('\0')
+        .update(files.join('\0'))
+        .digest('hex');
+      let contentDigest = this.analyzerContributionFileSetDigestCache.get(fileSetKey);
+      if (!contentDigest) {
+        contentDigest = (async () => {
+          const digest = crypto.createHash('sha256');
+          for (const absoluteFile of files) {
+            const relativeFile = path.relative(resolvedAnalyzerRoot, absoluteFile).replace(/\\/g, '/');
+            digest.update(relativeFile);
+            digest.update('\0');
+            try {
+              const content = await nativeFs.readFile(absoluteFile);
+              digest.update(content);
+            } catch (error) {
+              const code = (error as NodeJS.ErrnoException).code || 'READ_ERROR';
+              digest.update(`\0${code}`);
+            }
+            digest.update('\0');
+          }
+          return digest.digest('hex');
+        })();
+        this.analyzerContributionFileSetDigestCache.set(fileSetKey, contentDigest);
+      }
+
+      return {
+        sourceIdentity: `${resolvedAnalysisRoot}:${path.relative(resolvedAnalysisRoot, resolvedAnalyzerRoot).replace(/\\/g, '/') || '.'}`,
+        sourceContentHash: await contentDigest,
+      };
+    })();
+    this.analyzerContributionDigestCache.set(cacheKey, pending);
+    return pending;
+  }
+
   private async runAnalyzer(
     registration: AnalyzerRegistration,
     context: AnalysisContext,
@@ -5547,6 +5914,7 @@ export class AnalyzerOrchestrator {
       categories: CASCategories;
       contributions: any[];
       analysisErrors: CASAnalysisError[];
+      mergeIndexes: AnalysisMergeIndexes;
     }
   ): Promise<void> {
     const analyzerStartTime = Date.now();
@@ -5571,7 +5939,7 @@ export class AnalyzerOrchestrator {
       }
     }];
 
-    const result = await registration.analyzer.analyze(context);
+    const result = await this.analyzeWithContributionCache(registration, context, projectPath);
     const executionTime = Date.now() - analyzerStartTime;
 
     if (matchedRoot !== projectPath) {
@@ -5582,7 +5950,7 @@ export class AnalyzerOrchestrator {
     await this.mergeAnalysisResult(
       { allNodes: accumulators.allNodes, allEdges: accumulators.allEdges, allEntryPoints: accumulators.allEntryPoints, allExitPoints: accumulators.allExitPoints },
       result,
-      { analyzerId: registration.id, analysisErrors: accumulators.analysisErrors }
+      { analyzerId: registration.id, analysisErrors: accumulators.analysisErrors, mergeIndexes: accumulators.mergeIndexes }
     );
 
     if (result.behaviors) accumulators.allBehaviors.push(...result.behaviors);
@@ -5610,6 +5978,7 @@ export class AnalyzerOrchestrator {
       analyzer_type: registration.type,
       contribution_type: registration.type,
       execution_time_ms: executionTime,
+      cache_status: this.analyzerContributionCacheEvidence.get(registration.id)?.status,
       nodes_created: result.nodes?.length || 0,
       files_created: this.countDistinctSourceFiles(result.nodes, projectPath),
       edges_created: result.edges?.length || 0,
@@ -5793,17 +6162,31 @@ export class AnalyzerOrchestrator {
     return score;
   }
 
+  private createAnalysisMergeIndexes(target: AnalysisMergeTarget): AnalysisMergeIndexes {
+    return {
+      nodesById: new Map(target.allNodes.map(node => [node.id, node])),
+      edgesById: new Map(target.allEdges.map(edge => [edge.id, edge])),
+      entryPointsById: new Map(target.allEntryPoints.map(entryPoint => [entryPoint.id, entryPoint])),
+      entryPointsByCanonicalKey: new Map(
+        target.allEntryPoints
+          .flatMap(entryPoint => this.entryPointCanonicalKeys(entryPoint).map(key => [key, entryPoint] as const))
+      ),
+      exitPointsById: new Map(target.allExitPoints.map(exitPoint => [exitPoint.id, exitPoint])),
+    };
+  }
+
   private appendGraphItemsUnique<T extends { id: string }>(
     target: T[],
     incoming: T[],
     sectionLabel: 'entry point' | 'exit point' | 'edge',
     analyzerId: string,
-    analysisErrors?: CASAnalysisError[]
+    analysisErrors?: CASAnalysisError[],
+    indexes?: { byId: Map<string, T>; byCanonicalKey?: Map<string, T> }
   ): void {
-    const byId = new Map<string, T>(target.map(item => [item.id, item]));
+    const byId = indexes?.byId ?? new Map<string, T>(target.map(item => [item.id, item]));
     const isEntryPoint = sectionLabel === 'entry point';
     const byCanonicalKey = isEntryPoint
-      ? new Map<string, T>(
+      ? indexes?.byCanonicalKey ?? new Map<string, T>(
           target.flatMap(item => this.entryPointCanonicalKeys(item).map(key => [key, item] as const))
         )
       : undefined;
@@ -5940,66 +6323,76 @@ export class AnalyzerOrchestrator {
   }
 
   private async mergeAnalysisResult(
-    target: {
-      allNodes: CASNode[];
-      allEdges: CASEdge[];
-      allEntryPoints: any[];
-      allExitPoints: any[];
-    },
+    target: AnalysisMergeTarget,
     source: CASContribution,
-    options?: { analyzerId?: string; analysisErrors?: CASAnalysisError[] }
+    options?: { analyzerId?: string; analysisErrors?: CASAnalysisError[]; mergeIndexes?: AnalysisMergeIndexes }
   ): Promise<void> {
     // Budget-yield inside the merge loops: merging a whale contribution
     // (76k nodes / 96k edges from the TS analyzer) was a measured multi-second
     // event-loop stall. Iteration order and merge semantics are unchanged.
     const maybeYield = createYieldBudget();
     const contributingAnalyzer = options?.analyzerId || source.analyzer_metadata?.analyzer_id || 'unknown analyzer';
-    const existingNodeIds = new Set(target.allNodes.map(n => n.id));
-    const existingEdgesById = new Map(target.allEdges.map(e => [e.id, e]));
+    const mergeIndexes = options?.mergeIndexes ?? this.createAnalysisMergeIndexes(target);
     const validEntryPoints = (source.entry_points || []).filter(ep => this.isValidEntryPoint(ep));
     const validExitPoints = (source.exit_points || []).filter(ep => this.isValidExitPoint(ep));
+    for (const node of source.nodes || []) {
+      node.analyzers = [...new Set([...(node.analyzers || []), contributingAnalyzer])];
+      node.primaryAnalyzer ||= contributingAnalyzer;
+    }
+    for (const edge of source.edges || []) {
+      edge.metadata = {
+        ...(edge.metadata || {}),
+        attributes: {
+          ...((edge.metadata as any)?.attributes || {}),
+          source_analyzer: (edge.metadata as any)?.attributes?.source_analyzer || contributingAnalyzer,
+        },
+      };
+    }
+    for (const item of [...validEntryPoints, ...validExitPoints]) {
+      item.metadata = { ...(item.metadata || {}), source_analyzer: item.metadata?.source_analyzer || contributingAnalyzer };
+    }
+    const validEntryPointIds = new Set(validEntryPoints.map(entryPoint => entryPoint.id));
+    const validExitPointIds = new Set(validExitPoints.map(exitPoint => exitPoint.id));
     const invalidEntryPointIds = new Set((source.entry_points || [])
-      .filter(ep => !validEntryPoints.some(valid => valid.id === ep.id))
+      .filter(ep => !validEntryPointIds.has(ep.id))
       .map(ep => ep.id));
     const invalidExitPointIds = new Set((source.exit_points || [])
-      .filter(ep => !validExitPoints.some(valid => valid.id === ep.id))
+      .filter(ep => !validExitPointIds.has(ep.id))
       .map(ep => ep.id));
 
     for (const node of source.nodes || []) {
       await maybeYield();
-      if (existingNodeIds.has(node.id)) {
-        const existingNode = target.allNodes.find(n => n.id === node.id);
-        if (existingNode) {
-          // Enhanced merge logic for node collaboration
-          if (node.metadata) {
-            existingNode.metadata = { ...existingNode.metadata, ...node.metadata };
-          }
-          if (node.subcategories && node.subcategories.length > 0) {
-            // Use the enhanced subcategories from the framework analyzer
-            existingNode.subcategories = [...new Set([...(existingNode.subcategories || []), ...node.subcategories])];
-          }
-          if (node.level !== undefined && node.level !== existingNode.level) {
-            existingNode.level = node.level; // Framework analyzers can promote level
-          }
-          if (node.level_name && node.level_name !== existingNode.level_name) {
-            existingNode.level_name = node.level_name;
-          }
-          if (node.description && node.description !== existingNode.description) {
-            existingNode.description = node.description; // Framework-specific descriptions take precedence
-          }
-          if (node.tags && node.tags.length > 0) {
-            existingNode.tags = [...new Set([...(existingNode.tags || []), ...node.tags])];
-          }
-          if (node.type && node.type !== existingNode.type) {
-            existingNode.type = node.type;
-          }
-          if (node.analyzers && node.analyzers.length > 0) {
-            existingNode.analyzers = [...new Set([...(existingNode.analyzers || []), ...node.analyzers])];
-          }
+      const existingNode = mergeIndexes.nodesById.get(node.id);
+      if (existingNode) {
+        // Enhanced merge logic for node collaboration
+        if (node.metadata) {
+          existingNode.metadata = { ...existingNode.metadata, ...node.metadata };
+        }
+        if (node.subcategories && node.subcategories.length > 0) {
+          // Use the enhanced subcategories from the framework analyzer
+          existingNode.subcategories = [...new Set([...(existingNode.subcategories || []), ...node.subcategories])];
+        }
+        if (node.level !== undefined && node.level !== existingNode.level) {
+          existingNode.level = node.level; // Framework analyzers can promote level
+        }
+        if (node.level_name && node.level_name !== existingNode.level_name) {
+          existingNode.level_name = node.level_name;
+        }
+        if (node.description && node.description !== existingNode.description) {
+          existingNode.description = node.description; // Framework-specific descriptions take precedence
+        }
+        if (node.tags && node.tags.length > 0) {
+          existingNode.tags = [...new Set([...(existingNode.tags || []), ...node.tags])];
+        }
+        if (node.type && node.type !== existingNode.type) {
+          existingNode.type = node.type;
+        }
+        if (node.analyzers && node.analyzers.length > 0) {
+          existingNode.analyzers = [...new Set([...(existingNode.analyzers || []), ...node.analyzers])];
         }
       } else {
         target.allNodes.push(node);
-        existingNodeIds.add(node.id);
+        mergeIndexes.nodesById.set(node.id, node);
       }
     }
 
@@ -6010,10 +6403,10 @@ export class AnalyzerOrchestrator {
     const edgeWarnedIds = new Set<string>();
     for (const edge of edgesToMerge) {
       await maybeYield();
-      const existing = existingEdgesById.get(edge.id);
+      const existing = mergeIndexes.edgesById.get(edge.id);
       if (!existing) {
         target.allEdges.push(edge);
-        existingEdgesById.set(edge.id, edge);
+        mergeIndexes.edgesById.set(edge.id, edge);
         continue;
       }
       if (edgeWarnedIds.has(edge.id)) continue;
@@ -6028,8 +6421,22 @@ export class AnalyzerOrchestrator {
       });
     }
 
-    this.appendGraphItemsUnique(target.allEntryPoints, validEntryPoints, 'entry point', contributingAnalyzer, options?.analysisErrors);
-    this.appendGraphItemsUnique(target.allExitPoints, validExitPoints, 'exit point', contributingAnalyzer, options?.analysisErrors);
+    this.appendGraphItemsUnique(
+      target.allEntryPoints,
+      validEntryPoints,
+      'entry point',
+      contributingAnalyzer,
+      options?.analysisErrors,
+      { byId: mergeIndexes.entryPointsById, byCanonicalKey: mergeIndexes.entryPointsByCanonicalKey }
+    );
+    this.appendGraphItemsUnique(
+      target.allExitPoints,
+      validExitPoints,
+      'exit point',
+      contributingAnalyzer,
+      options?.analysisErrors,
+      { byId: mergeIndexes.exitPointsById }
+    );
   }
 
   /**
@@ -6041,6 +6448,45 @@ export class AnalyzerOrchestrator {
    * type and this validator pick them up. A parity guard test asserts they agree.
    */
   private static readonly VALID_ENTRY_POINT_TYPES: ReadonlySet<string> = new Set(ENTRY_POINT_TYPES);
+
+  private removeTestEntryPoints(nodes: CASNode[], edges: CASEdge[], entryPoints: CASEntryPoint[]): void {
+    const nodesById = new Map(nodes.map(node => [node.id, node]));
+    const removedEntryPointIds = new Set<string>();
+    let writeIndex = 0;
+
+    for (const entryPoint of entryPoints) {
+      const sourceNode = nodesById.get(entryPoint.source_node) ||
+        (entryPoint.handler?.node_id ? nodesById.get(entryPoint.handler.node_id) : undefined);
+      const sourceFile = sourceNode?.source?.file || entryPoint.handler?.file || '';
+      const metadata = entryPoint.metadata as Record<string, any> | undefined;
+      const isTestEntryPoint = entryPoint.type === 'test' ||
+        Boolean(metadata?.test_framework || metadata?.attributes?.test_framework) ||
+        Boolean(sourceNode && (
+          sourceNode.type === 'test' ||
+          sourceNode.type === 'test-suite' ||
+          sourceNode.type.startsWith('test_') ||
+          sourceNode.type.startsWith('cypress_') ||
+          sourceNode.category === 'test' ||
+          sourceNode.subcategories?.some(category => /^(test|testing|test-suite|e2e)$/i.test(category))
+        )) ||
+        Boolean(sourceFile && isTestFileName(sourceFile));
+
+      if (isTestEntryPoint) {
+        removedEntryPointIds.add(entryPoint.id);
+        continue;
+      }
+      entryPoints[writeIndex++] = entryPoint;
+    }
+    entryPoints.length = writeIndex;
+
+    if (removedEntryPointIds.size === 0) return;
+    writeIndex = 0;
+    for (const edge of edges) {
+      if (removedEntryPointIds.has(edge.source) || removedEntryPointIds.has(edge.target)) continue;
+      edges[writeIndex++] = edge;
+    }
+    edges.length = writeIndex;
+  }
 
   private isValidEntryPoint(ep: CASEntryPoint): boolean {
     return AnalyzerOrchestrator.VALID_ENTRY_POINT_TYPES.has(ep.type);
@@ -7590,15 +8036,23 @@ export class AnalyzerOrchestrator {
   private isPrimaryProductPathForProject(filePath: string, projectPath: string): boolean {
     const normalized = filePath.replace(/\\/g, '/');
     if (!normalized) return true;
-    if (this.isBundledFrontendPath(normalized, projectPath)) return false;
-    if (path.isAbsolute(normalized)) {
-      const relative = path.relative(projectPath, normalized).replace(/\\/g, '/');
-      if (relative && !relative.startsWith('..') && !path.isAbsolute(relative)) {
-        return this.isPrimaryProductPath(relative);
-      }
-      return false;
+    const resolvedProject = path.resolve(projectPath);
+    const cacheKey = `${resolvedProject}\0${normalized}`;
+    const cached = this.primaryProductPathCache.get(cacheKey);
+    if (cached !== undefined) return cached;
+
+    let result: boolean;
+    if (this.isBundledFrontendPath(normalized, resolvedProject)) {
+      result = false;
+    } else if (path.isAbsolute(normalized)) {
+      const relative = path.relative(resolvedProject, normalized).replace(/\\/g, '/');
+      result = Boolean(relative && !relative.startsWith('..') && !path.isAbsolute(relative)) &&
+        this.isPrimaryProductPath(relative);
+    } else {
+      result = this.isPrimaryProductPath(normalized);
     }
-    return this.isPrimaryProductPath(normalized);
+    this.primaryProductPathCache.set(cacheKey, result);
+    return result;
   }
 
   private isPrimaryProductPath(filePath: string): boolean {
@@ -8837,10 +9291,15 @@ export class AnalyzerOrchestrator {
   }
 
   private detectGodObjectAntiPattern(nodes: CASNode[], patterns: CASPattern[]): void {
+    const methodCountByParent = new Map<string, number>();
+    for (const node of nodes) {
+      if (node.type !== 'method' || !node.parent) continue;
+      methodCountByParent.set(node.parent, (methodCountByParent.get(node.parent) || 0) + 1);
+    }
     const godObjects = nodes.filter(n => {
       const lineCount = n.metadata?.metrics?.lines_of_code || 0;
       const complexity = n.metadata?.complexity?.cyclomatic || 0;
-      const methodCount = nodes.filter(m => m.parent === n.id && m.type === 'method').length;
+      const methodCount = methodCountByParent.get(n.id) || 0;
 
       return lineCount > 1000 || complexity > 50 || methodCount > 30;
     });
@@ -9877,6 +10336,30 @@ export class AnalyzerOrchestrator {
     });
   }
 
+  private async awaitAiWithoutCutoff<T>(promise: Promise<T>, operation: string, slowMs: number): Promise<T> {
+    let slowTimer: NodeJS.Timeout | undefined;
+    const startedAt = Date.now();
+    if (Number.isFinite(slowMs) && slowMs > 0) {
+      slowTimer = setTimeout(() => {
+        console.error(`[Klauro] ${operation} is still running after ${Date.now() - startedAt}ms; continuing until the provider completes`);
+      }, slowMs);
+      slowTimer.unref?.();
+    }
+    try {
+      return await promise;
+    } finally {
+      if (slowTimer) clearTimeout(slowTimer);
+    }
+  }
+
+  private narrativeModel(): string | undefined {
+    return process.env.DEEPINFRA_NARRATIVE_MODEL ||
+      process.env.OPENAI_NARRATIVE_MODEL ||
+      process.env.DEEPINFRA_MODEL ||
+      process.env.OPENAI_MODEL ||
+      undefined;
+  }
+
   private async aiExtractCapabilityCatalog(input: {
     systemName: string;
     enhancedSystemPurpose: EnhancedSystemPurpose;
@@ -9911,9 +10394,10 @@ export class AnalyzerOrchestrator {
     // would otherwise take 90-175s and time out).
     const journeys = (input.userJourneys || [])
       .filter(journey => journey.journey_kind === 'user-facing' || journey.criticality === 'critical' || journey.criticality === 'high')
+      .filter(journey => !/^run\s+(?:main|application|server)\b/i.test(journey.name))
       .slice(0, 12)
       .map(journey => ({
-        name: journey.name,
+        name: journey.name.replace(/\s*->\s*calls?\s+.*$/i, '').trim(),
         writes: (journey.terminal_effects?.entities_written || []).slice(0, 3),
         terminal: (journey.terminal_entities || []).slice(0, 3).map((entity: { name: string; access: string }) => `${entity.name}:${entity.access}`),
       }));
@@ -9967,9 +10451,47 @@ export class AnalyzerOrchestrator {
     // silently re-imposes the same starvation the window widening was meant to
     // fix (a rich platform gets curated down to the same count as a small one).
     // Derived purely from candidateAreas.length (deterministic evidence volume),
-    // never a name/domain judgement. Small/medium repos keep the original 6-12.
-    const catalogCountMin = Math.min(10, Math.max(6, Math.round(candidateAreas.length / 4)));
-    const catalogCountMax = Math.min(20, Math.max(12, Math.round(candidateAreas.length / 2)));
+    // never a name/domain judgement. A genuinely narrow package can therefore
+    // complete in one call, while broad platforms request proportionally more.
+    const catalogCountMax = Math.max(1, Math.min(20, Math.ceil(candidateAreas.length / 2)));
+    const catalogCountMin = Math.min(catalogCountMax, Math.max(1, Math.round(candidateAreas.length / 4)));
+    const artifactType = String(purpose.artifact_type || 'app');
+    // Infrastructure repositories often have no domain entities or user
+    // journeys: their deterministic evidence is deliberately implementation-
+    // shaped (Terraform resources, Compose services, shell entry points,
+    // Kubernetes workloads). The AI must translate that evidence into an
+    // operational responsibility, so the responsibility vocabulary cannot be
+    // required to repeat a low-level candidate label. These are artifact
+    // semantics, not product/domain guesses, and apply uniformly across every
+    // supported infrastructure language and framework.
+    const infrastructureResponsibilityTokens = new Set([
+      'environment', 'infrastructure', 'platform', 'provision', 'resource',
+      'runtime', 'service', 'topology', 'workload',
+    ].map(token => this.stemTerminologyToken(token)));
+    // Conversely, a detected language/framework belongs in implementation
+    // evidence, never in the user-facing responsibility name. Derive this set
+    // from the analyzers that actually fired instead of maintaining a vendor
+    // blocklist, so new supported IaC/container systems inherit the rule.
+    const infrastructureMechanismTokens = new Set<string>();
+    if (artifactType === 'infrastructure') {
+      for (const framework of input.frameworks || []) {
+        for (const token of String(framework || '').toLowerCase().split(/[^a-z0-9]+/)) {
+          if (token.length >= 3) infrastructureMechanismTokens.add(this.stemTerminologyToken(token));
+        }
+      }
+      for (const candidate of candidateAreas) {
+        for (const token of String(candidate || '').toLowerCase().split(/[^a-z0-9]+/)) {
+          if (token.length >= 3 && isLanguageBuiltinDomainToken(token)) {
+            infrastructureMechanismTokens.add(this.stemTerminologyToken(token));
+          }
+        }
+      }
+    }
+    const catalogTask = artifactType === 'infrastructure'
+      ? `You are cataloging the OPERATIONAL RESPONSIBILITIES of an infrastructure codebase. Return ONLY valid JSON: {"capabilities":[{"name":"...","description":"...","category":"core|supporting","entities":["..."],"journeys":["..."]}]}. Name what operators accomplish with the declared infrastructure in product-neutral operational language, such as "Provision platform infrastructure" or "Deploy service runtime". Never infer that a resource handles, processes, or manages a business concept merely because that concept appears in its resource name. Never name a script, file, command, handler, route, framework, or registration surface as the capability; "Manage Shell Deploy" and similar mechanism labels are invalid. Merge related deployment/configuration candidates. entities/journeys must be copied from supplied facts. Return ${catalogCountMin} to ${catalogCountMax} evidence-backed capabilities, ordered most central first.`
+      : artifactType === 'library' || artifactType === 'client-sdk'
+        ? `You are cataloging the CONSUMER-FACING ABILITIES of a reusable library or client SDK. Return ONLY valid JSON: {"capabilities":[{"name":"...","description":"...","category":"core|supporting","entities":["..."],"journeys":["..."]}]}. Name what library consumers can accomplish through its public contracts, not files, packages, handlers, or framework mechanics. entities/journeys must be copied from supplied facts. Return ${catalogCountMin} to ${catalogCountMax} evidence-backed capabilities, ordered most central first.`
+        : `You are cataloging the BUSINESS VALUE of a codebase. You are given BOTTOM-UP facts (user journeys, data entities, candidate route areas, external services) AND, when available, a top_down_signals block — the product's OWN words about what it is (README title/overview, manifest self-description, product terminology). Return ONLY valid JSON: {"capabilities":[{"name":"...","description":"...","category":"core|supporting","entities":["..."],"journeys":["..."]}]}. Rules: (1) THE PURPOSE TEST — every capability you name must be a product/user/operational ability that would appear in a product description, a user objective, a business offering, or an operational responsibility. If it would not, it is NOT a capability; drop it. Name capabilities as what the product lets its USERS or OPERATORS DO in plain product language (e.g. "Trade cryptocurrency", "Play Commander matches"), NEVER as a mechanism or a supporting noun ("Wallet interaction", "Manage sessions"). (2) USE top_down_signals as the primary arbiter of what the product IS BUILT FOR: the capability the product's own title/overview/terminology names is a core capability even if the bottom-up entities under-represent it — let this evidence RAISE the built-for capability to the top. (3) THE PURPOSE-TEST EXCLUSION — do NOT emit supporting/infrastructural concerns as capabilities (authentication, access control/permissions, session/token handling, logging/telemetry, notifications, caching, message brokering, generic CRUD, health checks, config, database) UNLESS top_down_signals shows the product IS that kind of product (an auth product sells access control; a codebase-analysis or game product does not). Absent top-down evidence that the product sells it, such a concern is at most "supporting", never "core", and is usually dropped. (4) MERGE related route areas and journeys into real capabilities; do not emit one per route. (5) category="core" only for the capabilities that ARE the product's value proposition (those corroborated by top_down_signals rank first); "supporting" for necessary-but-not-the-value. (6) entities/journeys must be names copied from the supplied facts. (7) Each description is ONE concise sentence, 8-16 words — no clauses, no lists — that names the CONCRETE records, decisions, or workflows the capability owns and why they matter, using the supplied entity/journey vocabulary. NEVER the empty template "Lets users <verb> <noun>" that only restates the capability name, and never the words "capability"/"lifecycle" as prose scaffolding — a description that adds no information beyond the name is rejected. Return ${catalogCountMin} to ${catalogCountMax} capabilities, ordered most-core first.`;
 
     // ---- TOP-DOWN EVIDENCE BUNDLE ----
     // The catalog is otherwise BOTTOM-UP (entities + route areas + journeys),
@@ -10002,10 +10524,8 @@ export class AnalyzerOrchestrator {
     // means this latency is paid once per repo.
     const aiBudget = Math.max(75000, Math.floor(input.budgetMs * 0.6));
     const requestCatalog = async (attempt: number, hintOverride?: string): Promise<string> => {
-      let timeoutHandle: NodeJS.Timeout | undefined;
-      try {
-        return await Promise.race([
-          aiService.generateComponentDescription({
+      return this.awaitAiWithoutCutoff(
+        aiService.generateComponentDescription({
             additionalContext: {
               // Structured extraction tolerates a smaller/faster model well and
               // benefits from its reliability; opt in via DEEPINFRA_STRUCTURED_MODEL
@@ -10017,7 +10537,7 @@ export class AnalyzerOrchestrator {
               // `hintOverride` (the THIN-CATALOG NUDGE below) takes priority
               // over the generic under-count hint when supplied.
               ...((hintOverride || attempt > 1) ? { retry_hint: hintOverride || `Previous answer returned fewer than ${catalogCountMin} capabilities for a platform whose facts name ${candidateAreas.length} distinct route areas. Cover the DISTINCT product areas in candidate_route_areas; merge related ones, but do not collapse unrelated areas.` } : {}),
-              task: `You are cataloging the BUSINESS VALUE of a codebase. You are given BOTTOM-UP facts (user journeys, data entities, candidate route areas, external services) AND, when available, a top_down_signals block — the product's OWN words about what it is (README title/overview, manifest self-description, product terminology). Return ONLY valid JSON: {"capabilities":[{"name":"...","description":"...","category":"core|supporting","entities":["..."],"journeys":["..."]}]}. Rules: (1) THE PURPOSE TEST — every capability you name must be a product/user/operational ability that would appear in a product description, a user objective, a business offering, or an operational responsibility. If it would not, it is NOT a capability; drop it. Name capabilities as what the product lets its USERS or OPERATORS DO in plain product language (e.g. "Trade cryptocurrency", "Play Commander matches"), NEVER as a mechanism or a supporting noun ("Wallet interaction", "Manage sessions"). (2) USE top_down_signals as the primary arbiter of what the product IS BUILT FOR: the capability the product's own title/overview/terminology names is a core capability even if the bottom-up entities under-represent it — let this evidence RAISE the built-for capability to the top. (3) THE PURPOSE-TEST EXCLUSION — do NOT emit supporting/infrastructural concerns as capabilities (authentication, access control/permissions, session/token handling, logging/telemetry, notifications, caching, message brokering, generic CRUD, health checks, config, database) UNLESS top_down_signals shows the product IS that kind of product (an auth product sells access control; a codebase-analysis or game product does not). Absent top-down evidence that the product sells it, such a concern is at most "supporting", never "core", and is usually dropped. (4) MERGE related route areas and journeys into real capabilities; do not emit one per route. (5) category="core" only for the capabilities that ARE the product's value proposition (those corroborated by top_down_signals rank first); "supporting" for necessary-but-not-the-value. (6) entities/journeys must be names copied from the supplied facts. (7) Each description is ONE concise sentence, 8-16 words — no clauses, no lists — that names the CONCRETE records, decisions, or workflows the capability owns and why they matter, using the supplied entity/journey vocabulary. NEVER the empty template "Lets users <verb> <noun>" that only restates the capability name, and never the words "capability"/"lifecycle" as prose scaffolding — a description that adds no information beyond the name is rejected. Return ${catalogCountMin} to ${catalogCountMax} capabilities, ordered most-core first.`,
+              task: catalogTask,
               style: 'Write like a product engineer or PM. Plain language. No markdown. Value verbs (lets, gives, tracks, surfaces, exposes, manages, monitors, secures, settles, enforces). No CRUD verbs, no "lifecycle", no route counts, no file paths, no marketing fluff. Each description names the concrete user-facing concept the entities point to.',
               product: {
                 name: input.systemName,
@@ -10038,23 +10558,16 @@ export class AnalyzerOrchestrator {
               },
             },
           }),
-          new Promise<string>((_, reject) => {
-            timeoutHandle = setTimeout(() => reject(new Error('capability extraction budget exceeded')), aiBudget);
-          }),
-        ]);
-      } finally {
-        if (timeoutHandle) clearTimeout(timeoutHandle);
-      }
+        'capability extraction',
+        aiBudget,
+      );
     };
 
     // Shared-inference latency is variable enough that a single attempt can exceed
-    // even a generous budget. The catalog is the difference between ~13 curated
-    // capabilities and 40 noisy candidates, so make TWO attempts before falling
-    // back to the deterministic candidates. UNDER-COUNT is retried like a parse
-    // failure: catalogCountMin is evidence-derived (candidate-pool scale), so a
-    // model that hands a 30-route-area platform 6 capabilities is under-
-    // complying, not curating — one retry, keeping the larger result, before
-    // accepting the shortfall (never loop beyond the 2-attempt budget).
+    // even a generous budget. Parse failures and evidence-proven under-counts get
+    // one retry before deterministic fallback. A result that satisfies the
+    // evidence-scaled range returns immediately; narrow packages do not pay for a
+    // redundant second call merely to reach an arbitrary global minimum.
     let catalog: Array<Record<string, unknown>> = [];
     let raw = '';
     const maxInitialAttempts = input.qualityNudge ? 1 : 2;
@@ -10191,7 +10704,42 @@ export class AnalyzerOrchestrator {
       'management', 'analysis', 'reporting', 'processing', 'handling', 'control',
       'service', 'services', 'system', 'data', 'manager', 'provides', 'manages',
       'handles', 'enforces', 'surfaces', 'tracks', 'exposes', 'secures', 'monitors',
+      'enterprise',
     ]);
+    const capabilityActionTokens = new Set([
+      'access', 'add', 'analyze', 'authorize', 'build', 'calculate', 'collect',
+      'create', 'delete', 'deploy', 'display', 'execute', 'generate', 'get',
+      'list', 'manage', 'monitor', 'navigate', 'process', 'provide', 'read',
+      'remove', 'retrieve', 'run', 'show', 'store', 'sync', 'track', 'update',
+      'validate', 'view', 'write',
+    ]);
+    const systemIdentityTokens = new Set(
+      String(input.systemName || '')
+        .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+        .toLowerCase()
+        .split(/[^a-z0-9]+/)
+        .filter(Boolean)
+        .map(token => this.stemTerminologyToken(token)),
+    );
+    const capabilityEvidenceVocabulary = new Set<string>();
+    for (const value of [
+      ...candidateAreas,
+      ...input.dataEntities.map(entity => entity.name),
+      ...(input.userJourneys || []).map(journey => journey.name),
+      String(purpose.primary_domain || ''),
+      ...(purpose.core_concepts || []),
+      String(topDownSignals.product_title || ''),
+      String(topDownSignals.product_overview || ''),
+      String(topDownSignals.product_self_description || ''),
+    ]) {
+      for (const token of String(value || '').replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase().split(/[^a-z0-9]+/)) {
+        if (token.length < 3) continue;
+        capabilityEvidenceVocabulary.add(this.stemTerminologyToken(token));
+      }
+    }
+    if (artifactType === 'infrastructure') {
+      for (const token of infrastructureResponsibilityTokens) capabilityEvidenceVocabulary.add(token);
+    }
     const seen = new Set<string>();
     // ---- PASS 1: parse/repair each catalog item (no operation linking yet —
     // operation assignment needs the FULL item set first, see pass 2). ----
@@ -10300,13 +10848,46 @@ export class AnalyzerOrchestrator {
       // takes over below).
       let itemBareNounRepaired = false;
       if (this.isBareNounCapabilityLabel(name)) {
-        const repaired = this.deriveManagePurposeLabel(name, itemEntityNamesRaw.length > 0);
-        if (!repaired) { bareNounRejected++; continue; }
-        name = repaired;
+        // Defer the verb until PASS 2 has linked operations. Prefixing
+        // "Manage" here falsely turns read-only resources into mutation
+        // capabilities; after linkage we can choose View vs Manage from the
+        // observed methods/actions and humanize the grounded entity name.
+        if (itemEntityNamesRaw.length === 0) { bareNounRejected++; continue; }
         itemBareNounRepaired = true;
         bareNounRepaired++;
       }
       const key = name.toLowerCase();
+      const purposeNouns = key
+        .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+        .split(/[^a-z0-9]+/)
+        .map(token => this.stemTerminologyToken(token))
+        .filter(token => token.length >= 3)
+        .filter(token => !capabilityActionTokens.has(token))
+        .filter(token => !GENERIC_CAPABILITY_NAME_TOKENS.has(token))
+        .filter(token => !systemIdentityTokens.has(token));
+      if (
+        artifactType === 'infrastructure' &&
+        purposeNouns.some(token => infrastructureMechanismTokens.has(token))
+      ) {
+        continue;
+      }
+      const unsupportedValueNouns = new Set([
+        'collaboration', 'decisionmaking', 'insight', 'metric', 'monitoring',
+        'performance', 'productivity', 'tracking',
+      ].map(token => this.stemTerminologyToken(token)));
+      if (purposeNouns.some(token =>
+        unsupportedValueNouns.has(token) && !capabilityEvidenceVocabulary.has(token)
+      )) {
+        continue;
+      }
+      const hasExactEntityEvidence = itemEntityNamesRaw.some(entityName => entityIdByName.has(entityName.toLowerCase()));
+      if (
+        purposeNouns.length > 0 &&
+        !purposeNouns.some(token => capabilityEvidenceVocabulary.has(token)) &&
+        !hasExactEntityEvidence
+      ) {
+        continue;
+      }
       if (seen.has(key)) continue;
       seen.add(key);
       const category: SystemCapability['category'] = item.category === 'core' ? 'core' : item.category === 'infrastructure' ? 'internal' : 'supporting';
@@ -10433,6 +11014,31 @@ export class AnalyzerOrchestrator {
       // for display if size ever matters.
       const dedupedOps = Array.from(new Map(operations.map(op => [op.entry_point_id, op])).values()).slice(0, 64);
       const candidateEntityIds = entityIdsByItemIndex.get(index) || new Set<string>();
+      const allRelatedEntities = Array.from(new Set([...relatedEntities, ...candidateEntityIds]));
+      const resolvedName = nameRepairedFromBareNoun
+        ? this.deriveDeterministicFallbackPurposeLabel({
+            id: `capability_${key.replace(/[^a-z0-9]+/g, '_')}`,
+            name,
+            description,
+            category,
+            operations: dedupedOps,
+            related_entities: allRelatedEntities,
+            related_domains: [],
+            criticality: category === 'core' ? 'high' : 'medium',
+            criticality_factors: [],
+          }, input.dataEntities, true)
+        : name;
+      if (!resolvedName) continue;
+      const resolvedKey = resolvedName.toLowerCase();
+      // Judge the capability NAME separately from its prose. A model can name
+      // the right read-only responsibility while appending a mutation claim to
+      // the description. Keep the grounded name/operation mapping, clear the
+      // bad prose, and let the required element-description pass regenerate it.
+      // A contradictory NAME still drops the whole item.
+      if (this.capabilityContradictsObservedOperations({ name: resolvedName, description: '', operations: dedupedOps })) continue;
+      const descriptionContradictsOperations = this.capabilityContradictsObservedOperations({
+        name: '', description, operations: dedupedOps,
+      });
       // Drop ungrounded filler: a capability that resolved to NO entity and NO
       // operation has zero evidence in the deterministic facts — it is a model
       // guess ("Monitors System Health", "Secures Communication"), not a
@@ -10452,23 +11058,27 @@ export class AnalyzerOrchestrator {
         if (groundedJourneys === 0 && !subjectCorroborated) continue;
       }
       out.push({
-        id: `capability_${key.replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '')}`,
-        name,
+        id: `capability_${resolvedKey.replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '')}`,
+        name: resolvedName,
         // The catalog NAME is AI-authored comprehension, grounded in journeys +
         // entities — the correct source for a capability's user-facing name.
         name_source: 'ai',
         name_generation: { status: 'ai_applied', attempted: true, generated_at: new Date().toISOString() },
-        description,
-        description_source: 'ai',
-        description_generation: { status: 'ai_applied', attempted: true, generated_at: new Date().toISOString() },
+        description: descriptionContradictsOperations ? '' : description,
+        description_source: descriptionContradictsOperations ? undefined : 'ai',
+        description_generation: descriptionContradictsOperations
+          ? { status: 'ai_rejected', attempted: true, reason: 'description-contradicts-observed-operations', generated_at: new Date().toISOString() }
+          : { status: 'ai_applied', attempted: true, generated_at: new Date().toISOString() },
         category,
         operations: dedupedOps,
-        related_entities: Array.from(new Set([...relatedEntities, ...candidateEntityIds])),
+        related_entities: allRelatedEntities,
         related_domains: Array.isArray(journeys) ? journeys.map((value: unknown) => String(value || '')).filter(Boolean).slice(0, 6) : [],
         criticality: category === 'core' ? 'high' : 'medium',
-        criticality_factors: nameRepairedFromBareNoun
-          ? ['ai-extracted-from-journeys-and-entities', 'bare-noun-purpose-repaired']
-          : ['ai-extracted-from-journeys-and-entities'],
+        criticality_factors: Array.from(new Set([
+          'ai-extracted-from-journeys-and-entities',
+          ...(nameRepairedFromBareNoun ? ['bare-noun-purpose-repaired'] : []),
+          ...(descriptionContradictsOperations ? ['catalog-description-rejected'] : []),
+        ])),
       });
     }
     recordSemanticDecision({
@@ -10530,7 +11140,17 @@ export class AnalyzerOrchestrator {
     const entityById = new Map(dataEntities.map(entity => [entity.id, entity]));
     // Defense-in-depth: a behavior-surface item must never enter the ranked
     // catalog through this path, however it got into `cataloged`/`candidates`.
-    const result = [...cataloged].filter(capability => capability.evidence_kind !== 'behavior-surface');
+    const result = [...cataloged]
+      .map(capability => this.normalizePolyglotCapabilityName(capability, entityById))
+      .filter(capability =>
+        capability.evidence_kind !== 'behavior-surface' &&
+        !this.capabilityContradictsObservedOperations(capability))
+      .filter(capability => !(
+        capability.category !== 'core' &&
+        (capability.related_entities || []).length === 0 &&
+        (capability.operations || []).length > 0 &&
+        (capability.operations || []).every(operation => operation.entry_point_type === 'page')
+      ));
 
     // entry_point_id -> its source node's `type`, used by the infrastructure
     // purpose gate to see PAST a generic entry_point_type (e.g. 'cli'/'pipeline'
@@ -10560,6 +11180,58 @@ export class AnalyzerOrchestrator {
     // (2) DEDUP. Re-run the name + entity-set dedup (with the strengthened
     // verb-variant pass) on the AI output — it never ran on the catalog.
     return this.dedupeSystemCapabilitiesByName(gated);
+  }
+
+  private normalizePolyglotCapabilityName(
+    capability: SystemCapability,
+    entityById: Map<string, CASDataEntity>,
+  ): SystemCapability {
+    const relatedNames = (capability.related_entities || [])
+      .map(id => entityById.get(id)?.name)
+      .filter((name): name is string => Boolean(name));
+    if (relatedNames.length < 2) return capability;
+    const rawTokens = (value: string) => value
+      .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+      .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+      .replace(/[_\-./]/g, ' ')
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter(token => token.length > 2);
+    const nameTokens = rawTokens(capability.name);
+    const implementationTokens = nameTokens.filter(token => isLanguageBuiltinDomainToken(token));
+    if (implementationTokens.length === 0) return capability;
+    const entityTokenSets = relatedNames.map(rawTokens);
+    const removable = implementationTokens.filter(token => entityTokenSets.some(withToken => {
+      if (!withToken.includes(token)) return false;
+      const semantic = withToken.filter(candidate => candidate !== token).join(' ');
+      return entityTokenSets.some(withoutToken => withoutToken !== withToken && withoutToken.join(' ') === semantic);
+    }));
+    if (removable.length === 0) return capability;
+    let normalizedName = capability.name;
+    for (const token of removable) {
+      normalizedName = normalizedName.replace(new RegExp(`\\b${token}\\b`, 'ig'), ' ');
+    }
+    normalizedName = normalizedName.replace(/\s+/g, ' ').trim();
+    if (/^handle\b/i.test(normalizedName)) normalizedName = normalizedName.replace(/^handle\b/i, 'Process');
+    if (!normalizedName || normalizedName === capability.name) return capability;
+    return {
+      ...capability,
+      name: normalizedName,
+      description: '',
+      description_source: undefined,
+      description_generation: undefined,
+    };
+  }
+
+  private capabilityContradictsObservedOperations(
+    capability: Pick<SystemCapability, 'name' | 'description' | 'operations'>,
+  ): boolean {
+    const operations = capability.operations || [];
+    if (!this.capabilityHasObservedRead(operations) || this.capabilityHasObservedMutation(operations)) {
+      return false;
+    }
+    return /^(?:manage|create|update|delete|modify|write|submit|set|configure)\b/i.test(capability.name) ||
+      /\b(?:manag(?:e|es|ing|ement)|creat(?:e|es|ing)|updat(?:e|es|ing)|delet(?:e|es|ing)|modif(?:y|ies|ying)|mutat(?:e|es|ing)|writ(?:e|es|ing)|submits?|configur(?:e|es|ing))\b/i.test(capability.description || '');
   }
 
   /**
@@ -10932,7 +11604,8 @@ export class AnalyzerOrchestrator {
     behaviorSurfaces: SystemCapability[],
     entryPoints: CASEntryPoint[],
     nodes: CASNode[],
-    systemCapabilities: SystemCapability[]
+    systemCapabilities: SystemCapability[],
+    dataEntities: CASDataEntity[] = [],
   ): void {
     // BARE-NOUN GUARD applies here too, defense-in-depth: these deterministic
     // candidates ship untouched when the AI catalog never ran (or returned
@@ -10941,13 +11614,16 @@ export class AnalyzerOrchestrator {
     // repaired or dropped here — same as the AI-catalog-item guard above,
     // just with `related_entities`/`operations` as the anchor evidence
     // instead of a catalog item's raw `entities` field.
-    const validDeterministic = candidateSnapshot
+    const candidatesWithEntityAnchors = candidateSnapshot.map(capability =>
+      this.attachFallbackEntityAnchor(capability, dataEntities)
+    );
+    const validDeterministic = candidatesWithEntityAnchors
       .filter(capability => !this.isRawCandidateLabelName(String(capability.name || ''), []))
       .map(capability => {
         const name = String(capability.name || '');
         if (!this.isBareNounCapabilityLabel(name)) return capability;
         const hasAnchorEvidence = (capability.related_entities?.length || 0) > 0 || (capability.operations?.length || 0) > 0;
-        const repaired = this.deriveManagePurposeLabel(name, hasAnchorEvidence);
+        const repaired = this.deriveDeterministicFallbackPurposeLabel(capability, dataEntities, hasAnchorEvidence);
         if (!repaired) return undefined;
         return {
           ...capability,
@@ -10957,7 +11633,11 @@ export class AnalyzerOrchestrator {
       })
       .filter((capability): capability is SystemCapability => Boolean(capability));
     if (validDeterministic.length > 0) {
-      systemCapabilities.splice(0, systemCapabilities.length, ...validDeterministic);
+      systemCapabilities.splice(
+        0,
+        systemCapabilities.length,
+        ...this.dedupeSystemCapabilitiesByName(validDeterministic),
+      );
       return;
     }
     const largeSurfaceCandidates = behaviorSurfaces.filter(
@@ -10970,6 +11650,108 @@ export class AnalyzerOrchestrator {
       ...surface,
       criticality_factors: Array.from(new Set([...(surface.criticality_factors || []), 'genuine-fallback-from-behavior-surface'])),
     })));
+  }
+
+  private deriveDeterministicFallbackPurposeLabel(
+    capability: SystemCapability,
+    dataEntities: CASDataEntity[],
+    hasAnchorEvidence: boolean,
+  ): string | undefined {
+    if (!hasAnchorEvidence) return undefined;
+    const entityById = new Map(dataEntities.map(entity => [entity.id, entity.name]));
+    const groundedEntityName = (capability.related_entities || [])
+      .map(id => entityById.get(id))
+      .find(Boolean);
+    const routeSubject = (capability.operations || [])
+      .map(operation => this.fallbackRouteResourceSubject(operation.path_or_command || operation.trigger?.path || ''))
+      .find(Boolean);
+    const subject = this.humanizeDisplayName(groundedEntityName || routeSubject || capability.name);
+    if (!subject) return undefined;
+    const operations = capability.operations || [];
+    const readOnly = this.capabilityHasObservedRead(operations) &&
+      !this.capabilityHasObservedMutation(operations) &&
+      (capability.related_entities || []).every(id => {
+        const entity = dataEntities.find(candidate => candidate.id === id);
+        return !entity || (
+          (entity.lifecycle?.created_by?.length || 0) === 0 &&
+          (entity.lifecycle?.updated_by?.length || 0) === 0 &&
+          (entity.lifecycle?.deleted_by?.length || 0) === 0
+        );
+      });
+    return `${readOnly ? 'View' : 'Manage'} ${subject}`;
+  }
+
+  private attachFallbackEntityAnchor(
+    capability: SystemCapability,
+    dataEntities: CASDataEntity[],
+  ): SystemCapability {
+    if ((capability.related_entities || []).length > 0 || dataEntities.length === 0) return capability;
+    const evidence = [
+      capability.name,
+      ...(capability.related_domains || []),
+      ...(capability.operations || []).flatMap(operation => [
+        operation.path_or_command || '',
+        operation.trigger?.path || '',
+      ]),
+    ].join(' ');
+    const canonicalEvidence = this.canonicalCapabilitySubject(evidence);
+    if (!canonicalEvidence) return capability;
+    const match = dataEntities
+      .map(entity => ({ entity, canonical: this.canonicalCapabilitySubject(entity.name) }))
+      .filter(item => item.canonical.length >= 4)
+      .sort((left, right) => right.canonical.length - left.canonical.length)
+      .find(item =>
+        canonicalEvidence.includes(item.canonical) ||
+        item.canonical.includes(canonicalEvidence)
+      );
+    if (!match) return capability;
+    return {
+      ...capability,
+      related_entities: [match.entity.id],
+      criticality_factors: Array.from(new Set([
+        ...(capability.criticality_factors || []),
+        'entity-anchor-inferred-from-resource-evidence',
+      ])),
+    };
+  }
+
+  private canonicalCapabilitySubject(value: string): string {
+    const tokens = this.humanizePascalName(String(value || ''))
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter(Boolean)
+      .filter(token => token.length > 1)
+      .filter(token => !isLanguageBuiltinDomainToken(token))
+      .filter(token => !['api', 'http', 'https', 'route', 'controller', 'handler', 'workflow', 'management', 'analysis', 'dashboard', 'view', 'manage', 'list', 'get', 'id'].includes(token))
+      .map(token => token.length > 4 && token.endsWith('s') ? token.slice(0, -1) : token);
+    return tokens.join('');
+  }
+
+  private fallbackRouteResourceSubject(value: string): string | undefined {
+    const segments = String(value || '')
+      .split(/[/?#]+/)
+      .map(segment => segment.replace(/[{}:]/g, '').trim())
+      .filter(Boolean)
+      .filter(segment => !/^\d+$/.test(segment))
+      .filter(segment => !/^(?:api|v\d+|id|index)$/i.test(segment))
+      .filter(segment => !isLanguageBuiltinDomainToken(segment.toLowerCase()));
+    const resource = [...segments].reverse().find(segment => !/(?:_id|Id)$/i.test(segment));
+    return resource ? resource.replace(/s$/i, '') : undefined;
+  }
+
+  private capabilityHasObservedRead(operations: SystemCapability['operations']): boolean {
+    return operations.some(operation =>
+      /^(?:view|read|list|get|show|access|retrieve|review|analyze|compare|present|render)$/i.test(operation.action || '') ||
+      /^(?:GET|HEAD|OPTIONS)$/i.test(operation.trigger?.method || '') ||
+      operation.entry_point_type === 'page'
+    );
+  }
+
+  private capabilityHasObservedMutation(operations: SystemCapability['operations']): boolean {
+    return operations.some(operation =>
+      /^(?:manage|create|update|delete|write|modify|submit|configure|mutate|set|save|persist)$/i.test(operation.action || '') ||
+      /^(?:POST|PUT|PATCH|DELETE)$/i.test(operation.trigger?.method || '')
+    );
   }
 
   /**
@@ -10986,7 +11768,12 @@ export class AnalyzerOrchestrator {
    *  - bare-noun names or structural template descriptions surviving.
    */
   private catalogQualityFailure(reconciled: SystemCapability[], distinctFamilyCount: number): string | undefined {
-    if (reconciled.length === 0) return 'empty catalog after reconciliation';
+    if (reconciled.length === 0) {
+      return distinctFamilyCount === 0 ? undefined : 'empty catalog after reconciliation';
+    }
+    if (reconciled.length === 1 && distinctFamilyCount >= 2) {
+      return `catalog collapse: 1 capability against ${distinctFamilyCount} distinct deterministic candidate families`;
+    }
     if (reconciled.length <= 3 && distinctFamilyCount >= Math.max(6, reconciled.length * 2)) {
       return `catalog collapse: ${reconciled.length} capabilities against ${distinctFamilyCount} distinct deterministic candidate families`;
     }
@@ -10999,6 +11786,65 @@ export class AnalyzerOrchestrator {
       return `structural template descriptions survived reconciliation: ${placeholders.slice(0, 3).map(capability => `"${capability.name}"`).join(', ')}`;
     }
     return undefined;
+  }
+
+  private catalogDistinctFamilyCount(candidates: SystemCapability[]): number {
+    candidates = candidates.filter(candidate => {
+      const hasDomainEvidence = (candidate.related_entities?.length || 0) > 0 || (candidate.related_domains?.length || 0) > 0;
+      const operations = candidate.operations || [];
+      const pageOnly = operations.length > 0 && operations.every(operation => operation.entry_point_type === 'page');
+      return hasDomainEvidence || !pageOnly || candidate.category === 'core';
+    });
+    if (candidates.length === 0) return 0;
+    const actionTokens = new Set([
+      'view', 'get', 'list', 'read', 'show', 'access', 'manage', 'create', 'update',
+      'delete', 'modify', 'write', 'process', 'handle', 'coordinate', 'provide',
+      'support', 'execute', 'run', 'perform', 'track', 'monitor',
+    ]);
+    const tokenize = (name: string): string[] => name
+      .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .map(token => this.stemTerminologyToken(token))
+      .filter(token => token.length >= 4 && !actionTokens.has(token) && !this.isGenericCapabilityToken(token));
+    // A distinctive subject repeated across most candidates ("order" across
+    // several language implementations) is evidence that they are one family,
+    // not noise to remove. Generic vocabulary is already excluded by tokenize.
+    const tokens = candidates.map(candidate => new Set(tokenize(String(candidate.name || ''))));
+    const entities = candidates.map(candidate => new Set((candidate.related_entities || []).map(value => String(value).toLowerCase())));
+    const parent = candidates.map((_, index) => index);
+    const find = (index: number): number => parent[index] === index ? index : (parent[index] = find(parent[index]));
+    const union = (left: number, right: number): void => {
+      const leftRoot = find(left);
+      const rightRoot = find(right);
+      if (leftRoot !== rightRoot) parent[rightRoot] = leftRoot;
+    };
+    const tokenSetsOverlap = (left: Set<string>, right: Set<string>): boolean => {
+      for (const a of left) {
+        for (const b of right) {
+          if (a === b || (Math.min(a.length, b.length) >= 5 && (a.includes(b) || b.includes(a)))) return true;
+        }
+      }
+      return false;
+    };
+    const setsOverlap = (left: Set<string>, right: Set<string>): boolean => [...left].some(value => right.has(value));
+    for (let left = 0; left < candidates.length; left++) {
+      for (let right = left + 1; right < candidates.length; right++) {
+        const subjectOverlap = tokenSetsOverlap(tokens[left], tokens[right]);
+        const sharedEntities = [...entities[left]].filter(value => entities[right].has(value));
+        const distinctiveEntityOverlap = sharedEntities.some(value => value
+          .replace(/^entity[_:-]?/, '')
+          .split(/[^a-z0-9]+/)
+          .some(token => token.length >= 4 && !this.isGenericCapabilityToken(token)));
+        const entityOverlap = sharedEntities.length > 0;
+        if (subjectOverlap || (entityOverlap && (distinctiveEntityOverlap || tokens[left].size === 0 || tokens[right].size === 0))) union(left, right);
+      }
+    }
+    const roots = new Set<number>();
+    for (let index = 0; index < candidates.length; index++) {
+      if (tokens[index].size > 0 || entities[index].size > 0) roots.add(find(index));
+    }
+    return roots.size;
   }
 
   /**
@@ -11026,9 +11872,7 @@ export class AnalyzerOrchestrator {
     nodes: CASNode[];
     budgetMs: number;
   }): Promise<SystemCapability[]> {
-    const distinctFamilyCount = new Set(
-      args.candidateSnapshot.map(capability => String(capability.name || '').trim()).filter(Boolean)
-    ).size;
+    const distinctFamilyCount = this.catalogDistinctFamilyCount(args.candidateSnapshot);
     let reconciled: SystemCapability[] = [];
     let qualityFailure: string | undefined;
     let cyclesRun = 0;
@@ -11104,7 +11948,10 @@ export class AnalyzerOrchestrator {
    * Every repair/drop is E1-attributable via one 'capability_finalization'
    * semantic-decision record (observational only, env-gated off by default).
    */
-  private finalizeSystemCapabilityNames(systemCapabilities: SystemCapability[]): void {
+  private finalizeSystemCapabilityNames(
+    systemCapabilities: SystemCapability[],
+    dataEntities: CASDataEntity[] = [],
+  ): void {
     let repaired = 0;
     const dropped: string[] = [];
     const kept: SystemCapability[] = [];
@@ -11128,12 +11975,30 @@ export class AnalyzerOrchestrator {
         continue;
       }
       const name = String(capability.name || '');
+      if (
+        /^Manage\b/i.test(name) &&
+        this.capabilityHasObservedRead(capability.operations || []) &&
+        !this.capabilityHasObservedMutation(capability.operations || [])
+      ) {
+        capability.name = name.replace(/^Manage\b/i, 'View');
+        capability.criticality_factors = Array.from(new Set([
+          ...(capability.criticality_factors || []),
+          'read-only-purpose-repaired',
+        ]));
+        repaired++;
+        kept.push(capability);
+        continue;
+      }
       if (!this.isBareNounCapabilityLabel(name)) {
         kept.push(capability);
         continue;
       }
       const hasAnchorEvidence = (capability.related_entities?.length || 0) > 0 || (capability.operations?.length || 0) > 0;
-      const repairedName = this.deriveManagePurposeLabel(name, hasAnchorEvidence);
+      const repairedName = this.deriveDeterministicFallbackPurposeLabel(
+        capability,
+        dataEntities,
+        hasAnchorEvidence,
+      );
       if (!repairedName) {
         dropped.push(name);
         continue;
@@ -11143,9 +12008,8 @@ export class AnalyzerOrchestrator {
       repaired++;
       kept.push(capability);
     }
-    if (dropped.length > 0) {
-      systemCapabilities.splice(0, systemCapabilities.length, ...kept);
-    }
+    const deduped = this.dedupeSystemCapabilitiesByName(kept);
+    systemCapabilities.splice(0, systemCapabilities.length, ...deduped);
     if (repaired > 0 || dropped.length > 0) {
       recordSemanticDecision({
         ts: Date.now(),
@@ -11207,6 +12071,7 @@ export class AnalyzerOrchestrator {
     // split simply no-ops (keeps the single merged surface) when omitted.
     entryPoints: CASEntryPoint[] = []
   ): Promise<void> {
+    this.elementDescriptionArtifactType = enhancedSystemPurpose.artifact_type;
     this.setElementDescriptionGrounding(
       enhancedSystemPurpose.primary_domain,
       enhancedSystemPurpose.core_concepts,
@@ -11245,21 +12110,20 @@ export class AnalyzerOrchestrator {
       return;
     }
 
-    // AI EXTRACTS the capability catalog (the business value) from the Camp-B
-    // fact bundle — user journeys, entities, route areas, services. On success,
-    // replaces systemCapabilities in place, each linked back to its evidence.
-    if (systemCapabilities.length > 0 || userJourneys.length > 0) {
-      // Snapshot the DETERMINISTIC candidates BEFORE the AI replaces them. The
-      // deterministic pass has already applied entity-set dedup and the
-      // purpose gate; the AI catalog (which reasons only from journeys/
-      // entities) discards all of that. reconcile re-applies those guarantees
-      // to the AI output — see reconcileCatalogedCapabilities. `systemCapabilities`
-      // here is domain capabilities ONLY: behavior surfaces (mcp_tool/rpc/
-      // command/event/message registration engines) were already routed into
-      // the separate `behaviorSurfaces` list by buildSystemCapabilities and
-      // never reach this candidate snapshot or the AI catalog prompt at all.
-      const candidateSnapshot = systemCapabilities.map(capability => ({ ...capability }));
-      const reconciled = await this.runCapabilityCatalogWithQualityGate({
+    const candidateSnapshot = systemCapabilities.map(capability => ({ ...capability }));
+    const aiInputFingerprint = this.hashAIInterpretationRefreshFingerprint(
+      this.buildAIInterpretationRefreshFingerprint(
+        systemName,
+        frameworks,
+        entryPointSummary,
+        databaseEntities,
+        externalServices,
+        domainConcepts,
+        candidateSnapshot,
+      )
+    );
+    const capabilityCatalogPromise = systemCapabilities.length > 0 || userJourneys.length > 0
+      ? this.runCapabilityCatalogWithQualityGate({
         systemName,
         enhancedSystemPurpose,
         frameworks,
@@ -11273,25 +12137,12 @@ export class AnalyzerOrchestrator {
         entryPoints,
         nodes,
         budgetMs,
-      });
-      if (reconciled.length > 0) {
-        systemCapabilities.splice(0, systemCapabilities.length, ...reconciled);
-      } else {
-        // The AI catalog returned nothing usable (empty response / all items
-        // dropped by the validity guard). The surviving DETERMINISTIC
-        // candidates must NOT be shipped as-is: a raw terminal-chain / shell-
-        // script label ("Run Shell script: release.sh -> Docker read (+2 more)")
-        // is never a real capability, even when the pipeline later synthesized a
-        // description for it — so it must pass the same validity guard the AI
-        // items do. (Measured live on Klauro-self v1.0.81: the AI catalog
-        // returned empty on the 45k-node CAS, and this exact shell-script
-        // leftover survived as the sole "capability" with 43 flows dangling a
-        // ghost cap_mcp_tool_surface ref, because the old `else if
-        // (candidateSnapshot.length === 0)` guard left non-empty deterministic
-        // sets untouched.)
-        this.applyDeterministicCapabilityFallback(candidateSnapshot, behaviorSurfaces, entryPoints, nodes, systemCapabilities);
-      }
-    }
+      })
+      : Promise.resolve<SystemCapability[]>([]);
+    const capabilityCatalogOutcome = capabilityCatalogPromise.then(
+      value => ({ status: 'fulfilled' as const, value }),
+      reason => ({ status: 'rejected' as const, reason })
+    );
 
     const structuralFacts = this.buildAIInterpretationFacts(
       systemName,
@@ -11301,17 +12152,49 @@ export class AnalyzerOrchestrator {
       externalServices,
       flowGraph,
       domainConcepts,
-      systemCapabilities,
+      candidateSnapshot,
       libraryNames,
       projectTextSignal,
       dataEntities,
-      projectTextSignal.manifestDescription || ''
+      projectTextSignal.manifestDescription || '',
+      userJourneys
     );
+    const artifactType = String(enhancedSystemPurpose.artifact_type || structuralFacts.artifactType || 'app');
+    if (artifactType === 'infrastructure') {
+      const declarations = nodes
+        .filter(node => /^(?:infrastructure_resource|kubernetes_deployment|compose_service|container_image_definition|serverless_function)$/i.test(node.type))
+        .map(node => ({
+          kind: node.type,
+          name: node.name,
+          provider: String((node.metadata as any)?.attributes?.provider || (node.metadata as any)?.framework || ''),
+          resource_type: String((node.metadata as any)?.attributes?.terraform_type || ''),
+          replicas: (node.metadata as any)?.replicas,
+          ports: (node.metadata as any)?.ports,
+        }))
+        .slice(0, 16);
+      if (declarations.length > 0) structuralFacts.infrastructureDeclarations = declarations;
+    }
     const descriptionPromptContract = this.buildAIDescriptionPromptContract(
       enhancedSystemPurpose,
       systemName,
       projectTextSignal
     );
+    const systemNarrativeFacts = artifactType === 'infrastructure'
+      ? {
+          systemName,
+          artifactType,
+          infrastructureDeclarations: structuralFacts.infrastructureDeclarations || [],
+          declaredTopology: {
+            deployableUnits: deployableCount,
+            externalServices: structuralFacts.externalServices || [],
+          },
+        }
+      : this.focusedSystemDescriptionFacts(structuralFacts);
+    const narrativePrimaryDomain = artifactType === 'infrastructure' ? undefined : enhancedSystemPurpose.primary_domain;
+    if (artifactType === 'infrastructure') {
+      delete descriptionPromptContract.suppliedPrimaryDomain;
+      delete descriptionPromptContract.suppliedPurposeType;
+    }
     const isKlauroSelfProject = this.isKlauroSelfProject(this.activeAnalysisProjectPath);
     const klauroSelfConcepts = [
       'CAS relationship graph',
@@ -11330,26 +12213,17 @@ export class AnalyzerOrchestrator {
     const promptCoreConcepts = isKlauroSelfProject
       ? klauroSelfConcepts
       : enhancedSystemPurpose.core_concepts;
+    const narrativeCoreConcepts = artifactType === 'infrastructure' ? [] : promptCoreConcepts;
 
     const elementsEnabled = process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS !== 'false' && process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS !== '0';
     const configuredElementLimit = Number(process.env.KLAURO_AI_ELEMENT_DESCRIPTION_LIMIT || '');
     const elementLimit = Number.isFinite(configuredElementLimit) && configuredElementLimit > 0 ? configuredElementLimit : 8;
     const entityNamesById = new Map(dataEntities.map(entity => [entity.id, entity.name]));
-    const capabilityTargets = elementsEnabled
-      // Capabilities produced by aiExtractCapabilityCatalog already carry a
-      // grounded AI description; only describe any that don't — PLUS any whose
-      // catalog description shipped as a no-information template ("Lets users
-      // <verb> <noun>" / "capability owns the ... lifecycle"): those bypass the
-      // element validator on the catalog path, so re-queue them here for an
-      // AI re-description under the scaffold-banning style contract.
-      ? systemCapabilities.filter(capability =>
-        capability.description_source !== 'ai' ||
-        Boolean(capabilityDescriptionScaffoldReason(capability.description || '', capability.name, [
-          ...(capability.related_entities || []).map(id => entityNamesById.get(id) || id),
-          ...(capability.related_domains || []),
-        ]))
-      ).slice(0, elementLimit).map(capability => this.capabilityDescriptionTarget(capability, entityNamesById))
-      : [];
+    const entityFieldsById = new Map(dataEntities.map(entity => [
+      entity.id,
+      (entity.fields || []).map(field => `${field.name}:${field.type || 'unknown'}`),
+    ]));
+    let capabilityTargets: DescriptionTarget[] = [];
 
     // E1 (observational): compact evidence digest for the semantic dataset. Sizes/
     // counts/key names only — NO source, NO secrets. See docs/SEMANTIC-MODEL.md.
@@ -11362,64 +12236,49 @@ export class AnalyzerOrchestrator {
       dataEntities: dataEntities.length,
       systemCapabilities: systemCapabilities.length,
       userJourneys: userJourneys.length,
-      capabilityTargets: capabilityTargets.length,
+      capabilityTargets: 0,
       unanalyzedLanguages: unanalyzedLanguages.length,
       hasProjectText: Boolean(projectTextSignal.manifestDescription || projectTextSignal.summary),
     };
     let timeoutHandle: NodeJS.Timeout | undefined;
     let raw: string;
+    const observedMethods = entryPoints
+      .map(entry => String(entry.trigger?.method || '').toUpperCase())
+      .filter(Boolean);
+    const observedReadOnly = observedMethods.some(method => ['GET', 'HEAD', 'OPTIONS'].includes(method)) &&
+      !observedMethods.some(method => ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method));
+    const readOnlyNarrativeRule = observedReadOnly
+      ? ' The observed product is a retrieval and review surface. Use affirmative sentences whose product-action verbs are retrieves, presents, returns, views, reviews, compares, or analyzes. Describe what is available to users, not ownership or state transitions. Do not discuss missing abilities or limitations. The domain label must describe the information or review purpose and must not use an ownership-oriented suffix.'
+      : '';
+    const semanticRepairTask = artifactType === 'infrastructure'
+      ? 'Regenerate the rejected infrastructure description from scratch. Return ONLY valid JSON with the same shape: {"system_description":"...","domain":"...","descriptions":[{"id":"...","description":"..."}]}. Write exactly 4 factual sentences. Use infrastructureDeclarations to name the exact declared resource types, runtime units, providers, replicas, and ports. Explain their declared topology without inferring application behavior from names. Do not hedge, market, discuss source artifacts, or describe scripts and commands. The domain must be a lowercase kebab-case infrastructure/deployment/platform label.'
+      : observedReadOnly
+        ? 'Regenerate the rejected parts from the supplied evidence. Return ONLY valid JSON with the same shape: {"system_description":"...","domain":"...","descriptions":[{"id":"...","description":"..."}]}. Write only affirmative product statements. Describe the system as a retrieval and review product. Every product action must use one of these verbs: retrieves, presents, returns, views, reviews, compares, analyzes. Write one paragraph of 4 to 6 full sentences (at least 240 characters) answering what the system is, what information users receive, how a named intent yields a named result, and the evidenced operating shape. Use exact nouns from distinctiveEntities, terminalOutputs, and recordsRead. Choose a domain made from those product nouns plus information, reference, query, or review when appropriate. Do not discuss limitations, absent behavior, implementation surfaces, source artifacts, prompt fields, or framework internals.'
+      : 'Repair the rejected parts of the previous answer. Return ONLY valid JSON with the same shape: {"system_description":"...","domain":"...","descriptions":[{"id":"...","description":"..."}]}. Write a grounded system_description that is ONE paragraph of 4 to 6 full sentences (at least 240 characters) answering, in order, what the system is, what it does, how it works, and how it is built. Replace generic mechanism phrases with one explicit relationship from productBehaviorPaths: name the product intent and the resulting record or message. Explain a transformation or decision only when businessTransformations contains one. The prompt intentionally withholds route and implementation names; never invent or name a request path, handler, function, method, source file, or framework internal. Use the exact domain nouns supplied by distinctiveEntities, terminalOutputs, recordsRead, recordsWritten, or messagesEmitted. Never say data lookup behavior, resource checks, lifecycle operations, manages data, or coordinates workflows. Frameworks may appear only as product-shaping context, never a package inventory; architecture shapes require corroborating deployable/topology facts. Do not translate entry-point categories into prose. Infer the domain FIRST from readmeProductTitle/readmeProductOverview/manifestDescription/distinctiveEntities/terminalOutputs; libraries are supporting evidence only. Mention integrations only by exact names listed in externalServices.';
+    const systemNarrativeTask = artifactType === 'infrastructure'
+      ? 'Return ONLY JSON shaped as {"system_description":"...","domain":"..."}. Write one paragraph of exactly 4 concise, grammatical sentences from the supplied evidence. Name the exact resource types and runtime units in infrastructureDeclarations; explain what is provisioned, how the declarations compose the runtime, and the evidenced replica/port/provider shape. State only declared facts: never hedge with likely/possibly, infer business behavior from a resource label, or call representations of one runtime separate applications. Do not mention scripts, source files, functions, variables, prompt keys, or graph evidence. Avoid marketing language. domain must be a lowercase kebab-case label of 2 to 4 nouns and must include infrastructure, deployment, provisioning, or platform.'
+      : artifactType === 'library' || artifactType === 'client-sdk'
+        ? 'Return ONLY JSON shaped as {"system_description":"...","domain":"..."}. Write one paragraph of exactly 4 concise, grammatical sentences from the supplied evidence: what reusable library or client SDK this is; what consumers can accomplish with it; how its public contracts transform inputs into results; and how it is packaged or integrated. Never describe it as an independently deployed application unless deployable evidence explicitly proves that. Do not mention prompt keys, source files, functions, variables, routes, handlers, or graph evidence. domain must be a lowercase kebab-case label of 2 to 4 product nouns.'
+        : `Return ONLY JSON shaped as {"system_description":"...","domain":"..."}. Write one paragraph of exactly 4 concise, grammatical sentences from the supplied product evidence: what the product is; what users or operators can do; how one named intent yields one named record, message, or result; and the evidenced operating/deployment shape. Use concrete product nouns. Do not mention frameworks, libraries, HTTP, requests, routes, endpoints, handlers, functions, methods, variables, source files, graph evidence, prompt keys, or implementation identifiers. Do not add marketing claims. domain must be a lowercase kebab-case label of 2 to 4 product nouns.${readOnlyNarrativeRule}`;
     try {
-      raw = await Promise.race([
-        aiService.generateComponentDescription({
+      timeoutHandle = setTimeout(() => {
+        console.error(`[Klauro] AI interpretation is still running after ${budgetMs}ms; continuing until the provider completes`);
+      }, budgetMs);
+      timeoutHandle.unref?.();
+      raw = await aiService.generateComponentDescription({
           additionalContext: {
-            task: 'You are writing the Klauro CAS human/agent orientation. Based ONLY on the supplied facts and descriptionContract, return ONLY valid JSON with this shape: {"system_description":"...","domain":"...","descriptions":[{"id":"...","description":"..."}],"quality_check":{"used_facts":["..."],"unsupported_claims":[]}}. Before writing, follow descriptionContract.evidence_priority in order. system_description must be ONE rich paragraph of 4 to 6 full sentences that answers, in order, the four questions in descriptionContract.system_description_shape: (1) WHAT IT IS — the system type/domain, inferred FIRST from readmeProductTitle/readmeProductOverview/manifestDescription (the product\'s own framing) and from distinctiveEntities/terminalOutputs (what it produces), and only THEN from dependencies when no stronger signal exists; (2) WHAT IT DOES — the concrete product workflows and the terminalOutputs it produces for its consumers; (3) HOW IT WORKS — the DATAFLOW that produces those outputs: what enters the system, what transformations or decisions the capabilities apply to the entities, and what terminal records/outputs result — never a package or library name in this sentence, and never a circular restatement of the capability or output lists;(4) HOW IT IS BUILT — the build shape and third-party integrations from the supplied facts: a framework from the allowedFrameworks fact list may appear only as product-shaping context (e.g. "a Symfony backend"), never as an inventory of package names ("leveraging libraries such as ..." is forbidden), and an architecture shape (monolith/microservices/event-driven/serverless) may be claimed only when the supplied deployable/topology facts corroborate it. Never write internal fact-list key names (such as the literal phrase "allowed frameworks") in the prose. The declared dependencies (in the "dependencies" fact, listed AFTER the product-framing and entity facts on purpose) are SUPPORTING evidence only, never the primary domain signal: a domain-SPECIFIC integration dependency (e.g. a codebase depending on ccxt/web3/ethers) may indicate a crypto/blockchain system when no stronger product-framing fact contradicts it, but generic infrastructure/tooling dependencies — loggers, auto-update/distribution frameworks, IPC/RPC transports, test/build tooling, serialization libs — are never domain evidence on their own and must NOT be read as implying a security, monitoring, or scanning product unless readmeProductTitle/readmeProductOverview/manifestDescription/distinctiveEntities/terminalOutputs independently support that framing. NEVER infer the domain from a keyword in the project name. Anchor WHAT IT DOES and HOW IT WORKS on what the system PRODUCES (terminalOutputs / api-response entities), not on mid-chain create/update/delete of records. domain must be one lowercase kebab-case label of 2 to 4 concrete product nouns from the facts. descriptions must include one grounded sentence per item in items; each sentence must name the concrete record, lifecycle, workflow, model, or boundary that item owns.',
-            style: 'Use precise engineering/product language. No markdown. No headings. No colon-prefixed inventory labels. No marketing. No vague placeholders. Do not describe source mechanics; translate them into product purpose. If a claim cannot be supported by a supplied fact, omit it and list it in quality_check.unsupported_claims instead of writing it.',
-            descriptionContract: descriptionPromptContract,
-            primaryDomain: enhancedSystemPurpose.primary_domain,
-            coreConcepts: promptCoreConcepts,
-            items: capabilityTargets,
-            ...structuralFacts,
-            // `dependencies` (== libraries) is placed AFTER structuralFacts on
-            // purpose: structuralFacts already carries readmeProductTitle/
-            // readmeProductOverview/manifestDescription/distinctiveEntities/
-            // terminalOutputs ahead of it, so raw dependency names never
-            // out-rank product-framing evidence in prompt position. A prior
-            // version threaded a duplicate `dependencies: libraryNames` key at
-            // the TOP of this object (ahead of manifestDescription/README/
-            // terminal evidence) — that duplicate raw-dependency-name salience
-            // is the suspected cause of a live misfire where a macOS menu-bar
-            // utility (deps: an auto-updater + a logging library) was labeled
-            // "security-scanning-tool": the dependency list had more positional
-            // and textual weight than the product's own self-description. See
-            // dependencySignalInstruction below for the explicit demotion.
-            dependencies: libraryNames,
-            dependencySignalInstruction: 'dependencies lists the declared package names for grounding only — treat it as the LAST-resort domain signal, after readmeProductTitle/readmeProductOverview/manifestDescription/distinctiveEntities/terminalOutputs. Generic infrastructure/tooling dependencies (loggers, auto-updaters, IPC/RPC transports, test/build tooling) are never domain evidence by themselves.',
-            // Deterministic deployment topology: grounds (and bounds) any
-            // architecture-shape wording in HOW IT IS BUILT.
-            ...(typeof deployableCount === 'number' ? {
-              deployableUnits: deployableCount,
-              deployableTopologyInstruction: deployableCount >= 3
-                ? `The system ships ${deployableCount} separately deployable units; architecture-shape wording must match that topology.`
-                : 'The system ships as a single (or frontend+backend pair of) deployable unit(s); never describe it as microservices, service-oriented, or distributed.',
-            } : {}),
-            ...(unanalyzedLanguages.length > 0 ? {
-              unanalyzedLanguages,
-              // FACT, not an instruction about what the text "must" say — a
-              // prior version phrased this as a directive ("system_description
-              // must state that ... and must name X as the dominant unanalyzed
-              // language") and the model echoed that directive verbatim
-              // (twice) into the stored, customer-facing description instead
-              // of writing its own sentence. Give the model the coverage fact
-              // plus a paraphrased example to adapt, never wording to repeat.
-              languageCoverageFact: `Coverage gap: ${unanalyzedLanguages[0].name} makes up ${unanalyzedLanguages[0].share_of_source}% of source files and was not parsed by this static analysis.`,
-              languageCoverageInstruction: `Work this coverage gap into system_description as one clause of ordinary prose, in your own words — for example "...though analysis coverage does not extend to its ${unanalyzedLanguages[0].name} portion." Never copy or restate this instruction text itself.`,
-            } : {}),
+            model: this.narrativeModel(),
+            model_provider: process.env.DEEPINFRA_NARRATIVE_MODEL ? 'deepinfra' : undefined,
+            responseFormat: 'json',
+            maxTokens: 550,
+            task: systemNarrativeTask,
+            primaryDomain: narrativePrimaryDomain,
+            coreConcepts: narrativeCoreConcepts,
+            ...systemNarrativeFacts,
+            dependencySignalInstruction: 'Declared libraries are supporting evidence only and the LAST-resort domain signal after repository text, distinctive entities, terminal outputs, and observed product behavior. Generic infrastructure, logging, transport, test, and build dependencies never establish the product domain by themselves.',
+            ...(typeof deployableCount === 'number' ? { deployableUnits: deployableCount } : {}),
           },
-        }),
-        new Promise<string>((_, reject) => {
-          timeoutHandle = setTimeout(() => reject(new Error('AI interpretation budget exceeded')), budgetMs);
-        }),
-      ]);
+        });
     } catch (error) {
       if (timeoutHandle) clearTimeout(timeoutHandle);
       const message = error instanceof Error ? error.message : String(error);
@@ -11437,6 +12296,27 @@ export class AnalyzerOrchestrator {
       throw new Error(`Klauro comprehension failed (AI provider): ${message}. Comprehension is AI-only; there is no deterministic fallback.`);
     }
     if (timeoutHandle) clearTimeout(timeoutHandle);
+
+    const catalogOutcome = await capabilityCatalogOutcome;
+    if (catalogOutcome.status === 'rejected') throw catalogOutcome.reason;
+    const reconciled = catalogOutcome.value;
+    if (reconciled.length > 0) {
+      systemCapabilities.splice(0, systemCapabilities.length, ...reconciled);
+    } else if (candidateSnapshot.length > 0 || behaviorSurfaces.length > 0) {
+      this.applyDeterministicCapabilityFallback(
+        candidateSnapshot,
+        behaviorSurfaces,
+        entryPoints,
+        nodes,
+        systemCapabilities,
+        dataEntities,
+      );
+    }
+    capabilityTargets = elementsEnabled
+      ? systemCapabilities.slice(0, elementLimit).map(capability => this.capabilityDescriptionTarget(capability, entityNamesById, entityFieldsById))
+      : [];
+    semanticEvidenceDigest.systemCapabilities = systemCapabilities.length;
+    semanticEvidenceDigest.capabilityTargets = capabilityTargets.length;
 
     // The gate grounds the description against the SAME distinctive evidence the
     // prompt saw (distinctive entities + declared dependencies + manifest text),
@@ -11458,6 +12338,16 @@ export class AnalyzerOrchestrator {
       projectTextConcepts: projectTextSignal.concepts,
       isKlauroSelfProject: this.isKlauroSelfProject(this.activeAnalysisProjectPath),
       deployableCount,
+      artifactType,
+      readOnlyProduct: observedReadOnly || (() => {
+        const operations = systemCapabilities.flatMap(capability => capability.operations || []);
+        const hasRead = operations.some(operation => /^(?:view|read|list|get|show|access|analyze|review)$/i.test(operation.action || '') ||
+          /^(?:GET|HEAD|OPTIONS)$/i.test(operation.trigger?.method || ''));
+        const hasMutation = operations.some(operation => /^(?:create|update|delete|write|modify|submit|configure|manage|mutate)$/i.test(operation.action || '') ||
+          /^(?:POST|PUT|PATCH|DELETE)$/i.test(operation.trigger?.method || '')) ||
+          dataEntities.some(entity => entity.lifecycle.created_by.length > 0 || entity.lifecycle.updated_by.length > 0 || entity.lifecycle.deleted_by.length > 0);
+        return hasRead && !hasMutation;
+      })(),
     };
 
     const combined = this.parseCombinedInterpretation(raw);
@@ -11468,7 +12358,10 @@ export class AnalyzerOrchestrator {
     // onto the purpose BEFORE validating the description, so the description
     // grounding gate can ground against the AI domain + concepts (there is no
     // longer a deterministic domain seed to ground against).
-    const firstDomainCandidate = domainCandidates.map(c => this.normalizeAIDomainLabel(c)).find(Boolean);
+    const firstDomainCandidate = domainCandidates
+      .map(c => this.normalizeAIDomainLabel(c))
+      .filter((label): label is string => Boolean(label))
+      .find(label => !(observedReadOnly && /(?:^|-)(?:management|lifecycle|mutation|write)(?:-|$)/i.test(label)));
     if (firstDomainCandidate && !enhancedSystemPurpose.primary_domain) {
       enhancedSystemPurpose.primary_domain = firstDomainCandidate;
     }
@@ -11482,6 +12375,17 @@ export class AnalyzerOrchestrator {
       enhancedSystemPurpose,
       interpretationFacts
     );
+    if (!validation.ok && !enhancedSystemPurpose.domain_source &&
+      firstDomainCandidate === enhancedSystemPurpose.primary_domain) {
+      // The first domain is seeded only so its matching first-pass prose can
+      // be grounded. Once that prose is rejected, carrying the seed into the
+      // repair prompt turns a bad claim into an instruction (for example,
+      // "order-management" repeatedly reintroducing mutation language into a
+      // read-only application). Repairs must start from evidence, not rejected
+      // model output; the candidate remains in domainCandidates and can still
+      // be accepted later if the final description independently grounds it.
+      enhancedSystemPurpose.primary_domain = '';
+    }
 
     const acceptedElements = new Map<string, string>();
     const rejectedElements = new Map<string, string>();
@@ -11504,13 +12408,18 @@ export class AnalyzerOrchestrator {
     // here (healed above / below via acceptAIInterpretationCandidate).
     for (let repairAttempt = 0; repairAttempt < 2; repairAttempt++) {
       if (validation.ok && rejectedElements.size === 0) break;
+      let repairTimeoutHandle: NodeJS.Timeout | undefined;
       try {
         const remainingMs = budgetMs;
-        let repairTimeoutHandle: NodeJS.Timeout | undefined;
-        const repairRaw = await Promise.race([
-          aiService.generateComponentDescription({
+        repairTimeoutHandle = setTimeout(() => {
+          console.error(`[Klauro] AI interpretation repair is still running after ${remainingMs}ms; continuing until the provider completes`);
+        }, remainingMs);
+        repairTimeoutHandle.unref?.();
+        const repairRaw = await aiService.generateComponentDescription({
             additionalContext: {
-              task: 'Repair the rejected parts of the previous answer. Return ONLY valid JSON with the same shape: {"system_description":"...","domain":"...","descriptions":[{"id":"...","description":"..."}]}. Fix only what was rejected: write a grounded system_description that is ONE paragraph of 4 to 6 full sentences (at least 240 characters) answering, in order, what the system is, what it does (anchored on the terminalOutputs it produces), how it works (the dataflow: what enters, what transformations/decisions happen, what terminal outputs result — never package or library names), and how it is built (frameworks only as product-shaping context, never a package inventory; architecture shapes like microservices only when the supplied deployable/topology facts corroborate them) — if it was rejected, and one grounded sentence per rejected item. Infer the domain FIRST from readmeProductTitle/readmeProductOverview/manifestDescription/distinctiveEntities/terminalOutputs; dependencies are supporting evidence only (generic infrastructure/tooling dependencies are never domain evidence on their own) — never infer a domain from a name. Mention integrations or external services only by the exact names listed in externalServices; if none are listed, do not mention integrations at all.',
+              model: this.narrativeModel(),
+              model_provider: process.env.DEEPINFRA_NARRATIVE_MODEL ? 'deepinfra' : undefined,
+              task: semanticRepairTask,
               style: 'Use descriptionContract as the acceptance test. No markdown. No marketing language. No raw labels like "Key capabilities:" or "Data model:". Do not invent features, company names, domains, compliance, scale, productivity, user-experience claims, or integrations beyond the facts. If the previous answer was rejected as source-bucket-restatement, rewrite it as product behavior. Do not use interaction surfaces, HTTP endpoints, HTTP workflows, API workflows, route workflows, WebSocket workflows, route surfaces, page routes, CLI commands, schedule surfaces, script-based, script-driven, internal script, internal files, source files, file-based entry points, or file entry point.',
               descriptionContract: descriptionPromptContract,
               rejected_system_description: validation.ok ? undefined : cleaned,
@@ -11518,21 +12427,13 @@ export class AnalyzerOrchestrator {
               rejected_items: capabilityTargets
                 .filter(target => rejectedElements.has(target.id))
                 .map(target => ({ ...target, rejection_reason: rejectedElements.get(target.id) })),
-              primaryDomain: enhancedSystemPurpose.primary_domain,
-              coreConcepts: promptCoreConcepts,
-              ...structuralFacts,
-              // See main-pass comment above: dependencies placed AFTER
-              // structuralFacts (README/manifest/distinctiveEntities/terminal
-              // evidence) on purpose, with an explicit demotion instruction.
-              dependencies: libraryNames,
-              dependencySignalInstruction: 'dependencies lists the declared package names for grounding only — treat it as the LAST-resort domain signal, after readmeProductTitle/readmeProductOverview/manifestDescription/distinctiveEntities/terminalOutputs. Generic infrastructure/tooling dependencies (loggers, auto-updaters, IPC/RPC transports, test/build tooling) are never domain evidence by themselves.',
+              primaryDomain: narrativePrimaryDomain,
+              coreConcepts: narrativeCoreConcepts,
+              ...(artifactType === 'infrastructure' ? systemNarrativeFacts : structuralFacts),
+              dependencySignalInstruction: 'libraries lists a compact, evidence-ranked set of declared packages for grounding only — treat it as the LAST-resort domain signal, after readmeProductTitle/readmeProductOverview/manifestDescription/distinctiveEntities/terminalOutputs. Generic infrastructure/tooling dependencies (loggers, auto-updaters, IPC/RPC transports, test/build tooling) are never domain evidence by themselves.',
+              integrationEvidenceInstruction: 'externalServices are integrations supported by static code evidence. Phrase them as supported integrations unless runtime or deployment facts explicitly prove they are active; never claim every listed service is deployed.',
             },
-          }),
-          new Promise<string>((_, reject) => {
-            repairTimeoutHandle = setTimeout(() => reject(new Error('AI interpretation repair budget exceeded')), remainingMs);
-          }),
-        ]);
-        if (repairTimeoutHandle) clearTimeout(repairTimeoutHandle);
+          });
         const repaired = this.parseCombinedInterpretation(repairRaw);
         if (repaired.domain) domainCandidates.push(repaired.domain);
         if (!validation.ok && (repaired.systemDescription || '').trim()) {
@@ -11561,6 +12462,49 @@ export class AnalyzerOrchestrator {
       } catch (repairError) {
         const repairMessage = repairError instanceof Error ? repairError.message : String(repairError);
         console.error(`[Klauro] AI interpretation repair skipped (${repairMessage}); using first-pass results`);
+      } finally {
+        if (repairTimeoutHandle) clearTimeout(repairTimeoutHandle);
+      }
+    }
+
+    // Combined system + element generation is efficient on the normal path,
+    // but a rejected system paragraph should not keep seeing the capability
+    // item payload that caused it to echo implementation mechanics. Make one
+    // final, system-only repair from the compact product evidence. This is a
+    // semantic retry only after a rejected answer; successful analyses pay no
+    // additional latency or tokens.
+    for (let focusedAttempt = 0; !validation.ok && focusedAttempt < 2; focusedAttempt++) {
+      try {
+        const focusedRepairRaw = await aiService.generateComponentDescription({
+          additionalContext: {
+            model: this.narrativeModel(),
+            model_provider: process.env.DEEPINFRA_NARRATIVE_MODEL ? 'deepinfra' : undefined,
+            task: `${systemNarrativeTask} Regenerate from scratch and do not copy the rejected paragraph. Translate identifiers into ordinary domain language. Do not include item descriptions.`,
+            rejection_reason: validation.reason,
+            retry_attempt: focusedAttempt + 1,
+            primaryDomain: narrativePrimaryDomain,
+            coreConcepts: narrativeCoreConcepts,
+            ...systemNarrativeFacts,
+          },
+        });
+        const focusedRepair = this.parseCombinedInterpretation(focusedRepairRaw);
+        if (focusedRepair.domain) domainCandidates.push(focusedRepair.domain);
+        if ((focusedRepair.systemDescription || '').trim()) {
+          const outcome = this.acceptAIInterpretationCandidate(
+            focusedRepair.systemDescription || '',
+            enhancedSystemPurpose,
+            interpretationFacts
+          );
+          if (outcome.text) {
+            cleaned = outcome.text;
+            validation = outcome.validation;
+          }
+        }
+      } catch (focusedRepairError) {
+        const repairMessage = focusedRepairError instanceof Error
+          ? focusedRepairError.message
+          : String(focusedRepairError);
+        console.error(`[Klauro] focused AI system-description repair failed (${repairMessage})`);
       }
     }
 
@@ -11606,6 +12550,13 @@ export class AnalyzerOrchestrator {
     for (const candidate of domainCandidates) {
       const label = this.normalizeAIDomainLabel(candidate);
       if (!label) continue;
+      if (observedReadOnly && /(?:^|-)(?:management|lifecycle|mutation|write)(?:-|$)/i.test(label)) {
+        enhancedSystemPurpose.domain_rejected_candidates = [
+          ...(enhancedSystemPurpose.domain_rejected_candidates || []),
+          { label, reason: 'read-only-domain-claims-ownership' },
+        ];
+        continue;
+      }
       // The pre-seeded first candidate: stamp its AI provenance if a grounded
       // domain hasn't been applied yet.
       if (label === enhancedSystemPurpose.primary_domain && !domainApplied) {
@@ -11665,18 +12616,54 @@ export class AnalyzerOrchestrator {
     }
 
     // Element (capability) descriptions: AI-applied when accepted; otherwise
-    // left unset (no deterministic substitute).
+    // routed through the stricter targeted repair pass below.
+    const unresolvedCapabilityIds: string[] = [];
     for (const target of capabilityTargets) {
       const accepted = acceptedElements.get(target.id);
       if (accepted) {
         this.applyElementDescription(target.id, accepted, systemCapabilities, [], 'ai', 'ai_applied', true, undefined, budgetMs);
       } else {
-        this.applyElementDescription(target.id, undefined, systemCapabilities, [], 'ai', 'ai_rejected', true, rejectedElements.get(target.id) || 'generated-description-failed-quality-gate', budgetMs);
+        const existing = systemCapabilities.find(capability => capability.id === target.id);
+        if (existing && (!existing.description || !this.validateElementDescription(existing.description, target).ok)) {
+          delete (existing as Partial<SystemCapability>).description;
+          existing.description_source = undefined;
+        }
+        unresolvedCapabilityIds.push(target.id);
+        this.applyElementDescription(target.id, undefined, systemCapabilities, [], undefined, 'ai_rejected', true, rejectedElements.get(target.id) || 'generated-description-failed-quality-gate', budgetMs);
+      }
+    }
+    if (unresolvedCapabilityIds.length > 0) {
+      const unresolvedCapabilities = systemCapabilities.filter(capability => unresolvedCapabilityIds.includes(capability.id));
+      await this.applyAIElementDescriptions(unresolvedCapabilities, [], {
+        systemName,
+        enhancedSystemPurpose,
+        projectTextSignal,
+        frameworks,
+        includeEntities: false,
+        nodes,
+        edges,
+        allCapabilitiesForEvidence: systemCapabilities,
+        userJourneys,
+      });
+      const unresolvedAfterRepair = unresolvedCapabilities.filter(capability => {
+        const target = this.capabilityDescriptionTarget(capability, entityNamesById, entityFieldsById);
+        return !capability.description || capability.description_source !== 'ai' || !this.validateElementDescription(capability.description, target).ok;
+      });
+      if (unresolvedAfterRepair.length > 0) {
+        const failures = unresolvedAfterRepair.map(capability => {
+          const target = this.capabilityDescriptionTarget(capability, entityNamesById, entityFieldsById);
+          const validation = capability.description
+            ? this.validateElementDescription(capability.description, target)
+            : { ok: false as const, reason: 'missing-description' };
+          const reason = capability.description_generation?.reason || validation.reason || 'unknown-quality-failure';
+          return `${capability.name} (${reason})`;
+        });
+        throw new Error(`Klauro comprehension could not produce grounded AI descriptions for required capabilities: ${failures.join(', ')}`);
       }
     }
     if (elementsEnabled && systemCapabilities.length > capabilityTargets.length) {
       const skippedCapabilities = systemCapabilities.slice(elementLimit);
-      const skippedTargets = skippedCapabilities.map(capability => this.capabilityDescriptionTarget(capability, entityNamesById));
+      const skippedTargets = skippedCapabilities.map(capability => this.capabilityDescriptionTarget(capability, entityNamesById, entityFieldsById));
       this.recordElementDescriptionGenerationByIds(
         skippedTargets.map(target => target.id),
         systemCapabilities,
@@ -11717,13 +12704,14 @@ export class AnalyzerOrchestrator {
     // The required first-pass comprehension contract is complete. Lazy entity
     // and node prose does not make the CAS structurally or semantically partial.
     enhancedSystemPurpose.ai_phase_status = 'complete';
+    enhancedSystemPurpose.ai_input_fingerprint = aiInputFingerprint;
 
     // The AI naming pass above has now had its chance; anything still carrying
     // a bare-noun structural placeholder (name_source unset — the AI catalog
     // did not cover/rename it) would otherwise ship that placeholder as the
     // final name. See finalizeSystemCapabilityNames for the live defect this
     // closes.
-    this.finalizeSystemCapabilityNames(systemCapabilities);
+    this.finalizeSystemCapabilityNames(systemCapabilities, dataEntities);
     this.finalizeFlowGraphCapabilities(flowGraph);
   }
 
@@ -11962,6 +12950,10 @@ export class AnalyzerOrchestrator {
     libraryNames: string[] = [],
     projectTextSignal: ProjectTextSignal = { concepts: [], evidence: [] }
   ): { accepted: boolean; refined: boolean; reason: string } {
+    if (enhancedSystemPurpose.artifact_type === 'infrastructure' &&
+      !/(?:^|-)(?:infrastructure|deployment|provisioning|platform)(?:-|$)/.test(label)) {
+      return { accepted: false, refined: false, reason: 'infrastructure-domain-missing-artifact-semantics' };
+    }
     if (!this.isGroundedAIDomainLabel(label, enhancedSystemPurpose)) {
       return { accepted: false, refined: false, reason: 'not-grounded-in-facts' };
     }
@@ -12122,12 +13114,17 @@ export class AnalyzerOrchestrator {
       userJourneys?: CASUserJourney[];
     }
   ): Promise<void> {
+    this.elementDescriptionArtifactType = context.enhancedSystemPurpose?.artifact_type || this.elementDescriptionArtifactType;
     this.setElementDescriptionGrounding(
       context.enhancedSystemPurpose?.primary_domain || context.projectTextSignal?.primaryDomain,
       context.enhancedSystemPurpose?.core_concepts || context.projectTextSignal?.concepts,
       context.enhancedSystemPurpose?.inferred_description || context.projectTextSignal?.summary
     );
     const entityNamesById = new Map(entities.map(entity => [entity.id, entity.name]));
+    const entityFieldsById = new Map(entities.map(entity => [
+      entity.id,
+      (entity.fields || []).map(field => `${field.name}:${field.type || 'unknown'}`),
+    ]));
     const entityTargetContext = context.includeEntities ? {
       relationsByName: this.buildEntityRelationsByName(context.nodes || [], context.edges || []),
       capabilitiesByEntityId: this.buildCapabilitiesByEntityId(context.allCapabilitiesForEvidence || capabilities),
@@ -12147,7 +13144,7 @@ export class AnalyzerOrchestrator {
           .sort((a, b) => (b.priorityScore ?? 0) - (a.priorityScore ?? 0))
       : [];
     const allTargets = [
-      ...capabilities.map(capability => this.capabilityDescriptionTarget(capability, entityNamesById)),
+      ...capabilities.map(capability => this.capabilityDescriptionTarget(capability, entityNamesById, entityFieldsById)),
       ...entityTargets,
     ];
     const configuredLimit = Number(process.env.KLAURO_AI_ELEMENT_DESCRIPTION_LIMIT || '');
@@ -12260,19 +13257,12 @@ export class AnalyzerOrchestrator {
     for (let i = 0; i < targets.length; i += batchSize) batches.push(targets.slice(i, i + batchSize));
 
     await runWithConcurrency(batches, concurrency, async (batch) => {
-      let timeoutHandle: NodeJS.Timeout | undefined;
       try {
-        const timeoutPromise = new Promise<string>((_, reject) => {
-          timeoutHandle = setTimeout(
-            () => reject(new Error('AI element description budget exceeded')),
-            budgetMs
-          );
-        });
-        const raw = await Promise.race([
+        const raw = await this.awaitAiWithoutCutoff(
           aiService.generateComponentDescription({
             additionalContext: {
-            task: 'Return ONLY valid JSON with this shape: {"descriptions":[{"id":"...","description":"..."}]}. For each CAPABILITY answer in plain product language: what does this capability let the product\'s users or operators DO, and what does it MEAN in THIS product? For each ENTITY answer what real-world concept it represents to the product. Lead with the product meaning, grounded in the related entities (relatedEntities) and the product domain (system.domain, system.concepts) — name the concrete user-facing concept the entities point to (e.g. crypto holdings, invoices, access policies, market signals, devices). Do NOT describe the CRUD mechanism, lifecycle, records, routes, or files; those are plumbing, not the capability. Use currentDescription ONLY for the underlying facts, never as a template to rephrase. Example: for a "Portfolio Management" capability touching Portfolio/PortfolioHolding/PortfolioPerformance entities in a crypto product, write "Portfolio Management lets users track their crypto holdings — balances, allocation, and performance across connected wallets and exchanges." not "creates and updates portfolio records".',
-              style: 'No markdown. Write like a product engineer explaining the feature to a new teammate or PM. Every description must say WHAT concrete records, decisions, or workflows the item owns and WHY that matters — a scaffold that only restates the name is rejected: never a bare "Lets users <verb> <noun>" whose verb/noun repeat the capability name (banned exactly like "supports"/"handles"), and never "The X capability owns the Y lifecycle". Prefer verbs that convey user/product value: gives, helps, tracks, surfaces, exposes, manages, monitors, secures, connects, settles, enforces. Avoid plumbing verbs (creates, updates, deletes, reads, processes, handles, coordinates) and avoid fluff (seamless, robust, efficient, business value, streamline, insights, productivity, compliant). Do not mention files, routes, operation counts, or "lifecycle". Name the concrete product concept the entities represent. Stay grounded; do not invent behavior beyond the supplied entities, domain, and evidence.',
+            task: 'Return ONLY valid JSON with this shape: {"descriptions":[{"id":"...","description":"..."}]}. For each CAPABILITY answer in plain product language: what can the product\'s users or operators DO, and what does that action MEAN in THIS product? For each ENTITY answer what real-world concept it represents to the product. Lead with the product meaning, grounded in the related entities (relatedEntities), fields, and product domain (system.domain, system.concepts). When item.readOnly is true, describe only retrieval, presentation, comparison, or review of the supplied records/fields; NEVER claim create, update, delete, write, submit, configure, manage, or mutation behavior. When item.artifactType is infrastructure, describe only the declared operational responsibility and resources: never infer that infrastructure handles, processes, or manages a business concept from a resource name, and never mention scripts, commands, files, handlers, or other source mechanics. Do NOT describe CRUD mechanisms, lifecycle, routes, or files. Use currentDescription ONLY for facts, never as a template to rephrase.',
+              style: 'No markdown. Write like a product engineer explaining the feature to a new teammate or PM. Never call the item a "capability", "feature", "module", "component", or "functionality" in the description; describe the concrete product behavior directly. Every description must say WHAT concrete records, decisions, workflows, or declared resources the item owns and WHY that matters — a scaffold that only restates the name is rejected: never a bare "Lets users <verb> <noun>" whose verb/noun repeat the item name, and never "The X capability owns the Y lifecycle". Prefer verbs that convey user/product value: gives, helps, tracks, surfaces, exposes, manages, monitors, secures, connects, settles, enforces. Avoid plumbing verbs (creates, updates, deletes, reads, processes, handles, coordinates) and avoid unsupported value claims (metrics, decision-making, collaboration, seamless, robust, efficient, business value, streamline, insights, productivity, compliant) unless those exact concepts appear in the supplied evidence. Do not mention scripts, commands, files, routes, operation counts, or "lifecycle". Name the concrete product concept or operational responsibility the evidence represents. Stay grounded; do not invent behavior beyond the supplied entities, domain, resources, and evidence.',
               descriptionContract: this.buildAIElementDescriptionPromptContract(context.systemName, context.enhancedSystemPurpose, context.projectTextSignal),
               system: {
                 name: context.systemName,
@@ -12284,9 +13274,9 @@ export class AnalyzerOrchestrator {
               items: batch,
             },
           }),
-          timeoutPromise,
-        ]);
-        if (timeoutHandle) clearTimeout(timeoutHandle);
+          'element description batch',
+          budgetMs,
+        );
 
         const parsed = this.parseDescriptionBatch(raw);
         if (!parsed || parsed.size === 0) {
@@ -12304,19 +13294,12 @@ export class AnalyzerOrchestrator {
         });
         let repaired: Map<string, string> | null = null;
         if (failedTargets.length > 0) {
-          let repairTimeoutHandle: NodeJS.Timeout | undefined;
           try {
-            const repairTimeoutPromise = new Promise<string>((_, reject) => {
-              repairTimeoutHandle = setTimeout(
-                () => reject(new Error('AI element description repair budget exceeded')),
-                budgetMs
-              );
-            });
-            const repairRaw = await Promise.race([
+            const repairRaw = await this.awaitAiWithoutCutoff(
               aiService.generateComponentDescription({
                 additionalContext: {
-                  task: 'Repair rejected descriptions. Return ONLY valid JSON with this shape: {"descriptions":[{"id":"...","description":"..."}]}. Rewrite each item in plain PRODUCT language: what does this capability let the product\'s users or operators DO, or what concept does this entity represent in the product? Lead with the meaning, grounded in item.relatedEntities and the product domain (system.domain, system.concepts). Name the concrete user-facing concept the entities point to; do NOT describe CRUD, lifecycle, records, routes, or files. Good examples: "Portfolio Management lets users track their crypto holdings — balances, allocation, and performance across connected wallets and exchanges." "Invoice Management gives users their billing invoices and payment history for the subscription they pay for." "Access Enforcement decides which users and devices may reach a protected resource, based on identity, device posture, and policy." "Whale Analysis surfaces large on-chain transactions so users can spot market-moving moves." Use the subject noun and explain what it means to users.',
-                  style: 'No markdown. Write like a product engineer explaining the feature to a teammate. Say WHAT concrete records, decisions, or workflows the item owns and WHY that matters — never a bare "Lets users <verb> <noun>" that restates the name, and never "The X capability owns the Y lifecycle". Prefer value verbs: gives, helps, tracks, surfaces, exposes, manages, monitors, secures, connects, settles, enforces, decides. Avoid plumbing verbs (creates, updates, deletes, reads, processes, handles, coordinates) and fluff (functionality, module, component, various, robust, efficient, business value, compliant, insights, streamline). Do not mention files, routes, operation counts, or "lifecycle". Name the concrete product concept implied by the item name, domain, and entities; do not invent behavior beyond the evidence.',
+                  task: 'Repair rejected descriptions. Return ONLY valid JSON with this shape: {"descriptions":[{"id":"...","description":"..."}]}. Rewrite each item in plain PRODUCT language, grounded in item.relatedEntities, item.fields, and the product domain. When item.readOnly is true, describe only what users can retrieve, see, compare, or review; NEVER claim create, update, delete, write, submit, configure, manage, or mutation behavior. Name the concrete user-facing concept and add supported information beyond the item name. Do not describe CRUD mechanisms, lifecycle, routes, files, or implementation symbols.',
+                  style: 'No markdown. Write like a product engineer explaining the behavior to a teammate. Never call the item a "capability", "feature", "module", "component", or "functionality"; describe the concrete product behavior directly. Say WHAT concrete records, decisions, or workflows the item owns and WHY that matters — never a bare "Lets users <verb> <noun>" that restates the name, and never "The X capability owns the Y lifecycle". Prefer value verbs: gives, helps, tracks, surfaces, exposes, manages, monitors, secures, connects, settles, enforces, decides. Avoid plumbing verbs (creates, updates, deletes, reads, processes, handles, coordinates) and unsupported value claims (metrics, decision-making, collaboration, functionality, module, component, various, robust, efficient, business value, compliant, insights, streamline) unless grounded in the supplied evidence. Do not mention files, routes, operation counts, or "lifecycle". Name the concrete product concept implied by the item name, domain, and entities; do not invent behavior beyond the evidence.',
                   system: {
                     name: context.systemName,
                     domain: context.enhancedSystemPurpose?.primary_domain || context.projectTextSignal?.primaryDomain,
@@ -12331,8 +13314,9 @@ export class AnalyzerOrchestrator {
                   })),
                 },
               }),
-              repairTimeoutPromise,
-            ]);
+              'element description repair batch',
+              budgetMs,
+            );
             repaired = this.parseDescriptionBatch(repairRaw);
             if (repaired) {
               for (const target of failedTargets) {
@@ -12342,8 +13326,6 @@ export class AnalyzerOrchestrator {
             }
           } catch {
             repaired = null;
-          } finally {
-            if (repairTimeoutHandle) clearTimeout(repairTimeoutHandle);
           }
         }
 
@@ -12356,13 +13338,12 @@ export class AnalyzerOrchestrator {
             : { ok: false, reason: 'no-batch-repair' };
           if (repairedValidation.ok) continue;
 
-          let individualTimeoutHandle: NodeJS.Timeout | undefined;
           try {
-            const individualRaw = await Promise.race([
+            const individualRaw = await this.awaitAiWithoutCutoff(
               aiService.generateComponentDescription({
                 additionalContext: {
-                  task: 'Return ONLY valid JSON with this shape: {"descriptions":[{"id":"...","description":"..."}]}. Rewrite this one rejected item as a grounded sentence. Say what concrete record, lifecycle, workflow, model, or boundary the named area owns and why that matters before editing. Use related entities, domains, source areas, evidence summary, and operations. If the name ends in Management, use the subject noun and describe the record, lifecycle, workflow, or relationship it owns. Do not list operations, source files, command verbs, or implementation mechanics.',
-                  style: 'No markdown. Prefer concrete verbs like centralizes, maintains, tracks, prepares, identifies, evaluates, records, links, validates, or preserves. Do not use "supports", "coordinates", "coordinating", "handles", "reads", "processes", "reading", "processing", "spans", "paths", "operations", "functionality", "insights", or marketing language. Use only the supplied facts.',
+                  task: 'Return ONLY valid JSON with this shape: {"descriptions":[{"id":"...","description":"..."}]}. Rewrite this one rejected item as one grounded product sentence. Use its related entities, fields, domains, and observed semantics to explain what users or operators can know or accomplish. When item.readOnly is true, describe only retrieval, presentation, comparison, or review; NEVER claim create, update, delete, write, submit, configure, manage, or mutation behavior. When item.artifactType is infrastructure, describe only the declared operational responsibility and resources: never infer that infrastructure handles, processes, or manages a business concept from a resource name, and never mention scripts, commands, files, handlers, or other source mechanics. Do not list operations, source files, routes, command verbs, or implementation mechanics.',
+                  style: 'No markdown. Describe the concrete product behavior directly; never prefix or label the item as a "capability", "feature", "module", "component", or "functionality". Prefer concrete product verbs consistent with the evidence. Do not use "capability", "lifecycle", "supports", "coordinates", "handles", "spans", "paths", "operations", "functionality", or marketing language. Use only the supplied facts.',
                   system: {
                     name: context.systemName,
                     domain: context.enhancedSystemPurpose?.primary_domain || context.projectTextSignal?.primaryDomain,
@@ -12370,7 +13351,7 @@ export class AnalyzerOrchestrator {
                     description: context.enhancedSystemPurpose?.inferred_description || context.projectTextSignal?.summary,
                     frameworks: context.frameworks || [],
                   },
-                  item: target,
+                  items: [target],
                   rejected_description: originalDescription,
                   rejection_reason: this.validateElementDescription(originalDescription || '', byId.get(target.id) || target).reason,
                   bad_examples: [
@@ -12389,13 +13370,9 @@ export class AnalyzerOrchestrator {
                   ],
                 },
               }),
-              new Promise<string>((_, reject) => {
-                individualTimeoutHandle = setTimeout(
-                  () => reject(new Error('AI element description individual repair budget exceeded')),
-                  budgetMs
-                );
-              }),
-            ]);
+              'individual element description repair',
+              budgetMs,
+            );
             const individualParsed = this.parseDescriptionBatch(individualRaw);
             const individualDescription = this.sanitizeElementDescriptionCandidate(individualParsed?.get(target.id) || '', byId.get(target.id) || target);
             if (individualDescription && this.validateElementDescription(individualDescription, byId.get(target.id) || target).ok) {
@@ -12403,8 +13380,6 @@ export class AnalyzerOrchestrator {
             }
           } catch {
             // Fall through to deterministic retention with the existing rejection reason.
-          } finally {
-            if (individualTimeoutHandle) clearTimeout(individualTimeoutHandle);
           }
         }
 
@@ -12463,6 +13438,11 @@ export class AnalyzerOrchestrator {
               budgetMs
             );
           } else {
+            const existing = capabilities.find(capability => capability.id === target.id) || entities.find(entity => entity.id === target.id);
+            if (existing?.description && !this.validateElementDescription(existing.description, target).ok) {
+              existing.description = undefined;
+              existing.description_source = undefined;
+            }
             this.applyElementDescription(target.id, undefined, capabilities, entities, undefined, 'ai_rejected', true, repairedValidation.reason || 'generated-description-failed-quality-gate', budgetMs);
           }
         }
@@ -12481,8 +13461,6 @@ export class AnalyzerOrchestrator {
           });
         }
         this.recordElementDescriptionGenerationByIds(batch.map(target => target.id), capabilities, entities, undefined, 'ai_failed', true, message, budgetMs);
-      } finally {
-        if (timeoutHandle) clearTimeout(timeoutHandle);
       }
     });
 
@@ -12504,7 +13482,11 @@ export class AnalyzerOrchestrator {
     );
   }
 
-  private capabilityDescriptionTarget(capability: SystemCapability, entityNamesById?: Map<string, string>): DescriptionTarget {
+  private capabilityDescriptionTarget(
+    capability: SystemCapability,
+    entityNamesById?: Map<string, string>,
+    entityFieldsById?: Map<string, string[]>,
+  ): DescriptionTarget {
     const sourceAreas = this.capabilitySourceAreas([], capability.operations);
     const actionSummary = Array.from(new Set(
       capability.operations
@@ -12512,6 +13494,11 @@ export class AnalyzerOrchestrator {
         .filter(Boolean)
         .map(action => action.toLowerCase())
     )).slice(0, 6);
+    const observedHttpMethods = capability.operations
+      .map(operation => String(operation.trigger?.method || '').toUpperCase())
+      .filter(Boolean);
+    const readOnly = /^(?:view|access|list|read|show|retrieve)\b/i.test(capability.name) ||
+      (observedHttpMethods.length > 0 && observedHttpMethods.every(method => ['GET', 'HEAD', 'OPTIONS'].includes(method)));
     return {
       id: capability.id,
       name: capability.name,
@@ -12519,7 +13506,7 @@ export class AnalyzerOrchestrator {
       currentDescription: capability.description,
       category: capability.category,
       operations: capability.operations.slice(0, 8).map(operation =>
-        [operation.action, operation.entry_point_type, operation.path_or_command].filter(Boolean).join(' ')
+        [operation.action, operation.trigger?.method, operation.entry_point_type, operation.path_or_command].filter(Boolean).join(' ')
       ),
       sourceAreas,
       evidenceSummary: [
@@ -12531,6 +13518,9 @@ export class AnalyzerOrchestrator {
       // real domain vocabulary instead of opaque ids.
       relatedEntities: capability.related_entities.map(id => entityNamesById?.get(id) || id),
       relatedDomains: capability.related_domains,
+      readOnly,
+      artifactType: this.elementDescriptionArtifactType,
+      fields: capability.related_entities.flatMap(id => entityFieldsById?.get(id) || []).slice(0, 24),
     };
   }
 
@@ -12552,11 +13542,15 @@ export class AnalyzerOrchestrator {
   }
 
   private sanitizeElementDescriptionCandidate(description: string, target: DescriptionTarget): string | undefined {
+    const escapedName = target.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     // Same hygiene stack as the system-description path (cleanGenerated... +
     // repairStrippedSentenceGrammar). The split — grammar repair applied to
     // system descriptions but NOT to capability descriptions — is what let
     // ungrammatical capability text reach production.
-    const cleaned = this.repairStrippedSentenceGrammar(this.cleanGeneratedDescriptionText(description));
+    const cleaned = this.repairStrippedSentenceGrammar(this.cleanGeneratedDescriptionText(description)
+      .replace(new RegExp(`^The\\s+${escapedName}\\s+(?:capability|feature|module|component|functionality)\\s+`, 'i'), `${target.name} `)
+      .replace(/^The\s+[^.,;:]{2,100}?\s+(?:capability|feature|module|component|functionality)\s+/i, `${target.name} `)
+      .replace(/^(?:This|The)\s+(?:capability|feature|module|component|functionality)\s+/i, `${target.name} `));
     if (!cleaned) return undefined;
     const validation = this.validateElementDescription(cleaned, target);
     if (validation.ok) return cleaned;
@@ -12748,7 +13742,8 @@ export class AnalyzerOrchestrator {
   }
 
   private validateElementDescription(description: string, target: DescriptionTarget): { ok: boolean; reason?: string } {
-    return validateSharedElementDescription(this.cleanGeneratedDescriptionText(description), {
+    const cleaned = this.cleanGeneratedDescriptionText(description);
+    const shared = validateSharedElementDescription(cleaned, {
       name: target.name,
       kind: target.kind,
       relatedDomains: target.relatedDomains,
@@ -12761,6 +13756,51 @@ export class AnalyzerOrchestrator {
       normalizeToken: token => this.normalizeDomainToken(token),
       isGenericToken: token => this.isGenericCapabilityToken(token),
     });
+    if (!shared.ok) return shared;
+    if (/\/(?:[A-Za-z0-9_.~-]+\/)*(?::|\{)[A-Za-z_][A-Za-z0-9_]*(?:\}|\b)/.test(cleaned)) {
+      return { ok: false, reason: 'raw-route-restatement' };
+    }
+    if (target.kind === 'capability') {
+      if (
+        target.artifactType === 'infrastructure' &&
+        /\b(?:shell|batch|powershell)\s+(?:scripts?|commands?)\b|\b(?:scripts?|source files?)\s+to\s+(?:provision|deploy|configure|manage|create|update)\b/i.test(cleaned)
+      ) {
+        return { ok: false, reason: 'infrastructure-source-mechanic-restatement' };
+      }
+      if (target.artifactType === 'infrastructure' && this.infrastructureNarrativeClaimsApplicationBehavior(cleaned)) {
+        return { ok: false, reason: 'infrastructure-claims-application-behavior' };
+      }
+      const ownEvidence = [
+        ...(target.operations || []),
+        ...(target.evidenceSummary || []),
+        ...(target.relatedEntities || []),
+        ...(target.relatedDomains || []),
+      ].filter(Boolean).join(' ').toLowerCase();
+      const unsupportedClaims = cleaned.match(/\b(?:decision[- ]making|collaboration|metrics?|tracking|monitoring|performance)\b/gi) || [];
+      for (const claim of unsupportedClaims) {
+        const normalizedClaim = claim.toLowerCase().replace(/[- ]/g, '');
+        const evidenceSupportsClaim = ownEvidence.replace(/[- ]/g, '').includes(normalizedClaim) ||
+          (normalizedClaim.startsWith('metric') && /\b(?:metric|prometheus|telemetry)\b/.test(ownEvidence));
+        if (!evidenceSupportsClaim) return { ok: false, reason: `unsupported-target-value-claim:${claim.toLowerCase()}` };
+      }
+      const unsupportedOperationalClaims = cleaned.match(/\b(?:high availability|resource utili[sz]ation|fault tolerance|auto[- ]scaling|scalability|resilien(?:ce|t))\b/gi) || [];
+      for (const claim of unsupportedOperationalClaims) {
+        const normalizedClaim = claim.toLowerCase().replace(/[- ]/g, '');
+        if (!ownEvidence.replace(/[- ]/g, '').includes(normalizedClaim)) {
+          return { ok: false, reason: `unsupported-target-operational-claim:${claim.toLowerCase()}` };
+        }
+      }
+      const observedHttpMethods = (target.operations || [])
+        .map(operation => /\b(GET|HEAD|OPTIONS|POST|PUT|PATCH|DELETE)\b/i.exec(operation)?.[1]?.toUpperCase())
+        .filter((method): method is string => Boolean(method));
+      const readOnlySemantics = /^(?:view|access|list|read|show|retrieve)\b/i.test(target.name) ||
+        (observedHttpMethods.length > 0 && observedHttpMethods.every(method => ['GET', 'HEAD', 'OPTIONS'].includes(method)));
+      if (readOnlySemantics &&
+        /\b(?:manag(?:e|es|ing|ement)|creat(?:e|es|ing)|updat(?:e|es|ing)|delet(?:e|es|ing)|modif(?:y|ies|ying)|mutat(?:e|es|ing)|writ(?:e|es|ing)|submits?|configur(?:e|es|ing))\b/i.test(cleaned)) {
+        return { ok: false, reason: 'read-only-capability-claims-mutation' };
+      }
+    }
+    return shared;
   }
 
   /**
@@ -12770,11 +13810,11 @@ export class AnalyzerOrchestrator {
    * CARDINAL: this function must never map one phrase's MEANING onto another.
    * It removes transport artifacts the model wraps its prose in (markdown
    * fences, bold/heading/bullet markers, backticks, stray quotes), normalizes
-   * whitespace, restores sentence-initial capitalization, collapses an
-   * accidental doubled word, and drops instruction-shaped sentences echoed
-   * back from the prompt. Nothing here inspects or rewrites domain
-   * vocabulary: a description that says the wrong thing is REJECTED by the
-   * validators and regenerated, never silently reworded.
+   * whitespace/punctuation spacing, restores sentence-initial capitalization,
+   * collapses an accidental doubled word, and drops instruction-shaped
+   * sentences echoed back from the prompt. Nothing here inspects or rewrites
+   * domain vocabulary: a description that says the wrong thing is REJECTED by
+   * the validators and regenerated, never silently reworded.
    */
   private cleanGeneratedDescriptionText(description: string): string {
     return this.stripInstructionShapedTails((description || '')
@@ -12791,6 +13831,7 @@ export class AnalyzerOrchestrator {
       .replace(/\b([A-Za-z][A-Za-z-]*)(\s+)\1\b/g, '$1')
       .replace(/\s*\n+\s*/g, ' ')
       .replace(/\s+/g, ' ')
+      .replace(/\s+([,.;:!?])/g, '$1')
       .trim()
       .replace(/^["']|["']$/g, '')
       .replace(/([.!?])\s+([a-z])/g, (_match, punct, letter) => `${punct} ${letter.toUpperCase()}`)
@@ -12989,14 +14030,19 @@ export class AnalyzerOrchestrator {
    * known. Read-only over its inputs; never mutates analysis output facts.
    */
   private buildTimingsBlock(
-    phaseTimings: Record<string, { started_at: string; duration_ms: number }>,
+    phaseTimings: Record<string, { started_at: string; duration_ms: number; cpu_duration_ms?: number }>,
     totalMs: number,
-    contributions: Array<{ analyzer_id: string; execution_time_ms?: number }>
+    contributions: Array<{ analyzer_id: string; execution_time_ms?: number }>,
+    cpuUsageStart?: NodeJS.CpuUsage
   ): CASAnalysisTimings {
     const stages: Record<string, number> = { scan: 0, parse: 0, graph: 0, decorators: 0, ai_enrichment: 0, save: 0 };
+    const cpuStages: Record<string, number> = { scan: 0, parse: 0, graph: 0, decorators: 0, ai_enrichment: 0, save: 0 };
     for (const [phase, record] of Object.entries(phaseTimings)) {
       const stage = AnalyzerOrchestrator.TIMING_STAGE_OF(phase);
-      if (stage) stages[stage] = (stages[stage] || 0) + record.duration_ms;
+      if (stage) {
+        stages[stage] = (stages[stage] || 0) + record.duration_ms;
+        cpuStages[stage] = (cpuStages[stage] || 0) + (record.cpu_duration_ms || 0);
+      }
     }
     const analyzers: Record<string, number> = {};
     for (const contribution of contributions) {
@@ -13004,9 +14050,22 @@ export class AnalyzerOrchestrator {
         analyzers[contribution.analyzer_id] = contribution.execution_time_ms;
       }
     }
+    const cpuUsage = cpuUsageStart ? process.cpuUsage(cpuUsageStart) : undefined;
+    const cpuUserMs = cpuUsage ? cpuUsage.user / 1000 : undefined;
+    const cpuSystemMs = cpuUsage ? cpuUsage.system / 1000 : undefined;
+    const cpuTotalMs = cpuUserMs !== undefined && cpuSystemMs !== undefined
+      ? cpuUserMs + cpuSystemMs
+      : undefined;
     return {
       total_ms: totalMs,
+      cpu_total_ms: cpuTotalMs === undefined ? undefined : Math.round(cpuTotalMs),
+      cpu_user_ms: cpuUserMs === undefined ? undefined : Math.round(cpuUserMs),
+      cpu_system_ms: cpuSystemMs === undefined ? undefined : Math.round(cpuSystemMs),
+      average_cpu_cores: cpuTotalMs === undefined || totalMs <= 0
+        ? undefined
+        : Math.round((cpuTotalMs / totalMs) * 1000) / 1000,
       stages,
+      cpu_stages: cpuStages,
       analyzers: Object.keys(analyzers).length > 0 ? analyzers : undefined,
     };
   }
@@ -13015,7 +14074,7 @@ export class AnalyzerOrchestrator {
    *  started_at (earliest) / duration_ms (sum) pair, or `{}` when none of the
    *  named phases ran in this analysis. */
   private phaseGroupTiming(
-    phaseTimings: Record<string, { started_at: string; duration_ms: number }>,
+    phaseTimings: Record<string, { started_at: string; duration_ms: number; cpu_duration_ms?: number }>,
     matches: (phase: string) => boolean
   ): { started_at?: string; duration_ms?: number } {
     let earliestMs: number | undefined;
@@ -13042,7 +14101,7 @@ export class AnalyzerOrchestrator {
    */
   private stampPhaseTimings(
     phases: CASAnalysisPhase[],
-    phaseTimings: Record<string, { started_at: string; duration_ms: number }>
+    phaseTimings: Record<string, { started_at: string; duration_ms: number; cpu_duration_ms?: number }>
   ): void {
     for (const phase of phases) {
       const timing = this.phaseGroupTiming(phaseTimings, (raw) => AnalyzerOrchestrator.ANALYSIS_PHASE_OF(raw) === phase.id);
@@ -13153,16 +14212,48 @@ export class AnalyzerOrchestrator {
       isKlauroSelfProject?: boolean;
       /** Deterministic deployable-unit count; corroborates architecture-shape claims. */
       deployableCount?: number;
+      /** True only when observed operations/entities contain reads and no mutation evidence. */
+      readOnlyProduct?: boolean;
+      artifactType?: string;
     } = {},
   ): { ok: boolean; reason?: string } {
-    const base = this.validateAIInterpretation(description, enhancedSystemPurpose, facts);
-    if (!base.ok) return base;
     const cleaned = this.cleanGeneratedDescriptionText(description);
+    // Grammar integrity has precedence over semantic categorization. A broken
+    // sentence can also contain framework or request vocabulary, but reporting
+    // that secondary issue causes repair prompts to preserve malformed prose.
+    if (/\b(?:it|this system|the system)\s+(?:frameworks|libraries|technologies|tools)\b/i.test(cleaned)) {
+      return { ok: false, reason: 'malformed-missing-verb' };
+    }
+    if (/\b(?:designed\s+to|to|and|or)\s+(?:and|or)\b/i.test(cleaned) ||
+      /\bwithout\s+(?:it|them|this|that)\s*[.!?]/i.test(cleaned) ||
+      /\b(?:it|the\s+(?:system|app|application|service))\s+also\s+(?:a|an|the)\b/i.test(cleaned)) {
+      return { ok: false, reason: 'malformed-prose' };
+    }
+    if (facts.artifactType === 'infrastructure') {
+      if (!/\b(?:infrastructure|provision(?:s|ed|ing)?|deploy(?:s|ed|ing|ment)?|resource|container|orchestrat(?:e|es|ed|ing|ion)|configuration)\b/i.test(cleaned)) {
+        return { ok: false, reason: 'infrastructure-purpose-missing' };
+      }
+      if (this.infrastructureNarrativeClaimsApplicationBehavior(cleaned) || /\bcustomers?\s+(?:can|use|submit|view|manage)\b/i.test(cleaned)) {
+        return { ok: false, reason: 'infrastructure-claims-application-behavior' };
+      }
+      if (/\b(?:likely|possibly|perhaps|presumably)\b/i.test(cleaned)) {
+        return { ok: false, reason: 'infrastructure-hedged-claim' };
+      }
+      if (/\b(?:scripts?|source files?|shell deployments?)\b/i.test(cleaned)) {
+        return { ok: false, reason: 'infrastructure-source-mechanic-restatement' };
+      }
+    }
+    const base = this.validateAIInterpretation(cleaned, enhancedSystemPurpose, facts);
+    if (!base.ok) return base;
+    if (/\b(?:combination of technologies|multiple programming languages|multi-language (?:backend )?development|flexibility in how)\b/i.test(cleaned)) {
+      return { ok: false, reason: 'implementation-stack-filler' };
+    }
     // The description is a four-question paragraph (what-is / does / how-works /
     // how-built), so require enough substance to have answered them — but keep
     // the floor low enough that a dense, fact-packed paragraph is not rejected.
-    // Sentence floor stays at >=2 (a floor, not the exact shape — the prompt asks
-    // for 4-6); length carries the paragraph-vs-one-liner distinction.
+    // Length and multiple sentences establish paragraph shape; semantic gates
+    // below enforce the four required kinds of content without rejecting a
+    // dense paragraph merely because two answers share one sentence.
     if (cleaned.length < 200) return { ok: false, reason: 'too-short-for-ai-paragraph' };
     if (this.descriptionSentenceCount(cleaned) < 2) return { ok: false, reason: 'single-sentence-ai-summary' };
     if (/\bworkflows\s+workflows\b/i.test(cleaned)) return { ok: false, reason: 'duplicate-workflow-wording' };
@@ -13170,6 +14261,13 @@ export class AnalyzerOrchestrator {
     if (/\bbuilt with\s+none detected\b/i.test(cleaned)) return { ok: false, reason: 'missing-framework-restatement' };
     if (/\bbuilt with\s+(?:a\s+)?mixed(?:\s+[^.]{0,80})?\s+monorepo\b/i.test(cleaned) ||
       /\bmixed(?:\s+[^.]{0,80})?\s+monorepo\s+that\s+(?:coordinates|captures|manages|maintains)\b/i.test(cleaned)) return { ok: false, reason: 'monorepo-shape-as-product-description' };
+    if (facts.readOnlyProduct &&
+      /\b(?:creat(?:e|es|ing|ion)|updat(?:e|es|ing)|delet(?:e|es|ing|ion)|writ(?:e|es|ing)|modif(?:y|ies|ying|ication)|submits?|configur(?:e|es|ing|ation)|manag(?:e|es|ing|ement)|mutat(?:e|es|ing|ion))\b/i.test(cleaned)) {
+      return { ok: false, reason: 'read-only-product-mutation-claim' };
+    }
+    if (facts.readOnlyProduct && /\b(?:read[- ]only mode|read[- ]only surface|focus(?:es|ed|ing)? on presenting|without (?:write|mutation|management))\b/i.test(cleaned)) {
+      return { ok: false, reason: 'read-only-mode-meta-description' };
+    }
     if (/^(?:it|this|the)\s+(?:software\s+)?(?:system\s+)?(?:provides|supports|handles|coordinates|manages|uses|defines|processes|produces|generates|offers|exposes|combines|includes|contains|serves|captures|tracks|stores|records|implements|analyzes|analyses)\b/i.test(cleaned)) {
       return { ok: false, reason: 'generic-pronoun-start' };
     }
@@ -13182,6 +14280,29 @@ export class AnalyzerOrchestrator {
     return { ok: true };
   }
 
+  private infrastructureNarrativeClaimsApplicationBehavior(description: string): boolean {
+    const tokens = String(description || '').toLowerCase().match(/[a-z][a-z0-9-]*/g) || [];
+    const infrastructureNouns = new Set([
+      'api', 'application', 'artifact', 'broker', 'cache', 'cluster', 'configuration', 'container',
+      'deployment', 'environment', 'event', 'image', 'infrastructure', 'job', 'message', 'network',
+      'pipeline', 'port', 'queue', 'request', 'resource', 'runtime', 'service', 'storage', 'traffic',
+      'workload',
+    ]);
+    const actionVerb = /^(?:handle|handles|handled|handling|manage|manages|managed|managing|process|processes|processed|processing)$/;
+    const actionNoun = /^(?:handling|management|processing|lifecycle)$/;
+    for (let index = 0; index < tokens.length; index += 1) {
+      if (actionVerb.test(tokens[index])) {
+        const subject = tokens[index + 1];
+        if (subject && !infrastructureNouns.has(subject)) return true;
+      }
+      if (actionNoun.test(tokens[index])) {
+        const subject = tokens[index - 1];
+        if (subject && !infrastructureNouns.has(subject)) return true;
+      }
+    }
+    return false;
+  }
+
   private descriptionSentenceCount(description: string): number {
     return (description.match(/[.!?](?:\s|$)/g) || []).length;
   }
@@ -13189,8 +14310,9 @@ export class AnalyzerOrchestrator {
   /**
    * MECHANICAL self-heal for gate rejections that are deterministic EDITS of
    * the AI's own text, not deterministic authorship (the AI-only comprehension
-   * boundary stands: trimming AI prose to a length budget or removing a leaked
-   * file path edits AI output without adding a single non-AI claim).
+   * boundary stands: trimming AI prose to a length budget or deleting a flagged
+   * length budget or removing a leaked file path edits AI output without adding
+   * a single non-AI claim).
    * Handles exactly these reason classes:
    *  - 'too-long': trim to the last full sentence inside the 2000-char limit
    *    (prod: hercules — a valid paragraph perma-rejected for running long).
@@ -13211,6 +14333,33 @@ export class AnalyzerOrchestrator {
    */
   private mechanicallyRepairAIInterpretation(description: string, reason?: string): string | undefined {
     if (!reason) return undefined;
+    // Mutation verbs are semantic predicates, not decorative words. Deleting
+    // them in place can turn a false read/write claim into malformed prose.
+    // Force an AI regeneration from the read-only facts instead.
+    if (reason === 'read-only-product-mutation-claim') return undefined;
+    if (reason === 'source-path-pollution' || reason === 'source-file-restatement') {
+      const stripped = description
+        .replace(/(?:^|[\s("'])(?:@\/|~\/|\.{1,2}\/|\/)[\w./:{}-]+/gi, ' ')
+        .replace(/(?:^|[\s("'])(?:@\/|~\/|\.{1,2}\/|\/)?[\w.-]+(?:\/[\w.-]+)+\.(?:ts|tsx|js|jsx|mjs|cjs|py|php|rb|go|rs|java|cs|dart|swift|kt|sql|tf|tfvars|hcl|yaml|yml)\b/gi, ' ')
+        .replace(/\b[\w-]+\.(?:ts|tsx|jsx|py|php|rb|cs|dart|swift|kt|sql|tf|tfvars|hcl)\b/gi, ' ');
+      const repaired = this.repairStrippedSentenceGrammar(this.cleanGeneratedDescriptionText(
+        stripped
+          .replace(/\s+,/g, ',')
+          .replace(/\(\s*\)/g, '')
+          .replace(/\s{2,}/g, ' ')
+      ));
+      return repaired && repaired !== this.cleanGeneratedDescriptionText(description) ? repaired : undefined;
+    }
+    if (reason === 'implementation-identifier-restatement') {
+      const humanized = description.replace(
+        /\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/g,
+        identifier => identifier.split('_').filter(Boolean).join(' ')
+      );
+      const repaired = this.repairStrippedSentenceGrammar(
+        this.cleanGeneratedDescriptionText(humanized.replace(/\s{2,}/g, ' '))
+      );
+      return repaired && repaired !== this.cleanGeneratedDescriptionText(description) ? repaired : undefined;
+    }
     if (reason === 'too-long') {
       const cleaned = this.cleanGeneratedDescriptionText(description);
       if (cleaned.length <= 2000) return undefined;
@@ -13279,14 +14428,14 @@ export class AnalyzerOrchestrator {
    * other sentences remain. A cheap edit of the AI's own text, not authorship.
    */
   private repairDanglingSentenceEndings(text: string): string {
-    const danglingTail = /(?:\s+(?:for|with|of|to|from|by|in|on|at|into|onto|and|or|but|the|a|an|as|via|per|than|that|which|while|when|where|whose|its|their))+\s*([.!?])$/i;
+    const danglingTail = /(?:\s+(?:for|with|of|to|from|by|in|on|at|into|onto|and|or|but|the|a|an|as|via|per|than|that|which|while|when|where|whose|its|their|using|leveraging|utilizing|integrating|including|providing|supporting))+\s*([.!?])$/i;
     const sentences = (text || '').split(/(?<=[.!?])\s+/);
     const repaired = sentences
       .map(sentence => {
         const trimmed = sentence.trim();
         const match = danglingTail.exec(trimmed);
         if (!match) return sentence;
-        const stripped = trimmed.replace(danglingTail, '$1');
+        const stripped = trimmed.replace(danglingTail, '$1').replace(/,\s*([.!?])$/, '$1');
         const remainingWords = stripped.replace(/[.!?]$/, '').trim().split(/\s+/).filter(Boolean);
         if (remainingWords.length < 4 && sentences.length > 1) return '';
         return stripped;
@@ -13324,7 +14473,7 @@ export class AnalyzerOrchestrator {
       .trim();
     const repaired = this.repairDanglingSentenceEndings(coordinationRepaired);
     // Drop sentences the repairs could not restore to clause shape.
-    const danglingTail = /\s+(?:for|with|of|to|from|by|in|on|at|into|onto|and|or|but|the|a|an|as|via|per|than|that|which|while|when|where|whose|its|their)\s*[.!?]$/i;
+    const danglingTail = /\s+(?:for|with|of|to|from|by|in|on|at|into|onto|and|or|but|the|a|an|as|via|per|than|that|which|while|when|where|whose|its|their|using|leveraging|utilizing|integrating|including|providing|supporting)\s*[.!?]$/i;
     const orphanedJoint = /\b(?:a|an|the)\s+(?:and|or)\b|\b(?:and|or)\s*[,.]/i;
     const sentences = repaired.split(/(?<=[.!?])\s+/).map(sentence => sentence.trim()).filter(Boolean);
     if (sentences.length <= 1) return repaired;
@@ -13386,9 +14535,22 @@ export class AnalyzerOrchestrator {
     let validation = this.validateGeneratedAIInterpretation(text, enhancedSystemPurpose, facts);
     if (validation.ok) return { text, validation };
 
-    const sanitized = this.sanitizeAIInterpretation(text, enhancedSystemPurpose, facts);
-    const sanitizedValidation = this.validateGeneratedAIInterpretation(sanitized, enhancedSystemPurpose, facts);
-    if (sanitizedValidation.ok) return { text: sanitized, validation: sanitizedValidation };
+    const preserveForSemanticRepair = new Set([
+      'read-only-product-mutation-claim',
+      'malformed-prose',
+      'malformed-missing-verb',
+      'infrastructure-claims-application-behavior',
+      'implementation-stack-filler',
+    ]);
+    if (!preserveForSemanticRepair.has(validation.reason || '')) {
+      const sanitized = this.sanitizeAIInterpretation(text, enhancedSystemPurpose, facts);
+      const sanitizedValidation = this.validateGeneratedAIInterpretation(sanitized, enhancedSystemPurpose, facts);
+      if (sanitizedValidation.ok) return { text: sanitized, validation: sanitizedValidation };
+      if (sanitized !== text) {
+        text = sanitized;
+        validation = sanitizedValidation;
+      }
+    }
 
     for (let round = 0; round < 3 && !validation.ok; round++) {
       const repaired = this.mechanicallyRepairAIInterpretation(text, validation.reason);
@@ -13400,10 +14562,14 @@ export class AnalyzerOrchestrator {
 
     // The mechanical edit may have unlocked the sentence-level sanitizer path
     // (e.g. marketing word stripped, remaining phrasing rejection fixable).
-    const sanitizedRepair = this.sanitizeAIInterpretation(text, enhancedSystemPurpose, facts);
-    if (sanitizedRepair !== text) {
-      const sanitizedRepairValidation = this.validateGeneratedAIInterpretation(sanitizedRepair, enhancedSystemPurpose, facts);
-      if (sanitizedRepairValidation.ok) return { text: sanitizedRepair, validation: sanitizedRepairValidation };
+    if (!preserveForSemanticRepair.has(validation.reason || '')) {
+      const sanitizedRepair = this.sanitizeAIInterpretation(text, enhancedSystemPurpose, facts);
+      if (sanitizedRepair !== text) {
+        const sanitizedRepairValidation = this.validateGeneratedAIInterpretation(sanitizedRepair, enhancedSystemPurpose, facts);
+        if (sanitizedRepairValidation.ok) return { text: sanitizedRepair, validation: sanitizedRepairValidation };
+        text = sanitizedRepair;
+        validation = sanitizedRepairValidation;
+      }
     }
     return { text, validation };
   }
@@ -13474,7 +14640,7 @@ export class AnalyzerOrchestrator {
       'based', 'full', 'stack', 'end', 'to', 'backend', 'frontend', 'web',
       'software', 'modern', 'simple', 'small', 'large', 'internal', 'core',
       'main', 'primary', 'central', 'general', 'purpose', 'multi', 'single',
-      'automated', 'comprehensive',
+      'automated', 'comprehensive', 'resulting', 'declared',
     ]);
     // Verbal participle connectors: -ing forms that link a noun to its
     // complement clause ("monorepo INCORPORATING tree-sitter parsers") rather
@@ -13490,6 +14656,20 @@ export class AnalyzerOrchestrator {
       'featuring', 'comprising', 'containing', 'offering', 'integrating',
       'exposing', 'powering', 'serving', 'delivering', 'wrapping',
       'spanning', 'orchestrating', 'coordinating', 'bundling',
+    ]);
+    // Finite action verbs can fall inside the regex's backward modifier window
+    // ("infrastructure provisions and manages a deployment platform"). They
+    // are predicates, not a claimed system type. Treating them as modifiers
+    // produced false fabrication rejections such as
+    // `ungrounded-system-type: provisions-manages` on pure IaC repositories.
+    const finiteVerbConnectors = new Set([
+      'apply', 'applies', 'build', 'builds', 'create', 'creates', 'define', 'defines',
+      'deploy', 'deploys', 'expose', 'exposes', 'generate', 'generates', 'handle',
+      'handles', 'host', 'hosts', 'manage', 'manages', 'operate', 'operates',
+      'orchestrate', 'orchestrates', 'package', 'packages', 'provision', 'provisions',
+      'provide', 'provides', 'review', 'reviews', 'route', 'routes', 'run', 'runs',
+      'serve', 'serves', 'support', 'supports', 'use', 'uses', 'involve', 'involves',
+      'consist', 'consists', 'contain', 'contains', 'comprise', 'comprises',
     ]);
     // Function words that END an attributive modifier run: an auxiliary/copula,
     // preposition, relative, or conjunction between a candidate token and the
@@ -13567,8 +14747,9 @@ export class AnalyzerOrchestrator {
       // system-type claims (the prod 'ungrounded-system-type: incorporating'
       // false rejection).
       let attributiveTokens = rawTokens;
-      for (let i = rawTokens.length - 2; i >= 0; i--) {
-        if (/[a-z]{3,}ing$/.test(rawTokens[i]) || clauseBreakers.has(rawTokens[i])) {
+      for (let i = rawTokens.length - 1; i >= 0; i--) {
+        const nonFinalParticiple = i < rawTokens.length - 1 && /[a-z]{3,}ing$/.test(rawTokens[i]);
+        if (nonFinalParticiple || clauseBreakers.has(rawTokens[i]) || finiteVerbConnectors.has(rawTokens[i])) {
           attributiveTokens = rawTokens.slice(i + 1);
           break;
         }
@@ -13586,6 +14767,7 @@ export class AnalyzerOrchestrator {
           !nameTokens.has(token) &&
           !this.isGenericCapabilityToken(token) &&
           !participleConnectors.has(token) &&
+          !finiteVerbConnectors.has(token) &&
           !/[a-z]{3,}ed$/.test(token));
       if (modifierTokens.length === 0) continue;
       // Grounded if ANY distinctive modifier token (or its 5-char stem) appears
@@ -13670,6 +14852,10 @@ export class AnalyzerOrchestrator {
     const cleaned = this.cleanGeneratedDescriptionText(description);
     if (cleaned.length < 120) return { ok: false, reason: 'too-short' };
     if (cleaned.length > 2000) return { ok: false, reason: 'too-long' };
+    if (/\b(?:dat|dat that|teh|tht)\b/i.test(cleaned)) return { ok: false, reason: 'malformed-prose' };
+    if ((facts.deployableCount ?? 0) === 0 && /\bmultiple (?:separately )?deploy(?:able|ment) units?\b/i.test(cleaned)) {
+      return { ok: false, reason: 'unproven-deployment-topology' };
+    }
     if (/AI description generation is disabled/i.test(cleaned)) return { ok: false, reason: 'ai-disabled-message' };
     const lower = cleaned.toLowerCase();
     const domain = enhancedSystemPurpose.primary_domain?.toLowerCase();
@@ -13780,11 +14966,30 @@ export class AnalyzerOrchestrator {
     if (/\b(file\.exists|string\.isnullorempty|math\.abs|console\.|system\.)\b/i.test(description)) {
       return { ok: false, reason: 'low-level-api-pollution' };
     }
-    if (this.matchSourceBucketRestatement(description)) {
-      return { ok: false, reason: 'source-bucket-restatement' };
+    if (/\b(?:allowed list|allowed frameworks?|allowedFrameworks|supplied facts?|fact[- ]list keys?|descriptionContract|distinctiveEntities|terminalOutputs)\b/i.test(description)) {
+      return { ok: false, reason: 'prompt-instruction-leak' };
+    }
+    const sourceBucketMatch = this.matchSourceBucketRestatement(description);
+    if (sourceBucketMatch) {
+      return { ok: false, reason: `source-bucket-restatement: ${sourceBucketMatch[0].toLowerCase()}` };
     }
     if (/\b(?:react components?|express routes?|route handlers?|api routes?|framework routes?)\b/i.test(description)) {
       return { ok: false, reason: 'framework-source-mechanics' };
+    }
+    if (/\b(?:utiliz(?:e|es|ing)|leverag(?:e|es|ing))\s+(?:frameworks?|libraries?)\b|\bframeworks?\s+(?:like|such as)\b|\bbuilt\s+using\s+(?:a\s+)?combination\s+of\s+frameworks?\b/i.test(description)) {
+      return { ok: false, reason: 'framework-inventory-instead-of-architecture' };
+    }
+    if (!facts.isKlauroSelfProject && /\bgraph evidence\b/i.test(description)) {
+      return { ok: false, reason: 'analysis-product-filler' };
+    }
+    if (/\bhttp requests?\b|\b(?:dedicated|specific|internal|route|request)?\s*handlers?\b|\bhandle(?:s|d|ing)?\s+(?:these\s+|incoming\s+)?requests?\b|\brouter\s+to\s+(?:direct|route)\b/i.test(description)) {
+      return { ok: false, reason: 'source-implementation-mechanics' };
+    }
+    if (/\b[a-z][a-z0-9]*(?:_[a-z0-9]+){1,}\b/.test(description)) {
+      return { ok: false, reason: 'implementation-identifier-restatement' };
+    }
+    if (/\bbuilt with (?:a )?combination of\b[^.]*\bframeworks?\b|\bsupporting multi-language (?:backend )?development\b/i.test(description)) {
+      return { ok: false, reason: 'framework-inventory-instead-of-architecture' };
     }
     if (/\b(scheduling-platform|developer-platform|commerce-platform|knowledge-base|internal-tools-platform|publishing-platform|photo-management-platform|federated-social-platform|no-code-database-platform|product-analytics-platform)\b/.test(`${domain || ''} ${primaryType || ''}`) &&
       /\bbuilt with\s+(?:react|express|react router|next(?:\.js|js)?|django|celery|graphene|rails|ruby|phoenix|elixir|laravel|symfony|fastapi|flask|none detected)(?:,|\s|\.|$)/i.test(description)) {
@@ -13996,7 +15201,7 @@ export class AnalyzerOrchestrator {
       'a', 'an', 'the', 'this', 'that', 'is', 'are', 'was', 'were', 'and', 'or',
       'for', 'with', 'its', 'their', 'our', 'main', 'core', 'general', 'basic',
       'internal', 'primary', 'central', 'various', 'multiple', 'other', 'more',
-      'built', 'used', 'using', 'about', 'into', 'onto', 'over', 'from',
+      'built', 'used', 'using', 'about', 'into', 'onto', 'over', 'from', 'through', 'across', 'via',
     ]);
     const lower = text.toLowerCase();
     const ungrounded = new Set<string>();
@@ -14388,21 +15593,68 @@ export class AnalyzerOrchestrator {
     entryPointSummary: { type: string; count: number }[],
     databaseEntities: string[],
     externalServices: string[],
-    flowGraph: CASFlowGraph,
     domainConcepts: CASDomainConcept[],
     systemCapabilities: SystemCapability[] = []
   ): boolean {
+    const decision = this.getAIInterpretationRefreshDecision(
+      previousOutput,
+      systemName,
+      frameworks,
+      entryPointSummary,
+      databaseEntities,
+      externalServices,
+      domainConcepts,
+      systemCapabilities
+    );
+    console.error(`[Klauro] AI interpretation refresh=${decision.refresh} reason=${decision.reason}`);
+    return decision.refresh;
+  }
+
+  private getAIInterpretationRefreshDecision(
+    previousOutput: CASOutput,
+    systemName: string,
+    frameworks: string[],
+    entryPointSummary: { type: string; count: number }[],
+    databaseEntities: string[],
+    externalServices: string[],
+    domainConcepts: CASDomainConcept[],
+    systemCapabilities: SystemCapability[] = []
+  ): { refresh: boolean; reason: string } {
     if (process.env.KLAURO_AI_INTERPRETATION_FORCE === 'true' || process.env.KLAURO_AI_INTERPRETATION_FORCE === '1') {
-      return true;
+      return { refresh: true, reason: 'forced-by-configuration' };
     }
     if (!previousOutput.enhanced_system_purpose?.inferred_description) {
-      return true;
+      return { refresh: true, reason: 'missing-previous-description' };
     }
     if (this.previousDescriptionNeedsCurrentValidation(previousOutput)) {
-      return true;
+      return { refresh: true, reason: 'previous-description-failed-current-validation' };
+    }
+    if ((previousOutput.system_capabilities || []).slice(0, 8).some(capability =>
+      !capability.description || !this.validateElementDescription(
+        capability.description,
+        this.capabilityDescriptionTarget(capability),
+      ).ok
+    )) {
+      return { refresh: true, reason: 'previous-capability-description-failed-current-validation' };
     }
 
-    const previousFacts = this.buildAIInterpretationFacts(
+    const nextFacts = this.buildAIInterpretationRefreshFingerprint(
+      systemName,
+      frameworks,
+      entryPointSummary,
+      databaseEntities,
+      externalServices,
+      domainConcepts,
+      systemCapabilities
+    );
+    const nextFingerprint = this.hashAIInterpretationRefreshFingerprint(nextFacts);
+    if (previousOutput.enhanced_system_purpose.ai_input_fingerprint) {
+      return previousOutput.enhanced_system_purpose.ai_input_fingerprint !== nextFingerprint
+        ? { refresh: true, reason: `semantic-fingerprint-changed:${previousOutput.enhanced_system_purpose.ai_input_fingerprint}->${nextFingerprint}` }
+        : { refresh: false, reason: 'semantic-fingerprint-unchanged' };
+    }
+
+    const previousFacts = this.buildAIInterpretationRefreshFingerprint(
       systemName,
       (previousOutput.analyzer_contributions || [])
         .filter(c => c.analyzer_type === 'framework')
@@ -14410,22 +15662,55 @@ export class AnalyzerOrchestrator {
       this.summarizeEntryPoints(previousOutput.entry_points || []),
       (previousOutput.database_schema?.entities || []).map(entity => entity.name),
       (previousOutput.external_services || []).map(service => service.name),
-      previousOutput.flow_graph || this.emptyFlowGraph(),
       previousOutput.domain_concepts || [],
       previousOutput.system_capabilities || []
     );
-    const nextFacts = this.buildAIInterpretationFacts(
-      systemName,
-      frameworks,
-      entryPointSummary,
-      databaseEntities,
-      externalServices,
-      flowGraph,
-      domainConcepts,
-      systemCapabilities
-    );
 
-    return JSON.stringify(previousFacts) !== JSON.stringify(nextFacts);
+    return JSON.stringify(previousFacts) !== JSON.stringify(nextFacts)
+      ? { refresh: true, reason: 'legacy-semantic-facts-changed' }
+      : { refresh: false, reason: 'legacy-semantic-facts-unchanged' };
+  }
+
+  private hashAIInterpretationRefreshFingerprint(facts: Record<string, unknown>): string {
+    return crypto.createHash('sha256').update(JSON.stringify(facts)).digest('hex');
+  }
+
+  private buildAIInterpretationRefreshFingerprint(
+    systemName: string,
+    frameworks: string[],
+    entryPointSummary: { type: string; count: number }[],
+    databaseEntities: string[],
+    externalServices: string[],
+    domainConcepts: CASDomainConcept[],
+    systemCapabilities: SystemCapability[] = []
+  ): Record<string, unknown> {
+    const normalizedSet = (values: string[]) => [...new Set(values
+      .map(value => String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim())
+      .filter(Boolean))].sort();
+    const capabilitySemantics = systemCapabilities
+      .filter(capability => {
+        const operations = capability.operations || [];
+        const pageOnly = operations.length > 0 && operations.every(operation => operation.entry_point_type === 'page');
+        return !pageOnly || (capability.related_entities?.length || 0) > 0 || capability.category === 'core';
+      })
+      .map(capability => ({
+        entities: normalizedSet(capability.related_entities || []),
+        domains: normalizedSet(capability.related_domains || []),
+        actions: normalizedSet((capability.operations || []).map(operation => operation.action || '')),
+      }))
+      .map(signature => JSON.stringify(signature))
+      .sort();
+    return {
+      system: String(systemName || '').toLowerCase().trim(),
+      frameworks: normalizedSet(frameworks),
+      entry_modes: normalizedSet(entryPointSummary.map(item => item.type)),
+      entities: normalizedSet(databaseEntities),
+      integrations: normalizedSet(externalServices),
+      domain_concepts: normalizedSet(domainConcepts
+        .filter(concept => concept.classification === 'core')
+        .map(concept => concept.name)),
+      capability_semantics: [...new Set(capabilitySemantics)],
+    };
   }
 
   private buildAIInterpretationFacts(
@@ -14440,7 +15725,8 @@ export class AnalyzerOrchestrator {
     libraryNames: string[] = [],
     projectTextSignal: ProjectTextSignal = { concepts: [], evidence: [] },
     dataEntities: CASDataEntity[] = [],
-    manifestDescription = ''
+    manifestDescription = '',
+    userJourneys: CASUserJourney[] = []
   ): Record<string, unknown> {
     // Terminal-segment principle: hand the model what journeys ultimately
     // produce (terminal entities) and the near-terminal stages leading there,
@@ -14493,6 +15779,7 @@ export class AnalyzerOrchestrator {
       'client-sdk': 'an auto-generated/client SDK for an external API — describe it as a client library, not as an application or system',
       'cli-tool': 'a command-line tool — describe it as a CLI tool, not as an application or system',
       'boilerplate': 'a boilerplate/starter template with demo content — describe it as a boilerplate, not as a real product',
+      'infrastructure': 'an infrastructure and deployment definition — describe only the evidenced resources, deployable units, environments, and deployment actions it provisions or runs; do not invent users, requests, orders, business workflows, or a business application, and do not count Docker/Compose/Kubernetes representations of one runtime as separate microservices',
     };
     const artifactFacts = this.activeArtifactType && this.activeArtifactType !== 'app'
       ? {
@@ -14518,10 +15805,52 @@ export class AnalyzerOrchestrator {
         manifestDescriptionInstruction: 'manifestDescription is the repo\'s own one-line self-description from its package manifest. Treat it as authoritative product framing when it is consistent with the structural facts.',
       }
       : {};
+    const productBehaviorPaths = (userJourneys || [])
+      .filter(journey => journey.journey_kind === 'user-facing' || (journey.terminal_entities?.length || 0) > 0)
+      .filter(journey => !/^run\s+(?:main|application|server)\b/i.test(journey.name))
+      .map(journey => {
+        const businessSteps = (journey.steps || [])
+          .filter(step => step.layer === 'business')
+          .map(step => step.name)
+          .filter(name => !/(?:handler|controller|service|repository|adapter|middleware)\b/i.test(name))
+          .filter(name => !/\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/.test(name))
+          .map(name => this.humanizePascalName(name))
+          .filter((name, index, names) => names.indexOf(name) === index)
+          .slice(0, 5);
+        return {
+          intent: journey.name.replace(/\s*->.*$/i, '').trim(),
+          businessTransformations: businessSteps,
+          recordsRead: (journey.terminal_effects?.entities_read || []).slice(0, 5),
+          recordsWritten: (journey.terminal_effects?.entities_written || []).slice(0, 5),
+          messagesEmitted: (journey.terminal_effects?.messages_emitted || []).slice(0, 5),
+          integrationsReached: (journey.terminal_effects?.external_services || []).slice(0, 5),
+          testsCovering: (journey.tests_covering || []).slice(0, 5),
+        };
+      })
+      .filter(path => path.intent || path.businessTransformations.length > 0 ||
+        path.recordsRead.length > 0 || path.recordsWritten.length > 0 || path.messagesEmitted.length > 0)
+      .slice(0, 12);
+    const observedOperations = systemCapabilities.flatMap(capability => capability.operations || []);
+    const hasObservedRead = observedOperations.some(operation => /^(?:view|read|list|get|show|access|analyze|review)$/i.test(operation.action || '') ||
+      /^(?:GET|HEAD|OPTIONS)$/i.test(operation.trigger?.method || ''));
+    const hasObservedMutation = observedOperations.some(operation => /^(?:create|update|delete|write|modify|submit|configure|manage|mutate)$/i.test(operation.action || '') ||
+      /^(?:POST|PUT|PATCH|DELETE)$/i.test(operation.trigger?.method || '')) ||
+      dataEntities.some(entity =>
+        (entity.lifecycle?.created_by?.length || 0) > 0 ||
+        (entity.lifecycle?.updated_by?.length || 0) > 0 ||
+        (entity.lifecycle?.deleted_by?.length || 0) > 0
+      );
+    const readOnlyFacts = hasObservedRead && !hasObservedMutation
+      ? {
+        observedProductActions: ['retrieve', 'present', 'return', 'view', 'review', 'compare', 'analyze'],
+        observedBehaviorInstruction: 'Write affirmative product statements using the supplied observedProductActions and the concrete records those actions return.',
+      }
+      : {};
     return {
       ...terminalFacts,
       ...artifactFacts,
       ...manifestFacts,
+      ...readOnlyFacts,
       ...this.buildProjectTextInterpretationFacts(projectTextSignal),
       ...this.buildSelfProjectInterpretationFacts(),
       ...this.buildAIInterpretationBaseFacts(
@@ -14529,7 +15858,40 @@ export class AnalyzerOrchestrator {
         externalServices, flowGraph, domainConcepts, systemCapabilities, libraryNames
       ),
       ...(distinctiveEntities.length > 0 ? { distinctiveEntities } : {}),
+      ...(productBehaviorPaths.length > 0 ? {
+        productBehaviorPaths,
+        productBehaviorInstruction: 'productBehaviorPaths are compact, language-neutral traces derived from the CAS graph. Translate their intent, transformations, and terminal effects into product language; do not copy route syntax or code identifiers into prose.',
+      } : {}),
     };
+  }
+
+  private focusedSystemDescriptionFacts(facts: Record<string, unknown>): Record<string, unknown> {
+    const keys = [
+      'systemName',
+      'productIdentity',
+      'artifactType',
+      'readmeProductTitle',
+      'readmeProductOverview',
+      'manifestDescription',
+      'projectTextSummary',
+      'projectTextConcepts',
+      'distinctiveEntities',
+      'terminalOutputs',
+      'terminalCapabilities',
+      'nearTerminalStages',
+      'productBehaviorPaths',
+      'domainConcepts',
+      'capabilities',
+      'databaseEntities',
+      'externalServices',
+      'observedProductActions',
+      'infrastructureDeclarations',
+    ];
+    const focused: Record<string, unknown> = {};
+    for (const key of keys) {
+      if (facts[key] !== undefined) focused[key] = facts[key];
+    }
+    return focused;
   }
 
   private buildAIDescriptionPromptContract(
@@ -14538,19 +15900,21 @@ export class AnalyzerOrchestrator {
     projectTextSignal: ProjectTextSignal
   ): Record<string, unknown> {
     return {
-      version: 'klauro-ai-description-contract-v12-dataflow-how-it-works',
+      version: 'klauro-ai-description-contract-v14-grounded-behavior-paths',
       goal: 'Produce a specific, accurate, defensible product/architecture paragraph from CAS facts only, answering four questions in order: what the system is, what it does, how it works, and how it is built.',
       systemName,
       suppliedPrimaryDomain: enhancedSystemPurpose.primary_domain,
       suppliedPurposeType: enhancedSystemPurpose.primary_type,
       evidence_priority: [
         'productIdentity/productIdentityInstruction when present',
+        'artifactTypeInstruction when present — this is structural truth and constrains every sentence; infrastructure definitions are not business applications, libraries are not services, and templates are not deployed products',
         'readmeProductTitle and readmeProductOverview when present; the repo\'s own README title and opening statement of what it is are top-down product framing — authoritative for WHAT the product is built for',
         'manifestDescription when present; the repo\'s own self-description is authoritative product framing',
         'distinctiveEntities — the domain-specific data shapes that define the product (e.g. DexTrade/WhaleTransaction/OhlcvCandle/AssetAnalysis); PREFER these over generic User/Account/Portfolio/Strategy CRUD, which every app has and which the entry-route journeys over-emphasize',
         'authoritativeProductFrame when present; it overrides examples, tests, docs, sample apps, and incidental code vocabulary',
         'projectTextDomain, projectTextSummary, and projectTextConcepts from human-authored repo text',
         'terminalOutputs, terminalCapabilities, nearTerminalStages, and terminalDomainSeed — the terminal segment of the product journeys; corroborating evidence, but note it can over-index on the generic record a chain writes (Portfolio/Strategy) rather than the domain-specific analysis it produces',
+        'productBehaviorPaths — language-neutral traces tying a user intent to business transformations and terminal records/messages; use these to explain HOW the product works without copying code identifiers or route syntax',
         // `libraries`/`dependencies` is intentionally ranked LAST among
         // fact-based signals (below README/manifest/distinctiveEntities/
         // terminal evidence, above only the deterministic fallback): it is
@@ -14567,7 +15931,6 @@ export class AnalyzerOrchestrator {
         // by themselves and must never be read as implying a security,
         // monitoring, or scanning product absent independent support.
         'libraries/dependencies — supporting evidence only; see dependencySignalInstruction',
-        'artifactTypeInstruction when the repo is a library, SDK, CLI, or boilerplate',
         'capabilities and domainConcepts',
         'databaseEntities, externalServices, and frameworks',
         'deterministicOverview as a fallback only when it does not conflict with stronger evidence',
@@ -14581,6 +15944,7 @@ export class AnalyzerOrchestrator {
       ],
       required_grounding: [
         'Mention at least two concrete supplied product nouns from capabilities, domainConcepts, projectTextConcepts, terminalOutputs, distinctiveEntities, or databaseEntities.',
+        'When productBehaviorPaths are present, describe at least one concrete relationship between a named product intent and its resulting record/message. Include a transformation or decision only when businessTransformations supplies one; never invent a code step to fill an absent transformation.',
         'The system-type/domain you name (e.g. "crypto market-intelligence API", "identity service") MUST be traceable to a supplied fact — a dependency in libraries, a distinctiveEntity, an externalService, a domainConcept, or manifestDescription. Never name a system-type with no supporting supplied fact.',
         'A framework name may appear only if it is in the supplied allowedFrameworks fact list, only in HOW IT IS BUILT, and only as product-shaping context ("a Symfony backend") — naming a framework or package is never required and never a substitute for describing the dataflow; in prose call them the frameworks the system is built with, never the literal phrase "allowed frameworks".',
         'Mention integrations only by exact names listed in externalServices.',
@@ -14623,7 +15987,7 @@ export class AnalyzerOrchestrator {
   ): Record<string, unknown> {
     return {
       version: 'klauro-ai-element-description-contract-v3-no-scaffold-templates',
-      goal: 'Describe each capability/entity by what it MEANS in this product — what it lets the product\'s users or operators do, or what real concept it represents — grounded in the data entities it manages and the product domain. A capability is product value, not CRUD plumbing; describe the value, not the mechanism.',
+      goal: 'Describe each item by what it MEANS in this product — what it lets the product\'s users or operators do, or what real concept it represents — grounded in the data entities and product domain. Describe product value, not CRUD plumbing or analysis terminology.',
       systemName,
       productDomain: enhancedSystemPurpose?.primary_domain,
       evidence_priority: [
@@ -14635,7 +15999,7 @@ export class AnalyzerOrchestrator {
       ],
       sentence_contract: [
         'One sentence (two only if needed for clarity).',
-        'Start with the capability/entity name.',
+        'Start directly with the item name or concrete product behavior; never prefix it with "The" plus an analysis label such as capability, feature, module, component, or functionality.',
         'Say what it lets the product\'s users or operators DO, or what concept it represents in THIS product, in plain product language a new engineer or PM would understand.',
         'Ground the meaning in the related entities and the product domain — name the concrete user-facing concept (e.g. crypto holdings, invoices, access policies, market signals), not the database operation.',
         'Lead with product meaning/value. Do NOT lead with or center on create/update/delete, lifecycle, records, routes, or file mechanics.',
@@ -14670,8 +16034,8 @@ export class AnalyzerOrchestrator {
   private buildSelfProjectInterpretationFacts(): Record<string, unknown> {
     if (!this.isKlauroSelfProject(this.activeAnalysisProjectPath)) return {};
     return {
-      productIdentity: 'Klauro is a CAS codebase-analysis engine with MCP tools for AI agents, local/hosted analyzer workflows, proposal previews, idiom guidance, incremental analysis, telemetry correlation, and analysis storage.',
-      productIdentityInstruction: 'For Klauro itself, prioritize CAS, analyzers, MCP, agent contexts, proposal previews, idiom guidance, incremental analysis, telemetry, and storage. Do not describe legacy workspace/project/user controllers as the main product surface.',
+      productIdentity: 'Klauro is a hosted CAS codebase-analysis engine with MCP tools for AI agents, a lightweight installed upload/query/watch client, proposal previews, idiom guidance, incremental analysis, workspace intelligence, telemetry correlation, and analysis storage.',
+      productIdentityInstruction: 'For Klauro itself, prioritize the hosted analyzer, CAS relationship graph, MCP agent context, proposal previews, idiom guidance, incremental and workspace analysis, telemetry, and storage. Do not describe legacy workspace/project/user controllers as the main product surface, and do not imply that customer analysis runs locally.',
     };
   }
 
@@ -14712,30 +16076,21 @@ export class AnalyzerOrchestrator {
       .slice(0, 12)
       .map(c => c.name);
 
-    // Test harnesses are not part of what the system *is* — drop `test`
-    // entry points so they do not pollute the narrative.
-    const meaningfulEntryPoints = entryPointSummary.filter(
-      e => e.type !== 'test' && e.count > 0
-    );
     const narrativeFrameworks = this.frameworksForNarrativeFacts(systemName, frameworks);
 
     return {
       systemName,
       frameworks: narrativeFrameworks,
-      // The full declared-dependency manifest is threaded in here as raw grounding
-      // (see dependencyNamesForAI). A tiny alphabetical cap silently dropped the
-      // DEFINING dependencies (a repo depending on ccxt/web3 lost them because
-      // they sort past the first 12), leaving the model to write domain identity
-      // from thin air. Surface the full list — it is fact grounding, not prose —
-      // capped only high enough to bound prompt size for pathological manifests.
-      libraries: libraryNames.slice(0, 200),
+      // dependencyNamesForAI is already ranked by analyzer recognition and
+      // real source-import frequency, so this compact list keeps defining
+      // dependencies without shipping a duplicate package-manifest dump.
+      libraries: libraryNames.slice(0, 48),
       allowedFrameworks: narrativeFrameworks.length > 0 ? narrativeFrameworks : ['none detected'],
       forbiddenFrameworkInstruction: narrativeFrameworks.length > 0
         ? 'Name a framework in prose only if it is in the allowedFrameworks fact list or is a package in libraries; refer to them as the frameworks the system is built with, never as "allowed frameworks". If allowedFrameworks says mixed monorepo, do not list individual frameworks in the narrative.'
         : libraryNames.length > 0
           ? 'No framework was detected in product code; mention only packages listed in libraries.'
           : 'No framework was detected in product code; do not mention any framework.',
-      entryPoints: [...meaningfulEntryPoints].sort((a, b) => a.type.localeCompare(b.type)),
       capabilities: topCapabilities,
       domainConcepts: conceptPool,
       databaseEntities: databaseEntities.filter(entity => !this.isTransportContractEntityName(entity)).slice(0, 15),
@@ -14804,7 +16159,7 @@ export class AnalyzerOrchestrator {
     exitPoints: CASExitPoint[] = []
   ): EnhancedSystemPurpose {
     this.activeTerminalSignal = terminalSignal;
-    const coreConcepts = domainExtractor.getCoreConcepts(domainConcepts);
+    const coreConcepts = this.productCoreConcepts(domainExtractor.getCoreConcepts(domainConcepts), frameworks);
     // Artifact-type classification precedes domain: WHAT KIND of codebase
     // this is (library/client-sdk/cli-tool/boilerplate/app) is structural
     // truth that manifests and entry/exit shape reveal directly. Libraries
@@ -14979,7 +16334,7 @@ export class AnalyzerOrchestrator {
     if (primaryDomain === 'user-identity-management') {
       return 'authentication-service';
     }
-    if (primaryDomain === 'codebase-analysis' && /^(multiplayer-application|gaming-platform|web-application)$/.test(primaryType)) {
+    if (/(^|-)codebase-analysis(?:-(?:engine|platform|system|tool))?$/.test(primaryDomain)) {
       return 'devtools-platform';
     }
     if (primaryDomain === 'cloud-infrastructure') {
@@ -15709,7 +17064,30 @@ export class AnalyzerOrchestrator {
       'render', 'close', 'focus', 'normalize', 'ensure', 'path', 'clamp', 'install',
       'modal', 'dialog', 'popup', 'screen', 'window', 'view', 'views',
       'using', 'specs', 'linq', 'language', 'languages',
+      'model', 'models', 'mapping', 'mappings',
     ]).has(token.toLowerCase());
+  }
+
+  private productCoreConcepts(concepts: CASDomainConcept[], frameworks: string[]): CASDomainConcept[] {
+    const frameworkTokens = new Set(
+      frameworks.flatMap(framework => this.domainTokensFromText(framework)),
+    );
+    const contextOnly = new Set(['enterprise', 'platform', 'proof', 'sample', 'example', 'generic']);
+    return concepts.filter(concept => {
+      const raw = String(concept?.name || '').trim();
+      if (!raw || /[{}\[\]\\:]/.test(raw)) return false;
+      const tokens = this.domainTokensFromText(raw).filter(token =>
+        !this.isGenericDomainToken(token) &&
+        !this.isGenericCapabilityToken(token) &&
+        !isCapabilityNoiseToken(token) &&
+        !isLanguageBuiltinDomainToken(token) &&
+        !isVendorLibDomainToken(token),
+      );
+      if (tokens.length === 0) return false;
+      if (tokens.every(token => frameworkTokens.has(token))) return false;
+      if (tokens.length === 1 && contextOnly.has(tokens[0])) return false;
+      return true;
+    });
   }
 
   private isTransportContractEntityName(entityName: string): boolean {
@@ -15815,42 +17193,69 @@ export class AnalyzerOrchestrator {
       .filter(token => token.length >= 3 && !/^(app|apps|web|ui|ux|api|client|server|frontend|backend|service|services)$/.test(token));
   }
 
-  // purposeCapabilitySummary and capabilityPurposeBias were both removed here
-  // (residual cleanup after c611d08c / 8fe31d29). Both encoded a primaryDomain
-  // string-literal switch -- literals naming specific benchmark-corpus products
-  // rather than generic categories -- mapped to a hardcoded phrase
-  // (purposeCapabilitySummary) or a hardcoded ranking bias
-  // (capabilityPurposeBias). That is the class the cardinal rule forbids:
-  // deterministic structural facts + AI interpretation, never a hardcoded
-  // domain/brand/keyword table. capabilityPurposeBias was additionally DEAD:
-  // its only two call sites were the capability sort comparator and
-  // filterCapabilitiesForKnownDomain, and the sole caller of both passed a
-  // primaryDomain that is unconditionally undefined at that structural stage,
-  // so every branch was unreachable and it always returned 0.
-  // filterCapabilitiesForKnownDomain, its domain-literal sibling, went with it
-  // for the same reason.
+  // purposeCapabilitySummary was removed here (residual cleanup after
+  // c611d08c): its only caller was the fabricated-appender tail of
+  // sanitizeAIInterpretation, deleted above. It was itself a textbook
+  // instance of the class this cardinal rule forbids -- a primaryDomain
+  // string-literal switch (clinical-testing / fleet-management /
+  // user-identity-management / solana-trading|solana-arbitrage|portfolio-
+  // management / an audio|content regex) each mapped to a hardcoded phrase
+  // ("patient records", "fuel management", "trade execution", "voice
+  // conversion inference", ...). Those domain literals read as specific
+  // benchmark-corpus projects rather than generic categories. Its sibling
+  // capabilityPurposeBias (same primaryDomain literals, still LIVE and used
+  // by capability filtering/sorting below) and the ~40-name hardcoded
+  // capability-display-name list in isGenericCapabilityDisplayName are the
+  // same class of violation and are still in the file -- flagged as a
+  // separate finding, not fixed here (they are load-bearing for capability
+  // filtering/ranking with no test coverage in this pass, so a blind rip-out
+  // risks a silent regression rather than a repair).
+
+  private capabilityPurposeBias(primaryDomain: string | undefined, capability: SystemCapability): number {
+    const text = [
+      capability.name,
+      ...(capability.related_domains || []),
+      ...(capability.related_entities || []),
+    ].join(' ').toLowerCase();
+    if (primaryDomain === 'clinical-testing') {
+      // ANCHOR-GATED (same misfire class as inferSystemPurpose's clinical
+      // override): 'measurement'/'device'/'force'/'report'/'assessment'/
+      // 'test' are generic English words present in almost any codebase
+      // (telemetry measurement, device-code auth, test suites, status
+      // reports). A capability whose name/domains/entities contain ONLY
+      // those generic tokens must not be scored as strongly clinical-aligned
+      // (0) — that requires a genuinely clinical-specific anchor. Generic
+      // hits still bias mildly toward the domain (2, still counted "aligned"
+      // by filterCapabilitiesForKnownDomain's <=2 threshold) rather than
+      // masquerading as core-aligned.
+      if (/\b(patient|muscle|grip|pinch|inclinometry|rehabilitation)\b/.test(text)) return 0;
+      if (/\b(measurement|device|force|report|assessment|test)\b/.test(text)) return 2;
+      return 1;
+    }
+    if (primaryDomain === 'user-identity-management') {
+      if (/\b(identity|password|token|session|credential|authorize|authorization|permission|role|user|account|register)\b/.test(text)) return 0;
+      if (/\b(wallet|withdrawal|decrypt|encrypt|proxy|transformations?|document|collection|knowledge|affiliate|self\s*heal)\b/.test(text)) return 5;
+      return 2;
+    }
+    if (/^(solana-trading|solana-arbitrage|portfolio-management)$/.test(primaryDomain || '')) {
+      if (/\b(price|trade|trading|portfolio|risk|allocation|hedge|market|token|wallet|solana|jupiter|raydium|geyser)\b/.test(text)) return 0;
+      if (/\b(document|collection|knowledge|catalog|checkout|order fulfillment|commerce)\b/.test(text)) return 6;
+      return 2;
+    }
+    if (primaryDomain === 'fleet-management') {
+      if (/\b(fleet|fuel|vehicle|maintenance|driver|odometer|ifta|dispatch|trip|telematics|billing)\b/.test(text)) return 0;
+      if (/\b(document|collection|knowledge|catalog|checkout|commerce)\b/.test(text)) return 6;
+      return 2;
+    }
+    return 0;
+  }
 
   private isCrossCuttingCapabilityName(name: string): boolean {
     return /\b(auth|authenticate|authentication|authorization|login|logout|session|token|jwt|oauth|permission|role|superuser|admin|user|users)\b/i.test(name);
   }
 
-  /**
-   * SHAPE TEST ONLY (cardinal rule: deterministic structural facts + AI
-   * interpretation, never a hardcoded domain/brand/keyword table). A ~40-name
-   * allowlist of specific product capability labels used to sit at the top of
-   * this method, exempting names like "Booking Lifecycle" / "Cart And
-   * Checkout" / "Session Replay" from the genericness test. Those literals
-   * named benchmark-corpus products, no producer in this codebase ever emits
-   * them, and 39 of the 40 were already non-generic under the shape test
-   * below, so the list bought nothing but a cardinal violation. Genericness is
-   * now decided purely by shape: a structural-noise phrase, a syntax-shaped
-   * label (brackets/quotes/colons -- a leaked code fragment), or a subject
-   * whose every token is a generic capability token with no distinguishing
-   * anchor. The residual literals below are structural English scaffolding
-   * ("console commands", "event handlers") and framework component names, not
-   * product/domain vocabulary.
-   */
   private isGenericCapabilityDisplayName(name: string): boolean {
+    if (/\b(Project Backend Provisioning|Authentication Services|Realtime Data Sync|Storage And Functions|Booking Lifecycle|Calendar Availability|Event Type Configuration|Scheduling Integrations|Product Catalog|Cart And Checkout|Order Fulfillment|Commerce Administration|Document Collaboration|Collection Organization|Knowledge Access Control|Knowledge Search|App Builder|Data Source Integration|Automation Workflows|Tenant App Administration|Content Publishing|Membership And Subscriptions|Newsletter Delivery|Publication Administration|Media Library|Backup And Upload|Media Intelligence|Sharing And Access|Social Timelines|Federation Delivery|Moderation And Safety|Notifications And Messaging|Table Modeling|Spreadsheet Views|API Data Access|Workspace Collaboration|Event Capture|Product Analytics|Feature Flags And Experiments|Session Replay)\b/i.test(name)) return false;
     if (/\b(bin\/console|console commands?|event(s)? handlers?|message handlers?|route handlers?)\b/i.test(name)) return true;
     if (/^(help management|report reporting|jobs? workflow)$/i.test(name)) return true;
     if (/^dismiss[_\s]/i.test(name)) return true;
@@ -18661,6 +20066,8 @@ export class AnalyzerOrchestrator {
       return lifecycleIds.length === 0 || lifecycleIds.some(id => productNodeIds.has(id));
     });
     const productEdges = edges.filter(edge => productNodeIds.has(edge.source) || productNodeIds.has(edge.target));
+    const productNodeById = new Map(productNodes.map(node => [node.id, node] as const));
+    const productNodeOrder = new Map(productNodes.map((node, index) => [node.id, index] as const));
 
     const resourceGroups = new Map<string, {
       entryPoints: CASEntryPoint[];
@@ -18708,7 +20115,11 @@ export class AnalyzerOrchestrator {
     // unrelated groups.
     const CALLEE_EDGE_TYPES = new Set(['calls', 'invokes', 'delegates_to', 'uses', 'queries']);
     const directCalleesBySource = new Map<string, Set<string>>();
+    const callerCountsByTarget = new Map<string, number>();
     for (const edge of productEdges) {
+      if (edge.type === 'calls' || edge.type === 'uses') {
+        callerCountsByTarget.set(edge.target, (callerCountsByTarget.get(edge.target) || 0) + 1);
+      }
       if (!CALLEE_EDGE_TYPES.has(edge.type)) continue;
       let callees = directCalleesBySource.get(edge.source);
       if (!callees) { callees = new Set(); directCalleesBySource.set(edge.source, callees); }
@@ -18729,6 +20140,14 @@ export class AnalyzerOrchestrator {
       ...de.lifecycle.updated_by,
       ...de.lifecycle.deleted_by,
     ]]));
+    const entityIdsByLifecycleNode = new Map<string, string[]>();
+    for (const entity of productDataEntities) {
+      for (const lifecycleId of entityLifecycleIds.get(entity.id) || []) {
+        const entityIds = entityIdsByLifecycleNode.get(lifecycleId);
+        if (entityIds) entityIds.push(entity.id);
+        else entityIdsByLifecycleNode.set(lifecycleId, [entity.id]);
+      }
+    }
     const groupEntityMatches = new Map<string, { direct: Set<string>; hop: Set<string> }>();
     const hopMatchDf = new Map<string, number>();
     for (const [resourceKey, group] of resourceGroups.entries()) {
@@ -18747,10 +20166,13 @@ export class AnalyzerOrchestrator {
       }
       const direct = new Set<string>();
       const hop = new Set<string>();
-      for (const de of productDataEntities) {
-        const lifecycleIds = entityLifecycleIds.get(de.id) || [];
-        if (lifecycleIds.some(id => handlerIds.has(id))) direct.add(de.id);
-        else if (lifecycleIds.some(id => hopIds.has(id))) hop.add(de.id);
+      for (const handlerId of handlerIds) {
+        for (const entityId of entityIdsByLifecycleNode.get(handlerId) || []) direct.add(entityId);
+      }
+      for (const hopId of hopIds) {
+        for (const entityId of entityIdsByLifecycleNode.get(hopId) || []) {
+          if (!direct.has(entityId)) hop.add(entityId);
+        }
       }
       for (const entityId of hop) hopMatchDf.set(entityId, (hopMatchDf.get(entityId) || 0) + 1);
       groupEntityMatches.set(resourceKey, { direct, hop });
@@ -18791,12 +20213,16 @@ export class AnalyzerOrchestrator {
         group.entryPoints,
         relatedEntities,
         productNodes,
-        productEdges
+        productEdges,
+        callerCountsByTarget
       );
 
       const category = this.inferCapabilityCategory(group.entryPoints, resourceKey);
 
-      const relatedNodes = productNodes.filter(node => relatedNodeIds.has(node.id));
+      const relatedNodes = [...relatedNodeIds]
+        .map(nodeId => productNodeById.get(nodeId))
+        .filter((node): node is CASNode => Boolean(node))
+        .sort((left, right) => (productNodeOrder.get(left.id) || 0) - (productNodeOrder.get(right.id) || 0));
       // Deterministic STRUCTURAL label (fact) — seeds the id and grounds the
       // description. The invented "<Domain> Management/…" behavior suffix stays
       // here for stability but is stripped from the shipped display name.
@@ -18917,12 +20343,12 @@ export class AnalyzerOrchestrator {
     const trimmedCapabilities = this.trimLowValueFallbackCapabilities(dedupedCapabilities, projectPath);
     // Domain is comprehension (AI-only) and is not known at this structural
     // stage; the hardcoded repo-name domain override was deleted. Capability
-    // ordering therefore no longer biases on a keyword-classified domain, and
-    // the domain-literal filter/bias pair (filterCapabilitiesForKnownDomain /
-    // capabilityPurposeBias) that consumed it is gone with it.
+    // ordering therefore no longer biases on a keyword-classified domain.
+    const primaryDomain: string | undefined = undefined;
+    const domainFilteredCapabilities = this.filterCapabilitiesForKnownDomain(trimmedCapabilities, primaryDomain);
     const sortedCapabilities = this.isKlauroSelfProject(projectPath)
-      ? this.prioritizeKlauroSelfCapabilities(trimmedCapabilities, projectPath)
-      : trimmedCapabilities;
+      ? this.prioritizeKlauroSelfCapabilities(domainFilteredCapabilities, projectPath)
+      : domainFilteredCapabilities;
     const fallbackCapabilities = sortedCapabilities.length === 0
       ? this.buildRepositoryFallbackCapabilities(productNodes, productEntryPoints, projectPath)
       : [];
@@ -18931,6 +20357,7 @@ export class AnalyzerOrchestrator {
     const finalCapabilities = capabilitiesToSort.sort((a, b) => {
       const critOrder = { critical: 0, high: 1, medium: 2, low: 3 };
       return this.klauroSelfCapabilityPriority(projectPath, a) - this.klauroSelfCapabilityPriority(projectPath, b) ||
+        this.capabilityPurposeBias(primaryDomain, a) - this.capabilityPurposeBias(primaryDomain, b) ||
         this.systemCapabilityProductPriority(a) - this.systemCapabilityProductPriority(b) ||
         critOrder[a.criticality] - critOrder[b.criticality] ||
         b.operations.length - a.operations.length ||
@@ -19016,6 +20443,37 @@ export class AnalyzerOrchestrator {
       !this.isLowValueFallbackCapability(capability, strongCapabilities)
     );
     return trimmed.length >= Math.max(1, strongCapabilities.length) ? trimmed : capabilities;
+  }
+
+  private filterCapabilitiesForKnownDomain(
+    capabilities: SystemCapability[],
+    primaryDomain?: string
+  ): SystemCapability[] {
+    if (!primaryDomain) return capabilities;
+    if (!/^(user-identity-management|fleet-management|solana-trading|solana-arbitrage|portfolio-management|clinical-testing|car-wash-operations)$/.test(primaryDomain)) {
+      return capabilities;
+    }
+
+    const alignedCapabilities = capabilities.filter(capability =>
+      this.capabilityPurposeBias(primaryDomain, capability) <= 2
+    );
+    const stronglyAlignedCapabilities = capabilities.filter(capability =>
+      this.capabilityPurposeBias(primaryDomain, capability) === 0
+    );
+
+    if (primaryDomain === 'user-identity-management' && stronglyAlignedCapabilities.length >= 3) {
+      return alignedCapabilities.length >= stronglyAlignedCapabilities.length
+        ? alignedCapabilities
+        : stronglyAlignedCapabilities;
+    }
+
+    if (stronglyAlignedCapabilities.length >= 4) {
+      return alignedCapabilities.length >= stronglyAlignedCapabilities.length
+        ? alignedCapabilities
+        : stronglyAlignedCapabilities;
+    }
+
+    return capabilities;
   }
 
   private isHardLowValueCapability(capability: SystemCapability): boolean {
@@ -20862,8 +22320,13 @@ export class AnalyzerOrchestrator {
     return tokens.join('-');
   }
 
+  private readonly domainTokenCache = new Map<string, readonly string[]>();
+
   private domainTokensFromText(text: string): string[] {
-    return text
+    const cached = this.domainTokenCache.get(text);
+    if (cached) return [...cached];
+
+    const tokens = text
       // Split acronym boundaries first ("AIInsights" -> "AI Insights",
       // "MLMetadata" -> "ML Metadata") so consecutive capitals don't squash into a
       // single garbage token ("Aiinsights"); then the normal camelCase boundary.
@@ -20877,6 +22340,8 @@ export class AnalyzerOrchestrator {
       .filter(token => !this.isGenericCapabilityToken(token))
       .filter(token => !isLanguageBuiltinDomainToken(token))
       .filter(token => !isCapabilityNoiseToken(token));
+    this.domainTokenCache.set(text, tokens);
+    return [...tokens];
   }
 
   private normalizeDomainToken(token: string): string {
@@ -20896,6 +22361,124 @@ export class AnalyzerOrchestrator {
     const currentDomains = (current.related_domains || []).map(domain => this.normalizeCapabilityReuseSubject(domain)).filter(Boolean);
     if (previousDomains.size === 0 || currentDomains.length === 0) return true;
     return currentDomains.some(domain => previousDomains.has(domain));
+  }
+
+  private reusePreviousCapabilityCatalog(
+    previousCapabilities: SystemCapability[],
+    currentCandidates: SystemCapability[],
+  ): SystemCapability[] {
+    const unused = new Set(currentCandidates.map((_, index) => index));
+    const reused: SystemCapability[] = [];
+    for (const previous of previousCapabilities) {
+      if (!previous.description || !['ai', 'manual', 'reused'].includes(String(previous.description_source || ''))) continue;
+      const previousEntities = new Set(previous.related_entities || []);
+      const matching = [...unused].filter(index => {
+        const current = currentCandidates[index];
+        if (current.id === previous.id || this.capabilityReuseSubjectsMatch(previous, current)) return true;
+        return (current.related_entities || []).some(entity => previousEntities.has(entity));
+      });
+      if (matching.length === 0) continue;
+      const candidates = matching.map(index => currentCandidates[index]);
+      for (const index of matching) unused.delete(index);
+      reused.push({
+        ...candidates[0],
+        id: previous.id,
+        name: previous.name,
+        description: previous.description,
+        description_source: 'reused',
+        description_generation: {
+          status: 'reused_previous',
+          attempted: false,
+          reason: previous.description_generation?.status,
+          generated_at: new Date().toISOString(),
+          origin_source: previous.description_generation?.origin_source
+            || (previous.description_source === 'ai' ? 'ai'
+              : previous.description_source === 'manual' ? 'manual'
+                : previous.description_source === 'deterministic' ? 'deterministic'
+                  : previous.description_generation?.reason === 'ai_applied' ? 'ai'
+                    : undefined),
+        },
+        related_domains: Array.from(new Set(candidates.flatMap(capability => capability.related_domains || []))),
+        related_entities: Array.from(new Set(candidates.flatMap(capability => capability.related_entities || []))),
+        operations: candidates.flatMap(capability => capability.operations || []),
+      });
+    }
+    // This path runs only when the semantic fingerprint is unchanged. An
+    // unmatched deterministic candidate therefore is not a newly evidenced
+    // product capability; it is a lower-level candidate the previous AI
+    // catalog intentionally curated away. Appending it here bypasses AI
+    // quality and reintroduces page/framework artifacts after an unrelated
+    // edit. A genuinely new capability changes the fingerprint and takes the
+    // normal AI refresh path instead.
+    return reused;
+  }
+
+  private stabilizeRefreshedCapabilityCatalog(
+    previousCapabilities: SystemCapability[],
+    currentCandidates: SystemCapability[],
+    refreshedCapabilities: SystemCapability[],
+  ): SystemCapability[] {
+    const currentOperationIds = new Set(currentCandidates
+      .flatMap(capability => capability.operations || [])
+      .map(operation => operation.entry_point_id)
+      .filter(Boolean));
+    const currentEntityIds = new Set(currentCandidates.flatMap(capability => capability.related_entities || []));
+    const groundedPrevious = previousCapabilities.filter(previous => {
+      if (!previous.description || !['ai', 'manual', 'reused'].includes(String(previous.description_source || ''))) return false;
+      if (!this.validateElementDescription(previous.description, this.capabilityDescriptionTarget(previous)).ok) return false;
+      const operations = previous.operations || [];
+      if (operations.length > 0) {
+        return operations.some(operation => currentOperationIds.has(operation.entry_point_id));
+      }
+      if ((previous.related_entities || []).some(entity => currentEntityIds.has(entity))) return true;
+      return currentCandidates.some(candidate => this.capabilityReuseSubjectsMatch(previous, candidate));
+    }).map(previous => {
+      const matchingCandidates = currentCandidates.filter(candidate => {
+        if (candidate.id === previous.id || this.capabilityReuseSubjectsMatch(previous, candidate)) return true;
+        const previousEntities = new Set(previous.related_entities || []);
+        return (candidate.related_entities || []).some(entity => previousEntities.has(entity));
+      });
+      const survivingOperations = (previous.operations || []).filter(operation => currentOperationIds.has(operation.entry_point_id));
+      return {
+        ...previous,
+        description_source: 'reused' as const,
+        description_generation: {
+          status: 'reused_previous' as const,
+          attempted: false,
+          reason: previous.description_generation?.status,
+          generated_at: new Date().toISOString(),
+          origin_source: previous.description_generation?.origin_source
+            || (previous.description_source === 'ai' ? 'ai'
+              : previous.description_source === 'manual' ? 'manual'
+                : previous.description_generation?.reason === 'ai_applied' ? 'ai'
+                  : undefined),
+        },
+        related_domains: Array.from(new Set([
+          ...(previous.related_domains || []),
+          ...matchingCandidates.flatMap(capability => capability.related_domains || []),
+        ])),
+        related_entities: Array.from(new Set([
+          ...(previous.related_entities || []).filter(entity => currentEntityIds.has(entity)),
+          ...matchingCandidates.flatMap(capability => capability.related_entities || []),
+        ])),
+        operations: Array.from(new Map([
+          ...survivingOperations,
+          ...matchingCandidates.flatMap(capability => capability.operations || []),
+        ].map(operation => [operation.entry_point_id, operation])).values()),
+      };
+    });
+
+    const overlapsGrounded = (candidate: SystemCapability): boolean => groundedPrevious.some(previous => {
+      if (candidate.id === previous.id || this.capabilityReuseSubjectsMatch(previous, candidate)) return true;
+      const previousEntities = new Set(previous.related_entities || []);
+      if ((candidate.related_entities || []).some(entity => previousEntities.has(entity))) return true;
+      const previousOperations = new Set((previous.operations || []).map(operation => operation.entry_point_id));
+      return (candidate.operations || []).some(operation => previousOperations.has(operation.entry_point_id));
+    });
+    return [
+      ...groundedPrevious,
+      ...refreshedCapabilities.filter(capability => !overlapsGrounded(capability)),
+    ];
   }
 
   private normalizeCapabilityReuseSubject(value: unknown): string {
@@ -21898,7 +23481,8 @@ export class AnalyzerOrchestrator {
     entryPoints: CASEntryPoint[],
     relatedEntities: CASDataEntity[],
     nodes: CASNode[],
-    edges: CASEdge[]
+    edges: CASEdge[],
+    callerCountsByTarget?: Map<string, number>
   ): { criticality: 'critical' | 'high' | 'medium' | 'low'; factors: string[] } {
     let score = 0;
     const factors: string[] = [];
@@ -21957,9 +23541,13 @@ export class AnalyzerOrchestrator {
     });
 
     let callerCount = 0;
-    for (const edge of edges) {
-      if ((edge.type === 'calls' || edge.type === 'uses') && nodeIds.has(edge.target)) {
-        callerCount++;
+    if (callerCountsByTarget) {
+      for (const nodeId of nodeIds) callerCount += callerCountsByTarget.get(nodeId) || 0;
+    } else {
+      for (const edge of edges) {
+        if ((edge.type === 'calls' || edge.type === 'uses') && nodeIds.has(edge.target)) {
+          callerCount++;
+        }
       }
     }
     if (callerCount > 5) {
@@ -22138,7 +23726,8 @@ export class AnalyzerOrchestrator {
       board: { before: ['dash', 'on', 'key', 'clip', 'leader', 'white'], after: [] },
       turn: { before: ['re'], after: [] },
     };
-    const rule = blockers[tokens[start]];
+    const token = tokens[start];
+    const rule = Object.prototype.hasOwnProperty.call(blockers, token) ? blockers[token] : undefined;
     if (!rule) return false;
     const before = tokens[start - 1];
     const after = tokens[end];
@@ -22161,7 +23750,7 @@ export class AnalyzerOrchestrator {
   // tokenization is a pure function of `pattern`, so memoize by the pattern string:
   // identical output, just skips the repeated regex + tokenize.
   private readonly signalPatternTokenCache = new Map<string, string[]>();
-  private matchesSignalPattern(rawTokens: string[], pattern: string): boolean {
+  private normalizedSignalPatternTokens(pattern: string): string[] {
     let patternTokens = this.signalPatternTokenCache.get(pattern);
     if (patternTokens === undefined) {
       patternTokens = pattern
@@ -22171,6 +23760,11 @@ export class AnalyzerOrchestrator {
         .map(token => this.singularizeSignalToken(token));
       if (this.signalPatternTokenCache.size < 20000) this.signalPatternTokenCache.set(pattern, patternTokens);
     }
+    return patternTokens;
+  }
+
+  private matchesSignalPattern(rawTokens: string[], pattern: string): boolean {
+    const patternTokens = this.normalizedSignalPatternTokens(pattern);
     if (patternTokens.length === 0) return false;
     const tokens = rawTokens.map(token => this.singularizeSignalToken(token));
     for (let i = 0; i + patternTokens.length <= tokens.length; i++) {
@@ -22696,18 +24290,51 @@ export class AnalyzerOrchestrator {
     await yieldToEventLoop();
     const nodeTypeList = this.tokenizeSignalItems(productNodes.map(n => n.type));
 
+    const signalIndexes = new WeakMap<string[][], Promise<Map<string, number>>>();
+    const signalIndex = (items: string[][]): Promise<Map<string, number>> => {
+      const cached = signalIndexes.get(items);
+      if (cached) return cached;
+      const building = (async () => {
+        const counts = new Map<string, number>();
+        for (const rawTokens of items) {
+          const tokens = rawTokens.map(token => this.singularizeSignalToken(token));
+          const present = new Set<string>();
+          for (let start = 0; start < tokens.length; start++) {
+            let joined = '';
+            const phrase: string[] = [];
+            for (let end = start; end < tokens.length; end++) {
+              const token = tokens[end];
+              joined += token;
+              phrase.push(token);
+              if (end > start) {
+                present.add(phrase.join(' '));
+                present.add(joined);
+              } else if (!this.isBlockedSignalCompound(tokens, start, end + 1)) {
+                present.add(token);
+              }
+            }
+          }
+          for (const key of present) counts.set(key, (counts.get(key) || 0) + 1);
+          await maybeYield();
+        }
+        return counts;
+      })();
+      signalIndexes.set(items, building);
+      return building;
+    };
+
     const countMatches = async (items: string[][], patterns: string[]): Promise<{ count: number; matched: string[] }> => {
+      const index = await signalIndex(items);
       const matched: string[] = [];
       let count = 0;
-      for (const tokens of items) {
-        await maybeYield();
-        for (const pattern of patterns) {
-          if (this.matchesSignalPattern(tokens, pattern)) {
-            if (!matched.includes(pattern)) {
-              matched.push(pattern);
-            }
-            count++;
-          }
+      for (const pattern of patterns) {
+        const patternTokens = this.normalizedSignalPatternTokens(pattern);
+        if (patternTokens.length === 0) continue;
+        const key = patternTokens.length === 1 ? patternTokens[0] : patternTokens.join(' ');
+        const occurrences = index.get(key) || 0;
+        if (occurrences > 0) {
+          matched.push(pattern);
+          count += occurrences;
         }
       }
       return { count, matched };
@@ -23195,6 +24822,8 @@ export class AnalyzerOrchestrator {
     // name, producing a fabricated cross-file (or cross-language) edge. See
     // isTestOrFixtureFileNode for the concrete evidence.
     const functionNodesByFile = new Map<string, CASNode[]>();
+    const functionNodesByName = new Map<string, CASNode[]>();
+    const nodeById = new Map(nodes.map(node => [node.id, node]));
     for (const node of nodes) {
       if ((node.type === 'function' || node.type === 'method') && !this.isTestOrFixtureFileNode(node)) {
         const file = node.source?.file || '';
@@ -23202,6 +24831,8 @@ export class AnalyzerOrchestrator {
           functionNodesByFile.set(file, []);
         }
         functionNodesByFile.get(file)!.push(node);
+        if (!functionNodesByName.has(node.name)) functionNodesByName.set(node.name, []);
+        functionNodesByName.get(node.name)!.push(node);
       }
     }
 
@@ -23261,7 +24892,7 @@ export class AnalyzerOrchestrator {
       // `execute`/`__invoke`/`run` method node extracted from that class).
       if (!ep.handler?.method_name) {
         if (ep.type !== 'cli') continue;
-        const commandNode = nodes.find(node => node.id === ep.source_node);
+        const commandNode = nodeById.get(ep.source_node);
         const commandFile = commandNode?.source?.file;
         if (!commandNode || !commandFile) continue;
         // Analyzers disagree on absolute vs relative paths — match by suffix.
@@ -23308,7 +24939,7 @@ export class AnalyzerOrchestrator {
       const routeNodeId = ep.source_node;
 
       if (!handlerName || handlerName.length === 0) continue;
-      const sourceNode = nodes.find(node => node.id === routeNodeId);
+      const sourceNode = nodeById.get(routeNodeId);
       if ((sourceNode?.type === 'function' || sourceNode?.type === 'method') && sourceNode.name === handlerName) {
         ep.handler.node_id = sourceNode.id;
         // Framework twin with no outgoing calls: bridge to the language
@@ -23446,9 +25077,7 @@ export class AnalyzerOrchestrator {
           // the candidate pool entirely (never counted, so they can't even
           // make a genuine same-file/language match ambiguous) — see
           // isTestOrFixtureFileNode and quality-iter-1 #6.
-          const allMatches = nodes.filter(n =>
-            (n.type === 'function' || n.type === 'method') && n.name === bare && !this.isTestOrFixtureFileNode(n)
-          );
+          const allMatches = functionNodesByName.get(bare) || [];
           if (allMatches.length !== 1) continue;
           const target = allMatches[0];
           if (target.id === routeNodeId) continue;
@@ -23497,6 +25126,13 @@ export class AnalyzerOrchestrator {
    */
   private linkHookUsageFetchers(nodes: CASNode[], edges: CASEdge[]): void {
     const existingEdgeIds = new Set(edges.map(e => e.id));
+    const callableNodesByName = new Map<string, CASNode[]>();
+    for (const node of nodes) {
+      if (node.type !== 'function' && node.type !== 'method') continue;
+      const matches = callableNodesByName.get(node.name);
+      if (matches) matches.push(node);
+      else callableNodesByName.set(node.name, [node]);
+    }
 
     for (const node of nodes) {
       if (node.type !== 'hook_usage') continue;
@@ -23505,9 +25141,7 @@ export class AnalyzerOrchestrator {
 
       for (const candidate of candidates) {
         const bare = candidate.includes('.') ? candidate.split('.').pop()! : candidate;
-        const allMatches = nodes.filter(n =>
-          (n.type === 'function' || n.type === 'method') && n.name === bare
-        );
+        const allMatches = callableNodesByName.get(bare) || [];
         if (allMatches.length !== 1) continue;
         const target = allMatches[0];
         if (target.id === node.id) continue;
@@ -23871,16 +25505,39 @@ export class AnalyzerOrchestrator {
    * are legitimately kept); when merging, keep the richest record (one that has a
    * handler file and a security/auth model).
    */
-  private dedupeHttpEntryPoints(entryPoints: CASEntryPoint[]): void {
+  private dedupeHttpEntryPoints(entryPoints: CASEntryPoint[], projectPath?: string): void {
     const isHttp = (entry: CASEntryPoint) => entry.type === 'http' || entry.type === 'route';
+    const normalizeFile = (entry: CASEntryPoint): string =>
+      String(entry.handler?.file || entry.metadata?.file || '').replace(/\\/g, '/').replace(/^\.\//, '');
+    const fileExists = (file: string): boolean => Boolean(
+      projectPath && file && fs.existsSync(path.isAbsolute(file) ? file : path.join(projectPath, file))
+    );
+    const canonicalFile = (entry: CASEntryPoint): string => {
+      const own = normalizeFile(entry);
+      if (!own || fileExists(own)) return own;
+      const method = String(entry.metadata?.method || entry.trigger?.method || '').toUpperCase();
+      const routePath = String(entry.metadata?.path || entry.trigger?.path || entry.trigger?.pattern || '');
+      const compatible = entryPoints
+        .filter(candidate => candidate !== entry && isHttp(candidate))
+        .filter(candidate => String(candidate.metadata?.method || candidate.trigger?.method || '').toUpperCase() === method)
+        .filter(candidate => String(candidate.metadata?.path || candidate.trigger?.path || candidate.trigger?.pattern || '') === routePath)
+        .map(normalizeFile)
+        .filter(candidate => candidate && (candidate.endsWith(`/${own}`) || own.endsWith(`/${candidate}`)))
+        .filter(fileExists);
+      return compatible.length === 1 ? compatible[0] : own;
+    };
     const keyOf = (entry: CASEntryPoint) => {
       const method = (entry.metadata?.method || entry.trigger?.method || '').toString().toUpperCase();
       const path = (entry.metadata?.path || entry.trigger?.path || entry.trigger?.pattern || '').toString();
-      const file = (entry.handler?.file || entry.metadata?.file || '').toString();
+      const file = canonicalFile(entry);
       return `${method} ${path} :: ${file}`;
     };
-    const richness = (entry: CASEntryPoint) =>
-      (entry.handler?.file ? 2 : 0) + (entry.handler?.line ? 1 : 0) + (entry.security ? 2 : 0) + (entry.description ? 1 : 0);
+    const richness = (entry: CASEntryPoint) => {
+      const handlerName = String(entry.handler?.method_name || '').trim();
+      const genericHandler = !handlerName || /^(?:main|application|server|index)(?:\.[a-z0-9]+)?$/i.test(handlerName);
+      return (entry.handler?.file ? 2 : 0) + (entry.handler?.line ? 1 : 0) +
+        (entry.security ? 2 : 0) + (entry.description ? 1 : 0) + (genericHandler ? 0 : 4);
+    };
     const bestByKey = new Map<string, CASEntryPoint>();
     const removals = new Set<CASEntryPoint>();
     for (const entry of entryPoints) {
@@ -23922,15 +25579,43 @@ export class AnalyzerOrchestrator {
    * folding the dropped twin's metadata onto the survivor so no fact —
    * handler resolution, validation, docs — is silently lost.
    */
-  private dedupeEntryPointTwins(entryPoints: CASEntryPoint[]): void {
+  private dedupeEntryPointTwins(entryPoints: CASEntryPoint[], projectPath?: string): void {
     const triggerSignature = (entry: CASEntryPoint): string => {
       const t = entry.trigger || {};
       const method = (entry.metadata?.method || t.method || '').toString().toUpperCase();
       const path = (entry.metadata?.path || t.path || t.pattern || t.event || t.schedule || '').toString();
       return `${method}::${path}`;
     };
-    const keyOf = (entry: CASEntryPoint) =>
-      `${entry.type}::${entry.source_node}::${triggerSignature(entry)}`;
+    const normalizedHandlerFile = (entry: CASEntryPoint): string =>
+      String(entry.handler?.file || '').replace(/\\/g, '/').replace(/^\.\//, '');
+    const semanticTriggerSignature = (entry: CASEntryPoint): string => {
+      const trigger = triggerSignature(entry);
+      return entry.type === 'cli' && trigger === '::' ? `::${entry.name}` : trigger;
+    };
+    const fileExists = (file: string): boolean => {
+      if (!projectPath || !file) return false;
+      return fs.existsSync(path.isAbsolute(file) ? file : path.join(projectPath, file));
+    };
+    const canonicalHandlerFile = (entry: CASEntryPoint): string => {
+      const own = normalizedHandlerFile(entry);
+      if (!own || fileExists(own)) return own;
+      const compatibleRealFiles = entryPoints
+        .filter(candidate => candidate !== entry && candidate.type === entry.type)
+        .filter(candidate => candidate.handler?.method_name === entry.handler?.method_name)
+        .filter(candidate => semanticTriggerSignature(candidate) === semanticTriggerSignature(entry))
+        .map(normalizedHandlerFile)
+        .filter(candidate => candidate && (candidate.endsWith(`/${own}`) || own.endsWith(`/${candidate}`)))
+        .filter(fileExists);
+      return compatibleRealFiles.length === 1 ? compatibleRealFiles[0] : own;
+    };
+    const keyOf = (entry: CASEntryPoint) => {
+      const handlerFile = canonicalHandlerFile(entry);
+      const handlerName = entry.handler?.method_name || '';
+      const semanticHandler = handlerFile && handlerName
+        ? `handler:${handlerFile}:${handlerName}`
+        : `source:${entry.source_node}`;
+      return `${entry.type}::${semanticHandler}::${semanticTriggerSignature(entry)}`;
+    };
     const richness = (entry: CASEntryPoint): number =>
       (entry.handler?.node_id ? 3 : 0) +
       (entry.handler?.file ? 1 : 0) +
@@ -25088,10 +26773,7 @@ export class AnalyzerOrchestrator {
 
   private buildTestSummary(nodes: CASNode[], entryPoints: CASEntryPoint[]): CASTestSummary {
     const testNodes = nodes.filter(n =>
-      (n.type === 'method' || n.type === 'function') &&
-      (n.name.startsWith('test_') || n.name.startsWith('test') ||
-       n.name.startsWith('it') || n.name.startsWith('should') ||
-       n.name.startsWith('specify') || n.subcategories?.includes('test'))
+      n.type === 'test' && !n.subcategories?.includes('suite')
     );
 
     let unit = 0;

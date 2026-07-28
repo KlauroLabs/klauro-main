@@ -40,7 +40,7 @@ export DEEPINFRA_STRUCTURED_MODEL="meta-llama/Meta-Llama-3.1-8B-Instruct"
 
 # Workspace (WAS) narrative pass tuning
 export KLAURO_WORKSPACE_AI_MAX_TOKENS=650
-export KLAURO_WORKSPACE_AI_TIMEOUT_MS=120000
+export KLAURO_WAS_AI_SLOW_MS=120000
 ```
 
 Customer machines should not set DeepInfra/OpenAI/Anthropic keys, run Ollama, or

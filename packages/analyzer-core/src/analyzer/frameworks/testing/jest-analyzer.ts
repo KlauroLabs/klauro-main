@@ -147,7 +147,7 @@ export class JestAnalyzer extends BaseAnalyzer {
       const packageJsonPath = path.join(projectPath, 'package.json');
       if (!await fs.pathExists(packageJsonPath)) return false;
 
-      const packageJson = await fs.readJson(packageJsonPath);
+      const packageJson = await this.readSourceJson<any>(packageJsonPath);
       const deps = { ...packageJson.dependencies, ...packageJson.devDependencies };
 
       if (Object.keys(deps).includes('jest') || Object.keys(deps).includes('@jest/core')) {
@@ -273,7 +273,7 @@ export class JestAnalyzer extends BaseAnalyzer {
           const configNode = this.createNodeBuilder(configId, 'Jest Configuration', 'config')
             .withLevel(1, 'system')
             .withCategory('config', ['testing'])
-            .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
+            .withSource({ file: fullPath, line: 1, end_line: this.sourceLineCount(content) })
             .withDescription('Jest testing framework configuration')
             .withMetadata({
               framework: 'jest',
@@ -300,7 +300,7 @@ export class JestAnalyzer extends BaseAnalyzer {
     try {
       const packageJsonPath = path.join(projectPath, 'package.json');
       if (await fs.pathExists(packageJsonPath)) {
-        const packageJson = await fs.readJson(packageJsonPath);
+        const packageJson = await this.readSourceJson<any>(packageJsonPath);
         if (packageJson.jest) {
           const config = this.extractPackageJsonConfig(packageJson.jest);
 
@@ -370,7 +370,7 @@ export class JestAnalyzer extends BaseAnalyzer {
         const suiteNode = this.createNodeBuilder(suiteId, suite.name, 'test')
           .withLevel(2, 'architectural')
           .withCategory('test', ['suite'])
-          .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
+          .withSource({ file: fullPath, line: 1, end_line: this.sourceLineCount(content) })
           .withDescription(`Jest test suite: ${suite.name}`)
           .withMetadata({
             framework: 'jest',
@@ -385,23 +385,6 @@ export class JestAnalyzer extends BaseAnalyzer {
           })
           .build();
         nodes.push(suiteNode);
-
-        entryPoints.push({
-          id: `entry_${suiteId}`,
-          name: `Test Suite: ${suite.name}`,
-          type: 'test',
-          source_node: suiteId,
-          metadata: {
-            file,
-            test_type: suite.type,
-            test_style: this.detectTestStyle(content),
-            uses_mocks: suite.mocks.length > 0,
-            is_async: suite.tests.some(t => t.async),
-            framework: suite.framework,
-            testCount: suite.tests.length,
-            mockCount: suite.mocks.length
-          }
-        });
 
         suite.tests.forEach((test, index) => {
           const testId = `test_${suiteId}_${index}`;
@@ -434,23 +417,6 @@ export class JestAnalyzer extends BaseAnalyzer {
             'structural'
           ));
 
-          entryPoints.push({
-            id: `entry_${testId}`,
-            name: `Test: ${test.description}`,
-            type: 'test',
-            source_node: testId,
-            metadata: {
-              suite: suite.name,
-              test_type: suite.type,
-              test_style: test.assertions.length > 0 ? 'procedural' : 'procedural',
-              uses_mocks: test.mocks.length > 0 || test.spies.length > 0,
-              is_async: test.async,
-              framework: suite.framework,
-              skipped: test.skipped,
-              focused: test.focused,
-              assertionCount: test.assertions.length
-            }
-          });
         });
 
         suite.hooks.forEach((hook, index) => {
@@ -520,7 +486,7 @@ export class JestAnalyzer extends BaseAnalyzer {
           const fallbackSuiteNode = this.createNodeBuilder(suiteId, suite.name, 'test-suite')
             .withLevel(2, 'architectural')
             .withCategory('test-suite', ['test'])
-            .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
+            .withSource({ file: fullPath, line: 1, end_line: this.sourceLineCount(content) })
             .withDescription(`Jest test suite: ${suite.name}`)
             .withMetadata({
               framework: 'jest',
@@ -576,7 +542,7 @@ export class JestAnalyzer extends BaseAnalyzer {
         3,
         fullPath,
         1,
-        content.split('\n').length,
+        this.sourceLineCount(content),
         {
           testFile,
           count: snapshotCount,
@@ -614,7 +580,7 @@ export class JestAnalyzer extends BaseAnalyzer {
         3,
         fullPath,
         1,
-        content.split('\n').length,
+        this.sourceLineCount(content),
         {
           type: utility.type,
           exports: utility.exports.length,
@@ -632,7 +598,7 @@ export class JestAnalyzer extends BaseAnalyzer {
     const coverageJsonPath = path.join(projectPath, 'coverage', 'coverage-final.json');
     if (await fs.pathExists(coverageJsonPath)) {
       try {
-        const coverageData = await fs.readJson(coverageJsonPath);
+        const coverageData = await this.readSourceJson<any>(coverageJsonPath);
 
         for (const [filePath, fileData] of Object.entries(coverageData)) {
           const data = fileData as any;
@@ -1032,7 +998,7 @@ export class JestAnalyzer extends BaseAnalyzer {
 
   private async detectJestVersion(projectPath: string): Promise<string> {
     try {
-      const packageJson = await fs.readJson(path.join(projectPath, 'package.json'));
+      const packageJson = await this.readSourceJson<any>(path.join(projectPath, 'package.json'));
       const deps = { ...packageJson.dependencies, ...packageJson.devDependencies };
       return deps.jest || deps['@jest/core'] || 'unknown';
     } catch {

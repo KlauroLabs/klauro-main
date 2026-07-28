@@ -16,6 +16,10 @@ import { yieldToEventLoop, createYieldBudget } from '../core/event-loop-yield';
 import * as crypto from 'crypto';
 import { availableParallelism } from 'node:os';
 import { Worker } from 'node:worker_threads';
+import {
+  readTreeSitterExtractionCache,
+  writeTreeSitterExtractionCache,
+} from '../core/tree-sitter-ts-extraction-cache';
 
 const BUILTIN_NOT_EXIT_POINTS = new Set([
   'Math', 'JSON', 'Array', 'Object', 'String', 'Number', 'Boolean',
@@ -191,7 +195,25 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
         exports
       );
 
-      this.integrateEnhancedCallGraphDataForSingleFile(extractedFunctions, nodes, edges, entryPoints, exitPoints, relativePath);
+      const retainedProjectNodes = (context.existingAnalysis || [])
+        .flatMap(contribution => contribution.nodes || [])
+        .filter(node => {
+          const sourceFile = node.source?.file;
+          if (!sourceFile) return true;
+          const normalizedSource = sourceFile.replace(/\\/g, '/');
+          const normalizedRelative = relativePath.replace(/\\/g, '/');
+          return normalizedSource !== normalizedRelative && !normalizedSource.endsWith(`/${normalizedRelative}`);
+        });
+      this.integrateEnhancedCallGraphDataForSingleFile(
+        extractedFunctions,
+        nodes,
+        [...nodes, ...retainedProjectNodes],
+        edges,
+        entryPoints,
+        exitPoints,
+        relativePath
+      );
+      this.applyTestSourceBoundary(nodes, entryPoints, exitPoints);
 
     } catch (error) {
       console.warn(`Failed to analyze ${relativePath} incrementally:`, error);
@@ -448,6 +470,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
 
       tsStart = Date.now();
       this.detectServerEntryPoints(sourceFiles, nodes, entryPoints, context.projectPath);
+      this.applyTestSourceBoundary(nodes, entryPoints, exitPoints);
       tsTimings['detectEntryPoints'] = Date.now() - tsStart;
       await yieldToEventLoop();
 
@@ -540,17 +563,37 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
       await yieldToEventLoop();
     }
 
-    let extractions: Array<TSFileExtraction | Error>;
-    try {
-      extractions = await this.extractTreeSitterFilesInWorkers(loadedFiles);
-    } catch (error) {
-      console.warn(`Tree-sitter worker pool unavailable; using sequential extraction: ${(error as Error).message}`);
-      extractions = await this.extractTreeSitterFilesSequentially(loadedFiles);
+    const extractions = new Array<TSFileExtraction | Error | undefined>(loadedFiles.length);
+    const misses: Array<{ index: number; fullPath: string; content: string }> = [];
+    const cached = await Promise.all(loadedFiles.map(file =>
+      readTreeSitterExtractionCache(file.content, file.fullPath)
+    ));
+    for (let index = 0; index < loadedFiles.length; index++) {
+      if (cached[index]) extractions[index] = cached[index];
+      else misses.push({ index, fullPath: loadedFiles[index].fullPath, content: loadedFiles[index].content });
+    }
+
+    if (misses.length > 0) {
+      let extractedMisses: Array<TSFileExtraction | Error>;
+      try {
+        extractedMisses = await this.extractTreeSitterFilesInWorkers(misses);
+      } catch (error) {
+        console.warn(`Tree-sitter worker pool unavailable; using sequential extraction: ${(error as Error).message}`);
+        extractedMisses = await this.extractTreeSitterFilesSequentially(misses);
+      }
+      await Promise.all(extractedMisses.map(async (extraction, missIndex) => {
+        const miss = misses[missIndex];
+        extractions[miss.index] = extraction;
+        if (!(extraction instanceof Error)) {
+          await writeTreeSitterExtractionCache(miss.content, miss.fullPath, extraction);
+        }
+      }));
     }
 
     for (let i = 0; i < loadedFiles.length; i++) {
       const loaded = loadedFiles[i];
       const extraction = extractions[i];
+      if (!extraction) continue;
       if (extraction instanceof Error) {
         this.addAnalysisWarning(`${loaded.relativePath} could not be parsed: ${extraction.message}`);
         continue;
@@ -598,16 +641,25 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
       return this.extractTreeSitterFilesSequentially(files);
     }
 
-    const bundledWorkerPath = path.join(__dirname, 'tree-sitter-ts-worker.cjs');
+    const compiledWorkerPath = path.join(
+      __dirname,
+      '..',
+      '..',
+      '..',
+      'dist',
+      'analyzer',
+      'core',
+      'tree-sitter-ts-worker.js'
+    );
     const sourceWorkerPath = path.join(__dirname, '..', 'core', 'tree-sitter-ts-worker.ts');
-    const workerPath = fs.existsSync(bundledWorkerPath)
-      ? bundledWorkerPath
-      : sourceWorkerPath;
+    const workerPath = resolveTreeSitterWorkerPath(compiledWorkerPath, sourceWorkerPath);
     const results = new Array<TSFileExtraction | Error>(files.length);
     let nextTask = 0;
 
     const runWorker = (): Promise<void> => new Promise((resolve, reject) => {
-      const worker = new Worker(workerPath, { execArgv: process.execArgv });
+      const worker = new Worker(workerPath, {
+        execArgv: treeSitterWorkerExecArgv(process.execArgv)
+      });
       let activeTask: number | undefined;
       const dispatch = (): void => {
         if (nextTask >= files.length) {
@@ -773,7 +825,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
   ): TSExtractedFunction[] {
     try {
       const fileId = `file_${relativePath.replace(/[^a-zA-Z0-9]/g, '_')}`;
-      const lines = content.split('\n');
+      const lineCount = this.sourceLineCount(content);
 
       // TODO/FIXME markers: scan file content directly. Tree-sitter comment
       // extraction is sparse (misses most line comments), so deriving todos only
@@ -781,19 +833,22 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
       // robust and language-agnostic for the common comment styles.
       const fileTodos: CASTodo[] = [];
       const TODO_RE = /(?:\/\/+|\/\*+|^\s*\*|#|<!--)\s*(TODO|FIXME|HACK|XXX|NOTE|WARNING|OPTIMIZE|REFACTOR)\b\s*:?\s*(.*?)(?:\s*\*\/|\s*-->)?\s*$/i;
-      for (let i = 0; i < lines.length; i++) {
-        const m = lines[i].match(TODO_RE);
-        if (!m) continue;
-        const todoType = m[1].toUpperCase() as CASTodo['type'];
-        fileTodos.push({
-          // Stable order-independent id: the line scan emits at most one todo
-          // per source line, so file+line identifies it.
-          id: `todo_${relativePath}_${i + 1}`,
-          type: todoType,
-          text: (m[2] || '').trim() || lines[i].trim(),
-          priority: todoType === 'FIXME' || todoType === 'HACK' ? 'high' : todoType === 'WARNING' ? 'medium' : 'low',
-          location: { file: fullPath, line: i + 1 },
-        });
+      if (/\b(?:TODO|FIXME|HACK|XXX|NOTE|WARNING|OPTIMIZE|REFACTOR)\b/i.test(content)) {
+        const lines = content.split('\n');
+        for (let i = 0; i < lines.length; i++) {
+          const m = lines[i].match(TODO_RE);
+          if (!m) continue;
+          const todoType = m[1].toUpperCase() as CASTodo['type'];
+          fileTodos.push({
+            // Stable order-independent id: the line scan emits at most one todo
+            // per source line, so file+line identifies it.
+            id: `todo_${relativePath}_${i + 1}`,
+            type: todoType,
+            text: (m[2] || '').trim() || lines[i].trim(),
+            priority: todoType === 'FIXME' || todoType === 'HACK' ? 'high' : todoType === 'WARNING' ? 'medium' : 'low',
+            location: { file: fullPath, line: i + 1 },
+          });
+        }
       }
       // Comments in the canonical CASComment shape (text/location/purpose), not the
       // ad-hoc {content,line,file} shape the readers don't understand.
@@ -817,7 +872,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
         1,
         fullPath,
         1,
-        lines.length,
+        lineCount,
         {
           relativePath,
           extension: path.extname(relativePath),
@@ -834,7 +889,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
       const extractedFunctions = this.processTreeSitterFunctions(extraction, relativePath, fileId, nodes, edges, entryPoints);
       for (const extractedFunction of extractedFunctions) {
         (extractedFunction as any).constructedClassNames =
-          this.extractConstructedClassNames(lines, extractedFunction.lineStart, extractedFunction.lineEnd);
+          this.extractConstructedClassNames(content, fullPath, extractedFunction.lineStart, extractedFunction.lineEnd);
       }
       this.processTreeSitterClasses(extraction, relativePath, fileId, nodes, edges);
       this.processTreeSitterVariables(extraction, relativePath, fileId, nodes, edges);
@@ -992,7 +1047,8 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
 
   private integrateEnhancedCallGraphDataForSingleFile(
     extractedFunctions: TSExtractedFunction[],
-    nodes: CASNode[],
+    localNodes: CASNode[],
+    resolutionNodes: CASNode[],
     edges: CASEdge[],
     _entryPoints: CASEntryPoint[],
     _exitPoints: CASExitPoint[],
@@ -1001,8 +1057,8 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     for (const func of extractedFunctions) {
       for (const call of func.calls) {
         if (call.targetType === 'method' || call.targetType === 'function') {
-          const sourceNodeId = this.findFunctionNodeId(nodes, func.name, func.className, filePath);
-          const targetNodeId = this.findTargetNodeId(nodes, call.target);
+          const sourceNodeId = this.findFunctionNodeId(localNodes, func.name, func.className, filePath);
+          const targetNodeId = this.findTargetNodeId(resolutionNodes, call.target);
 
           if (sourceNodeId && targetNodeId && sourceNodeId !== targetNodeId) {
             edges.push({
@@ -1144,12 +1200,21 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     edges: CASEdge[],
     _entryPoints: CASEntryPoint[]
   ): TSExtractedFunction[] {
+    const testSource = this.isTestSourcePath(filePath);
+    const standaloneFunctions = extraction.functions.map(func => {
+      if (!testSource || !func.isAnonymousCallback) return func;
+      return {
+        ...func,
+        name: `test_callback_${func.lineStart}_${func.columnStart}`,
+        isAnonymousCallback: false,
+      };
+    });
     const allFunctions: TSExtractedFunction[] = [
-      ...extraction.functions,
+      ...standaloneFunctions,
       ...extraction.classes.flatMap(cls => cls.methods)
     ];
 
-    extraction.functions.forEach((func, index) => {
+    standaloneFunctions.forEach((func, index) => {
       // Anonymous callback carriers (e.g. module-scope route handlers) exist only
       // to attribute their outbound calls; they get no graph node of their own.
       if ((func as any).isAnonymousCallback) return;
@@ -3628,9 +3693,12 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     return undefined;
   }
 
-  private extractConstructedClassNames(lines: string[], lineStart?: number, lineEnd?: number): string[] {
+  private extractConstructedClassNames(content: string, filePath: string, lineStart?: number, lineEnd?: number): string[] {
     if (!lineStart || !lineEnd || lineEnd < lineStart) return [];
-    const body = lines.slice(lineStart - 1, lineEnd).join('\n');
+    const corpusEntry = this.sourceCorpus()?.get(filePath);
+    const body = corpusEntry
+      ? content.slice(corpusEntry.lineStarts[lineStart - 1] ?? 0, corpusEntry.lineStarts[lineEnd] ?? content.length)
+      : content.split('\n').slice(lineStart - 1, lineEnd).join('\n');
     const constructed = new Set<string>();
     const constructionPattern = /\bnew\s+([A-Z][A-Za-z0-9_]*)\s*\(/g;
     let constructionMatch;
@@ -4386,17 +4454,44 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
   }
 
   private getLanguageIgnorePatterns(context: Pick<AnalysisContext, 'projectPath' | 'filters'>): string[] {
-    const patterns = this.getIgnorePatterns(context as AnalysisContext);
-    if (process.env.KLAURO_ANALYSIS_FOCUS === 'agent-fast') {
-      patterns.push(
-        '**/*.test.{js,jsx,ts,tsx,mjs,cjs}',
-        '**/*.spec.{js,jsx,ts,tsx,mjs,cjs}',
-        '**/__tests__/**',
-        '**/test/**',
-        '**/tests/**',
-      );
+    return this.getIgnorePatterns(context as AnalysisContext).filter(pattern =>
+      pattern !== '__tests__/**' && pattern !== '**/__tests__/**'
+    );
+  }
+
+  private applyTestSourceBoundary(
+    nodes: CASNode[],
+    entryPoints: CASEntryPoint[],
+    exitPoints: CASExitPoint[]
+  ): void {
+    const testNodeIds = new Set<string>();
+    for (const node of nodes) {
+      if (!this.isTestSourcePath(node.source?.file)) continue;
+      testNodeIds.add(node.id);
+      node.metadata = { ...node.metadata, is_test: true };
+      node.category = 'test';
+      node.subcategories = [...new Set([...(node.subcategories || []), node.type, 'test-code'])];
+      node.tags = [...new Set([...(node.tags || []), 'test-code'])];
     }
-    return patterns;
+
+    this.removeItemsOwnedByTestNodes(entryPoints, testNodeIds);
+    this.removeItemsOwnedByTestNodes(exitPoints, testNodeIds);
+  }
+
+  private removeItemsOwnedByTestNodes<T extends { source_node: string }>(items: T[], testNodeIds: Set<string>): void {
+    let writeIndex = 0;
+    for (const item of items) {
+      if (testNodeIds.has(item.source_node)) continue;
+      items[writeIndex++] = item;
+    }
+    items.length = writeIndex;
+  }
+
+  private isTestSourcePath(filePath?: string): boolean {
+    if (!filePath) return false;
+    const normalized = filePath.replace(/\\/g, '/').toLowerCase();
+    return /(?:^|\/)(?:__tests__|tests?|spec|e2e)(?:\/|$)/.test(normalized) ||
+      /\.(?:test|spec|e2e)\.(?:[cm]?[jt]sx?)$/.test(normalized);
   }
 
   protected getCapabilities(): string[] {
@@ -5022,4 +5117,17 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     }
     return false;
   }
+}
+export function treeSitterWorkerExecArgv(execArgv: string[]): string[] {
+  return execArgv.filter(argument =>
+    !argument.startsWith('--max-old-space-size=') &&
+    !argument.startsWith('--max_old_space_size='));
+}
+
+export function resolveTreeSitterWorkerPath(
+  compiledWorkerPath: string,
+  sourceWorkerPath: string,
+  exists: (filePath: string) => boolean = fs.existsSync
+): string {
+  return exists(compiledWorkerPath) ? compiledWorkerPath : sourceWorkerPath;
 }

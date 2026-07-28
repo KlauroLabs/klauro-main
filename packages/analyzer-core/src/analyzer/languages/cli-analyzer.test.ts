@@ -265,6 +265,7 @@ test('CliAnalyzer falls back to a generic main() entry point when no framework i
     const cas = await analyzer.analyze({ projectPath: dir });
     assert.equal(cas.entry_points.length, 1);
     assert.equal(cas.entry_points[0].metadata?.framework, 'generic');
+    assert.ok(cas.nodes.some(node => node.id === cas.entry_points[0].source_node));
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

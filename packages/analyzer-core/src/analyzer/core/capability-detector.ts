@@ -35,6 +35,13 @@ const ACTION_WORDS = new Set([
 
 const API_PREFIXES = new Set(['api', 'v1', 'v2', 'v3', 'rest', 'graphql']);
 
+interface CapabilityDetectionIndex {
+  chainsByEntryPoint: Map<string, CASCallChain[]>;
+  chainOrdinal: Map<CASCallChain, number>;
+  nodesById: Map<string, CASNode>;
+  entities: Array<{ entity: CASDataEntity; lowerName: string }>;
+}
+
 export class CapabilityDetector {
   detectCapabilities(
     entryPoints: CASEntryPoint[],
@@ -45,11 +52,27 @@ export class CapabilityDetector {
     entities?: CASDataEntity[]
   ): CASCapability[] {
     const groups = this.groupEntryPointsSemantically(entryPoints);
+    const chainsByEntryPoint = new Map<string, CASCallChain[]>();
+    const chainOrdinal = new Map<CASCallChain, number>();
+    for (const [ordinal, chain] of callChains.entries()) {
+      chainOrdinal.set(chain, ordinal);
+      const entryPointId = chain.entry_point?.entry_point_id;
+      if (!entryPointId) continue;
+      const chains = chainsByEntryPoint.get(entryPointId) || [];
+      chains.push(chain);
+      chainsByEntryPoint.set(entryPointId, chains);
+    }
+    const index: CapabilityDetectionIndex = {
+      chainsByEntryPoint,
+      chainOrdinal,
+      nodesById: new Map(nodes.map(node => [node.id, node])),
+      entities: (entities || []).map(entity => ({ entity, lowerName: entity.name.toLowerCase() })),
+    };
 
     const capabilities: CASCapability[] = [];
     for (const groupKey of Array.from(groups.keys())) {
       const eps = groups.get(groupKey)!;
-      const capability = this.buildCapability(groupKey, eps, callChains, nodes, edges, entities);
+      const capability = this.buildCapability(groupKey, eps, index, edges, entities);
       capabilities.push(capability);
     }
 
@@ -382,23 +405,22 @@ export class CapabilityDetector {
   private buildCapability(
     groupKey: string,
     entryPoints: CASEntryPoint[],
-    callChains: CASCallChain[],
-    nodes: CASNode[],
+    index: CapabilityDetectionIndex,
     edges: CASEdge[],
     entities?: CASDataEntity[]
   ): CASCapability {
     const entryPointIds = entryPoints.map(ep => ep.id);
 
-    const relevantChains = callChains.filter(chain =>
-      entryPointIds.includes(chain.entry_point?.entry_point_id || '')
-    );
+    const relevantChains = entryPointIds
+      .flatMap(entryPointId => index.chainsByEntryPoint.get(entryPointId) || [])
+      .sort((left, right) => (index.chainOrdinal.get(left) ?? 0) - (index.chainOrdinal.get(right) ?? 0));
 
-    const operations = this.buildOperations(entryPoints, relevantChains);
+    const operations = this.buildOperations(entryPoints, index.chainsByEntryPoint);
     const operationPatterns = this.detectOperationPatterns(operations, relevantChains);
-    const servicesUsed = this.findServicesUsed(relevantChains, nodes, edges);
+    const servicesUsed = this.findServicesUsed(relevantChains, index.nodesById, edges);
     const exitPoints = this.collectExitPoints(relevantChains);
     const entitiesTouched = entities ?
-      this.findEntitiesTouched(relevantChains, nodes, entities) : undefined;
+      this.findEntitiesTouched(relevantChains, index.nodesById, index.entities) : undefined;
 
     const entryTypes = Array.from(new Set(entryPoints.map(ep => ep.type)));
     const primaryType = this.findPrimaryType(entryTypes);
@@ -450,7 +472,7 @@ export class CapabilityDetector {
 
   private buildOperations(
     entryPoints: CASEntryPoint[],
-    callChains: CASCallChain[]
+    chainsByEntryPoint: Map<string, CASCallChain[]>
   ): CASOperation[] {
     const seenOperations = new Set<string>();
     const operations: CASOperation[] = [];
@@ -463,9 +485,7 @@ export class CapabilityDetector {
       seenOperations.add(operationKey);
 
       const pattern = this.inferOperationPattern(ep);
-      const chainIds = callChains
-        .filter(c => c.entry_point?.entry_point_id === ep.id)
-        .map(c => c.id);
+      const chainIds = (chainsByEntryPoint.get(ep.id) || []).map(chain => chain.id);
 
       operations.push({
         id: `op_${ep.id}`,
@@ -563,7 +583,7 @@ export class CapabilityDetector {
 
   private findServicesUsed(
     callChains: CASCallChain[],
-    nodes: CASNode[],
+    nodesById: Map<string, CASNode>,
     edges: CASEdge[]
   ): string[] {
     const serviceNodeIds = new Set<string>();
@@ -575,7 +595,7 @@ export class CapabilityDetector {
 
     for (const chain of callChains) {
       for (const step of chain.call_path || []) {
-        const node = nodes.find(n => n.id === step.node_id);
+        const node = nodesById.get(step.node_id);
         if (node && serviceTypes.has(node.type)) {
           serviceNodeIds.add(node.id);
         }
@@ -599,17 +619,16 @@ export class CapabilityDetector {
 
   private findEntitiesTouched(
     callChains: CASCallChain[],
-    nodes: CASNode[],
-    entities: CASDataEntity[]
+    nodesById: Map<string, CASNode>,
+    entities: Array<{ entity: CASDataEntity; lowerName: string }>
   ): string[] {
     const entityIds = new Set<string>();
 
     for (const chain of callChains) {
       for (const step of chain.call_path || []) {
-        const node = nodes.find(n => n.id === step.node_id);
+        const node = nodesById.get(step.node_id);
         if (node) {
-          for (const entity of entities) {
-            const entityNameLower = entity.name.toLowerCase();
+          for (const { entity, lowerName: entityNameLower } of entities) {
             const nodeNameLower = node.name.toLowerCase();
             if (nodeNameLower.includes(entityNameLower) ||
                 entityNameLower.includes(nodeNameLower.replace(/service|repository|controller/gi, ''))) {

@@ -12,6 +12,7 @@
  */
 import * as fs from 'fs';
 import * as path from 'path';
+import * as crypto from 'crypto';
 import * as yaml from 'js-yaml';
 import { cachedGlob as glob } from '../core/glob-cache';
 import { validatePack, Pack } from './pack-schema';
@@ -103,4 +104,28 @@ export async function loadPacksForProject(projectPath: string, localPackGlobs: s
     packs: [...byId.values()],
     errors: [...builtins.errors, ...localErrors],
   };
+}
+
+export async function semanticPackIdentityForProject(
+  projectPath: string,
+  localPackGlobs: string[] = []
+): Promise<string[]> {
+  const loaded = await loadPacksForProject(projectPath, localPackGlobs);
+  const sources = new Map<string, string>();
+  for (const item of loaded.packs) sources.set(item.sourcePath, item.tier);
+  for (const error of loaded.errors) {
+    if (!sources.has(error.sourcePath)) sources.set(error.sourcePath, 'invalid');
+  }
+
+  return [...sources.entries()].map(([sourcePath, tier]) => {
+    let contentHash = 'missing';
+    try {
+      contentHash = crypto.createHash('sha256').update(fs.readFileSync(sourcePath)).digest('hex');
+    } catch {
+    }
+    const sourceIdentity = tier === 'local'
+      ? path.relative(projectPath, sourcePath).replace(/\\/g, '/')
+      : path.basename(sourcePath);
+    return `${tier}:${sourceIdentity}:${contentHash}`;
+  }).sort();
 }

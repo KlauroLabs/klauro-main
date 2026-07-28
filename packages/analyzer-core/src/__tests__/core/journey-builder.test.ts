@@ -247,6 +247,32 @@ describe('buildUserJourneys', () => {
     expect(journeys[0].journey_kind).toBe('system');
   });
 
+  it('classifies a generic main bootstrap with no domain effects as system', () => {
+    const bootstrapNodes = [
+      { ...node('file_main', 'main.go', 'file'), source: { file: 'go/main.go', line: 1 } },
+      { ...node('fn_main', 'main', 'function'), source: { file: 'go/main.go', line: 1 } },
+    ] as CASNode[];
+    const bootstrapEntry = {
+      id: 'entry_main', source_node: 'file_main', type: 'cli', name: 'main',
+      trigger: { pattern: 'main' },
+      handler: { node_id: 'fn_main', method_name: 'main', file: 'go/main.go' },
+    } as CASEntryPoint;
+    const externalExit = {
+      id: 'exit_framework_bootstrap', source_node: 'fn_main', type: 'api',
+      name: 'External call: Framework.start', operation: { action: 'call' },
+    } as CASExitPoint;
+    const { journeys } = buildUserJourneys({
+      nodes: bootstrapNodes,
+      edges: [edge('contains_main', 'file_main', 'fn_main', 'contains')],
+      entryPoints: [bootstrapEntry],
+      exitPoints: [externalExit],
+      callChains: [chain('chain_main', 'fn_main', 'entry_main', [['file_main', 0], ['fn_main', 0]], 'exit_framework_bootstrap', 'fn_main')],
+      dataEntities: [],
+    });
+    expect(journeys).toHaveLength(1);
+    expect(journeys[0].journey_kind).toBe('system');
+  });
+
   it('keeps a genuine product CLI (bin entry rooted in a source file) user-facing', () => {
     const cliEntry: CASEntryPoint = {
       id: 'entry_klauro_cli',

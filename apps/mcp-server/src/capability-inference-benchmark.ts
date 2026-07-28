@@ -53,12 +53,13 @@ export async function runCapabilityInferenceBenchmark(options: { outputPath?: st
     //    rejected/failed (never a silent blank on a claimed-successful AI pass).
     const domainSource = cas.enhanced_system_purpose?.domain_source || '';
     const descriptionStatus = cas.enhanced_system_purpose?.description_generation?.status || '';
+    const aiEnrichment = cas.ai_enrichment || '';
     const domainProvenanceOk = primaryDomain
       ? domainSource === 'ai' || domainSource === 'ai-refined'
-      : ['ai_skipped', 'ai_rejected', 'ai_failed'].includes(descriptionStatus);
+      : ['ai_skipped', 'ai_rejected', 'ai_failed'].includes(descriptionStatus) || aiEnrichment === 'disabled';
     const genericCapabilities = capabilities.filter(capability => isGenericCapabilityName(capability.name));
     const gates = [
-      gate('capability-inference:primary-domain-provenance', domainProvenanceOk, `primary domain ${primaryDomain || 'absent'} (domain_source=${domainSource || 'unset'}, description_generation=${descriptionStatus || 'unset'})`),
+      gate('capability-inference:primary-domain-provenance', domainProvenanceOk, `primary domain ${primaryDomain || 'absent'} (domain_source=${domainSource || 'unset'}, description_generation=${descriptionStatus || 'unset'}, ai_enrichment=${aiEnrichment || 'unset'})`),
       gate('capability-inference:no-generic-primary-capabilities', genericCapabilities.length === 0, `${genericCapabilities.length} generic capabilities: ${genericCapabilities.map(item => item.name).join(', ') || 'none'}`),
       // Each domain concept must be inferred as a capability, matched over the
       // capability's name AND description. Capability phrasing is AI-derived and varies

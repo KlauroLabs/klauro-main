@@ -437,6 +437,46 @@ test('agent context does not treat docs-heavy inference tasks as documentation e
   });
 });
 
+test('agent context resolves performance owners from symptoms without naming implementation symbols', async () => {
+  await withWorkspace(async workspace => {
+    const cas = fixtureCas();
+    cas.system = { ...cas.system, root_path: workspace } as any;
+    cas.nodes = [
+      node('task', 'Task', 'entity', 'src/domain/task.ts', 1),
+      node('task-controller', 'TaskController', 'controller', 'src/controllers/taskController.ts', 1),
+      node('task-summary-service', 'TaskSummaryService', 'service', 'src/services/taskSummaryService.ts', 1),
+      node('project-repository', 'ProjectRepository', 'class', 'src/repositories/projectRepository.ts', 1),
+      node('task-summary-test', 'task summary contract', 'test', 'tests/taskSummaryService.test.ts', 1),
+    ];
+    cas.edges = [
+      { id: 'edge-controller-task', source: 'task-controller', target: 'task', type: 'uses' },
+      { id: 'edge-summary-task', source: 'task-summary-service', target: 'task', type: 'uses' },
+      { id: 'edge-summary-projects', source: 'task-summary-service', target: 'project-repository', type: 'calls' },
+      { id: 'edge-summary-test', source: 'task-summary-test', target: 'task-summary-service', type: 'tests' },
+    ] as any;
+    cas.entry_points = [];
+
+    const context = await getAgentContext(cas, workspace, {
+      task_type: 'debug',
+      target: 'task summary performance regression',
+      instructions: 'Diagnose and fix the slow task summary path that loads each project one by one. Preserve the public summary contract.',
+      success_criteria: [
+        'Root cause identifies repeated repository calls.',
+        'Fix batches and deduplicates project lookups behind the repository boundary.',
+        'Tests preserve the summary contract.',
+      ],
+      response_profile: 'capsule-only',
+    }) as any;
+
+    const firstFiles = new Set(context.files.slice(0, 3));
+    assert.deepEqual(firstFiles, new Set([
+      'src/repositories/projectRepository.ts',
+      'tests/taskSummaryService.test.ts',
+      'src/services/taskSummaryService.ts',
+    ]));
+  });
+});
+
 test('architecture context gives agents pattern budget and target-relevant owners', () => {
   const context = buildArchitectureContextForAgent(fixtureCas(), {
     target: 'UsersService',
@@ -884,6 +924,23 @@ test('agent context honors explicit file path targets before semantic fallback',
     assert.ok(context.target_resolution.candidates.every((candidate: any) =>
       candidate.file === 'src/users/entities/user.entity.ts' || candidate.score < 250
     ));
+  });
+});
+
+test('agent context keeps explicit related paths ahead of generic semantic matches', async () => {
+  await withWorkspace(async workspace => {
+    const context = await getAgentContext(fixtureCas(), workspace, {
+      task_type: 'review',
+      target: 'hosted analyzer deployment proof',
+      instructions: 'Review the release path without drifting into unrelated UI tests.',
+      related_paths: ['src/users/entities/user.entity.ts', 'src/users/users.service.ts'],
+      response_profile: 'capsule-only',
+    }) as any;
+
+    assert.deepEqual(context.files.slice(0, 2), [
+      'src/users/entities/user.entity.ts',
+      'src/users/users.service.ts',
+    ]);
   });
 });
 

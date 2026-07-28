@@ -80,7 +80,6 @@ test('GET /api/projects/:id/conceptual joins real ingested telemetry onto a flow
     ].join('\n'),
   );
   const cas = await analyzeProject(workspace);
-  await saveAnalysis(workspace, cas);
 
   const server = createRemoteAnalyzerHttpServer({ dataDir: remoteData });
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -105,7 +104,9 @@ test('GET /api/projects/:id/conceptual joins real ingested telemetry onto a flow
       analysis_id: analysisId,
     }, token);
     assert.equal(createRes.statusCode, 201);
-    const project = JSON.parse(createRes.body).project as { id: string };
+    const project = JSON.parse(createRes.body).project as { id: string; analysis_id: string };
+    const accountWorkspace = path.join(remoteData, 'workspaces', project.analysis_id);
+    await saveAnalysis(accountWorkspace, cas);
 
     // Sanity: before any telemetry is ingested, no flow carries a telemetry
     // facet — nothing fabricated. (Compact projection — a distinct cache key
@@ -123,7 +124,7 @@ test('GET /api/projects/:id/conceptual joins real ingested telemetry onto a flow
     // `/api/telemetry/runtime-events/:projectId` and the self-telemetry loop
     // both key their store off (see remote-analyzer-service.ts ingest-
     // reconcile route and self-telemetry.ts).
-    const recon = await request(port, 'POST', `/api/telemetry/runtime-events/${encodeURIComponent(workspace)}`, {
+    const recon = await request(port, 'POST', `/api/telemetry/runtime-events/${encodeURIComponent(accountWorkspace)}`, {
       events: [
         { type: 'request', method: 'GET', route: '/items/:id', path: '/items/7', status_code: 200, duration_ms: 15, trace_id: 't-ok', service_name: 'customer-svc' },
         { type: 'request', method: 'GET', route: '/items/:id', path: '/items/8', status_code: 200, duration_ms: 25, trace_id: 't-ok2', service_name: 'customer-svc' },
@@ -133,7 +134,8 @@ test('GET /api/projects/:id/conceptual joins real ingested telemetry onto a flow
     assert.equal(recon.statusCode, 200);
     const reconBody = JSON.parse(recon.body);
     assert.equal(reconBody.event_count, 3);
-    assert.equal(reconBody.correlation_summary.matched + reconBody.correlation_summary.partial, 3, 'all 3 events must correlate onto the /items/:id entry point');
+    assert.equal(reconBody.correlation_summary.unmatched, 3,
+      'ingest remains CAS-free and durable; the conceptual read performs correlation without blocking the write path');
 
     // Read via `include=full` — a params-distinct cache key from the `before`
     // read above, so this is a genuine fresh compute that exercises the new

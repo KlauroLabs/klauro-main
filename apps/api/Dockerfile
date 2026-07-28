@@ -1,19 +1,18 @@
-FROM node:22-bookworm-slim AS runtime
+FROM rust:1.88-bookworm AS native-parser-builder
 
-# Deploy-path-independent build stamp: infrastructure/vps/docker-compose.yml
-# wires these through to `docker compose build` from the invoking shell's own
-# git checkout (real .git is always available THERE — a fresh dev worktree,
-# deploy.sh's $APP_DIR, or any ad hoc build path — even though .git itself is
-# excluded from this image's build context, see .dockerignore). Both default
-# to empty so a build that doesn't pass them (or an older invocation) degrades
-# to the "unknown"-stamped-but-honest state below rather than failing.
-ARG KLAURO_GIT_SHA=""
-ARG KLAURO_BUILD_TIME=""
+WORKDIR /build/klauro-parse
+
+COPY packages/analyzer-core/native/klauro-parse/Cargo.toml packages/analyzer-core/native/klauro-parse/Cargo.lock ./
+RUN mkdir src && printf 'fn main() {}\n' > src/main.rs && cargo build --release && rm -rf src
+COPY packages/analyzer-core/native/klauro-parse/src ./src
+RUN touch src/main.rs && cargo build --release
+
+FROM node:22-bookworm-slim AS runtime
 
 WORKDIR /app
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends python3 make g++ \
+  && apt-get install -y --no-install-recommends python3 make g++ zstd \
   && rm -rf /var/lib/apt/lists/*
 
 COPY package.json package-lock.json ./
@@ -32,9 +31,20 @@ RUN npm ci \
 COPY apps/api ./apps/api
 COPY apps/mcp-server ./apps/mcp-server
 COPY packages/analyzer-core ./packages/analyzer-core
+COPY --from=native-parser-builder /build/klauro-parse/target/release/klauro-parse /app/packages/analyzer-core/native/klauro-parse/target/release/klauro-parse
 # @klauro/telemetry SDK is imported by relative path (self-telemetry.ts, env-gated);
 # zero runtime deps, run from source via tsx — just needs to be present in the image.
 COPY packages/klauro-sdk-js ./packages/klauro-sdk-js
+
+# Worker threads execute analyzer-core's compiled CommonJS worker. Running the
+# source .ts worker through tsx made production depend on ESM extension
+# resolution inside every worker and silently fell back to sequential parsing.
+RUN npm run build --workspace @klauro/analyzer-core
+
+# Keep release-varying stamp arguments below dependency installation and the
+# analyzer build so a new git SHA cannot invalidate apt/npm cache layers.
+ARG KLAURO_GIT_SHA=""
+ARG KLAURO_BUILD_TIME=""
 
 # If deploy.sh (or any other path) already wrote a real stamp onto the host
 # tree before this build ran, .dockerignore's negation lets it survive the

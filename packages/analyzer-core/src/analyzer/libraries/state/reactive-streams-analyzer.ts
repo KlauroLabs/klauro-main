@@ -67,16 +67,21 @@ export class ReactiveStreamsAnalyzer extends BaseAnalyzer {
   async analyze(context: AnalysisContext): Promise<CASContribution> {
     const { projectPath } = context;
     const ignorePatterns = this.getIgnorePatterns(context);
-
-    const sourceFiles = this.capAndPrioritizeSourceFiles(await glob(
-      '**/*.{ts,tsx,js,jsx,java,kt,swift}',
-      {
-        cwd: projectPath,
-        ignore: [...ignorePatterns, '**/*.test.*', '**/*.spec.*'],
-        absolute: false,
-        nodir: true,
-      }
-    ), 'reactive stream candidate files');
+    const groundedFiles = this.filesFromExistingAnalysis(
+      context,
+      source => /^(?:rxjs(?:\/|$)|reactor(?:-core)?(?:[./]|$)|io\.reactivex(?:[./]|$)|Combine(?:[./]|$))/i.test(source)
+    );
+    const sourceFiles = this.capAndPrioritizeSourceFiles(
+      (context.existingAnalysis?.length || 0) > 0
+        ? groundedFiles
+        : await glob('**/*.{ts,tsx,js,jsx,java,kt,swift}', {
+          cwd: projectPath,
+          ignore: [...ignorePatterns, '**/*.test.*', '**/*.spec.*'],
+          absolute: false,
+          nodir: true,
+        }),
+      'reactive stream candidate files'
+    );
 
     const nodes: CASNode[] = [];
     const edges: CASEdge[] = [];

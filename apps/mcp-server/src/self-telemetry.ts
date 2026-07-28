@@ -29,7 +29,6 @@ import * as nodePath from 'node:path';
 import * as klauroTelemetry from '../../../packages/klauro-sdk-js/src/index';
 import { klauroHttp } from '../../../packages/klauro-sdk-js/src/middleware/http';
 import type { CasRuntimeEvent } from '../../../packages/klauro-sdk-js/src/types';
-import { loadAnalysis } from './storage';
 import { ingestTelemetryBatch, type TelemetryEvent } from './telemetry-ingestion';
 
 const SERVICE_NAME = 'klauro-mcp-server';
@@ -55,19 +54,6 @@ const SLOW_SELF_INGEST_MS = 1_000;
  * getAnalysis this skips stored-element-description application — correlation
  * only reads structural facts, not prose.
  */
-async function loadCorrelationCas(projectPath: string): Promise<Awaited<ReturnType<typeof loadAnalysis>>> {
-  const startedAt = Date.now();
-  const cas = await loadAnalysis(projectPath, { preferCache: true }).catch(() => null);
-  const elapsedMs = Date.now() - startedAt;
-  if (elapsedMs >= SLOW_SELF_INGEST_MS) {
-    process.stdout.write(
-      `Klauro self-telemetry: correlation CAS load for ${projectPath} took ${elapsedMs}ms ` +
-        `(cold read; subsequent flushes reuse the in-memory copy).\n`,
-    );
-  }
-  return cas;
-}
-
 /** True when the master env gate is truthy. Anything else = disabled. */
 export function selfTelemetryEnabled(): boolean {
   const raw = (process.env.KLAURO_SELF_TELEMETRY || '').trim().toLowerCase();
@@ -147,11 +133,8 @@ export async function mirrorToCanonicalBucket(
     const canonicalPath = selfCanonicalProjectPath();
     if (!canonicalPath || canonicalPath === primaryProjectPath) return;
 
-    // Cached read (see loadCorrelationCas): null when no analysis of the
-    // canonical path exists yet — persist unmatched, never bootstrap here.
-    const cas = await loadCorrelationCas(canonicalPath);
     const mirrorStartedAt = Date.now();
-    await ingestTelemetryBatch(cas, canonicalPath, events, { persist: true });
+    await ingestTelemetryBatch(null, canonicalPath, events, { persist: true });
     const mirrorElapsedMs = Date.now() - mirrorStartedAt;
     if (mirrorElapsedMs >= SLOW_SELF_INGEST_MS) {
       process.stdout.write(
@@ -248,16 +231,13 @@ function localIngestFetch(projectPath: string): typeof fetch {
     try {
       const events = parseSdkBatch(init?.body);
       if (events.length > 0) {
-        // Raw observations MUST persist regardless of analysis state. Try to load
-        // the CAS for correlation (cached read — see loadCorrelationCas), but a
-        // missing analysis is NOT a drop reason: `null` makes ingestTelemetryBatch
-        // store the raw events (route/status/duration/error/timestamp) as
-        // `unmatched`. Correlation happens lazily once an analysis exists —
-        // telemetry is never lost.
+        // Ingest is deliberately CAS-free. Loading a large CAS on the HTTP
+        // process blocks health/status traffic and duplicates the analyzer
+        // worker's memory. Raw observations are durable immediately and the
+        // existing read/backfill path correlates them after analysis lands.
         const ingestStartedAt = Date.now();
-        const cas = await loadCorrelationCas(projectPath);
         const mapped = events.map(mapSdkEvent);
-        await ingestTelemetryBatch(cas, projectPath, mapped, { persist: true });
+        await ingestTelemetryBatch(null, projectPath, mapped, { persist: true });
         const ingestElapsedMs = Date.now() - ingestStartedAt;
         if (ingestElapsedMs >= SLOW_SELF_INGEST_MS) {
           process.stdout.write(

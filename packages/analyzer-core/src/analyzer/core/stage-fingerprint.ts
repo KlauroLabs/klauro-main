@@ -81,10 +81,12 @@ function walkSourceFiles(dir: string, exts: string[]): string[] {
 
 /** Hash file CONTENT for source files (small, fast, and correctness-critical —
  * a one-line change must move the fingerprint). */
-function hashSourceFiles(paths: string[]): string {
+function hashSourceFiles(paths: string[], identityRoot?: string): string {
   const hash = crypto.createHash('sha256');
   for (const filePath of paths) {
-    hash.update(filePath);
+    hash.update(identityRoot
+      ? path.relative(identityRoot, filePath).split(path.sep).join('/')
+      : filePath);
     try {
       hash.update(fs.readFileSync(filePath));
     } catch {
@@ -94,11 +96,32 @@ function hashSourceFiles(paths: string[]): string {
   return hash.digest('hex').slice(0, 16);
 }
 
-/** Hash grammar/native-binary IDENTITY (name + byte size), not full content —
- * the vendored-grammars directory is 100+MB of .wasm; a full content hash on
- * every process start is wasteful when filename+size already changes whenever
- * a grammar is swapped, added, or upgraded. */
-function hashBinaryIdentities(dir: string): string {
+interface ParserStageManifest {
+  version: number;
+  source_directories: Array<{ path: string; extensions: string[] }>;
+  source_files: string[];
+  grammar_directory: string;
+}
+
+function loadParserStageManifest(analyzerCoreRoot: string): ParserStageManifest {
+  const manifestPath = path.join(analyzerCoreRoot, 'parser-stage-manifest.json');
+  return JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as ParserStageManifest;
+}
+
+function combineFingerprintParts(...parts: string[]): string {
+  const hash = crypto.createHash('sha256');
+  for (const part of parts) {
+    hash.update(String(part.length));
+    hash.update(':');
+    hash.update(part);
+  }
+  return hash.digest('hex').slice(0, 16);
+}
+
+/** Hash grammar/native-binary content once per process. Same-size grammar
+ * replacements can change parse behavior, so filename and size are not a
+ * correctness-safe cache identity. */
+function hashBinaryContents(dir: string): string {
   let entries: string[];
   try {
     entries = fs.readdirSync(dir).filter(f => f.endsWith('.wasm')).sort();
@@ -107,68 +130,49 @@ function hashBinaryIdentities(dir: string): string {
   }
   const hash = crypto.createHash('sha256');
   for (const name of entries) {
-    let size = -1;
+    hash.update(name);
     try {
-      size = fs.statSync(path.join(dir, name)).size;
+      hash.update(fs.readFileSync(path.join(dir, name)));
     } catch {
-      // leave size at -1 — still contributes a deterministic (if wrong) value
+      hash.update('MISSING');
     }
-    hash.update(`${name}:${size}`);
   }
   return hash.digest('hex').slice(0, 16);
 }
 
-/** The parser/language-analyzer layer, relative to this file's dev location
- * (packages/analyzer-core/src/analyzer/core). Kept in sync with the equivalent
- * PARSER_LAYER_DIRS list in apps/mcp-server/scripts/build-bundle.mjs. */
+/** The parser/language-analyzer layer. The shared parser-stage manifest keeps
+ * the dev runtime and bundle builder on one cache-invalidation source set. */
+export function computeParserFingerprintForRoot(analyzerCoreRoot: string): string {
+  const manifest = loadParserStageManifest(analyzerCoreRoot);
+  const walked = manifest.source_directories.flatMap(directory =>
+    walkSourceFiles(path.join(analyzerCoreRoot, directory.path), directory.extensions)
+  );
+  const sourceFiles = manifest.source_files.map(file => path.join(analyzerCoreRoot, file));
+  const sourceHash = hashSourceFiles([...walked, ...sourceFiles].sort(), analyzerCoreRoot);
+  const configuredGrammarDirectory = process.env.KLAURO_GRAMMARS_DIR?.trim();
+  const grammarHash = hashBinaryContents(configuredGrammarDirectory || path.join(analyzerCoreRoot, manifest.grammar_directory));
+
+  return combineFingerprintParts(sourceHash, grammarHash);
+}
+
 function computeDevParserFingerprint(): string {
-  const analyzerDir = path.resolve(__dirname, '..');
-  const sourceDirs = [
-    path.join(analyzerDir, 'languages'),
-    path.join(analyzerDir, 'ast'),
-  ];
-  const sourceFiles = [
-    path.join(__dirname, 'tree-sitter-parser.ts'),
-    path.join(__dirname, 'native-parse.ts'),
-    path.join(__dirname, 'generic-tree-sitter-analyzer.ts'),
-    path.join(__dirname, 'estree-parse-cache.ts'),
-    path.join(__dirname, 'analyzer-file-read-cache.ts'),
-    path.join(analyzerDir, 'enhanced-call-graph-extractor.ts'),
-    path.join(analyzerDir, 'enhanced-rust-call-graph-extractor.ts'),
-  ];
-  const walked = sourceDirs.flatMap(dir => walkSourceFiles(dir, ['.ts', '.tsx']));
-  const sourceHash = hashSourceFiles([...walked, ...sourceFiles].sort());
-
-  const vendoredGrammarsDir = path.resolve(analyzerDir, '..', '..', 'vendored-grammars');
-  const grammarHash = hashBinaryIdentities(vendoredGrammarsDir);
-
-  return `${sourceHash}-${grammarHash}`.slice(0, 16);
+  return computeParserFingerprintForRoot(path.resolve(__dirname, '..', '..', '..'));
 }
 
 /** The graph/decorator/derived-facts layer: everything else under
  * src/analyzer that is not part of the parser layer above. Deliberately
  * broad (whole-package minus parser files) so no new deriver can be added
  * without automatically joining this fingerprint. */
-function computeDevDerivedFingerprint(): string {
-  const analyzerDir = path.resolve(__dirname, '..');
-  const parserDirs = new Set([
-    path.join(analyzerDir, 'languages'),
-    path.join(analyzerDir, 'ast'),
-  ]);
-  const parserFiles = new Set([
-    path.join(__dirname, 'tree-sitter-parser.ts'),
-    path.join(__dirname, 'native-parse.ts'),
-    path.join(__dirname, 'generic-tree-sitter-analyzer.ts'),
-    path.join(__dirname, 'estree-parse-cache.ts'),
-    path.join(__dirname, 'analyzer-file-read-cache.ts'),
-    path.join(analyzerDir, 'enhanced-call-graph-extractor.ts'),
-    path.join(analyzerDir, 'enhanced-rust-call-graph-extractor.ts'),
-    // This module itself and build-identity.ts are cache-invalidation
-    // plumbing, not derived-fact producers — excluding them avoids the
-    // fingerprint churning every time this comment is edited.
-    path.join(__dirname, 'stage-fingerprint.ts'),
-    path.join(__dirname, 'build-identity.ts'),
-  ]);
+export function computeDerivedFingerprintForRoot(analyzerCoreRoot: string): string {
+  const analyzerDir = path.join(analyzerCoreRoot, 'src', 'analyzer');
+  const manifest = loadParserStageManifest(analyzerCoreRoot);
+  const parserDirs = new Set(manifest.source_directories
+    .map(directory => path.join(analyzerCoreRoot, directory.path))
+    .filter(directory => directory === analyzerDir || directory.startsWith(`${analyzerDir}${path.sep}`)));
+  const parserFiles = new Set(manifest.source_files.map(file => path.join(analyzerCoreRoot, file)));
+  // Cache-invalidation plumbing does not itself produce analysis facts.
+  parserFiles.add(path.join(analyzerDir, 'core', 'stage-fingerprint.ts'));
+  parserFiles.add(path.join(analyzerDir, 'core', 'build-identity.ts'));
 
   const all = walkSourceFiles(analyzerDir, ['.ts', '.tsx']).filter(filePath => {
     if (parserFiles.has(filePath)) return false;
@@ -177,7 +181,11 @@ function computeDevDerivedFingerprint(): string {
     }
     return true;
   });
-  return hashSourceFiles(all);
+  return hashSourceFiles(all, analyzerCoreRoot);
+}
+
+function computeDevDerivedFingerprint(): string {
+  return computeDerivedFingerprintForRoot(path.resolve(__dirname, '..', '..', '..'));
 }
 
 export function getStageFingerprints(): StageFingerprints {
@@ -187,7 +195,14 @@ export function getStageFingerprints(): StageFingerprints {
   const bundledDerived = bundledValue(typeof __KLAURO_DERIVED_FINGERPRINT__ === 'string' ? __KLAURO_DERIVED_FINGERPRINT__ : undefined);
 
   if (bundledParser && bundledDerived) {
-    cached = { parser_fingerprint: bundledParser, derived_fingerprint: bundledDerived, channel: 'bundle' };
+    const configuredGrammarDirectory = process.env.KLAURO_GRAMMARS_DIR?.trim();
+    cached = {
+      parser_fingerprint: configuredGrammarDirectory
+        ? combineFingerprintParts(bundledParser, hashBinaryContents(configuredGrammarDirectory))
+        : bundledParser,
+      derived_fingerprint: bundledDerived,
+      channel: 'bundle',
+    };
     return cached;
   }
 

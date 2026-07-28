@@ -154,12 +154,31 @@ export class AIStackAnalyzer extends BaseAnalyzer {
     const entryPoints: CASEntryPoint[] = [];
 
     const ignorePatterns = this.getIgnorePatterns(context);
-    let sourceFiles = (await glob(`**/*.{${[...TS_EXTENSIONS, ...PY_EXTENSIONS].join(',')}}`, {
-      cwd: context.projectPath,
-      ignore: ignorePatterns,
-      absolute: true,
-      nodir: true,
-    })).filter(file => !isTestFileName(path.basename(file)));
+    const groundedFiles = this.filesFromExistingAnalysis(
+      context,
+      source => this.isAIPackage(source) || this.isAIPackage(source.split(/[/.]/)[0]),
+      true
+    );
+    const conventionFiles = context.existingAnalysis?.length
+      ? await glob([
+        '**/*{agent,prompt,mcp,retriever,embedding,vector,llm,chat,completion}*.{ts,tsx,js,jsx,mjs,cjs,py}',
+        '**/{agents,prompts,mcp,ai}/**/*.{ts,tsx,js,jsx,mjs,cjs,py}',
+      ], {
+        cwd: context.projectPath,
+        ignore: ignorePatterns,
+        absolute: false,
+        nodir: true,
+      })
+      : [];
+    let sourceFiles = context.existingAnalysis?.length
+      ? [...new Set([...groundedFiles, ...conventionFiles])].map(file => path.join(context.projectPath, file))
+      : await glob(`**/*.{${[...TS_EXTENSIONS, ...PY_EXTENSIONS].join(',')}}`, {
+        cwd: context.projectPath,
+        ignore: ignorePatterns,
+        absolute: true,
+        nodir: true,
+      });
+    sourceFiles = sourceFiles.filter(file => !isTestFileName(path.basename(file)));
     sourceFiles = this.capAndPrioritizeSourceFiles(sourceFiles, 'AI stack source files');
 
     const detections: AIDetection[] = [];

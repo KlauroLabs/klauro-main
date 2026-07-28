@@ -11,6 +11,7 @@ import {
   DEFAULT_MIN_NODE,
   detectBuildNodeVersion,
   buildUpdateSpawnEnv,
+  resolveSupportedNodeRange,
 } from './cli';
 import { isNetworkUnreachableError, requireConnectorEntitlement, unreachableServerError } from './connector-auth';
 
@@ -50,6 +51,13 @@ test('checkNodeSupportedForNativeBuild: the hosted manifest widens the range wit
   const gated = checkNodeSupportedForNativeBuild(26, manifest);
   assert.equal(gated.ok, false);
   assert.match(gated.message || '', /18-24/);
+});
+
+test('update node gate accepts only a complete coherent hosted range', () => {
+  assert.deepEqual(resolveSupportedNodeRange({ min_node: 18, max_node: 24 }), { min: 18, max: 24, range: '18-24' });
+  assert.deepEqual(resolveSupportedNodeRange({ min_node: 18 }), { min: 18, max: 22, range: '18-22' });
+  assert.deepEqual(resolveSupportedNodeRange({ min_node: 24, max_node: 18 }), { min: 18, max: 22, range: '18-22' });
+  assert.deepEqual(resolveSupportedNodeRange({ min_node: 18, max_node: 999 }), { min: 18, max: 22, range: '18-22' });
 });
 
 // ---------------------------------------------------------------------------
@@ -313,9 +321,25 @@ test('install.sh: Node 17 is refused (floor still enforced)', async () => {
 });
 
 test('install.sh: the hosted manifest max_node widens the range', async () => {
-  const run = await runInstallShWithFakeNode('v24.1.0', { manifest: { version: '9.9.9', min_node: 18, max_node: 24 } });
+  const run = await runInstallShWithFakeNode('v24.1.0', {
+    manifest: { version: '9.9.9', min_node: 18, max_node: 24, supported_node_range: '18-24' },
+  });
   assert.equal(run.status, 0, run.output);
   assert.equal(run.npmCalled, true);
+});
+
+test('install.sh: an incomplete hosted range cannot accidentally widen support', async () => {
+  const run = await runInstallShWithFakeNode('v24.1.0', { manifest: { version: '9.9.9', min_node: 18 } });
+  assert.notEqual(run.status, 0);
+  assert.match(run.output, /supports Node 18-22/);
+  assert.equal(run.npmCalled, false);
+});
+
+test('install.sh: a contradictory hosted range falls back to the baked safety gate', async () => {
+  const run = await runInstallShWithFakeNode('v24.1.0', { manifest: { version: '9.9.9', min_node: 24, max_node: 18 } });
+  assert.notEqual(run.status, 0);
+  assert.match(run.output, /supports Node 18-22/);
+  assert.equal(run.npmCalled, false);
 });
 
 test('install.sh: KLAURO_SKIP_NODE_CHECK=1 bypasses the ceiling (documented escape hatch)', async () => {

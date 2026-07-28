@@ -8,6 +8,7 @@ import { execFileSync } from 'node:child_process';
 import { createRemoteAnalyzerHttpServer } from './remote-analyzer-service';
 import { analyzeCodebaseRemotely, syncWorkingTreeRemotely } from './remote-sync-client';
 import { aiService } from '../../../packages/analyzer-core/src/ai/ai-service';
+import { AccountWorkspaceAnalysisScheduler, isCasComprehensionSettled, workspaceInputSignature } from './account-workspace-analysis';
 
 function git(repo: string, args: string[]): void {
   execFileSync('git', args, { cwd: repo, stdio: 'ignore' });
@@ -54,6 +55,61 @@ async function waitFor(check: () => Promise<boolean>, timeoutMs = 10_000, interv
   }
   throw new Error('waitFor timed out');
 }
+
+test('workspace comprehension waits for a pending L5 member and treats ready or failed L5 as terminal', () => {
+  assert.equal(isCasComprehensionSettled({ ai_enrichment: 'pending' }), false);
+  assert.equal(isCasComprehensionSettled({ layers_ready: { layers: [{ layer: 'L0', status: 'ready' }] } }), false);
+  assert.equal(isCasComprehensionSettled({ layers_ready: { layers: [{ layer: 'L5', status: 'pending' }] } }), false);
+  assert.equal(isCasComprehensionSettled({ ai_enrichment: 'ready', layers_ready: { layers: [{ layer: 'L5', status: 'ready' }] } }), true);
+  assert.equal(isCasComprehensionSettled({ ai_enrichment: 'error', layers_ready: { layers: [{ layer: 'L5', status: 'error' }] } }), true);
+  assert.equal(isCasComprehensionSettled({ analysis_timestamp: 'legacy-synchronous' }), true);
+});
+
+test('workspace input signature is order-independent and changes when a member comprehension layer settles', () => {
+  const pending = {
+    analysis_id: 'analysis-a', analysis_timestamp: '2026-07-22T00:00:00.000Z', ai_enrichment: 'pending',
+    layers_ready: { layers: [{ layer: 'L5', status: 'pending' }] }, nodes: [], edges: [], system: { primary_capabilities: [] },
+  } as any;
+  const ready = {
+    ...pending, ai_enrichment: 'ready',
+    layers_ready: { layers: [{ layer: 'L5', status: 'ready', completed_at: '2026-07-22T00:00:05.000Z' }] },
+    system: { description: 'AI description', primary_capabilities: [{ name: 'Manage orders', description: 'Processes orders.', description_source: 'ai' }] },
+  } as any;
+  const other = { ...ready, analysis_id: 'analysis-b', analysis_timestamp: '2026-07-22T00:00:01.000Z' } as any;
+  const a = workspaceInputSignature([{ path: 'a', name: 'A', cas: pending }, { path: 'b', name: 'B', cas: other }], ['project-a', 'project-b']);
+  const reordered = workspaceInputSignature([{ path: 'b', name: 'B', cas: other }, { path: 'a', name: 'A', cas: pending }], ['project-b', 'project-a']);
+  const settled = workspaceInputSignature([{ path: 'a', name: 'A', cas: ready }, { path: 'b', name: 'B', cas: other }], ['project-a', 'project-b']);
+  assert.equal(a, reordered);
+  assert.notEqual(a, settled);
+});
+
+test('workspace scheduler drains a project notification that arrives during an in-flight rebuild', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-was-dirty-drain-'));
+  try {
+    const scheduler = new AccountWorkspaceAnalysisScheduler(root, {} as any, { debounceMs: 10 });
+    let releaseFirst!: () => void;
+    const firstGate = new Promise<void>(resolve => { releaseFirst = resolve; });
+    let rebuilds = 0;
+    (scheduler as any).doRebuild = async () => {
+      rebuilds += 1;
+      if (rebuilds === 1) await firstGate;
+    };
+
+    const first = scheduler.rebuild('workspace-race');
+    scheduler.notifyProjectAnalysisLanded('workspace-race');
+    await new Promise(resolve => setTimeout(resolve, 30));
+    assert.equal(scheduler.isPending('workspace-race'), true, 'the concurrent notification must remain visible while the first rebuild runs');
+
+    releaseFirst();
+    await first;
+    await waitFor(async () => !scheduler.isPending('workspace-race'));
+
+    assert.equal(rebuilds, 2, 'the change that arrived in flight must be consumed by exactly one coalesced follow-up rebuild');
+    assert.equal(scheduler.isPending('workspace-race'), false, 'no dirty or pending state may remain after both runs complete');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
 
 /**
  * Server-side auto-refreshed Workspace Analysis (WAS): pushing member project
@@ -224,12 +280,29 @@ test('workspace reanalyze returns 202, background-persists an AI-enriched narrat
   // enrichWorkspaceAnalysisNarrative pass accepts it and stamps source 'ai'.
   const enrichedDescription = 'This workspace routes HTTP requests through the repo-reanalyze Python API service, records each request in the backend server, and returns computed handler results to the calling client. The API handles request processing, provides a single route surface, and supports the workspace backend behavior end to end.';
   const originalGenerate = aiService.generateComponentDescription;
-  aiService.generateComponentDescription = async () => JSON.stringify({
-    description: enrichedDescription,
-    product_value_summary: 'Gives users one HTTP API service that routes requests to Python handlers and returns computed results.',
-    value_drivers: ['API-backed request handling'],
-    relationship_summary: ['client calls repo-reanalyze API over HTTP'],
-  });
+  aiService.generateComponentDescription = async (request: any) => {
+    // Keep the manual rebuild in flight past the attach-triggered debounce.
+    // This reproduces the production race where the debounce joined an
+    // existing rebuild and left its dirty bit stranded forever.
+    await new Promise(resolve => setTimeout(resolve, 300));
+    const context = request?.additionalContext || {};
+    const domainNames = Array.isArray(context.required_domain_names) ? context.required_domain_names : [];
+    const capabilityNames = Array.isArray(context.required_capability_names) ? context.required_capability_names : [];
+    return JSON.stringify({
+      description: enrichedDescription,
+      product_value_summary: 'Gives users one HTTP API service that routes requests to Python handlers and returns computed results.',
+      value_drivers: ['API-backed request handling'],
+      relationship_summary: ['client calls repo-reanalyze API over HTTP'],
+      domain_items: domainNames.map((name: string) => ({
+        name,
+        description: `${name} represents the Python API service and its request routing, handler execution, and returned results for this workspace.`,
+      })),
+      capability_items: capabilityNames.map((name: string) => ({
+        name,
+        description: `${name} routes API requests to the Python handler and returns its computed response to the calling client.`,
+      })),
+    });
+  };
 
   const server = createRemoteAnalyzerHttpServer({ dataDir: remoteData });
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -282,6 +355,7 @@ test('workspace reanalyze returns 202, background-persists an AI-enriched narrat
     assert.equal(readyBody.analysis.workspace_narrative.degraded_reason, undefined);
     assert.equal(readyBody.enrichment?.status, 'ai');
     assert.ok(readyBody.enrichment?.completed_at);
+    assert.equal(readyBody.status, 'ready', 'a debounce that joins an in-flight rebuild must not strand the workspace in pending');
 
     // Workspace isolation: a non-member must get 404, and no rebuild may be
     // scheduled on their behalf.
@@ -365,9 +439,15 @@ test('a member CAS landed via /v1/sync (not just /v1/analyze) still triggers the
     }, token);
     assert.equal(projectRes.statusCode, 201);
 
-    // Nothing has been synced/reanalyzed yet for this linked project — no WAS should exist.
+    // Attaching an already-analyzed project is itself a WAS input change and
+    // now builds the initial workspace automatically.
+    await waitFor(async () => {
+      const res = await request(port, 'GET', `/api/workspaces/${workspaceId}/analysis`, undefined, token);
+      return JSON.parse(res.body).status === 'ready';
+    });
     const beforeRes = await request(port, 'GET', `/api/workspaces/${workspaceId}/analysis`, undefined, token);
-    assert.equal(JSON.parse(beforeRes.body).status, 'none');
+    const beforeGeneratedAt = JSON.parse(beforeRes.body).generated_at as string;
+    assert.ok(beforeGeneratedAt);
 
     // A real dirty-tree change, then an INCREMENTAL /v1/sync push — never a
     // second /v1/analyze and never a manual /api/workspaces/:id/reanalyze
@@ -378,7 +458,8 @@ test('a member CAS landed via /v1/sync (not just /v1/analyze) still triggers the
     // The debounced auto-rebuild must fire on its own from the /v1/sync push alone.
     await waitFor(async () => {
       const res = await request(port, 'GET', `/api/workspaces/${workspaceId}/analysis`, undefined, token);
-      return JSON.parse(res.body).status === 'ready';
+      const body = JSON.parse(res.body);
+      return body.status === 'ready' && body.generated_at !== beforeGeneratedAt;
     });
     const readyRes = await request(port, 'GET', `/api/workspaces/${workspaceId}/analysis`, undefined, token);
     const readyBody = JSON.parse(readyRes.body);

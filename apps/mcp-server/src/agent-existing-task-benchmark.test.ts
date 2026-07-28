@@ -34,6 +34,11 @@ test('seeded existing-task benchmark covers non-greenfield engineering families'
   const producerConsumer = report.scenarios.find(scenario => scenario.id === 'producer-consumer-contract-change');
   assert.equal(producerConsumer?.with_klauro.file_hit_rate, 100);
   assert.ok((producerConsumer?.score || 0) >= 90);
+  const performanceFix = report.scenarios.find(scenario => scenario.id === 'n-plus-one-task-summary');
+  assert.equal(performanceFix?.status, 'pass');
+  assert.equal(performanceFix?.with_klauro.file_hit_rate, 100);
+  assert.ok(performanceFix?.with_klauro.first_files.includes('src/services/taskSummaryService.ts'));
+  assert.ok(performanceFix?.with_klauro.first_files.includes('src/repositories/projectRepository.ts'));
   assert.deepEqual(
     new Set(report.scenarios.map(scenario => scenario.family)),
     new Set([

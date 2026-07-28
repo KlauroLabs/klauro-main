@@ -22,6 +22,7 @@ export interface IdiomValidationOptions extends IdiomQueryOptions {
   files?: string[];
   diffText?: string;
   includeWorkingTree?: boolean;
+  allowFileReads?: boolean;
 }
 
 interface DiffCollection {
@@ -256,7 +257,13 @@ export function validateCodebaseIdioms(
   const migrationFiles = changedFiles.filter(isMigrationPath);
   const schemaFiles = changedFiles.filter(isSchemaPath);
   const idioms = selectIdioms(cas, opts);
-  const impacts = idioms.map(idiom => idiomImpact(idiom, changedFiles, workingTree.diffText, projectPath));
+  const impacts = idioms.map(idiom => idiomImpact(
+    idiom,
+    changedFiles,
+    workingTree.diffText,
+    projectPath,
+    opts.allowFileReads !== false,
+  ));
   const matched = impacts.filter(impact => impact.impact_score > 0);
   const violations = [
     ...workingTree.warnings.map((warning, index) => validationViolation('working-tree-warning', 'file-organization', 'warning', undefined, warning, 'Review the working tree warning before trusting idiom validation.', index)),
@@ -357,7 +364,13 @@ function summarizeSelectedIdioms(idioms: CASCodebaseIdiom[]) {
   };
 }
 
-function idiomImpact(idiom: CASCodebaseIdiom, changedFiles: string[], diffText: string, projectPath: string) {
+function idiomImpact(
+  idiom: CASCodebaseIdiom,
+  changedFiles: string[],
+  diffText: string,
+  projectPath: string,
+  allowFileReads: boolean,
+) {
   const scopedFiles = (idiom.affected_scopes.files || []).map(normalizePath);
   const exampleFiles = idiom.positive_examples.map(example => example.file).filter(Boolean).map(normalizePath);
   const matchedFiles = changedFiles.filter(file =>
@@ -377,7 +390,7 @@ function idiomImpact(idiom: CASCodebaseIdiom, changedFiles: string[], diffText: 
   const violations: CASIdiomViolation[] = [];
 
   for (const file of changedFiles) {
-    const fileText = readFileIfSafe(projectPath, file);
+    const fileText = allowFileReads ? readFileIfSafe(projectPath, file) : addedTextForFile(diffText, file);
     if (idiom.category === 'naming') {
       violations.push(...namingViolations(idiom, file, fileText));
     }
@@ -399,6 +412,28 @@ function idiomImpact(idiom: CASCodebaseIdiom, changedFiles: string[], diffText: 
     ],
     violations,
   };
+}
+
+function addedTextForFile(diffText: string, targetFile: string): string {
+  const normalizedTarget = normalizePath(targetFile);
+  let currentFile = '';
+  const lines: string[] = [];
+  for (const line of diffText.split('\n')) {
+    const header = line.match(/^diff --git a\/(.+) b\/(.+)$/);
+    if (header) {
+      currentFile = normalizePath(header[2]);
+      continue;
+    }
+    const addedFile = line.match(/^\+\+\+ b\/(.+)$/);
+    if (addedFile) {
+      currentFile = normalizePath(addedFile[1]);
+      continue;
+    }
+    if (currentFile === normalizedTarget && line.startsWith('+') && !line.startsWith('+++')) {
+      lines.push(line.slice(1));
+    }
+  }
+  return lines.join('\n');
 }
 
 function namingViolations(idiom: CASCodebaseIdiom, file: string, fileText: string): CASIdiomViolation[] {

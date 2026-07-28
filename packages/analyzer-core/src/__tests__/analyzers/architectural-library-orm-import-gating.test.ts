@@ -133,4 +133,51 @@ describe('ORM/framework attribution is gated on real import source, not bare sym
     expect(names.some(name => name.startsWith('TypeORM: repository access'))).toBe(false);
     expect(names.some(name => name.startsWith('MikroORM: repository access'))).toBe(false);
   });
+
+  it('uses language-pass import evidence instead of rescanning unrelated source files', async () => {
+    await fs.writeJson(path.join(tempDir, 'package.json'), {
+      dependencies: { '@mikro-orm/core': '^6.4.4' },
+    });
+    await fs.ensureDir(path.join(tempDir, 'src'));
+    await fs.writeFile(path.join(tempDir, 'src/real.ts'), [
+      "import { EntityManager } from '@mikro-orm/core';",
+      'export const load = (em: EntityManager) => em.findAll();',
+    ].join('\n'));
+    await fs.writeFile(path.join(tempDir, 'src/decoy.ts'), [
+      'class EntityManager { findAll() { return []; } }',
+      'export const local = new EntityManager().findAll();',
+    ].join('\n'));
+
+    const analyzer = new ArchitecturalLibraryAnalyzer();
+    const contribution = await analyzer.analyze({
+      projectPath: tempDir,
+      analysisRootPath: tempDir,
+      existingAnalysis: [{
+        nodes: [{
+          id: 'import_real_mikro',
+          name: 'import @mikro-orm/core',
+          type: 'import',
+          source: { file: 'src/real.ts', line: 1 },
+          metadata: { source: '@mikro-orm/core' },
+        } as CASNode],
+        edges: [],
+        entry_points: [],
+        exit_points: [],
+        analyzer_metadata: {
+          analyzer_id: 'typescript-javascript',
+          analyzer_name: 'TypeScript/JavaScript Analyzer',
+          version: '1.0.0',
+          contribution_type: 'language',
+          nodes_contributed: 1,
+          edges_contributed: 0,
+          contributed_entry_points: 0,
+          contributed_exit_points: 0,
+        },
+      }],
+    });
+
+    const sourceFiles = (contribution.nodes || []).map(node => node.source?.file).filter(Boolean);
+    expect(sourceFiles.some(file => String(file).endsWith('src/real.ts'))).toBe(true);
+    expect(sourceFiles.some(file => String(file).endsWith('src/decoy.ts'))).toBe(false);
+  });
 });

@@ -101,16 +101,11 @@ test('conceptual endpoint exposes behavior_surfaces so flow capability_relations
       analysis_id: analyzeResult.analysis_id,
     }, token);
     assert.equal(createRes.statusCode, 201);
-    const project = JSON.parse(createRes.body).project as { id: string };
+    const project = JSON.parse(createRes.body).project as { id: string; analysis_id?: string };
+    assert.ok(project.analysis_id, 'authenticated project response should expose its attached analysis');
 
-    // Inject a behavior_surfaces entry through the product's own storage
-    // path (saveAnalysis), the same file the real HTTP handler reads via
-    // getAnalysis — no fabricated file format, no analyzer-internals bypass
-    // of the code path actually under test. `workspace` here mirrors
-    // remote-analyzer-service.ts's own workspacePath(dataDir, analysisId):
-    // makeAnalysisId's sha256-hex ids are already `safeName`-clean, so the
-    // join is exact.
-    const workspace = path.join(remoteData, 'workspaces', analyzeResult.analysis_id!);
+    // Project creation returns the account-scoped storage ID for the authorized attachment.
+    const workspace = path.join(remoteData, 'workspaces', project.analysis_id);
     const cas = await getAnalysis(workspace);
     const anchorEntryPoint = cas.entry_points?.find(ep => ep.source_node && cas.nodes.some(n => n.id === ep.source_node));
     assert.ok(anchorEntryPoint, 'fixture analysis must produce at least one real entry point to anchor the fabricated surface on');

@@ -123,6 +123,29 @@ async function registerAccount(port: number, email: string, workspaceName: strin
   return { token, workspaceId };
 }
 
+test('raw analysis status/export routes reject foreign projects and direct salted storage ids', async () => {
+  await withServer(async ({ port }) => {
+    const accountA = await registerAccount(port, 'analysis-read-a@example.com', 'Analysis Read A');
+    const accountB = await registerAccount(port, 'analysis-read-b@example.com', 'Analysis Read B');
+    const create = await request(port, 'POST', `/api/workspaces/${accountA.workspaceId}/projects`, {
+      name: 'Private Project',
+    }, accountA.token);
+    assert.equal(create.statusCode, 201);
+    const projectId = JSON.parse(create.body).project.id as string;
+
+    const ownStatus = await request(port, 'GET', `/v1/analyses/${projectId}/status`, undefined, accountA.token);
+    assert.equal(ownStatus.statusCode, 200);
+
+    const foreignStatus = await request(port, 'GET', `/v1/analyses/${projectId}/status`, undefined, accountB.token);
+    assert.equal(foreignStatus.statusCode, 404);
+    const foreignExport = await request(port, 'GET', `/v1/analyses/${projectId}/cas/export`, undefined, accountB.token);
+    assert.equal(foreignExport.statusCode, 404);
+
+    const directSalted = await request(port, 'GET', '/v1/analyses/acct_private-storage-id/status', undefined, accountA.token);
+    assert.equal(directSalted.statusCode, 404);
+  });
+});
+
 // --- TIER 1: account-level analysis storage isolation (the P0 bleed) ---
 
 test('TIER 1: two accounts analyzing repos at the IDENTICAL absolute path never collide on the same stored analysis', async () => {
@@ -162,12 +185,14 @@ test('TIER 1: two accounts analyzing repos at the IDENTICAL absolute path never 
     assert.equal(resultB.status, 'success');
     assert.ok(resultB.cas!.nodes.length > 0);
 
-    // THE ACTUAL PROOF: the two accounts' analyses must have been stored
-    // under DIFFERENT server-side analysis ids (resolveStorageAnalysisId
-    // salts by account), never the shared raw hash both clients computed.
-    assert.notEqual(resultA.analysis_id, resultB.analysis_id, 'accounts A and B must never be assigned the same storage analysis_id for the same path');
-    assert.notEqual(resultA.analysis_id, rawIdForPath, "account A's stored analysis_id must be salted, not the bare unsalted client hash");
-    assert.notEqual(resultB.analysis_id, rawIdForPath, "account B's stored analysis_id must be salted, not the bare unsalted client hash");
+    // The public handle stays stable and contains no internal tenant-storage
+    // key. Isolation is enforced below the protocol boundary: the same handle
+    // maps to a different acct_ directory for each authenticated account.
+    assert.equal(resultA.analysis_id, rawIdForPath);
+    assert.equal(resultB.analysis_id, rawIdForPath);
+    const storageKeys = fs.readdirSync(path.join(remoteData, 'workspaces')).filter(name => name.startsWith('acct_'));
+    assert.equal(storageKeys.length, 2, 'the same public handle must map to two isolated tenant storage keys');
+    assert.notEqual(storageKeys[0], storageKeys[1]);
 
     // Cross-check via the revisions read path (also salted): account B's
     // token must never be able to read account A's revision history by
@@ -178,13 +203,14 @@ test('TIER 1: two accounts analyzing repos at the IDENTICAL absolute path never 
     // Account B's own revisions (from its own analyze above) are fine to see;
     // the point is this must resolve to B's own workspace, not A's -- proven
     // by the analysis_id divergence already asserted above. As a second
-    // signal, re-fetch account A's revisions with A's own token, on the same
-    // raw id, and confirm the two callers are NOT looking at the same
-    // dataset (different analysis_id in each response).
+    // signal, re-fetch account A's revisions with A's own token on the same
+    // raw id. Both responses retain the public handle; their data is loaded
+    // from the distinct storage keys asserted above.
     const revisionsAsA = await request(port, 'GET', `/v1/projects/${encodeURIComponent(rawIdForPath)}/revisions`, undefined, accountA.token);
     assert.equal(revisionsAsA.statusCode, 200);
     const revisionsBodyAsA = JSON.parse(revisionsAsA.body);
-    assert.notEqual(revisionsBodyAsA.analysis_id, revisionsBodyAsB.analysis_id, 'the SAME raw analysisId must resolve to DIFFERENT per-account revision records');
+    assert.equal(revisionsBodyAsA.analysis_id, rawIdForPath);
+    assert.equal(revisionsBodyAsB.analysis_id, rawIdForPath);
   });
 });
 

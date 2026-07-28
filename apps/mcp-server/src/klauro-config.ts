@@ -59,18 +59,9 @@ export interface KlauroConfig {
     allowedAnalyzerHosts: string[];
     requireSelfHosted: boolean;
     /**
-     * Gate the LOCAL analysis path (the `analyze_codebase` MCP tool — the CLI
-     * `analyze` command is already remote-only). TRI-STATE:
-     *   true      → always refuse local; redirect to analyze_codebase_remote.
-     *   false     → always allow local (explicit opt-out, e.g. a dev repo).
-     *   undefined → DERIVE: refuse when the repo is bound to a hosted project
-     *               (project.id set), allow otherwise. This makes every real
-     *               customer remote-only by default (heavy work + storage on the
-     *               hosted analyzer, never on-machine) WITHOUT dead-ending an
-     *               unbound/OSS/offline repo that has no remote to redirect to.
-     * Env `KLAURO_ALLOW_LOCAL_ANALYSIS=1` force-allows regardless (dev/CI/gauntlet
-     * hatch, and the "prod is down, I must unblock locally" case).
-     * Symmetric counterpart to `requireSelfHosted`, which gates the REMOTE path.
+     * Retained for config compatibility. Customer MCP/CLI launch paths are
+     * hosted-only regardless of this value; analyzer development invokes the
+     * internal analyzer harness directly rather than weakening product policy.
      */
     requireRemoteAnalyzer?: boolean;
     blockUntrackedFiles: boolean;
@@ -296,19 +287,17 @@ export function defaultKlauroConfig(projectPath: string): KlauroConfig {
       allowRemoteAnalyzer: true,
       allowedAnalyzerHosts: [],
       requireSelfHosted: false,
-      // requireRemoteAnalyzer intentionally UNSET (undefined) → derived per repo
-      // in assertLocalAnalysisAllowed: bound-to-hosted repos are remote-only,
-      // unbound/OSS repos keep local. Set explicitly in .klaurorc to override.
+      // Kept only as a readable legacy config field. Product analysis is
+      // hosted regardless of this value; repository config cannot authorize
+      // analyzer execution on a customer machine.
       blockUntrackedFiles: false,
     },
     embedding: {
       enabled: true,
       provider: 'local',
-      // Real in-process ONNX sentence-embedding model (all-MiniLM-L6-v2). The
-      // local factory (createLocalEmbeddingProvider) transparently falls back to
-      // the zero-dependency hash embedding (klauro-local-hash-v1) when the model
-      // can't load, so concept queries get real semantic matching where the
-      // model is present and never fail where it isn't. Both are 384-dim.
+      // Real in-process ONNX sentence-embedding model (all-MiniLM-L6-v2).
+      // Availability failures degrade explicitly; they never masquerade as
+      // this model while producing hash vectors.
       model: 'onnx-all-MiniLM-L6-v2',
       apiKeyEnv: 'KLAURO_EMBEDDING_API_KEY',
       dimensions: 384,
@@ -568,24 +557,16 @@ export function isBoundToHostedProject(loaded: LoadedKlauroConfig): boolean {
 }
 
 /**
- * Gate the development-only local analysis path. Product analysis is hosted;
- * the installed client hashes, watches, packages, and uploads source changes.
- * Resolution order:
- *   1. Env KLAURO_ALLOW_LOCAL_ANALYSIS truthy → ALLOW (dev/CI/gauntlet hatch).
- *   2. Everything else → REFUSE. A repo config cannot accidentally turn a
- *      customer laptop into an analyzer host.
- * The thrown message names the exact tool + hosted URL, so a caller is
- * redirected to analyze_codebase_remote, never dead-ended.
+ * Reject every local analysis attempt. The installed client may discover,
+ * filter, hash, package, upload, watch, and query; analyzers always execute on
+ * Klauro infrastructure. Environment and repository policy cannot bypass this
+ * boundary.
  */
 export function assertLocalAnalysisAllowed(loaded: LoadedKlauroConfig): void {
-  const envHatch = process.env.KLAURO_ALLOW_LOCAL_ANALYSIS;
-  if (envHatch && envHatch !== '0' && envHatch.toLowerCase() !== 'false') return;
-
   const url = loaded.config.analyzer.serverUrl || DEFAULT_KLAURO_CLOUD_URL;
   throw new Error(
-    `Local full analysis is development-only; Klauro product analysis runs on the hosted analyzer. ` +
-    `Use analyze_codebase_remote (analyzes on the hosted analyzer at ${url} and caches the CAS locally) instead of analyze_codebase. ` +
-    `Developers and the gauntlet may deliberately override this with KLAURO_ALLOW_LOCAL_ANALYSIS=1.`
+    `Local analysis is not a customer execution mode; Klauro product analysis runs on the hosted analyzer. ` +
+    `Use analyze_codebase_remote to upload source to ${url}.`
   );
 }
 
@@ -715,15 +696,14 @@ export function validateEmbeddingConfig(config: KlauroConfig): EmbeddingConfigVa
     }
   }
 
-  // The local ONNX model (all-MiniLM-L6-v2) emits fixed 384-dim vectors; a
-  // mismatched dimensions setting would force a fallback to the hash embedding.
+  // The local ONNX model (all-MiniLM-L6-v2) emits fixed 384-dim vectors.
   if (
     embedding.provider === 'local' &&
     embedding.model === 'onnx-all-MiniLM-L6-v2' &&
     embedding.dimensions !== 384
   ) {
-    warnings.push(
-      `embedding.model "onnx-all-MiniLM-L6-v2" requires embedding.dimensions=384 (got ${embedding.dimensions}); the local provider will fall back to the hash embedding`,
+    errors.push(
+      `embedding.model "onnx-all-MiniLM-L6-v2" requires embedding.dimensions=384 (got ${embedding.dimensions})`,
     );
   }
 

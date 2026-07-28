@@ -27,7 +27,7 @@ Examples:
 - a new workspace is created from a folder that contains multiple repos;
 - a greenfield proposal or empty-folder build creates its first real files.
 
-The result is a normal Klauro CAS or WAS output. Some phases may run from the installed client, some may run in Klauro-hosted services, and AI enrichment must run through Klauro-managed providers. The implementation split is not exposed as separate products.
+The result is a normal Klauro CAS or WAS output. The installed client discovers, filters, hashes, packages, uploads, and watches source. All analysis phases run in Klauro-hosted services, including parsing, framework semantics, graph construction, comprehension, embeddings, validation, persistence, and AI enrichment. The implementation split is not exposed as separate products.
 
 ### Warm Understanding
 
@@ -41,6 +41,11 @@ Examples:
 - a teammate asks what changed between analyzed revisions.
 
 Warm queries should avoid broad source rediscovery. They should retrieve the smallest useful slice of CAS/WAS, plus follow-up tool calls for drilldown.
+
+The hosted storage contract is section-oriented. Identity and summary queries
+do not download graph-scale collections; graph, call, test, runtime, quality,
+and comprehension sections are hydrated only when the requested tool needs
+them. Complete compressed export is explicit and is not the default MCP path.
 
 ### In-Flight Analysis
 
@@ -97,6 +102,13 @@ After edits, MCP validation should:
 - compare it to other visible in-flight work;
 - flag duplicate capabilities, duplicate entities, conflicting contracts, overlapping migrations, and likely merge pressure;
 - recommend whether to continue, split, coordinate, or commit.
+
+Incremental analysis follows the complete dependency impact, not a fixed depth
+or language-specific heuristic. Import styles are resolved against the known
+project file inventory across supported language families, cycles terminate,
+and every affected file is included in recomputation. Content-addressed
+analyzer contributions make unchanged work inexpensive while preserving exact
+cold-analysis meaning.
 
 ## UI Behavior
 

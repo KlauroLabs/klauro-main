@@ -18,19 +18,28 @@
 import { execFileSync } from 'child_process';
 import * as crypto from 'crypto';
 import * as fs from 'fs-extra';
+import { open } from 'fs/promises';
 import * as http from 'http';
 import { request as httpsRequest } from 'https';
 import * as os from 'os';
 import * as path from 'path';
+import { promisify } from 'util';
+import { gzip, gunzip } from 'zlib';
 import { createRemoteAnalyzerHttpServer } from '../remote-analyzer-service';
 import { devDataRoot, reportDevDataDirSizeOnExit } from './dev-data';
 import { buildSourceSnapshot, EXCLUDED_DIRECTORIES } from '../remote-source';
 import { getAnalysisEntry, saveAnalysis } from '../storage';
+import { getAnalysis } from '../analyzer';
 import type { CASOutput } from '../../../../packages/analyzer-core/src/types/cas.types';
+import { getStageFingerprints } from '../../../../packages/analyzer-core/src/analyzer/core/stage-fingerprint';
+import { REMOTE_ANALYSIS_PROTOCOL_VERSION } from '../remote-analyzer-protocol';
 
 let localServerUrl: string | null = null;
+let localServerDataDir: string | null = null;
 let benchDataDirCleanupRegistered = false;
 let benchStoreScoped = false;
+const gzipAsync = promisify(gzip);
+const gunzipAsync = promisify(gunzip);
 
 /**
  * Dev-tooling hygiene: bench/corpus runs previously seeded every analyzed
@@ -58,6 +67,10 @@ async function ensureProductServer(): Promise<string> {
   // harness talks to it over HTTP exactly like any client. It is the product, not
   // the engine: the harness does not reach inside it.
   const dataDir = path.join(os.tmpdir(), `klauro-bench-analyzer-${process.pid}`);
+  localServerDataDir = dataDir;
+  if (!process.env.KLAURO_COORD_DIR) {
+    process.env.KLAURO_COORD_DIR = path.join(dataDir, 'coordination');
+  }
   // Scratch hygiene: the in-process bench server's data dir (uploaded source
   // snapshots + intermediate CASes) is tmpdir-scoped AND removed on process
   // exit, so repeated bench runs never accumulate durable source mirrors.
@@ -123,6 +136,35 @@ function postJson(url: string, body: unknown): Promise<any> {
   });
 }
 
+function getJson(url: string): Promise<any> {
+  const u = new URL(url);
+  const isHttps = u.protocol === 'https:';
+  const transport = isHttps ? httpsRequest : http.request;
+  const token = process.env.KLAURO_BENCH_ANALYZER_TOKEN;
+  return new Promise((resolve, reject) => {
+    const req = transport({
+      hostname: u.hostname,
+      port: u.port || (isHttps ? 443 : 80),
+      path: `${u.pathname}${u.search}`,
+      method: 'GET',
+      headers: token ? { authorization: `Bearer ${token}` } : {},
+    }, (res: any) => {
+      const chunks: Buffer[] = [];
+      res.on('data', (chunk: Buffer) => chunks.push(chunk));
+      res.on('end', () => {
+        const text = Buffer.concat(chunks).toString('utf8');
+        if ((res.statusCode || 0) >= 400) {
+          reject(new Error(`status ${res.statusCode}: ${text.slice(0, 200)}`));
+          return;
+        }
+        try { resolve(text ? JSON.parse(text) : {}); } catch (error) { reject(error); }
+      });
+    });
+    req.on('error', reject);
+    req.end();
+  });
+}
+
 /**
  * Ask the product to analyze a directory and return its CAS. Blackbox: builds the
  * source snapshot the product client would send, posts it to the product's analyzer
@@ -130,22 +172,42 @@ function postJson(url: string, body: unknown): Promise<any> {
  */
 export async function analyzeForBench(dir: string): Promise<CASOutput> {
   scopeBenchProcessToDevStore();
-  const serverUrl = await ensureProductServer();
   // The product analyzes committed source. Fixtures aren't standalone git repos, so
   // stage them in a throwaway git repo first (the customer always has a git repo);
   // the checked-in fixture is never mutated.
   const staged = await stageAsGitRepo(dir);
+  let cacheLock: string | undefined;
   try {
     const snapshot = await buildSourceSnapshot(staged);
+    const cache = benchCacheLocation(dir, snapshot.manifest.snapshot_digest);
+    if (cache) {
+      const cached = await readBenchCache(cache.file);
+      if (cached) {
+        await seedBenchAnalysisIfAbsent(dir, cached);
+        return cached;
+      }
+      cacheLock = await acquireBenchCacheLock(cache.lock, cache.file);
+      if (!cacheLock) {
+        const filledWhileWaiting = await readBenchCache(cache.file);
+        if (filledWhileWaiting) {
+          await seedBenchAnalysisIfAbsent(dir, filledWhileWaiting);
+          return filledWhileWaiting;
+        }
+      }
+    }
+
+    const serverUrl = await ensureProductServer();
     const response = await postJson(`${serverUrl}/v1/analyze`, {
+      protocol_version: REMOTE_ANALYSIS_PROTOCOL_VERSION,
       // Unique per source dir: the shared in-process server keys its incremental
       // cache/workspace on project_id, so sibling repos with the same basename
       // (was-bench ui/api/worker) must NOT collide, or one poisons the other's CAS.
       project_id: crypto.createHash('sha256').update(path.resolve(dir)).digest('hex').slice(0, 16),
       project_path: dir,
       snapshot,
+      async: true,
     });
-    const cas = response.cas as CASOutput;
+    const cas = response.cas as CASOutput || await waitForAcceptedBenchAnalysis(response.analysis_id);
     // The analyzer server names/identifies the system from the STAGED copy's own
     // path (a throwaway git repo under a temp dir, e.g.
     // `.../klauro-bench-analyzer-<pid>/workspaces/<hash>`), since that's the only
@@ -175,12 +237,111 @@ export async function analyzeForBench(dir: string): Promise<CASOutput> {
     // analyze/enrichment entry points (analyzeProject/runAnalysis) only; the
     // seed-if-absent below cannot destroy any provenance because the slot is
     // empty. Callers always get the fresh `cas` in-memory regardless.
-    const existing = await getAnalysisEntry(dir).catch(() => null);
-    if (!existing) await saveAnalysis(dir, cas).catch(() => undefined);
+    await seedBenchAnalysisIfAbsent(dir, cas);
+    if (cache) await writeBenchCache(cache.file, cas);
     return cas;
   } finally {
+    if (cacheLock) await fs.remove(cacheLock).catch(() => undefined);
     if (staged !== dir) await fs.remove(staged).catch(() => undefined);
   }
+}
+
+async function seedBenchAnalysisIfAbsent(dir: string, cas: CASOutput): Promise<void> {
+  const existing = await getAnalysisEntry(dir).catch(() => null);
+  if (!existing) await saveAnalysis(dir, cas).catch(() => undefined);
+}
+
+function benchCacheLocation(dir: string, snapshotDigest: string | undefined): { file: string; lock: string } | undefined {
+  const root = process.env.KLAURO_BENCH_CAS_CACHE_DIR;
+  if (!root || !snapshotDigest || process.env.KLAURO_BENCH_ANALYZER_URL) return undefined;
+  const stageFingerprints = getStageFingerprints();
+  const key = crypto.createHash('sha256')
+    .update(path.resolve(dir))
+    .update('\0')
+    .update(snapshotDigest)
+    .update('\0')
+    .update(stageFingerprints.parser_fingerprint)
+    .update('\0')
+    .update(stageFingerprints.derived_fingerprint)
+    .digest('hex');
+  const file = path.join(root, `${key}.cas.json.gz`);
+  return { file, lock: `${file}.lock` };
+}
+
+async function readBenchCache(file: string): Promise<CASOutput | undefined> {
+  try {
+    return JSON.parse((await gunzipAsync(await fs.readFile(file))).toString('utf8')) as CASOutput;
+  } catch {
+    return undefined;
+  }
+}
+
+async function writeBenchCache(file: string, cas: CASOutput): Promise<void> {
+  await fs.mkdirp(path.dirname(file));
+  const temporary = `${file}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`;
+  try {
+    await fs.writeFile(temporary, await gzipAsync(Buffer.from(JSON.stringify(cas), 'utf8')));
+    await fs.rename(temporary, file);
+  } finally {
+    await fs.remove(temporary).catch(() => undefined);
+  }
+}
+
+async function acquireBenchCacheLock(lock: string, cacheFile: string): Promise<string | undefined> {
+  await fs.mkdirp(path.dirname(lock));
+  const deadline = Date.now() + 180_000;
+  while (Date.now() < deadline) {
+    if (await fs.pathExists(cacheFile)) return undefined;
+    try {
+      const handle = await open(lock, 'wx');
+      await handle.writeFile(`${process.pid}\n`);
+      await handle.close();
+      return lock;
+    } catch (error: any) {
+      if (error?.code !== 'EEXIST') throw error;
+      if (await fs.pathExists(cacheFile)) return undefined;
+      try {
+        const lockStat = await fs.stat(lock);
+        if (Date.now() - lockStat.mtimeMs > 300_000) await fs.remove(lock);
+      } catch { /* another process completed or refreshed the lock */ }
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+  }
+  return undefined;
+}
+
+async function waitForAcceptedBenchAnalysis(analysisId: string): Promise<CASOutput> {
+  if (!analysisId) throw new Error('Klauro analyzer accepted the benchmark source without returning an analysis_id');
+  if (!localServerDataDir) {
+    throw new Error('Hosted benchmark analysis was accepted asynchronously; configure the hosted project query path before reading its CAS');
+  }
+  const workspace = path.join(localServerDataDir, 'workspaces', analysisId);
+  const deadline = Date.now() + 180_000;
+  let lastError = 'analysis has not been persisted yet';
+  while (Date.now() < deadline) {
+    try {
+      const status = await getJson(`${localServerUrl}/v1/analyses/${encodeURIComponent(analysisId)}/status`);
+      if (status.status === 'failed') {
+        throw new Error(`analysis failed: ${JSON.stringify(status.failed_layers || status)}`);
+      }
+      if (status.status !== 'ready') {
+        lastError = `analysis status is ${status.status || 'unknown'}`;
+        await new Promise(resolve => setTimeout(resolve, 100));
+        continue;
+      }
+      const cas = await getAnalysis(workspace);
+      const failedLayer = cas.layers_ready?.layers?.find(layer => layer.status === 'error');
+      if (failedLayer) {
+        throw new Error(`Klauro benchmark analysis failed at ${failedLayer.layer}: ${failedLayer.error || cas.ai_enrichment_error || 'unknown error'}`);
+      }
+      if (cas.layers_ready?.complete === true && cas.nodes?.length > 0) return cas;
+      lastError = 'analysis is still populating';
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error);
+    }
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  throw new Error(`Timed out waiting for accepted Klauro benchmark analysis ${analysisId}: ${lastError}`);
 }
 
 // Directory basenames never worth staging into the throwaway bench repo: VCS

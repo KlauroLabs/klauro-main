@@ -344,9 +344,17 @@ export function buildUserJourneys(input: UserJourneyInput, options: UserJourneyO
       ? findCronSchedule(entryCommandName, cronScheduleIndex)
       : undefined;
 
+    const genericBootstrapCli = entryPoint.type === 'cli' &&
+      /^(?:main|application|server|index)(?:\.[a-z0-9]+)?$/i.test(String(entryPoint.name || entryPoint.handler?.method_name || '').trim()) &&
+      effects.entitiesWritten.length === 0 &&
+      effects.entitiesRead.length === 0 &&
+      effects.messagesEmitted.length === 0 &&
+      effects.terminalEntities.length === 0 &&
+      steps.every(step => step.layer === 'entry' || step.layer === 'infrastructure');
+
     const journeyKind: CASUserJourney['journey_kind'] = (SCHEDULED_ENTRY_TYPES.has(entryPoint.type) || cronSchedule)
       ? 'scheduled'
-      : (USER_FACING_ENTRY_TYPES.has(entryPoint.type) && !isOperationalScriptEntry(entryFile))
+      : (USER_FACING_ENTRY_TYPES.has(entryPoint.type) && !isOperationalScriptEntry(entryFile) && !genericBootstrapCli)
         ? 'user-facing'
         : 'system';
 

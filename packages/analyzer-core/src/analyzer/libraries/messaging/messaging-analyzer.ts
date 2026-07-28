@@ -216,7 +216,7 @@ export class MessagingAnalyzer extends BaseAnalyzer {
       facts.edges,
       facts.entryPoints,
       facts.exitPoints,
-      this.extractImports(content),
+      this.extractImports(content, context.relativePath),
       facts.entryPoints.map(entryPoint => entryPoint.name)
     );
   }
@@ -269,8 +269,8 @@ export class MessagingAnalyzer extends BaseAnalyzer {
       }
       const relativePath = path.relative(projectPath, file);
       const ext = path.extname(file).toLowerCase();
-      const imports = this.extractImports(content);
-      const lineOf = (index: number): number => content.slice(0, index).split('\n').length;
+      const imports = this.extractImports(content, relativePath);
+      const lineOf = (index: number): number => this.sourceLineForIndex(content, index);
 
       if (['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'].includes(ext)) {
         this.extractTypeScriptMessaging(content, imports, relativePath, nodes, entryPoints, exitPoints, ensureChannelNode, addEdge, lineOf);
@@ -1037,7 +1037,7 @@ export class MessagingAnalyzer extends BaseAnalyzer {
       } catch {
         continue;
       }
-      const imports = this.extractImports(content);
+      const imports = this.extractImports(content, file);
       if (!imports.some(source => source === 'celery' || source.startsWith('celery.'))) continue;
       const taskRe = /@(?:app|celery|shared_task)(?:\.task)?(?:\([\s\S]{0,160}?\))?\s*\ndef\s+(\w+)\s*\(/g;
       let match: RegExpExecArray | null;
@@ -1056,9 +1056,12 @@ export class MessagingAnalyzer extends BaseAnalyzer {
     return directImportRe.test(content);
   }
 
-  private extractImports(content: string): string[] {
+  private extractImports(content: string, filePath: string): string[] {
+    const flavor = this.sourceImportFlavor(filePath);
+    const corpusImports = flavor ? this.sourceImports(content, flavor) : undefined;
+    if (corpusImports) return [...corpusImports];
     const imports = new Set<string>();
-    for (const line of content.split(/\r?\n/)) {
+    for (const line of this.sourceLines(content)) {
       const importMatch = line.match(/^\s*import\s+(?:.+?\s+from\s+)?['"]([^'"]+)['"]/);
       const requireMatch = line.match(/\brequire\(['"]([^'"]+)['"]\)/);
       const pythonMatch = line.match(/^\s*(?:from\s+([a-zA-Z0-9_.]+)\s+import|import\s+([a-zA-Z0-9_.]+))/);
@@ -1076,7 +1079,7 @@ export class MessagingAnalyzer extends BaseAnalyzer {
     try {
       const pkgPath = path.join(projectPath, 'package.json');
       if (await fs.pathExists(pkgPath)) {
-        const pkg = await fs.readJson(pkgPath);
+        const pkg = await this.readSourceJson<any>(pkgPath);
         for (const name of Object.keys({ ...pkg.dependencies, ...pkg.devDependencies, ...pkg.peerDependencies, ...pkg.optionalDependencies })) {
           names.add(name);
         }

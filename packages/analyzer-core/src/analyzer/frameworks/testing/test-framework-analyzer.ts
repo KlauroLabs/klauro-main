@@ -23,11 +23,11 @@ import { createYieldBudget } from '../../core/event-loop-yield';
  *   E2E     Playwright, Selenium
  *
  * Emits `test` nodes (suites carry the `suite` subcategory, cases do not — the
- * exact shape orchestrator.buildTestSuites lifts into CASTestSuite/CASTestCase),
- * reuses the 'test' CASEntryPoint kind for runnable entries, and — where the
- * subject-under-test resolves statically — a `covers` edge from the suite to the
- * imported symbol/module it exercises, so get_test_summary / find_tests can
- * answer "which tests cover this code".
+ * exact shape orchestrator.buildTestSuites lifts into CASTestSuite/CASTestCase).
+ * Test code remains outside the operational entry-point surface. When language
+ * analyzers provide test-owned AST nodes and call edges, this analyzer attaches
+ * helpers and mocks to the suite and emits exact `tests` edges to executed code;
+ * import-derived `covers` edges remain the explicitly coarser fallback.
  */
 
 type TestKind = 'unit' | 'integration' | 'e2e' | 'snapshot';
@@ -68,6 +68,14 @@ interface FrameworkRule {
   casePatterns: RegExp[];
 }
 
+interface TestCoverageTargetIndex {
+  fileNodesByPath: Map<string, string>;
+  nonTestNodesByPath: Map<string, string>;
+  nodesBySourcePath: Map<string, CASNode[]>;
+  nodesById: Map<string, CASNode>;
+  callsBySource: Map<string, Array<{ target: string; line?: number }>>;
+}
+
 export class TestFrameworkAnalyzer extends BaseAnalyzer {
   constructor() {
     super(
@@ -80,16 +88,11 @@ export class TestFrameworkAnalyzer extends BaseAnalyzer {
 
   async canAnalyze(projectPath: string): Promise<boolean> {
     try {
-      for (const rule of this.rules()) {
-        const files = await glob(rule.filePatterns, {
-          cwd: projectPath,
-          ignore: this.getIgnorePatterns({ projectPath } as AnalysisContext),
-          nodir: true
-        });
-        for (const file of files.slice(0, 40)) {
-          const content = await fs.readFile(path.join(projectPath, file), 'utf-8').catch(() => '');
-          if (this.matchesRule(rule, file, content)) return true;
-        }
+      const rules = this.rules();
+      const files = await this.discoverCandidateFiles(projectPath, this.getTestIgnorePatterns({ projectPath } as AnalysisContext), rules);
+      for (const file of files.slice(0, 200)) {
+        const content = await fs.readFile(path.join(projectPath, file), 'utf-8').catch(() => '');
+        if (rules.some(rule => this.matchesRule(rule, file, content))) return true;
       }
       return false;
     } catch {
@@ -104,11 +107,12 @@ export class TestFrameworkAnalyzer extends BaseAnalyzer {
     const exitPoints: CASExitPoint[] = [];
 
     try {
-      const ignorePatterns = this.getIgnorePatterns(context);
+      const ignorePatterns = this.getTestIgnorePatterns(context);
       const suites = await this.discoverSuites(context.projectPath, ignorePatterns);
+      const coverageTargets = this.buildCoverageTargetIndex(context.existingAnalysis);
 
       for (const suite of suites) {
-        this.emitSuite(suite, nodes, edges, entryPoints, context.existingAnalysis);
+        this.emitSuite(suite, nodes, edges, coverageTargets);
       }
 
       return this.createContribution(nodes, edges, entryPoints, exitPoints, {
@@ -128,57 +132,64 @@ export class TestFrameworkAnalyzer extends BaseAnalyzer {
 
   private async discoverSuites(projectPath: string, ignorePatterns: string[]): Promise<DiscoveredSuite[]> {
     const suites: DiscoveredSuite[] = [];
-    const claimedFiles = new Set<string>();
+    const rules = this.rules();
+    const files = await this.discoverCandidateFiles(projectPath, ignorePatterns, rules);
 
-    for (const rule of this.rules()) {
-      const files = await glob(rule.filePatterns, {
-        cwd: projectPath,
-        ignore: ignorePatterns,
-        nodir: true
+    const maybeYield = createYieldBudget();
+    for (const file of files) {
+      await maybeYield();
+      const normalized = file.replace(/\\/g, '/');
+      const absPath = path.join(projectPath, file);
+      const content = await fs.readFile(absPath, 'utf-8').catch(() => '');
+      if (!content.trim()) continue;
+
+      const rule = rules.find(candidate => this.matchesRule(candidate, normalized, content));
+      if (!rule) continue;
+      const cases = this.extractCases(rule, content);
+      if (cases.length === 0) continue;
+
+      suites.push({
+        name: this.suiteName(content, normalized, rule),
+        file: normalized,
+        absPath,
+        framework: rule.framework,
+        language: rule.language,
+        type: this.inferType(normalized, content),
+        lineCount: this.sourceLineCount(content),
+        cases,
+        imports: this.extractImports(content, rule.language)
       });
-
-      // Budget-yield per file: with the shared file-read cache warm the await
-      // resolves in a microtask (no event-loop hop), so this scan ran as one
-      // multi-second synchronous block on a whale repo. Results unchanged.
-      const maybeYield = createYieldBudget();
-      for (const file of files) {
-        await maybeYield();
-        const normalized = file.replace(/\\/g, '/');
-        // First rule to own a file wins — Jest/Cypress own their own files
-        // upstream, so we skip anything they detect via naming.
-        if (claimedFiles.has(normalized)) continue;
-
-        const absPath = path.join(projectPath, file);
-        const content = await fs.readFile(absPath, 'utf-8').catch(() => '');
-        if (!content.trim() || !this.matchesRule(rule, normalized, content)) continue;
-
-        const cases = this.extractCases(rule, content);
-        if (cases.length === 0) continue;
-
-        claimedFiles.add(normalized);
-        suites.push({
-          name: this.suiteName(content, normalized, rule),
-          file: normalized,
-          absPath,
-          framework: rule.framework,
-          language: rule.language,
-          type: this.inferType(normalized, content),
-          lineCount: content.split('\n').length,
-          cases,
-          imports: this.extractImports(content, rule.language)
-        });
-      }
     }
 
     return suites;
+  }
+
+  private async discoverCandidateFiles(
+    projectPath: string,
+    ignorePatterns: string[],
+    rules: FrameworkRule[]
+  ): Promise<string[]> {
+    return glob([...new Set([
+      ...rules.flatMap(rule => rule.filePatterns),
+      '**/{__tests__,test,tests,spec,e2e}/**/*.{js,jsx,ts,tsx,mjs,cjs}',
+    ])], {
+      cwd: projectPath,
+      ignore: ignorePatterns,
+      nodir: true,
+    });
+  }
+
+  private getTestIgnorePatterns(context: AnalysisContext): string[] {
+    return this.getIgnorePatterns(context).filter(pattern =>
+      pattern !== '__tests__/**' && pattern !== '**/__tests__/**'
+    );
   }
 
   private emitSuite(
     suite: DiscoveredSuite,
     nodes: CASNode[],
     edges: CASEdge[],
-    entryPoints: CASEntryPoint[],
-    existingAnalysis?: CASContribution[]
+    coverageTargets: TestCoverageTargetIndex,
   ): void {
     const suiteId = this.suiteNodeId(suite);
     const suiteNode = this.createNodeBuilder(suiteId, suite.name, 'test')
@@ -199,20 +210,7 @@ export class TestFrameworkAnalyzer extends BaseAnalyzer {
       .build();
     nodes.push(suiteNode);
 
-    entryPoints.push({
-      id: `entry_${suiteId}`,
-      name: `Test Suite: ${suite.name}`,
-      type: 'test',
-      source_node: suiteId,
-      metadata: {
-        file: suite.file,
-        test_type: suite.type,
-        framework: suite.framework,
-        language: suite.language,
-        testCount: suite.cases.length
-      }
-    } as CASEntryPoint);
-
+    const caseNodes: Array<{ discovered: DiscoveredCase; node: CASNode }> = [];
     suite.cases.forEach((testCase, index) => {
       const testId = `test_${suiteId}_${index}`;
       const testNode = this.createNodeBuilder(testId, testCase.name, 'test')
@@ -231,6 +229,7 @@ export class TestFrameworkAnalyzer extends BaseAnalyzer {
         })
         .build();
       nodes.push(testNode);
+      caseNodes.push({ discovered: testCase, node: testNode });
 
       edges.push(this.createEdge(
         this.generateEdgeId(suiteId, testId, 'contains'),
@@ -240,25 +239,13 @@ export class TestFrameworkAnalyzer extends BaseAnalyzer {
         'structural'
       ));
 
-      entryPoints.push({
-        id: `entry_${testId}`,
-        name: `Test: ${testCase.name}`,
-        type: 'test',
-        source_node: testId,
-        metadata: {
-          suite: suite.name,
-          test_type: suite.type,
-          framework: suite.framework,
-          language: suite.language,
-          skipped: testCase.skipped,
-          focused: testCase.focused
-        }
-      } as CASEntryPoint);
     });
+
+    this.attachDetailedTestGraph(suite, suiteNode, caseNodes, edges, coverageTargets);
 
     // covers edge: suite -> subject-under-test, gated on a real local import.
     for (const importPath of suite.imports) {
-      const targetId = this.resolveImportToNodeId(importPath, suite.file, nodes, existingAnalysis);
+      const targetId = this.resolveImportToNodeId(importPath, suite.file, coverageTargets);
       if (targetId) {
         edges.push(this.createEdge(
           this.generateEdgeId(suiteId, targetId, 'covers'),
@@ -287,14 +274,38 @@ export class TestFrameworkAnalyzer extends BaseAnalyzer {
 
   private fileMatchesPatterns(file: string, rule: FrameworkRule): boolean {
     const lower = file.toLowerCase();
-    for (const pattern of rule.filePatterns) {
-      const suffix = pattern.replace(/^\*\*\//, '').toLowerCase();
-      if (!suffix.includes('{') && !suffix.includes('*')) {
-        if (lower.endsWith(suffix)) return true;
-      }
+    switch (rule.framework) {
+      case 'vitest':
+      case 'mocha':
+      case 'jasmine':
+      case 'node:test':
+      case 'playwright':
+      case 'selenium':
+        return /\.(?:test|spec)\.(?:[cm]?[jt]sx?)$/.test(lower) ||
+          /\/(?:__tests__|test|tests|spec|e2e)\//.test(lower);
+      case 'pytest':
+      case 'unittest':
+        return /(?:^|\/)(?:test_.*|.*_test)\.py$/.test(lower) ||
+          /\/(?:test|tests)\/.*\.py$/.test(lower);
+      case 'go-test':
+        return /_test\.go$/.test(lower);
+      case 'rust-test':
+        return /(?:_test\.rs$|\/(?:tests|src)\/.*\.rs$)/.test(lower);
+      case 'junit':
+      case 'testng':
+        return /tests?\.(?:java|kt)$/.test(lower);
+      case 'xunit':
+      case 'nunit':
+        return /tests?\.cs$/.test(lower);
+      case 'rspec':
+        return /_spec\.rb$/.test(lower) || /\/spec\/.*\.rb$/.test(lower);
+      case 'minitest':
+        return /_test\.rb$/.test(lower) || /\/test\/.*\.rb$/.test(lower);
+      case 'phpunit':
+        return /test\.php$/.test(lower) || /\/tests\/.*\.php$/.test(lower);
+      default:
+        return false;
     }
-    // Fall through: glob already selected the file, so trust it.
-    return true;
   }
 
   private extractCases(rule: FrameworkRule, content: string): DiscoveredCase[] {
@@ -306,7 +317,7 @@ export class TestFrameworkAnalyzer extends BaseAnalyzer {
       let match: RegExpExecArray | null;
       while ((match = re.exec(content)) !== null) {
         const name = (match[1] || match[2] || 'anonymous test').trim();
-        const line = content.slice(0, match.index).split('\n').length;
+        const line = this.sourceLineForIndex(content, match.index);
         const key = `${name}@${line}`;
         if (seen.has(key)) continue;
         seen.add(key);
@@ -356,30 +367,182 @@ export class TestFrameworkAnalyzer extends BaseAnalyzer {
   private resolveImportToNodeId(
     importPath: string,
     testFilePath: string,
-    nodes: CASNode[],
-    existingAnalysis?: CASContribution[]
+    coverageTargets: TestCoverageTargetIndex,
   ): string | null {
     if (!importPath.startsWith('.')) return null;
-    const allNodes = [...nodes, ...(existingAnalysis?.flatMap(contribution => contribution.nodes || []) || [])];
     const candidates = this.resolveImportCandidates(importPath, testFilePath);
 
     for (const candidate of candidates) {
-      const match = allNodes.find(node =>
-        node.source?.file &&
-        (node.source.file === candidate || node.source.file.endsWith(candidate)) &&
-        node.type === 'file'
-      );
-      if (match) return match.id;
+      const match = coverageTargets.fileNodesByPath.get(this.normalizeSourcePath(candidate));
+      if (match) return match;
     }
     for (const candidate of candidates) {
-      const match = allNodes.find(node =>
-        node.source?.file &&
-        (node.source.file === candidate || node.source.file.endsWith(candidate)) &&
-        node.type !== 'test'
-      );
-      if (match) return match.id;
+      const match = coverageTargets.nonTestNodesByPath.get(this.normalizeSourcePath(candidate));
+      if (match) return match;
     }
     return null;
+  }
+
+  private buildCoverageTargetIndex(existingAnalysis?: CASContribution[]): TestCoverageTargetIndex {
+    const fileNodesByPath = new Map<string, string>();
+    const nonTestNodesByPath = new Map<string, string>();
+    const nodesBySourcePath = new Map<string, CASNode[]>();
+    const nodesById = new Map<string, CASNode>();
+    const callsBySource = new Map<string, Array<{ target: string; line?: number }>>();
+    for (const contribution of existingAnalysis || []) {
+      for (const node of contribution.nodes || []) {
+        nodesById.set(node.id, node);
+        if (!node.source?.file) continue;
+        for (const key of this.sourcePathSuffixes(node.source.file)) {
+          const sourceNodes = nodesBySourcePath.get(key) || [];
+          sourceNodes.push(node);
+          nodesBySourcePath.set(key, sourceNodes);
+        }
+        const index = node.type === 'file'
+          ? fileNodesByPath
+          : !this.isTestOwnedNode(node)
+            ? nonTestNodesByPath
+            : null;
+        if (!index) continue;
+        for (const key of this.sourcePathSuffixes(node.source.file)) {
+          if (!index.has(key)) index.set(key, node.id);
+        }
+      }
+      for (const edge of contribution.edges || []) {
+        if (edge.type !== 'calls') continue;
+        const calls = callsBySource.get(edge.source) || [];
+        const line = edge.metadata?.attributes?.line;
+        calls.push({ target: edge.target, line: typeof line === 'number' ? line : undefined });
+        callsBySource.set(edge.source, calls);
+      }
+    }
+    return { fileNodesByPath, nonTestNodesByPath, nodesBySourcePath, nodesById, callsBySource };
+  }
+
+  private attachDetailedTestGraph(
+    suite: DiscoveredSuite,
+    suiteNode: CASNode,
+    cases: Array<{ discovered: DiscoveredCase; node: CASNode }>,
+    edges: CASEdge[],
+    index: TestCoverageTargetIndex,
+  ): void {
+    const fileGraphNodes = this.graphNodesForSuite(suite, index)
+      .filter(node => node.id !== suiteNode.id && this.isTestOwnedNode(node));
+    const edgeIds = new Set(edges.map(edge => edge.id));
+
+    for (const node of fileGraphNodes) {
+      const relationship = node.type === 'mock' || node.type === 'test_double' ? 'mocks' : 'contains';
+      this.pushUniqueEdge(edges, edgeIds, this.createEdge(
+        this.generateEdgeId(suiteNode.id, node.id, relationship),
+        suiteNode.id,
+        node.id,
+        relationship,
+        relationship === 'mocks' ? 'test-relationship' : 'structural',
+        { confidence: 1, attributes: { evidence: 'same-test-source-file' } }
+      ));
+    }
+
+    const suiteTargets = this.reachableProductionTargets(fileGraphNodes.map(node => node.id), index);
+    for (const targetId of suiteTargets) {
+      this.pushExactTestEdge(edges, edgeIds, suiteNode.id, targetId, 'suite-call-graph');
+    }
+
+    for (let caseIndex = 0; caseIndex < cases.length; caseIndex++) {
+      const current = cases[caseIndex];
+      const nextLine = cases[caseIndex + 1]?.discovered.line ?? Number.POSITIVE_INFINITY;
+      const roots = fileGraphNodes.filter(node => {
+        const line = node.source?.line;
+        const endLine = node.source?.end_line ?? line;
+        return line !== undefined && (
+          (line <= current.discovered.line && (endLine ?? line) >= current.discovered.line) ||
+          (line >= current.discovered.line && line < nextLine)
+        );
+      });
+      for (const targetId of this.reachableProductionTargets(
+        roots.map(node => node.id),
+        index,
+        { start: current.discovered.line, end: nextLine }
+      )) {
+        this.pushExactTestEdge(edges, edgeIds, current.node.id, targetId, 'case-call-graph');
+      }
+    }
+  }
+
+  private graphNodesForSuite(suite: DiscoveredSuite, index: TestCoverageTargetIndex): CASNode[] {
+    const matches = new Map<string, CASNode>();
+    for (const sourcePath of [suite.absPath, suite.file]) {
+      for (const node of index.nodesBySourcePath.get(this.normalizeSourcePath(sourcePath)) || []) {
+        matches.set(node.id, node);
+      }
+    }
+    return [...matches.values()];
+  }
+
+  private reachableProductionTargets(
+    startNodeIds: string[],
+    index: TestCoverageTargetIndex,
+    rootCallLines?: { start: number; end: number },
+  ): Set<string> {
+    const targets = new Set<string>();
+    const visited = new Set<string>();
+    const queue = [...new Set(startNodeIds)].map(id => ({ id, root: true }));
+    while (queue.length > 0) {
+      const { id: sourceId, root } = queue.shift()!;
+      if (visited.has(sourceId)) continue;
+      visited.add(sourceId);
+      for (const call of index.callsBySource.get(sourceId) || []) {
+        if (root && rootCallLines && call.line !== undefined &&
+            (call.line < rootCallLines.start || call.line >= rootCallLines.end)) continue;
+        const target = index.nodesById.get(call.target);
+        if (!target) continue;
+        if (this.isTestOwnedNode(target)) queue.push({ id: call.target, root: false });
+        else targets.add(call.target);
+      }
+    }
+    return targets;
+  }
+
+  private isTestOwnedNode(node: CASNode): boolean {
+    return node.metadata?.is_test === true ||
+      node.category === 'test' ||
+      ['test', 'mock', 'test_double', 'test_fixture'].includes(node.type);
+  }
+
+  private pushExactTestEdge(
+    edges: CASEdge[],
+    edgeIds: Set<string>,
+    sourceId: string,
+    targetId: string,
+    evidence: string,
+  ): void {
+    this.pushUniqueEdge(edges, edgeIds, this.createEdge(
+      this.generateEdgeId(sourceId, targetId, 'tests'),
+      sourceId,
+      targetId,
+      'tests',
+      'test-relationship',
+      { confidence: 1, attributes: { evidence, exact: true } }
+    ));
+  }
+
+  private pushUniqueEdge(edges: CASEdge[], edgeIds: Set<string>, edge: CASEdge): void {
+    if (edgeIds.has(edge.id)) return;
+    edgeIds.add(edge.id);
+    edges.push(edge);
+  }
+
+  private sourcePathSuffixes(filePath: string): string[] {
+    const normalized = this.normalizeSourcePath(filePath);
+    const keys = [normalized];
+    for (let index = normalized.indexOf('/'); index >= 0; index = normalized.indexOf('/', index + 1)) {
+      const suffix = normalized.slice(index + 1);
+      if (suffix) keys.push(suffix);
+    }
+    return keys;
+  }
+
+  private normalizeSourcePath(filePath: string): string {
+    return path.normalize(filePath).replace(/\\/g, '/').replace(/^\.\//, '');
   }
 
   private resolveImportCandidates(importPath: string, testFilePath: string): string[] {

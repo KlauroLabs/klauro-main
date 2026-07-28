@@ -1,6 +1,6 @@
 import * as path from 'path';
 import type { CASOutput } from '../../types/cas.types';
-import { createYieldBudget } from './event-loop-yield';
+import { ANALYSIS_YIELD_BUDGET_MS, yieldToEventLoop } from './event-loop-yield';
 
 const MAX_PATH_STRING_LENGTH = 1024;
 
@@ -22,34 +22,43 @@ export async function relativizeProjectPaths(output: CASOutput, projectRoot: str
   // Budget-yield during the walk: rewriting a whale CAS (76k nodes, ~250MB
   // object graph) synchronously was a measured ~2s event-loop stall in the
   // in-process analyzer+HTTP server. Traversal order and results unchanged.
-  await relativizeValue(output, [...prefixes], createYieldBudget());
+  await relativizeValue(output, [...prefixes]);
   if (output.system && rootPath !== undefined) {
     output.system.root_path = rootPath;
   }
 }
 
-async function relativizeValue(value: unknown, prefixes: string[], maybeYield: () => Promise<void>): Promise<void> {
-  if (Array.isArray(value)) {
-    await maybeYield();
-    for (let index = 0; index < value.length; index++) {
-      const item = value[index];
-      if (typeof item === 'string') {
-        value[index] = relativizeString(item, prefixes);
-      } else {
-        await relativizeValue(item, prefixes, maybeYield);
+async function relativizeValue(value: unknown, prefixes: string[]): Promise<void> {
+  const pending: unknown[] = [value];
+  let lastYieldAt = Date.now();
+  let visitedSinceClockCheck = 0;
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (!current || typeof current !== 'object') continue;
+
+    if (Array.isArray(current)) {
+      for (let index = 0; index < current.length; index++) {
+        const item = current[index];
+        if (typeof item === 'string') current[index] = relativizeString(item, prefixes);
+        else if (item && typeof item === 'object') pending.push(item);
+      }
+    } else {
+      const record = current as Record<string, unknown>;
+      for (const key of Object.keys(record)) {
+        const child = record[key];
+        if (typeof child === 'string') record[key] = relativizeString(child, prefixes);
+        else if (child && typeof child === 'object') pending.push(child);
       }
     }
-    return;
-  }
-  if (!value || typeof value !== 'object') return;
-  await maybeYield();
-  const record = value as Record<string, unknown>;
-  for (const key of Object.keys(record)) {
-    const child = record[key];
-    if (typeof child === 'string') {
-      record[key] = relativizeString(child, prefixes);
-    } else {
-      await relativizeValue(child, prefixes, maybeYield);
+
+    visitedSinceClockCheck++;
+    if (visitedSinceClockCheck >= 512) {
+      visitedSinceClockCheck = 0;
+      const now = Date.now();
+      if (now - lastYieldAt >= ANALYSIS_YIELD_BUDGET_MS) {
+        await yieldToEventLoop();
+        lastYieldAt = Date.now();
+      }
     }
   }
 }

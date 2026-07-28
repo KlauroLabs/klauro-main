@@ -10,6 +10,8 @@ import {
   resolveAnalysisHeapMb,
 } from './analysis-heap';
 import {
+  __analysisWorkerRunningForTests,
+  analysisWorkerExecArgv,
   analysisRunsInProcess,
   runAnalysis,
   shutdownAnalysisWorker,
@@ -107,6 +109,13 @@ test('analysisRunsInProcess respects the fallback flag', () => {
   assert.strictEqual(analysisRunsInProcess({ KLAURO_ANALYSIS_IN_PROCESS: '0' }), false);
 });
 
+test('analysis worker removes parent eval payloads while preserving runtime loaders', () => {
+  assert.deepStrictEqual(
+    analysisWorkerExecArgv(['--require', 'tsx/preflight.cjs', '-e', 'runBenchmark()', '--max-old-space-size=1024', '--trace-warnings']),
+    ['--require', 'tsx/preflight.cjs', '--trace-warnings'],
+  );
+});
+
 test('worker success path: analysis runs in a child process, stores results, and logs run-complete', async () => {
   const summary = await runAnalysis(fixtureProject, { forceFull: true });
 
@@ -128,6 +137,18 @@ test('worker incremental path returns a change summary shape', async () => {
   assert.ok(summary.changeReport, 'expected a change report from the incremental path');
 });
 
+test('idle hosted worker exits after its warm reuse window', async () => {
+  process.env.KLAURO_ANALYSIS_WORKER_IDLE_MS = '10';
+  try {
+    await runAnalysis(fixtureProject);
+    assert.strictEqual(__analysisWorkerRunningForTests(), true);
+    await new Promise(resolve => setTimeout(resolve, 50));
+    assert.strictEqual(__analysisWorkerRunningForTests(), false);
+  } finally {
+    delete process.env.KLAURO_ANALYSIS_WORKER_IDLE_MS;
+  }
+});
+
 test('worker crash: server survives, gets a clear error, and a run-failed record is written', async () => {
   process.env.KLAURO_TEST_ANALYSIS_WORKER_CRASH = 'sigkill';
   try {
@@ -136,7 +157,6 @@ test('worker crash: server survives, gets a clear error, and a run-failed record
       (error: Error) => {
         assert.match(error.message, /Analysis worker for .* killed by signal SIGKILL/);
         assert.match(error.message, /KLAURO_ANALYSIS_HEAP_MB=\d+/);
-        assert.match(error.message, /agent-fast/);
         assert.match(error.message, /run-failed record/);
         return true;
       },

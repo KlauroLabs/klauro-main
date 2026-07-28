@@ -34,8 +34,24 @@ manifest_int_field() {
 }
 NODE_MIN="$(manifest_int_field min_node)"
 NODE_MAX="$(manifest_int_field max_node)"
-[ -n "${NODE_MIN}" ] || NODE_MIN="${NODE_MIN_DEFAULT}"
-[ -n "${NODE_MAX}" ] || NODE_MAX="${NODE_MAX_DEFAULT}"
+
+# Treat the hosted range as one atomic, bounded contract. A partially written,
+# stale, or malformed manifest must never loosen the local safety gate. The
+# hosted client bundle has no native analyzer dependencies, so a valid newer
+# release may widen the ceiling (currently through Node 24) without replacing
+# this installer; contradictory values fall back to its baked-in range.
+case "${NODE_MIN}:${NODE_MAX}" in
+  *[!0-9:]*|:|*:|*:*:*)
+    NODE_MIN="${NODE_MIN_DEFAULT}"
+    NODE_MAX="${NODE_MAX_DEFAULT}"
+    ;;
+  *)
+    if [ "${NODE_MIN}" -lt 1 ] || [ "${NODE_MAX}" -lt "${NODE_MIN}" ] || [ "${NODE_MAX}" -gt 99 ]; then
+      NODE_MIN="${NODE_MIN_DEFAULT}"
+      NODE_MAX="${NODE_MAX_DEFAULT}"
+    fi
+    ;;
+esac
 
 if ! command -v node >/dev/null 2>&1; then
   echo "Error: Node.js is not installed."

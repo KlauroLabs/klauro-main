@@ -1,4 +1,4 @@
-import { DEEPINFRA_OPENAI_BASE_URL, describeConfiguredAIProvider, getAIConfig } from '../../config/ai.config';
+import { DEEPINFRA_OPENAI_BASE_URL, describeConfiguredAIProvider, getAIConfig, getAIProviderChain } from '../../config/ai.config';
 
 const AI_ENV_KEYS = [
   'OPENAI_API_KEY',
@@ -105,5 +105,40 @@ describe('getAIConfig', () => {
     expect(provider.provider).toBe('deepinfra');
     expect(provider.baseURL).toBe(DEEPINFRA_OPENAI_BASE_URL);
     expect(provider.model).toBe('Qwen/Qwen2.5-72B-Instruct');
+  });
+
+  it('builds a hosted 70B-to-structured-model failover chain from production OPENAI_* variables', () => {
+    const chain = getAIProviderChain({
+      OPENAI_BASE_URL: DEEPINFRA_OPENAI_BASE_URL,
+      OPENAI_API_KEY: 'deepinfra-key',
+      OPENAI_MODEL: 'meta-llama/Llama-3.3-70B-Instruct-Turbo',
+      OPENAI_STRUCTURED_MODEL: 'meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo',
+    });
+    expect(chain.map(entry => entry.name)).toEqual(['deepinfra', 'deepinfra-fast-fallback', 'deepinfra-retry']);
+    expect(chain[0].model).toContain('70B');
+    expect(chain[1].model).toContain('8B');
+  });
+
+  it('adds one bounded fresh attempt when DeepInfra uses one model for both response shapes', () => {
+    const chain = getAIProviderChain({
+      DEEPINFRA_API_KEY: 'deepinfra-key',
+      DEEPINFRA_MODEL: 'mistralai/Mistral-Small-3.2-24B-Instruct-2506',
+      DEEPINFRA_STRUCTURED_MODEL: 'mistralai/Mistral-Small-3.2-24B-Instruct-2506',
+    });
+    expect(chain.map(entry => entry.name)).toEqual(['deepinfra', 'deepinfra-fast-fallback', 'deepinfra-retry']);
+    expect(chain[1].model).toBe('meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo');
+    expect(chain[2].model).toBe('mistralai/Mistral-Small-3.2-24B-Instruct-2506');
+  });
+
+  it('never enables local inference unless analyzer development explicitly opts in', () => {
+    expect(getAIProviderChain({
+      DEEPINFRA_API_KEY: 'deepinfra-key',
+      LOCAL_LLM_BASE_URL: 'http://127.0.0.1:11434/v1',
+    }).map(entry => entry.name)).not.toContain('local-llm');
+    expect(getAIProviderChain({
+      DEEPINFRA_API_KEY: 'deepinfra-key',
+      KLAURO_ALLOW_LOCAL_AI: '1',
+      LOCAL_LLM_BASE_URL: 'http://127.0.0.1:11434/v1',
+    }).map(entry => entry.name)).toContain('local-llm');
   });
 });

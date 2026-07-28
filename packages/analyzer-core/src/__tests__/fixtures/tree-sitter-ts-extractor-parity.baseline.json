@@ -1,0 +1,608 @@
+{
+  "baseline_commit": "2235c82c0370ec16ed996c71f6c17af1c657d03b",
+  "extractor_blob_sha256": "9289694b7b69787a053db8444082447e74c20226d9c103e7f006af5bdf16f50f",
+  "source_sha256": "ec48ee6a5a4a0e91a9c717bc312aa647fc755da2955a14ebc2cf31e890227eca",
+  "output": {
+    "imports": [
+      {
+        "source": "@scope/client",
+        "specifiers": [
+          {
+            "name": "Client",
+            "isDefault": true
+          },
+          {
+            "name": "Service",
+            "imported": "Injectable"
+          },
+          {
+            "name": "LIMITS"
+          },
+          {
+            "name": "RemoteError"
+          }
+        ],
+        "line": 1,
+        "isTypeOnly": false
+      },
+      {
+        "source": "./local-helper",
+        "specifiers": [
+          {
+            "name": "localHelper"
+          }
+        ],
+        "line": 2,
+        "isTypeOnly": false
+      }
+    ],
+    "functions": [
+      {
+        "name": "choose",
+        "signature": "function choose(flag: boolean): number",
+        "file": "golden.ts",
+        "lineStart": 40,
+        "lineEnd": 46,
+        "columnStart": 7,
+        "columnEnd": 1,
+        "type": "function",
+        "isAsync": false,
+        "isGenerator": false,
+        "isExported": true,
+        "isStatic": false,
+        "parameters": [
+          {
+            "name": "flag",
+            "type": "boolean",
+            "optional": false
+          }
+        ],
+        "returnType": "number",
+        "calls": [
+          {
+            "target": "nested",
+            "targetType": "function",
+            "line": 45,
+            "column": 16,
+            "argumentCount": 0,
+            "isAsync": false,
+            "isConditional": true,
+            "isInLoop": false,
+            "callExpression": "nested()",
+            "context": {
+              "enclosingFunction": "choose",
+              "blockDepth": 1,
+              "isInTry": false,
+              "isInCatch": false,
+              "isInFinally": false,
+              "isInCallback": false,
+              "isInPromise": false,
+              "conditionalDepth": 1,
+              "loopDepth": 0
+            }
+          },
+          {
+            "target": "LIMITS",
+            "targetType": "property",
+            "line": 42,
+            "column": 21,
+            "argumentCount": 0,
+            "isAsync": false,
+            "isConditional": true,
+            "isInLoop": false,
+            "callExpression": "LIMITS",
+            "context": {
+              "enclosingFunction": "choose",
+              "blockDepth": 0,
+              "isInTry": false,
+              "isInCatch": false,
+              "isInFinally": false,
+              "isInCallback": false,
+              "isInPromise": false,
+              "conditionalDepth": 1,
+              "loopDepth": 0
+            }
+          },
+          {
+            "target": "RemoteError",
+            "targetType": "property",
+            "line": 43,
+            "column": 14,
+            "argumentCount": 0,
+            "isAsync": false,
+            "isConditional": false,
+            "isInLoop": false,
+            "callExpression": "RemoteError",
+            "context": {
+              "enclosingFunction": "choose",
+              "blockDepth": 0,
+              "isInTry": false,
+              "isInCatch": false,
+              "isInFinally": false,
+              "isInCallback": false,
+              "isInPromise": false,
+              "conditionalDepth": 0,
+              "loopDepth": 0
+            }
+          }
+        ],
+        "complexity": 3,
+        "decorators": [],
+        "decoratorArgs": [],
+        "isAnonymousCallback": false
+      },
+      {
+        "name": "nested",
+        "signature": "function nested()",
+        "file": "golden.ts",
+        "lineStart": 41,
+        "lineEnd": 44,
+        "columnStart": 17,
+        "columnEnd": 3,
+        "type": "arrow",
+        "isAsync": false,
+        "isGenerator": false,
+        "isExported": false,
+        "isStatic": false,
+        "parameters": [],
+        "calls": [
+          {
+            "target": "LIMITS",
+            "targetType": "property",
+            "line": 42,
+            "column": 21,
+            "argumentCount": 0,
+            "isAsync": false,
+            "isConditional": true,
+            "isInLoop": false,
+            "callExpression": "LIMITS",
+            "context": {
+              "enclosingFunction": "nested",
+              "blockDepth": 0,
+              "isInTry": false,
+              "isInCatch": false,
+              "isInFinally": false,
+              "isInCallback": false,
+              "isInPromise": false,
+              "conditionalDepth": 1,
+              "loopDepth": 0
+            }
+          },
+          {
+            "target": "RemoteError",
+            "targetType": "property",
+            "line": 43,
+            "column": 14,
+            "argumentCount": 0,
+            "isAsync": false,
+            "isConditional": false,
+            "isInLoop": false,
+            "callExpression": "RemoteError",
+            "context": {
+              "enclosingFunction": "nested",
+              "blockDepth": 0,
+              "isInTry": false,
+              "isInCatch": false,
+              "isInFinally": false,
+              "isInCallback": false,
+              "isInPromise": false,
+              "conditionalDepth": 0,
+              "loopDepth": 0
+            }
+          }
+        ],
+        "complexity": 2,
+        "decorators": [],
+        "decoratorArgs": [],
+        "throws": [
+          "RemoteError"
+        ],
+        "isAnonymousCallback": false
+      },
+      {
+        "name": "format",
+        "signature": "function format(value: string)",
+        "file": "golden.ts",
+        "lineStart": 31,
+        "lineEnd": 37,
+        "columnStart": 2,
+        "columnEnd": 3,
+        "type": "method",
+        "isAsync": false,
+        "isGenerator": false,
+        "isExported": false,
+        "isStatic": false,
+        "parameters": [
+          {
+            "name": "value",
+            "type": "string",
+            "optional": false
+          }
+        ],
+        "calls": [
+          {
+            "target": "localHelper",
+            "targetType": "function",
+            "line": 33,
+            "column": 13,
+            "argumentCount": 1,
+            "isAsync": false,
+            "isConditional": false,
+            "isInLoop": false,
+            "callExpression": "localHelper(value ?? 'none')",
+            "context": {
+              "enclosingFunction": "format",
+              "blockDepth": 2,
+              "isInTry": true,
+              "isInCatch": false,
+              "isInFinally": false,
+              "isInCallback": false,
+              "isInPromise": false,
+              "conditionalDepth": 0,
+              "loopDepth": 0
+            }
+          },
+          {
+            "target": "RemoteError",
+            "targetType": "external",
+            "line": 35,
+            "column": 12,
+            "argumentCount": 1,
+            "isAsync": false,
+            "isConditional": false,
+            "isInLoop": false,
+            "callExpression": "RemoteError(error)",
+            "context": {
+              "enclosingFunction": "format",
+              "blockDepth": 2,
+              "isInTry": true,
+              "isInCatch": true,
+              "isInFinally": false,
+              "isInCallback": false,
+              "isInPromise": false,
+              "conditionalDepth": 0,
+              "loopDepth": 0
+            }
+          }
+        ],
+        "complexity": 3,
+        "decorators": [],
+        "decoratorArgs": [],
+        "throws": [
+          "RemoteError"
+        ],
+        "isAnonymousCallback": false
+      }
+    ],
+    "classes": [
+      {
+        "name": "BaseRunner",
+        "kind": "class",
+        "implements": [
+          "Runnable"
+        ],
+        "methods": [
+          {
+            "name": "constructor",
+            "signature": "function constructor(client: Client)",
+            "file": "golden.ts",
+            "lineStart": 12,
+            "lineEnd": 12,
+            "columnStart": 2,
+            "columnEnd": 49,
+            "type": "constructor",
+            "isAsync": false,
+            "isGenerator": false,
+            "isExported": false,
+            "isStatic": false,
+            "className": "BaseRunner",
+            "parameters": [
+              {
+                "name": "client",
+                "type": "Client",
+                "optional": false
+              }
+            ],
+            "calls": [
+              {
+                "target": "Service",
+                "targetType": "property",
+                "line": 7,
+                "column": 1,
+                "argumentCount": 0,
+                "isAsync": false,
+                "isConditional": false,
+                "isInLoop": false,
+                "callExpression": "Service",
+                "context": {
+                  "enclosingFunction": "BaseRunner",
+                  "enclosingClass": "BaseRunner",
+                  "blockDepth": 0,
+                  "isInTry": false,
+                  "isInCatch": false,
+                  "isInFinally": false,
+                  "isInCallback": false,
+                  "isInPromise": false,
+                  "conditionalDepth": 0,
+                  "loopDepth": 0
+                }
+              }
+            ],
+            "complexity": 1,
+            "decorators": [],
+            "decoratorArgs": [],
+            "isAnonymousCallback": false
+          },
+          {
+            "name": "run",
+            "signature": "async function run(input: string = 'default'): Promise<string>",
+            "file": "golden.ts",
+            "lineStart": 15,
+            "lineEnd": 25,
+            "columnStart": 2,
+            "columnEnd": 3,
+            "type": "method",
+            "isAsync": true,
+            "isGenerator": false,
+            "isExported": false,
+            "isStatic": false,
+            "className": "BaseRunner",
+            "parameters": [
+              {
+                "name": "input",
+                "type": "string",
+                "optional": true,
+                "defaultValue": "'default'"
+              }
+            ],
+            "returnType": "Promise<string>",
+            "calls": [
+              {
+                "target": "this.client.send",
+                "targetType": "method",
+                "line": 18,
+                "column": 14,
+                "argumentCount": 1,
+                "isAsync": true,
+                "isConditional": true,
+                "isInLoop": true,
+                "callExpression": "this.client.send(item)",
+                "context": {
+                  "enclosingFunction": "run",
+                  "enclosingClass": "BaseRunner",
+                  "blockDepth": 3,
+                  "isInTry": false,
+                  "isInCatch": false,
+                  "isInFinally": false,
+                  "isInCallback": false,
+                  "isInPromise": false,
+                  "conditionalDepth": 1,
+                  "loopDepth": 1
+                }
+              },
+              {
+                "target": "Promise.resolve(input).then",
+                "targetType": "method",
+                "line": 24,
+                "column": 11,
+                "argumentCount": 1,
+                "isAsync": false,
+                "isConditional": false,
+                "isInLoop": false,
+                "callExpression": "Promise.resolve(input).then((value) => localHelper(value))",
+                "context": {
+                  "enclosingFunction": "run",
+                  "enclosingClass": "BaseRunner",
+                  "blockDepth": 1,
+                  "isInTry": false,
+                  "isInCatch": false,
+                  "isInFinally": false,
+                  "isInCallback": false,
+                  "isInPromise": false,
+                  "conditionalDepth": 0,
+                  "loopDepth": 0
+                }
+              },
+              {
+                "target": "Promise.resolve",
+                "targetType": "method",
+                "line": 24,
+                "column": 11,
+                "argumentCount": 1,
+                "isAsync": false,
+                "isConditional": false,
+                "isInLoop": false,
+                "callExpression": "Promise.resolve(input)",
+                "context": {
+                  "enclosingFunction": "run",
+                  "enclosingClass": "BaseRunner",
+                  "blockDepth": 1,
+                  "isInTry": false,
+                  "isInCatch": false,
+                  "isInFinally": false,
+                  "isInCallback": false,
+                  "isInPromise": true,
+                  "conditionalDepth": 0,
+                  "loopDepth": 0
+                }
+              },
+              {
+                "target": "localHelper",
+                "targetType": "function",
+                "line": 24,
+                "column": 50,
+                "argumentCount": 1,
+                "isAsync": false,
+                "isConditional": false,
+                "isInLoop": false,
+                "callExpression": "localHelper(value)",
+                "context": {
+                  "enclosingFunction": "run",
+                  "enclosingClass": "BaseRunner",
+                  "blockDepth": 1,
+                  "isInTry": false,
+                  "isInCatch": false,
+                  "isInFinally": false,
+                  "isInCallback": true,
+                  "isInPromise": true,
+                  "conditionalDepth": 0,
+                  "loopDepth": 0
+                }
+              },
+              {
+                "target": "LIMITS",
+                "targetType": "property",
+                "line": 16,
+                "column": 8,
+                "argumentCount": 0,
+                "isAsync": false,
+                "isConditional": true,
+                "isInLoop": false,
+                "callExpression": "LIMITS",
+                "context": {
+                  "enclosingFunction": "run",
+                  "enclosingClass": "BaseRunner",
+                  "blockDepth": 0,
+                  "isInTry": false,
+                  "isInCatch": false,
+                  "isInFinally": false,
+                  "isInCallback": false,
+                  "isInPromise": false,
+                  "conditionalDepth": 1,
+                  "loopDepth": 0
+                }
+              },
+              {
+                "target": "RemoteError",
+                "targetType": "property",
+                "line": 21,
+                "column": 16,
+                "argumentCount": 0,
+                "isAsync": false,
+                "isConditional": true,
+                "isInLoop": false,
+                "callExpression": "RemoteError",
+                "context": {
+                  "enclosingFunction": "run",
+                  "enclosingClass": "BaseRunner",
+                  "blockDepth": 0,
+                  "isInTry": false,
+                  "isInCatch": false,
+                  "isInFinally": false,
+                  "isInCallback": false,
+                  "isInPromise": false,
+                  "conditionalDepth": 1,
+                  "loopDepth": 0
+                }
+              }
+            ],
+            "complexity": 4,
+            "decorators": [],
+            "decoratorArgs": [],
+            "documentation": "/** Execute one request. */",
+            "throws": [
+              "RemoteError"
+            ],
+            "isAnonymousCallback": false
+          }
+        ],
+        "properties": [
+          {
+            "name": "name",
+            "type": "string",
+            "isStatic": false,
+            "isPrivate": false,
+            "isReadonly": true,
+            "isOptional": true,
+            "lineStart": 9,
+            "lineEnd": 10,
+            "decorators": [],
+            "decoratorArgs": [
+              {
+                "name": "Service",
+                "args": [
+                  {
+                    "name": "0",
+                    "value": "token",
+                    "type": "string"
+                  }
+                ]
+              }
+            ],
+            "defaultValue": "'runner'"
+          }
+        ],
+        "lineStart": 8,
+        "lineEnd": 28,
+        "isExported": true,
+        "isAbstract": true,
+        "decorators": [
+          "Service"
+        ],
+        "decoratorArgs": [
+          {
+            "name": "Service",
+            "args": [
+              {
+                "name": "retries",
+                "value": 2,
+                "type": "number"
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "variables": [
+      {
+        "name": "moduleValue",
+        "type": "number",
+        "value": "3",
+        "kind": "const",
+        "line": 5,
+        "isExported": true
+      },
+      {
+        "name": "helpers",
+        "type": "string",
+        "value": "{\n  format(value: string) {\n    try {\n      return localHelper(value ?? 'none');\n    } catch (error) {\n      throw RemoteError(error);\n    }\n  },\n}",
+        "kind": "const",
+        "line": 30,
+        "isExported": true
+      }
+    ],
+    "exports": [
+      {
+        "name": "moduleValue",
+        "isDefault": false,
+        "isReExport": false,
+        "line": 5
+      },
+      {
+        "name": "helpers",
+        "isDefault": false,
+        "isReExport": false,
+        "line": 30
+      },
+      {
+        "name": "choose",
+        "isDefault": false,
+        "isReExport": false,
+        "line": 40
+      }
+    ],
+    "comments": [
+      {
+        "type": "jsdoc",
+        "text": "/** Module-level documentation. */",
+        "line": 4
+      },
+      {
+        "type": "jsdoc",
+        "text": "/** Execute one request. */",
+        "line": 14
+      }
+    ],
+    "hasSyntaxErrors": false
+  }
+}

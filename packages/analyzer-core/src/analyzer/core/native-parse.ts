@@ -9,6 +9,7 @@
  * its own world. This is how breadth reaches the long tail without wasm ABI pain.
  */
 import { execFileSync } from 'child_process';
+import { accessSync, readFileSync } from 'fs';
 import * as path from 'path';
 
 /** Languages compiled into the klauro-parse binary (extend as grammars are added). */
@@ -37,12 +38,35 @@ let binaryOk: boolean | null = null;
 function binaryAvailable(): boolean {
   if (binaryOk !== null) return binaryOk;
   try {
-    require('fs').accessSync(binaryPath());
-    binaryOk = true;
+    accessSync(binaryPath());
+    binaryOk = binaryMatchesRuntime(readFileSync(binaryPath(), { encoding: null, flag: 'r' }).subarray(0, 32));
   } catch {
     binaryOk = false;
   }
   return binaryOk;
+}
+
+export function binaryMatchesRuntime(header: Uint8Array): boolean {
+  if (process.platform === 'linux') {
+    if (header[0] !== 0x7f || header[1] !== 0x45 || header[2] !== 0x4c || header[3] !== 0x46) return false;
+    const littleEndian = header[5] === 1;
+    const machine = littleEndian
+      ? header[18] | (header[19] << 8)
+      : (header[18] << 8) | header[19];
+    return machine === ({ x64: 62, arm64: 183 } as Record<string, number>)[process.arch];
+  }
+  if (process.platform === 'darwin') {
+    const magic = [header[0], header[1], header[2], header[3]].map(byte => byte?.toString(16).padStart(2, '0')).join('');
+    if (!['feedface', 'feedfacf', 'cefaedfe', 'cffaedfe', 'cafebabe', 'bebafeca'].includes(magic)) return false;
+    if (magic === 'cafebabe' || magic === 'bebafeca') return true;
+    const littleEndian = magic === 'cefaedfe' || magic === 'cffaedfe';
+    const cpu = littleEndian
+      ? header[4] | (header[5] << 8) | (header[6] << 16) | (header[7] << 24)
+      : (header[4] << 24) | (header[5] << 16) | (header[6] << 8) | header[7];
+    return (cpu >>> 0) === ({ x64: 0x01000007, arm64: 0x0100000c } as Record<string, number>)[process.arch];
+  }
+  if (process.platform === 'win32') return header[0] === 0x4d && header[1] === 0x5a;
+  return false;
 }
 
 export function hasNativeGrammar(lang: string): boolean {

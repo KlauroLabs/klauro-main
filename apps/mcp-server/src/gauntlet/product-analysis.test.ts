@@ -28,6 +28,7 @@ import { saveAnalysis, loadAnalysis, getAnalysisEntry } from '../storage';
 
 let workspaceRoot: string;
 let fixtureProject: string;
+let previousBenchCache: string | undefined;
 
 function writeFixtureProject(root: string, name: string): string {
   const projectDir = path.join(root, name);
@@ -62,6 +63,8 @@ before(() => {
   fixtureProject = writeFixtureProject(workspaceRoot, 'read-purity-fixture');
   process.env.KLAURO_STORAGE_PATH = path.join(workspaceRoot, 'storage');
   process.env.KLAURO_LOG_DIR = path.join(workspaceRoot, 'logs');
+  previousBenchCache = process.env.KLAURO_BENCH_CAS_CACHE_DIR;
+  process.env.KLAURO_BENCH_CAS_CACHE_DIR = path.join(workspaceRoot, 'bench-cache');
   process.env.KLAURO_EMBEDDING_ENABLED = 'false';
   // The bench must behave as an AI-less reader: no provider configured.
   delete process.env.OPENAI_API_KEY;
@@ -71,6 +74,8 @@ before(() => {
 });
 
 after(() => {
+  if (previousBenchCache === undefined) delete process.env.KLAURO_BENCH_CAS_CACHE_DIR;
+  else process.env.KLAURO_BENCH_CAS_CACHE_DIR = previousBenchCache;
   fs.rmSync(workspaceRoot, { recursive: true, force: true });
 });
 
@@ -126,4 +131,23 @@ test('analyzeForBench still seeds the local cache when no analysis is stored', a
   assert.ok(entry, 'bench run should seed the empty slot so getAnalysis/MCP flows find it');
   const stored: any = await loadAnalysis(emptySlotProject);
   assert.equal(stored?.system?.name, 'seed-fixture');
+});
+
+test('analyzeForBench reuses exact run-scoped fixture CAS without re-running analysis', async () => {
+  const project = writeFixtureProject(workspaceRoot, 'memoized-fixture');
+  const cacheDir = process.env.KLAURO_BENCH_CAS_CACHE_DIR!;
+  const before = new Set(await fs.readdir(cacheDir).catch(() => []));
+  const first = await analyzeForBench(project);
+  const cacheFiles = (await fs.readdir(cacheDir)).filter(file => file.endsWith('.cas.json.gz') && !before.has(file));
+  assert.equal(cacheFiles.length, 1, 'first analysis should populate one run-scoped CAS cache entry');
+  const cacheFile = path.join(cacheDir, cacheFiles[0]);
+  const writtenAt = (await fs.stat(cacheFile)).mtimeMs;
+
+  await new Promise(resolve => setTimeout(resolve, 25));
+  const second = await analyzeForBench(project);
+
+  assert.equal(second.analysis_timestamp, first.analysis_timestamp);
+  assert.equal((await fs.stat(cacheFile)).mtimeMs, writtenAt, 'cache hit must not rewrite the cached CAS');
+  assert.deepEqual(second.nodes, first.nodes);
+  assert.deepEqual(second.edges, first.edges);
 });

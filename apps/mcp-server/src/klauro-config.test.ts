@@ -587,7 +587,6 @@ test('remote analyzer policy (allowRemoteAnalyzer / allowedAnalyzerHosts) is enf
 });
 
 test('product analysis stays hosted regardless of repo policy flags', () => {
-  delete process.env.KLAURO_ALLOW_LOCAL_ANALYSIS;
   const config = defaultKlauroConfig('/tmp/example-project');
   config.analyzer.serverUrl = 'https://mcp.klauro.com';
   const loaded: LoadedKlauroConfig = { config, ignorePatterns: [] };
@@ -595,19 +594,16 @@ test('product analysis stays hosted regardless of repo policy flags', () => {
   // Default is UNSET (derive), not false.
   assert.equal(config.policy.requireRemoteAnalyzer, undefined);
 
-  // Both legacy policy values refuse. Only the process-level developer hatch
-  // can deliberately enable a local analyzer.
+  // Both legacy policy values refuse.
   config.policy.requireRemoteAnalyzer = true;
   assert.throws(() => assertLocalAnalysisAllowed(loaded), /analyze_codebase_remote/);
   assert.throws(() => assertLocalAnalysisAllowed(loaded), /mcp\.klauro\.com/);
 
   config.policy.requireRemoteAnalyzer = false;
-  assert.throws(() => assertLocalAnalysisAllowed(loaded), /development-only/);
+  assert.throws(() => assertLocalAnalysisAllowed(loaded), /not a customer execution mode/);
 });
 
 test('product analysis stays hosted for bound and unbound folders', () => {
-  delete process.env.KLAURO_ALLOW_LOCAL_ANALYSIS;
-
   const unbound = defaultKlauroConfig('/tmp/example-project');
   assert.equal(unbound.policy.requireRemoteAnalyzer, undefined);
   assert.equal(unbound.project.id, undefined);
@@ -619,20 +615,14 @@ test('product analysis stays hosted for bound and unbound folders', () => {
   assert.throws(() => assertLocalAnalysisAllowed({ config: bound, ignorePatterns: [] }), /analyze_codebase_remote/);
 });
 
-test('prod-exclusive: KLAURO_ALLOW_LOCAL_ANALYSIS env hatch force-allows even a bound/required repo', () => {
+test('repository flags cannot bypass the customer hosted-only boundary', () => {
   const bound = defaultKlauroConfig('/tmp/example-project');
   bound.project.id = 'prj_example';
-  bound.policy.requireRemoteAnalyzer = true; // even the strongest signal
   const loaded: LoadedKlauroConfig = { config: bound, ignorePatterns: [] };
-  try {
-    process.env.KLAURO_ALLOW_LOCAL_ANALYSIS = '1';
-    assert.doesNotThrow(() => assertLocalAnalysisAllowed(loaded));
-    // '0' / 'false' are NOT a hatch.
-    process.env.KLAURO_ALLOW_LOCAL_ANALYSIS = '0';
-    assert.throws(() => assertLocalAnalysisAllowed(loaded));
-  } finally {
-    delete process.env.KLAURO_ALLOW_LOCAL_ANALYSIS;
-  }
+  bound.policy.requireRemoteAnalyzer = true;
+  assert.throws(() => assertLocalAnalysisAllowed(loaded), /hosted analyzer/);
+  bound.policy.requireRemoteAnalyzer = false;
+  assert.throws(() => assertLocalAnalysisAllowed(loaded), /hosted analyzer/);
 });
 
 test('validateConventions accepts well-formed conventions of every kind', () => {

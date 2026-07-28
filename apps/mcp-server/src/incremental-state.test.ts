@@ -95,7 +95,7 @@ test('change detector does not repeatedly full rebuild for already-analyzed dirt
   }
 });
 
-test('agent-fast treats later package config edits as incremental local changes', async () => {
+test('agent-fast rebuilds complete project semantics when a package manifest changes', async () => {
   const projectPath = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-incremental-agent-fast-config-'));
   const previousFocus = process.env.KLAURO_ANALYSIS_FOCUS;
   const previousFullRebuild = process.env.KLAURO_FULL_REBUILD_ON_CONFIG_CHANGE;
@@ -133,10 +133,8 @@ test('agent-fast treats later package config edits as incremental local changes'
     fs.writeFileSync(path.join(projectPath, 'package.json'), '{"name":"agent-fast-config","scripts":{"test":"node test.js","lint":"eslint ."}}\n');
 
     const changes = await detector.detectChanges(state);
-    assert.equal(changes.requiresFullRebuild, false);
-    assert.deepEqual(changes.modified, ['package.json']);
-    assert.deepEqual(changes.added, []);
-    assert.deepEqual(changes.deleted, []);
+    assert.equal(changes.requiresFullRebuild, true);
+    assert.match(changes.reason || '', /project-scope trigger changed: package\.json/);
   } finally {
     if (previousFocus === undefined) delete process.env.KLAURO_ANALYSIS_FOCUS;
     else process.env.KLAURO_ANALYSIS_FOCUS = previousFocus;
