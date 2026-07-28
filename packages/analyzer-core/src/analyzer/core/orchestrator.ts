@@ -149,7 +149,7 @@ import { AnalysisRunLog } from './run-log';
 import { withAnalyzerFileReadCache, getDebugCacheStats } from './analyzer-file-read-cache';
 import { semanticPackIdentityForProject } from '../packs/pack-loader';
 import { EmbeddingPhase, type EmbeddingPhaseConfig } from '../embedding/embedding-phase';
-import { aiService } from '../../ai/ai-service';
+import { aiService, isProviderUnavailableFailure } from '../../ai/ai-service';
 import { recordSemanticDecision } from '../../ai/semantic-dataset';
 import { setAICacheProjectScope } from '../../ai/ai-cache';
 import { aiConfig, getAIConfig } from '../../config/ai.config';
@@ -12424,7 +12424,13 @@ export class AnalyzerOrchestrator {
         gate_reason: message,
         final_outcome: 'error',
       });
-      throw new Error(`Klauro comprehension failed (AI provider): ${message}. Comprehension is AI-only; there is no deterministic fallback.`);
+      // Name the failure CLASS. "the provider never answered" and "the model
+      // answered and the answer was ungrounded" look identical to an operator
+      // otherwise, and they have opposite fixes (retry / credentials / quota vs.
+      // evidence / prompt). See isProviderUnavailableFailure.
+      throw new Error(isProviderUnavailableFailure(message)
+        ? `Klauro comprehension failed: no AI provider produced a response (${message}). This is a provider-availability failure, not a grounding failure — retry, and check provider credentials, quota and reachability. Comprehension is AI-only; there is no deterministic fallback.`
+        : `Klauro comprehension failed (AI provider): ${message}. Comprehension is AI-only; there is no deterministic fallback.`);
     }
     if (timeoutHandle) clearTimeout(timeoutHandle);
 
@@ -12749,6 +12755,13 @@ export class AnalyzerOrchestrator {
     // Element (capability) descriptions: AI-applied when accepted; otherwise
     // routed through the stricter targeted repair pass below.
     const unresolvedCapabilityIds: string[] = [];
+    // The NON-AI text each unresolved capability had BEFORE this pass cleared
+    // it. Retained so a capability whose AI prose never passes the grounding
+    // gate can degrade to its deterministic structural description instead of
+    // ending up blank — see the granular-failure block below. AI-authored text
+    // is deliberately NOT captured: re-labelling rejected model output as
+    // 'deterministic' would launder exactly the prose the gate refused.
+    const deterministicCapabilityText = new Map<string, string>();
     for (const target of capabilityTargets) {
       const accepted = acceptedElements.get(target.id);
       if (accepted) {
@@ -12756,6 +12769,9 @@ export class AnalyzerOrchestrator {
       } else {
         const existing = systemCapabilities.find(capability => capability.id === target.id);
         if (existing && (!existing.description || !this.validateElementDescription(existing.description, target).ok)) {
+          if (existing.description && existing.description_source !== 'ai') {
+            deterministicCapabilityText.set(target.id, existing.description);
+          }
           delete (existing as Partial<SystemCapability>).description;
           existing.description_source = undefined;
         }
@@ -12781,15 +12797,70 @@ export class AnalyzerOrchestrator {
         return !capability.description || capability.description_source !== 'ai' || !this.validateElementDescription(capability.description, target).ok;
       });
       if (unresolvedAfterRepair.length > 0) {
-        const failures = unresolvedAfterRepair.map(capability => {
+        // DEFECT (2026-07-27 comprehension audit): this used to THROW, which
+        // rejected runAiInterpretation and aborted the ENTIRE L5 pass — the
+        // system description, primary_domain, product_map identity and every
+        // other capability's already-accepted prose all went with it. On a
+        // 27,520-node repo, 2 rejected capabilities out of 59 left the stored
+        // analysis with description null / primary_domain null / domain
+        // "unknown": no answer at all to "what is this system", because two
+        // sentences somewhere in the catalog used a banned word.
+        //
+        // Rejection is right; the blast radius was not. A per-capability
+        // grounding failure is now contained to that capability: it degrades
+        // to its deterministic structural description (description_source
+        // 'deterministic', description_generation.status 'ai_rejected' with
+        // the real reason, so the degradation is visible and never passes as
+        // AI comprehension), and the pass continues.
+        //
+        // The no-deterministic-substitute doctrine is preserved where it
+        // actually matters — the SYSTEM narrative, which still throws above
+        // (search: "ungrounded system description") and has no fallback. Only
+        // the system description failing may fail the system.
+        const degraded: Array<{ id: string; name: string; reason: string; failure_class: 'provider-unavailable' | 'failed-grounding' }> = [];
+        for (const capability of unresolvedAfterRepair) {
           const target = this.capabilityDescriptionTarget(capability, entityNamesById, entityFieldsById);
           const validation = capability.description
             ? this.validateElementDescription(capability.description, target)
             : { ok: false as const, reason: 'missing-description' };
           const reason = capability.description_generation?.reason || validation.reason || 'unknown-quality-failure';
-          return `${capability.name} (${reason})`;
-        });
-        throw new Error(`Klauro comprehension could not produce grounded AI descriptions for required capabilities: ${failures.join(', ')}`);
+          const fallback = deterministicCapabilityText.get(capability.id);
+          if (fallback) {
+            capability.description = fallback;
+            capability.description_source = 'deterministic';
+          } else if (capability.description_source === 'ai') {
+            // Never ship ungrounded prose under an 'ai' provenance.
+            delete (capability as Partial<SystemCapability>).description;
+            capability.description_source = undefined;
+          }
+          capability.description_generation = {
+            ...(capability.description_generation || { attempted: true }),
+            status: 'ai_rejected',
+            attempted: true,
+            reason,
+            origin_source: fallback ? 'deterministic' : capability.description_generation?.origin_source,
+          };
+          degraded.push({
+            id: capability.id,
+            name: capability.name,
+            reason,
+            // Which remediation this needs: retry/credentials/quota, or evidence
+            // and prompt work. Conflating the two sent the 2026-07-27 audit
+            // chasing prompt grounding for what were provider timeouts.
+            failure_class: isProviderUnavailableFailure(reason) ? 'provider-unavailable' : 'failed-grounding',
+          });
+        }
+        // Roll-up so the honesty record is queryable without walking 59
+        // capabilities, and so a regression that degrades the whole catalog is
+        // visible rather than quietly "fine".
+        enhancedSystemPurpose.capability_description_degradations = degraded;
+        const unavailable = degraded.filter(item => item.failure_class === 'provider-unavailable').length;
+        console.error(
+          `[Klauro] ${degraded.length}/${capabilityTargets.length} capability descriptions degraded to their deterministic text ` +
+          `(${unavailable} provider-unavailable, ${degraded.length - unavailable} failed grounding). ` +
+          `The system description, primary domain and the remaining capabilities are unaffected: ` +
+          `${degraded.map(item => `${item.name} [${item.failure_class}] (${item.reason})`).join(', ')}`
+        );
       }
     }
     if (elementsEnabled && systemCapabilities.length > capabilityTargets.length) {

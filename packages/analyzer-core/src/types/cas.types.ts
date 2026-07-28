@@ -3575,6 +3575,29 @@ export interface EnhancedSystemPurpose extends SystemPurpose {
   domain_anchored?: boolean;
   /** AI domain candidates rejected by the domain authority rules. */
   domain_rejected_candidates?: Array<{ label: string; reason: string }>;
+  /**
+   * Capabilities whose AI description failed the grounding gate even after the
+   * targeted repair pass, and therefore fell back to their deterministic
+   * structural text (`description_source: 'deterministic'`). Present only when
+   * at least one capability degraded — never omitted to flatter the run.
+   *
+   * This exists because per-capability rejection used to be FATAL to the whole
+   * L5 pass: 2 bad descriptions out of 59 nulled the system description, the
+   * primary domain and the other 57 capabilities. Containment plus an explicit
+   * honesty record replaced that; the system narrative itself still has no
+   * fallback and still fails the analysis when it cannot be grounded.
+   */
+  capability_description_degradations?: Array<{
+    id: string;
+    name: string;
+    reason: string;
+    /** Which remediation this needs: 'provider-unavailable' = retry / check
+     *  credentials, quota and reachability; 'failed-grounding' = the model
+     *  answered and the answer was rejected, so the evidence or the prompt is
+     *  the problem. Conflating the two is how provider timeouts got reported as
+     *  grounding failures. */
+    failure_class: 'provider-unavailable' | 'failed-grounding';
+  }>;
   /** Deterministic artifact classification: what kind of deliverable this
    * repo is (library, generated client SDK, CLI tool, boilerplate, app). */
   artifact_type?: CASArtifactType;

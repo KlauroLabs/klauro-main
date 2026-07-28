@@ -8,6 +8,34 @@ import { prompts } from './ai-prompts';
 import { recordSemanticDecision } from './semantic-dataset';
 import * as winston from 'winston';
 
+/**
+ * Prefix on the aggregate error thrown when EVERY provider in the chain failed
+ * to answer. It marks a delivery failure (timeout, 429, auth, dropped
+ * connection, empty completion), NOT a quality judgement about model output.
+ *
+ * These two need different remediations and the 2026-07-27 comprehension audit
+ * caught them being reported identically: two 30s provider timeouts (with
+ * retries defaulted to zero) surfaced to the operator as "could not produce
+ * grounded AI descriptions", pointing them at prompts and evidence when the
+ * actual problem was that nothing had answered.
+ */
+export const AI_PROVIDER_UNAVAILABLE_MARKER = 'ai-provider-unavailable';
+
+/**
+ * True when a failure reason describes the provider never delivering an answer,
+ * rather than an answer that failed a grounding/quality gate. Matches the
+ * marker above plus the shapes that reach callers from single-provider paths.
+ */
+export function isProviderUnavailableFailure(reason: unknown): boolean {
+  const text = String(reason ?? '').toLowerCase();
+  if (!text) return false;
+  return text.includes(AI_PROVIDER_UNAVAILABLE_MARKER)
+    || text.includes('no generative ai provider is available')
+    || text.includes('provider returned empty content')
+    || /\b(etimedout|econnreset|econnrefused|enotfound|socket hang up)\b/.test(text)
+    || /\b(timed out|timeout|rate limit|429|502|503|504)\b/.test(text);
+}
+
 export interface AIProvider {
   name: string;
   available: boolean;
@@ -192,7 +220,14 @@ export class AIService {
             baseURL: entry.baseURL,
             model: entry.model,
             maxTokens: entry.maxTokens ?? aiConfig.openai.maxTokens,
-            maxRetries: Math.max(0, Number(process.env.KLAURO_AI_PROVIDER_RETRIES || 0)),
+            // Default 2, not 0. With zero retries a single transient provider
+            // blip (a 429, a dropped connection, one 30s stall) is indistinguish-
+            // able from "this model cannot produce grounded output", and L5
+            // comprehension reported a GROUNDING failure for what was really a
+            // provider outage — two completely different remediations. Retries
+            // are per-provider and sit UNDER the chain fallback, so the worst
+            // case is bounded by (retries x providers), not unbounded.
+            maxRetries: Math.max(0, Number(process.env.KLAURO_AI_PROVIDER_RETRIES ?? 2)),
           },
         };
         this.providerChain.push({ entry, provider: new OpenAIProvider(entryConfig) });
@@ -376,7 +411,13 @@ export class AIService {
       gate_reason: errors.join(' | '),
       final_outcome: 'error',
     });
-    throw new Error(`All AI providers in the chain failed: ${errors.join(' | ')}`);
+    // Stable marker so callers can tell PROVIDER UNAVAILABILITY apart from
+    // "the model answered and the answer failed the grounding gate". They need
+    // opposite remediations — retry / check credentials and quota, versus fix
+    // the evidence or the prompt — and the 2026-07-27 audit showed them being
+    // reported identically ("could not produce grounded descriptions") after
+    // two provider timeouts. See isProviderUnavailableFailure.
+    throw new Error(`${AI_PROVIDER_UNAVAILABLE_MARKER}: all AI providers in the chain failed: ${errors.join(' | ')}`);
   }
 
   async assessComponentRisk(context: AIAnalysisContext): Promise<AIRiskAssessment> {

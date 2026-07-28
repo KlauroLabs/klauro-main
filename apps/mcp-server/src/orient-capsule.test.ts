@@ -103,3 +103,38 @@ test('capsule and system_fit are complementary, not duplicative', () => {
   assert.equal(capsule.dimensions.communication_seams.tool, 'get_communication_seams');
   assert.ok(fit.communication_seams, 'system_fit embeds seam content, not just a pointer');
 });
+
+// --- P0 (2026-07-27 comprehension audit): capsule domain honesty ------------
+// When L5 could not ground a product domain, primary_domain / product_map
+// identity were null and the domain read "unknown" — yet the capsule in the SAME
+// payload confidently reported a domain, because it silently fell back to
+// system_purpose.primary_type (a structural artifact label) under the `domain`
+// key. An agent reading both had no way to tell which was true.
+
+test('orient_capsule reports an ungrounded domain as null instead of substituting the structural type', () => {
+  const cas = {
+    nodes: [], edges: [], analyzer_contributions: [],
+    system: { name: 'sample-service' },
+    // Exactly the audited shape: comprehension produced no product domain.
+    enhanced_system_purpose: { primary_domain: '', domain_source: undefined },
+    system_purpose: { primary_type: 'trading-automation' },
+  } as unknown as CASOutput;
+  const capsule = buildOrientCapsule(cas) as Record<string, unknown>;
+  assert.equal(capsule.domain, null, 'capsule must not claim a domain comprehension did not produce');
+  assert.equal(capsule.domain_source, null);
+  // The structural type is still available — under its own name.
+  assert.equal(capsule.system_type, 'trading-automation');
+});
+
+test('orient_capsule reports a grounded domain with its provenance', () => {
+  const cas = {
+    nodes: [], edges: [], analyzer_contributions: [],
+    system: { name: 'sample-service' },
+    enhanced_system_purpose: { primary_domain: 'payments', domain_source: 'ai' },
+    system_purpose: { primary_type: 'api-service' },
+  } as unknown as CASOutput;
+  const capsule = buildOrientCapsule(cas) as Record<string, unknown>;
+  assert.equal(capsule.domain, 'payments');
+  assert.equal(capsule.domain_source, 'ai');
+  assert.equal(capsule.system_type, 'api-service');
+});

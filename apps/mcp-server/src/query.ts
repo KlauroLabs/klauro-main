@@ -76,7 +76,17 @@ export function buildOrientCapsule(cas: CASOutput) {
 
   return {
     system: cas.system?.name,
-    domain: cas.enhanced_system_purpose?.primary_domain || cas.system_purpose?.primary_type,
+    // `domain` is the PRODUCT domain and nothing else. It used to silently fall
+    // back to system_purpose.primary_type — a structural artifact label — under
+    // the same key, so the capsule could confidently report a domain in the very
+    // same payload where primary_domain was null and get_product_map said
+    // "unknown" (2026-07-27 comprehension audit). An agent reading the two
+    // together could not tell which was true. Absence is now reported as
+    // absence, with the provenance beside it, and the structural type keeps its
+    // own name.
+    domain: cas.enhanced_system_purpose?.primary_domain || null,
+    domain_source: cas.enhanced_system_purpose?.domain_source || null,
+    system_type: cas.system_purpose?.primary_type || null,
     // Each dimension: is it present, how many items, and the tool that pulls it.
     dimensions: {
       entry_points: dimension((cas.entry_points?.length || 0) > 0, cas.entry_points?.length || 0, 'get_entry_points'),
