@@ -19,6 +19,13 @@ import { mirrorArtifactsToS3 } from './s3-artifacts';
 import type { AnalysisTrack } from './track';
 import { trackSuffix } from './track';
 import { resolveAnalysisScope, filterEntriesToScope, filterWorkspaceGraphsToScope } from './analysis-scope';
+import {
+  createCasSectionManifest,
+  hydrateCasSections,
+  selectExactCasSection,
+  type CasSectionManifest,
+  type CasSectionName,
+} from './cas-sections';
 
 const execFileAsync = promisify(execFile);
 const brotliCompressAsync = promisify(zlib.brotliCompress);
@@ -49,6 +56,7 @@ export interface AnalysisEntry {
   node_count: number;
   edge_count: number;
   cas_version?: string;
+  layers_ready?: CASOutput['layers_ready'];
   /** Which analysis track this entry belongs to. Defaults to 'main' (legacy). */
   track?: AnalysisTrack;
   /** Analyzed commit SHA, when the output carried one. */
@@ -593,6 +601,21 @@ async function writeCompressedJsonAtomic(filePath: string, value: unknown, optio
   }
 }
 
+async function compressLegacyJsonArtifact(basePath: string): Promise<void> {
+  const extension = compressedJsonExtension();
+  if (!extension || !(await fs.pathExists(basePath))) return;
+  const targetPath = `${basePath}${extension}`;
+  if (await fs.pathExists(targetPath)) return;
+  const tmpPath = `${targetPath}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    await compressJsonFile(basePath, tmpPath, compressionCodecForPath(targetPath));
+    await fs.move(tmpPath, targetPath, { overwrite: false });
+    await fs.remove(basePath);
+  } finally {
+    await fs.remove(tmpPath).catch(() => undefined);
+  }
+}
+
 async function readJsonMaybeCompressed(filePath: string): Promise<any> {
   const resolved = await resolveJsonStoragePath(filePath);
   if (!resolved) {
@@ -664,7 +687,7 @@ function hasZstdCommand(): boolean {
 
 async function compressJsonFile(sourcePath: string, targetPath: string, codec: JsonStorageCodec): Promise<void> {
   if (codec === 'zstd') {
-    await execFileAsync('zstd', ['-q', '-10', '-T0', '-f', sourcePath, '-o', targetPath], {
+    await execFileAsync('zstd', ['-q', '-3', '-T1', '-f', sourcePath, '-o', targetPath], {
       maxBuffer: 1024 * 1024,
     });
     return;
@@ -800,17 +823,133 @@ interface LoadedAnalysisCacheEntry {
   filePath: string;
   mtimeMs: number;
   size: number;
+  estimatedBytes: number;
   output: CASOutput;
 }
 
 const loadedAnalysisCache = new Map<string, LoadedAnalysisCacheEntry>();
 
+function parsedAnalysisCacheMaxEntries(): number {
+  return parsePositiveIntegerEnv('KLAURO_PARSED_ANALYSIS_CACHE_MAX_ENTRIES', 1);
+}
+
+function parsedAnalysisCacheMaxBytes(): number {
+  return parsePositiveIntegerEnv('KLAURO_PARSED_ANALYSIS_CACHE_MAX_BYTES', 256 * 1024 * 1024);
+}
+
+function estimateParsedAnalysisBytes(output: CASOutput): number {
+  const cas = output as CASOutput & {
+    method_calls?: unknown[];
+    analysis_facts?: unknown[];
+    domain_concepts?: unknown[];
+    intents?: unknown[];
+    runtime_static_links?: unknown[];
+  };
+  return (
+    64 * 1024 +
+    (cas.nodes?.length || 0) * 2_048 +
+    (cas.edges?.length || 0) * 768 +
+    (cas.method_calls?.length || 0) * 1_536 +
+    (cas.analysis_facts?.length || 0) * 1_024 +
+    (cas.domain_concepts?.length || 0) * 1_024 +
+    (cas.intents?.length || 0) * 768 +
+    (cas.runtime_static_links?.length || 0) * 768
+  );
+}
+
+function trimLoadedAnalysisCache(): void {
+  const maxEntries = parsedAnalysisCacheMaxEntries();
+  const maxBytes = parsedAnalysisCacheMaxBytes();
+  let retainedBytes = [...loadedAnalysisCache.values()].reduce((sum, entry) => sum + entry.estimatedBytes, 0);
+  while (loadedAnalysisCache.size > maxEntries || retainedBytes > maxBytes) {
+    const oldestKey = loadedAnalysisCache.keys().next().value as string | undefined;
+    if (!oldestKey) break;
+    const removed = loadedAnalysisCache.get(oldestKey);
+    loadedAnalysisCache.delete(oldestKey);
+    retainedBytes -= removed?.estimatedBytes || 0;
+  }
+}
+
+export function clearLoadedAnalysisCache(): void {
+  loadedAnalysisCache.clear();
+}
+
+export function getLoadedAnalysisCacheStats(): { entries: number; estimated_bytes: number; max_entries: number; max_bytes: number } {
+  return {
+    entries: loadedAnalysisCache.size,
+    estimated_bytes: [...loadedAnalysisCache.values()].reduce((sum, entry) => sum + entry.estimatedBytes, 0),
+    max_entries: parsedAnalysisCacheMaxEntries(),
+    max_bytes: parsedAnalysisCacheMaxBytes(),
+  };
+}
+
 async function rememberLoadedAnalysis(projectPath: string, filePath: string, output: CASOutput): Promise<void> {
   try {
     const stat = await fs.stat(filePath);
-    loadedAnalysisCache.set(projectPath, { filePath, mtimeMs: stat.mtimeMs, size: stat.size, output });
+    const estimatedBytes = estimateParsedAnalysisBytes(output);
+    loadedAnalysisCache.delete(projectPath);
+    if (estimatedBytes > parsedAnalysisCacheMaxBytes()) return;
+    loadedAnalysisCache.set(projectPath, { filePath, mtimeMs: stat.mtimeMs, size: stat.size, estimatedBytes, output });
+    trimLoadedAnalysisCache();
   } catch {
     loadedAnalysisCache.delete(projectPath);
+  }
+}
+
+interface SegmentedAnalysisPointer {
+  manifest_version: 1;
+  revision: string;
+}
+
+function segmentedAnalysisRoot(filePath: string): string {
+  return `${filePath}.sections`;
+}
+
+async function writeSegmentedAnalysis(filePath: string, output: CASOutput): Promise<void> {
+  const root = segmentedAnalysisRoot(filePath);
+  const revision = `rev-${Date.now()}-${crypto.randomBytes(6).toString('hex')}`;
+  const revisionDir = path.join(root, revision);
+  const tmpDir = `${revisionDir}.tmp`;
+  const extension = compressedJsonExtension();
+  const manifest = createCasSectionManifest(output);
+  try {
+    await fs.ensureDir(tmpDir);
+    for (const descriptor of manifest.sections) {
+      const sectionFile = `${descriptor.name}.json${extension}`;
+      const sectionPath = path.join(tmpDir, sectionFile);
+      await writeCompressedJsonAtomic(sectionPath, selectExactCasSection(output, descriptor.name), { spaces: 0 });
+      const stat = await fs.stat(sectionPath);
+      descriptor.file = sectionFile;
+      descriptor.bytes = stat.size;
+    }
+    await writeJsonAtomic(path.join(tmpDir, 'manifest.json'), manifest, { spaces: 2 });
+    await fs.ensureDir(root);
+    await fs.move(tmpDir, revisionDir, { overwrite: false });
+    await writeJsonAtomic(path.join(root, 'current.json'), {
+      manifest_version: 1,
+      revision,
+    } satisfies SegmentedAnalysisPointer, { spaces: 2 });
+    const revisions = (await fs.readdir(root).catch(() => []))
+      .filter(name => name.startsWith('rev-'))
+      .sort()
+      .reverse();
+    for (const stale of revisions.slice(2)) await fs.remove(path.join(root, stale)).catch(() => undefined);
+  } finally {
+    await fs.remove(tmpDir).catch(() => undefined);
+  }
+}
+
+async function resolveSegmentedAnalysis(filePath: string): Promise<{ directory: string; manifest: CasSectionManifest } | null> {
+  const root = segmentedAnalysisRoot(filePath);
+  try {
+    const pointer = await fs.readJson(path.join(root, 'current.json')) as SegmentedAnalysisPointer;
+    if (pointer.manifest_version !== 1 || !pointer.revision) return null;
+    const directory = path.join(root, pointer.revision);
+    const manifest = await fs.readJson(path.join(directory, 'manifest.json')) as CasSectionManifest;
+    if (manifest.manifest_version !== 1) return null;
+    return { directory, manifest };
+  } catch {
+    return null;
   }
 }
 
@@ -833,6 +972,11 @@ export async function saveAnalysis(
   const filePath = path.join(storagePath, fileName);
 
   await writeCompressedJsonAtomic(filePath, output, { spaces: 0 });
+  try {
+    await writeSegmentedAnalysis(filePath, output);
+  } catch (error) {
+    console.warn(`[Klauro] segmented analysis write failed for ${projectPath}; authoritative analysis remains available: ${error instanceof Error ? error.message : String(error)}`);
+  }
   // Only the 'main' track participates in the path-keyed loaded-analysis cache,
   // which is keyed by projectPath and read back by default (main) loads.
   if (track === 'main') {
@@ -851,6 +995,7 @@ export async function saveAnalysis(
     node_count: output.nodes.length,
     edge_count: output.edges.length,
     cas_version: output.cas_version,
+    ...(output.layers_ready ? { layers_ready: output.layers_ready } : {}),
     track,
     ...(output.base_commit ? { base_commit: output.base_commit } : {}),
     ...(output.branch ? { branch: output.branch } : {}),
@@ -899,6 +1044,75 @@ async function resolveAnalysisFileForLoad(
   return resolved;
 }
 
+export async function loadAnalysisSectionManifest(
+  projectPath: string,
+  options?: { track?: AnalysisTrack },
+): Promise<CasSectionManifest | null> {
+  const resolved = await resolveAnalysisFileForLoad(projectPath, options?.track);
+  if (!resolved) return null;
+  const segmented = await resolveSegmentedAnalysis(resolved);
+  if (segmented) return segmented.manifest;
+
+  const legacy = await readJsonMaybeCompressed(resolved) as CASOutput;
+  return createCasSectionManifest(legacy);
+}
+
+export async function loadAnalysisSections(
+  projectPath: string,
+  sections: readonly CasSectionName[],
+  options?: { track?: AnalysisTrack },
+): Promise<Partial<CASOutput> | null> {
+  const resolved = await resolveAnalysisFileForLoad(projectPath, options?.track);
+  if (!resolved) return null;
+  const requested = [...new Set<CasSectionName>(['identity', ...sections])];
+  const segmented = await resolveSegmentedAnalysis(resolved);
+  if (!segmented) {
+    const legacy = await readJsonMaybeCompressed(resolved) as CASOutput;
+    const parts = requested.map(section => selectExactCasSection(legacy, section));
+    return hydrateCasSections(parts);
+  }
+
+  const descriptorByName = new Map(segmented.manifest.sections.map(section => [section.name, section]));
+  const parts: Partial<CASOutput>[] = [];
+  for (const section of requested) {
+    const descriptor = descriptorByName.get(section);
+    if (!descriptor?.file) continue;
+    const sectionPath = path.join(segmented.directory, descriptor.file);
+    parts.push(await readJsonMaybeCompressed(sectionPath) as Partial<CASOutput>);
+  }
+  return hydrateCasSections(parts);
+}
+
+export async function loadCompleteAnalysisFromSections(
+  projectPath: string,
+  options?: { track?: AnalysisTrack },
+): Promise<CASOutput | null> {
+  const manifest = await loadAnalysisSectionManifest(projectPath, options);
+  if (!manifest) return null;
+  return await loadAnalysisSections(
+    projectPath,
+    manifest.sections.map(section => section.name),
+    options,
+  ) as CASOutput | null;
+}
+
+export interface AnalysisExportArtifact {
+  filePath: string;
+  codec: JsonStorageCodec;
+  bytes: number;
+}
+
+export async function resolveAnalysisExportArtifact(
+  projectPath: string,
+  options?: { track?: AnalysisTrack },
+): Promise<AnalysisExportArtifact | null> {
+  const resolved = await resolveAnalysisFileForLoad(projectPath, options?.track);
+  if (!resolved) return null;
+  const stat = await fs.stat(resolved).catch(() => null);
+  if (!stat) return null;
+  return { filePath: resolved, codec: compressionCodecForPath(resolved), bytes: stat.size };
+}
+
 /**
  * Cheap version fingerprint of the stored analysis for `projectPath`:
  * `mtimeMs:size` of the exact file loadAnalysis would read (same track
@@ -935,6 +1149,8 @@ export async function loadAnalysis(
       try {
         const stat = await fs.stat(resolved);
         if (stat.mtimeMs === cached.mtimeMs && stat.size === cached.size) {
+          loadedAnalysisCache.delete(projectPath);
+          loadedAnalysisCache.set(projectPath, cached);
           return tagAnalysisVersion(cached.output);
         }
       } catch {
@@ -1466,8 +1682,12 @@ export function getProjectStorageDir(projectPath: string): string {
   return path.join(storagePath, slug);
 }
 
-function incrementalStateFileName(track: AnalysisTrack): string {
+function incrementalStateBaseFileName(track: AnalysisTrack): string {
   return `incremental-state${trackSuffix(track)}.json`;
+}
+
+function incrementalStateFileName(track: AnalysisTrack): string {
+  return `${incrementalStateBaseFileName(track)}${compressedJsonExtension()}`;
 }
 
 export async function saveIncrementalState(
@@ -1487,7 +1707,11 @@ export async function saveIncrementalState(
     ),
   };
 
-  await writeJsonAtomic(statePath, stateToSave);
+  await writeCompressedJsonAtomic(statePath, stateToSave);
+  const basePath = path.join(projectDir, incrementalStateBaseFileName(track));
+  for (const stalePath of [basePath, ...jsonStoragePathCandidates(basePath)]) {
+    if (stalePath !== statePath) await fs.remove(stalePath).catch(() => undefined);
+  }
 }
 
 export async function loadIncrementalState(
@@ -1496,13 +1720,10 @@ export async function loadIncrementalState(
 ): Promise<IncrementalState | null> {
   try {
     const projectDir = getProjectStorageDir(projectPath);
-    const statePath = path.join(projectDir, incrementalStateFileName(track));
-
-    if (!(await fs.pathExists(statePath))) {
-      return null;
-    }
-
-    const state = await fs.readJson(statePath);
+    const statePath = path.join(projectDir, incrementalStateBaseFileName(track));
+    const resolved = await resolveJsonStoragePath(statePath);
+    if (!resolved) return null;
+    const state = await readJsonMaybeCompressed(resolved);
 
     if (state.version !== INCREMENTAL_STATE_VERSION_CURRENT) {
       console.warn(
@@ -1525,11 +1746,8 @@ export async function deleteIncrementalState(
 ): Promise<void> {
   try {
     const projectDir = getProjectStorageDir(projectPath);
-    const statePath = path.join(projectDir, incrementalStateFileName(track));
-
-    if (await fs.pathExists(statePath)) {
-      await fs.remove(statePath);
-    }
+    const statePath = path.join(projectDir, incrementalStateBaseFileName(track));
+    await Promise.all([statePath, ...jsonStoragePathCandidates(statePath)].map(candidate => fs.remove(candidate).catch(() => undefined)));
   } catch (error) {
     console.warn('Failed to delete incremental state:', error);
   }
@@ -1615,31 +1833,30 @@ export async function getFileCacheSize(projectPath: string): Promise<{
 
 const MAX_HISTORY_ENTRIES = 1000;
 
+function changeHistoryDirectory(projectDir: string): string {
+  return path.join(projectDir, 'change-history');
+}
+
+function changeHistoryEntryFileName(entry: ChangeHistoryEntry): string {
+  const timestamp = String(entry.timestamp || new Date().toISOString()).replace(/[^0-9TZ]/g, '-');
+  const identity = crypto.createHash('sha256').update(`${entry.id || ''}\0${entry.timestamp || ''}`).digest('hex').slice(0, 12);
+  return `${timestamp}-${identity}.json${compressedJsonExtension()}`;
+}
+
 export async function saveChangeHistoryEntry(
   projectPath: string,
   entry: ChangeHistoryEntry
 ): Promise<void> {
   const projectDir = getProjectStorageDir(projectPath);
-  await fs.ensureDir(projectDir);
-
-  const historyPath = path.join(projectDir, 'change-history.json');
-
-  let history: ChangeHistoryEntry[] = [];
-  if (await fs.pathExists(historyPath)) {
-    try {
-      history = await fs.readJson(historyPath);
-    } catch {
-      history = [];
-    }
-  }
-
-  history.unshift(entry);
-
-  if (history.length > MAX_HISTORY_ENTRIES) {
-    history = history.slice(0, MAX_HISTORY_ENTRIES);
-  }
-
-  await writeJsonAtomic(historyPath, history);
+  const directory = changeHistoryDirectory(projectDir);
+  await fs.ensureDir(directory);
+  await writeCompressedJsonAtomic(path.join(directory, changeHistoryEntryFileName(entry)), entry);
+  await compressLegacyJsonArtifact(path.join(projectDir, 'change-history.json'));
+  const files = (await fs.readdir(directory))
+    .filter(file => /\.json(?:\.zst|\.br)?$/.test(file))
+    .sort()
+    .reverse();
+  await Promise.all(files.slice(MAX_HISTORY_ENTRIES).map(file => fs.remove(path.join(directory, file))));
 }
 
 export async function loadChangeHistory(
@@ -1653,28 +1870,39 @@ export async function loadChangeHistory(
   try {
     const projectDir = getProjectStorageDir(projectPath);
     const historyPath = path.join(projectDir, 'change-history.json');
-
-    if (!(await fs.pathExists(historyPath))) {
-      return [];
+    const directory = changeHistoryDirectory(projectDir);
+    const history: ChangeHistoryEntry[] = [];
+    if (await fs.pathExists(directory)) {
+      const files = (await fs.readdir(directory))
+        .filter(file => /\.json(?:\.zst|\.br)?$/.test(file))
+        .sort()
+        .reverse();
+      for (const file of files) history.push(await readJsonMaybeCompressed(path.join(directory, file)) as ChangeHistoryEntry);
     }
-
-    let history: ChangeHistoryEntry[] = await fs.readJson(historyPath);
+    const legacyPath = await resolveJsonStoragePath(historyPath);
+    if (legacyPath) {
+      const legacy = await readJsonMaybeCompressed(legacyPath);
+      if (Array.isArray(legacy)) history.push(...legacy);
+    }
+    const deduped = [...new Map(history.map(entry => [entry.id || entry.timestamp, entry])).values()]
+      .sort((left, right) => String(right.timestamp || '').localeCompare(String(left.timestamp || '')));
+    let filtered = deduped;
 
     if (options?.since) {
       const sinceDate = new Date(options.since);
-      history = history.filter(e => new Date(e.timestamp) >= sinceDate);
+      filtered = filtered.filter(e => new Date(e.timestamp) >= sinceDate);
     }
 
     if (options?.until) {
       const untilDate = new Date(options.until);
-      history = history.filter(e => new Date(e.timestamp) <= untilDate);
+      filtered = filtered.filter(e => new Date(e.timestamp) <= untilDate);
     }
 
     if (options?.limit && options.limit > 0) {
-      history = history.slice(0, options.limit);
+      filtered = filtered.slice(0, options.limit);
     }
 
-    return history;
+    return filtered;
   } catch {
     return [];
   }
@@ -1692,10 +1920,8 @@ export async function clearChangeHistory(projectPath: string): Promise<void> {
   try {
     const projectDir = getProjectStorageDir(projectPath);
     const historyPath = path.join(projectDir, 'change-history.json');
-
-    if (await fs.pathExists(historyPath)) {
-      await fs.remove(historyPath);
-    }
+    await fs.remove(changeHistoryDirectory(projectDir));
+    await Promise.all([historyPath, ...jsonStoragePathCandidates(historyPath)].map(candidate => fs.remove(candidate).catch(() => undefined)));
   } catch (error) {
     console.warn('Failed to clear change history:', error);
   }
@@ -1780,7 +2006,19 @@ export async function saveAnalysisSnapshot(
   const snapshotId = `snapshot-${encodeSnapshotTimestamp(timestamp)}`;
   const snapshotPath = path.join(snapshotsDir, `${snapshotId}.json${compressedJsonExtension()}`);
 
-  await writeCompressedJsonAtomic(snapshotPath, output, { spaces: 0 });
+  const current = loadedAnalysisCache.get(projectPath);
+  if (current?.output === output && current.filePath.endsWith(compressedJsonExtension())) {
+    const tempPath = `${snapshotPath}.tmp-${process.pid}-${crypto.randomBytes(6).toString('hex')}`;
+    try {
+      await fs.copyFile(current.filePath, tempPath);
+      await fs.rename(tempPath, snapshotPath);
+    } catch (error) {
+      await fs.remove(tempPath).catch(() => undefined);
+      throw error;
+    }
+  } else {
+    await writeCompressedJsonAtomic(snapshotPath, output, { spaces: 0 });
+  }
 
   await pruneOldSnapshots(snapshotsDir);
 

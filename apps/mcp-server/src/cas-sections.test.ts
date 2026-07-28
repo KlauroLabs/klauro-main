@@ -1,0 +1,69 @@
+import assert from 'node:assert';
+import test from 'node:test';
+import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
+import {
+  CAS_SECTION_NAMES,
+  createCasSectionManifest,
+  hydrateCasSections,
+  parseCasSectionNames,
+  selectExactCasSection,
+  selectCasSections,
+  CAS_SECTION_PROFILES,
+} from './cas-sections';
+import { getCallers, getFileNodes, getNode, searchNodes } from './query';
+
+function fixtureCas(): CASOutput {
+  return {
+    cas_version: '1.11.0',
+    analysis_id: 'analysis-sections',
+    analysis_timestamp: '2026-07-22T00:00:00.000Z',
+    system: { name: 'sections', type: 'service' },
+    nodes: [{ id: 'n1', name: 'run', type: 'function', level: 1, file: 'src/run.ts' }],
+    edges: [{ id: 'e1', source: 'n1', target: 'n1', type: 'calls' }],
+    method_calls: [{ caller_id: 'n1', caller_node: 'n1', target_node: 'n1', call_details: { method_name: 'run' } }],
+    analysis_facts: [{ id: 'f1', subject_id: 'n1', kind: 'test' }],
+    system_capabilities: [{ id: 'c1', name: 'Run analysis' }],
+    test_summary: { total: 1 },
+    runtime_static_links: [{ node_id: 'n1' }],
+    risks: [{ id: 'r1', title: 'Risk' }],
+    analyzer_contributions: [],
+    progressive_levels: [],
+  } as unknown as CASOutput;
+}
+
+test('section hydration preserves the exact logical CAS object', () => {
+  const cas = fixtureCas();
+  const manifest = createCasSectionManifest(cas);
+  const hydrated = hydrateCasSections(
+    manifest.sections.map(section => selectExactCasSection(cas, section.name)),
+  );
+  assert.deepStrictEqual(hydrated, cas);
+  assert.deepStrictEqual(manifest.logical_fields, Object.keys(cas).sort());
+});
+
+test('targeted graph hydration excludes heavy unrelated sections', () => {
+  const selected = selectCasSections(fixtureCas(), ['graph']);
+  assert.ok(selected.nodes);
+  assert.ok(selected.edges);
+  assert.ok(selected.system);
+  assert.strictEqual(selected.method_calls, undefined);
+  assert.strictEqual(selected.analysis_facts, undefined);
+  assert.strictEqual(selected.runtime_static_links, undefined);
+});
+
+test('section parser rejects unknown names and deduplicates valid names', () => {
+  assert.deepStrictEqual(parseCasSectionNames('graph,calls,graph'), ['graph', 'calls']);
+  assert.throws(() => parseCasSectionNames('graph,__proto__'), /Unknown CAS section/);
+  assert.deepStrictEqual(parseCasSectionNames(CAS_SECTION_NAMES.join(',')), CAS_SECTION_NAMES);
+});
+
+test('section-hydrated MCP query answers equal full-CAS answers', () => {
+  const cas = fixtureCas();
+  const graph = selectCasSections(cas, CAS_SECTION_PROFILES.graph_search) as CASOutput;
+  const detail = selectCasSections(cas, CAS_SECTION_PROFILES.node_detail) as CASOutput;
+  const calls = selectCasSections(cas, CAS_SECTION_PROFILES.call_graph) as CASOutput;
+  assert.deepStrictEqual(searchNodes(graph, 'run'), searchNodes(cas, 'run'));
+  assert.deepStrictEqual(getFileNodes(graph, 'src/run.ts'), getFileNodes(cas, 'src/run.ts'));
+  assert.deepStrictEqual(getNode(detail, 'n1'), getNode(cas, 'n1'));
+  assert.deepStrictEqual(getCallers(calls, 'n1'), getCallers(cas, 'n1'));
+});
