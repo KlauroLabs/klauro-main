@@ -6,6 +6,9 @@ import { clearStoredConnectorSession, connectorToken, loadStoredConnectorAuth, n
 import { writeDefaultKlauroConfig } from './klauro-config';
 import { formatBuildIdentity, resolveManifestProjectName } from './installed-client-runtime';
 import { KLAURO_INSTALL_ONELINER, SELF_UPDATE_COMMANDS, runSelfUpdate } from './self-update';
+import { renderStatusReport } from './status-report';
+import { formatClientDoctor, runClientDoctor } from './client-doctor';
+import { buildSupportBundle, formatSupportBundleResult } from './support-bundle';
 
 function value(flag: string): string | undefined {
   const index = process.argv.indexOf(flag);
@@ -36,6 +39,39 @@ async function main() {
   if (command === 'analyze' || command === 'remote-analyze') return output(await analyzeCodebaseRemotely({ projectPath: target }), json);
   if (command === 'remote-sync' || command === 'sync') return output(await syncWorkingTreeRemotely({ projectPath: target }), json);
   if (command === 'upload-manifest' || command === 'index') return output(await buildUploadManifest(target, process.argv.includes('--dirty-tree') ? 'dirty-tree' : 'full'), json);
+  // status/doctor/support-bundle: the same class of dead end `update` was
+  // (see the comment above SELF_UPDATE_COMMANDS) — the product's own text
+  // tells customers to run all three (server error remediations, `klauro
+  // init`'s "check any time with `klauro status`", the 401 remediation's
+  // "if it recurs, run `klauro support-bundle`"), and none of them were ever
+  // registered in this file, so each fell through to the usage block and
+  // exited 0. All three share their logic with cli.ts via status-report.ts /
+  // client-doctor.ts / support-bundle.ts — see installed-cli-ops-commands.test.ts.
+  if (command === 'status') {
+    // fabricCliAvailable: false — `klauro fabric` is a cli.ts-only developer
+    // command, never registered below; see status-report.ts's
+    // buildConnectionReport comment for why this must be threaded through
+    // rather than left at the (cli.ts-appropriate) default.
+    const { report, lines } = await renderStatusReport({ repoPath: target, serverUrl: value('--server-url'), fabricCliAvailable: false });
+    return output(json ? report : lines.join('\n'), json);
+  }
+  if (command === 'doctor') {
+    // Always the lightweight customer environment/connection check — never
+    // the local-CAS-backed "agent doctor" cli.ts's `doctor <path>` also
+    // answers, which requires a local analysis this client never performs
+    // ("Analysis... execute only on Klauro infrastructure").
+    const report = await runClientDoctor({ projectPath: target, serverUrl: value('--server-url') });
+    if (json) { process.stdout.write(`${JSON.stringify(report, null, 2)}\n`); } else { process.stdout.write(`${formatClientDoctor(report)}\n`); }
+    process.exitCode = report.status === 'fail' ? 1 : 0;
+    return;
+  }
+  if (command === 'support-bundle') {
+    const result = await buildSupportBundle({
+      projectPath: process.argv[3] && !process.argv[3].startsWith('-') ? target : undefined,
+      outputPath: value('--output'),
+    });
+    return output(json ? result : formatSupportBundleResult(result), json);
+  }
   if (command === 'init') {
     const serverUrl = normalizeServerUrl(value('--server-url'));
     let projectId = value('--project-id');
@@ -95,6 +131,12 @@ async function main() {
     '  analyze [path]              Upload a committed source snapshot for hosted analysis',
     '  remote-sync [path]          Upload in-flight changes for hosted analysis',
     '  upload-manifest [path]      Preview source files selected for upload',
+    '  status [path] [--server-url URL]',
+    '                               One-glance report: account, release, project connection, analysis, MCP',
+    '  doctor [path] [--server-url URL]',
+    '                               Diagnose node version, auth/token age, server reachability, MCP registration',
+    '  support-bundle [path] [--output FILE]',
+    '                               Package redacted environment + run-log diagnostics to send to support',
     '  update [--check] [--force]  Install the latest hosted klauro release over this one',
     '  login --email EMAIL --password-stdin [--register]',
     '  auth-status | whoami | logout | version', '',
