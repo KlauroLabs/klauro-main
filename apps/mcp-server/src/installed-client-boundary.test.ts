@@ -42,7 +42,14 @@ test('installed bundle graph excludes hosted analyzer implementation', () => {
   const violations = metafileInputs().filter(input => forbidden.some(pattern => pattern.test(input)));
   assert.deepEqual(violations, []);
   const analyzerCoreInputs = metafileInputs().filter(input => input.includes('packages/analyzer-core/src/analyzer/'));
-  assert.deepEqual([...new Set(analyzerCoreInputs)], ['../../packages/analyzer-core/src/analyzer/core/language-registry.ts']);
+  // run-log.ts joined the allowlist with `klauro support-bundle` (restored to
+  // installed-cli.ts 2026-07-28): it's fs/os/path plus a redirected
+  // getBuildIdentity (see build-bundle.mjs's installedBoundary plugin) — no
+  // analyzer/parsing code, just log-file path resolution.
+  assert.deepEqual([...new Set(analyzerCoreInputs)].sort(), [
+    '../../packages/analyzer-core/src/analyzer/core/language-registry.ts',
+    '../../packages/analyzer-core/src/analyzer/core/run-log.ts',
+  ]);
   for (const forbidden of ['cross-codebase-analysis', 'workspace-analysis', 'proposal-preview', 'greenfield', 'semantic-search']) {
     assert.equal(metafileInputs().some(input => input.includes(forbidden)), false, forbidden);
   }

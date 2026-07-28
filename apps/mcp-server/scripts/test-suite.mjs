@@ -20,6 +20,11 @@ const artifactTestFiles = new Set([
   // update` (the 2026-07-27 P0: it did not, while the server's 426 told every
   // customer to run it).
   'src/installed-cli-update-command.test.ts',
+  // Same class, generalized: scans ALL customer-facing text for `klauro
+  // <command>` mentions and asserts installed-cli.ts registers each one
+  // (the 2026-07-28 follow-up audit that found status/doctor/support-bundle
+  // missing the same way `update` was). Also runs the built dist/cli.cjs.
+  'src/installed-cli-ops-commands.test.ts',
 ]);
 
 export const TEST_GROUPS = Object.freeze({
