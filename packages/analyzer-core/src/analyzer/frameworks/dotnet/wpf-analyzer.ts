@@ -989,20 +989,30 @@ export class WPFAnalyzer extends BaseAnalyzer {
     for (const window of windows) {
       if (window.baseClass === 'Window' || window.name.toLowerCase().includes('main')) {
         const windowId = this.generateId('window', window.filePath, window.name);
+        // A solution with five projects has five `MainWindow`s. Emitting the
+        // bare class name made them one indistinguishable name in the product
+        // (measured: 5 window entry points, 1 unique name), and emitting no
+        // handler left them with no code location for the orchestrator's
+        // dedup to key on. Qualify by the owning project directory and carry
+        // the file — both are real path evidence.
+        const project = path.basename(path.dirname(window.filePath));
         entryPoints.push(this.createEntryPoint(
           this.generateId('entry', window.filePath, window.name),
           windowId,
           'event',
-          window.name,
+          project && project !== '.' ? `${project}.${window.name}` : window.name,
           `WPF Window: ${window.name}`,
           { event: 'user-interaction' },
           undefined,
           {
             framework: 'wpf',
             entry_type: 'window',
+            window_class: window.name,
+            file: window.filePath,
             data_context: window.dataContext,
             event_handler_count: window.eventHandlers.length
-          }
+          },
+          { node_id: windowId, method_name: window.name, file: window.filePath }
         ));
       }
     }

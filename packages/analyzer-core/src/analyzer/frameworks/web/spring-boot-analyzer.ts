@@ -34,6 +34,10 @@ interface SpringEndpoint {
   produces: string[];
   consumes: string[];
   authenticated: boolean;
+  /** 1-based source line of the mapping annotation, used to give the
+   *  emitted route node/entry point a real handler.file+handler.line
+   *  (the orchestrator's dedup key on code location). */
+  line: number;
 }
 
 interface SpringService {
@@ -164,6 +168,11 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
       const configurations = await this.analyzeConfigurations(javaFiles, context.projectPath, nodes, edges);
       const entities = await this.analyzeEntities(javaFiles, context.projectPath, nodes, edges, exitPoints);
       const security = await this.analyzeSecurity(javaFiles, context.projectPath, nodes, edges);
+      // Messaging/scheduling/event/GraphQL triggers are NOT restricted to
+      // @Controller classes (a @Component/@Service can carry @KafkaListener
+      // or @Scheduled just as validly), so this scans every java file rather
+      // than only the ones already gated into analyzeControllers.
+      await this.analyzeMessagingTriggers(javaFiles, context.projectPath, nodes, entryPoints);
 
       this.buildSpringBootRelationships(controllers, services, configurations, entities, nodes, edges);
       this.identifyDatabaseConnections(entities, exitPoints);
@@ -293,12 +302,18 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
 
           endpoints.forEach((endpoint, index) => {
             const endpointId = `endpoint_${controllerId}_${endpoint.handlerName}_${index}`;
+            // NOTE: intentionally NOT named `fullPath` here — the outer scope
+            // already has a `fullPath` holding the java source file's absolute
+            // path (used below for handler.file / node source.file). A prior
+            // version of this code shadowed that outer binding with the
+            // composed ROUTE path, which silently fed the route path in as the
+            // node's source `file` instead of the real java file.
             const routePath = `${requestMapping}${endpoint.path}`.replace('//', '/');
 
             const endpointNode = this.createNodeBuilder(endpointId, `${endpoint.method.toUpperCase()} ${routePath}`, 'route')
               .withLevel(3, 'code')
               .withCategory('route', ['http', 'endpoint'])
-              .withSource({ file: fullPath, line: 1, end_line: 1 })
+              .withSource({ file: fullPath, line: endpoint.line, end_line: endpoint.line })
               .withDescription(`Spring Boot HTTP endpoint: ${endpoint.method.toUpperCase()} ${routePath}`)
               .withMetadata({
                 framework: 'spring-boot',
@@ -335,7 +350,8 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
               `Spring Boot HTTP endpoint: ${endpoint.method.toUpperCase()} ${canonicalPath}`,
               { method: endpoint.method.toUpperCase(), path: canonicalPath },
               { authenticated: endpoint.authenticated },
-              { method: endpoint.method, path: canonicalPath, controller: className, handler: endpoint.handlerName, authenticated: endpoint.authenticated }
+              { method: endpoint.method, path: canonicalPath, controller: className, handler: endpoint.handlerName, authenticated: endpoint.authenticated },
+              { node_id: endpointId, method_name: endpoint.handlerName, file: fullPath, line: endpoint.line }
             ));
           });
         }
@@ -640,6 +656,229 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
   }
 
   /**
+   * Detects Spring's non-HTTP-route trigger annotations — messaging listeners,
+   * scheduled tasks, application-event listeners, and Spring GraphQL
+   * operations — and emits one entry point per annotated method. Unlike
+   * `analyzeControllers`, this deliberately scans EVERY java file rather than
+   * only files already gated on `@Controller`/`@RestController`: a
+   * `@KafkaListener` or `@Scheduled` method is just as valid on a plain
+   * `@Component`/`@Service` as on a controller, and gating on the controller
+   * check would silently make those invisible. The cheap `includes()`
+   * pre-check keeps the cost near-zero for the files that use none of these.
+   */
+  private async analyzeMessagingTriggers(
+    files: string[],
+    projectPath: string,
+    nodes: CASNode[],
+    entryPoints: CASEntryPoint[]
+  ): Promise<void> {
+    const TRIGGER_ANNOTATIONS = [
+      '@KafkaListener', '@RabbitListener', '@JmsListener', '@Scheduled',
+      '@EventListener', '@TransactionalEventListener', '@MessageMapping',
+      '@SubscribeMapping', '@QueryMapping', '@MutationMapping', '@SchemaMapping'
+    ];
+
+    for (const file of files) {
+      const fullPath = path.join(projectPath, file);
+      const content = await fs.readFile(fullPath, 'utf-8');
+      if (!TRIGGER_ANNOTATIONS.some(marker => content.includes(marker))) continue;
+
+      const className = this.extractClassName(content);
+      if (!className) continue;
+
+      this.emitAnnotatedTriggers(content, className, fullPath, 'KafkaListener', 'message',
+        (rawArgs, handlerName) => {
+          const topics = this.extractNamedListLiteral(rawArgs, 'topics?');
+          const groupId = rawArgs?.match(/groupId\s*=\s*["']([^"']+)["']/)?.[1];
+          const label = topics.length ? topics.join(', ') : 'unknown-topic';
+          return {
+            name: `Kafka listener: ${label}`,
+            description: `Spring Kafka listener ${className}.${handlerName} on topic(s) ${label}`,
+            trigger: { event: label },
+            metadata: { topics, groupId }
+          };
+        }, nodes, entryPoints);
+
+      this.emitAnnotatedTriggers(content, className, fullPath, 'RabbitListener', 'message',
+        (rawArgs, handlerName) => {
+          const queues = this.extractNamedListLiteral(rawArgs, 'queues?');
+          const label = queues.length ? queues.join(', ') : 'unknown-queue';
+          return {
+            name: `RabbitMQ listener: ${label}`,
+            description: `Spring RabbitMQ listener ${className}.${handlerName} on queue(s) ${label}`,
+            trigger: { event: label },
+            metadata: { queues }
+          };
+        }, nodes, entryPoints);
+
+      this.emitAnnotatedTriggers(content, className, fullPath, 'JmsListener', 'message',
+        (rawArgs, handlerName) => {
+          const destinations = this.extractNamedListLiteral(rawArgs, 'destination');
+          const label = destinations.length ? destinations.join(', ') : 'unknown-destination';
+          return {
+            name: `JMS listener: ${label}`,
+            description: `Spring JMS listener ${className}.${handlerName} on destination ${label}`,
+            trigger: { event: label },
+            metadata: { destinations }
+          };
+        }, nodes, entryPoints);
+
+      this.emitAnnotatedTriggers(content, className, fullPath, 'Scheduled', 'schedule',
+        (rawArgs, handlerName) => {
+          const cron = rawArgs?.match(/cron\s*=\s*["']([^"']+)["']/)?.[1];
+          const fixedRate = rawArgs?.match(/fixedRate\s*=\s*["']?(\d+)["']?/)?.[1];
+          const fixedDelay = rawArgs?.match(/fixedDelay\s*=\s*["']?(\d+)["']?/)?.[1];
+          const label = cron
+            ? `cron: ${cron}`
+            : fixedRate
+              ? `every ${fixedRate}ms`
+              : fixedDelay
+                ? `every ${fixedDelay}ms (delay)`
+                : 'unspecified schedule';
+          return {
+            name: `Scheduled task: ${className}.${handlerName}`,
+            description: `Spring @Scheduled task ${className}.${handlerName} (${label})`,
+            trigger: { schedule: cron || (fixedRate ? `fixedRate:${fixedRate}` : fixedDelay ? `fixedDelay:${fixedDelay}` : undefined) },
+            metadata: {
+              cron,
+              fixedRate: fixedRate ? Number(fixedRate) : undefined,
+              fixedDelay: fixedDelay ? Number(fixedDelay) : undefined
+            }
+          };
+        }, nodes, entryPoints);
+
+      for (const annotationName of ['EventListener', 'TransactionalEventListener'] as const) {
+        this.emitAnnotatedTriggers(content, className, fullPath, annotationName, 'event',
+          (rawArgs, handlerName) => {
+            const eventType = rawArgs?.match(/(\w+)\.class/)?.[1];
+            const label = eventType || 'application event';
+            return {
+              name: `Event listener: ${className}.${handlerName}`,
+              description: `Spring ${annotationName} ${className}.${handlerName} for ${label}`,
+              trigger: { event: label },
+              metadata: { eventType }
+            };
+          }, nodes, entryPoints);
+      }
+
+      for (const annotationName of ['MessageMapping', 'SubscribeMapping'] as const) {
+        this.emitAnnotatedTriggers(content, className, fullPath, annotationName, 'message',
+          (rawArgs, handlerName) => {
+            const destination = this.extractAnnotationPathLiteral(rawArgs);
+            const label = destination || 'unknown-destination';
+            return {
+              name: `${annotationName === 'MessageMapping' ? 'STOMP message handler' : 'STOMP subscription handler'}: ${label}`,
+              description: `Spring ${annotationName} ${className}.${handlerName} on destination ${label}`,
+              trigger: { event: label, path: destination || undefined },
+              metadata: { destination }
+            };
+          }, nodes, entryPoints);
+      }
+
+      for (const annotationName of ['QueryMapping', 'MutationMapping', 'SchemaMapping'] as const) {
+        this.emitAnnotatedTriggers(content, className, fullPath, annotationName, 'http',
+          (rawArgs, handlerName) => {
+            const name = rawArgs?.match(/name\s*=\s*["']([^"']+)["']/)?.[1] || handlerName;
+            const opKind = annotationName === 'QueryMapping' ? 'Query'
+              : annotationName === 'MutationMapping' ? 'Mutation'
+              : 'SchemaMapping';
+            return {
+              name: `GraphQL ${opKind}: ${name}`,
+              description: `Spring GraphQL ${opKind} ${className}.${handlerName} (${name})`,
+              trigger: { method: opKind.toUpperCase(), path: name },
+              metadata: { operation: name, operationType: opKind }
+            };
+          }, nodes, entryPoints);
+      }
+    }
+  }
+
+  /**
+   * Shared machinery for every Spring trigger annotation in
+   * `analyzeMessagingTriggers`: finds each method-level `@AnnotationName(...)`
+   * occurrence (mirroring the same "annotation, then eventually a
+   * public/protected method signature" shape used for `@GetMapping` etc. in
+   * `extractEndpoints`), and for each one emits a node + a matching entry
+   * point carrying `handler.file`/`handler.line` so the orchestrator's
+   * location-based dedup can key on real code, not a guess.
+   */
+  private emitAnnotatedTriggers(
+    content: string,
+    className: string,
+    fullPath: string,
+    annotationName: string,
+    entryType: CASEntryPoint['type'],
+    buildMeta: (rawArgs: string | undefined, handlerName: string) => {
+      name: string;
+      description: string;
+      trigger?: CASEntryPoint['trigger'];
+      metadata: Record<string, any>;
+    },
+    nodes: CASNode[],
+    entryPoints: CASEntryPoint[]
+  ): void {
+    if (!content.includes(`@${annotationName}`)) return;
+
+    const pattern = new RegExp(
+      `@${annotationName}\\s*(?:\\(([^)]*)\\))?[\\s\\S]*?\\b(?:public|protected)\\s+(?:static\\s+)?[\\w.]+(?:<[^;{}]*>)?(?:\\[\\])*\\s+(\\w+)\\s*\\([^)]*\\)`,
+      'g'
+    );
+
+    let match;
+    let seq = 0;
+    while ((match = pattern.exec(content)) !== null) {
+      const rawArgs = match[1];
+      const handlerName = match[2];
+      const line = this.getLineNumber(content, match.index);
+      const built = buildMeta(rawArgs, handlerName);
+
+      const nodeId = `trigger_${this.sanitizeId(className)}_${this.sanitizeId(annotationName)}_${this.sanitizeId(handlerName)}_${seq}`;
+      const node = this.createNodeBuilder(nodeId, built.name, 'trigger')
+        .withLevel(3, 'code')
+        .withCategory('trigger', [entryType, annotationName])
+        .withSource({ file: fullPath, line, end_line: line })
+        .withDescription(built.description)
+        .withMetadata({
+          framework: 'spring-boot',
+          attributes: { annotation: annotationName, handlerName, class: className, ...built.metadata }
+        })
+        .build();
+      nodes.push(node);
+
+      entryPoints.push(this.createEntryPoint(
+        `entry_${nodeId}`,
+        nodeId,
+        entryType,
+        built.name,
+        built.description,
+        built.trigger,
+        undefined,
+        { annotation: annotationName, handlerName, class: className, ...built.metadata },
+        { node_id: nodeId, method_name: handlerName, file: fullPath, line }
+      ));
+
+      seq++;
+    }
+  }
+
+  /** Extracts the string literal(s) assigned to a named annotation attribute,
+   *  supporting both the single-value form (`topics = "orders"`) and the
+   *  array form (`topics = {"a", "b"}`). `keyPattern` may itself be a small
+   *  regex fragment (e.g. `topics?` to match both `topic` and `topics`). */
+  private extractNamedListLiteral(rawArgs: string | undefined, keyPattern: string): string[] {
+    if (!rawArgs) return [];
+    const keyMatch = rawArgs.match(new RegExp(`${keyPattern}\\s*=\\s*(\\{[^}]*\\}|["'][^"']*["'])`));
+    if (!keyMatch) return [];
+    const literals: string[] = [];
+    const literalPattern = /["']([^"']+)["']/g;
+    let match;
+    while ((match = literalPattern.exec(keyMatch[1])) !== null) {
+      literals.push(match[1]);
+    }
+    return literals;
+  }
+
+  /**
    * A class needs no access modifier to be a valid, fully-functional Spring
    * bean/controller/entity — package-private (default-visibility) classes are
    * a routine, idiomatic choice (a benchmarked Spring Boot reference app itself
@@ -679,7 +918,6 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
   }
 
   private extractEndpoints(content: string): SpringEndpoint[] {
-    const endpoints: SpringEndpoint[] = [];
     // Return type must allow generics/arrays (`Optional<Owner>`, `List<Owner>`,
     // `ResponseEntity<List<Pet>>`, `Owner[]`) in addition to a bare type/`void` —
     // real handler methods routinely wrap their response, and the previous
@@ -696,37 +934,94 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
     const classHeader = classDeclIdx >= 0 ? content.slice(0, classDeclIdx) : '';
     const classGuarded = /@(?:PreAuthorize|Secured|RolesAllowed)\b/.test(classHeader);
 
+    interface RawMapping { index: number; end: number; verbs: string[]; rawArgs?: string; handlerName: string; }
+    const rawMappings: RawMapping[] = [];
+
     let match;
-    let prevEnd = 0;
     while ((match = methodPattern.exec(content)) !== null) {
-      const method = match[1].toLowerCase();
-      const path = this.extractAnnotationPathLiteral(match[2]);
-      const handlerName = match[3];
+      rawMappings.push({
+        index: match.index,
+        end: match.index + match[0].length,
+        verbs: [match[1].toLowerCase()],
+        rawArgs: match[2],
+        handlerName: match[3]
+      });
+    }
+
+    // Bare method-level `@RequestMapping(value = "/x", method = RequestMethod.GET)`.
+    // The class-level @RequestMapping (the controller's base path) uses the SAME
+    // annotation name and precedes the `class` keyword, so any match whose start
+    // index is before classDeclIdx is the class-level one and must be skipped —
+    // extractRequestMapping() already isolates that one separately. A method-level
+    // use with no `method=` attribute applies to ALL HTTP methods per Spring's own
+    // default, so it's recorded as verb 'all' rather than guessed.
+    const bareRequestMappingPattern = /@RequestMapping\s*(?:\(([^)]*)\))?[\s\S]*?\b(?:public|protected)\s+(?:static\s+)?[\w.]+(?:<[^;{}]*>)?(?:\[\])*\s+(\w+)\s*\([^)]*\)/g;
+    while ((match = bareRequestMappingPattern.exec(content)) !== null) {
+      if (classDeclIdx >= 0 && match.index < classDeclIdx) continue;
+      rawMappings.push({
+        index: match.index,
+        end: match.index + match[0].length,
+        verbs: this.extractRequestMappingVerbs(match[1]),
+        rawArgs: match[1],
+        handlerName: match[2]
+      });
+    }
+
+    rawMappings.sort((a, b) => a.index - b.index);
+
+    const endpoints: SpringEndpoint[] = [];
+    let prevEnd = 0;
+    rawMappings.forEach((rm, i) => {
+      const path = this.extractAnnotationPathLiteral(rm.rawArgs);
+      const line = this.getLineNumber(content, rm.index);
 
       // Per-endpoint auth: a security annotation in the window from the previous
       // endpoint's end through this endpoint's signature guards THIS method only —
       // whether it sits just before the @…Mapping or between the mapping and
       // `public`. File-level inclusion would wrongly mark sibling open endpoints.
-      const windowStart = endpoints.length === 0
-        ? Math.max(0, content.lastIndexOf('}', match.index) + 1, prevEnd)
+      const windowStart = i === 0
+        ? Math.max(0, content.lastIndexOf('}', rm.index) + 1, prevEnd)
         : prevEnd;
-      const window = content.slice(windowStart, match.index + match[0].length);
+      const window = content.slice(windowStart, rm.end);
       const methodGuarded = /@(?:PreAuthorize|Secured|RolesAllowed)\b/.test(window);
-      prevEnd = match.index + match[0].length;
+      prevEnd = rm.end;
 
-      endpoints.push({
-        method,
-        path,
-        handlerName,
-        parameters: [],
-        responseType: 'Object',
-        produces: [],
-        consumes: [],
-        authenticated: classGuarded || methodGuarded
-      });
-    }
+      for (const method of rm.verbs) {
+        endpoints.push({
+          method,
+          path,
+          handlerName: rm.handlerName,
+          parameters: [],
+          responseType: 'Object',
+          produces: [],
+          consumes: [],
+          authenticated: classGuarded || methodGuarded,
+          line
+        });
+      }
+    });
 
     return endpoints;
+  }
+
+  /** Verbs declared via `method = RequestMethod.X` (or a `{RequestMethod.X,
+   *  RequestMethod.Y}` array) on a bare `@RequestMapping`. Absent = Spring's
+   *  own default of matching every HTTP method, recorded as 'all' rather than
+   *  guessed at a single verb. */
+  private extractRequestMappingVerbs(rawArgs: string | undefined): string[] {
+    if (!rawArgs) return ['all'];
+    const verbs: string[] = [];
+    const verbPattern = /RequestMethod\.(\w+)/g;
+    let match;
+    while ((match = verbPattern.exec(rawArgs)) !== null) {
+      verbs.push(match[1].toLowerCase());
+    }
+    return verbs.length > 0 ? verbs : ['all'];
+  }
+
+  /** 1-based line number of a character offset into `content`. */
+  private getLineNumber(content: string, index: number): number {
+    return content.slice(0, index).split('\n').length;
   }
 
   private extractFieldDependencies(content: string): string[] {

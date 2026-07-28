@@ -20,6 +20,18 @@ interface SwiftFunction {
   lineEnd: number;
   // Name of the enclosing type, or undefined for a free function.
   ownerName?: string;
+  // True for `func application(_:open urls:)` (AppKit) / the UIKit
+  // scene-delegate equivalent — the app's URL-scheme / deep-link entry.
+  // Structural: matched on the parameter label `open urls:`, not the name alone.
+  isDeepLinkHandler?: boolean;
+}
+
+// One SwiftUI scene builder found at the top level of an App-conforming
+// type's `var body: some Scene` computed property — each is a distinct
+// app surface (a window, a menu-bar extra, the Settings scene, ...).
+interface SwiftSceneEntry {
+  kind: string;
+  line: number;
 }
 
 // A body-level `let`/`var` declaration with an explicit type — i.e. an
@@ -54,6 +66,13 @@ interface SwiftType {
   // structural evidence the type participates in custom Codable
   // (de)serialization, carried into entity metadata when present.
   hasCodingKeysEnum: boolean;
+  // SwiftUI scene builders found at the top level of `var body: some Scene`
+  // (only meaningful when isAppConformer is true; empty otherwise).
+  sceneEntries: SwiftSceneEntry[];
+  // Line of a `.onOpenURL { ... }` modifier found anywhere in the type body,
+  // if any — the SwiftUI deep-link entry point alternative to
+  // `application(_:open:)`.
+  onOpenURLLine?: number;
 }
 
 interface SwiftImport {
@@ -103,6 +122,17 @@ const APP_LIFECYCLE_CONFORMANCES = new Set(['App', 'Scene']);
 // isn't a payload/domain shape, and Error conformers are diagnostic types,
 // not data entities.
 const NON_ENTITY_CONFORMANCES = new Set(['Scene', 'Error', 'ParsableCommand', 'AsyncParsableCommand']);
+// Conformances that mark a type as the app's lifecycle delegate, wired via
+// `@NSApplicationDelegateAdaptor`/`@UIApplicationDelegateAdaptor` (SwiftUI)
+// or the classic `UIApplicationMain`/`NSApplicationMain` entry — NOT via
+// `@main` on the delegate itself, so this is detected independently of the
+// hasMainAttribute/isAppConformer entry-point path above.
+const APP_DELEGATE_CONFORMANCES = new Set(['NSApplicationDelegate', 'UIApplicationDelegate']);
+// SwiftUI Scene builders recognized inside an App-conforming type's
+// `var body: some Scene`. Each is a distinct app surface. Matched by word
+// boundary + an immediately-following `(` or `{` so `Window` doesn't
+// false-positive inside `WindowGroup`.
+const SCENE_BUILDER_KEYWORDS = ['WindowGroup', 'Window', 'MenuBarExtra', 'Settings', 'DocumentGroup'];
 
 export class SwiftAnalyzer extends BaseAnalyzer {
   constructor() {
@@ -278,19 +308,28 @@ export class SwiftAnalyzer extends BaseAnalyzer {
         const conformances = typeDecl.conformances;
         const { properties: storedProperties, hasCodingKeysEnum } =
           this.extractStoredProperties(lines, i + 1, lineEnd);
+        const isAppConformer = conformances.includes('App');
+        // Cheap and only meaningful for App conformers, but computed
+        // unconditionally like storedProperties above — consulted below.
+        const sceneEntries = isAppConformer
+          ? this.extractSceneEntries(lines, i + 1, lineEnd)
+          : [];
+        const onOpenURLLine = this.findOnOpenURLLine(lines, i + 1, lineEnd);
         types.push({
           name: typeDecl.name,
           kind: typeDecl.kind,
           access: typeDecl.access,
           conformances,
           isSwiftUIView: conformances.includes('View'),
-          isAppConformer: conformances.includes('App'),
+          isAppConformer,
           hasMainAttribute: hasMain,
           lineStart: i + 1,
           lineEnd,
           functions,
           storedProperties,
           hasCodingKeysEnum,
+          sceneEntries,
+          onOpenURLLine,
         });
         pendingMainAttr = false;
         i = lineEnd - 1; // skip the body; functions already captured
@@ -395,6 +434,11 @@ export class SwiftAnalyzer extends BaseAnalyzer {
         const fn = this.matchFunctionDeclaration(trimmed);
         if (fn) {
           const lineEnd = this.findBlockEnd(lines, i);
+          // AppKit's `application(_:open:)` / the equivalent UIKit
+          // scene-delegate hook — matched on the `open urls:` parameter
+          // label, not the bare function name (which is also used for the
+          // unrelated `application(_:didFinishLaunching...)` lifecycle hook).
+          const isDeepLinkHandler = fn.name === 'application' && /\bopen\s+urls\s*:/.test(trimmed);
           functions.push({
             name: fn.name,
             access: fn.access,
@@ -403,6 +447,7 @@ export class SwiftAnalyzer extends BaseAnalyzer {
             lineStart: i + 1,
             lineEnd,
             ownerName,
+            isDeepLinkHandler,
           });
         }
       }
@@ -447,6 +492,62 @@ export class SwiftAnalyzer extends BaseAnalyzer {
       }
     }
     return { properties, hasCodingKeysEnum };
+  }
+
+  // Find SwiftUI Scene builders (WindowGroup/Window/MenuBarExtra/Settings/
+  // DocumentGroup) declared at the top brace-level of a `var body: some
+  // Scene` computed property within the given type body. Scoped strictly to
+  // that property's own braces — never a repo-wide scan for these words,
+  // which would false-positive on unrelated types/settings screens.
+  private extractSceneEntries(lines: string[], start: number, end: number): SwiftSceneEntry[] {
+    const entries: SwiftSceneEntry[] = [];
+    let depth = 0;
+    let bodyEntered = false;
+    let inSceneBody = false;
+    let sceneDepth = 0;
+    for (let i = start - 1; i < end && i < lines.length; i++) {
+      const stripped = this.stripStringsAndComments(lines[i]);
+      const trimmed = stripped.trim();
+
+      if (bodyEntered && depth === 1 && !inSceneBody && trimmed &&
+        /^(?:(?:open|public|internal|fileprivate|private)\s+)?var\s+body\s*:\s*some\s+Scene\b/.test(trimmed)) {
+        inSceneBody = true;
+        sceneDepth = 0;
+      } else if (inSceneBody && sceneDepth === 1 && trimmed) {
+        for (const kind of SCENE_BUILDER_KEYWORDS) {
+          if (new RegExp(`\\b${kind}\\b\\s*[({]`).test(trimmed)) {
+            entries.push({ kind, line: i + 1 });
+          }
+        }
+      }
+
+      for (const ch of stripped) {
+        if (ch === '{') {
+          depth++;
+          bodyEntered = true;
+          if (inSceneBody) sceneDepth++;
+        } else if (ch === '}') {
+          depth--;
+          if (inSceneBody) {
+            sceneDepth--;
+            if (sceneDepth <= 0) inSceneBody = false;
+          }
+        }
+      }
+    }
+    return entries;
+  }
+
+  // Find a `.onOpenURL { ... }` SwiftUI modifier anywhere within the type
+  // body (any nesting depth — it's a view-modifier chained inside a body,
+  // not a body-level declaration). Structural token match, not a keyword scan
+  // over the whole file: scoped to this type's own line range.
+  private findOnOpenURLLine(lines: string[], start: number, end: number): number | undefined {
+    for (let i = start - 1; i < end && i < lines.length; i++) {
+      const stripped = this.stripStringsAndComments(lines[i]);
+      if (/\.onOpenURL\s*\{/.test(stripped)) return i + 1;
+    }
+    return undefined;
   }
 
   // Matches a body-level `let`/`var name: Type` declaration and returns its
@@ -865,7 +966,73 @@ export class SwiftAnalyzer extends BaseAnalyzer {
             reasons,
             isMain: type.hasMainAttribute,
             isApp: type.isAppConformer,
-          }
+          },
+          { node_id: typeId, method_name: type.name, file: info.relativePath, line: type.lineStart }
+        ));
+      }
+
+      // AppDelegate lifecycle: a class conforming to NSApplicationDelegate/
+      // UIApplicationDelegate is the app's lifecycle hook whether or not it
+      // carries @main — the common SwiftUI wiring is
+      // @NSApplicationDelegateAdaptor/@UIApplicationDelegateAdaptor on a
+      // separate App type, so this must be detected independently of the
+      // hasMainAttribute/isAppConformer branch above.
+      const delegateConformance = type.conformances.find(c => APP_DELEGATE_CONFORMANCES.has(c));
+      if (delegateConformance) {
+        entryPoints.push(this.createEntryPoint(
+          `entry_${typeId}_appdelegate`,
+          typeId,
+          'lifecycle',
+          `App delegate: ${type.name}`,
+          `Swift application delegate (${delegateConformance} conformance)`,
+          undefined,
+          undefined,
+          { file: info.relativePath, line: type.lineStart, reasons: [delegateConformance] },
+          { node_id: typeId, method_name: type.name, file: info.relativePath, line: type.lineStart }
+        ));
+      }
+
+      // SwiftUI Scene entries: each scene builder at the top level of an App
+      // conformer's `var body: some Scene` is a distinct app surface
+      // (window / menu-bar extra / Settings / document window / ...).
+      if (type.isAppConformer && type.sceneEntries.length > 0) {
+        for (const scene of type.sceneEntries) {
+          entryPoints.push(this.createEntryPoint(
+            `entry_${typeId}_scene_${scene.line}`,
+            typeId,
+            'lifecycle',
+            `${scene.kind} scene: ${type.name}`,
+            `SwiftUI ${scene.kind} scene declared in ${type.name}'s body: some Scene`,
+            undefined,
+            undefined,
+            { file: info.relativePath, line: scene.line, reasons: ['Scene body'], scene_kind: scene.kind },
+            { node_id: typeId, method_name: type.name, file: info.relativePath, line: scene.line }
+          ));
+        }
+      }
+
+      // URL scheme / deep-link handler: either the AppKit/UIKit
+      // application(_:open:) delegate method, or the SwiftUI .onOpenURL
+      // modifier — whichever is present. At most one entry per type; the
+      // delegate method (more explicit evidence) wins if both are present.
+      const deepLinkMethod = type.functions.find(fn => fn.isDeepLinkHandler);
+      if (deepLinkMethod || type.onOpenURLLine !== undefined) {
+        const line = deepLinkMethod ? deepLinkMethod.lineStart : type.onOpenURLLine!;
+        const reason = deepLinkMethod ? 'application(_:open:)' : '.onOpenURL';
+        const handlerName = deepLinkMethod ? deepLinkMethod.name : 'onOpenURL';
+        const handlerNodeId = deepLinkMethod
+          ? this.functionId(info.relativePath, type.name, deepLinkMethod.name, deepLinkMethod.lineStart)
+          : typeId;
+        entryPoints.push(this.createEntryPoint(
+          `entry_${typeId}_deeplink`,
+          handlerNodeId,
+          'event',
+          `URL open handler: ${type.name}`,
+          `Swift deep-link / URL-scheme handler (${reason})`,
+          undefined,
+          undefined,
+          { file: info.relativePath, line, reasons: [reason] },
+          { node_id: handlerNodeId, method_name: handlerName, file: info.relativePath, line }
         ));
       }
     }
