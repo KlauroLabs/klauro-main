@@ -5751,6 +5751,82 @@ export class AnalyzerOrchestrator {
     return keys;
   }
 
+  /**
+   * CROSS-KIND identity keys — deliberately independent of `type` AND of the
+   * display `name`, and therefore only safe to match BETWEEN DIFFERENT
+   * ANALYZERS (the caller enforces that; see appendGraphItemsUnique).
+   *
+   * WHY THIS EXISTS. entryPointCanonicalKeys above puts `type` and `name` in
+   * the key, so it is structurally blind to the biggest remaining duplication
+   * class measured in production: ONE real trigger described by two or three
+   * analyzers under DIFFERENT kinds and DIFFERENT display names.
+   *   - a Django/Celery task `apply_credit` shipped THREE times in one CAS —
+   *     django as type `message` name "task apply_credit", workflow as type
+   *     `event` name "apply_credit", async-messaging as type `message` name
+   *     "apply_credit" — 46 tasks × up to 3 records.
+   *   - a .NET `Main` shipped twice — csharp as type `cli` name ".NET Main
+   *     entry point" (file+line) and wpf as type `lifecycle` name "Main.Main"
+   *     (file only, no line).
+   * Neither pair shares a canonical key: the kinds differ, the names differ,
+   * and the second record of each pair carries no line.
+   *
+   * WHY IT IS SAFE. Two records from the SAME analyzer at the same location
+   * are legitimately distinct (react emits three `event` entry points for the
+   * three DOM handlers of one component, all at the same file:line with the
+   * same handler method) — so a same-analyzer match must never merge. Two
+   * records from DIFFERENT analyzers pointing at the same handler method in
+   * the same file, or at the same (messaging system, channel) trigger, are the
+   * same real entry point by construction: no analyzer knows about another's
+   * emissions, and the overlap is the whole defect.
+   *
+   * Returns [] when the evidence is too thin to key on. Never keys on name
+   * alone, and never on file alone.
+   */
+  private entryPointCrossAnalyzerKeys(ep: any): string[] {
+    if (!ep || typeof ep !== 'object') return [];
+    const keys: string[] = [];
+
+    // (1) Same handler method in the same file. Line is intentionally NOT in
+    //     the key: the whole point is that one analyzer resolves the line and
+    //     the other does not (wpf's app_startup record carries file only).
+    const file = this.entryPointSourceFile(ep);
+    const method = typeof ep.handler?.method_name === 'string' ? ep.handler.method_name.trim() : '';
+    if (file && method) keys.push(`xhandler::${file.toLowerCase()}::${method.toLowerCase()}`);
+
+    // (2) Same async trigger: (messaging system, channel/operation). This is
+    //     how the Celery triple collapses — django's `celery.task.apply_credit`,
+    //     workflow's `celery:task:apply_credit` and async-messaging's
+    //     `celery:queue:apply_credit` all reduce to (celery, apply_credit).
+    //     Requires BOTH a system and an operation; the role token in the
+    //     middle (task/queue/topic/...) is exactly what disagrees between
+    //     analyzers and so is not part of the identity.
+    const trigger = this.entryPointTriggerIdentity(ep);
+    if (trigger) keys.push(`xtrigger::${trigger}`);
+
+    return keys;
+  }
+
+  /** `<system>::<channel>` for an async/messaging trigger, from explicit
+   *  metadata first and the dotted/coloned trigger event as the fallback.
+   *  Undefined unless BOTH halves are real evidence on the record. */
+  private entryPointTriggerIdentity(ep: any): string | undefined {
+    const metadata = ep?.metadata && typeof ep.metadata === 'object' ? ep.metadata : {};
+    const eventTokens = typeof ep?.trigger?.event === 'string'
+      ? ep.trigger.event.split(/[:.]/).map((token: string) => token.trim()).filter(Boolean)
+      : [];
+    // A single bare token ("process-start", "app-startup") is a kind label,
+    // not a (system, channel) pair — it must never form an identity.
+    if (eventTokens.length < 2 && !(metadata.system || metadata.task_type)) return undefined;
+
+    const system = [metadata.system, metadata.task_type, eventTokens[0]]
+      .find((value: unknown) => typeof value === 'string' && value.trim().length > 0);
+    const channel = [metadata.task_operation, metadata.channel, metadata.operation, eventTokens[eventTokens.length - 1]]
+      .find((value: unknown) => typeof value === 'string' && value.trim().length > 0);
+    if (!system || !channel) return undefined;
+    if (String(system).toLowerCase() === String(channel).toLowerCase()) return undefined;
+    return `${String(system).trim().toLowerCase()}::${String(channel).trim().toLowerCase()}`;
+  }
+
   /** Normalized (leading-`./`-free, forward-slashed) file the entry point was
    *  extracted from. Location evidence only — never fabricated. */
   private entryPointSourceFile(ep: any): string | undefined {
@@ -5807,10 +5883,31 @@ export class AnalyzerOrchestrator {
           target.flatMap(item => this.entryPointCanonicalKeys(item).map(key => [key, item] as const))
         )
       : undefined;
+    // Kind-agnostic index for the cross-analyzer duplicate class. Keyed the
+    // same way for every record, but a hit only counts when the two records
+    // come from DIFFERENT analyzers — hence the bucket per key.
+    const byCrossAnalyzerKey = isEntryPoint
+      ? new Map<string, T[]>()
+      : undefined;
+    const indexCrossAnalyzerKeys = (item: T, replaces?: T): void => {
+      if (!byCrossAnalyzerKey) return;
+      if (replaces) {
+        for (const bucket of byCrossAnalyzerKey.values()) {
+          const at = bucket.indexOf(replaces);
+          if (at >= 0) bucket.splice(at, 1);
+        }
+      }
+      for (const key of this.entryPointCrossAnalyzerKeys(item)) {
+        const bucket = byCrossAnalyzerKey.get(key);
+        if (bucket) { if (!bucket.includes(item)) bucket.push(item); } else byCrossAnalyzerKey.set(key, [item]);
+      }
+    };
+    if (byCrossAnalyzerKey) for (const item of target) indexCrossAnalyzerKeys(item);
     const indexCanonicalKeys = (item: T): void => {
       if (!byCanonicalKey) return;
       for (const key of this.entryPointCanonicalKeys(item)) byCanonicalKey.set(key, item);
     };
+    const analyzerOf = (item: any): string => String(item?.source_analyzer ?? '');
     const warnedIds = new Set<string>();
     for (const item of incoming) {
       const existing = byId.get(item.id);
@@ -5825,6 +5922,20 @@ export class AnalyzerOrchestrator {
           const hit = byCanonicalKey!.get(key);
           if (hit) { canonicalExisting = hit; break; }
         }
+        if (!canonicalExisting && byCrossAnalyzerKey) {
+          // Same real trigger under a DIFFERENT kind and a different display
+          // name, emitted by a different analyzer (Celery task as
+          // event+message+message; .NET Main as cli+lifecycle). Only a
+          // cross-analyzer hit counts — see entryPointCrossAnalyzerKeys.
+          const itemAnalyzer = analyzerOf(item);
+          for (const key of this.entryPointCrossAnalyzerKeys(item)) {
+            const hit = (byCrossAnalyzerKey.get(key) ?? []).find(
+              candidate => analyzerOf(candidate) !== itemAnalyzer
+                && !this.mergedAnalyzersOf(candidate).includes(itemAnalyzer)
+            );
+            if (hit) { canonicalExisting = hit; break; }
+          }
+        }
         if (canonicalExisting) {
           // SAME real entry point under two id schemes. Keep ONE record, but
           // never lose the losing record's evidence: merge the union (richer
@@ -5835,11 +5946,13 @@ export class AnalyzerOrchestrator {
           byId.delete(canonicalExisting.id);
           byId.set(merged.id, merged);
           indexCanonicalKeys(merged);
+          indexCrossAnalyzerKeys(merged, canonicalExisting);
           continue;
         }
         target.push(item);
         byId.set(item.id, item);
         indexCanonicalKeys(item);
+        indexCrossAnalyzerKeys(item);
         continue;
       }
       if (this.canonicalGraphJson(existing) === this.canonicalGraphJson(item)) continue;
@@ -5855,6 +5968,7 @@ export class AnalyzerOrchestrator {
         if (idx >= 0) target[idx] = merged;
         byId.set(merged.id, merged);
         indexCanonicalKeys(merged);
+        indexCrossAnalyzerKeys(merged, existing);
         continue;
       }
       if (warnedIds.has(item.id)) continue;
@@ -5915,7 +6029,15 @@ export class AnalyzerOrchestrator {
         );
       }
     }
-    const analyzers = [rich?.source_analyzer, lean?.source_analyzer].filter(Boolean) as string[];
+    // Provenance must survive a THIRD merge: a Celery task is described by
+    // django + workflow + async-messaging, and reading only the two records'
+    // `source_analyzer` dropped whichever contributor was already folded in.
+    const analyzers = [
+      rich?.source_analyzer,
+      lean?.source_analyzer,
+      ...this.mergedAnalyzersOf(rich),
+      ...this.mergedAnalyzersOf(lean),
+    ].filter(Boolean) as string[];
     const uniqueAnalyzers = [...new Set(analyzers)];
     if (uniqueAnalyzers.length > 0) {
       merged.source_analyzer = uniqueAnalyzers[0];
@@ -5924,6 +6046,15 @@ export class AnalyzerOrchestrator {
       }
     }
     return merged;
+  }
+
+  /** Every analyzer whose evidence is already folded into this record. Guards
+   *  the cross-analyzer dedup from re-merging a record into a union it is
+   *  already part of, and from chaining A→B→C when B and C are the same
+   *  analyzer describing two genuinely distinct entry points. */
+  private mergedAnalyzersOf(ep: any): string[] {
+    const listed = ep?.metadata?.merged_from_analyzers;
+    return Array.isArray(listed) ? listed.filter((value: unknown) => typeof value === 'string') : [];
   }
 
   private dedupeGraphItemsInPlace<T extends { id: string }>(
