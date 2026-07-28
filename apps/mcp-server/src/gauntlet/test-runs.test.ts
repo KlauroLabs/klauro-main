@@ -178,13 +178,20 @@ ok 1 - solo
   assert.equal(r.total, 1, 'only the real test, not the summary, is counted');
 });
 
-// One opt-in smoke test: run a tiny throwaway suite end-to-end through the same
+// One smoke test: run a tiny throwaway suite end-to-end through the same
 // machinery shape. We invoke node:test directly on a temp file (fast) rather
-// than the full project suite. Kept resilient: skipped on any environment error.
-test('runTestSuite-style end-to-end on a tiny temp suite (smoke)', async t => {
-  // This exercises the spawn+parse path against a minimal real run, without the
-  // ~2-3 min full suite. We shell out to tsx --test on a temp file directly.
+// than the full project suite.
+//
+// This used to spawn the `npx` shell shim and t.skip() whenever it produced no
+// output — which is exactly what happened inside the gate container (non-root
+// `gate` user, no writable npm cache), so the one test that actually exercises
+// the spawn+parse path never ran there. Resolve tsx's CLI entry and run it on
+// this process's own node binary: no shim, no network, no cache, and a genuine
+// failure now fails instead of silently disappearing.
+test('runTestSuite-style end-to-end on a tiny temp suite (smoke)', async () => {
   const { spawn } = await import('child_process');
+  const { createRequire } = await import('node:module');
+  const tsxCli = createRequire(__filename).resolve('tsx/cli');
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'test-runs-smoke-'));
   const tmpFile = path.join(tmpDir, 'tiny.test.ts');
   await fs.writeFile(
@@ -194,27 +201,37 @@ test('runTestSuite-style end-to-end on a tiny temp suite (smoke)', async t => {
       `test('tiny skip', { skip: true }, () => {});\n`,
   );
 
-  const out: string = await new Promise<string>((resolve, reject) => {
-    const child = spawn('npx', ['tsx', '--test', '--test-reporter=tap', tmpFile], {
-      env: { ...process.env, FORCE_COLOR: '0' },
-    });
+  const childEnv = { ...process.env };
+  delete childEnv.NODE_TEST_CONTEXT;
+  delete childEnv.NODE_OPTIONS;
+
+  const { out, err } = await new Promise<{ out: string; err: string }>((resolve, reject) => {
+    const child = spawn(
+      process.execPath,
+      [tsxCli, '--test', '--test-reporter=tap', tmpFile],
+      // NODE_TEST_CONTEXT is how node:test tells a process it is already
+      // inside a test run; inherited, the child prints "run() is being called
+      // recursively within a test file. skipping running files." to stderr and
+      // nothing at all to stdout. Drop it (and NODE_OPTIONS) so the child is a
+      // clean top-level runner.
+      { env: { ...childEnv, FORCE_COLOR: '0' } }
+    );
     let s = '';
+    let e = '';
     const timer = setTimeout(() => {
       child.kill('SIGKILL');
       reject(new Error('smoke timeout'));
     }, 60_000);
     child.stdout?.on('data', d => (s += d.toString()));
+    child.stderr?.on('data', d => (e += d.toString()));
     child.on('error', reject);
     child.on('close', () => {
       clearTimeout(timer);
-      resolve(s);
+      resolve({ out: s, err: e });
     });
-  }).catch(() => '');
+  });
 
-  if (!out) {
-    t.skip('temp run produced no output in this environment');
-    return;
-  }
+  assert.ok(out, `temp run produced no stdout; stderr was: ${err.slice(0, 800)}`);
 
   const parsed = parseTap(out);
   assert.ok(parsed.total >= 2, `expected >=2 tests, got ${parsed.total}`);
