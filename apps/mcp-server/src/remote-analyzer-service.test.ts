@@ -3,8 +3,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { requestConsumesMutationRateLimit, resolveHostedReleaseNodeRange, revisionMatchesSnapshot, stampRepoFacts, stampRepoFactsFromLastKnownOrMarkAbsent } from './remote-analyzer-service';
-import type { RemoteProjectRevision } from './remote-analyzer-protocol';
+import { stampRepoFacts, stampRepoFactsFromLastKnownOrMarkAbsent } from './remote-analyzer-service';
 import { getAnalysis } from './analyzer';
 import { CAS_VERSION, type CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import type { SourceManifest } from './remote-source';
@@ -52,79 +51,6 @@ function withTempWorkspace(run: (workspace: string) => Promise<void>): Promise<v
     fs.rmSync(workspace, { recursive: true, force: true });
   });
 }
-
-test('hosted release manifest preserves a valid widened Node range and repairs legacy manifests', () => {
-  assert.deepEqual(resolveHostedReleaseNodeRange({ min_node: 18, max_node: 24 }), { minNode: 18, maxNode: 24 });
-  assert.deepEqual(resolveHostedReleaseNodeRange({ min_node: 18 }), { minNode: 18, maxNode: 24 });
-  assert.deepEqual(resolveHostedReleaseNodeRange({ min_node: 24, max_node: 18 }), { minNode: 18, maxNode: 24 });
-  assert.deepEqual(resolveHostedReleaseNodeRange({ min_node: 18, max_node: 999 }), { minNode: 18, maxNode: 24 });
-});
-
-test('status polling and other reads do not consume the hosted mutation rate limit', () => {
-  assert.equal(requestConsumesMutationRateLimit('GET'), false);
-  assert.equal(requestConsumesMutationRateLimit('HEAD'), false);
-  assert.equal(requestConsumesMutationRateLimit('OPTIONS'), false);
-  assert.equal(requestConsumesMutationRateLimit('POST'), true);
-  assert.equal(requestConsumesMutationRateLimit('PATCH'), true);
-  assert.equal(requestConsumesMutationRateLimit('DELETE'), true);
-});
-
-test('committed snapshot reuse requires the exact source digest when both sides provide one', () => {
-  const revision: RemoteProjectRevision = {
-    analysis_id: 'analysis',
-    analysis_revision: 1,
-    branch: 'main',
-    commit: 'abc123',
-    source: 'local_commit_submission',
-    generated_at: new Date().toISOString(),
-    files: 2,
-    bytes: 20,
-    nodes: 10,
-    edges: 12,
-    snapshot_digest: 'digest-a',
-  };
-  const manifest: SourceManifest = {
-    generated_at: new Date().toISOString(),
-    root: '/repo',
-    branch: 'main',
-    base_commit: 'abc123',
-    file_count: 2,
-    total_bytes: 20,
-    snapshot_digest: 'digest-a',
-    excluded_directories: [],
-  };
-
-  assert.equal(revisionMatchesSnapshot(revision, manifest, 'abc123'), true);
-  assert.equal(revisionMatchesSnapshot(revision, { ...manifest, snapshot_digest: 'digest-b' }, 'abc123'), false);
-  assert.equal(revisionMatchesSnapshot(revision, manifest, 'different-commit'), false);
-});
-
-test('legacy revisions without a digest reuse only matching commit, branch, file count, and bytes', () => {
-  const revision: RemoteProjectRevision = {
-    analysis_id: 'analysis',
-    analysis_revision: 1,
-    branch: 'main',
-    commit: 'abc123',
-    source: 'local_commit_submission',
-    generated_at: new Date().toISOString(),
-    files: 2,
-    bytes: 20,
-    nodes: 10,
-    edges: 12,
-  };
-  const manifest: SourceManifest = {
-    generated_at: new Date().toISOString(),
-    root: '/repo',
-    branch: 'main',
-    file_count: 2,
-    total_bytes: 20,
-    excluded_directories: [],
-  };
-
-  assert.equal(revisionMatchesSnapshot(revision, manifest, 'abc123'), true);
-  assert.equal(revisionMatchesSnapshot(revision, { ...manifest, total_bytes: 21 }, 'abc123'), false);
-  assert.equal(revisionMatchesSnapshot(revision, { ...manifest, branch: 'release' }, 'abc123'), false);
-});
 
 test('stampRepoFacts: manifest.repo_facts lands on system.repo_facts AND survives a fresh getAnalysis() reload', async () => {
   await withTempWorkspace(async workspace => {

@@ -97,7 +97,7 @@ export class ValidationSchemaAnalyzer extends BaseAnalyzer {
   async analyze(context: AnalysisContext): Promise<CASContribution> {
     const { nodes, edges, libraries, contracts, handlerUsages } = await this.analyzeValidationContracts(
       context.projectPath,
-      await this.sourceFiles(context),
+      await this.sourceFiles(context.projectPath),
       true
     );
 
@@ -697,8 +697,6 @@ export class ValidationSchemaAnalyzer extends BaseAnalyzer {
   }
 
   private extractImports(content: string): string[] {
-    const corpusImports = this.sourceImports(content);
-    if (corpusImports) return [...corpusImports];
     const imports = new Set<string>();
     for (const line of content.split(/\r?\n/)) {
       const importMatch = line.match(/^\s*import\s+(?:.+?\s+from\s+)?['"]([^'"]+)['"]/);
@@ -721,29 +719,10 @@ export class ValidationSchemaAnalyzer extends BaseAnalyzer {
     return /(z\.object|yup\.object|Joi\.[a-z]+\s*\(|new\s+Ajv|@Is[A-Za-z]+|fields\.[A-Za-z]+|Validator\s*\(|Schema\b|(?:from\s*|require\s*\(\s*)['"](?:joi|@hapi\/joi)['"])/.test(content);
   }
 
-  private async sourceFiles(contextOrPath: AnalysisContext | string): Promise<string[]> {
-    const context = typeof contextOrPath === 'string' ? { projectPath: contextOrPath } : contextOrPath;
-    const groundedFiles = this.filesFromExistingAnalysis(
-      context,
-      source => ALL_PACKAGES.some(packageName => source === packageName || source.startsWith(`${packageName}/`)),
-      true
-    );
-    const conventionFiles = await glob([
-      '**/*{dto,schema,validator,validation,contract}*.{ts,tsx,js,jsx,py}',
-    ], {
-      cwd: context.projectPath,
-      ignore: [...this.getIgnorePatterns(context), '**/*.test.*', '**/*.spec.*'],
-      nodir: true,
-      absolute: false,
-    });
-    const evidenceFiles = [...new Set([...groundedFiles, ...conventionFiles])].sort();
-    if ((context.existingAnalysis?.length || 0) > 0 && evidenceFiles.length > 0) {
-      return this.capAndPrioritizeSourceFiles(evidenceFiles, 'validation schema candidate files');
-    }
-
+  private async sourceFiles(projectPath: string): Promise<string[]> {
     return this.capAndPrioritizeSourceFiles(await glob('**/*.{ts,tsx,js,jsx,py}', {
-      cwd: context.projectPath,
-      ignore: [...this.getIgnorePatterns(context), '**/*.test.*', '**/*.spec.*'],
+      cwd: projectPath,
+      ignore: [...this.getIgnorePatterns({ projectPath }), '**/*.test.*', '**/*.spec.*'],
       nodir: true,
       absolute: false,
     }), 'validation schema candidate files');
@@ -879,7 +858,7 @@ export class ValidationSchemaAnalyzer extends BaseAnalyzer {
   }
 
   private lineForIndex(content: string, index: number): number {
-    return this.sourceLineForIndex(content, index);
+    return content.slice(0, index).split(/\r?\n/).length;
   }
 
   private packageMatches(name: string, expected: string): boolean {

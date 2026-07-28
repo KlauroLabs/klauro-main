@@ -1295,105 +1295,6 @@ function buildExitPointIndex(cas: CASOutput): Map<string, CASExitPoint[]> {
   return index;
 }
 
-interface ContractFactIndex {
-  nodesById: Map<string, CASNode>;
-  invariantsByNode: Map<string, Array<{ description: string; entityName: string }>>;
-  eventualConsistencyByExitId: Map<string, NonNullable<CASOutput['consistency_model']>['store_consistency'][number]>;
-  passiveSeamsByTarget: Map<string, NonNullable<CASOutput['consistency_model']>['passive_seams']>;
-  lineageByNode: Map<string, CASEntityLineage[]>;
-  lineageOrdinal: Map<CASEntityLineage, number>;
-  entryPointNameById: Map<string, string>;
-  tryCatchNodeIds: Set<string>;
-  callChains: Array<{
-    chain: CASCallChain;
-    nodeIds: Set<string>;
-    entryKeys: Set<string>;
-    entryName: string;
-    caught: boolean;
-  }>;
-}
-
-const contractFactIndexes = new WeakMap<CASOutput, ContractFactIndex>();
-
-function contractFactIndex(cas: CASOutput): ContractFactIndex {
-  const cached = contractFactIndexes.get(cas);
-  if (cached) return cached;
-
-  const nodesById = new Map((cas.nodes || []).map(node => [node.id, node]));
-  const invariantsByNode = new Map<string, Array<{ description: string; entityName: string }>>();
-  for (const entity of cas.data_entities || []) {
-    for (const invariant of entity.invariants || []) {
-      for (const nodeId of invariant.enforced_by || []) {
-        const values = invariantsByNode.get(nodeId) || [];
-        values.push({ description: invariant.description, entityName: entity.name });
-        invariantsByNode.set(nodeId, values);
-      }
-    }
-  }
-
-  const eventualConsistencyByExitId = new Map<string, NonNullable<CASOutput['consistency_model']>['store_consistency'][number]>();
-  for (const consistency of cas.consistency_model?.store_consistency || []) {
-    if (consistency.consistency.staleness_risk) eventualConsistencyByExitId.set(consistency.ref_id, consistency);
-  }
-  const passiveSeamsByTarget = new Map<string, NonNullable<CASOutput['consistency_model']>['passive_seams']>();
-  for (const seam of cas.consistency_model?.passive_seams || []) {
-    const seams = passiveSeamsByTarget.get(seam.target) || [];
-    seams.push(seam);
-    passiveSeamsByTarget.set(seam.target, seams);
-  }
-
-  const lineageByNode = new Map<string, CASEntityLineage[]>();
-  const lineageOrdinal = new Map<CASEntityLineage, number>();
-  for (const [ordinal, lineage] of (cas.data_lineage || []).entries()) {
-    lineageOrdinal.set(lineage, ordinal);
-    const nodeIds = new Set([
-      ...(lineage.writers || []).map(writer => writer.node_id),
-      ...(lineage.readers || []).map(reader => reader.node_id),
-    ]);
-    for (const nodeId of nodeIds) {
-      const entries = lineageByNode.get(nodeId) || [];
-      entries.push(lineage);
-      lineageByNode.set(nodeId, entries);
-    }
-  }
-
-  const entryPointNameById = new Map<string, string>();
-  for (const entryPoint of cas.entry_points || []) {
-    entryPointNameById.set(entryPoint.id, entryPoint.name);
-    if (!entryPointNameById.has(entryPoint.source_node)) entryPointNameById.set(entryPoint.source_node, entryPoint.name);
-  }
-  const tryCatchNodeIds = new Set<string>();
-  for (const pattern of cas.patterns || []) {
-    if (!pattern.name.toLowerCase().includes('try-catch')) continue;
-    for (const nodeId of pattern.instances || []) tryCatchNodeIds.add(nodeId);
-  }
-  const callChains = (cas.call_chains || []).map(chain => {
-    const nodeIds = new Set((chain.call_path || []).map(step => step.node_id));
-    const entryId = chain.entry_point.entry_point_id || chain.entry_point.node_id;
-    return {
-      chain,
-      nodeIds,
-      entryKeys: new Set([entryId, chain.entry_point.node_id].filter(Boolean)),
-      entryName: entryPointNameById.get(entryId) || chain.entry_point.method_name || entryId,
-      caught: [...nodeIds].some(nodeId => tryCatchNodeIds.has(nodeId)),
-    };
-  });
-
-  const index: ContractFactIndex = {
-    nodesById,
-    invariantsByNode,
-    eventualConsistencyByExitId,
-    passiveSeamsByTarget,
-    lineageByNode,
-    lineageOrdinal,
-    entryPointNameById,
-    tryCatchNodeIds,
-    callChains,
-  };
-  contractFactIndexes.set(cas, index);
-  return index;
-}
-
 /** Constraints from a node's own raw source: guard clauses, throws, asserts,
  *  and require()-style gating conditionals, translated into a plain-English
  *  business rule where the condition is legible, or the raw guarded
@@ -1446,7 +1347,6 @@ function extractStructuralConstraints(
   exitPointsByNode: Map<string, CASExitPoint[]>,
   scopeEntryPointIds?: Set<string>
 ): FacetConstraint[] {
-  const facts = contractFactIndex(cas);
   const out: FacetConstraint[] = [];
   const seen = new Set<string>();
   const push = (kind: ConstraintKind, rule: string, evidence: string) => {
@@ -1480,9 +1380,11 @@ function extractStructuralConstraints(
   }
 
   // --- Data-entity invariants enforced by a node in this unit. ---
-  for (const nodeId of nodeIds) {
-    for (const invariant of facts.invariantsByNode.get(nodeId) || []) {
-      push('invariant', invariant.description, `data_entity "${invariant.entityName}" invariant enforced_by a node in this unit`);
+  for (const entity of cas.data_entities || []) {
+    for (const inv of entity.invariants || []) {
+      if (inv.enforced_by.some(id => nodeIds.has(id))) {
+        push('invariant', inv.description, `data_entity "${entity.name}" invariant enforced_by a node in this unit`);
+      }
     }
   }
 
@@ -1490,25 +1392,25 @@ function extractStructuralConstraints(
   //     from a store that the consistency model tagged eventual / staleness-
   //     risky, that is a real correctness constraint ("reads here may be
   //     stale"). Evidence-gated by ref_id match against this unit's exits. ---
-  if (cas.consistency_model) {
+  const consistency = cas.consistency_model;
+  if (consistency) {
     const ownExitIds = new Set<string>();
     for (const id of nodeIds) {
       for (const ep of exitPointsByNode.get(id) || []) ownExitIds.add(ep.id);
     }
-    for (const exitId of ownExitIds) {
-      const sc = facts.eventualConsistencyByExitId.get(exitId);
-      if (!sc) continue;
+    for (const sc of consistency.store_consistency || []) {
+      if (!sc.consistency.staleness_risk) continue; // strong primary reads carry no staleness constraint.
+      if (!ownExitIds.has(sc.ref_id)) continue;      // only when THIS unit's own exit reads that store.
       const cap = sc.consistency.cap_lean ? ` (${sc.consistency.cap_lean})` : '';
       push('consistency', `reads from ${sc.store} are eventually consistent${cap} — may observe stale data`,
         sc.consistency.evidence);
     }
     // Passive seams whose reader side is one of this unit's nodes: the landed
     // data is eventual by construction (replica / CDC / sink / materialized).
-    for (const nodeId of nodeIds) {
-      for (const seam of facts.passiveSeamsByTarget.get(nodeId) || []) {
-        push('consistency', `reads via ${seam.channel} (${seam.shared_resource}) are eventually consistent — may lag the source`,
-          seam.evidence);
-      }
+    for (const seam of consistency.passive_seams || []) {
+      if (!nodeIds.has(seam.target)) continue;
+      push('consistency', `reads via ${seam.channel} (${seam.shared_resource}) are eventually consistent — may lag the source`,
+        seam.evidence);
     }
   }
 
@@ -1544,7 +1446,6 @@ function extractErrorConstraints(
    *  unit-level behavior (a function's error contract spans all entries). */
   scopeEntryPointIds?: Set<string>
 ): FacetConstraint[] {
-  const facts = contractFactIndex(cas);
   const out: FacetConstraint[] = [];
   const seen = new Set<string>();
   const push = (rule: string, evidence: string) => {
@@ -1555,9 +1456,8 @@ function extractErrorConstraints(
 
   // "throws <ErrorType>" — only for nodes in THIS unit that declare throws.
   const throwingHere = new Set<string>();
-  for (const nodeId of nodeIds) {
-    const node = facts.nodesById.get(nodeId);
-    if (!node) continue;
+  for (const node of cas.nodes || []) {
+    if (!nodeIds.has(node.id)) continue;
     for (const errorType of node.signature?.throws || []) {
       throwingHere.add(node.id);
       push(`throws ${errorType}`, `node "${node.name}" signature.throws includes ${errorType}`);
@@ -1569,19 +1469,26 @@ function extractErrorConstraints(
   // for it. We only assert the path when the throwing node is on the chain
   // (the fact names the node), mirroring getErrorContracts' uncaught_paths.
   if (throwingHere.size > 0) {
-    for (const indexedChain of facts.callChains) {
-      const { chain } = indexedChain;
+    for (const chain of cas.call_chains || []) {
       // Flow/step scope: only chains rooted at this flow's own entry point.
       if (scopeEntryPointIds && scopeEntryPointIds.size > 0) {
-        if (![...indexedChain.entryKeys].some(key => scopeEntryPointIds.has(key))) continue;
+        const chainEp = chain.entry_point.entry_point_id || chain.entry_point.node_id;
+        if (!scopeEntryPointIds.has(chainEp) && !scopeEntryPointIds.has(chain.entry_point.node_id)) continue;
       }
       const throwerOnPath = (chain.call_path || []).find(step => throwingHere.has(step.node_id));
       if (!throwerOnPath) continue;
       // Evidence-gated caught check: a try-catch pattern instance on a node that
       // sits on this chain downstream of / at the thrower means the error is
       // handled — do not report it as uncaught.
-      if (indexedChain.caught) continue;
-      const epName = indexedChain.entryName;
+      const chainNodeIds = new Set((chain.call_path || []).map(s => s.node_id));
+      const caughtOnChain = (cas.patterns || []).some(p =>
+        p.name.toLowerCase().includes('try-catch') &&
+        (p.instances || []).some(id => chainNodeIds.has(id))
+      );
+      if (caughtOnChain) continue;
+      const epId = chain.entry_point.entry_point_id || chain.entry_point.node_id;
+      const epName = (cas.entry_points || []).find(ep => ep.id === epId)?.name
+        || chain.entry_point.method_name || epId;
       push(`uncaught path to entry point ${epName}`,
         `call chain ${chain.id} traverses throwing node "${throwerOnPath.method_name}" and reaches entry point ${epName} with no try-catch on the path`);
     }
@@ -1620,7 +1527,6 @@ function buildContract(
    *  flow's chains (see extractErrorConstraints). */
   scopeEntryPointIds?: Set<string>
 ): ILSOContract {
-  const facts = contractFactIndex(cas);
   const input = new Set<string>();
   const output = new Set<string>();
   const stateChanges = new Set<string>();
@@ -1676,13 +1582,7 @@ function buildContract(
   // accessor node id, joined the same way getInterfaceSignature does via
   // data_lineage external_recipients. writes -> state_changes; recipients
   // external to the process -> external_integrations.
-  const relevantLineage = new Set<CASEntityLineage>();
-  for (const nodeId of nodeIds) {
-    for (const lineage of facts.lineageByNode.get(nodeId) || []) relevantLineage.add(lineage);
-  }
-  const orderedLineage = [...relevantLineage].sort((left, right) =>
-    (facts.lineageOrdinal.get(left) ?? 0) - (facts.lineageOrdinal.get(right) ?? 0));
-  for (const entry of orderedLineage) {
+  for (const entry of cas.data_lineage || []) {
     const writesHere = entry.writers.some(w => nodeIds.has(w.node_id));
     const readsHere = entry.readers.some(r => nodeIds.has(r.node_id));
     if (writesHere) {

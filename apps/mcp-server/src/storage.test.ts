@@ -3,31 +3,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'fs-extra';
 import * as os from 'os';
 import * as path from 'path';
-import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
-import {
-  clearLoadedAnalysisCache,
-  getLoadedAnalysisCacheStats,
-  listCrossCodebaseSystemGraphs,
-  loadAnalysisSectionManifest,
-  loadAnalysisSections,
-  loadCompleteAnalysisFromSections,
-  loadAnalysis,
-  loadCrossCodebaseSystemGraph,
-  resolveAnalysisExportArtifact,
-  saveAnalysis,
-  saveCrossCodebaseSystemGraph,
-} from './storage';
-
-function casFixture(id: string): CASOutput {
-  return {
-    cas_version: '1.11.0', analysis_id: id, analysis_timestamp: '2026-07-22T00:00:00.000Z',
-    system: { name: id, type: 'service' },
-    nodes: [{ id: `${id}-node`, name: 'run', type: 'function', level: 1, file: 'src/run.ts' }],
-    edges: [], method_calls: [{ caller_id: `${id}-node`, callee_name: 'run' }],
-    analysis_facts: [{ id: `${id}-fact`, subject_id: `${id}-node`, kind: 'test' }],
-    analyzer_contributions: [], progressive_levels: [],
-  } as unknown as CASOutput;
-}
+import { listCrossCodebaseSystemGraphs, loadCrossCodebaseSystemGraph, saveCrossCodebaseSystemGraph } from './storage';
 
 async function withStoragePath<T>(fn: (storagePath: string) => Promise<T>): Promise<T> {
   const previous = process.env.KLAURO_STORAGE_PATH;
@@ -111,71 +87,4 @@ test('loading a legacy workspace analysis backfills metadata for future lightwei
     const afterLoad = await listCrossCodebaseSystemGraphs();
     assert.deepEqual(afterLoad[0].inputs?.map(input => input.repo_path), ['/tmp/legacy/service']);
   });
-});
-
-test('segmented storage hydrates exact CAS and targeted reads omit unrequested data', async () => {
-  await withStoragePath(async () => {
-    const project = '/tmp/segmented-project';
-    const cas = casFixture('segmented');
-    await saveAnalysis(project, cas);
-    const manifest = await loadAnalysisSectionManifest(project);
-    assert.ok(manifest?.sections.some(section => section.name === 'graph'));
-    assert.deepEqual(await loadCompleteAnalysisFromSections(project), cas);
-
-    const graph = await loadAnalysisSections(project, ['graph']);
-    assert.deepEqual(graph?.nodes, cas.nodes);
-    assert.equal(graph?.method_calls, undefined);
-    assert.equal(graph?.analysis_facts, undefined);
-
-    const artifact = await resolveAnalysisExportArtifact(project);
-    assert.ok(artifact);
-    assert.ok(artifact!.bytes > 0);
-  });
-});
-
-test('a segmented write failure never invalidates the authoritative analysis', async () => {
-  await withStoragePath(async storagePath => {
-    const project = '/tmp/segment-failure-project';
-    const first = await saveAnalysis(project, casFixture('before-segment-failure'));
-    const segmentRoot = path.join(storagePath, `${first.file}.sections`);
-    await fs.remove(segmentRoot);
-    await fs.writeFile(segmentRoot, 'blocks section directory creation');
-    const warnings: string[] = [];
-    const originalWarn = console.warn;
-    console.warn = message => warnings.push(String(message));
-    try {
-      await saveAnalysis(project, casFixture('after-segment-failure'));
-    } finally {
-      console.warn = originalWarn;
-    }
-    clearLoadedAnalysisCache();
-    assert.equal((await loadAnalysis(project))?.analysis_id, 'after-segment-failure');
-    assert.ok(warnings.some(message => message.includes('segmented analysis write failed')));
-  });
-});
-
-test('parsed CAS cache evicts by entry budget and refuses an object over the memory budget', async () => {
-  const previousEntries = process.env.KLAURO_PARSED_ANALYSIS_CACHE_MAX_ENTRIES;
-  const previousBytes = process.env.KLAURO_PARSED_ANALYSIS_CACHE_MAX_BYTES;
-  process.env.KLAURO_PARSED_ANALYSIS_CACHE_MAX_ENTRIES = '2';
-  process.env.KLAURO_PARSED_ANALYSIS_CACHE_MAX_BYTES = String(16 * 1024 * 1024);
-  clearLoadedAnalysisCache();
-  try {
-    await withStoragePath(async () => {
-      await saveAnalysis('/tmp/cache-a', casFixture('a'));
-      await saveAnalysis('/tmp/cache-b', casFixture('b'));
-      await saveAnalysis('/tmp/cache-c', casFixture('c'));
-      assert.equal(getLoadedAnalysisCacheStats().entries, 2);
-
-      process.env.KLAURO_PARSED_ANALYSIS_CACHE_MAX_BYTES = '1024';
-      await saveAnalysis('/tmp/cache-too-large', casFixture('too-large'));
-      assert.equal(getLoadedAnalysisCacheStats().entries, 2, 'oversized object is not retained');
-    });
-  } finally {
-    clearLoadedAnalysisCache();
-    if (previousEntries === undefined) delete process.env.KLAURO_PARSED_ANALYSIS_CACHE_MAX_ENTRIES;
-    else process.env.KLAURO_PARSED_ANALYSIS_CACHE_MAX_ENTRIES = previousEntries;
-    if (previousBytes === undefined) delete process.env.KLAURO_PARSED_ANALYSIS_CACHE_MAX_BYTES;
-    else process.env.KLAURO_PARSED_ANALYSIS_CACHE_MAX_BYTES = previousBytes;
-  }
 });

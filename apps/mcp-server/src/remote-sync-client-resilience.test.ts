@@ -71,11 +71,9 @@ test('postRemote retries past a transient HTML edge response and succeeds', asyn
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-resilience-test-'));
   const repo = makeGitFixtureRepo(root);
   let requestCount = 0;
-  const requestBodies: Buffer[] = [];
 
   const server = http.createServer(async (req, res) => {
-    const raw = await readRequestBody(req);
-    requestBodies.push(req.headers['content-encoding'] === 'gzip' ? gunzipSync(raw) : raw);
+    await readRequestBody(req);
     requestCount++;
     if (requestCount === 1) {
       // First attempt: Cloudflare intercepted the request and returned an
@@ -100,7 +98,6 @@ test('postRemote retries past a transient HTML edge response and succeeds', asyn
   const result = await analyzeCodebaseRemotely({ projectPath: repo, serverUrl, token: 'test-token' });
   assert.equal(result.status, 'success');
   assert.equal(requestCount, 2, 'exactly one retry was needed to succeed');
-  assert.deepEqual(requestBodies[1], requestBodies[0], 'retry must replay the exact immutable source package bytes');
 });
 
 test('postRemote gives an honest edge-aware error after persistent HTML responses, never a raw JSON.parse SyntaxError', async (t) => {

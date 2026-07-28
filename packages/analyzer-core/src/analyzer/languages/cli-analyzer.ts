@@ -549,23 +549,6 @@ export class CliAnalyzer extends BaseAnalyzer {
     const fileId = `file_${this.sanitizeId(result.relativePath)}`;
     const seen = new Set<string>();
 
-    if (result.commands.length > 0 && !nodes.some(node => node.id === fileId)) {
-      nodes.push(this.createNode(
-        fileId,
-        path.basename(result.relativePath),
-        'file',
-        1,
-        result.fullPath,
-        1,
-        undefined,
-        {
-          relativePath: result.relativePath,
-          extension: path.extname(result.relativePath),
-          cliFrameworks: [...result.frameworksDetected].sort(),
-        },
-      ));
-    }
-
     for (const cmd of result.commands) {
       const key = `${cmd.name}:${cmd.line}`;
       if (seen.has(key)) continue;

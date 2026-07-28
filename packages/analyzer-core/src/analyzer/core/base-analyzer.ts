@@ -1,19 +1,5 @@
 import * as crypto from 'crypto';
 import {
-  AnalyzerSourceCorpus,
-  getActiveSourceCorpus,
-  sourceImports,
-  sourceJson,
-  sourceLines,
-  sourceManifestKind,
-  sourcePathCategories,
-  sourceLineCount,
-  sourceLineForIndex,
-  type SourceManifestKind,
-  type SourceImportFlavor,
-  type SourcePathCategory,
-} from './source-corpus';
-import {
   CASNode,
   CASEdge,
   CASContribution,
@@ -87,13 +73,11 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 
 export interface AnalysisContext {
   projectPath: string;
-  analysisRootPath?: string;
   includeTests?: boolean;
   maxDepth?: number;
   filters?: string[];
   existingAnalysis?: CASContribution[];
   targetLevel?: number;
-  sourceCorpus?: AnalyzerSourceCorpus;
 }
 
 export interface FileAnalysisContext extends AnalysisContext {
@@ -107,58 +91,6 @@ import * as fs from 'fs-extra';
 import { SCAFFOLD_GLOBS } from './scaffold-paths';
 
 const MAX_REPORTED_FILE_WARNINGS = 25;
-
-interface ExistingAnalysisEvidenceIndex {
-  imports: Array<{ file: string; source: string }>;
-  relativeDependentsByTarget: Map<string, string[]>;
-  sourceFilesByNode: Map<string, string>;
-}
-
-const existingAnalysisEvidenceIndexes = new WeakMap<CASContribution, Map<string, ExistingAnalysisEvidenceIndex>>();
-
-function moduleKey(filePath: string): string {
-  return filePath
-    .replace(/\\/g, '/')
-    .replace(/\.(?:[cm]?[jt]sx?|py|rb|java|cs|go)$/i, '')
-    .replace(/\/index$/i, '');
-}
-
-function evidenceIndexFor(contribution: CASContribution, analysisRoot: string): ExistingAnalysisEvidenceIndex {
-  let byRoot = existingAnalysisEvidenceIndexes.get(contribution);
-  if (!byRoot) {
-    byRoot = new Map();
-    existingAnalysisEvidenceIndexes.set(contribution, byRoot);
-  }
-  const normalizedRoot = path.resolve(analysisRoot);
-  const cached = byRoot.get(normalizedRoot);
-  if (cached) return cached;
-
-  const imports: Array<{ file: string; source: string }> = [];
-  const relativeDependentsByTarget = new Map<string, string[]>();
-  const sourceFilesByNode = new Map<string, string>();
-  for (const node of contribution.nodes || []) {
-    const sourceFile = node.source?.file;
-    if (sourceFile) sourceFilesByNode.set(node.id, sourceFile);
-    if (node.type !== 'import' || !sourceFile) continue;
-    const metadata = node.metadata as Record<string, unknown> | undefined;
-    const importSource = String(metadata?.source || '');
-    if (!importSource) continue;
-    const absoluteFile = path.normalize(path.isAbsolute(sourceFile)
-      ? sourceFile
-      : path.join(normalizedRoot, sourceFile));
-    imports.push({ file: absoluteFile, source: importSource });
-    if (importSource.startsWith('.')) {
-      const target = moduleKey(path.resolve(path.dirname(absoluteFile), importSource));
-      const dependents = relativeDependentsByTarget.get(target);
-      if (dependents) dependents.push(absoluteFile);
-      else relativeDependentsByTarget.set(target, [absoluteFile]);
-    }
-  }
-
-  const index = { imports, relativeDependentsByTarget, sourceFilesByNode };
-  byRoot.set(normalizedRoot, index);
-  return index;
-}
 
 export abstract class BaseAnalyzer {
   readonly discoversNestedRoots: boolean = false;
@@ -206,57 +138,6 @@ export abstract class BaseAnalyzer {
     return false;
   }
 
-  protected sourceLineForIndex(content: string, index: number): number {
-    return sourceLineForIndex(content, index);
-  }
-
-  protected sourceLineCount(content: string): number {
-    return sourceLineCount(content);
-  }
-
-  protected sourceCorpus(context?: AnalysisContext): AnalyzerSourceCorpus | undefined {
-    return context?.sourceCorpus ?? getActiveSourceCorpus();
-  }
-
-  protected sourceImports(content: string, flavor: SourceImportFlavor = 'all'): readonly string[] | undefined {
-    return sourceImports(content, flavor);
-  }
-
-  protected sourceImportFlavor(filePath: string): SourceImportFlavor | undefined {
-    const extension = path.extname(filePath).toLowerCase();
-    if (['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'].includes(extension)) return 'ecmascript';
-    if (extension === '.py') return 'python';
-    if (extension === '.rb') return 'ruby';
-    if (extension === '.java' || extension === '.kt' || extension === '.kts') return 'java';
-    if (extension === '.go') return 'go';
-    if (extension === '.cs' || extension === '.fs') return 'dotnet';
-    if (extension === '.rs') return 'rust';
-    if (extension === '.php') return 'php';
-    if (extension === '.dart') return 'dart';
-    return undefined;
-  }
-
-  protected sourceLines(content: string): readonly string[] {
-    return sourceLines(content) ?? content.split(/\r?\n/);
-  }
-
-  protected sourcePathCategories(filePath: string): readonly SourcePathCategory[] {
-    return sourcePathCategories(filePath);
-  }
-
-  protected sourceManifestKind(filePath: string): SourceManifestKind | undefined {
-    return sourceManifestKind(filePath);
-  }
-
-  protected sourceJson<T>(content: string): T {
-    return sourceJson<T>(content);
-  }
-
-  protected async readSourceJson<T>(filePath: string): Promise<T> {
-    const content = await fs.readFile(filePath, 'utf8');
-    return this.sourceJson<T>(content);
-  }
-
   async analyzeFileSingle?(context: FileAnalysisContext): Promise<FileAnalysisResult>;
 
   async getRelevantFiles?(projectPath: string): Promise<string[]>;
@@ -279,67 +160,6 @@ export abstract class BaseAnalyzer {
       return [...this.analysisWarnings, `${this.suppressedWarningCount} additional file warnings suppressed`];
     }
     return [...this.analysisWarnings];
-  }
-
-  protected filesFromExistingAnalysis(
-    context: AnalysisContext,
-    matchesImportSource: (source: string) => boolean,
-    includeLocalDependents = false
-  ): string[] {
-    const absoluteFiles = new Set<string>();
-    const analysisRoot = context.analysisRootPath || context.projectPath;
-    const indexes = (context.existingAnalysis || []).map(contribution => evidenceIndexFor(contribution, analysisRoot));
-
-    for (const index of indexes) {
-      for (const candidate of index.imports) {
-        if (matchesImportSource(candidate.source)) absoluteFiles.add(candidate.file);
-      }
-    }
-
-    if (includeLocalDependents && absoluteFiles.size > 0) {
-      const queue = [...absoluteFiles];
-      while (queue.length > 0) {
-        const target = moduleKey(queue.shift()!);
-        for (const index of indexes) {
-          for (const dependent of index.relativeDependentsByTarget.get(target) || []) {
-            if (absoluteFiles.has(dependent)) continue;
-            absoluteFiles.add(dependent);
-            queue.push(dependent);
-          }
-        }
-      }
-    }
-
-    return [...absoluteFiles]
-      .map(absoluteFile => path.relative(context.projectPath, absoluteFile).replace(/\\/g, '/'))
-      .filter(relativeFile => Boolean(relativeFile) && !relativeFile.startsWith('../') && !path.isAbsolute(relativeFile))
-      .sort();
-  }
-
-  protected filesFromExistingAnalysisExitPoints(
-    context: AnalysisContext,
-    matchesExitPoint: (exitPoint: CASExitPoint) => boolean
-  ): string[] {
-    const analysisRoot = context.analysisRootPath || context.projectPath;
-    const sourceFilesByNode = new Map<string, string>();
-    for (const contribution of context.existingAnalysis || []) {
-      for (const [nodeId, sourceFile] of evidenceIndexFor(contribution, analysisRoot).sourceFilesByNode) {
-        sourceFilesByNode.set(nodeId, sourceFile);
-      }
-    }
-
-    const files = new Set<string>();
-    for (const contribution of context.existingAnalysis || []) {
-      for (const exitPoint of contribution.exit_points || []) {
-        if (!matchesExitPoint(exitPoint)) continue;
-        const sourceFile = sourceFilesByNode.get(exitPoint.source_node);
-        if (!sourceFile) continue;
-        const absoluteFile = path.isAbsolute(sourceFile) ? sourceFile : path.join(analysisRoot, sourceFile);
-        const relativeFile = path.relative(context.projectPath, absoluteFile).replace(/\\/g, '/');
-        if (relativeFile && !relativeFile.startsWith('../') && !path.isAbsolute(relativeFile)) files.add(relativeFile);
-      }
-    }
-    return [...files].sort();
   }
 
   protected capAndPrioritizeSourceFiles(files: string[], purpose = 'source files'): string[] {

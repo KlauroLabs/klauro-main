@@ -1,10 +1,8 @@
 import * as path from 'node:path';
-import { spawnSync } from 'node:child_process';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import { loadKlauroConfig, resolveAnalyzerUrl } from './klauro-config';
 import { connectorToken, normalizeServerUrl } from './connector-auth';
-import { loadAnalysis } from './storage';
-import { selectCasSections, type CasSectionName } from './cas-sections';
+import { loadAnalysis, saveAnalysis } from './storage';
 
 /**
  * HOSTED-ANALYSIS RESOLUTION for MCP read tools (docs/KLAURO-PRODUCT-MODEL.md:
@@ -21,14 +19,15 @@ import { selectCasSections, type CasSectionName } from './cas-sections';
  *
  * The contract implemented here:
  *  - BOUND repo (.klaurorc with a prj_ id + signed-in session): serve the
- *    HOSTED analysis through named CAS sections. Interactive reads never
- *    download or mirror the complete customer graph.
- *  - Section responses are cached in a bounded in-memory LRU keyed by hosted
- *    analysis timestamp. An explicit compatibility caller may request the
- *    compressed full export, but that artifact is never written locally.
- *  - `mcp.preferLocalCache` applies only to a pre-existing local analysis used
- *    for degraded/offline compatibility; it does not turn hosted reads into a
- *    full-CAS synchronization mechanism.
+ *    HOSTED analysis. The local store acts as a coherent MIRROR of it, keyed
+ *    by the hosted analysis_timestamp — the first read after a hosted
+ *    re-analysis pays one download, subsequent reads are local-fast.
+ *  - `mcp.preferLocalCache` (now real config, previously dead): when true
+ *    (default) a local analysis that is NOT OLDER than the hosted one is
+ *    served without a download (this covers both the coherent mirror and a
+ *    deliberately newer local working analysis, e.g. the in-flight track).
+ *    When false, a newer-than-hosted local analysis is ignored and the hosted
+ *    CAS is always served for the main view.
  *  - NEVER silently auto-analyze a bound repo locally. If the hosted analysis
  *    is unreachable (offline/5xx), serve the local cache WITH an explicit
  *    degraded note, or fail honestly when there is no cache at all.
@@ -66,8 +65,8 @@ export interface HostedAnalysisState {
 }
 
 export type BoundAnalysisSource =
-  | 'hosted'              // hydrated from the hosted service
-  | 'local-mirror'        // pre-existing local cache verified NOT OLDER than hosted
+  | 'hosted'              // freshly downloaded from the hosted service (and mirrored locally)
+  | 'local-mirror'        // local cache verified NOT OLDER than the hosted analysis
   | 'local-cache-degraded'; // hosted unavailable — serving local cache with an honest note
 
 export interface BoundAnalysisResolution {
@@ -76,10 +75,6 @@ export interface BoundAnalysisResolution {
   hosted_timestamp?: string;
   /** Honest degradation/context note, surfaced on tool responses. */
   note?: string;
-}
-
-export interface BoundAnalysisOptions {
-  sections?: readonly CasSectionName[];
 }
 
 export interface AnalysisSourceStamp {
@@ -92,8 +87,11 @@ export interface AnalysisSourceStamp {
   resolved_at: string;
 }
 
+/** Kill switch: KLAURO_MCP_HOSTED_RESOLUTION=off|0 restores the legacy
+ *  local-store-only behavior (also used by tests that exercise legacy paths). */
 export function hostedResolutionEnabled(): boolean {
-  return true;
+  const value = (process.env.KLAURO_MCP_HOSTED_RESOLUTION || '').trim().toLowerCase();
+  return value !== 'off' && value !== '0' && value !== 'false';
 }
 
 function hostedFetchTimeoutMs(): number {
@@ -145,50 +143,8 @@ interface StateCacheEntry {
 
 const hostedStateCache = new Map<string, StateCacheEntry>();
 
-interface SectionCacheEntry {
-  cas: Partial<CASOutput>;
-  bytes: number;
-}
-
-const hostedSectionCache = new Map<string, SectionCacheEntry>();
-
-function hostedSectionCacheMaxEntries(): number {
-  const value = Number(process.env.KLAURO_HOSTED_SECTION_CACHE_MAX_ENTRIES);
-  return Number.isFinite(value) && value > 0 ? Math.floor(value) : 24;
-}
-
-function hostedSectionCacheMaxBytes(): number {
-  const value = Number(process.env.KLAURO_HOSTED_SECTION_CACHE_MAX_BYTES);
-  return Number.isFinite(value) && value > 0 ? Math.floor(value) : 64 * 1024 * 1024;
-}
-
-function rememberHostedSections(key: string, entry: SectionCacheEntry): void {
-  const retainedEntry = { ...entry, bytes: entry.bytes * 7 };
-  hostedSectionCache.delete(key);
-  if (retainedEntry.bytes > hostedSectionCacheMaxBytes()) return;
-  hostedSectionCache.set(key, retainedEntry);
-  let bytes = [...hostedSectionCache.values()].reduce((sum, current) => sum + current.bytes, 0);
-  while (hostedSectionCache.size > hostedSectionCacheMaxEntries() || bytes > hostedSectionCacheMaxBytes()) {
-    const oldest = hostedSectionCache.keys().next().value as string | undefined;
-    if (!oldest) break;
-    const removed = hostedSectionCache.get(oldest);
-    hostedSectionCache.delete(oldest);
-    bytes -= removed?.bytes || 0;
-  }
-}
-
-export function getHostedSectionCacheStats(): { entries: number; bytes: number; max_entries: number; max_bytes: number } {
-  return {
-    entries: hostedSectionCache.size,
-    bytes: [...hostedSectionCache.values()].reduce((sum, entry) => sum + entry.bytes, 0),
-    max_entries: hostedSectionCacheMaxEntries(),
-    max_bytes: hostedSectionCacheMaxBytes(),
-  };
-}
-
 export function clearHostedAnalysisCaches(): void {
   hostedStateCache.clear();
-  hostedSectionCache.clear();
   lastResolutionStamp = undefined;
 }
 
@@ -223,59 +179,21 @@ export async function fetchHostedAnalysisState(binding: HostedProjectBinding): P
   return payload;
 }
 
-/** Full-CAS compatibility export. Interactive MCP reads use named sections;
- *  this path exists only for callers that explicitly need the complete
- *  logical CAS and is never mirrored into the customer's local store.
- * `unsupported` means the deployed server predates the export endpoint, so
- * the caller degrades honestly instead of re-running analysis. */
+/** Full-CAS download: GET /api/projects/{id}/cas (added alongside this module
+ *  in remote-analyzer-service.ts). `unsupported` = the deployed server predates
+ *  the endpoint (404), so the caller must degrade honestly instead of failing
+ *  opaquely or re-running analysis. */
 async function downloadHostedCas(binding: HostedProjectBinding): Promise<
   { kind: 'cas'; cas: CASOutput } | { kind: 'unsupported' } | { kind: 'no_analysis'; detail?: string }
 > {
-  const response = await fetch(
-    `${binding.serverUrl}/api/projects/${encodeURIComponent(binding.projectId)}/cas/export`,
-    { headers: { authorization: `Bearer ${binding.token}` }, signal: AbortSignal.timeout(hostedFetchTimeoutMs()) },
-  );
-  if (response.status === 404 || response.status === 410) return { kind: 'unsupported' };
-  if (response.status >= 400) throw new Error(`Hosted CAS export failed (HTTP ${response.status})`);
-  const codec = response.headers.get('x-klauro-cas-codec') || 'none';
-  const raw = Buffer.from(await response.arrayBuffer());
-  let json = raw;
-  if (codec === 'zstd') {
-    const result = spawnSync('zstd', ['-q', '-d', '-c'], { input: raw, maxBuffer: 1024 * 1024 * 1024 });
-    if (result.status !== 0) throw new Error('Hosted CAS export uses zstd but the local zstd decoder is unavailable');
-    json = result.stdout;
+  const { status, payload } = await fetchJson<{ status: string; cas?: CASOutput; error?: string }>(
+    binding, `/api/projects/${encodeURIComponent(binding.projectId)}/cas`);
+  if (status === 404) return { kind: 'unsupported' };
+  if (status >= 400) throw new Error(`Hosted CAS download failed (HTTP ${status})`);
+  if (!payload || payload.status !== 'ready' || !payload.cas) {
+    return { kind: 'no_analysis', detail: payload?.error };
   }
-  try {
-    return { kind: 'cas', cas: JSON.parse(json.toString('utf8')) as CASOutput };
-  } catch {
-    return { kind: 'no_analysis', detail: 'compressed CAS export was not valid JSON' };
-  }
-}
-
-async function fetchHostedCasSections(
-  binding: HostedProjectBinding,
-  analysisTimestamp: string | undefined,
-  sections: readonly CasSectionName[],
-): Promise<Partial<CASOutput>> {
-  const normalized = [...new Set(sections)].sort();
-  const cacheKey = `${binding.serverUrl}|${binding.projectId}|${analysisTimestamp || 'unknown'}|${normalized.join(',')}`;
-  const cached = hostedSectionCache.get(cacheKey);
-  if (cached) {
-    hostedSectionCache.delete(cacheKey);
-    hostedSectionCache.set(cacheKey, cached);
-    return cached.cas;
-  }
-  const route = `/api/projects/${encodeURIComponent(binding.projectId)}/cas/sections?sections=${encodeURIComponent(normalized.join(','))}`;
-  const response = await fetch(`${binding.serverUrl}${route}`, {
-    headers: { authorization: `Bearer ${binding.token}` },
-    signal: AbortSignal.timeout(hostedFetchTimeoutMs()),
-  });
-  const text = await response.text();
-  if (response.status >= 400) throw new Error(`Hosted CAS section request failed (HTTP ${response.status})`);
-  const payload = JSON.parse(text) as { status?: string; cas?: Partial<CASOutput>; error?: string };
-  if (payload.status !== 'ready' || !payload.cas) throw new Error(payload.error || 'Hosted CAS sections are unavailable');
-  rememberHostedSections(cacheKey, { cas: payload.cas, bytes: Buffer.byteLength(text) });
-  return payload.cas;
+  return { kind: 'cas', cas: payload.cas };
 }
 
 function timestampMs(value: string | null | undefined): number | null {
@@ -334,43 +252,13 @@ async function loadLocalCandidates(projectPath: string): Promise<{ preferred: CA
 }
 
 /**
- * The compatibility resolution matrix for a complete-CAS caller. Interactive
- * MCP reads pass `sections` and take the section-only branch above.
+ * The resolution matrix for a bound repo (see module doc):
+ *   bound + cache not-older-than-hosted  -> local mirror (no download)
+ *   bound + cache stale                  -> download hosted CAS, mirror, serve
+ *   bound + no cache                     -> download hosted CAS, mirror, serve (NEVER local auto-analyze)
+ *   bound + hosted unreachable           -> local cache with degraded note, or honest error
  */
-export async function resolveBoundAnalysis(
-  binding: HostedProjectBinding,
-  options: BoundAnalysisOptions = {},
-): Promise<BoundAnalysisResolution> {
-  if (options.sections?.length) {
-    try {
-      const state = await fetchHostedAnalysisState(binding);
-      if (state.status === 'no_analysis') {
-        throw new Error(`Hosted project ${binding.projectId} has no analysis yet`);
-      }
-      const hostedTimestamp = state.summary?.analysis_timestamp || undefined;
-      const cas = await fetchHostedCasSections(binding, hostedTimestamp, options.sections);
-      return stampResolution(binding, {
-        cas: cas as CASOutput,
-        source: 'hosted',
-        hosted_timestamp: hostedTimestamp || cas.analysis_timestamp,
-      });
-    } catch (error) {
-      const { preferred, main } = await loadLocalCandidates(binding.projectPath);
-      const local = preferred || main;
-      if (local) {
-        return stampResolution(binding, {
-          cas: selectCasSections(local, options.sections) as CASOutput,
-          source: 'local-cache-degraded',
-          note: `hosted CAS sections unavailable (${describeError(error)}); serving the same sections from local cache ${local.analysis_timestamp || 'unknown date'}`,
-        });
-      }
-      throw new Error(
-        `Hosted CAS sections for project ${binding.projectId} are unavailable (${describeError(error)}) and no local cache exists. ` +
-        `Refusing to download or reconstruct the full CAS for a section-scoped MCP query.`,
-      );
-    }
-  }
-
+export async function resolveBoundAnalysis(binding: HostedProjectBinding): Promise<BoundAnalysisResolution> {
   const { preferred, main } = await loadLocalCandidates(binding.projectPath);
   const local = preferred || main;
 
@@ -465,13 +353,13 @@ export async function resolveBoundAnalysis(
         cas: local,
         source: 'local-cache-degraded',
         hosted_timestamp: hostedTimestamp,
-        note: `hosted analysis is newer (${hostedTimestamp || 'timestamp unknown'}) but the deployed Klauro server does not expose full-CAS compressed export yet; ` +
+        note: `hosted analysis is newer (${hostedTimestamp || 'timestamp unknown'}) but the deployed Klauro server does not expose full-CAS download yet; ` +
           `serving local cache from ${local.analysis_timestamp || 'unknown date'} — update the server or re-run analyze_codebase to refresh`,
       });
     }
     throw new Error(
       `Hosted analysis for project ${binding.projectId} exists (${hostedTimestamp || 'timestamp unknown'}) but the deployed Klauro server ` +
-      `does not expose full-CAS compressed export and no local cache exists. ` +
+      `does not expose full-CAS download (GET /api/projects/{id}/cas returned 404) and no local cache exists. ` +
       `Update the server, or run analyze_codebase explicitly.`
     );
   }
@@ -487,6 +375,10 @@ export async function resolveBoundAnalysis(
     throw new Error(`Hosted analysis for project ${binding.projectId} could not be loaded${download.detail ? ` (${download.detail})` : ''} and no local cache exists.`);
   }
 
+  // Mirror the hosted CAS into the local store: this IS the local cache, made
+  // coherent — keyed by the hosted analysis_timestamp carried on the CAS, so
+  // the next read serves it from disk without another download.
+  await saveAnalysis(binding.projectPath, download.cas).catch(() => undefined);
   return stampResolution(binding, {
     cas: download.cas,
     source: 'hosted',

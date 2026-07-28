@@ -77,26 +77,12 @@ export class OutboundHttpClientAnalyzer extends BaseAnalyzer {
   }
 
   async analyze(context: AnalysisContext): Promise<CASContribution> {
-    const importGroundedFiles = this.filesFromExistingAnalysis(
-      context,
-      source => HTTP_CLIENT_DEPENDENCIES.some(dependency =>
-        source === dependency || source.startsWith(`${dependency}/`)
-      ),
-      true
-    );
-    const exitGroundedFiles = this.filesFromExistingAnalysisExitPoints(
-      context,
-      exitPoint => exitPoint.type === 'api' || /\b(?:fetch|axios|http|https)\b/i.test(exitPoint.name)
-    ).filter(file => !/\.(?:test|spec)\.[^.]+$/i.test(file));
-    const groundedFiles = [...new Set([...importGroundedFiles, ...exitGroundedFiles])].sort();
-    const allSourceFiles = (context.existingAnalysis?.length || 0) > 0 && groundedFiles.length > 0
-      ? groundedFiles
-      : await glob(SOURCE_GLOB, {
-        cwd: context.projectPath,
-        ignore: [...this.getIgnorePatterns(context), '**/*.test.*', '**/*.spec.*'],
-        nodir: true,
-        absolute: false,
-      });
+    const allSourceFiles = await glob(SOURCE_GLOB, {
+      cwd: context.projectPath,
+      ignore: [...this.getIgnorePatterns(context), '**/*.test.*', '**/*.spec.*'],
+      nodir: true,
+      absolute: false,
+    });
 
     const nodes: CASNode[] = [];
     const exitPoints: CASExitPoint[] = [];
@@ -434,7 +420,7 @@ export class OutboundHttpClientAnalyzer extends BaseAnalyzer {
       library,
       method: method.toUpperCase(),
       endpoint: normalized,
-      line: this.sourceLineForIndex(content, index),
+      line: lineForIndex(content, index),
       serviceAlias: serviceAliasFromEndpoint(normalized),
       declaration,
     });
@@ -608,4 +594,8 @@ function serviceAliasFromEndpoint(endpoint: string): string | undefined {
   if (host) return host;
   if (/^[A-Za-z0-9_.-]+$/.test(endpoint) && endpoint.includes('.')) return endpoint;
   return undefined;
+}
+
+function lineForIndex(content: string, index: number): number {
+  return content.slice(0, index).split(/\r?\n/).length;
 }

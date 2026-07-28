@@ -71,28 +71,11 @@ test('account routes remain usable when analyzer shared token is enabled', async
     assert.equal(me.json.user.email, 'owner@example.com');
     assert.equal(me.json.entitlement.status, 'active');
 
-    const oldClient = await requestJson(address.port, 'POST', '/v1/analyze', {
-      snapshot: { files: [{ path: 'index.ts', content: 'export {};', hash: 'ignored' }] },
-      async: true,
-    }, created.json.token);
-    assert.equal(oldClient.statusCode, 426);
-    assert.equal(oldClient.json.code, 'client_upgrade_required');
-    assert.equal(oldClient.json.required_protocol_version, 2);
-
     const sharedTokenMe = await requestJson(address.port, 'GET', '/api/me', undefined, 'shared-secret');
     assert.equal(sharedTokenMe.statusCode, 200);
     assert.equal(sharedTokenMe.json.user.id, 'shared-token');
     assert.equal(sharedTokenMe.json.entitlement.status, 'active');
     assert.equal(sharedTokenMe.json.entitlement.source, 'shared-analyzer-token');
-
-    const sharedTokenQuery = await requestJson(
-      address.port,
-      'POST',
-      '/api/projects/prj_not_allowed/query',
-      { tool: 'get_product_map', args: {} },
-      'shared-secret'
-    );
-    assert.equal(sharedTokenQuery.statusCode, 403);
   } finally {
     await new Promise<void>(resolve => server.close(() => resolve()));
     fs.rmSync(root, { recursive: true, force: true });
@@ -159,15 +142,6 @@ test('cross-tenant HTTP isolation: account B cannot read account A workspace/pro
     // B reading A's project conceptual data: must be denied.
     const bReadsAProjectConceptual = await requestJson(address.port, 'GET', `/api/projects/${projectIdA}/conceptual`, undefined, tokenB);
     assert.equal(bReadsAProjectConceptual.statusCode, 404);
-
-    const bQueriesAProject = await requestJson(
-      address.port,
-      'POST',
-      `/api/projects/${projectIdA}/query`,
-      { tool: 'get_product_map', args: {} },
-      tokenB
-    );
-    assert.equal(bQueriesAProject.statusCode, 404);
 
     // B triggering reanalyze on A's project: must be denied.
     const bReanalyzesAProject = await requestJson(address.port, 'POST', `/api/projects/${projectIdA}/reanalyze`, {}, tokenB);

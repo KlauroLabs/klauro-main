@@ -94,38 +94,6 @@ describe('DomainExtractor', () => {
     expect(names).not.toContain('constructor');
   });
 
-  it('tokenizes qualified names and route templates without punctuation artifacts', () => {
-    const concepts = extractor.extract(
-      [
-        ...nodesNamed('EnterpriseOrder', 3, 'order'),
-        ...nodesNamed('Microsoft.AspNetCore.Mvc', 3, 'dotnet'),
-        ...nodesNamed('Illuminate\\Support\\Facades\\Route', 3, 'php'),
-      ],
-      [entryPoint('route_1', 'GET /orders/{id}', '/orders/{id}'), entryPoint('route_2', 'GET /orders/:id', '/orders/:id')],
-      [entity('entity_order', 'EnterpriseOrder')],
-    );
-    const names = concepts.map(concept => concept.name);
-    expect(names).toContain('enterprise');
-    expect(names).toContain('order');
-    expect(names).not.toEqual(expect.arrayContaining(['{id}', ':id', 'dotnet', 'microsoft', 'aspnet', 'mvc', 'illuminate']));
-    expect(names.every(name => !/[{}:\\]/.test(name))).toBe(true);
-  });
-
-  it('does not promote supporting concepts merely to fill a fixed core quota', () => {
-    const concepts = extractor.extract(
-      [
-        ...nodesNamed('EnterpriseOrder', 8, 'order'),
-        ...nodesNamed('PeripheralAudit', 3, 'audit'),
-        ...nodesNamed('PeripheralExport', 3, 'export'),
-      ],
-      [entryPoint('route_1', 'Enterprise Orders', '/orders')],
-      [entity('entity_order', 'EnterpriseOrder')],
-    );
-    const core = concepts.filter(concept => concept.classification === 'core').map(concept => concept.name);
-    expect(core).toEqual(expect.arrayContaining(['enterprise', 'order']));
-    expect(core).not.toEqual(expect.arrayContaining(['peripheral', 'audit', 'export']));
-  });
-
   it('promotes prominent concepts to core when a repo has no boundary anchors', () => {
     // A CLI/bot-style repo: no entry points, no entities. Every concept is
     // structurally "supporting" by the strict rules — the promotion net must
@@ -179,7 +147,7 @@ describe('DomainExtractor', () => {
     const coreNames = concepts.filter(c => c.classification === 'core').map(c => c.name);
     expect(coreNames).toContain('feature');
     expect(coreNames).toContain('flag');
-    expect(concepts.map(c => c.name)).toContain('rollout');
+    expect(coreNames).toContain('rollout');
     expect(coreNames).not.toContain('petstore');
     expect(coreNames).not.toContain('invoice');
     expect(concepts.find(c => c.name === 'petstore')).toBeUndefined();

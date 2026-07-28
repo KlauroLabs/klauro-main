@@ -1,13 +1,13 @@
 import * as os from 'os';
 import * as path from 'path';
 import { spawnSync } from 'child_process';
-import { getAnalysis } from './analyzer';
+import { analyzeProject, analyzeProjectIncremental, getAnalysis } from './analyzer';
 import { formatEnvironmentDoctor, runEnvironmentDoctor } from './environment-doctor';
 import { getAgentBootstrap } from './agent-bootstrap';
 import { writeAgentDefaultConfig } from './agent-defaults';
 import { getAgentDoctor } from './agent-doctor';
 import { buildCASGoldenSnapshot } from './cas-contract';
-import { getAnalysisEntry, listCrossCodebaseSystemGraphs, loadCrossCodebaseSystemGraph, saveCrossCodebaseSystemGraph, saveGoldenSnapshot } from './storage';
+import { listCrossCodebaseSystemGraphs, loadCrossCodebaseSystemGraph, saveCrossCodebaseSystemGraph, saveGoldenSnapshot } from './storage';
 import * as query from './query';
 import { buildNodeRuntimeMetrics } from './product';
 import { loadTelemetryObservations } from './telemetry-ingestion';
@@ -288,20 +288,20 @@ async function main(): Promise<void> {
     const manifest = await buildUploadManifest(projectPath, args.dirtyTree ? 'dirty-tree' : 'full');
     const result = {
       status: 'success',
-      index_type: 'source-upload-manifest',
+      index_type: 'local-working-copy-context',
       authoritative: false,
-      visibility: 'not-published',
+      visibility: 'private-to-this-developer',
       account: {
         user: identity.user,
         entitlement: identity.entitlement,
       },
       manifest,
       next: [
-        'Run klauro analyze to upload this source snapshot for hosted analysis.',
-        'Run klauro sync while editing to publish in-flight changes for hosted incremental analysis.',
+        'Use this context to help local agents understand uncommitted work without publishing it as shared project analysis.',
+        'Commit changes and run klauro remote-analyze when the work should become a shared analyzed project revision.',
       ],
     };
-    process.stdout.write(args.json ? `${JSON.stringify(result, null, 2)}\n` : formatUploadPreparationResult(result));
+    process.stdout.write(args.json ? `${JSON.stringify(result, null, 2)}\n` : formatLocalIndexResult(result));
     return;
   }
 
@@ -321,7 +321,7 @@ async function main(): Promise<void> {
   if (args.command === 'analyze') {
     // One product: analysis always goes to the hosted service (heavy work + AI on the
     // VPS), production by default. No local/remote mode. serverUrl can point at a
-    // Customer installs always submit analysis to the hosted Klauro service.
+    // self-hosted analyzer-server for dev. See docs/KLAURO-PRODUCT-MODEL.md.
     const result = await withLogHandling(args.json, args.quiet, () => analyzeCodebaseRemotely({
       projectPath,
       serverUrl: args.serverUrl,
@@ -703,22 +703,13 @@ interface ReleaseManifest {
 export const DEFAULT_MIN_NODE = 18;
 export const DEFAULT_MAX_NODE = 22;
 
-export function resolveSupportedNodeRange(
-  manifest: Pick<ReleaseManifest, 'min_node' | 'max_node'> | null,
-): { min: number; max: number; range: string } {
-  const min = manifest?.min_node;
-  const max = manifest?.max_node;
-  if (!Number.isInteger(min) || !Number.isInteger(max) || min! < 1 || max! < min! || max! > 99) {
-    return { min: DEFAULT_MIN_NODE, max: DEFAULT_MAX_NODE, range: `${DEFAULT_MIN_NODE}-${DEFAULT_MAX_NODE}` };
-  }
-  return { min: min!, max: max!, range: `${min}-${max}` };
-}
-
 export function checkNodeSupportedForNativeBuild(
   nodeMajor: number,
   manifest: Pick<ReleaseManifest, 'min_node' | 'max_node' | 'supported_node_range'> | null,
 ): { ok: boolean; min: number; max: number; message?: string } {
-  const { min, max, range } = resolveSupportedNodeRange(manifest);
+  const min = manifest?.min_node ?? DEFAULT_MIN_NODE;
+  const max = manifest?.max_node ?? DEFAULT_MAX_NODE;
+  const range = manifest?.supported_node_range || `${min}-${max}`;
   if (!Number.isInteger(nodeMajor) || nodeMajor < min) {
     return {
       ok: false, min, max,
@@ -1026,7 +1017,7 @@ export interface HostedAnalysisState {
 
 async function fetchHostedAnalysisState(serverUrl: string, token: string, projectId: string): Promise<HostedAnalysisState | null> {
   try {
-    const state = await remoteJson<HostedAnalysisState>(serverUrl, token, `/api/projects/${encodeURIComponent(projectId)}/analysis-status`);
+    const state = await remoteJson<HostedAnalysisState>(serverUrl, token, `/api/projects/${encodeURIComponent(projectId)}/analysis`);
     return state && typeof state.status === 'string' ? state : null;
   } catch {
     return null;
@@ -1087,15 +1078,14 @@ async function runStatusCommand(args: ParsedArgs): Promise<void> {
   const repoPath = path.resolve(args.path || '.');
   let repo: { analyzed: boolean; analysis_complete: boolean; system?: string; analyzed_at?: string; staleness?: string; layers_ready?: unknown } = { analyzed: false, analysis_complete: false };
   try {
-    const entry = await getAnalysisEntry(repoPath);
-    if (!entry) throw new Error('No stored analysis metadata');
-    const freshness = summarizeAnalysisFreshness(repoPath, entry.analyzed_at);
-    const layersReady = entry.layers_ready;
+    const cas = await getAnalysis(repoPath);
+    const freshness = summarizeAnalysisFreshness(repoPath, cas.analysis_timestamp);
+    const layersReady = (cas as any).layers_ready;
     repo = {
       analyzed: true,
       analysis_complete: !layersReady || layersReady.complete !== false,
-      system: entry.name,
-      analyzed_at: entry.analyzed_at,
+      system: (cas as any).system_name || (cas as any).summary?.system_name,
+      analyzed_at: cas.analysis_timestamp,
       staleness: freshness?.staleness,
       ...(layersReady ? { layers_ready: layersReady } : {}),
     };
@@ -2144,16 +2134,17 @@ async function promptLine(label: string): Promise<string> {
 
 
 async function loadOrAnalyze(projectPath: string, refresh: boolean) {
-  if (refresh) {
-    const result = await analyzeCodebaseRemotely({ projectPath });
-    throw new Error(`Hosted analysis ${result.analysis_id} was accepted. Retry this read after the hosted analysis is ready.`);
-  }
+  if (refresh) return (await analyzeProjectIncremental(projectPath)).output;
 
   try {
-    return await getAnalysis(projectPath);
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
-    throw new Error(`No queryable analysis is available for ${projectPath}. Run \`klauro analyze ${projectPath}\` to submit hosted analysis. ${detail}`);
+    const existing = await getAnalysis(projectPath);
+    const freshness = summarizeAnalysisFreshness(projectPath, existing.analysis_timestamp);
+    if (freshness && freshness.staleness !== 'fresh') {
+      return (await analyzeProjectIncremental(projectPath)).output;
+    }
+    return existing;
+  } catch {
+    return (await analyzeProjectIncremental(projectPath)).output;
   }
 }
 
@@ -2375,7 +2366,7 @@ function printHelp(): void {
     '  klauro remote-analyze /path/to/repo [--server-url url] [--analysis-id id] [--json]',
     '  klauro remote-sync /path/to/repo [--server-url url] [--analysis-id id] [--json]',
     '  klauro save-golden /path/to/repo [--json] [--refresh]',
-    '  klauro analyzer-server [--host 0.0.0.0] [--port 8787] [--data-dir /path/to/data]  (hosted operator command; not shipped in the installed client)',
+    '  klauro analyzer-server [--host 0.0.0.0] [--port 8787] [--data-dir /path/to/data]  (unset: tmpdir scratch)',
     '',
     'Agent context:',
     '  klauro install-agent [/path/to/repo] [--json]',
@@ -2409,6 +2400,7 @@ function printHelp(): void {
     'Examples:',
     '  klauro init .',
     '  klauro login --email you@example.com',
+    '  klauro analyzer-server --host 127.0.0.1 --port 8787',
     '  klauro index . --dirty-tree',
     '  klauro upload-manifest .',
     '  klauro analyze .',
@@ -2422,7 +2414,6 @@ function printHelp(): void {
     '  klauro support-bundle . --output klauro-support.tar.gz',
     '  klauro remote-analyze .',
     '  klauro remote-sync .',
-    '  klauro analyzer-server --host 127.0.0.1 --port 8787',
     '  klauro proposal-preview . --plan "Add a health endpoint" --proposed-files proposed-files.json',
     '  klauro greenfield-guidance --plan "Create a portfolio reporting service" --reference-path ~/dev/your-org/reference-repo',
     '  klauro greenfield-build-context /tmp/new-app --plan "Build an operations command center" --json',
@@ -2451,6 +2442,8 @@ async function runAnalyzerServerCommand(args: ParsedArgs): Promise<void> {
         status: 'ready',
         service: 'klauro-remote-analyzer',
         url,
+        // Mirrors createRemoteAnalyzerHttpServer's resolution: explicit flag/env,
+        // else per-user tmpdir scratch (never a cwd-relative durable dir).
         data_dir: args.dataDir || process.env.KLAURO_REMOTE_ANALYZER_DATA || path.join(os.tmpdir(), `klauro-remote-analyzer-${typeof process.getuid === 'function' ? process.getuid() : 'user'}`),
         auth: process.env.KLAURO_ANALYZER_TOKEN ? 'bearer-token-required' : 'none',
       };
@@ -2459,7 +2452,9 @@ async function runAnalyzerServerCommand(args: ParsedArgs): Promise<void> {
     });
   });
 
-  const stop = () => server.close(() => process.exit(0));
+  const stop = () => {
+    server.close(() => process.exit(0));
+  };
   process.once('SIGINT', stop);
   process.once('SIGTERM', stop);
   await new Promise(() => undefined);
@@ -2492,7 +2487,7 @@ function formatUploadManifest(manifest: Awaited<ReturnType<typeof buildUploadMan
   ].filter(Boolean).join('\n');
 }
 
-function formatUploadPreparationResult(result: {
+function formatLocalIndexResult(result: {
   status: string;
   index_type: string;
   authoritative: boolean;
@@ -2502,7 +2497,7 @@ function formatUploadPreparationResult(result: {
   next: string[];
 }): string {
   return [
-    'Klauro source upload preparation: SUCCESS',
+    'Klauro local working-copy context: SUCCESS',
     `Type: ${result.index_type}`,
     `Shared project analysis: ${result.authoritative ? 'yes' : 'no'}`,
     `Visibility: ${result.visibility}`,
@@ -2526,6 +2521,18 @@ function formatAgentRevisionTracks(result: Awaited<ReturnType<typeof getAgentRev
     `Committed: ${result.committed_track.local_commit ? result.committed_track.local_commit.slice(0, 12) : 'unversioned'}${result.committed_track.analyzed ? ' (analyzed)' : ' (not analyzed yet)'}`,
     `Incoming: ${result.incoming_track.available ? `${result.incoming_track.commits.length} analyzed commit(s) ahead` : 'none detected'}`,
     result.incoming_track.guidance,
+    '',
+  ].join('\n');
+}
+
+function formatLocalAnalyzeResult(result: Awaited<ReturnType<typeof analyzeProjectIncremental>>, focus?: ParsedArgs['analysisFocus']): string {
+  return [
+    `Klauro local analysis: SUCCESS`,
+    `Type: ${result.wasFullRebuild ? 'full' : 'incremental'}`,
+    `Focus: ${focus || 'full'}`,
+    `Nodes: ${result.output.nodes.length}`,
+    `Edges: ${result.output.edges.length}`,
+    `Entry points: ${result.output.entry_points?.length || 0}`,
     '',
   ].join('\n');
 }

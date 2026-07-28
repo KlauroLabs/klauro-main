@@ -403,24 +403,9 @@ export class WorkflowDetector {
    * carry real specificity, e.g. "Check Collision").
    */
   private hasNoWorkflowAnchorEvidence(group: WorkflowGroup): boolean {
-    // A concrete HTTP resource path is itself framework-independent product
-    // evidence, even when a language analyzer cannot yet connect that route to
-    // an entity/service call chain. Dropping `/orders/{id}` merely because its
-    // handler graph is shallow erases real workflows across otherwise well-
-    // supported frameworks. Parameter-only/root/version prefixes do not count.
-    const hasResourceRoute = group.entryPoints.some(entryPoint => {
-      if (entryPoint.type !== 'http') return false;
-      return String(entryPoint.trigger?.path || '')
-        .split('/')
-        .some(segment => segment.length > 2 &&
-          !segment.startsWith(':') &&
-          !segment.startsWith('{') &&
-          !/^(?:api|v\d+)$/i.test(segment));
-    });
     return group.entitiesReferenced.size === 0 &&
       group.servicesUsed.size === 0 &&
-      group.exitPoints.size === 0 &&
-      !hasResourceRoute;
+      group.exitPoints.size === 0;
   }
 
   private isBareSingleWordGroupName(name: string): boolean {
@@ -561,12 +546,6 @@ export class WorkflowDetector {
   ): 'primary' | 'supporting' | 'internal' {
     const workflowName = workflow.name.toLowerCase();
     const workflowKey = workflow.id.replace('workflow_', '').toLowerCase();
-
-    // Language/runtime bootstrap functions are valid navigation surfaces, but
-    // never express why a product exists. Keep them in the workflow graph and
-    // explicitly classify them as supporting before domain-frequency signals
-    // can accidentally promote ubiquitous names such as Main or Program.
-    if (this.isProcessBootstrapWorkflow(workflow)) return 'supporting';
 
     const nameWords = workflowName.split(/\s+/);
     const keyWords = workflowKey.split(/[-_]/);
@@ -765,12 +744,7 @@ export class WorkflowDetector {
     workflows: CASWorkflow[],
     dependencies: CASWorkflowDependency[]
   ): CASWorkflow | undefined {
-    // A bootstrap may arrive pre-classified (persisted/imported CAS or a caller
-    // that bypassed classifyWorkflows). Rank real behavior whenever it exists;
-    // fall back to bootstraps only for a codebase that exposes nothing else.
-    const behavioralWorkflows = workflows.filter(workflow => !this.isProcessBootstrapWorkflow(workflow));
-    const eligible = behavioralWorkflows.length > 0 ? behavioralWorkflows : workflows;
-    const primary = eligible.filter(w => w.classification === 'primary');
+    const primary = workflows.filter(w => w.classification === 'primary');
 
     if (primary.length === 1) {
       return primary[0];
@@ -784,7 +758,7 @@ export class WorkflowDetector {
       });
     }
 
-    const supporting = eligible.filter(w => w.classification === 'supporting');
+    const supporting = workflows.filter(w => w.classification === 'supporting');
     if (supporting.length > 0) {
       return supporting.reduce((best, current) => {
         const bestScore = this.computeWorkflowImportanceScore(best, dependencies);
@@ -793,12 +767,7 @@ export class WorkflowDetector {
       });
     }
 
-    return eligible[0];
-  }
-
-  private isProcessBootstrapWorkflow(workflow: Pick<CASWorkflow, 'name'>): boolean {
-    return /^(?:__main__|main|program|application|server|bootstrap|startup|(?:run|start)\s+(?:main|application|server)|(?:application|server)\s+main)$/i
-      .test(workflow.name.trim());
+    return workflows[0];
   }
 
   private computeWorkflowImportanceScore(
@@ -810,9 +779,7 @@ export class WorkflowDetector {
     const serviceCount = workflow.services_used.length;
     const entityCount = workflow.entities_touched.length;
 
-    const bootstrapOnly = this.isProcessBootstrapWorkflow(workflow);
-    const bootstrapPenalty = bootstrapOnly ? 100 : 0;
-    return (entryPointCount * 3) + (dependentCount * 5) + serviceCount + entityCount - bootstrapPenalty;
+    return (entryPointCount * 3) + (dependentCount * 5) + serviceCount + entityCount;
   }
 
   private findEntryWorkflow(workflows: CASWorkflow[]): CASWorkflow | undefined {

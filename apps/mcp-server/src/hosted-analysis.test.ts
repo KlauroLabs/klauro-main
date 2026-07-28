@@ -9,12 +9,10 @@ import {
   clearHostedAnalysisCaches,
   compareHostedFreshness,
   currentAnalysisSourceStamp,
-  getHostedSectionCacheStats,
   resolveBoundAnalysis,
   resolveHostedProjectBinding,
 } from './hosted-analysis';
 import { loadAnalysis, saveAnalysis } from './storage';
-import { parseCasSectionNames, selectCasSections } from './cas-sections';
 
 /**
  * Resolution-matrix tests for hosted-analysis.ts — the fix for the live
@@ -87,25 +85,16 @@ async function startFakeHostedServer(options: { analysisTimestamp?: string; stat
         summary: { name: 'truckspy', analysis_timestamp: fake.state.analysis_timestamp, description_source: 'ai' },
       });
     }
-    const sectionsMatch = route.match(/^\/api\/projects\/([^/]+)\/cas\/sections$/);
-    if (sectionsMatch) {
+    const casMatch = route.match(/^\/api\/projects\/([^/]+)\/cas$/);
+    if (casMatch) {
       if (!fake.casSupported) return send(404, { status: 'error', error: 'not found' });
-      const requested = parseCasSectionNames(new URL(req.url || '', 'http://localhost').searchParams.get('sections'));
-      const cas = minimalCas(fake.state.analysis_timestamp || HOSTED_TS, 'hosted-truckspy');
       return send(200, {
         status: 'ready',
-        project_id: sectionsMatch[1],
+        project_id: casMatch[1],
         analysis_id: 'analysis-1',
         analysis_timestamp: fake.state.analysis_timestamp,
-        sections: requested,
-        cas: selectCasSections(cas, requested),
+        cas: minimalCas(fake.state.analysis_timestamp || HOSTED_TS, 'hosted-truckspy'),
       });
-    }
-    const exportMatch = route.match(/^\/api\/projects\/([^/]+)\/cas\/export$/);
-    if (exportMatch) {
-      if (!fake.casSupported) return send(404, { status: 'error', error: 'not found' });
-      res.writeHead(200, { 'content-type': 'application/json', 'x-klauro-cas-codec': 'none' });
-      return res.end(JSON.stringify(minimalCas(fake.state.analysis_timestamp || HOSTED_TS, 'hosted-truckspy')));
     }
     send(404, { status: 'error', error: 'unknown route' });
   });
@@ -179,12 +168,12 @@ test('signed-out session (no token) resolves to no binding', async () => {
   }
 });
 
-test('hosted resolution cannot be disabled by a legacy environment kill switch', async () => {
+test('kill switch KLAURO_MCP_HOSTED_RESOLUTION=off disables binding', async () => {
   const server = await startFakeHostedServer();
   try {
     const dir = await makeBoundRepo(server.url);
     process.env.KLAURO_MCP_HOSTED_RESOLUTION = 'off';
-    assert.ok(await resolveHostedProjectBinding(dir));
+    assert.strictEqual(await resolveHostedProjectBinding(dir), null);
     delete process.env.KLAURO_MCP_HOSTED_RESOLUTION;
     assert.ok(await resolveHostedProjectBinding(dir));
   } finally {
@@ -192,21 +181,19 @@ test('hosted resolution cannot be disabled by a legacy environment kill switch',
   }
 });
 
-test('bound + no cache: hydrates requested hosted sections without a full download or local mirror', async () => {
+test('bound + no cache: downloads hosted CAS, mirrors it, never runs a local analysis', async () => {
   const server = await startFakeHostedServer();
   try {
     const dir = await makeBoundRepo(server.url);
     const binding = await resolveHostedProjectBinding(dir);
     assert.ok(binding);
-    const resolution = await resolveBoundAnalysis(binding!, { sections: ['graph'] });
+    const resolution = await resolveBoundAnalysis(binding!);
     assert.strictEqual(resolution.source, 'hosted');
     assert.strictEqual(resolution.cas.analysis_timestamp, HOSTED_TS);
     assert.strictEqual(resolution.hosted_timestamp, HOSTED_TS);
-    // Customer reads do not mirror the full CAS into the local store.
+    // Mirrored into the local store.
     const mirrored = await loadAnalysis(dir);
-    assert.strictEqual(mirrored, null);
-    assert.ok(server.requests.includes(`/api/projects/prj_test123/cas/sections`));
-    assert.ok(!server.requests.includes(`/api/projects/prj_test123/cas/export`));
+    assert.strictEqual(mirrored?.analysis_timestamp, HOSTED_TS);
     // Provenance stamp available for tool responses.
     const stamp = currentAnalysisSourceStamp();
     assert.strictEqual(stamp.analysis_source?.origin, 'hosted');
@@ -216,40 +203,22 @@ test('bound + no cache: hydrates requested hosted sections without a full downlo
   }
 });
 
-test('bound section cache reuses one bounded response without downloading full CAS', async () => {
+test('bound + coherent mirror: second resolve serves local mirror without re-downloading', async () => {
   const server = await startFakeHostedServer();
   try {
     const dir = await makeBoundRepo(server.url);
     const binding = (await resolveHostedProjectBinding(dir))!;
-    await resolveBoundAnalysis(binding, { sections: ['graph'] });
-    const casDownloads = server.requests.filter(r => r.endsWith('/cas/sections')).length;
+    await resolveBoundAnalysis(binding);
+    const casDownloads = server.requests.filter(r => r.endsWith('/cas')).length;
     assert.strictEqual(casDownloads, 1);
 
-    const second = await resolveBoundAnalysis(binding, { sections: ['graph'] });
-    assert.strictEqual(second.source, 'hosted');
+    clearHostedAnalysisCaches(); // force a fresh state fetch, mirror stays on disk
+    const second = await resolveBoundAnalysis(binding);
+    assert.strictEqual(second.source, 'local-mirror');
     assert.strictEqual(second.cas.analysis_timestamp, HOSTED_TS);
-    assert.strictEqual(server.requests.filter(r => r.endsWith('/cas/sections')).length, casDownloads, 'no second download');
-    assert.strictEqual(getHostedSectionCacheStats().entries, 1);
+    assert.strictEqual(server.requests.filter(r => r.endsWith('/cas')).length, casDownloads, 'no second download');
   } finally {
     await server.close();
-  }
-});
-
-test('hosted section cache does not retain a response larger than its byte budget', async () => {
-  const previous = process.env.KLAURO_HOSTED_SECTION_CACHE_MAX_BYTES;
-  process.env.KLAURO_HOSTED_SECTION_CACHE_MAX_BYTES = '128';
-  clearHostedAnalysisCaches();
-  const server = await startFakeHostedServer();
-  try {
-    const dir = await makeBoundRepo(server.url);
-    const binding = (await resolveHostedProjectBinding(dir))!;
-    await resolveBoundAnalysis(binding, { sections: ['graph'] });
-    assert.strictEqual(getHostedSectionCacheStats().entries, 0);
-  } finally {
-    await server.close();
-    if (previous === undefined) delete process.env.KLAURO_HOSTED_SECTION_CACHE_MAX_BYTES;
-    else process.env.KLAURO_HOSTED_SECTION_CACHE_MAX_BYTES = previous;
-    clearHostedAnalysisCaches();
   }
 });
 
@@ -262,9 +231,9 @@ test('bound + stale cache: hosted analysis wins over the July-4 local cache', as
     const resolution = await resolveBoundAnalysis(binding);
     assert.strictEqual(resolution.source, 'hosted');
     assert.strictEqual(resolution.cas.analysis_timestamp, HOSTED_TS);
-    // The stale local cache remains untouched; hosted reads are hydrated in memory.
+    // Mirror replaced the stale cache.
     const mirrored = await loadAnalysis(dir);
-    assert.strictEqual(mirrored?.analysis_timestamp, STALE_TS);
+    assert.strictEqual(mirrored?.analysis_timestamp, HOSTED_TS);
   } finally {
     await server.close();
   }
@@ -280,7 +249,7 @@ test('bound + newer local + preferLocalCache=true (default): local analysis serv
     const resolution = await resolveBoundAnalysis(binding);
     assert.strictEqual(resolution.source, 'local-mirror');
     assert.strictEqual(resolution.cas.analysis_timestamp, NEWER_TS);
-    assert.strictEqual(server.requests.filter(r => r.endsWith('/cas/export')).length, 0, 'no download needed');
+    assert.strictEqual(server.requests.filter(r => r.endsWith('/cas')).length, 0, 'no download needed');
   } finally {
     await server.close();
   }
@@ -336,7 +305,7 @@ test('bound + old server build without /cas endpoint: degrades honestly', async 
     const binding = (await resolveHostedProjectBinding(dir))!;
     const resolution = await resolveBoundAnalysis(binding);
     assert.strictEqual(resolution.source, 'local-cache-degraded');
-    assert.match(resolution.note || '', /does not expose full-CAS/);
+    assert.match(resolution.note || '', /does not expose full-CAS download/);
   } finally {
     await server.close();
   }

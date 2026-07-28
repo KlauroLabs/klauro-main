@@ -35,7 +35,6 @@
 import * as fs from 'fs';
 import * as fsp from 'fs/promises';
 import * as path from 'path';
-import { REMOTE_ANALYSIS_PROTOCOL_VERSION } from '../remote-analyzer-protocol';
 
 export const DEFAULT_DEEPINFRA_BASE_URL = 'https://api.deepinfra.com/v1/openai';
 /** Tool-calling-capable DeepInfra model (matches the analyzer-core default). */
@@ -386,11 +385,9 @@ function connectViaHttp(server?: McpJsonServer): KlauroToolProvider {
             ...(token ? { authorization: `Bearer ${token}` } : {}),
           },
           body: JSON.stringify({
-            protocol_version: REMOTE_ANALYSIS_PROTOCOL_VERSION,
             project_id: (snapshot as any).project_name || path.basename(repoPath),
             project_path: repoPath,
             snapshot,
-            async: true,
           }),
         });
         if (!response.ok) {

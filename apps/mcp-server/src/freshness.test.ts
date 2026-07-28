@@ -3,7 +3,6 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import * as http from 'node:http';
 import { execFileSync } from 'node:child_process';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import { clearFreshnessSummaryCache, summarizeAnalysisFreshness } from './freshness';
@@ -88,37 +87,6 @@ function freshnessFixtureCas(root: string, analyzedAt: string): CASOutput {
     exit_points: [],
     analyzer_contributions: [{ analyzer_name: 'fixture', nodes_created: 2, edges_created: 1 }],
   } as unknown as CASOutput;
-}
-
-async function startFreshnessSyncServer(getCas: () => CASOutput): Promise<{ url: string; syncs: () => number; close: () => Promise<void> }> {
-  let syncCount = 0;
-  const server = http.createServer((request, response) => {
-    if (request.method === 'POST' && request.url === '/v1/sync') {
-      request.resume();
-      request.on('end', () => {
-        syncCount += 1;
-        const cas = { ...getCas(), analysis_timestamp: new Date(Date.now() + 1_000).toISOString() };
-        response.writeHead(200, { 'content-type': 'application/json' });
-        response.end(JSON.stringify({
-          status: 'success',
-          analysis_id: 'prj_freshness_test',
-          analysis_type: 'incremental',
-          cas,
-        }));
-      });
-      return;
-    }
-    response.writeHead(404, { 'content-type': 'application/json' });
-    response.end(JSON.stringify({ status: 'error', error: 'unknown fixture route' }));
-  });
-  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
-  const address = server.address();
-  assert.ok(address && typeof address === 'object');
-  return {
-    url: `http://127.0.0.1:${address.port}`,
-    syncs: () => syncCount,
-    close: () => new Promise(resolve => server.close(() => resolve())),
-  };
 }
 
 test('git repo with no changes since analysis reports fresh', () => {
@@ -301,35 +269,26 @@ test('agent context stays fresh with no warning when nothing changed', async () 
   });
 });
 
-test('resolve_agent_analysis refreshes stale customer analysis through hosted in-flight sync', async () => {
+test('resolve_agent_analysis refreshes a stale analysis before returning (acts on staleness, not just advisory)', async () => {
+  // SPEC-FRESHNESS.md: resolve_agent_analysis is documented as the mandatory
+  // first call for any agent, so it must ACT on staleness rather than only
+  // reporting it as an FYI field the caller can ignore. Before this change,
+  // this same scenario asserted staleness === 'aging' as the final answer;
+  // now the tool triggers an incremental refresh (changed-file-only, cheap)
+  // and the returned freshness reflects the POST-refresh state.
   const previousStorage = process.env.KLAURO_STORAGE_PATH;
-  const previousToken = process.env.KLAURO_ACCOUNT_TOKEN;
-  const previousAuthDisabled = process.env.KLAURO_CONNECTOR_AUTH_DISABLED;
   await withTempDir('klauro-freshness-resolve-', async root => {
     const storage = path.join(root, 'storage');
     process.env.KLAURO_STORAGE_PATH = storage;
-    process.env.KLAURO_ACCOUNT_TOKEN = 'freshness-test-token';
-    process.env.KLAURO_CONNECTOR_AUTH_DISABLED = '1';
-    let hosted: Awaited<ReturnType<typeof startFreshnessSyncServer>> | undefined;
     try {
       const project = path.join(root, 'project');
       fs.mkdirSync(project, { recursive: true });
       const files = writeSourceFixture(project);
       initGitRepo(project);
-      let hostedCas = freshnessFixtureCas(project, new Date().toISOString());
-      hosted = await startFreshnessSyncServer(() => hostedCas);
-      fs.writeFileSync(path.join(project, '.klaurorc'), JSON.stringify({
-        version: 1,
-        kind: 'project',
-        project: { name: 'freshness-test', id: 'prj_freshness_test', workspaceId: 'wsp_freshness' },
-        analyzer: { serverUrl: hosted.url, selfHosted: true },
-        policy: { allowRemoteAnalyzer: true, allowedAnalyzerHosts: [hosted.url] },
-      }));
       const analyzedAt = new Date(Date.now() - HOUR_MS).toISOString();
       await saveAnalysis(project, freshnessFixtureCas(project, analyzedAt));
       for (const file of files) setMtime(file, Date.now() - 2 * HOUR_MS);
       fs.appendFileSync(files[2], '// changed after analysis\n');
-      hostedCas = freshnessFixtureCas(project, new Date().toISOString());
 
       clearFreshnessSummaryCache();
       const resolution = await resolveAgentAnalysis({ path: project });
@@ -340,20 +299,9 @@ test('resolve_agent_analysis refreshes stale customer analysis through hosted in
       assert.equal(resolution.analysis_freshness!.staleness, 'fresh');
       assert.equal(resolution.analysis_freshness!.files_changed_since_analysis.count, 0);
       assert.match(resolution.recommendation, /best matching analysis/);
-      assert.equal(hosted.syncs(), 1);
-
-      const warmResolution = await resolveAgentAnalysis({ path: project });
-      assert.equal(warmResolution.refreshed, false, 'an unchanged warm orientation must not submit another hosted analysis');
-      assert.equal(warmResolution.analysis_freshness?.staleness, 'fresh');
-      assert.equal(hosted.syncs(), 1, 'an unchanged repeat must reuse the completed CAS');
     } finally {
-      await hosted?.close();
       if (previousStorage === undefined) delete process.env.KLAURO_STORAGE_PATH;
       else process.env.KLAURO_STORAGE_PATH = previousStorage;
-      if (previousToken === undefined) delete process.env.KLAURO_ACCOUNT_TOKEN;
-      else process.env.KLAURO_ACCOUNT_TOKEN = previousToken;
-      if (previousAuthDisabled === undefined) delete process.env.KLAURO_CONNECTOR_AUTH_DISABLED;
-      else process.env.KLAURO_CONNECTOR_AUTH_DISABLED = previousAuthDisabled;
     }
   });
 });

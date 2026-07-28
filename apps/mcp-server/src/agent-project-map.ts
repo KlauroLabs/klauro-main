@@ -1,13 +1,11 @@
 import * as path from 'path';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
-import { listAnalysesWithScope, type AnalysisEntry } from './storage';
-import { getAnalysis } from './analyzer';
+import { listAnalysesWithScope, getAnalysisEntry, type AnalysisEntry } from './storage';
+import { getAnalysis, analyzeProjectIncremental } from './analyzer';
 import { evaluateAgentReadiness, type AgentTask } from './agent-adoption';
 import { classifyAnalysisProfile } from './analysis-profile';
-import { clearFreshnessSummaryCache, summarizeAnalysisFreshness, type AnalysisFreshnessSummary } from './freshness';
+import { summarizeAnalysisFreshness, type AnalysisFreshnessSummary } from './freshness';
 import { excludeForeignWorkspaceEntries } from './analysis-scope';
-import { resolveHostedProjectBinding } from './hosted-analysis';
-import { syncWorkingTreeRemotely } from './remote-sync-client';
 
 export interface AgentAnalysisCandidate {
   path: string;
@@ -111,55 +109,41 @@ export async function resolveAgentAnalysis(input: {
   candidates: AgentAnalysisCandidate[];
   recommendation: string;
 }> {
+  // Act on staleness before scoring candidates, not just after: this was
+  // previously "compute analysis_freshness for display" only — the returned
+  // candidate list and node counts reflected whatever was last on disk even
+  // when staleness was non-fresh. resolve_agent_analysis is documented as the
+  // mandatory first call for any agent, so this is the highest-leverage place
+  // to guarantee freshness (see docs/SPEC-FRESHNESS.md). The refresh is the
+  // existing changed-file-only incremental path (analyzeProjectIncremental) —
+  // cheap when nothing relevant changed, bounded when something did.
   let refreshed = false;
   const initialMap = await getAgentProjectMap({ path: input.path, task: input.task, limit: 12 });
-  const initialCas = initialMap.selected ? await getAnalysis(initialMap.selected.path) : null;
+  let bestGuessPath = initialMap.selected?.path || normalizePath(input.path);
+  const initialEntry = initialMap.selected ? await getAnalysisEntry(initialMap.selected.path) : null;
   const initialFreshness = initialMap.selected
-    ? summarizeAnalysisFreshness(initialMap.selected.path, initialCas?.analysis_timestamp)
+    ? summarizeAnalysisFreshness(initialMap.selected.path, initialEntry?.analyzed_at)
     : null;
 
-  if (initialMap.selected && initialFreshness && initialFreshness.staleness !== 'fresh') {
-    const selectedPath = initialMap.selected.path;
-    const binding = await resolveHostedProjectBinding(selectedPath);
-    if (!binding) {
-      throw new Error(
-        `Analysis for ${selectedPath} is ${initialFreshness.staleness}, but the repository is not bound to a signed-in hosted project. ` +
-        `Refusing to serve stale agent context or run customer analysis locally; run \`klauro init\` or \`klauro login\`, then retry.`,
-      );
+  if (initialFreshness && initialFreshness.staleness !== 'fresh') {
+    try {
+      await analyzeProjectIncremental(bestGuessPath);
+      refreshed = true;
+    } catch {
+      // Refresh failure (e.g. path no longer exists) falls back to the
+      // pre-refresh candidate map computed above rather than throwing —
+      // resolve_agent_analysis should degrade gracefully, not hard-fail.
     }
-    const result = await syncWorkingTreeRemotely({
-      projectPath: selectedPath,
-      serverUrl: binding.serverUrl,
-      analysisId: binding.projectId,
-      token: binding.token,
-      wait: true,
-    });
-    if (!result.cas) {
-      throw new Error(
-        `Hosted refresh for ${selectedPath} was accepted but did not return a completed in-flight CAS. ` +
-        `Refusing to continue with stale agent context; retry after hosted analysis completes.`,
-      );
-    }
-    refreshed = true;
-    clearFreshnessSummaryCache();
   }
 
-  const map = refreshed
-    ? await getAgentProjectMap({ path: input.path, task: input.task, limit: 12 })
-    : initialMap;
+  const map = refreshed ? await getAgentProjectMap({ path: input.path, task: input.task, limit: 12 }) : initialMap;
   const selected = map.selected;
-  const selectedCas = selected
-    ? (refreshed ? await getAnalysis(selected.path) : initialCas)
+  const selectedEntry = selected
+    ? (refreshed ? await getAnalysisEntry(selected.path) : initialEntry)
     : null;
   const freshness = selected
-    ? summarizeAnalysisFreshness(selected.path, selectedCas?.analysis_timestamp)
+    ? summarizeAnalysisFreshness(selected.path, selectedEntry?.analyzed_at)
     : null;
-  if (refreshed && freshness?.staleness !== 'fresh') {
-    throw new Error(
-      `Hosted refresh for ${selected?.path || input.path} completed, but the returned in-flight CAS is still ${freshness?.staleness || 'unknown'}. ` +
-      `Refusing to serve stale agent context.`,
-    );
-  }
   const baseRecommendation = selected
     ? selected.path === normalizePath(input.path)
       ? 'Continue with the requested path; it is the best matching analysis.'

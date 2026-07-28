@@ -2,10 +2,7 @@ import type { CASOutput, ChangeReport } from '../../../packages/analyzer-core/sr
 import type { BranchDiffContext, RemoteFileChange, SourceManifest, SourceSnapshot, WorkingTreeChangeContext } from './remote-source';
 import type { ProposedFileInput } from './proposal-preview';
 
-export const REMOTE_ANALYSIS_PROTOCOL_VERSION = 2 as const;
-
 export interface RemoteAnalyzeRequest {
-  protocol_version: typeof REMOTE_ANALYSIS_PROTOCOL_VERSION;
   project_id?: string;
   organization_id?: string;
   project_path?: string;
@@ -14,8 +11,7 @@ export interface RemoteAnalyzeRequest {
    *  accepts the snapshot and responds in seconds with `status:'accepted'`;
    *  the analysis runs entirely server-side in the background, attaching to
    *  the account project and refreshing the workspace analysis as it lands.
-   *  Completion is observed through the status and explicit export endpoints;
-   *  uploads never hold the request open for a full CAS response. */
+   *  Omit/false for the legacy synchronous response carrying the full CAS. */
   async?: boolean;
 }
 
@@ -23,17 +19,12 @@ export interface RemoteAnalyzeRequest {
  *  accepted and the analysis is running server-side. */
 export interface RemoteAnalyzeAcceptedResponse {
   status: 'accepted';
-  protocol_version: typeof REMOTE_ANALYSIS_PROTOCOL_VERSION;
   analysis_id: string;
   base_commit?: string;
   manifest: SourceManifest;
-  /** The exact committed snapshot is already analyzed or currently in flight. */
-  reused?: boolean;
-  analysis_type?: 'unchanged';
 }
 
 export interface RemoteSyncRequest {
-  protocol_version: typeof REMOTE_ANALYSIS_PROTOCOL_VERSION;
   analysis_id: string;
   project_id?: string;
   organization_id?: string;
@@ -45,8 +36,6 @@ export interface RemoteSyncRequest {
     changed_files: RemoteFileChange[];
     manifest?: SourceManifest;
   };
-  /** Customer clients submit changes and return after durable acceptance. */
-  async?: boolean;
 }
 
 export interface RemoteAnalyzeDiffRequest {
@@ -76,7 +65,6 @@ export interface RemoteProjectRevision {
   generated_at: string;
   files: number;
   bytes: number;
-  snapshot_digest?: string;
   nodes: number;
   edges: number;
 }
@@ -147,4 +135,4 @@ export interface RemoteErrorResponse {
   error: string;
 }
 
-export type RemoteAnalyzerResponse = RemoteAnalyzeResponse | RemoteAnalyzeAcceptedResponse | RemoteProjectRevisionsResponse | RemoteErrorResponse;
+export type RemoteAnalyzerResponse = RemoteAnalyzeResponse | RemoteProjectRevisionsResponse | RemoteErrorResponse;

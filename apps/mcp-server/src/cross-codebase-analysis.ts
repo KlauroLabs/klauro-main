@@ -42,22 +42,6 @@ export interface CrossCodebaseInput {
   cas: CASOutput;
 }
 
-export interface CrossCodebaseBuildDiagnostics {
-  lookup_index_builds: number;
-  lookup_nodes_indexed: number;
-  node_lookups: number;
-  entry_lookups: number;
-  exit_lookups: number;
-}
-
-interface CrossCodebaseLookupIndex {
-  nodes_by_id: Map<string, CASNode>;
-  entry_points_by_id: Map<string, CASEntryPoint>;
-  exit_points_by_id: Map<string, CASExitPoint>;
-  provider_sdk_refs: CrossCodebaseRef[];
-  diagnostics?: CrossCodebaseBuildDiagnostics;
-}
-
 /** Shared contract (agent-A): evidence-first deployable-boundary signal.
  *  Tier 1 = ship artifacts (container/compose/k8s/serverless/installer/ci-deploy).
  *  Tier 2 = runnable-but-unpackaged (bin/server-entry). Tier 3 = package identity. */
@@ -94,9 +78,6 @@ export interface SystemCodebase {
    *  enhanced_system_purpose) — the workspace narrative prompt foregrounds this
    *  so the frame comes from the members' own evidence, never a canned frame. */
   primary_domain?: string;
-  /** AI-grounded member summary copied from the completed CAS. WAS composes
-   *  this member-owned meaning; it never re-infers a member from stack facts. */
-  description?: string;
   languages: string[];
   frameworks: string[];
   packages: string[];
@@ -952,10 +933,7 @@ export interface CrossCodebaseSystemGraph {
   workspace_complexity?: WorkspaceComplexity;
   summary: {
     codebases: number;
-    /** Canonical workspace-level applications exposed in the overview. */
     applications: number;
-    /** Complete drilldown inventory, including internal and package surfaces. */
-    application_surfaces: number;
     distribution_units: number;
     composition_kind: WorkspaceCompositionKind;
     interfaces: Record<SystemInterfaceKind, number>;
@@ -1252,50 +1230,18 @@ export function crossCodebaseSystemGraphId(name: string): string {
   return slugify(name || 'system-analysis') || 'system-analysis';
 }
 
-function buildCrossCodebaseLookupIndexes(
-  repositories: CrossCodebaseInput[],
-  diagnostics?: CrossCodebaseBuildDiagnostics,
-): Map<CASOutput, CrossCodebaseLookupIndex> {
-  const indexes = new Map<CASOutput, CrossCodebaseLookupIndex>();
-  for (const repository of repositories) {
-    if (indexes.has(repository.cas)) continue;
-    const nodesById = new Map<string, CASNode>();
-    const providerSdkRefs: CrossCodebaseRef[] = [];
-    for (const node of repository.cas.nodes || []) {
-      nodesById.set(node.id, node);
-      if (providerSdkRefs.length < 10 && ['module', 'package', 'library', 'class', 'interface', 'function'].includes(node.type)) {
-        providerSdkRefs.push(nodeRef(node));
-      }
-    }
-    if (diagnostics) {
-      diagnostics.lookup_index_builds += 1;
-      diagnostics.lookup_nodes_indexed += repository.cas.nodes?.length || 0;
-    }
-    indexes.set(repository.cas, {
-      nodes_by_id: nodesById,
-      entry_points_by_id: new Map((repository.cas.entry_points || []).map(entryPoint => [entryPoint.id, entryPoint])),
-      exit_points_by_id: new Map((repository.cas.exit_points || []).map(exitPoint => [exitPoint.id, exitPoint])),
-      provider_sdk_refs: providerSdkRefs,
-      diagnostics,
-    });
-  }
-  return indexes;
-}
-
 export function buildCrossCodebaseSystemGraph(
   name: string,
   repositories: CrossCodebaseInput[],
-  options: { id?: string; generatedAt?: string; diagnostics?: CrossCodebaseBuildDiagnostics } = {}
+  options: { id?: string; generatedAt?: string } = {}
 ): CrossCodebaseSystemGraph {
   const generatedAt = options.generatedAt || new Date().toISOString();
-  const lookupIndexes = buildCrossCodebaseLookupIndexes(repositories, options.diagnostics);
   const codebases = repositories.map(toSystemCodebase);
-  const interfaces = repositories.flatMap(repository => extractInterfaces(repository, codebaseId(repository.path), lookupIndexes.get(repository.cas)!));
+  const interfaces = repositories.flatMap(repository => extractInterfaces(repository, codebaseId(repository.path)));
   const runtimeComponents = repositories.flatMap(repository => extractRuntimeComponents(repository, codebaseId(repository.path)));
   const applications = buildApplications(codebases, interfaces, runtimeComponents, repositories);
   resolveDeployables(applications, repositories);
   linkDasUnits(applications, repositories);
-  mergeDuplicateDasApplications(applications);
   mergeCrossMemberSubdirApplications(applications, codebases, repositories);
   const distributionUnits = buildWorkspaceDistributionUnits(repositories, applications, codebases);
   const appByIdForLinks = new Map(applications.map(app => [app.id, app]));
@@ -1318,11 +1264,11 @@ export function buildCrossCodebaseSystemGraph(
   const ownership = buildWorkspaceOwnership(applications, codebases, repositories);
   const activity = buildWorkspaceActivity(repositories, applications);
   const telemetry = buildWorkspaceTelemetry(repositories, applications);
-  const capabilities = buildWorkspaceCapabilities(repositories, applications, codebases, lookupIndexes, systemInsights);
+  const capabilities = buildWorkspaceCapabilities(repositories, applications, codebases, systemInsights);
   // Honest truncation: the persisted list is capped for payload size, and the
   // true count is surfaced in summary.workflows_total/workflows_truncated so
   // "exactly 40" is a visible truncation, never a silent quota.
-  const workflowsAll = buildWorkspaceWorkflows(repositories, applications, interfaces, applicationLinks, lookupIndexes);
+  const workflowsAll = buildWorkspaceWorkflows(repositories, applications, interfaces, applicationLinks);
   const workflows = workflowsAll.slice(0, WORKSPACE_WORKFLOWS_MAX);
   const domains = buildWorkspaceDomains(repositories, applications, codebases, name);
   const environments = buildWorkspaceEnvironments(runtimeComponents, applications, repositories);
@@ -1332,7 +1278,7 @@ export function buildCrossCodebaseSystemGraph(
   const entityMap = buildWorkspaceEntities(repositories, applications, capabilities, workflows, dataFlowPaths);
   systemInsights = dedupeInsights([...systemInsights, ...inferEntityGapInsights(entityMap.entities)]);
   const unmatchedInterfaces = findUnmatchedInterfaces(interfaces, allLinks);
-  const riskAreas = buildWorkspaceRiskAreas(repositories, applications, interfaces, applicationLinks, systemInsights, unmatchedInterfaces, activity, telemetry, ownership, lookupIndexes);
+  const riskAreas = buildWorkspaceRiskAreas(repositories, applications, interfaces, applicationLinks, systemInsights, unmatchedInterfaces, activity, telemetry, ownership);
   const health = buildWorkspaceHealth(repositories, riskAreas, telemetry);
   const workspaceNarrative = buildWorkspaceNarrative(name, generatedAt, codebases, applications, applicationLinks, systemInsights, runtimeComponents, composition, capabilities, domains);
   const validation = buildWorkspaceValidation(codebases, applications, interfaces, applicationLinks, unmatchedInterfaces, inputs, health);
@@ -1389,7 +1335,7 @@ export function buildCrossCodebaseSystemGraph(
     validation,
     quality_flags: qualityFlags,
     ...(workspaceComplexity ? { workspace_complexity: workspaceComplexity } : {}),
-    summary: summarize(codebases, applications, deployables, distributionUnits, interfaces, runtimeComponents, runtimeLinks, applicationLinks, systemInsights, links, unmatchedInterfaces, composition, riskAreas, capabilities, workflows, domains, entityMap.entities, entityMap.paths, workflowsAll.length),
+    summary: summarize(codebases, applications, distributionUnits, interfaces, runtimeComponents, runtimeLinks, applicationLinks, systemInsights, links, unmatchedInterfaces, composition, riskAreas, capabilities, workflows, domains, entityMap.entities, entityMap.paths, workflowsAll.length),
   };
   normalizeWorkspaceNextMcpCalls(graph);
   return graph;
@@ -1481,24 +1427,17 @@ export async function enrichWorkspaceAnalysisNarrative(graph: WorkspaceAnalysisG
     writeWorkspaceAiDebug(raw);
     const parsed = parseWorkspaceNarrativeJson(raw);
     const now = new Date().toISOString();
-    const narrativeDescription = humanizeWorkspaceNarrativeIdentifiers(String(parsed.description || '').trim());
+    const narrativeDescription = String(parsed.description || '').trim();
     // GATE/PERSIST AGREEMENT (live v1.0.63 contradiction): the gate used to
     // check the RAW parsed summary for non-emptiness, while the accepted branch
     // persisted the STRICTER usefulAiProductValueSummary(...) result — so a
     // summary that was non-empty at gate time but rejected by the usefulness
     // filter persisted source='ai' with product_value_summary:"". Compute the
     // value that will actually persist FIRST and gate on that.
-    let acceptedProductValueSummary: string | undefined = usefulAiProductValueSummary(parsed.product_value_summary, graph.workspace_narrative.product_value_summary, graph)
+    const acceptedProductValueSummary = usefulAiProductValueSummary(parsed.product_value_summary, graph.workspace_narrative.product_value_summary, graph)
       || safeAiProductValueSummary(parsed.product_value_summary, graph.workspace_narrative.product_value_summary, graph)
       || String(graph.workspace_narrative.product_value_summary || '').trim();
     const baseNarrativeGate = evaluateWorkspaceNarrativeGate(graph, narrativeDescription, parsed.product_value_summary, graph.workspace_narrative.product_value_summary);
-    if (baseNarrativeGate.accepted && !acceptedProductValueSummary) {
-      acceptedProductValueSummary = await generateMissingWorkspaceProductValueSummary(
-        graph,
-        narrativeDescription,
-        'was-primary-missing-product-value-summary-v1',
-      );
-    }
     const narrativeGate = baseNarrativeGate.accepted && !acceptedProductValueSummary
       ? { accepted: false, reason: 'missing product_value_summary: the response omitted a usable product_value_summary field — return JSON that explicitly includes a non-empty product_value_summary (one concrete, evidence-backed sentence)' }
       : baseNarrativeGate;
@@ -1514,13 +1453,11 @@ export async function enrichWorkspaceAnalysisNarrative(graph: WorkspaceAnalysisG
           // Persist seam: isolated ungrounded marketing instances are stripped
           // mechanically (saturation was already rejected by the gate).
           description: stripUngroundedWorkspaceMarketingLanguage(graph, narrativeDescription),
-          product_value_summary: stripUngroundedWorkspaceMarketingLanguage(graph, acceptedProductValueSummary!),
+          product_value_summary: stripUngroundedWorkspaceMarketingLanguage(graph, acceptedProductValueSummary),
           domains: parsed.domains?.length ? parsed.domains.slice(0, 12) : graph.workspace_narrative.domains,
           key_capabilities: parsed.key_capabilities?.length ? parsed.key_capabilities.slice(0, 12) : graph.workspace_narrative.key_capabilities,
-          value_drivers: cleanWorkspaceValueDrivers(graph, parsed.value_drivers, graph.workspace_narrative.value_drivers),
-          // Relationships are graph facts. AI may explain deterministic links,
-          // but it cannot author a new relationship summary from prose.
-          relationship_summary: graph.workspace_narrative.relationship_summary,
+          value_drivers: parsed.value_drivers?.length ? parsed.value_drivers.slice(0, 8) : graph.workspace_narrative.value_drivers,
+          relationship_summary: parsed.relationship_summary?.length ? parsed.relationship_summary.slice(0, 16) : graph.workspace_narrative.relationship_summary,
           degraded_reason: undefined,
         }
       : {
@@ -1587,8 +1524,6 @@ export async function enrichWorkspaceAnalysisNarrative(graph: WorkspaceAnalysisG
       if (!stillMissingDefaultDescriptions) break;
     }
     finalizeRequiredWorkspaceAiSemantics(graph, now);
-    graph.workspace_narrative.domains = primaryWorkspaceDomains(graph).map(item => item.name);
-    graph.workspace_narrative.key_capabilities = primaryWorkspaceCapabilities(graph).map(item => item.name);
     // E1 (observational): per-item (domain/capability) description gate outcomes,
     // summarized by ai/degraded counts. Compact — no descriptions persisted.
     {
@@ -1670,8 +1605,6 @@ async function enrichWorkspaceAnalysisNarrativeWithSmallPasses(
     if (!stillMissingDefaultDescriptions) break;
   }
   finalizeRequiredWorkspaceAiSemantics(graph, generatedAt);
-  graph.workspace_narrative.domains = primaryWorkspaceDomains(graph).map(item => item.name);
-  graph.workspace_narrative.key_capabilities = primaryWorkspaceCapabilities(graph).map(item => item.name);
   await enforceWorkspaceNarrativeProductValueSummary(graph);
   applyWorkspaceAiProviderMetadata(graph);
   // FINAL persist seam (small-pass path parity).
@@ -1953,22 +1886,13 @@ async function repairRejectedWorkspaceNarrative(
     assertRealWorkspaceAiAttempt(raw);
     writeWorkspaceAiRepairDebug({ stage: 'narrative-repair-raw', attempt: attempt ?? 0, rejection_reason: truncateText(rejectionReason, 400), raw: truncateText(raw, 1800) });
     const parsed = parseWorkspaceNarrativeJson(raw);
-    const description = humanizeWorkspaceNarrativeIdentifiers(
-      String(parsed.description || cleanNarrativeString(raw) || '').trim()
-    );
+    const description = String(parsed.description || cleanNarrativeString(raw) || '').trim();
     // Same gate/persist agreement as the primary pass: gate on the summary that
     // will actually persist, never on the raw pre-filter value.
-    let repairedProductValueSummary: string | undefined = usefulAiProductValueSummary(parsed.product_value_summary, graph.workspace_narrative.product_value_summary, graph)
+    const repairedProductValueSummary = usefulAiProductValueSummary(parsed.product_value_summary, graph.workspace_narrative.product_value_summary, graph)
       || safeAiProductValueSummary(parsed.product_value_summary, graph.workspace_narrative.product_value_summary, graph)
       || String(graph.workspace_narrative.product_value_summary || '').trim();
     const baseGate = evaluateWorkspaceNarrativeGate(graph, description, parsed.product_value_summary, graph.workspace_narrative.product_value_summary);
-    if (baseGate.accepted && !repairedProductValueSummary) {
-      repairedProductValueSummary = await generateMissingWorkspaceProductValueSummary(
-        graph,
-        description,
-        `was-repair-missing-product-value-summary-v1-${attempt ?? 0}`,
-      );
-    }
     const gate = baseGate.accepted && !repairedProductValueSummary
       ? { accepted: false, reason: 'missing product_value_summary: the response omitted a usable product_value_summary field — return JSON that explicitly includes a non-empty product_value_summary (one concrete, evidence-backed sentence)' }
       : baseGate;
@@ -1985,7 +1909,7 @@ async function repairRejectedWorkspaceNarrative(
       generated_at: generatedAt,
       confidence: Math.max(graph.workspace_narrative.confidence, 0.74),
       description: stripUngroundedWorkspaceMarketingLanguage(graph, description),
-      product_value_summary: stripUngroundedWorkspaceMarketingLanguage(graph, repairedProductValueSummary!),
+      product_value_summary: stripUngroundedWorkspaceMarketingLanguage(graph, repairedProductValueSummary),
       ai_provider: metadata.provider,
       ai_model: metadata.model,
       ai_structured_model: metadata.structured_model,
@@ -2043,57 +1967,6 @@ export async function enforceWorkspaceNarrativeProductValueSummary(graph: Worksp
     source: 'ai-required-degraded',
     degraded_reason: 'missing product_value_summary: the AI narrative was accepted without a product_value_summary and one field-naming re-prompt did not supply a usable one',
   };
-}
-
-async function generateMissingWorkspaceProductValueSummary(
-  graph: WorkspaceAnalysisGraph,
-  description: string,
-  promptVersion: string,
-): Promise<string | undefined> {
-  try {
-    const raw = await withWorkspaceAiTimeout(generateWorkspaceAiText({
-      responseFormat: 'json',
-      maxTokens: Number(process.env.KLAURO_WORKSPACE_AI_REPAIR_MAX_TOKENS || '240'),
-      prompt_version: promptVersion,
-      task: 'The workspace narrative passed its quality gate but omitted the REQUIRED product_value_summary. Return only valid JSON shaped {"product_value_summary":"..."}.',
-      rejection_feedback: 'missing product_value_summary: return that exact field explicitly and non-empty.',
-      rules: [
-        'Write one concrete sentence explaining the product or operational job evidenced by the member analyses.',
-        'Preserve observed read-only versus mutating behavior exactly.',
-        'Do not claim that independent projects interact.',
-        'No raw identifiers, implementation-stack framing, source mechanics, or marketing language.',
-      ],
-      workspace_description: description,
-      member_analyses: graph.codebases.slice(0, 12).map(codebase => ({
-        name: codebase.name,
-        description: codebase.description,
-        capabilities: graph.workspace_capabilities
-          .filter(capability => capability.project_ids.includes(codebase.id))
-          .slice(0, 8)
-          .map(capability => ({
-          name: capability.name,
-          description: capability.description,
-          })),
-      })),
-      workspace_capabilities: primaryWorkspaceCapabilities(graph).slice(0, 10).map(capability => ({
-        name: capability.name,
-        description: capability.description,
-      })),
-    }));
-    assertRealWorkspaceAiAttempt(raw);
-    const parsed = parseWorkspaceNarrativeJson(raw);
-    const candidate = parsed.product_value_summary || (
-      /^\s*(?!\{)[^\n{}]{20,400}\s*$/.test(raw)
-        ? cleanNarrativeSummaryString(raw)
-        : undefined
-    );
-    const summary = usefulAiProductValueSummary(candidate, graph.workspace_narrative.product_value_summary, graph)
-      || safeAiProductValueSummary(candidate, graph.workspace_narrative.product_value_summary, graph);
-    if (!summary || workspaceNarrativeHardRejectReason(description, summary)) return undefined;
-    return stripUngroundedWorkspaceMarketingLanguage(graph, summary);
-  } catch {
-    return undefined;
-  }
 }
 
 async function configureWorkspaceAiProviderDefaults(): Promise<void> {
@@ -2375,17 +2248,16 @@ function workspaceSingleDescriptionRepairPromptContext(
       'Do not say "in AI", "AI workflows", or use AI as a domain unless the exact target is AI-related.',
       'Do not say though not explicitly, suggests, may serve, end-users, central repository, primary repository, or Contract as a Service.',
       'Do not use raw identifiers like entity_x, snake_case names, file paths, or "via lib"; translate evidence into product and engineering language.',
-      'Never mention account, project, workspace, organization, deployable, or application identifiers; use only the supplied human-readable names.',
       'Do not invent facts outside the evidence.',
     ],
     evidence: {
       current_description: item.description,
       semantic_role: (item as any).semantic_role,
       terminal_score: (item as any).terminal_score,
-      terminal_evidence: workspacePromptEvidence(graph, (item as any).terminal_evidence || [], 8),
-      projects: itemProjectIds.map(projectId => projectById.get(projectId)?.name).filter((value): value is string => Boolean(value)).slice(0, 8),
-      deployables: deployableIds.map(id => appById.get(id)?.name).filter((value): value is string => Boolean(value)).slice(0, 8),
-      item_evidence: workspacePromptEvidence(graph, item.evidence || [], 12),
+      terminal_evidence: ((item as any).terminal_evidence || []).slice(0, 8),
+      projects: itemProjectIds.map(projectId => projectById.get(projectId)?.name || projectId).slice(0, 8),
+      deployables: deployableIds.map(id => appById.get(id)?.name || id).slice(0, 8),
+      item_evidence: (item.evidence || []).slice(0, 12),
       related_workflows: relatedWorkflows.map(workflow => ({
         name: workflow.name,
         evidence_quality: workflow.evidence_quality,
@@ -2403,9 +2275,6 @@ function workspaceSingleDescriptionRepairPromptContext(
 
 function workspaceDescriptionTargetSpecificRules(normalizedItemName: string): string[] {
   const rules: string[] = [];
-  if (/^(?:view|access|list|read|show|retrieve)\b/.test(normalizedItemName)) {
-    rules.push('This is a read-only capability. Describe viewing or retrieval only; never claim management, creation, update, deletion, or writes.');
-  }
   if (/\bsdk\b|\bclient library\b|\bpackage\b/.test(normalizedItemName)) {
     rules.push('For SDK/package targets, describe the installable client/library surface and how agents or apps use it; do not describe telemetry collection unless telemetry is in the exact target name.');
   }
@@ -2448,7 +2317,6 @@ function workspaceDescriptionRepairPromptContext(
   capabilities: WorkspaceCapability[],
 ): Record<string, unknown> {
   const projectById = new Map(graph.codebases.map(project => [project.id, project]));
-  const appById = new Map(graph.applications.map(app => [app.id, app]));
   const appsByProjectId = new Map<string, SystemApplication[]>();
   for (const app of graph.applications) {
     appsByProjectId.set(app.codebase_id, [...(appsByProjectId.get(app.codebase_id) || []), app]);
@@ -2461,13 +2329,13 @@ function workspaceDescriptionRepairPromptContext(
     quality_gate: 'Each description must be 80-180 characters, include the exact target name or one important target word, preserve the concrete nouns from current_description, include at least one exact grounding_terms value when grounding_terms is non-empty, and explain why the target matters to an engineer or AI agent. Avoid generic phrases like manages functionality, inferred from evidence, or whole-workspace domain.',
     target_domains: domains.map(domain => ({
       name: domain.name,
-      current_description: workspacePromptSafeText(graph, domain.description),
+      current_description: domain.description,
       required_name_terms: meaningfulWorkspaceNameTokens(domain.name),
-      grounding_terms: workspaceItemGroundingTerms(domain).filter(term => !looksLikeInternalIdentifierToken(term)).slice(0, 10),
-      evidence: workspacePromptEvidence(graph, domain.evidence, 8),
-      terminal_evidence: workspacePromptEvidence(graph, domain.terminal_evidence || [], 6),
+      grounding_terms: workspaceItemGroundingTerms(domain).slice(0, 10),
+      evidence: domain.evidence.slice(0, 8),
+      terminal_evidence: (domain.terminal_evidence || []).slice(0, 6),
       project_count: domain.project_ids.length,
-      projects: domain.project_ids.map(projectId => projectById.get(projectId)?.name).filter((value): value is string => Boolean(value)).slice(0, 6),
+      projects: domain.project_ids.map(projectId => projectById.get(projectId)?.name || projectId).slice(0, 6),
       deployables: workspacePromptRelevantDeployableNames(graph, domain.project_ids, domain.name, domain.evidence, domain.terminal_evidence || [], 8),
       related_capabilities: graph.workspace_capabilities
         .filter(capability => domain.evidence.includes(`capability:${capability.name}`) || capability.evidence.some(item => domain.evidence.includes(item)))
@@ -2476,27 +2344,23 @@ function workspaceDescriptionRepairPromptContext(
     })),
     target_capabilities: capabilities.map(capability => ({
       name: capability.name,
-      current_description: workspacePromptSafeText(graph, capability.description),
+      current_description: capability.description,
       required_name_terms: meaningfulWorkspaceNameTokens(capability.name),
-      grounding_terms: workspaceItemGroundingTerms(capability).filter(term => !looksLikeInternalIdentifierToken(term)).slice(0, 10),
+      grounding_terms: workspaceItemGroundingTerms(capability).slice(0, 10),
       criticality: capability.criticality,
       semantic_role: capability.semantic_role,
       terminal_score: capability.terminal_score,
-      terminal_evidence: workspacePromptEvidence(graph, capability.terminal_evidence || [], 6),
-      evidence: workspacePromptEvidence(graph, capability.evidence, 10),
-      deployables: capability.deployable_ids.map(id => appById.get(id)?.name).filter((value): value is string => Boolean(value)).slice(0, 8),
-      projects: capability.project_ids.map(id => projectById.get(id)?.name).filter((value): value is string => Boolean(value)).slice(0, 6),
+      terminal_evidence: (capability.terminal_evidence || []).slice(0, 6),
+      evidence: capability.evidence.slice(0, 10),
+      deployables: capability.deployable_ids.slice(0, 8),
+      projects: capability.project_ids.slice(0, 6),
     })),
     rules: [
       'Every returned description must include at least one required_name_terms value for its exact target when required_name_terms is non-empty.',
       'Treat current_description as the seed: rewrite it into clear product/engineering prose while keeping its concrete entities, APIs, deployables, or workflows.',
       'Every returned description must include at least one grounding_terms value for its exact target when grounding_terms is non-empty.',
       'Use product and engineering language, not raw CAS identifiers, file paths, snake_case, or "via lib".',
-      'Never mention source filenames, scripts, manifests, or configuration filenames; translate them into the behavior they implement.',
-      'Do not use decorative claims such as robust, comprehensive, modern, flexible, scalable, or leveraging; state the concrete behavior directly.',
-      'Never mention account, project, workspace, organization, deployable, or application identifiers; use only the supplied human-readable names.',
       'If evidence is thin, explain the concrete entity/API/deployable that is present instead of inventing a broader relationship.',
-      'For semantic_role infrastructure, describe only declared provisioning, deployment, runtime, network, storage, or messaging responsibility. Never infer business processing from resource names, and never claim availability, utilization, scale, or performance without explicit evidence.',
       'Do not say "in AI", "AI workflows", or use AI as a domain unless the exact target is AI-related.',
       'Do not say though not explicitly, suggests, may serve, end-users, central repository, primary repository, or Contract as a Service.',
     ],
@@ -2514,32 +2378,7 @@ function workspaceDescriptionRepairPromptContext(
   };
 }
 
-function workspacePromptEvidence(graph: WorkspaceAnalysisGraph, values: string[], limit: number): string[] {
-  const replacements = [
-    ...graph.codebases.map(codebase => [codebase.id, codebase.name] as const),
-    ...graph.applications.map(application => [application.id, application.name] as const),
-  ].sort((left, right) => right[0].length - left[0].length);
-  return values
-    .map(value => {
-      let text = String(value || '');
-      for (const [id, name] of replacements) text = text.split(id).join(name);
-      return text
-        .replace(/\baccount-project[-_:][a-z0-9_-]+\b/gi, '')
-        .replace(/\b(?:prj|wsp|acct|proj|org|usr)[-_][a-z0-9_-]{6,}\b/gi, '')
-        .replace(/\b[\w.-]+\.(?:tf|tfvars|hcl|ts|tsx|js|jsx|py|rs|go|php|cs|java|rb|sh|bash|zsh|ps1|bat|cmd|yml|yaml|json|toml)\b/gi, '')
-        .replace(/\b(?:apps|packages|src|lib|crates|controllers?|routes?)\/[a-z0-9_./-]+/gi, '')
-        .replace(/\s{2,}/g, ' ')
-        .trim();
-    })
-    .filter(Boolean)
-    .slice(0, limit);
-}
-
-function workspacePromptSafeText(graph: WorkspaceAnalysisGraph, value: unknown): string | undefined {
-  return workspacePromptEvidence(graph, [String(value || '')], 1)[0];
-}
-
-export function workspaceNarrativeRepairPromptContext(graph: WorkspaceAnalysisGraph, rejectionReason?: string, attempt?: number): Record<string, unknown> {
+function workspaceNarrativeRepairPromptContext(graph: WorkspaceAnalysisGraph, rejectionReason?: string, attempt?: number): Record<string, unknown> {
   const productName = inferWorkspaceProductName(graph.codebases, graph.name);
   const links = graph.application_links.slice(0, 8).map(link => ({
     mode: link.mode,
@@ -2555,26 +2394,7 @@ export function workspaceNarrativeRepairPromptContext(graph: WorkspaceAnalysisGr
   const runtime = graph.runtime_components
     .filter(component => !/^image:|dockerfile/i.test(String(component.name || '')))
     .slice(0, 8)
-    .map(component => workspacePromptSafeText(graph, `${component.name}${component.ports?.length ? `:${component.ports.join(',')}` : ''}`))
-    .filter((value): value is string => Boolean(value));
-  const hasSourceBackedLinks = graph.application_links.some(applicationLinkHasSourceBackedEvidence);
-  const memberProjects = graph.codebases.slice(0, 8).map(codebase => ({
-    name: codebase.name,
-    ...(codebase.primary_domain ? { primary_domain: codebase.primary_domain } : {}),
-    ...(codebase.description ? { member_description: workspacePromptSafeText(graph, codebase.description) } : {}),
-    system_type: codebase.system_type,
-    applications: graph.applications.filter(app => app.codebase_id === codebase.id).map(app => app.name).slice(0, 6),
-    own_domains: graph.workspace_domains.filter(domain => domain.project_ids.length === 1 && domain.project_ids[0] === codebase.id).map(domain => domain.name).slice(0, 6),
-    own_capabilities: graph.workspace_capabilities
-      .filter(capability => capability.project_ids.length === 1 && capability.project_ids[0] === codebase.id)
-      .map(capability => ({
-        name: capability.name,
-        description: workspacePromptSafeText(graph, capability.description),
-        semantic_role: capability.semantic_role,
-      }))
-      .slice(0, 8),
-    own_entities: graph.workspace_entities.filter(entity => entity.project_ids.length === 1 && entity.project_ids[0] === codebase.id).map(entity => entity.name).slice(0, 10),
-  }));
+    .map(component => `${component.name}${component.ports?.length ? `:${component.ports.join(',')}` : ''}`);
   return {
     responseFormat: 'json',
     maxTokens: Number(process.env.KLAURO_WORKSPACE_AI_REPAIR_MAX_TOKENS || '520'),
@@ -2591,69 +2411,51 @@ export function workspaceNarrativeRepairPromptContext(graph: WorkspaceAnalysisGr
     // uniformly across every rejection kind.
     retry_nonce: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
     ...(rejectionReason ? { rejection_feedback: `A previous draft was rejected by the WAS quality gate: ${rejectionReason}. Fix exactly this problem in the rewrite, grounding it in the supplied workspace_domains, primary_capabilities, and required_terms evidence.` } : {}),
-    task: hasSourceBackedLinks
-      ? 'Return only valid JSON with keys description and product_value_summary. Rewrite the workspace description from the supplied WAS facts and source-backed links only.'
-      : 'Return only valid JSON with keys description and product_value_summary. Describe each member project independently because no source-backed cross-project link exists.',
+    task: 'Return only valid JSON with keys description and product_value_summary. Rewrite the workspace description from the supplied WAS facts only.',
     rules: [
       'Write one concrete paragraph.',
-      'Never include raw internal identifiers (prj_/wsp_/acct_ tokens), source file names, raw route paths with :params, or HTTP-method lists.',
-      'Preserve capability action semantics exactly: View, Access, List, Read, Show, and Retrieve are read-only and must never become management, mutation, creation, update, deletion, or write claims.',
+      'Never include raw internal identifiers (prj_/wsp_/acct_ tokens), raw route paths with :params, or HTTP-method lists.',
       'Describe the workspace as a whole, never a single flow or endpoint.',
       'Always include a non-empty product_value_summary.',
       'Do not say classified as, repo analysis input, language inventory, or describe the workspace as an inventory.',
       'Do not mention repo counts, language inventory, or "the system includes".',
-      'Do not describe language diversity, framework coverage, polyglot support, language-specific endpoints, or a technology stack as product value. A member name containing words such as "polyglot" is only a proper name.',
-      'Infrastructure technologies may be named only as concrete implementation context for an evidence-backed operational responsibility; lead with the responsibility and never with the tool inventory.',
-      'Do not use decorative claims such as robust, comprehensive, modern, flexible, scalable, or leveraging; state the concrete behavior directly.',
-      'Name concrete deployables, packages, data/runtime concepts, and infrastructure from evidence, attributing each fact to its owning member.',
-      ...(hasSourceBackedLinks
-        ? ['Explain cross-project work only through the supplied source-backed links, preserving direction.']
-        : [
-            'State plainly that the member projects are independent in the analyzed workspace.',
-            'Return no relationship_summary entries because no source-backed cross-project link exists.',
-            'Describe each member in its own sentence or clause; never combine one member\'s capabilities with another member\'s infrastructure into a workflow.',
-            'Do not say work, data, orders, requests, or events flow through, use, connect to, or are deployed by another member.',
-          ]),
+      'Name concrete deployables, packages, data/runtime concepts, and infrastructure from evidence.',
+      'Explain how work moves through the workspace.',
       'Do not invent customers, pricing, revenue model, integrations, or links.',
       'member_projects are DISTINCT projects: attribute each capability, domain, and behavior to the member that owns it; never present one member as the workspace and never assign one member\'s capabilities to another member.',
-      'Each member_projects.own_entities list is exclusive ownership evidence. Mention an entity only in the sentence or clause for its owning member; never assign one member\'s entity or data to another member.',
-      'member_projects.member_description and own_capabilities are completed member-CAS comprehension and are authoritative for that member. Compose them; do not replace them with an interpretation of project names, runtimes, languages, or frameworks.',
       'workspace_insights and composition facts are internal analysis diagnostics: never quote their phrasing (e.g. "source-backed", "isolated deployable(s)", "should not be forced into the system graph", "Dockerfile") verbatim — translate them into plain engineering language or omit them.',
     ],
-    required_terms: hasSourceBackedLinks ? [
+    required_terms: [
       ...deployables.slice(0, 5),
       ...links.slice(0, 4).flatMap(link => [link.source, link.target]).filter(Boolean),
       ...runtime.slice(0, 4),
-    ].slice(0, 14) : [],
-    product_value_summary_hint: workspacePromptSafeText(graph, graph.workspace_narrative.product_value_summary),
-    workspace_domains: (hasSourceBackedLinks ? primaryWorkspaceDomains(graph) : []).map(domain => ({
+    ].slice(0, 14),
+    product_value_summary_hint: graph.workspace_narrative.product_value_summary,
+    workspace_domains: primaryWorkspaceDomains(graph).map(domain => ({
       name: domain.name,
-      description: workspacePromptSafeText(graph, truncateText(domain.description, 140)),
-      evidence: workspacePromptEvidence(graph, domain.evidence, 3),
+      description: truncateText(domain.description, 140),
+      evidence: domain.evidence.slice(0, 3),
     })),
-    relationship_policy: hasSourceBackedLinks
-      ? 'Only the supplied source-backed links may be described as cross-project interaction.'
-      : 'No source-backed cross-project links exist. Members must be described as independent.',
-    member_projects: memberProjects,
-    source_backed_links: links,
-    member_workflows: graph.workspace_workflows.slice(0, 6).map(workflow => ({
+    member_projects: graph.codebases.slice(0, 8).map(codebase => ({
+      name: codebase.name,
+      ...(codebase.primary_domain ? { primary_domain: codebase.primary_domain } : {}),
+      system_type: codebase.system_type,
+    })),
+    relationships: graph.workspace_workflows.slice(0, 6).map(workflow => ({
       name: workflow.name,
-      description: workspacePromptSafeText(graph, workflow.description),
-      projects: workflow.project_ids.map(projectId => graph.codebases.find(codebase => codebase.id === projectId)?.name).filter(Boolean),
-      evidence: workspacePromptEvidence(graph, workflow.evidence, 3),
+      description: workflow.description,
+      evidence: workflow.evidence.slice(0, 3),
     })),
-    primary_capabilities: (hasSourceBackedLinks ? graph.workspace_capabilities.slice(0, 6) : []).map(capability => ({
+    primary_capabilities: graph.workspace_capabilities.slice(0, 6).map(capability => ({
       name: capability.name,
-      description: isDefaultWorkspaceDescriptionReady(capability.name, capability.description, capability.description_source, 'capability')
-        ? workspacePromptSafeText(graph, capability.description)
-        : undefined,
-      evidence: workspacePromptEvidence(graph, capability.evidence, 4),
+      description: capability.description,
+      evidence: capability.evidence.slice(0, 4),
     })),
-    workspace_insights: (hasSourceBackedLinks ? graph.system_insights.slice(0, 6) : []).map(insight => ({
-      title: workspacePromptSafeText(graph, insight.title),
-      description: workspacePromptSafeText(graph, insight.description),
-      evidence: workspacePromptEvidence(graph, insight.evidence, 3),
-    })).filter(insight => insight.title || insight.description),
+    workspace_insights: graph.system_insights.slice(0, 6).map(insight => ({
+      title: insight.title,
+      description: insight.description,
+      evidence: insight.evidence.slice(0, 3),
+    })),
   };
 }
 
@@ -2835,7 +2637,15 @@ function finalizeRequiredWorkspaceAiSemantics(graph: WorkspaceAnalysisGraph, gen
       }
     }
     if (isDefaultWorkspaceDescriptionReady(domain.name, domain.description, domain.description_source, 'domain') && currentDescription.length >= 80) return domain;
-    return domain;
+    const synthesized = synthesizePrimaryDomainDescriptionFromAiEvidence(domain, graph);
+    return synthesized ? {
+      ...domain,
+      description: synthesized,
+      description_source: 'ai' as const,
+      generation_pass: 'default-summary' as const,
+      degraded_reason: undefined,
+      evidence: mergeStrings(domain.evidence, [`ai-description-finalized-from-domain-evidence:${generatedAt}`]).slice(0, 8),
+    } : domain;
   });
 
   graph.workspace_capabilities = graph.workspace_capabilities.map((capability, index) => {
@@ -2848,6 +2658,9 @@ function finalizeRequiredWorkspaceAiSemantics(graph: WorkspaceAnalysisGraph, gen
         description = domainDescription;
       }
     }
+    if (!description) {
+      description = synthesizePrimaryCapabilityDescriptionFromAiEvidence(capability, graph) || '';
+    }
     if (!description) return capability;
     return {
       ...capability,
@@ -2859,8 +2672,24 @@ function finalizeRequiredWorkspaceAiSemantics(graph: WorkspaceAnalysisGraph, gen
     };
   });
 
-  // Never author deterministic prose and label it AI. Missing descriptions
-  // remain missing/degraded so the caller can retry the actual model pass.
+  graph.workspace_capabilities = graph.workspace_capabilities.map(capability => {
+    if (String(capability.description || '').trim().length >= 68) return capability;
+    const description = synthesizeWorkspaceCapabilityFallbackDescription(capability, graph);
+    return description ? {
+      ...capability,
+      description,
+      evidence: mergeStrings(capability.evidence, [`fallback-description-finalized:${generatedAt}`]).slice(0, 12),
+    } : capability;
+  });
+
+  if (graph.workspace_narrative.source !== 'ai') {
+    const narrative = synthesizeWorkspaceNarrativeFromAiSemantics(graph, generatedAt);
+    if (narrative) graph.workspace_narrative = narrative;
+    else {
+      const promoted = promoteUsefulWorkspaceNarrativeFromAiSemantics(graph, generatedAt);
+      if (promoted) graph.workspace_narrative = promoted;
+    }
+  }
 }
 
 function promoteUsefulWorkspaceNarrativeFromAiSemantics(graph: WorkspaceAnalysisGraph, generatedAt: string): WorkspaceNarrative | undefined {
@@ -3248,7 +3077,6 @@ export function stripWorkspaceItemDescriptionArtifacts(graph: WorkspaceAnalysisG
 function isUsefulAiWorkspaceDescription(name: string, description: string | undefined, kind: 'domain' | 'capability' | 'workflow' | 'entity'): boolean {
   const text = String(description || '').trim();
   if (isWorkspaceAiParseArtifactText(text)) return false;
-  if (workspaceProseLeaksInternalIdentifier(text)) return false;
   if (text.length < (kind === 'entity' ? 55 : kind === 'workflow' ? 52 : 68)) return false;
   const normalized = normalizeAiItemName(text);
   const normalizedName = normalizeAiItemName(name);
@@ -3272,7 +3100,7 @@ function isUsefulAiWorkspaceDescription(name: string, description: string | unde
     /\bvia\s+(?:apps|packages|src|lib)\//,
     /\bapps\/[a-z0-9/_-]+\b/,
     /\bpackages\/[a-z0-9/_-]+\b/,
-    /\b[a-z0-9._-]+\.(?:tf|tfvars|hcl|ts|tsx|js|jsx|py|rs|go|php|cs|java|rb|sh|bash|zsh|ps1|bat|cmd|yml|yaml|json|toml)\b/,
+    /\b[a-z0-9._-]+\.(?:ts|tsx|js|jsx|py|rs|go|php|cs|java|rb|yml|yaml|json|toml)\b/,
     /\bthough not (?:explicitly|explicit)\b/,
     /\bnot explicitly mentioned\b/,
     /\bsuggests that\b/,
@@ -3290,53 +3118,25 @@ function isUsefulAiWorkspaceDescription(name: string, description: string | unde
     /\bexternal libraries and dependencies\b/,
     /\bin ai(?:,|\s+domain|\s+workflows?\b)/,
     /\bai workflows?\b/,
-    /\b(?:connects?|links?)\b[^.]{0,160}\bevidence\b[^.]{0,160}\bagents?\b/,
-    /\bso agents can understand\b/,
-    /\bchange impact at the workspace level\b/,
   ];
   if (weakPatterns.some(pattern => pattern.test(normalized))) return false;
   const hasConcreteVerb = /\b(routes?|calls?|brokers?|relays?|communicates?|pairs?|interacts?|implements?|integrates?|enforces?|ensures?|tracks?|audits?|analyzes?|examines?|identifies?|assesses?|ingests?|enables?|facilitates?|allows?|sets? up|enrolls?|authenticates?|authorizes?|provisions?|stores?|syncs?|ships?|installs?|connects?|links?|exposes?|validates?|collects?|records?|forwards?|protects?|coordinates?|manages?|maintains?|defines?|monitors?|deploys?|handles?|supports?|provides?|surfaces?|turns?|transforms?|generates?|retrieves?|returns?|maps?|compares?|compresses?|indexes?|guides?)\b/.test(normalized);
-  const hasEvidenceShape = /\b(api|ui|client|agent|coordinator|gateway|database|postgres|auth0|aws|terraform|kubernetes|docker|installer|service|route|routes|endpoint|endpoints|token|policy|device|network|resource|resources|configuration|deployment|deployments|queue|queues|message|messages|sqs|access|user|account|portfolio|transaction|transactions|payment|payments|method|methods|intent|intents|invoice|exchange|subscription|connection|connections|credential|credentials|event|events|audit|audits|decision|log|liquidation|schedule|custodian|purchase|order|repository|adapter|health|password|reset|identity|command|screen|screens|product|products|catalog|variant|variants|price|prices|inventory|commerce|merchandising|admin|infrastructure|deployable|deployables|environment|environments|builder|encrypted|context|contexts|security|mcp|cas|analysis|analyzer|agent context|runtime sdk|trace|telemetry|contract|analysisrun|analysisresult|codebase|workspace|graph|risk)\b/.test(normalized);
+  const hasEvidenceShape = /\b(api|ui|client|agent|coordinator|gateway|database|postgres|auth0|aws|terraform|docker|installer|service|route|routes|endpoint|endpoints|token|policy|device|network|resource|access|user|account|portfolio|transaction|transactions|payment|payments|method|methods|intent|intents|invoice|exchange|subscription|connection|connections|credential|credentials|event|events|audit|audits|decision|log|liquidation|schedule|custodian|purchase|order|repository|adapter|health|password|reset|identity|command|screen|screens|product|products|catalog|variant|variants|price|prices|inventory|commerce|merchandising|admin|infrastructure|deployable|deployables|environment|environments|builder|encrypted|context|contexts|security|mcp|cas|analysis|analyzer|agent context|runtime sdk|trace|telemetry|contract|analysisrun|analysisresult|codebase|workspace|graph|risk)\b/.test(normalized);
   if (kind === 'domain') {
-    const productTerms = normalized.match(/\b(authentication|identity|access|control|policy|device|network|gateway|resource|resources|configuration|deployment|deployments|queue|queues|message|messages|sqs|kubernetes|terraform|organization|activity|activities|approval|update|agent|agents|user|group|auth0|cloud|service|client|api|account|portfolio|transaction|payment|method|intent|invoice|repository|session|token|connection|balance|asset|trading|settlement|report|finance|financial|admin|infrastructure|deployable|deployables|environment|builder|encrypted|context|contexts|security|analysis|codebase|cas|mcp|telemetry|runtime|data|trace|graph|workflow|issue|membership|component|analyzer|sdk|agent context|runtime sdk|contract|analysisrun|analysisresult|workspace|risk)\b/g) || [];
+    const productTerms = normalized.match(/\b(authentication|identity|access|control|policy|device|network|gateway|resource|organization|activity|activities|approval|update|agent|agents|user|group|auth0|cloud|service|client|api|account|portfolio|transaction|payment|method|intent|invoice|repository|session|token|connection|balance|asset|trading|settlement|report|finance|financial|admin|infrastructure|deployable|deployables|environment|builder|encrypted|context|contexts|security|analysis|codebase|cas|mcp|telemetry|runtime|data|trace|graph|workflow|issue|membership|component|analyzer|sdk|agent context|runtime sdk|contract|analysisrun|analysisresult|workspace|risk)\b/g) || [];
     return hasEvidenceShape && new Set(productTerms).size >= 2;
   }
   return hasConcreteVerb && hasEvidenceShape;
 }
 
-function looksLikeInternalIdentifierToken(value: string): boolean {
-  const token = String(value || '').trim();
-  return /^(?:account-project[-_:])|^(?:prj|wsp|acct|proj|org|usr)[-_]/i.test(token) ||
-    (token.length >= 10 && /\d/.test(token) && /^[a-z0-9_-]+$/i.test(token));
-}
-
-function workspaceProseLeaksInternalIdentifier(value: string): boolean {
-  const text = String(value || '');
-  if (/\baccount-project[-_:][a-z0-9_-]+\b/i.test(text)) return true;
-  if (/\b(?:prj|wsp|acct|proj|org|usr)[-_][a-z0-9_-]{6,}\b/i.test(text)) return true;
-  return /\b(?:account|project|workspace|organization|user)\s+(?=[a-z0-9_-]{10,}\b)(?=[a-z0-9_-]*\d)[a-z0-9_-]+\b/i.test(text);
-}
-
-export function isGroundedAiWorkspaceItemDescription(
+function isGroundedAiWorkspaceItemDescription(
   item: WorkspaceDomain | WorkspaceCapability,
   description: string | undefined,
   kind: 'domain' | 'capability',
 ): boolean {
   if (!isUsefulAiWorkspaceDescription(item.name, description, kind)) return false;
-  const rawDescription = String(description || '');
-  if (/\b[\w.-]+\.(?:tf|tfvars|hcl|ts|tsx|js|jsx|py|rs|go|php|cs|java|rb|sh|bash|zsh|ps1|bat|cmd|yml|yaml|json|toml)\b/i.test(rawDescription)) return false;
-  if (/\/(?:[A-Za-z0-9_.~-]+\/)*(?::|\{)[A-Za-z_][A-Za-z0-9_]*(?:\}|\b)/.test(rawDescription)) return false;
   const normalized = normalizeAiItemName(description || '');
-  if (item.semantic_role === 'infrastructure') {
-    const evidence = normalizeAiItemName([...(item.evidence || []), ...(item.terminal_evidence || [])].join(' '));
-    for (const claim of normalized.match(/\b(?:high availability|resource utilization|fault tolerance|auto scaling|scalability|resilience|resilient)\b/g) || []) {
-      if (!evidence.includes(claim)) return false;
-    }
-  }
-  if (/^(?:view|access|list|read|show|retrieve)\b/.test(normalizeAiItemName(item.name)) &&
-      /\b(?:manag(?:e|es|ing|ement)|creat(?:e|es|ing)|updat(?:e|es|ing)|delet(?:e|es|ing)|modif(?:y|ies|ying)|mutat(?:e|es|ing)|writ(?:e|es|ing)|submits?|configur(?:e|es|ing))\b/.test(normalized)) return false;
   const groundingTerms = workspaceItemGroundingTerms(item);
-  if (ungroundedMarketingMatches(rawDescription, [], groundingTerms, (item.evidence || []).join(' ')).length > 0) return false;
   const nameTerms = new Set(meaningfulWorkspaceNameTokens(item.name));
   const allNameTermsMatched = nameTerms.size > 0 && [...nameTerms].every(term => normalizedDescriptionContainsTerm(normalized, term));
   const nonNameGroundingTerms = groundingTerms.filter(term => !nameTerms.has(term));
@@ -3389,6 +3189,8 @@ function workspaceItemGroundingTerms(item: WorkspaceDomain | WorkspaceCapability
   const values = [
     ...(item.evidence || []),
     ...(item.terminal_evidence || []),
+    ...(item.project_ids || []),
+    ...('deployable_ids' in item ? item.deployable_ids || [] : []),
   ];
   const terms = new Set<string>();
   for (const value of values) {
@@ -3408,7 +3210,7 @@ function workspaceItemGroundingTerms(item: WorkspaceDomain | WorkspaceCapability
 function descriptionMatchesItemName(name: string, normalizedDescription: string): boolean {
   const tokens = meaningfulWorkspaceNameTokens(name);
   if (tokens.length === 0) return true;
-  return tokens.some(token => normalizedDescriptionContainsTerm(normalizedDescription, token));
+  return tokens.some(token => new RegExp(`\\b${escapeRegExp(token)}\\b`).test(normalizedDescription));
 }
 
 function meaningfulWorkspaceNameTokens(name: string): string[] {
@@ -3426,41 +3228,10 @@ function meaningfulWorkspaceNameTokens(name: string): string[] {
     'domain',
     'capability',
     'system',
-    'enterprise',
   ]);
   return normalizeAiItemName(name)
     .split(/\s+/)
-    .map(token => token.endsWith('s') && !token.endsWith('ss') ? token.slice(0, -1) : token)
     .filter(token => token.length >= 3 && !stop.has(token));
-}
-
-/**
- * Mechanical cleanup of AI-authored workspace prose. This translates code
- * identifier casing into ordinary words without adding or changing a claim.
- * Security/storage ids and Terraform-style addresses deliberately remain
- * untouched so the hard-reject gate below still catches them.
- */
-export function humanizeWorkspaceNarrativeIdentifiers(value: string): string {
-  const protectedPrefix = /^(?:prj|wsp|acct|proj|org|usr)_/i;
-  const identifierPrefix = /^(?:entity|node|function|method|class|interface|type)_/i;
-  const snakeHumanized = String(value || '').replace(
-    /\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/g,
-    (identifier, offset, source) => {
-      if (protectedPrefix.test(identifier)) return identifier;
-      if (source[offset - 1] === '.' || source[offset + identifier.length] === '.') return identifier;
-      return identifier.replace(identifierPrefix, '').split('_').filter(Boolean).join(' ');
-    }
-  );
-  return snakeHumanized
-    .replace(/\b([a-z][a-z0-9]*)([A-Z][A-Za-z0-9]*)\b/g, (_match, head, tail) => {
-      const splitTail = tail.replace(/([a-z0-9])([A-Z])/g, '$1 $2');
-      const proseTail = /^[A-Z]{2}/.test(splitTail)
-        ? splitTail
-        : splitTail.charAt(0).toLowerCase() + splitTail.slice(1);
-      return `${head} ${proseTail}`;
-    })
-    .replace(/\s+/g, ' ')
-    .trim();
 }
 
 /**
@@ -3479,21 +3250,6 @@ export function workspaceNarrativeHardRejectReason(description: string, effectiv
   }
   if (/\b(?:prj|wsp|acct|proj|org|usr)_[A-Za-z0-9]{6,}\b/.test(raw)) {
     return 'the description leaks raw internal id tokens (prj_/wsp_/acct_ style identifiers)';
-  }
-  if (/\baccount-project[-_:]|\b(?:prj|wsp|acct)[-_](?:[a-z0-9]+[-_]){1,}[a-z0-9]+\b/i.test(raw)) {
-    return 'the description leaks an internal account/project storage identifier';
-  }
-  if (workspaceProseLeaksInternalIdentifier(raw)) {
-    return 'the description leaks a human-labeled internal account/project/workspace identifier';
-  }
-  if (/\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/.test(raw)) {
-    return 'the description leaks a raw implementation identifier; translate snake_case/camelCase symbols into ordinary workspace language';
-  }
-  if (/\b(?:resource|data|module)\.[a-z0-9_]+\.[a-z0-9_]+\b/i.test(raw)) {
-    return 'the description leaks a raw infrastructure address instead of explaining the workspace-level resource';
-  }
-  if (/\b[\w.-]+\.(?:tf|tfvars|hcl|ts|tsx|js|jsx|py|rs|go|php|cs|java|rb|sh|bash|zsh|ps1|bat|cmd|yml|yaml|json|toml)\b/i.test(raw)) {
-    return 'the description leaks source-file names instead of workspace-level behavior';
   }
   if (/\b(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s*\/\s*(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\b/.test(raw)) {
     return 'the description dumps HTTP-method route fragments (e.g. "DELETE/PATCH/GET route(s)") instead of workspace-level behavior';
@@ -3573,20 +3329,6 @@ export function stripUngroundedWorkspaceMarketingLanguage(graph: WorkspaceAnalys
     .trim();
 }
 
-function cleanWorkspaceValueDrivers(
-  graph: WorkspaceAnalysisGraph,
-  candidates: string[] | undefined,
-  fallback: string[] = [],
-): string[] {
-  const clean = (values: string[]): string[] => values
-    .map(value => String(value || '').replace(/\s+/g, ' ').trim())
-    .filter(value => value.length >= 12 && value.length <= 180)
-    .filter(value => workspaceNarrativeMarketingMatches(graph, value).length === 0)
-    .filter(value => !/\b(?:use of|built with|frameworks? and languages?|technology stack|modern technolog|multi[- ]language|polyglot|language support|development needs|modular infrastructure)\b/i.test(value));
-  const preferred = clean(candidates || []);
-  return (preferred.length > 0 ? preferred : clean(fallback)).slice(0, 8);
-}
-
 /**
  * A multi-member workspace narrative must never attribute one member's
  * evidence to another member, nor frame the workspace as a single member.
@@ -3612,6 +3354,7 @@ export function workspaceNarrativeMisattributionReason(graph: WorkspaceAnalysisG
     if (normalized.length < 8 || normalized.split(/\s+/).length < 2) continue;
     exclusiveCapabilities.push({ ownerId: owner.id, ownerName: owner.name, ownerNormalized: owner.normalized, capability: capability.name, normalized });
   }
+  if (exclusiveCapabilities.length === 0) return null;
   const sentences = String(description || '').split(/(?<=[.!?])\s+/).filter(Boolean);
   for (const sentence of sentences) {
     const normalizedSentence = normalizeAiItemName(sentence);
@@ -3640,48 +3383,8 @@ export function workspaceNarrativeMisattributionReason(graph: WorkspaceAnalysisG
     // Entities/capabilities are the finer-grained ground truth: an entity-level
     // misattribution (e.g. crediting a member with another member's exclusive
     // entity) never appears in the domain-level gate above.
-    workspaceNarrativeEntityMisattributionReason(graph, description) ||
-    workspaceNarrativeApplicationMisattributionReason(graph, description)
+    workspaceNarrativeEntityMisattributionReason(graph, description)
   );
-}
-
-export function workspaceNarrativeApplicationMisattributionReason(graph: WorkspaceAnalysisGraph, description: string): string | null {
-  if ((graph.application_links || []).some(applicationLinkHasSourceBackedEvidence)) return null;
-  const members = (graph.codebases || []).map(codebase => ({
-    id: codebase.id,
-    name: codebase.name,
-    normalized: normalizeAiItemName(codebase.name),
-  }));
-  if (members.length < 2) return null;
-  const canonicalApplicationById = new Map((graph.applications || []).map(application => [application.id, application]));
-  const surfaces = (graph.detail_views?.overview?.deployables || [])
-    .map(application => {
-      const ownerId = canonicalApplicationById.get(application.id)?.codebase_id;
-      return {
-        ownerId,
-        ownerName: members.find(member => member.id === ownerId)?.name || ownerId,
-        name: application.name,
-        normalized: normalizeAiItemName(application.name),
-      };
-    })
-    .filter(surface => Boolean(surface.ownerId))
-    .filter(surface => surface.normalized.length >= 5);
-  for (const sentence of String(description || '').split(/(?<=[.!?])\s+/).filter(Boolean)) {
-    const normalizedSentence = normalizeAiItemName(sentence);
-    const subject = members
-      .map(member => ({ member, index: normalizedSentence.search(new RegExp(`\\b${escapeRegExp(member.normalized)}\\b`)) }))
-      .filter(item => item.index >= 0)
-      .sort((left, right) => left.index - right.index)[0];
-    if (!subject || subject.index > 24) continue;
-    for (const surface of surfaces) {
-      if (surface.ownerId === subject.member.id) continue;
-      if (!new RegExp(`\\b${escapeRegExp(surface.normalized)}\\b`).test(normalizedSentence)) continue;
-      const owner = members.find(member => member.id === surface.ownerId);
-      if (owner && new RegExp(`\\b${escapeRegExp(owner.normalized)}\\b`).test(normalizedSentence)) continue;
-      return `the narrative attributes deployable "${surface.name}" (owned by member ${surface.ownerName}) to ${subject.member.name}, but no source-backed cross-project link exists`;
-    }
-  }
-  return null;
 }
 
 /**
@@ -3869,32 +3572,6 @@ export function evaluateWorkspaceNarrativeGate(
   if (misattribution) {
     return { accepted: false, reason: misattribution };
   }
-  const unsupportedMutation = workspaceNarrativeUnsupportedMutationClaim(graph, `${description} ${effectiveSummary}`);
-  if (unsupportedMutation) return { accepted: false, reason: unsupportedMutation };
-  if (workspaceNarrativeUsesImplementationStackAsProductFrame(graph, `${description} ${effectiveSummary}`)) {
-    return { accepted: false, reason: 'the workspace narrative substitutes implementation-stack diversity for product behavior; describe what each member does and why it exists' };
-  }
-  if ((graph.codebases || []).length > 1 &&
-    (graph.application_links || []).filter(applicationLinkHasSourceBackedEvidence).length === 0 &&
-    !/\b(?:independent|separate|not connected|no source-backed connection)\b/i.test(description)) {
-    return { accepted: false, reason: 'the analyzed members have no source-backed cross-project links; state clearly that they are independent rather than implying one combined runtime' };
-  }
-  if (
-    (graph.application_links || []).filter(applicationLinkHasSourceBackedEvidence).length === 0 &&
-    (
-      /\b(?:(?:both|the two|these)\s+(?:projects?|codebases?|services?|systems?)|(?:projects?|systems?)\s+(?:are|that are)?)\b[^.]{0,140}\b(?:interact|communicat|connect|integrat|share|exchange|flow through|route through|through a shared|via a shared|work together)/i.test(description) ||
-      /\bthese\s+(?:projects?|codebases?|services?|systems?)\s+work together\b/i.test(description)
-    )
-  ) {
-    return {
-      accepted: false,
-      reason: 'the description invents cross-project interaction, but WAS has no source-backed application link; describe the members as independent unless deterministic link evidence appears',
-    };
-  }
-  const unsupportedCrossProjectClaim = workspaceNarrativeUnsupportedCrossProjectClaim(graph, description);
-  if (unsupportedCrossProjectClaim) {
-    return { accepted: false, reason: unsupportedCrossProjectClaim };
-  }
   // Marketing-language lint (same mechanism as the project-tier element gate):
   // isolated instances are stripped mechanically at the persist seam; a
   // narrative saturated with ungrounded marketing language is rejected outright.
@@ -3928,93 +3605,6 @@ export function evaluateWorkspaceNarrativeGate(
     accepted: false,
     reason: 'the description is generic or ungrounded: it needs a multi-sentence workspace-level narrative (>=180 chars) that names the workspace\'s real capabilities, domains, codebases, or deployables and uses concrete behavior verbs',
   };
-}
-
-function workspaceNarrativeUsesImplementationStackAsProductFrame(
-  graph: WorkspaceAnalysisGraph,
-  narrative: string,
-): boolean {
-  let normalized = normalizeAiItemName(narrative);
-  const evidenceNames = [
-    graph.name,
-    ...(graph.codebases || []).map(codebase => codebase.name),
-    ...(graph.applications || []).map(application => application.name),
-    ...(graph.distribution_units || []).map(unit => unit.name),
-  ]
-    .map(normalizeAiItemName)
-    .filter(name => name.length >= 4)
-    .sort((left, right) => right.length - left.length);
-  for (const name of evidenceNames) {
-    normalized = normalized.replace(new RegExp(`\\b${escapeRegExp(name)}\\b`, 'g'), ' ');
-  }
-  return /\b(?:polyglot|multi[- ]language|language support|language specific|frameworks? and languages?|development needs|technology stack)\b/.test(normalized);
-}
-
-function workspaceNarrativeUnsupportedMutationClaim(graph: WorkspaceAnalysisGraph, text: string): string | null {
-  const mutationVerb = /\b(?:manage|management|create|creation|update|delete|write|configure|modify|mutate|mutation|submit|process|processing|handle)\b/i;
-  const readSignal = /\b(?:view|viewing|read|reading|list|listing|access|retrieve|retrieval|review|reviewing|show|browse|lookup|search|present|presentation)\b/i;
-  const mutationCapabilities = (graph.workspace_capabilities || []).filter(capability => mutationVerb.test(capability.name));
-  const normalizedText = normalizeAiItemName(text);
-  for (const capability of graph.workspace_capabilities || []) {
-    if (!readSignal.test(capability.name) || mutationVerb.test(capability.name)) continue;
-    const subject = normalizeAiItemName(capability.name)
-      .replace(/\b(?:view|viewing|read|reading|list|listing|access|retrieve|retrieval|review|reviewing|show|browse|lookup|search|present|presentation|surface)\b/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim();
-    const subjectTokens = subject.split(/\s+/).filter(token => token.length >= 3);
-    if (subjectTokens.length === 0) continue;
-    const hasMutationCounterpart = mutationCapabilities.some(candidate => {
-      const candidateText = normalizeAiItemName(candidate.name);
-      return subjectTokens.some(token => candidateText.includes(token));
-    });
-    if (hasMutationCounterpart) continue;
-    const subjectPattern = subjectTokens
-      .map(token => `${escapeRegExp(token.replace(/s$/, ''))}s?`)
-      .join('\\s+');
-    const claimPattern = new RegExp(`(?:\\b(?:manag(?:e|es|ed|ing|ement)|creat(?:e|es|ed|ing|ion)|updat(?:e|es|ed|ing|ion)|delet(?:e|es|ed|ing|ion)|writ(?:e|es|ing)|configur(?:e|es|ed|ing|ation)|modif(?:y|ies|ied|ying|ication)|mutat(?:e|es|ed|ing|ion)|process(?:es|ed|ing)?|handl(?:e|es|ed|ing))(?:\\s+and\\s+(?:view|views|viewing|review|reviews|reviewing|analyz(?:e|es|ing)|read|reads|reading|present|presents|presenting))?\\s+(?:the\\s+)?${subjectPattern}\\b|\\b${subjectPattern}\\s+(?:management|processing|mutation|lifecycle)\\b)`, 'i');
-    if (claimPattern.test(normalizedText)) {
-      return `the narrative claims mutation of ${subject}, but the workspace evidence exposes only the read capability "${capability.name}"`;
-    }
-  }
-  return null;
-}
-
-function workspaceNarrativeUnsupportedCrossProjectClaim(graph: WorkspaceAnalysisGraph, description: string): string | null {
-  if ((graph.application_links || []).some(applicationLinkHasSourceBackedEvidence)) return null;
-  if ((graph.codebases || []).length < 2) return null;
-
-  const termsByProject = new Map<string, Set<string>>();
-  const add = (projectId: string, value: string): void => {
-    const normalized = normalizeAiItemName(value);
-    if (normalized.length < 4) return;
-    const terms = termsByProject.get(projectId) || new Set<string>();
-    terms.add(normalized);
-    termsByProject.set(projectId, terms);
-  };
-  for (const codebase of graph.codebases || []) add(codebase.id, codebase.name);
-  for (const application of graph.applications || []) add(application.codebase_id, application.name);
-  for (const domain of graph.workspace_domains || []) {
-    if (domain.project_ids.length === 1) add(domain.project_ids[0], domain.name);
-  }
-  for (const capability of graph.workspace_capabilities || []) {
-    if (capability.project_ids.length === 1) add(capability.project_ids[0], capability.name);
-  }
-  for (const entity of graph.workspace_entities || []) {
-    if (entity.project_ids.length === 1) add(entity.project_ids[0], entity.name);
-  }
-
-  const relationshipVerb = /\b(?:using|through|via|between|together|shared|connect\w*|integrat\w*|interact\w*|communicat\w*|exchang\w*|send\w*|receiv\w*|publish\w*|consum\w*|broker\w*|relay\w*|route\w*|flow\w*|facilitat\w*|coordinat\w*|orchestrat\w*)\b/i;
-  for (const sentence of String(description || '').split(/(?<=[.!?])\s+/).filter(Boolean)) {
-    if (!relationshipVerb.test(sentence)) continue;
-    const normalizedSentence = normalizeAiItemName(sentence);
-    const matchedProjects = [...termsByProject.entries()].filter(([, terms]) =>
-      [...terms].some(term => new RegExp(`\\b${escapeRegExp(term).replace(/\\s+/g, '\\\\s+')}\\b`).test(normalizedSentence))
-    );
-    if (matchedProjects.length >= 2) {
-      return 'the description claims interaction between independently analyzed projects without a source-backed application link; describe each member separately unless deterministic link evidence appears';
-    }
-  }
-  return null;
 }
 
 const WORKSPACE_BEHAVIOR_WORD_PATTERN = /\b(?:brokers?|relays?|routes?|ships?|installs?|communicates?|calls?|pairs?|interacts?|authenticates?|authorizes?|enrolls?|connects?|protects?|provisions?|declares?|exposes?|records?|forwards?|coordinates?|manages?|handles?|supports?|provides?|processes?|captures?|uses?|consumes?|performs?|orchestrates?|flows?|turns?|transforms?|generates?|retrieves?|returns?|maps?|compares?|compresses?|guides?|validates?|depends?|enables?|enabling|powers?|drives?|runs?|executes?|requires?|syncs?|trades?|settles?|holds?|tracks?|surfaces?|lets?|gives?|fronts?|stores?|persists?|publishes?|streams?|schedules?|triggers?|signs?|verifies?|secures?|enforces?|monitors?)\b/g;
@@ -4187,7 +3777,7 @@ function safeAiProductValueSummary(value: unknown, fallback?: string, graph?: Wo
   if (/\bsecure network access workspace\b/.test(fallbackText) && !hasSecureNetworkAccessSignal(normalized)) return undefined;
   if (hasSecureNetworkAccessSignal(normalized) && graph && !workspaceHasSecureNetworkAccessSignal(graph)) return undefined;
   if (/\b(codebase intelligence|cas|mcp|agent context|analyzer)\b/.test(normalized) && graph && !workspaceHasCodebaseIntelligenceSignal(graph)) return undefined;
-  const unsupportedMarketing = /\b(scalable|scalability|flexibility|enterprise grade|enterprise-grade|real time|mission critical|mission-critical|compliance|hybrid environments?)\b/.test(normalized);
+  const unsupportedMarketing = /\b(scalable|enterprise grade|enterprise-grade|real time|mission critical|mission-critical|compliance|hybrid environments?)\b/.test(normalized);
   if (unsupportedMarketing) return undefined;
   // Shared project-tier marketing lint (element-description-validator
   // mechanism): saturation is unsafe; isolated instances are stripped so a
@@ -4324,31 +3914,23 @@ export function workspaceAiEnrichmentEnabled(): boolean {
     process.env.KLAURO_AI_INTERPRETATION !== 'false';
 }
 
-// Exported for tests. Despite the historical name, this is a slow-operation
-// observer, never a completeness cutoff. A model response may be slow, but
-// elapsed time alone is not evidence that the work is invalid or wedged.
+// Exported for tests (timeout env contract).
 export async function withWorkspaceAiTimeout<T>(promise: Promise<T>): Promise<T> {
-  const slowMs = Number(
-    process.env.KLAURO_WAS_AI_SLOW_MS ||
-    process.env.KLAURO_WAS_AI_TIMEOUT_MS ||
-    process.env.KLAURO_WORKSPACE_AI_TIMEOUT_MS ||
-    120_000,
-  );
+  // The WAS AI provider chain (hosted -> local -> fallback tiers) can
+  // legitimately take well over 15s on cold local/openrouter tiers. Budget
+  // philosophy matches the project tier (KLAURO_AI_INTERPRETATION_BUDGET_MS):
+  // generous by default, env-tunable. KLAURO_WORKSPACE_AI_TIMEOUT_MS is the
+  // legacy alias.
+  const timeoutMs = Number(process.env.KLAURO_WAS_AI_TIMEOUT_MS || process.env.KLAURO_WORKSPACE_AI_TIMEOUT_MS || 120_000);
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return promise;
   let timer: NodeJS.Timeout | undefined;
-  const startedAt = Date.now();
   try {
-    if (Number.isFinite(slowMs) && slowMs > 0) {
-      timer = setTimeout(() => {
-        process.stderr.write(`${JSON.stringify({
-          event: 'workspace_ai_slow',
-          elapsed_ms: Date.now() - startedAt,
-          threshold_ms: slowMs,
-          action: 'continuing',
-        })}\n`);
-      }, slowMs);
-      timer.unref?.();
-    }
-    return await promise;
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`Workspace AI enrichment exceeded ${timeoutMs}ms timeout`)), timeoutMs);
+      }),
+    ]);
   } finally {
     if (timer) clearTimeout(timer);
   }
@@ -4387,15 +3969,10 @@ export function workspaceNarrativePromptContext(graph: WorkspaceAnalysisGraph): 
       'Return product_value_summary as one evidence-backed sentence explaining the product/business job this workspace appears to serve.',
       'Do not use unsupported marketing claims such as scalable, enterprise-grade, real-time, mission-critical, compliance, or hybrid environments unless those exact facts appear in evidence.',
       'facts.member_projects lists DISTINCT member projects, each with its OWN own_capabilities/own_domains. Attribute every capability, domain, and behavior to the member project that owns it; never present one member as the workspace, never assign one member\'s capabilities to another member, and never frame or title the workspace as a single member.',
-      'facts.member_projects.own_entities is exclusive ownership evidence. Mention an entity only under its owning member and never assign one member\'s entity or data to another member.',
-      'facts.member_projects.member_description and own_capabilities are completed member-CAS comprehension and are authoritative for that member. Compose them; do not replace them with an interpretation of project names, runtimes, languages, or frameworks.',
-      'Describe what each member does and why it exists. Do not describe language diversity, framework coverage, polyglot support, or a technology stack as product value. A member name containing words such as "polyglot" is only a proper name and is not evidence of a product capability.',
-      'Infrastructure technologies may be named only as concrete implementation context for an evidence-backed operational responsibility, such as Terraform provisioning a declared queue or Kubernetes running a declared service; they must never replace the member\'s responsibility or product behavior.',
       'facts.behavior_facts.insights and facts.composition are internal analysis diagnostics: NEVER quote their phrasing (e.g. "source-backed", "isolated deployable(s)", "should not be forced into the system graph", "Dockerfile", raw image/port tokens) in customer prose — translate them into plain engineering language or omit them.',
       'For every connection, preserve direction exactly as source -> target. For sdk-install, the source depends on or imports the target; do not reverse that relationship.',
       'Do not turn warnings, unclaimed-provider insights, or topology-only declarations into active source-backed relationships.',
       'Do not describe a service as communicating with another service unless the connection appears in behavior_facts.important_connections with the same source and target.',
-      'When facts.relationship_policy says no source-backed cross-project links exist, describe members as independent and never claim they interact through shared infrastructure.',
       'Frame the workspace ONLY through the domains, capabilities, and member-project facts supplied in facts.member_projects, facts.semantic_targets, and must_explain. Never assign the workspace a product category or frame that is not named there.',
       'If the facts include blockchain RPC/p2p ports (e.g. 8545/8546/30303/8899), blockchain-node deployables (ethereum/bitcoin/solana/polygon nodes), or wallet/custody/token/exchange/liquidation entities, identify the workspace as a crypto / digital-asset system and name the chains and on-chain behavior; do not flatten it into a generic "financial application".',
       'Return domain_items for every required_domain_names item, using exact names.',
@@ -4405,7 +3982,6 @@ export function workspaceNarrativePromptContext(graph: WorkspaceAnalysisGraph): 
       'Only name deployables that appear in that target context. If no target-specific deployable is listed, describe the domain or capability through entities, workflows, routes, or interfaces instead.',
       'If a target is supporting rather than core, say what support plane it represents instead of inflating it into a product capability.',
       'Capability/domain descriptions must be behavior-first; do not expose raw identifiers such as entity_*, snake_case table names, "via lib", or implementation-only names unless they are public product terms.',
-      'Preserve capability action semantics exactly: View, Access, List, Read, Show, and Retrieve are read-only and must never become management, mutation, creation, update, deletion, or write claims.',
     ],
     facts: workspaceAiFactSheet(graph, productName),
   };
@@ -4416,7 +3992,7 @@ function workspaceAiFactSheet(graph: WorkspaceAnalysisGraph, productName = infer
   const appById = new Map(graph.applications.map(app => [app.id, app]));
   const deployables = overview.deployables.slice(0, 8).map(app => {
     const ports = normalizePortTokens(app.ports);
-    return `${workspacePromptApplicationName(graph, app)}(${app.kind}${ports.length ? `,ports:${ports.slice(0, 4).join('/')}` : ''}${app.isolated ? ',isolated' : ''})`;
+    return `${app.name}(${app.kind}${ports.length ? `,ports:${ports.slice(0, 4).join('/')}` : ''}${app.isolated ? ',isolated' : ''})`;
   });
   const blockchainSurfaces = overview.deployables
     .filter(app => {
@@ -4429,7 +4005,7 @@ function workspaceAiFactSheet(graph: WorkspaceAnalysisGraph, productName = infer
     .map(app => `${app.name}: blockchain RPC/p2p ports ${normalizePortTokens(app.ports).filter(port => CRYPTO_RPC_PORTS.has(port)).join(', ') || 'n/a'}`);
   const connections = overview.connections.slice(0, 6).map(connection => {
     const verb = connection.kind === 'sdk-install' ? 'depends on/imports' : 'calls/communicates with';
-    return `${workspacePromptApplicationLabel(graph, connection.source)} -> ${workspacePromptApplicationLabel(graph, connection.target)} (${connection.mode} ${connection.kind}, ${connection.evidence_quality}, ${verb})`;
+    return `${connection.source} -> ${connection.target} (${connection.mode} ${connection.kind}, ${connection.evidence_quality}, ${verb})`;
   });
   const distributionUnits = graph.distribution_units.slice(0, 4).map(unit =>
     `${unit.name} ships ${unit.component_names.join(' + ')} together (${unit.kind})`
@@ -4437,15 +4013,14 @@ function workspaceAiFactSheet(graph: WorkspaceAnalysisGraph, productName = infer
   const domains = primaryWorkspaceDomains(graph).map(domain => workspaceDomainPromptContext(domain, graph, appById));
   const capabilities = primaryWorkspaceCapabilities(graph).map(capability => workspaceCapabilityPromptContext(capability, graph, appById));
   const workflows = graph.workspace_workflows.slice(0, 4).map(workflow =>
-    workspacePromptSafeText(graph, `${workflow.name}: ${workflow.deployable_ids.map(id => appById.get(id) ? workspacePromptApplicationName(graph, appById.get(id)!) : workspacePromptApplicationLabel(graph, id)).slice(0, 3).join(', ')}`)
-  ).filter((value): value is string => Boolean(value));
-  const codebaseNameById = new Map(graph.codebases.map(codebase => [codebase.id, codebase.name]));
+    `${workflow.name}: ${workflow.deployable_ids.map(id => appById.get(id)?.name || id).slice(0, 3).join(', ')}`
+  );
   const entities = graph.workspace_entities.slice(0, 5).map(entity =>
-    workspacePromptSafeText(graph, `${entity.name}: ${entity.project_ids.map(id => codebaseNameById.get(id)).filter(Boolean).slice(0, 3).join(', ')}; paths=${entity.path_count || 0}`)
-  ).filter((value): value is string => Boolean(value));
+    `${entity.name}: ${entity.project_ids.slice(0, 3).join(', ')}; paths=${entity.path_count || 0}`
+  );
   const insights = graph.system_insights.slice(0, 5).map(insight =>
-    workspacePromptSafeText(graph, `${insight.type}: ${insight.title} - ${truncateText(insight.description, 96)}`)
-  ).filter((value): value is string => Boolean(value));
+    `${insight.type}: ${insight.title} - ${truncateText(insight.description, 96)}`
+  );
   const external = overview.external_dependencies.slice(0, 6).map(dep =>
     `${dep.name}(${dep.kind}) ${dep.usage} in ${dep.project}`
   );
@@ -4464,25 +4039,18 @@ function workspaceAiFactSheet(graph: WorkspaceAnalysisGraph, productName = infer
   const memberProjects = graph.codebases.slice(0, 12).map(codebase => ({
     name: codebase.name,
     ...(codebase.primary_domain ? { primary_domain: codebase.primary_domain } : {}),
-    ...(codebase.description ? { member_description: workspacePromptSafeText(graph, codebase.description) } : {}),
     system_type: codebase.system_type,
     role: codebase.project_role,
+    frameworks: codebase.frameworks.slice(0, 4),
+    languages: codebase.languages.slice(0, 4),
     own_capabilities: (graph.workspace_capabilities || [])
       .filter(capability => (capability.project_ids || []).length >= 1 && capability.project_ids.every(id => id === codebase.id))
-      .map(capability => ({
-        name: capability.name,
-        description: workspacePromptSafeText(graph, capability.description),
-        semantic_role: capability.semantic_role,
-      }))
+      .map(capability => capability.name)
       .slice(0, 6),
     own_domains: (graph.workspace_domains || [])
       .filter(domain => (domain.project_ids || []).length >= 1 && domain.project_ids.every(id => id === codebase.id))
       .map(domain => domain.name)
       .slice(0, 5),
-    own_entities: (graph.workspace_entities || [])
-      .filter(entity => (entity.project_ids || []).length === 1 && entity.project_ids[0] === codebase.id)
-      .map(entity => entity.name)
-      .slice(0, 10),
   }));
   const memberDomainFacts = graph.codebases
     .filter(codebase => codebase.primary_domain)
@@ -4501,14 +4069,12 @@ function workspaceAiFactSheet(graph: WorkspaceAnalysisGraph, productName = infer
   return {
     product_name: productName,
     product_value_summary_hint: graph.workspace_narrative.product_value_summary,
-    relationship_policy: connections.length > 0
-      ? 'Only the exact source -> target connections listed in behavior_facts.important_connections may be described.'
-      : 'No source-backed cross-project links exist. The member projects are independent; shared vocabulary or infrastructure names do not prove communication.',
     must_explain: mustExplain,
     member_projects: memberProjects,
     composition: {
       kind: graph.composition.kind,
       primary_view: graph.composition.recommended_primary_view,
+      reasons: graph.composition.reasons.slice(0, 3),
     },
     behavior_facts: {
       distribution_units: distributionUnits,
@@ -4528,39 +4094,12 @@ function workspaceAiFactSheet(graph: WorkspaceAnalysisGraph, productName = infer
   };
 }
 
-function workspacePromptApplicationName(
-  graph: WorkspaceAnalysisGraph,
-  app: { name: string; codebase_id?: string; project_id?: string },
-): string {
-  const raw = String(app.name || '').trim();
-  const ownerId = app.codebase_id || app.project_id || '';
-  const codebase = graph.codebases.find(item => item.id === ownerId);
-  if (/^(?:account-project[-_:]|prj[-_:])/i.test(raw) || normalizeAiItemName(raw) === normalizeAiItemName(ownerId)) {
-    return codebase?.name || 'member project';
-  }
-  return raw || codebase?.name || 'member project';
-}
-
-function workspacePromptApplicationLabel(graph: WorkspaceAnalysisGraph, value: string): string {
-  const app = graph.applications.find(item => item.id === value || item.name === value);
-  if (app) return workspacePromptApplicationName(graph, app);
-  if (/^(?:account-project[-_:]|prj[-_:])/i.test(String(value || ''))) {
-    const codebase = graph.codebases.find(item => normalizeAiItemName(item.id) === normalizeAiItemName(value));
-    return codebase?.name || 'member project';
-  }
-  return value;
-}
-
 function primaryWorkspaceDomains(graph: WorkspaceAnalysisGraph): WorkspaceDomain[] {
-  const productDomains = graph.workspace_domains.filter(domain => domain.semantic_role !== 'infrastructure');
-  const coreDomains = productDomains.filter(domain => domain.semantic_role === 'core');
-  return (coreDomains.length > 0 ? coreDomains : productDomains.length > 0 ? productDomains : graph.workspace_domains).slice(0, 6);
+  return graph.workspace_domains.slice(0, 6);
 }
 
 function primaryWorkspaceCapabilities(graph: WorkspaceAnalysisGraph): WorkspaceCapability[] {
-  const productCapabilities = graph.workspace_capabilities.filter(capability => capability.semantic_role !== 'infrastructure');
-  const coreCapabilities = productCapabilities.filter(capability => capability.semantic_role === 'core');
-  return (coreCapabilities.length > 0 ? coreCapabilities : productCapabilities.length > 0 ? productCapabilities : graph.workspace_capabilities).slice(0, 8);
+  return graph.workspace_capabilities.slice(0, 8);
 }
 
 function workspaceDomainPromptContext(
@@ -4589,17 +4128,15 @@ function workspaceDomainPromptContext(
     role: domain.semantic_role,
     terminal_score: domain.terminal_score,
     target_words: meaningfulWorkspaceNameTokens(domain.name),
-    evidence: workspacePromptEvidence(graph, domain.evidence, 8),
-    terminal_evidence: workspacePromptEvidence(graph, domain.terminal_evidence || [], 6),
-    grounding_terms: workspaceItemGroundingTerms(domain).filter(term => !looksLikeInternalIdentifierToken(term)).slice(0, 12),
+    evidence: domain.evidence.slice(0, 8),
+    terminal_evidence: (domain.terminal_evidence || []).slice(0, 6),
+    grounding_terms: workspaceItemGroundingTerms(domain).slice(0, 12),
     deployables,
     related_capabilities: relatedCapabilities.map(capability => ({
       name: capability.name,
       role: capability.semantic_role,
-      description: isDefaultWorkspaceDescriptionReady(capability.name, capability.description, capability.description_source, 'capability')
-        ? workspacePromptSafeText(graph, truncateText(capability.description, 140))
-        : undefined,
-      evidence: workspacePromptEvidence(graph, capability.evidence, 4),
+      description: truncateText(capability.description, 140),
+      evidence: capability.evidence.slice(0, 4),
     })),
     related_entities: relatedEntities.map(entity => ({
       name: entity.name,
@@ -4611,12 +4148,10 @@ function workspaceDomainPromptContext(
       name: workflow.name,
       role: workflow.semantic_role,
       evidence_quality: workflow.evidence_quality,
-      deployables: workflow.deployable_ids.map(id => appById.get(id) ? workspacePromptApplicationName(graph, appById.get(id)!) : workspacePromptApplicationLabel(graph, id)).slice(0, 4),
+      deployables: workflow.deployable_ids.map(id => appById.get(id)?.name || id).slice(0, 4),
     })),
     distribution_units: graph.distribution_units
-      .filter(unit => unit.component_deployable_ids.some(id => deployables.includes(
-        appById.get(id) ? workspacePromptApplicationName(graph, appById.get(id)!) : workspacePromptApplicationLabel(graph, id)
-      )))
+      .filter(unit => unit.component_deployable_ids.some(id => deployables.includes(appById.get(id)?.name || id)))
       .map(unit => unit.name)
       .slice(0, 3),
   };
@@ -4628,7 +4163,7 @@ function workspaceCapabilityPromptContext(
   appById: Map<string, SystemApplication>,
 ): Record<string, unknown> {
   const deployables = capability.deployable_ids
-    .map(id => appById.get(id) ? workspacePromptApplicationName(graph, appById.get(id)!) : workspacePromptApplicationLabel(graph, id))
+    .map(id => appById.get(id)?.name || id)
     .slice(0, 4);
   const workflows = graph.workspace_workflows
     .filter(workflow =>
@@ -4651,8 +4186,8 @@ function workspaceCapabilityPromptContext(
     criticality: capability.criticality,
     terminal_score: capability.terminal_score,
     target_words: meaningfulWorkspaceNameTokens(capability.name),
-    evidence: workspacePromptEvidence(graph, capability.evidence, 4),
-    terminal_evidence: workspacePromptEvidence(graph, capability.terminal_evidence || [], 3),
+    evidence: capability.evidence.slice(0, 4),
+    terminal_evidence: (capability.terminal_evidence || []).slice(0, 3),
     deployables,
     workflows,
     entities,
@@ -4688,7 +4223,7 @@ function workspacePromptRelevantDeployableNames(
     })
     .filter(item => item.evidenceScore >= 12 || (targetTerms.length > 0 && item.evidenceScore >= 10))
     .sort((left, right) => right.evidenceScore - left.evidenceScore || right.rank - left.rank || left.app.name.localeCompare(right.app.name))
-    .map(item => workspacePromptApplicationName(graph, item.app))
+    .map(item => item.app.name)
     .filter((name, index, names) => names.indexOf(name) === index)
     .slice(0, limit);
 }
@@ -6327,15 +5862,6 @@ function isRawInfrastructureOrImageSurface(app: SystemApplication): boolean {
   if (/^(resource|data|provider|variable|output)\./.test(app.name.toLowerCase())) return true;
   if (/^(postgres|redis|minio|mysql|mariadb|mongodb|database|db|nginx|traefik|caddy)([-_/\s]|$)/.test(normalized)) return true;
   if (app.kind === 'codebase' && /(?:^|[-_/\s])(postgres|redis|minio|mysql|mariadb|mongodb|database|db)(?:$|[-_/\s])/.test(normalized)) return true;
-  const aliases = app.service_aliases.map(alias => alias.toLowerCase());
-  const terraformOnly = app.ports.length === 0 &&
-    app.interface_ids.length === 0 &&
-    aliases.length > 0 &&
-    aliases.every(alias =>
-      alias === 'terraform' ||
-      /(?:^|\/)main\.tf$/.test(alias) ||
-      /^(?:resource|data|provider|variable|output|module)\./.test(alias));
-  if (terraformOnly) return true;
   return false;
 }
 
@@ -6343,7 +5869,7 @@ function isSyntheticRootApplication(app: SystemApplication, siblings: SystemAppl
   if (siblings.length === 0) return false;
   const rootName = cleanApplicationName(path.basename(app.codebase_path || ''));
   const isRootName = Boolean(rootName && cleanApplicationName(app.name) === rootName);
-  if (!isRootName && app.path_hint && app.path_hint !== '.') return false;
+  if (!isRootName && app.path_hint) return false;
   const runtimeOnlyImage = app.runtime_component_ids.length > 0 &&
     app.ports.length === 0 &&
     app.service_aliases.some(alias => /docker image definition|dockerfile/i.test(alias));
@@ -6354,7 +5880,7 @@ function isSyntheticRootApplication(app: SystemApplication, siblings: SystemAppl
     (candidate.path_hint || candidate.runtime_component_ids.length > 0 || candidate.interface_ids.length > 0)
   );
   if (!meaningfulSibling) return false;
-  return isRootName || app.interface_ids.length === 0 || app.kind === 'codebase';
+  return isRootName || app.interface_ids.length === 0 || app.kind === 'codebase' || app.name === applicationNameFromId(app.id);
 }
 
 function isWeakerDuplicateApplicationSurface(app: SystemApplication, siblings: SystemApplication[]): boolean {
@@ -6900,9 +6426,6 @@ function buildWorkspaceDomains(
   workspaceName: string,
 ): WorkspaceDomain[] {
   const terminalProfiles = buildWorkspaceTerminalProfiles(repositories);
-  const infrastructureProjectIds = new Set(repositories
-    .filter(repository => repository.cas.enhanced_system_purpose?.artifact_type === 'infrastructure')
-    .map(repository => codebaseId(repository.path)));
   const domains = new Map<string, { project_ids: string[]; evidence: string[]; score: number; terminal_score: number; terminal_evidence: string[] }>();
   const productNames = workspaceProductNameSet(codebases, workspaceName);
   const codebaseNameById = new Map(codebases.map(codebase => [codebase.id, codebase.name]));
@@ -6924,12 +6447,6 @@ function buildWorkspaceDomains(
     if (enhanced?.primary_domain) {
       add(enhanced.primary_domain, projectId, `primary_domain:${enhanced.primary_domain}`, 4, 4, [`primary_domain:${enhanced.primary_domain}`]);
     }
-    // Infrastructure member vocabulary names resources and deployment
-    // mechanics, not business domains. Its explicit artifact-grounded primary
-    // domain remains visible, while queue/container/script concepts stay in
-    // infrastructure_overlay and the member CAS instead of contaminating
-    // another member's product-domain ownership.
-    if (infrastructureProjectIds.has(projectId)) continue;
     for (const concept of enhanced?.core_concepts || []) {
       add(concept, projectId, `core_concept:${concept}`, 2, 0, []);
     }
@@ -7020,9 +6537,7 @@ function buildWorkspaceDomains(
       description: '',
       project_ids: value.project_ids,
       evidence: value.evidence,
-      semantic_role: value.project_ids.length > 0 && value.project_ids.every(projectId => infrastructureProjectIds.has(projectId))
-        ? 'infrastructure'
-        : value.terminal_score >= 8 ? semanticRoleForWorkspaceItem(name, value.terminal_score, 'core') : undefined,
+      semantic_role: value.terminal_score >= 8 ? semanticRoleForWorkspaceItem(name, value.terminal_score, 'core') : undefined,
       terminal_score: roundTerminalScore(value.terminal_score),
       terminal_evidence: value.terminal_evidence,
       confidence: Math.min(0.92, 0.45 + value.score * 0.08),
@@ -7173,7 +6688,7 @@ export function isVerbPhraseDomainLabel(name: string): boolean {
   // Netsuitesynctrack") is a capability/action label, not a domain. An explicit
   // verb lexicon covers base forms that morphology cannot detect (Alter, Send,
   // Get). Extend only when a NEW base-form verb leaks.
-  if (/^(?:send|sends|list|lists|get|gets|view|views|access|accesses|create|creates|delete|deletes|manage|manages|handle|handles|fetch|fetches|build|builds|run|runs|execute|executes|process|processes|load|loads|save|saves|read|reads|write|writes|add|adds|remove|removes|check|checks|validate|validates|parse|parses|render|renders|receive|receives|start|starts|stop|stops|sync|syncs|track|tracks|monitor|monitors|generate|generates|compute|computes|calculate|calculates|provide|provides|expose|exposes|register|registers|configure|configures|update|updates|surface|surfaces|analyze|analyzes|analyse|analyses|transcribe|transcribes|approve|approves|spawn|spawns|search|searches|ingest|ingests|transform|transforms|index|indexes|map|maps|define|defines|coordinate|coordinates|deploy|deploys|install|installs|connect|connects|collect|collects|record|records|enforce|enforces|integrate|integrates|audit|audits|examine|examines|identify|identifies|assess|assesses|detect|detects|discover|discovers|retrieve|retrieves|import|imports|export|exports|route|routes|dispatch|dispatches|orchestrate|orchestrates|describe|describes|poll|polls|secures|alter|alters|notify|notifies|publish|publishes|subscribe|subscribes|resolve|resolves|aggregate|aggregates|submit|submits|upload|uploads|download|downloads|emit|emits|broadcast|broadcasts|replicate|replicates|migrate|migrates|encrypt|encrypts|decrypt|decrypts|persist|persists|verify|verifies)$/.test(leading)) {
+  if (/^(?:send|sends|list|lists|get|gets|create|creates|delete|deletes|manage|manages|handle|handles|fetch|fetches|build|builds|run|runs|execute|executes|process|processes|load|loads|save|saves|read|reads|write|writes|add|adds|remove|removes|check|checks|validate|validates|parse|parses|render|renders|receive|receives|start|starts|stop|stops|sync|syncs|track|tracks|monitor|monitors|generate|generates|compute|computes|calculate|calculates|provide|provides|expose|exposes|register|registers|configure|configures|update|updates|surface|surfaces|analyze|analyzes|analyse|analyses|transcribe|transcribes|approve|approves|spawn|spawns|search|searches|ingest|ingests|transform|transforms|index|indexes|map|maps|define|defines|coordinate|coordinates|deploy|deploys|install|installs|connect|connects|collect|collects|record|records|enforce|enforces|integrate|integrates|audit|audits|examine|examines|identify|identifies|assess|assesses|detect|detects|discover|discovers|retrieve|retrieves|import|imports|export|exports|route|routes|dispatch|dispatches|orchestrate|orchestrates|describe|describes|poll|polls|secures|alter|alters|notify|notifies|publish|publishes|subscribe|subscribes|resolve|resolves|aggregate|aggregates|submit|submits|upload|uploads|download|downloads|emit|emits|broadcast|broadcasts|replicate|replicates|migrate|migrates|encrypt|encrypts|decrypt|decrypts|persist|persists|verify|verifies)$/.test(leading)) {
     return true;
   }
   // Grammatical fallback for 3rd-person-singular present verbs the lexicon has
@@ -7206,13 +6721,11 @@ function collapseOverlappingWorkspaceDomains(
     workspaceDomainSortScore(right[0], right[1], productNames) -
       workspaceDomainSortScore(left[0], left[1], productNames)
   );
-  for (const [name] of ordered) {
-    const value = byName.get(name);
-    if (!value) continue;
+  for (const [name, value] of ordered) {
     const target = ordered
       .filter(([candidateName]) => candidateName !== name && byName.has(candidateName))
-      .find(([candidateName]) =>
-        shouldCollapseWorkspaceDomainInto(name, value, candidateName, byName.get(candidateName)!)
+      .find(([candidateName, candidateValue]) =>
+        shouldCollapseWorkspaceDomainInto(name, value, candidateName, candidateValue)
       );
     if (!target) continue;
     const targetValue = byName.get(target[0]);
@@ -7239,14 +6752,8 @@ function shouldCollapseWorkspaceDomainInto(
   if (tokens.size === 0) return false;
   const sameSemanticName = tokens.size === candidateTokens.size && [...tokens].every(token => candidateTokens.has(token));
   if (sameSemanticName) {
-    const sourceIsPrimary = (value.evidence || []).some(item => item.startsWith('primary_domain:'));
-    const candidateIsPrimary = (candidateValue.evidence || []).some(item => item.startsWith('primary_domain:'));
-    if (sourceIsPrimary !== candidateIsPrimary) return candidateIsPrimary;
     return candidateValue.score >= value.score || (candidateValue.terminal_score || 0) >= (value.terminal_score || 0) || candidateName.length >= name.length;
   }
-  const sourceIsPrimary = (value.evidence || []).some(item => item.startsWith('primary_domain:'));
-  if (sourceIsPrimary) return false;
-  if (isVerbPhraseDomainLabel(candidateName)) return false;
   if (candidateTokens.size <= tokens.size) return false;
   const isSubset = [...tokens].every(token => candidateTokens.has(token));
   if (!isSubset) return false;
@@ -7257,16 +6764,15 @@ function shouldCollapseWorkspaceDomainInto(
 }
 
 function workspaceDomainTokens(name: string): Set<string> {
-  const stop = new Set(['application', 'domain', 'enterprise', 'management', 'platform', 'service', 'services', 'system', 'workspace']);
-  return new Set(normalizeAiItemName(String(name || '').replace(/([a-z0-9])([A-Z])/g, '$1 $2'))
+  const stop = new Set(['domain', 'management', 'service', 'services', 'system', 'workspace']);
+  return new Set(normalizeAiItemName(name)
     .split(/\s+/)
-    .map(token => token.replace(/^(?:application|enterprise|platform|service|system|workspace)(?=.{4,})/, ''))
     .map(token => token.endsWith('s') && !token.endsWith('ss') ? token.slice(0, -1) : token)
     .filter(token => token.length >= 4 && !stop.has(token)));
 }
 
 function isGenericWorkspaceDomainBucket(name: string): boolean {
-  return /^(analyzer|analyzers|application|applications|enterprise|platform|package|packages|dependency|dependencies|library|libraries|module|modules|project|projects|app|apps|service|services|system|systems|data|config|configuration)$/i.test(name.trim());
+  return /^(analyzer|analyzers|package|packages|dependency|dependencies|library|libraries|module|modules|project|projects|app|apps|service|services|system|systems|data|config|configuration)$/i.test(name.trim());
 }
 
 function workspaceProductNameSet(codebases: SystemCodebase[], workspaceName: string): Set<string> {
@@ -7524,8 +7030,7 @@ function isWeakWorkspaceDomain(name: string): boolean {
   if (/^(command|commands|event|events|route|routes|handler|handlers)\b/.test(normalized)) return true;
   if (/^(url|uri|id|uuid|data|info|item|items|value|values|type|types|status|state|config|configuration|generate|create|read|update|delete|list|find|get|set|sync|process|execute|handle|manage|service|api|app|system|days|password|port|server|issue|issues|result|results|snapshot|snapshots)$/.test(normalized)) return true;
   // Single-word structural / UI / tooling fragments that are not domains.
-  if (/^(auto|automated|page|pages|preview|view|views|collect|draft|untitled|sample|demo|example|default|index|main|util|utils|helper|helpers|mock|mocks|misc|temp|todo|linq|alert|summary|summaries)$/.test(normalized)) return true;
-  if (/^(enterprise|platform|application|typescript|javascript|node|nodejs|python|java|kotlin|scala|dotnet|\.net|csharp|rust|golang|go|php|ruby|dart|flutter|swift|objective c|cpp|c\+\+|terraform|docker|kubernetes|react|angular|vue|svelte|express|fastapi|django|flask|laravel|spring|nestjs|aspnet|framework|frameworks)$/.test(normalized)) return true;
+  if (/^(auto|automated|page|pages|preview|view|views|collect|draft|untitled|sample|demo|example|default|index|main|util|utils|helper|helpers|mock|mocks|misc|temp|todo|linq|alert)$/.test(normalized)) return true;
   if (normalized.split(/\s+/).length === 1 && normalized.length < 4) return true;
   return false;
 }
@@ -7534,7 +7039,6 @@ function buildWorkspaceCapabilities(
   repositories: CrossCodebaseInput[],
   applications: SystemApplication[],
   codebases: SystemCodebase[],
-  lookupIndexes: Map<CASOutput, CrossCodebaseLookupIndex>,
   systemInsights: SystemInsight[] = [],
 ): WorkspaceCapability[] {
   const terminalProfiles = buildWorkspaceTerminalProfiles(repositories);
@@ -7543,19 +7047,15 @@ function buildWorkspaceCapabilities(
   for (const repository of repositories) {
     const id = codebaseId(repository.path);
     const apps = applications.filter(app => app.codebase_id === id);
-    const appByProjectId = new Map(apps.map(app => [app.id, app]));
-    const lookupIndex = lookupIndexes.get(repository.cas)!;
     for (const entry of repository.cas.entry_points || []) {
-      const refs = entryRefs(lookupIndex, entry);
-      const app = refs.map(ref => applicationForFileFromIndex(id, ref.file, appByProjectId)).find(Boolean) ||
-        (apps.length === 1 ? apps[0] : undefined);
+      const refs = entryRefs(repository.cas, entry);
+      const app = refs.map(ref => applicationForFile(id, ref.file, apps)).find(Boolean) || apps[0];
       if (app) appByEntry.set(`${id}:${entry.id}`, app);
     }
   }
   const capabilities: WorkspaceCapability[] = [];
   for (const repository of repositories) {
     const projectId = codebaseId(repository.path);
-    const infrastructureArtifact = repository.cas.enhanced_system_purpose?.artifact_type === 'infrastructure';
     const terminalProfile = terminalProfiles.get(projectId) || emptyTerminalSemanticProfile(projectId);
     for (const capability of repository.cas.system_capabilities || []) {
       const apps = capability.operations
@@ -7573,7 +7073,7 @@ function buildWorkspaceCapabilities(
         ...(capability.related_entities || []).map(entity => `entity:${entity}`),
         ...(capability.operations || []).map(operation => `${operation.action}:${operation.path_or_command || operation.entry_point_id}`),
       ].slice(0, 10);
-      const infraOnlyEvidence = infrastructureArtifact || isInfrastructureOnlyCapabilityEvidence(capability.name, evidence);
+      const infraOnlyEvidence = isInfrastructureOnlyCapabilityEvidence(capability.name, evidence);
       const semanticRole = infraOnlyEvidence
         ? 'infrastructure'
         : isContextPreservationCapability(capability.name, capability.description)
@@ -7583,7 +7083,7 @@ function buildWorkspaceCapabilities(
           ? 'supporting'
           : semanticRoleForWorkspaceItem(capability.name, terminalSignal.score, fallbackRole);
       const deployableIds = [...new Set(apps.map(app => app.id))];
-      const repoAiDescriptionReady = (capability as any).description_source === 'ai' &&
+      const repoAiDescriptionReady = !infraOnlyEvidence && (capability as any).description_source === 'ai' &&
         isGroundedAiWorkspaceItemDescription({
           id: `${projectId}:capability:${slugify(capability.id || capability.name)}`,
           name: capability.name,
@@ -7606,8 +7106,9 @@ function buildWorkspaceCapabilities(
         description_source: repoAiDescriptionReady ? 'ai' : 'ai-required-degraded',
         ai_required: true,
         generation_pass: 'default-summary',
-        degraded_reason: repoAiDescriptionReady ? undefined :
-          'Whole-workspace capability descriptions require grounded AI enrichment from deterministic WAS facts.',
+        degraded_reason: repoAiDescriptionReady ? undefined : infraOnlyEvidence
+          ? 'Capability evidence is infrastructure-only and must not be promoted as a product capability without source-backed business behavior.'
+          : 'Whole-workspace primary capability descriptions require default AI enrichment from deterministic WAS facts.',
         semantic_role: semanticRole,
         terminal_score: roundTerminalScore(infraOnlyEvidence ? Math.min(0, terminalSignal.score) : terminalSignal.score),
         terminal_evidence: infraOnlyEvidence ? mergeStrings(terminalSignal.evidence, ['infrastructure-only-evidence']).slice(0, 10) : terminalSignal.evidence,
@@ -8938,23 +8439,13 @@ function buildWorkspaceWorkflows(
   applications: SystemApplication[],
   interfaces: SystemInterface[],
   applicationLinks: SystemApplicationLink[],
-  lookupIndexes: Map<CASOutput, CrossCodebaseLookupIndex>,
 ): WorkspaceWorkflow[] {
   const terminalProfiles = buildWorkspaceTerminalProfiles(repositories);
-  const appById = new Map(applications.map(app => [app.id, app]));
-  const appByInterface = new Map(interfaces.map(item => [item.id, appById.get(item.application_id)]));
-  const interfaceOrder = new Map(interfaces.map((item, index) => [item.id, index]));
-  const interfaceIdsByEvidence = new Map<string, string[]>();
-  for (const item of interfaces) {
-    for (const evidence of item.evidence) {
-      const key = `${item.codebase_id}:${evidence.id}`;
-      interfaceIdsByEvidence.set(key, [...(interfaceIdsByEvidence.get(key) || []), item.id]);
-    }
-  }
+  const appByInterface = new Map(interfaces.map(item => [item.id, applications.find(app => app.id === item.application_id)]));
   const workflows: WorkspaceWorkflow[] = [];
   for (const link of dedupeWorkflowApplicationLinks(applicationLinks).slice(0, 40)) {
-    const source = appByInterface.get(link.source_interface_id || '') || appById.get(link.source_application_id);
-    const target = appByInterface.get(link.target_interface_id || '') || appById.get(link.target_application_id);
+    const source = appByInterface.get(link.source_interface_id || '') || applications.find(app => app.id === link.source_application_id);
+    const target = appByInterface.get(link.target_interface_id || '') || applications.find(app => app.id === link.target_application_id);
     if (!source || !target) continue;
     workflows.push({
       id: `workflow:${slugify(link.id)}`,
@@ -8974,25 +8465,26 @@ function buildWorkspaceWorkflows(
     const projectId = codebaseId(repository.path);
     const terminalProfile = terminalProfiles.get(projectId) || emptyTerminalSemanticProfile(projectId);
     const apps = applications.filter(app => app.codebase_id === projectId);
-    const appByProjectId = new Map(apps.map(app => [app.id, app]));
-    const lookupIndex = lookupIndexes.get(repository.cas)!;
     for (const workflow of repository.cas.workflows || []) {
       if (isRuntimeEndpointSemanticName(workflow.name || workflow.id || '')) continue;
       const deployableIds = new Set<string>();
       const entries = (workflow.entry_points || [])
-        .map(entryId => lookupEntryPoint(lookupIndex, entryId))
+        .map(entryId => (repository.cas.entry_points || []).find(candidate => candidate.id === entryId))
         .filter(Boolean) as any[];
-      for (const entry of entries) {
-        const app = entryRefs(lookupIndex, entry).map(ref => applicationForFileFromIndex(projectId, ref.file, appByProjectId)).find(Boolean);
+      for (const entryId of workflow.entry_points || []) {
+        const entry = (repository.cas.entry_points || []).find(candidate => candidate.id === entryId);
+        const app = entry ? entryRefs(repository.cas, entry).map(ref => applicationForFile(projectId, ref.file, apps)).find(Boolean) : undefined;
         if (app) deployableIds.add(app.id);
       }
       const exits = (workflow.exit_points || [])
-        .map(exitId => lookupExitPoint(lookupIndex, exitId))
+        .map(exitId => (repository.cas.exit_points || []).find(candidate => candidate.id === exitId))
         .filter(Boolean) as any[];
-      const interfaceIds = [...new Set([
-        ...(workflow.entry_points || []).flatMap(entryId => interfaceIdsByEvidence.get(`${projectId}:${entryId}`) || []),
-        ...(workflow.exit_points || []).flatMap(exitId => interfaceIdsByEvidence.get(`${projectId}:${exitId}`) || []),
-      ])].sort((left, right) => (interfaceOrder.get(left) || 0) - (interfaceOrder.get(right) || 0));
+      const interfaceIds = interfaces
+        .filter(item => item.codebase_id === projectId && item.evidence.some(evidence =>
+          (workflow.entry_points || []).includes(evidence.id) ||
+          (workflow.exit_points || []).includes(evidence.id)
+        ))
+        .map(item => item.id);
       const criticality = workspaceWorkflowCriticality(workflow, entries, exits, [...deployableIds], interfaceIds);
       const terminalSignal = terminalSignalForCapability(terminalProfile, {
         id: workflow.id,
@@ -9521,7 +9013,6 @@ function buildWorkspaceRiskAreas(
   activity: WorkspaceActivitySummary,
   telemetry: WorkspaceTelemetrySummary,
   ownership: Record<string, WorkspaceOwnership>,
-  lookupIndexes: Map<CASOutput, CrossCodebaseLookupIndex>,
 ): WorkspaceRiskArea[] {
   const risks: WorkspaceRiskArea[] = [];
   const localChangeRiskBuckets = new Map<string, {
@@ -9540,13 +9031,11 @@ function buildWorkspaceRiskAreas(
   for (const repository of repositories) {
     const projectId = codebaseId(repository.path);
     const apps = applications.filter(app => app.codebase_id === projectId);
-    const appByProjectId = new Map(apps.map(app => [app.id, app]));
-    const lookupIndex = lookupIndexes.get(repository.cas)!;
     for (const risk of repository.cas.change_risks || []) {
 	      if (!['critical', 'high'].includes(risk.risk_level)) continue;
-	      const node = lookupNode(lookupIndex, risk.node_id);
+	      const node = (repository.cas.nodes || []).find(candidate => candidate.id === risk.node_id);
 	      if (isLegacyReferenceSource(node?.source?.file)) continue;
-	      const app = applicationForFileFromIndex(projectId, node?.source?.file, appByProjectId);
+	      const app = applicationForFile(projectId, node?.source?.file, apps);
       const bucketId = app?.id || projectId;
       const bucket = localChangeRiskBuckets.get(bucketId) || {
         severity: risk.risk_level,
@@ -9872,9 +9361,8 @@ function toSystemCodebase(repository: CrossCodebaseInput): SystemCodebase {
     name: sanitizeDeployableName(repository.name || cas.system?.name || path.basename(repository.path), repository),
     path: repository.path,
     project_role: inferProjectRole(repository),
-    system_type: String(cas.enhanced_system_purpose?.artifact_type || cas.system?.type || 'application'),
+    system_type: cas.system?.type || 'application',
     primary_domain: String((cas as any).enhanced_system_purpose?.primary_domain || '').trim() || undefined,
-    description: String((cas as any).enhanced_system_purpose?.inferred_description || '').trim() || undefined,
     languages: (cas.system?.technologies?.languages || []).map(language => language.name).filter(Boolean),
     // The raw technologies inventory does not distinguish a product framework
     // from one detected only in test fixtures/mocks/samples. Drop any framework
@@ -9904,9 +9392,8 @@ function inferProjectRole(repository: CrossCodebaseInput): SystemCodebase['proje
   return 'unknown';
 }
 
-function extractInterfaces(repository: CrossCodebaseInput, id: string, lookupIndex: CrossCodebaseLookupIndex): SystemInterface[] {
+function extractInterfaces(repository: CrossCodebaseInput, id: string): SystemInterface[] {
   const interfaces: SystemInterface[] = [];
-  const providerHttpKeys = new Set<string>();
   const cas = repository.cas;
   const base = {
     codebase_id: id,
@@ -9914,38 +9401,33 @@ function extractInterfaces(repository: CrossCodebaseInput, id: string, lookupInd
   };
 
   for (const entryPoint of cas.entry_points || []) {
-    const httpProvider = isHttpProvider(entryPoint);
-    const messageListener = isMessageListener(entryPoint);
-    const refs = httpProvider || messageListener ? entryRefs(lookupIndex, entryPoint) : [];
-    if (httpProvider) {
+    if (isHttpProvider(entryPoint)) {
       const endpoint = entryPoint.trigger?.path || entryPoint.name;
       const method = normalizeHttpMethod(entryPoint.trigger?.method) || 'ALL';
-      const key = httpKey(method, endpoint);
       interfaces.push({
         ...base,
-        application_id: applicationId(id, inferApplicationName(repository, refs, entryServiceAliases(entryPoint), endpoint)),
+        application_id: applicationId(id, inferApplicationName(repository, entryRefs(cas, entryPoint), entryServiceAliases(entryPoint), endpoint)),
         id: interfaceId(id, 'provider-http', entryPoint.id),
         kind: 'http-api',
         role: 'provider',
         mode: isStreamEntry(entryPoint) ? 'stream' : 'sync',
         name: `${method} ${endpoint}`,
-        key,
+        key: httpKey(method, endpoint),
         protocol: isStreamEntry(entryPoint) ? 'websocket' : 'http',
         method,
         endpoint,
         service_aliases: entryServiceAliases(entryPoint),
         topology_surface: topologySurface(entryPoint.metadata),
-        refs,
+        refs: entryRefs(cas, entryPoint),
         evidence: [{ kind: 'entry_point', id: entryPoint.id, confidence: 0.9 }],
       });
-      providerHttpKeys.add(key);
     }
 
-    if (messageListener) {
+    if (isMessageListener(entryPoint)) {
       const topic = normalizeTopic(entryPoint.trigger?.event || entryPoint.name);
       interfaces.push({
         ...base,
-        application_id: applicationId(id, inferApplicationName(repository, refs, [], entryPoint.name)),
+        application_id: applicationId(id, inferApplicationName(repository, entryRefs(cas, entryPoint), [], entryPoint.name)),
         id: interfaceId(id, 'listener-message', entryPoint.id),
         kind: isStreamEntry(entryPoint) ? 'stream' : 'message',
         role: 'listener',
@@ -9954,7 +9436,7 @@ function extractInterfaces(repository: CrossCodebaseInput, id: string, lookupInd
         key: topic,
         topic,
         schema: entryPoint.input?.schema || entryPoint.input?.type,
-        refs,
+        refs: entryRefs(cas, entryPoint),
         evidence: [{ kind: 'entry_point', id: entryPoint.id, confidence: 0.9 }],
       });
     }
@@ -9964,9 +9446,9 @@ function extractInterfaces(repository: CrossCodebaseInput, id: string, lookupInd
     const endpoint = route.path;
     const method = normalizeHttpMethod(route.method) || 'ALL';
     const key = httpKey(method, endpoint);
-    if (providerHttpKeys.has(key)) continue;
+    if (interfaces.some(candidate => candidate.kind === 'http-api' && candidate.role === 'provider' && candidate.key === key)) continue;
       const routeId = `${method}:${endpoint}:${route.controller}.${route.handler}`;
-      const refs = route.source_node ? nodeRefs(lookupIndex, [route.source_node]) : [];
+      const refs = route.source_node ? nodeRefs(cas, [route.source_node]) : [];
     interfaces.push({
       ...base,
       application_id: applicationId(id, inferApplicationName(repository, refs, routeServiceAliases(route, refs), endpoint)),
@@ -9984,12 +9466,9 @@ function extractInterfaces(repository: CrossCodebaseInput, id: string, lookupInd
       refs,
       evidence: [{ kind: 'entry_point', id: routeId, confidence: 0.75 }],
     });
-    providerHttpKeys.add(key);
   }
 
   for (const exitPoint of cas.exit_points || []) {
-    const refs = exitRefs(lookupIndex, exitPoint);
-    const sourceAliases = sourceNodeServiceAliases(lookupIndex, exitPoint.source_node);
     if (isHttpConsumer(exitPoint)) {
       const endpoint = exitPoint.target?.endpoint || exitPoint.target?.resource || exitPoint.name;
       if (!isConcreteHttpConsumerEndpoint(endpoint, exitPoint)) continue;
@@ -10004,7 +9483,7 @@ function extractInterfaces(repository: CrossCodebaseInput, id: string, lookupInd
         // no apps/packages/bin hint — masking the correct consumer identity
         // (e.g. "admin-ui") entirely, so downstream links pointed a phantom
         // same-name app at the real target instead of the real consumer.
-        application_id: applicationId(id, inferApplicationName(repository, refs, sourceAliases, '')),
+        application_id: applicationId(id, inferApplicationName(repository, exitRefs(cas, exitPoint), sourceNodeServiceAliases(cas, exitPoint.source_node), '')),
         id: interfaceId(id, 'consumer-http', exitPoint.id),
         kind: 'http-api',
         role: 'consumer',
@@ -10016,7 +9495,7 @@ function extractInterfaces(repository: CrossCodebaseInput, id: string, lookupInd
         endpoint,
         service_aliases: exitServiceAliases(exitPoint),
         topology_surface: topologySurface(exitPoint.metadata),
-        refs,
+        refs: exitRefs(cas, exitPoint),
         evidence: [{ kind: 'exit_point', id: exitPoint.id, confidence: 0.85 }],
       });
     }
@@ -10026,7 +9505,7 @@ function extractInterfaces(repository: CrossCodebaseInput, id: string, lookupInd
       if (packageName && isSystemPackageConsumer(packageName) && !looksLikePlatformPackage(packageName)) {
         interfaces.push({
           ...base,
-          application_id: applicationId(id, inferApplicationName(repository, refs, sourceAliases, packageName)),
+          application_id: applicationId(id, inferApplicationName(repository, exitRefs(cas, exitPoint), sourceNodeServiceAliases(cas, exitPoint.source_node), packageName)),
           id: interfaceId(id, 'consumer-sdk', exitPoint.id),
           kind: 'sdk',
           role: 'consumer',
@@ -10034,7 +9513,7 @@ function extractInterfaces(repository: CrossCodebaseInput, id: string, lookupInd
           name: packageName,
           key: packageName,
           package_name: packageName,
-          refs,
+          refs: exitRefs(cas, exitPoint),
           evidence: [{ kind: 'exit_point', id: exitPoint.id, confidence: 0.82 }],
         });
       }
@@ -10044,7 +9523,7 @@ function extractInterfaces(repository: CrossCodebaseInput, id: string, lookupInd
       const topic = normalizeTopic(exitPoint.target?.resource || exitPoint.name);
       interfaces.push({
         ...base,
-        application_id: applicationId(id, inferApplicationName(repository, refs, sourceAliases, topic)),
+        application_id: applicationId(id, inferApplicationName(repository, exitRefs(cas, exitPoint), sourceNodeServiceAliases(cas, exitPoint.source_node), topic)),
         id: interfaceId(id, 'publisher-message', exitPoint.id),
         kind: isStreamExit(exitPoint) ? 'stream' : 'message',
         role: 'publisher',
@@ -10053,7 +9532,7 @@ function extractInterfaces(repository: CrossCodebaseInput, id: string, lookupInd
         key: topic,
         topic,
         schema: exitPoint.data?.output_type,
-        refs,
+        refs: exitRefs(cas, exitPoint),
         evidence: [{ kind: 'exit_point', id: exitPoint.id, confidence: 0.9 }],
       });
     }
@@ -10063,7 +9542,7 @@ function extractInterfaces(repository: CrossCodebaseInput, id: string, lookupInd
       if (!isSpecificSharedResource(resource)) continue;
       interfaces.push({
         ...base,
-        application_id: applicationId(id, inferApplicationName(repository, refs, sourceAliases, resource)),
+        application_id: applicationId(id, inferApplicationName(repository, exitRefs(cas, exitPoint), sourceNodeServiceAliases(cas, exitPoint.source_node), resource)),
         id: interfaceId(id, 'passive-data-exit', exitPoint.id),
         kind: 'passive-data',
         role: 'shared',
@@ -10071,7 +9550,7 @@ function extractInterfaces(repository: CrossCodebaseInput, id: string, lookupInd
         name: exitPoint.name,
         key: resource,
         resource,
-        refs,
+        refs: exitRefs(cas, exitPoint),
         evidence: [{ kind: 'exit_point', id: exitPoint.id, confidence: 0.78 }],
       });
     }
@@ -10079,11 +9558,10 @@ function extractInterfaces(repository: CrossCodebaseInput, id: string, lookupInd
 
   for (const service of cas.external_services || []) {
     const packageName = normalizePackageName(service.name || service.id);
-    const refs = nodeRefs(lookupIndex, service.connected_nodes || []);
     if (!service.endpoint && isWorkspaceRelevantExternalDependency(packageName)) {
       interfaces.push({
         ...base,
-        application_id: applicationId(id, inferApplicationName(repository, refs, [], service.name || packageName)),
+        application_id: applicationId(id, inferApplicationName(repository, nodeRefs(cas, service.connected_nodes || []), [], service.name || packageName)),
         id: interfaceId(id, 'consumer-service-sdk', service.id || packageName),
         kind: 'sdk',
         role: 'consumer',
@@ -10091,7 +9569,7 @@ function extractInterfaces(repository: CrossCodebaseInput, id: string, lookupInd
         name: displayExternalDependencyName(packageName),
         key: packageName,
         package_name: packageName,
-        refs,
+        refs: nodeRefs(cas, service.connected_nodes || []),
         evidence: [{ kind: 'external_service', id: service.id || packageName, confidence: 0.82 }],
       });
       continue;
@@ -10101,7 +9579,7 @@ function extractInterfaces(repository: CrossCodebaseInput, id: string, lookupInd
     if (!isConcreteHttpConsumerEndpoint(endpoint)) continue;
     interfaces.push({
       ...base,
-      application_id: applicationId(id, inferApplicationName(repository, refs, serviceAliasesFromEndpoint(endpoint), endpoint)),
+      application_id: applicationId(id, inferApplicationName(repository, nodeRefs(cas, service.connected_nodes || []), serviceAliasesFromEndpoint(endpoint), endpoint)),
       id: interfaceId(id, 'consumer-service', service.id),
       kind: service.type?.toLowerCase().includes('websocket') ? 'stream' : 'http-api',
       role: 'consumer',
@@ -10112,7 +9590,7 @@ function extractInterfaces(repository: CrossCodebaseInput, id: string, lookupInd
       method: 'FETCH',
       endpoint,
       service_aliases: serviceAliasesFromEndpoint(endpoint),
-      refs,
+      refs: nodeRefs(cas, service.connected_nodes || []),
       evidence: [{ kind: 'external_service', id: service.id, confidence: 0.75 }],
     });
   }
@@ -10154,10 +9632,9 @@ function extractInterfaces(repository: CrossCodebaseInput, id: string, lookupInd
   }
 
   for (const packageName of sdkPackageCandidates(repository)) {
-    const refs = providerSdkRefs(lookupIndex);
     interfaces.push({
       ...base,
-      application_id: applicationId(id, inferApplicationName(repository, refs, [], packageName)),
+      application_id: applicationId(id, inferApplicationName(repository, providerSdkRefs(cas), [], packageName)),
       id: interfaceId(id, 'provider-sdk', packageName),
       kind: 'sdk',
       role: 'provider',
@@ -10165,7 +9642,7 @@ function extractInterfaces(repository: CrossCodebaseInput, id: string, lookupInd
       name: packageName,
       key: packageName,
       package_name: packageName,
-      refs,
+      refs: providerSdkRefs(cas),
       evidence: [{ kind: 'schema', id: packageName, confidence: 0.72 }],
     });
   }
@@ -10173,16 +9650,14 @@ function extractInterfaces(repository: CrossCodebaseInput, id: string, lookupInd
   for (const dataEntity of cas.data_entities || []) {
     const resource = normalizeResource(dataEntity.name);
     if (!isSpecificSharedResource(resource)) continue;
-    const nodeIds = [
-      ...(dataEntity.lifecycle?.created_by || []),
-      ...(dataEntity.lifecycle?.read_by || []),
-      ...(dataEntity.lifecycle?.updated_by || []),
-      ...(dataEntity.lifecycle?.deleted_by || []),
-    ];
-    const refs = nodeRefs(lookupIndex, nodeIds);
     interfaces.push({
       ...base,
-      application_id: applicationId(id, inferApplicationName(repository, refs, [], dataEntity.name)),
+      application_id: applicationId(id, inferApplicationName(repository, nodeRefs(cas, [
+        ...(dataEntity.lifecycle?.created_by || []),
+        ...(dataEntity.lifecycle?.read_by || []),
+        ...(dataEntity.lifecycle?.updated_by || []),
+        ...(dataEntity.lifecycle?.deleted_by || []),
+      ]), [], dataEntity.name)),
       id: interfaceId(id, 'passive-data-entity', dataEntity.id || dataEntity.name),
       kind: 'passive-data',
       role: 'shared',
@@ -10190,7 +9665,12 @@ function extractInterfaces(repository: CrossCodebaseInput, id: string, lookupInd
       name: dataEntity.name,
       key: resource,
       resource,
-      refs,
+      refs: nodeRefs(cas, [
+        ...(dataEntity.lifecycle?.created_by || []),
+        ...(dataEntity.lifecycle?.read_by || []),
+        ...(dataEntity.lifecycle?.updated_by || []),
+        ...(dataEntity.lifecycle?.deleted_by || []),
+      ]),
       evidence: [{ kind: 'schema', id: dataEntity.id || dataEntity.name, confidence: 0.68 }],
     });
   }
@@ -10703,15 +10183,6 @@ function applicationForFile(codebaseIdValue: string, file: string | undefined, a
   return applications.find(app => app.id === id);
 }
 
-function applicationForFileFromIndex(
-  codebaseIdValue: string,
-  file: string | undefined,
-  applicationsById: Map<string, SystemApplication>,
-): SystemApplication | undefined {
-  const appName = applicationNameFromFile(file);
-  return appName ? applicationsById.get(applicationId(codebaseIdValue, appName)) : undefined;
-}
-
 function applicationForImportSource(
   codebaseIdValue: string,
   sourceFile: string | undefined,
@@ -11211,14 +10682,6 @@ function countUniqueMatches(text: string, patterns: RegExp[]): number {
 }
 
 function inferWorkspaceProductName(codebases: SystemCodebase[], fallback: string): string {
-  const explicitWorkspaceName = String(fallback || '').trim();
-  if (
-    explicitWorkspaceName &&
-    !/^(?:workspace|analysis|system|project)$/i.test(explicitWorkspaceName) &&
-    !/^(?:wsp|prj|acct)[_-][a-z0-9_-]+$/i.test(explicitWorkspaceName)
-  ) {
-    return explicitWorkspaceName;
-  }
   const stop = new Set(['gauntlet', 'workspace', 'analysis', 'proof', 'concept', 'repo', 'app', 'api', 'ui', 'client', 'server', 'service', 'system', 'infra', 'infrastructure', 'admin', 'user', 'mobile', 'website', 'poc', 'old', 'demo', 'self', 'hosted', 'builder', 'current', 'latest']);
   const counts = new Map<string, number>();
   const tokensFor = (value: string | undefined) => String(value || '').split(/[^a-zA-Z0-9]+/).filter(Boolean);
@@ -11688,10 +11151,7 @@ function buildApplications(
     app.interface_ids.push(item.id);
     app.service_aliases = mergeStrings(app.service_aliases, item.service_aliases || []);
     const fileHint = item.refs.find(ref => ref.file)?.file;
-    const fileSurface = applicationSurfaceFromFile(fileHint);
-    const codebase = codebaseById.get(item.codebase_id);
-    const isCodebaseRoot = Boolean(codebase && app.id === applicationId(item.codebase_id, codebase.name));
-    if (!isCodebaseRoot && !app.path_hint && fileSurface) app.path_hint = fileSurface.pathHint;
+    if (!app.path_hint && fileHint) app.path_hint = applicationPathHint(fileHint);
     if (isPackagePathHint(app.path_hint)) {
       app.kind = 'package';
       app.deployable = false;
@@ -11706,8 +11166,7 @@ function buildApplications(
     app.service_aliases = mergeStrings(app.service_aliases, component.service_aliases || []);
     app.ports = mergeStrings(app.ports, component.ports || []);
     const fileHint = component.refs.find(ref => ref.file)?.file;
-    const fileSurface = applicationSurfaceFromFile(fileHint);
-    if (!app.path_hint && fileSurface) app.path_hint = fileSurface.pathHint;
+    if (!app.path_hint && fileHint) app.path_hint = applicationPathHint(fileHint);
     app.kind = applicationKind(app.name, codebaseById.get(component.codebase_id)?.system_type, app.path_hint);
     app.deployable = app.deployable || (
       app.kind !== 'tool' &&
@@ -11750,23 +11209,7 @@ function buildApplications(
   // "application" label from a bare directory that never accumulated any.
   const admitted = normalized.filter(app => {
     if (app.deployable) return true;
-    const codebase = codebaseById.get(app.codebase_id);
-    if (codebase && app.id === applicationId(app.codebase_id, codebase.name)) return true;
     if (app.kind !== 'package' && app.kind !== 'codebase') return true;
-    const sameNamedDistinctSurface = normalized.some(other =>
-      other.id !== app.id &&
-      cleanApplicationName(other.name) === cleanApplicationName(app.name) &&
-      pathHintConflicts(other.path_hint || '', app.path_hint || ''));
-    if (sameNamedDistinctSurface) return true;
-    if (app.kind === 'package') {
-      const repository = repositories.find(candidate => codebaseId(candidate.path) === app.codebase_id);
-      const imported = (repository?.cas.nodes || []).some(node => {
-        if (String(node.type || '').toLowerCase() !== 'import') return false;
-        const importSource = String((node.metadata as Record<string, unknown> | undefined)?.source || '');
-        return applicationForImportSource(app.codebase_id, node.source?.file, importSource, normalized)?.id === app.id;
-      });
-      if (imported) return true;
-    }
     return app.interface_ids.length > 0 || app.runtime_component_ids.length > 0;
   });
 
@@ -12009,13 +11452,9 @@ function applicationSurfaceCandidatesFromEvidenceRoots(
         shipsPaths: [...(evidence.ships_paths || [])],
       });
     } else {
-      if (evidence.tier < existing.tier) {
-        existing.tier = evidence.tier;
-        existing.names = new Set(cleanEvidenceName ? [cleanEvidenceName] : []);
-      } else if (evidence.tier === existing.tier && cleanEvidenceName) {
-        existing.names.add(cleanEvidenceName);
-      }
+      if (evidence.tier < existing.tier) existing.tier = evidence.tier;
       existing.evidence = mergeStrings(existing.evidence, evidence.evidence);
+      if (cleanEvidenceName) existing.names.add(cleanEvidenceName);
       existing.shipsPaths = mergeStrings(existing.shipsPaths, evidence.ships_paths || []);
     }
   }
@@ -12311,10 +11750,6 @@ function resolveDeployables(applications: SystemApplication[], repositories: Cro
     const resolutions = new Map<string, DeployableResolution>();
     for (const app of appsForRepo) {
       const rootPath = app.path_hint || app.name;
-      const hasSpecificSibling = appsForRepo.some(other =>
-        other.id !== app.id &&
-        Boolean(other.path_hint) &&
-        !isRawInfrastructureOrImageSurface(other));
       // Must check entrypoint_member match before root_path containment: a
       // per-service Dockerfile conventionally lives in a shared directory
       // (docker/, deploy/), so root_path containment alone misses it and a
@@ -12327,9 +11762,7 @@ function resolveDeployables(applications: SystemApplication[], repositories: Cro
         candidate.tier === 1 && candidate.entrypoint_member && bundleNameMatches(candidate.entrypoint_member, app));
       const directoryDecoupledMatch = directoryDecoupledCandidates.find(candidate => candidate.root_path !== '.')
         || directoryDecoupledCandidates[0];
-      const exactRootEvidence = directoryDecoupledMatch
-        || (!app.path_hint && !hasSpecificSibling ? evidenceByRoot.get('.') : undefined)
-        || evidenceByRoot.get(rootPath);
+      const exactRootEvidence = directoryDecoupledMatch || evidenceByRoot.get(rootPath);
       const evidence = exactRootEvidence
         || [...evidenceByRoot.values()].find(candidate => rootPath && (rootPath.startsWith(`${candidate.root_path}/`) || candidate.root_path.startsWith(`${rootPath}/`)));
       if (evidence) {
@@ -12536,29 +11969,6 @@ function resolveDeployables(applications: SystemApplication[], repositories: Cro
     }
 
     applyShippedGate(appsForRepo, resolutions, rootBundleTargets);
-    for (const app of appsForRepo) {
-      if (!isRawInfrastructureOrImageSurface(app)) continue;
-      app.deployable = false;
-      app.boundary_evidence = mergeStrings(app.boundary_evidence || [], ['infrastructure-artifact-not-application']);
-    }
-    const specificDeployableSiblings = appsForRepo.filter(app =>
-      Boolean(app.path_hint) && app.deployable && !isRawInfrastructureOrImageSurface(app));
-    if (specificDeployableSiblings.length > 0) {
-      for (const app of appsForRepo) {
-        if (app.path_hint || !app.deployable) continue;
-        const ownsDistinctRootArtifact = evidenceList.some(evidence =>
-          evidence.root_path === '.' &&
-          evidence.tier === 1 &&
-          (evidence.ships_paths?.length ?? 0) <= 1 &&
-          (bundleNameMatches(evidence.name, app) ||
-            Boolean(evidence.entrypoint_member && bundleNameMatches(evidence.entrypoint_member, app))));
-        if (ownsDistinctRootArtifact) continue;
-        app.deployable = false;
-        app.boundary_evidence = mergeStrings(app.boundary_evidence || [], [
-          'workspace-container-root:specific-deployable-siblings-own-runtime-boundaries',
-        ]);
-      }
-    }
   }
 }
 
@@ -12602,7 +12012,7 @@ function linkDasUnits(applications: SystemApplication[], repositories: CrossCode
       // position — the service's WAS row drilled down into the wrong unit.
       // A unit bearing the app's own cleaned name is the strongest identity
       // evidence and must win; root/member containment stays as fallback.
-      const nameMatch = das.das_index.units.find(unit => distributionNamesMatch(app.name, unit.name));
+      const nameMatch = das.das_index.units.find(unit => cleanApplicationName(app.name) === cleanApplicationName(unit.name));
       // A bundled-member app normally leaves the link to its bundle primary
       // — but when the DAS itself promoted a unit under this app's OWN name,
       // the two layers disagree (workspace bundling folded it, DAS ships it
@@ -12618,62 +12028,6 @@ function linkDasUnits(applications: SystemApplication[], repositories: CrossCode
         rootMatches(appRoot, unit.root_path) ||
         unit.member_root_paths.some(memberRoot => rootMatches(appRoot, memberRoot)));
       if (match) app.source_das_unit_id = match.id;
-    }
-  }
-}
-
-function mergeDuplicateDasApplications(applications: SystemApplication[]): void {
-  const byUnit = new Map<string, SystemApplication[]>();
-  for (const app of applications) {
-    if (!app.source_das_unit_id || app.merged_into) continue;
-    const key = `${app.codebase_id}:${app.source_das_unit_id}`;
-    byUnit.set(key, [...(byUnit.get(key) || []), app]);
-  }
-
-  const evidenceScore = (app: SystemApplication): number =>
-    app.runtime_component_ids.length * 8 +
-    app.interface_ids.length * 6 +
-    app.ports.length * 4 +
-    app.service_aliases.length * 2 +
-    (app.boundary_evidence || []).length +
-    (app.evidence || []).length;
-
-  for (const unitApplications of byUnit.values()) {
-    if (unitApplications.length < 2) continue;
-    const identityGroups: SystemApplication[][] = [];
-    for (const app of unitApplications) {
-      const pathName = path.basename(app.path_hint || '');
-      const group = identityGroups.find(items => items.some(item =>
-        distributionNamesMatch(item.name, app.name) ||
-        distributionNamesMatch(path.basename(item.path_hint || ''), app.name) ||
-        distributionNamesMatch(item.name, pathName)));
-      if (group) group.push(app);
-      else identityGroups.push([app]);
-    }
-
-    for (const duplicates of identityGroups) {
-      if (duplicates.length < 2) continue;
-      const survivor = [...duplicates].sort((left, right) =>
-        Number(isRawInfrastructureOrImageSurface(left)) - Number(isRawInfrastructureOrImageSurface(right)) ||
-        evidenceScore(right) - evidenceScore(left) ||
-        Number(right.kind !== 'codebase') - Number(left.kind !== 'codebase') ||
-        left.name.localeCompare(right.name))[0];
-
-      for (const duplicate of duplicates) {
-        if (duplicate.id === survivor.id) continue;
-        survivor.interface_ids = mergeStrings(survivor.interface_ids, duplicate.interface_ids);
-        survivor.runtime_component_ids = mergeStrings(survivor.runtime_component_ids, duplicate.runtime_component_ids);
-        survivor.ports = mergeStrings(survivor.ports, duplicate.ports);
-        survivor.service_aliases = mergeStrings(survivor.service_aliases, duplicate.service_aliases);
-        survivor.evidence = mergeStrings(survivor.evidence || [], duplicate.evidence || []);
-        survivor.boundary_evidence = mergeStrings(survivor.boundary_evidence || [], duplicate.boundary_evidence || []);
-        if (!survivor.description && duplicate.description) survivor.description = duplicate.description;
-        duplicate.merged_into = survivor.id;
-        duplicate.boundary_evidence = mergeStrings(duplicate.boundary_evidence || [], [
-          `duplicate-das-surface:merged-into:${survivor.id}`,
-          `shared-das-unit:${duplicate.source_das_unit_id}`,
-        ]);
-      }
     }
   }
 }
@@ -13068,7 +12422,6 @@ function buildSharedCodeRollup(
 function summarize(
   codebases: SystemCodebase[],
   applications: SystemApplication[],
-  overviewApplications: SystemApplication[],
   distributionUnits: WorkspaceDistributionUnit[],
   interfaces: SystemInterface[],
   runtimeComponents: SystemRuntimeComponent[],
@@ -13088,8 +12441,7 @@ function summarize(
 ): CrossCodebaseSystemGraph['summary'] {
   return {
     codebases: codebases.length,
-    applications: overviewApplications.length,
-    application_surfaces: applications.length,
+    applications: applications.length,
     distribution_units: distributionUnits.length,
     composition_kind: composition.kind,
     interfaces: countBy(interfaces, item => item.kind),
@@ -13353,9 +12705,9 @@ function exitServiceAliases(exitPoint: CASExitPoint): string[] {
   );
 }
 
-function sourceNodeServiceAliases(lookupIndex: CrossCodebaseLookupIndex, nodeId: string | undefined): string[] {
+function sourceNodeServiceAliases(cas: CASOutput, nodeId: string | undefined): string[] {
   if (!nodeId) return [];
-  const node = lookupNode(lookupIndex, nodeId);
+  const node = (cas.nodes || []).find(candidate => candidate.id === nodeId);
   const metadata = (node?.metadata || {}) as Record<string, unknown>;
   const explicitAliases = normalizeAliases(
     metadata.service_aliases,
@@ -13410,11 +12762,10 @@ function isHostShapedToken(cleanedName: string): boolean {
     const dotTld = dotSegments[dotSegments.length - 1];
     if (/^[a-z]{2,6}$/.test(dotTld) && dotSegments.slice(0, -1).every(segment => /^[a-z0-9-]+$/.test(segment))) return true;
   }
-  // cleanApplicationName preserves dots, so a dashed value here is an ordinary
-  // kebab-case repo/deployable name, not evidence of a hostname. Treating any
-  // three-part kebab name ending in a short word as a host misclassified names
-  // such as enterprise-polyglot-app and enterprise-platform-infra.
-  return false;
+  const segments = normalized.split('-').filter(Boolean);
+  if (segments.length < 3) return false;
+  const tld = segments[segments.length - 1];
+  return /^[a-z]{2,6}$/.test(tld) && segments.slice(0, -1).every(segment => /^[a-z0-9]+$/i.test(segment));
 }
 
 /** True when `cleanedName` is not safe to surface as a deployable/app name
@@ -13814,42 +13165,30 @@ function isSystemPackageConsumer(packageName: string): boolean {
   return false;
 }
 
-function entryRefs(lookupIndex: CrossCodebaseLookupIndex, entryPoint: CASEntryPoint): CrossCodebaseRef[] {
+function entryRefs(cas: CASOutput, entryPoint: CASEntryPoint): CrossCodebaseRef[] {
   return [
-    ...nodeRefs(lookupIndex, [entryPoint.source_node, entryPoint.handler?.node_id].filter(Boolean) as string[]),
+    ...nodeRefs(cas, [entryPoint.source_node, entryPoint.handler?.node_id].filter(Boolean) as string[]),
     entryPoint.handler?.file ? { id: entryPoint.handler.node_id || entryPoint.source_node, file: entryPoint.handler.file, line: entryPoint.handler.line } : undefined,
   ].filter(Boolean) as CrossCodebaseRef[];
 }
 
-function exitRefs(lookupIndex: CrossCodebaseLookupIndex, exitPoint: CASExitPoint): CrossCodebaseRef[] {
-  return nodeRefs(lookupIndex, [exitPoint.source_node, ...(exitPoint.connected_nodes || [])].filter(Boolean));
+function exitRefs(cas: CASOutput, exitPoint: CASExitPoint): CrossCodebaseRef[] {
+  return nodeRefs(cas, [exitPoint.source_node, ...(exitPoint.connected_nodes || [])].filter(Boolean));
 }
 
-function providerSdkRefs(lookupIndex: CrossCodebaseLookupIndex): CrossCodebaseRef[] {
-  return lookupIndex.provider_sdk_refs;
+function providerSdkRefs(cas: CASOutput): CrossCodebaseRef[] {
+  return (cas.nodes || [])
+    .filter(node => ['module', 'package', 'library', 'class', 'interface', 'function'].includes(node.type))
+    .slice(0, 10)
+    .map(nodeRef);
 }
 
-function nodeRefs(lookupIndex: CrossCodebaseLookupIndex, nodeIds: string[]): CrossCodebaseRef[] {
+function nodeRefs(cas: CASOutput, nodeIds: string[]): CrossCodebaseRef[] {
+  const byId = new Map((cas.nodes || []).map(node => [node.id, node]));
   return [...new Set(nodeIds)].map(id => {
-    const node = lookupNode(lookupIndex, id);
+    const node = byId.get(id);
     return node ? nodeRef(node) : { id };
   });
-}
-
-function lookupNode(lookupIndex: CrossCodebaseLookupIndex, nodeId: string | undefined): CASNode | undefined {
-  if (!nodeId) return undefined;
-  if (lookupIndex.diagnostics) lookupIndex.diagnostics.node_lookups += 1;
-  return lookupIndex.nodes_by_id.get(nodeId);
-}
-
-function lookupEntryPoint(lookupIndex: CrossCodebaseLookupIndex, entryPointId: string): CASEntryPoint | undefined {
-  if (lookupIndex.diagnostics) lookupIndex.diagnostics.entry_lookups += 1;
-  return lookupIndex.entry_points_by_id.get(entryPointId);
-}
-
-function lookupExitPoint(lookupIndex: CrossCodebaseLookupIndex, exitPointId: string): CASExitPoint | undefined {
-  if (lookupIndex.diagnostics) lookupIndex.diagnostics.exit_lookups += 1;
-  return lookupIndex.exit_points_by_id.get(exitPointId);
 }
 
 function nodeRef(node: CASNode): CrossCodebaseRef {

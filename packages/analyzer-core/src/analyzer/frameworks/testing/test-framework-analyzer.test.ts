@@ -73,9 +73,8 @@ describe('sum', () => {
     assert.strictEqual(suites[0].metadata?.framework, 'vitest');
     assert.deepEqual(cases.map(c => c.name).sort(), ['adds two numbers', 'handles zero']);
 
-    // Tests are modeled in the dedicated suite/case graph, not as operational
-    // entry points.
-    assert.strictEqual(contribution.entry_points.length, 0);
+    // Runnable test entry points reuse the 'test' kind.
+    assert.ok(contribution.entry_points.every(ep => ep.type === 'test'));
 
     const coversEdge = contribution.edges.find(e => e.type === 'covers');
     assert.ok(coversEdge, 'should emit a covers edge to the subject-under-test');

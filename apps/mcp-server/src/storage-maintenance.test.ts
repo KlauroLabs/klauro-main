@@ -102,10 +102,7 @@ test('storage pruning can remove ephemeral analyses from the index without touch
     const analysesRoot = path.join(root, 'analyses');
     const tempProject = path.join(tempRoot, 'klauro-existing-task-proof-abc123', 'task-label-product-enhancement');
     const generatedProject = path.join(root, 'machine-proof-workspaces', 'machine-1', 'with-klauro');
-    // The suite deliberately runs with an isolated HOME under os.tmpdir(). A
-    // HOME-derived path would therefore be correctly classified as ephemeral,
-    // defeating this fixture's purpose of representing a durable checkout.
-    const realProject = path.resolve('/srv/real-product/api');
+    const realProject = path.join(os.homedir(), 'dev', 'real-product', 'api');
     const tempFile = 'task-label-product-enhancement-aaaaaaaaaaaa.json.zst';
     const generatedFile = 'with-klauro-bbbbbbbbbbbb.json.zst';
     const realFile = 'api-cccccccccccc.json.zst';

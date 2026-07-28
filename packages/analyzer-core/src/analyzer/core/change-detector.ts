@@ -9,7 +9,6 @@ import {
   ChangeSet,
   FULL_REBUILD_THRESHOLD,
 } from '../../types/cas.types';
-import { computeAffectedFileClosure } from './incremental-impact';
 
 const CORE_CONFIG_FILES = [
   'package.json',
@@ -75,7 +74,7 @@ const PROJECT_SCOPE_TRIGGER_FILES = [
   'pom.xml',
 ];
 
-export const PROJECT_SCOPE_TRIGGER_PATTERNS = PROJECT_SCOPE_TRIGGER_FILES.flatMap(pattern =>
+const PROJECT_SCOPE_TRIGGER_PATTERNS = PROJECT_SCOPE_TRIGGER_FILES.flatMap(pattern =>
   pattern.startsWith('**/') || pattern.includes('/')
     ? [pattern]
     : [pattern, `**/${pattern}`]
@@ -633,7 +632,7 @@ export class ChangeDetector {
       };
     }
 
-    return this.enrichWithDependencies({
+    return {
       added,
       modified,
       deleted,
@@ -641,7 +640,7 @@ export class ChangeDetector {
       affectedNodeIds: new Set<string>(),
       requiresFullRebuild: false,
       detectionMethod: 'hash',
-    }, previousState);
+    };
   }
 
   private async enrichWithDependencies(
@@ -657,14 +656,37 @@ export class ChangeDetector {
       ...changeSet.deleted,
     ]);
 
-    for (const file of computeAffectedFileClosure(changedFiles, previousState.files)) {
-      affectedFiles.add(file);
-    }
+    const dependents = this.buildReverseDependencyMap(previousState);
 
-    for (const file of changedFiles) {
-      const record = previousState.files[file];
-      if (!record) continue;
-      for (const nodeId of record.nodeIds) affectedNodeIds.add(nodeId);
+    const queue = [...changedFiles];
+    const visited = new Set(changedFiles);
+    const MAX_DEPTH = 5;
+    let depth = 0;
+
+    while (queue.length > 0 && depth < MAX_DEPTH) {
+      const currentBatch = [...queue];
+      queue.length = 0;
+      depth++;
+
+      for (const file of currentBatch) {
+        const deps = dependents.get(file);
+        if (deps) {
+          for (const dep of deps) {
+            if (!visited.has(dep)) {
+              visited.add(dep);
+              affectedFiles.add(dep);
+              queue.push(dep);
+            }
+          }
+        }
+
+        const record = previousState.files[file];
+        if (record) {
+          for (const nodeId of record.nodeIds) {
+            affectedNodeIds.add(nodeId);
+          }
+        }
+      }
     }
 
     for (const file of affectedFiles) {
@@ -734,6 +756,21 @@ export class ChangeDetector {
       return null;
     }
     return relativeToProject;
+  }
+
+  private buildReverseDependencyMap(state: IncrementalState): Map<string, Set<string>> {
+    const dependents = new Map<string, Set<string>>();
+
+    for (const [filePath, record] of Object.entries(state.files)) {
+      for (const importedFile of record.importedFiles) {
+        if (!dependents.has(importedFile)) {
+          dependents.set(importedFile, new Set());
+        }
+        dependents.get(importedFile)!.add(filePath);
+      }
+    }
+
+    return dependents;
   }
 
   private shouldTriggerFullRebuild(changeSet: ChangeSet, state: IncrementalState): boolean {
@@ -806,7 +843,9 @@ export class ChangeDetector {
    */
   private checkProjectScopeTrigger(changedFiles: string[]): string | null {
     for (const file of changedFiles) {
-      if (matchesProjectScopeTrigger(file)) return file;
+      if (matchesProjectScopeTrigger(file)) {
+        return file;
+      }
     }
     return null;
   }

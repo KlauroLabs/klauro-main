@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { assertRealWorkspaceAiAttempt, buildCrossCodebaseSystemGraph, buildWorkspaceAgentContext, computeCodebaseComplexity, computeWorkspaceComplexity, detectWorkspaceCryptoProfile, enforceWorkspaceNarrativeProductValueSummary, enrichWorkspaceAnalysisNarrative, evaluateWorkspaceNarrativeGate, humanizeWorkspaceNarrativeIdentifiers, isGroundedAiWorkspaceItemDescription, isUncorroboratedEntityNameDomain, isVerbPhraseDomainLabel, isWorkspaceAiParseArtifactText, normalizeWorkspaceAiDescriptionText, productFrameworksFromCas, selectPreferredWorkspaceOllamaModel, selectWorkspaceAnalysisDetail, stripUngroundedWorkspaceMarketingLanguage, stripWorkspaceItemDescriptionArtifacts, withWorkspaceAiTimeout, workspaceNarrativeApplicationMisattributionReason, workspaceNarrativeDomainMisattributionReason, workspaceNarrativeEntityMisattributionReason, workspaceNarrativeHardRejectReason, workspaceNarrativeMarketingMatches, workspaceNarrativeMisattributionReason, workspaceNarrativePromptContext, workspaceNarrativeRepairPromptContext } from './cross-codebase-analysis';
+import { assertRealWorkspaceAiAttempt, buildCrossCodebaseSystemGraph, buildWorkspaceAgentContext, computeCodebaseComplexity, computeWorkspaceComplexity, detectWorkspaceCryptoProfile, enforceWorkspaceNarrativeProductValueSummary, enrichWorkspaceAnalysisNarrative, evaluateWorkspaceNarrativeGate, isUncorroboratedEntityNameDomain, isVerbPhraseDomainLabel, isWorkspaceAiParseArtifactText, normalizeWorkspaceAiDescriptionText, productFrameworksFromCas, selectPreferredWorkspaceOllamaModel, selectWorkspaceAnalysisDetail, stripUngroundedWorkspaceMarketingLanguage, stripWorkspaceItemDescriptionArtifacts, withWorkspaceAiTimeout, workspaceNarrativeDomainMisattributionReason, workspaceNarrativeEntityMisattributionReason, workspaceNarrativeHardRejectReason, workspaceNarrativeMarketingMatches, workspaceNarrativeMisattributionReason, workspaceNarrativePromptContext } from './cross-codebase-analysis';
 import { aiService } from '../../../packages/analyzer-core/src/ai/ai-service';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 
@@ -437,10 +437,7 @@ test('workspace analysis composes completed CAS outputs without source reads', (
   // was deleted (evidence-or-delete) rather than kept as a name guess.
   assert.ok(!graph.system_insights.some(insight => insight.type === 'mcp-agent-surface'));
   assert.ok(graph.system_insights.some(insight => insight.type === 'declared-unused-infrastructure' && /redis/i.test(insight.title)));
-  assert.ok(
-    graph.system_insights.some(insight => insight.type === 'provider-api-without-source-consumers' && /internal-api/i.test(insight.title)),
-    JSON.stringify({ applications: graph.applications, deployables: graph.deployables, links: graph.application_links, insights: graph.system_insights }, null, 2),
-  );
+  assert.ok(graph.system_insights.some(insight => insight.type === 'provider-api-without-source-consumers' && /internal-api/i.test(insight.title)));
 });
 
 test('does not invent cross-repo links from relative http calls', () => {
@@ -1362,11 +1359,7 @@ test('builds compact workspace agent contexts from WAS without full graph inject
   });
 
   assert.equal(context.product, 'workspace_agent_context');
-  assert.equal(
-    context.workspace.composition_kind,
-    'interconnected-system',
-    JSON.stringify({ applications: graph.applications, deployables: graph.deployables, links: graph.application_links, insights: graph.system_insights }, null, 2),
-  );
+  assert.equal(context.workspace.composition_kind, 'interconnected-system');
   assert.ok(context.context_budget.estimated_context_tokens < context.context_budget.estimated_full_was_tokens);
   assert.ok(context.context_budget.estimated_token_reduction_percentage > 0);
   assert.ok(['high', 'medium', 'low'].includes(context.context_budget.signal_quality));
@@ -1524,19 +1517,6 @@ test('falls back to the repo directory name instead of a bare external endpoint 
   assert.ok(names.includes('wex-client-php'), `expected repo-directory-derived name "wex-client-php", got: ${names.join(', ')}`);
 });
 
-test('preserves ordinary multi-part kebab repo names instead of treating them as hostnames', () => {
-  const app = cas({
-    system: { id: 'enterprise-polyglot-app', name: 'enterprise-polyglot-app', type: 'application', root_path: '/tmp/staged-id' },
-    nodes: [{ id: 'orders', name: 'OrdersController', type: 'controller', source: { file: 'src/orders.ts', line: 1 } } as any],
-  });
-  const graph = buildCrossCodebaseSystemGraph('Enterprise Workspace', [
-    { path: 'account-project:prj_internal_id', name: 'enterprise-polyglot-app', cas: app },
-  ]);
-  assert.equal(graph.codebases[0].name, 'enterprise-polyglot-app');
-  assert.ok(graph.applications.some(candidate => candidate.name === 'enterprise-polyglot-app'));
-  assert.ok(graph.codebases.every(candidate => !candidate.name.startsWith('account-project-')));
-});
-
 // --- WAS narrative quality-gate calibration (live-prod regression fixtures) ---
 
 function shopCas(): CASOutput {
@@ -1581,17 +1561,6 @@ const REAL_SHOP_NARRATIVE = 'This workspace powers the shop-api storefront backe
 // HTTP-method dump, route param fragment, single-flow altitude).
 const PERSONAL_BAD_ACCEPT_NARRATIVE = 'Friends is a workspace visible flow in account project-prj_yg64u7pf7lvdcppt. It is reached by DELETE/PATCH/GET/event route(s) such as /API/friends/:friendshipId and records friendship state so the account can manage friend connections across the workspace projects and services.';
 
-test('workspace narrative cleanup humanizes code identifiers without laundering protected ids or infrastructure addresses', () => {
-  assert.equal(
-    humanizeWorkspaceNarrativeIdentifiers('Order review uses calculate_enterprise_total and orderLookup before returning EnterpriseOrder records.'),
-    'Order review uses calculate enterprise total and order lookup before returning EnterpriseOrder records.'
-  );
-  assert.equal(
-    humanizeWorkspaceNarrativeIdentifiers('Project prj_yg64u7pf7lvdcppt provisions resource.aws_sqs_queue.enterprise_queue.'),
-    'Project prj_yg64u7pf7lvdcppt provisions resource.aws_sqs_queue.enterprise_queue.'
-  );
-});
-
 test('WAS quality gate hard-rejects id-leaking, route-dumping, single-flow prose (the Personal bad-accept)', () => {
   const graph = buildCrossCodebaseSystemGraph('personal-workspace', [
     { path: '/tmp/shop-api', name: 'shop-api', cas: shopCas() },
@@ -1602,11 +1571,8 @@ test('WAS quality gate hard-rejects id-leaking, route-dumping, single-flow prose
 
   // Each hard-reject marker individually:
   assert.match(String(workspaceNarrativeHardRejectReason('This workspace serves account project-prj_yg64u7pf7lvdcppt records to clients across services and stores them durably for later retrieval by the reporting pipeline and admin tools.', 'summary')), /internal id/i);
-  assert.match(String(workspaceNarrativeHardRejectReason('The deployment platform provisions Kubernetes resources for account xzgtuwa8lendbssf and maintains the resulting infrastructure for operators.', 'summary')), /internal account|identifier/i);
   assert.match(String(workspaceNarrativeHardRejectReason('This workspace is reached by DELETE/PATCH/GET route(s) that manage records across the services and store the resulting state for the reporting pipeline and admin tooling to read later.', 'summary')), /route fragments|single-flow/i);
   assert.match(String(workspaceNarrativeHardRejectReason('This workspace exposes endpoints such as /api/friends/:friendshipId that manage records across the services and store the resulting state for the reporting pipeline and admin tooling.', 'summary')), /route path|parameter/i);
-  assert.match(String(workspaceNarrativeHardRejectReason('The deployment project executes deploy.sh to provision infrastructure and records release state for operators across the workspace.', 'summary')), /source-file names/i);
-  assert.match(String(workspaceNarrativeHardRejectReason('The infrastructure project provisions resource.aws_sqs_queue.enterprise_queue and exposes the queue to the application runtime.', 'summary')), /infrastructure address|raw implementation identifier/i);
   assert.match(String(workspaceNarrativeHardRejectReason('Friends is a workspace visible flow that manages friendship records across the services and stores the resulting state for the reporting pipeline and the admin tooling to read later on.', 'summary')), /single-flow|flow/i);
   // Empty product_value_summary alongside a non-empty description is a hard reject.
   assert.match(String(workspaceNarrativeHardRejectReason(REAL_SHOP_NARRATIVE, '')), /product_value_summary/i);
@@ -1617,211 +1583,6 @@ test('WAS quality gate hard-rejects id-leaking, route-dumping, single-flow prose
   assert.equal(workspaceNarrativeHardRejectReason('This workspace verifies SHA-256 checksums during install and coordinates the registry, deployment services, and the admin tooling that keep storefront releases consistent for the engineering teams that operate them.', 'Runs release verification for the storefront platform.'), null);
   // A clean workspace-level narrative with a summary has no hard-reject marker.
   assert.equal(workspaceNarrativeHardRejectReason(REAL_SHOP_NARRATIVE, 'Runs the storefront ordering and catalog backend.'), null);
-});
-
-test('WAS quality gate rejects unsupported cross-project interaction even when the prose does not say both projects', () => {
-  const orderCas = shopCas();
-  const infraCas = cas({
-    system: { id: 'infra', name: 'platform-infra', type: 'application', root_path: '/tmp/platform-infra' },
-    nodes: [{ id: 'queue', name: 'Deployment Queue', type: 'infrastructure_resource', source: { file: 'main.tf', line: 1 } } as any],
-    enhanced_system_purpose: { artifact_type: 'infrastructure', primary_domain: 'Deployment Platform', core_concepts: ['Deployment Queue'] } as any,
-    system_capabilities: [{
-      id: 'capability:deploy', name: 'Deploy Infrastructure', description: 'Provisions the deployment queue.', category: 'core', criticality: 'high', operations: [], related_entities: [], related_domains: ['Deployment Platform'], confidence: 0.9, evidence: ['queue'],
-    }] as any,
-  });
-  const graph = buildCrossCodebaseSystemGraph('enterprise-workspace', [
-    { path: '/tmp/shop-api', name: 'shop-api', cas: orderCas },
-    { path: '/tmp/platform-infra', name: 'platform-infra', cas: infraCas },
-  ]);
-  graph.application_links = [];
-  graph.codebases = [
-    { ...graph.codebases[0], id: 'orders-project', name: 'shop-api' },
-    { ...graph.codebases[1], id: 'infra-project', name: 'platform-infra' },
-  ];
-  graph.applications = [
-    { ...graph.applications[0], id: 'shop-api-app', codebase_id: 'orders-project', name: 'shop-api' },
-    { ...graph.applications.at(-1)!, id: 'platform-infra-app', codebase_id: 'infra-project', name: 'platform-infra' },
-  ];
-  graph.workspace_domains = [
-    { ...graph.workspace_domains[0], name: 'Commerce', project_ids: ['orders-project'] },
-    { ...graph.workspace_domains.at(-1)!, name: 'Deployment Platform', project_ids: ['infra-project'] },
-  ];
-  graph.workspace_capabilities = [
-    { ...graph.workspace_capabilities[0], name: 'Order Fulfillment', project_ids: ['orders-project'] },
-    { ...graph.workspace_capabilities.at(-1)!, name: 'Deploy Infrastructure', project_ids: ['infra-project'] },
-  ];
-  const gate = evaluateWorkspaceNarrativeGate(
-    graph,
-    'The enterprise workspace contains shop-api for Order Fulfillment and platform-infra for Deployment Platform resources. Order Fulfillment flows through the Deployment Platform using shared infrastructure before shop-api records the final state for operators.',
-    'Manages storefront orders and provisions deployment infrastructure.',
-  );
-  assert.equal(gate.accepted, false);
-  assert.match(String(gate.reason), /without a source-backed application link|independently analyzed|no source-backed cross-project links/i);
-});
-
-test('generic scale qualifiers never merge domain ownership across independent projects', () => {
-  const orders = cas({
-    system: { id: 'orders', name: 'orders-app', type: 'application', root_path: '/tmp/orders-app' },
-    enhanced_system_purpose: { primary_domain: 'Enterprise Order', core_concepts: ['enterprise', 'order'] } as any,
-  });
-  const infrastructure = cas({
-    system: { id: 'infra', name: 'deployment-infra', type: 'application', root_path: '/tmp/deployment-infra' },
-    enhanced_system_purpose: { artifact_type: 'infrastructure', primary_domain: 'Enterprise Deployment Platform', core_concepts: ['enterprise', 'platform', 'deployment'] } as any,
-  });
-  const graph = buildCrossCodebaseSystemGraph('enterprise-workspace', [
-    { path: '/tmp/orders-app', name: 'orders-app', cas: orders },
-    { path: '/tmp/deployment-infra', name: 'deployment-infra', cas: infrastructure },
-  ]);
-  const orderDomain = graph.workspace_domains.find(domain => domain.name === 'Enterprise Order');
-  const deploymentDomain = graph.workspace_domains.find(domain => domain.name === 'Enterprise Deployment Platform');
-  assert.deepEqual(orderDomain?.project_ids, [graph.codebases.find(codebase => codebase.name === 'orders-app')?.id]);
-  assert.deepEqual(deploymentDomain?.project_ids, [graph.codebases.find(codebase => codebase.name === 'deployment-infra')?.id]);
-  assert.equal(graph.workspace_domains.some(domain => /^(Enterprise|Platform|Application)$/.test(domain.name)), false);
-});
-
-test('every member primary domain survives workspace composition across polyglot entity aliases', () => {
-  const orders = cas({
-    system: { id: 'orders', name: 'enterprise-polyglot-app', type: 'application', root_path: '/tmp/enterprise-polyglot-app' },
-    enhanced_system_purpose: {
-      primary_domain: 'enterprise-orders',
-      core_concepts: ['orders', 'order', 'enterprise', 'summary'],
-    } as any,
-    data_entities: [
-      { id: 'order-ts', name: 'EnterpriseOrder', kind: 'persisted-entity', fields: [] } as any,
-      { id: 'order-python', name: 'EnterprisePythonOrder', kind: 'persisted-entity', fields: [] } as any,
-    ],
-    system_capabilities: [
-      {
-        id: 'orders-capability',
-        name: 'Handle Enterprise Python Orders',
-        description: '',
-        related_domains: [],
-        related_entities: ['order-ts', 'order-python'],
-        operations: [],
-      } as any,
-    ],
-  });
-  const infrastructure = cas({
-    system: { id: 'infra', name: 'enterprise-platform-infra', type: 'application', root_path: '/tmp/enterprise-platform-infra' },
-    enhanced_system_purpose: {
-      artifact_type: 'infrastructure',
-      primary_domain: 'enterprise-deploy-resource',
-      core_concepts: ['deploy', 'resource'],
-    } as any,
-  });
-
-  const graph = buildCrossCodebaseSystemGraph('enterprise-hosted-proof', [
-    { path: '/tmp/enterprise-platform-infra', name: 'enterprise-platform-infra', cas: infrastructure },
-    { path: '/tmp/enterprise-polyglot-app', name: 'enterprise-polyglot-app', cas: orders },
-  ]);
-  const orderProjectId = graph.codebases.find(codebase => codebase.name === 'enterprise-polyglot-app')?.id;
-  const deployProjectId = graph.codebases.find(codebase => codebase.name === 'enterprise-platform-infra')?.id;
-
-  assert.ok(graph.workspace_domains.some(domain =>
-    domain.project_ids.includes(String(orderProjectId)) && /order/i.test(domain.name)
-  ), `missing the order project's primary domain: ${JSON.stringify(graph.workspace_domains)}`);
-  assert.ok(graph.workspace_domains
-    .filter(domain => /order/i.test(domain.name))
-    .every(domain => !domain.project_ids.includes(String(deployProjectId))), `infrastructure project contaminated order-domain ownership: ${JSON.stringify(graph.workspace_domains)}`);
-  assert.ok(graph.workspace_domains.some(domain =>
-    domain.project_ids.includes(String(deployProjectId)) && /deploy|resource/i.test(domain.name)
-  ), `missing the infrastructure project's primary domain: ${JSON.stringify(graph.workspace_domains)}`);
-  assert.equal(
-    graph.workspace_domains.some(domain => domain.name === 'EnterpriseOrder'),
-    false,
-    `entity-shaped EnterpriseOrder should collapse into the stronger primary order domain: ${JSON.stringify(graph.workspace_domains)}`,
-  );
-  assert.equal(graph.workspace_domains.some(domain => /^Summar(?:y|ies)$/i.test(domain.name)), false);
-});
-
-test('WAS narrative rejects raw identifiers and unsupported mutation of read-only subjects', () => {
-  assert.match(
-    String(workspaceNarrativeHardRejectReason(
-      'The workspace provisions the enterprise_queue resource and exposes order review behavior.',
-      'Reviews enterprise orders and provisions infrastructure.',
-    )),
-    /implementation identifier/,
-  );
-  const graph = buildCrossCodebaseSystemGraph('enterprise-workspace', [
-    { path: '/tmp/shop-api', name: 'shop-api', cas: shopCas() },
-  ]);
-  graph.workspace_capabilities = [{
-    id: 'view-orders', name: 'View Enterprise Orders', description: 'Reads order records.',
-    description_source: 'ai', ai_required: true, generation_pass: 'default-summary', semantic_role: 'core',
-    project_ids: [graph.codebases[0].id], deployable_ids: [], evidence: ['GET /orders'],
-  } as any];
-  const gate = evaluateWorkspaceNarrativeGate(
-    graph,
-    'The enterprise workspace provides operators with order review across its application. It manages enterprise orders for users while presenting their current details through the storefront service.',
-    'A platform for managing enterprise orders.',
-  );
-  assert.equal(gate.accepted, false);
-  assert.match(String(gate.reason), /only the read capability/i);
-
-  graph.workspace_capabilities[0].name = 'Enterprise Order Retrieval';
-  const nounFormGate = evaluateWorkspaceNarrativeGate(
-    graph,
-    'The enterprise workspace provides operators with order retrieval and review through its storefront service.',
-    'A platform for processing enterprise orders.',
-  );
-  assert.equal(nounFormGate.accepted, false);
-  assert.match(String(nounFormGate.reason), /only the read capability/i);
-});
-
-test('infrastructure domain descriptions are grounded by deployment, configuration, resource, queue, and message evidence', () => {
-  assert.equal(isGroundedAiWorkspaceItemDescription({
-    name: 'Enterprise Deployment Platform',
-    description: '',
-    project_ids: ['infra-project'],
-    evidence: ['primary_domain:enterprise-deployment-platform'],
-    terminal_score: 4,
-    terminal_evidence: ['primary_domain:enterprise-deployment-platform'],
-    confidence: 0.8,
-  } as any, 'The Enterprise Deployment Platform automates deployment workflows by translating configuration directives into resource definitions and SQS message payloads.', 'domain'), true);
-});
-
-test('workspace item descriptions reject source filenames and decorative marketing even when otherwise grounded', () => {
-  const capability = {
-    name: 'Manage Shell Deploy',
-    description: '',
-    project_ids: ['infra-project'],
-    deployable_ids: ['deployment-enterprise-queue'],
-    evidence: ['deployment queue', 'shell deployment'],
-    terminal_score: 8,
-    terminal_evidence: ['deployment queue'],
-    confidence: 0.8,
-  } as any;
-  assert.equal(isGroundedAiWorkspaceItemDescription(
-    capability,
-    'Manage Shell Deploy executes deployment workflows by running the deploy.sh shell script for the deployment queue.',
-    'capability',
-  ), false);
-  assert.equal(isGroundedAiWorkspaceItemDescription(
-    capability,
-    'Manage Shell Deploy provides a robust and scalable deployment queue for modern infrastructure workflows.',
-    'capability',
-  ), false);
-  assert.equal(isGroundedAiWorkspaceItemDescription(
-    capability,
-    'Manage Shell Deploy queues shell deployment requests and coordinates their execution against declared infrastructure resources.',
-    'capability',
-  ), true);
-  const readOnlyCapability = { ...capability, name: 'Access Enterprise Dashboard', evidence: ['enterprise dashboard', 'order records'] };
-  assert.equal(isGroundedAiWorkspaceItemDescription(
-    readOnlyCapability,
-    'Access Enterprise Dashboard provides order management and updates through the application dashboard.',
-    'capability',
-  ), false);
-  assert.equal(isGroundedAiWorkspaceItemDescription(
-    readOnlyCapability,
-    'Access Enterprise Dashboard provides a centralized interface for managing and monitoring enterprise order activity.',
-    'capability',
-  ), false);
-  assert.equal(isGroundedAiWorkspaceItemDescription(
-    readOnlyCapability,
-    'Access Enterprise Dashboard lets users review enterprise order records through the application dashboard.',
-    'capability',
-  ), true);
 });
 
 test('WAS quality gate accepts a real workspace narrative that enumerates the workspace\'s own capabilities', () => {
@@ -2111,23 +1872,6 @@ test('workspace narrative prompt foregrounds the members\' own domains and conta
   assert.doesNotMatch(serialized, /agent-context infrastructure/i);
 });
 
-test('workspace narrative prompt removes storage ids and source filenames before remote AI enrichment', () => {
-  const graph = buildCrossCodebaseSystemGraph('shop-workspace', [
-    { path: '/tmp/shop-api', name: 'shop-api', cas: shopCas() },
-  ]);
-  graph.workspace_capabilities[0].evidence.push('Execute:deploy.sh', 'source:main.tf', 'account-project-prj_deadbeef1234');
-  graph.system_insights.push({
-    type: 'risk',
-    title: 'deploy.sh workflow',
-    description: 'Read main.tf in account-project-prj_deadbeef1234 before changing deployment.',
-    severity: 'warning',
-    evidence: ['deploy.sh', 'main.tf'],
-  } as any);
-  const serialized = JSON.stringify(workspaceNarrativePromptContext(graph));
-  assert.doesNotMatch(serialized, /deploy\.sh|main\.tf|account-project|prj_deadbeef/i);
-  assert.match(serialized, /shop-api|Order Fulfillment/i);
-});
-
 test('a frame rejection re-prompts with feedback naming the actual rejected frame, on a fresh cache key per attempt', async () => {
   const originalGenerate = aiService.generateComponentDescription;
   const originalEnv = process.env.KLAURO_WORKSPACE_AI_ENRICHMENT;
@@ -2195,32 +1939,29 @@ test('a frame rejection re-prompts with feedback naming the actual rejected fram
   }
 });
 
-test('WAS AI latency threshold observes slow work without truncating completeness', async () => {
+test('WAS AI timeout is env-configurable (KLAURO_WAS_AI_TIMEOUT_MS, legacy alias) with a generous default', async () => {
   const originalNew = process.env.KLAURO_WAS_AI_TIMEOUT_MS;
   const originalLegacy = process.env.KLAURO_WORKSPACE_AI_TIMEOUT_MS;
-  const originalSlow = process.env.KLAURO_WAS_AI_SLOW_MS;
   const delay = <T,>(ms: number, value: T) => new Promise<T>(resolve => setTimeout(() => resolve(value), ms));
   try {
-    delete process.env.KLAURO_WAS_AI_SLOW_MS;
+    // Default is generous (120s) — a slow-ish provider chain is not killed.
     delete process.env.KLAURO_WAS_AI_TIMEOUT_MS;
     delete process.env.KLAURO_WORKSPACE_AI_TIMEOUT_MS;
     assert.equal(await withWorkspaceAiTimeout(delay(30, 'ok')), 'ok');
 
-    // Historical timeout variables remain accepted as observation thresholds,
-    // but they never abandon a valid slow model response.
+    // KLAURO_WAS_AI_TIMEOUT_MS is respected.
     process.env.KLAURO_WAS_AI_TIMEOUT_MS = '10';
-    assert.equal(await withWorkspaceAiTimeout(delay(30, 'late')), 'late');
+    await assert.rejects(() => withWorkspaceAiTimeout(delay(300, 'late')), /exceeded 10ms/);
 
-    // Legacy KLAURO_WORKSPACE_AI_TIMEOUT_MS is also observation-only.
+    // Legacy KLAURO_WORKSPACE_AI_TIMEOUT_MS still works as an alias.
     delete process.env.KLAURO_WAS_AI_TIMEOUT_MS;
     process.env.KLAURO_WORKSPACE_AI_TIMEOUT_MS = '10';
-    assert.equal(await withWorkspaceAiTimeout(delay(30, 'legacy-late')), 'legacy-late');
+    await assert.rejects(() => withWorkspaceAiTimeout(delay(300, 'late')), /exceeded 10ms/);
 
-    process.env.KLAURO_WAS_AI_SLOW_MS = '5000';
+    // The new var wins over the legacy alias.
+    process.env.KLAURO_WAS_AI_TIMEOUT_MS = '5000';
     assert.equal(await withWorkspaceAiTimeout(delay(30, 'ok')), 'ok');
   } finally {
-    if (originalSlow === undefined) delete process.env.KLAURO_WAS_AI_SLOW_MS;
-    else process.env.KLAURO_WAS_AI_SLOW_MS = originalSlow;
     if (originalNew === undefined) delete process.env.KLAURO_WAS_AI_TIMEOUT_MS;
     else process.env.KLAURO_WAS_AI_TIMEOUT_MS = originalNew;
     if (originalLegacy === undefined) delete process.env.KLAURO_WORKSPACE_AI_TIMEOUT_MS;
@@ -2282,33 +2023,6 @@ test('misattribution gate: member A capabilities in a sentence whose subject is 
   assert.equal(workspaceNarrativeMisattributionReason(single, bad), null);
 });
 
-test('misattribution gate rejects another independent member deployable in a subject member sentence', () => {
-  const graph = {
-    name: 'Enterprise Hosted Proof',
-    codebases: [
-      { id: 'app-project', name: 'enterprise-polyglot-app' },
-      { id: 'infra-project', name: 'enterprise-platform-infra' },
-    ],
-    applications: [
-      { id: 'app', codebase_id: 'app-project', name: 'enterprise-polyglot-app' },
-      { id: 'api', codebase_id: 'infra-project', name: 'enterprise-api' },
-    ],
-    application_links: [],
-    workspace_domains: [],
-    workspace_capabilities: [],
-    workspace_entities: [],
-    detail_views: { overview: { deployables: [
-      { id: 'app', name: 'enterprise-polyglot-app' },
-      { id: 'api', name: 'enterprise-api' },
-    ] } },
-  } as any;
-  const bad = 'The enterprise polyglot-app project provides order views, with endpoints available at enterprise API:8080.';
-  assert.match(String(workspaceNarrativeApplicationMisattributionReason(graph, bad)), /enterprise-api.*enterprise-platform-infra/i);
-  assert.match(String(workspaceNarrativeMisattributionReason(graph, bad)), /enterprise-api.*enterprise-platform-infra/i);
-  const good = 'The enterprise platform-infra project declares the enterprise API, while enterprise polyglot-app provides order views.';
-  assert.equal(workspaceNarrativeApplicationMisattributionReason(graph, good), null);
-});
-
 test('WAS narrative gate applies the project-tier marketing lint: saturation rejects, single instances strip', () => {
   const graph = buildCrossCodebaseSystemGraph('openclaw-workspace', [
     { path: '/tmp/shop-api', name: 'shop-api', cas: shopCas() },
@@ -2317,7 +2031,6 @@ test('WAS narrative gate applies the project-tier marketing lint: saturation rej
   const fluff = 'This comprehensive workspace offers a robust set of features and provides a strong foundation, making it an ideal solution for businesses and organizations.';
   const matches = workspaceNarrativeMarketingMatches(graph, fluff);
   assert.ok(matches.length >= 3, `expected saturated marketing matches, got: ${JSON.stringify(matches)}`);
-  assert.deepEqual(workspaceNarrativeMarketingMatches(graph, 'Uses modern frameworks by leveraging infrastructure flexibility.'), ['modern', 'leveraging', 'flexibility']);
   const gate = evaluateWorkspaceNarrativeGate(graph, fluff, 'Manages orders for the storefront.');
   assert.equal(gate.accepted, false);
   assert.ok(/unsupported-marketing-language/.test(gate.reason || ''), `expected marketing rejection, got: ${gate.reason}`);
@@ -2327,134 +2040,6 @@ test('WAS narrative gate applies the project-tier marketing lint: saturation rej
   const stripped = stripUngroundedWorkspaceMarketingLanguage(graph, single);
   assert.ok(!/comprehensive/i.test(stripped), `expected "comprehensive" stripped, got: ${stripped}`);
   assert.ok(/routes checkout orders into the shop-api service/.test(stripped), `facts must survive the strip, got: ${stripped}`);
-});
-
-test('WAS narrative gate does not mistake a member proper name for stack framing', () => {
-  const graph = {
-    name: 'Enterprise Hosted Proof',
-    codebases: [
-      { id: 'app-project', name: 'enterprise-polyglot-app' },
-      { id: 'infra-project', name: 'enterprise-platform-infra' },
-    ],
-    applications: [
-      { id: 'app', codebase_id: 'app-project', name: 'enterprise-polyglot-app' },
-      { id: 'infra', codebase_id: 'infra-project', name: 'enterprise-platform-infra' },
-    ],
-    application_links: [],
-    distribution_units: [],
-    workspace_domains: [],
-    workspace_capabilities: [],
-    workspace_entities: [],
-    system_insights: [],
-    detail_views: { overview: { deployables: [] } },
-  } as any;
-  const behaviorFirst = 'The enterprise-platform-infra project provisions the declared queue and runs containerized services for deployment operations. The enterprise-polyglot-app project independently retrieves and presents EnterpriseOrder records in an orders dashboard so users can review order details.';
-  const behaviorFirstGate = evaluateWorkspaceNarrativeGate(graph, behaviorFirst, 'Provides independent deployment operations and order review surfaces.');
-  assert.doesNotMatch(String(behaviorFirstGate.reason || ''), /implementation-stack diversity/);
-
-  const stackFirst = `${behaviorFirst} Its product value is polyglot language support through language-specific endpoints and a diverse technology stack.`;
-  assert.match(String(evaluateWorkspaceNarrativeGate(graph, stackFirst, 'Provides language support.').reason), /implementation-stack diversity/);
-});
-
-test('WAS narrative gate rejects invented cooperation and mutation across independent read-only members', () => {
-  const graph = {
-    name: 'Enterprise Hosted Proof',
-    codebases: [
-      { id: 'app-project', name: 'enterprise-polyglot-app' },
-      { id: 'infra-project', name: 'enterprise-platform-infra' },
-    ],
-    applications: [],
-    application_links: [],
-    distribution_units: [],
-    workspace_domains: [],
-    workspace_entities: [],
-    workspace_capabilities: [{
-      name: 'View Enterprise Orders',
-      project_ids: ['app-project'],
-      deployable_ids: [],
-      evidence: [],
-    }],
-    system_insights: [],
-    detail_views: { overview: { deployables: [] } },
-  } as any;
-  const inventedCooperation = 'The enterprise-platform-infra project provisions deployment resources. The enterprise-polyglot-app project retrieves and presents EnterpriseOrder records. These systems work together to manage and review enterprise orders for operators.';
-  assert.match(String(evaluateWorkspaceNarrativeGate(graph, inventedCooperation, 'Manages and reviews enterprise orders.').reason), /read capability|no source-backed.*link/);
-  const oneMemberGraph = { ...graph, codebases: graph.codebases.slice(0, 1) } as any;
-  const unsupportedMutation = 'The enterprise order application retrieves and presents order records for operators through its review surface. It gives users detailed order information for analysis and comparison. The product provides a platform for managing and reviewing enterprise orders while surfacing the selected records.';
-  assert.match(String(evaluateWorkspaceNarrativeGate(oneMemberGraph, unsupportedMutation, 'Provides a platform for managing and reviewing enterprise orders.').reason), /read capability/);
-});
-
-test('workspace composition preserves grounded AI infrastructure capabilities without promoting them to product value', () => {
-  const infrastructure = cas({
-    system: { id: 'infra', name: 'platform-infra', type: 'application', root_path: '/tmp/platform-infra' },
-    enhanced_system_purpose: { artifact_type: 'infrastructure', primary_domain: 'platform-infrastructure' } as any,
-    system_capabilities: [{
-      id: 'deploy-runtime',
-      name: 'Deploy service runtime',
-      description: 'Deploy service runtime provisions container deployments and queue resources for the declared application environment.',
-      description_source: 'ai',
-      related_domains: ['platform-infrastructure'],
-      related_entities: [],
-      operations: [{ action: 'Execute', path_or_command: 'deployment command' }],
-    } as any],
-  });
-  const graph = buildCrossCodebaseSystemGraph('platform', [
-    { path: '/tmp/platform-infra', name: 'platform-infra', cas: infrastructure },
-  ]);
-  const capability = graph.workspace_capabilities.find(item => item.name === 'Deploy service runtime');
-  assert.equal(capability?.semantic_role, 'infrastructure');
-  assert.equal(capability?.description_source, 'ai');
-  assert.match(String(capability?.description), /container deployments and queue resources/);
-  assert.equal(isGroundedAiWorkspaceItemDescription(
-    capability!,
-    'Deploy service runtime ensures high availability and resource utilization across the platform.',
-    'capability',
-  ), false);
-});
-
-test('workspace narrative prompt omits language and framework inventories from member facts', () => {
-  const graph = buildCrossCodebaseSystemGraph('shop-workspace', [
-    { path: '/tmp/shop-api', name: 'shop-api', cas: shopCas() },
-  ]);
-  graph.codebases[0].languages = ['TypeScript', 'Python'];
-  graph.codebases[0].frameworks = ['Express', 'FastAPI'];
-  const context = workspaceNarrativePromptContext(graph) as any;
-  const member = context.facts.member_projects[0];
-  assert.equal(member.languages, undefined);
-  assert.equal(member.frameworks, undefined);
-  assert.match(JSON.stringify(context), /Do not describe language diversity/);
-});
-
-test('independent-member WAS repair prompt keeps entities scoped and omits global semantic buckets', () => {
-  const app = shopCas();
-  app.enhanced_system_purpose = {
-    ...(app.enhanced_system_purpose || {}),
-    inferred_description: 'The application retrieves and presents enterprise orders so operators can review order details.',
-  } as any;
-  app.data_entities = [{
-    id: 'entity_order',
-    name: 'EnterpriseOrder',
-    fields: [],
-    lifecycle: { created_by: [], read_by: ['route-node'], updated_by: [], deleted_by: [] },
-  }] as any;
-  const infra = cas({
-    system: { id: 'infra', name: 'enterprise-platform-infra', type: 'service', root_path: '/tmp/infra' },
-  });
-  const graph = buildCrossCodebaseSystemGraph('enterprise', [
-    { path: '/tmp/app', name: 'enterprise-polyglot-app', cas: app },
-    { path: '/tmp/infra', name: 'enterprise-platform-infra', cas: infra },
-  ]);
-  const context = workspaceNarrativeRepairPromptContext(graph) as any;
-  const appMember = context.member_projects.find((member: any) => member.name === 'enterprise-polyglot-app');
-  const infraMember = context.member_projects.find((member: any) => member.name === 'enterprise-platform-infra');
-  assert.ok(appMember.own_entities.includes('EnterpriseOrder'));
-  assert.ok(!infraMember.own_entities.includes('EnterpriseOrder'));
-  assert.match(appMember.member_description, /retrieves and presents enterprise orders/);
-  assert.ok(appMember.own_capabilities.every((capability: any) => typeof capability === 'object' && capability.name));
-  assert.deepEqual(infraMember.own_entities, []);
-  assert.deepEqual(context.workspace_domains, []);
-  assert.deepEqual(context.primary_capabilities, []);
-  assert.deepEqual(context.required_terms, []);
 });
 
 test('workspace domains are evidence-length: no verb-phrase capability labels, no silent 16-quota padding', () => {
@@ -2638,7 +2223,7 @@ test('DEFECT-WAS2: marketing saturation strips-and-accepts a grounded 2-repo nar
   // Grounded 2-repo narrative sprinkled with the 3 live-degrade adjectives
   // (comprehensive / various / robust) -> was hard-rejected at >=3, now strips
   // and re-checks grounding: the stripped text still names real domains + verbs.
-  const grounded = 'This workspace groups two independent client projects. The backend manages billing location and synchronizes inventory with NetSuite. The infrastructure project provisions cloud access control, database infrastructure, and exposes a comprehensive cloud monitoring surface across various environments with robust network access control.';
+  const grounded = 'This workspace groups two client projects. The backend manages billing location and synchronizes inventory with NetSuite. The infrastructure project provisions cloud access control, database infrastructure, and exposes a comprehensive cloud monitoring surface across various environments with robust network access control.';
   const pvs = 'Manages NetSuite billing synchronization and provisions the cloud access, monitoring and database infrastructure that runs it.';
   assert.equal(evaluateWorkspaceNarrativeGate(graph, grounded, pvs).accepted, true);
   // Pure marketing fluff strips to nothing grounded -> still rejected.
@@ -3130,8 +2715,7 @@ test('LIVE-SHAPE E2E: tier-1 member CAS never yields empty applications, and das
   // an empty applications list — this is the end-to-end invariant the
   // sub-function suites cannot see (they test seams, not the full pipeline).
   assert.ok(graph.applications.length > 0, 'applications must never be empty when the member CAS has tier-1 ship units');
-  assert.equal(graph.summary.applications, graph.deployables.length, 'summary must count canonical workspace-level applications');
-  assert.equal(graph.summary.application_surfaces, graph.applications.length, 'summary must preserve the complete drilldown surface count');
+  assert.equal(graph.summary.applications, graph.applications.length, 'summary must count the same applications list that persists');
 
   const coordinatorApp = graph.applications.find(app => app.name === 'coordinator');
   const agentApp = graph.applications.find(app => app.name === 'agent');
@@ -3303,157 +2887,6 @@ function makeEdges(count: number, nodeCount: number): CASOutput['edges'] {
     kind: 'calls',
   } as any));
 }
-
-test('WAS lookup indexing visits a 50k-node CAS once and uses bounded reference lookups', () => {
-  const referenceCount = 100;
-  const nodes = makeNodes(50_000);
-  const largeCas = cas({
-    system: { id: 'large-api', name: 'large-api', type: 'service', root_path: '/tmp/large-api' },
-    nodes,
-    entry_points: Array.from({ length: referenceCount }, (_, index) => ({
-      id: `entry-${index}`,
-      source_node: `node-${index}`,
-      type: 'http',
-      name: `GET /items/${index}`,
-      trigger: { method: 'GET', path: `/items/${index}` },
-    } as any)),
-    exit_points: Array.from({ length: referenceCount }, (_, index) => ({
-      id: `exit-${index}`,
-      source_node: `node-${index + referenceCount}`,
-      type: 'api',
-      name: `fetch service ${index}`,
-      target: { endpoint: `https://service-${index}.example/items` },
-      operation: { method: 'GET' },
-    } as any)),
-    workflows: Array.from({ length: referenceCount }, (_, index) => ({
-      id: `workflow-${index}`,
-      name: `Process item ${index}`,
-      classification: 'supporting',
-      entry_points: [`entry-${index}`],
-      exit_points: [`exit-${index}`],
-      entities_touched: [],
-    } as any)),
-    change_risks: Array.from({ length: referenceCount }, (_, index) => ({
-      node_id: `node-${index + referenceCount * 2}`,
-      risk_level: 'high',
-      factors: [],
-      recommendations: [],
-    } as any)),
-  });
-  const diagnostics = {
-    lookup_index_builds: 0,
-    lookup_nodes_indexed: 0,
-    node_lookups: 0,
-    entry_lookups: 0,
-    exit_lookups: 0,
-  };
-
-  buildCrossCodebaseSystemGraph('large-workspace', [
-    { path: '/tmp/large-api', name: 'large-api', cas: largeCas },
-  ], {
-    id: 'large-workspace',
-    generatedAt: '2026-01-01T00:00:00.000Z',
-    diagnostics,
-  });
-
-  assert.equal(diagnostics.lookup_index_builds, 1);
-  assert.equal(diagnostics.lookup_nodes_indexed, 50_000);
-  assert.ok(diagnostics.entry_lookups > 0 && diagnostics.entry_lookups <= referenceCount);
-  assert.equal(diagnostics.exit_lookups, diagnostics.entry_lookups);
-  assert.ok(diagnostics.node_lookups <= referenceCount * 7, `expected bounded node lookups, got ${diagnostics.node_lookups}`);
-});
-
-test('indexed WAS lookups preserve complete interface, workflow, alias, and risk semantics', () => {
-  const input = cas({
-    system: { id: 'orders', name: 'orders', type: 'service', root_path: '/tmp/orders' },
-    nodes: [{
-      id: 'orders-handler',
-      name: 'listOrders',
-      qualified_name: 'OrdersController.listOrders',
-      type: 'function',
-      source: { file: 'src/orders.ts', line: 17 },
-      metadata: { deployment_service_name: 'orders-api' },
-    }, {
-      id: 'orders-client',
-      name: 'notifyOrders',
-      type: 'function',
-      source: { file: 'src/client.ts', line: 31 },
-      metadata: { service_aliases: ['orders-worker'] },
-    }, {
-      id: 'orders-risk',
-      name: 'replaceOrder',
-      type: 'function',
-      source: { file: 'apps/orders/src/repository.ts', line: 49 },
-    }] as any,
-    entry_points: [{
-      id: 'entry-orders',
-      source_node: 'orders-handler',
-      type: 'http',
-      name: 'GET /orders',
-      trigger: { method: 'GET', path: '/orders' },
-    } as any],
-    exit_points: [{
-      id: 'exit-orders',
-      source_node: 'orders-client',
-      connected_nodes: ['orders-handler'],
-      type: 'api',
-      name: 'notify orders',
-      target: { endpoint: 'https://orders-worker.example/events' },
-      operation: { method: 'POST' },
-    } as any],
-    workflows: [{
-      id: 'orders-workflow',
-      name: 'Process orders',
-      classification: 'primary',
-      entry_points: ['entry-orders'],
-      exit_points: ['exit-orders'],
-      entities_touched: ['Order'],
-    } as any],
-    change_risks: [{
-      node_id: 'orders-risk',
-      risk_level: 'high',
-      factors: [{ factor: 'critical-path', severity: 'high', details: 'Order persistence' }],
-      recommendations: ['Run order persistence tests.'],
-    } as any],
-  });
-  const options = { id: 'orders-workspace', generatedAt: '2026-01-01T00:00:00.000Z' };
-  const expectedNode = input.nodes.find(node => node.id === 'orders-handler')!;
-  const standard = buildCrossCodebaseSystemGraph('orders-workspace', [
-    { path: '/tmp/orders', name: 'orders', cas: input },
-  ], options);
-  const diagnostics = {
-    lookup_index_builds: 0,
-    lookup_nodes_indexed: 0,
-    node_lookups: 0,
-    entry_lookups: 0,
-    exit_lookups: 0,
-  };
-  const instrumented = buildCrossCodebaseSystemGraph('orders-workspace', [
-    { path: '/tmp/orders', name: 'orders', cas: input },
-  ], { ...options, diagnostics });
-
-  assert.deepEqual(instrumented, standard);
-  const provider = instrumented.interfaces.find(item => item.evidence.some(evidence => evidence.id === 'entry-orders'))!;
-  assert.deepEqual(provider.refs[0], {
-    id: expectedNode.id,
-    name: expectedNode.name,
-    type: expectedNode.type,
-    file: expectedNode.source?.file,
-    line: expectedNode.source?.line,
-  });
-  const consumer = instrumented.interfaces.find(item => item.evidence.some(evidence => evidence.id === 'exit-orders'))!;
-  assert.deepEqual(consumer.refs.map(ref => ref.id), ['orders-client', 'orders-handler']);
-  assert.ok(instrumented.workspace_workflows.some(workflow =>
-    workflow.id.endsWith('orders-workflow') &&
-    workflow.interface_ids.includes(provider.id) &&
-    workflow.interface_ids.includes(consumer.id)
-  ));
-  assert.ok(consumer.application_id.endsWith(':orders-worker'), consumer.application_id);
-  assert.ok(instrumented.risk_areas.some(risk =>
-    risk.evidence.includes('apps/orders/src/repository.ts') &&
-    risk.evidence.includes('Run order persistence tests.')
-  ));
-});
 
 test('codebase complexity: deterministic — identical input always produces the identical score', () => {
   const buildInput = () => cas({

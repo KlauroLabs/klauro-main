@@ -225,8 +225,7 @@ test('klauro analyze auto-attaches by matching git remote when no .klaurorc bind
 
     const projectsRes = await request(port, 'GET', `/api/workspaces/${workspaceId}/projects`, undefined, token);
     const matched = JSON.parse(projectsRes.body).projects.find((p: { id: string }) => p.id === project.id) as { analysis_id?: string };
-    assert.match(matched.analysis_id || '', /^acct_/);
-    assert.notEqual(matched.analysis_id, result.analysis_id);
+    assert.equal(matched.analysis_id, result.analysis_id);
 
     // Ambiguous case: a second project shares the same normalized remote —
     // a FRESH repo pushed against that same remote must not guess between them.

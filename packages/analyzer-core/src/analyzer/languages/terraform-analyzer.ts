@@ -382,7 +382,7 @@ export class TerraformAnalyzer extends BaseAnalyzer {
       for (; end < lines.length; end++) {
         depth += countChar(lines[end], '{');
         depth -= countChar(lines[end], '}');
-        if (depth <= 0) break;
+        if (depth <= 0 && end > index) break;
       }
       blocks.push({
         kind: match[1],

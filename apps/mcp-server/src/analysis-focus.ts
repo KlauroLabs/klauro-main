@@ -229,7 +229,7 @@ export function applyAnalysisFocus(
   if (focus === 'agent-fast') {
     process.env.KLAURO_ANALYSIS_FOCUS = 'agent-fast';
     process.env.KLAURO_AI_INTERPRETATION = process.env.KLAURO_AI_INTERPRETATION || 'true';
-    process.env.KLAURO_AI_INTERPRETATION_FORCE = process.env.KLAURO_AI_INTERPRETATION_FORCE || 'false';
+    process.env.KLAURO_AI_INTERPRETATION_FORCE = process.env.KLAURO_AI_INTERPRETATION_FORCE || 'true';
     process.env.KLAURO_AI_INTERPRETATION_ALLOW_DETERMINISTIC_KEEP = 'false';
     process.env.KLAURO_AI_INTERPRETATION_BUDGET_MS = process.env.KLAURO_AI_INTERPRETATION_BUDGET_MS ||
       options.interpretationBudgetMs ||
@@ -249,7 +249,7 @@ export function applyAnalysisFocus(
   if (focus === 'ui-overview') {
     process.env.KLAURO_ANALYSIS_FOCUS = 'ui-overview';
     process.env.KLAURO_AI_INTERPRETATION = process.env.KLAURO_AI_INTERPRETATION || 'true';
-    process.env.KLAURO_AI_INTERPRETATION_FORCE = process.env.KLAURO_AI_INTERPRETATION_FORCE || 'false';
+    process.env.KLAURO_AI_INTERPRETATION_FORCE = process.env.KLAURO_AI_INTERPRETATION_FORCE || 'true';
     process.env.KLAURO_AI_INTERPRETATION_ALLOW_DETERMINISTIC_KEEP = 'false';
     process.env.KLAURO_AI_INTERPRETATION_BUDGET_MS = process.env.KLAURO_AI_INTERPRETATION_BUDGET_MS ||
       options.interpretationBudgetMs ||

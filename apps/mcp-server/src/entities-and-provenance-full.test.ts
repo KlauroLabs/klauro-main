@@ -196,6 +196,9 @@ test('GET /api/projects/{id}/entities surfaces description/description_source/ro
   fs.mkdirSync(storagePath, { recursive: true });
 
   const analysisId = 'test-entities-provenance-analysis';
+  const workspace = path.join(remoteData, 'workspaces', analysisId);
+  fs.mkdirSync(workspace, { recursive: true });
+
   const server = createRemoteAnalyzerHttpServer({ dataDir: remoteData });
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   const address = server.address();
@@ -203,6 +206,8 @@ test('GET /api/projects/{id}/entities surfaces description/description_source/ro
   const port = address.port;
 
   try {
+    await saveAnalysis(workspace, buildFixtureCas());
+
     const registerRes = await request(port, 'POST', '/api/auth/register', {
       email: 'entities-owner@example.com',
       password: 'password-1234',
@@ -219,10 +224,7 @@ test('GET /api/projects/{id}/entities surfaces description/description_source/ro
       analysis_id: analysisId,
     }, token);
     assert.equal(createRes.statusCode, 201);
-    const project = JSON.parse(createRes.body).project as { id: string; analysis_id: string };
-    const workspace = path.join(remoteData, 'workspaces', project.analysis_id);
-    fs.mkdirSync(workspace, { recursive: true });
-    await saveAnalysis(workspace, buildFixtureCas());
+    const project = JSON.parse(createRes.body).project as { id: string };
 
     // --- (1) GET /entities: description/description_source/role/relations ---
     const entitiesRes = await request(port, 'GET', `/api/projects/${project.id}/entities`, undefined, token);

@@ -111,7 +111,7 @@ export class OpenAIProvider implements AIProvider {
     
     try {
       const response = await this.makeRequest(prompt, {
-        temperature: this.config.openai.temperature,
+        temperature: 0.3,
         maxTokens: Number.isFinite(requestedMaxTokens) && requestedMaxTokens > 0
           ? requestedMaxTokens
           : Math.max(500, this.config.openai.maxTokens),

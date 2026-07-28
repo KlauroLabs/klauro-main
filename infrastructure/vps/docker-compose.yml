@@ -16,10 +16,6 @@ services:
         KLAURO_BUILD_TIME: "${KLAURO_BUILD_TIME:-}"
     image: klauro/api:alpha
     restart: unless-stopped
-    # The current host has six vCPUs. Klauro may use at most four, preserving
-    # two for Caddy, SSH, health probes, and host operations even during a cold
-    # whale analysis. Completeness is unchanged; excess work queues.
-    cpus: "4.0"
     env_file:
       - /opt/klauro/.env
     environment:
@@ -39,24 +35,9 @@ services:
       # if this ever regresses (warnIfEphemeralCoordDir).
       KLAURO_COORD_DIR: /data/coordination
       KLAURO_SELF_TELEMETRY_PROJECT: /data/workspaces/prj_wbW33m-wfETn1N41
-      KLAURO_TS_EXTRACTION_CACHE_PATH: /data/cache/ts-extractions
-      KLAURO_ANALYZER_CONTRIBUTION_CACHE_PATH: /data/cache/analyzer-contributions
-      KLAURO_AI_CACHE_PATH: /data/cache/ai
-      KLAURO_AI_INTERPRETATION_FORCE: "false"
-      # AI calls are one bounded attempt per chain entry. If the primary shared
-      # inference worker stalls, Klauro advances to the next explicit entry;
-      # it never multiplies hidden SDK retries into multi-minute silence.
-      AI_TIMEOUT: "30000"
-      KLAURO_AI_PROVIDER_RETRIES: "0"
-      # Narrative generation uses a compact product-only prompt. This model
-      # completed the representative four-sentence contract in ~1.3s; larger
-      # shared models exceeded the request SLO without improving that result.
-      DEEPINFRA_NARRATIVE_MODEL: "${DEEPINFRA_NARRATIVE_MODEL:-mistralai/Mistral-Small-3.2-24B-Instruct-2506}"
-      DEEPINFRA_FAST_FALLBACK_MODEL: "${DEEPINFRA_FAST_FALLBACK_MODEL:-meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo}"
-      OPENROUTER_MODEL: "${OPENROUTER_MODEL:-tencent/hy3}"
       # One analysis worker at a time fits the 8GB host without competing heaps;
       # two parser workers use bounded parallelism inside that isolated job.
-      KLAURO_TS_PARSE_WORKERS: "1"
+      KLAURO_TS_PARSE_WORKERS: "2"
       KLAURO_ANALYSIS_CONCURRENCY: "1"
       # A slow analysis keeps running. Only a worker whose real phase counter
       # stops advancing for ten minutes is recycled from its durable checkpoint.

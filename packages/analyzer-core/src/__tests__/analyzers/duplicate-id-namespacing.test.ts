@@ -42,7 +42,7 @@ describe('duplicate id namespacing across files', () => {
       '});',
     ].join('\n');
 
-    it('produces distinct suite/test node ids without polluting production entry points', async () => {
+    it('produces distinct suite/test entry ids for same-named suites in two files', async () => {
       write('apps/user-api/src/app/app.service.spec.ts', suiteFile('AppService'));
       write('apps/admin-api/src/app/app.service.spec.ts', suiteFile('AppService'));
 
@@ -58,18 +58,26 @@ describe('duplicate id namespacing across files', () => {
         entryPoints
       );
 
-      expect(entryPoints).toEqual([]);
+      const ids = entryPoints.map(entry => entry.id);
+      expect(new Set(ids).size).toBe(ids.length);
 
-      const suiteNodes = nodes.filter(node => node.id.startsWith('test_suite_'));
-      expect(new Set(suiteNodes.map(node => node.id)).size).toBe(2);
-      expect(suiteNodes.map(node => node.id).sort()).toEqual([
-        'test_suite_apps_admin_api_src_app_app_service_spec_ts_AppService',
-        'test_suite_apps_user_api_src_app_app_service_spec_ts_AppService',
+      const suiteEntries = ids.filter(id => id.startsWith('entry_test_suite_'));
+      expect(suiteEntries.sort()).toEqual([
+        'entry_test_suite_apps_admin_api_src_app_app_service_spec_ts_AppService',
+        'entry_test_suite_apps_user_api_src_app_app_service_spec_ts_AppService',
       ]);
 
-      const testNodes = nodes.filter(node => node.id.startsWith('test_test_suite_'));
-      expect(testNodes).toHaveLength(4);
-      expect(new Set(testNodes.map(node => node.id)).size).toBe(4);
+      // Per-test entries are namespaced through the suite id.
+      const testEntries = ids.filter(id => id.startsWith('entry_test_test_suite_'));
+      expect(testEntries.length).toBe(4);
+      expect(new Set(testEntries).size).toBe(4);
+
+      // Suite nodes are distinct too, and entry source_node points at them.
+      const suiteNodes = nodes.filter(node => node.id.startsWith('test_suite_'));
+      expect(new Set(suiteNodes.map(node => node.id)).size).toBe(2);
+      for (const entry of entryPoints.filter(e => e.id.startsWith('entry_test_suite_'))) {
+        expect(suiteNodes.some(node => node.id === entry.source_node)).toBe(true);
+      }
     });
 
     it('is deterministic across repeated analyses', async () => {
@@ -79,9 +87,9 @@ describe('duplicate id namespacing across files', () => {
 
       const run = async () => {
         const analyzer = new JestAnalyzer() as any;
-        const nodes: CASNode[] = [];
-        await analyzer.analyzeTestSuites(files, root, nodes, [], []);
-        return nodes.map(node => node.id);
+        const entryPoints: CASEntryPoint[] = [];
+        await analyzer.analyzeTestSuites(files, root, [], [], entryPoints);
+        return entryPoints.map(entry => entry.id);
       };
 
       expect(await run()).toEqual(await run());

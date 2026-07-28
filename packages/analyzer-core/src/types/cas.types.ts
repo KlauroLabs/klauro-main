@@ -1490,7 +1490,7 @@ export interface CASDeclaredDependency {
    *  "@solana/web3.js", "requests"). No normalization of meaning. */
   name: string;
   /** Package ecosystem the declaring manifest belongs to. */
-  ecosystem: 'npm' | 'pypi' | 'cargo' | 'go' | 'maven' | 'gradle' | 'nuget' | 'composer' | 'pub' | 'unknown';
+  ecosystem: 'npm' | 'pypi' | 'cargo' | 'go' | 'unknown';
   /** Declared version / range when the manifest records one (npm/cargo/pypi). */
   version?: string;
   /** Dependency scope(s) this name was declared under, across manifests. */
@@ -1525,7 +1525,6 @@ export interface CASAnalyzerContribution {
   contributed_exit_points?: number;
   execution_time?: string;
   execution_time_ms?: number;
-  cache_status?: 'disabled' | 'hit' | 'miss' | 'invalidated' | 'coalesced';
   memory_usage?: string;
   provided_perspectives?: string[];
   errors?: string[];
@@ -2919,9 +2918,6 @@ export interface CASDescriptionGeneration {
   reason?: string;
   budget_ms?: number;
   generated_at?: string;
-  /** Authorship provenance of the stored text. A reused description keeps
-   *  this origin while status records that no new generation occurred. */
-  origin_source?: 'deterministic' | 'ai' | 'manual';
   /**
    * Set when a prior AI-generated description was carried forward across a
    * full re-analysis that ran without AI, so the text was not re-validated
@@ -3003,24 +2999,12 @@ export interface CASAnalysisTimings {
    *  was computed (initial synchronous landing, or again after deferred AI
    *  enrichment completes). */
   total_ms: number;
-  /** CPU consumed by the isolated analysis worker, excluding network/provider
-   *  wait. This is the efficiency measure used by hosted performance gates. */
-  cpu_total_ms?: number;
-  cpu_user_ms?: number;
-  cpu_system_ms?: number;
-  /** cpu_total_ms / total_ms. Values above 1 mean the run used multiple cores
-   *  on average; a value near 1 means one core was saturated for the run. */
-  average_cpu_cores?: number;
   /** Coarsest stage buckets that already exist as function-call boundaries in
    *  the orchestrator's main path: scan (analyzer detection), parse (language
    *  + framework/library analyzers), graph (relationship/index/architecture
    *  building), decorators (node-level enrichment passes), ai_enrichment (the
    *  AI interpretation pass), save (embedding + final metadata). */
   stages?: Record<string, number>;
-  /** CPU milliseconds attributed to the same stage buckets. Unlike wall time,
-   * provider/network wait contributes zero here, exposing repeated scans and
-   * graph work that consume hosted compute even when phases overlap. */
-  cpu_stages?: Record<string, number>;
   /** analyzer_id -> execution_time_ms, lifted from `analyzer_contributions`
    *  (already measured per-analyzer; not re-measured here). */
   analyzers?: Record<string, number>;
@@ -3564,7 +3548,7 @@ export interface CASDomainConcept {
   classification: 'core' | 'supporting' | 'infrastructure';
 }
 
-export type CASArtifactType = 'app' | 'library' | 'client-sdk' | 'cli-tool' | 'boilerplate' | 'infrastructure';
+export type CASArtifactType = 'app' | 'library' | 'client-sdk' | 'cli-tool' | 'boilerplate';
 
 export interface EnhancedSystemPurpose extends SystemPurpose {
   primary_domain: string;
@@ -3583,11 +3567,6 @@ export interface EnhancedSystemPurpose extends SystemPurpose {
   inferred_description: string;
   description_source?: 'deterministic' | 'ai' | 'manual' | 'reused';
   description_generation?: CASDescriptionGeneration;
-  /** Hash of the deterministic product-semantic facts that produced the
-   * current AI comprehension. Incremental analysis compares this with the
-   * next deterministic facts instead of comparing AI-curated output to raw
-   * analyzer candidates. */
-  ai_input_fingerprint?: string;
   primary_workflow_id?: string;
   supporting_workflow_ids: string[];
   /** Roll-up honesty record for the entity-description LAST-stage AI pass —
@@ -3776,7 +3755,6 @@ export interface IncrementalState {
   gitCommitHash?: string;
   files: Record<string, FileAnalysisRecord>;
   analyzerVersions: Record<string, string>;
-  analyzerRegistryFingerprint?: string;
   config?: {
     rebuildThreshold?: number;
     watchDebounceMs?: number;

@@ -16,8 +16,10 @@ import { EmbeddingProvider, EmbeddingProviderOptions } from './types';
  * process pays the load cost (~150ms warm, one-time download cold) only once.
  *
  * Availability: if the transformers module or the model weights cannot be
- * loaded (offline first run, disk full, incompatible platform), embed() throws
- * so callers can report an honestly degraded semantic index.
+ * loaded (offline first run, disk full, incompatible platform), embed() throws.
+ * Callers use isOnnxEmbeddingAvailable() / createLocalEmbeddingProvider() to
+ * fall back to the zero-dependency hash provider so semantic_search degrades
+ * gracefully instead of failing.
  */
 
 export const ONNX_EMBEDDING_MODEL = 'onnx-all-MiniLM-L6-v2';
@@ -38,7 +40,7 @@ async function loadPipeline(): Promise<FeatureExtractionPipeline> {
   if (!pipelinePromise) {
     pipelinePromise = (async () => {
       // Dynamic import (a) keeps @huggingface/transformers off the hot path for
-      // explicitly configured hash embeddings and (b) lets model availability
+      // the hash-only fallback and (b) lets the module be genuinely optional at
       // runtime — a missing install surfaces as a catchable rejection here.
       const moduleName = '@huggingface/transformers';
       const transformers = (await import(moduleName)) as {
@@ -66,12 +68,7 @@ export class OnnxEmbeddingProvider implements EmbeddingProvider {
   readonly maxBatch: number;
 
   constructor(options: EmbeddingProviderOptions) {
-    if (options.model && options.model !== ONNX_EMBEDDING_MODEL) {
-      throw new Error(
-        `OnnxEmbeddingProvider produces ${ONNX_EMBEDDING_MODEL} vectors and cannot report model "${options.model}"`,
-      );
-    }
-    this.model = ONNX_EMBEDDING_MODEL;
+    this.model = options.model || ONNX_EMBEDDING_MODEL;
     // The ONNX MiniLM output is fixed at 384 dims; honour the configured value
     // only when it matches so a mis-set config surfaces loudly rather than
     // silently truncating/padding vectors.
@@ -105,7 +102,7 @@ export class OnnxEmbeddingProvider implements EmbeddingProvider {
 /**
  * Probe whether the ONNX embedding model can be loaded in this environment.
  * Loads (and memoises) the pipeline; returns false on any failure so callers
- * can report unavailable semantic embeddings. Cheap on warm calls.
+ * can fall back to the hash provider. Cheap on warm calls (memoised promise).
  */
 export async function isOnnxEmbeddingAvailable(): Promise<boolean> {
   try {

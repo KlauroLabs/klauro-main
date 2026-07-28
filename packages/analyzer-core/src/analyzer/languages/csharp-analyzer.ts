@@ -1683,12 +1683,22 @@ export class CSharpAnalyzer extends BaseAnalyzer {
       if (fileNode) edges.push(this.createEdge(`${fileNode.id}_contains_${nodeId}`, fileNode.id, nodeId, 'contains'));
     }
 
+    // NAME MUST IDENTIFY *WHICH* PROGRAM. A multi-project .NET solution has one
+    // Main per project, and a constant name made them indistinguishable in the
+    // product: a measured 10k-node WPF solution shipped 5 `cli` entry points
+    // that all read ".NET Main entry point" (5 records, 1 unique name), so the
+    // UI, flows and capabilities could not tell the service host from the
+    // desktop shell. Qualify with the owning project directory — real path
+    // evidence, never a fabricated label.
+    const programScope = path.basename(path.dirname(relativeFile)) || path.basename(relativeFile);
+    const programLabel = hasTopLevelHost ? '.NET host startup' : '.NET Main entry point';
+
     this.pushUniqueEntryPoint(entryPoints, {
       id: `entry_dotnet_program_${this.sanitizeId(relativeFile)}_${line}`,
       source_node: nodeId,
       source_analyzer: this.analyzerId,
       type: hasTopLevelHost ? 'lifecycle' : 'cli',
-      name: hasTopLevelHost ? '.NET host startup' : '.NET Main entry point',
+      name: programScope && programScope !== '.' ? `${programLabel}: ${programScope}` : programLabel,
       description: 'Program.cs starts the .NET process/host for this project.',
       trigger: { event: hasTopLevelHost ? 'host-start' : 'process-start' },
       handler: {

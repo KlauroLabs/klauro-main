@@ -140,18 +140,6 @@ function request(port: number, method: string, route: string, body?: unknown, to
   });
 }
 
-function requestBuffer(port: number, route: string, token: string): Promise<{ statusCode: number; body: Buffer; headers: http.IncomingHttpHeaders }> {
-  return new Promise((resolve, reject) => {
-    const req = http.request({ hostname: '127.0.0.1', port, path: route, method: 'GET', headers: { authorization: `Bearer ${token}` } }, response => {
-      const chunks: Buffer[] = [];
-      response.on('data', chunk => chunks.push(Buffer.from(chunk)));
-      response.on('end', () => resolve({ statusCode: response.statusCode || 0, body: Buffer.concat(chunks), headers: response.headers }));
-    });
-    req.on('error', reject);
-    req.end();
-  });
-}
-
 test('DAS routes: index shape, scoped slice smaller than full, LRU keying, unknown-id + non-promoted honesty', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-das-http-'));
   const remoteData = path.join(root, 'remote-data');
@@ -176,19 +164,21 @@ test('DAS routes: index shape, scoped slice smaller than full, LRU keying, unkno
     const workspacesRes = await request(port, 'GET', '/api/workspaces', undefined, token);
     const workspaceId = JSON.parse(workspacesRes.body).workspaces[0].id as string;
 
-    const promotedAnalysisHandle = 'das-http-promoted';
+    // --- promoted fixture: 2-unit DAS (api + worker) written directly
+    // through the product's own storage path (saveAnalysis) — the same file
+    // remote-analyzer-service.ts's GET handlers read via getAnalysis. ---
+    const promotedAnalysisId = 'das-http-promoted';
+    const promotedWorkspace = path.join(remoteData, 'workspaces', promotedAnalysisId);
+    await fs.promises.mkdir(promotedWorkspace, { recursive: true });
+    const promotedCas = buildPromotedCas(promotedAnalysisId);
+    await saveAnalysis(promotedWorkspace, promotedCas);
+
     const createRes = await request(port, 'POST', `/api/workspaces/${workspaceId}/projects`, {
       name: 'das-http-promoted-fixture',
-      analysis_id: promotedAnalysisHandle,
+      analysis_id: promotedAnalysisId,
     }, token);
     assert.equal(createRes.statusCode, 201);
-    const project = JSON.parse(createRes.body).project as { id: string; analysis_id?: string };
-    assert.ok(project.analysis_id, 'authenticated project response should expose its attached analysis');
-
-    const promotedWorkspace = path.join(remoteData, 'workspaces', project.analysis_id);
-    await fs.promises.mkdir(promotedWorkspace, { recursive: true });
-    const promotedCas = buildPromotedCas(project.analysis_id);
-    await saveAnalysis(promotedWorkspace, promotedCas);
+    const project = JSON.parse(createRes.body).project as { id: string };
 
     // --- /das index shape: units + counts, no `cas` body ---
     const dasRes = await request(port, 'GET', `/api/projects/${project.id}/das`, undefined, token);
@@ -196,7 +186,7 @@ test('DAS routes: index shape, scoped slice smaller than full, LRU keying, unkno
     const dasBody = JSON.parse(dasRes.body);
     assert.equal(dasBody.status, 'ready');
     assert.equal(dasBody.project_id, project.id);
-    assert.equal(dasBody.analysis_id, project.analysis_id);
+    assert.equal(dasBody.analysis_id, promotedAnalysisId);
     assert.equal(dasBody.das_index.promoted, true);
     assert.equal(dasBody.das_index.units.length, 2);
     assert.deepEqual(dasBody.das_index.units.map((u: any) => u.name).sort(), ['api', 'worker']);
@@ -249,47 +239,27 @@ test('DAS routes: index shape, scoped slice smaller than full, LRU keying, unkno
     assert.match(unknownScopeBody.error, /api/);
     assert.match(unknownScopeBody.error, /worker/);
 
-    // --- unscoped JSON cannot return the full CAS; callers must use named
-    // sections or the authenticated compressed export stream ---
+    // --- full CAS download (no das_unit_id) is unaffected and still returns
+    // every node ---
     const fullCas = await request(port, 'GET', `/api/projects/${project.id}/cas`, undefined, token);
-    assert.equal(fullCas.statusCode, 410);
+    assert.equal(fullCas.statusCode, 200);
     const fullCasBody = JSON.parse(fullCas.body);
-    assert.match(fullCasBody.export_url, /\/cas\/export$/);
-    assert.match(fullCasBody.sections_url, /\/cas\/sections$/);
-
-    const manifestResponse = await request(port, 'GET', `/api/projects/${project.id}/cas/manifest`, undefined, token);
-    assert.equal(manifestResponse.statusCode, 200);
-    const manifestBody = JSON.parse(manifestResponse.body);
-    assert.equal(manifestBody.cas, undefined);
-    assert.ok(manifestBody.manifest.sections.some((section: { name: string }) => section.name === 'graph'));
-
-    const graphResponse = await request(port, 'GET', `/api/projects/${project.id}/cas/sections?sections=graph`, undefined, token);
-    assert.equal(graphResponse.statusCode, 200);
-    const graphBody = JSON.parse(graphResponse.body);
-    assert.equal(graphBody.cas.nodes.length, promotedCas.nodes.length);
-    assert.equal(graphBody.cas.method_calls, undefined);
-
-    const exportResponse = await requestBuffer(port, `/api/projects/${project.id}/cas/export`, token);
-    assert.equal(exportResponse.statusCode, 200);
-    assert.ok(exportResponse.body.length > 0);
-    assert.ok(['brotli', 'zstd', 'none'].includes(String(exportResponse.headers['x-klauro-cas-codec'])));
-    assert.match(String(exportResponse.headers['content-disposition']), /attachment/);
+    assert.equal(fullCasBody.cas.nodes.length, promotedCas.nodes.length);
+    assert.equal(fullCasBody.das_unit_id, undefined);
 
     // --- non-promoted honesty: a SEPARATE project pointing at a single-
     // deployable analysis must report promoted:false with no units, and
     // scoping it must be a 4xx request error, never a 200 no_analysis body ---
-    const nonPromotedAnalysisHandle = 'das-http-non-promoted';
+    const nonPromotedAnalysisId = 'das-http-non-promoted';
+    const nonPromotedWorkspace = path.join(remoteData, 'workspaces', nonPromotedAnalysisId);
+    await fs.promises.mkdir(nonPromotedWorkspace, { recursive: true });
+    await saveAnalysis(nonPromotedWorkspace, buildNonPromotedCas(nonPromotedAnalysisId));
     const createNonPromotedRes = await request(port, 'POST', `/api/workspaces/${workspaceId}/projects`, {
       name: 'das-http-non-promoted-fixture',
-      analysis_id: nonPromotedAnalysisHandle,
+      analysis_id: nonPromotedAnalysisId,
     }, token);
     assert.equal(createNonPromotedRes.statusCode, 201);
-    const nonPromotedProject = JSON.parse(createNonPromotedRes.body).project as { id: string; analysis_id?: string };
-    assert.ok(nonPromotedProject.analysis_id, 'authenticated project response should expose its attached analysis');
-
-    const nonPromotedWorkspace = path.join(remoteData, 'workspaces', nonPromotedProject.analysis_id);
-    await fs.promises.mkdir(nonPromotedWorkspace, { recursive: true });
-    await saveAnalysis(nonPromotedWorkspace, buildNonPromotedCas(nonPromotedProject.analysis_id));
+    const nonPromotedProject = JSON.parse(createNonPromotedRes.body).project as { id: string };
 
     const dasNonPromoted = await request(port, 'GET', `/api/projects/${nonPromotedProject.id}/das`, undefined, token);
     assert.equal(dasNonPromoted.statusCode, 200);

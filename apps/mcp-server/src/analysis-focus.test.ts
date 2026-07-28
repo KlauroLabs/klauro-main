@@ -34,7 +34,7 @@ test('ui-overview focus enables AI enrichment without silently opting into local
 
     assert.equal(seen.focus, 'ui-overview');
     assert.equal(seen.interpretation, 'true');
-    assert.equal(seen.force, 'false');
+    assert.equal(seen.force, 'true');
     assert.equal(seen.deterministicKeep, 'false');
     assert.equal(seen.interpretationBudget, '45000');
     assert.equal(seen.elementBudget, '90000');
@@ -82,7 +82,7 @@ test('agent-fast focus keeps required AI summary and capability enrichment witho
 
     assert.equal(seen.focus, 'agent-fast');
     assert.equal(seen.interpretation, 'true');
-    assert.equal(seen.force, 'false');
+    assert.equal(seen.force, 'true');
     assert.equal(seen.deterministicKeep, 'false');
     assert.equal(seen.interpretationBudget, '30000');
     assert.equal(seen.elements, 'true');

@@ -251,23 +251,14 @@ describe('deterministic/AI boundary', () => {
     });
     resetAICooldownState();
     describeSpy.mockReset();
-    describeSpy.mockImplementation(async (opts: any) => {
-      const items = opts?.additionalContext?.items;
-      if (Array.isArray(items) && items.some((item: any) => item?.kind === 'capability')) {
-        return JSON.stringify({
-          descriptions: items.map((item: any) => ({
-            id: item.id,
-            description: `${item.name} maintains customer Order records with id, customerId, and total fields used by order creation, lookup, and listing.`,
-          })),
-        });
-      }
-      return JSON.stringify({
+    describeSpy.mockResolvedValue(
+      JSON.stringify({
         system_description:
           'This service is an Express HTTP API for order tracking that records customer orders in an in-memory order store. It exposes endpoints to create a new order, fetch one order by id, and list all stored orders as JSON.',
         domain: 'customer-order-tracking',
         descriptions: [],
-      });
-    });
+      }),
+    );
     const enabledRun = await createPipelineOrchestrator().orchestrateAnalysis(fixtureDir);
     expect(describeSpy).toHaveBeenCalled();
     // Comprehension, when produced, is AI provenance — never deterministic.
@@ -308,14 +299,6 @@ describe('deterministic/AI boundary', () => {
     describeSpy.mockReset();
     describeSpy.mockImplementation(async (opts: any) => {
       const items = opts?.additionalContext?.items;
-      if (Array.isArray(items) && items.some((item: any) => item?.kind === 'capability')) {
-        return JSON.stringify({
-          descriptions: items.map((item: any) => ({
-            id: item.id,
-            description: `${item.name} maintains customer Order records with id, customerId, and total fields used by order creation, lookup, and listing.`,
-          })),
-        });
-      }
       // Entity-description batch: this call's items are DescriptionTarget
       // objects tagged kind:'entity' — reply with an entity-grounded sentence
       // that names the subject and one of its own fields (the same grounding

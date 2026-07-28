@@ -210,25 +210,6 @@ export class AuthAnalyzer extends BaseAnalyzer {
   }
 
   private async sourceFiles(context: AnalysisContext): Promise<string[]> {
-    const groundedFiles = this.filesFromExistingAnalysis(
-      context,
-      source => AUTH_RULES.some(ruleDef => ruleDef.importSources.some(pattern => pattern.test(source))),
-      true
-    );
-    const conventionFiles = await glob([
-      '**/*{auth,guard,policy,permission,session,jwt,oauth}*.{ts,tsx,js,jsx,py,rb,java}',
-      '**/*.rego',
-    ], {
-      cwd: context.projectPath,
-      ignore: [...this.getIgnorePatterns(context), '**/*.test.*', '**/*.spec.*'],
-      nodir: true,
-      absolute: false,
-    });
-    const evidenceFiles = [...new Set([...groundedFiles, ...conventionFiles])].sort();
-    if ((context.existingAnalysis?.length || 0) > 0 && evidenceFiles.length > 0) {
-      return this.capAndPrioritizeSourceFiles(evidenceFiles, 'auth candidate files');
-    }
-
     return this.capAndPrioritizeSourceFiles(await glob([
       '**/*.{ts,tsx,js,jsx,py,rb,java,rego}',
     ], {
@@ -524,8 +505,6 @@ export class AuthAnalyzer extends BaseAnalyzer {
   }
 
   private extractImports(content: string): string[] {
-    const corpusImports = this.sourceImports(content);
-    if (corpusImports) return [...corpusImports].map(value => value.replace(/::/g, '.').toLowerCase());
     const imports = new Set<string>();
     for (const line of content.split(/\r?\n/)) {
       const importMatch = line.match(/^\s*import\s+(?:.+?\s+from\s+)?['"]([^'"]+)['"]/);

@@ -207,19 +207,6 @@ describe('classifyArtifactType', () => {
     }));
     expect(result.artifactType).toBe('app');
   });
-
-  test('multi-surface deployment repository is infrastructure, not a CLI tool or app', () => {
-    const result = classifyArtifactType(input({
-      nodes: [
-        { ...node('Queue', 'main.tf'), type: 'terraform_resource' },
-        { ...node('Deployment', 'k8s/deployment.yaml'), type: 'kubernetes_deployment' },
-        { ...node('Container', 'Dockerfile'), type: 'dockerfile' },
-      ],
-      entryPointSummary: [{ type: 'cli', count: 1 }, { type: 'file', count: 1 }],
-    }));
-    expect(result.artifactType).toBe('infrastructure');
-    expect(result.evidence.join(' ')).toMatch(/container.*kubernetes.*terraform/);
-  });
 });
 
 describe('artifactLedDomainLabel', () => {

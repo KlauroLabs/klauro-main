@@ -8,9 +8,8 @@ import { installGauntletWatcher, listGauntletWatchers, stopGauntletWatcher } fro
 import { runIncrementalGauntlet, listIncrementalRecords } from './gauntlet/incremental-gauntlet';
 import { appendFileSync } from 'fs';
 import * as nodePath from 'path';
-import { getAnalysis as getStoredAnalysis } from './analyzer';
+import { analyzeProjectIncremental, getAnalysis as getStoredAnalysis, runAnalysis } from './analyzer';
 import { compareHostedFreshness, currentAnalysisSourceStamp, hostedSummaryPayload, resolutionIsStaleDegraded, resolveBoundAnalysis, resolveHostedProjectBinding } from './hosted-analysis';
-import { CAS_SECTION_PROFILES, type CasSectionName } from './cas-sections';
 import { getAnalysisEntry, getStorageHealth, listAgenticBenchmarkReports, listAnalyses, listCrossCodebaseSystemGraphs, listWorkspaceGraphs, loadAgenticBenchmarkReport, loadCrossCodebaseSystemGraph, loadGoldenSnapshot, loadLatestAgenticBenchmarkReportByType, loadRuntimeObservations, loadWorkspaceGraph, saveAgenticBenchmarkReport, saveCrossCodebaseSystemGraph, saveGoldenSnapshot, saveRuntimeObservation, saveWorkspaceGraph } from './storage';
 import * as query from './query';
 import * as adrStore from './adr-store';
@@ -41,10 +40,10 @@ import { formatIncrementalValueMarkdownReport, runIncrementalValueBenchmark } fr
 import { buildAgentPerformanceProof, formatStoredBenchmarkReport } from './agent-performance-proof';
 import { formatIdiomBenchmarkMarkdown, runAgentIdiomBenchmark } from './agent-idiom-benchmark';
 import { runMachineAgentProof } from './machine-gauntlet';
-import { analyzeCodebaseRemotely, generateElementDescriptionRemotely, syncWorkingTreeRemotely } from './remote-sync-client';
+import { analyzeCodebaseRemotely, syncWorkingTreeRemotely } from './remote-sync-client';
 import { getAgentRevisionTracks } from './agent-revision-tracks';
 import { buildUploadManifest } from './remote-source';
-import { loadKlauroConfig, writeDefaultKlauroConfig, validateConventions, type KlauroConventions } from './klauro-config';
+import { loadKlauroConfig, writeDefaultKlauroConfig, validateConventions, assertLocalAnalysisAllowed, type KlauroConventions } from './klauro-config';
 import { resolveSectionFilterForProject } from './context-filter';
 import * as fs from 'node:fs/promises';
 import { buildGithubImportPlan } from './github-import';
@@ -54,7 +53,7 @@ import * as greenfieldBuildSession from './greenfield-build-session';
 import * as descriptionEnrichment from './description-enrichment';
 import * as runtimeSimulation from './runtime-simulation';
 import * as telemetryIngestion from './telemetry-ingestion';
-import { getAnalysisFocusProfiles, type AnalysisFocus } from './analysis-focus';
+import { getAnalysisFocusProfiles, withAnalysisFocus, type AnalysisFocus } from './analysis-focus';
 import { getDescriptionEnrichmentTargets } from './analysis-usefulness-review';
 import { semanticSearch } from './semantic-search';
 import { pruneKlauroStorage } from './storage-maintenance';
@@ -126,24 +125,36 @@ Trust, then verify: every result is stamped to a commit/branch. If get_file_node
 
 Watch for silent server staleness: \`klauro update\` overwrites the installed MCP server on disk, but an ALREADY-RUNNING server process keeps executing the OLD build in memory until the client restarts — MCP servers do not hot-reload, and this happens with no error, just missing tools or stale behavior. Every get_summary / get_system_overview response (and anything else on the freshness-stamped orient path) carries a server_update field once it becomes known (empty on the very first call of a session, populated from the second call onward) whenever a newer build is installed or available; get_server_version is the direct, always-fresh way to check on demand and returns the same finding as running_stale/server_update plus installed_version. If you see server_update or a get_server_version note asking for a restart, relay it to the human verbatim — restarting the MCP client (Claude Code / IDE) is the only way to pick up the new build.`;
 
-// Customer reads never execute analyzer code. Bound repositories resolve the
-// hosted result; unbound repositories may read an existing development cache,
-// but missing/stale state is reported until the client uploads it for hosted
-// analysis.
-async function getFreshAnalysisForAgent(projectPath: string, sections?: readonly CasSectionName[]) {
+// Freshness-gated read: this is now the DEFAULT way any agent-entry tool reads
+// CAS, not a special agent-only path (see docs/SPEC-FRESHNESS.md). It checks the
+// cheap (~sub-100ms, 5s-memoized) git-diff based staleness summary and, only when
+// stale, runs analyzeProjectIncremental — which is changed-file-only and
+// content-hash cached, so the common case (nothing changed) costs one git scan,
+// not a re-parse. The name is kept as getFreshAnalysisForAgent for call-site
+// continuity; every agent-entry tool should route through this instead of the
+// raw getAnalysis(path).
+async function getFreshAnalysisForAgent(projectPath: string) {
   // Project-bound repo (.klaurorc with a prj_ id + signed-in session): the
   // HOSTED analysis is the source of truth (docs/KLAURO-PRODUCT-MODEL.md).
-  // resolveBoundAnalysis serves it via bounded named-section hydration and
-  // NEVER silently runs a local analysis or mirrors the full hosted CAS —
+  // resolveBoundAnalysis serves it (via a coherent local mirror keyed by the
+  // hosted analysis_timestamp) and NEVER silently runs a local analysis —
   // when the server is unreachable it degrades honestly to the local cache
   // (stamped with a note) or fails with an explicit error. Unbound repos keep
   // the legacy local freshness-gated path below, including auto-analyze.
   const binding = await resolveHostedProjectBinding(projectPath).catch(() => null);
   if (binding) {
-    return (await resolveBoundAnalysis(binding, sections ? { sections } : undefined)).cas;
+    return (await resolveBoundAnalysis(binding)).cas;
   }
 
-  return getStoredAnalysis(projectPath);
+  try {
+    const cas = await getStoredAnalysis(projectPath);
+    const summary = freshness.summarizeAnalysisFreshness(projectPath, cas.analysis_timestamp);
+    if (!summary || summary.staleness === 'fresh') return cas;
+  } catch {
+    // Missing analysis falls through to the same incremental path as stale analysis.
+  }
+
+  return (await analyzeProjectIncremental(projectPath)).output;
 }
 
 /**
@@ -154,11 +165,11 @@ async function getFreshAnalysisForAgent(projectPath: string, sections?: readonly
  * bypass hosted resolution, as does any unbound repo — those paths are
  * byte-for-byte the legacy local-store behavior.
  */
-async function getAnalysis(projectPath: string, options?: { track?: import('./track').AnalysisTrack; sections?: readonly CasSectionName[] }) {
+async function getAnalysis(projectPath: string, options?: { track?: import('./track').AnalysisTrack }) {
   if (!options?.track) {
     const binding = await resolveHostedProjectBinding(projectPath).catch(() => null);
     if (binding) {
-      return (await resolveBoundAnalysis(binding, options?.sections ? { sections: options.sections } : undefined)).cas;
+      return (await resolveBoundAnalysis(binding)).cas;
     }
   }
   return getStoredAnalysis(projectPath, options);
@@ -642,6 +653,21 @@ function compactWorkspaceSemanticItem(item: any): Record<string, unknown> {
 function errorResponse(error: unknown): { content: Array<{ type: 'text'; text: string }>; isError: true } {
   const message = error instanceof Error ? error.message : String(error);
   return { content: [{ type: 'text', text: JSON.stringify({ error: message }) }], isError: true };
+}
+
+function versionUpgradeReport(
+  hadPreviousAnalysis: boolean,
+  previousVersion: string | undefined,
+  newVersion: string | undefined
+): { from: string; to: string; note: string } | undefined {
+  if (!hadPreviousAnalysis || !newVersion) return undefined;
+  const from = previousVersion || 'unknown (stored before versioned index)';
+  if (from === newVersion) return undefined;
+  return {
+    from,
+    to: newVersion,
+    note: `Stored analysis was upgraded from cas_version ${from} to ${newVersion}. Fields introduced between these versions are now populated for this project.`,
+  };
 }
 
 /**
@@ -1159,7 +1185,7 @@ function registerTools(server: McpServer) {
     'analyze_codebase',
     {
       title: 'Analyze Codebase',
-      description: 'Upload a filtered source snapshot for hosted Klauro analysis. The installed MCP server never parses or builds CAS locally.',
+      description: 'Development-only full CAS analysis on this machine. Customer agents should use analyze_codebase_remote; the installed client uploads source changes and the hosted analyzer performs all heavy parsing and enrichment. This tool refuses unless KLAURO_ALLOW_LOCAL_ANALYSIS=1 is explicitly set for analyzer development or gauntlet execution.',
       inputSchema: {
         path: z.string().describe('Absolute path to the project directory'),
         force_full: z.boolean().optional().describe('Force full rebuild even if incremental is possible'),
@@ -1167,16 +1193,33 @@ function registerTools(server: McpServer) {
       } as any,
     } as any,
     async ({ path, force_full, analysis_focus }: any) => withErrorHandling(async () => {
+      // Prod-exclusive guard: if .klaurorc sets policy.requireRemoteAnalyzer, the
+      // on-machine analyzer must refuse and redirect to analyze_codebase_remote,
+      // so heavy analysis + storage stay on the hosted analyzer (never local).
+      assertLocalAnalysisAllowed(await loadKlauroConfig(path));
       const focus: AnalysisFocus = analysis_focus || 'agent-fast';
-      const result = await analyzeCodebaseRemotely({ projectPath: path });
+      return withAnalysisFocus(focus, async () => {
+      const previousEntry = await getAnalysisEntry(path);
+      const summary = await runAnalysis(path, { forceFull: Boolean(force_full) });
       return json({
-        status: result.status,
-        analysis_id: result.analysis_id,
+        status: 'success',
+        analysis_type: summary.analysisType,
         analysis_focus: focus,
         path,
-        files_sent: result.manifest.file_count,
-        bytes_sent: result.manifest.total_bytes,
-        force_full_requested: Boolean(force_full),
+        name: summary.name,
+        nodes: summary.nodes,
+        edges: summary.edges,
+        entry_points: summary.entryPoints,
+        analyzers_run: summary.analyzersRun,
+        errors: summary.errors,
+        phases: summary.phases,
+        version_upgrade: versionUpgradeReport(
+          Boolean(previousEntry),
+          summary.previousCasVersion || previousEntry?.cas_version,
+          summary.casVersion
+        ),
+        change_summary: summary.changeSummary,
+      });
       });
     })
   );
@@ -1231,12 +1274,12 @@ function registerTools(server: McpServer) {
       } as any,
     } as any,
     async ({ path, target, target_kind, instructions }: any) => withErrorHandling(async () => {
-      return json(await generateElementDescriptionRemotely({
+      return json(await withAnalysisFocus('ui-overview', () => descriptionEnrichment.generateElementDescription({
         projectPath: path,
         target,
         targetKind: target_kind,
         instructions,
-      }));
+      })));
     })
   );
 
@@ -1310,12 +1353,12 @@ function registerTools(server: McpServer) {
     async ({ path, layer, target, target_kind, instructions, scenario, event_count, seed, persist, force_full }: any) => withErrorHandling(async () => {
       if (layer === 'manual-element-description') {
         if (!target) throw new Error('manual-element-description requires target');
-        return json(await generateElementDescriptionRemotely({
+        return json(await withAnalysisFocus('ui-overview', () => descriptionEnrichment.generateElementDescription({
           projectPath: path,
           target,
           targetKind: target_kind,
           instructions,
-        }));
+        })));
       }
 
       if (layer === 'runtime-simulation') {
@@ -1334,17 +1377,21 @@ function registerTools(server: McpServer) {
           ? 'ui-overview'
           : 'deep-context';
 
-      const result = await analyzeCodebaseRemotely({ projectPath: path });
-      return json({
-        status: result.status,
-        analysis_id: result.analysis_id,
-        layer,
-        analysis_focus: focus,
-        path,
-        files_sent: result.manifest.file_count,
-        bytes_sent: result.manifest.total_bytes,
-        force_full_requested: Boolean(force_full),
-      });
+      return json(await withAnalysisFocus(focus, async () => {
+        const summary = await runAnalysis(path, { forceFull: Boolean(force_full) });
+        return {
+          status: 'success',
+          layer,
+          analysis_type: summary.analysisType,
+          analysis_focus: focus,
+          path,
+          nodes: summary.nodes,
+          edges: summary.edges,
+          entry_points: summary.entryPoints,
+          phases: summary.phases,
+          change_summary: summary.changeSummary,
+        };
+      }));
     })
   );
 
@@ -1503,7 +1550,7 @@ function registerTools(server: McpServer) {
     'analyze_codebase_remote',
     {
       title: 'Analyze Codebase Remotely',
-      description: 'Upload a filtered local source snapshot to the hosted Klauro analyzer. Returns after acceptance; CAS is never downloaded or materialized by this launch path.',
+      description: 'Upload a filtered local source snapshot to a remote Klauro analyzer service, then cache the returned CAS locally for fast MCP queries.',
       inputSchema: {
         path: z.string().describe('Absolute path to the project directory'),
         server_url: z.string().optional().describe('Remote analyzer URL. Defaults to KLAURO_ANALYZER_URL or Klauro Cloud.'),
@@ -1511,7 +1558,9 @@ function registerTools(server: McpServer) {
       } as any,
     } as any,
     async ({ path, server_url, analysis_id }: any) => withErrorHandling(async () => {
-      const result = await analyzeCodebaseRemotely({ projectPath: path, serverUrl: server_url, analysisId: analysis_id });
+      // wait:true — this MCP tool's contract is to cache the returned CAS
+      // locally for fast queries, so it needs the synchronous response.
+      const result = await analyzeCodebaseRemotely({ projectPath: path, serverUrl: server_url, analysisId: analysis_id, wait: true });
       return json({
         status: result.status,
         analysis_id: result.analysis_id,
@@ -1520,7 +1569,10 @@ function registerTools(server: McpServer) {
         files_sent: result.manifest.file_count,
         bytes_sent: result.manifest.total_bytes,
         path,
-        name: path.split('/').pop(),
+        name: result.cas!.system?.name || path.split('/').pop(),
+        nodes: result.cas!.nodes?.length || 0,
+        edges: result.cas!.edges?.length || 0,
+        entry_points: result.cas!.entry_points?.length || 0,
       });
     })
   );
@@ -1529,7 +1581,7 @@ function registerTools(server: McpServer) {
     'sync_codebase_remote',
     {
       title: 'Sync Codebase Remotely',
-      description: 'Upload dirty-tree file changes for hosted analysis. Returns acceptance metadata without downloading or materializing CAS locally.',
+      description: 'Send dirty-tree file changes to a remote Klauro analyzer service and cache the updated CAS locally. Use after local agent edits when analyzers are hosted.',
       inputSchema: {
         path: z.string().describe('Absolute path to the project directory'),
         server_url: z.string().optional().describe('Remote analyzer URL. Defaults to KLAURO_ANALYZER_URL or Klauro Cloud.'),
@@ -1547,7 +1599,10 @@ function registerTools(server: McpServer) {
         files_sent: result.manifest.file_count,
         bytes_sent: result.manifest.total_bytes,
         path,
-        name: path.split('/').pop(),
+        name: result.cas.system?.name || path.split('/').pop(),
+        nodes: result.cas.nodes?.length || 0,
+        edges: result.cas.edges?.length || 0,
+        entry_points: result.cas.entry_points?.length || 0,
         change_summary: summary ? {
           files_changed: summary.filesAdded + summary.filesModified + summary.filesDeleted,
           nodes_added: summary.nodesAdded,
@@ -1976,10 +2031,6 @@ function registerTools(server: McpServer) {
         // surface must never present a stale cache as current.
         const binding = await resolveHostedProjectBinding(path).catch(() => null);
         if (binding) {
-          if (!scope && detail !== 'full' && runtime === undefined && !exclude_sections?.length) {
-            const hosted = await hostedSummaryPayload(binding);
-            if (hosted) return json(withFreshnessStamp({ ...hosted, hosted_status: hosted.hosted_status || 'ready' }));
-          }
           let resolution;
           try {
             resolution = await resolveBoundAnalysis(binding);
@@ -2037,7 +2088,7 @@ function registerTools(server: McpServer) {
       } as any,
     } as any,
     async ({ path, runtime, exclude_sections }: any) => withErrorHandling(async () => {
-      const cas = await getFreshAnalysisForAgent(path, CAS_SECTION_PROFILES.system_overview);
+      const cas = await getFreshAnalysisForAgent(path);
       const filter = await resolveSectionFilterForProject(path, { runtime, exclude_sections });
       return json(withFreshnessStamp(query.getSystemOverview(cas, {
         excludeRuntime: filter.isExcluded('runtime'),
@@ -3904,12 +3955,7 @@ function registerTools(server: McpServer) {
     async ({ path, query: q, type, category, level, limit, mode, detail, scope }: any) => withErrorHandling(async () => {
       const resolvedMode = mode || 'hybrid';
       const resolvedDetail = detail || 'compact';
-      const scopedGetCas = async (p: string) => scopeCasToDasUnit(
-        await getFreshAnalysisForAgent(p, resolvedMode === 'lexical'
-          ? CAS_SECTION_PROFILES.graph_search
-          : ['identity', 'graph', 'supplemental']),
-        scope,
-      );
+      const scopedGetCas = async (p: string) => scopeCasToDasUnit(await getFreshAnalysisForAgent(p), scope);
       if (resolvedMode === 'lexical') {
         // searchNodes returns a bare array (existing contract) — not stamped
         // with freshness_checked_at to avoid a breaking shape change; the
@@ -3940,8 +3986,7 @@ function registerTools(server: McpServer) {
       } as any,
     } as any,
     async ({ path, query: q, type, category, level, types, files, limit }: any) => withErrorHandling(async () => {
-      const getCas = (projectPath: string) => getFreshAnalysisForAgent(projectPath, ['identity', 'graph', 'supplemental']);
-      return json(withFreshnessStamp(await semanticSearch(path, q, { type, category, level, types, files, limit, getCas })));
+      return json(withFreshnessStamp(await semanticSearch(path, q, { type, category, level, types, files, limit, getCas: getFreshAnalysisForAgent })));
     })
   );
 
@@ -3955,7 +4000,7 @@ function registerTools(server: McpServer) {
       } as any,
     } as any,
     async ({ path }: any) => withErrorHandling(async () => {
-      const cas = await getAnalysis(path, { sections: ['identity', 'supplemental'] });
+      const cas = await getAnalysis(path);
       const index = cas.embedding_index;
       if (!index) {
         return json({
@@ -3992,7 +4037,7 @@ function registerTools(server: McpServer) {
       } as any,
     } as any,
     async ({ path, node_id }: any) => withErrorHandling(async () => {
-      const cas = await getAnalysis(path, { sections: CAS_SECTION_PROFILES.node_detail });
+      const cas = await getAnalysis(path);
       const result = query.getNode(cas, node_id);
       if (!result) return json({ error: `Node not found: ${node_id}` });
       return json(result);
@@ -4011,7 +4056,7 @@ function registerTools(server: McpServer) {
       } as any,
     } as any,
     async ({ path, file_path, scope }: any) => withErrorHandling(async () => {
-      const cas = scopeCasToDasUnit(await getAnalysis(path, { sections: CAS_SECTION_PROFILES.graph_search }), scope);
+      const cas = scopeCasToDasUnit(await getAnalysis(path), scope);
       return json(query.getFileNodes(cas, file_path, path));
     })
   );
@@ -4032,7 +4077,7 @@ function registerTools(server: McpServer) {
       } as any,
     } as any,
     async ({ path, level, limit, offset, edge_limit, include_edges, include_entry_exit }: any) => withErrorHandling(async () => {
-      const cas = await getAnalysis(path, { sections: ['identity', 'graph', 'supplemental'] });
+      const cas = await getAnalysis(path);
       return json(query.getLevel(cas, level, { limit, offset, edge_limit, include_edges, include_entry_exit }));
     })
   );
@@ -4091,7 +4136,7 @@ function registerTools(server: McpServer) {
       } as any,
     } as any,
     async ({ path, type, limit, offset }: any) => withErrorHandling(async () => {
-      const cas = await getAnalysis(path, { sections: ['identity', 'supplemental'] });
+      const cas = await getAnalysis(path);
       return json(query.getExitPoints(cas, { type, limit, offset }));
     })
   );
@@ -4180,7 +4225,7 @@ function registerTools(server: McpServer) {
       } as any,
     } as any,
     async ({ path, node_id, depth, limit }: any) => withErrorHandling(async () => {
-      const cas = await getAnalysis(path, { sections: CAS_SECTION_PROFILES.call_graph });
+      const cas = await getAnalysis(path);
       return json(query.getCallers(cas, node_id, depth, limit));
     })
   );
@@ -4198,7 +4243,7 @@ function registerTools(server: McpServer) {
       } as any,
     } as any,
     async ({ path, node_id, depth, limit }: any) => withErrorHandling(async () => {
-      const cas = await getAnalysis(path, { sections: CAS_SECTION_PROFILES.call_graph });
+      const cas = await getAnalysis(path);
       return json(query.getCallees(cas, node_id, depth, limit));
     })
   );
@@ -6752,7 +6797,7 @@ function registerTools(server: McpServer) {
     'start_watch',
     {
       title: 'Start Watch',
-      description: 'Begin watching a project for file changes. Coalesces IDE-style events and uploads the dirty-tree delta for hosted incremental analysis; no analyzer executes on the developer machine. Returns a watch_id for tracking the session.',
+      description: 'Begin watching a project for file changes. Automatically runs incremental analysis when files change. Returns a watch_id for tracking the session.',
       inputSchema: {
         path: z.string().describe('Project path to watch'),
       } as any,

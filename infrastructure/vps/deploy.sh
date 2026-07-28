@@ -135,8 +135,7 @@ command -v sshpass >/dev/null || { echo "ERROR: sshpass not installed." >&2; exi
 # NB: ControlPath must stay short (macOS TMPDIR overflows the Unix-socket path
 # limit) — use /tmp directly + %C (hash of conn params) instead of %r@%h:%p.
 CM_OPTS="-o ControlMaster=auto -o ControlPath=/tmp/klauro-cm-%C -o ControlPersist=120"
-export SSHPASS="$VPS_PASSWORD"
-SSH="sshpass -e ssh -o StrictHostKeyChecking=no -o ConnectTimeout=25 $CM_OPTS"
+SSH="sshpass -p $VPS_PASSWORD ssh -o StrictHostKeyChecking=no -o ConnectTimeout=25 $CM_OPTS"
 DEST="$VPS_USER@$VPS_HOST"
 
 # --- optional: cut the release first --------------------------------------
@@ -167,11 +166,8 @@ fi
 echo "==> Syncing app-dist"
 rsync -az --delete -e "$SSH" apps/app/dist/ "$DEST:/opt/klauro/app-dist/"
 echo "==> Syncing source (excluding heavy/generated dirs)"
-rsync -az --delete-delay --exclude node_modules --exclude dist --exclude .git --exclude .pack \
+rsync -az --exclude node_modules --exclude dist --exclude .git --exclude .pack \
   --exclude logs --exclude docs.zip -e "$SSH" ./ "$DEST:/opt/klauro/source/"
-echo "==> Syncing remote gate source to the identical deployment snapshot"
-rsync -az --delete-delay --exclude node_modules --exclude dist --exclude .git --exclude .pack \
-  --exclude logs --exclude docs.zip -e "$SSH" ./ "$DEST:/opt/klauro/devgate/"
 echo "==> Syncing Caddyfile + docker-compose.yml"
 rsync -az -e "$SSH" infrastructure/vps/Caddyfile "$DEST:/opt/klauro/Caddyfile"
 rsync -az -e "$SSH" infrastructure/vps/docker-compose.yml "$DEST:/opt/klauro/docker-compose.yml"
@@ -204,7 +200,6 @@ STAMP
 # --- rebuild + restart -----------------------------------------------------
 echo "==> Rebuilding + restarting containers on $VPS_HOST"
 $SSH "$DEST" "cd /opt/klauro && KLAURO_GIT_SHA='$GIT_SHA' KLAURO_BUILD_TIME='$BUILD_TIME' docker compose up -d --build --remove-orphans"
-$SSH "$DEST" "docker image rm klauro-gate >/dev/null 2>&1 || true"
 
 # --- guard: force Caddy to re-resolve the (possibly recreated) api container -
 # Defect #24 (observed twice on prod): `docker compose up -d --build` recreates
@@ -287,15 +282,5 @@ if ! $SSH "$DEST" '
   echo "    !! runtime bug in the analysis path. Check 'docker logs klauro-api-1'." >&2
   exit 1
 fi
-
-# Repeated image rebuilds otherwise leave one dangling multi-gigabyte image and
-# its BuildKit layers behind on every deploy. Keep the live image and useful
-# recent cache, but bound inactive build artifacts on the small alpha VPS.
-echo "==> Applying Docker artifact retention"
-$SSH "$DEST" '
-  set -e
-  docker image prune -f >/dev/null
-  docker builder prune -af --keep-storage 20GB >/dev/null
-'
 
 echo "==> Deploy verified. $KLAURO_URL is live (dist $DIST_VER)."

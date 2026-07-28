@@ -65,7 +65,7 @@ describe('contribution merge duplicate-id semantics', () => {
     expect(analysisErrors).toHaveLength(0);
   });
 
-  it('keeps the first entry point and warns when a duplicate id carries different content', async () => {
+  it('UNION-MERGES an exact-id entry-point collision instead of dropping the loser (d2e6acf7)', async () => {
     const target = emptyTarget();
     const first = cliEntry({
       id: 'entry_http_server',
@@ -88,14 +88,14 @@ describe('contribution merge duplicate-id semantics', () => {
       { analyzerId: 'nestjs', analysisErrors }
     );
 
+    // Two DIFFERING records under one id used to keep the first and warn,
+    // silently discarding real extracted evidence. They now merge: one record
+    // survives, the richer one supplies conflicting scalars, and neither
+    // side's metadata is lost — so this is no longer a PARTIAL_ANALYSIS.
     expect(target.allEntryPoints).toHaveLength(1);
     expect(target.allEntryPoints[0].name).toBe('HTTP Server: port 3000');
-    expect(analysisErrors).toHaveLength(1);
-    expect(analysisErrors[0].code).toBe('PARTIAL_ANALYSIS');
-    expect(analysisErrors[0].severity).toBe('warning');
-    expect(analysisErrors[0].message).toContain('entry_http_server');
-    expect(analysisErrors[0].message).toContain('apps/api/src/main.ts');
-    expect(analysisErrors[0].message).toContain('apps/api-internal/src/main.ts');
+    expect(target.allEntryPoints[0].metadata.port).toBe(3000);
+    expect(analysisErrors).toHaveLength(0);
   });
 
   it('applies the same semantics to exit points', async () => {

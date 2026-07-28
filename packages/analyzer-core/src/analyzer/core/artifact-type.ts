@@ -95,9 +95,6 @@ export function classifyArtifactType(input: ArtifactTypeInput): ArtifactTypeResu
   const boilerplate = detectBoilerplate(manifest, appEntries);
   if (boilerplate) return boilerplate;
 
-  const infrastructure = detectInfrastructure(nodes, appEntries);
-  if (infrastructure) return infrastructure;
-
   const cliTool = detectCliTool(manifest, appEntries, cliEntries);
   if (cliTool) return cliTool;
 
@@ -105,29 +102,6 @@ export function classifyArtifactType(input: ArtifactTypeInput): ArtifactTypeResu
   if (library) return library;
 
   return { artifactType: 'app', evidence: ['default: no library/client/cli/boilerplate markers'] };
-}
-
-function detectInfrastructure(
-  nodes: ArtifactTypeInput['nodes'],
-  appEntries: number,
-): ArtifactTypeResult | null {
-  if (appEntries > 0) return null;
-  const surfaces = new Set<string>();
-  for (const node of nodes) {
-    const type = String(node.type || '').toLowerCase();
-    const file = String(node.source?.file || '').replace(/\\/g, '/').toLowerCase();
-    if (type.includes('terraform') || /(^|\/)main\.tf$|\.tf$/.test(file)) surfaces.add('terraform');
-    if (type.includes('kubernetes') || type.startsWith('k8s_') || /(^|\/)k8s\//.test(file)) surfaces.add('kubernetes');
-    if (type.includes('docker') || /(^|\/)dockerfile$/.test(file)) surfaces.add('container');
-    if (type.includes('compose') || /docker-compose[^/]*\.ya?ml$|compose\.ya?ml$/.test(file)) surfaces.add('compose');
-    if (type.includes('pipeline') || /(^|\/)(\.github\/workflows|\.gitlab-ci|jenkinsfile|azure-pipelines)/.test(file)) surfaces.add('ci-cd');
-    if (type.includes('helm') || /(^|\/)charts?\//.test(file)) surfaces.add('helm');
-  }
-  if (surfaces.size < 2) return null;
-  return {
-    artifactType: 'infrastructure',
-    evidence: [`${surfaces.size} infrastructure surfaces: ${[...surfaces].sort().join(', ')}`, '0 application entry points'],
-  };
 }
 
 /**

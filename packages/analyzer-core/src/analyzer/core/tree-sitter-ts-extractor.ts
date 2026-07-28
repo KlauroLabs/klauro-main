@@ -366,101 +366,6 @@ export function collectSyntaxErrorLocations(root: any): TSSyntaxErrorLocation[] 
   return locations;
 }
 
-const EXTRACTED_FUNCTION_TYPES = new Set([
-  'function_declaration',
-  'method_definition',
-  'arrow_function',
-  'function_expression',
-  'generator_function_declaration'
-]);
-
-const THROW_FUNCTION_BOUNDARY_TYPES = new Set([
-  ...EXTRACTED_FUNCTION_TYPES,
-  'generator_function'
-]);
-
-const VARIABLE_FUNCTION_TYPES = new Set([
-  'function_declaration',
-  'method_definition',
-  'arrow_function',
-  'function_expression'
-]);
-
-const CLASS_CONTAINER_TYPES = new Set([
-  'class_declaration',
-  'class',
-  'abstract_class_declaration'
-]);
-
-const COMPLEXITY_NODE_TYPES = new Set([
-  'if_statement', 'ternary_expression', 'switch_case',
-  'for_statement', 'for_in_statement', 'for_of_statement',
-  'while_statement', 'do_statement', 'catch_clause', 'binary_expression'
-]);
-
-type TSCallContextFacts = Omit<TSExtractedCall['context'], 'enclosingFunction' | 'enclosingClass'> & {
-  isConditional: boolean;
-  isInLoop: boolean;
-};
-
-interface TSIndexedCall {
-  node: any;
-  isAsync: boolean;
-  context: TSCallContextFacts;
-}
-
-interface TSIndexedIdentifier {
-  node: any;
-  parent: any | null;
-  excludeFromReference: boolean;
-  conditionalDepth: number;
-  loopDepth: number;
-}
-
-interface TSFunctionTraversal {
-  node: any;
-  parent: any | null;
-  grandparent: any | null;
-  className?: string;
-  hasEnclosingFunction: boolean;
-  calls: TSIndexedCall[];
-  identifiers: TSIndexedIdentifier[];
-  complexity: number;
-  throwTypes: Set<string>;
-}
-
-interface TSRootTraversal {
-  imports: any[];
-  classes: any[];
-  variables: any[];
-  exports: any[];
-  comments: Array<{ type: string; text: string; line: number }>;
-  standaloneFunctions: any[];
-  objectMethods: any[];
-  functions: Map<any, TSFunctionTraversal>;
-}
-
-interface TSTraversalFrame {
-  node: any;
-  parent: any | null;
-  grandparent: any | null;
-  parentType?: string;
-  classDepth: number;
-  className?: string;
-  variableFunctionDepth: number;
-  enclosingFunctionDepth: number;
-  activeFunctions: TSFunctionTraversal[];
-  throwBoundaries: Array<TSFunctionTraversal | undefined>;
-  conditionalDepth: number;
-  loopDepth: number;
-  blockDepth: number;
-  tryDepth: number;
-  catchDepth: number;
-  finallyDepth: number;
-  callbackDepth: number;
-  promiseDepth: number;
-}
-
 export class TreeSitterTSExtractor {
   private parsers = new Map<string, any>();
   private currentFile: string = '';
@@ -488,24 +393,32 @@ export class TreeSitterTSExtractor {
     const tree = parser.parse(forParse);
     const root = getRootNode(tree);
 
-    const traversal = this.buildTraversalIndex(root);
+    // extractImports/Classes/Variables/Exports each independently did a full
+    // pre-order DFS of the whole tree to collect their root-level node types —
+    // 4 traversals, each marshaling every named node across the native
+    // tree-sitter boundary. Collapse them into ONE walk that buckets by type.
+    // Because collectByType(s) and this walk use the identical stack/reverse-push
+    // order, each type's filtered subsequence is byte-identical to the old
+    // per-type walk, so the extract methods produce the same output (proven by
+    // node-count equality on hercules-fe).
+    const buckets = this.collectRootNodeBuckets(root);
     const hasSyntaxErrors = treeHasSyntaxErrors(root);
 
     const result: TSFileExtraction = {
-      imports: this.extractImports(root, traversal.imports),
+      imports: this.extractImports(root, buckets.imports),
       functions: [],
       classes: [],
       variables: [],
       exports: [],
-      comments: traversal.comments,
+      comments: this.extractComments(root),
       hasSyntaxErrors,
       // Only walk for locations when the boolean is already true — the
       // common case (a healthy file) pays nothing extra.
       syntaxErrorLocations: hasSyntaxErrors ? collectSyntaxErrorLocations(root) : undefined
     };
 
-    const functions = this.extractStandaloneFunctions(traversal);
-    const classes = this.extractClasses(root, traversal.classes, traversal);
+    const functions = this.extractStandaloneFunctions(root);
+    const classes = this.extractClasses(root, buckets.classes);
 
     for (const cls of classes) {
       result.classes.push(cls);
@@ -517,8 +430,8 @@ export class TreeSitterTSExtractor {
       }
     }
 
-    result.variables = this.extractVariables(root, traversal.variables, true);
-    result.exports = this.extractExports(root, traversal.exports);
+    result.variables = this.extractVariables(root, buckets.variables);
+    result.exports = this.extractExports(root, buckets.exports);
 
     return result;
   }
@@ -586,11 +499,41 @@ export class TreeSitterTSExtractor {
     return imports;
   }
 
-  private extractStandaloneFunctions(traversal: TSRootTraversal): TSExtractedFunction[] {
+  private extractFunctions(root: any): TSExtractedFunction[] {
     const functions: TSExtractedFunction[] = [];
+    const funcTypes = new Set([
+      'function_declaration',
+      'method_definition',
+      'arrow_function',
+      'function_expression',
+      'generator_function_declaration'
+    ]);
 
-    for (const func of traversal.standaloneFunctions) {
-      const extracted = this.extractFunction(func, traversal.functions.get(func.id));
+    const funcNodes = this.collectByTypes(root, funcTypes);
+
+    for (const func of funcNodes) {
+      const extracted = this.extractFunction(func, root);
+      if (extracted) {
+        functions.push(extracted);
+      }
+    }
+
+    return functions;
+  }
+
+  private extractStandaloneFunctions(root: any): TSExtractedFunction[] {
+    const functions: TSExtractedFunction[] = [];
+    const funcTypes = new Set([
+      'function_declaration',
+      'arrow_function',
+      'function_expression',
+      'generator_function_declaration'
+    ]);
+
+    const funcNodes = this.collectByTypesOutsideClasses(root, funcTypes);
+
+    for (const func of funcNodes) {
+      const extracted = this.extractFunction(func, root);
       if (extracted && !extracted.className) {
         functions.push(extracted);
       }
@@ -605,8 +548,11 @@ export class TreeSitterTSExtractor {
     // them explicitly here, restricted to method_definitions whose immediate
     // parent is an object literal, so real class methods stay handled solely
     // by extractClasses().
-    for (const func of traversal.objectMethods) {
-      const extracted = this.extractFunction(func, traversal.functions.get(func.id));
+    const objectMethodNodes = this.collectByTypesOutsideClasses(root, new Set(['method_definition']))
+      .filter((node: any) => node.parent?.type === 'object');
+
+    for (const func of objectMethodNodes) {
+      const extracted = this.extractFunction(func, root);
       if (extracted && !extracted.className) {
         functions.push(extracted);
       }
@@ -615,14 +561,12 @@ export class TreeSitterTSExtractor {
     return functions;
   }
 
-  private extractFunction(func: any, traversal?: TSFunctionTraversal): TSExtractedFunction | null {
+  private extractFunction(func: any, root: any): TSExtractedFunction | null {
     let funcName = func.childForFieldName('name')?.text;
     let funcType: TSExtractedFunction['type'] = 'function';
-    let className = traversal?.className;
+    let className: string | undefined;
     let isStatic = false;
     let isExported = false;
-    const parent = traversal?.parent ?? func.parent;
-    const grandparent = traversal?.grandparent ?? parent?.parent;
 
     if (func.type === 'method_definition') {
       funcType = 'method';
@@ -636,19 +580,19 @@ export class TreeSitterTSExtractor {
     } else if (func.type === 'arrow_function' || func.type === 'function_expression') {
       funcType = 'arrow';
 
-      if (parent?.type === 'variable_declarator') {
-        const varName = parent.childForFieldName('name');
+      if (func.parent?.type === 'variable_declarator') {
+        const varName = func.parent.childForFieldName('name');
         funcName = varName?.text;
 
-        const varDecl = grandparent;
+        const varDecl = func.parent.parent;
         if (varDecl?.parent?.type === 'export_statement') {
           isExported = true;
         }
-      } else if (parent?.type === 'pair') {
-        const key = parent.childForFieldName('key');
+      } else if (func.parent?.type === 'pair') {
+        const key = func.parent.childForFieldName('key');
         funcName = key?.text;
-      } else if (parent?.type === 'assignment_expression') {
-        const left = parent.childForFieldName('left');
+      } else if (func.parent?.type === 'assignment_expression') {
+        const left = func.parent.childForFieldName('left');
         if (left?.type === 'member_expression') {
           funcName = left.childForFieldName('property')?.text;
         } else if (left?.type === 'identifier') {
@@ -672,33 +616,33 @@ export class TreeSitterTSExtractor {
     let isAnonymousCallback = false;
     if (!funcName &&
         (func.type === 'arrow_function' || func.type === 'function_expression') &&
-        parent?.type === 'arguments' &&
-        !(traversal?.hasEnclosingFunction ?? this.hasEnclosingFunction(func))) {
+        func.parent?.type === 'arguments' &&
+        !this.hasEnclosingFunction(func)) {
       funcName = 'anonymous';
       isAnonymousCallback = true;
     }
 
     if (!funcName) return null;
 
-    let classParent = traversal ? null : func.parent;
-    while (classParent) {
+    let parent = func.parent;
+    while (parent) {
       // `abstract_class_declaration` (a distinct node type from `class_declaration` in
       // tree-sitter-typescript, used for `abstract class X`) needs the same className
       // attribution as a plain class, or every method of every abstract class silently
       // loses its className and gets misfiled as a standalone function.
-      if (classParent.type === 'class_declaration' || classParent.type === 'class' || classParent.type === 'abstract_class_declaration') {
-        className = classParent.childForFieldName('name')?.text;
+      if (parent.type === 'class_declaration' || parent.type === 'class' || parent.type === 'abstract_class_declaration') {
+        className = parent.childForFieldName('name')?.text;
         break;
       }
-      if (classParent.type === 'class_body') {
-        classParent = classParent.parent;
+      if (parent.type === 'class_body') {
+        parent = parent.parent;
         continue;
       }
-      classParent = classParent.parent;
+      parent = parent.parent;
     }
 
     if (func.type === 'function_declaration') {
-      if (parent?.type === 'export_statement') {
+      if (func.parent?.type === 'export_statement') {
         isExported = true;
       }
     }
@@ -711,12 +655,10 @@ export class TreeSitterTSExtractor {
     const returnType = this.extractReturnType(func);
     const decorators = this.extractDecorators(func);
     const decoratorArgs = this.extractDecoratorArgs(func);
-    const calls = this.extractCalls(func, funcName, className, traversal);
-    const complexity = traversal?.complexity ?? this.calculateComplexity(func);
+    const calls = this.extractCalls(func, funcName, className);
+    const complexity = this.calculateComplexity(func);
     const documentation = this.extractDocumentation(func);
-    const throws = traversal
-      ? (traversal.throwTypes.size > 0 ? Array.from(traversal.throwTypes) : undefined)
-      : this.extractThrows(func);
+    const throws = this.extractThrows(func);
 
     const signature = this.buildSignature(funcName, parameters, returnType, isAsync, isGenerator);
 
@@ -1071,12 +1013,7 @@ export class TreeSitterTSExtractor {
     }
   }
 
-  private extractCalls(
-    func: any,
-    enclosingFunction: string,
-    enclosingClass?: string,
-    traversal?: TSFunctionTraversal
-  ): TSExtractedCall[] {
+  private extractCalls(func: any, enclosingFunction: string, enclosingClass?: string): TSExtractedCall[] {
     const calls: TSExtractedCall[] = [];
     const body = func.childForFieldName('body');
     if (!body) return calls;
@@ -1090,41 +1027,15 @@ export class TreeSitterTSExtractor {
     // each bucket, and calls are still emitted before identifier refs, so
     // output is byte-identical.
     const needIdentifiers = this.imports.size > 0;
-    let callNodes: TSIndexedCall[];
-    let identifierNodes: TSIndexedIdentifier[];
-    if (traversal) {
-      callNodes = traversal.calls;
-      identifierNodes = needIdentifiers ? traversal.identifiers : [];
-    } else {
-      callNodes = [];
-      identifierNodes = [];
+    const callNodes: any[] = [];
+    const identifierNodes: any[] = [];
+    {
       const stack = [body];
       while (stack.length > 0) {
         const current = stack.pop()!;
         const t = current.type;
-        if (t === 'call_expression') {
-          callNodes.push({
-            node: current,
-            isAsync: current.parent?.type === 'await_expression',
-            context: this.analyzeCallContext(current)
-          });
-        } else if (needIdentifiers && t === 'identifier') {
-          const parent = current.parent;
-          const parentType = parent?.type;
-          let excludeFromReference = parentType === 'import_specifier' ||
-            parentType === 'import_clause' || parentType === 'namespace_import';
-          if (!excludeFromReference && parent &&
-              (parentType === 'call_expression' || parentType === 'new_expression')) {
-            excludeFromReference = nodeIdEquals(parent.childForFieldName('function'), current);
-          }
-          identifierNodes.push({
-            node: current,
-            parent,
-            excludeFromReference,
-            conditionalDepth: -1,
-            loopDepth: -1
-          });
-        }
+        if (t === 'call_expression') callNodes.push(current);
+        else if (needIdentifiers && t === 'identifier') identifierNodes.push(current);
         for (let i = current.namedChildCount - 1; i >= 0; i--) {
           stack.push(current.namedChild(i));
         }
@@ -1132,7 +1043,7 @@ export class TreeSitterTSExtractor {
     }
 
     for (const call of callNodes) {
-      const extracted = this.extractCall(call.node, enclosingFunction, enclosingClass, call);
+      const extracted = this.extractCall(call, enclosingFunction, enclosingClass);
       if (extracted) {
         calls.push(extracted);
       }
@@ -1169,21 +1080,16 @@ export class TreeSitterTSExtractor {
     enclosingFunction: string,
     enclosingClass: string | undefined,
     seenAtLine: Set<string>,
-    preCollected?: TSIndexedIdentifier[]
+    preCollected?: any[]
   ): TSExtractedCall[] {
     const refs: TSExtractedCall[] = [];
     if (this.imports.size === 0) return refs;
 
-    if (preCollected) {
-      for (const identifier of preCollected) {
-        const ref = this.buildIdentifierReference(identifier.node, enclosingFunction, enclosingClass, seenAtLine, identifier);
-        if (ref) refs.push(ref);
-      }
-    } else {
-      for (const idNode of this.collectByType(body, 'identifier')) {
-        const ref = this.buildIdentifierReference(idNode, enclosingFunction, enclosingClass, seenAtLine);
-        if (ref) refs.push(ref);
-      }
+    const identifierNodes = preCollected ?? this.collectByType(body, 'identifier');
+
+    for (const idNode of identifierNodes) {
+      const ref = this.buildIdentifierReference(idNode, enclosingFunction, enclosingClass, seenAtLine);
+      if (ref) refs.push(ref);
     }
 
     return refs;
@@ -1198,13 +1104,12 @@ export class TreeSitterTSExtractor {
     idNode: any,
     enclosingFunction: string,
     enclosingClass: string | undefined,
-    seenAtLine: Set<string>,
-    indexed?: TSIndexedIdentifier
+    seenAtLine: Set<string>
   ): TSExtractedCall | null {
     const name = idNode.text;
     if (!this.imports.has(name)) return null;
 
-    const parent = indexed?.parent ?? idNode.parent;
+    const parent = idNode.parent;
     if (!parent) return null;
 
     // Already captured as a real call/constructor edge by extractCall/extractCalls —
@@ -1219,13 +1124,11 @@ export class TreeSitterTSExtractor {
     // site leaks in as a bogus `references` edge, flipping the edge set run-to-run
     // (Camp-B determinism defect). `id` is the underlying node identity and is
     // stable, so this exclusion is now deterministic. See `nodeIdEquals`.
-    if (indexed?.excludeFromReference) return null;
-    if (!indexed) {
-      if (parent.type === 'call_expression' && nodeIdEquals(parent.childForFieldName('function'), idNode)) return null;
-      if (parent.type === 'new_expression' && nodeIdEquals(parent.childForFieldName('function'), idNode)) return null;
-      if (parent.type === 'import_specifier' || parent.type === 'import_clause' ||
-          parent.type === 'namespace_import') return null;
-    }
+    if (parent.type === 'call_expression' && nodeIdEquals(parent.childForFieldName('function'), idNode)) return null;
+    if (parent.type === 'new_expression' && nodeIdEquals(parent.childForFieldName('function'), idNode)) return null;
+    // Import specifier / declaration positions are bindings, not reads.
+    if (parent.type === 'import_specifier' || parent.type === 'import_clause' ||
+        parent.type === 'namespace_import') return null;
 
     // De-dupe multiple identifier occurrences resolving to the same import at the same
     // source line (e.g. `TIER_RATE_LIMITS[tier] || TIER_RATE_LIMITS.free` on one line) —
@@ -1235,22 +1138,18 @@ export class TreeSitterTSExtractor {
     if (seenAtLine.has(dedupeKey)) return null;
     seenAtLine.add(dedupeKey);
 
-    let conditionalDepth = indexed?.conditionalDepth ?? -1;
-    let loopDepth = indexed?.loopDepth ?? -1;
-    if (conditionalDepth < 0 || loopDepth < 0) {
-      conditionalDepth = 0;
-      loopDepth = 0;
-      let parentNode = idNode.parent;
-      while (parentNode) {
-        if (parentNode.type === 'if_statement' || parentNode.type === 'ternary_expression' || parentNode.type === 'switch_statement') {
-          conditionalDepth++;
-        } else if (parentNode.type === 'for_statement' || parentNode.type === 'for_in_statement' ||
-                   parentNode.type === 'for_of_statement' || parentNode.type === 'while_statement' ||
-                   parentNode.type === 'do_statement') {
-          loopDepth++;
-        }
-        parentNode = parentNode.parent;
+    let parentNode = idNode.parent;
+    let conditionalDepth = 0;
+    let loopDepth = 0;
+    while (parentNode) {
+      if (parentNode.type === 'if_statement' || parentNode.type === 'ternary_expression' || parentNode.type === 'switch_statement') {
+        conditionalDepth++;
+      } else if (parentNode.type === 'for_statement' || parentNode.type === 'for_in_statement' ||
+                 parentNode.type === 'for_of_statement' || parentNode.type === 'while_statement' ||
+                 parentNode.type === 'do_statement') {
+        loopDepth++;
       }
+      parentNode = parentNode.parent;
     }
 
     return {
@@ -1388,12 +1287,7 @@ export class TreeSitterTSExtractor {
     return !(source.startsWith('.') || source.startsWith('/'));
   }
 
-  private extractCall(
-    call: any,
-    enclosingFunction: string,
-    enclosingClass?: string,
-    indexed?: TSIndexedCall
-  ): TSExtractedCall | null {
+  private extractCall(call: any, enclosingFunction: string, enclosingClass?: string): TSExtractedCall | null {
     const callee = call.childForFieldName('function') || call.namedChild(0);
     if (!callee) return null;
 
@@ -1436,8 +1330,8 @@ export class TreeSitterTSExtractor {
     const args = call.childForFieldName('arguments');
     const argumentCount = args ? args.namedChildCount : 0;
 
-    const isAsync = indexed?.isAsync ?? call.parent?.type === 'await_expression';
-    const { isConditional, conditionalDepth, isInLoop, loopDepth, blockDepth, isInTry, isInCatch, isInFinally, isInCallback, isInPromise } = indexed?.context ?? this.analyzeCallContext(call);
+    const isAsync = call.parent?.type === 'await_expression';
+    const { isConditional, conditionalDepth, isInLoop, loopDepth, blockDepth, isInTry, isInCatch, isInFinally, isInCallback, isInPromise } = this.analyzeCallContext(call);
 
     return {
       target,
@@ -1579,7 +1473,7 @@ export class TreeSitterTSExtractor {
     return undefined;
   }
 
-  private extractClasses(root: any, preCollected?: any[], traversal?: TSRootTraversal): TSExtractedClass[] {
+  private extractClasses(root: any, preCollected?: any[]): TSExtractedClass[] {
     const classes: TSExtractedClass[] = [];
     // `abstract class Foo extends Base` parses as `abstract_class_declaration`, a
     // DIFFERENT node type from plain `class_declaration` in tree-sitter-typescript —
@@ -1600,7 +1494,7 @@ export class TreeSitterTSExtractor {
         ? this.extractInterface(cls)
         : cls.type === 'type_alias_declaration'
           ? this.extractTypeAliasShape(cls)
-          : this.extractClass(cls, traversal);
+          : this.extractClass(cls);
       if (extracted) {
         classes.push(extracted);
       }
@@ -1609,7 +1503,7 @@ export class TreeSitterTSExtractor {
     return classes;
   }
 
-  private extractClass(cls: any, traversal?: TSRootTraversal): TSExtractedClass | null {
+  private extractClass(cls: any): TSExtractedClass | null {
     const nameNode = cls.childForFieldName('name');
     const className = nameNode?.text;
     if (!className) return null;
@@ -1651,7 +1545,7 @@ export class TreeSitterTSExtractor {
         if (!member) continue;
 
         if (member.type === 'method_definition') {
-          const method = this.extractFunction(member, traversal?.functions.get(member.id));
+          const method = this.extractFunction(member, cls);
           if (method) {
             method.className = className;
             methods.push(method);
@@ -1840,12 +1734,12 @@ export class TreeSitterTSExtractor {
     };
   }
 
-  private extractVariables(root: any, preCollected?: any[], outsideFunctions = false): TSExtractedVariable[] {
+  private extractVariables(root: any, preCollected?: any[]): TSExtractedVariable[] {
     const variables: TSExtractedVariable[] = [];
     const varDeclNodes = preCollected ?? this.collectByTypes(root, new Set(['lexical_declaration', 'variable_declaration']));
 
     for (const decl of varDeclNodes) {
-      if (!outsideFunctions && this.isInsideFunction(decl)) continue;
+      if (this.isInsideFunction(decl)) continue;
 
       const kind = decl.children?.[0]?.text as 'const' | 'let' | 'var' || 'const';
       const isExported = decl.parent?.type === 'export_statement';
@@ -1934,192 +1828,29 @@ export class TreeSitterTSExtractor {
     return exports;
   }
 
-  private buildTraversalIndex(root: any): TSRootTraversal {
-    const traversal: TSRootTraversal = {
-      imports: [],
-      classes: [],
-      variables: [],
-      exports: [],
-      comments: [],
-      standaloneFunctions: [],
-      objectMethods: [],
-      functions: new Map()
-    };
-    const bodyOwners = new Map<any, TSFunctionTraversal>();
-    const stack: TSTraversalFrame[] = [{
-      node: root,
-      parent: null,
-      grandparent: null,
-      classDepth: 0,
-      variableFunctionDepth: 0,
-      enclosingFunctionDepth: 0,
-      activeFunctions: [],
-      throwBoundaries: [],
-      conditionalDepth: 0,
-      loopDepth: 0,
-      blockDepth: 0,
-      tryDepth: 0,
-      catchDepth: 0,
-      finallyDepth: 0,
-      callbackDepth: 0,
-      promiseDepth: 0
-    }];
+  private extractComments(root: any): Array<{ type: string; text: string; line: number }> {
+    const comments: Array<{ type: string; text: string; line: number }> = [];
 
+    const stack = [root];
     while (stack.length > 0) {
-      const frame = stack.pop()!;
-      const node = frame.node;
-      const type = node.type;
+      const node = stack.pop()!;
+      if (node.type === 'comment') {
+        let type = 'line';
+        if (node.text.startsWith('/**')) type = 'jsdoc';
+        else if (node.text.startsWith('/*')) type = 'block';
 
-      if (type === 'import_statement') traversal.imports.push(node);
-      else if (type === 'class_declaration' || type === 'abstract_class_declaration' ||
-               type === 'interface_declaration' || type === 'type_alias_declaration') traversal.classes.push(node);
-      else if ((type === 'lexical_declaration' || type === 'variable_declaration') && frame.variableFunctionDepth === 0) traversal.variables.push(node);
-      else if (type === 'export_statement') traversal.exports.push(node);
-
-      if (type === 'comment') {
-        let commentType = 'line';
-        if (node.text.startsWith('/**')) commentType = 'jsdoc';
-        else if (node.text.startsWith('/*')) commentType = 'block';
-        traversal.comments.push({
-          type: commentType,
+        comments.push({
+          type,
           text: node.text,
           line: node.startPosition.row + 1
         });
       }
-
-      let functionTraversal: TSFunctionTraversal | undefined;
-      if (EXTRACTED_FUNCTION_TYPES.has(type)) {
-        functionTraversal = {
-          node,
-          parent: frame.parent,
-          grandparent: frame.grandparent,
-          className: frame.className,
-          hasEnclosingFunction: frame.enclosingFunctionDepth > 0,
-          calls: [],
-          identifiers: [],
-          complexity: 1,
-          throwTypes: new Set()
-        };
-        traversal.functions.set(node.id, functionTraversal);
-        const body = node.childForFieldName('body');
-        if (body) bodyOwners.set(body.id, functionTraversal);
-
-        if (frame.classDepth === 0) {
-          if (type === 'method_definition') {
-            if (frame.parentType === 'object') traversal.objectMethods.push(node);
-          } else {
-            traversal.standaloneFunctions.push(node);
-          }
-        }
-      }
-
-      const bodyOwner = bodyOwners.get(node.id);
-      const activeFunctions = bodyOwner
-        ? [...frame.activeFunctions, bodyOwner]
-        : frame.activeFunctions;
-      const throwBoundaries = THROW_FUNCTION_BOUNDARY_TYPES.has(type)
-        ? [...frame.throwBoundaries, functionTraversal]
-        : frame.throwBoundaries;
-
-      if (activeFunctions.length > 0) {
-        if (type === 'call_expression') {
-          const call: TSIndexedCall = {
-            node,
-            isAsync: frame.parentType === 'await_expression',
-            context: {
-              isConditional: frame.conditionalDepth > 0,
-              isInLoop: frame.loopDepth > 0,
-              blockDepth: frame.blockDepth,
-              isInTry: frame.tryDepth > 0,
-              isInCatch: frame.catchDepth > 0,
-              isInFinally: frame.finallyDepth > 0,
-              isInCallback: frame.callbackDepth > 0,
-              isInPromise: frame.promiseDepth > 0,
-              conditionalDepth: frame.conditionalDepth,
-              loopDepth: frame.loopDepth
-            }
-          };
-          for (const active of activeFunctions) active.calls.push(call);
-        } else if (type === 'identifier') {
-          const parent = frame.parent;
-          const parentType = frame.parentType;
-          let excludeFromReference = parentType === 'import_specifier' ||
-            parentType === 'import_clause' || parentType === 'namespace_import';
-          if (!excludeFromReference && parent &&
-              (parentType === 'call_expression' || parentType === 'new_expression')) {
-            excludeFromReference = nodeIdEquals(parent.childForFieldName('function'), node);
-          }
-          const identifier: TSIndexedIdentifier = {
-            node,
-            parent,
-            excludeFromReference,
-            conditionalDepth: frame.conditionalDepth,
-            loopDepth: frame.loopDepth
-          };
-          for (const active of activeFunctions) active.identifiers.push(identifier);
-        }
-
-        if (COMPLEXITY_NODE_TYPES.has(type)) {
-          let increment = type !== 'binary_expression';
-          if (!increment) {
-            const operator = node.childForFieldName('operator')?.text;
-            increment = operator === '&&' || operator === '||' || operator === '??';
-          }
-          if (increment) {
-            for (const active of activeFunctions) active.complexity++;
-          }
-        }
-
-        if (type === 'throw_statement') {
-          const throwOwner = throwBoundaries[throwBoundaries.length - 1];
-          const typeName = throwOwner ? this.throwTypeName(node) : undefined;
-          if (typeName && throwOwner) throwOwner.throwTypes.add(typeName);
-        }
-      }
-
-      let className = frame.className;
-      if (CLASS_CONTAINER_TYPES.has(type)) {
-        className = node.childForFieldName('name')?.text;
-      }
-
-      let promiseDepth = frame.promiseDepth;
-      if (type === 'call_expression') {
-        const callee = node.childForFieldName('function') || node.namedChild(0);
-        if (callee?.text?.includes('then') || callee?.text?.includes('catch')) promiseDepth++;
-      }
-
-      const childFrame = {
-        classDepth: frame.classDepth + (CLASS_CONTAINER_TYPES.has(type) ? 1 : 0),
-        className,
-        variableFunctionDepth: frame.variableFunctionDepth + (VARIABLE_FUNCTION_TYPES.has(type) ? 1 : 0),
-        enclosingFunctionDepth: frame.enclosingFunctionDepth + (EXTRACTED_FUNCTION_TYPES.has(type) ? 1 : 0),
-        activeFunctions,
-        throwBoundaries,
-        conditionalDepth: frame.conditionalDepth +
-          (type === 'if_statement' || type === 'ternary_expression' || type === 'switch_statement' ? 1 : 0),
-        loopDepth: frame.loopDepth +
-          (type === 'for_statement' || type === 'for_in_statement' || type === 'for_of_statement' ||
-           type === 'while_statement' || type === 'do_statement' ? 1 : 0),
-        blockDepth: frame.blockDepth + (type === 'statement_block' ? 1 : 0),
-        tryDepth: frame.tryDepth + (type === 'try_statement' ? 1 : 0),
-        catchDepth: frame.catchDepth + (type === 'catch_clause' ? 1 : 0),
-        finallyDepth: frame.finallyDepth + (type === 'finally_clause' ? 1 : 0),
-        callbackDepth: frame.callbackDepth + (type === 'arrow_function' || type === 'function_expression' ? 1 : 0),
-        promiseDepth
-      };
-
-      for (let i = node.namedChildCount - 1; i >= 0; i--) {
-        stack.push({
-          node: node.namedChild(i),
-          parent: node,
-          grandparent: frame.parent,
-          parentType: type,
-          ...childFrame
-        });
+      for (let i = node.childCount - 1; i >= 0; i--) {
+        stack.push(node.child(i));
       }
     }
 
-    return traversal;
+    return comments;
   }
 
   private isInsideFunction(node: any): boolean {
@@ -2180,6 +1911,38 @@ export class TreeSitterTSExtractor {
     return results;
   }
 
+  /**
+   * Single-pass root collector: one pre-order DFS that buckets the four
+   * root-level node categories that extractImports/Classes/Variables/Exports
+   * used to each walk the whole tree for. The stack/reverse-push order is
+   * identical to collectByType(s), so each bucket equals the corresponding
+   * per-type walk exactly (same nodes, same document order).
+   */
+  private collectRootNodeBuckets(root: any): {
+    imports: any[];
+    classes: any[];
+    variables: any[];
+    exports: any[];
+  } {
+    const imports: any[] = [];
+    const classes: any[] = [];
+    const variables: any[] = [];
+    const exports: any[] = [];
+    const stack = [root];
+    while (stack.length > 0) {
+      const current = stack.pop()!;
+      const t = current.type;
+      if (t === 'import_statement') imports.push(current);
+      else if (t === 'class_declaration' || t === 'abstract_class_declaration' || t === 'interface_declaration' || t === 'type_alias_declaration') classes.push(current);
+      else if (t === 'lexical_declaration' || t === 'variable_declaration') variables.push(current);
+      else if (t === 'export_statement') exports.push(current);
+      for (let i = current.namedChildCount - 1; i >= 0; i--) {
+        stack.push(current.namedChild(i));
+      }
+    }
+    return { imports, classes, variables, exports };
+  }
+
   private collectByTypes(node: any, types: Set<string>): any[] {
     const results: any[] = [];
     const stack = [node];
@@ -2195,14 +1958,29 @@ export class TreeSitterTSExtractor {
     return results;
   }
 
-  private findFirst(node: any, type: string): any | null {
+  private collectByTypesOutsideClasses(node: any, types: Set<string>): any[] {
+    const results: any[] = [];
     const stack = [node];
     while (stack.length > 0) {
       const current = stack.pop()!;
-      if (current.type === type) return current;
+      if (current !== node && (current.type === 'class_declaration' || current.type === 'class' || current.type === 'abstract_class_declaration')) {
+        continue;
+      }
+      if (types.has(current.type)) {
+        results.push(current);
+      }
       for (let i = current.namedChildCount - 1; i >= 0; i--) {
         stack.push(current.namedChild(i));
       }
+    }
+    return results;
+  }
+
+  private findFirst(node: any, type: string): any | null {
+    if (node.type === type) return node;
+    for (let i = 0, n = node.namedChildCount; i < n; i++) {
+      const found = this.findFirst(node.namedChild(i), type);
+      if (found) return found;
     }
     return null;
   }

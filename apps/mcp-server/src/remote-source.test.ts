@@ -4,7 +4,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { buildSourceSnapshot, sourceSnapshotDigest } from './remote-source';
+import { buildSourceSnapshot } from './remote-source';
 
 /**
  * Coverage for repo_facts (contributor_count/first_commit_at/last_commit_at)
@@ -43,17 +43,6 @@ function withTempDir(run: (dir: string) => void | Promise<void>): void | Promise
   cleanup();
   return result;
 }
-
-test('snapshot digest is order-independent and changes with path or content', () => {
-  const files = [
-    { path: 'src/a.ts', content: 'export const a = 1;', hash: 'hash-a' },
-    { path: 'src/b.ts', content: 'export const b = 2;', hash: 'hash-b' },
-  ];
-  const expected = sourceSnapshotDigest(files);
-  assert.equal(sourceSnapshotDigest([...files].reverse()), expected);
-  assert.notEqual(sourceSnapshotDigest([{ ...files[0], path: 'src/c.ts' }, files[1]]), expected);
-  assert.notEqual(sourceSnapshotDigest([{ ...files[0], hash: 'hash-changed' }, files[1]]), expected);
-});
 
 test('repo_facts: single-author git repo carries contributor_count=1 and distinct first/last commit timestamps', async () => {
   await withTempDir(async dir => {

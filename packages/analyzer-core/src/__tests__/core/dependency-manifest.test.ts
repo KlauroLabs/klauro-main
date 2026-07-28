@@ -112,30 +112,6 @@ describe('buildDependencyManifest', () => {
     expect(manifest.dependencies.find(d => d.name === 'github.com/stretchr/testify')!.scopes).toEqual(['build']);
   });
 
-  it('extracts JVM, .NET, PHP, and Dart dependencies with provenance', () => {
-    write('java/pom.xml', '<project><dependencies><dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-web</artifactId><version>3.4.0</version></dependency></dependencies></project>');
-    write('kotlin/build.gradle.kts', 'dependencies {\n  implementation("io.ktor:ktor-server-core:3.0.0")\n  testImplementation("org.junit.jupiter:junit-jupiter:5.11.0")\n}');
-    write('dotnet/App.csproj', '<Project><ItemGroup><PackageReference Include="MediatR" Version="12.4.1" /><PackageReference Include="xunit" Version="2.9.2"><PrivateAssets>all</PrivateAssets></PackageReference></ItemGroup></Project>');
-    write('php/composer.json', JSON.stringify({ require: { php: '^8.3', 'laravel/framework': '^11.0' }, 'require-dev': { 'phpunit/phpunit': '^11.0' } }));
-    write('dart/pubspec.yaml', ['name: app', 'dependencies:', '  flutter:', '    sdk: flutter', '  dio: ^5.7.0', 'dev_dependencies:', '  flutter_test:', '    sdk: flutter'].join('\n'));
-
-    const manifest = buildDependencyManifest(root)!;
-    const byName = new Map(manifest.dependencies.map(dependency => [dependency.name, dependency]));
-    expect(byName.get('spring-boot-starter-web')).toMatchObject({ ecosystem: 'maven', version: '3.4.0', scopes: ['runtime'] });
-    expect(byName.get('ktor-server-core')).toMatchObject({ ecosystem: 'gradle', version: '3.0.0', scopes: ['runtime'] });
-    expect(byName.get('junit-jupiter')?.scopes).toEqual(['dev']);
-    expect(byName.get('MediatR')).toMatchObject({ ecosystem: 'nuget', version: '12.4.1', scopes: ['runtime'] });
-    expect(byName.get('xunit')?.scopes).toEqual(['build']);
-    expect(byName.get('laravel/framework')).toMatchObject({ ecosystem: 'composer', version: '^11.0', scopes: ['runtime'] });
-    expect(byName.get('phpunit/phpunit')?.scopes).toEqual(['dev']);
-    expect(byName.get('flutter')).toMatchObject({ ecosystem: 'pub', scopes: ['runtime'] });
-    expect(byName.get('dio')).toMatchObject({ ecosystem: 'pub', version: '^5.7.0' });
-    expect(byName.get('flutter_test')?.scopes).toEqual(['dev']);
-    expect(manifest.manifests).toEqual([
-      'dart/pubspec.yaml', 'dotnet/App.csproj', 'java/pom.xml', 'kotlin/build.gradle.kts', 'php/composer.json',
-    ]);
-  });
-
   it('skips node_modules and dot-directories (no vendored/worktree leakage)', () => {
     write('package.json', JSON.stringify({ dependencies: { ccxt: '^4.2.26' } }));
     write('node_modules/evil/package.json', JSON.stringify({ dependencies: { malware: '1.0.0' } }));

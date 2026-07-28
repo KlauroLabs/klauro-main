@@ -467,37 +467,6 @@ describe('collectDeployableEvidence', () => {
     expect(serverEntry!.root_path).toBe('src');
   });
 
-  test('Tier 2: absolute and relative provider evidence for one server is merged', () => {
-    projectPath = tempProject();
-    fs.ensureDirSync(path.join(projectPath, 'python'));
-    fs.writeFileSync(
-      path.join(projectPath, 'python', 'api.py'),
-      'from fastapi import FastAPI\napp = FastAPI()\n'
-    );
-    const entryPoints: CASEntryPoint[] = [{
-      id: 'python_route',
-      source_node: 'python_handler',
-      type: 'http',
-      name: 'GET /orders/{id}',
-      trigger: { method: 'GET', path: '/orders/{id}' },
-      handler: {
-        node_id: 'python_handler',
-        method_name: 'get_order',
-        file: path.join(projectPath, 'python', 'api.py'),
-      },
-    }];
-
-    const result = collectDeployableEvidence({ projectPath, nodes: [], entryPoints, exitPoints: [] });
-    const pythonServers = result.filter(item =>
-      item.kind === 'server-entry' && item.root_path === 'python' && item.name === 'python'
-    );
-    expect(pythonServers).toHaveLength(1);
-    expect(pythonServers[0].evidence).toEqual(expect.arrayContaining([
-      expect.stringContaining('HTTP entry point'),
-      expect.stringContaining('FastAPI app instantiation'),
-    ]));
-  });
-
   test('Tier 2: server-entry root_path is corrected to the full monorepo-relative path when handler.file was recorded relative to a sub-package scan root', () => {
     // Regression lock for the root_path truncation bug: a per-package
     // analysis pass can emit `entry.handler.file` relative to that

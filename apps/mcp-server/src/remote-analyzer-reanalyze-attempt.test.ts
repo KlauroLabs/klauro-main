@@ -88,7 +88,7 @@ test('reanalyze failure surfaces last_attempt.state=failed with a reason; recove
       analysis_id: analyzeResult.analysis_id,
     }, token);
     assert.equal(linkRes.statusCode, 201);
-    const project = JSON.parse(linkRes.body).project as { id: string; analysis_id: string };
+    const project = JSON.parse(linkRes.body).project as { id: string };
 
     // Sanity: before any reanalyze attempt, no last_attempt is present
     // (purely additive — old clients see no new field).
@@ -108,7 +108,7 @@ test('reanalyze failure surfaces last_attempt.state=failed with a reason; recove
     // current microtask queue drains, so this synchronous rmSync (no await
     // before it) is guaranteed to land before the background task starts,
     // regardless of scheduling — not a timing race.
-    const serverWorkspace = path.join(remoteData, 'workspaces', project.analysis_id);
+    const serverWorkspace = path.join(remoteData, 'workspaces', analyzeResult.analysis_id as string);
     assert.ok(fs.existsSync(serverWorkspace), 'sanity: the uploaded snapshot workspace must exist on disk before we delete it');
 
     const reanalyzeRes = await request(port, 'POST', `/api/projects/${project.id}/reanalyze`, {}, token);

@@ -123,19 +123,18 @@ export class LaravelAnalyzer extends BaseAnalyzer {
 
   async canAnalyze(projectPath: string): Promise<boolean> {
     try {
-      const composerFiles = await glob(['composer.json', '**/composer.json'], {
-        cwd: projectPath,
-        ignore: [...this.getIgnorePatterns({ projectPath }), '**/vendor/**'],
-        nodir: true,
-      });
-      for (const composerFile of Array.from(new Set(composerFiles))) {
-        const composerJson = await fs.readJson(path.join(projectPath, composerFile));
+      const composerJsonPath = path.join(projectPath, 'composer.json');
+      if (await fs.pathExists(composerJsonPath)) {
+        const composerJson = await fs.readJson(composerJsonPath);
         const deps = { ...composerJson.require, ...composerJson['require-dev'] };
+
         if (Object.keys(deps).some(dep =>
           dep === 'laravel/framework' ||
           dep === 'laravel/laravel' ||
           dep === 'laravel/lumen-framework'
-        )) return true;
+        )) {
+          return true;
+        }
       }
 
       const artisanExists = await fs.pathExists(path.join(projectPath, 'artisan'));
@@ -557,16 +556,14 @@ export class LaravelAnalyzer extends BaseAnalyzer {
   ): Promise<LaravelRoute[]> {
     const routes: LaravelRoute[] = [];
 
-    const routeFiles = await glob([
-      'routes/{web,api,console,channels}.php',
-      '**/routes/{web,api,console,channels}.php',
-    ], {
-      cwd: projectPath,
-      ignore: [...this.getIgnorePatterns({ projectPath }), '**/vendor/**', '**/tests/**', '**/test/**'],
-      nodir: true,
-    });
+    const routeFiles = [
+      'routes/web.php',
+      'routes/api.php',
+      'routes/console.php',
+      'routes/channels.php'
+    ];
 
-    for (const routeFile of Array.from(new Set(routeFiles)).sort()) {
+    for (const routeFile of routeFiles) {
       const fullPath = path.join(projectPath, routeFile);
       if (await fs.pathExists(fullPath)) {
         try {

@@ -123,7 +123,7 @@ export const DEEPINFRA_OPENAI_BASE_URL = 'https://api.deepinfra.com/v1/openai';
 // Cheap, valid default for the DeepInfra endpoint the product uses. Replaces stale
 // defaults (Meta-Llama-3.3-70B-Instruct, which DeepInfra 404s) and the gpt-4o-mini
 // fallback that a DeepInfra base URL would otherwise resolve to. ~$0.02–0.05/Mtok.
-export const DEFAULT_DEEPINFRA_MODEL = 'mistralai/Mistral-Small-3.2-24B-Instruct-2506';
+export const DEFAULT_DEEPINFRA_MODEL = 'meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo';
 
 function hasAzureOpenAIConfig(): boolean {
   return Boolean(
@@ -203,11 +203,12 @@ export function describeConfiguredAIProvider(env: NodeJS.ProcessEnv = process.en
 }
 
 function defaultRequestTimeoutMs(): string {
-  // One stalled shared-inference request must not hold the entire analysis
-  // critical path for minutes. Completeness is preserved by the provider chain:
-  // a timed-out attempt advances to a fresh attempt/provider, and the analysis is
-  // only complete after a grounded response is accepted.
-  return '30000';
+  // Hosted 70B catalog/narrative calls send a large fact bundle and return
+  // structured JSON; a 30s timeout was below real latency, so the SDK aborted and
+  // burned its retry budget (3 x 30s) before any result. 90s lets one attempt
+  // finish even on a slow shared-inference moment (the catalog race budget is 75s,
+  // so this never cuts a call the race would otherwise allow to finish).
+  return '90000';
 }
 
 export function getAIConfig(): AIConfig {
@@ -371,7 +372,7 @@ export interface AIProviderChainEntry {
  *      {name?, base_url, key_env?|api_key?, model, structured_model?, max_tokens?}
  *      giving explicit, ordered control (DeepInfra -> local Mac -> OpenRouter).
  *   2. Otherwise a sensible default chain from the discrete env vars:
- *      DeepInfra (primary) -> explicitly opted-in development LLM ->
+ *      DeepInfra (primary) -> optional local LLM (LOCAL_LLM_BASE_URL) ->
  *      OpenRouter (OPENROUTER_API_KEY, reasoning-safe max_tokens).
  * Entries missing a base URL or resolvable key are dropped. Returns [] when
  * nothing is configured (the caller then uses its single-provider path).
@@ -414,49 +415,19 @@ export function getAIProviderChain(env: NodeJS.ProcessEnv = process.env): AIProv
   const chain: AIProviderChainEntry[] = [];
 
   // Primary: DeepInfra (cheap hosted 70B, no reasoning-token overhead).
-  // Production commonly configures this OpenAI-compatible endpoint through
-  // OPENAI_* variables; recognize that shape too so it does not silently fall
-  // back to the single-provider retry path.
-  const openAICompatibleDeepInfra = Boolean(env.OPENAI_BASE_URL && /deepinfra/i.test(env.OPENAI_BASE_URL));
-  const deepInfraKey = env.DEEPINFRA_API_KEY || (openAICompatibleDeepInfra ? env.OPENAI_API_KEY : undefined);
-  if (deepInfraKey) {
-    const primaryModel = env.DEEPINFRA_MODEL || env.OPENAI_MODEL || DEFAULT_DEEPINFRA_MODEL;
-    const structuredModel = env.DEEPINFRA_STRUCTURED_MODEL || env.OPENAI_STRUCTURED_MODEL || primaryModel;
-    const baseURL = env.DEEPINFRA_BASE_URL || (openAICompatibleDeepInfra ? env.OPENAI_BASE_URL : undefined) || DEEPINFRA_OPENAI_BASE_URL;
+  if (env.DEEPINFRA_API_KEY) {
     chain.push({
       name: 'deepinfra',
-      baseURL,
-      apiKey: deepInfraKey,
-      model: primaryModel,
-      structuredModel,
-    });
-    const fastFallbackModel = env.DEEPINFRA_FAST_FALLBACK_MODEL || env.OPENAI_STRUCTURED_MODEL ||
-      'meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo';
-    if (fastFallbackModel !== primaryModel) {
-      chain.push({
-        name: 'deepinfra-fast-fallback',
-        baseURL,
-        apiKey: deepInfraKey,
-        model: fastFallbackModel,
-        structuredModel: fastFallbackModel,
-      });
-    }
-    // One final fresh primary request recovers a transient shared-worker stall.
-    // SDK/provider retries remain disabled, so every attempt is explicit and
-    // observable rather than multiplying invisibly.
-    chain.push({
-      name: 'deepinfra-retry',
-      baseURL,
-      apiKey: deepInfraKey,
-      model: primaryModel,
-      structuredModel: primaryModel,
+      baseURL: env.DEEPINFRA_BASE_URL || DEEPINFRA_OPENAI_BASE_URL,
+      apiKey: env.DEEPINFRA_API_KEY,
+      model: env.DEEPINFRA_MODEL || DEFAULT_DEEPINFRA_MODEL,
+      structuredModel: env.DEEPINFRA_STRUCTURED_MODEL || env.DEEPINFRA_MODEL || DEFAULT_DEEPINFRA_MODEL,
     });
   }
 
-  // Analyzer-development escape hatch only. Customer/hosted execution is
-  // remote-AI-only; a stale LOCAL_LLM_BASE_URL must never make production wait
-  // on a laptop or nonexistent Ollama service.
-  if (env.KLAURO_ALLOW_LOCAL_AI === '1' && env.LOCAL_LLM_BASE_URL) {
+  // Secondary (optional): a local LLM (e.g. a dedicated Mac over Tailscale).
+  // Slotted in only when its base URL is set; skipped otherwise.
+  if (env.LOCAL_LLM_BASE_URL) {
     chain.push({
       name: 'local-llm',
       baseURL: env.LOCAL_LLM_BASE_URL,
@@ -475,8 +446,8 @@ export function getAIProviderChain(env: NodeJS.ProcessEnv = process.env): AIProv
       name: 'openrouter',
       baseURL: env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1',
       apiKey: env.OPENROUTER_API_KEY,
-      model: env.OPENROUTER_MODEL || 'tencent/hy3',
-      structuredModel: env.OPENROUTER_STRUCTURED_MODEL || env.OPENROUTER_MODEL || 'tencent/hy3',
+      model: env.OPENROUTER_MODEL || 'tencent/hy3:free',
+      structuredModel: env.OPENROUTER_STRUCTURED_MODEL || env.OPENROUTER_MODEL || 'tencent/hy3:free',
       maxTokens: env.OPENROUTER_MAX_TOKENS ? parseInt(env.OPENROUTER_MAX_TOKENS) : 4000,
     });
   }

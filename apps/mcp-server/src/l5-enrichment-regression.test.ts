@@ -81,15 +81,11 @@ function groundedDescriptionFor(ctx: any): string {
 function mockSuccess(): void {
   (aiService as any).generateComponentDescription = async (context: any): Promise<string> => {
     const ac = context?.additionalContext || {};
-    const items: Array<{ id: string; name?: string; relatedDomains?: string[] }> = Array.isArray(ac.items) ? ac.items : [];
-    const descriptions = items.map(item => {
-      const name = item.name || item.id;
-      const subject = item.relatedDomains?.join(' ') || name;
-      return {
-        id: item.id,
-        description: `${name} enforces ${subject} rules when requests enter the product and persists accepted record changes. The resulting ${subject} state remains available to later product workflows.`,
-      };
-    });
+    const items: Array<{ id: string }> = Array.isArray(ac.items) ? ac.items : [];
+    const descriptions = items.map(item => ({
+      id: item.id,
+      description: `Owns and orchestrates the ${item.id} capability, coordinating its records and route handlers end to end.`,
+    }));
     return JSON.stringify({
       system_description: groundedDescriptionFor(ac),
       domain: 'http-api-record-management',

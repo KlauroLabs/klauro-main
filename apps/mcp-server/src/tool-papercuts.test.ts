@@ -272,14 +272,15 @@ test('/conceptual honors a max_flows query param (bounded) and its gap text refl
     // approach plan-parallel-work.test.ts / flow-layer-gaps.test.ts use to
     // exercise query.ts joins without a real multi-file analysis run.
     const analysisId = 'max-flows-analysis-id';
+    const workspace = path.join(remoteData, 'workspaces', analysisId);
+    await saveAnalysis(workspace, buildManyEntryPointsCas(analysisId, 25));
+
     const createRes = await httpRequest(port, 'POST', `/api/workspaces/${workspaceId}/projects`, {
       name: 'max-flows-fixture',
       analysis_id: analysisId,
     }, token);
     assert.equal(createRes.statusCode, 201);
-    const project = JSON.parse(createRes.body).project as { id: string; analysis_id: string };
-    const workspace = path.join(remoteData, 'workspaces', project.analysis_id);
-    await saveAnalysis(workspace, buildManyEntryPointsCas(project.analysis_id, 25));
+    const project = JSON.parse(createRes.body).project as { id: string };
 
     // Default (no max_flows): capped at 20, gap text names the REAL applied cap (20), not the stale "15".
     const defaultRes = await httpRequest(port, 'GET', `/api/projects/${project.id}/conceptual`, undefined, token);

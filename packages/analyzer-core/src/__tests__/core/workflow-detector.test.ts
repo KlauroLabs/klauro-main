@@ -80,74 +80,7 @@ describe('WorkflowDetector: pathless entry-point naming keeps full specificity',
   });
 });
 
-describe('WorkflowDetector: primary workflow reflects product behavior', () => {
-  it('does not rank a generic process bootstrap above a real domain workflow', () => {
-    const detector = new WorkflowDetector();
-    const workflows = [
-      {
-        id: 'workflow_main', name: 'Main', classification: 'supporting', entry_points: ['go-main', 'rust-main'],
-        services_used: [], entities_touched: [], dependencies: [], dependents: [],
-      },
-      {
-        id: 'workflow_view_orders', name: 'View Orders', classification: 'supporting', entry_points: ['get-order'],
-        services_used: [], entities_touched: ['entity_order'], dependencies: [], dependents: [],
-      },
-    ] as any;
-
-    const graph = detector.buildDependencyGraph(workflows, [], []);
-
-    expect(graph.primary_workflow_id).toBe('workflow_view_orders');
-  });
-
-  it('does not trust a pre-classified bootstrap as the sole primary workflow', () => {
-    const detector = new WorkflowDetector();
-    const workflows = [
-      {
-        id: 'workflow_main', name: 'Main', classification: 'primary', entry_points: ['java-main'],
-        services_used: ['service-bootstrap'], entities_touched: [], dependencies: [], dependents: [],
-      },
-      {
-        id: 'workflow_review_orders', name: 'Review Orders', classification: 'supporting', entry_points: ['get-order'],
-        services_used: [], entities_touched: ['entity_order'], dependencies: [], dependents: [],
-      },
-    ] as any;
-
-    const graph = detector.buildDependencyGraph(workflows, [], []);
-
-    expect(graph.primary_workflow_id).toBe('workflow_review_orders');
-  });
-
-  it('classifies exact language bootstrap names as supporting even when domain frequency matches', () => {
-    const detector = new WorkflowDetector();
-    const workflows = [{
-      id: 'workflow_program', name: 'Program', classification: 'primary', entry_points: ['dotnet-main'],
-      services_used: [], entities_touched: [], dependencies: [], dependents: [],
-    }] as any;
-
-    detector.classifyWorkflows(workflows, [{
-      id: 'concept_program', name: 'program', classification: 'core', frequency: 100,
-    }] as any);
-
-    expect(workflows[0].classification).toBe('supporting');
-  });
-});
-
 describe('WorkflowDetector: bare-noun groups with no anchor evidence are dropped, not shipped as junk', () => {
-  it('keeps a single-word HTTP resource workflow even when its call-chain enrichment is absent', () => {
-    const detector = new WorkflowDetector();
-    const workflows = detector.detectWorkflows([{
-      id: 'entry_order',
-      name: 'View order',
-      type: 'http',
-      trigger: { method: 'GET', path: '/api/v1/orders/{order_id}' },
-      handler: { node_id: 'order-handler', method_name: 'getOrder', file: 'src/orders/controller.ts' },
-    } as any], [], [], []);
-
-    expect(workflows).toEqual([
-      expect.objectContaining({ name: 'Orders', workflow_type: 'query', entry_points: ['entry_order'] }),
-    ]);
-  });
-
   it('drops a single-word-named group when no call chain touches an entity/service or reaches an exit point', () => {
     const detector = new WorkflowDetector();
     const entryPoints: CASEntryPoint[] = [

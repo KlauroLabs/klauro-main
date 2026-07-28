@@ -60,19 +60,11 @@ export class CronAnalyzer extends BaseAnalyzer {
     const hasNodeCron = deps.has('node-cron');
     const hasNestSchedule = deps.has('@nestjs/schedule');
 
-    const groundedFiles = this.filesFromExistingAnalysis(
-      context,
-      source => source === 'cron' || source.startsWith('cron/') ||
-        source === 'node-cron' || source.startsWith('node-cron/') ||
-        source === '@nestjs/schedule' || source.startsWith('@nestjs/schedule/')
-    );
-    const jsFiles = context.existingAnalysis?.length
-      ? groundedFiles
-      : await glob(['**/*.{js,ts}'], {
-        cwd: context.projectPath,
-        ignore: [...this.getIgnorePatterns(context), '**/*.test.*', '**/*.spec.*'],
-        nodir: true
-      });
+    const jsFiles = await glob(['**/*.{js,ts}'], {
+      cwd: context.projectPath,
+      ignore: [...this.getIgnorePatterns(context), '**/*.test.*', '**/*.spec.*'],
+      nodir: true
+    });
 
     const jobs: ScheduledJob[] = [];
 

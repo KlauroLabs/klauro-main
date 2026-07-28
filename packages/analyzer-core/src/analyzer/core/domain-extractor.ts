@@ -72,8 +72,7 @@ const GENERIC_PROGRAMMING_TERMS = new Set([
   'page', 'pages', 'layout', 'layouts', 'metadata', 'section', 'sections',
   'navbar', 'nav', 'footer', 'button', 'arrow', 'padding', 'total',
   'home', 'submit', 'rewrites', 'rewrite', 'asset', 'assets', 'generated',
-  'gql', 'model', 'models', 'mapping', 'schema', 'server', 'routes', 'web',
-  'tablename', 'normalize', 'normalizer'
+  'gql'
 ]);
 
 const GENERIC_CROSS_CUTTING_HINTS = new Set([
@@ -95,7 +94,6 @@ const FRAMEWORK_AND_LIBRARY_TERMS = new Set([
   'webpack', 'vite', 'rollup', 'babel', 'eslint', 'prettier', 'tsx', 'tsc',
   'typescript', 'javascript', 'node', 'nodejs', 'deno', 'bun', 'npm', 'yarn',
   'php', 'python', 'ruby', 'java', 'csharp', 'golang', 'rust', 'dart',
-  'dotnet', 'aspnet', 'mvc', 'sqlalchemy', 'microsoft', 'illuminate',
   'prisma', 'typeorm', 'sequelize', 'mongoose', 'knex', 'drizzle',
   'postgres', 'postgresql', 'mysql', 'sqlite', 'mongodb', 'redis', 'mongo',
   'docker', 'kubernetes', 'k8s', 'terraform', 'ansible',
@@ -259,11 +257,7 @@ export class DomainExtractor {
 
   private extractConceptsFromName(name: string): string[] {
     const normalized = this.splitCamelCase(name);
-    // Identifiers arrive from every supported language and framework, including
-    // route templates, qualified type names, namespace separators, and IaC
-    // addresses. Tokenize on every non-alphanumeric boundary so punctuation can
-    // never become a domain concept ("{id}", ":id", "Route\\Facade").
-    const words = normalized.split(/[^A-Za-z0-9]+/).filter(w => w.length > 2);
+    const words = normalized.split(/[\s_\-./]+/).filter(w => w.length > 2);
 
     return words.map(w => w.toLowerCase());
   }
@@ -471,7 +465,7 @@ export class DomainExtractor {
     results: CASDomainConcept[],
     byName: Map<string, ConceptOccurrence>
   ): void {
-    const TARGET_CORE = 1;
+    const TARGET_CORE = 5;
     const coreCount = results.filter(c => c.classification === 'core').length;
     if (coreCount >= TARGET_CORE) return;
 
@@ -488,9 +482,8 @@ export class DomainExtractor {
         return this.prominenceScore(ob) - this.prominenceScore(oa);
       });
 
-    // Promote only when structural classification found NO core concept. A
-    // fixed quota fabricates importance on small/polyglot repos by promoting
-    // framework and package vocabulary merely to fill five slots.
+    // Top up to TARGET_CORE so that a clear domain is never left with a
+    // single weak core concept (or none at all).
     const toPromote = Math.min(TARGET_CORE - coreCount, candidates.length);
     for (let i = 0; i < toPromote; i++) {
       candidates[i].classification = 'core';

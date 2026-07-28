@@ -29,13 +29,13 @@ test('grammarHealth resolves the full breadth grammar set from the source tree',
   assert.ok(sample.size >= 0); // sample is a slice; the real assertion is count above.
 });
 
-test('a hosted analyzer build ships grammars next to dist-hosted/analyzer-service.cjs', () => {
-  // Only meaningful after `npm run build:hosted`. The installed client in dist/
-  // intentionally excludes grammars and all analyzer implementation.
-  const distGrammars = path.join(mcpServerRoot, 'dist-hosted', 'grammars');
-  const distServer = path.join(mcpServerRoot, 'dist-hosted', 'analyzer-service.cjs');
+test('a built bundle ships grammars next to dist/server.cjs', () => {
+  // Only meaningful after `npm run build`. Skip in a fresh checkout so the suite
+  // stays green pre-build; once dist/ exists it must carry the grammars.
+  const distGrammars = path.join(mcpServerRoot, 'dist', 'grammars');
+  const distServer = path.join(mcpServerRoot, 'dist', 'server.cjs');
   if (!fs.existsSync(distServer)) {
-    test.skip('dist-hosted/analyzer-service.cjs not built — run `npm run build:hosted` to exercise this guard');
+    test.skip('dist/server.cjs not built — run `npm run build` to exercise this guard');
     return;
   }
   assert.ok(fs.existsSync(distGrammars), 'dist/grammars/ must exist next to the bundle after build');

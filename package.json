@@ -23,9 +23,5 @@
     "proof": "npm run mcp:typecheck && npm run mcp:test && npm run analyzer:build && npm run analyzer:test",
     "perf:budget": "npm --prefix apps/mcp-server run perf:budget"
   },
-  "overrides": {
-    "fast-xml-parser": "5.10.1",
-    "multer": "2.2.0"
-  },
   "license": "UNLICENSED"
 }

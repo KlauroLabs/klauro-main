@@ -110,7 +110,7 @@ export class ReactAnalyzer extends BaseAnalyzer {
       const packageJsonPath = path.join(projectPath, 'package.json');
       if (!await fs.pathExists(packageJsonPath)) return false;
 
-      const packageJson = await this.readSourceJson<any>(packageJsonPath);
+      const packageJson = await fs.readJson(packageJsonPath);
       const deps = { ...packageJson.dependencies, ...packageJson.devDependencies };
 
       if (Object.keys(deps).some(dep => dep === 'react' || dep === 'react-dom')) {
@@ -151,7 +151,15 @@ export class ReactAnalyzer extends BaseAnalyzer {
   }
 
   async getRelevantFiles(projectPath: string): Promise<string[]> {
-    return this.reactSourceFiles({ projectPath });
+    return glob(['**/*.{ts,tsx,js,jsx}'], {
+      cwd: projectPath,
+      ignore: [
+        ...this.getIgnorePatterns({ projectPath }),
+        '**/*.test.*',
+        '**/*.spec.*'
+      ],
+      nodir: true
+    });
   }
 
   async analyzeFileSingle(context: FileAnalysisContext): Promise<FileAnalysisResult> {
@@ -238,7 +246,12 @@ export class ReactAnalyzer extends BaseAnalyzer {
     let t = Date.now();
 
     try {
-      const reactFiles = await this.reactSourceFiles(context);
+      const ignorePatterns = this.getIgnorePatterns(context);
+      const reactFiles = this.capAndPrioritizeSourceFiles(await glob(['**/*.{ts,tsx,js,jsx}'], {
+        cwd: context.projectPath,
+        ignore: [...ignorePatterns, '**/*.test.*', '**/*.spec.*'],
+        nodir: true
+      }), 'React source files');
       timings['glob'] = Date.now() - t;
 
       t = Date.now();
@@ -313,37 +326,6 @@ export class ReactAnalyzer extends BaseAnalyzer {
     }
   }
 
-  private async reactSourceFiles(context: AnalysisContext): Promise<string[]> {
-    const ignore = [...this.getIgnorePatterns(context), '**/*.test.*', '**/*.spec.*'];
-    const jsxFiles = await glob(['**/*.{tsx,jsx}'], {
-      cwd: context.projectPath,
-      ignore,
-      nodir: true,
-    });
-    const importGroundedFiles = this.filesFromExistingAnalysis(
-      context,
-      source => /^(react(?:-dom)?|next|react-router(?:-dom)?|redux|@reduxjs\/toolkit|zustand|recoil)(?:\/|$)/.test(source),
-      true
-    );
-    const conventionFiles = await glob([
-      '**/*{route,router,routes,store,context,hook,hooks,page,screen,component,layout,provider}*.{ts,js}',
-      '**/{routes,router,store,stores,context,contexts,hooks,pages,screens,components}/**/*.{ts,js}',
-    ], {
-      cwd: context.projectPath,
-      ignore,
-      nodir: true,
-    });
-    const candidates = [...new Set([...jsxFiles, ...importGroundedFiles, ...conventionFiles])].sort();
-    if ((context.existingAnalysis?.length || 0) > 0 && candidates.length > 0) {
-      return this.capAndPrioritizeSourceFiles(candidates, 'React source files');
-    }
-    return this.capAndPrioritizeSourceFiles(await glob(['**/*.{ts,tsx,js,jsx}'], {
-      cwd: context.projectPath,
-      ignore,
-      nodir: true,
-    }), 'React source files');
-  }
-
   protected getCapabilities(): string[] {
     return [
       'component-analysis',
@@ -359,7 +341,7 @@ export class ReactAnalyzer extends BaseAnalyzer {
 
   private async analyzeApplication(projectPath: string, nodes: CASNode[]): Promise<ReactApplication | null> {
     try {
-      const packageJson = await this.readSourceJson<any>(path.join(projectPath, 'package.json'));
+      const packageJson = await fs.readJson(path.join(projectPath, 'package.json'));
       const deps = { ...packageJson.dependencies, ...packageJson.devDependencies };
 
       const typescript = Object.keys(deps).includes('typescript') ||
@@ -388,11 +370,11 @@ export class ReactAnalyzer extends BaseAnalyzer {
         buildTool
       };
 
-      const appId = this.generateId('app', 'package.json', application.name);
+      const appId = this.generateId('app', path.join(projectPath, 'package.json'), application.name);
       const appNode = this.createNodeBuilder(appId, application.name, 'react_app')
         .withLevel(1, 'system')
         .withCategory('frontend', ['react', 'application'])
-        .withSource({ file: 'package.json', line: 1, end_line: 1 })
+        .withSource({ file: path.join(projectPath, 'package.json'), line: 1, end_line: 1 })
         .withDescription(`React application: ${application.name}`)
         .withMetadata({
           framework: 'react',
@@ -451,7 +433,7 @@ export class ReactAnalyzer extends BaseAnalyzer {
             const componentNode = this.createNodeBuilder(componentId, component.name, component.type === 'functional' ? 'functional_component' : 'class_component')
               .withLevel(2, 'architectural')
               .withCategory('component', ['react', component.type])
-              .withSource({ file: fullPath, line: 1, end_line: this.sourceLineCount(content) })
+              .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
               .withDescription(`React ${component.type} component: ${component.name}`)
               .withDocumentation(documentation)
               .withComments(comments)
@@ -549,7 +531,7 @@ export class ReactAnalyzer extends BaseAnalyzer {
             const hookNode = this.createNodeBuilder(hookId, hook.name, 'custom_hook')
               .withLevel(3, 'code')
               .withCategory('hook', ['react', 'custom'])
-              .withSource({ file: fullPath, line: 1, end_line: this.sourceLineCount(content) })
+              .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
               .withDescription(`Custom React hook: ${hook.name}`)
               .withDocumentation(documentation)
               .withComments(comments)
@@ -611,7 +593,7 @@ export class ReactAnalyzer extends BaseAnalyzer {
             const contextNode = this.createNodeBuilder(contextId, context.name, 'react_context')
               .withLevel(3, 'code')
               .withCategory('context', ['react', 'state'])
-              .withSource({ file: fullPath, line: 1, end_line: this.sourceLineCount(content) })
+              .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
               .withDescription(`React context: ${context.name}`)
               .withMetadata({
                 framework: 'react',
@@ -727,7 +709,7 @@ export class ReactAnalyzer extends BaseAnalyzer {
             const storeNode = this.createNodeBuilder(storeId, store.name, `${store.type}_store`)
               .withLevel(3, 'code')
               .withCategory('store', ['react', store.type, 'state'])
-              .withSource({ file: fullPath, line: 1, end_line: this.sourceLineCount(content) })
+              .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
               .withDescription(`${store.type.charAt(0).toUpperCase() + store.type.slice(1)} store: ${store.name}`)
               .withMetadata({
                 framework: 'react',
@@ -791,7 +773,7 @@ export class ReactAnalyzer extends BaseAnalyzer {
         const pageNode = this.createNodeBuilder(pageId, pageName, 'react_page')
           .withLevel(2, 'architectural')
           .withCategory('page', ['react', 'view'])
-          .withSource({ file: fullPath, line: 1, end_line: this.sourceLineCount(content) })
+          .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
           .withDescription(`React page: ${pageName}`)
           .withMetadata({
             framework: 'react',
@@ -926,7 +908,7 @@ export class ReactAnalyzer extends BaseAnalyzer {
             const utilNode = this.createNodeBuilder(utilId, util.name, `${util.type}_util`)
               .withLevel(4, 'member')
               .withCategory('util', ['helper', util.type])
-              .withSource({ file: fullPath, line: 1, end_line: this.sourceLineCount(content) })
+              .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
               .withDescription(`Utility ${util.type}: ${util.name}`)
               .withMetadata({
                 framework: 'react',
@@ -1433,7 +1415,7 @@ export class ReactAnalyzer extends BaseAnalyzer {
       else if (thisMethod) handlerName = thisMethod[1];
       else if (arrowCall) handlerName = arrowCall[1];
 
-      const lineNumber = this.sourceLineForIndex(content, nodeStart + match.index);
+      const lineNumber = content.substring(0, nodeStart + match.index).split('\n').length;
       handlers.push({ event, handlerName, line: lineNumber });
     }
 
@@ -1489,7 +1471,7 @@ export class ReactAnalyzer extends BaseAnalyzer {
         props.push(propMatch[1]);
       }
 
-      const lineNumber = this.sourceLineForIndex(content, nodeStart + match.index);
+      const lineNumber = content.substring(0, nodeStart + match.index).split('\n').length;
 
       const key = `${componentName}:${lineNumber}`;
       if (!seen.has(key)) {
@@ -2139,7 +2121,7 @@ export class ReactAnalyzer extends BaseAnalyzer {
 
   private async detectReactVersion(projectPath: string): Promise<string> {
     try {
-      const packageJson = await this.readSourceJson<any>(path.join(projectPath, 'package.json'));
+      const packageJson = await fs.readJson(path.join(projectPath, 'package.json'));
       const deps = { ...packageJson.dependencies, ...packageJson.devDependencies };
       return deps.react || 'unknown';
     } catch {
@@ -2152,7 +2134,7 @@ export class ReactAnalyzer extends BaseAnalyzer {
     if (cached !== undefined) return cached;
     let fileRouter = false;
     try {
-      const packageJson = await this.readSourceJson<any>(path.join(projectPath, 'package.json'));
+      const packageJson = await fs.readJson(path.join(projectPath, 'package.json'));
       const deps = { ...packageJson.dependencies, ...packageJson.devDependencies };
       fileRouter = Object.keys(deps).includes('next');
     } catch {
@@ -3012,7 +2994,7 @@ export class ReactAnalyzer extends BaseAnalyzer {
     while ((match = multiLineRegex.exec(content)) !== null) {
       const text = match[1].replace(/^\s*\*\s?/gm, '').trim();
       const startIndex = match.index;
-      const lineNumber = this.sourceLineForIndex(content, startIndex);
+      const lineNumber = content.substring(0, startIndex).split('\n').length;
 
       if (!text.startsWith('@')) {
         comments.push({

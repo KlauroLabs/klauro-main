@@ -20,7 +20,6 @@ jest.mock('fs-extra', () => ({
 const mockGlob = jest.fn();
 
 jest.mock('glob', () => ({
-  ...jest.requireActual('glob'),
   glob: mockGlob,
   default: mockGlob,
 }));

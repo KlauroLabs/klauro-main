@@ -1,6 +1,5 @@
 import { AnalyzerOrchestrator, type AnalysisProgressEvent } from '../../../packages/analyzer-core/src/analyzer/core/orchestrator';
 import type { CASOutput, IncrementalState, ChangeReport, ChangeHistoryEntry } from '../../../packages/analyzer-core/src/types/cas.types';
-import { buildCompletedAnalysisLayersReady } from './layered-analysis';
 import { TypeScriptJavaScriptAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/typescript-javascript-analyzer';
 import { PythonAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/python-analyzer';
 import { JavaAnalyzer } from '../../../packages/analyzer-core/src/analyzer/languages/java-analyzer';
@@ -182,7 +181,6 @@ let orchestrator: AnalyzerOrchestrator | null = null;
 
 export function createOrchestrator(): AnalyzerOrchestrator {
   const created = new AnalyzerOrchestrator();
-  created.configureAnalyzerContributionCache(process.env.KLAURO_ANALYZER_CONTRIBUTION_CACHE_PATH);
 
   const languageRegistrations: AnalyzerRegistration[] = [
     {
@@ -827,8 +825,9 @@ async function buildEmbeddingPhaseConfig(projectPath: string): Promise<Embedding
       maxConcurrency: embedding.maxConcurrency,
       apiKeyEnv: embedding.apiKeyEnv,
     };
-    // Provider construction enforces that the configured model name matches
-    // the implementation that produces the vectors.
+    // The local path prefers the real ONNX model and lazily falls back to the
+    // hash embedding when it can't load, so the index is built with real
+    // semantics wherever the model is present. The API path is unchanged.
     const provider = createEmbeddingProvider(embedding.provider, providerOptions);
 
     const store = buildVectorStore(
@@ -1084,7 +1083,6 @@ export async function analyzeProject(projectPath: string, displayName?: string):
     ));
 
     await saveAnalysis(projectPath, result);
-    await saveIncrementalState(projectPath, orch.createIncrementalBaseline(projectPath, result));
     clearFreshnessSummaryCache();
     await saveAnalysisSnapshot(projectPath, result);
 
@@ -1157,7 +1155,6 @@ export async function analyzeProjectDeferred(
     ));
 
     await saveAnalysis(projectPath, result);
-    await saveIncrementalState(projectPath, dedicatedOrch.createIncrementalBaseline(projectPath, result));
     clearFreshnessSummaryCache();
     await saveAnalysisSnapshot(projectPath, result);
 
@@ -1245,7 +1242,7 @@ export async function analyzeProjectLayered(
     throw new Error(`Project path does not exist: ${projectPath}`);
   }
 
-  const { computeL0Index, buildL0OnlyCas } = await import('./layered-analysis.js');
+  const { computeL0Index, buildL0OnlyCas } = await import('./layered-analysis');
 
   const l0Promise = (async () => {
     const l0Index = await computeL0Index(projectPath);
@@ -1278,7 +1275,7 @@ export async function analyzeProjectLayered(
   })();
 
   const restPromise = l0Promise.then(async () => {
-    const { buildLayersReady } = await import('./layered-analysis.js');
+    const { buildLayersReady } = await import('./layered-analysis');
 
     // WARM PATH: when a previous COMPLETE analysis exists for this workspace,
     // take the incremental pipeline instead of a full deferred pass. Change
@@ -1552,7 +1549,7 @@ function buildChangeHistoryEntry(result: IncrementalAnalysisResult): ChangeHisto
       ],
     },
     semanticSummary: result.wasFullRebuild
-      ? `Full rebuild triggered${result.fullRebuildReason ? `: ${result.fullRebuildReason}` : ''}`
+      ? 'Full rebuild triggered'
       : `${report.summary.filesAdded + report.summary.filesModified + report.summary.filesDeleted} files changed; ${report.summary.nodesAdded} nodes added, ${report.summary.nodesModified} modified, ${report.summary.nodesDeleted} deleted`,
     intent: {
       type: 'unknown' as const,
@@ -2049,7 +2046,6 @@ async function runIncrementalAnalysis(
     const result = await orch.orchestrateAnalysis(projectPath, { displayName, conventions, packGlobs, onProgress });
     debug('initial-orchestrate-full', phaseStartedAt);
     phaseStartedAt = Date.now();
-    result.layers_ready = buildCompletedAnalysisLayersReady(result);
     await saveAnalysis(projectPath, result);
     clearFreshnessSummaryCache();
     debug('initial-save-analysis', phaseStartedAt);
@@ -2069,7 +2065,6 @@ async function runIncrementalAnalysis(
     debug('initial-build-state', phaseStartedAt);
 
     phaseStartedAt = Date.now();
-    freshResult.output.layers_ready = buildCompletedAnalysisLayersReady(freshResult.output);
     await saveIncrementalState(projectPath, freshResult.state);
     debug('initial-save-state', phaseStartedAt);
     phaseStartedAt = Date.now();
@@ -2158,11 +2153,8 @@ async function runIncrementalAnalysis(
     preservePreviousAIDescriptions(previousOutput, result.output);
   }
 
-  const previousLayersReady = JSON.stringify(result.output.layers_ready ?? null);
-  result.output.layers_ready = buildCompletedAnalysisLayersReady(result.output);
-  const layersManifestChanged = JSON.stringify(result.output.layers_ready) !== previousLayersReady;
   const casChanged = hasCasReportChanges(result.changeReport);
-  const outputChanged = result.output !== previousOutput || casChanged || layersManifestChanged;
+  const outputChanged = result.output !== previousOutput || casChanged;
   if (outputChanged) {
     phaseStartedAt = Date.now();
     await saveAnalysis(projectPath, result.output);
@@ -2407,7 +2399,6 @@ interface WorkerHandle {
   child: ChildProcess;
   heap: AnalysisHeapResolution;
   stderrTail: string;
-  idleTimer?: NodeJS.Timeout;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- holds both
   // AnalysisRunSummary ('analyze' jobs) and LayeredRunSummary ('layered' jobs)
   // pending entries in one map keyed by job id; each dispatch site knows its
@@ -2420,33 +2411,6 @@ const WORKER_STDERR_TAIL_CHARS = 4096;
 let workerHandle: WorkerHandle | null = null;
 let nextWorkerJobId = 1;
 let workerJobChain: Promise<unknown> = Promise.resolve();
-
-const DEFAULT_ANALYSIS_WORKER_IDLE_MS = 60_000;
-
-function getAnalysisWorkerIdleMs(): number {
-  const raw = process.env.KLAURO_ANALYSIS_WORKER_IDLE_MS;
-  const parsed = raw !== undefined && raw !== '' ? Number(raw) : NaN;
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_ANALYSIS_WORKER_IDLE_MS;
-}
-
-function clearWorkerIdleTimer(handle: WorkerHandle): void {
-  if (!handle.idleTimer) return;
-  clearTimeout(handle.idleTimer);
-  handle.idleTimer = undefined;
-}
-
-function scheduleWorkerIdleShutdown(handle: WorkerHandle): void {
-  clearWorkerIdleTimer(handle);
-  if (handle.pending.size > 0 || workerHandle !== handle) return;
-  const idleMs = getAnalysisWorkerIdleMs();
-  handle.idleTimer = setTimeout(() => {
-    handle.idleTimer = undefined;
-    if (workerHandle !== handle || handle.pending.size > 0) return;
-    workerHandle = null;
-    handle.child.disconnect();
-  }, idleMs);
-  handle.idleTimer.unref();
-}
 
 function resolveWorkerEntryPath(): string {
   for (const candidate of ['analysis-worker.cjs', 'analysis-worker.ts']) {
@@ -2466,7 +2430,7 @@ function collectKlauroEnvSnapshot(): Record<string, string> {
 
 function spawnAnalysisWorker(heap: AnalysisHeapResolution): WorkerHandle {
   const child = fork(resolveWorkerEntryPath(), [], {
-    execArgv: [...analysisWorkerExecArgv(process.execArgv), `--max-old-space-size=${heap.heapMb}`],
+    execArgv: [...process.execArgv, `--max-old-space-size=${heap.heapMb}`],
     stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
     env: process.env,
   });
@@ -2509,7 +2473,6 @@ function spawnAnalysisWorker(heap: AnalysisHeapResolution): WorkerHandle {
       if (message.stackTop) error.stack = `${message.message}\n${message.stackTop}`;
       job.reject(error);
     }
-    scheduleWorkerIdleShutdown(handle);
   });
 
   child.on('error', (error) => {
@@ -2522,25 +2485,6 @@ function spawnAnalysisWorker(heap: AnalysisHeapResolution): WorkerHandle {
   });
 
   return handle;
-}
-
-export function analysisWorkerExecArgv(execArgv: readonly string[]): string[] {
-  const safe: string[] = [];
-  for (let index = 0; index < execArgv.length; index += 1) {
-    const argument = execArgv[index];
-    if (['-e', '--eval', '-p', '--print'].includes(argument)) {
-      index += 1;
-      continue;
-    }
-    if (
-      argument.startsWith('--eval=')
-      || argument.startsWith('--print=')
-      || argument.startsWith('--max-old-space-size=')
-      || argument.startsWith('--max_old_space_size=')
-    ) continue;
-    safe.push(argument);
-  }
-  return safe;
 }
 
 function workerLooksOutOfMemory(handle: WorkerHandle, code: number | null, signal: NodeJS.Signals | null): boolean {
@@ -2665,7 +2609,6 @@ function ensureAnalysisWorker(): WorkerHandle {
   if (!workerHandle) {
     workerHandle = spawnAnalysisWorker(heap);
   }
-  clearWorkerIdleTimer(workerHandle);
   return workerHandle;
 }
 
@@ -2673,14 +2616,9 @@ export function shutdownAnalysisWorker(): void {
   if (!workerHandle) return;
   const handle = workerHandle;
   workerHandle = null;
-  clearWorkerIdleTimer(handle);
   handle.child.removeAllListeners('exit');
   handle.child.kill();
   failPendingWorkerJobs(handle, null, 'SIGTERM', 'was shut down while a job was running');
-}
-
-export function __analysisWorkerRunningForTests(): boolean {
-  return workerHandle !== null;
 }
 
 function dispatchWorkerJob(projectPath: string, options: RunAnalysisOptions): Promise<AnalysisRunSummary> {

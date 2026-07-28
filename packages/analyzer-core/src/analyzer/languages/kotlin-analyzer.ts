@@ -57,6 +57,17 @@ interface KotlinImport {
   lineNumber: number;
 }
 
+// A Compose Navigation destination (`composable("route"){}` / `dialog("route"){}`
+// / `navigation(startDestination=..., route="graph"){}`) found strictly inside a
+// `NavHost(...) { ... }` builder block. Route text is the literal string
+// passed to the call — never fabricated when the argument isn't a plain
+// string literal (interpolated/const-referenced routes are silently skipped).
+interface KotlinNavDestination {
+  route: string;
+  kind: 'composable' | 'dialog' | 'navigation';
+  line: number;
+}
+
 interface KotlinFileInfo {
   relativePath: string;
   fullPath: string;
@@ -65,6 +76,7 @@ interface KotlinFileInfo {
   functions: KotlinFunction[];
   imports: KotlinImport[];
   lineCount: number;
+  navDestinations: KotlinNavDestination[];
 }
 
 const KOTLIN_GLOBS = ['**/*.kt', '**/*.kts'];
@@ -79,6 +91,21 @@ const KOTLIN_CALL_KEYWORDS = new Set([
 const ANDROID_ACTIVITY_BASES = new Set([
   'ComponentActivity', 'AppCompatActivity', 'Activity', 'FragmentActivity',
 ]);
+// Structural (supertype-based) detection for the other Android component
+// families — analogous to ANDROID_ACTIVITY_BASES, so these are found even in
+// repos with no AndroidManifest.xml in the analyzed source (or whose manifest
+// wasn't reachable — see the 2026-07-17 warning below), not only via the
+// manifest pass. `type` mirrors MANIFEST_COMPONENT_ENTRY_TYPES below so a
+// structurally-detected class and a manifest-declared one resolve to the same
+// CAS entry-point `type` for the same component kind.
+const ANDROID_APPLICATION_BASES = new Set(['Application']);
+const ANDROID_SERVICE_BASES = new Set(['Service', 'IntentService', 'LifecycleService']);
+const ANDROID_RECEIVER_BASES = new Set(['BroadcastReceiver']);
+const ANDROID_PROVIDER_BASES = new Set(['ContentProvider']);
+// WorkManager background-work units — not an Android manifest component
+// (Workers are dispatched programmatically via WorkManager, never declared in
+// AndroidManifest.xml), so this is structural-only, no manifest counterpart.
+const ANDROID_WORKER_BASES = new Set(['Worker', 'CoroutineWorker', 'ListenableWorker', 'RxWorker']);
 const ANDROID_MANIFEST_GLOB = ['**/AndroidManifest.xml'];
 // Manifest component kinds resolved to entry points, and the CAS entry-point
 // `type` each maps to: Activity is a UI screen ('page', matching the existing
@@ -255,6 +282,7 @@ export class KotlinAnalyzer extends BaseAnalyzer {
     const imports = this.extractImports(lines);
     const types = this.extractTypes(lines);
     const functions = this.extractFunctions(lines, types);
+    const navDestinations = this.extractNavHostDestinations(lines);
 
     return {
       relativePath,
@@ -264,6 +292,7 @@ export class KotlinAnalyzer extends BaseAnalyzer {
       functions,
       imports,
       lineCount: lines.length,
+      navDestinations,
     };
   }
 
@@ -642,6 +671,78 @@ export class KotlinAnalyzer extends BaseAnalyzer {
     return result;
   }
 
+  // Strip a trailing `//` line comment while KEEPING string-literal contents
+  // intact (unlike stripStringsAndComments, which also erases quoted text) —
+  // needed here because route strings live inside the quotes we must match.
+  private removeTrailingLineComment(line: string): string {
+    let inSingle = false;
+    let inDouble = false;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      const next = line[i + 1];
+      if (!inSingle && !inDouble && ch === '/' && next === '/') return line.slice(0, i);
+      if (ch === "'" && !inDouble) inSingle = !inSingle;
+      else if (ch === '"' && !inSingle) inDouble = !inDouble;
+    }
+    return line;
+  }
+
+  // Compose Navigation destinations: scoped strictly to the body of a
+  // `NavHost(...) { ... }` builder call, so a `composable("route"){}` used as
+  // route registration is captured while an unrelated `@Composable fun` (or a
+  // `composable`-named identifier outside any NavHost) is never mistaken for
+  // one — over-detecting every @Composable would flood entry points with
+  // plain UI functions instead of actual navigable destinations.
+  private extractNavHostDestinations(lines: string[]): KotlinNavDestination[] {
+    const destinations: KotlinNavDestination[] = [];
+    const destRegex = /\b(composable|dialog)\s*\(\s*(?:route\s*=\s*)?"([^"]+)"/;
+    // `navigation(startDestination = "...", route = "...") { ... }` — the
+    // route argument may appear after other named args, so search the whole
+    // call header for a `route = "..."` pair rather than anchoring position 0.
+    const navGraphRegex = /\bnavigation\s*\(/;
+    const navGraphRouteRegex = /\broute\s*=\s*"([^"]+)"/;
+
+    for (let i = 0; i < lines.length; i++) {
+      const header = this.removeTrailingLineComment(lines[i]);
+      if (!/\bNavHost\s*\(/.test(header)) continue;
+
+      const blockEnd = this.findBlockEnd(lines, i);
+      for (let j = i; j < blockEnd && j < lines.length; j++) {
+        const text = this.removeTrailingLineComment(lines[j]);
+
+        const destMatch = text.match(destRegex);
+        if (destMatch) {
+          destinations.push({
+            route: destMatch[2],
+            kind: destMatch[1] as 'composable' | 'dialog',
+            line: j + 1,
+          });
+          continue;
+        }
+
+        if (navGraphRegex.test(text)) {
+          // The route argument may be on the same line or a following one
+          // within the call's parameter list — scan a small forward window
+          // (nested `navigation(...)` blocks are rare and short in practice).
+          const windowEnd = Math.min(blockEnd, j + 6);
+          for (let k = j; k < windowEnd; k++) {
+            const routeMatch = this.removeTrailingLineComment(lines[k]).match(navGraphRouteRegex);
+            if (routeMatch) {
+              destinations.push({ route: routeMatch[1], kind: 'navigation', line: j + 1 });
+              break;
+            }
+            if (lines[k].includes('{')) break; // reached the graph's builder body, stop searching
+          }
+        }
+      }
+
+      // Skip past this NavHost's body so a nested NavHost (rare) inside it
+      // isn't independently rescanned as a second top-level site.
+      i = Math.max(i, blockEnd - 1);
+    }
+    return destinations;
+  }
+
   // ---------------------------------------------------------------------------
   // Emission
   // ---------------------------------------------------------------------------
@@ -717,8 +818,40 @@ export class KotlinAnalyzer extends BaseAnalyzer {
           `Android entry-point Activity (extends ${activityBase})`,
           { pattern: type.name },
           undefined,
-          { file: info.relativePath, line: type.lineStart, base: activityBase, language: 'kotlin' }
+          { file: info.relativePath, line: type.lineStart, base: activityBase, language: 'kotlin' },
+          { node_id: typeId, method_name: type.name, file: info.relativePath, line: type.lineStart }
         ));
+      }
+
+      // Structural detection of the other Android component families —
+      // supertype-based like Activity above, so these are found even without
+      // (or ahead of) the AndroidManifest.xml pass. Each uses the same
+      // `entry_${typeId}` id / `typeId` source_node as the manifest path
+      // below would use for the same class, so emitManifestEntryPoints'
+      // alreadyEntryPointed dedup naturally collapses a class declared in
+      // BOTH places into a single entry point instead of double-counting it.
+      const structuralBases: Array<{ bases: Set<string>; type: CASEntryPoint['type']; label: string }> = [
+        { bases: ANDROID_APPLICATION_BASES, type: 'lifecycle', label: 'Application' },
+        { bases: ANDROID_SERVICE_BASES, type: 'lifecycle', label: 'Service' },
+        { bases: ANDROID_RECEIVER_BASES, type: 'event', label: 'BroadcastReceiver' },
+        { bases: ANDROID_PROVIDER_BASES, type: 'api', label: 'ContentProvider' },
+        { bases: ANDROID_WORKER_BASES, type: 'schedule', label: 'WorkManager Worker' },
+      ];
+      for (const { bases, type: epType, label } of structuralBases) {
+        const base = type.supertypes.find(s => bases.has(s));
+        if (!base) continue;
+        entryPoints.push(this.createEntryPoint(
+          `entry_${typeId}`,
+          typeId,
+          epType,
+          `Android ${label}: ${type.name}`,
+          `Android ${label} (extends ${base})`,
+          { pattern: type.name },
+          undefined,
+          { file: info.relativePath, line: type.lineStart, base, language: 'kotlin' },
+          { node_id: typeId, method_name: type.name, file: info.relativePath, line: type.lineStart }
+        ));
+        break; // a class extends exactly one of these families
       }
 
       // Data-entity fields: one 'property' node per component field, parented
@@ -819,7 +952,8 @@ export class KotlinAnalyzer extends BaseAnalyzer {
           'Kotlin application entry point (fun main)',
           undefined,
           undefined,
-          { file: info.relativePath, line: fn.lineStart, language: 'kotlin' }
+          { file: info.relativePath, line: fn.lineStart, language: 'kotlin' },
+          { node_id: functionId, method_name: fn.name, file: info.relativePath, line: fn.lineStart }
         ));
       } else if (fn.name === 'module' && fn.receiver === 'Application') {
         entryPoints.push(this.createEntryPoint(
@@ -832,9 +966,30 @@ export class KotlinAnalyzer extends BaseAnalyzer {
           'Ktor application module (fun Application.module)',
           undefined,
           undefined,
-          { file: info.relativePath, line: fn.lineStart, framework: 'ktor', language: 'kotlin' }
+          { file: info.relativePath, line: fn.lineStart, framework: 'ktor', language: 'kotlin' },
+          { node_id: functionId, method_name: fn.name, file: info.relativePath, line: fn.lineStart }
         ));
       }
+    }
+
+    // Compose Navigation destinations found inside NavHost(...) builder
+    // blocks (see extractNavHostDestinations). Not owned by any single
+    // type/function — attributed to the file node, the same "no more precise
+    // owner" fallback emitImportEdges/exit points already use for file-level
+    // facts.
+    for (const dest of info.navDestinations) {
+      const destId = `navdest_${this.sanitizeId(info.relativePath)}_${this.sanitizeId(dest.route)}_${dest.line}`;
+      entryPoints.push(this.createEntryPoint(
+        `entry_${destId}`,
+        fileId,
+        'route',
+        `Compose destination: ${dest.route}`,
+        `Compose Navigation ${dest.kind === 'navigation' ? 'nested graph' : 'destination'} registered via ${dest.kind}("${dest.route}") inside NavHost`,
+        { pattern: dest.route },
+        undefined,
+        { file: info.relativePath, line: dest.line, route: dest.route, kind: dest.kind, framework: 'compose-navigation', language: 'kotlin' },
+        { node_id: fileId, method_name: dest.route, file: info.relativePath, line: dest.line }
+      ));
     }
   }
 
@@ -1025,6 +1180,52 @@ export class KotlinAnalyzer extends BaseAnalyzer {
       const application = parsed?.manifest?.application;
       if (!application) continue;
 
+      // <application android:name="..."> declares the app's Application
+      // subclass on the <application> ELEMENT ITSELF, not as a child
+      // component — resolve it the same way as the activity/service/receiver/
+      // provider children below, since a plain child-tag loop over
+      // application[componentTag] never sees this attribute.
+      const appName = typeof application === 'object' ? application?.name : undefined;
+      if (appName && typeof appName === 'string') {
+        const qualified = this.resolveManifestClassName(appName, manifestPackage);
+        let resolved = byQualifiedName.get(qualified);
+        if (!resolved) {
+          const simpleName = qualified.split('.').pop() || qualified;
+          const candidates = bySimpleName.get(simpleName);
+          if (candidates && candidates.length === 1) resolved = candidates[0];
+        }
+        if (!resolved) {
+          this.addAnalysisWarning(
+            `Kotlin: manifest <application android:name="${appName}"> in ${manifestPath} did not resolve to a parsed class — skipped`
+          );
+        } else {
+          const { info, type } = resolved;
+          const typeId = this.typeId(info.relativePath, type.name);
+          if (!alreadyEntryPointed.has(typeId)) {
+            alreadyEntryPointed.add(typeId);
+            const baseType = type.supertypes[0];
+            entryPoints.push(this.createEntryPoint(
+              `entry_${typeId}`,
+              typeId,
+              'lifecycle',
+              `Android Application: ${type.name}`,
+              `Android manifest-declared Application${baseType ? ` (extends ${baseType})` : ''}`,
+              { pattern: type.name },
+              undefined,
+              {
+                file: info.relativePath,
+                line: type.lineStart,
+                base: baseType,
+                language: 'kotlin',
+                component: 'application',
+                manifestFile: manifestPath,
+              },
+              { node_id: typeId, method_name: type.name, file: info.relativePath, line: type.lineStart }
+            ));
+          }
+        }
+      }
+
       for (const [componentTag, entryType] of Object.entries(MANIFEST_COMPONENT_ENTRY_TYPES)) {
         for (const component of this.toArray(application[componentTag])) {
           const rawName = typeof component === 'object' ? component?.name : undefined;
@@ -1046,8 +1247,6 @@ export class KotlinAnalyzer extends BaseAnalyzer {
 
           const { info, type } = resolved;
           const typeId = this.typeId(info.relativePath, type.name);
-          if (alreadyEntryPointed.has(typeId)) continue;
-          alreadyEntryPointed.add(typeId);
 
           const componentLabel = componentTag.charAt(0).toUpperCase() + componentTag.slice(1);
           const baseType = type.supertypes[0];
@@ -1063,6 +1262,45 @@ export class KotlinAnalyzer extends BaseAnalyzer {
             }
             if (collected.length > 0) actions = collected;
           }
+
+          // LAUNCHER intent-filter (MAIN action + LAUNCHER category) marks
+          // the app's primary entry Activity — surfaced as metadata so a
+          // consumer can find the launch screen among possibly many
+          // activities without re-parsing the manifest itself.
+          let isLauncher = false;
+          if (componentTag === 'activity') {
+            for (const filter of this.toArray(component['intent-filter'])) {
+              const filterActions = this.toArray(filter?.action)
+                .map(a => (typeof a === 'object' ? a?.name : undefined));
+              const filterCategories = this.toArray(filter?.category)
+                .map(c => (typeof c === 'object' ? c?.name : undefined));
+              if (
+                filterActions.includes('android.intent.action.MAIN') &&
+                filterCategories.includes('android.intent.category.LAUNCHER')
+              ) {
+                isLauncher = true;
+                break;
+              }
+            }
+          }
+
+          if (alreadyEntryPointed.has(typeId)) {
+            // A structural (supertype) pass already emitted this class's
+            // entry point — don't double-count it, but the manifest is the
+            // ONLY source for intent-filter data (LAUNCHER / receiver
+            // actions), so merge that signal into the existing entry point
+            // rather than silently dropping it.
+            const existing = entryPoints.find(ep => ep.source_node === typeId);
+            if (existing) {
+              if (isLauncher) existing.metadata = { ...existing.metadata, is_launcher: true };
+              if (actions) {
+                existing.metadata = { ...existing.metadata, actions };
+                existing.trigger = { ...existing.trigger, event: actions.join(',') };
+              }
+            }
+            continue;
+          }
+          alreadyEntryPointed.add(typeId);
 
           entryPoints.push(this.createEntryPoint(
             `entry_${typeId}`,
@@ -1080,7 +1318,9 @@ export class KotlinAnalyzer extends BaseAnalyzer {
               component: componentTag,
               manifestFile: manifestPath,
               ...(actions ? { actions } : {}),
-            }
+              ...(isLauncher ? { is_launcher: true } : {}),
+            },
+            { node_id: typeId, method_name: type.name, file: info.relativePath, line: type.lineStart }
           ));
         }
       }

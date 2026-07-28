@@ -4,7 +4,6 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { PackAnalyzer } from './pack-analyzer';
-import { semanticPackIdentityForProject } from './pack-loader';
 
 /**
  * End-to-end proof: a declared pack (YAML + tree-sitter query) produces real
@@ -20,22 +19,6 @@ import { semanticPackIdentityForProject } from './pack-loader';
 function makeTempDir(prefix: string): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
 }
-
-test('semantic pack identity changes when content changes at the same path', async () => {
-  const dir = makeTempDir('klauro-pack-identity-');
-  try {
-    const packDir = path.join(dir, 'packs');
-    fs.mkdirSync(packDir, { recursive: true });
-    const packPath = path.join(packDir, 'router.pack.yaml');
-    fs.copyFileSync(path.join(__dirname, 'examples', 'koa-routes.pack.yaml'), packPath);
-    const before = await semanticPackIdentityForProject(dir, ['packs/*.pack.yaml']);
-    fs.appendFileSync(packPath, '\n# changed rule identity\n');
-    const after = await semanticPackIdentityForProject(dir, ['packs/*.pack.yaml']);
-    assert.notDeepEqual(after, before);
-  } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
-});
 
 test('PackAnalyzer emits real http entry_points from the built-in koa-routes pack on a Koa fixture', async () => {
   const dir = makeTempDir('klauro-pack-koa-');

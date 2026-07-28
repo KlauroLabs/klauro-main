@@ -69,7 +69,7 @@ export function collectDeployableEvidence(input: CollectDeployableEvidenceInput)
     }
   }
 
-  const deduped = dedupe(results, projectPath);
+  const deduped = dedupe(results);
   const consolidated = mergeDuplicateNamedInstallerLeaves(deduped);
   // Compose<->container identity join must run BEFORE the ships_paths
   // bundling pass: a real service is currently three unmerged rows (compose-
@@ -92,39 +92,16 @@ export function collectDeployableEvidence(input: CollectDeployableEvidenceInput)
   return classified;
 }
 
-function canonicalEvidenceRoot(projectPath: string, rootPath: string): string {
-  const normalized = rootPath.replace(/\\/g, '/').replace(/\/$/, '') || '.';
-  if (!path.isAbsolute(normalized)) return normalized.replace(/^\.\//, '') || '.';
-  const relative = path.relative(projectPath, normalized).replace(/\\/g, '/');
-  return relative && !relative.startsWith('../') && !path.isAbsolute(relative) ? relative : normalized;
-}
-
-function dedupe(items: DeployableEvidence[], projectPath: string): DeployableEvidence[] {
-  const byIdentity = new Map<string, DeployableEvidence>();
+function dedupe(items: DeployableEvidence[]): DeployableEvidence[] {
+  const seen = new Set<string>();
   const out: DeployableEvidence[] = [];
   for (const item of items) {
-    const canonicalRoot = canonicalEvidenceRoot(projectPath, item.root_path);
-    const key = `${item.tier}::${item.kind}::${canonicalRoot}::${item.name}`;
-    const existing = byIdentity.get(key);
-    if (existing) {
-      existing.evidence = [...new Set([...existing.evidence, ...item.evidence])];
-      existing.ships_paths = unionOptional(existing.ships_paths, item.ships_paths);
-      existing.ports = unionOptional(existing.ports, item.ports);
-      existing.base_images = unionOptional(existing.base_images, item.base_images);
-      existing.entrypoint_member ||= item.entrypoint_member;
-      existing.bundled_into ||= item.bundled_into;
-      continue;
-    }
-    item.root_path = canonicalRoot;
-    byIdentity.set(key, item);
+    const key = `${item.tier}::${item.kind}::${item.root_path}::${item.name}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
     out.push(item);
   }
   return out;
-}
-
-function unionOptional<T>(left: T[] | undefined, right: T[] | undefined): T[] | undefined {
-  const values = [...new Set([...(left || []), ...(right || [])])];
-  return values.length > 0 ? values : undefined;
 }
 
 /** Normalizes a bundle-member token for comparison (case/whitespace/separator/

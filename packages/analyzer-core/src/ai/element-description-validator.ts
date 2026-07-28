@@ -97,7 +97,7 @@ const FILLER_PHRASE_PATTERN = new RegExp([
  */
 const ENTITY_LEGITIMATE_STATE_PATTERN = /\b(?:state mutations?|screen state|workflow state|current product context|surrounding product workflows?|records?, lists?, or screen state)\b/gi;
 
-const MARKETING_LANGUAGE_PATTERN = /\b(seamless(?:ly)?|robust|comprehensive|various|crucial role|plays a key role|efficient(?:ly)?|efficiency|productivity|performance|compliant|compliance|advanced|modern|leverag(?:e|es|ing)|streamline(?:s|d|ing)?|user-friendly|business value|improving operational|enhanc(?:e|es|ing)|better understanding|insights(?: into)?|structured data and insights|reduces? costs?|best practices|scalable|scalability|flexibility|secure by design|user experience|strong foundation|ideal solution|best[- ]in[- ]class|state[- ]of[- ]the[- ]art|cutting[- ]edge|feature[- ]rich|decision[- ]making|collaboration|metrics?)\b/gi;
+const MARKETING_LANGUAGE_PATTERN = /\b(seamless(?:ly)?|robust|comprehensive|various|crucial role|plays a key role|efficient(?:ly)?|efficiency|productivity|compliant|compliance|advanced|streamline(?:s|d|ing)?|user-friendly|business value|improving operational|enhanc(?:e|es|ing)|better understanding|insights(?: into)?|structured data and insights|reduces? costs?|best practices|scalable|secure by design|user experience|strong foundation|ideal solution|best[- ]in[- ]class|state[- ]of[- ]the[- ]art|cutting[- ]edge|feature[- ]rich)\b/gi;
 
 function splitGroundingSource(value: string): string[] {
   return value
@@ -141,45 +141,6 @@ function marketingGroundingTokens(
     .flatMap(value => splitGroundingSource(String(value || '')))
     .map(token => normalizeToken(token))
     .filter(token => token.length > 2);
-}
-
-function unsupportedEnumeratedDetail(
-  description: string,
-  subject: ElementDescriptionSubject,
-  normalizeToken: (token: string) => string,
-  isGenericToken: (token: string) => boolean,
-): string | undefined {
-  const grounding = new Set([
-    subject.name,
-    ...(subject.relatedDomains || []),
-    ...(subject.relatedEntities || []),
-    ...(subject.fields || []),
-    ...(subject.domainVocabulary || []),
-  ]
-    .flatMap(value => splitGroundingSource(String(value || '')))
-    .map(token => normalizeToken(token))
-    .filter(token => token.length >= 3 && !isGenericToken(token))
-    .map(token => token.slice(0, 6)));
-  if (grounding.size === 0) return undefined;
-
-  const stop = new Set([
-    'including', 'such', 'example', 'like', 'other', 'related', 'specific',
-    'information', 'details', 'data', 'record', 'records', 'activity', 'activities',
-  ]);
-  for (const match of description.matchAll(/\b(?:details?|information|fields?|attributes?|properties|records?),?\s+(?:including|such as|for example)\s+([^.;]+)/gi)) {
-    const listText = String(match[1] || '').replace(/,\s*(?:for|to|so|when|before|after|while|which|that)\b.*$/i, '');
-    const items = listText.split(/\s*,\s*|\s+(?:and|or)\s+/).map(item => item.trim()).filter(Boolean);
-    if (items.length < 2) continue;
-    for (const item of items) {
-      const claims = splitGroundingSource(item)
-        .map(token => normalizeToken(token))
-        .filter(token => token.length >= 4 && !stop.has(token) && !isGenericToken(token));
-      if (claims.length > 0 && !claims.some(token => grounding.has(token.slice(0, 6)))) {
-        return item;
-      }
-    }
-  }
-  return undefined;
 }
 
 /**
@@ -265,11 +226,6 @@ export function validateElementDescription(
       ...(subject.domainVocabulary || []),
     ]);
     if (scaffoldReason) return { ok: false, reason: scaffoldReason };
-    if (/\bthe\s+[^.]{1,100}\s+capability\b/i.test(cleaned)) {
-      return { ok: false, reason: 'internal-analysis-vocabulary' };
-    }
-    const unsupportedDetail = unsupportedEnumeratedDetail(cleaned, subject, normalizeToken, isGenericToken);
-    if (unsupportedDetail) return { ok: false, reason: `unsupported-enumerated-detail:${unsupportedDetail}` };
   }
   if (FILLER_PHRASE_PATTERN.test(cleaned)) {
     // Entity recalibration: if the subject is an entity and the filler match is

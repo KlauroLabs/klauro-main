@@ -94,11 +94,8 @@ describe('per-phase timing + timings block (instrumentation only)', () => {
     expect(output.timings).toBeDefined();
     expect(output.timings!.total_ms).toBeGreaterThanOrEqual(0);
     expect(output.timings!.stages).toBeDefined();
-    expect(output.timings!.cpu_stages).toBeDefined();
     for (const stage of ['scan', 'parse', 'graph', 'decorators', 'ai_enrichment', 'save']) {
       expect(typeof output.timings!.stages![stage]).toBe('number');
-      expect(typeof output.timings!.cpu_stages![stage]).toBe('number');
-      expect(output.timings!.cpu_stages![stage]).toBeGreaterThanOrEqual(0);
     }
     const stageSum = Object.values(output.timings!.stages!).reduce((a, b) => a + b, 0);
     // Summed stage time should never exceed the wall-clock total (it is a

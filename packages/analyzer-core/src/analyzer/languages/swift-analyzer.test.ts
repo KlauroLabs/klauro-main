@@ -106,9 +106,12 @@ test('SwiftAnalyzer extracts types, functions, conformance, views, calls and ent
 
     // Regression guard for the public-struct-flood bug: a public type
     // declaration is API surface, not an entry point on its own. This
-    // fixture has no public types, so there must be exactly ONE entry point
-    // total (the @main App) — not one per type.
-    assert.strictEqual(entryPoints.length, 1, 'only the @main App is an entry point, not every type');
+    // fixture has no public types, so there must be exactly the @main App
+    // entry plus one entry per top-level Scene builder in its `body: some
+    // Scene` (here, a single WindowGroup) — not one per type.
+    assert.strictEqual(entryPoints.length, 2, 'the @main App entry plus its one WindowGroup scene entry, not one per type');
+    const windowGroupEntry = entryPoints.find(ep => (ep.metadata as any)?.scene_kind === 'WindowGroup');
+    assert.ok(windowGroupEntry, 'WindowGroup scene entry detected inside AppMain.body');
 
     // Public library surface stays a plain node, never an entry point.
     const greeterEntry = entryPoints.find(ep => ep.source_node === greeter!.id);
@@ -312,6 +315,183 @@ test('SwiftAnalyzer: Codable struct with >=2 fields becomes a dto with property 
     const appTheme = nodes.find(n => n.name === 'AppTheme');
     assert.ok(appTheme, 'AppTheme type node exists');
     assert.notStrictEqual(appTheme!.type, 'dto', 'a SwiftUI View struct is excluded from data-entity reclassification');
+  } finally {
+    await fs.remove(projectPath);
+  }
+});
+
+// --- Regression fixtures for the entry-point detection gap (P0) ---
+// The stored production analysis of a real SwiftUI macOS app collapsed to
+// just 2 entry points (1 lifecycle, 1 cli) because swift-analyzer.ts only
+// ever emitted entry points from @main/App-conformer types and main.swift.
+// AppDelegate lifecycle hooks, SwiftUI Scene builders, and URL-scheme/
+// deep-link handlers were structurally present but entirely undetected.
+
+async function makeSceneProject(): Promise<string> {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'swift-analyzer-scene-test-'));
+  const sources = path.join(dir, 'Sources', 'App');
+  await fs.ensureDir(sources);
+
+  await fs.writeFile(path.join(sources, 'MenuBar.swift'), `import SwiftUI
+
+@main
+struct MenuBarApp: App {
+    var body: some Scene {
+        MenuBarExtra {
+            Text("menu content")
+        } label: {
+            Text("label")
+        }
+        Settings {
+            Text("settings content")
+        }
+    }
+}
+`, 'utf-8');
+
+  return dir;
+}
+
+test('SwiftAnalyzer: App body: some Scene yields the App entry plus one entry per scene builder', async () => {
+  const projectPath = await makeSceneProject();
+  try {
+    const analyzer = new SwiftAnalyzer();
+    const cas = await analyzer.analyze({ projectPath });
+    const nodes = cas.nodes || [];
+    const entryPoints = cas.entry_points || [];
+
+    const appType = nodes.find(n => n.name === 'MenuBarApp');
+    assert.ok(appType, 'MenuBarApp type node exists');
+
+    const appEntry = entryPoints.find(ep => ep.source_node === appType!.id && ep.type === 'lifecycle' && !(ep.metadata as any)?.scene_kind);
+    assert.ok(appEntry, '@main App entry still emitted');
+
+    const sceneEntries = entryPoints.filter(ep => (ep.metadata as any)?.scene_kind);
+    assert.strictEqual(sceneEntries.length, 2, 'exactly one entry per top-level scene builder');
+
+    const kinds = sceneEntries.map(ep => (ep.metadata as any).scene_kind).sort();
+    assert.deepStrictEqual(kinds, ['MenuBarExtra', 'Settings'], 'MenuBarExtra and Settings scenes both detected');
+
+    for (const ep of sceneEntries) {
+      assert.ok(ep.handler?.file, 'scene entry carries handler.file');
+      assert.ok(ep.handler?.line, 'scene entry carries handler.line');
+    }
+
+    // Total: 1 App entry + 2 scene entries.
+    assert.strictEqual(entryPoints.length, 3, 'App entry + 2 scene entries, nothing else');
+  } finally {
+    await fs.remove(projectPath);
+  }
+});
+
+async function makeAppDelegateProject(): Promise<string> {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'swift-analyzer-appdelegate-test-'));
+  const sources = path.join(dir, 'Sources', 'App');
+  await fs.ensureDir(sources);
+
+  await fs.writeFile(path.join(sources, 'AppDelegate.swift'), `import AppKit
+
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        setup()
+    }
+
+    func setup() {}
+}
+`, 'utf-8');
+
+  return dir;
+}
+
+test('SwiftAnalyzer: NSApplicationDelegate conformer yields a lifecycle entry point even without @main', async () => {
+  const projectPath = await makeAppDelegateProject();
+  try {
+    const analyzer = new SwiftAnalyzer();
+    const cas = await analyzer.analyze({ projectPath });
+    const nodes = cas.nodes || [];
+    const entryPoints = cas.entry_points || [];
+
+    const delegate = nodes.find(n => n.name === 'AppDelegate');
+    assert.ok(delegate, 'AppDelegate type node exists');
+
+    const entry = entryPoints.find(ep => ep.source_node === delegate!.id);
+    assert.ok(entry, 'AppDelegate registered as an entry point');
+    assert.strictEqual(entry!.type, 'lifecycle', 'NSApplicationDelegate conformer is a lifecycle entry');
+    assert.ok(entry!.handler?.file, 'entry carries handler.file');
+    assert.ok(entry!.handler?.line, 'entry carries handler.line');
+    assert.strictEqual(entryPoints.length, 1, 'exactly one entry point for the AppDelegate (no @main present)');
+  } finally {
+    await fs.remove(projectPath);
+  }
+});
+
+async function makeDeepLinkProject(): Promise<string> {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'swift-analyzer-deeplink-test-'));
+  const sources = path.join(dir, 'Sources', 'App');
+  await fs.ensureDir(sources);
+
+  await fs.writeFile(path.join(sources, 'AppDelegate.swift'), `import AppKit
+
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {}
+
+    func application(_ application: NSApplication, open urls: [URL]) {
+        handle(urls)
+    }
+
+    func handle(_ urls: [URL]) {}
+}
+`, 'utf-8');
+
+  return dir;
+}
+
+test('SwiftAnalyzer: application(_:open:) yields exactly one deep-link entry', async () => {
+  const projectPath = await makeDeepLinkProject();
+  try {
+    const analyzer = new SwiftAnalyzer();
+    const cas = await analyzer.analyze({ projectPath });
+    const entryPoints = cas.entry_points || [];
+
+    const deepLinkEntries = entryPoints.filter(ep => ep.type === 'event');
+    assert.strictEqual(deepLinkEntries.length, 1, 'exactly one deep-link entry point');
+    assert.ok(deepLinkEntries[0].handler?.file, 'deep-link entry carries handler.file');
+    assert.ok(deepLinkEntries[0].handler?.line, 'deep-link entry carries handler.line');
+
+    // Plus the AppDelegate lifecycle entry from NSApplicationDelegate conformance.
+    assert.strictEqual(entryPoints.length, 2, 'AppDelegate lifecycle entry + exactly one deep-link entry, no duplicates');
+  } finally {
+    await fs.remove(projectPath);
+  }
+});
+
+async function makePlainStructProject(): Promise<string> {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'swift-analyzer-plain-struct-test-'));
+  const sources = path.join(dir, 'Sources', 'App');
+  await fs.ensureDir(sources);
+
+  await fs.writeFile(path.join(sources, 'Plain.swift'), `import Foundation
+
+struct Plain {
+    let value: String
+
+    func doSomething() {
+        print(value)
+    }
+}
+`, 'utf-8');
+
+  return dir;
+}
+
+test('SwiftAnalyzer: plain struct with no @main and no conformance yields no entry point', async () => {
+  const projectPath = await makePlainStructProject();
+  try {
+    const analyzer = new SwiftAnalyzer();
+    const cas = await analyzer.analyze({ projectPath });
+    const entryPoints = cas.entry_points || [];
+
+    assert.strictEqual(entryPoints.length, 0, 'no over-detection on a plain, non-conforming struct');
   } finally {
     await fs.remove(projectPath);
   }

@@ -12,12 +12,9 @@ import { runSharedCodeRollupBench, _resetSharedCodeRollupBenchCache } from './sh
 
 test('shared-code rollup: libs/auth consumed by 2 deployables with non-empty surface + correct blast radius', async () => {
   _resetSharedCodeRollupBenchCache();
-  const { graph, rollup, authRollup } = await runSharedCodeRollupBench();
+  const { rollup, authRollup } = await runSharedCodeRollupBench();
 
-  assert.ok(
-    rollup.length > 0,
-    `expected at least one shared-code rollup entry: ${JSON.stringify({ applications: graph.applications, links: graph.application_links }, null, 2)}`,
-  );
+  assert.ok(rollup.length > 0, 'expected at least one shared-code rollup entry');
   assert.ok(authRollup, 'expected a rollup entry for the auth lib');
 
   // Both consumers present.

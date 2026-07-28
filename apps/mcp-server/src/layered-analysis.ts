@@ -169,37 +169,6 @@ export function buildLayersReady(
 }
 
 /**
- * Build the canonical completion manifest for a CAS that has finished the
- * deterministic pipeline. This belongs at the persistence boundary as well
- * as the progressive wrapper: incremental, branch, and direct worker callers
- * must never save a structurally complete CAS without an honest layer state.
- */
-export function buildCompletedAnalysisLayersReady(output: CASOutput): CASLayersReady {
-  const generatedAt = output.analysis_timestamp || new Date().toISOString();
-  const ready = { status: 'ready' as const, completedAt: generatedAt };
-  const l5 = output.ai_enrichment === 'pending'
-    ? { status: 'pending' as const }
-    : output.ai_enrichment === 'error'
-      ? {
-          status: 'error' as const,
-          completedAt: generatedAt,
-          error: output.ai_enrichment_error
-            ? `AI comprehension pass failed (comprehension is AI-only, no deterministic fallback): ${output.ai_enrichment_error}`
-            : 'AI comprehension pass failed; comprehension is AI-only (no deterministic fallback)',
-        }
-      : ready;
-
-  return buildLayersReady({
-    L0: ready,
-    L1: ready,
-    L2: ready,
-    L3: ready,
-    L4: ready,
-    L5: l5,
-  }, { generatedAt });
-}
-
-/**
  * Build a minimal-but-valid CASOutput carrying ONLY the L0 index, for the
  * seconds-long window before L1-L4 land. Every required CASOutput field is
  * present (so existing query tools don't crash on a partial store); every

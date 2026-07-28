@@ -293,17 +293,12 @@ export async function getAgentContext(cas: CASOutput, path: string, taskInput: A
     limit: 12,
   });
   const entryContext = buildEntryContext(cas, task, selectedNode?.id);
-  const explicitRelatedPathItems = buildExplicitRelatedPathReadPlan(cas, path, task.related_paths || []);
-  let fileReadPlan = uniqueByFile([
-    ...explicitRelatedPathItems,
-    ...buildFileReadPlan(cas, selectedNode || undefined, callers, callees, tests, entryContext),
-  ]);
+  let fileReadPlan = buildFileReadPlan(cas, selectedNode || undefined, callers, callees, tests, entryContext);
   const requestedTargetFile = targetQuery ? normalizeTargetFileForAgent(path, cas.system?.root_path, targetQuery) : null;
   if (requestedTargetFile && !fileReadPlan.some(item => item.file === requestedTargetFile)) {
     fileReadPlan = [targetFileReadPlanItem(requestedTargetFile), ...fileReadPlan].slice(0, 12);
   }
   fileReadPlan = augmentFileReadPlanWithTaskHints(cas, fileReadPlan, task, path).slice(0, 12);
-  fileReadPlan = uniqueByFile([...explicitRelatedPathItems, ...fileReadPlan]).slice(0, 12);
   // Runtime opt-out: when excluded, skip the telemetry load + priority build
   // entirely (a real token/compute saving, not a blanked section) so the
   // context is a pure static view. 'auto'/'include' keep today's gated behavior.
@@ -4755,28 +4750,6 @@ function targetFileReadPlanItem(file: string): FileReadPlanItem {
   };
 }
 
-function buildExplicitRelatedPathReadPlan(
-  cas: CASOutput,
-  projectPath: string,
-  relatedPaths: string[],
-): FileReadPlanItem[] {
-  const rootPath = cas.system?.root_path || projectPath;
-  return uniqueStrings(relatedPaths)
-    .map(candidate => normalizeTargetFileForAgent(projectPath, rootPath, candidate))
-    .filter((file): file is string => typeof file === 'string' && file !== '.' && !file.startsWith('../'))
-    .map(file => {
-      const nodes = cas.nodes.filter(node => nodeMatchesTargetFile(node, file, rootPath)).slice(0, 8);
-      const primary = chooseBestFileTargetNode(nodes);
-      return {
-        file,
-        reason: 'explicit related path supplied by the agent task',
-        node_ids: nodes.map(node => node.id),
-        line: primary?.source?.line,
-        line_window: primary ? buildLineWindow(primary) : targetFileReadPlanItem(file).line_window,
-      };
-    });
-}
-
 function augmentFileReadPlanWithTaskHints(
   cas: CASOutput,
   plan: FileReadPlanItem[],
@@ -4787,11 +4760,9 @@ function augmentFileReadPlanWithTaskHints(
     task.task_type,
     task.target,
     task.instructions,
-    ...(task.related_paths || []),
     ...(task.success_criteria || []),
   ].filter(Boolean).join(' ');
   const tokens = tokenizeTaskHint(taskText);
-  const symptomTokens = tokenizeTaskHint([task.target, task.instructions].filter(Boolean).join(' '));
   if (tokens.size === 0) return plan;
 
   const rootPath = cas.system?.root_path || projectPath;
@@ -4804,44 +4775,15 @@ function augmentFileReadPlanWithTaskHints(
   for (const item of likelyFocusedTests) existing.add(item.file);
   const candidates = collectTaskHintCandidateFiles(cas, rootPath)
     .filter(file => !existing.has(file) && shouldIncludeTaskHintCandidate(file, tokens))
-    .map(file => ({
-      file,
-      score: taskHintFileScore(file, tokens),
-      lexicalOverlap: taskHintFileLexicalOverlap(file, tokens),
-      symptomOverlap: taskHintFileLexicalOverlap(file, symptomTokens),
-    }))
+    .map(file => ({ file, score: taskHintFileScore(file, tokens) }))
     .filter(candidate => candidate.score >= 18)
-    .sort((left, right) =>
-      right.symptomOverlap - left.symptomOverlap ||
-      (right.score + right.lexicalOverlap * 20) - (left.score + left.lexicalOverlap * 20) ||
-      right.score - left.score ||
-      left.file.localeCompare(right.file)
-    )
+    .sort((left, right) => right.score - left.score || left.file.localeCompare(right.file))
     .slice(0, 5);
 
   if (candidates.length === 0 && likelyFocusedTests.length === 0 && explicitSymbolItems.length === 0) return plan;
   const sourceItems = plan.filter(item => !isTestPath(item.file));
   const testItems = plan.filter(item => isTestPath(item.file));
   const hintItems = candidates.map(candidate => taskHintReadPlanItem(candidate.file, candidate.score, tokens));
-  const taskEvidenceItems = uniqueByFile([...plan, ...hintItems])
-    .map(item => ({
-      item,
-      score: taskHintFileScore(item.file, tokens),
-      lexicalOverlap: taskHintFileLexicalOverlap(item.file, tokens),
-      symptomOverlap: taskHintFileLexicalOverlap(item.file, symptomTokens),
-    }))
-    .filter(candidate => candidate.score >= 26 && candidate.lexicalOverlap >= 2)
-    .sort((left, right) =>
-      Number(isTestPath(left.item.file)) - Number(isTestPath(right.item.file)) ||
-      right.symptomOverlap - left.symptomOverlap ||
-      right.score - left.score ||
-      left.item.file.localeCompare(right.item.file)
-    )
-    .map(candidate => candidate.item);
-  const taskEvidenceFiles = new Set(taskEvidenceItems.map(item => item.file));
-  const supportingSourceItems = sourceItems.filter(item => !taskEvidenceFiles.has(item.file));
-  const supportingTestItems = testItems.filter(item => !taskEvidenceFiles.has(item.file));
-  const supportingHintItems = hintItems.filter(item => !taskEvidenceFiles.has(item.file));
   if (targetLooksLikeAgentContextSurfaceWork(taskText)) {
     return [
       ...sourceItems,
@@ -4862,15 +4804,6 @@ function augmentFileReadPlanWithTaskHints(
       ...likelyFocusedTests,
       ...testItems,
       ...nonDocumentationItems,
-    ];
-  }
-  if (explicitSymbolItems.length === 0 && taskEvidenceItems.length > 0) {
-    return [
-      ...taskEvidenceItems,
-      ...supportingSourceItems,
-      ...likelyFocusedTests,
-      ...supportingTestItems,
-      ...supportingHintItems,
     ];
   }
   return [
@@ -5067,11 +5000,6 @@ function taskHintFileScore(file: string, tokens: Set<string>): number {
   if (targetLooksLikeDocumentationFirstWork([...tokens].join(' ')) && isDocumentationPath(file)) score += 30;
   if (isDocumentationPath(file) && /docs?|readme|usage|guide|audit|proof|report|evidence/.test(normalizedFile)) score += 16;
   return score;
-}
-
-function taskHintFileLexicalOverlap(file: string, tokens: Set<string>): number {
-  const fileTokens = tokenizeTaskHint(file);
-  return [...tokens].filter(token => fileTokens.has(token)).length;
 }
 
 function targetLooksLikeDocumentationWork(text?: string): boolean {

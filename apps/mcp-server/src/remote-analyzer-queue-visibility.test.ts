@@ -117,9 +117,9 @@ test('reanalyze last_attempt lifecycle carries queued_at/queue_position/started_
     // before the POST and no later than "now".
     assert.ok(succeeded!.queued_at, 'queued_at must be recorded');
     assert.ok(Date.parse(succeeded!.queued_at!) >= acceptedAt - 1000, 'queued_at must reflect accept time, not some earlier stamp');
-    // queue_position counts every accepted analysis job already in flight,
-    // including the workspace rebuild triggered when this project attached.
-    assert.ok(Number.isInteger(succeeded!.queue_position) && succeeded!.queue_position! >= 0, 'queue_position must be a non-negative integer');
+    // queue_position: a single, uncontended reanalyze on a fresh process must
+    // see zero other attempts already in flight.
+    assert.equal(succeeded!.queue_position, 0, 'first reanalyze on a fresh process has nothing ahead of it');
     // started_at: must be present and no earlier than queued_at (execution
     // cannot begin before the request was accepted).
     assert.ok(succeeded!.started_at, 'started_at must be recorded');

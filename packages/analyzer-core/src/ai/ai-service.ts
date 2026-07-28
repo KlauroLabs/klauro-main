@@ -192,7 +192,6 @@ export class AIService {
             baseURL: entry.baseURL,
             model: entry.model,
             maxTokens: entry.maxTokens ?? aiConfig.openai.maxTokens,
-            maxRetries: Math.max(0, Number(process.env.KLAURO_AI_PROVIDER_RETRIES || 0)),
           },
         };
         this.providerChain.push({ entry, provider: new OpenAIProvider(entryConfig) });
@@ -290,24 +289,16 @@ export class AIService {
     const errors: string[] = [];
     const wantsStructured = context.additionalContext?.responseFormat === 'json'
       || context.additionalContext?.response_format === 'json';
-    const serializedContextBytes = Buffer.byteLength(JSON.stringify(context.additionalContext || {}), 'utf8');
     for (const { entry, provider } of this.providerChain) {
       const startTime = Date.now();
       try {
         this.logger.info(`Generating description using ${entry.name} provider (chain)`);
-        const requestedModelProvider = String(context.additionalContext?.model_provider || '').trim().toLowerCase();
-        // A provider-scoped override applies to that provider's PRIMARY entry,
-        // not every fallback whose name shares its prefix. Otherwise a
-        // requested DeepInfra narrative model overwrites deepinfra-fast-
-        // fallback too, turning a diverse chain into repeated calls to the
-        // same stalled inference pool.
-        const requestedModelApplies = !requestedModelProvider || entry.name.toLowerCase() === requestedModelProvider;
         const perProviderContext: AIAnalysisContext = {
           ...context,
           additionalContext: {
             ...context.additionalContext,
             // Caller-supplied model/maxTokens win; otherwise use the entry's.
-            model: (requestedModelApplies ? context.additionalContext?.model : undefined)
+            model: context.additionalContext?.model
               ?? (wantsStructured ? (entry.structuredModel || entry.model) : entry.model),
             maxTokens: context.additionalContext?.maxTokens
               ?? context.additionalContext?.max_tokens
@@ -329,9 +320,6 @@ export class AIService {
           input_evidence_digest: {
             context_keys: Object.keys(context.additionalContext || {}).length,
             wants_structured: wantsStructured,
-            context_bytes: serializedContextBytes,
-            output_bytes: Buffer.byteLength(description, 'utf8'),
-            elapsed_ms: Date.now() - startTime,
           },
           raw_output_excerpt: description,
           parse_ok: true,
@@ -351,8 +339,6 @@ export class AIService {
           input_evidence_digest: {
             context_keys: Object.keys(context.additionalContext || {}).length,
             wants_structured: wantsStructured,
-            context_bytes: serializedContextBytes,
-            elapsed_ms: Date.now() - startTime,
           },
           parse_ok: false,
           gate_verdict: 'rejected',
