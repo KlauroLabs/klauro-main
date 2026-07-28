@@ -191,6 +191,7 @@ for cache_dir in \
   "$DEVGATE_DIR/$WORKSPACE/node_modules/.cache" \
   "$DEVGATE_DIR/node_modules/.cache" \
   "$DEVGATE_DIR/apps/mcp-server/dist" \
+  "$DEVGATE_DIR/apps/mcp-server/dist-hosted" \
   "$DEVGATE_DIR/apps/mcp-server/.customer-package" \
   "$DEVGATE_DIR/apps/mcp-server/.pack"; do
   mkdir -p "$cache_dir" 2>/dev/null || true
