@@ -11,6 +11,7 @@
 // reference, in both compiled CommonJS output and ts-node/tsx dev runs).
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const fsExtra: { readFile: (path: string, options?: unknown) => Promise<string | Buffer> } = require('fs-extra');
+import { AsyncLocalStorage } from 'node:async_hooks';
 
 /**
  * Analyzer-file-read cache.
@@ -40,6 +41,8 @@ const fsExtra: { readFile: (path: string, options?: unknown) => Promise<string |
  *    `readFile` is always restored afterward (try/finally), even on error.
  *  - Per-run cache instance, not a module-level singleton — no risk of
  *    serving stale content across separate `orchestrateAnalysis()` calls.
+ *  - Async-context isolation keeps concurrent hosted runs from sharing file
+ *    content or derived source-corpus indexes.
  *  - Preserves exact promise-resolution/rejection semantics: a cached hit
  *    resolves with the same content already-successfully read; a miss falls
  *    through to the real `fs.readFile` unchanged (errors propagate exactly
@@ -47,17 +50,40 @@ const fsExtra: { readFile: (path: string, options?: unknown) => Promise<string |
  */
 
 import { yieldToEventLoop, ANALYSIS_YIELD_BUDGET_MS } from './event-loop-yield';
+import { AnalyzerSourceCorpus, captureSourceCorpusFile, withSourceCorpus, type SourceCorpusStats } from './source-corpus';
 
-let activeCache: Map<string, Promise<string | Buffer>> | null = null;
+interface ReadCacheRun {
+  cache: Map<string, Promise<string | Buffer>>;
+  corpus: AnalyzerSourceCorpus;
+  hits: number;
+  misses: number;
+  lastHitYieldAt: number;
+}
+
+const readCacheStorage = new AsyncLocalStorage<ReadCacheRun>();
 let patchDepth = 0;
 let originalReadFile: typeof fsExtra.readFile | null = null;
-let debugHits = 0;
-let debugMisses = 0;
-let lastHitYieldAt = 0;
+let lastDebugStats = { hits: 0, misses: 0 };
+let lastSourceCorpusStats: SourceCorpusStats = {
+  files: 0,
+  derivedEntries: 0,
+  entryHits: 0,
+  importIndexes: 0,
+  lineIndexes: 0,
+  lineArrays: 0,
+  jsonParses: 0,
+  lineLookups: 0,
+  linePrefixCharactersAvoided: 0,
+};
 
 /** Debug-only counters, gated on KLAURO_DEBUG_FILE_READ_CACHE=1 in orchestrator.ts. */
 export function getDebugCacheStats(): { hits: number; misses: number } {
-  return { hits: debugHits, misses: debugMisses };
+  const run = readCacheStorage.getStore();
+  return run ? { hits: run.hits, misses: run.misses } : lastDebugStats;
+}
+
+export function getSourceCorpusStats(): SourceCorpusStats {
+  return readCacheStorage.getStore()?.corpus.stats() ?? lastSourceCorpusStats;
 }
 
 function normalizeEncoding(options: unknown): string {
@@ -78,13 +104,14 @@ function installPatch(): void {
     originalReadFile = fsExtra.readFile;
     const original = originalReadFile;
     fsExtra.readFile = function patchedReadFile(filePath: string, options?: unknown) {
-      if (typeof filePath !== 'string' || !activeCache) {
+      const run = readCacheStorage.getStore();
+      if (typeof filePath !== 'string' || !run) {
         return original.call(fsExtra, filePath, options);
       }
       const key = cacheKey(filePath, normalizeEncoding(options));
-      const cached = activeCache.get(key);
+      const cached = run.cache.get(key);
       if (cached) {
-        debugHits++;
+        run.hits++;
         // Event-loop breather (TASK: read-path starvation during analysis):
         // a cache hit resolves as a pure microtask, so an analyzer's per-file
         // `await fs.readFile(...)` loop over already-cached files never leaves
@@ -94,8 +121,8 @@ function installPatch(): void {
         // always crosses a macrotask boundary, so inserting an occasional
         // setImmediate hop on hits is strictly closer to unpatched semantics:
         // same content, same ordering per caller, just not microtask-fused.
-        if (Date.now() - lastHitYieldAt >= ANALYSIS_YIELD_BUDGET_MS) {
-          lastHitYieldAt = Date.now();
+        if (Date.now() - run.lastHitYieldAt >= ANALYSIS_YIELD_BUDGET_MS) {
+          run.lastHitYieldAt = Date.now();
           return cached.then(async value => {
             await yieldToEventLoop();
             return value;
@@ -103,9 +130,12 @@ function installPatch(): void {
         }
         return cached;
       }
-      debugMisses++;
-      const promise = original.call(fsExtra, filePath, options);
-      const cache = activeCache;
+      run.misses++;
+      const promise = original.call(fsExtra, filePath, options).then(value => {
+        if (typeof value === 'string') captureSourceCorpusFile(filePath, value);
+        return value;
+      });
+      const cache = run.cache;
       // Cache the in-flight promise itself (not just the resolved value) so
       // concurrent callers racing for the same not-yet-read file also share
       // one real disk read instead of each issuing their own. On rejection,
@@ -141,17 +171,20 @@ function uninstallPatch(): void {
  * if something downstream also wraps a narrower scope.
  */
 export async function withAnalyzerFileReadCache<T>(fn: () => Promise<T>): Promise<T> {
-  const isOutermost = activeCache === null;
-  if (isOutermost) {
-    activeCache = new Map();
-  }
+  if (readCacheStorage.getStore()) return fn();
+  const run: ReadCacheRun = {
+    cache: new Map(),
+    corpus: new AnalyzerSourceCorpus(),
+    hits: 0,
+    misses: 0,
+    lastHitYieldAt: 0,
+  };
   installPatch();
   try {
-    return await fn();
+    return await readCacheStorage.run(run, () => withSourceCorpus(run.corpus, fn));
   } finally {
+    lastDebugStats = { hits: run.hits, misses: run.misses };
+    lastSourceCorpusStats = run.corpus.stats();
     uninstallPatch();
-    if (isOutermost) {
-      activeCache = null;
-    }
   }
 }
