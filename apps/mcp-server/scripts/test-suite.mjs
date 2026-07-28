@@ -28,6 +28,26 @@ export function defaultConcurrency(cpuCount = availableParallelism()) {
   return Math.max(1, Math.min(3, cpuCount - 1));
 }
 
+/**
+ * Shortest usable temp root.
+ *
+ * tsx opens a unix domain socket at `$TMPDIR/tsx-<uid>/<pid>.pipe` for every
+ * child it runs, and a unix socket path is hard-capped by the kernel at 104
+ * bytes on macOS (108 on Linux) — `listen` fails with EINVAL past that, before
+ * a single test executes. macOS's default TMPDIR is `/var/folders/xx/<30
+ * chars>/T` (~48 bytes) all by itself, so nesting a per-file isolated TMPDIR
+ * under it overflowed the cap and made the ENTIRE suite unrunnable on any Mac:
+ * all 165 core files exited 1 in ~60ms and the summary line read
+ * `tests=0 pass=0 fail=0`. Linux CI never saw it because /tmp is 4 bytes.
+ *
+ * `/tmp` is still outside packageRoot, so the isolation this root exists to
+ * provide (fixtures must not walk up into this repo's real .klaurorc) holds.
+ */
+export function shortTempBase(platform = process.platform, systemTemp = tmpdir()) {
+  if (platform === 'win32') return systemTemp;
+  return systemTemp.length <= '/tmp'.length ? systemTemp : '/tmp';
+}
+
 export function testWeight(source, file) {
   const testCount = (source.match(/\b(?:test|it)\s*\(/g) || []).length;
   const expensiveOperations = (source.match(/\b(?:analyzeForBench|analyzeCodebase|orchestrateAnalysis|spawn|execFile)\b/g) || []).length;
@@ -99,12 +119,12 @@ async function main() {
   // Test fixtures frequently walk upward for .klaurorc, exactly like the
   // installed client. Keeping their HOME/TMPDIR below packageRoot makes an
   // allegedly isolated fixture inherit this repository's real configuration.
-  const runParent = path.join(tmpdir(), 'klauro-test-suite');
+  const runParent = path.join(shortTempBase(), 'klauro-tests');
   await mkdir(runParent, { recursive: true });
-  const runRoot = await mkdtemp(path.join(runParent, 'klauro-mcp-suite-'));
+  const runRoot = await mkdtemp(path.join(runParent, 'run-'));
   let nextIndex = 0;
   const failures = [];
-  const totals = { tests: 0, passed: 0, failed: 0, skipped: 0 };
+  const totals = { tests: 0, passed: 0, failed: 0, skipped: 0, crashed: 0 };
   const activeChildren = new Set();
   let interrupted = false;
   const terminate = () => {
@@ -124,6 +144,11 @@ async function main() {
       if (result.stdout) process.stdout.write(result.stdout);
       if (result.stderr) process.stderr.write(result.stderr);
       if (result.exitCode !== 0) failures.push(item.file);
+      // A file that exits non-zero having reported NO tests did not fail a
+      // test — it never got to run one (import error, harness/env breakage).
+      // Counted separately so the summary can never read `fail=0` while the
+      // run is red, which is how a whole-suite macOS breakage stayed invisible.
+      if (result.exitCode !== 0 && result.summary.tests === 0) totals.crashed += 1;
     };
     const exclusive = plan.filter(item => artifactTestFiles.has(item.file));
     const parallel = plan.filter(item => !artifactTestFiles.has(item.file));
@@ -148,7 +173,7 @@ async function main() {
   }
   const exitCode = interrupted ? 143 : failures.length === 0 ? 0 : 1;
   if (failures.length > 0) process.stderr.write(`[Klauro test suite] failed files (${failures.length}): ${failures.join(', ')}\n`);
-  process.stderr.write(`[Klauro test suite] completed in ${((Date.now() - started) / 1000).toFixed(1)}s files=${plan.length} tests=${totals.tests} pass=${totals.passed} fail=${totals.failed} skipped=${totals.skipped} exit=${exitCode}\n`);
+  process.stderr.write(`[Klauro test suite] completed in ${((Date.now() - started) / 1000).toFixed(1)}s files=${plan.length} tests=${totals.tests} pass=${totals.passed} fail=${totals.failed} skipped=${totals.skipped} crashed_files=${totals.crashed} exit=${exitCode}\n`);
   process.exitCode = exitCode;
 }
 
@@ -167,7 +192,9 @@ async function runBuildPrerequisite(hosted) {
 }
 
 async function runTestFile(tsxCli, file, forwarded, runRoot, activeChildren) {
-  const key = crypto.createHash('sha256').update(file).digest('hex').slice(0, 16);
+  // 10 hex chars over 245 files: collision probability ~1e-7, and every byte
+  // counts against the unix-socket path cap described on shortTempBase().
+  const key = crypto.createHash('sha256').update(file).digest('hex').slice(0, 10);
   const isolatedRoot = path.join(runRoot, key);
   const home = path.join(isolatedRoot, 'home');
   const temporary = path.join(isolatedRoot, 'tmp');
@@ -209,8 +236,13 @@ async function runTestFile(tsxCli, file, forwarded, runRoot, activeChildren) {
   }
 }
 
-function parseTapSummary(output) {
-  const value = label => Number(output.match(new RegExp(`^# ${label} (\\d+)$`, 'm'))?.[1] || 0);
+export function parseTapSummary(output) {
+  // node:test's default reporter prefixes its summary block with `# ` on older
+  // Node and `ℹ ` from Node 22 on. Matching only `# ` meant every count read 0
+  // on a modern local Node while the container's older Node reported real
+  // numbers — the suite's headline `tests=/pass=/fail=` line was silently
+  // fabricating zeros depending on where you ran it. Accept both.
+  const value = label => Number(output.match(new RegExp(`^(?:#|\\u2139) ${label} (\\d+)$`, 'm'))?.[1] || 0);
   return { tests: value('tests'), passed: value('pass'), failed: value('fail'), skipped: value('skipped') };
 }
 

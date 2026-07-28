@@ -52,3 +52,33 @@ test('suite can select an exact test file without changing group membership', ()
   const selected = plan('--file', 'src/test-suite-organization.test.ts');
   assert.deepEqual(selected.files.map(item => item.file), ['src/test-suite-organization.test.ts']);
 });
+
+test('summary parsing accepts both node:test reporter prefixes', async () => {
+  const { parseTapSummary } = await import(path.resolve('scripts/test-suite.mjs')) as any;
+
+  // Older Node prefixes the summary block with `# `, Node 22+ with `ℹ `.
+  // Recognising only one silently reported tests=0 pass=0 fail=0 on the other,
+  // so the suite's headline numbers depended on which machine ran it.
+  const hash = ['# tests 7', '# pass 5', '# fail 1', '# skipped 1'].join('\n');
+  const info = ['\u2139 tests 7', '\u2139 pass 5', '\u2139 fail 1', '\u2139 skipped 1'].join('\n');
+  const expected = { tests: 7, passed: 5, failed: 1, skipped: 1 };
+
+  assert.deepEqual(parseTapSummary(hash), expected);
+  assert.deepEqual(parseTapSummary(info), expected);
+});
+
+test('per-file temp roots stay short enough for a unix domain socket', async () => {
+  const { shortTempBase } = await import(path.resolve('scripts/test-suite.mjs')) as any;
+
+  // tsx binds $TMPDIR/tsx-<uid>/<pid>.pipe for every child; the kernel caps a
+  // unix socket path at 104 bytes on macOS. macOS's own TMPDIR is ~48 bytes,
+  // so nesting the isolated per-file TMPDIR under it made EVERY test file exit
+  // with EINVAL before running a single test.
+  assert.equal(shortTempBase('darwin', '/var/folders/5_/5xzp0rq57cs_m_2f263y1p8r0000gp/T'), '/tmp');
+  assert.equal(shortTempBase('linux', '/tmp'), '/tmp');
+  assert.equal(shortTempBase('win32', 'C:\\Temp'), 'C:\\Temp');
+
+  const base = shortTempBase();
+  const worstCase = path.join(base, 'klauro-tests', 'run-XXXXXX', 'a'.repeat(10), 'tmp', 'tsx-501', '999999.pipe');
+  assert.ok(worstCase.length < 104, `worst-case socket path ${worstCase.length} bytes: ${worstCase}`);
+});
