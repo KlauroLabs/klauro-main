@@ -256,3 +256,118 @@ test('W5 activation: a workspace with no fabric config (or fabric.enabled:false)
     }
   });
 });
+
+/**
+ * Coordination Engine wave 2 (docs/SPEC-COORDINATION-ENGINE.md §3 + §5)
+ * through the REAL MCP tool surface: structured intent (`produces`/
+ * `consumes`), the claim-scoped `events` drain, and path-less exploration
+ * claims. The unit-level derivation/drift/drain behavior is covered in
+ * coordination/contract-intent.test.ts and coordination/event-drain.test.ts;
+ * these assert the WIRING — that the tools accept the fields, persist them,
+ * and hand back the blocks.
+ */
+test('wave 2 wiring: declared contracts land on the board and reach peers via the contract board', async () => {
+  await withHermeticFabricEnv(async () => {
+    delete process.env.FAB_WS;
+    const server = createServer();
+    const claim = getToolHandler(server, 'fab_claim_work');
+    const list = getToolHandler(server, 'fab_list_active_work');
+    const ws = 'ws-wave2-contracts';
+
+    const claimed = payload(await claim({
+      agent_id: 'producer',
+      intent: 'build the outcome record',
+      paths: ['src/outcomes.ts'],
+      workspace: ws,
+      produces: [{
+        kind: 'export',
+        name: 'buildOutcomeRecord',
+        path: 'src/outcomes.ts',
+        signature: '(ws: string) => OutcomeRecord[]',
+        notes: 'throws on empty ws',
+      }],
+    }));
+    assert.equal(claimed.produces.length, 1);
+    assert.equal(claimed.produces[0].status, 'declared');
+
+    // A peer stubs against the DECLARED contract before it is written.
+    payload(await claim({
+      agent_id: 'consumer',
+      intent: 'render outcomes',
+      paths: ['src/ui/outcomes-panel.ts'],
+      workspace: ws,
+      consumes: ['buildOutcomeRecord'],
+    }));
+
+    const board = payload(await list({ workspace: ws, contracts: true }));
+    const producerRow = board.contract_board.find((r: any) => r.agent_id === 'producer');
+    assert.equal(producerRow.produces[0].name, 'buildOutcomeRecord');
+    const consumerRow = board.contract_board.find((r: any) => r.agent_id === 'consumer');
+    assert.deepEqual(consumerRow.consumes, ['buildOutcomeRecord']);
+    // Phase is DERIVED for display — a declaration alone is intent, not edits.
+    assert.equal(board.active.find((a: any) => a.agent_id === 'producer').phase, 'exploring');
+  });
+});
+
+test('wave 2 wiring: the events block rides fab_* responses and is absent when empty', async () => {
+  await withHermeticFabricEnv(async () => {
+    delete process.env.FAB_WS;
+    const server = createServer();
+    const claim = getToolHandler(server, 'fab_claim_work');
+    const check = getToolHandler(server, 'fab_check_collision');
+    const ws = 'ws-wave2-events';
+
+    const first = payload(await claim({ agent_id: 'a', intent: 'own the area', paths: ['src/area/'], workspace: ws }));
+    assert.equal(first.events, undefined, 'nothing has happened yet — absent when empty');
+
+    // A peer claims INTO a's footprint: that is an event a's claim subscribes
+    // to implicitly, with no registration step anywhere.
+    payload(await claim({ agent_id: 'b', intent: 'touch the same area', paths: ['src/area/file.ts'], workspace: ws }));
+
+    const drained = payload(await check({ agent_id: 'a', paths: ['src/area/'], workspace: ws }));
+    assert.ok(drained.events, 'an active claim drains its footprint-overlap events on any fabric call');
+    assert.ok(drained.events.entries.some((e: any) => e.agent_id === 'b'));
+    assert.equal(drained.events.truncated, false);
+    assert.ok(typeof drained.events.resume_seq === 'number');
+    assert.ok(typeof drained.events.epoch === 'string');
+
+    // Echoing resume_seq drains the backlog: the same call is then quiet.
+    const after = payload(await check({ agent_id: 'a', paths: ['src/area/'], workspace: ws, since_seq: drained.events.resume_seq }));
+    assert.equal(after.events, undefined);
+
+    // No claim, no drain.
+    const stranger = payload(await check({ agent_id: 'nobody', paths: ['src/area/'], workspace: ws }));
+    assert.equal(stranger.events, undefined);
+  });
+});
+
+test('wave 2 wiring: a path-less exploration claim is visible, distinct, and localizes via fab_extend', async () => {
+  await withHermeticFabricEnv(async () => {
+    delete process.env.FAB_WS;
+    const server = createServer();
+    const claim = getToolHandler(server, 'fab_claim_work');
+    const extend = getToolHandler(server, 'fab_extend');
+    const list = getToolHandler(server, 'fab_list_active_work');
+    const ws = 'ws-wave2-exploring';
+
+    const arrived = payload(await claim({ agent_id: 'explorer', intent: 'figure out where the bug lives', workspace: ws }));
+    assert.equal(arrived.status, 'claimed');
+    assert.equal(arrived.exploration_claim, true);
+    assert.match(arrived.exploration_note, /fab_extend/);
+
+    const listed = payload(await list({ workspace: ws }));
+    assert.equal(listed.count, 1, 'a path-less claim must not fall out of the board');
+    assert.equal(listed.active[0].exploration_claim, true);
+    assert.equal(listed.active[0].phase, 'exploring');
+
+    // near-narrowing must still show it: an arriving agent has no footprint
+    // to match, and silently hiding them is the failure mode being prevented.
+    const narrowed = payload(await list({ workspace: ws, near: ['src/somewhere/'] }));
+    assert.equal(narrowed.count, 1);
+
+    const localized = payload(await extend({ agent_id: 'explorer', add_paths: ['src/found/'], workspace: ws }));
+    assert.deepEqual(localized.paths, ['src/found/']);
+    const relisted = payload(await list({ workspace: ws }));
+    assert.equal(relisted.active[0].exploration_claim, undefined, 'once localized it is an ordinary claim');
+  });
+});

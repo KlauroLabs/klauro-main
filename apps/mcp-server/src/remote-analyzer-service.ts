@@ -14,7 +14,7 @@ import { previewCodebaseIteration, previewGreenfieldCodebase } from './proposal-
 import { isDirectCliInvocation } from './cli-invocation';
 import { AccountHttpError, AccountStore, type AccountProject } from './account-store';
 import { AccountWorkspaceAnalysisScheduler } from './account-workspace-analysis';
-import { getGrants, heartbeatGrant, releaseGrant, requestGrant, type AgentKind } from './coordination';
+import { getGrants, heartbeatGrant, releaseGrant, requestGrant, type AgentKind, type DeclaredContract } from './coordination';
 import { appendClaim, checkEditLock, describeCursorGap, getActiveClaims, getBoardInfo, getPresence, getStoreDir, readClaimLog, releaseAgentWithReason, releaseClaimById, warnIfEphemeralCoordDir, type ClaimLogEntry } from './coordination/local-store';
 import { deriveActiveClaims } from './coordination/presence';
 import { appendSecurityAudit, assertSameTenant, defaultSecretDenyPatterns, getSecurityStoreDir, redactInFlightChanges, TenantMismatchError } from './coordination/security';
@@ -866,6 +866,12 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           status?: 'active' | 'released';
           version?: number;
           kind?: ClaimLogEntry['kind'];
+          /** Coordination Engine §3 structured intent, additive on the wire:
+           *  contracts this lane will create/change, and the contract names it
+           *  builds against. Old clients send neither and behave exactly as
+           *  before; old servers ignore them (§16 migration). */
+          produces?: DeclaredContract[];
+          consumes?: string[];
         }>(request, maxBodyBytes);
 
         // ADVISORY fabric path (cross-machine mirror of fab.ts claim /
@@ -904,6 +910,8 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
             heartbeat_at: now,
             base_commit: body.base_commit,
             branch: body.branch,
+            ...(body.produces?.length ? { produces: body.produces } : {}),
+            ...(body.consumes?.length ? { consumes: body.consumes } : {}),
           });
           const board = await getBoardInfo(workspace);
           broadcastCoordinationEvent(workspace, 'claim', {

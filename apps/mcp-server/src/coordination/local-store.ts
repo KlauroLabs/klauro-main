@@ -27,8 +27,10 @@ import * as fsp from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
+import type { DeclaredContractDriftFinding } from './collision';
+import { contractIdentity, MAX_CONSUMES_PER_CLAIM, mergeContracts } from './contract-intent';
 import { deriveActiveClaims, derivePresence, reduceClaimLog } from './presence';
-import type { AgentPresence, WorkClaim, WorkClaimStatus } from './types';
+import type { AgentPresence, DeclaredContract, WorkClaim, WorkClaimStatus } from './types';
 
 /** One line of `claims.jsonl`: a `WorkClaim` plus store-assigned bookkeeping. */
 export interface ClaimLogEntry extends WorkClaim {
@@ -66,6 +68,24 @@ export interface SurpriseDetail {
   changer: string;
   affected: string;
   explanation: string;
+  /**
+   * Coordination Engine §3: the DECLARED CONTRACT this surprise is about, when
+   * the finding came from `detectDeclaredContractDrift` rather than the
+   * original W4 caller-side detector. Additive — absent on every pre-wave-2
+   * surprise, and readers must treat absence exactly as before.
+   */
+  contract?: string;
+  /**
+   * Why this surprise fired. Absent = the original contract-divergence
+   * detector (W4 step 2). `declared_contract_drift` = the producer's ambient
+   * diff no longer matches what it declared; `declared_contract_missing` = the
+   * producer deleted it, or released without ever producing it. Both cover
+   * SIGNATURE-SHAPED drift only — never semantic/behavioral change behind an
+   * unchanged signature (see `detectDeclaredContractDrift`).
+   */
+  reason?: 'declared_contract_drift' | 'declared_contract_missing';
+  /** `name_only` matches are real but LOWER CONFIDENCE, and say so. */
+  confidence?: 'path_qualified' | 'name_only';
 }
 
 /**
@@ -839,8 +859,16 @@ export async function recordUnclaimedEdit(
  *  `plan_intent_merge` re-runs (unlike `recordUnclaimedEdit`'s
  *  timestamp-suffixed id, which deliberately wants every occurrence visible —
  *  a surprise is the same fact re-observed, not a new event each time). */
-function surpriseClaimId(workspaceId: string, detail: Pick<SurpriseDetail, 'symbol' | 'changer' | 'affected'>): string {
-  return `surprise:${workspaceId}:${detail.symbol}:${detail.changer}:${detail.affected}`;
+function surpriseClaimId(
+  workspaceId: string,
+  detail: Pick<SurpriseDetail, 'symbol' | 'changer' | 'affected' | 'reason'>
+): string {
+  const base = `surprise:${workspaceId}:${detail.symbol}:${detail.changer}:${detail.affected}`;
+  // Suffix ONLY when a reason is present, so every pre-wave-2 surprise keeps
+  // its exact historical id (dedup across the upgrade must not re-fire old
+  // findings). A drift and a missing finding about the same contract are two
+  // distinct facts and must not dedupe into one.
+  return detail.reason ? `${base}:${detail.reason}` : base;
 }
 
 /**
@@ -894,6 +922,34 @@ export async function persistSurprise(
       existing
     );
   });
+}
+
+/**
+ * Persist §3 declared-contract drift findings as surprises ADDRESSED to each
+ * recorded consumer, so the consumer hears about it while both changes are
+ * still soft — not at merge time. Delivery then rides §5's claim-scoped drain
+ * (the consumer's own active claim is the subscription; no registration).
+ * Deduped exactly like every other surprise, keyed additionally on the reason.
+ * Advisory: the consumer decides what to do.
+ */
+export async function persistContractDriftSurprises(
+  workspaceId: string,
+  findings: DeclaredContractDriftFinding[]
+): Promise<ClaimLogEntry[]> {
+  const persisted: ClaimLogEntry[] = [];
+  for (const f of findings) {
+    const entry = await persistSurprise(workspaceId, {
+      symbol: f.contract,
+      changer: f.producer_agent_id,
+      affected: f.consumer_agent_id,
+      explanation: f.explanation,
+      contract: f.contract,
+      reason: f.reason,
+      confidence: f.confidence,
+    });
+    if (entry) persisted.push(entry);
+  }
+  return persisted;
 }
 
 /**
@@ -1037,7 +1093,15 @@ export async function extendClaim(
   workspaceId: string,
   claimId: string,
   addPaths: string[],
-  addSymbols: string[] = []
+  addSymbols: string[] = [],
+  /**
+   * Coordination Engine §3: contracts/consumers to fold into the claim on the
+   * same extension. Existing `produces`/`consumes` are PRESERVED and merged
+   * (explicit declarations win over observations for the same identity) — an
+   * extend must never silently drop the contract board a lane already
+   * published.
+   */
+  addContracts: { produces?: DeclaredContract[]; consumes?: string[] } = {}
 ): Promise<{ claim: ClaimLogEntry; conflicts: EditLockConflict[] }> {
   return withWorkspaceLock(workspaceId, async ({ log, append }) => {
     const nowMs = Date.now();
@@ -1091,8 +1155,90 @@ export async function extendClaim(
       base_commit: prior.base_commit,
       branch: prior.branch,
       org_id: prior.org_id,
+      ...mergedContractFields(prior, addContracts),
     });
     return { claim: entry, conflicts };
+  });
+}
+
+/**
+ * Fold new contracts into a claim's existing board (Coordination Engine §3).
+ * Returns only the fields that should be spread onto the superseding entry, so
+ * a claim with no contracts at all stays byte-identical to its pre-wave-2 shape
+ * (no empty arrays written into the log).
+ */
+function mergedContractFields(
+  prior: Pick<WorkClaim, 'produces' | 'consumes'>,
+  add: { produces?: DeclaredContract[]; consumes?: string[] }
+): Partial<Pick<WorkClaim, 'produces' | 'consumes'>> {
+  const declaredIn = [...(prior.produces ?? []), ...(add.produces ?? [])].filter(
+    (c) => (c.status ?? 'declared') === 'declared'
+  );
+  const observedIn = [...(prior.produces ?? []), ...(add.produces ?? [])].filter((c) => c.status === 'observed');
+  const produces = mergeContracts(declaredIn, observedIn);
+  const consumes = [...new Set([...(prior.consumes ?? []), ...(add.consumes ?? [])])].slice(
+    0,
+    MAX_CONSUMES_PER_CLAIM
+  );
+  return {
+    ...(produces.length ? { produces } : {}),
+    ...(consumes.length ? { consumes } : {}),
+  };
+}
+
+/**
+ * AUTO-DERIVATION WRITE PATH (Coordination Engine §3, the adoption fix).
+ * Records machine-derived contracts onto an agent's ACTIVE claim: `produces`
+ * entries auto-lifted from its own ambient `SymbolChange[]`
+ * (`status:'observed'`) and `consumes` names auto-recorded because its diff
+ * references a peer's contract. Appends an LWW-superseding entry under the
+ * SAME claim_id — claim identity, intent, scope and created_at are all
+ * preserved; only the contract board grows.
+ *
+ * NO-OP BY DESIGN when there is nothing new to say (returns `null`): this runs
+ * on ambient paths that may fire on every call, and an append per call would
+ * turn observation into log spam. Also a no-op when the agent has no active
+ * claim — observation attaches to a claim or not at all.
+ */
+export async function recordDerivedContracts(
+  workspaceId: string,
+  agentId: string,
+  derived: { produces?: DeclaredContract[]; consumes?: string[] }
+): Promise<ClaimLogEntry | null> {
+  const hasInput = (derived.produces?.length ?? 0) > 0 || (derived.consumes?.length ?? 0) > 0;
+  if (!hasInput) return null;
+  return withWorkspaceLock(workspaceId, async ({ log, append }) => {
+    const nowMs = Date.now();
+    const prior = deriveActiveClaims(log, nowMs).find(
+      (c) => c.workspace_id === workspaceId && c.agent_id === agentId
+    );
+    if (!prior) return null;
+
+    const merged = mergedContractFields(prior, derived);
+    const priorIds = new Set((prior.produces ?? []).map((c) => contractIdentity(c)));
+    const nextIds = new Set((merged.produces ?? []).map((c) => contractIdentity(c)));
+    const priorConsumes = new Set(prior.consumes ?? []);
+    const grewProduces = [...nextIds].some((id) => !priorIds.has(id));
+    const grewConsumes = (merged.consumes ?? []).some((n) => !priorConsumes.has(n));
+    if (!grewProduces && !grewConsumes) return null; // nothing new observed — do not append.
+
+    const now = new Date().toISOString();
+    return append({
+      claim_id: prior.claim_id,
+      workspace_id: workspaceId,
+      agent_id: prior.agent_id,
+      agent_kind: prior.agent_kind,
+      scope: prior.scope,
+      intent: prior.intent,
+      status: 'active',
+      created_at: prior.created_at,
+      ttl_ms: prior.ttl_ms,
+      heartbeat_at: now,
+      base_commit: prior.base_commit,
+      branch: prior.branch,
+      org_id: prior.org_id,
+      ...merged,
+    });
   });
 }
 

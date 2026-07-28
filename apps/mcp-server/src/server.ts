@@ -67,7 +67,19 @@ import { attachInteractionReach } from '../../../packages/analyzer-core/src/anal
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import { loadStoredConnectorAuth, normalizeServerUrl } from './connector-auth';
 import { arbitrate, detectCollisions, getGrants, heartbeatGrant, releaseGrant, requestGrant, type AgentKind, type CasEdgeRef, type WasCapabilityRef, type WorkClaim } from './coordination';
-import { attributeChange, appendClaim, checkEditLock, extendClaim, getActiveClaims, getBoardInfo, getPresence, readClaimLog, readSurprisesFor, releaseAgentWithReason, watch } from './coordination/local-store';
+import { attributeChange, appendClaim, checkEditLock, extendClaim, getActiveClaims, getBoardInfo, getPresence, persistContractDriftSurprises, readClaimLog, readSurprisesFor, recordDerivedContracts, releaseAgentWithReason, watch } from './coordination/local-store';
+import { detectDeclaredContractDrift } from './coordination/collision';
+import {
+  attributeChangesToClaim,
+  deriveObservedConsumes,
+  deriveObservedProduces,
+  derivePhase,
+  derivePhaseFromClaim,
+  isExplorationClaim,
+  EXPLORATION_CLAIM_NOTE,
+  type PeerContracts,
+} from './coordination/contract-intent';
+import { drainEventsForClaim, type EventsBlock } from './coordination/event-drain';
 import { remoteActive, remoteCheck, remoteClaim, remoteRelease } from './coordination/remote-transport';
 import { resolveFabricSettings } from './coordination/fabric-config';
 import { ensureWriteHookStarted, closeAllWriteHooks, shouldActivateWriteHook } from './coordination/write-hook';
@@ -85,7 +97,7 @@ import {
   compareConceptualCoordinates,
   type ConceptIndex,
 } from './coordination/conceptual-scope';
-import type { ConceptualCoordinate } from './coordination/types';
+import type { ConceptualCoordinate, DeclaredContract } from './coordination/types';
 import { loadPersistedRuntimeFacts } from './telemetry-fusion';
 
 export const SERVER_INSTRUCTIONS = `Klauro serves a precomputed analysis of this repository — call graph, routes, data flows, entry points, conventions, and tests, queryable directly. Default to it over grep/Read: a query returns real call sites and blast radius, not guesses. The value is the sequence below; each tool's own description has the detail.
@@ -755,13 +767,22 @@ async function describeGrantHolders(
  * capture otherwise fails — callers merge this with agent-reported `changes`
  * rather than depending on it exclusively.
  */
-async function ambientChangesForWorkspace(workspace: string): Promise<SymbolChange[]> {
+async function ambientChangesForWorkspace(workspace: string, maxFiles?: number): Promise<SymbolChange[]> {
   try {
-    return await captureInFlightChanges({ repoPath: workspace });
+    return await captureInFlightChanges({ repoPath: workspace, maxFiles });
   } catch {
     return [];
   }
 }
+
+/**
+ * File budget for the wave-2 ambient contract sweep, which runs INSIDE a
+ * fab_* tool response. A pathologically dirty tree must not turn an advisory
+ * observation into a slow coordination call — past this many changed files the
+ * sweep observes a prefix rather than blocking the caller. Explicit
+ * declaration (`produces`) is unaffected and remains complete.
+ */
+const AMBIENT_SWEEP_MAX_FILES = 60;
 
 /** Merge agent-reported and ambiently-captured changes, de-duplicating by symbol_id (reported wins on conflict — it's the more authoritative, conscious signal). */
 function mergeChanges(reported: SymbolChange[], ambient: SymbolChange[]): SymbolChange[] {
@@ -5983,26 +6004,155 @@ function registerTools(server: McpServer) {
     }
   };
 
+  // -------------------------------------------------------------------------
+  // Coordination Engine wave 2 (docs/SPEC-COORDINATION-ENGINE.md §3 + §5):
+  // structured intent with AUTO-DERIVATION, declared-contract drift, and the
+  // claim-scoped event drain. Everything below is ADVISORY and BEST-EFFORT:
+  // no fabric call may ever fail because contract derivation or a drain did.
+  // -------------------------------------------------------------------------
+
+  /** Parse the caller-supplied `produces` array into DeclaredContracts (explicit = declared). */
+  const parseDeclaredContracts = (raw: any): DeclaredContract[] =>
+    Array.isArray(raw)
+      ? raw
+          .filter((c) => c && typeof c.name === 'string' && typeof c.kind === 'string')
+          .map((c) => ({
+            kind: c.kind,
+            name: c.name,
+            path: c.path,
+            signature: c.signature,
+            notes: c.notes,
+            status: 'declared' as const,
+          }))
+      : [];
+
+  /**
+   * THE ADOPTION FIX (§3 auto-derivation): lift this agent's ambient
+   * `SymbolChange[]` into its claim as observed `produces`, auto-record
+   * `consumes` edges against peers' contract boards, and fire declared-contract
+   * drift surprises at the consumers that recorded an edge. Explicit
+   * declaration stays the high-signal path; this is the FLOOR that keeps the
+   * board populated when nobody declares anything.
+   *
+   * Runs only on the WRITE paths (claim/extend), never on reads: it costs a git
+   * diff plus a parse, and the write paths are where an agent's state actually
+   * moved. §13 attribution is enforced per change by `attributeChangesToClaim`
+   * — a change any other active claim also covers is lifted by nobody.
+   */
+  const ambientContractSweep = async (
+    ws: string,
+    agentId: string,
+    repoPath: string
+  ): Promise<{
+    phase?: 'exploring' | 'building' | 'verifying';
+    observed_produces?: DeclaredContract[];
+    observed_consumes?: string[];
+    shared_tree_changes?: number;
+    drift_surprises?: number;
+  }> => {
+    try {
+      const changes = await ambientChangesForWorkspace(repoPath, AMBIENT_SWEEP_MAX_FILES);
+      const active = await getActiveClaims(ws);
+      const mine = active.find((c) => c.agent_id === agentId);
+      if (!mine) return {};
+      const others = active.filter((c) => c.claim_id !== mine.claim_id);
+      const { mine: myChanges, shared } = attributeChangesToClaim(changes, mine, others);
+
+      const observedProduces = deriveObservedProduces(myChanges);
+      const peers: PeerContracts[] = others.map((c) => ({
+        agent_id: c.agent_id,
+        claim_id: c.claim_id,
+        contracts: c.produces ?? [],
+      }));
+      const consumes = deriveObservedConsumes({ changes: myChanges }, peers, [
+        ...(mine.produces ?? []),
+        ...observedProduces,
+      ]);
+      await recordDerivedContracts(ws, agentId, {
+        produces: observedProduces,
+        consumes: consumes.names,
+      });
+
+      // Drift: compare MY declared contracts against MY actual diff, and
+      // address findings to the lanes that recorded a consumes edge on me.
+      const refreshed = await getActiveClaims(ws);
+      const meNow = refreshed.find((c) => c.agent_id === agentId) ?? mine;
+      const drift = detectDeclaredContractDrift(meNow, refreshed, myChanges);
+      const persisted = await persistContractDriftSurprises(ws, drift);
+
+      return {
+        phase: derivePhase({ changes: myChanges }),
+        ...(observedProduces.length ? { observed_produces: observedProduces } : {}),
+        ...(consumes.names.length ? { observed_consumes: consumes.names } : {}),
+        ...(shared.length ? { shared_tree_changes: shared.length } : {}),
+        ...(persisted.length ? { drift_surprises: persisted.length } : {}),
+      };
+    } catch {
+      // Advisory by contract: derivation failure degrades to no derivation.
+      return {};
+    }
+  };
+
+  /**
+   * §5 CLAIM-SCOPED DRAIN. The caller's own ACTIVE CLAIM *is* the subscription
+   * — no registration, no interest taxonomy, nothing to renew. Returns the
+   * `events` block or undefined (absent when empty). No claim, no drain: an
+   * agent with no footprint has no relevance neighborhood, and polls
+   * `fab_list_active_work` explicitly instead.
+   */
+  const drainEvents = async (
+    ws: string,
+    agentId: string | undefined,
+    opts: { since_seq?: number; since_epoch?: string } = {},
+    known?: WorkClaim
+  ): Promise<EventsBlock | undefined> => {
+    if (!agentId) return undefined;
+    try {
+      const claim = known ?? (await getActiveClaims(ws)).find((c) => c.agent_id === agentId);
+      if (!claim) return undefined;
+      return await drainEventsForClaim(ws, claim, opts);
+    } catch {
+      return undefined;
+    }
+  };
+
   server.registerTool(
     'fab_claim_work',
     {
       title: 'Fab: Claim Work (advisory)',
-      description: 'ADVISORY awareness claim (default coordination mode) — announces intent to peers, never blocks or queues, takes no lease. Use fab_claim_work for awareness-first parallel work where agents coordinate rather than lock. When you instead need a GUARANTEED exclusive lease over a scope (at-most-one-writer, with queueing on contention), use the enforced claim_work. Advisory work-claim over the same-machine coordination fabric (CLI-parity for `fab.ts claim`). AWARENESS-FIRST, NEVER A LOCKOUT: the claim always succeeds — it announces to peers on this host that you intend to touch these paths/symbols with this intent, so a fleet coordinates instead of blindly clobbering. Unlike the enforced grant surface (claim_work), this takes no lease and never queues you. Belt-and-suspenders: this ALSO runs the same overlap scan check_collision/fab_check_collision does and returns a `warning` (plus `conflicts`) inline when your paths overlap an already-active claim by another agent — so even an agent that skipped the preflight check still gets the heads-up. Call fab_release_work when done.',
+      description: 'ADVISORY awareness claim (default coordination mode) — announces intent to peers, never blocks or queues, takes no lease. Use fab_claim_work for awareness-first parallel work where agents coordinate rather than lock. When you instead need a GUARANTEED exclusive lease over a scope (at-most-one-writer, with queueing on contention), use the enforced claim_work. Advisory work-claim over the same-machine coordination fabric (CLI-parity for `fab.ts claim`). AWARENESS-FIRST, NEVER A LOCKOUT: the claim always succeeds — it announces to peers on this host that you intend to touch these paths/symbols with this intent, so a fleet coordinates instead of blindly clobbering. Unlike the enforced grant surface (claim_work), this takes no lease and never queues you. Belt-and-suspenders: this ALSO runs the same overlap scan check_collision/fab_check_collision does and returns a `warning` (plus `conflicts`) inline when your paths overlap an already-active claim by another agent — so even an agent that skipped the preflight check still gets the heads-up. Call fab_release_work when done. DECLARE YOUR CONTRACTS: pass `produces` (the exports/signatures/endpoints/types you will create — name + shape, BEFORE you write them) and peers can build against them immediately instead of waiting for your code to land; pass `consumes` (contract names you build against) and you are told the moment a producer\'s actual diff diverges from what it declared. If you declare nothing, ambient observation fills the board anyway (your diff is auto-lifted into `produces`, and references to peers\' contracts are auto-recorded as `consumes`) — declaring is just higher-signal and EARLIER. Claiming with no paths yet is fine and visible (an exploration claim, phase "exploring"): call fab_extend with add_paths the moment you localize your work. Responses may carry an `events` block: your active claim IS your subscription (events addressed to you, plus events overlapping your footprint) — no registration step, nothing to renew.',
       inputSchema: {
         agent_id: z.string().describe('Stable identifier for the calling agent/session'),
         intent: z.string().describe('Short description of the work being claimed'),
-        paths: z.array(z.string()).optional().describe('File/dir paths this work will touch'),
+        paths: z.array(z.string()).optional().describe('File/dir paths this work will touch. Omit if you have not localized yet — a path-less exploration claim is valid, visible, and expected to be extended later.'),
         symbols: z.array(z.string()).optional().describe('Symbol/node ids this work will touch'),
+        produces: z.array(z.object({
+          kind: z.enum(['export', 'signature', 'endpoint', 'type', 'event', 'schema']),
+          name: z.string(),
+          path: z.string().optional(),
+          signature: z.string().optional(),
+          notes: z.string().optional(),
+        })).optional().describe('Contracts this work will CREATE or CHANGE — declare them before you write them so peers can stub against them now. Identity is (kind, name, path?); include `path` for an unambiguous match.'),
+        consumes: z.array(z.string()).optional().describe('Contract NAMES this work builds against (a peer\'s declared export/endpoint/type). Recording this is what makes drift surprises reach you while both changes are still soft.'),
         workspace: z.string().optional().describe('Workspace id to coordinate within (defaults to the repo .klaurorc fabric.workspace from `klauro init`, then $FAB_WS, else "poc")'),
         agent_kind: z.enum(['claude', 'cursor', 'codex', 'human', 'other']).optional().describe('Kind of agent (default claude)'),
         ttl_ms: z.number().optional().describe('Claim TTL in ms before it is considered stale (default 6h, matching fab.ts)'),
+        repo_path: z.string().optional().describe('Your working tree (default: the server cwd). Used for ambient contract observation only — the diff never leaves this host.'),
+        since_seq: z.number().optional().describe('Event cursor: echo back the `resume_seq` from your last fab_* response to continue the drain from there.'),
+        since_epoch: z.string().optional().describe('Epoch your cursor belongs to; a mismatch returns an explicit gap notice instead of silence.'),
       } as any,
     } as any,
-    async ({ agent_id, intent, paths, symbols, workspace, agent_kind, ttl_ms }: any) => withErrorHandling(async () => {
+    async ({ agent_id, intent, paths, symbols, produces, consumes, workspace, agent_kind, ttl_ms, repo_path, since_seq, since_epoch }: any) => withErrorHandling(async () => {
       const settings = await advisoryFabricSettings(workspace);
       const ws = settings.workspace;
       const claimPaths: string[] = paths || [];
       const claimSymbols: string[] = symbols || [];
+      const declaredContracts = parseDeclaredContracts(produces);
+      const declaredConsumes: string[] = Array.isArray(consumes) ? consumes.filter((c: any) => typeof c === 'string') : [];
+      const explorationClaim = isExplorationClaim({
+        scope: { paths: claimPaths, symbols: claimSymbols },
+        produces: declaredContracts,
+      });
       // REMOTE MODE (docs/FABRIC-REMOTE.md): a `klauro init` fabric config (or
       // the FAB_REMOTE_URL CI escape hatch) routes the claim to the
       // cross-machine coordination API instead of this host's filesystem.
@@ -6021,6 +6171,13 @@ function registerTools(server: McpServer) {
             paths: claimPaths, symbols: claimSymbols,
             ttl_ms: res.ttl_ms, server_time: res.server_time,
             conflicts: res.conflicts, warning: res.warning,
+            // Wire compatibility (§16): the remote coordination API accepts and
+            // returns new fields additively, but the CURRENT deployed transport
+            // has no produces/consumes column, so echo what the caller declared
+            // rather than pretending the remote board recorded it.
+            ...(declaredContracts.length ? { produces: declaredContracts, produces_note: 'Declared contracts are LOCAL-VIEW only until the remote transport carries them — peers on other machines see your paths/intent, not your contract board.' } : {}),
+            ...(declaredConsumes.length ? { consumes: declaredConsumes } : {}),
+            ...(explorationClaim ? { exploration_claim: true, exploration_note: EXPLORATION_CLAIM_NOTE } : {}),
             heartbeat_hint: 'Re-claim before ttl_ms elapses to stay visible; fab_release_work when done.',
           });
         } catch (err) {
@@ -6049,7 +6206,12 @@ function registerTools(server: McpServer) {
         created_at: now,
         ttl_ms: ttl_ms ?? 6 * 60 * 60 * 1000,
         heartbeat_at: now,
+        ...(declaredContracts.length ? { produces: declaredContracts } : {}),
+        ...(declaredConsumes.length ? { consumes: declaredConsumes } : {}),
       });
+      // §3 auto-derivation + §5 drain, both strictly advisory (see helpers).
+      const derived = await ambientContractSweep(ws, agent_id, repo_path || process.cwd());
+      const events = await drainEvents(ws, agent_id, { since_seq, since_epoch });
       const board = await getBoardInfo(ws);
       const overlapWarning = conflicts.length
         ? `ADVISORY: ${conflicts.length} other agent(s) overlap your scope (${conflicts
@@ -6071,7 +6233,18 @@ function registerTools(server: McpServer) {
         intent,
         paths: entry.scope.paths,
         symbols: entry.scope.symbols,
+        // §3: the claim's contract board — explicit declarations plus anything
+        // ambient observation lifted onto it. `phase` is DERIVED for display
+        // (no writer reports it, so it can never be stale or lied about).
+        ...(declaredContracts.length ? { produces: declaredContracts } : {}),
+        ...(declaredConsumes.length ? { consumes: declaredConsumes } : {}),
+        ...derived,
         conflicts,
+        ...(events ? { events } : {}),
+        // A path-less claim is REPRESENTABLE and VISIBLE, never dropped from
+        // the board — but it cannot overlap-match, so say so and prompt the
+        // agent to re-extend the moment it localizes.
+        ...(explorationClaim ? { exploration_claim: true, exploration_note: EXPLORATION_CLAIM_NOTE } : {}),
         warning: [tierNote, overlapWarning].filter(Boolean).join(' ') || undefined,
       });
       }
@@ -6082,18 +6255,34 @@ function registerTools(server: McpServer) {
     'fab_extend',
     {
       title: 'Fab: Extend Claim (advisory)',
-      description: 'Extend an ACTIVE advisory claim mid-task ("I also need to touch X — safe?") without losing claim identity: same claim_id, union of old+new paths/symbols, original intent and created_at preserved. The overlap scan runs against the ADDED scope only and is surfaced inline — extension always succeeds, never denied. Local-tier only until the remote transport gains an extend endpoint; when a remote fabric is configured the response says so explicitly.',
+      description: 'Extend an ACTIVE advisory claim mid-task ("I also need to touch X — safe?") without losing claim identity: same claim_id, union of old+new paths/symbols, original intent and created_at preserved. THIS IS ALSO HOW AN EXPLORATION CLAIM LOCALIZES: if you claimed with no paths, call fab_extend with add_paths (and add_produces) the moment you know what you are touching — until then your claim is visible but cannot overlap-match. Contract declarations are merged, never dropped. The overlap scan runs against the ADDED scope only and is surfaced inline — extension always succeeds, never denied. Local-tier only until the remote transport gains an extend endpoint; when a remote fabric is configured the response says so explicitly.',
       inputSchema: {
         agent_id: z.string().describe('Agent whose active advisory claim to extend'),
         add_paths: z.array(z.string()).optional().describe('Paths to append to the claim scope'),
         add_symbols: z.array(z.string()).optional().describe('Symbol/node ids to append to the claim scope'),
+        add_produces: z.array(z.object({
+          kind: z.enum(['export', 'signature', 'endpoint', 'type', 'event', 'schema']),
+          name: z.string(),
+          path: z.string().optional(),
+          signature: z.string().optional(),
+          notes: z.string().optional(),
+        })).optional().describe('Contracts to add to this claim\'s board — declare them as soon as you know their names/shapes; peers stub against them immediately.'),
+        add_consumes: z.array(z.string()).optional().describe('Contract names to add to what this claim builds against.'),
         workspace: z.string().optional().describe('Workspace id (defaults to the repo .klaurorc fabric.workspace from `klauro init`, then $FAB_WS, else "poc")'),
+        repo_path: z.string().optional().describe('Your working tree (default: the server cwd) for ambient contract observation.'),
+        since_seq: z.number().optional().describe('Event cursor: echo back the `resume_seq` from your last fab_* response.'),
+        since_epoch: z.string().optional().describe('Epoch your cursor belongs to; a mismatch returns an explicit gap notice.'),
       } as any,
     } as any,
-    async ({ agent_id, add_paths, add_symbols, workspace }: any) => withErrorHandling(async () => {
+    async ({ agent_id, add_paths, add_symbols, add_produces, add_consumes, workspace, repo_path, since_seq, since_epoch }: any) => withErrorHandling(async () => {
       const settings = await advisoryFabricSettings(workspace);
       const ws = settings.workspace;
-      const outcome = await extendClaim(ws, `${ws}:${agent_id}`, add_paths || [], add_symbols || []);
+      const outcome = await extendClaim(ws, `${ws}:${agent_id}`, add_paths || [], add_symbols || [], {
+        produces: parseDeclaredContracts(add_produces),
+        consumes: Array.isArray(add_consumes) ? add_consumes.filter((c: any) => typeof c === 'string') : [],
+      });
+      const derived = await ambientContractSweep(ws, agent_id, repo_path || process.cwd());
+      const events = await drainEvents(ws, agent_id, { since_seq, since_epoch });
       const remoteNote = settings.remote
         ? 'Remote fabric is configured but claim extension is LOCAL-ONLY for now — agents on other machines still see the pre-extension scope.'
         : settings.localReason;
@@ -6106,7 +6295,11 @@ function registerTools(server: McpServer) {
         intent: outcome.claim.intent,
         paths: outcome.claim.scope.paths,
         symbols: outcome.claim.scope.symbols,
+        ...(outcome.claim.produces?.length ? { produces: outcome.claim.produces } : {}),
+        ...(outcome.claim.consumes?.length ? { consumes: outcome.claim.consumes } : {}),
+        ...derived,
         conflicts: outcome.conflicts,
+        ...(events ? { events } : {}),
         warning: [remoteNote, outcome.conflicts.length
           ? `ADVISORY: ${outcome.conflicts.length} other agent(s) overlap the ADDED scope — coordinate before writing.`
           : undefined].filter(Boolean).join(' ') || undefined,
@@ -6123,9 +6316,11 @@ function registerTools(server: McpServer) {
         agent_id: z.string().describe('Your agent_id (excluded from the overlap scan so you do not collide with yourself)'),
         paths: z.array(z.string()).describe('Proposed file/dir paths to check for overlap'),
         workspace: z.string().optional().describe('Workspace id (defaults to the repo .klaurorc fabric.workspace from `klauro init`, then $FAB_WS, else "poc")'),
+        since_seq: z.number().optional().describe('Event cursor: echo back the `resume_seq` from your last fab_* response.'),
+        since_epoch: z.string().optional().describe('Epoch your cursor belongs to; a mismatch returns an explicit gap notice.'),
       } as any,
     } as any,
-    async ({ agent_id, paths, workspace }: any) => withErrorHandling(async () => {
+    async ({ agent_id, paths, workspace, since_seq, since_epoch }: any) => withErrorHandling(async () => {
       const settings = await advisoryFabricSettings(workspace);
       const ws = settings.workspace;
       const remote = settings.remote;
@@ -6162,6 +6357,7 @@ function registerTools(server: McpServer) {
       // config not found from server cwd). Surface whichever applies so a local
       // result is never silently ambiguous about cross-machine visibility.
       const localTierNote = degradeNote || (settings.localReason ? `${settings.localReason} ` : '');
+      const events = await drainEvents(ws, agent_id, { since_seq, since_epoch });
       return json({
         workspace: ws,
         tier: 'local',
@@ -6169,6 +6365,7 @@ function registerTools(server: McpServer) {
         paths: paths || [],
         ok: conflicts.length === 0,
         conflicts,
+        ...(events ? { events } : {}),
         note:
           localTierNote +
           (conflicts.length
@@ -6186,12 +6383,17 @@ function registerTools(server: McpServer) {
       inputSchema: {
         agent_id: z.string().describe('Agent id whose claims to release'),
         workspace: z.string().optional().describe('Workspace id (defaults to the repo .klaurorc fabric.workspace from `klauro init`, then $FAB_WS, else "poc")'),
+        since_seq: z.number().optional().describe('Event cursor: echo back the `resume_seq` from your last fab_* response. Your final drain happens BEFORE the release, since releasing ends the subscription.'),
+        since_epoch: z.string().optional().describe('Epoch your cursor belongs to; a mismatch returns an explicit gap notice.'),
       } as any,
     } as any,
-    async ({ agent_id, workspace }: any) => withErrorHandling(async () => {
+    async ({ agent_id, workspace, since_seq, since_epoch }: any) => withErrorHandling(async () => {
       const settings = await advisoryFabricSettings(workspace);
       const ws = settings.workspace;
       const remote = settings.remote;
+      // §5: the claim IS the subscription, so this is the LAST drain — take it
+      // before the release removes the footprint that scopes it.
+      const finalEvents = await drainEvents(ws, agent_id, { since_seq, since_epoch });
       let degradeWarning: string | undefined;
       if (remote) {
         try {
@@ -6226,6 +6428,7 @@ function registerTools(server: McpServer) {
         released_count: released.length,
         ...(outcome.reason ? { reason: outcome.reason } : {}),
         released: released.map((r) => ({ claim_id: r.claim_id, intent: r.intent, paths: r.scope.paths })),
+        ...(finalEvents ? { events: finalEvents } : {}),
         // degradeWarning = remote release failed; settings.localReason = remote
         // was never configured (so "released local only" is expected, not a
         // failure). Either way, say why this was a local-only release.
@@ -6238,13 +6441,17 @@ function registerTools(server: McpServer) {
     'fab_list_active_work',
     {
       title: 'Fab: List Active Work (advisory)',
-      description: 'List active ADVISORY fabric claims (the awareness surface for fab_claim_work). For the ENFORCED grant/lease state and its FIFO queue, use get_active_agents instead. List every active advisory claim in a workspace on this host (CLI-parity for `fab.ts active`): each agent\'s intent, claimed paths, and symbols. The awareness surface — call before starting work to see who else is here and what they are touching.',
+      description: 'List active ADVISORY fabric claims (the awareness surface for fab_claim_work). For the ENFORCED grant/lease state and its FIFO queue, use get_active_agents instead. List every active advisory claim in a workspace on this host (CLI-parity for `fab.ts active`): each agent\'s intent, claimed paths, symbols, DERIVED phase (exploring/building/verifying — never self-reported), and CONTRACT BOARD (`produces`/`consumes`: what each lane is creating and what it builds against, whether declared up front or observed from its diff). Pass `contracts: true` for the contract board alone — who is producing what, so you can stub against a peer\'s declared export before it exists. The awareness surface — call before starting work to see who else is here and what they are touching.',
       inputSchema: {
         workspace: z.string().optional().describe('Workspace id (defaults to the repo .klaurorc fabric.workspace from `klauro init`, then $FAB_WS, else "poc")'),
-        agent_id: z.string().optional().describe('When provided, also returns surprise events addressed to this agent (contract divergences a peer\'s in-flight change caused in scope you depend on)'),
+        agent_id: z.string().optional().describe('When provided, also returns surprise events addressed to this agent (contract divergences a peer\'s in-flight change caused in scope you depend on), plus your claim-scoped `events` drain if you hold an active claim'),
+        contracts: z.boolean().optional().describe('Return the CONTRACT BOARD view: every active lane\'s produces/consumes, so you can build against a declared contract before it is written.'),
+        near: z.array(z.string()).optional().describe('Narrow the listing to claims whose footprint is near these paths. Exploration claims (no paths yet) are ALWAYS included — an arriving agent has no footprint but is still in the room.'),
+        since_seq: z.number().optional().describe('Event cursor: echo back the `resume_seq` from your last fab_* response.'),
+        since_epoch: z.string().optional().describe('Epoch your cursor belongs to; a mismatch returns an explicit gap notice.'),
       } as any,
     } as any,
-    async ({ workspace, agent_id }: any) => withErrorHandling(async () => {
+    async ({ workspace, agent_id, contracts, near, since_seq, since_epoch }: any) => withErrorHandling(async () => {
       const settings = await advisoryFabricSettings(workspace);
       const ws = settings.workspace;
       const remote = settings.remote;
@@ -6279,13 +6486,37 @@ function registerTools(server: McpServer) {
           degradeNote = `Remote fabric unreachable (${msg}) — showing the LOCAL view only; agents on other machines are NOT listed.`;
         }
       }
-      const active = await getActiveClaims(ws);
+      const activeAll = await getActiveClaims(ws);
+      // NEAR-narrowing must never hide an EXPLORATION claim: an arriving agent
+      // has no footprint yet (§3), so every path predicate is vacuously false
+      // for it — narrowing on paths alone would silently drop exactly the
+      // participant you most need to know arrived.
+      const nearPaths: string[] = Array.isArray(near) ? near : [];
+      const active = nearPaths.length
+        ? activeAll.filter(
+            (c) =>
+              isExplorationClaim(c) ||
+              c.scope.paths.some((p) => nearPaths.some((n) => p === n || p.startsWith(`${n}/`) || n.startsWith(`${p}/`)))
+          )
+        : activeAll;
       const board = await getBoardInfo(ws);
+      const events = await drainEvents(ws, agent_id, { since_seq, since_epoch });
+      const contractBoard = active
+        .filter((c) => (c.produces?.length ?? 0) > 0 || (c.consumes?.length ?? 0) > 0)
+        .map((c) => ({
+          agent_id: c.agent_id,
+          claim_id: c.claim_id,
+          intent: c.intent,
+          produces: c.produces ?? [],
+          consumes: c.consumes ?? [],
+        }));
       return json({
         workspace: ws,
         tier: 'local',
         epoch: board.epoch,
         min_retained_seq: board.min_retained_seq,
+        ...(events ? { events } : {}),
+        ...(contracts ? { contract_board: contractBoard } : {}),
         // Never silent: if remote was expected but we fell back, degradeNote
         // carries the runtime cause (unreachable/401); otherwise settings.localReason
         // explains why local is the resolved tier (not configured / disabled /
@@ -6300,6 +6531,15 @@ function registerTools(server: McpServer) {
           intent: c.intent,
           paths: c.scope.paths,
           symbols: c.scope.symbols,
+          // DERIVED for display (§3) — never self-reported, so never stale.
+          phase: derivePhaseFromClaim(c),
+          ...(c.produces?.length ? { produces: c.produces } : {}),
+          ...(c.consumes?.length ? { consumes: c.consumes } : {}),
+          // A path-less claim renders DISTINCTLY rather than looking like an
+          // empty/broken claim: somebody is here, they just have not localized.
+          ...(isExplorationClaim(c)
+            ? { exploration_claim: true, note: 'no footprint declared yet — arriving/exploring, not idle' }
+            : {}),
         })),
       });
     })

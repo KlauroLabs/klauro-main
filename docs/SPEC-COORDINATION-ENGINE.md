@@ -345,6 +345,18 @@ Explicit declaration is the high-signal path, but the board must not depend on d
    `reason: 'declared_contract_drift' | 'declared_contract_missing'`. Delivery rides §5's
    claim-scoped drain. Advisory: the consumer decides.
 
+### SHIPPED (wave 2) — scope limit, stated
+`detectDeclaredContractDrift` (collision.ts) covers **signature-shaped drift only**:
+params, return type, nullability, rename, deletion, and declared-but-never-produced. It
+does NOT detect semantic/behavioral change behind an unchanged signature — a producer that
+keeps `getUser(id: string): User` byte-identical while changing what it MEANS produces no
+finding here (body-only changes are excluded from contract lifting for exactly this
+reason). Behavioral divergence remains conceptual-conflict.ts's territory. Implementation:
+`coordination/contract-intent.ts` (identity/matching/auto-derivation/derived phase),
+`coordination/collision.ts` (drift detector), `coordination/local-store.ts`
+(`recordDerivedContracts`, `persistContractDriftSurprises`),
+`coordination/event-drain.ts` (§5).
+
 ### MCP surface
 - `fab_claim_work` / `fab_extend` / `/v1/coordination/claim` (advisory mode) gain
   `produces`, `consumes`. (No `set_phase` — phase is derived.)

@@ -55,6 +55,16 @@ export interface CaptureOpts {
   repoPath: string;
   /** Git ref to diff against (the "before" state). Defaults to 'HEAD'. */
   baseRef?: string;
+  /**
+   * Stop after this many ANALYZABLE changed files. Absent = unbounded (the
+   * historical behavior every existing caller keeps). Callers on a latency
+   * budget — e.g. the wave-2 ambient contract sweep, which runs inside a
+   * fab_* tool response — pass a bound so a pathologically dirty tree
+   * (hundreds of uncommitted files, each TS-parsed) cannot turn an advisory
+   * observation into a slow call. Truncation is honest: the capture returns
+   * fewer changes, never fabricated ones.
+   */
+  maxFiles?: number;
 }
 
 // "Analyzable" here means "worth reporting a change for at all" — broader than
@@ -339,8 +349,10 @@ export async function captureInFlightChanges(opts: CaptureOpts): Promise<SymbolC
 
   const changedFiles = await listChangedFiles(repoPath, baseRef);
   const changes: SymbolChange[] = [];
+  let analyzed = 0;
 
   for (const { file, status } of changedFiles) {
+    if (opts.maxFiles !== undefined && analyzed >= opts.maxFiles) break;
     const ext = path.extname(file);
     if (!ANALYZABLE_EXTENSIONS.has(ext)) {
       // Non-source or genuinely unrecognized extension: skip silently (matches
@@ -348,6 +360,7 @@ export async function captureInFlightChanges(opts: CaptureOpts): Promise<SymbolC
       // emitting noise for lockfiles, markdown, JSON config, etc.
       continue;
     }
+    analyzed++;
 
     if (status === 'deleted') {
       if (TS_JS_EXTENSIONS.has(ext)) {

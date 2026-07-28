@@ -52,6 +52,51 @@ export interface ConceptualCoordinate {
 }
 
 /**
+ * Kind of contract surface a lane produces (Coordination Engine §3).
+ * Deliberately the vocabulary the analysis already speaks (interface
+ * signatures / ICELOT contracts) — no new contract syntax was invented.
+ */
+export type ContractKind = 'export' | 'signature' | 'endpoint' | 'type' | 'event' | 'schema';
+
+/**
+ * A contract this lane will create/change (DECLARED), or has been observed
+ * changing (OBSERVED) — Coordination Engine §3 "structured intent, reduced".
+ *
+ * CONTRACT IDENTITY is `(kind, name, path?)`. Path-qualified matching is
+ * preferred; a name-only match (a consumer names a contract without a path, or
+ * two same-named contracts exist) is real but reported at LOWER CONFIDENCE and
+ * labeled as such — see `matchContract` in contract-intent.ts.
+ *
+ * `signature` is a STRING on purpose: agents write and read it. The
+ * deterministic drift comparator works on ambient-captured `SymbolChange[]`,
+ * never on parsing this string.
+ *
+ * SCOPE HONESTY: this shape describes signature-shaped surfaces only. It
+ * cannot express (and drift detection cannot detect) semantic/behavioral
+ * change behind an unchanged signature — see `notes` for the human-carried
+ * part, and `detectDeclaredContractDrift`'s header for the explicit limit.
+ */
+export interface DeclaredContract {
+  kind: ContractKind;
+  /** e.g. "buildOutcomeRecord", "GET /v1/coordination/outcomes". */
+  name: string;
+  /** Where it lives / will live. Absent on a not-yet-localized declaration. */
+  path?: string;
+  /** Legible shape: "(ws: string, opts?: {limit}) => OutcomeRecord[]". */
+  signature?: string;
+  /** Semantics a signature can't carry ("throws on empty ws"). */
+  notes?: string;
+  /**
+   * `'declared'` = the lane said it would produce this (intent).
+   * `'observed'` = auto-lifted from ambient capture (evidence of activity).
+   * An explicit declaration always WINS over an observation for the same
+   * identity; both are visible on the board, labeled (see `mergeContracts`).
+   * Absent is treated as `'declared'` (the pre-auto-derivation default).
+   */
+  status?: 'declared' | 'observed';
+}
+
+/**
  * The unit of "announced intent" an agent registers before acting.
  * Last-writer-wins per `claim_id`, ordered by the monotonic `seq` (presence.ts).
  */
@@ -92,7 +137,37 @@ export interface WorkClaim {
   branch?: string;
   /** Organization scope (§WS-F tenancy). Optional/additive — see `TenantScoped` in security.ts. */
   org_id?: string;
+  /**
+   * Contracts this lane will create/change (Coordination Engine §3). Mixed
+   * provenance: explicitly declared entries plus entries auto-lifted from this
+   * lane's ambient `SymbolChange[]` with `status:'observed'`. Optional and
+   * additive — an absent `produces` reads exactly as it did before this field
+   * existed. Peers build against DECLARED contracts before they are written
+   * (the manually-proven 2026-07-20 pattern, now a fabric primitive).
+   */
+  produces?: DeclaredContract[];
+  /**
+   * Plain contract NAMES this lane builds against (Coordination Engine §3).
+   * Populated explicitly, or auto-recorded when this lane's ambient diff
+   * references a contract a PEER claim declares/produces. This is the edge
+   * that makes drift surprises deliverable to the lanes that actually care —
+   * drift detection compares one producer's diff against ITS consumers, never
+   * against every claim.
+   */
+  consumes?: string[];
 }
+
+/**
+ * DERIVED, never declared (Coordination Engine §3: "phase is derived, never
+ * declared"). Display-only: no writer reports it, nothing branches on it, and
+ * it is recomputed at read time so it can never go stale.
+ *  - `exploring`  — an active claim with no observed ambient edits yet
+ *                   (frequently also a path-less claim: an arriving agent that
+ *                   has not localized its footprint).
+ *  - `building`   — ambient edits observed under this claim.
+ *  - `verifying`  — test-file telemetry observed under this claim.
+ */
+export type DerivedPhase = 'exploring' | 'building' | 'verifying';
 
 /** A workspace's live agent roster (WS-C `presence.ts` / `get_active_agents`). */
 export interface AgentPresence {

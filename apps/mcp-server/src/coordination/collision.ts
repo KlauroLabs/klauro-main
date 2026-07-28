@@ -4,10 +4,13 @@
  * capabilities) is passed in by the caller. No transport, no storage.
  */
 
+import type { SymbolChange } from './conceptual-conflict';
+import type { ContractMatchConfidence } from './contract-intent';
 import type {
   BlastIntersectionFinding,
   CasEdgeRef,
   CollisionReport,
+  ContractKind,
   DriftFinding,
   DuplicateFinding,
   InFlightSnapshot,
@@ -171,6 +174,159 @@ function detectBlastIntersections(
         with_claim_id: b.claim_id,
         symbols: shared,
         evidence: shared.map((s) => `blast_radius:${s}`),
+      });
+    }
+  }
+  return findings;
+}
+
+// ---------------------------------------------------------------------------
+// Detector 5: DECLARED-CONTRACT DRIFT (Coordination Engine §3, wave 2)
+// ---------------------------------------------------------------------------
+
+/**
+ * One divergence between what a producer DECLARED it would produce and what
+ * its ambient diff actually did, addressed to a lane that consumes it.
+ */
+export interface DeclaredContractDriftFinding {
+  producer_agent_id: string;
+  producer_claim_id: string;
+  consumer_agent_id: string;
+  consumer_claim_id: string;
+  /** The contract name the producer declared and the consumer builds against. */
+  contract: string;
+  contract_kind: ContractKind;
+  reason: 'declared_contract_drift' | 'declared_contract_missing';
+  /** `name_only` matches are real but LOWER CONFIDENCE — labeled, never promoted. */
+  confidence: ContractMatchConfidence;
+  explanation: string;
+  evidence: string[];
+}
+
+function normalizeSignature(sig: string | undefined): string | undefined {
+  if (sig === undefined) return undefined;
+  return sig.replace(/\s+/g, ' ').replace(/\s*([(),:;<>|&=])\s*/g, '$1').trim();
+}
+
+function samePathish(a: string | undefined, b: string | undefined): boolean {
+  if (!a || !b) return false;
+  return normalizePath(a.replace(/\\/g, '/')) === normalizePath(b.replace(/\\/g, '/'));
+}
+
+/**
+ * DETERMINISTIC declared-contract drift (§3 "divergence auto-fires a
+ * surprise"). Compares one producer's ACTUAL `SymbolChange[]` against the
+ * contracts that producer DECLARED, and emits a finding per affected consumer
+ * — i.e. per neighborhood claim whose `consumes` names the contract (declared
+ * explicitly or auto-recorded by §3's observation path). Delivery rides the
+ * claim-scoped drain (§5); the finding is ADVISORY — the consumer decides.
+ *
+ * SCOPE, STATED EXPLICITLY: this covers SIGNATURE-SHAPED DRIFT ONLY — the
+ * shape a contract exposes (params, return type, nullability, existence,
+ * location). It CANNOT and does not detect SEMANTIC or BEHAVIORAL change: a
+ * producer that keeps `getUser(id: string): User` byte-identical while
+ * changing what the function MEANS (different ordering, different error
+ * semantics, a now-cached read, a changed invariant) produces no finding here.
+ * Body edits are excluded from contract lifting for exactly this reason — a
+ * `body` change is precisely the case this layer is honest about not knowing.
+ * Behavioral divergence is conceptual-conflict.ts's territory (detectors 4/5),
+ * not this one's.
+ *
+ * SCALE: O(producer's declared contracts × its own consumers) — the consumer
+ * edges live on claims, so this never scans all claims (§3 scale note).
+ *
+ * ATTRIBUTION (§13): `producerChanges` must be the producer's OWN attributed
+ * diff. On a shared tree the caller disables this detector rather than blaming
+ * an agent for another agent's edit.
+ */
+export function detectDeclaredContractDrift(
+  producerClaim: WorkClaim,
+  neighborhoodClaims: WorkClaim[],
+  producerChanges: SymbolChange[]
+): DeclaredContractDriftFinding[] {
+  const declared = (producerClaim.produces ?? []).filter((c) => (c.status ?? 'declared') === 'declared');
+  if (declared.length === 0) return [];
+
+  const findings: DeclaredContractDriftFinding[] = [];
+  const producerReleased = producerClaim.status === 'released';
+
+  for (const contract of declared) {
+    const consumers = neighborhoodClaims.filter(
+      (c) => c.claim_id !== producerClaim.claim_id && (c.consumes ?? []).includes(contract.name)
+    );
+    if (consumers.length === 0) continue; // nobody depends on it — nothing to deliver.
+
+    const byName = producerChanges.filter((ch) => ch.name === contract.name);
+    const pathQualified = byName.filter((ch) => samePathish(ch.file, contract.path));
+    const matched = pathQualified.length > 0 ? pathQualified : byName;
+    const confidence: ContractMatchConfidence =
+      pathQualified.length > 0 ? 'path_qualified' : 'name_only';
+
+    let reason: DeclaredContractDriftFinding['reason'] | undefined;
+    let explanation = '';
+    const evidence: string[] = [];
+
+    if (matched.length === 0) {
+      // Declared but never produced. Only a FINDING once the producer has
+      // released — mid-flight, "not written yet" is the normal state of a
+      // declaration and firing on it would make declaring a liability.
+      if (producerReleased) {
+        reason = 'declared_contract_missing';
+        explanation =
+          `${producerClaim.agent_id} released its claim without producing declared ` +
+          `${contract.kind} "${contract.name}"${contract.path ? ` in ${contract.path}` : ''}.`;
+        evidence.push(`declared:${contract.kind}:${contract.name}`, 'producer_released_without_change');
+      }
+    } else {
+      const deleted = matched.find((ch) => ch.change_kind === 'delete');
+      const renamed = matched.find((ch) => ch.change_kind === 'rename');
+      const declaredSig = normalizeSignature(contract.signature);
+      const divergent = declaredSig
+        ? matched.find((ch) => {
+            const actual = normalizeSignature(ch.after?.signature);
+            return !!actual && actual !== declaredSig;
+          })
+        : undefined;
+      if (deleted) {
+        reason = 'declared_contract_missing';
+        explanation = `${producerClaim.agent_id} DELETED declared ${contract.kind} "${contract.name}" (${deleted.file}).`;
+        evidence.push(`declared:${contract.name}`, `observed:delete:${deleted.symbol_id}`);
+      } else if (renamed) {
+        reason = 'declared_contract_drift';
+        explanation =
+          `${producerClaim.agent_id} RENAMED declared ${contract.kind} "${contract.name}" ` +
+          `to "${renamed.after?.name ?? '?'}" (${renamed.file}).`;
+        evidence.push(`declared:${contract.name}`, `observed:rename:${renamed.symbol_id}`);
+      } else if (divergent) {
+        reason = 'declared_contract_drift';
+        explanation =
+          `${producerClaim.agent_id}'s in-flight ${contract.kind} "${contract.name}" no longer matches its ` +
+          `declaration — declared "${contract.signature}", observed "${divergent.after?.signature}" ` +
+          `(${divergent.change_kind}, ${divergent.file}). Signature-shaped drift only; behavior is not compared.`;
+        evidence.push(
+          `declared_signature:${contract.signature}`,
+          `observed_signature:${divergent.after?.signature}`,
+          `change_kind:${divergent.change_kind}`
+        );
+      }
+    }
+
+    if (!reason) continue;
+    for (const consumer of consumers) {
+      findings.push({
+        producer_agent_id: producerClaim.agent_id,
+        producer_claim_id: producerClaim.claim_id,
+        consumer_agent_id: consumer.agent_id,
+        consumer_claim_id: consumer.claim_id,
+        contract: contract.name,
+        contract_kind: contract.kind,
+        reason,
+        confidence,
+        explanation:
+          confidence === 'name_only'
+            ? `${explanation} [LOWER CONFIDENCE: matched by name only — no path-qualified match]`
+            : explanation,
+        evidence: [...evidence, `consumer:${consumer.agent_id}`, `match:${confidence}`],
       });
     }
   }

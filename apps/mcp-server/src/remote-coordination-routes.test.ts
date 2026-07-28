@@ -278,3 +278,50 @@ test('getRemoteFabConfig: unset FAB_REMOTE_URL means local mode (zero breaking c
     token: 't',
   });
 });
+
+/**
+ * Coordination Engine §3 wire compatibility (§16 migration): the advisory
+ * claim route accepts `produces`/`consumes` ADDITIVELY and stores them on the
+ * server's board, so a cross-machine fleet sees the same contract board a
+ * same-machine one does. Old clients send neither and are unaffected.
+ */
+test('advisory claim route carries produces/consumes additively onto the server board', async () => {
+  const boot = await bootService();
+  try {
+    const res = await fetch(`${boot.baseUrl}/v1/coordination/claim`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${TOKEN}` },
+      body: JSON.stringify({
+        mode: 'advisory',
+        workspace: 'ws-contracts',
+        agent_id: 'producer',
+        intent: 'build the outcome record',
+        paths: ['src/outcomes.ts'],
+        produces: [{ kind: 'export', name: 'buildOutcomeRecord', path: 'src/outcomes.ts', signature: '(ws: string) => OutcomeRecord[]' }],
+        consumes: ['getBoardInfo'],
+      }),
+    });
+    assert.equal(res.status, 200);
+
+    const { getActiveClaims } = await import('./coordination/local-store');
+    const [claim] = await getActiveClaims('ws-contracts');
+    assert.equal(claim.produces?.[0].name, 'buildOutcomeRecord');
+    assert.deepEqual(claim.consumes, ['getBoardInfo']);
+
+    // A legacy client sending neither is byte-identical to before: no empty
+    // arrays materialize on the board.
+    const legacy = await fetch(`${boot.baseUrl}/v1/coordination/claim`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${TOKEN}` },
+      body: JSON.stringify({ mode: 'advisory', workspace: 'ws-contracts', agent_id: 'legacy', intent: 'old client' }),
+    });
+    assert.equal(legacy.status, 200);
+    const claims = await getActiveClaims('ws-contracts');
+    const old = claims.find((c) => c.agent_id === 'legacy')!;
+    assert.equal(old.produces, undefined);
+    assert.equal(old.consumes, undefined);
+  } finally {
+    boot.server.close();
+    boot.restoreEnv();
+  }
+});
