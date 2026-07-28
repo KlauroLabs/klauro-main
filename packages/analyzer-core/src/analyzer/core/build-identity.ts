@@ -9,9 +9,19 @@ declare const __KLAURO_VERSION__: string | undefined;
 export interface BuildIdentity {
   version: string;
   base_version: string;
+  /** The sha that REPRODUCES the running code. When a deploy shipped an
+   *  uncommitted tree this is the snapshot commit deploy.sh recorded for it,
+   *  never the (misleading) HEAD the tree merely sat on top of. */
   git_sha: string;
   build_time?: string;
   channel: 'bundle' | 'dev';
+  /** True when the deployed tree had uncommitted changes. `git_sha` still
+   *  resolves to real code (the snapshot), but that commit is not on any
+   *  branch and was never reviewed. */
+  dirty?: boolean;
+  /** HEAD of the deploying checkout when `dirty` is set — the committed
+   *  ancestor the snapshot was taken against. */
+  head_sha?: string;
 }
 
 const FALLBACK_BASE_VERSION = '1.0.0';
@@ -46,6 +56,12 @@ function resolveDevBaseVersion(): string {
 export interface DevBuildStamp {
   git_sha?: string;
   build_time?: string;
+  /** Set by deploy.sh when --allow-dirty shipped an uncommitted tree. */
+  dirty?: boolean;
+  /** Sha of the snapshot commit deploy.sh wrote for that uncommitted tree, so
+   *  the deployed bytes remain reproducible (`git checkout <snapshot_sha>`)
+   *  even though nothing was landed on a branch. */
+  snapshot_sha?: string;
 }
 
 function resolveBuildStampPath(): string {
@@ -80,6 +96,10 @@ export function readDevBuildStamp(stampPath: string): DevBuildStamp | null {
  * fallback exactly as before.
  */
 export function resolveDevGitSha(stamp: DevBuildStamp | null): string {
+  // A dirty deploy's HEAD does NOT reproduce the shipped bytes — the snapshot
+  // commit does. Prefer it, so a prod analysis is always traceable to code
+  // that actually exists in the object store.
+  if (stamp?.dirty && stamp.snapshot_sha && /^[0-9a-f]{7,40}$/.test(stamp.snapshot_sha)) return stamp.snapshot_sha;
   if (stamp?.git_sha && /^[0-9a-f]{7,40}$/.test(stamp.git_sha)) return stamp.git_sha;
   const result = spawnSync('git', ['rev-parse', '--short=12', 'HEAD'], {
     cwd: __dirname,
@@ -113,12 +133,14 @@ export function getBuildIdentity(): BuildIdentity {
   const stamp = readDevBuildStamp(resolveBuildStampPath());
   const baseVersion = resolveDevBaseVersion();
   const gitSha = resolveDevGitSha(stamp);
+  const dirty = stamp?.dirty === true;
   cached = {
-    version: `${baseVersion}-dev+${gitSha}`,
+    version: `${baseVersion}-dev+${gitSha}${dirty ? '-dirty' : ''}`,
     base_version: baseVersion,
     git_sha: gitSha,
     build_time: stamp?.build_time,
     channel: 'dev',
+    ...(dirty ? { dirty: true, head_sha: stamp?.git_sha } : {}),
   };
   return cached;
 }
@@ -132,6 +154,9 @@ export function formatBuildIdentity(): string {
   const identity = getBuildIdentity();
   if (identity.channel === 'bundle') {
     return `${identity.version} (bundle, built ${identity.build_time || 'unknown time'})`;
+  }
+  if (identity.dirty) {
+    return `${identity.version} (dev checkout, UNCOMMITTED tree snapshotted as ${identity.git_sha}, on top of ${identity.head_sha || 'unknown'})`;
   }
   return `${identity.version} (dev checkout, git ${identity.git_sha})`;
 }

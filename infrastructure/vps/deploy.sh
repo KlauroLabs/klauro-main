@@ -60,8 +60,10 @@ done
 # A committed tree is an atomic, reviewable snapshot; the working tree is not.
 # Refuse by default. `--allow-dirty` is the deliberate escape hatch (local
 # experiments against a throwaway box), never the norm.
+DIRTY_DEPLOY=0
+SNAPSHOT_SHA=""
 if [ "$ALLOW_DIRTY" != "1" ]; then
-  DIRTY="$(git -C "$APP_DIR" status --porcelain 2>/dev/null || true)"
+  DIRTY="$(git -C "$APP_DIR" status --porcelain -uall 2>/dev/null || true)"
   if [ -n "$DIRTY" ]; then
     echo "ERROR: refusing to deploy a DIRTY working tree — this deploy ships the tree verbatim," >&2
     echo "       so uncommitted (or half-written) files would go straight to production." >&2
@@ -71,6 +73,47 @@ if [ "$ALLOW_DIRTY" != "1" ]; then
     echo "" >&2
     echo "       Commit (or stash) the above, then re-run. To override: --allow-dirty" >&2
     exit 1
+  fi
+fi
+
+# --- guard: a build stamp must never be producible from an untraceable tree --
+# The dirty guard above is the primary defence, but --allow-dirty existed as an
+# escape hatch that produced a stamp reading HEAD's sha while shipping bytes
+# that were NOT that commit — exactly how prod ended up serving "v1.0.127"
+# stamped with a v1.0.126 sha, leaving hosted analyses impossible to trace back
+# to code. An escape hatch is fine; an untraceable one is not.
+#
+# So when --allow-dirty is used we do not lie: write the working tree to a real
+# commit object FIRST (a detached snapshot, never a branch, never touching
+# .git/index — a concurrent editor's staged state must survive this), stamp it
+# as the reproducing sha, and mark the build dirty. `git checkout <snapshot>`
+# then reproduces production byte-for-byte. If a snapshot cannot be produced —
+# no git, no repo — we refuse outright rather than ship an unattributable
+# build.
+if [ "$ALLOW_DIRTY" = "1" ]; then
+  DIRTY="$(git -C "$APP_DIR" status --porcelain -uall 2>/dev/null || true)"
+  if [ -n "$DIRTY" ]; then
+    DIRTY_DEPLOY=1
+    if ! git -C "$APP_DIR" rev-parse --git-dir >/dev/null 2>&1; then
+      echo "ERROR: --allow-dirty needs a git repo to snapshot the tree into; refusing an untraceable build." >&2
+      exit 1
+    fi
+    SNAPSHOT_INDEX="$(mktemp -t klauro-deploy-snapshot-index)"
+    if ! SNAPSHOT_SHA="$(
+      cd "$APP_DIR" &&
+      GIT_INDEX_FILE="$SNAPSHOT_INDEX" git read-tree HEAD &&
+      GIT_INDEX_FILE="$SNAPSHOT_INDEX" git add -A &&
+      SNAPSHOT_TREE="$(GIT_INDEX_FILE="$SNAPSHOT_INDEX" git write-tree)" &&
+      git commit-tree "$SNAPSHOT_TREE" -p HEAD \
+        -m "deploy snapshot: uncommitted tree shipped by deploy.sh --allow-dirty at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    )"; then
+      rm -f "$SNAPSHOT_INDEX"
+      echo "ERROR: could not snapshot the dirty tree into a commit; refusing an untraceable build." >&2
+      exit 1
+    fi
+    rm -f "$SNAPSHOT_INDEX"
+    SNAPSHOT_SHA="$(git -C "$APP_DIR" rev-parse --short=12 "$SNAPSHOT_SHA")"
+    echo "==> DIRTY deploy: working tree snapshotted as $SNAPSHOT_SHA (reproduce with: git checkout $SNAPSHOT_SHA)" >&2
   fi
 fi
 
@@ -188,10 +231,17 @@ rsync -az -e "$SSH" infrastructure/vps/docker-compose.yml "$DEST:/opt/klauro/doc
 # over the (on-prod, always-failing) git invocation.
 GIT_SHA="$(git -C "$APP_DIR" rev-parse --short=12 HEAD)"
 BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-echo "==> Stamping build identity ($GIT_SHA @ $BUILD_TIME)"
-$SSH "$DEST" "cat > /opt/klauro/source/apps/mcp-server/.klauro-build-stamp.json" <<STAMP
+if [ "$DIRTY_DEPLOY" = "1" ]; then
+  echo "==> Stamping build identity (DIRTY: snapshot $SNAPSHOT_SHA on top of $GIT_SHA @ $BUILD_TIME)"
+  $SSH "$DEST" "cat > /opt/klauro/source/apps/mcp-server/.klauro-build-stamp.json" <<STAMP
+{"git_sha": "$GIT_SHA", "build_time": "$BUILD_TIME", "dirty": true, "snapshot_sha": "$SNAPSHOT_SHA"}
+STAMP
+else
+  echo "==> Stamping build identity ($GIT_SHA @ $BUILD_TIME)"
+  $SSH "$DEST" "cat > /opt/klauro/source/apps/mcp-server/.klauro-build-stamp.json" <<STAMP
 {"git_sha": "$GIT_SHA", "build_time": "$BUILD_TIME"}
 STAMP
+fi
 # .dockerignore previously dropped that file from every Docker build context
 # (its own `.klauro*` exclusion patterns matched the stamp file too — fixed
 # with a negation entry), so this SSH-written file alone never reached the

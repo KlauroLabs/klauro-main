@@ -47,6 +47,7 @@ import { getCachedDeployableAnalyses, scopeCasToDasUnit } from './deployable-ana
 import { initSelfTelemetry, instrumentHttpHandler, mapSdkEvent } from './self-telemetry';
 import type { CasRuntimeEvent } from '../../../packages/klauro-sdk-js/src/types';
 import { executeHostedProjectQuery, HOSTED_PROJECT_QUERY_TOOL_NAMES } from './hosted-project-query';
+import { getBuildIdentity } from '../../../packages/analyzer-core/src/analyzer/core/build-identity';
 import { z } from 'zod';
 
 const DEFAULT_PORT = 8787;
@@ -216,7 +217,23 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
       }
 
       if (request.method === 'GET' && route === '/health') {
-        writeJson(response, 200, { status: 'ok', service: 'klauro-remote-analyzer', version: SERVICE_VERSION });
+        // git_sha is the sha that REPRODUCES this running process. Without it
+        // on /health a deploy can report success while nobody can say which
+        // code produced a given hosted analysis (prod ran an unreproducible
+        // tree for hours under a version string that looked fine).
+        const buildIdentity = getBuildIdentity();
+        writeJson(response, 200, {
+          status: 'ok',
+          service: 'klauro-remote-analyzer',
+          version: SERVICE_VERSION,
+          build: {
+            git_sha: buildIdentity.git_sha,
+            build_time: buildIdentity.build_time ?? null,
+            channel: buildIdentity.channel,
+            dirty: buildIdentity.dirty === true,
+            ...(buildIdentity.dirty ? { head_sha: buildIdentity.head_sha ?? null } : {}),
+          },
+        });
         return;
       }
 

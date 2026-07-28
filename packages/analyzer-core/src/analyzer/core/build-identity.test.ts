@@ -163,3 +163,21 @@ test('forceRefresh bypasses the throttle cache', async () => {
   });
   assert.equal(second.running_stale, false);
 });
+
+test('resolveDevGitSha: a DIRTY deploy reports the snapshot commit, not the HEAD it merely sat on', () => {
+  // prod once served a tree stamped with an ancestor's sha, so no hosted
+  // analysis could be traced to the code that produced it. A dirty deploy now
+  // carries a real snapshot commit and that is what identifies the build.
+  const sha = resolveDevGitSha({
+    git_sha: '2235c82c0000',
+    dirty: true,
+    snapshot_sha: 'a1b2c3d4e5f6',
+    build_time: '2026-07-27T04:00:00Z',
+  });
+  assert.equal(sha, 'a1b2c3d4e5f6');
+});
+
+test('resolveDevGitSha: a dirty stamp with no usable snapshot still falls back to the stamped HEAD sha', () => {
+  const sha = resolveDevGitSha({ git_sha: '2235c82c0000', dirty: true, snapshot_sha: 'nope!' });
+  assert.equal(sha, '2235c82c0000');
+});
