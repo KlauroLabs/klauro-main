@@ -57,6 +57,10 @@ apps/marketing-site/node_modules/
 breadth-codex*.md
 # Release packing output (klauro tarball + manifest staged for VPS upload)
 apps/mcp-server/.pack/
+# Build output: scripts/build-bundle.mjs regenerates it (with the current
+# version) on every build. It used to be TRACKED, so any build dirtied the tree
+# and the release step stamped the published manifest git_sha '<sha>-dirty'.
+apps/mcp-server/.customer-package/
 
 # Deploy-time build stamp (infrastructure/vps/deploy.sh writes this on the VPS
 # copy only; a local checkout resolves its build identity from real .git)
