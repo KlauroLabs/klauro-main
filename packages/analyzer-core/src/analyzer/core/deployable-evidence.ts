@@ -509,7 +509,7 @@ function rebundleBinsIntoServiceUnits(items: DeployableEvidence[]): void {
     // Exact identity (candidate's own name equals the service unit's own
     // name) is unambiguous and must win over an ENTRYPOINT/CMD-token
     // coincidence, regardless of array order. Real hosted defect (2026-07,
-    // Zerac multi-binary cargo workspace): a monorepo-root container whose
+    // multi-binary workspace repos): a monorepo-root container whose
     // entrypoint dispatches between several binaries (`entrypoint_member:
     // "coordinator"`, one of the names it can run) sorted BEFORE the
     // "coordinator" compose-service row that names the exact same bin — a

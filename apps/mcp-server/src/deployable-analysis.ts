@@ -158,12 +158,12 @@ function shipsPathRoots(
 ): DeployableRoot[] {
   // entrypoint_member is folded into the same token set as ships_paths: a
   // Tier-1 row that ships no COPY/cargo-build-arg evidence of its own but
-  // whose Dockerfile ENTRYPOINT/CMD names a real bin (e.g. Zerac's "gateway"
+  // whose Dockerfile ENTRYPOINT/CMD names a real bin (e.g. a "gateway"
   // service — no ships_paths, but `entrypoint/cmd: ["/bin/agent", "run"]`,
   // the SAME binary "agent"'s own compose-service row ships) is still
   // concretely identified by that name, just via a different evidence field.
   // Without this, "gateway" had zero concrete roots anywhere and fell back to
-  // the degenerate '.' blanket match — the one Zerac unit that stayed
+  // the degenerate '.' blanket match — the one unit that stayed
   // matching the entire codebase after the ships_paths fix landed.
   const tokens = [...(unit.ships_paths || []), ...(unit.entrypoint_member ? [unit.entrypoint_member] : [])]
     .map(normalizeShipToken)
@@ -203,7 +203,7 @@ function unitRoots(
   // maximally-weak match: entry-point-deployable.ts's isPathPrefix treats '.'
   // as a prefix of EVERY file, so if it were kept in the seed-root list every
   // node in the whole repo would seed this one unit's closure. Real hosted
-  // defect (2026-07, Zerac multi-binary cargo workspace): every one of 9 DAS
+  // defect (2026-07, multi-binary workspace repos): every one of 9 DAS
   // units had `root_path: "."` (compose `build: .` and installer scripts at
   // repo root are both completely normal), so EVERY unit's seed set was the
   // entire codebase — nodes=12031/eps=341/exits=5053 identical across all
@@ -216,7 +216,7 @@ function unitRoots(
   // separate bin layout) does the degenerate own root remain the seed — that
   // repo-root shape is real, not a bug, for a true single-deployable CAS.
   // Fallback for the redundant-multi-service-dispatch shape (real hosted
-  // case, Zerac's "unnamed-service" root container): its own ships_paths
+  // case, an "unnamed-service" root container): its own ships_paths
   // names 5 binaries, every one of which ALSO has its own dedicated
   // compose-service Tier-1 row that wins the `bundled_into` pointer, so
   // bundledMembersOf returns nothing for this row even though its ships_paths
