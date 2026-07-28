@@ -70,3 +70,6 @@ apps/mcp-server/.klauro-build-stamp.json
 **/tsconfig.tsbuildinfo
 logs/
 apps/mcp-server/src/gauntlet/scorecard-out/
+
+# esbuild output for the hosted analyzer bundles (build artifact, never committed)
+apps/mcp-server/dist-hosted/
