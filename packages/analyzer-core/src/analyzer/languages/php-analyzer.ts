@@ -2176,11 +2176,19 @@ export class PHPAnalyzer extends BaseAnalyzer {
   }
 
   private isPropertyDeclaration(line: string): boolean {
+    // A typed property with a default value (`private ?int $id = null;`,
+    // `private array $items = [];`) IS a property declaration — Doctrine
+    // entities routinely default nullable/array-typed properties this way,
+    // and `id` (the primary key) is almost always one of them. Excluding any
+    // line containing `=` silently dropped exactly those properties from the
+    // graph. The structural regex in extractProperties (visibility, optional
+    // type, `$name`, optional `= value`) already rejects lines that merely
+    // resemble a declaration, so this check only needs to rule out the
+    // things that clearly aren't one: method signatures/bodies.
     return line.includes('$') &&
            (line.includes('public') || line.includes('private') || line.includes('protected')) &&
            !line.includes('function') &&
-           !line.includes('return') &&
-           !line.includes('=');
+           !line.includes('return');
   }
 
 

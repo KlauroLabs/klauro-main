@@ -31,12 +31,19 @@ const DECLARATION_PATTERNS: Record<RegexAnalyzedLanguage, RegExp> = {
   php: /\b(?:function|class|interface|trait|enum)\s+\w/,
 };
 
+// PHP treats `#` as a line comment, but `#[` starts an attribute
+// (`#[ORM\Column(...)]`), a balanced, often multi-line construct introduced
+// in PHP 8. Matching `#[...]` as a line comment truncates the attribute at
+// the first newline, discarding its closing `)`/`]` and making the file look
+// delimiter-imbalanced even though it parses cleanly. Exclude `#[` from the
+// PHP line-comment match so attributes are left in place for the delimiter
+// count (their internal strings are already stripped beforehand).
 const LINE_COMMENT_PATTERNS: Record<RegexAnalyzedLanguage, RegExp> = {
   python: /#[^\n]*/g,
   java: /\/\/[^\n]*/g,
   ruby: /#[^\n]*/g,
   dart: /\/\/[^\n]*/g,
-  php: /(?:\/\/|#)[^\n]*/g,
+  php: /\/\/[^\n]*|#(?!\[)[^\n]*/g,
 };
 
 const BLOCK_COMMENT_LANGUAGES = new Set<RegexAnalyzedLanguage>(['java', 'dart', 'php']);
