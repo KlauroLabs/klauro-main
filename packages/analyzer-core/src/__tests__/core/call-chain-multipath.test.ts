@@ -92,7 +92,7 @@ describe('buildCallChains multi-path exploration', () => {
     expect(chains[0].exit_point?.exit_point_id).toBe('xDb');
   });
 
-  test('among same-value exits, picks the shortest path', () => {
+  test('among same-value exits, picks the DEEPEST path (the fuller narrative)', () => {
     // handler -> nearRepo (database exit, depth 1)
     // handler -> a -> b -> farRepo (database exit, depth 3)
     const nodes = [node('handler'), node('nearRepo'), node('a'), node('b'), node('farRepo')];
@@ -109,8 +109,55 @@ describe('buildCallChains multi-path exploration', () => {
       [exit('xFar', 'farRepo', 'database'), exit('xNear', 'nearRepo', 'database')]
     );
 
-    expect(chains[0].exit_point?.exit_point_id).toBe('xNear');
-    expect(chains[0].call_path.map(s => s.node_id)).toEqual(['handler', 'nearRepo']);
+    // CONTRACT CHANGE (comprehension lane): shortest-path-wins pinned a flow's
+    // terminus to the FIRST side effect on the way out, which on real repos
+    // meant the entry function's own first outbound call — the measured cause
+    // of a flow population that was 70-96% single-step. An exit point is
+    // something a chain passes through; the terminus a reader wants is the LAST
+    // thing it does. At equal exit VALUE the deeper path is therefore the
+    // better answer. (Exit value still dominates: the test above still prefers
+    // a distant database exit over a nearer analytics one.)
+    expect(chains[0].exit_point?.exit_point_id).toBe('xFar');
+    expect(chains[0].call_path.map(s => s.node_id)).toEqual(['handler', 'a', 'b', 'farRepo']);
+  });
+
+  test('an exit point is not a wall: the walk continues past an exit-bearing node that still calls in-repo code', () => {
+    // REGRESSION (comprehension lane): entry -> mid -> repo, where `mid` is in
+    // a DIFFERENT PACKAGE from the entry and itself carries an sdk exit. The
+    // old walk stopped dead at `mid` (any exit-bearing node ended the chain,
+    // and a rank-0 exit abandoned the BFS outright), so the flow terminated at
+    // an in-repo function and reported an SDK boundary that the chain had not
+    // actually reached the end of. The chain must keep going and terminate at
+    // the real terminal.
+    const nodes = [node('pkgA/entry'), node('pkgB/mid'), node('pkgB/repo')];
+    const edges = [edge('pkgA/entry', 'pkgB/mid'), edge('pkgB/mid', 'pkgB/repo')];
+    const chains = buildChains(
+      nodes,
+      edges,
+      [entry('ep1', 'pkgA/entry')],
+      [exit('xMidSdk', 'pkgB/mid', 'sdk'), exit('xRepoDb', 'pkgB/repo', 'database')]
+    );
+
+    expect(chains[0].chain_type).toBe('entry-to-exit');
+    expect(chains[0].exit_point?.exit_point_id).toBe('xRepoDb');
+    expect(chains[0].call_path.map(s => s.node_id)).toEqual(['pkgA/entry', 'pkgB/mid', 'pkgB/repo']);
+  });
+
+  test('a genuinely terminal exit-bearing node with nowhere left to go still ends the chain', () => {
+    // The other half of the same rule: honest behavior at a real boundary. A
+    // node whose only outbound work is the third-party call IS the terminus.
+    const nodes = [node('handler'), node('stripeClient')];
+    const edges = [edge('handler', 'stripeClient')];
+    const chains = buildChains(
+      nodes,
+      edges,
+      [entry('ep1', 'handler')],
+      [exit('xStripe', 'stripeClient', 'sdk')]
+    );
+
+    expect(chains[0].chain_type).toBe('entry-to-exit');
+    expect(chains[0].exit_point?.exit_point_id).toBe('xStripe');
+    expect(chains[0].call_path.map(s => s.node_id)).toEqual(['handler', 'stripeClient']);
   });
 
   test('deterministic: identical chains across runs and across input edge order', () => {

@@ -129,6 +129,7 @@ import { relativizeProjectPaths } from './relativize-project-paths';
 import { isRegisteredManifest, isRegisteredSourceExtension, isPackageBoundaryManifest } from './language-registry';
 import { discoverWorkspaceGlobRootsWithoutManifest } from './workspace-globs';
 import { CallGraphBuilder } from './call-graph-builder';
+import { internalizeInRepoCalls } from './in-repo-call-resolution';
 import { DomainExtractor } from './domain-extractor';
 import { WorkflowDetector } from './workflow-detector';
 import { CapabilityDetector } from './capability-detector';
@@ -1631,6 +1632,26 @@ export class AnalyzerOrchestrator {
     this.applyCanonicalOrdering(allNodes, allEdges, allEntryPoints, allExitPoints, allLibraries);
     this.linkRouteHandlers(allNodes, allEdges, allEntryPoints);
     this.linkHookUsageFetchers(allNodes, allEdges);
+    // IN-REPO CALL RESOLUTION (in-repo-call-resolution.ts): several analyzers
+    // classify a call by SYNTAX (`Type::method(...)`, a symbol imported from
+    // `@/app/x`) and emit an `sdk` exit point for it WITHOUT emitting the
+    // `calls` edge to the callee's own node — even when that node exists in
+    // this same graph. Both halves compound downstream: traversal has no edge
+    // to follow, and the spurious exit point is simultaneously a
+    // 'call_external' role fact and a terminus candidate, so the one-node
+    // chain gets labeled "calls external service X" and declared complete.
+    // This pass resolves those callees against real in-repo declarations,
+    // adds the missing `calls` edges and drops the exit points that were
+    // never exits. Runs HERE — after twins merge (so resolution sees a
+    // unified graph) and before call chains / flows / external services /
+    // the index consume it. Abstains on anything it cannot positively
+    // resolve, so a genuine third-party SDK call remains a terminus.
+    const internalizedCalls = internalizeInRepoCalls({
+      nodes: allNodes, edges: allEdges, exitPoints: allExitPoints, libraries: allLibraries,
+    });
+    if (process.env.KLAURO_DEBUG_ANALYZE === '1') {
+      console.error('[Klauro] in-repo call resolution:', JSON.stringify(internalizedCalls));
+    }
     this.addDiscoveredEntryPoints(projectPath, allNodes, allEntryPoints, allEdges);
     this.dedupeHttpEntryPoints(allEntryPoints, projectPath);
     this.dedupeEntryPointTwins(allEntryPoints, projectPath);
@@ -3246,6 +3267,23 @@ export class AnalyzerOrchestrator {
     this.applyCanonicalOrdering(nodes, edges, entryPoints, exitPoints, previousOutput.libraries || []);
     this.linkRouteHandlers(nodes, edges, entryPoints);
     this.linkHookUsageFetchers(nodes, edges);
+    // IN-REPO CALL RESOLUTION (in-repo-call-resolution.ts): several analyzers
+    // classify a call by SYNTAX (`Type::method(...)`, a symbol imported from
+    // `@/app/x`) and emit an `sdk` exit point for it WITHOUT emitting the
+    // `calls` edge to the callee's own node — even when that node exists in
+    // this same graph. Both halves compound downstream: traversal has no edge
+    // to follow, and the spurious exit point is simultaneously a
+    // 'call_external' role fact and a terminus candidate, so the one-node
+    // chain gets labeled "calls external service X" and declared complete.
+    // This pass resolves those callees against real in-repo declarations,
+    // adds the missing `calls` edges and drops the exit points that were
+    // never exits. Runs HERE — after twins merge (so resolution sees a
+    // unified graph) and before call chains / flows / external services /
+    // the index consume it. Abstains on anything it cannot positively
+    // resolve, so a genuine third-party SDK call remains a terminus.
+    internalizeInRepoCalls({
+      nodes, edges, exitPoints, libraries: previousOutput.libraries || [],
+    });
     this.addDiscoveredEntryPoints(projectPath, nodes, entryPoints, edges);
     this.dedupeHttpEntryPoints(entryPoints, projectPath);
     this.dedupeEntryPointTwins(entryPoints, projectPath);
@@ -9967,6 +10005,7 @@ export class AnalyzerOrchestrator {
         }
 
         const exits = exitBySource.get(currentNodeId);
+        const onwardEdges = adjacency.get(currentNodeId) || [];
         if (exits?.length) {
           const bestHere = [...exits].sort((a, b) =>
             (this.rankChainExit(a) - this.rankChainExit(b)) || a.id.localeCompare(b.id)
@@ -9975,20 +10014,32 @@ export class AnalyzerOrchestrator {
           if (
             !best ||
             rank < best.rank ||
-            (rank === best.rank && depth < best.depth) ||
+            // DEEPER WINS AT EQUAL RANK (was: shallower). An exit point is a
+            // side effect the chain PASSES THROUGH, not necessarily where it
+            // ends; preferring the shallowest same-rank exit pinned the
+            // terminus to the first side effect on the way out — most often
+            // the entry function's own first outbound call. The terminus a
+            // reader wants is the LAST thing the chain does, so among exits of
+            // equal value take the furthest-reached one.
+            (rank === best.rank && depth > best.depth) ||
             (rank === best.rank && depth === best.depth && currentNodeId.localeCompare(best.nodeId) < 0)
           ) {
             best = { nodeId: currentNodeId, depth, exit: bestHere, rank };
           }
-          // A chain terminates at an exit node, so don't expand past it.
-          // Early exit: BFS visits by depth, so the first top-rank exit found
-          // is on a shortest path for that rank.
-          if (best.rank === 0) break;
-          continue;
+          // AN EXIT POINT IS NOT A WALL. Stopping the walk at the first
+          // exit-bearing node (and abandoning the whole BFS on a rank-0 one)
+          // is what made the modal chain ONE NODE LONG: an entry function that
+          // both makes one outbound call AND drives the rest of the feature
+          // was recorded as "entry -> that call, done", and every in-repo hop
+          // behind it went unseen. Only a node with nowhere left to go in this
+          // repo is a real terminus; when in-repo call edges continue out of
+          // this node, keep walking and let the ranking above decide which
+          // exit ends up being the terminus.
+          if (onwardEdges.length === 0) continue;
         }
 
         if (depth >= maxDepth) continue;
-        for (const edge of adjacency.get(currentNodeId) || []) {
+        for (const edge of onwardEdges) {
           if (depthByNode.has(edge.target)) continue;
           depthByNode.set(edge.target, depth + 1);
           parentByNode.set(edge.target, { parent: currentNodeId, edge });

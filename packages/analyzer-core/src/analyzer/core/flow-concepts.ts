@@ -557,6 +557,13 @@ export const TRACEABLE_NODE_TYPES = new Set([
   // this is where the flow's real side effects live in a React app).
   'react_route', 'component', 'functional_component', 'class_component', 'page', 'view',
   'hook_usage', 'hook',
+  // A store node IS a callable hook in the frameworks that emit one
+  // (`useXStore()`), and it is precisely the "where the flow's real side
+  // effects live" node the comment above is about — state reads/writes and the
+  // service calls behind them. Leaving it untraceable meant a component's call
+  // into its own store was a dead end, which on store-centric SPAs is most of
+  // the interesting behavior.
+  'zustand_store', 'store',
 ]);
 
 const VALIDATE_NAME_RE = /\b(validate|guard|check|assert|sanitize|verify|authoriz|authentic)/i;
@@ -722,6 +729,14 @@ function deriveNodeRoleOccurrences(
  *  even when the side-effect character doesn't change (e.g. controller ->
  *  service, both "logic", still worth separating as distinct semantic units
  *  when the node `category`/`type` signals a layer change). */
+/** The source file a node was declared in, from whichever fact the
+ *  contributing analyzer recorded. Used as a segmentation boundary (see
+ *  segmentIntoStepsByRole) — never fabricated: nodes with no file fact answer
+ *  the same sentinel and therefore never split on this axis. */
+export function sourceFileOf(node: CASNode): string {
+  return (node as any).file_path || node.source?.file || '';
+}
+
 export function layerOf(node: CASNode): string {
   if (node.category) return node.category;
   if (['controller', 'handler', 'route', 'resolver', 'gateway', 'react_route'].includes(node.type)) return 'entry';
@@ -873,13 +888,30 @@ function segmentIntoStepsByRole(
   // unrelated business-logic hops in DIFFERENT layers (e.g. a bare
   // dispatching controller and an unrelated downstream helper) stay distinct
   // steps rather than collapsing into one undifferentiated blob.
+  //
+  // FILE BOUNDARY — THE FALLBACK AXIS when layer carries no signal. `layerOf`
+  // discriminates only where a contributing analyzer stamped `category` or a
+  // layered node `type`. On stacks where it does not (systems languages, plain
+  // module code), EVERY node answers 'unknown' and the layer test degenerates
+  // to "always merge": an eight-hop chain collapses into one
+  // "Process (8 functions: …)" blob, which is precisely the one-step flow this
+  // doctrine exists to prevent. When BOTH nodes are layer-unknown, crossing
+  // into a different SOURCE FILE is the best boundary evidence available — a
+  // hop out of the current file is a hop into a different unit of work.
+  // Deliberately NOT applied when either side has a real layer: on a stack
+  // that does stamp layers, layer is the better (coarser, semantic) boundary
+  // and file would shatter one service into one step per helper module.
   const segments: Array<{ role: StepRole; nodes: CASNode[]; evidences: string[] }> = [];
   for (const occ of occurrences) {
     const last = segments[segments.length - 1];
     const sameRole = last && last.role === occ.role;
-    const layerOk = !sameRole || occ.role !== 'process'
-      || layerOf(last!.nodes[last!.nodes.length - 1]) === layerOf(occ.node);
-    if (last && sameRole && layerOk) {
+    const prevNode = last ? last.nodes[last.nodes.length - 1] : undefined;
+    const prevLayer = prevNode ? layerOf(prevNode) : undefined;
+    const layerOk = !sameRole || occ.role !== 'process' || prevLayer === layerOf(occ.node);
+    const bothLayerUnknown = prevLayer === 'unknown' && layerOf(occ.node) === 'unknown';
+    const fileOk = !sameRole || occ.role !== 'process' || !bothLayerUnknown
+      || sourceFileOf(prevNode!) === sourceFileOf(occ.node);
+    if (last && sameRole && layerOk && fileOk) {
       last.nodes.push(occ.node);
       last.evidences.push(occ.evidence);
     } else {
@@ -964,6 +996,31 @@ function externalServiceForNodes(nodeIds: Set<string>, exitPointsByNode: Map<str
     const eps = exitPointsByNode.get(id) || [];
     const ext = eps.find(ep => ['api', 'webhook', 'sdk'].includes(ep.type));
     if (ext) return ext.target?.service_id || ext.target?.sdk || ext.name;
+  }
+  return undefined;
+}
+
+/** The OPERATION invoked at an outbound call — the remote method/function the
+ *  exit point already names, in specificity order. Naming only; never
+ *  fabricated (returns undefined when the analyzer recorded no operation, and
+ *  a bare HTTP verb is not one). */
+function externalOperationForNodes(
+  nodeIds: Set<string>,
+  exitPointsByNode: Map<string, CASExitPoint[]>
+): string | undefined {
+  for (const id of nodeIds) {
+    const ep = (exitPointsByNode.get(id) || []).find(e => ['api', 'webhook', 'sdk'].includes(e.type));
+    if (!ep) continue;
+    const md: any = ep.metadata || {};
+    const candidates = [md.function, ep.target?.endpoint, ep.operation?.action];
+    for (const c of candidates) {
+      // Only an identifier-shaped token is an operation name; a URL path, a
+      // bare "external_call" placeholder or an HTTP verb is not.
+      if (typeof c !== 'string') continue;
+      if (!/^[A-Za-z_$][\w$]*$/.test(c)) continue;
+      if (/^(external_call|call|get|post|put|patch|delete|head|options)$/i.test(c)) continue;
+      return c;
+    }
   }
   return undefined;
 }
@@ -1145,7 +1202,24 @@ function nameStepForRoleImpl(
   }
 
   if (role === 'call_external') {
+    // NAME THE OPERATION, NOT THE IMPORT. "Call <service>" repeated across a
+    // flow population carries almost no information (and, before in-repo call
+    // resolution landed, <service> was frequently a same-repo module). The
+    // OPERATION being invoked is the real fact the exit point already
+    // carries — the remote method/endpoint/action — so lead with it and keep
+    // the service as the qualifier.
     const service = externalServiceForNodes(nodeIds, exitPointsByNode);
+    const operation = externalOperationForNodes(nodeIds, exitPointsByNode);
+    if (operation) {
+      const op = titleCaseWords(operation);
+      return {
+        name: service ? `${op} via ${service}` : op,
+        description: service
+          ? `Calls ${operation} on external service ${service} via ${fnNames}.`
+          : `Calls ${operation} outside the process via ${fnNames}.`,
+        grounded: true,
+      };
+    }
     const name = service ? `Call ${service}` : 'Call External Service';
     return {
       name,
@@ -1175,9 +1249,18 @@ function nameStepForRoleImpl(
   if (verb) {
     return { name: titleizeWord(verb), description: `Core logic (verb "${verb}" on "${verbNode!.name}") via ${fnNames}.`, grounded: true };
   }
-  const name = nodes.length === 1
-    ? `Process (${nodes[0].name})`
-    : `Process (${nodes.length} functions: ${nodes.slice(0, 3).map(n => n.name).join(', ')}${nodes.length > 3 ? ', …' : ''})`;
+  // HONEST FALLBACK, but a LEGIBLE one. There is no entity and no verb here,
+  // so the only real fact left is the identifier the segment's ENTRY-MOST
+  // function was given by its author. Presenting that as a title-cased phrase
+  // ("Add Agent To Notify") is the same deterministic string surgery every
+  // other naming branch uses on a real token — it invents nothing that
+  // `Process (add_agent_to_notify)` did not already show, and unlike the
+  // parenthesized form it actually distinguishes one step from the next.
+  // Still flagged ungrounded: the caller records the honest-fallback gap.
+  const lead = titleCaseWords(nodes[0]?.name || '');
+  const name = lead
+    ? (nodes.length === 1 ? lead : `${lead} (+${nodes.length - 1} more)`)
+    : (nodes.length === 1 ? `Process (${nodes[0].name})` : `Process (${nodes.length} functions)`);
   return {
     name,
     description: `No entity/verb evidence found for this segment; conservative grouping of ${fnNames}.`,
@@ -3420,7 +3503,173 @@ export function computeFlowConcepts(cas: CASOutput, opts: ComputeFlowConceptsOpt
       flows = [...flows, ...partnerPublishers];
     }
   }
-  return pruneBlanketCapabilityRelationships(stitchContinuations(flows, cas));
+  return disambiguateFlowNames(
+    cas,
+    pruneBlanketCapabilityRelationships(stitchContinuations(flows, cas)).map(collapseDuplicateFunctionSteps)
+  );
+}
+
+/**
+ * ONE FUNCTION-ID SET, ONE STEP.
+ *
+ * A node whose OWN facts ground several roles legitimately emits several
+ * adjacent occurrences (see segmentIntoStepsByRole's SPLIT rule) — but that is
+ * only a real narrative split when the resulting steps point at DIFFERENT code.
+ * When two adjacent steps resolve to the identical set of function ids AND
+ * neither one is scoped to its own sub-section (line range), the reader is
+ * being shown the same function twice under two labels, which reads as a
+ * two-step flow that is really one step. Collapse those: keep the
+ * higher-priority role's step (occurrences are emitted in ROLE_PRIORITY order,
+ * so that is the earlier one), append the dropped step's name as a qualifier
+ * so no observed role is silently lost, and renumber.
+ *
+ * Non-adjacent repeats of the same function id are left alone: a genuine loop
+ * back through the same function later in a flow is real structure.
+ */
+function dedupeStepEdges<T extends { from_step_id: string; to_step_id: string; kind: string }>(edges: T[]): T[] {
+  const seen = new Set<string>();
+  const out: T[] = [];
+  for (const e of edges) {
+    const key = `${e.from_step_id}->${e.to_step_id}:${e.kind}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(e);
+  }
+  return out;
+}
+
+function collapseDuplicateFunctionSteps(flow: FlowConcept): FlowConcept {
+  if (flow.steps.length < 2) return flow;
+  const keyOf = (s: FlowStep) => s.functions.map(f => f.function_id).sort().join('|');
+  const isSectioned = (s: FlowStep) => s.functions.some(f => f.section !== undefined);
+
+  const kept: FlowStep[] = [];
+  /** absorbed step_id -> surviving step_id, so every reference the flow already
+   *  holds (contract facet provenance, step-graph edges) is re-pointed instead
+   *  of left dangling. */
+  const absorbedInto = new Map<string, string>();
+  let collapsed = 0;
+  for (const step of flow.steps) {
+    const prev = kept[kept.length - 1];
+    if (prev && keyOf(prev) === keyOf(step) && !isSectioned(prev) && !isSectioned(step)) {
+      collapsed++;
+      absorbedInto.set(step.step_id, prev.step_id);
+      if (!prev.name.includes(step.name)) prev.name = `${prev.name} & ${step.name}`;
+      prev.description = `${prev.description} Also: ${step.description}`;
+      // The absorbed step's typed code mappings describe the same functions —
+      // keep them so the step↔code join stays complete.
+      if (step.code_mappings?.length) {
+        prev.code_mappings = [...(prev.code_mappings || []), ...step.code_mappings.map(m => ({ ...m, step_id: prev.step_id }))];
+      }
+      continue;
+    }
+    kept.push(step);
+  }
+  if (collapsed === 0) return flow;
+
+  const survivingIds = new Set(kept.map(s => s.step_id));
+  kept.forEach((s, i) => { s.order = i; });
+
+  // Re-point the flow contract's provenance at the surviving steps. The
+  // aggregate was built from the pre-collapse step list, so without this a
+  // flow would keep citing step ids its own `steps` no longer contains.
+  const contract = flow.contract && flow.contract.facet_provenance
+    ? {
+        ...flow.contract,
+        facet_provenance: flow.contract.facet_provenance.map(entry => ({
+          ...entry,
+          contributed_by_step_ids: entry.contributed_by_step_ids
+            ? [...new Set(entry.contributed_by_step_ids.map(id => absorbedInto.get(id) ?? id))].sort()
+            : entry.contributed_by_step_ids,
+        })),
+      }
+    : flow.contract;
+
+  return {
+    ...flow,
+    steps: kept,
+    ...(contract ? { contract } : {}),
+    // Step-graph edges pointing at an absorbed step no longer resolve; drop
+    // them rather than leaving dangling references.
+    ...(flow.step_graph
+      ? {
+          step_graph: {
+            ...flow.step_graph,
+            edges: dedupeStepEdges(
+              (flow.step_graph.edges || [])
+                .map(e => ({
+                  ...e,
+                  from_step_id: absorbedInto.get(e.from_step_id) ?? e.from_step_id,
+                  to_step_id: absorbedInto.get(e.to_step_id) ?? e.to_step_id,
+                }))
+                // an edge that became a self-loop described a hop between two
+                // labels of ONE step — it is not a step transition any more.
+                .filter(e => e.from_step_id !== e.to_step_id
+                  && survivingIds.has(e.from_step_id) && survivingIds.has(e.to_step_id))
+            ),
+          },
+        }
+      : {}),
+    gaps: [
+      ...(flow.gaps || []),
+      `${collapsed} step(s) collapsed: adjacent steps resolved to the identical function id set with no distinguishing sub-section.`,
+    ],
+  };
+}
+
+/**
+ * FLOW NAMES MUST DISTINGUISH FLOWS.
+ *
+ * Entry-point-derived names collide hard on repos with many similar entries —
+ * every binary's `main`, every route file's `handler`. A population where a
+ * name maps to a dozen flows carries no navigational information. Qualify each
+ * colliding name with the most specific REAL fact that separates its flows,
+ * tried in order and only kept when it actually splits the collision group:
+ *   1. the deployable / package-root directory of the entry file
+ *      (`bin/coordinator`, `apps/app`) — the unit a reader already thinks in;
+ *   2. the entry file's own basename;
+ *   3. the flow's terminus (what it produces).
+ * A name that still collides after all three is left alone — a fabricated
+ * discriminator would be worse than an honest duplicate.
+ */
+function disambiguateFlowNames(cas: CASOutput, flows: FlowConcept[]): FlowConcept[] {
+  if (flows.length < 2) return flows;
+  const nodesById = new Map((cas.nodes || []).map(n => [n.id, n]));
+  const entryById = new Map((cas.entry_points || []).map(e => [e.id, e]));
+
+  const entryFileOf = (flow: FlowConcept): string | undefined => {
+    const ep = entryById.get(flow.entry_point);
+    const nodeId = ep?.handler?.node_id || ep?.source_node || flow.entry_point;
+    const node = nodesById.get(nodeId);
+    const file = node ? sourceFileOf(node) : undefined;
+    return file || ((ep as any)?.location?.file as string | undefined) || undefined;
+  };
+
+  const qualifiers: Array<(f: FlowConcept) => string | undefined> = [
+    f => { const file = entryFileOf(f); if (!file) return undefined; const parts = file.split('/'); return parts.length >= 2 ? parts.slice(0, 2).join('/') : parts[0]; },
+    f => { const file = entryFileOf(f); return file ? file.split('/').pop()?.replace(/\.[^.]+$/, '') : undefined; },
+    f => f.terminus?.produces || f.terminus?.kind,
+  ];
+
+  const groups = new Map<string, FlowConcept[]>();
+  for (const f of flows) {
+    const g = groups.get(f.name);
+    if (g) g.push(f); else groups.set(f.name, [f]);
+  }
+
+  for (const [name, group] of groups) {
+    if (group.length < 2) continue;
+    for (const qualify of qualifiers) {
+      const values = group.map(qualify);
+      // Only useful when it genuinely partitions: every flow gets a value and
+      // the values are not all identical.
+      if (values.some(v => !v)) continue;
+      if (new Set(values).size < 2) continue;
+      group.forEach((f, i) => { f.name = dedupeAdjacentWords(`${name} (${values[i]})`); });
+      break;
+    }
+  }
+  return flows;
 }
 
 /** A capability must relate to at least this many flows via entity overlap

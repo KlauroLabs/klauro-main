@@ -1420,17 +1420,28 @@ describe('role-based step segmentation (Step doctrine rewrite)', () => {
 
     const flow = computeFlowConcepts(cas)[0];
     // ONE function (n_root), grounded for BOTH 'validate' (entry auth guard)
-    // AND 'persist' (its own database exit) -> TWO steps, both mapped back to
-    // the same node.
-    expect(flow.steps.length).toBe(2);
-    expect(flow.steps.every(s => s.functions.some(f => f.function_id === 'n_root'))).toBe(true);
-    expect(flow.steps.map(s => s.name)).toEqual(['Validate Request', 'Persist Data']);
-    // each step's own code_mappings independently ground the relationship for
-    // the shared node — the many-to-many point (D1).
-    const validateMappings = (flow.steps[0].code_mappings || []).filter(m => m.code_region.node_id === 'n_root');
-    const persistMappings = (flow.steps[1].code_mappings || []).filter(m => m.code_region.node_id === 'n_root');
-    expect(validateMappings.some(m => m.relationship === 'validates')).toBe(true);
-    expect(persistMappings.some(m => m.relationship === 'causes_effect')).toBe(true);
+    // AND 'persist' (its own database exit). Both roles are still DERIVED —
+    // but they no longer become two steps.
+    //
+    // CONTRACT CHANGE (comprehension lane): a step is a unit of the flow's
+    // NARRATIVE, and two steps pointing at the identical function id with no
+    // distinguishing sub-section read as two hops when only one hop happened.
+    // Measured on real repos, that shape was pure noise (a React component
+    // appearing as "Persist Data" then "Call <its own module>"), so adjacent
+    // steps over the same function id set now COLLAPSE
+    // (collapseDuplicateFunctionSteps). Nothing derived is discarded: both
+    // role names survive in the step name, both descriptions survive in the
+    // description, and both sets of typed code mappings survive on the step —
+    // which is what keeps the many-to-many step<->code join (D1) intact.
+    expect(flow.steps.length).toBe(1);
+    expect(flow.steps[0].functions.some(f => f.function_id === 'n_root')).toBe(true);
+    expect(flow.steps[0].name).toBe('Validate Request & Persist Data');
+    expect(flow.gaps?.some(g => /collapsed/.test(g))).toBe(true);
+    const mappings = (flow.steps[0].code_mappings || []).filter(m => m.code_region.node_id === 'n_root');
+    expect(mappings.some(m => m.relationship === 'validates')).toBe(true);
+    expect(mappings.some(m => m.relationship === 'causes_effect')).toBe(true);
+    // every surviving mapping is attributed to the surviving step.
+    expect((flow.steps[0].code_mappings || []).every(m => m.step_id === flow.steps[0].step_id)).toBe(true);
   });
 
   test('ASYNC DISPATCH: a message/event exit grounds a Publish/Dispatch step, distinct from an outbound API call', () => {
@@ -1513,7 +1524,12 @@ describe('role-based step segmentation (Step doctrine rewrite)', () => {
     const opaqueStep = flow.steps.find(s => s.functions.some(f => f.function_id === 'n_opaque'))!;
     expect(opaqueStep).toBeDefined();
     // honest — not a fabricated role label, just the conservative fallback:
-    expect(opaqueStep.name).toBe('Process (doThing123)');
+    // HONEST FALLBACK, LEGIBLE FORM: there is still no entity and no verb, so
+    // the only real fact is the author's own identifier — presented as a
+    // title-cased phrase rather than wrapped in "Process (…)". Same
+    // information, and unlike the parenthesized form it distinguishes this
+    // step from the next one. Still reported as a gap (asserted below).
+    expect(opaqueStep.name).toBe('Do Thing123');
     expect(flow.gaps).toBeDefined();
     expect(flow.gaps!.some(g => /no validate\/persist\/dispatch\/call\/respond\/entity\/verb evidence/.test(g))).toBe(true);
   });
