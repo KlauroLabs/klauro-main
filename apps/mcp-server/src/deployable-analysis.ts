@@ -124,6 +124,65 @@ function bundledMembersOf(unit: DeployableEvidence, allEvidence: DeployableEvide
   return allEvidence.filter(e => e !== unit && e.bundled_into === unit.name);
 }
 
+/** Matching-purposes-only token normalization mirroring
+ *  deployable-evidence.ts's normalizeMemberToken (private to that module) —
+ *  separators/case/a trailing ship-artifact extension stripped, never used
+ *  for a display name. */
+function normalizeShipToken(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/\.(exe|msi|dmg|pkg|deb|rpm|appimage)$/i, '')
+    .replace(/[\s_-]+/g, '');
+}
+
+/**
+ * Concrete roots for every name this unit's OWN ships_paths declares it
+ * builds/bundles, resolved against the full evidence set BY NAME — not via
+ * `bundled_into` linkage. A unit's `ships_paths` (Dockerfile
+ * COPY/cargo-build-arg targets, installer bundle manifest entries) is
+ * positive evidence of membership independent of which single unit a
+ * candidate's `bundled_into` pointer happened to land on (a Tier-2/3 row can
+ * only carry ONE `bundled_into`, so when the SAME binary is named by more
+ * than one Tier-1 row's ships_paths — e.g. a repo-root "dispatch" container
+ * whose entrypoint can run any of several services, alongside each service's
+ * OWN dedicated compose-service row — the bin's `bundled_into` lands on
+ * exactly one of them, but ships_paths still correctly names it as shipped
+ * evidence for the others too). Used as a closure-seeding signal only, never
+ * mutates `bundled_into` or the reported member_root_paths.
+ */
+function shipsPathRoots(
+  unit: DeployableEvidence,
+  allEvidence: DeployableEvidence[],
+  allRoots: DeployableRoot[],
+): DeployableRoot[] {
+  // entrypoint_member is folded into the same token set as ships_paths: a
+  // Tier-1 row that ships no COPY/cargo-build-arg evidence of its own but
+  // whose Dockerfile ENTRYPOINT/CMD names a real bin (e.g. Zerac's "gateway"
+  // service — no ships_paths, but `entrypoint/cmd: ["/bin/agent", "run"]`,
+  // the SAME binary "agent"'s own compose-service row ships) is still
+  // concretely identified by that name, just via a different evidence field.
+  // Without this, "gateway" had zero concrete roots anywhere and fell back to
+  // the degenerate '.' blanket match — the one Zerac unit that stayed
+  // matching the entire codebase after the ships_paths fix landed.
+  const tokens = [...(unit.ships_paths || []), ...(unit.entrypoint_member ? [unit.entrypoint_member] : [])]
+    .map(normalizeShipToken)
+    .filter(Boolean);
+  if (!tokens.length) return [];
+  const tokenSet = new Set(tokens);
+  const roots: DeployableRoot[] = [];
+  allEvidence.forEach((candidate, idx) => {
+    if (candidate === unit || candidate.tier === 1) return;
+    const root = allRoots[idx];
+    if (!root || !root.rootPath || root.rootPath === '.') return;
+    const nameMatches = tokenSet.has(normalizeShipToken(candidate.name));
+    const rootBase = root.rootPath.split('/').filter(Boolean).pop() || '';
+    const rootBaseMatches = rootBase && tokenSet.has(normalizeShipToken(rootBase));
+    if (nameMatches || rootBaseMatches) roots.push(root);
+  });
+  return roots;
+}
+
 /** A's own root plus every bundled member's root (spec §2.1 step 1: "A's own
  *  ships_paths — its own root plus any bundled member roots"). Bundled-member
  *  roots are read from their OWN `root_path` (the real filesystem root a
@@ -138,6 +197,38 @@ function unitRoots(
   const own = allRoots[idx];
   const members = bundledMembersOf(unit, allEvidence);
   const memberRoots = members.map(m => allRoots[allEvidence.indexOf(m)]).filter(Boolean) as DeployableRoot[];
+
+  // A degenerate own root ('.' — a monorepo-root Dockerfile/compose-service/
+  // installer whose build context or script lives at the repo root) is a
+  // maximally-weak match: entry-point-deployable.ts's isPathPrefix treats '.'
+  // as a prefix of EVERY file, so if it were kept in the seed-root list every
+  // node in the whole repo would seed this one unit's closure. Real hosted
+  // defect (2026-07, Zerac multi-binary cargo workspace): every one of 9 DAS
+  // units had `root_path: "."` (compose `build: .` and installer scripts at
+  // repo root are both completely normal), so EVERY unit's seed set was the
+  // entire codebase — nodes=12031/eps=341/exits=5053 identical across all
+  // nine, zero narrowing. When concrete (non-'.') bundled-member roots exist
+  // (the real bin/crate subdirectory a compose service or installer actually
+  // ships — see bundledMembersOf/resolveEvidenceBundling), THOSE are the true
+  // narrowing signal and the degenerate own root is dropped so it can't
+  // blanket-match. Only when no concrete root exists anywhere (a genuinely
+  // repo-root-shaped single deployable, e.g. a lone NestJS service with no
+  // separate bin layout) does the degenerate own root remain the seed — that
+  // repo-root shape is real, not a bug, for a true single-deployable CAS.
+  // Fallback for the redundant-multi-service-dispatch shape (real hosted
+  // case, Zerac's "unnamed-service" root container): its own ships_paths
+  // names 5 binaries, every one of which ALSO has its own dedicated
+  // compose-service Tier-1 row that wins the `bundled_into` pointer, so
+  // bundledMembersOf returns nothing for this row even though its ships_paths
+  // evidence is real. Resolving ships_paths by name (not by bundled_into)
+  // recovers those same concrete roots as an additional narrowing signal
+  // without touching bundled_into or member_root_paths (still bundled_into-
+  // derived, per spec §2.1 step 1) — see shipsPathRoots's own doc comment.
+  const shipsRoots = shipsPathRoots(unit, allEvidence, allRoots);
+  const concreteMemberRoots = [...memberRoots, ...shipsRoots].filter(r => r.rootPath && r.rootPath !== '.');
+  if (own && own.rootPath === '.' && concreteMemberRoots.length > 0) {
+    return concreteMemberRoots;
+  }
   return own ? [own, ...memberRoots] : memberRoots;
 }
 

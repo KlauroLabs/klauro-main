@@ -10,6 +10,11 @@ interface ComposeService {
   name: string;
   image?: string;
   build?: string;
+  /** The object-form `build.dockerfile` path, when present — reliably
+   *  repo-relative (unlike `build.context`, which real compose files
+   *  sometimes point at an absolute deploy-time path outside the analyzed
+   *  tree, e.g. a VPS rsync destination). See composeBuildContext below. */
+  dockerfile?: string;
   ports: Array<{ host?: string; container: string }>;
   dependsOn: string[];
   environment: Record<string, string>;
@@ -245,6 +250,7 @@ export class DockerComposeAnalyzer extends ContainerTopologyAnalyzer {
         service_aliases: [service.name],
         image: service.image,
         build: service.build,
+        dockerfile: service.dockerfile,
         ports: service.ports,
         depends_on: service.dependsOn,
         environment_keys: Object.keys(service.environment),
@@ -642,6 +648,7 @@ function parseComposeServicesFromYaml(content: string): ComposeService[] {
       name,
       image: stringValue(service.image),
       build: composeBuildContext(service.build),
+      dockerfile: composeBuildDockerfile(service.build),
       ports: composePorts(service.ports),
       dependsOn: composeDependsOn(service.depends_on),
       environment: composeEnvironment(service.environment),
@@ -662,6 +669,20 @@ function composeBuildContext(value: unknown): string | undefined {
   // (e.g. `build: { dockerfile: docker/php.Dockerfile }` with no `context`).
   if (value && typeof value === 'object' && !Array.isArray(value)) {
     return stringValue((value as any).context) || '.';
+  }
+  return undefined;
+}
+
+/** The object-form `build.dockerfile` path, when present. Unlike `context`
+ *  (which real compose files sometimes point at an absolute deploy-time path
+ *  outside the analyzed tree — e.g. `context: /opt/klauro/source` on a
+ *  production host, meaningless relative to the repo this analyzer is
+ *  walking), `dockerfile` is always a plain repo-relative path to the actual
+ *  Dockerfile compose builds, and root_path resolution below prefers it for
+ *  exactly that reason. */
+function composeBuildDockerfile(value: unknown): string | undefined {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return stringValue((value as any).dockerfile);
   }
   return undefined;
 }

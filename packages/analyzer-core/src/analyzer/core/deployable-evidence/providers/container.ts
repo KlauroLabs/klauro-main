@@ -240,9 +240,39 @@ function collect(ctx: EvidenceCollectionContext): DeployableEvidence[] {
       // Resolving it against path.dirname(file) keeps two same-named build
       // contexts in different compose files (or a nested-app compose file)
       // from colliding on the same evidence root_path.
+      //
+      // BUT a real compose file may declare `build.context` as an ABSOLUTE
+      // deploy-time path that has nothing to do with the analyzed repo tree
+      // at all (2026-07 hosted defect: production docker-compose.yml built
+      // against `context: /opt/klauro/source`, the VPS rsync destination —
+      // path.join-ing that onto the compose file's own directory produced the
+      // nonsense root_path "infrastructure/vps/opt/klauro/source", which
+      // matched zero real source files and made the join with the sibling
+      // container-kind Tier-1 row for the SAME Dockerfile fail, leaving two
+      // near-empty duplicate "api" ship units instead of one correct one).
+      // `build.dockerfile` (when object-form `build:` supplies it) is always
+      // a plain repo-relative path to the real Dockerfile compose builds —
+      // the SAME path the sibling `container_image_definition` row for that
+      // Dockerfile already keys its own root_path on (path.dirname(file) at
+      // this provider's container_image_definition branch above) — so when
+      // it's available, deriving root_path from it instead keeps this row
+      // trivially joinable with that sibling row by identical root_path.
       const composeDir = path.dirname(file) || '.';
       const buildContext = String(metadata.build);
-      const rootPath = path.normalize(path.join(composeDir === '.' ? '' : composeDir, buildContext)) || '.';
+      const dockerfilePath = metadata.dockerfile ? String(metadata.dockerfile) : undefined;
+      const contextIsUnresolvable = path.isAbsolute(buildContext);
+      const rootPath = dockerfilePath
+        ? path.normalize(path.dirname(
+            path.isAbsolute(dockerfilePath)
+              ? dockerfilePath
+              : path.join(composeDir === '.' ? '' : composeDir, dockerfilePath),
+          )) || '.'
+        : contextIsUnresolvable
+          // No dockerfile hint and the context points outside the repo
+          // entirely — the compose file's own directory is a strictly more
+          // honest root than joining an unrelated absolute path onto it.
+          ? composeDir
+          : path.normalize(path.join(composeDir === '.' ? '' : composeDir, buildContext)) || '.';
 
       out.push({
         root_path: rootPath,

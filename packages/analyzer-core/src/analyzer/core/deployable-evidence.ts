@@ -506,9 +506,23 @@ function rebundleBinsIntoServiceUnits(items: DeployableEvidence[]): void {
     const candidateKey = normalizeMemberToken(candidate.name);
     if (!candidateKey) continue;
 
-    const unit = serviceUnits.find(
-      u => normalizeMemberToken(u.name) === candidateKey || entrypointTokenMatchesName(u.entrypoint_member, candidate.name),
-    );
+    // Exact identity (candidate's own name equals the service unit's own
+    // name) is unambiguous and must win over an ENTRYPOINT/CMD-token
+    // coincidence, regardless of array order. Real hosted defect (2026-07,
+    // Zerac multi-binary cargo workspace): a monorepo-root container whose
+    // entrypoint dispatches between several binaries (`entrypoint_member:
+    // "coordinator"`, one of the names it can run) sorted BEFORE the
+    // "coordinator" compose-service row that names the exact same bin — a
+    // single .find() over both signals together stopped at the coincidental
+    // entrypoint-token hit first and never reached the exact-name row, so
+    // the bin never got repointed away from the generic multi-service
+    // container. Trying every unit for an exact-name match FIRST, and only
+    // falling back to the (weaker, coincidence-prone) entrypoint-token
+    // signal when no exact-name match exists anywhere, removes the ordering
+    // dependency entirely.
+    const unit =
+      serviceUnits.find(u => normalizeMemberToken(u.name) === candidateKey) ||
+      serviceUnits.find(u => entrypointTokenMatchesName(u.entrypoint_member, candidate.name));
     if (!unit || unit.name === candidate.bundled_into) continue;
 
     candidate.bundled_into = unit.name;
