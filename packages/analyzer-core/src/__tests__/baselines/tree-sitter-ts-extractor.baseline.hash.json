@@ -1,0 +1,5 @@
+{
+  "sha256": "1241130a013ab4736c5307f56236b67707c7a7536af21cac9f5ca4cf73a3cb60",
+  "sourceCommit": "ae012fd5",
+  "note": "SHA-256 of tree-sitter-ts-extractor.baseline.ts, the pre-rewrite extractor vendored as the OLD side of the differential parity harness. Asserted by __tests__/parity/tree-sitter-ts-extractor-differential-parity.test.ts. If this assertion fails, the baseline was edited: revert it, or re-vendor from a named commit and update sourceCommit and sha256 together in one reviewed commit."
+}

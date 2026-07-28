@@ -122,7 +122,11 @@ module.exports = {
   testPathIgnorePatterns: [
     '<rootDir>/node_modules/',
     '<rootDir>/dist/',
-    '<rootDir>/coverage/'
+    '<rootDir>/coverage/',
+    // Full-corpus old-vs-new extractor differential: minutes of work over
+    // ~1.5k files, so it is a dedicated gate step (`npm run parity:extractor`)
+    // rather than inner-loop unit noise. Run it via jest.parity.config.js.
+    '<rootDir>/src/__tests__/parity/'
   ],
   
   // Transform ignore patterns
