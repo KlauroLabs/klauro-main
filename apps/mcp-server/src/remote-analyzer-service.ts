@@ -226,6 +226,11 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           status: 'ok',
           service: 'klauro-remote-analyzer',
           version: SERVICE_VERSION,
+          // Lets `klauro doctor` check protocol compatibility with a plain,
+          // side-effect-free GET instead of only learning about a mismatch
+          // from a real analyze/sync submission's 426. Must stay equal to the
+          // value enforced above and in clientUpgradeRequiredMessage.
+          required_protocol_version: REMOTE_ANALYSIS_PROTOCOL_VERSION,
           build: {
             git_sha: buildIdentity.git_sha,
             build_time: buildIdentity.build_time ?? null,
