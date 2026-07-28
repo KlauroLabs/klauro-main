@@ -45,6 +45,11 @@ interface InstrumentationHit {
   agentGuidance: string;
 }
 
+interface PreparedSourceFile {
+  content: string;
+  imports: string[];
+}
+
 const RULES: ObservabilityRule[] = [
   rule('opentelemetry-js', 'OpenTelemetry JS', ['@opentelemetry/api', '@opentelemetry/sdk-node'], ['npm'], ['@opentelemetry/api', '@opentelemetry/sdk-node'], ['ts', 'tsx', 'js', 'jsx'], 'telemetry', [
     extractor('tracer setup', /\b(?:trace\.)?getTracer\s*\(\s*['"`](?<name>[^'"`]+)['"`]/g, 'telemetry', 'otel-tracer'),
@@ -232,10 +237,11 @@ export class ObservabilityAnalyzer extends BaseAnalyzer {
     const libraries: CASLibrary[] = [];
     const allHits: InstrumentationHit[] = [];
     const moduleNodes = new Set<string>();
+    const preparedFiles = await this.prepareSourceFiles(projectPath, sourceFiles);
 
     for (const ruleDef of RULES) {
       const dependencyHits = dependencies.filter(dep => this.ruleMatchesDependency(ruleDef, dep));
-      const hits = await this.findInstrumentation(projectPath, sourceFiles, ruleDef);
+      const hits = await this.findInstrumentation(sourceFiles, ruleDef, preparedFiles);
       if (dependencyHits.length === 0 && hits.length === 0) continue;
       allHits.push(...hits);
 
@@ -293,7 +299,23 @@ export class ObservabilityAnalyzer extends BaseAnalyzer {
     return { nodes, edges, libraries, hits: allHits };
   }
 
-  private async findInstrumentation(projectPath: string, files: string[], ruleDef: ObservabilityRule): Promise<InstrumentationHit[]> {
+  private async prepareSourceFiles(projectPath: string, files: string[]): Promise<Map<string, PreparedSourceFile>> {
+    const prepared = new Map<string, PreparedSourceFile>();
+    const maybeYield = createYieldBudget();
+    for (const relativeFile of files) {
+      await maybeYield();
+      const content = await this.readTextFileIfExists(path.join(projectPath, relativeFile));
+      if (!content) continue;
+      prepared.set(relativeFile, { content, imports: [...(this.sourceImports(content) ?? this.extractImports(content))] });
+    }
+    return prepared;
+  }
+
+  private async findInstrumentation(
+    files: string[],
+    ruleDef: ObservabilityRule,
+    preparedFiles: Map<string, PreparedSourceFile>
+  ): Promise<InstrumentationHit[]> {
     const hits: InstrumentationHit[] = [];
     const applicableFiles = files.filter(file => ruleDef.fileExtensions.some(ext => file.endsWith(`.${ext}`)));
 
@@ -303,14 +325,15 @@ export class ObservabilityAnalyzer extends BaseAnalyzer {
     const maybeYield = createYieldBudget();
     for (const relativeFile of applicableFiles) {
       await maybeYield();
-      const content = await this.readTextFileIfExists(path.join(projectPath, relativeFile));
-      if (!content || !this.fileReferencesRule(content, ruleDef)) continue;
+      const prepared = preparedFiles.get(relativeFile);
+      if (!prepared || !this.fileReferencesRule(prepared.content, ruleDef, prepared.imports)) continue;
+      const { content } = prepared;
 
       for (const extractorDef of ruleDef.extractors) {
         extractorDef.pattern.lastIndex = 0;
         let match: RegExpExecArray | null;
         while ((match = extractorDef.pattern.exec(content)) !== null) {
-          const line = content.slice(0, match.index).split(/\r?\n/).length;
+          const line = this.sourceLineForIndex(content, match.index);
           const identifier = this.normalizeIdentifier(match.groups?.name || extractorDef.defaultIdentifier);
           hits.push({
             ruleId: ruleDef.id,
@@ -331,8 +354,7 @@ export class ObservabilityAnalyzer extends BaseAnalyzer {
     return hits;
   }
 
-  private fileReferencesRule(content: string, ruleDef: ObservabilityRule): boolean {
-    const imports = this.extractImports(content);
+  private fileReferencesRule(content: string, ruleDef: ObservabilityRule, imports = this.extractImports(content)): boolean {
     if (imports.some(importSource => ruleDef.imports.some(pkg => importSource === pkg || importSource.startsWith(`${pkg}/`)))) {
       return true;
     }
@@ -385,6 +407,26 @@ export class ObservabilityAnalyzer extends BaseAnalyzer {
   }
 
   private async sourceFiles(context: AnalysisContext): Promise<string[]> {
+    const groundedFiles = this.filesFromExistingAnalysis(
+      context,
+      source => RULES.some(ruleDef => ruleDef.imports.some(importName =>
+        source === importName || source.startsWith(`${importName}/`) || source.startsWith(`${importName}.`)
+      )),
+      true
+    );
+    const conventionFiles = await glob([
+      '**/*{telemetry,observability,instrumentation,tracing,metrics,logger,logging}*.{ts,tsx,js,jsx,py,java,cs,go}',
+    ], {
+      cwd: context.projectPath,
+      ignore: [...this.getIgnorePatterns(context), '**/*.test.*', '**/*.spec.*', '**/obj/**', '**/bin/**'],
+      nodir: true,
+      absolute: false,
+    });
+    const evidenceFiles = [...new Set([...groundedFiles, ...conventionFiles])].sort();
+    if ((context.existingAnalysis?.length || 0) > 0 && evidenceFiles.length > 0) {
+      return this.capAndPrioritizeSourceFiles(evidenceFiles, 'observability instrumentation candidate files');
+    }
+
     return this.capAndPrioritizeSourceFiles(await glob([
       '**/*.{ts,tsx,js,jsx,py,java,cs,go}',
     ], {

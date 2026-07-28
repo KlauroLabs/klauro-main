@@ -59,6 +59,12 @@ interface UsageHit {
   excerpt: string;
 }
 
+interface PreparedArchitectureSource {
+  content: string;
+  imports: string[];
+  lines: readonly string[];
+}
+
 const RULES: ArchitectureLibraryRule[] = [
   rule('typeorm', 'TypeORM', 'orm', ['npm'], ['typeorm'], [
     // Bare `EntityManager` / `getRepository` / `DataSource` also appear verbatim in
@@ -382,7 +388,7 @@ export class ArchitecturalLibraryAnalyzer extends BaseAnalyzer {
       [],
       [],
       exitPoints,
-      this.extractImports(content),
+      this.extractImports(content, context.relativePath),
       nodes.map(node => node.name)
     );
   }
@@ -405,6 +411,15 @@ export class ArchitecturalLibraryAnalyzer extends BaseAnalyzer {
   }
 
   private async sourceFiles(context: AnalysisContext): Promise<string[]> {
+    const importGroundedFiles = this.filesFromExistingAnalysis(context, source =>
+      this.selectedRules.some(rule => rule.packages.some(pkg =>
+        source === pkg || source.startsWith(`${pkg}/`) || (pkg.endsWith('/') && source.startsWith(pkg))
+      ))
+    );
+    if (importGroundedFiles.length > 0) {
+      return this.capAndPrioritizeSourceFiles(importGroundedFiles, 'architecture library candidate files');
+    }
+
     return this.capAndPrioritizeSourceFiles(await glob([
       '**/*.{ts,tsx,js,jsx,py,rb,java,cs,go,rs,php}',
     ], {
@@ -415,23 +430,13 @@ export class ArchitecturalLibraryAnalyzer extends BaseAnalyzer {
     }), 'architecture library candidate files');
   }
 
-  private async findUsages(projectPath: string, files: string[], rule: ArchitectureLibraryRule): Promise<UsageHit[]> {
+  private findUsages(files: string[], preparedFiles: Map<string, PreparedArchitectureSource>, rule: ArchitectureLibraryRule): UsageHit[] {
     const usages: UsageHit[] = [];
-    // Budget-yield per file: with the shared analyzer file-read cache warm,
-    // `await fs.readFile` resolves in a microtask (no event-loop hop), so this
-    // loop over every candidate file × usage patterns ran as one multi-second
-    // synchronous block on a whale repo. Order and matches unchanged.
-    const maybeYield = createYieldBudget();
     const needsImportEvidence = rule.usagePatterns.some(pattern => pattern.requiresImportEvidence);
     for (const relativeFile of files) {
-      await maybeYield();
-      const absoluteFile = path.join(projectPath, relativeFile);
-      let content = '';
-      try {
-        content = await fs.readFile(absoluteFile, 'utf8');
-      } catch {
-        continue;
-      }
+      const prepared = preparedFiles.get(relativeFile);
+      if (!prepared) continue;
+      const { content, imports, lines } = prepared;
       if (!this.fileMayUseRule(content, rule)) continue;
 
       // Import-source evidence: does this file actually import from one of the rule's
@@ -440,12 +445,11 @@ export class ArchitecturalLibraryAnalyzer extends BaseAnalyzer {
       // used verbatim by both typeorm and @mikro-orm/core) from being attributed to a
       // specific framework it wasn't actually imported from.
       const fileImportsRulePackage = needsImportEvidence
-        ? this.extractImports(content).some(importSource => rule.packages.some(
+        ? imports.some(importSource => rule.packages.some(
             pkg => importSource === pkg || importSource.startsWith(`${pkg}/`)
           ))
         : false;
 
-      const lines = content.split(/\r?\n/);
       lines.forEach((line, index) => {
         for (const pattern of rule.usagePatterns) {
           if (pattern.requiresImportEvidence && !fileImportsRulePackage) continue;
@@ -464,12 +468,32 @@ export class ArchitecturalLibraryAnalyzer extends BaseAnalyzer {
     return usages;
   }
 
+  private async prepareSourceFiles(projectPath: string, files: string[]): Promise<Map<string, PreparedArchitectureSource>> {
+    const prepared = new Map<string, PreparedArchitectureSource>();
+    const maybeYield = createYieldBudget();
+    for (const relativeFile of files) {
+      await maybeYield();
+      try {
+        const content = await fs.readFile(path.join(projectPath, relativeFile), 'utf8');
+        prepared.set(relativeFile, {
+          content,
+          imports: this.extractImports(content, relativeFile),
+          lines: this.sourceLines(content),
+        });
+      } catch {
+        continue;
+      }
+    }
+    return prepared;
+  }
+
   private async analyzeArchitectureLibraries(
     projectPath: string,
     sourceFiles: string[],
     includeLibraries: boolean
   ): Promise<{ nodes: CASNode[]; exitPoints: CASExitPoint[]; libraries: CASLibrary[] }> {
-      const dependencies = await this.readDependencies(projectPath);
+    const dependencies = await this.readDependencies(projectPath);
+    const preparedFiles = await this.prepareSourceFiles(projectPath, sourceFiles);
     const nodes: CASNode[] = [];
     const exitPoints: CASExitPoint[] = [];
     const libraries: CASLibrary[] = [];
@@ -477,7 +501,7 @@ export class ArchitecturalLibraryAnalyzer extends BaseAnalyzer {
     for (const rule of this.selectedRules) {
       const dependencyHits = dependencies.filter(dep => this.ruleMatchesDependency(rule, dep));
       if (dependencyHits.length === 0) continue;
-      const usages = await this.findUsages(projectPath, sourceFiles, rule);
+      const usages = this.findUsages(sourceFiles, preparedFiles, rule);
       const connectedNodes: string[] = [];
 
       for (const usageHit of usages.slice(0, 20)) {
@@ -552,9 +576,12 @@ export class ArchitecturalLibraryAnalyzer extends BaseAnalyzer {
     return { nodes, exitPoints, libraries };
   }
 
-  private extractImports(content: string): string[] {
+  private extractImports(content: string, filePath: string): string[] {
+    const flavor = this.sourceImportFlavor(filePath);
+    const corpusImports = flavor ? this.sourceImports(content, flavor) : undefined;
+    if (corpusImports) return [...corpusImports];
     const imports = new Set<string>();
-    for (const line of content.split(/\r?\n/)) {
+    for (const line of this.sourceLines(content)) {
       const importMatch = line.match(/^\s*import\s+(?:.+?\s+from\s+)?['"]([^'"]+)['"]/);
       const requireMatch = line.match(/\brequire\(['"]([^'"]+)['"]\)/);
       const pythonMatch = line.match(/^\s*(?:from\s+([a-zA-Z0-9_.]+)\s+import|import\s+([a-zA-Z0-9_.]+))/);
@@ -588,7 +615,7 @@ export class ArchitecturalLibraryAnalyzer extends BaseAnalyzer {
   private async readPackageJsonDependencies(projectPath: string): Promise<DependencyHit[]> {
     const packageJsonPath = path.join(projectPath, 'package.json');
     if (!await fs.pathExists(packageJsonPath)) return [];
-    const pkg = await fs.readJson(packageJsonPath);
+    const pkg = await this.readSourceJson<any>(packageJsonPath);
     const hits: DependencyHit[] = [];
     const add = (deps: Record<string, string> | undefined, type: CASLibrary['type']) => {
       for (const [name, version] of Object.entries(deps || {})) {

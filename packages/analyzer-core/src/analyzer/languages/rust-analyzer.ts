@@ -12,6 +12,8 @@ import type { RustASTNode } from '../core/ast-types';
 import * as path from 'path';
 import { EnhancedRustCallGraphExtractor } from '../enhanced-rust-call-graph-extractor';
 
+let detectedRustVersion: string | undefined;
+
 const RUST_STD_MODULES = new Set([
   'std', 'core', 'alloc',
   'Vec', 'String', 'HashMap', 'HashSet', 'BTreeMap', 'BTreeSet',
@@ -3062,14 +3064,16 @@ export class RustAnalyzer extends BaseAnalyzer {
   }
 
   private async getRustVersion(projectPath: string): Promise<string> {
+    void projectPath;
+    if (detectedRustVersion !== undefined) return detectedRustVersion;
     try {
-      // Try to get version from rustc
       const { execSync } = require('child_process');
-      const version = execSync('rustc --version', { encoding: 'utf-8' });
+      const version = execSync('rustc --version', { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] });
       const match = version.match(/rustc (\d+\.\d+\.\d+)/);
-      return match ? match[1] : 'unknown';
+      detectedRustVersion = match ? match[1] : 'unknown';
     } catch {
-      return 'unknown';
+      detectedRustVersion = 'unknown';
     }
+    return detectedRustVersion || 'unknown';
   }
 }

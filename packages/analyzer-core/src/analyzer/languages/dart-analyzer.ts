@@ -77,7 +77,7 @@ export class DartAnalyzer extends BaseAnalyzer {
     const exitPoints: CASExitPoint[] = [];
     const content = await fs.readFile(context.filePath, 'utf8');
     const stat = await fs.stat(context.filePath);
-    const pubspec = await this.readPubspec(context.projectPath);
+    const pubspec = await this.readPubspecForFile(context.projectPath, context.relativePath);
     const isFlutterProject = Boolean(pubspec.match(/\bflutter\s*:/) || pubspec.includes('sdk: flutter'));
 
     const pendingCalls: DartPendingCall[] = [];
@@ -129,13 +129,14 @@ export class DartAnalyzer extends BaseAnalyzer {
         nodir: true,
       });
       files.sort();
-      const pubspec = await this.readPubspec(context.projectPath);
-      const isFlutterProject = Boolean(pubspec.match(/\bflutter\s*:/) || pubspec.includes('sdk: flutter'));
+      const pubspecByDirectory = await this.readPubspecs(context.projectPath);
 
       const pendingCalls: DartPendingCall[] = [];
       for (const relativeFile of files.sort()) {
         const fullPath = path.join(context.projectPath, relativeFile);
         const content = await fs.readFile(fullPath, 'utf8');
+        const pubspec = this.pubspecForFile(relativeFile, pubspecByDirectory);
+        const isFlutterProject = Boolean(pubspec.match(/\bflutter\s*:/) || pubspec.includes('sdk: flutter'));
         this.analyzeDartFile({
           projectPath: context.projectPath,
           relativeFile,
@@ -159,7 +160,7 @@ export class DartAnalyzer extends BaseAnalyzer {
         ...(warnings.length > 0 ? { warnings } : {}),
         framework_specific: {
           language: 'dart',
-          framework: isFlutterProject ? 'flutter' : 'dart',
+          framework: [...pubspecByDirectory.values()].some(pubspec => /\bflutter\s*:|sdk:\s*flutter/.test(pubspec)) ? 'flutter' : 'dart',
           files_analyzed: files.length,
         },
       });
@@ -603,9 +604,33 @@ export class DartAnalyzer extends BaseAnalyzer {
     return normalized.endsWith('_test.dart') || normalized.includes('/test/');
   }
 
-  private async readPubspec(projectPath: string): Promise<string> {
-    const file = path.join(projectPath, 'pubspec.yaml');
-    return (await fs.pathExists(file)) ? fs.readFile(file, 'utf8') : '';
+  private async readPubspecs(projectPath: string): Promise<Map<string, string>> {
+    const manifests = await glob(['pubspec.yaml', '**/pubspec.yaml'], {
+      cwd: projectPath,
+      ignore: this.ignorePatterns(),
+      nodir: true,
+    });
+    const byDirectory = new Map<string, string>();
+    for (const relative of manifests.sort()) {
+      byDirectory.set(path.posix.dirname(relative.replace(/\\/g, '/')), await fs.readFile(path.join(projectPath, relative), 'utf8'));
+    }
+    return byDirectory;
+  }
+
+  private pubspecForFile(relativeFile: string, byDirectory: Map<string, string>): string {
+    let directory = path.posix.dirname(relativeFile.replace(/\\/g, '/'));
+    while (true) {
+      const manifest = byDirectory.get(directory);
+      if (manifest !== undefined) return manifest;
+      if (directory === '.') return byDirectory.get('.') || '';
+      const parent = path.posix.dirname(directory);
+      if (parent === directory) return byDirectory.get('.') || '';
+      directory = parent;
+    }
+  }
+
+  private async readPubspecForFile(projectPath: string, relativeFile: string): Promise<string> {
+    return this.pubspecForFile(relativeFile, await this.readPubspecs(projectPath));
   }
 
   private findMatchingBrace(content: string, start: number): number {

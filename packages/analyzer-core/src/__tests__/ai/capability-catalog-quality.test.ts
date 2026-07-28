@@ -150,7 +150,11 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     frameworks: [],
     userJourneys: [],
     dataEntities: [],
-    candidateSnapshot: Array.from({ length: 12 }, (_, i) => cap({ id: `cand_${i}`, name: `Area ${i} Management` })),
+    candidateSnapshot: [
+      'Manage orders', 'Track portfolios', 'Settle payments', 'Review invoices',
+      'Enroll devices', 'Authorize access', 'Publish messages', 'Schedule jobs',
+      'Analyze risks', 'Generate reports', 'Sync inventory', 'Configure policies',
+    ].map((name, index) => cap({ id: `cand_${index}`, name })),
     behaviorSurfaces: [],
     externalServices: [],
     flowGraph: { capabilities: [] },

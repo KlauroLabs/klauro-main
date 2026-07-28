@@ -93,6 +93,11 @@ const TEST_PATH = /(^|\/)(__tests__|tests?|spec|e2e|cypress)(\/|$)|(\.|_|-)(test
 const MIGRATION_PATH = /(^|\/)(migrations?|db\/migrate|prisma\/migrations)(\/|$)|migration/i;
 const SCHEMA_PATH = /(^|\/)(schema|models?|entities?|database|prisma)(\/|$)|(\.prisma|schema\.sql)$/i;
 const CONFIG_PATH = /(^|\/)(\.env|config|configs|settings)(\/|$)|(^|\/)(package\.json|tsconfig\.json|pyproject\.toml|Cargo\.toml|go\.mod|composer\.json|pubspec\.yaml|appsettings\.json)$/i;
+const DEPENDENCY_INJECTION_DECORATORS = new Set([
+  'injectable', 'inject', 'controller', 'restcontroller', 'module', 'ngmodule',
+  'component', 'service', 'autowired', 'provide', 'provides', 'provider',
+  'bean', 'configuration', 'singleton', 'named',
+]);
 
 export async function detectCodebaseIdioms(input: IdiomDetectionInput): Promise<IdiomDetectionResult> {
   // Yield between detector families: each sweeps every node (several run
@@ -418,15 +423,16 @@ function detectModuleBoundaryIdioms(input: IdiomDetectionInput): IdiomDraft[] {
 
 function detectDependencyInjectionIdioms(input: IdiomDetectionInput): IdiomDraft[] {
   if (isInfrastructureOnlyInput(input)) return [];
-  const decoratorNames = input.decorators.map(decorator => decorator.decorator_info.name.toLowerCase());
-  const injectableNodes = input.nodes.filter(node =>
-    /injectable|controller|module|service|provider/i.test([node.name, node.type, node.source?.raw || '', node.metadata?.annotations?.join(' ') || ''].join(' '))
+  const diDecoratorEntries = input.decorators.filter(decorator =>
+    isDependencyInjectionDecorator(decorator.decorator_info.name)
   );
+  const decoratorNames = diDecoratorEntries.map(decorator => decorator.decorator_info.name.toLowerCase());
+  const injectableNodes = input.nodes.filter(isDependencyInjectionDeclaration);
   const constructorInjectionNodes = input.nodes.filter(node =>
     /constructor\s*\([^)]*(private|protected|readonly|inject|@Inject)/i.test(node.source?.raw || '') ||
-    /dependency-injection|provider/i.test(node.category || '')
+    hasSemanticToken(node.category, 'dependency-injection') || hasSemanticToken(node.category, 'provider')
   );
-  const diDecorators = decoratorNames.filter(name => /injectable|inject|controller|module|component|service|autowired|provide/.test(name));
+  const diDecorators = decoratorNames;
   if (injectableNodes.length + constructorInjectionNodes.length < 5 && diDecorators.length < 3) {
     return [];
   }
@@ -449,7 +455,7 @@ function detectDependencyInjectionIdioms(input: IdiomDetectionInput): IdiomDraft
     },
     evidence: [
       ...examples.map(nodeEvidence('Node participates in dependency injection')),
-      ...input.decorators.slice(0, 4).map(decorator => ({
+      ...diDecoratorEntries.slice(0, 4).map(decorator => ({
         kind: 'decorator' as const,
         file: decorator.decorator_info.source_location.file,
         line: decorator.decorator_info.source_location.line,
@@ -471,13 +477,15 @@ function detectDependencyInjectionIdioms(input: IdiomDetectionInput): IdiomDraft
 function detectDataAccessIdioms(input: IdiomDetectionInput, files: FileInventory): IdiomDraft[] {
   if (isInfrastructureOnlyInput(input)) return [];
   const dataNodes = input.nodes.filter(node =>
-    /repository|model|entity|schema|prisma|orm|database|dao/i.test([node.name, node.type, node.source?.file || ''].join(' ')) &&
+    isDataAccessDeclaration(node) &&
     Boolean(node.source?.file && !isConfigPath(node.source.file) && !isMigrationPath(node.source.file) && !isTestPath(node.source.file))
   );
   const dataLibraries = input.libraries.filter(library => /prisma|typeorm|mikro|sequelize|mongoose|sqlalchemy|diesel|sqlx|entity framework|ef core/i.test(library.name));
   const exitPoints = input.exitPoints.filter(exitPoint => exitPoint.type === 'database');
   if (dataNodes.length < 3 && dataLibraries.length === 0 && exitPoints.length < 3) return [];
-  const schemaFiles = files.schema.filter(file => !isConfigPath(file) && !isMigrationPath(file) && !isTestPath(file));
+  const schemaFiles = files.schema.filter(file =>
+    isDataAccessSchemaFile(file) && !isConfigPath(file) && !isMigrationPath(file) && !isTestPath(file)
+  );
   const ormLabel = dataLibraries.length > 0
     ? dataLibraries.map(library => library.name).slice(0, 2).join('/')
     : 'repository/entity classes';
@@ -498,7 +506,10 @@ function detectDataAccessIdioms(input: IdiomDetectionInput, files: FileInventory
       ...dataLibraries.slice(0, 3).map(library => ({ kind: 'analysis-fact' as const, claim: `Data library detected: ${library.name}.`, confidence: 0.78 })),
       ...schemaFiles.slice(0, 3).map(fileEvidence('Schema/model file participates in data access')),
     ],
-    positive_examples: dataNodes.slice(0, 5).map((node, index) => nodeExample(idiomId, node, index, 'Uses the local data access boundary.')),
+    positive_examples: [
+      ...dataNodes.slice(0, 5).map((node, index) => nodeExample(idiomId, node, index, 'Uses the local data access boundary.')),
+      ...schemaFiles.slice(0, Math.max(0, 5 - dataNodes.length)).map((file, index) => fileExample(idiomId, file, dataNodes.length + index, 'Defines the local persistence schema or model surface.')),
+    ],
     affected_scopes: { files: unique([...dataNodes.map(node => node.source?.file).filter(Boolean) as string[], ...schemaFiles]).slice(0, 25), file_globs: ['**/*{repository,model,entity,schema,prisma}*'] },
     agent_guidance: {
       do: ['Route persistence changes through existing repository/ORM/entity patterns.'],
@@ -506,6 +517,64 @@ function detectDataAccessIdioms(input: IdiomDetectionInput, files: FileInventory
       validation: ['Check data edits for matching schema/entity/repository updates and focused tests.'],
     },
   }];
+}
+
+function isDependencyInjectionDeclaration(node: CASNode): boolean {
+  const type = normalizeSemanticValue(node.type);
+  const name = node.name || '';
+  if (node.source?.file && isTestPath(node.source.file)) return false;
+  const annotations = node.metadata?.annotations || [];
+  const declarationType = /^(class|service|controller|module|provider|injectable|component)$/.test(type);
+  const namedProvider = /(?:Service|Controller|Module|Provider|Injector|Container)$/.test(name);
+  const annotatedProvider = annotations.some(isDependencyInjectionDecorator);
+  return hasSemanticToken(node.category, 'dependency-injection') ||
+    hasSemanticToken(node.category, 'provider') ||
+    annotatedProvider ||
+    (declarationType && namedProvider);
+}
+
+function isDependencyInjectionDecorator(value: string): boolean {
+  const decorator = value.trim()
+    .replace(/^@/, '')
+    .replace(/\(.*$/, '')
+    .split('.')
+    .pop()
+    ?.toLowerCase();
+  return Boolean(decorator && DEPENDENCY_INJECTION_DECORATORS.has(decorator));
+}
+
+function isDataAccessDeclaration(node: CASNode): boolean {
+  const type = normalizeSemanticValue(node.type);
+  const name = node.name || '';
+  const file = normalizePath(node.source?.file || '');
+  const roleType = /^(repository|repo|dao|model|entity|orm-entity|database-entity|schema|prisma-model)$/.test(type);
+  const roleName = /^(class|repository|repo|dao|model|entity|orm-entity|database-entity|schema|prisma-model)$/.test(type) &&
+    /(?:Repository|Repo|DAO|Dao|Entity|Model|Schema)$/.test(name);
+  const rolePath = isDataAccessPath(file);
+  return hasSemanticToken(node.category, 'data-access') || roleType || roleName || rolePath;
+}
+
+function isDataAccessPath(file: string): boolean {
+  return /\.(repository|repo|dao|model|entity|schema)\.[^.]+$/i.test(file) ||
+    /(^|\/)prisma\/schema\.prisma$/i.test(file) ||
+    /(^|\/)schema\.sql$/i.test(file);
+}
+
+function isDataAccessSchemaFile(file: string): boolean {
+  if (isDataAccessPath(file)) return true;
+  return /(^|\/)models\.py$/i.test(file) ||
+    /(^|\/)app\/models\/[^/]+\.rb$/i.test(file) ||
+    /(^|\/)app\/models\/[^/]+\.php$/i.test(file) ||
+    /(^|\/)(models?|entities?|repositories?|dao)\/[^/]+\.(py|rb|php|java|kt|kts|cs|go|rs)$/i.test(file);
+}
+
+function hasSemanticToken(value: string | undefined, token: string): boolean {
+  if (!value) return false;
+  return value.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean).join('-').includes(token);
+}
+
+function normalizeSemanticValue(value: string | undefined): string {
+  return (value || '').trim().toLowerCase().replace(/_/g, '-');
 }
 
 function detectErrorHandlingIdioms(input: IdiomDetectionInput): IdiomDraft[] {

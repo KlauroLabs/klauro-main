@@ -106,7 +106,7 @@ export class McpToolRegistrationAnalyzer extends BaseAnalyzer {
     const entryPoints: CASEntryPoint[] = [];
     const exitPoints: CASExitPoint[] = [];
 
-    const files = await this.getCandidateFiles(context.projectPath);
+    const files = await this.getCandidateFiles(context.projectPath, context);
     const registrations: McpToolRegistration[] = [];
 
     for (const file of files) {
@@ -211,7 +211,23 @@ export class McpToolRegistrationAnalyzer extends BaseAnalyzer {
     }
   }
 
-  private async getCandidateFiles(projectPath: string): Promise<string[]> {
+  private async getCandidateFiles(projectPath: string, context?: AnalysisContext): Promise<string[]> {
+    if (context?.existingAnalysis?.length) {
+      const groundedFiles = this.filesFromExistingAnalysis(
+        context,
+        source => source === '@modelcontextprotocol/sdk' || source.startsWith('@modelcontextprotocol/sdk/'),
+        true
+      );
+      const conventionFiles = await glob([
+        '**/*{mcp,tool,tools,server,registry,registration}*.{ts,tsx,js,jsx,mjs,cjs}',
+        '**/{mcp,tools}/**/*.{ts,tsx,js,jsx,mjs,cjs}',
+      ], {
+        cwd: projectPath,
+        ignore: [...this.getIgnorePatterns(context), '**/*.test.*', '**/*.spec.*', '**/__tests__/**'],
+        nodir: true,
+      });
+      return [...new Set([...groundedFiles, ...conventionFiles])].sort();
+    }
     return glob(['**/*.{ts,tsx,js,jsx,mjs,cjs}'], {
       cwd: projectPath,
       ignore: [...this.getIgnorePatterns({ projectPath }), '**/*.test.*', '**/*.spec.*', '**/__tests__/**'],

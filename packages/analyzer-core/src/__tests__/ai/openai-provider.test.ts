@@ -10,28 +10,32 @@ describe('OpenAIProvider compatible endpoint support', () => {
   });
 
   it('sends chat completions to a configured OpenAI-compatible base URL', async () => {
-    const seen: Array<{ url?: string; authorization?: string }> = [];
+    const seen: Array<{ url?: string; authorization?: string; body?: any }> = [];
     const server = http.createServer((req, res) => {
-      seen.push({
-        url: req.url,
-        authorization: req.headers.authorization,
+      let raw = '';
+      req.on('data', chunk => { raw += chunk; });
+      req.on('end', () => {
+        seen.push({
+          url: req.url,
+          authorization: req.headers.authorization,
+          body: raw ? JSON.parse(raw) : undefined,
+        });
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({
+          id: 'chatcmpl-local-test',
+          object: 'chat.completion',
+          created: Math.floor(Date.now() / 1000),
+          model: 'local-test-model',
+          choices: [{
+            index: 0,
+            message: {
+              role: 'assistant',
+              content: 'This local endpoint generated a grounded test description.',
+            },
+            finish_reason: 'stop',
+          }],
+        }));
       });
-      req.resume();
-      res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({
-        id: 'chatcmpl-local-test',
-        object: 'chat.completion',
-        created: Math.floor(Date.now() / 1000),
-        model: 'local-test-model',
-        choices: [{
-          index: 0,
-          message: {
-            role: 'assistant',
-            content: 'This local endpoint generated a grounded test description.',
-          },
-          finish_reason: 'stop',
-        }],
-      }));
     });
 
     await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -42,6 +46,7 @@ describe('OpenAIProvider compatible endpoint support', () => {
       config.openai.baseURL = `http://127.0.0.1:${address.port}/v1`;
       config.openai.model = 'local-test-model';
       config.openai.apiKey = 'local-test-key';
+      config.openai.temperature = 0;
 
       const provider = new OpenAIProvider(config);
       const description = await provider.generateDescription({
@@ -51,6 +56,7 @@ describe('OpenAIProvider compatible endpoint support', () => {
       expect(description).toBe('This local endpoint generated a grounded test description.');
       expect(seen[0]?.url).toBe('/v1/chat/completions');
       expect(seen[0]?.authorization).toBe('Bearer local-test-key');
+      expect(seen[0]?.body?.temperature).toBe(0);
     } finally {
       await new Promise<void>(resolve => server.close(() => resolve()));
     }

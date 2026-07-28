@@ -158,8 +158,8 @@ export class MockingLibraryAnalyzer extends BaseAnalyzer {
     for (const relativeFile of await this.testFiles(projectPath)) {
       const content = await this.safeRead(path.join(projectPath, relativeFile));
       if (!content) continue;
-      if (this.importedMockingLibraries(content, dependencies).size > 0) return true;
-      if (this.importedFixtureLibraries(content).size > 0) return true;
+      if (this.importedMockingLibraries(content, dependencies, relativeFile).size > 0) return true;
+      if (this.importedFixtureLibraries(content, relativeFile).size > 0) return true;
     }
     return false;
   }
@@ -216,7 +216,7 @@ export class MockingLibraryAnalyzer extends BaseAnalyzer {
       edges,
       [],
       [],
-      this.extractImports(content),
+      this.extractImports(content, context.relativePath),
       [...doubles.map(double => double.name), ...fixtures.map(fixture => fixture.name)]
     );
   }
@@ -262,10 +262,10 @@ export class MockingLibraryAnalyzer extends BaseAnalyzer {
       const content = await this.safeRead(absoluteFile);
       if (!content || !this.fileMayContainDoubles(content)) continue;
 
-      const mockLibs = this.importedMockingLibraries(content, dependencies);
+      const mockLibs = this.importedMockingLibraries(content, dependencies, relativeFile);
       if (mockLibs.size > 0) doubles.push(...this.extractDoubles(content, relativeFile, mockLibs));
 
-      const fixtureLibs = this.importedFixtureLibraries(content);
+      const fixtureLibs = this.importedFixtureLibraries(content, relativeFile);
       if (fixtureLibs.size > 0) fixtures.push(...this.extractFixtures(content, relativeFile, fixtureLibs));
     }
 
@@ -433,7 +433,7 @@ export class MockingLibraryAnalyzer extends BaseAnalyzer {
 
   private extractDoubles(content: string, filePath: string, libraries: Set<MockingLibrary>): MockDouble[] {
     const doubles: MockDouble[] = [];
-    const lines = content.split(/\r?\n/);
+    const lines = this.sourceLines(content);
 
     lines.forEach((line, index) => {
       const lineNumber = index + 1;
@@ -547,7 +547,7 @@ export class MockingLibraryAnalyzer extends BaseAnalyzer {
 
   private extractFixtures(content: string, filePath: string, libraries: Set<FixtureLibrary>): FixtureFactory[] {
     const fixtures: FixtureFactory[] = [];
-    const lines = content.split(/\r?\n/);
+    const lines = this.sourceLines(content);
 
     lines.forEach((line, index) => {
       const lineNumber = index + 1;
@@ -655,8 +655,8 @@ export class MockingLibraryAnalyzer extends BaseAnalyzer {
     return labels[library];
   }
 
-  private importedMockingLibraries(content: string, dependencies: DependencyHit[]): Set<MockingLibrary> {
-    const imports = this.extractImports(content);
+  private importedMockingLibraries(content: string, dependencies: DependencyHit[], filePath: string): Set<MockingLibrary> {
+    const imports = this.extractImports(content, filePath);
     const found = new Set<MockingLibrary>();
     for (const [library, sources] of Object.entries(MOCK_IMPORTS) as Array<[MockingLibrary, string[]]>) {
       if (imports.some(source => sources.some(pkg => source === pkg || source.startsWith(`${pkg}/`) || source.startsWith(`${pkg}.`)))) {
@@ -674,8 +674,8 @@ export class MockingLibraryAnalyzer extends BaseAnalyzer {
     return found;
   }
 
-  private importedFixtureLibraries(content: string): Set<FixtureLibrary> {
-    const imports = this.extractImports(content);
+  private importedFixtureLibraries(content: string, filePath: string): Set<FixtureLibrary> {
+    const imports = this.extractImports(content, filePath);
     const found = new Set<FixtureLibrary>();
     for (const [library, sources] of Object.entries(FIXTURE_IMPORTS) as Array<[FixtureLibrary, string[]]>) {
       if (imports.some(source => sources.some(pkg => source === pkg || source.startsWith(`${pkg}/`) || source.startsWith(`${pkg}.`)))) {
@@ -685,9 +685,12 @@ export class MockingLibraryAnalyzer extends BaseAnalyzer {
     return found;
   }
 
-  private extractImports(content: string): string[] {
+  private extractImports(content: string, filePath: string): string[] {
+    const flavor = this.sourceImportFlavor(filePath);
+    const corpusImports = flavor ? this.sourceImports(content, flavor) : undefined;
+    if (corpusImports) return [...corpusImports];
     const imports = new Set<string>();
-    for (const line of content.split(/\r?\n/)) {
+    for (const line of this.sourceLines(content)) {
       const importMatch = line.match(/^\s*import\s+(?:.+?\s+from\s+)?['"]([^'"]+)['"]/);
       const requireMatch = line.match(/\brequire\(['"]([^'"]+)['"]\)/);
       const pythonMatch = line.match(/^\s*(?:from\s+([a-zA-Z0-9_.]+)\s+import|import\s+([a-zA-Z0-9_.]+))/);
@@ -711,7 +714,7 @@ export class MockingLibraryAnalyzer extends BaseAnalyzer {
     return match?.[1];
   }
 
-  private findFactoryBoyModel(lines: string[], classLine: number): string | undefined {
+  private findFactoryBoyModel(lines: readonly string[], classLine: number): string | undefined {
     for (let i = classLine + 1; i < Math.min(lines.length, classLine + 25); i++) {
       const line = lines[i];
       if (line.trim() && !/^\s/.test(line)) break;
@@ -734,6 +737,7 @@ export class MockingLibraryAnalyzer extends BaseAnalyzer {
   private async testFiles(projectPath: string): Promise<string[]> {
     return this.capAndPrioritizeSourceFiles(await glob([
       '**/*.{test,spec}.{ts,tsx,js,jsx,mjs,cjs}',
+      '**/{__tests__,test,tests,spec,e2e}/**/*.{ts,tsx,js,jsx,mjs,cjs}',
       '**/test_*.py',
       '**/*_test.py',
       '**/tests/**/*.py',
@@ -751,7 +755,10 @@ export class MockingLibraryAnalyzer extends BaseAnalyzer {
     ], {
       cwd: projectPath,
       ignore: this.getIgnorePatterns({ projectPath }).filter(pattern =>
-        !pattern.includes('fixtures') && !pattern.includes('testdata') && !pattern.includes('cas-tests')),
+        !pattern.includes('fixtures') &&
+        !pattern.includes('testdata') &&
+        !pattern.includes('cas-tests') &&
+        !pattern.includes('__tests__')),
       nodir: true,
       absolute: false,
     }), 'mocking and fixture candidate files');
@@ -771,7 +778,7 @@ export class MockingLibraryAnalyzer extends BaseAnalyzer {
   private async readPackageJsonDependencies(projectPath: string): Promise<DependencyHit[]> {
     const packageJsonPath = path.join(projectPath, 'package.json');
     if (!await fs.pathExists(packageJsonPath)) return [];
-    const pkg = await fs.readJson(packageJsonPath).catch(() => undefined);
+    const pkg = await this.readSourceJson<any>(packageJsonPath).catch(() => undefined);
     if (!pkg) return [];
     const hits: DependencyHit[] = [];
     const add = (deps: Record<string, string> | undefined, type: CASLibrary['type']) => {

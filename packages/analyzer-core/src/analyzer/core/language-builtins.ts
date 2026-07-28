@@ -119,6 +119,11 @@ const LANGUAGE_MODULE_TOKENS = new Set([
   // Platform module names used for OS-specific source files
   'linux', 'windows', 'macos', 'darwin', 'unix', 'posix', 'win32', 'android',
   'native',
+  // Language/runtime labels emitted by polyglot paths, namespaces, and build
+  // metadata. They describe an implementation surface, never the product.
+  'javascript', 'typescript', 'nodejs', 'python', 'java', 'kotlin', 'scala',
+  'dotnet', 'csharp', 'fsharp', 'rust', 'ruby', 'php', 'dart', 'flutter',
+  'swift', 'objectivec', 'terraform', 'powershell',
 ]);
 
 /**

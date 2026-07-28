@@ -293,18 +293,18 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
 
           endpoints.forEach((endpoint, index) => {
             const endpointId = `endpoint_${controllerId}_${endpoint.handlerName}_${index}`;
-            const fullPath = `${requestMapping}${endpoint.path}`.replace('//', '/');
+            const routePath = `${requestMapping}${endpoint.path}`.replace('//', '/');
 
-            const endpointNode = this.createNodeBuilder(endpointId, `${endpoint.method.toUpperCase()} ${fullPath}`, 'route')
+            const endpointNode = this.createNodeBuilder(endpointId, `${endpoint.method.toUpperCase()} ${routePath}`, 'route')
               .withLevel(3, 'code')
               .withCategory('route', ['http', 'endpoint'])
               .withSource({ file: fullPath, line: 1, end_line: 1 })
-              .withDescription(`Spring Boot HTTP endpoint: ${endpoint.method.toUpperCase()} ${fullPath}`)
+              .withDescription(`Spring Boot HTTP endpoint: ${endpoint.method.toUpperCase()} ${routePath}`)
               .withMetadata({
                 framework: 'spring-boot',
                 attributes: {
                   method: endpoint.method,
-                  path: fullPath,
+                  path: routePath,
                   handlerName: endpoint.handlerName,
                   parameters: endpoint.parameters,
                   produces: endpoint.produces,
@@ -326,7 +326,7 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
             // (filters ep.type==='http', reads trigger.method/path + security)
             // surfaces Spring routes in get_route_table, like Express/NestJS.
             // Normalize Spring's `{id}` path params to the `:id` route convention.
-            const canonicalPath = fullPath.replace(/\{([^}]+)\}/g, ':$1');
+            const canonicalPath = routePath.replace(/\{([^}]+)\}/g, ':$1');
             entryPoints.push(this.createEntryPoint(
               `entry_${endpointId}`,
               endpointId,

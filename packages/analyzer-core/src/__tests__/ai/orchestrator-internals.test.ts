@@ -204,6 +204,51 @@ describe('calculateQualityMetrics', () => {
   });
 });
 
+describe('indexed graph derivations', () => {
+  it('links a hook usage only when its fetcher name resolves uniquely', () => {
+    const nodes = [
+      {
+        id: 'hook_1',
+        name: 'useOrders',
+        type: 'hook_usage',
+        metadata: { attributes: { dependencies: ['client.fetchOrders'], hook_name: 'useQuery' } },
+      },
+      { id: 'fetch_1', name: 'fetchOrders', type: 'function' },
+      { id: 'other_1', name: 'other', type: 'function' },
+    ] as CASNode[];
+    const edges: CASEdge[] = [];
+
+    orch.linkHookUsageFetchers(nodes, edges);
+
+    expect(edges).toEqual([
+      expect.objectContaining({ source: 'hook_1', target: 'fetch_1', type: 'calls' }),
+    ]);
+
+    nodes.push({ id: 'fetch_2', name: 'fetchOrders', type: 'method' } as CASNode);
+    const ambiguousEdges: CASEdge[] = [];
+    orch.linkHookUsageFetchers(nodes, ambiguousEdges);
+    expect(ambiguousEdges).toEqual([]);
+  });
+
+  it('detects a god object from indexed child-method counts', () => {
+    const parent = { id: 'service_1', name: 'LargeService', type: 'service', metadata: {} } as CASNode;
+    const methods = Array.from({ length: 31 }, (_, index) => ({
+      id: `method_${index}`,
+      name: `method${index}`,
+      type: 'method',
+      parent: parent.id,
+      metadata: {},
+    } as CASNode));
+    const patterns: any[] = [];
+
+    orch.detectGodObjectAntiPattern([parent, ...methods], patterns);
+
+    expect(patterns).toEqual([
+      expect.objectContaining({ id: 'god-object-anti-pattern', instances: [parent.id] }),
+    ]);
+  });
+});
+
 describe('source inventory analyzer detection', () => {
   it('detects language signals from one shared inventory and ignores generated worktrees', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-inventory-'));
@@ -1976,6 +2021,21 @@ describe('architecture and capability inference', () => {
     )).toBe('backend-service');
   });
 
+  it('uses an AI-grounded codebase-analysis domain to override incidental security vocabulary', async () => {
+    expect(orch.refinePurposeTypeForDomain(
+      'network-access-platform',
+      'cas-codebase-analysis',
+      ['React', 'Express'],
+      [{ type: 'http', count: 20 }, { type: 'cli', count: 4 }]
+    )).toBe('devtools-platform');
+    expect(orch.refinePurposeTypeForDomain(
+      'network-access-platform',
+      'codebase-analysis-engine',
+      ['React', 'Express'],
+      [{ type: 'http', count: 20 }, { type: 'cli', count: 4 }]
+    )).toBe('devtools-platform');
+  });
+
   it('adds readable titles and descriptions to test gaps', async () => {
     const gaps = orch.buildTestGaps([], [
       node({
@@ -2332,6 +2392,42 @@ describe('architecture and capability inference', () => {
     const fabricatedVerdict = orch.validateGeneratedAIInterpretation(fabricated, purpose, grounding);
     expect(fabricatedVerdict.ok).toBe(false);
     expect(String(fabricatedVerdict.reason)).toMatch(/ungrounded-system-type/);
+  });
+
+  it('does not treat a final preposition before a type head as a fabricated system type', async () => {
+    const purpose = { primary_domain: 'deployment-infrastructure', core_concepts: ['deployment', 'terraform', 'kubernetes', 'queue'] };
+    const grounding = {
+      systemName: 'platform-infra',
+      frameworks: ['terraform'],
+      libraries: [],
+      databaseEntities: [],
+      structuralTokens: ['deployment', 'terraform', 'kubernetes', 'queue', 'infrastructure'],
+      projectTextSummary: 'Cloud deployment infrastructure and queue resources',
+    };
+    const description = 'platform-infra provisions deployment infrastructure through API resources declared with Terraform and Kubernetes. It creates queue and service topology for operators who deploy the application environment.';
+    expect(orch.validateGeneratedAIInterpretation(description, purpose, grounding)).toEqual({ ok: true });
+  });
+
+  it('does not treat finite infrastructure verbs as a fabricated system type', async () => {
+    const purpose = { primary_domain: 'cloud-infrastructure', core_concepts: ['deployment', 'terraform', 'kubernetes'] };
+    const grounding = {
+      systemName: 'platform-infra', frameworks: ['terraform'], libraries: [], databaseEntities: [],
+      structuralTokens: ['deployment', 'terraform', 'kubernetes', 'infrastructure'],
+      projectTextSummary: 'Cloud deployment infrastructure',
+    };
+    const description = 'platform-infra is a cloud infrastructure definition for application deployment. It provisions and manages a deployment platform with Terraform and Kubernetes resources. Operators review the declared service topology before applying environment changes. The repository packages those declarations as one infrastructure codebase.';
+    expect(orch.validateGeneratedAIInterpretation(description, purpose, grounding)).toEqual({ ok: true });
+  });
+
+  it('does not treat clause verbs before an infrastructure type head as type modifiers', async () => {
+    const purpose = { primary_domain: 'cloud-infrastructure', core_concepts: ['deployment', 'terraform', 'kubernetes'] };
+    const grounding = {
+      systemName: 'platform-infra', frameworks: ['terraform'], libraries: [], databaseEntities: [],
+      structuralTokens: ['deployment', 'terraform', 'kubernetes', 'infrastructure', 'platform'],
+      projectTextSummary: 'Cloud deployment infrastructure', artifactType: 'infrastructure',
+    };
+    const description = 'platform-infra declares cloud infrastructure for application deployment. The deployment shape involves a platform with a Kubernetes runtime and Terraform resources. The declarations provision the runtime units from configuration. Operators can review the resulting platform topology before deployment.';
+    expect(orch.validateGeneratedAIInterpretation(description, purpose, grounding)).toEqual({ ok: true });
   });
 
   describe('mechanical repair-not-reject for fixable gate rejections', () => {
@@ -4112,6 +4208,34 @@ describe('orchestrator resolveNodeTwins (task #27: analyzer twin nodes/entries)'
   });
 });
 
+describe('orchestrator dedupeHttpEntryPoints', () => {
+  it('canonicalizes nested analyzer roots and keeps the specific route handler', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-http-entry-dedupe-'));
+    try {
+      fs.mkdirSync(path.join(root, 'go'), { recursive: true });
+      fs.writeFileSync(path.join(root, 'go/main.go'), 'package main\n');
+      const entries = [
+        {
+          id: 'generic', source_node: 'file_go_main', type: 'http', name: 'GET /orders/:id',
+          trigger: { method: 'GET', path: '/orders/:id' },
+          handler: { node_id: 'fn_main', method_name: 'main.go', file: 'go/main.go', line: 1 },
+        },
+        {
+          id: 'framework', source_node: 'route_orders', type: 'http', name: 'GET /orders/:id',
+          trigger: { method: 'GET', path: '/orders/:id' },
+          handler: { node_id: 'fn_order', method_name: 'getOrder', file: 'main.go', line: 4 },
+        },
+      ] as CASEntryPoint[];
+      orch.dedupeHttpEntryPoints(entries, root);
+      expect(entries).toHaveLength(1);
+      expect(entries[0].id).toBe('framework');
+      expect(entries[0].handler?.method_name).toBe('getOrder');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('orchestrator dedupeEntryPointTwins (task #27: entry-point twins)', () => {
   it('collapses a php-analyzer generic-class CLI entry and a symfony-analyzer command CLI entry for the SAME (now-unified) source_node, keeping the richer record', () => {
     // After resolveNodeTwins unifies the php-analyzer `class` node and the
@@ -4169,6 +4293,79 @@ describe('orchestrator dedupeEntryPointTwins (task #27: entry-point twins)', () 
     orch.dedupeEntryPointTwins(entryPoints);
 
     expect(entryPoints).toHaveLength(2);
+  });
+
+  it('collapses a nested-project entry whose unprefixed handler path does not exist', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-entry-twin-'));
+    try {
+      fs.mkdirSync(path.join(root, 'rust', 'src'), { recursive: true });
+      fs.writeFileSync(path.join(root, 'rust', 'src', 'main.rs'), 'fn main() {}\n');
+      const entries: CASEntryPoint[] = [
+        {
+          id: 'nested', source_node: 'nested_main', type: 'cli', name: 'main',
+          handler: { node_id: 'nested_main', method_name: 'main', file: 'rust/src/main.rs' },
+          trigger: { pattern: 'main' },
+        } as CASEntryPoint,
+        {
+          id: 'unprefixed', source_node: 'unprefixed_main', type: 'cli', name: 'main',
+          handler: { node_id: 'unprefixed_main', method_name: 'main', file: 'src/main.rs' },
+          trigger: { pattern: 'main' },
+        } as CASEntryPoint,
+      ];
+
+      orch.dedupeEntryPointTwins(entries, root);
+      expect(entries).toHaveLength(1);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps suffix-compatible entry paths when both files genuinely exist', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-entry-distinct-'));
+    try {
+      fs.mkdirSync(path.join(root, 'src'), { recursive: true });
+      fs.mkdirSync(path.join(root, 'rust', 'src'), { recursive: true });
+      fs.writeFileSync(path.join(root, 'src', 'main.rs'), 'fn main() {}\n');
+      fs.writeFileSync(path.join(root, 'rust', 'src', 'main.rs'), 'fn main() {}\n');
+      const entries: CASEntryPoint[] = [
+        {
+          id: 'root', source_node: 'root_main', type: 'cli', name: 'main',
+          handler: { node_id: 'root_main', method_name: 'main', file: 'src/main.rs' },
+          trigger: { pattern: 'main' },
+        } as CASEntryPoint,
+        {
+          id: 'nested', source_node: 'nested_main', type: 'cli', name: 'main',
+          handler: { node_id: 'nested_main', method_name: 'main', file: 'rust/src/main.rs' },
+          trigger: { pattern: 'main' },
+        } as CASEntryPoint,
+      ];
+
+      orch.dedupeEntryPointTwins(entries, root);
+      expect(entries).toHaveLength(2);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('orchestrator incremental baseline inventory', () => {
+  it('records project-scope triggers even when no analyzer node owns the file', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-incremental-triggers-'));
+    try {
+      fs.mkdirSync(path.join(root, 'dotnet'), { recursive: true });
+      fs.writeFileSync(path.join(root, 'dotnet', 'Enterprise.Api.csproj'), '<Project />');
+      fs.writeFileSync(path.join(root, 'Dockerfile.api'), 'FROM node:22');
+      fs.writeFileSync(path.join(root, 'compose.yml'), 'services: {}');
+
+      const files = orch.getIncrementalSourceFiles(root);
+      expect(files).toEqual(expect.arrayContaining([
+        'dotnet/Enterprise.Api.csproj',
+        'Dockerfile.api',
+        'compose.yml',
+      ]));
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 
@@ -5375,6 +5572,12 @@ describe('stripped-sentence grammar guard and repetition collapse (live mtg/herc
       .toBe('It works by providing telemetry data and graph evidence.');
   });
 
+  it('repairs an incomplete participle tail from a truncated provider response', async () => {
+    expect(orch.repairStrippedSentenceGrammar(
+      'It is built with a Node backend, integrating supported providers, and leveraging.'
+    )).toBe('It is built with a Node backend, integrating supported providers.');
+  });
+
   it('repairs the live broken-coordination stump "a robust and solution"', async () => {
     expect(orch.repairStrippedSentenceGrammar('The service offers a robust and solution.'))
       .toBe('The service offers a robust solution.');
@@ -5978,16 +6181,17 @@ describe('thin-catalog nudge (defect #33 — catalog VARIANCE: v1.0.83 returned 
     (aiService as any).generateComponentDescription = async (arg: any) => {
       callCount++;
       captured.push(arg);
-      if (callCount <= 2) {
-        // Both regular attempts collapse everything into one merged item —
-        // exactly the measured v1.0.83 shape.
+      if (callCount === 1) {
+        // The first call collapses everything into one merged item. It already
+        // satisfies this small repo's evidence-scaled minimum, so the next call
+        // is the targeted family nudge rather than a generic retry.
         return JSON.stringify({
           capabilities: [
             { name: 'Manage all product records', description: 'Owns Widget, Gadget, and Gizmo records across the whole platform.', category: 'core', entities: ['Widget'], journeys: [] },
           ],
         });
       }
-      // Third call = the thin-catalog nudge. It must be told the distinct
+      // Second call = the thin-catalog nudge. It must be told the distinct
       // families by name, and this time returns one grounded capability PER
       // family — the measured v1.0.84 shape.
       return JSON.stringify({
@@ -6000,10 +6204,10 @@ describe('thin-catalog nudge (defect #33 — catalog VARIANCE: v1.0.83 returned 
     };
     try {
       const catalog = await orch.aiExtractCapabilityCatalog(baseInput);
-      expect(callCount).toBe(3);
+      expect(callCount).toBe(2);
       // The nudge call's retry_hint enumerates the real distinct families by
       // name (evidence already computed deterministically, not invented).
-      const nudgeHint = captured[2]?.additionalContext?.retry_hint;
+      const nudgeHint = captured[1]?.additionalContext?.retry_hint;
       expect(nudgeHint).toMatch(/Widget route area/);
       expect(nudgeHint).toMatch(/Gadget route area/);
       expect(nudgeHint).toMatch(/Gizmo route area/);
@@ -6032,11 +6236,10 @@ describe('thin-catalog nudge (defect #33 — catalog VARIANCE: v1.0.83 returned 
     const captured: any[] = [];
     (aiService as any).generateComponentDescription = async (arg: any) => {
       captured.push(arg);
-      // Both regular attempts return FIVE caps (five distinct entity sets —
-      // effectively 5, above the old fixed <=3 cutoff). With 16 families the
-      // scaled ceiling is max(3, floor(16/3)=5) = 5, so the nudge fires; the
-      // nudge attempt returns one purpose cap per family.
-      if (captured.length <= 2) return JSON.stringify({ capabilities: fiveCaps });
+      // The first call returns FIVE caps (five distinct entity sets). With 16
+      // families the scaled ceiling is max(3, floor(16/3)=5) = 5, so the second
+      // call is the targeted nudge and returns one cap per family.
+      if (captured.length === 1) return JSON.stringify({ capabilities: fiveCaps });
       return JSON.stringify({
         capabilities: nouns.map(noun => ({
           name: `Manage ${noun.toLowerCase()}s`,
@@ -6051,8 +6254,8 @@ describe('thin-catalog nudge (defect #33 — catalog VARIANCE: v1.0.83 returned 
         candidateCapabilities: sixteenFamilies,
         dataEntities: nouns.map(noun => ({ id: `entity_${noun.toLowerCase()}`, name: noun })),
       });
-      expect(captured.length).toBe(3); // scaled ceiling admitted the 5-cap undercount
-      const hint = String(captured[2]?.additionalContext?.retry_hint || '');
+      expect(captured.length).toBe(2); // one result plus one evidence-backed nudge
+      const hint = String(captured[1]?.additionalContext?.retry_hint || '');
       expect(hint).toContain('16 DISTINCT candidate route-area families');
       expect(hint).toContain('(top 10 listed)');
       expect(catalog.length).toBe(16);
@@ -6076,10 +6279,9 @@ describe('thin-catalog nudge (defect #33 — catalog VARIANCE: v1.0.83 returned 
     };
     try {
       const catalog = await orch.aiExtractCapabilityCatalog(baseInput);
-      // catalogCountMin floors at 6 here, so both regular attempts run (2
-      // calls) — the point under test is that catalog.length (3) !== 1, so
-      // the thin-catalog nudge must NOT fire a 3rd call.
-      expect(callCount).toBe(2);
+      // Three capabilities satisfy the evidence-scaled range, so the first
+      // successful call is final and no quality nudge is warranted.
+      expect(callCount).toBe(1);
       expect(catalog.length).toBe(3);
     } finally {
       (aiService as any).generateComponentDescription = original;
@@ -6105,7 +6307,7 @@ describe('thin-catalog nudge (defect #33 — catalog VARIANCE: v1.0.83 returned 
         candidateCapabilities: [candidateCapabilities[0]],
         dataEntities: [dataEntities[0]],
       });
-      expect(callCount).toBe(2); // the two regular attempts only, no nudge call
+      expect(callCount).toBe(1); // one satisfying call, no unsupported nudge
       expect(catalog.length).toBe(1);
     } finally {
       (aiService as any).generateComponentDescription = original;
@@ -6124,8 +6326,8 @@ describe('thin-catalog nudge (defect #33 — catalog VARIANCE: v1.0.83 returned 
     const captured: any[] = [];
     (aiService as any).generateComponentDescription = async (arg: any) => {
       captured.push(arg);
-      // First two attempts collapse to 3 thin items; the nudge attempt returns 9.
-      if (captured.length <= 2) {
+      // The first attempt collapses to 3 thin items; the nudge returns 9.
+      if (captured.length === 1) {
         return JSON.stringify({
           capabilities: [
             { name: 'Create record', description: 'Creates a record in the system for operators to review later.', category: 'core', entities: ['Widget'], journeys: [] },
@@ -6148,8 +6350,8 @@ describe('thin-catalog nudge (defect #33 — catalog VARIANCE: v1.0.83 returned 
         candidateCapabilities: manyFamilies,
         dataEntities: nouns.map(noun => ({ id: `entity_${noun.toLowerCase()}`, name: noun })),
       });
-      expect(captured.length).toBe(3); // two regular attempts + the severe-undercount nudge
-      const nudgeArg = captured[2];
+      expect(captured.length).toBe(2); // one result + the severe-undercount nudge
+      const nudgeArg = captured[1];
       const hint = String(nudgeArg?.additionalContext?.retry_hint || JSON.stringify(nudgeArg));
       expect(hint).toContain('only 3 distinct capabilities');
       expect(catalog.length).toBe(9);
@@ -6671,6 +6873,73 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
     }
   });
 
+  it('starts capability curation and the system narrative concurrently', async () => {
+    const previousOpenAI = process.env.OPENAI_API_KEY;
+    const previousInterpretation = process.env.KLAURO_AI_INTERPRETATION;
+    const previousForce = process.env.KLAURO_AI_INTERPRETATION_FORCE;
+    process.env.OPENAI_API_KEY = 'test-openai-key';
+    process.env.KLAURO_AI_INTERPRETATION = 'true';
+    process.env.KLAURO_AI_INTERPRETATION_FORCE = '1';
+    let catalogStarted = false;
+    let narrativeStarted = false;
+    let release!: () => void;
+    const bothStarted = new Promise<void>(resolve => { release = resolve; });
+    const markStarted = (kind: 'catalog' | 'narrative') => {
+      if (kind === 'catalog') catalogStarted = true;
+      else narrativeStarted = true;
+      if (catalogStarted && narrativeStarted) release();
+    };
+
+    const catalogSpy = jest.spyOn(orch, 'runCapabilityCatalogWithQualityGate').mockImplementation(async () => {
+      markStarted('catalog');
+      await bothStarted;
+      return [{
+        id: 'cap_analyze', name: 'Analyze codebases', name_source: 'ai',
+        description: 'Builds relationship graphs that explain code behavior to engineering agents.',
+        description_source: 'ai', category: 'core', operations: [], related_entities: [],
+        related_domains: ['code-analysis'], criticality: 'high', criticality_factors: [],
+      }];
+    });
+    const narrativeSpy = jest.spyOn(aiService, 'generateComponentDescription').mockImplementation(async () => {
+      markStarted('narrative');
+      await bothStarted;
+      return JSON.stringify({
+        system_description: 'Klauro analyzes source repositories into relationship graphs that explain how software behaves. It identifies code structure, product capabilities, flows, and change boundaries for engineering agents. Source enters deterministic analyzers, which connect code facts into navigable system context and produce grounded codebase intelligence. The resulting analysis is exposed through MCP for development work.',
+        domain: 'codebase-intelligence',
+        descriptions: [],
+      });
+    });
+
+    try {
+      const purpose: any = {
+        primary_type: 'developer-tool', confidence: 0.9, evidence: [],
+        primary_domain: 'codebase-intelligence', core_concepts: ['codebase', 'analysis'],
+        inferred_description: 'A codebase intelligence service.', supporting_workflow_ids: [],
+      };
+      const capabilities: any[] = [{
+        id: 'candidate_analyze', name: 'Analyze codebases', description: 'Analyze repositories.',
+        category: 'core', operations: [], related_entities: [], related_domains: ['code-analysis'],
+        criticality: 'high', criticality_factors: [],
+      }];
+      await orch.applyAIInterpretation(
+        purpose, 'klauro', [], [], [], [], orch.emptyFlowGraph(), [], capabilities,
+        [], [], [], { concepts: ['codebase', 'analysis'], evidence: [], manifestDescription: 'Codebase intelligence for engineering agents.' },
+        [{ name: 'Analyze a codebase', journey_kind: 'user-facing' }],
+      );
+      expect(catalogStarted).toBe(true);
+      expect(narrativeStarted).toBe(true);
+    } finally {
+      catalogSpy.mockRestore();
+      narrativeSpy.mockRestore();
+      if (previousOpenAI === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = previousOpenAI;
+      if (previousInterpretation === undefined) delete process.env.KLAURO_AI_INTERPRETATION;
+      else process.env.KLAURO_AI_INTERPRETATION = previousInterpretation;
+      if (previousForce === undefined) delete process.env.KLAURO_AI_INTERPRETATION_FORCE;
+      else process.env.KLAURO_AI_INTERPRETATION_FORCE = previousForce;
+    }
+  });
+
   it('bare-noun capability names: repairs a grounded single-noun label, drops an ungrounded noun phrase, and keeps verb-headed labels untouched', async () => {
     // Reproduces the live defect measured on a real analyzed Swift macOS repo
     // (v1.0.116): 24 of the system_capabilities entries were single/two-word
@@ -6875,6 +7144,78 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
     // bare or given an invented purpose.
     expect(names).not.toContain('Wizard');
   });
+
+  it('applyDeterministicCapabilityFallback: derives a read-only purpose and humanized entity subject', () => {
+    const candidateSnapshot: any[] = [{
+      id: 'cap_enterpriseorders',
+      name: 'Enterpriseorders',
+      related_entities: ['entity_enterprise_order'],
+      operations: [{
+        entry_point_id: 'entry_order', entry_point_type: 'http', action: 'View',
+        trigger: { method: 'GET', path: '/orders/{id}' },
+      }],
+      criticality_factors: [],
+    }];
+    const systemCapabilities: any[] = [];
+    orch.applyDeterministicCapabilityFallback(candidateSnapshot, [], [], [], systemCapabilities, [{
+      id: 'entity_enterprise_order', name: 'EnterpriseOrder',
+    }]);
+
+    expect(systemCapabilities[0].name).toBe('View Enterprise Order');
+  });
+
+  it('applyDeterministicCapabilityFallback: merges polyglot read surfaces by entity and repairs an unanchored route', () => {
+    const candidates: any[] = [
+      {
+        id: 'cap_enterprise',
+        name: 'Enterprise',
+        related_entities: ['entity_enterpriseorder'],
+        related_domains: ['enterprise'],
+        operations: [
+          { entry_point_id: 'internal_analyze', entry_point_type: 'internal', action: 'Analyze' },
+          { entry_point_id: 'ts_orders', entry_point_type: 'http', action: 'View', trigger: { method: 'GET', path: '/ts/orders/:id' } },
+        ],
+        category: 'core',
+        criticality: 'medium',
+        criticality_factors: [],
+      },
+      {
+        id: 'cap_orders',
+        name: 'Orders Management',
+        related_entities: ['entity_enterpriseorder'],
+        related_domains: ['orders'],
+        operations: [
+          { entry_point_id: 'python_orders', entry_point_type: 'http', action: 'List', trigger: { method: 'GET', path: '/python/orders/{id}' } },
+        ],
+        category: 'supporting',
+        criticality: 'low',
+        criticality_factors: [],
+      },
+      {
+        id: 'cap_enterpriseorders',
+        name: 'Enterpriseorders Workflow',
+        related_entities: [],
+        related_domains: ['enterpriseorders'],
+        operations: [
+          { entry_point_id: 'dotnet_orders', entry_point_type: 'http', action: 'List', path_or_command: '/enterpriseorders/dotnet/orders/{id}', trigger: { method: 'GET', path: '/enterpriseorders/dotnet/orders/{id}' } },
+        ],
+        category: 'supporting',
+        criticality: 'low',
+        criticality_factors: [],
+      },
+    ];
+    const systemCapabilities: any[] = [];
+    orch.applyDeterministicCapabilityFallback(candidates, [], [], [], systemCapabilities, [{
+      id: 'entity_enterpriseorder',
+      name: 'EnterpriseOrder',
+      lifecycle: { created_by: [], read_by: ['ts_orders'], updated_by: [], deleted_by: [] },
+    }]);
+
+    expect(systemCapabilities).toHaveLength(1);
+    expect(systemCapabilities[0].name).toBe('View Enterprise Order');
+    expect(systemCapabilities[0].operations.map((operation: any) => operation.entry_point_id).sort())
+      .toEqual(['dotnet_orders', 'internal_analyze', 'python_orders', 'ts_orders']);
+  });
 });
 
 describe('domain grounding gate: dependency-name salience (live defect — a menu-bar utility labeled "security-scanning-tool" off its dependency list)', () => {
@@ -6983,7 +7324,7 @@ describe('domain grounding gate: dependency-name salience (live defect — a men
     }
   });
 
-  it('prompt construction: dependency names are positioned AFTER manifestDescription in the additionalContext payload and carry an explicit demotion instruction', async () => {
+  it('prompt construction: compact system narration excludes dependency names and carries an explicit demotion policy', async () => {
     const envKeys = ['OPENAI_API_KEY', 'KLAURO_AI_INTERPRETATION', 'KLAURO_AI_INTERPRETATION_FORCE', 'KLAURO_AI_INTERPRETATION_BUDGET_MS'];
     const saved: Record<string, string | undefined> = Object.fromEntries(envKeys.map(key => [key, process.env[key]]));
     process.env.OPENAI_API_KEY = 'test-openai-key';
@@ -7030,9 +7371,9 @@ describe('domain grounding gate: dependency-name salience (live defect — a men
     expect(String(additionalContext.dependencySignalInstruction || '')).toEqual(expect.stringContaining('LAST-resort'));
     const serialized = JSON.stringify(additionalContext);
     const manifestIndex = serialized.indexOf('"manifestDescription"');
-    const dependenciesIndex = serialized.indexOf('"dependencies"');
+    const dependenciesIndex = serialized.indexOf('"libraries"');
     expect(manifestIndex).toBeGreaterThan(-1);
-    expect(dependenciesIndex).toBeGreaterThan(manifestIndex);
+    expect(dependenciesIndex).toBe(-1);
   });
 });
 
@@ -7266,6 +7607,16 @@ describe('architecture-shape claim gate (live truckspy: "microservices" shipped 
 });
 
 describe('domain-claim gate (replaces descriptionContradictsPurposeFamily\'s hardcoded six-family table with a generic evidence gate)', () => {
+  it('does not misread connective phrases such as through workflow execution as a business domain', () => {
+    const description = 'An infrastructure definition that provisions deployable services for enterprise environments. It applies stack configuration through workflow execution and produces deployment records for operators.';
+    const result = orch.validateAIInterpretation(
+      description,
+      { primary_domain: 'enterprise-deployment', core_concepts: ['deploy', 'stack', 'service'] },
+      { structuralTokens: ['deploy', 'stack', 'service'] },
+    );
+    expect(result.reason).not.toBe('ungrounded-domain-claim: through workflow execution');
+  });
+
   it('keeps "fleet management platform" grounded via entity/route evidence, not just a literal domain label match (truckspy regression)', () => {
     const description = 'A fleet management platform that tracks vehicles, drivers, and trips for dispatch operators. It records trip assignments and produces driver activity reports for fleet managers.';
     // primary_domain is deliberately generic (not "fleet-management") — grounding
@@ -7354,7 +7705,7 @@ describe('description prompt contract: how-it-works is dataflow, never a package
 
   it('the contract requires dataflow in HOW IT WORKS and forbids package names there', async () => {
     const contract = orch.buildAIDescriptionPromptContract(purpose, 'truckspy', { concepts: [], evidence: [] });
-    expect(contract.version).toContain('v12-dataflow-how-it-works');
+    expect(contract.version).toContain('v14-grounded-behavior-paths');
     const shape: string[] = contract.system_description_shape;
     const howItWorks = shape.find(line => line.startsWith('HOW IT WORKS'))!;
     expect(howItWorks).toMatch(/DATAFLOW/);
@@ -7501,7 +7852,8 @@ describe('catalog completeness (live truckspy: fuel/safety/ELD rich evidence, 9-
       const bigCounts = bigCtx.task.match(/Return (\d+) to (\d+) capabilities/);
       expect(Number(bigCounts[2])).toBeGreaterThan(12);
 
-      // Small pool keeps the original 6-12 guidance and 24-name window bound.
+      // A small pool uses evidence-proportional guidance rather than forcing
+      // six capabilities out of ten candidate families.
       const smallPool = bigPool.slice(0, 10);
       await orch.aiExtractCapabilityCatalog({
         systemName: 'small',
@@ -7514,11 +7866,66 @@ describe('catalog completeness (live truckspy: fuel/safety/ELD rich evidence, 9-
       const smallCtx = captured[captured.length - 1].additionalContext;
       expect(smallCtx.facts.candidate_route_areas.length).toBe(10);
       const smallCounts = smallCtx.task.match(/Return (\d+) to (\d+) capabilities/);
-      expect(Number(smallCounts[1])).toBe(6);
-      expect(Number(smallCounts[2])).toBe(12);
+      expect(Number(smallCounts[1])).toBe(3);
+      expect(Number(smallCounts[2])).toBe(5);
     } finally {
       (aiService as any).generateComponentDescription = original;
     }
+  });
+});
+
+describe('incremental capability catalog stability', () => {
+  it('preserves every prior capability with surviving operation evidence when a refresh collapses them', () => {
+    const previous = ['review', 'compare'].map(action => ({
+      id: `cap_${action}`,
+      name: `${action} enterprise orders`,
+      description: `${action[0].toUpperCase()}${action.slice(1)} enterprise orders presents EnterpriseOrder details for operator review.`,
+      description_source: 'ai',
+      category: 'core',
+      related_entities: ['entity_order'],
+      related_domains: ['enterprise-orders'],
+      operations: [{ entry_point_id: `entry_${action}`, entry_point_type: 'http', action }],
+    }));
+    const currentCandidates = [{
+      id: 'candidate_orders', name: 'Enterprise orders', category: 'core',
+      related_entities: ['entity_order'], related_domains: ['enterprise-orders'],
+      operations: [
+        { entry_point_id: 'entry_review', entry_point_type: 'http', action: 'review' },
+        { entry_point_id: 'entry_compare', entry_point_type: 'http', action: 'compare' },
+      ],
+    }];
+    const refreshed = [{
+      id: 'cap_orders', name: 'Review enterprise orders',
+      description: 'Reviews EnterpriseOrder records for operators.', description_source: 'ai', category: 'core',
+      related_entities: ['entity_order'], related_domains: ['enterprise-orders'],
+      operations: currentCandidates[0].operations,
+    }];
+
+    const stabilized = orch.stabilizeRefreshedCapabilityCatalog(previous, currentCandidates, refreshed);
+
+    expect(stabilized.map((capability: any) => capability.id)).toEqual(['cap_review', 'cap_compare']);
+    expect(stabilized.every((capability: any) => capability.description_source === 'reused')).toBe(true);
+  });
+
+  it('drops prior capabilities whose operation evidence disappeared and keeps genuinely new refreshed capabilities', () => {
+    const previous = [{
+      id: 'cap_removed', name: 'Delete enterprise orders', description: 'Deletes orders.', description_source: 'ai', category: 'core',
+      related_entities: ['entity_order'], related_domains: ['enterprise-orders'],
+      operations: [{ entry_point_id: 'entry_removed', entry_point_type: 'http', action: 'delete' }],
+    }];
+    const currentCandidates = [{
+      id: 'candidate_review', name: 'Review enterprise orders', category: 'core',
+      related_entities: ['entity_order'], related_domains: ['enterprise-orders'],
+      operations: [{ entry_point_id: 'entry_review', entry_point_type: 'http', action: 'review' }],
+    }];
+    const refreshed = [{
+      id: 'cap_review', name: 'Review enterprise orders', description: 'Reviews EnterpriseOrder records.', description_source: 'ai', category: 'core',
+      related_entities: ['entity_order'], related_domains: ['enterprise-orders'], operations: currentCandidates[0].operations,
+    }];
+
+    const stabilized = orch.stabilizeRefreshedCapabilityCatalog(previous, currentCandidates, refreshed);
+
+    expect(stabilized.map((capability: any) => capability.id)).toEqual(['cap_review']);
   });
 });
 
@@ -7560,6 +7967,621 @@ describe('stripInstructionShapedTails: generic output-hygiene net for leaked pro
     const cleaned = orch.cleanGeneratedDescriptionText(withLeak);
     expect(cleaned).not.toMatch(/must state/i);
     expect(cleaned).not.toMatch(/must name/i);
+  });
+});
+
+describe('enterprise AI semantic guards', () => {
+  it('rejects target-unsupported dashboard metrics and decision-making claims', () => {
+    const target = {
+      id: 'cap_dashboard', name: 'Access Enterprise Dashboard', kind: 'capability',
+      currentDescription: 'Displays enterprise order records.', operations: ['View Enterprise Dashboard'],
+      evidenceSummary: ['EnterpriseDashboard component'], relatedEntities: ['EnterpriseOrder'], relatedDomains: ['enterprise-orders'],
+    };
+    expect(orch.validateElementDescription(
+      'Provides users with a centralized dashboard to monitor enterprise metrics and support informed decision-making.',
+      target,
+    ).reason).toMatch(/unsupported-(?:marketing-language|target-value-claim)/);
+    expect(orch.validateElementDescription(
+      'Access Enterprise Dashboard gives users one place to review EnterpriseOrder records and compare order details.',
+      target,
+    ).ok).toBe(true);
+  });
+
+  it('rejects mutation semantics for access/view capabilities even when the surface is a page', () => {
+    const target = {
+      id: 'cap_dashboard', name: 'Access Enterprise Dashboard', kind: 'capability',
+      operations: ['Process page Enterprise Dashboard'], relatedEntities: ['EnterpriseOrder'], relatedDomains: ['enterprise-orders'],
+    };
+    expect(orch.validateElementDescription(
+      'Access Enterprise Dashboard gives users a centralized interface for managing EnterpriseOrder workflows and order activity.',
+      target,
+    ).reason).toBe('read-only-capability-claims-mutation');
+  });
+
+  it('rejects malformed prose and topology claims without Tier-1 deployment proof', () => {
+    const purpose = { primary_domain: 'enterprise-orders', core_concepts: ['orders'] };
+    expect(orch.validateAIInterpretation(
+      'An enterprise order system that retrieves EnterpriseOrder records for operators. Requests turn into dat that read an order record and return it to the user. It is built with Express for request handling.',
+      purpose,
+      { frameworks: ['Express'], databaseEntities: ['EnterpriseOrder'] },
+    ).reason).toBe('malformed-prose');
+    expect(orch.validateAIInterpretation(
+      'An enterprise order system that retrieves EnterpriseOrder records for operators. Requests resolve an order identifier into the matching EnterpriseOrder record and return it to the user. The code contains multiple deployment units built with Express.',
+      purpose,
+      { frameworks: ['Express'], databaseEntities: ['EnterpriseOrder'] },
+    ).reason).toBe('unproven-deployment-topology');
+  });
+
+  it('does not retry an empty capability catalog when the codebase has no evidence-backed capability families', () => {
+    expect(orch.catalogQualityFailure([], 0)).toBeUndefined();
+    expect(orch.catalogQualityFailure([], 1)).toBe('empty catalog after reconciliation');
+    expect(orch.catalogQualityFailure([{ name: 'View orders' }], 3)).toMatch(/catalog collapse/);
+  });
+
+  it('grounds infrastructure responsibilities above implementation-shaped candidate labels', async () => {
+    const original = (aiService as any).generateComponentDescription;
+    (aiService as any).generateComponentDescription = async () => JSON.stringify({
+      capabilities: [{
+        name: 'Deploy service runtime',
+        description: 'Lets operators deploy the declared service runtime consistently.',
+        category: 'core',
+        entities: [],
+        journeys: [],
+      }],
+    });
+    try {
+      const catalog = await orch.aiExtractCapabilityCatalog({
+        systemName: 'platform-infra',
+        enhancedSystemPurpose: {
+          artifact_type: 'infrastructure',
+          primary_domain: 'deployment-infrastructure',
+          core_concepts: ['deployment'],
+        },
+        frameworks: ['Shell', 'Terraform', 'Kubernetes'],
+        userJourneys: [],
+        dataEntities: [],
+        candidateCapabilities: [{
+          name: 'Shell Deploy',
+          related_entities: [],
+          operations: [{ entry_point_id: 'entry_deploy', entry_point_type: 'cli', action: 'Execute' }],
+        }],
+        externalServices: [],
+        flowGraph: { capabilities: [] },
+        projectTextSignal: { concepts: [], evidence: [] },
+        budgetMs: 30000,
+      });
+      expect(catalog).toHaveLength(1);
+      expect(catalog[0].name).toBe('Deploy service runtime');
+      expect(catalog[0].operations).toEqual([
+        expect.objectContaining({ entry_point_id: 'entry_deploy' }),
+      ]);
+    } finally {
+      (aiService as any).generateComponentDescription = original;
+    }
+  });
+
+  it('rejects detected infrastructure mechanisms as capability names', async () => {
+    const original = (aiService as any).generateComponentDescription;
+    (aiService as any).generateComponentDescription = async () => JSON.stringify({
+      capabilities: [{
+        name: 'Deploy shell environments',
+        description: 'Deploys shell environments for application runtime configuration.',
+        category: 'core',
+        entities: [],
+        journeys: [],
+      }],
+    });
+    try {
+      const catalog = await orch.aiExtractCapabilityCatalog({
+        systemName: 'platform-infra',
+        enhancedSystemPurpose: {
+          artifact_type: 'infrastructure',
+          primary_domain: 'deployment-infrastructure',
+          core_concepts: ['deployment'],
+        },
+        frameworks: ['Shell', 'Terraform'],
+        userJourneys: [],
+        dataEntities: [],
+        candidateCapabilities: [{
+          name: 'Shell Deploy', related_entities: [], operations: [],
+        }],
+        externalServices: [],
+        flowGraph: { capabilities: [] },
+        projectTextSignal: { concepts: [], evidence: [] },
+        budgetMs: 30000,
+      });
+      expect(catalog).toEqual([]);
+    } finally {
+      (aiService as any).generateComponentDescription = original;
+    }
+  });
+
+  it('keeps a grounded read-only name, rejects its mutation prose, and drops unrelated entity-backed claims', async () => {
+    const original = (aiService as any).generateComponentDescription;
+    (aiService as any).generateComponentDescription = async () => JSON.stringify({
+      capabilities: [
+        {
+          name: 'View enterprise orders',
+          description: 'Lets users access enterprise orders for tracking and management.',
+          category: 'core', entities: ['EnterpriseOrder'], journeys: [],
+        },
+        {
+          name: 'Monitor enterprise performance',
+          description: 'Gives users a dashboard to monitor enterprise performance.',
+          category: 'supporting', entities: ['EnterpriseOrder'], journeys: [],
+        },
+      ],
+    });
+    try {
+      const catalog = await orch.aiExtractCapabilityCatalog({
+        systemName: 'enterprise-orders',
+        enhancedSystemPurpose: {
+          artifact_type: 'app', primary_domain: 'enterprise-order-review', core_concepts: ['enterprise', 'order'],
+        },
+        frameworks: ['Express'], userJourneys: [],
+        dataEntities: [{ id: 'entity_order', name: 'EnterpriseOrder' }],
+        candidateCapabilities: [{
+          name: 'Enterpriseorders', related_entities: ['entity_order'],
+          operations: [{
+            entry_point_id: 'entry_order', entry_point_type: 'http', action: 'View',
+            trigger: { method: 'GET', path: '/orders/{id}' },
+          }],
+        }],
+        externalServices: [], flowGraph: { capabilities: [] },
+        projectTextSignal: { concepts: [], evidence: [] }, budgetMs: 30000,
+      });
+
+      expect(catalog).toHaveLength(1);
+      expect(catalog[0].name).toBe('View enterprise orders');
+      expect(catalog[0].description).toBe('');
+      expect(catalog[0].description_generation?.reason).toBe('description-contradicts-observed-operations');
+      expect(catalog[0].operations).toEqual([expect.objectContaining({ entry_point_id: 'entry_order' })]);
+    } finally {
+      (aiService as any).generateComponentDescription = original;
+    }
+  });
+
+  it('repairs an AI bare-noun resource with the verb proven by linked operations', async () => {
+    const original = (aiService as any).generateComponentDescription;
+    (aiService as any).generateComponentDescription = async () => JSON.stringify({
+      capabilities: [{
+        name: 'Enterprise Orders',
+        description: 'Presents EnterpriseOrder records for review by users.',
+        category: 'core', entities: ['EnterpriseOrder'], journeys: [],
+      }],
+    });
+    try {
+      const catalog = await orch.aiExtractCapabilityCatalog({
+        systemName: 'enterprise-orders',
+        enhancedSystemPurpose: {
+          artifact_type: 'app', primary_domain: 'enterprise-order-review', core_concepts: ['enterprise', 'order'],
+        },
+        frameworks: ['Express'], userJourneys: [],
+        dataEntities: [{ id: 'entity_order', name: 'EnterpriseOrder' }],
+        candidateCapabilities: [{
+          name: 'Enterpriseorders', related_entities: ['entity_order'],
+          operations: [{
+            entry_point_id: 'entry_order', entry_point_type: 'http', action: 'View',
+            trigger: { method: 'GET', path: '/orders/{id}' },
+          }],
+        }],
+        externalServices: [], flowGraph: { capabilities: [] },
+        projectTextSignal: { concepts: [], evidence: [] }, budgetMs: 30000,
+      });
+
+      expect(catalog).toHaveLength(1);
+      expect(catalog[0].name).toBe('View Enterprise Order');
+    } finally {
+      (aiService as any).generateComponentDescription = original;
+    }
+  });
+
+  it('rejects malformed system prose with a missing predicate verb', () => {
+    const purpose = { primary_domain: 'enterprise-orders', core_concepts: ['enterprise', 'orders'] };
+    const description = 'The application is an enterprise order system for operators who review order records. It retrieves EnterpriseOrder records for requested identifiers and presents those records to its users. Order requests are resolved into the matching EnterpriseOrder record through the observed read workflow. Built as a polyglot service, it frameworks like Express and FastAPI for its request handling.';
+    expect(orch.validateGeneratedAIInterpretation(description, purpose, {
+      systemName: 'enterprise-polyglot-app',
+      frameworks: ['Express', 'FastAPI'],
+      databaseEntities: ['EnterpriseOrder'],
+      structuralTokens: ['order', 'enterprise'],
+    }).reason).toBe('malformed-missing-verb');
+  });
+
+  it('keeps infrastructure narration and domains anchored to infrastructure semantics', () => {
+    const purpose = {
+      primary_domain: 'enterprise-compose-deploy',
+      artifact_type: 'infrastructure',
+      core_concepts: ['enterprise', 'compose', 'deploy', 'queue'],
+      inferred_description: 'Terraform provisions an AWS queue and deployment resources.',
+    };
+    expect(orch.validateGeneratedAIInterpretation(
+      'The platform provisions cloud infrastructure for an enterprise service. It processes orders by managing an enterprise queue for customers. Deployment configuration creates the declared queue resource. Containers run the configured service image.',
+      purpose,
+      { artifactType: 'infrastructure', structuralTokens: ['enterprise', 'queue', 'deploy'] },
+    ).reason).toBe('infrastructure-claims-application-behavior');
+    expect(orch.validateGeneratedAIInterpretation(
+      'The platform provisions cloud infrastructure for an enterprise service. The queue deployment handles orders processing and queuing. Deployment configuration creates the declared queue resource. Containers run the configured service image.',
+      purpose,
+      { artifactType: 'infrastructure', structuralTokens: ['enterprise', 'queue', 'deploy'] },
+    ).reason).toBe('infrastructure-claims-application-behavior');
+    expect(orch.evaluateAIDomainCandidate(
+      'enterprise-compose-deploy',
+      purpose,
+      [],
+      { concepts: [], evidence: [] },
+    ).reason).toBe('infrastructure-domain-missing-artifact-semantics');
+  });
+
+  it('rejects infrastructure capability prose that substitutes shell mechanics for the responsibility', () => {
+    const target = {
+      id: 'cap_deploy_runtime',
+      name: 'Deploy Service Runtime',
+      kind: 'capability',
+      artifactType: 'infrastructure',
+      relatedDomains: ['deployment-infrastructure'],
+      relatedEntities: [],
+      operations: ['Deploy pipeline'],
+      evidenceSummary: ['AWS queue', 'container runtime'],
+    };
+    expect(orch.validateElementDescription(
+      'Deploys and manages service runtimes by executing shell scripts to provision and configure containerized services and AWS resources.',
+      target,
+    ).reason).toBe('infrastructure-source-mechanic-restatement');
+    expect(orch.validateElementDescription(
+      'Deploys the containerized service and queue to handle orders processing and queuing for the enterprise platform.',
+      target,
+    ).reason).toBe('infrastructure-claims-application-behavior');
+    expect(orch.validateElementDescription(
+      'Deploys containerized service runtimes and queue resources while ensuring high availability and resource utilization.',
+      target,
+    ).reason).toBe('unsupported-target-operational-claim:high availability');
+    expect(orch.validateElementDescription(
+      'Deploys containerized service runtimes and provisions the declared AWS queue for the application environment.',
+      target,
+    )).toEqual({ ok: true });
+  });
+
+  it('rejects incomplete and implementation-led AI system descriptions', () => {
+    const purpose = { primary_domain: 'enterprise-orders', core_concepts: ['enterprise', 'orders'] };
+    const facts = {
+      systemName: 'enterprise-polyglot-app',
+      frameworks: ['Express', 'FastAPI'],
+      databaseEntities: ['EnterpriseOrder'],
+      structuralTokens: ['order', 'enterprise'],
+    };
+    expect(orch.validateGeneratedAIInterpretation(
+      'An enterprise order system retrieves EnterpriseOrder records for operators. It lets users view selected orders through HTTP requests. The enterprise_python_handler resolves identifiers into matching records. It is built with a combination of Express and FastAPI frameworks, supporting multi-language backend development.',
+      purpose,
+      facts,
+    ).reason).toBe('source-implementation-mechanics');
+    expect(orch.validateGeneratedAIInterpretation(
+      'An enterprise order system retrieves EnterpriseOrder records for operators. It lets users view selected orders through product workflows. Order identifiers resolve into dat, which is returned to the operator. It is built as a web application with Express.',
+      purpose,
+      facts,
+    ).reason).toBe('malformed-prose');
+    expect(orch.validateGeneratedAIInterpretation(
+      'The Enterprise Polyglot App is an enterprise order review system for operators. It retrieves EnterpriseOrder records for selected identifiers and presents the matching details. Order identifiers resolve into the matching record for review. It is built utilizing frameworks like Express and FastAPI.',
+      purpose,
+      facts,
+    ).reason).toBe('framework-inventory-instead-of-architecture');
+    expect(orch.validateGeneratedAIInterpretation(
+      'The Enterprise Polyglot App is an enterprise order review system for operators. It retrieves EnterpriseOrder records for selected identifiers and presents the matching details. Order identifiers resolve into the matching record for review. It is built using a combination of frameworks, including Express and FastAPI.',
+      purpose,
+      facts,
+    ).reason).toBe('framework-inventory-instead-of-architecture');
+    expect(orch.validateGeneratedAIInterpretation(
+      'The Enterprise Polyglot App is an enterprise order review system for operators. It retrieves EnterpriseOrder records for selected identifiers and presents the matching details. Order identifiers resolve into the matching record and provide graph evidence for review. It is built as an Express web service.',
+      purpose,
+      facts,
+    ).reason).toBe('analysis-product-filler');
+    expect(orch.validateGeneratedAIInterpretation(
+      'The Enterprise Polyglot App is a software product designed to and display enterprise orders. It processes requests to view orders, retrieving the relevant order data from a database and presenting it to the user. The system uses a router to direct the flow of information. It also a dashboard capability to summarize and display order data.',
+      purpose,
+      facts,
+    ).reason).toBe('malformed-prose');
+  });
+
+  it('humanizes a raw implementation identifier without replacing AI-authored prose', () => {
+    const purpose = { primary_domain: 'enterprise-orders', core_concepts: ['enterprise', 'orders'] };
+    const description = 'The Enterprise Polyglot App is an enterprise order review system for operators. It retrieves EnterpriseOrder records for selected identifiers and presents the matching details. The enterprise_python_record represents the order selected by the operator and carries the result through the review flow. The application is built with Express and FastAPI as its web service frameworks.';
+    const outcome = orch.acceptAIInterpretationCandidate(description, purpose, {
+      systemName: 'enterprise-polyglot-app',
+      frameworks: ['Express', 'FastAPI'],
+      databaseEntities: ['EnterpriseOrder'],
+      structuralTokens: ['order', 'enterprise'],
+    });
+    expect(outcome.validation.ok).toBe(true);
+    expect(outcome.text).toContain('enterprise python record');
+    expect(outcome.text).not.toContain('enterprise_python_record');
+  });
+
+  it('limits focused system-description repair facts to product evidence', () => {
+    expect(orch.focusedSystemDescriptionFacts({
+      systemName: 'orders',
+      distinctiveEntities: ['EnterpriseOrder'],
+      productBehaviorPaths: [{ intent: 'Review order', recordsRead: ['EnterpriseOrder'] }],
+      allowedFrameworks: ['Express'],
+      libraries: ['internal-request-router'],
+      entryPoints: [{ handler: 'enterprise_python_handler' }],
+      deterministicOverview: 'HTTP handler implementation mechanics',
+    })).toEqual({
+      systemName: 'orders',
+      distinctiveEntities: ['EnterpriseOrder'],
+      productBehaviorPaths: [{ intent: 'Review order', recordsRead: ['EnterpriseOrder'] }],
+    });
+  });
+
+  it('rejects system-level mutation claims when all observed product behavior is read-only', () => {
+    const purpose = { primary_domain: 'enterprise-orders', core_concepts: ['enterprise', 'orders'] };
+    const description = 'The Enterprise Polyglot App is an enterprise order management system that creates and manages EnterpriseOrder records for operators. Users retrieve selected order details for review. Requests resolve an order identifier into the matching EnterpriseOrder record and return it to the operator. The application is built with Express and FastAPI for request handling.';
+    expect(orch.validateGeneratedAIInterpretation(description, purpose, {
+      systemName: 'enterprise-polyglot-app',
+      frameworks: ['Express', 'FastAPI'],
+      databaseEntities: ['EnterpriseOrder'],
+      structuralTokens: ['order', 'enterprise'],
+      readOnlyProduct: true,
+    }).reason).toBe('read-only-product-mutation-claim');
+    const repaired = orch.acceptAIInterpretationCandidate(description, purpose, {
+      systemName: 'enterprise-polyglot-app',
+      frameworks: ['Express', 'FastAPI'],
+      databaseEntities: ['EnterpriseOrder'],
+      structuralTokens: ['order', 'enterprise'],
+      readOnlyProduct: true,
+    });
+    expect(repaired.validation.ok).toBe(false);
+    expect(repaired.validation.reason).toBe('read-only-product-mutation-claim');
+    expect(repaired.text).toContain('creates and manages EnterpriseOrder records');
+    expect(orch.mechanicallyRepairAIInterpretation(description, repaired.validation.reason)).toBeUndefined();
+  });
+
+  it('uses a positive read-only repair grammar that does not prime mutation vocabulary', () => {
+    const source = fs.readFileSync(path.join(__dirname, '../../analyzer/core/orchestrator.ts'), 'utf8');
+    const start = source.indexOf("const semanticRepairTask = artifactType");
+    const end = source.indexOf("const systemNarrativeTask", start);
+    const readOnlyBranch = source.slice(start, end);
+    expect(readOnlyBranch).toContain('retrieves, presents, returns, views, reviews, compares, analyzes');
+    expect(readOnlyBranch).not.toMatch(/remove every create|never claim create/i);
+  });
+
+  it('drops mutation claims when every observed HTTP operation is read-only', () => {
+    const cataloged = [{
+      id: 'capability_manage_orders',
+      name: 'Manage Enterprise Orders',
+      description: 'Allows operators to create, update, and delete EnterpriseOrder records.',
+      description_source: 'ai',
+      category: 'core',
+      related_entities: ['entity_order'],
+      related_domains: [],
+      operations: [{ entry_point_id: 'get-order', entry_point_type: 'http', action: 'View', trigger: { method: 'GET', path: '/orders/:id' } }],
+    }];
+    const entities = [{ id: 'entity_order', name: 'EnterpriseOrder', kind: 'persisted-entity' }];
+    expect(orch.reconcileCatalogedCapabilities(cataloged, [], entities)).toEqual([]);
+  });
+
+  it('removes implementation-language qualifiers from polyglot capabilities', () => {
+    const cataloged = [{
+      id: 'capability_orders',
+      name: 'Handle Enterprise Python Orders',
+      description: 'Python-specific processing for order records.',
+      description_source: 'ai',
+      category: 'core',
+      related_entities: ['entity_python_order', 'entity_order'],
+      related_domains: ['enterprise-orders'],
+      operations: [],
+    }];
+    const entities = [
+      { id: 'entity_python_order', name: 'EnterprisePythonOrder', kind: 'persisted-entity' },
+      { id: 'entity_order', name: 'EnterpriseOrder', kind: 'persisted-entity' },
+    ];
+    const [capability] = orch.reconcileCatalogedCapabilities(cataloged, [], entities);
+    expect(capability.name).toBe('Process Enterprise Orders');
+    expect(capability.description).toBe('');
+  });
+
+  it('filters route placeholders, framework tokens, and context adjectives from product core concepts', () => {
+    expect(orch.productCoreConcepts(
+      ['orders', 'order', 'enterprise', '{id}', ':id', 'dotnet', 'model', 'mapping', 'proof'].map((name, index) => ({ id: `concept-${index}`, name })),
+      ['ASP.NET Core'],
+    ).map((concept: any) => concept.name)).toEqual(['orders', 'order']);
+  });
+
+  it('counts polyglot behavior once and excludes an entity-free page surface from product families', () => {
+    const candidates = [
+      { name: 'Enterpriseorders', related_entities: ['order'], operations: [] },
+      { name: 'Enterprise Order', related_entities: ['order'], operations: [] },
+      { name: 'View Enterprise Orders', related_entities: ['order'], operations: [] },
+      { name: 'List Orders', related_entities: ['order'], operations: [] },
+      { name: 'Enterprise Dashboard', category: 'supporting', related_entities: [], operations: [{ entry_point_type: 'page' }] },
+      { name: 'Access Enterprise Dashboard', category: 'supporting', related_entities: [], operations: [{ entry_point_type: 'page' }] },
+    ];
+    expect(orch.catalogDistinctFamilyCount(candidates)).toBe(1);
+  });
+
+  it('groups different operations around the same distinctive entity into one product family', () => {
+    const candidates = [
+      { name: 'View Enterprise Orders', related_entities: ['entity_enterpriseorder'], operations: [] },
+      { name: 'Calculate Enterprise Totals', related_entities: ['entity_enterpriseorder'], operations: [] },
+    ];
+    expect(orch.catalogDistinctFamilyCount(candidates)).toBe(1);
+  });
+
+  it('keeps a supporting page in UI structure without promoting it to a product capability', () => {
+    const cataloged = [
+      {
+        id: 'orders', name: 'View Enterprise Orders', description: 'Enterprise orders are available for operator review.',
+        category: 'core', related_entities: ['entity_order'], related_domains: [], operations: [],
+      },
+      {
+        id: 'dashboard', name: 'Monitor Enterprise Dashboard', description: 'The dashboard presents enterprise order navigation.',
+        category: 'supporting', related_entities: [], related_domains: [],
+        operations: [{ entry_point_id: 'page-dashboard', entry_point_type: 'page', action: 'Process' }],
+      },
+    ];
+    const entities = [{ id: 'entity_order', name: 'EnterpriseOrder', kind: 'persisted-entity' }];
+    expect(orch.reconcileCatalogedCapabilities(cataloged, [], entities).map((capability: any) => capability.name))
+      .toEqual(['View Enterprise Orders']);
+  });
+
+  // The "mechanically removes model-written analysis labels" expectation that
+  // lived here required sanitizeElementDescriptionCandidate to REWRITE the
+  // candidate ("The <name> capability surfaces ..." -> "<name> surfaces ...").
+  // c611d08c established the opposite contract for every description path —
+  // validate, never mutate — and the phrase-rewrite replaces it depended on
+  // were deleted with the rest of the rewrite table. A candidate that opens
+  // with an analysis label is now rejected and regenerated, not reworded, so
+  // the expectation is intentionally gone rather than adapted.
+
+  it('does not refresh full comprehension for another route in an already understood entry mode', () => {
+    const previous = {
+      enhanced_system_purpose: {
+        inferred_description: 'The order service retrieves EnterpriseOrder records for operators. Requests identify an order and return the matching record.',
+      },
+      analyzer_contributions: [{ analyzer_type: 'framework', analyzer_name: 'Express Analyzer' }],
+      entry_points: [{ id: 'get-order', type: 'http' }],
+      database_schema: { entities: [{ name: 'EnterpriseOrder' }] },
+      external_services: [],
+      domain_concepts: [{ id: 'orders', name: 'orders', classification: 'core' }],
+      system_capabilities: [{
+        id: 'view-orders', name: 'View Enterprise Orders', category: 'core',
+        description: 'View Enterprise Orders presents EnterpriseOrder details for operators reviewing selected orders.',
+        description_source: 'ai',
+        related_domains: ['enterprise-orders'], related_entities: ['order'], operations: [
+          { entry_point_id: 'get-order', entry_point_type: 'http', action: 'View' },
+        ],
+      }],
+    };
+
+    expect(orch.shouldRefreshAIInterpretation(
+      previous,
+      'order-service',
+      ['Express'],
+      [{ type: 'http', count: 9 }],
+      ['EnterpriseOrder'],
+      [],
+      [{ id: 'orders-next', name: 'orders', classification: 'core' }],
+      [{
+        id: 'view-orders-next', name: 'View Enterprise Orders', category: 'core',
+        related_domains: ['enterprise-orders'], related_entities: ['order'], operations: [
+          { entry_point_id: 'get-order-2', entry_point_type: 'http', action: 'View' },
+        ],
+      }],
+    )).toBe(false);
+  });
+
+  it('compares persisted deterministic AI inputs instead of the curated catalog', () => {
+    const deterministicCandidates = [
+      { id: 'candidate-orders', name: 'Process Enterprise Orders', category: 'core', related_domains: [], related_entities: ['order'], operations: [] },
+      { id: 'candidate-dashboard', name: 'Access Enterprise Dashboard', category: 'supporting', related_domains: [], related_entities: [], operations: [] },
+    ];
+    const facts = orch.buildAIInterpretationRefreshFingerprint(
+      'order-service', ['Express'], [{ type: 'http', count: 8 }], ['EnterpriseOrder'], [],
+      [{ id: 'orders', name: 'orders', classification: 'core' }], deterministicCandidates,
+    );
+    const previous = {
+      enhanced_system_purpose: {
+        inferred_description: 'The order service retrieves EnterpriseOrder records for operators.',
+        ai_input_fingerprint: orch.hashAIInterpretationRefreshFingerprint(facts),
+      },
+      system_capabilities: [{
+        id: 'ai-orders', name: 'View Enterprise Order Details', category: 'core',
+        description: 'View Enterprise Order Details returns the selected EnterpriseOrder record.',
+        description_source: 'ai', related_domains: [], related_entities: ['order'], operations: [],
+      }],
+    };
+    expect(orch.shouldRefreshAIInterpretation(
+      previous, 'order-service', ['Express'], [{ type: 'http', count: 9 }], ['EnterpriseOrder'], [],
+      [{ id: 'orders-next', name: 'orders', classification: 'core' }], deterministicCandidates,
+    )).toBe(false);
+    expect(orch.getAIInterpretationRefreshDecision(
+      previous, 'order-service', ['Express'], [{ type: 'http', count: 9 }], ['EnterpriseOrder'], [],
+      [{ id: 'orders-next', name: 'orders', classification: 'core' }], deterministicCandidates,
+    )).toEqual({ refresh: false, reason: 'semantic-fingerprint-unchanged' });
+  });
+
+  it('reports why comprehension must refresh when product semantics change', () => {
+    const deterministicCandidates = [
+      { id: 'candidate-orders', name: 'View Enterprise Orders', category: 'core', related_domains: [], related_entities: ['order'], operations: [] },
+    ];
+    const facts = orch.buildAIInterpretationRefreshFingerprint(
+      'order-service', ['Express'], [{ type: 'http', count: 8 }], ['EnterpriseOrder'], [],
+      [{ id: 'orders', name: 'orders', classification: 'core' }], deterministicCandidates,
+    );
+    const previous = {
+      enhanced_system_purpose: {
+        inferred_description: 'The order service retrieves EnterpriseOrder records for operators.',
+        ai_input_fingerprint: orch.hashAIInterpretationRefreshFingerprint(facts),
+      },
+    };
+
+    const decision = orch.getAIInterpretationRefreshDecision(
+      previous, 'order-service', ['Express'], [{ type: 'http', count: 8 }], ['EnterpriseOrder', 'Invoice'], [],
+      [{ id: 'orders', name: 'orders', classification: 'core' }], deterministicCandidates,
+    );
+    expect(decision.refresh).toBe(true);
+    expect(decision.reason).toMatch(/^semantic-fingerprint-changed:/);
+  });
+
+  it('reattaches an AI catalog to fresh operations through entity evidence', () => {
+    const previous = [{
+      id: 'ai-orders', name: 'View Enterprise Order Details', category: 'core',
+      description: 'View Enterprise Order Details returns the selected EnterpriseOrder record.',
+      description_source: 'ai', related_domains: [], related_entities: ['order'], operations: [],
+    }];
+    const current = [
+      {
+        id: 'candidate-orders', name: 'Process Enterprise Orders', category: 'core', description: '',
+        related_domains: [], related_entities: ['order'],
+        operations: [{ entry_point_id: 'summary-route', entry_point_type: 'http', action: 'View' }],
+      },
+      {
+        id: 'candidate-dashboard', name: 'Access Enterprise Dashboard', category: 'supporting', description: '',
+        related_domains: [], related_entities: [], operations: [],
+      },
+    ];
+    const reused = orch.reusePreviousCapabilityCatalog(previous, current);
+    expect(reused[0].id).toBe('ai-orders');
+    expect(reused[0].description_source).toBe('reused');
+    expect(reused[0].description_generation?.origin_source).toBe('ai');
+    expect(reused[0].operations).toHaveLength(1);
+    expect(reused.some((capability: any) => capability.id === 'candidate-dashboard')).toBe(false);
+  });
+
+  it('refreshes full comprehension when product semantics change', () => {
+    const previous = {
+      enhanced_system_purpose: { inferred_description: 'The order service retrieves EnterpriseOrder records for operators.' },
+      analyzer_contributions: [{ analyzer_type: 'framework', analyzer_name: 'Express Analyzer' }],
+      entry_points: [{ id: 'get-order', type: 'http' }],
+      database_schema: { entities: [{ name: 'EnterpriseOrder' }] },
+      external_services: [],
+      domain_concepts: [{ id: 'orders', name: 'orders', classification: 'core' }],
+      system_capabilities: [{
+        id: 'view-orders', name: 'View Enterprise Orders', category: 'core',
+        related_domains: ['enterprise-orders'], related_entities: ['order'], operations: [],
+      }],
+    };
+
+    expect(orch.shouldRefreshAIInterpretation(
+      previous,
+      'order-service',
+      ['Express'],
+      [{ type: 'http', count: 1 }, { type: 'message', count: 1 }],
+      ['EnterpriseOrder', 'Invoice'],
+      ['Stripe'],
+      [
+        { id: 'orders-next', name: 'orders', classification: 'core' },
+        { id: 'billing-next', name: 'billing', classification: 'core' },
+      ],
+      [{
+        id: 'settle-invoice', name: 'Settle Invoices', category: 'core',
+        related_domains: ['billing'], related_entities: ['invoice'], operations: [],
+      }],
+    )).toBe(true);
+  });
+
+  it('keeps genuinely distinct product areas as separate evidence families', () => {
+    const candidates = ['Orders', 'Invoices', 'Payments', 'Subscriptions', 'Inventory', 'Shipping', 'Returns', 'Catalog']
+      .map((name, index) => ({ name: `Manage ${name}`, related_entities: [`entity_${index}`], operations: [] }));
+    expect(orch.catalogDistinctFamilyCount(candidates)).toBe(8);
   });
 });
 

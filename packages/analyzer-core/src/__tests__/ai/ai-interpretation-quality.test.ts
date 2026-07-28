@@ -55,13 +55,21 @@ describe('shared element description validator', () => {
     expect(result.reason).toBe('generic-structural-phrase');
   });
 
+  it('rejects internal analysis vocabulary in customer-facing capability descriptions', () => {
+    const result = validateElementDescription(
+      'The View order capability reads EnterpriseOrder records so operators can verify order details.',
+      { name: 'View order', kind: 'capability', relatedEntities: ['EnterpriseOrder'] },
+    );
+    expect(result).toEqual({ ok: false, reason: 'internal-analysis-vocabulary' });
+  });
+
   it('rejects source-bucket restatements for capability descriptions', () => {
     const result = validateElementDescription(
       'Visual Capability enables script-based visualization of system behavior and state.',
       { name: 'Visual Capability', relatedDomains: ['visual'] },
     );
     expect(result.ok).toBe(false);
-    expect(result.reason).toBe('source-bucket-restatement');
+    expect(result.reason).toMatch(/^source-bucket-restatement/);
   });
 
   it('rejects file coordination restatements for capability descriptions', () => {
@@ -172,7 +180,13 @@ describe('shared element description validator', () => {
   it('keeps a "lets users" sentence whose concrete content is grounded in the capability entities', () => {
     const result = validateElementDescription(
       'Portfolio Management lets users track their crypto holdings — balances, allocation, and performance across connected wallets.',
-      { name: 'Portfolio Management', kind: 'capability', relatedDomains: ['portfolio'], relatedEntities: ['PortfolioHolding', 'Wallet'] },
+      {
+        name: 'Portfolio Management',
+        kind: 'capability',
+        relatedDomains: ['portfolio'],
+        relatedEntities: ['PortfolioHolding', 'Wallet'],
+        fields: ['balance:number', 'allocation:number', 'performance:number'],
+      },
     );
     expect(result.ok).toBe(true);
   });
@@ -410,14 +424,13 @@ describe('AI interpretation budgets for hosted providers', () => {
     }
   });
 
-  it('ignores local model toggles and defaults the per-request timeout to 90s for hosted AI', () => {
+  it('ignores local model toggles and uses the bounded per-attempt hosted timeout', () => {
     const { getAIConfig } = require('../../config/ai.config');
-    // Hosted default is 90s: a hosted-70B catalog/narrative call sends a large
-    // fact bundle and returns structured JSON on highly variable shared inference;
-    // a short timeout cut it off, burning the retry budget before any result.
-    expect(getAIConfig().openai.timeout).toBe(90000);
+    // Completeness is preserved across retries/provider failover; one stalled
+    // shared-inference request must not monopolize the analysis critical path.
+    expect(getAIConfig().openai.timeout).toBe(30000);
     process.env.KLAURO_OLLAMA_AUTO = 'true';
-    expect(getAIConfig().openai.timeout).toBe(90000);
+    expect(getAIConfig().openai.timeout).toBe(30000);
     process.env.AI_TIMEOUT = '45000';
     expect(getAIConfig().openai.timeout).toBe(45000);
   });
@@ -527,15 +540,15 @@ describe('AI repair re-prompt budget (2 attempts) and terminal throw', () => {
     expect(purpose.inferred_description).toMatch(/CAS relationship graphs/);
   });
 
-  it('throws AFTER exhausting both repair re-prompts (AI-only-or-throw stands, no deterministic fallback)', async () => {
+  it('throws after exhausting broad and focused repairs (AI-only-or-throw stands, no deterministic fallback)', async () => {
     const spy = jest.spyOn(aiService, 'generateComponentDescription').mockResolvedValue(badAnswer);
     const purpose = freshPurpose();
 
     await expect(
       orch.applyAIInterpretation(purpose, 'analysis-api', [], [], [], [], orch.emptyFlowGraph(), [])
-    ).rejects.toThrow(/failed the grounding gate \(source-bucket-restatement\)/);
+    ).rejects.toThrow(/failed the grounding gate \(source-bucket-restatement(?:: [^)]+)?\)/);
 
-    expect(spy).toHaveBeenCalledTimes(3);
+    expect(spy).toHaveBeenCalledTimes(5);
     expect(purpose.description_generation.status).toBe('ai_rejected');
     expect(purpose.inferred_description).toBe('A code analysis service.');
   });
@@ -710,12 +723,46 @@ describe('element description grounding parity with the system validator', () =>
       criticality_factors: [],
     };
     const entityNamesById = new Map([['entity-card', 'FuelCard']]);
-    const target = localOrch.capabilityDescriptionTarget(capability, entityNamesById);
+    const target = localOrch.capabilityDescriptionTarget(capability, entityNamesById, new Map([['entity-card', ['id:string', 'lastFour:string']]]));
     expect(target.relatedEntities).toEqual(['FuelCard']);
+    expect(target.fields).toEqual(['id:string', 'lastFour:string']);
     expect(target.operations[0]).toContain('src/CardManagementWS.php');
 
     const bare = localOrch.capabilityDescriptionTarget(capability);
     expect(bare.relatedEntities).toEqual(['entity-card']);
+  });
+
+  it('carries observed read-only semantics into capability description prompts', () => {
+    const localOrch = new AnalyzerOrchestrator() as any;
+    const target = localOrch.capabilityDescriptionTarget({
+      id: 'view-order', name: 'View order', category: 'core', description: '',
+      related_entities: ['entity-order'], related_domains: ['orders'], criticality_factors: [],
+      operations: [{
+        entry_point_id: 'get-order', entry_point_type: 'http', action: 'View',
+        trigger: { method: 'GET', path: '/orders/:id' },
+      }],
+    }, new Map([['entity-order', 'EnterpriseOrder']]), new Map([['entity-order', ['id:string', 'total:number']]]));
+    expect(target.readOnly).toBe(true);
+    expect(target.operations[0]).toContain('GET');
+    expect(target.fields).toEqual(['id:string', 'total:number']);
+  });
+
+  it('rejects concrete detail lists that are absent from entity fields and accepts grounded fields', () => {
+    const subject = {
+      name: 'View Enterprise Orders',
+      kind: 'capability',
+      relatedDomains: ['enterprise-orders'],
+      relatedEntities: ['EnterpriseOrder'],
+      fields: ['id:number', 'total:number'],
+    };
+    expect(validateElementDescription(
+      'View Enterprise Orders returns EnterpriseOrder details, including status, items, and timestamps, for an operator request.',
+      subject,
+    ).reason).toMatch(/^unsupported-enumerated-detail:/);
+    expect(validateElementDescription(
+      'View Enterprise Orders returns EnterpriseOrder details, including the order id and total, for an operator request.',
+      subject,
+    ).ok).toBe(true);
   });
 });
 

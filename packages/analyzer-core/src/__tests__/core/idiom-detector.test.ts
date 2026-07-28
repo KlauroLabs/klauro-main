@@ -57,6 +57,84 @@ describe('detectCodebaseIdioms repo-derived statistics', () => {
     expect(dataAccess!.description).toContain('3 data-access node(s)');
   });
 
+  it('does not use substring collisions or UI consumers as data-access examples', async () => {
+    const nodes = [
+      node({ id: 'format', name: 'formatRelativeTime', type: 'function', source: { file: 'src/dashboard/formatRelativeTime.ts', line: 1 } }),
+      node({ id: 'page', name: 'EntityDetailPage', type: 'functional_component', source: { file: 'src/pages/EntityDetailPage.tsx', line: 1 } }),
+      node({ id: 'hook', name: 'useDataEntity', type: 'hook_usage', source: { file: 'src/pages/EntityDetailPage.tsx', line: 2 } }),
+      node({ id: 'entities-page', name: 'EntitiesPage', type: 'functional_component', source: { file: 'src/Entities/EntitiesPage.tsx', line: 1 } }),
+      node({ id: 'entities-file', name: 'EntitiesPage.tsx', type: 'file', source: { file: 'src/Entities/EntitiesPage.tsx', line: 1 } }),
+      node({ id: 'repo', name: 'UserRepository', type: 'repository', source: { file: 'src/users/user.repository.ts', line: 1 } }),
+      node({ id: 'entity', name: 'UserEntity', type: 'entity', source: { file: 'src/users/user.entity.ts', line: 1 } }),
+      node({ id: 'model', name: 'AuditModel', type: 'model', source: { file: 'src/audit/audit.model.ts', line: 1 } }),
+    ];
+    const result = await detectCodebaseIdioms(baseInput({ nodes }));
+    const dataAccess = result.idioms.find(idiom => idiom.category === 'data-access');
+    expect(dataAccess).toBeDefined();
+    expect(dataAccess!.positive_examples.map(example => example.name)).toEqual(['UserRepository', 'UserEntity', 'AuditModel']);
+  });
+
+  it('keeps backend directory-convention model files as cross-language fallback evidence', async () => {
+    const nodes = [
+      node({ id: 'rails-model-file', name: 'user.rb', type: 'file', source: { file: 'app/models/user.rb', line: 1 } }),
+      node({ id: 'django-model-file', name: 'models.py', type: 'file', source: { file: 'billing/models.py', line: 1 } }),
+      node({ id: 'laravel-model-file', name: 'User.php', type: 'file', source: { file: 'app/Models/User.php', line: 1 } }),
+    ];
+    const exitPoints = Array.from({ length: 3 }, (_, index) => ({ id: `db-${index}`, name: `query-${index}`, type: 'database' })) as any;
+    const result = await detectCodebaseIdioms(baseInput({ nodes, exitPoints }));
+    const dataAccess = result.idioms.find(idiom => idiom.category === 'data-access');
+    expect(dataAccess).toBeDefined();
+    expect(dataAccess!.positive_examples.map(example => example.file)).toEqual([
+      'app/models/user.rb', 'billing/models.py', 'app/Models/User.php',
+    ]);
+  });
+
+  it('uses actual provider declarations and DI decorators as dependency-injection evidence', async () => {
+    const nodes = [
+      node({ id: 'html', name: '<script type="module" src="/src/main.tsx"></script>', type: 'import', source: { file: 'index.html', line: 25, raw: '<script type="module" src="/src/main.tsx"></script>' } }),
+      node({ id: 'hook', name: 'useExternalServices usage', type: 'hook_usage', source: { file: 'src/ExternalServicesList.tsx', line: 1 } }),
+      node({ id: 'component', name: 'ExternalServicesList', type: 'functional_component', source: { file: 'src/ExternalServicesList.tsx', line: 1 } }),
+      node({ id: 'test-provider', name: 'FakeProvider', type: 'provider', source: { file: 'src/providers/provider.test.ts', line: 1 } }),
+      ...Array.from({ length: 5 }, (_, index) => node({
+        id: `service-${index}`,
+        name: `Billing${index}Service`,
+        type: 'service',
+        source: { file: `src/billing/billing${index}.service.ts`, line: 1 },
+      })),
+    ];
+    const result = await detectCodebaseIdioms(baseInput({ nodes }));
+    const dependencyInjection = result.idioms.find(idiom => idiom.category === 'dependency-injection');
+    expect(dependencyInjection).toBeDefined();
+    expect(dependencyInjection!.positive_examples.map(example => example.name)).toEqual([
+      'Billing0Service', 'Billing1Service', 'Billing2Service', 'Billing3Service', 'Billing4Service',
+    ]);
+  });
+
+  it('recognizes supported compound DI decorators without accepting substring lookalikes', async () => {
+    const decorators = ['NgModule', 'RestController', 'Provides', 'ServiceLocator'].map((name, index) => ({
+      id: `decorator-${index}`,
+      target_node: `target-${index}`,
+      decorator_info: { name, source_location: { file: `src/provider-${index}.ts`, line: 1 } },
+    })) as any;
+    const nodes = [
+      node({
+        id: 'annotated-module',
+        name: 'ApplicationConfiguration',
+        type: 'class',
+        source: { file: 'src/application-configuration.ts', line: 1 },
+        metadata: { annotations: ['@NgModule({})'] },
+      }),
+    ];
+    const result = await detectCodebaseIdioms(baseInput({ nodes, decorators }));
+    const dependencyInjection = result.idioms.find(idiom => idiom.category === 'dependency-injection');
+    expect(dependencyInjection).toBeDefined();
+    const claims = dependencyInjection!.evidence.map(evidence => evidence.claim).join('\n');
+    expect(claims).toContain('NgModule');
+    expect(claims).toContain('RestController');
+    expect(claims).toContain('Provides');
+    expect(claims).not.toContain('ServiceLocator');
+  });
+
   it('names the dominant migration directory in the migrations idiom', async () => {
     const nodes = [
       node({ id: 'm1', name: 'CreateUsers', source: { file: 'db/migrate/20240101_create_users.rb', line: 1 } }),

@@ -1,16 +1,29 @@
 import { EmbeddingProvider, EmbeddingProviderOptions } from './types';
 import { createYieldBudget } from '../core/event-loop-yield';
 
-const LOCAL_MODEL = 'klauro-local-hash-v1';
+export const LOCAL_HASH_EMBEDDING_MODEL = 'klauro-local-hash-v1';
+const MAX_CACHED_TOKEN_FEATURES = 250_000;
+
+interface TokenFeature {
+  index: number;
+  sign: 1 | -1;
+  weight: number;
+}
 
 export class LocalEmbeddingProvider implements EmbeddingProvider {
   readonly id = 'local' as const;
   readonly model: string;
   readonly dimensions: number;
   readonly maxBatch: number;
+  private readonly tokenFeatureCache = new Map<string, readonly TokenFeature[]>();
 
   constructor(options: EmbeddingProviderOptions) {
-    this.model = options.model || LOCAL_MODEL;
+    if (options.model && options.model !== LOCAL_HASH_EMBEDDING_MODEL) {
+      throw new Error(
+        `LocalEmbeddingProvider produces ${LOCAL_HASH_EMBEDDING_MODEL} vectors and cannot report model "${options.model}"`,
+      );
+    }
+    this.model = LOCAL_HASH_EMBEDDING_MODEL;
     this.dimensions = options.dimensions;
     this.maxBatch = Math.max(1, options.maxBatch);
   }
@@ -37,13 +50,8 @@ export class LocalEmbeddingProvider implements EmbeddingProvider {
     const tokens = this.tokenize(text);
 
     for (const token of tokens) {
-      this.addFeature(vector, token, 1);
-      if (token.includes(':')) {
-        const [scope, value] = token.split(':', 2);
-        if (scope && value) {
-          this.addFeature(vector, scope, 0.7);
-          this.addFeature(vector, value, 0.9);
-        }
+      for (const feature of this.featuresForToken(token)) {
+        vector[feature.index] += feature.weight * feature.sign;
       }
     }
 
@@ -62,10 +70,27 @@ export class LocalEmbeddingProvider implements EmbeddingProvider {
       .slice(0, 2048);
   }
 
-  private addFeature(vector: Float32Array, token: string, weight: number): void {
+  private featuresForToken(token: string): readonly TokenFeature[] {
+    const cached = this.tokenFeatureCache.get(token);
+    if (cached) return cached;
+
+    const features: TokenFeature[] = [this.feature(token, 1)];
+    if (token.includes(':')) {
+      const [scope, value] = token.split(':', 2);
+      if (scope && value) {
+        features.push(this.feature(scope, 0.7), this.feature(value, 0.9));
+      }
+    }
+    if (this.tokenFeatureCache.size < MAX_CACHED_TOKEN_FEATURES) {
+      this.tokenFeatureCache.set(token, features);
+    }
+    return features;
+  }
+
+  private feature(token: string, weight: number): TokenFeature {
     const index = this.hash(token) % this.dimensions;
-    const sign = this.hash(`sign:${token}`) % 2 === 0 ? 1 : -1;
-    vector[index] += weight * sign;
+    const sign: 1 | -1 = this.hash(`sign:${token}`) % 2 === 0 ? 1 : -1;
+    return { index, sign, weight };
   }
 
   private hash(value: string): number {

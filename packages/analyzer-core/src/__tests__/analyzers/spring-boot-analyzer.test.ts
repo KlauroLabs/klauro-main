@@ -98,6 +98,10 @@ describe('SpringBootAnalyzer', () => {
       // Every real endpoint must be found — none dropped by the generic
       // return-type or value=/path= annotation-argument bugs.
       expect(routes).toHaveLength(4);
+      for (const entryPoint of contribution.entry_points || []) {
+        expect(entryPoint.handler?.file).toMatch(/src\/main\/java\/com\/example\/web\/OwnerResource\.java$/);
+        expect(entryPoint.handler?.file).not.toBe(entryPoint.trigger?.path);
+      }
     });
 
     it('does not emit a route for a plain @Component with no mapping annotations (negative control)', async () => {

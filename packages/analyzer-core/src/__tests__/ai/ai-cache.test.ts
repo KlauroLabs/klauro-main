@@ -38,6 +38,21 @@ describe('AICache', () => {
     await cache.close();
   });
 
+  it('uses the hosted persistent cache path from KLAURO_AI_CACHE_PATH', async () => {
+    const previous = process.env.KLAURO_AI_CACHE_PATH;
+    process.env.KLAURO_AI_CACHE_PATH = diskDir;
+    try {
+      const cache = new AICache();
+      await cache.set('hosted-key', 'persisted');
+      expect((cache as any).diskCacheDir).toBe(diskDir);
+      expect(fs.readdirSync(diskDir).some(file => file.endsWith('.json'))).toBe(true);
+      await cache.close();
+    } finally {
+      if (previous === undefined) delete process.env.KLAURO_AI_CACHE_PATH;
+      else process.env.KLAURO_AI_CACHE_PATH = previous;
+    }
+  });
+
   it('returns null for an unknown key', async () => {
     const cache = makeCache(diskDir);
     expect(await cache.get('does-not-exist')).toBeNull();

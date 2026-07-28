@@ -100,4 +100,17 @@ describe('TerraformAnalyzer', () => {
     // Interpolated (`${var.env}-worker`) values are skipped, not fabricated.
     expect(attrsFor('resource.aws_lambda_function.worker').function_name).toBeUndefined();
   });
+
+  it('extracts adjacent one-line blocks without swallowing the following resource', async () => {
+    await fs.writeFile(path.join(tempDir, 'main.tf'), [
+      'terraform { required_version = ">= 1.6.0" }',
+      'resource "aws_sqs_queue" "enterprise_queue" { name = "enterprise-orders" }',
+    ].join('\n'));
+
+    const analyzer = new TerraformAnalyzer();
+    const result = await analyzer.analyze({ projectPath: tempDir } as any);
+    const resource = (result.nodes || []).find(node => node.qualified_name === 'resource.aws_sqs_queue.enterprise_queue');
+    expect(resource).toBeDefined();
+    expect((result.exit_points || []).some(exit => exit.source_node === resource?.id)).toBe(true);
+  });
 });
