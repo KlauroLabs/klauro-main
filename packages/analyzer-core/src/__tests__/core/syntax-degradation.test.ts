@@ -122,6 +122,79 @@ describe('detectSyntaxDegradation', () => {
     expect(warning).toContain('braces');
   });
 
+  it('does not flag a valid PHP 8 entity using multi-line attributes and constructor promotion', () => {
+    // Regression for the truckspy false positive: `#[ORM\Column(...)]` was
+    // matched by the PHP line-comment pattern (`#`), which truncated each
+    // multi-line attribute at its first newline and discarded the closing
+    // `)`/`]`, making a perfectly valid entity look delimiter-imbalanced.
+    const content = [
+      '<?php',
+      'namespace App\\Entity;',
+      '',
+      'use Doctrine\\ORM\\Mapping as ORM;',
+      '',
+      '#[ORM\\Entity]',
+      '#[ORM\\Table(name: "users")]',
+      'class User',
+      '{',
+      '    #[ORM\\Id]',
+      '    #[ORM\\GeneratedValue]',
+      '    #[ORM\\Column(',
+      '        type: "integer",',
+      '    )]',
+      '    private ?int $id = null;',
+      '',
+      '    #[ORM\\Column(',
+      '        type: "string",',
+      '        length: 255,',
+      '    )]',
+      '    private string $name;',
+      '',
+      '    public function __construct(',
+      '        private readonly string $email,',
+      '    ) {',
+      '    }',
+      '',
+      '    public function getId(): ?int',
+      '    {',
+      '        return $this->id;',
+      '    }',
+      '}',
+      '',
+    ].join('\n');
+
+    expect(detectSyntaxDegradation({
+      relativePath: 'src/Entity/User.php',
+      content,
+      language: 'php',
+      extractedNodeCount: 1,
+    })).toBeUndefined();
+  });
+
+  it('still flags a PHP attribute-bearing file that is genuinely unbalanced', () => {
+    const content = [
+      '<?php',
+      'class Broken',
+      '{',
+      '    #[ORM\\Column(',
+      '        type: "string"',
+      '    private string $name;',
+      '',
+      '    function a() {',
+      '    function b() {',
+      '    function c() {',
+      '}',
+    ].join('\n');
+
+    const warning = detectSyntaxDegradation({
+      relativePath: 'src/Entity/Broken.php',
+      content,
+      language: 'php',
+      extractedNodeCount: 1,
+    });
+    expect(warning).toBeDefined();
+  });
+
   it('flags a Dart file with heavily unbalanced braces', () => {
     const content = 'class Broken {\n  void a() {\n  void b() {\n  void c() {\n';
     const warning = detectSyntaxDegradation({

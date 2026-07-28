@@ -18,6 +18,7 @@ interface JavaClass {
   annotations: string[];
   lineStart: number;
   lineEnd: number;
+  isRecord?: boolean;
 }
 
 interface JavaMethod {
@@ -327,12 +328,13 @@ export class JavaAnalyzer extends BaseAnalyzer {
       const packageName = this.extractPackage(content);
       const imports = this.extractImports(content);
       const classes = this.extractClasses(content, relativePath);
+      const records = this.extractRecords(content, relativePath);
       const interfaces = this.extractInterfaces(content, relativePath);
       const degradation = detectSyntaxDegradation({
         relativePath,
         content,
         language: 'java',
-        extractedNodeCount: classes.length + interfaces.length,
+        extractedNodeCount: classes.length + records.length + interfaces.length,
       });
       if (degradation) this.addAnalysisWarning(degradation);
       const comments = this.extractComments(content, relativePath);
@@ -357,7 +359,7 @@ export class JavaAnalyzer extends BaseAnalyzer {
         {
           packageName: packageName || 'default',
           imports: imports.map(i => i.importPath),
-          classCount: classes.length,
+          classCount: classes.length + records.length,
           interfaceCount: interfaces.length,
           commentCount: comments.length,
           todoCount: todos.length
@@ -409,6 +411,10 @@ export class JavaAnalyzer extends BaseAnalyzer {
 
       for (const cls of classes) {
         await this.processJavaClass(cls, fileId, fullPath, nodes, edges, entryPoints, comments, todos, content, lines);
+      }
+
+      for (const rec of records) {
+        await this.processJavaClass(rec, fileId, fullPath, nodes, edges, entryPoints, comments, todos, content, lines);
       }
 
       for (const intf of interfaces) {
@@ -465,7 +471,8 @@ export class JavaAnalyzer extends BaseAnalyzer {
           methodCount: cls.methods.length,
           isPublic: cls.modifiers.includes('public'),
           isAbstract: cls.modifiers.includes('abstract'),
-          isFinal: cls.modifiers.includes('final')
+          isFinal: cls.modifiers.includes('final'),
+          isRecord: !!cls.isRecord
         }
       })
       .withDocumentation(classJavadoc)
@@ -800,6 +807,164 @@ export class JavaAnalyzer extends BaseAnalyzer {
     }
 
     return classes;
+  }
+
+  /**
+   * Java 16+ records (`record Point(int x, int y) {}`) are a distinct
+   * declaration from `class` and were previously invisible to this analyzer:
+   * extractClasses only matches the literal `class` keyword, so a
+   * record-only file (extremely common for Spring DTOs) produced zero
+   * extracted nodes even though it parses and compiles cleanly. That silent
+   * zero then tripped the "no code elements could be extracted" syntax
+   * heuristic even though the file was never broken. This treats a record's
+   * component list as its fields (the compiler-synthesized accessors) and
+   * reuses the same class pipeline (fields/methods/annotations) for any
+   * explicit body content such as compact constructors or extra methods.
+   */
+  private extractRecords(content: string, filePath: string): JavaClass[] {
+    const records: JavaClass[] = [];
+    const lines = content.split('\n');
+    const packageName = this.extractPackage(content) || 'default';
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim();
+      if (!/\brecord\s+\w+\s*\(/.test(line) || line.startsWith('//')) continue;
+
+      const header = this.collectRecordComponentString(lines, i);
+      if (!header) continue;
+
+      const modifiers = this.extractModifiers(lines[i]);
+      const afterParens = lines[header.endIndex].slice(header.charAfterClose);
+      const implementsMatch = afterParens.match(/implements\s+([^{]+)/);
+      const implementsInterfaces = implementsMatch
+        ? implementsMatch[1].split(',').map(s => s.trim())
+        : [];
+
+      const classStartLine = i + 1;
+      const classEndLine = this.findClassEnd(lines, i);
+
+      const componentFields = this.extractRecordComponents(header.components, classStartLine);
+      const bodyFields = this.extractFields(lines, i, classEndLine);
+      const methods = this.extractMethods(lines, i, classEndLine);
+      const annotations = this.extractAnnotations(lines, i);
+
+      records.push({
+        name: header.name,
+        packageName,
+        filePath,
+        modifiers,
+        extends: undefined,
+        implementsInterfaces,
+        fields: [...componentFields, ...bodyFields],
+        methods,
+        innerClasses: [],
+        annotations,
+        lineStart: classStartLine,
+        lineEnd: classEndLine,
+        isRecord: true
+      });
+    }
+
+    return records;
+  }
+
+  /**
+   * Depth-tracks a record's parenthesized component list starting at
+   * `lines[startIndex]`, across as many physical lines as needed (component
+   * lists are routinely wrapped by formatters, e.g. `@ConfigurationProperties`
+   * records). Returns the raw text between the record's own `(` and its
+   * matching `)` plus enough position info to keep scanning right after it.
+   */
+  private collectRecordComponentString(
+    lines: string[],
+    startIndex: number,
+    maxLines = 60
+  ): { name: string; components: string; endIndex: number; charAfterClose: number } | undefined {
+    const headerLine = lines[startIndex];
+    const nameMatch = headerLine.match(/\brecord\s+(\w+)\s*\(/);
+    if (!nameMatch || nameMatch.index === undefined) return undefined;
+
+    const name = nameMatch[1];
+    let depth = 0;
+    let components = '';
+
+    for (let i = startIndex; i < lines.length && i - startIndex < maxLines; i++) {
+      const line = i === startIndex ? headerLine.slice(nameMatch.index + nameMatch[0].length) : lines[i];
+
+      for (let c = 0; c < line.length; c++) {
+        const character = line[c];
+        if (character === '(') {
+          depth += 1;
+          components += character;
+        } else if (character === ')') {
+          if (depth === 0) {
+            return { name, components, endIndex: i, charAfterClose: c + 1 };
+          }
+          depth -= 1;
+          components += character;
+        } else {
+          components += character;
+        }
+      }
+      components += ' ';
+    }
+
+    return undefined;
+  }
+
+  /** Splits on commas that are not nested inside `()`, `<>`, or `[]`. */
+  private splitTopLevelByComma(text: string): string[] {
+    const parts: string[] = [];
+    let depth = 0;
+    let current = '';
+
+    for (const character of text) {
+      if (character === '(' || character === '<' || character === '[') depth += 1;
+      else if (character === ')' || character === '>' || character === ']') depth -= 1;
+
+      if (character === ',' && depth <= 0) {
+        parts.push(current);
+        current = '';
+      } else {
+        current += character;
+      }
+    }
+    if (current.trim()) parts.push(current);
+
+    return parts;
+  }
+
+  private extractRecordComponents(componentString: string, lineNumber: number): JavaField[] {
+    const fields: JavaField[] = [];
+
+    for (const rawPart of this.splitTopLevelByComma(componentString)) {
+      let part = rawPart.trim();
+      if (!part) continue;
+
+      const annotations: string[] = [];
+      let annotationMatch: RegExpMatchArray | null;
+      while ((annotationMatch = part.match(/^@(\w+)(?:\([^()]*\))?\s*/))) {
+        annotations.push(annotationMatch[1]);
+        part = part.slice(annotationMatch[0].length);
+      }
+
+      const tokens = part.split(/\s+/).filter(Boolean);
+      if (tokens.length >= 2) {
+        const name = tokens[tokens.length - 1];
+        const type = tokens.slice(0, -1).join(' ');
+        fields.push({
+          name,
+          type,
+          modifiers: ['final'],
+          annotations,
+          isStatic: false,
+          isFinal: true,
+          lineNumber
+        });
+      }
+    }
+
+    return fields;
   }
 
   private extractInterfaces(content: string, filePath: string): JavaInterface[] {

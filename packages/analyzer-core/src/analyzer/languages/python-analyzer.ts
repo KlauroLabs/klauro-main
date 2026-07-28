@@ -739,20 +739,28 @@ export class PythonAnalyzer extends BaseAnalyzer {
       const line = lines[i];
 
       if (line.trim().startsWith('class ')) {
-        const classMatch = line.match(/class\s+(\w+)(?:\(([^)]*)\))?:/);
+        let classMatch = line.match(/class\s+(\w+)(?:\(([^)]*)\))?:/);
+        let signatureEndIndex = i;
+        if (!classMatch) {
+          // The signature may be a class statement with a base-class list
+          // split across multiple lines; join it before giving up.
+          const collected = this.collectLogicalStatement(lines, i);
+          classMatch = collected.text.match(/class\s+(\w+)(?:\(([^)]*)\))?:/);
+          if (classMatch) signatureEndIndex = collected.endIndex;
+        }
         if (classMatch) {
           const className = classMatch[1];
           const baseClasses = classMatch[2]
-            ? classMatch[2].split(',').map(s => s.trim())
+            ? classMatch[2].split(',').map(s => s.trim()).filter(Boolean)
             : [];
 
           const decorators = this.extractDecorators(lines, i);
-          const classStartLine = i + 1;
+          const classStartLine = signatureEndIndex + 1;
           const classEndLine = this.findBlockEnd(lines, i);
 
-          const methods = this.extractMethods(lines, i, classEndLine);
-          const attributes = this.extractClassAttributes(lines, i, classEndLine);
-          const docstring = this.extractDocstring(lines, i + 1);
+          const methods = this.extractMethods(lines, signatureEndIndex, classEndLine);
+          const attributes = this.extractClassAttributes(lines, signatureEndIndex, classEndLine);
+          const docstring = this.extractDocstring(lines, signatureEndIndex + 1);
           const documentation = this.extractDocumentationFromDocstring(docstring || '', 'class');
           const classContent = lines.slice(i, classEndLine).join('\n');
           const classComments = this.extractCommentsFromContent(classContent, filePath, classStartLine);
@@ -799,7 +807,15 @@ export class PythonAnalyzer extends BaseAnalyzer {
       const line = lines[i];
 
       if (line.trim().startsWith('def ') || line.trim().startsWith('async def ')) {
-        const funcMatch = line.match(/(async\s+)?def\s+(\w+)\s*\(([^)]*)\)(?:\s*->\s*([^:]+))?:/);
+        let funcMatch = line.match(/(async\s+)?def\s+(\w+)\s*\(([^)]*)\)(?:\s*->\s*([^:]+))?:/);
+        let signatureEndIndex = i;
+        if (!funcMatch) {
+          // Long typed parameter lists are routinely wrapped across lines by
+          // formatters; join the signature before treating it as unparsable.
+          const collected = this.collectLogicalStatement(lines, i);
+          funcMatch = collected.text.match(/(async\s+)?def\s+(\w+)\s*\(([^)]*)\)(?:\s*->\s*([^:]+))?:/);
+          if (funcMatch) signatureEndIndex = collected.endIndex;
+        }
         if (funcMatch) {
           const isAsync = !!funcMatch[1];
           const functionName = funcMatch[2];
@@ -808,11 +824,11 @@ export class PythonAnalyzer extends BaseAnalyzer {
 
           if (!this.isInsideClass(lines, i)) {
             const decorators = this.extractDecorators(lines, i);
-            const functionStartLine = i + 1;
+            const functionStartLine = signatureEndIndex + 1;
             const functionEndLine = this.findBlockEnd(lines, i);
 
             const parameters = this.extractParameters(paramString);
-            const docstring = this.extractDocstring(lines, i + 1);
+            const docstring = this.extractDocstring(lines, signatureEndIndex + 1);
             const documentation = this.extractDocumentationFromDocstring(docstring || '', 'function');
             const functionContent = lines.slice(i, functionEndLine).join('\n');
             const functionComments = this.extractCommentsFromContent(functionContent, filePath, functionStartLine);
@@ -855,7 +871,13 @@ export class PythonAnalyzer extends BaseAnalyzer {
       const indent = line.length - line.trimStart().length;
 
       if (indent > 0 && (line.trim().startsWith('def ') || line.trim().startsWith('async def '))) {
-        const methodMatch = line.match(/(async\s+)?def\s+(\w+)\s*\(([^)]*)\)(?:\s*->\s*([^:]+))?:/);
+        let methodMatch = line.match(/(async\s+)?def\s+(\w+)\s*\(([^)]*)\)(?:\s*->\s*([^:]+))?:/);
+        let signatureEndIndex = i;
+        if (!methodMatch) {
+          const collected = this.collectLogicalStatement(lines, i);
+          methodMatch = collected.text.match(/(async\s+)?def\s+(\w+)\s*\(([^)]*)\)(?:\s*->\s*([^:]+))?:/);
+          if (methodMatch) signatureEndIndex = collected.endIndex;
+        }
         if (methodMatch) {
           const isAsync = !!methodMatch[1];
           const methodName = methodMatch[2];
@@ -863,11 +885,11 @@ export class PythonAnalyzer extends BaseAnalyzer {
           const returnAnnotation = methodMatch[4]?.trim();
 
           const decorators = this.extractDecorators(lines, i);
-          const methodStartLine = i + 1;
+          const methodStartLine = signatureEndIndex + 1;
           const methodEndLine = this.findBlockEnd(lines, i);
 
           const parameters = this.extractParameters(paramString);
-          const docstring = this.extractDocstring(lines, i + 1);
+          const docstring = this.extractDocstring(lines, signatureEndIndex + 1);
           const documentation = this.extractDocumentationFromDocstring(docstring || '', 'method');
           const methodContent = lines.slice(i, methodEndLine).join('\n');
           const methodComments = this.extractCommentsFromContent(methodContent, '', methodStartLine);
@@ -1088,6 +1110,42 @@ export class PythonAnalyzer extends BaseAnalyzer {
     }
 
     return undefined;
+  }
+
+  /**
+   * Collects a full logical `class`/`def` statement that may span multiple
+   * physical lines (e.g. long multi-line base-class lists or typed parameter
+   * lists split across lines, common in Django/GraphQL schema files black
+   * formats). Joins continuation lines into one string so the existing
+   * single-line regexes can match, and returns the physical line index where
+   * the signature's trailing colon was found so callers can resume scanning
+   * from the real body offset instead of the signature's first line.
+   */
+  private collectLogicalStatement(
+    lines: string[],
+    startIndex: number,
+    maxLines = 60
+  ): { text: string; endIndex: number } {
+    let depth = 0;
+    let text = '';
+    let endIndex = startIndex;
+
+    for (let i = startIndex; i < lines.length && i - startIndex < maxLines; i++) {
+      const line = lines[i];
+      text += i === startIndex ? line : ` ${line.trim()}`;
+
+      for (const character of line) {
+        if (character === '(') depth += 1;
+        else if (character === ')') depth -= 1;
+      }
+
+      endIndex = i;
+      if (depth <= 0 && /:\s*(#.*)?$/.test(line.trimEnd())) {
+        break;
+      }
+    }
+
+    return { text, endIndex };
   }
 
   private findBlockEnd(lines: string[], startIndex: number): number {
