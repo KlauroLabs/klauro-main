@@ -4076,7 +4076,16 @@ async function serveLatestManifest(request: http.IncomingMessage, response: http
     max_node: maxNode,
     supported_node_range: `${minNode}-${maxNode}`,
     published_at: (manifest.published_at as string) || null,
+    // Build identity of the published tarball, so "is the CLI channel in sync
+    // with the deployed server" is answerable from the manifest instead of by
+    // installing it (deploy.sh's client-channel gate, 2026-07-27 audit).
+    git_sha: (manifest.git_sha as string) || null,
     update_command: 'klauro update',
+    /** First release whose CLI actually implements `update`. Older clients
+     *  must reinstall — through 1.0.127 the command printed usage and exited
+     *  0, which is what turned the HTTP 426 remediation into a dead end. */
+    update_command_min_version: (manifest.update_command_min_version as string) || '1.0.128',
+    install_command: (manifest.install_command as string) || `curl -fsSL ${base}/install.sh | sh`,
   };
   response.writeHead(200, corsHeaders({ 'content-type': 'application/json', 'cache-control': 'no-cache' }));
   response.end(JSON.stringify(body));
