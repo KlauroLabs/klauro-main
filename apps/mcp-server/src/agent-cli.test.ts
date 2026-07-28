@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -10,6 +10,44 @@ const tsxBin = fs.existsSync(path.join(repoRoot, 'node_modules', '.bin', 'tsx'))
   ? path.join(repoRoot, 'node_modules', '.bin', 'tsx')
   : path.join(repoRoot, '..', '..', 'node_modules', '.bin', 'tsx');
 const fixturePath = path.join(repoRoot, 'fixtures', 'analysis-truth', 'fastapi-sqlalchemy');
+
+// A local stand-in for "a Klauro server that does not know you": answers 401 to
+// everything. The account boundary is a property of the CLI, not of the
+// deployed service, so it is proved against this instead of over the internet —
+// deterministic, offline, and ~9s faster per assertion.
+//
+// It runs in a CHILD process, not in this one: runCli uses spawnSync, which
+// blocks this process's event loop for the whole CLI run, so an in-process
+// server would never accept the connection and every request would "time out"
+// against a server that is sitting right there.
+let unauthorizedServer: ReturnType<typeof spawn>;
+let unauthorizedServerUrl: string;
+
+test.before(async () => {
+  unauthorizedServer = spawn(
+    process.execPath,
+    [
+      '-e',
+      `const http=require('http');` +
+        `const s=http.createServer((_q,r)=>{r.writeHead(401,{'content-type':'application/json'});r.end('{"error":"unauthorized"}')});` +
+        `s.listen(0,'127.0.0.1',()=>console.log(s.address().port));`,
+    ],
+    { stdio: ['ignore', 'pipe', 'inherit'] }
+  );
+  const port = await new Promise<string>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('401 stub server did not report a port')), 10_000);
+    unauthorizedServer.stdout?.once('data', chunk => {
+      clearTimeout(timer);
+      resolve(String(chunk).trim());
+    });
+    unauthorizedServer.once('error', reject);
+  });
+  unauthorizedServerUrl = `http://127.0.0.1:${port}`;
+});
+
+test.after(() => {
+  unauthorizedServer?.kill('SIGKILL');
+});
 
 test('command-specific help prints usage without treating --help as a project path', () => {
   const result = spawnSync(tsxBin, ['src/cli.ts', 'agent-context', '--help'], {
@@ -84,6 +122,13 @@ function runCli(
       ...env,
       KLAURO_STORAGE_PATH: workspace.storage,
       HOME: path.dirname(workspace.storage),
+      // Point the CLI at the throwaway 401 server, never the real cloud
+      // default. Without this these tests made a live round-trip to
+      // production on every run: slow (9s+), a load source pointed at the
+      // deployed service from every CI run, and flaky — a single upstream
+      // timeout turned "Klauro account required" into "Could not reach
+      // https://mcp.klauro.com", which is exactly how this file went red.
+      KLAURO_ANALYZER_URL: unauthorizedServerUrl,
       ...overrides,
     },
     encoding: 'utf8',
