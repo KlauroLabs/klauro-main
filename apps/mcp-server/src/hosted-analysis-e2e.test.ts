@@ -6,21 +6,36 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { createRemoteAnalyzerHttpServer } from './remote-analyzer-service';
-import { analyzeCodebaseRemotely } from './remote-sync-client';
 import { clearHostedAnalysisCaches, resolveBoundAnalysis, resolveHostedProjectBinding } from './hosted-analysis';
 import { loadAnalysis, saveAnalysis } from './storage';
+import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 
 /**
- * End-to-end proof of the hosted-analysis mirror loop through the REAL
+ * End-to-end proof of hosted segmented CAS access through the REAL
  * analyzer service (the fix for the 2026-07-14 truckspy audit): a repo bound
  * to a hosted prj_ project, whose analysis lives ONLY on the server, must be
- * served to MCP read tools by downloading the full hosted CAS via
- * GET /api/projects/{id}/cas and mirroring it into the local store — never by
- * silently running a local analysis, and never from an unrelated stale cache.
+ * served to MCP read tools by hydrating only requested sections — never by
+ * silently running a local analysis and never by mirroring the full graph.
  */
 
 function git(repo: string, args: string[]): void {
   execFileSync('git', args, { cwd: repo, stdio: 'ignore' });
+}
+
+function hostedFixture(timestamp = '2026-07-22T00:00:00.000Z'): CASOutput {
+  return {
+    cas_version: '1.11.0',
+    analysis_id: 'hosted-e2e-analysis',
+    analysis_timestamp: timestamp,
+    system: { id: 'system-e2e', name: 'hosted-e2e', type: 'application', technologies: { languages: [], frameworks: [] } },
+    nodes: [{ id: 'node-handler', name: 'handler', type: 'function', level: 1, source: { file: 'app.py', line: 1 } }],
+    edges: [],
+    entry_points: [],
+    exit_points: [],
+    analyzer_contributions: [],
+    progressive_levels: [],
+    layers_ready: { complete: true, generated_at: timestamp, layers: [] },
+  } as unknown as CASOutput;
 }
 
 function request(port: number, method: string, route: string, body?: unknown, token?: string): Promise<{ statusCode: number; body: string }> {
@@ -44,7 +59,7 @@ function request(port: number, method: string, route: string, body?: unknown, to
   });
 }
 
-test('bound repo with server-only analysis: MCP resolution downloads via /cas and mirrors locally', async () => {
+test('bound repo with server-only analysis: MCP hydrates graph sections without replacing local state', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-hosted-e2e-'));
   const remoteData = path.join(root, 'remote-data');
   const previousRemoteData = process.env.KLAURO_REMOTE_ANALYZER_DATA;
@@ -71,8 +86,9 @@ test('bound repo with server-only analysis: MCP resolution downloads via /cas an
     const projectRes = await request(port, 'POST', `/api/workspaces/${workspaceId}/projects`, {
       name: 'hosted-e2e-repo',
       repo_url: 'https://github.com/example/hosted-e2e-repo',
+      analysis_id: 'hosted-e2e-analysis',
     }, token);
-    const project = JSON.parse(projectRes.body).project as { id: string };
+    const project = JSON.parse(projectRes.body).project as { id: string; analysis_id: string };
     assert.match(project.id, /^prj_/);
 
     const repo = path.join(root, 'hosted-e2e-repo');
@@ -89,30 +105,17 @@ test('bound repo with server-only analysis: MCP resolution downloads via /cas an
     git(repo, ['add', '.']);
     git(repo, ['commit', '-m', 'initial commit']);
 
-    // One shared store for the whole test (the in-process service and the
-    // MCP-side client read the same storage env). Synchronous push so the
-    // hosted analysis is fully landed before the client resolves.
+    // Persist the hosted source of truth directly; this E2E proves storage and
+    // query transport, not the independently-tested analysis scheduler.
     process.env.KLAURO_STORAGE_PATH = path.join(root, 'shared-store');
-    const pushed = await analyzeCodebaseRemotely({ projectPath: repo, serverUrl, token, wait: true });
-    assert.equal(pushed.status, 'success');
-    assert.equal(pushed.analysis_id, project.id);
-
-    // The analysis→project attach lands asynchronously after the push; wait
-    // until the hosted state endpoint reports it (same polling the web app does).
-    const deadline = Date.now() + 30_000;
-    for (;;) {
-      const stateRes = await request(port, 'GET', `/api/projects/${encodeURIComponent(project.id)}/analysis`, undefined, token);
-      const state = JSON.parse(stateRes.body) as { status?: string; summary?: { analysis_timestamp?: string } };
-      if ((state.status === 'ready' || state.status === 'populating') && state.summary?.analysis_timestamp) break;
-      if (Date.now() > deadline) assert.fail(`hosted analysis never attached: ${stateRes.body.slice(0, 200)}`);
-      await new Promise(resolve => setTimeout(resolve, 200));
-    }
+    const serverWorkspace = path.join(remoteData, 'workspaces', project.analysis_id);
+    await saveAnalysis(serverWorkspace, hostedFixture());
 
     // Recreate the audit's STALE-CACHE condition: overwrite the client-side
     // local entry for this repo with a doctored July-4 copy of the CAS, so the
     // local cache is older than the hosted analysis.
-    const localAfterPush = await loadAnalysis(repo);
-    assert.ok(localAfterPush, 'wait:true push saves the CAS locally');
+    const localAfterPush = await loadAnalysis(serverWorkspace);
+    assert.ok(localAfterPush, 'hosted analysis is persisted on the service');
     const staleTimestamp = '2026-07-04T19:14:18.863Z';
     await saveAnalysis(repo, { ...localAfterPush!, analysis_timestamp: staleTimestamp });
     process.env.KLAURO_ACCOUNT_TOKEN = token;
@@ -122,20 +125,18 @@ test('bound repo with server-only analysis: MCP resolution downloads via /cas an
     assert.ok(binding, 'repo must resolve as project-bound');
     assert.equal(binding!.projectId, project.id);
 
-    // Stale local cache must LOSE to the hosted analysis: downloaded via
-    // GET /api/projects/{id}/cas and mirrored over the stale entry.
-    const resolution = await resolveBoundAnalysis(binding!);
+    // Stale local cache must lose to section hydration without being overwritten.
+    const resolution = await resolveBoundAnalysis(binding!, { sections: ['graph'] });
     assert.equal(resolution.source, 'hosted');
     assert.ok(resolution.cas.nodes.length > 0, 'downloaded hosted CAS carries real nodes');
     assert.equal(resolution.cas.analysis_timestamp, resolution.hosted_timestamp);
     assert.notEqual(resolution.cas.analysis_timestamp, staleTimestamp);
 
-    // Mirrored into the local store, and the second resolve serves the mirror.
+    // The local entry remains stale; repeated reads are served by the bounded section cache.
     const mirrored = await loadAnalysis(repo);
-    assert.equal(mirrored?.analysis_timestamp, resolution.cas.analysis_timestamp);
-    clearHostedAnalysisCaches();
-    const second = await resolveBoundAnalysis(binding!);
-    assert.equal(second.source, 'local-mirror');
+    assert.equal(mirrored?.analysis_timestamp, staleTimestamp);
+    const second = await resolveBoundAnalysis(binding!, { sections: ['graph'] });
+    assert.equal(second.source, 'hosted');
   } finally {
     await new Promise<void>(resolve => server.close(() => resolve()));
     if (previousRemoteData === undefined) delete process.env.KLAURO_REMOTE_ANALYZER_DATA;
@@ -179,9 +180,9 @@ test('a background analysis that crashed reports status=failed with the reason (
     const token = JSON.parse(registerRes.body).token as string;
     const workspaceId = JSON.parse((await request(port, 'GET', '/api/workspaces', undefined, token)).body).workspaces[0].id as string;
     const projectRes = await request(port, 'POST', `/api/workspaces/${workspaceId}/projects`, {
-      name: 'crashed-repo', repo_url: 'https://github.com/example/crashed-repo',
+      name: 'crashed-repo', repo_url: 'https://github.com/example/crashed-repo', analysis_id: 'crashed-e2e-analysis',
     }, token);
-    const project = JSON.parse(projectRes.body).project as { id: string };
+    const project = JSON.parse(projectRes.body).project as { id: string; analysis_id: string };
 
     const repo = path.join(root, 'crashed-repo');
     fs.mkdirSync(repo, { recursive: true });
@@ -194,12 +195,11 @@ test('a background analysis that crashed reports status=failed with the reason (
     }, null, 2));
     git(repo, ['add', '.']);
     git(repo, ['commit', '-m', 'initial commit']);
-    const pushed = await analyzeCodebaseRemotely({ projectPath: repo, serverUrl, token, wait: true });
-    assert.equal(pushed.status, 'success');
+    const serverWorkspace = path.join(remoteData, 'workspaces', project.analysis_id);
+    await saveAnalysis(serverWorkspace, hostedFixture());
 
     // Reproduce what markBackgroundAnalysisFailed persists when the background
     // analysis throws: the still-pending structural layers flip to 'error'.
-    const serverWorkspace = path.join(remoteData, 'workspaces', project.id);
     const stored = await loadAnalysis(serverWorkspace);
     assert.ok(stored, 'hosted CAS must exist after push');
     stored!.layers_ready = {

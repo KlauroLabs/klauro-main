@@ -70,7 +70,7 @@ test('remote analyzer supports full source upload and dirty-tree incremental syn
 
     const appFile = path.join(repo, 'app', 'main.py');
     fs.appendFileSync(appFile, '\n\n@app.get("/healthz")\ndef healthz():\n    return {"ok": True}\n');
-    const incremental = await syncWorkingTreeRemotely({ projectPath: repo, serverUrl, analysisId: full.analysis_id, token });
+    const incremental = await syncWorkingTreeRemotely({ projectPath: repo, serverUrl, analysisId: full.analysis_id, token, wait: true });
 
     assert.equal(incremental.status, 'success');
     assert.equal(incremental.analysis_type, 'incremental');

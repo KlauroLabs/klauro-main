@@ -1,8 +1,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { EventEmitter } from 'events';
-import { runAnalysis } from './analyzer';
 import type { ChangeReport } from '../../../packages/analyzer-core/src/types/cas.types';
+import { syncWorkingTreeRemotely } from './remote-sync-client';
 
 interface WatchSession {
   id: string;
@@ -101,67 +101,46 @@ function isSourceFile(filePath: string): boolean {
 }
 
 async function runIncrementalAnalysis(session: WatchSession): Promise<void> {
-  if (session.analysisInProgress) return;
-  if (session.pendingChanges.size === 0) return;
-
+  if (session.analysisInProgress || session.pendingChanges.size === 0) return;
   session.analysisInProgress = true;
-  const changesSnapshot = Array.from(session.pendingChanges.values());
+  const changes = Array.from(session.pendingChanges.values());
   session.pendingChanges.clear();
-
-  const startTime = Date.now();
+  const startedAt = Date.now();
 
   try {
-    const result = await runAnalysis(session.projectPath);
-    if (!result.changeReport) {
-      throw new Error('Incremental analysis returned no change report');
-    }
-    const duration = Date.now() - startTime;
-
+    const result = await syncWorkingTreeRemotely({ projectPath: session.projectPath });
+    const duration = Date.now() - startedAt;
     session.lastAnalysis = new Date().toISOString();
     session.stats.totalAnalysesRun++;
     session.stats.averageAnalysisTimeMs = Math.round(
       ((session.stats.averageAnalysisTimeMs * (session.stats.totalAnalysesRun - 1)) + duration) /
       session.stats.totalAnalysesRun
     );
-
-    session.recentChanges.unshift(result.changeReport);
-    if (session.recentChanges.length > MAX_RECENT_CHANGES) {
-      session.recentChanges.pop();
-    }
-
-    emitter.emit('analysis-complete', {
+    emitter.emit('analysis-accepted', {
       watchId: session.id,
       projectPath: session.projectPath,
-      files: changesSnapshot.map(change => change.path),
-      changeReport: result.changeReport,
+      analysisId: result.analysis_id,
+      files: changes.map(change => change.path),
       duration,
-      wasFullRebuild: result.wasFullRebuild,
     });
-
   } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    session.error = errorMessage;
-    emitter.emit('analysis-error', {
-      watchId: session.id,
-      projectPath: session.projectPath,
-      error: errorMessage,
-    });
+    for (const change of changes) {
+      if (!session.pendingChanges.has(change.path)) session.pendingChanges.set(change.path, change);
+    }
+    const message = error instanceof Error ? error.message : String(error);
+    session.error = message;
+    emitter.emit('analysis-error', { watchId: session.id, projectPath: session.projectPath, error: message });
   } finally {
     session.analysisInProgress = false;
-
-    if (session.pendingChanges.size > 0) {
-      scheduleAnalysis(session);
-    }
+    if (session.pendingChanges.size > 0 && session.status === 'active') scheduleAnalysis(session);
   }
 }
 
 function scheduleAnalysis(session: WatchSession): void {
-  if (session.debounceTimer) {
-    clearTimeout(session.debounceTimer);
-  }
+  if (session.debounceTimer) clearTimeout(session.debounceTimer);
   session.debounceTimer = setTimeout(() => {
     session.debounceTimer = null;
-    runIncrementalAnalysis(session);
+    void runIncrementalAnalysis(session);
   }, getDebounceMs());
 }
 

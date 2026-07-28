@@ -1,0 +1,18 @@
+{
+  "name": "@klauro/mcp-server",
+  "version": "1.0.127",
+  "private": false,
+  "description": "Lightweight Klauro MCP and CLI client",
+  "main": "dist/index.cjs",
+  "bin": {
+    "klauro": "dist/cli.cjs"
+  },
+  "files": [
+    "dist/"
+  ],
+  "dependencies": {},
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "UNLICENSED"
+}

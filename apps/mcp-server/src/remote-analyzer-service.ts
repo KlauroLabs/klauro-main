@@ -1,11 +1,12 @@
 import * as crypto from 'node:crypto';
 import * as http from 'node:http';
 import * as fs from 'fs-extra';
+import { createReadStream } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { gunzipSync } from 'node:zlib';
 import { analyzeProjectIncremental, analyzeProjectDeferred, checkDoomedVersionRebuild, runAnalysis, runLayeredAnalysis } from './analyzer';
-import type { AccountActivityEvent, RemoteAnalyzeDiffRequest, RemoteAnalyzeRequest, RemoteAnalyzeResponse, RemoteGreenfieldPreviewRequest, RemoteProjectRevision, RemoteProjectRevisionsResponse, RemoteProposalPreviewRequest, RemoteSyncRequest } from './remote-analyzer-protocol';
+import { REMOTE_ANALYSIS_PROTOCOL_VERSION, type AccountActivityEvent, type RemoteAnalyzeDiffRequest, type RemoteAnalyzeRequest, type RemoteAnalyzeResponse, type RemoteGreenfieldPreviewRequest, type RemoteProjectRevision, type RemoteProjectRevisionsResponse, type RemoteProposalPreviewRequest, type RemoteSyncRequest } from './remote-analyzer-protocol';
 import type { BranchDiffContext, RemoteFileChange, RepoFacts, SourceManifest } from './remote-source';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import { buildSourceSnapshot } from './remote-source';
@@ -26,13 +27,27 @@ import { buildNodeRuntimeMetrics } from './product';
 import { getAnalysis } from './analyzer';
 import { buildSummary, getProductMap, getFlowConcepts, getArchitecturalConflicts, getParadigmConformance, getPerspectives, getCicdPipelines, getCommunicationSeams, buildOrientCapsule, getSemanticCoverage, getDataEntities } from './query';
 import type { SemanticRole } from './semantic-roles';
-import { getAnalysisFileFingerprint, loadAnalysis, saveAnalysis, writeJsonAtomic } from './storage';
+import {
+  getAnalysisEntry,
+  getAnalysisFileFingerprint,
+  loadAnalysis,
+  loadAnalysisSectionManifest,
+  loadAnalysisSections,
+  resolveAnalysisExportArtifact,
+  saveAnalysis,
+  writeJsonAtomic,
+} from './storage';
+import { parseCasSectionNames } from './cas-sections';
 import { clearFreshnessSummaryCache } from './freshness';
 import { descriptionStorePath } from './description-enrichment';
+import { generateElementDescription } from './description-enrichment';
+import { withAnalysisFocus } from './analysis-focus';
 import { ResponseCache, responseCacheKey } from './response-cache';
 import { getCachedDeployableAnalyses, scopeCasToDasUnit } from './deployable-analysis';
 import { initSelfTelemetry, instrumentHttpHandler, mapSdkEvent } from './self-telemetry';
 import type { CasRuntimeEvent } from '../../../packages/klauro-sdk-js/src/types';
+import { executeHostedProjectQuery, HOSTED_PROJECT_QUERY_TOOL_NAMES } from './hosted-project-query';
+import { z } from 'zod';
 
 const DEFAULT_PORT = 8787;
 const DEFAULT_MAX_BODY_BYTES = 100 * 1024 * 1024;
@@ -159,8 +174,8 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
   const token = options.token ?? process.env.KLAURO_ANALYZER_TOKEN;
   const maxBodyBytes = options.maxBodyBytes || resolveMaxBodyBytes();
   const rateLimitPerMinute = options.rateLimitPerMinute ?? Number(process.env.KLAURO_ANALYZER_RATE_LIMIT_PER_MINUTE || 120);
-  const deferAiEnrichment = options.deferAiEnrichment === true;
   const buckets = new Map<string, RateLimitBucket>();
+  const activeCommittedSnapshots = new Map<string, string>();
   // Ops guard (durable board, wave 1): the 2026-07-21 incident was this server
   // writing its coordination board to the container's ephemeral overlay FS
   // (KLAURO_COORD_DIR unset) while the persistent /data volume went unused —
@@ -295,18 +310,9 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
         }
         const body = await readJsonBody<{ events?: CasRuntimeEvent[] }>(request, maxBodyBytes);
         const events = Array.isArray(body.events) ? body.events : [];
-        // Raw observations MUST persist regardless of analysis state. A missing
-        // analysis is NOT a drop reason: fall back to `null` cas so the raw
-        // events (route/status/duration/error/timestamp) are stored as
-        // `unmatched`, and ack 200 so the SDK does not requeue forever.
-        // Correlation happens lazily once an analysis exists.
-        let cas: any = null;
-        try {
-          cas = await getAnalysis(projectId);
-        } catch {
-          cas = null;
-        }
-        const result = await ingestTelemetryBatch(cas, projectId, events.map(mapSdkEvent), { persist: true });
+        // Keep ingest independent of CAS size and analyzer load. Raw events are
+        // durable immediately; read/backfill correlates them once CAS is ready.
+        const result = await ingestTelemetryBatch(null, projectId, events.map(mapSdkEvent), { persist: true });
         await appendAuditLog(dataDir, {
           event: 'telemetry_runtime_events',
           workspace: projectId,
@@ -330,7 +336,15 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           return;
         }
         const accountResult = await handleAccountApi(accounts, apiAuthorization.userId, route, request, maxBodyBytes, apiAuthorization.sharedToken, dataDir, workspaceAnalyses);
-        if (accountResult.serializedBody !== undefined) {
+        if (accountResult.stream) {
+          response.writeHead(accountResult.statusCode, accountResult.stream.headers);
+          const stream = createReadStream(accountResult.stream.filePath);
+          stream.on('error', error => {
+            if (!response.headersSent) writeJson(response, 500, { status: 'error', error: error.message });
+            else response.destroy(error);
+          });
+          stream.pipe(response);
+        } else if (accountResult.serializedBody !== undefined) {
           // Pre-serialized (cacheable) responses are written verbatim so a
           // cache hit is byte-identical to the fresh compute that produced it.
           writeText(response, accountResult.statusCode, 'application/json', accountResult.serializedBody);
@@ -351,7 +365,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
       }
 
       const clientId = authorization.clientId || request.socket.remoteAddress || 'unknown';
-      if (!withinRateLimit(buckets, clientId, rateLimitPerMinute)) {
+      if (requestConsumesMutationRateLimit(request.method) && !withinRateLimit(buckets, clientId, rateLimitPerMinute)) {
         await appendAuditLog(dataDir, {
           event: 'rate_limited',
           method: request.method,
@@ -364,8 +378,16 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
 
       if (request.method === 'POST' && route === '/v1/analyze') {
         const body = await readJsonBody<RemoteAnalyzeRequest>(request, maxBodyBytes);
+        if (body.protocol_version !== REMOTE_ANALYSIS_PROTOCOL_VERSION) {
+          writeJson(response, 426, {
+            status: 'error', code: 'client_upgrade_required',
+            error: `This Klauro server requires analysis protocol ${REMOTE_ANALYSIS_PROTOCOL_VERSION}. Run klauro update and restart the MCP client.`,
+            required_protocol_version: REMOTE_ANALYSIS_PROTOCOL_VERSION,
+          });
+          return;
+        }
 
-        if (body.async === true) {
+        {
           // Progressive disclosure: persist the snapshot NOW, answer in
           // seconds, and run the entire analysis server-side in the
           // background. The background continuation performs the exact same
@@ -378,13 +400,59 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           }
           const rawAcceptedId = body.project_id || makeAnalysisId(body.project_path || body.snapshot.project_name);
           const acceptedAnalysisId = resolveStorageAnalysisId(rawAcceptedId, accountSaltFor(authorization.clientId));
+          const visibleAnalysisId = clientVisibleAnalysisId(rawAcceptedId, acceptedAnalysisId, authorization.clientId);
           const acceptedWorkspace = workspacePath(dataDir, acceptedAnalysisId);
-          await fs.remove(acceptedWorkspace);
-          await fs.ensureDir(acceptedWorkspace);
-          await writeSnapshot(acceptedWorkspace, body.snapshot.files);
+          const snapshotIdentity = committedSnapshotIdentity(body.snapshot.manifest, body.snapshot.base_commit);
+          const activeIdentity = activeCommittedSnapshots.get(acceptedAnalysisId);
+          const revisions = await readProjectRevisions(dataDir, acceptedAnalysisId);
+          const reusableRevision = revisions.revisions.find(revision => revisionMatchesSnapshot(revision, body.snapshot.manifest, body.snapshot.base_commit));
+          const storedAnalysisExists = reusableRevision
+            ? Boolean(await getAnalysisFileFingerprint(acceptedWorkspace, { track: 'main' }))
+            : false;
+
+          if ((snapshotIdentity && activeIdentity === snapshotIdentity) || (reusableRevision && storedAnalysisExists)) {
+            await linkAnalysisToAccountProject(
+              accounts,
+              authorization.clientId,
+              body.project_id,
+              acceptedAnalysisId,
+              body.snapshot.manifest.git_remote,
+              body.snapshot.manifest.repo_facts,
+            );
+            await appendAuditLog(dataDir, {
+              event: 'analyze_reused',
+              analysis_id: acceptedAnalysisId,
+              project_id: body.project_id,
+              base_commit: body.snapshot.base_commit,
+              reason: activeIdentity === snapshotIdentity ? 'already_running' : 'already_analyzed',
+            });
+            writeJson(response, 202, {
+              status: 'accepted',
+              protocol_version: REMOTE_ANALYSIS_PROTOCOL_VERSION,
+              analysis_id: visibleAnalysisId,
+              base_commit: body.snapshot.base_commit,
+              manifest: body.snapshot.manifest,
+              reused: true,
+              analysis_type: 'unchanged',
+            });
+            return;
+          }
+
+          if (snapshotIdentity) activeCommittedSnapshots.set(acceptedAnalysisId, snapshotIdentity);
+          try {
+            await fs.remove(acceptedWorkspace);
+            await fs.ensureDir(acceptedWorkspace);
+            await writeSnapshot(acceptedWorkspace, body.snapshot.files);
+          } catch (error) {
+            if (snapshotIdentity && activeCommittedSnapshots.get(acceptedAnalysisId) === snapshotIdentity) {
+              activeCommittedSnapshots.delete(acceptedAnalysisId);
+            }
+            throw error;
+          }
           writeJson(response, 202, {
             status: 'accepted',
-            analysis_id: acceptedAnalysisId,
+            protocol_version: REMOTE_ANALYSIS_PROTOCOL_VERSION,
+            analysis_id: visibleAnalysisId,
             base_commit: body.snapshot.base_commit,
             manifest: body.snapshot.manifest,
           });
@@ -491,35 +559,80 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
                 project_id: body.project_id,
                 error: detail.slice(0, 500),
               }).catch(() => {});
+            } finally {
+              if (snapshotIdentity && activeCommittedSnapshots.get(acceptedAnalysisId) === snapshotIdentity) {
+                activeCommittedSnapshots.delete(acceptedAnalysisId);
+              }
             }
           });
           return;
         }
 
-        const result = await handleAnalyze(dataDir, body, deferAiEnrichment, accountSaltFor(authorization.clientId));
-        await appendProjectRevision(dataDir, result, 'local_commit_submission');
-        // Attach the landed analysis to the matching account project record.
-        // Without this, a project created in the web app (no analysis_id at
-        // creation) NEVER shows an analysis on /api/projects/:id/analysis even
-        // though every CLI `klauro analyze` push succeeded — the analysis sat
-        // orphaned under workspacePath(analysis_id). The CLI sends project_id
-        // = .klaurorc project.id (prj_...), which IS the account project id.
-        await linkAnalysisToAccountProject(accounts, authorization.clientId, body.project_id, result.analysis_id, body.snapshot?.manifest?.git_remote, body.snapshot?.manifest?.repo_facts);
-        await appendAuditLog(dataDir, {
-          event: 'analyze',
-          analysis_id: result.analysis_id,
-          project_id: body.project_id,
-          organization_id: body.organization_id,
-          files: result.manifest.file_count,
-          bytes: result.manifest.total_bytes,
-          nodes: result.cas.nodes.length,
-          edges: result.cas.edges.length,
+      }
+
+      const rawAnalysisStatusMatch = route.match(/^\/v1\/analyses\/([^/]+)\/status$/);
+      if (request.method === 'GET' && rawAnalysisStatusMatch) {
+        const analysisId = await resolveAuthorizedAnalysisReadId(
+          accounts,
+          authorization.clientId,
+          decodeURIComponent(rawAnalysisStatusMatch[1]),
+        );
+        if (!analysisId) {
+          writeJson(response, 404, { status: 'error', error: 'Analysis not found' });
+          return;
+        }
+        const workspace = workspacePath(dataDir, analysisId);
+        const entry = await getAnalysisEntry(workspace);
+        const lastAttempt = await readAttemptRecord(projectAttemptRecordPath(workspace));
+        const layers = entry?.layers_ready?.layers || [];
+        const failedLayers = layers.filter(layer => layer.status === 'error');
+        const complete = Boolean(
+          entry
+          && (entry.layers_ready?.complete ?? true)
+          && !activeCommittedSnapshots.has(analysisId),
+        );
+        writeJson(response, 200, {
+          status: failedLayers.length > 0 ? 'failed' : complete ? 'ready' : 'populating',
+          analysis_id: analysisId,
+          ...(entry ? {
+            summary: {
+              name: entry.name,
+              node_count: entry.node_count,
+              edge_count: entry.edge_count,
+              analyzed_at: entry.analyzed_at,
+              layers_ready: entry.layers_ready,
+            },
+          } : {}),
+          ...(lastAttempt ? { last_attempt: lastAttempt } : {}),
+          ...(failedLayers.length > 0 ? { failed_layers: failedLayers } : {}),
         });
-        writeJson(response, 200, result);
-        // Async, never blocks/affects the response above: if this analysis_id
-        // is linked to an account project (klauro init reconnect flow), mark
-        // that project's workspace(s) dirty for a debounced WAS rebuild.
-        void notifyProjectAnalysisLandedForAnalysisId(result.analysis_id);
+        return;
+      }
+
+      const rawAnalysisExportMatch = route.match(/^\/v1\/analyses\/([^/]+)\/cas\/export$/);
+      if (request.method === 'GET' && rawAnalysisExportMatch) {
+        const analysisId = await resolveAuthorizedAnalysisReadId(
+          accounts,
+          authorization.clientId,
+          decodeURIComponent(rawAnalysisExportMatch[1]),
+        );
+        if (!analysisId) {
+          writeJson(response, 404, { status: 'error', error: 'Analysis not found' });
+          return;
+        }
+        const artifact = await resolveAnalysisExportArtifact(workspacePath(dataDir, analysisId));
+        if (!artifact) {
+          writeJson(response, 404, { status: 'error', error: 'Analysis is not ready' });
+          return;
+        }
+        response.writeHead(200, {
+          'content-type': artifact.codec === 'zstd' ? 'application/zstd' : 'application/json',
+          'content-length': artifact.bytes,
+          'x-klauro-cas-codec': artifact.codec,
+          'x-klauro-analysis-id': analysisId,
+          ...(artifact.codec === 'brotli' ? { 'content-encoding': 'br' } : {}),
+        });
+        createReadStream(artifact.filePath).pipe(response);
         return;
       }
 
@@ -538,7 +651,40 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           nodes: result.cas.nodes.length,
           edges: result.cas.edges.length,
         });
-        writeJson(response, 200, result);
+        writeJson(response, 200, {
+          ...result,
+          analysis_id: clientVisibleAnalysisId(body.project_id || makeAnalysisId(body.project_path || body.diff_context.target_branch), result.analysis_id, authorization.clientId),
+        });
+        return;
+      }
+
+      if (request.method === 'POST' && route === '/v1/enrich-element') {
+        const body = await readJsonBody<{
+          analysis_id?: string;
+          target?: string;
+          target_kind?: 'node' | 'service' | 'entity' | 'capability' | 'entry_point' | 'exit_point' | 'flow';
+          instructions?: string;
+        }>(request, maxBodyBytes);
+        if (!body.analysis_id || !body.target) {
+          writeJson(response, 400, { status: 'error', error: 'Hosted element enrichment requires analysis_id and target' });
+          return;
+        }
+        const analysisId = resolveStorageAnalysisId(body.analysis_id, accountSaltFor(authorization.clientId));
+        const workspace = workspacePath(dataDir, analysisId);
+        if (!(await fs.pathExists(workspace))) {
+          writeJson(response, 404, { status: 'error', error: `No uploaded analysis found for ${body.analysis_id}` });
+          return;
+        }
+        const result = await withAnalysisFocus('ui-overview', () => generateElementDescription({
+          projectPath: workspace,
+          target: body.target!,
+          targetKind: body.target_kind,
+          instructions: body.instructions,
+        }));
+        writeJson(response, 200, {
+          ...result,
+          analysis_id: clientVisibleAnalysisId(body.analysis_id, analysisId, authorization.clientId),
+        });
         return;
       }
 
@@ -552,27 +698,91 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
         const requestedAnalysisId = decodeURIComponent(revisionsMatch[1]);
         const analysisId = resolveStorageAnalysisId(requestedAnalysisId, accountSaltFor(authorization.clientId));
         const result = await readProjectRevisions(dataDir, analysisId);
-        writeJson(response, 200, result);
+        writeJson(response, 200, {
+          ...result,
+          analysis_id: clientVisibleAnalysisId(requestedAnalysisId, analysisId, authorization.clientId),
+        });
         return;
       }
 
       if (request.method === 'POST' && route === '/v1/sync') {
         const body = await readJsonBody<RemoteSyncRequest>(request, maxBodyBytes);
+        if (body.protocol_version !== REMOTE_ANALYSIS_PROTOCOL_VERSION) {
+          writeJson(response, 426, {
+            status: 'error', code: 'client_upgrade_required',
+            error: `This Klauro server requires analysis protocol ${REMOTE_ANALYSIS_PROTOCOL_VERSION}. Run klauro update and restart the MCP client.`,
+            required_protocol_version: REMOTE_ANALYSIS_PROTOCOL_VERSION,
+          });
+          return;
+        }
+        if (body.async === true) {
+          const prepared = await prepareSync(dataDir, body, accountSaltFor(authorization.clientId));
+          const attemptRecordPath = projectAttemptRecordPath(prepared.workspace);
+          const queuedAt = new Date().toISOString();
+          await writeAttemptRecord(attemptRecordPath, {
+            state: 'in-progress',
+            trigger: 'sync',
+            queued_at: queuedAt,
+            started_at: queuedAt,
+          });
+          writeJson(response, 202, {
+            status: 'accepted',
+            protocol_version: REMOTE_ANALYSIS_PROTOCOL_VERSION,
+            analysis_id: clientVisibleAnalysisId(body.analysis_id, prepared.analysisId, authorization.clientId),
+            base_commit: body.changes.base_commit,
+            manifest: prepared.manifest,
+          });
+          setImmediate(async () => {
+            const startedAt = new Date().toISOString();
+            await writeAttemptRecord(attemptRecordPath, {
+              state: 'in-progress',
+              trigger: 'sync',
+              queued_at: queuedAt,
+              started_at: startedAt,
+            });
+            try {
+              const result = await completeSync(prepared, body);
+              await recordCompletedSync(dataDir, accounts, body, result);
+              const finishedAt = new Date().toISOString();
+              await writeAttemptRecord(attemptRecordPath, {
+                state: 'succeeded',
+                trigger: 'sync',
+                queued_at: queuedAt,
+                started_at: startedAt,
+                finished_at: finishedAt,
+                duration_ms: Math.max(0, Date.parse(finishedAt) - Date.parse(startedAt)),
+              });
+              void notifyProjectAnalysisLandedForAnalysisId(result.analysis_id);
+            } catch (error) {
+              const detail = error instanceof Error ? error.message : String(error);
+              console.error(`[Klauro] async sync failed for ${prepared.analysisId}: ${detail}`);
+              const finishedAt = new Date().toISOString();
+              await markBackgroundAnalysisFailed(prepared.workspace, detail);
+              await writeAttemptRecord(attemptRecordPath, {
+                state: 'failed',
+                trigger: 'sync',
+                queued_at: queuedAt,
+                started_at: startedAt,
+                finished_at: finishedAt,
+                duration_ms: Math.max(0, Date.parse(finishedAt) - Date.parse(startedAt)),
+                reason: detail.slice(0, 500),
+              });
+              await appendAuditLog(dataDir, {
+                event: 'sync_async_failed',
+                analysis_id: prepared.analysisId,
+                project_id: body.project_id,
+                error: detail.slice(0, 500),
+              }).catch(() => {});
+            }
+          });
+          return;
+        }
         const result = await handleSync(dataDir, body, accountSaltFor(authorization.clientId));
-        await appendAuditLog(dataDir, {
-          event: 'sync',
-          analysis_id: result.analysis_id,
-          project_id: body.project_id,
-          organization_id: body.organization_id,
-          files: result.manifest.file_count,
-          bytes: result.manifest.total_bytes,
-          changed_files: result.change_report
-            ? result.change_report.summary.filesAdded + result.change_report.summary.filesModified + result.change_report.summary.filesDeleted
-            : undefined,
-          nodes: result.cas.nodes.length,
-          edges: result.cas.edges.length,
+        await recordCompletedSync(dataDir, accounts, body, result);
+        writeJson(response, 200, {
+          ...result,
+          analysis_id: clientVisibleAnalysisId(body.analysis_id, result.analysis_id, authorization.clientId),
         });
-        writeJson(response, 200, result);
         // WAS AUTO-REBUILD REGRESSION FIX: /v1/analyze and /api/projects/:id/
         // reanalyze both call notifyProjectAnalysisLandedForAnalysisId after a
         // member CAS lands, but this route never did — so a workspace whose
@@ -588,9 +798,6 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
         // it on the linked project record (if any) so a later server-side
         // reanalyze with no client .git in reach has a last-known value to
         // fall back on (see stampRepoFactsFromLastKnownOrMarkAbsent).
-        if (body.project_id && /^prj_/.test(body.project_id)) {
-          void accounts.setProjectRepoFacts(body.project_id, result.manifest.repo_facts).catch(() => {});
-        }
         return;
       }
 
@@ -1645,6 +1852,36 @@ function accountSaltFor(clientId: string | undefined): string | undefined {
   return clientId && clientId.startsWith('user:') ? clientId : undefined;
 }
 
+/** Keep tenant-salted storage keys private while preserving a stable client
+ * handle. Authenticated callers address the same raw handle on every request;
+ * the server deterministically maps it into that caller's isolated keyspace. */
+function clientVisibleAnalysisId(requestedId: string, storageId: string, clientId: string | undefined): string {
+  return clientId?.startsWith('user:') && storageId.startsWith('acct_')
+    ? requestedId
+    : storageId;
+}
+
+async function resolveAuthorizedAnalysisReadId(
+  accounts: AccountStore,
+  clientId: string | undefined,
+  requestedId: string,
+): Promise<string | null> {
+  if (!clientId?.startsWith('user:')) {
+    return resolveStorageAnalysisId(requestedId, accountSaltFor(clientId));
+  }
+  if (requestedId.startsWith('acct_')) return null;
+  if (requestedId.startsWith('prj_')) {
+    const userId = clientId.slice('user:'.length);
+    try {
+      const project = await accounts.getProjectForUser(userId, requestedId);
+      if (!project) return null;
+    } catch {
+      return null;
+    }
+  }
+  return resolveStorageAnalysisId(requestedId, clientId);
+}
+
 /** Shared rejection-reason classification so /v1/coordination/* and /api/* report the same cause for the same failure. */
 export type AuthRejectReason = 'no_token' | 'not_recognized';
 
@@ -1806,7 +2043,12 @@ async function handleAccountApi(
   sharedToken = false,
   dataDir?: string,
   workspaceAnalyses?: AccountWorkspaceAnalysisScheduler,
-): Promise<{ statusCode: number; body: unknown; serializedBody?: string }> {
+): Promise<{
+  statusCode: number;
+  body: unknown;
+  serializedBody?: string;
+  stream?: { filePath: string; headers: Record<string, string | number> };
+}> {
   if (request.method === 'GET' && route === '/api/me') {
     if (sharedToken) {
       return {
@@ -1927,9 +2169,25 @@ async function handleAccountApi(
         };
       }
       if (!body.name) throw new AccountHttpError(400, 'name is required to create a new project');
+      if (body.analysis_id?.startsWith('acct_') || body.analysis_id?.startsWith('prj_')) {
+        throw new AccountHttpError(400, 'analysis_id must be the client analysis handle returned for this repository, not an internal storage or project id');
+      }
+      const storedBody = body.analysis_id
+        ? { ...body, analysis_id: resolveStorageAnalysisId(body.analysis_id, `user:${userId}`) }
+        : body;
+      const project = await accounts.createProject(
+        userId,
+        workspaceId,
+        storedBody as { name: string; repo_url?: string; local_path?: string; analysis_id?: string },
+      );
+      // Membership is itself a workspace-analysis input change. When an
+      // already-analyzed repository is attached, an unchanged follow-up push
+      // may be legitimately reused and emit no new analysis landing event, so
+      // creation must schedule the WAS rebuild directly.
+      if (project.analysis_id) scheduleWorkspaceReanalyze(workspaceAnalyses, dataDir, workspaceId);
       return {
         statusCode: 201,
-        body: { project: await accounts.createProject(userId, workspaceId, body as { name: string; repo_url?: string; local_path?: string; analysis_id?: string }) },
+        body: { project },
       };
     }
     // No DELETE /api/workspaces/{id}/projects/{projectId} (detach) here by
@@ -2064,6 +2322,89 @@ async function handleAccountApi(
     return { statusCode: 200, body: { project } };
   }
 
+  const projectQueryMatch = route.match(/^\/api\/projects\/([^/]+)\/query$/);
+  if (projectQueryMatch && request.method === 'POST') {
+    if (sharedToken) throw new AccountHttpError(403, 'A signed-in Klauro account is required for project intelligence queries');
+    if (!dataDir) throw new AccountHttpError(500, 'Analysis storage unavailable');
+    const project = await accounts.getProjectForUser(userId, decodeURIComponent(projectQueryMatch[1]));
+    if (!project) throw new AccountHttpError(404, 'Project not found');
+    if (!project.analysis_id) throw new AccountHttpError(409, 'Project has no completed analysis');
+    const body = await readJsonBody<{ tool?: string; args?: unknown }>(request, maxBodyBytes);
+    if (!body.tool || !HOSTED_PROJECT_QUERY_TOOL_NAMES.includes(body.tool as any)) {
+      throw new AccountHttpError(400, `Unsupported hosted query tool '${body.tool || ''}'`);
+    }
+    try {
+      const workspace = workspacePath(dataDir, project.analysis_id);
+      const cas = await getAnalysis(workspace);
+      const result = await executeHostedProjectQuery({
+        cas,
+        tool: body.tool,
+        args: body.args,
+        projectPath: workspace,
+      });
+      return {
+        statusCode: 200,
+        body: {
+          status: 'ready',
+          project_id: project.id,
+          analysis_id: project.analysis_id,
+          analysis_timestamp: cas.analysis_timestamp,
+          tool: body.tool,
+          result,
+        },
+      };
+    } catch (error) {
+      if (error instanceof z.ZodError) throw new AccountHttpError(400, error.message);
+      throw error;
+    }
+  }
+
+  const projectAnalysisStatusMatch = route.match(/^\/api\/projects\/([^/]+)\/analysis-status$/);
+  if (projectAnalysisStatusMatch && request.method === 'GET') {
+    if (!dataDir) throw new AccountHttpError(500, 'Analysis storage unavailable');
+    const project = await accounts.getProjectForUser(userId, decodeURIComponent(projectAnalysisStatusMatch[1]));
+    if (!project) throw new AccountHttpError(404, 'Project not found');
+    if (!project.analysis_id) {
+      return { statusCode: 200, body: { status: 'no_analysis', project_id: project.id } };
+    }
+    const analysisWorkspace = workspacePath(dataDir, project.analysis_id);
+    const entry = await getAnalysisEntry(analysisWorkspace);
+    const lastAttempt = await readAttemptRecord(projectAttemptRecordPath(analysisWorkspace));
+    if (!entry) {
+      return {
+        statusCode: 200,
+        body: {
+          status: lastAttempt?.state === 'in-progress' ? 'populating' : 'no_analysis',
+          project_id: project.id,
+          analysis_id: project.analysis_id,
+          ...(lastAttempt ? { last_attempt: lastAttempt } : {}),
+        },
+      };
+    }
+    const layers = entry.layers_ready?.layers || [];
+    const structuralErrors = layers.filter(layer => layer.layer !== 'L5' && layer.status === 'error');
+    const pending = layers.some(layer => layer.status === 'pending');
+    const status = structuralErrors.length > 0 ? 'failed' : pending ? 'populating' : 'ready';
+    return {
+      statusCode: 200,
+      body: {
+        status,
+        project_id: project.id,
+        analysis_id: project.analysis_id,
+        ...(lastAttempt ? { last_attempt: lastAttempt } : {}),
+        ...(structuralErrors.length > 0 ? { failed_layers: structuralErrors.map(layer => layer.layer) } : {}),
+        summary: {
+          name: entry.name,
+          analysis_timestamp: entry.analyzed_at,
+          node_count: entry.node_count,
+          edge_count: entry.edge_count,
+          cas_version: entry.cas_version,
+          layers_ready: entry.layers_ready,
+        },
+      },
+    };
+  }
+
   const projectAnalysisMatch = route.match(/^\/api\/projects\/([^/]+)\/analysis$/);
   if (projectAnalysisMatch && request.method === 'GET') {
     if (!dataDir) throw new AccountHttpError(500, 'Analysis storage unavailable');
@@ -2162,14 +2503,80 @@ async function handleAccountApi(
     }
   }
 
-  // Full-CAS download for the MCP hosted-analysis mirror (hosted-analysis.ts):
-  // a project-bound repo's MCP server pulls the ENTIRE stored CAS once per
-  // hosted re-analysis and mirrors it into its local store, so every read tool
-  // serves the hosted source of truth at local speed. Callers check the cheap
-  // GET /api/projects/{id}/analysis state first and only hit this route when
-  // the mirror timestamp is older than the hosted analysis_timestamp — so no
-  // response cache here (the payload can be whale-sized and each version is
-  // downloaded at most once per client).
+  const projectCasManifestMatch = route.match(/^\/api\/projects\/([^/]+)\/cas\/manifest$/);
+  if (projectCasManifestMatch && request.method === 'GET') {
+    if (!dataDir) throw new AccountHttpError(500, 'Analysis storage unavailable');
+    const project = await accounts.getProjectForUser(userId, decodeURIComponent(projectCasManifestMatch[1]));
+    if (!project) throw new AccountHttpError(404, 'Project not found');
+    if (!project.analysis_id) return { statusCode: 200, body: { status: 'no_analysis', project_id: project.id } };
+    const workspace = workspacePath(dataDir, project.analysis_id);
+    const manifest = await loadAnalysisSectionManifest(workspace);
+    if (!manifest) return { statusCode: 200, body: { status: 'no_analysis', project_id: project.id } };
+    return {
+      statusCode: 200,
+      body: { status: 'ready', project_id: project.id, analysis_id: project.analysis_id, manifest },
+    };
+  }
+
+  const projectCasSectionsMatch = route.match(/^\/api\/projects\/([^/]+)\/cas\/sections$/);
+  if (projectCasSectionsMatch && request.method === 'GET') {
+    if (!dataDir) throw new AccountHttpError(500, 'Analysis storage unavailable');
+    const project = await accounts.getProjectForUser(userId, decodeURIComponent(projectCasSectionsMatch[1]));
+    if (!project) throw new AccountHttpError(404, 'Project not found');
+    if (!project.analysis_id) return { statusCode: 200, body: { status: 'no_analysis', project_id: project.id } };
+    const url = new URL(request.url || '', 'http://localhost');
+    let sections;
+    try {
+      sections = parseCasSectionNames(url.searchParams.get('sections'));
+    } catch (error) {
+      throw new AccountHttpError(400, error instanceof Error ? error.message : String(error));
+    }
+    if (sections.length === 0) throw new AccountHttpError(400, 'At least one CAS section is required');
+    const workspace = workspacePath(dataDir, project.analysis_id);
+    const cas = await loadAnalysisSections(workspace, sections);
+    if (!cas) return { statusCode: 200, body: { status: 'no_analysis', project_id: project.id } };
+    return {
+      statusCode: 200,
+      body: {
+        status: 'ready',
+        project_id: project.id,
+        analysis_id: project.analysis_id,
+        analysis_timestamp: cas.analysis_timestamp || null,
+        sections,
+        cas,
+      },
+    };
+  }
+
+  const projectCasExportMatch = route.match(/^\/api\/projects\/([^/]+)\/cas\/export$/);
+  if (projectCasExportMatch && request.method === 'GET') {
+    if (!dataDir) throw new AccountHttpError(500, 'Analysis storage unavailable');
+    const project = await accounts.getProjectForUser(userId, decodeURIComponent(projectCasExportMatch[1]));
+    if (!project) throw new AccountHttpError(404, 'Project not found');
+    if (!project.analysis_id) return { statusCode: 200, body: { status: 'no_analysis', project_id: project.id } };
+    const artifact = await resolveAnalysisExportArtifact(workspacePath(dataDir, project.analysis_id));
+    if (!artifact) return { statusCode: 200, body: { status: 'no_analysis', project_id: project.id } };
+    const extension = artifact.codec === 'brotli' ? 'json.br' : artifact.codec === 'zstd' ? 'json.zst' : 'json';
+    return {
+      statusCode: 200,
+      body: null,
+      stream: {
+        filePath: artifact.filePath,
+        headers: {
+          'content-type': artifact.codec === 'zstd' ? 'application/zstd' : 'application/json',
+          'content-length': artifact.bytes,
+          'content-disposition': `attachment; filename="${project.id}.${extension}"`,
+          'x-klauro-cas-codec': artifact.codec,
+          'x-klauro-analysis-id': project.analysis_id,
+          ...(artifact.codec === 'brotli' ? { 'content-encoding': 'br' } : {}),
+        },
+      },
+    };
+  }
+
+  // DAS-scoped CAS remains a query response. Unscoped full-CAS access is an
+  // explicit compressed stream at /cas/export; normal MCP clients hydrate
+  // named sections and never mirror the entire customer graph.
   //
   // DAS-scoped variant (?das_unit_id=<id>): the web UI's deployable page was
   // approximating deployable-analysis.ts's phase-2 scoping (getCachedDeploy-
@@ -2249,27 +2656,16 @@ async function handleAccountApi(
       return { statusCode: 200, body, serializedBody };
     }
 
-    try {
-      const cas = await getAnalysis(workspace);
-      const body = {
-        status: 'ready',
-        project_id: project.id,
-        analysis_id: project.analysis_id,
-        analysis_timestamp: cas.analysis_timestamp || null,
-        cas,
-      };
-      return { statusCode: 200, body, serializedBody: JSON.stringify(body) };
-    } catch (error) {
-      return {
-        statusCode: 200,
-        body: {
-          status: 'no_analysis',
-          project_id: project.id,
-          analysis_id: project.analysis_id,
-          error: error instanceof Error ? error.message : String(error),
-        },
-      };
-    }
+    return {
+      statusCode: 410,
+      body: {
+        status: 'gone',
+        error: 'Full CAS JSON responses are disabled. Request named sections or use the compressed export stream.',
+        manifest_url: `/api/projects/${encodeURIComponent(project.id)}/cas/manifest`,
+        sections_url: `/api/projects/${encodeURIComponent(project.id)}/cas/sections`,
+        export_url: `/api/projects/${encodeURIComponent(project.id)}/cas/export`,
+      },
+    };
   }
 
   // DAS index: units + counts + orphan accounting WITHOUT the multi-MB `cas`
@@ -2684,35 +3080,15 @@ async function handleAccountApi(
     const workspace = workspacePath(dataDir, analysisId);
     let sourceRoot = workspace;
     if (!(await fs.pathExists(workspace))) {
-      // SECURITY: `project.local_path` is client-supplied, tenant-scoped
-      // metadata (see AccountStore.createProject) — it is NEVER verified to
-      // be a path this account is actually entitled to have this server
-      // read. On a shared host (the deployed shape today: one analyzer
-      // process, many tenants), reading it here is an arbitrary local-file
-      // read/re-analyze primitive: any account whose project record ends up
-      // with a `local_path` pointing at another tenant's (or the operator's)
-      // real repo — via a client bug, an ambient-cwd mistake in `klauro
-      // init`, or a malicious API call — causes THIS account's reanalyze to
-      // walk and return that path's real source under its own session. This
-      // is exactly the cross-tenant bleed reported in the 2026-07-06
-      // cold-customer audit. Disabled by default; only for a genuinely
-      // colocated dev/ops box where every project's local_path is trusted
-      // operator-controlled state, opt in with
-      // KLAURO_ALLOW_LOCAL_PATH_REANALYZE_FALLBACK=1.
-      const fallbackAllowed = process.env.KLAURO_ALLOW_LOCAL_PATH_REANALYZE_FALLBACK === '1';
-      if (fallbackAllowed && project.local_path && (await fs.pathExists(project.local_path))) {
-        sourceRoot = project.local_path;
-      } else {
-        return {
-          statusCode: 409,
-          body: {
-            status: 'no_snapshot',
-            project_id: project.id,
-            analysis_id: analysisId,
-            error: 'No uploaded snapshot found for this project on the server. Run `klauro analyze` in the repo (or `klauro init`) to push an analysis before reanalyzing.',
-          },
-        };
-      }
+      return {
+        statusCode: 409,
+        body: {
+          status: 'no_snapshot',
+          project_id: project.id,
+          analysis_id: analysisId,
+          error: 'No uploaded snapshot found for this project on the server. Run `klauro analyze` in the repo (or `klauro init`) to push an analysis before reanalyzing.',
+        },
+      };
     }
     const displayName = resolveDisplayName(undefined, project.name);
     const dataDirForBackground = dataDir;
@@ -3049,6 +3425,11 @@ function withinRateLimit(buckets: Map<string, RateLimitBucket>, key: string, lim
   return bucket.count <= limit;
 }
 
+export function requestConsumesMutationRateLimit(method: string | undefined): boolean {
+  const normalized = String(method || 'GET').toUpperCase();
+  return normalized !== 'GET' && normalized !== 'HEAD' && normalized !== 'OPTIONS';
+}
+
 /** One persisted in-flight snapshot record (§WS-B), stored append-only per workspace. */
 interface InFlightSnapshotRecord {
   workspace: string;
@@ -3105,71 +3486,6 @@ async function runIncrementalAnalysisIsolated(
   const summary = await runAnalysis(workspace, { displayName });
   const output = await getAnalysis(workspace);
   return { output, changeReport: summary.changeReport, wasFullRebuild: summary.wasFullRebuild };
-}
-
-async function handleAnalyze(dataDir: string, request: RemoteAnalyzeRequest, deferAiEnrichment = false, accountSalt?: string): Promise<RemoteAnalyzeResponse> {
-  if (!request.snapshot?.files?.length) throw new Error('Remote analyze requires a source snapshot with files');
-  const rawAnalysisId = request.project_id || makeAnalysisId(request.project_path || request.snapshot.project_name);
-  const analysisId = resolveStorageAnalysisId(rawAnalysisId, accountSalt);
-  const workspace = workspacePath(dataDir, analysisId);
-  const displayName = resolveDisplayName(request.snapshot.project_name, request.project_path);
-
-  await fs.remove(workspace);
-  await fs.ensureDir(workspace);
-  await writeSnapshot(workspace, request.snapshot.files);
-
-  if (deferAiEnrichment) {
-    // Progressive path: return the deterministic CAS now; the AI enrichment
-    // runs in the background and upgrades the stored analysis for later fetches.
-    const deferred = await analyzeProjectDeferred(workspace, displayName);
-    await stampRepoFacts(workspace, deferred.output, request.snapshot.manifest);
-    return {
-      status: 'success',
-      analysis_id: analysisId,
-      analysis_revision: Date.now(),
-      analysis_type: 'full',
-      base_commit: request.snapshot.base_commit,
-      manifest: request.snapshot.manifest,
-      cas: deferred.output,
-    };
-  }
-
-  let result: Awaited<ReturnType<typeof runIncrementalAnalysisIsolated>>;
-  try {
-    result = await runIncrementalAnalysisIsolated(workspace, displayName);
-  } catch (error) {
-    // Comprehension is AI-only and THROWS when a hosted AI provider is not
-    // available (docs/cas/DETERMINISM-BOUNDARY.md). The remote analyze edge is
-    // structure-first: rather than fail the whole request (and rather than emit a
-    // deterministic comprehension substitute — which does not exist), ship the
-    // deterministic Camp-B CAS now with comprehension left pending/unset. In the
-    // hosted product a provider is always configured, so this path is not taken.
-    const message = error instanceof Error ? error.message : String(error);
-    if (!/comprehension/i.test(message)) throw error;
-    console.error(`[Klauro] remote analyze: comprehension unavailable, returning structure-only CAS (${message})`);
-    const deferred = await analyzeProjectDeferred(workspace, displayName);
-    await stampRepoFacts(workspace, deferred.output, request.snapshot.manifest);
-    return {
-      status: 'success',
-      analysis_id: analysisId,
-      analysis_revision: Date.now(),
-      analysis_type: 'full',
-      base_commit: request.snapshot.base_commit,
-      manifest: request.snapshot.manifest,
-      cas: deferred.output,
-    };
-  }
-  await stampRepoFacts(workspace, result.output, request.snapshot.manifest);
-  return {
-    status: 'success',
-    analysis_id: analysisId,
-    analysis_revision: Date.now(),
-    analysis_type: result.wasFullRebuild ? 'full' : 'incremental',
-    base_commit: request.snapshot.base_commit,
-    manifest: request.snapshot.manifest,
-    cas: result.output,
-    change_report: result.changeReport,
-  };
 }
 
 async function handleAnalyzeDiff(dataDir: string, request: RemoteAnalyzeDiffRequest, accountSalt?: string): Promise<RemoteAnalyzeResponse> {
@@ -3233,6 +3549,30 @@ function buildDiffManifest(workspace: string, diff: BranchDiffContext): SourceMa
   };
 }
 
+function committedSnapshotIdentity(manifest: SourceManifest, baseCommit?: string): string | null {
+  if (!baseCommit) return null;
+  return [
+    baseCommit,
+    manifest.branch || '',
+    manifest.snapshot_digest || '',
+    manifest.file_count,
+    manifest.total_bytes,
+  ].join(':');
+}
+
+export function revisionMatchesSnapshot(
+  revision: RemoteProjectRevision,
+  manifest: SourceManifest,
+  baseCommit?: string,
+): boolean {
+  if (!baseCommit || revision.commit !== baseCommit) return false;
+  if (revision.branch && manifest.branch && revision.branch !== manifest.branch) return false;
+  if (revision.snapshot_digest && manifest.snapshot_digest) {
+    return revision.snapshot_digest === manifest.snapshot_digest;
+  }
+  return revision.files === manifest.file_count && revision.bytes === manifest.total_bytes;
+}
+
 async function appendProjectRevision(dataDir: string, result: RemoteAnalyzeResponse, source: RemoteProjectRevision['source']): Promise<void> {
   const revision: RemoteProjectRevision = {
     analysis_id: result.analysis_id,
@@ -3243,6 +3583,7 @@ async function appendProjectRevision(dataDir: string, result: RemoteAnalyzeRespo
     generated_at: new Date().toISOString(),
     files: result.manifest.file_count,
     bytes: result.manifest.total_bytes,
+    snapshot_digest: result.manifest.snapshot_digest,
     nodes: result.cas.nodes.length,
     edges: result.cas.edges.length,
   };
@@ -3418,7 +3759,14 @@ async function collectWorkspaceActivityEvents(
   return events;
 }
 
-async function handleSync(dataDir: string, request: RemoteSyncRequest, accountSalt?: string): Promise<RemoteAnalyzeResponse> {
+interface PreparedSync {
+  analysisId: string;
+  workspace: string;
+  displayName?: string;
+  manifest: SourceManifest;
+}
+
+async function prepareSync(dataDir: string, request: RemoteSyncRequest, accountSalt?: string): Promise<PreparedSync> {
   if (!request.analysis_id) throw new Error('Remote sync requires analysis_id');
   // Same resolveStorageAnalysisId salting as /v1/analyze: the client resends
   // the same bare-hash id it computed for the original analyze call, so
@@ -3434,8 +3782,13 @@ async function handleSync(dataDir: string, request: RemoteSyncRequest, accountSa
 
   await applyChanges(workspace, request.changes.changed_files || []);
   const displayName = resolveDisplayName(request.changes.project_name, request.project_path);
-  const result = await runIncrementalAnalysisIsolated(workspace, displayName);
   const manifest = request.changes.manifest || buildChangeManifest(workspace, request.changes.changed_files || []);
+  return { analysisId, workspace, displayName, manifest };
+}
+
+async function completeSync(prepared: PreparedSync, request: RemoteSyncRequest): Promise<RemoteAnalyzeResponse> {
+  const result = await runIncrementalAnalysisIsolated(prepared.workspace, prepared.displayName);
+  const { analysisId, workspace, manifest } = prepared;
   await stampRepoFacts(workspace, result.output, manifest);
   return {
     status: 'success',
@@ -3447,6 +3800,34 @@ async function handleSync(dataDir: string, request: RemoteSyncRequest, accountSa
     cas: result.output,
     change_report: result.changeReport,
   };
+}
+
+async function handleSync(dataDir: string, request: RemoteSyncRequest, accountSalt?: string): Promise<RemoteAnalyzeResponse> {
+  return completeSync(await prepareSync(dataDir, request, accountSalt), request);
+}
+
+async function recordCompletedSync(
+  dataDir: string,
+  accounts: AccountStore,
+  request: RemoteSyncRequest,
+  result: RemoteAnalyzeResponse,
+): Promise<void> {
+  await appendAuditLog(dataDir, {
+    event: 'sync',
+    analysis_id: result.analysis_id,
+    project_id: request.project_id,
+    organization_id: request.organization_id,
+    files: result.manifest.file_count,
+    bytes: result.manifest.total_bytes,
+    changed_files: result.change_report
+      ? result.change_report.summary.filesAdded + result.change_report.summary.filesModified + result.change_report.summary.filesDeleted
+      : undefined,
+    nodes: result.cas.nodes.length,
+    edges: result.cas.edges.length,
+  });
+  if (request.project_id && /^prj_/.test(request.project_id)) {
+    await accounts.setProjectRepoFacts(request.project_id, result.manifest.repo_facts).catch(() => {});
+  }
 }
 
 /**
@@ -3661,16 +4042,31 @@ async function serveLatestManifest(request: http.IncomingMessage, response: http
     manifest = {};
   }
   const base = publicBaseUrl(request);
+  const { minNode, maxNode } = resolveHostedReleaseNodeRange(manifest);
   const body = {
     version: (manifest.version as string) || null,
     tarball: `${base}/dist/klauro-latest.tgz`,
     tarball_path: '/dist/klauro-latest.tgz',
-    min_node: (manifest.min_node as number) || 18,
+    min_node: minNode,
+    max_node: maxNode,
+    supported_node_range: `${minNode}-${maxNode}`,
     published_at: (manifest.published_at as string) || null,
     update_command: 'klauro update',
   };
   response.writeHead(200, corsHeaders({ 'content-type': 'application/json', 'cache-control': 'no-cache' }));
   response.end(JSON.stringify(body));
+}
+
+export function resolveHostedReleaseNodeRange(manifest: Record<string, unknown>): { minNode: number; maxNode: number } {
+  const manifestMin = Number(manifest.min_node);
+  const manifestMax = Number(manifest.max_node);
+  const minNode = Number.isInteger(manifestMin) && manifestMin > 0 ? manifestMin : 18;
+  const maxNode = manifest.max_node === undefined
+    ? 24
+    : Number.isInteger(manifestMax) && manifestMax >= minNode && manifestMax <= 99
+      ? manifestMax
+      : null;
+  return maxNode === null ? { minNode: 18, maxNode: 24 } : { minNode, maxNode };
 }
 
 function bearerToken(request: http.IncomingMessage): string | undefined {
@@ -3728,7 +4124,7 @@ type ReanalyzeAttemptState = 'in-progress' | 'succeeded' | 'failed';
 
 interface ReanalyzeAttemptRecord {
   state: ReanalyzeAttemptState;
-  trigger: 'reanalyze';
+  trigger: 'reanalyze' | 'sync';
   /** When the request was accepted (202'd), before the background work has
    *  necessarily started executing — see `started_at` below. */
   queued_at?: string;
@@ -3841,7 +4237,7 @@ function scheduleWorkspaceReanalyze(
       queue_position: workspaceQueuePosition,
       started_at: workspaceAttemptStartedAt,
     });
-    await workspaceAnalyses.rebuild(workspaceId).then(
+    await workspaceAnalyses.rebuild(workspaceId, { force: true }).then(
       async () => {
         const workspaceAttemptFinishedAt = new Date().toISOString();
         await writeAttemptRecord(workspaceAttemptPath, {

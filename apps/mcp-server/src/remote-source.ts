@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
@@ -58,6 +58,30 @@ export interface WorkingTreeChangeContext {
   manifest: SourceManifest;
 }
 
+export interface StreamingSourceFile {
+  path: string;
+  hash: string;
+  bytes: number;
+  status?: 'added' | 'modified';
+  readContent: () => Promise<string>;
+}
+
+export interface StreamingSourceSnapshotPlan {
+  project_name: string;
+  base_commit?: string;
+  snapshot_source: 'committed-head' | 'working-tree';
+  files: StreamingSourceFile[];
+  manifest: SourceManifest;
+}
+
+export interface StreamingWorkingTreePlan {
+  project_name: string;
+  base_commit?: string;
+  readGitDiff?: () => Promise<string | undefined>;
+  changed_files: Array<StreamingSourceFile | RemoteDeletedFile>;
+  manifest: SourceManifest;
+}
+
 /**
  * Cheap, client-derived repo-level facts — contributor count and first/last
  * commit timestamps — read from git metadata (never file content). Additive
@@ -82,6 +106,9 @@ export interface SourceManifest {
   transfer_recommendation?: SourceTransferRecommendation;
   file_count: number;
   total_bytes: number;
+  /** Stable digest of the exact uploaded path/content set. Unlike generated_at
+   * and local root metadata, this changes only when analyzable source changes. */
+  snapshot_digest?: string;
   excluded_directories: string[];
   config_file?: string;
   ignore_file?: string;
@@ -244,6 +271,11 @@ const EXCLUDED_FILES = new Set([
   '.pypirc',
 ]);
 
+export function isDefaultSensitiveSourceFile(filePath: string): boolean {
+  const base = path.basename(filePath).toLowerCase();
+  return EXCLUDED_FILES.has(base) || /^\.env(?:\.|$)/.test(base);
+}
+
 // Extensions carried into the remote snapshot even though they aren't a registered
 // programming-language source extension or a named manifest in language-registry.ts.
 // Several framework analyzers read plain, non-manifest-named config files by glob
@@ -345,6 +377,8 @@ const IMPORTANT_EXTENSIONLESS = new Set([
   '.klaurorc.json',
 ]);
 
+const STREAMING_GIT_BATCH_FILES = 8;
+
 export async function buildSourceSnapshot(projectPath: string): Promise<SourceSnapshot> {
   const root = path.resolve(projectPath);
   const loaded = await loadKlauroConfig(root);
@@ -394,6 +428,90 @@ export async function buildSourceSnapshot(projectPath: string): Promise<SourceSn
     snapshot_source: 'working-tree',
     files: files.sort((left, right) => left.path.localeCompare(right.path)),
     manifest: buildManifest(root, loaded, files),
+  };
+}
+
+export async function buildStreamingSourceSnapshot(projectPath: string): Promise<StreamingSourceSnapshotPlan> {
+  const root = path.resolve(projectPath);
+  const loaded = await loadKlauroConfig(root);
+  const isGit = isGitRepository(root);
+  const head = readGitHead(root);
+  const dirty = isGit && head ? listGitChanges(root).length > 0 : false;
+  if (isGit && head && dirty) {
+    const committed = await buildStreamingHeadSnapshot(root, loaded, head);
+    if (committed.files.length > 0) return committed;
+  }
+
+  const files: StreamingSourceFile[] = [];
+  const diagnostics = newWalkDiagnostics();
+  await walkConfiguredSourceFiles(root, loaded, async absolutePath => {
+    const relativePath = normalizeRelativePath(path.relative(root, absolutePath));
+    const content = await fs.readFile(absolutePath, 'utf8');
+    files.push({
+      path: relativePath,
+      hash: hashContent(content),
+      bytes: Buffer.byteLength(content, 'utf8'),
+      readContent: () => fs.readFile(absolutePath, 'utf8'),
+    });
+  }, [], diagnostics);
+  files.sort((left, right) => left.path.localeCompare(right.path));
+  if (files.length === 0) {
+    throw buildEmptySnapshotDiagnostic(root, loaded, {
+      isGit,
+      hasHead: Boolean(head),
+      dirty,
+      fellBackFromEmptyHead: Boolean(isGit && head && dirty),
+      diagnostics,
+    });
+  }
+  return {
+    project_name: loaded.config.project.name || path.basename(root),
+    base_commit: head,
+    snapshot_source: 'working-tree',
+    files,
+    manifest: buildManifestFromStats(root, loaded, files),
+  };
+}
+
+async function buildStreamingHeadSnapshot(
+  root: string,
+  loaded: LoadedKlauroConfig,
+  head: string,
+): Promise<StreamingSourceSnapshotPlan> {
+  const trackedPaths = listGitTrackedPathsAtHead(root).map(normalizeRelativePath).filter(Boolean);
+  const objectSizes = readFileSizesAtRef(root, 'HEAD', trackedPaths);
+  const included: string[] = [];
+  for (const relativePath of trackedPaths) {
+    const size = objectSizes.get(relativePath);
+    if (size !== undefined && await shouldIncludeRelativePath(root, relativePath, loaded, size)) included.push(relativePath);
+  }
+
+  const files: StreamingSourceFile[] = [];
+  for (let offset = 0; offset < included.length; offset += STREAMING_GIT_BATCH_FILES) {
+    const batch = included.slice(offset, offset + STREAMING_GIT_BATCH_FILES);
+    const contents = readFilesAtRef(root, 'HEAD', batch);
+    for (const relativePath of batch) {
+      const content = contents.get(relativePath);
+      if (content === undefined) continue;
+      files.push({
+        path: relativePath,
+        hash: hashContent(content),
+        bytes: Buffer.byteLength(content, 'utf8'),
+        readContent: async () => {
+          const current = readFileAtRef(root, 'HEAD', relativePath);
+          if (current === null) throw new Error(`Unable to reread ${relativePath} from committed HEAD during upload`);
+          return current;
+        },
+      });
+    }
+  }
+  files.sort((left, right) => left.path.localeCompare(right.path));
+  return {
+    project_name: loaded.config.project.name || path.basename(root),
+    base_commit: head,
+    snapshot_source: 'committed-head',
+    files,
+    manifest: buildManifestFromStats(root, loaded, files),
   };
 }
 
@@ -504,15 +622,23 @@ export async function buildHeadSourceSnapshot(
   if (!head) {
     throw new Error('Cannot build a committed-HEAD snapshot: this repository has no HEAD commit.');
   }
+  const trackedPaths = listGitTrackedPathsAtHead(root)
+    .map(normalizeRelativePath)
+    .filter(Boolean);
+  const objectSizes = readFileSizesAtRef(root, 'HEAD', trackedPaths);
+  const includedPaths: string[] = [];
+  for (const normalized of trackedPaths) {
+    const byteSize = objectSizes.get(normalized);
+    if (byteSize === undefined) continue;
+    if (await shouldIncludeRelativePath(root, normalized, loaded, byteSize)) {
+      includedPaths.push(normalized);
+    }
+  }
+  const contents = readFilesAtRef(root, 'HEAD', includedPaths);
   const files: RemoteSourceFile[] = [];
-  for (const trackedPath of listGitTrackedPathsAtHead(root)) {
-    const normalized = normalizeRelativePath(trackedPath);
-    const content = readFileAtRef(root, 'HEAD', normalized);
+  for (const normalized of includedPaths) {
+    const content = contents.get(normalized);
     if (content == null) continue;
-    // Use the git-blob byte size for the max-file-bytes gate: the file may not
-    // exist (or may differ) in the working tree, so stat-ing disk would be wrong.
-    const byteSize = Buffer.byteLength(content, 'utf8');
-    if (!(await shouldIncludeRelativePath(root, normalized, loaded, byteSize))) continue;
     files.push({ path: normalized, content, hash: hashContent(content) });
   }
 
@@ -555,6 +681,42 @@ export async function buildWorkingTreeChangeContext(projectPath: string): Promis
     git_diff: loaded.config.upload.sendGitDiff ? readGitDiff(root) : undefined,
     changed_files: changedFiles.sort((left, right) => left.path.localeCompare(right.path)),
     manifest: buildManifest(root, loaded, changedFiles.filter((file): file is RemoteChangedFile => file.status !== 'deleted')),
+  };
+}
+
+export async function buildStreamingWorkingTreeChanges(projectPath: string): Promise<StreamingWorkingTreePlan> {
+  const root = path.resolve(projectPath);
+  const loaded = await loadKlauroConfig(root);
+  if (!loaded.config.upload.allowDirtyTreeSync) {
+    throw new Error('Dirty-tree sync is disabled by .klaurorc upload.allowDirtyTreeSync=false');
+  }
+  const changedFiles: Array<StreamingSourceFile | RemoteDeletedFile> = [];
+  for (const change of listGitChanges(root)) {
+    const normalized = normalizeRelativePath(change.path);
+    const absolutePath = safeJoin(root, normalized);
+    if (!absolutePath || !await shouldIncludeRelativePath(root, normalized, loaded)) continue;
+    if (change.status === 'deleted') {
+      if (loaded.config.upload.sendDeletedPaths) changedFiles.push({ path: normalized, status: 'deleted' });
+      continue;
+    }
+    if (loaded.config.policy.blockUntrackedFiles && change.status === 'added') continue;
+    const content = await fs.readFile(absolutePath, 'utf8');
+    changedFiles.push({
+      path: normalized,
+      status: change.status,
+      hash: hashContent(content),
+      bytes: Buffer.byteLength(content, 'utf8'),
+      readContent: () => fs.readFile(absolutePath, 'utf8'),
+    });
+  }
+  changedFiles.sort((left, right) => left.path.localeCompare(right.path));
+  const sourceFiles = changedFiles.filter((file): file is StreamingSourceFile => file.status !== 'deleted');
+  return {
+    project_name: loaded.config.project.name || path.basename(root),
+    base_commit: readGitHead(root),
+    readGitDiff: loaded.config.upload.sendGitDiff ? async () => readGitDiff(root) : undefined,
+    changed_files: changedFiles,
+    manifest: buildManifestFromStats(root, loaded, sourceFiles),
   };
 }
 
@@ -863,7 +1025,7 @@ async function shouldIncludeRelativePathVerbose(
     }
   }
   const base = parts[parts.length - 1];
-  if (EXCLUDED_FILES.has(base)) return { included: false, reason: `default file exclusion: ${base}` };
+  if (isDefaultSensitiveSourceFile(base)) return { included: false, reason: `default file exclusion: ${base}` };
   if (/^\.env\./.test(base)) return { included: false, reason: 'default file exclusion: .env.*' };
   if (/\.lockb$/.test(base)) return { included: false, reason: 'default file exclusion: *.lockb' };
 
@@ -1023,6 +1185,57 @@ function readFileAtRef(root: string, ref: string, relativePath: string): string 
   }
 }
 
+function readFileSizesAtRef(root: string, ref: string, relativePaths: string[]): Map<string, number> {
+  const sizes = new Map<string, number>();
+  if (relativePaths.length === 0) return sizes;
+  const input = relativePaths.map(relativePath => `${ref}:./${relativePath}`).join('\n') + '\n';
+  const result = spawnSync('git', ['cat-file', '--batch-check=%(objecttype) %(objectsize)'], {
+    cwd: root,
+    input,
+    encoding: 'utf8',
+    maxBuffer: 1024 * 1024 * 64,
+    stdio: ['pipe', 'pipe', 'ignore'],
+  });
+  if (result.status !== 0 || typeof result.stdout !== 'string') return sizes;
+  const lines = result.stdout.trimEnd().split('\n');
+  for (let index = 0; index < relativePaths.length; index += 1) {
+    const match = /^(\S+)\s+(\d+)$/.exec(lines[index] || '');
+    if (match?.[1] === 'blob') sizes.set(relativePaths[index], Number(match[2]));
+  }
+  return sizes;
+}
+
+function readFilesAtRef(root: string, ref: string, relativePaths: string[]): Map<string, string> {
+  const contents = new Map<string, string>();
+  if (relativePaths.length === 0) return contents;
+  const input = relativePaths.map(relativePath => `${ref}:./${relativePath}`).join('\n') + '\n';
+  const result = spawnSync('git', ['cat-file', '--batch'], {
+    cwd: root,
+    input,
+    encoding: null,
+    maxBuffer: 1024 * 1024 * 512,
+    stdio: ['pipe', 'pipe', 'ignore'],
+  });
+  if (result.status !== 0 || !Buffer.isBuffer(result.stdout)) return contents;
+
+  const output = result.stdout;
+  let offset = 0;
+  for (const relativePath of relativePaths) {
+    const headerEnd = output.indexOf(0x0a, offset);
+    if (headerEnd < 0) break;
+    const header = output.subarray(offset, headerEnd).toString('utf8');
+    offset = headerEnd + 1;
+    const match = /^[0-9a-f]+\s+blob\s+(\d+)$/.exec(header);
+    if (!match) continue;
+    const byteSize = Number(match[1]);
+    const end = offset + byteSize;
+    if (!Number.isSafeInteger(byteSize) || end > output.length) break;
+    contents.set(relativePath, output.subarray(offset, end).toString('utf8'));
+    offset = end + (output[end] === 0x0a ? 1 : 0);
+  }
+  return contents;
+}
+
 /** Detect the repo's default branch (main/master), preferring an explicitly
  *  configured origin/HEAD, then a local main, then master. */
 function detectDefaultBranch(root: string): string | undefined {
@@ -1111,7 +1324,23 @@ function readGitDiff(root: string): string | undefined {
   }
 }
 
-function buildManifest(root: string, loaded: LoadedKlauroConfig, files: Array<{ content: string }>): SourceManifest {
+export function sourceSnapshotDigest(files: Array<{ path?: string; content: string; hash?: string }>): string {
+  const digest = crypto.createHash('sha256');
+  const ordered = [...files].sort((left, right) => (left.path || '').localeCompare(right.path || ''));
+  for (const file of ordered) {
+    digest.update(file.path || '');
+    digest.update('\0');
+    digest.update(file.hash || hashContent(file.content));
+    digest.update('\0');
+  }
+  return digest.digest('hex');
+}
+
+function buildManifest(
+  root: string,
+  loaded: LoadedKlauroConfig,
+  files: Array<{ path?: string; content: string; hash?: string }>,
+): SourceManifest {
   const gitRemote = readGitRemote(root);
   const remoteProvider = detectRemoteProvider(gitRemote);
   return {
@@ -1125,6 +1354,41 @@ function buildManifest(root: string, loaded: LoadedKlauroConfig, files: Array<{ 
     transfer_recommendation: recommendTransfer(loaded, remoteProvider, 'full'),
     file_count: files.length,
     total_bytes: files.reduce((sum, file) => sum + Buffer.byteLength(file.content, 'utf8'), 0),
+    snapshot_digest: sourceSnapshotDigest(files),
+    excluded_directories: Array.from(EXCLUDED_DIRECTORIES).sort(),
+    config_file: loaded.configPath,
+    ignore_file: loaded.ignorePath,
+    upload_mode: loaded.config.upload.mode,
+    repo_facts: deriveRepoFacts(root),
+    policy: {
+      require_manifest_review: loaded.config.upload.requireManifestReview,
+      allow_dirty_tree_sync: loaded.config.upload.allowDirtyTreeSync,
+      send_git_diff: loaded.config.upload.sendGitDiff,
+      send_deleted_paths: loaded.config.upload.sendDeletedPaths,
+    },
+  };
+}
+
+function buildManifestFromStats(
+  root: string,
+  loaded: LoadedKlauroConfig,
+  files: Array<{ path: string; hash: string; bytes: number }>,
+  mode: 'full' | 'dirty-tree' = 'full',
+): SourceManifest {
+  const gitRemote = readGitRemote(root);
+  const remoteProvider = detectRemoteProvider(gitRemote);
+  return {
+    generated_at: new Date().toISOString(),
+    root,
+    git_remote: gitRemote,
+    remote_provider: remoteProvider,
+    branch: readGitBranch(root),
+    base_commit: readGitHead(root),
+    dirty: listGitChanges(root).length > 0,
+    transfer_recommendation: recommendTransfer(loaded, remoteProvider, mode),
+    file_count: files.length,
+    total_bytes: files.reduce((sum, file) => sum + file.bytes, 0),
+    snapshot_digest: sourceSnapshotDigest(files.map(file => ({ path: file.path, hash: file.hash, content: '' }))),
     excluded_directories: Array.from(EXCLUDED_DIRECTORIES).sort(),
     config_file: loaded.configPath,
     ignore_file: loaded.ignorePath,

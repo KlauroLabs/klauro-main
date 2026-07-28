@@ -49,6 +49,10 @@ function makeState(projectPath: string, marker: string): IncrementalState {
   };
 }
 
+async function stateArtifactExists(projectDir: string, baseName: string): Promise<boolean> {
+  return (await Promise.all(['', '.zst', '.br'].map(suffix => fs.pathExists(path.join(projectDir, `${baseName}${suffix}`))))).some(Boolean);
+}
+
 test('main and in-flight incremental state coexist without overwriting each other', async () => {
   await withStoragePath(async () => {
     const projectPath = '/tmp/klauro-inc-project';
@@ -60,8 +64,8 @@ test('main and in-flight incremental state coexist without overwriting each othe
 
     // Both files persisted, neither overwrote the other.
     const projectDir = getProjectStorageDir(projectPath);
-    assert.ok(await fs.pathExists(path.join(projectDir, 'incremental-state.json')));
-    assert.ok(await fs.pathExists(path.join(projectDir, 'incremental-state.inflight.json')));
+    assert.ok(await stateArtifactExists(projectDir, 'incremental-state.json'));
+    assert.ok(await stateArtifactExists(projectDir, 'incremental-state.inflight.json'));
 
     // Each loads back independently with its own contents.
     const loadedMain = await loadIncrementalState(projectPath); // default 'main'
@@ -77,15 +81,14 @@ test('main and in-flight incremental state coexist without overwriting each othe
   });
 });
 
-test("default/main incremental state path is the legacy bare filename (backward compatible)", async () => {
+test('default/main incremental state keeps the legacy basename with transparent compression', async () => {
   await withStoragePath(async () => {
     const projectPath = '/tmp/klauro-inc-project-legacy';
     await saveIncrementalState(projectPath, makeState(projectPath, 'main'));
 
     const projectDir = getProjectStorageDir(projectPath);
-    // main track must use the exact legacy filename, no suffix.
-    assert.ok(await fs.pathExists(path.join(projectDir, 'incremental-state.json')));
-    assert.ok(!(await fs.pathExists(path.join(projectDir, 'incremental-state.main.json'))));
+    assert.ok(await stateArtifactExists(projectDir, 'incremental-state.json'));
+    assert.ok(!(await stateArtifactExists(projectDir, 'incremental-state.main.json')));
 
     // Explicit 'main' resolves to the same file as the default.
     const explicit = await loadIncrementalState(projectPath, 'main');
