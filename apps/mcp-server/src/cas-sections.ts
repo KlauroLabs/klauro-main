@@ -35,6 +35,12 @@ const IDENTITY_FIELDS = new Set([
   'analysis_id',
   'analysis_timestamp',
   'analyzer_build',
+  // Analyzer IDENTITY, alongside analyzer_build: the reuse gate in
+  // remote-analyzer-service reads these to decide whether a stored analysis was
+  // produced by THIS analyzer, and it must be able to do so without loading the
+  // whole CAS. (Before this they fell through to 'supplemental'.)
+  'parser_fingerprint',
+  'derived_fingerprint',
   'base_commit',
   'branch',
   'track',

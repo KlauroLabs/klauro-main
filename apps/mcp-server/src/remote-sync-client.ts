@@ -40,8 +40,12 @@ export interface AnalyzeRemotelyResult extends Omit<RemoteAnalyzeResponse, 'stat
    *  operator/test completion request carrying the finished CAS. */
   status: 'success' | 'accepted';
   analysis_revision?: number;
-  analysis_type?: 'full' | 'incremental' | 'unchanged';
+  analysis_type?: 'full' | 'incremental' | 'unchanged' | 'analyzer_upgrade';
   reused?: boolean;
+  /** Why the server did or did not serve the stored analysis — see
+   *  RemoteAnalyzeAcceptedResponse.reuse_decision. Surfaced so a client can
+   *  tell "your analysis is current" from "you got a cached old one". */
+  reuse_decision?: import('./remote-analyzer-protocol').RemoteAnalyzeAcceptedResponse['reuse_decision'];
   cas?: RemoteAnalyzeResponse['cas'];
   /** What the shared snapshot was built from (committed HEAD vs working tree).
    *  Optional so plain sync responses remain assignable for shared formatting. */
