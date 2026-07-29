@@ -9,6 +9,7 @@ import { createAnalyzeUploadRequest, createIncrementalUploadRequest, isStreaming
 import { assertRemoteAnalyzerAllowed, loadKlauroConfig, resolveAnalysisId, resolveAnalyzerUrl } from './klauro-config';
 import { connectorToken, requireConnectorEntitlement } from './connector-auth';
 import { DEFAULT_KLAURO_CLOUD_URL } from './defaults';
+import { describeHttpFailure, describeTransportFailure, hostedFetch } from './hosted-transport';
 
 export interface RemoteSyncOptions {
   projectPath: string;
@@ -249,11 +250,14 @@ export async function fetchRemoteProjectRevisions(options: RemoteSyncOptions): P
   const headers: Record<string, string> = {};
   const token = connectorToken(options.token, serverUrl);
   if (token) headers.authorization = `Bearer ${token}`;
-  const response = await fetch(`${serverUrl}/v1/projects/${encodeURIComponent(analysisId)}/revisions`, { headers });
+  const url = `${serverUrl}/v1/projects/${encodeURIComponent(analysisId)}/revisions`;
+  const operation = 'GET revisions';
+  // Same constraint as the hosted read tools: a bare fetch here reports
+  // `fetch failed` with no cause, no URL, and no retry.
+  const response = await hostedFetch(url, { headers }, { operation });
+  if (!response.ok) throw new Error(await describeHttpFailure(response, { url, operation }));
   const payload = await response.json().catch(() => ({})) as RemoteProjectRevisionsResponse | { status: 'error'; error: string };
-  if (!response.ok || payload.status === 'error') {
-    throw new Error(payload.status === 'error' ? payload.error : `Remote analyzer returned ${response.status}`);
-  }
+  if (payload.status === 'error') throw new Error(payload.error);
   return payload;
 }
 
@@ -406,13 +410,17 @@ async function postRemote(
         const isLastAttempt = attempt === maxAttempts;
         if (!retriable || isLastAttempt) {
           if (retriable) {
-          // Exhausted retries on a transient condition: surface an honest
-          // message naming the edge rather than the raw underlying error.
-          const detail = error instanceof Error ? error.message : String(error);
+          // Exhausted retries on a transient condition. RetriableRemoteError
+          // already carries an authored, readable message; a raw transport
+          // rejection does not — its diagnosis lives in `cause`, so it goes
+          // through the unwrapper rather than being reported as its opaque
+          // wrapper message.
           const timedOut = error instanceof Error && error.name === 'AbortError';
           const summary = timedOut
-            ? `The Klauro server did not respond within ${Math.round(timeoutMs / 1000)}s for ${endpoint}`
-            : detail;
+            ? `The Klauro server did not respond within ${Math.round(timeoutMs / 1000)}s for ${endpoint}. Target: ${url}.`
+            : error instanceof RetriableRemoteError
+              ? error.message
+              : describeTransportFailure(error, { url, operation: `POST ${endpoint}`, attempts: maxAttempts });
             throw new Error(`${summary} (retried ${maxAttempts} times)`);
           }
           throw error;

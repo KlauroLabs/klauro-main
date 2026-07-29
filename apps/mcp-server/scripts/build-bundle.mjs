@@ -180,6 +180,18 @@ function captureHandshake(profile) {
 const handshake = { core: await captureHandshake('core'), full: await captureHandshake('full') };
 writeFileSync(path.join(output, 'handshake.json'), JSON.stringify(handshake));
 
+// Build stamp for the stale-bundle guard (src/bundle-staleness.ts). MCP
+// clients are registered against dist/, so without a recorded build time a
+// bundle that no longer matches the sources beside it starts and serves
+// happily with no signal that anything is out of date.
+writeFileSync(path.join(output, 'build-stamp.json'), `${JSON.stringify({
+  version: packageVersion,
+  git_sha: JSON.parse(definitions.__KLAURO_GIT_SHA__),
+  build_time: JSON.parse(definitions.__KLAURO_BUILD_TIME__),
+  parser_fingerprint: stageFingerprints.parser_fingerprint,
+  derived_fingerprint: stageFingerprints.derived_fingerprint,
+}, null, 2)}\n`);
+
 const customerFiles = readdirSync(output).filter(file => statSync(path.join(output, file)).isFile());
 const totalBytes = customerFiles.reduce((sum, file) => sum + statSync(path.join(output, file)).size, 0);
 const maxBytes = Number(process.env.KLAURO_CLIENT_MAX_BYTES || 32 * 1024 * 1024);

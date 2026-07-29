@@ -1,6 +1,7 @@
 import type { Readable, Writable } from 'stream';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { createServer } from './installed-client-server.js';
+import { checkRunningBundleStaleness } from './bundle-staleness';
 import { writeSessionLock, removeSessionLock } from './session-lock';
 
 process.on('uncaughtException', (error) => {
@@ -27,6 +28,15 @@ export async function startServer(
   // detected — restart it after updating" instead of updating silently with
   // no signal that anything needs to change client-side. Never blocks startup.
   writeSessionLock();
+  // Stale-bundle guard: an MCP client is registered against the BUILT bundle,
+  // so a bundle older than the sources beside it keeps serving an outdated
+  // contract with no outward sign. Report it here rather than letting the
+  // mismatch present later as an unexplained tool failure. Never blocks
+  // startup — a stale-but-working client beats no client at all.
+  try {
+    const staleness = checkRunningBundleStaleness(__dirname);
+    if (staleness.note) process.stderr.write(`Klauro MCP stale bundle: ${staleness.note}\n`);
+  } catch { /* the guard must never be the reason the server fails to start */ }
   const server = createServer();
   const transport = new StdioServerTransport(input, output);
   await server.connect(transport);
