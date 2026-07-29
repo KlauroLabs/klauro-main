@@ -3598,6 +3598,38 @@ export interface EnhancedSystemPurpose extends SystemPurpose {
      *  grounding failures. */
     failure_class: 'provider-unavailable' | 'failed-grounding';
   }>;
+  /**
+   * Capabilities whose NAME could not be AI-generated and whose deterministic
+   * structural label was rejected because it was derived from a SOURCE PATH —
+   * a file extension rendered as a word, filesystem geography, or an opaque
+   * generated id. Each entry was either rebuilt from operation/entity evidence
+   * or dropped; neither ever ships the path text.
+   *
+   * This exists because the un-enriched fallback used to ship those labels
+   * verbatim as customer-visible capabilities, including the hosted service's
+   * own storage root. Present only when at least one name degraded.
+   */
+  capability_name_degradations?: Array<{
+    id: string;
+    /** The name that shipped (rebuilt) or the rejected one (dropped). */
+    name: string;
+    /** The path-derived label that was refused. */
+    rejected_name: string;
+    reason: 'name-derived-from-source-path';
+    disposition: 'rebuilt-from-evidence' | 'dropped';
+  }>;
+  /**
+   * How much of the shipped capability catalog carries an AUTHORED name
+   * (AI/manual/reused) versus an un-enriched deterministic placeholder. The
+   * honest counterpart to a `ready` status: a catalog that is 228 placeholders
+   * and 0 authored names is a degraded comprehension layer, not a result.
+   */
+  capability_naming_coverage?: {
+    total: number;
+    authored: number;
+    un_enriched: number;
+    path_derived_rejected: number;
+  };
   /** Deterministic artifact classification: what kind of deliverable this
    * repo is (library, generated client SDK, CLI tool, boilerplate, app). */
   artifact_type?: CASArtifactType;

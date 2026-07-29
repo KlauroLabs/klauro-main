@@ -50,7 +50,24 @@ export interface RemoteAnalyzeAcceptedResponse {
   manifest: SourceManifest;
   /** The exact committed snapshot is already analyzed or currently in flight. */
   reused?: boolean;
-  analysis_type?: 'unchanged';
+  /** 'unchanged' = stored analysis served as-is. 'analyzer_upgrade' = the
+   *  snapshot was unchanged but the analyzer that produced the stored analysis
+   *  is not this one, so it is being re-analyzed. */
+  analysis_type?: 'unchanged' | 'analyzer_upgrade';
+  /**
+   * WHY this request was (or was not) served from the stored analysis. Always
+   * present. `reused: true` with no reason is how "customers never receive
+   * fixes" stayed invisible: the reuse gate deduped on the source snapshot
+   * alone, and a new analyzer build silently returned the old analysis.
+   */
+  reuse_decision?: {
+    reused: boolean;
+    reason: string;
+    source: 'unchanged' | 'analyzer_upgrade' | 'source_changed';
+    /** Which identity tier decided it — see analyzer-identity-reuse.ts. */
+    analyzer_identity_tier: 'parser' | 'derived' | 'build' | 'legacy-build' | 'match' | 'unknown' | 'in-flight';
+    analyzer_build?: string;
+  };
 }
 
 export interface RemoteSyncRequest {

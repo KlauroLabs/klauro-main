@@ -48,6 +48,12 @@ import { initSelfTelemetry, instrumentHttpHandler, mapSdkEvent } from './self-te
 import type { CasRuntimeEvent } from '../../../packages/klauro-sdk-js/src/types';
 import { executeHostedProjectQuery, HOSTED_PROJECT_QUERY_TOOL_NAMES } from './hosted-project-query';
 import { getBuildIdentity } from '../../../packages/analyzer-core/src/analyzer/core/build-identity';
+import { getStageFingerprints } from '../../../packages/analyzer-core/src/analyzer/core/stage-fingerprint';
+import {
+  decideAnalyzerIdentityReuse,
+  type AnalyzerIdentity,
+  type AnalyzerIdentityDecision,
+} from './analyzer-identity-reuse';
 import { z } from 'zod';
 
 const DEFAULT_PORT = 8787;
@@ -432,7 +438,22 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
             ? Boolean(await getAnalysisFileFingerprint(acceptedWorkspace, { track: 'main' }))
             : false;
 
-          if ((snapshotIdentity && activeIdentity === snapshotIdentity) || (reusableRevision && storedAnalysisExists)) {
+          const analysisAlreadyRunning = Boolean(snapshotIdentity && activeIdentity === snapshotIdentity);
+          const snapshotUnchanged = Boolean(reusableRevision && storedAnalysisExists);
+          // ANALYZER IDENTITY is the second half of "unchanged". The source
+          // snapshot matching only proves the INPUT is the same; it says
+          // nothing about the analyzer that read it. Deduping on the snapshot
+          // alone is why a customer who upgraded the CLI and re-ran `analyze`
+          // silently got their old analysis back and no analyzer fix ever
+          // reached them (see analyzer-identity-reuse.ts). An in-flight run is
+          // exempt: it is being produced by THIS server right now.
+          const identityDecision = snapshotUnchanged && !analysisAlreadyRunning
+            ? await analyzerIdentityReuseDecisionFor(acceptedWorkspace)
+            : null;
+          const reuseStoredAnalysis = analysisAlreadyRunning
+            || (snapshotUnchanged && identityDecision?.reusable === true);
+
+          if (reuseStoredAnalysis) {
             await linkAnalysisToAccountProject(
               accounts,
               authorization.clientId,
@@ -441,12 +462,16 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
               body.snapshot.manifest.git_remote,
               body.snapshot.manifest.repo_facts,
             );
+            const reuseReason = analysisAlreadyRunning
+              ? 'Analysis for this exact snapshot is already running on the server.'
+              : identityDecision?.reason || 'Source snapshot and analyzer identity both unchanged.';
             await appendAuditLog(dataDir, {
               event: 'analyze_reused',
               analysis_id: acceptedAnalysisId,
               project_id: body.project_id,
               base_commit: body.snapshot.base_commit,
-              reason: activeIdentity === snapshotIdentity ? 'already_running' : 'already_analyzed',
+              reason: analysisAlreadyRunning ? 'already_running' : 'already_analyzed',
+              analyzer_identity_tier: analysisAlreadyRunning ? 'in-flight' : identityDecision?.tier,
             });
             writeJson(response, 202, {
               status: 'accepted',
@@ -456,8 +481,35 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
               manifest: body.snapshot.manifest,
               reused: true,
               analysis_type: 'unchanged',
+              // `reused: true` with no reason is what made this invisible for
+              // months. Always say WHY, and on which identity tier.
+              reuse_decision: {
+                reused: true,
+                reason: reuseReason,
+                source: 'unchanged',
+                analyzer_identity_tier: analysisAlreadyRunning ? 'in-flight' : identityDecision?.tier || 'match',
+                analyzer_build: currentAnalyzerIdentity().analyzer_build,
+              },
             });
             return;
+          }
+
+          // Snapshot unchanged but the analyzer moved: re-analyze rather than
+          // serve a stale result, and TELL the client which tier forced it.
+          const analyzerUpgradeReanalysis = snapshotUnchanged && identityDecision?.reusable === false;
+          if (analyzerUpgradeReanalysis && identityDecision) {
+            await appendAuditLog(dataDir, {
+              event: 'analyze_analyzer_upgrade',
+              analysis_id: acceptedAnalysisId,
+              project_id: body.project_id,
+              base_commit: body.snapshot.base_commit,
+              analyzer_identity_tier: identityDecision.tier,
+              reason: identityDecision.reason,
+            });
+            console.error(
+              `[Klauro] ${acceptedAnalysisId}: source snapshot unchanged but analyzer identity differs ` +
+              `(tier=${identityDecision.tier}) — re-analyzing. ${identityDecision.reason}`
+            );
           }
 
           if (snapshotIdentity) activeCommittedSnapshots.set(acceptedAnalysisId, snapshotIdentity);
@@ -477,6 +529,19 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
             analysis_id: visibleAnalysisId,
             base_commit: body.snapshot.base_commit,
             manifest: body.snapshot.manifest,
+            reused: false,
+            ...(analyzerUpgradeReanalysis && identityDecision
+              ? { analysis_type: 'analyzer_upgrade' as const }
+              : {}),
+            reuse_decision: {
+              reused: false,
+              reason: analyzerUpgradeReanalysis && identityDecision
+                ? identityDecision.reason
+                : 'Source snapshot differs from every stored revision.',
+              source: analyzerUpgradeReanalysis ? 'analyzer_upgrade' : 'source_changed',
+              analyzer_identity_tier: analyzerUpgradeReanalysis && identityDecision ? identityDecision.tier : 'match',
+              analyzer_build: currentAnalyzerIdentity().analyzer_build,
+            },
           });
           const backgroundClientId = authorization.clientId;
           setImmediate(async () => {
@@ -2436,7 +2501,16 @@ async function handleAccountApi(
     const layers = entry.layers_ready?.layers || [];
     const structuralErrors = layers.filter(layer => layer.layer !== 'L5' && layer.status === 'error');
     const pending = layers.some(layer => layer.status === 'pending');
-    const status = structuralErrors.length > 0 ? 'failed' : pending ? 'populating' : 'ready';
+    // Same honesty rule as /analysis below: a terminal L5 'error' means the
+    // comprehension layer degraded, so this listing must not read 'ready'.
+    const l5Errored = layers.some(layer => layer.layer === 'L5' && layer.status === 'error');
+    const status = structuralErrors.length > 0
+      ? 'failed'
+      : pending
+        ? 'populating'
+        : l5Errored
+          ? 'degraded'
+          : 'ready';
     return {
       statusCode: 200,
       body: {
@@ -2444,6 +2518,7 @@ async function handleAccountApi(
         project_id: project.id,
         analysis_id: project.analysis_id,
         ...(lastAttempt ? { last_attempt: lastAttempt } : {}),
+        ...(l5Errored && structuralErrors.length === 0 ? { degraded_layers: ['L5'] } : {}),
         ...(structuralErrors.length > 0 ? { failed_layers: structuralErrors.map(layer => layer.layer) } : {}),
         summary: {
           name: entry.name,
@@ -2496,13 +2571,35 @@ async function handleAccountApi(
       // killed every analysis and no surface said so). L5 stays separate: its
       // failure degrades comprehension only, the structure is still real.
       const structuralErrors = erroredLayers.filter(layer => layer.layer !== 'L5');
+      const aiDegraded = cas.ai_enrichment === 'error'
+        || (erroredLayers.some(layer => layer.layer === 'L5') && !hasPendingLayer);
+      // COMPREHENSION DEGRADATION is a status, not a footnote. An L5 failure
+      // used to be reported as `status: 'ready'` with an `ai_enrichment` field
+      // beside it — and what shipped under that 'ready' was 228 un-enriched
+      // structural placeholders where a healthy run produced 13 coherent
+      // capabilities. A client that branches on `status` had no way to know.
+      // 'degraded' says the structure is real and queryable but comprehension
+      // is not what it should be; the machine-readable detail follows.
+      const naming = cas.enhanced_system_purpose?.capability_naming_coverage;
+      const nameDegradations = cas.enhanced_system_purpose?.capability_name_degradations || [];
+      const descriptionDegradations = cas.enhanced_system_purpose?.capability_description_degradations || [];
+      // A structure-only deployment (comprehension never configured) is a mode,
+      // not a degradation — only judge naming coverage when the pass actually
+      // ran. A pass that ran and authored NOTHING is the audited failure.
+      const comprehensionAttempted = cas.ai_enrichment === 'ready'
+        || cas.ai_enrichment === 'synchronous'
+        || cas.ai_enrichment === 'error';
+      const comprehensionDegraded = aiDegraded
+        || descriptionDegradations.length > 0
+        || nameDegradations.length > 0
+        || Boolean(comprehensionAttempted && naming && naming.total > 0 && naming.authored === 0);
       const status = structuralErrors.length > 0
         ? 'failed'
         : cas.layers_ready && !cas.layers_ready.complete && hasPendingLayer
           ? 'populating'
-          : 'ready';
-      const aiDegraded = cas.ai_enrichment === 'error'
-        || (erroredLayers.some(layer => layer.layer === 'L5') && !hasPendingLayer);
+          : comprehensionDegraded
+            ? 'degraded'
+            : 'ready';
       // Additive last-attempt visibility (defect #41): a reanalyze of an
       // already-'ready' analysis that throws leaves the CAS above completely
       // untouched (no pending layer for markBackgroundAnalysisFailed to flip),
@@ -2532,6 +2629,19 @@ async function handleAccountApi(
                   cas.ai_enrichment_error ||
                   erroredLayers.find(layer => layer.layer === 'L5' && layer.error)?.error ||
                   'AI comprehension pass failed; comprehension is AI-only (no deterministic fallback)',
+              }
+            : {}),
+          ...(comprehensionDegraded
+            ? {
+                comprehension: {
+                  degraded: true,
+                  ...(naming ? { capability_naming_coverage: naming } : {}),
+                  capability_name_degradations: nameDegradations.length,
+                  capability_description_degradations: descriptionDegradations.length,
+                  detail: aiDegraded
+                    ? 'The AI comprehension pass failed; capability names and descriptions are un-enriched deterministic facts.'
+                    : 'Part of the capability catalog could not be AI-enriched; those entries carry deterministic evidence text, not authored comprehension.',
+                },
               }
             : {}),
           project_id: project.id,
@@ -3625,6 +3735,38 @@ function committedSnapshotIdentity(manifest: SourceManifest, baseCommit?: string
     manifest.file_count,
     manifest.total_bytes,
   ].join(':');
+}
+
+/** The analyzer identity THIS server would produce right now. */
+export function currentAnalyzerIdentity(): AnalyzerIdentity {
+  const fingerprints = getStageFingerprints();
+  return {
+    analyzer_build: getBuildIdentity().version,
+    parser_fingerprint: fingerprints.parser_fingerprint,
+    derived_fingerprint: fingerprints.derived_fingerprint,
+  };
+}
+
+/**
+ * Reads ONLY the `identity` section of the stored analysis (analyzer_build +
+ * both stage fingerprints, see cas-sections.ts) — a small JSON read, not a CAS
+ * load — and decides whether it may be reused by this server.
+ */
+export async function analyzerIdentityReuseDecisionFor(workspace: string): Promise<AnalyzerIdentityDecision> {
+  let stored: AnalyzerIdentity | null = null;
+  try {
+    const identity = await loadAnalysisSections(workspace, ['identity'], { track: 'main' });
+    if (identity) {
+      stored = {
+        analyzer_build: (identity as AnalyzerIdentity).analyzer_build,
+        parser_fingerprint: (identity as AnalyzerIdentity).parser_fingerprint,
+        derived_fingerprint: (identity as AnalyzerIdentity).derived_fingerprint,
+      };
+    }
+  } catch {
+    stored = null;
+  }
+  return decideAnalyzerIdentityReuse(stored, currentAnalyzerIdentity());
 }
 
 export function revisionMatchesSnapshot(

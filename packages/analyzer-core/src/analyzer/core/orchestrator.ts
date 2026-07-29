@@ -137,7 +137,11 @@ import {
   isBareNounCapabilityLabel as sharedIsBareNounCapabilityLabel,
   isStructuralPlaceholderCapabilityDescription as sharedIsStructuralPlaceholderCapabilityDescription,
   deriveCapabilityNameFromOperations as sharedDeriveCapabilityNameFromOperations,
-  buildCapabilityDescriptionFromOperations as sharedBuildCapabilityDescriptionFromOperations
+  buildCapabilityDescriptionFromOperations as sharedBuildCapabilityDescriptionFromOperations,
+  namingSubjectFromPath,
+  stripSourceFileExtension,
+  isPathDerivedCapabilityName,
+  isStoragePathToken
 } from './capability-naming';
 import { CallChainAnalyzer } from './call-chain-analyzer';
 import { CapabilityDependencyBuilder } from './capability-dependency-builder';
@@ -2219,7 +2223,7 @@ export class AnalyzerOrchestrator {
     // CAS); the inline path already swept at the end of applyAIInterpretation
     // — the sweep is idempotent. A deferred AI run later mutates these same
     // references and re-sweeps on completion.
-    this.finalizeSystemCapabilityNames(systemCapabilities, dataEntities);
+    this.finalizeSystemCapabilityNames(systemCapabilities, dataEntities, enhancedSystemPurpose);
     this.finalizeFlowGraphCapabilities(flowGraph);
     const entryPointsWithContractAndCapability = this.deriveEntryPointContractAndCapability(allEntryPoints, {
       nodes: allNodes,
@@ -3581,7 +3585,7 @@ export class AnalyzerOrchestrator {
     // AI branch may not have covered every candidate — either way, no further
     // pass is coming before this rebuilt CAS ships. Idempotent (the AI branch
     // already swept inside applyAIInterpretation).
-    this.finalizeSystemCapabilityNames(systemCapabilities, dataEntities);
+    this.finalizeSystemCapabilityNames(systemCapabilities, dataEntities, enhancedSystemPurpose);
     this.finalizeFlowGraphCapabilities(flowGraph);
 
     const entryPointsWithContractAndCapability = this.deriveEntryPointContractAndCapability(entryPoints, {
@@ -11909,16 +11913,35 @@ export class AnalyzerOrchestrator {
     return tokens.join('');
   }
 
+  /**
+   * The resource subject behind an operation's `path_or_command`. That field
+   * carries EITHER a route ("/api/v1/invoices/:id") OR — for internal
+   * operations, which anchor on `node.source.file` — a SOURCE FILE PATH.
+   *
+   * DEFECT (live, deployed build): the file case fell through the route logic
+   * unchanged, so `src/nat.rs` yielded the last segment `nat.rs`, the trailing
+   * `s` was stripped as a plural, and `humanizeDisplayName` split the dot into
+   * a word: "Manage Nat R". Same for `.sh` -> " Sh" and `.nix` -> " Nix";
+   * 39 shipped capability names carried a file extension as an English word.
+   * The extension is now removed BEFORE the plural strip, and filesystem
+   * geography can never be the subject.
+   */
   private fallbackRouteResourceSubject(value: string): string | undefined {
     const segments = String(value || '')
+      .replace(/\\/g, '/')
       .split(/[/?#]+/)
-      .map(segment => segment.replace(/[{}:]/g, '').trim())
+      .map(segment => stripSourceFileExtension(segment.replace(/[{}:]/g, '').trim()))
       .filter(Boolean)
       .filter(segment => !/^\d+$/.test(segment))
       .filter(segment => !/^(?:api|v\d+|id|index)$/i.test(segment))
+      .filter(segment => !isStoragePathToken(segment))
       .filter(segment => !isLanguageBuiltinDomainToken(segment.toLowerCase()));
     const resource = [...segments].reverse().find(segment => !/(?:_id|Id)$/i.test(segment));
-    return resource ? resource.replace(/s$/i, '') : undefined;
+    // A plural is only stripped when something remains: "s" alone, or a
+    // one-letter stem, is a fragment, not a resource.
+    if (!resource) return undefined;
+    const singular = resource.replace(/s$/i, '');
+    return singular.length >= 2 ? singular : undefined;
   }
 
   private capabilityHasObservedRead(operations: SystemCapability['operations']): boolean {
@@ -12133,10 +12156,12 @@ export class AnalyzerOrchestrator {
   private finalizeSystemCapabilityNames(
     systemCapabilities: SystemCapability[],
     dataEntities: CASDataEntity[] = [],
+    purpose?: EnhancedSystemPurpose,
   ): void {
     let repaired = 0;
     const dropped: string[] = [];
     const kept: SystemCapability[] = [];
+    const nameDegradations: NonNullable<EnhancedSystemPurpose['capability_name_degradations']> = [];
     // Placeholder-DESCRIPTION sweep runs on every entry regardless of
     // name_source: an AI-authored NAME never legitimizes a structural
     // template description ("X: query operation via message") — rebuild it
@@ -12157,6 +12182,49 @@ export class AnalyzerOrchestrator {
         continue;
       }
       const name = String(capability.name || '');
+      // PATH-DERIVED GUARD (defect, live deployed build): a capability whose
+      // name could not be AI-generated fell back to a filename/path-derived
+      // structural label and shipped it AS the product capability — file
+      // extensions rendered as words ("Manage Nat R" from `nat.rs`) and, twice,
+      // the hosted service's own storage geography ("Workspaces Prj … Web Tsx").
+      // Such a name is worse than none: it is not a capability, and it leaks
+      // internal infrastructure. Rebuild it from EVIDENCE (related entity /
+      // operation subject) or drop the capability outright — never ship it.
+      // The reason is recorded on `capability_name_degradations` so the
+      // omission is visible to a client rather than silent.
+      if (isPathDerivedCapabilityName(name)) {
+        if (capability.structural_label && isPathDerivedCapabilityName(capability.structural_label)) {
+          delete (capability as Partial<SystemCapability>).structural_label;
+        }
+        const hasAnchor = (capability.related_entities?.length || 0) > 0 || (capability.operations?.length || 0) > 0;
+        const rebuilt = this.deriveDeterministicFallbackPurposeLabel(capability, dataEntities, hasAnchor);
+        if (rebuilt && !isPathDerivedCapabilityName(rebuilt)) {
+          capability.name = rebuilt;
+          capability.criticality_factors = Array.from(new Set([
+            ...(capability.criticality_factors || []),
+            'path-derived-name-rebuilt-from-evidence',
+          ]));
+          nameDegradations.push({
+            id: capability.id,
+            name: rebuilt,
+            rejected_name: name,
+            reason: 'name-derived-from-source-path',
+            disposition: 'rebuilt-from-evidence',
+          });
+          repaired++;
+          kept.push(capability);
+          continue;
+        }
+        dropped.push(name);
+        nameDegradations.push({
+          id: capability.id,
+          name,
+          rejected_name: name,
+          reason: 'name-derived-from-source-path',
+          disposition: 'dropped',
+        });
+        continue;
+      }
       if (
         /^Manage\b/i.test(name) &&
         this.capabilityHasObservedRead(capability.operations || []) &&
@@ -12192,6 +12260,28 @@ export class AnalyzerOrchestrator {
     }
     const deduped = this.dedupeSystemCapabilitiesByName(kept);
     systemCapabilities.splice(0, systemCapabilities.length, ...deduped);
+    if (purpose) {
+      // Honesty roll-up (mirrors capability_description_degradations): every
+      // name that could not be AI-generated is counted, and the un-enriched
+      // share is stated. A client can act on this — it is the difference
+      // between "13 coherent capabilities" and "228 structural placeholders".
+      if (nameDegradations.length > 0) {
+        purpose.capability_name_degradations = [
+          ...(purpose.capability_name_degradations || []),
+          ...nameDegradations,
+        ];
+      }
+      const unnamed = deduped.filter(capability =>
+        capability.name_source !== 'ai' &&
+        capability.name_source !== 'manual' &&
+        capability.name_source !== 'reused');
+      purpose.capability_naming_coverage = {
+        total: deduped.length,
+        authored: deduped.length - unnamed.length,
+        un_enriched: unnamed.length,
+        path_derived_rejected: nameDegradations.length,
+      };
+    }
     if (repaired > 0 || dropped.length > 0) {
       recordSemanticDecision({
         ts: Date.now(),
@@ -12964,7 +13054,7 @@ export class AnalyzerOrchestrator {
     // did not cover/rename it) would otherwise ship that placeholder as the
     // final name. See finalizeSystemCapabilityNames for the live defect this
     // closes.
-    this.finalizeSystemCapabilityNames(systemCapabilities, dataEntities);
+    this.finalizeSystemCapabilityNames(systemCapabilities, dataEntities, enhancedSystemPurpose);
     this.finalizeFlowGraphCapabilities(flowGraph);
   }
 
@@ -22515,7 +22605,19 @@ export class AnalyzerOrchestrator {
     const cached = this.domainTokenCache.get(text);
     if (cached) return [...cached];
 
-    const tokens = text
+    // PATH REDUCTION (defect: the hosted storage root shipped as a capability
+    // name). Naming subjects sometimes arrive as a FILE PATH — a node whose
+    // name is its file, an entity keyed by module. Split into directories, an
+    // ABSOLUTE analyzed-source path contributes its whole server-side
+    // geography ("/<data-root>/workspaces/<project-id>/…") as domain tokens;
+    // that is how "Workspaces Prj … Web Tsx" became a customer-visible
+    // capability. Reduce any path-shaped text to its basename minus file
+    // extension BEFORE tokenizing, so no directory — and therefore no analysis
+    // root, absolute or relative — can reach a name. Applied here, at the one
+    // tokenizer every naming path funnels through, rather than at each caller.
+    const source = /[\\/]/.test(text) ? namingSubjectFromPath(text) : stripSourceFileExtension(text);
+
+    const tokens = source
       // Split acronym boundaries first ("AIInsights" -> "AI Insights",
       // "MLMetadata" -> "ML Metadata") so consecutive capitals don't squash into a
       // single garbage token ("Aiinsights"); then the normal camelCase boundary.
