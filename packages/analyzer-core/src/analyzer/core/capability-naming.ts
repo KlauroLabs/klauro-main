@@ -79,14 +79,18 @@ export const SOURCE_FILE_EXTENSION_TOKENS = new Set<string>([
  * A capability name containing any of these was derived from a path.
  *
  * Generic filesystem + hosting vocabulary only — no product or client names.
+ *
+ * Deliberately EXCLUDES words that are ordinary product English even though
+ * they also name directories — data, user(s), project(s), analysis, build,
+ * cache, storage, upload, snapshot, repo, root, home, index, out, target. A
+ * live scan of 966 stored analyses flagged real capabilities ("Secure user
+ * data", "Surfaces user data") on `user`+`data` adjacency; product vocabulary
+ * must win over filesystem vocabulary whenever a word is genuinely both.
  */
 export const STORAGE_PATH_NOISE_TOKENS = new Set<string>([
-  'data', 'var', 'tmp', 'temp', 'opt', 'usr', 'srv', 'mnt', 'etc', 'proc',
-  'home', 'root', 'private', 'volumes', 'users', 'user',
-  'workspace', 'workspaces', 'workdir', 'repo', 'repos', 'checkout',
-  'prj', 'proj', 'project', 'projects', 'analysis', 'analyses', 'upload',
-  'uploads', 'snapshot', 'snapshots', 'storage', 'bin', 'obj', 'dist', 'build',
-  'out', 'target', 'node_modules', 'vendor', 'cache', 'caches',
+  'var', 'tmp', 'temp', 'opt', 'usr', 'srv', 'mnt', 'etc', 'proc',
+  'private', 'volumes', 'workspace', 'workspaces', 'workdir', 'checkout',
+  'prj', 'proj', 'bin', 'obj', 'dist', 'node_modules', 'vendor',
 ]);
 
 /**

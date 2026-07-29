@@ -80,6 +80,14 @@ describe('path hygiene vocabulary', () => {
       'View Cache Statistics',
       'Manage Datasets',
       'Manage Service Bindings',
+      // Found by a live scan of 966 stored analyses: these are REAL shipped
+      // capabilities that an over-broad storage vocabulary flagged on
+      // `user`+`data` adjacency. Product English wins whenever a word is
+      // genuinely both a directory name and a domain noun.
+      'Secure user data',
+      'Surfaces user data',
+      'Manage Project Analysis Storage',
+      'View Build Cache Index',
     ]) {
       expect([name, isPathDerivedCapabilityName(name)]).toEqual([name, false]);
     }
