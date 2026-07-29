@@ -41,11 +41,24 @@ test('verify_distribution_channel FAILS on a 200 tarball with a mismatched hoste
   assert.equal(result.ok, false, 'a version mismatch must fail the gate even when the tarball itself is fully served');
 });
 
-test('verify_distribution_channel FAILS on a 206 (or other non-200) tarball response, even with a matching version', () => {
-  // This is the exact bug: under the old `(A && B) || C` grouping, a bare
+test('verify_distribution_channel treats 206 as success — the caller probes with a range request', () => {
+  // The caller uses `curl -r 0-0`, so a server honoring the range header
+  // answers 206 Partial Content; 200 means it ignored the range. Both are
+  // a served tarball. Rejecting 206 would fail every correctly-served
+  // release, so 206 must pass WITH a matching version.
+  assert.equal(runGate('1.0.130', '1.0.130', '206').ok, true, '206 is the expected response to a range request');
+});
+
+test('verify_distribution_channel FAILS when the version mismatches, whatever the tarball status', () => {
+  // This is the original bug: under `(A && B) || C` grouping, a bare
   // `[ "$TARBALL_CODE" = "206" ]` as C made the whole expression true no
-  // matter what A and B evaluated to. Prove 206 alone can no longer buy a
-  // pass, and that an arbitrary non-200 (e.g. 404) behaves the same way.
-  assert.equal(runGate('1.0.130', '1.0.130', '206').ok, false, '206 must not short-circuit the gate to a pass');
-  assert.equal(runGate('1.0.130', '1.0.130', '404').ok, false, 'an arbitrary non-200 must also fail the gate');
+  // matter what A and B evaluated to — so a stale hosted manifest passed
+  // the gate. 206 must no longer buy a pass on its own.
+  assert.equal(runGate('1.0.126', '1.0.130', '206').ok, false, '206 must not short-circuit past a version mismatch');
+  assert.equal(runGate('1.0.126', '1.0.130', '200').ok, false, 'a version mismatch fails even on a fully served tarball');
+});
+
+test('verify_distribution_channel FAILS on a status that is neither 200 nor 206', () => {
+  assert.equal(runGate('1.0.130', '1.0.130', '404').ok, false, 'an unserved tarball must fail the gate');
+  assert.equal(runGate('1.0.130', '1.0.130', '000').ok, false, 'an unreachable host must fail the gate');
 });
