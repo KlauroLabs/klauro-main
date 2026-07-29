@@ -103,6 +103,8 @@ const SCANNED_FILES = [
   'src/klauro-config.ts', // init/login remediation from config loading
   'src/installed-client-runtime.ts', // installed-client bundle shim (getBuildIdentity, checkServerStaleness, ...)
   'src/installed-client-server.ts', // the installed MCP server's own tool text
+  'src/hosted-transport.ts', // transport/HTTP failure remediation on every hosted MCP tool
+  'src/bundle-staleness.ts', // stale-client-build remediation surfaced at startup and on orientation
   'src/index.ts', // installed MCP server entry point
   'src/mcp-registration-doctor.ts', // MCP-registration remediation
   'src/remote-analyzer-protocol.ts', // client-side protocol constants + the 426 message builder

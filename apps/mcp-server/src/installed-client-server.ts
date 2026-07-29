@@ -8,6 +8,8 @@ import { buildUploadManifest, isDefaultSensitiveSourceFile } from './remote-sour
 import { getAgentRevisionTracks } from './agent-revision-tracks';
 import { loadKlauroConfig, resolveAnalyzerUrl } from './klauro-config';
 import { connectorToken } from './connector-auth';
+import { describeHttpFailure, findErrorCode, hostedFetch, redactUrl, unwrapCauseChain } from './hosted-transport';
+import { checkRunningBundleStaleness } from './bundle-staleness';
 import * as watcher from './watcher';
 
 export const INSTALLED_TOOL_NAMES = [
@@ -24,6 +26,16 @@ function json(value: unknown) {
   return { content: [{ type: 'text' as const, text: JSON.stringify(value) }] };
 }
 
+/**
+ * Every hosted read tool routes through hostedProjectGet, and every hosted
+ * query tool through hostedProjectQuery. That makes these two functions the
+ * product's entire failure surface for agents: whatever they throw is what an
+ * agent sees for ALL hosted tools at once. Both therefore go through
+ * hosted-transport.ts, which retries transport faults and reports the
+ * unwrapped cause, the target URL, and a remediation — never a bare
+ * `fetch failed` or a bare status number, neither of which gives an agent a
+ * next step.
+ */
 async function hostedProjectGet(projectPath: string, suffix: string, params: Record<string, unknown> = {}) {
   const loaded = await loadKlauroConfig(projectPath);
   const serverUrl = resolveAnalyzerUrl(loaded)!.replace(/\/+$/, '');
@@ -32,9 +44,13 @@ async function hostedProjectGet(projectPath: string, suffix: string, params: Rec
   const url = new URL(`${serverUrl}/api/projects/${encodeURIComponent(projectId)}${suffix}`);
   for (const [key, value] of Object.entries(params)) if (value !== undefined) url.searchParams.set(key, String(value));
   const token = connectorToken(undefined, serverUrl);
-  const response = await fetch(url, { headers: token ? { authorization: `Bearer ${token}` } : {} });
-  const payload = await response.json().catch(() => ({ status: 'error', error: `Klauro returned HTTP ${response.status}` }));
-  if (!response.ok || (payload as any).status === 'error') throw new Error((payload as any).error || `Klauro returned HTTP ${response.status}`);
+  const operation = `GET ${suffix.replace(/^\//, '') || 'analysis'}`;
+  const response = await hostedFetch(url, { headers: token ? { authorization: `Bearer ${token}` } : {} }, { operation });
+  if (!response.ok) throw new Error(await describeHttpFailure(response, { url: url.toString(), operation }));
+  const payload = await readHostedJson(response, { url: url.toString(), operation });
+  if ((payload as any)?.status === 'error') {
+    throw new Error(`Klauro's hosted server reported an error for ${operation}. Target: ${redactUrl(url.toString())}. Detail: ${(payload as any).error || 'no detail provided'}.`);
+  }
   return payload;
 }
 
@@ -44,17 +60,40 @@ async function hostedProjectQuery(projectPath: string, tool: string, args: Recor
   const projectId = loaded.config.project.id;
   if (!projectId) throw new Error(`No hosted Klauro project is bound to ${projectPath}. Run \`klauro init ${projectPath}\` first.`);
   const token = connectorToken(undefined, serverUrl);
-  const response = await fetch(`${serverUrl}/api/projects/${encodeURIComponent(projectId)}/query`, {
+  const url = `${serverUrl}/api/projects/${encodeURIComponent(projectId)}/query`;
+  const operation = `query ${tool}`;
+  const response = await hostedFetch(url, {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
       ...(token ? { authorization: `Bearer ${token}` } : {}),
     },
     body: JSON.stringify({ tool, args }),
-  });
-  const payload = await response.json().catch(() => ({ status: 'error', error: `Klauro returned HTTP ${response.status}` })) as any;
-  if (!response.ok || payload.status === 'error') throw new Error(payload.error || `Klauro returned HTTP ${response.status}`);
+  }, { operation });
+  if (!response.ok) throw new Error(await describeHttpFailure(response, { url, operation }));
+  const payload = await readHostedJson(response, { url, operation }) as any;
+  if (payload?.status === 'error') {
+    throw new Error(`Klauro's hosted server reported an error for ${operation}. Target: ${redactUrl(url)}. Detail: ${payload.error || 'no detail provided'}.`);
+  }
   return payload.result;
+}
+
+/** Parse a 2xx hosted body. A truncated or non-JSON 2xx body (an edge that
+ *  answered instead of the server, or a connection cut mid-stream) must not
+ *  surface as a parser error with no indication of where it came from. */
+async function readHostedJson(response: Response, context: { url: string; operation: string }): Promise<unknown> {
+  const text = await response.text();
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    const snippet = text.slice(0, 300).replace(/\s+/g, ' ').trim();
+    throw new Error(
+      `Klauro's hosted server returned an unreadable body for ${context.operation} (HTTP ${response.status}, ` +
+      `content-type "${response.headers.get('content-type') || 'none'}", ${text.length} bytes). ` +
+      `Target: ${redactUrl(context.url)}. Parse error: ${error instanceof Error ? error.message : String(error)}. ` +
+      `Body starts: ${snippet || '(empty)'}. Retry; if it persists, run \`klauro doctor\`.`
+    );
+  }
 }
 
 const MAX_VALIDATION_DIFF_BYTES = 2_000_000;
@@ -115,11 +154,51 @@ const taskSchema = z.object({
   runtime: z.enum(['auto', 'include', 'exclude']).optional(), exclude_sections: z.array(z.string()).optional(),
 });
 
+/** Messages that name no cause and imply no next step. An agent that receives
+ *  one of these is stuck: it cannot tell a misconfiguration from an outage
+ *  from a credential problem, and has nothing to act on. */
+const OPAQUE_ERROR_MESSAGES = new Set(['fetch failed', 'failed to fetch', 'network error', 'terminated', 'other side closed', '']);
+
+export function isOpaqueErrorMessage(message: string): boolean {
+  return OPAQUE_ERROR_MESSAGES.has(message.trim().toLowerCase());
+}
+
+/**
+ * Last line of defence on the tool surface.
+ *
+ * The per-callsite work in hosted-transport.ts covers the paths this file
+ * owns, but a tool handler can reach code that raises its own bare transport
+ * rejection. Rather than trust every present and future callsite, every
+ * handler is wrapped: any error whose message names no cause is re-reported
+ * with the tool name, the unwrapped `cause` chain, and a remediation before it
+ * leaves the process. The invariant this enforces is that no opaque message
+ * can reach an agent, whatever a callsite forgets.
+ */
+export function withTransparentErrors<T extends (...args: any[]) => any>(registerFn: T): T {
+  return ((name: string, config: unknown, handler: (...args: any[]) => any) =>
+    registerFn(name, config, async (...args: any[]) => {
+      try {
+        return await handler(...args);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (!isOpaqueErrorMessage(message)) throw error;
+        const chain = unwrapCauseChain(error);
+        const code = findErrorCode(error);
+        throw new Error(
+          `Klauro's \`${name}\` tool failed with a transport error that carried no message of its own. ` +
+          `Underlying error: ${chain.join(' <- ') || message || 'none reported'}${code ? ` (${code})` : ''}. ` +
+          'This is a client-side connectivity or configuration failure, not a missing analysis. ' +
+          'Run `klauro doctor` to check the configured server URL, network reachability, and credentials, then retry.'
+        );
+      }
+    })) as unknown as T;
+}
+
 export function createServer(): McpServer {
   const server = new McpServer({ name: 'klauro', version: '1.0.0' }, {
     instructions: 'Klauro installed client. Upload source and diffs for hosted analysis, query hosted slices, and watch in-flight changes. No analysis, CAS/WAS construction, graph construction, proposal materialization, or embeddings execute on this machine.',
   });
-  const register = server.registerTool.bind(server) as any;
+  const register = withTransparentErrors(server.registerTool.bind(server) as any);
 
   register('analyze_codebase', {
     description: 'Upload a filtered source snapshot for hosted Klauro analysis. No analyzer executes locally.',
@@ -139,7 +218,15 @@ export function createServer(): McpServer {
   register('resolve_agent_analysis', {
     description: 'Resolve the bound hosted project and return its analysis readiness and compact hosted summary.',
     inputSchema: { path: z.string() },
-  }, async ({ path }: any) => json(await hostedProjectGet(path, '/analysis-status')));
+    // Agents call this first to orient, so it is the one place a stale client
+    // build reaches the consumer that would otherwise act on stale behaviour
+    // without ever seeing the stderr warning emitted at startup.
+  }, async ({ path }: any) => {
+    const status = await hostedProjectGet(path, '/analysis-status') as Record<string, unknown>;
+    let staleness: { note: string | null } = { note: null };
+    try { staleness = checkRunningBundleStaleness(__dirname); } catch { /* never fail a read on the guard */ }
+    return json(staleness.note ? { ...status, client_build_warning: staleness.note } : status);
+  });
 
   register('get_summary', {
     description: 'Retrieve the compact hosted analysis summary. The client does not download or construct CAS.',

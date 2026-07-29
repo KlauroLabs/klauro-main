@@ -25,6 +25,11 @@ const artifactTestFiles = new Set([
   // (the 2026-07-28 follow-up audit that found status/doctor/support-bundle
   // missing the same way `update` was). Also runs the built dist/cli.cjs.
   'src/installed-cli-ops-commands.test.ts',
+  // Drives the BUILT dist/index.cjs over stdio the way a registered MCP client
+  // does. The class it gates — "the MCP surface is down while HTTP is fine" —
+  // was invisible to every other test in this package, because they exercise
+  // handlers and library functions rather than the transport agents speak.
+  'src/mcp-surface-live-e2e.test.ts',
 ]);
 
 export const TEST_GROUPS = Object.freeze({

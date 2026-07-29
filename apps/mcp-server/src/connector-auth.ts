@@ -2,6 +2,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { DEFAULT_KLAURO_CLOUD_URL } from './defaults';
+import { findErrorCode, unwrapCauseChain } from './hosted-transport';
 
 export interface ConnectorEntitlement {
   status: 'active' | 'trialing' | 'inactive';
@@ -50,9 +51,19 @@ export function isNetworkUnreachableError(error: unknown): boolean {
 }
 
 export function unreachableServerError(serverUrl: string, error: unknown): Error {
-  const cause = (error as { cause?: { code?: string } })?.cause;
-  const detail = cause?.code || (error instanceof Error ? error.message : String(error));
-  return new Error(`Could not reach ${serverUrl} — check the server URL (${detail}).`);
+  // The condition is rarely one `cause` deep — undici nests, and an
+  // AggregateError from address selection hides its real errors elsewhere
+  // again — so this reads the whole chain rather than a single level, and
+  // names a command instead of leaving the reader to guess a next step.
+  const chain = unwrapCauseChain(error);
+  const code = findErrorCode(error);
+  const chainText = chain.join(' <- ');
+  const detail = code && !chainText.includes(code)
+    ? `${code}: ${chainText}`
+    : chainText || String(error);
+  return new Error(
+    `Could not reach ${serverUrl} — check the server URL and network connectivity (${detail}), then run \`klauro doctor\`.`
+  );
 }
 
 export function connectorToken(explicitToken?: string, serverUrl?: string): string | undefined {
