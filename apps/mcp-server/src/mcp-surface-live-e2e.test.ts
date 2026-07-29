@@ -172,7 +172,18 @@ test('a transport failure on the MCP surface never reaches an agent as an opaque
     KLAURO_HOSTED_REQUEST_TIMEOUT_MS: '5000',
   });
   try {
-    await client.initialize();
+    const initialized = await client.initialize();
+
+    // The handshake's serverInfo.version is the ONLY version an agent-side
+    // user or a bug report can read off the MCP connection — it must carry
+    // the real build identity, not a hardcoded placeholder. installed-client-
+    // server.ts used to construct its McpServer with a literal '1.0.0',
+    // meaning every issue filed against the MCP surface carried a meaningless
+    // version regardless of what `klauro version` actually reported.
+    const reportedVersion = initialized.result?.serverInfo?.version;
+    assert.ok(reportedVersion, `initialize returned no serverInfo.version: ${JSON.stringify(initialized).slice(0, 400)}`);
+    assert.notEqual(reportedVersion, '1.0.0', 'serverInfo.version is the hardcoded placeholder, not the real build identity');
+    assert.match(reportedVersion, /^\d+\.\d+\.\d+\+[0-9a-f]+(-dirty)?$/, `serverInfo.version does not look like a real build identity (version+sha): ${reportedVersion}`);
 
     // Both hosted call shapes: the read path and the query path. They are
     // separate functions, and the defect was that BOTH reported nothing.

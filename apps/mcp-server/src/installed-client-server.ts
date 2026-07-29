@@ -10,6 +10,7 @@ import { loadKlauroConfig, resolveAnalyzerUrl } from './klauro-config';
 import { connectorToken } from './connector-auth';
 import { describeHttpFailure, findErrorCode, hostedFetch, redactUrl, unwrapCauseChain } from './hosted-transport';
 import { checkRunningBundleStaleness } from './bundle-staleness';
+import { getBuildIdentity } from './installed-client-runtime';
 import * as watcher from './watcher';
 
 export const INSTALLED_TOOL_NAMES = [
@@ -195,7 +196,7 @@ export function withTransparentErrors<T extends (...args: any[]) => any>(registe
 }
 
 export function createServer(): McpServer {
-  const server = new McpServer({ name: 'klauro', version: '1.0.0' }, {
+  const server = new McpServer({ name: 'klauro', version: getBuildIdentity().version }, {
     instructions: 'Klauro installed client. Upload source and diffs for hosted analysis, query hosted slices, and watch in-flight changes. No analysis, CAS/WAS construction, graph construction, proposal materialization, or embeddings execute on this machine.',
   });
   const register = withTransparentErrors(server.registerTool.bind(server) as any);

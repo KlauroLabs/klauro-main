@@ -170,13 +170,16 @@ else
     HOSTED="$(curl -fsS "https://mcp.klauro.com/dist/latest.json" | node -p "JSON.parse(require('fs').readFileSync(0)).version" 2>/dev/null || echo unknown)"
     TARBALL_CODE="$(curl -s -o /dev/null -w '%{http_code}' -r 0-0 "https://mcp.klauro.com/dist/klauro-latest.tgz" 2>/dev/null || echo 000)"
     echo "    hosted latest.json version: $HOSTED ; tarball HTTP: $TARBALL_CODE"
-    if [ "$HOSTED" = "$VERSION" ] && [ "$TARBALL_CODE" = "200" ] || [ "$TARBALL_CODE" = "206" ]; then
+    # shellcheck source=verify-distribution-channel.sh
+    . "$(cd "$(dirname "$0")" && pwd)/verify-distribution-channel.sh"
+    if verify_distribution_channel "$HOSTED" "$VERSION" "$TARBALL_CODE"; then
       echo "    OK — clients will see $VERSION + download the tarball on 'klauro update'"
     else
-      echo "    !! DISTRIBUTION CHANNEL BROKEN: version=$HOSTED (want $VERSION), tarball=$TARBALL_CODE (want 200/206)."
-      echo "    !! Common cause: the api container is missing the '/opt/klauro/downloads' volume mount"
-      echo "    !! (the deploy rsyncs docker-compose.yml — ensure it keeps the downloads mount)."
-      echo "    !! Tarball uploaded fine, but clients can't fetch it. FIX before announcing the release."
+      echo "    !! DISTRIBUTION CHANNEL BROKEN: version=$HOSTED (want $VERSION), tarball=$TARBALL_CODE (want 200)." >&2
+      echo "    !! Common cause: the api container is missing the '/opt/klauro/downloads' volume mount" >&2
+      echo "    !! (the deploy rsyncs docker-compose.yml — ensure it keeps the downloads mount)." >&2
+      echo "    !! Tarball uploaded fine, but clients can't fetch it. FIX before announcing the release." >&2
+      exit 1
     fi
   fi
 fi
