@@ -151,7 +151,12 @@ describe('hostile input guards', () => {
       const preloaded = await analyzer.preloadFilesWithTreeSitter(['broken.ts', 'ok.ts'], tempDir);
       expect(preloaded.length).toBe(2);
       const warnings: string[] = analyzer.collectAnalysisWarnings();
-      expect(warnings.some(warning => warning.includes('broken.ts') && warning.includes('syntax errors'))).toBe(true);
+      // The warning no longer says "syntax errors" for a located parse failure:
+      // a tree-sitter ERROR node is not proof the source itself is invalid, so
+      // the message is hedged and names the location instead of blaming the
+      // file. What must hold is that the broken file is reported as partially
+      // extracted, and that the healthy file is not implicated.
+      expect(warnings.some(warning => warning.includes('broken.ts') && warning.includes('extraction may be partial'))).toBe(true);
       expect(warnings.some(warning => warning.includes('ok.ts'))).toBe(false);
     });
 
