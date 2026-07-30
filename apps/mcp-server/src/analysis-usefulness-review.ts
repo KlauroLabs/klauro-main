@@ -115,8 +115,6 @@ const GENERIC_TERMS = new Set([
   'apps',
   'users',
   'dev',
-  'outcode',
-  'personal',
   'asset',
   'assets',
   'generated',

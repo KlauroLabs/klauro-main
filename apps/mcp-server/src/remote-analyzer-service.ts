@@ -2589,7 +2589,7 @@ async function handleAccountApi(
       // terminal 'error' (the L5 AI comprehension pass failed its model call
       // or grounding gate) keeps layers_ready.complete false forever — before
       // this distinction, a project whose L5 errored read as 'populating'
-      // indefinitely (prod: electripure/hercules/openclaw stuck "populating"
+      // indefinitely (prod: multiple live customer projects stuck "populating"
       // with description_source null). The structure IS complete and final, so
       // the project is 'ready', with an explicit degraded ai_enrichment
       // indicator + the underlying rejection reason so the failure is VISIBLE.

@@ -68,7 +68,7 @@ const GENERIC_PROGRAMMING_TERMS = new Set([
   'option', 'opts', 'meta', 'misc', 'other', 'others',
   'api', 'apis', 'app', 'apps', 'lib', 'libs', 'client', 'clients',
   'backend', 'frontend', 'business', 'portal', 'portals',
-  'users', 'michaelshattuck', 'dev', 'outcode', 'personal',
+  'users', 'dev',
   'page', 'pages', 'layout', 'layouts', 'metadata', 'section', 'sections',
   'navbar', 'nav', 'footer', 'button', 'arrow', 'padding', 'total',
   'home', 'submit', 'rewrites', 'rewrite', 'asset', 'assets', 'generated',
@@ -124,7 +124,7 @@ const ENGLISH_STOPWORDS = new Set([
   'main', 'app', 'src', 'dist', 'common', 'global', 'local',
   'api', 'apis', 'apps', 'libs', 'client', 'clients',
   'backend', 'frontend', 'business', 'portal', 'portals',
-  'users', 'michaelshattuck', 'dev', 'outcode', 'personal',
+  'users', 'dev',
   'wrapper', 'manager', 'factory', 'builder', 'registry',
 ]);
 

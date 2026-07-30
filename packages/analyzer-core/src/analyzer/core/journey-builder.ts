@@ -76,8 +76,9 @@ const CRON_LINKABLE_ENTRY_TYPES = new Set(['cli']);
 // journey_kind 'system'. This mirrors the FLOW-role signal
 // (semantic-roles.ts isScriptEntryFile / classifyFlowRole), applied to the KIND
 // axis. Evidence = entry TYPE + a script-file root; no name blocklist. Live leak:
-// release.sh (Klauro), doctor-install-switch-docker.sh (openclaw),
-// install-local-sync.sh / hosted-mcp-allowlist-smoke.sh (kontinuum) surfaced as
+// release.sh (Klauro), a docker-based install/switch script (a repo whose CLI
+// wraps an assistant runtime), and an install-local-sync / hosted-mcp-allowlist
+// smoke-script pair (a CLI-first repo with a hosted MCP surface) surfaced as
 // user-facing/high journeys.
 const OPERATIONAL_SCRIPT_ENTRY_FILE = /\.(sh|bash|zsh|ps1|bat|cmd)$|(^|\/)(makefile|justfile)$/i;
 function isOperationalScriptEntry(file: string | undefined): boolean {

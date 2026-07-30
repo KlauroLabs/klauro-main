@@ -8932,3 +8932,45 @@ describe('P0 follow-up: the sentence-level DROP filter carries no hardcoded voca
     expect((orch as any).previousDescriptionNeedsCurrentValidation(noClassification)).toBe(false);
   });
 });
+
+describe('repoRelativePathSegments / domainKeyFromNode: out-of-root path segments never become tokens', () => {
+  // The analysis root, the developer's home directory, and any personal
+  // client-folder naming scheme are machine-specific, not repo vocabulary.
+  // This must hold for an ARBITRARY username/client folder, not just the
+  // ones a maintainer happened to think to filter — so the guarantee is
+  // structural (relative-to-root cut), never an enumerated blocklist.
+  const projectPath = '/Users/zzzrandomdev123/dev/clients/acmewidgets';
+
+  it('drops every path segment above the analysis root, regardless of what those segments are named', () => {
+    const localOrch = new AnalyzerOrchestrator() as any;
+    const file = `${projectPath}/src/services/InvoiceService.ts`;
+    const segments: string[] = localOrch.repoRelativePathSegments(file, projectPath);
+
+    expect(segments).toEqual(['InvoiceService.ts']);
+    expect(segments.join('/')).not.toMatch(/zzzrandomdev123|acmewidgets/i);
+  });
+
+  it('contributes NO tokens at all when there is no root to resolve an absolute path against', () => {
+    const localOrch = new AnalyzerOrchestrator() as any;
+    const file = `${projectPath}/src/services/InvoiceService.ts`;
+    expect(localOrch.repoRelativePathSegments(file, undefined)).toEqual([]);
+  });
+
+  it('contributes NO tokens when the file sits outside (or exactly at) the given root', () => {
+    const localOrch = new AnalyzerOrchestrator() as any;
+    expect(localOrch.repoRelativePathSegments('/Users/zzzrandomdev123/dev/other-project/index.ts', projectPath)).toEqual([]);
+    expect(localOrch.repoRelativePathSegments(projectPath, projectPath)).toEqual([]);
+  });
+
+  it('domainKeyFromNode never surfaces the username or client-folder name as a domain key', () => {
+    const localOrch = new AnalyzerOrchestrator() as any;
+    const node = {
+      id: 'n1',
+      name: 'x',
+      type: 'function',
+      source: { file: `${projectPath}/src/services/InvoiceService.ts` },
+    };
+    const key = localOrch.domainKeyFromNode(node, projectPath);
+    expect(key).not.toMatch(/zzzrandomdev123|acmewidgets|clients/i);
+  });
+});
