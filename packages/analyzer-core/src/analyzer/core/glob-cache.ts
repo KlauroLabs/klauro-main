@@ -22,6 +22,22 @@
  * are returned as a COPY (slice) so a caller that sorts/mutates in place cannot
  * corrupt another caller's view. Only string-returning globs use this wrapper;
  * callers using `withFileTypes` (Path objects) stay on direct glob.
+ *
+ * NO-TOKEN DETERMINISM (byte-stability outside an orchestrator run): async
+ * glob's raw emission order is an I/O race regardless of whether a run token
+ * is active — see the ORDER IS SORTED note below. Every analyzer's own unit
+ * test drives `analyzer.analyze()` directly, with no beginGlobRun/endGlobRun
+ * around it, so before this fix the no-token path returned glob's raw order
+ * unsorted. Under low I/O contention that race rarely flips, so isolated test
+ * runs looked stable; under the contention of a full parallel multi-file
+ * suite it flips often enough to make analyzer output (e.g.
+ * DoctrineAnalyzer's node/edge/exit-point emission, which is ordered by
+ * discovery) intermittently byte-unstable — a real defect, not a flaky test,
+ * since output order feeds fingerprinting/caching. The no-token path now
+ * sorts too, gated on `isRealGlobModule()` so jest-mocked glob returns (which
+ * per-test mocks may intentionally hand back in a specific, non-sorted,
+ * meaningful order — see src/__tests__/utils/test-helpers.ts) are left
+ * exactly as returned; only the real filesystem walk is sorted.
  */
 import { glob as realGlob, Glob, Ignore } from 'glob';
 
@@ -128,13 +144,22 @@ function defaultNocase(): boolean {
   return resolvedDefaultNocase;
 }
 
+/** True when this process has the real `glob` package (Glob/Ignore are
+ *  classes), false when the jest environment has mocked 'glob' down to
+ *  `{ glob: mockFn }` (see src/__tests__/setup.ts). Used to gate every
+ *  behavior — shared-ignore enhancement AND no-token sorting — that must
+ *  never apply to a mocked return. */
+function isRealGlobModule(): boolean {
+  return typeof Glob === 'function' && typeof Ignore === 'function';
+}
+
 /** Returns options augmented with the run's shared memoized ignore, or null
  *  when this call's options aren't safely enhanceable. */
 function enhanceOptions(state: RunState, options: GlobOptions | undefined): GlobOptions | null {
   // Ops kill-switch: disable the shared ignore, keeping only result memoization.
   if (process.env.KLAURO_GLOB_SHARED_IGNORE === 'off') return null;
   // Guard against the jest environment where 'glob' is mocked with {glob} only.
-  if (typeof Glob !== 'function' || typeof Ignore !== 'function') return null;
+  if (!isRealGlobModule()) return null;
   const opts = options ?? {};
   for (const key of Object.keys(opts)) {
     if (opts[key] === undefined) continue;
@@ -212,9 +237,19 @@ function keyFor(pattern: string | string[], options: GlobOptions | undefined): s
 
 export async function cachedGlob(pattern: string | string[], options?: GlobOptions): Promise<string[]> {
   const token = activeToken;
-  if (token === null) return realGlob(pattern as string, options as any) as Promise<string[]>;
+  if (token === null) {
+    const result = (await realGlob(pattern as string, options as any)) as string[];
+    // See NO-TOKEN DETERMINISM in the header: real-filesystem calls made
+    // outside an orchestrator run (every analyzer's own unit test) are just
+    // as subject to glob's async I/O-order race as run-scoped calls, so they
+    // need the same sort. Jest-mocked returns are left untouched.
+    return isRealGlobModule() ? [...result].sort() : result;
+  }
   const key = keyFor(pattern, options);
-  if (key === null) return realGlob(pattern as string, options as any) as Promise<string[]>;
+  if (key === null) {
+    const result = (await realGlob(pattern as string, options as any)) as string[];
+    return isRealGlobModule() ? [...result].sort() : result;
+  }
   const state = runCaches.get(token)!;
   const existing = state.results.get(key);
   if (existing) { hits += 1; return existing.slice(); }
