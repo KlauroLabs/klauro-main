@@ -97,7 +97,10 @@ test('workspace scheduler drains a project notification that arrives during an i
 
     const first = scheduler.rebuild('workspace-race');
     scheduler.notifyProjectAnalysisLanded('workspace-race');
-    await new Promise(resolve => setTimeout(resolve, 30));
+    // The condition under test IS isPending('workspace-race') — poll for it
+    // directly rather than sleeping a fixed 30ms and hoping the notification
+    // had settled by then.
+    await waitFor(async () => scheduler.isPending('workspace-race'));
     assert.equal(scheduler.isPending('workspace-race'), true, 'the concurrent notification must remain visible while the first rebuild runs');
 
     releaseFirst();
@@ -284,7 +287,15 @@ test('workspace reanalyze returns 202, background-persists an AI-enriched narrat
     // Keep the manual rebuild in flight past the attach-triggered debounce.
     // This reproduces the production race where the debounce joined an
     // existing rebuild and left its dirty bit stranded forever.
-    await new Promise(resolve => setTimeout(resolve, 300));
+    //
+    // NOT a condition poll: by design the debounced attempt JOINS the
+    // in-flight rebuild rather than re-invoking this mock, so there is no
+    // second, observable event to poll for here — the race only reproduces
+    // if this mock's own elapsed time outlasts the debounce window itself.
+    // Tied explicitly to KLAURO_WORKSPACE_ANALYSIS_DEBOUNCE_MS (set to '150'
+    // above) with margin, rather than an unexplained magic number.
+    const debounceMs = Number(process.env.KLAURO_WORKSPACE_ANALYSIS_DEBOUNCE_MS) || 150;
+    await new Promise(resolve => setTimeout(resolve, debounceMs * 2));
     const context = request?.additionalContext || {};
     const domainNames = Array.isArray(context.required_domain_names) ? context.required_domain_names : [];
     const capabilityNames = Array.isArray(context.required_capability_names) ? context.required_capability_names : [];

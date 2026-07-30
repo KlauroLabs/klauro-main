@@ -30,6 +30,42 @@ test('suite groups partition every test without overlap or omission', () => {
   assert.ok(gauntlet.files.every(item => item.file.startsWith('src/gauntlet/')));
 });
 
+test('fast/bench groups partition every test by ROLE, not by directory, without overlap or omission', () => {
+  const all = plan();
+  const fast = plan('--group', 'fast');
+  const bench = plan('--group', 'bench');
+  const combined = new Set([...fast.files, ...bench.files].map(item => item.file));
+
+  assert.equal(combined.size, all.files.length);
+  assert.deepEqual([...combined].sort(), all.files.map(item => item.file).sort());
+
+  // The whole point of the fast/bench split: a benchmark sitting directly in
+  // src/ (not under src/gauntlet/) must land in `bench`, not `fast` — this is
+  // exactly the class of file the old core/gauntlet directory-based split let
+  // slip into the pre-deploy gate.
+  const knownStraySrcBenchmarks = [
+    'src/agent-existing-task-benchmark.test.ts',
+    'src/competitor-baseline-benchmark.test.ts',
+    'src/architecture-pattern-benchmark.test.ts',
+    'src/agent-idiom-benchmark.test.ts',
+    'src/capability-inference-benchmark.test.ts',
+    'src/analysis-focus-benchmark.test.ts',
+    'src/agent-greenfield-benchmark.test.ts',
+    'src/runtime-impact-benchmark.test.ts',
+    'src/incremental-benchmark-copy.test.ts',
+  ];
+  const benchFiles = new Set(bench.files.map(item => item.file));
+  const fastFiles = new Set(fast.files.map(item => item.file));
+  for (const stray of knownStraySrcBenchmarks) {
+    assert.ok(all.files.some(item => item.file === stray), `expected ${stray} to still exist in the suite`);
+    assert.ok(benchFiles.has(stray), `expected ${stray} in bench (role-based), got fast=${fastFiles.has(stray)}`);
+    assert.ok(!fastFiles.has(stray), `expected ${stray} NOT in fast — this is exactly the directory-split defect`);
+  }
+
+  assert.ok(bench.files.every(item => item.file.startsWith('src/gauntlet/') || /-benchmark(-|\.)/.test(item.file)));
+  assert.ok(fast.files.every(item => !item.file.startsWith('src/gauntlet/') && !/-benchmark(-|\.)/.test(item.file)));
+});
+
 test('suite planner runs expensive files first and keeps deterministic ordering', () => {
   const first = plan();
   const second = plan();

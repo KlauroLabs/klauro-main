@@ -12,6 +12,9 @@
 #                                                    # upload tarball/tag), then deploy
 #   infrastructure/vps/deploy.sh --skip-app-build    # reuse an existing apps/app/dist
 #   infrastructure/vps/deploy.sh --no-verify         # skip the post-deploy health checks
+#   infrastructure/vps/deploy.sh --allow-detached    # deploy a sha no local branch points at
+#                                                    # (auto-creates a branch ref at that sha
+#                                                    # so it can never become a GC candidate)
 #
 # VPS creds come from the repo-root .env (VPS_HOST/VPS_USER/VPS_PASSWORD), which is
 # gitignored. Requires sshpass + rsync. KLAURO_URL overrides the API base
@@ -27,6 +30,7 @@ WITH_RELEASE=""
 SKIP_APP_BUILD=0
 DO_VERIFY=1
 ALLOW_DIRTY=0
+ALLOW_DETACHED=0
 
 for arg in "$@"; do
   case "$arg" in
@@ -35,6 +39,7 @@ for arg in "$@"; do
     --skip-app-build)      SKIP_APP_BUILD=1 ;;
     --no-verify)           DO_VERIFY=0 ;;
     --allow-dirty)         ALLOW_DIRTY=1 ;;
+    --allow-detached)      ALLOW_DETACHED=1 ;;
     -h|--help)
       sed -n '2,19p' "$0"; exit 0 ;;
     *) echo "unknown flag: $arg (see --help)"; exit 2 ;;
@@ -117,50 +122,81 @@ if [ "$ALLOW_DIRTY" = "1" ]; then
   fi
 fi
 
+# --- guard: the sha being deployed must be REACHABLE FROM A LOCAL BRANCH ----
+# The dirty-tree guard stops uncommitted bytes from shipping, but says nothing
+# about whether the commit itself is anchored to anything. REAL INCIDENT: twice
+# in one working session a lane deployed from `git worktree add --detach`,
+# which leaves HEAD pointing at a real commit that no branch points at.
+# Production ran that commit fine, but it was a garbage-collection candidate
+# from the moment the worktree was removed, and unreproducible from master —
+# "which commit is live" stopped being answerable by `git branch --contains`.
+# Both incidents were only recovered because someone happened to notice; the
+# script itself had nothing to say. Same failure class as the build-stamp
+# defect above: a sha that names something not guaranteed to keep existing.
+#
+# Policy chosen: refuse by default. Deploying a truly detached snapshot is
+# occasionally legitimate (a throwaway experiment against this box), so the
+# escape hatch is explicit (--allow-detached) AND self-healing — using it
+# creates a real local branch ref pointing at the deploy sha automatically,
+# so "the flag was used" and "the sha got lost" can never both be true. This
+# mirrors the --allow-dirty escape hatch's own philosophy: an escape hatch is
+# fine, an untraceable one is not.
+DEPLOY_SHA_FULL="$(git -C "$APP_DIR" rev-parse HEAD)"
+if [ "$DIRTY_DEPLOY" = "1" ]; then
+  DEPLOY_SHA_FULL="$(git -C "$APP_DIR" rev-parse "$SNAPSHOT_SHA")"
+fi
+
+REACHABLE_BRANCH=""
+while IFS= read -r branch; do
+  [ -z "$branch" ] && continue
+  if git -C "$APP_DIR" merge-base --is-ancestor "$DEPLOY_SHA_FULL" "$branch" 2>/dev/null; then
+    REACHABLE_BRANCH="$branch"
+    break
+  fi
+done < <(git -C "$APP_DIR" for-each-ref --format='%(refname:short)' refs/heads/)
+
+if [ -z "$REACHABLE_BRANCH" ]; then
+  if [ "$ALLOW_DETACHED" != "1" ]; then
+    echo "ERROR: refusing to deploy $DEPLOY_SHA_FULL — it is not reachable from any local" >&2
+    echo "       branch, so it would decouple production from master with no ref keeping it" >&2
+    echo "       alive (a git-gc candidate the moment this worktree/checkout goes away)." >&2
+    echo "" >&2
+    echo "       This is usually a detached \`git worktree add --detach\` checkout, or a" >&2
+    echo "       commit made without checking out a branch first." >&2
+    echo "" >&2
+    echo "       Fix: check out or fast-forward a real branch onto this commit, then re-run." >&2
+    echo "       To deploy a deliberate detached snapshot anyway: --allow-detached (this" >&2
+    echo "       automatically creates a local branch ref at the deploy sha so it can never" >&2
+    echo "       become an orphaned, unreproducible commit)." >&2
+    exit 1
+  fi
+  SNAPSHOT_BRANCH="deploy-snapshot/$(git -C "$APP_DIR" rev-parse --short=12 "$DEPLOY_SHA_FULL")-$(date -u +%Y%m%dT%H%M%SZ)"
+  git -C "$APP_DIR" branch "$SNAPSHOT_BRANCH" "$DEPLOY_SHA_FULL"
+  echo "==> --allow-detached: $DEPLOY_SHA_FULL was reachable from no branch — created local branch '$SNAPSHOT_BRANCH' at it so it cannot be lost." >&2
+  REACHABLE_BRANCH="$SNAPSHOT_BRANCH"
+fi
+echo "==> Deploy sha $DEPLOY_SHA_FULL is reachable from branch '$REACHABLE_BRANCH'." >&2
+
 # --- guard: SPEC-PURITY — no client/benchmark product names in specs or
 # shipped source -------------------------------------------------------------
 # Klauro's specs and product source must read as repo-agnostic: they explain
 # the ANALYZER's behavior, not any one customer's codebase. In practice,
 # comments and doc prose keep leaking the names of the benchmark/client repos
-# used to find bugs (zerac, soon-lens, truckspy, Hoggan, ...) straight into
-# docs/SPEC*.md and orchestrator.ts. That's a doctrine violation two ways: it
-# leaks client identity into a product artifact, and it silently rots the
-# specs into a diary of one corpus instead of a description of the product.
+# used to find bugs straight into docs/SPEC*.md and orchestrator.ts. That's a
+# doctrine violation two ways: it leaks client identity into a product
+# artifact, and it silently rots the specs into a diary of one corpus instead
+# of a description of the product.
 #
-# BENCHMARK_CORPUS_NAMES is the single list to extend when a new benchmark/
-# client repo enters the corpus and starts showing up in commit messages —
-# add its name (lowercase, `|`-separated, regex-escaped if needed) here and
-# nowhere else. Keep entries specific enough to avoid false positives on
-# common English words.
-BENCHMARK_CORPUS_NAMES='zerac|soon-lens|truckspy|hoggan|washup|miniflux|petclinic'
-
-echo "==> Checking spec/source purity (no benchmark-corpus names: $BENCHMARK_CORPUS_NAMES)"
-SPEC_PURITY_HITS=""
-# (a) doctrine/spec docs
-SPEC_DOC_PATHS="docs/ARCHITECTURE.md docs/UNDERSTANDING-MODEL.md docs/COVERAGE-INTELLIGENCE.md"
-for p in docs/SPEC*.md docs/was/ docs/cas/ $SPEC_DOC_PATHS; do
-  [ -e "$p" ] || continue
-  HIT="$(grep -rniE "$BENCHMARK_CORPUS_NAMES" "$p" 2>/dev/null || true)"
-  [ -n "$HIT" ] && SPEC_PURITY_HITS="${SPEC_PURITY_HITS}${HIT}
-"
-done
-# (b) shipped product source, excluding test/fixture/bench/corpus paths
-SRC_HITS="$(grep -rniE "$BENCHMARK_CORPUS_NAMES" --include='*.ts' \
-  packages/analyzer-core/src apps/mcp-server/src 2>/dev/null \
-  | grep -viE '/(test|tests|fixture|fixtures|__tests__|gauntlet|bench|benchmark|corpus)/|(\.test|\.spec|-test|benchmark|-bench|gauntlet|-corpus|-eval|-fixture)[^/]*\.ts:|/(agent-scratch-dogfood-build|agent-adoption-measurement|agent-task-family-coverage)\.ts:' || true)"
-[ -n "$SRC_HITS" ] && SPEC_PURITY_HITS="${SPEC_PURITY_HITS}${SRC_HITS}
-"
-
-if [ -n "$SPEC_PURITY_HITS" ]; then
-  echo "ERROR: SPEC-PURITY gate failed — benchmark/client corpus names found in specs or" >&2
-  echo "       product source (rule: spec/doctrine and product source must be" >&2
-  echo "       product-agnostic — move corpus references to benchmark records or fixtures)." >&2
-  echo "" >&2
-  echo "$SPEC_PURITY_HITS" | sed '/^$/d; s/^/         /' >&2
-  echo "" >&2
-  echo "       Fix by rewording the offending comments/docs generically, or by moving the" >&2
-  echo "       corpus-specific detail into a test/fixture/gauntlet/bench/corpus path (which" >&2
-  echo "       this gate excludes). Refusing to deploy." >&2
+# Open item #71: this used to be a single hand-typed BENCHMARK_CORPUS_NAMES
+# list right here — it only ever caught a name someone remembered to add, so
+# a brand-new customer/corpus repo sailed through silently (it already had,
+# once). The forbidden set is now DERIVED FROM EVIDENCE instead (real analyzed
+# project/workspace names known to the account, names already narrated in
+# this repo's own test/fixture/gauntlet/bench/corpus paths, plus a
+# shape/context heuristic that fails closed on a name never seen before) —
+# see apps/mcp-server/src/spec-purity-gate.ts for the policy and its tests.
+echo "==> Checking spec/source purity (evidence-derived forbidden-name gate — see spec-purity-gate.ts)"
+if ! ( cd "$APP_DIR/apps/mcp-server" && npx tsx src/spec-purity-gate-cli.ts "$APP_DIR" ); then
   exit 1
 fi
 
