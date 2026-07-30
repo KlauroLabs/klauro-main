@@ -131,10 +131,20 @@ export class NestJSAnalyzer extends BaseAnalyzer {
       if (!await fs.pathExists(packageJsonPath)) return false;
 
       const packageJson = await fs.readJson(packageJsonPath);
-      const packageName = typeof packageJson?.name === 'string' ? packageJson.name : '';
-      if (['@klauro/analyzer-core', '@unravl/analyzer-core'].includes(packageName)) {
-        return false;
-      }
+      // NOTE: this used to hard-exclude a literal pair of package names here
+      // (the analyzer's own host package). That was a name-based hack from
+      // before scaffold-paths.ts centralized fixture/test-scaffold exclusion
+      // (SCAFFOLD_GLOBS is already applied to this analyzer's file glob via
+      // getIgnorePatterns, and framework-comprehension.ts's product-path gate
+      // filters test/fixture evidence out of system.frameworks downstream).
+      // A hardcoded name exclusion is repo-specific and evidence-free — it
+      // silently blinded detection for any nested workspace package that
+      // happens to carry one of those two exact names, INCLUDING a real,
+      // deployed NestJS application living at that path (self-analysis
+      // DEFECT: this analyzer's own analyzer-core package is a genuine NestJS
+      // service — app.module.ts/organizations.controller.ts/etc. — yet the
+      // name match suppressed canAnalyze() for it outright, well before any
+      // fixture/test path could even be considered).
       const deps = { ...packageJson.dependencies, ...packageJson.devDependencies };
 
       return Object.keys(deps).some(dep =>
