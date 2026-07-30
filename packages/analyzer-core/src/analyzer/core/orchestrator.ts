@@ -11360,8 +11360,10 @@ export class AnalyzerOrchestrator {
         candidate.name.toLowerCase().split(/\s+/).filter(token => token.length > 3 && !GENERIC_CAPABILITY_NAME_TOKENS.has(token))
       );
       let best = 0;
+      const entityOverlaps: number[] = [];
       const scores: number[] = staged.map((item, index) => {
         const entityOverlap = candidateEntityNames.filter(entityName => item.entityNameSet.has(entityName)).length;
+        entityOverlaps.push(entityOverlap);
         let tokenOverlap = 0;
         for (const token of candidateTokens) if (itemTokens[index].has(token)) tokenOverlap++;
         const score = entityOverlap * 2 + tokenOverlap;
@@ -11369,8 +11371,45 @@ export class AnalyzerOrchestrator {
         return score;
       });
       if (best === 0) continue;
+      const tiedIndices: number[] = [];
       for (let index = 0; index < staged.length; index++) {
-        if (scores[index] !== best) continue;
+        if (scores[index] === best) tiedIndices.push(index);
+      }
+      // TASK #108 — a tie in the score above means the scorer cannot
+      // distinguish which catalog item(s) this candidate's operations really
+      // belong to. #17 made that tie broadcast to every tied item ("genuine
+      // M:N"), but measured live (11 samples, Klauro-self CAS): most ties here
+      // come from candidates with ZERO related entities (behavior-surface-
+      // derived MCP-tool-family candidates are domain-entity-free by
+      // construction — see largeSurfaceCandidates above) matching several
+      // catalog items on nothing but incidental TOKEN overlap. That is not
+      // shared ownership, it's the absence of distinguishing evidence, and
+      // broadcasting the full operation list to every tied name produced
+      // byte-identical operation sets on differently-named, differently-
+      // entity-anchored capabilities (up to 100% containment) in every one of
+      // 11 live samples.
+      //
+      // A tie is only treated as genuine M:N when it is grounded in actual
+      // shared ENTITY evidence (a real, demonstrated anchor — the candidate
+      // names entities more than one catalog item independently also names),
+      // never in token overlap alone. When no tied item has any entity
+      // overlap, the tie is a scoring collision: this never drops the
+      // candidate's operations (that would trade degenerate-but-populated for
+      // honest-but-empty, no better for a reader) and never keeps guessing —
+      // it resolves to the single most-central tied item, using the AI's own
+      // stated "most central first" catalog ordering as the deterministic
+      // tie-break (staged is in that order), which is a real signal, not a
+      // fabricated one.
+      let winners: number[];
+      if (tiedIndices.length === 1) {
+        winners = tiedIndices;
+      } else {
+        const maxEntityOverlapAmongTied = Math.max(...tiedIndices.map(index => entityOverlaps[index]));
+        winners = maxEntityOverlapAmongTied > 0
+          ? tiedIndices.filter(index => entityOverlaps[index] === maxEntityOverlapAmongTied)
+          : [tiedIndices[0]];
+      }
+      for (const index of winners) {
         if (!opsByItemIndex.has(index)) opsByItemIndex.set(index, []);
         opsByItemIndex.get(index)!.push(...candidate.operations);
         if (!entityIdsByItemIndex.has(index)) entityIdsByItemIndex.set(index, new Set());
@@ -21834,6 +21873,52 @@ export class AnalyzerOrchestrator {
         return true;
       });
       if (superset) mergeInto(superset, capability);
+    }
+
+    // Pass 2b — operation-set containment near-dups, independent of entity-set
+    // relationship (TASK #108, downstream backstop for the aiExtractCapability-
+    // Catalog tie rule above: a scoring TIE that genuinely reflects shared
+    // entity evidence is now kept as real M:N there, but two catalog items can
+    // each independently tie against the SAME small candidate while also
+    // carrying their OWN other entities — e.g. "Manage organizations and
+    // workspaces" {Organization,Workspace,...} and "Validate CAS contracts"
+    // {Codebase,AnalysisResult,...}, different names, different entity sets,
+    // measured live sharing the IDENTICAL 13-operation set verbatim). Passes 1
+    // -2 above are all keyed on entity-SET identity/subset, so a pair with
+    // different entity sets is invisible to them regardless of how identical
+    // their operations are. This is the same "adds no distinct behavior" bar
+    // as pass 2, checked on the one axis those passes never look at: the
+    // capability's own claimed operations, independent of what its entities or
+    // name say. A non-empty operation set that is a (near-)STRICT subset of
+    // another survivor's contributes zero distinguishing operational evidence
+    // of its own and merges into the richer copy. Requires a non-empty set (an
+    // empty set is trivially "contained" in everything and must never merge on
+    // that alone — same guard passes 1-2 use for entity sets) and full
+    // containment: a capability that shares SOME operations but also owns at
+    // least one the other lacks still adds distinct behavior and survives —
+    // that is legitimate sharing (an operation serving two capabilities), not
+    // a near-duplicate, and must never be merged away.
+    const opSurvivors = capabilities.filter(capability =>
+      !removed.has(capability) && !isSurfaceCap(capability) && capability.operations.length > 0);
+    for (const capability of opSurvivors) {
+      if (removed.has(capability)) continue;
+      const ownOperationKeys = new Set(capability.operations.map(operationKey));
+      const opSuperset = opSurvivors.find(other => {
+        if (other === capability || removed.has(other)) return false;
+        const otherOperationKeys = new Set(other.operations.map(operationKey));
+        if (otherOperationKeys.size < ownOperationKeys.size) return false;
+        if (otherOperationKeys.size === ownOperationKeys.size) {
+          const otherRichness = richness(other);
+          const ownRichness = richness(capability);
+          if (otherRichness < ownRichness) return false;
+          if (otherRichness === ownRichness && other.id <= capability.id) return false;
+        }
+        for (const key of ownOperationKeys) {
+          if (!otherOperationKeys.has(key)) return false;
+        }
+        return true;
+      });
+      if (opSuperset) mergeInto(opSuperset, capability);
     }
 
     // Pass 3 — verb-variant near-dups that share the SAME PRIMARY entity and an
