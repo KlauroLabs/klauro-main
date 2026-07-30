@@ -39,10 +39,18 @@ export function DeployableDetailPage() {
   if (index.isError) return <ErrorState message="Could not load this codebase's analysis." />;
 
   if (!index.promoted) {
+    // "1 ship unit found, below the threshold" and "no ship evidence found at
+    // all" are different answers: report the qualified count, never a bare
+    // "nothing to show" that reads as "we found nothing".
+    const found = index.qualifiedUnitCount;
+    const threshold = index.promotionThreshold ?? 2;
     return (
       <EmptyState
-        title="No deployable units to show"
-        description="This codebase resolves fewer than two tier-qualified ship units, so it hasn't promoted to a Deployable Analysis Workspace — a single-deployable codebase is a valid, common, terminal state (see apps/app/docs/briefs/deployables.md)."
+        title={found === 0
+          ? 'No ship evidence found in this codebase'
+          : `Single deployable — ${found ?? 'fewer than ' + threshold} tier-qualified ship unit${found === 1 ? '' : 's'} found`}
+        description={index.promotionReason
+          ?? `This codebase resolves fewer than ${threshold} tier-qualified ship units, so it hasn't promoted to a Deployable Analysis Workspace — a single-deployable codebase is a valid, common, terminal state (see apps/app/docs/briefs/deployables.md).`}
       />
     );
   }
