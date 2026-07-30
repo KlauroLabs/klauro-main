@@ -83,3 +83,52 @@ test('ElixirAnalyzer.analyze extracts modules, functions, calls, tags, and entry
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// Regression fixture for task #84: the per-file line-based Elixir parser is
+// a best-effort heuristic (do/end depth stack + regex matchers), not a real
+// grammar, and this repo's per-file glob loop previously called it with no
+// per-file guard. Any thrown exception on ONE file propagated to the
+// analyze()-level catch and turned into "Elixir analysis failed" for the
+// WHOLE repo, discarding every module/function already found in every other
+// file. Assert the opposite: one file blowing up degrades gracefully to a
+// named warning for that file, while the rest of the repo still analyzes.
+test('ElixirAnalyzer.analyze isolates a single file that throws during parsing — other files still analyze', async () => {
+  const dir = makeProject();
+  const original = (ElixirAnalyzer.prototype as any).parseElixirFile;
+  (ElixirAnalyzer.prototype as any).parseElixirFile = function (
+    relativePath: string,
+    fullPath: string,
+    content: string
+  ) {
+    if (relativePath === 'math.ex') {
+      throw new Error('synthetic parse failure (regression fixture for task #84)');
+    }
+    return original.call(this, relativePath, fullPath, content);
+  };
+  try {
+    const analyzer = new ElixirAnalyzer();
+    const cas = await analyzer.analyze({ projectPath: dir });
+
+    // The healthy file (server.ex) still contributed its module/function —
+    // the whole-repo analysis did not abort.
+    const modules = cas.nodes!.filter(n => n.type === 'module');
+    assert.ok(
+      modules.some(n => n.qualified_name === 'App.Server'),
+      'App.Server should still be extracted even though math.ex threw'
+    );
+    assert.ok(
+      !modules.some(n => n.qualified_name === 'App.Math'),
+      'App.Math (the file that threw) should be absent, not silently swallowed'
+    );
+
+    // The failure is named, not silently swallowed.
+    const warnings = (cas.analyzer_metadata as any)?.warnings || [];
+    assert.ok(
+      warnings.some((w: string) => w.includes('math.ex') && w.includes('synthetic parse failure')),
+      `expected a warning naming math.ex and the failure reason, got: ${JSON.stringify(warnings)}`
+    );
+  } finally {
+    (ElixirAnalyzer.prototype as any).parseElixirFile = original;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

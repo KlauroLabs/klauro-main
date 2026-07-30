@@ -159,7 +159,21 @@ export class ElixirAnalyzer extends BaseAnalyzer {
         } catch {
           continue;
         }
-        fileInfos.push(this.parseElixirFile(relativePath, fullPath, content));
+        // Isolate per-file: the line-based parser is a best-effort heuristic
+        // (do/end depth stack, regex matchers), not a real grammar, so an
+        // unanticipated line shape in ONE file must not be able to take down
+        // Elixir analysis for the whole repo. Before this, a throw here
+        // propagated to the outer catch below, turning one malformed/unusual
+        // file into "Elixir analysis failed" for every file. Degrade
+        // gracefully instead: skip only the offending file, name it and the
+        // reason in a warning, and keep going with the rest.
+        try {
+          fileInfos.push(this.parseElixirFile(relativePath, fullPath, content));
+        } catch (error) {
+          this.addAnalysisWarning(
+            `${relativePath} could not be parsed: ${(error as Error).message}; this file's modules/functions were skipped, other files were still analyzed`
+          );
+        }
       }
 
       // Repo-wide module index for resolving alias/use/import + call targets.
