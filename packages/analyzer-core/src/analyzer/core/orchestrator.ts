@@ -10819,11 +10819,32 @@ export class AnalyzerOrchestrator {
      *     is included with its real (possibly small) count, so a repo whose
      *     honest answer is several small capabilities still gets them,
      *     visibly labeled small rather than hidden.
+     *
+     * TASK #99 (stop naming candidates with a structural placeholder): every
+     * `evidence_kind: 'behavior-surface'` candidate's `name` is the
+     * deterministic `"<Kind> Surface"` placeholder (buildBehaviorCapabilities)
+     * — a mechanism noun by construction, and the catalog prompt's own
+     * purpose-test rule (1) below explicitly tells the model to reject
+     * mechanism nouns. So a real, evidenced surface arrived pre-shaped to be
+     * discarded regardless of size — live-probed: a 205-entry surface ranked
+     * FIRST and still was never picked. When the candidate carries real
+     * per-entry identifiers (evidence_examples — the repo's own registered
+     * tool/command/event names, set by buildBehaviorCapabilities), present
+     * those instead — evidence the model can recognize as a product ability
+     * described by what it's actually called, not a placeholder shaped like
+     * plumbing. This is presentation-only: it never touches the candidate's
+     * real `name`/`structural_label`, which stay the honest placeholder
+     * everywhere else (behavior_surfaces display, dedup, merge). No protocol
+     * or product vocabulary of this codebase's own choosing — every word
+     * comes from the repo's own registrations. Falls back to the structural
+     * name when no examples exist.
      */
     const candidateAreaFacts = rankedCandidateAreas
       .slice(0, candidateWindowSize)
       .map(capability => ({
-        name: capability.name,
+        name: capability.evidence_kind === 'behavior-surface' && (capability.evidence_examples || []).length > 0
+          ? (capability.evidence_examples as string[]).join(', ')
+          : capability.name,
         entry_points: this.behaviorSurfaceEntryCount(capability),
         entities: (capability.related_entities || []).length,
       }));
@@ -22645,6 +22666,13 @@ export class AnalyzerOrchestrator {
     interface BehaviorEntry {
       ep: CASEntryPoint;
       prefix?: string;
+      // The RESOLVED subject string (chooseSubjectField's per-surface
+      // winning field, computed below) — kept alongside `ep` so any later
+      // evidence-derived naming (candidate.evidence_examples) reads the SAME
+      // real per-tool identifier the family/prefix extraction used, rather
+      // than re-deriving from raw trigger fields with the original
+      // event-first precedence the task #99 name-extraction fix replaced.
+      subject?: string;
     }
     interface BehaviorSurface {
       kind: string;
@@ -22774,7 +22802,7 @@ export class AnalyzerOrchestrator {
             prefix = normalized;
           }
         }
-        return { ep, prefix };
+        return { ep, prefix, subject: rawSubject || undefined };
       });
       surfaces.set(kind, { kind, kindEvidence, entries });
     }
@@ -22865,6 +22893,18 @@ export class AnalyzerOrchestrator {
       const exampleNames = entries.slice(0, 3)
         .map(({ ep }) => String(ep.trigger?.event || ep.name || '').trim())
         .filter(Boolean);
+      // TASK #99 (evidence-derived candidate naming): a WIDER, deduped sample
+      // than the description's 3-example prose gets — enough for the catalog
+      // step to see real handler-name vocabulary instead of the structural
+      // "<Kind> Surface" placeholder alone. Reads each entry's already-
+      // RESOLVED `subject` (chooseSubjectField's per-surface winning field,
+      // computed above) — never re-derives from raw trigger fields, which
+      // would reintroduce the event-first precedence the name-extraction fix
+      // replaced (a constant transport marker would win again here even
+      // though it no longer wins family-prefix extraction).
+      const evidenceExamples = Array.from(new Set(
+        entries.map(({ subject }) => String(subject || '').trim()).filter(Boolean)
+      )).slice(0, 5);
       const handlerFiles = new Set(entries
         .map(({ ep }) => ep.handler?.file || nodesById.get(ep.source_node || '')?.source?.file || '')
         .filter(Boolean));
@@ -22914,6 +22954,7 @@ export class AnalyzerOrchestrator {
         // CAS field (never system_capabilities/top_capabilities) instead of
         // merging it into an existing entity-anchored capability.
         evidence_kind: surface.kindEvidence === 'registration' ? 'behavior-surface' : undefined,
+        ...(evidenceExamples.length > 0 ? { evidence_examples: evidenceExamples } : {}),
         criticality_factors: [
           `${total} ${surface.kind} entry points form one cohesive behavior ${prefix ? `family ('${prefix}')` : 'surface'}`,
           ...(framework ? [`Registered via ${framework} (analyzer framework evidence)`] : []),

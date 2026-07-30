@@ -7237,6 +7237,85 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
     }
   });
 
+  it('presents a real behavior-surface candidate to the catalog step by its TRUE evidence weight and real handler names, not the capped ops count or the structural placeholder (task #99: magnitude + evidence-derived naming)', async () => {
+    // A large, single-file, diversely-named registration surface — exactly
+    // the shape buildBehaviorCapabilities collapses to one candidate whose
+    // structural label is the "<Kind> Surface" mechanism-noun placeholder.
+    // Built through the REAL pipeline (buildBehaviorCapabilities), not a
+    // hand-authored fixture, so evidence_kind/evidence_examples populate
+    // exactly as production does.
+    const SERVER_FILE = 'apps/mcp-server/src/server.ts';
+    const nodes: CASNode[] = [];
+    const entries: CASEntryPoint[] = [];
+    const names = [
+      'assess_change_risk', 'get_data_entities', 'run_answer_pack', 'validate_behavioral_invariants',
+      'sync_codebase_remote', 'preview_codebase_iteration', 'save_workspace_graph', 'verify_workspace_link',
+      'get_agent_revision_tracks', 'list_workspace_analyses', 'resolve_agent_analysis', 'start_watch',
+      'stop_watch', 'poll_watch_changes', 'get_test_summary', 'get_semantic_map',
+    ];
+    for (const [index, name] of names.entries()) {
+      const handlerId = `handler_${name}_${index}`;
+      nodes.push({ id: handlerId, name, type: 'mcp_tool' as any, source: { file: SERVER_FILE } as any } as CASNode);
+      entries.push({
+        id: `entry_${handlerId}`,
+        source_node: handlerId,
+        type: 'message',
+        name,
+        // The fixed shape (task #99 name-extraction fix): a constant
+        // transport event alongside the real per-tool identifier.
+        trigger: { event: 'mcp.tool.call', pattern: name },
+        handler: { node_id: handlerId, method_name: name, file: SERVER_FILE },
+      } as CASEntryPoint);
+    }
+    const behaviorSurfaces = await orch.buildBehaviorCapabilities(entries, nodes, [], []);
+    expect(behaviorSurfaces.length).toBe(1);
+    expect(behaviorSurfaces[0].evidence_kind).toBe('behavior-surface');
+    expect(behaviorSurfaces[0].evidence_examples?.length).toBeGreaterThan(0);
+    // The structural placeholder is untouched — still available for
+    // behavior_surfaces display, dedup, merge.
+    expect(behaviorSurfaces[0].name).toBe('Mcp Tool Surface');
+
+    const captured: any[] = [];
+    const original = (aiService as any).generateComponentDescription;
+    (aiService as any).generateComponentDescription = async (opts: any) => {
+      captured.push(opts);
+      return JSON.stringify({ capabilities: [] });
+    };
+    try {
+      await orch.aiExtractCapabilityCatalog({
+        systemName: 'proof-of-concept',
+        enhancedSystemPurpose: { primary_domain: 'dev-tool', core_concepts: [] },
+        frameworks: [], userJourneys: [],
+        dataEntities: [],
+        candidateCapabilities: [],
+        behaviorSurfaces,
+        externalServices: [], flowGraph: { capabilities: [] },
+        projectTextSignal: { concepts: [], evidence: [] }, budgetMs: 30000,
+      });
+      const facts = captured[0]?.additionalContext?.facts;
+      const areas: any[] = facts?.candidate_route_areas || [];
+      expect(areas.length).toBeGreaterThan(0);
+      const presented = areas[0];
+      // entry_points must be the TRUE count (16), never the capped
+      // operations.length (12) — the exact understatement the fix exists to
+      // avoid.
+      expect(presented.entry_points).toBe(16);
+      // The presented name is real handler vocabulary, not the "Surface"
+      // mechanism-noun placeholder the catalog prompt's own purpose-test
+      // rule tells the model to reject on sight.
+      expect(presented.name).not.toMatch(/\bSurface\b/);
+      expect(presented.name).not.toBe('Mcp Tool Surface');
+      const presentedNames = presented.name.split(', ');
+      for (const example of presentedNames) {
+        expect(names).toContain(example);
+      }
+      // Facts only — no adjective/ranking language anywhere in the object.
+      expect(JSON.stringify(presented)).not.toMatch(/primary|core|main|central|flagship/i);
+    } finally {
+      (aiService as any).generateComponentDescription = original;
+    }
+  });
+
   it('excludes a SMALL behavior surface from the ranked window (below the operation-count threshold)', async () => {
     const captured: any[] = [];
     const original = (aiService as any).generateComponentDescription;
