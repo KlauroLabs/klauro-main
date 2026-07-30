@@ -1915,7 +1915,11 @@ export class AnalyzerOrchestrator {
 
     phaseStart = startPhase();
     const domainExtractor = new DomainExtractor();
-    const domainConcepts = domainExtractor.extract(allNodes, allEntryPoints, dataEntities, allEdges, projectPath);
+    // Capability NAMES are a distinctiveness channel for domain vocabulary: the
+    // subject of "Analyze codebase structure" is what the product is about.
+    const domainConcepts = domainExtractor.extract(allNodes, allEntryPoints, dataEntities, allEdges, projectPath, {
+      capabilityNames: systemCapabilities.map(capability => capability.name).filter(Boolean),
+    });
     logTiming('pp_domainConcepts', phaseStart);
     await yieldToEventLoop();
 
@@ -3417,7 +3421,9 @@ export class AnalyzerOrchestrator {
     const testGaps = this.buildTestGaps(flowCoverage, nodes);
 
     const domainExtractor = new DomainExtractor();
-    const domainConcepts = domainExtractor.extract(nodes, entryPoints, dataEntities, edges, projectPath);
+    const domainConcepts = domainExtractor.extract(nodes, entryPoints, dataEntities, edges, projectPath, {
+      capabilityNames: systemCapabilities.map(capability => capability.name).filter(Boolean),
+    });
 
     const workflowDetector = new WorkflowDetector();
     const workflows = workflowDetector.detectWorkflows(entryPoints, callChains, nodes, edges, exitPoints);

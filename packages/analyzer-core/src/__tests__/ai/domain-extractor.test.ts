@@ -1,3 +1,6 @@
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import { DomainExtractor } from '../../analyzer/core/domain-extractor';
 import { CASNode, CASEntryPoint, CASDataEntity } from '../../types/cas.types';
 
@@ -195,6 +198,153 @@ describe('DomainExtractor', () => {
     for (let i = 1; i < concepts.length; i++) {
       expect(concepts[i - 1].frequency).toBeGreaterThanOrEqual(concepts[i].frequency);
     }
+  });
+});
+
+describe('DomainExtractor distinctiveness gate', () => {
+  const extractor = new DomainExtractor();
+
+  const typeNode = (id: string, name: string, file = 'src/domain/model.ts'): CASNode =>
+    node(id, name, { type: 'interface', source: { file, line: 1 } as any });
+
+  it('a frequent but generic English word is not a concept', () => {
+    // REGRESSION: a production analysis emitted 599 "concepts" whose tail was
+    // ordinary English (`triggered`, `acknowledged`, `locale`, `reproduction`).
+    // Those words occur — that was the whole of their qualification.
+    const nodes: CASNode[] = [
+      // The generic verb is the MOST frequent token in the graph, spread over
+      // more code units than the domain term, and named by nothing.
+      ...nodesNamed('markShipmentTriggered', 12, 'fn'),
+      // The domain term is named by the entity model.
+      ...nodesNamed('shipment', 3, 's'),
+      typeNode('t1', 'ShipmentRoute'), typeNode('t2', 'ShipmentLeg'), typeNode('t3', 'ShipmentManifest'),
+    ];
+    const concepts = extractor.extract(nodes, [], [entity('ent_shipment', 'Shipment', ['triggered'])], []);
+    const names = concepts.map(concept => concept.name);
+
+    expect(names).toContain('shipment');
+    expect(names).not.toContain('triggered');
+    // ... and the term that IS retained cites why.
+    const shipment = concepts.find(concept => concept.name === 'shipment')!;
+    expect(shipment.distinctiveness_evidence?.join(' ')).toMatch(/entity name: Shipment/);
+    // Ranking is by distinctiveness, so the cited term outranks the frequent one.
+    expect(names[0]).toBe('shipment');
+  });
+
+  it('an entity FIELD name alone is not distinctiveness evidence', () => {
+    // A field list is where a record's incidental attributes live. Crediting it
+    // as an entity anchor is how generic words rode in on an entity's coat-tails.
+    const concepts = extractor.extract(
+      [...nodesNamed('applyTimezone', 4, 'tz')],
+      [],
+      [entity('ent_booking', 'Booking', ['timezone', 'locale'])],
+      [],
+    );
+    const timezone = concepts.find(concept => concept.name === 'timezone');
+    expect(timezone?.distinctiveness_evidence?.join(' ') || '').not.toMatch(/entity name/);
+  });
+
+  it('recurrence across the declared-type vocabulary is evidence; one type is not', () => {
+    const nodes: CASNode[] = [
+      typeNode('t1', 'LedgerEntry'), typeNode('t2', 'LedgerAccount'), typeNode('t3', 'LedgerPosting'),
+      typeNode('t4', 'CarouselState'),
+      ...nodesNamed('ledger', 2, 'l'), ...nodesNamed('mascot', 2, 'm'),
+    ];
+    const concepts = extractor.extract(nodes, [], [], []);
+    const ledger = concepts.find(concept => concept.name === 'ledger');
+    expect(ledger?.distinctiveness_evidence?.join(' ')).toMatch(/declared type \(3\)/);
+    const mascot = concepts.find(concept => concept.name === 'mascot');
+    expect(mascot?.distinctiveness_evidence?.join(' ') || '').not.toMatch(/declared type/);
+  });
+
+  it('a capability subject is a concept even when the code spells it only in identifiers', () => {
+    const concepts = extractor.extract(
+      [...nodesNamed('reconcileSettlement', 3, 'r')],
+      [],
+      [],
+      [],
+      undefined,
+      { capabilityNames: ['Reconcile settlement batches', 'Report settlement variance'] },
+    );
+    const settlement = concepts.find(concept => concept.name === 'settlement')!;
+    expect(settlement).toBeDefined();
+    expect(settlement.distinctiveness_evidence?.join(' ')).toMatch(/capability subject/);
+  });
+
+  it('frequency counts DISTINCT usage sites, not token occurrences', () => {
+    // Four code units, one term. The old counter recorded the same node up to
+    // three times and reported the product of its own weighting.
+    const concepts = extractor.extract(nodesNamed('warehouse', 4, 'w'), [], [], []);
+    const warehouse = concepts.find(concept => concept.name === 'warehouse')!;
+    expect(warehouse.frequency).toBe(4);
+    expect(warehouse.description).toMatch(/4 distinct usage sites/);
+  });
+
+  it('caps the emitted vocabulary rather than shipping hundreds of terms', () => {
+    const nodes: CASNode[] = [];
+    const entities: CASDataEntity[] = [];
+    for (let index = 0; index < 120; index++) {
+      const term = `zeta${index}kappa`;
+      entities.push(entity(`ent_${index}`, term));
+      nodes.push(node(`n_${index}_a`, term), node(`n_${index}_b`, term));
+    }
+    const concepts = extractor.extract(nodes, [], entities, []);
+    expect(concepts.length).toBeLessThanOrEqual(40);
+    expect(concepts.every(concept => (concept.distinctiveness_evidence || []).length > 0)).toBe(true);
+  });
+});
+
+describe('DomainExtractor authored compounds', () => {
+  const extractor = new DomainExtractor();
+  let root: string;
+
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'domain-compound-'));
+  });
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it('keeps an authored hyphenated compound as ONE concept, not two words', () => {
+    // REGRESSION: a compound the authors write as one term shipped as two
+    // separate concepts because tokenization split every non-alphanumeric
+    // boundary. Both halves then looked like independent domain vocabulary.
+    fs.writeFileSync(
+      path.join(root, 'README.md'),
+      '# Parser toolkit\n\nGrammars are compiled with cross-parser support for every language.\n',
+    );
+    fs.writeFileSync(
+      path.join(root, 'package.json'),
+      JSON.stringify({ name: 'toolkit', dependencies: { 'cross-parser': '1.0.0' } }),
+    );
+    const nodes: CASNode[] = [
+      node('n1', 'CrossParserRegistry', { type: 'class', source: { file: 'src/cross-parser/registry.ts' } as any }),
+      node('n2', 'crossParserFor', { type: 'function', source: { file: 'src/cross-parser/resolve.ts' } as any }),
+      node('n3', 'loadCrossParser', { type: 'function', source: { file: 'src/cross-parser/load.ts' } as any }),
+    ];
+
+    const names = extractor.extract(nodes, [], [], [], root).map(concept => concept.name);
+    expect(names).toContain('cross-parser');
+    expect(names).not.toContain('cross');
+    // The compound is cited to the authors' own text, not to its frequency.
+    const compound = extractor
+      .extract(nodes, [], [], [], root)
+      .find(concept => concept.name === 'cross-parser')!;
+    expect(compound.distinctiveness_evidence?.join(' ')).toMatch(/authored prose/);
+  });
+
+  it('never fuses a kebab-case FILE NAME into one concept', () => {
+    // File names are not authored terms. Sourcing the lexicon from prose and
+    // manifests only is what keeps `analysis-usefulness-review.ts` from
+    // becoming a single concept.
+    fs.writeFileSync(path.join(root, 'README.md'), '# Toolkit\n\nA toolkit for warehouse logistics.\n');
+    const nodes: CASNode[] = [
+      node('n1', 'WarehouseSlotPlanner', { type: 'class', source: { file: 'src/warehouse-slot-planner.ts' } as any }),
+      node('n2', 'planWarehouseSlot', { type: 'function', source: { file: 'src/warehouse-slot-planner.ts' } as any }),
+    ];
+    const names = extractor.extract(nodes, [], [], [], root).map(concept => concept.name);
+    expect(names).not.toContain('warehouse-slot-planner');
+    expect(names).toContain('warehouse');
   });
 });
 

@@ -9404,9 +9404,11 @@ describe('P1: core_concepts and domain_concepts are grounded in the repository',
     for (const concept of concepts) {
       expect(typeof concept.description).toBe('string');
       expect(concept.description.trim().length).toBeGreaterThan(0);
-      // Factual: it reports counted references and the term itself.
+      // Factual: it reports counted references and the term itself. The count is
+      // DISTINCT USAGE SITES — the raw occurrence total it used to report was a
+      // token counter inflated by the extractor's own per-node weighting.
       expect(concept.description).toContain(concept.name);
-      expect(concept.description).toMatch(/\d+ total occurrences/);
+      expect(concept.description).toMatch(/\d+ distinct usage sites?/);
     }
   });
 
