@@ -390,9 +390,60 @@ function cleanScriptDisplayName(relativeFile: string): string {
   return base;
 }
 
+/** Cap on how much of one copy-command line is scanned for `target/(release|
+ *  debug)/<name>` source tokens. Mirrors MAX_FUNC_BODY_SEARCH_CHARS's own
+ *  reasoning below (defect: an unbounded lazy quantifier over a pathological
+ *  shell file made a single regex pass quadratic in file size) — every
+ *  quantifier this file adds over line/command text must carry an explicit
+ *  bound, even one that already looks line-scoped via `[^\n]`, because a
+ *  single generated/minified line with no newline for a long stretch removes
+ *  that implicit bound entirely. */
+const MAX_COPY_COMMAND_SEARCH_CHARS = 2000;
+
+/** Read the source-side binary name out of ONE `target/(release|debug)/...`
+ *  path token, however it is spelled on a copy/install command line:
+ *  optionally quoted, with or without a leading `./`, with or without a
+ *  trailing path separator before the filename. Deliberately excludes `$`
+ *  and `{`/`}` from the captured name (an unresolved shell variable, e.g.
+ *  `target/release/$BIN`, is not a real member name — silently keeping the
+ *  literal string "$BIN" would ship a fabricated identity) rather than
+ *  guessing at variable expansion, which this module does not attempt here
+ *  (see resolveIndirectCargoPackageMembers below for the one shape of
+ *  indirection this file DOES resolve: a wrapper function's own positional
+ *  parameter, not an arbitrary shell variable). */
+const COPY_TARGET_TOKEN = /(?:^|[\s"'])(?:\.\/)?target\/(?:release|debug)\/([A-Za-z0-9_.-]+)/g;
+
+/** Robust copy-target scraping for installer scripts (spec §91b): the binary
+ *  name a packaging step ships is whatever `cp`/`install`/`mv` names as its
+ *  SOURCE, but real scripts spell that command in more shapes than a single
+ *  `cp target/release/<bin> <dest>` line:
+ *   - `install` (common on Linux packaging: `install -Dm755 target/release/x
+ *     "$pkgdir"/usr/bin/x`) and `mv`, not just `cp`.
+ *   - Multiple source tokens on one invocation (`cp target/release/a
+ *     target/release/b dist/`) — every `target/(release|debug)/<name>` token
+ *     on the command line is a member, not just the first.
+ *   - Quoted paths (`cp "target/release/${BIN}"` -> the quote is stripped by
+ *     COPY_TARGET_TOKEN's boundary class; the unresolved `${BIN}` variable
+ *     itself is correctly NOT captured as a name — see COPY_TARGET_TOKEN's
+ *     own doc comment).
+ *  Each command's scan window is bounded (MAX_COPY_COMMAND_SEARCH_CHARS) so a
+ *  pathological single-line script cannot make this quadratic in file size,
+ *  the same defensive shape MAX_FUNC_BODY_SEARCH_CHARS uses below. */
+function collectCopyTargetMembers(content: string): string[] {
+  const members: string[] = [];
+  for (const commandMatch of content.matchAll(/\b(?:cp|install|mv)\s+[^\n]{0,2000}/g)) {
+    const commandText = commandMatch[0].slice(0, MAX_COPY_COMMAND_SEARCH_CHARS);
+    for (const tokenMatch of commandText.matchAll(COPY_TARGET_TOKEN)) {
+      members.push(tokenMatch[1]);
+    }
+  }
+  return members;
+}
+
 /** Installers / packaging shell scripts (e.g. build-installer.sh) that bundle
  *  multiple binaries into one distribution artifact. Reads `cargo build -p X`
- *  args plus `cp target/release/<bin> ...` copy targets to recover real
+ *  args plus `cp`/`install`/`mv` copy targets naming a `target/release/` or
+ *  `target/debug/` source (see collectCopyTargetMembers) to recover real
  *  membership, independent of whether the Distribution Artifact Analyzer's
  *  own node pipeline fired for this file. */
 function collectFromInstallerScripts(ctx: EvidenceCollectionContext): DeployableEvidence[] {
@@ -422,9 +473,7 @@ function collectFromInstallerScripts(ctx: EvidenceCollectionContext): Deployable
     for (const match of content.matchAll(/cargo\s+(?:build|install)\b[^\n]*/g)) {
       for (const pkgMatch of match[0].matchAll(/-p\s+([A-Za-z0-9_-]+)/g)) members.add(pkgMatch[1]);
     }
-    for (const match of content.matchAll(/\bcp\s+[^\n]*target\/(?:release|debug)\/([A-Za-z0-9_-]+)/g)) {
-      members.add(match[1]);
-    }
+    collectCopyTargetMembers(content).forEach(name => members.add(name));
     resolveIndirectCargoPackageMembers(content).forEach(name => members.add(name));
 
     if (!members.size) continue;

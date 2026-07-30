@@ -1014,6 +1014,122 @@ describe('collectDeployableEvidence: evidence-gated bundling resolution (SPEC-DE
     expect(clientBin!.bundled_into).toBe(installer!.name);
   });
 
+  // --- installer ships_paths robustness (spec #91b): the original scrape
+  // only recognized a bare `cp target/(release|debug)/<name>` on its own
+  // line. Real packaging scripts use `install` and `mv` too, put multiple
+  // source tokens on one invocation, and quote paths.
+  describe('installer ships_paths: robust shell-token scraping', () => {
+    test('`install` (not just `cp`) naming a target/release source is read as a member', () => {
+      projectPath = tempProject();
+      fs.writeFileSync(
+        path.join(projectPath, 'Cargo.toml'),
+        ['[workspace]', 'members = ["agent"]', '', '[[bin]]', 'name = "agent"', 'path = "agent/src/main.rs"', ''].join('\n'),
+      );
+      fs.writeFileSync(
+        path.join(projectPath, 'build-installer.sh'),
+        [
+          '#!/bin/bash',
+          'cargo build --release -p agent',
+          'install -Dm755 target/release/agent "$pkgdir"/usr/bin/agent',
+        ].join('\n') + '\n',
+      );
+
+      const result = collectDeployableEvidence({ projectPath, nodes: [], entryPoints: [], exitPoints: [] });
+      const installer = result.find(item => item.kind === 'installer');
+      expect(installer).toBeDefined();
+      expect(installer!.ships_paths).toEqual(expect.arrayContaining(['agent']));
+    });
+
+    test('`mv` naming a target/debug source is read as a member', () => {
+      projectPath = tempProject();
+      fs.writeFileSync(
+        path.join(projectPath, 'Cargo.toml'),
+        ['[workspace]', 'members = ["watcher"]', '', '[[bin]]', 'name = "watcher"', 'path = "watcher/src/main.rs"', ''].join('\n'),
+      );
+      fs.writeFileSync(
+        path.join(projectPath, 'build-installer.sh'),
+        ['#!/bin/bash', 'cargo build -p watcher', 'mv target/debug/watcher dist/watcher'].join('\n') + '\n',
+      );
+
+      const result = collectDeployableEvidence({ projectPath, nodes: [], entryPoints: [], exitPoints: [] });
+      const installer = result.find(item => item.kind === 'installer');
+      expect(installer).toBeDefined();
+      expect(installer!.ships_paths).toEqual(expect.arrayContaining(['watcher']));
+    });
+
+    test('multiple target/release source tokens on ONE cp invocation are all read as members', () => {
+      projectPath = tempProject();
+      fs.writeFileSync(
+        path.join(projectPath, 'Cargo.toml'),
+        [
+          '[workspace]',
+          'members = ["client", "client-service"]',
+          '',
+          '[[bin]]',
+          'name = "client"',
+          'path = "client/src/main.rs"',
+          '',
+          '[[bin]]',
+          'name = "client-service"',
+          'path = "client-service/src/main.rs"',
+          '',
+        ].join('\n'),
+      );
+      fs.writeFileSync(
+        path.join(projectPath, 'build-installer.sh'),
+        [
+          '#!/bin/bash',
+          'cargo build --release -p client',
+          'cargo build --release -p client-service',
+          'cp target/release/client target/release/client-service dist/',
+        ].join('\n') + '\n',
+      );
+
+      const result = collectDeployableEvidence({ projectPath, nodes: [], entryPoints: [], exitPoints: [] });
+      const installer = result.find(item => item.kind === 'installer');
+      expect(installer).toBeDefined();
+      expect(installer!.ships_paths).toEqual(expect.arrayContaining(['client', 'client-service']));
+    });
+
+    test('a quoted target/release path is read as a member, quotes stripped', () => {
+      projectPath = tempProject();
+      fs.writeFileSync(
+        path.join(projectPath, 'Cargo.toml'),
+        ['[workspace]', 'members = ["agent"]', '', '[[bin]]', 'name = "agent"', 'path = "agent/src/main.rs"', ''].join('\n'),
+      );
+      fs.writeFileSync(
+        path.join(projectPath, 'build-installer.sh'),
+        ['#!/bin/bash', 'cargo build --release -p agent', 'cp "target/release/agent" "dist/agent"'].join('\n') + '\n',
+      );
+
+      const result = collectDeployableEvidence({ projectPath, nodes: [], entryPoints: [], exitPoints: [] });
+      const installer = result.find(item => item.kind === 'installer');
+      expect(installer).toBeDefined();
+      expect(installer!.ships_paths).toEqual(['agent']);
+    });
+
+    test('an unresolved shell variable in the source path is NOT captured as a fabricated member name', () => {
+      projectPath = tempProject();
+      fs.writeFileSync(
+        path.join(projectPath, 'Cargo.toml'),
+        ['[workspace]', 'members = ["agent"]', '', '[[bin]]', 'name = "agent"', 'path = "agent/src/main.rs"', ''].join('\n'),
+      );
+      fs.writeFileSync(
+        path.join(projectPath, 'build-installer.sh'),
+        ['#!/bin/bash', 'cargo build --release -p agent', 'cp "target/release/${BIN}" dist/'].join('\n') + '\n',
+      );
+
+      const result = collectDeployableEvidence({ projectPath, nodes: [], entryPoints: [], exitPoints: [] });
+      const installer = result.find(item => item.kind === 'installer');
+      // Only the resolvable `cargo build -p agent` evidence should surface a
+      // member; the unresolved `${BIN}` token must never become a literal
+      // "${BIN}" (or "BIN") ships_paths entry.
+      expect(installer).toBeDefined();
+      expect(installer!.ships_paths).toEqual(['agent']);
+      expect(installer!.ships_paths).not.toEqual(expect.arrayContaining([expect.stringContaining('BIN')]));
+    });
+  });
+
   test('negative case: two sibling bin candidates with NO installer/Dockerfile referencing either stay separate (no merge on absence of evidence)', () => {
     projectPath = tempProject();
     fs.writeFileSync(
