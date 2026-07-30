@@ -309,6 +309,36 @@ export function linkInfraTopology(output: Pick<CASOutput, 'nodes' | 'entry_point
   });
   result.joins = result.joins.filter(j => !j.source_node || !j.target_node || j.source_node !== j.target_node);
 
+  // A deployable whose root owns the whole tree has no representative code node,
+  // so its edges anchor on a synthetic key. That key still has to EXIST: an
+  // edge naming an id present in no collection is a dangling endpoint no
+  // traversal can follow. Emitted only for the keys edges actually reference,
+  // so a repository with no whole-tree deployable gains nothing.
+  const referencedSyntheticIds = new Set<string>();
+  for (const e of result.edges) {
+    for (const endpoint of [e.source, e.target]) {
+      if (endpoint.startsWith('deployable:')) referencedSyntheticIds.add(endpoint);
+    }
+  }
+  for (const anchor of deployableAnchors) {
+    if (!referencedSyntheticIds.has(anchor.anchorNodeId)) continue;
+    result.nodes.push({
+      id: anchor.anchorNodeId,
+      name: anchor.deployable.name,
+      type: 'deployable_unit',
+      level: 1,
+      level_name: 'system',
+      analyzers: ['infra-topology-linker'],
+      metadata: {
+        deployable_name: anchor.deployable.name,
+        deployable_root: anchor.deployable.root_path,
+        deployable_kind: anchor.deployable.kind,
+        synthetic_anchor: true,
+        topology_surface: 'deployable',
+      },
+    } as CASNode);
+  }
+
   return result;
 }
 

@@ -132,6 +132,33 @@ export function formatReferentialIntegrityReport(report: ReferentialIntegrityRep
   return lines.join('\n');
 }
 
+/**
+ * Drop every edge that references an id which was just removed from an
+ * id-bearing collection, in place; returns how many were dropped.
+ *
+ * The counterpart to any pass that legitimately discards a row. Two producers
+ * were measured removing rows and leaving their references behind, so the
+ * reconciliation lives in one place: a caller that removes rows and forgets
+ * this leaves the graph asserting endpoints that do not exist, and every count
+ * derived from a traversal inherits the error. Use this when the removed row
+ * has no successor to point at; when it does (the row moved rather than
+ * vanished), REPOINT the edge instead — dropping loses a real relationship.
+ */
+export function dropEdgesReferencingRemovedEndpoints(
+  edges: Array<{ source: string; target: string }>,
+  removedEndpointIds: Set<string>
+): number {
+  if (removedEndpointIds.size === 0) return 0;
+  let writeIndex = 0;
+  for (const edge of edges) {
+    if (removedEndpointIds.has(edge.source) || removedEndpointIds.has(edge.target)) continue;
+    edges[writeIndex++] = edge;
+  }
+  const dropped = edges.length - writeIndex;
+  edges.length = writeIndex;
+  return dropped;
+}
+
 function topEntries(counts: Record<string, number>, limit = 10): string {
   const entries = Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, limit);
   return entries.length > 0 ? entries.map(([k, v]) => `${k}=${v}`).join(' ') : 'none';
