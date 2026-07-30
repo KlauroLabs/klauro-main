@@ -165,3 +165,137 @@ test('getErd format switch: mermaid-only vs json-only vs both', () => {
   const jsonOnly = getErd(cas, { format: 'json' }) as any;
   assert.ok(jsonOnly.entities && !jsonOnly.mermaid, 'json-only');
 });
+
+// ---------------------------------------------------------------------------
+// The defect these lock: the ERD only ever read `database_schema.entities[]
+// .relationships`, so an ORM whose analyzer models relations as EDGES rendered
+// a set of disconnected boxes (its associations lived in the string-only
+// `relationships_summary`), and a typed-composition data model rendered no
+// edges at all. Relations from the shared extractor are now merged in, which
+// also means an analysis stored BEFORE relations were persisted still renders.
+// ---------------------------------------------------------------------------
+
+test('buildErd renders relations an ORM emitted as EDGES, not property decorators', () => {
+  const cas = {
+    database_schema: {
+      orm: 'Doctrine',
+      entities: [
+        { name: 'Booking', fields: [{ name: 'id', type: 'int', primary: true }], relationships: [] },
+        { name: 'Company', fields: [{ name: 'id', type: 'int', primary: true }], relationships: [] },
+      ],
+      relationships_summary: ['Booking N:1 Company (via company)'],
+    },
+    nodes: [
+      { id: 'e_booking', name: 'Booking', type: 'entity' },
+      { id: 'e_company', name: 'Company', type: 'entity' },
+    ],
+    edges: [{
+      id: 'rel_1',
+      source: 'e_booking',
+      target: 'e_company',
+      type: 'references',
+      metadata: { attributes: { relationType: 'ManyToOne', field: 'company' } },
+    }],
+    data_entities: [
+      { id: 'de_booking', name: 'Booking', fields: [], lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] } },
+      { id: 'de_company', name: 'Company', fields: [], lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] } },
+    ],
+  } as unknown as CASOutput;
+
+  const model = buildErd(cas);
+  const edge = model.relationships.find(r => r.from === 'Booking' && r.to === 'Company');
+  assert.ok(edge, 'edge-declared relation reaches the ERD');
+  assert.equal(edge!.cardinality, 'many-to-one');
+  assert.equal(edge!.field, 'company');
+  assert.equal(model.cardinality_breakdown['many-to-one'], 1);
+  assert.match(erdToMermaid(model), /Booking \}o--\|\| Company/);
+});
+
+test('buildErd renders typed-composition relations and never invents one from a field NAME', () => {
+  const cas = {
+    database_schema: {
+      entities: [
+        {
+          name: 'PacketZeroCopy',
+          fields: [{ name: 'header', type: 'PacketHeader' }, { name: 'buf', type: '[u8]' }],
+          relationships: [],
+        },
+        { name: 'PacketHeader', fields: [{ name: 'nonce', type: '[u8; 12]' }], relationships: [] },
+        // `header` here is a plain string — an entity-shaped NAME with no type
+        // evidence, which must produce NO edge.
+        { name: 'Envelope', fields: [{ name: 'header', type: 'String' }], relationships: [] },
+      ],
+      relationships_summary: [],
+    },
+    nodes: [],
+    edges: [],
+    data_entities: [
+      {
+        id: 'de_pzc', name: 'PacketZeroCopy',
+        fields: [
+          { name: 'header', type: 'PacketHeader', is_sensitive: false },
+          { name: 'buf', type: '[u8]', is_sensitive: false },
+        ],
+        lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] },
+      },
+      {
+        id: 'de_ph', name: 'PacketHeader',
+        fields: [{ name: 'nonce', type: '[u8; 12]', is_sensitive: false }],
+        lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] },
+      },
+      {
+        id: 'de_env', name: 'Envelope',
+        fields: [{ name: 'header', type: 'String', is_sensitive: false }],
+        lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] },
+      },
+    ],
+  } as unknown as CASOutput;
+
+  const model = buildErd(cas);
+  assert.equal(model.relationships.length, 1);
+  assert.equal(model.relationships[0].from, 'PacketZeroCopy');
+  assert.equal(model.relationships[0].to, 'PacketHeader');
+  assert.equal(model.relationships[0].cardinality, 'one-to-one');
+  assert.match(model.relationships[0].evidence, /typed `PacketHeader`/);
+  // The composed field is labelled fk in the diagram, not a bare scalar.
+  const pzc = model.entities.find(e => e.name === 'PacketZeroCopy')!;
+  assert.ok(pzc.fields.find(f => f.name === 'header')!.fk);
+  assert.ok(erdToMermaid(model).includes('PacketZeroCopy ||--|| PacketHeader'));
+});
+
+test('buildErd draws ONE edge per relation field even when two carriers read it differently', () => {
+  // The decorator carrier (via database_schema) proves `AnalysisRun.codebase`
+  // is `ManyToOne`; the typed-composition carrier reads the same field as a
+  // `1:1` composition because its declared type IS `Codebase`. One field, one
+  // relation — drawing both would render every association twice.
+  const cas = {
+    database_schema: {
+      orm: 'MikroORM',
+      entities: [
+        {
+          name: 'AnalysisRun',
+          fields: [{ name: 'codebase', type: 'Codebase' }],
+          relationships: [{ type: 'ManyToOne', target: 'Codebase', field: 'codebase' }],
+        },
+        { name: 'Codebase', fields: [{ name: 'id', type: 'number', primary: true }], relationships: [] },
+      ],
+      relationships_summary: [],
+    },
+    nodes: [],
+    edges: [],
+    data_entities: [
+      {
+        id: 'de_run', name: 'AnalysisRun',
+        fields: [{ name: 'codebase', type: 'Codebase', is_sensitive: false }],
+        lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] },
+      },
+      { id: 'de_cb', name: 'Codebase', fields: [], lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] } },
+    ],
+  } as unknown as CASOutput;
+
+  const model = buildErd(cas);
+  const edges = model.relationships.filter(r => r.from === 'AnalysisRun' && r.to === 'Codebase');
+  assert.equal(edges.length, 1);
+  assert.equal(edges[0].cardinality, 'many-to-one', 'the stronger declared cardinality wins');
+  assert.equal(model.cardinality_breakdown['one-to-one'], 0);
+});
