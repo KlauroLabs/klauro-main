@@ -1825,6 +1825,29 @@ describe('architecture and capability inference', () => {
     expect(purpose.primary_type).not.toBe('gaming-platform');
   });
 
+  it('scores a shape signature to a non-zero weight without a runner-up present (guards the single-entry signature table left after task #90 — secondBest is now optional)', async () => {
+    const entryPoints = [
+      { id: 'e1', type: 'http', name: 'GET /api/users', trigger: { method: 'GET', path: '/api/users' } },
+      { id: 'e2', type: 'http', name: 'GET /api/session', trigger: { method: 'GET', path: '/api/session' } },
+    ];
+    const nodes: CASNode[] = [
+      node({ id: 'route', name: 'ApiRoute', type: 'controller', source: { file: 'src/api/route.ts' } }),
+      node({ id: 'mw', name: 'AuthMiddleware', type: 'middleware', source: { file: 'src/middleware/auth.ts' } }),
+      node({ id: 'provider', name: 'SessionProvider', type: 'component', source: { file: 'src/context/provider.tsx' } }),
+    ];
+    const priorPath = (orch as any).activeAnalysisProjectPath;
+    (orch as any).activeAnalysisProjectPath = undefined;
+    try {
+      // Must not throw: with the business-vertical entries gone there is no
+      // signatures[1] to read a separation bonus from.
+      const purpose = await orch.inferSystemPurpose(entryPoints as any, [], [], nodes);
+      expect(typeof purpose.primary_type).toBe('string');
+      expect(purpose.confidence).toBeGreaterThan(0);
+    } finally {
+      (orch as any).activeAnalysisProjectPath = priorPath;
+    }
+  });
+
   it('classifies devtools-platform from a DECLARED source-parser dependency, not from talking about "analysis" (task #90)', async () => {
     const nodes: CASNode[] = [
       node({ id: 'walker', name: 'SymbolWalker', type: 'class', source: { file: 'src/SymbolWalker.ts' } }),

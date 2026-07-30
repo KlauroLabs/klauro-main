@@ -25523,7 +25523,10 @@ export class AnalyzerOrchestrator {
     );
     let confidence = topMatch.weight / maxPossibleScore;
 
-    if (topMatch.weight > 0 && secondBest.weight > 0) {
+    // secondBest is optional: the signature table is down to shape entries
+    // after task #90 removed the business-vertical ones, so there may be no
+    // runner-up at all. A separation bonus needs two scoring signatures.
+    if (topMatch.weight > 0 && (secondBest?.weight ?? 0) > 0) {
       const separation = (topMatch.weight - secondBest.weight) / topMatch.weight;
       confidence = Math.min(confidence + (separation * 0.3), 1.0);
     }
