@@ -19,7 +19,7 @@ import {
 } from '../../../packages/analyzer-core/src/analyzer/core/entry-point-deployable';
 import {
   ReachabilityIndex,
-  callEdgePairs,
+  reachabilityEdgePairs,
 } from '../../../packages/analyzer-core/src/analyzer/core/reachability-index';
 
 /**
@@ -383,13 +383,27 @@ const sliceContexts = new WeakMap<CASOutput, CasSliceContext>();
  * per-unit re-scan of the whole edge list, which is the exhaustive-scan defect
  * class that index exists to retire.
  *
- * The index is built over the call graph `callEdgePairs` defines ('calls'
- * edges + resolved method_calls) PLUS 'invokes' edges, which some analyzers
- * emit for a dispatch/registration call and which the DAS closure must follow
- * for the same reason it follows 'calls'. That is a superset of the persisted
- * `cas.reachability_index`'s edge set, so this builds its own index rather
- * than rehydrating the stored one — a DAS unit that silently lost its
- * dispatch-reached code would under-report its own contents.
+ * The DAS closure needs the call graph `callEdgePairs` defines ('calls' edges
+ * + resolved method_calls) PLUS 'invokes' edges, which some analyzers emit
+ * for a dispatch/registration call — a closure that stopped at 'calls' would
+ * silently lose that dispatch-reached code from a unit's own contents. The
+ * persisted `cas.reachability_index` (built by buildReachabilityIndexFromCas)
+ * is built over exactly that same edge set (`reachabilityEdgePairs`), so when
+ * the CAS carries one this rehydrates it (`ReachabilityIndex.from`) instead of
+ * rebuilding — the whole reason a second Tarjan+PLL pass existed was that the
+ * persisted index used to be missing 'invokes'; now that it isn't, DAS reuses
+ * it like every other reachability consumer.
+ *
+ * Reuse is gated on `includes_invokes_edges`, NOT on presence alone: an
+ * analysis stored before that flag existed carries a persisted index built
+ * over 'calls' + method_calls only, and DAS used to ALWAYS rebuild its own
+ * (invokes-inclusive) index regardless of what was persisted — trusting an
+ * old index just because it exists would silently hand such a unit a
+ * narrower closure than it used to get, which is exactly the kind of
+ * regression this function must never introduce. The rebuild path covers
+ * that case, plus CAS objects with no persisted index at all (in-memory test
+ * fixtures, proposal previews), so this function degrades to "build it"
+ * rather than throwing or under-reporting.
  */
 function sliceContextFor(cas: CASOutput): CasSliceContext {
   const cached = sliceContexts.get(cas);
@@ -418,11 +432,9 @@ function sliceContextFor(cas: CASOutput): CasSliceContext {
     }
   }
 
-  const pairs = callEdgePairs(cas as any);
-  for (const e of cas.edges || []) {
-    if (e.type === 'invokes') pairs.push([e.source, e.target]);
-  }
-  const reach = ReachabilityIndex.build(nodes.map(n => n.id), pairs);
+  const reach = cas.reachability_index?.includes_invokes_edges
+    ? ReachabilityIndex.from(cas.reachability_index)
+    : ReachabilityIndex.build(nodes.map(n => n.id), reachabilityEdgePairs(cas as any));
 
   const context: CasSliceContext = { nodesById, nodeIdsByFile, filesBySuffixKey, reach };
   sliceContexts.set(cas, context);
