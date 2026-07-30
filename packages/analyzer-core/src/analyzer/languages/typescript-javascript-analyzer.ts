@@ -600,10 +600,28 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
       }
       if (extraction.hasSyntaxErrors) {
         const locations = extraction.syntaxErrorLocations || [];
-        const locationSuffix = locations.length > 0
-          ? ` (near line${locations.length > 1 ? 's' : ''} ${locations.map(l => l.line).join(', ')}: ${locations.map(l => JSON.stringify(l.snippet)).join(', ')})`
-          : '';
-        this.addAnalysisWarning(`${loaded.relativePath} contains syntax errors; extraction may be partial${locationSuffix}`);
+        // Split into KNOWN parser limitations (valid source our grammar
+        // can't yet handle — never phrase these as the user's code being
+        // broken) vs. everything else (genuinely unrecognized constructs,
+        // worded as a possibility, not a verdict, since a single tree-sitter
+        // ERROR node is not proof the source itself is invalid).
+        const known = locations.filter(l => l.knownLimitation);
+        const unknown = locations.filter(l => !l.knownLimitation);
+        if (known.length > 0) {
+          const detail = known
+            .map(l => `line ${l.line} (${l.knownLimitation})`)
+            .join('; ');
+          this.addAnalysisWarning(
+            `${loaded.relativePath}: ${known.length} known parser limitation${known.length > 1 ? 's' : ''} — ${detail}. This is a limitation of our parser, not a defect in this file; the rest of the file was still analyzed.`
+          );
+        }
+        if (unknown.length > 0) {
+          const locationSuffix = ` (near line${unknown.length > 1 ? 's' : ''} ${unknown.map(l => l.line).join(', ')}: ${unknown.map(l => JSON.stringify(l.snippet)).join(', ')})`;
+          this.addAnalysisWarning(`${loaded.relativePath} contains a construct our parser could not fully recognize; extraction may be partial for that part of the file${locationSuffix}`);
+        }
+        if (known.length === 0 && unknown.length === 0) {
+          this.addAnalysisWarning(`${loaded.relativePath} contains syntax errors; extraction may be partial`);
+        }
       }
       results.push({ ...loaded, extraction });
     }

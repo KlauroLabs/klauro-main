@@ -280,6 +280,15 @@ export interface TSSyntaxErrorLocation {
   line: number;
   /** Short, control-character-sanitized preview of the offending text — never the raw slice (which may itself contain the very non-printable bytes that broke parsing, e.g. an embedded NUL). */
   snippet: string;
+  /**
+   * When set, this location matches a KNOWN tree-sitter-typescript grammar
+   * limitation on otherwise-valid TypeScript/JavaScript — not a defect in the
+   * analyzed codebase. Populated by `classifyKnownGrammarLimitation`. Callers
+   * should word any user-facing message around this field so a construct our
+   * parser can't yet handle is never reported as if the user's source were
+   * broken (see collectSyntaxErrorLocations doc comment).
+   */
+  knownLimitation?: string;
 }
 
 export interface TSFileExtraction {
@@ -337,11 +346,49 @@ function sanitizeSyntaxErrorSnippet(raw: string): string {
     : collapsed;
 }
 
+/**
+ * Two KNOWN tree-sitter-typescript (0.23.2) grammar limitations that fire on
+ * genuinely valid TypeScript, confirmed by direct repro against the native
+ * grammar (see task #84 investigation):
+ *
+ * 1. An inline `import('module').Type` type reference immediately followed
+ *    by an array (`[]`) or generic (`<...>`) suffix. The bare form
+ *    (`import('m').T`) parses fine; only the suffixed form breaks — the
+ *    grammar emits a MISSING ';' and then misreads the suffix as a stray
+ *    statement. Valid TS (checked by `tsc`); tree-sitter-typescript just
+ *    can't express it yet.
+ * 2. The contextual keyword `using` (TC39 explicit resource management,
+ *    `using x = getResource();`) used as an ordinary identifier — a function
+ *    parameter name, arrow-function parameter, or plain variable name. Every
+ *    other contextual keyword this grammar supports (`of`, `from`, `as`,
+ *    `satisfies`, ...) parses fine as an identifier in the same positions;
+ *    `using` alone does not, confirmed by minimal repro
+ *    (`(using) => using.x` / `function f(using) {}` both error while
+ *    `(satisfies) => satisfies.x` does not). Valid TS; grammar limitation.
+ *
+ * Matched against the raw source line (not the ERROR/MISSING node's own
+ * text, which for a MISSING token is empty) so classification survives
+ * exactly which node tree-sitter chose to blame.
+ */
+function classifyKnownGrammarLimitation(lineText: string | undefined): string | undefined {
+  if (!lineText) return undefined;
+  if (/\bimport\s*\(\s*(['"])(?:(?!\1).)*\1\s*\)(?:\s*\.\s*[A-Za-z_$][\w$]*)*\s*(?:\[\s*\]|<)/.test(lineText)) {
+    return "inline `import('module').Type` used with an array/generic suffix — tree-sitter-typescript 0.23.2 cannot parse this valid TypeScript construct";
+  }
+  if (/\busing\b/.test(lineText) && !/\busing\s+[A-Za-z_$][\w$]*\s*=/.test(lineText)) {
+    return "the contextual keyword `using` used as an identifier (parameter/variable name) — tree-sitter-typescript 0.23.2 cannot disambiguate it from a `using` resource declaration";
+  }
+  return undefined;
+}
+
 /** Walks the tree collecting up to MAX_SYNTAX_ERROR_LOCATIONS real ERROR/
  *  missing-token node positions. Bounded traversal (stops once the cap is
  *  hit) so a pathologically damaged file can't turn this into an expensive
- *  full-tree walk on every parse. */
-export function collectSyntaxErrorLocations(root: any): TSSyntaxErrorLocation[] {
+ *  full-tree walk on every parse. `sourceLines`, when provided, is used only
+ *  to classify KNOWN grammar limitations (see classifyKnownGrammarLimitation)
+ *  so the resulting message can say "known parser limitation" instead of
+ *  blaming the analyzed file's syntax. */
+export function collectSyntaxErrorLocations(root: any, sourceLines?: string[]): TSSyntaxErrorLocation[] {
   const locations: TSSyntaxErrorLocation[] = [];
   if (!root) return locations;
   const stack: any[] = [root];
@@ -351,7 +398,13 @@ export function collectSyntaxErrorLocations(root: any): TSSyntaxErrorLocation[] 
       if (!node) continue;
       if (node.type === 'ERROR' || node.isMissing) {
         const line = (node.startPosition?.row ?? 0) + 1;
-        locations.push({ line, snippet: sanitizeSyntaxErrorSnippet(String(node.text ?? '')) });
+        const lineText = sourceLines?.[line - 1];
+        const knownLimitation = classifyKnownGrammarLimitation(lineText);
+        locations.push({
+          line,
+          snippet: sanitizeSyntaxErrorSnippet(String(node.text ?? '')),
+          ...(knownLimitation ? { knownLimitation } : {})
+        });
         continue; // don't descend into an already-flagged ERROR subtree
       }
       const childCount = node.childCount ?? 0;
@@ -499,9 +552,11 @@ export class TreeSitterTSExtractor {
       exports: [],
       comments: traversal.comments,
       hasSyntaxErrors,
-      // Only walk for locations when the boolean is already true — the
-      // common case (a healthy file) pays nothing extra.
-      syntaxErrorLocations: hasSyntaxErrors ? collectSyntaxErrorLocations(root) : undefined
+      // Only walk for locations (and only split into lines) when the boolean
+      // is already true — the common case (a healthy file) pays nothing extra.
+      syntaxErrorLocations: hasSyntaxErrors
+        ? collectSyntaxErrorLocations(root, content.split('\n'))
+        : undefined
     };
 
     const functions = this.extractStandaloneFunctions(traversal);

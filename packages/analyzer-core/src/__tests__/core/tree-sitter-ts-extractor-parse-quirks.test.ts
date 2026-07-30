@@ -91,3 +91,96 @@ describe('TreeSitterTSExtractor parse quirks (NUL separator + abstract-as-proper
     expect(sanitized).not.toContain('"static"');
   });
 });
+
+/**
+ * Regression fixtures for task #84: two further genuinely-valid-TS
+ * constructs that tree-sitter-typescript 0.23.2 cannot parse (confirmed by
+ * direct repro against the native grammar; `tsc` accepts both). Unlike the
+ * NUL-separator/`abstract`-as-key class above, there is no safe source-level
+ * rewrite for either — sanitizing the array/generic suffix off an inline
+ * import-type, or renaming a real `using` identifier, would corrupt what the
+ * extractor reports. So the fix here is honest degrade-gracefully: the file
+ * still contributes every OTHER construct that IS parseable, hasSyntaxErrors
+ * stays true, and `syntaxErrorLocations[].knownLimitation` names the
+ * limitation instead of the surfaced warning blaming the analyzed file's
+ * syntax (see classifyKnownGrammarLimitation in tree-sitter-ts-extractor.ts
+ * and its caller in typescript-javascript-analyzer.ts).
+ */
+describe('TreeSitterTSExtractor known grammar limitations (degrade gracefully, name the limitation)', () => {
+  const extractor = new TreeSitterTSExtractor();
+
+  it('flags an array-suffixed inline import type as a known limitation, still extracts the rest of the file', () => {
+    const source = `
+      export type Foo = import('./bar').Bar[];
+
+      export function realFunctionAfter(x: number): number {
+        return x + 1;
+      }
+
+      export class RealClassAfter {
+        method() { return 1; }
+      }
+    `;
+    const extraction = extractor.extractFromSource(source, 'import-type-array-suffix.ts');
+    expect(extraction.hasSyntaxErrors).toBe(true);
+    expect(extraction.syntaxErrorLocations?.length).toBeGreaterThan(0);
+    expect(extraction.syntaxErrorLocations?.every(l => l.knownLimitation)).toBe(true);
+    // Degrade gracefully: everything after the broken construct still extracts.
+    expect(extraction.functions.some(f => f.name === 'realFunctionAfter')).toBe(true);
+    expect(extraction.classes.some(c => c.name === 'RealClassAfter')).toBe(true);
+  });
+
+  it('does NOT misclassify a bare (non-suffixed) inline import type — it parses cleanly', () => {
+    const source = `export type Foo = import('./bar').Bar;\n`;
+    const extraction = extractor.extractFromSource(source, 'import-type-bare.ts');
+    expect(extraction.hasSyntaxErrors).toBe(false);
+  });
+
+  it('flags `using` used as an arrow-function parameter name as a known limitation, still extracts the rest of the file', () => {
+    const source = `
+      export const handler = using => using.x;
+
+      export function realFunctionAfter(x: number): number {
+        return x + 1;
+      }
+    `;
+    const extraction = extractor.extractFromSource(source, 'using-arrow-param.ts');
+    expect(extraction.hasSyntaxErrors).toBe(true);
+    expect(extraction.syntaxErrorLocations?.some(l => l.knownLimitation?.includes('using'))).toBe(true);
+    expect(extraction.functions.some(f => f.name === 'realFunctionAfter')).toBe(true);
+  });
+
+  it('flags `using` used as a normal function parameter name as a known limitation, still extracts the function itself', () => {
+    const source = `
+      export function processResource(using) {
+        return using.value;
+      }
+    `;
+    const extraction = extractor.extractFromSource(source, 'using-fn-param.ts');
+    expect(extraction.hasSyntaxErrors).toBe(true);
+    expect(extraction.syntaxErrorLocations?.some(l => l.knownLimitation?.includes('using'))).toBe(true);
+    expect(extraction.functions.some(f => f.name === 'processResource')).toBe(true);
+  });
+
+  it('does NOT misclassify a real `using` resource declaration — it parses cleanly, no error at all', () => {
+    const source = `
+      function f() {
+        using x = getResource();
+        return x;
+      }
+    `;
+    const extraction = extractor.extractFromSource(source, 'using-real-declaration.ts');
+    expect(extraction.hasSyntaxErrors).toBe(false);
+  });
+
+  it('leaves a genuinely unrecognized construct unclassified (no knownLimitation) rather than over-claiming', () => {
+    const source = `
+      export function broken(: number {
+        return 1;
+      }
+    `;
+    const extraction = extractor.extractFromSource(source, 'genuinely-broken.ts');
+    expect(extraction.hasSyntaxErrors).toBe(true);
+    expect(extraction.syntaxErrorLocations?.some(l => !l.knownLimitation)).toBe(true);
+  });
+});
