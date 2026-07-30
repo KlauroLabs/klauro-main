@@ -3607,8 +3607,37 @@ describe('content-management domain anchor (inferSystemPurpose)', () => {
     operations: [],
   });
 
-  it('classifies a page-tree CMS with revision and publishing vocabulary as content-management', async () => {
-    const purpose = await orch.inferSystemPurpose(
+  const withProjectPath = async (files: Record<string, string> | null, run: () => Promise<any>): Promise<any> => {
+    const prior = (orch as any).activeAnalysisProjectPath;
+    let root: string | undefined;
+    try {
+      if (files) {
+        root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-cms-'));
+        for (const [name, body] of Object.entries(files)) fs.writeFileSync(path.join(root, name), body);
+      }
+      (orch as any).activeAnalysisProjectPath = root;
+      return await run();
+    } finally {
+      (orch as any).activeAnalysisProjectPath = prior;
+      if (root) fs.rmSync(root, { recursive: true, force: true });
+    }
+  };
+
+  it('classifies a page-tree CMS from a DECLARED CMS-framework dependency (task #90: the revision/page entity anchor is gone — those nouns belong to any document-versioning, records-management or wiki product)', async () => {
+    const purpose = await withProjectPath(
+      { 'requirements.txt': 'wagtail==6.0\ndjango==5.0\n' },
+      () => orch.inferSystemPurpose(
+        [httpEntry('e1', '/pages/1/unpublish/')],
+        [entity('Page'), entity('Revision'), entity('Document')],
+        [capability('Revision Management')],
+        []
+      ));
+    expect(purpose.primary_type).toBe('content-management');
+    expect(purpose.evidence.join(' ')).toContain('content-management framework');
+  });
+
+  it('does NOT classify a page-tree document system as content-management without a CMS-framework dependency — honest precision cost of task #90', async () => {
+    const purpose = await withProjectPath(null, () => orch.inferSystemPurpose(
       [
         httpEntry('e1', '/pages/1/unpublish/'),
         httpEntry('e2', '/pages/1/revisions/'),
@@ -3626,10 +3655,13 @@ describe('content-management domain anchor (inferSystemPurpose)', () => {
         capability('Task Management'), capability('Image Management'),
       ],
       []
-    );
-    expect(purpose.primary_type).toBe('content-management');
-    expect(purpose.confidence).toBeGreaterThanOrEqual(0.8);
-    expect(purpose.evidence.join(' ')).toContain('revision');
+    ));
+    // Every CMS noun this gate used to key on is present — Page, Revision,
+    // Document, Rendition, Collection, Redirect, Locale, Site, plus
+    // publish/draft/preview paths — and it is deliberately no longer enough.
+    // Business identity for a bespoke CMS with no framework dependency comes
+    // from the AI interpretation layer via refinePurposeTypeForDomain.
+    expect(purpose.primary_type).not.toBe('content-management');
   });
 
   it('does not classify a workflow engine without content entities as content-management', async () => {

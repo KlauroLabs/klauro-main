@@ -25759,37 +25759,33 @@ export class AnalyzerOrchestrator {
     // distinguishing shape now reports a structural type (api-service /
     // cli-tool / general-application) until AI grounds it.
 
-    // Anchor-gated like the clinical and commerce signatures: a CMS verdict
-    // requires the revision entity (the load-bearing CMS concept: versioned
-    // content) together with page or document entities, broad page-tree
-    // entity vocabulary, and publishing-workflow vocabulary on real paths or
-    // capabilities. Workflow/task/approval vocabulary alone must keep losing
-    // to this gate: a page-tree CMS contains a moderation workflow engine,
-    // not the other way around.
-    const cmsEntitySignals = await countMatches(
-      entityNames,
-      ['page', 'document', 'revision', 'rendition', 'collection', 'redirect', 'snippet', 'locale', 'site', 'media']
+    // RE-GROUNDED (task #90): this gate read better than its siblings — it
+    // keyed on DECLARED ENTITIES rather than path words — but entity names are
+    // still names. 'Page', 'Document', 'Revision', 'Collection' and 'Media'
+    // are the vocabulary of any document-versioning, records-management,
+    // e-signature, wiki or DAM product, and 'revision' as the load-bearing
+    // anchor is satisfied by any audit-trail table.
+    //
+    // A CMS is, in practice, always built ON a CMS: the framework is a
+    // declared dependency, and it is domain-defining in a way its nouns are
+    // not. That declaration replaces both the entity anchor and the publishing
+    // word list.
+    const CMS_FRAMEWORK_PACKAGES = [
+      'wagtail', 'django-cms', 'mezzanine', 'strapi', 'sanity', 'contentful',
+      'keystone', '@keystone-6/core', 'payload', 'directus', 'decap-cms',
+      'netlify-cms', 'prismic', 'ghost', 'drupal', 'craftcms', 'statamic',
+      'umbraco', 'sitecore', 'contentstack',
+    ];
+    const hasCmsFrameworkEvidence = await this.manifestDeclaresPackage(
+      this.activeAnalysisProjectPath || '',
+      CMS_FRAMEWORK_PACKAGES,
     );
-    const cmsPublishingSignals = await countMatches(
-      nameEntityCapabilityPathTokens,
-      ['publish', 'unpublish', 'draft', 'moderation', 'preview', 'revision']
-    );
-    const hasCmsEntityAnchor =
-      cmsEntitySignals.matched.includes('revision') &&
-      (cmsEntitySignals.matched.includes('page') || cmsEntitySignals.matched.includes('document'));
-    if (hasCmsEntityAnchor && cmsEntitySignals.matched.length >= 4 && cmsPublishingSignals.matched.length >= 2 &&
+    if (hasCmsFrameworkEvidence &&
       topMatch.type !== 'medical-device-software' && topMatch.type !== 'clinical-testing-platform') {
       return {
         primary_type: 'content-management',
-        confidence: this.signatureMatchConfidence(
-          cmsEntitySignals.matched.length + cmsPublishingSignals.matched.length,
-          cmsEntitySignals.size + cmsPublishingSignals.size,
-          confidence,
-        ),
-        evidence: [
-          `Content entities: ${cmsEntitySignals.matched.join(', ')}`,
-          `Publishing vocabulary: ${cmsPublishingSignals.matched.join(', ')}`,
-        ],
+        confidence: this.signatureMatchConfidence(1, 1, confidence),
+        evidence: ['Declared dependency on a content-management framework'],
         secondary_types: [topMatch.type, ...secondaryTypes]
           .filter(type => type !== 'content-management')
           .slice(0, 3),
