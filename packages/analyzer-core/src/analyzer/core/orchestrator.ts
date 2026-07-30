@@ -124,6 +124,7 @@ import { buildParadigmConformance } from './paradigm-conformance';
 import { buildArchitecturalConflicts } from './architectural-conflicts';
 import { buildDataLineage } from './data-lineage';
 import { isLanguageBuiltinName, isLanguageBuiltinExitPoint, isLanguageBuiltinDomainToken, isCapabilityNoiseToken, isVendorLibDomainToken } from './language-builtins';
+import { extractDistinctiveTextVocabulary, isEnglishFunctionWord } from './text-vocabulary';
 import { buildProductMap } from './product-map';
 import { buildReachabilityIndexFromCas } from './reachability-index';
 import { relativizeProjectPaths } from './relativize-project-paths';
@@ -15345,9 +15346,19 @@ export class AnalyzerOrchestrator {
     if (!facts.isKlauroSelfProject && domain === 'codebase-analysis') {
       return { ok: false, reason: 'codebase-analysis-domain-without-klauro-evidence' };
     }
-    if (domain === 'car-wash-operations' &&
-      /\b(boilerplate|prefetch strategies?|main grounded concepts are\s+(?:network|routing|access|checkout))\b/i.test(cleaned)) {
-      return { ok: false, reason: 'car-wash-description-leans-on-framework-plumbing' };
+    // A product description must describe the PRODUCT, not the framework it
+    // was built with. Rendering strategy, scaffolding provenance, and a bare
+    // recital of routing/access plumbing as the system's "main concepts" are
+    // never what a codebase is for.
+    //
+    // REMOVED (2026-07-29, hardcoded-knowledge class): this rejection used to
+    // be gated on `domain === 'car-wash-operations'`, so the very same
+    // framework-plumbing description passed validation for every other
+    // repository in existence. The defect it guards against is a property of
+    // the description, not of one repository's industry — the gate is dropped
+    // and the check now applies wherever it applies.
+    if (/\b(boilerplate|prefetch strategies?|main grounded concepts are\s+(?:network|routing|access|checkout))\b/i.test(cleaned)) {
+      return { ok: false, reason: 'description-leans-on-framework-plumbing' };
     }
     const genericConceptListEnding = /\b(access|network|data|app|page|component|service|route|user|settings|portal|company)\b(?:,\s*(?:and\s+)?\b(access|network|data|app|page|component|service|route|user|settings|portal|company)\b){1,4}\.?$/i.test(cleaned);
     const genericDataEnding = /\b(?:manage|manages|managing|track|tracks|tracking|handle|handles|handling|coordinate|coordinates|coordinating)\s+(?:user|portal|company|application|app|system)\s+data\.?$/i.test(cleaned);
@@ -16608,18 +16619,20 @@ export class AnalyzerOrchestrator {
     // grounded core-concept vocabulary the AI prompt reads. `primary_domain` and
     // `inferred_description` are left UNSET; applyAIInterpretation is the sole
     // writer and THROWS if AI comprehension cannot be produced.
-    const coreConceptNames = [
-      ...projectTextSignal.concepts,
-      ...coreConcepts.map(c => c.name),
-      ...domainConcepts.slice(0, 25).map(c => c.name),
-    ].filter(concept => !this.isProjectNameConcept(concept, projectPath));
+    const coreConceptNames = this.rankCoreConcepts(
+      projectTextSignal.concepts,
+      coreConcepts,
+      domainConcepts,
+      databaseEntities,
+      projectPath,
+    );
 
     const supportingWorkflows = workflows.filter(w => w.classification === 'supporting');
 
     return {
       ...basePurpose,
       confidence: basePurpose.confidence,
-      evidence: [...basePurpose.evidence, ...projectTextSignal.evidence].slice(0, 20),
+      evidence: this.orderPurposeEvidence([...basePurpose.evidence, ...projectTextSignal.evidence]).slice(0, 20),
       artifact_type: artifactResult.artifactType,
       core_concepts: Array.from(new Set(coreConceptNames)).slice(0, 10),
       // primary_domain / inferred_description are COMPREHENSION and are left
@@ -16632,6 +16645,122 @@ export class AnalyzerOrchestrator {
       primary_workflow_id: workflowGraph.primary_workflow_id,
       supporting_workflow_ids: supportingWorkflows.map(w => w.id)
     };
+  }
+
+  /**
+   * The repository's core vocabulary, ranked by HOW MUCH OF THE REPOSITORY'S
+   * OWN EVIDENCE stands behind each term rather than by which list it came
+   * from.
+   *
+   * This used to be plain list concatenation with the project-text vocabulary
+   * first. Because that list was capped at eight and `core_concepts` at ten,
+   * whatever the text scorer produced consumed eight of the ten slots before a
+   * single structural concept was considered — and the tail was filled from the
+   * raw top-25-by-frequency domain concepts, i.e. the noisiest part of that
+   * surface. Measured across 25 production analyses, the result was that the
+   * repository's actual vocabulary was almost entirely absent: a card-game app
+   * reported six unrelated terms ahead of `game`/`card`/`rules`, and a
+   * car-wash app reported none of its own vocabulary at all.
+   *
+   * Evidence weights, strongest first:
+   *  - a named DATA ENTITY is the repository's own domain model, stated by the
+   *    authors in schema form;
+   *  - an ENTRY-POINT anchor means the term names something the system exposes;
+   *  - `core` classification means the structural classifier singled it out;
+   *  - corroboration by the human-authored TEXT means the authors use the word
+   *    when describing the product;
+   *  - prominence within the concept distribution breaks remaining ties.
+   *
+   * No source can monopolize the list, and no term is privileged for belonging
+   * to a category the analyzer was taught about.
+   */
+  private rankCoreConcepts(
+    projectTextConcepts: string[],
+    coreConcepts: CASDomainConcept[],
+    domainConcepts: CASDomainConcept[],
+    databaseEntities: string[],
+    projectPath: string,
+  ): string[] {
+    const maxFrequency = Math.max(1, ...domainConcepts.map(concept => concept.frequency || 0));
+    const textTokens = new Set(
+      projectTextConcepts.flatMap(concept => this.domainTokensFromText(concept.replace(/-/g, ' '))),
+    );
+    const entityTokens = new Set(
+      databaseEntities.flatMap(entity => this.domainTokensFromText(entity)),
+    );
+    const coreNames = new Set(coreConcepts.map(concept => concept.name));
+
+    const scoreOf = (name: string, concept?: CASDomainConcept): number => {
+      const tokens = this.domainTokensFromText(name.replace(/-/g, ' '));
+      let score = 0;
+      if (concept?.appears_in?.entities?.length) score += 4;
+      if (tokens.some(token => entityTokens.has(token))) score += 4;
+      if (concept?.appears_in?.entry_points?.length) score += 3;
+      if (concept && coreNames.has(concept.name)) score += 2;
+      if (tokens.some(token => textTokens.has(token))) score += 2;
+      // A multi-word phrase names a concept more precisely than a lone word.
+      if (tokens.length > 1) score += 1;
+      score += (concept?.frequency || 0) / maxFrequency;
+      return score;
+    };
+
+    const conceptByName = new Map(domainConcepts.map(concept => [concept.name, concept]));
+    const candidates = new Map<string, number>();
+    const consider = (name: string) => {
+      const cleaned = String(name || '').trim();
+      if (!cleaned) return;
+      if (this.isProjectNameConcept(cleaned, projectPath)) return;
+      const existing = candidates.get(cleaned);
+      const score = scoreOf(cleaned, conceptByName.get(cleaned));
+      if (existing === undefined || score > existing) candidates.set(cleaned, score);
+    };
+
+    for (const concept of projectTextConcepts) consider(concept);
+    for (const concept of coreConcepts) consider(concept.name);
+    for (const concept of domainConcepts) consider(concept.name);
+
+    return Array.from(candidates.entries())
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+      .map(([name]) => name);
+  }
+
+  /**
+   * Orders purpose evidence by how much it can actually be trusted to say what
+   * the repository is FOR.
+   *
+   * The evidence list used to be plain concatenation, which put whichever
+   * vocabulary signature happened to fire at the very top and the repository's
+   * own product documentation at the bottom. That reads as the analyzer's
+   * primary reason for its verdict — measured on this repository's own
+   * production analysis, the leading evidence line was a bag of security
+   * keywords ("policy, policies, resource, resources, agent, agents, device,
+   * devices, grant, grants, scan, credential, vulnerability, cve") ahead of
+   * its package description, README and product doc. A keyword bag is the
+   * WEAKEST form of evidence here: it reports incidental word overlap, which is
+   * exactly the failure mode the signature anchor gates exist to contain.
+   *
+   * Strongest first: what the authors wrote about the product, then counted
+   * structural facts (entry points, entities, interfaces), then vocabulary
+   * overlap. Ordering only — nothing is added or dropped, and ties keep their
+   * original relative order.
+   */
+  private orderPurposeEvidence(evidence: string[]): string[] {
+    const rank = (line: string): number => {
+      const text = String(line || '');
+      // Human-authored product framing: a manifest description, a README, a
+      // product doc. The authors' own statement of what this is.
+      if (/^(package\.json description|README|readme|docs\/README|PRD|PRODUCT|OVERVIEW|CLAUDE|AGENTS|KLAURO)[.\w/]*(\.md|\.mdx)?$/.test(text)) return 0;
+      if (/^source text$/.test(text)) return 1;
+      // Counted structural facts.
+      if (/^\d|\b\d+\s+(HTTP|page|route|data|entry|CLI)\b|^Primary interface is\b/.test(text)) return 2;
+      // Vocabulary-overlap signature matches ("<Something> signals: a, b, c").
+      if (/\bsignals:/i.test(text) || /\bvocabulary:/i.test(text)) return 4;
+      return 3;
+    };
+    return evidence
+      .map((line, index) => ({ line, index, rank: rank(line) }))
+      .sort((a, b) => a.rank - b.rank || a.index - b.index)
+      .map(entry => entry.line);
   }
 
   private hasNetworkAccessManagementSignal(
@@ -16716,6 +16845,50 @@ export class AnalyzerOrchestrator {
     return signals.length >= 3 && (/\btrade execution\b/.test(text) || /\barbitrage\b/.test(text) || /\bswap\b/.test(text));
   }
 
+  /**
+   * True when a domain label already names a KIND OF CODEBASE rather than a
+   * subject matter — "…-platform", "…-service", "…-library", "…-tool",
+   * "…-sdk", "…-base" and friends. Morphology only: the head noun of the
+   * compound is what decides, so the test works for labels the analyzer has
+   * never seen. A label like "fleet-management" or "portfolio-management"
+   * names what the software is ABOUT; one like "commerce-platform" names what
+   * it IS, and the codebase's structural shape must not override it.
+   */
+  /**
+   * Confidence for a signature-based codebase-type verdict, DERIVED from how
+   * much of the signature the repository actually matched.
+   *
+   * REPLACES (2026-07-29, hardcoded-knowledge class) a set of per-signature
+   * hardcoded confidence floors — `Math.max(0.86, …)` for one signature,
+   * `Math.max(0.84, …)` for four others, `0.82` and `0.8` for the rest. Those
+   * numbers were properties of the signature's AUTHOR, not of the evidence: a
+   * repository matching 4 of a signature's 11 terms reported the same 0.84 as
+   * one matching all 11, and because the floor was a `max` it could only ever
+   * inflate a low computed confidence, never reflect it. That is how a
+   * vocabulary-only overlap came to be published as a high-confidence verdict.
+   *
+   * Coverage of the signature now sets the number, on one scale shared by every
+   * signature, so a thin match reads as a thin match. The floor of the range is
+   * deliberately well below the old constants: reaching a signature's anchor
+   * gate is meaningful, but matching a third of its vocabulary is not
+   * near-certainty.
+   */
+  private signatureMatchConfidence(
+    matchedCount: number,
+    signatureSize: number,
+    computedConfidence: number,
+  ): number {
+    const coverage = signatureSize > 0 ? Math.min(1, matchedCount / signatureSize) : 0;
+    const derived = 0.6 + 0.35 * coverage;
+    return Math.round(Math.max(derived, computedConfidence) * 100) / 100;
+  }
+
+  private isCodebaseTypeShapedDomainLabel(primaryDomain: string): boolean {
+    const label = String(primaryDomain || '').toLowerCase().trim();
+    if (!label) return false;
+    return /-(platform|service|services|server|tool|tools|toolkit|sdk|library|package|framework|engine|base|suite|cli|daemon|agent|gateway|proxy|runtime|compiler|driver|plugin|extension|boilerplate|template|codebase|application|app)$/.test(label);
+  }
+
   private refinePurposeTypeForDomain(
     primaryType: string,
     primaryDomain: string,
@@ -16740,21 +16913,8 @@ export class AnalyzerOrchestrator {
     if (/-boilerplate$/.test(primaryDomain)) {
       return 'boilerplate';
     }
-    if (primaryDomain === 'fleet-management' && (hasServerFramework || hasBackendEntry)) {
-      return 'backend-service';
-    }
     if (/^solana-(?:trading|arbitrage)$/.test(primaryDomain)) {
       return 'trading-automation';
-    }
-    if (primaryDomain === 'portfolio-management' && /^(trading-automation|web-application)$/.test(primaryType)) {
-      const hasPageEntry = entryPointSummary.some(entry => entry.count > 0 && /^(page|route)$/.test(entry.type));
-      const hasBackendEntryForPurpose = entryPointSummary.some(entry =>
-        entry.count > 0 && /^(http|message|event|cli|schedule|websocket)$/.test(entry.type)
-      );
-      if (hasPageEntry && !hasBackendEntryForPurpose) return 'frontend-application';
-    }
-    if (primaryDomain === 'user-identity-management') {
-      return 'authentication-service';
     }
     if (/(^|-)codebase-analysis(?:-(?:engine|platform|system|tool))?$/.test(primaryDomain)) {
       return 'devtools-platform';
@@ -16797,6 +16957,31 @@ export class AnalyzerOrchestrator {
     }
     if (primaryDomain === 'product-analytics-platform') {
       return 'product-analytics-platform';
+    }
+    // REMOVED (2026-07-29, hardcoded-knowledge class): three bare domain
+    // literals — 'fleet-management' -> backend-service,
+    // 'portfolio-management' -> frontend-application, and
+    // 'user-identity-management' -> authentication-service — each stated as an
+    // equality test against one specific label. Their PURPOSE was structural:
+    // when the AI grounds the repository in a subject-matter domain, an
+    // incidental-vocabulary verdict from the signature classifier must lose to
+    // what the codebase's own shape says it is. That intent applies to every
+    // subject-matter domain, not to three named ones, and the literals meant a
+    // repository whose domain happened to be phrased differently kept the
+    // wrong type.
+    //
+    // Stated structurally: a SUBJECT-MATTER label (one that does not itself
+    // name a codebase type) plus server-framework or backend entry points is a
+    // backend service; plus page entry points and no backend entry points it is
+    // a frontend application.
+    if (!this.isCodebaseTypeShapedDomainLabel(primaryDomain)) {
+      const hasPageEntry = entryPointSummary.some(entry => entry.count > 0 && /^(page|route)$/.test(entry.type));
+      if (hasPageEntry && !hasBackendEntry) {
+        return 'frontend-application';
+      }
+      if (hasServerFramework || hasBackendEntry) {
+        return 'backend-service';
+      }
     }
     return primaryType;
   }
@@ -17329,121 +17514,60 @@ export class AnalyzerOrchestrator {
     return snippets.join(' ');
   }
 
-  private phraseScore(text: string, terms: string[]): number {
-    return terms.reduce((score, term) => {
-      const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const count = (text.match(new RegExp(`\\b${escaped}\\b`, 'gi')) || []).length;
-      return score + Math.min(count, 6);
-    }, 0);
-  }
 
+  /**
+   * The repository's own DOMAIN VOCABULARY, derived from the human-authored
+   * text the repository ships (manifest description, README/PRD framing, doc
+   * prose, UI strings).
+   *
+   * REMOVED (2026-07-29, hardcoded-knowledge class): this used to score the
+   * text against a ~90-entry list of domain/product phrases and return the
+   * ones that matched. The list was fitted to the repositories that happened
+   * to be on hand, so it reported its OWN vocabulary back as the repository's
+   * concepts, and it reported that vocabulary on repositories that contain
+   * none of it — measured across 25 production analyses, the list filled the
+   * first eight of the ten `core_concepts` slots on nearly every repository
+   * and crowded the real vocabulary out entirely. It fired on incidental
+   * English ("in order to" -> an order-management concept), on stack
+   * plumbing (a database driver -> a driver concept, an SDK mention -> a
+   * cloud-provider concept), and on generic physics/UI words. Terms outside
+   * the list were invisible no matter how central they were to the product.
+   *
+   * The replacement reads only what the text says: term frequency over the
+   * prose, filtered by the same generic/noise/builtin/vendor predicates the
+   * rest of the capability and domain surfaces use, gated on repetition and
+   * on distinctiveness relative to this text's own frequency distribution.
+   * A term the authors never repeated is not a core concept, and no term is
+   * privileged for belonging to a category the analyzer was taught about.
+   */
   private inferConceptsFromProjectText(text: string): string[] {
-    const candidates = [
-      'zero trust',
-      'security',
-      'network',
-      'access',
-      'access request',
-      'identity provider',
-      'verification',
-      'gateway',
-      'resource',
-      'agent',
-      'arbitrage',
-      'solana',
-      'market data',
-      'dex',
-      'terraform',
-      'opentofu',
-      'aws',
-      'infrastructure',
-      'vpc',
-      'ecs',
-      'rds',
-      'cloudfront',
-      'route53',
-      'risk',
-      'commerce operations',
-      'cart',
-      'checkout',
-      'order',
-      'orders',
-      'invoice',
-      'billing',
-      'fleet management',
-      'commercial vehicle',
-      'telematics',
-      'vehicle fleet',
-      'driver',
-      'vehicle',
-      'fuel',
-      'maintenance',
-      'safety monitoring',
-      'dispatching',
-      'routing',
-      'clinical testing',
-      'patient',
-      'muscle',
-      'measurement',
-      'force',
-      'device',
-      'assessment',
-      'portfolio',
-      'codebase analysis',
-      'analyzer',
-      'billing',
-      'payment',
-      'customer',
-      'assistant',
-      'gateway',
-      'channels',
-      'messaging',
-      'shopify',
-      'theme',
-      'storefront',
-      'merchant',
-      'scheduling',
-      'booking',
-      'bookings',
-      'calendar',
-      'availability',
-      'appointment',
-      'appointments',
-      'developer platform',
-      'backend as a service',
-      'database platform',
-      'postgres',
-      'supabase',
-      'appwrite',
-      'realtime',
-      'edge functions',
-      'commerce platform',
-      'digital commerce',
-      'medusa',
-      'ecommerce',
-      'products',
-      'inventory',
-      'fulfillment',
-      'knowledge base',
-      'team wiki',
-      'collaborative documentation',
-      'outline',
-      'collections',
-    ];
-    return candidates
-      .map(candidate => ({ candidate, score: this.phraseScore(text, [candidate]) }))
-      .filter(item => item.score > 0)
-      .sort((a, b) => b.score - a.score)
-      .map(item => item.candidate)
-      .map(candidate => candidate.replace(/\s+/g, '-'))
-      .slice(0, 8);
+    return extractDistinctiveTextVocabulary(text, {
+      limit: 8,
+      isNoiseToken: token => this.isProjectTextNoiseToken(token),
+    }).map(term => term.replace(/\s+/g, '-'));
   }
 
-  private focusProjectTextConcepts(concepts: string[], preferred: string[]): string[] {
-    const selected = preferred.filter(concept => concepts.includes(concept));
-    const filled = [...selected, ...preferred.filter(concept => !selected.includes(concept))];
-    return filled.slice(0, 5);
+  /**
+   * Rejects a word that cannot be domain vocabulary in ANY repository:
+   * too-short/numeric tokens, English function words, the generic
+   * architecture/capability vocabulary, language builtins, vendor library
+   * names, and hash/id-shaped blobs. Every predicate here is language- or
+   * stack-level; none names a product, industry, or business domain.
+   */
+  private isProjectTextNoiseToken(token: string): boolean {
+    const normalized = String(token || '').toLowerCase();
+    if (normalized.length < 4) return true;
+    if (/^\d/.test(normalized)) return true;
+    if (isEnglishFunctionWord(normalized)) return true;
+    if (this.isHashOrIdShapedToken(normalized)) return true;
+    if (this.isGenericDomainToken(normalized)) return true;
+    if (this.isGenericCapabilityToken(normalized)) return true;
+    if (isCapabilityNoiseToken(normalized)) return true;
+    if (isLanguageBuiltinDomainToken(normalized)) return true;
+    if (isVendorLibDomainToken(normalized)) return true;
+    return false;
   }
+
 
   /**
    * Hash/id-shaped tokens (content hashes, uuids, random ids, base36 blobs)
@@ -20993,17 +21117,69 @@ export class AnalyzerOrchestrator {
     if (/^(Synchronize|Sync|Replicate|Mirror)\s+(Synchronization|Workflow|Capability)$/i.test(name)) return true;
     if (/^(Bad|Not|Bind|Branding|Poll|Usd|Pnl|Control|Destroy|Routing|Container|Scaffold|Sized|Result|Layer|Layers|Call|Forward|Weight Norm|Jit|Nets|Gui|Prepare Scriptable|Drag|Edit|Javascript|Day|Migrate|Type|Timezone|Require Access|Duplicate Task|Printt|Hooks Hooks|Boundary|Sentry|Mutate|Settled|Capture Exception|Token|Prefetch|Fallback|Material|Gesture Detector|Len|Matmul Relative|Atom|Bulk|Busy|Duplicate|Allowed|Boolean|Code|Define|Doc|Docs|Gen|Mdx|Meta|Tabs|Tick|And|Disable And|Can|Definitions|Emoji|Field|Fields|Array|Attributes|Description|Functions?|Regular|Duration|Factory|Fixtures? Fixture|Background|Design|Loader|Mobile|Multiplayer|Socket|Category|Confirm|Hashed|Non|Upload|Synced|Static|Canvas|Klauro|Number|Avatar|Game|Lobby|Mfaenroll|Mfaverify|Rectangle|Rendered|Splash|Circle|Alert|Alerts?|Sign|Signs?)\s+(Management|Workflow|Capability|Settlement)$/i.test(name)) return true;
     if (/\b([a-z]+)s?\s+(analysis|management|workflow|reporting|generation)\s+\1\s+\2\b/i.test(name)) return true;
-    return /\b(Associated Token Address|Dlmm History|Liquidation Paper Version|Device Arp|Access Token|Big Int|Screens?|Skeleton|Tab|End|Top|Exchange Code Token|Truncate Device|Running|Compose|Vpn|Binary|Uint8|Uint16|Uint32|Uint64|Int8|Int16|Int32|Int64)\s+(Management|Capability|Workflow)\b/i.test(name);
+    // REMOVED (2026-07-29, hardcoded-knowledge class): the corpus-product
+    // literals 'Associated Token Address', 'Dlmm History', 'Liquidation Paper
+    // Version' and 'Device Arp' used to head this list. They named individual
+    // types out of specific repositories that happened to be analyzed, so they
+    // could only ever fire on those repositories — measured across 25
+    // production analyses (215 capabilities) this predicate matched NOTHING
+    // AT ALL, literals included. What remains is language- and platform-level
+    // vocabulary: primitive width types, transport/session plumbing, and UI
+    // chrome nouns, which are noise as a capability SUBJECT in any codebase.
+    return /\b(Access Token|Big Int|Screens?|Skeleton|Tab|End|Top|Exchange Code Token|Truncate Device|Running|Compose|Vpn|Binary|Uint8|Uint16|Uint32|Uint64|Int8|Int16|Int32|Int64)\s+(Management|Capability|Workflow)\b/i.test(name);
+  }
+
+  /**
+   * True when a capability has NOTHING the codebase can show for it: no
+   * related entity, no operation, and a name or description that is itself a
+   * placeholder. Such an entry cannot be a strong product capability no matter
+   * what it is called — an authored name is a claim, not evidence.
+   *
+   * Reuses the shared distinctiveness predicates (`isBareNounCapabilityLabel`,
+   * `isStructuralPlaceholderCapabilityDescription`) rather than restating them.
+   */
+  private isStructurallyUngroundedCapability(capability: SystemCapability): boolean {
+    const hasStructuralEvidence =
+      (capability.related_entities || []).length > 0 ||
+      (capability.operations || []).length > 0;
+    if (hasStructuralEvidence) return false;
+    if (this.isBareNounCapabilityLabel(capability.name || '')) return true;
+    if (this.isStructuralPlaceholderCapabilityDescription(capability.description || '')) return true;
+    // No entities, no operations, and no description to stand in for them.
+    return !String(capability.description || '').trim();
   }
 
   private isStrongProductCapability(capability: SystemCapability): boolean {
     const name = capability.name || '';
     if (/^(Users?|Register|Registration|Signup|Login|Session|Token|Provider|Permission|Role)\s+(Management|Workflow|Capability|Authentication)$/i.test(name)) return false;
     if (this.isGenericCapabilityDisplayName(name)) return false;
-    if (/\b(Associated Token Address|Dlmm History|Liquidation Paper Version|Value)\s+Management\b/i.test(name)) return false;
-    if (/\b(Clinical Measurements|Clinical Reporting|Patient Records|Device Connectivity|Fleet Operations|Fuel Management|Fuel Synchronization|Vehicle Maintenance|Driver Communication|Device Enrollment|Network Connection Control|Organization Access Context|Signal Synchronization|Trade Execution|Market Data Discovery|Market Pair Discovery|Market Price Analysis|Token Balance Discovery|Token Launch Monitoring|Token Purchase Execution|Batch Trade Execution|Trading Risk Control|Profit And Loss Reporting|Pre Market Rate Analysis|Scaled Market Analysis|Amount Settlement|Network Access Control|Codebase Analysis|Agent Context|Incremental Analysis|Cloud Access Control|Cloud Monitoring|Network Infrastructure|Project Backend Provisioning|Authentication Services|Realtime Data Sync|Storage And Functions|Booking Lifecycle|Calendar Availability|Event Type Configuration|Scheduling Integrations|Product Catalog|Cart And Checkout|Order Fulfillment|Commerce Administration|Document Collaboration|Collection Organization|Knowledge Access Control|Knowledge Search|App Builder|Data Source Integration|Automation Workflows|Tenant App Administration|Content Publishing|Membership And Subscriptions|Newsletter Delivery|Publication Administration|Media Library|Backup And Upload|Media Intelligence|Sharing And Access|Social Timelines|Federation Delivery|Moderation And Safety|Notifications And Messaging|Table Modeling|Spreadsheet Views|API Data Access|Workspace Collaboration|Event Capture|Product Analytics|Feature Flags And Experiments|Session Replay)\b/i.test(name)) {
-      return true;
-    }
+    // REMOVED (2026-07-29, hardcoded-knowledge class): a ~72-name allowlist of
+    // product capability names ('Clinical Measurements', 'Fleet Operations',
+    // 'Trade Execution', 'Token Launch Monitoring', 'Product Catalog', ...)
+    // short-circuited straight to `true` here, and a companion four-literal
+    // demotion ('Associated Token Address', 'Dlmm History', 'Liquidation Paper
+    // Version') short-circuited to `false`. Both were fitted to the
+    // repositories that had been analyzed: a capability got to be "strong"
+    // because someone had once written its name down, not because the codebase
+    // showed anything.
+    //
+    // Characterized against 215 capabilities from 25 production analyses
+    // before removal. The allowlist matched 9 of them, all by
+    // case-insensitive SUBSTRING against AI-authored prose names, with no
+    // evidence requirement at all — including three fleet-operations
+    // capabilities on a chat-gateway product that carry zero operations and
+    // zero related entities. Removing it flips exactly one verdict (a
+    // `supporting` capability with no operations that was "strong" only
+    // because its name happened to contain an allowlisted phrase); the other
+    // eight are admitted by the evidence rules below on their own merits. The
+    // trimmed capability set is byte-identical across all 25 repositories, so
+    // the literals were inert where they were not wrong.
+    //
+    // Strength is now decided only by what the capability can show: a
+    // distinctive, non-placeholder subject plus real structural evidence. The
+    // shape and evidence tests below already express that, so the fall-through
+    // IS the replacement.
+    if (this.isStructurallyUngroundedCapability(capability)) return false;
     const subject = name
       .replace(/\b(Management|Capability|Workflow|Authentication|Reporting|Generation|Analysis|Synchronization)$/i, '')
       .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
@@ -24882,13 +25058,15 @@ export class AnalyzerOrchestrator {
       return building;
     };
 
-    const countMatches = async (items: string[][], patterns: string[]): Promise<{ count: number; matched: string[] }> => {
+    const countMatches = async (items: string[][], patterns: string[]): Promise<{ count: number; matched: string[]; size: number }> => {
       const index = await signalIndex(items);
       const matched: string[] = [];
       let count = 0;
+      let size = 0;
       for (const pattern of patterns) {
         const patternTokens = this.normalizedSignalPatternTokens(pattern);
         if (patternTokens.length === 0) continue;
+        size++;
         const key = patternTokens.length === 1 ? patternTokens[0] : patternTokens.join(' ');
         const occurrences = index.get(key) || 0;
         if (occurrences > 0) {
@@ -24896,7 +25074,7 @@ export class AnalyzerOrchestrator {
           count += occurrences;
         }
       }
-      return { count, matched };
+      return { count, matched, size };
     };
 
     for (const sig of signatures) {
@@ -25077,7 +25255,7 @@ export class AnalyzerOrchestrator {
       topMatch.type !== 'clinical-testing-platform') {
       return {
         primary_type: 'devtools-platform',
-        confidence: Math.max(0.82, Math.round(confidence * 100) / 100),
+        confidence: this.signatureMatchConfidence(devtoolsSignals.matched.length, devtoolsSignals.size, confidence),
         evidence: [`Developer-tool/code-analysis signals: ${devtoolsSignals.matched.join(', ')}`],
         secondary_types: topMatch.type !== 'devtools-platform' ? [topMatch.type, ...secondaryTypes].slice(0, 3) : secondaryTypes,
       };
@@ -25086,7 +25264,7 @@ export class AnalyzerOrchestrator {
     if (hasDominantDesktopUi && clinicalSignals.matched.length >= 3 && hasClinicalAnchor) {
       return {
         primary_type: 'clinical-testing-platform',
-        confidence: Math.max(0.86, Math.round(confidence * 100) / 100),
+        confidence: this.signatureMatchConfidence(clinicalSignals.matched.length, clinicalSignals.size, confidence),
         evidence: [`Clinical desktop signals: ${clinicalSignals.matched.join(', ')}`],
         secondary_types: [topMatch.type, ...secondaryTypes]
           .filter(type => type !== 'clinical-testing-platform')
@@ -25114,7 +25292,7 @@ export class AnalyzerOrchestrator {
       topMatch.type !== 'clinical-testing-platform') {
       return {
         primary_type: 'fleet-management-platform',
-        confidence: Math.max(0.84, Math.round(confidence * 100) / 100),
+        confidence: this.signatureMatchConfidence(fleetSignals.matched.length, fleetSignals.size, confidence),
         evidence: [`Fleet operations signals: ${fleetSignals.matched.join(', ')}`],
         secondary_types: [topMatch.type, ...secondaryTypes]
           .filter(type => type !== 'fleet-management-platform')
@@ -25166,7 +25344,7 @@ export class AnalyzerOrchestrator {
         primary_type: (hasScanCredentialAnchor && hasSecurityScannerDependencyEvidence)
           ? 'security-scanning-tool'
           : 'network-access-platform',
-        confidence: Math.max(0.84, Math.round(confidence * 100) / 100),
+        confidence: this.signatureMatchConfidence(zeroTrustSignals.matched.length, zeroTrustSignals.size, confidence),
         evidence: [`Zero-trust/security signals: ${zeroTrustSignals.matched.join(', ')}`],
         secondary_types: [topMatch.type, ...secondaryTypes]
           .filter(type => type !== 'network-access-platform' && type !== 'security-scanning-tool')
@@ -25184,7 +25362,7 @@ export class AnalyzerOrchestrator {
       traySignals.matched.some(signal => /tray|tray icon|system tray/.test(signal))) {
       return {
         primary_type: 'tray-icon-library',
-        confidence: Math.max(0.84, Math.round(confidence * 100) / 100),
+        confidence: this.signatureMatchConfidence(traySignals.matched.length, traySignals.size, confidence),
         evidence: [`Tray UI signals: ${traySignals.matched.join(', ')}`],
         secondary_types: [topMatch.type, ...secondaryTypes]
           .filter(type => type !== 'tray-icon-library')
@@ -25198,7 +25376,7 @@ export class AnalyzerOrchestrator {
       topMatch.type !== 'clinical-testing-platform') {
       return {
         primary_type: 'trading-automation',
-        confidence: Math.max(0.84, Math.round(confidence * 100) / 100),
+        confidence: this.signatureMatchConfidence(tradingSignals.matched.length, tradingSignals.size, confidence),
         evidence: [`Trading/market signals: ${tradingSignals.matched.join(', ')}`],
         secondary_types: [topMatch.type, ...secondaryTypes]
           .filter(type => type !== 'trading-automation')
@@ -25228,7 +25406,11 @@ export class AnalyzerOrchestrator {
       topMatch.type !== 'medical-device-software' && topMatch.type !== 'clinical-testing-platform') {
       return {
         primary_type: 'content-management',
-        confidence: Math.max(0.8, Math.round(confidence * 100) / 100),
+        confidence: this.signatureMatchConfidence(
+          cmsEntitySignals.matched.length + cmsPublishingSignals.matched.length,
+          cmsEntitySignals.size + cmsPublishingSignals.size,
+          confidence,
+        ),
         evidence: [
           `Content entities: ${cmsEntitySignals.matched.join(', ')}`,
           `Publishing vocabulary: ${cmsPublishingSignals.matched.join(', ')}`,

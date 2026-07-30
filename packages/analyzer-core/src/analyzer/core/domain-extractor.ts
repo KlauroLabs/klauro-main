@@ -1,4 +1,5 @@
 import { CASNode, CASEntryPoint, CASDataEntity, CASDomainConcept, CASEdge } from '../../types/cas.types';
+import { isEnglishFunctionWord } from './text-vocabulary';
 
 interface ConceptOccurrence {
   name: string;
@@ -17,6 +18,43 @@ interface ConceptStats {
 const MAX_DOMAIN_CONCEPT_NODE_REFERENCES = 200;
 const MAX_DOMAIN_CONCEPT_ENTRY_REFERENCES = 100;
 const MAX_DOMAIN_CONCEPT_ENTITY_REFERENCES = 100;
+/** Absolute floor for a concept the distribution alone would admit. */
+const MIN_DISTINCTIVE_CONCEPT_FREQUENCY = 3;
+/**
+ * Below this many concepts there is no distribution to reason about, and the
+ * list is short enough to be useful as-is.
+ */
+const MIN_CONCEPTS_FOR_DISTRIBUTION_TRIM = 60;
+
+/**
+ * Words of the PRESENTATION LANGUAGE ITSELF — CSS selector conventions,
+ * stylesheet mechanics, and utility-class naming shipped by UI frameworks.
+ *
+ * Deliberately SMALL. The load-bearing fix for stylesheet noise is structural
+ * (style-rule nodes and stylesheet files are excluded from concept extraction
+ * outright, see isInfrastructureNode); this set only catches the residue that
+ * reaches concept extraction through OTHER files' paths and identifiers.
+ *
+ * Every entry must be a word with no plausible business meaning in any
+ * industry, so that suppressing it can never hide a real domain concept.
+ * Dual-use words are deliberately absent — `order`, `content`, `header`,
+ * `container`, `target`, `media`, `theme`, `alert`, `size`, `weight`, `color`
+ * and their kin are all CSS vocabulary AND ordinary domain nouns, and a
+ * repository that genuinely deals in them must be able to say so.
+ */
+const PRESENTATION_LAYER_TERMS = new Set([
+  // UI-framework component-class names
+  'btn', 'navbar', 'offcanvas', 'popover', 'tooltip', 'dropdown', 'accordion',
+  'breadcrumb', 'backdrop', 'popper', 'carousel', 'spinner',
+  // stylesheet mechanics
+  'stylesheet', 'stylesheets', 'keyframes', 'zindex', 'nowrap', 'flexbox',
+  'css', 'scss', 'sass',
+  // utility-class morphology
+  'rounded', 'bordered', 'borderless', 'uppercase', 'lowercase', 'capitalize',
+  'colspan', 'rowspan', 'xxl', 'xxs',
+  // icon/sprite plumbing
+  'sprite', 'glyph', 'chevron', 'caret',
+]);
 
 const GENERIC_INFRASTRUCTURE_HINTS = new Set([
   'logger', 'log', 'cache', 'config',
@@ -192,6 +230,20 @@ export class DomainExtractor {
   private isInfrastructureNode(node: CASNode): boolean {
     const file = node.source?.file?.toLowerCase() || '';
     const text = `${node.type} ${node.name} ${(node.subcategories || []).join(' ')}`.toLowerCase();
+    // STYLE RULES ARE NOT DOMAIN VOCABULARY. A `style_rule` node's name is a
+    // CSS SELECTOR (".navbar-expand-sm .offcanvas", ":root, [data-bs-theme]",
+    // ".popover .popover-arrow::before"), which is presentation syntax. A
+    // single bundled UI framework stylesheet emits thousands of them and, left
+    // in, they dominate the concept distribution outright: measured on a real
+    // production analysis, 2,720 of 3,684 nodes (74%) were style rules from one
+    // vendored CSS bundle, and the resulting `domain_concepts` list was almost
+    // entirely selector fragments and utility-class names.
+    if (node.type === 'style_rule') return true;
+    if (/\.(css|scss|sass|less|styl|stylus)$/.test(file)) return true;
+    // Schema-migration files are named by sequence number and table plumbing,
+    // not by domain vocabulary; the numbers themselves ("0001".."0016") were
+    // surfacing as concepts.
+    if (/(^|\/)(migrations?|db\/migrate)(\/|$)/.test(file)) return true;
     return node.type === 'import' ||
       node.type === 'file' ||
       /(^|\/)(test|tests|spec|__tests__|fixtures?|__fixtures__|mocks?|__mocks__|examples?|samples?|docs?|documentation|snippets?|dist|build|node_modules|coverage|vendor|generated)(\/|$)/.test(file) ||
@@ -295,7 +347,12 @@ export class DomainExtractor {
 
     for (const segment of segments) {
       const base = segment.replace(/\.[a-z0-9]+$/i, '');
-      const words = this.splitCamelCase(base).split(/[\s_\-.]+/).filter(w => w.length > 2);
+      // Tokenize on EVERY non-alphanumeric boundary, exactly as
+      // extractConceptsFromName does. Splitting only on whitespace/_/-/. left
+      // punctuation attached to the token, so syntax debris like "child)",
+      // "[data", "arrow::before," and 'theme="light"]' survived intact and was
+      // emitted as domain vocabulary.
+      const words = this.splitCamelCase(base).split(/[^A-Za-z0-9]+/).filter(w => w.length > 2);
       concepts.push(...words.map(w => w.toLowerCase()));
     }
 
@@ -314,9 +371,14 @@ export class DomainExtractor {
     const normalized = concept.toLowerCase();
 
     if (
+      // Purely numeric tokens are sequence numbers and version stamps
+      // (migration ordinals, breakpoint sizes), never domain vocabulary.
+      /^\d+$/.test(normalized) ||
       GENERIC_PROGRAMMING_TERMS.has(normalized) ||
       FRAMEWORK_AND_LIBRARY_TERMS.has(normalized) ||
-      ENGLISH_STOPWORDS.has(normalized)
+      ENGLISH_STOPWORDS.has(normalized) ||
+      PRESENTATION_LAYER_TERMS.has(normalized) ||
+      isEnglishFunctionWord(normalized)
     ) {
       return;
     }
@@ -380,7 +442,8 @@ export class DomainExtractor {
           entities: Array.from(occurrence.entities).slice(0, MAX_DOMAIN_CONCEPT_ENTITY_REFERENCES),
           nodes: Array.from(occurrence.nodes).slice(0, MAX_DOMAIN_CONCEPT_NODE_REFERENCES)
         },
-        classification: this.classifyConcept(occurrence, stats)
+        classification: this.classifyConcept(occurrence, stats),
+        description: this.describeConcept(occurrence),
       });
     }
 
@@ -393,7 +456,76 @@ export class DomainExtractor {
     // concepts so the domain is never left entirely unclassified.
     this.ensureCoreConcepts(results, occurrenceByName);
 
-    return results;
+    return this.retainDistinctiveConcepts(results, occurrenceByName);
+  }
+
+  /**
+   * Factual, evidence-grounded description of WHERE a concept appears. This is
+   * structure (Camp B), not comprehension: it reports counted occurrences and
+   * nothing else, so it can never claim a meaning the codebase does not show.
+   *
+   * `domain_concepts` previously shipped with no description field at all —
+   * every consumer that read one got `undefined`, on every entry, in every
+   * analysis.
+   */
+  private describeConcept(occurrence: ConceptOccurrence): string {
+    const parts: string[] = [];
+    if (occurrence.entities.size > 0) {
+      parts.push(`${occurrence.entities.size} data ${occurrence.entities.size === 1 ? 'entity' : 'entities'}`);
+    }
+    if (occurrence.entryPoints.size > 0) {
+      parts.push(`${occurrence.entryPoints.size} entry ${occurrence.entryPoints.size === 1 ? 'point' : 'points'}`);
+    }
+    if (occurrence.nodes.size > 0) {
+      parts.push(`${occurrence.nodes.size} code ${occurrence.nodes.size === 1 ? 'unit' : 'units'}`);
+    }
+    const where = parts.length > 0 ? parts.join(', ') : 'no located references';
+    return `Vocabulary term "${occurrence.name}" appears in ${where} (${occurrence.frequency} total occurrences).`;
+  }
+
+  /**
+   * Keeps only the concepts the repository's own evidence distinguishes.
+   *
+   * Emitting every token that occurs twice produced lists of hundreds to
+   * thousands of entries per repository (measured: 341–5,767 across production
+   * analyses) in which the genuinely load-bearing vocabulary was
+   * indistinguishable from incidental identifier noise. A surface that long is
+   * not a domain model, and downstream consumers that mine it for repository
+   * vocabulary were matching on the noise.
+   *
+   * A concept is retained when the repository's structure singles it out:
+   *  - it is anchored at a real boundary (a data entity or an entry point), or
+   *  - the classifier judged it `core`, or
+   *  - its frequency reaches the distribution's own upper decile.
+   *
+   * The cutoff is derived from THIS repository's frequency distribution, so it
+   * scales with codebase size instead of over-firing on large repositories and
+   * never firing on small ones.
+   */
+  private retainDistinctiveConcepts(
+    results: CASDomainConcept[],
+    byName: Map<string, ConceptOccurrence>,
+  ): CASDomainConcept[] {
+    // A percentile over a handful of samples is not a distribution. Small
+    // concept sets do not have the problem this trim exists to solve — they
+    // are already readable — and trimming them by a cutoff derived from eight
+    // data points discards real vocabulary. Leave them intact.
+    if (results.length <= MIN_CONCEPTS_FOR_DISTRIBUTION_TRIM) return results;
+    const frequencies = results.map(concept => concept.frequency).sort((a, b) => a - b);
+    const upperDecile = frequencies[Math.floor(frequencies.length * 0.9)] ?? 0;
+    const cutoff = Math.max(MIN_DISTINCTIVE_CONCEPT_FREQUENCY, upperDecile);
+
+    const retained = results.filter(concept => {
+      const occurrence = byName.get(concept.name);
+      if (occurrence && (occurrence.entities.size > 0 || occurrence.entryPoints.size > 0)) return true;
+      if (concept.classification === 'core') return true;
+      return concept.frequency >= cutoff;
+    });
+
+    // Never return an empty domain model when concepts were found: a tiny
+    // repository whose whole distribution sits below the floor still has a
+    // most-prominent vocabulary.
+    return retained.length > 0 ? retained : results.slice(0, 10);
   }
 
   /**

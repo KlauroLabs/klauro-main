@@ -3594,6 +3594,12 @@ export interface CASDomainConcept {
     nodes: string[];
   };
   classification: 'core' | 'supporting' | 'infrastructure';
+  /**
+   * Factual account of where the term occurs (entities / entry points / code
+   * units and total occurrences). Structure, not comprehension — it reports
+   * counted evidence and never asserts a meaning.
+   */
+  description?: string;
 }
 
 export type CASArtifactType = 'app' | 'library' | 'client-sdk' | 'cli-tool' | 'boilerplate' | 'infrastructure';

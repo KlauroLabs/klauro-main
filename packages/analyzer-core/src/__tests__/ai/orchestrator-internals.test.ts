@@ -8974,3 +8974,398 @@ describe('repoRelativePathSegments / domainKeyFromNode: out-of-root path segment
     expect(key).not.toMatch(/zzzrandomdev123|acmewidgets|clients/i);
   });
 });
+
+/**
+ * P1 (2026-07-29): the hardcoded-knowledge class, closed out.
+ *
+ * The cardinal rule is deterministic structural facts plus AI interpretation,
+ * never a hardcoded brand/keyword/domain table. These guards pin the specific
+ * functions that still carried such tables, and the characterization block
+ * below records what removing them changed against real production output.
+ */
+describe('P1: no domain/product literals in the capability and purpose predicates', () => {
+  // CODE only — the doc-comments that record WHICH literals were deleted must
+  // not themselves trip the guards.
+  const source = fs.readFileSync(
+    path.join(__dirname, '../../analyzer/core/orchestrator.ts'),
+    'utf-8',
+  )
+    .split('\n')
+    .filter(line => !/^\s*(?:\/\/|\/\*|\*)/.test(line))
+    .join('\n');
+
+  const bodyOf = (signature: string): string => {
+    const start = source.indexOf(signature);
+    expect({ signature, found: start > -1 }).toEqual({ signature, found: true });
+    const end = source.indexOf('\n  }', start);
+    return source.slice(start, end === -1 ? undefined : end);
+  };
+
+  /**
+   * Product, industry, and company vocabulary that must never appear inside a
+   * classification predicate. Each entry named a specific analyzed repository's
+   * subject matter.
+   */
+  const DOMAIN_PRODUCT_LITERALS = [
+    'Clinical Measurements', 'Clinical Reporting', 'Patient Records',
+    'Fleet Operations', 'Fuel Management', 'Vehicle Maintenance',
+    'Driver Communication', 'Trade Execution', 'Token Launch Monitoring',
+    'Token Purchase Execution', 'Batch Trade Execution', 'Trading Risk Control',
+    'Market Data Discovery', 'Market Price Analysis', 'Profit And Loss Reporting',
+    'Product Catalog', 'Cart And Checkout', 'Order Fulfillment',
+    'Booking Lifecycle', 'Calendar Availability', 'Session Replay',
+    'Social Timelines', 'Federation Delivery', 'Newsletter Delivery',
+    'Associated Token Address', 'Dlmm History', 'Liquidation Paper Version',
+    'Device Arp',
+  ];
+
+  it('isStrongProductCapability contains no product-capability allowlist', () => {
+    const body = bodyOf('private isStrongProductCapability(');
+    for (const literal of DOMAIN_PRODUCT_LITERALS) {
+      expect({ literal, present: body.includes(literal) }).toEqual({ literal, present: false });
+    }
+  });
+
+  it('isHardLowValueCapability contains no corpus-product literals', () => {
+    const body = bodyOf('private isHardLowValueCapability(');
+    for (const literal of DOMAIN_PRODUCT_LITERALS) {
+      expect({ literal, present: body.includes(literal) }).toEqual({ literal, present: false });
+    }
+  });
+
+  it('inferConceptsFromProjectText holds no candidate-phrase table', () => {
+    const body = bodyOf('private inferConceptsFromProjectText(');
+    // The deleted seed list. None of these may be named by the extractor: the
+    // repository's vocabulary comes from the repository's own text.
+    for (const literal of [
+      'zero trust', 'solana', 'arbitrage', 'fleet management', 'clinical testing',
+      'patient', 'muscle', 'portfolio', 'commerce operations', 'telematics',
+      'commercial vehicle', 'knowledge base', 'team wiki', 'backend as a service',
+      'storefront', 'merchant', 'shopify', 'supabase', 'appwrite', 'medusa',
+      'outline', 'codebase analysis', 'market data', 'aws', 'terraform',
+    ]) {
+      expect({ literal, present: body.includes(literal) }).toEqual({ literal, present: false });
+    }
+    // And no residual candidate array at all.
+    expect(body).not.toMatch(/const candidates\s*=\s*\[/);
+  });
+
+  it('refinePurposeTypeForDomain no longer switches on bare business-domain labels', () => {
+    const body = bodyOf('private refinePurposeTypeForDomain(');
+    for (const literal of [
+      "'fleet-management'",
+      "'portfolio-management'",
+      "'user-identity-management'",
+      "'car-wash-operations'",
+    ]) {
+      expect({ literal, present: body.includes(literal) }).toEqual({ literal, present: false });
+    }
+  });
+
+  it('the AI-interpretation validator gates framework-plumbing prose on the prose, not on one industry', () => {
+    expect(source).not.toContain("'car-wash-operations'");
+    expect(source).not.toContain('car-wash-description-leans-on-framework-plumbing');
+  });
+
+  it('no codebase-type signature asserts a hardcoded confidence floor', () => {
+    // Every verdict's confidence must be derived from how much of the
+    // signature actually matched, on one shared scale.
+    expect(source).not.toMatch(/confidence:\s*Math\.max\(0\.\d+,\s*Math\.round\(confidence/);
+    expect(source).toContain('private signatureMatchConfidence(');
+  });
+
+  it('the shared text-vocabulary module names no product, industry, or company', () => {
+    const vocabularySource = fs.readFileSync(
+      path.join(__dirname, '../../analyzer/core/text-vocabulary.ts'),
+      'utf-8',
+    );
+    for (const literal of [
+      'fleet', 'clinical', 'patient', 'solana', 'portfolio', 'commerce',
+      'shopify', 'supabase', 'terraform', 'vehicle', 'trading', 'invoice',
+      'checkout', 'telematics', 'muscle', 'arbitrage',
+    ]) {
+      expect({ literal, present: vocabularySource.toLowerCase().includes(literal) })
+        .toEqual({ literal, present: false });
+    }
+  });
+
+  it('the presentation-layer term set suppresses no dual-use domain noun', () => {
+    const extractorSource = fs.readFileSync(
+      path.join(__dirname, '../../analyzer/core/domain-extractor.ts'),
+      'utf-8',
+    );
+    const start = extractorSource.indexOf('const PRESENTATION_LAYER_TERMS');
+    expect(start).toBeGreaterThan(-1);
+    const body = extractorSource.slice(start, extractorSource.indexOf(']);', start));
+    // Words that are CSS vocabulary AND ordinary domain nouns. Suppressing any
+    // of them would hide a real concept from a repository that deals in it.
+    for (const noun of [
+      "'order'", "'content'", "'header'", "'footer'", "'container'", "'target'",
+      "'media'", "'theme'", "'alert'", "'size'", "'weight'", "'color'",
+      "'text'", "'style'", "'body'", "'main'", "'active'", "'screen'",
+      "'duration'", "'position'", "'block'", "'row'", "'grid'", "'part'",
+    ]) {
+      expect({ noun, present: body.includes(noun) }).toEqual({ noun, present: false });
+    }
+  });
+});
+
+describe('P1 characterization: capability classification against real production output', () => {
+  // 215 capabilities from 25 production analyses read out of the hosted CAS
+  // store. The fixture is a benchmark record, which is where corpus-specific
+  // names are allowed to live.
+  const corpus: Array<{
+    repo: string;
+    capabilities: Array<{
+      name: string; category: string; description_source?: string;
+      ops: number; ents: number; domains?: string[]; desc?: string | null;
+    }>;
+  }> = require('../fixtures/production-capability-corpus.json');
+
+  const materialize = (capability: any) => ({
+    name: capability.name,
+    category: capability.category,
+    description_source: capability.description_source,
+    description: capability.desc || '',
+    operations: Array.from({ length: capability.ops }, (_, i) => ({ name: `op${i}` })),
+    related_entities: Array.from({ length: capability.ents }, (_, i) => `ent${i}`),
+    related_domains: capability.domains || [],
+  });
+
+  const allCapabilities = corpus.flatMap(repo => repo.capabilities.map(materialize));
+
+  it('reads a real corpus, not a hand-written sample', () => {
+    expect(corpus.length).toBeGreaterThanOrEqual(20);
+    expect(allCapabilities.length).toBeGreaterThanOrEqual(200);
+  });
+
+  it('isHardLowValueCapability fires on nothing in production output — its literals were inert', () => {
+    // Characterized BEFORE the literals were removed: this predicate matched
+    // zero of 215 real capabilities, literals included. Removing the four
+    // corpus-product names therefore cannot change any real verdict, and this
+    // records that fact rather than asserting it from the code.
+    const fired = allCapabilities.filter(capability => orch.isHardLowValueCapability(capability));
+    expect(fired.map((capability: any) => capability.name)).toEqual([]);
+  });
+
+  it('the trimmed capability set is unchanged for every repository', () => {
+    // Baseline recorded by running the SAME corpus through the predicates
+    // before the literals were removed: 212 of 215 capabilities survived, with
+    // exactly three repositories trimming one entry each. The allowlist's
+    // removal changes strength classification (below) but not what survives
+    // trimming, on any of the 25 repositories.
+    const BASELINE_TRIMMED_BY_REPO: Record<string, number> = {
+      'soon-lens': 1, v2: 1, truckspy: 1,
+    };
+    let totalKept = 0;
+    for (const repo of corpus) {
+      const capabilities = repo.capabilities.map(materialize);
+      const kept = orch.trimLowValueFallbackCapabilities(capabilities, '/tmp/characterization');
+      const expectedTrimmed = BASELINE_TRIMMED_BY_REPO[repo.repo] || 0;
+      expect({ repo: repo.repo, trimmed: capabilities.length - kept.length })
+        .toEqual({ repo: repo.repo, trimmed: expectedTrimmed });
+      totalKept += kept.length;
+    }
+    expect(totalKept).toBe(212);
+  });
+
+  it('a capability that was strong ONLY because a literal named it is no longer strong', () => {
+    // The single behavioral difference across 215 capabilities. This entry is
+    // `supporting`, carries zero operations, and its name merely CONTAINED an
+    // allowlisted phrase. Nothing about the codebase made it a strong product
+    // capability; the allowlist did. Losing it is the intended correction.
+    const promotedByLiteralAlone = allCapabilities.find(
+      (capability: any) => capability.name === 'Manages codebase analysis and revisions',
+    );
+    expect(promotedByLiteralAlone).toBeDefined();
+    expect(promotedByLiteralAlone!.category).toBe('supporting');
+    expect(promotedByLiteralAlone!.operations).toHaveLength(0);
+    expect(orch.isStrongProductCapability(promotedByLiteralAlone)).toBe(false);
+  });
+
+  it('strength now tracks evidence, and an entry with no evidence at all cannot be strong', () => {
+    for (const capability of allCapabilities) {
+      if (!orch.isStrongProductCapability(capability)) continue;
+      const hasEvidence =
+        (capability as any).related_entities.length > 0 ||
+        (capability as any).operations.length > 0 ||
+        String((capability as any).description || '').trim().length > 0;
+      expect({ name: (capability as any).name, hasEvidence }).toEqual({
+        name: (capability as any).name,
+        hasEvidence: true,
+      });
+    }
+  });
+
+  it('capabilities named only by an allowlisted phrase keep their verdicts on their own merits', () => {
+    // Eight of the nine former allowlist matches are still strong — the
+    // evidence rules admit them without help. This is the "no silent
+    // regression" half of the diff.
+    const formerlyAllowlisted = allCapabilities.filter((capability: any) =>
+      /\b(Fleet Operations|Vehicle Maintenance|Driver Communication|Trade Execution|Agent Context|Codebase Analysis|Incremental Analysis)\b/i
+        .test(capability.name),
+    );
+    expect(formerlyAllowlisted.length).toBe(9);
+    const stillStrong = formerlyAllowlisted.filter(capability => orch.isStrongProductCapability(capability));
+    expect(stillStrong.length).toBe(8);
+  });
+});
+
+describe('P1: core_concepts and domain_concepts are grounded in the repository', () => {
+  it('project-text vocabulary comes from the text, not from a candidate list', () => {
+    // A repository whose prose contains none of the deleted seed vocabulary
+    // must report ITS OWN repeated terms — and must NOT report seed words.
+    const text = [
+      'ledger reconciliation service for municipal water utilities.',
+      'the ledger reconciliation pipeline ingests meter readings and posts',
+      'ledger adjustments. meter readings are validated before reconciliation.',
+      'operators review ledger adjustments and approve meter readings.',
+    ].join(' ');
+    const concepts: string[] = (orch as any).inferConceptsFromProjectText(text);
+    expect(concepts.join(' ')).toMatch(/ledger|meter|reconciliation/);
+    for (const seed of ['order', 'driver', 'force', 'aws', 'security', 'agent', 'portfolio']) {
+      expect({ seed, present: concepts.includes(seed) }).toEqual({ seed, present: false });
+    }
+  });
+
+  it('a term the authors used once is not a core concept', () => {
+    const concepts: string[] = (orch as any).inferConceptsFromProjectText(
+      'dredging permits are issued quarterly. bathymetric surveys inform dredging permits and dredging schedules.',
+    );
+    // "bathymetric" occurs once; "dredging" three times.
+    expect(concepts.some(concept => concept.includes('dredging'))).toBe(true);
+    expect(concepts).not.toContain('bathymetric');
+  });
+
+  it('core_concepts rank by the repository\'s own evidence, not by which list a term came from', () => {
+    const domainConcepts = [
+      {
+        id: 'c1', name: 'kiln', frequency: 40, classification: 'core',
+        appears_in: { entry_points: ['ep1'], entities: ['e1'], nodes: ['n1'] },
+      },
+      {
+        id: 'c2', name: 'incidental', frequency: 400, classification: 'supporting',
+        appears_in: { entry_points: [], entities: [], nodes: ['n2'] },
+      },
+    ] as any[];
+    const ranked: string[] = (orch as any).rankCoreConcepts(
+      ['incidental'],
+      [domainConcepts[0]],
+      domainConcepts,
+      ['Kiln'],
+      '/tmp/project',
+    );
+    // Entity- and entry-point-anchored `kiln` outranks the far more frequent
+    // but entirely unanchored `incidental`, even though `incidental` is the
+    // one the project text produced.
+    expect(ranked[0]).toBe('kiln');
+  });
+
+  it('every domain concept carries a factual, evidence-grounded description', () => {
+    const { DomainExtractor } = require('../../analyzer/core/domain-extractor');
+    const extractor = new DomainExtractor();
+    const nodes = Array.from({ length: 6 }, (_, i) => ({
+      id: `n${i}`, name: 'KilnScheduleService', type: 'class',
+      source: { file: `src/kiln/kiln-schedule-service-${i}.ts` },
+    })) as any[];
+    const concepts = extractor.extract(nodes, [], [], [], '');
+    expect(concepts.length).toBeGreaterThan(0);
+    for (const concept of concepts) {
+      expect(typeof concept.description).toBe('string');
+      expect(concept.description.trim().length).toBeGreaterThan(0);
+      // Factual: it reports counted references and the term itself.
+      expect(concept.description).toContain(concept.name);
+      expect(concept.description).toMatch(/\d+ total occurrences/);
+    }
+  });
+
+  it('stylesheet selectors never become domain vocabulary', () => {
+    const { DomainExtractor } = require('../../analyzer/core/domain-extractor');
+    const extractor = new DomainExtractor();
+    // The real shape: a bundled UI framework contributing thousands of
+    // style_rule nodes whose names are CSS selectors, alongside a handful of
+    // genuine domain classes.
+    const styleNodes = [
+      '.navbar-expand-sm .offcanvas', '.popover .popover-arrow::before',
+      ':root, [data-bs-theme="light"]', '.btn-check:disabled + .btn',
+      '.table-bordered > :not(caption) > *', '.rounded-1', '*, *::before, *::after',
+      '.dropdown-menu li:hover > a', '.carousel-item.active',
+    ].map((selector, i) => ({
+      id: `s${i}`, name: selector, type: 'style_rule',
+      source: { file: 'static/css/vendor.css' },
+    })) as any[];
+    const domainNodes = Array.from({ length: 5 }, (_, i) => ({
+      id: `d${i}`, name: 'OwnerRecordService', type: 'class',
+      source: { file: `src/owners/owner-record-service-${i}.java` },
+    })) as any[];
+
+    const names = extractor.extract([...styleNodes, ...domainNodes], [], [], [], '')
+      .map((concept: any) => concept.name);
+
+    for (const fragment of [
+      'offcanvas', 'popover', 'btn', 'rounded', 'carousel', 'dropdown',
+      'navbar', 'caption', 'theme', 'root', 'child', 'data', 'before', 'after',
+    ]) {
+      expect({ fragment, present: names.includes(fragment) }).toEqual({ fragment, present: false });
+    }
+    expect(names).toContain('owner');
+  });
+
+  it('path tokenization leaves no punctuation debris', () => {
+    const { DomainExtractor } = require('../../analyzer/core/domain-extractor');
+    const extractor = new DomainExtractor();
+    const nodes = Array.from({ length: 4 }, (_, i) => ({
+      id: `n${i}`, name: 'SluiceGate', type: 'class',
+      source: { file: `src/sluice[gate]/sluice::gate-${i}.ts` },
+    })) as any[];
+    for (const concept of extractor.extract(nodes, [], [], [], '')) {
+      expect(concept.name).toMatch(/^[a-z0-9]+$/);
+    }
+  });
+
+  it('migration sequence numbers are not domain concepts', () => {
+    const { DomainExtractor } = require('../../analyzer/core/domain-extractor');
+    const extractor = new DomainExtractor();
+    const nodes = Array.from({ length: 8 }, (_, i) => ({
+      id: `m${i}`, name: `Migration000${i}`, type: 'class',
+      source: { file: `db/migrate/000${i}_add_sluice_gates.rb` },
+    })) as any[];
+    const names = extractor.extract(nodes, [], [], [], '').map((concept: any) => concept.name);
+    expect(names.some((name: string) => /^\d+$/.test(name))).toBe(false);
+  });
+});
+
+describe('P1: purpose evidence leads with the strongest source', () => {
+  it('a vocabulary keyword bag never outranks the repository\'s own documentation', () => {
+    const ordered: string[] = (orch as any).orderPurposeEvidence([
+      'Zero-trust/security signals: policy, policies, resource, resources, agent, agents, device, devices, grant, grants, scan, credential, vulnerability, cve',
+      'package.json description',
+      'README.md',
+      '12 HTTP endpoints',
+    ]);
+    expect(ordered[0]).toBe('package.json description');
+    expect(ordered[ordered.length - 1]).toMatch(/^Zero-trust\/security signals:/);
+    expect(ordered).toHaveLength(4);
+  });
+
+  it('orders only — it adds and drops nothing', () => {
+    const input = ['Fleet operations signals: driver, trip', 'source text', '4 data entities'];
+    const ordered: string[] = (orch as any).orderPurposeEvidence(input);
+    expect([...ordered].sort()).toEqual([...input].sort());
+  });
+});
+
+describe('P1: signature confidence reflects the evidence', () => {
+  it('a thin signature match cannot report near-certainty', () => {
+    const thin = (orch as any).signatureMatchConfidence(4, 11, 0.3);
+    const full = (orch as any).signatureMatchConfidence(11, 11, 0.3);
+    // The old hardcoded floor reported 0.84 for both.
+    expect(thin).toBeLessThan(0.8);
+    expect(full).toBeGreaterThan(thin);
+    expect(full).toBeLessThanOrEqual(0.95);
+  });
+
+  it('a genuinely high computed confidence is never lowered', () => {
+    expect((orch as any).signatureMatchConfidence(2, 11, 0.93)).toBe(0.93);
+  });
+});
