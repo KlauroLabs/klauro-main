@@ -25568,10 +25568,6 @@ export class AnalyzerOrchestrator {
     const hasClinicalAnchor = clinicalSignals.matched.some(signal =>
       ['patient', 'muscle', 'inclinometry', 'grip', 'pinch', 'rehabilitation'].includes(signal)
     );
-    const fleetSignals = await countMatches(
-      nameEntityCapabilityPathTokens,
-      ['fleet', 'vehicle', 'driver', 'fuel', 'maintenance', 'dispatch', 'telematics', 'odometer', 'ifta', 'trip', 'booking']
-    );
     const devtoolsSignals = await countMatches(
       nameEntityCapabilityPathTokens,
       ['analyzer', 'static analysis', 'code analysis', 'codebase analysis', 'codebase graph', 'codemod']
@@ -25599,33 +25595,25 @@ export class AnalyzerOrchestrator {
       };
     }
 
-    // ANCHOR-GATED (same live self-analysis defect class as the clinical
-    // override above, 2026-07-20 — quality-iter-1): 'fleet'/'driver'/
-    // 'dispatch'/'maintenance'/'trip'/'booking' are generic words that show up
-    // incidentally in any coordination/scheduling codebase (Klauro's own docs
-    // talk about "fleets of agents", work "dispatch", code "maintenance") and
-    // previously counted as their OWN anchor via /vehicle|fleet|driver/ — so a
-    // vocabulary-only overlap on Klauro's own repo racked up 4 matches
-    // (fleet, dispatch, driver, maintenance) with ZERO genuine fleet-operations
-    // evidence and got stamped 'fleet-management-platform' at a hardcoded 0.84
-    // floor. Require an anchor from vocabulary that is actually
-    // fleet-distinctive (vehicle/telematics/odometer/ifta) — words that don't
-    // plausibly appear outside real fleet-operations software — never from
-    // 'fleet' or 'driver' themselves.
-    const hasFleetAnchor = fleetSignals.matched.some(signal => /vehicle|telematics|odometer|ifta/.test(signal));
-    if (fleetSignals.matched.length >= 4 &&
-      hasFleetAnchor &&
-      topMatch.type !== 'medical-device-software' &&
-      topMatch.type !== 'clinical-testing-platform') {
-      return {
-        primary_type: 'fleet-management-platform',
-        confidence: this.signatureMatchConfidence(fleetSignals.matched.length, fleetSignals.size, confidence),
-        evidence: [`Fleet operations signals: ${fleetSignals.matched.join(', ')}`],
-        secondary_types: [topMatch.type, ...secondaryTypes]
-          .filter(type => type !== 'fleet-management-platform')
-          .slice(0, 3),
-      };
-    }
+    // REMOVED (task #90): the 'fleet-management-platform' override, anchor and
+    // all. The anchor tokens were narrower than the ones they replaced, but
+    // they were still words: a repo earns this verdict by containing the
+    // string 'vehicle' or 'odometer' somewhere in a name. That is exactly the
+    // rule this sweep exists to delete, and narrowing a word list only moves
+    // the misfire — a parts catalog, an insurance rater, a mapping SDK, a
+    // physics sim and a regulatory-forms library all carry the same nouns
+    // without being fleet-operations software.
+    //
+    // No deterministic replacement is offered: fleet identity has no
+    // distinguishing CAS shape (it is CRUD over records on a schedule), and
+    // the honest signal — a declared telematics/ELD provider SDK — is not
+    // enumerable across ecosystems without re-importing a vendor list, i.e.
+    // the same hardcoded-knowledge defect wearing a manifest costume. This
+    // judgment goes to the AI interpretation layer, which reaches primary_type
+    // through refinePurposeTypeForDomain (already covered: a grounded
+    // 'fleet-management' domain overrides the structural verdict there).
+    // Honest cost: real fleet repos now report their structural shape until AI
+    // grounds them.
 
     // REMOVED (task #90): the 'network-access-platform' half of this override.
     // Its anchor was either the literal phrase 'zero trust' appearing in a
