@@ -7223,8 +7223,13 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
       // Reached the prompt as a real candidate route area (evidence the ranker
       // actually surfaced it, not just that the AI happened to name it) — proving
       // the gate keyed on the TRUE 207 count, not the capped-at-12 operations.
+      // Task #99: candidate_route_areas is now {name, entry_points, entities}
+      // facts, not a bare string — entry_points must carry the TRUE 207 count
+      // (behaviorSurfaceEntryCount), never the capped operations.length (12).
       const facts = captured[0]?.additionalContext?.facts;
-      expect(facts?.candidate_route_areas).toContain('Mcp Tool Surface');
+      const mcpCandidate = (facts?.candidate_route_areas || []).find((area: any) => area.name === 'Mcp Tool Surface');
+      expect(mcpCandidate).toBeDefined();
+      expect(mcpCandidate.entry_points).toBe(207);
       // Operations link back so the resulting capability stays navigable.
       expect(catalog[0].operations.length).toBeGreaterThan(0);
     } finally {
@@ -7261,7 +7266,9 @@ describe('capability catalog validity guard + MCP-tool-family merge (Klauro rung
         projectTextSignal: { concepts: [], evidence: [] }, budgetMs: 30000,
       });
       const facts = captured[0]?.additionalContext?.facts;
-      expect(facts?.candidate_route_areas || []).not.toContain('Cli Surface');
+      // Task #99: candidate_route_areas is now {name, entry_points, entities}
+      // facts, not a bare string.
+      expect((facts?.candidate_route_areas || []).some((area: any) => area.name === 'Cli Surface')).toBe(false);
     } finally {
       (aiService as any).generateComponentDescription = original;
     }

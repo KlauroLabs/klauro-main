@@ -10803,6 +10803,30 @@ export class AnalyzerOrchestrator {
     const candidateAreas = rankedCandidateAreas
       .map(capability => capability.name)
       .slice(0, candidateWindowSize);
+    /**
+     * TASK #99 (make magnitude visible): `candidateAreas` above is a bare
+     * array of name strings — a 205-entry surface and a 1-operation area are
+     * textually identical in that shape, so the catalog step has no way to
+     * see which candidate is actually load-bearing. Attaches the candidate's
+     * real evidence weight as FACTS ONLY: no adjective, no ranking language,
+     * nothing naming a candidate "primary"/"core"/"the main thing" — the
+     * numbers do the work, and the model draws its own conclusion.
+     *   - entry_points reads behaviorSurfaceEntryCount, the TRUE count — NOT
+     *     `operations.length`, which buildCandidate caps at 12 for CAS size.
+     *     Using the capped count here would UNDERSTATE exactly the magnitude
+     *     this exists to reveal (a 205-entry surface would read as 12).
+     *   - No threshold drops anything: every candidate already in the window
+     *     is included with its real (possibly small) count, so a repo whose
+     *     honest answer is several small capabilities still gets them,
+     *     visibly labeled small rather than hidden.
+     */
+    const candidateAreaFacts = rankedCandidateAreas
+      .slice(0, candidateWindowSize)
+      .map(capability => ({
+        name: capability.name,
+        entry_points: this.behaviorSurfaceEntryCount(capability),
+        entities: (capability.related_entities || []).length,
+      }));
     const services = (input.externalServices || []).slice(0, 12);
     // THE OUTPUT CAP: how many capabilities the model is told to return, and the
     // final out.slice() cap below, must likewise scale with how much was handed
@@ -10908,7 +10932,7 @@ export class AnalyzerOrchestrator {
               facts: {
                 user_journeys: journeys,
                 data_entities: entities,
-                candidate_route_areas: candidateAreas,
+                candidate_route_areas: candidateAreaFacts,
                 external_services: services,
                 // Evidence-gated: present ONLY when the repo supplied real
                 // product-facing text. Its absence must not weaken the catalog;
