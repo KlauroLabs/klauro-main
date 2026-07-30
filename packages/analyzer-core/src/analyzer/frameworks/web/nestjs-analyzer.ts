@@ -1551,6 +1551,17 @@ export class NestJSAnalyzer extends BaseAnalyzer {
               line: node.loc?.start.line,
               entry_file: filePath,
               bootstrap_method: bootstrapMethod
+            },
+            // Explicit handler so the repo-relative path is used. Without one
+            // the generic backfill copies the backing node's source.file, which
+            // this analyzer records as an ABSOLUTE path — a location that
+            // resolves for no consumer, and the only entry point in the output
+            // that was not repo-relative.
+            {
+              node_id: bootstrapId,
+              method_name: bootstrapMethod,
+              file: filePath,
+              ...(node.loc?.start.line !== undefined ? { line: node.loc.start.line } : {})
             }
           ));
         }
@@ -1576,6 +1587,13 @@ export class NestJSAnalyzer extends BaseAnalyzer {
               line: node.loc?.start.line,
               port: port,
               protocol: 'http'
+            },
+            // Repo-relative, for the same reason as the bootstrap entry above.
+            {
+              node_id: bootstrapId,
+              method_name: 'listen',
+              file: filePath,
+              ...(node.loc?.start.line !== undefined ? { line: node.loc.start.line } : {})
             }
           ));
         }

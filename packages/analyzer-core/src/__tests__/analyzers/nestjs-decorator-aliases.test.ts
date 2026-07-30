@@ -162,3 +162,49 @@ describe('NestJS decorator import aliases', () => {
     expect(http.map(e => `${e.trigger?.method} ${e.trigger?.path}`)).toEqual(['GET /plain']);
   });
 });
+
+describe('NestJS bootstrap entry paths', () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'nest-bootstrap-'));
+    fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({
+      name: 'bootstrap-fixture',
+      dependencies: { '@nestjs/core': '^10.0.0' },
+    }));
+  });
+
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it('reports repo-relative locations, never an absolute filesystem path', async () => {
+    // The bootstrap entries were the only ones in the output carrying an
+    // absolute path, because they fell through to the generic handler backfill
+    // which copies the backing node's source.file — recorded here as absolute.
+    const full = path.join(root, 'src', 'main.ts');
+    fs.mkdirSync(path.dirname(full), { recursive: true });
+    fs.writeFileSync(full, [
+      "import { NestFactory } from '@nestjs/core';",
+      "import { AppModule } from './app.module';",
+      '',
+      'async function bootstrap() {',
+      '  const app = await NestFactory.create(AppModule);',
+      '  await app.listen(3000);',
+      '}',
+      'bootstrap();',
+    ].join('\n'));
+
+    const contribution: any = await new NestJSAnalyzer().analyze({ projectPath: root } as any);
+    const bootstrapEntries = (contribution.entry_points || []).filter(
+      (e: any) => e.name === 'Application Start' || String(e.name).startsWith('HTTP Server')
+    );
+
+    expect(bootstrapEntries.length).toBeGreaterThanOrEqual(1);
+    for (const entry of bootstrapEntries) {
+      expect(entry.handler?.file).toBe('src/main.ts');
+      expect(path.isAbsolute(entry.handler?.file ?? '')).toBe(false);
+      expect(entry.handler?.file).not.toContain(root);
+    }
+  });
+});
