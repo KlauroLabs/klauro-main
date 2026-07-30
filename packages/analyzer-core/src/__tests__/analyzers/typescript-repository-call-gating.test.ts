@@ -149,4 +149,69 @@ describe('Repository/ORM exit-point routing is gated on receiver evidence, not b
 
     expect(dbExitPointsFor(contribution, method!.id).length).toBe(0);
   });
+
+  /**
+   * An unresolved receiver — a call on the result of another call — is UNKNOWN,
+   * and unknown is not a store. Before the receiver-naming fix the call target
+   * carried the receiver's raw SOURCE TEXT, whose dot-separated tail was read
+   * as a repository name: a plain `.find` at the end of a `.map().filter()
+   * .sort()` chain shipped as a `database` exit on a repository called
+   * `Length)`. Measured on a real analysis of this repo.
+   */
+  it('does NOT route a chained-call .find() to a DB exit point, or name it from source text', async () => {
+    const contribution = await analyzeProject({
+      'src/services/chain.service.ts': [
+        "import { Injectable } from '@nestjs/common';",
+        '',
+        '@Injectable()',
+        'export class ChainService {',
+        '  anchor(entities: any[]) {',
+        '    return entities',
+        '      .map(entity => ({ entity, canonical: entity.name }))',
+        '      .filter(item => item.canonical.length >= 4)',
+        '      .sort((left, right) => right.canonical.length - left.canonical.length)',
+        "      .find(item => item.canonical.includes('x'));",
+        '  }',
+        '}',
+      ].join('\n'),
+    });
+
+    const method = methodNode(contribution, 'ChainService', 'anchor');
+    expect(method).toBeDefined();
+    expect(dbExitPointsFor(contribution, method!.id).length).toBe(0);
+
+    // Nothing anywhere in the contribution may be named out of source text.
+    const sourceTextShaped = (contribution.exit_points || [])
+      .map(ep => ep.name || '')
+      .filter(name => /[()[\]{}\s]/.test(name));
+    expect(sourceTextShaped).toEqual([]);
+  });
+
+  it('does NOT route a call on a call result to an API exit point', async () => {
+    // `getClient().get('/users')` has a URL-shaped first argument, which is the
+    // evidence isApiCall leans on for wrapped HTTP clients. That evidence is
+    // only meaningful once we know WHAT the receiver is; here we do not.
+    const contribution = await analyzeProject({
+      'src/services/client.service.ts': [
+        "import { Injectable } from '@nestjs/common';",
+        '',
+        'declare function getClient(): any;',
+        '',
+        '@Injectable()',
+        'export class ClientService {',
+        '  load() {',
+        "    return getClient().get('/users');",
+        '  }',
+        '}',
+      ].join('\n'),
+    });
+
+    const method = methodNode(contribution, 'ClientService', 'load');
+    expect(method).toBeDefined();
+
+    const apiExits = (contribution.exit_points || []).filter(
+      ep => ep.type === 'api' && ep.source_node === method!.id
+    );
+    expect(apiExits).toEqual([]);
+  });
 });

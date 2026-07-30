@@ -134,6 +134,28 @@ export interface TSExtractedParameter {
   defaultValue?: string;
 }
 
+/**
+ * Receiver marker for a method call whose receiver is not a NAME.
+ *
+ * `foo().bar()`, `(a ?? b).bar()`, `arr[0].bar()` — the receiver is a computed
+ * value, so there is no name to record. The receiver used to be filled in with
+ * the receiver node's raw SOURCE TEXT, which for a chained call is the whole
+ * preceding expression, newlines and all. Downstream consumers split that blob
+ * on `.` and treated its tail as a receiver name, so
+ *
+ *   dataEntities
+ *     .sort((left, right) => right.canonical.length - left.canonical.length)
+ *     .find(...)
+ *
+ * was reported as a `database` exit point on a repository named `Length)`.
+ *
+ * Deliberately not a legal JS identifier, so it can never collide with a real
+ * receiver name, and never resolves by name lookup. Absence of a receiver name
+ * is UNKNOWN, not evidence: a call through this marker must not be classified
+ * as a store or API exit (see `isRepositoryCall` / `isApiCall`).
+ */
+export const UNRESOLVED_RECEIVER = '<unresolved>';
+
 export interface TSExtractedCall {
   target: string;
   targetType: 'function' | 'method' | 'constructor' | 'external' | 'unknown' | 'library' | 'property';
@@ -1443,6 +1465,61 @@ export class TreeSitterTSExtractor {
     return !(source.startsWith('.') || source.startsWith('/'));
   }
 
+  /**
+   * The NAME of a call's receiver, or null when the receiver has no name.
+   *
+   * Whitelist, not blacklist: only node types that ARE a name contribute one
+   * (`x`, `this`, `super`, and dotted chains of those). Everything else — a
+   * call result, a subscript, a parenthesized or awaited expression, a literal
+   * — is a computed value with no name, and yields null so the caller records
+   * UNRESOLVED_RECEIVER. A blacklist would have to enumerate every expression
+   * form the grammar can put in receiver position, and each one it missed
+   * would leak source text back into the call graph.
+   */
+  private resolveReceiverName(node: any): string | null {
+    if (!node) return null;
+
+    switch (node.type) {
+      case 'identifier':
+        return node.text;
+      case 'this':
+        return 'this';
+      case 'super':
+        return 'super';
+      // `import('./Foo')` — the grammar gives the callee its own node type, but
+      // `import` IS the name of what is being called, and a dynamic import is a
+      // real cross-file dependency the pipeline already understands by that name.
+      case 'import':
+        return 'import';
+
+      // Transparent wrappers: TYPE-LEVEL or grouping syntax that does not change
+      // WHAT the receiver is. `capability.relatedFlows!.map(...)` calls through a
+      // named receiver; dropping the name because of a `!` would lose real call
+      // edges (DI-field and typed-receiver resolution both key off the name).
+      case 'non_null_expression':          // x!
+      case 'parenthesized_expression':     // (x)
+      case 'as_expression':                // x as T
+      case 'satisfies_expression':         // x satisfies T
+        return this.resolveReceiverName(node.namedChild(0));
+      // `<T>x` is the one wrapper that puts the TYPE first, so index 0 is the
+      // type_arguments node and the value is index 1.
+      case 'type_assertion':
+        return this.resolveReceiverName(node.namedChild(1));
+
+      case 'member_expression': {
+        const base = this.resolveReceiverName(node.childForFieldName('object'));
+        if (!base) return null;
+        const prop = node.childForFieldName('property');
+        // A computed member (`a[k].m()`) has no property_identifier, so the
+        // chain has no name past this point.
+        if (!prop || prop.type !== 'property_identifier') return null;
+        return `${base}.${prop.text}`;
+      }
+      default:
+        return null;
+    }
+  }
+
   private extractCall(
     call: any,
     enclosingFunction: string,
@@ -1458,7 +1535,12 @@ export class TreeSitterTSExtractor {
     if (callee.type === 'member_expression') {
       const obj = callee.childForFieldName('object');
       const prop = callee.childForFieldName('property');
-      target = `${obj?.text || ''}.${prop?.text || ''}`;
+      // NAME the receiver or mark it unresolved — never paste its source text.
+      // resolveReceiverName returns null for any receiver that is a computed
+      // value rather than a name (a call result, a subscript, a parenthesized
+      // expression), which is the whole reason UNRESOLVED_RECEIVER exists.
+      const receiver = this.resolveReceiverName(obj);
+      target = `${receiver ?? UNRESOLVED_RECEIVER}.${prop?.text || ''}`;
       targetType = 'method';
 
       // Only classify as a 'library' (external SDK) call when the import source is a real
@@ -1468,7 +1550,9 @@ export class TreeSitterTSExtractor {
       // of resolving to a real 'calls' edge, which is bug #2 from the 2026-07-04 impact
       // benchmark (get_callers inconsistently missing cross-file calls to imported
       // functions/objects that happen to be local, not third-party).
-      if (obj?.text && this.isExternalImport(obj.text)) {
+      // Gated on a RESOLVED receiver: an import lookup keyed by source text is
+      // meaningless, and an unresolved receiver is not evidence of anything.
+      if (receiver && this.isExternalImport(receiver)) {
         targetType = 'library';
       }
     } else if (callee.type === 'identifier') {
@@ -1485,7 +1569,13 @@ export class TreeSitterTSExtractor {
       target = 'super';
       targetType = 'constructor';
     } else {
-      target = callee.text;
+      // A callee that is not a name either: an IIFE `(async () => {...})()`, a
+      // returned function `f()()`, `arr[0]()`. This branch used to paste
+      // `callee.text`, so every IIFE carried its ENTIRE body — kilobytes of
+      // source, newlines and all — as its call target. Same rule as a receiver:
+      // name it if it has a name (`f!()` is a call to `f`), else record it as
+      // unresolved.
+      target = this.resolveReceiverName(callee) ?? UNRESOLVED_RECEIVER;
     }
 
     const args = call.childForFieldName('arguments');
