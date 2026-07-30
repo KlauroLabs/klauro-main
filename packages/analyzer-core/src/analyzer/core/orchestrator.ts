@@ -22426,10 +22426,21 @@ export class AnalyzerOrchestrator {
    * on) or no handler file evidence exists at all.
    */
   private behaviorEntryModuleArea(ep: CASEntryPoint, nodesById: Map<string, CASNode>): string | undefined {
-    const file = (ep.handler?.file || nodesById.get(ep.source_node || '')?.source?.file || '')
-      .replace(/\\/g, '/');
-    if (!file) return undefined;
-    const parts = file.split('/').filter(Boolean);
+    const file = ep.handler?.file || nodesById.get(ep.source_node || '')?.source?.file || '';
+    return this.moduleAreaFromFile(file);
+  }
+
+  /**
+   * Shared directory-walk core behind behaviorEntryModuleArea: given ANY file
+   * path, returns the first non-structural/non-generic directory segment
+   * (deepest first). Extracted so the CALLEE-module fallback below
+   * (behaviorEntryCalleeModuleArea) can apply the identical structural filter
+   * to a reached node's file, not just the handler's own declaring file.
+   */
+  private moduleAreaFromFile(file: string): string | undefined {
+    const normalized = (file || '').replace(/\\/g, '/');
+    if (!normalized) return undefined;
+    const parts = normalized.split('/').filter(Boolean);
     parts.pop(); // drop the filename — only directory segments name a module
     for (let i = parts.length - 1; i >= 0; i--) {
       const words = parts[i]
@@ -22443,6 +22454,63 @@ export class AnalyzerOrchestrator {
       if (this.isStructuralAreaName(area)) continue;
       if (words.every(word => this.isGenericCapabilityToken(this.normalizeDomainToken(word)))) continue;
       return area;
+    }
+    return undefined;
+  }
+
+  /**
+   * SECOND-TIER functional-cohesion fallback, for when even file-directory
+   * clustering (behaviorEntryModuleArea) can't split a large diverse
+   * registration surface — the common real-world case where every handler is
+   * REGISTERED in one file (one big server.ts/routes.ts wiring hundreds of
+   * tools/routes), so every entry resolves to the SAME single directory and
+   * file-based clustering structurally cannot produce the required >= 2
+   * groups no matter how the entries differ. Measured live on Klauro's own
+   * self-analysis: all ~200 MCP tool registrations share one file
+   * (apps/mcp-server/src/server.ts), so behaviorEntryModuleArea collapses the
+   * entire surface to one area and the whole registration engine falls
+   * through to a single opaque "Mcp Tool Surface" candidate — one slot in a
+   * ~14-candidate catalog window standing in for the platform's actual
+   * flagship surface.
+   *
+   * A handler's DEFINING location is one fact; where its logic actually
+   * DELEGATES (the call graph) is a second, independent structural fact that
+   * does vary per-handler even when every handler is declared in the same
+   * file — each tool's implementation typically calls a different downstream
+   * service/module. Walks outward (bounded hops) from the handler's own node
+   * along the same edge set buildCandidate already uses for entity-overlap
+   * reachability, and returns the first REACHED node whose file resolves to a
+   * non-structural area different from the handler's own declaring module
+   * (so this never just re-derives the same single area the file-based pass
+   * already tried and rejected as unsplittable). Pure call-graph structure —
+   * no name/domain vocabulary of its own; reuses the identical structural/
+   * generic-token filter moduleAreaFromFile already applies.
+   */
+  private behaviorEntryCalleeModuleArea(
+    ep: CASEntryPoint,
+    nodesById: Map<string, CASNode>,
+    outgoingBySource: Map<string, string[]>,
+    ownArea: string | undefined,
+  ): string | undefined {
+    const handlerId = ep.source_node || ep.handler?.node_id;
+    if (!handlerId) return undefined;
+    const visited = new Set<string>([handlerId]);
+    let frontier: string[] = [handlerId];
+    for (let hop = 0; hop < 2 && frontier.length > 0; hop++) {
+      const next: string[] = [];
+      for (const nodeId of frontier) {
+        for (const target of outgoingBySource.get(nodeId) || []) {
+          if (visited.has(target)) continue;
+          visited.add(target);
+          const targetFile = nodesById.get(target)?.source?.file;
+          if (targetFile) {
+            const area = this.moduleAreaFromFile(targetFile);
+            if (area && area !== ownArea) return area;
+          }
+          next.push(target);
+        }
+      }
+      frontier = next;
     }
     return undefined;
   }
@@ -22841,13 +22909,49 @@ export class AnalyzerOrchestrator {
           if (leftover.length >= AnalyzerOrchestrator.BEHAVIOR_SURFACE_MIN_ENTRIES) {
             candidates.push({ capability: buildCandidate(surface, undefined, leftover), evidence: leftover.length });
           }
-        } else if (remainder.length > 0) {
-          // No functional-cohesion evidence (name-family or module) survives
-          // for the remainder: last resort is the single collapsed-surface
-          // capability, same as the pre-fix behavior — but scoped to the
-          // remainder only, since strongFamilies (if any) already got their
-          // own candidates below.
-          candidates.push({ capability: buildCandidate(surface, undefined, remainder), evidence: remainder.length });
+        } else {
+          // FILE-DIRECTORY clustering failed to reach 2 groups — the common
+          // case where every handler in the surface is registered in ONE file
+          // (a single server.ts/routes.ts), so behaviorEntryModuleArea
+          // resolves every entry to the same area and can never produce >= 2
+          // clusters no matter how functionally distinct the handlers are.
+          // Fall back to CALLEE-module clustering (behaviorEntryCalleeModuleArea):
+          // same structural-area filter, applied to where each handler's own
+          // call graph leads instead of where it is declared. Own directory
+          // evidence still wins whenever it worked above; this only runs on
+          // the remainder because that already means it didn't.
+          const ownArea = this.behaviorEntryModuleArea(remainder[0]?.ep, nodesById);
+          const calleeModuleMap = new Map<string, BehaviorEntry[]>();
+          for (const entry of remainder) {
+            const area = this.behaviorEntryCalleeModuleArea(entry.ep, nodesById, outgoingBySource, ownArea);
+            if (!area) continue;
+            const bucket = calleeModuleMap.get(area);
+            if (bucket) bucket.push(entry);
+            else calleeModuleMap.set(area, [entry]);
+          }
+          const calleeModuleClusters = [...calleeModuleMap.entries()]
+            .filter(([, entries]) => entries.length >= AnalyzerOrchestrator.BEHAVIOR_FAMILY_MIN_ENTRIES)
+            .sort((a, b) => b[1].length - a[1].length);
+          const calleeModuleCoverage = calleeModuleClusters.reduce((sum, [, entries]) => sum + entries.length, 0) /
+            Math.max(remainder.length, 1);
+
+          if (calleeModuleClusters.length >= 2 && calleeModuleCoverage >= 0.4) {
+            for (const [area, entries] of calleeModuleClusters.slice(0, 12)) {
+              candidates.push({ capability: buildCandidate(surface, area, entries), evidence: entries.length });
+            }
+            const clustered = new Set(calleeModuleClusters.flatMap(([, entries]) => entries));
+            const leftover = remainder.filter(entry => !clustered.has(entry));
+            if (leftover.length >= AnalyzerOrchestrator.BEHAVIOR_SURFACE_MIN_ENTRIES) {
+              candidates.push({ capability: buildCandidate(surface, undefined, leftover), evidence: leftover.length });
+            }
+          } else if (remainder.length > 0) {
+            // No functional-cohesion evidence (name-family, declaring module,
+            // or callee module) survives for the remainder: last resort is the
+            // single collapsed-surface capability, same as the pre-fix
+            // behavior — but scoped to the remainder only, since strongFamilies
+            // (if any) already got their own candidates below.
+            candidates.push({ capability: buildCandidate(surface, undefined, remainder), evidence: remainder.length });
+          }
         }
         // Strong name-token families found alongside a large diverse surface
         // are real cohesion evidence too — keep them as their own candidates
