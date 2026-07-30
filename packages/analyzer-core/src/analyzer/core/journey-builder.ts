@@ -178,6 +178,13 @@ const STD_TRAIT_METHOD_NAMES = new Set([
   'extend', 'drain', 'clear', 'replace', 'swap', 'fmt', 'hash', 'eq', 'cmp', 'clamp',
   'as_kebab', 'as_kebab_case', 'as_snake_case', 'to_snake_case', 'serialize', 'deserialize',
 ]);
+// A bare generic exception/error TYPE name (Rust `enum Error`, a language's
+// built-in Exception base, ...) carries no domain meaning: "reads Error" /
+// "reads Err" tells a reader nothing about what the journey actually
+// produces. Exact-match only — a SPECIFIC error type ("CacheError",
+// "ValidationError") still names its own domain and is left alone; only the
+// generic marker word itself is excluded.
+const GENERIC_ERROR_TYPE_NAME = /^(?:error|errors|exception|exceptions|err|errs)$/i;
 
 /** Lifecycle methods, hooks, widget builders, HTTP-verb handler names. */
 function isFrameworkPlumbingName(rawName: string): boolean {
@@ -202,6 +209,8 @@ function isUtilityNodeName(rawName: string): boolean {
 
 /** A name that must never appear as a journey terminal entity or effect. */
 function isExcludedTerminalName(name: string): boolean {
+  const trimmed = (name || '').trim();
+  if (GENERIC_ERROR_TYPE_NAME.test(trimmed)) return true;
   return isFrameworkPlumbingName(name) || isUtilityNodeName(name);
 }
 
@@ -1215,8 +1224,22 @@ function scoreCriticality(
     if (chain.criticality === 'critical') score += 3;
     else if (chain.criticality === 'high') score += 2;
   }
-  if (score >= 10) return 'critical';
-  if (score >= 6) return 'high';
+  // A journey with NO observed terminal effect whatsoever — no writes, no
+  // reads, no external calls, no messages, and no terminal entity resolved
+  // (including after isExcludedTerminalName drops a generic error/exception
+  // type as a non-terminus) — has no business outcome to be critical ABOUT.
+  // The chain-criticality contributions above come from the Structural
+  // Importance layer (call-graph centrality of the code the journey merely
+  // PASSES THROUGH), not from anything this journey itself produces. Without
+  // this cap, an effect-less journey whose only terminal candidate was a
+  // generic `Error` type (now correctly excluded, leaving no terminus)
+  // inherited 'critical' purely from a shared path's centrality — i.e. was
+  // rated critical on the strength of an error path it never actually
+  // resolved. Capped at 'medium' so it can still surface as worth a look,
+  // never overstated as a critical business outcome that was never observed.
+  const noObservedOutcome = !effects.hasAnyEffect && effects.terminalEntities.length === 0;
+  if (score >= 10) return noObservedOutcome ? 'medium' : 'critical';
+  if (score >= 6) return noObservedOutcome ? 'medium' : 'high';
   if (score >= 3) return 'medium';
   return 'low';
 }
@@ -1566,14 +1589,32 @@ function humanizeLabel(text: string): string {
     .toLowerCase();
 }
 
+/**
+ * Strips a trailing English plural suffix from `word` — but ONLY when the
+ * stripped stem is long enough to plausibly be a real domain noun. The same
+ * length thresholds already proven for exactly this class of bug (a bare
+ * trailing 's' is grammatical evidence of a PLURAL only on words with enough
+ * letters to carry meaning past the strip) are used verbatim from
+ * `stemTerminologyToken`/`canonicalCapabilitySubject` in orchestrator.ts.
+ *
+ * DEFECT (live, deployed build): a REST path tail segment "login-as"
+ * (`partner-portal/clients/:org_id/login-as`) humanizes to "login as", and an
+ * unguarded strip read the trailing 's' on "as" as a plural, producing
+ * "login a" -> "LoginA". A shell script's external-command exit point ("aws")
+ * hit the identical unguarded strip, producing "Aw". Neither "as" nor "aws"
+ * is an English plural noun; they are a preposition and a CLI tool name
+ * respectively — words too short to ever safely lose a trailing letter.
+ */
+function singularizeEnglishWord(word: string): string {
+  if (word.length > 4 && /ies$/.test(word)) return `${word.slice(0, -3)}y`;
+  if (word.length > 5 && /(ses|xes|zes|ches|shes)$/.test(word)) return word.slice(0, -2);
+  if (word.length > 4 && /s$/.test(word) && !/ss$/.test(word)) return word.slice(0, -1);
+  return word;
+}
+
 function singularizeLabel(label: string): string {
   const words = label.split(' ');
-  const last = words[words.length - 1];
-  let singular = last;
-  if (/ies$/.test(last)) singular = last.replace(/ies$/, 'y');
-  else if (/(ses|xes|zes|ches|shes)$/.test(last)) singular = last.replace(/es$/, '');
-  else if (/s$/.test(last) && !/ss$/.test(last)) singular = last.replace(/s$/, '');
-  words[words.length - 1] = singular;
+  words[words.length - 1] = singularizeEnglishWord(words[words.length - 1]);
   return words.join(' ');
 }
 

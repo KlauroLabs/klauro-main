@@ -109,6 +109,16 @@ test('conceptual endpoint exposes behavior_surfaces so flow capability_relations
     const cas = await getAnalysis(workspace);
     const anchorEntryPoint = cas.entry_points?.find(ep => ep.source_node && cas.nodes.some(n => n.id === ep.source_node));
     assert.ok(anchorEntryPoint, 'fixture analysis must produce at least one real entry point to anchor the fabricated surface on');
+    // DEFECT (measured live, three repos): capabilities on this endpoint
+    // never carried a `description` at all — 0/N described vs. get_product_map's
+    // N/N on the exact same capability ids from the exact same analysis.
+    // Stamp a description on a real derived capability (if the fixture
+    // analysis produced one) so the regression below proves the endpoint now
+    // forwards it, the same way it already forwards a surface's description.
+    if (cas.system_capabilities && cas.system_capabilities.length > 0) {
+      cas.system_capabilities[0].description = 'Fixture-injected capability description (test-only).';
+      cas.system_capabilities[0].description_source = 'ai';
+    }
     const surfaceId = 'cap_test_mcp_tool_surface';
     cas.behavior_surfaces = [
       ...(cas.behavior_surfaces || []),
@@ -146,6 +156,18 @@ test('conceptual endpoint exposes behavior_surfaces so flow capability_relations
     assert.ok(mcpSurface, `expected the fixture surface ${surfaceId} among ${JSON.stringify(body.behavior_surfaces.map((s: any) => s.id))}`);
     assert.equal(mcpSurface.name, 'Test Mcp Tool Surface');
     assert.equal(mcpSurface.evidence_kind, 'behavior-surface');
+
+    // DEFECT regression: the conceptual surface must carry the same
+    // description/description_source get_product_map already carries for the
+    // identical capability id — previously absent (0 keys) on this endpoint.
+    assert.equal(mcpSurface.description, 'Fixture-injected registration surface (test-only) anchored on a real entry point.');
+    assert.equal(mcpSurface.description_source, 'deterministic');
+    if (cas.system_capabilities && cas.system_capabilities.length > 0) {
+      const describedCapability = body.capabilities.find((c: any) => c.id === cas.system_capabilities![0].id);
+      assert.ok(describedCapability, 'expected the fixture-described capability in the response');
+      assert.equal(describedCapability.description, 'Fixture-injected capability description (test-only).');
+      assert.equal(describedCapability.description_source, 'ai');
+    }
 
     // No dangling refs: every flow's capability_relationships[].capability_id
     // must resolve against capabilities ∪ behavior_surfaces.
