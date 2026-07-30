@@ -269,7 +269,11 @@ export class MockingLibraryAnalyzer extends BaseAnalyzer {
       if (fixtureLibs.size > 0) fixtures.push(...this.extractFixtures(content, relativeFile, fixtureLibs));
     }
 
-    const nodes = [...this.createDoubleNodes(doubles), ...this.createFixtureNodes(fixtures)];
+    const nodes = [
+      ...this.createDoubleNodes(doubles),
+      ...this.createSeamNodes(doubles),
+      ...this.createFixtureNodes(fixtures),
+    ];
     const edges = [...this.createSeamEdges(doubles), ...this.createConstructsEdges(fixtures)];
     const libraries = includeLibraries ? this.createLibraries(dependencies, doubles, fixtures) : [];
     return { nodes, edges, libraries, doubles, fixtures };
@@ -320,10 +324,46 @@ export class MockingLibraryAnalyzer extends BaseAnalyzer {
   }
 
   /**
+   * The seam nodes the `mocks` edges point at — one per distinct replaced
+   * collaborator, so several doubles of the same collaborator collapse onto one
+   * seam. These were referenced by every seam edge but never emitted, which
+   * left the graph asserting targets that existed in no collection; the
+   * relationship is real, so the row it names has to exist. Located at the
+   * first observation site, which is the only evidence the seam has.
+   */
+  private createSeamNodes(doubles: MockDouble[]): CASNode[] {
+    const firstObservation = new Map<string, MockDouble>();
+    for (const double of doubles) {
+      if (!double.seamTarget) continue;
+      const seamId = `seam_${this.sanitizeId(double.seamTarget)}`;
+      if (!firstObservation.has(seamId)) firstObservation.set(seamId, double);
+    }
+
+    return [...firstObservation].map(([seamId, double]) => this.createNode(
+      seamId,
+      double.seamTarget!,
+      'dependency_seam',
+      4,
+      double.filePath,
+      double.line,
+      double.line,
+      {
+        seam_target: double.seamTarget,
+        seam_kind: double.seamKind,
+        boundary_type: 'dependency-seam',
+        architecture_category: 'dependency-seam',
+        evidence: double.evidence,
+        tags: ['dependency-seam', 'test-seam'],
+        subcategories: ['testing', 'dependency-seam'],
+      }
+    ));
+  }
+
+  /**
    * The seam map: one `mocks` edge per double that names a real collaborator.
-   * source = the double node, target = a synthetic seam node keyed by the
-   * replaced module/type so multiple doubles of the same collaborator collapse
-   * onto one seam. This is the artifact that reveals the integration surface.
+   * source = the double node, target = the seam node keyed by the replaced
+   * module/type so multiple doubles of the same collaborator collapse onto one
+   * seam. This is the artifact that reveals the integration surface.
    */
   private createSeamEdges(doubles: MockDouble[]): CASEdge[] {
     const edges: CASEdge[] = [];

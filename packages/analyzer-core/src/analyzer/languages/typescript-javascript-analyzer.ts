@@ -13,6 +13,7 @@ import { TSESTree } from '@typescript-eslint/typescript-estree';
 import { cachedEstreeParse as parse } from '../core/estree-parse-cache';
 import { cachedGlob as glob } from '../core/glob-cache';
 import { yieldToEventLoop, createYieldBudget } from '../core/event-loop-yield';
+import { dropEdgesReferencingRemovedEndpoints } from '../core/graph-referential-integrity';
 import * as crypto from 'crypto';
 import { availableParallelism } from 'node:os';
 import { Worker } from 'node:worker_threads';
@@ -213,7 +214,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
         exitPoints,
         relativePath
       );
-      this.applyTestSourceBoundary(nodes, entryPoints, exitPoints);
+      this.applyTestSourceBoundary(nodes, entryPoints, exitPoints, edges);
 
     } catch (error) {
       console.warn(`Failed to analyze ${relativePath} incrementally:`, error);
@@ -470,7 +471,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
 
       tsStart = Date.now();
       this.detectServerEntryPoints(sourceFiles, nodes, entryPoints, context.projectPath);
-      this.applyTestSourceBoundary(nodes, entryPoints, exitPoints);
+      this.applyTestSourceBoundary(nodes, entryPoints, exitPoints, edges);
       tsTimings['detectEntryPoints'] = Date.now() - tsStart;
       await yieldToEventLoop();
 
@@ -4482,10 +4483,22 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     );
   }
 
+  /**
+   * Test code stays in the graph as nodes (tagged `test-code`) but contributes
+   * no entry or exit points: a `vi.fn()` in a spec is not a product surface.
+   *
+   * `edges` is not optional. Removing an entry/exit point without dropping the
+   * `calls` edges that reference it is how the analyzer shipped a graph whose
+   * edges named ids present in no collection — measured at 17,656 `calls` edges
+   * on one real repository, the overwhelming majority of them test-file call
+   * sites (`expect`, `fireEvent`, `vi.spyOn`) whose exit point this boundary
+   * had discarded while the edge to it survived.
+   */
   private applyTestSourceBoundary(
     nodes: CASNode[],
     entryPoints: CASEntryPoint[],
-    exitPoints: CASExitPoint[]
+    exitPoints: CASExitPoint[],
+    edges: CASEdge[]
   ): void {
     const testNodeIds = new Set<string>();
     for (const node of nodes) {
@@ -4497,14 +4510,22 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
       node.tags = [...new Set([...(node.tags || []), 'test-code'])];
     }
 
-    this.removeItemsOwnedByTestNodes(entryPoints, testNodeIds);
-    this.removeItemsOwnedByTestNodes(exitPoints, testNodeIds);
+    const removedEndpointIds = new Set<string>();
+    this.removeItemsOwnedByTestNodes(entryPoints, testNodeIds, removedEndpointIds);
+    this.removeItemsOwnedByTestNodes(exitPoints, testNodeIds, removedEndpointIds);
+    // The discarded point has no successor to point at — the call it stood for
+    // is test scaffolding, not a product edge — so the reference is dropped.
+    dropEdgesReferencingRemovedEndpoints(edges, removedEndpointIds);
   }
 
-  private removeItemsOwnedByTestNodes<T extends { source_node: string }>(items: T[], testNodeIds: Set<string>): void {
+  private removeItemsOwnedByTestNodes<T extends { id: string; source_node: string }>(
+    items: T[],
+    testNodeIds: Set<string>,
+    removedIds: Set<string>
+  ): void {
     let writeIndex = 0;
     for (const item of items) {
-      if (testNodeIds.has(item.source_node)) continue;
+      if (testNodeIds.has(item.source_node)) { removedIds.add(item.id); continue; }
       items[writeIndex++] = item;
     }
     items.length = writeIndex;
