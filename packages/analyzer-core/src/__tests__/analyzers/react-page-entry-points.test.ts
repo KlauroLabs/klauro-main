@@ -51,7 +51,10 @@ describe('React page entry point emission', () => {
       expect(entryPoints[0].trigger?.path).not.toContain('.tsx');
     });
 
-    it('marks non-file-router pages as component references without an HTTP-looking GET path', () => {
+    it('claims NO url for a non-file-router page — the derived route is a filename guess', () => {
+      // Outside a file-router project nothing maps this file to a URL, so the
+      // component's existence is reported and the address is not. Emitting the
+      // filename-derived '/profit-machine' asserted a URL declared nowhere.
       const entryPoints: CASEntryPoint[] = [];
       analyzer().createPageEntryPoints(
         [page('ProfitMachine', 'src/pages/ProfitMachine.tsx')],
@@ -61,10 +64,12 @@ describe('React page entry point emission', () => {
       );
 
       expect(entryPoints).toHaveLength(1);
-      expect(entryPoints[0].trigger?.method).toBeUndefined();
-      expect(entryPoints[0].trigger?.path).toBeUndefined();
-      expect(entryPoints[0].trigger?.pattern).toBe('/profit-machine');
+      expect(entryPoints[0].trigger).toBeUndefined();
       expect(entryPoints[0].metadata?.trigger_kind).toBe('page-component');
+      expect(entryPoints[0].metadata?.has_declared_route).toBe(false);
+      // The real fact survives: which component, and where it lives.
+      expect(entryPoints[0].metadata?.component).toBe('ProfitMachine');
+      expect(entryPoints[0].handler?.file).toBe('src/pages/ProfitMachine.tsx');
     });
 
     it('skips pages already reachable through an extracted router route', () => {
@@ -111,10 +116,83 @@ describe('React page entry point emission', () => {
         const trigger = `${entry.trigger?.path || ''}${entry.trigger?.pattern || ''}`;
         expect(trigger).not.toMatch(/\.(tsx|jsx|ts|js)$/);
       }
-      expect(entryPoints.map(e => e.trigger?.pattern)).toEqual([
-        '/activity/decision-list',
-        '/assets/components/buy',
-      ]);
+      // A `pages/` SEGMENT in a project that is not a file router is just a
+      // folder name; the URL it suggests is still a guess, so no address is
+      // claimed at all — which satisfies the file-path rule above outright.
+      expect(entryPoints.map(e => e.trigger)).toEqual([undefined, undefined]);
+    });
+  });
+
+  describe('routed-page detection by resolved module', () => {
+    it('treats a page as routed when the router RENAMES it on import', () => {
+      // The router binds a local alias to a module: `CodebaseEntities` is
+      // `EntitiesPage`. Name-only matching missed every renamed page, and each
+      // one then shipped a second time as an invented URL.
+      const entryPoints: CASEntryPoint[] = [];
+      analyzer().createPageEntryPoints(
+        [page('Entities', 'src/app/Entities/EntitiesPage.tsx', 'EntitiesPage')],
+        [{ path: 'entities', component: 'CodebaseEntities', componentModule: '@/app/Entities/EntitiesPage' }],
+        entryPoints,
+        false
+      );
+
+      expect(entryPoints).toHaveLength(0);
+    });
+
+    it('treats a page as routed through an INDEX route, which declares no path', () => {
+      // `{ index: true, element: <DashboardPage /> }` renders at the parent's
+      // path. Every route pattern required a path, so an index route's
+      // component looked unrouted and was reported as unreachable.
+      const entryPoints: CASEntryPoint[] = [];
+      analyzer().createPageEntryPoints(
+        [page('Dashboard', 'src/app/Dashboard/DashboardPage.tsx', 'DashboardPage')],
+        [{ path: '', component: 'DashboardPage', index: true }],
+        entryPoints,
+        false
+      );
+
+      expect(entryPoints).toHaveLength(0);
+    });
+
+    it('still reports a page that no route resolves to', () => {
+      const entryPoints: CASEntryPoint[] = [];
+      analyzer().createPageEntryPoints(
+        [page('Orphan', 'src/app/Orphan/OrphanPage.tsx', 'OrphanPage')],
+        [{ path: 'entities', component: 'CodebaseEntities', componentModule: '@/app/Entities/EntitiesPage' }],
+        entryPoints,
+        false
+      );
+
+      expect(entryPoints).toHaveLength(1);
+      expect(entryPoints[0].metadata?.component).toBe('OrphanPage');
+      expect(entryPoints[0].trigger).toBeUndefined();
+    });
+
+    it('does not treat a near-miss module suffix as the same module', () => {
+      // `.../Users` must never match `.../SuperUsers`.
+      expect(analyzer().moduleTargetsAgree('@/app/Users', 'src/app/SuperUsers.tsx')).toBe(false);
+      expect(analyzer().moduleTargetsAgree('@/app/Users', 'src/app/Users.tsx')).toBe(true);
+      expect(analyzer().moduleTargetsAgree('@/app/Entities/EntitiesPage', 'src/app/Entities/EntitiesPage.tsx')).toBe(true);
+    });
+  });
+
+  describe('buildComponentModuleMap', () => {
+    it('resolves aliases from imports and from lazily-loaded consts', () => {
+      const map = analyzer().buildComponentModuleMap([
+        "import { AuthPage } from '@/app/Auth/AuthPage';",
+        "import Shell from '@/shared/Shell';",
+        "import { EntitiesPage as Renamed } from '@/app/Entities/EntitiesPage';",
+        "const Flows = lazy(() => import('@/app/Flows/FlowsListPage'));",
+        "const Fns = lazyPage('Functions', () => import('@/app/Functions/FunctionsPage'), 'FunctionsPage');",
+      ].join('\n'));
+
+      expect(map.get('AuthPage')).toBe('@/app/Auth/AuthPage');
+      expect(map.get('Shell')).toBe('@/shared/Shell');
+      // Bound under the LOCAL name, which is what a route element references.
+      expect(map.get('Renamed')).toBe('@/app/Entities/EntitiesPage');
+      expect(map.get('Flows')).toBe('@/app/Flows/FlowsListPage');
+      // The wrapper-function form must resolve too, not just bare lazy().
+      expect(map.get('Fns')).toBe('@/app/Functions/FunctionsPage');
     });
   });
 });

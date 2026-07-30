@@ -63,6 +63,17 @@ interface ReactRoute {
   guards?: string[];
   children?: ReactRoute[];
   lazy?: boolean;
+  /** A react-router index route: renders at the PARENT's path, has none itself. */
+  index?: boolean;
+  /** File the route declaration was read from. */
+  filePath?: string;
+  /**
+   * Module specifier the route's component alias resolves to, e.g.
+   * `CodebaseEntities` -> `@/app/Entities/EntitiesPage`. This is the STRUCTURAL
+   * link between a route and the page file that serves it; the local alias name
+   * on its own is not, because a router routinely renames on import.
+   */
+  componentModule?: string;
 }
 
 interface ReactStore {
@@ -651,9 +662,23 @@ export class ReactAnalyzer extends BaseAnalyzer {
       if (content.includes('Route') || content.includes('Router') || content.includes('routing')) {
         try {
           const extractedRoutes = this.extractRoutes(content, file);
+          // Resolve each route's component alias to the module it is imported
+          // from, so a page can be matched to its route structurally rather than
+          // by a name the router is free to change.
+          const moduleMap = this.buildComponentModuleMap(content);
+          const annotate = (route: ReactRoute): void => {
+            route.filePath = file;
+            const target = route.component ? moduleMap.get(route.component) : undefined;
+            if (target) route.componentModule = target;
+            for (const child of route.children || []) annotate(child);
+          };
+          extractedRoutes.forEach(annotate);
           routes.push(...extractedRoutes);
 
-          extractedRoutes.forEach((route, index) => {
+          // Path-less (index) routes count for reachability but get no node or
+          // entry point: their address is the parent's, and synthesizing one
+          // here would be a guess.
+          extractedRoutes.filter(route => route.path).forEach((route, index) => {
             const routeId = this.generateId('route', file, `${route.path}_${index}`);
             route.nodeId = routeId;
             const routeNode = this.createNodeBuilder(routeId, route.path, 'react_route')
@@ -822,11 +847,22 @@ export class ReactAnalyzer extends BaseAnalyzer {
     fileRouter: boolean
   ): void {
     const routedComponents = new Set<string>();
+    const routedModules: string[] = [];
     const visit = (route: ReactRoute) => {
       if (route.component) routedComponents.add(route.component);
+      if (route.componentModule) routedModules.push(route.componentModule);
       for (const child of route.children || []) visit(child);
     };
     routes.forEach(visit);
+
+    // A page is already covered by a route when the route's component RESOLVES
+    // to this page's module. Matching the alias name alone missed every page the
+    // router renames on import (`EntitiesPage` routed as `CodebaseEntities`),
+    // and those pages then shipped a second time as invented URLs.
+    const isRouted = (page: ReactPage): boolean => {
+      if (routedComponents.has(page.component) || routedComponents.has(page.name)) return true;
+      return routedModules.some(target => this.moduleTargetsAgree(target, page.filePath));
+    };
 
     for (const page of pages) {
       const pageId = this.generateId('page', page.filePath, page.name);
@@ -854,24 +890,38 @@ export class ReactAnalyzer extends BaseAnalyzer {
         continue;
       }
 
-      if (routedComponents.has(page.component) || routedComponents.has(page.name)) continue;
+      if (isRouted(page)) continue;
 
+      // NO TRIGGER. Outside a file-router project the page's `route` is derived
+      // from its FILENAME and is declared nowhere — emitting it as a pattern
+      // claimed the component is served at a URL that does not exist
+      // (`/flows-list`, `/function-detail`). The component existing is a real
+      // fact and stays; the URL was not, and is dropped rather than guessed.
+      // Consumers already handle an address-less entry: the UI renders "—" for
+      // it and the journey builder falls back to the page name.
       entryPoints.push(this.createEntryPoint(
         `entry_${pageId}`,
         pageId,
         'page',
         `Page ${page.name}`,
-        `React page component ${page.component}`,
-        {
-          pattern: page.route
-        },
+        `React page component ${page.component}, not reachable through any extracted route`,
+        undefined,
         {
           authenticated: false
         },
         {
           component: page.component,
           name: page.name,
-          trigger_kind: 'page-component'
+          trigger_kind: 'page-component',
+          // Recorded so the absence of an address reads as a finding rather
+          // than as missing extraction.
+          has_declared_route: false
+        },
+        {
+          node_id: pageId,
+          method_name: page.component,
+          file: page.filePath,
+          line: 1
         }
       ));
     }
@@ -1208,6 +1258,24 @@ export class ReactAnalyzer extends BaseAnalyzer {
           component: match[1]
         });
       }
+    }
+
+    // Index routes — `{ index: true, element: <X /> }` and `<Route index
+    // element={<X />} />` — have NO path of their own: they render at the
+    // PARENT's path. Every pattern above requires a path, so these were skipped
+    // entirely and their component looked unrouted. They are recorded with an
+    // empty path and `index: true`; the caller does not emit a node or entry
+    // point for a path-less route (there is no address to report that would not
+    // be invented), but they do count as routed for page reachability.
+    const indexRouteObjectPattern = /\{\s*index:\s*true\s*,\s*(?:element|component)\s*:\s*(?:<(\w+)|(\w+))/g;
+    while ((match = indexRouteObjectPattern.exec(content)) !== null) {
+      const component = match[1] || match[2];
+      if (component) routes.push({ path: '', component, index: true });
+    }
+
+    const indexRouteJsxPattern = /<Route[^>]*\bindex\b[^>]*element=\{[^}]*<(\w+)/g;
+    while ((match = indexRouteJsxPattern.exec(content)) !== null) {
+      routes.push({ path: '', component: match[1], index: true });
     }
 
     const objectRoutePattern = /\{\s*path:\s*['"]([^'"]+)['"]\s*,\s*(?:element|component)\s*:\s*(?:<(\w+)|(\w+))/g;
@@ -2000,6 +2068,72 @@ export class ReactAnalyzer extends BaseAnalyzer {
   private extractPageName(filePath: string): string {
     const fileName = path.basename(filePath, path.extname(filePath));
     return fileName.replace(/Page$|View$|Screen$/, '') || fileName;
+  }
+
+  /**
+   * Local component binding -> the module specifier it comes from, for one file.
+   *
+   * Covers the shapes a router uses to name a page: a plain or named import
+   * (with or without `as`), and a lazily-loaded const whose initialiser contains
+   * a dynamic `import('...')` — including the common wrapper-function form
+   * `const X = lazyPage('Area', () => import('mod'), 'Export')`, which is why
+   * this looks for the dynamic import ANYWHERE in the initialiser rather than
+   * matching one known wrapper.
+   */
+  private buildComponentModuleMap(content: string): Map<string, string> {
+    const map = new Map<string, string>();
+
+    // const X = <expr containing import('mod')>;  (lazy / lazyPage / React.lazy)
+    for (const m of content.matchAll(/\b(?:const|let|var)\s+(\w+)\s*=\s*([^;]*?)(?:;|\n(?=\s*(?:const|let|var|function|export|import)\b))/g)) {
+      const dynamic = /\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/.exec(m[2]);
+      if (dynamic) map.set(m[1], dynamic[1]);
+    }
+
+    // import Default from 'mod'  /  import { A, B as C } from 'mod'
+    for (const m of content.matchAll(/\bimport\s+([^;'"]+?)\s+from\s*['"]([^'"]+)['"]/g)) {
+      const clause = m[1];
+      const moduleSpecifier = m[2];
+      const defaultMatch = /^\s*(\w+)\s*(?:,|$)/.exec(clause);
+      if (defaultMatch) map.set(defaultMatch[1], moduleSpecifier);
+      const braces = /\{([^}]*)\}/.exec(clause);
+      if (braces) {
+        for (const part of braces[1].split(',')) {
+          const named = /^\s*(\w+)(?:\s+as\s+(\w+))?\s*$/.exec(part);
+          if (named) map.set(named[2] || named[1], moduleSpecifier);
+        }
+      }
+    }
+
+    return map;
+  }
+
+  /**
+   * Comparable form of a module target: path-alias prefixes (`@/`, `~/`, `./`)
+   * and the file extension removed, plus a trailing `/index` collapsed. Used to
+   * decide whether a route's component module and a page file are the same
+   * module without resolving the project's full alias configuration — a
+   * path-suffix agreement on this form is what identifies them.
+   */
+  private normalizeModuleTarget(target: string): string {
+    return target
+      .replace(/\\/g, '/')
+      .replace(/^[@~]\//, '')
+      .replace(/^\.{1,2}\//, '')
+      .replace(/\.(tsx|ts|jsx|js|mjs|cjs)$/i, '')
+      .replace(/\/index$/, '')
+      .replace(/^\/+/, '');
+  }
+
+  /** True when a route's component module and a page's file denote one module. */
+  private moduleTargetsAgree(moduleSpecifier: string, pageFilePath: string): boolean {
+    const spec = this.normalizeModuleTarget(moduleSpecifier);
+    const file = this.normalizeModuleTarget(pageFilePath);
+    if (!spec || !file) return false;
+    // One is an alias-relative path and the other repo-relative, so neither is a
+    // prefix of the other in general — agreement is one being a path suffix of
+    // the other, anchored on a segment boundary so `.../Users` never matches
+    // `.../SuperUsers`.
+    return file === spec || file.endsWith(`/${spec}`) || spec.endsWith(`/${file}`);
   }
 
   private inferRoute(filePath: string): string {
