@@ -1825,6 +1825,67 @@ describe('architecture and capability inference', () => {
     expect(purpose.primary_type).not.toBe('gaming-platform');
   });
 
+  it('scores a shape signature to a non-zero weight without a runner-up present (guards the single-entry signature table left after task #90 — secondBest is now optional)', async () => {
+    const entryPoints = [
+      { id: 'e1', type: 'http', name: 'GET /api/users', trigger: { method: 'GET', path: '/api/users' } },
+      { id: 'e2', type: 'http', name: 'GET /api/session', trigger: { method: 'GET', path: '/api/session' } },
+    ];
+    const nodes: CASNode[] = [
+      node({ id: 'route', name: 'ApiRoute', type: 'controller', source: { file: 'src/api/route.ts' } }),
+      node({ id: 'mw', name: 'AuthMiddleware', type: 'middleware', source: { file: 'src/middleware/auth.ts' } }),
+      node({ id: 'provider', name: 'SessionProvider', type: 'component', source: { file: 'src/context/provider.tsx' } }),
+    ];
+    const priorPath = (orch as any).activeAnalysisProjectPath;
+    (orch as any).activeAnalysisProjectPath = undefined;
+    try {
+      // Must not throw: with the business-vertical entries gone there is no
+      // signatures[1] to read a separation bonus from.
+      const purpose = await orch.inferSystemPurpose(entryPoints as any, [], [], nodes);
+      expect(typeof purpose.primary_type).toBe('string');
+      expect(purpose.confidence).toBeGreaterThan(0);
+    } finally {
+      (orch as any).activeAnalysisProjectPath = priorPath;
+    }
+  });
+
+  it('classifies devtools-platform from a DECLARED source-parser dependency, not from talking about "analysis" (task #90)', async () => {
+    const nodes: CASNode[] = [
+      node({ id: 'walker', name: 'SymbolWalker', type: 'class', source: { file: 'src/SymbolWalker.ts' } }),
+      node({ id: 'report', name: 'ReportBuilder', type: 'class', source: { file: 'src/ReportBuilder.ts' } }),
+    ];
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-parser-dep-'));
+    const priorPath = (orch as any).activeAnalysisProjectPath;
+    try {
+      fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({
+        name: 'code-tool',
+        dependencies: { 'tree-sitter': '^0.21.0' },
+      }));
+      (orch as any).activeAnalysisProjectPath = root;
+      const purpose = await orch.inferSystemPurpose([], [], [], nodes);
+      expect(purpose.primary_type).toBe('devtools-platform');
+      expect(purpose.evidence.join(' ')).toContain('source-parser');
+    } finally {
+      (orch as any).activeAnalysisProjectPath = priorPath;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('does not classify a product that ANALYSES something other than code as developer tooling on the word "analysis" alone (task #90)', async () => {
+    const nodes: CASNode[] = [
+      node({ id: 'img-analyzer', name: 'ImageAnalyzer', type: 'class', source: { file: 'src/analysis/ImageAnalyzer.ts' } }),
+      node({ id: 'analysis-run', name: 'AnalysisRun', type: 'class', source: { file: 'src/analysis/AnalysisRun.ts' } }),
+      node({ id: 'analysis-report', name: 'AnalysisReport', type: 'class', source: { file: 'src/analysis/AnalysisReport.ts' } }),
+    ];
+    const priorPath = (orch as any).activeAnalysisProjectPath;
+    (orch as any).activeAnalysisProjectPath = undefined;
+    try {
+      const purpose = await orch.inferSystemPurpose([], [], [], nodes);
+      expect(purpose.primary_type).not.toBe('devtools-platform');
+    } finally {
+      (orch as any).activeAnalysisProjectPath = priorPath;
+    }
+  });
+
   it('does not classify generic preview or invariant names as developer tooling', async () => {
     const nodes: CASNode[] = [
       node({ id: 'preview-window', name: 'PreviewWindow', type: 'component', source: { file: 'src/PreviewWindow.xaml.cs' } }),
@@ -1874,16 +1935,54 @@ describe('architecture and capability inference', () => {
     expect(purpose.primary_type).not.toBe('cli-tool');
   });
 
-  it('prefers clinical desktop signals over incidental help/tutorial content', async () => {
-    const nodes: CASNode[] = [
-      node({ id: 'lesson-help', name: 'TutorialHelpWindow', type: 'class', source: { file: 'src/Help/TutorialHelpWindow.xaml.cs' } }),
-      node({ id: 'patient-window', name: 'PatientWindow', type: 'class', source: { file: 'src/PatientWindow.xaml.cs' } }),
-      node({ id: 'muscle-viewmodel', name: 'MuscleMeasurementViewModel', type: 'class', source: { file: 'src/ViewModels/MuscleMeasurementViewModel.cs' } }),
-      node({ id: 'device-modal', name: 'DeviceForceModal', type: 'class', source: { file: 'src/Modals/DeviceForceModal.xaml.cs' } }),
-    ];
-    const purpose = await orch.inferSystemPurpose([], [], [], nodes);
+  // Clinical desktop fixture, reused by the pair below. The node vocabulary
+  // ('patient', 'muscle', 'measurement', 'force') is identical in both cases;
+  // only the DECLARED DEPENDENCY differs. That is the whole point of the
+  // task #90 redesign: the words are not the evidence.
+  const clinicalDesktopNodes = (): CASNode[] => ([
+    node({ id: 'lesson-help', name: 'TutorialHelpWindow', type: 'class', source: { file: 'src/Help/TutorialHelpWindow.xaml.cs' } }),
+    node({ id: 'patient-window', name: 'PatientWindow', type: 'class', source: { file: 'src/PatientWindow.xaml.cs' } }),
+    node({ id: 'muscle-viewmodel', name: 'MuscleMeasurementViewModel', type: 'class', source: { file: 'src/ViewModels/MuscleMeasurementViewModel.cs' } }),
+    node({ id: 'device-modal', name: 'DeviceForceModal', type: 'class', source: { file: 'src/Modals/DeviceForceModal.xaml.cs' } }),
+  ]);
 
-    expect(purpose.primary_type).toBe('clinical-testing-platform');
+  it('classifies a clinical desktop instrument app from a DECLARED healthcare-interop dependency (task #90: DICOM/HL7/FHIR is domain-defining evidence; the clinical word list is gone)', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-clinical-dep-'));
+    const priorPath = (orch as any).activeAnalysisProjectPath;
+    try {
+      fs.writeFileSync(path.join(root, 'Instrument.csproj'), [
+        '<Project Sdk="Microsoft.NET.Sdk">',
+        '  <ItemGroup>',
+        '    <PackageReference Include="fo-dicom" Version="5.1.2" />',
+        '  </ItemGroup>',
+        '</Project>',
+      ].join('\n'));
+      (orch as any).activeAnalysisProjectPath = root;
+      const purpose = await orch.inferSystemPurpose([], [], [], clinicalDesktopNodes());
+      expect(purpose.primary_type).toBe('clinical-testing-platform');
+      expect(purpose.evidence.join(' ')).toContain('healthcare-interop');
+    } finally {
+      (orch as any).activeAnalysisProjectPath = priorPath;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('does NOT classify the same clinical-sounding desktop app as clinical without an interop dependency — honest precision cost of task #90 (the verdict now needs evidence, and a bag of clinical words is not evidence)', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-clinical-nodep-'));
+    const priorPath = (orch as any).activeAnalysisProjectPath;
+    try {
+      fs.writeFileSync(path.join(root, 'Instrument.csproj'), '<Project Sdk="Microsoft.NET.Sdk" />');
+      (orch as any).activeAnalysisProjectPath = root;
+      const purpose = await orch.inferSystemPurpose([], [], [], clinicalDesktopNodes());
+      // Deliberate, documented degradation: a genuinely clinical repo that
+      // declares no interop dependency now reports its structural shape here.
+      // Business identity for it comes from the AI interpretation layer via
+      // refinePurposeTypeForDomain, not from this deterministic classifier.
+      expect(purpose.primary_type).not.toBe('clinical-testing-platform');
+    } finally {
+      (orch as any).activeAnalysisProjectPath = priorPath;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('does not flip a large web/analyzer codebase to clinical-testing-platform on incidental generic vocabulary (live self-analysis defect: Klauro\'s own repo scored clinical-testing-platform 0.86 off "device"/"measurement"/"force" and generic "modal" component naming, with zero genuinely clinical evidence)', async () => {
@@ -1951,6 +2050,50 @@ describe('architecture and capability inference', () => {
       expect(purpose.primary_type).not.toBe('network-access-platform');
     } finally {
       (orch as any).activeAnalysisProjectPath = priorPath;
+    }
+  });
+
+  it('classifies security-scanning-tool ONLY from a declared runtime dependency on a scanner engine (task #90: the vocabulary anchor is gone — scanning words alone can never produce this verdict)', async () => {
+    const nodes: CASNode[] = [
+      node({ id: 'scan-runner', name: 'ScanRunner', type: 'class', source: { file: 'src/ScanRunner.ts' } }),
+      node({ id: 'finding-store', name: 'FindingStore', type: 'class', source: { file: 'src/FindingStore.ts' } }),
+    ];
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-scanner-dep-'));
+    const priorPath = (orch as any).activeAnalysisProjectPath;
+    try {
+      fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({
+        name: 'scan-product',
+        dependencies: { 'osv-scanner': '^1.0.0' },
+      }));
+      (orch as any).activeAnalysisProjectPath = root;
+      const purpose = await orch.inferSystemPurpose([], [], [], nodes);
+      expect(purpose.primary_type).toBe('security-scanning-tool');
+      expect(purpose.evidence.join(' ')).toContain('runtime dependency');
+    } finally {
+      (orch as any).activeAnalysisProjectPath = priorPath;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('does not classify a repo that merely scans ITSELF in CI as a security-scanning-tool (dev-dependency scanners are hygiene, not product identity)', async () => {
+    const nodes: CASNode[] = [
+      node({ id: 'scan-runner', name: 'ScanRunner', type: 'class', source: { file: 'src/ScanRunner.ts' } }),
+      node({ id: 'cve-report', name: 'CveOverviewReport', type: 'class', source: { file: 'src/CveOverviewReport.ts' } }),
+    ];
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-scanner-devdep-'));
+    const priorPath = (orch as any).activeAnalysisProjectPath;
+    try {
+      fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({
+        name: 'some-web-product',
+        dependencies: { express: '^4.0.0' },
+        devDependencies: { 'osv-scanner': '^1.0.0', semgrep: '^1.0.0' },
+      }));
+      (orch as any).activeAnalysisProjectPath = root;
+      const purpose = await orch.inferSystemPurpose([], [], [], nodes);
+      expect(purpose.primary_type).not.toBe('security-scanning-tool');
+    } finally {
+      (orch as any).activeAnalysisProjectPath = priorPath;
+      fs.rmSync(root, { recursive: true, force: true });
     }
   });
 
@@ -2943,19 +3086,48 @@ describe('domain and security classification robustness (out-of-distribution rep
     expect(purpose.secondary_types || []).not.toContain('gaming-platform');
   });
 
-  it('still recognizes a real card game as a gaming platform with whole-token evidence', async () => {
-    const nodes: CASNode[] = [
-      node({ id: 'game', name: 'Game', source: { file: 'src/game/game.ts' } }),
-      node({ id: 'deck', name: 'Deck', source: { file: 'src/game/deck.ts' } }),
-      node({ id: 'card', name: 'Card', source: { file: 'src/game/card.ts' } }),
-      node({ id: 'player', name: 'Player', source: { file: 'src/game/player.ts' } }),
-      node({ id: 'lobby', name: 'GameLobby', source: { file: 'src/game/lobby.ts' } }),
-      node({ id: 'board', name: 'GameBoard', source: { file: 'src/game/board.ts' } }),
-    ];
+  // Same card-game fixture, twice: identical node vocabulary, differing ONLY
+  // in whether a game engine is declared. Task #90 moved this verdict off the
+  // words and onto the dependency.
+  const cardGameNodes = (): CASNode[] => ([
+    node({ id: 'game', name: 'Game', source: { file: 'src/game/game.ts' } }),
+    node({ id: 'deck', name: 'Deck', source: { file: 'src/game/deck.ts' } }),
+    node({ id: 'card', name: 'Card', source: { file: 'src/game/card.ts' } }),
+    node({ id: 'player', name: 'Player', source: { file: 'src/game/player.ts' } }),
+    node({ id: 'lobby', name: 'GameLobby', source: { file: 'src/game/lobby.ts' } }),
+    node({ id: 'board', name: 'GameBoard', source: { file: 'src/game/board.ts' } }),
+  ]);
 
-    const purpose = await orch.inferSystemPurpose([], [], [], nodes);
+  it('recognizes a real card game as a gaming platform from a DECLARED game-engine dependency', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-game-dep-'));
+    const priorPath = (orch as any).activeAnalysisProjectPath;
+    try {
+      fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({
+        name: 'card-game',
+        dependencies: { colyseus: '^0.15.0' },
+      }));
+      (orch as any).activeAnalysisProjectPath = root;
+      const purpose = await orch.inferSystemPurpose([], [], [], cardGameNodes());
+      expect(purpose.primary_type).toBe('gaming-platform');
+      expect(purpose.evidence.join(' ')).toContain('game engine');
+    } finally {
+      (orch as any).activeAnalysisProjectPath = priorPath;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
 
-    expect(purpose.primary_type).toBe('gaming-platform');
+  it('does NOT classify the same game-sounding codebase as a gaming platform without an engine dependency — honest precision cost of task #90', async () => {
+    const priorPath = (orch as any).activeAnalysisProjectPath;
+    (orch as any).activeAnalysisProjectPath = undefined;
+    try {
+      const purpose = await orch.inferSystemPurpose([], [], [], cardGameNodes());
+      // 'game', 'deck', 'card', 'player', 'lobby', 'board' all present and
+      // still not sufficient. The deterministic layer reports shape; business
+      // identity comes from the AI interpretation layer.
+      expect(purpose.primary_type).not.toBe('gaming-platform');
+    } finally {
+      (orch as any).activeAnalysisProjectPath = priorPath;
+    }
   });
 
   it('does not treat ReturnAuthorization domain models as authentication or authorization enforcement points', async () => {
@@ -3458,8 +3630,37 @@ describe('content-management domain anchor (inferSystemPurpose)', () => {
     operations: [],
   });
 
-  it('classifies a page-tree CMS with revision and publishing vocabulary as content-management', async () => {
-    const purpose = await orch.inferSystemPurpose(
+  const withProjectPath = async (files: Record<string, string> | null, run: () => Promise<any>): Promise<any> => {
+    const prior = (orch as any).activeAnalysisProjectPath;
+    let root: string | undefined;
+    try {
+      if (files) {
+        root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-cms-'));
+        for (const [name, body] of Object.entries(files)) fs.writeFileSync(path.join(root, name), body);
+      }
+      (orch as any).activeAnalysisProjectPath = root;
+      return await run();
+    } finally {
+      (orch as any).activeAnalysisProjectPath = prior;
+      if (root) fs.rmSync(root, { recursive: true, force: true });
+    }
+  };
+
+  it('classifies a page-tree CMS from a DECLARED CMS-framework dependency (task #90: the revision/page entity anchor is gone — those nouns belong to any document-versioning, records-management or wiki product)', async () => {
+    const purpose = await withProjectPath(
+      { 'requirements.txt': 'wagtail==6.0\ndjango==5.0\n' },
+      () => orch.inferSystemPurpose(
+        [httpEntry('e1', '/pages/1/unpublish/')],
+        [entity('Page'), entity('Revision'), entity('Document')],
+        [capability('Revision Management')],
+        []
+      ));
+    expect(purpose.primary_type).toBe('content-management');
+    expect(purpose.evidence.join(' ')).toContain('content-management framework');
+  });
+
+  it('does NOT classify a page-tree document system as content-management without a CMS-framework dependency — honest precision cost of task #90', async () => {
+    const purpose = await withProjectPath(null, () => orch.inferSystemPurpose(
       [
         httpEntry('e1', '/pages/1/unpublish/'),
         httpEntry('e2', '/pages/1/revisions/'),
@@ -3477,10 +3678,13 @@ describe('content-management domain anchor (inferSystemPurpose)', () => {
         capability('Task Management'), capability('Image Management'),
       ],
       []
-    );
-    expect(purpose.primary_type).toBe('content-management');
-    expect(purpose.confidence).toBeGreaterThanOrEqual(0.8);
-    expect(purpose.evidence.join(' ')).toContain('revision');
+    ));
+    // Every CMS noun this gate used to key on is present — Page, Revision,
+    // Document, Rendition, Collection, Redirect, Locale, Site, plus
+    // publish/draft/preview paths — and it is deliberately no longer enough.
+    // Business identity for a bespoke CMS with no framework dependency comes
+    // from the AI interpretation layer via refinePurposeTypeForDomain.
+    expect(purpose.primary_type).not.toBe('content-management');
   });
 
   it('does not classify a workflow engine without content entities as content-management', async () => {

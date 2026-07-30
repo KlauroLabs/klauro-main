@@ -572,6 +572,7 @@ export class AnalyzerOrchestrator {
   private analyzerRootMap: Map<string, string> = new Map();
   private manifestFileCache: Map<string, string[]> = new Map();
   private manifestEvidenceCache: Map<string, Promise<{ dependencyNames: string[]; contents: string[] }>> = new Map();
+  private manifestRuntimeDependencyCache: Map<string, Promise<Set<string>>> = new Map();
   private analyzerContributionCache?: PersistentAnalyzerContributionCache;
   private analyzerContributionDigestCache = new Map<string, Promise<{ sourceIdentity: string; sourceContentHash: string }>>();
   private analyzerContributionFileSetDigestCache = new Map<string, Promise<string>>();
@@ -1218,6 +1219,7 @@ export class AnalyzerOrchestrator {
     this.detectedAnalyzerCache.delete(cacheKey);
     this.manifestFileCache.delete(projectPath);
     this.manifestEvidenceCache.delete(projectPath);
+    this.manifestRuntimeDependencyCache.delete(projectPath);
     this.nestedRepoIgnoreCache.delete(projectPath);
     this.sourceFileInventoryCache.delete(cacheKey);
   }
@@ -5585,6 +5587,95 @@ export class AnalyzerOrchestrator {
       return this.hasContentPathSignal(projectPath, patterns.content);
     }
 
+    return false;
+  }
+
+  /**
+   * Whole-name match against the project's DIRECT RUNTIME dependencies only.
+   *
+   * Distinct from manifestContainsAny on two axes that matter when a
+   * dependency is used as evidence about what a product *is* (rather than
+   * which framework it uses):
+   *
+   *  - runtime only. A scanner/engine listed under devDependencies is CI
+   *    hygiene — nearly every serious repo has one — and says nothing about
+   *    the product. Only a runtime dependency means the shipped product
+   *    actually links against the thing.
+   *  - whole-name, not substring, and no manifest free-text fallback. The
+   *    live "menu-bar utility labeled security-scanning-tool off its
+   *    dependency list" defect is the standing warning that loose matching on
+   *    dependency vocabulary fabricates product identity; a README or lockfile
+   *    merely mentioning a scanner is not a declaration that we link to it.
+   *
+   * npm-only by construction (package.json is the one manifest format whose
+   * runtime/dev split we parse). Callers must treat a false as "no evidence",
+   * never as "evidence of absence".
+   */
+  private async manifestDeclaresRuntimeDependency(projectPath: string, packageNames: string[]): Promise<boolean> {
+    if (!projectPath) return false;
+    const wanted = new Set(packageNames.map(name => name.toLowerCase()));
+    let runtimePromise = this.manifestRuntimeDependencyCache.get(projectPath);
+    if (!runtimePromise) {
+      runtimePromise = (async () => {
+        const runtimeNames = new Set<string>();
+        const matches = await this.getManifestFiles(projectPath);
+        for (const match of matches.slice(0, 160)) {
+          if (path.basename(match) !== 'package.json') continue;
+          try {
+            const content = await nativeFs.readFile(path.join(projectPath, match), 'utf8');
+            const dependencies = JSON.parse(content).dependencies;
+            if (!dependencies || typeof dependencies !== 'object') continue;
+            for (const dependency of Object.keys(dependencies)) runtimeNames.add(dependency.toLowerCase());
+          } catch {
+          }
+        }
+        return runtimeNames;
+      })();
+      this.manifestRuntimeDependencyCache.set(projectPath, runtimePromise);
+    }
+
+    const runtimeNames = await runtimePromise;
+    for (const declared of runtimeNames) {
+      // Scoped packages count under their bare name too (@scope/pkg -> pkg),
+      // which is how the same engine ships across registries.
+      if (wanted.has(declared) || wanted.has(declared.replace(/^@[^/]+\//, ''))) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Cross-ecosystem sibling of manifestDeclaresRuntimeDependency: is one of
+   * these packages declared as a dependency in ANY of the project's build
+   * manifests?
+   *
+   * npm goes through the strict runtime-dependency path above. Every other
+   * ecosystem (csproj/pom/go.mod/requirements/Gemfile/Cargo) is matched as a
+   * WHOLE TOKEN in the manifest text — those formats do not give us a
+   * runtime/dev split we can read uniformly, and a package coordinate is
+   * still a declaration, unlike prose. Whole-token (not substring) matching is
+   * the load-bearing part: substring matching over manifest text is how
+   * dependency vocabulary turns into fabricated product identity.
+   *
+   * Only ever use this with package sets that are DOMAIN-DEFINING — packages
+   * nothing outside the domain has a reason to link against. A package that a
+   * repo of any domain might reasonably depend on proves nothing, and putting
+   * it in such a list re-creates the keyword classifier one level down.
+   */
+  private async manifestDeclaresPackage(projectPath: string, packageNames: string[]): Promise<boolean> {
+    if (!projectPath) return false;
+    if (await this.manifestDeclaresRuntimeDependency(projectPath, packageNames)) return true;
+
+    const matches = await this.getManifestFiles(projectPath);
+    const tokenPatterns = packageNames.map(name =>
+      new RegExp(`(^|[^a-z0-9])${name.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^a-z0-9]|$)`, 'i'));
+    for (const match of matches.slice(0, 160)) {
+      if (path.basename(match) === 'package.json') continue;
+      try {
+        const content = await nativeFs.readFile(path.join(projectPath, match), 'utf8');
+        if (tokenPatterns.some(pattern => pattern.test(content))) return true;
+      } catch {
+      }
+    }
     return false;
   }
 
@@ -25192,18 +25283,14 @@ export class AnalyzerOrchestrator {
     // tested or evidence-backed capability. See orchestrator.ts inline
     // history / commit message for the full per-entry disposition.
     const signatures: SystemSignature[] = [
-      {
-        type: 'gaming-platform',
-        description: 'Gaming, card game, or interactive entertainment platform',
-        indicators: {
-          pathPatterns: ['game', 'player', 'deck', 'card', 'match', 'lobby', 'turn', 'score', 'commander', 'board'],
-          verbPatterns: ['play', 'draw', 'shuffle', 'deal', 'attack', 'defend', 'cast', 'mulligan'],
-          entityPatterns: ['game', 'player', 'deck', 'card', 'match', 'lobby', 'turn', 'score', 'hand', 'board', 'commander', 'mana'],
-          capabilityPatterns: ['game', 'match', 'lobby', 'player', 'deck'],
-        },
-        distinctiveness: 4,
-        weight: 0
-      },
+      // REMOVED (task #90): the 'gaming-platform' entry. Its indicators were
+      // pure business vocabulary — 'card', 'player', 'match', 'score',
+      // 'board', 'hand', 'deal', 'draw', 'cast' — every one of which is a
+      // common word in unrelated software (payment CARDs, media PLAYERs,
+      // regex MATCHing, DASHBOARDs, CASTing types, DRAWing on a canvas, DEALs
+      // in a CRM). It had accumulated two layers of damage control (a
+      // strong-signal re-gate and two dedicated negative tests) and still
+      // needed them. The verdict is now dependency-gated further below.
       {
         type: 'web-application',
         description: 'Full-stack web application with frontend and backend',
@@ -25216,23 +25303,13 @@ export class AnalyzerOrchestrator {
         distinctiveness: 1,
         weight: 0
       },
-      {
-        type: 'devtools-platform',
-        description: 'Developer tools, code analysis, or visualization platform',
-        indicators: {
-          // Only genuinely distinctive tokens are listed. Generic terms
-          // (node, edge, graph, component, token, render, layout, plugin,
-          // sdk) were removed: they appear in almost every codebase and
-          // previously caused systems like a Claude-agent manager or any
-          // React app to be mislabeled a devtools platform.
-          pathPatterns: ['analyzer', 'sourcemap', 'transpile', 'transpiler', 'transpilation', 'linter', 'codegen', 'blueprint'],
-          verbPatterns: ['transpile', 'instrument', 'profile'],
-          entityPatterns: ['analyzer', 'sourcemap', 'blueprint', 'diagnostic', 'codemod'],
-          capabilityPatterns: ['static analysis', 'code analysis', 'transpilation', 'instrumentation', 'profiling'],
-        },
-        distinctiveness: 3,
-        weight: 0
-      }
+      // REMOVED (task #90): the 'devtools-platform' entry. Its token list had
+      // already been narrowed once (generic 'node'/'edge'/'graph'/'token'
+      // removed after a React app and an agent manager were both mislabeled
+      // devtools) and the residue was still vocabulary: 'analyzer',
+      // 'blueprint', 'diagnostic', 'profile', 'instrument' name things in
+      // medical, industrial, financial and observability software that are
+      // not developer tools. The verdict is now dependency-gated below.
     ];
 
     const productNodes: CASNode[] = [];
@@ -25415,16 +25492,6 @@ export class AnalyzerOrchestrator {
         }
       }
 
-      if (sig.type === 'gaming-platform' && score > 0) {
-        const gameTokenLists = [...paths, ...nodeNames, ...entityNames, ...capabilityNames];
-        const strongGameSignals = ['game', 'deck', 'lobby', 'mana', 'mulligan', 'gameplay', 'matchmaking']
-          .filter(signal => gameTokenLists.some(tokens => this.matchesSignalPattern(tokens, signal)));
-        if (strongGameSignals.length < 1) {
-          score = 0;
-          typeEvidence.length = 0;
-        }
-      }
-
       // Single-token evidence gate: a domain claim needs at least TWO distinct
       // matched indicator tokens. One incidental keyword must never assert a
       // business domain — live audit 2026-07-14: a 41-node k8s/compose-only
@@ -25456,7 +25523,10 @@ export class AnalyzerOrchestrator {
     );
     let confidence = topMatch.weight / maxPossibleScore;
 
-    if (topMatch.weight > 0 && secondBest.weight > 0) {
+    // secondBest is optional: the signature table is down to shape entries
+    // after task #90 removed the business-vertical ones, so there may be no
+    // runner-up at all. A separation bonus needs two scoring signatures.
+    if (topMatch.weight > 0 && (secondBest?.weight ?? 0) > 0) {
       const separation = (topMatch.weight - secondBest.weight) / topMatch.weight;
       confidence = Math.min(confidence + (separation * 0.3), 1.0);
     }
@@ -25497,209 +25567,228 @@ export class AnalyzerOrchestrator {
     // is the anti-generic-overmatch invariant this gate exists for.
     const hasDominantDesktopUi =
       desktopUiSignals.matched.includes('viewmodel') || desktopUiSignals.matched.includes('xaml');
-    const clinicalSignals = await countMatches(
-      nameEntityCapabilityPathTokens,
-      ['patient', 'muscle', 'device', 'measurement', 'force', 'inclinometry', 'grip', 'pinch', 'rehabilitation']
+    // RE-GROUNDED (task #90): the clinical verdict no longer reads vocabulary.
+    // It previously counted 'patient'/'muscle'/'device'/'measurement'/'force'
+    // and required one "clinical-specific" word as an anchor — but a word list
+    // is a word list however carefully curated, and 'patient'/'grip'/'pinch'
+    // appear in scheduling software, gesture/input libraries and physiotherapy
+    // CONTENT sites that are not clinical systems.
+    //
+    // Healthcare is one of the few domains with a genuinely domain-defining
+    // dependency class: the interop standards. Nothing outside healthcare
+    // software links against a FHIR client, an HL7v2 parser or a DICOM
+    // toolkit — these encode patient-record and medical-imaging wire formats
+    // and have no use elsewhere. That declaration, not the presence of the
+    // word "patient", is the evidence.
+    const CLINICAL_INTEROP_PACKAGES = [
+      'fhir', 'fhirclient', 'hl7', 'hl7v2', 'nhapi', 'hapi-fhir',
+      'dicom', 'fo-dicom', 'pydicom', 'dcmtk', 'gdcm', 'dicomweb-client',
+    ];
+    const hasClinicalInteropEvidence = await this.manifestDeclaresPackage(
+      this.activeAnalysisProjectPath || '',
+      CLINICAL_INTEROP_PACKAGES,
     );
-    // Distinctive clinical anchor: 'device'/'measurement'/'force' are generic
-    // English words that show up incidentally in any large real codebase
-    // (telemetry "measurement", "force refresh", device-code auth flows).
-    // Same live defect: Klauro's own self-analysis matched >=3 of these
-    // generic tokens with no genuinely clinical vocabulary present at all and
-    // got stamped 'clinical-testing-platform' at a hardcoded 0.86 floor. Every
-    // sibling override below (fleet/zero-trust/trading) already requires an
-    // anchor from its OWN distinctive vocabulary; this one didn't. Require the
-    // same here: at least one of the terms that is actually clinical-specific.
-    const hasClinicalAnchor = clinicalSignals.matched.some(signal =>
-      ['patient', 'muscle', 'inclinometry', 'grip', 'pinch', 'rehabilitation'].includes(signal)
+    // RE-GROUNDED (task #90): the devtools verdict was a word count over
+    // 'analyzer'/'analysis'/'codebase' — which is exactly how a product that
+    // ANALYSES something other than code (logs, images, markets, patients)
+    // acquired it, and how a product's own documentation about analysis
+    // acquired it too. Saying "analysis" is not evidence of parsing code.
+    //
+    // Parsing source into an AST is: a source-parser/AST toolkit taken as a
+    // direct RUNTIME dependency has essentially one use, and it is the thing
+    // that makes a developer tool a developer tool. Formatters, bundlers and
+    // test runners are excluded — every repo of every domain depends on
+    // those as tooling, which is the false-positive class being removed.
+    const SOURCE_PARSER_PACKAGES = [
+      'tree-sitter', 'ts-morph', 'jscodeshift', 'recast', 'acorn', 'esprima',
+      '@babel/parser', 'babel-parser', 'libcst', 'javaparser', 'ast-grep',
+      '@ast-grep/napi', 'srcml', 'ruby_parser', 'go/ast', 'roslyn',
+    ];
+    const hasSourceParserEvidence = await this.manifestDeclaresPackage(
+      this.activeAnalysisProjectPath || '',
+      SOURCE_PARSER_PACKAGES,
     );
-    const fleetSignals = await countMatches(
-      nameEntityCapabilityPathTokens,
-      ['fleet', 'vehicle', 'driver', 'fuel', 'maintenance', 'dispatch', 'telematics', 'odometer', 'ifta', 'trip', 'booking']
-    );
-    const zeroTrustSignals = await countMatches(
-      nameEntityCapabilityPathTokens,
-      ['zero trust', 'policy', 'policies', 'resource', 'resources', 'agent', 'agents', 'device', 'devices', 'grant', 'grants', 'scan', 'credential', 'vulnerability', 'cve']
-    );
-    const traySignals = await countMatches(
-      nameEntityCapabilityPathTokens,
-      ['tray', 'tray icon', 'menu', 'submenu', 'system tray', 'port forward', 'portfwd']
-    );
-    const tradingSignals = await countMatches(
-      nameEntityCapabilityPathTokens,
-      ['solana', 'arbitrage', 'trade', 'trading', 'swap', 'token', 'market', 'price', 'dex', 'cex', 'jupiter', 'raydium', 'bundle', 'liquidity']
-    );
-    const devtoolsSignals = await countMatches(
-      nameEntityCapabilityPathTokens,
-      ['analyzer', 'static analysis', 'code analysis', 'codebase analysis', 'codebase graph', 'codemod']
-    );
-    if (devtoolsSignals.count >= 3 &&
-      devtoolsSignals.matched.some(signal => /analyzer|analysis|codebase/.test(signal)) &&
-      tradingSignals.matched.length < 4 &&
+    if (hasSourceParserEvidence &&
       topMatch.type !== 'medical-device-software' &&
       topMatch.type !== 'clinical-testing-platform') {
       return {
         primary_type: 'devtools-platform',
-        confidence: this.signatureMatchConfidence(devtoolsSignals.matched.length, devtoolsSignals.size, confidence),
-        evidence: [`Developer-tool/code-analysis signals: ${devtoolsSignals.matched.join(', ')}`],
+        confidence: this.signatureMatchConfidence(1, 1, confidence),
+        evidence: ['Declared runtime dependency on a source-parser/AST toolkit'],
         secondary_types: topMatch.type !== 'devtools-platform' ? [topMatch.type, ...secondaryTypes].slice(0, 3) : secondaryTypes,
       };
     }
 
-    if (hasDominantDesktopUi && clinicalSignals.matched.length >= 3 && hasClinicalAnchor) {
+    // The desktop-shape half is kept as a discriminator between a clinical
+    // DESKTOP instrument application and a clinical web/API service — but it
+    // can no longer produce the verdict on its own, and neither can vocabulary:
+    // the interop declaration is now a hard precondition.
+    if (hasClinicalInteropEvidence && hasDominantDesktopUi) {
       return {
         primary_type: 'clinical-testing-platform',
-        confidence: this.signatureMatchConfidence(clinicalSignals.matched.length, clinicalSignals.size, confidence),
-        evidence: [`Clinical desktop signals: ${clinicalSignals.matched.join(', ')}`],
+        confidence: this.signatureMatchConfidence(1, 1, confidence),
+        evidence: ['Declared healthcare-interop dependency (FHIR/HL7/DICOM) with a native desktop UI surface'],
         secondary_types: [topMatch.type, ...secondaryTypes]
           .filter(type => type !== 'clinical-testing-platform')
           .slice(0, 3),
       };
     }
 
-    // ANCHOR-GATED (same live self-analysis defect class as the clinical
-    // override above, 2026-07-20 — quality-iter-1): 'fleet'/'driver'/
-    // 'dispatch'/'maintenance'/'trip'/'booking' are generic words that show up
-    // incidentally in any coordination/scheduling codebase (Klauro's own docs
-    // talk about "fleets of agents", work "dispatch", code "maintenance") and
-    // previously counted as their OWN anchor via /vehicle|fleet|driver/ — so a
-    // vocabulary-only overlap on Klauro's own repo racked up 4 matches
-    // (fleet, dispatch, driver, maintenance) with ZERO genuine fleet-operations
-    // evidence and got stamped 'fleet-management-platform' at a hardcoded 0.84
-    // floor. Require an anchor from vocabulary that is actually
-    // fleet-distinctive (vehicle/telematics/odometer/ifta) — words that don't
-    // plausibly appear outside real fleet-operations software — never from
-    // 'fleet' or 'driver' themselves.
-    const hasFleetAnchor = fleetSignals.matched.some(signal => /vehicle|telematics|odometer|ifta/.test(signal));
-    if (fleetSignals.matched.length >= 4 &&
-      hasFleetAnchor &&
-      topMatch.type !== 'medical-device-software' &&
-      topMatch.type !== 'clinical-testing-platform') {
-      return {
-        primary_type: 'fleet-management-platform',
-        confidence: this.signatureMatchConfidence(fleetSignals.matched.length, fleetSignals.size, confidence),
-        evidence: [`Fleet operations signals: ${fleetSignals.matched.join(', ')}`],
-        secondary_types: [topMatch.type, ...secondaryTypes]
-          .filter(type => type !== 'fleet-management-platform')
-          .slice(0, 3),
-      };
-    }
+    // REMOVED (task #90): the 'fleet-management-platform' override, anchor and
+    // all. The anchor tokens were narrower than the ones they replaced, but
+    // they were still words: a repo earns this verdict by containing the
+    // string 'vehicle' or 'odometer' somewhere in a name. That is exactly the
+    // rule this sweep exists to delete, and narrowing a word list only moves
+    // the misfire — a parts catalog, an insurance rater, a mapping SDK, a
+    // physics sim and a regulatory-forms library all carry the same nouns
+    // without being fleet-operations software.
+    //
+    // No deterministic replacement is offered: fleet identity has no
+    // distinguishing CAS shape (it is CRUD over records on a schedule), and
+    // the honest signal — a declared telematics/ELD provider SDK — is not
+    // enumerable across ecosystems without re-importing a vendor list, i.e.
+    // the same hardcoded-knowledge defect wearing a manifest costume. This
+    // judgment goes to the AI interpretation layer, which reaches primary_type
+    // through refinePurposeTypeForDomain (already covered: a grounded
+    // 'fleet-management' domain overrides the structural verdict there).
+    // Honest cost: real fleet repos now report their structural shape until AI
+    // grounds them.
 
-    // ANCHOR-GATED (same live self-analysis defect class as fleet/clinical
-    // above, 2026-07-21): 'scan'/'credential'/'cve'/'agent'/'grant'/'policy'
-    // are generic words that show up incidentally in ANY agent-coordination +
-    // codebase-analysis product — Klauro's own fabric vocabulary talks about
-    // work "grants", advisory "claims", codebase "scan"ning, and API
-    // "credential"s, and its security-analysis surface legitimately mentions
-    // "vulnerability"/"cve" as things it REPORTS ON. A product that analyzes
-    // other codebases' security posture is not itself a security scanner, and
-    // vocabulary-only overlap on Klauro's own repo racked up 7 matches (agent,
-    // agents, grant, scan, policy, credential, cve) with ZERO evidence Klauro
-    // ships a scanning ENGINE, and got stamped 'security-scanning-tool' at a
-    // hardcoded 0.84 floor. Require the scan/credential/cve path to be backed
-    // by real scanner-shaped dependency evidence (an actual vulnerability
-    // scanner engine as a project dependency, or a CVE-feed integration
-    // manifest) — never vocabulary alone — before it can anchor the
-    // classification. The generic-token combination (policy/resource/agent/
-    // device all present) below it is unchanged: it already requires all four
-    // distinct tokens together, which the fleet/clinical fix pattern treats as
-    // sufficiently specific.
-    const SECURITY_SCANNER_DEPENDENCY_MARKERS = [
-      'semgrep', 'snyk', 'trivy', 'bandit', 'grype', 'nuclei', 'gitleaks',
-      'trufflehog', 'zaproxy', 'owasp-zap', 'dependency-check', 'safety',
-      'eslint-plugin-security', 'retire.js', 'sonarqube', 'checkov', 'tfsec',
-      'clair', 'anchore'
+    // REMOVED (task #90): the 'network-access-platform' half of this override.
+    // Its anchor was either the literal phrase 'zero trust' appearing in a
+    // name, or the co-occurrence of 'policy'+'resource'+'agent'+'device' —
+    // four of the most generic nouns in software. Any agent-coordination,
+    // IaC, IAM, MDM or plugin-host codebase satisfies that set incidentally,
+    // and the verdict it produced was a business identity, not a shape.
+    //
+    // KEPT AND RE-GROUNDED: 'security-scanning-tool', now decided ONLY by
+    // dependency evidence. Linking a scanner ENGINE into the shipped product
+    // is a declared, checkable fact about what the code does; vocabulary about
+    // scanning is not (a product that REPORTS ON vulnerabilities necessarily
+    // talks about them, which is precisely how this classifier once labeled a
+    // codebase-analysis product a security scanner off its own docs).
+    //
+    // Two deliberate narrowings versus the previous dependency check:
+    //  - runtime dependency only. The old list was matched against every
+    //    manifest including devDependencies and raw manifest text, so a
+    //    routine CI security step was enough. That is the same shape as the
+    //    live "menu-bar utility labeled security-scanning-tool off its
+    //    dependency list" defect.
+    //  - engine packages only. Hygiene tooling that a security-conscious repo
+    //    of ANY domain adds to CI (lint security plugins, dependency
+    //    audit/report wrappers, SAST quality platforms) is removed from the
+    //    list: depending on them means the team scans its own code, not that
+    //    the product is a scanner. What remains are engines you only take as a
+    //    RUNTIME dependency in order to perform scans as a feature.
+    const SECURITY_SCANNER_ENGINE_PACKAGES = [
+      'semgrep', 'trivy', 'grype', 'nuclei', 'gitleaks', 'trufflehog',
+      'zaproxy', 'owasp-zap', 'clair', 'anchore', 'syft', 'osv-scanner',
     ];
-    const activeProjectPathForZeroTrustGate = this.activeAnalysisProjectPath || '';
-    const hasScanCredentialAnchor =
-      zeroTrustSignals.matched.includes('scan') &&
-      zeroTrustSignals.matched.some(signal => /credential|vulnerability|cve/.test(signal));
-    const hasSecurityScannerDependencyEvidence = activeProjectPathForZeroTrustGate
-      ? await this.manifestContainsAny(activeProjectPathForZeroTrustGate, SECURITY_SCANNER_DEPENDENCY_MARKERS)
-      : false;
-    const hasZeroTrustAnchor =
-      zeroTrustSignals.matched.includes('zero trust') ||
-      (hasScanCredentialAnchor && hasSecurityScannerDependencyEvidence) ||
-      ['policy', 'resource', 'agent', 'device'].every(signal => zeroTrustSignals.matched.includes(signal));
-    if (zeroTrustSignals.matched.length >= 4 &&
-      hasZeroTrustAnchor &&
+    const hasSecurityScannerDependencyEvidence = await this.manifestDeclaresRuntimeDependency(
+      this.activeAnalysisProjectPath || '',
+      SECURITY_SCANNER_ENGINE_PACKAGES,
+    );
+    // RE-GROUNDED (task #90), replacing the deleted 'gaming-platform'
+    // vocabulary signature: a game engine or multiplayer game server is a
+    // domain-defining dependency. You do not link a game engine into software
+    // that is not a game — unlike the words 'card', 'player' and 'match',
+    // which are ambient across all software. Deliberately excludes general
+    // rendering/physics libraries (WebGL scene graphs, canvas toolkits): those
+    // are used by data-visualisation, CAD and mapping products too, so their
+    // presence would re-create the false-positive class this replaces.
+    const GAME_ENGINE_PACKAGES = [
+      'phaser', 'excalibur', 'melonjs', 'kaboom', 'playcanvas', 'colyseus',
+      'boardgame.io', 'godot', 'unityengine', 'monogame', 'libgdx', 'pygame',
+      'bevy', 'ggez', 'raylib', 'love2d',
+    ];
+    const hasGameEngineEvidence = await this.manifestDeclaresPackage(
+      this.activeAnalysisProjectPath || '',
+      GAME_ENGINE_PACKAGES,
+    );
+    if (hasGameEngineEvidence) {
+      return {
+        primary_type: 'gaming-platform',
+        confidence: this.signatureMatchConfidence(1, 1, confidence),
+        evidence: ['Declared dependency on a game engine or multiplayer game server'],
+        secondary_types: [topMatch.type, ...secondaryTypes]
+          .filter(type => type !== 'gaming-platform')
+          .slice(0, 3),
+      };
+    }
+
+    if (hasSecurityScannerDependencyEvidence &&
       topMatch.type !== 'medical-device-software' &&
       topMatch.type !== 'clinical-testing-platform') {
       return {
-        primary_type: (hasScanCredentialAnchor && hasSecurityScannerDependencyEvidence)
-          ? 'security-scanning-tool'
-          : 'network-access-platform',
-        confidence: this.signatureMatchConfidence(zeroTrustSignals.matched.length, zeroTrustSignals.size, confidence),
-        evidence: [`Zero-trust/security signals: ${zeroTrustSignals.matched.join(', ')}`],
+        primary_type: 'security-scanning-tool',
+        confidence: this.signatureMatchConfidence(1, 1, confidence),
+        evidence: ['Declared runtime dependency on a vulnerability-scanning engine'],
         secondary_types: [topMatch.type, ...secondaryTypes]
-          .filter(type => type !== 'network-access-platform' && type !== 'security-scanning-tool')
+          .filter(type => type !== 'security-scanning-tool')
           .slice(0, 3),
       };
     }
 
-    const activeProjectPathForTrayGate = this.activeAnalysisProjectPath || '';
-    const repoNameForTrayGate = path.basename(activeProjectPathForTrayGate).toLowerCase();
-    const isTrayArtifactRepo =
-      /\b(tray[-_]?icon|system[-_]?tray|tray)\b/.test(repoNameForTrayGate) ||
-      /(^|\/)(tray[-_]?icon|system[-_]?tray|tray)(\/|$)/i.test(activeProjectPathForTrayGate);
-    if (isTrayArtifactRepo &&
-      traySignals.matched.length >= 2 &&
-      traySignals.matched.some(signal => /tray|tray icon|system tray/.test(signal))) {
-      return {
-        primary_type: 'tray-icon-library',
-        confidence: this.signatureMatchConfidence(traySignals.matched.length, traySignals.size, confidence),
-        evidence: [`Tray UI signals: ${traySignals.matched.join(', ')}`],
-        secondary_types: [topMatch.type, ...secondaryTypes]
-          .filter(type => type !== 'tray-icon-library')
-          .slice(0, 3),
-      };
-    }
+    // REMOVED (task #90, hardcoded-knowledge sweep): the 'tray-icon-library'
+    // override. Its gate was the repo's own DIRECTORY NAME containing 'tray',
+    // corroborated by the same word appearing in node names — i.e. the verdict
+    // was "this is a tray library because it is called tray". A checkout path
+    // is not evidence about what code does (it is chosen by whoever cloned it),
+    // and restating a name is not an inference.
+    //
+    // The 'library' half of this verdict is genuinely structural and is not
+    // lost: artifact-type.ts derives library/artifact shape from packaging and
+    // export surface, independently of this classifier. What is dropped is the
+    // domain half ('tray icon'), which belongs to the AI interpretation layer.
 
-    if (tradingSignals.matched.length >= 4 &&
-      tradingSignals.matched.some(signal => /solana|arbitrage|trade|trading|swap|dex|cex/.test(signal)) &&
-      topMatch.type !== 'medical-device-software' &&
-      topMatch.type !== 'clinical-testing-platform') {
-      return {
-        primary_type: 'trading-automation',
-        confidence: this.signatureMatchConfidence(tradingSignals.matched.length, tradingSignals.size, confidence),
-        evidence: [`Trading/market signals: ${tradingSignals.matched.join(', ')}`],
-        secondary_types: [topMatch.type, ...secondaryTypes]
-          .filter(type => type !== 'trading-automation')
-          .slice(0, 3),
-      };
-    }
+    // REMOVED (task #90, hardcoded-knowledge sweep): the 'trading-automation'
+    // override. It concluded a product's business identity from a bag of
+    // market words ('trade', 'swap', 'token', 'market', 'price', 'bundle',
+    // 'liquidity') plus named third-party chain/exchange products used as
+    // anchors — the exact defect this sweep exists to remove, and a
+    // spec-purity violation besides (product source must never name specific
+    // ecosystem products). 'token', 'market', 'price' and 'bundle' in
+    // particular are generic across auth, pricing, and build tooling, so the
+    // 4-match count gate was satisfiable with zero trading evidence.
+    //
+    // No structural replacement is offered here on purpose. Trading identity
+    // is not observable in the CAS shape: a market-making bot and a job
+    // scheduler are the same graph. The one admissible signal would be a
+    // declared exchange/market-data SDK dependency, which the deterministic
+    // layer cannot enumerate honestly across ecosystems. Business identity for
+    // these repos is therefore handed to the AI interpretation layer, whose
+    // grounded primary_domain already reaches primary_type through
+    // refinePurposeTypeForDomain. Honest cost: a trading repo with no other
+    // distinguishing shape now reports a structural type (api-service /
+    // cli-tool / general-application) until AI grounds it.
 
-    // Anchor-gated like the clinical and commerce signatures: a CMS verdict
-    // requires the revision entity (the load-bearing CMS concept: versioned
-    // content) together with page or document entities, broad page-tree
-    // entity vocabulary, and publishing-workflow vocabulary on real paths or
-    // capabilities. Workflow/task/approval vocabulary alone must keep losing
-    // to this gate: a page-tree CMS contains a moderation workflow engine,
-    // not the other way around.
-    const cmsEntitySignals = await countMatches(
-      entityNames,
-      ['page', 'document', 'revision', 'rendition', 'collection', 'redirect', 'snippet', 'locale', 'site', 'media']
+    // RE-GROUNDED (task #90): this gate read better than its siblings — it
+    // keyed on DECLARED ENTITIES rather than path words — but entity names are
+    // still names. 'Page', 'Document', 'Revision', 'Collection' and 'Media'
+    // are the vocabulary of any document-versioning, records-management,
+    // e-signature, wiki or DAM product, and 'revision' as the load-bearing
+    // anchor is satisfied by any audit-trail table.
+    //
+    // A CMS is, in practice, always built ON a CMS: the framework is a
+    // declared dependency, and it is domain-defining in a way its nouns are
+    // not. That declaration replaces both the entity anchor and the publishing
+    // word list.
+    const CMS_FRAMEWORK_PACKAGES = [
+      'wagtail', 'django-cms', 'mezzanine', 'strapi', 'sanity', 'contentful',
+      'keystone', '@keystone-6/core', 'payload', 'directus', 'decap-cms',
+      'netlify-cms', 'prismic', 'ghost', 'drupal', 'craftcms', 'statamic',
+      'umbraco', 'sitecore', 'contentstack',
+    ];
+    const hasCmsFrameworkEvidence = await this.manifestDeclaresPackage(
+      this.activeAnalysisProjectPath || '',
+      CMS_FRAMEWORK_PACKAGES,
     );
-    const cmsPublishingSignals = await countMatches(
-      nameEntityCapabilityPathTokens,
-      ['publish', 'unpublish', 'draft', 'moderation', 'preview', 'revision']
-    );
-    const hasCmsEntityAnchor =
-      cmsEntitySignals.matched.includes('revision') &&
-      (cmsEntitySignals.matched.includes('page') || cmsEntitySignals.matched.includes('document'));
-    if (hasCmsEntityAnchor && cmsEntitySignals.matched.length >= 4 && cmsPublishingSignals.matched.length >= 2 &&
+    if (hasCmsFrameworkEvidence &&
       topMatch.type !== 'medical-device-software' && topMatch.type !== 'clinical-testing-platform') {
       return {
         primary_type: 'content-management',
-        confidence: this.signatureMatchConfidence(
-          cmsEntitySignals.matched.length + cmsPublishingSignals.matched.length,
-          cmsEntitySignals.size + cmsPublishingSignals.size,
-          confidence,
-        ),
-        evidence: [
-          `Content entities: ${cmsEntitySignals.matched.join(', ')}`,
-          `Publishing vocabulary: ${cmsPublishingSignals.matched.join(', ')}`,
-        ],
+        confidence: this.signatureMatchConfidence(1, 1, confidence),
+        evidence: ['Declared dependency on a content-management framework'],
         secondary_types: [topMatch.type, ...secondaryTypes]
           .filter(type => type !== 'content-management')
           .slice(0, 3),
