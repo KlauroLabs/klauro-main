@@ -3390,6 +3390,20 @@ export interface SystemCapability {
    */
   evidence_kind?: 'behavior-surface' | 'infrastructure';
   /**
+   * A few of this candidate's own real, per-entry identifiers (registered
+   * tool/command/event names — evidence, never invented) — used ONLY to
+   * present a `evidence_kind: 'behavior-surface'` candidate to the AI
+   * capability-catalog step by what its handlers are actually called, instead
+   * of the structural `<Kind> Surface` placeholder (a mechanism noun the
+   * catalog prompt's own purpose-test rule tells the model to reject on
+   * sight, hiding a large flagship surface behind a name shaped like
+   * plumbing). Never overwrites `name`/`structural_label` — those stay the
+   * honest structural placeholder everywhere else (behavior_surfaces
+   * display, dedup, merge). Absent when the surface's entries carry no
+   * readable per-entry identifier.
+   */
+  evidence_examples?: string[];
+  /**
    * Inverted M:N capability<->flow edges, one {flow_id, role, rationale} per
    * flow related to this capability — roles live on the edge, not either
    * endpoint (docs/SEMANTIC-MODEL.md). Computed once at analysis time,
