@@ -21461,9 +21461,27 @@ export class AnalyzerOrchestrator {
     // ordering therefore no longer biases on a keyword-classified domain, and
     // the domain-literal filter/bias pair (filterCapabilitiesForKnownDomain /
     // capabilityPurposeBias) that consumed it is gone with it.
-    const sortedCapabilities = this.isKlauroSelfProject(projectPath)
-      ? this.prioritizeKlauroSelfCapabilities(trimmedCapabilities, projectPath)
-      : trimmedCapabilities;
+    //
+    // #112 (found while investigating #33 catalog variance): a self-project
+    // reprioritization pass used to run here (prioritizeKlauroSelfCapabilities
+    // / klauroSelfCapabilityPriority), gated on isKlauroSelfProject. It did not
+    // reorder — it DROPPED any capability whose name/related_domains text
+    // failed to match a hand-written phrase whitelist (a generic-noun bucket
+    // of "workspaces?|projects?|users?|...", always excluded). Because this
+    // only fired when analyzing Klauro's own repo, it contaminated every
+    // capability-catalog measurement ever taken on the self CAS: a
+    // well-evidenced capability (including the MCP tool-serving surface
+    // itself, unless its name happened to contain the literal token "mcp")
+    // could be silently deleted after the catalog correctly produced it,
+    // whenever the AI's own wording missed the whitelist. That is the
+    // hardcoded-vocabulary defect in its most severe form — deleting by
+    // words, not merely ranking by them — compounded by being both
+    // self-referential (special-cased for one repo) and shipped to every
+    // customer. Removed outright rather than replaced with a subtler
+    // word-based rule; no evidence-based replacement was requested or is
+    // obviously correct — if ordering needs help, it must come from
+    // operation counts, entity anchoring, or coverage, not phrase matching.
+    const sortedCapabilities = trimmedCapabilities;
     const fallbackCapabilities = sortedCapabilities.length === 0
       ? this.buildRepositoryFallbackCapabilities(productNodes, productEntryPoints, projectPath)
       : [];
@@ -21471,8 +21489,7 @@ export class AnalyzerOrchestrator {
 
     const finalCapabilities = capabilitiesToSort.sort((a, b) => {
       const critOrder = { critical: 0, high: 1, medium: 2, low: 3 };
-      return this.klauroSelfCapabilityPriority(projectPath, a) - this.klauroSelfCapabilityPriority(projectPath, b) ||
-        this.systemCapabilityProductPriority(a) - this.systemCapabilityProductPriority(b) ||
+      return this.systemCapabilityProductPriority(a) - this.systemCapabilityProductPriority(b) ||
         critOrder[a.criticality] - critOrder[b.criticality] ||
         b.operations.length - a.operations.length ||
         a.name.localeCompare(b.name);
@@ -22262,25 +22279,6 @@ export class AnalyzerOrchestrator {
     if (/\b(budget|cost|billing)\b/.test(text)) factors.push('Budget resources affect cost visibility and spend controls.');
     if (/\b(cloudwatch|alarm|monitoring)\b/.test(text)) factors.push('Monitoring resources affect incident detection and operational visibility.');
     return factors;
-  }
-
-  private prioritizeKlauroSelfCapabilities(capabilities: SystemCapability[], projectPath?: string): SystemCapability[] {
-    const primary = capabilities.filter(capability => this.klauroSelfCapabilityPriority(projectPath, capability) <= 2);
-    if (primary.length >= 5) return primary;
-    return capabilities.filter(capability => this.klauroSelfCapabilityPriority(projectPath, capability) < 8);
-  }
-
-  private klauroSelfCapabilityPriority(projectPath: string | undefined, capability: SystemCapability): number {
-    if (!this.isKlauroSelfProject(projectPath)) return 0;
-    const text = `${capability.name} ${(capability.related_domains || []).join(' ')}`.toLowerCase();
-    if (/\b(codebase analysis|architecture mapping|agent contexts|codebase idiom guidance|incremental analysis|analysis storage|proposal preview|greenfield planning|runtime telemetry|cas contract validation|change impact analysis|behavioral invariant validation|machine repo gauntlet|answer packs|agent continuation|agent task proof|mcp)\b/.test(text)) {
-      return 0;
-    }
-    if (/\b(call chain|pattern detection|trace|report analysis|klauro runtime sdk|runtime sdk)\b/.test(text)) return 2;
-    if (/\b(workspaces?|projects?|users?|organizations?|membership|auth|components?|health|database|function call|connection|tags?|issues?)\b/.test(text)) {
-      return 9;
-    }
-    return 5;
   }
 
   private systemCapabilityProductPriority(capability: SystemCapability): number {

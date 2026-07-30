@@ -595,29 +595,17 @@ describe('self-analysis AI description guardrails', () => {
     expect(result.ok).toBe(true);
   });
 
-  it('prioritizes current Klauro analyzer and MCP capabilities over legacy API residue', () => {
-    const localOrch = new AnalyzerOrchestrator() as any;
-    jest.spyOn(localOrch, 'isKlauroSelfProject').mockReturnValue(true);
-    const capabilities = [
-      { name: 'Workspaces Management', related_domains: ['workspace'] },
-      { name: 'Projects Management', related_domains: ['project'] },
-      { name: 'Codebase Analysis', related_domains: ['analysis'] },
-      { name: 'Agent Context', related_domains: ['agent'] },
-      { name: 'Proposal Preview', related_domains: ['proposal'] },
-      { name: 'Codebase Idiom Guidance', related_domains: ['idiom'] },
-      { name: 'Analysis Storage', related_domains: ['storage'] },
-    ];
-
-    const prioritized = localOrch.prioritizeKlauroSelfCapabilities(capabilities, '/tmp/klauro');
-
-    expect(prioritized.map((capability: any) => capability.name)).toEqual([
-      'Codebase Analysis',
-      'Agent Context',
-      'Proposal Preview',
-      'Codebase Idiom Guidance',
-      'Analysis Storage',
-    ]);
-  });
+  // #112: 'prioritizes current Klauro analyzer and MCP capabilities over
+  // legacy API residue' removed (was: `localOrch.prioritizeKlauroSelfCapabilities`).
+  // That method didn't reorder, it DROPPED capabilities whose name/domains
+  // failed a hand-written phrase whitelist — this test asserted the drop
+  // itself as correct behavior (e.g. "Workspaces Management" and "Projects
+  // Management" disappearing from the result), which is exactly the
+  // hardcoded-vocabulary-deletes-by-words defect being removed. The method
+  // no longer exists; no replacement assertion is added because no
+  // evidence-based replacement was requested — capability ordering now
+  // relies solely on systemCapabilityProductPriority / criticality /
+  // operation count / name, unchanged by this removal.
 });
 
 describe('element description grounding parity with the system validator', () => {
