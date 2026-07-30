@@ -6232,7 +6232,42 @@ export class AnalyzerOrchestrator {
     const trigger = this.entryPointTriggerIdentity(ep);
     if (trigger) keys.push(`xtrigger::${trigger}`);
 
+    // (3) Same declared web route: (verb, path, rendered/handling component).
+    //     Measured duplication class: a router declaration extracted by BOTH a
+    //     framework analyzer and a routing-library analyzer — one file's 20
+    //     declared paths shipped as 40 `route` entry points. Neither key above
+    //     can see it: the display names legitimately differ ("Route /auth" vs
+    //     "GET /auth"), the library record carries no handler at all (so no
+    //     file and no method for key 1), and a route trigger has no
+    //     (system, channel) pair (so no key 2). The component is required as
+    //     well as the path so that two genuinely different surfaces which
+    //     happen to share a path+verb — a backend endpoint and a frontend page
+    //     at the same URL — are never collapsed into one. File is deliberately
+    //     NOT in the key: the two analyzers resolve the declaring file against
+    //     different roots ("apps/app/src/router.tsx" vs "src/router.tsx"), and
+    //     path+verb+component is already an exact identity for a declaration.
+    const routeIdentity = this.entryPointRouteIdentity(ep);
+    if (routeIdentity) keys.push(`xroute::${routeIdentity}`);
+
     return keys;
+  }
+
+  /** `<method>::<path>::<component>` for a declared web route, from trigger and
+   *  metadata evidence only. Undefined unless ALL THREE are real evidence on
+   *  the record — a path with no component, or a component with no path, is not
+   *  a strong enough identity to merge two analyzers' records on. */
+  private entryPointRouteIdentity(ep: any): string | undefined {
+    const path = typeof ep?.trigger?.path === 'string' ? ep.trigger.path.trim() : '';
+    const method = typeof ep?.trigger?.method === 'string' ? ep.trigger.method.trim() : '';
+    if (!path || !method) return undefined;
+    const metadata = ep?.metadata && typeof ep.metadata === 'object' ? ep.metadata : {};
+    const component = [metadata.component, metadata.handler, metadata.element]
+      .find((value: unknown) => typeof value === 'string' && value.trim().length > 0);
+    if (!component) return undefined;
+    // An "Unknown" component is the routing extractors' placeholder for a route
+    // whose element could not be resolved — a placeholder is not an identity.
+    if (String(component).trim().toLowerCase() === 'unknown') return undefined;
+    return `${method.toLowerCase()}::${path.toLowerCase()}::${String(component).trim().toLowerCase()}`;
   }
 
   /** `<system>::<channel>` for an async/messaging trigger, from explicit
