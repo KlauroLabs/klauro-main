@@ -25525,17 +25525,12 @@ export class AnalyzerOrchestrator {
       nameEntityCapabilityPathTokens,
       ['tray', 'tray icon', 'menu', 'submenu', 'system tray', 'port forward', 'portfwd']
     );
-    const tradingSignals = await countMatches(
-      nameEntityCapabilityPathTokens,
-      ['solana', 'arbitrage', 'trade', 'trading', 'swap', 'token', 'market', 'price', 'dex', 'cex', 'jupiter', 'raydium', 'bundle', 'liquidity']
-    );
     const devtoolsSignals = await countMatches(
       nameEntityCapabilityPathTokens,
       ['analyzer', 'static analysis', 'code analysis', 'codebase analysis', 'codebase graph', 'codemod']
     );
     if (devtoolsSignals.count >= 3 &&
       devtoolsSignals.matched.some(signal => /analyzer|analysis|codebase/.test(signal)) &&
-      tradingSignals.matched.length < 4 &&
       topMatch.type !== 'medical-device-software' &&
       topMatch.type !== 'clinical-testing-platform') {
       return {
@@ -25655,19 +25650,26 @@ export class AnalyzerOrchestrator {
       };
     }
 
-    if (tradingSignals.matched.length >= 4 &&
-      tradingSignals.matched.some(signal => /solana|arbitrage|trade|trading|swap|dex|cex/.test(signal)) &&
-      topMatch.type !== 'medical-device-software' &&
-      topMatch.type !== 'clinical-testing-platform') {
-      return {
-        primary_type: 'trading-automation',
-        confidence: this.signatureMatchConfidence(tradingSignals.matched.length, tradingSignals.size, confidence),
-        evidence: [`Trading/market signals: ${tradingSignals.matched.join(', ')}`],
-        secondary_types: [topMatch.type, ...secondaryTypes]
-          .filter(type => type !== 'trading-automation')
-          .slice(0, 3),
-      };
-    }
+    // REMOVED (task #90, hardcoded-knowledge sweep): the 'trading-automation'
+    // override. It concluded a product's business identity from a bag of
+    // market words ('trade', 'swap', 'token', 'market', 'price', 'bundle',
+    // 'liquidity') plus named third-party chain/exchange products used as
+    // anchors — the exact defect this sweep exists to remove, and a
+    // spec-purity violation besides (product source must never name specific
+    // ecosystem products). 'token', 'market', 'price' and 'bundle' in
+    // particular are generic across auth, pricing, and build tooling, so the
+    // 4-match count gate was satisfiable with zero trading evidence.
+    //
+    // No structural replacement is offered here on purpose. Trading identity
+    // is not observable in the CAS shape: a market-making bot and a job
+    // scheduler are the same graph. The one admissible signal would be a
+    // declared exchange/market-data SDK dependency, which the deterministic
+    // layer cannot enumerate honestly across ecosystems. Business identity for
+    // these repos is therefore handed to the AI interpretation layer, whose
+    // grounded primary_domain already reaches primary_type through
+    // refinePurposeTypeForDomain. Honest cost: a trading repo with no other
+    // distinguishing shape now reports a structural type (api-service /
+    // cli-tool / general-application) until AI grounds it.
 
     // Anchor-gated like the clinical and commerce signatures: a CMS verdict
     // requires the revision entity (the load-bearing CMS concept: versioned
