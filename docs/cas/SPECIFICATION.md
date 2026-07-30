@@ -2169,6 +2169,258 @@ interface CASValidation {
 }
 ```
 
+### 4.15 System Capabilities and Domain Model (v1.7.0+, current shape v1.11.0)
+
+#### SystemCapability
+A structurally-anchored unit of what the system DOES for its consumers. See §5.31 for the anchoring requirement every emitted capability MUST satisfy.
+
+```typescript
+interface SystemCapability {
+  id: string;
+  name: string;
+  // Provenance of `name`. A capability NAME asserts what the capability DOES —
+  // comprehension, produced only by AI (or a curated 'manual' map, or 'reused'
+  // incremental carry-forward), NEVER a deterministic keyword->label template.
+  // Left unset (name holds `structural_label`) until the AI naming pass runs.
+  name_source?: 'ai' | 'manual' | 'reused';
+  name_generation?: CASDescriptionGeneration;
+  // Deterministic FACT label: the humanized domain key anchored on the
+  // terminal (api-response / persisted) entities the capability produces.
+  // Pure structural fact, stable run-to-run, makes no claim about behavior.
+  structural_label?: string;
+  description: string;
+  description_source?: 'deterministic' | 'ai' | 'manual' | 'reused';
+  description_generation?: CASDescriptionGeneration;
+  category: 'core' | 'supporting' | 'admin' | 'internal';
+
+  operations: Array<{
+    entry_point_id: string;
+    entry_point_type: string;
+    action: string;
+    path_or_command?: string;
+    trigger?: { method?: string; path?: string };
+  }>;
+
+  related_entities: string[];
+  related_domains: string[];
+  criticality: 'critical' | 'high' | 'medium' | 'low';
+  criticality_factors: string[];
+  // Provenance of the evidence that produced this capability:
+  // 'behavior-surface' = derived from a named registration surface (an MCP
+  // tool server, a socket-event namespace) with no persisted-entity anchor —
+  // the AI catalog pass systematically misses these, so they are re-injected
+  // if dropped (the flagship-capability guarantee). 'infrastructure' = the
+  // capability's only anchors are runtime/lifecycle-shaped entities with no
+  // product evidence; it fails the purpose test and is excluded from the
+  // shipped catalog.
+  evidence_kind?: 'behavior-surface' | 'infrastructure';
+  // Inverted M:N capability<->flow edges, {flow_id, role, rationale} per tie.
+  // Computed once, un-capped, persisted; omitted (never []) when uncomputed.
+  related_flows?: Array<{ flow_id: string; role: string; rationale: string }>;
+}
+```
+
+`behavior_surfaces` carries the SAME `SystemCapability` shape for navigation-tier
+registration surfaces (mcp_tool / rpc / command / event / message-handler
+engines with no product-entity anchor). A behavior surface is structurally
+EXCLUDED from `system_capabilities`/ranking, is always `category: 'internal'`,
+and its `criticality` is capped at `'medium'` so it can never outrank a domain
+capability's urgency, while remaining fully navigable with its own
+operations/entry-point evidence.
+
+#### CASDomainConcept
+Distinctiveness-gated domain vocabulary. See §5.30 for the evidence gate every entry MUST satisfy.
+
+```typescript
+interface CASDomainConcept {
+  id: string;
+  name: string;
+  // DISTINCT USAGE SITES: separate code units, entry points, and entities
+  // that use the term. NOT a raw token count.
+  frequency: number;
+  appears_in: {
+    entry_points: string[];
+    entities: string[];
+    nodes: string[];
+  };
+  classification: 'core' | 'supporting' | 'infrastructure';
+  // Factual account of where the term occurs. Structure, not comprehension.
+  description?: string;
+  // Rank key: how strongly the repo's own structure/authored text singles
+  // this term out, as opposed to how often it occurs. Channel breadth
+  // dominates; site spread only breaks ties, logarithmically.
+  distinctiveness?: number;
+  // WHY this term is a concept — the cited channels (see §5.30). A term with
+  // no citation is not domain vocabulary, however frequent.
+  distinctiveness_evidence?: string[];
+}
+```
+
+#### SystemPurpose / EnhancedSystemPurpose
+
+```typescript
+interface SystemPurpose {
+  primary_type: string;
+  confidence: number;
+  evidence: string[];
+  secondary_types?: string[];
+}
+
+interface EnhancedSystemPurpose extends SystemPurpose {
+  primary_domain: string;
+  // Comprehension provenance is AI-only (see docs/cas/DETERMINISM-BOUNDARY.md);
+  // left unset until AI runs, never coerced to 'deterministic' on empty output.
+  domain_source?: 'deterministic' | 'ai' | 'ai-refined' | 'reused';
+  // True when the deterministic domain won via an anchor gate or grounded
+  // structural evidence. An anchored domain may only be NARROWED by AI
+  // (refined to a more specific child label), never replaced sideways.
+  domain_anchored?: boolean;
+  domain_rejected_candidates?: Array<{ label: string; reason: string }>;
+  // Capabilities whose AI description failed the grounding gate even after a
+  // targeted repair pass, and fell back to deterministic structural text.
+  // Present only when at least one capability degraded.
+  capability_description_degradations?: Array<{ id: string; reason: string }>;
+}
+```
+
+#### CASProductMap
+Whole-system rollup consumed by `get_product_map`: identity, capabilities, journeys, data exposure, conventions, and health, in one bounded payload. See the type definitions in `analyzer-core/src/types/cas.types.ts` (`CASProductMap`, `CASProductMapCapability`, `CASProductMapJourney`, `CASProductMapRuntimeTopology`) for the full field-level shape; this specification defers to that file rather than reproducing every nested field, since `CASProductMap` is itself a projection over the structures already defined above (capabilities, journeys, data entities, paradigm conformance, health) plus the infra-topology join (`runtime_topology`) — it introduces no new evidence of its own.
+
+### 4.16 Cross-Cutting Structural Facts (v1.9.0-v1.11.0)
+
+#### CASDependencyManifest
+Full declared-dependency FACT bundle — every manifest, every declared name, no interpretation:
+
+```typescript
+interface CASDependencyManifest {
+  manifests: string[];               // Manifest files scanned, project-relative, sorted
+  dependencies: CASDeclaredDependency[]; // Deduped names across all manifests, sorted
+  total: number;                      // == dependencies.length
+}
+
+interface CASDeclaredDependency {
+  name: string;                       // Raw package name exactly as declared
+  ecosystem: 'npm' | 'pypi' | 'cargo' | 'go' | 'maven' | 'gradle' | 'nuget' | 'composer' | 'pub' | 'unknown';
+  version?: string;
+  scopes: Array<'runtime' | 'dev' | 'peer' | 'optional' | 'build'>;
+  declared_in: string[];              // Manifest file(s) that declared it, sorted
+}
+```
+
+This is a Camp-B structural fact bundle (see docs/cas/DETERMINISM-BOUNDARY.md):
+raw names only. What a dependency MEANS is the AI comprehension pass's job,
+reading this bundle as grounding — `dependency_manifest` itself MUST NOT carry
+any interpretive label.
+
+#### CASCoverageGap
+Self-discovered gaps this analysis pass encountered but does not yet understand:
+
+```typescript
+type CASCoverageGapKind =
+  | 'unknown-dependency' | 'low-extraction-ratio'
+  | 'zero-entry-points' | 'unhandled-node-type';
+
+interface CASCoverageGap {
+  kind: CASCoverageGapKind;
+  evidence: string;                   // Short human-readable statement
+  file?: string;
+  severity: 'low' | 'medium' | 'high';
+  key?: string;                       // Machine-stable key for cross-repo aggregation
+  detail?: Record<string, unknown>;
+}
+```
+
+#### CASReachabilityIndex / CASStructuralImportanceMeta
+Persisted structural-intelligence layer over the call graph (Tarjan SCC condensation + pruned 2-hop landmark labeling), enabling near-O(1) reachability/affected-set queries without a per-query traversal:
+
+```typescript
+interface CASReachabilityIndex {
+  version: 1;
+  node_ids: string[];                 // Sorted; array position = compact node index
+  comp_of: number[];
+  comp_count: number;
+  comp_adj_offsets: number[];         // CSR condensation DAG
+  comp_adj_targets: number[];
+  label_out_offsets: number[];        // CSR 2-hop labels
+  label_out: number[];
+  label_in_offsets: number[];
+  label_in: number[];
+  stats: { nodes: number; edges: number; comps: number; largest_scc: number; label_entries: number };
+}
+
+interface CASStructuralImportanceMeta {
+  algorithm: 'seeded-random-walk-power-iteration';
+  damping: number;
+  epsilon: number;
+  max_iterations: number;
+  iterations: number;
+  converged: boolean;
+  seed_count: number;                 // Non-test entry-point nodes
+  seed_source: 'entry-points' | 'uniform';
+  node_count: number;
+  edge_count: number;
+}
+```
+
+`CASReachabilityIndex` and `CASStructuralImportanceMeta` contain ONLY graph-shape
+facts (no timestamps) — byte-stable across identical runs. `CASNode.structural_importance`
+(a [0,1] centrality score) is computed from structure only, NEVER AI-derived.
+
+#### CommunicationSeamsResult / ConsistencyModelResult
+Unified sync/async/passive seam classification and CAP/consistency characterization, derived additively from exit points, messaging edges, entry points, config env vars, and data lineage — never a re-detection pass:
+
+```typescript
+interface CommunicationSeamsResult {
+  seams: Array<{
+    id?: string;
+    source: string;
+    target: string;
+    modality: 'sync' | 'async' | 'passive';
+    confidence: number;
+    metadata?: { exit_point?: string; entry_point?: string; entity_id?: string; [key: string]: unknown };
+  }>;
+  inventory: {
+    level: string;
+    counts: { sync: number; async: number; passive: number; total: number };
+    component_seams: Array<{
+      source: string; target: string;
+      modalities: Array<'sync' | 'async' | 'passive'>;
+      sync: number; async: number; passive: number; total: number;
+    }>;
+  };
+}
+
+interface ConsistencyModelResult {
+  // Per data-store egress / broadened passive seam: consistency posture
+  // (strong | eventual | tunable), staleness risk, CP/AP lean, cited evidence.
+  // Evidence-gated — never a guessed consistency. See analyzer/core/consistency-model.ts.
+  [key: string]: unknown;
+}
+```
+
+#### ConventionMatchReport
+Audit trail for declared custom-architecture conventions (`.klaurorc` `conventions:`): what each declared convention matched or failed to match in the real extracted nodes. Evidence-gated — a convention with `matched: false` emits nothing rather than fabricating a route/entity/flow. Absent when no conventions are declared. See `analyzer/core/conventions-applier.ts` for the full per-convention shape.
+
+#### DeployableEvidence
+Evidence-gated ship/build-artifact rows — the deterministic signal that a subtree of the repo is its own independently shippable unit. Consumed by WAS (§ WAS spec) to build workspace-level deployables, and by DAS (docs/das/SPECIFICATION.md) to decide whether a CAS promotes to a Deployable-Analysis Workspace.
+
+```typescript
+interface DeployableEvidence {
+  root_path: string;
+  name: string;
+  tier: 1 | 2 | 3;                    // 1 = ship artifact, 2 = runnable-but-unpackaged, 3 = package identity
+  kind: 'container' | 'compose-service' | 'k8s' | 'serverless' | 'installer' |
+        'ci-deploy' | 'bin' | 'server-entry' | 'package';
+  evidence: string[];
+  ships_paths?: string[];
+  ports?: number[];
+  entrypoint_member?: string;         // Which of ships_paths is the primary/ENTRYPOINT of a multi-member bundle
+  bundled_into?: string;              // Name of the unit this one ships inside of, when merged
+}
+```
+
+See docs/SPEC-DEPLOYABLE-DETECTION.md for the tier-qualification rules and evidence-gated bundling/dedup pass that produces this array.
+
 ## 5. Semantic Rules
 
 ### 5.1 Node Identity
