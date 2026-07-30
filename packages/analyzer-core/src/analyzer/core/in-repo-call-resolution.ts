@@ -109,6 +109,14 @@ export interface InternalizeStats {
   unresolved: number;
   /** internalized, grouped by resolution tier. */
   by_tier: Record<string, number>;
+  /** Pre-existing edges whose target was a dropped exit point and which were
+   *  repointed at the resolved in-repo callee (keeping their own id/evidence). */
+  edges_repointed: number;
+  /** Edges that referenced a dropped exit point and could not be repointed
+   *  truthfully — the repoint would have been a self-call or a duplicate of a
+   *  call pair the graph already asserts — so they were removed rather than
+   *  left with an endpoint that resolves nowhere. */
+  edges_dropped_orphaned: number;
 }
 
 function fileOf(node: CASNode): string | undefined {
@@ -326,8 +334,23 @@ function resolveCallee(
 }
 
 /**
- * Run the pass. Mutates `edges` (appends resolved `calls` edges) and
- * `exitPoints` (removes the exit points that were not exits at all), in place.
+ * Run the pass. Mutates `edges` (appends resolved `calls` edges, and repoints
+ * or removes the edges that referenced a dropped exit point) and `exitPoints`
+ * (removes the exit points that were not exits at all), in place.
+ *
+ * REFERENTIAL INTEGRITY. Dropping an exit point is only half of the
+ * correction: the contributing analyzer already emitted a `calls` edge whose
+ * TARGET is that exit point's id. Removing the row without reconciling those
+ * references leaves the edge pointing at an id that exists in no id-bearing
+ * collection — a dangling endpoint the traversal cannot follow and every
+ * derived count silently mis-attributes. Measured on a real analysis before
+ * this reconciliation existed: 17,245 of 102,354 `calls` edges (16.9% of the
+ * whole graph) referenced dropped exit ids, every one of them missing its
+ * target and none of them carrying internalization provenance — because the
+ * orphans were the ORIGINAL analyzer edges, not the replacements this pass
+ * appends. So each reference is repointed at the resolved in-repo callee
+ * (the edge is right; only its endpoint row moved), or dropped when
+ * repointing would duplicate an existing call edge or name a self-call.
  */
 export function internalizeInRepoCalls(input: InternalizeInput): InternalizeStats {
   const { nodes, edges, exitPoints } = input;
@@ -335,6 +358,7 @@ export function internalizeInRepoCalls(input: InternalizeInput): InternalizeStat
     candidates: 0, internalized: 0, edges_added: 0,
     skipped_library_mapped: 0, skipped_declared_dependency: 0,
     skipped_ambiguous: 0, unresolved: 0, by_tier: {},
+    edges_repointed: 0, edges_dropped_orphaned: 0,
   };
   if (!Array.isArray(nodes) || !Array.isArray(edges) || !Array.isArray(exitPoints)) return stats;
 
@@ -349,6 +373,11 @@ export function internalizeInRepoCalls(input: InternalizeInput): InternalizeStat
 
   const removed = new Set<CASExitPoint>();
   const added: CASEdge[] = [];
+  /** Resolved callee node id, keyed by the id of the exit point being dropped —
+   *  the repointing table phase two consumes. */
+  const resolvedTargetByExitId = new Map<string, string>();
+  const resolutionTierByExitId = new Map<string, string>();
+  const declaredModuleByExitId = new Map<string, string>();
 
   for (const ep of exitPoints) {
     if (!SYMBOL_BEARING_EXIT_TYPES.has(ep.type)) continue;
@@ -392,6 +421,9 @@ export function internalizeInRepoCalls(input: InternalizeInput): InternalizeStat
     stats.internalized++;
     stats.by_tier[resolved.tier] = (stats.by_tier[resolved.tier] || 0) + 1;
     removed.add(ep);
+    resolvedTargetByExitId.set(ep.id, resolved.node.id);
+    resolutionTierByExitId.set(ep.id, resolved.tier);
+    declaredModuleByExitId.set(ep.id, moduleSpec);
 
     const key = `${ep.source_node} ${resolved.node.id}`;
     if (existingCallEdges.has(key)) continue;
@@ -422,7 +454,96 @@ export function internalizeInRepoCalls(input: InternalizeInput): InternalizeStat
     exitPoints.length = 0;
     exitPoints.push(...kept);
   }
+  // The replacements land BEFORE reconciliation so that phase two sees them as
+  // already-asserted call pairs: an original edge whose repointed pair is
+  // already covered by a replacement is a duplicate, not a second call.
   if (added.length > 0) edges.push(...added);
+  if (removed.size > 0) {
+    reconcileEdgesToRemovedExitPoints(
+      edges,
+      { resolvedTargetByExitId, resolutionTierByExitId, declaredModuleByExitId },
+      stats
+    );
+  }
 
   return stats;
+}
+
+/**
+ * PHASE TWO — repoint (or drop) every edge that referenced an exit point this
+ * pass removed, so no edge survives with an endpoint that resolves in no
+ * collection. Runs after the removal so the decision table is complete.
+ *
+ * An edge is REPOINTED at the resolved in-repo callee, keeping its own id and
+ * evidence (call site, confidence) and gaining the same internalization
+ * provenance the appended replacement edges carry. It is DROPPED when
+ * repointing would name a self-call or duplicate a call edge that already
+ * exists for that source/target pair — both of which would trade a dangling
+ * endpoint for a false one. An edge whose endpoint was removed but never
+ * resolved cannot happen (only resolved exits are removed); the defensive
+ * branch drops it rather than leave it dangling.
+ */
+function reconcileEdgesToRemovedExitPoints(
+  edges: CASEdge[],
+  tables: {
+    resolvedTargetByExitId: Map<string, string>;
+    resolutionTierByExitId: Map<string, string>;
+    declaredModuleByExitId: Map<string, string>;
+  },
+  stats: InternalizeStats
+): void {
+  const { resolvedTargetByExitId, resolutionTierByExitId, declaredModuleByExitId } = tables;
+
+  // Call-edge pairs already present, so repointing never manufactures a second
+  // edge for a pair the graph already asserts.
+  const callPairs = new Set<string>();
+  for (const e of edges) {
+    if (e.type !== 'calls' && e.type !== 'invokes') continue;
+    if (resolvedTargetByExitId.has(e.target)) continue; // about to move
+    callPairs.add(`${e.source} ${e.target}`);
+  }
+
+  const survivors: CASEdge[] = [];
+  for (const e of edges) {
+    const removedEndpoint = resolvedTargetByExitId.has(e.target) || resolvedTargetByExitId.has(e.source);
+    if (!removedEndpoint) {
+      survivors.push(e);
+      continue;
+    }
+    // An exit point is only ever a call TARGET; an edge originating at one is
+    // not something this pass can repoint truthfully.
+    if (resolvedTargetByExitId.has(e.source)) {
+      stats.edges_dropped_orphaned++;
+      continue;
+    }
+
+    const exitId = e.target;
+    const newTarget = resolvedTargetByExitId.get(exitId)!;
+    const pair = `${e.source} ${newTarget}`;
+    if (newTarget === e.source || callPairs.has(pair)) {
+      stats.edges_dropped_orphaned++;
+      continue;
+    }
+
+    callPairs.add(pair);
+    e.target = newTarget;
+    const metadata = (e.metadata || {}) as Record<string, unknown>;
+    const attributes = (metadata.attributes || {}) as Record<string, unknown>;
+    e.metadata = {
+      ...metadata,
+      attributes: {
+        ...attributes,
+        internalized_from_exit_point: exitId,
+        resolution: resolutionTierByExitId.get(exitId),
+        declared_module: declaredModuleByExitId.get(exitId),
+      },
+    } as CASEdge['metadata'];
+    stats.edges_repointed++;
+    survivors.push(e);
+  }
+
+  if (survivors.length !== edges.length) {
+    edges.length = 0;
+    edges.push(...survivors);
+  }
 }

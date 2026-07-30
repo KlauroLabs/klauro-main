@@ -55,7 +55,28 @@ try {
     console.error('The deployed analyzer is broken even though /health is green.');
     process.exit(1);
   }
-  console.log(`analysis smoke OK — ${nodes} nodes in ${elapsed}ms`);
+
+  // REFERENTIAL INTEGRITY over the analysis just produced. Liveness and a
+  // node count do not catch a graph that points at rows which do not exist: a
+  // stored analysis once carried 16.9% of its edges referencing ids present in
+  // no id-bearing collection, self-reported in validation and gated by nothing.
+  // Asserted here because this is the one deploy step that runs a REAL
+  // analysis end to end.
+  const { checkEdgeReferentialIntegrity, formatReferentialIntegrityReport } = await import(
+    '/app/packages/analyzer-core/src/analyzer/core/graph-referential-integrity.ts'
+  );
+  const integrity = checkEdgeReferentialIntegrity(output?.edges, {
+    nodes: output?.nodes,
+    entry_points: output?.entry_points,
+    exit_points: output?.exit_points,
+  });
+  if (!integrity.ok) {
+    console.error('ANALYSIS SMOKE FAIL: edge referential integrity violated.');
+    console.error(formatReferentialIntegrityReport(integrity));
+    process.exit(1);
+  }
+
+  console.log(`analysis smoke OK — ${nodes} nodes in ${elapsed}ms; ${formatReferentialIntegrityReport(integrity)}`);
 } catch (error) {
   // A torn/partial deploy surfaces HERE (e.g. ReferenceError: X is not defined).
   console.error(`ANALYSIS SMOKE FAIL: ${error instanceof Error ? error.message : String(error)}`);
