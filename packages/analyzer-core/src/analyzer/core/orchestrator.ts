@@ -11229,35 +11229,16 @@ export class AnalyzerOrchestrator {
       }
     }
 
-    // Grounding facts for the ungrounded-filler gate below. Journey references
-    // only ground a capability when they name REAL supplied journeys (the model
-    // sometimes invents journey strings, which must not count as evidence).
-    // Top-down corroboration = the capability's SUBJECT (name minus the leading
-    // value-verb, so the ubiquitous "Manage"/"Track" verbs corroborate nothing)
-    // appearing in the product's own words — README title/overview/manifest
-    // self-description or journey vocabulary. All evidence-derived; no
-    // capability-name keyword judgement.
-    const suppliedJourneyNames = new Set(
-      (input.userJourneys || []).map(journey => String(journey.name || '').toLowerCase().trim()).filter(Boolean));
-    const topDownCorroborationTokens = new Set<string>();
-    for (const text of [
-      String(topDownSignals.product_title || ''),
-      String(topDownSignals.product_overview || ''),
-      String(topDownSignals.product_self_description || ''),
-      (input.userJourneys || []).map(journey => String(journey.name || '')).join(' '),
-    ]) {
-      for (const token of text.replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase().split(/[^a-z0-9]+/)) {
-        if (token.length > 3 && !this.isGenericCapabilityToken(token)) topDownCorroborationTokens.add(this.stemTerminologyToken(token));
-      }
-    }
-    const subjectTokensOf = (capabilityName: string): string[] =>
-      String(capabilityName || '')
-        .replace(/^\s*(provides?|surfaces?|tracks?|exposes?|manages?|monitors?|secures?|handles?|enforces?|settles?|delivers?|renders?|displays?|shows?|supports?|enables?)\s+/i, '')
-        .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
-        .toLowerCase()
-        .split(/[^a-z0-9]+/)
-        .filter(token => token.length > 3 && !this.isGenericCapabilityToken(token) && !GENERIC_CAPABILITY_NAME_TOKENS.has(token))
-        .map(token => this.stemTerminologyToken(token));
+    // STRUCTURAL ANCHOR GATE counters (see the gate itself below, in the
+    // assembly loop): an unanchored (0 entities, 0 operations) item is now
+    // rejected unconditionally, so this replaces the former journey-name/
+    // top-down-vocabulary escape hatch entirely — journey NAME overlap and
+    // README/manifest token overlap are still just prose corroboration, not
+    // a resolvable operation/entity/entry-point, and must never re-admit a
+    // fabricated capability. Counted (not silently dropped) so the rejection
+    // is E1-attributable, same as bareNounRejected above.
+    let unanchoredRejected = 0;
+    const unanchoredRejectedNames: string[] = [];
 
     for (let index = 0; index < staged.length; index++) {
       const { name, key, description, category, relatedEntities, journeys, nameRepairedFromBareNoun } = staged[index];
@@ -11294,23 +11275,35 @@ export class AnalyzerOrchestrator {
       const descriptionContradictsOperations = this.capabilityContradictsObservedOperations({
         name: '', description, operations: dedupedOps,
       });
-      // Drop ungrounded filler: a capability that resolved to NO entity and NO
-      // operation has zero evidence in the deterministic facts — it is a model
-      // guess ("Monitors System Health", "Secures Communication"), not a
-      // capability we can stand behind or let an agent navigate to. The gate
-      // applies to category:'core' TOO — an AI-asserted "core" label is itself
-      // ungrounded output, so it cannot be the thing that exempts an item from
-      // the grounding check ("Manage pricing" shipped core with 0 entities and
-      // 0 journeys through exactly that hole). A 0-entity/0-operation CORE item
-      // survives only when it is genuinely journey-grounded (references a REAL
-      // supplied journey) or its subject is corroborated by the product's own
-      // top-down vocabulary (README/manifest/journey terminology).
+      // STRUCTURAL ANCHOR GATE (defect: AI fabricates whole capabilities with
+      // ZERO structural evidence, and they shipped). A capability that
+      // resolved to NO entity and NO operation has nothing to describe,
+      // regardless of how confident the prose reads — "Manages fleet
+      // operations", "Manages vehicle maintenance", "Provides driver
+      // communication" all shipped this way (0 operations, 0 entities, 0
+      // entry points) on a real chat-gateway/assistant-runtime CAS, and the
+      // deterministic primary_type classifier then read those invented
+      // capabilities back as fleet-operations EVIDENCE (see
+      // inferSystemPurpose's productCapabilities filter, which now also
+      // excludes unanchored items). `operations` is itself entry-point-
+      // anchored (each carries the real `entry_point_id` it was linked from
+      // in PASS 2 above), so `dedupedOps.length > 0` already covers "at
+      // least one resolvable operation or entry point" — this check and the
+      // `relatedEntities` check together are the whole anchoring rule.
+      //
+      // Evidence gates the AI — never the reverse: this used to let a
+      // 0-entity/0-operation CORE item survive when it merely NAMED a real
+      // supplied journey, or when its subject string happened to overlap the
+      // product's own README/manifest vocabulary. Neither is structural
+      // anchoring — a journey NAME match and a vocabulary-token match are
+      // both still just the AI's (or the top-down text's) prose, not a
+      // resolvable operation/entity/entry-point. Removed: an unanchored
+      // capability is now rejected unconditionally, regardless of category,
+      // journey-name overlap, or top-down corroboration.
       if (relatedEntities.length === 0 && dedupedOps.length === 0) {
-        if (category !== 'core') continue;
-        const groundedJourneys = (Array.isArray(journeys) ? journeys : [])
-          .filter((value: unknown) => suppliedJourneyNames.has(String(value || '').toLowerCase().trim())).length;
-        const subjectCorroborated = subjectTokensOf(name).some(token => topDownCorroborationTokens.has(token));
-        if (groundedJourneys === 0 && !subjectCorroborated) continue;
+        unanchoredRejected++;
+        unanchoredRejectedNames.push(name);
+        continue;
       }
       out.push({
         id: `capability_${resolvedKey.replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '')}`,
@@ -11346,12 +11339,16 @@ export class AnalyzerOrchestrator {
         kept: out.length,
         bareNounRepaired,
         bareNounRejected,
+        unanchoredRejected,
+        ...(unanchoredRejected > 0 ? { unanchoredRejectedNames: unanchoredRejectedNames.slice(0, 10) } : {}),
       },
       raw_output_excerpt: raw,
       parse_ok: true,
       gate_verdict: out.length > 0 ? 'accepted' : 'degraded',
       gate_reason: out.length === 0
-        ? (bareNounRejected > 0 ? 'all-candidates-dropped-as-ungrounded:bare-noun-labels' : 'all-candidates-dropped-as-ungrounded')
+        ? (bareNounRejected > 0 ? 'all-candidates-dropped-as-ungrounded:bare-noun-labels'
+          : unanchoredRejected > 0 ? 'all-candidates-dropped-as-ungrounded:unanchored'
+          : 'all-candidates-dropped-as-ungrounded')
         : undefined,
       final_outcome: out.length > 0 ? 'ai' : 'degraded',
     });
@@ -12039,7 +12036,16 @@ export class AnalyzerOrchestrator {
    * checks only — never product/name vocabulary:
    *  - collapse: <=3 capabilities against a candidate pool with 2x+ more
    *    distinct deterministic families;
-   *  - bare-noun names or structural template descriptions surviving.
+   *  - bare-noun names or structural template descriptions surviving;
+   *  - UNANCHORED capabilities surviving (0 related_entities AND 0
+   *    operations — no resolvable entity, operation, or entry point). This
+   *    is defense-in-depth for the same class the aiExtractCapabilityCatalog
+   *    assembly-loop gate rejects at parse time (see the STRUCTURAL ANCHOR
+   *    GATE there): reconciliation runs AFTER that gate and could in
+   *    principle re-admit an unanchored item (a `manual`/`reused` capability
+   *    carried forward whose referenced entity/operation no longer resolves
+   *    on this run), so this is the same check applied to what would
+   *    actually ship, catching anything the earlier gate didn't see.
    */
   private catalogQualityFailure(reconciled: SystemCapability[], distinctFamilyCount: number): string | undefined {
     if (reconciled.length === 0) {
@@ -12058,6 +12064,12 @@ export class AnalyzerOrchestrator {
     const placeholders = reconciled.filter(capability => this.isStructuralPlaceholderCapabilityDescription(capability.description));
     if (placeholders.length > 0) {
       return `structural template descriptions survived reconciliation: ${placeholders.slice(0, 3).map(capability => `"${capability.name}"`).join(', ')}`;
+    }
+    const unanchored = reconciled.filter(capability =>
+      (capability.related_entities || []).length === 0 && (capability.operations || []).length === 0
+    );
+    if (unanchored.length > 0) {
+      return `unanchored capabilities survived reconciliation (no resolvable operation, entity, or entry point): ${unanchored.slice(0, 3).map(capability => `"${capability.name}"`).join(', ')}`;
     }
     return undefined;
   }
@@ -24994,7 +25006,22 @@ export class AnalyzerOrchestrator {
       ];
       return lifecycleIds.length === 0 || lifecycleIds.some(id => productNodeIds.has(id));
     });
-    const productCapabilities = capabilities.filter(capability => capability.category !== 'internal');
+    // Excludes UNANCHORED capabilities too (0 related_entities AND 0
+    // operations — no resolvable entity, operation, or entry point): the
+    // aiExtractCapabilityCatalog assembly-loop gate (STRUCTURAL ANCHOR GATE)
+    // now rejects these at catalog-build time, but this classifier reads
+    // whatever `capabilities` it's handed (including `manual`/`reused`
+    // carry-forward capabilities the gate never re-checks), so a fabricated
+    // capability that somehow still ships must never feed primary_type
+    // classification either — that's exactly how "Manages fleet operations"
+    // (0 operations, 0 entities) got read back as fleet-operations EVIDENCE
+    // by the fleet-management-platform signature below (capabilityNames /
+    // fleetSignals), which is a second-order fabrication effect, not a fix
+    // for the fabrication itself.
+    const productCapabilities = capabilities.filter(capability =>
+      capability.category !== 'internal' &&
+      ((capability.related_entities || []).length > 0 || (capability.operations || []).length > 0)
+    );
     const evidence: string[] = [];
     const signatureEvidence = new Map<string, string[]>();
 
