@@ -122,7 +122,10 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
   /** Project root captured at analyze() start, so buildNodeIndexes can resolve
    *  import specifiers to project-relative module files. */
   private currentProjectPath = '';
-  private classFieldTypes = new Map<string, { typeName: string; library?: string; source?: 'ctor' | 'field' }>();
+  /** `isCollection` records that the DECLARED annotation named an in-memory
+   *  collection (`RowModel[]`), which the stored base type name no longer shows —
+   *  the distinction between a store handle and a list of already-loaded rows. */
+  private classFieldTypes = new Map<string, { typeName: string; library?: string; source?: 'ctor' | 'field'; isCollection?: boolean }>();
   private repositoryPropertyTypes = new Map<string, string>();
   private prismaModelNames = new Map<string, string>();
   private nodeById = new Map<string, CASNode>();
@@ -1308,7 +1311,8 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
           this.classFieldTypes.set(`${cls.name}.${param.name}`, {
             typeName: param.type!,
             library,
-            source: 'ctor'
+            source: 'ctor',
+            isCollection: this.isInMemoryCollectionType(param.type!)
           });
           if (this.isRepositoryLikeType(param.type!)) {
             this.repositoryPropertyTypes.set(param.name, param.type!);
@@ -1337,8 +1341,11 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
         const typeName = this.tsBaseTypeName(rawType);
         if (!typeName) return;
         const library = this.getLibraryForType(typeName);
-        this.classFieldTypes.set(key, { typeName, library, source: 'field' });
-        if (this.isRepositoryLikeType(typeName)) {
+        this.classFieldTypes.set(key, { typeName, library, source: 'field', isCollection: this.isInMemoryCollectionType(rawType) });
+        // The RAW annotation decides store-handle-ness, not the base name: the
+        // base name of `RowModel[]` is `RowModel`, which reads as a store handle
+        // while the field is an array of already-loaded rows.
+        if (!this.isInMemoryCollectionType(rawType) && this.isRepositoryLikeType(typeName)) {
           this.repositoryPropertyTypes.set(prop.name, typeName);
         }
       });
@@ -1684,6 +1691,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
   }
 
   private isRepositoryLikeType(typeName: string): boolean {
+    if (this.isInMemoryCollectionType(typeName)) return false;
     const lower = typeName.toLowerCase();
     return lower.includes('repository') ||
       lower.includes('prismaclient') ||
@@ -1691,6 +1699,27 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
       lower.includes('model') ||
       lower.includes('database') ||
       lower.includes('knex');
+  }
+
+  /**
+   * A declared type naming an IN-MEMORY collection of values rather than a
+   * handle that can reach a store: `Thing[]`, `readonly Thing[]`,
+   * `Array<Thing>`, `Set<Thing>`, `Record<string, Thing>`.
+   *
+   * Why this is load-bearing: the repository-like test matches the substring
+   * `model`, and the base-type helper strips `[]` before that test runs, so a
+   * plain `RowModel[]` field registered as a repository handle. Every
+   * `Array.prototype` call on it then read as store access — the measured
+   * `Array.find()`-as-database-write shape. A collection of rows already IN
+   * memory is the OPPOSITE of evidence for a round trip to a store: the rows
+   * are here precisely because something already fetched them.
+   */
+  private isInMemoryCollectionType(rawType?: string): boolean {
+    if (!rawType) return false;
+    const type = rawType.trim();
+    if (/^readonly\s/i.test(type)) return true;
+    if (/\[\s*\]\s*$/.test(type)) return true;
+    return /^(Array|ReadonlyArray|Set|ReadonlySet|Map|ReadonlyMap|WeakSet|WeakMap|Record|Iterable|IterableIterator|AsyncIterable|Generator)\s*</.test(type);
   }
 
   private findNodeIdByNameIndexed(targetName: string, sourceFile?: string, sourceClassName?: string): string | undefined {
@@ -3270,57 +3299,142 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
    * A bare method-name match with an UNKNOWN or clearly-non-repository receiver (a plain
    * service field, a local array `arr.find()`) must NOT be routed to a DB exit point.
    */
+  /**
+   * A `database` exit requires evidence on BOTH axes: the OPERATION has to be a
+   * persistence operation, and the RECEIVER has to be a store handle. Absence
+   * on either axis means unknown, never a store.
+   *
+   * The operation axis used to be skipped entirely whenever a declared receiver
+   * type was on file, which is how plain collection calls became store access:
+   * with any field named `entities` typed as a repository anywhere in the
+   * project, a completely unrelated `entities.map(...)` over a `string[]` local
+   * in another file was emitted as a `database` exit. Measured on a real
+   * repository, `.map()` and `.slice()` on locals were shipping as database
+   * exits, so every count keyed on terminus kind — the data-access picture,
+   * the "data touched" facet, state-change side effects, and any criticality
+   * score that reads database access — was inflated by in-memory list work.
+   *
+   * The operation vocabulary is the definition of what a persistence call IS
+   * (an ORM/repository/query verb), not a list of collection methods to
+   * exclude: a method absent from it is simply unproven, whatever its name.
+   */
   private isRepositoryCall(target: string, className?: string): boolean {
     if (!target.includes('.')) return false;
     const parts = target.split('.');
     const methodName = (parts.pop() || '').toLowerCase();
+    const isThisQualified = target.startsWith('this.') || target.startsWith('self.');
     const originalCallerName = parts.join('.').replace('this.', '');
     const callerName = originalCallerName.toLowerCase();
 
-    // Receiver-type evidence: does the caller's own class record this field as a
-    // constructor-injected dependency, and if so, is that declared type actually a
-    // repository/ORM handle? If we KNOW the type and it's NOT repository-like (e.g.
-    // `someService: OrganizationsService`), that is strong evidence against an ORM
-    // call regardless of the method name — bail out even for "ormSpecificMethods".
+    // AXIS 1 — OPERATION EVIDENCE. Checked first and for every receiver, so no
+    // amount of receiver evidence can turn a non-persistence call into a store
+    // access. `.map`/`.slice`/`.reduce`/`.some` are not here because nothing
+    // proves they reach a store — the same reason any other unproven method is
+    // not here.
+    if (!TypeScriptJavaScriptAnalyzer.PERSISTENCE_OPERATIONS.has(methodName)) return false;
+
+    // AXIS 2 — RECEIVER EVIDENCE. The caller's own class recording this field's
+    // declared type is the strongest form, and it cuts both ways: a KNOWN type
+    // that is not a store handle (`someService: OrganizationsService`) is
+    // positive evidence AGAINST, even for an unambiguous ORM verb.
     const lastProperty = originalCallerName.split('.').pop() || originalCallerName;
-    const knownFieldType = (className && this.classFieldTypes.get(`${className}.${lastProperty}`)?.typeName)
-      || this.repositoryPropertyTypes.get(lastProperty);
-    if (knownFieldType) {
-      return this.isRepositoryLikeType(knownFieldType);
+    const declaredField = className ? this.classFieldTypes.get(`${className}.${lastProperty}`) : undefined;
+    if (declaredField?.typeName) {
+      // A field declared as a collection of rows is not a handle, however
+      // store-like its element type reads.
+      if (declaredField.isCollection) return false;
+      return this.isRepositoryLikeType(declaredField.typeName);
     }
 
-    const ormSpecificMethods = [
-      'findoneorfail', 'findall', 'findandcount',
-      'persistandflush', 'removeandflush', 'nativeupdate', 'nativedelete',
-      'getreference', 'populate', 'assign', 'flush', 'upsert', 'persist',
-      'findunique', 'findfirst', 'findmany', 'createmany', 'updatemany',
-      'deletemany', 'aggregate', 'groupby',
-      'findbyid', 'findbyidandupdate', 'findbyidanddelete', 'findbyidandremove',
-      'findoneandupdate', 'findoneanddelete', 'findoneandremove',
-      'updateone', 'deleteone', 'insertmany'
-    ];
-
-    const ambiguousMethods = [
-      'find', 'findone', 'create', 'save', 'insert',
-      'update', 'delete', 'remove', 'count'
-    ];
-
-    if (ormSpecificMethods.includes(methodName) || ambiguousMethods.includes(methodName)) {
-      // No recorded type for this receiver at all (untyped param, plain local variable,
-      // or a property this analyzer never saw declared) — fall back to name-based
-      // evidence that the receiver itself looks like a repository/model handle
-      // (`this.repo`, `this.userRepository`, `const userRepo = new UserRepository(...)`,
-      // `UserModel.find()`), never the method name alone.
-      return this.isRepositoryLikeCaller(callerName) || this.isModelLikeCaller(originalCallerName);
+    // The project-wide table is keyed by BARE PROPERTY NAME, so it describes
+    // "some class somewhere declares a field of this name with a store type" —
+    // which is only about THIS receiver when the receiver is genuinely a field
+    // of the calling object. For a bare local or parameter the receiver is
+    // unresolved, and an unresolved receiver is unknown, not a store.
+    if (isThisQualified) {
+      const injectedFieldType = this.repositoryPropertyTypes.get(lastProperty);
+      if (injectedFieldType) return this.isRepositoryLikeType(injectedFieldType);
     }
 
-    return false;
+    // No declared type for this receiver (untyped param, plain local variable,
+    // or a property this analyzer never saw declared) — fall back to name-based
+    // evidence that the receiver itself looks like a repository/model handle
+    // (`this.repo`, `this.userRepository`, `const userRepo = new UserRepository(...)`,
+    // `UserModel.find()`), never the method name alone.
+    return this.isRepositoryLikeCaller(callerName) || this.isModelLikeCaller(originalCallerName);
   }
 
+  /** ORM / repository / query-builder operations — the vocabulary that PROVES a
+   *  call is persistence. Receiver evidence alone never qualifies a call; one of
+   *  these has to be the operation being performed. */
+  private static readonly PERSISTENCE_OPERATIONS = new Set([
+    // Driver/ORM-specific verbs: unambiguous on their own.
+    'findoneorfail', 'findall', 'findandcount',
+    'persistandflush', 'removeandflush', 'nativeupdate', 'nativedelete',
+    'getreference', 'populate', 'assign', 'flush', 'upsert', 'persist',
+    'findunique', 'findfirst', 'findmany', 'createmany', 'updatemany',
+    'deletemany', 'aggregate', 'groupby',
+    'findbyid', 'findbyidandupdate', 'findbyidanddelete', 'findbyidandremove',
+    'findoneandupdate', 'findoneanddelete', 'findoneandremove',
+    'updateone', 'deleteone', 'insertmany',
+    // Driver / query-builder execution verbs. A prepared statement, an executed
+    // query, or a transaction boundary on a store handle is persistence just as
+    // much as an ORM finder — measured on a second real codebase, where a
+    // SQLite handle's `prepare`/`exec` calls are the ENTIRE data-access surface
+    // and requiring only ORM finder vocabulary would have erased it.
+    'prepare', 'exec', 'execute', 'query', 'raw', 'pragma',
+    'transaction', 'begintransaction', 'commit', 'rollback',
+    'createquerybuilder', 'getrepository', 'getentitymanager',
+    'select', 'insertinto', 'deletefrom', 'truncate',
+    'connect', 'disconnect', 'close', 'destroy',
+    // Verbs an in-memory collection also uses (`find`, `create`), which is why
+    // receiver evidence is still required alongside them.
+    'find', 'findone', 'create', 'save', 'insert',
+    'update', 'delete', 'remove', 'count'
+    // Deliberately ABSENT despite being real driver verbs on some clients:
+    // `get`, `all`, `run`, `end`. They are the most heavily overloaded names in
+    // the language (`Map.get`, `Promise.all`, `res.end`), and a capitalized
+    // built-in receiver satisfies the model-handle test by not resolving to any
+    // local declaration — so including them would classify `Promise.all(...)`
+    // as store access. Their absence costs a driver call; their presence would
+    // manufacture data access out of ordinary control flow.
+  ]);
+
+  /**
+   * A capitalized receiver used as a static store handle (`UserModel.find()`,
+   * `Order.findOne()`) — the ActiveRecord/Mongoose shape where the class itself
+   * is the query surface.
+   *
+   * Capitalization alone was the whole test, which made every module-level
+   * constant a store handle: `const LENSES = [...]; LENSES.find(...)` was
+   * emitted as a database exit, and so was `DEPLOYABLE_PERSPECTIVES.find(...)`
+   * — array lookups over literal config. Two receiver facts now have to hold,
+   * both about what the receiver IS rather than which method was called:
+   *   - it is not written in the universal constant convention (ALL_CAPS /
+   *     SCREAMING_SNAKE), which never names a class; and
+   *   - it does not resolve to a VALUE declaration in this repository. A name
+   *     declared here as a variable is a value, whatever its casing — a store
+   *     handle resolves to a class/entity or to nothing local at all (imported
+   *     from the ORM).
+   */
   private isModelLikeCaller(callerName: string): boolean {
     const lastPart = callerName.split('.').pop() || '';
-    return /^[A-Z][A-Za-z0-9_]*$/.test(lastPart);
+    if (!/^[A-Z][A-Za-z0-9_]*$/.test(lastPart)) return false;
+    if (/^[A-Z0-9_]+$/.test(lastPart)) return false;
+
+    const declarations = this.nodesByName.get(lastPart) || [];
+    if (declarations.length > 0 &&
+        declarations.every(node => TypeScriptJavaScriptAnalyzer.VALUE_DECLARATION_TYPES.has(node.type))) {
+      return false;
+    }
+    return true;
   }
+
+  /** Node types that declare a VALUE rather than a callable/queryable surface.
+   *  A receiver resolving only to these cannot be a store handle. */
+  private static readonly VALUE_DECLARATION_TYPES = new Set([
+    'variable', 'constant', 'property', 'parameter', 'field', 'enum'
+  ]);
 
   private isRepositoryLikeCaller(callerName: string): boolean {
     // MikroORM's `wrap(entity).assign(...)` / `wrap(entity).toObject()` helper —
