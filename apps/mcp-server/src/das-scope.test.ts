@@ -38,10 +38,11 @@ function entryPoint(id: string, file: string, handlerNodeId: string): CASEntryPo
   } as CASEntryPoint;
 }
 
-/** Same 2-unit promoted shape as deployable-analysis.test.ts's fixture (api +
- *  worker compose services sharing libs/shared, plus 2 ungated bins) — kept
- *  local so this file exercises the product surface without depending on
- *  another test file's internals. */
+/** Same promoted shape as deployable-analysis.test.ts's fixture: api + worker
+ *  compose services sharing libs/shared, plus 2 declared bin targets which are
+ *  units in their own right (ship evidence qualifies them; cardinality does
+ *  not gate them) — kept local so this file exercises the product surface
+ *  without depending on another test file's internals. */
 function buildPromotedCas(analysisId = 'das-scope-promoted'): CASOutput {
   const nodes: CASNode[] = [
     node('A1', 'apps/api/handler.ts'),
@@ -111,8 +112,9 @@ test('get_summary product surface: promoted CAS exposes das_index; rollup counts
   const cas = buildPromotedCas();
   const das = getCachedDeployableAnalyses(cas);
   assert.equal(das.promoted, true);
-  assert.equal(das.das_index.units.length, 2);
-  assert.deepEqual(das.das_index.units.map(u => u.name).sort(), ['api', 'worker']);
+  assert.equal(das.das_index.units.length, 4);
+  assert.deepEqual(das.das_index.units.map(u => u.name).sort(), ['api', 'tool1', 'tool2', 'worker']);
+  assert.equal(das.das_index.qualified_unit_count, 4);
 
   const rollupSummary = query.buildSummary(scopeCasToDasUnit(cas, undefined));
   assert.equal(rollupSummary.nodes, 6); // all 6 nodes, unscoped rollup
@@ -178,11 +180,15 @@ test('scopeCasToDasUnit: unknown das_unit_id throws a helpful error naming avail
   );
 });
 
-test('scopeCasToDasUnit: non-promoted repo has no das_index and a scope param errors gracefully', () => {
+test('scopeCasToDasUnit: non-promoted repo reports WHY (not just an empty list) and a scope param errors gracefully', () => {
   const cas = buildNonPromotedCas();
   const das = getCachedDeployableAnalyses(cas);
   assert.equal(das.promoted, false);
   assert.equal(das.das_index.units.length, 0);
+  // Legible: one ship unit found, below the threshold — not "found nothing".
+  assert.equal(das.das_index.qualified_unit_count, 1);
+  assert.equal(das.das_index.promotion_threshold, 2);
+  assert.match(das.das_index.reason, /below the promotion threshold/);
 
   assert.equal(scopeCasToDasUnit(cas, undefined), cas);
   assert.throws(

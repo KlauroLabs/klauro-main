@@ -560,7 +560,12 @@ function buildSummaryWithDasIndex(
   const summary = query.buildSummary(scopedCas, opts);
   if (scope) return summary;
   const das = getCachedDeployableAnalyses(cas);
-  return das.promoted ? { ...summary, das_index: das.das_index } : summary;
+  // das_index is attached whether or not the repo promoted. When it hasn't, the
+  // index is a few fields (qualified_unit_count / promotion_threshold / reason)
+  // and it is the only way a caller can tell "one ship unit found, below the
+  // threshold" from "no ship evidence found at all" — omitting it made those
+  // two answers indistinguishable.
+  return { ...summary, das_index: das.das_index };
 }
 
 function json(data: unknown): { content: Array<{ type: 'text'; text: string }> } {

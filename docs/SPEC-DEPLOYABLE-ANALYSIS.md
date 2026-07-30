@@ -28,11 +28,29 @@ segmented:
 > after the evidence-gated bundling/dedup pass in
 > `SPEC-DEPLOYABLE-DETECTION.md` §3–§4 completes. A "tier-qualified ship
 > unit" is a surviving `SystemApplication` that is not `bundled_into`
-> another unit and carries either (a) its own Tier-1 ship declaration, or
-> (b) Tier-2/3 evidence that passed the §5b shipped-gate (sole-runnable
-> exemption included). Tier-4 folder-prior evidence never counts toward the
-> threshold by itself — a repo with two folders under `apps/` and no
-> Tier-1/2/3 evidence for either does not promote.
+> another unit and whose own evidence declares a ship-or-build artifact:
+> either (a) a Tier-1 ship declaration, or (b) a Tier-2 **build target** —
+> a target a manifest or toolchain convention declares (cargo `[[bin]]`, a
+> package manifest `bin` field, a go `package main`, a `src/bin/*` entry).
+> **Cardinality is not part of the rule.** Evidence with no ship or build
+> artifact of its own never qualifies: a route-handler entry point, a
+> publishable package identity, a build-stage image. Tier-4 folder-prior
+> evidence never reaches `deployable_evidence` at all — a repo with two
+> folders under `apps/` and no Tier-1/2/3 evidence for either does not
+> promote.
+>
+> The rule used to carry a "sole-runnable exemption": a Tier-2/3 row counted
+> only if it was the *only* runnable candidate in the repo. That gate was
+> written to suppress stray scripts and instead suppressed the answer on the
+> repos where the question matters — in a workspace declaring a dozen build
+> targets, every one was rejected for existing alongside the others, leaving
+> 59.9% of the graph in no unit at all. Ship evidence is the discriminator.
+
+Whether a CAS promoted or not, the reported index MUST state **how many
+units qualified** and the threshold. "One ship unit found, below the
+threshold of two" and "no ship evidence found at all" are different answers
+and a caller must be able to tell them apart; an empty unit list alone reads
+as "found nothing".
 
 This is the same count already computed for `WorkspaceDeployable[]` today —
 DAS does not invent a new counting pass, it reacts to the existing one and
@@ -57,14 +75,29 @@ a name and a path.
 A DAS unit is **derived from the repo's own CAS**, never re-analyzed from
 source. Given a tier-qualified `SystemApplication` A:
 
-1. **Seed set.** Start from A's `ships_paths` (its own root plus any bundled
-   member roots) and A's `entrypoint_member` — the CAS entry points and exit
-   points whose file falls under those paths.
-2. **Reachability closure.** Walk the CAS call graph forward from the seed
-   entry points and backward from the seed exit points until the walk stops
-   producing new nodes. Everything reached is IN A's DAS; nothing reached
-   only from another ship unit's seed set is IN A's DAS, unless it is also
-   reachable from A's own seeds (see §2.2, shared code).
+1. **Seed set.** Strongest evidence first, and **never a bare path prefix**:
+   (a) A's **declared entry files** — the source entry a build target's own
+   evidence names (a cargo `src/bin/x.rs` / `src/main.rs`, a go `package
+   main` file), including those declared by A's bundled members and
+   `ships_paths`-named members. This is the only signal that separates two
+   build targets inside one crate. (b) A's **concrete roots** — its own
+   `root_path` plus member roots — except a root SHARED with a sibling
+   unit's entry file, which cannot discriminate between them. The repo root
+   (`.`) is admitted only when A's own entry file sits directly in it, or
+   when A has no narrower evidence at all; otherwise a repo-root build
+   context (a compose `build: .`, an installer script at the top level —
+   both completely normal) would seed every unit with the entire codebase.
+   A unit with no resolvable seed reports zero nodes and says so.
+2. **Reachability closure.** Expand the seeds with the **reachability index**
+   (`affectedSet`, direction `downstream`): what does this artifact's code
+   call? Downstream-only — following callees into shared libraries but never
+   walking backward from a shared library into a sibling unit's callers,
+   which would merge every unit touching a common util into one blob. Then
+   **complete by file**: if any node of a file is in the closure, the whole
+   file is, because a source file is a compilation unit. Completion is
+   applied once and is NOT a new frontier — alternating completion and call
+   expansion to a fixpoint measures ~77% of a workspace repo into every
+   unit.
 3. **Derived layers.** Capabilities, flows, entities, and seams are then
    filtered/reprojected onto that node subset using the same construction
    rules the repo-level CAS already uses (semantic-model.md's
@@ -99,6 +132,37 @@ each DAS unit as if it were owned there. It is attributed as follows:
 - Shared-code facts are never double-counted in coverage or health metrics
   at the repo-CAS-rollup level (§3) — they are counted once, against the
   canonical owner, with `also_used_by` cross-references to the consumers.
+
+**The numbers must say this out loud.** A unit's `node_count` INCLUDES its
+shared code (a crate five binaries link is part of all five shipped
+artifacts; a slice that omitted it would describe a binary that cannot run),
+so unit counts do not partition the graph and may sum to many times its
+size. The index therefore reports the decomposition rather than leaving it
+to be inferred:
+
+- `exclusive_node_count + shared_node_count + orphan_node_count ===
+  graph_node_count` — an exact partition.
+- `covered_node_count` / `coverage_ratio` — the union, counted once.
+- `sum_of_unit_node_counts` — allowed to exceed the union, by exactly the
+  multiplicity of shared code.
+- per unit: `exclusive_node_count`, `shared_node_count`, and
+  `owned_shared_node_count`, where summing exclusive + owned-shared across
+  units reconstructs the union exactly (one canonical owner per shared node).
+- per unit: `seed_node_count` + `seed_basis` (`entry-file:<path>` /
+  `root:<path>` / `no-resolvable-seed`) — so a zero-node or an
+  unexpectedly-large unit is diagnosable from the index alone.
+
+### 2.3 Slice scoping
+
+A slice contains **only its own deployable's** comprehension. A flow is in
+the slice when its own root (`entry_point`) is; sharing a capability with a
+flow rooted in another unit is NOT containment, since capabilities are
+cross-cutting by construction. A capability's `operations` and `entry_points`
+are narrowed to the slice's own entry points, and every `related_flows`
+reference is pruned to flows PRESENT in that slice — a scoped payload must
+never name another deployable's flows. This applies to every scoped retrieval
+surface, including a named-section read (`?sections=…&das_unit_id=…`), which
+must slice rather than accept the scope and return the rollup.
 
 ## 3. CAS-as-rollup semantics
 

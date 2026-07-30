@@ -41,15 +41,60 @@ function isTier1(e: DeployableEvidence): boolean {
   return e.tier === 1;
 }
 
+/** Ship-evidence qualification, mirroring apps/mcp-server/src/deployable-
+ *  analysis.ts's tierQualifiedShipUnits (which owns the doc comment and the
+ *  rationale): standalone AND declaring a ship-or-build artifact of its own —
+ *  never "how many other runnables exist". Kept in lockstep with that module so
+ *  the web UI's unit list is the same list the API's das_index reports. */
+function isBuildTarget(e: DeployableEvidence): boolean {
+  return e.tier === 2 && e.kind === 'bin';
+}
+
+function normalizeShipToken(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/\.(exe|msi|dmg|pkg|deb|rpm|appimage)$/i, '')
+    .replace(/[\s_-]+/g, '');
+}
+
+/** Does this row's evidence name a concrete entry FILE? Same evidence-grammar
+ *  whitelist (and same survivor ranking) as the server module's
+ *  DECLARED_ENTRY_FILE_PATTERNS, so both sides pick the same twin. */
+function declaresEntryFile(e: DeployableEvidence): boolean {
+  return (e.evidence || []).some(line =>
+    /^src\/bin entry:\s*\S/.test(line)
+    || /^src\/main\.rs present, no \[\[bin\]\] override\s*\(/.test(line)
+    || /^package main entry:\s*\S/.test(line));
+}
+
 export function tierQualifiedShipUnits(evidence: DeployableEvidence[]): DeployableEvidence[] {
-  const standalone = evidence.filter(e => !e.bundled_into);
-  const tier1Units = standalone.filter(isTier1);
+  const qualified = evidence.filter(e => !e.bundled_into && (isTier1(e) || isBuildTarget(e)));
 
-  const allRunnable = evidence.filter(e => e.tier === 2 || e.tier === 3);
-  const soleRunnable = allRunnable.length <= 1;
-  const tier23Units = standalone.filter(e => (e.tier === 2 || e.tier === 3) && e.kind !== 'server-entry' && soleRunnable);
-
-  return [...tier1Units, ...tier23Units];
+  // One binary declared through two conventions at once (a cargo `[[bin]]` row
+  // plus the `src/bin/<name>.rs` row for the same target) is one unit: the row
+  // naming a concrete entry file wins, then the longer root_path, then
+  // declaration order.
+  const outranks = (candidate: DeployableEvidence, incumbent: DeployableEvidence): boolean => {
+    const candidateFile = declaresEntryFile(candidate) ? 0 : 1;
+    const incumbentFile = declaresEntryFile(incumbent) ? 0 : 1;
+    if (candidateFile !== incumbentFile) return candidateFile < incumbentFile;
+    return (candidate.root_path || '').length > (incumbent.root_path || '').length;
+  };
+  const seenBuildTargets = new Map<string, DeployableEvidence>();
+  for (const item of qualified) {
+    if (!isBuildTarget(item)) continue;
+    const key = normalizeShipToken(item.name);
+    if (!key) continue;
+    const existing = seenBuildTargets.get(key);
+    if (!existing || outranks(item, existing)) seenBuildTargets.set(key, item);
+  }
+  return qualified.filter(item => {
+    if (!isBuildTarget(item)) return true;
+    const key = normalizeShipToken(item.name);
+    if (!key) return true;
+    return seenBuildTargets.get(key) === item;
+  });
 }
 
 export function bundledMembersOf(unit: DeployableEvidence, allEvidence: DeployableEvidence[]): DeployableEvidence[] {

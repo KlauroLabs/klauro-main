@@ -37,7 +37,7 @@ import {
   saveAnalysis,
   writeJsonAtomic,
 } from './storage';
-import { parseCasSectionNames } from './cas-sections';
+import { parseCasSectionNames, selectCasSections, type CasSectionName } from './cas-sections';
 import { clearFreshnessSummaryCache } from './freshness';
 import { descriptionStorePath } from './description-enrichment';
 import { generateElementDescription } from './description-enrichment';
@@ -2729,6 +2729,62 @@ async function handleAccountApi(
     }
     if (sections.length === 0) throw new AccountHttpError(400, 'At least one CAS section is required');
     const workspace = workspacePath(dataDir, project.analysis_id);
+    const sectionsDasUnitId = url.searchParams.get('das_unit_id') || undefined;
+
+    // DAS-scoped sections (?das_unit_id=<id>): the scope used to be accepted
+    // and silently IGNORED here, so `?sections=comprehension&das_unit_id=X`
+    // returned the whole repo's capability and flow set — flows whose own ids
+    // name other deployables — while looking like a scoped answer. Slicing
+    // needs the layers the closure is derived from (graph/calls) plus the ship
+    // evidence itself (runtime) and the entry/exit/entity layer
+    // (supplemental), so those are loaded regardless of what was requested and
+    // then projected back down to exactly the requested sections.
+    if (sectionsDasUnitId) {
+      const version = await storedAnalysisVersion(workspace);
+      const cacheKey = version === null ? null : responseCacheKey({
+        endpoint: 'das-cas-sections',
+        projectId: project.id,
+        analysisId: project.analysis_id,
+        version,
+        params: { das_unit_id: sectionsDasUnitId, sections: sections.join(',') },
+      });
+      if (cacheKey) {
+        const cached = casReadResponseCache.get(cacheKey);
+        if (cached !== undefined) return { statusCode: 200, body: JSON.parse(cached), serializedBody: cached };
+      }
+      const sliceInputSections = [...new Set<CasSectionName>([
+        ...sections,
+        'graph',
+        'calls',
+        'runtime',
+        'supplemental',
+        'comprehension',
+      ])];
+      const fullEnough = await loadAnalysisSections(workspace, sliceInputSections);
+      if (!fullEnough) return { statusCode: 200, body: { status: 'no_analysis', project_id: project.id } };
+      let scopedCas;
+      try {
+        // loadAnalysisSections returns Partial<CASOutput> by design (it loaded a
+        // named subset); the slicer only reads the fields requested above.
+        scopedCas = scopeCasToDasUnit(fullEnough as CASOutput, { das_unit_id: sectionsDasUnitId });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new AccountHttpError(message.startsWith('Unknown scope.das_unit_id') ? 404 : 400, message);
+      }
+      const body = {
+        status: 'ready',
+        project_id: project.id,
+        analysis_id: project.analysis_id,
+        analysis_timestamp: scopedCas.analysis_timestamp || null,
+        sections,
+        das_unit_id: sectionsDasUnitId,
+        cas: selectCasSections(scopedCas, sections),
+      };
+      const serializedBody = JSON.stringify(body);
+      if (cacheKey) casReadResponseCache.set(cacheKey, serializedBody);
+      return { statusCode: 200, body, serializedBody };
+    }
+
     const cas = await loadAnalysisSections(workspace, sections);
     if (!cas) return { statusCode: 200, body: { status: 'no_analysis', project_id: project.id } };
     return {

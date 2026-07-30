@@ -198,8 +198,15 @@ test('DAS routes: index shape, scoped slice smaller than full, LRU keying, unkno
     assert.equal(dasBody.project_id, project.id);
     assert.equal(dasBody.analysis_id, project.analysis_id);
     assert.equal(dasBody.das_index.promoted, true);
-    assert.equal(dasBody.das_index.units.length, 2);
-    assert.deepEqual(dasBody.das_index.units.map((u: any) => u.name).sort(), ['api', 'worker']);
+    assert.equal(dasBody.das_index.units.length, 4);
+    assert.deepEqual(dasBody.das_index.units.map((u: any) => u.name).sort(), ['api', 'tool1', 'tool2', 'worker']);
+    // Honest coverage accounting travels with the index over HTTP too.
+    assert.equal(dasBody.das_index.graph_node_count, 6);
+    assert.equal(
+      dasBody.das_index.exclusive_node_count + dasBody.das_index.shared_node_count + dasBody.das_index.orphan_node_count,
+      dasBody.das_index.graph_node_count,
+    );
+    assert.ok(dasBody.das_index.sum_of_unit_node_counts >= dasBody.das_index.covered_node_count);
     assert.equal(dasBody.cas, undefined, '/das must never carry the multi-MB cas body');
     for (const unit of dasBody.das_index.units) {
       assert.ok(typeof unit.id === 'string' && unit.id.length > 0);
@@ -269,6 +276,26 @@ test('DAS routes: index shape, scoped slice smaller than full, LRU keying, unkno
     assert.equal(graphBody.cas.nodes.length, promotedCas.nodes.length);
     assert.equal(graphBody.cas.method_calls, undefined);
 
+    // --- sections honor das_unit_id: the scope used to be accepted and
+    // ignored, returning the whole repo's graph/comprehension under a scoped
+    // URL. A scoped sections read must carry ONLY this unit's slice, and only
+    // the requested sections. ---
+    const scopedSections = await request(
+      port, 'GET', `/api/projects/${project.id}/cas/sections?sections=graph&das_unit_id=${apiUnit.id}`, undefined, token);
+    assert.equal(scopedSections.statusCode, 200);
+    const scopedSectionsBody = JSON.parse(scopedSections.body);
+    assert.equal(scopedSectionsBody.das_unit_id, apiUnit.id);
+    assert.equal(scopedSectionsBody.cas.nodes.length, 3, 'scoped sections must carry the unit slice, not the repo');
+    assert.equal(scopedSectionsBody.cas.method_calls, undefined, 'unrequested sections stay out of a scoped read');
+    assert.equal(scopedSectionsBody.cas.system_capabilities, undefined, 'comprehension was not requested');
+    const scopedSectionsRepeat = await request(
+      port, 'GET', `/api/projects/${project.id}/cas/sections?sections=graph&das_unit_id=${apiUnit.id}`, undefined, token);
+    assert.equal(scopedSectionsRepeat.body, scopedSections.body, 'repeat scoped sections read is served byte-identically');
+    const unknownScopedSections = await request(
+      port, 'GET', `/api/projects/${project.id}/cas/sections?sections=graph&das_unit_id=nope`, undefined, token);
+    assert.equal(unknownScopedSections.statusCode, 404);
+    assert.match(JSON.parse(unknownScopedSections.body).error, /Unknown scope\.das_unit_id/);
+
     const exportResponse = await requestBuffer(port, `/api/projects/${project.id}/cas/export`, token);
     assert.equal(exportResponse.statusCode, 200);
     assert.ok(exportResponse.body.length > 0);
@@ -297,6 +324,11 @@ test('DAS routes: index shape, scoped slice smaller than full, LRU keying, unkno
     assert.equal(dasNonPromotedBody.status, 'ready');
     assert.equal(dasNonPromotedBody.das_index.promoted, false);
     assert.deepEqual(dasNonPromotedBody.das_index.units, []);
+    // "1 found, below the threshold" must be legible over HTTP, not just an
+    // empty list a caller has to read as "found nothing".
+    assert.equal(dasNonPromotedBody.das_index.qualified_unit_count, 1);
+    assert.equal(dasNonPromotedBody.das_index.promotion_threshold, 2);
+    assert.match(dasNonPromotedBody.das_index.reason, /below the promotion threshold/);
 
     const scopeNonPromoted = await request(port, 'GET', `/api/projects/${nonPromotedProject.id}/cas?das_unit_id=anything`, undefined, token);
     assert.equal(scopeNonPromoted.statusCode, 400, 'scoping a non-promoted repo must be a 4xx request error, not a 200 no_analysis body');

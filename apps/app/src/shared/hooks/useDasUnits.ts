@@ -46,6 +46,15 @@ interface RemoteDasIndexResponse {
   das_index?: {
     promoted: boolean;
     units: RemoteDasUnit[];
+    /** How many units qualified vs how many promotion needs — reported even
+     *  when `promoted` is false, so "1 found, below the threshold" is
+     *  distinguishable from "no ship evidence found at all". */
+    qualified_unit_count?: number;
+    promotion_threshold?: number;
+    reason?: string;
+    graph_node_count?: number;
+    covered_node_count?: number;
+    coverage_ratio?: number;
     orphan_node_count: number;
     orphan_node_ids: string[];
   };
@@ -64,6 +73,12 @@ export function useDasUnitIndex(projectId: string | undefined) {
     ...query,
     promoted: query.data?.das_index?.promoted ?? false,
     units: query.data?.das_index?.units ?? [],
+    qualifiedUnitCount: query.data?.das_index?.qualified_unit_count,
+    promotionThreshold: query.data?.das_index?.promotion_threshold,
+    promotionReason: query.data?.das_index?.reason,
+    coverageRatio: query.data?.das_index?.coverage_ratio,
+    coveredNodeCount: query.data?.das_index?.covered_node_count,
+    graphNodeCount: query.data?.das_index?.graph_node_count,
     orphanNodeCount: query.data?.das_index?.orphan_node_count,
     orphanNodeIds: query.data?.das_index?.orphan_node_ids ?? [],
   };

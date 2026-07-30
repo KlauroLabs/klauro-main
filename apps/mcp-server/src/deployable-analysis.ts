@@ -1,7 +1,6 @@
 import type {
   CASOutput,
   CASNode,
-  CASEdge,
   CASEntryPoint,
   CASExitPoint,
   CASDataEntity,
@@ -18,6 +17,10 @@ import {
   extractEntryPointFilePath,
   type DeployableRoot,
 } from '../../../packages/analyzer-core/src/analyzer/core/entry-point-deployable';
+import {
+  ReachabilityIndex,
+  callEdgePairs,
+} from '../../../packages/analyzer-core/src/analyzer/core/reachability-index';
 
 /**
  * DEPLOYABLE ANALYSIS SPECIFICATION (DAS) — PHASE 1
@@ -36,6 +39,16 @@ import {
  * DAS unit is a VIEW over its parent CAS, not a persisted analysis artifact —
  * cheapest honest starting point; see the phase-2 open items at the bottom of
  * this file for the persistence tradeoff.
+ *
+ * THREE DECISIONS THIS MODULE MAKES, each stated once where it is implemented:
+ *  - WHAT QUALIFIES as a unit — ship evidence, never cardinality
+ *    (isBuildTargetDeclaration / tierQualifiedShipUnits).
+ *  - WHAT A UNIT CONTAINS — a reachability-index closure seeded from the
+ *    unit's own declared entry files and discriminating roots, completed by
+ *    file; never a path-prefix match (seedsForUnit / closureForSeeds).
+ *  - HOW SHARED CODE IS REPRESENTED — in every unit that reaches it, tagged,
+ *    with one canonical owner, and with the multiplicity reported in numbers
+ *    rather than hidden inside per-unit totals (DAS_COUNTS_NOTE).
  */
 
 // ---------------------------------------------------------------------------
@@ -55,31 +68,117 @@ function isTier1ShipDeclaration(e: DeployableEvidence): boolean {
 }
 
 /**
+ * THE QUALIFICATION PREDICATE, stated plainly: a DeployableEvidence row is a
+ * DAS unit when it is standalone (no `bundled_into`) AND its own evidence
+ * declares a ship-or-build artifact — a Tier-1 ship declaration (Dockerfile
+ * ENTRYPOINT/CMD, compose service, k8s/serverless manifest, installer
+ * manifest, CI deploy job) or a Tier-2 `bin` row (a build target a manifest or
+ * toolchain convention declares: cargo `[[bin]]`, a package manifest `bin`
+ * field, a go `package main`, a `src/bin/*` entry). HOW MANY OTHER RUNNABLES
+ * EXIST IN THE REPO IS NOT PART OF THE PREDICATE.
+ *
+ * This replaces a cardinality gate ("a Tier-2/3 row counts only if it is the
+ * sole runnable candidate in the repo") that was written to suppress noise
+ * from stray scripts but instead suppressed the answer on exactly the repos
+ * where the question matters: in a workspace repo declaring a dozen build
+ * targets, every one of them was rejected FOR EXISTING ALONGSIDE THE OTHERS,
+ * so most of the repo's code belonged to no unit at all (measured: 59.9% of
+ * nodes orphaned on a 12-build-target workspace repo). Ship evidence is the
+ * discriminator; cardinality is not.
+ *
+ * Noise is still excluded, by the same predicate rather than by counting: a
+ * row with no ship/build artifact of its own never qualifies — a
+ * 'server-entry' (a port-binding route handler: an entry point INTO a
+ * deployable, not a build target), a 'package' identity (publishable, not
+ * runnable), a 'build-image' (plumbing for other units, see
+ * deployable-evidence.ts's classifyBuildStageContainers). Tier-4
+ * folder-heuristic evidence never reaches deployable_evidence at all
+ * (DeployableEvidence.tier is typed 1|2|3).
+ */
+function isBuildTargetDeclaration(e: DeployableEvidence): boolean {
+  return e.tier === 2 && e.kind === 'bin';
+}
+
+/**
+ * Matching-purposes-only token normalization mirroring deployable-evidence.ts's
+ * normalizeMemberToken (private to that module) — separators/case/a trailing
+ * ship-artifact extension stripped, never used for a display name.
+ */
+function normalizeShipToken(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/\.(exe|msi|dmg|pkg|deb|rpm|appimage)$/i, '')
+    .replace(/[\s_-]+/g, '');
+}
+
+/**
+ * Collapse build-target rows that declare THE SAME binary twice. A toolchain
+ * can declare one target through two conventions at once — cargo emits a
+ * `[[bin]] name = "x"` row (root_path = the manifest dir) AND, for the same
+ * target, a `src/bin/x.rs` row (root_path = that crate's `src`) — and shipping
+ * both as units would double-count a single shipped artifact. Grouped by
+ * normalized name among build-target rows only (never across Tier-1 ship
+ * declarations, whose identity joins are already resolved upstream by
+ * deployable-evidence.ts's joinComposeAndContainerUnits /
+ * mergeDuplicateNamedInstallerLeaves).
+ *
+ * The survivor is the row whose evidence names a concrete ENTRY FILE (the
+ * strongest evidence, and the one that can seed a closure without borrowing
+ * from a sibling — see unitDeclaredFiles), then the longer root_path, then
+ * declaration order. Rows are SELECTED, never synthesized: every returned row
+ * is an element of the input array, so callers that resolve a row's identity
+ * by `indexOf` keep working. The dropped twin's evidence is still consulted
+ * for seeding via its identity group (see unitDeclaredFiles).
+ */
+function dedupeBuildTargetIdentities(units: DeployableEvidence[]): DeployableEvidence[] {
+  const groups = new Map<string, DeployableEvidence[]>();
+  const out: DeployableEvidence[] = [];
+  for (const unit of units) {
+    if (!isBuildTargetDeclaration(unit)) {
+      out.push(unit);
+      continue;
+    }
+    const key = normalizeShipToken(unit.name);
+    if (!key) {
+      out.push(unit);
+      continue;
+    }
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key)!.push(unit);
+  }
+  for (const group of groups.values()) {
+    if (group.length === 1) {
+      out.push(group[0]);
+      continue;
+    }
+    const ranked = [...group].sort((a, b) => {
+      const aFile = evidenceDeclaredFiles(a).length > 0 ? 0 : 1;
+      const bFile = evidenceDeclaredFiles(b).length > 0 ? 0 : 1;
+      if (aFile !== bFile) return aFile - bFile;
+      const aRoot = (a.root_path || '').length;
+      const bRoot = (b.root_path || '').length;
+      if (aRoot !== bRoot) return bRoot - aRoot;
+      return units.indexOf(a) - units.indexOf(b);
+    });
+    out.push(ranked[0]);
+  }
+  // Restore declaration order so unit ordering (and every tie-break that
+  // depends on it) stays a pure function of the evidence list.
+  return out.sort((a, b) => units.indexOf(a) - units.indexOf(b));
+}
+
+/**
  * The set of DeployableEvidence rows that count toward the promotion
  * threshold — "tier-qualified ship units" (spec §1). A CAS-scoped counterpart
- * to cross-codebase-analysis.ts's buildApplications/applyShippedGate. Rule:
- *  - A row with bundled_into set never counts on its own.
- *  - Every standalone Tier-1 row counts.
- *  - A standalone Tier-2/3 row counts only if it's the sole runnable candidate
- *    in the repo and not a server-entry row (a per-route entry is an entry
- *    point, not a ship unit). Otherwise it fails the shipped-gate.
- *  - Tier-4 folder-heuristic evidence never appears in deployable_evidence at
- *    all (DeployableEvidence.tier is typed 1|2|3), so no explicit exclusion is needed here.
+ * to cross-codebase-analysis.ts's buildApplications/applyShippedGate. See
+ * isBuildTargetDeclaration above for the predicate itself.
  */
 export function tierQualifiedShipUnits(evidence: DeployableEvidence[] | undefined): DeployableEvidence[] {
   const items = evidence || [];
   const standalone = items.filter(e => !e.bundled_into);
-  const tier1Units = standalone.filter(isTier1ShipDeclaration);
-
-  const allRunnable = items.filter(e => e.tier === 2 || e.tier === 3);
-  const soleRunnable = allRunnable.length <= 1;
-  const tier23Units = standalone.filter(e =>
-    (e.tier === 2 || e.tier === 3) &&
-    e.kind !== 'server-entry' &&
-    soleRunnable,
-  );
-
-  return [...tier1Units, ...tier23Units];
+  const qualified = standalone.filter(e => isTier1ShipDeclaration(e) || isBuildTargetDeclaration(e));
+  return dedupeBuildTargetIdentities(qualified);
 }
 
 /**
@@ -90,8 +189,10 @@ export function tierQualifiedShipUnits(evidence: DeployableEvidence[] | undefine
  * this function returns false for 0 or 1 qualified units, never emitting a
  * one-entry DAS-unit list masquerading as a rollup.
  */
+const PROMOTION_THRESHOLD = 2;
+
 export function shouldPromote(cas: Pick<CASOutput, 'deployable_evidence'>): boolean {
-  return tierQualifiedShipUnits(cas.deployable_evidence).length >= 2;
+  return tierQualifiedShipUnits(cas.deployable_evidence).length >= PROMOTION_THRESHOLD;
 }
 
 // ---------------------------------------------------------------------------
@@ -112,28 +213,15 @@ function dasUnitIds(evidence: DeployableEvidence[]): string[] {
 // §2.1 — Slicing: seed set + reachability closure
 // ---------------------------------------------------------------------------
 
-/** Call-graph edge types the reachability closure walks (spec §2.1 step 2:
- *  "walk the CAS call graph"). Non-call edges (imports, contains, extends,
- *  ...) are NOT part of the closure walk, but a survives-node's full induced
- *  edge set (of every type) is still projected into the slice afterward —
- *  see projectSlice below — so the slice's own edges are complete, only the
- *  MEMBERSHIP decision is call-graph-scoped. */
-const CALL_GRAPH_EDGE_TYPES = new Set(['calls', 'invokes']);
+/** Non-call edges (imports, contains, extends, ...) are NOT part of the
+ *  closure walk — see sliceContextFor for the exact call-graph edge set the
+ *  reachability index is built over — but a surviving node's full induced edge
+ *  set (of every type) is still projected into the slice afterward, so a
+ *  slice's own edges are complete; only the MEMBERSHIP decision is
+ *  call-graph-scoped. */
 
 function bundledMembersOf(unit: DeployableEvidence, allEvidence: DeployableEvidence[]): DeployableEvidence[] {
   return allEvidence.filter(e => e !== unit && e.bundled_into === unit.name);
-}
-
-/** Matching-purposes-only token normalization mirroring
- *  deployable-evidence.ts's normalizeMemberToken (private to that module) —
- *  separators/case/a trailing ship-artifact extension stripped, never used
- *  for a display name. */
-function normalizeShipToken(value: string): string {
-  return value
-    .trim()
-    .toLowerCase()
-    .replace(/\.(exe|msi|dmg|pkg|deb|rpm|appimage)$/i, '')
-    .replace(/[\s_-]+/g, '');
 }
 
 /**
@@ -151,11 +239,11 @@ function normalizeShipToken(value: string): string {
  * evidence for the others too). Used as a closure-seeding signal only, never
  * mutates `bundled_into` or the reported member_root_paths.
  */
-function shipsPathRoots(
+function shipsPathMembers(
   unit: DeployableEvidence,
   allEvidence: DeployableEvidence[],
   allRoots: DeployableRoot[],
-): DeployableRoot[] {
+): Array<{ row: DeployableEvidence; root: DeployableRoot }> {
   // entrypoint_member is folded into the same token set as ships_paths: a
   // Tier-1 row that ships no COPY/cargo-build-arg evidence of its own but
   // whose Dockerfile ENTRYPOINT/CMD names a real bin (e.g. a "gateway"
@@ -170,7 +258,7 @@ function shipsPathRoots(
     .filter(Boolean);
   if (!tokens.length) return [];
   const tokenSet = new Set(tokens);
-  const roots: DeployableRoot[] = [];
+  const members: Array<{ row: DeployableEvidence; root: DeployableRoot }> = [];
   allEvidence.forEach((candidate, idx) => {
     if (candidate === unit || candidate.tier === 1) return;
     const root = allRoots[idx];
@@ -178,9 +266,9 @@ function shipsPathRoots(
     const nameMatches = tokenSet.has(normalizeShipToken(candidate.name));
     const rootBase = root.rootPath.split('/').filter(Boolean).pop() || '';
     const rootBaseMatches = rootBase && tokenSet.has(normalizeShipToken(rootBase));
-    if (nameMatches || rootBaseMatches) roots.push(root);
+    if (nameMatches || rootBaseMatches) members.push({ row: candidate, root });
   });
-  return roots;
+  return members;
 }
 
 /** A's own root plus every bundled member's root (spec §2.1 step 1: "A's own
@@ -199,22 +287,13 @@ function unitRoots(
   const memberRoots = members.map(m => allRoots[allEvidence.indexOf(m)]).filter(Boolean) as DeployableRoot[];
 
   // A degenerate own root ('.' — a monorepo-root Dockerfile/compose-service/
-  // installer whose build context or script lives at the repo root) is a
-  // maximally-weak match: entry-point-deployable.ts's isPathPrefix treats '.'
-  // as a prefix of EVERY file, so if it were kept in the seed-root list every
-  // node in the whole repo would seed this one unit's closure. Real hosted
-  // defect (2026-07, multi-binary workspace repos): every one of 9 DAS
-  // units had `root_path: "."` (compose `build: .` and installer scripts at
-  // repo root are both completely normal), so EVERY unit's seed set was the
-  // entire codebase — nodes=12031/eps=341/exits=5053 identical across all
-  // nine, zero narrowing. When concrete (non-'.') bundled-member roots exist
-  // (the real bin/crate subdirectory a compose service or installer actually
-  // ships — see bundledMembersOf/resolveEvidenceBundling), THOSE are the true
-  // narrowing signal and the degenerate own root is dropped so it can't
-  // blanket-match. Only when no concrete root exists anywhere (a genuinely
-  // repo-root-shaped single deployable, e.g. a lone NestJS service with no
-  // separate bin layout) does the degenerate own root remain the seed — that
-  // repo-root shape is real, not a bug, for a true single-deployable CAS.
+  // installer whose build context or script lives at the repo root) names no
+  // narrower region than "the repo", and seedsForUnit drops it from the seed
+  // roots for that reason. When concrete (non-'.') bundled-member or
+  // ships_paths-resolved roots exist (the real bin/crate subdirectory a
+  // compose service or installer actually ships), THOSE are the narrowing
+  // signal and the degenerate own root is dropped here too so it cannot
+  // dominate the longest-prefix ownership pass either.
   // Fallback for the redundant-multi-service-dispatch shape (real hosted
   // case, an "unnamed-service" root container): its own ships_paths
   // names 5 binaries, every one of which ALSO has its own dedicated
@@ -224,7 +303,7 @@ function unitRoots(
   // recovers those same concrete roots as an additional narrowing signal
   // without touching bundled_into or member_root_paths (still bundled_into-
   // derived, per spec §2.1 step 1) — see shipsPathRoots's own doc comment.
-  const shipsRoots = shipsPathRoots(unit, allEvidence, allRoots);
+  const shipsRoots = shipsPathMembers(unit, allEvidence, allRoots).map(m => m.root);
   const concreteMemberRoots = [...memberRoots, ...shipsRoots].filter(r => r.rootPath && r.rootPath !== '.');
   if (own && own.rootPath === '.' && concreteMemberRoots.length > 0) {
     return concreteMemberRoots;
@@ -236,89 +315,300 @@ function exitPointFile(exit: CASExitPoint, nodesById: Map<string, CASNode>): str
   return (exit.metadata as any)?.file || nodesById.get(exit.source_node)?.source?.file;
 }
 
-interface SeedSet {
-  seedNodeIds: Set<string>;
-  seedEntryPoints: CASEntryPoint[];
-  seedExitPoints: CASExitPoint[];
-}
-
-/** Spec §2.1 step 1: the seed set is every node physically under the unit's
- *  own roots, plus the entry/exit points whose file falls under those same
- *  roots (and their handler/source nodes, defensively, in case an
- *  entry/exit's handler node lives in a differently-recorded file). */
-function seedsForUnit(cas: CASOutput, roots: DeployableRoot[], nodesById: Map<string, CASNode>): SeedSet {
-  const seedNodeIds = new Set<string>();
-  for (const n of cas.nodes) {
-    const file = n.source?.file;
-    if (file && matchDeployableRoot(file, roots)) seedNodeIds.add(n.id);
-  }
-
-  const seedEntryPoints = (cas.entry_points || []).filter(ep => {
-    const file = extractEntryPointFilePath(ep, nodesById);
-    return Boolean(file && matchDeployableRoot(file, roots));
-  });
-  const seedExitPoints = (cas.exit_points || []).filter(exit => {
-    const file = exitPointFile(exit, nodesById);
-    return Boolean(file && matchDeployableRoot(file, roots));
-  });
-
-  for (const ep of seedEntryPoints) {
-    if (ep.handler?.node_id) seedNodeIds.add(ep.handler.node_id);
-    else if (ep.source_node) seedNodeIds.add(ep.source_node);
-  }
-  for (const exit of seedExitPoints) {
-    if (exit.source_node) seedNodeIds.add(exit.source_node);
-  }
-
-  return { seedNodeIds, seedEntryPoints, seedExitPoints };
+function normalizeEvidencePath(value: string): string {
+  return value.trim().replace(/\\/g, '/').replace(/^\.\/+/, '').replace(/\/+$/, '');
 }
 
 /**
- * Spec §2.1 step 2: expand the seed node set by call-graph reachability —
- * "forward from the seed entry points... backward from the seed exit
- * points". Deliberately TWO INDEPENDENT one-directional walks from the SAME
- * seed set, not one undirected walk: a forward walk from a seed may pass
- * THROUGH a shared node (e.g. a common util both this unit and a sibling
- * unit call) on its way to that shared node's own callees, but must NOT then
- * turn around and walk BACKWARD from that shared node to pick up the
- * sibling's OTHER callers — that would merge two independent units' closures
- * into one connected blob through any shared dependency, which is exactly
- * the false-positive shared-code contour identity crisis point 2.2's
- * canonical-ownership pass exists to prevent bleeding into the more basic
- * reachability step. Each direction only ever propagates FROM the seed set,
- * never re-seeds itself from a node discovered by the other direction. */
-function reachabilityClosure(edges: CASEdge[], seed: Set<string>): Set<string> {
-  const forward = new Map<string, string[]>();
-  const backward = new Map<string, string[]>();
-  for (const e of edges) {
-    if (!CALL_GRAPH_EDGE_TYPES.has(e.type)) continue;
-    if (!forward.has(e.source)) forward.set(e.source, []);
-    forward.get(e.source)!.push(e.target);
-    if (!backward.has(e.target)) backward.set(e.target, []);
-    backward.get(e.target)!.push(e.source);
-  }
+ * The evidence-string grammar in which a provider names a build target's own
+ * ENTRY FILE. A whitelist of the exact shapes deployable-evidence's providers
+ * emit (bin-targets.ts's four bin conventions + the HTTP-entry shape), never a
+ * "find something path-shaped in the text" guess: a row's evidence also cites
+ * manifests, Dockerfiles and route paths, none of which are the target's
+ * source entry.
+ */
+const DECLARED_ENTRY_FILE_PATTERNS: RegExp[] = [
+  /^src\/bin entry:\s*(\S.*)$/,
+  /^src\/main\.rs present, no \[\[bin\]\] override\s*\((.+)\)$/,
+  /^package main entry:\s*(\S.*)$/,
+  /^HTTP entry point:.*\(([^()]+?)(?::\d+)?\)$/,
+];
 
-  const walk = (adj: Map<string, string[]>): Set<string> => {
-    const visited = new Set(seed);
-    const queue: string[] = [...seed];
-    while (queue.length) {
-      const cur = queue.shift()!;
-      for (const next of adj.get(cur) || []) {
-        if (!visited.has(next)) {
-          visited.add(next);
-          queue.push(next);
-        }
+/** Entry-file paths this row's OWN evidence declares (may be empty). */
+function evidenceDeclaredFiles(unit: DeployableEvidence): string[] {
+  const out: string[] = [];
+  for (const line of unit.evidence || []) {
+    for (const pattern of DECLARED_ENTRY_FILE_PATTERNS) {
+      const match = line.match(pattern);
+      if (match?.[1]) {
+        out.push(normalizeEvidencePath(match[1]));
+        break;
       }
     }
-    return visited;
-  };
+  }
+  return [...new Set(out)];
+}
 
-  const forwardReached = walk(forward);
-  const backwardReached = walk(backward);
-  const combined = new Set(seed);
-  for (const id of forwardReached) combined.add(id);
-  for (const id of backwardReached) combined.add(id);
-  return combined;
+/**
+ * Rows that declare THE SAME artifact as `unit` (see
+ * dedupeBuildTargetIdentities): only one of them is a DAS unit, but the
+ * dropped twin's evidence still describes the same binary, so its declared
+ * entry file is legitimate seeding evidence for the surviving unit.
+ */
+function identityTwins(unit: DeployableEvidence, allEvidence: DeployableEvidence[]): DeployableEvidence[] {
+  const key = normalizeShipToken(unit.name);
+  if (!key) return [];
+  return allEvidence.filter(e => e !== unit && e.tier !== 1 && normalizeShipToken(e.name) === key);
+}
+
+/** Nodes belonging to each source file, and the file-key set — derived once
+ *  per CAS (see sliceContextFor) rather than re-scanned per unit. */
+interface CasSliceContext {
+  nodesById: Map<string, CASNode>;
+  nodeIdsByFile: Map<string, string[]>;
+  /** Suffix lookup for a declared path recorded relative to a sub-package scan
+   *  root instead of the repo root (the same prefix-drift
+   *  extractEntryPointFilePath corrects) — keyed on the declared path, so a
+   *  lookup is O(1) instead of a scan over every file. */
+  filesBySuffixKey: Map<string, string[]>;
+  reach: ReachabilityIndex;
+}
+
+const sliceContexts = new WeakMap<CASOutput, CasSliceContext>();
+
+/**
+ * DAS closures are computed with the REACHABILITY INDEX
+ * (analyzer-core/core/reachability-index.ts): one Tarjan+PLL build per CAS,
+ * then O(answer) `affectedSet` enumeration per unit — instead of the previous
+ * per-unit re-scan of the whole edge list, which is the exhaustive-scan defect
+ * class that index exists to retire.
+ *
+ * The index is built over the call graph `callEdgePairs` defines ('calls'
+ * edges + resolved method_calls) PLUS 'invokes' edges, which some analyzers
+ * emit for a dispatch/registration call and which the DAS closure must follow
+ * for the same reason it follows 'calls'. That is a superset of the persisted
+ * `cas.reachability_index`'s edge set, so this builds its own index rather
+ * than rehydrating the stored one — a DAS unit that silently lost its
+ * dispatch-reached code would under-report its own contents.
+ */
+function sliceContextFor(cas: CASOutput): CasSliceContext {
+  const cached = sliceContexts.get(cas);
+  if (cached) return cached;
+
+  const nodes = cas.nodes || [];
+  const nodesById = new Map(nodes.map(n => [n.id, n]));
+  const nodeIdsByFile = new Map<string, string[]>();
+  for (const n of nodes) {
+    const file = n.source?.file ? normalizeEvidencePath(n.source.file) : undefined;
+    if (!file) continue;
+    if (!nodeIdsByFile.has(file)) nodeIdsByFile.set(file, []);
+    nodeIdsByFile.get(file)!.push(n.id);
+  }
+  const filesBySuffixKey = new Map<string, string[]>();
+  for (const file of nodeIdsByFile.keys()) {
+    const segments = file.split('/');
+    // Every path-segment suffix of the file, so a declared 'src/main.rs'
+    // resolves to 'crates/agent/src/main.rs' only when the drift is a missing
+    // PREFIX (never an unrelated same-basename file elsewhere: the suffix must
+    // still match segment-for-segment).
+    for (let i = 1; i < segments.length; i++) {
+      const key = segments.slice(i).join('/');
+      if (!filesBySuffixKey.has(key)) filesBySuffixKey.set(key, []);
+      filesBySuffixKey.get(key)!.push(file);
+    }
+  }
+
+  const pairs = callEdgePairs(cas as any);
+  for (const e of cas.edges || []) {
+    if (e.type === 'invokes') pairs.push([e.source, e.target]);
+  }
+  const reach = ReachabilityIndex.build(nodes.map(n => n.id), pairs);
+
+  const context: CasSliceContext = { nodesById, nodeIdsByFile, filesBySuffixKey, reach };
+  sliceContexts.set(cas, context);
+  return context;
+}
+
+interface UnitSeed {
+  seedNodeIds: Set<string>;
+  /** Human-readable, evidence-citing account of WHERE this unit's seed came
+   *  from — so a 0-node or an unexpectedly-large unit is diagnosable from the
+   *  index alone instead of by re-deriving the slice. */
+  basis: string[];
+}
+
+/** Every entry file a unit's own evidence — or the evidence of a row that
+ *  declares the SAME artifact (an identity twin), a bundled member, or a
+ *  ships_paths-named member — names for it. A Tier-1 ship declaration cites a
+ *  Dockerfile/compose file, never a source entry, so its entry files come from
+ *  the build targets it ships. */
+function unitDeclaredFiles(
+  unit: DeployableEvidence,
+  allEvidence: DeployableEvidence[],
+  allRoots: DeployableRoot[],
+): string[] {
+  return [...new Set([
+    ...evidenceDeclaredFiles(unit),
+    ...identityTwins(unit, allEvidence).flatMap(evidenceDeclaredFiles),
+    ...bundledMembersOf(unit, allEvidence).flatMap(evidenceDeclaredFiles),
+    ...shipsPathMembers(unit, allEvidence, allRoots).map(m => m.row).flatMap(evidenceDeclaredFiles),
+  ])];
+}
+
+/** Resolve a declared path against the CAS's real node files: exact match, or
+ *  a path-segment-suffix match for a path recorded relative to a sub-package
+ *  scan root instead of the repo root. Never a basename guess. */
+function resolveDeclaredFile(declared: string, ctx: CasSliceContext): string[] {
+  if (ctx.nodeIdsByFile.has(declared)) return [declared];
+  return ctx.filesBySuffixKey.get(declared) || [];
+}
+
+/**
+ * The seed set for a unit's closure. Two kinds of evidence contribute, and
+ * PATH PREFIXES ALONE ARE NOT A SEED RULE — seeding by root prefix produced
+ * both observed failure modes: a root_path of '.' (a repo-root compose
+ * `build: .` or installer script, completely normal) matched every file in the
+ * repo so every unit's "slice" was the whole codebase; and a root_path
+ * pointing at a deploy-time or build-context directory rather than source
+ * matched almost nothing, so a repo's real products came out as a handful of
+ * nodes.
+ *
+ *  1. DECLARED ENTRY FILES — the file a build target's own evidence names
+ *     (cargo `src/bin/x.rs` / `src/main.rs`, a go `package main` file). The
+ *     only signal that can tell two build targets in the SAME crate apart.
+ *  2. CONCRETE ROOTS — its own root_path plus bundled-member and
+ *     ships_paths-resolved roots, with '.' dropped, and with any root SHARED
+ *     WITH A SIBLING UNIT'S ENTRY FILE dropped as well. A directory that
+ *     contains two sibling build targets' entry files cannot discriminate
+ *     between them (a workspace `src/` holding `src/bin/a.rs` and
+ *     `src/bin/b.rs`; a crate whose `src/bin/` holds four targets), so for
+ *     those units only their own entry file seeds the closure. A root that
+ *     contains exactly this unit's target IS its build input and seeds it
+ *     whole — that is what a compose service building `bin/agent` ships.
+ *
+ * A unit with no resolvable seed reports zero nodes with its basis saying so,
+ * rather than silently claiming the repo.
+ */
+function seedsForUnit(
+  unit: DeployableEvidence,
+  allEvidence: DeployableEvidence[],
+  roots: DeployableRoot[],
+  allRoots: DeployableRoot[],
+  ctx: CasSliceContext,
+): UnitSeed {
+  const seedNodeIds = new Set<string>();
+  const basis: string[] = [];
+
+  const ownFiles = new Set<string>();
+  for (const declared of unitDeclaredFiles(unit, allEvidence, allRoots)) {
+    const resolved = resolveDeclaredFile(declared, ctx);
+    if (resolved.length === 0) continue;
+    for (const file of resolved) {
+      ownFiles.add(file);
+      for (const id of ctx.nodeIdsByFile.get(file) || []) seedNodeIds.add(id);
+    }
+    basis.push(`entry-file:${declared}`);
+  }
+
+  const siblingFiles: string[] = [];
+  for (const sibling of tierQualifiedShipUnits(allEvidence)) {
+    if (sibling === unit) continue;
+    for (const declared of unitDeclaredFiles(sibling, allEvidence, allRoots)) {
+      for (const file of resolveDeclaredFile(declared, ctx)) {
+        if (!ownFiles.has(file)) siblingFiles.push(file);
+      }
+    }
+  }
+
+  const concreteRoots = roots.filter(r => r.rootPath && r.rootPath !== '.');
+  // The sibling-sharing exclusion applies only when this unit HAS an entry file
+  // of its own to fall back on. A unit whose only evidence is a root (a cargo
+  // `[[bin]]` row that names a target but no path) keeps that root even when a
+  // sibling target lives under it — dropping it would leave the unit with no
+  // seed at all, which reports a real build target as zero nodes.
+  const discriminatingRoots = ownFiles.size === 0
+    ? concreteRoots
+    : concreteRoots.filter(root => !siblingFiles.some(file => matchDeployableRoot(file, [root])));
+
+  // THE REPO ROOT AS A SEED. '.' is a prefix of every file, so admitting it
+  // freely is the blanket match that made nine units of one workspace repo
+  // identical. It is admitted in exactly two evidence-backed cases:
+  //  (a) the unit's own entry file sits DIRECTLY at the repo root — a go
+  //      `package main` in `main.go`, an npm bin at the top level: the module
+  //      root IS its build input, and refusing it reports a whole
+  //      single-binary repo as orphans (measured: 99% orphaned);
+  //  (b) the unit has no narrower evidence at all — a repo-root Dockerfile or
+  //      compose service whose context is '.' and which ships nothing
+  //      separately identifiable. Its build context is the repo, and the
+  //      alternative is a 0-node unit for a real ship declaration.
+  // A unit with narrower evidence never gets '.', which is why the workspace
+  // case stays narrow: every one of those services names a bin/crate.
+  const ownRootIsRepoRoot = roots.some(r => !r.rootPath || r.rootPath === '.');
+  const entryFileAtRepoRoot = [...ownFiles].some(file => !file.includes('/'));
+  const admitRepoRoot = ownRootIsRepoRoot
+    && discriminatingRoots.length === 0
+    && (entryFileAtRepoRoot || ownFiles.size === 0);
+
+  const seedRoots = admitRepoRoot
+    ? [...discriminatingRoots, { deployable_id: '', deployable_name: '', rootPath: '.' }]
+    : discriminatingRoots;
+  if (seedRoots.length > 0) {
+    for (const [file, ids] of ctx.nodeIdsByFile) {
+      if (!matchDeployableRoot(file, seedRoots)) continue;
+      for (const id of ids) seedNodeIds.add(id);
+    }
+    for (const root of seedRoots) basis.push(`root:${root.rootPath}`);
+  }
+
+  if (seedNodeIds.size === 0) basis.push('no-resolvable-seed');
+  return { seedNodeIds, basis };
+}
+
+/**
+ * The unit's node closure: its seeds, everything they transitively CALL, and —
+ * because a source FILE is a compilation unit, not a menu — every node in
+ * every file the closure touches.
+ *
+ * Two rules, applied in this order and ONCE each:
+ *  1. CALL-DOWNSTREAM (`affectedSet` direction 'downstream'): what does this
+ *     artifact's code call? Downstream-only is the containment question a
+ *     deployable asks, so it follows callees into shared libraries but never
+ *     turns around and walks BACKWARD from a shared library into a sibling
+ *     unit's callers, which would merge every unit touching a common util into
+ *     one blob.
+ *  2. FILE COMPLETION: if any node of a file is in the closure, the whole file
+ *     is — you cannot ship half a module. Without this, counts collapse on
+ *     exactly the languages whose call graph is sparsest (a Rust binary whose
+ *     `main` resolves two call edges came out as a 2-node "deployable" while
+ *     its crate sat in the orphan pile).
+ *
+ * Deliberately NOT iterated to a fixpoint. Alternating the two rules until
+ * stable measures ~77% of a workspace repo into EVERY unit: file completion
+ * admits functions this binary never calls, and walking THOSE functions'
+ * callees invents membership one hop at a time until every unit contains
+ * everything. Completion is a statement about the files already established as
+ * members, not a new frontier.
+ *
+ * Seeds are unioned back in explicitly: `affectedSet` only enumerates nodes
+ * the index covers, and a node with no incident call edge is deliberately
+ * absent from the index (see reachability-index.ts) — it still belongs to the
+ * unit that declares it.
+ */
+function closureForSeeds(seedNodeIds: Set<string>, ctx: CasSliceContext): Set<string> {
+  if (seedNodeIds.size === 0) return new Set();
+  const closure = new Set(seedNodeIds);
+  const { affected } = ctx.reach.affectedSet(seedNodeIds, { direction: 'downstream', includeSeeds: false });
+  for (const id of affected) closure.add(id);
+
+  const files = new Set<string>();
+  for (const id of closure) {
+    const file = ctx.nodesById.get(id)?.source?.file;
+    if (file) files.add(normalizeEvidencePath(file));
+  }
+  for (const file of files) {
+    for (const sibling of ctx.nodeIdsByFile.get(file) || []) closure.add(sibling);
+  }
+  return closure;
 }
 
 // ---------------------------------------------------------------------------
@@ -345,6 +635,10 @@ function directOwnerIndex(
 ): number | undefined {
   let best: { len: number; unitIndex: number } | undefined;
   for (const { root, unitIndex } of rootsWithOwner) {
+    // '.' is a prefix of every file (isPathPrefix) and therefore says nothing
+    // about ownership — a repo-root-context unit must not become the canonical
+    // owner of every shared node in the repo by default.
+    if (!root.rootPath || root.rootPath === '.') continue;
     if (matchDeployableRoot(file, [root]) && root.rootPath.length > (best?.len ?? -1)) {
       best = { len: root.rootPath.length, unitIndex };
     }
@@ -436,6 +730,33 @@ function filterCapabilities(caps: SystemCapability[] | undefined, includedEntryP
   return (caps || []).filter(cap => (cap.operations || []).some(op => includedEntryPointIds.has(op.entry_point_id)));
 }
 
+/**
+ * SLICE-LOCAL REFERENTIAL INTEGRITY (spec §3): every `flow_id` a slice's
+ * capabilities/surfaces point at must resolve to a flow PRESENT IN THAT SLICE.
+ * A capability that survives into unit A can carry `related_flows` naming
+ * flows rooted in unit B's entry points; leaving those references in place is
+ * how a scoped comprehension payload came to name other deployables' flows
+ * (a scoped query returned flows whose own ids identify a different binary).
+ * Operations are also narrowed to the slice's own entry points, so a
+ * capability shared by two units describes only the operations THIS unit
+ * exposes.
+ */
+function scopeCapabilitiesToSlice<T extends SystemCapability>(
+  caps: T[],
+  includedEntryPointIds: Set<string>,
+  survivingFlowIds: Set<string>,
+): T[] {
+  return caps.map(cap => {
+    const operations = (cap.operations || []).filter(op => includedEntryPointIds.has(op.entry_point_id));
+    const related = (cap.related_flows || []).filter(ref => survivingFlowIds.has(ref.flow_id));
+    return {
+      ...cap,
+      operations,
+      ...(cap.related_flows ? { related_flows: related } : {}),
+    };
+  });
+}
+
 function filterWorkflows(workflows: CASWorkflow[] | undefined, includedEntryPointIds: Set<string>): CASWorkflow[] {
   return (workflows || []).filter(w => (w.entry_points || []).some(id => includedEntryPointIds.has(id)));
 }
@@ -444,25 +765,73 @@ function filterUserJourneys(journeys: CASUserJourney[] | undefined, includedEntr
   return (journeys || []).filter(j => includedEntryPointIds.has(j.entry_point_id));
 }
 
-function filterFlowGraph(flowGraph: CASFlowGraph | undefined, includedEntryPointIds: Set<string>): CASFlowGraph | undefined {
-  if (!flowGraph) return undefined;
+/**
+ * The flows that belong to a unit: a flow is IN the slice when its own root —
+ * `entry_point`, which is either an entry-point id or the root node id of a
+ * chain-anchored flow — is in the slice. Nothing else qualifies a flow.
+ *
+ * The previous rule also admitted any flow sharing a capability with a
+ * surviving capability, which is how a scoped payload came to contain flows
+ * whose own ids name a DIFFERENT deployable: capabilities are cross-cutting by
+ * construction (one capability's operations can span several binaries), so
+ * "shares a capability" is not containment. Membership is now decided by the
+ * flow's own root only; `capability_ids` are then narrowed to the capabilities
+ * that survive here, and dangling `related_flows` references are pruned in
+ * scopeCapabilitiesToSlice.
+ */
+function scopeFlows(
+  flows: CASFlowGraph['flows'],
+  includedEntryPointIds: Set<string>,
+  reachable: Set<string>,
+  survivingCapabilityIds: Set<string>,
+): NonNullable<CASFlowGraph['flows']> {
+  return (flows || [])
+    .filter(flow => includedEntryPointIds.has(flow.entry_point) || reachable.has(flow.entry_point))
+    .map(flow => ({
+      ...flow,
+      ...(flow.capability_ids
+        ? { capability_ids: flow.capability_ids.filter(id => survivingCapabilityIds.has(id)) }
+        : {}),
+    }));
+}
+
+/** The slice's flow graph plus the flow ids it contains — the id set every
+ *  other layer's flow references are pruned against (scopeCapabilitiesToSlice),
+ *  so "a slice's related_flows resolve to flows present in that slice" holds by
+ *  construction instead of by convention. */
+interface ScopedFlowGraph {
+  graph: CASFlowGraph | undefined;
+  flowIds: Set<string>;
+}
+
+function filterFlowGraph(
+  flowGraph: CASFlowGraph | undefined,
+  includedEntryPointIds: Set<string>,
+  reachable: Set<string>,
+): ScopedFlowGraph {
+  if (!flowGraph) return { graph: undefined, flowIds: new Set() };
   const survivingCaps = (flowGraph.capabilities || []).filter(cap =>
     (cap.entry_points || []).some(id => includedEntryPointIds.has(id)));
-  if (survivingCaps.length === 0) return undefined;
+  const scopedFlows = scopeFlows(
+    flowGraph.flows,
+    includedEntryPointIds,
+    reachable,
+    new Set(survivingCaps.map(c => c.id)),
+  );
+  const scopedFlowIds = new Set(scopedFlows.map(f => f.flow_id));
+  if (survivingCaps.length === 0) return { graph: undefined, flowIds: scopedFlowIds };
   const survivingIds = new Set(survivingCaps.map(c => c.id));
-  return {
-    capabilities: survivingCaps,
-    // Flows are narrowed to the surviving entry points so the deployable-scoped
-    // slice keeps referential integrity: every flow_id still reachable from a
-    // surviving capability's related_flows must resolve here too.
-    ...(flowGraph.flows
-      ? {
-          flows: flowGraph.flows.filter(flow =>
-            includedEntryPointIds.has(flow.entry_point) ||
-            (flow.capability_ids || []).some(id => survivingIds.has(id)) ||
-            (flow.capability_id ? survivingIds.has(flow.capability_id) : false)),
-        }
-      : {}),
+  const graph: CASFlowGraph = {
+    // A capability's own `entry_points` list is narrowed to this unit's, so a
+    // cross-cutting capability describes only the surface THIS deployable
+    // exposes (CASCapability carries no related_flows of its own — that
+    // reference lives on SystemCapability and is pruned in
+    // scopeCapabilitiesToSlice).
+    capabilities: survivingCaps.map(cap => ({
+      ...cap,
+      entry_points: cap.entry_points.filter(id => includedEntryPointIds.has(id)),
+    })),
+    ...(flowGraph.flows ? { flows: scopedFlows } : {}),
     dependencies: (flowGraph.dependencies || []).filter(d => survivingIds.has(d.from_capability) && survivingIds.has(d.to_capability)),
     topology: {
       root_capabilities: (flowGraph.topology?.root_capabilities || []).filter(id => survivingIds.has(id)),
@@ -481,6 +850,7 @@ function filterFlowGraph(flowGraph: CASFlowGraph | undefined, includedEntryPoint
       .filter(layer => layer.capabilities.length > 0),
     system_insights: flowGraph.system_insights,
   };
+  return { graph, flowIds: scopedFlowIds };
 }
 
 function filterDataEntities(entities: CASDataEntity[] | undefined, reachable: Set<string>): CASDataEntity[] {
@@ -553,28 +923,90 @@ export interface DasUnitIndexEntry {
   member_root_paths: string[];
   tier: 1 | 2 | 3;
   kind: DeployableEvidence['kind'];
+  /** Every node in this unit's closure — INCLUDING code it shares with other
+   *  units. Unit node_counts therefore do not partition the graph; see
+   *  DasIndex.counts_note. */
   node_count: number;
+  /** The part of node_count no other unit reaches. */
+  exclusive_node_count: number;
+  /** The part of node_count at least one other unit also reaches (a workspace
+   *  crate five binaries link is SHARED five times, not duplicated). */
+  shared_node_count: number;
+  /** Of `shared_node_count`, the nodes for which THIS unit is the canonical
+   *  owner (spec §2.2 — exactly one owner per shared node, never zero, never
+   *  two). Summing exclusive_node_count + owned_shared_node_count across units
+   *  gives covered_node_count exactly. */
+  owned_shared_node_count: number;
   entry_point_count: number;
   exit_point_count: number;
+  /** Nodes the unit's own evidence put in the closure before reachability
+   *  expansion, and the evidence that produced them (`entry-file:<path>` /
+   *  `root:<path>` / `no-resolvable-seed`) — so an empty or an unexpectedly
+   *  large unit is diagnosable from the index alone. */
+  seed_node_count: number;
+  seed_basis: string[];
   boundary_evidence: string[];
 }
 
 export interface DasIndex {
   promoted: boolean;
   units: DasUnitIndexEntry[];
+  /** How many tier-qualified ship units this CAS resolves, and the threshold
+   *  promotion needs — reported ALWAYS, including when `promoted` is false.
+   *  "1 qualified unit, below the threshold of 2" and "no ship evidence at
+   *  all" are different answers and a caller must be able to tell them apart;
+   *  before this, both surfaced as an empty unit list. */
+  qualified_unit_count: number;
+  promotion_threshold: number;
+  /** One sentence saying why this CAS is or is not promoted, in the same terms
+   *  as qualified_unit_count. */
+  reason: string;
+  /** Total nodes in the parent CAS's graph — the denominator for coverage. */
+  graph_node_count: number;
+  /** Nodes in at least one unit's closure (the union, counted once). */
+  covered_node_count: number;
+  /** covered_node_count / graph_node_count, 0-1, rounded to 4 dp. */
+  coverage_ratio: number;
+  /** Nodes reached by exactly one unit / by more than one. These two plus
+   *  orphan_node_count partition graph_node_count exactly. */
+  exclusive_node_count: number;
+  shared_node_count: number;
+  /** Sum of every unit's node_count. Exceeds covered_node_count by exactly the
+   *  multiplicity of shared code — stated explicitly so a reader never has to
+   *  infer whether unit counts overlap. */
+  sum_of_unit_node_counts: number;
   /** Nodes reached by NO unit at all (spec asks these be reported, not
    *  silently dropped, so counts stay honest — "no node in zero slices
    *  unless genuinely unreachable"). Empty when every node is claimed by at
    *  least one unit's closure. */
   orphan_node_count: number;
   orphan_node_ids: string[];
+  counts_note: string;
 }
+
+/** HOW SHARED CODE IS REPRESENTED (spec §2.2, decided here and stated once):
+ *  a node reached by N units appears in ALL N slices — a workspace crate that
+ *  five binaries link really is part of all five shipped artifacts, and a slice
+ *  that omitted it would describe a binary that cannot run. It is tagged in
+ *  each slice (`metadata.attribution` = 'owned' on its single canonical owner,
+ *  'shared' elsewhere, with `canonical_owner_das_unit_id` pointing home), and
+ *  the index reports the multiplicity in numbers rather than leaving it to be
+ *  inferred: exclusive/shared/orphan partition the graph, while
+ *  sum_of_unit_node_counts is allowed to exceed the graph and says by how
+ *  much. */
+const DAS_COUNTS_NOTE =
+  'Unit node_counts include shared code and so may sum to more than graph_node_count; '
+  + 'exclusive_node_count + shared_node_count + orphan_node_count === graph_node_count, and '
+  + 'each shared node has exactly one canonical owner (owned_shared_node_count).';
 
 export interface DasUnitSlice {
   das_unit_id: string;
   das_unit_name: string;
   root_path: string;
   member_root_paths: string[];
+  /** See DasUnitIndexEntry.seed_node_count / seed_basis. */
+  seed_node_count: number;
+  seed_basis: string[];
   /** CASOutput-SHAPED slice — same field names/types a repo-level CAS uses,
    *  restricted to this unit's reachability closure. Deliberately Partial:
    *  fields with no unit-scoped meaning (system, cas_version, ...) are filled
@@ -623,11 +1055,12 @@ export interface BuildDeployableAnalysesResult {
 export function sliceDeployableAnalysis(cas: CASOutput, deployable: DeployableEvidence): DasUnitSlice {
   const allEvidence = cas.deployable_evidence || [];
   const allRoots = buildDeployableRoots(allEvidence);
-  const nodesById = new Map(cas.nodes.map(n => [n.id, n]));
+  const ctx = sliceContextFor(cas);
+  const nodesById = ctx.nodesById;
 
   const roots = unitRoots(deployable, allEvidence, allRoots);
-  const { seedNodeIds, seedEntryPoints, seedExitPoints } = seedsForUnit(cas, roots, nodesById);
-  const reachable = reachabilityClosure(cas.edges || [], seedNodeIds);
+  const { seedNodeIds, basis } = seedsForUnit(deployable, allEvidence, roots, allRoots, ctx);
+  const reachable = closureForSeeds(seedNodeIds, ctx);
 
   const idx = allEvidence.indexOf(deployable);
   const unitId = dasUnitIds(allEvidence)[idx] ?? `das:${deployable.kind}:${deployable.name}`;
@@ -636,16 +1069,36 @@ export function sliceDeployableAnalysis(cas: CASOutput, deployable: DeployableEv
   const edges = (cas.edges || []).filter(e => reachable.has(e.source) && reachable.has(e.target));
   const reachableFiles = new Set(nodes.map(n => n.source?.file).filter((f): f is string => Boolean(f)));
 
+  // Entry/exit points belong to the unit whose closure contains their handler
+  // node — not to whichever unit's root_path happens to be a prefix of their
+  // file. Path-prefix attribution is what gave every unit of a repo-root-context
+  // workspace the same 341 entry points; a handler node is in a closure only
+  // because the unit declares it or reaches it by a call edge.
+  const inClosure = (nodeId: string | undefined): boolean => Boolean(nodeId && reachable.has(nodeId));
+  const seedEntryPoints = (cas.entry_points || []).filter(ep => {
+    if (inClosure(ep.handler?.node_id) || inClosure(ep.source_node)) return true;
+    const file = extractEntryPointFilePath(ep, nodesById);
+    return Boolean(file && reachableFiles.has(file));
+  });
+  const seedExitPoints = (cas.exit_points || []).filter(exit => {
+    if (inClosure(exit.source_node)) return true;
+    const file = exitPointFile(exit, nodesById);
+    return Boolean(file && reachableFiles.has(file));
+  });
+
   const includedEntryPointIds = new Set(seedEntryPoints.map(e => e.id));
   const includedExitPointIds = new Set(seedExitPoints.map(e => e.id));
   const dataEntities = filterDataEntities(cas.data_entities, reachable);
   const includedEntityIds = new Set(dataEntities.map(e => e.id));
+  const scopedFlowGraph = filterFlowGraph(cas.flow_graph, includedEntryPointIds, reachable);
 
   return {
     das_unit_id: unitId,
     das_unit_name: deployable.name,
     root_path: deployable.root_path,
     member_root_paths: bundledMembersOf(deployable, allEvidence).map(m => m.root_path),
+    seed_node_count: seedNodeIds.size,
+    seed_basis: basis,
     slice: {
       cas_version: cas.cas_version,
       analyzer_build: cas.analyzer_build,
@@ -658,9 +1111,17 @@ export function sliceDeployableAnalysis(cas: CASOutput, deployable: DeployableEv
       exit_points: seedExitPoints,
       data_entities: dataEntities,
       data_lineage: filterDataLineage(cas.data_lineage, reachableFiles),
-      system_capabilities: filterCapabilities(cas.system_capabilities, includedEntryPointIds),
-      behavior_surfaces: filterCapabilities(cas.behavior_surfaces, includedEntryPointIds),
-      flow_graph: filterFlowGraph(cas.flow_graph, includedEntryPointIds),
+      system_capabilities: scopeCapabilitiesToSlice(
+        filterCapabilities(cas.system_capabilities, includedEntryPointIds),
+        includedEntryPointIds,
+        scopedFlowGraph.flowIds,
+      ),
+      behavior_surfaces: scopeCapabilitiesToSlice(
+        filterCapabilities(cas.behavior_surfaces, includedEntryPointIds),
+        includedEntryPointIds,
+        scopedFlowGraph.flowIds,
+      ),
+      flow_graph: scopedFlowGraph.graph,
       workflows: filterWorkflows(cas.workflows, includedEntryPointIds),
       user_journeys: filterUserJourneys(cas.user_journeys, includedEntryPointIds),
       communication_seams: filterCommunicationSeams(cas.communication_seams, includedEntryPointIds, includedExitPointIds, includedEntityIds),
@@ -685,12 +1146,32 @@ export function buildDeployableAnalyses(cas: CASOutput): BuildDeployableAnalyses
   const allEvidence = cas.deployable_evidence || [];
   const qualified = tierQualifiedShipUnits(allEvidence);
 
-  if (qualified.length < 2) {
-    return { promoted: false, das_index: { promoted: false, units: [], orphan_node_count: 0, orphan_node_ids: [] }, units: [] };
+  if (qualified.length < PROMOTION_THRESHOLD) {
+    return {
+      promoted: false,
+      das_index: {
+        promoted: false,
+        units: [],
+        qualified_unit_count: qualified.length,
+        promotion_threshold: PROMOTION_THRESHOLD,
+        reason: qualified.length === 0
+          ? 'No tier-qualified ship unit found: no deployable_evidence row declares a ship or build artifact of its own.'
+          : `${qualified.length} tier-qualified ship unit found (${qualified.map(u => u.name).join(', ')}) — below the promotion threshold of ${PROMOTION_THRESHOLD}, so this CAS is its own single deployable and needs no per-unit slicing. Coverage and orphan counts describe slices and are therefore zero here, not "nothing found".`,
+        graph_node_count: (cas.nodes || []).length,
+        covered_node_count: 0,
+        coverage_ratio: 0,
+        exclusive_node_count: 0,
+        shared_node_count: 0,
+        sum_of_unit_node_counts: 0,
+        orphan_node_count: 0,
+        orphan_node_ids: [],
+        counts_note: DAS_COUNTS_NOTE,
+      },
+      units: [],
+    };
   }
 
   const allRoots = buildDeployableRoots(allEvidence);
-  const unitIdByEvidence = dasUnitIds(allEvidence);
 
   // Slice every unit once (reachability closure), then compute shared
   // attribution across all of them, then re-tag each slice's nodes.
@@ -732,10 +1213,34 @@ export function buildDeployableAnalyses(cas: CASOutput): BuildDeployableAnalyses
   });
 
   // Honest counts (spec §7): every node reached by no unit at all is an
-  // orphan — reported, never silently dropped from the total.
+  // orphan — reported, never silently dropped from the total — and the overlap
+  // between units is reported as overlap instead of being left implicit in
+  // per-unit totals that sum past the graph.
   const reachedAnywhere = new Set<string>();
   for (const u of unitsReachability) for (const id of u.reachable) reachedAnywhere.add(id);
-  const orphanIds = cas.nodes.filter(n => !reachedAnywhere.has(n.id)).map(n => n.id);
+  const orphanIds = (cas.nodes || []).filter(n => !reachedAnywhere.has(n.id)).map(n => n.id);
+
+  const perUnitCounts = unitsReachability.map(() => ({ exclusive: 0, shared: 0, ownedShared: 0 }));
+  let exclusiveTotal = 0;
+  let sharedTotal = 0;
+  for (const [, info] of attribution) {
+    if (info.attribution === 'exclusive') {
+      exclusiveTotal += 1;
+      perUnitCounts[info.canonicalOwnerIndex].exclusive += 1;
+      continue;
+    }
+    sharedTotal += 1;
+    perUnitCounts[info.canonicalOwnerIndex].ownedShared += 1;
+  }
+  for (const u of unitsReachability) {
+    for (const id of u.reachable) {
+      if (attribution.get(id)?.attribution === 'shared') perUnitCounts[u.index].shared += 1;
+    }
+  }
+
+  const graphNodeCount = (cas.nodes || []).length;
+  const coveredNodeCount = reachedAnywhere.size;
+  const sumOfUnitNodeCounts = units.reduce((sum, u) => sum + u.slice.nodes.length, 0);
 
   const das_index: DasIndex = {
     promoted: true,
@@ -747,12 +1252,27 @@ export function buildDeployableAnalyses(cas: CASOutput): BuildDeployableAnalyses
       tier: unit.tier,
       kind: unit.kind,
       node_count: units[i].slice.nodes.length,
+      exclusive_node_count: perUnitCounts[i].exclusive,
+      shared_node_count: perUnitCounts[i].shared,
+      owned_shared_node_count: perUnitCounts[i].ownedShared,
       entry_point_count: (units[i].slice.entry_points || []).length,
       exit_point_count: (units[i].slice.exit_points || []).length,
+      seed_node_count: units[i].seed_node_count,
+      seed_basis: units[i].seed_basis,
       boundary_evidence: unit.evidence,
     })),
+    qualified_unit_count: qualified.length,
+    promotion_threshold: PROMOTION_THRESHOLD,
+    reason: `${qualified.length} tier-qualified ship units resolved (>= ${PROMOTION_THRESHOLD}), so this CAS is a Deployable-Analysis Workspace.`,
+    graph_node_count: graphNodeCount,
+    covered_node_count: coveredNodeCount,
+    coverage_ratio: graphNodeCount === 0 ? 0 : Math.round((coveredNodeCount / graphNodeCount) * 10000) / 10000,
+    exclusive_node_count: exclusiveTotal,
+    shared_node_count: sharedTotal,
+    sum_of_unit_node_counts: sumOfUnitNodeCounts,
     orphan_node_count: orphanIds.length,
     orphan_node_ids: orphanIds.slice(0, 50),
+    counts_note: DAS_COUNTS_NOTE,
   };
 
   return { promoted: true, das_index, units };
