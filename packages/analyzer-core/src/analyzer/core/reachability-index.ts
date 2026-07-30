@@ -38,6 +38,7 @@
  */
 
 import type { CASReachabilityIndex } from '../../types/cas.types';
+import { appendAll } from './bulk-array-ops';
 
 export type { CASReachabilityIndex };
 
@@ -201,7 +202,7 @@ export function buildReachabilityIndex(nodeIds: Iterable<string>, edges: Iterabl
   comp_adj_offsets[0] = 0;
   for (let c = 0; c < compCount; c++) comp_adj_offsets[c + 1] = comp_adj_offsets[c] + compAdjLists[c].length;
   const comp_adj_targets: number[] = [];
-  for (const list of compAdjLists) comp_adj_targets.push(...list);
+  for (const list of compAdjLists) appendAll(comp_adj_targets, list);
 
   // Reverse condensation adjacency (build-time only; derived again on load).
   const compRevLists: number[][] = Array.from({ length: compCount }, () => []);
@@ -279,8 +280,8 @@ export function buildReachabilityIndex(nodeIds: Iterable<string>, edges: Iterabl
   const label_out: number[] = [];
   const label_in: number[] = [];
   for (let c = 0; c < compCount; c++) {
-    label_out.push(...labelOut[c]);
-    label_in.push(...labelIn[c]);
+    appendAll(label_out, labelOut[c]);
+    appendAll(label_in, labelIn[c]);
     label_out_offsets[c + 1] = label_out.length;
     label_in_offsets[c + 1] = label_in.length;
   }

@@ -132,6 +132,7 @@ import { isRegisteredManifest, isRegisteredSourceExtension, isPackageBoundaryMan
 import { discoverWorkspaceGlobRootsWithoutManifest } from './workspace-globs';
 import { CallGraphBuilder } from './call-graph-builder';
 import { internalizeInRepoCalls } from './in-repo-call-resolution';
+import { appendAll, replaceArrayContents } from './bulk-array-ops';
 import { DomainExtractor } from './domain-extractor';
 import { WorkflowDetector } from './workflow-detector';
 import { CapabilityDetector } from './capability-detector';
@@ -1752,8 +1753,8 @@ export class AnalyzerOrchestrator {
       // evidence to match against instead of bare names only.
       const decoratorsForConventions = this.buildAllDecorators(allNodes);
       const conventionsResult = applyConventions(options?.conventions, allNodes, allEdges, decoratorsForConventions);
-      allEntryPoints.push(...conventionsResult.entry_points);
-      allEdges.push(...conventionsResult.edges);
+      appendAll(allEntryPoints, conventionsResult.entry_points);
+      appendAll(allEdges, conventionsResult.edges);
       declaredDataEntities = conventionsResult.data_entities;
       declaredConventionMatches = conventionsResult.matches;
       for (const { node_id, role } of conventionsResult.role_tags) {
@@ -1817,7 +1818,7 @@ export class AnalyzerOrchestrator {
     // Structural design-pattern detection. Per-language analyzers rarely emit
     // design patterns (get_patterns was empty on every TS/JS codebase); detect the
     // common ones from node/edge structure so the tool returns real signal.
-    allPatterns.push(...this.detectDesignPatterns(allNodes, allEdges));
+    appendAll(allPatterns, this.detectDesignPatterns(allNodes, allEdges));
     logTiming('pp_detectPatterns', Date.now());
     await yieldToEventLoop();
 
@@ -2452,12 +2453,12 @@ export class AnalyzerOrchestrator {
     // infra-topology-linker.ts. Never blocks/fails a real analysis run.
     try {
       const infraLinks = linkInfraTopology(output);
-      if (infraLinks.nodes.length > 0) output.nodes.push(...infraLinks.nodes);
+      if (infraLinks.nodes.length > 0) appendAll(output.nodes, infraLinks.nodes);
       // Additive runtime-topology edges (deploys/exposes/routes_to/
       // provisions_*/runtime_depends_on) join infra resources to the code they
       // ship and use; they live on output.edges alongside compose/terraform
       // depends_on, traversable via query_graph / get_dependencies.
-      if (infraLinks.edges.length > 0) output.edges.push(...infraLinks.edges);
+      if (infraLinks.edges.length > 0) appendAll(output.edges, infraLinks.edges);
     } catch (error) {
       console.error('[Klauro] infra-topology-linker pass failed:', error);
     }
@@ -6603,8 +6604,7 @@ export class AnalyzerOrchestrator {
     const deduped: T[] = [];
     this.appendGraphItemsUnique(deduped, items, sectionLabel, analyzerId, analysisErrors);
     if (deduped.length === items.length) return;
-    items.length = 0;
-    items.push(...deduped);
+    replaceArrayContents(items, deduped);
   }
 
   private async mergeAnalysisResult(
@@ -18475,8 +18475,7 @@ export class AnalyzerOrchestrator {
     // source file, or an overlapping lifecycle accessor node — i.e. the same
     // reader/writer touches both surfaced shapes).
     const dedupedEntities = this.dedupePluralSingularEntities(entities);
-    entities.length = 0;
-    entities.push(...dedupedEntities);
+    replaceArrayContents(entities, dedupedEntities);
 
     // Deflate the surfaced entity set to the product's real DOMAIN objects using
     // the deterministic KIND fact (framework evidence, never name/casing). The
@@ -26187,8 +26186,10 @@ export class AnalyzerOrchestrator {
           existing.metadata = { ...edge.metadata, ...existing.metadata };
         }
       }
-      edges.length = 0;
-      edges.push(...deduped);
+      // Whole-graph replacement: `push(...deduped)` here is what made an
+      // ordinary-sized repository unanalyzable (one argument per edge, past the
+      // engine's argument limit).
+      replaceArrayContents(edges, deduped);
     }
   }
 
