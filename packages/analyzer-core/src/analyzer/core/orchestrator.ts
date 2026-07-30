@@ -6558,11 +6558,24 @@ export class AnalyzerOrchestrator {
           // cross-analyzer hit counts — see entryPointCrossAnalyzerKeys.
           const itemAnalyzer = analyzerOf(item);
           for (const key of this.entryPointCrossAnalyzerKeys(item)) {
-            const hit = (byCrossAnalyzerKey.get(key) ?? []).find(
+            const matches = (byCrossAnalyzerKey.get(key) ?? []).filter(
               candidate => analyzerOf(candidate) !== itemAnalyzer
                 && !this.mergedAnalyzersOf(candidate).includes(itemAnalyzer)
             );
-            if (hit) { canonicalExisting = hit; break; }
+            if (matches.length === 0) continue;
+            // Own tiebreak by id, never "first in bucket": the bucket's
+            // insertion order tracks `target`/`incoming` iteration order,
+            // which today is always deterministic because every caller
+            // happens to hand this function an already-sorted array. That is
+            // a caller-discipline precondition, not a guarantee this function
+            // enforces — the exact shape of latent nondeterminism this
+            // session went looking for elsewhere (see
+            // docs/cas/DETERMINISM-BOUNDARY.md). Sorting here means the pick
+            // stays correct even if a future caller feeds it results
+            // collected by completion order instead of array order.
+            matches.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+            canonicalExisting = matches[0];
+            break;
           }
         }
         if (canonicalExisting) {
