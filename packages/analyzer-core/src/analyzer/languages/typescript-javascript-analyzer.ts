@@ -3377,10 +3377,27 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     'findbyid', 'findbyidandupdate', 'findbyidanddelete', 'findbyidandremove',
     'findoneandupdate', 'findoneanddelete', 'findoneandremove',
     'updateone', 'deleteone', 'insertmany',
+    // Driver / query-builder execution verbs. A prepared statement, an executed
+    // query, or a transaction boundary on a store handle is persistence just as
+    // much as an ORM finder — measured on a second real codebase, where a
+    // SQLite handle's `prepare`/`exec` calls are the ENTIRE data-access surface
+    // and requiring only ORM finder vocabulary would have erased it.
+    'prepare', 'exec', 'execute', 'query', 'raw', 'pragma',
+    'transaction', 'begintransaction', 'commit', 'rollback',
+    'createquerybuilder', 'getrepository', 'getentitymanager',
+    'select', 'insertinto', 'deletefrom', 'truncate',
+    'connect', 'disconnect', 'close', 'destroy',
     // Verbs an in-memory collection also uses (`find`, `create`), which is why
     // receiver evidence is still required alongside them.
     'find', 'findone', 'create', 'save', 'insert',
     'update', 'delete', 'remove', 'count'
+    // Deliberately ABSENT despite being real driver verbs on some clients:
+    // `get`, `all`, `run`, `end`. They are the most heavily overloaded names in
+    // the language (`Map.get`, `Promise.all`, `res.end`), and a capitalized
+    // built-in receiver satisfies the model-handle test by not resolving to any
+    // local declaration — so including them would classify `Promise.all(...)`
+    // as store access. Their absence costs a driver call; their presence would
+    // manufacture data access out of ordinary control flow.
   ]);
 
   /**

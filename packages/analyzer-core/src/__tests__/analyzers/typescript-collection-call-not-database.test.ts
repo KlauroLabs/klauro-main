@@ -141,4 +141,28 @@ describe('collection calls are not database exits', () => {
     // value. Neither is a store handle.
     expect(exits.filter(exit => exit.type === 'database')).toEqual([]);
   });
+  it('keeps a SQL driver handle\'s prepared statements and executions', async () => {
+    const exits = await analyzeSources({
+      'src/store.ts': [
+        'export class Store {',
+        '  private db: Database;',
+        '  constructor(db: Database) { this.db = db; }',
+        '  init() {',
+        "    this.db.exec('CREATE TABLE t (id TEXT)');",
+        '  }',
+        '  insertRow(id: string) {',
+        "    return this.db.prepare('INSERT INTO t VALUES (?)').run(id);",
+        '  }',
+        '}',
+        'export interface Database { exec(sql: string): void; prepare(sql: string): { run(id: string): void }; }',
+        '',
+      ].join('\n'),
+    });
+
+    // A driver handle's execution verbs ARE the data-access surface for a
+    // codebase with no ORM; the vocabulary has to cover them or the whole
+    // surface disappears.
+    const names = exits.filter(exit => exit.type === 'database').map(exit => exit.name);
+    expect(names).toEqual(expect.arrayContaining([expect.stringContaining('exec'), expect.stringContaining('prepare')]));
+  });
 });
