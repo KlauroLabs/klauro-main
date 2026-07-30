@@ -1215,6 +1215,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
     nodes: CASNode[],
     entryPoints: CASEntryPoint[]
   ): void {
+    const aliases = this.buildImportAliasMap(ast);
     const walk = (node: any, currentClass?: any) => {
       if (!node || typeof node !== 'object') return;
 
@@ -1222,7 +1223,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
 
       if (node.type === 'MethodDefinition' && node.decorators) {
         const onEventDecorator = node.decorators.find((dec: any) =>
-          dec.expression?.callee?.name === 'OnEvent'
+          this.isDecorator(dec, 'OnEvent', aliases)
         );
 
         if (onEventDecorator) {
@@ -1283,6 +1284,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
     nodes: CASNode[],
     entryPoints: CASEntryPoint[]
   ): void {
+    const aliases = this.buildImportAliasMap(ast);
     const walk = (node: any, currentClass?: any) => {
       if (!node || typeof node !== 'object') return;
       const activeClass = node.type === 'ClassDeclaration' ? node : currentClass;
@@ -1291,9 +1293,9 @@ export class NestJSAnalyzer extends BaseAnalyzer {
         const schedulerDecorators = ['Cron', 'Interval', 'Timeout'];
 
         node.decorators.forEach((decorator: any) => {
-          const decoratorName = decorator.expression?.callee?.name;
+          const decoratorName = this.resolveDecoratorName(decorator, aliases);
 
-          if (schedulerDecorators.includes(decoratorName)) {
+          if (decoratorName && schedulerDecorators.includes(decoratorName)) {
             const methodName = node.key?.name || 'scheduledTask';
 
             // Find the parent class
@@ -1367,13 +1369,14 @@ export class NestJSAnalyzer extends BaseAnalyzer {
     nodes: CASNode[],
     entryPoints: CASEntryPoint[]
   ): void {
+    const aliases = this.buildImportAliasMap(ast);
     const walk = (node: any) => {
       // Check for @Processor decorator on classes
       if (!node || typeof node !== 'object') return;
 
       if (node.type === 'ClassDeclaration' && node.decorators) {
         const processorDecorator = node.decorators.find((dec: any) =>
-          dec.expression?.callee?.name === 'Processor'
+          this.isDecorator(dec, 'Processor', aliases)
         );
 
         if (processorDecorator && node.id) {
@@ -1386,7 +1389,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
             node.body.body.forEach((member: any) => {
               if (member.type === 'MethodDefinition' && member.decorators) {
                 const processDecorator = member.decorators.find((dec: any) =>
-                  dec.expression?.callee?.name === 'Process'
+                  this.isDecorator(dec, 'Process', aliases)
                 );
 
                 if (processDecorator) {
@@ -1437,16 +1440,17 @@ export class NestJSAnalyzer extends BaseAnalyzer {
     nodes: CASNode[],
     entryPoints: CASEntryPoint[]
   ): void {
+    const aliases = this.buildImportAliasMap(ast);
     const walk = (node: any, currentClass?: any) => {
       if (!node || typeof node !== 'object') return;
       const activeClass = node.type === 'ClassDeclaration' ? node : currentClass;
 
       if (node.type === 'MethodDefinition' && node.decorators) {
         const messagePatternDecorator = node.decorators.find((dec: any) =>
-          dec.expression?.callee?.name === 'MessagePattern'
+          this.isDecorator(dec, 'MessagePattern', aliases)
         );
         const eventPatternDecorator = node.decorators.find((dec: any) =>
-          dec.expression?.callee?.name === 'EventPattern'
+          this.isDecorator(dec, 'EventPattern', aliases)
         );
 
         if (messagePatternDecorator || eventPatternDecorator) {
@@ -1617,13 +1621,14 @@ export class NestJSAnalyzer extends BaseAnalyzer {
     nodes: CASNode[],
     entryPoints: CASEntryPoint[]
   ): void {
+    const aliases = this.buildImportAliasMap(ast);
     const walk = (node: any) => {
       // Check for @Command decorator (nest-commander)
       if (!node || typeof node !== 'object') return;
 
       if (node.type === 'ClassDeclaration' && node.decorators) {
         const commandDecorator = node.decorators.find((dec: any) =>
-          dec.expression?.callee?.name === 'Command'
+          this.isDecorator(dec, 'Command', aliases)
         );
 
         if (commandDecorator && node.id) {
@@ -1652,7 +1657,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
 
       if (node.type === 'MethodDefinition' && node.decorators) {
         const subCommandDecorator = node.decorators.find((dec: any) =>
-          dec.expression?.callee?.name === 'SubCommand'
+          this.isDecorator(dec, 'SubCommand', aliases)
         );
 
         if (subCommandDecorator) {
@@ -1768,6 +1773,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
   }
 
   private extractModuleInfo(ast: TSESTree.Program, filePath: string): NestModule | null {
+    const aliases = this.buildImportAliasMap(ast);
     let moduleInfo: NestModule | null = null;
 
     const walk = (node: any) => {
@@ -1775,7 +1781,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
 
       if (node.type === 'ClassDeclaration' && node.decorators) {
         const moduleDecorator = node.decorators.find((dec: any) =>
-          dec.expression?.callee?.name === 'Module'
+          this.isDecorator(dec, 'Module', aliases)
         );
 
         if (moduleDecorator && node.id) {
@@ -1787,7 +1793,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
             controllers: metadata.controllers || [],
             providers: metadata.providers || [],
             exports: metadata.exports || [],
-            isGlobal: node.decorators.some((dec: any) => dec.expression?.callee?.name === 'Global')
+            isGlobal: node.decorators.some((dec: any) => this.isDecorator(dec, 'Global', aliases))
           };
         }
       }
@@ -1808,6 +1814,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
   }
 
   private extractControllerInfo(ast: TSESTree.Program, filePath: string): NestController | null {
+    const aliases = this.buildImportAliasMap(ast);
     let controllerInfo: NestController | null = null;
     const isControllerFile = this.isControllerFile(filePath);
 
@@ -1816,7 +1823,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
 
       if (node.type === 'ClassDeclaration' && node.decorators) {
         const controllerDecorator = node.decorators.find((dec: any) => {
-          const name = dec.expression?.callee?.name;
+          const name = this.resolveDecoratorName(dec, aliases);
           return name && CONTROLLER_PATTERNS.some(pattern => pattern.test(name));
         });
 
@@ -1831,10 +1838,10 @@ export class NestJSAnalyzer extends BaseAnalyzer {
           const basePath = controllerDecorator
             ? (this.extractDecoratorArgument(controllerDecorator) || '')
             : '';
-          const routes = this.extractRoutes(node);
-          const guards = this.extractClassDecorators(node, 'UseGuards');
-          const interceptors = this.extractClassDecorators(node, 'UseInterceptors');
-          const pipes = this.extractClassDecorators(node, 'UsePipes');
+          const routes = this.extractRoutes(node, aliases);
+          const guards = this.extractClassDecorators(node, 'UseGuards', aliases);
+          const interceptors = this.extractClassDecorators(node, 'UseInterceptors', aliases);
+          const pipes = this.extractClassDecorators(node, 'UsePipes', aliases);
 
           controllerInfo = {
             name: node.id.name,
@@ -1845,7 +1852,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
             interceptors,
             pipes,
             dependencies: this.extractConstructorDependencies(node),
-            decorators: this.extractAllDecoratorNames(node.decorators)
+            decorators: this.extractAllDecoratorNames(node.decorators, aliases)
           };
         }
       }
@@ -1881,6 +1888,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
   }
 
   private extractProviderInfo(ast: TSESTree.Program, filePath: string): NestProvider | null {
+    const aliases = this.buildImportAliasMap(ast);
     let providerInfo: NestProvider | null = null;
 
     const isDataAccessLayerFile = (path: string): boolean => {
@@ -1907,7 +1915,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
       if (node.type === 'ClassDeclaration' && node.id) {
         const hasDecorators = node.decorators && node.decorators.length > 0;
         const injectableDecorator = hasDecorators && node.decorators.find((dec: any) =>
-          dec.expression?.callee?.name === 'Injectable'
+          this.isDecorator(dec, 'Injectable', aliases)
         );
 
         const className = node.id.name;
@@ -1948,6 +1956,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
   }
 
   private extractGuardInfo(ast: TSESTree.Program, filePath: string): NestGuard | null {
+    const aliases = this.buildImportAliasMap(ast);
     let guardInfo: NestGuard | null = null;
 
     const walk = (node: any) => {
@@ -1955,7 +1964,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
 
       if (node.type === 'ClassDeclaration' && node.decorators) {
         const injectableDecorator = node.decorators.find((dec: any) =>
-          dec.expression?.callee?.name === 'Injectable'
+          this.isDecorator(dec, 'Injectable', aliases)
         );
 
         if (injectableDecorator && node.id) {
@@ -1989,6 +1998,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
   }
 
   private extractMiddlewareInfo(ast: TSESTree.Program, filePath: string): NestMiddleware | null {
+    const aliases = this.buildImportAliasMap(ast);
     let middlewareInfo: NestMiddleware | null = null;
 
     const walk = (node: any) => {
@@ -1996,7 +2006,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
 
       if (node.type === 'ClassDeclaration' && node.decorators) {
         const injectableDecorator = node.decorators.find((dec: any) =>
-          dec.expression?.callee?.name === 'Injectable'
+          this.isDecorator(dec, 'Injectable', aliases)
         );
 
         if (injectableDecorator && node.id) {
@@ -2029,26 +2039,26 @@ export class NestJSAnalyzer extends BaseAnalyzer {
     return middlewareInfo;
   }
 
-  private extractRoutes(classNode: any): NestRoute[] {
+  private extractRoutes(classNode: any, aliases?: Map<string, string>): NestRoute[] {
     const routes: NestRoute[] = [];
 
     if (classNode.body && classNode.body.body) {
       classNode.body.body.forEach((member: any) => {
         if (member.type === 'MethodDefinition' && member.decorators) {
           const httpDecorator = member.decorators.find((dec: any) => {
-            const name = dec.expression?.callee?.name;
+            const name = this.resolveDecoratorName(dec, aliases);
             return name && HTTP_DECORATOR_PATTERNS.some(pattern => pattern.test(name));
           });
 
           if (httpDecorator) {
-            const decoratorName = httpDecorator.expression.callee.name.toLowerCase();
+            const decoratorName = (this.resolveDecoratorName(httpDecorator, aliases) || '').toLowerCase();
             const method = HTTP_METHOD_MAP[decoratorName] || this.extractMethodFromName(decoratorName);
             const path = this.extractDecoratorArgument(httpDecorator) || '/';
             const handlerName = member.key.name;
             const parameters = this.extractMethodParameters(member);
-            const guards = this.extractMethodDecorators(member, 'UseGuards');
-            const pipes = this.extractMethodDecorators(member, 'UsePipes');
-            const interceptors = this.extractMethodDecorators(member, 'UseInterceptors');
+            const guards = this.extractMethodDecorators(member, 'UseGuards', aliases);
+            const pipes = this.extractMethodDecorators(member, 'UsePipes', aliases);
+            const interceptors = this.extractMethodDecorators(member, 'UseInterceptors', aliases);
 
             routes.push({
               method,
@@ -2058,7 +2068,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
               guards,
               pipes,
               interceptors,
-              decorators: this.extractAllDecoratorNames(member.decorators)
+              decorators: this.extractAllDecoratorNames(member.decorators, aliases)
             });
           }
         }
@@ -2153,18 +2163,21 @@ export class NestJSAnalyzer extends BaseAnalyzer {
     return metadata;
   }
 
-  private extractAllDecoratorNames(decorators: any[] | undefined): string[] {
+  /** Decorator names as the framework knows them, with import aliases resolved —
+   *  a consumer looking for "Controller" must not miss a class that wrote
+   *  `@Ctrl` because the import renamed it. */
+  private extractAllDecoratorNames(decorators: any[] | undefined, aliases?: Map<string, string>): string[] {
     return (decorators || [])
-      .map((dec: any) => dec.expression?.callee?.name || dec.expression?.name)
+      .map((dec: any) => this.resolveDecoratorName(dec, aliases))
       .filter((name: any): name is string => typeof name === 'string');
   }
 
-  private extractClassDecorators(classNode: any, decoratorName: string): string[] {
+  private extractClassDecorators(classNode: any, decoratorName: string, aliases?: Map<string, string>): string[] {
     const decorators: string[] = [];
 
     if (classNode.decorators) {
       classNode.decorators.forEach((dec: any) => {
-        if (dec.expression?.callee?.name === decoratorName) {
+        if (this.isDecorator(dec, decoratorName, aliases)) {
           const args = this.extractDecoratorArguments(dec);
           decorators.push(...args);
         }
@@ -2174,12 +2187,12 @@ export class NestJSAnalyzer extends BaseAnalyzer {
     return decorators;
   }
 
-  private extractMethodDecorators(methodNode: any, decoratorName: string): string[] {
+  private extractMethodDecorators(methodNode: any, decoratorName: string, aliases?: Map<string, string>): string[] {
     const decorators: string[] = [];
 
     if (methodNode.decorators) {
       methodNode.decorators.forEach((dec: any) => {
-        if (dec.expression?.callee?.name === decoratorName) {
+        if (this.isDecorator(dec, decoratorName, aliases)) {
           const args = this.extractDecoratorArguments(dec);
           decorators.push(...args);
         }
@@ -3621,6 +3634,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
 
 
   private findModuleClassNode(ast: TSESTree.Program): any {
+    const aliases = this.buildImportAliasMap(ast);
     let moduleNode: any = null;
 
     const walk = (node: any) => {
@@ -3628,7 +3642,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
 
       if (node.type === 'ClassDeclaration' && node.decorators) {
         const hasModuleDecorator = node.decorators.some((dec: any) =>
-          dec.expression?.callee?.name === 'Module'
+          this.isDecorator(dec, 'Module', aliases)
         );
         if (hasModuleDecorator) {
           moduleNode = node;
