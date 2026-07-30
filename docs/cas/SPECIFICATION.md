@@ -51,7 +51,7 @@ This specification defines:
 - Query interfaces for information retrieval
 - Extension mechanisms for future capabilities
 
-CAS is scoped to a single project, repo, folder, or codebase analysis. Multi-project composition is defined by the Workspace Analysis Specification (WAS), which is generated after all associated CAS outputs complete and MUST be derivable from those CAS outputs without source-code reads.
+CAS is scoped to a single project, repo, folder, or codebase analysis. Multi-project composition is defined by the Workspace Analysis Specification (WAS), which is generated after all associated CAS outputs complete and MUST be derivable from those CAS outputs without source-code reads. A single repo that itself resolves two or more independently shippable units MAY further decompose into per-deployable slices under the Deployable Analysis Specification (DAS, docs/das/SPECIFICATION.md); a DAS slice is derived from this repo's own completed CAS facts, never a second source-level parse.
 
 This specification does NOT define:
 - Visualization or presentation formats
