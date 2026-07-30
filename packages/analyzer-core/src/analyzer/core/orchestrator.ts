@@ -22628,7 +22628,11 @@ export class AnalyzerOrchestrator {
       entries: BehaviorEntry[];
     }
 
-    const surfaces = new Map<string, BehaviorSurface>();
+    // PASS 1: filter + group by kind only — no subject/prefix decided yet.
+    // Kind grouping depends only on entry type / registration node type, never
+    // on trigger fields, so it is safe to do this before the subject-field
+    // choice below.
+    const rawSurfaces = new Map<string, { kindEvidence: 'registration' | 'entry-type'; eps: CASEntryPoint[] }>();
     for (const ep of entryPoints) {
       await maybeYield();
       const type = String(ep.type || '').toLowerCase();
@@ -22646,14 +22650,6 @@ export class AnalyzerOrchestrator {
       const registrationKind = nodeType && !genericNodeTypes.has(nodeType) ? nodeType : undefined;
       if (!registrationKind && !behaviorEntryTypes.has(type)) continue;
 
-      // The SUBJECT of the entry: the registered event/command/tool name.
-      const rawSubject = String(ep.trigger?.event || ep.trigger?.pattern || ep.name || '');
-      const subjectTokens = rawSubject
-        .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
-        .toLowerCase()
-        .split(/[^a-z0-9]+/)
-        .filter(Boolean);
-
       // DOM/UI interaction handlers (Page click/change/submit…) are page
       // plumbing wired by the component analyzers, not a behavior family.
       // Tested against the registered EVENT name only (every token DOM-shaped),
@@ -22669,36 +22665,94 @@ export class AnalyzerOrchestrator {
         continue;
       }
 
-      // Family prefix = first meaningful SUBJECT token. Transport lead-ins
-      // ("SOCKET game:action") and grammatical action verbs (get_/run_) are
-      // skipped/rejected — they name the wire or the operation, not a family.
-      const firstToken = subjectTokens.find(token =>
-        !/^(socket|sockets|event|events|message|messages|cmd|command|commands|on|emit|ws|handler|handlers)$/.test(token));
-      let prefix: string | undefined;
-      if (firstToken && firstToken.length > 2) {
-        const normalized = this.normalizeDomainToken(firstToken);
-        if (normalized &&
-          !AnalyzerOrchestrator.BEHAVIOR_ACTION_VERB_PREFIXES.has(normalized) &&
-          !AnalyzerOrchestrator.DOM_INTERACTION_EVENT_TOKENS.has(normalized) &&
-          !this.isGenericCapabilityToken(normalized) &&
-          !this.isGenericDomainToken(normalized) &&
-          !isCapabilityNoiseToken(normalized) &&
-          !isLanguageBuiltinDomainToken(normalized)) {
-          prefix = normalized;
-        }
-      }
-
       // Normalize separator spelling so analyzers that stamp 'mcp_tool' and
       // 'mcp-tool' contribute to ONE surface.
       const kind = (registrationKind || type).replace(/-/g, '_');
-      if (!surfaces.has(kind)) {
-        surfaces.set(kind, {
-          kind,
-          kindEvidence: registrationKind ? 'registration' : 'entry-type',
-          entries: [],
-        });
-      }
-      surfaces.get(kind)!.entries.push({ ep, prefix });
+      const bucket = rawSurfaces.get(kind);
+      if (bucket) bucket.eps.push(ep);
+      else rawSurfaces.set(kind, { kindEvidence: registrationKind ? 'registration' : 'entry-type', eps: [ep] });
+    }
+
+    /**
+     * TASK #99 (lost tool names): which trigger field actually carries the
+     * SUBJECT of an entry is analyzer-specific, and at least two analyzers
+     * (an MCP-tool duplicate-detection path, a Rails background-job path)
+     * stamp a CONSTANT `trigger.event` (a protocol/lifecycle marker shared by
+     * every entry they emit — 'mcp.tool.call', 'perform') while the entry's
+     * own distinguishing identity sits unused in `trigger.pattern` or
+     * `ep.name`. Because `trigger.event` was tried first unconditionally,
+     * that constant marker always won and every entry from such a path
+     * presented the SAME subject — collapsing hundreds of functionally
+     * distinct tools/jobs into one spurious "family" before either the
+     * name-prefix or module-cohesion clustering below ever got a chance to
+     * differentiate them.
+     *
+     * This is a structural choice, not a protocol special-case: for each
+     * kind-surface, prefer whichever of {event, pattern, name} has the
+     * HIGHEST number of DISTINCT non-empty values across that surface's own
+     * entries (ties keep the original event > pattern > name precedence) —
+     * i.e. prefer the field that actually distinguishes entries, over one
+     * that happens to run first. A surface where `trigger.event` genuinely
+     * IS the varying, meaningful subject (socket.io's `game:action` /
+     * `lobby:create`) keeps using it, because there it has the highest
+     * cardinality already. Computed once per surface, not per entry — this
+     * is corpus-shape evidence (document frequency), the same principle
+     * `rankCatalogPromptCandidates`'s nonDiscriminative-token filter and
+     * `hopDfLimit` already apply elsewhere in this file.
+     */
+    const chooseSubjectField = (eps: CASEntryPoint[]): 'event' | 'pattern' | 'name' => {
+      const distinctCount = (values: Array<string | undefined>): number =>
+        new Set(values.filter((value): value is string => Boolean(value))).size;
+      const eventCount = distinctCount(eps.map(ep => ep.trigger?.event));
+      const patternCount = distinctCount(eps.map(ep => ep.trigger?.pattern));
+      const nameCount = distinctCount(eps.map(ep => ep.name));
+      if (eventCount >= patternCount && eventCount >= nameCount) return 'event';
+      if (patternCount >= nameCount) return 'pattern';
+      return 'name';
+    };
+
+    const surfaces = new Map<string, BehaviorSurface>();
+    for (const [kind, { kindEvidence, eps }] of rawSurfaces.entries()) {
+      const subjectField = chooseSubjectField(eps);
+      const entries: BehaviorEntry[] = eps.map(ep => {
+        const rawSubject = String(
+          (subjectField === 'event' ? ep.trigger?.event : undefined) ||
+          (subjectField === 'pattern' ? ep.trigger?.pattern : undefined) ||
+          (subjectField === 'name' ? ep.name : undefined) ||
+          // Falls through to the full original precedence when the chosen
+          // field is empty for THIS particular entry (a surface can mix
+          // entries from analyzers that populate different fields) — never
+          // leaves an entry subject-less just because the surface-wide
+          // winner happened not to apply to it.
+          ep.trigger?.event || ep.trigger?.pattern || ep.name || ''
+        );
+        const subjectTokens = rawSubject
+          .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+          .toLowerCase()
+          .split(/[^a-z0-9]+/)
+          .filter(Boolean);
+
+        // Family prefix = first meaningful SUBJECT token. Transport lead-ins
+        // ("SOCKET game:action") and grammatical action verbs (get_/run_) are
+        // skipped/rejected — they name the wire or the operation, not a family.
+        const firstToken = subjectTokens.find(token =>
+          !/^(socket|sockets|event|events|message|messages|cmd|command|commands|on|emit|ws|handler|handlers)$/.test(token));
+        let prefix: string | undefined;
+        if (firstToken && firstToken.length > 2) {
+          const normalized = this.normalizeDomainToken(firstToken);
+          if (normalized &&
+            !AnalyzerOrchestrator.BEHAVIOR_ACTION_VERB_PREFIXES.has(normalized) &&
+            !AnalyzerOrchestrator.DOM_INTERACTION_EVENT_TOKENS.has(normalized) &&
+            !this.isGenericCapabilityToken(normalized) &&
+            !this.isGenericDomainToken(normalized) &&
+            !isCapabilityNoiseToken(normalized) &&
+            !isLanguageBuiltinDomainToken(normalized)) {
+            prefix = normalized;
+          }
+        }
+        return { ep, prefix };
+      });
+      surfaces.set(kind, { kind, kindEvidence, entries });
     }
 
     // Bounded call-graph reachability (2 hops) from a cluster's handlers —
@@ -22991,6 +23045,14 @@ export class AnalyzerOrchestrator {
     const candidateEntities = new Set(candidate.related_entities);
     const candidateDomain = this.normalizeDomainToken(
       String(candidate.related_domains[0] || '').toLowerCase());
+    // TASK #99 (entity-free merge gate): a candidate's TRUE size — the real
+    // entry-point count the behavior surface represents, not the capped
+    // `operations` sample — governs how much scepticism a bare domain-token
+    // match deserves below. Reuses behaviorSurfaceEntryCount, the same
+    // criticality_factors[0]-derived count LARGE_BEHAVIOR_SURFACE_OPERATION_THRESHOLD
+    // already uses for this exact "candidate carries more evidence than its
+    // capped operations array can show" reason.
+    const candidateTrueSize = this.behaviorSurfaceEntryCount(candidate);
 
     let best: SystemCapability | undefined;
     let bestScore = 0;
@@ -23021,6 +23083,33 @@ export class AnalyzerOrchestrator {
           .filter(Boolean));
       const subjectAgreement = Boolean(candidateDomain) && targetTokens.has(candidateDomain);
       if (!domainMatch && !(entityOverlap && subjectAgreement)) continue;
+      // TASK #99 (entity-free merge gate): a bare `domainMatch` — two things
+      // sharing one textual token — is a HINT, not proof, and was previously
+      // sufficient on its own regardless of any entity evidence. Live-probed
+      // on this repo: a 210-tool MCP registration engine absorbed into a
+      // 1-operation "MCP Server" placeholder at sharedEntities=0, purely
+      // because both sides' domain token normalized to the same word. Two
+      // independent conditions now each require the merge to be BACKED BY
+      // ENTITY EVIDENCE, not just corroborated by it:
+      //   1. The candidate carries entity evidence of its own (entities.size
+      //      > 0) — if it names entities and none of them match the target's,
+      //      the domain-token coincidence is directly contradicted, not
+      //      merely unconfirmed.
+      //   2. The candidate is LARGE relative to what it would be absorbed
+      //      into (>= the same BEHAVIOR_SURFACE_MIN_ENTRIES bar that defines
+      //      "a real surface", and markedly bigger than the target's own
+      //      current operation count) — a large surface swallowing into a
+      //      small existing capability is exactly backwards evidence-wise
+      //      regardless of which side happens to be entity-free, so it needs
+      //      the same entity proof a small, low-risk merge does not.
+      // A domain-token match on a small, entity-free candidate (a 5-entry
+      // sibling family, say) still merges as before — the goal is fewer
+      // ungrounded merges, not fewer merges.
+      if (domainMatch && !entityOverlap) {
+        const sizeAsymmetric = candidateTrueSize >= AnalyzerOrchestrator.BEHAVIOR_SURFACE_MIN_ENTRIES &&
+          candidateTrueSize > capability.operations.length * 3;
+        if (candidateEntities.size > 0 || sizeAsymmetric) continue;
+      }
       // Exact domain identity dominates; entity-confirmed subject agreement next.
       const score = (domainMatch ? 1000 : 0) + (subjectAgreement ? 100 : 0) + sharedEntities * 2;
       if (!best || score > bestScore) {
