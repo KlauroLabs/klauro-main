@@ -228,7 +228,7 @@ export function resolveDeclaredTypeShape(rawType: string | undefined): TypeShape
         type = args[0];
         continue;
       }
-      // An unrecognised generic is its own shape (e.g. `Money<USD>`), and a
+      // An unrecognised generic is its own shape (e.g. `Amount<USD>`), and a
       // generic whose head we cannot vouch for must not be unwrapped.
       return { name: undefined, collection };
     }
