@@ -3383,10 +3383,41 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     'update', 'delete', 'remove', 'count'
   ]);
 
+  /**
+   * A capitalized receiver used as a static store handle (`UserModel.find()`,
+   * `Order.findOne()`) — the ActiveRecord/Mongoose shape where the class itself
+   * is the query surface.
+   *
+   * Capitalization alone was the whole test, which made every module-level
+   * constant a store handle: `const LENSES = [...]; LENSES.find(...)` was
+   * emitted as a database exit, and so was `DEPLOYABLE_PERSPECTIVES.find(...)`
+   * — array lookups over literal config. Two receiver facts now have to hold,
+   * both about what the receiver IS rather than which method was called:
+   *   - it is not written in the universal constant convention (ALL_CAPS /
+   *     SCREAMING_SNAKE), which never names a class; and
+   *   - it does not resolve to a VALUE declaration in this repository. A name
+   *     declared here as a variable is a value, whatever its casing — a store
+   *     handle resolves to a class/entity or to nothing local at all (imported
+   *     from the ORM).
+   */
   private isModelLikeCaller(callerName: string): boolean {
     const lastPart = callerName.split('.').pop() || '';
-    return /^[A-Z][A-Za-z0-9_]*$/.test(lastPart);
+    if (!/^[A-Z][A-Za-z0-9_]*$/.test(lastPart)) return false;
+    if (/^[A-Z0-9_]+$/.test(lastPart)) return false;
+
+    const declarations = this.nodesByName.get(lastPart) || [];
+    if (declarations.length > 0 &&
+        declarations.every(node => TypeScriptJavaScriptAnalyzer.VALUE_DECLARATION_TYPES.has(node.type))) {
+      return false;
+    }
+    return true;
   }
+
+  /** Node types that declare a VALUE rather than a callable/queryable surface.
+   *  A receiver resolving only to these cannot be a store handle. */
+  private static readonly VALUE_DECLARATION_TYPES = new Set([
+    'variable', 'constant', 'property', 'parameter', 'field', 'enum'
+  ]);
 
   private isRepositoryLikeCaller(callerName: string): boolean {
     // MikroORM's `wrap(entity).assign(...)` / `wrap(entity).toObject()` helper —

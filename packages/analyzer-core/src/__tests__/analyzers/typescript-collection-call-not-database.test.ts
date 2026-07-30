@@ -121,4 +121,24 @@ describe('collection calls are not database exits', () => {
 
     expect(exits.filter(exit => exit.type === 'database')).toEqual([]);
   });
+  it('does not treat Array.find on a module constant as persistence', async () => {
+    const exits = await analyzeSources({
+      'src/lenses.ts': [
+        "const LENSES = [{ id: 'concepts' }, { id: 'deployables' }];",
+        "const Perspectives = [{ id: 'runtime' }];",
+        'export function pickLens(id: string) {',
+        '  return {',
+        '    lens: LENSES.find(entry => entry.id === id),',
+        '    perspective: Perspectives.find(entry => entry.id === id),',
+        '  };',
+        '}',
+        '',
+      ].join('\n'),
+    });
+
+    // Capitalization is not receiver evidence: ALL_CAPS is the constant
+    // convention, and a capitalized name declared here as a variable is a
+    // value. Neither is a store handle.
+    expect(exits.filter(exit => exit.type === 'database')).toEqual([]);
+  });
 });
