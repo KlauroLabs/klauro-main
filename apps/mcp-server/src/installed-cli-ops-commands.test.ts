@@ -192,13 +192,22 @@ test('the SHIPPED cli entry point implements `doctor` — it must not fall throu
 });
 
 test('the SHIPPED cli entry point implements `support-bundle` — it must not fall through to the usage block', async () => {
-  const result = runInstalledCliSync(['support-bundle', '--json']);
-  assert.doesNotMatch(result.stdout, /Usage: klauro <command>/, '`klauro support-bundle` printed the usage block — the command is not registered in installed-cli.ts');
-  const payload = JSON.parse(result.stdout) as { bundle_path: string; included: unknown[]; excluded: string[] };
-  assert.equal(typeof payload.bundle_path, 'string');
-  assert.ok(Array.isArray(payload.excluded) && payload.excluded.length > 0, 'support bundle must document what it deliberately excludes');
-  // Redaction: no secret-shaped value should ever appear in the manifest text.
-  assert.doesNotMatch(JSON.stringify(payload), /sk-[a-zA-Z0-9]{10,}/, 'support bundle must not leak an API-key-shaped value');
+  // --output into a temp dir: without it the bundle lands in process.cwd(),
+  // littering the package root with untracked tarballs that can trip
+  // infrastructure/vps/deploy.sh's dirty-working-tree guard.
+  const outputDir = mkdtempSync(path.join(os.tmpdir(), 'klauro-support-bundle-'));
+  try {
+    const outputPath = path.join(outputDir, 'support-bundle.tar.gz');
+    const result = runInstalledCliSync(['support-bundle', '--output', outputPath, '--json']);
+    assert.doesNotMatch(result.stdout, /Usage: klauro <command>/, '`klauro support-bundle` printed the usage block — the command is not registered in installed-cli.ts');
+    const payload = JSON.parse(result.stdout) as { bundle_path: string; included: unknown[]; excluded: string[] };
+    assert.equal(payload.bundle_path, outputPath);
+    assert.ok(Array.isArray(payload.excluded) && payload.excluded.length > 0, 'support bundle must document what it deliberately excludes');
+    // Redaction: no secret-shaped value should ever appear in the manifest text.
+    assert.doesNotMatch(JSON.stringify(payload), /sk-[a-zA-Z0-9]{10,}/, 'support bundle must not leak an API-key-shaped value');
+  } finally {
+    rmSync(outputDir, { recursive: true, force: true });
+  }
 });
 
 test('the shipped help text advertises status, doctor, and support-bundle', () => {
