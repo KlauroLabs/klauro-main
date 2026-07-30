@@ -142,10 +142,9 @@ per gate invocation.
 
 ## Spec-purity gate
 
-`deploy.sh` refuses to deploy if benchmark/client corpus names (e.g. `zerac`,
-`soon-lens`, `truckspy`, `hoggan`, `washup`, `miniflux`, `petclinic`) show up
-in the product's specs/doctrine docs (`docs/SPEC*.md`, `docs/was/`,
-`docs/cas/`, `docs/ARCHITECTURE.md`, `docs/UNDERSTANDING-MODEL.md`,
+`deploy.sh` refuses to deploy if benchmark/client corpus names show up in the
+product's specs/doctrine docs (`docs/SPEC*.md`, `docs/was/`, `docs/cas/`,
+`docs/ARCHITECTURE.md`, `docs/UNDERSTANDING-MODEL.md`,
 `docs/COVERAGE-INTELLIGENCE.md`) or in shipped product source
 (`packages/analyzer-core/src`, `apps/mcp-server/src`, `*.ts`), skipping
 `test`/`tests`/`fixture`/`fixtures`/`__tests__`/`gauntlet`/`bench`/`benchmark`/
@@ -158,11 +157,22 @@ straight into permanent product artifacts. This gate runs alongside the
 dirty-tree guard, before any VPS interaction, and prints every offending line
 with file:line context when it fires.
 
-The pattern list lives in ONE place — the `BENCHMARK_CORPUS_NAMES` variable
-near the top of the guard in `deploy.sh` — with a comment describing how to
-extend it: add the new benchmark/client repo's name there (and nowhere else)
-the next time one starts showing up in commit messages or comments.
+As of 2026-07-29 (open item #71) the forbidden-name set is no longer a
+hand-maintained literal list — it is DERIVED FROM EVIDENCE: real analyzed
+project/workspace names known to the account, names already narrated in this
+repo's own `test`/`fixture`/`gauntlet`/`bench`/`corpus` paths, and a
+fail-closed shape/context heuristic that flags a name never seen before when
+it appears in a customer/benchmark-naming sentence (`"the customer repo
+<x>"`, `"benchmarked against <x>"`). A hand-typed list only ever caught a name
+someone remembered to add; this catches a brand-new one the first time it
+shows up. The full policy, its precision tradeoffs, and its tests live in
+`apps/mcp-server/src/spec-purity-gate.ts` (invoked via
+`apps/mcp-server/src/spec-purity-gate-cli.ts`) — `deploy.sh` just calls it.
 
 As of 2026-07-17 the gate correctly fires against the current tree (a purge
 of existing violations is in progress); that is expected until the purge
-lands, not a bug in the gate.
+lands, not a bug in the gate. The evidence-derived gate above additionally
+surfaces several real violations the old static list never covered (e.g.
+customer/corpus names leaking into `orchestrator.ts` and
+`docs/COVERAGE-INTELLIGENCE.md`) — those are real, pre-existing doctrine
+violations for a follow-up cleanup, not new breakage from this change.
