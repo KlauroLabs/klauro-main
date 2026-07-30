@@ -17,6 +17,7 @@ import {
   CASRouteTableEntry,
   CASDatabaseSchema,
   CASDatabaseEntity,
+  CASDatabaseRelationship,
   CASExternalService,
   CASEntryPoint,
   ENTRY_POINT_TYPES,
@@ -168,6 +169,7 @@ import { cachedGlob as glob, beginGlobRun, endGlobRun } from './glob-cache';
 // the HTTP server, so long synchronous phases starve every request (incl.
 // /health) — see event-loop-yield.ts for the measured 524-starvation story.
 import { yieldToEventLoop, createYieldBudget } from './event-loop-yield';
+import { extractEntityRelations, cardinalityForRelationType, parseRelationDeclaration } from './entity-relations';
 import { globSync } from 'glob';
 import * as path from 'path';
 import * as crypto from 'crypto';
@@ -1761,7 +1763,7 @@ export class AnalyzerOrchestrator {
     await yieldToEventLoop();
     phaseStart = startPhase();
     const dataEntities = this.enrichCuratedProductDataEntities(
-      [...this.buildDataEntities(allNodes, allEdges, projectPath), ...declaredDataEntities],
+      [...this.buildDataEntities(allNodes, allEdges, projectPath, databaseSchema), ...declaredDataEntities],
       systemName,
       allNodes,
       projectPath
@@ -3316,7 +3318,7 @@ export class AnalyzerOrchestrator {
     const changeRisks = this.buildChangeRisks(nodes, edges, entryPoints, gitAnalyzer);
     const changeRiskSummary = this.buildChangeRiskSummary(changeRisks);
     const dataEntities = this.enrichCuratedProductDataEntities(
-      this.buildDataEntities(nodes, edges, projectPath),
+      this.buildDataEntities(nodes, edges, projectPath, databaseSchema),
       systemName,
       nodes,
       projectPath
@@ -8688,6 +8690,8 @@ export class AnalyzerOrchestrator {
 
         let relationType: string | undefined;
         let relTarget: string | undefined;
+        let relInverseField: string | undefined;
+        let relJoinTable: string | undefined;
 
         for (const ann of annotations) {
           if (ann.includes('OneToMany')) relationType = 'OneToMany';
@@ -8697,6 +8701,17 @@ export class AnalyzerOrchestrator {
 
           const targetMatch = ann.match(/\(\)\s*=>\s*(\w+)/);
           if (targetMatch) relTarget = targetMatch[1];
+
+          // The INVERSE side, when the declaration names it (`mappedBy` /
+          // `inversedBy` / `back_populates` / a `post => post.author` second
+          // arrow). Parsed by the shared relation-declaration parser so the
+          // ERD and the entity surface read the same vocabulary.
+          const parsed = parseRelationDeclaration(ann);
+          if (parsed) {
+            relInverseField = relInverseField || parsed.inverseField;
+            relJoinTable = relJoinTable || parsed.joinTable;
+            if (!relTarget && parsed.target) relTarget = parsed.target;
+          }
         }
 
         // Attribute-shape ORMs (Doctrine/Symfony) store the relation kind +
@@ -8708,6 +8723,11 @@ export class AnalyzerOrchestrator {
             relationType = relAttr;
             const targetAttr = (prop.metadata as any)?.attributes?.target_entity;
             if (targetAttr && targetAttr !== 'unknown') relTarget = String(targetAttr).split('\\').pop();
+            const inverseAttr = (prop.metadata as any)?.attributes;
+            relInverseField = relInverseField
+              || (inverseAttr?.inverse_field as string | undefined)
+              || (inverseAttr?.mappedBy as string | undefined)
+              || (inverseAttr?.inversedBy as string | undefined);
           }
         }
 
@@ -8726,7 +8746,9 @@ export class AnalyzerOrchestrator {
           entityRelationships.push({
             type: relationType as any,
             target: relTarget,
-            field: prop.name
+            field: prop.name,
+            ...(relInverseField ? { inverse_field: relInverseField } : {}),
+            ...(relJoinTable ? { join_table: relJoinTable } : {}),
           });
 
           const cardinality = relationType === 'OneToMany' ? '1:N' :
@@ -8759,6 +8781,13 @@ export class AnalyzerOrchestrator {
     // edge's `relationType`. Read those too so the relation graph is complete
     // for every ORM, not just decorator-based TypeORM.
     const entityById = new Map(entityNodes.map(n => [n.id, n]));
+    // Structured relations are recorded on the OWNING entity too, not just in
+    // the prose summary. `relationships_summary` is a string list — nothing
+    // downstream can render an ERD or compute a blast radius from it — so an
+    // edge-emitting ORM used to leave `entities[].relationships` almost empty
+    // while the summary listed hundreds of associations, and the ERD showed the
+    // handful that happened to also carry a property decorator.
+    const schemaEntityByName = new Map(entities.map(entity => [entity.name.toLowerCase(), entity]));
     for (const edge of edges) {
       const relType = (edge.metadata as any)?.attributes?.relationType as string | undefined;
       if (!relType) continue;
@@ -8770,6 +8799,26 @@ export class AnalyzerOrchestrator {
         relType === 'ManyToMany' ? 'N:M' : '1:1';
       const field = (edge.metadata as any)?.attributes?.field;
       relationships.push(`${src.name} ${cardinality} ${tgt.name}${field ? ` (via ${field})` : ''}`);
+
+      if (!/^(OneToOne|OneToMany|ManyToOne|ManyToMany)$/.test(relType)) continue;
+      const owner = schemaEntityByName.get(src.name.toLowerCase());
+      if (!owner) continue;
+      const already = owner.relationships.some(existing =>
+        existing.type === relType &&
+        existing.target.toLowerCase() === tgt.name.toLowerCase() &&
+        (existing.field || '') === (field || ''));
+      if (already) continue;
+      owner.relationships.push({
+        type: relType as CASDatabaseRelationship['type'],
+        target: tgt.name,
+        field: field || '',
+        ...((edge.metadata as any)?.attributes?.inverseField
+          ? { inverse_field: String((edge.metadata as any).attributes.inverseField) }
+          : {}),
+        ...((edge.metadata as any)?.attributes?.joinTable
+          ? { join_table: String((edge.metadata as any).attributes.joinTable) }
+          : {}),
+      });
     }
 
     // Method-based relations: Laravel Eloquent declares relations as model methods
@@ -13469,7 +13518,7 @@ export class AnalyzerOrchestrator {
       (entity.fields || []).map(field => `${field.name}:${field.type || 'unknown'}`),
     ]));
     const entityTargetContext = context.includeEntities ? {
-      relationsByName: this.buildEntityRelationsByName(context.nodes || [], context.edges || []),
+      relationsByName: this.buildEntityRelationsByName(context.nodes || [], context.edges || [], entities),
       capabilitiesByEntityId: this.buildCapabilitiesByEntityId(context.allCapabilitiesForEvidence || capabilities),
       journeysByEntityName: this.buildJourneysByEntityName(context.userJourneys || []),
     } : undefined;
@@ -13997,24 +14046,37 @@ export class AnalyzerOrchestrator {
    */
   private buildEntityRelationsByName(
     nodes: CASNode[],
-    edges: CASEdge[]
+    edges: CASEdge[],
+    entities: CASDataEntity[] = [],
   ): Map<string, Array<{ targetName: string; relationType: string; field?: string }>> {
     const byName = new Map<string, Array<{ targetName: string; relationType: string; field?: string }>>();
-    const nodesById = new Map<string, CASNode>();
-    for (const node of nodes) {
-      if (!nodesById.has(node.id)) nodesById.set(node.id, node);
+    // DATA relations only. An entity description grounded on
+    // "relates to <a UI component> (implements)" is worse than no relation
+    // evidence at all, and structural composition is not what a reader means
+    // by an entity's relations.
+    const graph = extractEntityRelations({ nodes, edges, dataEntities: entities });
+    for (const [key, relations] of graph.dataByEntityNameLower) {
+      byName.set(key, relations.map(relation => ({
+        targetName: relation.targetName,
+        relationType: relation.relationType,
+        field: relation.field,
+      })));
     }
-    for (const edge of edges) {
-      const relationType = (edge.metadata as any)?.attributes?.relationType as string | undefined;
-      if (!relationType) continue;
-      const source = nodesById.get(edge.source);
-      const target = nodesById.get(edge.target);
-      if (!source?.name || !target?.name) continue;
-      const key = source.name.toLowerCase();
-      const evidence = { targetName: target.name, relationType, field: (edge.metadata as any)?.attributes?.field };
-      const list = byName.get(key);
-      if (list) list.push(evidence);
-      else byName.set(key, [evidence]);
+    // Relations already persisted on the entity (analysis-time source-decorator
+    // evidence the stored graph does not carry) are merged in, not replaced.
+    for (const entity of entities) {
+      const key = entity.name.toLowerCase();
+      const persisted = (entity.relations || []).filter(relation => relation.kind === 'data');
+      if (!persisted.length) continue;
+      const list = byName.get(key) || [];
+      const seen = new Set(list.map(item => `${item.relationType}|${item.targetName}|${item.field || ''}`.toLowerCase()));
+      for (const relation of persisted) {
+        const dedupeKey = `${relation.relation_type}|${relation.target_name}|${relation.field || ''}`.toLowerCase();
+        if (seen.has(dedupeKey)) continue;
+        seen.add(dedupeKey);
+        list.push({ targetName: relation.target_name, relationType: relation.relation_type, field: relation.field });
+      }
+      byName.set(key, list);
     }
     return byName;
   }
@@ -17976,7 +18038,12 @@ export class AnalyzerOrchestrator {
     };
   }
 
-  private buildDataEntities(nodes: CASNode[], edges: CASEdge[], projectPath?: string): CASDataEntity[] {
+  private buildDataEntities(
+    nodes: CASNode[],
+    edges: CASEdge[],
+    projectPath?: string,
+    databaseSchema?: CASDatabaseSchema,
+  ): CASDataEntity[] {
     // ORM entities keyed by canonical identity (the name-derived entity id).
     // Multiple anchor nodes can describe the same entity (a framework analyzer's
     // model node + a language analyzer's class node, or two same-named models):
@@ -18248,7 +18315,149 @@ export class AnalyzerOrchestrator {
       entity.kind === 'api-response' ||
       !this.isInfrastructureShapedEntityName(entity.name)
     );
-    return withoutInfra.length > 0 ? withoutInfra : surfaced;
+    const finalEntities = withoutInfra.length > 0 ? withoutInfra : surfaced;
+
+    // Relations LAST, over the FINAL entity set: a relation may only target a
+    // surfaced entity, so the target gate has to see the set after every
+    // dedupe/kind/infrastructure filter above has run.
+    this.attachEntityRelations(finalEntities, nodes, edges, databaseSchema);
+    return finalEntities;
+  }
+
+  /**
+   * Populate `CASDataEntity.relations` (and flag the relation-declaring
+   * fields) from every relation carrier, via the shared evidence-gated
+   * extractor — see analyzer/core/entity-relations.ts for the carriers and the
+   * data-vs-structural split.
+   *
+   * `database_schema` is folded in as an EXTRA carrier because
+   * buildDatabaseSchema reads relation decorators off the SOURCE FILE
+   * (sourceDecoratorsForNode), evidence that exists only during analysis and
+   * is not otherwise persisted anywhere on the graph. Without this fold a
+   * decorator ORM's associations would be visible in the database-schema
+   * summary and nowhere else — exactly the split that left persisted entities
+   * with an empty relation list while their foreign keys sat in plain sight.
+   */
+  private attachEntityRelations(
+    entities: CASDataEntity[],
+    nodes: CASNode[],
+    edges: CASEdge[],
+    databaseSchema?: CASDatabaseSchema,
+  ): void {
+    const graph = extractEntityRelations({ nodes, edges, dataEntities: entities });
+    const canonicalByLower = new Map(entities.map(entity => [entity.name.toLowerCase(), entity.name]));
+
+    const relationsByEntity = new Map<string, CASDataEntity['relations']>();
+    const relationFieldsByEntity = new Map<string, Set<string>>();
+    const seen = new Set<string>();
+    const record = (
+      sourceKey: string,
+      relation: NonNullable<CASDataEntity['relations']>[number],
+    ) => {
+      // ONE data relation per (entity, field): a field declares at most one
+      // association, so a weaker carrier reading the same field differently (a
+      // typed-composition `1:1` over the decorator's `N:1`) must not double it.
+      // Carriers are folded strongest-first, so the first reading wins.
+      if (relation.kind === 'data' && relation.field
+        && relationFieldsByEntity.get(sourceKey)?.has(relation.field)) return;
+      const key = [
+        sourceKey,
+        relation.cardinality || relation.relation_type,
+        relation.target_name.toLowerCase(),
+        relation.field || '',
+        relation.kind,
+      ].join('|').toLowerCase();
+      if (seen.has(key)) return;
+      seen.add(key);
+      const list = relationsByEntity.get(sourceKey);
+      if (list) list.push(relation);
+      else relationsByEntity.set(sourceKey, [relation]);
+      if (relation.kind === 'data' && relation.field) {
+        let fields = relationFieldsByEntity.get(sourceKey);
+        if (!fields) {
+          fields = new Set<string>();
+          relationFieldsByEntity.set(sourceKey, fields);
+        }
+        fields.add(relation.field);
+      }
+    };
+
+    // Carrier A — the source-read relation decorators captured in
+    // database_schema. Strongest cardinality evidence, so it goes FIRST and
+    // the dedupe keeps it over a weaker typed-composition reading of the same
+    // field.
+    for (const schemaEntity of databaseSchema?.entities || []) {
+      const sourceKey = schemaEntity.name.toLowerCase();
+      if (!canonicalByLower.has(sourceKey)) continue;
+      for (const relation of schemaEntity.relationships || []) {
+        const targetName = canonicalByLower.get(String(relation.target || '').toLowerCase());
+        if (!targetName) continue;
+        record(sourceKey, {
+          target_name: targetName,
+          relation_type: relation.type,
+          kind: 'data',
+          cardinality: cardinalityForRelationType(relation.type),
+          field: relation.field || undefined,
+          inverse_field: relation.inverse_field || undefined,
+          join_table: relation.join_table || undefined,
+          evidence_source: 'orm-declaration',
+          evidence: `ORM relation ${relation.type}${relation.field ? ` declared on ${schemaEntity.name}.${relation.field}` : ''}`,
+        });
+      }
+    }
+
+    // Carrier B — everything the graph itself proves (ORM relation edges,
+    // property-level relation declarations, typed composition, structural
+    // interface/trait edges).
+    for (const [sourceKey, relations] of graph.dataByEntityNameLower) {
+      if (!canonicalByLower.has(sourceKey)) continue;
+      for (const relation of relations) {
+        record(sourceKey, {
+          target_name: relation.targetName,
+          relation_type: relation.relationType,
+          kind: 'data',
+          cardinality: relation.cardinality,
+          field: relation.field,
+          inverse_field: relation.inverseField,
+          owning: relation.owning,
+          join_table: relation.joinTable,
+          evidence_source: relation.evidenceSource,
+          evidence: relation.evidence,
+        });
+      }
+    }
+    for (const [sourceKey, relations] of graph.structuralByEntityNameLower) {
+      if (!canonicalByLower.has(sourceKey)) continue;
+      for (const relation of relations) {
+        record(sourceKey, {
+          target_name: relation.targetName,
+          relation_type: relation.relationType,
+          kind: 'structural',
+          field: relation.field,
+          evidence_source: relation.evidenceSource,
+          evidence: relation.evidence,
+        });
+      }
+    }
+
+    for (const entity of entities) {
+      const sourceKey = entity.name.toLowerCase();
+      const relations = relationsByEntity.get(sourceKey);
+      if (relations?.length) {
+        // Data relations first so a reader (human or agent) sees the data model
+        // before the structural composition, and a truncating consumer keeps
+        // the data model rather than the interface list.
+        entity.relations = [
+          ...relations.filter(relation => relation.kind === 'data'),
+          ...relations.filter(relation => relation.kind === 'structural'),
+        ];
+      }
+      const relationFields = relationFieldsByEntity.get(sourceKey);
+      if (!relationFields || !entity.fields) continue;
+      for (const field of entity.fields) {
+        if (relationFields.has(field.name)) field.is_relation = true;
+      }
+    }
   }
 
   /**

@@ -1241,6 +1241,10 @@ export function getDataEntities(
 
   const summarized = entities.slice(offset, offset + limit).map(e => {
     const classification = roleByEntityId.get(e.id);
+    const nameKey = e.name.toLowerCase();
+    const dataRelations = relationIndex.dataByEntityNameLower.get(nameKey) || [];
+    const structuralRelations = relationIndex.structuralByEntityNameLower.get(nameKey) || [];
+    const relationFieldNames = relationIndex.relationFieldsByEntityNameLower.get(nameKey) || new Set<string>();
     return {
       id: e.id,
       name: e.name,
@@ -1254,12 +1258,27 @@ export function getDataEntities(
       role: classification?.role,
       role_evidence: classification?.role_evidence,
       field_count: e.fields?.length || 0,
-      fields: (e.fields || []).slice(0, 10),
-      // ORM relation evidence (references edges carrying relationType),
-      // keyed by name in relationIndex — same evidence classifyEntityRole
-      // already consumes for role classification, now surfaced directly so a
-      // caller doesn't have to re-derive the entity graph itself.
-      relations: (relationIndex.byEntityNameLower.get(e.name.toLowerCase()) || []).slice(0, 10),
+      // A field that IS a relation is flagged rather than dropped: the column
+      // is real and callers still need its name/type, but it must not read as
+      // scalar state when a relation declaration or an entity-typed
+      // declaration proves it is a foreign key. See `relations` below for the
+      // relation itself (direction, cardinality, evidence).
+      fields: (e.fields || []).slice(0, 10).map(f =>
+        relationFieldNames.has(f.name) && !f.is_relation ? { ...f, is_relation: true } : f),
+      relation_field_names: [...relationFieldNames],
+      // DATA relations only — ORM associations (decorator, attribute, or
+      // analyzer-emitted edge) and typed composition where a field's type IS
+      // another extracted entity. Every entry cites the evidence that proves
+      // it; a field whose NAME merely looks like a foreign key yields nothing.
+      relations: dataRelations.slice(0, 25),
+      relation_count: dataRelations.length,
+      // STRUCTURAL relations (implements / uses_trait / extends) are a
+      // SEPARATE field. They are legitimate — an entity implementing an
+      // interface is a real edge — but they are not the data model, and they
+      // used to be the only thing in `relations`, which made a persisted
+      // entity look unrelated to everything it has a foreign key to.
+      structural_relations: structuralRelations.slice(0, 10),
+      structural_relation_count: structuralRelations.length,
       lifecycle_summary: {
         created_by_count: e.lifecycle?.created_by?.length || 0,
         read_by_count: e.lifecycle?.read_by?.length || 0,
@@ -2910,6 +2929,14 @@ const ERD_RELATION_KIND_TO_CARDINALITY: Record<string, ErdCardinality> = {
   ManyToMany: 'many-to-many',
 };
 
+/** The extractor's normalized cardinality -> the ERD vocabulary. */
+const ERD_EXTRACTED_CARDINALITY: Record<string, ErdCardinality> = {
+  '1:1': 'one-to-one',
+  '1:N': 'one-to-many',
+  'N:1': 'many-to-one',
+  'N:M': 'many-to-many',
+};
+
 // The Mermaid crow's-foot notation for the LEFT->RIGHT reading of the edge.
 // `from` side first. e.g. one-to-many: from ||--o{ to.
 const ERD_CARDINALITY_TO_MERMAID: Record<ErdCardinality, string> = {
@@ -2934,6 +2961,15 @@ export function buildErd(
   const emptyBreakdown = (): Record<ErdCardinality, number> => ({
     'one-to-one': 0, 'one-to-many': 0, 'many-to-one': 0, 'many-to-many': 0, unknown: 0,
   });
+
+  // The relation graph from EVERY carrier, not just `database_schema`. An ORM
+  // whose analyzer emits relation EDGES (rather than property decorators) used
+  // to leave `database_schema.entities[].relationships` nearly empty, and a
+  // typed-composition data model left it entirely empty — in both cases the
+  // ERD rendered a set of disconnected boxes even though the relations were
+  // provable from the stored graph. Reading the shared extractor here also
+  // means an analysis stored BEFORE relations were persisted still renders.
+  const relationGraph = buildEntityRelationIndex(cas);
 
   if (!schema || !schema.entities || schema.entities.length === 0) {
     return { orm: schema?.orm, entities: [], relationships: [], cardinality_breakdown: emptyBreakdown() };
@@ -2961,6 +2997,11 @@ export function buildErd(
   const relationships: ErdRelationship[] = [];
   const breakdown = emptyBreakdown();
   const relSeen = new Set<string>();
+  // (entity|field) pairs whose relation is already drawn. A field declares AT
+  // MOST ONE association, so a second carrier reading the same field with a
+  // different cardinality (a typed-composition `1:1` over a decorator's `N:1`)
+  // must not draw a second edge — that would render every relation twice.
+  const relFieldClaimed = new Set<string>();
 
   for (const ent of schema.entities) {
     if (wantEntity && ent.name.toLowerCase() !== wantEntity) {
@@ -2972,7 +3013,10 @@ export function buildErd(
     // field, or ends in a conventional `_id`/`Id` suffix AND names a known
     // entity. Only the former is strictly evidence-backed; the suffix heuristic
     // is a labelling aid (fk?), never a source of relationship edges.
-    const relationFieldNames = new Set((ent.relationships || []).map(r => r.field).filter(Boolean) as string[]);
+    const relationFieldNames = new Set([
+      ...((ent.relationships || []).map(r => r.field).filter(Boolean) as string[]),
+      ...(relationGraph.relationFieldsByEntityNameLower.get(ent.name.toLowerCase()) || []),
+    ]);
 
     const fields: ErdField[] = (ent.fields || []).map(f => {
       const looksFk =
@@ -3008,6 +3052,7 @@ export function buildErd(
       const key = `${ent.name}|${cardinality}|${rel.target}|${rel.field || ''}`.toLowerCase();
       if (relSeen.has(key)) continue;
       relSeen.add(key);
+      if (rel.field) relFieldClaimed.add(`${ent.name}|${rel.field}`.toLowerCase());
       relationships.push({
         from: ent.name,
         to: rel.target,
@@ -3015,6 +3060,38 @@ export function buildErd(
         field: rel.field || undefined,
         join_table: rel.join_table || undefined,
         evidence: `ORM relation ${rel.type}${rel.field ? ` via ${rel.field}` : ''}`,
+      });
+      breakdown[cardinality] += 1;
+    }
+  }
+
+  // Relations from the shared extractor, for every entity already in the
+  // diagram. Same evidence gate: the target must be a known entity. Dedupe is
+  // shared with the database_schema pass above via `relSeen`, so a relation
+  // proved by both carriers renders once.
+  const erdEntityNames = new Map(entities.map(e => [e.name.toLowerCase(), e.name]));
+  for (const [sourceKey, relations] of relationGraph.dataByEntityNameLower) {
+    const fromName = erdEntityNames.get(sourceKey);
+    if (!fromName) continue;
+    for (const relation of relations) {
+      const toName = erdEntityNames.get(relation.targetName.toLowerCase());
+      if (!toName) continue;
+      const cardinality: ErdCardinality =
+        ERD_EXTRACTED_CARDINALITY[relation.cardinality || ''] ||
+        ERD_RELATION_KIND_TO_CARDINALITY[relation.relationType] ||
+        'unknown';
+      const key = `${fromName}|${cardinality}|${toName}|${relation.field || ''}`.toLowerCase();
+      if (relSeen.has(key)) continue;
+      if (relation.field && relFieldClaimed.has(`${fromName}|${relation.field}`.toLowerCase())) continue;
+      relSeen.add(key);
+      if (relation.field) relFieldClaimed.add(`${fromName}|${relation.field}`.toLowerCase());
+      relationships.push({
+        from: fromName,
+        to: toName,
+        cardinality,
+        field: relation.field || undefined,
+        join_table: relation.joinTable || undefined,
+        evidence: relation.evidence,
       });
       breakdown[cardinality] += 1;
     }

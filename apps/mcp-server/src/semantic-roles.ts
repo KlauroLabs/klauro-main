@@ -22,7 +22,13 @@
  * carries the evidence that drove the decision. Nothing is fabricated.
  */
 
-import type { CASDomainConcept, CASDataEntity, CASNode, CASEdge } from '../../../packages/analyzer-core/src/types/cas.types';
+import type { CASDomainConcept, CASDataEntity, CASDatabaseSchema, CASNode, CASEdge } from '../../../packages/analyzer-core/src/types/cas.types';
+import {
+  cardinalityForRelationType,
+  extractEntityRelations,
+  type EntityRelationCardinality,
+  type EntityRelationEvidenceSource,
+} from '../../../packages/analyzer-core/src/analyzer/core/entity-relations';
 
 export type SemanticRole = 'core' | 'supporting' | 'infrastructure';
 
@@ -222,77 +228,217 @@ function roleFromConcepts(concepts: CASDomainConcept[] | undefined): { role?: Se
   };
 }
 
-/** A single ORM relation, resolved to real node names, keyed by the
+/** A single relation, resolved to real node names, keyed by the
  *  RELATION SOURCE entity's own name (lowercased) — the join key
- *  `classifyEntityRole` uses to look up "what does this entity relate to". */
+ *  `classifyEntityRole` uses to look up "what does this entity relate to".
+ *  `kind` distinguishes a DATA relation (ORM association / typed composition)
+ *  from a STRUCTURAL one (interface/trait/superclass), so a caller can never
+ *  mistake an interface list for the entity's data model. */
 export interface EntityRelationEvidence {
   targetName: string;
   relationType: string;
   field?: string;
+  kind: 'data' | 'structural';
+  cardinality?: EntityRelationCardinality;
+  inverseField?: string;
+  owning?: boolean;
+  joinTable?: string;
+  evidenceSource: EntityRelationEvidenceSource;
+  evidence: string;
 }
 
 export interface EntityRelationIndex {
+  /** Every relation (data first, then structural) — the shape role
+   *  classification consumes, since a trait-composed association is evidence
+   *  about an entity's shape just as an ORM relation is. */
   byEntityNameLower: Map<string, EntityRelationEvidence[]>;
+  /** DATA relations only — the entity's actual data model. */
+  dataByEntityNameLower: Map<string, EntityRelationEvidence[]>;
+  /** STRUCTURAL relations only (implements / trait / extends). */
+  structuralByEntityNameLower: Map<string, EntityRelationEvidence[]>;
+  /** Field names on each entity that ARE relations, not scalar columns. */
+  relationFieldsByEntityNameLower: Map<string, Set<string>>;
 }
 
 /**
- * Structural (non-ORM-relation) edge TYPES that also count as relation
- * evidence for a class-shaped entity: `implements an interface` / `uses a
- * trait` is a genuine structural relationship between the entity and
- * whatever it composes, even when no ORM `references` edge exists for it.
- * This matters for trait-composed join records (Doctrine's
- * `ConnectionBindTrait`/`ConnectionBindInterface` pattern, and equivalents
- * in other ORMs/languages): the field a trait contributes (e.g. a
- * `connection` association) is real on the class but is not always
- * re-emitted as its own `references` edge with `relationType` metadata by
- * the analyzer that walks the trait body — so relying on `references` edges
- * alone silently drops this relation. `implements`/`uses_trait` edges ARE
- * already emitted for every class regardless, so reusing them costs nothing
- * and only ever ADDS evidence a `references`-only reading would miss.
- */
-const STRUCTURAL_COMPOSITION_EDGE_TYPES = new Set(['implements', 'uses_trait']);
-
-/**
- * Build an entity-name-keyed relation index from the CAS node/edge graph.
- * ORM analyzers (Doctrine, TypeORM, Prisma, MikroORM, Eloquent, …) all emit
- * cross-entity relations as `references` edges carrying
- * `metadata.attributes.relationType` — the same convention the
- * database_schema ERD summary already reads (see buildDatabaseSchema's
- * "Edge-based relations" pass in orchestrator.ts). Keyed by NAME rather than
- * node id because a `CASDataEntity` (data_entities[]) and its originating
- * graph NODE (nodes[], the edge endpoint) carry different id schemes — the
- * entity name is the only reliable join key between the two.
+ * Build an entity-name-keyed relation index from the CAS.
  *
- * Also folds in `implements`/`uses_trait` structural edges (see
- * STRUCTURAL_COMPOSITION_EDGE_TYPES) tagged with the edge's own type as the
- * `relationType` — evidence a trait/interface-composed relation exists even
- * when the analyzer never re-emitted it as a `references` edge. This never
- * shrinks the evidence a caller sees, only adds to it.
+ * Delegates to the SHARED evidence-gated extractor
+ * (analyzer-core analyzer/core/entity-relations.ts) so the entity surface, the
+ * ERD, and role classification all read the same relation graph from the same
+ * carriers — ORM relation edges, property-level relation declarations, typed
+ * composition where a field's type IS another entity, and structural
+ * interface/trait edges. Previously this function read ONLY `references` edges
+ * carrying `relationType` plus `implements`/`uses_trait`, which meant a
+ * decorator-ORM entity's whole relation list could be one
+ * entity -> UI-component `implements` edge.
+ *
+ * Keyed by NAME rather than node id because a `CASDataEntity`
+ * (data_entities[]) and its originating graph NODE (nodes[], the edge
+ * endpoint) carry different id schemes — the entity name is the only reliable
+ * join key between the two.
+ *
+ * Relations already persisted on `data_entities[].relations` (written at
+ * analysis time, where source-level relation decorators are still readable)
+ * are preferred and merged in: they are the only carrier for a decorator ORM
+ * whose analyzer records nothing about the relation on the graph itself.
  */
-export function buildEntityRelationIndex(cas: { nodes?: CASNode[]; edges?: CASEdge[] }): EntityRelationIndex {
-  const byEntityNameLower = new Map<string, EntityRelationEvidence[]>();
-  const nodesById = new Map<string, CASNode>();
-  for (const node of cas.nodes || []) {
-    if (!nodesById.has(node.id)) nodesById.set(node.id, node);
-  }
-  for (const edge of cas.edges || []) {
-    const relationType = (edge.metadata as any)?.attributes?.relationType as string | undefined
-      || (STRUCTURAL_COMPOSITION_EDGE_TYPES.has(edge.type) ? edge.type : undefined);
-    if (!relationType) continue;
-    const source = nodesById.get(edge.source);
-    const target = nodesById.get(edge.target);
-    if (!source?.name || !target?.name) continue;
-    const key = source.name.toLowerCase();
-    const list = byEntityNameLower.get(key);
-    const evidence: EntityRelationEvidence = {
-      targetName: target.name,
-      relationType,
-      field: (edge.metadata as any)?.attributes?.field,
-    };
+export function buildEntityRelationIndex(
+  cas: {
+    nodes?: CASNode[];
+    edges?: CASEdge[];
+    data_entities?: CASDataEntity[];
+    database_schema?: CASDatabaseSchema;
+  },
+): EntityRelationIndex {
+  const graph = extractEntityRelations({
+    nodes: cas.nodes,
+    edges: cas.edges,
+    dataEntities: cas.data_entities,
+  });
+
+  const toEvidence = (relation: {
+    targetName: string; relationType: string; kind: 'data' | 'structural';
+    cardinality?: EntityRelationCardinality; field?: string; inverseField?: string;
+    owning?: boolean; joinTable?: string; evidenceSource: EntityRelationEvidenceSource; evidence: string;
+  }): EntityRelationEvidence => ({
+    targetName: relation.targetName,
+    relationType: relation.relationType,
+    field: relation.field,
+    kind: relation.kind,
+    cardinality: relation.cardinality,
+    inverseField: relation.inverseField,
+    owning: relation.owning,
+    joinTable: relation.joinTable,
+    evidenceSource: relation.evidenceSource,
+    evidence: relation.evidence,
+  });
+
+  const dataByEntityNameLower = new Map<string, EntityRelationEvidence[]>();
+  const structuralByEntityNameLower = new Map<string, EntityRelationEvidence[]>();
+  const relationFieldsByEntityNameLower = new Map<string, Set<string>>(
+    [...graph.relationFieldsByEntityNameLower].map(([key, set]) => [key, new Set(set)]),
+  );
+  const seen = new Set<string>();
+
+  const claimedDataFields = new Map<string, Set<string>>();
+  const add = (
+    bucket: Map<string, EntityRelationEvidence[]>,
+    key: string,
+    evidence: EntityRelationEvidence,
+  ) => {
+    // ONE data relation per (entity, field). A field declares at most one
+    // association, so the persisted analysis-time reading of it must not be
+    // joined by a weaker re-derivation of the same field from the stored graph.
+    if (evidence.kind === 'data' && evidence.field) {
+      const claimed = claimedDataFields.get(key);
+      if (claimed?.has(evidence.field)) return;
+      if (claimed) claimed.add(evidence.field);
+      else claimedDataFields.set(key, new Set([evidence.field]));
+    }
+    const dedupeKey = [
+      key, evidence.kind, (evidence.cardinality || evidence.relationType).toLowerCase(),
+      evidence.targetName.toLowerCase(), (evidence.field || '').toLowerCase(),
+    ].join('|');
+    if (seen.has(dedupeKey)) return;
+    seen.add(dedupeKey);
+    const list = bucket.get(key);
     if (list) list.push(evidence);
-    else byEntityNameLower.set(key, [evidence]);
+    else bucket.set(key, [evidence]);
+  };
+
+  // Persisted relations FIRST — analysis-time source-decorator evidence that
+  // cannot be re-derived from the stored graph, so it carries the strongest
+  // cardinality and wins the dedupe.
+  for (const entity of cas.data_entities || []) {
+    const key = entity.name.toLowerCase();
+    for (const relation of entity.relations || []) {
+      const evidence: EntityRelationEvidence = {
+        targetName: relation.target_name,
+        relationType: relation.relation_type,
+        field: relation.field,
+        kind: relation.kind,
+        cardinality: relation.cardinality,
+        inverseField: relation.inverse_field,
+        owning: relation.owning,
+        joinTable: relation.join_table,
+        evidenceSource: relation.evidence_source,
+        evidence: relation.evidence,
+      };
+      add(relation.kind === 'data' ? dataByEntityNameLower : structuralByEntityNameLower, key, evidence);
+      if (relation.kind === 'data' && relation.field) {
+        let fields = relationFieldsByEntityNameLower.get(key);
+        if (!fields) {
+          fields = new Set<string>();
+          relationFieldsByEntityNameLower.set(key, fields);
+        }
+        fields.add(relation.field);
+      }
+    }
   }
-  return { byEntityNameLower };
+
+  // `database_schema` relations SECOND. buildDatabaseSchema reads relation
+  // decorators off the SOURCE FILE during analysis — evidence that exists
+  // nowhere on the stored graph — so for a decorator ORM this is the only
+  // carrier that knows the real cardinality. Reading it here is what keeps the
+  // entity surface agreeing with the ERD on analyses stored BEFORE relations
+  // were persisted on the entity itself.
+  const schemaEntityNames = new Map(
+    (cas.database_schema?.entities || []).map(entity => [entity.name.toLowerCase(), entity.name]),
+  );
+  const knownTargetName = (name: string): string | undefined =>
+    (cas.data_entities || []).find(entity => entity.name.toLowerCase() === name.toLowerCase())?.name
+    || schemaEntityNames.get(name.toLowerCase());
+  for (const schemaEntity of cas.database_schema?.entities || []) {
+    const key = schemaEntity.name.toLowerCase();
+    for (const relation of schemaEntity.relationships || []) {
+      const targetName = relation.target ? knownTargetName(relation.target) : undefined;
+      if (!targetName) continue;
+      add(dataByEntityNameLower, key, {
+        targetName,
+        relationType: relation.type,
+        field: relation.field || undefined,
+        kind: 'data',
+        cardinality: cardinalityForRelationType(relation.type),
+        inverseField: relation.inverse_field,
+        joinTable: relation.join_table,
+        evidenceSource: 'orm-declaration',
+        evidence: `ORM relation ${relation.type}${relation.field ? ` declared on ${schemaEntity.name}.${relation.field}` : ''}`,
+      });
+      if (relation.field) {
+        let fields = relationFieldsByEntityNameLower.get(key);
+        if (!fields) {
+          fields = new Set<string>();
+          relationFieldsByEntityNameLower.set(key, fields);
+        }
+        fields.add(relation.field);
+      }
+    }
+  }
+
+  for (const [key, relations] of graph.dataByEntityNameLower) {
+    for (const relation of relations) add(dataByEntityNameLower, key, toEvidence(relation));
+  }
+  for (const [key, relations] of graph.structuralByEntityNameLower) {
+    for (const relation of relations) add(structuralByEntityNameLower, key, toEvidence(relation));
+  }
+
+  // Combined view: data relations first so a truncating consumer keeps the
+  // data model, structural composition after.
+  const byEntityNameLower = new Map<string, EntityRelationEvidence[]>();
+  for (const key of new Set([...dataByEntityNameLower.keys(), ...structuralByEntityNameLower.keys()])) {
+    byEntityNameLower.set(key, [
+      ...(dataByEntityNameLower.get(key) || []),
+      ...(structuralByEntityNameLower.get(key) || []),
+    ]);
+  }
+
+  return {
+    byEntityNameLower,
+    dataByEntityNameLower,
+    structuralByEntityNameLower,
+    relationFieldsByEntityNameLower,
+  };
 }
 
 /** Field-name vocabulary that corroborates a relation TARGET being an

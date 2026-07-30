@@ -3060,6 +3060,14 @@ export interface CASDataEntity {
     type: string;
     is_sensitive: boolean;
     validation?: string[];
+    /**
+     * True when this field IS a relation (see `relations`) rather than a plain
+     * scalar column. The field stays listed — the underlying column is real
+     * and callers still need its name/type — but it must not read as scalar
+     * state when a relation declaration or entity-typed declaration proves
+     * otherwise.
+     */
+    is_relation?: boolean;
   }>;
 
   lifecycle: {
@@ -3068,6 +3076,30 @@ export interface CASDataEntity {
     updated_by: string[];
     deleted_by: string[];
   };
+
+  /**
+   * Relations to OTHER entities, evidence-gated (see
+   * analyzer/core/entity-relations.ts). `kind` separates a DATA relation (an
+   * ORM association or a typed composition — the ERD/blast-radius content)
+   * from a STRUCTURAL one (interface/trait/superclass composition). Both are
+   * carried here so a consumer never has to guess which it is looking at, and
+   * so a structural edge can never masquerade as the entity's data model.
+   * `evidence` cites the decorator/attribute/edge/type that proves the
+   * relation; a field whose NAME merely looks like a foreign key produces no
+   * entry.
+   */
+  relations?: Array<{
+    target_name: string;
+    relation_type: string;
+    kind: 'data' | 'structural';
+    cardinality?: '1:1' | '1:N' | 'N:1' | 'N:M';
+    field?: string;
+    inverse_field?: string;
+    owning?: boolean;
+    join_table?: string;
+    evidence_source: 'orm-edge' | 'orm-declaration' | 'typed-composition' | 'structural-edge';
+    evidence: string;
+  }>;
 
   transformations?: Array<{
     from_node: string;
