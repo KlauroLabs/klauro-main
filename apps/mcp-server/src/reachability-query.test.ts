@@ -9,7 +9,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { getAffectedSet, assessChangeRisk } from './query';
-import { buildReachabilityIndexFromCas } from '../../../packages/analyzer-core/src/analyzer/core/reachability-index';
+import { buildReachabilityIndexFromCas, buildReachabilityIndex, callEdgePairs } from '../../../packages/analyzer-core/src/analyzer/core/reachability-index';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 
 /** Deterministic PRNG (mulberry32) so the random fixture is replayable. */
@@ -53,6 +53,14 @@ function makeFixtureCas(withIndex: boolean): CASOutput {
     const s = Math.floor(rand() * n);
     const t = Math.floor(rand() * n);
     if (s !== t) edges.push({ source: `fn:${s}`, target: `fn:${t}`, type: k % 2 === 0 ? 'contains' : 'references' });
+  }
+  // 'invokes' edges (dispatch/registration calls some analyzers emit instead
+  // of a literal 'calls' edge) — these DO count as reachability, and the
+  // index/traversal parity proof below must hold with them present.
+  for (let k = 0; k < 150; k++) {
+    const s = Math.floor(rand() * n);
+    const t = Math.floor(rand() * n);
+    if (s !== t) edges.push({ source: `fn:${s}`, target: `fn:${t}`, type: 'invokes' });
   }
   const method_calls = Array.from({ length: 60 }, (_, k) => ({
     caller_node: `fn:${Math.floor(rand() * n)}`,
@@ -98,6 +106,48 @@ test('getAffectedSet: index answer == traversal answer for every direction (pari
       assert.equal(slow.method, 'traversal');
       assert.deepEqual(fast.affected, slow.affected, `direction=${direction} seeds=${seeds.join(',')}`);
       assert.equal(fast.truncated, slow.truncated);
+    }
+  }
+});
+
+/**
+ * Task #100 compatibility proof: an analysis STORED BEFORE 'invokes' was
+ * added to the persisted index's closure carries a `reachability_index` with
+ * no `includes_invokes_edges` flag (it predates the field entirely — plain
+ * JSON, so the field is simply absent, not `false`). getAffectedSet must NOT
+ * trust that stale index just because it's present: doing so would silently
+ * hand back the pre-fix (narrower) answer forever, even though a fresh
+ * traversal — or a re-analysis — would report more. It must fall back to
+ * traversal, which reports the SAME (wider, invokes-inclusive) answer as a
+ * fresh index would.
+ */
+test('getAffectedSet: a pre-task#100 stored index (no includes_invokes_edges) is not trusted — falls back and still finds invokes-reached nodes', () => {
+  const cas = makeFixtureCas(false); // has 'invokes' edges in cas.edges, no index yet
+  // Simulate the OLD persisted shape: built over the OLD edge set (calls +
+  // method_calls only), no includes_invokes_edges flag — exactly what
+  // buildReachabilityIndexFromCas used to emit before this fix.
+  const staleIndex = buildReachabilityIndex(
+    cas.nodes.map(n => n.id),
+    callEdgePairs({ nodes: cas.nodes, edges: cas.edges, method_calls: cas.method_calls as any })
+  );
+  assert.equal((staleIndex as any).includes_invokes_edges, undefined, 'fixture must reproduce the pre-fix shape');
+  const staleCas: CASOutput = { ...cas, reachability_index: staleIndex };
+
+  const freshIndexCas = makeFixtureCas(true); // current buildReachabilityIndexFromCas: flag is true
+  assert.equal(freshIndexCas.reachability_index?.includes_invokes_edges, true);
+
+  const rand = rng(555);
+  for (let q = 0; q < 30; q++) {
+    const seeds = [`fn:${Math.floor(rand() * 400)}`];
+    for (const direction of ['upstream', 'downstream', 'both'] as const) {
+      const withStaleIndex = getAffectedSet(staleCas, seeds, { direction });
+      const withFreshIndex = getAffectedSet(freshIndexCas, seeds, { direction });
+      // The stale index must be REJECTED (traversal fallback used instead),
+      // and that fallback must agree with what the current, up-to-date index
+      // reports — never a narrower answer.
+      assert.equal(withStaleIndex.method, 'traversal', 'a pre-fix stored index must not be reused');
+      assert.equal(withFreshIndex.method, 'reachability_index');
+      assert.deepEqual(withStaleIndex.affected, withFreshIndex.affected, `direction=${direction} seed=${seeds[0]}`);
     }
   }
 });

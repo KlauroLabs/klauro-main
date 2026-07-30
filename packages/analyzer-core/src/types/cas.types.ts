@@ -841,6 +841,21 @@ export interface CASCommunity {
  */
 export interface CASReachabilityIndex {
   version: 1;
+  /**
+   * Content-coverage marker, NOT a format version (the CSR shape above is
+   * unchanged and still `version: 1`): true when this index's closure was
+   * built over 'calls' + resolved method_calls + 'invokes' edges
+   * (reachabilityEdgePairs, task #100); absent/false on analyses stored
+   * BEFORE that fix, whose closure covered 'calls' + method_calls only.
+   * Every consumer that can either rehydrate this persisted index OR fall
+   * back to rebuilding its own (query.ts's getAffectedSet,
+   * deployable-analysis.ts's DAS slice) MUST gate reuse on this flag being
+   * true — trusting presence alone would silently hand a stale, narrower
+   * closure to a caller that used to get the wider (invokes-inclusive) one
+   * from a from-scratch rebuild, on any analysis stored before this field
+   * existed.
+   */
+  includes_invokes_edges?: boolean;
   /** Sorted node ids; array position = compact node index. */
   node_ids: string[];
   /** comp_of[i] = SCC component of node_ids[i] (components canonically

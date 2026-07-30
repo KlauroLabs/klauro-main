@@ -2,6 +2,8 @@ import {
   buildReachabilityIndex,
   ReachabilityIndex,
   callEdgePairs,
+  reachabilityEdgePairs,
+  buildReachabilityIndexFromCas,
   type EdgePair,
 } from '../../analyzer/core/reachability-index';
 
@@ -279,5 +281,95 @@ describe('reachability-index: callEdgePairs', () => {
       ],
     });
     expect(pairs).toEqual([['a', 'b'], ['b', 'c']]);
+  });
+});
+
+describe('reachability-index: reachabilityEdgePairs', () => {
+  test('is callEdgePairs plus invokes edges', () => {
+    const cas = {
+      nodes: [{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'd' }],
+      edges: [
+        { source: 'a', target: 'b', type: 'calls' },
+        { source: 'a', target: 'c', type: 'contains' },
+        { source: 'b', target: 'd', type: 'invokes' },
+      ],
+      method_calls: [{ caller_node: 'b', target_node: 'c' }],
+    };
+    expect(reachabilityEdgePairs(cas)).toEqual([['a', 'b'], ['b', 'c'], ['b', 'd']]);
+    // callEdgePairs itself is unchanged (still excludes invokes) — only the
+    // reachability-specific superset adds it.
+    expect(callEdgePairs(cas)).toEqual([['a', 'b'], ['b', 'c']]);
+  });
+
+  test('buildReachabilityIndexFromCas includes invokes-reached nodes (superset over calls-only)', () => {
+    // a -calls-> b; b -invokes-> c (dispatch, no literal 'calls' edge to c).
+    const cas = {
+      nodes: [{ id: 'a' }, { id: 'b' }, { id: 'c' }],
+      edges: [
+        { source: 'a', target: 'b', type: 'calls' },
+        { source: 'b', target: 'c', type: 'invokes' },
+      ],
+      method_calls: [],
+    };
+    const persisted = buildReachabilityIndexFromCas(cas);
+    // The content-coverage marker consumers gate reuse on (see
+    // CASReachabilityIndex.includes_invokes_edges) must be set — this is what
+    // lets a consumer tell this apart from a pre-task#100 stored index.
+    expect(persisted.includes_invokes_edges).toBe(true);
+    const idx = ReachabilityIndex.from(persisted);
+    // Before this fix, buildReachabilityIndexFromCas excluded 'invokes', so
+    // a could not reach c through the index. It must now.
+    expect(idx.canReach('a', 'c')).toBe(true);
+    expect(idx.canReach('a', 'b')).toBe(true);
+  });
+
+  /**
+   * Task #100 acceptance criterion 2: "REACHABILITY ANSWERS MUST BE A
+   * SUPERSET. Adding edges can only ever make more things reachable. If
+   * anything becomes LESS reachable after the change, something is wrong —
+   * stop and report rather than adjusting until the numbers look nice.
+   * Verify this explicitly on real data, not by argument."
+   *
+   * Random-graph property test (not argument-only): for every seed and every
+   * direction, the affected set computed over the OLD edge definition
+   * (`callEdgePairs` — calls + resolved method_calls) must be a SUBSET of the
+   * affected set computed over the NEW one (`reachabilityEdgePairs` — the
+   * same plus 'invokes'). Never the reverse; never a divergent (non-nested)
+   * pair. Runs many random graphs plus many random seed sets per graph so a
+   * single lucky topology can't hide a violation.
+   */
+  test('superset property: old-edge-set reachability ⊆ new-edge-set reachability, every graph/seed/direction', () => {
+    for (let g = 0; g < 8; g++) {
+      const { nodes, edges: callEdges } = randomGraph(120, 260, 9000 + g);
+      // A second, disjoint-ish random edge set standing in for 'invokes' —
+      // some overlap with callEdges is fine and realistic (dispatch call
+      // sites that also happen to share an endpoint with a literal call).
+      const rand = rng(31337 + g);
+      const invokesEdges: EdgePair[] = [];
+      for (let k = 0; k < 90; k++) {
+        const s = nodes[Math.floor(rand() * nodes.length)];
+        const t = nodes[Math.floor(rand() * nodes.length)];
+        if (s !== t) invokesEdges.push([s, t]);
+      }
+
+      const oldIndex = ReachabilityIndex.build(nodes, callEdges);
+      const newIndex = ReachabilityIndex.build(nodes, [...callEdges, ...invokesEdges]);
+
+      const seedRand = rng(2026 + g);
+      for (let q = 0; q < 25; q++) {
+        const seedCount = 1 + Math.floor(seedRand() * 3);
+        const seeds = Array.from({ length: seedCount }, () => nodes[Math.floor(seedRand() * nodes.length)]);
+        for (const direction of ['upstream', 'downstream', 'both'] as const) {
+          const oldResult = oldIndex.affectedSet(seeds, { direction });
+          const newResult = newIndex.affectedSet(seeds, { direction });
+          const newSet = new Set(newResult.affected);
+          for (const id of oldResult.affected) {
+            expect(newSet.has(id)).toBe(true);
+          }
+          // The new (superset-edge) answer is never SMALLER than the old one.
+          expect(newResult.affected.length).toBeGreaterThanOrEqual(oldResult.affected.length);
+        }
+      }
+    }
   });
 });

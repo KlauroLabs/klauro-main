@@ -503,7 +503,36 @@ export function callEdgePairs(cas: CallGraphLikeCas): EdgePair[] {
   return pairs;
 }
 
-/** Build the persistable index straight from a CAS-shaped object. */
+/**
+ * Directed edges any reachability CLOSURE must follow: `callEdgePairs` PLUS
+ * 'invokes' edges, which some analyzers emit for a dispatch/registration call
+ * (e.g. a route table entry, an event-handler registration) rather than a
+ * literal `calls` edge — a closure that stops at 'calls' silently loses those
+ * dispatch-reached nodes. This is the edge set the PERSISTED
+ * `cas.reachability_index` is built over (see buildReachabilityIndexFromCas)
+ * and it is the single definition every consumer that follows or falls back
+ * to that index must use identically: query.ts's traversal fallback and
+ * deployable-analysis.ts's DAS closure both import this function rather than
+ * re-deriving their own edge set, specifically so "index present" and "index
+ * absent, fall back to traversal" never disagree (see
+ * reachability-query.test.ts's parity proof).
+ */
+export function reachabilityEdgePairs(cas: CallGraphLikeCas): EdgePair[] {
+  const pairs = callEdgePairs(cas);
+  for (const e of cas.edges) {
+    if (e.type === 'invokes') pairs.push([e.source, e.target]);
+  }
+  return pairs;
+}
+
+/** Build the persistable index straight from a CAS-shaped object. Uses
+ *  `reachabilityEdgePairs` (calls + resolved method_calls + invokes) — see
+ *  that function's doc comment for why 'invokes' is included and why every
+ *  consumer of this persisted index must agree on the same edge set. Stamps
+ *  `includes_invokes_edges: true` (see CASReachabilityIndex) so a consumer
+ *  deciding whether to reuse this persisted index can tell it apart from one
+ *  stored before 'invokes' was added to the closure — reuse must never be
+ *  decided on presence alone, only on this flag. */
 export function buildReachabilityIndexFromCas(cas: CallGraphLikeCas): CASReachabilityIndex {
-  return buildReachabilityIndex(cas.nodes.map((n) => n.id), callEdgePairs(cas));
+  return { ...buildReachabilityIndex(cas.nodes.map((n) => n.id), reachabilityEdgePairs(cas)), includes_invokes_edges: true };
 }

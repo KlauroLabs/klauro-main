@@ -8,6 +8,7 @@ import {
   resolveDasScope,
 } from './deployable-analysis';
 import type { CASNode, CASEdge, CASEntryPoint, CASOutput, DeployableEvidence } from '../../../packages/analyzer-core/src/types/cas.types';
+import { buildReachabilityIndexFromCas, buildReachabilityIndex, callEdgePairs } from '../../../packages/analyzer-core/src/analyzer/core/reachability-index';
 
 function node(id: string, file: string): CASNode {
   return { id, name: id, type: 'function', source: { file, line: 1 } } as CASNode;
@@ -220,6 +221,84 @@ test('slices carry their reachability closure, shared code is tagged and counted
   const tool1IndexEntry = idx.units.find(u => u.name === 'tool1')!;
   assert.equal(tool1IndexEntry.exclusive_node_count, 1);
   assert.equal(tool1IndexEntry.shared_node_count, 0);
+});
+
+/**
+ * Task #100 (docs/SPEC-MATHEMATICAL-INTELLIGENCE.md): the persisted
+ * `cas.reachability_index` now includes 'invokes' edges, so DAS reuses it
+ * (ReachabilityIndex.from) instead of always rebuilding its own. Proves two
+ * things at once: (1) a unit's closure still follows an 'invokes' dispatch
+ * edge the same way it always followed 'calls' (no regression), and (2) the
+ * slice produced when the CAS carries a persisted index is byte-identical to
+ * the slice produced when it doesn't (the rebuild fallback path) — the reuse
+ * is a speedup, never a semantic change.
+ */
+test('DAS closure follows invokes edges via the persisted index, and reuse == rebuild', () => {
+  const cas = buildFixtureCas();
+  // A1 -invokes-> a dispatch-only node (no literal 'calls' edge) that must
+  // still land inside api's slice, exactly like S1 does via 'calls'.
+  const dispatched = node('D1', 'apps/api/dispatched-handler.ts');
+  cas.nodes = [...cas.nodes, dispatched];
+  cas.edges = [...cas.edges, { id: 'edge_A1_D1', source: 'A1', target: 'D1', type: 'invokes' } as CASEdge];
+
+  const withoutIndex = buildDeployableAnalyses(cas);
+  const apiWithout = withoutIndex.units.find(u => u.das_unit_name === 'api')!;
+  assert.ok(
+    apiWithout.slice.nodes.some(n => n.id === 'D1'),
+    'invokes-dispatched node must be in the closure (rebuild path)'
+  );
+
+  const casWithIndex: CASOutput = {
+    ...cas,
+    reachability_index: buildReachabilityIndexFromCas({ nodes: cas.nodes, edges: cas.edges, method_calls: [] }),
+  };
+  const withIndex = buildDeployableAnalyses(casWithIndex);
+  const apiWith = withIndex.units.find(u => u.das_unit_name === 'api')!;
+  assert.ok(
+    apiWith.slice.nodes.some(n => n.id === 'D1'),
+    'invokes-dispatched node must be in the closure (reused persisted-index path)'
+  );
+
+  // Reuse produces the exact same slice as rebuild — node sets, entry points,
+  // and the das_index summary all match.
+  assert.deepEqual(
+    apiWith.slice.nodes.map(n => n.id).sort(),
+    apiWithout.slice.nodes.map(n => n.id).sort()
+  );
+  assert.deepEqual(withIndex.das_index, withoutIndex.das_index);
+});
+
+/**
+ * Task #100 compatibility proof: a CAS stored BEFORE 'invokes' was added to
+ * the persisted index's closure carries a `reachability_index` with no
+ * `includes_invokes_edges` flag. Before this fix, DAS ignored the persisted
+ * index entirely and always rebuilt its own (invokes-inclusive) one, so such
+ * an analysis already got the wider closure. Reuse-when-present must not
+ * regress that: a stale, flag-less index must be rejected and rebuilt, never
+ * trusted just because `cas.reachability_index` is truthy.
+ */
+test('a pre-task#100 stored index (no includes_invokes_edges) is not trusted — DAS still follows invokes', () => {
+  const cas = buildFixtureCas();
+  const dispatched = node('D1', 'apps/api/dispatched-handler.ts');
+  cas.nodes = [...cas.nodes, dispatched];
+  cas.edges = [...cas.edges, { id: 'edge_A1_D1', source: 'A1', target: 'D1', type: 'invokes' } as CASEdge];
+
+  // The OLD persisted shape: built over the OLD edge set (calls + method_calls
+  // only, via callEdgePairs), no includes_invokes_edges flag — exactly what
+  // buildReachabilityIndexFromCas used to emit before this fix.
+  const staleIndex = buildReachabilityIndex(
+    cas.nodes.map(n => n.id),
+    callEdgePairs({ nodes: cas.nodes, edges: cas.edges, method_calls: [] })
+  );
+  assert.equal((staleIndex as any).includes_invokes_edges, undefined, 'fixture must reproduce the pre-fix shape');
+
+  const staleCas: CASOutput = { ...cas, reachability_index: staleIndex };
+  const result = buildDeployableAnalyses(staleCas);
+  const apiUnit = result.units.find(u => u.das_unit_name === 'api')!;
+  assert.ok(
+    apiUnit.slice.nodes.some(n => n.id === 'D1'),
+    'a stale pre-fix index must be rejected, not silently narrow the closure'
+  );
 });
 
 test('a monorepo with app dirs covers >90% of nodes', () => {

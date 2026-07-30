@@ -5,7 +5,7 @@ import type {
   CASTestSuite, ChangeHistoryEntry, ChangeAggregate, HeatMapData, ImpactAnalysis,
 } from '../../../packages/analyzer-core/src/types/cas.types';
 import { diffBehavior } from '../../../packages/analyzer-core/src/analyzer/core/behavior-diff';
-import { ReachabilityIndex, callEdgePairs } from '../../../packages/analyzer-core/src/analyzer/core/reachability-index';
+import { ReachabilityIndex, reachabilityEdgePairs } from '../../../packages/analyzer-core/src/analyzer/core/reachability-index';
 import { detectCommunities } from '../../../packages/analyzer-core/src/analyzer/core/community-detection';
 import { findNearClones } from '../../../packages/analyzer-core/src/analyzer/core/minhash-clone-detection';
 import { isAuthenticationGuardName } from '../../../packages/analyzer-core/src/analyzer/core/guard-classification';
@@ -1413,10 +1413,16 @@ export function getStability(cas: CASOutput, nodeId?: string) {
  * affected when `nodeIds` change (direction 'upstream' = transitive callers,
  * the blast radius; 'downstream' = transitive callees; 'both' = undirected
  * closure). Uses the persisted reachability index when the analysis carries
- * one (near-O(1) / O(answer)); falls back to a full BFS traversal over the
- * SAME edge set ('calls' edges + resolved method_calls) on older CAS
- * revisions — both paths return identical answers (parity-tested). When
- * `maxNodes` truncates, both paths return a bounded subset and flag
+ * one AND it's marked `includes_invokes_edges` (near-O(1) / O(answer));
+ * falls back to a full BFS traversal over the SAME edge set
+ * `reachabilityEdgePairs` defines ('calls' edges + resolved method_calls +
+ * 'invokes' edges) on CAS revisions with no persisted index, or with one
+ * stored before that flag existed — both paths return identical answers
+ * (parity-tested). Gating on the flag (not presence alone) matters: an
+ * analysis stored before task #100 carries an index built over 'calls' +
+ * method_calls only, and reusing it unconditionally would silently narrow
+ * the answer below what a fresh traversal (or a re-analysis) would report.
+ * When `maxNodes` truncates, both paths return a bounded subset and flag
  * `truncated: true`; the untruncated closure is identical across paths.
  */
 export function getAffectedSet(
@@ -1427,17 +1433,18 @@ export function getAffectedSet(
   const direction = opts.direction ?? 'upstream';
   const maxNodes = opts.maxNodes ?? Infinity;
 
-  if (cas.reachability_index) {
+  if (cas.reachability_index?.includes_invokes_edges) {
     const idx = ReachabilityIndex.from(cas.reachability_index);
     const result = idx.affectedSet(nodeIds, { direction, maxNodes });
     return { ...result, method: 'reachability_index' };
   }
 
-  // Traversal fallback (old CAS without a persisted index): BFS over the
-  // exact edge set the index is built from, so answers match the index path.
+  // Traversal fallback: no persisted index, or one stored before
+  // 'includes_invokes_edges' existed — BFS over the exact edge set a fresh
+  // index would be built from, so answers match the up-to-date index path.
   const fwd = new Map<string, string[]>();
   const rev = new Map<string, string[]>();
-  for (const [s, t] of callEdgePairs(cas)) {
+  for (const [s, t] of reachabilityEdgePairs(cas)) {
     if (s === t) continue;
     if (!fwd.has(s)) fwd.set(s, []);
     fwd.get(s)!.push(t);
