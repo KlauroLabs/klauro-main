@@ -1,8 +1,7 @@
 # Code Analysis Specification (CAS)
 
-**Version:** 1.10.0
+**Version:** 1.11.0
 **Status:** Active
-**Last Updated:** 2026-02-05
 
 ## Abstract
 
@@ -23,19 +22,20 @@ The Code Analysis Specification (CAS) defines a universal, language-agnostic for
 
 ## Version History
 
-This document specifies version 1.10.0 of the Code Analysis Specification. The evolution of CAS includes:
+This document specifies version 1.11.0 of the Code Analysis Specification. The evolution of CAS includes:
 
-- **[Version 1.0.0](./v1.0.0.md)** (2024-01-01) - Initial release with core nodes, edges, and basic metadata
-- **[Version 1.1.0](./v1.1.0.md)** (2024-06-01) - Added progressive levels, entry/exit points, and extended metadata
-- **[Version 1.2.0](./v1.2.0.md)** (2024-09-19) - Added multi-perspective support and enhanced patterns
-- **[Version 1.3.0](./v1.3.0-rfp.md)** (2025-01-01) - Added comprehensive call graph tracking and method invocation analysis
-- **[Version 1.4.0](./v1.4.0-rfp.md)** (2025-09-20) - Added documentation and comment extraction
-- **[Version 1.5.0](./v1.5.0-rfp.md)** (2026-01-09) - Added class-level relationships, pattern variations, and enhanced entry points
-- **[Version 1.6.0](./v1.6.0-rfp.md)** (2026-01-23) - Added test architecture, test categorization, BDD support, and test-to-code relationships
-- **[Version 1.7.0](./v1.7.0-rfp.md)** (2026-01-25) - Added inference-based intelligence: intent, critical flows, change risk, data lifecycle, security boundaries, flow coverage, temporal stability
-- **[Version 1.8.0](./v1.8.0-rfp.md)** (2026-02-05) - Added incremental analysis: change detection, change reporting, change history, impact analysis
-- **Version 1.10.0** (2026-06-08) - Current version - Added system health/coherence analysis and graph-anchored semantic retrieval
-- **[Version 1.9.0](./v1.9.0-rfp.md)** (2026-05-13) - Added Codebase Idiom Intelligence for repo-local conventions, examples, violations, and agent validation
+- **[Version 1.0.0](./v1.0.0.md)** - Initial release with core nodes, edges, and basic metadata
+- **[Version 1.1.0](./v1.1.0.md)** - Added progressive levels, entry/exit points, and extended metadata
+- **[Version 1.2.0](./v1.2.0.md)** - Added multi-perspective support and enhanced patterns
+- **[Version 1.3.0](./v1.3.0-rfp.md)** - Added comprehensive call graph tracking and method invocation analysis
+- **[Version 1.4.0](./v1.4.0-rfp.md)** - Added documentation and comment extraction
+- **[Version 1.5.0](./v1.5.0-rfp.md)** - Added class-level relationships, pattern variations, and enhanced entry points
+- **[Version 1.6.0](./v1.6.0-rfp.md)** - Added test architecture, test categorization, BDD support, and test-to-code relationships
+- **[Version 1.7.0](./v1.7.0-rfp.md)** - Added inference-based intelligence: intent, critical flows, change risk, data lifecycle, security boundaries, flow coverage, temporal stability, system capabilities, domain concepts
+- **[Version 1.8.0](./v1.8.0-rfp.md)** - Added incremental analysis: change detection, change reporting, change history, impact analysis; runtime/static correlation; distribution units
+- **[Version 1.9.0](./v1.9.0-rfp.md)** - Added Codebase Idiom Intelligence for repo-local conventions, examples, violations, and agent validation
+- **Version 1.10.0** - Added system health/coherence analysis and graph-anchored semantic retrieval (embedding index)
+- **Version 1.11.0** - Current version. See §11.11 for the full field-level diff. Summary: evidence-gated `persisted-entity` classification on data entities (`kind_evidence`, replacing the uncited persistence fallback); distinctiveness-gated domain concepts (`distinctiveness_evidence`, replacing raw-frequency ranking); structural anchoring required for every shipped capability; `ENTRY_POINT_TYPES`/`EXIT_POINT_TYPES` promoted to the single source of truth for their type unions (adds `graphql` as a first-class entry-point kind); full declared-dependency manifest (`dependency_manifest`); self-discovered coverage gaps (`coverage_gaps`); unified communication-seam classification (`communication_seams`) and CAP/consistency characterization (`consistency_model`); custom-architecture convention audit trail (`conventions_applied`); progressive layer-readiness ladder (`layers_ready`, `l0_index`); edge referential-integrity invariant (zero dangling endpoints) enforced as a release gate.
 
 ## 1. Introduction
 
@@ -51,7 +51,7 @@ This specification defines:
 - Query interfaces for information retrieval
 - Extension mechanisms for future capabilities
 
-CAS is scoped to a single project, repo, folder, or codebase analysis. Multi-project composition is defined by the Workspace Analysis Specification (WAS), which is generated after all associated CAS outputs complete and MUST be derivable from those CAS outputs without source-code reads.
+CAS is scoped to a single project, repo, folder, or codebase analysis. Multi-project composition is defined by the Workspace Analysis Specification (WAS), which is generated after all associated CAS outputs complete and MUST be derivable from those CAS outputs without source-code reads. A single repo that itself resolves two or more independently shippable units MAY further decompose into per-deployable slices under the Deployable Analysis Specification (DAS, docs/das/SPECIFICATION.md); a DAS slice is derived from this repo's own completed CAS facts, never a second source-level parse.
 
 This specification does NOT define:
 - Visualization or presentation formats
@@ -95,7 +95,7 @@ The root structure containing complete analysis results:
 
 ```typescript
 interface CASOutput {
-  cas_version: "1.10.0";
+  cas_version: "1.11.0";
   analysis_timestamp: string;  // ISO 8601
   analysis_id: string;          // Unique identifier
 
@@ -169,10 +169,57 @@ interface CASOutput {
   idiom_summary?: CASIdiomSummary;                // Aggregate idiom counts and guidance digest
   idiom_examples?: CASIdiomExample[];             // Positive examples agents can copy
   idiom_violations?: CASIdiomViolation[];         // Known deviations and validation findings
+  paradigm_conformance?: CASParadigmConformance[]; // Adoption rate of each detected paradigm, with deviations
+  architectural_conflicts?: CASArchitecturalConflict[]; // A concern handled by two competing structural patterns
+  principle_violations?: CASPrincipleViolation[]; // Layering / single-responsibility / coupling breaks
+
+  // v1.7.0+ System capabilities and domain model (see §4.15)
+  system_capabilities?: SystemCapability[];
+  behavior_surfaces?: SystemCapability[];         // Registration/engine surfaces with no product-entity anchor; never ranked as capabilities
+  system_purpose?: SystemPurpose;
+  enhanced_system_purpose?: EnhancedSystemPurpose;
+  domain_concepts?: CASDomainConcept[];           // Distinctiveness-gated domain vocabulary (see §5.28)
+  workflows?: CASWorkflow[];
+  workflow_graph?: CASWorkflowGraph;
+  user_journeys?: CASUserJourney[];
+  user_journey_summary?: CASUserJourneySummary;
+  data_lineage?: CASEntityLineage[];
+  flow_graph?: CASFlowGraph;
+  product_map?: CASProductMap;                    // Whole-system rollup: identity, capabilities, journeys, data, conventions, health
+
+  // v1.10.0 Graph-Anchored Semantic Retrieval
+  embedding_index?: CASEmbeddingIndex;
+
+  // v1.11.0 Structural intelligence, dependency facts, and cross-cutting classification (see §4.16)
+  reachability_index?: CASReachabilityIndex;      // SCC condensation + landmark labeling over the call graph
+  structural_importance_meta?: CASStructuralImportanceMeta; // Provenance for CASNode.structural_importance
+  communities?: CASCommunity[];                   // Louvain functional modules (call-graph clustering)
+  dependency_manifest?: CASDependencyManifest;    // Full declared-dependency FACT bundle (every manifest, every name)
+  coverage_gaps?: CASCoverageGap[];                // Self-discovered analysis gaps (unknown deps, low extraction ratio, ...)
+  conventions_applied?: ConventionMatchReport[];  // Audit trail for declared .klaurorc custom-architecture conventions
+  communication_seams?: CommunicationSeamsResult; // Unified sync/async/passive seam classification
+  consistency_model?: ConsistencyModelResult;     // CAP/consistency posture over data-store egress and passive seams
+  runtime_static_links?: CASRuntimeStaticLink[];  // (moved up from v1.8.0 grouping below for adjacency)
+  deployable_evidence?: DeployableEvidence[];      // Evidence-gated ship/build-artifact rows (see §4.14)
+  distribution_units?: CASDistributionUnit[];      // (see §4.7 note — retained here for schema-order reference)
+  codebase_type?: CodebaseType;                    // What KIND of thing this root is (web-backend, library, cli, ...)
+  codebase_type_confidence?: number;
+  codebase_types?: Array<{ type: CodebaseType; confidence: number }>; // Every codebase type with non-trivial evidence
+
+  // Progressive layering (layered-entrypoint CAS only)
+  layers_ready?: CASLayersReady;                   // L0..L5 layer-readiness ladder
+  l0_index?: {                                     // Fast filesystem-walk index, present before L1+ facts land
+    total_files: number;
+    languages: Array<{ name: string; files: number }>;
+    top_level_dirs: string[];
+    duration_ms: number;
+  };
 
   metadata?: SystemMetadata;
 }
 ```
+
+Fields listed above with no explicit "Added in vX.Y.0" annotation were introduced in v1.11.0. §4.15 and §4.16 define their shapes; §5.28-§5.33 state the invariants that govern them.
 
 ### 4.2 CASNode
 
@@ -699,10 +746,35 @@ System entry points (API endpoints, CLI commands, etc.):
 - **Frontend SPAs**: Entry points are routes/pages which represent user-facing views. Capabilities emerge from the services and state management the routes consume.
 
 ```typescript
+// ENTRY_POINT_TYPES (analyzer-core/types/cas.types.ts) is the single source of
+// truth for this union: CASEntryPoint['type'] is DERIVED from it
+// (`type: typeof ENTRY_POINT_TYPES[number]`), and the orchestrator's
+// isValidEntryPoint validator MUST check membership in the SAME array — see
+// §5.29. A conforming producer MUST NOT emit a type outside this closed set.
+const ENTRY_POINT_TYPES = [
+  'http', 'websocket', 'cli', 'event', 'schedule', 'page', 'route',
+  'message', 'file', 'test', 'lifecycle', 'api',
+  // data/ML pipeline: orchestration task/asset node, the DAG/flow/job entry
+  // itself, an ordered notebook code cell, an ML training-loop entry point.
+  'task', 'pipeline', 'notebook-cell', 'train',
+  // embedded/systems: a hardware/timer interrupt service routine, and a
+  // kernel/driver hook (module_init/module_exit, fops, ioctl handler).
+  'interrupt', 'driver',
+  // desktop-app: an Electron IPC main-process handler, a Tauri Rust command.
+  'ipc', 'command',
+  // non-REST API: a gRPC/RPC server-side method handler — a method dispatch,
+  // not an HTTP path.
+  'rpc',
+  // non-REST API: a GraphQL root operation (Query/Mutation/Subscription
+  // field, or a field resolver). Addressed by OPERATION NAME over a single
+  // transport endpoint, not by path+verb — not a route. Added in v1.11.0.
+  'graphql',
+] as const;
+type CASEntryPointType = typeof ENTRY_POINT_TYPES[number];
+
 interface EntryPoint {
   id: string;
-  type: 'http' | 'grpc' | 'graphql' | 'websocket' | 'cli' |
-        'event' | 'scheduled' | 'startup' | 'test' | 'other';  // v1.6.0: Added 'test'
+  type: CASEntryPointType;
   name: string;
   description?: string;
 
@@ -740,13 +812,17 @@ interface EntryPoint {
 External system interactions:
 
 ```typescript
+// EXIT_POINT_TYPES is the mirror single source of truth for this union (§5.29).
+type CASExitPointType =
+  'database' | 'api' | 'file' | 'message' | 'event' |
+  'cache' | 'sdk' | 'webhook' | 'navigation' |
+  'client_storage' | 'analytics';
+
 interface ExitPoint {
   id: string;
   source_node: string;
   source_analyzer?: string;
-  type: 'database' | 'api' | 'file' | 'message' | 'event' |
-        'cache' | 'sdk' | 'webhook' | 'navigation' |
-        'client_storage' | 'analytics';
+  type: CASExitPointType;
   name: string;
   description?: string;
 
@@ -1588,6 +1664,16 @@ interface CASChangeRiskSummary {
 Entity-centric data lifecycle:
 
 ```typescript
+// Structural kind, derived deterministically from framework evidence on the
+// entity's anchor node(s) — NEVER from the entity's name or directory. See
+// §5.28 for the evidence requirement this classification MUST satisfy.
+type CASDataEntityKind =
+  | 'persisted-entity'  // durable state, backed by CITED persistence evidence
+  | 'api-response'      // the system's outward-facing produced/consumed contract
+  | 'request-dto'       // inbound contract (@Body / validation DTO / request schema)
+  | 'domain-shape'       // a real domain type with NO discriminating framework fact
+  | 'value-object';      // field-only shape, no persistence, no route/api binding
+
 interface CASDataEntity {
   id: string;
   name: string;
@@ -1596,11 +1682,25 @@ interface CASDataEntity {
   description_source?: 'deterministic' | 'ai' | 'manual' | 'reused';
   description_generation?: CASDescriptionGeneration;
 
+  kind?: CASDataEntityKind;
+  // 'framework-evidence' MAY only be claimed when kind_evidence cites the
+  // decorator/attribute/mapping that proves it. 'shape-inference' means the
+  // kind came from the selection path's shape alone — an honest label, not a
+  // downgrade.
+  kind_source?: 'framework-evidence' | 'shape-inference';
+  // Citation for `kind` when kind_source === 'framework-evidence'. MANDATORY
+  // for `persisted-entity` — see §5.28.
+  kind_evidence?: string;
+
   fields?: Array<{
     name: string;
     type: string;
     is_sensitive: boolean;
     validation?: string[];
+    // True when this field IS a relation (see `relations`) rather than a
+    // plain scalar column. The field stays listed; it just must not read as
+    // scalar state when a relation declaration proves otherwise.
+    is_relation?: boolean;
   }>;
 
   lifecycle: {
@@ -1609,6 +1709,24 @@ interface CASDataEntity {
     updated_by: string[];
     deleted_by: string[];
   };
+
+  // Relations to OTHER entities, evidence-gated. `kind` separates a DATA
+  // relation (an ORM association / typed composition — ERD content) from a
+  // STRUCTURAL one (interface/trait/superclass composition) so a structural
+  // edge can never masquerade as the entity's data model. A field whose NAME
+  // merely looks like a foreign key produces no entry.
+  relations?: Array<{
+    target_name: string;
+    relation_type: string;
+    kind: 'data' | 'structural';
+    cardinality?: '1:1' | '1:N' | 'N:1' | 'N:M';
+    field?: string;
+    inverse_field?: string;
+    owning?: boolean;
+    join_table?: string;
+    evidence_source: 'orm-edge' | 'orm-declaration' | 'typed-composition' | 'structural-edge';
+    evidence: string;
+  }>;
 
   transformations?: Array<{
     from_node: string;
@@ -1633,6 +1751,12 @@ interface CASDataSummary {
   }>;
 }
 ```
+
+**`kind` classification MUST NOT read the entity name, its casing, or its
+directory.** `persisted-entity` in particular MUST carry `kind_evidence`
+citing one of the admissible persistence carriers in §5.28; an entity whose
+only qualification is living under an `entities/`-shaped directory MUST
+classify as `domain-shape`, not `persisted-entity`.
 
 #### CASBehavioralInvariant
 Behavior-level rules that must stay true across code, schema, tests, and security boundaries:
@@ -2045,6 +2169,258 @@ interface CASValidation {
 }
 ```
 
+### 4.15 System Capabilities and Domain Model (v1.7.0+, current shape v1.11.0)
+
+#### SystemCapability
+A structurally-anchored unit of what the system DOES for its consumers. See §5.31 for the anchoring requirement every emitted capability MUST satisfy.
+
+```typescript
+interface SystemCapability {
+  id: string;
+  name: string;
+  // Provenance of `name`. A capability NAME asserts what the capability DOES —
+  // comprehension, produced only by AI (or a curated 'manual' map, or 'reused'
+  // incremental carry-forward), NEVER a deterministic keyword->label template.
+  // Left unset (name holds `structural_label`) until the AI naming pass runs.
+  name_source?: 'ai' | 'manual' | 'reused';
+  name_generation?: CASDescriptionGeneration;
+  // Deterministic FACT label: the humanized domain key anchored on the
+  // terminal (api-response / persisted) entities the capability produces.
+  // Pure structural fact, stable run-to-run, makes no claim about behavior.
+  structural_label?: string;
+  description: string;
+  description_source?: 'deterministic' | 'ai' | 'manual' | 'reused';
+  description_generation?: CASDescriptionGeneration;
+  category: 'core' | 'supporting' | 'admin' | 'internal';
+
+  operations: Array<{
+    entry_point_id: string;
+    entry_point_type: string;
+    action: string;
+    path_or_command?: string;
+    trigger?: { method?: string; path?: string };
+  }>;
+
+  related_entities: string[];
+  related_domains: string[];
+  criticality: 'critical' | 'high' | 'medium' | 'low';
+  criticality_factors: string[];
+  // Provenance of the evidence that produced this capability:
+  // 'behavior-surface' = derived from a named registration surface (an MCP
+  // tool server, a socket-event namespace) with no persisted-entity anchor —
+  // the AI catalog pass systematically misses these, so they are re-injected
+  // if dropped (the flagship-capability guarantee). 'infrastructure' = the
+  // capability's only anchors are runtime/lifecycle-shaped entities with no
+  // product evidence; it fails the purpose test and is excluded from the
+  // shipped catalog.
+  evidence_kind?: 'behavior-surface' | 'infrastructure';
+  // Inverted M:N capability<->flow edges, {flow_id, role, rationale} per tie.
+  // Computed once, un-capped, persisted; omitted (never []) when uncomputed.
+  related_flows?: Array<{ flow_id: string; role: string; rationale: string }>;
+}
+```
+
+`behavior_surfaces` carries the SAME `SystemCapability` shape for navigation-tier
+registration surfaces (mcp_tool / rpc / command / event / message-handler
+engines with no product-entity anchor). A behavior surface is structurally
+EXCLUDED from `system_capabilities`/ranking, is always `category: 'internal'`,
+and its `criticality` is capped at `'medium'` so it can never outrank a domain
+capability's urgency, while remaining fully navigable with its own
+operations/entry-point evidence.
+
+#### CASDomainConcept
+Distinctiveness-gated domain vocabulary. See §5.30 for the evidence gate every entry MUST satisfy.
+
+```typescript
+interface CASDomainConcept {
+  id: string;
+  name: string;
+  // DISTINCT USAGE SITES: separate code units, entry points, and entities
+  // that use the term. NOT a raw token count.
+  frequency: number;
+  appears_in: {
+    entry_points: string[];
+    entities: string[];
+    nodes: string[];
+  };
+  classification: 'core' | 'supporting' | 'infrastructure';
+  // Factual account of where the term occurs. Structure, not comprehension.
+  description?: string;
+  // Rank key: how strongly the repo's own structure/authored text singles
+  // this term out, as opposed to how often it occurs. Channel breadth
+  // dominates; site spread only breaks ties, logarithmically.
+  distinctiveness?: number;
+  // WHY this term is a concept — the cited channels (see §5.30). A term with
+  // no citation is not domain vocabulary, however frequent.
+  distinctiveness_evidence?: string[];
+}
+```
+
+#### SystemPurpose / EnhancedSystemPurpose
+
+```typescript
+interface SystemPurpose {
+  primary_type: string;
+  confidence: number;
+  evidence: string[];
+  secondary_types?: string[];
+}
+
+interface EnhancedSystemPurpose extends SystemPurpose {
+  primary_domain: string;
+  // Comprehension provenance is AI-only (see docs/cas/DETERMINISM-BOUNDARY.md);
+  // left unset until AI runs, never coerced to 'deterministic' on empty output.
+  domain_source?: 'deterministic' | 'ai' | 'ai-refined' | 'reused';
+  // True when the deterministic domain won via an anchor gate or grounded
+  // structural evidence. An anchored domain may only be NARROWED by AI
+  // (refined to a more specific child label), never replaced sideways.
+  domain_anchored?: boolean;
+  domain_rejected_candidates?: Array<{ label: string; reason: string }>;
+  // Capabilities whose AI description failed the grounding gate even after a
+  // targeted repair pass, and fell back to deterministic structural text.
+  // Present only when at least one capability degraded.
+  capability_description_degradations?: Array<{ id: string; reason: string }>;
+}
+```
+
+#### CASProductMap
+Whole-system rollup consumed by `get_product_map`: identity, capabilities, journeys, data exposure, conventions, and health, in one bounded payload. See the type definitions in `analyzer-core/src/types/cas.types.ts` (`CASProductMap`, `CASProductMapCapability`, `CASProductMapJourney`, `CASProductMapRuntimeTopology`) for the full field-level shape; this specification defers to that file rather than reproducing every nested field, since `CASProductMap` is itself a projection over the structures already defined above (capabilities, journeys, data entities, paradigm conformance, health) plus the infra-topology join (`runtime_topology`) — it introduces no new evidence of its own.
+
+### 4.16 Cross-Cutting Structural Facts (v1.9.0-v1.11.0)
+
+#### CASDependencyManifest
+Full declared-dependency FACT bundle — every manifest, every declared name, no interpretation:
+
+```typescript
+interface CASDependencyManifest {
+  manifests: string[];               // Manifest files scanned, project-relative, sorted
+  dependencies: CASDeclaredDependency[]; // Deduped names across all manifests, sorted
+  total: number;                      // == dependencies.length
+}
+
+interface CASDeclaredDependency {
+  name: string;                       // Raw package name exactly as declared
+  ecosystem: 'npm' | 'pypi' | 'cargo' | 'go' | 'maven' | 'gradle' | 'nuget' | 'composer' | 'pub' | 'unknown';
+  version?: string;
+  scopes: Array<'runtime' | 'dev' | 'peer' | 'optional' | 'build'>;
+  declared_in: string[];              // Manifest file(s) that declared it, sorted
+}
+```
+
+This is a Camp-B structural fact bundle (see docs/cas/DETERMINISM-BOUNDARY.md):
+raw names only. What a dependency MEANS is the AI comprehension pass's job,
+reading this bundle as grounding — `dependency_manifest` itself MUST NOT carry
+any interpretive label.
+
+#### CASCoverageGap
+Self-discovered gaps this analysis pass encountered but does not yet understand:
+
+```typescript
+type CASCoverageGapKind =
+  | 'unknown-dependency' | 'low-extraction-ratio'
+  | 'zero-entry-points' | 'unhandled-node-type';
+
+interface CASCoverageGap {
+  kind: CASCoverageGapKind;
+  evidence: string;                   // Short human-readable statement
+  file?: string;
+  severity: 'low' | 'medium' | 'high';
+  key?: string;                       // Machine-stable key for cross-repo aggregation
+  detail?: Record<string, unknown>;
+}
+```
+
+#### CASReachabilityIndex / CASStructuralImportanceMeta
+Persisted structural-intelligence layer over the call graph (Tarjan SCC condensation + pruned 2-hop landmark labeling), enabling near-O(1) reachability/affected-set queries without a per-query traversal:
+
+```typescript
+interface CASReachabilityIndex {
+  version: 1;
+  node_ids: string[];                 // Sorted; array position = compact node index
+  comp_of: number[];
+  comp_count: number;
+  comp_adj_offsets: number[];         // CSR condensation DAG
+  comp_adj_targets: number[];
+  label_out_offsets: number[];        // CSR 2-hop labels
+  label_out: number[];
+  label_in_offsets: number[];
+  label_in: number[];
+  stats: { nodes: number; edges: number; comps: number; largest_scc: number; label_entries: number };
+}
+
+interface CASStructuralImportanceMeta {
+  algorithm: 'seeded-random-walk-power-iteration';
+  damping: number;
+  epsilon: number;
+  max_iterations: number;
+  iterations: number;
+  converged: boolean;
+  seed_count: number;                 // Non-test entry-point nodes
+  seed_source: 'entry-points' | 'uniform';
+  node_count: number;
+  edge_count: number;
+}
+```
+
+`CASReachabilityIndex` and `CASStructuralImportanceMeta` contain ONLY graph-shape
+facts (no timestamps) — byte-stable across identical runs. `CASNode.structural_importance`
+(a [0,1] centrality score) is computed from structure only, NEVER AI-derived.
+
+#### CommunicationSeamsResult / ConsistencyModelResult
+Unified sync/async/passive seam classification and CAP/consistency characterization, derived additively from exit points, messaging edges, entry points, config env vars, and data lineage — never a re-detection pass:
+
+```typescript
+interface CommunicationSeamsResult {
+  seams: Array<{
+    id?: string;
+    source: string;
+    target: string;
+    modality: 'sync' | 'async' | 'passive';
+    confidence: number;
+    metadata?: { exit_point?: string; entry_point?: string; entity_id?: string; [key: string]: unknown };
+  }>;
+  inventory: {
+    level: string;
+    counts: { sync: number; async: number; passive: number; total: number };
+    component_seams: Array<{
+      source: string; target: string;
+      modalities: Array<'sync' | 'async' | 'passive'>;
+      sync: number; async: number; passive: number; total: number;
+    }>;
+  };
+}
+
+interface ConsistencyModelResult {
+  // Per data-store egress / broadened passive seam: consistency posture
+  // (strong | eventual | tunable), staleness risk, CP/AP lean, cited evidence.
+  // Evidence-gated — never a guessed consistency. See analyzer/core/consistency-model.ts.
+  [key: string]: unknown;
+}
+```
+
+#### ConventionMatchReport
+Audit trail for declared custom-architecture conventions (`.klaurorc` `conventions:`): what each declared convention matched or failed to match in the real extracted nodes. Evidence-gated — a convention with `matched: false` emits nothing rather than fabricating a route/entity/flow. Absent when no conventions are declared. See `analyzer/core/conventions-applier.ts` for the full per-convention shape.
+
+#### DeployableEvidence
+Evidence-gated ship/build-artifact rows — the deterministic signal that a subtree of the repo is its own independently shippable unit. Consumed by WAS (§ WAS spec) to build workspace-level deployables, and by DAS (docs/das/SPECIFICATION.md) to decide whether a CAS promotes to a Deployable-Analysis Workspace.
+
+```typescript
+interface DeployableEvidence {
+  root_path: string;
+  name: string;
+  tier: 1 | 2 | 3;                    // 1 = ship artifact, 2 = runnable-but-unpackaged, 3 = package identity
+  kind: 'container' | 'compose-service' | 'k8s' | 'serverless' | 'installer' |
+        'ci-deploy' | 'bin' | 'server-entry' | 'package';
+  evidence: string[];
+  ships_paths?: string[];
+  ports?: number[];
+  entrypoint_member?: string;         // Which of ships_paths is the primary/ENTRYPOINT of a multi-member bundle
+  bundled_into?: string;              // Name of the unit this one ships inside of, when merged
+}
+```
+
+See docs/SPEC-DEPLOYABLE-DETECTION.md for the tier-qualification rules and evidence-gated bundling/dedup pass that produces this array.
+
 ## 5. Semantic Rules
 
 ### 5.1 Node Identity
@@ -2295,6 +2671,55 @@ Capability descriptions MUST be AI-generated or AI-reviewed in the default summa
 - Agents SHOULD call both `validate_behavioral_invariants` and `validate_codebase_idioms` before finalizing edits.
 - Live agent proof SHOULD include copied-repo A/B tasks where both arms can pass correctness and the with-CAS arm receives idiom context; acceptance SHOULD require positive idiom-conformance delta without correctness regression.
 
+### 5.28 Persisted-Entity Evidence (v1.11.0)
+
+- `CASDataEntity.kind === 'persisted-entity'` MUST NOT be assigned without a citable persistence fact. An entity classification with no discriminating framework evidence MUST degrade to `domain-shape`, never fall back to `persisted-entity`.
+- The name or casing of an entity, or its residence under an `entities/`-shaped directory, MUST NOT be treated as persistence evidence.
+- Admissible persistence evidence carriers (any one is sufficient, and `kind_evidence` MUST cite which one applied):
+  1. an ORM mapping attribute on the node (`table` / `tableName` / `collection` / `orm` / `persisted`);
+  2. a persistence decorator/annotation (`@Entity`, `@Table`, `@Document`, `@Model`, `@PrimaryKey`, `@Column`, ...) or an ORM base class the node extends (`BaseEntity`, `ActiveRecord`, `Model`, ...);
+  3. an ORM-family analyzer subcategory (`orm-entity`, `typeorm`, `gorm`, ...);
+  4. an analyzer that explicitly typed the node as an ORM entity/model;
+  5. a table mapping / schema definition for the name in `database_schema` (a declared table, or a primary-key field);
+  6. a migration that references the name;
+  7. a repository/DAO that references the name.
+- The bare `entity` subcategory alone is NOT an admissible carrier.
+- A shape with `kind === 'domain-shape'` MUST still be surfaced (never dropped) and MUST be honestly labeled; it MUST be EXCLUDED from any ERD/entity-relationship rendering that implies durable storage.
+
+### 5.29 Entry/Exit Point Closed Type Sets (v1.11.0)
+
+- `CASEntryPoint.type` MUST be a member of `ENTRY_POINT_TYPES`, and `CASExitPoint.type` MUST be a member of `EXIT_POINT_TYPES` — both defined once in `analyzer-core/src/types/cas.types.ts` and consumed by BOTH the TypeScript union and the orchestrator's runtime validator (`isValidEntryPoint` / `isValidExitPoint`), so the two can never drift apart.
+- Adding a new entry-point or exit-point kind MUST add it to the corresponding array only; a validator that hardcodes a second, separately-maintained allowlist is a defect.
+- `graphql` is a first-class `CASEntryPoint` kind (v1.11.0): a GraphQL root operation is addressed by operation name over a single transport endpoint, not by path+verb, and MUST NOT be classified as a `route`.
+
+### 5.30 Domain Concept Distinctiveness (v1.11.0)
+
+- A `CASDomainConcept` MUST carry at least one cited channel in `distinctiveness_evidence`. A term with zero citations MUST NOT be emitted, however many times it occurs in source text.
+- Admissible distinctiveness channels: the term names a data entity; the term is a capability SUBJECT; the term is an entry-point noun; the term recurs across three (3) or more distinct declared type names; the term appears in authored prose (README/manifest/comments).
+- `frequency` MUST report distinct usage sites (code units + entry points + entities touched), never a raw token-occurrence count.
+- The emitted domain-concept list MUST be capped (40 entries in the current implementation) and MUST NOT be padded to reach the cap when fewer terms qualify.
+- Plural/singular twins of the same term (e.g. `workspace`/`workspaces`) MUST be merged into one entry when both forms are independently present.
+
+### 5.31 Capability Structural Anchoring (v1.11.0)
+
+- Every `SystemCapability` in `system_capabilities` MUST be structurally anchored: it MUST NOT ship purely from a name/keyword classification with no supporting graph evidence. Anchoring evidence includes (in order of strength): a terminal `api-response` entity the capability's operations produce; a `persisted-entity` the capability's implementing cluster operates on (with a minimum implementing-node-count floor); an unclassified (not proven-plumbing) entity with lifecycle breadth; or a substantial business-implementation cluster (service/usecase/workflow/entity/model-shaped nodes above a minimum count).
+- A capability whose only anchors are runtime/lifecycle-shaped entities with no product (persisted/api-response) evidence MUST carry `evidence_kind: 'infrastructure'` and MUST be excluded from the shipped catalog — it fails the purpose test (see docs/SEMANTIC-MODEL.md).
+- A capability derived from a named registration surface with no persisted-entity anchor (an MCP tool server, a socket-event namespace) MUST carry `evidence_kind: 'behavior-surface'` and is re-injected if a post-hoc catalog pass dropped it (the flagship-capability guarantee) — this is the one case where a capability may ship without a data-entity anchor, because the registration surface itself is the anchor.
+
+### 5.32 Edge Referential Integrity (v1.11.0)
+
+- Every `CASEdge.source` and `CASEdge.target` MUST resolve to the `id` of a row in `nodes`, `entry_points`, or `exit_points`. An edge with an endpoint that resolves to none of these three collections is DANGLING and is a defect, not an acceptable degradation.
+- `CASValidation.graph_integrity.dangling_edges` MUST report the true count (0 for a conforming analysis); a nonzero count MUST NOT be silently tolerated by downstream consumers.
+- This invariant is asserted as a release gate: `infrastructure/vps/analysis-smoke.mjs` runs `checkEdgeReferentialIntegrity` against a live deterministic (AI-off) analysis before every deploy and fails loud on any dangling endpoint.
+
+### 5.33 Determinism (v1.11.0)
+
+- Same unchanged source input MUST produce byte-identical Camp-B facts (nodes, edges, entry/exit points, entities, routes) across separate runs and separate processes, modulo the run-metadata allowlist (`analysis_id`, `analysis_timestamp`, `generated_at`, `execution_time_ms`).
+- File/directory enumeration MUST be sorted before emission; raw filesystem/glob iteration order MUST NOT be treated as stable. This is enforced in `analyzer/core/glob-cache.ts`; a caller that walks the filesystem directly (bypassing the shared glob cache) MUST sort its own results.
+- Generated ids MUST derive from stable facts (file path + content position), never from a per-run-instance counter — a counter-based id (`comment_${++counter}`-shaped) drifts across warm re-analysis in a long-lived server even when a fresh-process run looks stable.
+- Regression coverage: `run-stability.test.ts` asserts byte-identity across repeated runs (including warm re-analysis) and rejects counter-shaped ids.
+- **Known partial exception, not yet closed as of this writing:** cross-file `references`-edge resolution has an open defect where ambiguous name resolution can depend on async file-processing order, producing a small edge-count variance across separate processes. See docs/cas/DETERMINISM-BOUNDARY.md for the current status before treating full Camp-B byte-stability as unconditionally true; the module-level ordering, id-stability, and glob-sorting guarantees above ARE enforced today independent of that open item.
+
 ## 6. Query Interface
 
 ### 6.1 Tag-Based Queries
@@ -2376,8 +2801,8 @@ This document has no IANA actions.
 
 ```json
 {
-  "cas_version": "1.4.0",
-  "analysis_timestamp": "2025-09-20T00:00:00Z",
+  "cas_version": "1.11.0",
+  "analysis_timestamp": "2000-01-01T00:00:00Z",
   "analysis_id": "analysis_123",
   "system": {
     "id": "system_example",
@@ -2852,7 +3277,26 @@ interface BaseAnalyzer {
 **Breaking changes:**
 - None. All new fields and features are optional.
 
-### 11.11 Backward Compatibility
+### 11.11 Upgrading from v1.10.0 to v1.11.0
+
+**Required changes:**
+- Update `cas_version` to "1.11.0".
+- A consumer that reads `CASDataEntity.kind` MUST stop treating `persisted-entity` as a name-derived classification and instead read `kind_evidence`/`kind_source`; entities previously read as persisted purely by directory/name convention now classify as `domain-shape` and are excluded from ERD rendering.
+- A consumer that renders `domain_concepts` MUST stop ranking by `frequency` alone (now distinct-usage-sites, not a token count) and MUST expect the list capped at 40 non-padded entries.
+- A consumer that reads `CASEntryPoint.type`/`CASExitPoint.type` MUST accept `graphql` as a valid entry-point kind and MUST NOT hardcode a separate allowlist — read `ENTRY_POINT_TYPES`/`EXIT_POINT_TYPES` from `analyzer-core/src/types/cas.types.ts` (or treat any value outside the documented closed set as a schema violation to report, not silently drop).
+
+**Optional enhancements:**
+- Consume `dependency_manifest` for the full declared-dependency fact bundle (not just the recognized-framework subset in `libraries`).
+- Consume `coverage_gaps` to drive systematic gap-closing instead of ad hoc discovery.
+- Consume `communication_seams` / `consistency_model` for unified sync/async/passive seam classification and CAP posture.
+- Consume `conventions_applied` for an audit trail of declared `.klaurorc` custom-architecture conventions.
+- Consume `reachability_index` / `structural_importance_meta` for near-O(1) reachability queries instead of per-query graph traversal.
+- Consume `layers_ready` / `l0_index` on layered-entrypoint analyses to distinguish "still computing" from "absent from the codebase."
+
+**Breaking changes:**
+- None at the schema level (every new/changed field is additive or a narrowing of an existing optional field's semantics). The `persisted-entity`/`domain_concepts` reclassifications above are a SEMANTIC narrowing of existing fields, not a shape change — a consumer that already treats absence/uncited claims conservatively is unaffected.
+
+### 11.12 Backward Compatibility
 
 All versions maintain backward compatibility:
 - New fields are optional
@@ -2864,47 +3308,61 @@ All versions maintain backward compatibility:
 
 ### Appendix A: Version History
 
-- **v1.10.0** (2026-06-08): System Health And Semantic Retrieval
+- **v1.11.0**: Structural Intelligence, Dependency Facts, and Invariant Hardening
+  - Evidence-gated `persisted-entity` classification (`kind_evidence`), replacing the uncited persistence fallback
+  - Distinctiveness-gated domain concepts (`distinctiveness_evidence`), replacing raw-frequency ranking
+  - Structural anchoring required for every shipped `system_capabilities` entry; `behavior_surfaces` navigation tier for unanchored registration surfaces
+  - `ENTRY_POINT_TYPES` / `EXIT_POINT_TYPES` promoted to single-source-of-truth closed sets; `graphql` added as a first-class entry-point kind
+  - Full declared-dependency manifest (`dependency_manifest`)
+  - Self-discovered coverage gaps (`coverage_gaps`)
+  - Unified communication-seam classification (`communication_seams`) and CAP/consistency characterization (`consistency_model`)
+  - Custom-architecture convention audit trail (`conventions_applied`)
+  - Reachability index and structural-importance provenance (`reachability_index`, `structural_importance_meta`)
+  - Progressive layer-readiness ladder (`layers_ready`, `l0_index`) for layered-entrypoint analyses
+  - Edge referential-integrity invariant (zero dangling endpoints) enforced as a pre-deploy release gate
+  - Deterministic file-ordering enforcement in the shared glob cache
+
+- **v1.10.0**: System Health And Semantic Retrieval
   - System health/coherence analysis
   - Complexity, duplication, paradigm drift, and idiom drift risk areas
   - Runtime-informed operational priorities through MCP
   - Graph-anchored semantic retrieval
 
-- **v1.9.0** (2026-05-13): Codebase Idiom Intelligence
+- **v1.9.0**: Codebase Idiom Intelligence
   - Repo-local convention extraction
   - Idiom examples, violations, and validation
   - Idiom-aware agent contexts
 
-- **v1.0.0** (2024-01-01): Initial release
+- **v1.0.0**: Initial release
   - Core node and edge structures
   - Basic metadata support
   - System information
 
-- **v1.1.0** (2024-06-01): Boundaries and Enrichment
+- **v1.1.0**: Boundaries and Enrichment
   - Entry and exit points
   - External services
   - Analyzer contributions
   - Progressive disclosure hints
 
-- **v1.2.0** (2024-09-19): Multi-Perspective Analysis
+- **v1.2.0**: Multi-Perspective Analysis
   - Perspective support for multiple views
   - Enhanced node organization
   - Perspective-aware edges
 
-- **v1.3.0** (2025-01-01): Call Graph Tracking
+- **v1.3.0**: Call Graph Tracking
   - Method call analysis
   - Call chain reconstruction
   - Decorator/annotation semantics
   - Performance hints
 
-- **v1.4.0** (2025-09-20): Documentation Extraction
+- **v1.4.0**: Documentation Extraction
   - Structured documentation parsing
   - Comment classification
   - TODO/FIXME tracking
   - Implementation status assessment
   - System health metrics
 
-- **v1.5.0** (2026-01-09): Class Relationships & Pattern Analysis
+- **v1.5.0**: Class Relationships & Pattern Analysis
   - Class-to-class relationship edges (uses, depends_on, injects)
   - Pattern variation and deviation tracking
   - Enhanced entry points with full paths
@@ -2912,7 +3370,7 @@ All versions maintain backward compatibility:
   - Required parent field for class members
   - External services filtering (no builtins)
 
-- **v1.6.0** (2026-01-23): Test Architecture & Visualization
+- **v1.6.0**: Test Architecture & Visualization
   - New `'test'` entry point type (replaces event-based test detection)
   - Test categorization (unit, integration, e2e, acceptance, bdd)
   - Test suite and test case structures
@@ -2922,7 +3380,7 @@ All versions maintain backward compatibility:
   - Per-node test coverage integration
   - Aggregated test summary statistics
 
-- **v1.7.0** (2026-01-25): Inference-Based Intelligence
+- **v1.7.0**: Inference-Based Intelligence
   - Intent inference from commits, comments, and pattern deviations
   - Critical flow enhancement to CASCallChain (criticality, runtime_stats, test_coverage)
   - Flow summary for critical path statistics
@@ -2932,7 +3390,7 @@ All versions maintain backward compatibility:
   - Flow-level test coverage with gap analysis
   - Git-based temporal stability metrics (churn, bug fix rate, legacy detection)
 
-- **v1.8.0** (2026-02-05): Incremental Analysis
+- **v1.8.0**: Incremental Analysis
   - Multi-tier change detection (mtime, git, content hash)
   - File-level analysis with import/export tracking
   - Incremental state management between analysis runs
@@ -2946,7 +3404,7 @@ All versions maintain backward compatibility:
   - Semantic impact reporting for workflows, capabilities, data entities, and contracts
   - Cross-repository link confidence and evidence
 
-- **v1.9.0** (2026-05-13): Codebase Idiom Intelligence
+- **v1.9.0**: Codebase Idiom Intelligence
   - Repo-local idioms for naming, file organization, module boundaries, dependency injection, data access, error handling, validation, auth/tenant scope, logging, testing, migrations, async style, and configuration
   - Evidence-backed positive examples and deviations
   - Agent guidance with do, avoid, and validation instructions
@@ -2954,7 +3412,7 @@ All versions maintain backward compatibility:
   - Live copied-repo A/B idiom quality proof
   - Machine-wide real-repo discovery and accounting
 
-- **v1.10.0** (2026-06-08): Layered Analysis and Description Enrichment
+- **v1.10.0**: Layered Analysis and Description Enrichment
   - `analysis_phases` explains which analysis layers ran, which are deferred, and what each layer provides to UI and agents
   - AI system narrative and primary capability descriptions are required default enrichment; unavailable AI is recorded as degraded provenance, not accepted as equivalent deterministic text
   - Per-element descriptions for nodes, services, entities, capabilities, entry points, and exit points are manually triggered enrichment outputs

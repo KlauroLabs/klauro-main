@@ -2,7 +2,6 @@
 
 **Version:** 1.0.0
 **Status:** Active
-**Last Updated:** 2026-06-20
 
 ## 1. Purpose
 
@@ -46,24 +45,33 @@ Workspace builders MUST honor repo/project exclusion policy before CAS and WAS a
 ```typescript
 interface WorkspaceAnalysis {
   analysis_kind: 'workspace';
+  spec_version: '1.0.0';
   was_version: '1.0.0';
   id: string;
   name: string;
   generated_at: string;
 
   inputs: WASInput[];
-  projects: WorkspaceProject[];
-  deployables: WorkspaceDeployable[];
+  codebase_count: number;
+  codebases: WorkspaceProject[];
+  projects: WorkspaceProject[];               // Alias of `codebases`
+  applications: WorkspaceDeployable[];         // Full drilldown inventory, including internal/package surfaces
+  deployables: WorkspaceDeployable[];          // Canonical workspace-level deployables exposed in the overview
   distribution_units: WorkspaceDistributionUnit[];
   composition: WorkspaceCompositionProfile;
   interfaces: WorkspaceInterface[];
-  integration_links: WorkspaceIntegrationLink[];
+  runtime_components: WorkspaceRuntimeComponent[];
+  runtime_links: WorkspaceRuntimeLink[];
   runtime_topology: {
     components: WorkspaceRuntimeComponent[];
     links: WorkspaceRuntimeLink[];
   };
+  ownership: Record<string, WorkspaceOwnership>;
   environments: WorkspaceEnvironment[];
   infrastructure_overlay: WorkspaceInfrastructureOverlay;
+  application_links: WorkspaceApplicationLink[]; // deployable-to-deployable links (superset of integration_links)
+  integration_links: WorkspaceIntegrationLink[]; // Interface-to-interface links (HTTP/SDK/message/stream/passive)
+  shared_code_rollup: WorkspaceSharedCodeRollup[]; // Monorepo shared-library consumer/blast-radius rollup — see §5.1
   data_flow_paths: WorkspaceDataFlowPath[];
   workspace_capabilities: WorkspaceCapability[];
   workspace_workflows: WorkspaceWorkflow[];
@@ -72,19 +80,27 @@ interface WorkspaceAnalysis {
   workspace_entity_paths: WorkspaceEntityPath[];
   health: WorkspaceHealth;
   risk_areas: WorkspaceRiskArea[];
+  priority_work_items: WorkspaceRiskArea[];    // risk_areas re-ranked for "what to fix first"
   activity: WorkspaceActivitySummary;
   telemetry: WorkspaceTelemetrySummary;
-  inferred_insights: WorkspaceInsight[];
+  system_insights: WorkspaceInsight[];
+  inferred_insights: WorkspaceInsight[];       // Alias of `system_insights`
+  links: WorkspaceIntegrationLink[];           // Superset link list backing `integration_links`/`application_links`
   unmatched_interfaces: WorkspaceUnmatchedInterface[];
   workspace_narrative: WorkspaceNarrative;
-  deterministic_narrative: WorkspaceNarrative;
   ai_enrichment: WorkspaceAiProviderMetadata;
   detail_views: WorkspaceDetailViews;
   validation: WorkspaceValidation;
   quality_flags: WorkspaceQualityFlag[];
+  // Deterministic, evidence-based complexity score (never AI, never a keyword
+  // table — every subscore's inputs are already-named CAS/WAS facts). Absent
+  // (not zero-filled) when the workspace has no member codebases to score.
+  workspace_complexity?: WorkspaceComplexity;
   summary: WorkspaceSummary;
 }
 ```
+
+There is no `deterministic_narrative` field. `WorkspaceNarrative` (the single `workspace_narrative` field) is comprehension and MUST be AI-authored or explicitly marked degraded — see docs/cas/DETERMINISM-BOUNDARY.md. A prior draft of this specification listed a `deterministic_narrative` field alongside it; that field was retired and MUST NOT be emitted.
 
 ## 5. Core Objects
 
@@ -117,6 +133,73 @@ interface WorkspaceAnalysis {
 WAS MUST use repo-level terminal and near-terminal CAS facts to separate core business/product behavior from supporting and infrastructure behavior. Terminal facts include CAS user journey `terminal_entities`, `terminal_effects`, flow graph `leaf_capabilities`, `primary_flow.core_capability_id`, value-chain capabilities, persisted or externally emitted end effects, and entities one or two layers upstream of those end effects. Whole-workspace domains, capabilities, workflows, and entities SHOULD expose `semantic_role`, `terminal_score`, and `terminal_evidence` when terminal evidence affects ranking. High-degree infrastructure, framework setup, build tooling, or generic backend provisioning MUST NOT outrank terminal business capabilities merely because it is central or noisy. The terminal evidence belongs in WAS only as a cross-repo ranking/explanation signal; authoritative repo-local readers, writers, tests, invariants, and implementation details remain in CAS.
 
 `WorkspaceEntity` and `WorkspaceEntityPath` are workspace-level indexes over repo-level CAS entities, data lineage, workflows, capabilities, and cross-repo flows. They MUST NOT duplicate every repo-local entity field or lifecycle detail. Entity paths SHOULD include source, target, ordered steps, `step_count`, `confidence`, `evidence_quality`, and `next_mcp_calls`. Path descriptions MUST be honest about whether the path is source-backed, topology-backed, route-shape inferred, or name/capability inferred. They SHOULD answer "which projects mention this entity concept?", "which workflows/capabilities carry it?", "does it cross a service boundary?", and "which repo-level CAS tool should I call next?" The authoritative field list, constraints, readers, writers, tests, and invariants remain in each repo's CAS.
+
+### 5.1 Shared-Code Rollup (monorepo workspaces)
+
+`shared_code_rollup` composes a cross-deployable view of a shared library/package inside a monorepo workspace: which deployables consume it, how much they use it, and — where derivable from CAS import specifiers — which exported symbols each consumer actually imports. It MUST be built from facts already computed in the same pass (deployable/package application rows, sdk-install application links, and CAS `import` node specifiers); it MUST NOT run a new source-level analysis pass of its own.
+
+```typescript
+interface WorkspaceSharedCodeRollup {
+  id: string;
+  lib_application_id: string;
+  lib_name: string;
+  project_id: string;
+  path_hint: string;
+  consumer_count: number;
+  total_usage_count: number;
+  consumers: Array<{
+    deployable_id: string;
+    deployable_name: string;
+    project_id: string;
+    usage_count: number;
+    consumed_symbols: string[];
+    evidence_quality: WorkspaceLinkEvidenceQuality;
+  }>;
+  consumed_surface: string[];
+  surface_derivable: boolean;
+  blast_radius: Array<{ symbol: string; consumer_deployable_ids: string[]; consumer_count: number }>;
+  evidence: string[];
+}
+```
+
+`blast_radius` MUST be derivable per-symbol only when the underlying CAS exposes named-import specifiers for the consumer; when a consumer's import is a bare/namespace import with no resolvable symbol list, `surface_derivable` MUST be `false` and `consumed_surface` MUST be empty rather than guessed.
+
+### 5.2 Workspace Complexity
+
+`workspace_complexity` is a deterministic, evidence-based complexity score — never AI, never a keyword table. Every subscore is read straight off already-computed CAS/WAS facts (graph size, entry/exit surface, communication-seam modality counts, dependency fan-out, entity/capability/deployable counts, runtime-link density, DAS-promotion fraction). The same input always produces the same score.
+
+```typescript
+interface ComplexitySubscore {
+  score: number;                    // 0-100
+  inputs: Record<string, number>;   // Named evidence values this subscore averaged
+}
+
+interface CodebaseComplexity {
+  codebase_id: string;
+  composite: number;                // Mean of the four subscores below, unweighted
+  subscores: {
+    size: ComplexitySubscore;       // Log-scaled node + edge counts
+    coupling: ComplexitySubscore;   // External dependency fan-out + internal edge density
+    surface: ComplexitySubscore;    // Entry/exit points + active (sync/async) communication seams
+    topology: ComplexitySubscore;   // Deployable/entity/capability breadth
+  };
+  computed_from: string[];          // Exact fact names this score was computed from
+}
+
+interface WorkspaceComplexity {
+  composite: number;                       // 60% member-average + 40% cross-repo factors
+  member_average_composite: number;
+  subscores: {
+    application_surface: ComplexitySubscore;    // Log-scaled deployable-application count
+    runtime_link_density: ComplexitySubscore;   // Log-scaled resolved cross-repo runtime link count
+    das_verified_fraction: ComplexitySubscore;  // % of applications confirmed by DAS promotion (source_das_unit_id set)
+  };
+  members: Array<{ codebase_id: string; composite: number; subscores: CodebaseComplexity['subscores'] }>;
+  computed_from: string[];
+}
+```
+
+`composite` weightings (per-codebase subscores unweighted; workspace 60/40 member-average/cross-repo split) are documented defaults, not fitted constants — there is no labeled-complexity corpus to calibrate against yet. Absent (never zero-filled) when the workspace has no member codebases to score.
 
 ## 6. Retrieval Detail Levels
 
@@ -163,6 +246,16 @@ These views are retrieval profiles. They MUST NOT create separate truths or infe
 - WAS MUST support drilldown without duplicating repo-local details. Workspace objects should include stable project ids, deployable ids, interface ids, repo paths, and next MCP calls that point back to repo-level CAS tools.
 - WAS SHOULD expose CAS distribution units at overview and evidence levels when they affect how agents should plan changes. A member deployable change SHOULD prompt agent guidance to inspect installer, release, service, desktop-entry, signing, or deployment artifacts before finalizing.
 - WAS SHOULD expose workspace entity concepts and paths when repo-level CAS provides data entities, workflows, capabilities, lineage, or cross-repo flow evidence. Entity paths MUST cite repo-level CAS lineage/workflow/capability facts and SHOULD include `get_data_lineage` drilldown calls.
+- When a member CAS has promoted to a Deployable-Analysis Workspace (docs/das/SPECIFICATION.md), WAS MUST consume that CAS's DAS units directly as the source of the corresponding `WorkspaceDeployable` entries' capabilities, flows, entities, and seams, carrying both the owning CAS's `codebase_id` and the DAS unit id (`source_das_unit_id`) — the three-hop provenance `workspace -> CAS (codebase_id) -> DAS (unit)`. When a member CAS has NOT promoted, WAS MUST fall back to building the `WorkspaceDeployable` from `deployable_evidence` and whole-CAS facts. This fallback MUST be silent to the schema: `WorkspaceDeployable` gains only the optional `source_das_unit_id` field and every other field is populated identically regardless of provenance.
+
+### 7.1 Invariants
+
+- **Reproducibility.** WAS MUST be derivable from the member CAS outputs alone — never a source-code read of its own. `WorkspaceValidation.source_code_read_required` MUST be `false`.
+- **Deployable identity stability.** A `SystemApplication`/`WorkspaceDeployable` id MUST be derived deterministically from its identity-collision-guarded construction (see `cross-codebase-analysis.ts`'s `buildApplications`), never freshly minted per analysis run — re-analyzing an unchanged workspace MUST yield the same deployable ids.
+- **No fabricated links.** Cross-repo HTTP links MUST NOT be inferred from a relative route alone; a consumer endpoint naming a concrete host or service alias MUST match that host/alias before route-shape compatibility can create a link. `evidence_quality` on every link/workflow/entity-path MUST honestly reflect its strongest supporting evidence tier (`source-backed` > `package-declared` > `topology-backed` > `route-shape-inferred` > `name-inferred`), never upgraded to make a payload look more confident.
+- **Isolated is valid.** WAS MUST NOT manufacture a weak link to avoid reporting a deployable as isolated, and validation MUST NOT fail a workspace solely for having zero integration links.
+- **Comprehension provenance.** `workspace_narrative`, `WorkspaceDomain.description`, `WorkspaceCapability.description`, and `WorkspaceWorkflow` descriptions MUST carry `source`/`description_source` of `ai` or `ai-required-degraded` — never `deterministic`. There is no deterministic workspace narrative (see docs/cas/DETERMINISM-BOUNDARY.md); a `deterministic_narrative` field MUST NOT be emitted.
+- **Complexity determinism.** `workspace_complexity` and each member `CodebaseComplexity` MUST be computed with no AI call, no randomness, and no timestamp in the formula — the same CAS/WAS facts MUST always produce the same score.
 
 ## 8. Acceptance Examples (workspace shapes)
 
