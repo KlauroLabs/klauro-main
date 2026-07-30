@@ -654,6 +654,12 @@ export const ENTRY_POINT_TYPES = [
   // (grpc-js addService impl, NestJS @GrpcMethod, Python grpcio Servicer) —
   // a method dispatch, not an HTTP path, so it reads distinctly from REST routes.
   'rpc',
+  // non-REST API entry-point kind: a GraphQL root operation (a Query/Mutation/
+  // Subscription field, or a field resolver on an object type). Callers address it
+  // by OPERATION NAME over a single transport endpoint, not by path+verb, so it is
+  // not a route: lumping it in with routes made an entire protocol surface
+  // unaskable ("what are the GraphQL entry points?" returned nothing filterable).
+  'graphql',
 ] as const;
 
 export type CASEntryPointType = typeof ENTRY_POINT_TYPES[number];

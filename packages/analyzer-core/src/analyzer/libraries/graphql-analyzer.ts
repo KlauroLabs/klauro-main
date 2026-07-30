@@ -11,6 +11,8 @@ interface GraphQLField {
   name: string;
   type: string;
   args: Array<{ name: string; type: string }>;
+  /** 0-based line offset of this field within the enclosing block body. */
+  lineOffset?: number;
 }
 
 interface GraphQLType {
@@ -26,12 +28,31 @@ interface GraphQLOperation {
   returnType: string;
   args: Array<{ name: string; type: string }>;
   filePath: string;
+  /** 1-based line of the declaration (SDL field, or the decorated/receiver method). */
+  line?: number;
+  /**
+   * For a field resolver (rootType 'Field'), the object type the field hangs off —
+   * taken from the enclosing resolver class's type argument. Absent for root
+   * Query/Mutation/Subscription operations, whose parent IS the root type.
+   */
+  objectType?: string;
 }
 
 interface GraphQLResolver {
   rootType: string;
   field: string;
   filePath: string;
+  /**
+   * The name of the code symbol that fulfils the field, which is NOT always the
+   * field name: Graphene uses `resolve_<field>`, gqlgen a PascalCase method,
+   * schema-first binders name the field in a decorator arg while the function is
+   * named separately. Reported so a caller can jump straight to the implementation.
+   */
+  method?: string;
+  /** 1-based line of the resolver implementation. */
+  line?: number;
+  /** For a field resolver, the object type whose field this fulfils (see GraphQLOperation.objectType). */
+  objectType?: string;
 }
 
 /**
@@ -53,7 +74,12 @@ export class GraphQLAnalyzer extends BaseAnalyzer {
       if (await fs.pathExists(packageJsonPath)) {
         const packageJson = await fs.readJson(packageJsonPath);
         const deps = { ...packageJson.dependencies, ...packageJson.devDependencies };
-        const markers = ['graphql', '@apollo/server', 'apollo-server', 'type-graphql', 'graphql-yoga', 'nexus'];
+        const markers = [
+          'graphql', '@apollo/server', 'apollo-server', 'type-graphql', 'graphql-yoga', 'nexus',
+          // Code-first server frameworks that own the decorators but do not
+          // necessarily list `graphql` as a direct dependency themselves.
+          '@nestjs/graphql', 'mercurius'
+        ];
         if (Object.keys(deps).some(d => markers.includes(d) || d.startsWith('@apollo/') || d.startsWith('@nexus/'))) {
           return true;
         }
@@ -225,11 +251,11 @@ export class GraphQLAnalyzer extends BaseAnalyzer {
     resolvers: GraphQLResolver[]
   ): void {
     if (isSdl) {
-      this.parseSDL(content, file, types, operations);
+      this.parseSDL(content, file, types, operations, 1);
       return;
     }
-    for (const sdl of this.extractGqlTemplates(content)) {
-      this.parseSDL(sdl, file, types, operations);
+    for (const { sdl, startLine } of this.extractGqlTemplates(content)) {
+      this.parseSDL(sdl, file, types, operations, startLine);
     }
     this.parseTypeGraphQL(content, file, operations, resolvers);
     this.parseResolverMaps(content, file, resolvers);
@@ -255,15 +281,16 @@ export class GraphQLAnalyzer extends BaseAnalyzer {
     for (const v of content.matchAll(/(\w+)\s*=\s*(QueryType|MutationType|SubscriptionType)\s*\(/g)) {
       varToRoot.set(v[1], typeToRoot[v[2]]);
     }
-    for (const m of content.matchAll(/@(\w+)\.field\(\s*["']([^"']+)["']/g)) {
+    for (const m of content.matchAll(/@(\w+)\.field\(\s*["']([^"']+)["']\s*\)([\s\S]{0,200}?\bdef\s+(\w+))?/g)) {
       const rootType = varToRoot.get(m[1]);
       if (!rootType) continue;
       const field = m[2];
+      const line = this.lineAt(content, m.index!);
       if (!operations.some(o => o.rootType === rootType && o.name === field)) {
-        operations.push({ name: field, rootType, returnType: 'Unknown', args: [], filePath });
+        operations.push({ name: field, rootType, returnType: 'Unknown', args: [], filePath, line });
       }
       if (!resolvers.some(r => r.rootType === rootType && r.field === field)) {
-        resolvers.push({ rootType, field, filePath });
+        resolvers.push({ rootType, field, filePath, method: m[4], line });
       }
     }
   }
@@ -277,12 +304,13 @@ export class GraphQLAnalyzer extends BaseAnalyzer {
     if (!/\bgraphene\b/.test(content)) return;
     // resolve_<field> methods resolve a Query/Subscription field.
     for (const m of content.matchAll(/\bdef\s+resolve_(\w+)\s*\(/g)) {
-      const method = m[1];
-      if (!operations.some(o => o.rootType === 'Query' && o.name === method)) {
-        operations.push({ name: method, rootType: 'Query', returnType: 'Unknown', args: [], filePath });
+      const field = m[1];
+      const line = this.lineAt(content, m.index!);
+      if (!operations.some(o => o.rootType === 'Query' && o.name === field)) {
+        operations.push({ name: field, rootType: 'Query', returnType: 'Unknown', args: [], filePath, line });
       }
-      if (!resolvers.some(r => r.rootType === 'Query' && r.field === method)) {
-        resolvers.push({ rootType: 'Query', field: method, filePath });
+      if (!resolvers.some(r => r.rootType === 'Query' && r.field === field)) {
+        resolvers.push({ rootType: 'Query', field, filePath, method: `resolve_${field}`, line });
       }
     }
   }
@@ -301,11 +329,12 @@ export class GraphQLAnalyzer extends BaseAnalyzer {
     while ((m = re.exec(content)) !== null) {
       const rootType = kindToRoot[m[1]];
       const method = m[2];
+      const line = this.lineAt(content, m.index);
       if (!operations.some(o => o.rootType === rootType && o.name === method)) {
-        operations.push({ name: method, rootType, returnType: 'Unknown', args: [], filePath });
+        operations.push({ name: method, rootType, returnType: 'Unknown', args: [], filePath, line });
       }
       if (!resolvers.some(r => r.rootType === rootType && r.field === method)) {
-        resolvers.push({ rootType, field: method, filePath });
+        resolvers.push({ rootType, field: method, filePath, method, line });
       }
     }
   }
@@ -325,11 +354,12 @@ export class GraphQLAnalyzer extends BaseAnalyzer {
     while ((m = re.exec(content)) !== null) {
       const rootType = kindToRoot[m[1].toLowerCase()];
       const field = m[2].charAt(0).toLowerCase() + m[2].slice(1);
+      const line = this.lineAt(content, m.index);
       if (!operations.some(o => o.rootType === rootType && o.name === field)) {
-        operations.push({ name: field, rootType, returnType: 'Unknown', args: [], filePath });
+        operations.push({ name: field, rootType, returnType: 'Unknown', args: [], filePath, line });
       }
       if (!resolvers.some(r => r.rootType === rootType && r.field === field)) {
-        resolvers.push({ rootType, field, filePath });
+        resolvers.push({ rootType, field, filePath, method: m[2], line });
       }
     }
   }
@@ -349,11 +379,12 @@ export class GraphQLAnalyzer extends BaseAnalyzer {
     while ((m = re.exec(content)) !== null) {
       const rootType = kindToRoot[m[1]];
       const field = m[2];
+      const line = this.lineAt(content, m.index);
       if (!operations.some(o => o.rootType === rootType && o.name === field)) {
-        operations.push({ name: field, rootType, returnType: 'Unknown', args: [], filePath });
+        operations.push({ name: field, rootType, returnType: 'Unknown', args: [], filePath, line });
       }
       if (!resolvers.some(r => r.rootType === rootType && r.field === field)) {
-        resolvers.push({ rootType, field, filePath });
+        resolvers.push({ rootType, field, filePath, method: field, line });
       }
     }
   }
@@ -407,7 +438,12 @@ export class GraphQLAnalyzer extends BaseAnalyzer {
 
     // Nodes + entry points for root operations (the API contract).
     for (const op of operations) {
-      const opId = `graphql_operation_${op.rootType.toLowerCase()}_${this.sanitizeId(op.name)}`;
+      // Field resolvers are namespaced by their object type: two types may each
+      // declare a `posts` field, and a bare `field_posts` id would merge them.
+      const opScope = op.rootType === 'Field' && op.objectType
+        ? `field_${this.sanitizeId(op.objectType)}`
+        : op.rootType.toLowerCase();
+      const opId = `graphql_operation_${opScope}_${this.sanitizeId(op.name)}`;
       const hasResolver = resolverIndex.has(`${op.rootType}.${op.name}`);
 
       nodes.push(this.createNode(
@@ -430,10 +466,15 @@ export class GraphQLAnalyzer extends BaseAnalyzer {
         }
       ));
 
-      // Link operation -> resolver function when present.
-      const resolver = resolvers.find(r => r.rootType === op.rootType && r.field === op.name);
+      // Link operation -> resolver function when present. A field resolver must
+      // match on object type too, else two types' same-named fields cross-link.
+      const resolver = resolvers.find(r =>
+        r.rootType === op.rootType &&
+        r.field === op.name &&
+        (op.rootType !== 'Field' || r.objectType === op.objectType)
+      );
       if (resolver) {
-        const resolverId = `graphql_resolver_${op.rootType.toLowerCase()}_${this.sanitizeId(op.name)}`;
+        const resolverId = `graphql_resolver_${opScope}_${this.sanitizeId(op.name)}`;
         nodes.push(this.createNode(
           resolverId,
           `${op.rootType}.${op.name} resolver`,
@@ -452,7 +493,7 @@ export class GraphQLAnalyzer extends BaseAnalyzer {
           }
         ));
         edges.push(this.createEdge(
-          `graphql_resolves_${op.rootType.toLowerCase()}_${this.sanitizeId(op.name)}`,
+          `graphql_resolves_${opScope}_${this.sanitizeId(op.name)}`,
           opId,
           resolverId,
           'resolved_by',
@@ -474,14 +515,22 @@ export class GraphQLAnalyzer extends BaseAnalyzer {
         ));
       }
 
+      // A field resolver's addressable parent is the object type it hangs off;
+      // a root operation's is the root type itself.
+      const parentType = op.rootType === 'Field' ? (op.objectType || 'Field') : op.rootType;
+      const operationPath = `${parentType}.${op.name}`;
+      // Emitted as its own kind, not as a route: a GraphQL operation is addressed
+      // by name over one transport endpoint, so it has no path+verb to route on.
       entryPoints.push(this.createEntryPoint(
         `entry_${opId}`,
         opId,
-        'route',
+        'graphql',
         op.name,
-        `GraphQL ${op.rootType}: ${op.name}`,
+        op.rootType === 'Field'
+          ? `GraphQL field resolver: ${operationPath}`
+          : `GraphQL ${op.rootType}: ${op.name}`,
         {
-          pattern: `${op.rootType}.${op.name}`,
+          pattern: operationPath,
           method: op.rootType,
           parameters: op.args.map(a => ({ name: a.name, type: a.type, required: a.type.includes('!') }))
         },
@@ -490,12 +539,23 @@ export class GraphQLAnalyzer extends BaseAnalyzer {
           api: 'GraphQL',
           operationType: op.rootType,
           operation: op.name,
+          operationPath,
+          parentType,
           returnType: op.returnType,
-          hasResolver
+          hasResolver,
+          // The code symbol that fulfils the operation, which is not always the
+          // field name (Graphene resolve_x, gqlgen PascalCase, bound decorators).
+          resolverMethod: resolver?.method,
+          declaredAt: op.line != null ? `${op.filePath}:${op.line}` : op.filePath
         },
         resolver
-          ? { node_id: opId, method_name: op.name, file: resolver.filePath }
-          : { node_id: opId, method_name: op.name, file: op.filePath }
+          ? {
+              node_id: opId,
+              method_name: resolver.method || op.name,
+              file: resolver.filePath,
+              line: resolver.line ?? op.line
+            }
+          : { node_id: opId, method_name: op.name, file: op.filePath, line: op.line }
       ));
       const ep = entryPoints[entryPoints.length - 1];
       ep.output = { type: op.returnType };
@@ -505,9 +565,13 @@ export class GraphQLAnalyzer extends BaseAnalyzer {
     }
   }
 
-  /** Extract bodies of gql`...` template literals. */
-  private extractGqlTemplates(content: string): string[] {
-    const out: string[] = [];
+  /**
+   * Extract bodies of gql`...` template literals, each with the line the body
+   * starts on in the host file so SDL parsed out of embedded schemas still
+   * reports a real file:line rather than a line relative to the template.
+   */
+  private extractGqlTemplates(content: string): Array<{ sdl: string; startLine: number }> {
+    const out: Array<{ sdl: string; startLine: number }> = [];
     // gql`` or graphql`` tagged templates.
     const tagged = /\b(?:gql|graphql)\s*`/g;
     let m: RegExpExecArray | null;
@@ -515,7 +579,7 @@ export class GraphQLAnalyzer extends BaseAnalyzer {
       const start = m.index + m[0].length;
       const end = content.indexOf('`', start);
       if (end === -1) break;
-      out.push(content.slice(start, end));
+      out.push({ sdl: content.slice(start, end), startLine: this.lineAt(content, start) });
       tagged.lastIndex = end + 1;
     }
     // Modern Apollo convention: `#graphql`-magic-commented template literals
@@ -525,7 +589,7 @@ export class GraphQLAnalyzer extends BaseAnalyzer {
       const start = m.index + 1; // just past the opening backtick
       const end = content.indexOf('`', start);
       if (end === -1) break;
-      out.push(content.slice(start, end));
+      out.push({ sdl: content.slice(start, end), startLine: this.lineAt(content, start) });
       magic.lastIndex = end + 1;
     }
     return out;
@@ -536,7 +600,9 @@ export class GraphQLAnalyzer extends BaseAnalyzer {
     sdl: string,
     filePath: string,
     types: GraphQLType[],
-    operations: GraphQLOperation[]
+    operations: GraphQLOperation[],
+    /** 1-based line in the host file that `sdl` starts on (1 for a whole .graphql file). */
+    sdlStartLine: number = 1
   ): void {
     const blockRe = /\b(type|input|interface|enum)\s+(\w+)(?:\s+implements\s+[\w\s&]+)?\s*\{([^}]*)\}/g;
     let m: RegExpExecArray | null;
@@ -544,6 +610,8 @@ export class GraphQLAnalyzer extends BaseAnalyzer {
       const kind = m[1] as GraphQLTypeKind;
       const name = m[2];
       const body = m[3];
+      // Line the body opens on, in host-file coordinates.
+      const bodyLine = sdlStartLine - 1 + this.lineAt(sdl, m.index + m[0].indexOf('{'));
 
       if (ROOT_TYPES.has(name) && kind === 'type') {
         for (const field of this.parseFields(body, kind)) {
@@ -552,7 +620,8 @@ export class GraphQLAnalyzer extends BaseAnalyzer {
             rootType: name as GraphQLOperation['rootType'],
             returnType: field.type,
             args: field.args,
-            filePath
+            filePath,
+            line: bodyLine + (field.lineOffset ?? 0)
           });
         }
         continue;
@@ -575,7 +644,8 @@ export class GraphQLAnalyzer extends BaseAnalyzer {
   private parseFields(body: string, kind: GraphQLTypeKind): GraphQLField[] {
     const fields: GraphQLField[] = [];
     const lines = body.split(/\r?\n/);
-    for (const raw of lines) {
+    for (let i = 0; i < lines.length; i++) {
+      const raw = lines[i];
       const line = raw.replace(/#.*/, '').trim();
       if (!line) continue;
       // name(arg: Type, ...): ReturnType  OR  name: Type
@@ -591,7 +661,7 @@ export class GraphQLAnalyzer extends BaseAnalyzer {
           if (am) args.push({ name: am[1], type: am[2].trim() });
         }
       }
-      fields.push({ name, type, args });
+      fields.push({ name, type, args, lineOffset: i });
     }
     return fields;
   }
@@ -609,18 +679,44 @@ export class GraphQLAnalyzer extends BaseAnalyzer {
     // @ResolveField / @FieldResolver wire a field on an object type to a method —
     // captured as a 'Field' operation so the schema-field -> resolver edge forms,
     // same as @Query/@Mutation roots.
+    // A field resolver's field belongs to the object type named by the ENCLOSING
+    // `@Resolver(() => User)` class, so record where each resolver class opens and
+    // attribute later field resolvers to the nearest preceding one. Without that,
+    // every field resolver in a service collapses to the same anonymous "Field"
+    // parent and two types' `posts` fields become indistinguishable.
+    const resolverClasses: Array<{ index: number; objectType?: string }> = [];
+    for (const rc of content.matchAll(/@Resolver\s*\(((?:[^()]|\([^()]*\))*)\)/g)) {
+      const arg = rc[1] || '';
+      const typeMatch = arg.match(/=>\s*\[?\s*(\w+)/) || arg.match(/\bof\s*:\s*\(\)\s*=>\s*\[?\s*(\w+)/);
+      resolverClasses.push({ index: rc.index!, objectType: typeMatch ? typeMatch[1] : undefined });
+    }
+    const enclosingObjectType = (index: number): string | undefined => {
+      let found: string | undefined;
+      for (const rc of resolverClasses) {
+        if (rc.index > index) break;
+        found = rc.objectType;
+      }
+      return found;
+    };
+
     const re = /@(Query|Mutation|Subscription|ResolveField|FieldResolver)\s*\(((?:[^()]|\([^()]*\))*)\)\s*(?:async\s+)?(\w+)\s*\(/g;
     let m: RegExpExecArray | null;
     while ((m = re.exec(content)) !== null) {
-      const rootType = (/Field/.test(m[1]) ? 'Field' : m[1]) as GraphQLOperation['rootType'];
+      const isFieldResolver = /Field/.test(m[1]);
+      const rootType = (isFieldResolver ? 'Field' : m[1]) as GraphQLOperation['rootType'];
       const method = m[3];
+      const line = this.lineAt(content, m.index);
       // Return type from either `() => Type` (explicit) or `returns: () => Type`.
       const returnTypeMatch = m[2].match(/=>\s*\[?\s*([\w]+)/);
       const returnType = returnTypeMatch ? returnTypeMatch[1] : 'Unknown';
-      if (!operations.some(o => o.rootType === rootType && o.name === method)) {
-        operations.push({ name: method, rootType, returnType, args: [], filePath });
+      const objectType = isFieldResolver ? enclosingObjectType(m.index) : undefined;
+      // Field resolvers are keyed by object type as well as name: two resolver
+      // classes may both declare a `posts` field, and a name-only key would drop
+      // the second one entirely.
+      if (!operations.some(o => o.rootType === rootType && o.name === method && o.objectType === objectType)) {
+        operations.push({ name: method, rootType, returnType, args: [], filePath, line, objectType });
       }
-      resolvers.push({ rootType, field: method, filePath });
+      resolvers.push({ rootType, field: method, filePath, method, line, objectType });
     }
   }
 
@@ -630,14 +726,21 @@ export class GraphQLAnalyzer extends BaseAnalyzer {
       const re = new RegExp(`\\b${root}\\s*:\\s*\\{`, 'g');
       let m: RegExpExecArray | null;
       while ((m = re.exec(content)) !== null) {
-        const block = this.extractBraceBlock(content, content.indexOf('{', m.index));
+        const blockOpen = content.indexOf('{', m.index);
+        const block = this.extractBraceBlock(content, blockOpen);
         if (block === null) continue;
+        // Offset of the block body within the file, so a field's line inside the
+        // resolver map resolves to a real file line.
+        const bodyOffset = blockOpen + 1;
         const fieldRe = /(\w+)\s*(?::\s*(?:async\s*)?(?:function\b|\([^)]*\)\s*=>|async\s*\([^)]*\)\s*=>)|\s*\([^)]*\)\s*\{)/g;
         let fm: RegExpExecArray | null;
         while ((fm = fieldRe.exec(block)) !== null) {
           const field = fm[1];
           if (!resolvers.some(r => r.rootType === root && r.field === field)) {
-            resolvers.push({ rootType: root, field, filePath });
+            resolvers.push({
+              rootType: root, field, filePath, method: field,
+              line: this.lineAt(content, bodyOffset + fm.index)
+            });
           }
         }
         // Property shorthand: `Query: { user, users }` references named resolver
@@ -648,7 +751,10 @@ export class GraphQLAnalyzer extends BaseAnalyzer {
         while ((sm = shorthandRe.exec(block)) !== null) {
           const field = sm[1];
           if (!resolvers.some(r => r.rootType === root && r.field === field)) {
-            resolvers.push({ rootType: root, field, filePath });
+            resolvers.push({
+              rootType: root, field, filePath, method: field,
+              line: this.lineAt(content, bodyOffset + sm.index)
+            });
           }
         }
       }
@@ -672,6 +778,31 @@ export class GraphQLAnalyzer extends BaseAnalyzer {
   /** Strip GraphQL type wrappers ([], !) down to the base type name. */
   private baseTypeName(type: string): string {
     return type.replace(/[![\]\s]/g, '');
+  }
+
+  /**
+   * 1-based line of a character offset. The newline index is memoised for the
+   * text most recently asked about, because every parser below resolves many
+   * offsets against the same file body and a per-call rescan would be quadratic.
+   */
+  private lineIndexCache: { text: string; offsets: number[] } | null = null;
+  private lineAt(text: string, index: number): number {
+    if (this.lineIndexCache?.text !== text) {
+      const offsets: number[] = [];
+      for (let i = 0; i < text.length; i++) {
+        if (text.charCodeAt(i) === 10) offsets.push(i);
+      }
+      this.lineIndexCache = { text, offsets };
+    }
+    const offsets = this.lineIndexCache!.offsets;
+    let lo = 0;
+    let hi = offsets.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (offsets[mid] < index) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo + 1;
   }
 
   protected getCapabilities(): string[] {

@@ -182,7 +182,7 @@ export type KlauroRouteConvention =
 export interface KlauroEntryPointConvention {
   files: string;
   export_matches: string;
-  kind: 'http' | 'websocket' | 'cli' | 'event' | 'schedule' | 'page' | 'route' | 'message' | 'file' | 'test' | 'lifecycle' | 'api' | 'task' | 'pipeline' | 'notebook-cell' | 'train';
+  kind: 'http' | 'websocket' | 'cli' | 'event' | 'schedule' | 'page' | 'route' | 'message' | 'file' | 'test' | 'lifecycle' | 'api' | 'task' | 'pipeline' | 'notebook-cell' | 'train' | 'graphql';
 }
 
 export interface KlauroEntityConvention {
