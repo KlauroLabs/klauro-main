@@ -219,6 +219,24 @@ test('DAS routes: index shape, scoped slice smaller than full, LRU keying, unkno
     assert.ok(apiUnit, 'expected the api unit in das_index');
     assert.ok(workerUnit, 'expected the worker unit in das_index');
 
+    // --- get_summary's FAST hosted path (GET /api/projects/:id/analysis)
+    // must carry das_index too. This is the endpoint hostedSummaryPayload
+    // (hosted-analysis.ts) hits by default — before this fix it never
+    // attached das_index, so a promoted repo queried the ordinary way (no
+    // scope/detail=full/runtime/exclude_sections) reported no DAS units at
+    // all despite /das and the full-CAS path both having them. ---
+    const analysisRes = await request(port, 'GET', `/api/projects/${project.id}/analysis`, undefined, token);
+    assert.equal(analysisRes.statusCode, 200);
+    const analysisBody = JSON.parse(analysisRes.body);
+    assert.equal(analysisBody.status, 'ready');
+    assert.ok(analysisBody.summary, 'expected a summary object on the fast hosted path');
+    assert.equal(analysisBody.summary.das_index.promoted, true);
+    assert.deepEqual(
+      analysisBody.summary.das_index.units.map((u: any) => u.name).sort(),
+      ['api', 'tool1', 'tool2', 'worker'],
+    );
+    assert.deepEqual(analysisBody.summary.das_index, dasBody.das_index, 'the fast hosted path and the dedicated /das route must report the identical index');
+
     // --- scoped slice: strictly smaller than the full CAS (api's closure is
     // A1, A2, S1 = 3 of the 6 fixture nodes, same as das-scope.test.ts's
     // in-process assertion), membership-gated response shape ---

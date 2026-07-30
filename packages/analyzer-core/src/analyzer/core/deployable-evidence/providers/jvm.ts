@@ -159,7 +159,22 @@ function collectMavenRunnableTargets(ctx: EvidenceCollectionContext): Deployable
     if (!content) continue;
     const rootPath = path.dirname(pom);
 
-    const hasSpringBootPlugin = /<artifactId>\s*spring-boot-maven-plugin\s*<\/artifactId>/.test(content);
+    const springBootPluginBlockMatch = content.match(/<plugin>\s*(?:(?!<\/plugin>)[\s\S])*?<artifactId>\s*spring-boot-maven-plugin\s*<\/artifactId>(?:(?!<\/plugin>)[\s\S])*?<\/plugin>/);
+    const hasSpringBootPlugin = Boolean(springBootPluginBlockMatch);
+    // The `repackage` goal is what actually produces the shippable artifact
+    // (a self-contained executable fat-jar Maven binds into the `package`
+    // phase) -- everything else about the plugin is configuration. It is
+    // usually bound one of two ways: an explicit <executions><goal>repackage
+    // </goal> block (the shape Spring Initializr scaffolds), or implicitly,
+    // inherited from spring-boot-starter-parent's own <pluginManagement>
+    // when the child pom just lists the bare plugin with no <executions> at
+    // all -- which is equally common and, because the binding lives in a
+    // parent POM this scan never resolves, textually invisible here. Bare
+    // plugin presence is therefore already the right signal for "this
+    // module ships its own repackaged jar"; the explicit-goal match below is
+    // additional corroborating evidence text, not an extra gate.
+    const hasExplicitRepackageGoal = hasSpringBootPlugin
+      && /<goal>\s*repackage\s*<\/goal>/.test(springBootPluginBlockMatch![0]);
     const shadeMainClassMatch = content.match(/<artifactId>\s*maven-shade-plugin\s*<\/artifactId>[\s\S]*?<mainClass>([^<]+)<\/mainClass>/)
       || content.match(/<artifactId>\s*maven-assembly-plugin\s*<\/artifactId>[\s\S]*?<mainClass>([^<]+)<\/mainClass>/);
     const execMainClassMatch = content.match(/<artifactId>\s*exec-maven-plugin\s*<\/artifactId>[\s\S]*?<mainClass>([^<]+)<\/mainClass>/);
@@ -174,10 +189,26 @@ function collectMavenRunnableTargets(ctx: EvidenceCollectionContext): Deployable
       root_path: rootPath,
       name: moduleNameFromRoot(rootPath, projectPath, displayName),
       tier: 2,
-      kind: hasSpringBootPlugin ? 'server-entry' : 'bin',
+      // A Spring Boot Maven module IS its own build target -- the plugin
+      // repackages this module's own jar into a standalone runnable
+      // artifact, exactly like a Gradle `application`/`bootJar` target or a
+      // cargo [[bin]] -- never a 'server-entry' (an in-process HTTP route
+      // handler with no build artifact of its own). Misclassifying it as
+      // 'server-entry' made deployable-analysis.ts's isBuildTargetDeclaration
+      // (tier===2 && kind==='bin') silently drop every Spring Boot Maven
+      // module from ship-evidence qualification -- a repo whose only runnable
+      // units are Spring Boot Maven apps could never promote to a
+      // Deployable-Analysis Workspace no matter how many independently
+      // shippable services it had.
+      kind: 'bin',
       evidence: [
         `pom.xml: ${pom}`,
-        ...(hasSpringBootPlugin ? ['spring-boot-maven-plugin present'] : []),
+        ...(hasSpringBootPlugin ? [
+          'spring-boot-maven-plugin present',
+          hasExplicitRepackageGoal
+            ? 'spring-boot-maven-plugin repackage goal bound explicitly (produces the standalone executable jar)'
+            : 'spring-boot-maven-plugin repackage goal (default binding via spring-boot-starter-parent packaging convention; produces the standalone executable jar)',
+        ] : []),
         ...(mainClass ? [`mainClass: ${mainClass}`] : []),
       ],
     });
