@@ -98,10 +98,10 @@ unhandled. Drives the next fix waves.
 | backend | web-backend | 0.46 | 1425 | 60 | 12 | 5 | 0 | 0 |
 | flight-finder | cli | 0.52 | 701 | 32 | 7 | 15 | 0 | 0 |
 | investor | web-backend | 0.43 | 21982 | 853 | 0 | 388 | 0 | 0 |
-| kadra.ai | cli | 0.34 | 2379 | 192 | 21 | 6 | 0 | 0 |
+| cli-assistant-a | cli | 0.34 | 2379 | 192 | 21 | 6 | 0 | 0 |
 | platform | web-backend | 0.55 | 5247 | 773 | 2 | 97 | 0 | 0 |
 | simulation-engine | web-frontend | 0.58 | 7522 | 2 | 3 | 100 | 0 | 0 |
-| kontinuum | cli | 0.34 | 5828 | 677 | 3 | 69 | 0 | 0 |
+| cli-assistant-b | cli | 0.34 | 5828 | 677 | 3 | 69 | 0 | 0 |
 | pumpfun-portal | web-backend | 0.60 | 193 | 1 | 0 | 0 | 0 | 0 |
 | client | web-frontend | 1.00 | 2016 | 1 | 6 | 46 | 0 | 0 |
 | side-scroller | library | 0.69 | 2021 | 2 | 0 | 41 | 0 | 0 |
@@ -115,8 +115,8 @@ unhandled. Drives the next fix waves.
 
 ## Crashed (5)
 
-- openclaw: timed out after 90000ms analyzing openclaw
-- money: timed out after 90000ms analyzing money
+- assistant-runtime-x: timed out after 90000ms analyzing assistant-runtime-x
+- finance-app-y: timed out after 90000ms analyzing finance-app-y
 - app: timed out after 90000ms analyzing app
 - backend: timed out after 90000ms analyzing backend
 - frontend: timed out after 90000ms analyzing frontend

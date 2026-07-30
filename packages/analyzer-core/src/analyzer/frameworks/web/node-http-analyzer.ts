@@ -366,7 +366,7 @@ export class NodeHttpAnalyzer extends BaseAnalyzer {
     // member-expression form (`request.method`, `req.url`, `url.pathname`) and
     // the bare-local-variable form (a destructured/aliased `const method = ...`,
     // `const pathname = url.pathname` hoisted once per handler — the shape
-    // soon-bos's bos-api actually uses) are real, equally static evidence.
+    // a real API service package actually uses) are real, equally static evidence.
     const ifPattern = /if\s*\(([^)]*?(?:method|url|pathname)[^)]*?)\)\s*\{/g;
     let ifMatch: RegExpExecArray | null;
     while ((ifMatch = ifPattern.exec(content)) !== null) {

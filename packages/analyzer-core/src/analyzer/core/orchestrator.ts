@@ -176,6 +176,21 @@ import * as crypto from 'crypto';
 import * as nativeFs from 'node:fs/promises';
 
 /**
+ * Code-layout words that show up as path segments across effectively every
+ * repo (framework/language conventions, not domain vocabulary). This is the
+ * ONLY word list `repoRelativePathSegments` filters against — machine- and
+ * developer-specific segments (home directory, username, personal folder
+ * names, client folders, …) never reach this list at all, because they are
+ * cut structurally before this filter runs (see `repoRelativePathSegments`).
+ */
+const GENERIC_PATH_LAYOUT_WORDS = new Set([
+  'src', 'app', 'apps', 'packages', 'lib', 'libs', 'server', 'client', 'clients',
+  'components', 'controllers', 'services', 'repositories', 'models', 'entities',
+  'routes', 'pages', 'api', 'test', 'tests', 'spec', 'specs', 'backend', 'frontend',
+  'vendor', 'generated', 'dist', 'build', 'out', 'bin', 'node_modules',
+]);
+
+/**
  * Run an async worker over `items` with a bounded number in flight at once,
  * awaiting the whole set. Each worker is independent; results are not returned
  * (workers mutate shared state under their own id, so completion order does not
@@ -9149,7 +9164,11 @@ export class AnalyzerOrchestrator {
     if (/^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+$/.test(value) && !value.includes('/') && !value.startsWith('@')) return false;
     if (/^\w+\.\w+\(/.test(value)) return false;
     if (/^\.?\//.test(value) || lower.startsWith('route') || lower.includes('window.location')) return false;
-    if (/^(node:|rxjs(?:\/|$)|protractor(?:\/|$)|@angular(?:\/|$)|@app(?:\/|$)|@shared(?:\/|$)|openclaw\/plugin-sdk(?:\/|$))/.test(lower)) return false;
+    // The last alternative generalizes "the repo's own internal plugin-SDK
+    // package" (own-scope/plugin-sdk) rather than naming one specific repo's
+    // package — that convention recurs across any repo that ships a
+    // plugin/extension SDK as a local workspace package.
+    if (/^(node:|rxjs(?:\/|$)|protractor(?:\/|$)|@angular(?:\/|$)|@app(?:\/|$)|@shared(?:\/|$)|[\w-]+\/plugin-sdk(?:\/|$))/.test(lower)) return false;
     if (/^(object|array|string|number|boolean|date|math|json|promise|map|set|error|regexp|function|process|global)(\.|$)/.test(lower)) return false;
     return true;
   }
@@ -15463,7 +15482,8 @@ export class AnalyzerOrchestrator {
       return { ok: false, reason: 'raw-fact-list-format' };
     }
     // Prompt-internal fact-list vocabulary echoed as prose ("produces terminal
-    // outputs such as ..." — live kontinuum). Narrow to the template forms so a
+    // outputs such as ..." — live: a CLI-first repo whose own product surface
+    // is a terminal/task-report tool). Narrow to the template forms so a
     // genuine terminal/CLI product's "terminal output" prose is untouched.
     if (/\b(?:produces?|producing|produce)\s+terminal\s+(?:records?|outputs?)\b/i.test(description) ||
       /\bterminal\s+outputs?\s+such\s+as\b/i.test(description)) {
@@ -15793,7 +15813,8 @@ export class AnalyzerOrchestrator {
         .replace(/\s{2,}/g, ' ')
     ));
     // Stripping the shape word can gut a copula predicate ("its architecture
-    // is, with 11 deployable units" — live kontinuum). A sentence whose
+    // is, with 11 deployable units" — live: a CLI-first repo with 11
+    // deployable units). A sentence whose
     // is/are lost its complement has nothing left to say; drop it whole when
     // other sentences remain rather than shipping the stump.
     const sentences = repaired.split(/(?<=[.!?])\s+/).map(sentence => sentence.trim()).filter(Boolean);
@@ -15944,7 +15965,8 @@ export class AnalyzerOrchestrator {
     if (keep.length === sentences.length) return cleaned;
     // The OPENING sentence carries the paragraph's subject ("<name> is a ...").
     // Dropping it leaves pronoun-headed prose with no referent ("It produces
-    // ..." — prod: openclaw shipped an accepted description clipped this way).
+    // ..." — prod: a live customer analysis shipped an accepted description
+    // clipped this way).
     // Sentence-level sanitization is only a valid repair when the first
     // sentence survives; otherwise the text goes back unchanged so the
     // semantic rejection stands and the AI re-prompt re-authors it whole.
@@ -17456,7 +17478,7 @@ export class AnalyzerOrchestrator {
       'old', 'new', 'main', 'index', 'metadata', 'data', 'core', 'lib', 'library',
       'src', 'dist', 'build', 'out', 'pkg', 'bin', 'httpexception', 'exception', 'exceptions', 'error', 'errors',
       'libs', 'package', 'portal', 'dashboard', 'admin', 'business', 'apps',
-      'users', 'michaelshattuck', 'dev', 'clients', 'outcode', 'personal',
+      'users', 'dev', 'clients',
       'page', 'pages', 'route', 'routes', 'component', 'components', 'layout',
       'layouts', 'section', 'sections', 'navbar', 'nav', 'footer', 'button',
       'arrow', 'padding', 'total', 'home', 'submit', 'rewrite', 'rewrites',
@@ -18304,7 +18326,8 @@ export class AnalyzerOrchestrator {
     // or api-response evidence is plumbing, not a domain data entity — so it must
     // not surface in database_entities even when the domain filter above fell back
     // to the full set (a DTO-only repo with zero persisted/api-response shapes,
-    // e.g. openclaw, where SpawnBase/DaemonAction/RuntimeInfo/ZaiUsage/… would
+    // e.g. an assistant-runtime repo whose entities are all process/DTO
+    // shapes, where SpawnBase/DaemonAction/RuntimeInfo/ZaiUsage/… would
     // otherwise leak through the fallback). Gated on entity KIND + name shape
     // (evidence), never a capability/keyword blocklist: persisted-entity /
     // api-response shapes are kept regardless of name. Never blank the entity
@@ -21148,8 +21171,9 @@ export class AnalyzerOrchestrator {
    * Second dedup pass keyed on canonical ENTITY-SET identity. Name-keyed dedup
    * (above) cannot catch verb-variant capabilities — "Tracks task reports" vs
    * "Provides task reports" — that are the SAME capability because both anchor
-   * on the identical related_entities set (live: kontinuum TaskReport ×2, mtg
-   * EconomyTransaction ×2). Same entity set ⇒ same capability regardless of
+   * on the identical related_entities set (live: a CLI task-report tool's
+   * TaskReport ×2, a rules-accurate game engine's EconomyTransaction ×2).
+   * Same entity set ⇒ same capability regardless of
    * name: merge evidence and keep the richest / core-most copy. Near-dup: a
    * capability whose entity set is a strict SUBSET of another's and that
    * carries no operation the superset lacks adds no distinct behavior — merge
@@ -21721,7 +21745,8 @@ export class AnalyzerOrchestrator {
       // Code-artifact-shaped entities (…Handler/Adapter/Registry/… head noun)
       // that carry no persistence / api-response framework evidence never seed
       // a capability: they are wiring that leaked into the entity set (live:
-      // openclaw "Registers Telegram Handlers" from RegisterTelegramHandler).
+      // an assistant-runtime repo's "Registers Telegram Handlers" from
+      // RegisterTelegramHandler).
       // Same both-conditions rule as the derivation-path filter — a role-suffixed
       // entity WITH real persisted/produced evidence still anchors capabilities.
       if (this.isCodeArtifactRoleName(entity.name) &&
@@ -21777,7 +21802,7 @@ export class AnalyzerOrchestrator {
       const composedEntityKey = nodeTokens.length > 1 && /(^|\/)(entity|entities|model|models)(\/|$)/.test(file)
         ? nodeTokens.join('_')
         : undefined;
-      const key = composedEntityKey || this.domainKeyFromNode(node);
+      const key = composedEntityKey || this.domainKeyFromNode(node, projectPath);
       if (!key || this.domainCoveredByExistingDomain(key, existingDomains)) continue;
       const group = ensureGroup(key, nodeTokens);
       group.nodes.push(node);
@@ -22003,8 +22028,8 @@ export class AnalyzerOrchestrator {
    * entity-anchored buildTerminalCapabilities above. That path derives a
    * capability from dataEntities + terminal graph nodes, so capability ==
    * persisted/produced DATA; behavior engines with little or no entity surface
-   * are structurally invisible to it (audited on 5 live repos: MTG's
-   * rules-accurate game engine + multiplayer, openclaw's assistant runtime,
+   * are structurally invisible to it (audited on 5 live repos: a
+   * rules-accurate game engine + multiplayer, an assistant-runtime repo,
    * Klauro's own ~280-tool MCP surface — every flagship missing while the list
    * bloated with CRUD-over-tables).
    *
@@ -22751,18 +22776,52 @@ export class AnalyzerOrchestrator {
       (node.type === 'class' && /\b(controller|service|handler|repository|store|model|entity)\b/.test(text));
   }
 
-  private domainKeyFromNode(node: CASNode): string | undefined {
+  /**
+   * Split a source-file path into segments that are safe to mine for
+   * domain/capability vocabulary, and nothing else.
+   *
+   * Structural, not enumerated: any segment at or above the analysis root
+   * (the developer's home directory, their username, whatever folder they
+   * happen to keep client work in, an org name, …) is machine- and
+   * developer-specific, never repo vocabulary, and must never contribute a
+   * token — regardless of what that segment is spelled. We guarantee that by
+   * resolving the path relative to the analysis root FIRST and only ever
+   * looking at segments inside it; we do not and must not enumerate specific
+   * usernames or folder names to filter out, because that only protects
+   * against the ones we thought to list.
+   *
+   * What's left after that structural cut is then filtered against a small
+   * set of genuinely generic code-layout words (src, controllers, models,
+   * routes, api, test, …) that carry no domain meaning on ANY repo.
+   */
+  private repoRelativePathSegments(rawFile: string, projectPath?: string): string[] {
+    if (!rawFile) return [];
+    let normalized = rawFile.replace(/\\/g, '/');
+    if (path.isAbsolute(normalized) && projectPath) {
+      const rel = path.relative(projectPath, normalized).replace(/\\/g, '/');
+      // Outside (or exactly at) the analysis root: contributes nothing.
+      if (!rel || rel === '.' || rel.startsWith('..')) return [];
+      normalized = rel;
+    } else if (path.isAbsolute(normalized) && !projectPath) {
+      // No root to resolve against — we cannot prove any segment is
+      // in-repo, so refuse to mine this path rather than risk leaking
+      // whatever machine-specific segments precede the repo.
+      return [];
+    }
+    return normalized
+      .split('/')
+      .filter(Boolean)
+      .filter(part => !GENERIC_PATH_LAYOUT_WORDS.has(part.toLowerCase()));
+  }
+
+  private domainKeyFromNode(node: CASNode, projectPath?: string): string | undefined {
     const tradingKey = this.tradingBotDomainKeyFromNode(node);
     if (tradingKey) return tradingKey;
 
     const nameKey = this.domainKeyFromText(node.name);
     if (nameKey) return nameKey;
 
-    const pathParts = (node.source?.file || '')
-      .replace(/\\/g, '/')
-      .split('/')
-      .filter(Boolean)
-      .filter(part => !/^(src|app|apps|packages|lib|libs|server|client|clients|components|controllers|services|repositories|models|entities|routes|pages|api|test|tests|spec|users|michaelshattuck|dev|outcode|personal|backend|frontend|vendor|generated)$/.test(part.toLowerCase()));
+    const pathParts = this.repoRelativePathSegments(node.source?.file || '', projectPath);
     for (const part of pathParts.reverse()) {
       const key = this.domainKeyFromText(part.replace(/\.[^.]+$/, ''));
       if (key) return key;
@@ -23035,7 +23094,7 @@ export class AnalyzerOrchestrator {
       'str', 'autenticacion', 'authentication', 'authorization', 'link', 'links',
       'foreach', 'all', 'response', 'down', 'apply', 'one', 'add',
       'should', 'when', 'then', 'given', 'describe', 'context', 'before', 'after', 'mock', 'stub',
-      'php', 'python', 'java', 'csharp', 'rust', 'dart', 'users', 'michaelshattuck',
+      'php', 'python', 'java', 'csharp', 'rust', 'dart', 'users',
       'flutter', 'lifecycle',
       'summarize', 'summary', 'args', 'argument', 'arguments', 'print', 'aggregate', 'average',
       'status', 'file', 'files', 'default', 'target', 'targets', 'unique', 'compact', 'score',
@@ -23047,7 +23106,7 @@ export class AnalyzerOrchestrator {
       'string', 'team', 'inv', 'iso', 'empty', 'text', 'trim', 'split', 'skip', 'pick',
       'port', 'html', 'hash', 'configured', 'callback', 'cache', 'block', 'blue', 'bubbles',
       'help', 'from', 'count', 'counts', 'slugify', 'with', 'match', 'matches',
-      'dev', 'clients', 'outcode', 'personal', 'business', 'apps', 'libs', 'bos',
+      'dev', 'clients', 'business', 'apps', 'libs',
       'entry', 'entries', 'first', 'path', 'paths', 'percent', 'percentage',
       'minimal', 'gate', 'gates', 'compatible', 'support', 'dynamic', 'feature', 'features',
       'guide', 'guides', 'manual', 'manuals',
