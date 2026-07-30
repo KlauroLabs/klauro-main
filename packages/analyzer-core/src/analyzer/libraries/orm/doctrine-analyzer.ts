@@ -110,12 +110,12 @@ export class DoctrineAnalyzer extends BaseAnalyzer {
     }
 
     const ignorePatterns = ['vendor/**', '**/vendor/**'];
-    const sourceFiles = await glob('**/*.php', {
+    const sourceFiles = this.sortFiles(await glob('**/*.php', {
       cwd: projectPath,
       ignore: ignorePatterns,
       absolute: true,
       nodir: true
-    });
+    }));
 
     for (const file of sourceFiles.slice(0, 400)) {
       try {
@@ -137,12 +137,20 @@ export class DoctrineAnalyzer extends BaseAnalyzer {
     const exitPoints: CASContribution['exit_points'] = [];
 
     const ignorePatterns = this.getIgnorePatterns(context);
-    const sourceFiles = await glob('**/*.php', {
+    // Sorted before the read fan-out below. Root cause lives in glob-cache.ts
+    // (cachedGlob now sorts its result unconditionally, including outside an
+    // orchestrator beginGlobRun/endGlobRun window — see its NO-TOKEN
+    // DETERMINISM note), so this sort is belt-and-suspenders: it keeps
+    // fileContents' insertion order — which drives entity/write-site
+    // discovery order, which drives node/edge/exit-point emission order —
+    // deterministic locally, independent of whether a future caller bypasses
+    // or changes the shared glob cache.
+    const sourceFiles = this.sortFiles(await glob('**/*.php', {
       cwd: context.projectPath,
       ignore: ignorePatterns,
       absolute: true,
       nodir: true
-    });
+    }));
 
     const entities: DoctrineEntity[] = [];
     const fileContents = new Map<string, string>();
@@ -181,6 +189,11 @@ export class DoctrineAnalyzer extends BaseAnalyzer {
       entities.push(...this.parseEntities(content, relativePath, traitInfoByName));
     }
 
+    // Emission order is a pure function of WHAT was found, never of the order
+    // it was discovered in — the file list above is already sorted, and this
+    // keeps that property local to the analyzer rather than dependent on a
+    // distant glob contract.
+    this.sortEntities(entities);
     this.emitEntityGraph(entities, nodes, edges);
 
     // Pass 2: scan every PHP file (not just entity files) for
@@ -209,6 +222,7 @@ export class DoctrineAnalyzer extends BaseAnalyzer {
       writeSites.push(...this.extractWriteSites(content, relativePath, knownEntityNames));
     }
 
+    this.sortWriteSites(writeSites);
     exitPoints.push(...this.emitWriteFacts(writeSites, entities, nodes, edges));
 
     return this.createContribution(nodes, edges, [], exitPoints, {
@@ -817,6 +831,51 @@ export class DoctrineAnalyzer extends BaseAnalyzer {
       }
     }
     return [...names];
+  }
+
+  // ---------------------------------------------------------------------
+  // Deterministic ordering
+  //
+  // Root fix lives in glob-cache.ts (cachedGlob sorts its result even
+  // outside an orchestrator beginGlobRun/endGlobRun window now — see its
+  // NO-TOKEN DETERMINISM note). The sorts below are a local, defense-in-depth
+  // guarantee: they make this analyzer's own emission order a pure function
+  // of file/entity/write-site identity, independent of the cache layer, so
+  // it stays byte-stable even if a future caller bypasses or changes the
+  // shared glob cache.
+  // ---------------------------------------------------------------------
+
+  /** Discovery order for every glob in this analyzer. Plain codepoint sort so
+   *  the result is locale-independent (localeCompare is not). */
+  private sortFiles(files: string[]): string[] {
+    return [...files].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  }
+
+  private compareStrings(a: string, b: string): number {
+    return a < b ? -1 : a > b ? 1 : 0;
+  }
+
+  /** Entity node/edge emission order: file path, then declaration line, then
+   *  class name (two classes never share a file+line, so the third key is only
+   *  a total-order guarantee). */
+  private sortEntities(entities: DoctrineEntity[]): void {
+    entities.sort((a, b) =>
+      this.compareStrings(a.filePath, b.filePath) ||
+      a.line - b.line ||
+      this.compareStrings(a.className, b.className)
+    );
+  }
+
+  /** Write-fact emission order. Also fixes the `_${index}` suffix in the
+   *  emitted query node ids, which is positional. */
+  private sortWriteSites(sites: DoctrineWriteSite[]): void {
+    sites.sort((a, b) =>
+      this.compareStrings(a.filePath, b.filePath) ||
+      a.line - b.line ||
+      this.compareStrings(a.op, b.op) ||
+      this.compareStrings(a.entityName, b.entityName) ||
+      this.compareStrings(a.via, b.via)
+    );
   }
 
   // ---------------------------------------------------------------------
