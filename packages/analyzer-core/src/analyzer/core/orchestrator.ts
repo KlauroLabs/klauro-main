@@ -24823,359 +24823,27 @@ export class AnalyzerOrchestrator {
       weight: number;
     }
 
+    // Klauro cardinal rule: this table must contain only structural/technical
+    // discriminators (real declared node types, framework routing
+    // conventions, self-anchored evidence), never a hardcoded
+    // business-vertical/domain-vocabulary categorizer. It previously carried
+    // ~30 business-domain entries (e-commerce keyed on cart/checkout/product/
+    // payment, notification-service keyed on alert/webhook, crm-system,
+    // payment-service, iot-platform, medical-device-software,
+    // patient-management, etc.) that concluded a product's business identity
+    // from generic English words with no dependency/manifest/schema evidence
+    // behind them — the same defect class that once described an unrelated
+    // repo in trading terms off vocabulary overlap alone. None of those
+    // entries had a single asserting test or downstream consumer (audited via
+    // repo-wide grep before removal), and the anchor-gated overrides further
+    // below in this function already own the small number of these
+    // categories (clinical-testing-platform, content-management, ...) that
+    // are still reachable, with their own independent, tested anchor logic.
+    // Removing this table's redundant/unguarded duplicates is a pure
+    // narrowing of the guess-from-vocabulary surface, not a loss of any
+    // tested or evidence-backed capability. See orchestrator.ts inline
+    // history / commit message for the full per-entry disposition.
     const signatures: SystemSignature[] = [
-      {
-        type: 'verification-service',
-        description: 'Data verification and validation system',
-        indicators: {
-          pathPatterns: ['verify', 'validate', 'check', 'barcode', 'scan', 'lookup'],
-          verbPatterns: ['verify', 'validate', 'check', 'scan'],
-          entityPatterns: ['verification', 'validator', 'barcode', 'serial', 'gtin', 'lot'],
-          capabilityPatterns: ['verify', 'validate', 'check', 'scan'],
-        },
-        distinctiveness: 3,
-        weight: 0
-      },
-      {
-        type: 'sync-service',
-        description: 'Data synchronization and replication system',
-        indicators: {
-          pathPatterns: ['sync', 'push', 'pull', 'replicate', 'mirror', 'synchronization'],
-          verbPatterns: ['sync', 'push', 'pull', 'replicate'],
-          entityPatterns: ['sync', 'replication', 'source', 'target', 'connection'],
-          capabilityPatterns: ['sync', 'push', 'pull', 'synchronization'],
-        },
-        distinctiveness: 3,
-        weight: 0
-      },
-      {
-        type: 'e-commerce',
-        description: 'Online shopping and commerce platform',
-        indicators: {
-          pathPatterns: ['cart', 'checkout', 'shop', 'store', 'catalog', 'wishlist'],
-          verbPatterns: ['purchase', 'buy', 'add-to-cart'],
-          entityPatterns: ['product', 'order', 'cart', 'payment', 'customer', 'sku', 'inventory', 'price'],
-          capabilityPatterns: ['checkout', 'cart', 'purchase', 'catalog'],
-        },
-        distinctiveness: 2.5,
-        weight: 0
-      },
-      {
-        type: 'messaging-service',
-        description: 'Message queue and event processing system',
-        indicators: {
-          pathPatterns: ['message', 'queue', 'publish', 'subscribe', 'topic', 'channel'],
-          verbPatterns: ['publish', 'subscribe', 'send', 'receive', 'broadcast'],
-          entityPatterns: ['message', 'queue', 'topic', 'subscriber', 'publisher', 'event'],
-          capabilityPatterns: ['publish', 'subscribe', 'message', 'notify'],
-        },
-        distinctiveness: 3,
-        weight: 0
-      },
-      {
-        type: 'workflow-engine',
-        description: 'Business process and workflow automation',
-        indicators: {
-          pathPatterns: ['workflow', 'process', 'task', 'step', 'approval', 'stage'],
-          verbPatterns: ['approve', 'reject', 'submit', 'escalate'],
-          entityPatterns: ['workflow', 'process', 'task', 'stage', 'approval', 'assignee'],
-          capabilityPatterns: ['workflow', 'process', 'task', 'approve'],
-        },
-        distinctiveness: 3,
-        weight: 0
-      },
-      {
-        type: 'scheduling-service',
-        description: 'Appointment and scheduling management',
-        indicators: {
-          pathPatterns: ['schedule', 'appointment', 'booking', 'calendar', 'slot', 'availability'],
-          verbPatterns: ['schedule', 'book', 'reserve', 'cancel'],
-          entityPatterns: ['schedule', 'appointment', 'booking', 'slot', 'calendar', 'availability'],
-          capabilityPatterns: ['schedule', 'book', 'availability'],
-        },
-        distinctiveness: 3,
-        weight: 0
-      },
-      {
-        type: 'notification-service',
-        description: 'Notification and alerting system',
-        indicators: {
-          pathPatterns: ['notification', 'alert', 'email', 'sms', 'push', 'webhook'],
-          verbPatterns: ['notify', 'alert', 'send', 'trigger'],
-          entityPatterns: ['notification', 'alert', 'template', 'recipient', 'channel'],
-          capabilityPatterns: ['notify', 'alert', 'send'],
-        },
-        distinctiveness: 2.5,
-        weight: 0
-      },
-      {
-        type: 'document-management',
-        description: 'Document storage and management system',
-        indicators: {
-          pathPatterns: ['document', 'file', 'upload', 'download', 'attachment', 'storage'],
-          verbPatterns: ['upload', 'download', 'attach', 'store'],
-          entityPatterns: ['document', 'file', 'attachment', 'folder', 'version'],
-          capabilityPatterns: ['upload', 'download', 'document', 'file'],
-        },
-        distinctiveness: 2.5,
-        weight: 0
-      },
-      {
-        type: 'search-service',
-        description: 'Search and discovery system',
-        indicators: {
-          pathPatterns: ['search', 'query', 'find', 'filter', 'index', 'suggest'],
-          verbPatterns: ['search', 'query', 'find', 'filter'],
-          entityPatterns: ['index', 'query', 'result', 'facet', 'suggestion'],
-          capabilityPatterns: ['search', 'query', 'find'],
-        },
-        distinctiveness: 2,
-        weight: 0
-      },
-      {
-        type: 'inventory-management',
-        description: 'Inventory and stock management system',
-        indicators: {
-          pathPatterns: ['inventory', 'stock', 'warehouse', 'shipment', 'transfer'],
-          verbPatterns: ['transfer', 'receive', 'ship', 'adjust'],
-          entityPatterns: ['inventory', 'stock', 'warehouse', 'location', 'shipment', 'transfer'],
-          capabilityPatterns: ['inventory', 'stock', 'warehouse', 'shipment'],
-        },
-        distinctiveness: 3,
-        weight: 0
-      },
-      {
-        type: 'crm-system',
-        description: 'Customer relationship management',
-        indicators: {
-          pathPatterns: ['customer', 'contact', 'lead', 'opportunity', 'account', 'deal'],
-          verbPatterns: ['convert', 'qualify', 'assign'],
-          entityPatterns: ['customer', 'contact', 'lead', 'opportunity', 'account', 'deal', 'campaign'],
-          capabilityPatterns: ['customer', 'lead', 'contact', 'opportunity'],
-        },
-        distinctiveness: 2.5,
-        weight: 0
-      },
-      {
-        type: 'saas-platform',
-        description: 'Multi-tenant SaaS application',
-        indicators: {
-          pathPatterns: ['workspace', 'organization', 'team', 'subscription', 'tenant', 'plan'],
-          entityPatterns: ['workspace', 'organization', 'subscription', 'tenant', 'plan', 'billing'],
-          capabilityPatterns: ['workspace', 'organization', 'subscription'],
-        },
-        distinctiveness: 2.5,
-        weight: 0
-      },
-      {
-        type: 'content-management',
-        description: 'Content management system',
-        indicators: {
-          pathPatterns: ['post', 'article', 'page', 'blog', 'media', 'category', 'tag'],
-          verbPatterns: ['publish', 'draft', 'archive'],
-          entityPatterns: ['post', 'article', 'page', 'content', 'media', 'category', 'author'],
-          capabilityPatterns: ['publish', 'content', 'article', 'media'],
-        },
-        distinctiveness: 2,
-        weight: 0
-      },
-      {
-        type: 'data-processing',
-        description: 'Data processing and ETL pipeline',
-        indicators: {
-          pathPatterns: ['process', 'transform', 'import', 'export', 'batch', 'pipeline', 'etl'],
-          verbPatterns: ['process', 'transform', 'import', 'export', 'extract'],
-          entityPatterns: ['job', 'task', 'queue', 'pipeline', 'batch', 'transformation'],
-          capabilityPatterns: ['process', 'transform', 'import', 'export', 'batch'],
-        },
-        distinctiveness: 2,
-        weight: 0
-      },
-      {
-        type: 'scheduling-platform',
-        description: 'Scheduling, calendar, and booking platform',
-        indicators: {
-          pathPatterns: ['booking', 'bookings', 'calendar', 'availability', 'appointment', 'meeting', 'event-type'],
-          verbPatterns: ['schedule', 'book', 'reserve'],
-          entityPatterns: ['booking', 'calendar', 'availability', 'appointment', 'eventtype', 'meeting'],
-          capabilityPatterns: ['booking', 'calendar', 'scheduling', 'availability'],
-        },
-        distinctiveness: 4.5,
-        weight: 0
-      },
-      {
-        type: 'developer-platform',
-        description: 'Developer platform for application backends, databases, APIs, and SDKs',
-        indicators: {
-          pathPatterns: ['database', 'postgres', 'auth', 'storage', 'realtime', 'function', 'sdk', 'console'],
-          verbPatterns: ['deploy', 'provision', 'generate'],
-          entityPatterns: ['database', 'project', 'organization', 'function', 'deployment', 'api', 'bucket'],
-          capabilityPatterns: ['database', 'auth', 'realtime', 'storage', 'function', 'sdk'],
-        },
-        distinctiveness: 3.8,
-        weight: 0
-      },
-      {
-        type: 'commerce-platform',
-        description: 'Commerce platform for product, order, checkout, inventory, and fulfillment workflows',
-        indicators: {
-          pathPatterns: ['product', 'cart', 'checkout', 'order', 'inventory', 'payment', 'fulfillment', 'customer'],
-          verbPatterns: ['checkout', 'fulfill', 'refund', 'purchase'],
-          entityPatterns: ['product', 'cart', 'order', 'inventory', 'payment', 'fulfillment', 'customer'],
-          capabilityPatterns: ['product', 'cart', 'checkout', 'order', 'inventory', 'payment'],
-        },
-        distinctiveness: 4,
-        weight: 0
-      },
-      {
-        type: 'knowledge-base',
-        description: 'Knowledge base and document collaboration platform',
-        indicators: {
-          pathPatterns: ['document', 'collection', 'comment', 'revision', 'share', 'workspace'],
-          verbPatterns: ['publish', 'share', 'comment'],
-          entityPatterns: ['document', 'collection', 'comment', 'revision', 'workspace', 'attachment'],
-          capabilityPatterns: ['document', 'collection', 'knowledge', 'wiki'],
-        },
-        distinctiveness: 4,
-        weight: 0
-      },
-      {
-        type: 'authentication-service',
-        description: 'Authentication and identity management',
-        indicators: {
-          pathPatterns: ['auth', 'login', 'oauth', 'sso', 'identity', 'token', 'session'],
-          verbPatterns: ['login', 'logout', 'authenticate', 'authorize'],
-          entityPatterns: ['user', 'session', 'token', 'credential', 'role', 'permission'],
-          capabilityPatterns: ['login', 'auth', 'session', 'token'],
-        },
-        distinctiveness: 2,
-        weight: 0
-      },
-      {
-        type: 'analytics-platform',
-        description: 'Analytics and reporting platform',
-        indicators: {
-          pathPatterns: ['analytics', 'report', 'dashboard', 'metric', 'insight', 'chart'],
-          verbPatterns: ['aggregate', 'analyze', 'track'],
-          entityPatterns: ['metric', 'report', 'event', 'aggregation', 'dimension', 'measure'],
-          capabilityPatterns: ['analytics', 'report', 'dashboard', 'metric'],
-        },
-        distinctiveness: 2.5,
-        weight: 0
-      },
-      {
-        type: 'payment-service',
-        description: 'Payment processing system',
-        indicators: {
-          pathPatterns: ['payment', 'charge', 'refund', 'invoice', 'transaction', 'payout'],
-          verbPatterns: ['charge', 'refund', 'pay', 'settle'],
-          entityPatterns: ['payment', 'transaction', 'invoice', 'refund', 'payout', 'account'],
-          capabilityPatterns: ['payment', 'charge', 'refund', 'invoice'],
-        },
-        distinctiveness: 3,
-        weight: 0
-      },
-      {
-        type: 'iot-platform',
-        description: 'IoT device management platform',
-        indicators: {
-          pathPatterns: ['device', 'sensor', 'telemetry', 'firmware', 'provision', 'command'],
-          verbPatterns: ['provision', 'register', 'configure'],
-          entityPatterns: ['device', 'sensor', 'telemetry', 'firmware', 'reading', 'gateway'],
-          capabilityPatterns: ['device', 'sensor', 'telemetry', 'provision'],
-        },
-        distinctiveness: 3,
-        weight: 0
-      },
-      {
-        type: 'desktop-application',
-        description: 'Desktop GUI application',
-        indicators: {
-          nodeTypePatterns: ['window', 'viewmodel', 'ui_component', 'command', 'converter', 'view'],
-          entityPatterns: ['settings', 'preferences', 'configuration'],
-          capabilityPatterns: ['window', 'dialog', 'form', 'display'],
-        },
-        distinctiveness: 2,
-        weight: 0
-      },
-      {
-        type: 'medical-device-software',
-        description: 'Medical device and clinical measurement software',
-        indicators: {
-          pathPatterns: ['patient', 'device', 'muscle', 'force', 'measurement', 'evaluator', 'protocol'],
-          entityPatterns: ['patient', 'evaluator', 'protocol', 'muscle', 'device', 'measurement', 'normvalues', 'sequence'],
-          nodeTypePatterns: ['window', 'viewmodel', 'service', 'database_context'],
-          capabilityPatterns: ['patient', 'device', 'measurement', 'protocol', 'evaluator', 'report'],
-        },
-        distinctiveness: 4,
-        weight: 0
-      },
-      {
-        type: 'clinical-testing-platform',
-        description: 'Clinical testing, assessment, and rehabilitation platform',
-        indicators: {
-          pathPatterns: ['inclinometry', 'grip', 'pinch', 'muscle', 'rom', 'strength', 'rehabilitation'],
-          entityPatterns: ['muscletest', 'testinfo', 'coverletter', 'standardmuscles', 'custommuscles', 'normvalues'],
-          capabilityPatterns: ['muscle', 'grip', 'pinch', 'inclinometry', 'test', 'assessment'],
-        },
-        distinctiveness: 5,
-        weight: 0
-      },
-      {
-        type: 'hardware-device-software',
-        description: 'Hardware device communication and control software',
-        indicators: {
-          pathPatterns: ['device', 'sensor', 'serial', 'usb', 'bluetooth', 'calibrate'],
-          entityPatterns: ['device', 'sensor', 'reading', 'calibration', 'firmware'],
-          nodeTypePatterns: ['service'],
-          capabilityPatterns: ['device', 'calibrate', 'sensor', 'reading'],
-        },
-        distinctiveness: 3.5,
-        weight: 0
-      },
-      {
-        type: 'patient-management',
-        description: 'Patient data management and records system',
-        indicators: {
-          pathPatterns: ['patient', 'record', 'history', 'demographic', 'visit', 'chart'],
-          entityPatterns: ['patient', 'record', 'evaluator', 'visit', 'chart', 'history', 'coverletter'],
-          capabilityPatterns: ['patient', 'record', 'history', 'demographic'],
-        },
-        distinctiveness: 3.5,
-        weight: 0
-      },
-      {
-        type: 'api-gateway',
-        description: 'API gateway and routing service',
-        indicators: {
-          pathPatterns: ['gateway', 'proxy', 'route', 'upstream', 'rate-limit'],
-          entityPatterns: ['route', 'upstream', 'service', 'consumer', 'plugin'],
-          capabilityPatterns: ['route', 'proxy', 'gateway'],
-        },
-        distinctiveness: 3,
-        weight: 0
-      },
-      {
-        type: 'api-service',
-        description: 'REST/GraphQL API backend',
-        indicators: {
-          pathPatterns: ['api', 'graphql', 'rest', 'resource'],
-          nodeTypePatterns: ['controller', 'service', 'repository', 'resolver'],
-          capabilityPatterns: ['crud', 'resource'],
-        },
-        distinctiveness: 1,
-        weight: 0
-      },
-      {
-        type: 'cli-tool',
-        description: 'Command-line interface tool',
-        indicators: {
-          capabilityPatterns: ['command', 'execute', 'run'],
-          nodeTypePatterns: ['command', 'cli'],
-        },
-        distinctiveness: 3,
-        weight: 0
-      },
       {
         type: 'gaming-platform',
         description: 'Gaming, card game, or interactive entertainment platform',
@@ -25186,18 +24854,6 @@ export class AnalyzerOrchestrator {
           capabilityPatterns: ['game', 'match', 'lobby', 'player', 'deck'],
         },
         distinctiveness: 4,
-        weight: 0
-      },
-      {
-        type: 'multiplayer-application',
-        description: 'Real-time multiplayer application with websocket communication',
-        indicators: {
-          pathPatterns: ['socket', 'lobby', 'room', 'player', 'matchmaking', 'realtime', 'session'],
-          verbPatterns: ['join', 'leave', 'broadcast', 'emit', 'connect'],
-          entityPatterns: ['socket', 'room', 'lobby', 'player', 'session', 'connection', 'event'],
-          capabilityPatterns: ['socket', 'lobby', 'room', 'matchmaking'],
-        },
-        distinctiveness: 3.5,
         weight: 0
       },
       {
@@ -25227,18 +24883,6 @@ export class AnalyzerOrchestrator {
           capabilityPatterns: ['static analysis', 'code analysis', 'transpilation', 'instrumentation', 'profiling'],
         },
         distinctiveness: 3,
-        weight: 0
-      },
-      {
-        type: 'education-platform',
-        description: 'Learning management system or educational platform',
-        indicators: {
-          pathPatterns: ['course', 'lesson', 'quiz', 'certificate', 'learning', 'curriculum', 'enrollment', 'tutorial', 'assignment', 'student', 'instructor'],
-          verbPatterns: ['enroll', 'complete', 'submit', 'grade', 'certify', 'learn', 'study', 'teach'],
-          entityPatterns: ['course', 'lesson', 'quiz', 'student', 'instructor', 'enrollment', 'certificate', 'curriculum', 'assignment', 'grade', 'progress', 'achievement', 'leaderboard'],
-          capabilityPatterns: ['course', 'lesson', 'quiz', 'certificate', 'learning', 'enrollment'],
-        },
-        distinctiveness: 4.5,
         weight: 0
       }
     ];
@@ -25492,9 +25136,19 @@ export class AnalyzerOrchestrator {
     // actually desktop/WPF-native — require one of THEM specifically, not raw
     // count, so a large web app's incidental "modal" naming can never alone
     // read as a dominant desktop UI.
+    // NOTE: this used to also short-circuit true whenever topMatch.type was
+    // 'desktop-application'/'medical-device-software'/
+    // 'clinical-testing-platform'/'hardware-device-software' — but that
+    // was never independent evidence, it was a silent backdoor into the
+    // now-removed hardcoded business-vocabulary `signatures` table entries
+    // for those exact types (they were the only way topMatch.type could ever
+    // equal one of them). Now that those table entries are gone, this gate
+    // is pure structural evidence: a genuinely desktop/WPF-native token
+    // (viewmodel or xaml) actually present, full stop — no raw-count floor
+    // layered on top, since requiring the distinctive token itself already
+    // is the anti-generic-overmatch invariant this gate exists for.
     const hasDominantDesktopUi =
-      ['desktop-application', 'medical-device-software', 'clinical-testing-platform', 'hardware-device-software'].includes(topMatch.type) ||
-      (desktopUiSignals.count >= 5 && desktopUiSignals.matched.some(signal => signal === 'viewmodel' || signal === 'xaml'));
+      desktopUiSignals.matched.includes('viewmodel') || desktopUiSignals.matched.includes('xaml');
     const clinicalSignals = await countMatches(
       nameEntityCapabilityPathTokens,
       ['patient', 'muscle', 'device', 'measurement', 'force', 'inclinometry', 'grip', 'pinch', 'rehabilitation']
