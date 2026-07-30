@@ -298,3 +298,133 @@ describe('graph integrity duplicate-id validation', () => {
     });
   });
 });
+
+/**
+ * Declared web routes extracted TWICE — once by a framework analyzer and once
+ * by the routing-library analyzer for the same router file. Measured in
+ * production: one router file's 20 declared paths shipped as 40 `route` entry
+ * points, because the two records share no canonical key (names differ, the
+ * library record carries no handler at all, and a route trigger has no
+ * (system, channel) pair). The route identity is (verb, path, component).
+ */
+describe('cross-analyzer route dedup', () => {
+  let orchestrator: any;
+
+  beforeEach(() => {
+    orchestrator = new AnalyzerOrchestrator() as any;
+  });
+
+  // Shapes copied from a real analysis of a React + react-router app.
+  const frameworkRoute = (path: string, component: string) => ({
+    id: `entry_route_apps_app_src_router_tsx_${path.replace(/\W/g, '_')}_0_abc`,
+    source_node: `route_apps_app_src_router_tsx_${path.replace(/\W/g, '_')}_0_abc`,
+    source_analyzer: 'react',
+    type: 'route',
+    name: `Route ${path}`,
+    description: `React route mapping to component ${component}`,
+    trigger: { path, method: 'GET' },
+    metadata: { component },
+    handler: {
+      node_id: `route_apps_app_src_router_tsx_${path.replace(/\W/g, '_')}_0_abc`,
+      method_name: path,
+      file: 'apps/app/src/router.tsx',
+      line: 1,
+    },
+  });
+
+  const libraryRoute = (path: string, component: string) => ({
+    id: `entry_route_src_router_tsx_${path.replace(/\W/g, '_')}`,
+    source_node: 'file_apps_app_src_router_tsx',
+    source_analyzer: 'react-router',
+    type: 'route',
+    name: `GET ${path}`,
+    trigger: { path, method: 'GET' },
+    // NOTE: no handler at all, and the file is resolved against the sub-app
+    // root rather than the repo root — both reasons the older keys missed this.
+    metadata: { framework: 'react-router', component, lazy: true, sourceFile: 'src/router.tsx' },
+  });
+
+  function mergeAll(groups: Array<{ analyzerId: string; entries: any[] }>) {
+    const target = { allNodes: [], allEdges: [], allEntryPoints: [] as any[], allExitPoints: [] };
+    for (const { analyzerId, entries } of groups) {
+      orchestrator.mergeAnalysisResult(target, {
+        entry_points: entries,
+        analyzer_metadata: {
+          analyzer_id: analyzerId, analyzer_name: analyzerId, contribution_type: 'framework',
+        },
+      }, { analyzerId });
+    }
+    return target.allEntryPoints;
+  }
+
+  it('N declared paths seen by two analyzers yield N route entries, not 2N', () => {
+    const declared: Array<[string, string]> = [
+      ['/', 'AuthenticatedLayout'],
+      ['/auth', 'AuthPage'],
+      ['overview', 'CodebaseOverview'],
+      ['flows/:flowId', 'FlowDetailPage'],
+      ['functions/file/*', 'FileNodesPage'],
+    ];
+
+    const merged = mergeAll([
+      { analyzerId: 'react', entries: declared.map(([p, c]) => frameworkRoute(p, c)) },
+      { analyzerId: 'react-router', entries: declared.map(([p, c]) => libraryRoute(p, c)) },
+    ]);
+
+    expect(merged.length).toBe(declared.length);
+    expect(merged.map(e => e.trigger.path).sort()).toEqual(declared.map(([p]) => p).sort());
+  });
+
+  it('merges without losing either analyzer\'s evidence', () => {
+    const merged = mergeAll([
+      { analyzerId: 'react', entries: [frameworkRoute('/auth', 'AuthPage')] },
+      { analyzerId: 'react-router', entries: [libraryRoute('/auth', 'AuthPage')] },
+    ]);
+
+    expect(merged.length).toBe(1);
+    const ep = merged[0];
+    // The framework record's location evidence survives...
+    expect(ep.handler?.file).toBe('apps/app/src/router.tsx');
+    expect(ep.description).toContain('AuthPage');
+    // ...and so does the library record's, which nothing else carries.
+    expect(ep.metadata.lazy).toBe(true);
+    expect(ep.metadata.framework).toBe('react-router');
+    expect(ep.metadata.merged_from_analyzers.sort()).toEqual(['react', 'react-router']);
+  });
+
+  it('does NOT merge two surfaces that share a path and verb but render different components', () => {
+    // A backend endpoint and a frontend page at the same URL are two entry
+    // points, not one — the component is what keeps them apart.
+    const merged = mergeAll([
+      { analyzerId: 'react', entries: [frameworkRoute('/health', 'HealthPage')] },
+      { analyzerId: 'express', entries: [libraryRoute('/health', 'healthController')] },
+    ]);
+    expect(merged.length).toBe(2);
+  });
+
+  it('the route key does NOT fire for two records from the SAME analyzer', () => {
+    // One analyzer emitting two records for one path is describing two real
+    // things (react emits several event entries at one file:line), so the
+    // cross-analyzer keys must never collapse a single analyzer's own output.
+    // These two share the route identity but NOT any canonical key — different
+    // display names and different location evidence — so a merge here could
+    // only come from the route key, and must not happen.
+    const merged = mergeAll([{
+      analyzerId: 'react',
+      entries: [frameworkRoute('/auth', 'AuthPage'), libraryRoute('/auth', 'AuthPage')]
+        .map(e => ({ ...e, source_analyzer: 'react' })),
+    }]);
+    expect(merged.length).toBe(2);
+  });
+
+  it('does NOT key on an unresolved "Unknown" component placeholder', () => {
+    const merged = mergeAll([
+      { analyzerId: 'react', entries: [frameworkRoute('/a', 'Unknown')] },
+      { analyzerId: 'react-router', entries: [libraryRoute('/b', 'Unknown')] },
+    ]);
+    // Different paths anyway, but the point is neither emitted a route key at
+    // all — a placeholder must never become an identity.
+    expect(orchestrator.entryPointRouteIdentity(frameworkRoute('/a', 'Unknown'))).toBeUndefined();
+    expect(merged.length).toBe(2);
+  });
+});
