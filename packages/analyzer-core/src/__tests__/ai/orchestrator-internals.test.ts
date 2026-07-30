@@ -5971,6 +5971,100 @@ describe('behavior-anchored capability derivation (buildBehaviorCapabilities)', 
     expect(entries.every(entry => allOperationIds.has(entry.id) || capabilities[0].operations.length >= 6)).toBe(true);
   });
 
+  it('uses the DISTINGUISHING trigger field when trigger.event is a constant marker shared by every entry (task #99: lost tool names)', async () => {
+    // Reproduces the real defect: a duplicate-detection path stamps a
+    // constant, protocol-level trigger.event ('mcp.tool.call') on every entry
+    // while the entry's own distinguishing name sits in trigger.pattern.
+    // Because trigger.event was tried first unconditionally, every entry
+    // presented the SAME subject ('mcp.tool.call') regardless of which real
+    // tool it was — 24 functionally distinct tools collapsed into one
+    // spurious family before name-prefix or module clustering ever ran.
+    // Deliberately generic tool names (verb + noun, no shared subject prefix)
+    // spread across distinct files so a correct fix must show REAL per-tool
+    // module clusters, not a name-token family and not one opaque surface.
+    const toolsByModule: Record<string, string[]> = {
+      fabric: ['claim_work', 'release_work', 'check_collision', 'plan_parallel_work'],
+      capability: ['read_capability_memory', 'read_workspace_map', 'read_summary', 'read_product_map'],
+      workspace: ['inspect_workspace_health', 'chart_workspace_graph', 'audit_workspace_risk', 'scan_workspace_freshness'],
+    };
+    const nodes: CASNode[] = [];
+    const entries: CASEntryPoint[] = [];
+    for (const [area, names] of Object.entries(toolsByModule)) {
+      for (const [index, name] of names.entries()) {
+        const handlerId = `handler_${area}_${name}_${index}`;
+        nodes.push(bNode({
+          id: handlerId, name, type: 'mcp_tool' as any,
+          source: { file: `apps/mcp-server/src/${area}/${name}.ts` } as any,
+        }));
+        entries.push({
+          id: `entry_${handlerId}`,
+          source_node: handlerId,
+          type: 'message',
+          name,
+          // The bug shape: a constant transport-level event alongside the
+          // real per-tool identifier in `pattern` — same fields ai-stack
+          // analyzer's MCP-tool detection populates.
+          trigger: { event: 'mcp.tool.call', pattern: name },
+          handler: { node_id: handlerId, method_name: name, file: `apps/mcp-server/src/${area}/${name}.ts` },
+        } as CASEntryPoint);
+      }
+    }
+
+    const capabilities = await localOrch.buildBehaviorCapabilities(entries, nodes, [], []);
+
+    // Not 1 (the old collapse, where every entry's subject was 'mcp.tool.call'
+    // and family-prefix clustering claimed the whole surface at 100%
+    // coverage before module clustering ever ran).
+    expect(capabilities.length).toBeGreaterThanOrEqual(3);
+    const labels = capabilities.map((capability: any) => capability.structural_label);
+    expect(labels.join(' ')).not.toMatch(/\bMcp\s*(Tool)?\s*Call\b/i);
+    for (const area of Object.keys(toolsByModule)) {
+      expect(labels.some((label: string) => new RegExp(area, 'i').test(label))).toBe(true);
+    }
+    const allOperationIds = new Set(capabilities.flatMap((capability: any) =>
+      capability.operations.map((operation: any) => operation.entry_point_id)));
+    for (const entry of entries) {
+      expect(allOperationIds.has(entry.id)).toBe(true);
+    }
+  });
+
+  it('keeps using trigger.event as the subject when it genuinely IS the varying, discriminating field (socket.io regression guard)', async () => {
+    // Counterpart guard rail: chooseSubjectField must not blindly avoid
+    // trigger.event — a surface where event is the highest-cardinality field
+    // (socket.io's game:*/lobby:* namespace) must keep using it exactly as
+    // before the field-selection change.
+    const events = [
+      'game:action', 'game:pass-priority', 'game:pass-turn', 'game:concede',
+      'game:mulligan-keep', 'game:reconnect',
+      'lobby:create', 'lobby:join', 'lobby:leave', 'lobby:start',
+    ];
+    const fixtures = events.map((event, index) => {
+      const nodeId = `socket_file_${index}`;
+      return {
+        node: bNode({ id: nodeId, name: 'socket.ts', type: 'file', source: { file: 'src/server/socket.ts' } as any }),
+        entry: {
+          id: `entry_socket_${event.replace(/[^a-zA-Z0-9]/g, '_')}`,
+          source_node: nodeId,
+          type: 'event',
+          name: `SOCKET ${event}`,
+          trigger: { event },
+          metadata: { framework: 'socket.io' },
+        } as CASEntryPoint,
+      };
+    });
+
+    const capabilities = await localOrch.buildBehaviorCapabilities(
+      fixtures.map(fixture => fixture.entry),
+      fixtures.map(fixture => fixture.node),
+      [],
+      []
+    );
+
+    const labels = capabilities.map((capability: any) => capability.structural_label);
+    expect(labels).toContain('Game Event Surface');
+    expect(labels).toContain('Lobby Event Surface');
+  });
+
   it('derives shared-prefix socket event families (game_*) as capabilities, ignoring DOM click/change noise', async () => {
     const events = [
       'game:action', 'game:pass-priority', 'game:pass-turn', 'game:concede',
