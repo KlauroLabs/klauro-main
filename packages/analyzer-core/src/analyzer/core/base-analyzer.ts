@@ -909,10 +909,64 @@ export abstract class BaseAnalyzer {
       if (ch === '"' || ch === "'" || ch === '`') { inString = ch; out += ch; i++; continue; }
       if (ch === '/' && next === '/') { inLineComment = true; out += '  '; i += 2; continue; }
       if (ch === '/' && next === '*') { inBlockComment = true; out += '  '; i += 2; continue; }
+      // A REGEX LITERAL must be consumed whole. Its body routinely contains
+      // unbalanced quote characters — `/([^'"`]+)/` is ordinary in this codebase
+      // — and treating one of those as the start of a string desynchronised the
+      // scanner for the REST OF THE FILE, so every comment after the first such
+      // regex silently stopped being blanked. That is how a doc comment
+      // illustrating a call shape kept being extracted as a real call site even
+      // though blanking was already applied.
+      if (ch === '/' && this.regexLiteralCanStartHere(out)) {
+        const end = this.skipRegexLiteral(content, i);
+        if (end > i) { out += content.slice(i, end); i = end; continue; }
+      }
       out += ch;
       i++;
     }
     return out;
+  }
+
+  /**
+   * Whether a `/` at this point begins a regex literal rather than division.
+   * Decided by the previous significant token, the standard disambiguation:
+   * division can only follow a value, so anything that cannot END a value
+   * (an operator, an opening bracket, a separator, or a keyword like `return`)
+   * means a regex follows. Conservative by design — when in doubt it answers
+   * "not a regex" and the character is treated as before.
+   */
+  private regexLiteralCanStartHere(emitted: string): boolean {
+    const before = emitted.replace(/\s+$/, '');
+    if (before.length === 0) return true;
+    const last = before[before.length - 1];
+    if ('(,=:[!&|?{};+-*%~^<>'.includes(last)) return true;
+    const keyword = /(?:^|[^\w$])(return|typeof|instanceof|in|of|new|delete|void|throw|case|do|else|yield|await)$/.exec(before);
+    return keyword !== null;
+  }
+
+  /**
+   * Index just past the regex literal starting at `start`, or `start` if the
+   * text there is not a well-formed one-line regex. Honours backslash escapes
+   * and character classes, inside which `/` does not terminate the literal.
+   */
+  private skipRegexLiteral(content: string, start: number): number {
+    let i = start + 1;
+    let inClass = false;
+    while (i < content.length) {
+      const ch = content[i];
+      if (ch === '\n') return start;      // regex literals do not span lines
+      if (ch === '\\') { i += 2; continue; }
+      if (inClass) {
+        if (ch === ']') inClass = false;
+      } else if (ch === '[') {
+        inClass = true;
+      } else if (ch === '/') {
+        i++;
+        while (i < content.length && /[a-z]/i.test(content[i])) i++; // flags
+        return i;
+      }
+      i++;
+    }
+    return start;
   }
 
   protected createFileAnalysisResult(
