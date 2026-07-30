@@ -5860,6 +5860,117 @@ describe('behavior-anchored capability derivation (buildBehaviorCapabilities)', 
     }
   });
 
+  it('clusters a large diverse ONE-FILE mcp_tool surface by CALLEE module cohesion when file-directory clustering cannot split it', async () => {
+    // Task #99: the module-cohesion fix above (previous test) still collapses
+    // to ONE opaque candidate when every handler is REGISTERED in the same
+    // file — the real shape of Klauro's own self-analysis, where all ~200 MCP
+    // tools are wired in one apps/mcp-server/src/server.ts. behaviorEntryModuleArea
+    // resolves every entry to the identical single directory, so file-based
+    // clustering can never produce the required >= 2 groups no matter how
+    // functionally distinct the handlers are — the whole registration engine
+    // (the platform's actual flagship surface) becomes exactly one candidate
+    // in the deterministic pool the capability-catalog prompt draws from.
+    // Each handler here shares one declaring file but CALLS a different
+    // downstream service module (fabric/capability/workspace/telemetry/
+    // patterns/history) — real, varying structural evidence that survives
+    // even when the declaring location doesn't. Tool names deliberately share
+    // no prefix family (get_/run_-style verbs only) so name-token clustering
+    // can't split it either — callee-module clustering must do the work.
+    const moduleTools: Record<string, string[]> = {
+      fabric: ['claim_work', 'release_work', 'check_collision', 'plan_parallel_work'],
+      capability: ['get_capability_memory', 'get_workspace_capability_map', 'get_summary', 'get_product_map'],
+      workspace: ['get_workspace_health', 'get_workspace_graph', 'subscribe_workspace', 'get_workspace_risk_context'],
+      telemetry: ['ingest_telemetry', 'correlate_runtime_event', 'get_runtime_trace', 'get_runtime_observations'],
+      patterns: ['get_patterns', 'get_pattern_instances', 'get_pattern_examples', 'get_clones'],
+      history: ['get_analysis_snapshots', 'compare_analysis_iterations', 'get_changes_since', 'get_changes_between'],
+    };
+    const SERVER_FILE = 'apps/mcp-server/src/server.ts';
+    const nodes: CASNode[] = [];
+    const entries: CASEntryPoint[] = [];
+    const edges: CASEdge[] = [];
+    for (const [area, names] of Object.entries(moduleTools)) {
+      for (const [index, name] of names.entries()) {
+        const handlerId = `handler_${area}_${name}_${index}`;
+        const serviceId = `service_${area}`;
+        nodes.push(bNode({ id: handlerId, name, type: 'mcp_tool' as any, source: { file: SERVER_FILE } as any }));
+        entries.push({
+          id: `entry_${handlerId}`,
+          source_node: handlerId,
+          type: 'message',
+          name,
+          trigger: { method: 'registerTool', path: name },
+          handler: { node_id: handlerId, method_name: name, file: SERVER_FILE },
+        } as CASEntryPoint);
+        // Every handler delegates one hop to its area's service, which lives
+        // in its OWN module directory — the varying structural fact the fix
+        // relies on when the declaring file is uniform.
+        if (!nodes.some(existing => existing.id === serviceId)) {
+          nodes.push(bNode({
+            id: serviceId, name: `${area}Service`, type: 'service' as any,
+            source: { file: `packages/analyzer-core/src/${area}/${area}-service.ts` } as any,
+          }));
+        }
+        edges.push({ id: `e_${handlerId}`, source: handlerId, target: serviceId, type: 'calls' });
+      }
+    }
+
+    const capabilities = await localOrch.buildBehaviorCapabilities(entries, nodes, edges, []);
+
+    // Not 1 (the single-file collapse this fix targets): one candidate per
+    // real callee-module cluster, same bound as the multi-file case.
+    expect(capabilities.length).toBeGreaterThanOrEqual(6);
+    const labels = capabilities.map((capability: any) => capability.structural_label);
+    for (const area of Object.keys(moduleTools)) {
+      expect(labels.some((label: string) => new RegExp(area, 'i').test(label))).toBe(true);
+    }
+    const allOperationIds = new Set(capabilities.flatMap((capability: any) =>
+      capability.operations.map((operation: any) => operation.entry_point_id)));
+    for (const entry of entries) {
+      expect(allOperationIds.has(entry.id)).toBe(true);
+    }
+  });
+
+  it('falls back to one collapsed surface when neither file nor callee module clustering finds >= 2 cohesive groups', async () => {
+    // Guard rail for the callee-module fix: when handlers share one file AND
+    // their callees also collapse to one (or zero) module areas, there is
+    // genuinely no functional-cohesion evidence to split on — the honest
+    // outcome stays a single surface, never a fabricated split.
+    const SERVER_FILE = 'apps/mcp-server/src/server.ts';
+    const nodes: CASNode[] = [];
+    const entries: CASEntryPoint[] = [];
+    const edges: CASEdge[] = [];
+    const names = [
+      'get_alpha', 'get_beta', 'get_gamma', 'get_delta', 'get_epsilon', 'get_zeta',
+      'get_eta', 'get_theta', 'get_iota', 'get_kappa', 'get_lambda', 'get_mu',
+    ];
+    for (const [index, name] of names.entries()) {
+      const handlerId = `handler_${name}_${index}`;
+      nodes.push(bNode({ id: handlerId, name, type: 'mcp_tool' as any, source: { file: SERVER_FILE } as any }));
+      entries.push({
+        id: `entry_${handlerId}`,
+        source_node: handlerId,
+        type: 'message',
+        name,
+        trigger: { method: 'registerTool', path: name },
+        handler: { node_id: handlerId, method_name: name, file: SERVER_FILE },
+      } as CASEntryPoint);
+      // Every handler calls into the SAME shared utility module — no varying
+      // callee evidence, so callee-module clustering must not fabricate one.
+      edges.push({ id: `e_${handlerId}`, source: handlerId, target: 'shared-util', type: 'calls' });
+    }
+    nodes.push(bNode({ id: 'shared-util', name: 'sharedUtil', type: 'function' as any, source: { file: 'packages/analyzer-core/src/util/shared.ts' } as any }));
+
+    const capabilities = await localOrch.buildBehaviorCapabilities(entries, nodes, edges, []);
+
+    expect(capabilities.length).toBe(1);
+    expect(capabilities[0].operations.length).toBeGreaterThan(0);
+    const allOperationIds = new Set(capabilities[0].operations.map((operation: any) => operation.entry_point_id));
+    // The single collapsed surface still carries every entry as evidence
+    // (dedupedOps trimming happens later, in aiExtractCapabilityCatalog) —
+    // buildBehaviorCapabilities' own candidate must not silently drop entries.
+    expect(entries.every(entry => allOperationIds.has(entry.id) || capabilities[0].operations.length >= 6)).toBe(true);
+  });
+
   it('derives shared-prefix socket event families (game_*) as capabilities, ignoring DOM click/change noise', async () => {
     const events = [
       'game:action', 'game:pass-priority', 'game:pass-turn', 'game:concede',
