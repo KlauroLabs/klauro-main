@@ -6111,7 +6111,7 @@ describe('top-down capability evidence (C2)', () => {
     expect(ranked.indexOf('Dispatch Resource Management')).toBeLessThan(ranked.indexOf('Inspection Resource Management'));
   });
 
-  it('UNGROUNDED-FILLER GATE: an AI-asserted "core" item with 0 entities, 0 operations, and 0 real journeys is dropped ("Manage pricing"), while a top-down-corroborated one survives', async () => {
+  it('STRUCTURAL ANCHOR GATE: an AI-asserted "core" item with 0 entities and 0 operations is dropped unconditionally — even when it names a real journey or its subject overlaps top-down vocabulary (the escape hatch this gate used to have) — while an entity-anchored or operation-anchored item survives', async () => {
     const original = (aiService as any).generateComponentDescription;
     (aiService as any).generateComponentDescription = async () => JSON.stringify({
       capabilities: [
@@ -6121,9 +6121,21 @@ describe('top-down capability evidence (C2)', () => {
         { name: 'Coordinate partners', description: 'Coordinates partner onboarding workflows and partner account decisions end to end.', category: 'core', entities: [], journeys: ['Totally invented journey'] },
         // Entity-grounded core item survives as before.
         { name: 'Manage trips', description: 'Tracks Trip records from booking through completion for dispatch operators.', category: 'core', entities: ['Trip'], journeys: [] },
-        // 0-entity/0-op core item whose SUBJECT is corroborated by a real
-        // journey's vocabulary (top-down terminology) survives — the RAISE force.
+        // DEFECT (real chat-gateway/assistant-runtime CAS, 25-repo capability
+        // corpus): 0-entity/0-operation core items shipped anyway because their
+        // SUBJECT happened to overlap the product's own top-down vocabulary
+        // (README/manifest/journey terminology) — "Manages fleet operations",
+        // "Manages vehicle maintenance", "Provides driver communication" all
+        // had zero operations, zero entities, zero entry points, pure
+        // invention. That escape hatch (journey-name overlap OR top-down
+        // subject corroboration) is now REMOVED: evidence gates the AI, never
+        // the reverse, so this is rejected regardless of category or prose.
         { name: 'Manage inspections', description: 'Owns inspection reports and their review workflow decisions for fleet compliance.', category: 'core', entities: [], journeys: [] },
+        // A SINGLE resolvable operation (no entity at all) is sufficient
+        // structural anchoring — the gate requires ONE of {operation, entity,
+        // entry point}, not entities specifically. Linked via PASS 2's
+        // token-overlap match against a real candidateCapabilities operation.
+        { name: 'Coordinate inspection dispatch', description: 'Coordinates dispatch operations that route inspectors to pending inspection sites.', category: 'core', entities: [], journeys: [] },
       ],
     });
     try {
@@ -6133,15 +6145,25 @@ describe('top-down capability evidence (C2)', () => {
         frameworks: [],
         userJourneys: [{ name: 'Create inspection report' }] as any[],
         dataEntities: [{ id: 'entity_trip', name: 'Trip' }] as any[],
-        candidateCapabilities: [],
+        candidateCapabilities: [
+          { name: 'Inspection Dispatch Routing', related_entities: [], operations: [
+            { entry_point_id: 'ep_dispatch_1', entry_point_type: 'http', action: 'Dispatch', path_or_command: '/inspections/dispatch' },
+          ] },
+        ] as any[],
         externalServices: [], flowGraph: { capabilities: [] } as any,
         projectTextSignal: { concepts: [], evidence: [] } as any, budgetMs: 30000,
       });
       const names = catalog.map((capability: any) => capability.name);
       expect(names).not.toContain('Manage pricing');
       expect(names).not.toContain('Coordinate partners');
+      // No longer survives: 0 entities, 0 operations, 0 entry points — the
+      // journey/top-down escape hatch is gone.
+      expect(names).not.toContain('Manage inspections');
       expect(names).toContain('Manage trips');
-      expect(names).toContain('Manage inspections');
+      expect(names).toContain('Coordinate inspection dispatch');
+      const opAnchored = catalog.find((capability: any) => capability.name === 'Coordinate inspection dispatch') as any;
+      expect(opAnchored.operations.length).toBeGreaterThan(0);
+      expect(opAnchored.related_entities.length).toBe(0);
     } finally {
       (aiService as any).generateComponentDescription = original;
     }

@@ -114,7 +114,15 @@ describe('finalizeFlowGraphCapabilities (flow_graph bare-noun/placeholder sweep)
 });
 
 describe('catalogQualityFailure (post-reconcile gate, defect #33)', () => {
-  const purposeful = (name: string) => cap({ id: name, name, description: `Grounded prose about ${name} and why the ability exists in the product.` });
+  // Anchored by default (one resolvable operation) — a purposeful, grounded
+  // capability always carries SOME structural evidence; tests that need to
+  // exercise the unanchored path build their own zero-operation/zero-entity
+  // fixture explicitly (see the "unanchored capabilities" describe block).
+  const anchorOp = (name: string) => ([{ entry_point_id: `ep_${name.replace(/\W+/g, '_')}`, entry_point_type: 'http', action: 'Handle' }] as any);
+  const purposeful = (name: string) => cap({
+    id: name, name, description: `Grounded prose about ${name} and why the ability exists in the product.`,
+    operations: anchorOp(name),
+  });
 
   it('fails an empty catalog', () => {
     expect(orch.catalogQualityFailure([], 20)).toContain('empty');
@@ -131,9 +139,9 @@ describe('catalogQualityFailure (post-reconcile gate, defect #33)', () => {
   });
 
   it('fails on surviving bare-noun names and placeholder descriptions', () => {
-    const bare = [purposeful('Analyze codebases'), purposeful('Serve agent context'), purposeful('Coordinate fleets'), cap({ id: 'g', name: 'Gateway' })];
+    const bare = [purposeful('Analyze codebases'), purposeful('Serve agent context'), purposeful('Coordinate fleets'), cap({ id: 'g', name: 'Gateway', operations: anchorOp('Gateway') })];
     expect(orch.catalogQualityFailure(bare, 8)).toContain('bare-noun');
-    const placeholder = [purposeful('Analyze codebases'), purposeful('Serve agent context'), purposeful('Coordinate fleets'), cap({ id: 'p', name: 'Manage Hot Spots', description: 'Hot: query operation via message' })];
+    const placeholder = [purposeful('Analyze codebases'), purposeful('Serve agent context'), purposeful('Coordinate fleets'), cap({ id: 'p', name: 'Manage Hot Spots', description: 'Hot: query operation via message', operations: anchorOp('Manage Hot Spots') })];
     expect(orch.catalogQualityFailure(placeholder, 8)).toContain('template');
   });
 
@@ -143,7 +151,45 @@ describe('catalogQualityFailure (post-reconcile gate, defect #33)', () => {
   });
 });
 
+describe('catalogQualityFailure: unanchored capabilities (defect — AI fabricates capabilities with ZERO structural evidence)', () => {
+  // Real shipped fabrications from a chat-gateway/assistant-runtime CAS
+  // (25-repo capability corpus, 215 capabilities characterized): "Manages
+  // fleet operations", "Manages vehicle maintenance", "Provides driver
+  // communication" — each with operations=0, related_entities=0, no entry
+  // points. Confident prose, zero anchoring. This is the RECONCILED-output
+  // half of the anchor gate (defense-in-depth for the assembly-loop gate in
+  // aiExtractCapabilityCatalog): reused/manual capabilities carried forward
+  // across incremental runs never pass back through that gate, so this check
+  // must independently catch an unanchored item in whatever ships.
+  const unanchored = (name: string) => cap({ id: name, name, description: `Manages ${name.toLowerCase()} end to end for operators.` });
+  const anchored = (name: string) => cap({
+    id: name, name, description: `Grounded prose about ${name} and why the ability exists in the product.`,
+    operations: [{ entry_point_id: `ep_${name}`, entry_point_type: 'http', action: 'Handle' }] as any,
+  });
+
+  it('fails a catalog where an otherwise-rich set carries one unanchored fabrication', () => {
+    const six = [
+      anchored('Analyze codebases'), anchored('Serve agent context over MCP'), anchored('Coordinate agent fleets'),
+      anchored('Detect deployables'), anchored('Correlate runtime telemetry'),
+      unanchored('Manages fleet operations'),
+    ];
+    const failure = orch.catalogQualityFailure(six, 20);
+    expect(failure).toContain('unanchored');
+    expect(failure).toContain('Manages fleet operations');
+  });
+
+  it('a capability anchored by a related entity ALONE (no operations) is not flagged unanchored', () => {
+    const six = [
+      anchored('Analyze codebases'), anchored('Serve agent context over MCP'), anchored('Coordinate agent fleets'),
+      anchored('Detect deployables'), anchored('Correlate runtime telemetry'),
+      cap({ id: 'entity-anchored', name: 'Manage subscriber records', description: 'Owns subscriber account records end to end for operators.', related_entities: ['entity_subscriber'] }),
+    ];
+    expect(orch.catalogQualityFailure(six, 20)).toBeUndefined();
+  });
+});
+
 describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)', () => {
+  const anchorOp = (name: string) => ([{ entry_point_id: `ep_${name.replace(/\W+/g, '_')}`, entry_point_type: 'http', action: 'Handle' }] as any);
   const gateArgs = (localOrch: any) => ({
     systemName: 'sys',
     enhancedSystemPurpose: { primary_domain: 'analysis', core_concepts: [] },
@@ -167,7 +213,7 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
   it('retries a collapsed catalog with a quality nudge and keeps the passing retry result', async () => {
     const localOrch = new AnalyzerOrchestrator() as any;
     const collapsed = ['View entry points', 'View functions', 'View dashboard'].map(name => cap({ id: name, name, description: `Surfaces the ${name.toLowerCase()} page for users of the product.` }));
-    const rich = ['Analyze codebases', 'Serve agent context over MCP', 'Coordinate agent fleets', 'Detect deployables', 'Correlate runtime telemetry', 'Store analyses'].map(name => cap({ id: name, name, description: `Grounded prose about ${name} and why the ability exists in the product.` }));
+    const rich = ['Analyze codebases', 'Serve agent context over MCP', 'Coordinate agent fleets', 'Detect deployables', 'Correlate runtime telemetry', 'Store analyses'].map(name => cap({ id: name, name, description: `Grounded prose about ${name} and why the ability exists in the product.`, operations: anchorOp(name) }));
     const calls: any[] = [];
     localOrch.aiExtractCapabilityCatalog = async (input: any) => {
       calls.push(input);
@@ -196,7 +242,7 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
 
   it('passes a good first catalog through with a single call', async () => {
     const localOrch = new AnalyzerOrchestrator() as any;
-    const rich = ['Analyze codebases', 'Serve agent context over MCP', 'Coordinate agent fleets', 'Detect deployables', 'Correlate runtime telemetry', 'Store analyses'].map(name => cap({ id: name, name, description: `Grounded prose about ${name} and why the ability exists in the product.` }));
+    const rich = ['Analyze codebases', 'Serve agent context over MCP', 'Coordinate agent fleets', 'Detect deployables', 'Correlate runtime telemetry', 'Store analyses'].map(name => cap({ id: name, name, description: `Grounded prose about ${name} and why the ability exists in the product.`, operations: anchorOp(name) }));
     let calls = 0;
     localOrch.aiExtractCapabilityCatalog = async () => { calls++; return rich; };
     localOrch.reconcileCatalogedCapabilities = (extracted: SystemCapability[]) => extracted;
@@ -215,5 +261,38 @@ describe('runCapabilityCatalogWithQualityGate (retry-before-degrade, defect #33)
     const out = await localOrch.runCapabilityCatalogWithQualityGate(gateArgs(localOrch));
     expect(calls).toBe(3);
     expect(out).toHaveLength(0);
+  });
+
+  it('retries when the RECONCILED catalog carries an unanchored (fabricated) capability, and keeps the anchored retry result', async () => {
+    // Same shape as the real defect: a catalog that otherwise looks rich
+    // ships one item with 0 operations and 0 related_entities ("Manages
+    // fleet operations"). The quality gate must not accept that catalog as
+    // final — it retries with a nudge, same as it does for bare-noun names
+    // and template descriptions.
+    const localOrch = new AnalyzerOrchestrator() as any;
+    const withFabrication = [
+      ...['Analyze codebases', 'Serve agent context over MCP', 'Coordinate agent fleets', 'Detect deployables', 'Correlate runtime telemetry']
+        .map(name => cap({ id: name, name, description: `Grounded prose about ${name} and why the ability exists in the product.`, operations: anchorOp(name) })),
+      cap({ id: 'fab', name: 'Manages fleet operations', description: 'Manages fleet operations end to end for dispatch teams.' }),
+    ];
+    // One MORE anchored item than `withFabrication` carried (7 vs 6): the
+    // gate keeps the largest RECONCILED result across cycles by raw length
+    // (see runCapabilityCatalogWithQualityGate), so the retry result must be
+    // strictly larger for this test to observe it winning over the
+    // fabrication-carrying first cycle.
+    const anchoredOnly = ['Analyze codebases', 'Serve agent context over MCP', 'Coordinate agent fleets', 'Detect deployables', 'Correlate runtime telemetry', 'Store analyses', 'Schedule dispatch runs']
+      .map(name => cap({ id: name, name, description: `Grounded prose about ${name} and why the ability exists in the product.`, operations: anchorOp(name) }));
+    const calls: any[] = [];
+    localOrch.aiExtractCapabilityCatalog = async (input: any) => {
+      calls.push(input);
+      return calls.length === 1 ? withFabrication : anchoredOnly;
+    };
+    localOrch.reconcileCatalogedCapabilities = (extracted: SystemCapability[]) => extracted;
+
+    const out = await localOrch.runCapabilityCatalogWithQualityGate(gateArgs(localOrch));
+    expect(calls).toHaveLength(2);
+    expect(calls[1].qualityNudge).toContain('quality check');
+    expect(out.map((capability: SystemCapability) => capability.name)).not.toContain('Manages fleet operations');
+    expect(out).toHaveLength(7);
   });
 });
