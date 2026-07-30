@@ -3616,6 +3616,12 @@ export interface CASWorkflowGraph {
 export interface CASDomainConcept {
   id: string;
   name: string;
+  /**
+   * DISTINCT USAGE SITES — how many separate code units, entry points and
+   * entities use the term. Not a token count: a raw occurrence counter reported
+   * five figures for the top term of a mid-sized repository and could not tell a
+   * pervasive domain noun from a common English word.
+   */
   frequency: number;
   appears_in: {
     entry_points: string[];
@@ -3629,6 +3635,21 @@ export interface CASDomainConcept {
    * counted evidence and never asserts a meaning.
    */
   description?: string;
+  /**
+   * Rank key: how strongly the repository's own structure and authored text
+   * single this term out, as opposed to how often it occurs. Channel breadth
+   * dominates; site spread only breaks ties, logarithmically.
+   */
+  distinctiveness?: number;
+  /**
+   * WHY this term is a concept — the cited channels: a data entity it names, a
+   * capability whose subject it is, an entry-point noun, recurrence across the
+   * declared-type vocabulary, or authored README/manifest prose. A term with no
+   * citation is not domain vocabulary, however frequent. `structural prominence`
+   * appears only via the small floor that keeps type-less repositories (bare
+   * scripts, bots) from reporting nothing at all.
+   */
+  distinctiveness_evidence?: string[];
 }
 
 export type CASArtifactType = 'app' | 'library' | 'client-sdk' | 'cli-tool' | 'boilerplate' | 'infrastructure';

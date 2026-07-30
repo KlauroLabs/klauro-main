@@ -1,3 +1,5 @@
+import * as fs from 'fs';
+import * as path from 'path';
 import { CASNode, CASEntryPoint, CASDataEntity, CASDomainConcept, CASEdge } from '../../types/cas.types';
 import { isEnglishFunctionWord } from './text-vocabulary';
 
@@ -7,7 +9,26 @@ interface ConceptOccurrence {
   entryPoints: Set<string>;
   entities: Set<string>;
   nodes: Set<string>;
+  /**
+   * Distinct FILES whose repo-relative path contains the term — the repository
+   * organizing a module or directory around it. Counted as usage SPREAD, never
+   * as distinctiveness evidence: a directory name is how `workbench`/`avatar`
+   * would walk back in.
+   */
+  files: Set<string>;
   frequency: number;
+  /**
+   * DISTINCTIVENESS EVIDENCE, tracked per channel. Occurrence count is NOT
+   * evidence — every token in the repository occurs, and ranking by raw
+   * occurrence is what admitted several hundred generic English words as
+   * "domain concepts". A term is this system's vocabulary only when the
+   * repository's own structure or its authors single it out.
+   */
+  entityNames: Set<string>;
+  capabilitySubjects: Set<string>;
+  entryPointNouns: Set<string>;
+  declaredTypeNames: Set<string>;
+  proseTerms: Set<string>;
 }
 
 interface ConceptStats {
@@ -15,16 +36,53 @@ interface ConceptStats {
   maxFrequency: number;
 }
 
+/**
+ * Authored/structural context the distinctiveness gate needs. Every field is
+ * optional: with none of it the extractor still runs, and falls back to the
+ * ranked prominence floor rather than emitting an unfiltered token list.
+ */
+export interface DomainExtractionContext {
+  /** System capability names — their subject nouns are domain vocabulary. */
+  capabilityNames?: string[];
+}
+
 const MAX_DOMAIN_CONCEPT_NODE_REFERENCES = 200;
 const MAX_DOMAIN_CONCEPT_ENTRY_REFERENCES = 100;
 const MAX_DOMAIN_CONCEPT_ENTITY_REFERENCES = 100;
-/** Absolute floor for a concept the distribution alone would admit. */
-const MIN_DISTINCTIVE_CONCEPT_FREQUENCY = 3;
 /**
- * Below this many concepts there is no distribution to reason about, and the
- * list is short enough to be useful as-is.
+ * Upper bound on the emitted vocabulary. A domain model is something a person
+ * can read and recognize as this system's subject matter; at several hundred
+ * entries it is a token dump, and consumers that mine it for repository
+ * vocabulary match on the noise. Cap only — never padded to reach it.
  */
-const MIN_CONCEPTS_FOR_DISTRIBUTION_TRIM = 60;
+const MAX_DOMAIN_CONCEPTS = 40;
+/**
+ * How many DISTINCT declared type names must contain a token before the type
+ * vocabulary counts as evidence for it. One incidental type name is not the
+ * system's vocabulary; the same noun recurring across separate declarations is.
+ */
+const MIN_DECLARED_TYPE_RECURRENCE = 3;
+/**
+ * Floor for repositories whose vocabulary lives nowhere the evidence channels
+ * can see it — a script/CLI/bot codebase of bare functions, with no declared
+ * types, entities, capabilities, or authored prose. Rather than emit nothing (or
+ * fall back to the whole unfiltered token list), top the retained set up to this
+ * many by DISTINCTIVENESS RANK, cited honestly as structural prominence.
+ */
+const MIN_RETAINED_CONCEPTS = 8;
+/** A term must occupy at least this many distinct usage sites to be considered. */
+const MIN_DISTINCT_USAGE_SITES = 2;
+
+/**
+ * Node types that DECLARE a named shape — the codebase's type vocabulary. A
+ * function or variable name is deliberately excluded: those are where incidental
+ * English lives (`triggered`, `assigned`, `acknowledged`), and admitting them is
+ * indistinguishable from ranking by raw occurrence.
+ */
+const DECLARED_TYPE_NODE_TYPES = new Set([
+  'class', 'interface', 'type', 'struct', 'enum', 'record', 'trait', 'protocol',
+  'entity', 'model', 'dto', 'schema', 'aggregate', 'valueobject', 'union',
+]);
 
 /**
  * Words of the PRESENTATION LANGUAGE ITSELF — CSS selector conventions,
@@ -169,25 +227,167 @@ const ENGLISH_STOPWORDS = new Set([
 export class DomainExtractor {
   private concepts: Map<string, ConceptOccurrence> = new Map();
   private projectRoot?: string;
+  /** Authored compound terms, kebab form (`tree-sitter`). See readAuthoredProse. */
+  private compoundSpans: Set<string> = new Set();
+  /** Separator-free form (`treesitter`) -> the kebab term it stands for. */
+  private compoundJoined: Map<string, string> = new Map();
+  /** Lowercased words appearing in authored prose (README / manifest). */
+  private proseWords: Set<string> = new Set();
+  /** Token -> distinct declared type names containing it. */
+  private declaredTypeNamesByToken: Map<string, Set<string>> = new Map();
 
   extract(
     nodes: CASNode[],
     entryPoints: CASEntryPoint[],
     dataEntities: CASDataEntity[],
     edges: CASEdge[] = [],
-    projectPath?: string
+    projectPath?: string,
+    context: DomainExtractionContext = {},
   ): CASDomainConcept[] {
     this.concepts.clear();
+    this.compoundSpans = new Set();
+    this.compoundJoined = new Map();
+    this.proseWords = new Set();
+    this.declaredTypeNamesByToken = new Map();
     this.projectRoot = projectPath
       ? projectPath.replace(/\\/g, '/').replace(/\/+$/, '')
       : undefined;
 
+    // Authored evidence and the compound lexicon FIRST: tokenization consults
+    // the lexicon, so it has to exist before any name is split.
+    this.readAuthoredProse(projectPath);
+    this.indexDeclaredTypeVocabulary(nodes);
+
     this.extractFromNodes(nodes);
     this.extractFromEntryPoints(entryPoints);
     this.extractFromEntities(dataEntities);
+    this.extractFromCapabilities(context.capabilityNames || []);
     this.extractFromGraphRoles(nodes, edges);
 
     return this.buildDomainConcepts();
+  }
+
+  /**
+   * Reads the repository's AUTHORED text — the manifest's own description/name
+   * and the README — for two purposes:
+   *
+   *  1. PROSE EVIDENCE. A word the authors use when explaining the product is
+   *     the product's vocabulary, independent of how often it appears in code.
+   *  2. THE COMPOUND LEXICON. `tree-sitter` shipped as two concepts, `tree` and
+   *     `sitter`, because tokenization split on every non-alphanumeric boundary.
+   *     A hyphenated term in authored prose (or a hyphenated dependency name) is
+   *     a term the authors treat as ONE word, so tokenization preserves it.
+   *     Sourcing the lexicon from PROSE and MANIFEST — never from file names —
+   *     is what keeps kebab-case filenames from becoming single giant concepts.
+   *
+   * Deterministic, bounded (two files), and entirely optional: with no project
+   * path (or an unreadable repo) both channels are simply empty.
+   */
+  private readAuthoredProse(projectPath?: string): void {
+    if (!projectPath) return;
+    const authored: string[] = [];
+    const compounds = new Set<string>();
+    const readText = (file: string, limit: number): string => {
+      try {
+        const stat = fs.statSync(file);
+        if (!stat.isFile() || stat.size === 0) return '';
+        return fs.readFileSync(file, 'utf8').slice(0, limit);
+      } catch {
+        return '';
+      }
+    };
+
+    const manifestRaw = readText(path.join(projectPath, 'package.json'), 200000);
+    if (manifestRaw) {
+      try {
+        const manifest = JSON.parse(manifestRaw);
+        if (manifest?.description) authored.push(String(manifest.description));
+        if (manifest?.name) authored.push(String(manifest.name).replace(/^@/, '').replace(/\//g, ' '));
+        // Dependency names are authored, hyphenated terms. They join the
+        // COMPOUND LEXICON only — they are not prose evidence, so a dependency
+        // still has to earn its way in through a real evidence channel.
+        for (const section of ['dependencies', 'devDependencies', 'peerDependencies']) {
+          for (const dep of Object.keys(manifest?.[section] || {})) {
+            const bare = String(dep).replace(/^@[^/]+\//, '');
+            if (bare.includes('-')) compounds.add(bare.toLowerCase());
+          }
+        }
+      } catch { /* an unparseable manifest simply contributes nothing */ }
+    }
+    for (const readme of ['README.md', 'README.mdx', 'readme.md', 'Readme.md']) {
+      const content = readText(path.join(projectPath, readme), 40000);
+      if (content) { authored.push(content); break; }
+    }
+    for (const manifestFile of ['Cargo.toml', 'pyproject.toml', 'go.mod', 'composer.json', 'Gemfile']) {
+      const content = readText(path.join(projectPath, manifestFile), 60000);
+      for (const match of content.match(/[a-z][a-z0-9]*(?:-[a-z0-9]+)+/g) || []) {
+        compounds.add(match.toLowerCase());
+      }
+    }
+
+    const proseText = authored.join('\n');
+    for (const word of proseText.toLowerCase().match(/[a-z][a-z0-9]{2,}/g) || []) {
+      this.proseWords.add(word);
+    }
+    for (const match of proseText.toLowerCase().match(/[a-z][a-z0-9]*(?:-[a-z0-9]+)+/g) || []) {
+      compounds.add(match);
+      // A compound the authors WROTE is prose evidence in its own right; one
+      // that only appears as a dependency name is not.
+      this.proseWords.add(match);
+    }
+
+    // Only compounds whose PARTS are all real words are kept — a hyphenated
+    // version string or hash fragment is not a term. Spans are capped at three
+    // words, which is what tokenizeWithCompounds probes.
+    for (const term of compounds) {
+      const parts = term.split('-');
+      if (parts.length < 2 || parts.length > 3) continue;
+      if (!parts.every(part => part.length >= 3 && /^[a-z][a-z0-9]*$/.test(part))) continue;
+      this.compoundSpans.add(term);
+      this.compoundJoined.set(parts.join(''), term);
+    }
+  }
+
+  /**
+   * Indexes which DECLARED TYPE names contain each token, so the gate can ask
+   * whether the codebase's type vocabulary keeps naming this thing rather than
+   * whether the token merely occurs.
+   */
+  private indexDeclaredTypeVocabulary(nodes: CASNode[]): void {
+    for (const node of nodes) {
+      if (!DECLARED_TYPE_NODE_TYPES.has(String(node.type || '').toLowerCase())) continue;
+      if (node.metadata?.is_test || node.metadata?.is_generated) continue;
+      if (this.isInfrastructureNode(node)) continue;
+      const declaredName = String(node.name || '');
+      if (!declaredName) continue;
+      for (const token of this.extractConceptsFromName(declaredName)) {
+        let names = this.declaredTypeNamesByToken.get(token);
+        if (!names) { names = new Set(); this.declaredTypeNamesByToken.set(token, names); }
+        names.add(declaredName);
+      }
+    }
+  }
+
+  /**
+   * Capability SUBJECTS. A capability name states what the system does to what
+   * ("Analyze codebase structure"), and the object of that sentence is domain
+   * vocabulary by construction — it is what the product's own capability
+   * catalog is about.
+   */
+  private extractFromCapabilities(capabilityNames: string[]): void {
+    for (const capabilityName of capabilityNames) {
+      const name = String(capabilityName || '');
+      if (!name) continue;
+      // The SUBJECT, not the verb. A capability name opens with the action
+      // ("Manage organizations and workspaces"), and crediting the leading verb
+      // put `manage` in the domain vocabulary of a codebase-analysis product.
+      // A verb that is also genuinely this system's subject matter still arrives
+      // through its other channels.
+      const subject = this.extractConceptsFromName(name).slice(1);
+      for (const concept of subject) {
+        this.recordEvidence(concept, 'capabilitySubjects', name);
+      }
+    }
   }
 
   private extractFromGraphRoles(nodes: CASNode[], edges: CASEdge[]): void {
@@ -208,18 +408,26 @@ export class DomainExtractor {
 
       if (!hasChildren && !isTerminal && !isDomainCarrier) continue;
 
-      const concepts = [
-        ...this.extractConceptsFromName(node.name),
-        ...this.extractConceptsFromPath(this.projectRelativeFilePath(node.source?.file || '')),
-      ];
-      const weight = isDomainCarrier ? 3 : hasChildren ? 2 : 1;
+      const relativeFile = this.projectRelativeFilePath(node.source?.file || '');
+      const pathConcepts = this.extractConceptsFromPath(relativeFile);
 
-      for (const concept of concepts) {
-        for (let i = 0; i < weight; i++) {
-          this.recordOccurrence(concept, 'node', node.id);
-        }
+      // The weighted repeat-recording that used to live here inflated the raw
+      // occurrence counter (up to 3 per node) and nothing else; usage SITES are
+      // distinct ids, so a node counts once however it is weighted. Structural
+      // importance is expressed through the distinctiveness channels instead.
+      for (const concept of [...this.extractConceptsFromName(node.name), ...pathConcepts]) {
+        this.recordOccurrence(concept, 'node', node.id);
+      }
+      if (relativeFile) {
+        for (const concept of pathConcepts) this.recordFileSpread(concept, relativeFile);
       }
     }
+  }
+
+  /** Records that a term names part of a real file path (spread, not evidence). */
+  private recordFileSpread(concept: string, file: string): void {
+    const occurrence = this.occurrenceFor(concept);
+    if (occurrence) occurrence.files.add(file);
   }
 
   private isLikelyDomainCarrier(node: CASNode): boolean {
@@ -288,21 +496,26 @@ export class DomainExtractor {
 
       for (const concept of [...pathConcepts, ...nameConcepts]) {
         this.recordOccurrence(concept, 'entryPoint', ep.id);
+        // The noun at a real boundary — a route segment or the handler's own
+        // name — is what the system exposes, and therefore its vocabulary.
+        this.recordEvidence(concept, 'entryPointNouns', ep.trigger?.path || ep.name || ep.id);
       }
     }
   }
 
   private extractFromEntities(entities: CASDataEntity[]): void {
     for (const entity of entities) {
-      const concepts = this.extractConceptsFromName(entity.name);
-
-      for (const concept of concepts) {
+      for (const concept of this.extractConceptsFromName(entity.name)) {
         this.recordOccurrence(concept, 'entity', entity.id);
+        // The entity's NAME is distinctiveness evidence. Its FIELD names below
+        // are not: a field list is where a record's incidental attributes live
+        // (`timezone`, `locale`, `triggered`), and crediting them is what let
+        // ordinary English ride into the vocabulary on an entity's coat-tails.
+        this.recordEvidence(concept, 'entityNames', entity.name);
       }
 
       for (const field of entity.fields || []) {
-        const fieldConcepts = this.extractConceptsFromName(field.name);
-        for (const concept of fieldConcepts) {
+        for (const concept of this.extractConceptsFromName(field.name)) {
           this.recordOccurrence(concept, 'entity', entity.id);
         }
       }
@@ -310,14 +523,51 @@ export class DomainExtractor {
   }
 
   private extractConceptsFromName(name: string): string[] {
-    const normalized = this.splitCamelCase(name);
     // Identifiers arrive from every supported language and framework, including
     // route templates, qualified type names, namespace separators, and IaC
     // addresses. Tokenize on every non-alphanumeric boundary so punctuation can
-    // never become a domain concept ("{id}", ":id", "Route\\Facade").
-    const words = normalized.split(/[^A-Za-z0-9]+/).filter(w => w.length > 2);
+    // never become a domain concept ("{id}", ":id", "Route\\Facade") — then
+    // re-join the spans the authors write as ONE term (see compoundLexicon).
+    return this.tokenizeWithCompounds(name);
+  }
 
-    return words.map(w => w.toLowerCase());
+  /**
+   * Splits an identifier or path segment into tokens, preserving any span that
+   * the compound lexicon says is a single authored term.
+   *
+   * Word-span rejoining (rather than substring search) keeps this O(tokens): a
+   * camelCase `TreeSitterParser` and a kebab `tree-sitter-parser` both reduce to
+   * the same word list, so one lookup per span position resolves both forms.
+   */
+  private tokenizeWithCompounds(raw: string): string[] {
+    const words = this.splitCamelCase(String(raw || ''))
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter(Boolean);
+    if (this.compoundSpans.size === 0 && this.compoundJoined.size === 0) {
+      return words.filter(word => word.length > 2);
+    }
+    const tokens: string[] = [];
+    let index = 0;
+    while (index < words.length) {
+      let matchedSpan = 0;
+      for (let span = 3; span >= 2; span--) {
+        if (index + span > words.length) continue;
+        const candidate = words.slice(index, index + span).join('-');
+        if (this.compoundSpans.has(candidate)) {
+          tokens.push(candidate);
+          matchedSpan = span;
+          break;
+        }
+      }
+      if (matchedSpan) { index += matchedSpan; continue; }
+      // A compound written with no separator at all (`treesitter`).
+      const joined = this.compoundJoined.get(words[index]);
+      if (joined) { tokens.push(joined); index++; continue; }
+      if (words[index].length > 2) tokens.push(words[index]);
+      index++;
+    }
+    return tokens;
   }
 
   /**
@@ -348,12 +598,13 @@ export class DomainExtractor {
     for (const segment of segments) {
       const base = segment.replace(/\.[a-z0-9]+$/i, '');
       // Tokenize on EVERY non-alphanumeric boundary, exactly as
-      // extractConceptsFromName does. Splitting only on whitespace/_/-/. left
+      // extractConceptsFromName does — through the SAME tokenizer, so an
+      // authored compound survives in a path (`src/cross-parser/…`) just as it
+      // does in an identifier. Splitting only on whitespace/_/-/. left
       // punctuation attached to the token, so syntax debris like "child)",
       // "[data", "arrow::before," and 'theme="light"]' survived intact and was
       // emitted as domain vocabulary.
-      const words = this.splitCamelCase(base).split(/[^A-Za-z0-9]+/).filter(w => w.length > 2);
-      concepts.push(...words.map(w => w.toLowerCase()));
+      concepts.push(...this.tokenizeWithCompounds(base));
     }
 
     return concepts;
@@ -363,14 +614,9 @@ export class DomainExtractor {
     return str.replace(/([a-z])([A-Z])/g, '$1 $2');
   }
 
-  private recordOccurrence(
-    concept: string,
-    source: 'node' | 'entryPoint' | 'entity',
-    id: string
-  ): void {
-    const normalized = concept.toLowerCase();
-
-    if (
+  /** Vocabulary that is never a domain concept regardless of its evidence. */
+  private isSuppressedTerm(normalized: string): boolean {
+    return (
       // Purely numeric tokens are sequence numbers and version stamps
       // (migration ordinals, breakpoint sizes), never domain vocabulary.
       /^\d+$/.test(normalized) ||
@@ -379,22 +625,40 @@ export class DomainExtractor {
       ENGLISH_STOPWORDS.has(normalized) ||
       PRESENTATION_LAYER_TERMS.has(normalized) ||
       isEnglishFunctionWord(normalized)
-    ) {
-      return;
-    }
+    );
+  }
 
-    if (!this.concepts.has(normalized)) {
-      this.concepts.set(normalized, {
+  private occurrenceFor(concept: string): ConceptOccurrence | undefined {
+    const normalized = concept.toLowerCase();
+    if (this.isSuppressedTerm(normalized)) return undefined;
+    let occurrence = this.concepts.get(normalized);
+    if (!occurrence) {
+      occurrence = {
         name: concept,
         normalizedName: normalized,
         entryPoints: new Set(),
         entities: new Set(),
         nodes: new Set(),
-        frequency: 0
-      });
+        files: new Set(),
+        frequency: 0,
+        entityNames: new Set(),
+        capabilitySubjects: new Set(),
+        entryPointNouns: new Set(),
+        declaredTypeNames: new Set(),
+        proseTerms: new Set(),
+      };
+      this.concepts.set(normalized, occurrence);
     }
+    return occurrence;
+  }
 
-    const occurrence = this.concepts.get(normalized)!;
+  private recordOccurrence(
+    concept: string,
+    source: 'node' | 'entryPoint' | 'entity',
+    id: string
+  ): void {
+    const occurrence = this.occurrenceFor(concept);
+    if (!occurrence) return;
 
     switch (source) {
       case 'node':
@@ -411,10 +675,144 @@ export class DomainExtractor {
     occurrence.frequency++;
   }
 
+  /**
+   * Records a DISTINCTIVENESS citation without inventing a usage site. Evidence
+   * answers "why is this a concept"; sites answer "where does it occur". The two
+   * are deliberately separate — conflating them is how occurrence count came to
+   * stand in for significance.
+   */
+  private recordEvidence(
+    concept: string,
+    channel: 'entityNames' | 'capabilitySubjects' | 'entryPointNouns' | 'declaredTypeNames' | 'proseTerms',
+    citation: string,
+  ): void {
+    const occurrence = this.occurrenceFor(concept);
+    if (!occurrence || !citation) return;
+    occurrence[channel].add(citation);
+  }
+
+  /**
+   * DISTINCT USAGE SITES — the number of separate places the term is actually
+   * used (code units, entry points, entities), not how many times a token was
+   * counted. The old `frequency` was a raw occurrence counter that the
+   * graph-role pass incremented up to three times per node, and it reported
+   * 54,297 for the top term of a 57,356-node repository: a number that cannot
+   * distinguish a pervasive domain noun from a common English word, and was
+   * nonetheless the ranking key.
+   */
+  private distinctUsageSites(occurrence: ConceptOccurrence): number {
+    return occurrence.nodes.size + occurrence.entryPoints.size +
+      occurrence.entities.size + occurrence.files.size;
+  }
+
+  /** Cited distinctiveness channels for a term, strongest first. */
+  private distinctivenessEvidence(occurrence: ConceptOccurrence): string[] {
+    const cited: string[] = [];
+    const sample = (values: Set<string>, limit = 3) => [...values].slice(0, limit).join(', ');
+    if (occurrence.entityNames.size > 0) {
+      cited.push(`entity name: ${sample(occurrence.entityNames)}`);
+    }
+    if (occurrence.capabilitySubjects.size > 0) {
+      cited.push(`capability subject: ${sample(occurrence.capabilitySubjects, 2)}`);
+    }
+    if (occurrence.entryPointNouns.size > 0) {
+      cited.push(`entry-point noun: ${sample(occurrence.entryPointNouns)}`);
+    }
+    if (occurrence.declaredTypeNames.size >= MIN_DECLARED_TYPE_RECURRENCE) {
+      cited.push(`declared type (${occurrence.declaredTypeNames.size}): ${sample(occurrence.declaredTypeNames)}`);
+    }
+    if (occurrence.proseTerms.size > 0) {
+      cited.push(`authored prose: ${sample(occurrence.proseTerms, 1)}`);
+    }
+    return cited;
+  }
+
+  /**
+   * DISTINCTIVENESS RANK. Channel breadth dominates: a term the entity model,
+   * the capability catalog and the authors all name is the system's vocabulary,
+   * whatever its token count. Site spread contributes only as a tie-breaker, and
+   * logarithmically, so a term cannot climb the list by sheer repetition.
+   */
+  private distinctivenessScore(occurrence: ConceptOccurrence): number {
+    const channels =
+      (occurrence.entityNames.size > 0 ? 4 : 0) +
+      (occurrence.capabilitySubjects.size > 0 ? 4 : 0) +
+      (occurrence.entryPointNouns.size > 0 ? 3 : 0) +
+      (occurrence.declaredTypeNames.size >= MIN_DECLARED_TYPE_RECURRENCE ? 2 : 0) +
+      (occurrence.proseTerms.size > 0 ? 3 : 0);
+    // Breadth WITHIN a channel: many entities/capabilities naming the term is
+    // stronger than one, but with diminishing returns.
+    const depth =
+      Math.log2(1 + occurrence.entityNames.size) +
+      Math.log2(1 + occurrence.capabilitySubjects.size) +
+      Math.log2(1 + occurrence.entryPointNouns.size) +
+      Math.log2(1 + occurrence.declaredTypeNames.size);
+    return channels * 10 + depth * 2 + Math.log2(1 + this.distinctUsageSites(occurrence));
+  }
+
+  /**
+   * `workspace` and `workspaces` are ONE term. Both surface because identifiers
+   * and route paths use whichever number reads better, and both were emitted:
+   * five of a forty-entry vocabulary were plural twins of another entry, which
+   * both wastes the budget and reads as though the system had two concepts.
+   * Merged only when BOTH forms are present, so a term that only ever appears
+   * plural keeps the form the codebase actually uses.
+   */
+  private mergePluralIntoSingular(): void {
+    for (const [plural, occurrence] of [...this.concepts]) {
+      const singular = this.singularForm(plural);
+      if (singular === plural) continue;
+      const target = this.concepts.get(singular);
+      if (!target) continue;
+      for (const id of occurrence.nodes) target.nodes.add(id);
+      for (const id of occurrence.entryPoints) target.entryPoints.add(id);
+      for (const id of occurrence.entities) target.entities.add(id);
+      for (const file of occurrence.files) target.files.add(file);
+      for (const citation of occurrence.entityNames) target.entityNames.add(citation);
+      for (const citation of occurrence.capabilitySubjects) target.capabilitySubjects.add(citation);
+      for (const citation of occurrence.entryPointNouns) target.entryPointNouns.add(citation);
+      for (const citation of occurrence.declaredTypeNames) target.declaredTypeNames.add(citation);
+      for (const citation of occurrence.proseTerms) target.proseTerms.add(citation);
+      for (const declaredName of this.declaredTypeNamesByToken.get(plural) || []) {
+        let names = this.declaredTypeNamesByToken.get(singular);
+        if (!names) { names = new Set(); this.declaredTypeNamesByToken.set(singular, names); }
+        names.add(declaredName);
+      }
+      this.concepts.delete(plural);
+    }
+  }
+
+  /** Conservative English singularizer; returns the input when unsure. */
+  private singularForm(word: string): string {
+    if (/(ss|us|is|as|os)$/.test(word)) return word;
+    if (/[^aeiou]ies$/.test(word)) return `${word.slice(0, -3)}y`;
+    if (/(sses|shes|ches|xes|zes)$/.test(word)) return word.slice(0, -2);
+    if (/s$/.test(word) && word.length > 3) return word.slice(0, -1);
+    return word;
+  }
+
   private buildDomainConcepts(): CASDomainConcept[] {
+    // Fold the declared-type index and the prose channel into the occurrences
+    // now that every term is known.
+    for (const [normalized, occurrence] of this.concepts) {
+      for (const declaredName of this.declaredTypeNamesByToken.get(normalized) || []) {
+        occurrence.declaredTypeNames.add(declaredName);
+      }
+      if (this.proseWords.has(normalized)) occurrence.proseTerms.add(normalized);
+    }
+
+    this.mergePluralIntoSingular();
+
     const entries: Array<{ id: string; occurrence: ConceptOccurrence }> = [];
     for (const [id, occurrence] of this.concepts) {
-      if (occurrence.frequency < 2) continue;
+      const sites = this.distinctUsageSites(occurrence);
+      if (sites < 1) continue;
+      // A single site is enough only when the entity model or the capability
+      // catalog names the term; otherwise it needs a second site to be a term
+      // of this system at all rather than one incidental identifier.
+      const anchored = occurrence.entityNames.size > 0 || occurrence.capabilitySubjects.size > 0;
+      if (sites < MIN_DISTINCT_USAGE_SITES && !anchored) continue;
+      occurrence.frequency = sites;
       entries.push({ id, occurrence });
     }
 
@@ -444,10 +842,20 @@ export class DomainExtractor {
         },
         classification: this.classifyConcept(occurrence, stats),
         description: this.describeConcept(occurrence),
+        distinctiveness: Math.round(this.distinctivenessScore(occurrence) * 100) / 100,
+        distinctiveness_evidence: this.distinctivenessEvidence(occurrence),
       });
     }
 
-    results.sort((a, b) => b.frequency - a.frequency);
+    // Ranked by DISTINCTIVENESS, not by occurrence count. The list's order is
+    // what every truncating consumer reads first, so ordering by raw frequency
+    // put the most common English word at the top of the domain model.
+    results.sort((left, right) => {
+      const byScore =
+        this.distinctivenessScore(occurrenceByName.get(right.name)!) -
+        this.distinctivenessScore(occurrenceByName.get(left.name)!);
+      return byScore || right.frequency - left.frequency || left.name.localeCompare(right.name);
+    });
 
     // Promotion safety net. Repos with no recognized entry points or data
     // entities (CLIs, bots, libraries, data pipelines) can end up with zero
@@ -479,53 +887,62 @@ export class DomainExtractor {
     if (occurrence.nodes.size > 0) {
       parts.push(`${occurrence.nodes.size} code ${occurrence.nodes.size === 1 ? 'unit' : 'units'}`);
     }
+    if (occurrence.files.size > 0) {
+      parts.push(`${occurrence.files.size} ${occurrence.files.size === 1 ? 'file path' : 'file paths'}`);
+    }
     const where = parts.length > 0 ? parts.join(', ') : 'no located references';
-    return `Vocabulary term "${occurrence.name}" appears in ${where} (${occurrence.frequency} total occurrences).`;
+    const sites = this.distinctUsageSites(occurrence);
+    return `Vocabulary term "${occurrence.name}" appears in ${where} (${sites} distinct usage ${sites === 1 ? 'site' : 'sites'}).`;
   }
 
   /**
-   * Keeps only the concepts the repository's own evidence distinguishes.
+   * Keeps only the terms the repository's own evidence DISTINGUISHES.
    *
-   * Emitting every token that occurs twice produced lists of hundreds to
-   * thousands of entries per repository (measured: 341–5,767 across production
-   * analyses) in which the genuinely load-bearing vocabulary was
-   * indistinguishable from incidental identifier noise. A surface that long is
-   * not a domain model, and downstream consumers that mine it for repository
-   * vocabulary were matching on the noise.
+   * The previous gate retained anything anchored in an entity or entry point,
+   * anything the classifier called core, or anything in the frequency
+   * distribution's upper decile. Since entity FIELD names counted as an entity
+   * anchor and the ranking key was raw occurrence, ordinary English rode in on
+   * both routes: a measured production analysis emitted 599 "concepts" whose
+   * tail was `triggered, grants, assigned, leave, iteration, ... locale,
+   * reproduction`. Frequency is not distinctiveness — every token in the
+   * repository occurs.
    *
-   * A concept is retained when the repository's structure singles it out:
-   *  - it is anchored at a real boundary (a data entity or an entry point), or
-   *  - the classifier judged it `core`, or
-   *  - its frequency reaches the distribution's own upper decile.
-   *
-   * The cutoff is derived from THIS repository's frequency distribution, so it
-   * scales with codebase size instead of over-firing on large repositories and
-   * never firing on small ones.
+   * A term is retained only with a CITED channel (see distinctivenessEvidence):
+   * it names a data entity, is the subject of a system capability, is a noun at
+   * an entry point, recurs across the declared-type vocabulary, or the authors
+   * use it in the README/manifest prose.
    */
   private retainDistinctiveConcepts(
     results: CASDomainConcept[],
     byName: Map<string, ConceptOccurrence>,
   ): CASDomainConcept[] {
-    // A percentile over a handful of samples is not a distribution. Small
-    // concept sets do not have the problem this trim exists to solve — they
-    // are already readable — and trimming them by a cutoff derived from eight
-    // data points discards real vocabulary. Leave them intact.
-    if (results.length <= MIN_CONCEPTS_FOR_DISTRIBUTION_TRIM) return results;
-    const frequencies = results.map(concept => concept.frequency).sort((a, b) => a - b);
-    const upperDecile = frequencies[Math.floor(frequencies.length * 0.9)] ?? 0;
-    const cutoff = Math.max(MIN_DISTINCTIVE_CONCEPT_FREQUENCY, upperDecile);
+    const retained = results.filter(concept => (concept.distinctiveness_evidence || []).length > 0);
 
-    const retained = results.filter(concept => {
-      const occurrence = byName.get(concept.name);
-      if (occurrence && (occurrence.entities.size > 0 || occurrence.entryPoints.size > 0)) return true;
-      if (concept.classification === 'core') return true;
-      return concept.frequency >= cutoff;
-    });
+    // PROMINENCE FLOOR — only when the channels found NOTHING. A repository
+    // whose vocabulary lives nowhere they can see it (bare functions, no
+    // declared types, no entities, no authored prose) would otherwise report an
+    // empty domain model; it gets a small ranked list, labeled honestly.
+    //
+    // Deliberately NOT a top-up to a quota: a repository that yielded three
+    // cited terms HAS three: padding the rest from the rejected tail would
+    // reinstate exactly the words the gate exists to remove.
+    if (retained.length === 0) {
+      for (const concept of results) {
+        if (retained.length >= MIN_RETAINED_CONCEPTS) break;
+        if ((concept.distinctiveness_evidence || []).length > 0) continue;
+        const occurrence = byName.get(concept.name);
+        if (!occurrence || this.distinctUsageSites(occurrence) < MIN_DISTINCT_USAGE_SITES) continue;
+        concept.distinctiveness_evidence = [
+          `structural prominence: ${this.distinctUsageSites(occurrence)} usage sites, no channel evidence`,
+        ];
+        retained.push(concept);
+      }
+      // `results` is already in distinctiveness order; restore that order after
+      // the top-up so the floor entries sit where their rank puts them.
+      retained.sort((left, right) => results.indexOf(left) - results.indexOf(right));
+    }
 
-    // Never return an empty domain model when concepts were found: a tiny
-    // repository whose whole distribution sits below the floor still has a
-    // most-prominent vocabulary.
-    return retained.length > 0 ? retained : results.slice(0, 10);
+    return retained.slice(0, MAX_DOMAIN_CONCEPTS);
   }
 
   /**
@@ -554,12 +971,23 @@ export class DomainExtractor {
       (appearsInEntities ? 2 : 0) +
       (appearsInManyNodes ? 1 : 0);
 
-    // Boundary-anchored core (web services, APIs).
+    // Boundary-anchored core (web services, APIs). The absolute
+    // frequency thresholds that used to live here (`frequency > 10`,
+    // `frequency > 5`) were relics of the raw occurrence counter: on a large
+    // repository every retained term clears them, and classification collapsed
+    // to "everything is core". What remains is STRUCTURE — how many distinct
+    // boundaries name the term — plus the two channels that mean the product's
+    // own data model or capability catalog names it.
+    // TWO boundaries, or the product's own model/catalog naming it. A single
+    // boundary plus "appears in more than three nodes" reached the old
+    // presenceScore >= 3 for essentially every retained term on a large
+    // repository, which is how `classification` came out as 40-of-40 core and
+    // stopped telling consumers anything.
     const boundaryCore =
-      presenceScore >= 3 ||
+      presenceScore >= 4 ||
       (appearsInEntryPoints && appearsInEntities) ||
-      (occurrence.frequency > 10 && appearsInEntryPoints) ||
-      (occurrence.frequency > 5 && presenceScore >= 2);
+      occurrence.entityNames.size > 0 ||
+      occurrence.capabilitySubjects.size > 0;
 
     // Prominence-anchored core (no boundary required). A concept that
     // pervades a large share of the codebase, or recurs far more often than
@@ -571,7 +999,7 @@ export class DomainExtractor {
       stats.maxFrequency > 0 ? occurrence.frequency / stats.maxFrequency : 0;
     const prominenceCore =
       (occurrence.nodes.size >= 5 && nodeDominance >= 0.5) ||
-      (occurrence.frequency >= 5 && frequencyDominance >= 0.6);
+      (occurrence.frequency >= 3 && frequencyDominance >= 0.6);
 
     // Prominence overrides the cross-cutting hint: `token`/`session`/`auth`
     // are usually supporting concerns, but in a domain that is genuinely
