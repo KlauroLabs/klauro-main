@@ -2124,6 +2124,40 @@ const casReadResponseCache = new ResponseCache(8);
  */
 const CONCEPTUAL_DEFAULT_MAX_FLOWS = 25;
 const CONCEPTUAL_MAX_FLOWS_CEILING = 100;
+/**
+ * DEFECT (measured live, three repos): this endpoint's `capabilities` never
+ * carried a `description` at all — 0/5, 0/10, 0/13 capabilities described vs.
+ * get_product_map's 5/5, 8/10, 13/13 on the exact SAME capability ids from
+ * the exact same analysis. An agent using the conceptual surface (the one
+ * the product's own orientation text points at) got named capabilities with
+ * no explanation of what they do. get_product_map already computes
+ * `description`/`description_source` at analysis time (product-map.ts); this
+ * endpoint now surfaces the same fields rather than re-deriving them.
+ *
+ * Shipped by DEFAULT, not opt-in: capability/surface counts are small
+ * (tens, not the hundreds that flows/nodes reach), so the added payload is
+ * bounded even without a query flag. But this route carries NO
+ * RESPONSE_BUDGET_BYTES enforcement at all (unlike the /query-routed MCP
+ * tools — see response-budget.ts) and was separately measured large/slow on
+ * a whale CAS, so each description is truncated to a short excerpt (same
+ * technique as machine-gauntlet.ts's `description_excerpt`) — enough to
+ * answer "what does this do," never enough to multiply payload size by
+ * capability count.
+ */
+const CONCEPTUAL_DESCRIPTION_EXCERPT_CHARS = 280;
+
+function conceptualDescriptionFields(item: { description?: string; description_source?: string }): {
+  description?: string;
+  description_source?: string;
+} {
+  if (!item.description) return {};
+  return {
+    description: item.description.length > CONCEPTUAL_DESCRIPTION_EXCERPT_CHARS
+      ? `${item.description.slice(0, CONCEPTUAL_DESCRIPTION_EXCERPT_CHARS)}…`
+      : item.description,
+    description_source: item.description_source || 'deterministic',
+  };
+}
 
 /** Test/ops probe: lets the endpoint tests assert deterministically that a
  * repeat GET was served from the cache (not merely byte-identical by luck). */
@@ -3169,6 +3203,7 @@ async function handleAccountApi(
       const capabilities = (cas.system_capabilities || []).map(capability => ({
         id: capability.id,
         name: capability.name,
+        ...conceptualDescriptionFields(capability),
         category: capability.category,
         criticality: capability.criticality,
         related_flows: (!target && capability.related_flows && capability.related_flows.length > 0)
@@ -3193,6 +3228,7 @@ async function handleAccountApi(
       const behaviorSurfaces = (cas.behavior_surfaces || []).map(surface => ({
         id: surface.id,
         name: surface.structural_label || surface.name,
+        ...conceptualDescriptionFields(surface),
         category: surface.category,
         evidence_kind: surface.evidence_kind,
         entry_points: surface.operations?.length || 0,

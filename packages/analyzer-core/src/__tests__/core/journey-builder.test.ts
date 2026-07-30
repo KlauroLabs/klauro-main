@@ -1480,6 +1480,116 @@ describe('buildUserJourneys terminal data hygiene', () => {
     expect(terminal.access).toBe('read');
   });
 
+  // REGRESSION (live, deployed build): a REST path tail segment whose last
+  // hyphenated word is short ("login-as") was read as an English plural and
+  // stripped past recognition ("login as" -> "login a" -> "LoginA"). A
+  // trailing 's' is only real evidence of a plural on a word with enough
+  // letters left over to still mean something — never on a 2-letter word.
+  it('never mutates a short trailing word in a route tail segment past recognition ("login-as" stays "LoginAs", not "LoginA")', () => {
+    const input = {
+      nodes: [
+        node('n_method', 'login_as_client', 'method'),
+      ],
+      edges: [],
+      entryPoints: [{
+        id: 'entry_machine_to_machine',
+        source_node: 'n_method',
+        type: 'cli',
+        name: 'main',
+        trigger: {},
+        handler: { node_id: 'n_method', method_name: 'login_as_client' },
+      } as CASEntryPoint],
+      exitPoints: [{
+        id: 'exit_login_as',
+        source_node: 'n_method',
+        type: 'api',
+        name: 'POST login-as',
+        target: { service_id: 'external_api', endpoint: 'partner-portal/clients/{org_id}/login-as' },
+        operation: { method: 'POST', action: 'post' },
+      } as CASExitPoint],
+      callChains: [],
+      dataEntities: [],
+    };
+
+    const { journeys } = buildUserJourneys(input);
+    const terminal = journeys[0].terminal_entities[0];
+    expect(terminal.name).not.toBe('LoginA');
+    expect(terminal.name).toBe('LoginAs');
+  });
+
+  // REGRESSION (live, deployed build): a shell script's "External command:
+  // aws" exit point fed the bare CLI tool name "aws" through the same route-
+  // resource singularizer, producing "Aw" ("aws" is not an English plural).
+  it('never mutates an external shell command name past recognition ("aws" stays "Aws", not "Aw")', () => {
+    const input = {
+      nodes: [
+        node('n_script', '61-win-agent-after-reboot.sh', 'file'),
+      ],
+      edges: [],
+      entryPoints: [{
+        id: 'entry_win_agent_reboot',
+        source_node: 'n_script',
+        type: 'cli',
+        name: 'Shell script: 61-win-agent-after-reboot.sh',
+        trigger: {},
+      } as CASEntryPoint],
+      exitPoints: [{
+        id: 'exit_aws_cmd',
+        source_node: 'n_script',
+        type: 'api',
+        name: 'External command: aws',
+        target: { resource: 'aws', sdk: 'aws' },
+        operation: { action: 'aws', method: 'shell' },
+      } as CASExitPoint],
+      callChains: [],
+      dataEntities: [],
+    };
+
+    const { journeys } = buildUserJourneys(input);
+    const terminal = journeys[0].terminal_entities[0];
+    expect(terminal.name).not.toBe('Aw');
+    expect(terminal.name).toBe('Aws');
+  });
+
+  // REGRESSION (live, deployed build): a bare generic error/exception TYPE
+  // ("enum Error") is not a domain terminus — it carries no information about
+  // what the journey actually produces. When it is the ONLY terminal
+  // candidate the walk finds, the journey must report an honest empty
+  // terminus (never substitute the generic type name), and must not be
+  // rated 'critical' on the strength of a call chain that merely passes
+  // through centrally-important code without producing any observed effect.
+  it('never reports a generic Error type as a journey terminus, and never rates an effect-less journey critical', () => {
+    const input = {
+      nodes: [
+        node('n_entry', 'agent', 'method'),
+        node('n_error', 'Error', 'enum'),
+      ],
+      edges: [
+        edge('e1', 'n_entry', 'n_error', 'calls'),
+      ],
+      entryPoints: [{
+        id: 'entry_script',
+        source_node: 'n_entry',
+        type: 'cli',
+        name: 'Shell script: reconnect.sh',
+        trigger: {},
+        handler: { node_id: 'n_entry', method_name: 'agent' },
+      } as CASEntryPoint],
+      exitPoints: [],
+      callChains: [
+        chain('chain_1', 'n_entry', 'entry_script', [['n_entry', 0], ['n_error', 1]]),
+      ].map(c => ({ ...c, criticality: 'critical' as const })),
+      dataEntities: [],
+    };
+
+    const { journeys } = buildUserJourneys(input);
+    expect(journeys).toHaveLength(1);
+    const journey = journeys[0];
+    const terminalNames = journey.terminal_entities.map(t => t.name);
+    expect(terminalNames).not.toContain('Error');
+    expect(journey.criticality).not.toBe('critical');
+  });
+
   it('never promotes Flutter lifecycle methods or widget builders to terminals and demotes them from business stages', () => {
     const input = {
       nodes: [
