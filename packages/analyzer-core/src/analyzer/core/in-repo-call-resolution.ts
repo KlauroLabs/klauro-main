@@ -1,4 +1,5 @@
 import type { CASEdge, CASExitPoint, CASNode, CASLibrary } from '../../types/cas.types';
+import { appendAll, replaceArrayContents } from './bulk-array-ops';
 import { TRACEABLE_NODE_TYPES } from './flow-concepts';
 
 /**
@@ -450,14 +451,12 @@ export function internalizeInRepoCalls(input: InternalizeInput): InternalizeStat
   }
 
   if (removed.size > 0) {
-    const kept = exitPoints.filter(ep => !removed.has(ep));
-    exitPoints.length = 0;
-    exitPoints.push(...kept);
+    replaceArrayContents(exitPoints, exitPoints.filter(ep => !removed.has(ep)));
   }
   // The replacements land BEFORE reconciliation so that phase two sees them as
   // already-asserted call pairs: an original edge whose repointed pair is
   // already covered by a replacement is a duplicate, not a second call.
-  if (added.length > 0) edges.push(...added);
+  if (added.length > 0) appendAll(edges, added);
   if (removed.size > 0) {
     reconcileEdgesToRemovedExitPoints(
       edges,
@@ -543,7 +542,6 @@ function reconcileEdgesToRemovedExitPoints(
   }
 
   if (survivors.length !== edges.length) {
-    edges.length = 0;
-    edges.push(...survivors);
+    replaceArrayContents(edges, survivors);
   }
 }
