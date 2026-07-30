@@ -1209,6 +1209,126 @@ describe('collectDeployableEvidence: evidence-gated bundling resolution (SPEC-DE
     });
   });
 
+  // --- JVM (Maven): spring-boot-maven-plugin's `repackage` goal is what
+  // actually produces the shippable executable jar -- it must be read as
+  // ship/build evidence, the same as a Gradle `application` target or a
+  // cargo [[bin]]. Before this fix, jvm.ts's Maven path classified every
+  // Spring Boot module as kind:'server-entry' (an in-process route handler,
+  // no build artifact of its own), which deployable-analysis.ts's
+  // isBuildTargetDeclaration (tier===2 && kind==='bin') silently excludes
+  // from ship-evidence qualification -- a repo whose only runnable units are
+  // Spring Boot Maven services could never promote to a Deployable-Analysis
+  // Workspace no matter how many independently shippable services it had.
+  describe('JVM (Maven): spring-boot-maven-plugin repackage goal', () => {
+    test('a Maven module with spring-boot-maven-plugin (explicit repackage execution) yields a tier-2 kind:bin row, not server-entry', () => {
+      projectPath = tempProject();
+      fs.writeFileSync(
+        path.join(projectPath, 'pom.xml'),
+        [
+          '<project>',
+          '  <artifactId>orders-service</artifactId>',
+          '  <build>',
+          '    <plugins>',
+          '      <plugin>',
+          '        <groupId>org.springframework.boot</groupId>',
+          '        <artifactId>spring-boot-maven-plugin</artifactId>',
+          '        <executions>',
+          '          <execution>',
+          '            <goals><goal>repackage</goal></goals>',
+          '          </execution>',
+          '        </executions>',
+          '      </plugin>',
+          '    </plugins>',
+          '  </build>',
+          '</project>',
+        ].join('\n') + '\n',
+      );
+
+      const result = collectDeployableEvidence({
+        projectPath,
+        nodes: [],
+        entryPoints: [],
+        exitPoints: [],
+        displayName: 'orders-service',
+      });
+
+      const binRow = result.find(item => item.tier === 2 && item.kind === 'bin' && item.root_path === '.');
+      expect(binRow).toBeDefined();
+      expect(binRow!.evidence.some(e => /repackage goal bound explicitly/.test(e))).toBe(true);
+      expect(result.some(item => item.kind === 'server-entry')).toBe(false);
+    });
+
+    test('a Maven module with spring-boot-maven-plugin bare (repackage bound implicitly via spring-boot-starter-parent) still yields kind:bin', () => {
+      projectPath = tempProject();
+      fs.writeFileSync(
+        path.join(projectPath, 'pom.xml'),
+        [
+          '<project>',
+          '  <artifactId>billing-service</artifactId>',
+          '  <parent>',
+          '    <groupId>org.springframework.boot</groupId>',
+          '    <artifactId>spring-boot-starter-parent</artifactId>',
+          '  </parent>',
+          '  <build>',
+          '    <plugins>',
+          '      <plugin>',
+          '        <groupId>org.springframework.boot</groupId>',
+          '        <artifactId>spring-boot-maven-plugin</artifactId>',
+          '      </plugin>',
+          '    </plugins>',
+          '  </build>',
+          '</project>',
+        ].join('\n') + '\n',
+      );
+
+      const result = collectDeployableEvidence({
+        projectPath,
+        nodes: [],
+        entryPoints: [],
+        exitPoints: [],
+        displayName: 'billing-service',
+      });
+
+      const binRow = result.find(item => item.tier === 2 && item.kind === 'bin' && item.root_path === '.');
+      expect(binRow).toBeDefined();
+      expect(binRow!.evidence.some(e => /default binding via spring-boot-starter-parent/.test(e))).toBe(true);
+    });
+
+    test('two Maven Spring Boot modules now clear the DAS promotion threshold (tierQualifiedShipUnits >= 2)', () => {
+      projectPath = tempProject();
+      for (const svc of ['orders-service', 'billing-service']) {
+        fs.mkdirpSync(path.join(projectPath, svc));
+        fs.writeFileSync(
+          path.join(projectPath, svc, 'pom.xml'),
+          [
+            '<project>',
+            `  <artifactId>${svc}</artifactId>`,
+            '  <build>',
+            '    <plugins>',
+            '      <plugin>',
+            '        <groupId>org.springframework.boot</groupId>',
+            '        <artifactId>spring-boot-maven-plugin</artifactId>',
+            '      </plugin>',
+            '    </plugins>',
+            '  </build>',
+            '</project>',
+          ].join('\n') + '\n',
+        );
+      }
+
+      const result = collectDeployableEvidence({
+        projectPath,
+        nodes: [],
+        entryPoints: [],
+        exitPoints: [],
+        displayName: 'multi-service',
+      });
+
+      const binRows = result.filter(item => item.tier === 2 && item.kind === 'bin');
+      expect(binRows.map(r => r.name).sort()).toEqual(['billing-service', 'orders-service']);
+    });
+  });
+
   // --- Cross-provider duplicate-identity regression coverage (2026-07 hosted
   // reanalysis of a Rust cargo-workspace repo with shell + NSIS installers,
   // v1.0.111, 49 deployable rows). Real defect: the same logical service
