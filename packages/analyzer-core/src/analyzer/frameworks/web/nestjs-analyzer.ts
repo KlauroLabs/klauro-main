@@ -983,6 +983,50 @@ export class NestJSAnalyzer extends BaseAnalyzer {
     }
   }
 
+  /**
+   * Map of local binding -> original exported name for every named import in
+   * the file, so a decorator renamed at the import site still resolves to the
+   * decorator it actually is.
+   *
+   * WHY: decorators were matched against the literal exported name
+   * (`callee.name === 'WebSocketGateway'`), which is blind to the perfectly
+   * ordinary `import { WebSocketGateway as WSGateway }` — done precisely when
+   * the class itself is named WebSocketGateway and the names would collide.
+   * A gateway declared that way, and every message handler inside it, was
+   * invisible: the class-level match failed, so the whole body was never
+   * walked. Import aliasing is a rename, never a different decorator.
+   */
+  private buildImportAliasMap(ast: TSESTree.Program): Map<string, string> {
+    const aliases = new Map<string, string>();
+    for (const statement of ast.body || []) {
+      if ((statement as any).type !== 'ImportDeclaration') continue;
+      for (const specifier of (statement as any).specifiers || []) {
+        if (specifier.type !== 'ImportSpecifier') continue;
+        const exported = specifier.imported?.name;
+        const local = specifier.local?.name;
+        if (exported && local && exported !== local) aliases.set(local, exported);
+      }
+    }
+    return aliases;
+  }
+
+  /**
+   * The decorator's original exported name, resolving an import alias when one
+   * is in effect. Pass the file's alias map; an empty/absent map degrades to
+   * the literal callee name.
+   */
+  private resolveDecoratorName(dec: any, aliases?: Map<string, string>): string | undefined {
+    // `@Foo(...)` (CallExpression) and bare `@Foo` (Identifier) both occur.
+    const local = dec?.expression?.callee?.name ?? dec?.expression?.name;
+    if (typeof local !== 'string') return undefined;
+    return aliases?.get(local) ?? local;
+  }
+
+  /** True when `dec` is the named NestJS decorator, alias-aware. */
+  private isDecorator(dec: any, exportedName: string, aliases?: Map<string, string>): boolean {
+    return this.resolveDecoratorName(dec, aliases) === exportedName;
+  }
+
   private analyzeWebSocketGateways(
     ast: TSESTree.Program,
     filePath: string,
@@ -993,12 +1037,13 @@ export class NestJSAnalyzer extends BaseAnalyzer {
     entryPoints: CASEntryPoint[],
     newNodes: CASNode[]
   ): void {
+    const aliases = this.buildImportAliasMap(ast);
     const walk = (node: any) => {
       if (!node || typeof node !== 'object') return;
 
       if (node.type === 'ClassDeclaration' && node.decorators) {
         const gatewayDecorator = node.decorators.find((dec: any) =>
-          dec.expression?.callee?.name === 'WebSocketGateway'
+          this.isDecorator(dec, 'WebSocketGateway', aliases)
         );
 
         if (gatewayDecorator && node.id) {
@@ -1069,12 +1114,14 @@ export class NestJSAnalyzer extends BaseAnalyzer {
             node.body.body.forEach((member: any) => {
               if (member.type === 'MethodDefinition' && member.decorators) {
                 const subscribeDecorator = member.decorators.find((dec: any) =>
-                  dec.expression?.callee?.name === 'SubscribeMessage'
+                  this.isDecorator(dec, 'SubscribeMessage', aliases)
                 );
 
                 if (subscribeDecorator) {
                   const eventName = this.extractDecoratorArgument(subscribeDecorator) || 'message';
                   const handlerName = member.key.name;
+                  const registrationLine = (subscribeDecorator as any).loc?.start.line
+                    ?? member.loc?.start.line ?? 1;
                   const handlerId = `ws_handler_${this.sanitizeId(`${className}_${handlerName}`)}`;
 
                   // Create handler node
@@ -1120,7 +1167,24 @@ export class NestJSAnalyzer extends BaseAnalyzer {
                     },
                     {
                       handler_method: handlerName,
-                      gateway_class: className
+                      gateway_class: className,
+                      // The gateway this message is addressed to: the message
+                      // name alone is not unique (two gateways may both handle
+                      // 'ping'), so the pair is the addressable identity.
+                      message: eventName,
+                      declaredAt: `${filePath}:${registrationLine}`
+                    },
+                    // Anchor to the handler method so "where is this handled?"
+                    // is answerable from the entry point itself. The line is the
+                    // @SubscribeMessage decorator's own — the registration site,
+                    // and what a reader grepping for the message name will find.
+                    // A method's loc.start is its FIRST decorator, which for a
+                    // guarded handler is several lines above the registration.
+                    {
+                      node_id: handlerId,
+                      method_name: handlerName,
+                      file: filePath,
+                      line: registrationLine
                     }
                   ));
                 }
