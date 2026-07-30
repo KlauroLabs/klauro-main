@@ -23045,6 +23045,14 @@ export class AnalyzerOrchestrator {
     const candidateEntities = new Set(candidate.related_entities);
     const candidateDomain = this.normalizeDomainToken(
       String(candidate.related_domains[0] || '').toLowerCase());
+    // TASK #99 (entity-free merge gate): a candidate's TRUE size — the real
+    // entry-point count the behavior surface represents, not the capped
+    // `operations` sample — governs how much scepticism a bare domain-token
+    // match deserves below. Reuses behaviorSurfaceEntryCount, the same
+    // criticality_factors[0]-derived count LARGE_BEHAVIOR_SURFACE_OPERATION_THRESHOLD
+    // already uses for this exact "candidate carries more evidence than its
+    // capped operations array can show" reason.
+    const candidateTrueSize = this.behaviorSurfaceEntryCount(candidate);
 
     let best: SystemCapability | undefined;
     let bestScore = 0;
@@ -23075,6 +23083,33 @@ export class AnalyzerOrchestrator {
           .filter(Boolean));
       const subjectAgreement = Boolean(candidateDomain) && targetTokens.has(candidateDomain);
       if (!domainMatch && !(entityOverlap && subjectAgreement)) continue;
+      // TASK #99 (entity-free merge gate): a bare `domainMatch` — two things
+      // sharing one textual token — is a HINT, not proof, and was previously
+      // sufficient on its own regardless of any entity evidence. Live-probed
+      // on this repo: a 210-tool MCP registration engine absorbed into a
+      // 1-operation "MCP Server" placeholder at sharedEntities=0, purely
+      // because both sides' domain token normalized to the same word. Two
+      // independent conditions now each require the merge to be BACKED BY
+      // ENTITY EVIDENCE, not just corroborated by it:
+      //   1. The candidate carries entity evidence of its own (entities.size
+      //      > 0) — if it names entities and none of them match the target's,
+      //      the domain-token coincidence is directly contradicted, not
+      //      merely unconfirmed.
+      //   2. The candidate is LARGE relative to what it would be absorbed
+      //      into (>= the same BEHAVIOR_SURFACE_MIN_ENTRIES bar that defines
+      //      "a real surface", and markedly bigger than the target's own
+      //      current operation count) — a large surface swallowing into a
+      //      small existing capability is exactly backwards evidence-wise
+      //      regardless of which side happens to be entity-free, so it needs
+      //      the same entity proof a small, low-risk merge does not.
+      // A domain-token match on a small, entity-free candidate (a 5-entry
+      // sibling family, say) still merges as before — the goal is fewer
+      // ungrounded merges, not fewer merges.
+      if (domainMatch && !entityOverlap) {
+        const sizeAsymmetric = candidateTrueSize >= AnalyzerOrchestrator.BEHAVIOR_SURFACE_MIN_ENTRIES &&
+          candidateTrueSize > capability.operations.length * 3;
+        if (candidateEntities.size > 0 || sizeAsymmetric) continue;
+      }
       // Exact domain identity dominates; entity-confirmed subject agreement next.
       const score = (domainMatch ? 1000 : 0) + (subjectAgreement ? 100 : 0) + sharedEntities * 2;
       if (!best || score > bestScore) {

@@ -6160,6 +6160,126 @@ describe('behavior-anchored capability derivation (buildBehaviorCapabilities)', 
     expect(entityCapability.category).toBe('supporting');
   });
 
+  it('refuses to merge a LARGE behavior surface into a SMALL existing capability on bare domain-token coincidence (task #99: entity-free merge gate)', async () => {
+    // Reproduces the live-probed defect exactly: a large registration engine
+    // (>= BEHAVIOR_SURFACE_MIN_ENTRIES, no entity overlap) whose extracted
+    // domain token happens to textually match a small, pre-existing
+    // capability's own domain — sharedEntities=0 in both directions — must
+    // stay standalone, not get absorbed on word coincidence alone.
+    const largeCandidate = {
+      id: 'cap_pending_large',
+      name: 'Widget Tool Surface',
+      structural_label: 'Widget Tool Surface',
+      description: '',
+      category: 'internal',
+      // operations is capped/sampled — behaviorSurfaceEntryCount must read
+      // the TRUE count from criticality_factors[0], same as production.
+      operations: Array.from({ length: 12 }, (_, index) => ({
+        entry_point_id: `entry_widget_${index}`,
+        entry_point_type: 'message',
+      })),
+      related_entities: [],
+      related_domains: ['widget'],
+      criticality: 'low',
+      criticality_factors: ['30 mcp_tool entry points form one cohesive behavior surface'],
+    } as any;
+    const smallPlaceholder = {
+      id: 'cap_widget_service',
+      name: 'Widget Service',
+      description: '',
+      category: 'supporting',
+      operations: [{ entry_point_id: 'entry_infra_widget', entry_point_type: 'internal' }],
+      related_entities: [],
+      related_domains: ['widget'],
+      criticality: 'low',
+      criticality_factors: [],
+    } as any;
+    const capabilities = [smallPlaceholder];
+
+    const merged = localOrch.mergeBehaviorCapabilityIntoExisting(largeCandidate, capabilities);
+
+    expect(merged).toBe(false);
+    expect(smallPlaceholder.operations).toHaveLength(1);
+    expect(capabilities).toHaveLength(1);
+  });
+
+  it('still merges a SMALL entity-free behavior surface on domain-token match — the gate targets size/evidence asymmetry, not merging itself', async () => {
+    // Counterpart guard rail: a small, low-risk, entity-free candidate
+    // (below BEHAVIOR_SURFACE_MIN_ENTRIES) matching an existing capability's
+    // domain must keep merging as before — the fix narrows WHEN bare
+    // domain-token coincidence is trusted, it does not disable merging.
+    const smallCandidate = {
+      id: 'cap_pending_small',
+      name: 'Fab Tool Surface',
+      structural_label: 'Fab Tool Surface',
+      description: '',
+      category: 'internal',
+      operations: [
+        { entry_point_id: 'entry_fab_1', entry_point_type: 'message' },
+        { entry_point_id: 'entry_fab_2', entry_point_type: 'message' },
+      ],
+      related_entities: [],
+      related_domains: ['fab'],
+      criticality: 'low',
+      criticality_factors: ["5 mcp_tool entry points form one cohesive behavior family ('fab')"],
+    } as any;
+    const existingCapability = {
+      id: 'cap_fab',
+      name: 'Fab',
+      description: '',
+      category: 'supporting',
+      operations: [{ entry_point_id: 'entry_fab_existing', entry_point_type: 'internal' }],
+      related_entities: [],
+      related_domains: ['fab'],
+      criticality: 'low',
+      criticality_factors: [],
+    } as any;
+    const capabilities = [existingCapability];
+
+    const merged = localOrch.mergeBehaviorCapabilityIntoExisting(smallCandidate, capabilities);
+
+    expect(merged).toBe(true);
+    expect(existingCapability.operations.length).toBe(3);
+  });
+
+  it('still merges a LARGE behavior surface when it is genuinely backed by shared entities, not just a domain-token match', async () => {
+    // Counterpart guard rail: size asymmetry alone must not block a merge
+    // that IS actually evidenced — a large surface whose entities genuinely
+    // overlap the target still merges, same as before the fix.
+    const largeEvidencedCandidate = {
+      id: 'cap_pending_large_evidenced',
+      name: 'Order Tool Surface',
+      structural_label: 'Order Tool Surface',
+      description: '',
+      category: 'internal',
+      operations: Array.from({ length: 12 }, (_, index) => ({
+        entry_point_id: `entry_order_${index}`,
+        entry_point_type: 'message',
+      })),
+      related_entities: ['entity-order'],
+      related_domains: ['order'],
+      criticality: 'low',
+      criticality_factors: ['30 mcp_tool entry points form one cohesive behavior surface'],
+    } as any;
+    const targetCapability = {
+      id: 'cap_order',
+      name: 'Order Service',
+      description: '',
+      category: 'core',
+      operations: [{ entry_point_id: 'entry_order_existing', entry_point_type: 'http' }],
+      related_entities: ['entity-order'],
+      related_domains: ['order'],
+      criticality: 'high',
+      criticality_factors: [],
+    } as any;
+    const capabilities = [targetCapability];
+
+    const merged = localOrch.mergeBehaviorCapabilityIntoExisting(largeEvidencedCandidate, capabilities);
+
+    expect(merged).toBe(true);
+    expect(targetCapability.operations.length).toBe(13);
+  });
+
   it('exercises count restraint: no behavior capability from small or prefix-less surfaces, hard cap overall', async () => {
     // 3 cli commands (below family threshold) + 5 diverse cli commands with
     // action-verb prefixes only → nothing.
