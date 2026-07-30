@@ -16775,87 +16775,16 @@ export class AnalyzerOrchestrator {
       .map(entry => entry.line);
   }
 
-  private hasNetworkAccessManagementSignal(
-    systemCapabilities: SystemCapability[],
-    coreConcepts: CASDomainConcept[],
-    nodes: CASNode[]
-  ): boolean {
-    const text = [
-      ...systemCapabilities.map(capability => `${capability.name} ${capability.description || ''}`),
-      ...coreConcepts.map(concept => concept.name),
-      ...nodes.slice(0, 500).map(node => `${node.name} ${node.type} ${node.source?.file || ''}`),
-    ].join(' ').toLowerCase();
-    const signals = [
-      /\bnetwork connection control\b/,
-      /\bdevice enrollment\b/,
-      /\borganization access context\b/,
-      /\bsignal synchronization\b/,
-      /\bzero[- ]trust\b/,
-      /\bpolicy\b/,
-      /\bresource\b/,
-      /\bagent\b/,
-      /\bdevice\b/,
-    ].filter(pattern => pattern.test(text));
-    return signals.length >= 4 &&
-      (/\bnetwork connection control\b/.test(text) || /\bzero[- ]trust\b/.test(text) || /\borganization access context\b/.test(text));
-  }
-
-  private hasNetworkAccessConceptSignal(
-    primaryDomain: string,
-    systemCapabilities: SystemCapability[],
-    coreConcepts: CASDomainConcept[],
-    nodes: CASNode[],
-    extraConcepts: string[] = []
-  ): boolean {
-    if (!/^(product-data-management|product-management|content-management|portfolio-management|market-management)$/.test(primaryDomain)) {
-      return false;
-    }
-    const text = [
-      ...systemCapabilities.map(capability => `${capability.name} ${capability.description || ''}`),
-      ...coreConcepts.map(concept => concept.name),
-      ...extraConcepts,
-      ...nodes.slice(0, 300).map(node => `${node.name} ${node.source?.file || ''}`),
-    ].join(' ').toLowerCase();
-    const networkSignals = [
-      /\bzero[- ]trust\b/,
-      /\bnetwork\b/,
-      /\bdevice\b/,
-      /\baccess\b/,
-      /\bpolicy\b/,
-      /\btenant\b/,
-      /\bcentral\b/,
-      /\bonboard\b/,
-      /\bverification\b/,
-      /\bgateway\b/,
-    ].filter(pattern => pattern.test(text)).length;
-    const financeSignals = /\b(portfolio|investment|trading|trade|asset|assets|crypto|token|wallet|payment|billing|invoice|checkout|cart)\b/.test(text);
-    return networkSignals >= 4 && !financeSignals;
-  }
-
-  private hasTradingAutomationSignal(
-    systemCapabilities: SystemCapability[],
-    coreConcepts: CASDomainConcept[],
-    nodes: CASNode[]
-  ): boolean {
-    const text = [
-      ...systemCapabilities.map(capability => `${capability.name} ${capability.description || ''} ${(capability.related_domains || []).join(' ')}`),
-      ...coreConcepts.map(concept => concept.name),
-      ...nodes.slice(0, 500).map(node => `${node.name} ${node.type} ${node.source?.file || ''}`),
-    ].join(' ').toLowerCase();
-    const signals = [
-      /\btrade execution\b/,
-      /\btrading\b/,
-      /\barbitrage\b/,
-      /\bswap\b/,
-      /\btoken balance\b/,
-      /\bmarket price\b/,
-      /\bjupiter\b/,
-      /\braydium\b/,
-      /\bdex\b/,
-      /\bcex\b/,
-    ].filter(pattern => pattern.test(text));
-    return signals.length >= 3 && (/\btrade execution\b/.test(text) || /\barbitrage\b/.test(text) || /\bswap\b/.test(text));
-  }
+  // REMOVED (hardcoded-knowledge class, defect #90): hasNetworkAccessManagementSignal,
+  // hasNetworkAccessConceptSignal, and hasTradingAutomationSignal — three
+  // dead, never-called keyword-bag classifiers (confirmed zero call sites
+  // anywhere in packages/). Each matched a fixed vocabulary list ('zero
+  // trust'/'policy'/'agent'/'device' for network-access; 'jupiter'/'raydium'/
+  // 'dex'/'cex'/'arbitrage'/'swap' for trading) against project text and
+  // concluded a business-domain verdict from incidental word overlap — the
+  // exact class this defect targets, just unwired. Removed outright rather
+  // than left as unused dead weight that could get re-wired later without
+  // review.
 
   /**
    * True when a domain label already names a KIND OF CODEBASE rather than a
@@ -16913,9 +16842,6 @@ export class AnalyzerOrchestrator {
       entry.count > 0 && /^(http|message|event|cli|schedule|websocket)$/.test(entry.type)
     );
 
-    if (primaryDomain === 'tray-icon-library') {
-      return 'tray-icon-library';
-    }
     if (/-client-library$/.test(primaryDomain)) {
       return 'client-sdk';
     }
@@ -16925,75 +16851,60 @@ export class AnalyzerOrchestrator {
     if (/-boilerplate$/.test(primaryDomain)) {
       return 'boilerplate';
     }
-    if (/^solana-(?:trading|arbitrage)$/.test(primaryDomain)) {
-      return 'trading-automation';
-    }
+    // Sanctioned self-identity exception, not a business-domain rule: a
+    // codebase-analysis domain names a KIND OF TOOL (something that analyzes
+    // other codebases), the same way "-library"/"-boilerplate" above do. It is
+    // covered by dedicated grounding/self-identity gates elsewhere
+    // (validateAIInterpretation's isKlauroSelfProject path) that require real
+    // evidence before the domain is ever accepted in the first place — this
+    // step only decides what TYPE OF CODEBASE that already-accepted domain
+    // implies, same as every other shape rule in this function.
     if (/(^|-)codebase-analysis(?:-(?:engine|platform|system|tool))?$/.test(primaryDomain)) {
       return 'devtools-platform';
     }
-    if (primaryDomain === 'cloud-infrastructure') {
-      return 'infrastructure-codebase';
-    }
-    if (primaryDomain === 'testing-utilities') {
-      return 'library-package';
-    }
-    if (primaryDomain === 'card-game-platform') {
-      return 'gaming-platform';
-    }
-    if (primaryDomain === 'scheduling-platform') {
-      return 'scheduling-platform';
-    }
-    if (primaryDomain === 'developer-platform') {
-      return 'developer-platform';
-    }
-    if (primaryDomain === 'commerce-platform') {
-      return 'commerce-platform';
-    }
-    if (primaryDomain === 'knowledge-base') {
-      return 'knowledge-base';
-    }
-    if (primaryDomain === 'internal-tools-platform') {
-      return 'internal-tools-platform';
-    }
-    if (primaryDomain === 'publishing-platform') {
-      return 'publishing-platform';
-    }
-    if (primaryDomain === 'photo-management-platform') {
-      return 'photo-management-platform';
-    }
-    if (primaryDomain === 'federated-social-platform') {
-      return 'federated-social-platform';
-    }
-    if (primaryDomain === 'no-code-database-platform') {
-      return 'no-code-database-platform';
-    }
-    if (primaryDomain === 'product-analytics-platform') {
-      return 'product-analytics-platform';
-    }
-    // REMOVED (2026-07-29, hardcoded-knowledge class): three bare domain
-    // literals — 'fleet-management' -> backend-service,
-    // 'portfolio-management' -> frontend-application, and
-    // 'user-identity-management' -> authentication-service — each stated as an
-    // equality test against one specific label. Their PURPOSE was structural:
-    // when the AI grounds the repository in a subject-matter domain, an
-    // incidental-vocabulary verdict from the signature classifier must lose to
-    // what the codebase's own shape says it is. That intent applies to every
-    // subject-matter domain, not to three named ones, and the literals meant a
-    // repository whose domain happened to be phrased differently kept the
-    // wrong type.
+    // REMOVED (hardcoded-knowledge class, defect #90): a run of ~12 bare
+    // domain-literal equality checks — 'tray-icon-library' -> itself,
+    // '^solana-(?:trading|arbitrage)$' -> 'trading-automation',
+    // 'cloud-infrastructure' -> 'infrastructure-codebase',
+    // 'testing-utilities' -> 'library-package',
+    // 'card-game-platform' -> 'gaming-platform', and eight more
+    // ('scheduling-platform', 'developer-platform', 'commerce-platform',
+    // 'knowledge-base', 'internal-tools-platform', 'publishing-platform',
+    // 'photo-management-platform', 'federated-social-platform',
+    // 'no-code-database-platform', 'product-analytics-platform') that each
+    // just echoed the domain back at itself. These were vocabulary deciding a
+    // conclusion, not evidence: 'solana-trading' -> 'trading-automation' is
+    // the exact failure class that once described an unrelated repo in
+    // trading terms, and 'card-game-platform' -> 'gaming-platform' interprets
+    // business subject matter ("card game") into a codebase-type verdict
+    // rather than reading the codebase's own shape.
     //
-    // Stated structurally: a SUBJECT-MATTER label (one that does not itself
-    // name a codebase type) plus server-framework or backend entry points is a
-    // backend service; plus page entry points and no backend entry points it is
-    // a frontend application.
-    if (!this.isCodebaseTypeShapedDomainLabel(primaryDomain)) {
-      const hasPageEntry = entryPointSummary.some(entry => entry.count > 0 && /^(page|route)$/.test(entry.type));
-      if (hasPageEntry && !hasBackendEntry) {
-        return 'frontend-application';
-      }
-      if (hasServerFramework || hasBackendEntry) {
-        return 'backend-service';
-      }
+    // The ten identity echoes carried a real (if implicit) intent though: a
+    // domain that is ALREADY spelled like a codebase-type label (ends in
+    // "-platform", "-base", "-service", ...) should be trusted as that type
+    // rather than fought over by structural heuristics below. That intent is
+    // general, not particular to ten named strings, and
+    // isCodebaseTypeShapedDomainLabel already tests it by suffix shape — so
+    // state it once, generically, instead of enumerating every domain that
+    // happens to satisfy it. 'tray-icon-library' and 'card-game-platform'
+    // fall out of the same generic rule now (as 'library-package' via the
+    // suffix rule above, and as its own literal 'card-game-platform' via the
+    // shape rule below, respectively) rather than the specific display names
+    // this file used to hardcode for them — an honest precision loss for
+    // those two labels, not a fabricated one.
+    if (this.isCodebaseTypeShapedDomainLabel(primaryDomain)) {
+      return primaryDomain;
+    }
+    // A SUBJECT-MATTER label (one that does not itself name a codebase type)
+    // plus server-framework or backend entry points is a backend service;
+    // plus page entry points and no backend entry points it is a frontend
+    // application.
+    const hasPageEntry = entryPointSummary.some(entry => entry.count > 0 && /^(page|route)$/.test(entry.type));
+    if (hasPageEntry && !hasBackendEntry) {
+      return 'frontend-application';
+    }
+    if (hasServerFramework || hasBackendEntry) {
+      return 'backend-service';
     }
     return primaryType;
   }
