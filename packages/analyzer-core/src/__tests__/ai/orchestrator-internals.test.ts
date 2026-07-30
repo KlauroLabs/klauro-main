@@ -3025,19 +3025,48 @@ describe('domain and security classification robustness (out-of-distribution rep
     expect(purpose.secondary_types || []).not.toContain('gaming-platform');
   });
 
-  it('still recognizes a real card game as a gaming platform with whole-token evidence', async () => {
-    const nodes: CASNode[] = [
-      node({ id: 'game', name: 'Game', source: { file: 'src/game/game.ts' } }),
-      node({ id: 'deck', name: 'Deck', source: { file: 'src/game/deck.ts' } }),
-      node({ id: 'card', name: 'Card', source: { file: 'src/game/card.ts' } }),
-      node({ id: 'player', name: 'Player', source: { file: 'src/game/player.ts' } }),
-      node({ id: 'lobby', name: 'GameLobby', source: { file: 'src/game/lobby.ts' } }),
-      node({ id: 'board', name: 'GameBoard', source: { file: 'src/game/board.ts' } }),
-    ];
+  // Same card-game fixture, twice: identical node vocabulary, differing ONLY
+  // in whether a game engine is declared. Task #90 moved this verdict off the
+  // words and onto the dependency.
+  const cardGameNodes = (): CASNode[] => ([
+    node({ id: 'game', name: 'Game', source: { file: 'src/game/game.ts' } }),
+    node({ id: 'deck', name: 'Deck', source: { file: 'src/game/deck.ts' } }),
+    node({ id: 'card', name: 'Card', source: { file: 'src/game/card.ts' } }),
+    node({ id: 'player', name: 'Player', source: { file: 'src/game/player.ts' } }),
+    node({ id: 'lobby', name: 'GameLobby', source: { file: 'src/game/lobby.ts' } }),
+    node({ id: 'board', name: 'GameBoard', source: { file: 'src/game/board.ts' } }),
+  ]);
 
-    const purpose = await orch.inferSystemPurpose([], [], [], nodes);
+  it('recognizes a real card game as a gaming platform from a DECLARED game-engine dependency', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-game-dep-'));
+    const priorPath = (orch as any).activeAnalysisProjectPath;
+    try {
+      fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({
+        name: 'card-game',
+        dependencies: { colyseus: '^0.15.0' },
+      }));
+      (orch as any).activeAnalysisProjectPath = root;
+      const purpose = await orch.inferSystemPurpose([], [], [], cardGameNodes());
+      expect(purpose.primary_type).toBe('gaming-platform');
+      expect(purpose.evidence.join(' ')).toContain('game engine');
+    } finally {
+      (orch as any).activeAnalysisProjectPath = priorPath;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
 
-    expect(purpose.primary_type).toBe('gaming-platform');
+  it('does NOT classify the same game-sounding codebase as a gaming platform without an engine dependency — honest precision cost of task #90', async () => {
+    const priorPath = (orch as any).activeAnalysisProjectPath;
+    (orch as any).activeAnalysisProjectPath = undefined;
+    try {
+      const purpose = await orch.inferSystemPurpose([], [], [], cardGameNodes());
+      // 'game', 'deck', 'card', 'player', 'lobby', 'board' all present and
+      // still not sufficient. The deterministic layer reports shape; business
+      // identity comes from the AI interpretation layer.
+      expect(purpose.primary_type).not.toBe('gaming-platform');
+    } finally {
+      (orch as any).activeAnalysisProjectPath = priorPath;
+    }
   });
 
   it('does not treat ReturnAuthorization domain models as authentication or authorization enforcement points', async () => {

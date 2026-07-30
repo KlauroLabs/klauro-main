@@ -25283,18 +25283,14 @@ export class AnalyzerOrchestrator {
     // tested or evidence-backed capability. See orchestrator.ts inline
     // history / commit message for the full per-entry disposition.
     const signatures: SystemSignature[] = [
-      {
-        type: 'gaming-platform',
-        description: 'Gaming, card game, or interactive entertainment platform',
-        indicators: {
-          pathPatterns: ['game', 'player', 'deck', 'card', 'match', 'lobby', 'turn', 'score', 'commander', 'board'],
-          verbPatterns: ['play', 'draw', 'shuffle', 'deal', 'attack', 'defend', 'cast', 'mulligan'],
-          entityPatterns: ['game', 'player', 'deck', 'card', 'match', 'lobby', 'turn', 'score', 'hand', 'board', 'commander', 'mana'],
-          capabilityPatterns: ['game', 'match', 'lobby', 'player', 'deck'],
-        },
-        distinctiveness: 4,
-        weight: 0
-      },
+      // REMOVED (task #90): the 'gaming-platform' entry. Its indicators were
+      // pure business vocabulary — 'card', 'player', 'match', 'score',
+      // 'board', 'hand', 'deal', 'draw', 'cast' — every one of which is a
+      // common word in unrelated software (payment CARDs, media PLAYERs,
+      // regex MATCHing, DASHBOARDs, CASTing types, DRAWing on a canvas, DEALs
+      // in a CRM). It had accumulated two layers of damage control (a
+      // strong-signal re-gate and two dedicated negative tests) and still
+      // needed them. The verdict is now dependency-gated further below.
       {
         type: 'web-application',
         description: 'Full-stack web application with frontend and backend',
@@ -25506,16 +25502,6 @@ export class AnalyzerOrchestrator {
         }
       }
 
-      if (sig.type === 'gaming-platform' && score > 0) {
-        const gameTokenLists = [...paths, ...nodeNames, ...entityNames, ...capabilityNames];
-        const strongGameSignals = ['game', 'deck', 'lobby', 'mana', 'mulligan', 'gameplay', 'matchmaking']
-          .filter(signal => gameTokenLists.some(tokens => this.matchesSignalPattern(tokens, signal)));
-        if (strongGameSignals.length < 1) {
-          score = 0;
-          typeEvidence.length = 0;
-        }
-      }
-
       // Single-token evidence gate: a domain claim needs at least TWO distinct
       // matched indicator tokens. One incidental keyword must never assert a
       // business domain — live audit 2026-07-14: a 41-node k8s/compose-only
@@ -25694,6 +25680,34 @@ export class AnalyzerOrchestrator {
       this.activeAnalysisProjectPath || '',
       SECURITY_SCANNER_ENGINE_PACKAGES,
     );
+    // RE-GROUNDED (task #90), replacing the deleted 'gaming-platform'
+    // vocabulary signature: a game engine or multiplayer game server is a
+    // domain-defining dependency. You do not link a game engine into software
+    // that is not a game — unlike the words 'card', 'player' and 'match',
+    // which are ambient across all software. Deliberately excludes general
+    // rendering/physics libraries (WebGL scene graphs, canvas toolkits): those
+    // are used by data-visualisation, CAD and mapping products too, so their
+    // presence would re-create the false-positive class this replaces.
+    const GAME_ENGINE_PACKAGES = [
+      'phaser', 'excalibur', 'melonjs', 'kaboom', 'playcanvas', 'colyseus',
+      'boardgame.io', 'godot', 'unityengine', 'monogame', 'libgdx', 'pygame',
+      'bevy', 'ggez', 'raylib', 'love2d',
+    ];
+    const hasGameEngineEvidence = await this.manifestDeclaresPackage(
+      this.activeAnalysisProjectPath || '',
+      GAME_ENGINE_PACKAGES,
+    );
+    if (hasGameEngineEvidence) {
+      return {
+        primary_type: 'gaming-platform',
+        confidence: this.signatureMatchConfidence(1, 1, confidence),
+        evidence: ['Declared dependency on a game engine or multiplayer game server'],
+        secondary_types: [topMatch.type, ...secondaryTypes]
+          .filter(type => type !== 'gaming-platform')
+          .slice(0, 3),
+      };
+    }
+
     if (hasSecurityScannerDependencyEvidence &&
       topMatch.type !== 'medical-device-software' &&
       topMatch.type !== 'clinical-testing-platform') {
