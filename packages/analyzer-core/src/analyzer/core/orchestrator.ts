@@ -25521,10 +25521,6 @@ export class AnalyzerOrchestrator {
       nameEntityCapabilityPathTokens,
       ['zero trust', 'policy', 'policies', 'resource', 'resources', 'agent', 'agents', 'device', 'devices', 'grant', 'grants', 'scan', 'credential', 'vulnerability', 'cve']
     );
-    const traySignals = await countMatches(
-      nameEntityCapabilityPathTokens,
-      ['tray', 'tray icon', 'menu', 'submenu', 'system tray', 'port forward', 'portfwd']
-    );
     const devtoolsSignals = await countMatches(
       nameEntityCapabilityPathTokens,
       ['analyzer', 'static analysis', 'code analysis', 'codebase analysis', 'codebase graph', 'codemod']
@@ -25632,23 +25628,17 @@ export class AnalyzerOrchestrator {
       };
     }
 
-    const activeProjectPathForTrayGate = this.activeAnalysisProjectPath || '';
-    const repoNameForTrayGate = path.basename(activeProjectPathForTrayGate).toLowerCase();
-    const isTrayArtifactRepo =
-      /\b(tray[-_]?icon|system[-_]?tray|tray)\b/.test(repoNameForTrayGate) ||
-      /(^|\/)(tray[-_]?icon|system[-_]?tray|tray)(\/|$)/i.test(activeProjectPathForTrayGate);
-    if (isTrayArtifactRepo &&
-      traySignals.matched.length >= 2 &&
-      traySignals.matched.some(signal => /tray|tray icon|system tray/.test(signal))) {
-      return {
-        primary_type: 'tray-icon-library',
-        confidence: this.signatureMatchConfidence(traySignals.matched.length, traySignals.size, confidence),
-        evidence: [`Tray UI signals: ${traySignals.matched.join(', ')}`],
-        secondary_types: [topMatch.type, ...secondaryTypes]
-          .filter(type => type !== 'tray-icon-library')
-          .slice(0, 3),
-      };
-    }
+    // REMOVED (task #90, hardcoded-knowledge sweep): the 'tray-icon-library'
+    // override. Its gate was the repo's own DIRECTORY NAME containing 'tray',
+    // corroborated by the same word appearing in node names — i.e. the verdict
+    // was "this is a tray library because it is called tray". A checkout path
+    // is not evidence about what code does (it is chosen by whoever cloned it),
+    // and restating a name is not an inference.
+    //
+    // The 'library' half of this verdict is genuinely structural and is not
+    // lost: artifact-type.ts derives library/artifact shape from packaging and
+    // export surface, independently of this classifier. What is dropped is the
+    // domain half ('tray icon'), which belongs to the AI interpretation layer.
 
     // REMOVED (task #90, hardcoded-knowledge sweep): the 'trading-automation'
     // override. It concluded a product's business identity from a bag of
