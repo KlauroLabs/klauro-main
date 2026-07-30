@@ -10,6 +10,7 @@ export type EntryKind =
   | 'command'
   | 'ipc'
   | 'rpc'
+  | 'graphql'
   | 'event'
   | 'schedule'
   | 'message'
@@ -69,6 +70,7 @@ export const KIND_META: Record<EntryKind, KindMeta> = {
   route: { kind: 'route', family: 'request-wait', label: 'Web route / page', meaning: 'A page or route a browser loads directly.' },
   page: { kind: 'page', family: 'request-wait', label: 'UI interaction', meaning: 'A button or form handler in a web app.' },
   rpc: { kind: 'rpc', family: 'request-wait', label: 'gRPC / RPC method', meaning: 'A remote procedure call — a method, not a web path.' },
+  graphql: { kind: 'graphql', family: 'request-wait', label: 'GraphQL operation', meaning: 'A named query, mutation, or subscription — callers ask for it by name, not by URL.' },
   websocket: { kind: 'websocket', family: 'request-wait', label: 'Live socket (WebSocket)', meaning: 'A persistent two-way connection held open.' },
   cli: { kind: 'cli', family: 'request-wait', label: 'Command-line command', meaning: 'A subcommand run in a terminal.' },
   command: { kind: 'command', family: 'request-wait', label: 'Desktop app command', meaning: 'A command a desktop UI calls into its own backend.' },

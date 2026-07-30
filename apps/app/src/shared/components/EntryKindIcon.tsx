@@ -19,6 +19,7 @@ const GLYPHS: Record<EntryKind, string> = {
   route: 'M6 18l4-12h4l4 12',
   page: 'M8 8h8v2H8zM8 12h5v2H8z',
   rpc: 'M6 9l3-3 3 3M18 15l-3 3-3-3M9 6v9M15 9v9',
+  graphql: 'M12 4l7 4v8l-7 4-7-4V8zM12 4v16M5 8l14 8M19 8L5 16',
   websocket: 'M5 9a10 10 0 0 1 14 0M8 12a6 6 0 0 1 8 0M12 16v.01',
   cli: 'M6 8l4 4-4 4M13 16h6',
   command: 'M7 7h4v4H7zM13 7h4v4h-4zM7 13h4v4H7zM13 13h4v4h-4z',

@@ -7,7 +7,7 @@ import { ENTRY_POINT_TYPES, CASEntryPoint, CASContribution } from '../../types/c
  * drift. Historically isValidEntryPoint() kept a HARDCODED, separate allowlist —
  * adding a new entry-point kind to the union silently dropped it from output
  * (bit type-data ML and cat-api), and the allowlist accumulated dead entries
- * ('grpc'/'graphql') no analyzer emits (the gRPC analyzer emits 'rpc').
+ * ('grpc') no analyzer emits (the gRPC analyzer emits 'rpc').
  *
  * These tests fail loudly if anyone reintroduces that drift.
  */
@@ -32,9 +32,10 @@ describe('entry-point type parity', () => {
   });
 
   it('rejects a type that is not in the source-of-truth array', () => {
-    // 'grpc'/'graphql' were dead allowlist entries; no analyzer emits them
-    // (gRPC handlers are emitted as 'rpc'). They must NOT be accepted.
-    for (const bogus of ['grpc', 'graphql', 'totally-made-up']) {
+    // 'grpc' was a dead allowlist entry; no analyzer emits it (gRPC handlers are
+    // emitted as 'rpc'). 'graphql' is NOT in this list any more — it became a real
+    // kind once the GraphQL analyzer stopped disguising operations as routes.
+    for (const bogus of ['grpc', 'totally-made-up']) {
       const ep = makeEntryPoint(bogus as CASEntryPoint['type'], `ep_${bogus}`);
       expect({ bogus, accepted: orch.isValidEntryPoint(ep) }).toEqual({ bogus, accepted: false });
     }
@@ -47,7 +48,7 @@ describe('entry-point type parity', () => {
       'http', 'cli', 'websocket', 'message', 'event', 'schedule',
       'page', 'route', 'lifecycle', 'test', 'api', 'file',
       'task', 'pipeline', 'notebook-cell', 'train',
-      'interrupt', 'driver', 'ipc', 'command', 'rpc',
+      'interrupt', 'driver', 'ipc', 'command', 'rpc', 'graphql',
     ];
 
     const source: CASContribution = {
