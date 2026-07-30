@@ -2578,6 +2578,19 @@ async function handleAccountApi(
     try {
       const cas = await getAnalysis(analysisWorkspace);
       const summary = buildSummary(cas, { detail: 'compact' });
+      // das_index (spec §3): this endpoint is the FAST hosted-summary path
+      // get_summary takes by default (server.ts's hostedSummaryPayload, hit
+      // whenever a caller passes no scope/detail=full/runtime/exclude_sections
+      // — i.e. the common case). Without attaching it here, das_index only
+      // ever reached a caller that fell through to the slower full-CAS-mirror
+      // branch (buildSummaryWithDasIndex in server.ts) or hit the dedicated
+      // /api/projects/{id}/das route directly — so a fresh promoted analysis
+      // queried the normal way never saw its DAS units. Attach it onto
+      // `summary` (not a sibling of it) so hostedSummaryPayload's `{
+      // ...state.summary, hosted_status }` spread flattens it to the same
+      // top-level `das_index` key buildSummaryWithDasIndex already produces.
+      const das = getCachedDeployableAnalyses(cas);
+      (summary as Record<string, unknown>).das_index = das.das_index;
       const productMap = getProductMap(cas);
       // Progressive availability (task #112): a project attached during its
       // L0-only window is real and queryable, just not fully layered yet — the
