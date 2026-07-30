@@ -95,7 +95,7 @@ The root structure containing complete analysis results:
 
 ```typescript
 interface CASOutput {
-  cas_version: "1.10.0";
+  cas_version: "1.11.0";
   analysis_timestamp: string;  // ISO 8601
   analysis_id: string;          // Unique identifier
 
@@ -169,10 +169,57 @@ interface CASOutput {
   idiom_summary?: CASIdiomSummary;                // Aggregate idiom counts and guidance digest
   idiom_examples?: CASIdiomExample[];             // Positive examples agents can copy
   idiom_violations?: CASIdiomViolation[];         // Known deviations and validation findings
+  paradigm_conformance?: CASParadigmConformance[]; // Adoption rate of each detected paradigm, with deviations
+  architectural_conflicts?: CASArchitecturalConflict[]; // A concern handled by two competing structural patterns
+  principle_violations?: CASPrincipleViolation[]; // Layering / single-responsibility / coupling breaks
+
+  // v1.7.0+ System capabilities and domain model (see §4.15)
+  system_capabilities?: SystemCapability[];
+  behavior_surfaces?: SystemCapability[];         // Registration/engine surfaces with no product-entity anchor; never ranked as capabilities
+  system_purpose?: SystemPurpose;
+  enhanced_system_purpose?: EnhancedSystemPurpose;
+  domain_concepts?: CASDomainConcept[];           // Distinctiveness-gated domain vocabulary (see §5.28)
+  workflows?: CASWorkflow[];
+  workflow_graph?: CASWorkflowGraph;
+  user_journeys?: CASUserJourney[];
+  user_journey_summary?: CASUserJourneySummary;
+  data_lineage?: CASEntityLineage[];
+  flow_graph?: CASFlowGraph;
+  product_map?: CASProductMap;                    // Whole-system rollup: identity, capabilities, journeys, data, conventions, health
+
+  // v1.10.0 Graph-Anchored Semantic Retrieval
+  embedding_index?: CASEmbeddingIndex;
+
+  // v1.11.0 Structural intelligence, dependency facts, and cross-cutting classification (see §4.16)
+  reachability_index?: CASReachabilityIndex;      // SCC condensation + landmark labeling over the call graph
+  structural_importance_meta?: CASStructuralImportanceMeta; // Provenance for CASNode.structural_importance
+  communities?: CASCommunity[];                   // Louvain functional modules (call-graph clustering)
+  dependency_manifest?: CASDependencyManifest;    // Full declared-dependency FACT bundle (every manifest, every name)
+  coverage_gaps?: CASCoverageGap[];                // Self-discovered analysis gaps (unknown deps, low extraction ratio, ...)
+  conventions_applied?: ConventionMatchReport[];  // Audit trail for declared .klaurorc custom-architecture conventions
+  communication_seams?: CommunicationSeamsResult; // Unified sync/async/passive seam classification
+  consistency_model?: ConsistencyModelResult;     // CAP/consistency posture over data-store egress and passive seams
+  runtime_static_links?: CASRuntimeStaticLink[];  // (moved up from v1.8.0 grouping below for adjacency)
+  deployable_evidence?: DeployableEvidence[];      // Evidence-gated ship/build-artifact rows (see §4.14)
+  distribution_units?: CASDistributionUnit[];      // (see §4.7 note — retained here for schema-order reference)
+  codebase_type?: CodebaseType;                    // What KIND of thing this root is (web-backend, library, cli, ...)
+  codebase_type_confidence?: number;
+  codebase_types?: Array<{ type: CodebaseType; confidence: number }>; // Every codebase type with non-trivial evidence
+
+  // Progressive layering (layered-entrypoint CAS only)
+  layers_ready?: CASLayersReady;                   // L0..L5 layer-readiness ladder
+  l0_index?: {                                     // Fast filesystem-walk index, present before L1+ facts land
+    total_files: number;
+    languages: Array<{ name: string; files: number }>;
+    top_level_dirs: string[];
+    duration_ms: number;
+  };
 
   metadata?: SystemMetadata;
 }
 ```
+
+Fields listed above with no explicit "Added in vX.Y.0" annotation were introduced in v1.11.0. §4.15 and §4.16 define their shapes; §5.28-§5.33 state the invariants that govern them.
 
 ### 4.2 CASNode
 
@@ -699,10 +746,35 @@ System entry points (API endpoints, CLI commands, etc.):
 - **Frontend SPAs**: Entry points are routes/pages which represent user-facing views. Capabilities emerge from the services and state management the routes consume.
 
 ```typescript
+// ENTRY_POINT_TYPES (analyzer-core/types/cas.types.ts) is the single source of
+// truth for this union: CASEntryPoint['type'] is DERIVED from it
+// (`type: typeof ENTRY_POINT_TYPES[number]`), and the orchestrator's
+// isValidEntryPoint validator MUST check membership in the SAME array — see
+// §5.29. A conforming producer MUST NOT emit a type outside this closed set.
+const ENTRY_POINT_TYPES = [
+  'http', 'websocket', 'cli', 'event', 'schedule', 'page', 'route',
+  'message', 'file', 'test', 'lifecycle', 'api',
+  // data/ML pipeline: orchestration task/asset node, the DAG/flow/job entry
+  // itself, an ordered notebook code cell, an ML training-loop entry point.
+  'task', 'pipeline', 'notebook-cell', 'train',
+  // embedded/systems: a hardware/timer interrupt service routine, and a
+  // kernel/driver hook (module_init/module_exit, fops, ioctl handler).
+  'interrupt', 'driver',
+  // desktop-app: an Electron IPC main-process handler, a Tauri Rust command.
+  'ipc', 'command',
+  // non-REST API: a gRPC/RPC server-side method handler — a method dispatch,
+  // not an HTTP path.
+  'rpc',
+  // non-REST API: a GraphQL root operation (Query/Mutation/Subscription
+  // field, or a field resolver). Addressed by OPERATION NAME over a single
+  // transport endpoint, not by path+verb — not a route. Added in v1.11.0.
+  'graphql',
+] as const;
+type CASEntryPointType = typeof ENTRY_POINT_TYPES[number];
+
 interface EntryPoint {
   id: string;
-  type: 'http' | 'grpc' | 'graphql' | 'websocket' | 'cli' |
-        'event' | 'scheduled' | 'startup' | 'test' | 'other';  // v1.6.0: Added 'test'
+  type: CASEntryPointType;
   name: string;
   description?: string;
 
@@ -740,13 +812,17 @@ interface EntryPoint {
 External system interactions:
 
 ```typescript
+// EXIT_POINT_TYPES is the mirror single source of truth for this union (§5.29).
+type CASExitPointType =
+  'database' | 'api' | 'file' | 'message' | 'event' |
+  'cache' | 'sdk' | 'webhook' | 'navigation' |
+  'client_storage' | 'analytics';
+
 interface ExitPoint {
   id: string;
   source_node: string;
   source_analyzer?: string;
-  type: 'database' | 'api' | 'file' | 'message' | 'event' |
-        'cache' | 'sdk' | 'webhook' | 'navigation' |
-        'client_storage' | 'analytics';
+  type: CASExitPointType;
   name: string;
   description?: string;
 
@@ -1588,6 +1664,16 @@ interface CASChangeRiskSummary {
 Entity-centric data lifecycle:
 
 ```typescript
+// Structural kind, derived deterministically from framework evidence on the
+// entity's anchor node(s) — NEVER from the entity's name or directory. See
+// §5.28 for the evidence requirement this classification MUST satisfy.
+type CASDataEntityKind =
+  | 'persisted-entity'  // durable state, backed by CITED persistence evidence
+  | 'api-response'      // the system's outward-facing produced/consumed contract
+  | 'request-dto'       // inbound contract (@Body / validation DTO / request schema)
+  | 'domain-shape'       // a real domain type with NO discriminating framework fact
+  | 'value-object';      // field-only shape, no persistence, no route/api binding
+
 interface CASDataEntity {
   id: string;
   name: string;
@@ -1596,11 +1682,25 @@ interface CASDataEntity {
   description_source?: 'deterministic' | 'ai' | 'manual' | 'reused';
   description_generation?: CASDescriptionGeneration;
 
+  kind?: CASDataEntityKind;
+  // 'framework-evidence' MAY only be claimed when kind_evidence cites the
+  // decorator/attribute/mapping that proves it. 'shape-inference' means the
+  // kind came from the selection path's shape alone — an honest label, not a
+  // downgrade.
+  kind_source?: 'framework-evidence' | 'shape-inference';
+  // Citation for `kind` when kind_source === 'framework-evidence'. MANDATORY
+  // for `persisted-entity` — see §5.28.
+  kind_evidence?: string;
+
   fields?: Array<{
     name: string;
     type: string;
     is_sensitive: boolean;
     validation?: string[];
+    // True when this field IS a relation (see `relations`) rather than a
+    // plain scalar column. The field stays listed; it just must not read as
+    // scalar state when a relation declaration proves otherwise.
+    is_relation?: boolean;
   }>;
 
   lifecycle: {
@@ -1609,6 +1709,24 @@ interface CASDataEntity {
     updated_by: string[];
     deleted_by: string[];
   };
+
+  // Relations to OTHER entities, evidence-gated. `kind` separates a DATA
+  // relation (an ORM association / typed composition — ERD content) from a
+  // STRUCTURAL one (interface/trait/superclass composition) so a structural
+  // edge can never masquerade as the entity's data model. A field whose NAME
+  // merely looks like a foreign key produces no entry.
+  relations?: Array<{
+    target_name: string;
+    relation_type: string;
+    kind: 'data' | 'structural';
+    cardinality?: '1:1' | '1:N' | 'N:1' | 'N:M';
+    field?: string;
+    inverse_field?: string;
+    owning?: boolean;
+    join_table?: string;
+    evidence_source: 'orm-edge' | 'orm-declaration' | 'typed-composition' | 'structural-edge';
+    evidence: string;
+  }>;
 
   transformations?: Array<{
     from_node: string;
@@ -1633,6 +1751,12 @@ interface CASDataSummary {
   }>;
 }
 ```
+
+**`kind` classification MUST NOT read the entity name, its casing, or its
+directory.** `persisted-entity` in particular MUST carry `kind_evidence`
+citing one of the admissible persistence carriers in §5.28; an entity whose
+only qualification is living under an `entities/`-shaped directory MUST
+classify as `domain-shape`, not `persisted-entity`.
 
 #### CASBehavioralInvariant
 Behavior-level rules that must stay true across code, schema, tests, and security boundaries:
