@@ -25303,23 +25303,13 @@ export class AnalyzerOrchestrator {
         distinctiveness: 1,
         weight: 0
       },
-      {
-        type: 'devtools-platform',
-        description: 'Developer tools, code analysis, or visualization platform',
-        indicators: {
-          // Only genuinely distinctive tokens are listed. Generic terms
-          // (node, edge, graph, component, token, render, layout, plugin,
-          // sdk) were removed: they appear in almost every codebase and
-          // previously caused systems like a Claude-agent manager or any
-          // React app to be mislabeled a devtools platform.
-          pathPatterns: ['analyzer', 'sourcemap', 'transpile', 'transpiler', 'transpilation', 'linter', 'codegen', 'blueprint'],
-          verbPatterns: ['transpile', 'instrument', 'profile'],
-          entityPatterns: ['analyzer', 'sourcemap', 'blueprint', 'diagnostic', 'codemod'],
-          capabilityPatterns: ['static analysis', 'code analysis', 'transpilation', 'instrumentation', 'profiling'],
-        },
-        distinctiveness: 3,
-        weight: 0
-      }
+      // REMOVED (task #90): the 'devtools-platform' entry. Its token list had
+      // already been narrowed once (generic 'node'/'edge'/'graph'/'token'
+      // removed after a React app and an agent manager were both mislabeled
+      // devtools) and the residue was still vocabulary: 'analyzer',
+      // 'blueprint', 'diagnostic', 'profile', 'instrument' name things in
+      // medical, industrial, financial and observability software that are
+      // not developer tools. The verdict is now dependency-gated below.
     ];
 
     const productNodes: CASNode[] = [];
@@ -25595,18 +25585,33 @@ export class AnalyzerOrchestrator {
       this.activeAnalysisProjectPath || '',
       CLINICAL_INTEROP_PACKAGES,
     );
-    const devtoolsSignals = await countMatches(
-      nameEntityCapabilityPathTokens,
-      ['analyzer', 'static analysis', 'code analysis', 'codebase analysis', 'codebase graph', 'codemod']
+    // RE-GROUNDED (task #90): the devtools verdict was a word count over
+    // 'analyzer'/'analysis'/'codebase' — which is exactly how a product that
+    // ANALYSES something other than code (logs, images, markets, patients)
+    // acquired it, and how a product's own documentation about analysis
+    // acquired it too. Saying "analysis" is not evidence of parsing code.
+    //
+    // Parsing source into an AST is: a source-parser/AST toolkit taken as a
+    // direct RUNTIME dependency has essentially one use, and it is the thing
+    // that makes a developer tool a developer tool. Formatters, bundlers and
+    // test runners are excluded — every repo of every domain depends on
+    // those as tooling, which is the false-positive class being removed.
+    const SOURCE_PARSER_PACKAGES = [
+      'tree-sitter', 'ts-morph', 'jscodeshift', 'recast', 'acorn', 'esprima',
+      '@babel/parser', 'babel-parser', 'libcst', 'javaparser', 'ast-grep',
+      '@ast-grep/napi', 'srcml', 'ruby_parser', 'go/ast', 'roslyn',
+    ];
+    const hasSourceParserEvidence = await this.manifestDeclaresPackage(
+      this.activeAnalysisProjectPath || '',
+      SOURCE_PARSER_PACKAGES,
     );
-    if (devtoolsSignals.count >= 3 &&
-      devtoolsSignals.matched.some(signal => /analyzer|analysis|codebase/.test(signal)) &&
+    if (hasSourceParserEvidence &&
       topMatch.type !== 'medical-device-software' &&
       topMatch.type !== 'clinical-testing-platform') {
       return {
         primary_type: 'devtools-platform',
-        confidence: this.signatureMatchConfidence(devtoolsSignals.matched.length, devtoolsSignals.size, confidence),
-        evidence: [`Developer-tool/code-analysis signals: ${devtoolsSignals.matched.join(', ')}`],
+        confidence: this.signatureMatchConfidence(1, 1, confidence),
+        evidence: ['Declared runtime dependency on a source-parser/AST toolkit'],
         secondary_types: topMatch.type !== 'devtools-platform' ? [topMatch.type, ...secondaryTypes].slice(0, 3) : secondaryTypes,
       };
     }

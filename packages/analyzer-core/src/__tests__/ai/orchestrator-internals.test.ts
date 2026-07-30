@@ -1825,6 +1825,44 @@ describe('architecture and capability inference', () => {
     expect(purpose.primary_type).not.toBe('gaming-platform');
   });
 
+  it('classifies devtools-platform from a DECLARED source-parser dependency, not from talking about "analysis" (task #90)', async () => {
+    const nodes: CASNode[] = [
+      node({ id: 'walker', name: 'SymbolWalker', type: 'class', source: { file: 'src/SymbolWalker.ts' } }),
+      node({ id: 'report', name: 'ReportBuilder', type: 'class', source: { file: 'src/ReportBuilder.ts' } }),
+    ];
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-parser-dep-'));
+    const priorPath = (orch as any).activeAnalysisProjectPath;
+    try {
+      fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({
+        name: 'code-tool',
+        dependencies: { 'tree-sitter': '^0.21.0' },
+      }));
+      (orch as any).activeAnalysisProjectPath = root;
+      const purpose = await orch.inferSystemPurpose([], [], [], nodes);
+      expect(purpose.primary_type).toBe('devtools-platform');
+      expect(purpose.evidence.join(' ')).toContain('source-parser');
+    } finally {
+      (orch as any).activeAnalysisProjectPath = priorPath;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('does not classify a product that ANALYSES something other than code as developer tooling on the word "analysis" alone (task #90)', async () => {
+    const nodes: CASNode[] = [
+      node({ id: 'img-analyzer', name: 'ImageAnalyzer', type: 'class', source: { file: 'src/analysis/ImageAnalyzer.ts' } }),
+      node({ id: 'analysis-run', name: 'AnalysisRun', type: 'class', source: { file: 'src/analysis/AnalysisRun.ts' } }),
+      node({ id: 'analysis-report', name: 'AnalysisReport', type: 'class', source: { file: 'src/analysis/AnalysisReport.ts' } }),
+    ];
+    const priorPath = (orch as any).activeAnalysisProjectPath;
+    (orch as any).activeAnalysisProjectPath = undefined;
+    try {
+      const purpose = await orch.inferSystemPurpose([], [], [], nodes);
+      expect(purpose.primary_type).not.toBe('devtools-platform');
+    } finally {
+      (orch as any).activeAnalysisProjectPath = priorPath;
+    }
+  });
+
   it('does not classify generic preview or invariant names as developer tooling', async () => {
     const nodes: CASNode[] = [
       node({ id: 'preview-window', name: 'PreviewWindow', type: 'component', source: { file: 'src/PreviewWindow.xaml.cs' } }),
