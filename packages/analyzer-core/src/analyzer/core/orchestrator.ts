@@ -5643,6 +5643,42 @@ export class AnalyzerOrchestrator {
     return false;
   }
 
+  /**
+   * Cross-ecosystem sibling of manifestDeclaresRuntimeDependency: is one of
+   * these packages declared as a dependency in ANY of the project's build
+   * manifests?
+   *
+   * npm goes through the strict runtime-dependency path above. Every other
+   * ecosystem (csproj/pom/go.mod/requirements/Gemfile/Cargo) is matched as a
+   * WHOLE TOKEN in the manifest text — those formats do not give us a
+   * runtime/dev split we can read uniformly, and a package coordinate is
+   * still a declaration, unlike prose. Whole-token (not substring) matching is
+   * the load-bearing part: substring matching over manifest text is how
+   * dependency vocabulary turns into fabricated product identity.
+   *
+   * Only ever use this with package sets that are DOMAIN-DEFINING — packages
+   * nothing outside the domain has a reason to link against. A package that a
+   * repo of any domain might reasonably depend on proves nothing, and putting
+   * it in such a list re-creates the keyword classifier one level down.
+   */
+  private async manifestDeclaresPackage(projectPath: string, packageNames: string[]): Promise<boolean> {
+    if (!projectPath) return false;
+    if (await this.manifestDeclaresRuntimeDependency(projectPath, packageNames)) return true;
+
+    const matches = await this.getManifestFiles(projectPath);
+    const tokenPatterns = packageNames.map(name =>
+      new RegExp(`(^|[^a-z0-9])${name.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^a-z0-9]|$)`, 'i'));
+    for (const match of matches.slice(0, 160)) {
+      if (path.basename(match) === 'package.json') continue;
+      try {
+        const content = await nativeFs.readFile(path.join(projectPath, match), 'utf8');
+        if (tokenPatterns.some(pattern => pattern.test(content))) return true;
+      } catch {
+      }
+    }
+    return false;
+  }
+
   private async manifestContainsAny(projectPath: string, needles: string[]): Promise<boolean> {
     const loweredNeedles = needles.map(needle => needle.toLowerCase());
     let evidencePromise = this.manifestEvidenceCache.get(projectPath);
@@ -25552,21 +25588,26 @@ export class AnalyzerOrchestrator {
     // is the anti-generic-overmatch invariant this gate exists for.
     const hasDominantDesktopUi =
       desktopUiSignals.matched.includes('viewmodel') || desktopUiSignals.matched.includes('xaml');
-    const clinicalSignals = await countMatches(
-      nameEntityCapabilityPathTokens,
-      ['patient', 'muscle', 'device', 'measurement', 'force', 'inclinometry', 'grip', 'pinch', 'rehabilitation']
-    );
-    // Distinctive clinical anchor: 'device'/'measurement'/'force' are generic
-    // English words that show up incidentally in any large real codebase
-    // (telemetry "measurement", "force refresh", device-code auth flows).
-    // Same live defect: Klauro's own self-analysis matched >=3 of these
-    // generic tokens with no genuinely clinical vocabulary present at all and
-    // got stamped 'clinical-testing-platform' at a hardcoded 0.86 floor. Every
-    // sibling override below (fleet/zero-trust/trading) already requires an
-    // anchor from its OWN distinctive vocabulary; this one didn't. Require the
-    // same here: at least one of the terms that is actually clinical-specific.
-    const hasClinicalAnchor = clinicalSignals.matched.some(signal =>
-      ['patient', 'muscle', 'inclinometry', 'grip', 'pinch', 'rehabilitation'].includes(signal)
+    // RE-GROUNDED (task #90): the clinical verdict no longer reads vocabulary.
+    // It previously counted 'patient'/'muscle'/'device'/'measurement'/'force'
+    // and required one "clinical-specific" word as an anchor — but a word list
+    // is a word list however carefully curated, and 'patient'/'grip'/'pinch'
+    // appear in scheduling software, gesture/input libraries and physiotherapy
+    // CONTENT sites that are not clinical systems.
+    //
+    // Healthcare is one of the few domains with a genuinely domain-defining
+    // dependency class: the interop standards. Nothing outside healthcare
+    // software links against a FHIR client, an HL7v2 parser or a DICOM
+    // toolkit — these encode patient-record and medical-imaging wire formats
+    // and have no use elsewhere. That declaration, not the presence of the
+    // word "patient", is the evidence.
+    const CLINICAL_INTEROP_PACKAGES = [
+      'fhir', 'fhirclient', 'hl7', 'hl7v2', 'nhapi', 'hapi-fhir',
+      'dicom', 'fo-dicom', 'pydicom', 'dcmtk', 'gdcm', 'dicomweb-client',
+    ];
+    const hasClinicalInteropEvidence = await this.manifestDeclaresPackage(
+      this.activeAnalysisProjectPath || '',
+      CLINICAL_INTEROP_PACKAGES,
     );
     const devtoolsSignals = await countMatches(
       nameEntityCapabilityPathTokens,
@@ -25584,11 +25625,15 @@ export class AnalyzerOrchestrator {
       };
     }
 
-    if (hasDominantDesktopUi && clinicalSignals.matched.length >= 3 && hasClinicalAnchor) {
+    // The desktop-shape half is kept as a discriminator between a clinical
+    // DESKTOP instrument application and a clinical web/API service — but it
+    // can no longer produce the verdict on its own, and neither can vocabulary:
+    // the interop declaration is now a hard precondition.
+    if (hasClinicalInteropEvidence && hasDominantDesktopUi) {
       return {
         primary_type: 'clinical-testing-platform',
-        confidence: this.signatureMatchConfidence(clinicalSignals.matched.length, clinicalSignals.size, confidence),
-        evidence: [`Clinical desktop signals: ${clinicalSignals.matched.join(', ')}`],
+        confidence: this.signatureMatchConfidence(1, 1, confidence),
+        evidence: ['Declared healthcare-interop dependency (FHIR/HL7/DICOM) with a native desktop UI surface'],
         secondary_types: [topMatch.type, ...secondaryTypes]
           .filter(type => type !== 'clinical-testing-platform')
           .slice(0, 3),

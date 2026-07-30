@@ -1874,16 +1874,54 @@ describe('architecture and capability inference', () => {
     expect(purpose.primary_type).not.toBe('cli-tool');
   });
 
-  it('prefers clinical desktop signals over incidental help/tutorial content', async () => {
-    const nodes: CASNode[] = [
-      node({ id: 'lesson-help', name: 'TutorialHelpWindow', type: 'class', source: { file: 'src/Help/TutorialHelpWindow.xaml.cs' } }),
-      node({ id: 'patient-window', name: 'PatientWindow', type: 'class', source: { file: 'src/PatientWindow.xaml.cs' } }),
-      node({ id: 'muscle-viewmodel', name: 'MuscleMeasurementViewModel', type: 'class', source: { file: 'src/ViewModels/MuscleMeasurementViewModel.cs' } }),
-      node({ id: 'device-modal', name: 'DeviceForceModal', type: 'class', source: { file: 'src/Modals/DeviceForceModal.xaml.cs' } }),
-    ];
-    const purpose = await orch.inferSystemPurpose([], [], [], nodes);
+  // Clinical desktop fixture, reused by the pair below. The node vocabulary
+  // ('patient', 'muscle', 'measurement', 'force') is identical in both cases;
+  // only the DECLARED DEPENDENCY differs. That is the whole point of the
+  // task #90 redesign: the words are not the evidence.
+  const clinicalDesktopNodes = (): CASNode[] => ([
+    node({ id: 'lesson-help', name: 'TutorialHelpWindow', type: 'class', source: { file: 'src/Help/TutorialHelpWindow.xaml.cs' } }),
+    node({ id: 'patient-window', name: 'PatientWindow', type: 'class', source: { file: 'src/PatientWindow.xaml.cs' } }),
+    node({ id: 'muscle-viewmodel', name: 'MuscleMeasurementViewModel', type: 'class', source: { file: 'src/ViewModels/MuscleMeasurementViewModel.cs' } }),
+    node({ id: 'device-modal', name: 'DeviceForceModal', type: 'class', source: { file: 'src/Modals/DeviceForceModal.xaml.cs' } }),
+  ]);
 
-    expect(purpose.primary_type).toBe('clinical-testing-platform');
+  it('classifies a clinical desktop instrument app from a DECLARED healthcare-interop dependency (task #90: DICOM/HL7/FHIR is domain-defining evidence; the clinical word list is gone)', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-clinical-dep-'));
+    const priorPath = (orch as any).activeAnalysisProjectPath;
+    try {
+      fs.writeFileSync(path.join(root, 'Instrument.csproj'), [
+        '<Project Sdk="Microsoft.NET.Sdk">',
+        '  <ItemGroup>',
+        '    <PackageReference Include="fo-dicom" Version="5.1.2" />',
+        '  </ItemGroup>',
+        '</Project>',
+      ].join('\n'));
+      (orch as any).activeAnalysisProjectPath = root;
+      const purpose = await orch.inferSystemPurpose([], [], [], clinicalDesktopNodes());
+      expect(purpose.primary_type).toBe('clinical-testing-platform');
+      expect(purpose.evidence.join(' ')).toContain('healthcare-interop');
+    } finally {
+      (orch as any).activeAnalysisProjectPath = priorPath;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('does NOT classify the same clinical-sounding desktop app as clinical without an interop dependency — honest precision cost of task #90 (the verdict now needs evidence, and a bag of clinical words is not evidence)', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-clinical-nodep-'));
+    const priorPath = (orch as any).activeAnalysisProjectPath;
+    try {
+      fs.writeFileSync(path.join(root, 'Instrument.csproj'), '<Project Sdk="Microsoft.NET.Sdk" />');
+      (orch as any).activeAnalysisProjectPath = root;
+      const purpose = await orch.inferSystemPurpose([], [], [], clinicalDesktopNodes());
+      // Deliberate, documented degradation: a genuinely clinical repo that
+      // declares no interop dependency now reports its structural shape here.
+      // Business identity for it comes from the AI interpretation layer via
+      // refinePurposeTypeForDomain, not from this deterministic classifier.
+      expect(purpose.primary_type).not.toBe('clinical-testing-platform');
+    } finally {
+      (orch as any).activeAnalysisProjectPath = priorPath;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('does not flip a large web/analyzer codebase to clinical-testing-platform on incidental generic vocabulary (live self-analysis defect: Klauro\'s own repo scored clinical-testing-platform 0.86 off "device"/"measurement"/"force" and generic "modal" component naming, with zero genuinely clinical evidence)', async () => {
