@@ -376,3 +376,137 @@ describe('in-repo call resolution', () => {
     expect(input.edges).toHaveLength(1);
   });
 });
+
+/**
+ * REGRESSION — dropping an exit point must not leave the edges that referenced
+ * it pointing at an id present in no collection.
+ *
+ * Measured before this held: 17,245 `calls` edges in one stored analysis (16.9%
+ * of the whole graph) targeted exit ids this pass had removed. The orphans were
+ * the analyzers' ORIGINAL edges, not the replacements this pass appends — which
+ * is why none of them carried internalization provenance and the cause looked
+ * like a persistence cap rather than an unreconciled removal.
+ */
+describe('exit-point removal reconciles the edges that referenced it', () => {
+  function scenario() {
+    return {
+      nodes: [
+        node({
+          id: 'caller', name: 'handle', type: 'function',
+          source: { file: 'apps/web/src/page.tsx', line: 1, end_line: 9 } as any,
+        }),
+        node({
+          id: 'callee', name: 'useThing', type: 'function',
+          source: { file: 'apps/web/src/hooks/thing.ts', line: 2, end_line: 8 } as any,
+        }),
+      ] as CASNode[],
+      // The edge the analyzer emitted alongside its (mis-classified) exit point.
+      edges: [{
+        id: 'call_caller_exit_sdk_handle_useThing_4',
+        source: 'caller',
+        target: 'exit_sdk_handle_useThing_4',
+        type: 'calls',
+        metadata: { confidence: 0.9, locations: [{ file: 'apps/web/src/page.tsx', line: 4 }] },
+      }] as CASEdge[],
+      exitPoints: [{
+        id: 'exit_sdk_handle_useThing_4',
+        source_node: 'caller',
+        type: 'sdk',
+        name: 'useThing',
+        target: { sdk: '@/hooks/thing' },
+        metadata: { module: '@/hooks/thing', function: 'useThing', call_line: 4 },
+      }] as CASExitPoint[],
+      libraries: [],
+    };
+  }
+
+  it('leaves no edge referencing the removed exit point', () => {
+    const input = scenario();
+    const stats = internalizeInRepoCalls(input);
+    expect(stats.internalized).toBe(1);
+    expect(input.exitPoints).toHaveLength(0);
+
+    const endpointIds = new Set([
+      ...input.nodes.map(n => n.id),
+      ...input.exitPoints.map(e => e.id),
+    ]);
+    const dangling = input.edges.filter(e => !endpointIds.has(e.source) || !endpointIds.has(e.target));
+    expect(dangling).toEqual([]);
+  });
+
+  it('asserts exactly one call for the pair, not a duplicate per reference', () => {
+    const input = scenario();
+    internalizeInRepoCalls(input);
+    const pairs = input.edges.filter(e => e.type === 'calls').map(e => `${e.source}->${e.target}`);
+    expect(pairs).toEqual(['caller->callee']);
+  });
+
+  it('keeps the correction auditable — the surviving edge names the exit it replaced', () => {
+    const input = scenario();
+    internalizeInRepoCalls(input);
+    const attributes = (input.edges[0].metadata as any)?.attributes;
+    expect(attributes?.internalized_from_exit_point).toBe('exit_sdk_handle_useThing_4');
+  });
+
+  it('repoints a referencing edge whose source is not the exit point owner', () => {
+    const input = scenario();
+    // A second caller recorded a call to the SAME exit id; the appended
+    // replacement (from `caller`) cannot cover it, so it must be repointed.
+    input.nodes.push(node({
+      id: 'other', name: 'render', type: 'function',
+      source: { file: 'apps/web/src/other.tsx', line: 1, end_line: 3 } as any,
+    }));
+    input.edges.push({
+      id: 'call_other_exit_sdk_handle_useThing_4',
+      source: 'other',
+      target: 'exit_sdk_handle_useThing_4',
+      type: 'calls',
+    } as CASEdge);
+
+    const stats = internalizeInRepoCalls(input);
+    expect(stats.edges_repointed).toBe(1);
+    const repointed = input.edges.find(e => e.id === 'call_other_exit_sdk_handle_useThing_4');
+    expect(repointed?.target).toBe('callee');
+    const endpointIds = new Set(input.nodes.map(n => n.id));
+    expect(input.edges.filter(e => !endpointIds.has(e.target))).toEqual([]);
+  });
+
+  it('drops rather than repoints when the repoint would be a self-call', () => {
+    const input = scenario();
+    input.edges.push({
+      id: 'call_callee_exit_sdk_handle_useThing_4',
+      source: 'callee',
+      target: 'exit_sdk_handle_useThing_4',
+      type: 'calls',
+    } as CASEdge);
+
+    const stats = internalizeInRepoCalls(input);
+    expect(stats.edges_dropped_orphaned).toBeGreaterThanOrEqual(1);
+    expect(input.edges.some(e => e.source === 'callee' && e.target === 'callee')).toBe(false);
+    const endpointIds = new Set(input.nodes.map(n => n.id));
+    expect(input.edges.filter(e => !endpointIds.has(e.target))).toEqual([]);
+  });
+
+  it('leaves edges to exit points it did NOT remove untouched', () => {
+    const input = scenario();
+    input.exitPoints.push({
+      id: 'exit_api_handle_post_7',
+      source_node: 'caller',
+      type: 'api',
+      name: 'POST /v1/things',
+      target: { endpoint: 'https://api.example.com/v1/things' },
+      metadata: { call_line: 7 },
+    } as CASExitPoint);
+    input.edges.push({
+      id: 'call_caller_exit_api_handle_post_7',
+      source: 'caller',
+      target: 'exit_api_handle_post_7',
+      type: 'calls',
+    } as CASEdge);
+
+    internalizeInRepoCalls(input);
+    const kept = input.edges.find(e => e.id === 'call_caller_exit_api_handle_post_7');
+    expect(kept?.target).toBe('exit_api_handle_post_7');
+    expect(input.exitPoints.map(e => e.id)).toContain('exit_api_handle_post_7');
+  });
+});
