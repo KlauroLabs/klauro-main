@@ -213,10 +213,24 @@ export class CronAnalyzer extends BaseAnalyzer {
    */
   private extractNestScheduleJobs(content: string, file: string): ScheduledJob[] {
     const jobs: ScheduledJob[] = [];
-    const pattern = /@(Cron|Interval|Timeout)\s*\(\s*([^)]*)\)\s*\n\s*(?:public\s+|private\s+|protected\s+|async\s+)*([A-Za-z_$][\w$]*)\s*\(/g;
+    // A scheduler decorator may be RENAMED at the import site
+    // (`import { Cron as Scheduled }`), and matching the exported name alone
+    // then silently drops the job. Map every local binding back to the
+    // decorator it actually is, and match on the local names.
+    const localToKind = this.nestScheduleBindings(content);
+    const alternation = [...localToKind.keys()]
+      .sort((a, b) => b.length - a.length)
+      .map(name => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+      .join('|');
+    if (!alternation) return jobs;
+
+    const pattern = new RegExp(
+      `@(${alternation})\\s*\\(\\s*([^)]*)\\)\\s*\\n\\s*(?:public\\s+|private\\s+|protected\\s+|async\\s+)*([A-Za-z_$][\\w$]*)\\s*\\(`,
+      'g'
+    );
     let m: RegExpExecArray | null;
     while ((m = pattern.exec(content)) !== null) {
-      const decoratorKind = m[1] as 'Cron' | 'Interval' | 'Timeout';
+      const decoratorKind = localToKind.get(m[1]) as 'Cron' | 'Interval' | 'Timeout';
       const rawArg = m[2].trim();
       const methodName = m[3];
       const line = content.slice(0, m.index).split('\n').length;
@@ -230,6 +244,38 @@ export class CronAnalyzer extends BaseAnalyzer {
       jobs.push({ library: 'nestjs-schedule', schedule, handler: methodName, file, line, decoratorKind });
     }
     return jobs;
+  }
+
+  /**
+   * Local binding -> scheduler decorator it denotes, for one file.
+   *
+   * Defaults to the decorators' own names so a file that uses them without an
+   * explicit named import (or imports the namespace) still matches; an aliased
+   * named import additionally binds the local name, and REPLACES the original
+   * only for that binding, so `import { Cron as Scheduled }` matches
+   * `@Scheduled` while a different file's plain `@Cron` is untouched.
+   */
+  private nestScheduleBindings(content: string): Map<string, 'Cron' | 'Interval' | 'Timeout'> {
+    const kinds = ['Cron', 'Interval', 'Timeout'] as const;
+    const bindings = new Map<string, 'Cron' | 'Interval' | 'Timeout'>();
+    for (const kind of kinds) bindings.set(kind, kind);
+
+    for (const importMatch of content.matchAll(/\bimport\s*\{([^}]*)\}\s*from\s*['"]([^'"]+)['"]/g)) {
+      if (!/@nestjs\/schedule/.test(importMatch[2])) continue;
+      for (const part of importMatch[1].split(',')) {
+        const named = /^\s*(\w+)(?:\s+as\s+(\w+))?\s*$/.exec(part);
+        if (!named) continue;
+        const exported = named[1] as 'Cron' | 'Interval' | 'Timeout';
+        if (!kinds.includes(exported)) continue;
+        const local = named[2];
+        if (local) {
+          bindings.set(local, exported);
+          // The exported name is no longer bound in this file.
+          if (local !== exported) bindings.delete(exported);
+        }
+      }
+    }
+    return bindings;
   }
 
   /** Resolve the handler arg to a readable name: bare identifier as-is, otherwise

@@ -150,3 +150,75 @@ export class ReportsService {
     await fs.remove(root);
   }
 });
+
+test('CronAnalyzer finds scheduler decorators imported under an alias', async () => {
+  // `import { Cron as Scheduled }` is ordinary — matching the exported name
+  // alone dropped every job in the file with no indication anything was skipped.
+  const root = await makeFixture(
+    { '@nestjs/schedule': '^4.0.0' },
+    {
+      'jobs.service.ts': `import { Injectable } from '@nestjs/common'
+import { Cron as Scheduled, Interval as Every, Timeout as After } from '@nestjs/schedule'
+
+@Injectable()
+export class JobsService {
+  @Scheduled('0 * * * *')
+  async hourly() {}
+
+  @Every(5000)
+  async poll() {}
+
+  @After(1000)
+  async warmup() {}
+}
+`,
+    }
+  );
+  try {
+    const contribution = await new CronAnalyzer().analyze({ projectPath: root });
+    const schedules = contribution.entry_points.filter(ep => ep.type === 'schedule');
+
+    assert.strictEqual(schedules.length, 3, 'all three aliased decorators are jobs');
+    const byHandler = new Map(schedules.map(ep => [ep.handler?.method_name, ep]));
+    // Schedules are preserved verbatim, so the alias must not change them.
+    assert.strictEqual(byHandler.get('hourly')!.trigger?.schedule, '0 * * * *');
+    assert.strictEqual(byHandler.get('poll')!.trigger?.schedule, '5000');
+    assert.strictEqual(byHandler.get('warmup')!.trigger?.schedule, '1000');
+    // The alias resolves back to the decorator it really is, so an @Interval
+    // written as @Every is not recorded as a cron expression.
+    const kindOf = (handler: string) => {
+      const node = contribution.nodes.find(
+        n => n.type === 'scheduled_job' && n.name === handler
+      );
+      return (node?.metadata as any)?.attributes?.decoratorKind;
+    };
+    assert.strictEqual(kindOf('hourly'), 'Cron');
+    assert.strictEqual(kindOf('poll'), 'Interval');
+    assert.strictEqual(kindOf('warmup'), 'Timeout');
+  } finally {
+    await fs.remove(root);
+  }
+});
+
+test('CronAnalyzer still matches an unaliased scheduler import', async () => {
+  const root = await makeFixture(
+    { '@nestjs/schedule': '^4.0.0' },
+    {
+      'plain.service.ts': `import { Cron } from '@nestjs/schedule'
+
+export class PlainService {
+  @Cron('0 0 * * *')
+  async nightly() {}
+}
+`,
+    }
+  );
+  try {
+    const contribution = await new CronAnalyzer().analyze({ projectPath: root });
+    const schedules = contribution.entry_points.filter(ep => ep.type === 'schedule');
+    assert.strictEqual(schedules.length, 1);
+    assert.strictEqual(schedules[0].handler?.method_name, 'nightly');
+  } finally {
+    await fs.remove(root);
+  }
+});
