@@ -70,31 +70,80 @@ ICELOT itself straddles the boundary, per-facet:
   unit actually does and why*. Evidence-gated: an interpretive facet is written
   only when a real Camp-B fact grounds it, never invented.
 
-## Camp B must be run-to-run deterministic (and currently is NOT, in one place)
+## Camp B must be run-to-run deterministic
 
 Same unchanged source → byte-identical Camp-B facts (nodes, edges, entry/exit
 points, entities, routes), modulo the run-metadata allowlist (`analysis_id`,
 `analysis_timestamp`, `generated_at`, `execution_time_ms`).
 
-**Known open defect (2026-07-07):** cross-file `references`-edge resolution is
-NOT yet deterministic — ~6–13 fuzzy reference edges flip present/absent across
-separate processes (edge count 8128↔8134 on a 24k-node repo) because ambiguous
-name resolution depends on async file-processing order. This must be fixed
-(deterministic candidate selection over sorted inputs) — it is a Camp-B
-correctness bug, since a fact must not change run-to-run.
+**Cross-file `references`-edge resolution — status as of 2026-07-30 (updated,
+was documented as an open defect since 2026-07-07):** a 2026-07-07 audit
+documented ambiguous cross-file name resolution (the same identifier declared
+in more than one file) as depending on async file-processing order, with
+~6–13 fuzzy reference edges flipping present/absent across separate processes
+on a 24k-node repo. That same day, a few hours later, commit `a3b6e0c2`
+("import-source-aware ref resolution, refs run-stability + deployable
+fixtures") landed the fix this note called for — but this doc was never
+revisited against it until now. What `a3b6e0c2` established, in
+`typescript-javascript-analyzer.ts`:
+- Ambiguous same-named candidates resolve **import-source-aware first**
+  (`selectDeclarationCandidate`, via `importsByConsumerFile` /
+  `indexImportNode`): if the consumer imported the name from a specific
+  module, that module's declaration wins.
+- Any remaining ambiguity is broken by `compareNodesStable` — a total order
+  over source file, then line, then node id — never insertion/discovery
+  order. Declaration node ids are content-hashed (`generateNodeId(type,
+  filePath, name)`, sha256 of file path + name, no counters); variable-node
+  ids are a position-within-its-own-file index. Neither depends on the order
+  files were processed in, so the tiebreak is order-independent by
+  construction, not just in practice.
+- `6f15b06b` (2026-07-30, "make cachedGlob deterministic outside orchestrator
+  runs") is a separate, later contributor: it closed a no-token gap in
+  `glob-cache.ts` where calls outside a `beginGlobRun`/`endGlobRun` window
+  (every analyzer's own unit test) skipped the sort `a3b6e0c2` didn't touch.
+  Not the fix for the ambiguous-resolution defect itself, but it removes an
+  adjacent source of file-discovery-order variance.
+
+**Reproduced:** `run-stability-cross-process.test.ts` spawns 5 genuinely
+separate, cold `node` child processes (no shared module cache, no shared
+event loop — unlike `run-stability.test.ts`'s in-process repeated calls)
+against a fixture with real 3-way cross-file name ambiguity (12 groups, each
+name declared in 3 different files, 72 cross-file consumers, 150 unrelated
+filler files for realistic file-discovery/read concurrency). All 5 processes
+produced a byte-identical `references`-edge set (144 edges) with 100% correct
+import-source attribution (every consumer resolved to the exact module it
+imported from, zero misattributions). A companion code audit of the
+resolution path (orchestrator merge/dedup, tree-sitter extraction, the
+worker-pool call-graph integration, and the other language analyzers) found
+no other completion-order-dependent pattern feeding `references`-edge
+resolution — see `appendGraphItemsUnique`'s cross-analyzer bucket tiebreak
+below for the one latent (not live) risk that turned up and was hardened.
+
+**What remains unverified:** this is small-fixture, cross-process proof, not
+a repeat of the original measurement at realistic corpus scale — the ~24k-node
+class of repo the 2026-07-07 defect was originally measured on. The exception
+above is very likely closed, but that specific scale has not been re-run
+since `a3b6e0c2`/`6f15b06b`. Until it is, treat "closed" as "closed at fixture
+scale, unconfirmed at corpus scale" rather than an unconditional invariant.
 
 Enforcement mechanisms that DO hold today: run-scoped glob results are sorted
-before emission — ENFORCED in `glob-cache.ts` since task #20 (raw async glob
-order was never deterministic; it merely looked stable while minimatch cost
-serialized the walker). Direct glob callers and `withFileTypes` walks remain
-OUTSIDE that protection and must sort their own results. Ids must derive from
-stable facts (file path + content position), never per-instance run counters —
+before emission — ENFORCED in `glob-cache.ts` since task #20, and outside a
+run since `6f15b06b` (raw async glob order was never deterministic; it merely
+looked stable while minimatch cost serialized the walker). Direct glob
+callers and `withFileTypes` walks remain OUTSIDE that protection and must
+sort their own results. Ids must derive from stable facts (file path +
+content position), never per-instance run counters —
 `comment_${++counter}`-style ids drift on WARM re-analysis in the long-lived
 server even though fresh-process runs look stable (fixed across 19 analyzers,
 task #20). `applyCanonicalOrdering` canonicalizes nodes/edges/entry/exit/libraries;
-tie-broken fallback selection; the Rust analyzer's two-phase link. Regression:
-`npx jest src/__tests__/ai/run-stability.test.ts` (now also asserts warm
-re-analysis byte-identity and rejects `^(comment|todo)_\d+$` ids).
+tie-broken fallback selection; the Rust analyzer's two-phase link;
+`appendGraphItemsUnique`'s cross-analyzer entry-point bucket pick
+(`orchestrator.ts`) now has its own id-sorted tiebreak rather than relying on
+callers to hand it a pre-sorted array. Regression:
+`npx jest src/__tests__/ai/run-stability.test.ts` (warm re-analysis
+byte-identity, rejects `^(comment|todo)_\d+$` ids) and
+`npx jest src/__tests__/ai/run-stability-cross-process.test.ts` (cross-process
+references-edge byte-identity + import-source attribution correctness).
 
 ## Camp C generation contract
 
