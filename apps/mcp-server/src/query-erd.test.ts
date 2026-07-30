@@ -299,3 +299,54 @@ test('buildErd draws ONE edge per relation field even when two carriers read it 
   assert.equal(edges[0].cardinality, 'many-to-one', 'the stronger declared cardinality wins');
   assert.equal(model.cardinality_breakdown['one-to-one'], 0);
 });
+
+test('a non-persisted shape is excluded from the ERD, and its edges go with it', () => {
+  // REGRESSION: a UI viewer's own geometry types reached the ERD with
+  // impeccably-extracted edges between them (a layout composing its node and
+  // edge shapes 1:N). The relations were right; the BOXES were wrong. `kind`
+  // now carries the verdict, and the ERD reads it: a shape explicitly
+  // classified non-persisted draws no table, so its relationships cannot draw
+  // either. A shape with NO kind at all is untouched — absence is not evidence.
+  const cas = {
+    database_schema: {
+      entities: [
+        { name: 'ErdLayout', fields: [{ name: 'nodes', type: 'ErdNode[]' }], relationships: [] },
+        { name: 'ErdNode', fields: [{ name: 'width', type: 'number' }], relationships: [] },
+        { name: 'Codebase', table: 'codebases', fields: [{ name: 'id', type: 'number', primary: true }], relationships: [] },
+        { name: 'Unclassified', fields: [{ name: 'id', type: 'number', primary: true }], relationships: [] },
+      ],
+      relationships_summary: [],
+    },
+    nodes: [],
+    edges: [],
+    data_entities: [
+      {
+        id: 'de_layout', name: 'ErdLayout', kind: 'domain-shape', kind_source: 'shape-inference',
+        fields: [{ name: 'nodes', type: 'ErdNode[]', is_sensitive: false }],
+        lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] },
+        relations: [{
+          target_name: 'ErdNode', relation_type: 'composes_many', kind: 'data', cardinality: '1:N',
+          field: 'nodes', evidence_source: 'typed-composition',
+          evidence: 'field ErdLayout.nodes is typed `ErdNode[]`',
+        }],
+      },
+      {
+        id: 'de_node', name: 'ErdNode', kind: 'domain-shape', kind_source: 'shape-inference',
+        fields: [{ name: 'width', type: 'number', is_sensitive: false }],
+        lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] },
+      },
+      {
+        id: 'de_codebase', name: 'Codebase', kind: 'persisted-entity', kind_source: 'framework-evidence',
+        kind_evidence: 'analyzer subcategory `orm-entity` on Codebase',
+        fields: [{ name: 'id', type: 'number', is_sensitive: false }],
+        lifecycle: { created_by: [], read_by: [], updated_by: [], deleted_by: [] },
+      },
+    ],
+  } as unknown as CASOutput;
+
+  const model = buildErd(cas);
+  const names = model.entities.map(e => e.name);
+  assert.deepEqual(names.sort(), ['Codebase', 'Unclassified']);
+  assert.equal(model.relationships.length, 0);
+  assert.equal(model.cardinality_breakdown['one-to-many'], 0);
+});

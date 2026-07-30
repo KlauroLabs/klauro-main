@@ -3035,15 +3035,25 @@ export interface CASAnalysisTimings {
 /**
  * Kind of a data entity, derived deterministically from framework-analyzer
  * evidence on the node — never from the entity's name or casing.
- *  - `persisted-entity`  ORM/@Entity/table-mapped durable state.
+ *  - `persisted-entity`  ORM/@Entity/table-mapped durable state. REQUIRES cited
+ *                        persistence evidence (`kind_evidence`) — an ORM
+ *                        decorator/attribute/base class, a migration, a schema
+ *                        definition, a table mapping, or a repository/DAO
+ *                        reference. A shape selected only by its LOCATION (a
+ *                        type under an `entities/` directory) is never
+ *                        persisted on that basis alone.
  *  - `api-response`      controller return shape / API response — the terminal-entity kind.
  *  - `request-dto`       inbound contract — @Body / validation DTO / request schema.
+ *  - `domain-shape`      a field-carrying domain type with NO persistence and no
+ *                        route/api binding: real, named honestly, and excluded
+ *                        from the ERD's entity set (it has no table to draw).
  *  - `value-object`      field-only shape, no persistence, no route/api binding.
  */
 export type CASDataEntityKind =
   | 'persisted-entity'
   | 'api-response'
   | 'request-dto'
+  | 'domain-shape'
   | 'value-object';
 
 export interface CASDataEntity {
@@ -3059,7 +3069,20 @@ export interface CASDataEntity {
    * entity name). Camp-B fact. See CASDataEntityKind.
    */
   kind?: CASDataEntityKind;
-  kind_source?: 'framework-evidence';
+  /**
+   * `framework-evidence` may only be claimed when `kind_evidence` cites the
+   * decorator/attribute/mapping that proves it. When the kind came from the
+   * selection path's shape alone (no discriminating framework fact), this is
+   * `shape-inference` — an honest label, not a downgrade of the entity.
+   */
+  kind_source?: 'framework-evidence' | 'shape-inference';
+  /**
+   * Citation for `kind` when `kind_source` is `framework-evidence`: the actual
+   * decorator, attribute, subcategory, table mapping, migration, or
+   * repository/DAO reference the classification read. Mandatory for
+   * `persisted-entity` — an uncitable persistence claim is not evidence.
+   */
+  kind_evidence?: string;
 
   fields?: Array<{
     name: string;

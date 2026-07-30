@@ -2991,7 +2991,24 @@ export function buildErd(
     if (we.project_ids && we.project_ids.length) wsEntityRepos.set(we.name.toLowerCase(), we.project_ids);
   }
 
-  const knownEntityNames = new Set(schema.entities.map(e => e.name));
+  // NON-PERSISTED SHAPES ARE NOT ERD ENTITIES. `data_entities` carries the
+  // deterministic kind, so a shape the analyzer classified as a domain
+  // shape/DTO/value object is excluded here even when it reached
+  // `database_schema` (an analysis stored before the producer-side persistence
+  // gate, or a schema carrier that admitted a type on its location). Exclusion
+  // requires an explicit non-persisted classification: a name ABSENT from
+  // `data_entities`, or one with no kind at all, is left alone — absence is not
+  // evidence. Dropping the box also drops its edges, since every relationship
+  // below is gated on both endpoints being in the entity set.
+  const nonPersistedNames = new Set<string>();
+  for (const entity of cas.data_entities || []) {
+    if (entity.kind && entity.kind !== 'persisted-entity') {
+      nonPersistedNames.add(entity.name.toLowerCase());
+    }
+  }
+  const schemaEntities = schema.entities.filter(e => !nonPersistedNames.has(e.name.toLowerCase()));
+
+  const knownEntityNames = new Set(schemaEntities.map(e => e.name));
 
   const entities: ErdEntity[] = [];
   const relationships: ErdRelationship[] = [];
@@ -3003,7 +3020,7 @@ export function buildErd(
   // must not draw a second edge — that would render every relation twice.
   const relFieldClaimed = new Set<string>();
 
-  for (const ent of schema.entities) {
+  for (const ent of schemaEntities) {
     if (wantEntity && ent.name.toLowerCase() !== wantEntity) {
       // Still allow it to appear if it is the TARGET of a wanted entity's
       // relationship — handled below by not filtering targets out of the graph.

@@ -439,6 +439,59 @@ interface EntityPropertyIndex {
   resolved: Map<string, CASNode[]>;
 }
 
+/**
+ * Persistence evidence that lives elsewhere in the graph than on the entity's
+ * own anchor node — a table mapping, a migration, a repository/DAO — indexed by
+ * entity name. See Orchestrator.buildPersistenceEvidenceContext.
+ */
+interface PersistenceEvidenceContext {
+  /**
+   * On-node evidence (decorator/attribute/ORM subcategory/analyzer entity type)
+   * found on ANY node with the entity's name, keyed by lowercased name. An
+   * entity routinely has several nodes — a language analyzer's `class` node with
+   * the property children, and a framework analyzer's `entity` node carrying the
+   * `@Entity`/EF-Core annotation — and the entity's chosen ANCHOR is the
+   * field-richest of them, i.e. usually the one WITHOUT the annotation. Reading
+   * evidence only off that anchor lost the ORM proof for a whole hand-rolled DAL.
+   */
+  evidencedNames: Map<string, string>;
+  mappedNames: Map<string, string>;
+  migrationNames: Map<string, string>;
+  repositoryNames: Map<string, string>;
+}
+
+/**
+ * Declarations that PROVE durable persistence across ecosystems: ORM
+ * entity/table/document/collection annotations, and the column/key mapping
+ * annotations that only exist on a mapped class. Anchored so a decorator merely
+ * CONTAINING the word (`@EntityListeners`, `@TableColumnHeader`) does not match.
+ */
+const PERSISTENCE_DECLARATION =
+  /@?\b(Entity|Table|Document|Collection|Model|Embeddable|MappedSuperclass|PrimaryKey|PrimaryGeneratedColumn|Column|ObjectType|Schema|Index|sqlx|Migration)\b(?![A-Za-z])/;
+
+/**
+ * Migration-name vocabulary — the verbs and structural nouns a migration class
+ * is named with. Stripped to leave the SUBJECT, so `CreateOrdersTable` proves
+ * `Order` and nothing else.
+ */
+const MIGRATION_VOCABULARY =
+  /^(create|add|drop|alter|rename|remove|delete|update|change|modify|init|initial|migration|migrate|table|tables|column|columns|index|indexes|indices|constraint|key|keys|to|from|for|and|the|schema|seed|up|down|v\d*)$/i;
+
+/** ORM base classes a persisted record extends in inheritance-based ORMs. */
+const PERSISTENCE_BASE_CLASS =
+  /\b(BaseEntity|ActiveRecord|ApplicationRecord|Model|Document|DbContext|SQLModel|DeclarativeBase|EntityBase|AggregateRoot)\b/;
+
+/**
+ * ORM-FAMILY analyzer subcategories. The bare `entity` subcategory is
+ * deliberately ABSENT: language analyzers push it from a path heuristic
+ * (a type living under `entities/`), which is location, not persistence.
+ */
+const ORM_FAMILY_SUBCATEGORIES = new Set<string>([
+  'orm', 'orm-entity', 'typeorm', 'sea-orm', 'gorm', 'mikroorm', 'prisma', 'drizzle',
+  'sequelize', 'mongoose', 'sqlalchemy', 'django-model', 'activerecord', 'eloquent',
+  'doctrine', 'hibernate', 'jpa', 'entity-framework', 'ef-core', 'diesel', 'sqlx',
+]);
+
 interface DiscoveredEntryPointCandidate {
   file: string;
   type: CASEntryPoint['type'];
@@ -8708,17 +8761,27 @@ export class AnalyzerOrchestrator {
       }
     }
 
+    // THE ERD'S ENTITY SET. Every member must carry cited persistence evidence:
+    // this is the diagram of what the system STORES, so a shape admitted on
+    // location alone (any class under an `entities/` directory) would draw a box
+    // for a table that does not exist. The two branches below that are pure
+    // LOCATION heuristics are therefore gated on
+    // persistenceEvidenceForAnchors, while an explicit analyzer classification
+    // (node type `entity`/`model`, an `@Entity` annotation) is itself the
+    // evidence and passes directly.
+    const schemaPersistence = this.buildPersistenceEvidenceContext(nodes);
     const entityNodes = nodes.filter(n =>
       (!projectPath || this.isPrimaryProductNodeForProject(n, projectPath)) &&
       !n.subcategories?.includes('abstract') &&
       (
         n.type === 'entity' ||
         n.type === 'model' ||
-        n.subcategories?.includes('entity') ||
         n.metadata?.annotations?.some(a => a.includes('Entity')) ||
         // Some analyzers (Java) store class-level annotations under attributes.
         (n.metadata as any)?.attributes?.annotations?.some((a: string) => a.includes('Entity')) ||
-        (n.type === 'class' && n.source?.file?.includes('/entities/'))
+        ((n.subcategories?.includes('entity') ||
+          (n.type === 'class' && n.source?.file?.includes('/entities/'))) &&
+          Boolean(this.persistenceEvidenceForAnchors([n], schemaPersistence, n.name)))
       )
     );
 
@@ -18192,6 +18255,9 @@ export class AnalyzerOrchestrator {
     );
 
     const propertyIndex = this.buildEntityPropertyIndex(nodes);
+    // Off-node persistence evidence (table mapping / migration / repository),
+    // built once for every kind decision in this pass.
+    const persistence = this.buildPersistenceEvidenceContext(nodes, databaseSchema);
     const nodesById = new Map<string, CASNode>();
     for (const node of nodes) {
       if (!nodesById.has(node.id)) nodesById.set(node.id, node);
@@ -18211,6 +18277,13 @@ export class AnalyzerOrchestrator {
     }
 
     for (const entityNode of entityNodes) {
+      // FIELDS ARE DEDUPED BY NAME. A field name is unique within a record, but
+      // property nodes for one shape can arrive twice (a class node plus a
+      // language analyzer's re-declaration, an inherited property re-emitted on
+      // the subclass, the schema-file fallback overlapping property nodes), and
+      // the raw push listed the same column twice — a layout shape shipped with
+      // `width` in its field list twice. First occurrence wins: it carries the
+      // richest resolved type (the fallback paths append later).
       const fields: Array<{
         name: string;
         type: string;
@@ -18320,11 +18393,19 @@ export class AnalyzerOrchestrator {
         }
       }
 
+      // Dedupe by field name, first occurrence wins (see the `fields`
+      // declaration above).
+      const fieldsByName = new Map<string, typeof fields[number]>();
+      for (const field of fields) {
+        if (!fieldsByName.has(field.name)) fieldsByName.set(field.name, field);
+      }
+      const uniqueFields = [...fieldsByName.values()];
+
       const ormEntity: CASDataEntity = {
         id: `entity_${entityNode.name.toLowerCase()}`,
         name: entityNode.name,
         schema_source: entityNode.source?.file,
-        fields: fields.length > 0 ? fields : undefined,
+        fields: uniqueFields.length > 0 ? uniqueFields : undefined,
         lifecycle: {
           created_by: [...new Set(createdBy)],
           read_by: [...new Set(readBy)],
@@ -18333,11 +18414,19 @@ export class AnalyzerOrchestrator {
         }
       };
       // KIND is a Camp-B fact derived from framework evidence on the anchor node
-      // (never from the name). This selection path is ORM/@Entity/table-mapped or
-      // an /entities/ data shape, so the evidence classifier defaults these to
-      // persisted-entity, but api/serializer evidence on the same node can still
-      // reclassify it as api-response.
-      this.tagDataEntityKind(ormEntity, [entityNode], 'persisted-entity');
+      // (never from the name). This selection path MIXES two populations: shapes
+      // proved persistent (ORM decorator / table mapping / ORM subcategory) and
+      // shapes admitted on LOCATION alone (a type under an `entities/` folder, a
+      // POCO/plain struct in a model directory). The `persisted-entity` request
+      // below is therefore only a request: without cited persistence evidence the
+      // classifier degrades it to `domain-shape`, so a UI or wire-format type
+      // never ships as durable state.
+      this.tagDataEntityKind(ormEntity, [entityNode], 'persisted-entity', persistence);
+      // A shape with NO fields and NO persistence evidence carries no data model
+      // at all (live: a zero-field marker struct surfaced as an entity). Nothing
+      // downstream can render, relate, or reason about it — drop it rather than
+      // relabel it.
+      if (!ormEntity.fields?.length && ormEntity.kind !== 'persisted-entity') continue;
       mergeOrmEntity(ormEntity);
     }
     entities.push(...ormEntitiesById.values());
@@ -18396,8 +18485,12 @@ export class AnalyzerOrchestrator {
     // evidence) is treated as domain to avoid dropping genuine shapes on thin
     // evidence. If a codebase has zero persisted/api-response shapes, keep the full
     // ranked set rather than blank the entity model.
+    // `domain-shape` is kept here: it is a field-carrying domain type that
+    // merely failed the PERSISTENCE gate, not plumbing. It stays visible and
+    // honestly labeled — and the ERD excludes it, since it has no table.
     const domainEntities = entities.filter(
-      entity => entity.kind === 'persisted-entity' || entity.kind === 'api-response' || entity.kind == null
+      entity => entity.kind === 'persisted-entity' || entity.kind === 'api-response' ||
+        entity.kind === 'domain-shape' || entity.kind == null
     );
     const surfaced = domainEntities.length > 0 ? domainEntities : entities;
 
@@ -18576,49 +18669,219 @@ export class AnalyzerOrchestrator {
    * path already narrowed the candidate set — e.g. an ORM selection path passes
    * 'persisted-entity', the DTO-shape path passes 'value-object').
    */
-  private classifyDataEntityKind(anchors: CASNode[], fallback: CASDataEntityKind): CASDataEntityKind {
+  private classifyDataEntityKind(
+    anchors: CASNode[],
+    fallback: CASDataEntityKind,
+    persistence?: PersistenceEvidenceContext,
+    entityName?: string,
+  ): { kind: CASDataEntityKind; evidence?: string } {
     const subcats = new Set<string>();
-    let sawOrmType = false;
     let sawDtoType = false;
-    let ormAttr = false;
     for (const node of anchors) {
       if (!node) continue;
       for (const sub of node.subcategories || []) subcats.add(String(sub).toLowerCase());
-      const type = String(node.type || '').toLowerCase();
-      if (type === 'entity' || type === 'model') sawOrmType = true;
-      if (type === 'dto') sawDtoType = true;
-      const attrs = (node.metadata?.attributes || {}) as Record<string, unknown>;
-      if (attrs.orm || attrs.table || attrs.persisted || attrs.is_persisted) ormAttr = true;
+      if (String(node.type || '').toLowerCase() === 'dto') sawDtoType = true;
     }
     const has = (...names: string[]) => names.some(name => subcats.has(name));
+
+    // PERSISTENCE EVIDENCE — cited or absent, never assumed. See
+    // persistenceEvidenceForAnchors for the admissible carriers.
+    const persisted = this.persistenceEvidenceForAnchors(anchors, persistence, entityName);
 
     // api-response — what the system produces for its consumers. This is the
     // terminal set. Serializer output and OpenAPI/GraphQL/api-contract response
     // shapes are the product's outward-facing contract.
-    if (has('api-response', 'serializer') ||
-        (has('api', 'api-contract', 'openapi', 'graphql') && !ormAttr && !sawOrmType)) {
-      return 'api-response';
+    if (has('api-response', 'serializer')) {
+      return { kind: 'api-response', evidence: `analyzer subcategory \`${has('api-response') ? 'api-response' : 'serializer'}\`` };
+    }
+    if (has('api', 'api-contract', 'openapi', 'graphql') && !persisted) {
+      return { kind: 'api-response', evidence: 'api-contract analyzer subcategory' };
     }
 
-    // persisted-entity — durable state (ORM decorator / @Entity / table mapping).
-    if (ormAttr || sawOrmType ||
-        has('orm', 'orm-entity', 'entity', 'typeorm', 'sea-orm', 'gorm', 'mikroorm', 'data-access')) {
-      return 'persisted-entity';
-    }
+    // persisted-entity — durable state, and ONLY with a citation. The old gate
+    // also accepted the bare `entity` subcategory and returned the caller's
+    // `persisted-entity` fallback when nothing discriminated, so a type whose
+    // only qualification was living under an `entities/` directory shipped as
+    // durable state (live: a UI viewer's own geometry types — a layout
+    // interface with width/height — reported as persisted entities and drawn
+    // into the ERD).
+    if (persisted) return { kind: 'persisted-entity', evidence: persisted };
 
     // request-dto — inbound contract (@Body / validation DTO / request schema).
     if (sawDtoType ||
         has('input-validation', 'request', 'validation', 'validation_contract', 'contract', 'schema')) {
-      return 'request-dto';
+      return { kind: 'request-dto', evidence: sawDtoType ? 'analyzer node type `dto`' : 'inbound-contract analyzer subcategory' };
     }
 
-    return fallback;
+    // No discriminating framework fact. A `persisted-entity` fallback cannot
+    // stand — it is exactly the uncitable claim this gate exists to stop — so it
+    // degrades to `domain-shape`: still a real, surfaced domain type, just not
+    // one with a table behind it.
+    if (fallback === 'persisted-entity') return { kind: 'domain-shape' };
+    return { kind: fallback };
   }
 
-  /** Attach the deterministic kind (framework-evidence sourced) to an entity. */
-  private tagDataEntityKind(entity: CASDataEntity, anchors: CASNode[], fallback: CASDataEntityKind): void {
-    entity.kind = this.classifyDataEntityKind(anchors, fallback);
-    entity.kind_source = 'framework-evidence';
+  /**
+   * Cited persistence evidence for an entity's anchor nodes, or undefined.
+   *
+   * ADMISSIBLE CARRIERS (each one cites itself):
+   *   1. an ORM mapping ATTRIBUTE on the node (`table`/`tableName`/`collection`/
+   *      `orm`/`persisted`);
+   *   2. a persistence DECORATOR/ANNOTATION (`@Entity`, `@Table`, `@Document`,
+   *      `@Model`, `@PrimaryKey`, `@Column`, …) or an ORM BASE CLASS the node
+   *      extends (`BaseEntity`, `ActiveRecord`, `Model`, …);
+   *   3. an ORM-family analyzer SUBCATEGORY (`orm-entity`, `typeorm`, `gorm`, …);
+   *   4. an analyzer that TYPED the node as an ORM entity/model (`entity`,
+   *      `model`) — a framework analyzer's explicit classification;
+   * Carriers 1–4 are read off the entity's anchor nodes AND (via
+   * `persistence.evidencedNames`) off any same-named node in the graph, because
+   * the annotation and the property list frequently live on different nodes for
+   * the same declaration.
+   *   5. a TABLE MAPPING / SCHEMA DEFINITION for the name in `database_schema`
+   *      (a declared table, or a primary-key field);
+   *   6. a MIGRATION that references the name;
+   *   7. a REPOSITORY/DAO that references the name.
+   *
+   * The bare `entity` subcategory and an `entities/`-directory location are NOT
+   * carriers: both are produced by path heuristics, and both are how UI/wire
+   * types entered the persisted set.
+   */
+  private persistenceEvidenceOnNode(node: CASNode): string | undefined {
+    const attrs = (node.metadata?.attributes || {}) as Record<string, unknown>;
+    for (const key of ['table', 'tableName', 'collection', 'orm', 'persisted', 'is_persisted']) {
+      if (attrs[key]) return `ORM mapping attribute \`${key}\` on ${node.name}`;
+    }
+    const declarations = [
+      ...(node.metadata?.annotations || []),
+      ...(Array.isArray(attrs.annotations) ? (attrs.annotations as unknown[]).map(String) : []),
+      ...(Array.isArray(attrs.decorators) ? (attrs.decorators as unknown[]).map(String) : []),
+    ];
+    for (const declaration of declarations) {
+      const match = PERSISTENCE_DECLARATION.exec(String(declaration));
+      if (match) return `persistence declaration \`${match[0]}\` on ${node.name}`;
+    }
+    const base = String(attrs.extends || '');
+    if (base && PERSISTENCE_BASE_CLASS.test(base)) return `ORM base class \`${base}\` on ${node.name}`;
+    for (const sub of node.subcategories || []) {
+      const key = String(sub).toLowerCase();
+      if (ORM_FAMILY_SUBCATEGORIES.has(key)) return `analyzer subcategory \`${key}\` on ${node.name}`;
+    }
+    const type = String(node.type || '').toLowerCase();
+    if (type === 'entity' || type === 'model') return `analyzer node type \`${type}\` on ${node.name}`;
+    return undefined;
+  }
+
+  private persistenceEvidenceForAnchors(
+    anchors: CASNode[],
+    persistence?: PersistenceEvidenceContext,
+    entityName?: string,
+  ): string | undefined {
+    for (const node of anchors) {
+      const onNode = node && this.persistenceEvidenceOnNode(node);
+      if (onNode) return onNode;
+    }
+    if (!persistence || !entityName) return undefined;
+    const key = entityName.toLowerCase();
+    const evidenced = persistence.evidencedNames.get(key);
+    if (evidenced) return evidenced;
+    const mapped = persistence.mappedNames.get(key);
+    if (mapped) return mapped;
+    const migration = persistence.migrationNames.get(key);
+    if (migration) return migration;
+    return persistence.repositoryNames.get(key);
+  }
+
+  /**
+   * Table-mapping / migration / repository evidence indexed by entity name, so
+   * a shape with no on-node ORM fact can still PROVE persistence from the rest
+   * of the graph (a hand-rolled DAL: a plain struct plus a repository that
+   * loads it, or a migration that creates its table).
+   */
+  private buildPersistenceEvidenceContext(
+    nodes: CASNode[],
+    databaseSchema?: CASDatabaseSchema,
+  ): PersistenceEvidenceContext {
+    const mappedNames = new Map<string, string>();
+    for (const entity of databaseSchema?.entities || []) {
+      const key = String(entity.name || '').toLowerCase();
+      if (!key) continue;
+      if (entity.table) {
+        mappedNames.set(key, `table mapping \`${entity.table}\` in database_schema`);
+      } else if ((entity.fields || []).some(field => field.primary)) {
+        mappedNames.set(key, 'primary-key field declared in database_schema');
+      }
+    }
+    const evidencedNames = new Map<string, string>();
+    for (const node of nodes) {
+      const name = String(node.name || '').toLowerCase();
+      if (!name || evidencedNames.has(name)) continue;
+      const onNode = this.persistenceEvidenceOnNode(node);
+      if (onNode) evidencedNames.set(name, onNode);
+    }
+    const migrationNames = new Map<string, string>();
+    const repositoryNames = new Map<string, string>();
+    const record = (into: Map<string, string>, subject: string, citation: string) => {
+      const key = subject.toLowerCase();
+      if (key.length >= 3 && !into.has(key)) into.set(key, citation);
+    };
+    // DECLARATION node types only. A first pass accepted any node whose name or
+    // file merely looked repository-ish, and imports/constants/variables/file
+    // nodes (`import ../connection`, `PARTITION_COUNT`, `databaseRepository`,
+    // `telemetry-repository.ts`) minted 13 phantom persisted entities on one
+    // real repo. Evidence has to be a DECLARED repository/migration.
+    const DECLARATION_TYPES = new Set(['class', 'struct', 'interface', 'type', 'repository', 'migration', 'model']);
+    for (const node of nodes) {
+      const type = String(node.type || '').toLowerCase();
+      if (!DECLARATION_TYPES.has(type)) continue;
+      const name = String(node.name || '');
+      const subcats = (node.subcategories || []).map(sub => String(sub).toLowerCase());
+      if (type === 'migration') {
+        // The migration's SUBJECT: what is left after the migration vocabulary
+        // (`Create…Table`, `AddColumnTo…`, the timestamp prefix) is removed.
+        const subject = name
+          .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+          .split(/[^A-Za-z0-9]+/)
+          .filter(word => word && !/^\d+$/.test(word) &&
+            !MIGRATION_VOCABULARY.test(word))
+          .map(word => word.toLowerCase());
+        for (const word of subject) {
+          record(migrationNames, word, `migration \`${name}\` references it`);
+          record(migrationNames, this.singularizeNoun(word), `migration \`${name}\` references it`);
+        }
+        continue;
+      }
+      // A repository/DAO's SUBJECT is its name with the role suffix removed —
+      // `InvoiceRepository` proves `Invoice`, and nothing else. Decomposing the
+      // name into every noun it contains is what admitted `Query` from
+      // `QueryBuilder` and `Doctrine` from `isDoctrineRepository`.
+      const suffix = /(Repository|Repositories|Repo|Dao|DAO|Store|Mapper|Persistence)$/.exec(name);
+      const isRepository = Boolean(suffix) || type === 'repository' || subcats.includes('data-access');
+      if (!isRepository) continue;
+      const subject = suffix ? name.slice(0, suffix.index) : name;
+      if (!subject) continue;
+      const key = subject.toLowerCase();
+      record(repositoryNames, key, `repository/DAO \`${name}\` references it`);
+      record(repositoryNames, this.singularizeNoun(key), `repository/DAO \`${name}\` references it`);
+    }
+    return { evidencedNames, mappedNames, migrationNames, repositoryNames };
+  }
+
+  /**
+   * Attach the deterministic kind to an entity, with the evidence that proves
+   * it. `framework-evidence` is claimed ONLY alongside a citation; otherwise the
+   * source is recorded honestly as `shape-inference`.
+   */
+  private tagDataEntityKind(
+    entity: CASDataEntity,
+    anchors: CASNode[],
+    fallback: CASDataEntityKind,
+    persistence?: PersistenceEvidenceContext,
+  ): void {
+    const { kind, evidence } = this.classifyDataEntityKind(anchors, fallback, persistence, entity.name);
+    entity.kind = kind;
+    entity.kind_source = evidence ? 'framework-evidence' : 'shape-inference';
+    if (evidence) entity.kind_evidence = evidence;
+    else delete entity.kind_evidence;
   }
 
   /** Lightweight English singularizer for matching method-name nouns to entities. */
@@ -18886,6 +19149,34 @@ export class AnalyzerOrchestrator {
       const name = String(node.name || '').toLowerCase();
       if (name) callableNames.add(name);
     }
+    // NESTED SUB-OBJECT INDEX — type names that appear as the declared FIELD
+    // TYPE of another data shape. THE RULE: a shape that is only ever reached as
+    // another shape's field, declares no identity of its own, and carries no
+    // persistence / api-response evidence is a SUB-OBJECT of its parent, not a
+    // first-class entity. This is what over-decomposed a response body into
+    // separate top-level entities per nested block (a metrics response whose
+    // every sub-object — ratio, value-at-risk, tax-lot list — became its own
+    // "entity"). Uppercase-anchored so scalar/annotation noise never lands here.
+    const nestedFieldTypeNames = new Set<string>();
+    for (const node of nodes) {
+      if (!this.isDtoLikeDataShapeNode(node, propertyIndex)) continue;
+      for (const prop of this.entityPropertyNodesFromIndex(propertyIndex, node)) {
+        // createNode() spreads analyzer metadata onto node.metadata directly
+        // while some analyzers nest under metadata.attributes — accept both.
+        const metadata = (prop.metadata || {}) as Record<string, unknown>;
+        const attributeType = (metadata.attributes as Record<string, unknown> | undefined)?.type;
+        const declared = prop.signature?.return_type ||
+          (typeof metadata.type === 'string' ? metadata.type : '') ||
+          (typeof attributeType === 'string' ? attributeType : '');
+        for (const identifier of String(declared).match(/[A-Z][A-Za-z0-9_]*/g) || []) {
+          nestedFieldTypeNames.add(identifier.toLowerCase());
+        }
+      }
+    }
+    // An identity declaration of its OWN — the field that makes a shape
+    // addressable as a record rather than an inline block of its parent.
+    const IDENTITY_FIELD = /^(id|_id|uuid|guid|pk|primary_key|primarykey|key|slug|code)$/i;
+
     const groups = new Map<string, { rep: CASNode; nodes: CASNode[]; ops: Set<string> }>();
     for (const node of nodes) {
       if (!this.isDtoLikeDataShapeNode(node, propertyIndex)) continue;
@@ -18944,7 +19235,25 @@ export class AnalyzerOrchestrator {
       // Default to value-object; framework evidence on the group's nodes (api /
       // serializer / validation subcategories, dto node type) reclassifies to
       // api-response or request-dto. The name/affix is intentionally NOT used.
+      // ON-NODE evidence only. The off-node carriers (table mapping / migration /
+      // repository) CORROBORATE a shape already selected as a data record; they
+      // must not PROMOTE an arbitrary typed request/response shape into durable
+      // state. Passing them here promoted four shapes on one real repo purely
+      // because a same-named repository class existed elsewhere — including a
+      // framework-detection helper class that shares a noun with nothing stored.
       this.tagDataEntityKind(derivedEntity, group.nodes, 'value-object');
+      // NESTED SUB-OBJECT exclusion — see nestedFieldTypeNames above for the
+      // rule. All three conditions required: every anchor of the group is
+      // consumed as another shape's field type, the shape declares no identity
+      // field of its own, and it is neither persisted nor produced.
+      const everyAnchorNested = group.nodes.every(node =>
+        nestedFieldTypeNames.has(String(node.name || '').toLowerCase()));
+      const declaresIdentity = fields.some(field => IDENTITY_FIELD.test(field.name));
+      if (everyAnchorNested && !declaresIdentity &&
+          derivedEntity.kind !== 'persisted-entity' &&
+          derivedEntity.kind !== 'api-response') {
+        continue;
+      }
       // Evidence-first code-artifact exclusion: a shape whose head noun is a
       // code-infrastructure ROLE (…Handler/Adapter/Registry/Factory/Provider/
       // Middleware/Preflight/Pending) is wiring — a callable's contract, not a
@@ -18968,8 +19277,9 @@ export class AnalyzerOrchestrator {
     const kindRank: Record<CASDataEntityKind, number> = {
       'api-response': 0,
       'persisted-entity': 1,
-      'request-dto': 2,
-      'value-object': 3,
+      'domain-shape': 2,
+      'request-dto': 3,
+      'value-object': 4,
     };
     return derived
 	      .sort((left, right) =>

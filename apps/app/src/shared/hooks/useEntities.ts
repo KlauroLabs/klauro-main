@@ -2,7 +2,12 @@ import { useMemo } from 'react';
 import { useProjectCas } from './useProjectCas';
 import { resolveSlug } from '@/shared/lib/slugs';
 
-export type DataEntityKind = 'persisted-entity' | 'api-response' | 'request-dto' | 'value-object';
+export type DataEntityKind =
+  | 'persisted-entity'
+  | 'api-response'
+  | 'request-dto'
+  | 'domain-shape'
+  | 'value-object';
 
 export interface DataEntityField {
   name: string;
@@ -25,7 +30,9 @@ export interface DataEntity {
   description?: string;
   description_source?: 'deterministic' | 'ai' | 'manual' | 'reused';
   kind?: DataEntityKind;
-  kind_source?: 'framework-evidence';
+  kind_source?: 'framework-evidence' | 'shape-inference';
+  /** Citation for `kind` — mandatory when the kind is evidence-sourced. */
+  kind_evidence?: string;
   fields?: DataEntityField[];
   lifecycle: DataEntityLifecycle;
   transformations?: Array<{ from_node: string; to_node: string; transformation_type: string }>;

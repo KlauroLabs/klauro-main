@@ -4534,6 +4534,115 @@ describe('entity-extraction gaps from real-repo onboarding (mtg/openclaw/hercule
     expect((feed.fields || []).map((f: any) => f.name)).toEqual(expect.arrayContaining(['ID', 'UserID', 'Title']));
   });
 
+  describe('persisted-entity requires CITED persistence evidence', () => {
+    it('an ORM-decorated class is persisted with a citation; the identical undecorated class is not', () => {
+      const orderNodes = (name: string, decorated: boolean): CASNode[] => [
+        node({
+          id: `class_${name}`, name, type: 'class',
+          source: { file: `src/database/entities/${name.toLowerCase()}.ts`, line: 1 },
+          metadata: {
+            attributes: {
+              propertyCount: 2, methodCount: 0,
+              ...(decorated ? { decorators: ['Entity'] } : {}),
+            },
+          },
+        }),
+        node({ id: `prop_${name}_total`, name: 'total', type: 'property', parent: `class_${name}`, source: { file: `src/database/entities/${name.toLowerCase()}.ts`, line: 2 } }),
+        node({ id: `prop_${name}_placedAt`, name: 'placedAt', type: 'property', parent: `class_${name}`, source: { file: `src/database/entities/${name.toLowerCase()}.ts`, line: 3 } }),
+      ];
+      const entities = orch.buildDataEntities([...orderNodes('MappedOrder', true), ...orderNodes('PlainOrder', false)], []);
+
+      const mapped = entities.find((entity: any) => entity.name === 'MappedOrder');
+      expect(mapped.kind).toBe('persisted-entity');
+      expect(mapped.kind_source).toBe('framework-evidence');
+      expect(mapped.kind_evidence).toMatch(/Entity/);
+
+      // Same fields, same directory, no decorator: it is still a real domain
+      // type, but nothing proves it is stored.
+      const plain = entities.find((entity: any) => entity.name === 'PlainOrder');
+      expect(plain.kind).toBe('domain-shape');
+      expect(plain.kind_source).toBe('shape-inference');
+      expect(plain.kind_evidence).toBeUndefined();
+    });
+
+    it('a repository/DAO reference is admissible persistence evidence for a shape with no on-node ORM fact', () => {
+      const nodes: CASNode[] = [
+        node({
+          id: 'struct_model_invoice', name: 'Invoice', type: 'struct',
+          source: { file: 'internal/model/invoice.go', line: 1 },
+          metadata: { language: 'go', attributes: { packageName: 'model', fieldCount: 2, methodCount: 0 } },
+        }),
+        node({ id: 'field_invoice_id', name: 'ID', type: 'field', parent: 'struct_model_invoice', source: { file: 'internal/model/invoice.go', line: 2 } }),
+        node({ id: 'field_invoice_total', name: 'Total', type: 'field', parent: 'struct_model_invoice', source: { file: 'internal/model/invoice.go', line: 3 } }),
+        node({
+          id: 'struct_invoice_repository', name: 'InvoiceRepository', type: 'struct',
+          source: { file: 'internal/storage/invoice_repository.go', line: 1 },
+          metadata: { language: 'go', attributes: { packageName: 'storage', fieldCount: 1, methodCount: 5 } },
+        }),
+      ];
+      const invoice = orch.buildDataEntities(nodes, []).find((entity: any) => entity.name === 'Invoice');
+      expect(invoice.kind).toBe('persisted-entity');
+      expect(invoice.kind_evidence).toMatch(/repository\/DAO/);
+    });
+
+    it('a UI layout interface under an entities/ directory is never a persisted entity and never reaches the ERD', () => {
+      // REGRESSION: an ERD viewer's own geometry types (a layout interface with
+      // width/height plus the node/edge shapes it positions) shipped as
+      // `persisted-entity` with kind_source `framework-evidence` and were drawn
+      // into the ERD. Their only qualification was living in a directory called
+      // `entities/` — a UI component folder, not a data layer.
+      const nodes: CASNode[] = [
+        node({
+          id: 'interface_erd_layout', name: 'ErdLayout', type: 'interface',
+          source: { file: 'apps/app/src/shared/components/entities/erdLayout.ts', line: 20 },
+          subcategories: ['general'],
+          metadata: { attributes: { propertyCount: 3, methodCount: 0 } },
+        }),
+        node({ id: 'prop_layout_nodes', name: 'nodes', type: 'property', parent: 'interface_erd_layout', source: { file: 'apps/app/src/shared/components/entities/erdLayout.ts', line: 21 }, metadata: { attributes: { type: 'ErdNode[]' } } }),
+        node({ id: 'prop_layout_width', name: 'width', type: 'property', parent: 'interface_erd_layout', source: { file: 'apps/app/src/shared/components/entities/erdLayout.ts', line: 22 }, metadata: { attributes: { type: 'number' } } }),
+        // The SAME field name emitted twice (the duplicate-carrier case).
+        node({ id: 'prop_layout_width_again', name: 'width', type: 'property', parent: 'interface_erd_layout', source: { file: 'apps/app/src/shared/components/entities/erdLayout.ts', line: 23 }, metadata: { attributes: { type: 'number' } } }),
+      ];
+      const entities = orch.buildDataEntities(nodes, []);
+      const layout = entities.find((entity: any) => entity.name === 'ErdLayout');
+      expect(layout.kind).toBe('domain-shape');
+      expect(layout.kind).not.toBe('persisted-entity');
+      // FIELD DEDUPE: a column is listed once, however many carriers declared it.
+      expect((layout.fields || []).map((field: any) => field.name)).toEqual(['nodes', 'width']);
+
+      // And it is not in the ERD's entity set: buildDatabaseSchema admits no box
+      // for it, so there is no table to draw.
+      const schema = orch.buildDatabaseSchema(nodes, []);
+      expect(schema.entities.map((entity: any) => entity.name)).not.toContain('ErdLayout');
+    });
+
+    it('a zero-field shape with no persistence evidence is dropped, not relabeled', () => {
+      const nodes: CASNode[] = [
+        node({
+          id: 'struct_model_packetheader', name: 'PacketHeader', type: 'struct',
+          source: { file: 'src/model/wire.rs', line: 1 },
+          metadata: { language: 'rust', attributes: { fieldCount: 0, methodCount: 0 } },
+        }),
+      ];
+      expect(orch.buildDataEntities(nodes, []).map((entity: any) => entity.name)).not.toContain('PacketHeader');
+    });
+
+    it('a nested response sub-object is not a first-class entity', () => {
+      // A shape reached ONLY as another shape's field type, with no identity
+      // field and no persistence/api evidence, is a sub-object of its parent.
+      const nodes: CASNode[] = [
+        node({ id: 'iface_risk_report', name: 'RiskReportResponse', type: 'interface', source: { file: 'src/portfolio/dto/risk.ts', line: 1 } }),
+        node({ id: 'prop_report_var', name: 'valueAtRisk', type: 'property', parent: 'iface_risk_report', source: { file: 'src/portfolio/dto/risk.ts', line: 2 }, metadata: { attributes: { type: 'RiskValueAtRisk' } } }),
+        node({ id: 'prop_report_id', name: 'id', type: 'property', parent: 'iface_risk_report', source: { file: 'src/portfolio/dto/risk.ts', line: 3 }, metadata: { attributes: { type: 'string' } } }),
+        node({ id: 'iface_risk_var', name: 'RiskValueAtRisk', type: 'interface', source: { file: 'src/portfolio/dto/risk.ts', line: 8 } }),
+        node({ id: 'prop_var_ninetyfive', name: 'confidence95', type: 'property', parent: 'iface_risk_var', source: { file: 'src/portfolio/dto/risk.ts', line: 9 }, metadata: { attributes: { type: 'number' } } }),
+        node({ id: 'prop_var_horizon', name: 'horizonDays', type: 'property', parent: 'iface_risk_var', source: { file: 'src/portfolio/dto/risk.ts', line: 10 }, metadata: { attributes: { type: 'number' } } }),
+      ];
+      const names = orch.buildDataEntities(nodes, []).map((entity: any) => entity.name.toLowerCase());
+      expect(names).not.toContain('riskvalueatrisk');
+    });
+  });
+
   describe('operation-shaped and format-token shapes stay out of the entity set (openclaw gap)', () => {
     it('excludes a params shape whose core noun is a callable in the graph', async () => {
       const nodes: CASNode[] = [
