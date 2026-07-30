@@ -572,6 +572,7 @@ export class AnalyzerOrchestrator {
   private analyzerRootMap: Map<string, string> = new Map();
   private manifestFileCache: Map<string, string[]> = new Map();
   private manifestEvidenceCache: Map<string, Promise<{ dependencyNames: string[]; contents: string[] }>> = new Map();
+  private manifestRuntimeDependencyCache: Map<string, Promise<Set<string>>> = new Map();
   private analyzerContributionCache?: PersistentAnalyzerContributionCache;
   private analyzerContributionDigestCache = new Map<string, Promise<{ sourceIdentity: string; sourceContentHash: string }>>();
   private analyzerContributionFileSetDigestCache = new Map<string, Promise<string>>();
@@ -1218,6 +1219,7 @@ export class AnalyzerOrchestrator {
     this.detectedAnalyzerCache.delete(cacheKey);
     this.manifestFileCache.delete(projectPath);
     this.manifestEvidenceCache.delete(projectPath);
+    this.manifestRuntimeDependencyCache.delete(projectPath);
     this.nestedRepoIgnoreCache.delete(projectPath);
     this.sourceFileInventoryCache.delete(cacheKey);
   }
@@ -5585,6 +5587,59 @@ export class AnalyzerOrchestrator {
       return this.hasContentPathSignal(projectPath, patterns.content);
     }
 
+    return false;
+  }
+
+  /**
+   * Whole-name match against the project's DIRECT RUNTIME dependencies only.
+   *
+   * Distinct from manifestContainsAny on two axes that matter when a
+   * dependency is used as evidence about what a product *is* (rather than
+   * which framework it uses):
+   *
+   *  - runtime only. A scanner/engine listed under devDependencies is CI
+   *    hygiene — nearly every serious repo has one — and says nothing about
+   *    the product. Only a runtime dependency means the shipped product
+   *    actually links against the thing.
+   *  - whole-name, not substring, and no manifest free-text fallback. The
+   *    live "menu-bar utility labeled security-scanning-tool off its
+   *    dependency list" defect is the standing warning that loose matching on
+   *    dependency vocabulary fabricates product identity; a README or lockfile
+   *    merely mentioning a scanner is not a declaration that we link to it.
+   *
+   * npm-only by construction (package.json is the one manifest format whose
+   * runtime/dev split we parse). Callers must treat a false as "no evidence",
+   * never as "evidence of absence".
+   */
+  private async manifestDeclaresRuntimeDependency(projectPath: string, packageNames: string[]): Promise<boolean> {
+    if (!projectPath) return false;
+    const wanted = new Set(packageNames.map(name => name.toLowerCase()));
+    let runtimePromise = this.manifestRuntimeDependencyCache.get(projectPath);
+    if (!runtimePromise) {
+      runtimePromise = (async () => {
+        const runtimeNames = new Set<string>();
+        const matches = await this.getManifestFiles(projectPath);
+        for (const match of matches.slice(0, 160)) {
+          if (path.basename(match) !== 'package.json') continue;
+          try {
+            const content = await nativeFs.readFile(path.join(projectPath, match), 'utf8');
+            const dependencies = JSON.parse(content).dependencies;
+            if (!dependencies || typeof dependencies !== 'object') continue;
+            for (const dependency of Object.keys(dependencies)) runtimeNames.add(dependency.toLowerCase());
+          } catch {
+          }
+        }
+        return runtimeNames;
+      })();
+      this.manifestRuntimeDependencyCache.set(projectPath, runtimePromise);
+    }
+
+    const runtimeNames = await runtimePromise;
+    for (const declared of runtimeNames) {
+      // Scoped packages count under their bare name too (@scope/pkg -> pkg),
+      // which is how the same engine ships across registries.
+      if (wanted.has(declared) || wanted.has(declared.replace(/^@[^/]+\//, ''))) return true;
+    }
     return false;
   }
 
@@ -25517,10 +25572,6 @@ export class AnalyzerOrchestrator {
       nameEntityCapabilityPathTokens,
       ['fleet', 'vehicle', 'driver', 'fuel', 'maintenance', 'dispatch', 'telematics', 'odometer', 'ifta', 'trip', 'booking']
     );
-    const zeroTrustSignals = await countMatches(
-      nameEntityCapabilityPathTokens,
-      ['zero trust', 'policy', 'policies', 'resource', 'resources', 'agent', 'agents', 'device', 'devices', 'grant', 'grants', 'scan', 'credential', 'vulnerability', 'cve']
-    );
     const devtoolsSignals = await countMatches(
       nameEntityCapabilityPathTokens,
       ['analyzer', 'static analysis', 'code analysis', 'codebase analysis', 'codebase graph', 'codemod']
@@ -25576,54 +25627,49 @@ export class AnalyzerOrchestrator {
       };
     }
 
-    // ANCHOR-GATED (same live self-analysis defect class as fleet/clinical
-    // above, 2026-07-21): 'scan'/'credential'/'cve'/'agent'/'grant'/'policy'
-    // are generic words that show up incidentally in ANY agent-coordination +
-    // codebase-analysis product — Klauro's own fabric vocabulary talks about
-    // work "grants", advisory "claims", codebase "scan"ning, and API
-    // "credential"s, and its security-analysis surface legitimately mentions
-    // "vulnerability"/"cve" as things it REPORTS ON. A product that analyzes
-    // other codebases' security posture is not itself a security scanner, and
-    // vocabulary-only overlap on Klauro's own repo racked up 7 matches (agent,
-    // agents, grant, scan, policy, credential, cve) with ZERO evidence Klauro
-    // ships a scanning ENGINE, and got stamped 'security-scanning-tool' at a
-    // hardcoded 0.84 floor. Require the scan/credential/cve path to be backed
-    // by real scanner-shaped dependency evidence (an actual vulnerability
-    // scanner engine as a project dependency, or a CVE-feed integration
-    // manifest) — never vocabulary alone — before it can anchor the
-    // classification. The generic-token combination (policy/resource/agent/
-    // device all present) below it is unchanged: it already requires all four
-    // distinct tokens together, which the fleet/clinical fix pattern treats as
-    // sufficiently specific.
-    const SECURITY_SCANNER_DEPENDENCY_MARKERS = [
-      'semgrep', 'snyk', 'trivy', 'bandit', 'grype', 'nuclei', 'gitleaks',
-      'trufflehog', 'zaproxy', 'owasp-zap', 'dependency-check', 'safety',
-      'eslint-plugin-security', 'retire.js', 'sonarqube', 'checkov', 'tfsec',
-      'clair', 'anchore'
+    // REMOVED (task #90): the 'network-access-platform' half of this override.
+    // Its anchor was either the literal phrase 'zero trust' appearing in a
+    // name, or the co-occurrence of 'policy'+'resource'+'agent'+'device' —
+    // four of the most generic nouns in software. Any agent-coordination,
+    // IaC, IAM, MDM or plugin-host codebase satisfies that set incidentally,
+    // and the verdict it produced was a business identity, not a shape.
+    //
+    // KEPT AND RE-GROUNDED: 'security-scanning-tool', now decided ONLY by
+    // dependency evidence. Linking a scanner ENGINE into the shipped product
+    // is a declared, checkable fact about what the code does; vocabulary about
+    // scanning is not (a product that REPORTS ON vulnerabilities necessarily
+    // talks about them, which is precisely how this classifier once labeled a
+    // codebase-analysis product a security scanner off its own docs).
+    //
+    // Two deliberate narrowings versus the previous dependency check:
+    //  - runtime dependency only. The old list was matched against every
+    //    manifest including devDependencies and raw manifest text, so a
+    //    routine CI security step was enough. That is the same shape as the
+    //    live "menu-bar utility labeled security-scanning-tool off its
+    //    dependency list" defect.
+    //  - engine packages only. Hygiene tooling that a security-conscious repo
+    //    of ANY domain adds to CI (lint security plugins, dependency
+    //    audit/report wrappers, SAST quality platforms) is removed from the
+    //    list: depending on them means the team scans its own code, not that
+    //    the product is a scanner. What remains are engines you only take as a
+    //    RUNTIME dependency in order to perform scans as a feature.
+    const SECURITY_SCANNER_ENGINE_PACKAGES = [
+      'semgrep', 'trivy', 'grype', 'nuclei', 'gitleaks', 'trufflehog',
+      'zaproxy', 'owasp-zap', 'clair', 'anchore', 'syft', 'osv-scanner',
     ];
-    const activeProjectPathForZeroTrustGate = this.activeAnalysisProjectPath || '';
-    const hasScanCredentialAnchor =
-      zeroTrustSignals.matched.includes('scan') &&
-      zeroTrustSignals.matched.some(signal => /credential|vulnerability|cve/.test(signal));
-    const hasSecurityScannerDependencyEvidence = activeProjectPathForZeroTrustGate
-      ? await this.manifestContainsAny(activeProjectPathForZeroTrustGate, SECURITY_SCANNER_DEPENDENCY_MARKERS)
-      : false;
-    const hasZeroTrustAnchor =
-      zeroTrustSignals.matched.includes('zero trust') ||
-      (hasScanCredentialAnchor && hasSecurityScannerDependencyEvidence) ||
-      ['policy', 'resource', 'agent', 'device'].every(signal => zeroTrustSignals.matched.includes(signal));
-    if (zeroTrustSignals.matched.length >= 4 &&
-      hasZeroTrustAnchor &&
+    const hasSecurityScannerDependencyEvidence = await this.manifestDeclaresRuntimeDependency(
+      this.activeAnalysisProjectPath || '',
+      SECURITY_SCANNER_ENGINE_PACKAGES,
+    );
+    if (hasSecurityScannerDependencyEvidence &&
       topMatch.type !== 'medical-device-software' &&
       topMatch.type !== 'clinical-testing-platform') {
       return {
-        primary_type: (hasScanCredentialAnchor && hasSecurityScannerDependencyEvidence)
-          ? 'security-scanning-tool'
-          : 'network-access-platform',
-        confidence: this.signatureMatchConfidence(zeroTrustSignals.matched.length, zeroTrustSignals.size, confidence),
-        evidence: [`Zero-trust/security signals: ${zeroTrustSignals.matched.join(', ')}`],
+        primary_type: 'security-scanning-tool',
+        confidence: this.signatureMatchConfidence(1, 1, confidence),
+        evidence: ['Declared runtime dependency on a vulnerability-scanning engine'],
         secondary_types: [topMatch.type, ...secondaryTypes]
-          .filter(type => type !== 'network-access-platform' && type !== 'security-scanning-tool')
+          .filter(type => type !== 'security-scanning-tool')
           .slice(0, 3),
       };
     }

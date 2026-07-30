@@ -1954,6 +1954,50 @@ describe('architecture and capability inference', () => {
     }
   });
 
+  it('classifies security-scanning-tool ONLY from a declared runtime dependency on a scanner engine (task #90: the vocabulary anchor is gone — scanning words alone can never produce this verdict)', async () => {
+    const nodes: CASNode[] = [
+      node({ id: 'scan-runner', name: 'ScanRunner', type: 'class', source: { file: 'src/ScanRunner.ts' } }),
+      node({ id: 'finding-store', name: 'FindingStore', type: 'class', source: { file: 'src/FindingStore.ts' } }),
+    ];
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-scanner-dep-'));
+    const priorPath = (orch as any).activeAnalysisProjectPath;
+    try {
+      fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({
+        name: 'scan-product',
+        dependencies: { 'osv-scanner': '^1.0.0' },
+      }));
+      (orch as any).activeAnalysisProjectPath = root;
+      const purpose = await orch.inferSystemPurpose([], [], [], nodes);
+      expect(purpose.primary_type).toBe('security-scanning-tool');
+      expect(purpose.evidence.join(' ')).toContain('runtime dependency');
+    } finally {
+      (orch as any).activeAnalysisProjectPath = priorPath;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('does not classify a repo that merely scans ITSELF in CI as a security-scanning-tool (dev-dependency scanners are hygiene, not product identity)', async () => {
+    const nodes: CASNode[] = [
+      node({ id: 'scan-runner', name: 'ScanRunner', type: 'class', source: { file: 'src/ScanRunner.ts' } }),
+      node({ id: 'cve-report', name: 'CveOverviewReport', type: 'class', source: { file: 'src/CveOverviewReport.ts' } }),
+    ];
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-scanner-devdep-'));
+    const priorPath = (orch as any).activeAnalysisProjectPath;
+    try {
+      fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({
+        name: 'some-web-product',
+        dependencies: { express: '^4.0.0' },
+        devDependencies: { 'osv-scanner': '^1.0.0', semgrep: '^1.0.0' },
+      }));
+      (orch as any).activeAnalysisProjectPath = root;
+      const purpose = await orch.inferSystemPurpose([], [], [], nodes);
+      expect(purpose.primary_type).not.toBe('security-scanning-tool');
+    } finally {
+      (orch as any).activeAnalysisProjectPath = priorPath;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('capability ranking carries NO hardcoded domain bias — capabilityPurposeBias and its filter sibling are gone', async () => {
     // Both were a primaryDomain string-literal switch (literals naming
     // specific benchmark-corpus products) driving capability ranking and
