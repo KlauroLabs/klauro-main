@@ -1,8 +1,7 @@
 # Code Analysis Specification (CAS)
 
-**Version:** 1.10.0
+**Version:** 1.11.0
 **Status:** Active
-**Last Updated:** 2026-02-05
 
 ## Abstract
 
@@ -23,19 +22,20 @@ The Code Analysis Specification (CAS) defines a universal, language-agnostic for
 
 ## Version History
 
-This document specifies version 1.10.0 of the Code Analysis Specification. The evolution of CAS includes:
+This document specifies version 1.11.0 of the Code Analysis Specification. The evolution of CAS includes:
 
-- **[Version 1.0.0](./v1.0.0.md)** (2024-01-01) - Initial release with core nodes, edges, and basic metadata
-- **[Version 1.1.0](./v1.1.0.md)** (2024-06-01) - Added progressive levels, entry/exit points, and extended metadata
-- **[Version 1.2.0](./v1.2.0.md)** (2024-09-19) - Added multi-perspective support and enhanced patterns
-- **[Version 1.3.0](./v1.3.0-rfp.md)** (2025-01-01) - Added comprehensive call graph tracking and method invocation analysis
-- **[Version 1.4.0](./v1.4.0-rfp.md)** (2025-09-20) - Added documentation and comment extraction
-- **[Version 1.5.0](./v1.5.0-rfp.md)** (2026-01-09) - Added class-level relationships, pattern variations, and enhanced entry points
-- **[Version 1.6.0](./v1.6.0-rfp.md)** (2026-01-23) - Added test architecture, test categorization, BDD support, and test-to-code relationships
-- **[Version 1.7.0](./v1.7.0-rfp.md)** (2026-01-25) - Added inference-based intelligence: intent, critical flows, change risk, data lifecycle, security boundaries, flow coverage, temporal stability
-- **[Version 1.8.0](./v1.8.0-rfp.md)** (2026-02-05) - Added incremental analysis: change detection, change reporting, change history, impact analysis
-- **Version 1.10.0** (2026-06-08) - Current version - Added system health/coherence analysis and graph-anchored semantic retrieval
-- **[Version 1.9.0](./v1.9.0-rfp.md)** (2026-05-13) - Added Codebase Idiom Intelligence for repo-local conventions, examples, violations, and agent validation
+- **[Version 1.0.0](./v1.0.0.md)** - Initial release with core nodes, edges, and basic metadata
+- **[Version 1.1.0](./v1.1.0.md)** - Added progressive levels, entry/exit points, and extended metadata
+- **[Version 1.2.0](./v1.2.0.md)** - Added multi-perspective support and enhanced patterns
+- **[Version 1.3.0](./v1.3.0-rfp.md)** - Added comprehensive call graph tracking and method invocation analysis
+- **[Version 1.4.0](./v1.4.0-rfp.md)** - Added documentation and comment extraction
+- **[Version 1.5.0](./v1.5.0-rfp.md)** - Added class-level relationships, pattern variations, and enhanced entry points
+- **[Version 1.6.0](./v1.6.0-rfp.md)** - Added test architecture, test categorization, BDD support, and test-to-code relationships
+- **[Version 1.7.0](./v1.7.0-rfp.md)** - Added inference-based intelligence: intent, critical flows, change risk, data lifecycle, security boundaries, flow coverage, temporal stability, system capabilities, domain concepts
+- **[Version 1.8.0](./v1.8.0-rfp.md)** - Added incremental analysis: change detection, change reporting, change history, impact analysis; runtime/static correlation; distribution units
+- **[Version 1.9.0](./v1.9.0-rfp.md)** - Added Codebase Idiom Intelligence for repo-local conventions, examples, violations, and agent validation
+- **Version 1.10.0** - Added system health/coherence analysis and graph-anchored semantic retrieval (embedding index)
+- **Version 1.11.0** - Current version. See §11.11 for the full field-level diff. Summary: evidence-gated `persisted-entity` classification on data entities (`kind_evidence`, replacing the uncited persistence fallback); distinctiveness-gated domain concepts (`distinctiveness_evidence`, replacing raw-frequency ranking); structural anchoring required for every shipped capability; `ENTRY_POINT_TYPES`/`EXIT_POINT_TYPES` promoted to the single source of truth for their type unions (adds `graphql` as a first-class entry-point kind); full declared-dependency manifest (`dependency_manifest`); self-discovered coverage gaps (`coverage_gaps`); unified communication-seam classification (`communication_seams`) and CAP/consistency characterization (`consistency_model`); custom-architecture convention audit trail (`conventions_applied`); progressive layer-readiness ladder (`layers_ready`, `l0_index`); edge referential-integrity invariant (zero dangling endpoints) enforced as a release gate.
 
 ## 1. Introduction
 
