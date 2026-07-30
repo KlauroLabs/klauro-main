@@ -46,6 +46,18 @@ function writeFixtureProject(root: string): string {
   return projectDir;
 }
 
+// Polls a condition instead of sleeping a fixed duration — a fixed sleep is
+// either a race (too short, flaky under load) or pure wasted wall time on the
+// pre-deploy gate (too long, "just in case"). Polls every 5ms up to
+// timeoutMs, so the common case resolves almost immediately.
+async function pollUntil(condition: () => boolean, timeoutMs = 2000, intervalMs = 5): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!condition()) {
+    if (Date.now() >= deadline) throw new Error(`pollUntil: condition not met within ${timeoutMs}ms`);
+    await new Promise(resolve => setTimeout(resolve, intervalMs));
+  }
+}
+
 function readRunLogEvents(): Array<{ event: string; project_path: string; run_id: string; error?: { message: string } }> {
   const logPath = getAnalysisRunLogPath();
   if (!fs.existsSync(logPath)) return [];
@@ -142,7 +154,7 @@ test('idle hosted worker exits after its warm reuse window', async () => {
   try {
     await runAnalysis(fixtureProject);
     assert.strictEqual(__analysisWorkerRunningForTests(), true);
-    await new Promise(resolve => setTimeout(resolve, 50));
+    await pollUntil(() => __analysisWorkerRunningForTests() === false);
     assert.strictEqual(__analysisWorkerRunningForTests(), false);
   } finally {
     delete process.env.KLAURO_ANALYSIS_WORKER_IDLE_MS;

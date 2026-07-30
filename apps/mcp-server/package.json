@@ -120,6 +120,8 @@
     "test": "node scripts/test-suite.mjs",
     "test:core": "node scripts/test-suite.mjs --group core",
     "test:gauntlet": "node scripts/test-suite.mjs --group gauntlet",
+    "test:fast": "node scripts/test-suite.mjs --group fast",
+    "test:bench": "node scripts/test-suite.mjs --group bench",
     "test:serial": "node scripts/test-suite.mjs --concurrency 1",
     "typecheck": "NODE_OPTIONS='--max-old-space-size=8192' tsc --noEmit",
     "gauntlet:run": "tsx src/gauntlet/index.ts",

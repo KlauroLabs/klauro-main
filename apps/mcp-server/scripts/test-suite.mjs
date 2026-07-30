@@ -32,10 +32,28 @@ const artifactTestFiles = new Set([
   'src/mcp-surface-live-e2e.test.ts',
 ]);
 
+// Role, not directory: a file is a BENCHMARK if it lives under src/gauntlet/
+// OR its own name says so (`*-benchmark.test.ts`, `*-benchmark-copy.test.ts`,
+// etc). The `core` group used to be "not under src/gauntlet/", which let 9
+// benchmark files sitting directly in src/ (agent-existing-task-benchmark,
+// competitor-baseline-benchmark, architecture-pattern-benchmark,
+// agent-idiom-benchmark, capability-inference-benchmark,
+// analysis-focus-benchmark, agent-greenfield-benchmark,
+// runtime-impact-benchmark, incremental-benchmark-copy — ~250 CPU-seconds)
+// ride along in the pre-deploy gate purely because of where they happened to
+// be saved, not what they are. `fast` is the actual pre-deploy gate now;
+// `bench` (gauntlet + every *-benchmark file, wherever it lives) is nightly.
+const BENCHMARK_ROLE_RE = /-benchmark(-|\.)|^src\/gauntlet\//;
+export function isBenchmarkRole(file) {
+  return BENCHMARK_ROLE_RE.test(file);
+}
+
 export const TEST_GROUPS = Object.freeze({
   all: () => true,
   core: file => !file.startsWith('src/gauntlet/'),
   gauntlet: file => file.startsWith('src/gauntlet/'),
+  fast: file => !isBenchmarkRole(file),
+  bench: file => isBenchmarkRole(file),
 });
 
 export function defaultConcurrency(cpuCount = availableParallelism()) {
