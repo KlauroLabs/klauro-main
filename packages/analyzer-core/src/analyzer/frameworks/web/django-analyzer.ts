@@ -446,7 +446,7 @@ export class DjangoAnalyzer extends BaseAnalyzer {
     const projectNode = this.createNodeBuilder(projectId, projectName, 'application')
       .withLevel(1, 'system')
       .withCategory('application', ['framework', 'django'])
-      .withSource({ file: fullSettingsPath, line: 1, end_line: settingsContent.split('\n').length })
+      .withSource({ file: settingsPath, line: 1, end_line: settingsContent.split('\n').length })
       .withDescription(`Django project: ${projectName}`)
       .withDocumentation(documentation)
       .withComments(comments)
@@ -585,7 +585,7 @@ export class DjangoAnalyzer extends BaseAnalyzer {
       const appNode = this.createNodeBuilder(appId, appName, 'module')
         .withLevel(2, 'architectural')
         .withCategory('module', ['framework', 'django'])
-        .withSource({ file: path.join(projectPath, appDir), line: 1, end_line: 1 })
+        .withSource({ file: appDir, line: 1, end_line: 1 })
         .withDescription(`Django app module: ${appName}`)
         .withComments(appComments)
         .withTodos(appTodos)
@@ -616,7 +616,7 @@ export class DjangoAnalyzer extends BaseAnalyzer {
         const mutationNode = this.createNodeBuilder(mutationId, mutation.name, 'mutation')
           .withLevel(3, 'code')
           .withCategory('mutation', ['graphql', 'api'])
-          .withSource({ file: path.join(projectPath, mutation.filePath), line: 1, end_line: 1 })
+          .withSource({ file: mutation.filePath, line: 1, end_line: 1 })
           .withDescription(`GraphQL mutation: ${mutation.name}`)
           .withMetadata({
             framework: 'graphene',
@@ -688,7 +688,7 @@ export class DjangoAnalyzer extends BaseAnalyzer {
         const queryNode = this.createNodeBuilder(queryId, query.name, 'query')
           .withLevel(3, 'code')
           .withCategory('query', ['graphql', 'api'])
-          .withSource({ file: path.join(projectPath, query.filePath), line: 1, end_line: 1 })
+          .withSource({ file: query.filePath, line: 1, end_line: 1 })
           .withDescription(`GraphQL query: ${query.name}`)
           .withMetadata({
             framework: 'graphene',
@@ -758,7 +758,7 @@ export class DjangoAnalyzer extends BaseAnalyzer {
         const typeNode = this.createNodeBuilder(typeId, gqlType.name, 'type')
           .withLevel(3, 'code')
           .withCategory('type', ['graphql', 'schema'])
-          .withSource({ file: path.join(projectPath, gqlType.filePath), line: 1, end_line: 1 })
+          .withSource({ file: gqlType.filePath, line: 1, end_line: 1 })
           .withDescription(`GraphQL type: ${gqlType.name}`)
           .withMetadata({
             framework: 'graphene',
@@ -799,7 +799,7 @@ export class DjangoAnalyzer extends BaseAnalyzer {
         const taskNode = this.createNodeBuilder(taskId, task.name, 'task')
           .withLevel(3, 'code')
           .withCategory('task', ['async', 'celery'])
-          .withSource({ file: path.join(projectPath, task.filePath), line: 1, end_line: 1 })
+          .withSource({ file: task.filePath, line: 1, end_line: 1 })
           .withDescription(`Celery task: ${task.name}`)
           .withMetadata({
             framework: 'celery',
@@ -876,7 +876,7 @@ export class DjangoAnalyzer extends BaseAnalyzer {
         const modelNode = this.createNodeBuilder(modelId, model.name, 'model')
           .withLevel(3, 'code')
           .withCategory('model', model.abstract ? ['data', 'abstract'] : ['data', 'entity'])
-          .withSource({ file: path.join(projectPath, model.filePath), line: 1, end_line: 1 })
+          .withSource({ file: model.filePath, line: 1, end_line: 1 })
           .withDescription(`Django model: ${model.name}`)
           .withDocumentation(modelDocumentation)
           .withComments(modelComments)
@@ -908,7 +908,7 @@ export class DjangoAnalyzer extends BaseAnalyzer {
           nodes.push(this.createNodeBuilder(fieldId, field.name, 'field')
             .withLevel(4, 'member')
             .withCategory('field', ['data'])
-            .withSource({ file: path.join(projectPath, model.filePath), line: 1, end_line: 1 })
+            .withSource({ file: model.filePath, line: 1, end_line: 1 })
             .withSignature({ parameters: [], return_type: field.type })
             .withMetadata({
               framework: 'django',
@@ -944,7 +944,7 @@ export class DjangoAnalyzer extends BaseAnalyzer {
         const viewNode = this.createNodeBuilder(viewId, viewDisplayName, 'controller')
           .withLevel(3, 'code')
           .withCategory('controller', ['api', 'rest'])
-          .withSource({ file: path.join(projectPath, view.filePath), line: 1, end_line: 1 })
+          .withSource({ file: view.filePath, line: 1, end_line: 1 })
           .withDescription(`Django view: ${viewDisplayName}`)
           .withDocumentation(viewDocumentation)
           .withComments(viewComments)
@@ -979,7 +979,7 @@ export class DjangoAnalyzer extends BaseAnalyzer {
         const serializerNode = this.createNodeBuilder(serializerId, serializer.name, 'serializer')
           .withLevel(3, 'code')
           .withCategory('serializer', ['api', 'rest', 'dto'])
-          .withSource({ file: path.join(projectPath, serializer.filePath), line: 1, end_line: 1 })
+          .withSource({ file: serializer.filePath, line: 1, end_line: 1 })
           .withDescription(`Django REST Framework serializer: ${serializer.name}`)
           .withMetadata({
             framework: 'django-rest-framework',
@@ -1011,7 +1011,7 @@ export class DjangoAnalyzer extends BaseAnalyzer {
           .withLevel(4, 'member')
           .withCategory('route', ['http', 'endpoint'])
           .withSource({
-            file: path.join(projectPath, url.sourceFile || path.join(appDir, 'urls.py')),
+            file: url.sourceFile || path.join(appDir, 'urls.py'),
             line: 1,
             end_line: 1
           })
@@ -2311,7 +2311,7 @@ export class DjangoAnalyzer extends BaseAnalyzer {
         const middlewareNode = this.createNodeBuilder(middlewareId, mw.name, 'middleware')
           .withLevel(3, 'code')
           .withCategory('middleware', ['framework', 'django'])
-          .withSource({ file: path.join(projectPath, mw.filePath), line: 1, end_line: 1 })
+          .withSource({ file: mw.filePath, line: 1, end_line: 1 })
           .withDescription(`Django middleware: ${mw.name}`)
           .withDocumentation(middlewareDocumentation)
           .withComments(middlewareComments)

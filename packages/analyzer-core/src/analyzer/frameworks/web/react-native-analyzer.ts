@@ -363,7 +363,7 @@ export class ReactNativeAnalyzer extends BaseAnalyzer {
       const node = this.createNodeBuilder(id, c.name, type)
         .withLevel(2, 'architectural')
         .withCategory(c.isScreen ? 'screen' : 'component', ['react-native', c.isScreen ? 'screen' : 'component'])
-        .withSource({ file: fullPath, line: 1 })
+        .withSource({ file: c.filePath, line: 1 })
         .withDescription(c.isScreen
           ? `React Native screen: ${c.name}`
           : `React Native component: ${c.name}`)
@@ -451,7 +451,7 @@ export class ReactNativeAnalyzer extends BaseAnalyzer {
       nodes.push(this.createNodeBuilder(id, `Layout ${route.routePath || '/'}`, 'layout')
         .withLevel(2, 'architectural')
         .withCategory('layout', ['react-native', 'expo-router'])
-        .withSource({ file: fullPath, line: 1 })
+        .withSource({ file: route.filePath, line: 1 })
         .withDescription(`Expo Router layout for ${route.routePath || '/'}`)
         .withTags([`analyzer:${this.analyzerId}`, 'expo-router'])
         .withMetadata({ framework: 'react-native', attributes: { routePath: route.routePath, groups: route.groups, router: 'expo-router' } })
@@ -463,7 +463,7 @@ export class ReactNativeAnalyzer extends BaseAnalyzer {
     nodes.push(this.createNodeBuilder(id, `Route ${route.routePath}`, 'route')
       .withLevel(3, 'code')
       .withCategory('route', ['react-native', 'expo-router', 'navigation'])
-      .withSource({ file: fullPath, line: 1 })
+      .withSource({ file: route.filePath, line: 1 })
       .withDescription(`Expo Router screen at ${route.routePath}`)
       .withTags([`analyzer:${this.analyzerId}`, 'expo-router'])
       .withMetadata({
@@ -592,7 +592,7 @@ export class ReactNativeAnalyzer extends BaseAnalyzer {
       nodes.push(this.createNodeBuilder(id, reg.screenName, 'navigation-screen')
         .withLevel(3, 'code')
         .withCategory('navigation', ['react-native', 'react-navigation', reg.navigatorKind])
-        .withSource({ file: fullPath, line: reg.line })
+        .withSource({ file: reg.filePath, line: reg.line })
         .withDescription(`React Navigation ${reg.navigatorKind} screen "${reg.screenName}"${reg.componentName ? ` -> ${reg.componentName}` : ''}`)
         .withTags([`analyzer:${this.analyzerId}`, 'rn-navigation'])
         .withMetadata({
@@ -624,7 +624,7 @@ export class ReactNativeAnalyzer extends BaseAnalyzer {
     const seenEdge = new Set<string>();
     for (const call of navigateCalls) {
       const fullPath = path.join(projectPath, call.filePath);
-      const sourceId = this.ensureNavigationSourceNode(call.filePath, fullPath, nodes);
+      const sourceId = this.ensureNavigationSourceNode(call.filePath, nodes);
       const targetId = screenNodeByName.get(call.targetScreen);
 
       if (targetId) {
@@ -652,13 +652,13 @@ export class ReactNativeAnalyzer extends BaseAnalyzer {
     }
   }
 
-  private ensureNavigationSourceNode(relativePath: string, fullPath: string, nodes: CASNode[]): string {
+  private ensureNavigationSourceNode(relativePath: string, nodes: CASNode[]): string {
     const id = this.generateId('rn_nav_source', relativePath, 'navigation');
     if (nodes.some(n => n.id === id)) return id;
     nodes.push(this.createNodeBuilder(id, `Navigation ${relativePath}`, 'navigation-source')
       .withLevel(3, 'code')
       .withCategory('navigation', ['react-native', 'react-navigation'])
-      .withSource({ file: fullPath, line: 1 })
+      .withSource({ file: relativePath, line: 1 })
       .withDescription(`Screen navigation source in ${relativePath}`)
       .withTags([`analyzer:${this.analyzerId}`, 'rn-navigation'])
       .withMetadata({ framework: 'react-native', attributes: { sourceFile: relativePath } })
@@ -713,7 +713,7 @@ export class ReactNativeAnalyzer extends BaseAnalyzer {
       nodes.push(this.createNodeBuilder(id, cap.module, 'native-capability')
         .withLevel(3, 'code')
         .withCategory('capability', ['react-native', 'expo', 'native-module'])
-        .withSource({ file: fullPath, line: 1 })
+        .withSource({ file: cap.filePath, line: 1 })
         .withDescription(`Native device capability: ${cap.module} (${cap.feature})`)
         .withTags([`analyzer:${this.analyzerId}`, 'expo-native-modules', `capability:${cap.feature}`])
         .withMetadata({ framework: 'react-native', attributes: { module: cap.module, feature: cap.feature } })

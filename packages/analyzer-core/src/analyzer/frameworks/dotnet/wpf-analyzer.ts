@@ -304,7 +304,7 @@ export class WPFAnalyzer extends BaseAnalyzer {
           } else {
             const node = this.createNodeBuilder(windowId, windowName, 'window')
               .withLevel(2, this.getLevelName(2))
-              .withSource({ file: fullPath, line: this.findLineNumber(content, match[0]) })
+              .withSource({ file: file, line: this.findLineNumber(content, match[0]) })
               .withMetadata({
                 framework: 'wpf',
                 attributes: {
@@ -326,7 +326,7 @@ export class WPFAnalyzer extends BaseAnalyzer {
             const xamlNodeId = this.generateId('xaml', xamlPath, windowName);
             const xamlNode = this.createNodeBuilder(xamlNodeId, path.basename(xamlPath), 'view')
               .withLevel(3, this.getLevelName(3))
-              .withSource({ file: path.join(projectPath, xamlPath), line: 1 })
+              .withSource({ file: xamlPath, line: 1 })
               .withMetadata({
                 framework: 'wpf',
                 attributes: {
@@ -353,7 +353,7 @@ export class WPFAnalyzer extends BaseAnalyzer {
           // eventHandlers above — arbitrary methods are never promoted, only
           // methods a WPF event is structurally wired to.
           this.emitUiEventHandlerEntryPoints(
-            windowId, windowName, file, fullPath,
+            windowId, windowName, file,
             this.extractEventHandlerBindings(content, xamlContent),
             content, newNodes, edges, entryPoints
           );
@@ -433,7 +433,7 @@ export class WPFAnalyzer extends BaseAnalyzer {
           } else {
             const node = this.createNodeBuilder(controlId, controlName, 'ui_component')
               .withLevel(3, this.getLevelName(3))
-              .withSource({ file: fullPath, line: this.findLineNumber(content, match[0]) })
+              .withSource({ file: file, line: this.findLineNumber(content, match[0]) })
               .withMetadata({
                 framework: 'wpf',
                 attributes: {
@@ -452,7 +452,7 @@ export class WPFAnalyzer extends BaseAnalyzer {
           // a button Click inside the control's own code-behind) — same
           // evidence-gated extraction as Windows.
           this.emitUiEventHandlerEntryPoints(
-            controlId, controlName, file, fullPath,
+            controlId, controlName, file,
             this.extractEventHandlerBindings(content, xamlContent),
             content, newNodes, edges, entryPoints
           );
@@ -538,7 +538,7 @@ export class WPFAnalyzer extends BaseAnalyzer {
           } else {
             const node = this.createNodeBuilder(vmId, vmName, 'viewmodel')
               .withLevel(2, this.getLevelName(2))
-              .withSource({ file: fullPath, line: this.findLineNumber(content, match[0]) })
+              .withSource({ file: file, line: this.findLineNumber(content, match[0]) })
               .withMetadata({
                 framework: 'wpf',
                 attributes: {
@@ -559,7 +559,7 @@ export class WPFAnalyzer extends BaseAnalyzer {
             const cmdId = this.generateId('command', file, `${vmName}_${cmd.name}`);
             const cmdNode = this.createNodeBuilder(cmdId, cmd.name, 'command')
               .withLevel(4, this.getLevelName(4))
-              .withSource({ file: fullPath })
+              .withSource({ file: file })
               .withParent(vmId)
               .withMetadata({
                 framework: 'wpf',
@@ -681,7 +681,7 @@ export class WPFAnalyzer extends BaseAnalyzer {
           } else {
             const node = this.createNodeBuilder(serviceId, serviceName, 'service')
               .withLevel(2, this.getLevelName(2))
-              .withSource({ file: fullPath, line: this.findLineNumber(content, match[0]) })
+              .withSource({ file: file, line: this.findLineNumber(content, match[0]) })
               .withMetadata({
                 framework: 'wpf',
                 attributes: {
@@ -754,7 +754,7 @@ export class WPFAnalyzer extends BaseAnalyzer {
           } else {
             const node = this.createNodeBuilder(converterId, converterName, 'converter')
               .withLevel(3, this.getLevelName(3))
-              .withSource({ file: fullPath, line: this.findLineNumber(content, match[0]) })
+              .withSource({ file: file, line: this.findLineNumber(content, match[0]) })
               .withMetadata({
                 framework: 'wpf',
                 attributes: {
@@ -838,7 +838,7 @@ export class WPFAnalyzer extends BaseAnalyzer {
           } else {
             const node = this.createNodeBuilder(connId, className, 'service')
               .withLevel(2, this.getLevelName(2))
-              .withSource({ file: fullPath, line: this.findLineNumber(content, match[0]) })
+              .withSource({ file: file, line: this.findLineNumber(content, match[0]) })
               .withMetadata({
                 framework: 'wpf',
                 attributes: {
@@ -1142,7 +1142,7 @@ export class WPFAnalyzer extends BaseAnalyzer {
           newNodes.push(
             this.createNodeBuilder(nodeId, appName, 'app_startup')
               .withLevel(2, this.getLevelName(2))
-              .withSource({ file: fullPath, line })
+              .withSource({ file: file, line })
               .withMetadata({
                 framework: 'wpf',
                 attributes: { startup_method: methodName, is_application_subclass: !!appMatch }
@@ -1252,7 +1252,7 @@ export class WPFAnalyzer extends BaseAnalyzer {
           newNodes.push(
             this.createNodeBuilder(reportNodeId, path.basename(xamlFile), 'view')
               .withLevel(3, this.getLevelName(3))
-              .withSource({ file: fullPath, line: 1 })
+              .withSource({ file: xamlFile, line: 1 })
               .withMetadata({
                 framework: 'wpf',
                 attributes: {
@@ -1526,7 +1526,6 @@ export class WPFAnalyzer extends BaseAnalyzer {
     parentId: string,
     parentName: string,
     filePath: string,
-    fullPath: string,
     bindings: WpfEventHandlerBinding[],
     csContent: string,
     newNodes: CASNode[],
@@ -1542,7 +1541,7 @@ export class WPFAnalyzer extends BaseAnalyzer {
 
       const handlerNode = this.createNodeBuilder(handlerId, `${binding.event}=${binding.method}`, 'event_handler')
         .withLevel(4, this.getLevelName(4))
-        .withSource({ file: fullPath, line: line || 1 })
+        .withSource({ file: filePath, line: line || 1 })
         .withParent(parentId)
         .withMetadata({
           framework: 'wpf',

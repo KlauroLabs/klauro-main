@@ -115,7 +115,9 @@ describe('NestJS extraction paths that previously emitted nothing', () => {
     const { nodes } = await analyze();
     const controllerNode = nodes.find(n => n.name === 'OrdersController' && n.type === 'controller');
     expect(controllerNode).toBeDefined();
-    expect(controllerNode.source.file).toBe(path.join(root, 'src/api/orders.ts'));
+    // source.file is repo-relative: it must not carry the analysis sandbox's
+    // absolute layout (temp dir, username) into stored output.
+    expect(controllerNode.source.file).toBe('src/api/orders.ts');
   });
 
   it('still finds a conventionally named controller (no regression from the broadened scan)', async () => {

@@ -290,7 +290,7 @@ export class AngularAnalyzer extends BaseAnalyzer {
       const appNode = this.createNodeBuilder(appId, application.name, 'angular_app')
         .withLevel(1, 'system')
         .withCategory('frontend', ['angular', 'application'])
-        .withSource({ file: path.join(projectPath, 'package.json'), line: 1, end_line: 1 })
+        .withSource({ file: 'package.json', line: 1, end_line: 1 })
         .withDescription(`Angular application: ${application.name}`)
         .withMetadata({
           framework: 'angular',
@@ -344,7 +344,7 @@ export class AngularAnalyzer extends BaseAnalyzer {
             const componentNode = this.createNodeBuilder(componentId, component.name, 'angular_component')
               .withLevel(2, 'architectural')
               .withCategory('component', ['angular', 'ui'])
-              .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
+              .withSource({ file: file, line: 1, end_line: content.split('\n').length })
               .withDescription(`Angular component: ${component.name}`)
               .withMetadata({
                 framework: 'angular',
@@ -393,7 +393,7 @@ export class AngularAnalyzer extends BaseAnalyzer {
                       this.createNodeBuilder(methodId, handler.handlerName, 'method')
                         .withLevel(4, 'member')
                         .withCategory('method', ['angular', 'event-handler'])
-                        .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
+                        .withSource({ file: file, line: 1, end_line: content.split('\n').length })
                         .withDescription(`Event handler method ${handler.handlerName} in ${component.name}`)
                         .withParent(componentId)
                         .withMetadata({ framework: 'angular' })
@@ -496,7 +496,7 @@ export class AngularAnalyzer extends BaseAnalyzer {
             const serviceNode = this.createNodeBuilder(serviceId, service.name, 'angular_service')
               .withLevel(2, 'architectural')
               .withCategory('service', ['angular', 'injectable'])
-              .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
+              .withSource({ file: file, line: 1, end_line: content.split('\n').length })
               .withDescription(`Angular service: ${service.name}`)
               .withMetadata({
                 framework: 'angular',
@@ -516,7 +516,7 @@ export class AngularAnalyzer extends BaseAnalyzer {
               const methodNode = this.createNodeBuilder(methodId, method.name, 'method')
                 .withLevel(4, 'member')
                 .withCategory('method', ['angular', 'function'])
-                .withSource({ file: fullPath, line: 1, end_line: 1 })
+                .withSource({ file: file, line: 1, end_line: 1 })
                 .withDescription(`Method in ${service.name}: ${method.name}`)
                 .withParent(serviceId)
                 .withSignature({
@@ -571,7 +571,7 @@ export class AngularAnalyzer extends BaseAnalyzer {
             const moduleNode = this.createNodeBuilder(moduleId, module.name, 'angular_module')
               .withLevel(1, 'system')
               .withCategory('module', ['angular', 'organizational'])
-              .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
+              .withSource({ file: file, line: 1, end_line: content.split('\n').length })
               .withDescription(`Angular module: ${module.name}`)
               .withMetadata({
                 framework: 'angular',
@@ -620,7 +620,7 @@ export class AngularAnalyzer extends BaseAnalyzer {
             const directiveNode = this.createNodeBuilder(directiveId, directive.name, 'angular_directive')
               .withLevel(3, 'code')
               .withCategory('directive', ['angular', 'dom'])
-              .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
+              .withSource({ file: file, line: 1, end_line: content.split('\n').length })
               .withDescription(`Angular directive: ${directive.name}`)
               .withMetadata({
                 framework: 'angular',
@@ -669,7 +669,7 @@ export class AngularAnalyzer extends BaseAnalyzer {
             const pipeNode = this.createNodeBuilder(pipeId, pipe.name, 'angular_pipe')
               .withLevel(3, 'code')
               .withCategory('pipe', ['angular', 'transform'])
-              .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
+              .withSource({ file: file, line: 1, end_line: content.split('\n').length })
               .withDescription(`Angular pipe: ${pipe.name}`)
               .withMetadata({
                 framework: 'angular',
@@ -714,7 +714,7 @@ export class AngularAnalyzer extends BaseAnalyzer {
             const guardNode = this.createNodeBuilder(guardId, guard.name, 'angular_guard')
               .withLevel(3, 'code')
               .withCategory('guard', ['angular', 'security'])
-              .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
+              .withSource({ file: file, line: 1, end_line: content.split('\n').length })
               .withDescription(`Angular guard: ${guard.name}`)
               .withMetadata({
                 framework: 'angular',
@@ -794,7 +794,7 @@ export class AngularAnalyzer extends BaseAnalyzer {
       const routeNode = this.createNodeBuilder(routeId, displayPath, 'angular_route')
         .withLevel(3, 'code')
         .withCategory('route', ['angular', 'navigation'])
-        .withSource({ file: path.join(projectPath, route.sourceFile), line: route.line, end_line: route.line })
+        .withSource({ file: route.sourceFile, line: route.line, end_line: route.line })
         .withDescription(route.component
           ? `Angular route ${displayPath} rendering ${route.component}`
           : route.redirectTo !== undefined
@@ -919,7 +919,7 @@ export class AngularAnalyzer extends BaseAnalyzer {
             const routeNode = this.createNodeBuilder(routeId, route.path, 'angular_route')
               .withLevel(3, 'code')
               .withCategory('route', ['angular', 'navigation'])
-              .withSource({ file: fullPath, line: 1, end_line: 1 })
+              .withSource({ file: file, line: 1, end_line: 1 })
               .withDescription(`Angular route: ${route.path}`)
               .withMetadata({
                 framework: 'angular',
@@ -1925,7 +1925,7 @@ export class AngularAnalyzer extends BaseAnalyzer {
         this.generateId('method', service.filePath, `${service.name}_${methodName}`);
       const emitted = this.extractHttpCallsForOwner({
         content,
-        fullPath,
+        relativeFile: service.filePath,
         ownerId: serviceId,
         ownerName: service.name,
         methodIdFor,
@@ -1954,7 +1954,7 @@ export class AngularAnalyzer extends BaseAnalyzer {
         this.generateId('method', component.filePath, `${component.name}_${methodName}`);
       const emitted = this.extractHttpCallsForOwner({
         content,
-        fullPath,
+        relativeFile: component.filePath,
         ownerId: componentId,
         ownerName: component.name,
         methodIdFor,
@@ -1986,7 +1986,7 @@ export class AngularAnalyzer extends BaseAnalyzer {
    */
   private extractHttpCallsForOwner(args: {
     content: string;
-    fullPath: string;
+    relativeFile: string;
     ownerId: string;
     ownerName: string;
     methodIdFor: (methodName: string) => string;
@@ -1994,7 +1994,7 @@ export class AngularAnalyzer extends BaseAnalyzer {
     nodes: CASNode[];
     edges: CASEdge[];
   }): CASExitPoint[] {
-    const { content, fullPath, ownerId, ownerName, methodIdFor, createMissingMethodNode, nodes, edges } = args;
+    const { content, relativeFile, ownerId, ownerName, methodIdFor, createMissingMethodNode, nodes, edges } = args;
     const exits: CASExitPoint[] = [];
 
     const classFields = this.extractClassFieldLiterals(content);
@@ -2063,7 +2063,7 @@ export class AngularAnalyzer extends BaseAnalyzer {
               this.createNodeBuilder(lazyId, methodName, 'method')
                 .withLevel(4, 'member')
                 .withCategory('method', ['angular', 'function'])
-                .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
+                .withSource({ file: relativeFile, line: 1, end_line: content.split('\n').length })
                 .withDescription(`Method in ${ownerName}: ${methodName}`)
                 .withParent(ownerId)
                 .withMetadata({ framework: 'angular' })

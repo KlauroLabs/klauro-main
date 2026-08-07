@@ -135,7 +135,7 @@ export class TauriAnalyzer extends BaseAnalyzer {
       const appNode = this.createNodeBuilder(appId, 'Tauri Application', 'application')
         .withLevel(1, 'system')
         .withCategory('application', ['framework', 'tauri', 'desktop'])
-        .withSource({ file: path.join(context.projectPath, anchorFile), line: 1, end_line: 1 })
+        .withSource({ file: anchorFile, line: 1, end_line: 1 })
         .withDescription('Tauri desktop application (Rust backend + web frontend)')
         .withMetadata({ framework: 'tauri', attributes: { version, commands: allCommands.length } })
         .build();
@@ -153,7 +153,7 @@ export class TauriAnalyzer extends BaseAnalyzer {
         const commandNode = this.createNodeBuilder(commandId, `#[tauri::command] ${cmd.name}`, 'tauri_command')
           .withLevel(3, 'code')
           .withCategory('tauri_command', ['tauri', 'command', 'entry-point'])
-          .withSource({ file: path.join(context.projectPath, cmd.file), line: cmd.line, end_line: cmd.line })
+          .withSource({ file: cmd.file, line: cmd.line, end_line: cmd.line })
           .withDescription(`Tauri command '${cmd.name}' invoked from the frontend via invoke()`)
           .withMetadata({
             framework: 'tauri',
@@ -200,7 +200,7 @@ export class TauriAnalyzer extends BaseAnalyzer {
         const regNode = this.createNodeBuilder(regId, 'tauri::generate_handler![...]', 'tauri_registration')
           .withLevel(2, 'architectural')
           .withCategory('tauri_registration', ['tauri', 'wiring'])
-          .withSource({ file: path.join(context.projectPath, reg.file), line: reg.line, end_line: reg.line })
+          .withSource({ file: reg.file, line: reg.line, end_line: reg.line })
           .withDescription(`Registers ${reg.commands.length} Tauri command(s) with the app builder`)
           .withMetadata({ framework: 'tauri', attributes: { commands: reg.commands } })
           .build();
@@ -219,7 +219,7 @@ export class TauriAnalyzer extends BaseAnalyzer {
         const callNode = this.createNodeBuilder(callId, `invoke('${call.command}')`, 'tauri_invoke')
           .withLevel(3, 'code')
           .withCategory('tauri_invoke', ['tauri', 'call-site'])
-          .withSource({ file: path.join(context.projectPath, call.file), line: call.line, end_line: call.line })
+          .withSource({ file: call.file, line: call.line, end_line: call.line })
           .withDescription(`Frontend call to Tauri command '${call.command}'`)
           .withMetadata({ framework: 'tauri', attributes: { command: call.command } })
           .build();

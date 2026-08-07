@@ -132,7 +132,7 @@ export class MLTrainingAnalyzer extends BaseAnalyzer {
           const node = this.createNodeBuilder(modelId, model.className, 'model')
             .withLevel(3, 'code')
             .withCategory('model', ['ml', model.framework])
-            .withSource({ file: path.join(context.projectPath, model.file), line: model.line, end_line: model.bodyEnd })
+            .withSource({ file: model.file, line: model.line, end_line: model.bodyEnd })
             .withDescription(`${model.framework === 'pytorch' ? 'PyTorch' : 'Keras/TensorFlow'} model: ${model.className}`)
             .withMetadata({ framework: model.framework, attributes: { kind: 'model-definition' } })
             .build();
@@ -146,7 +146,7 @@ export class MLTrainingAnalyzer extends BaseAnalyzer {
           const node = this.createNodeBuilder(dsId, ds.name, 'dataset')
             .withLevel(3, 'code')
             .withCategory('dataset', ['ml', ds.kind])
-            .withSource({ file: path.join(context.projectPath, ds.file), line: ds.line, end_line: ds.line })
+            .withSource({ file: ds.file, line: ds.line, end_line: ds.line })
             .withDescription(ds.kind === 'dataset-subclass'
               ? `Dataset class: ${ds.name}`
               : `Dataset loader: ${ds.name}`)
@@ -161,7 +161,7 @@ export class MLTrainingAnalyzer extends BaseAnalyzer {
           const node = this.createNodeBuilder(entryNodeId, entry.name, 'train')
             .withLevel(3, 'code')
             .withCategory('train', ['ml', 'training-entry', entry.framework])
-            .withSource({ file: path.join(context.projectPath, entry.file), line: entry.line, end_line: entry.line })
+            .withSource({ file: entry.file, line: entry.line, end_line: entry.line })
             .withDescription(`ML training entry point: ${entry.name}`)
             .withMetadata({ framework: entry.framework, attributes: { kind: entry.kind } })
             .build();

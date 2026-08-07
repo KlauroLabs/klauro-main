@@ -110,7 +110,7 @@ export class NodeHttpAnalyzer extends BaseAnalyzer {
         const appNode = this.createNodeBuilder(appId, 'Node.js HTTP Server', 'application')
           .withLevel(1, 'system')
           .withCategory('application', ['framework', 'node-http'])
-          .withSource({ file: path.join(context.projectPath, server.file), line: server.line, end_line: server.line })
+          .withSource({ file: server.file, line: server.line, end_line: server.line })
           .withDescription(`Raw Node.js ${server.isHttps ? 'https' : 'http'}.createServer application`)
           .withMetadata({ framework: 'node-http', attributes: { protocol: server.isHttps ? 'https' : 'http' } })
           .build();
@@ -135,7 +135,7 @@ export class NodeHttpAnalyzer extends BaseAnalyzer {
             const routeNode = this.createNodeBuilder(routeId, `${route.method.toUpperCase()} ${route.path}`, 'route')
               .withLevel(3, 'code')
               .withCategory('route', ['http', 'endpoint'])
-              .withSource({ file: path.join(context.projectPath, route.file), line: route.line, end_line: route.line })
+              .withSource({ file: route.file, line: route.line, end_line: route.line })
               .withDescription(`Node.js raw HTTP endpoint: ${route.method.toUpperCase()} ${route.path}`)
               .withMetadata({
                 framework: 'node-http',

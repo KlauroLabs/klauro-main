@@ -541,7 +541,7 @@ export class PhoenixAnalyzer extends BaseAnalyzer {
       .withLevel(2, 'architectural')
       .withCategory(ctrl.kind === 'liveview' ? 'liveview' : 'controller',
         ctrl.kind === 'liveview' ? ['phoenix', 'liveview', 'web'] : ['phoenix', 'mvc', 'http'])
-      .withSource({ file: fullPath, line: 1, end_line: ctrl.lineEnd })
+      .withSource({ file: ctrl.filePath, line: 1, end_line: ctrl.lineEnd })
       .withDescription(ctrl.kind === 'liveview'
         ? `Phoenix LiveView: ${ctrl.module}`
         : `Phoenix controller: ${ctrl.module}`)
@@ -561,7 +561,7 @@ export class PhoenixAnalyzer extends BaseAnalyzer {
       nodes.push(this.createNodeBuilder(actionId, action.name, ctrl.kind === 'liveview' ? 'liveview_callback' : 'controller_action')
         .withLevel(4, 'member')
         .withCategory('method', ['phoenix', ctrl.kind === 'liveview' ? 'callback' : 'action'])
-        .withSource({ file: fullPath, line: action.line, end_line: action.line })
+        .withSource({ file: ctrl.filePath, line: action.line, end_line: action.line })
         .withDescription(`${ctrl.module}.${action.name}`)
         .withParent(controllerId)
         .withMetadata({ framework: 'phoenix', language: 'elixir' })
@@ -584,7 +584,7 @@ export class PhoenixAnalyzer extends BaseAnalyzer {
           { event: action.name },
           undefined,
           { module: ctrl.module, callback: action.name, line: action.line, language: 'elixir' },
-          { node_id: actionId, method_name: action.name, file: fullPath, line: action.line }
+          { node_id: actionId, method_name: action.name, file: ctrl.filePath, line: action.line }
         ));
       }
     }
@@ -603,7 +603,7 @@ export class PhoenixAnalyzer extends BaseAnalyzer {
     nodes.push(this.createNodeBuilder(schemaId, schema.name, 'ecto_schema')
       .withLevel(2, 'architectural')
       .withCategory('model', ['phoenix', 'ecto', 'database', 'entity'])
-      .withSource({ file: fullPath, line: 1, end_line: schema.lineEnd })
+      .withSource({ file: schema.filePath, line: 1, end_line: schema.lineEnd })
       .withDescription(`Ecto schema: ${schema.module} (table "${schema.table}")`)
       .withMetadata({
         framework: 'phoenix',
@@ -624,7 +624,7 @@ export class PhoenixAnalyzer extends BaseAnalyzer {
       nodes.push(this.createNodeBuilder(fieldId, field.name, 'field')
         .withLevel(4, 'member')
         .withCategory('field', ['phoenix', 'ecto', 'data'])
-        .withSource({ file: fullPath, line: field.line, end_line: field.line })
+        .withSource({ file: schema.filePath, line: field.line, end_line: field.line })
         .withSignature({ parameters: [], return_type: field.type })
         .withParent(schemaId)
         .withMetadata({
@@ -681,7 +681,7 @@ export class PhoenixAnalyzer extends BaseAnalyzer {
     nodes.push(this.createNodeBuilder(contextId, ctx.name, 'phoenix_context')
       .withLevel(2, 'architectural')
       .withCategory('service', ['phoenix', 'context', 'domain'])
-      .withSource({ file: fullPath, line: 1, end_line: ctx.lineEnd })
+      .withSource({ file: ctx.filePath, line: 1, end_line: ctx.lineEnd })
       .withDescription(`Phoenix context (domain boundary): ${ctx.module}`)
       .withMetadata({
         framework: 'phoenix',
@@ -709,7 +709,7 @@ export class PhoenixAnalyzer extends BaseAnalyzer {
     nodes.push(this.createNodeBuilder(routerId, router.module.split('.').pop()!, 'phoenix_router')
       .withLevel(2, 'architectural')
       .withCategory('router', ['phoenix', 'http', 'routing'])
-      .withSource({ file: fullPath, line: 1, end_line: 1 })
+      .withSource({ file: router.filePath, line: 1, end_line: 1 })
       .withDescription(`Phoenix router: ${router.module}`)
       .withMetadata({
         framework: 'phoenix',
@@ -730,7 +730,7 @@ export class PhoenixAnalyzer extends BaseAnalyzer {
       nodes.push(this.createNodeBuilder(routeId, label, 'phoenix_route')
         .withLevel(3, 'code')
         .withCategory('route', ['phoenix', 'http'])
-        .withSource({ file: fullPath, line: route.line, end_line: route.line })
+        .withSource({ file: router.filePath, line: route.line, end_line: route.line })
         .withDescription(`Phoenix route: ${label} -> ${handlerDesc}`)
         .withMetadata({
           framework: 'phoenix',
@@ -767,7 +767,7 @@ export class PhoenixAnalyzer extends BaseAnalyzer {
           language: 'elixir',
         },
         controller
-          ? { node_id: this.controllerId(controller), method_name: route.action || 'mount', file: path.join(projectPath, controller.filePath) }
+          ? { node_id: this.controllerId(controller), method_name: route.action || 'mount', file: controller.filePath }
           : undefined
       ));
 

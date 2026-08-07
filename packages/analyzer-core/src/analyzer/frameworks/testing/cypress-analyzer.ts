@@ -80,6 +80,10 @@ interface CypressFixture {
   used: string[];
 }
 
+/** Repo-relative location of the Cypress fixtures dir, used both to build the
+ *  absolute glob root and to re-anchor globbed fixture paths for source.file. */
+const RELATIVE_FIXTURES_DIR = path.join('cypress', 'fixtures');
+
 export class CypressAnalyzer extends BaseAnalyzer {
   constructor() {
     super(
@@ -191,12 +195,17 @@ export class CypressAnalyzer extends BaseAnalyzer {
     try {
       const configFiles = ['cypress.config.js', 'cypress.config.ts', 'cypress.json'];
       let configPath: string | null = null;
+      let relativeConfigFile: string = '';
       let configContent: string = '';
 
       for (const configFile of configFiles) {
         const fullPath = path.join(projectPath, configFile);
         if (await fs.pathExists(fullPath)) {
           configPath = fullPath;
+          // configPath stays absolute because it also seeds the node id, and
+          // re-seeding would renumber existing nodes; source.file takes the
+          // repo-relative name instead.
+          relativeConfigFile = configFile;
           configContent = await fs.readFile(fullPath, 'utf-8');
           break;
         }
@@ -220,7 +229,7 @@ export class CypressAnalyzer extends BaseAnalyzer {
       const configNode = this.createNodeBuilder(configId, 'Cypress Configuration', 'cypress_config')
         .withLevel(1, 'system')
         .withCategory('configuration', ['cypress', 'testing'])
-        .withSource({ file: configPath, line: 1, end_line: configContent.split('\n').length })
+        .withSource({ file: relativeConfigFile, line: 1, end_line: configContent.split('\n').length })
         .withDescription('Cypress testing framework configuration')
         .withMetadata({
           framework: 'cypress',
@@ -274,7 +283,7 @@ export class CypressAnalyzer extends BaseAnalyzer {
             const specNode = this.createNodeBuilder(specId, spec.name, 'cypress_spec')
               .withLevel(2, 'architectural')
               .withCategory('spec', ['cypress', 'e2e', 'testing'])
-              .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
+              .withSource({ file: file, line: 1, end_line: content.split('\n').length })
               .withDescription(`Cypress test spec: ${spec.name}`)
               .withMetadata({
                 framework: 'cypress',
@@ -292,7 +301,9 @@ export class CypressAnalyzer extends BaseAnalyzer {
             nodes.push(specNode);
 
             spec.describes.forEach(describe => {
-              this.analyzeDescribe(describe, specId, fullPath, nodes, edges, entryPoints);
+              // repo-relative `file`, matching the parent specId seed above:
+              // describe/test nodes must not carry the sandbox's absolute path.
+              this.analyzeDescribe(describe, specId, file, nodes, edges, entryPoints);
             });
 
             entryPoints.push(this.createEntryPoint(
@@ -438,7 +449,7 @@ export class CypressAnalyzer extends BaseAnalyzer {
             const commandNode = this.createNodeBuilder(commandId, command.name, 'cypress_custom_command')
               .withLevel(3, 'code')
               .withCategory('command', ['cypress', 'custom'])
-              .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
+              .withSource({ file: file, line: 1, end_line: content.split('\n').length })
               .withDescription(`Cypress custom command: ${command.name}`)
               .withSignature({
                 parameters: command.parameters,
@@ -491,7 +502,7 @@ export class CypressAnalyzer extends BaseAnalyzer {
             const pageNode = this.createNodeBuilder(pageId, pageObject.name, 'cypress_page_object')
               .withLevel(3, 'code')
               .withCategory('page', ['cypress', 'pom'])
-              .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
+              .withSource({ file: file, line: 1, end_line: content.split('\n').length })
               .withDescription(`Cypress page object: ${pageObject.name}`)
               .withMetadata({
                 framework: 'cypress',
@@ -508,7 +519,7 @@ export class CypressAnalyzer extends BaseAnalyzer {
               const methodNode = this.createNodeBuilder(methodId, method.name, 'page_method')
                 .withLevel(4, 'member')
                 .withCategory('method', ['cypress', 'page-action'])
-                .withSource({ file: fullPath, line: 1, end_line: 1 })
+                .withSource({ file: file, line: 1, end_line: 1 })
                 .withDescription(`Page method: ${method.name}`)
                 .withParent(pageId)
                 .withSignature({
@@ -545,7 +556,7 @@ export class CypressAnalyzer extends BaseAnalyzer {
     edges: CASEdge[]
   ): Promise<CypressFixture[]> {
     const fixtures: CypressFixture[] = [];
-    const fixturesPath = path.join(projectPath, 'cypress', 'fixtures');
+    const fixturesPath = path.join(projectPath, RELATIVE_FIXTURES_DIR);
 
     if (await fs.pathExists(fixturesPath)) {
       const fixtureFiles = await glob(['**/*.json', '**/*.js', '**/*.ts'], {
@@ -556,6 +567,9 @@ export class CypressAnalyzer extends BaseAnalyzer {
 
       for (const file of fixtureFiles) {
         const fullPath = path.join(fixturesPath, file);
+        // `file` is relative to fixturesPath (the glob cwd), so re-anchor it on
+        // the project root before storing it — source.file is repo-relative.
+        const relativeFile = path.join(RELATIVE_FIXTURES_DIR, file);
         const content = await fs.readFile(fullPath, 'utf-8');
 
         try {
@@ -567,7 +581,7 @@ export class CypressAnalyzer extends BaseAnalyzer {
             const fixtureNode = this.createNodeBuilder(fixtureId, fixture.name, 'cypress_fixture')
               .withLevel(4, 'member')
               .withCategory('fixture', ['cypress', 'data'])
-              .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
+              .withSource({ file: relativeFile, line: 1, end_line: content.split('\n').length })
               .withDescription(`Cypress test fixture: ${fixture.name}`)
               .withMetadata({
                 framework: 'cypress',

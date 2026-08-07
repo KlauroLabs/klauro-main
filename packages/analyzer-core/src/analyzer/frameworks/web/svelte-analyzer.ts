@@ -183,7 +183,7 @@ export class SvelteAnalyzer extends BaseAnalyzer {
         const node = this.createNodeBuilder(componentId, component.name, 'svelte_component')
           .withLevel(2, 'architectural')
           .withCategory('component', ['svelte', 'sfc'])
-          .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
+          .withSource({ file: file, line: 1, end_line: content.split('\n').length })
           .withDescription(`Svelte component: ${component.name}`)
           .withTags(['svelte-component'])
           .withMetadata({
@@ -216,7 +216,7 @@ export class SvelteAnalyzer extends BaseAnalyzer {
             this.createNodeBuilder(eventNodeId, `${component.name}:${handler.event}`, 'dom_event_binding')
               .withLevel(4, 'member')
               .withCategory('event_binding', ['svelte', 'event'])
-              .withSource({ file: fullPath, line: handler.line, end_line: handler.line })
+              .withSource({ file: file, line: handler.line, end_line: handler.line })
               .withDescription(`${handler.event} handler in ${component.name}${handler.handlerName ? ` -> ${handler.handlerName}` : ''}`)
               .withParent(componentId)
               .withMetadata({
@@ -253,7 +253,7 @@ export class SvelteAnalyzer extends BaseAnalyzer {
                   this.createNodeBuilder(handlerNodeId, handler.handlerName, 'event_handler_function')
                     .withLevel(4, 'member')
                     .withCategory('handler', ['svelte', 'event-handler'])
-                    .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
+                    .withSource({ file: file, line: 1, end_line: content.split('\n').length })
                     .withDescription(`Event handler function ${handler.handlerName} in ${component.name}`)
                     .withParent(componentId)
                     .withMetadata({ framework: 'svelte' })
@@ -470,7 +470,7 @@ export class SvelteAnalyzer extends BaseAnalyzer {
         const node = this.createNodeBuilder(storeId, store.name, 'svelte_store')
           .withLevel(3, 'code')
           .withCategory('store', ['svelte', 'state', store.kind])
-          .withSource({ file: fullPath, line: store.line, end_line: store.line })
+          .withSource({ file: file, line: store.line, end_line: store.line })
           .withDescription(`Svelte ${store.kind} store: ${store.name}`)
           .withTags(['svelte-store'])
           .withMetadata({
@@ -566,7 +566,7 @@ export class SvelteAnalyzer extends BaseAnalyzer {
       const routeNode = this.createNodeBuilder(routeId, routePath || '/', 'sveltekit_route')
         .withLevel(3, 'code')
         .withCategory('route', ['svelte', 'sveltekit', isApi ? 'api' : 'page'])
-        .withSource({ file: path.join(projectPath, dirRelativeFromProject), line: 1, end_line: 1 })
+        .withSource({ file: dirRelativeFromProject, line: 1, end_line: 1 })
         .withDescription(
           isApi
             ? `SvelteKit API route: ${routePath || '/'}`

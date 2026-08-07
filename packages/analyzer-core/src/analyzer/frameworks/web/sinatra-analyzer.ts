@@ -100,7 +100,7 @@ export class SinatraAnalyzer extends BaseAnalyzer {
       const appNode = this.createNodeBuilder(appId, 'Sinatra Application', 'application')
         .withLevel(1, 'system')
         .withCategory('application', ['framework', 'sinatra', 'ruby'])
-        .withSource({ file: path.join(context.projectPath, allRoutes[0].file), line: 1, end_line: 1 })
+        .withSource({ file: allRoutes[0].file, line: 1, end_line: 1 })
         .withDescription('Sinatra HTTP application')
         .withMetadata({ framework: 'sinatra', attributes: { version, routes: allRoutes.length } })
         .build();
@@ -113,7 +113,7 @@ export class SinatraAnalyzer extends BaseAnalyzer {
         const routeNode = this.createNodeBuilder(routeId, `${route.method.toUpperCase()} ${route.path}`, 'route')
           .withLevel(3, 'code')
           .withCategory('route', ['http', 'endpoint'])
-          .withSource({ file: path.join(context.projectPath, route.file), line: route.line, end_line: route.line })
+          .withSource({ file: route.file, line: route.line, end_line: route.line })
           .withDescription(`Sinatra HTTP endpoint: ${route.method.toUpperCase()} ${route.path}`)
           .withMetadata({
             framework: 'sinatra',

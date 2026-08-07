@@ -149,7 +149,7 @@ export class FastifyAnalyzer extends BaseAnalyzer {
       const appNode = this.createNodeBuilder(appId, 'Fastify Application', 'application')
         .withLevel(1, 'system')
         .withCategory('application', ['framework', 'fastify'])
-        .withSource({ file: path.join(context.projectPath, jsFiles[0] || ''), line: 1, end_line: 1 })
+        .withSource({ file: jsFiles[0] || '', line: 1, end_line: 1 })
         .withDescription('Fastify HTTP application')
         .withMetadata({ framework: 'fastify', attributes: { version, routes: allRoutes.length } })
         .build();
@@ -163,7 +163,7 @@ export class FastifyAnalyzer extends BaseAnalyzer {
         const routeNode = this.createNodeBuilder(routeId, `${route.method.toUpperCase()} ${fullPath}`, 'route')
           .withLevel(3, 'code')
           .withCategory('route', ['http', 'endpoint'])
-          .withSource({ file: path.join(context.projectPath, route.file), line: route.line, end_line: route.line })
+          .withSource({ file: route.file, line: route.line, end_line: route.line })
           .withDescription(`Fastify HTTP endpoint: ${route.method.toUpperCase()} ${fullPath}`)
           .withMetadata({
             framework: 'fastify',

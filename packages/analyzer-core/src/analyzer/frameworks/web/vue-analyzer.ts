@@ -255,7 +255,7 @@ export class VueAnalyzer extends BaseAnalyzer {
       const appNode = this.createNodeBuilder(appId, application.name, 'vue_app')
         .withLevel(1, 'system')
         .withCategory('frontend', ['vue', 'application'])
-        .withSource({ file: path.join(projectPath, 'package.json'), line: 1, end_line: 1 })
+        .withSource({ file: 'package.json', line: 1, end_line: 1 })
         .withDescription(`Vue.js application: ${application.name}`)
         .withDocumentation(documentation)
         .withComments(comments)
@@ -305,7 +305,7 @@ export class VueAnalyzer extends BaseAnalyzer {
             const componentNode = this.createNodeBuilder(componentId, component.name, 'vue_component')
               .withLevel(2, 'architectural')
               .withCategory('component', ['vue', component.type])
-              .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
+              .withSource({ file: file, line: 1, end_line: content.split('\n').length })
               .withDescription(`Vue ${component.type} component: ${component.name}`)
               .withMetadata({
                 framework: 'vue',
@@ -333,7 +333,7 @@ export class VueAnalyzer extends BaseAnalyzer {
               const methodNode = this.createNodeBuilder(methodId, method.name, 'method')
                 .withLevel(4, 'member')
                 .withCategory('method', ['vue', 'function'])
-                .withSource({ file: fullPath, line: 1, end_line: 1 })
+                .withSource({ file: file, line: 1, end_line: 1 })
                 .withDescription(`Method in ${component.name}: ${method.name}`)
                 .withParent(componentId)
                 .withSignature({
@@ -360,7 +360,7 @@ export class VueAnalyzer extends BaseAnalyzer {
               const computedNode = this.createNodeBuilder(computedId, computed.name, 'computed')
                 .withLevel(4, 'member')
                 .withCategory('computed', ['vue', 'reactive'])
-                .withSource({ file: fullPath, line: 1, end_line: 1 })
+                .withSource({ file: file, line: 1, end_line: 1 })
                 .withDescription(`Computed property in ${component.name}: ${computed.name}`)
                 .withParent(componentId)
                 .withMetadata({
@@ -465,7 +465,7 @@ export class VueAnalyzer extends BaseAnalyzer {
             const composableNode = this.createNodeBuilder(composableId, composable.name, 'composable')
               .withLevel(3, 'code')
               .withCategory('composable', ['vue', 'composition-api'])
-              .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
+              .withSource({ file: file, line: 1, end_line: content.split('\n').length })
               .withDescription(`Vue composable: ${composable.name}`)
               .withSignature({
                 parameters: composable.parameters.map(p => ({ name: p.name, type: p.type })),
@@ -514,7 +514,7 @@ export class VueAnalyzer extends BaseAnalyzer {
             const storeNode = this.createNodeBuilder(storeId, store.name, `${store.type}_store`)
               .withLevel(3, 'code')
               .withCategory('store', ['vue', store.type, 'state'])
-              .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
+              .withSource({ file: file, line: 1, end_line: content.split('\n').length })
               .withDescription(`${store.type.charAt(0).toUpperCase() + store.type.slice(1)} store: ${store.name}`)
               .withMetadata({
                 framework: 'vue',
@@ -562,7 +562,7 @@ export class VueAnalyzer extends BaseAnalyzer {
             const routeNode = this.createNodeBuilder(routeId, route.path, 'vue_route')
               .withLevel(3, 'code')
               .withCategory('route', ['vue', 'navigation'])
-              .withSource({ file: fullPath, line: 1, end_line: 1 })
+              .withSource({ file: file, line: 1, end_line: 1 })
               .withDescription(`Vue route: ${route.path}`)
               .withMetadata({
                 framework: 'vue',
@@ -631,7 +631,7 @@ export class VueAnalyzer extends BaseAnalyzer {
             const directiveNode = this.createNodeBuilder(directiveId, directive.name, 'vue_directive')
               .withLevel(3, 'code')
               .withCategory('directive', ['vue', 'dom'])
-              .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
+              .withSource({ file: file, line: 1, end_line: content.split('\n').length })
               .withDescription(`Vue directive: ${directive.name}`)
               .withMetadata({
                 framework: 'vue',
@@ -677,7 +677,7 @@ export class VueAnalyzer extends BaseAnalyzer {
             const pluginNode = this.createNodeBuilder(pluginId, plugin.name, 'vue_plugin')
               .withLevel(3, 'code')
               .withCategory('plugin', ['vue', 'extension'])
-              .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
+              .withSource({ file: file, line: 1, end_line: content.split('\n').length })
               .withDescription(`Vue plugin: ${plugin.name}`)
               .withMetadata({
                 framework: 'vue',
