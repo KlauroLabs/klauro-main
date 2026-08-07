@@ -460,6 +460,37 @@ export class NestJSAnalyzer extends BaseAnalyzer {
     return /^(Public|IsPublic|AllowAnonymous|AllowAnonymousRequest|SkipAuth|SkipAuthGuard|SkipJwtAuth|NoAuth|Anonymous|Unprotected|AllowUnauthorized(Request)?)$/i.test(name);
   }
 
+  /**
+   * A `@Controller` class is not gated by filename convention — Nest routes
+   * it purely on the decorator. The `.controller.` filename is a fast path,
+   * not evidence; a controller sitting in an arbitrarily named file (e.g.
+   * src/api/orders.ts) is still a controller. Files that miss the filename
+   * fast path are given a cheap textual pre-check for `@Controller(` before
+   * paying for a full AST parse, so a repo-wide scan stays affordable.
+   */
+  private async findControllerCandidateFiles(files: string[], projectPath: string): Promise<string[]> {
+    const filenameMatches = files.filter(f => f.includes('.controller.'));
+    const filenameSet = new Set(filenameMatches);
+    const remaining = files.filter(f => !filenameSet.has(f) && /\.[cm]?[tj]sx?$/.test(f));
+
+    const decoratorMatches: string[] = [];
+    for (const file of remaining) {
+      try {
+        const fullPath = path.join(projectPath, file);
+        const stat = await fs.stat(fullPath);
+        if (!stat.isFile()) continue;
+        const content = await fs.readFile(fullPath, 'utf-8');
+        if (/@Controller\s*\(/.test(content)) {
+          decoratorMatches.push(file);
+        }
+      } catch {
+        continue;
+      }
+    }
+
+    return [...filenameMatches, ...decoratorMatches];
+  }
+
   private async analyzeControllers(
     files: string[],
     projectPath: string,
@@ -471,7 +502,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
     globalGuards: NestGlobalGuardRegistration[] = []
   ): Promise<NestController[]> {
     const controllers: NestController[] = [];
-    const controllerFiles = files.filter(f => f.includes('.controller.'));
+    const controllerFiles = await this.findControllerCandidateFiles(files, projectPath);
 
     for (const file of controllerFiles) {
       const fullPath = path.join(projectPath, file);
@@ -1230,12 +1261,10 @@ export class NestJSAnalyzer extends BaseAnalyzer {
           const eventName = this.extractDecoratorArgument(onEventDecorator) || 'event';
           const methodName = node.key?.name || 'handleEvent';
 
-          // Find the parent class
-          let parentClass = node;
-          while (parentClass && parentClass.type !== 'ClassDeclaration') {
-            parentClass = parentClass.parent;
-          }
-          const className = parentClass?.id?.name || 'UnknownClass';
+          // This parser does not populate node.parent, so the owning class
+          // must come from activeClass, tracked by the walk itself as it
+          // descends (see the recursive calls below).
+          const className = activeClass?.id?.name || 'UnknownClass';
 
           const listenerId = `event_listener_${this.sanitizeId(`${className}_${methodName}`)}`;
           const parentId = `class_${filePath}_${className}_0`;
@@ -1264,11 +1293,12 @@ export class NestJSAnalyzer extends BaseAnalyzer {
       }
 
       for (const key in node) {
+        if (key === 'parent') continue;
         if (typeof node[key] === 'object' && node[key] !== null) {
           if (Array.isArray(node[key])) {
-            node[key].forEach(walk);
+            node[key].forEach((child: any) => walk(child, activeClass));
           } else {
-            walk(node[key]);
+            walk(node[key], activeClass);
           }
         }
       }
@@ -1298,12 +1328,10 @@ export class NestJSAnalyzer extends BaseAnalyzer {
           if (decoratorName && schedulerDecorators.includes(decoratorName)) {
             const methodName = node.key?.name || 'scheduledTask';
 
-            // Find the parent class
-            let parentClass = node;
-            while (parentClass && parentClass.type !== 'ClassDeclaration') {
-              parentClass = parentClass.parent;
-            }
-            const className = parentClass?.id?.name || 'UnknownClass';
+            // This parser does not populate node.parent, so the owning
+            // class must come from activeClass, tracked by the walk itself
+            // as it descends (see the recursive calls below).
+            const className = activeClass?.id?.name || 'UnknownClass';
 
             const parentId = `class_${filePath}_${className}_0`;
             const parentNode = nodes.find(n => n.id === parentId);
@@ -1349,11 +1377,12 @@ export class NestJSAnalyzer extends BaseAnalyzer {
       }
 
       for (const key in node) {
+        if (key === 'parent') continue;
         if (typeof node[key] === 'object' && node[key] !== null) {
           if (Array.isArray(node[key])) {
-            node[key].forEach(walk);
+            node[key].forEach((child: any) => walk(child, activeClass));
           } else {
-            walk(node[key]);
+            walk(node[key], activeClass);
           }
         }
       }
