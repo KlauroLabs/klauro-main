@@ -347,7 +347,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
           const moduleNode = this.createNodeBuilder(moduleId, moduleInfo.name, 'module')
             .withLevel(1, 'system')
             .withCategory('backend', ['framework'])
-            .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
+            .withSource({ file: file, line: 1, end_line: content.split('\n').length })
             .withDescription(`NestJS module: ${moduleInfo.name}`)
             .withMetadata({
               framework: 'nestjs',
@@ -521,7 +521,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
             const controllerNode = this.createNodeBuilder(controllerId, controllerInfo.name, 'controller')
               .withLevel(2, 'architectural')
               .withCategory('controller', ['api', 'rest', 'nestjs'])
-              .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
+              .withSource({ file: file, line: 1, end_line: content.split('\n').length })
               .withDescription(`NestJS controller handling HTTP requests: ${controllerInfo.name}`)
               .withMetadata({
                 framework: 'nestjs',
@@ -712,7 +712,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
             const providerNode = this.createNodeBuilder(providerId, providerInfo.name, providerInfo.type)
               .withLevel(2, 'architectural')
               .withCategory(providerInfo.type, ['nestjs', 'injectable'])
-              .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
+              .withSource({ file: file, line: 1, end_line: content.split('\n').length })
               .withDescription(`NestJS ${providerInfo.type}: ${providerInfo.name}`)
               .withMetadata({
                 framework: 'nestjs',
@@ -751,7 +751,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
               const methodNode = this.createNodeBuilder(methodId, method.name, 'method')
                 .withLevel(4, 'member')
                 .withCategory('method', ['function'])
-                .withSource({ file: fullPath, line: 1, end_line: 1 })
+                .withSource({ file: file, line: 1, end_line: 1 })
                 .withDescription(`Method in ${providerInfo.name}: ${method.name}`)
                 .withParent(providerNodeId)
                 .withSignature({
@@ -839,7 +839,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
             const guardNode = this.createNodeBuilder(guardId, guardInfo.name, 'guard')
               .withLevel(3, 'code')
               .withCategory('guard', ['security', 'nestjs'])
-              .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
+              .withSource({ file: file, line: 1, end_line: content.split('\n').length })
               .withDescription(`NestJS guard: ${guardInfo.name}`)
               .withMetadata({
                 framework: 'nestjs',
@@ -914,7 +914,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
             const middlewareNode = this.createNodeBuilder(middlewareId, middlewareInfo.name, 'middleware')
               .withLevel(3, 'code')
               .withCategory('middleware', ['http', 'nestjs'])
-              .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
+              .withSource({ file: file, line: 1, end_line: content.split('\n').length })
               .withDescription(`NestJS middleware: ${middlewareInfo.name}`)
               .withMetadata({
                 framework: 'nestjs',
@@ -1058,7 +1058,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
             gatewayNode = this.createNodeBuilder(gatewayId, className, 'gateway')
               .withLevel(2, 'architectural')
               .withCategory('gateway', ['websocket', 'nestjs', 'realtime'])
-              .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
+              .withSource({ file: filePath, line: 1, end_line: content.split('\n').length })
               .withDescription(`WebSocket Gateway: ${className}`)
               .withMetadata({
                 framework: 'nestjs',
@@ -1128,7 +1128,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
                   const handlerNode = this.createNodeBuilder(handlerId, `${eventName} handler`, 'ws_handler')
                     .withLevel(3, 'code')
                     .withCategory('handler', ['websocket', 'event'])
-                    .withSource({ file: fullPath, line: member.loc?.start.line || 1 })
+                    .withSource({ file: filePath, line: member.loc?.start.line || 1 })
                     .withDescription(`WebSocket message handler for '${eventName}' event`)
                     .withParent(gatewayId)
                     .withMetadata({
@@ -1521,7 +1521,7 @@ export class NestJSAnalyzer extends BaseAnalyzer {
           const bootstrapNode = this.createNodeBuilder(bootstrapId, 'Application Bootstrap', 'bootstrap')
             .withLevel(1, 'system')
             .withCategory('bootstrap', ['initialization', 'nestjs'])
-            .withSource({ file: fullPath, line: node.loc?.start.line || 1 })
+            .withSource({ file: filePath, line: node.loc?.start.line || 1 })
             .withDescription('NestJS application bootstrap and initialization')
             .withMetadata({
               framework: 'nestjs',
