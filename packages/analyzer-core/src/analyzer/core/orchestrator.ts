@@ -12798,25 +12798,13 @@ export class AnalyzerOrchestrator {
       delete descriptionPromptContract.suppliedPrimaryDomain;
       delete descriptionPromptContract.suppliedPurposeType;
     }
-    const isKlauroSelfProject = this.isKlauroSelfProject(this.activeAnalysisProjectPath);
-    const klauroSelfConcepts = [
-      'CAS relationship graph',
-      'codebase analysis',
-      'MCP agent contexts',
-      'proposal previews',
-      'idiom guidance',
-      'incremental analysis',
-      'telemetry correlation',
-      'analysis storage',
-    ];
-    if (isKlauroSelfProject) {
-      structuralFacts.domainConcepts = klauroSelfConcepts;
-      structuralFacts.projectTextConcepts = klauroSelfConcepts;
-    }
-    const promptCoreConcepts = isKlauroSelfProject
-      ? klauroSelfConcepts
-      : enhancedSystemPurpose.core_concepts;
-    const narrativeCoreConcepts = artifactType === 'infrastructure' ? [] : promptCoreConcepts;
+    // #113: this used to overwrite structuralFacts.domainConcepts /
+    // projectTextConcepts / the prompt's core concepts with a hand-written
+    // "klauroSelfConcepts" list for this repo only, biasing the AI's own
+    // narrative toward prepared vocabulary instead of the evidence every
+    // other repo is described from. Removed — this repo now goes through
+    // the same evidence-derived core_concepts path as every other repo.
+    const narrativeCoreConcepts = artifactType === 'infrastructure' ? [] : enhancedSystemPurpose.core_concepts;
 
     const elementsEnabled = process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS !== 'false' && process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS !== '0';
     const configuredElementLimit = Number(process.env.KLAURO_AI_ELEMENT_DESCRIPTION_LIMIT || '');
