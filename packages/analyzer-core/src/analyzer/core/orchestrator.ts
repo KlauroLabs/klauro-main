@@ -16541,7 +16541,12 @@ export class AnalyzerOrchestrator {
       ...manifestFacts,
       ...readOnlyFacts,
       ...this.buildProjectTextInterpretationFacts(projectTextSignal),
-      ...this.buildSelfProjectInterpretationFacts(),
+      // #113: buildSelfProjectInterpretationFacts() used to inject a
+      // hand-written `productIdentity` paragraph and instruction into the
+      // prompt facts for this repo only — the same class of bias as the
+      // removed klauroSelfConcepts injection, prepared narrative text
+      // steering the AI's own description instead of letting it derive one
+      // from evidence like every other repo. Removed.
       ...this.buildAIInterpretationBaseFacts(
         systemName, frameworks, entryPointSummary, entityGrounding,
         externalServices, flowGraph, domainConcepts, systemCapabilities, libraryNames
@@ -16717,14 +16722,6 @@ export class AnalyzerOrchestrator {
       ...(projectTextSignal.productDocTitle ? { readmeProductTitle: projectTextSignal.productDocTitle } : {}),
       ...(projectTextSignal.productDocSummary ? { readmeProductOverview: projectTextSignal.productDocSummary } : {}),
       projectTextInstruction: 'Human-authored project text is product framing. Use it to choose emphasis, but keep every claim grounded in the structural facts.',
-    };
-  }
-
-  private buildSelfProjectInterpretationFacts(): Record<string, unknown> {
-    if (!this.isKlauroSelfProject(this.activeAnalysisProjectPath)) return {};
-    return {
-      productIdentity: 'Klauro is a hosted CAS codebase-analysis engine with MCP tools for AI agents, a lightweight installed upload/query/watch client, proposal previews, idiom guidance, incremental analysis, workspace intelligence, telemetry correlation, and analysis storage.',
-      productIdentityInstruction: 'For Klauro itself, prioritize the hosted analyzer, CAS relationship graph, MCP agent context, proposal previews, idiom guidance, incremental and workspace analysis, telemetry, and storage. Do not describe legacy workspace/project/user controllers as the main product surface, and do not imply that customer analysis runs locally.',
     };
   }
 
@@ -17384,9 +17381,17 @@ export class AnalyzerOrchestrator {
       const content = this.safeReadText(guidePath, 30000);
       if (!content) continue;
       const stripped = this.stripBoilerplateProjectText(content);
-      const useful = this.isKlauroSelfProject(projectPath)
-        ? stripped
-        : this.stripAgentToolingInstructionText(stripped);
+      // #113: this repo used to skip stripAgentToolingInstructionText and
+      // feed CLAUDE.md/AGENTS.md straight into the product-text signal
+      // verbatim (only the generic boilerplate strip applied) — every other
+      // repo's agent-tooling docs get the agent-tooling-instruction strip
+      // applied, per the comment above this loop, because those docs
+      // describe how to work ON the repo, not what the product is. Letting
+      // this repo's own CLAUDE.md through unstripped meant its (extensive)
+      // doctrine/instruction text could leak directly into the AI's grounding
+      // evidence — a second, file-based route to the same self-narrative
+      // bias as the removed hardcoded facts. Same strip for every repo now.
+      const useful = this.stripAgentToolingInstructionText(stripped);
       if (useful.length > 80) {
         textParts.push(useful);
         evidence.push(guideName);
