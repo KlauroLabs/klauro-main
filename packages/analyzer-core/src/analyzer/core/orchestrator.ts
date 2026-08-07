@@ -316,48 +316,6 @@ export const RISKABLE_NODE_TYPES: readonly string[] = [
   'entity', 'model', 'route', 'handler', 'resolver', 'mutation', 'repository'
 ];
 
-export const KLAURO_SELF_CAPABILITY_NAMES: Readonly<Record<string, string>> = {
-  agent: 'Agent Context',
-  analysis: 'Codebase Analysis',
-  architecture: 'Architecture Mapping',
-  answer: 'Answer Packs',
-  cas: 'CAS Contract Validation',
-  change: 'Change Impact Analysis',
-  continuation: 'Agent Continuation',
-  contract: 'Contract Impact Analysis',
-  description: 'AI Description Enrichment',
-  evidence: 'Evidence Validation',
-  greenfield: 'Greenfield Planning',
-  idiom: 'Codebase Idiom Guidance',
-  incremental: 'Incremental Analysis',
-  invariant: 'Behavioral Invariant Validation',
-  klauro: 'Klauro Runtime SDK',
-  machine: 'Machine Repo Gauntlet',
-  mcp: 'MCP Server',
-  project: 'Project Resolution',
-  proposal: 'Proposal Preview',
-  runtime: 'Runtime Telemetry',
-  telemetry: 'Runtime Telemetry',
-  storage: 'Analysis Storage',
-  task: 'Agent Task Proof',
-  workspace: 'Workspace Mapping',
-};
-
-export const KLAURO_SELF_CAPABILITY_DESCRIPTIONS: Readonly<Record<string, string>> = {
-  'codebase analysis': 'Codebase Analysis builds a CAS relationship graph from repository structure so agents can understand interaction surfaces, data, tests, risks, and dependencies before editing.',
-  'architecture mapping': 'Architecture Mapping identifies local patterns, ownership layers, and inventories so agents can place changes in the right architectural boundary.',
-  'greenfield planning': 'Greenfield Planning compares a proposed product slice against existing capability memory so new projects avoid duplicate concepts and start with coherent architecture.',
-  'proposal preview': 'Proposal Preview analyzes a proposed codebase iteration as a temporary CAS graph so reviewers can inspect changed contracts, risks, idioms, and test impact before the real repo changes.',
-  'agent context': 'Agent Context turns CAS graph matches, risks, idioms, and tests into a compact coding context before an AI agent edits a repository.',
-  'agent contexts': 'Agent Context turns CAS graph matches, risks, idioms, and tests into a compact coding context before an AI agent edits a repository.',
-  'mcp server': 'MCP Server exposes CAS tools, prompts, and compact agent contexts so AI agents can query codebase structure before choosing source files to read or edit.',
-  'codebase idiom guidance': 'Codebase Idiom Guidance identifies local conventions and validates proposed changes against the patterns already used in the repository.',
-  'analysis storage': 'Analysis Storage persists CAS outputs, snapshots, incremental state, and compressed artifacts so later MCP calls can reuse prior analysis.',
-  'klauro runtime sdk': 'Klauro Runtime SDK captures request, command, function, and error traces so runtime telemetry can be correlated back to the static CAS graph.',
-  'runtime telemetry': 'Runtime Telemetry surfaces observed latency, errors, throughput, and hotspots so agents can prioritize fixes by production impact.',
-  'trace management': 'Trace Management links runtime spans and call paths back to analyzed code so agents can inspect the behavior that produced an observation.',
-};
-
 interface DetectedAnalyzerCacheEntry {
   expiresAt: number;
   projectRoots: string[];
@@ -21210,8 +21168,7 @@ export class AnalyzerOrchestrator {
 
       const resourceKey = this.inferResourceKey(ep);
       const resourceName = this.inferResourceName(ep, resourceKey);
-      if (!this.namedSystemCapabilityForDomain(resourceKey, projectPath) &&
-        this.isGenericCapabilityResourceKey(resourceKey, resourceName)) continue;
+      if (this.isGenericCapabilityResourceKey(resourceKey, resourceName)) continue;
 
       if (!resourceGroups.has(resourceKey)) {
         resourceGroups.set(resourceKey, { entryPoints: [], name: resourceName });
@@ -21357,7 +21314,7 @@ export class AnalyzerOrchestrator {
       const structuralLabel = this.formatDomainCapabilityName(resourceKey, group.name, operations, relatedEntities.length, projectPath, relatedNodes);
       // DISPLAY NAME = terminal-evidence-grounded placeholder (fact), overwritten
       // by the AI naming pass with an AI-authored name (name_source:'ai').
-      const capabilityName = this.terminalGroundedCapabilityName(structuralLabel, resourceKey, relatedEntities, projectPath);
+      const capabilityName = this.terminalGroundedCapabilityName(structuralLabel, relatedEntities);
 
       capabilities.push({
         id: nextCapabilityId({ name: structuralLabel, related_domains: [resourceKey] }),
@@ -22559,7 +22516,7 @@ export class AnalyzerOrchestrator {
       // Management/Analysis/…" grammar the gates key off — but that grammar is
       // an invented behavior claim, so it never becomes the shipped display name.
       const structuralLabel = this.formatTerminalCapabilityName(key, group.label, operations, uniqueEntities, projectPath, uniqueNodes);
-      if ((!this.namedSystemCapabilityForDomain(key, projectPath) && this.isGenericCapabilityResourceKey(key, structuralLabel)) ||
+      if (this.isGenericCapabilityResourceKey(key, structuralLabel) ||
         this.isProjectNameCapabilityName(structuralLabel, projectPath)) {
         continue;
       }
@@ -22585,7 +22542,7 @@ export class AnalyzerOrchestrator {
       // invented "<Domain> Management" behavior claim. The AI naming pass
       // (aiExtractCapabilityCatalog) overwrites it with an AI-authored name and
       // stamps name_source:'ai'; until then name_source stays unset.
-      const capabilityName = this.terminalGroundedCapabilityName(structuralLabel, key, uniqueEntities, projectPath);
+      const capabilityName = this.terminalGroundedCapabilityName(structuralLabel, uniqueEntities);
       const capability: SystemCapability = {
         id: 'cap_pending',
         name: capabilityName,
@@ -24112,18 +24069,13 @@ export class AnalyzerOrchestrator {
    * OraclePrice/OracleFeedMapping becomes the placeholder "Oracle Price"
    * (grounded), not a guess about what it manages.
    *
-   * Curated (`namedSystemCapabilityForDomain`) and factual-resource
-   * (ECR/ECS/Route53 infrastructure) names carry real meaning already and are
-   * returned unchanged.
+   * Factual-resource (ECR/ECS/Route53 infrastructure) names carry real
+   * meaning already and are returned unchanged.
    */
   private terminalGroundedCapabilityName(
     structuralLabel: string,
-    key: string,
-    entities: CASDataEntity[],
-    projectPath?: string
+    entities: CASDataEntity[]
   ): string {
-    // Curated manual name for Klauro-self: real meaning, keep verbatim.
-    if (this.namedSystemCapabilityForDomain(key, projectPath)) return structuralLabel;
     // Factual infrastructure-resource identities are not invented behavior.
     if (/\b(Infrastructure|Connectivity|Integration)$/.test(structuralLabel)) return structuralLabel;
 
@@ -24172,9 +24124,6 @@ export class AnalyzerOrchestrator {
     projectPath?: string,
     nodes: CASNode[] = []
   ): string {
-    const namedDomain = this.namedSystemCapabilityForDomain(key, projectPath);
-    if (namedDomain) return namedDomain;
-
     // Authentication is labeled from framework/library-analyzer EVIDENCE — a
     // member node the auth analyzer tagged (auth_strategy/guard/auth_policy) —
     // never from an /auth|login|jwt/ regex on the key/name/operation text.
@@ -24248,8 +24197,6 @@ export class AnalyzerOrchestrator {
     // Authentication is labeled from auth-analyzer evidence on member nodes, not
     // from an /auth|login|jwt|token/ regex on the operation text.
     const hasAuthEvidence = this.capabilityHasAuthEvidence(nodes);
-    const namedDomain = this.namedSystemCapabilityForDomain(key, projectPath);
-    if (namedDomain) return namedDomain;
     const operationText = [
       key,
       fallbackLabel,
@@ -24304,12 +24251,6 @@ export class AnalyzerOrchestrator {
     }
     this.klauroSelfProjectCache.set(resolved, isSelf);
     return isSelf;
-  }
-
-  private namedSystemCapabilityForDomain(key: string, projectPath?: string): string | undefined {
-    if (!this.isKlauroSelfProject(projectPath)) return undefined;
-    const normalized = this.normalizeDomainToken((key || '').toLowerCase());
-    return KLAURO_SELF_CAPABILITY_NAMES[normalized];
   }
 
   private hasTradingCapabilityContext(projectPath: string | undefined, text: string): boolean {
