@@ -114,13 +114,16 @@ function capability(name: string, description: string, relatedDomains: string[] 
   };
 }
 
-test('buildKlauroVocabulary derives terms from the curated orchestrator maps', () => {
+// #113: buildKlauroVocabulary used to also seed from KLAURO_SELF_CAPABILITY_NAMES
+// / KLAURO_SELF_CAPABILITY_DESCRIPTIONS, hand-written maps the orchestrator used
+// to manufacture capability names/descriptions for its own repo (a doctrine
+// violation: product source must not special-case one repo's vocabulary). Those
+// maps are removed, so there is no curated vocabulary left to derive terms from
+// — the only legitimate cross-contamination signal that survives is the literal
+// brand mention.
+test('buildKlauroVocabulary is just the literal brand mention now that the curated maps are gone', () => {
   const vocabulary = buildKlauroVocabulary();
-  assert.ok(vocabulary.includes('Klauro'));
-  assert.ok(vocabulary.includes('Agent Task Proof'));
-  assert.ok(vocabulary.includes('Proposal Preview'));
-  assert.ok(vocabulary.some(term => term.startsWith('Codebase Analysis builds a CAS relationship graph')));
-  assert.ok(vocabulary.length >= 20);
+  assert.deepEqual(vocabulary, ['Klauro']);
 });
 
 test('findVocabularyLeaks reports zero occurrences on a clean foreign analysis', () => {
@@ -133,49 +136,47 @@ test('findVocabularyLeaks reports zero occurrences on a clean foreign analysis',
   assert.deepEqual(findVocabularyLeaks(foreign), []);
 });
 
-test('findVocabularyLeaks catches curated capability names, descriptions, and Klauro mentions', () => {
+test('findVocabularyLeaks catches literal Klauro brand mentions', () => {
   const contaminated = vocabFixture({
     system_capabilities: [
-      capability('Agent Task Proof', 'Codebase Analysis builds a CAS relationship graph from repository structure so agents can understand interaction surfaces, data, tests, risks, and dependencies before editing.'),
+      capability('Klauro Sync', 'Calls out to Klauro for analysis.'),
     ],
     user_journeys: [{ id: 'journey-1', name: 'Run klauro analyze on the repo', steps: [] }],
   } as unknown as Partial<CASOutput>);
   const leaks = findVocabularyLeaks(contaminated);
-  assert.ok(leaks.some(leak => leak.term === 'Agent Task Proof' && leak.section === 'capability_names'));
-  assert.ok(leaks.some(leak => leak.term.startsWith('Codebase Analysis builds') && leak.section === 'capability_descriptions'));
+  assert.ok(leaks.some(leak => leak.term === 'Klauro' && leak.section === 'capability_names'));
+  assert.ok(leaks.some(leak => leak.term === 'Klauro' && leak.section === 'capability_descriptions'));
   assert.ok(leaks.some(leak => leak.term === 'Klauro' && leak.section === 'journeys'));
 });
 
-test('evaluateVocabIsolationChecks passes clean foreign analyses and the Klauro positive control', () => {
+// #113: this used to also assert a "positive control" — that Klauro's own
+// self-analysis still received its curated capability names. That test
+// validated the doctrine violation itself (manufactured vocabulary appearing
+// in the self-analysis was the PASSING case), so it is removed along with
+// evaluateVocabIsolationChecks's `klauroSelf` parameter. Only the legitimate
+// direction remains: foreign repos must not pick up Klauro's own vocabulary.
+test('evaluateVocabIsolationChecks passes a clean foreign analysis', () => {
   const foreign = vocabFixture({
     system_capabilities: [capability('Vehicle Management', 'Vehicle Management maintains vehicle records, workflows, and relationships used by fleet behavior.')],
   } as unknown as Partial<CASOutput>);
-  const klauroSelf = vocabFixture({
-    system_capabilities: [capability('Agent Context', 'Agent Context turns CAS graph matches, risks, idioms, and tests into a compact coding context before an AI agent edits a repository.')],
-  } as unknown as Partial<CASOutput>);
   const checks = evaluateVocabIsolationChecks({
     foreign: [{ name: 'fleet-app', cas: foreign }],
-    klauroSelf,
   });
-  assert.equal(checks.length, 2);
+  assert.equal(checks.length, 1);
   assert.ok(checks.every(check => check.status === 'pass'));
 });
 
-test('evaluateVocabIsolationChecks fails contaminated foreign analyses and a de-branded self analysis', () => {
+test('evaluateVocabIsolationChecks fails a contaminated foreign analysis and reports a missing repo', () => {
   const contaminated = vocabFixture({
-    system_capabilities: [capability('Agent Task Proof', 'Proves agent tasks.')],
-  } as unknown as Partial<CASOutput>);
-  const debrandedSelf = vocabFixture({
-    system_capabilities: [capability('Task Management', 'Task Management maintains task records, workflows, and relationships used by analysis behavior.')],
+    system_capabilities: [capability('Klauro Sync', 'Proves agent tasks via Klauro.')],
   } as unknown as Partial<CASOutput>);
   const checks = evaluateVocabIsolationChecks({
     foreign: [{ name: 'wagtail', cas: contaminated }, { name: 'missing-repo', cas: null }],
-    klauroSelf: debrandedSelf,
   });
-  assert.equal(checks.length, 3);
+  assert.equal(checks.length, 2);
   assert.ok(checks.every(check => check.status === 'fail'));
   const wagtail = checks.find(check => check.id === 'vocab-isolation-wagtail');
-  assert.ok(wagtail?.observed.includes('"Agent Task Proof" in capability_names'));
+  assert.ok(wagtail?.observed.includes('"Klauro" in capability_names'));
   const missing = checks.find(check => check.id === 'vocab-isolation-missing-repo');
   assert.equal(missing?.observed, 'analysis not loaded');
 });

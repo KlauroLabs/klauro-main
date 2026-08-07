@@ -316,48 +316,6 @@ export const RISKABLE_NODE_TYPES: readonly string[] = [
   'entity', 'model', 'route', 'handler', 'resolver', 'mutation', 'repository'
 ];
 
-export const KLAURO_SELF_CAPABILITY_NAMES: Readonly<Record<string, string>> = {
-  agent: 'Agent Context',
-  analysis: 'Codebase Analysis',
-  architecture: 'Architecture Mapping',
-  answer: 'Answer Packs',
-  cas: 'CAS Contract Validation',
-  change: 'Change Impact Analysis',
-  continuation: 'Agent Continuation',
-  contract: 'Contract Impact Analysis',
-  description: 'AI Description Enrichment',
-  evidence: 'Evidence Validation',
-  greenfield: 'Greenfield Planning',
-  idiom: 'Codebase Idiom Guidance',
-  incremental: 'Incremental Analysis',
-  invariant: 'Behavioral Invariant Validation',
-  klauro: 'Klauro Runtime SDK',
-  machine: 'Machine Repo Gauntlet',
-  mcp: 'MCP Server',
-  project: 'Project Resolution',
-  proposal: 'Proposal Preview',
-  runtime: 'Runtime Telemetry',
-  telemetry: 'Runtime Telemetry',
-  storage: 'Analysis Storage',
-  task: 'Agent Task Proof',
-  workspace: 'Workspace Mapping',
-};
-
-export const KLAURO_SELF_CAPABILITY_DESCRIPTIONS: Readonly<Record<string, string>> = {
-  'codebase analysis': 'Codebase Analysis builds a CAS relationship graph from repository structure so agents can understand interaction surfaces, data, tests, risks, and dependencies before editing.',
-  'architecture mapping': 'Architecture Mapping identifies local patterns, ownership layers, and inventories so agents can place changes in the right architectural boundary.',
-  'greenfield planning': 'Greenfield Planning compares a proposed product slice against existing capability memory so new projects avoid duplicate concepts and start with coherent architecture.',
-  'proposal preview': 'Proposal Preview analyzes a proposed codebase iteration as a temporary CAS graph so reviewers can inspect changed contracts, risks, idioms, and test impact before the real repo changes.',
-  'agent context': 'Agent Context turns CAS graph matches, risks, idioms, and tests into a compact coding context before an AI agent edits a repository.',
-  'agent contexts': 'Agent Context turns CAS graph matches, risks, idioms, and tests into a compact coding context before an AI agent edits a repository.',
-  'mcp server': 'MCP Server exposes CAS tools, prompts, and compact agent contexts so AI agents can query codebase structure before choosing source files to read or edit.',
-  'codebase idiom guidance': 'Codebase Idiom Guidance identifies local conventions and validates proposed changes against the patterns already used in the repository.',
-  'analysis storage': 'Analysis Storage persists CAS outputs, snapshots, incremental state, and compressed artifacts so later MCP calls can reuse prior analysis.',
-  'klauro runtime sdk': 'Klauro Runtime SDK captures request, command, function, and error traces so runtime telemetry can be correlated back to the static CAS graph.',
-  'runtime telemetry': 'Runtime Telemetry surfaces observed latency, errors, throughput, and hotspots so agents can prioritize fixes by production impact.',
-  'trace management': 'Trace Management links runtime spans and call paths back to analyzed code so agents can inspect the behavior that produced an observation.',
-};
-
 interface DetectedAnalyzerCacheEntry {
   expiresAt: number;
   projectRoots: string[];
@@ -12840,25 +12798,13 @@ export class AnalyzerOrchestrator {
       delete descriptionPromptContract.suppliedPrimaryDomain;
       delete descriptionPromptContract.suppliedPurposeType;
     }
-    const isKlauroSelfProject = this.isKlauroSelfProject(this.activeAnalysisProjectPath);
-    const klauroSelfConcepts = [
-      'CAS relationship graph',
-      'codebase analysis',
-      'MCP agent contexts',
-      'proposal previews',
-      'idiom guidance',
-      'incremental analysis',
-      'telemetry correlation',
-      'analysis storage',
-    ];
-    if (isKlauroSelfProject) {
-      structuralFacts.domainConcepts = klauroSelfConcepts;
-      structuralFacts.projectTextConcepts = klauroSelfConcepts;
-    }
-    const promptCoreConcepts = isKlauroSelfProject
-      ? klauroSelfConcepts
-      : enhancedSystemPurpose.core_concepts;
-    const narrativeCoreConcepts = artifactType === 'infrastructure' ? [] : promptCoreConcepts;
+    // #113: this used to overwrite structuralFacts.domainConcepts /
+    // projectTextConcepts / the prompt's core concepts with a hand-written
+    // "klauroSelfConcepts" list for this repo only, biasing the AI's own
+    // narrative toward prepared vocabulary instead of the evidence every
+    // other repo is described from. Removed — this repo now goes through
+    // the same evidence-derived core_concepts path as every other repo.
+    const narrativeCoreConcepts = artifactType === 'infrastructure' ? [] : enhancedSystemPurpose.core_concepts;
 
     const elementsEnabled = process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS !== 'false' && process.env.KLAURO_AI_ELEMENT_DESCRIPTIONS !== '0';
     const configuredElementLimit = Number(process.env.KLAURO_AI_ELEMENT_DESCRIPTION_LIMIT || '');
@@ -12987,7 +12933,6 @@ export class AnalyzerOrchestrator {
       structuralTokens: this.structuralGroundingTokens(structuralFacts, gateEntityGrounding),
       projectTextSummary: projectTextSignal.manifestDescription || projectTextSignal.summary,
       projectTextConcepts: projectTextSignal.concepts,
-      isKlauroSelfProject: this.isKlauroSelfProject(this.activeAnalysisProjectPath),
       deployableCount,
       artifactType,
       readOnlyProduct: observedReadOnly || (() => {
@@ -14934,7 +14879,6 @@ export class AnalyzerOrchestrator {
       structuralTokens?: string[];
       projectTextSummary?: string;
       projectTextConcepts?: string[];
-      isKlauroSelfProject?: boolean;
       /** Deterministic deployable-unit count; corroborates architecture-shape claims. */
       deployableCount?: number;
       /** True only when observed operations/entities contain reads and no mutation evidence. */
@@ -15568,7 +15512,6 @@ export class AnalyzerOrchestrator {
       structuralTokens?: string[];
       projectTextSummary?: string;
       projectTextConcepts?: string[];
-      isKlauroSelfProject?: boolean;
       /** Deterministic deployable-unit count; corroborates architecture-shape claims. */
       deployableCount?: number;
     } = {},
@@ -15640,16 +15583,18 @@ export class AnalyzerOrchestrator {
       /\bdesigned to be used through entry points?\b/i.test(description)) {
       return { ok: false, reason: 'generic-architecture-cliche' };
     }
-    if (facts.isKlauroSelfProject) {
-      const hasKlauroIdentity = /\b(cas|codebase analysis|relationship graph|mcp|agent contexts?|proposal previews?|idiom guidance|incremental analysis|telemetry|analysis storage|analyzer)\b/i.test(cleaned);
-      const hasOnlyLegacySurface = /\b(work orders?|built with ruby|REQUEST https|manag(?:e|es|ing) workspaces?, projects?,? (?:and )?users?|workspace, project, and user workflows|analyzer controller records|jwt services?|auth(?:entication)? services?|http, message, and websocket entry points?|supports? http, message, and websocket|integrates? with redis and jwt)\b/i.test(cleaned);
-      if (!hasKlauroIdentity) return { ok: false, reason: 'self-description-misses-product-identity' };
-      if (hasOnlyLegacySurface) return { ok: false, reason: 'legacy-self-api-pollution' };
-      if (/\bfocus(?:ed|es|ing)?\s+on\s+security,\s+access control,\s+and\s+verification\b/i.test(cleaned)) return { ok: false, reason: 'self-description-overweights-security-domain' };
-    }
-    if (!facts.isKlauroSelfProject && domain === 'codebase-analysis') {
-      return { ok: false, reason: 'codebase-analysis-domain-without-klauro-evidence' };
-    }
+    // #113: two self-only gates removed here. (1) a hand-written vocabulary
+    // requirement ("must mention cas/mcp/agent contexts/...") that rejected
+    // this repo's own AI description unless it echoed a prepared phrase list
+    // — the AI-quality gate equivalent of grading only one student against
+    // an answer key nobody else received. (2) a domain check that rejected
+    // EVERY OTHER repo's description outright for resolving to the
+    // 'codebase-analysis' domain while exempting this repo from the same
+    // rejection — i.e. baking in "only Klauro can plausibly be a
+    // codebase-analysis product" as a fact. Both removed outright, matching
+    // the 2026-07-29 precedent below: no evidence-based, repo-agnostic
+    // replacement was requested or obviously correct, so the check is
+    // dropped rather than reworded to a subtler self-favoring rule.
     // A product description must describe the PRODUCT, not the framework it
     // was built with. Rendering strategy, scaffolding provenance, and a bare
     // recital of routing/access plumbing as the system's "main concepts" are
@@ -15713,7 +15658,14 @@ export class AnalyzerOrchestrator {
     if (/\b(?:utiliz(?:e|es|ing)|leverag(?:e|es|ing))\s+(?:frameworks?|libraries?)\b|\bframeworks?\s+(?:like|such as)\b|\bbuilt\s+using\s+(?:a\s+)?combination\s+of\s+frameworks?\b/i.test(description)) {
       return { ok: false, reason: 'framework-inventory-instead-of-architecture' };
     }
-    if (!facts.isKlauroSelfProject && /\bgraph evidence\b/i.test(description)) {
+    // #113: this used to exempt this repo's own description from the
+    // "graph evidence" filler check. Every system-narrative prompt (see the
+    // systemNarrativeTask strings above) already instructs the AI, for every
+    // artifact type including this repo's, not to mention "graph evidence" —
+    // it is prompt-structure leak text, not real product vocabulary, so the
+    // rejection now applies unconditionally like the sibling leak checks
+    // around it (descriptionContract, distinctiveEntities, terminalOutputs).
+    if (/\bgraph evidence\b/i.test(description)) {
       return { ok: false, reason: 'analysis-product-filler' };
     }
     if (/\bhttp requests?\b|\b(?:dedicated|specific|internal|route|request)?\s*handlers?\b|\bhandle(?:s|d|ing)?\s+(?:these\s+|incoming\s+)?requests?\b|\brouter\s+to\s+(?:direct|route)\b/i.test(description)) {
@@ -16589,7 +16541,12 @@ export class AnalyzerOrchestrator {
       ...manifestFacts,
       ...readOnlyFacts,
       ...this.buildProjectTextInterpretationFacts(projectTextSignal),
-      ...this.buildSelfProjectInterpretationFacts(),
+      // #113: buildSelfProjectInterpretationFacts() used to inject a
+      // hand-written `productIdentity` paragraph and instruction into the
+      // prompt facts for this repo only — the same class of bias as the
+      // removed klauroSelfConcepts injection, prepared narrative text
+      // steering the AI's own description instead of letting it derive one
+      // from evidence like every other repo. Removed.
       ...this.buildAIInterpretationBaseFacts(
         systemName, frameworks, entryPointSummary, entityGrounding,
         externalServices, flowGraph, domainConcepts, systemCapabilities, libraryNames
@@ -16765,14 +16722,6 @@ export class AnalyzerOrchestrator {
       ...(projectTextSignal.productDocTitle ? { readmeProductTitle: projectTextSignal.productDocTitle } : {}),
       ...(projectTextSignal.productDocSummary ? { readmeProductOverview: projectTextSignal.productDocSummary } : {}),
       projectTextInstruction: 'Human-authored project text is product framing. Use it to choose emphasis, but keep every claim grounded in the structural facts.',
-    };
-  }
-
-  private buildSelfProjectInterpretationFacts(): Record<string, unknown> {
-    if (!this.isKlauroSelfProject(this.activeAnalysisProjectPath)) return {};
-    return {
-      productIdentity: 'Klauro is a hosted CAS codebase-analysis engine with MCP tools for AI agents, a lightweight installed upload/query/watch client, proposal previews, idiom guidance, incremental analysis, workspace intelligence, telemetry correlation, and analysis storage.',
-      productIdentityInstruction: 'For Klauro itself, prioritize the hosted analyzer, CAS relationship graph, MCP agent context, proposal previews, idiom guidance, incremental and workspace analysis, telemetry, and storage. Do not describe legacy workspace/project/user controllers as the main product surface, and do not imply that customer analysis runs locally.',
     };
   }
 
@@ -17143,14 +17092,15 @@ export class AnalyzerOrchestrator {
     if (/-boilerplate$/.test(primaryDomain)) {
       return 'boilerplate';
     }
-    // Sanctioned self-identity exception, not a business-domain rule: a
+    // Repo-agnostic shape rule, not a self-identity exception: a
     // codebase-analysis domain names a KIND OF TOOL (something that analyzes
-    // other codebases), the same way "-library"/"-boilerplate" above do. It is
-    // covered by dedicated grounding/self-identity gates elsewhere
-    // (validateAIInterpretation's isKlauroSelfProject path) that require real
-    // evidence before the domain is ever accepted in the first place — this
-    // step only decides what TYPE OF CODEBASE that already-accepted domain
-    // implies, same as every other shape rule in this function.
+    // other codebases), the same way "-library"/"-boilerplate" above do —
+    // this applies to ANY repo whose already-accepted domain matches the
+    // literal, not just this one. #113: the self-only grounding gate this
+    // comment used to point to (validateAIInterpretation rejecting the
+    // 'codebase-analysis' domain for every repo except this one) has been
+    // removed; this step only decides what TYPE OF CODEBASE an
+    // already-accepted domain implies, same as every other shape rule here.
     if (/(^|-)codebase-analysis(?:-(?:engine|platform|system|tool))?$/.test(primaryDomain)) {
       return 'devtools-platform';
     }
@@ -17431,9 +17381,17 @@ export class AnalyzerOrchestrator {
       const content = this.safeReadText(guidePath, 30000);
       if (!content) continue;
       const stripped = this.stripBoilerplateProjectText(content);
-      const useful = this.isKlauroSelfProject(projectPath)
-        ? stripped
-        : this.stripAgentToolingInstructionText(stripped);
+      // #113: this repo used to skip stripAgentToolingInstructionText and
+      // feed CLAUDE.md/AGENTS.md straight into the product-text signal
+      // verbatim (only the generic boilerplate strip applied) — every other
+      // repo's agent-tooling docs get the agent-tooling-instruction strip
+      // applied, per the comment above this loop, because those docs
+      // describe how to work ON the repo, not what the product is. Letting
+      // this repo's own CLAUDE.md through unstripped meant its (extensive)
+      // doctrine/instruction text could leak directly into the AI's grounding
+      // evidence — a second, file-based route to the same self-narrative
+      // bias as the removed hardcoded facts. Same strip for every repo now.
+      const useful = this.stripAgentToolingInstructionText(stripped);
       if (useful.length > 80) {
         textParts.push(useful);
         evidence.push(guideName);
@@ -21210,8 +21168,7 @@ export class AnalyzerOrchestrator {
 
       const resourceKey = this.inferResourceKey(ep);
       const resourceName = this.inferResourceName(ep, resourceKey);
-      if (!this.namedSystemCapabilityForDomain(resourceKey, projectPath) &&
-        this.isGenericCapabilityResourceKey(resourceKey, resourceName)) continue;
+      if (this.isGenericCapabilityResourceKey(resourceKey, resourceName)) continue;
 
       if (!resourceGroups.has(resourceKey)) {
         resourceGroups.set(resourceKey, { entryPoints: [], name: resourceName });
@@ -21357,7 +21314,7 @@ export class AnalyzerOrchestrator {
       const structuralLabel = this.formatDomainCapabilityName(resourceKey, group.name, operations, relatedEntities.length, projectPath, relatedNodes);
       // DISPLAY NAME = terminal-evidence-grounded placeholder (fact), overwritten
       // by the AI naming pass with an AI-authored name (name_source:'ai').
-      const capabilityName = this.terminalGroundedCapabilityName(structuralLabel, resourceKey, relatedEntities, projectPath);
+      const capabilityName = this.terminalGroundedCapabilityName(structuralLabel, relatedEntities);
 
       capabilities.push({
         id: nextCapabilityId({ name: structuralLabel, related_domains: [resourceKey] }),
@@ -21468,7 +21425,7 @@ export class AnalyzerOrchestrator {
         ? nonRedundantCapabilities
         : capabilities;
     const dedupedCapabilities = this.dedupeSystemCapabilitiesByName(capabilitiesForAgents);
-    const trimmedCapabilities = this.trimLowValueFallbackCapabilities(dedupedCapabilities, projectPath);
+    const trimmedCapabilities = this.trimLowValueFallbackCapabilities(dedupedCapabilities);
     // Domain is comprehension (AI-only) and is not known at this structural
     // stage; the hardcoded repo-name domain override was deleted. Capability
     // ordering therefore no longer biases on a keyword-classified domain, and
@@ -21574,8 +21531,13 @@ export class AnalyzerOrchestrator {
     }];
   }
 
-  private trimLowValueFallbackCapabilities(capabilities: SystemCapability[], projectPath?: string): SystemCapability[] {
-    if (this.isKlauroSelfProject(projectPath)) return capabilities;
+  private trimLowValueFallbackCapabilities(capabilities: SystemCapability[]): SystemCapability[] {
+    // #113: this repo used to be exempt from the low-value-fallback trim
+    // entirely (the opposite direction from every other self-only gate here
+    // — protecting capabilities from removal instead of manufacturing them
+    // — but still a special case gated on isKlauroSelfProject). Removed: this
+    // repo's fallback capabilities are trimmed by the same hard/soft rules
+    // as every other repo's.
     const hardTrimmed = capabilities.filter(capability => !this.isHardLowValueCapability(capability));
     if (hardTrimmed.length < capabilities.length && hardTrimmed.length >= 1) {
       capabilities = hardTrimmed;
@@ -22559,7 +22521,7 @@ export class AnalyzerOrchestrator {
       // Management/Analysis/…" grammar the gates key off — but that grammar is
       // an invented behavior claim, so it never becomes the shipped display name.
       const structuralLabel = this.formatTerminalCapabilityName(key, group.label, operations, uniqueEntities, projectPath, uniqueNodes);
-      if ((!this.namedSystemCapabilityForDomain(key, projectPath) && this.isGenericCapabilityResourceKey(key, structuralLabel)) ||
+      if (this.isGenericCapabilityResourceKey(key, structuralLabel) ||
         this.isProjectNameCapabilityName(structuralLabel, projectPath)) {
         continue;
       }
@@ -22585,7 +22547,7 @@ export class AnalyzerOrchestrator {
       // invented "<Domain> Management" behavior claim. The AI naming pass
       // (aiExtractCapabilityCatalog) overwrites it with an AI-authored name and
       // stamps name_source:'ai'; until then name_source stays unset.
-      const capabilityName = this.terminalGroundedCapabilityName(structuralLabel, key, uniqueEntities, projectPath);
+      const capabilityName = this.terminalGroundedCapabilityName(structuralLabel, uniqueEntities);
       const capability: SystemCapability = {
         id: 'cap_pending',
         name: capabilityName,
@@ -24112,18 +24074,13 @@ export class AnalyzerOrchestrator {
    * OraclePrice/OracleFeedMapping becomes the placeholder "Oracle Price"
    * (grounded), not a guess about what it manages.
    *
-   * Curated (`namedSystemCapabilityForDomain`) and factual-resource
-   * (ECR/ECS/Route53 infrastructure) names carry real meaning already and are
-   * returned unchanged.
+   * Factual-resource (ECR/ECS/Route53 infrastructure) names carry real
+   * meaning already and are returned unchanged.
    */
   private terminalGroundedCapabilityName(
     structuralLabel: string,
-    key: string,
-    entities: CASDataEntity[],
-    projectPath?: string
+    entities: CASDataEntity[]
   ): string {
-    // Curated manual name for Klauro-self: real meaning, keep verbatim.
-    if (this.namedSystemCapabilityForDomain(key, projectPath)) return structuralLabel;
     // Factual infrastructure-resource identities are not invented behavior.
     if (/\b(Infrastructure|Connectivity|Integration)$/.test(structuralLabel)) return structuralLabel;
 
@@ -24172,9 +24129,6 @@ export class AnalyzerOrchestrator {
     projectPath?: string,
     nodes: CASNode[] = []
   ): string {
-    const namedDomain = this.namedSystemCapabilityForDomain(key, projectPath);
-    if (namedDomain) return namedDomain;
-
     // Authentication is labeled from framework/library-analyzer EVIDENCE — a
     // member node the auth analyzer tagged (auth_strategy/guard/auth_policy) —
     // never from an /auth|login|jwt/ regex on the key/name/operation text.
@@ -24248,8 +24202,6 @@ export class AnalyzerOrchestrator {
     // Authentication is labeled from auth-analyzer evidence on member nodes, not
     // from an /auth|login|jwt|token/ regex on the operation text.
     const hasAuthEvidence = this.capabilityHasAuthEvidence(nodes);
-    const namedDomain = this.namedSystemCapabilityForDomain(key, projectPath);
-    if (namedDomain) return namedDomain;
     const operationText = [
       key,
       fallbackLabel,
@@ -24304,12 +24256,6 @@ export class AnalyzerOrchestrator {
     }
     this.klauroSelfProjectCache.set(resolved, isSelf);
     return isSelf;
-  }
-
-  private namedSystemCapabilityForDomain(key: string, projectPath?: string): string | undefined {
-    if (!this.isKlauroSelfProject(projectPath)) return undefined;
-    const normalized = this.normalizeDomainToken((key || '').toLowerCase());
-    return KLAURO_SELF_CAPABILITY_NAMES[normalized];
   }
 
   private hasTradingCapabilityContext(projectPath: string | undefined, text: string): boolean {

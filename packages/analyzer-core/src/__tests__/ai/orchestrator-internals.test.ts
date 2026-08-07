@@ -1088,13 +1088,32 @@ describe('architecture and capability inference', () => {
     expect(labels).not.toContain('Loc Capability');
   });
 
-  it('uses product-surface capability names and filters helper buckets when analyzing Klauro itself', async () => {
+  // #113: this used to be 'uses product-surface capability names and filters
+  // helper buckets when analyzing Klauro itself' and asserted that this repo
+  // received curated display names ('Agent Context', 'Runtime Telemetry',
+  // 'Proposal Preview') pulled from the removed KLAURO_SELF_CAPABILITY_NAMES
+  // map — i.e. it asserted the doctrine violation (manufacturing capability
+  // names for one repo instead of deriving them from evidence) as correct
+  // behavior. namedSystemCapabilityForDomain and the maps behind it are
+  // gone, so these single-generic-noun resource keys (agent/runtime/
+  // proposal/compatible) are no longer force-kept as meaningful capabilities
+  // — they fall through the same isGenericCapabilityResourceKey filter every
+  // other repo's generic-noun resource keys fall through. This is the
+  // honest, un-special-cased baseline: analyzing this repo with generic
+  // resource-key evidence now behaves IDENTICALLY to analyzing a foreign
+  // repo with the same shape of evidence.
+  it('behaves identically to a foreign repo when analyzing Klauro itself (no curated capability names survive)', async () => {
     const klauroRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-self-naming-'));
+    const foreignRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'foreign-self-naming-'));
     fs.writeFileSync(
       path.join(klauroRoot, 'package.json'),
       JSON.stringify({ name: '@klauro/monorepo', version: '1.0.0' }),
     );
-    const nodes: CASNode[] = [
+    fs.writeFileSync(
+      path.join(foreignRoot, 'package.json'),
+      JSON.stringify({ name: 'some-other-app', version: '1.0.0' }),
+    );
+    const buildNodes = (): CASNode[] => [
       node({ id: 'agent', name: 'AgentWorkflowService', type: 'service', source: { file: 'src/agent-workflow.ts' } }),
       node({ id: 'runtime', name: 'RuntimeTelemetryService', type: 'service', source: { file: 'src/runtime-simulation.ts' } }),
       node({ id: 'proposal', name: 'ProposalPreviewService', type: 'service', source: { file: 'src/proposal-preview-html.ts' } }),
@@ -1102,16 +1121,28 @@ describe('architecture and capability inference', () => {
     ];
 
     try {
-      const { capabilities } = await orch.buildSystemCapabilities([], [], nodes, [], klauroRoot);
-      const names = capabilities.map((capability: any) => capability.name);
+      const { capabilities: klauroCapabilities } = await orch.buildSystemCapabilities([], [], buildNodes(), [], klauroRoot);
+      const klauroNames = klauroCapabilities.map((capability: any) => capability.name);
 
-      expect(names).toEqual(expect.arrayContaining(['Agent Context', 'Runtime Telemetry', 'Proposal Preview']));
-      expect(names).not.toContain('Agent Management');
-      expect(names).not.toContain('Runtime Management');
-      expect(names).not.toContain('Proposal Management');
-      expect(names).not.toContain('Compatible Management');
+      // None of the previously-curated product-surface names are manufactured.
+      expect(klauroNames).not.toContain('Agent Context');
+      expect(klauroNames).not.toContain('Runtime Telemetry');
+      expect(klauroNames).not.toContain('Proposal Preview');
+      expect(klauroNames).not.toContain('Agent Management');
+      expect(klauroNames).not.toContain('Runtime Management');
+      expect(klauroNames).not.toContain('Proposal Management');
+      expect(klauroNames).not.toContain('Compatible Management');
+
+      const { capabilities: foreignCapabilities } = await orch.buildSystemCapabilities([], [], buildNodes(), [], foreignRoot);
+      const foreignNames = foreignCapabilities.map((capability: any) => capability.name);
+
+      // Same evidence shape, same outcome shape, regardless of which repo it is.
+      expect(klauroCapabilities.length).toBe(foreignCapabilities.length);
+      expect(klauroNames.map((name: string) => name.replace(/^Klauro Self Naming[a-z0-9 ]*/i, '').trim()))
+        .toEqual(foreignNames.map((name: string) => name.replace(/^Foreign Self Naming[a-z0-9 ]*/i, '').trim()));
     } finally {
       fs.rmSync(klauroRoot, { recursive: true, force: true });
+      fs.rmSync(foreignRoot, { recursive: true, force: true });
     }
   });
 
@@ -8411,14 +8442,31 @@ describe('domain-claim gate (replaces descriptionContradictsPurposeFamily\'s har
     expect(rejected.reason).toBe('ungrounded-domain-claim: runs clinical testing system, patient testing, clinical measurements');
   });
 
-  it('the sixth family (codebase-analysis / "cas graph" / "agent contexts") stays covered by the pre-existing, already-generic Klauro-self-identity checks — not folded into this frame, since those terms are internal analyzer vocabulary (a sanctioned self-identity exception), not a business-domain claim any other repo should ever legitimately make', () => {
+  // #113: this used to assert that a "codebase-analysis-domain-without-
+  // klauro-evidence" gate rejected any non-Klauro project claiming the
+  // codebase-analysis domain, described (by the test's own title) as "a
+  // sanctioned self-identity exception" — i.e. product source hardcoding the
+  // assumption that only Klauro can plausibly be a codebase-analysis
+  // product. That gate is removed along with the isKlauroSelfProject flag it
+  // read. It turns out no replacement is needed: the SAME generic
+  // ungrounded-domain-claim / ungrounded-system-type evidence gate that
+  // covers every other family above (fleet, portfolio, zero-trust, clinical)
+  // already rejects an ungrounded "codebase analysis"/"CAS graph"/"agent
+  // contexts" claim on its own, and accepts it once real structural evidence
+  // grounds it — for ANY repo, including this one, with no repo-identity
+  // check anywhere in the path.
+  it('folds the sixth family (codebase-analysis / "cas graph" / "agent contexts") into the same generic evidence gate as every other family, with no self-identity exception', () => {
     const description = 'A codebase analysis system that builds a CAS graph of every module and produces agent contexts for downstream tools. It tracks relationships between files and exposes them through an MCP server.';
-    // Non-Klauro project claiming the Klauro-specific domain is rejected by the
-    // untouched, already-generic codebase-analysis-domain-without-klauro-evidence
-    // gate — no hardcoded "cas graph"/"agent contexts" vocabulary was reintroduced.
-    const result = orch.validateAIInterpretation(description, { primary_domain: 'codebase-analysis', core_concepts: [] }, { isKlauroSelfProject: false });
-    expect(result.ok).toBe(false);
-    expect(result.reason).toBe('codebase-analysis-domain-without-klauro-evidence');
+    const rejected = orch.validateAIInterpretation(description, { primary_domain: 'codebase-analysis', core_concepts: [] }, {});
+    expect(rejected.ok).toBe(false);
+    expect(rejected.reason).toBe('ungrounded-system-type: agent-contexts-downstream');
+
+    const grounded = orch.validateAIInterpretation(
+      description,
+      { primary_domain: 'codebase-analysis', core_concepts: ['codebase analysis', 'agent contexts'] },
+      { structuralTokens: ['codebase', 'analysis', 'agent', 'graph'] },
+    );
+    expect(grounded.ok).toBe(true);
   });
 
   it('gates a domain the old six-family table NEVER covered ("restaurant order management system") — proving this is a generic evidence gate, not an expanded vocabulary list', () => {
@@ -9906,7 +9954,7 @@ describe('P1 characterization: capability classification against real production
     let totalKept = 0;
     for (const repo of corpus) {
       const capabilities = repo.capabilities.map(materialize);
-      const kept = orch.trimLowValueFallbackCapabilities(capabilities, '/tmp/characterization');
+      const kept = orch.trimLowValueFallbackCapabilities(capabilities);
       const expectedTrimmed = BASELINE_TRIMMED_BY_REPO[repo.repo] || 0;
       expect({ repo: repo.repo, trimmed: capabilities.length - kept.length })
         .toEqual({ repo: repo.repo, trimmed: expectedTrimmed });

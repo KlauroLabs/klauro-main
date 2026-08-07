@@ -554,58 +554,52 @@ describe('AI repair re-prompt budget (2 attempts) and terminal throw', () => {
   });
 });
 
-describe('self-analysis AI description guardrails', () => {
+// #113: this describe block used to be 'self-analysis AI description
+// guardrails' and asserted THREE self-only special cases:
+//   - a hand-written vocabulary requirement (`isKlauroSelfProject: true`
+//     descriptions were REJECTED unless they echoed a prepared phrase list
+//     like "cas"/"mcp"/"agent contexts"/"idiom guidance"/...);
+//   - a "legacy-self-api-pollution" rejection that only fired for this repo;
+//   - implicitly, a domain check ('codebase-analysis-domain-without-klauro-
+//     evidence') that rejected every OTHER repo's description for resolving
+//     to the 'codebase-analysis' domain while exempting this repo from that
+//     same rejection.
+// All three were graded against a prepared answer key that no other
+// analyzed repository received — the AI-quality-gate equivalent of the
+// removed `prioritizeKlauroSelfCapabilities` (#112) hardcoded-vocabulary
+// defect, applied to descriptions instead of capability names. The gates
+// are removed from the orchestrator; these tests asserted the special-cased
+// behavior itself, so they are removed rather than kept green. No
+// evidence-based, repo-agnostic replacement was requested or is obviously
+// correct — this repo's descriptions are now validated by exactly the same
+// generic gates (grounding, marketing-language, framework-plumbing, prompt-
+// leak, etc.) as every other repo in `validateAIInterpretation`, which is
+// exercised elsewhere in this file without any `isKlauroSelfProject` flag.
+//
+// One assertion is worth keeping explicitly: the previously self-exempted
+// "graph evidence" prompt-leak check (`analysis-product-filler`) now applies
+// to this repo too, since every system-narrative prompt already instructs
+// the AI not to use that literal phrase for any artifact type.
+describe('graph-evidence leak check applies uniformly (no self exemption)', () => {
   const purpose: any = {
     primary_type: 'developer-tool',
     confidence: 0.9,
     evidence: [],
-    primary_domain: 'codebase-analysis',
+    primary_domain: 'devtools-platform',
     core_concepts: ['CAS', 'MCP', 'codebase analysis', 'agent contexts'],
     inferred_description: 'Klauro builds CAS relationship graphs for AI agents and human codebase inspection.',
     supporting_workflow_ids: [],
   };
 
-  it('rejects stale legacy API summaries for the Klauro repo itself', () => {
+  it('rejects a description that leaks the literal prompt-instruction phrase "graph evidence"', () => {
     const result = orch.validateGeneratedAIInterpretation(
-      'A codebase analysis system built with Ruby that coordinates workspace, project, and user workflows to produce analyzer controller records. It manages workspaces, projects, and users through HTTP endpoints.',
+      'Klauro builds CAS relationship graphs from repositories so AI agents can understand codebase structure before editing. It exposes MCP agent contexts, idiom guidance, and incremental analysis, correlating graph evidence with telemetry for development workflows.',
       purpose,
-      { isKlauroSelfProject: true, structuralTokens: ['codebase', 'analysis', 'workspace', 'project'] },
+      { structuralTokens: ['codebase', 'analysis', 'agent', 'storage'] },
     );
 
-    expect(result).toEqual({ ok: false, reason: 'legacy-self-api-pollution' });
+    expect(result).toEqual({ ok: false, reason: 'analysis-product-filler' });
   });
-
-  it('rejects self summaries centered on stale auth and route surfaces', () => {
-    const result = orch.validateGeneratedAIInterpretation(
-      'Klauro is a codebase analysis system that builds relationship graphs for AI agents and human code reviewers. It focuses on analyzing codebases, validating contracts, storing analysis results, and providing telemetry data to help agents understand and modify repositories. The system integrates with Redis and JWT services for caching and authentication, and it supports HTTP, message, and WebSocket entry points for communication.',
-      purpose,
-      { isKlauroSelfProject: true, structuralTokens: ['codebase', 'analysis', 'agent', 'telemetry'] },
-    );
-
-    expect(result).toEqual({ ok: false, reason: 'legacy-self-api-pollution' });
-  });
-
-  it('accepts self descriptions that lead with CAS, MCP, agent guidance, and analysis storage', () => {
-    const result = orch.validateGeneratedAIInterpretation(
-      'Klauro builds CAS relationship graphs from repositories so AI agents can understand codebase structure before editing. It exposes MCP agent contexts, idiom guidance, proposal previews, incremental analysis, telemetry correlation, and analysis storage for development workflows.',
-      purpose,
-      { isKlauroSelfProject: true, structuralTokens: ['codebase', 'analysis', 'agent', 'storage'] },
-    );
-
-    expect(result.ok).toBe(true);
-  });
-
-  // #112: 'prioritizes current Klauro analyzer and MCP capabilities over
-  // legacy API residue' removed (was: `localOrch.prioritizeKlauroSelfCapabilities`).
-  // That method didn't reorder, it DROPPED capabilities whose name/domains
-  // failed a hand-written phrase whitelist — this test asserted the drop
-  // itself as correct behavior (e.g. "Workspaces Management" and "Projects
-  // Management" disappearing from the result), which is exactly the
-  // hardcoded-vocabulary-deletes-by-words defect being removed. The method
-  // no longer exists; no replacement assertion is added because no
-  // evidence-based replacement was requested — capability ordering now
-  // relies solely on systemCapabilityProductPriority / criticality /
-  // operation count / name, unchanged by this removal.
 });
 
 describe('element description grounding parity with the system validator', () => {

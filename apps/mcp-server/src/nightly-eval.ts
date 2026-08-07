@@ -6,10 +6,6 @@ import { isDirectCliInvocation } from './cli-invocation';
 import { assertAnalysisVersionSupported, describeAnalysisVersion, loadAnalysis } from './storage';
 import { buildSummary, getDataLineage, getParadigmConformance, getProductMap, getUserJourneys } from './query';
 import { buildCrossRepoRouteDrift } from './product';
-import {
-  KLAURO_SELF_CAPABILITY_DESCRIPTIONS,
-  KLAURO_SELF_CAPABILITY_NAMES,
-} from '../../../packages/analyzer-core/src/analyzer/core/orchestrator';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 
 const PACKAGE_ROOT = path.resolve(__dirname, '..');
@@ -340,11 +336,15 @@ function runVersionSkewSuite(): { result: SuiteResult; checks: AnswerPackCheck[]
   return { result, checks };
 }
 
+// #113: this used to also seed the vocabulary from KLAURO_SELF_CAPABILITY_NAMES
+// / KLAURO_SELF_CAPABILITY_DESCRIPTIONS — hand-written maps the orchestrator
+// used to MANUFACTURE capability names/descriptions for Klauro's own repo
+// (never AI/evidence-derived). Those maps are gone (product source must not
+// special-case one repo's vocabulary), so there is no curated vocabulary left
+// to check for. The one surviving check is the literal brand mention, which
+// is a legitimate cross-contamination signal independent of any curated list.
 export function buildKlauroVocabulary(): string[] {
-  const terms = new Set<string>(['Klauro']);
-  for (const name of Object.values(KLAURO_SELF_CAPABILITY_NAMES)) terms.add(name);
-  for (const description of Object.values(KLAURO_SELF_CAPABILITY_DESCRIPTIONS)) terms.add(description);
-  return [...terms];
+  return ['Klauro'];
 }
 
 function vocabularyTermAppearsIn(term: string, text: string): boolean {
@@ -375,9 +375,14 @@ export function findVocabularyLeaks(cas: CASOutput): Array<{ term: string; secti
   return leaks;
 }
 
+// #113: this used to also assert a "positive control" — that Klauro's own
+// self-analysis STILL contains its curated capability names. That check
+// validated the doctrine violation itself (manufactured vocabulary showing up
+// in the self-analysis was treated as the PASSING case), so it is removed
+// along with the maps it depended on. What is left is the legitimate
+// direction only: foreign repos must not pick up Klauro's own brand vocabulary.
 export function evaluateVocabIsolationChecks(input: {
   foreign: Array<{ name: string; cas: CASOutput | null }>;
-  klauroSelf: CASOutput | null;
 }): AnswerPackCheck[] {
   const checks: AnswerPackCheck[] = [];
   const record = (id: string, question: string, invariant: string, observed: string, pass: boolean) => {
@@ -393,25 +398,12 @@ export function evaluateVocabIsolationChecks(input: {
       : 'analysis not loaded';
     record(
       `vocab-isolation-${target.name}`,
-      `Is the ${target.name} analysis free of Klauro product vocabulary?`,
-      'zero curated capability names, curated descriptions, or Klauro mentions in capability names, descriptions, domains, journeys, and product map',
+      `Is the ${target.name} analysis free of Klauro brand vocabulary?`,
+      'zero Klauro mentions in capability names, descriptions, domains, journeys, and product map',
       summary,
       leaks !== null && leaks.length === 0
     );
   }
-
-  const selfCapabilityNames = (input.klauroSelf?.system_capabilities || []).map(capability => capability.name);
-  const curatedNames = Object.values(KLAURO_SELF_CAPABILITY_NAMES);
-  const selfHits = curatedNames.filter(name => selfCapabilityNames.includes(name));
-  record(
-    'vocab-isolation-klauro-self-positive',
-    'Does the Klauro self-analysis still receive its curated product-surface capability names?',
-    'at least 1 curated capability name present in system_capabilities',
-    input.klauroSelf
-      ? `${selfHits.length}/${curatedNames.length} curated names present (${selfHits.slice(0, 3).join(', ')})`
-      : 'analysis not loaded',
-    selfHits.length >= 1
-  );
 
   return checks;
 }
@@ -422,10 +414,9 @@ async function runVocabIsolationSuite(): Promise<{ result: SuiteResult; checks: 
   const truckspyAppPath = process.env.KLAURO_EVAL_TRUCKSPY_APP
     || path.join(os.homedir(), 'dev', 'clients', 'outcode', 'truckspy', 'truckspyapp');
 
-  const [rails, truckspyApp, klauroSelf] = await Promise.all([
+  const [rails, truckspyApp] = await Promise.all([
     loadStoredAnalysis(railsPath),
     loadStoredAnalysis(truckspyAppPath),
-    loadStoredAnalysis(REPO_ROOT),
   ]);
 
   const checks = evaluateVocabIsolationChecks({
@@ -433,7 +424,6 @@ async function runVocabIsolationSuite(): Promise<{ result: SuiteResult; checks: 
       { name: 'rails-work-orders', cas: rails },
       { name: 'truckspyapp', cas: truckspyApp },
     ],
-    klauroSelf,
   });
   const failing = checks.filter(check => check.status === 'fail');
   const result = suiteResult(
