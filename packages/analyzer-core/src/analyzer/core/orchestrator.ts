@@ -12933,7 +12933,6 @@ export class AnalyzerOrchestrator {
       structuralTokens: this.structuralGroundingTokens(structuralFacts, gateEntityGrounding),
       projectTextSummary: projectTextSignal.manifestDescription || projectTextSignal.summary,
       projectTextConcepts: projectTextSignal.concepts,
-      isKlauroSelfProject: this.isKlauroSelfProject(this.activeAnalysisProjectPath),
       deployableCount,
       artifactType,
       readOnlyProduct: observedReadOnly || (() => {
@@ -14880,7 +14879,6 @@ export class AnalyzerOrchestrator {
       structuralTokens?: string[];
       projectTextSummary?: string;
       projectTextConcepts?: string[];
-      isKlauroSelfProject?: boolean;
       /** Deterministic deployable-unit count; corroborates architecture-shape claims. */
       deployableCount?: number;
       /** True only when observed operations/entities contain reads and no mutation evidence. */
@@ -15514,7 +15512,6 @@ export class AnalyzerOrchestrator {
       structuralTokens?: string[];
       projectTextSummary?: string;
       projectTextConcepts?: string[];
-      isKlauroSelfProject?: boolean;
       /** Deterministic deployable-unit count; corroborates architecture-shape claims. */
       deployableCount?: number;
     } = {},
@@ -15586,16 +15583,18 @@ export class AnalyzerOrchestrator {
       /\bdesigned to be used through entry points?\b/i.test(description)) {
       return { ok: false, reason: 'generic-architecture-cliche' };
     }
-    if (facts.isKlauroSelfProject) {
-      const hasKlauroIdentity = /\b(cas|codebase analysis|relationship graph|mcp|agent contexts?|proposal previews?|idiom guidance|incremental analysis|telemetry|analysis storage|analyzer)\b/i.test(cleaned);
-      const hasOnlyLegacySurface = /\b(work orders?|built with ruby|REQUEST https|manag(?:e|es|ing) workspaces?, projects?,? (?:and )?users?|workspace, project, and user workflows|analyzer controller records|jwt services?|auth(?:entication)? services?|http, message, and websocket entry points?|supports? http, message, and websocket|integrates? with redis and jwt)\b/i.test(cleaned);
-      if (!hasKlauroIdentity) return { ok: false, reason: 'self-description-misses-product-identity' };
-      if (hasOnlyLegacySurface) return { ok: false, reason: 'legacy-self-api-pollution' };
-      if (/\bfocus(?:ed|es|ing)?\s+on\s+security,\s+access control,\s+and\s+verification\b/i.test(cleaned)) return { ok: false, reason: 'self-description-overweights-security-domain' };
-    }
-    if (!facts.isKlauroSelfProject && domain === 'codebase-analysis') {
-      return { ok: false, reason: 'codebase-analysis-domain-without-klauro-evidence' };
-    }
+    // #113: two self-only gates removed here. (1) a hand-written vocabulary
+    // requirement ("must mention cas/mcp/agent contexts/...") that rejected
+    // this repo's own AI description unless it echoed a prepared phrase list
+    // — the AI-quality gate equivalent of grading only one student against
+    // an answer key nobody else received. (2) a domain check that rejected
+    // EVERY OTHER repo's description outright for resolving to the
+    // 'codebase-analysis' domain while exempting this repo from the same
+    // rejection — i.e. baking in "only Klauro can plausibly be a
+    // codebase-analysis product" as a fact. Both removed outright, matching
+    // the 2026-07-29 precedent below: no evidence-based, repo-agnostic
+    // replacement was requested or obviously correct, so the check is
+    // dropped rather than reworded to a subtler self-favoring rule.
     // A product description must describe the PRODUCT, not the framework it
     // was built with. Rendering strategy, scaffolding provenance, and a bare
     // recital of routing/access plumbing as the system's "main concepts" are
@@ -15659,7 +15658,14 @@ export class AnalyzerOrchestrator {
     if (/\b(?:utiliz(?:e|es|ing)|leverag(?:e|es|ing))\s+(?:frameworks?|libraries?)\b|\bframeworks?\s+(?:like|such as)\b|\bbuilt\s+using\s+(?:a\s+)?combination\s+of\s+frameworks?\b/i.test(description)) {
       return { ok: false, reason: 'framework-inventory-instead-of-architecture' };
     }
-    if (!facts.isKlauroSelfProject && /\bgraph evidence\b/i.test(description)) {
+    // #113: this used to exempt this repo's own description from the
+    // "graph evidence" filler check. Every system-narrative prompt (see the
+    // systemNarrativeTask strings above) already instructs the AI, for every
+    // artifact type including this repo's, not to mention "graph evidence" —
+    // it is prompt-structure leak text, not real product vocabulary, so the
+    // rejection now applies unconditionally like the sibling leak checks
+    // around it (descriptionContract, distinctiveEntities, terminalOutputs).
+    if (/\bgraph evidence\b/i.test(description)) {
       return { ok: false, reason: 'analysis-product-filler' };
     }
     if (/\bhttp requests?\b|\b(?:dedicated|specific|internal|route|request)?\s*handlers?\b|\bhandle(?:s|d|ing)?\s+(?:these\s+|incoming\s+)?requests?\b|\brouter\s+to\s+(?:direct|route)\b/i.test(description)) {
@@ -17089,14 +17095,15 @@ export class AnalyzerOrchestrator {
     if (/-boilerplate$/.test(primaryDomain)) {
       return 'boilerplate';
     }
-    // Sanctioned self-identity exception, not a business-domain rule: a
+    // Repo-agnostic shape rule, not a self-identity exception: a
     // codebase-analysis domain names a KIND OF TOOL (something that analyzes
-    // other codebases), the same way "-library"/"-boilerplate" above do. It is
-    // covered by dedicated grounding/self-identity gates elsewhere
-    // (validateAIInterpretation's isKlauroSelfProject path) that require real
-    // evidence before the domain is ever accepted in the first place — this
-    // step only decides what TYPE OF CODEBASE that already-accepted domain
-    // implies, same as every other shape rule in this function.
+    // other codebases), the same way "-library"/"-boilerplate" above do —
+    // this applies to ANY repo whose already-accepted domain matches the
+    // literal, not just this one. #113: the self-only grounding gate this
+    // comment used to point to (validateAIInterpretation rejecting the
+    // 'codebase-analysis' domain for every repo except this one) has been
+    // removed; this step only decides what TYPE OF CODEBASE an
+    // already-accepted domain implies, same as every other shape rule here.
     if (/(^|-)codebase-analysis(?:-(?:engine|platform|system|tool))?$/.test(primaryDomain)) {
       return 'devtools-platform';
     }
