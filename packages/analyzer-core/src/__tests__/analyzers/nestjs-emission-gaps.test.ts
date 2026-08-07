@@ -11,7 +11,8 @@ import { NestJSAnalyzer } from '../../analyzer/frameworks/web/nestjs-analyzer';
  * Two extraction paths that could never emit anything, and one that only
  * emitted from a conventionally named file.
  *
- * (1) analyzeScheduledTasks and analyzeEventListeners resolved the owning
+ * (1) analyzeScheduledTasks, analyzeEventListeners and the @SubCommand branch
+ * of analyzeCliCommands resolved the owning
  * class by walking `node.parent` up to the nearest ClassDeclaration. This
  * parser never populates `node.parent`, so that walk always failed and the
  * class name fell back to the literal string 'UnknownClass' — which never
@@ -37,6 +38,7 @@ describe('NestJS extraction paths that previously emitted nothing', () => {
         '@nestjs/common': '^10.0.0',
         '@nestjs/schedule': '^4.0.0',
         '@nestjs/event-emitter': '^2.0.0',
+        'nest-commander': '^3.0.0',
       },
     }));
   });
@@ -101,6 +103,27 @@ describe('NestJS extraction paths that previously emitted nothing', () => {
     expect(events[0].metadata.handler_method).toBe('handleOrderCreated');
   });
 
+  it('emits a @SubCommand entry point anchored to its real owning class', async () => {
+    write('src/sync.command.ts', [
+      "import { Command, SubCommand, CommandRunner } from 'nest-commander';",
+      '',
+      "@Command({ name: 'db' })",
+      'export class DatabaseCommand extends CommandRunner {',
+      "  @SubCommand('sync')",
+      '  runSync() {}',
+      '}',
+    ]);
+
+    const { entryPoints } = await analyze();
+    const subCommands = entryPoints.filter(e => e.metadata?.handler_method === 'runSync');
+    expect(subCommands.length).toBe(1);
+    expect(subCommands[0].type).toBe('cli');
+    // The owning class, not the 'UnknownClass' fallback the parent-walk produced.
+    expect(subCommands[0].metadata.command_class).toBe('DatabaseCommand');
+    // Anchors to the real class node id, which 'UnknownClass' could never match.
+    expect(subCommands[0].source_node).toBe('class_src/sync.command.ts_DatabaseCommand_0');
+  });
+
   it('finds a @Controller class in a file that does not follow the *.controller.* naming convention', async () => {
     write('src/api/orders.ts', [
       "import { Controller, Get } from '@nestjs/common';",
@@ -115,7 +138,9 @@ describe('NestJS extraction paths that previously emitted nothing', () => {
     const { nodes } = await analyze();
     const controllerNode = nodes.find(n => n.name === 'OrdersController' && n.type === 'controller');
     expect(controllerNode).toBeDefined();
-    expect(controllerNode.source.file).toBe(path.join(root, 'src/api/orders.ts'));
+    // source.file is repo-relative, matching the filePath threaded through the
+    // analyzer and the `class_<file>_<name>_0` node ids built from it.
+    expect(controllerNode.source.file).toBe('src/api/orders.ts');
   });
 
   it('still finds a conventionally named controller (no regression from the broadened scan)', async () => {
