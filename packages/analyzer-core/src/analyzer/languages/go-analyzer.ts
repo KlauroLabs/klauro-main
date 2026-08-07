@@ -423,8 +423,8 @@ export class GoAnalyzer extends BaseAnalyzer {
       }
 
       const fileId = `file_${this.sanitizeId(relativePath)}`;
-      const fileComments = this.extractCommentsFromFile(content, fullPath);
-      const fileTodos = this.extractTodosFromComments(fileComments, fullPath);
+      const fileComments = this.extractCommentsFromFile(content, relativePath);
+      const fileTodos = this.extractTodosFromComments(fileComments, relativePath);
 
       nodes.push(this.createNodeBuilder(
         fileId,
@@ -433,7 +433,7 @@ export class GoAnalyzer extends BaseAnalyzer {
       )
         .withLevel(1, 'File/Module')
         .withCategory('modules', ['go-files'])
-        .withSource({ file: fullPath, line: 1, end_line: lines.length })
+        .withSource({ file: relativePath, line: 1, end_line: lines.length })
         .withMetadata({
           language: 'go',
           attributes: {
@@ -468,7 +468,7 @@ export class GoAnalyzer extends BaseAnalyzer {
         )
           .withLevel(2, 'Import/Dependency')
           .withCategory('imports', ['go-imports'])
-          .withSource({ file: fullPath, line: imp.lineNumber })
+          .withSource({ file: relativePath, line: imp.lineNumber })
           .withMetadata({
             language: 'go',
             attributes: {
@@ -501,19 +501,19 @@ export class GoAnalyzer extends BaseAnalyzer {
       }
 
       for (const struct of structs) {
-        await this.processGoStruct(struct, fileId, fullPath, nodes, edges, entryPoints);
+        await this.processGoStruct(struct, fileId, fullPath, relativePath, nodes, edges, entryPoints);
       }
 
       for (const intf of interfaces) {
-        await this.processGoInterface(intf, fileId, fullPath, nodes, edges, entryPoints);
+        await this.processGoInterface(intf, fileId, fullPath, relativePath, nodes, edges, entryPoints);
       }
 
       for (const func of functions) {
-        await this.processGoFunction(func, fileId, fullPath, nodes, edges, entryPoints);
+        await this.processGoFunction(func, fileId, fullPath, relativePath, nodes, edges, entryPoints);
       }
 
       for (const type of types) {
-        await this.processGoType(type, fileId, fullPath, nodes, edges, entryPoints);
+        await this.processGoType(type, fileId, fullPath, relativePath, nodes, edges, entryPoints);
       }
 
       for (const variable of variables) {
@@ -525,7 +525,7 @@ export class GoAnalyzer extends BaseAnalyzer {
         )
           .withLevel(3, 'Variable/Property')
           .withCategory('data', ['go-variables'])
-          .withSource({ file: fullPath, line: variable.lineNumber })
+          .withSource({ file: relativePath, line: variable.lineNumber })
           .withMetadata({
             language: 'go',
             is_exported: variable.isExported,
@@ -556,7 +556,7 @@ export class GoAnalyzer extends BaseAnalyzer {
         )
           .withLevel(3, 'Constant/Property')
           .withCategory('data', ['go-constants'])
-          .withSource({ file: fullPath, line: constant.lineNumber })
+          .withSource({ file: relativePath, line: constant.lineNumber })
           .withMetadata({
             language: 'go',
             is_exported: constant.isExported,
@@ -586,13 +586,14 @@ export class GoAnalyzer extends BaseAnalyzer {
     struct: GoStruct,
     fileId: string,
     fullPath: string,
+    relativePath: string,
     nodes: CASNode[],
     edges: CASEdge[],
     entryPoints: any[]
   ): Promise<void> {
     const structId = `struct_${this.sanitizeId(struct.packageName)}_${this.sanitizeId(struct.name)}`;
     const content = await fs.readFile(fullPath, 'utf-8');
-    const structComments = this.extractCommentsFromFile(content, fullPath).filter(c =>
+    const structComments = this.extractCommentsFromFile(content, relativePath).filter(c =>
       c.location.line >= struct.lineStart - 3 && c.location.line <= struct.lineStart
     );
     const structTodos = this.extractTodosFromComments(structComments, structId);
@@ -608,7 +609,7 @@ export class GoAnalyzer extends BaseAnalyzer {
     )
       .withLevel(2, 'Class/Interface')
       .withCategory('structures', ['go-structs'])
-      .withSource({ file: fullPath, line: struct.lineStart, end_line: struct.lineEnd })
+      .withSource({ file: relativePath, line: struct.lineStart, end_line: struct.lineEnd })
       .withMetadata({
         language: 'go',
         is_exported: struct.isExported,
@@ -642,7 +643,7 @@ export class GoAnalyzer extends BaseAnalyzer {
       )
         .withLevel(4, 'Field/Property')
         .withCategory('data', ['struct-fields'])
-        .withSource({ file: fullPath, line: field.lineNumber })
+        .withSource({ file: relativePath, line: field.lineNumber })
         .withMetadata({
           language: 'go',
           is_exported: field.isExported,
@@ -670,7 +671,7 @@ export class GoAnalyzer extends BaseAnalyzer {
         content.split('\n'),
         method.lineStart - 1
       );
-      const methodComments = this.extractCommentsFromFile(content, fullPath).filter(c =>
+      const methodComments = this.extractCommentsFromFile(content, relativePath).filter(c =>
         c.location.line >= method.lineStart && c.location.line <= method.lineEnd
       );
       const methodTodos = this.extractTodosFromComments(methodComments, methodId);
@@ -682,7 +683,7 @@ export class GoAnalyzer extends BaseAnalyzer {
       )
         .withLevel(4, 'Method/Function')
         .withCategory('methods', ['struct-methods'])
-        .withSource({ file: fullPath, line: method.lineStart, end_line: method.lineEnd })
+        .withSource({ file: relativePath, line: method.lineStart, end_line: method.lineEnd })
         .withMetadata({
           is_exported: method.isExported,
           attributes: {
@@ -729,13 +730,14 @@ export class GoAnalyzer extends BaseAnalyzer {
     intf: GoInterface,
     fileId: string,
     fullPath: string,
+    relativePath: string,
     nodes: CASNode[],
     edges: CASEdge[],
     entryPoints: any[]
   ): Promise<void> {
     const interfaceId = `interface_${this.sanitizeId(intf.packageName)}_${this.sanitizeId(intf.name)}`;
     const content = await fs.readFile(fullPath, 'utf-8');
-    const interfaceComments = this.extractCommentsFromFile(content, fullPath).filter(c =>
+    const interfaceComments = this.extractCommentsFromFile(content, relativePath).filter(c =>
       c.location.line >= intf.lineStart - 3 && c.location.line <= intf.lineStart
     );
     const interfaceTodos = this.extractTodosFromComments(interfaceComments, interfaceId);
@@ -751,7 +753,7 @@ export class GoAnalyzer extends BaseAnalyzer {
     )
       .withLevel(2, 'Class/Interface')
       .withCategory('structures', ['go-interfaces'])
-      .withSource({ file: fullPath, line: intf.lineStart, end_line: intf.lineEnd })
+      .withSource({ file: relativePath, line: intf.lineStart, end_line: intf.lineEnd })
       .withMetadata({
         language: 'go',
         is_exported: intf.isExported,
@@ -783,7 +785,7 @@ export class GoAnalyzer extends BaseAnalyzer {
       )
         .withLevel(4, 'Method/Function')
         .withCategory('methods', ['interface-methods'])
-        .withSource({ file: fullPath, line: method.lineStart, end_line: method.lineEnd })
+        .withSource({ file: relativePath, line: method.lineStart, end_line: method.lineEnd })
         .withMetadata({
           is_exported: method.isExported,
           attributes: {
@@ -826,6 +828,7 @@ export class GoAnalyzer extends BaseAnalyzer {
     func: GoFunction,
     fileId: string,
     fullPath: string,
+    relativePath: string,
     nodes: CASNode[],
     edges: CASEdge[],
     entryPoints: any[]
@@ -833,7 +836,7 @@ export class GoAnalyzer extends BaseAnalyzer {
     const functionId = `function_${this.sanitizeId(func.packageName)}_${this.sanitizeId(func.name)}_${func.lineStart}`;
     const content = await fs.readFile(fullPath, 'utf-8');
     const lines = content.split('\n');
-    const functionComments = this.extractCommentsFromFile(content, fullPath).filter(c =>
+    const functionComments = this.extractCommentsFromFile(content, relativePath).filter(c =>
       c.location.line >= func.lineStart - 3 && c.location.line <= func.lineStart
     );
     const functionTodos = this.extractTodosFromComments(functionComments, functionId);
@@ -848,7 +851,7 @@ export class GoAnalyzer extends BaseAnalyzer {
     )
       .withLevel(3, 'Function/Method')
       .withCategory('functions', func.receiver ? ['method-functions'] : ['standalone-functions'])
-      .withSource({ file: fullPath, line: func.lineStart, end_line: func.lineEnd })
+      .withSource({ file: relativePath, line: func.lineStart, end_line: func.lineEnd })
       .withMetadata({
         language: 'go',
         is_exported: func.isExported,
@@ -922,13 +925,14 @@ export class GoAnalyzer extends BaseAnalyzer {
     type: GoType,
     fileId: string,
     fullPath: string,
+    relativePath: string,
     nodes: CASNode[],
     edges: CASEdge[],
     entryPoints: any[]
   ): Promise<void> {
     const typeId = `type_${this.sanitizeId(type.packageName)}_${this.sanitizeId(type.name)}`;
     const content = await fs.readFile(fullPath, 'utf-8');
-    const typeComments = this.extractCommentsFromFile(content, fullPath).filter(c =>
+    const typeComments = this.extractCommentsFromFile(content, relativePath).filter(c =>
       c.location.line >= type.lineNumber - 3 && c.location.line <= type.lineNumber
     );
     const typeTodos = this.extractTodosFromComments(typeComments, typeId);
@@ -944,7 +948,7 @@ export class GoAnalyzer extends BaseAnalyzer {
     )
       .withLevel(2, 'Type/Interface')
       .withCategory('structures', ['go-types'])
-      .withSource({ file: fullPath, line: type.lineNumber })
+      .withSource({ file: relativePath, line: type.lineNumber })
       .withMetadata({
         language: 'go',
         is_exported: type.isExported,
@@ -973,7 +977,7 @@ export class GoAnalyzer extends BaseAnalyzer {
         content.split('\n'),
         method.lineStart - 1
       );
-      const methodComments = this.extractCommentsFromFile(content, fullPath).filter(c =>
+      const methodComments = this.extractCommentsFromFile(content, relativePath).filter(c =>
         c.location.line >= method.lineStart && c.location.line <= method.lineEnd
       );
       const methodTodos = this.extractTodosFromComments(methodComments, methodId);
@@ -985,7 +989,7 @@ export class GoAnalyzer extends BaseAnalyzer {
       )
         .withLevel(4, 'Method/Function')
         .withCategory('methods', ['type-methods'])
-        .withSource({ file: fullPath, line: method.lineStart, end_line: method.lineEnd })
+        .withSource({ file: relativePath, line: method.lineStart, end_line: method.lineEnd })
         .withMetadata({
           is_exported: method.isExported,
           attributes: {
@@ -1907,7 +1911,7 @@ export class GoAnalyzer extends BaseAnalyzer {
       if (child.type === 'Function' && child.calls) {
         const callerFunction = functionNodes.find(n =>
           n.name === child.name &&
-          n.source?.file === fullPath
+          n.source?.file === file
         );
 
         if (!callerFunction) continue;
@@ -2029,7 +2033,7 @@ export class GoAnalyzer extends BaseAnalyzer {
           const funcName = funcMatch[2];
           currentFunction = functionNodes.find(n =>
             n.name === funcName &&
-            n.source?.file === fullPath &&
+            n.source?.file === file &&
             n.source?.line !== undefined && Math.abs(n.source.line - lineNum) <= 2
           );
           if (currentFunction) {
@@ -2051,7 +2055,7 @@ export class GoAnalyzer extends BaseAnalyzer {
 
       if (!currentFunction) {
         currentFunction = functionNodes.find(n =>
-          n.source?.file === fullPath &&
+          n.source?.file === file &&
           n.source?.line !== undefined && n.source.line <= lineNum &&
           n.source?.end_line !== undefined && n.source.end_line >= lineNum
         );
@@ -2079,7 +2083,7 @@ export class GoAnalyzer extends BaseAnalyzer {
                      receiverType === target ||
                      (target === 'this' && edges.some(e =>
                        e.type === 'has_method' && e.target === n.id &&
-                       nodes.find(s => s.id === e.source)?.source?.file === fullPath
+                       nodes.find(s => s.id === e.source)?.source?.file === file
                      ));
             });
 

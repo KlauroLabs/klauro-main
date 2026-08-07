@@ -353,7 +353,7 @@ export class JavaAnalyzer extends BaseAnalyzer {
         relativePath.split('/').pop() || 'unknown.java',
         'file',
         1,
-        fullPath,
+        relativePath,
         1,
         lines.length,
         {
@@ -382,7 +382,7 @@ export class JavaAnalyzer extends BaseAnalyzer {
           imp.importPath,
           'import',
           2,
-          fullPath,
+          relativePath,
           imp.lineNumber,
           imp.lineNumber,
           {
@@ -410,15 +410,15 @@ export class JavaAnalyzer extends BaseAnalyzer {
       }
 
       for (const cls of classes) {
-        await this.processJavaClass(cls, fileId, fullPath, nodes, edges, entryPoints, comments, todos, content, lines);
+        await this.processJavaClass(cls, fileId, relativePath, nodes, edges, entryPoints, comments, todos, content, lines);
       }
 
       for (const rec of records) {
-        await this.processJavaClass(rec, fileId, fullPath, nodes, edges, entryPoints, comments, todos, content, lines);
+        await this.processJavaClass(rec, fileId, relativePath, nodes, edges, entryPoints, comments, todos, content, lines);
       }
 
       for (const intf of interfaces) {
-        await this.processJavaInterface(intf, fileId, fullPath, nodes, edges, entryPoints, comments, todos, content, lines);
+        await this.processJavaInterface(intf, fileId, relativePath, nodes, edges, entryPoints, comments, todos, content, lines);
       }
 
     } catch (error) {
@@ -429,7 +429,7 @@ export class JavaAnalyzer extends BaseAnalyzer {
   private async processJavaClass(
     cls: JavaClass,
     fileId: string,
-    fullPath: string,
+    relativePath: string,
     nodes: CASNode[],
     edges: CASEdge[],
     entryPoints: any[],
@@ -459,7 +459,7 @@ export class JavaAnalyzer extends BaseAnalyzer {
     )
       .withLevel(2, 'Class/Interface')
       .withCategory('structures', ['classes'])
-      .withSource({ file: fullPath, line: cls.lineStart, end_line: cls.lineEnd })
+      .withSource({ file: relativePath, line: cls.lineStart, end_line: cls.lineEnd })
       .withMetadata({
         attributes: {
           packageName: cls.packageName,
@@ -497,7 +497,7 @@ export class JavaAnalyzer extends BaseAnalyzer {
         field.name,
         'field',
         4,
-        fullPath,
+        relativePath,
         field.lineNumber,
         field.lineNumber,
         {
@@ -541,7 +541,7 @@ export class JavaAnalyzer extends BaseAnalyzer {
       )
         .withLevel(4, 'Method/Function')
         .withCategory('methods', ['class-methods'])
-        .withSource({ file: fullPath, line: method.lineStart, end_line: method.lineEnd })
+        .withSource({ file: relativePath, line: method.lineStart, end_line: method.lineEnd })
         .withMetadata({
           attributes: {
             returnType: method.returnType,
@@ -610,7 +610,7 @@ export class JavaAnalyzer extends BaseAnalyzer {
   private async processJavaInterface(
     intf: JavaInterface,
     fileId: string,
-    fullPath: string,
+    relativePath: string,
     nodes: CASNode[],
     edges: CASEdge[],
     entryPoints: any[],
@@ -634,7 +634,7 @@ export class JavaAnalyzer extends BaseAnalyzer {
       intf.name,
       'interface',
       2,
-      fullPath,
+      relativePath,
       intf.lineStart,
       intf.lineEnd,
       {
@@ -687,7 +687,7 @@ export class JavaAnalyzer extends BaseAnalyzer {
       )
         .withLevel(4, 'Method/Function')
         .withCategory('methods', ['interface-methods'])
-        .withSource({ file: fullPath, line: method.lineStart, end_line: method.lineEnd })
+        .withSource({ file: relativePath, line: method.lineStart, end_line: method.lineEnd })
         .withMetadata({
           attributes: {
             returnType: method.returnType,
@@ -2120,7 +2120,7 @@ export class JavaAnalyzer extends BaseAnalyzer {
           const methodName = match[2] || objectOrClass;
 
           const callerMethod = methodNodes.find(n =>
-            n.source?.file === fullPath &&
+            n.source?.file === file &&
             n.source?.line !== undefined && n.source.line <= i + 1 &&
             n.source?.end_line !== undefined && n.source.end_line >= i + 1
           );
@@ -2230,7 +2230,7 @@ export class JavaAnalyzer extends BaseAnalyzer {
           const nextMethodLine = this.findNextMethodDeclaration(lines, i);
           if (nextMethodLine !== -1) {
             const methodAtLine = methodNodes.find(n =>
-              n.source?.file === fullPath &&
+              n.source?.file === file &&
               n.source?.line === nextMethodLine + 1
             );
 

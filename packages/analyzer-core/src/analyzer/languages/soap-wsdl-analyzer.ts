@@ -495,7 +495,7 @@ export class SoapWsdlAnalyzer extends BaseAnalyzer {
       .build());
 
     for (const type of info.types) {
-      this.emitXsdType(info.fullPath, fileId, type, nodes, edges, typeIndex);
+      this.emitXsdType(info.relativePath, fileId, type, nodes, edges, typeIndex);
     }
   }
 
@@ -528,7 +528,7 @@ export class SoapWsdlAnalyzer extends BaseAnalyzer {
       .build());
 
     for (const type of info.types) {
-      this.emitXsdType(info.fullPath, fileId, type, nodes, edges, typeIndex);
+      this.emitXsdType(info.relativePath, fileId, type, nodes, edges, typeIndex);
     }
 
     for (const message of info.messages) {
@@ -596,7 +596,7 @@ export class SoapWsdlAnalyzer extends BaseAnalyzer {
   }
 
   private emitXsdType(
-    fullPath: string,
+    relativePath: string,
     fileId: string,
     type: XsdType,
     nodes: CASNode[],
@@ -608,7 +608,7 @@ export class SoapWsdlAnalyzer extends BaseAnalyzer {
     const node = this.createNodeBuilder(typeId, type.name, 'data-entity')
       .withLevel(2, 'Data Entity')
       .withCategory('data', ['xsd-types', `xsd-${type.kind}`])
-      .withSource({ file: fullPath, line: 1 })
+      .withSource({ file: relativePath, line: 1 })
       .withMetadata({
         language: 'xsd',
         attributes: {

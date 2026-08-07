@@ -245,7 +245,7 @@ export class RubyAnalyzer extends BaseAnalyzer {
     const stat = await fs.stat(context.filePath);
     const analysis = this.parseRubySource(content, context.relativePath);
 
-    this.emitFileNodes(analysis, context.relativePath, context.filePath, nodes, edges);
+    this.emitFileNodes(analysis, context.relativePath, nodes, edges);
     this.buildInheritanceEdges([analysis], nodes, edges);
     this.buildCallEdges([analysis], edges);
 
@@ -303,7 +303,7 @@ export class RubyAnalyzer extends BaseAnalyzer {
         });
         if (degradation) this.addAnalysisWarning(degradation);
         fileAnalyses.push(analysis);
-        this.emitFileNodes(analysis, file, fullPath, nodes, edges);
+        this.emitFileNodes(analysis, file, nodes, edges);
       }
 
       this.buildInheritanceEdges(fileAnalyses, nodes, edges);
@@ -813,7 +813,6 @@ export class RubyAnalyzer extends BaseAnalyzer {
   private emitFileNodes(
     analysis: RubyFileAnalysis,
     relativePath: string,
-    fullPath: string,
     nodes: CASNode[],
     edges: CASEdge[]
   ): void {
@@ -822,7 +821,7 @@ export class RubyAnalyzer extends BaseAnalyzer {
       nodes.push(this.createNodeBuilder(moduleId, rubyModule.name, 'module')
         .withLevel(3, 'code')
         .withCategory('module', ['ruby'])
-        .withSource({ file: fullPath, line: rubyModule.lineStart, end_line: rubyModule.lineEnd })
+        .withSource({ file: relativePath, line: rubyModule.lineStart, end_line: rubyModule.lineEnd })
         .withDescription(`Ruby module: ${rubyModule.qualifiedName}`)
         .withMetadata({
           framework: 'ruby',
@@ -838,9 +837,9 @@ export class RubyAnalyzer extends BaseAnalyzer {
         .withTags(['analyzer:ruby'])
         .build());
 
-      this.emitMethods(rubyModule.methods, moduleId, rubyModule.qualifiedName, relativePath, fullPath, nodes, edges);
-      this.emitConstants(rubyModule.constants, moduleId, rubyModule.qualifiedName, relativePath, fullPath, nodes, edges);
-      this.emitStateMachines(rubyModule.stateMachines, moduleId, rubyModule.qualifiedName, relativePath, fullPath, nodes, edges);
+      this.emitMethods(rubyModule.methods, moduleId, rubyModule.qualifiedName, relativePath, nodes, edges);
+      this.emitConstants(rubyModule.constants, moduleId, rubyModule.qualifiedName, relativePath, nodes, edges);
+      this.emitStateMachines(rubyModule.stateMachines, moduleId, rubyModule.qualifiedName, relativePath, nodes, edges);
     }
 
     for (const rubyClass of analysis.classes) {
@@ -848,7 +847,7 @@ export class RubyAnalyzer extends BaseAnalyzer {
       nodes.push(this.createNodeBuilder(classId, rubyClass.name, 'class')
         .withLevel(3, 'code')
         .withCategory('class', ['ruby'])
-        .withSource({ file: fullPath, line: rubyClass.lineStart, end_line: rubyClass.lineEnd })
+        .withSource({ file: relativePath, line: rubyClass.lineStart, end_line: rubyClass.lineEnd })
         .withDescription(`Ruby class: ${rubyClass.qualifiedName}`)
         .withMetadata({
           framework: 'ruby',
@@ -868,16 +867,16 @@ export class RubyAnalyzer extends BaseAnalyzer {
         .withTags(['analyzer:ruby'])
         .build());
 
-      this.emitMethods(rubyClass.methods, classId, rubyClass.qualifiedName, relativePath, fullPath, nodes, edges);
-      this.emitConstants(rubyClass.constants, classId, rubyClass.qualifiedName, relativePath, fullPath, nodes, edges);
-      this.emitStateMachines(rubyClass.stateMachines, classId, rubyClass.qualifiedName, relativePath, fullPath, nodes, edges);
+      this.emitMethods(rubyClass.methods, classId, rubyClass.qualifiedName, relativePath, nodes, edges);
+      this.emitConstants(rubyClass.constants, classId, rubyClass.qualifiedName, relativePath, nodes, edges);
+      this.emitStateMachines(rubyClass.stateMachines, classId, rubyClass.qualifiedName, relativePath, nodes, edges);
 
       for (const attribute of rubyClass.attributes) {
         const attributeId = this.generateId('property', relativePath, `${rubyClass.qualifiedName}#${attribute.name}`);
         nodes.push(this.createNodeBuilder(attributeId, attribute.name, 'property')
           .withLevel(4, 'member')
           .withCategory('property', ['ruby'])
-          .withSource({ file: fullPath, line: attribute.lineNumber, end_line: attribute.lineNumber })
+          .withSource({ file: relativePath, line: attribute.lineNumber, end_line: attribute.lineNumber })
           .withDescription(`Ruby attribute (${attribute.kind}) on ${rubyClass.qualifiedName}: ${attribute.name}`)
           .withParent(classId)
           .withMetadata({ framework: 'ruby', attributes: { kind: attribute.kind } })
@@ -898,7 +897,7 @@ export class RubyAnalyzer extends BaseAnalyzer {
       nodes.push(this.createNodeBuilder(functionId, method.name, 'function')
         .withLevel(3, 'code')
         .withCategory('function', ['ruby'])
-        .withSource({ file: fullPath, line: method.lineStart, end_line: method.lineEnd })
+        .withSource({ file: relativePath, line: method.lineStart, end_line: method.lineEnd })
         .withDescription(`Ruby top-level method: ${method.name}`)
         .withSignature({ parameters: method.parameters.map(name => ({ name, type: 'Object' })) })
         .withMetadata({ framework: 'ruby' })
@@ -911,7 +910,7 @@ export class RubyAnalyzer extends BaseAnalyzer {
       nodes.push(this.createNodeBuilder(constantId, constant.name, 'constant')
         .withLevel(3, 'code')
         .withCategory('constant', ['ruby'])
-        .withSource({ file: fullPath, line: constant.lineNumber, end_line: constant.lineNumber })
+        .withSource({ file: relativePath, line: constant.lineNumber, end_line: constant.lineNumber })
         .withDescription(`Ruby constant: ${constant.name}`)
         .withMetadata({ framework: 'ruby', attributes: { value: constant.value } })
         .withTags(['analyzer:ruby'])
@@ -924,7 +923,6 @@ export class RubyAnalyzer extends BaseAnalyzer {
     ownerId: string,
     ownerQualifiedName: string,
     relativePath: string,
-    fullPath: string,
     nodes: CASNode[],
     edges: CASEdge[]
   ): void {
@@ -934,7 +932,7 @@ export class RubyAnalyzer extends BaseAnalyzer {
       nodes.push(this.createNodeBuilder(methodId, method.name, 'method')
         .withLevel(4, 'member')
         .withCategory('method', ['ruby'])
-        .withSource({ file: fullPath, line: method.lineStart, end_line: method.lineEnd })
+        .withSource({ file: relativePath, line: method.lineStart, end_line: method.lineEnd })
         .withDescription(`Ruby method ${ownerQualifiedName}${separator}${method.name}`)
         .withParent(ownerId)
         .withSignature({ parameters: method.parameters.map(name => ({ name, type: 'Object' })) })
@@ -962,7 +960,6 @@ export class RubyAnalyzer extends BaseAnalyzer {
     ownerId: string,
     ownerQualifiedName: string,
     relativePath: string,
-    fullPath: string,
     nodes: CASNode[],
     edges: CASEdge[]
   ): void {
@@ -971,7 +968,7 @@ export class RubyAnalyzer extends BaseAnalyzer {
       nodes.push(this.createNodeBuilder(constantId, constant.name, 'constant')
         .withLevel(4, 'member')
         .withCategory('constant', ['ruby'])
-        .withSource({ file: fullPath, line: constant.lineNumber, end_line: constant.lineNumber })
+        .withSource({ file: relativePath, line: constant.lineNumber, end_line: constant.lineNumber })
         .withDescription(`Ruby constant ${ownerQualifiedName}::${constant.name}`)
         .withParent(ownerId)
         .withMetadata({ framework: 'ruby', attributes: { value: constant.value } })
@@ -1008,7 +1005,6 @@ export class RubyAnalyzer extends BaseAnalyzer {
     ownerId: string,
     ownerQualifiedName: string,
     relativePath: string,
-    fullPath: string,
     nodes: CASNode[],
     edges: CASEdge[]
   ): void {
@@ -1020,7 +1016,7 @@ export class RubyAnalyzer extends BaseAnalyzer {
         nodes.push(this.createNodeBuilder(stateId, state, 'state')
           .withLevel(4, 'member')
           .withCategory('state', ['ruby', machine.dsl])
-          .withSource({ file: fullPath, line: machine.lineStart, end_line: machine.lineEnd })
+          .withSource({ file: relativePath, line: machine.lineStart, end_line: machine.lineEnd })
           .withDescription(`State '${state}' of ${ownerQualifiedName} ${machine.attribute} state machine`)
           .withParent(ownerId)
           .withMetadata({
@@ -1069,7 +1065,7 @@ export class RubyAnalyzer extends BaseAnalyzer {
                 dsl: machine.dsl
               },
               conditional: transition.conditional,
-              locations: [{ file: fullPath, line: transition.line }]
+              locations: [{ file: relativePath, line: transition.line }]
             }
           ));
         }

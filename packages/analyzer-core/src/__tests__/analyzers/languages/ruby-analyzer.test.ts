@@ -135,7 +135,7 @@ describe('RubyAnalyzer', () => {
       const nodes: any[] = [];
       const edges: any[] = [];
       const analysis = analyzer.parseRubySource(source, 'lib/child.rb');
-      internal.emitFileNodes(analysis, 'lib/child.rb', '/project/lib/child.rb', nodes, edges);
+      internal.emitFileNodes(analysis, 'lib/child.rb', nodes, edges);
       internal.buildInheritanceEdges([analysis], nodes, edges);
 
       const classNodes = nodes.filter(node => node.type === 'class');
@@ -484,7 +484,7 @@ describe('RubyAnalyzer', () => {
       const nodes: any[] = [];
       const edges: any[] = [];
       const analysis = analyzer.parseRubySource(source, 'app/models/order.rb');
-      internal.emitFileNodes(analysis, 'app/models/order.rb', '/project/app/models/order.rb', nodes, edges);
+      internal.emitFileNodes(analysis, 'app/models/order.rb', nodes, edges);
 
       const orderNode = nodes.find(node => node.type === 'class' && node.name === 'Order');
       expect(orderNode.metadata.attributes.state_machines).toHaveLength(1);

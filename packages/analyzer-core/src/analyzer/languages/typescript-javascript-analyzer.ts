@@ -782,15 +782,15 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
 
       const fileId = `file_${relativePath.replace(/[^a-zA-Z0-9]/g, '_')}`;
       const lines = content.split('\n');
-      const fileComments = this.extractCommentsFromFile(content, fullPath);
-      const fileTodos = this.extractTodosFromComments(fileComments, fullPath);
+      const fileComments = this.extractCommentsFromFile(content, relativePath);
+      const fileTodos = this.extractTodosFromComments(fileComments, relativePath);
 
       nodes.push(this.createNode(
         fileId,
         path.basename(relativePath),
         'file',
         1,
-        fullPath,
+        relativePath,
         1,
         lines.length,
         {
@@ -868,7 +868,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
             type: todoType,
             text: (m[2] || '').trim() || lines[i].trim(),
             priority: todoType === 'FIXME' || todoType === 'HACK' ? 'high' : todoType === 'WARNING' ? 'medium' : 'low',
-            location: { file: fullPath, line: i + 1 },
+            location: { file: relativePath, line: i + 1 },
           });
         }
       }
@@ -882,7 +882,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
         style: (c.type === 'block' || c.type === 'jsdoc' ? '/* */' : '//') as CASComment['style'],
         text: c.text,
         purpose: (/\btodo\b/i.test(c.text) ? 'todo' : /\b(fixme|hack)\b/i.test(c.text) ? 'hack' : /\bwarning\b/i.test(c.text) ? 'warning' : /\bnote\b/i.test(c.text) ? 'note' : 'explanation') as CASComment['purpose'],
-        location: { file: fullPath, line: c.line },
+        location: { file: relativePath, line: c.line },
       }));
 
       // Comments and todos are TOP-LEVEL CASNode fields, not metadata — that is
@@ -892,7 +892,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
         path.basename(relativePath),
         'file',
         1,
-        fullPath,
+        relativePath,
         1,
         lineCount,
         {
@@ -957,7 +957,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
           type: todoType,
           text: (m[2] || '').trim() || lines[i].trim(),
           priority: todoType === 'FIXME' || todoType === 'HACK' ? 'high' : todoType === 'WARNING' ? 'medium' : 'low',
-          location: { file: fullPath, line: i + 1 },
+          location: { file: relativePath, line: i + 1 },
         });
       }
       // Comments in the canonical CASComment shape (text/location/purpose), not the
@@ -970,7 +970,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
         style: (c.type === 'block' || c.type === 'jsdoc' ? '/* */' : '//') as CASComment['style'],
         text: c.text,
         purpose: (/\btodo\b/i.test(c.text) ? 'todo' : /\b(fixme|hack)\b/i.test(c.text) ? 'hack' : /\bwarning\b/i.test(c.text) ? 'warning' : /\bnote\b/i.test(c.text) ? 'note' : 'explanation') as CASComment['purpose'],
-        location: { file: fullPath, line: c.line },
+        location: { file: relativePath, line: c.line },
       }));
 
       // Comments and todos are TOP-LEVEL CASNode fields, not metadata — that is
@@ -980,7 +980,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
         path.basename(relativePath),
         'file',
         1,
-        fullPath,
+        relativePath,
         1,
         lines.length,
         {

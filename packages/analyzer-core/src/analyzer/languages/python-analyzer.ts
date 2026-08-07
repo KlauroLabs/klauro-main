@@ -430,8 +430,8 @@ export class PythonAnalyzer extends BaseAnalyzer {
         extractedNodeCount: classes.length + functions.length,
       });
       if (degradation) this.addAnalysisWarning(degradation);
-      const fileComments = this.extractCommentsFromFile(content, fullPath);
-      const fileTodos = this.extractTodosFromComments(fileComments, fullPath);
+      const fileComments = this.extractCommentsFromFile(content, relativePath);
+      const fileTodos = this.extractTodosFromComments(fileComments, relativePath);
 
       if (!modules.has(moduleName)) {
         modules.set(moduleName, []);
@@ -441,7 +441,7 @@ export class PythonAnalyzer extends BaseAnalyzer {
       const fileId = `file_${this.sanitizeId(relativePath)}`;
       const fileNode = this.createNodeBuilder(fileId, relativePath.split('/').pop() || 'unknown.py', 'file')
         .withLevel(1, this.getLevelName(1))
-        .withSource({ file: fullPath, line: 1, end_line: lines.length })
+        .withSource({ file: relativePath, line: 1, end_line: lines.length })
         .withMetadata({
           framework: this.analyzerName.toLowerCase().replace(' analyzer', ''),
           attributes: {
@@ -466,7 +466,7 @@ export class PythonAnalyzer extends BaseAnalyzer {
           imp.alias || imp.fromImport || imp.module,
           'import',
           2,
-          fullPath,
+          relativePath,
           imp.lineNumber,
           imp.lineNumber,
           {
@@ -496,14 +496,14 @@ export class PythonAnalyzer extends BaseAnalyzer {
       }
 
       for (const cls of classes) {
-        await this.processPythonClass(cls, fileId, fullPath, nodes, edges, entryPoints);
+        await this.processPythonClass(cls, fileId, relativePath, nodes, edges, entryPoints);
       }
 
       for (const func of functions) {
-        await this.processPythonFunction(func, fileId, fullPath, nodes, edges, entryPoints);
+        await this.processPythonFunction(func, fileId, relativePath, nodes, edges, entryPoints);
       }
 
-      this.extractFunctionCalls(content, fullPath, relativePath, classes, functions, nodes, edges, exitPoints);
+      this.extractFunctionCalls(content, relativePath, classes, functions, nodes, edges, exitPoints);
 
       for (const variable of variables) {
         const variableId = `variable_${fileId}_${this.sanitizeId(variable.name)}`;
@@ -512,7 +512,7 @@ export class PythonAnalyzer extends BaseAnalyzer {
           variable.name,
           'variable',
           3,
-          fullPath,
+          relativePath,
           variable.lineNumber,
           variable.lineNumber,
           {
@@ -538,7 +538,7 @@ export class PythonAnalyzer extends BaseAnalyzer {
   private async processPythonClass(
     cls: PythonClass,
     fileId: string,
-    fullPath: string,
+    relativePath: string,
     nodes: CASNode[],
     edges: CASEdge[],
     entryPoints: any[]
@@ -547,7 +547,7 @@ export class PythonAnalyzer extends BaseAnalyzer {
 
     const classNode = this.createNodeBuilder(classId, cls.name, 'class')
       .withLevel(2, this.getLevelName(2))
-      .withSource({ file: fullPath, line: cls.lineStart, end_line: cls.lineEnd })
+      .withSource({ file: relativePath, line: cls.lineStart, end_line: cls.lineEnd })
       .withMetadata({
         framework: this.analyzerName.toLowerCase().replace(' analyzer', ''),
         attributes: {
@@ -581,7 +581,7 @@ export class PythonAnalyzer extends BaseAnalyzer {
       const methodNode = this.createNodeBuilder(methodId, method.name, 'method')
         .withLevel(4, this.getLevelName(4))
         .withParent(classId)
-        .withSource({ file: fullPath, line: method.lineStart, end_line: method.lineEnd })
+        .withSource({ file: relativePath, line: method.lineStart, end_line: method.lineEnd })
         .withMetadata({
           framework: this.analyzerName.toLowerCase().replace(' analyzer', ''),
           attributes: {
@@ -621,7 +621,7 @@ export class PythonAnalyzer extends BaseAnalyzer {
         attr.name,
         'attribute',
         4,
-        fullPath,
+        relativePath,
         attr.lineNumber,
         attr.lineNumber,
         {
@@ -644,7 +644,7 @@ export class PythonAnalyzer extends BaseAnalyzer {
   private async processPythonFunction(
     func: PythonFunction,
     fileId: string,
-    fullPath: string,
+    relativePath: string,
     nodes: CASNode[],
     edges: CASEdge[],
     entryPoints: any[]
@@ -653,7 +653,7 @@ export class PythonAnalyzer extends BaseAnalyzer {
 
     const functionNode = this.createNodeBuilder(functionId, func.name, 'function')
       .withLevel(3, this.getLevelName(3))
-      .withSource({ file: fullPath, line: func.lineStart, end_line: func.lineEnd })
+      .withSource({ file: relativePath, line: func.lineStart, end_line: func.lineEnd })
       .withMetadata({
         framework: this.analyzerName.toLowerCase().replace(' analyzer', ''),
         attributes: {
@@ -1319,7 +1319,6 @@ export class PythonAnalyzer extends BaseAnalyzer {
 
   private extractFunctionCalls(
     content: string,
-    fullPath: string,
     relativePath: string,
     classes: PythonClass[],
     functions: PythonFunction[],

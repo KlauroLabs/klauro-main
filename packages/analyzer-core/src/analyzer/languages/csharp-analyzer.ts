@@ -219,13 +219,13 @@ export class CSharpAnalyzer extends BaseAnalyzer {
     return [...this.getIgnorePatterns(context), ...generated, ...tests];
   }
 
-  private async getCachedFile(fullPath: string): Promise<{ content: string; lines: string[]; comments: CASComment[] }> {
+  private async getCachedFile(fullPath: string, relativeFile: string): Promise<{ content: string; lines: string[]; comments: CASComment[] }> {
     const cached = this.fileCache.get(fullPath);
     if (cached) return cached;
 
     const content = await fs.readFile(fullPath, 'utf-8');
     const lines = content.split('\n');
-    const comments = this.extractCommentsFromFile(content, fullPath);
+    const comments = this.extractCommentsFromFile(content, relativeFile);
     const fileData = { content, lines, comments };
     this.fileCache.set(fullPath, fileData);
     return fileData;
@@ -252,10 +252,10 @@ export class CSharpAnalyzer extends BaseAnalyzer {
       context
     );
     this.detectAspNetPatterns(nodes, edges, entryPoints);
-    this.detectProgramEntryPoint(context.relativePath, context.filePath, content, nodes, edges, entryPoints);
-    this.detectHostedServices(context.relativePath, context.filePath, content, nodes, edges, entryPoints);
-    this.detectDotNetScheduledJobs(context.relativePath, context.filePath, content, nodes, edges, entryPoints);
-    this.detectAzureFunctions(context.relativePath, context.filePath, content, nodes, entryPoints);
+    this.detectProgramEntryPoint(context.relativePath, content, nodes, edges, entryPoints);
+    this.detectHostedServices(context.relativePath, content, nodes, edges, entryPoints);
+    this.detectDotNetScheduledJobs(context.relativePath, content, nodes, edges, entryPoints);
+    this.detectAzureFunctions(context.relativePath, content, nodes, entryPoints);
     this.buildInheritanceRelationships(nodes, edges);
     this.buildInterfaceImplementationEdges(nodes, edges);
     this.linkEnumUsages(nodes, edges);
@@ -484,7 +484,7 @@ export class CSharpAnalyzer extends BaseAnalyzer {
     _context: AnalysisContext
   ): Promise<void> {
     try {
-      const fileData = await this.getCachedFile(fullPath);
+      const fileData = await this.getCachedFile(fullPath, relativePath);
       const { content, lines } = fileData;
 
       const namespace = this.extractNamespace(content);
@@ -503,11 +503,11 @@ export class CSharpAnalyzer extends BaseAnalyzer {
 
       const fileId = `file_${this.sanitizeId(relativePath)}`;
       const fileComments = fileData.comments;
-      const fileTodos = this.extractTodosFromComments(fileComments, fullPath);
+      const fileTodos = this.extractTodosFromComments(fileComments, relativePath);
 
       const fileNode = this.createNodeBuilder(fileId, relativePath.split('/').pop() || 'unknown.cs', 'file')
         .withLevel(1, this.getLevelName(1))
-        .withSource({ file: fullPath, line: 1, end_line: lines.length })
+        .withSource({ file: relativePath, line: 1, end_line: lines.length })
         .withMetadata({
           language: 'csharp',
           attributes: {
@@ -532,7 +532,7 @@ export class CSharpAnalyzer extends BaseAnalyzer {
           using.alias || using.namespace,
           'using',
           2,
-          fullPath,
+          relativePath,
           using.lineNumber,
           using.lineNumber,
           {
@@ -562,19 +562,19 @@ export class CSharpAnalyzer extends BaseAnalyzer {
       }
 
       for (const cls of classes) {
-        await this.processCSharpClass(cls, fileId, fullPath, content, lines, fileComments, nodes, edges, entryPoints);
+        await this.processCSharpClass(cls, fileId, relativePath, content, lines, fileComments, nodes, edges, entryPoints);
       }
 
       for (const intf of interfaces) {
-        await this.processCSharpInterface(intf, fileId, fullPath, lines, nodes, edges, entryPoints);
+        await this.processCSharpInterface(intf, fileId, relativePath, lines, nodes, edges, entryPoints);
       }
 
       for (const enm of enums) {
-        await this.processCSharpEnum(enm, fileId, fullPath, nodes, edges, entryPoints);
+        await this.processCSharpEnum(enm, fileId, relativePath, nodes, edges, entryPoints);
       }
 
       for (const struct of structs) {
-        await this.processCSharpStruct(struct, fileId, fullPath, nodes, edges, entryPoints);
+        await this.processCSharpStruct(struct, fileId, relativePath, nodes, edges, entryPoints);
       }
 
     } catch (error) {
@@ -585,7 +585,7 @@ export class CSharpAnalyzer extends BaseAnalyzer {
   private async processCSharpClass(
     cls: CSharpClass,
     fileId: string,
-    fullPath: string,
+    relativePath: string,
     content: string,
     lines: string[],
     fileComments: CASComment[],
@@ -609,7 +609,7 @@ export class CSharpAnalyzer extends BaseAnalyzer {
     )
       .withLevel(2, 'Class/Interface')
       .withCategory('structures', ['classes'])
-      .withSource({ file: fullPath, line: cls.lineStart, end_line: cls.lineEnd })
+      .withSource({ file: relativePath, line: cls.lineStart, end_line: cls.lineEnd })
       .withMetadata({
         attributes: {
           namespace: cls.namespace,
@@ -648,7 +648,7 @@ export class CSharpAnalyzer extends BaseAnalyzer {
         field.name,
         'field',
         4,
-        fullPath,
+        relativePath,
         field.lineNumber,
         field.lineNumber,
         {
@@ -677,7 +677,7 @@ export class CSharpAnalyzer extends BaseAnalyzer {
         property.name,
         'property',
         4,
-        fullPath,
+        relativePath,
         property.lineNumber,
         property.lineNumber,
         {
@@ -720,7 +720,7 @@ export class CSharpAnalyzer extends BaseAnalyzer {
       )
         .withLevel(4, 'Method/Function')
         .withCategory('methods', ['class-methods'])
-        .withSource({ file: fullPath, line: method.lineStart, end_line: method.lineEnd })
+        .withSource({ file: relativePath, line: method.lineStart, end_line: method.lineEnd })
         .withMetadata({
           attributes: {
             returnType: method.returnType,
@@ -760,7 +760,7 @@ export class CSharpAnalyzer extends BaseAnalyzer {
   private async processCSharpInterface(
     intf: CSharpInterface,
     fileId: string,
-    fullPath: string,
+    relativePath: string,
     lines: string[],
     nodes: CASNode[],
     edges: CASEdge[],
@@ -772,7 +772,7 @@ export class CSharpAnalyzer extends BaseAnalyzer {
     const interfaceNode = this.createNodeBuilder(interfaceId, intf.name, 'interface')
       .withLevel(2, this.getLevelName(2))
       .withCategory('structures', ['interfaces'])
-      .withSource({ file: fullPath, line: intf.lineStart, end_line: intf.lineEnd })
+      .withSource({ file: relativePath, line: intf.lineStart, end_line: intf.lineEnd })
       .withMetadata({
         language: 'csharp',
         attributes: {
@@ -800,7 +800,7 @@ export class CSharpAnalyzer extends BaseAnalyzer {
       const methodNode = this.createNodeBuilder(methodId, method.name, 'interface_method')
         .withLevel(4, this.getLevelName(4))
         .withCategory('methods', ['interface-methods'])
-        .withSource({ file: fullPath, line: method.lineStart, end_line: method.lineEnd })
+        .withSource({ file: relativePath, line: method.lineStart, end_line: method.lineEnd })
         .withParent(interfaceId)
         .withMetadata({
           language: 'csharp',
@@ -827,7 +827,7 @@ export class CSharpAnalyzer extends BaseAnalyzer {
       const propertyNode = this.createNodeBuilder(propertyId, property.name, 'interface_property')
         .withLevel(4, this.getLevelName(4))
         .withCategory('properties', ['interface-properties'])
-        .withSource({ file: fullPath, line: property.lineNumber, end_line: property.lineNumber })
+        .withSource({ file: relativePath, line: property.lineNumber, end_line: property.lineNumber })
         .withParent(interfaceId)
         .withMetadata({
           language: 'csharp',
@@ -854,7 +854,7 @@ export class CSharpAnalyzer extends BaseAnalyzer {
   private async processCSharpEnum(
     enm: CSharpEnum,
     fileId: string,
-    fullPath: string,
+    relativePath: string,
     nodes: CASNode[],
     edges: CASEdge[],
     entryPoints: any[]
@@ -864,7 +864,7 @@ export class CSharpAnalyzer extends BaseAnalyzer {
     const enumNode = this.createNodeBuilder(enumId, enm.name, 'enum')
       .withLevel(2, this.getLevelName(2))
       .withCategory('structures', ['enums'])
-      .withSource({ file: fullPath, line: enm.lineStart, end_line: enm.lineEnd })
+      .withSource({ file: relativePath, line: enm.lineStart, end_line: enm.lineEnd })
       .withMetadata({
         language: 'csharp',
         attributes: {
@@ -893,7 +893,7 @@ export class CSharpAnalyzer extends BaseAnalyzer {
         value.name,
         'enum_value',
         4,
-        fullPath,
+        relativePath,
         value.lineNumber,
         value.lineNumber,
         {
@@ -928,7 +928,7 @@ export class CSharpAnalyzer extends BaseAnalyzer {
   private async processCSharpStruct(
     struct: CSharpStruct,
     fileId: string,
-    fullPath: string,
+    relativePath: string,
     nodes: CASNode[],
     edges: CASEdge[],
     entryPoints: any[]
@@ -938,7 +938,7 @@ export class CSharpAnalyzer extends BaseAnalyzer {
     const structNode = this.createNodeBuilder(structId, struct.name, 'struct')
       .withLevel(2, this.getLevelName(2))
       .withCategory('structures', ['structs'])
-      .withSource({ file: fullPath, line: struct.lineStart, end_line: struct.lineEnd })
+      .withSource({ file: relativePath, line: struct.lineStart, end_line: struct.lineEnd })
       .withMetadata({
         language: 'csharp',
         attributes: {
@@ -970,7 +970,7 @@ export class CSharpAnalyzer extends BaseAnalyzer {
         field.name,
         'field',
         4,
-        fullPath,
+        relativePath,
         field.lineNumber,
         field.lineNumber,
         {
@@ -1636,21 +1636,20 @@ export class CSharpAnalyzer extends BaseAnalyzer {
       const fullPath = path.join(projectPath, relativeFile);
       let content = '';
       try {
-        content = (await this.getCachedFile(fullPath)).content;
+        content = (await this.getCachedFile(fullPath, relativeFile)).content;
       } catch {
         continue;
       }
 
-      this.detectProgramEntryPoint(relativeFile, fullPath, content, nodes, edges, entryPoints);
-      this.detectHostedServices(relativeFile, fullPath, content, nodes, edges, entryPoints);
-      this.detectDotNetScheduledJobs(relativeFile, fullPath, content, nodes, edges, entryPoints);
-      this.detectAzureFunctions(relativeFile, fullPath, content, nodes, entryPoints);
+      this.detectProgramEntryPoint(relativeFile, content, nodes, edges, entryPoints);
+      this.detectHostedServices(relativeFile, content, nodes, edges, entryPoints);
+      this.detectDotNetScheduledJobs(relativeFile, content, nodes, edges, entryPoints);
+      this.detectAzureFunctions(relativeFile, content, nodes, entryPoints);
     }
   }
 
   private detectProgramEntryPoint(
     relativeFile: string,
-    fullPath: string,
     content: string,
     nodes: CASNode[],
     edges: CASEdge[],
@@ -1662,13 +1661,13 @@ export class CSharpAnalyzer extends BaseAnalyzer {
     const looksLikeProgram = path.basename(relativeFile).toLowerCase() === 'program.cs';
     if (!hasExplicitMain && !(looksLikeProgram && hasTopLevelHost)) return;
 
-    const fileNode = this.findFileNode(nodes, fullPath);
+    const fileNode = this.findFileNode(nodes, relativeFile);
     const line = this.lineNumberFor(content, hasExplicitMain ? /\bstatic\s+(?:async\s+)?(?:Task|void|int)\s+Main\s*\(/ : /\b(?:WebApplication|Host)\.(?:CreateBuilder|CreateDefaultBuilder|CreateApplicationBuilder)\s*\(/);
     const nodeId = `dotnet_program_${this.sanitizeId(relativeFile)}_${line}`;
     if (!nodes.some(node => node.id === nodeId)) {
       nodes.push(this.createNodeBuilder(nodeId, 'Program entry point', 'host_entry')
         .withLevel(3, this.getLevelName(3))
-        .withSource({ file: fullPath, line })
+        .withSource({ file: relativeFile, line })
         .withMetadata({
           language: 'csharp',
           framework: hasTopLevelHost ? 'dotnet-host' : 'dotnet',
@@ -1704,7 +1703,7 @@ export class CSharpAnalyzer extends BaseAnalyzer {
       handler: {
         node_id: nodeId,
         method_name: hasExplicitMain ? 'Main' : 'top-level-statements',
-        file: fullPath,
+        file: relativeFile,
         line
       },
       metadata: {
@@ -1717,7 +1716,6 @@ export class CSharpAnalyzer extends BaseAnalyzer {
 
   private detectHostedServices(
     relativeFile: string,
-    fullPath: string,
     content: string,
     nodes: CASNode[],
     edges: CASEdge[],
@@ -1737,7 +1735,7 @@ export class CSharpAnalyzer extends BaseAnalyzer {
       if (!isHostedService && !isMessageWorker) continue;
       if (isAbstract && !isHostedService) continue;
 
-      const classNode = this.findClassNode(nodes, serviceName, fullPath);
+      const classNode = this.findClassNode(nodes, serviceName, relativeFile);
       if (classNode) {
         classNode.type = 'worker';
         classNode.subcategories = [...new Set([...(classNode.subcategories || []), 'background-service'])];
@@ -1755,12 +1753,12 @@ export class CSharpAnalyzer extends BaseAnalyzer {
       }
 
       const executeLine = this.lineNumberFor(content, /\bExecuteAsync\s*\(/);
-      const executeNode = this.findMethodNode(nodes, serviceName, 'ExecuteAsync', fullPath);
+      const executeNode = this.findMethodNode(nodes, serviceName, 'ExecuteAsync', relativeFile);
       const handleEventLine = this.lineNumberFor(content, /\bHandleEvent\s*\(/);
-      const handleEventNode = this.findMethodNode(nodes, serviceName, 'HandleEvent', fullPath);
-      const startNode = this.findMethodNode(nodes, serviceName, 'StartAsync', fullPath);
+      const handleEventNode = this.findMethodNode(nodes, serviceName, 'HandleEvent', relativeFile);
+      const startNode = this.findMethodNode(nodes, serviceName, 'StartAsync', relativeFile);
       const handlerNode = executeNode || handleEventNode || startNode;
-      const sourceNode = handlerNode?.id || classNode?.id || this.ensureSyntheticNode(nodes, edges, fullPath, relativeFile, serviceName, 'worker', match.index, content);
+      const sourceNode = handlerNode?.id || classNode?.id || this.ensureSyntheticNode(nodes, edges, relativeFile, serviceName, 'worker', match.index, content);
       const messageType = this.extractWorkerMessageType(inheritance);
       const queueName = this.extractQueueName(content);
       const serviceType = isMessageWorker ? 'message-worker' : 'background-service';
@@ -1779,7 +1777,7 @@ export class CSharpAnalyzer extends BaseAnalyzer {
         handler: {
           node_id: sourceNode,
           method_name: executeNode ? 'ExecuteAsync' : handleEventNode ? 'HandleEvent' : startNode ? 'StartAsync' : serviceName,
-          file: fullPath,
+          file: relativeFile,
           line: handlerNode?.source?.line || executeLine || handleEventLine || this.lineNumberAtOffset(content, match.index)
         },
         input: messageType ? { type: messageType } : undefined,
@@ -1836,7 +1834,6 @@ export class CSharpAnalyzer extends BaseAnalyzer {
 
   private detectDotNetScheduledJobs(
     relativeFile: string,
-    fullPath: string,
     content: string,
     nodes: CASNode[],
     edges: CASEdge[],
@@ -1849,7 +1846,7 @@ export class CSharpAnalyzer extends BaseAnalyzer {
       { regex: /\bTimer\s*\(/g, name: 'Timer scheduled callback', schedule: 'timer' },
     ];
 
-    const fileNode = this.findFileNode(nodes, fullPath);
+    const fileNode = this.findFileNode(nodes, relativeFile);
     for (const pattern of patterns) {
       let match: RegExpExecArray | null;
       while ((match = pattern.regex.exec(content)) !== null) {
@@ -1858,7 +1855,7 @@ export class CSharpAnalyzer extends BaseAnalyzer {
         if (!nodes.some(node => node.id === nodeId)) {
           nodes.push(this.createNodeBuilder(nodeId, pattern.name, 'scheduler')
             .withLevel(3, this.getLevelName(3))
-            .withSource({ file: fullPath, line })
+            .withSource({ file: relativeFile, line })
             .withMetadata({
               language: 'csharp',
               framework: 'dotnet-host',
@@ -1882,7 +1879,7 @@ export class CSharpAnalyzer extends BaseAnalyzer {
           handler: {
             node_id: nodeId,
             method_name: match[1] || pattern.schedule,
-            file: fullPath,
+            file: relativeFile,
             line
           },
           metadata: {
@@ -1898,7 +1895,6 @@ export class CSharpAnalyzer extends BaseAnalyzer {
 
   private detectAzureFunctions(
     relativeFile: string,
-    fullPath: string,
     content: string,
     nodes: CASNode[],
     entryPoints: CASEntryPoint[]
@@ -1908,8 +1904,8 @@ export class CSharpAnalyzer extends BaseAnalyzer {
     while ((match = functionPattern.exec(content)) !== null) {
       const functionName = match[1];
       const methodName = match[2];
-      const methodNode = this.findMethodNode(nodes, undefined, methodName, fullPath);
-      const sourceNode = methodNode?.id || this.findFileNode(nodes, fullPath)?.id;
+      const methodNode = this.findMethodNode(nodes, undefined, methodName, relativeFile);
+      const sourceNode = methodNode?.id || this.findFileNode(nodes, relativeFile)?.id;
       if (!sourceNode) continue;
       const hasHttpTrigger = /\[HttpTrigger\b/.test(match[0]);
       this.pushUniqueEntryPoint(entryPoints, {
@@ -1923,7 +1919,7 @@ export class CSharpAnalyzer extends BaseAnalyzer {
         handler: {
           node_id: sourceNode,
           method_name: methodName,
-          file: fullPath,
+          file: relativeFile,
           line: methodNode?.source?.line || this.lineNumberAtOffset(content, match.index)
         },
         metadata: {
@@ -1936,13 +1932,13 @@ export class CSharpAnalyzer extends BaseAnalyzer {
     }
   }
 
-  private findFileNode(nodes: CASNode[], fullPath: string): CASNode | undefined {
-    const normalized = fullPath.replace(/\\/g, '/').toLowerCase();
+  private findFileNode(nodes: CASNode[], relativeFile: string): CASNode | undefined {
+    const normalized = relativeFile.replace(/\\/g, '/').toLowerCase();
     return nodes.find(node => node.type === 'file' && node.source?.file?.replace(/\\/g, '/').toLowerCase() === normalized);
   }
 
-  private findClassNode(nodes: CASNode[], className: string, fullPath: string): CASNode | undefined {
-    const normalized = fullPath.replace(/\\/g, '/').toLowerCase();
+  private findClassNode(nodes: CASNode[], className: string, relativeFile: string): CASNode | undefined {
+    const normalized = relativeFile.replace(/\\/g, '/').toLowerCase();
     return nodes.find(node =>
       node.name === className &&
       (node.type === 'class' || node.type === 'worker') &&
@@ -1950,8 +1946,8 @@ export class CSharpAnalyzer extends BaseAnalyzer {
     );
   }
 
-  private findMethodNode(nodes: CASNode[], className: string | undefined, methodName: string, fullPath: string): CASNode | undefined {
-    const normalized = fullPath.replace(/\\/g, '/').toLowerCase();
+  private findMethodNode(nodes: CASNode[], className: string | undefined, methodName: string, relativeFile: string): CASNode | undefined {
+    const normalized = relativeFile.replace(/\\/g, '/').toLowerCase();
     return nodes.find(node =>
       node.type === 'method' &&
       node.name === methodName &&
@@ -1963,7 +1959,6 @@ export class CSharpAnalyzer extends BaseAnalyzer {
   private ensureSyntheticNode(
     nodes: CASNode[],
     edges: CASEdge[],
-    fullPath: string,
     relativeFile: string,
     name: string,
     type: string,
@@ -1975,14 +1970,14 @@ export class CSharpAnalyzer extends BaseAnalyzer {
     if (!nodes.some(node => node.id === nodeId)) {
       nodes.push(this.createNodeBuilder(nodeId, name, type)
         .withLevel(3, this.getLevelName(3))
-        .withSource({ file: fullPath, line })
+        .withSource({ file: relativeFile, line })
         .withMetadata({
           language: 'csharp',
           framework: 'dotnet-host'
         })
         .withAnalyzers([this.analyzerId], this.analyzerId)
         .build());
-      const fileNode = this.findFileNode(nodes, fullPath);
+      const fileNode = this.findFileNode(nodes, relativeFile);
       if (fileNode) edges.push(this.createEdge(`${fileNode.id}_contains_${nodeId}`, fileNode.id, nodeId, 'contains'));
     }
     return nodeId;
@@ -2243,7 +2238,7 @@ export class CSharpAnalyzer extends BaseAnalyzer {
 
       for (const child of ast.children || []) {
         if (child.kind === 'Method' && child.invocations) {
-          const callerMethod = firstMethodByFileAndName(fullPath, child.name);
+          const callerMethod = firstMethodByFileAndName(file, child.name);
 
           if (!callerMethod) continue;
 
@@ -2397,7 +2392,7 @@ export class CSharpAnalyzer extends BaseAnalyzer {
     projectPath: string,
     sharedIndex?: CSharpFallbackCallGraphIndex
   ): Promise<void> {
-    const fileData = await this.getCachedFile(fullPath);
+    const fileData = await this.getCachedFile(fullPath, file);
     const { content, lines } = fileData;
     const currentNamespace = this.extractNamespace(content) || 'global';
     const localIndex = sharedIndex || this.buildFallbackCallGraphIndex(edges, exitPoints, methodNodes, classNodes);
@@ -2410,7 +2405,7 @@ export class CSharpAnalyzer extends BaseAnalyzer {
       methodsByClassId,
       classByMethodId
     } = localIndex;
-    const methodsInFile = methodsInFileByPath.get(fullPath) || [];
+    const methodsInFile = methodsInFileByPath.get(file) || [];
     // Lazily-built per-caller-method receiver variable -> declared type map.
     const receiverTypesByMethod = new Map<string, Map<string, string>>();
 
@@ -2446,7 +2441,6 @@ export class CSharpAnalyzer extends BaseAnalyzer {
             const targetId = this.ensureSyntheticNode(
               nodes,
               edges,
-              fullPath,
               file,
               commandName,
               'command',
