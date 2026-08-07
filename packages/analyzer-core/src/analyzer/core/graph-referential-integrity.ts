@@ -163,3 +163,124 @@ function topEntries(counts: Record<string, number>, limit = 10): string {
   const entries = Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, limit);
   return entries.length > 0 ? entries.map(([k, v]) => `${k}=${v}`).join(' ') : 'none';
 }
+
+/**
+ * SOURCE-PATH REPO-RELATIVITY — the invariant that every persisted `file`
+ * field naming a location under the analysis root is repo-relative.
+ *
+ * WHY THIS EXISTS. Every other field of this shape is repo-relative; an
+ * analyzer that records `node.source.file` (or an entry point's
+ * `handler.file`) as an ABSOLUTE path leaks the analysis sandbox's local
+ * filesystem layout into customer-visible output and resolves for no
+ * consumer — not the UI, not an agent, not a human reading the document on
+ * a different machine. 34 analyzer files were found doing this; the generic
+ * entry-point backfill then faithfully copies whatever it finds.
+ *
+ * A path is only flagged when it resolves UNDER the analysis root (i.e. it
+ * was supposed to be relativized and was not) — an absolute path pointing
+ * genuinely outside the repo (a global dependency, a generated file in a
+ * shared cache) is not this defect and is left alone; forcing a relative
+ * rewrite there would produce a WRONG path, which is worse than an honest
+ * absolute one.
+ */
+export interface AbsoluteSourcePathSample {
+  id: string;
+  producer: string;
+  field: 'source.file' | 'handler.file';
+  file: string;
+}
+
+export interface SourcePathIntegrityReport {
+  total_checked: number;
+  /** Absolute paths that resolve under the analysis root — the defect class. */
+  leaked_absolute_paths: number;
+  by_producer: Record<string, number>;
+  samples: AbsoluteSourcePathSample[];
+  ok: boolean;
+}
+
+function isPosixAbsolute(file: string): boolean {
+  // Repo-relative paths are POSIX-style throughout the CAS (relativize
+  // strips both `\` and `/` separated prefixes); a leading `/` or a Windows
+  // drive/UNC form is the only shape a repo-relative path never takes.
+  return /^\/|^[a-zA-Z]:[\\/]|^\\\\/.test(file);
+}
+
+/** True when `file` (already known absolute) resolves under `rootPath`. */
+function isUnderRoot(file: string, rootPath: string): boolean {
+  const normalizedFile = file.replace(/\\/g, '/');
+  const normalizedRoot = rootPath.replace(/\\/g, '/').replace(/\/+$/, '');
+  return normalizedFile === normalizedRoot || normalizedFile.startsWith(`${normalizedRoot}/`);
+}
+
+export function checkSourcePathIntegrity(
+  collections: {
+    nodes?: Array<{ id?: string; source?: { file?: string }; analyzers?: string[]; primaryAnalyzer?: string }>;
+    entry_points?: Array<{ id?: string; source_analyzer?: string; handler?: { file?: string } }>;
+  },
+  /** The analysis root a leaked path would have been relativized against.
+   *  Persisted documents carry this at `system.root_path` (kept absolute on
+   *  purpose as the resolution anchor — see relativize-project-paths.ts). */
+  rootPath: string | undefined,
+  options: { maxSamples?: number } = {}
+): SourcePathIntegrityReport {
+  const maxSamples = options.maxSamples ?? 20;
+  const report: SourcePathIntegrityReport = {
+    total_checked: 0,
+    leaked_absolute_paths: 0,
+    by_producer: {},
+    samples: [],
+    ok: true,
+  };
+
+  if (!rootPath) {
+    // No anchor to prove a path is "under the root" against — refuse to
+    // guess rather than risk false positives on genuinely external paths.
+    return report;
+  }
+
+  const record = (id: string | undefined, producer: string, field: AbsoluteSourcePathSample['field'], file: string) => {
+    report.leaked_absolute_paths++;
+    report.by_producer[producer] = (report.by_producer[producer] || 0) + 1;
+    if (report.samples.length < maxSamples) {
+      report.samples.push({ id: id || 'unknown', producer, field, file });
+    }
+  };
+
+  for (const node of collections.nodes || []) {
+    const file = node.source?.file;
+    if (!file) continue;
+    report.total_checked++;
+    if (isPosixAbsolute(file) && isUnderRoot(file, rootPath)) {
+      record(node.id, node.primaryAnalyzer || node.analyzers?.[0] || 'unknown', 'source.file', file);
+    }
+  }
+
+  for (const entryPoint of collections.entry_points || []) {
+    const file = entryPoint.handler?.file;
+    if (!file) continue;
+    report.total_checked++;
+    if (isPosixAbsolute(file) && isUnderRoot(file, rootPath)) {
+      record(entryPoint.id, entryPoint.source_analyzer || 'unknown', 'handler.file', file);
+    }
+  }
+
+  report.ok = report.leaked_absolute_paths === 0;
+  return report;
+}
+
+/** Human-readable one-screen summary for a gate's stderr. */
+export function formatSourcePathIntegrityReport(report: SourcePathIntegrityReport): string {
+  if (report.ok) {
+    return `source-path repo-relativity clean — ${report.total_checked} file field(s) checked, 0 leaked absolute paths.`;
+  }
+  const pct = report.total_checked > 0 ? ((report.leaked_absolute_paths / report.total_checked) * 100).toFixed(1) : '0.0';
+  const lines = [
+    `${report.leaked_absolute_paths} of ${report.total_checked} file field(s) (${pct}%) are absolute paths under the analysis root that should have been relativized.`,
+    `  by producer: ${topEntries(report.by_producer)}`,
+  ];
+  for (const sample of report.samples) {
+    lines.push(`  e.g. ${sample.producer} ${sample.field} on ${sample.id}: "${sample.file}"`);
+  }
+  return lines.join('\n');
+}

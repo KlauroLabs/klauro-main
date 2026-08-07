@@ -72,3 +72,22 @@ function relativizeString(value: string, prefixes: string[]): string {
   }
   return value;
 }
+
+/**
+ * Single-value counterpart to `relativizeProjectPaths`, for normalising a
+ * `source.file` / `handler.file` at the point it ENTERS a node or entry
+ * point, rather than relying solely on the end-of-pipeline sweep above to
+ * catch it later. Same prefix-strip rule, so the two can never disagree.
+ *
+ * Returns `rawFile` unchanged when it is already relative, or when it is
+ * absolute but does not resolve under `projectRoot` (a dependency genuinely
+ * outside the analysis root) — forcing a relative rewrite there would
+ * produce a WRONG path, which is worse than an honest absolute one.
+ */
+export function toRepoRelativeSourceFile(rawFile: string | undefined, projectRoot: string): string | undefined {
+  if (!rawFile) return rawFile;
+  const root = path.resolve(projectRoot);
+  if (root === path.sep || root.length < 2) return rawFile;
+  const prefixes = [`${root}${path.sep}`, `${root.replace(/\\/g, '/')}/`];
+  return relativizeString(rawFile, prefixes);
+}

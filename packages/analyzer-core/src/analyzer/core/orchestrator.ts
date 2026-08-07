@@ -127,7 +127,7 @@ import { isLanguageBuiltinName, isLanguageBuiltinExitPoint, isLanguageBuiltinDom
 import { extractDistinctiveTextVocabulary, isEnglishFunctionWord } from './text-vocabulary';
 import { buildProductMap } from './product-map';
 import { buildReachabilityIndexFromCas } from './reachability-index';
-import { relativizeProjectPaths } from './relativize-project-paths';
+import { relativizeProjectPaths, toRepoRelativeSourceFile } from './relativize-project-paths';
 import { isRegisteredManifest, isRegisteredSourceExtension, isPackageBoundaryManifest } from './language-registry';
 import { discoverWorkspaceGlobRootsWithoutManifest } from './workspace-globs';
 import { CallGraphBuilder } from './call-graph-builder';
@@ -26831,7 +26831,14 @@ export class AnalyzerOrchestrator {
         handler: {
           node_id: sourceNode.id,
           method_name: sourceNode.name || path.basename(candidate.file),
-          file: sourceNode.source?.file || candidate.file,
+          // Normalise here rather than trust the backing node: many
+          // analyzers still record `source.file` as an absolute sandbox
+          // path (see task #115), and this backfill would otherwise
+          // faithfully copy it into customer-visible output. `candidate.file`
+          // is already known repo-relative (collectEntryPointCandidates
+          // normalizes it), so prefer that when the node's own file doesn't
+          // resolve to something repo-relative.
+          file: toRepoRelativeSourceFile(sourceNode.source?.file, projectPath) || candidate.file,
           line: sourceNode.source?.line || 1,
         },
         metadata: {
@@ -26861,7 +26868,10 @@ export class AnalyzerOrchestrator {
           handler: {
             node_id: fallbackNode.id,
             method_name: fallbackNode.name,
-            file,
+            // Was `file` (the raw, possibly-absolute source field) — every
+            // other field on this entry point already uses `relativeFile`;
+            // `handler.file` was the one that leaked the sandbox path.
+            file: relativeFile,
             line: fallbackNode.source?.line || 1,
           },
           metadata: {
