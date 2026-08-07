@@ -9954,7 +9954,7 @@ describe('P1 characterization: capability classification against real production
     let totalKept = 0;
     for (const repo of corpus) {
       const capabilities = repo.capabilities.map(materialize);
-      const kept = orch.trimLowValueFallbackCapabilities(capabilities, '/tmp/characterization');
+      const kept = orch.trimLowValueFallbackCapabilities(capabilities);
       const expectedTrimmed = BASELINE_TRIMMED_BY_REPO[repo.repo] || 0;
       expect({ repo: repo.repo, trimmed: capabilities.length - kept.length })
         .toEqual({ repo: repo.repo, trimmed: expectedTrimmed });

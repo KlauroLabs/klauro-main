@@ -21420,7 +21420,7 @@ export class AnalyzerOrchestrator {
         ? nonRedundantCapabilities
         : capabilities;
     const dedupedCapabilities = this.dedupeSystemCapabilitiesByName(capabilitiesForAgents);
-    const trimmedCapabilities = this.trimLowValueFallbackCapabilities(dedupedCapabilities, projectPath);
+    const trimmedCapabilities = this.trimLowValueFallbackCapabilities(dedupedCapabilities);
     // Domain is comprehension (AI-only) and is not known at this structural
     // stage; the hardcoded repo-name domain override was deleted. Capability
     // ordering therefore no longer biases on a keyword-classified domain, and
@@ -21526,8 +21526,13 @@ export class AnalyzerOrchestrator {
     }];
   }
 
-  private trimLowValueFallbackCapabilities(capabilities: SystemCapability[], projectPath?: string): SystemCapability[] {
-    if (this.isKlauroSelfProject(projectPath)) return capabilities;
+  private trimLowValueFallbackCapabilities(capabilities: SystemCapability[]): SystemCapability[] {
+    // #113: this repo used to be exempt from the low-value-fallback trim
+    // entirely (the opposite direction from every other self-only gate here
+    // — protecting capabilities from removal instead of manufacturing them
+    // — but still a special case gated on isKlauroSelfProject). Removed: this
+    // repo's fallback capabilities are trimmed by the same hard/soft rules
+    // as every other repo's.
     const hardTrimmed = capabilities.filter(capability => !this.isHardLowValueCapability(capability));
     if (hardTrimmed.length < capabilities.length && hardTrimmed.length >= 1) {
       capabilities = hardTrimmed;
