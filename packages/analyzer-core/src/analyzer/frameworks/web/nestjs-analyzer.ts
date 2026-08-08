@@ -1669,9 +1669,10 @@ export class NestJSAnalyzer extends BaseAnalyzer {
     entryPoints: CASEntryPoint[]
   ): void {
     const aliases = this.buildImportAliasMap(ast);
-    const walk = (node: any) => {
+    const walk = (node: any, currentClass?: any) => {
       // Check for @Command decorator (nest-commander)
       if (!node || typeof node !== 'object') return;
+      const activeClass = node.type === 'ClassDeclaration' ? node : currentClass;
 
       if (node.type === 'ClassDeclaration' && node.decorators) {
         const commandDecorator = node.decorators.find((dec: any) =>
@@ -1711,12 +1712,10 @@ export class NestJSAnalyzer extends BaseAnalyzer {
           const subCommandName = this.extractDecoratorArgument(subCommandDecorator);
           const methodName = node.key?.name || 'handleCommand';
 
-          // Find parent class
-          let parentClass = node;
-          while (parentClass && parentClass.type !== 'ClassDeclaration') {
-            parentClass = parentClass.parent;
-          }
-          const className = parentClass?.id?.name || 'UnknownClass';
+          // This parser does not populate node.parent, so the owning class
+          // must come from activeClass, tracked by the walk itself as it
+          // descends (see the recursive calls below).
+          const className = activeClass?.id?.name || 'UnknownClass';
           const parentId = `class_${filePath}_${className}_0`;
 
           entryPoints.push(this.createEntryPoint(
@@ -1737,11 +1736,12 @@ export class NestJSAnalyzer extends BaseAnalyzer {
       }
 
       for (const key in node) {
+        if (key === 'parent') continue;
         if (typeof node[key] === 'object' && node[key] !== null) {
           if (Array.isArray(node[key])) {
-            node[key].forEach(walk);
+            node[key].forEach((child: any) => walk(child, activeClass));
           } else {
-            walk(node[key]);
+            walk(node[key], activeClass);
           }
         }
       }
