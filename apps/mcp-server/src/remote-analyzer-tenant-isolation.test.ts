@@ -1,5 +1,6 @@
 import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
+import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as http from 'node:http';
 import * as os from 'node:os';
@@ -328,4 +329,177 @@ test('TIER 2: getProjectForUser/reanalyze/analysis reads all 404 for a project i
     const conceptualAsStranger = await request(port, 'GET', `/api/projects/${project.id}/conceptual`, undefined, strangerToken);
     assert.equal(conceptualAsStranger.statusCode, 404);
   });
+});
+
+// --- task #120: server-side membership enforcement on WRITE paths ---
+//
+// Everything above proves the READ side already 404s for a foreign project.
+// These tests hit the raw HTTP write routes directly (no client SDK, no
+// `.klaurorc`, no `requireBoundProject` client-side guard from 5291b1ec) --
+// exactly how a direct API caller who is not using the CLI at all would --
+// to prove the SERVER itself refuses to write under a project id the caller
+// is not a member of, and that any pre-existing data under that id survives
+// untouched.
+
+function minimalSnapshotBody(projectId: string, marker: string) {
+  const content = `def marker():\n    return "${marker}"\n`;
+  const hash = crypto.createHash('sha256').update(content).digest('hex');
+  return {
+    protocol_version: 2,
+    project_id: projectId,
+    project_path: '/tmp/attacker-checkout',
+    snapshot: {
+      project_name: 'attacker-checkout',
+      snapshot_source: 'working-tree' as const,
+      files: [{ path: 'attack.py', content, hash }],
+      manifest: {
+        generated_at: new Date().toISOString(),
+        root: '/tmp/attacker-checkout',
+        file_count: 1,
+        total_bytes: Buffer.byteLength(content, 'utf8'),
+        excluded_directories: [],
+      },
+    },
+    async: false,
+  };
+}
+
+test('SECURITY (task #120): POST /v1/analyze with a foreign prj_ id is refused server-side, and the victim project\'s stored analysis is never touched', async () => {
+  await withServer(async ({ port, serverUrl, remoteData }) => {
+    const victim = await registerAccount(port, 'victim-write-a@example.com', 'Victim Workspace');
+    const attacker = await registerAccount(port, 'attacker-write-b@example.com', 'Attacker Workspace');
+
+    const root = path.dirname(remoteData);
+    const victimRepo = path.join(root, 'victim-write-repo');
+    writeRepo(victimRepo, 'def victim_real_code():\n    return "victim-secret-marker"\n');
+    const victimProjectRes = await request(port, 'POST', `/api/workspaces/${victim.workspaceId}/projects`, {
+      name: 'victim-real-project',
+    }, victim.token);
+    assert.equal(victimProjectRes.statusCode, 201);
+    const victimProject = JSON.parse(victimProjectRes.body).project as { id: string };
+
+    const legitPush = await analyzeCodebaseRemotely({
+      projectPath: victimRepo,
+      serverUrl,
+      token: victim.token,
+      analysisId: victimProject.id,
+      wait: true,
+    });
+    assert.equal(legitPush.status, 'success');
+    assert.ok(legitPush.cas!.nodes.length > 0);
+    const victimWorkspace = path.join(remoteData, 'workspaces', victimProject.id);
+    assert.ok(fs.existsSync(victimWorkspace), 'victim workspace must exist on disk before the attack');
+    const beforeFiles = fs.readdirSync(victimWorkspace).sort();
+    const beforeAppFileContent = fs.readFileSync(path.join(victimWorkspace, 'app.py'), 'utf8');
+    assert.match(beforeAppFileContent, /victim-secret-marker/);
+
+    // The attack: raw HTTP POST, attacker's own valid session token, but a
+    // project_id belonging to the victim's workspace. Before this fix,
+    // resolveStorageAnalysisId passed prj_ ids through unchanged with no
+    // membership check, so this would fs.remove() + overwrite the victim's
+    // real stored analysis with the attacker's payload.
+    const attackBody = minimalSnapshotBody(victimProject.id, 'attacker-injected-marker');
+    const attackRes = await request(port, 'POST', '/v1/analyze', attackBody, attacker.token);
+    assert.equal(attackRes.statusCode, 404, `expected 404 (collapsed not-found/not-a-member), got ${attackRes.statusCode}: ${attackRes.body}`);
+    const attackResponseBody = JSON.parse(attackRes.body);
+    assert.match(attackResponseBody.error, /Project not found, or your account is not a member/);
+
+    // The victim's on-disk data must be untouched -- no fs.remove, no
+    // overwrite, no new source files from the attacker, and the attacker's
+    // `attack.py` must never have landed next to the victim's real source.
+    assert.ok(fs.existsSync(victimWorkspace), 'victim workspace must still exist after the attack attempt');
+    const afterFiles = fs.readdirSync(victimWorkspace).sort();
+    assert.deepEqual(afterFiles, beforeFiles, 'attack must not alter the victim workspace top-level file listing');
+    assert.ok(!afterFiles.includes('attack.py'), 'the attacker\'s payload file must never land in the victim workspace');
+    const afterAppFileContent = fs.readFileSync(path.join(victimWorkspace, 'app.py'), 'utf8');
+    assert.equal(afterAppFileContent, beforeAppFileContent, 'the victim\'s real source content must be byte-identical after the attack attempt');
+
+    // The legitimate owner can still push to their own project immediately
+    // afterward -- the gate does not wedge the real owner out.
+    writeRepo(victimRepo, 'def victim_real_code_v2():\n    return "victim-secret-marker-v2"\n');
+    const followUpPush = await analyzeCodebaseRemotely({
+      projectPath: victimRepo,
+      serverUrl,
+      token: victim.token,
+      analysisId: victimProject.id,
+      wait: true,
+    });
+    assert.equal(followUpPush.status, 'success');
+  });
+});
+
+test('SECURITY (task #120): POST /v1/sync and /v1/analyze-diff with a foreign prj_ id are both refused server-side', async () => {
+  await withServer(async ({ port, serverUrl, remoteData }) => {
+    const victim = await registerAccount(port, 'victim-sync-a@example.com', 'Victim Sync Workspace');
+    const attacker = await registerAccount(port, 'attacker-sync-b@example.com', 'Attacker Sync Workspace');
+
+    const root = path.dirname(remoteData);
+    const victimRepo = path.join(root, 'victim-sync-repo');
+    writeRepo(victimRepo, 'def real():\n    return 1\n');
+    const victimProjectRes = await request(port, 'POST', `/api/workspaces/${victim.workspaceId}/projects`, {
+      name: 'victim-sync-project',
+    }, victim.token);
+    const victimProject = JSON.parse(victimProjectRes.body).project as { id: string };
+    const legitPush = await analyzeCodebaseRemotely({
+      projectPath: victimRepo, serverUrl, token: victim.token, analysisId: victimProject.id, wait: true,
+    });
+    assert.equal(legitPush.status, 'success');
+
+    const syncBody = {
+      protocol_version: 2,
+      analysis_id: victimProject.id,
+      project_id: victimProject.id,
+      project_path: victimRepo,
+      changes: {
+        project_name: 'attacker-sync',
+        changed_files: [{ path: 'attack.py', content: 'def hacked(): return 1\n', hash: 'x'.repeat(64) }],
+      },
+      async: false,
+    };
+    const syncRes = await request(port, 'POST', '/v1/sync', syncBody, attacker.token);
+    assert.equal(syncRes.statusCode, 404, `expected 404, got ${syncRes.statusCode}: ${syncRes.body}`);
+
+    const diffBody = {
+      project_id: victimProject.id,
+      project_path: victimRepo,
+      diff_context: {
+        target_branch: 'attacker-branch',
+        head_commit: 'deadbeef',
+        files: [{ path: 'attack.py', content: 'def hacked(): return 1\n', hash: 'x'.repeat(64) }],
+      },
+    };
+    const diffRes = await request(port, 'POST', '/v1/analyze-diff', diffBody, attacker.token);
+    assert.equal(diffRes.statusCode, 404, `expected 404, got ${diffRes.statusCode}: ${diffRes.body}`);
+  });
+});
+
+test('STORAGE ADMISSION BOUND (task #120): an account cannot push unlimited distinct unbound analyses', async () => {
+  const previousLimit = process.env.KLAURO_MAX_ANALYSES_PER_ACCOUNT;
+  process.env.KLAURO_MAX_ANALYSES_PER_ACCOUNT = '2';
+  try {
+    await withServer(async ({ port, serverUrl, remoteData }) => {
+      const account = await registerAccount(port, 'quota-account@example.com', 'Quota Workspace');
+      const root = path.dirname(remoteData);
+
+      for (let i = 0; i < 2; i++) {
+        const repo = path.join(root, `quota-repo-${i}`);
+        writeRepo(repo, `def entry_${i}():\n    return ${i}\n`);
+        const result = await analyzeCodebaseRemotely({ projectPath: repo, serverUrl, token: account.token, wait: true });
+        assert.equal(result.status, 'success', `push ${i} within the quota must succeed`);
+      }
+
+      const repoOverLimit = path.join(root, 'quota-repo-over-limit');
+      writeRepo(repoOverLimit, 'def over_limit():\n    return -1\n');
+      let sawQuotaError = false;
+      try {
+        await analyzeCodebaseRemotely({ projectPath: repoOverLimit, serverUrl, token: account.token, wait: true });
+      } catch (error) {
+        sawQuotaError = /storage limit/i.test(error instanceof Error ? error.message : String(error));
+      }
+      assert.ok(sawQuotaError, 'the (limit+1)th distinct unbound analysis must be refused with a storage-limit error');
+    });
+  } finally {
+    if (previousLimit === undefined) delete process.env.KLAURO_MAX_ANALYSES_PER_ACCOUNT;
+    else process.env.KLAURO_MAX_ANALYSES_PER_ACCOUNT = previousLimit;
+  }
 });
