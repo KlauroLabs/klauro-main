@@ -858,13 +858,36 @@ export class AngularAnalyzer extends BaseAnalyzer {
         ));
       }
 
-      if (route.component && route.pathResolved && route.segment !== '**') {
+      // A route is a real, navigable entry point whenever it renders SOMETHING
+      // at `displayPath` — either directly (`component`/`loadComponent`) or by
+      // handing off to a lazily-loaded feature module (`loadChildren`). The
+      // route-node above (line ~794) is emitted for every resolved route
+      // unconditionally, but this gate used to require `route.component`
+      // alone, which `loadChildren`-based lazy feature-module routes never
+      // set (see angular-route-resolver.ts: `component` only comes from
+      // `component:`/`loadComponent:`, never `loadChildren:`). Real Angular
+      // SPAs lean heavily on `loadChildren` for feature-module lazy loading,
+      // so that single-field gate silently dropped the majority of a large
+      // app's routes from entry_points while the graph still had them as
+      // angular_route nodes (measured on a real SPA: 158 angular_route nodes,
+      // only 17 counted as entry points — an 89% gap between what the
+      // analyzer found and what it reported). A bare `redirectTo`-only route
+      // (no component, no loadChildren) is intentionally still excluded: it
+      // renders nothing of its own, it only aliases to another route that is
+      // itself already counted. The wildcard `**` catch-all and any route
+      // whose path could not be resolved remain excluded for the same reason
+      // as before — neither names a specific, reliable navigable path.
+      const rendersSomething = Boolean(route.component || route.loadChildrenFile);
+      if (rendersSomething && route.pathResolved && route.segment !== '**') {
+        const isLazyModuleRoute = !route.component && Boolean(route.loadChildrenFile);
         entryPoints.push(this.createEntryPoint(
           `entry_${routeId}`,
           routeId,
           'route',
           `Route ${displayPath}`,
-          `Angular route ${displayPath} rendering ${route.component}`,
+          isLazyModuleRoute
+            ? `Angular route ${displayPath} lazy-loading module ${route.loadChildrenFile}`
+            : `Angular route ${displayPath} rendering ${route.component}`,
           {
             path: displayPath,
             method: 'GET'
@@ -877,7 +900,8 @@ export class AngularAnalyzer extends BaseAnalyzer {
             component: route.component,
             component_file: route.componentFile,
             guards: allGuards,
-            lazy: route.lazyComponent || route.lazyChildren,
+            lazy: route.lazyComponent || route.lazyChildren || isLazyModuleRoute,
+            load_children: route.loadChildrenFile,
             data: route.data,
             route_file: route.sourceFile
           }

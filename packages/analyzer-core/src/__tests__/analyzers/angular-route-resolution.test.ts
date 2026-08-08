@@ -467,11 +467,41 @@ export const routes: Routes = [
       expect(login!.security?.authorized_roles).toEqual(['guestGuard']);
     });
 
-    it('does not emit wildcard or componentless entry points', async () => {
+    it('does not emit wildcard entry points, but does emit lazy loadChildren module entry points', async () => {
       writeTruckspyShapedApp();
       const { entryPoints, nodes } = await runAnalyzer();
       const routeEntries = entryPoints.filter(ep => ep.type === 'route');
-      expect(routeEntries.every(ep => ep.metadata?.component)).toBe(true);
+
+      // Every emitted entry point must render SOMETHING at its path: either
+      // its own component, or (for a lazy feature-module boundary like
+      // `path: 'vehicles', loadChildren: ...`) a load_children target. A
+      // route with neither (a bare redirect, or the wildcard catch-all) must
+      // never be counted.
+      expect(routeEntries.every(ep => ep.metadata?.component || ep.metadata?.load_children)).toBe(true);
+
+      // Real defect: a `loadChildren`-based lazy feature-module route (no
+      // component of its own — the child module supplies its own routes) was
+      // previously dropped from entry_points entirely because the gate
+      // required `route.component`, even though the angular_route NODE was
+      // always emitted for it. On a real Angular SPA leaning on loadChildren
+      // for feature-module lazy loading, that undercounted entry points by
+      // 89% (158 angular_route nodes, only 17 entry points) relative to what
+      // the analyzer itself had already discovered. The 'vehicles' and
+      // 'auth' routes below are exactly that shape in this fixture.
+      const vehiclesModuleEntry = routeEntries.find(ep => ep.trigger?.path === '/vehicles');
+      expect(vehiclesModuleEntry).toBeDefined();
+      expect(vehiclesModuleEntry!.metadata?.component).toBeUndefined();
+      expect(vehiclesModuleEntry!.metadata?.load_children).toBe('src/app/features/vehicles/vehicles.routing.ts');
+      expect(vehiclesModuleEntry!.metadata?.lazy).toBe(true);
+
+      const authModuleEntry = routeEntries.find(ep => ep.trigger?.path === '/auth');
+      expect(authModuleEntry).toBeDefined();
+      expect(authModuleEntry!.metadata?.component).toBeUndefined();
+      expect(authModuleEntry!.metadata?.load_children).toBe('src/app/features/auth/auth.routing.ts');
+
+      const paths = routeEntries.map(ep => ep.trigger?.path);
+      expect(paths).not.toContain('**');
+      expect(paths).not.toContain('/**');
 
       const routeNodes = nodes.filter(node => node.type === 'angular_route');
       const wildcardNodes = routeNodes.filter(node => String(node.metadata?.attributes?.segment) === '**');

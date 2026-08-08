@@ -2526,7 +2526,41 @@ export class AnalyzerOrchestrator {
         // the same references held by `output`) and then refreshes the few
         // output fields derived from those AI mutations.
         this.deferredAiEnrichments.set(output, async () => {
-          await runAiInterpretation();
+          // CONSISTENCY GUARD (real defect: a desktop-app analysis served
+          // summary.top_capabilities with 6 AI-polished names while
+          // ai_enrichment:"error" AND product_map.capabilities with 28 raw
+          // duplicate-laden entries — two irreconcilable answers to "how many
+          // capabilities does this app have" in the SAME response). Root
+          // cause: applyAIInterpretation's capability-catalog step
+          // (systemCapabilities.splice(...)) commits its AI-polished names
+          // into the array `output.system_capabilities` already references
+          // BEFORE the LATER description-generation/grounding-gate step in
+          // the same call can still throw. When it does throw, enrichAnalysisAI
+          // (above) marks ai_enrichment='error' and rethrows, but everything
+          // below this line in this closure — including the product_map
+          // rebuild that would fold the spliced capabilities into a deduped
+          // product_map.capabilities — never runs. The result: system_capabilities
+          // silently carries the partial AI upgrade while product_map is stuck
+          // on the stale pre-AI raw snapshot. Neither half lies on its own;
+          // shipping them together in one response does.
+          //
+          // Fix: snapshot the raw, pre-AI capability objects before running
+          // the AI phase. On failure, roll system_capabilities back to that
+          // raw snapshot (undoing the partial splice) and rebuild product_map
+          // from the SAME rolled-back state, so a response with
+          // ai_enrichment==='error' never presents AI-polished capability
+          // names anywhere — every field derived from system_capabilities
+          // agrees with every other one, all grounded in the same
+          // deterministic (unenriched) data.
+          const rawCapabilitySnapshot = systemCapabilities.map(capability => ({ ...capability }));
+          try {
+            await runAiInterpretation();
+          } catch (error) {
+            systemCapabilities.splice(0, systemCapabilities.length, ...rawCapabilitySnapshot);
+            output.system_capabilities = systemCapabilities.length > 0 ? systemCapabilities : undefined;
+            output.product_map = buildProductMap(output);
+            throw error;
+          }
           // CONSTRAINT (capability→flow linkage on the deferred path): the AI
           // catalog pass REPLACES the system_capabilities array contents
           // (systemCapabilities.splice in applyAIInterpretation) with fresh
