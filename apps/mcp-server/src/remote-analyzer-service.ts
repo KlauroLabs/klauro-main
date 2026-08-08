@@ -455,6 +455,11 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           return;
         }
 
+        if (!(await authorizeProjectWrite(accounts, authorization.clientId, body.project_id))) {
+          writeJson(response, 404, { status: 'error', error: PROJECT_WRITE_DENIED_MESSAGE });
+          return;
+        }
+
         {
           // Progressive disclosure: persist the snapshot NOW, answer in
           // seconds, and run the entire analysis server-side in the
@@ -470,6 +475,15 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           const acceptedAnalysisId = resolveStorageAnalysisId(rawAcceptedId, accountSaltFor(authorization.clientId));
           const visibleAnalysisId = clientVisibleAnalysisId(rawAcceptedId, acceptedAnalysisId, authorization.clientId);
           const acceptedWorkspace = workspacePath(dataDir, acceptedAnalysisId);
+          const admission = await admitAccountAnalysisWorkspace(dataDir, authorization.clientId, rawAcceptedId, acceptedAnalysisId);
+          if (!admission.admitted) {
+            writeJson(response, 403, {
+              status: 'error',
+              error: `Storage limit reached: this account already has ${admission.count} distinct unbound analyses (limit ${admission.limit}). ` +
+                `Bind this repo to an existing project (\`klauro init\`) instead of pushing another unbound checkout, or contact support to raise the limit.`,
+            });
+            return;
+          }
           const snapshotIdentity = committedSnapshotIdentity(body.snapshot.manifest, body.snapshot.base_commit);
           const activeIdentity = activeCommittedSnapshots.get(acceptedAnalysisId);
           const revisions = await readProjectRevisions(dataDir, acceptedAnalysisId);
@@ -765,6 +779,10 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
 
       if (request.method === 'POST' && route === '/v1/analyze-diff') {
         const body = await readJsonBody<RemoteAnalyzeDiffRequest>(request, maxBodyBytes);
+        if (!(await authorizeProjectWrite(accounts, authorization.clientId, body.project_id))) {
+          writeJson(response, 404, { status: 'error', error: PROJECT_WRITE_DENIED_MESSAGE });
+          return;
+        }
         const result = await handleAnalyzeDiff(dataDir, body, accountSaltFor(authorization.clientId));
         await appendAuditLog(dataDir, {
           event: 'analyze_diff',
@@ -794,6 +812,10 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
         }>(request, maxBodyBytes);
         if (!body.analysis_id || !body.target) {
           writeJson(response, 400, { status: 'error', error: 'Hosted element enrichment requires analysis_id and target' });
+          return;
+        }
+        if (!(await authorizeProjectWrite(accounts, authorization.clientId, body.analysis_id))) {
+          writeJson(response, 404, { status: 'error', error: PROJECT_WRITE_DENIED_MESSAGE });
           return;
         }
         const analysisId = resolveStorageAnalysisId(body.analysis_id, accountSaltFor(authorization.clientId));
@@ -842,6 +864,14 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           });
           return;
         }
+        // Sync's storage key is `analysis_id`, not `project_id` (see
+        // prepareSync below) — that is the field to gate. `project_id` is
+        // only used later for the account-attach step, which is already
+        // membership-checked via linkAnalysisToAccountProject/recordCompletedSync.
+        if (!(await authorizeProjectWrite(accounts, authorization.clientId, body.analysis_id))) {
+          writeJson(response, 404, { status: 'error', error: PROJECT_WRITE_DENIED_MESSAGE });
+          return;
+        }
         if (body.async === true) {
           const prepared = await prepareSync(dataDir, body, accountSaltFor(authorization.clientId));
           const attemptRecordPath = projectAttemptRecordPath(prepared.workspace);
@@ -869,7 +899,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
             });
             try {
               const result = await completeSync(prepared, body);
-              await recordCompletedSync(dataDir, accounts, body, result);
+              await recordCompletedSync(dataDir, accounts, body, result, authorization.clientId);
               const finishedAt = new Date().toISOString();
               await writeAttemptRecord(attemptRecordPath, {
                 state: 'succeeded',
@@ -905,7 +935,7 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           return;
         }
         const result = await handleSync(dataDir, body, accountSaltFor(authorization.clientId));
-        await recordCompletedSync(dataDir, accounts, body, result);
+        await recordCompletedSync(dataDir, accounts, body, result, authorization.clientId);
         writeJson(response, 200, {
           ...result,
           analysis_id: clientVisibleAnalysisId(body.analysis_id, result.analysis_id, authorization.clientId),
@@ -2049,6 +2079,59 @@ async function authorizeAccountApiRequest(accounts: AccountStore, request: http.
   const user = await accounts.authenticate(token);
   if (user) return { authorized: true, userId: user.id };
   return { authorized: false, userId: '', reason: token ? 'not_recognized' : 'no_token' };
+}
+
+/** Same collapsed-404 message every membership-gated read path already uses
+ * (see /api/projects/:id and friends) — never distinguishes "no such
+ * project" from "not a member" so a write attempt can't be used to probe for
+ * the existence of a project in someone else's workspace. */
+const PROJECT_WRITE_DENIED_MESSAGE =
+  'Project not found, or your account is not a member of its workspace. Verify the project_id and that you are signed in to the account that owns it.';
+
+/**
+ * Server-side membership gate for every write path that persists data under
+ * a client-supplied project/analysis id (`/v1/analyze`, `/v1/analyze-diff`,
+ * `/v1/sync`, `/v1/enrich-element`).
+ *
+ * WHY THIS EXISTS: `resolveStorageAnalysisId` passes `prj_...` ids through
+ * UNCHANGED (see its own doc comment — "already globally unique +
+ * auth-checked"), but nothing upstream of it actually checked that the
+ * CALLING account is a member of the workspace that owns that project id.
+ * Before this gate, any authenticated (or even anonymous, since the
+ * pass-through does not consult clientId at all) caller who sent a
+ * well-formed `prj_...` id got `workspacePath(dataDir, thatId)` handed back
+ * as their write target verbatim — for `/v1/analyze` that includes an
+ * unconditional `fs.remove(workspace)` before the re-write, so a guessed or
+ * observed foreign project id was not just readable, it was overwritable.
+ * `linkAnalysisToAccountProject` (below) already enforced membership before
+ * attaching the write to an ACCOUNT RECORD, but that runs after the bytes
+ * already landed on disk and only gates the account's pointer to the
+ * analysis, not the underlying storage write itself. This closes that gap by
+ * checking membership BEFORE any write happens, using the same
+ * `getProjectForUser` primitive the read paths already trust (see
+ * `resolveAuthorizedAnalysisReadId` above and the /api/projects/:id family).
+ *
+ * Anonymous/shared-token callers (`clientId` not `user:...`) can never write
+ * under a `prj_` id — there is no account identity to check membership
+ * against, so denying is the only safe answer. The deploy smoke
+ * (analysis-smoke.mjs) never reaches this: it calls the analyzer in-process,
+ * not over HTTP. Non-`prj_` ids (bare path hashes) are unaffected by this
+ * gate — `resolveStorageAnalysisId` already folds those into the caller's
+ * own `acct_` keyspace before they ever reach disk, which is the pre-existing
+ * fix for the 2026-07-06 cross-tenant bleed (see
+ * remote-analyzer-tenant-isolation.test.ts) and remains sufficient on its
+ * own; only the `prj_` pass-through case was unguarded.
+ */
+async function authorizeProjectWrite(accounts: AccountStore, clientId: string | undefined, projectId: string | undefined): Promise<boolean> {
+  if (!projectId || !/^prj_/.test(projectId)) return true;
+  if (!clientId?.startsWith('user:')) return false;
+  const userId = clientId.slice('user:'.length);
+  try {
+    const project = await accounts.getProjectForUser(userId, projectId);
+    return Boolean(project);
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -4182,6 +4265,7 @@ async function recordCompletedSync(
   accounts: AccountStore,
   request: RemoteSyncRequest,
   result: RemoteAnalyzeResponse,
+  clientId?: string,
 ): Promise<void> {
   await appendAuditLog(dataDir, {
     event: 'sync',
@@ -4196,7 +4280,14 @@ async function recordCompletedSync(
     nodes: result.cas.nodes.length,
     edges: result.cas.edges.length,
   });
-  if (request.project_id && /^prj_/.test(request.project_id)) {
+  // `setProjectRepoFacts` itself takes no userId and does not check
+  // membership (see its doc comment: it silently no-ops on an unknown id,
+  // but a REAL foreign project id was previously stamped unconditionally).
+  // `request.analysis_id` is already membership-checked above (the storage
+  // write itself), but `project_id` is a separate, independently
+  // client-supplied field — gate it too before mutating that project's
+  // stored repo_facts metadata.
+  if (request.project_id && /^prj_/.test(request.project_id) && (await authorizeProjectWrite(accounts, clientId, request.project_id))) {
     await accounts.setProjectRepoFacts(request.project_id, result.manifest.repo_facts).catch(() => {});
   }
 }
@@ -4671,6 +4762,73 @@ function scheduleWorkspaceReanalyze(
 function resolveStorageAnalysisId(rawId: string, accountSalt: string | undefined): string {
   if (/^prj_/.test(rawId) || /^acct_/.test(rawId)) return rawId;
   return accountSalt ? `acct_${makeAnalysisId(accountSalt + '::' + rawId)}` : rawId;
+}
+
+const DEFAULT_MAX_ANALYSES_PER_ACCOUNT = 50;
+
+/** Configurable via `KLAURO_MAX_ANALYSES_PER_ACCOUNT`; falls back to a
+ * generous default that comfortably covers a real developer's local
+ * checkouts (a few dozen repos) without allowing unbounded growth. */
+function maxAnalysesPerAccount(): number {
+  const raw = Number(process.env.KLAURO_MAX_ANALYSES_PER_ACCOUNT);
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : DEFAULT_MAX_ANALYSES_PER_ACCOUNT;
+}
+
+function accountAnalysisQuotaPath(dataDir: string, userId: string): string {
+  // Sanitize userId defensively before it touches a path -- account ids are
+  // server-generated (`usr_<random>`), but this must never trust that blindly.
+  const safeUserId = userId.replace(/[^a-zA-Z0-9_-]/g, '_');
+  return path.join(dataDir, 'account-quota', `${safeUserId}.json`);
+}
+
+/**
+ * STORAGE ADMISSION BOUND (task #120 item 5).
+ *
+ * Even with `authorizeProjectWrite` closing the `prj_` cross-tenant write
+ * gap above, an authenticated account could still push an UNLIMITED number
+ * of DISTINCT bare-hash (unbound, non-`prj_`) analysis ids via `/v1/analyze`
+ * -- each one durably creates its own `acct_<hash>` workspace directory on
+ * disk forever, with no cap anywhere in this file. This is exactly the shape
+ * measured in the read-only VPS inspection that opened this task: 180 pure
+ * path-hash slug directories (272MB) matching no registered project.
+ *
+ * `prj_` ids are not tracked here -- their growth is already bounded by
+ * explicit account project creation (`AccountStore.createProject`, itself
+ * membership-gated), now also write-gated by `authorizeProjectWrite` above.
+ * Anonymous/shared-token callers are not tracked either: there is no account
+ * to charge the quota against, and production requires
+ * `KLAURO_ANALYZER_TOKEN` for any of this code to be reached anonymously.
+ *
+ * Tracked in a small per-account sidecar file rather than extending
+ * `accounts.json`'s schema -- this is a rate/quota concern, not identity
+ * data, and keeping it separate avoids touching `AccountStore`'s own
+ * persistence/migration surface for something this narrow.
+ */
+async function admitAccountAnalysisWorkspace(
+  dataDir: string,
+  clientId: string | undefined,
+  rawId: string,
+  storageId: string,
+): Promise<{ admitted: boolean; count: number; limit: number }> {
+  const limit = maxAnalysesPerAccount();
+  if (!clientId?.startsWith('user:') || !storageId.startsWith('acct_')) {
+    return { admitted: true, count: 0, limit };
+  }
+  const userId = clientId.slice('user:'.length);
+  const quotaPath = accountAnalysisQuotaPath(dataDir, userId);
+  await fs.ensureDir(path.dirname(quotaPath));
+  let known: string[] = [];
+  try {
+    const loaded = await fs.readJson(quotaPath);
+    if (Array.isArray(loaded)) known = loaded;
+  } catch {
+    known = [];
+  }
+  if (known.includes(storageId)) return { admitted: true, count: known.length, limit };
+  if (known.length >= limit) return { admitted: false, count: known.length, limit };
+  known.push(storageId);
+  await fs.writeJson(quotaPath, known);
+  return { admitted: true, count: known.length, limit };
 }
 
 /**
