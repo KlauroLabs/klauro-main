@@ -144,6 +144,57 @@ test('installed-cli.ts registers status, doctor, and support-bundle (the 2026-07
   }
 });
 
+// --- P0 follow-up #2 (2026-08-08) -----------------------------------------
+// SAME class again: `reset-password`, `change-password`, and
+// `admin-mint-reset-token` were built entirely in cli.ts (the dev CLI) and
+// never ported to installed-cli.ts (the ONLY file build-bundle.mjs puts in
+// the customer tarball) — the endpoints worked, but no shipped binary could
+// reach them, discovered by a coordinator diffing `grep -c` counts across
+// the two files immediately after merge. This is now the SECOND time a
+// command landed in cli.ts only: the text-mention gate above did not catch
+// it because nothing in the SCANNED_FILES text surface happened to mention
+// these commands by name in backticks (cli.ts itself, where they WERE
+// documented, is deliberately excluded from that scan — it carries a much
+// larger developer-only surface that must NOT all be required in
+// installed-cli.ts).
+//
+// This gate closes that hole from a different, stronger angle: rather than
+// depending on incidental prose mentioning a command, it reads the actual
+// SERVER CONTRACT (every `/api/auth/...` route literal in
+// remote-analyzer-service.ts — the real, mechanical source of truth for
+// what auth capabilities exist) and asserts BOTH client entry points contain
+// client code that reaches each one. A future auth route added server-side
+// with no reachable path from EITHER cli.ts or installed-cli.ts fails this
+// test immediately, with no dependency on anyone remembering to also write
+// a "run `klauro whatever`" remediation string somewhere.
+test('every /api/auth/* route the server exposes is reachable from BOTH cli.ts and installed-cli.ts', () => {
+  const serviceSource = readFileSync(path.join(__dirname, 'remote-analyzer-service.ts'), 'utf8');
+  const cliSource = readFileSync(path.join(__dirname, 'cli.ts'), 'utf8');
+
+  const routes = new Set<string>();
+  for (const match of serviceSource.matchAll(/route === '(\/api\/auth\/[a-zA-Z0-9/_-]+)'/g)) routes.add(match[1]);
+  assert.ok(routes.size > 0, 'the scan found zero /api/auth/* routes — the extraction regex or remote-analyzer-service.ts route shape changed; fix the regex, not this assertion');
+
+  const missing: string[] = [];
+  for (const route of routes) {
+    if (!installedCliSource.includes(route)) missing.push(`${route} — not referenced anywhere in installed-cli.ts (unreachable from the shipped CLI)`);
+    if (!cliSource.includes(route)) missing.push(`${route} — not referenced anywhere in cli.ts`);
+  }
+  assert.deepEqual(missing, [], `Auth route(s) the server exposes but a client entry point cannot reach:\n${missing.join('\n')}`);
+});
+
+// admin-mint-reset-token has no HTTP route (by design — see its doc comment
+// in both files: there is no site-wide admin role to gate an endpoint with,
+// so it talks to the AccountStore directly). The route-literal gate above
+// can't see it, so it needs its own explicit, mechanically-checked pin —
+// same shape as the status/doctor/support-bundle test above.
+test('installed-cli.ts registers reset-password, change-password, and admin-mint-reset-token (the 2026-08-08 audit fix)', () => {
+  const registered = registeredCommands(installedCliSource);
+  for (const command of ['reset-password', 'change-password', 'admin-mint-reset-token']) {
+    assert.ok(registered.has(command), `installed-cli.ts must register \`${command}\``);
+  }
+});
+
 /** Synchronous form — safe only when the CLI needs no in-process server. */
 function runInstalledCliSync(args: string[]): { status: number | null; stdout: string; stderr: string } {
   const result = spawnSync(process.execPath, [shippedCli, ...args], { encoding: 'utf8', timeout: 60_000 });
@@ -215,4 +266,64 @@ test('the shipped help text advertises status, doctor, and support-bundle', () =
   assert.match(help, /status \[path\]/);
   assert.match(help, /doctor \[path\]/);
   assert.match(help, /support-bundle \[path\]/);
+});
+
+test('the shipped help text advertises reset-password, change-password, and admin-mint-reset-token', () => {
+  const help = runInstalledCliSync([]).stdout;
+  assert.match(help, /reset-password --token TOKEN/);
+  assert.match(help, /change-password/);
+  assert.match(help, /admin-mint-reset-token --email EMAIL/);
+});
+
+// Live functional proof against the BUILT bundle (not source): each command
+// must actually reach account-store.ts / the network, never silently fall
+// through to the generic usage block the way `update`/`status`/`doctor`/
+// `support-bundle` all once did. Using an unreachable server-url / a scratch
+// data dir means these assert on a REAL attempt-and-fail, not a mocked path.
+test('the SHIPPED cli entry point implements `reset-password` — it must not fall through to the usage block', async () => {
+  const result = await runInstalledCli(['reset-password', '--token', 'krt_fake', '--new-password', 'irrelevant-password-1', '--server-url', 'http://127.0.0.1:1']);
+  assert.doesNotMatch(result.stdout + result.stderr, /Usage: klauro <command>/, '`klauro reset-password` printed the usage block — the command is not registered in installed-cli.ts');
+  assert.notEqual(result.status, 0, 'an unreachable server must fail the command, not silently succeed');
+});
+
+test('the SHIPPED cli entry point implements `change-password` — it must not fall through to the usage block', async () => {
+  // No stored session and no reachable server: must fail on "no session" or
+  // a network error, never print the generic usage text.
+  const result = await runInstalledCli(['change-password', '--current-password', 'irrelevant-1', '--new-password', 'irrelevant-2', '--server-url', 'http://127.0.0.1:1']);
+  assert.doesNotMatch(result.stdout + result.stderr, /Usage: klauro <command>/, '`klauro change-password` printed the usage block — the command is not registered in installed-cli.ts');
+  assert.notEqual(result.status, 0);
+});
+
+test('the SHIPPED cli entry point implements `admin-mint-reset-token` and it really talks to AccountStore — proven against a scratch data dir', async () => {
+  const dataDir = mkdtempSync(path.join(os.tmpdir(), 'klauro-admin-mint-'));
+  try {
+    // No account exists yet at this scratch dir: the command must reach
+    // AccountStore.mintPasswordResetToken and get its real 404, not the
+    // generic usage block (which would also exit non-zero, but for the
+    // wrong reason — the assertion on stdout below tells them apart).
+    const noAccount = await runInstalledCli(['admin-mint-reset-token', '--email', 'nobody@example.com', '--data-dir', dataDir, '--json']);
+    assert.doesNotMatch(noAccount.stdout + noAccount.stderr, /Usage: klauro <command>/, '`klauro admin-mint-reset-token` printed the usage block — the command is not registered in installed-cli.ts');
+    assert.match(noAccount.stdout + noAccount.stderr, /No account exists with that email/);
+
+    // Seed a real account directly with the source-level AccountStore (this
+    // test file already runs under tsx, so importing it here costs nothing
+    // and keeps the seeding step out of the artifact-under-test), then mint
+    // for real against the SAME scratch dir via the BUILT binary.
+    const { AccountStore } = await import('./account-store');
+    const store = new AccountStore(dataDir);
+    const seeded = await store.register({ email: 'owner@example.com', password: 'seed-password-1234', workspaceName: 'Seed' });
+
+    const minted = await runInstalledCli(['admin-mint-reset-token', '--email', 'owner@example.com', '--data-dir', dataDir, '--json']);
+    assert.equal(minted.status, 0, `admin-mint-reset-token failed against a real account: ${minted.stderr}`);
+    const payload = JSON.parse(minted.stdout) as { token: string; user_id: string; expires_at: string };
+    assert.match(payload.token, /^krt_/);
+    assert.equal(payload.user_id, seeded.user.id);
+    assert.ok(Date.parse(payload.expires_at) > Date.now());
+
+    // And the minted token is real: it redeems successfully against the store directly.
+    const redeemed = await store.redeemPasswordResetToken({ token: payload.token, newPassword: 'post-mint-password-2' });
+    assert.equal(redeemed.userId, seeded.user.id);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
 });

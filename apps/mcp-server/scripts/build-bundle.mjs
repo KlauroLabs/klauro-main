@@ -133,6 +133,39 @@ const cliResult = await build({ ...shared, entryPoints: ['src/installed-cli.ts']
 chmodSync(path.join(output, 'cli.cjs'), 0o755);
 await build({ ...shared, entryPoints: ['src/bootstrap.ts'], outfile: 'dist/index.cjs', external: ['./server.cjs'] });
 
+// §AUTH-LIFECYCLE (2026-08-08) — build-time backstop against the SAME class
+// of defect twice now: a command built entirely in cli.ts (the dev CLI) and
+// never ported to installed-cli.ts, the only file bundled here. The unit
+// test at src/installed-cli-ops-commands.test.ts catches this from source;
+// this check catches it against the ACTUAL COMPILED ARTIFACT that ships to
+// customers — the thing that actually matters, since a source-level match
+// can't prove esbuild didn't tree-shake a branch out, and this is the step
+// that runs on every real build (dev test runs are opt-in; this is not).
+// Route literals are read from the server's own route table
+// (remote-analyzer-service.ts) rather than hand-listed, so a new
+// `/api/auth/*` endpoint automatically becomes a required string in the
+// built dist/cli.cjs with no separate list to remember to update.
+{
+  const serviceSource = readFileSync(path.join(packageRoot, 'src', 'remote-analyzer-service.ts'), 'utf8');
+  const authRoutes = [...new Set([...serviceSource.matchAll(/route === '(\/api\/auth\/[a-zA-Z0-9/_-]+)'/g)].map(match => match[1]))];
+  if (authRoutes.length === 0) throw new Error('build-bundle: found zero /api/auth/* routes in remote-analyzer-service.ts — the extraction regex broke, fix it rather than silently skipping this gate.');
+  const builtCli = readFileSync(path.join(output, 'cli.cjs'), 'utf8');
+  const missingRoutes = authRoutes.filter(route => !builtCli.includes(route));
+  // admin-mint-reset-token has no HTTP route (see its doc comment — no
+  // site-wide admin role exists to gate an endpoint with), so it needs its
+  // own explicit pin here alongside the mechanical route scan.
+  const requiredCommandLiterals = ['admin-mint-reset-token'];
+  const missingCommands = requiredCommandLiterals.filter(command => !builtCli.includes(command));
+  if (missingRoutes.length || missingCommands.length) {
+    throw new Error([
+      'build-bundle: the shipped CLI (dist/cli.cjs) is missing client code for a real auth capability:',
+      ...missingRoutes.map(route => `  route ${route} — add a client path to it in src/installed-cli.ts`),
+      ...missingCommands.map(command => `  command \`${command}\` — register it in src/installed-cli.ts`),
+      'This is the exact class of defect that shipped `reset-password`/`change-password`/`admin-mint-reset-token` unreachable to every customer — refusing to produce a customer package until it is fixed.',
+    ].join('\n'));
+  }
+}
+
 const mergedMetafile = { server: serverResult.metafile, cli: cliResult.metafile };
 writeFileSync(path.join(output, 'bundle-metafile.json'), JSON.stringify(mergedMetafile));
 
