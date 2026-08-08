@@ -10773,6 +10773,70 @@ export class AnalyzerOrchestrator {
     }
   }
 
+  /**
+   * DEFECT (measured 2026-07-30, task #107): a single AI call on the
+   * capability-catalog critical path had NO hard cutoff — `awaitAiWithoutCutoff`
+   * above only logs a warning past its "soft" budget and otherwise waits
+   * indefinitely. Live sampling of the capability-catalog call found 10.9s-30.4s
+   * under normal conditions but 83.6s and 215.8s during a genuine provider
+   * partial outage, with no ceiling on the worst case at all — a single call
+   * could exceed the ENTIRE product latency budget (hard max 3 minutes) on its
+   * own.
+   *
+   * The fix is execution architecture, not a cutoff that abandons work: bound
+   * each INDIVIDUAL provider attempt with a per-attempt timeout and, on timeout,
+   * retry against a genuinely FRESH call (`attemptFactory` must start a NEW
+   * request every invocation, never replay an in-flight promise) — a connection
+   * stalling toward the provider chain's own ~90s worst case is abandoned in
+   * favor of starting over on a clean connection, which is frequently much
+   * faster than riding out the original stall (see class comment/report for the
+   * measured comparison).
+   *
+   * COMPLETENESS INVARIANT (never ship an incomplete/truncated/degraded result
+   * merely because a clock ran out): this spends AT MOST
+   * `maxBoundedAttempts * perAttemptTimeoutMs` on bounded, abandonable attempts.
+   * If every bounded attempt is cut off or fails, the analysis does NOT give up
+   * and does NOT fall back to a synthetic/degraded substitute — it commits to
+   * one FINAL attempt via `awaitAiWithoutCutoff`, which has no cutoff at all, so
+   * the stage always finishes with a real, provider-produced answer no matter
+   * how long a fully degraded provider takes. The bound only changes WHICH
+   * attempt is currently being awaited, never whether the stage completes.
+   */
+  private async awaitAiBoundedThenUncapped<T>(
+    attemptFactory: (attemptIndex: number) => Promise<T>,
+    operation: string,
+    opts: { perAttemptTimeoutMs: number; maxBoundedAttempts: number; slowWarnMs: number },
+  ): Promise<T> {
+    const TIMED_OUT = Symbol('ai-attempt-bound-timeout');
+    for (let attemptIndex = 1; attemptIndex <= opts.maxBoundedAttempts; attemptIndex++) {
+      const attemptStartedAt = Date.now();
+      let timer: NodeJS.Timeout | undefined;
+      try {
+        const raced = await Promise.race<T | typeof TIMED_OUT>([
+          attemptFactory(attemptIndex),
+          new Promise<typeof TIMED_OUT>(resolve => {
+            timer = setTimeout(() => resolve(TIMED_OUT), opts.perAttemptTimeoutMs);
+            timer.unref?.();
+          }),
+        ]);
+        if (raced === TIMED_OUT) {
+          console.error(`[Klauro] ${operation} bounded attempt ${attemptIndex}/${opts.maxBoundedAttempts} exceeded ${opts.perAttemptTimeoutMs}ms (elapsed ${Date.now() - attemptStartedAt}ms); abandoning and retrying with a fresh call`);
+          continue;
+        }
+        return raced;
+      } catch (error) {
+        console.error(`[Klauro] ${operation} bounded attempt ${attemptIndex}/${opts.maxBoundedAttempts} failed after ${Date.now() - attemptStartedAt}ms (${error instanceof Error ? error.message : String(error)}); retrying with a fresh call`);
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+    }
+    // Every bounded, abandonable attempt was cut off or failed. Completeness is
+    // preserved here, not compromised: one final attempt runs with NO timeout,
+    // guaranteeing a real answer eventually rather than a degraded/synthetic one.
+    console.error(`[Klauro] ${operation}: all ${opts.maxBoundedAttempts} bounded attempts (${opts.perAttemptTimeoutMs}ms each) were cut off or failed; committing to one final uncapped attempt — completion is guaranteed, latency is not`);
+    return this.awaitAiWithoutCutoff(attemptFactory(opts.maxBoundedAttempts + 1), operation, opts.slowWarnMs);
+  }
+
   private narrativeModel(): string | undefined {
     return process.env.DEEPINFRA_NARRATIVE_MODEL ||
       process.env.OPENAI_NARRATIVE_MODEL ||
@@ -10989,9 +11053,19 @@ export class AnalyzerOrchestrator {
     // even a slow attempt completes; genuinely hung calls still fall back. Caching
     // means this latency is paid once per repo.
     const aiBudget = Math.max(75000, Math.floor(input.budgetMs * 0.6));
+    // TASK #107 (measured 2026-07-30): live sampling of this exact call put
+    // normal conditions at 10.9s-30.4s and a genuine provider partial outage at
+    // 83.6s/215.8s, with nothing bounding the worst case. 40s sits comfortably
+    // above the observed healthy ceiling (so a normal attempt is essentially
+    // never abandoned mid-flight) while cutting a degraded/hung attempt off well
+    // before it can consume an outsized share of the product's 3-minute hard
+    // budget on its own — see awaitAiBoundedThenUncapped for the retry-fresh
+    // mechanism and the completeness guarantee (the final attempt is uncapped).
+    const CATALOG_ATTEMPT_BOUND_MS = 40000;
+    const CATALOG_MAX_BOUNDED_ATTEMPTS = 3;
     const requestCatalog = async (attempt: number, hintOverride?: string): Promise<string> => {
-      return this.awaitAiWithoutCutoff(
-        aiService.generateComponentDescription({
+      return this.awaitAiBoundedThenUncapped(
+        () => aiService.generateComponentDescription({
             additionalContext: {
               // Structured extraction tolerates a smaller/faster model well and
               // benefits from its reliability; opt in via DEEPINFRA_STRUCTURED_MODEL
@@ -11025,7 +11099,11 @@ export class AnalyzerOrchestrator {
             },
           }),
         'capability extraction',
-        aiBudget,
+        {
+          perAttemptTimeoutMs: CATALOG_ATTEMPT_BOUND_MS,
+          maxBoundedAttempts: CATALOG_MAX_BOUNDED_ATTEMPTS,
+          slowWarnMs: aiBudget,
+        },
       );
     };
 

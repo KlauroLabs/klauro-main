@@ -6,6 +6,7 @@ import { isDirectCliInvocation } from './cli-invocation';
 import { assertAnalysisVersionSupported, describeAnalysisVersion, loadAnalysis } from './storage';
 import { buildSummary, getDataLineage, getParadigmConformance, getProductMap, getUserJourneys } from './query';
 import { buildCrossRepoRouteDrift } from './product';
+import { analyzeForBench } from './gauntlet/product-analysis';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 
 const PACKAGE_ROOT = path.resolve(__dirname, '..');
@@ -109,6 +110,70 @@ async function runAnalysisGauntletSuite(): Promise<SuiteResult> {
         .filter((target: { status: string }) => target.status === 'fail')
         .map((target: { name: string }) => target.name),
     });
+}
+
+/**
+ * TASK #107 (capability-catalog latency defect, 2026-07-30): the AI-enrichment
+ * stage (which includes the capability-catalog call) had NO hard cutoff and no
+ * gate watching its wall-clock — the same "sits unenforced until someone acts"
+ * shape as the historical graph-integrity-warning rot (17,295 warnings ignored
+ * for months). Per-phase timing already exists
+ * (`output.timings.stages.ai_enrichment`, `KLAURO_DEBUG_ANALYZER_PHASES`) — this
+ * wires that EXISTING, already-persisted number into the EXISTING nightly gate
+ * rather than inventing a new report nobody reads.
+ *
+ * Runs one small real analysis through the product's own HTTP path
+ * (analyzeForBench — same blackbox helper analysis-gauntlet uses, never
+ * imports orchestrator internals) and asserts the AI-enrichment stage and the
+ * total analysis duration stay under the documented product ceilings:
+ *   - HARD FAIL >180s total (the product's absolute worst-case budget: the
+ *     entire analysis, not just this stage, must never exceed 3 minutes).
+ *   - HARD FAIL >150s ai_enrichment (must leave headroom for the rest of the
+ *     pipeline inside the 180s ceiling).
+ *   - WARN >60s ai_enrichment (the documented "60s hard max for average-class
+ *     repos" figure; a small fixture exceeding it on an otherwise-healthy
+ *     provider is a regression worth a human look, even before it's a hard
+ *     failure).
+ * These are regression tripwires (in the spirit of coverage-gate.ts's
+ * documented floors), not a target to shave toward — a healthy run on this
+ * small fixture is expected to finish in single-digit seconds.
+ */
+async function runAiCatalogLatencyBudgetSuite(): Promise<SuiteResult> {
+  const fixturePath = path.join(PACKAGE_ROOT, 'fixtures', 'analysis-truth', 'express-mongoose');
+  const HARD_MAX_TOTAL_MS = 180_000;
+  const HARD_MAX_AI_ENRICHMENT_MS = 150_000;
+  const WARN_AI_ENRICHMENT_MS = 60_000;
+  const startedAt = Date.now();
+  try {
+    const output = await analyzeForBench(fixturePath);
+    const durationMs = Date.now() - startedAt;
+    const totalMs = output.timings?.total_ms ?? durationMs;
+    const aiEnrichmentMs = output.timings?.stages?.ai_enrichment ?? 0;
+    const metrics = {
+      total_ms: totalMs,
+      ai_enrichment_ms: aiEnrichmentMs,
+      hard_max_total_ms: HARD_MAX_TOTAL_MS,
+      hard_max_ai_enrichment_ms: HARD_MAX_AI_ENRICHMENT_MS,
+      warn_ai_enrichment_ms: WARN_AI_ENRICHMENT_MS,
+    };
+    if (totalMs > HARD_MAX_TOTAL_MS) {
+      return suiteResult('ai-catalog-latency-budget', 'fail', durationMs,
+        `Total analysis took ${Math.round(totalMs / 1000)}s, exceeding the ${HARD_MAX_TOTAL_MS / 1000}s hard product budget`, metrics);
+    }
+    if (aiEnrichmentMs > HARD_MAX_AI_ENRICHMENT_MS) {
+      return suiteResult('ai-catalog-latency-budget', 'fail', durationMs,
+        `AI enrichment (incl. capability catalog) took ${Math.round(aiEnrichmentMs / 1000)}s, exceeding the ${HARD_MAX_AI_ENRICHMENT_MS / 1000}s hard stage budget`, metrics);
+    }
+    if (aiEnrichmentMs > WARN_AI_ENRICHMENT_MS) {
+      return suiteResult('ai-catalog-latency-budget', 'warn', durationMs,
+        `AI enrichment took ${Math.round(aiEnrichmentMs / 1000)}s on a small fixture — above the ${WARN_AI_ENRICHMENT_MS / 1000}s average-repo target, worth a look`, metrics);
+    }
+    return suiteResult('ai-catalog-latency-budget', 'pass', durationMs,
+      `AI enrichment ${Math.round(aiEnrichmentMs / 1000)}s, total ${Math.round(totalMs / 1000)}s (budgets: ${HARD_MAX_AI_ENRICHMENT_MS / 1000}s stage / ${HARD_MAX_TOTAL_MS / 1000}s total)`, metrics);
+  } catch (error) {
+    return suiteResult('ai-catalog-latency-budget', 'error', Date.now() - startedAt,
+      `analysis failed: ${error instanceof Error ? error.message : String(error)}`, {});
+  }
 }
 
 function runStabilitySuite(): SuiteResult {
@@ -633,6 +698,7 @@ async function main(): Promise<void> {
 
   const stages: Array<{ name: string; run: () => Promise<SuiteResult> }> = [
     { name: 'analysis-gauntlet', run: runAnalysisGauntletSuite },
+    { name: 'ai-catalog-latency-budget', run: runAiCatalogLatencyBudgetSuite },
     { name: 'run-stability', run: async () => runStabilitySuite() },
     {
       name: 'answer-pack',
