@@ -204,12 +204,12 @@ export function createServer(): McpServer {
   register('analyze_codebase', {
     description: 'Upload a filtered source snapshot for hosted Klauro analysis. No analyzer executes locally.',
     inputSchema: { path: z.string() },
-  }, async ({ path }: any) => json(await analyzeCodebaseRemotely({ projectPath: path })));
+  }, async ({ path }: any) => json(await analyzeCodebaseRemotely({ projectPath: path, requireBoundProject: true })));
 
   register('sync_codebase_remote', {
     description: 'Upload in-flight working-tree changes for hosted incremental analysis.',
     inputSchema: { path: z.string() },
-  }, async ({ path }: any) => json(await syncWorkingTreeRemotely({ projectPath: path })));
+  }, async ({ path }: any) => json(await syncWorkingTreeRemotely({ projectPath: path, requireBoundProject: true })));
 
   register('get_upload_manifest', {
     description: 'Preview exactly which source files would be uploaded. This reads files but performs no parsing or analysis.',

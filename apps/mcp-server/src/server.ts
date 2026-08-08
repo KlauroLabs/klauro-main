@@ -1195,7 +1195,7 @@ function registerTools(server: McpServer) {
     } as any,
     async ({ path, force_full, analysis_focus }: any) => withErrorHandling(async () => {
       const focus: AnalysisFocus = analysis_focus || 'agent-fast';
-      const result = await analyzeCodebaseRemotely({ projectPath: path });
+      const result = await analyzeCodebaseRemotely({ projectPath: path, requireBoundProject: true });
       return json({
         status: result.status,
         analysis_id: result.analysis_id,
@@ -1361,7 +1361,7 @@ function registerTools(server: McpServer) {
           ? 'ui-overview'
           : 'deep-context';
 
-      const result = await analyzeCodebaseRemotely({ projectPath: path });
+      const result = await analyzeCodebaseRemotely({ projectPath: path, requireBoundProject: true });
       return json({
         status: result.status,
         analysis_id: result.analysis_id,
@@ -1538,7 +1538,7 @@ function registerTools(server: McpServer) {
       } as any,
     } as any,
     async ({ path, server_url, analysis_id }: any) => withErrorHandling(async () => {
-      const result = await analyzeCodebaseRemotely({ projectPath: path, serverUrl: server_url, analysisId: analysis_id });
+      const result = await analyzeCodebaseRemotely({ projectPath: path, serverUrl: server_url, analysisId: analysis_id, requireBoundProject: true });
       return json({
         status: result.status,
         analysis_id: result.analysis_id,
@@ -1564,7 +1564,7 @@ function registerTools(server: McpServer) {
       } as any,
     } as any,
     async ({ path, server_url, analysis_id }: any) => withErrorHandling(async () => {
-      const result = await syncWorkingTreeRemotely({ projectPath: path, serverUrl: server_url, analysisId: analysis_id });
+      const result = await syncWorkingTreeRemotely({ projectPath: path, serverUrl: server_url, analysisId: analysis_id, requireBoundProject: true });
       const summary = result.change_report?.summary;
       return json({
         status: result.status,

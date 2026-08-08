@@ -6,7 +6,15 @@ import { saveAnalysis } from './storage';
 import type { RemoteAnalyzeResponse, RemoteAnalyzerResponse, RemoteProjectRevisionsResponse } from './remote-analyzer-protocol';
 import { buildBranchDiffContext, buildStreamingSourceSnapshot, buildStreamingWorkingTreeChanges } from './remote-source';
 import { createAnalyzeUploadRequest, createIncrementalUploadRequest, isStreamingJsonRequest } from './streaming-source-upload';
-import { assertRemoteAnalyzerAllowed, loadKlauroConfig, resolveAnalysisId, resolveAnalyzerUrl } from './klauro-config';
+import {
+  assertRemoteAnalyzerAllowed,
+  isUnboundHostedProjectId,
+  loadKlauroConfig,
+  probeHostedProjectBinding,
+  resolveAnalysisId,
+  resolveAnalyzerUrl,
+  type LoadedKlauroConfig,
+} from './klauro-config';
 import { connectorToken, requireConnectorEntitlement } from './connector-auth';
 import { DEFAULT_KLAURO_CLOUD_URL } from './defaults';
 import { describeHttpFailure, describeTransportFailure, hostedFetch } from './hosted-transport';
@@ -19,6 +27,19 @@ export interface RemoteSyncOptions {
   /** Operator/test completion mode. Customer uploads omit this so acceptance
    *  stays asynchronous and the installed client reads bounded CAS sections. */
   wait?: boolean;
+  /**
+   * Refuse the upload up front (see assertUploadTargetIsReachable) instead of
+   * accepting source this repo/account cannot actually reach a destination
+   * for. Every REAL customer entry point sets this — the CLI `analyze` /
+   * `remote-analyze` / `remote-sync` commands, the `analyze_codebase` /
+   * `analyze_codebase_remote` / `sync_codebase_remote` MCP tools, and the
+   * installed client. Left false by default so this low-level function keeps
+   * behaving exactly as before for callers that intentionally exercise an
+   * arbitrary/mock server with an explicit analysisId and no .klaurorc — most
+   * of this file's own test suite, and analysisId-bypass callers in general
+   * (an explicit analysisId is itself a deliberate placement decision).
+   */
+  requireBoundProject?: boolean;
 }
 
 export interface RemoteElementDescriptionOptions extends RemoteSyncOptions {
@@ -54,6 +75,58 @@ export interface AnalyzeRemotelyResult extends Omit<RemoteAnalyzeResponse, 'stat
   in_flight?: InFlightSyncOutcome;
 }
 
+/**
+ * Refuse to upload source into a project this repo/account cannot actually
+ * reach — the "never accept work you will drop" gate for every write path
+ * (analyze / sync / branch-diff). Two failure shapes, both caught BEFORE any
+ * bytes leave this machine:
+ *
+ *  1. No `klauro init` ever ran (or an older CLI left a placeholder): there is
+ *     no project.id at all, so an upload would land under a path-hash slug
+ *     that appears in no workspace (see defaultAnalysisId below) — accepted,
+ *     stored, and unreachable. This is a local, offline check.
+ *
+ *  2. `klauro init` ran once, but under a different account, or the project
+ *     was since deleted, or this account was removed from its workspace: the
+ *     id LOOKS bound (prj_…) but the server would 404 it for THIS account.
+ *     Caught with one lightweight GET (mirrors klauro init's own self-heal
+ *     probe) rather than letting the upload accept and a LATER read 404 —
+ *     the 404 the server returns there does not distinguish "does not exist"
+ *     from "exists, not yours", so catching it here — where we can still
+ *     name both possibilities and point at the fix — beats catching it after
+ *     the fact.
+ *
+ * A network hiccup / 5xx / auth blip during the probe is 'indeterminate' and
+ * NEVER blocks the upload — only a definite local absence or a definite
+ * server 404 does.
+ */
+async function assertUploadTargetIsReachable(loaded: LoadedKlauroConfig, serverUrl: string | undefined, options: RemoteSyncOptions): Promise<void> {
+  if (!options.requireBoundProject) return;
+  // An explicit analysisId is itself a deliberate placement decision (it wins
+  // over .klaurorc's project.id in resolveAnalysisId) — trust it rather than
+  // second-guessing a caller who named their destination directly.
+  if (options.analysisId) return;
+  const projectId = loaded.config.project.id;
+  if (isUnboundHostedProjectId(projectId)) {
+    throw new Error(
+      'This repo is not connected to a hosted Klauro project (no project.id in .klaurorc — `klauro init` has never run here, or an older CLI left it unbound). ' +
+      'Uploading now would be accepted and stored under an orphaned, path-hashed id that appears in no workspace — refusing instead of accepting work that would be silently dropped. ' +
+      'Run `klauro init` first (from this directory: `klauro init --path .`), then retry.'
+    );
+  }
+  if (!serverUrl) return;
+  const token = connectorToken(options.token, serverUrl);
+  if (!token) return;
+  const probe = await probeHostedProjectBinding(serverUrl, token, String(projectId));
+  if (probe === 'not_found') {
+    throw new Error(
+      `The project bound in this repo's .klaurorc (${projectId}) was not found for the currently signed-in account. ` +
+      "The server returns the same 404 whether the project truly no longer exists or exists but belongs to a workspace this account is not a member of — refusing to upload rather than accepting source into a destination this account cannot reach. " +
+      'Run `klauro whoami` to see which account is signed in; if it is the wrong one, run `klauro login --email you@example.com` for the account that owns this project; otherwise run `klauro init --force` to bind a fresh project this account can see.'
+    );
+  }
+}
+
 export async function analyzeCodebaseRemotely(options: RemoteSyncOptions): Promise<AnalyzeRemotelyResult> {
   const projectPath = path.resolve(options.projectPath);
   const loaded = await loadKlauroConfig(projectPath);
@@ -61,6 +134,7 @@ export async function analyzeCodebaseRemotely(options: RemoteSyncOptions): Promi
   assertRemoteAnalyzerAllowed(loaded, serverUrl);
   if (!serverUrl) throw new Error('Klauro server URL is not configured');
   await requireConnectorEntitlement({ serverUrl, token: options.token });
+  await assertUploadTargetIsReachable(loaded, serverUrl, options);
   // On a dirty tree this reads the COMMITTED HEAD content from git objects (never
   // the dirty files, never touching the working tree); on a clean tree it walks
   // the working tree as before. See buildSourceSnapshot/buildHeadSourceSnapshot.
@@ -199,6 +273,7 @@ export async function syncWorkingTreeRemotely(options: RemoteSyncOptions): Promi
   const serverUrl = resolveAnalyzerUrl(loaded, options.serverUrl);
   assertRemoteAnalyzerAllowed(loaded, serverUrl);
   await requireConnectorEntitlement({ serverUrl, token: options.token });
+  await assertUploadTargetIsReachable(loaded, serverUrl, options);
   const changes = await buildStreamingWorkingTreeChanges(projectPath);
   const analysisId = resolveAnalysisId(loaded, defaultAnalysisId(projectPath), options.analysisId);
   const response = await postRemote(options, '/v1/sync', createIncrementalUploadRequest({
@@ -232,6 +307,7 @@ export async function analyzeBranchDiffRemotely(options: RemoteBranchDiffOptions
   const serverUrl = resolveAnalyzerUrl(loaded, options.serverUrl);
   assertRemoteAnalyzerAllowed(loaded, serverUrl);
   await requireConnectorEntitlement({ serverUrl, token: options.token });
+  await assertUploadTargetIsReachable(loaded, serverUrl, options);
   const diffContext = await buildBranchDiffContext(projectPath, options.targetBranch, options.baseBranch);
   const analysisId = resolveAnalysisId(loaded, defaultAnalysisId(projectPath), options.analysisId);
   const response = await postRemote(options, '/v1/analyze-diff', {

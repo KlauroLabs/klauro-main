@@ -45,8 +45,8 @@ async function main() {
     });
     return;
   }
-  if (command === 'analyze' || command === 'remote-analyze') return output(await analyzeCodebaseRemotely({ projectPath: target }), json);
-  if (command === 'remote-sync' || command === 'sync') return output(await syncWorkingTreeRemotely({ projectPath: target }), json);
+  if (command === 'analyze' || command === 'remote-analyze') return output(await analyzeCodebaseRemotely({ projectPath: target, requireBoundProject: true }), json);
+  if (command === 'remote-sync' || command === 'sync') return output(await syncWorkingTreeRemotely({ projectPath: target, requireBoundProject: true }), json);
   if (command === 'upload-manifest' || command === 'index') return output(await buildUploadManifest(target, process.argv.includes('--dirty-tree') ? 'dirty-tree' : 'full'), json);
   // status/doctor/support-bundle: the same class of dead end `update` was
   // (see the comment above SELF_UPDATE_COMMANDS) — the product's own text
