@@ -182,6 +182,12 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
   const maxBodyBytes = options.maxBodyBytes || resolveMaxBodyBytes();
   const rateLimitPerMinute = options.rateLimitPerMinute ?? Number(process.env.KLAURO_ANALYZER_RATE_LIMIT_PER_MINUTE || 120);
   const buckets = new Map<string, RateLimitBucket>();
+  // §AUTH-LIFECYCLE — separate bucket map + budget for the unauthenticated
+  // auth surfaces (login, reset redemption). Kept apart from `buckets`
+  // (general /v1/* coordination traffic) so a burst of legitimate analyzer
+  // pushes can never starve the auth budget, or vice versa.
+  const authBuckets = new Map<string, RateLimitBucket>();
+  const authRateLimitPerMinute = Number(process.env.KLAURO_AUTH_RATE_LIMIT_PER_MINUTE || 20);
   const activeCommittedSnapshots = new Map<string, string>();
   // Ops guard (durable board, wave 1): the 2026-07-21 incident was this server
   // writing its coordination board to the container's ephemeral overlay FS
@@ -302,10 +308,44 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
         return;
       }
 
+      // §AUTH-LIFECYCLE — per-IP throttle on the three unauthenticated
+      // credential-guessing surfaces (login + reset redemption both accept a
+      // secret from an anonymous caller). This is IN ADDITION to the
+      // per-account exponential backoff inside AccountStore.login/
+      // redeemPasswordResetToken: the account-level throttle protects one
+      // account against sustained guessing, this protects the server against
+      // one source hammering MANY accounts' login endpoints. Distinct,
+      // stricter budget than the general coordination rate limit below (which
+      // only applies to already-authenticated /v1/* traffic).
+      if (request.method === 'POST' && (route === '/api/auth/login' || route === '/api/auth/reset-password/redeem')) {
+        const ip = request.socket.remoteAddress || 'unknown';
+        if (!withinRateLimit(authBuckets, `authip:${ip}`, authRateLimitPerMinute)) {
+          await appendAuditLog(dataDir, { event: 'auth_ip_rate_limited', route, client: anonymizeClient(ip) });
+          writeJson(response, 429, { status: 'error', error: 'Too many authentication attempts from this source. Try again shortly.' });
+          return;
+        }
+      }
+
       if (request.method === 'POST' && route === '/api/auth/login') {
         const body = await readJsonBody<{ email: string; password: string }>(request, maxBodyBytes);
-        const result = await accounts.login(body);
+        const result = await accounts.login({ ...body, source: anonymizeClient(request.socket.remoteAddress || 'unknown') });
         writeJson(response, 200, result);
+        return;
+      }
+
+      // Public (no Bearer): the whole point is to recover a signed-out,
+      // password-forgotten account, so there is no valid session to require.
+      // Authorization is the possession of the single-use token itself
+      // (minted only by an operator — see AccountStore.mintPasswordResetToken),
+      // not a Bearer header.
+      if (request.method === 'POST' && route === '/api/auth/reset-password/redeem') {
+        const body = await readJsonBody<{ token: string; new_password: string }>(request, maxBodyBytes);
+        if (!body.token || !body.new_password) {
+          writeJson(response, 400, { status: 'error', error: 'token and new_password are required' });
+          return;
+        }
+        const result = await accounts.redeemPasswordResetToken({ token: body.token, newPassword: body.new_password });
+        writeJson(response, 200, { status: 'success', user_id: result.userId, email: result.email });
         return;
       }
 
@@ -2238,6 +2278,23 @@ async function handleAccountApi(
   // attempt sidecars, the server-side WAS record) — see
   // collectAccountActivityEvents below — so an account with no analyses yet
   // honestly returns {events:[]}, never a fabricated placeholder.
+  // §AUTH-LIFECYCLE — signed-in password change. Requires the current
+  // password (see AccountStore.changePassword's doc comment) and is not
+  // available on a shared-token request (there is no individual user
+  // identity/password behind a shared analyzer token).
+  if (request.method === 'POST' && route === '/api/auth/change-password') {
+    if (sharedToken) throw new AccountHttpError(400, 'Password change is not available for shared-token requests');
+    const body = await readJsonBody<{ current_password: string; new_password: string }>(request, maxBodyBytes);
+    if (!body.current_password || !body.new_password) {
+      throw new AccountHttpError(400, 'current_password and new_password are required');
+    }
+    const result = await accounts.changePassword(userId, bearerToken(request), {
+      currentPassword: body.current_password,
+      newPassword: body.new_password,
+    });
+    return { statusCode: 200, body: result };
+  }
+
   if (request.method === 'GET' && route === '/api/account/activity') {
     if (!dataDir) throw new AccountHttpError(500, 'Analysis storage unavailable');
     const limit = clampActivityLimit(new URL(request.url || '', 'http://localhost').searchParams.get('limit'));
