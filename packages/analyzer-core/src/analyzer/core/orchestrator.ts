@@ -1965,16 +1965,24 @@ export class AnalyzerOrchestrator {
     await yieldToEventLoop();
     const entryPointSummary = this.summarizeEntryPoints(productEntryPointsForPurpose);
     const projectTextSignal = this.extractProjectTextSignal(projectPath);
-    // Name priority (CONTENT-FIRST): the content-derived name — README/PRD H1
-    // title, then the root manifest name, then a common package scope — is the
-    // strongest, most deliberate self-naming signal and always OUTRANKS a
-    // caller-supplied displayName. On the hosted path options.displayName is
-    // frequently just a checkout-folder basename ("proof-of-concept") threaded
-    // from the client path or the project record, so it must never win over a
-    // real content name. When the repo has NO root self-naming file (common for
-    // C#/non-npm stacks — e.g. a benchmarked C# client repo, whose reanalyze passes the project
-    // record's "Acme Scientific" as the displayName), the explicit displayName
-    // is the next fallback, above the bare workspace basename. (The old gate
+    // Name priority (CONTENT-FIRST, DECLARED-BEFORE-PROSE): the content-derived
+    // name — root manifest name (package.json/composer.json/pyproject.toml/
+    // Cargo.toml/pom.xml/csproj), then README/PRD H1 title only when no
+    // manifest exists, then a common package scope — is the strongest,
+    // most deliberate self-naming signal and always OUTRANKS a caller-supplied
+    // displayName. On the hosted path options.displayName is frequently just a
+    // checkout-folder basename ("proof-of-concept") threaded from the client
+    // path or the project record, so it must never win over a real content
+    // name. Manifest name outranks the doc title because it is DECLARED
+    // identity (an author committed it on purpose to name the package) while
+    // a doc's first heading is prose structure that is not always a product
+    // title at all — see the DEFECT (system name) note on
+    // resolveSystemDisplayName for the case (measured on a benchmarked Angular
+    // SPA) where a README's first heading was the boilerplate "# Prerequisites".
+    // When the repo has NO root self-naming file (common for C#/non-npm stacks — e.g. a
+    // benchmarked C# client repo, whose reanalyze passes the project record's
+    // "Acme Scientific" as the displayName), the explicit displayName is the
+    // next fallback, above the bare workspace basename. (The old gate
     // compared displayName to basename(WORKSPACE), which in the split-workspace
     // architecture never matches a client-derived name, so it wrongly kept weak
     // names like "proof-of-concept" and dropped real ones like "Acme
@@ -3478,9 +3486,10 @@ export class AnalyzerOrchestrator {
     const repositoryLinks = this.buildRepositoryLinks(projectPath, nodes, entryPoints, exitPoints, externalServices, libraries, databaseSchema, configuration);
     const runtimeStaticLinks = this.buildRuntimeStaticLinks(nodes, entryPoints, exitPoints, callChains, externalServices);
     const distributionUnits = this.buildDistributionUnits(projectPath, nodes);
-    // CONTENT-FIRST name priority — same rule as the full analysis path: the
-    // content-derived name (README/PRD title, root manifest, common package
-    // scope) outranks a caller-supplied displayName (often a checkout-folder
+    // CONTENT-FIRST, DECLARED-BEFORE-PROSE name priority — same rule as the
+    // full analysis path: the content-derived name (root manifest name,
+    // README/PRD title only when no manifest exists, common package scope)
+    // outranks a caller-supplied displayName (often a checkout-folder
     // basename), which in turn is the fallback above the bare workspace
     // basename. Resolved BEFORE deployableEvidence collection (hoisted from
     // further below) so collectDeployableEvidence receives the resolved system
@@ -13396,11 +13405,32 @@ export class AnalyzerOrchestrator {
             : { ok: false as const, reason: 'missing-description' };
           const reason = capability.description_generation?.reason || validation.reason || 'unknown-quality-failure';
           const fallback = deterministicCapabilityText.get(capability.id);
-          if (fallback) {
+          // DEFECT (2026-08 grounding audit): the gate above refuses an
+          // ungrounded AI description, but this substitute used to ship
+          // `fallback` UNVALIDATED — it never ran through
+          // validateElementDescription at all. That let a capability on a
+          // benchmarked PHP SOAP-client library ship a name like
+          // "View WSCard" alongside a description like "Infos Management
+          // reads infos records..." (the deterministic text was built from a
+          // different internal label than the one shipped as the name — see the
+          // generateTerminalCapabilityDescription/generateCapabilityDescription
+          // fix that now keeps them in sync at the source). The grounding gate
+          // belongs at THIS layer, not one above it: run the exact same
+          // name/description-agreement check (target-not-grounded — do the
+          // subject's own name tokens appear anywhere in the text?) that AI
+          // text must pass, on the deterministic substitute too. A
+          // capability whose name and description disagree, or whose text
+          // fails the same structural/marketing/scaffold checks, must not
+          // ship a description at all — never delete the capability itself,
+          // just its unverifiable prose (see the 'no fallback' branch below).
+          const fallbackValidation = fallback ? this.validateElementDescription(fallback, target) : undefined;
+          if (fallback && fallbackValidation?.ok) {
             capability.description = fallback;
             capability.description_source = 'deterministic';
-          } else if (capability.description_source === 'ai') {
-            // Never ship ungrounded prose under an 'ai' provenance.
+          } else {
+            // Either there was no deterministic text to fall back to, or that
+            // text itself failed the grounding gate (fallbackValidation.ok ===
+            // false) — never ship ungrounded prose under ANY provenance.
             delete (capability as Partial<SystemCapability>).description;
             capability.description_source = undefined;
           }
@@ -13408,8 +13438,10 @@ export class AnalyzerOrchestrator {
             ...(capability.description_generation || { attempted: true }),
             status: 'ai_rejected',
             attempted: true,
-            reason,
-            origin_source: fallback ? 'deterministic' : capability.description_generation?.origin_source,
+            reason: fallback && !fallbackValidation?.ok
+              ? `deterministic-fallback-ungrounded:${fallbackValidation?.reason || 'unknown'}`
+              : reason,
+            origin_source: fallback && fallbackValidation?.ok ? 'deterministic' : capability.description_generation?.origin_source,
           };
           degraded.push({
             id: capability.id,
@@ -17285,29 +17317,46 @@ export class AnalyzerOrchestrator {
   }
 
   /**
-   * DEFECT (system name = directory basename): `path.basename(projectPath)`
-   * ("proof-of-concept") was the ONLY fallback when no explicit displayName
-   * was supplied, even when the repo names itself elsewhere. Evidence-gated
-   * priority, never fabricated: (1) an explicit caller-supplied displayName
-   * always wins; (2) the product doc's own title (README/PRD H1 — the
-   * strongest top-down self-naming evidence, already parsed once by
-   * extractProjectTextSignal as productDocTitle and reused here verbatim,
-   * never re-derived); (3) the ROOT manifest's own declared name
-   * (package.json `name`, scope-stripped and humanized — "@klauro/monorepo"
-   * -> "Monorepo"); (4) NEW — COMMON-PACKAGE-SCOPE fallback: when the repo
-   * has no root manifest/README (an uploaded snapshot can genuinely lack
-   * root-level files while still containing nested package manifests — see
-   * prj_wbW33m-wfETn1N41, whose uploaded workspace has no root package.json
-   * or README but does have apps/app/package.json, apps/api/package.json,
-   * packages/analyzer-core/package.json, ... all scoped "@klauro/..."),
-   * scan nested manifests for a single DOMINANT npm scope and use it as the
-   * product/org name ("@klauro/app" + "@klauro/analyzer-core" + ... ->
-   * "Klauro"). Requires >=1 scoped manifest and abstains (returns undefined)
-   * when manifests span multiple unrelated scopes, so we never fabricate a
-   * name from an unscoped or genuinely multi-vendor tree; (5) the path
-   * basename as the last-resort structural fact. Returns undefined when no
-   * step above yields a name, so the caller keeps its existing
-   * basename-derived value.
+   * DEFECT (system name = prose heading over declared identity): this
+   * resolver used to check the product doc's own H1 (README/PRD title)
+   * BEFORE any manifest, on the theory that a doc title is the "strongest
+   * top-down self-naming evidence". That is wrong whenever the doc's first
+   * heading is not a product title at all — a scaffolded frontend repo's
+   * README very often has a boilerplate first heading like "# Prerequisites"
+   * ahead of any real title (measured live on a benchmarked Angular SPA): the
+   * system's displayed name came out as "Prerequisites" while the project's
+   * own package.json declared a real product name one file away. A markdown
+   * heading is prose STRUCTURE, not declared identity, and must never
+   * outrank it. This is a precedence fix, not a vocabulary fix — nothing
+   * here special-cases the string "Prerequisites" or any other heading text;
+   * the same rule must hold for every repo whether its stray first heading
+   * says "Prerequisites", "Getting Started", or anything else.
+   *
+   * Evidence-gated priority, never fabricated: (1) an explicit caller-supplied
+   * displayName always wins; (2) the ROOT manifest's own declared name —
+   * package.json/composer.json/pyproject.toml/Cargo.toml/pom.xml, or a
+   * single root *.csproj — scope/vendor-stripped and humanized
+   * ("@klauro/monorepo" -> "Klauro", "acme/checkout-lib" -> "Checkout Lib").
+   * This is DECLARED identity: an author committed it on purpose to name the
+   * package, so it outranks prose; (3) the product doc's own title
+   * (README/PRD H1), used only when NO root manifest exists at all — the
+   * common case for a doc-first repo like mtg's PRD, which has no root
+   * package.json and whose H1 names the Commander game it hosts; already
+   * parsed once by extractProjectTextSignal as productDocTitle and reused
+   * here verbatim, never re-derived; (4) COMMON-PACKAGE-SCOPE fallback: when
+   * the repo has no root manifest/README (an uploaded snapshot can
+   * genuinely lack root-level files while still containing nested package
+   * manifests — see prj_wbW33m-wfETn1N41, whose uploaded workspace has no
+   * root package.json or README but does have apps/app/package.json,
+   * apps/api/package.json, packages/analyzer-core/package.json, ... all
+   * scoped "@klauro/..."), scan nested manifests for a single DOMINANT npm
+   * scope and use it as the product/org name ("@klauro/app" +
+   * "@klauro/analyzer-core" + ... -> "Klauro"). Requires >=1 scoped
+   * manifest and abstains (returns undefined) when manifests span multiple
+   * unrelated scopes, so we never fabricate a name from an unscoped or
+   * genuinely multi-vendor tree; (5) the path basename as the last-resort
+   * structural fact. Returns undefined when no step above yields a name, so
+   * the caller keeps its existing basename-derived value.
    */
   /**
    * True when `displayName` is either absent or textually indistinguishable
@@ -17326,31 +17375,134 @@ export class AnalyzerOrchestrator {
   }
 
   private resolveSystemDisplayName(projectPath: string, productDocTitle?: string): string | undefined {
+    const manifestName = this.resolveRootManifestName(projectPath);
+    if (manifestName) return manifestName;
+
     const cleanedTitle = String(productDocTitle || '').trim();
     if (cleanedTitle && cleanedTitle.length <= 80) return cleanedTitle;
+
+    return this.resolveCommonPackageScopeName(projectPath);
+  }
+
+  /**
+   * Root manifest declared name, across every ecosystem this analyzer
+   * supports — DECLARED identity evidence (an author committed this value on
+   * purpose to name the package), so callers check it before any prose
+   * heading. package.json / composer.json `name`; Cargo.toml `[package]
+   * name`; pyproject.toml `[project] name` or `[tool.poetry] name`; pom.xml
+   * root `<artifactId>` (the `<parent>` block, if any, is stripped first so
+   * a parent POM's own artifactId never wins, and the search stops at
+   * `<dependencies>` so a dependency's artifactId can't be mistaken for the
+   * project's own); and, for the one ecosystem with no name FIELD at all, a
+   * single root `*.csproj` file, whose filename IS the declared project
+   * identity in .NET (ambiguous when more than one exists at the root, so
+   * that case abstains). Each name is scope/vendor-stripped and humanized
+   * via humanizeManifestName. Returns undefined when nothing is found —
+   * never guesses.
+   */
+  private resolveRootManifestName(projectPath: string): string | undefined {
     const packageJson = this.safeReadJson(path.join(projectPath, 'package.json'));
-    const rootManifestName = typeof packageJson?.name === 'string' ? packageJson.name.trim() : '';
-    if (rootManifestName) {
-      // A scoped root manifest whose scope-stripped name is a GENERIC STRUCTURAL
-      // word ("@klauro/monorepo", "@acme/root", "@org/workspace") is not
-      // self-naming the product — the structural word describes the repo shape,
-      // while the SCOPE ("@klauro") is the product/org identity. Prefer the
-      // scope in that case ("@klauro/monorepo" -> "Klauro", not "Monorepo").
-      // A genuinely product-named root manifest ("@acme/checkout-service" ->
-      // "Checkout Service") is untouched. Unscoped generic names fall through to
-      // the common-package-scope resolver, which may still recover a real scope
-      // from nested manifests.
-      const scopeMatch = rootManifestName.match(/^@([^/]+)\//);
-      const scopeStripped = rootManifestName.replace(/^@[^/]+\//, '').trim();
-      const isGenericStructuralName = /^(mono-?repo|root|workspace|workspaces|repo|repository|source|src|main|app|apps|packages?|projects?|core|server|client|web|www|api|frontend|backend)$/i.test(scopeStripped);
-      if (scopeMatch && isGenericStructuralName) {
-        const scoped = this.humanizeScopeStrippedManifestName(scopeMatch[1]);
-        if (scoped) return scoped;
-      }
-      const humanized = this.humanizeScopeStrippedManifestName(rootManifestName);
+    const packageJsonName = typeof packageJson?.name === 'string' ? packageJson.name.trim() : '';
+    if (packageJsonName) {
+      const humanized = this.humanizeManifestName(packageJsonName);
       if (humanized) return humanized;
     }
-    return this.resolveCommonPackageScopeName(projectPath);
+
+    const composerJson = this.safeReadJson(path.join(projectPath, 'composer.json'));
+    const composerName = typeof composerJson?.name === 'string' ? composerJson.name.trim() : '';
+    if (composerName) {
+      const humanized = this.humanizeManifestName(composerName);
+      if (humanized) return humanized;
+    }
+
+    const cargoToml = this.safeReadText(path.join(projectPath, 'Cargo.toml'), 8000);
+    if (cargoToml) {
+      const packageBlock = cargoToml.match(/\[package\]([\s\S]*?)(?:\n\[|$)/);
+      const nameMatch = packageBlock?.[1]?.match(/^\s*name\s*=\s*"([^"]+)"/m);
+      if (nameMatch?.[1]?.trim()) {
+        const humanized = this.humanizeManifestName(nameMatch[1].trim());
+        if (humanized) return humanized;
+      }
+    }
+
+    const pyprojectToml = this.safeReadText(path.join(projectPath, 'pyproject.toml'), 8000);
+    if (pyprojectToml) {
+      const projectBlock = pyprojectToml.match(/\[project\]([\s\S]*?)(?:\n\[|$)/);
+      const poetryBlock = pyprojectToml.match(/\[tool\.poetry\]([\s\S]*?)(?:\n\[|$)/);
+      const nameMatch =
+        projectBlock?.[1]?.match(/^\s*name\s*=\s*"([^"]+)"/m) ||
+        poetryBlock?.[1]?.match(/^\s*name\s*=\s*"([^"]+)"/m);
+      if (nameMatch?.[1]?.trim()) {
+        const humanized = this.humanizeManifestName(nameMatch[1].trim());
+        if (humanized) return humanized;
+      }
+    }
+
+    const pomXml = this.safeReadText(path.join(projectPath, 'pom.xml'), 20000);
+    if (pomXml) {
+      const withoutParent = pomXml.replace(/<parent>[\s\S]*?<\/parent>/, '');
+      const withoutDeps = withoutParent.split('<dependencies>')[0];
+      const artifactMatch = withoutDeps.match(/<artifactId>([^<]+)<\/artifactId>/);
+      if (artifactMatch?.[1]?.trim()) {
+        const humanized = this.humanizeManifestName(artifactMatch[1].trim());
+        if (humanized) return humanized;
+      }
+    }
+
+    try {
+      const rootCsprojFiles = fs.readdirSync(projectPath, { withFileTypes: true })
+        .filter(entry => entry.isFile() && entry.name.toLowerCase().endsWith('.csproj'))
+        .map(entry => entry.name);
+      if (rootCsprojFiles.length === 1) {
+        const humanized = this.humanizeManifestName(path.basename(rootCsprojFiles[0], path.extname(rootCsprojFiles[0])));
+        if (humanized) return humanized;
+      }
+    } catch {
+      // unreadable root directory — no csproj evidence, fall through
+    }
+
+    return undefined;
+  }
+
+  /**
+   * "@scope/pkg-name" -> "Pkg Name" (scope/vendor-stripped, kebab/underscore
+   * split, title-cased). Also handles composer-style "vendor/package" (no
+   * leading "@"). A scope/vendor whose stripped remainder is a GENERIC
+   * STRUCTURAL word ("@klauro/monorepo", "acme/root", "@org/workspace") is
+   * not self-naming the product — the structural word describes the repo
+   * SHAPE, while the scope/vendor ("@klauro", "acme") is the product/org
+   * identity — so the scope wins instead ("@klauro/monorepo" -> "Klauro",
+   * not "Monorepo"). A genuinely product-named manifest
+   * ("@acme/checkout-service" -> "Checkout Service", "acme/payment-client"
+   * -> "Payment Client") is untouched.
+   */
+  private humanizeManifestName(manifestName: string): string | undefined {
+    const scopedMatch = manifestName.match(/^@?([^/@\s]+)\/(.+)$/);
+    if (scopedMatch) {
+      const [, scope, remainder] = scopedMatch;
+      const remainderTrimmed = remainder.trim();
+      const isGenericStructuralName = /^(mono-?repo|root|workspace|workspaces|repo|repository|source|src|main|app|apps|packages?|projects?|core|server|client|web|www|api|frontend|backend)$/i.test(remainderTrimmed);
+      if (isGenericStructuralName) {
+        const scopedHumanized = this.humanizeWords(scope);
+        if (scopedHumanized) return scopedHumanized;
+      }
+      const humanizedRemainder = this.humanizeWords(remainderTrimmed);
+      if (humanizedRemainder) return humanizedRemainder;
+      return this.humanizeWords(scope);
+    }
+    return this.humanizeWords(manifestName);
+  }
+
+  /** kebab/underscore/space split, title-cased. Shared by every manifest-name humanizer above. */
+  private humanizeWords(value: string): string | undefined {
+    const humanized = value
+      .replace(/[-_]+/g, ' ')
+      .split(' ')
+      .filter(Boolean)
+      .map((word: string) => word.charAt(0).toUpperCase() + word.slice(1))
+      .join(' ')
+      .trim();
+    return humanized || undefined;
   }
 
   /** "@scope/pkg-name" -> "Pkg Name" (scope-stripped, kebab/underscore split, title-cased). */
@@ -21439,7 +21591,12 @@ export class AnalyzerOrchestrator {
           generated_at: new Date().toISOString(),
         },
         structural_label: structuralLabel,
-        description: this.generateCapabilityDescription(structuralLabel, operations, relatedEntities, group.entryPoints),
+        // DEFECT (2026-08 grounding audit): build the description from the SAME
+        // label the capability ships as its name (capabilityName), not the
+        // internal structural grammar label — see the matching note in
+        // buildTerminalDomainCapabilities' generateTerminalCapabilityDescription
+        // call for why these two labels can otherwise disagree.
+        description: this.generateCapabilityDescription(capabilityName, operations, relatedEntities, group.entryPoints),
         description_source: undefined,
         description_generation: {
           status: 'ai_skipped',
@@ -22671,7 +22828,20 @@ export class AnalyzerOrchestrator {
           generated_at: new Date().toISOString(),
         },
         structural_label: structuralLabel,
-        description: this.generateTerminalCapabilityDescription(structuralLabel, uniqueNodes, uniqueEntities, operations),
+        // DEFECT (2026-08 grounding audit): this used to build the description
+        // from `structuralLabel` — the internal "<Domain> Management/…" grammar
+        // label that drives the gates above — while the capability actually
+        // SHIPS `capabilityName` (terminalGroundedCapabilityName's
+        // evidence-grounded placeholder) as its name. Those two labels are
+        // deliberately allowed to differ (see the DISPLAY NAME comment above),
+        // so a description built from one and a name built from the other can
+        // name/describe two different things ("View WSCard" named, "Infos
+        // Management reads infos records" described — measured live on a
+        // benchmarked PHP SOAP-client library). Build the description from
+        // the SAME label the capability ships as its name, so name and
+        // description are always about the same subject even before any AI
+        // pass runs.
+        description: this.generateTerminalCapabilityDescription(capabilityName, uniqueNodes, uniqueEntities, operations),
         description_source: undefined,
         description_generation: {
           status: 'ai_skipped',
@@ -24550,7 +24720,13 @@ export class AnalyzerOrchestrator {
     const lowerLabel = label.toLowerCase();
     void lowerLabel;
     void nodes;
-    const subject = label.replace(/\s+(Management|Capability|Workflow|Reporting|Analysis|Generation|Settlement|Rebalancing|Authentication)$/i, '').trim() || label;
+    // Callers now pass the SAME label the capability ships as its `name`
+    // (terminalGroundedCapabilityName's placeholder), which may carry a
+    // trailing "(EntityName)" disambiguator ("Invoice (InvoiceRecord)") that
+    // reads awkwardly as a sentence subject — strip it for prose purposes,
+    // same as the trailing invented-behavior-suffix strip below.
+    const label_ = label.replace(/\s*\([^)]*\)\s*$/, '').trim() || label;
+    const subject = label_.replace(/\s+(Management|Capability|Workflow|Reporting|Analysis|Generation|Settlement|Rebalancing|Authentication)$/i, '').trim() || label_;
     const subjectLower = subject.toLowerCase();
 
     // Deterministic, fact-grounded description: state what the code actually
@@ -24582,9 +24758,9 @@ export class AnalyzerOrchestrator {
     const pathClause = samplePaths.length ? ` (e.g. ${samplePaths.join(', ')})` : '';
 
     if (!dataClause && !surfaceClause) {
-      return `${label} groups ${subjectLower}-related nodes in the relationship graph; no entry points or data entities were resolved for it, so its runtime behavior is unverified.`;
+      return `${label_} groups ${subjectLower}-related nodes in the relationship graph; no entry points or data entities were resolved for it, so its runtime behavior is unverified.`;
     }
-    return `${label}${dataClause}${surfaceClause}${pathClause}.`.replace(/\s+/g, ' ').trim();
+    return `${label_}${dataClause}${surfaceClause}${pathClause}.`.replace(/\s+/g, ' ').trim();
   }
 
   private capabilityVerbClause(actions: string[]): string {
@@ -25138,7 +25314,12 @@ export class AnalyzerOrchestrator {
     entities: Array<{ name: string }> = [],
     entryPoints: CASEntryPoint[] = [],
   ): string {
-    const subject = name.replace(/\s+(Management|Capability|Workflow|Reporting|Analysis|Generation|Settlement|Rebalancing|Authentication)$/i, '').trim() || name;
+    // Callers pass the SAME label the capability ships as its `name`
+    // (terminalGroundedCapabilityName's placeholder), which may carry a
+    // trailing "(EntityName)" disambiguator — strip it for prose purposes
+    // (see the matching strip in generateTerminalCapabilityDescription).
+    const name_ = name.replace(/\s*\([^)]*\)\s*$/, '').trim() || name;
+    const subject = name_.replace(/\s+(Management|Capability|Workflow|Reporting|Analysis|Generation|Settlement|Rebalancing|Authentication)$/i, '').trim() || name_;
     const subjectLower = subject.toLowerCase();
 
     const actions = Array.from(new Set(
@@ -25170,9 +25351,9 @@ export class AnalyzerOrchestrator {
     const pathClause = samplePaths.length ? ` (${samplePaths.join(', ')})` : '';
 
     if (!dataClause && !surfaceClause) {
-      return `${name} groups ${subjectLower}-related nodes in the relationship graph; no entry points or data entities were resolved for it, so its runtime behavior is unverified.`;
+      return `${name_} groups ${subjectLower}-related nodes in the relationship graph; no entry points or data entities were resolved for it, so its runtime behavior is unverified.`;
     }
-    return `${name}${dataClause}${surfaceClause}${pathClause}.`.replace(/\s+/g, ' ').trim();
+    return `${name_}${dataClause}${surfaceClause}${pathClause}.`.replace(/\s+/g, ' ').trim();
   }
 
   private capabilityInteractionPhrase(entryTypes: string[]): string {
