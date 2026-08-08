@@ -1977,9 +1977,9 @@ export class AnalyzerOrchestrator {
     // identity (an author committed it on purpose to name the package) while
     // a doc's first heading is prose structure that is not always a product
     // title at all — see the DEFECT (system name) note on
-    // resolveSystemDisplayName for the truckspyui case where a README's first
-    // heading was the boilerplate "# Prerequisites". When the repo has NO
-    // root self-naming file (common for C#/non-npm stacks — e.g. a
+    // resolveSystemDisplayName for the case (measured on a benchmarked Angular
+    // SPA) where a README's first heading was the boilerplate "# Prerequisites".
+    // When the repo has NO root self-naming file (common for C#/non-npm stacks — e.g. a
     // benchmarked C# client repo, whose reanalyze passes the project record's
     // "Acme Scientific" as the displayName), the explicit displayName is the
     // next fallback, above the bare workspace basename. (The old gate
@@ -13371,13 +13371,14 @@ export class AnalyzerOrchestrator {
             : { ok: false as const, reason: 'missing-description' };
           const reason = capability.description_generation?.reason || validation.reason || 'unknown-quality-failure';
           const fallback = deterministicCapabilityText.get(capability.id);
-          // DEFECT (2026-08 grounding audit, wex-client-php): the gate above
-          // refuses an ungrounded AI description, but this substitute used to
-          // ship `fallback` UNVALIDATED — it never ran through
-          // validateElementDescription at all. That let a capability named
-          // "View WSCard" ship the description "Infos Management reads infos
-          // records..." (the deterministic text was built from a different
-          // internal label than the one shipped as the name — see the
+          // DEFECT (2026-08 grounding audit): the gate above refuses an
+          // ungrounded AI description, but this substitute used to ship
+          // `fallback` UNVALIDATED — it never ran through
+          // validateElementDescription at all. That let a capability on a
+          // benchmarked PHP SOAP-client library ship a name like
+          // "View WSCard" alongside a description like "Infos Management
+          // reads infos records..." (the deterministic text was built from a
+          // different internal label than the one shipped as the name — see the
           // generateTerminalCapabilityDescription/generateCapabilityDescription
           // fix that now keeps them in sync at the source). The grounding gate
           // belongs at THIS layer, not one above it: run the exact same
@@ -17286,11 +17287,11 @@ export class AnalyzerOrchestrator {
    * resolver used to check the product doc's own H1 (README/PRD title)
    * BEFORE any manifest, on the theory that a doc title is the "strongest
    * top-down self-naming evidence". That is wrong whenever the doc's first
-   * heading is not a product title at all — an Angular-CLI-scaffolded
-   * README's very first line is often the literal boilerplate heading
-   * "# Prerequisites" (see truckspyui in the beta-audit corpus): the
+   * heading is not a product title at all — a scaffolded frontend repo's
+   * README very often has a boilerplate first heading like "# Prerequisites"
+   * ahead of any real title (measured live on a benchmarked Angular SPA): the
    * system's displayed name came out as "Prerequisites" while the project's
-   * own package.json declared "truckspy-frontend" one file away. A markdown
+   * own package.json declared a real product name one file away. A markdown
    * heading is prose STRUCTURE, not declared identity, and must never
    * outrank it. This is a precedence fix, not a vocabulary fix — nothing
    * here special-cases the string "Prerequisites" or any other heading text;
@@ -17301,7 +17302,7 @@ export class AnalyzerOrchestrator {
    * displayName always wins; (2) the ROOT manifest's own declared name —
    * package.json/composer.json/pyproject.toml/Cargo.toml/pom.xml, or a
    * single root *.csproj — scope/vendor-stripped and humanized
-   * ("@klauro/monorepo" -> "Klauro", "truckspy/wex-client" -> "Wex Client").
+   * ("@klauro/monorepo" -> "Klauro", "acme/checkout-lib" -> "Checkout Lib").
    * This is DECLARED identity: an author committed it on purpose to name the
    * package, so it outranks prose; (3) the product doc's own title
    * (README/PRD H1), used only when NO root manifest exists at all — the
@@ -17438,8 +17439,8 @@ export class AnalyzerOrchestrator {
    * SHAPE, while the scope/vendor ("@klauro", "acme") is the product/org
    * identity — so the scope wins instead ("@klauro/monorepo" -> "Klauro",
    * not "Monorepo"). A genuinely product-named manifest
-   * ("@acme/checkout-service" -> "Checkout Service", "truckspy/wex-client"
-   * -> "Wex Client") is untouched.
+   * ("@acme/checkout-service" -> "Checkout Service", "acme/payment-client"
+   * -> "Payment Client") is untouched.
    */
   private humanizeManifestName(manifestName: string): string | undefined {
     const scopedMatch = manifestName.match(/^@?([^/@\s]+)\/(.+)$/);
@@ -22801,10 +22802,11 @@ export class AnalyzerOrchestrator {
         // deliberately allowed to differ (see the DISPLAY NAME comment above),
         // so a description built from one and a name built from the other can
         // name/describe two different things ("View WSCard" named, "Infos
-        // Management reads infos records" described — a real wex-client-php
-        // finding). Build the description from the SAME label the capability
-        // ships as its name, so name and description are always about the
-        // same subject even before any AI pass runs.
+        // Management reads infos records" described — measured live on a
+        // benchmarked PHP SOAP-client library). Build the description from
+        // the SAME label the capability ships as its name, so name and
+        // description are always about the same subject even before any AI
+        // pass runs.
         description: this.generateTerminalCapabilityDescription(capabilityName, uniqueNodes, uniqueEntities, operations),
         description_source: undefined,
         description_generation: {
