@@ -364,3 +364,35 @@ test('parseArgs: a real positional path still lands in the path slot', () => {
   const parsed = parseArgs(['init', '/tmp/some-repo']);
   assert.equal(parsed.path, '/tmp/some-repo');
 });
+
+// ---------------------------------------------------------------------------
+// §AUTH-LIFECYCLE — reset-password / change-password / admin-mint-reset-token
+// flag parsing. Only the parsing itself is unit-testable here (the commands
+// make real network/filesystem calls); account-store.test.ts covers the
+// underlying AccountStore behavior end to end.
+// ---------------------------------------------------------------------------
+
+test('parseArgs: reset-password token/new-password flags', () => {
+  const parsed = parseArgs(['reset-password', '--token', 'krt_abc123', '--new-password', 'a-new-password-1']);
+  assert.equal(parsed.resetToken, 'krt_abc123');
+  assert.equal(parsed.newPassword, 'a-new-password-1');
+  assert.equal(parsed.resetTokenStdin, false);
+  assert.equal(parsed.newPasswordStdin, false);
+
+  const stdinVariant = parseArgs(['reset-password', '--token-stdin', '--new-password-stdin']);
+  assert.equal(stdinVariant.resetTokenStdin, true);
+  assert.equal(stdinVariant.newPasswordStdin, true);
+});
+
+test('parseArgs: change-password current/new-password flags', () => {
+  const parsed = parseArgs(['change-password', '--current-password', 'old-pw-1', '--new-password', 'new-pw-2']);
+  assert.equal(parsed.currentPassword, 'old-pw-1');
+  assert.equal(parsed.newPassword, 'new-pw-2');
+});
+
+test('parseArgs: admin-mint-reset-token email/data-dir/minted-by flags', () => {
+  const parsed = parseArgs(['admin-mint-reset-token', '--email', 'owner@example.com', '--data-dir', '/data', '--minted-by', 'operator:me@example.com']);
+  assert.equal(parsed.email, 'owner@example.com');
+  assert.equal(parsed.dataDir, '/data');
+  assert.equal(parsed.mintedBy, 'operator:me@example.com');
+});
