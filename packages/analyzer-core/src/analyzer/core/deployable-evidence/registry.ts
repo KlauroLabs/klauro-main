@@ -3,6 +3,7 @@ import { binTargetsProvider } from './providers/bin-targets';
 import { ciDeployProvider } from './providers/ci-deploy';
 import { containerProvider } from './providers/container';
 import { deployManifestsProvider } from './providers/deploy-manifests';
+import { desktopPackagingProvider } from './providers/desktop-packaging';
 import { dotnetProvider } from './providers/dotnet';
 import { installerProvider } from './providers/installer';
 import { jvmProvider } from './providers/jvm';
@@ -34,6 +35,7 @@ export const BUILTIN_PROVIDERS: EvidenceProvider[] = [
   deployManifestsProvider,
   nativeProvider,
   mobileProvider,
+  desktopPackagingProvider,
 ];
 
 const registeredProviders: EvidenceProvider[] = [...BUILTIN_PROVIDERS];
