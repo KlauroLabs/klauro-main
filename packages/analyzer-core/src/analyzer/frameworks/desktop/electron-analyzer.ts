@@ -134,7 +134,7 @@ export class ElectronAnalyzer extends BaseAnalyzer {
       const appNode = this.createNodeBuilder(appId, 'Electron Application', 'application')
         .withLevel(1, 'system')
         .withCategory('application', ['framework', 'electron', 'desktop'])
-        .withSource({ file: path.join(context.projectPath, anchorFile), line: 1, end_line: 1 })
+        .withSource({ file: anchorFile, line: 1, end_line: 1 })
         .withDescription('Electron desktop application (main + renderer processes)')
         .withMetadata({ framework: 'electron', attributes: { version, ipcHandlers: allHandlers.length, windows: allWindows.length } })
         .build();
@@ -146,7 +146,7 @@ export class ElectronAnalyzer extends BaseAnalyzer {
         const winNode = this.createNodeBuilder(winId, win.varName ? `BrowserWindow: ${win.varName}` : 'BrowserWindow', 'window')
           .withLevel(2, 'architectural')
           .withCategory('window', ['electron', 'renderer'])
-          .withSource({ file: path.join(context.projectPath, win.file), line: win.line, end_line: win.line })
+          .withSource({ file: win.file, line: win.line, end_line: win.line })
           .withDescription('Electron renderer window (BrowserWindow instance)')
           .withMetadata({ framework: 'electron', attributes: { varName: win.varName } })
           .build();
@@ -167,7 +167,7 @@ export class ElectronAnalyzer extends BaseAnalyzer {
         const handlerNode = this.createNodeBuilder(handlerId, `ipcMain.${h.method} '${h.channel}'`, 'ipc_handler')
           .withLevel(3, 'code')
           .withCategory('ipc_handler', ['electron', 'ipc', 'entry-point'])
-          .withSource({ file: path.join(context.projectPath, h.file), line: h.line, end_line: h.line })
+          .withSource({ file: h.file, line: h.line, end_line: h.line })
           .withDescription(`Electron IPC ${h.method === 'handle' ? 'request/response' : 'fire-and-forget'} handler for channel '${h.channel}'`)
           .withMetadata({
             framework: 'electron',
@@ -216,7 +216,7 @@ export class ElectronAnalyzer extends BaseAnalyzer {
         const callNode = this.createNodeBuilder(callId, `ipcRenderer.${call.method} '${call.channel}'`, 'ipc_call')
           .withLevel(3, 'code')
           .withCategory('ipc_call', ['electron', 'ipc', 'call-site'])
-          .withSource({ file: path.join(context.projectPath, call.file), line: call.line, end_line: call.line })
+          .withSource({ file: call.file, line: call.line, end_line: call.line })
           .withDescription(`Electron renderer-side IPC call to channel '${call.channel}'`)
           .withMetadata({ framework: 'electron', attributes: { channel: call.channel, method: call.method } })
           .build();
@@ -254,7 +254,7 @@ export class ElectronAnalyzer extends BaseAnalyzer {
         const exposedNode = this.createNodeBuilder(exposedId, `window.${exp.key}`, 'exposed_api')
           .withLevel(3, 'code')
           .withCategory('exposed_api', ['electron', 'preload', 'contextBridge'])
-          .withSource({ file: path.join(context.projectPath, exp.file), line: exp.line, end_line: exp.line })
+          .withSource({ file: exp.file, line: exp.line, end_line: exp.line })
           .withDescription(`Preload-exposed API surface reachable from the renderer as window.${exp.key}`)
           .withMetadata({ framework: 'electron', attributes: { key: exp.key } })
           .build();

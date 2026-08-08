@@ -226,7 +226,7 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
           const appNode = this.createNodeBuilder(appId, className, 'application')
             .withLevel(1, 'system')
             .withCategory('application', ['framework', 'spring-boot'])
-            .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
+            .withSource({ file: file, line: 1, end_line: content.split('\n').length })
             .withDescription(`Spring Boot application: ${className}`)
             .withDocumentation(documentation)
             .withComments(comments)
@@ -286,7 +286,7 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
           const controllerNode = this.createNodeBuilder(controllerId, className, 'controller')
             .withLevel(2, 'architectural')
             .withCategory('controller', ['api', 'rest'])
-            .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
+            .withSource({ file: file, line: 1, end_line: content.split('\n').length })
             .withDescription(`Spring Boot REST controller: ${className}`)
             .withMetadata({
               framework: 'spring-boot',
@@ -313,7 +313,7 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
             const endpointNode = this.createNodeBuilder(endpointId, `${endpoint.method.toUpperCase()} ${routePath}`, 'route')
               .withLevel(3, 'code')
               .withCategory('route', ['http', 'endpoint'])
-              .withSource({ file: fullPath, line: endpoint.line, end_line: endpoint.line })
+              .withSource({ file: file, line: endpoint.line, end_line: endpoint.line })
               .withDescription(`Spring Boot HTTP endpoint: ${endpoint.method.toUpperCase()} ${routePath}`)
               .withMetadata({
                 framework: 'spring-boot',
@@ -351,7 +351,7 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
               { method: endpoint.method.toUpperCase(), path: canonicalPath },
               { authenticated: endpoint.authenticated },
               { method: endpoint.method, path: canonicalPath, controller: className, handler: endpoint.handlerName, authenticated: endpoint.authenticated },
-              { node_id: endpointId, method_name: endpoint.handlerName, file: fullPath, line: endpoint.line }
+              { node_id: endpointId, method_name: endpoint.handlerName, file: file, line: endpoint.line }
             ));
           });
         }
@@ -408,7 +408,7 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
           const serviceNode = this.createNodeBuilder(serviceId, className, nodeType)
             .withLevel(2, 'architectural')
             .withCategory(nodeType, subcategories)
-            .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
+            .withSource({ file: file, line: 1, end_line: content.split('\n').length })
             .withDescription(`Spring Boot ${stereotype}: ${className}`)
             .withMetadata({
               framework: 'spring-boot',
@@ -427,7 +427,7 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
             const methodNode = this.createNodeBuilder(methodId, method.name, 'method')
               .withLevel(4, 'member')
               .withCategory('method', ['function'])
-              .withSource({ file: fullPath, line: 1, end_line: 1 })
+              .withSource({ file: file, line: 1, end_line: 1 })
               .withDescription(`Method in ${className}: ${method.name}`)
               .withMetadata({
                 framework: 'spring-boot',
@@ -487,7 +487,7 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
           const configNode = this.createNodeBuilder(configId, className, 'service')
             .withLevel(2, 'architectural')
             .withCategory('service', ['configuration', 'spring'])
-            .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
+            .withSource({ file: file, line: 1, end_line: content.split('\n').length })
             .withDescription(`Spring Boot configuration: ${className}`)
             .withMetadata({
               framework: 'spring-boot',
@@ -505,7 +505,7 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
             const beanNode = this.createNodeBuilder(beanId, bean.name, 'service')
               .withLevel(3, 'code')
               .withCategory('service', ['bean', 'spring'])
-              .withSource({ file: fullPath, line: 1, end_line: 1 })
+              .withSource({ file: file, line: 1, end_line: 1 })
               .withDescription(`Spring bean: ${bean.name}`)
               .withMetadata({
                 framework: 'spring-boot',
@@ -567,7 +567,7 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
           const entityNode = this.createNodeBuilder(entityId, className, 'model')
             .withLevel(3, 'code')
             .withCategory('model', ['data', 'entity'])
-            .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
+            .withSource({ file: file, line: 1, end_line: content.split('\n').length })
             .withDescription(`JPA entity: ${className}`)
             .withMetadata({
               framework: 'spring-boot',
@@ -635,7 +635,7 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
           const securityNode = this.createNodeBuilder(securityId, className, 'service')
             .withLevel(2, 'architectural')
             .withCategory('service', ['security', 'configuration'])
-            .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
+            .withSource({ file: file, line: 1, end_line: content.split('\n').length })
             .withDescription(`Spring Security configuration: ${className}`)
             .withMetadata({
               framework: 'spring-boot',
@@ -686,7 +686,7 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
       const className = this.extractClassName(content);
       if (!className) continue;
 
-      this.emitAnnotatedTriggers(content, className, fullPath, 'KafkaListener', 'message',
+      this.emitAnnotatedTriggers(content, className, file, 'KafkaListener', 'message',
         (rawArgs, handlerName) => {
           const topics = this.extractNamedListLiteral(rawArgs, 'topics?');
           const groupId = rawArgs?.match(/groupId\s*=\s*["']([^"']+)["']/)?.[1];
@@ -699,7 +699,7 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
           };
         }, nodes, entryPoints);
 
-      this.emitAnnotatedTriggers(content, className, fullPath, 'RabbitListener', 'message',
+      this.emitAnnotatedTriggers(content, className, file, 'RabbitListener', 'message',
         (rawArgs, handlerName) => {
           const queues = this.extractNamedListLiteral(rawArgs, 'queues?');
           const label = queues.length ? queues.join(', ') : 'unknown-queue';
@@ -711,7 +711,7 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
           };
         }, nodes, entryPoints);
 
-      this.emitAnnotatedTriggers(content, className, fullPath, 'JmsListener', 'message',
+      this.emitAnnotatedTriggers(content, className, file, 'JmsListener', 'message',
         (rawArgs, handlerName) => {
           const destinations = this.extractNamedListLiteral(rawArgs, 'destination');
           const label = destinations.length ? destinations.join(', ') : 'unknown-destination';
@@ -723,7 +723,7 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
           };
         }, nodes, entryPoints);
 
-      this.emitAnnotatedTriggers(content, className, fullPath, 'Scheduled', 'schedule',
+      this.emitAnnotatedTriggers(content, className, file, 'Scheduled', 'schedule',
         (rawArgs, handlerName) => {
           const cron = rawArgs?.match(/cron\s*=\s*["']([^"']+)["']/)?.[1];
           const fixedRate = rawArgs?.match(/fixedRate\s*=\s*["']?(\d+)["']?/)?.[1];
@@ -748,7 +748,7 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
         }, nodes, entryPoints);
 
       for (const annotationName of ['EventListener', 'TransactionalEventListener'] as const) {
-        this.emitAnnotatedTriggers(content, className, fullPath, annotationName, 'event',
+        this.emitAnnotatedTriggers(content, className, file, annotationName, 'event',
           (rawArgs, handlerName) => {
             const eventType = rawArgs?.match(/(\w+)\.class/)?.[1];
             const label = eventType || 'application event';
@@ -762,7 +762,7 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
       }
 
       for (const annotationName of ['MessageMapping', 'SubscribeMapping'] as const) {
-        this.emitAnnotatedTriggers(content, className, fullPath, annotationName, 'message',
+        this.emitAnnotatedTriggers(content, className, file, annotationName, 'message',
           (rawArgs, handlerName) => {
             const destination = this.extractAnnotationPathLiteral(rawArgs);
             const label = destination || 'unknown-destination';
@@ -776,7 +776,7 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
       }
 
       for (const annotationName of ['QueryMapping', 'MutationMapping', 'SchemaMapping'] as const) {
-        this.emitAnnotatedTriggers(content, className, fullPath, annotationName, 'http',
+        this.emitAnnotatedTriggers(content, className, file, annotationName, 'http',
           (rawArgs, handlerName) => {
             const name = rawArgs?.match(/name\s*=\s*["']([^"']+)["']/)?.[1] || handlerName;
             const opKind = annotationName === 'QueryMapping' ? 'Query'
@@ -805,7 +805,7 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
   private emitAnnotatedTriggers(
     content: string,
     className: string,
-    fullPath: string,
+    relativeFile: string,
     annotationName: string,
     entryType: CASEntryPoint['type'],
     buildMeta: (rawArgs: string | undefined, handlerName: string) => {
@@ -836,7 +836,7 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
       const node = this.createNodeBuilder(nodeId, built.name, 'trigger')
         .withLevel(3, 'code')
         .withCategory('trigger', [entryType, annotationName])
-        .withSource({ file: fullPath, line, end_line: line })
+        .withSource({ file: relativeFile, line, end_line: line })
         .withDescription(built.description)
         .withMetadata({
           framework: 'spring-boot',
@@ -854,7 +854,7 @@ export class SpringBootAnalyzer extends BaseAnalyzer {
         built.trigger,
         undefined,
         { annotation: annotationName, handlerName, class: className, ...built.metadata },
-        { node_id: nodeId, method_name: handlerName, file: fullPath, line }
+        { node_id: nodeId, method_name: handlerName, file: relativeFile, line }
       ));
 
       seq++;

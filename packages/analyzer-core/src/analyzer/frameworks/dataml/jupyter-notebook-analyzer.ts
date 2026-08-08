@@ -156,7 +156,7 @@ export class JupyterNotebookAnalyzer extends BaseAnalyzer {
     const notebookNode = this.createNodeBuilder(notebookId, notebookName, 'notebook')
       .withLevel(2, 'architectural')
       .withCategory('notebook', ['jupyter', 'ipynb'])
-      .withSource({ file: path.join(projectPath, file), line: 1, end_line: 1 })
+      .withSource({ file: file, line: 1, end_line: 1 })
       .withDescription(`Jupyter notebook: ${notebookName}`)
       .withMetadata({
         framework: 'jupyter-notebook',
@@ -196,7 +196,7 @@ export class JupyterNotebookAnalyzer extends BaseAnalyzer {
       const cellNode = this.createNodeBuilder(cellId, label, 'notebook-cell')
         .withLevel(3, 'code')
         .withCategory('notebook-cell', ['jupyter', 'code-cell'])
-        .withSource({ file: path.join(projectPath, file), line: cell.index + 1, end_line: cell.index + 1 })
+        .withSource({ file: file, line: cell.index + 1, end_line: cell.index + 1 })
         .withDescription(`Notebook code cell #${cell.index}${cell.executionCount != null ? ` (executed as [${cell.executionCount}])` : ''}`)
         .withMetadata({
           framework: 'jupyter-notebook',

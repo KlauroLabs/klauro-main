@@ -303,7 +303,7 @@ export class RailsAnalyzer extends BaseAnalyzer {
     nodes.push(this.createNodeBuilder(appId, appName, 'rails_app')
       .withLevel(1, 'system')
       .withCategory('backend', ['rails', 'ruby', 'application'])
-      .withSource({ file: path.join(projectPath, markerRelative), line: 1, end_line: 1 })
+      .withSource({ file: markerRelative, line: 1, end_line: 1 })
       .withDescription(root ? `Rails engine or application: ${appName}` : `Rails application: ${appName}`)
       .withMetadata({
         framework: 'rails',
@@ -341,7 +341,7 @@ export class RailsAnalyzer extends BaseAnalyzer {
         .withCategory('model', model.abstract
           ? ['rails', 'activerecord', 'database', 'abstract']
           : ['rails', 'activerecord', 'database', 'entity'])
-        .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
+        .withSource({ file: model.filePath, line: 1, end_line: content.split('\n').length })
         .withDescription(`Rails ActiveRecord model: ${model.name}`)
         .withMetadata({
           framework: 'rails',
@@ -568,7 +568,7 @@ export class RailsAnalyzer extends BaseAnalyzer {
       nodes.push(this.createNodeBuilder(controllerId, controller.name, 'rails_controller')
         .withLevel(2, 'architectural')
         .withCategory('controller', ['rails', 'mvc', 'http'])
-        .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
+        .withSource({ file: file, line: 1, end_line: content.split('\n').length })
         .withDescription(`Rails controller: ${controller.name}`)
         .withMetadata({
           framework: 'rails',
@@ -585,7 +585,7 @@ export class RailsAnalyzer extends BaseAnalyzer {
         nodes.push(this.createNodeBuilder(actionId, action.name, 'controller_method')
           .withLevel(4, 'member')
           .withCategory('method', ['rails', 'action'])
-          .withSource({ file: fullPath, line: action.line, end_line: action.line })
+          .withSource({ file: file, line: action.line, end_line: action.line })
           .withDescription(`Controller action in ${controller.name}: ${action.name}`)
           .withParent(controllerId)
           .withMetadata({ framework: 'rails' })
@@ -605,7 +605,7 @@ export class RailsAnalyzer extends BaseAnalyzer {
         nodes.push(this.createNodeBuilder(filterId, filter.name, 'middleware')
           .withLevel(3, 'code')
           .withCategory('security', ['rails', 'before_action', 'auth'])
-          .withSource({ file: fullPath, line: filter.line, end_line: filter.line })
+          .withSource({ file: file, line: filter.line, end_line: filter.line })
           .withDescription(`Rails before_action auth filter on ${controller.name}: ${filter.name}`)
           .withMetadata({
             framework: 'rails',
@@ -743,7 +743,7 @@ export class RailsAnalyzer extends BaseAnalyzer {
       nodes.push(this.createNodeBuilder(routeId, `${route.method} ${route.path}`, 'rails_route')
         .withLevel(3, 'code')
         .withCategory('route', ['rails', 'http'])
-        .withSource({ file: routesPath, line: 1, end_line: 1 })
+        .withSource({ file: routesRelative, line: 1, end_line: 1 })
         .withDescription(`Rails route: ${route.method} ${route.path} -> ${route.controller}#${route.action}`)
         .withMetadata({
           framework: 'rails',
@@ -942,7 +942,7 @@ export class RailsAnalyzer extends BaseAnalyzer {
       nodes.push(this.createNodeBuilder(migrationId, migration.name, 'rails_migration')
         .withLevel(3, 'code')
         .withCategory('migration', ['rails', 'database', 'schema'])
-        .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
+        .withSource({ file: file, line: 1, end_line: content.split('\n').length })
         .withDescription(`Rails migration: ${migration.name}`)
         .withMetadata({
           framework: 'rails',
@@ -1023,7 +1023,7 @@ export class RailsAnalyzer extends BaseAnalyzer {
         nodes.push(this.createNodeBuilder(fieldId, columnName, 'field')
           .withLevel(4, 'member')
           .withCategory('field', ['rails', 'data'])
-          .withSource({ file: modelFile, line: 1, end_line: 1 })
+          .withSource({ file: model.filePath, line: 1, end_line: 1 })
           .withSignature({ parameters: [], return_type: columnType })
           .withParent(modelId)
           .withMetadata({
@@ -1190,7 +1190,7 @@ export class RailsAnalyzer extends BaseAnalyzer {
       nodes.push(this.createNodeBuilder(workerId, worker.name, worker.kind === 'job' ? 'rails_job' : 'rails_mailer')
         .withLevel(2, 'architectural')
         .withCategory('worker', ['rails', worker.kind === 'job' ? 'background_job' : 'mailer'])
-        .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
+        .withSource({ file: file, line: 1, end_line: content.split('\n').length })
         .withDescription(worker.kind === 'job'
           ? `Rails background job: ${worker.name}`
           : `Rails mailer: ${worker.name}`)
@@ -1273,7 +1273,7 @@ export class RailsAnalyzer extends BaseAnalyzer {
       nodes.push(this.createNodeBuilder(suiteId, suite.name, 'test_suite')
         .withLevel(3, 'code')
         .withCategory('testing', ['rails', suite.framework])
-        .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
+        .withSource({ file: file, line: 1, end_line: content.split('\n').length })
         .withDescription(`Rails ${suite.framework} test suite: ${suite.name}`)
         .withMetadata({
           framework: 'rails',

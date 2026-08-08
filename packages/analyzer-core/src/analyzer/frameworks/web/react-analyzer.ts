@@ -462,7 +462,7 @@ export class ReactAnalyzer extends BaseAnalyzer {
             const componentNode = this.createNodeBuilder(componentId, component.name, component.type === 'functional' ? 'functional_component' : 'class_component')
               .withLevel(2, 'architectural')
               .withCategory('component', ['react', component.type])
-              .withSource({ file: fullPath, line: 1, end_line: this.sourceLineCount(content) })
+              .withSource({ file: file, line: 1, end_line: this.sourceLineCount(content) })
               .withDescription(`React ${component.type} component: ${component.name}`)
               .withDocumentation(documentation)
               .withComments(comments)
@@ -491,7 +491,7 @@ export class ReactAnalyzer extends BaseAnalyzer {
               const hookUsageNode = this.createNodeBuilder(hookUsageId, `${hook.name} usage`, 'hook_usage')
                 .withLevel(4, 'member')
                 .withCategory('hook_usage', ['react', 'hook'])
-                .withSource({ file: fullPath, line: 1, end_line: 1 })
+                .withSource({ file: file, line: 1, end_line: 1 })
                 .withDescription(`Hook usage in ${component.name}: ${hook.name}`)
                 .withParent(componentId)
                 .withMetadata({
@@ -560,7 +560,7 @@ export class ReactAnalyzer extends BaseAnalyzer {
             const hookNode = this.createNodeBuilder(hookId, hook.name, 'custom_hook')
               .withLevel(3, 'code')
               .withCategory('hook', ['react', 'custom'])
-              .withSource({ file: fullPath, line: 1, end_line: this.sourceLineCount(content) })
+              .withSource({ file: file, line: 1, end_line: this.sourceLineCount(content) })
               .withDescription(`Custom React hook: ${hook.name}`)
               .withDocumentation(documentation)
               .withComments(comments)
@@ -622,7 +622,7 @@ export class ReactAnalyzer extends BaseAnalyzer {
             const contextNode = this.createNodeBuilder(contextId, context.name, 'react_context')
               .withLevel(3, 'code')
               .withCategory('context', ['react', 'state'])
-              .withSource({ file: fullPath, line: 1, end_line: this.sourceLineCount(content) })
+              .withSource({ file: file, line: 1, end_line: this.sourceLineCount(content) })
               .withDescription(`React context: ${context.name}`)
               .withMetadata({
                 framework: 'react',
@@ -684,7 +684,7 @@ export class ReactAnalyzer extends BaseAnalyzer {
             const routeNode = this.createNodeBuilder(routeId, route.path, 'react_route')
               .withLevel(3, 'code')
               .withCategory('route', ['react', 'navigation'])
-              .withSource({ file: fullPath, line: 1, end_line: 1 })
+              .withSource({ file: file, line: 1, end_line: 1 })
               .withDescription(`React route: ${route.path}`)
               .withMetadata({
                 framework: 'react',
@@ -752,7 +752,7 @@ export class ReactAnalyzer extends BaseAnalyzer {
             const storeNode = this.createNodeBuilder(storeId, store.name, `${store.type}_store`)
               .withLevel(3, 'code')
               .withCategory('store', ['react', store.type, 'state'])
-              .withSource({ file: fullPath, line: 1, end_line: this.sourceLineCount(content) })
+              .withSource({ file: file, line: 1, end_line: this.sourceLineCount(content) })
               .withDescription(`${store.type.charAt(0).toUpperCase() + store.type.slice(1)} store: ${store.name}`)
               .withMetadata({
                 framework: 'react',
@@ -816,7 +816,7 @@ export class ReactAnalyzer extends BaseAnalyzer {
         const pageNode = this.createNodeBuilder(pageId, pageName, 'react_page')
           .withLevel(2, 'architectural')
           .withCategory('page', ['react', 'view'])
-          .withSource({ file: fullPath, line: 1, end_line: this.sourceLineCount(content) })
+          .withSource({ file: file, line: 1, end_line: this.sourceLineCount(content) })
           .withDescription(`React page: ${pageName}`)
           .withMetadata({
             framework: 'react',
@@ -976,7 +976,7 @@ export class ReactAnalyzer extends BaseAnalyzer {
             const utilNode = this.createNodeBuilder(utilId, util.name, `${util.type}_util`)
               .withLevel(4, 'member')
               .withCategory('util', ['helper', util.type])
-              .withSource({ file: fullPath, line: 1, end_line: this.sourceLineCount(content) })
+              .withSource({ file: file, line: 1, end_line: this.sourceLineCount(content) })
               .withDescription(`Utility ${util.type}: ${util.name}`)
               .withMetadata({
                 framework: 'react',

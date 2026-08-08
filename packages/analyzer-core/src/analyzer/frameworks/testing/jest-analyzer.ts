@@ -273,7 +273,7 @@ export class JestAnalyzer extends BaseAnalyzer {
           const configNode = this.createNodeBuilder(configId, 'Jest Configuration', 'config')
             .withLevel(1, 'system')
             .withCategory('config', ['testing'])
-            .withSource({ file: fullPath, line: 1, end_line: this.sourceLineCount(content) })
+            .withSource({ file: configPath, line: 1, end_line: this.sourceLineCount(content) })
             .withDescription('Jest testing framework configuration')
             .withMetadata({
               framework: 'jest',
@@ -370,7 +370,7 @@ export class JestAnalyzer extends BaseAnalyzer {
         const suiteNode = this.createNodeBuilder(suiteId, suite.name, 'test')
           .withLevel(2, 'architectural')
           .withCategory('test', ['suite'])
-          .withSource({ file: fullPath, line: 1, end_line: this.sourceLineCount(content) })
+          .withSource({ file: file, line: 1, end_line: this.sourceLineCount(content) })
           .withDescription(`Jest test suite: ${suite.name}`)
           .withMetadata({
             framework: 'jest',
@@ -391,7 +391,7 @@ export class JestAnalyzer extends BaseAnalyzer {
           const testNode = this.createNodeBuilder(testId, test.description, 'test')
             .withLevel(3, 'code')
             .withCategory('test', ['unit'])
-            .withSource({ file: fullPath, line: 1, end_line: 1 })
+            .withSource({ file: file, line: 1, end_line: 1 })
             .withDescription(`Jest test: ${test.description}`)
             .withMetadata({
               framework: 'jest',
@@ -424,7 +424,7 @@ export class JestAnalyzer extends BaseAnalyzer {
           const hookNode = this.createNodeBuilder(hookId, `${hook.type}${hook.description ? ': ' + hook.description : ''}`, 'hook')
             .withLevel(4, 'member')
             .withCategory('hook', ['test'])
-            .withSource({ file: fullPath, line: 1, end_line: 1 })
+            .withSource({ file: file, line: 1, end_line: 1 })
             .withDescription(`Jest ${hook.type} hook`)
             .withMetadata({
               framework: 'jest',
@@ -451,7 +451,7 @@ export class JestAnalyzer extends BaseAnalyzer {
           const mockNode = this.createNodeBuilder(mockId, mock.name, 'mock')
             .withLevel(4, 'member')
             .withCategory('mock', ['test'])
-            .withSource({ file: fullPath, line: 1, end_line: 1 })
+            .withSource({ file: file, line: 1, end_line: 1 })
             .withDescription(`Jest mock: ${mock.name}`)
             .withMetadata({
               framework: 'jest',
@@ -486,7 +486,7 @@ export class JestAnalyzer extends BaseAnalyzer {
           const fallbackSuiteNode = this.createNodeBuilder(suiteId, suite.name, 'test-suite')
             .withLevel(2, 'architectural')
             .withCategory('test-suite', ['test'])
-            .withSource({ file: fullPath, line: 1, end_line: this.sourceLineCount(content) })
+            .withSource({ file: file, line: 1, end_line: this.sourceLineCount(content) })
             .withDescription(`Jest test suite: ${suite.name}`)
             .withMetadata({
               framework: 'jest',

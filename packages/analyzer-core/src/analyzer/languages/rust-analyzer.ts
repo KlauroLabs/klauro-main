@@ -366,7 +366,7 @@ export class RustAnalyzer extends BaseAnalyzer {
     const stat = await fs.stat(context.filePath);
 
     await this.detectProjectType(context.projectPath);
-    this.createFileNode(context.relativePath, context.filePath, nodes, context);
+    this.createFileNode(context.relativePath, nodes, context);
     const extraction = await this.extractFileElements(context.filePath, nodes, edges, entryPoints, context);
     if (extraction) {
       this.linkFileElements(extraction, nodes, edges, new Set(edges.map(edge => edge.id)), exitPoints, methodCalls);
@@ -412,7 +412,7 @@ export class RustAnalyzer extends BaseAnalyzer {
       const extractions: RustFileExtraction[] = [];
       for (const file of rustFiles) {
         const fullPath = path.resolve(context.projectPath, file);
-        this.createFileNode(file, fullPath, nodes, context);
+        this.createFileNode(file, nodes, context);
         const extraction = await this.extractFileElements(fullPath, nodes, edges, entryPoints, context);
         if (extraction) extractions.push(extraction);
       }
@@ -482,7 +482,6 @@ export class RustAnalyzer extends BaseAnalyzer {
 
   private createFileNode(
     relativePath: string,
-    fullPath: string,
     nodes: CASNode[],
     context: AnalysisContext
   ): void {
@@ -492,7 +491,7 @@ export class RustAnalyzer extends BaseAnalyzer {
     const fileNode = this.createNodeBuilder(fileId, fileName, 'file')
       .withLevel(2, 'architectural')
       .withCategory('source', ['rust', 'file'])
-      .withSource({ file: fullPath, line: 1 })
+      .withSource({ file: relativePath, line: 1 })
       .withDescription(`Rust source file: ${relativePath}`)
       .withMetadata({
         language: 'rust',

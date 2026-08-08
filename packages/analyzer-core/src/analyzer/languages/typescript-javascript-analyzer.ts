@@ -6,7 +6,7 @@ import {
 } from '../../types/cas.types';
 import { AnalyzerError } from '../core/errors';
 import { EnhancedCallGraphExtractor, ExtractedFunction } from '../enhanced-call-graph-extractor';
-import { TreeSitterTSExtractor, TSFileExtraction, TSExtractedFunction, TSExtractedClass, TSDecoratorDetail } from '../core/tree-sitter-ts-extractor';
+import { TreeSitterTSExtractor, TSFileExtraction, TSExtractedFunction, TSExtractedClass, TSDecoratorDetail, UNRESOLVED_RECEIVER } from '../core/tree-sitter-ts-extractor';
 import * as path from 'path';
 import * as fs from 'fs-extra';
 import { TSESTree } from '@typescript-eslint/typescript-estree';
@@ -782,15 +782,15 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
 
       const fileId = `file_${relativePath.replace(/[^a-zA-Z0-9]/g, '_')}`;
       const lines = content.split('\n');
-      const fileComments = this.extractCommentsFromFile(content, fullPath);
-      const fileTodos = this.extractTodosFromComments(fileComments, fullPath);
+      const fileComments = this.extractCommentsFromFile(content, relativePath);
+      const fileTodos = this.extractTodosFromComments(fileComments, relativePath);
 
       nodes.push(this.createNode(
         fileId,
         path.basename(relativePath),
         'file',
         1,
-        fullPath,
+        relativePath,
         1,
         lines.length,
         {
@@ -868,7 +868,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
             type: todoType,
             text: (m[2] || '').trim() || lines[i].trim(),
             priority: todoType === 'FIXME' || todoType === 'HACK' ? 'high' : todoType === 'WARNING' ? 'medium' : 'low',
-            location: { file: fullPath, line: i + 1 },
+            location: { file: relativePath, line: i + 1 },
           });
         }
       }
@@ -882,7 +882,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
         style: (c.type === 'block' || c.type === 'jsdoc' ? '/* */' : '//') as CASComment['style'],
         text: c.text,
         purpose: (/\btodo\b/i.test(c.text) ? 'todo' : /\b(fixme|hack)\b/i.test(c.text) ? 'hack' : /\bwarning\b/i.test(c.text) ? 'warning' : /\bnote\b/i.test(c.text) ? 'note' : 'explanation') as CASComment['purpose'],
-        location: { file: fullPath, line: c.line },
+        location: { file: relativePath, line: c.line },
       }));
 
       // Comments and todos are TOP-LEVEL CASNode fields, not metadata — that is
@@ -892,7 +892,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
         path.basename(relativePath),
         'file',
         1,
-        fullPath,
+        relativePath,
         1,
         lineCount,
         {
@@ -957,7 +957,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
           type: todoType,
           text: (m[2] || '').trim() || lines[i].trim(),
           priority: todoType === 'FIXME' || todoType === 'HACK' ? 'high' : todoType === 'WARNING' ? 'medium' : 'low',
-          location: { file: fullPath, line: i + 1 },
+          location: { file: relativePath, line: i + 1 },
         });
       }
       // Comments in the canonical CASComment shape (text/location/purpose), not the
@@ -970,7 +970,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
         style: (c.type === 'block' || c.type === 'jsdoc' ? '/* */' : '//') as CASComment['style'],
         text: c.text,
         purpose: (/\btodo\b/i.test(c.text) ? 'todo' : /\b(fixme|hack)\b/i.test(c.text) ? 'hack' : /\bwarning\b/i.test(c.text) ? 'warning' : /\bnote\b/i.test(c.text) ? 'note' : 'explanation') as CASComment['purpose'],
-        location: { file: fullPath, line: c.line },
+        location: { file: relativePath, line: c.line },
       }));
 
       // Comments and todos are TOP-LEVEL CASNode fields, not metadata — that is
@@ -980,7 +980,7 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
         path.basename(relativePath),
         'file',
         1,
-        fullPath,
+        relativePath,
         1,
         lines.length,
         {
@@ -1746,6 +1746,11 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
   }
 
   private findNodeIdByNameIndexedUncached(targetName: string, sourceFile?: string, sourceClassName?: string): string | undefined {
+    // A call through an unnamed receiver resolves to nothing by NAME. Bailing out
+    // here rather than letting the marker fall through keeps it away from the
+    // substring-matching fallback near the end of this method, which compares the
+    // receiver against class names and must never be handed a placeholder.
+    if (this.hasUnresolvedReceiver(targetName)) return undefined;
     // Direct `this.method()` / `self.method()` — a call to a sibling method on the
     // caller's own class. This is the bulk of intra-class calls; without it the
     // call graph (and get_callees/get_method_calls) is almost empty for methods.
@@ -3320,6 +3325,11 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
    */
   private isRepositoryCall(target: string, className?: string): boolean {
     if (!target.includes('.')) return false;
+    // AXIS 0 — IS THERE A RECEIVER AT ALL. `foo().find(...)` has a receiver we
+    // could not name, and absence of evidence is unknown, not a store. Checked
+    // before the operation axis so no receiver-shaped reasoning below ever runs
+    // on a marker.
+    if (this.hasUnresolvedReceiver(target)) return false;
     const parts = target.split('.');
     const methodName = (parts.pop() || '').toLowerCase();
     const isThisQualified = target.startsWith('this.') || target.startsWith('self.');
@@ -3467,7 +3477,19 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
     return false;
   }
 
+  /** True when the call's receiver is the unresolved-receiver marker rather than
+   *  a name — i.e. the receiver is a computed value (`foo().m()`, `arr[0].m()`).
+   *  Such a call carries no receiver evidence, so it can be neither a store nor
+   *  an API exit: those classifications rest on knowing WHAT is being called. */
+  private hasUnresolvedReceiver(target: string): boolean {
+    return target.startsWith(`${UNRESOLVED_RECEIVER}.`);
+  }
+
   private isApiCall(target: string, callExpression: string): boolean {
+    // An unnamed receiver is not an HTTP client. Without this, `getClient().get('/users')`
+    // would reach the URL-shaped-argument branch below and be published as an
+    // outbound API exit whose target service is a marker.
+    if (this.hasUnresolvedReceiver(target)) return false;
     const lowerTarget = target.toLowerCase();
     const lowerExpression = callExpression.toLowerCase();
 

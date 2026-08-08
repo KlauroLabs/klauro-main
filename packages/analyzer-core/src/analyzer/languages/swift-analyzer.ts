@@ -768,9 +768,7 @@ export class SwiftAnalyzer extends BaseAnalyzer {
       // adds `refresh` to UserStore rather than emitting a second UserStore).
       const canonical = typeIndex?.get(type.name);
       const isCanonical = !canonical || canonical.type === type;
-      const typeId = isCanonical
-        ? this.typeId(type.name, type.lineStart)
-        : this.typeId(canonical!.type.name, canonical!.type.lineStart);
+      const typeId = this.canonicalTypeId(type, typeIndex);
 
       if (!isCanonical) {
         // Methods only — attach to the canonical type's node.
@@ -1085,11 +1083,16 @@ export class SwiftAnalyzer extends BaseAnalyzer {
     const edgeIds = new Set(edges.map(e => e.id));
     for (const info of fileInfos) {
       for (const type of info.types) {
-        const sourceId = this.typeId(type.name, type.lineStart);
+        // Resolve BOTH endpoints through the same canonicalization emitFileNodes
+        // uses. `extension X: P` declares a conformance on a row that is not
+        // itself a node — X's node lives at the canonical declaration's line —
+        // so keying the source off `type.lineStart` names an id no collection
+        // ever emitted and the edge dangles.
+        const sourceId = this.canonicalTypeId(type, typeIndex);
         for (const conformance of type.conformances) {
           const target = typeIndex.get(conformance);
           if (!target) continue; // external / system protocol (e.g. View, App) — not a repo edge
-          const targetId = this.typeId(target.type.name, target.type.lineStart);
+          const targetId = this.canonicalTypeId(target.type, typeIndex);
           if (sourceId === targetId) continue;
 
           // protocol target -> 'implements'; class/struct/etc -> 'extends' (mirrors java/csharp).
@@ -1226,6 +1229,23 @@ export class SwiftAnalyzer extends BaseAnalyzer {
 
   private typeId(name: string, line: number): string {
     return `type_${this.sanitizeId(name)}_${line}`;
+  }
+
+  /**
+   * The id of the node that actually REPRESENTS this type declaration. An
+   * `extension X` is not a new type: emitFileNodes emits no node for it and
+   * re-parents its members onto X's canonical declaration. So every id-bearing
+   * reference to a type — the node itself and any edge endpoint naming it —
+   * must resolve through this one helper, or a reference keyed off the
+   * extension's own line names an id that exists in no collection.
+   */
+  private canonicalTypeId(
+    type: SwiftType,
+    typeIndex?: Map<string, { fileRel: string; type: SwiftType }>
+  ): string {
+    const canonical = typeIndex?.get(type.name);
+    if (!canonical || canonical.type === type) return this.typeId(type.name, type.lineStart);
+    return this.typeId(canonical.type.name, canonical.type.lineStart);
   }
 
   private functionId(relativePath: string, owner: string, name: string, line: number): string {

@@ -96,7 +96,7 @@ export class LuigiAnalyzer extends BaseAnalyzer {
         const node = this.createNodeBuilder(nodeId, task.className, 'task')
           .withLevel(3, 'code')
           .withCategory('task', ['luigi', 'batch-task'])
-          .withSource({ file: path.join(context.projectPath, task.file), line: task.line, end_line: task.bodyEnd })
+          .withSource({ file: task.file, line: task.line, end_line: task.bodyEnd })
           .withDescription(`Luigi task: ${task.className}`)
           .withMetadata({ framework: 'luigi' })
           .build();

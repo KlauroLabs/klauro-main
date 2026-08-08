@@ -75,7 +75,7 @@ export class FiberAnalyzer extends BaseAnalyzer {
       const appNode = this.createNodeBuilder(appId, 'Fiber Application', 'application')
         .withLevel(1, 'system')
         .withCategory('application', ['framework', 'fiber'])
-        .withSource({ file: path.join(context.projectPath, files[0] || ''), line: 1, end_line: 1 })
+        .withSource({ file: files[0] || '', line: 1, end_line: 1 })
         .withDescription('Fiber HTTP application')
         .withMetadata({ framework: 'fiber', attributes: { routes: allRoutes.length } })
         .build();
@@ -87,7 +87,7 @@ export class FiberAnalyzer extends BaseAnalyzer {
         const routeNode = this.createNodeBuilder(routeId, `${route.method.toUpperCase()} ${route.path}`, 'route')
           .withLevel(3, 'code')
           .withCategory('route', ['http', 'endpoint'])
-          .withSource({ file: path.join(context.projectPath, route.file), line: route.line, end_line: route.line })
+          .withSource({ file: route.file, line: route.line, end_line: route.line })
           .withDescription(`Fiber HTTP endpoint: ${route.method.toUpperCase()} ${route.path}`)
           .withMetadata({
             framework: 'fiber',

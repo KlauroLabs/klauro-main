@@ -69,7 +69,7 @@ export class EchoAnalyzer extends BaseAnalyzer {
       const appNode = this.createNodeBuilder(appId, 'Echo Application', 'application')
         .withLevel(1, 'system')
         .withCategory('application', ['framework', 'echo'])
-        .withSource({ file: path.join(context.projectPath, files[0] || ''), line: 1, end_line: 1 })
+        .withSource({ file: files[0] || '', line: 1, end_line: 1 })
         .withDescription('Echo HTTP application')
         .withMetadata({ framework: 'echo', attributes: { routes: allRoutes.length } })
         .build();
@@ -81,7 +81,7 @@ export class EchoAnalyzer extends BaseAnalyzer {
         const routeNode = this.createNodeBuilder(routeId, `${route.method.toUpperCase()} ${route.path}`, 'route')
           .withLevel(3, 'code')
           .withCategory('route', ['http', 'endpoint'])
-          .withSource({ file: path.join(context.projectPath, route.file), line: route.line, end_line: route.line })
+          .withSource({ file: route.file, line: route.line, end_line: route.line })
           .withDescription(`Echo HTTP endpoint: ${route.method.toUpperCase()} ${route.path}`)
           .withMetadata({
             framework: 'echo',

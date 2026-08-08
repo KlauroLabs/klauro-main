@@ -100,7 +100,7 @@ export class DagsterAnalyzer extends BaseAnalyzer {
         const node = this.createNodeBuilder(nodeId, dn.name, casType)
           .withLevel(dn.kind === 'job' || dn.kind === 'graph' ? 2 : 3, dn.kind === 'job' || dn.kind === 'graph' ? 'architectural' : 'code')
           .withCategory(casType, ['dagster', dn.kind])
-          .withSource({ file: path.join(context.projectPath, dn.file), line: dn.line, end_line: dn.line })
+          .withSource({ file: dn.file, line: dn.line, end_line: dn.line })
           .withDescription(`Dagster ${dn.kind}: ${dn.name}`)
           .withMetadata({ framework: 'dagster', attributes: { kind: dn.kind } })
           .build();
