@@ -19,7 +19,7 @@ import { getAgentRevisionTracks } from './agent-revision-tracks';
 import { createRemoteAnalyzerHttpServer } from './remote-analyzer-service';
 import { AccountStore } from './account-store';
 import { buildUploadManifest } from './remote-source';
-import { loadKlauroConfig, writeDefaultKlauroConfig, writeProjectBindingIntoConfig } from './klauro-config';
+import { loadKlauroConfig, writeDefaultKlauroConfig, writeProjectBindingIntoConfig, isUnboundHostedProjectId, probeHostedProjectBinding } from './klauro-config';
 import { buildGithubImportPlan } from './github-import';
 import { compareAnalysisIterations, getPreviewAnalysis, previewCodebaseIteration, previewGreenfieldCodebase, type ProposedFileInput } from './proposal-preview';
 import { buildGreenfieldArchitectureGuidance, type GreenfieldReferenceAnalysis } from './greenfield-guidance';
@@ -373,6 +373,7 @@ async function main(): Promise<void> {
       projectPath,
       serverUrl: args.serverUrl,
       analysisId: args.analysisId,
+      requireBoundProject: true,
     }));
     process.stdout.write(args.json ? `${JSON.stringify(result, null, 2)}\n` : formatRemoteResult(result));
     return;
@@ -383,6 +384,7 @@ async function main(): Promise<void> {
       projectPath,
       serverUrl: args.serverUrl,
       analysisId: args.analysisId,
+      requireBoundProject: true,
     }));
     process.stdout.write(args.json ? `${JSON.stringify(result, null, 2)}\n` : formatRemoteResult(result));
     return;
@@ -393,6 +395,7 @@ async function main(): Promise<void> {
       projectPath,
       serverUrl: args.serverUrl,
       analysisId: args.analysisId,
+      requireBoundProject: true,
     }));
     process.stdout.write(args.json ? `${JSON.stringify(result, null, 2)}\n` : formatRemoteResult(result));
     return;
@@ -1407,44 +1410,12 @@ async function runInitCommand(projectPath: string, args: ParsedArgs, options: { 
 // buildConnectionReport / formatConnectionReportLines live in ./status-report
 // (imported above), shared with installed-cli.ts.
 
-/**
- * True when a .klaurorc's project.id does NOT bind to a hosted project: null /
- * missing / any non-prj_ placeholder (all of which an older broken CLI could
- * leave behind). An unbound config makes every analysis upload land as an
- * orphaned path-hash slug, so `klauro init` self-heals it when signed in.
- * Exported (cli.ts is otherwise entry-only) so the decision is unit-testable.
- */
-export function isUnboundHostedProjectId(id: unknown): boolean {
-  return typeof id !== 'string' || !/^prj_/.test(id);
-}
-
-/**
- * Probe whether a .klaurorc's well-formed prj_ id actually resolves for THIS
- * account: GET /api/projects/{id} answers 200 for a member, 404 for a project
- * that does not exist (or belongs to someone else — the server deliberately
- * does not distinguish). Only a definite 404 is reported as 'not_found';
- * network failures / 5xx / auth problems are 'indeterminate' so the caller
- * NEVER rebinds on a flaky connection or an expired token. fetchImpl is
- * injectable (and the function exported) so the decision is unit-testable
- * without a live server.
- */
-export async function probeHostedProjectBinding(
-  serverUrl: string,
-  token: string,
-  projectId: string,
-  fetchImpl: typeof fetch = fetch,
-): Promise<'bound' | 'not_found' | 'indeterminate'> {
-  try {
-    const response = await fetchImpl(`${serverUrl}/api/projects/${encodeURIComponent(projectId)}`, {
-      headers: { authorization: `Bearer ${token}` },
-    });
-    if (response.ok) return 'bound';
-    if (response.status === 404) return 'not_found';
-    return 'indeterminate';
-  } catch {
-    return 'indeterminate';
-  }
-}
+// isUnboundHostedProjectId / probeHostedProjectBinding now live in
+// ./klauro-config (shared with remote-sync-client.ts, which uses them to
+// refuse an upload up front instead of accepting source it cannot place —
+// see analyzeCodebaseRemotely). Re-exported here so cli.ts stays the stable
+// import path for existing tests/callers.
+export { isUnboundHostedProjectId, probeHostedProjectBinding };
 
 async function resolveInitOptions(projectPath: string, args: ParsedArgs): Promise<{
   serverUrl?: string;
@@ -1785,7 +1756,7 @@ function normalizeRepoUrl(value?: string): string | undefined {
 
 async function loadOrAnalyze(projectPath: string, refresh: boolean) {
   if (refresh) {
-    const result = await analyzeCodebaseRemotely({ projectPath });
+    const result = await analyzeCodebaseRemotely({ projectPath, requireBoundProject: true });
     throw new Error(`Hosted analysis ${result.analysis_id} was accepted. Retry this read after the hosted analysis is ready.`);
   }
 

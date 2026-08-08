@@ -228,7 +228,7 @@ export async function describeHttpFailure(response: Response, context: { url: st
   if (status === 401 || status === 403) {
     remediation = 'The request was not authorized. Run `klauro auth-status`; if it reports no account, run `klauro login`, then restart the MCP client.';
   } else if (status === 404) {
-    remediation = "The hosted project was not found. Confirm the project id in this repo's .klaurorc matches a project on this server, then run `klauro status`.";
+    remediation = "The hosted project was not found for the currently signed-in account. The server returns this same 404 whether the project id in this repo's .klaurorc no longer exists OR it exists but belongs to a workspace this account is not a member of (it deliberately does not distinguish the two, to avoid leaking a private project's existence). Run `klauro status` to see the bound project id, and `klauro whoami` to confirm which account is signed in; if it's the wrong account, run `klauro login` for the one that owns this project, otherwise run `klauro init --force` to bind a fresh project this account can see.";
   } else if (status === 426) {
     remediation = 'This client is older than the protocol the server requires. Run `klauro update`, then restart the MCP client.';
   } else if (status === 429) {

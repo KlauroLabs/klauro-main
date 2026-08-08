@@ -557,6 +557,49 @@ export function isBoundToHostedProject(loaded: LoadedKlauroConfig): boolean {
 }
 
 /**
+ * True when a .klaurorc's project.id does NOT bind to a hosted project: null /
+ * missing / any non-prj_ placeholder (all of which an older broken CLI, or no
+ * `klauro init` at all, could leave behind). An unbound config makes every
+ * analysis upload land as an orphaned path-hash slug (see defaultAnalysisId in
+ * remote-sync-client.ts) that never appears in any workspace — `klauro init`
+ * self-heals it when signed in, and every upload path (analyze/sync/branch-diff)
+ * refuses up front rather than accepting source it cannot place. Exported so the
+ * decision is unit-testable and shared by cli.ts and remote-sync-client.ts.
+ */
+export function isUnboundHostedProjectId(id: unknown): boolean {
+  return typeof id !== 'string' || !/^prj_/.test(id);
+}
+
+/**
+ * Probe whether a .klaurorc's well-formed prj_ id actually resolves for THIS
+ * account: GET /api/projects/{id} answers 200 for a member, 404 for a project
+ * that does not exist (or belongs to someone else — the server deliberately
+ * does not distinguish, to avoid leaking existence to non-members). Only a
+ * definite 404 is reported as 'not_found'; network failures / 5xx / auth
+ * problems are 'indeterminate' so callers NEVER refuse an upload on a flaky
+ * connection or an expired token — they fall through and let the upload
+ * itself be the source of truth. fetchImpl is injectable (and the function
+ * exported) so the decision is unit-testable without a live server.
+ */
+export async function probeHostedProjectBinding(
+  serverUrl: string,
+  token: string,
+  projectId: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<'bound' | 'not_found' | 'indeterminate'> {
+  try {
+    const response = await fetchImpl(`${serverUrl}/api/projects/${encodeURIComponent(projectId)}`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    if (response.ok) return 'bound';
+    if (response.status === 404) return 'not_found';
+    return 'indeterminate';
+  } catch {
+    return 'indeterminate';
+  }
+}
+
+/**
  * Reject every local analysis attempt. The installed client may discover,
  * filter, hash, package, upload, watch, and query; analyzers always execute on
  * Klauro infrastructure. Environment and repository policy cannot bypass this
