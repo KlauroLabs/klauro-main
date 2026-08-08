@@ -2,13 +2,14 @@ import * as path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { analyzeCodebaseRemotely, syncWorkingTreeRemotely } from './remote-sync-client';
 import { buildUploadManifest } from './remote-source';
-import { clearStoredConnectorSession, connectorToken, loadStoredConnectorAuth, normalizeServerUrl, saveStoredConnectorSession } from './connector-auth';
+import { clearStoredConnectorSession, connectorToken, loadStoredConnectorAuth, normalizeServerUrl, resolveAuthStatus, saveStoredConnectorSession, warnIfSessionExpiringSoon } from './connector-auth';
 import { writeDefaultKlauroConfig } from './klauro-config';
 import { formatBuildIdentity, resolveManifestProjectName } from './installed-client-runtime';
 import { KLAURO_INSTALL_ONELINER, SELF_UPDATE_COMMANDS, runSelfUpdate } from './self-update';
 import { renderStatusReport } from './status-report';
 import { formatClientDoctor, runClientDoctor } from './client-doctor';
 import { buildSupportBundle, formatSupportBundleResult } from './support-bundle';
+import { promptLine, promptPassword, readAllStdin } from './password-prompt';
 
 function value(flag: string): string | undefined {
   const index = process.argv.indexOf(flag);
@@ -78,6 +79,11 @@ async function main() {
     let workspaceId = value('--organization-id');
     let projectName: string | undefined;
     const token = connectorToken(undefined, serverUrl);
+    // Warn BEFORE the placement calls below if the token is close to (or
+    // past) the server's TTL — init is the very first authenticated command
+    // most sessions run, so this is the earliest point to catch a session
+    // that's about to strand the rest of the first-session flow.
+    if (token) warnIfSessionExpiringSoon(serverUrl, loadStoredConnectorAuth().accounts[serverUrl]);
     if (token && !projectId) {
       const placement = await ensureHostedPlacement(target, serverUrl, token, value('--workspace'));
       projectId = placement.project.id;
@@ -106,16 +112,44 @@ async function main() {
     return output({ status: claude.status === 0 || codex.status === 0 ? 'installed' : 'manual-registration-required', bundle, results }, json);
   }
   if (command === 'auth-status' || command === 'whoami') {
-    const auth = loadStoredConnectorAuth();
-    const serverUrl = normalizeServerUrl(auth.defaultServerUrl);
-    return output({ server_url: serverUrl, signed_in: Boolean(auth.accounts[serverUrl]), email: auth.accounts[serverUrl]?.email || null }, json);
+    // Round-trips to GET /api/me instead of only checking that a token FILE
+    // exists — see resolveAuthStatus's doc comment in connector-auth.ts. The
+    // old version here answered "signed_in: true" purely from
+    // ~/.klauro/auth.json's presence, which is exactly the lie that let a
+    // dead (server-rejected) session report as healthy.
+    const status = await resolveAuthStatus({ serverUrl: value('--server-url') });
+    return output(json
+      ? { ...status, signed_in: status.state === 'signed-in', email: status.email ?? null }
+      : status.detail,
+      json);
   }
   if (command === 'logout') return output(clearStoredConnectorSession(value('--server-url')), json);
   if (command === 'login') {
-    const email = value('--email');
-    const password = value('--password') || (process.argv.includes('--password-stdin') ? (await readStdin()).trim() : undefined);
-    if (!email || !password) throw new Error('login requires --email and --password or --password-stdin');
     const serverUrl = normalizeServerUrl(value('--server-url'));
+    // Credentials must travel over HTTPS only — never send a password in the clear.
+    if (!/^https:\/\//i.test(serverUrl) && !/^https?:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/i.test(serverUrl)) {
+      throw new Error(`Refusing to send credentials over a non-HTTPS server URL: ${serverUrl}`);
+    }
+    const email = value('--email') || await promptLine('Email: ');
+    // Password read, in priority order — see password-prompt.ts:
+    //  1. --password-stdin  (scriptable; read the piped/redirected stdin stream)
+    //  2. --password VALUE  (legacy; DEPRECATED — visible in shell history and
+    //     to other processes on this machine via `ps`; kept working for
+    //     existing scripted/CI callers, but flagged on every use)
+    //  3. interactive no-echo TTY prompt (characters are never echoed)
+    // This is the actual fix for the dead end this command used to hit with
+    // no arguments ("login requires --email and --password or
+    // --password-stdin") — it now prompts instead of demanding flags.
+    const legacyPassword = value('--password');
+    const passwordStdin = process.argv.includes('--password-stdin');
+    if (legacyPassword && !passwordStdin) {
+      process.stderr.write(
+        'Warning: --password on the command line is visible in your shell history and to other processes on this machine (via `ps`). Prefer the interactive prompt (omit --password) or --password-stdin for scripts.\n',
+      );
+    }
+    const password = passwordStdin ? await readAllStdin() : (legacyPassword || await promptPassword('Password: '));
+    if (!email) throw new Error('login requires --email or an entered email');
+    if (!password) throw new Error('login requires --password, --password-stdin, or an entered password');
     const route = process.argv.includes('--register') ? '/api/auth/register' : '/api/auth/login';
     const response = await fetch(`${serverUrl}${route}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email, password }) });
     const payload = await response.json().catch(() => ({})) as any;
@@ -138,7 +172,8 @@ async function main() {
     '  support-bundle [path] [--output FILE]',
     '                               Package redacted environment + run-log diagnostics to send to support',
     '  update [--check] [--force]  Install the latest hosted klauro release over this one',
-    '  login --email EMAIL --password-stdin [--register]',
+    '  login [--email EMAIL] [--password-stdin | --register]',
+    '                               Prompts for email/password (no echo) if not given; --password-stdin for scripts',
     '  auth-status | whoami | logout | version', '',
     `If \`klauro update\` cannot run, reinstall from scratch: ${KLAURO_INSTALL_ONELINER}`, '',
     'Analysis, CAS/WAS construction, graphs, proposals, embeddings, and AI execute only on Klauro infrastructure.',
@@ -170,12 +205,6 @@ async function ensureHostedPlacement(projectPath: string, serverUrl: string, tok
 
 function output(value: unknown, json: boolean) {
   process.stdout.write(json ? `${JSON.stringify(value, null, 2)}\n` : `${typeof value === 'string' ? value : JSON.stringify(value, null, 2)}\n`);
-}
-
-async function readStdin(): Promise<string> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of process.stdin) chunks.push(Buffer.from(chunk));
-  return Buffer.concat(chunks).toString('utf8');
 }
 
 main().catch(error => { process.stderr.write(`${error instanceof Error ? error.message : error}\n`); process.exit(1); });

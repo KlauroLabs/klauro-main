@@ -32,14 +32,14 @@ import { runSelfUpdate } from './self-update';
 import { withAnalysisFocus, type AnalysisFocus } from './analysis-focus';
 import { decideInitFlow, resolveNamedChoice, type RecognizedRemote } from './init-resolution';
 import { buildCrossCodebaseSystemGraph, selectWorkspaceAnalysisDetail, summarizeCrossCodebaseSystemGraph, type WorkspaceDetailLevel } from './cross-codebase-analysis';
-import { clearStoredConnectorSession, connectorToken, isNetworkUnreachableError, loadStoredConnectorAuth, normalizeServerUrl, requireConnectorEntitlement, saveStoredConnectorSession, unreachableServerError } from './connector-auth';
+import { clearStoredConnectorSession, connectorToken, isNetworkUnreachableError, loadStoredConnectorAuth, normalizeServerUrl, requireConnectorEntitlement, resolveAuthStatus, saveStoredConnectorSession, unreachableServerError } from './connector-auth';
 import { detectRemoteProvider } from './remote-provider';
 import { detectWorkspaceIdentity, findFabricProjectRoot, resolveFabricSettings, resolveFabricToken, writeFabricSection } from './coordination/fabric-config';
 import { remoteActive } from './coordination/remote-transport';
 import { getActiveClaims } from './coordination/local-store';
 import * as fs from 'fs-extra';
 import * as readline from 'readline';
-import { promptPassword, readAllStdin } from './password-prompt';
+import { promptLine, promptPassword, readAllStdin } from './password-prompt';
 import {
   buildAnalysisStatusLine,
   buildConnectionReport,
@@ -189,18 +189,17 @@ async function main(): Promise<void> {
   }
 
   if (args.command === 'auth-status') {
-    const auth = loadStoredConnectorAuth();
-    const serverUrl = normalizeServerUrl(args.serverUrl || auth.defaultServerUrl);
-    const stored = auth.accounts[serverUrl];
-    const result = {
-      server_url: serverUrl,
-      signed_in: Boolean(stored),
-      email: stored?.email,
-      auth_file: process.env.KLAURO_AUTH_CONFIG_PATH || '~/.klauro/auth.json',
-    };
+    // Round-trips to the server (GET /api/me) rather than only checking that
+    // a token FILE exists — a locally-present token can be expired or
+    // server-side dropped, and this command's whole job is to say so instead
+    // of reporting "signed_in: true" while every real API call 401s. See
+    // resolveAuthStatus's states: no-token / signed-in / rejected /
+    // unreachable. Bounded by an internal fetch timeout so an unreachable
+    // server reports as such quickly rather than hanging.
+    const status = await resolveAuthStatus({ serverUrl: args.serverUrl });
     process.stdout.write(args.json
-      ? `${JSON.stringify(result, null, 2)}\n`
-      : `${result.signed_in ? `Signed in to ${serverUrl}${result.email ? ` as ${result.email}` : ''}` : `Not signed in to ${serverUrl}`}\n`);
+      ? `${JSON.stringify({ ...status, signed_in: status.state === 'signed-in' }, null, 2)}\n`
+      : `${status.detail}\n`);
     return;
   }
 
@@ -215,15 +214,14 @@ async function main(): Promise<void> {
   }
 
   if (args.command === 'whoami') {
-    const auth = loadStoredConnectorAuth();
-    const serverUrl = normalizeServerUrl(args.serverUrl || auth.defaultServerUrl);
-    const stored = auth.accounts[serverUrl];
+    // Same real-state check as auth-status (see that handler's comment) —
+    // whoami used to answer from the local token file alone and could say
+    // "signed in" for a session the server had already rejected.
+    const status = await resolveAuthStatus({ serverUrl: args.serverUrl });
     if (args.json) {
-      process.stdout.write(`${JSON.stringify({ server_url: serverUrl, signed_in: Boolean(stored), email: stored?.email ?? null }, null, 2)}\n`);
+      process.stdout.write(`${JSON.stringify({ ...status, signed_in: status.state === 'signed-in', email: status.email ?? null }, null, 2)}\n`);
     } else {
-      process.stdout.write(stored
-        ? `Signed in to ${serverUrl}${stored.email ? ` as ${stored.email}` : ''}\n`
-        : `Not signed in to ${serverUrl} (run: klauro login --email you@example.com --register)\n`);
+      process.stdout.write(`${status.detail}\n`);
     }
     return;
   }
@@ -763,9 +761,20 @@ async function runLoginCommand(args: ParsedArgs): Promise<void> {
   const email = args.email || await promptLine('Email: ');
   // Password read, in priority order:
   //  1. --password-stdin  (scriptable; read the piped/redirected stdin stream)
-  //  2. --password VALUE  (legacy; discouraged — visible in shell history)
+  //  2. --password VALUE  (legacy; DEPRECATED — see warning below)
   //  3. interactive no-echo TTY prompt (characters are never echoed)
   // The value is never echoed, logged, or persisted; only the exchanged token is stored.
+  if (args.password && !args.passwordStdin) {
+    // A value passed with `--password` is written into the shell's history
+    // file and is visible to any other process/user on the machine via `ps`
+    // for as long as this process runs — that exposure is exactly what
+    // interactive prompting and --password-stdin exist to avoid. Kept
+    // working (not removed) for scripted/CI callers that already use it, but
+    // every use is flagged so a human at a terminal knows to stop.
+    process.stderr.write(
+      'Warning: --password on the command line is visible in your shell history and to other processes on this machine (via `ps`). Prefer the interactive prompt (omit --password) or --password-stdin for scripts.\n',
+    );
+  }
   const password = args.passwordStdin
     ? await readAllStdin()
     : (args.password || await promptPassword('Password: '));
@@ -1599,15 +1608,6 @@ function normalizeRepoUrl(value?: string): string | undefined {
   const detected = detectRemoteProvider(value);
   return (detected?.repository_url || value).replace(/\.git$/i, '').toLowerCase();
 }
-
-async function promptLine(label: string): Promise<string> {
-  if (!process.stdin.isTTY) return '';
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  const answer = await new Promise<string>(resolve => rl.question(label, resolve));
-  rl.close();
-  return answer.trim();
-}
-
 
 async function loadOrAnalyze(projectPath: string, refresh: boolean) {
   if (refresh) {
