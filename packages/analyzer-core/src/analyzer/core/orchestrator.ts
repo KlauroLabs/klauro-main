@@ -1840,7 +1840,7 @@ export class AnalyzerOrchestrator {
     phaseStart = startPhase();
     const changeRiskSummary = this.buildChangeRiskSummary(changeRisks);
     const stabilitySummary = this.buildStabilitySummary(temporalStability);
-    const { capabilities: systemCapabilities, behaviorSurfaces } = await this.buildSystemCapabilities(allEntryPoints, dataEntities, allNodes, allEdges, projectPath);
+    const { capabilities: systemCapabilities, behaviorSurfaces } = await this.buildSystemCapabilities(allEntryPoints, dataEntities, allNodes, allEdges, projectPath, allExitPoints);
     await yieldToEventLoop();
     const systemPurpose = await this.inferSystemPurpose(allEntryPoints, dataEntities, systemCapabilities, allNodes);
     logTiming('pp_capabilities', phaseStart);
@@ -3409,7 +3409,7 @@ export class AnalyzerOrchestrator {
     const behavioralInvariants = this.buildBehavioralInvariants(nodes, edges, entryPoints, databaseSchema, dataEntities, securityBoundaries, testSuites, projectPath);
     const behavioralInvariantSummary = this.buildBehavioralInvariantSummary(behavioralInvariants);
 
-    const { capabilities: systemCapabilities, behaviorSurfaces } = await this.buildSystemCapabilities(entryPoints, dataEntities, nodes, edges, projectPath);
+    const { capabilities: systemCapabilities, behaviorSurfaces } = await this.buildSystemCapabilities(entryPoints, dataEntities, nodes, edges, projectPath, exitPoints);
     await yieldToEventLoop();
     const systemPurpose = await this.inferSystemPurpose(entryPoints, dataEntities, systemCapabilities, nodes);
 
@@ -21379,7 +21379,8 @@ export class AnalyzerOrchestrator {
     dataEntities: CASDataEntity[],
     nodes: CASNode[],
     edges: CASEdge[],
-    projectPath?: string
+    projectPath?: string,
+    exitPoints: CASExitPoint[] = []
   ): Promise<{ capabilities: SystemCapability[]; behaviorSurfaces: SystemCapability[] }> {
     // Event-loop hygiene: this pass was the single worst measured stall on a
     // whale re-analysis (6.7s sync on a 76k-node repo — product-path minimatch
@@ -21404,6 +21405,12 @@ export class AnalyzerOrchestrator {
     const productEntryPoints = entryPoints.filter(ep =>
       (!ep.source_node || productNodeIds.has(ep.source_node)) &&
       (!ep.handler?.file || isProductPath(ep.handler.file))
+    );
+    // Same product-boundary filter as entry points, applied to exit points —
+    // TASK #119's integration-capability pass must only see OUTBOUND calls the
+    // product itself makes, never vendored/build-tooling exit points.
+    const productExitPoints = (exitPoints || []).filter(ep =>
+      (!ep.source_node || productNodeIds.has(ep.source_node))
     );
     const productDataEntities = dataEntities.filter(entity => {
       if (entity.schema_source && !isProductPath(entity.schema_source)) return false;
@@ -21670,6 +21677,37 @@ export class AnalyzerOrchestrator {
     // while remaining fully browsable via the separate behavior_surfaces field.
     const behaviorSurfaces: SystemCapability[] = [];
     for (const candidate of behaviorCapabilities) {
+      await maybeYield();
+      if (this.mergeBehaviorCapabilityIntoExisting(candidate, capabilities)) continue;
+      behaviorSurfaces.push({
+        ...candidate,
+        id: nextCapabilityId(candidate),
+      });
+    }
+
+    // TASK #119 (integrations never reach candidate generation): everything
+    // above anchors on INBOUND evidence (entry points, persisted/api-response
+    // entities) — an OUTBOUND dependency the system calls out to (a payment
+    // processor, a chat platform, a bookmarking service) is something the
+    // product DOES, but a repo whose whole value is "sync N third-party
+    // services" previously had zero candidate evidence for that: exit points
+    // never fed buildSystemCapabilities at all (measured live: a 27-integration
+    // feed-reader's Integration entity carried every provider's credential
+    // field, and not one of those providers ever became a capability
+    // candidate — the evidence was extracted and never used). This mirrors
+    // buildBehaviorCapabilities exactly (same entity-poor/high-evidence shape,
+    // same merge-or-stand-alone-surface treatment, same eventual exposure to
+    // the catalog prompt via the LARGE_BEHAVIOR_SURFACE_OPERATION_THRESHOLD
+    // fold) — never a name/keyword table, purely reachable exit-point facts.
+    await maybeYield();
+    const integrationCapabilities = await this.buildIntegrationCapabilities(
+      productExitPoints,
+      productNodes,
+      productEdges,
+      productEntryPoints,
+      productDataEntities,
+    );
+    for (const candidate of integrationCapabilities) {
       await maybeYield();
       if (this.mergeBehaviorCapabilityIntoExisting(candidate, capabilities)) continue;
       behaviorSurfaces.push({
@@ -23524,6 +23562,202 @@ export class AnalyzerOrchestrator {
       .sort((a, b) => b.evidence - a.evidence)
       .slice(0, AnalyzerOrchestrator.BEHAVIOR_CAPABILITY_MAX)
       .map(candidate => candidate.capability);
+  }
+
+  /**
+   * TASK #119 — INTEGRATIONS AS CAPABILITY CANDIDATES.
+   *
+   * Every candidate above this point is INBOUND-anchored: it starts from an
+   * entry point (a route, a CLI command, an event) or a persisted/api-response
+   * entity. An OUTBOUND dependency — a third-party API/SDK the product calls
+   * OUT to — never seeded a candidate anywhere in this file, even though exit
+   * points are already extracted with real per-call evidence
+   * (buildExternalServices consumes the exact same `exitPoints` list this
+   * reads). Measured live: a feed-reader repo's `Integration` entity carries
+   * one credential field per third-party provider (Telegram, Notion,
+   * Pinboard, Wallabag, ...) — ~20 real outbound integrations — and not one
+   * became a capability candidate, because candidate generation only ever
+   * grouped INBOUND entry points into resource groups. The evidence was
+   * extracted (exit_points, buildExternalServices) and never consumed here.
+   *
+   * Structural qualification (evidence only, no name/keyword table):
+   *   1. type is 'api' or 'sdk' — database/cache exit points stay
+   *      infrastructure, not third-party product integrations.
+   *   2. `isMeaningfulExternalServiceName` already rejects call-shaped/
+   *      language-builtin fragments (the same filter buildExternalServices
+   *      uses), so this and that list agree on what counts as a real service.
+   *   3. REACHABILITY — the exit point's source node must be either an
+   *      entry-point handler itself or have at least one incoming call edge.
+   *      An exit point nothing in the graph ever reaches is unexercised code,
+   *      not a product ability (the same bar buildTerminalCapabilities'
+   *      `isTerminal` check already applies to inbound nodes).
+   *
+   * Presentation mirrors the proven flagship-surface pattern
+   * (buildBehaviorCapabilities / LARGE_BEHAVIOR_SURFACE_OPERATION_THRESHOLD):
+   * each qualifying service either merges into an existing entity-anchored
+   * capability it demonstrably shares data with, or stands alone tagged
+   * `evidence_kind: 'behavior-surface'` with the real per-service names in
+   * `evidence_examples` — so a rich integration surface reaches the catalog
+   * prompt as real evidence ("Telegram, Notion, Pinboard, ...") rather than a
+   * mechanism-shaped placeholder, exactly like Klauro's own large MCP-tool
+   * surface already does. This never bypasses the structural anchor gate:
+   * each candidate carries real `entry_point_id`s (`exit:<id>`) seeded from
+   * actual exit points, so it is anchored by the same rule as everything
+   * else, never a special case.
+   */
+  private async buildIntegrationCapabilities(
+    exitPoints: CASExitPoint[],
+    nodes: CASNode[],
+    edges: CASEdge[],
+    entryPoints: CASEntryPoint[],
+    dataEntities: CASDataEntity[],
+  ): Promise<SystemCapability[]> {
+    const maybeYield = createYieldBudget();
+    const nodesById = new Map(nodes.map(node => [node.id, node]));
+    const incoming = new Map<string, number>();
+    for (const edge of edges) {
+      incoming.set(edge.target, (incoming.get(edge.target) || 0) + 1);
+    }
+    const entryHandlerIds = new Set<string>();
+    for (const ep of entryPoints) {
+      if (ep.source_node) entryHandlerIds.add(ep.source_node);
+      const epAny = ep as any;
+      if (epAny.handler?.node_id) entryHandlerIds.add(epAny.handler.node_id);
+    }
+
+    // Group qualifying outbound calls by the external service they target —
+    // the SAME name/key derivation buildExternalServices uses for its 'api'/
+    // 'sdk' branch, so a capability here and the external_services list agree
+    // on identity.
+    const groups = new Map<string, { name: string; exitPoints: CASExitPoint[] }>();
+    for (const ep of exitPoints) {
+      await maybeYield();
+      const type = String(ep.type || '').toLowerCase();
+      if (type !== 'api' && type !== 'sdk') continue;
+      const sdkName = ep.target?.sdk || ep.name || '';
+      if (isLanguageBuiltinName(sdkName) || isLanguageBuiltinExitPoint(ep) || !this.isMeaningfulExternalServiceName(sdkName)) {
+        continue;
+      }
+      const reached = Boolean(ep.source_node) &&
+        ((incoming.get(ep.source_node!) || 0) > 0 || entryHandlerIds.has(ep.source_node!));
+      if (!reached) continue;
+      const key = sdkName.toLowerCase().replace(/\s+/g, '_');
+      if (!groups.has(key)) groups.set(key, { name: sdkName, exitPoints: [] });
+      groups.get(key)!.exitPoints.push(ep);
+    }
+    if (groups.size === 0) return [];
+
+    // Entity association: the exit point's OWN source node is the handler —
+    // same direct-lifecycle-match pattern the resource-group pass uses,
+    // never a vocabulary guess.
+    const entityIdsByLifecycleNode = new Map<string, string[]>();
+    for (const entity of dataEntities) {
+      const lifecycleIds = [
+        ...entity.lifecycle.created_by,
+        ...entity.lifecycle.read_by,
+        ...entity.lifecycle.updated_by,
+        ...entity.lifecycle.deleted_by,
+      ];
+      for (const nodeId of lifecycleIds) {
+        const list = entityIdsByLifecycleNode.get(nodeId);
+        if (list) list.push(entity.id);
+        else entityIdsByLifecycleNode.set(nodeId, [entity.id]);
+      }
+    }
+
+    const buildOperations = (groupExitPoints: CASExitPoint[]) =>
+      groupExitPoints.slice(0, 24).map(ep => ({
+        entry_point_id: `exit:${ep.id}`,
+        entry_point_type: 'external',
+        action: ep.operation?.action || this.inferActionFromNodeName(ep.name || 'call'),
+        path_or_command: ep.source_node ? nodesById.get(ep.source_node)?.source?.file : undefined,
+      }));
+    const entitiesFor = (groupExitPoints: CASExitPoint[]) => {
+      const ids = new Set<string>();
+      for (const ep of groupExitPoints) {
+        if (!ep.source_node) continue;
+        for (const entityId of entityIdsByLifecycleNode.get(ep.source_node) || []) ids.add(entityId);
+      }
+      return Array.from(ids);
+    };
+
+    // MANY-INTEGRATIONS FOLD: a handful of qualifying services stand alone —
+    // each already carries enough of its own evidence to be a distinct
+    // candidate. A LARGE number of small integrations (the feed-reader case —
+    // ~20 providers, 1-3 exit points each) would otherwise flood the
+    // candidate window with near-identical, individually-weak fragments; that
+    // shape is folded into ONE surface candidate whose `evidence_examples`
+    // names every real provider, mirroring the existing
+    // largeSurfaceCandidates fold for oversized behavior-registration
+    // families. The threshold is the count of DISTINCT qualifying services
+    // (structural), never their names.
+    const INTEGRATION_FOLD_THRESHOLD = 3;
+    const results: SystemCapability[] = [];
+    if (groups.size > INTEGRATION_FOLD_THRESHOLD) {
+      const allExitPoints = Array.from(groups.values()).flatMap(group => group.exitPoints);
+      const serviceNames = Array.from(groups.values()).map(group => group.name);
+      results.push({
+        id: '',
+        name: 'External Integration Surface',
+        name_source: undefined,
+        name_generation: {
+          status: 'ai_skipped',
+          reason: 'awaiting-ai-comprehension',
+          attempted: false,
+          generated_at: new Date().toISOString(),
+        },
+        structural_label: 'External Integration Surface',
+        description: `Behavior surface: ${allExitPoints.length} outbound calls across ${groups.size} third-party integrations.`,
+        description_source: 'deterministic',
+        description_generation: {
+          status: 'deterministic_initial',
+          attempted: true,
+          generated_at: new Date().toISOString(),
+        },
+        category: 'supporting',
+        operations: buildOperations(allExitPoints),
+        related_entities: entitiesFor(allExitPoints),
+        related_domains: Array.from(groups.keys()).slice(0, 6),
+        criticality: groups.size >= 10 ? 'high' : 'medium',
+        criticality_factors: [`${allExitPoints.length} outbound integration calls`],
+        evidence_kind: 'behavior-surface',
+        evidence_examples: serviceNames.slice(0, 20),
+      });
+      return results;
+    }
+
+    for (const [key, group] of groups) {
+      await maybeYield();
+      const structuralLabel = `Integrate with ${group.name}`;
+      results.push({
+        id: '',
+        name: structuralLabel,
+        name_source: undefined,
+        name_generation: {
+          status: 'ai_skipped',
+          reason: 'awaiting-ai-comprehension',
+          attempted: false,
+          generated_at: new Date().toISOString(),
+        },
+        structural_label: structuralLabel,
+        description: `Sends or receives data through the ${group.name} integration across ${group.exitPoints.length} call sites.`,
+        description_source: 'deterministic',
+        description_generation: {
+          status: 'deterministic_initial',
+          attempted: true,
+          generated_at: new Date().toISOString(),
+        },
+        category: 'supporting',
+        operations: buildOperations(group.exitPoints),
+        related_entities: entitiesFor(group.exitPoints),
+        related_domains: [key],
+        criticality: 'medium',
+        criticality_factors: [`${group.exitPoints.length} outbound calls to ${group.name}`],
+        evidence_kind: 'behavior-surface',
+        evidence_examples: [group.name],
+      });
+    }
+    return results;
   }
 
   /**
