@@ -1,3 +1,4 @@
+import * as os from 'node:os';
 import * as path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { analyzeCodebaseRemotely, syncWorkingTreeRemotely } from './remote-sync-client';
@@ -10,6 +11,13 @@ import { renderStatusReport } from './status-report';
 import { formatClientDoctor, runClientDoctor } from './client-doctor';
 import { buildSupportBundle, formatSupportBundleResult } from './support-bundle';
 import { promptLine, promptPassword, readAllStdin } from './password-prompt';
+// §AUTH-LIFECYCLE — admin-mint-reset-token talks to the account store
+// directly (no HTTP hop, no site-wide admin role to gate an endpoint with —
+// see AccountStore.mintPasswordResetToken's doc comment). account-store.ts
+// has no dependency on any hosted-only module (analyzer.ts, orchestrator,
+// etc.), so it is safe to pull into the installed-client bundle the same way
+// every other shared module here is.
+import { AccountStore } from './account-store';
 
 function value(flag: string): string | undefined {
   const index = process.argv.indexOf(flag);
@@ -158,6 +166,106 @@ async function main() {
     if (!token) throw new Error('Login response did not include an access token');
     return output({ status: 'signed-in', ...saveStoredConnectorSession({ serverUrl, token, email }) }, json);
   }
+  // §AUTH-LIFECYCLE — `klauro reset-password`. Redeems a single-use token an
+  // operator minted (see `admin-mint-reset-token` below); PUBLIC endpoint by
+  // design (the whole point is recovering an account with no valid session,
+  // so authorization is possession of the token, not a Bearer header). On
+  // success every existing session for the account is dead server-side —
+  // this command deliberately does not auto-login, so `klauro login`
+  // exercises the new password at least once.
+  if (command === 'reset-password') {
+    const serverUrl = normalizeServerUrl(value('--server-url'));
+    if (!/^https:\/\//i.test(serverUrl) && !/^https?:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/i.test(serverUrl)) {
+      throw new Error(`Refusing to send a reset token over a non-HTTPS server URL: ${serverUrl}`);
+    }
+    const tokenStdin = process.argv.includes('--token-stdin');
+    const resetToken = tokenStdin ? await readAllStdin() : (value('--token') || await promptLine('Reset token: '));
+    if (!resetToken) throw new Error('reset-password requires --token, --token-stdin, or an entered token');
+    const legacyNewPassword = value('--new-password');
+    const newPasswordStdin = process.argv.includes('--new-password-stdin');
+    if (legacyNewPassword && !newPasswordStdin) {
+      process.stderr.write('Warning: --new-password on the command line is visible in your shell history and to other processes on this machine (via `ps`). Prefer the interactive prompt (omit --new-password) or --new-password-stdin.\n');
+    }
+    const newPassword = newPasswordStdin ? await readAllStdin() : (legacyNewPassword || await promptPassword('New password: '));
+    if (!newPassword) throw new Error('reset-password requires --new-password, --new-password-stdin, or an entered password');
+    const response = await fetch(`${serverUrl}/api/auth/reset-password/redeem`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ token: resetToken, new_password: newPassword }) });
+    const payload = await response.json().catch(() => ({})) as any;
+    if (!response.ok) throw new Error(payload.error || `Password reset failed with HTTP ${response.status}`);
+    return output(json
+      ? { status: 'success', server_url: serverUrl, email: payload.email ?? null }
+      : `Password reset. Every previous session for ${payload.email || 'this account'} has been signed out.\nRun \`klauro login --email ${payload.email || '<email>'}\` to sign in with the new password.`,
+      json);
+  }
+  // §AUTH-LIFECYCLE — `klauro change-password`. Requires an existing session
+  // (this repo/host's stored connector auth) and the CURRENT password. On
+  // success the server revokes every OTHER session and rotates this one's
+  // token; the new token is saved immediately so the caller isn't logged out
+  // by their own password change.
+  if (command === 'change-password') {
+    const serverUrl = normalizeServerUrl(value('--server-url'));
+    if (!/^https:\/\//i.test(serverUrl) && !/^https?:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/i.test(serverUrl)) {
+      throw new Error(`Refusing to send credentials over a non-HTTPS server URL: ${serverUrl}`);
+    }
+    const token = connectorToken(undefined, serverUrl);
+    if (!token) throw new Error('change-password requires an existing session — run `klauro login` first.');
+    const legacyCurrentPassword = value('--current-password');
+    const currentPasswordStdin = process.argv.includes('--current-password-stdin');
+    if (legacyCurrentPassword && !currentPasswordStdin) {
+      process.stderr.write('Warning: --current-password on the command line is visible in shell history and to other processes. Prefer the interactive prompt or --current-password-stdin.\n');
+    }
+    const legacyNewPassword = value('--new-password');
+    const newPasswordStdin = process.argv.includes('--new-password-stdin');
+    if (legacyNewPassword && !newPasswordStdin) {
+      process.stderr.write('Warning: --new-password on the command line is visible in shell history and to other processes. Prefer the interactive prompt or --new-password-stdin.\n');
+    }
+    const currentPassword = currentPasswordStdin ? await readAllStdin() : (legacyCurrentPassword || await promptPassword('Current password: '));
+    const newPassword = newPasswordStdin ? await readAllStdin() : (legacyNewPassword || await promptPassword('New password: '));
+    if (!currentPassword) throw new Error('change-password requires --current-password, --current-password-stdin, or an entered password');
+    if (!newPassword) throw new Error('change-password requires --new-password, --new-password-stdin, or an entered password');
+    const response = await fetch(`${serverUrl}/api/auth/change-password`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` }, body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }) });
+    const payload = await response.json().catch(() => ({})) as any;
+    if (!response.ok || !payload?.token) throw new Error(payload.error || `Password change failed with HTTP ${response.status}`);
+    const stored = saveStoredConnectorSession({ serverUrl, token: payload.token, email: payload.user?.email });
+    return output(json
+      ? { status: 'success', server_url: stored.serverUrl, user: payload.user }
+      : `Password changed for ${payload.user?.email || 'your account'}. Every other session was signed out; this session's token was rotated and saved to ${stored.file}.`,
+      json);
+  }
+  // §AUTH-LIFECYCLE — `klauro admin-mint-reset-token`. OPERATOR-ONLY. Talks
+  // to the AccountStore DIRECTLY against the same data directory the hosted
+  // analyzer server uses (--data-dir, or KLAURO_REMOTE_ANALYZER_DATA) — not
+  // an HTTP call, and deliberately so: this product has no site-wide admin
+  // role (workspace roles are owner/admin/member, scoped per-workspace), so
+  // rather than invent one to gate an HTTP admin-mint endpoint, the trust
+  // boundary is the same one that already gates read-only inspection of
+  // accounts.json — being able to run this command with access to /data IS
+  // the operator authentication. Prints the raw single-use token to stdout
+  // exactly once; relay it to the account owner out-of-band, never re-print
+  // or log it. Redeemed via `klauro reset-password --token <token>`.
+  if (command === 'admin-mint-reset-token') {
+    const email = value('--email');
+    if (!email) throw new Error('admin-mint-reset-token requires --email <account-email>');
+    const dataDir = path.resolve(
+      value('--data-dir')
+        || process.env.KLAURO_REMOTE_ANALYZER_DATA
+        || path.join(os.tmpdir(), `klauro-remote-analyzer-${typeof process.getuid === 'function' ? process.getuid() : 'user'}`),
+    );
+    const accounts = new AccountStore(dataDir);
+    const mintedBy = value('--minted-by') || `operator:${os.userInfo().username}@${os.hostname()}`;
+    const minted = await accounts.mintPasswordResetToken({ email, mintedBy });
+    return output(json
+      ? { status: 'success', data_dir: dataDir, email, user_id: minted.userId, token: minted.token, expires_at: minted.expiresAt }
+      : [
+        `Minted a password reset token for ${email} (data dir: ${dataDir}).`,
+        `Token (relay this to the account owner out-of-band — it is shown ONLY here, and it is single-use):`,
+        `  ${minted.token}`,
+        `Expires at ${minted.expiresAt} (30 minutes from now).`,
+        `The account owner redeems it with:`,
+        `  klauro reset-password --server-url <server-url> --token ${minted.token}`,
+        `Redeeming invalidates every existing session for the account.`,
+      ].join('\n'),
+      json);
+  }
   process.stdout.write([
     'Usage: klauro <command> [path] [options]', '',
     '  init [path]                 Configure a project for hosted Klauro analysis',
@@ -174,7 +282,14 @@ async function main() {
     '  update [--check] [--force]  Install the latest hosted klauro release over this one',
     '  login [--email EMAIL] [--password-stdin | --register]',
     '                               Prompts for email/password (no echo) if not given; --password-stdin for scripts',
-    '  auth-status | whoami | logout | version', '',
+    '  auth-status | whoami | logout | version',
+    '  change-password [--current-password-stdin] [--new-password-stdin]',
+    '                               Requires an existing session + current password; invalidates every other session',
+    '  reset-password --token TOKEN [--token-stdin] [--new-password-stdin]',
+    '                               Redeems a single-use token an operator minted with admin-mint-reset-token',
+    '  admin-mint-reset-token --email EMAIL [--data-dir PATH] [--minted-by LABEL]',
+    '                               OPERATOR-ONLY: mints a 30-minute single-use reset token directly against the account store',
+    '',
     `If \`klauro update\` cannot run, reinstall from scratch: ${KLAURO_INSTALL_ONELINER}`, '',
     'Analysis, CAS/WAS construction, graphs, proposals, embeddings, and AI execute only on Klauro infrastructure.',
   ].join('\n') + '\n');
