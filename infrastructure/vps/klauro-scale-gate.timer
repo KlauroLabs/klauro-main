@@ -1,0 +1,15 @@
+# Companion timer for klauro-scale-gate.service — see that file's header
+# before installing either. Weekly, not per-deploy: a real multi-thousand-
+# file analysis costs several minutes, which is the correct trade for a
+# periodic gate but the wrong one for deploy smoke (which stays intentionally
+# tiny — see infrastructure/vps/analysis-smoke.mjs).
+[Unit]
+Description=Weekly Klauro scale-survivability gate
+
+[Timer]
+OnCalendar=Sun 03:00 UTC
+Persistent=true
+RandomizedDelaySec=1800
+
+[Install]
+WantedBy=timers.target

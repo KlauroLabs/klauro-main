@@ -20,6 +20,41 @@ services:
     # two for Caddy, SSH, health probes, and host operations even during a cold
     # whale analysis. Completeness is unchanged; excess work queues.
     cpus: "4.0"
+    # Production survivability (2026-08): the host has 7.7GB RAM and NO
+    # container memory ceiling existed before this line — `docker stats`
+    # showed MEM USAGE/LIMIT as usage-vs-HOST-TOTAL, i.e. unbounded. The
+    # historical incidents (dmesg: anon-rss up to 7.4GB pre-worker-isolation;
+    # then, even after the 2026-07-18 heap-cap + worker-isolation fix, a
+    # cluster of concurrent non-API node processes on this same host drove
+    # the kernel's GLOBAL (not cgroup) OOM killer to take systemd itself
+    # twice on 2026-07-30) both land on the SAME underlying gap: nothing ever
+    # stopped this container's total RSS (main process + forked worker +
+    # tsx/esbuild helpers) from growing into the last GB of host memory.
+    # Direct peak-RSS probes against this repo (analyzeProjectLayered run
+    # through the SAME forked-worker path production uses, sampled via
+    # /proc/<pid>/status, AI enrichment disabled to isolate the deterministic
+    # pipeline) measured, at the current KLAURO_ANALYSIS_HEAP_MB=4096 heap
+    # cap:
+    #   775 files  (packages/analyzer-core) -> 27,477 nodes: peak RSS 1.66GB
+    #   1953 files (apps/mcp-server)        -> 21,660 nodes: peak RSS 1.54GB
+    #   3355 files (this repo, full)        -> 57,392 nodes: peak RSS 2.30GB
+    # RSS grows sub-linearly with node count (a large fixed baseline —
+    # full source text + AST retention across 25-38 concurrent analyzers —
+    # dominates more than the marginal per-node cost). Extrapolating that
+    # curve to the known 93,306-node/159.6s whale (the 3,856-file repo that
+    # used to crash on the edges.push(...deduped) argument-limit bug) puts
+    # its worker peak in the ~3-3.5GB range — NOT independently re-measured
+    # at that exact scale under this harness; re-run
+    # infrastructure/vps/README.md's memory-probe recipe against a true
+    # multi-thousand-node whale before trusting this number for a tighter
+    # cap. 6144MB gives the main api process (~300-500MB idle) plus one
+    # worker (4096MB heap + non-heap overhead, currently observed up to
+    # ~2.4GB but sized here for the extrapolated ~3.5GB whale case) real
+    # headroom while still leaving >1.5GB free on the host for Caddy, sshd,
+    # and page cache — the same floor this program's own operating
+    # instructions require checking before every batch of work.
+    mem_limit: 6144m
+    memswap_limit: 6144m
     env_file:
       - /opt/klauro/.env
     environment:
