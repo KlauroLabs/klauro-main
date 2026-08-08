@@ -84,7 +84,6 @@ export class DartAnalyzer extends BaseAnalyzer {
     this.analyzeDartFile({
       projectPath: context.projectPath,
       relativeFile: context.relativePath,
-      fullPath: context.filePath,
       content,
       isFlutterProject,
       nodes,
@@ -140,7 +139,6 @@ export class DartAnalyzer extends BaseAnalyzer {
         this.analyzeDartFile({
           projectPath: context.projectPath,
           relativeFile,
-          fullPath,
           content,
           isFlutterProject,
           nodes,
@@ -196,7 +194,6 @@ export class DartAnalyzer extends BaseAnalyzer {
   private analyzeDartFile(input: {
     projectPath: string;
     relativeFile: string;
-    fullPath: string;
     content: string;
     isFlutterProject: boolean;
     nodes: CASNode[];
@@ -205,14 +202,14 @@ export class DartAnalyzer extends BaseAnalyzer {
     exitPoints: CASExitPoint[];
     pendingCalls: DartPendingCall[];
   }): void {
-    const { relativeFile, fullPath, content, isFlutterProject, nodes, edges, entryPoints, exitPoints, pendingCalls } = input;
+    const { relativeFile, content, isFlutterProject, nodes, edges, entryPoints, exitPoints, pendingCalls } = input;
     const lines = content.split(/\r?\n/);
     const fileId = `file_${this.sanitizeId(relativeFile)}`;
     const isTest = this.isDartTestFile(relativeFile);
 
     nodes.push(this.createNodeBuilder(fileId, path.basename(relativeFile), 'file')
       .withLevel(1, this.getLevelName(1))
-      .withSource({ file: fullPath, line: 1, end_line: lines.length })
+      .withSource({ file: relativeFile, line: 1, end_line: lines.length })
       .withMetadata({
         language: 'dart',
         framework: isFlutterProject ? 'flutter' : 'dart',
@@ -228,7 +225,7 @@ export class DartAnalyzer extends BaseAnalyzer {
 
     for (const imported of this.extractImports(content)) {
       const importId = `import_${fileId}_${this.sanitizeId(imported)}`;
-      nodes.push(this.createNode(importId, imported, 'import', 2, fullPath, 1, 1, {
+      nodes.push(this.createNode(importId, imported, 'import', 2, relativeFile, 1, 1, {
         language: 'dart',
         imported,
       }));
@@ -244,7 +241,7 @@ export class DartAnalyzer extends BaseAnalyzer {
       nodes.push(this.createNodeBuilder(classId, dartClass.name, nodeType)
         .withLevel(nodeType === 'mobile_screen' ? 3 : 2, this.getLevelName(nodeType === 'mobile_screen' ? 3 : 2))
         .withCategory(nodeType === 'mobile_screen' || nodeType === 'widget' ? 'presentation' : 'structures', [nodeType])
-        .withSource({ file: fullPath, line: dartClass.line, end_line: dartClass.endLine })
+        .withSource({ file: relativeFile, line: dartClass.line, end_line: dartClass.endLine })
         .withMetadata({
           language: 'dart',
           framework: isFlutterProject ? 'flutter' : 'dart',
@@ -276,7 +273,7 @@ export class DartAnalyzer extends BaseAnalyzer {
           {
             node_id: classId,
             method_name: 'build',
-            file: fullPath,
+            file: relativeFile,
             line: dartClass.line,
           }
         ));
@@ -297,7 +294,7 @@ export class DartAnalyzer extends BaseAnalyzer {
       const functionType = fn.ownerClass ? 'method' : 'function';
       nodes.push(this.createNodeBuilder(functionId, fn.name, functionType)
         .withLevel(4, this.getLevelName(4))
-        .withSource({ file: fullPath, line: fn.line })
+        .withSource({ file: relativeFile, line: fn.line })
         .withParent(ownerId)
         .withMetadata({
           language: 'dart',
@@ -332,7 +329,7 @@ export class DartAnalyzer extends BaseAnalyzer {
           {
             node_id: functionId,
             method_name: 'main',
-            file: fullPath,
+            file: relativeFile,
             line: fn.line,
           }
         ));
@@ -355,7 +352,7 @@ export class DartAnalyzer extends BaseAnalyzer {
           {
             node_id: functionId,
             method_name: fn.name,
-            file: fullPath,
+            file: relativeFile,
             line: fn.line,
           }
         ));
@@ -364,7 +361,7 @@ export class DartAnalyzer extends BaseAnalyzer {
 
     for (const route of this.extractRouteLiterals(content)) {
       const routeId = `route_${this.sanitizeId(relativeFile)}_${this.sanitizeId(route.path)}_${route.line}`;
-      nodes.push(this.createNode(routeId, route.path, 'route', 3, fullPath, route.line, route.line, {
+      nodes.push(this.createNode(routeId, route.path, 'route', 3, relativeFile, route.line, route.line, {
         language: 'dart',
         framework: 'flutter',
         route_kind: route.kind,
@@ -386,13 +383,13 @@ export class DartAnalyzer extends BaseAnalyzer {
         {
           node_id: routeId,
           method_name: route.kind,
-          file: fullPath,
+          file: relativeFile,
           line: route.line,
         }
       ));
     }
 
-    this.detectExitPoints(content, relativeFile, fullPath, nodes, exitPoints);
+    this.detectExitPoints(content, relativeFile, nodes, exitPoints);
   }
 
   private extractImports(content: string): string[] {
@@ -524,7 +521,7 @@ export class DartAnalyzer extends BaseAnalyzer {
     return routes;
   }
 
-  private detectExitPoints(content: string, relativeFile: string, fullPath: string, nodes: CASNode[], exitPoints: CASExitPoint[]): void {
+  private detectExitPoints(content: string, relativeFile: string, nodes: CASNode[], exitPoints: CASExitPoint[]): void {
     const checks = [
       { regex: /\b(?:http|client)\.(?:get|post|put|delete|patch)\s*\(/g, type: 'api' as const, name: 'Dart HTTP client call' },
       { regex: /\bDio\s*\(/g, type: 'api' as const, name: 'Dio HTTP client' },
@@ -539,7 +536,7 @@ export class DartAnalyzer extends BaseAnalyzer {
       while ((match = check.regex.exec(content)) !== null) {
         const line = this.lineAt(content, match.index);
         const nodeId = `boundary_${this.sanitizeId(relativeFile)}_${this.sanitizeId(check.name)}_${line}`;
-        nodes.push(this.createNode(nodeId, check.name, 'boundary', 4, fullPath, line, line, {
+        nodes.push(this.createNode(nodeId, check.name, 'boundary', 4, relativeFile, line, line, {
           language: 'dart',
           framework: 'flutter',
           boundary_type: check.type,

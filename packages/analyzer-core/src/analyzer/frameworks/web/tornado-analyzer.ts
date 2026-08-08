@@ -183,7 +183,7 @@ export class TornadoAnalyzer extends BaseAnalyzer {
         const appNode = this.createNodeBuilder(appId, application.name, 'application')
           .withLevel(1, 'system')
           .withCategory('application', ['framework', 'tornado'])
-          .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
+          .withSource({ file: file, line: 1, end_line: content.split('\n').length })
           .withDescription(`Tornado application: ${application.name}`)
           .withMetadata({
             framework: 'tornado',
@@ -251,7 +251,7 @@ export class TornadoAnalyzer extends BaseAnalyzer {
         const routeNode = this.createNodeBuilder(routeId, `${route.handlerClass} ${route.pattern}`, 'route')
           .withLevel(3, 'code')
           .withCategory('route', ['http', 'endpoint'])
-          .withSource({ file: fullPath, line: route.handlerLine || 1, end_line: route.handlerLine || 1 })
+          .withSource({ file: file, line: route.handlerLine || 1, end_line: route.handlerLine || 1 })
           .withDescription(`Tornado route: ${route.pattern} -> ${route.handlerClass}`)
           .withMetadata({
             framework: 'tornado',
@@ -263,7 +263,7 @@ export class TornadoAnalyzer extends BaseAnalyzer {
         const handlerNode = this.createNodeBuilder(handlerId, route.handlerClass, 'controller')
           .withLevel(3, 'code')
           .withCategory('controller', ['api', 'rest'])
-          .withSource({ file: fullPath, line: route.handlerLine || 1 })
+          .withSource({ file: file, line: route.handlerLine || 1 })
           .withDescription(`Tornado RequestHandler: ${route.handlerClass}`)
           .withMetadata({ framework: 'tornado', attributes: { route_pattern: route.pattern } })
           .build();
@@ -282,7 +282,7 @@ export class TornadoAnalyzer extends BaseAnalyzer {
           const methodNode = this.createNodeBuilder(methodId, `${route.handlerClass}.${hm.method}`, 'function')
             .withLevel(4, 'member')
             .withCategory('function', ['handler', 'endpoint'])
-            .withSource({ file: fullPath, line: hm.line })
+            .withSource({ file: file, line: hm.line })
             .withDescription(`Tornado handler method: ${route.handlerClass}.${hm.method}`)
             .withMetadata({ framework: 'tornado', attributes: { route_method: hm.method, route_pattern: route.pattern } })
             .build();

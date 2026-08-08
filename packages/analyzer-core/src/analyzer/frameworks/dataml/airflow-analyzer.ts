@@ -128,7 +128,7 @@ export class AirflowAnalyzer extends BaseAnalyzer {
           const dagNode = this.createNodeBuilder(dagId, dag.dagId, 'pipeline')
             .withLevel(2, 'architectural')
             .withCategory('pipeline', ['airflow', 'dag', 'orchestration'])
-            .withSource({ file: path.join(context.projectPath, dag.file), line: dag.line, end_line: dag.line })
+            .withSource({ file: dag.file, line: dag.line, end_line: dag.line })
             .withDescription(`Airflow DAG: ${dag.dagId}`)
             .withMetadata({ framework: 'airflow', attributes: { schedule: dag.schedule || null } })
             .build();
@@ -154,7 +154,7 @@ export class AirflowAnalyzer extends BaseAnalyzer {
           const taskNode = this.createNodeBuilder(taskNodeId, task.taskId, 'task')
             .withLevel(3, 'code')
             .withCategory('task', ['airflow', 'operator', task.operator])
-            .withSource({ file: path.join(context.projectPath, task.file), line: task.line, end_line: task.line })
+            .withSource({ file: task.file, line: task.line, end_line: task.line })
             .withDescription(`Airflow task "${task.taskId}" (${task.operator})`)
             .withMetadata({ framework: 'airflow', attributes: { operator: task.operator, dagVar: task.dagVar } })
             .build();

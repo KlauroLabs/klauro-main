@@ -141,7 +141,7 @@ export class McpToolRegistrationAnalyzer extends BaseAnalyzer {
       const nodeBuilder = this.createNodeBuilder(nodeId, reg.name, 'mcp_tool')
         .withLevel(3, 'code')
         .withCategory('mcp_tool', ['mcp', 'tool-registration'])
-        .withSource({ file: path.join(context.projectPath, reg.filePath), line: reg.line, end_line: reg.line })
+        .withSource({ file: reg.filePath, line: reg.line, end_line: reg.line })
         .withDescription(`MCP tool registration: ${reg.name} (via ${reg.receiver}.${reg.kind}())`)
         .withMetadata({
           attributes: {

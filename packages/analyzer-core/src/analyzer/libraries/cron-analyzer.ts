@@ -87,12 +87,10 @@ export class CronAnalyzer extends BaseAnalyzer {
 
     jobs.forEach((job, index) => {
       const jobId = `scheduled_job_${this.sanitizeId(job.library)}_${this.sanitizeId(job.handler)}_${index}`;
-      const fullPath = path.join(context.projectPath, job.file);
-
       const jobNode = this.createNodeBuilder(jobId, job.handler, 'scheduled_job')
         .withLevel(3, 'code')
         .withCategory('scheduled_job', ['cron', job.library])
-        .withSource({ file: fullPath, line: job.line, end_line: job.line })
+        .withSource({ file: job.file, line: job.line, end_line: job.line })
         .withDescription(`Scheduled job (${job.library}): ${job.handler} on schedule "${job.schedule}"`)
         .withMetadata({
           framework: job.library,

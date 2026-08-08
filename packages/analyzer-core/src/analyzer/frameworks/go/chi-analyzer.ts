@@ -71,7 +71,7 @@ export class ChiAnalyzer extends BaseAnalyzer {
       const appNode = this.createNodeBuilder(appId, 'Chi Application', 'application')
         .withLevel(1, 'system')
         .withCategory('application', ['framework', 'chi'])
-        .withSource({ file: path.join(context.projectPath, files[0] || ''), line: 1, end_line: 1 })
+        .withSource({ file: files[0] || '', line: 1, end_line: 1 })
         .withDescription('Chi HTTP application')
         .withMetadata({ framework: 'chi', attributes: { routes: allRoutes.length } })
         .build();
@@ -83,7 +83,7 @@ export class ChiAnalyzer extends BaseAnalyzer {
         const routeNode = this.createNodeBuilder(routeId, `${route.method.toUpperCase()} ${route.path}`, 'route')
           .withLevel(3, 'code')
           .withCategory('route', ['http', 'endpoint'])
-          .withSource({ file: path.join(context.projectPath, route.file), line: route.line, end_line: route.line })
+          .withSource({ file: route.file, line: route.line, end_line: route.line })
           .withDescription(`Chi HTTP endpoint: ${route.method.toUpperCase()} ${route.path}`)
           .withMetadata({
             framework: 'chi',

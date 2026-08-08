@@ -177,7 +177,7 @@ export class StarletteAnalyzer extends BaseAnalyzer {
         const appNode = this.createNodeBuilder(appId, application.name, 'application')
           .withLevel(1, 'system')
           .withCategory('application', ['framework', 'starlette'])
-          .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
+          .withSource({ file: file, line: 1, end_line: content.split('\n').length })
           .withDescription(`Starlette application: ${application.name}`)
           .withMetadata({
             framework: 'starlette',
@@ -222,7 +222,7 @@ export class StarletteAnalyzer extends BaseAnalyzer {
         const routeNode = this.createNodeBuilder(routeId, `${route.methods.join('|').toUpperCase()} ${route.pattern}`, 'route')
           .withLevel(3, 'code')
           .withCategory('route', ['http', 'endpoint'])
-          .withSource({ file: fullPath, line: route.handlerLine || 1, end_line: route.handlerLine || 1 })
+          .withSource({ file: file, line: route.handlerLine || 1, end_line: route.handlerLine || 1 })
           .withDescription(`Starlette route: ${route.pattern} -> ${route.handlerName}`)
           .withMetadata({
             framework: 'starlette',
@@ -234,7 +234,7 @@ export class StarletteAnalyzer extends BaseAnalyzer {
         const handlerNode = this.createNodeBuilder(handlerId, route.handlerName, 'function')
           .withLevel(3, 'code')
           .withCategory('function', ['handler', 'endpoint'])
-          .withSource({ file: fullPath, line: route.handlerLine || 1 })
+          .withSource({ file: file, line: route.handlerLine || 1 })
           .withDescription(`Starlette endpoint: ${route.handlerName}`)
           .withMetadata({ framework: 'starlette', attributes: { route_methods: route.methods, route_path: route.pattern } })
           .build();

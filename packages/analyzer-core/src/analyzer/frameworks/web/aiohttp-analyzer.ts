@@ -166,7 +166,7 @@ export class AiohttpAnalyzer extends BaseAnalyzer {
         const appNode = this.createNodeBuilder(appId, application.name, 'application')
           .withLevel(1, 'system')
           .withCategory('application', ['framework', 'aiohttp'])
-          .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
+          .withSource({ file: file, line: 1, end_line: content.split('\n').length })
           .withDescription(`aiohttp application: ${application.name}`)
           .withMetadata({
             framework: 'aiohttp',
@@ -211,7 +211,7 @@ export class AiohttpAnalyzer extends BaseAnalyzer {
         const routeNode = this.createNodeBuilder(routeId, `${route.method.toUpperCase()} ${route.pattern}`, 'route')
           .withLevel(3, 'code')
           .withCategory('route', ['http', 'endpoint'])
-          .withSource({ file: fullPath, line: route.handlerLine || 1, end_line: route.handlerLine || 1 })
+          .withSource({ file: file, line: route.handlerLine || 1, end_line: route.handlerLine || 1 })
           .withDescription(`aiohttp route: ${route.method.toUpperCase()} ${route.pattern}`)
           .withMetadata({
             framework: 'aiohttp',
@@ -229,7 +229,7 @@ export class AiohttpAnalyzer extends BaseAnalyzer {
         const handlerNode = this.createNodeBuilder(handlerId, route.handlerName, 'function')
           .withLevel(3, 'code')
           .withCategory('function', ['handler', 'endpoint'])
-          .withSource({ file: fullPath, line: route.handlerLine || 1 })
+          .withSource({ file: file, line: route.handlerLine || 1 })
           .withDescription(`aiohttp route handler: ${route.handlerName}`)
           .withMetadata({
             framework: 'aiohttp',

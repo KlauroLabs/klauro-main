@@ -120,7 +120,7 @@ export class SlimAnalyzer extends BaseAnalyzer {
       const appNode = this.createNodeBuilder(appId, 'Slim/CodeIgniter Application', 'application')
         .withLevel(1, 'system')
         .withCategory('application', ['framework', 'slim', 'php'])
-        .withSource({ file: path.join(context.projectPath, allRoutes[0].file), line: 1, end_line: 1 })
+        .withSource({ file: allRoutes[0].file, line: 1, end_line: 1 })
         .withDescription('Slim (PSR-7) or CodeIgniter HTTP application')
         .withMetadata({ framework: 'slim', attributes: { version, routes: allRoutes.length } })
         .build();
@@ -132,7 +132,7 @@ export class SlimAnalyzer extends BaseAnalyzer {
         const routeNode = this.createNodeBuilder(routeId, `${route.method.toUpperCase()} ${route.path}`, 'route')
           .withLevel(3, 'code')
           .withCategory('route', ['http', 'endpoint'])
-          .withSource({ file: path.join(context.projectPath, route.file), line: route.line, end_line: route.line })
+          .withSource({ file: route.file, line: route.line, end_line: route.line })
           .withDescription(`${route.kind === 'codeigniter' ? 'CodeIgniter' : 'Slim'} HTTP endpoint: ${route.method.toUpperCase()} ${route.path}`)
           .withMetadata({
             framework: route.kind === 'codeigniter' ? 'codeigniter' : 'slim',

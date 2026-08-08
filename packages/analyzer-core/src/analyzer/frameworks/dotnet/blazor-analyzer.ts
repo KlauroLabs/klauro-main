@@ -417,7 +417,7 @@ export class BlazorAnalyzer extends BaseAnalyzer {
 
     const componentNode = this.createNodeBuilder(componentId, component.name, COMPONENT_TAG)
       .withLevel(2, this.getLevelName(2))
-      .withSource({ file: fullPath, line: 1 })
+      .withSource({ file: component.filePath, line: 1 })
       .withMetadata({
         framework: FRAMEWORK,
         attributes: {
@@ -441,7 +441,7 @@ export class BlazorAnalyzer extends BaseAnalyzer {
       const paramId = this.generateId('blazor-param', component.filePath, `${component.name}_${param.name}`);
       const paramNode = this.createNodeBuilder(paramId, param.name, 'parameter')
         .withLevel(4, this.getLevelName(4))
-        .withSource({ file: fullPath })
+        .withSource({ file: component.filePath })
         .withParent(componentId)
         .withMetadata({
           framework: FRAMEWORK,
@@ -465,7 +465,7 @@ export class BlazorAnalyzer extends BaseAnalyzer {
       const routeId = this.generateId('blazor-route', component.filePath, `${component.name}_${route.template}`);
       const routeNode = this.createNodeBuilder(routeId, route.template, 'route')
         .withLevel(3, this.getLevelName(3))
-        .withSource({ file: fullPath })
+        .withSource({ file: component.filePath })
         .withParent(componentId)
         .withMetadata({
           framework: FRAMEWORK,
@@ -508,7 +508,7 @@ export class BlazorAnalyzer extends BaseAnalyzer {
       const handlerId = this.generateId('blazor-handler', component.filePath, `${component.name}_${handler.event}_${handler.method}`);
       const handlerNode = this.createNodeBuilder(handlerId, `${handler.event}=${handler.method}`, 'event_handler')
         .withLevel(4, this.getLevelName(4))
-        .withSource({ file: fullPath })
+        .withSource({ file: component.filePath })
         .withParent(componentId)
         .withMetadata({
           framework: FRAMEWORK,

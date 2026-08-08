@@ -272,7 +272,7 @@ export class AspNetCoreAnalyzer extends BaseAnalyzer {
           } else {
             const node = this.createNodeBuilder(controllerId, controllerName, 'controller')
               .withLevel(2, this.getLevelName(2))
-              .withSource({ file: fullPath, line: this.findLineNumber(content, match[0]) })
+              .withSource({ file: file, line: this.findLineNumber(content, match[0]) })
               .withMetadata({
                 framework: 'aspnet-core',
                 attributes: {
@@ -297,7 +297,7 @@ export class AspNetCoreAnalyzer extends BaseAnalyzer {
             const routeId = this.generateId('route', file, `${controllerName}_${route.method}_${route.handlerName}`);
             const routeNode = this.createNodeBuilder(routeId, `${route.method.toUpperCase()} ${route.path}`, 'route')
               .withLevel(3, this.getLevelName(3))
-              .withSource({ file: fullPath })
+              .withSource({ file: file })
               .withParent(controllerNodeId)
               .withMetadata({
                 framework: 'aspnet-core',
@@ -382,7 +382,7 @@ export class AspNetCoreAnalyzer extends BaseAnalyzer {
           const endpointId = this.generateId('endpoint', file, `minimal_${method}_${routePath}`);
           const endpointNode = this.createNodeBuilder(endpointId, `${method.toUpperCase()} ${routePath}`, 'route')
             .withLevel(3, this.getLevelName(3))
-            .withSource({ file: fullPath, line })
+            .withSource({ file: file, line })
             .withMetadata({
               framework: 'aspnet-core',
               attributes: {
@@ -473,7 +473,7 @@ export class AspNetCoreAnalyzer extends BaseAnalyzer {
           } else {
             const node = this.createNodeBuilder(middlewareId, middlewareName, 'middleware')
               .withLevel(2, this.getLevelName(2))
-              .withSource({ file: fullPath, line: this.findLineNumber(content, match[0]) })
+              .withSource({ file: file, line: this.findLineNumber(content, match[0]) })
               .withMetadata({
                 framework: 'aspnet-core',
                 attributes: {
@@ -550,7 +550,7 @@ export class AspNetCoreAnalyzer extends BaseAnalyzer {
           } else {
             const node = this.createNodeBuilder(serviceId, serviceName, 'service')
               .withLevel(2, this.getLevelName(2))
-              .withSource({ file: fullPath, line: this.findLineNumber(content, match[0]) })
+              .withSource({ file: file, line: this.findLineNumber(content, match[0]) })
               .withMetadata({
                 framework: 'aspnet-core',
                 attributes: {
@@ -639,7 +639,7 @@ export class AspNetCoreAnalyzer extends BaseAnalyzer {
           } else {
             const node = this.createNodeBuilder(contextId, contextName, 'database_context')
               .withLevel(2, this.getLevelName(2))
-              .withSource({ file: fullPath, line: this.findLineNumber(content, match[0]) })
+              .withSource({ file: file, line: this.findLineNumber(content, match[0]) })
               .withMetadata({
                 framework: 'aspnet-core',
                 attributes: {
@@ -771,7 +771,7 @@ export class AspNetCoreAnalyzer extends BaseAnalyzer {
           } else {
             const node = this.createNodeBuilder(hubId, hubName, 'websocket_hub')
               .withLevel(2, this.getLevelName(2))
-              .withSource({ file: fullPath, line: this.findLineNumber(content, match[0]) })
+              .withSource({ file: file, line: this.findLineNumber(content, match[0]) })
               .withMetadata({
                 framework: 'aspnet-core',
                 attributes: {

@@ -292,7 +292,7 @@ export class FlaskAnalyzer extends BaseAnalyzer {
           const appNode = this.createNodeBuilder(appId, application.name, 'application')
             .withLevel(1, 'system')
             .withCategory('application', ['framework', 'flask'])
-            .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
+            .withSource({ file: file, line: 1, end_line: content.split('\n').length })
             .withDescription(`Flask application: ${application.name}`)
             .withDocumentation(documentation)
             .withComments(comments)
@@ -361,7 +361,7 @@ export class FlaskAnalyzer extends BaseAnalyzer {
           const blueprintNode = this.createNodeBuilder(blueprintId, blueprintName, 'module')
             .withLevel(2, 'component')
             .withCategory('module', ['blueprint'])
-            .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
+            .withSource({ file: file, line: 1, end_line: content.split('\n').length })
             .withDescription(`Flask blueprint: ${blueprintName}`)
             .withDocumentation(blueprintDocumentation)
             .withComments(blueprintComments)
@@ -459,7 +459,7 @@ export class FlaskAnalyzer extends BaseAnalyzer {
         const viewNode = this.createNodeBuilder(viewId, view.name, 'controller')
           .withLevel(3, 'code')
           .withCategory('controller', ['api', 'rest'])
-          .withSource({ file: fullPath, line: 1, end_line: 1 })
+          .withSource({ file: file, line: 1, end_line: 1 })
           .withDescription(`Flask ${view.type} view: ${view.name}`)
           .withDocumentation(viewDocumentation)
           .withComments(viewComments)
@@ -483,7 +483,7 @@ export class FlaskAnalyzer extends BaseAnalyzer {
           const routeNode = this.createNodeBuilder(routeId, `${route.methods.join('|')} ${route.pattern}`, 'route')
             .withLevel(4, 'member')
             .withCategory('route', ['http', 'endpoint'])
-            .withSource({ file: fullPath, line: 1, end_line: 1 })
+            .withSource({ file: file, line: 1, end_line: 1 })
             .withDescription(`Flask route: ${route.pattern}`)
             .withMetadata({
               attributes: {
@@ -552,7 +552,7 @@ export class FlaskAnalyzer extends BaseAnalyzer {
           const modelNode = this.createNodeBuilder(modelId, model.name, 'model')
             .withLevel(3, 'code')
             .withCategory('model', ['data', 'entity'])
-            .withSource({ file: fullPath, line: 1, end_line: 1 })
+            .withSource({ file: file, line: 1, end_line: 1 })
             .withDescription(`Flask SQLAlchemy model: ${model.name}`)
             .withDocumentation(modelDocumentation)
             .withComments(modelComments)
@@ -621,7 +621,7 @@ export class FlaskAnalyzer extends BaseAnalyzer {
       const templateNode = this.createNodeBuilder(templateId, templateName, 'component')
         .withLevel(4, 'member')
         .withCategory('component', ['ui', 'template'])
-        .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
+        .withSource({ file: file, line: 1, end_line: content.split('\n').length })
         .withDescription(`Jinja template: ${templateName}`)
         .withMetadata({
           framework: 'flask',
@@ -680,7 +680,7 @@ export class FlaskAnalyzer extends BaseAnalyzer {
           const formNode = this.createNodeBuilder(formId, form.name, 'component')
             .withLevel(3, 'code')
             .withCategory('component', ['ui', 'form'])
-            .withSource({ file: fullPath, line: 1, end_line: 1 })
+            .withSource({ file: file, line: 1, end_line: 1 })
             .withDescription(`Flask form component: ${form.name}`)
             .withMetadata({
               framework: 'flask',
@@ -730,7 +730,7 @@ export class FlaskAnalyzer extends BaseAnalyzer {
             const extensionNode = this.createNodeBuilder(extensionId, extensionName, 'service')
               .withLevel(2, 'architectural')
               .withCategory('service', ['framework', 'flask'])
-              .withSource({ file: path.join(projectPath, file), line: 1, end_line: 1 })
+              .withSource({ file: file, line: 1, end_line: 1 })
               .withDescription(`Flask extension: ${extensionName}`)
               .withMetadata({
                 framework: 'flask',
@@ -1399,7 +1399,7 @@ export class FlaskAnalyzer extends BaseAnalyzer {
           const formNode = this.createNodeBuilder(formId, form.name, 'component')
             .withLevel(3, 'code')
             .withCategory('component', ['ui', 'form'])
-            .withSource({ file: fullPath, line: 1, end_line: 1 })
+            .withSource({ file: file, line: 1, end_line: 1 })
             .withDescription(`Flask form component: ${form.name}`)
             .withMetadata({
               framework: 'flask',
@@ -1449,7 +1449,7 @@ export class FlaskAnalyzer extends BaseAnalyzer {
             const extensionNode = this.createNodeBuilder(extensionId, extensionName, 'service')
               .withLevel(2, 'architectural')
               .withCategory('service', ['framework', 'flask'])
-              .withSource({ file: path.join(projectPath, file), line: 1, end_line: 1 })
+              .withSource({ file: file, line: 1, end_line: 1 })
               .withDescription(`Flask extension: ${extensionName}`)
               .withMetadata({
                 framework: 'flask',

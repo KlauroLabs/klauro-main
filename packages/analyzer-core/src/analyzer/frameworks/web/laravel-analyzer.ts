@@ -290,7 +290,7 @@ export class LaravelAnalyzer extends BaseAnalyzer {
       const appNode = this.createNodeBuilder(appId, application.name, 'laravel_app')
         .withLevel(1, 'system')
         .withCategory('backend', ['laravel', 'php', 'application'])
-        .withSource({ file: path.join(projectPath, 'composer.json'), line: 1, end_line: 1 })
+        .withSource({ file: 'composer.json', line: 1, end_line: 1 })
         .withDescription(`Laravel application: ${application.name}`)
         .withDocumentation(documentation)
         .withComments(comments)
@@ -346,7 +346,7 @@ export class LaravelAnalyzer extends BaseAnalyzer {
             const controllerNode = this.createNodeBuilder(controllerId, controller.name, 'laravel_controller')
               .withLevel(2, 'architectural')
               .withCategory('controller', ['laravel', 'mvc', 'http'])
-              .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
+              .withSource({ file: file, line: 1, end_line: content.split('\n').length })
               .withDescription(`Laravel controller: ${controller.name}`)
               .withDocumentation(controllerDocumentation)
               .withComments(controllerComments)
@@ -373,7 +373,7 @@ export class LaravelAnalyzer extends BaseAnalyzer {
               const methodNode = this.createNodeBuilder(methodId, method.name, 'controller_method')
                 .withLevel(4, 'member')
                 .withCategory('method', ['laravel', 'action'])
-                .withSource({ file: fullPath, line: method.line, end_line: nextMethodLine })
+                .withSource({ file: file, line: method.line, end_line: nextMethodLine })
                 .withDescription(`Controller method in ${controller.name}: ${method.name}`)
                 .withParent(controllerId)
                 .withSignature({
@@ -438,7 +438,7 @@ export class LaravelAnalyzer extends BaseAnalyzer {
             const modelNode = this.createNodeBuilder(modelId, model.name, 'laravel_model')
               .withLevel(2, 'architectural')
               .withCategory('model', ['laravel', 'eloquent', 'database'])
-              .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
+              .withSource({ file: file, line: 1, end_line: content.split('\n').length })
               .withDescription(`Laravel Eloquent model: ${model.name}`)
               .withDocumentation(modelDocumentation)
               .withComments(modelComments)
@@ -469,7 +469,7 @@ export class LaravelAnalyzer extends BaseAnalyzer {
               const relationNode = this.createNodeBuilder(relationId, relation.name, 'eloquent_relation')
                 .withLevel(4, 'member')
                 .withCategory('relation', ['laravel', 'eloquent'])
-                .withSource({ file: fullPath, line: relation.line, end_line: nextRelationLine })
+                .withSource({ file: file, line: relation.line, end_line: nextRelationLine })
                 .withDescription(`Eloquent relationship in ${model.name}: ${relation.name}`)
                 .withParent(modelId)
                 .withMetadata({
@@ -525,7 +525,7 @@ export class LaravelAnalyzer extends BaseAnalyzer {
             const migrationNode = this.createNodeBuilder(migrationId, migration.name, 'laravel_migration')
               .withLevel(3, 'code')
               .withCategory('migration', ['laravel', 'database', 'schema'])
-              .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
+              .withSource({ file: file, line: 1, end_line: content.split('\n').length })
               .withDescription(`Laravel migration: ${migration.name}`)
               .withMetadata({
                 framework: 'laravel',
@@ -579,7 +579,7 @@ export class LaravelAnalyzer extends BaseAnalyzer {
             const routeNode = this.createNodeBuilder(routeId, `${route.method} ${route.uri}`, 'laravel_route')
               .withLevel(3, 'code')
               .withCategory('route', ['laravel', 'http'])
-              .withSource({ file: fullPath, line: 1, end_line: 1 })
+              .withSource({ file: routeFile, line: 1, end_line: 1 })
               .withDescription(`Laravel route: ${route.method} ${route.uri}`)
               .withMetadata({
                 framework: 'laravel',
@@ -663,7 +663,7 @@ export class LaravelAnalyzer extends BaseAnalyzer {
             const middlewareNode = this.createNodeBuilder(middlewareId, mw.name, 'laravel_middleware')
               .withLevel(3, 'code')
               .withCategory('middleware', ['laravel', 'http', 'filter'])
-              .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
+              .withSource({ file: file, line: 1, end_line: content.split('\n').length })
               .withDescription(`Laravel middleware: ${mw.name}`)
               .withDocumentation(middlewareDocumentation)
               .withComments(middlewareComments)
@@ -717,7 +717,7 @@ export class LaravelAnalyzer extends BaseAnalyzer {
             const serviceNode = this.createNodeBuilder(serviceId, service.name, 'laravel_service')
               .withLevel(2, 'architectural')
               .withCategory('service', ['laravel', 'provider'])
-              .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
+              .withSource({ file: file, line: 1, end_line: content.split('\n').length })
               .withDescription(`Laravel service: ${service.name}`)
               .withMetadata({
                 framework: 'laravel',
@@ -765,7 +765,7 @@ export class LaravelAnalyzer extends BaseAnalyzer {
             const commandNode = this.createNodeBuilder(commandId, command.name, 'laravel_command')
               .withLevel(3, 'code')
               .withCategory('command', ['laravel', 'artisan', 'cli'])
-              .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
+              .withSource({ file: file, line: 1, end_line: content.split('\n').length })
               .withDescription(`Laravel Artisan command: ${command.name}`)
               .withMetadata({
                 framework: 'laravel',
@@ -814,7 +814,7 @@ export class LaravelAnalyzer extends BaseAnalyzer {
             const jobNode = this.createNodeBuilder(jobId, job.name, 'laravel_job')
               .withLevel(3, 'code')
               .withCategory('job', ['laravel', 'queue', 'async'])
-              .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
+              .withSource({ file: file, line: 1, end_line: content.split('\n').length })
               .withDescription(`Laravel job: ${job.name}`)
               .withMetadata({
                 framework: 'laravel',
@@ -876,7 +876,7 @@ export class LaravelAnalyzer extends BaseAnalyzer {
       const templateNode = this.createNodeBuilder(templateId, templateName, 'laravel_blade_template')
         .withLevel(3, 'code')
         .withCategory('view', ['laravel', 'blade', 'template'])
-        .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
+        .withSource({ file: file, line: 1, end_line: content.split('\n').length })
         .withDescription(`Blade template: ${templateName}`)
         .withMetadata({
           framework: 'laravel',
@@ -945,7 +945,7 @@ export class LaravelAnalyzer extends BaseAnalyzer {
         const eventNode = this.createNodeBuilder(eventId, className, 'laravel_event')
           .withLevel(3, 'code')
           .withCategory('event', ['laravel', 'event', 'async'])
-          .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
+          .withSource({ file: file, line: 1, end_line: content.split('\n').length })
           .withDescription(`Laravel event: ${className}`)
           .withMetadata({
             framework: 'laravel',
@@ -986,7 +986,7 @@ export class LaravelAnalyzer extends BaseAnalyzer {
         const listenerNode = this.createNodeBuilder(listenerId, className, 'laravel_listener')
           .withLevel(3, 'code')
           .withCategory('listener', ['laravel', 'event', 'handler'])
-          .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
+          .withSource({ file: file, line: 1, end_line: content.split('\n').length })
           .withDescription(`Laravel listener: ${className}`)
           .withMetadata({
             framework: 'laravel',
@@ -1106,7 +1106,7 @@ export class LaravelAnalyzer extends BaseAnalyzer {
         const requestNode = this.createNodeBuilder(requestId, className, 'laravel_form_request')
           .withLevel(3, 'code')
           .withCategory('validation', ['laravel', 'request', 'form'])
-          .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
+          .withSource({ file: file, line: 1, end_line: content.split('\n').length })
           .withDescription(`Laravel form request: ${className}`)
           .withMetadata({
             framework: 'laravel',
@@ -1160,7 +1160,7 @@ export class LaravelAnalyzer extends BaseAnalyzer {
         const resourceNode = this.createNodeBuilder(resourceId, className, 'laravel_resource')
           .withLevel(3, 'code')
           .withCategory('transformer', ['laravel', 'api', 'resource'])
-          .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
+          .withSource({ file: file, line: 1, end_line: content.split('\n').length })
           .withDescription(`Laravel API resource: ${className}`)
           .withMetadata({
             framework: 'laravel',

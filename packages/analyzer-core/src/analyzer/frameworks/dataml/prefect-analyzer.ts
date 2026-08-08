@@ -97,7 +97,7 @@ export class PrefectAnalyzer extends BaseAnalyzer {
           const node = this.createNodeBuilder(nodeId, pn.name, casType)
             .withLevel(pn.kind === 'flow' ? 2 : 3, pn.kind === 'flow' ? 'architectural' : 'code')
             .withCategory(casType, ['prefect', pn.kind])
-            .withSource({ file: path.join(context.projectPath, pn.file), line: pn.line, end_line: pn.bodyEnd })
+            .withSource({ file: pn.file, line: pn.line, end_line: pn.bodyEnd })
             .withDescription(`Prefect ${pn.kind}: ${pn.name}`)
             .withMetadata({ framework: 'prefect', attributes: { kind: pn.kind } })
             .build();

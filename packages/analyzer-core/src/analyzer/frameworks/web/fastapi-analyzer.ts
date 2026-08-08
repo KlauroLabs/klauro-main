@@ -304,7 +304,7 @@ export class FastAPIAnalyzer extends BaseAnalyzer {
           const appNode = this.createNodeBuilder(appId, application.name, 'application')
             .withLevel(1, 'system')
             .withCategory('application', ['framework', 'fastapi'])
-            .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
+            .withSource({ file: file, line: 1, end_line: content.split('\n').length })
             .withDescription(`FastAPI application: ${application.name}`)
             .withDocumentation(documentation)
             .withComments(comments)
@@ -376,7 +376,7 @@ export class FastAPIAnalyzer extends BaseAnalyzer {
         const routerNode = this.createNodeBuilder(routerId, routerName, 'router')
           .withLevel(2, 'architectural')
           .withCategory('module', ['router'])
-          .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
+          .withSource({ file: file, line: 1, end_line: content.split('\n').length })
           .withDescription(`FastAPI router: ${routerName}`)
           .withDocumentation(routerDocumentation)
           .withComments(routerComments)
@@ -428,7 +428,7 @@ export class FastAPIAnalyzer extends BaseAnalyzer {
           const handlerNode = this.createNodeBuilder(handlerId, route.handlerName, 'function')
             .withLevel(3, 'code')
             .withCategory('function', ['handler', 'endpoint'])
-            .withSource({ file: fullPath, line: route.handlerLine, end_line: route.handlerEndLine })
+            .withSource({ file: file, line: route.handlerLine, end_line: route.handlerEndLine })
             .withDescription(`FastAPI route handler: ${route.handlerName}`)
             .withMetadata({
               framework: 'fastapi',
@@ -459,7 +459,7 @@ export class FastAPIAnalyzer extends BaseAnalyzer {
               const calleeNode = this.createNodeBuilder(calleeId, calleeName, 'function')
                 .withLevel(4, 'member')
                 .withCategory('function', call.callType === 'dependency' ? ['dependency'] : ['callee'])
-                .withSource({ file: fullPath, line: call.line })
+                .withSource({ file: file, line: call.line })
                 .withDescription(`Called by handler: ${route.handlerName}`)
                 .withMetadata({
                   framework: 'fastapi',
@@ -570,7 +570,7 @@ export class FastAPIAnalyzer extends BaseAnalyzer {
           const modelNode = this.createNodeBuilder(modelId, model.name, 'model')
             .withLevel(3, 'code')
             .withCategory('model', ['data', 'entity'])
-            .withSource({ file: fullPath, line: 1, end_line: 1 })
+            .withSource({ file: file, line: 1, end_line: 1 })
             .withDescription(`Pydantic model: ${model.name}`)
             .withDocumentation(modelDocumentation)
             .withComments(modelComments)
@@ -621,7 +621,7 @@ export class FastAPIAnalyzer extends BaseAnalyzer {
           const dependencyNode = this.createNodeBuilder(depId, dep.name, 'service')
             .withLevel(3, 'code')
             .withCategory('service', ['injectable'])
-            .withSource({ file: fullPath, line: 1, end_line: 1 })
+            .withSource({ file: file, line: 1, end_line: 1 })
             .withDescription(`FastAPI dependency: ${dep.name}`)
             .withDocumentation(depDocumentation)
             .withComments(depComments)
@@ -672,7 +672,7 @@ export class FastAPIAnalyzer extends BaseAnalyzer {
           const middlewareNode = this.createNodeBuilder(middlewareId, mw.name, 'middleware')
             .withLevel(3, 'code')
             .withCategory('middleware', ['interceptor'])
-            .withSource({ file: fullPath, line: 1, end_line: 1 })
+            .withSource({ file: file, line: 1, end_line: 1 })
             .withDescription(`FastAPI middleware: ${mw.name}`)
             .withDocumentation(middlewareDocumentation)
             .withComments(middlewareComments)
@@ -716,7 +716,7 @@ export class FastAPIAnalyzer extends BaseAnalyzer {
           const taskNode = this.createNodeBuilder(taskId, task.name, 'service')
             .withLevel(4, 'member')
             .withCategory('service', ['background'])
-            .withSource({ file: fullPath, line: 1, end_line: 1 })
+            .withSource({ file: file, line: 1, end_line: 1 })
             .withDescription(`FastAPI background task: ${task.name}`)
             .withMetadata({
               framework: 'fastapi',
@@ -756,7 +756,7 @@ export class FastAPIAnalyzer extends BaseAnalyzer {
           const websocketNode = this.createNodeBuilder(wsId, `WebSocket ${ws.path}`, 'route')
             .withLevel(3, 'code')
             .withCategory('route', ['websocket', 'realtime'])
-            .withSource({ file: fullPath, line: 1, end_line: 1 })
+            .withSource({ file: file, line: 1, end_line: 1 })
             .withDescription(`FastAPI WebSocket endpoint: ${ws.path}`)
             .withMetadata({
               framework: 'fastapi',
@@ -784,7 +784,7 @@ export class FastAPIAnalyzer extends BaseAnalyzer {
             handler: {
               node_id: wsId,
               method_name: ws.endpoint,
-              file: fullPath,
+              file: file,
               line: 0
             },
             security: {

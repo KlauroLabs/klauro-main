@@ -174,7 +174,7 @@ export class SanicAnalyzer extends BaseAnalyzer {
         const appNode = this.createNodeBuilder(appId, application.name, 'application')
           .withLevel(1, 'system')
           .withCategory('application', ['framework', 'sanic'])
-          .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
+          .withSource({ file: file, line: 1, end_line: content.split('\n').length })
           .withDescription(`Sanic application: ${application.name}`)
           .withMetadata({
             framework: 'sanic',
@@ -214,7 +214,7 @@ export class SanicAnalyzer extends BaseAnalyzer {
         const bpNode = this.createNodeBuilder(bpId, name, 'module')
           .withLevel(2, 'component')
           .withCategory('module', ['blueprint'])
-          .withSource({ file: fullPath, line: 1, end_line: content.split('\n').length })
+          .withSource({ file: file, line: 1, end_line: content.split('\n').length })
           .withDescription(`Sanic blueprint: ${name}`)
           .withMetadata({
             framework: 'sanic',
@@ -272,7 +272,7 @@ export class SanicAnalyzer extends BaseAnalyzer {
         const routeNode = this.createNodeBuilder(routeId, `${route.methods.join('|').toUpperCase()} ${fullPattern}`, 'route')
           .withLevel(3, 'code')
           .withCategory('route', ['http', 'endpoint'])
-          .withSource({ file: fullPath, line: route.handlerLine || 1, end_line: route.handlerLine || 1 })
+          .withSource({ file: file, line: route.handlerLine || 1, end_line: route.handlerLine || 1 })
           .withDescription(`Sanic route: ${route.methods.join('|').toUpperCase()} ${fullPattern}`)
           .withMetadata({
             framework: 'sanic',
@@ -289,7 +289,7 @@ export class SanicAnalyzer extends BaseAnalyzer {
         const handlerNode = this.createNodeBuilder(handlerId, route.handlerName, 'function')
           .withLevel(3, 'code')
           .withCategory('function', ['handler', 'endpoint'])
-          .withSource({ file: fullPath, line: route.handlerLine || 1 })
+          .withSource({ file: file, line: route.handlerLine || 1 })
           .withDescription(`Sanic route handler: ${route.handlerName}`)
           .withMetadata({ framework: 'sanic', attributes: { route_methods: route.methods, route_path: fullPattern } })
           .build();

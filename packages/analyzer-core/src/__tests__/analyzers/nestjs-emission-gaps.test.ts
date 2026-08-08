@@ -138,8 +138,10 @@ describe('NestJS extraction paths that previously emitted nothing', () => {
     const { nodes } = await analyze();
     const controllerNode = nodes.find(n => n.name === 'OrdersController' && n.type === 'controller');
     expect(controllerNode).toBeDefined();
-    // source.file is repo-relative, matching the filePath threaded through the
-    // analyzer and the `class_<file>_<name>_0` node ids built from it.
+    // source.file is repo-relative: it must not carry the analysis sandbox's
+    // absolute layout (temp dir, username) into stored output, and it matches
+    // the filePath threaded through the analyzer and the `class_<file>_<name>_0`
+    // node ids built from it (#114b).
     expect(controllerNode.source.file).toBe('src/api/orders.ts');
   });
 

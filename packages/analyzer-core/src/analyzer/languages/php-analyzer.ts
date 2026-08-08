@@ -542,8 +542,8 @@ export class PHPAnalyzer extends BaseAnalyzer {
       }
 
       const fileId = `file_${this.sanitizeId(relativePath)}`;
-      const fileComments = this.extractCommentsFromFile(content, fullPath);
-      const fileTodos = this.extractTodosFromComments(fileComments, fullPath);
+      const fileComments = this.extractCommentsFromFile(content, relativePath);
+      const fileTodos = this.extractTodosFromComments(fileComments, relativePath);
 
       nodes.push(this.createNodeBuilder(
         fileId,
@@ -552,7 +552,7 @@ export class PHPAnalyzer extends BaseAnalyzer {
       )
         .withLevel(1, 'File/Module')
         .withCategory('modules', ['php-files'])
-        .withSource({ file: fullPath, line: 1, end_line: lines.length })
+        .withSource({ file: relativePath, line: 1, end_line: lines.length })
         .withMetadata({
           attributes: {
             namespace: namespace || 'global',
@@ -582,7 +582,7 @@ export class PHPAnalyzer extends BaseAnalyzer {
         )
           .withLevel(2, 'Import/Dependency')
           .withCategory('imports', ['php-uses'])
-          .withSource({ file: fullPath, line: use.lineNumber })
+          .withSource({ file: relativePath, line: use.lineNumber })
           .withMetadata({
             attributes: {
               namespace: use.namespace,
@@ -612,26 +612,26 @@ export class PHPAnalyzer extends BaseAnalyzer {
       }
 
       for (const cls of classes) {
-        await this.processPHPClass(cls, fileId, fullPath, content, lines, fileComments, nodes, edges, entryPoints);
+        await this.processPHPClass(cls, fileId, relativePath, content, lines, fileComments, nodes, edges, entryPoints);
       }
 
       for (const intf of interfaces) {
-        await this.processPHPInterface(intf, fileId, fullPath, fileComments, nodes, edges, entryPoints);
+        await this.processPHPInterface(intf, fileId, relativePath, fileComments, nodes, edges, entryPoints);
       }
 
       for (const trait of traits) {
-        await this.processPHPTrait(trait, fileId, fullPath, content, lines, fileComments, nodes, edges, entryPoints);
+        await this.processPHPTrait(trait, fileId, relativePath, content, lines, fileComments, nodes, edges, entryPoints);
       }
 
       for (const enm of enums) {
-        await this.processPHPEnum(enm, fileId, fullPath, content, lines, fileComments, nodes, edges, entryPoints);
+        await this.processPHPEnum(enm, fileId, relativePath, content, lines, fileComments, nodes, edges, entryPoints);
       }
 
       for (const func of functions) {
-        await this.processPHPFunction(func, fileId, fullPath, lines, fileComments, nodes, edges, entryPoints);
+        await this.processPHPFunction(func, fileId, relativePath, lines, fileComments, nodes, edges, entryPoints);
       }
 
-      this.detectSoapExitPoints(content, fullPath, fileId, classes, nodes, exitPoints);
+      this.detectSoapExitPoints(content, relativePath, fileId, classes, nodes, exitPoints);
 
       for (const variable of globalVars) {
         const variableId = `variable_${fileId}_${this.sanitizeId(variable.name)}`;
@@ -642,7 +642,7 @@ export class PHPAnalyzer extends BaseAnalyzer {
         )
           .withLevel(3, 'Variable/Property')
           .withCategory('data', ['php-variables'])
-          .withSource({ file: fullPath, line: variable.lineNumber })
+          .withSource({ file: relativePath, line: variable.lineNumber })
           .withMetadata({
             attributes: {
               type: variable.type,
@@ -672,7 +672,7 @@ export class PHPAnalyzer extends BaseAnalyzer {
         )
           .withLevel(3, 'Constant/Property')
           .withCategory('data', ['php-constants'])
-          .withSource({ file: fullPath, line: constant.lineNumber })
+          .withSource({ file: relativePath, line: constant.lineNumber })
           .withMetadata({
             attributes: {
               value: constant.value,
@@ -698,7 +698,7 @@ export class PHPAnalyzer extends BaseAnalyzer {
 
   private detectSoapExitPoints(
     content: string,
-    fullPath: string,
+    relativePath: string,
     fileId: string,
     classes: PHPClass[],
     nodes: CASNode[],
@@ -775,7 +775,7 @@ export class PHPAnalyzer extends BaseAnalyzer {
 
     const exitIds = new Set(exitPoints.map(exit => exit.id));
     const methodNodesInFile = nodes.filter(node =>
-      (node.type === 'method' || node.type === 'function') && node.source?.file === fullPath
+      (node.type === 'method' || node.type === 'function') && node.source?.file === relativePath
     );
     const enclosingNodeId = (lineNumber: number): string => {
       let innermost: CASNode | undefined;
@@ -884,7 +884,7 @@ export class PHPAnalyzer extends BaseAnalyzer {
   private async processPHPClass(
     cls: PHPClass,
     fileId: string,
-    fullPath: string,
+    relativePath: string,
     _content: string,
     lines: string[],
     fileComments: CASComment[],
@@ -906,7 +906,7 @@ export class PHPAnalyzer extends BaseAnalyzer {
     )
       .withLevel(2, 'Class/Interface')
       .withCategory('structures', ['php-classes'])
-      .withSource({ file: fullPath, line: cls.lineStart, end_line: cls.lineEnd })
+      .withSource({ file: relativePath, line: cls.lineStart, end_line: cls.lineEnd })
       .withMetadata({
         is_exported: cls.modifiers.includes('public'),
         attributes: {
@@ -966,7 +966,7 @@ export class PHPAnalyzer extends BaseAnalyzer {
           {
             framework: 'symfony',
             kind: 'command',
-            file: fullPath,
+            file: relativePath,
             commandName: commandName || undefined,
             className: cls.name
           }
@@ -985,7 +985,7 @@ export class PHPAnalyzer extends BaseAnalyzer {
       )
         .withLevel(4, 'Property/Field')
         .withCategory('data', ['class-properties'])
-        .withSource({ file: fullPath, line: property.lineNumber })
+        .withSource({ file: relativePath, line: property.lineNumber })
         .withMetadata({
           is_exported: property.visibility === 'public',
           attributes: {
@@ -1028,7 +1028,7 @@ export class PHPAnalyzer extends BaseAnalyzer {
       )
         .withLevel(4, 'Method/Function')
         .withCategory('methods', ['class-methods'])
-        .withSource({ file: fullPath, line: method.lineStart, end_line: method.lineEnd })
+        .withSource({ file: relativePath, line: method.lineStart, end_line: method.lineEnd })
         .withMetadata({
           is_exported: method.visibility === 'public',
           attributes: {
@@ -1074,7 +1074,7 @@ export class PHPAnalyzer extends BaseAnalyzer {
       )
         .withLevel(4, 'Constant/Property')
         .withCategory('data', ['class-constants'])
-        .withSource({ file: fullPath, line: constant.lineNumber })
+        .withSource({ file: relativePath, line: constant.lineNumber })
         .withMetadata({
           is_exported: constant.visibility === 'public',
           attributes: {
@@ -1100,7 +1100,7 @@ export class PHPAnalyzer extends BaseAnalyzer {
   private async processPHPInterface(
     intf: PHPInterface,
     fileId: string,
-    fullPath: string,
+    relativePath: string,
     fileComments: CASComment[],
     nodes: CASNode[],
     edges: CASEdge[],
@@ -1120,7 +1120,7 @@ export class PHPAnalyzer extends BaseAnalyzer {
     )
       .withLevel(2, 'Interface/Contract')
       .withCategory('structures', ['php-interfaces'])
-      .withSource({ file: fullPath, line: intf.lineStart, end_line: intf.lineEnd })
+      .withSource({ file: relativePath, line: intf.lineStart, end_line: intf.lineEnd })
       .withMetadata({
         is_exported: true,
         attributes: {
@@ -1154,7 +1154,7 @@ export class PHPAnalyzer extends BaseAnalyzer {
       )
         .withLevel(4, 'Method/Function')
         .withCategory('methods', ['interface-methods'])
-        .withSource({ file: fullPath, line: method.lineStart, end_line: method.lineEnd })
+        .withSource({ file: relativePath, line: method.lineStart, end_line: method.lineEnd })
         .withMetadata({
           is_exported: true,
           attributes: {
@@ -1190,7 +1190,7 @@ export class PHPAnalyzer extends BaseAnalyzer {
       )
         .withLevel(4, 'Constant/Property')
         .withCategory('data', ['interface-constants'])
-        .withSource({ file: fullPath, line: constant.lineNumber })
+        .withSource({ file: relativePath, line: constant.lineNumber })
         .withMetadata({
           is_exported: true,
           attributes: {
@@ -1214,7 +1214,7 @@ export class PHPAnalyzer extends BaseAnalyzer {
   private async processPHPTrait(
     trait: PHPTrait,
     fileId: string,
-    fullPath: string,
+    relativePath: string,
     _content: string,
     lines: string[],
     fileComments: CASComment[],
@@ -1236,7 +1236,7 @@ export class PHPAnalyzer extends BaseAnalyzer {
     )
       .withLevel(2, 'Class/Trait')
       .withCategory('structures', ['php-traits'])
-      .withSource({ file: fullPath, line: trait.lineStart, end_line: trait.lineEnd })
+      .withSource({ file: relativePath, line: trait.lineStart, end_line: trait.lineEnd })
       .withMetadata({
         is_exported: true,
         attributes: {
@@ -1270,7 +1270,7 @@ export class PHPAnalyzer extends BaseAnalyzer {
       )
         .withLevel(4, 'Property/Field')
         .withCategory('data', ['trait-properties'])
-        .withSource({ file: fullPath, line: property.lineNumber })
+        .withSource({ file: relativePath, line: property.lineNumber })
         .withMetadata({
           is_exported: property.visibility === 'public',
           attributes: {
@@ -1313,7 +1313,7 @@ export class PHPAnalyzer extends BaseAnalyzer {
       )
         .withLevel(4, 'Method/Function')
         .withCategory('methods', ['trait-methods'])
-        .withSource({ file: fullPath, line: method.lineStart, end_line: method.lineEnd })
+        .withSource({ file: relativePath, line: method.lineStart, end_line: method.lineEnd })
         .withMetadata({
           is_exported: method.visibility === 'public',
           attributes: {
@@ -1349,7 +1349,7 @@ export class PHPAnalyzer extends BaseAnalyzer {
   private async processPHPEnum(
     enm: PHPEnum,
     fileId: string,
-    fullPath: string,
+    relativePath: string,
     _content: string,
     lines: string[],
     fileComments: CASComment[],
@@ -1371,7 +1371,7 @@ export class PHPAnalyzer extends BaseAnalyzer {
     )
       .withLevel(2, 'Class/Enum')
       .withCategory('structures', ['php-enums'])
-      .withSource({ file: fullPath, line: enm.lineStart, end_line: enm.lineEnd })
+      .withSource({ file: relativePath, line: enm.lineStart, end_line: enm.lineEnd })
       .withMetadata({
         attributes: {
           namespace: enm.namespace,
@@ -1407,7 +1407,7 @@ export class PHPAnalyzer extends BaseAnalyzer {
       )
         .withLevel(4, 'Constant/Property')
         .withCategory('data', ['enum-cases'])
-        .withSource({ file: fullPath, line: enumCase.lineNumber })
+        .withSource({ file: relativePath, line: enumCase.lineNumber })
         .withMetadata({
           attributes: {
             value: enumCase.value,
@@ -1443,7 +1443,7 @@ export class PHPAnalyzer extends BaseAnalyzer {
       )
         .withLevel(4, 'Method/Function')
         .withCategory('methods', ['enum-methods'])
-        .withSource({ file: fullPath, line: method.lineStart, end_line: method.lineEnd })
+        .withSource({ file: relativePath, line: method.lineStart, end_line: method.lineEnd })
         .withMetadata({
           is_exported: method.visibility === 'public',
           attributes: {
@@ -1477,7 +1477,7 @@ export class PHPAnalyzer extends BaseAnalyzer {
   private async processPHPFunction(
     func: PHPFunction,
     fileId: string,
-    fullPath: string,
+    relativePath: string,
     lines: string[],
     fileComments: CASComment[],
     nodes: CASNode[],
@@ -1500,7 +1500,7 @@ export class PHPAnalyzer extends BaseAnalyzer {
     )
       .withLevel(3, 'Function')
       .withCategory('functions', ['php-functions'])
-      .withSource({ file: fullPath, line: func.lineStart, end_line: func.lineEnd })
+      .withSource({ file: relativePath, line: func.lineStart, end_line: func.lineEnd })
       .withMetadata({
         attributes: {
           namespace: func.namespace,
@@ -2984,7 +2984,7 @@ export class PHPAnalyzer extends BaseAnalyzer {
         for (const call of ast.calls) {
           // The caller is the method whose body spans this call's line — NOT a
           // same-named method (call.method is the TARGET, not the caller).
-          const callerMethod = (methodNodesByFile.get(fullPath) || []).find(n =>
+          const callerMethod = (methodNodesByFile.get(file) || []).find(n =>
               n.source?.line !== undefined && n.source.line <= call.line &&
               n.source?.end_line !== undefined && n.source.end_line >= call.line
             );
@@ -3307,7 +3307,7 @@ export class PHPAnalyzer extends BaseAnalyzer {
 
     for (const file of phpFiles) {
       const fullPath = path.join(projectPath, file);
-      const methodsInFile = methodsByFile.get(fullPath) || [];
+      const methodsInFile = methodsByFile.get(file) || [];
       if (methodsInFile.length === 0) continue;
 
       let content = '';
@@ -3420,7 +3420,7 @@ export class PHPAnalyzer extends BaseAnalyzer {
     const edgeIds = new Set(edges.map(edge => edge.id));
     const exitIds = new Set(exitPoints.map(exit => exit.id));
     const classIds = new Set(classNodes.map(node => node.id));
-    const methodsInFile = methodNodes.filter(method => method.source?.file === fullPath);
+    const methodsInFile = methodNodes.filter(method => method.source?.file === file);
     const methodNodesByName = new Map<string, CASNode[]>();
     const classNodesByName = new Map<string, CASNode[]>();
     const methodsByClassId = new Map<string, CASNode[]>();
