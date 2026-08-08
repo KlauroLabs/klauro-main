@@ -47,6 +47,31 @@ export async function readAllStdin(
 }
 
 /**
+ * Read one non-secret line from an interactive TTY (echo ON — used for the
+ * `Email:` prompt, never for a password). Shared by cli.ts and
+ * installed-cli.ts so the two entry points' `login` prompting can't drift the
+ * way their `auth-status`/`whoami` implementations once did.
+ *
+ * Non-TTY stdin returns '' immediately so a caller can fall back to a flag
+ * (`--email`) and fail with a clear message instead of hanging waiting for
+ * input that will never come.
+ */
+export async function promptLine(
+  label: string,
+  stdin: NodeJS.ReadStream = process.stdin,
+  stdout: NodeJS.WriteStream = process.stdout,
+): Promise<string> {
+  if (!stdin.isTTY) return '';
+  // Lazy import: readline pulls in more than this module needs for the
+  // common (non-interactive/scripted) path.
+  const readline = await import('node:readline');
+  const rl = readline.createInterface({ input: stdin, output: stdout });
+  const answer = await new Promise<string>(resolve => rl.question(label, resolve));
+  rl.close();
+  return answer.trim();
+}
+
+/**
  * Read a secret from an interactive TTY with echo OFF. Prints `label`, puts the
  * terminal into raw mode so NOTHING typed or pasted is echoed, reads until
  * Enter, then emits one newline so the cursor advances. Ctrl-C aborts, Ctrl-D
