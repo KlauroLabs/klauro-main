@@ -17,6 +17,7 @@ import type { AgentTask, AgentTaskType } from './agent-adoption';
 import { analyzeCodebaseRemotely, syncWorkingTreeRemotely } from './remote-sync-client';
 import { getAgentRevisionTracks } from './agent-revision-tracks';
 import { createRemoteAnalyzerHttpServer } from './remote-analyzer-service';
+import { AccountStore } from './account-store';
 import { buildUploadManifest } from './remote-source';
 import { loadKlauroConfig, writeDefaultKlauroConfig, writeProjectBindingIntoConfig } from './klauro-config';
 import { buildGithubImportPlan } from './github-import';
@@ -92,6 +93,14 @@ interface ParsedArgs {
   password?: string;
   passwordStdin: boolean;
   register: boolean;
+  // §AUTH-LIFECYCLE — reset-password / change-password / admin-mint-reset-token.
+  resetToken?: string;
+  resetTokenStdin: boolean;
+  currentPassword?: string;
+  currentPasswordStdin: boolean;
+  newPassword?: string;
+  newPasswordStdin: boolean;
+  mintedBy?: string;
   // Read-subcommand filters (cicd / seams / product-map / node-metrics).
   provider?: string;
   deployOnly: boolean;
@@ -185,6 +194,21 @@ async function main(): Promise<void> {
     process.stdout.write(args.json
       ? `${JSON.stringify(result, null, 2)}\n`
       : `${result.removed ? 'Removed' : 'No stored'} Klauro login for ${result.serverUrl}\n`);
+    return;
+  }
+
+  if (args.command === 'reset-password') {
+    await runResetPasswordCommand(args);
+    return;
+  }
+
+  if (args.command === 'change-password') {
+    await runChangePasswordCommand(args);
+    return;
+  }
+
+  if (args.command === 'admin-mint-reset-token') {
+    await runAdminMintResetTokenCommand(args);
     return;
   }
 
@@ -815,6 +839,156 @@ async function runLoginCommand(args: ParsedArgs): Promise<void> {
   process.stdout.write(args.json
     ? `${JSON.stringify(result, null, 2)}\n`
     : `Signed in to ${stored.serverUrl} as ${identity.user?.email || email} (${identity.entitlement.status}).\nAuth stored at ${stored.file}\n`);
+}
+
+/**
+ * §AUTH-LIFECYCLE — `klauro reset-password`. Redeems a single-use reset
+ * token minted by an operator (there is no self-service email flow — see
+ * account-store.ts's AccountPasswordResetToken doc comment) against
+ * POST /api/auth/reset-password/redeem. PUBLIC endpoint by design: the
+ * whole point is recovering an account that has no valid session, so
+ * authorization here is possession of the token itself, never a stored
+ * login. On success the account's password is changed and every existing
+ * session for it is invalidated server-side — the caller must run
+ * `klauro login` afterward to get a fresh session (this command
+ * deliberately does not auto-login, so the new password is exercised at
+ * least once by the human/operator confirming it works).
+ */
+async function runResetPasswordCommand(args: ParsedArgs): Promise<void> {
+  const serverUrl = normalizeServerUrl(args.serverUrl);
+  if (!/^https:\/\//i.test(serverUrl) && !/^https?:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/i.test(serverUrl)) {
+    throw new Error(`Refusing to send a reset token over a non-HTTPS server URL: ${serverUrl}`);
+  }
+  const token = args.resetTokenStdin ? await readAllStdin() : (args.resetToken || await promptLine('Reset token: '));
+  if (!token) throw new Error('reset-password requires --token, --token-stdin, or an entered token');
+  if (args.newPassword && !args.newPasswordStdin) {
+    process.stderr.write(
+      'Warning: --new-password on the command line is visible in your shell history and to other processes on this machine (via `ps`). Prefer the interactive prompt (omit --new-password) or --new-password-stdin.\n',
+    );
+  }
+  const newPassword = args.newPasswordStdin ? await readAllStdin() : (args.newPassword || await promptPassword('New password: '));
+  if (!newPassword) throw new Error('reset-password requires --new-password, --new-password-stdin, or an entered password');
+
+  let response: Response;
+  try {
+    response = await fetch(`${serverUrl}/api/auth/reset-password/redeem`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ token, new_password: newPassword }),
+    });
+  } catch (error) {
+    if (isNetworkUnreachableError(error)) throw unreachableServerError(serverUrl, error);
+    throw error;
+  }
+  const payload = await response.json().catch(() => ({})) as any;
+  if (!response.ok) {
+    throw new Error(payload?.error || `Klauro password reset failed with HTTP ${response.status}`);
+  }
+  const result = { status: 'success', server_url: serverUrl, email: payload.email ?? null };
+  process.stdout.write(args.json
+    ? `${JSON.stringify(result, null, 2)}\n`
+    : `Password reset. Every previous session for ${payload.email || 'this account'} has been signed out.\nRun \`klauro login --email ${payload.email || '<email>'}\` to sign in with the new password.\n`);
+}
+
+/**
+ * §AUTH-LIFECYCLE — `klauro change-password`. Requires an already-signed-in
+ * session (the stored connector auth this repo/host is using) and the
+ * CURRENT password — see AccountStore.changePassword's doc comment for why.
+ * On success the server rotates the session token (every other session is
+ * revoked) and this command immediately persists the new token via the same
+ * stored-connector-session mechanism `klauro login` uses, so the caller is
+ * not logged out by their own password change.
+ */
+async function runChangePasswordCommand(args: ParsedArgs): Promise<void> {
+  const serverUrl = normalizeServerUrl(args.serverUrl);
+  if (!/^https:\/\//i.test(serverUrl) && !/^https?:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/i.test(serverUrl)) {
+    throw new Error(`Refusing to send credentials over a non-HTTPS server URL: ${serverUrl}`);
+  }
+  const token = connectorToken(undefined, serverUrl);
+  if (!token) throw new Error('change-password requires an existing session — run `klauro login` first.');
+
+  if (args.currentPassword && !args.currentPasswordStdin) {
+    process.stderr.write('Warning: --current-password on the command line is visible in shell history and to other processes. Prefer the interactive prompt or --current-password-stdin.\n');
+  }
+  if (args.newPassword && !args.newPasswordStdin) {
+    process.stderr.write('Warning: --new-password on the command line is visible in shell history and to other processes. Prefer the interactive prompt or --new-password-stdin.\n');
+  }
+  const currentPassword = args.currentPasswordStdin ? await readAllStdin() : (args.currentPassword || await promptPassword('Current password: '));
+  const newPassword = args.newPasswordStdin ? await readAllStdin() : (args.newPassword || await promptPassword('New password: '));
+  if (!currentPassword) throw new Error('change-password requires --current-password, --current-password-stdin, or an entered password');
+  if (!newPassword) throw new Error('change-password requires --new-password, --new-password-stdin, or an entered password');
+
+  let response: Response;
+  try {
+    response = await fetch(`${serverUrl}/api/auth/change-password`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+      body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+    });
+  } catch (error) {
+    if (isNetworkUnreachableError(error)) throw unreachableServerError(serverUrl, error);
+    throw error;
+  }
+  const payload = await response.json().catch(() => ({})) as any;
+  if (!response.ok || !payload?.token) {
+    throw new Error(payload?.error || `Klauro password change failed with HTTP ${response.status}`);
+  }
+  const stored = saveStoredConnectorSession({ serverUrl, token: payload.token, email: payload.user?.email });
+  const result = { status: 'success', server_url: stored.serverUrl, user: payload.user };
+  process.stdout.write(args.json
+    ? `${JSON.stringify(result, null, 2)}\n`
+    : `Password changed for ${payload.user?.email || 'your account'}. Every other session was signed out; this session's token was rotated and saved to ${stored.file}.\n`);
+}
+
+/**
+ * §AUTH-LIFECYCLE — `klauro admin-mint-reset-token`. OPERATOR-ONLY,
+ * server-side/CLI command — NOT an HTTP endpoint. There is no site-wide
+ * admin role in the product's authorization model (workspace roles are
+ * owner/admin/member, scoped per-workspace, not a superuser concept), so
+ * rather than inventing one to gate an HTTP admin-mint route, this command
+ * talks to the AccountStore DIRECTLY against the same data directory the
+ * `analyzer-server` process uses (--data-dir, or
+ * KLAURO_REMOTE_ANALYZER_DATA). The trust boundary is the same one that
+ * already gates read-only inspection of accounts.json: being able to run
+ * this command on the box (or a shell with access to /data) IS the operator
+ * authentication. Prints the raw single-use token to stdout exactly once —
+ * this is the generated secret's only appearance; relay it to the account
+ * owner out-of-band (chat/call), never re-print or log it. The token
+ * expires in 30 minutes (see RESET_TOKEN_TTL_MS in account-store.ts) and is
+ * consumed by `klauro reset-password --token <token>` (or
+ * POST /api/auth/reset-password/redeem directly).
+ */
+async function runAdminMintResetTokenCommand(args: ParsedArgs): Promise<void> {
+  if (!args.email) throw new Error('admin-mint-reset-token requires --email <account-email>');
+  const dataDir = path.resolve(
+    args.dataDir
+      || process.env.KLAURO_REMOTE_ANALYZER_DATA
+      || path.join(os.tmpdir(), `klauro-remote-analyzer-${typeof process.getuid === 'function' ? process.getuid() : 'user'}`),
+  );
+  const accounts = new AccountStore(dataDir);
+  const mintedBy = args.mintedBy || `operator:${os.userInfo().username}@${os.hostname()}`;
+  const minted = await accounts.mintPasswordResetToken({ email: args.email, mintedBy });
+  const result = {
+    status: 'success',
+    data_dir: dataDir,
+    email: args.email,
+    user_id: minted.userId,
+    token: minted.token,
+    expires_at: minted.expiresAt,
+    redeem_with: `klauro reset-password --server-url <server-url> --token <token>`,
+  };
+  process.stdout.write(args.json
+    ? `${JSON.stringify(result, null, 2)}\n`
+    : [
+      `Minted a password reset token for ${args.email} (data dir: ${dataDir}).`,
+      `Token (relay this to the account owner out-of-band — it is shown ONLY here, and it is single-use):`,
+      `  ${minted.token}`,
+      `Expires at ${minted.expiresAt} (30 minutes from now).`,
+      `The account owner redeems it with:`,
+      `  klauro reset-password --server-url <server-url> --token ${minted.token}`,
+      `or by POSTing { "token": "...", "new_password": "..." } to /api/auth/reset-password/redeem.`,
+      `Redeeming invalidates every existing session for the account.`,
+    ].join('\n') + '\n');
 }
 
 /**
@@ -1678,6 +1852,9 @@ export function parseArgs(argv: string[]): ParsedArgs {
     register: false,
     deployOnly: false,
     markdown: false,
+    resetTokenStdin: false,
+    currentPasswordStdin: false,
+    newPasswordStdin: false,
   };
 
   for (let i = 1; i < argv.length; i++) {
@@ -1703,6 +1880,20 @@ export function parseArgs(argv: string[]): ParsedArgs {
       parsed.passwordStdin = true;
     } else if (arg === '--register') {
       parsed.register = true;
+    } else if (arg === '--token') {
+      parsed.resetToken = argv[++i];
+    } else if (arg === '--token-stdin') {
+      parsed.resetTokenStdin = true;
+    } else if (arg === '--current-password') {
+      parsed.currentPassword = argv[++i];
+    } else if (arg === '--current-password-stdin') {
+      parsed.currentPasswordStdin = true;
+    } else if (arg === '--new-password') {
+      parsed.newPassword = argv[++i];
+    } else if (arg === '--new-password-stdin') {
+      parsed.newPasswordStdin = true;
+    } else if (arg === '--minted-by') {
+      parsed.mintedBy = argv[++i];
     } else if (arg === '--path') {
       parsed.path = argv[++i];
     } else if (arg === '--analysis-id') {
@@ -1828,6 +2019,12 @@ function printHelp(): void {
     '  klauro whoami [--server-url url] [--json]',
     '  klauro auth-status [--server-url url] [--json]',
     '  klauro logout [--server-url url] [--json]',
+    '  klauro change-password [--current-password-stdin | --current-password value] [--new-password-stdin | --new-password value] [--server-url url] [--json]',
+    '      (requires an existing session; invalidates every OTHER session; rotates and saves this one)',
+    '  klauro reset-password --token value [--token-stdin] [--new-password-stdin | --new-password value] [--server-url url] [--json]',
+    '      (redeems a single-use token an operator minted for you — see `klauro admin-mint-reset-token`; invalidates every session)',
+    '  klauro admin-mint-reset-token --email account@example.com [--data-dir /path/to/data] [--minted-by label] [--json]',
+    '      (OPERATOR-ONLY, runs directly against the account store — not an HTTP call; prints a single-use 30-min token once)',
     '',
     'Coordination fabric — fine control only; `klauro init` enables it by default (docs/FABRIC-REMOTE.md):',
     '  klauro fabric status [/path/to/repo] [--json]                                     (detail view: enabled/endpoint/workspace + active claims)',
