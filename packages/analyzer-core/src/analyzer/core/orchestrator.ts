@@ -13371,11 +13371,31 @@ export class AnalyzerOrchestrator {
             : { ok: false as const, reason: 'missing-description' };
           const reason = capability.description_generation?.reason || validation.reason || 'unknown-quality-failure';
           const fallback = deterministicCapabilityText.get(capability.id);
-          if (fallback) {
+          // DEFECT (2026-08 grounding audit, wex-client-php): the gate above
+          // refuses an ungrounded AI description, but this substitute used to
+          // ship `fallback` UNVALIDATED — it never ran through
+          // validateElementDescription at all. That let a capability named
+          // "View WSCard" ship the description "Infos Management reads infos
+          // records..." (the deterministic text was built from a different
+          // internal label than the one shipped as the name — see the
+          // generateTerminalCapabilityDescription/generateCapabilityDescription
+          // fix that now keeps them in sync at the source). The grounding gate
+          // belongs at THIS layer, not one above it: run the exact same
+          // name/description-agreement check (target-not-grounded — do the
+          // subject's own name tokens appear anywhere in the text?) that AI
+          // text must pass, on the deterministic substitute too. A
+          // capability whose name and description disagree, or whose text
+          // fails the same structural/marketing/scaffold checks, must not
+          // ship a description at all — never delete the capability itself,
+          // just its unverifiable prose (see the 'no fallback' branch below).
+          const fallbackValidation = fallback ? this.validateElementDescription(fallback, target) : undefined;
+          if (fallback && fallbackValidation?.ok) {
             capability.description = fallback;
             capability.description_source = 'deterministic';
-          } else if (capability.description_source === 'ai') {
-            // Never ship ungrounded prose under an 'ai' provenance.
+          } else {
+            // Either there was no deterministic text to fall back to, or that
+            // text itself failed the grounding gate (fallbackValidation.ok ===
+            // false) — never ship ungrounded prose under ANY provenance.
             delete (capability as Partial<SystemCapability>).description;
             capability.description_source = undefined;
           }
@@ -13383,8 +13403,10 @@ export class AnalyzerOrchestrator {
             ...(capability.description_generation || { attempted: true }),
             status: 'ai_rejected',
             attempted: true,
-            reason,
-            origin_source: fallback ? 'deterministic' : capability.description_generation?.origin_source,
+            reason: fallback && !fallbackValidation?.ok
+              ? `deterministic-fallback-ungrounded:${fallbackValidation?.reason || 'unknown'}`
+              : reason,
+            origin_source: fallback && fallbackValidation?.ok ? 'deterministic' : capability.description_generation?.origin_source,
           };
           degraded.push({
             id: capability.id,
@@ -21534,7 +21556,12 @@ export class AnalyzerOrchestrator {
           generated_at: new Date().toISOString(),
         },
         structural_label: structuralLabel,
-        description: this.generateCapabilityDescription(structuralLabel, operations, relatedEntities, group.entryPoints),
+        // DEFECT (2026-08 grounding audit): build the description from the SAME
+        // label the capability ships as its name (capabilityName), not the
+        // internal structural grammar label — see the matching note in
+        // buildTerminalDomainCapabilities' generateTerminalCapabilityDescription
+        // call for why these two labels can otherwise disagree.
+        description: this.generateCapabilityDescription(capabilityName, operations, relatedEntities, group.entryPoints),
         description_source: undefined,
         description_generation: {
           status: 'ai_skipped',
@@ -22766,7 +22793,19 @@ export class AnalyzerOrchestrator {
           generated_at: new Date().toISOString(),
         },
         structural_label: structuralLabel,
-        description: this.generateTerminalCapabilityDescription(structuralLabel, uniqueNodes, uniqueEntities, operations),
+        // DEFECT (2026-08 grounding audit): this used to build the description
+        // from `structuralLabel` — the internal "<Domain> Management/…" grammar
+        // label that drives the gates above — while the capability actually
+        // SHIPS `capabilityName` (terminalGroundedCapabilityName's
+        // evidence-grounded placeholder) as its name. Those two labels are
+        // deliberately allowed to differ (see the DISPLAY NAME comment above),
+        // so a description built from one and a name built from the other can
+        // name/describe two different things ("View WSCard" named, "Infos
+        // Management reads infos records" described — a real wex-client-php
+        // finding). Build the description from the SAME label the capability
+        // ships as its name, so name and description are always about the
+        // same subject even before any AI pass runs.
+        description: this.generateTerminalCapabilityDescription(capabilityName, uniqueNodes, uniqueEntities, operations),
         description_source: undefined,
         description_generation: {
           status: 'ai_skipped',
@@ -24645,7 +24684,13 @@ export class AnalyzerOrchestrator {
     const lowerLabel = label.toLowerCase();
     void lowerLabel;
     void nodes;
-    const subject = label.replace(/\s+(Management|Capability|Workflow|Reporting|Analysis|Generation|Settlement|Rebalancing|Authentication)$/i, '').trim() || label;
+    // Callers now pass the SAME label the capability ships as its `name`
+    // (terminalGroundedCapabilityName's placeholder), which may carry a
+    // trailing "(EntityName)" disambiguator ("Invoice (InvoiceRecord)") that
+    // reads awkwardly as a sentence subject — strip it for prose purposes,
+    // same as the trailing invented-behavior-suffix strip below.
+    const label_ = label.replace(/\s*\([^)]*\)\s*$/, '').trim() || label;
+    const subject = label_.replace(/\s+(Management|Capability|Workflow|Reporting|Analysis|Generation|Settlement|Rebalancing|Authentication)$/i, '').trim() || label_;
     const subjectLower = subject.toLowerCase();
 
     // Deterministic, fact-grounded description: state what the code actually
@@ -24677,9 +24722,9 @@ export class AnalyzerOrchestrator {
     const pathClause = samplePaths.length ? ` (e.g. ${samplePaths.join(', ')})` : '';
 
     if (!dataClause && !surfaceClause) {
-      return `${label} groups ${subjectLower}-related nodes in the relationship graph; no entry points or data entities were resolved for it, so its runtime behavior is unverified.`;
+      return `${label_} groups ${subjectLower}-related nodes in the relationship graph; no entry points or data entities were resolved for it, so its runtime behavior is unverified.`;
     }
-    return `${label}${dataClause}${surfaceClause}${pathClause}.`.replace(/\s+/g, ' ').trim();
+    return `${label_}${dataClause}${surfaceClause}${pathClause}.`.replace(/\s+/g, ' ').trim();
   }
 
   private capabilityVerbClause(actions: string[]): string {
@@ -25233,7 +25278,12 @@ export class AnalyzerOrchestrator {
     entities: Array<{ name: string }> = [],
     entryPoints: CASEntryPoint[] = [],
   ): string {
-    const subject = name.replace(/\s+(Management|Capability|Workflow|Reporting|Analysis|Generation|Settlement|Rebalancing|Authentication)$/i, '').trim() || name;
+    // Callers pass the SAME label the capability ships as its `name`
+    // (terminalGroundedCapabilityName's placeholder), which may carry a
+    // trailing "(EntityName)" disambiguator — strip it for prose purposes
+    // (see the matching strip in generateTerminalCapabilityDescription).
+    const name_ = name.replace(/\s*\([^)]*\)\s*$/, '').trim() || name;
+    const subject = name_.replace(/\s+(Management|Capability|Workflow|Reporting|Analysis|Generation|Settlement|Rebalancing|Authentication)$/i, '').trim() || name_;
     const subjectLower = subject.toLowerCase();
 
     const actions = Array.from(new Set(
@@ -25265,9 +25315,9 @@ export class AnalyzerOrchestrator {
     const pathClause = samplePaths.length ? ` (${samplePaths.join(', ')})` : '';
 
     if (!dataClause && !surfaceClause) {
-      return `${name} groups ${subjectLower}-related nodes in the relationship graph; no entry points or data entities were resolved for it, so its runtime behavior is unverified.`;
+      return `${name_} groups ${subjectLower}-related nodes in the relationship graph; no entry points or data entities were resolved for it, so its runtime behavior is unverified.`;
     }
-    return `${name}${dataClause}${surfaceClause}${pathClause}.`.replace(/\s+/g, ' ').trim();
+    return `${name_}${dataClause}${surfaceClause}${pathClause}.`.replace(/\s+/g, ' ').trim();
   }
 
   private capabilityInteractionPhrase(entryTypes: string[]): string {
