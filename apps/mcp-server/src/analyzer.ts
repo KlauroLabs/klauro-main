@@ -1579,13 +1579,44 @@ function buildChangeHistoryEntry(result: IncrementalAnalysisResult): ChangeHisto
 //
 // Server-side config only (KLAURO_ANALYSIS_CONCURRENCY, with the older
 // KLAURO_ANALYSIS_LANES name kept as a fallback) — not customer-facing.
+//
+// Production survivability (2026-08): the old DEFAULT_ANALYSIS_LANES=2 was a
+// flat literal with no relationship to the host it happened to run on — the
+// VPS .env additionally pins KLAURO_ANALYSIS_CONCURRENCY=1 as a manual
+// workaround. When no explicit env is set, the default is now derived from
+// actual host RAM the same way resolveAnalysisHeapMb() already derives the
+// per-worker heap cap: how many worker-sized heaps fit in RAM after leaving
+// headroom for the main api process, Caddy, sshd, and OS/page-cache pressure.
+// Real peak-RSS probes against this repo (Aug 2026, packages/analyzer-core
+// 775 files / apps/mcp-server 1953 files / full repo 3355 files) measured
+// 1.5-2.4GB worker RSS on a 4096MB heap cap — RSS runs ~1.3-1.5x the heap
+// ceiling once non-heap buffers (parsed source, tree-sitter ASTs) are
+// counted. PER_LANE_RAM_FACTOR encodes that overhead; HOST_RESERVE_MB keeps
+// enough free memory for the rest of the host regardless of lane count — the
+// same "systemd got OOM-killed" failure mode this whole program exists to
+// prevent must never recur just because lanes were sized optimistically.
 const DEFAULT_ANALYSIS_LANES = 2;
+const PER_LANE_RAM_FACTOR = 1.4;
+const HOST_RESERVE_MB = 1536;
+
+function deriveAnalysisLaneCountFromHost(): number {
+  const heap = resolveAnalysisHeapMb();
+  const perLaneMb = Math.max(1, Math.round(heap.heapMb * PER_LANE_RAM_FACTOR));
+  const usableMb = heap.totalRamMb - HOST_RESERVE_MB;
+  if (usableMb <= 0) return 1;
+  const byRam = Math.floor(usableMb / perLaneMb);
+  // Never derive UP past the historical default — a bigger host should not
+  // silently start running more concurrent whales than this codepath has
+  // ever been proven safe at without a deliberate KLAURO_ANALYSIS_CONCURRENCY
+  // bump. It only ever derives DOWN from that ceiling on a smaller host.
+  return Math.max(1, Math.min(DEFAULT_ANALYSIS_LANES, byRam));
+}
 
 function getAnalysisLaneCount(): number {
   const raw = process.env.KLAURO_ANALYSIS_CONCURRENCY ?? process.env.KLAURO_ANALYSIS_LANES;
-  if (raw === undefined || raw === '') return DEFAULT_ANALYSIS_LANES;
+  if (raw === undefined || raw === '') return deriveAnalysisLaneCountFromHost();
   const parsed = Number(raw);
-  return Number.isFinite(parsed) && parsed >= 1 ? Math.floor(parsed) : DEFAULT_ANALYSIS_LANES;
+  return Number.isFinite(parsed) && parsed >= 1 ? Math.floor(parsed) : deriveAnalysisLaneCountFromHost();
 }
 
 // --- Memory guard --------------------------------------------------------

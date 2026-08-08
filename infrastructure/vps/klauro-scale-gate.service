@@ -1,0 +1,30 @@
+# PERIODIC scale-survivability gate — VPS-side systemd unit.
+#
+# NOT INSTALLED by this change (production-survivability work is scoped to
+# DO NOT DEPLOY — this file documents the intended VPS-side wiring so a human
+# can review and install it deliberately, the same way infrastructure/vps's
+# other units are reviewed before `systemctl enable` on the box).
+#
+# Install (manual, by a human, after review):
+#   sudo cp klauro-scale-gate.service klauro-scale-gate.timer /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now klauro-scale-gate.timer
+#
+# Runs apps/mcp-server/scripts/scale-survivability-gate.sh from the deployed
+# source checkout (/opt/klauro/source) once a week. OnFailure= routes a
+# non-zero exit to the SAME alert path other production units already use —
+# fill in klauro-alert@.service (or whatever this host's existing on-call
+# escalation unit is named) before enabling; a timer with no working
+# OnFailure= target is exactly the "number nobody reads" failure mode this
+# gate exists to avoid.
+[Unit]
+Description=Klauro periodic scale-survivability gate
+OnFailure=klauro-alert@%n.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/klauro/source
+ExecStart=/opt/klauro/source/apps/mcp-server/scripts/scale-survivability-gate.sh
+# Runs as the deploy user, not root — it only needs read access to the repo
+# checkout and the same VPS SSH creds deploy.sh already uses from .env.
+User=root
