@@ -1,5 +1,6 @@
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { existsSync, statSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { analyzeCodebaseRemotely, syncWorkingTreeRemotely } from './remote-sync-client';
 import { buildUploadManifest } from './remote-source';
@@ -24,9 +25,147 @@ function value(flag: string): string | undefined {
   return index >= 0 ? process.argv[index + 1] : undefined;
 }
 
+// ---------------------------------------------------------------------------
+// Flag validation + `--help`, generalised across every subcommand.
+//
+// The defect this closes: `target` below was computed by treating anything
+// NOT starting with `-` as the positional path, and anything else (including
+// an unrecognized or misspelled flag, and `--help`/`-h` themselves) was
+// silently dropped. `klauro analyze --help` therefore never printed usage —
+// `--help` vanished, the positional slot fell back to `.`, and a real
+// analysis of the current directory ran. Task #49 fixed one shape of this
+// (an unknown flag silently becoming the path) for `init` in the developer
+// CLI's parseArgs (cli.ts); it was never ported to this file, which is the
+// one actually shipped (dist/cli.cjs, built from this file — see
+// scripts/build-bundle.mjs). Fixed generally here: every subcommand honours
+// `--help`/`-h`, and every subcommand rejects a flag it does not recognize
+// instead of swallowing it.
+// ---------------------------------------------------------------------------
+
+const HELP_FLAGS = new Set(['--help', '-h']);
+
+/** Flags that consume the next argv slot as their value, so flag validation
+ *  below does not misread that value as a second, unrecognized flag. */
+const FLAGS_WITH_VALUES = new Set([
+  '--server-url', '--project-id', '--organization-id', '--workspace', '--output',
+  '--email', '--password', '--token', '--new-password', '--current-password',
+  '--data-dir', '--minted-by', '--claude-scope',
+]);
+
+/** The flags each subcommand actually reads (via `value()` or
+ *  `argv.includes()` above/below). A command absent from this map is not
+ *  flag-validated here — it either isn't a real command (falls through to
+ *  the usage block, unchanged) or its flags are validated elsewhere. */
+const COMMAND_FLAGS: Record<string, Set<string>> = {
+  ...Object.fromEntries(SELF_UPDATE_COMMANDS.map(name => [name, new Set(['--server-url', '--check', '--force', '--json'])])),
+  version: new Set(['--json']),
+  '--version': new Set(['--json']),
+  '-v': new Set(['--json']),
+  analyze: new Set(['--json']),
+  'remote-analyze': new Set(['--json']),
+  'remote-sync': new Set(['--json']),
+  sync: new Set(['--json']),
+  'upload-manifest': new Set(['--json', '--dirty-tree']),
+  index: new Set(['--json', '--dirty-tree']),
+  status: new Set(['--server-url', '--json']),
+  doctor: new Set(['--server-url', '--json']),
+  'support-bundle': new Set(['--output', '--json']),
+  init: new Set(['--server-url', '--project-id', '--organization-id', '--workspace', '--force', '--json']),
+  install: new Set(['--claude-scope', '--json']),
+  'auth-status': new Set(['--server-url', '--json']),
+  whoami: new Set(['--server-url', '--json']),
+  logout: new Set(['--server-url', '--json']),
+  login: new Set(['--server-url', '--email', '--password', '--password-stdin', '--register', '--json']),
+  'reset-password': new Set(['--server-url', '--token', '--token-stdin', '--new-password', '--new-password-stdin', '--json']),
+  'change-password': new Set(['--server-url', '--current-password', '--current-password-stdin', '--new-password', '--new-password-stdin', '--json']),
+  'admin-mint-reset-token': new Set(['--email', '--data-dir', '--minted-by', '--json']),
+};
+
+/** Commands that read `target` as a real filesystem path (as opposed to
+ *  ignoring it, e.g. `login`). An explicitly-given path that doesn't exist,
+ *  or isn't a directory, must fail here with a clear message rather than
+ *  fail deep inside git/upload plumbing with a confusing error — or, worse,
+ *  silently fall back to `.` the way a swallowed `--help` used to. Path
+ *  omitted (defaulting to cwd) is always valid, so it is not checked. */
+const PATH_COMMANDS = new Set([
+  'analyze', 'remote-analyze', 'remote-sync', 'sync', 'upload-manifest', 'index',
+  'init', 'status', 'doctor', 'support-bundle',
+]);
+
+/** Throws by flag name instead of letting an unrecognized `--flag` fall
+ *  through to the positional path slot or get silently ignored. */
+function validateFlags(command: string, argv: string[]): void {
+  const allowed = COMMAND_FLAGS[command];
+  if (!allowed) return;
+  for (let i = 3; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (!arg.startsWith('-') || HELP_FLAGS.has(arg)) continue;
+    if (!allowed.has(arg)) {
+      throw new Error(`Unknown option for \`klauro ${command}\`: ${arg} (run \`klauro ${command} --help\` for supported flags)`);
+    }
+    if (FLAGS_WITH_VALUES.has(arg)) i += 1;
+  }
+}
+
+/** An explicit path argument must resolve to a real directory before any
+ *  command acts on it — see the `klauro analyze --help` incident in the
+ *  block comment above: silently proceeding on a wrong/nonexistent path is
+ *  what turned a swallowed flag into a real 28k-file analysis. */
+function validateTargetPath(command: string, rawArg: string | undefined, resolved: string): void {
+  if (!PATH_COMMANDS.has(command)) return;
+  if (!rawArg || rawArg.startsWith('-')) return; // no explicit path; cwd default is always valid
+  if (!existsSync(resolved)) throw new Error(`\`klauro ${command}\`: path does not exist: ${resolved}`);
+  if (!statSync(resolved).isDirectory()) throw new Error(`\`klauro ${command}\`: path is not a directory: ${resolved}`);
+}
+
+const USAGE_TEXT = [
+  'Usage: klauro <command> [path] [options]', '',
+  '  init [path]                 Configure a project for hosted Klauro analysis',
+  '  install                     Register the lightweight MCP with Claude and Codex',
+  '  analyze [path]              Upload a committed source snapshot for hosted analysis',
+  '  remote-sync [path]          Upload in-flight changes for hosted analysis',
+  '  upload-manifest [path]      Preview source files selected for upload',
+  '  status [path] [--server-url URL]',
+  '                               One-glance report: account, release, project connection, analysis, MCP',
+  '  doctor [path] [--server-url URL]',
+  '                               Diagnose node version, auth/token age, server reachability, MCP registration',
+  '  support-bundle [path] [--output FILE]',
+  '                               Package redacted environment + run-log diagnostics to send to support',
+  '  update [--check] [--force]  Install the latest hosted klauro release over this one',
+  '  login [--email EMAIL] [--password-stdin | --register]',
+  '                               Prompts for email/password (no echo) if not given; --password-stdin for scripts',
+  '  auth-status | whoami | logout | version',
+  '  change-password [--current-password-stdin] [--new-password-stdin]',
+  '                               Requires an existing session + current password; invalidates every other session',
+  '  reset-password --token TOKEN [--token-stdin] [--new-password-stdin]',
+  '                               Redeems a single-use token an operator minted with admin-mint-reset-token',
+  '  admin-mint-reset-token --email EMAIL [--data-dir PATH] [--minted-by LABEL]',
+  '                               OPERATOR-ONLY: mints a 30-minute single-use reset token directly against the account store',
+  '',
+  `If \`klauro update\` cannot run, reinstall from scratch: ${KLAURO_INSTALL_ONELINER}`, '',
+  'Analysis, CAS/WAS construction, graphs, proposals, embeddings, and AI execute only on Klauro infrastructure.',
+  '',
+  'Every subcommand accepts --help/-h to print this usage instead of running.',
+].join('\n') + '\n';
+
+function printUsage(): void {
+  process.stdout.write(USAGE_TEXT);
+}
+
 async function main() {
   const command = process.argv[2] || 'help';
-  const target = path.resolve(process.argv[3] && !process.argv[3].startsWith('-') ? process.argv[3] : '.');
+  // `--help`/`-h` on ANY subcommand prints usage and does nothing else —
+  // checked before flag validation and before any command runs, so it can
+  // never be shadowed by an unknown-option error or (the original defect)
+  // silently discarded into a real run of the command.
+  if (HELP_FLAGS.has(command) || process.argv.slice(3).some(arg => HELP_FLAGS.has(arg))) {
+    printUsage();
+    return;
+  }
+  validateFlags(command, process.argv);
+  const rawPathArg = process.argv[3];
+  const target = path.resolve(rawPathArg && !rawPathArg.startsWith('-') ? rawPathArg : '.');
+  validateTargetPath(command, rawPathArg, target);
   const json = process.argv.includes('--json');
   if (command === 'version' || command === '--version' || command === '-v') return output({ version: formatBuildIdentity() }, json);
   // Self-update. This MUST exist in the shipped CLI: the hosted server's
@@ -266,33 +405,7 @@ async function main() {
       ].join('\n'),
       json);
   }
-  process.stdout.write([
-    'Usage: klauro <command> [path] [options]', '',
-    '  init [path]                 Configure a project for hosted Klauro analysis',
-    '  install                     Register the lightweight MCP with Claude and Codex',
-    '  analyze [path]              Upload a committed source snapshot for hosted analysis',
-    '  remote-sync [path]          Upload in-flight changes for hosted analysis',
-    '  upload-manifest [path]      Preview source files selected for upload',
-    '  status [path] [--server-url URL]',
-    '                               One-glance report: account, release, project connection, analysis, MCP',
-    '  doctor [path] [--server-url URL]',
-    '                               Diagnose node version, auth/token age, server reachability, MCP registration',
-    '  support-bundle [path] [--output FILE]',
-    '                               Package redacted environment + run-log diagnostics to send to support',
-    '  update [--check] [--force]  Install the latest hosted klauro release over this one',
-    '  login [--email EMAIL] [--password-stdin | --register]',
-    '                               Prompts for email/password (no echo) if not given; --password-stdin for scripts',
-    '  auth-status | whoami | logout | version',
-    '  change-password [--current-password-stdin] [--new-password-stdin]',
-    '                               Requires an existing session + current password; invalidates every other session',
-    '  reset-password --token TOKEN [--token-stdin] [--new-password-stdin]',
-    '                               Redeems a single-use token an operator minted with admin-mint-reset-token',
-    '  admin-mint-reset-token --email EMAIL [--data-dir PATH] [--minted-by LABEL]',
-    '                               OPERATOR-ONLY: mints a 30-minute single-use reset token directly against the account store',
-    '',
-    `If \`klauro update\` cannot run, reinstall from scratch: ${KLAURO_INSTALL_ONELINER}`, '',
-    'Analysis, CAS/WAS construction, graphs, proposals, embeddings, and AI execute only on Klauro infrastructure.',
-  ].join('\n') + '\n');
+  printUsage();
 }
 
 interface HostedChoice { id: string; name: string; repo_url?: string; local_path?: string }
