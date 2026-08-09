@@ -17,7 +17,8 @@ import {
 } from './klauro-config';
 import { connectorToken, requireConnectorEntitlement } from './connector-auth';
 import { DEFAULT_KLAURO_CLOUD_URL } from './defaults';
-import { describeHttpFailure, describeTransportFailure, hostedFetch } from './hosted-transport';
+import { fetch as undiciFetch } from 'undici';
+import { describeHttpFailure, describeTransportFailure, getHostedDispatcher, hostedFetch, isDeadConnectionError, resetHostedDispatcher } from './hosted-transport';
 
 export interface RemoteSyncOptions {
   projectPath: string;
@@ -373,7 +374,17 @@ function sleep(ms: number): Promise<void> {
 class RetriableRemoteError extends Error {}
 
 /** True for network-level failures (DNS, connection reset, TLS) that Node's
- *  fetch/undici surfaces as a rejected promise rather than a response. */
+ *  fetch/undici surfaces as a rejected promise rather than a response.
+ *
+ *  This also covers a destroyed/GOAWAY'd h2 session (see hosted-transport.ts
+ *  for the mechanism). Retrying that here on a write is a deliberate choice,
+ *  not an oversight: `/v1/analyze`, `/v1/sync`, and `/v1/analyze-diff` are all
+ *  upserts keyed by `analysisId` (the server replaces the stored snapshot for
+ *  that id; see remote-analyzer-service.ts's `workspacePath(dataDir,
+ *  analysisId)`), not an append-only event log — re-sending the same body is
+ *  a no-op-or-overwrite, never a duplicate. That is also why this function
+ *  already retried the bare `fetch failed` envelope before this change;
+ *  a dead h2 session is the same class of client-side condition. */
 function isRetriableNetworkError(error: unknown): boolean {
   if (error instanceof RetriableRemoteError) return true;
   if (!(error instanceof Error)) return false;
@@ -381,6 +392,7 @@ function isRetriableNetworkError(error: unknown): boolean {
   // always worth a retry: it means we gave up waiting, not that the server
   // definitively rejected the request.
   if (error.name === 'AbortError') return true;
+  if (isDeadConnectionError(error)) return true;
   const cause = (error as { cause?: unknown }).cause;
   const causeCode = cause && typeof cause === 'object' ? (cause as { code?: string }).code : undefined;
   if (['ECONNRESET', 'ETIMEDOUT', 'ECONNREFUSED', 'EPIPE', 'UND_ERR_SOCKET', 'UND_ERR_CONNECT_TIMEOUT'].includes(causeCode || '')) {
@@ -397,7 +409,14 @@ async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: numbe
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    return await fetch(url, { ...init, signal: controller.signal, ...(isStreamingJsonRequestBody(init.body) ? { duplex: 'half' } : {}) } as RequestInit);
+    // Shares hosted-transport.ts's dispatcher (not global fetch) so a dead h2
+    // session discovered by a read and one discovered by a write evict the
+    // same pooled connection rather than each surface getting stuck on a
+    // broken pool of its own.
+    return await undiciFetch(url, {
+      ...init, signal: controller.signal, dispatcher: getHostedDispatcher(),
+      ...(isStreamingJsonRequestBody(init.body) ? { duplex: 'half' } : {}),
+    } as any) as unknown as Response;
   } finally {
     clearTimeout(timer);
   }
@@ -505,6 +524,10 @@ async function postRemote(
           }
           throw error;
         }
+        // See fetchWithTimeout above: force a fresh connection before the
+        // retry when the one just used is confirmed dead, so the retry
+        // cannot land on the same broken pooled session.
+        if (isDeadConnectionError(error)) resetHostedDispatcher();
         await sleep(REMOTE_RETRY_DELAYS_MS[attempt - 1]);
       }
     }

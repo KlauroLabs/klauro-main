@@ -7,9 +7,12 @@ import {
   describeHttpFailure,
   describeTransportFailure,
   findErrorCode,
+  getHostedDispatcher,
   hostedFetch,
+  isDeadConnectionError,
   isRetriableTransportError,
   redactUrl,
+  resetHostedDispatcher,
   unwrapCauseChain,
 } from './hosted-transport';
 import { isOpaqueErrorMessage, withTransparentErrors } from './installed-client-server';
@@ -173,4 +176,81 @@ test('the tool wrapper refuses to let an opaque message leave the process', asyn
   // wrapper is a floor, not a rewriter.
   register('get_summary', {}, async () => { throw new Error('No hosted Klauro project is bound to /x.'); });
   await assert.rejects(registered[1]({}), /No hosted Klauro project is bound/);
+});
+
+// ---------------------------------------------------------------------------
+// P0 (2026-08-07): a server restart tears down every client's pooled h2
+// session. Node's global fetch caches that session per origin for the life
+// of the process and never evicts a destroyed one, so every subsequent read
+// fails identically forever — reported as "could not reach the hosted
+// server" even though a fresh connection from a different process (curl)
+// reaches the same server fine a second later. The fix: hosted-transport.ts
+// owns its own dispatcher instead of using global fetch, so a dead-session
+// error can throw the pooled connection away and force a real handshake on
+// the retry that follows.
+//
+// These are the "necessary but not sufficient" mocked/local half of the
+// proof — see the container-restart run against the real deployed server for
+// the sufficient half (a mocked destroyed session cannot reproduce Node's
+// actual global-fetch h2 pooling defect; it can only pin the mechanism this
+// module now uses instead).
+// ---------------------------------------------------------------------------
+
+test('isDeadConnectionError recognizes a destroyed/GOAWAY h2 session by code and by message alone', () => {
+  assert.ok(isDeadConnectionError(Object.assign(new Error('The session has been destroyed'), { code: 'ERR_HTTP2_INVALID_SESSION' })));
+  assert.ok(isDeadConnectionError(Object.assign(new Error('goaway'), { code: 'ERR_HTTP2_GOAWAY_SESSION' })));
+  assert.ok(isDeadConnectionError(Object.assign(new Error('reset'), { code: 'ECONNRESET' })));
+  // Some Node versions surface this condition as message text with no `code`
+  // populated at all — the classifier must not depend on `code` alone.
+  assert.ok(isDeadConnectionError(new TypeError('fetch failed', { cause: new Error('The session has been destroyed') })));
+  assert.equal(isDeadConnectionError(Object.assign(new Error('bad cert'), { code: 'UNABLE_TO_VERIFY_LEAF_SIGNATURE' })), false);
+});
+
+test('a destroyed h2 session is retriable, and its report says "connection was reset", never "could not reach the server"', () => {
+  const error = Object.assign(new Error('The session has been destroyed'), { code: 'ERR_HTTP2_INVALID_SESSION' });
+  assert.ok(isRetriableTransportError(error));
+  const message = describeTransportFailure(error, { url: 'https://example.invalid/api/x', operation: 'GET analysis', attempts: 2 });
+  // Honesty requirement: the server answered fine a moment ago on another
+  // connection, so this must not claim the server is unreachable.
+  assert.doesNotMatch(message, /could not reach the hosted server/i, message);
+  assert.match(message, /connection.*was reset/i, message);
+  assert.match(message, /retried/i, message);
+});
+
+test('resetHostedDispatcher discards the pooled dispatcher; getHostedDispatcher lazily rebuilds it', () => {
+  const first = getHostedDispatcher();
+  assert.equal(getHostedDispatcher(), first, 'the dispatcher is pooled/reused across calls, not rebuilt on every request');
+  resetHostedDispatcher();
+  const second = getHostedDispatcher();
+  assert.notEqual(second, first, 'after a dead-connection error, the next dispatcher must be a genuinely new instance, not the destroyed one');
+});
+
+test('hostedFetch survives a connection dying mid-process and recovers on the next attempt, without a client restart', async () => {
+  // Server-restart-shaped failure, reproduced locally: the first TCP
+  // connection this process opens gets destroyed out from under it (as a
+  // deploy restart destroys every live session), and only a genuinely new
+  // connection reaches anything. No client-side restart happens between the
+  // failure and the successful retry — hostedFetch calls this within one
+  // invocation, exactly like an agent's single tool call must recover
+  // without the human restarting their MCP client.
+  let connectionCount = 0;
+  const server = http.createServer((_req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ status: 'ok' }));
+  });
+  server.on('connection', socket => {
+    connectionCount += 1;
+    if (connectionCount === 1) socket.destroy();
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const port = (server.address() as net.AddressInfo).port;
+
+  process.env.KLAURO_HOSTED_RETRY_DELAY_MS = '0';
+  try {
+    const response = await hostedFetch(`http://127.0.0.1:${port}/api`, {}, { operation: 'GET analysis' });
+    assert.equal(response.status, 200);
+    assert.ok(connectionCount >= 2, `expected a second, fresh connection after the first died; got ${connectionCount}`);
+  } finally {
+    delete process.env.KLAURO_HOSTED_RETRY_DELAY_MS;
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  }
 });

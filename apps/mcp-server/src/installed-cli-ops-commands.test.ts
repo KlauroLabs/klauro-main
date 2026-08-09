@@ -327,3 +327,52 @@ test('the SHIPPED cli entry point implements `admin-mint-reset-token` and it rea
     rmSync(dataDir, { recursive: true, force: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// P0 follow-up (2026-08-07): `klauro analyze --help` printed no usage and
+// instead ran a REAL analysis of the current directory (28,393 files /
+// 307MB). The positional-path fallthrough treated `--help` as "not a path"
+// (it starts with `-`) and silently dropped it, leaving `target` defaulted
+// to `.` — the same class task #49 fixed for `init`'s flag parsing in the
+// developer CLI (cli.ts), never ported to this file, the one actually
+// shipped as dist/cli.cjs. Fixed generally: every subcommand honours
+// `--help`/`-h` and rejects an unrecognized flag instead of swallowing it.
+// ---------------------------------------------------------------------------
+
+test('`klauro analyze --help` prints usage and performs no analysis (the incident this class caused)', async () => {
+  const result = await runInstalledCli(['analyze', '--help']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Usage: klauro <command>/);
+  // The regression signature: a real run prints an `accepted`/`success`
+  // status JSON-ish payload or a network/binding error, never bare usage.
+  assert.doesNotMatch(result.stdout, /"status"/, 'a real analysis ran instead of printing help');
+});
+
+test('--help/-h prints usage for every subcommand instead of running it', async () => {
+  for (const args of [['init', '--help'], ['status', '-h'], ['doctor', '--help'], ['upload-manifest', '-h'], ['login', '--help'], ['--help'], ['-h']]) {
+    const result = await runInstalledCli(args);
+    assert.equal(result.status, 0, `\`klauro ${args.join(' ')}\` exited ${result.status}: ${result.stderr}`);
+    assert.match(result.stdout, /Usage: klauro <command>/, `\`klauro ${args.join(' ')}\` did not print usage`);
+  }
+});
+
+test('an unrecognized flag is rejected by name, on every subcommand, instead of silently becoming the path or being dropped', async () => {
+  const analyze = await runInstalledCli(['analyze', '--headless']);
+  assert.notEqual(analyze.status, 0);
+  assert.match(analyze.stdout + analyze.stderr, /Unknown option for `klauro analyze`: --headless/);
+  assert.doesNotMatch(analyze.stdout, /Usage: klauro <command>/, 'an unknown flag must name itself, not fall back to the generic usage block');
+
+  const init = await runInstalledCli(['init', '--not-a-real-flag']);
+  assert.notEqual(init.status, 0);
+  assert.match(init.stdout + init.stderr, /Unknown option for `klauro init`: --not-a-real-flag/);
+});
+
+test('an explicit path that does not exist, or is not a directory, fails with a clear message instead of proceeding', async () => {
+  const missing = await runInstalledCli(['analyze', '/no/such/klauro-cli-test-path']);
+  assert.notEqual(missing.status, 0);
+  assert.match(missing.stdout + missing.stderr, /path does not exist/);
+
+  const notADir = await runInstalledCli(['analyze', __filename]);
+  assert.notEqual(notADir.status, 0);
+  assert.match(notADir.stdout + notADir.stderr, /path is not a directory/);
+});
