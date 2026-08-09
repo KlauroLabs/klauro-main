@@ -17383,11 +17383,25 @@ export class AnalyzerOrchestrator {
   }
 
   private resolveSystemDisplayName(projectPath: string, productDocTitle?: string): string | undefined {
-    const manifestName = this.resolveRootManifestName(projectPath);
-    if (manifestName) return manifestName;
-
+    const manifest = this.resolveRootManifestName(projectPath);
     const cleanedTitle = String(productDocTitle || '').trim();
-    if (cleanedTitle && cleanedTitle.length <= 80) return cleanedTitle;
+    const hasRealDocTitle = cleanedTitle.length > 0 && cleanedTitle.length <= 80;
+
+    if (manifest) {
+      // A manifest name reached only via the GENERIC-STRUCTURAL FALLBACK
+      // (e.g. "@klauro/monorepo" -> the scope "Klauro", because "monorepo"
+      // itself is repo-shape filler, not a product word) is weaker evidence
+      // than the general "declared identity outranks prose" rule assumes —
+      // the author didn't actually write a specific name, the resolver
+      // manufactured one from the scope. A real product doc title (README/
+      // PRD H1) is more informative in that narrow case and wins instead.
+      // A genuinely specific manifest name (the common case) still wins
+      // outright over any doc title, unchanged.
+      if (manifest.genericFallback && hasRealDocTitle) return cleanedTitle;
+      return manifest.name;
+    }
+
+    if (hasRealDocTitle) return cleanedTitle;
 
     return this.resolveCommonPackageScopeName(projectPath);
   }
@@ -17416,21 +17430,27 @@ export class AnalyzerOrchestrator {
    * exists at the root, so that case abstains). Each name is
    * scope/vendor-stripped and humanized via humanizeManifestName (or, for
    * go.mod, the dedicated humanizeGoModulePath). Returns undefined when
-   * nothing is found — never guesses.
+   * nothing is found — never guesses. The returned `genericFallback` flag
+   * marks a name that was only reachable by falling back from a generic
+   * structural remainder to the scope/org segment (e.g. "@klauro/monorepo"
+   * -> "Klauro"): the author never actually wrote a specific product name
+   * there, so resolveSystemDisplayName treats that case as weaker evidence
+   * than a genuinely specific manifest name and lets a real product doc
+   * title outrank it.
    */
-  private resolveRootManifestName(projectPath: string): string | undefined {
+  private resolveRootManifestName(projectPath: string): { name: string; genericFallback: boolean } | undefined {
     const packageJson = this.safeReadJson(path.join(projectPath, 'package.json'));
     const packageJsonName = typeof packageJson?.name === 'string' ? packageJson.name.trim() : '';
     if (packageJsonName) {
       const humanized = this.humanizeManifestName(packageJsonName);
-      if (humanized) return humanized;
+      if (humanized) return { name: humanized.value, genericFallback: humanized.genericFallback };
     }
 
     const composerJson = this.safeReadJson(path.join(projectPath, 'composer.json'));
     const composerName = typeof composerJson?.name === 'string' ? composerJson.name.trim() : '';
     if (composerName) {
       const humanized = this.humanizeManifestName(composerName);
-      if (humanized) return humanized;
+      if (humanized) return { name: humanized.value, genericFallback: humanized.genericFallback };
     }
 
     const cargoToml = this.safeReadText(path.join(projectPath, 'Cargo.toml'), 8000);
@@ -17439,7 +17459,7 @@ export class AnalyzerOrchestrator {
       const nameMatch = packageBlock?.[1]?.match(/^\s*name\s*=\s*"([^"]+)"/m);
       if (nameMatch?.[1]?.trim()) {
         const humanized = this.humanizeManifestName(nameMatch[1].trim());
-        if (humanized) return humanized;
+        if (humanized) return { name: humanized.value, genericFallback: humanized.genericFallback };
       }
       // No [package] block (or no name in it) means this Cargo.toml is a
       // VIRTUAL WORKSPACE MANIFEST — a workspace root deliberately has no
@@ -17456,7 +17476,7 @@ export class AnalyzerOrchestrator {
         poetryBlock?.[1]?.match(/^\s*name\s*=\s*"([^"]+)"/m);
       if (nameMatch?.[1]?.trim()) {
         const humanized = this.humanizeManifestName(nameMatch[1].trim());
-        if (humanized) return humanized;
+        if (humanized) return { name: humanized.value, genericFallback: humanized.genericFallback };
       }
     }
 
@@ -17467,7 +17487,7 @@ export class AnalyzerOrchestrator {
       const artifactMatch = withoutDeps.match(/<artifactId>([^<]+)<\/artifactId>/);
       if (artifactMatch?.[1]?.trim()) {
         const humanized = this.humanizeManifestName(artifactMatch[1].trim());
-        if (humanized) return humanized;
+        if (humanized) return { name: humanized.value, genericFallback: humanized.genericFallback };
       }
     }
 
@@ -17476,19 +17496,19 @@ export class AnalyzerOrchestrator {
       const moduleMatch = goMod.match(/^\s*module\s+(\S+)/m);
       if (moduleMatch?.[1]?.trim()) {
         const humanized = this.humanizeGoModulePath(moduleMatch[1].trim());
-        if (humanized) return humanized;
+        if (humanized) return { name: humanized.value, genericFallback: humanized.genericFallback };
       }
     }
 
     const gemspecName = this.resolveRootGemspecName(projectPath);
-    if (gemspecName) return gemspecName;
+    if (gemspecName) return { name: gemspecName, genericFallback: false };
 
     const mixExs = this.safeReadText(path.join(projectPath, 'mix.exs'), 8000);
     if (mixExs) {
       const appMatch = mixExs.match(/\bapp:\s*:([a-zA-Z_][a-zA-Z0-9_]*)/);
       if (appMatch?.[1]?.trim()) {
         const humanized = this.humanizeManifestName(appMatch[1].trim());
-        if (humanized) return humanized;
+        if (humanized) return { name: humanized.value, genericFallback: humanized.genericFallback };
       }
     }
 
@@ -17497,7 +17517,7 @@ export class AnalyzerOrchestrator {
       const nameMatch = packageSwift.match(/Package\s*\(\s*name:\s*"([^"]+)"/);
       if (nameMatch?.[1]?.trim()) {
         const humanized = this.humanizeManifestName(nameMatch[1].trim());
-        if (humanized) return humanized;
+        if (humanized) return { name: humanized.value, genericFallback: humanized.genericFallback };
       }
     }
 
@@ -17508,7 +17528,7 @@ export class AnalyzerOrchestrator {
       const nameMatch = gradleSettings.match(/rootProject\.name\s*=\s*['"]([^'"]+)['"]/);
       if (nameMatch?.[1]?.trim()) {
         const humanized = this.humanizeManifestName(nameMatch[1].trim());
-        if (humanized) return humanized;
+        if (humanized) return { name: humanized.value, genericFallback: humanized.genericFallback };
       }
     }
     // build.gradle / build.gradle.kts alone (no settings.gradle) is
@@ -17524,7 +17544,7 @@ export class AnalyzerOrchestrator {
         const cleaned = nameMatch[1].trim().replace(/^['"]|['"]$/g, '');
         if (cleaned) {
           const humanized = this.humanizeManifestName(cleaned);
-          if (humanized) return humanized;
+          if (humanized) return { name: humanized.value, genericFallback: humanized.genericFallback };
         }
       }
     }
@@ -17535,7 +17555,7 @@ export class AnalyzerOrchestrator {
         .map(entry => entry.name);
       if (rootCsprojFiles.length === 1) {
         const humanized = this.humanizeManifestName(path.basename(rootCsprojFiles[0], path.extname(rootCsprojFiles[0])));
-        if (humanized) return humanized;
+        if (humanized) return { name: humanized.value, genericFallback: humanized.genericFallback };
       } else if (rootCsprojFiles.length === 0) {
         // No root .csproj at all (a multi-project .NET repo's projects
         // typically live in subdirectories) — a single root *.sln is still
@@ -17545,7 +17565,7 @@ export class AnalyzerOrchestrator {
           .map(entry => entry.name);
         if (rootSlnFiles.length === 1) {
           const humanized = this.humanizeManifestName(path.basename(rootSlnFiles[0], path.extname(rootSlnFiles[0])));
-          if (humanized) return humanized;
+          if (humanized) return { name: humanized.value, genericFallback: humanized.genericFallback };
         }
       }
     } catch {
@@ -17580,10 +17600,10 @@ export class AnalyzerOrchestrator {
     const nameMatch = gemspecText?.match(/\.name\s*=\s*['"]([^'"]+)['"]/);
     if (nameMatch?.[1]?.trim()) {
       const humanized = this.humanizeManifestName(nameMatch[1].trim());
-      if (humanized) return humanized;
+      if (humanized) return humanized.value;
     }
 
-    return this.humanizeManifestName(path.basename(gemspecFiles[0], path.extname(gemspecFiles[0])));
+    return this.humanizeManifestName(path.basename(gemspecFiles[0], path.extname(gemspecFiles[0])))?.value;
   }
 
   /**
@@ -17612,7 +17632,7 @@ export class AnalyzerOrchestrator {
    *    segment (the org) is the more identifying evidence, matching the
    *    same "@org/monorepo -> Org" precedent already established for npm.
    */
-  private humanizeGoModulePath(modulePath: string): string | undefined {
+  private humanizeGoModulePath(modulePath: string): { value: string; genericFallback: boolean } | undefined {
     const segments = modulePath.split('/').filter(Boolean);
     if (segments.length === 0) return undefined;
 
@@ -17627,16 +17647,18 @@ export class AnalyzerOrchestrator {
     };
 
     if (segments.length === 1) {
-      return this.humanizeWords(firstLabel(segments[0]));
+      const humanized = this.humanizeWords(firstLabel(segments[0]));
+      return humanized ? { value: humanized, genericFallback: false } : undefined;
     }
 
     const lastSegment = segments[segments.length - 1];
     if (this.GENERIC_STRUCTURAL_NAME_PATTERN.test(lastSegment)) {
       const orgSegment = segments[segments.length - 2];
       const humanizedOrg = this.humanizeWords(firstLabel(orgSegment));
-      if (humanizedOrg) return humanizedOrg;
+      if (humanizedOrg) return { value: humanizedOrg, genericFallback: true };
     }
-    return this.humanizeWords(lastSegment);
+    const humanized = this.humanizeWords(lastSegment);
+    return humanized ? { value: humanized, genericFallback: false } : undefined;
   }
 
   /**
@@ -17651,7 +17673,7 @@ export class AnalyzerOrchestrator {
    * ("@acme/checkout-service" -> "Checkout Service", "acme/payment-client"
    * -> "Payment Client") is untouched.
    */
-  private humanizeManifestName(manifestName: string): string | undefined {
+  private humanizeManifestName(manifestName: string): { value: string; genericFallback: boolean } | undefined {
     const scopedMatch = manifestName.match(/^@?([^/@\s]+)\/(.+)$/);
     if (scopedMatch) {
       const [, scope, remainder] = scopedMatch;
@@ -17659,13 +17681,15 @@ export class AnalyzerOrchestrator {
       const isGenericStructuralName = this.GENERIC_STRUCTURAL_NAME_PATTERN.test(remainderTrimmed);
       if (isGenericStructuralName) {
         const scopedHumanized = this.humanizeWords(scope);
-        if (scopedHumanized) return scopedHumanized;
+        if (scopedHumanized) return { value: scopedHumanized, genericFallback: true };
       }
       const humanizedRemainder = this.humanizeWords(remainderTrimmed);
-      if (humanizedRemainder) return humanizedRemainder;
-      return this.humanizeWords(scope);
+      if (humanizedRemainder) return { value: humanizedRemainder, genericFallback: false };
+      const scopedHumanized = this.humanizeWords(scope);
+      return scopedHumanized ? { value: scopedHumanized, genericFallback: false } : undefined;
     }
-    return this.humanizeWords(manifestName);
+    const humanized = this.humanizeWords(manifestName);
+    return humanized ? { value: humanized, genericFallback: false } : undefined;
   }
 
   /**
