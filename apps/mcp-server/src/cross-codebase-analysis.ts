@@ -11813,20 +11813,21 @@ function suppressWorkspaceContainerRoots(
 }
 
 /** True when this codebase's system.type reads 'application' only because
- *  determineSystemType() had no controller/component/package/module CAS node
- *  types to key off of (the silent default — see orchestrator.ts), the root
- *  app surface has no path_hint of its own and no real deployable evidence
- *  (no service-ish alias, no useful alias, nothing beyond the bare name/type
+ *  determineSystemType() (orchestrator.ts) fell through its final default —
+ *  no live entry points (http/rpc/graphql/websocket/api/cli/page/...) and no
+ *  ship-or-runnable deployable evidence to key off of — the root app surface
+ *  has no path_hint of its own and no real deployable evidence (no
+ *  service-ish alias, no useful alias, nothing beyond the bare name/type
  *  fallthrough), and there's at least one other, better-evidenced app in the
  *  same codebase — i.e. this is the phantom container, not the one true app. */
 function isSystemTypeDefaultedWithoutRealEvidence(repository: CrossCodebaseInput, rootApp: SystemApplication): boolean {
   const systemType = repository.cas.system?.type;
   if (systemType !== 'application') return false;
 
-  const recognizedTypes = new Set(['controller', 'component', 'package', 'module']);
-  const nodes = repository.cas.nodes || [];
-  const hasRecognizedType = nodes.some(node => recognizedTypes.has(String((node as CASNode)?.type || '')));
-  if (hasRecognizedType) return false; // determineSystemType had real signal; not a silent default
+  const hasEntryPointEvidence = (repository.cas.entry_points || []).length > 0;
+  const hasShipOrRunnableEvidence = (repository.cas.deployable_evidence || [])
+    .some(item => item.tier === 1 || item.tier === 2);
+  if (hasEntryPointEvidence || hasShipOrRunnableEvidence) return false; // determineSystemType had real signal; not a silent default
 
   if (rootApp.path_hint) return false; // has its own real surface path, not the bare synthetic root
   if ((rootApp.service_aliases || []).length > 0) return false; // carries real alias evidence

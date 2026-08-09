@@ -1,7 +1,7 @@
 import { AnalyzerOrchestrator } from '../../analyzer/core/orchestrator';
 import { TerraformAnalyzer } from '../../analyzer/languages/terraform-analyzer';
 import { aiService } from '../../ai/ai-service';
-import { CASDataEntity, CASEdge, CASEntryPoint, CASExitPoint, CASNode } from '../../types/cas.types';
+import { CASDataEntity, CASEdge, CASEntryPoint, CASExitPoint, CASNode, DeployableEvidence } from '../../types/cas.types';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -10429,5 +10429,101 @@ describe('P1: signature confidence reflects the evidence', () => {
 
   it('a genuinely high computed confidence is never lowered', () => {
     expect((orch as any).signatureMatchConfidence(2, 11, 0.93)).toBe(0.93);
+  });
+});
+
+describe('determineSystemType: evidence-based classification (live defect: a Go feed-reader with 175 HTTP entry points and Docker/RPM/Debian ship artifacts reported "library" because the old logic was a node-type-presence checklist gated on CASNode.type "controller" — which only web-framework analyzers like Spring Boot/Express/Flask stamp, never a framework-less stdlib HTTP server such as Go net/http — so it fell through to the "package" branch, which fires for essentially any Go or Java repo since those analyzers stamp every source package/namespace with node.type "package" as a routine file-organization fact unrelated to library-ness)', () => {
+  function entry(partial: Partial<CASEntryPoint>): CASEntryPoint {
+    return {
+      id: partial.id || 'ep_1',
+      source_node: partial.source_node || 'node_1',
+      type: partial.type || 'http',
+      name: partial.name || 'GET /thing',
+      ...partial,
+    } as CASEntryPoint;
+  }
+
+  function deployable(partial: Partial<DeployableEvidence>): DeployableEvidence {
+    return {
+      root_path: partial.root_path || '.',
+      name: partial.name || 'unit',
+      tier: partial.tier ?? 1,
+      kind: partial.kind || 'container',
+      evidence: partial.evidence || ['evidence'],
+      ...partial,
+    } as DeployableEvidence;
+  }
+
+  it('a Go HTTP server with package-organized source and container ship evidence is a service, not a library (the reproduced live defect)', () => {
+    const entryPoints = [entry({ type: 'http', name: 'GET /feeds' })];
+    const deployableEvidence = [
+      deployable({ tier: 1, kind: 'container', name: 'app' }),
+      // The go.mod / package.json / Cargo.toml tier-3 identity signal that
+      // used to be misread as "this is a library" is present here too, and
+      // must NOT win over the network entry point + ship evidence.
+      deployable({ tier: 3, kind: 'package', name: 'feedreader' }),
+    ];
+    expect((orch as any).determineSystemType(entryPoints, deployableEvidence)).toBe('service');
+  });
+
+  it('package manifest identity alone, with no entry points and no ship/runnable evidence, is a genuine library', () => {
+    const entryPoints: CASEntryPoint[] = [];
+    const deployableEvidence = [deployable({ tier: 3, kind: 'package', name: 'left-pad' })];
+    expect((orch as any).determineSystemType(entryPoints, deployableEvidence)).toBe('library');
+  });
+
+  it('a frontend app with page entry points and no network entry point is an application, not a service', () => {
+    const entryPoints = [entry({ type: 'page', name: '/dashboard' })];
+    const deployableEvidence: DeployableEvidence[] = [];
+    expect((orch as any).determineSystemType(entryPoints, deployableEvidence)).toBe('application');
+  });
+
+  it('a CLI tool with a bin target and no network entry point is an application', () => {
+    const entryPoints = [entry({ type: 'cli', name: 'run' })];
+    const deployableEvidence = [deployable({ tier: 2, kind: 'bin', name: 'mycli' })];
+    expect((orch as any).determineSystemType(entryPoints, deployableEvidence)).toBe('application');
+  });
+
+  it('more than one top-level ship unit is a monorepo, regardless of entry-point shape', () => {
+    const entryPoints = [entry({ type: 'http' })];
+    const deployableEvidence = [
+      deployable({ tier: 1, kind: 'container', name: 'api' }),
+      deployable({ tier: 1, kind: 'container', name: 'worker' }),
+    ];
+    expect((orch as any).determineSystemType(entryPoints, deployableEvidence)).toBe('monorepo');
+  });
+
+  it('a ship unit bundled into a sibling does not count toward the monorepo threshold', () => {
+    const entryPoints = [entry({ type: 'http' })];
+    const deployableEvidence = [
+      deployable({ tier: 1, kind: 'container', name: 'api' }),
+      deployable({ tier: 1, kind: 'server-entry', name: 'client-service', bundled_into: 'api' } as Partial<DeployableEvidence>),
+    ];
+    expect((orch as any).determineSystemType(entryPoints, deployableEvidence)).toBe('service');
+  });
+
+  it('a build-stage image tier-1 row does not count toward the monorepo threshold', () => {
+    const entryPoints = [entry({ type: 'http' })];
+    const deployableEvidence = [
+      deployable({ tier: 1, kind: 'container', name: 'app' }),
+      deployable({ tier: 1, kind: 'build-image', name: 'builder' }),
+    ];
+    expect((orch as any).determineSystemType(entryPoints, deployableEvidence)).toBe('service');
+  });
+
+  it('a repo with no entry points and no deployable evidence at all falls back to application, matching prior default behavior', () => {
+    expect((orch as any).determineSystemType([], [])).toBe('application');
+  });
+
+  it('an RPC entry point is treated as network-facing, same as HTTP', () => {
+    const entryPoints = [entry({ type: 'rpc', name: 'UserService.Get' })];
+    const deployableEvidence = [deployable({ tier: 2, kind: 'server-entry', name: 'grpc-server' })];
+    expect((orch as any).determineSystemType(entryPoints, deployableEvidence)).toBe('service');
+  });
+
+  it('a "test" entry point alone does not count as a runtime entry surface', () => {
+    const entryPoints = [entry({ type: 'test', name: 'it renders' })];
+    const deployableEvidence: DeployableEvidence[] = [];
+    expect((orch as any).determineSystemType(entryPoints, deployableEvidence)).toBe('application');
   });
 });
