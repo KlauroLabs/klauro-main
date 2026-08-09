@@ -8313,6 +8313,253 @@ describe('resolveSystemDisplayName (Klauro rung-2: system name = directory basen
   });
 });
 
+describe('resolveRootManifestName ecosystem coverage (task: go.mod naming-precedence gap audit)', () => {
+  // real-world regression: a Go module following the standard major-version
+  // layout ("module miniflux.app/v2") was falling through to the directory
+  // basename "v2" — go.mod had no manifest handler at all.
+  it('go.mod: a domain-shaped module path with a major-version suffix names from the domain label, not the version segment', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-sysname-gomod-domain-'));
+    try {
+      fs.writeFileSync(path.join(root, 'go.mod'), 'module miniflux.app/v2\n\ngo 1.21\n');
+      expect(orch.resolveSystemDisplayName(root, undefined)).toBe('Miniflux');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('go.mod: a host/org/repo module path without a version suffix names from the last (most specific) segment', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-sysname-gomod-hostorgrepo-'));
+    try {
+      fs.writeFileSync(path.join(root, 'go.mod'), 'module github.com/spf13/cobra\n');
+      expect(orch.resolveSystemDisplayName(root, undefined)).toBe('Cobra');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('go.mod: a host/org/repo path WITH a major-version suffix strips the version segment then uses the last remaining segment', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-sysname-gomod-hostorgrepo-v2-'));
+    try {
+      fs.writeFileSync(path.join(root, 'go.mod'), 'module github.com/acme/checkout-service/v2\n');
+      expect(orch.resolveSystemDisplayName(root, undefined)).toBe('Checkout Service');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('go.mod: a generic-structural last segment ("server") defers to the org segment, same precedent as npm scope', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-sysname-gomod-generic-'));
+    try {
+      fs.writeFileSync(path.join(root, 'go.mod'), 'module github.com/acme/server\n');
+      expect(orch.resolveSystemDisplayName(root, undefined)).toBe('Acme');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('go.mod: a module path that IS literally "v2" (nothing to strip down to) keeps it rather than naming from nothing', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-sysname-gomod-bare-v2-'));
+    try {
+      fs.writeFileSync(path.join(root, 'go.mod'), 'module v2\n');
+      expect(orch.resolveSystemDisplayName(root, undefined)).toBe('V2');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('*.gemspec: an explicit name assignment inside Gem::Specification wins over the filename', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-sysname-gemspec-explicit-'));
+    try {
+      fs.writeFileSync(path.join(root, 'checkout_gem.gemspec'), [
+        'Gem::Specification.new do |spec|',
+        '  spec.name = "checkout-toolkit"',
+        '  spec.version = "1.0.0"',
+        'end',
+      ].join('\n'));
+      expect(orch.resolveSystemDisplayName(root, undefined)).toBe('Checkout Toolkit');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('*.gemspec: falls back to the gemspec filename (Ruby convention) when no explicit name is assigned', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-sysname-gemspec-filename-'));
+    try {
+      fs.writeFileSync(path.join(root, 'widget_tracker.gemspec'), 'Gem::Specification.new do |s|\n  s.version = "1.0.0"\nend\n');
+      expect(orch.resolveSystemDisplayName(root, undefined)).toBe('Widget Tracker');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('*.gemspec: abstains when more than one root gemspec exists (ambiguous), same rule as root *.csproj', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-sysname-gemspec-ambiguous-'));
+    try {
+      fs.writeFileSync(path.join(root, 'a.gemspec'), 'Gem::Specification.new do |s|\nend\n');
+      fs.writeFileSync(path.join(root, 'b.gemspec'), 'Gem::Specification.new do |s|\nend\n');
+      expect(orch.resolveSystemDisplayName(root, undefined)).toBeUndefined();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('a bare Gemfile with no gemspec has no name field to declare identity from and correctly abstains', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-sysname-gemfile-only-'));
+    try {
+      fs.writeFileSync(path.join(root, 'Gemfile'), "source 'https://rubygems.org'\ngem 'rails'\n");
+      expect(orch.resolveSystemDisplayName(root, undefined)).toBeUndefined();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('mix.exs: the Elixir :app atom is scope/vendor-stripped and humanized like every other manifest name', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-sysname-mixexs-'));
+    try {
+      fs.writeFileSync(path.join(root, 'mix.exs'), [
+        'defmodule OrderProcessor.MixProject do',
+        '  use Mix.Project',
+        '  def project, do: [app: :order_processor, version: "0.1.0"]',
+        'end',
+      ].join('\n'));
+      expect(orch.resolveSystemDisplayName(root, undefined)).toBe('Order Processor');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('Package.swift: the declared package name wins, read from the Package(name: "...") call header', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-sysname-packageswift-'));
+    try {
+      fs.writeFileSync(path.join(root, 'Package.swift'), [
+        '// swift-tools-version:5.9',
+        'import PackageDescription',
+        '',
+        'let package = Package(',
+        '    name: "NetworkKit",',
+        '    products: [.library(name: "NetworkKit", targets: ["NetworkKit"])]',
+        ')',
+      ].join('\n'));
+      // Consistent with the pre-existing csproj/Cargo/pyproject behavior
+      // elsewhere in this resolver: humanizeWords splits on structural
+      // delimiters (-, _, ., /) only, never inside a camel/PascalCase word —
+      // "NetworkKit" is left as one word, same as "Enterprise.Api"-style
+      // .NET names are left alone apart from the dot split.
+      expect(orch.resolveSystemDisplayName(root, undefined)).toBe('NetworkKit');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('settings.gradle.kts: rootProject.name is the declared identity for a Kotlin/Gradle project', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-sysname-gradle-kts-'));
+    try {
+      fs.writeFileSync(path.join(root, 'settings.gradle.kts'), 'rootProject.name = "inventory-service"\ninclude(":app")\n');
+      expect(orch.resolveSystemDisplayName(root, undefined)).toBe('Inventory Service');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('settings.gradle (Groovy): rootProject.name is read the same way for a Java/Gradle project', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-sysname-gradle-groovy-'));
+    try {
+      fs.writeFileSync(path.join(root, 'settings.gradle'), "rootProject.name = 'billing-service'\ninclude 'app'\n");
+      expect(orch.resolveSystemDisplayName(root, undefined)).toBe('Billing Service');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('a bare build.gradle with no settings.gradle has no reliable name field and correctly abstains rather than guessing from group/archivesBaseName', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-sysname-buildgradle-only-'));
+    try {
+      fs.writeFileSync(path.join(root, 'build.gradle'), "group = 'com.example'\narchivesBaseName = 'not-a-declared-project-name'\n");
+      expect(orch.resolveSystemDisplayName(root, undefined)).toBeUndefined();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('pubspec.yaml: the top-level name key is the declared identity for a Dart/Flutter project', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-sysname-pubspec-'));
+    try {
+      fs.writeFileSync(path.join(root, 'pubspec.yaml'), [
+        'name: recipe_book',
+        'description: A Flutter app.',
+        'environment:',
+        '  sdk: ">=3.0.0 <4.0.0"',
+        'dependencies:',
+        '  flutter:',
+        '    sdk: flutter',
+      ].join('\n'));
+      expect(orch.resolveSystemDisplayName(root, undefined)).toBe('Recipe Book');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('*.sln: falls back to a single root solution filename when no root *.csproj exists', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-sysname-sln-'));
+    try {
+      fs.mkdirSync(path.join(root, 'src', 'Api'), { recursive: true });
+      fs.writeFileSync(path.join(root, 'src', 'Api', 'Api.csproj'), '<Project />');
+      fs.writeFileSync(path.join(root, 'CentralServer.sln'), 'Microsoft Visual Studio Solution File\n');
+      expect(orch.resolveSystemDisplayName(root, undefined)).toBe('CentralServer');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('*.sln: a root *.csproj still takes precedence over a root *.sln when both exist', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-sysname-sln-csproj-precedence-'));
+    try {
+      fs.writeFileSync(path.join(root, 'Instrument.csproj'), '<Project />');
+      fs.writeFileSync(path.join(root, 'Solution.sln'), 'Microsoft Visual Studio Solution File\n');
+      expect(orch.resolveSystemDisplayName(root, undefined)).toBe('Instrument');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('*.sln: abstains when more than one root solution file exists (ambiguous)', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-sysname-sln-ambiguous-'));
+    try {
+      fs.writeFileSync(path.join(root, 'A.sln'), 'Microsoft Visual Studio Solution File\n');
+      fs.writeFileSync(path.join(root, 'B.sln'), 'Microsoft Visual Studio Solution File\n');
+      expect(orch.resolveSystemDisplayName(root, undefined)).toBeUndefined();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('Cargo.toml: a virtual workspace manifest (no [package] block) has no name of its own and correctly abstains rather than guessing from [workspace]', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-sysname-cargo-workspace-'));
+    try {
+      fs.writeFileSync(path.join(root, 'Cargo.toml'), [
+        '[workspace]',
+        'members = ["crates/api", "crates/worker"]',
+        'resolver = "2"',
+      ].join('\n'));
+      expect(orch.resolveSystemDisplayName(root, undefined)).toBeUndefined();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // PRESERVE THE EXISTING WIN: a repo with NO manifest at all must still
+  // fall back to its product-doc title (README/PRD H1) — none of the new
+  // ecosystem handlers above should ever change that when they all abstain.
+  it('no manifest of any kind: still falls back to the product-doc title, unregressed', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-sysname-no-manifest-doctitle-'));
+    try {
+      expect(orch.resolveSystemDisplayName(root, 'Commander Deckbuilder')).toBe('Commander Deckbuilder');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('systemDisplayNameIsBareBasename (caller-supplied displayName that is itself just the folder name)', () => {
   it('treats an absent displayName as bare', () => {
     expect(orch.systemDisplayNameIsBareBasename(undefined, '/tmp/proof-of-concept')).toBe(true);

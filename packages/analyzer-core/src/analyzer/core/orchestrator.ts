@@ -515,6 +515,13 @@ export interface OrchestrateAnalysisOptions {
 }
 
 export class AnalyzerOrchestrator {
+  // A manifest-declared name/scope segment that describes the REPO'S SHAPE
+  // ("monorepo", "server", "api", ...) rather than the product itself.
+  // Shared by every manifest-name humanizer that needs to prefer an
+  // enclosing scope/org over a generic leaf word (see humanizeManifestName
+  // and humanizeGoModulePath) — structural, not a product-name vocabulary.
+  private readonly GENERIC_STRUCTURAL_NAME_PATTERN = /^(mono-?repo|root|workspace|workspaces|repo|repository|source|src|main|app|apps|packages?|projects?|core|server|client|web|www|api|frontend|backend)$/i;
+
   private analyzers: Map<string, AnalyzerRegistration> = new Map();
   private projectRoots: string[] = [];
   // Subset of projectRoots that own their own package-boundary manifest
@@ -17334,8 +17341,9 @@ export class AnalyzerOrchestrator {
    *
    * Evidence-gated priority, never fabricated: (1) an explicit caller-supplied
    * displayName always wins; (2) the ROOT manifest's own declared name —
-   * package.json/composer.json/pyproject.toml/Cargo.toml/pom.xml, or a
-   * single root *.csproj — scope/vendor-stripped and humanized
+   * package.json/composer.json/pyproject.toml/Cargo.toml/pom.xml/go.mod/
+   * *.gemspec/mix.exs/Package.swift/settings.gradle(.kts)/pubspec.yaml, or a
+   * single root *.csproj or *.sln — scope/vendor-stripped and humanized
    * ("@klauro/monorepo" -> "Klauro", "acme/checkout-lib" -> "Checkout Lib").
    * This is DECLARED identity: an author committed it on purpose to name the
    * package, so it outranks prose; (3) the product doc's own title
@@ -17393,12 +17401,22 @@ export class AnalyzerOrchestrator {
    * root `<artifactId>` (the `<parent>` block, if any, is stripped first so
    * a parent POM's own artifactId never wins, and the search stops at
    * `<dependencies>` so a dependency's artifactId can't be mistaken for the
-   * project's own); and, for the one ecosystem with no name FIELD at all, a
-   * single root `*.csproj` file, whose filename IS the declared project
-   * identity in .NET (ambiguous when more than one exists at the root, so
-   * that case abstains). Each name is scope/vendor-stripped and humanized
-   * via humanizeManifestName. Returns undefined when nothing is found —
-   * never guesses.
+   * project's own); go.mod `module` path (see humanizeGoModulePath — the
+   * ecosystem with no name FIELD, only a path, so it gets its own resolver);
+   * a root `*.gemspec`'s explicit `name =` assignment, falling back to the
+   * gemspec's own filename (ambiguous when more than one exists at the
+   * root, so that case abstains — same rule as csproj below); mix.exs's
+   * `app: :atom_name`; Package.swift's `Package(name: "...")`; Gradle's
+   * `rootProject.name` in settings.gradle/settings.gradle.kts (build.gradle
+   * alone has no reliable name field and is deliberately not read — see
+   * doc); pubspec.yaml's top-level `name:` key; and, for ecosystems with no
+   * name FIELD at all, a single root `*.csproj` file, whose filename IS the
+   * declared project identity in .NET, falling back to a single root
+   * `*.sln` when no csproj exists (ambiguous when more than one of either
+   * exists at the root, so that case abstains). Each name is
+   * scope/vendor-stripped and humanized via humanizeManifestName (or, for
+   * go.mod, the dedicated humanizeGoModulePath). Returns undefined when
+   * nothing is found — never guesses.
    */
   private resolveRootManifestName(projectPath: string): string | undefined {
     const packageJson = this.safeReadJson(path.join(projectPath, 'package.json'));
@@ -17423,6 +17441,10 @@ export class AnalyzerOrchestrator {
         const humanized = this.humanizeManifestName(nameMatch[1].trim());
         if (humanized) return humanized;
       }
+      // No [package] block (or no name in it) means this Cargo.toml is a
+      // VIRTUAL WORKSPACE MANIFEST — a workspace root deliberately has no
+      // name of its own; falling through (rather than guessing from
+      // [workspace] keys) is correct, not a gap.
     }
 
     const pyprojectToml = this.safeReadText(path.join(projectPath, 'pyproject.toml'), 8000);
@@ -17449,6 +17471,64 @@ export class AnalyzerOrchestrator {
       }
     }
 
+    const goMod = this.safeReadText(path.join(projectPath, 'go.mod'), 4000);
+    if (goMod) {
+      const moduleMatch = goMod.match(/^\s*module\s+(\S+)/m);
+      if (moduleMatch?.[1]?.trim()) {
+        const humanized = this.humanizeGoModulePath(moduleMatch[1].trim());
+        if (humanized) return humanized;
+      }
+    }
+
+    const gemspecName = this.resolveRootGemspecName(projectPath);
+    if (gemspecName) return gemspecName;
+
+    const mixExs = this.safeReadText(path.join(projectPath, 'mix.exs'), 8000);
+    if (mixExs) {
+      const appMatch = mixExs.match(/\bapp:\s*:([a-zA-Z_][a-zA-Z0-9_]*)/);
+      if (appMatch?.[1]?.trim()) {
+        const humanized = this.humanizeManifestName(appMatch[1].trim());
+        if (humanized) return humanized;
+      }
+    }
+
+    const packageSwift = this.safeReadText(path.join(projectPath, 'Package.swift'), 4000);
+    if (packageSwift) {
+      const nameMatch = packageSwift.match(/Package\s*\(\s*name:\s*"([^"]+)"/);
+      if (nameMatch?.[1]?.trim()) {
+        const humanized = this.humanizeManifestName(nameMatch[1].trim());
+        if (humanized) return humanized;
+      }
+    }
+
+    const gradleSettings =
+      this.safeReadText(path.join(projectPath, 'settings.gradle.kts'), 4000) ||
+      this.safeReadText(path.join(projectPath, 'settings.gradle'), 4000);
+    if (gradleSettings) {
+      const nameMatch = gradleSettings.match(/rootProject\.name\s*=\s*['"]([^'"]+)['"]/);
+      if (nameMatch?.[1]?.trim()) {
+        const humanized = this.humanizeManifestName(nameMatch[1].trim());
+        if (humanized) return humanized;
+      }
+    }
+    // build.gradle / build.gradle.kts alone (no settings.gradle) is
+    // deliberately not consulted here — Gradle has no reliable project-name
+    // field outside rootProject.name; group/archivesBaseName are build
+    // metadata, not declared product identity, and guessing from them would
+    // be exactly the fabrication this resolver exists to avoid.
+
+    const pubspecYaml = this.safeReadText(path.join(projectPath, 'pubspec.yaml'), 4000);
+    if (pubspecYaml) {
+      const nameMatch = pubspecYaml.match(/^name:\s*(.+)$/m);
+      if (nameMatch?.[1]) {
+        const cleaned = nameMatch[1].trim().replace(/^['"]|['"]$/g, '');
+        if (cleaned) {
+          const humanized = this.humanizeManifestName(cleaned);
+          if (humanized) return humanized;
+        }
+      }
+    }
+
     try {
       const rootCsprojFiles = fs.readdirSync(projectPath, { withFileTypes: true })
         .filter(entry => entry.isFile() && entry.name.toLowerCase().endsWith('.csproj'))
@@ -17456,12 +17536,107 @@ export class AnalyzerOrchestrator {
       if (rootCsprojFiles.length === 1) {
         const humanized = this.humanizeManifestName(path.basename(rootCsprojFiles[0], path.extname(rootCsprojFiles[0])));
         if (humanized) return humanized;
+      } else if (rootCsprojFiles.length === 0) {
+        // No root .csproj at all (a multi-project .NET repo's projects
+        // typically live in subdirectories) — a single root *.sln is still
+        // declared identity: its filename IS the solution/product name.
+        const rootSlnFiles = fs.readdirSync(projectPath, { withFileTypes: true })
+          .filter(entry => entry.isFile() && entry.name.toLowerCase().endsWith('.sln'))
+          .map(entry => entry.name);
+        if (rootSlnFiles.length === 1) {
+          const humanized = this.humanizeManifestName(path.basename(rootSlnFiles[0], path.extname(rootSlnFiles[0])));
+          if (humanized) return humanized;
+        }
       }
     } catch {
-      // unreadable root directory — no csproj evidence, fall through
+      // unreadable root directory — no csproj/sln evidence, fall through
     }
 
     return undefined;
+  }
+
+  /**
+   * A root `*.gemspec`'s declared identity. Ruby convention is stronger
+   * than most ecosystems: the FILENAME is the gem name by convention (e.g.
+   * `mygem.gemspec` for a gem named `mygem`), but a spec can also assign
+   * `name` explicitly inside its `Gem::Specification.new do |s| ... end`
+   * block under any block-variable name (`s.name`, `spec.name`, ...) — that
+   * explicit assignment is checked first since it's the more direct
+   * declaration, falling back to the filename. Ambiguous (more than one
+   * root gemspec) abstains, same rule as root *.csproj.
+   */
+  private resolveRootGemspecName(projectPath: string): string | undefined {
+    let gemspecFiles: string[];
+    try {
+      gemspecFiles = fs.readdirSync(projectPath, { withFileTypes: true })
+        .filter(entry => entry.isFile() && entry.name.toLowerCase().endsWith('.gemspec'))
+        .map(entry => entry.name);
+    } catch {
+      return undefined;
+    }
+    if (gemspecFiles.length !== 1) return undefined;
+
+    const gemspecText = this.safeReadText(path.join(projectPath, gemspecFiles[0]), 8000);
+    const nameMatch = gemspecText?.match(/\.name\s*=\s*['"]([^'"]+)['"]/);
+    if (nameMatch?.[1]?.trim()) {
+      const humanized = this.humanizeManifestName(nameMatch[1].trim());
+      if (humanized) return humanized;
+    }
+
+    return this.humanizeManifestName(path.basename(gemspecFiles[0], path.extname(gemspecFiles[0])));
+  }
+
+  /**
+   * Go's `module` directive is a PATH, not a name field, so it needs its own
+   * resolver rather than reuse of humanizeManifestName's scope/pkg split.
+   * Two structural rules, both driven only by path shape:
+   *
+   * 1. TRAILING MAJOR-VERSION SEGMENT: Go's own module-versioning
+   *    convention (see golang.org/ref/mod#major-version-suffixes) requires
+   *    every v2+ module to suffix its path with `/vN` purely for import
+   *    disambiguation — it carries no product-identity information. A
+   *    trailing segment matching `vN` (N >= 2) is stripped before naming,
+   *    but ONLY when something remains after stripping — a module whose
+   *    entire path IS "v2" keeps it rather than naming from nothing.
+   *
+   * 2. DOMAIN-PREFIX vs LAST-SEGMENT: after stripping, a lone remaining
+   *    segment that itself looks like a domain (contains a dot, e.g.
+   *    "example.app") is the whole identity — its first label ("example")
+   *    is the product name, the rest is TLD-shaped noise. A multi-segment
+   *    path (host/org/repo, e.g. "github.com/acme/widget-tool") follows
+   *    Go's own convention that the LAST segment is the specific package/
+   *    repo name,
+   *    so that wins — UNLESS the last segment is a generic structural word
+   *    (the same GENERIC_STRUCTURAL_NAME_PATTERN humanizeManifestName uses
+   *    for npm scopes, e.g. "server", "api"), in which case the previous
+   *    segment (the org) is the more identifying evidence, matching the
+   *    same "@org/monorepo -> Org" precedent already established for npm.
+   */
+  private humanizeGoModulePath(modulePath: string): string | undefined {
+    const segments = modulePath.split('/').filter(Boolean);
+    if (segments.length === 0) return undefined;
+
+    if (segments.length > 1 && /^v[2-9][0-9]*$/i.test(segments[segments.length - 1])) {
+      segments.pop();
+    }
+    if (segments.length === 0) return undefined;
+
+    const firstLabel = (segment: string): string => {
+      const dotIndex = segment.indexOf('.');
+      return dotIndex > 0 ? segment.slice(0, dotIndex) : segment;
+    };
+
+    if (segments.length === 1) {
+      return this.humanizeWords(firstLabel(segments[0]));
+    }
+
+    const lastSegment = segments[segments.length - 1];
+    if (this.GENERIC_STRUCTURAL_NAME_PATTERN.test(lastSegment)) {
+      const orgSegment = segments[segments.length - 2];
+      const humanizedOrg = this.humanizeWords(firstLabel(orgSegment));
+      if (humanizedOrg) return humanizedOrg;
+    }
+    return this.humanizeWords(lastSegment);
   }
 
   /**
@@ -17481,7 +17656,7 @@ export class AnalyzerOrchestrator {
     if (scopedMatch) {
       const [, scope, remainder] = scopedMatch;
       const remainderTrimmed = remainder.trim();
-      const isGenericStructuralName = /^(mono-?repo|root|workspace|workspaces|repo|repository|source|src|main|app|apps|packages?|projects?|core|server|client|web|www|api|frontend|backend)$/i.test(remainderTrimmed);
+      const isGenericStructuralName = this.GENERIC_STRUCTURAL_NAME_PATTERN.test(remainderTrimmed);
       if (isGenericStructuralName) {
         const scopedHumanized = this.humanizeWords(scope);
         if (scopedHumanized) return scopedHumanized;
@@ -17493,10 +17668,17 @@ export class AnalyzerOrchestrator {
     return this.humanizeWords(manifestName);
   }
 
-  /** kebab/underscore/space split, title-cased. Shared by every manifest-name humanizer above. */
+  /**
+   * kebab/underscore/dot/space split, title-cased. Shared by every
+   * manifest-name humanizer above. The dot delimiter covers .NET's
+   * Company.Product-style csproj/sln filenames ("Yisda.CentralServer" ->
+   * "Yisda CentralServer") the same way "-"/"_" already cover kebab/snake
+   * case elsewhere; it is a structural filename delimiter, not a
+   * product-specific rule.
+   */
   private humanizeWords(value: string): string | undefined {
     const humanized = value
-      .replace(/[-_]+/g, ' ')
+      .replace(/[-_.]+/g, ' ')
       .split(' ')
       .filter(Boolean)
       .map((word: string) => word.charAt(0).toUpperCase() + word.slice(1))
