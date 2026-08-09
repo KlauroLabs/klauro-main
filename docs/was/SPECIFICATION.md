@@ -1,7 +1,7 @@
 # Workspace Analysis Specification (WAS)
 
 **Version:** 1.0.0
-**Status:** Active
+**Status:** Superseded by `docs/analysis-scope/SPECIFICATION.md` 2.0.0. Retained for the compatibility mapping defined there (§12); not the current specification for new analyses.
 
 ## 1. Purpose
 
