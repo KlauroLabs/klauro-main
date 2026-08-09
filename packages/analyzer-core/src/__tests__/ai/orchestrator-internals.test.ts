@@ -8169,11 +8169,30 @@ describe('resolveSystemDisplayName (Klauro rung-2: system name = directory basen
     }
   });
 
-  it('prefers the product doc title (README H1) over the manifest name', () => {
+  // NOT "doc title always beats the manifest" — that rule was replaced by
+  // 48ed4e52 (declared manifest name outranks prose doc heading) precisely
+  // because it misnamed a real customer SPA "Prerequisites" from a
+  // boilerplate README H1. The narrower, still-live case: a manifest name
+  // that only resolved via the GENERIC-STRUCTURAL FALLBACK ("@klauro/
+  // monorepo" -> scope "Klauro", because "monorepo" is repo-shape filler,
+  // not a product word — see the "@klauro/monorepo -> Klauro" test below) is
+  // weaker evidence than a real, specific product doc title, so the doc
+  // title wins in that narrow case only.
+  it('prefers the product doc title over a manifest name reached only via the generic-structural scope fallback', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-sysname-doctitle-'));
     try {
       fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ name: '@klauro/monorepo' }));
       expect(orch.resolveSystemDisplayName(root, 'Klauro Proof Of Concept')).toBe('Klauro Proof Of Concept');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('still prefers a genuinely specific manifest name over a doc title (declared identity outranks prose, unchanged)', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'klauro-sysname-manifest-beats-doctitle-'));
+    try {
+      fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ name: '@acme/checkout-service' }));
+      expect(orch.resolveSystemDisplayName(root, 'Some Other Product Name')).toBe('Checkout Service');
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
