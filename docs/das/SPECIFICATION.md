@@ -1,7 +1,7 @@
 # Deployable Analysis Specification (DAS)
 
 **Version:** 1.0.0
-**Status:** Active (Phase 1-2 implemented; see §10 for what remains)
+**Status:** Superseded by `docs/analysis-scope/SPECIFICATION.md` 2.0.0. Retained for the compatibility mapping defined there (§12) and because its §3.3/§10 limitations are cited directly by that specification; not the current specification for new analyses. (Phase 1-2 implemented; see §10 for what remains.)
 
 ## 1. Purpose
 
