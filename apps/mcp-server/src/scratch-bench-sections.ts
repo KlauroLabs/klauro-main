@@ -40,6 +40,8 @@ async function main() {
       await runConcurrent('segmented-start-context', n, () =>
         loadAnalysisSections(PROJECT_PATH, CAS_SECTION_PROFILES.full));
     }
+  }
+  if (MODE === 'graph-search' || MODE === 'all') {
     for (const n of [1, 4, 16]) {
       await runConcurrent('segmented-graph-search', n, () =>
         loadAnalysisSections(PROJECT_PATH, CAS_SECTION_PROFILES.graph_search));
