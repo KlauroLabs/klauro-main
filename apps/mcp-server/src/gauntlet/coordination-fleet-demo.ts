@@ -55,7 +55,7 @@ import type {
   CasEdgeRef,
   CollisionReport,
   InFlightSnapshot,
-  WasCapabilityRef,
+  WorkspaceCapabilityRef,
   WorkClaim,
 } from '../coordination/types';
 
@@ -142,8 +142,8 @@ export function buildCasEdges(): CasEdgeRef[] {
   ];
 }
 
-export function buildWasCapabilities(): WasCapabilityRef[] {
-  return [{ id: 'was-cap-1', name: 'refactor-auth-flow', project_ids: ['proof-of-concept'] }];
+export function buildWorkspaceCapabilities(): WorkspaceCapabilityRef[] {
+  return [{ id: 'workspace-cap-1', name: 'refactor-auth-flow', project_ids: ['proof-of-concept'] }];
 }
 
 /** Epsilon's uncommitted working tree touches the CheckoutResponse contract
@@ -190,7 +190,7 @@ export async function runCoordinatedArm(
   workspaceId: string,
   fleet: FleetAgentIntent[],
   casEdges: CasEdgeRef[],
-  wasCapabilities: WasCapabilityRef[],
+  workspaceCapabilities: WorkspaceCapabilityRef[],
   inFlightSnapshots: InFlightSnapshot[]
 ): Promise<CoordinatedArmResult> {
   const arbitrations: CoordinatedArmResult['arbitrations'] = [];
@@ -221,7 +221,7 @@ export async function runCoordinatedArm(
       ttl_ms: 5 * 60 * 1000,
       heartbeat_at: now,
     };
-    const verdict = arbitrate(proposedClaim, activeSoFar, casEdges, wasCapabilities);
+    const verdict = arbitrate(proposedClaim, activeSoFar, casEdges, workspaceCapabilities);
     arbitrations.push({ agent_id: agent.agent_id, claim_id: agent.claim_id, result: verdict });
 
     if (verdict.verdict === 'duplicate') dupWorkPrevented++;
@@ -250,7 +250,7 @@ export async function runCoordinatedArm(
   // (delta vs epsilon via the CAS edge) get caught even when they weren't the
   // *first* conflict a given agent's per-claim arbitration hit.
   const finalActive = await getActiveClaims(workspaceId);
-  const collisionReport = detectCollisions(finalActive, inFlightSnapshots, casEdges, wasCapabilities);
+  const collisionReport = detectCollisions(finalActive, inFlightSnapshots, casEdges, workspaceCapabilities);
 
   // 4. In-flight visibility: does agent B (gamma) actually see agent A's
   // (epsilon's) uncommitted claim/contract touch? We answer this directly off
@@ -310,7 +310,7 @@ export function runUncoordinatedArm(
   workspaceId: string,
   fleet: FleetAgentIntent[],
   casEdges: CasEdgeRef[],
-  wasCapabilities: WasCapabilityRef[],
+  workspaceCapabilities: WorkspaceCapabilityRef[],
   inFlightSnapshots: InFlightSnapshot[]
 ): UncoordinatedArmResult {
   const actionsTaken = fleet.map((agent) => ({
@@ -338,7 +338,7 @@ export function runUncoordinatedArm(
 
   // Post-hoc-only: nobody ran this while acting. Standing in for a merge-time
   // discovery, not a live warning.
-  const wouldHaveCollided = detectCollisions(asClaims, inFlightSnapshots, casEdges, wasCapabilities);
+  const wouldHaveCollided = detectCollisions(asClaims, inFlightSnapshots, casEdges, workspaceCapabilities);
 
   const dupWorkCommitted = wouldHaveCollided.duplicates.length;
 
@@ -365,11 +365,11 @@ export interface FleetDemoReport {
 export async function runFleetDemo(workspaceId: string): Promise<FleetDemoReport> {
   const fleet = buildFleetScenario(workspaceId);
   const casEdges = buildCasEdges();
-  const wasCapabilities = buildWasCapabilities();
+  const workspaceCapabilities = buildWorkspaceCapabilities();
   const inFlightSnapshots = buildInFlightSnapshots(workspaceId);
 
-  const coordinated = await runCoordinatedArm(workspaceId, fleet, casEdges, wasCapabilities, inFlightSnapshots);
-  const uncoordinated = runUncoordinatedArm(workspaceId, fleet, casEdges, wasCapabilities, inFlightSnapshots);
+  const coordinated = await runCoordinatedArm(workspaceId, fleet, casEdges, workspaceCapabilities, inFlightSnapshots);
+  const uncoordinated = runUncoordinatedArm(workspaceId, fleet, casEdges, workspaceCapabilities, inFlightSnapshots);
 
   return { workspaceId, fleetSize: fleet.length, coordinated, uncoordinated };
 }

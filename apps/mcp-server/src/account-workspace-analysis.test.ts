@@ -561,7 +561,7 @@ test('a short-circuited AI attempt persists an honest enrichment error, not a fa
     assert.equal(readyBody.enrichment?.status, 'error');
     assert.match(String(readyBody.enrichment?.error || ''), /no real attempt/i);
     // ...and the narrative must never claim a quality-gate rejection happened.
-    assert.ok(!/rejected by the WAS quality gate/i.test(String(readyBody.analysis?.workspace_narrative?.degraded_reason || '')),
+    assert.ok(!/rejected by the workspace narrative quality gate/i.test(String(readyBody.analysis?.workspace_narrative?.degraded_reason || '')),
       `no fake gate rejection allowed: ${readyBody.analysis?.workspace_narrative?.degraded_reason}`);
   } finally {
     aiService.generateComponentDescription = originalGenerate;

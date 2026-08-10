@@ -1,5 +1,5 @@
 import { Box, Chip, Stack, Typography } from '@mui/material';
-import type { DasShipEvidenceFields } from '@/shared/hooks/useDasUnits';
+import type { DasShipEvidenceFields } from '@/shared/hooks/useSubCasNodes';
 
 export function DasShipEvidence({ evidence }: { evidence: DasShipEvidenceFields | undefined }) {
   if (!evidence) return null;

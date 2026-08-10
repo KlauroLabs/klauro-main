@@ -292,7 +292,7 @@ export class AccountWorkspaceAnalysisScheduler {
       record.graph.workspace_narrative = {
         ...record.graph.workspace_narrative,
         source: 'ai-required-degraded',
-        degraded_reason: `AI workspace narrative enrichment failed during the server-side WAS rebuild: ${detail}. Retry via POST /api/workspaces/{id}/reanalyze once an AI provider is reachable.`,
+        degraded_reason: `AI workspace narrative enrichment failed during the server-side workspace-level CAS rebuild: ${detail}. Retry via POST /api/workspaces/{id}/reanalyze once an AI provider is reachable.`,
       };
       record.enrichment = {
         status: 'error',

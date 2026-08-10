@@ -30,7 +30,7 @@ import {
   getActiveClaims,
   getPresence,
 } from '../coordination/local-store';
-import type { CasEdgeRef, InFlightSnapshot, WasCapabilityRef, WorkClaim } from '../coordination/types';
+import type { CasEdgeRef, InFlightSnapshot, WorkspaceCapabilityRef, WorkClaim } from '../coordination/types';
 
 const WORKSPACE_ID = 'coordination-demo-workspace';
 
@@ -41,7 +41,7 @@ const CAS_EDGES: CasEdgeRef[] = [
 ];
 
 /** Small inline workspace-level-CAS-capability fixture — just enough to exercise capability matching. */
-const WAS_CAPABILITIES: WasCapabilityRef[] = [
+const WORKSPACE_CAPABILITIES: WorkspaceCapabilityRef[] = [
   { id: 'cap-1', name: 'checkout-refactor', project_ids: ['proj-checkout'] },
 ];
 
@@ -97,7 +97,7 @@ async function scenario1(transcript: TranscriptLine[]): Promise<ScenarioResult> 
     scope: { repo: WORKSPACE_ID, paths: ['src/checkout/'], symbols: ['CheckoutService.submitOrder'], capability: 'checkout-refactor' },
     intent: 'Refactor checkout flow to support split payments',
   }));
-  const resultA = arbitrate(claimA, await getActiveClaims(WORKSPACE_ID), CAS_EDGES, WAS_CAPABILITIES);
+  const resultA = arbitrate(claimA, await getActiveClaims(WORKSPACE_ID), CAS_EDGES, WORKSPACE_CAPABILITIES);
   say(transcript, 1, 'Agent A verdict', { verdict: resultA.verdict });
 
   say(transcript, 1, 'Agent B is given the SAME task and calls claim_work for "checkout-refactor".');
@@ -108,7 +108,7 @@ async function scenario1(transcript: TranscriptLine[]): Promise<ScenarioResult> 
     intent: 'Rebuild checkout flow to support split payments',
   }), seq: 999 };
   const activeForB = await getActiveClaims(WORKSPACE_ID);
-  const resultB = arbitrate(claimBAttempt, activeForB, CAS_EDGES, WAS_CAPABILITIES);
+  const resultB = arbitrate(claimBAttempt, activeForB, CAS_EDGES, WORKSPACE_CAPABILITIES);
   say(transcript, 1, 'Agent B verdict (check_collision / claim_work)', {
     verdict: resultB.verdict,
     with_claim_id: resultB.with_claim?.claim_id,
@@ -147,7 +147,7 @@ async function scenario2(transcript: TranscriptLine[]): Promise<ScenarioResult> 
     scope: { repo: WORKSPACE_ID, paths: ['src/auth/login.ts'], symbols: [] },
     intent: 'Add MFA prompt to login handler',
   }), seq: 998 };
-  const arbResult = arbitrate(overlappingClaim, await getActiveClaims(WORKSPACE_ID), CAS_EDGES, WAS_CAPABILITIES);
+  const arbResult = arbitrate(overlappingClaim, await getActiveClaims(WORKSPACE_ID), CAS_EDGES, WORKSPACE_CAPABILITIES);
   say(transcript, 2, 'arbitrate() verdict on overlapping path claim', { verdict: arbResult.verdict, kind: arbResult.kind, evidence: arbResult.evidence });
 
   const overlapPassed =
@@ -171,7 +171,7 @@ async function scenario2(transcript: TranscriptLine[]): Promise<ScenarioResult> 
     scope: { repo: WORKSPACE_ID, paths: ['src/billing/x.ts'], symbols: [] },
     intent: 'Add proration logic to billing',
   }), seq: 997 };
-  const disjointArb = arbitrate(disjointClaim, await getActiveClaims(WORKSPACE_ID), CAS_EDGES, WAS_CAPABILITIES);
+  const disjointArb = arbitrate(disjointClaim, await getActiveClaims(WORKSPACE_ID), CAS_EDGES, WORKSPACE_CAPABILITIES);
   say(transcript, 2, 'Disjoint-path result', {
     lockConflicts: disjointLockConflicts,
     arbitrateVerdict: disjointArb.verdict,
@@ -215,7 +215,7 @@ async function scenario3(transcript: TranscriptLine[]): Promise<ScenarioResult> 
   }));
 
   const activeClaims = await getActiveClaims(WORKSPACE_ID);
-  const report = detectCollisions(activeClaims, [inFlightA], CAS_EDGES, WAS_CAPABILITIES);
+  const report = detectCollisions(activeClaims, [inFlightA], CAS_EDGES, WORKSPACE_CAPABILITIES);
   say(transcript, 3, 'detectCollisions() report (drifts)', report.drifts);
 
   const drift = report.drifts.find((d) => d.agent_id === 'agent-A' && d.with_agent_id === claimB.agent_id);

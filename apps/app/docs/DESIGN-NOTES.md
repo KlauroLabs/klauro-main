@@ -100,7 +100,7 @@ same boundary CodebaseHeader documents for the Repo overview screen. `WorkspaceP
 content region only.
 
 ### No designed surface for applications/deployables, merged_into folding, or DAS badges — API-offers-more
-The WAS graph's `applications[]` (with `merged_into`/`also_declared_by`/`source_das_unit_id`) is
+The WAS graph's `applications[]` (with `merged_into`/`also_declared_by`/`source_sub_cas_node_id`) is
 real, richer data the Figma "Workspace" frame does not show anywhere — the frame's only repository-
 shaped section is "Repositories", which reads as the codebases list (WAS `codebases[]`), not
 per-application rows. Per the DESIGN FIDELITY RULE nothing is added to the UI beyond the frame, so
@@ -473,7 +473,7 @@ a route exists.
 ### No Figma design exists for this route
 Checked the same 5 screens (file `Ux2aXXgq4jzD9T4TZaDAw8`, node-ids 1698-13626, 1748-6595,
 1647-37709, 1982-5977, 2030-31178). None covers a DAS unit picker or drilldown.
-`/codebases/:projectId/deployables/:dasUnitId` is **undesigned** — derived from the design
+`/codebases/:projectId/deployables/:subCasNodeId` is **undesigned** — derived from the design
 language plus the entry-points lane's per-deployable switcher (`DeployableSwitcher.tsx`, itself
 undesigned): a page header with a bordered-pill `Select` switcher in the actions slot
 (`DasUnitPicker.tsx`, hidden below 2 units, same as its precedent), then stacked bordered card
@@ -490,7 +490,7 @@ accounting, all of which `apps/mcp-server/src/deployable-analysis.ts`'s
 `buildDeployableAnalyses` computes via a call-graph reachability closure (and only the MCP
 `get_summary` tool's `scope` parameter can retrieve). This lane does NOT reimplement that
 closure client-side (that would be the "second flow algorithm" LANE-COMMON.md forbids). Instead:
-- `src/pages/deployable/dasIndex.ts` reproduces the much smaller, purely evidence-based
+- `src/pages/deployable/subCasNodeIndex.ts` reproduces the much smaller, purely evidence-based
   **promotion rule + id scheme** (`tierQualifiedShipUnits`/`shouldPromote`/`buildDeployableRoots`)
   against `cas.deployable_evidence`, which the HTTP payload DOES carry in full — so the picker's
   units and ids are exact, not approximate.
@@ -502,9 +502,9 @@ closure client-side (that would be the "second flow algorithm" LANE-COMMON.md fo
   shared between two units, which only the real closure algorithm tags.
 - `src/pages/deployable/DasOrphanNotice.tsx` renders an explicit "not available over HTTP yet"
   notice rather than a fabricated or omitted orphan count.
-Affected fields: `sub_cas_nodes` (server has it, HTTP doesn't expose it), `DasUnitSlice.slice.nodes/
-entry_points/exit_points` (reachability-closure-scoped), `DasIndex.orphan_node_count`/
-`orphan_node_ids`. A future backend lane adding a `GET /api/projects/:id/cas?scope=<das_unit_id>`
+Affected fields: `sub_cas_nodes` (server has it, HTTP doesn't expose it), `SubCasNodeSlice.slice.nodes/
+entry_points/exit_points` (reachability-closure-scoped), `SubCasNodeIndex.orphan_node_count`/
+`orphan_node_ids`. A future backend lane adding a `GET /api/projects/:id/cas?scope=<sub_cas_node_id>`
 (or dedicated `/deployables` HTTP route) would let this page drop its approximation layer
 entirely in favor of the real slice, using the same unit ids it already computes today.
 
@@ -733,10 +733,10 @@ empty state is gone; an honest empty state remains for the real case of a codeba
 
 ### CORRECTION — monorepo/deployable structure was already wired, by a different lane
 This lane's task brief named "monorepo understanding missing" as a second gap to fix, citing
-`cas.deployable_evidence` + `dasIndex.ts`. Checked `ArchitectureSection.tsx` (Repo overview's
-section 04, already reusing `useDasIndex`) and found the clickables-diagrams lane had already
+`cas.deployable_evidence` + `subCasNodeIndex.ts`. Checked `ArchitectureSection.tsx` (Repo overview's
+section 04, already reusing `useSubCasNodeIndex`) and found the clickables-diagrams lane had already
 wired `ArchitectureDiagram` to real `deployable_evidence` nodes/`bundled_into` edges, clickable
-into `/codebases/:id/deployables/:dasUnitId` for promoted units (see that lane's own entry
+into `/codebases/:id/deployables/:subCasNodeId` for promoted units (see that lane's own entry
 above, "Architecture diagram — real data, narrower edge set..."). The Figma "Repo overview" frame
 has no separate deployable-count/monorepo-structure element beyond the Architecture section (see
 the 4-card stat row's fixed Capabilities/Entry points/Contributors/Codebase age set, and the
@@ -778,7 +778,7 @@ route source directly; a human should re-check `~/.klauro/auth.json` token fresh
 |---|---|---|---|
 | Dependencies section (chips) | Repo overview §05 | **Fixed** — fed now | `useExternalServices`/`useLibraries` off `cas.external_services`/`cas.libraries` |
 | Full Dependencies page | `/codebases/:id/dependencies` | **Fixed** — fed now | same hooks, reuses page-integrations' list components |
-| Architecture diagram (deployable/monorepo structure) | Repo overview §04 | Already fed (prior lane) | `useDasIndex` over `cas.deployable_evidence`, clickable into DAS unit routes |
+| Architecture diagram (deployable/monorepo structure) | Repo overview §04 | Already fed (prior lane) | `useSubCasNodeIndex` over `cas.deployable_evidence`, clickable into DAS unit routes |
 | Jump Back In — Capabilities | Home | **Fixed** — fed now | `useProjectSummary(project.id).summary.capabilities` |
 | Jump Back In — Last Opened | Home | **Fixed** — fed now (client-side) | `useRecentProjectViews.ts`, `localStorage`, recorded by `CodebasePage` |
 | Jump Back In — Lines | Home | True gap | no lines-of-code field anywhere in `AnalysisSummary`/`ProjectRevision`/`CASSystem` |

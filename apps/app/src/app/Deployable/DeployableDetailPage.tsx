@@ -5,7 +5,7 @@ import { PageHeader } from '@/shared/layout/PageHeader';
 import { LoadingState } from '@/shared/layout/LoadingState';
 import { EmptyState } from '@/shared/layout/EmptyState';
 import { ErrorState } from '@/shared/layout/ErrorState';
-import { useDasUnitIndex, useDasUnitSlice } from '@/shared/hooks/useDasUnits';
+import { useDasUnitIndex, useSubCasNodeSlice } from '@/shared/hooks/useSubCasNodes';
 import { encodeSlug, resolveSlug } from '@/shared/lib/slugs';
 import { DasUnitPicker } from './DasUnitPicker';
 import { DasUnitOverview } from './DasUnitOverview';
@@ -24,7 +24,7 @@ export function DeployableDetailPage() {
     () => resolveSlug(dasUnitId, index.units) ?? index.units[0],
     [index.units, dasUnitId],
   );
-  const scoped = useDasUnitSlice(projectId, selectedUnit?.id);
+  const scoped = useSubCasNodeSlice(projectId, selectedUnit?.id);
 
   useEffect(() => {
     if (!projectId || !selectedUnit) return;

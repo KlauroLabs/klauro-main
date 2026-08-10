@@ -3,7 +3,7 @@ import { screen, fireEvent } from '@testing-library/react';
 import { renderWithProviders } from '../../utils/renderWithProviders';
 import { CodebaseArchitecture } from '@/app/Codebase/CodebaseArchitecture';
 import * as summaryHooks from '@/shared/hooks/useProjectSummary';
-import * as dasHooks from '@/shared/hooks/useDasUnits';
+import * as dasHooks from '@/shared/hooks/useSubCasNodes';
 import * as architectureConceptsHooks from '@/shared/hooks/useArchitectureConcepts';
 
 const routeProps = { route: '/codebases/p1/architecture', path: '/codebases/:projectId/architecture' };
@@ -17,8 +17,8 @@ function mockSummary(overrides: Partial<ReturnType<typeof summaryHooks.useProjec
   } as ReturnType<typeof summaryHooks.useProjectSummary>);
 }
 
-function mockDasIndex(overrides: Partial<ReturnType<typeof dasHooks.useDasIndex>>) {
-  vi.spyOn(dasHooks, 'useDasIndex').mockReturnValue({
+function mockSubCasNodeIndex(overrides: Partial<ReturnType<typeof dasHooks.useSubCasNodeIndex>>) {
+  vi.spyOn(dasHooks, 'useSubCasNodeIndex').mockReturnValue({
     isLoading: false,
     isError: false,
     promoted: false,
@@ -27,7 +27,7 @@ function mockDasIndex(overrides: Partial<ReturnType<typeof dasHooks.useDasIndex>
     nodes: [],
     dataEntities: [],
     ...overrides,
-  } as ReturnType<typeof dasHooks.useDasIndex>);
+  } as ReturnType<typeof dasHooks.useSubCasNodeIndex>);
 }
 
 function mockArchitectureConcepts(overrides: Partial<ReturnType<typeof architectureConceptsHooks.useArchitectureConcepts>>) {
@@ -43,7 +43,7 @@ function mockArchitectureConcepts(overrides: Partial<ReturnType<typeof architect
 describe('CodebaseArchitecture', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
-    mockDasIndex({});
+    mockSubCasNodeIndex({});
     mockArchitectureConcepts({});
   });
 
@@ -109,7 +109,7 @@ describe('CodebaseArchitecture', () => {
         summary: { architecture_type: 'Modular monolith' },
       },
     });
-    mockDasIndex({
+    mockSubCasNodeIndex({
       evidence: [
         { root_path: 'services/api', name: 'api', tier: 1, kind: 'container', evidence: ['Dockerfile'] },
       ],

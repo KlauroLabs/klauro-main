@@ -29,7 +29,7 @@ import * as runtimeSdk from './runtime-sdk';
 import * as agentDoctor from './agent-doctor';
 import * as workspaceGraph from './workspace-graph';
 import * as crossCodebaseAnalysis from './cross-codebase-analysis';
-import { getCachedDeployableAnalyses, scopeCasToDasUnit, type DasScopeParam } from './deployable-analysis';
+import { getCachedDeployableAnalyses, scopeCasToSubCasNode, type SubCasNodeScopeParam } from './deployable-analysis';
 import * as agentDefaults from './agent-defaults';
 import * as integrationDepth from './integration-depth';
 import * as invariantValidation from './invariant-validation';
@@ -67,7 +67,7 @@ import { attachDeployable, ensureEntryPointDescription } from '../../../packages
 import { attachInteractionReach } from '../../../packages/analyzer-core/src/analyzer/core/entry-point-enrichment';
 import type { CASOutput } from '../../../packages/analyzer-core/src/types/cas.types';
 import { loadStoredConnectorAuth, normalizeServerUrl } from './connector-auth';
-import { arbitrate, detectCollisions, getGrants, heartbeatGrant, releaseGrant, requestGrant, type AgentKind, type CasEdgeRef, type WasCapabilityRef, type WorkClaim } from './coordination';
+import { arbitrate, detectCollisions, getGrants, heartbeatGrant, releaseGrant, requestGrant, type AgentKind, type CasEdgeRef, type WorkspaceCapabilityRef, type WorkClaim } from './coordination';
 import { attributeChange, appendClaim, checkEditLock, extendClaim, getActiveClaims, getBoardInfo, getPresence, persistContractDriftSurprises, readClaimLog, readSurprisesFor, recordDerivedContracts, releaseAgentWithReason, watch } from './coordination/local-store';
 import { detectDeclaredContractDrift } from './coordination/collision';
 import {
@@ -552,12 +552,12 @@ function enableToolCallLogging(server: McpServer): void {
  * the discovery path a caller uses to learn a scope exists before ever
  * passing one.
  */
-function buildSummaryWithDasIndex(
+function buildSummaryWithSubCasNodeIndex(
   cas: CASOutput,
-  scope: DasScopeParam | undefined,
+  scope: SubCasNodeScopeParam | undefined,
   opts: { detail?: 'compact' | 'full'; excludeSeams?: boolean }
 ): Record<string, unknown> {
-  const scopedCas = scopeCasToDasUnit(cas, scope);
+  const scopedCas = scopeCasToSubCasNode(cas, scope);
   const summary = query.buildSummary(scopedCas, opts);
   if (scope) return summary;
   const das = getCachedDeployableAnalyses(cas);
@@ -683,12 +683,12 @@ async function casEdgesForWorkspace(workspace: string): Promise<CasEdgeRef[]> {
  * the persisted workspace-analysis graph whose inputs cover `workspace` (same
  * resolver `resolve_workspace_analysis` uses) and trims its
  * `workspace_capabilities` to the coordination module's minimal
- * `WasCapabilityRef` shape. `workspace` may be a logical id with no matching
+ * `WorkspaceCapabilityRef` shape. `workspace` may be a logical id with no matching
  * workspace-level-CAS analysis (or none has been run yet) — that is expected, not an error,
  * so any failure or empty match falls back to `[]` and arbitration proceeds
  * exactly as before this cross-reference existed.
  */
-async function wasCapabilitiesForWorkspace(workspace: string): Promise<WasCapabilityRef[]> {
+async function workspaceCapabilitiesForWorkspace(workspace: string): Promise<WorkspaceCapabilityRef[]> {
   try {
     const { selected } = await resolveWorkspaceAnalysisForPaths([workspace]);
     if (!selected) return [];
@@ -1070,7 +1070,7 @@ async function resolveWorkspaceAnalysisForPaths(paths: string[] = []): Promise<{
 
 async function buildWorkspaceFreshness(graph: any): Promise<{
   status: 'fresh' | 'stale' | 'unknown';
-  stale_inputs: Array<{ project_id: string; repo_path: string; was_input_at?: string; current_analysis_at?: string; reason: string }>;
+  stale_inputs: Array<{ project_id: string; repo_path: string; parent_cas_input_at?: string; current_analysis_at?: string; reason: string }>;
   checked_inputs: number;
 }> {
   const staleInputs = [];
@@ -1079,11 +1079,11 @@ async function buildWorkspaceFreshness(graph: any): Promise<{
     if (!repoPath) continue;
     const entry = await getAnalysisEntry(repoPath);
     if (!entry) {
-      staleInputs.push({ project_id: input.project_id || input.codebase_id, repo_path: repoPath, was_input_at: input.cas_generated_at, reason: 'No current CAS index entry exists for this sub-CAS node.' });
+      staleInputs.push({ project_id: input.project_id || input.codebase_id, repo_path: repoPath, parent_cas_input_at: input.cas_generated_at, reason: 'No current CAS index entry exists for this sub-CAS node.' });
       continue;
     }
     if (input.cas_generated_at && entry.analyzed_at && new Date(entry.analyzed_at).getTime() > new Date(input.cas_generated_at).getTime()) {
-      staleInputs.push({ project_id: input.project_id || input.codebase_id, repo_path: repoPath, was_input_at: input.cas_generated_at, current_analysis_at: entry.analyzed_at, reason: 'This sub-CAS node was re-analyzed after the parent CAS was generated.' });
+      staleInputs.push({ project_id: input.project_id || input.codebase_id, repo_path: repoPath, parent_cas_input_at: input.cas_generated_at, current_analysis_at: entry.analyzed_at, reason: 'This sub-CAS node was re-analyzed after the parent CAS was generated.' });
     }
   }
   return {
@@ -1093,7 +1093,7 @@ async function buildWorkspaceFreshness(graph: any): Promise<{
   };
 }
 
-function validateWasGraph(graph: any, freshnessResult?: Awaited<ReturnType<typeof buildWorkspaceFreshness>>) {
+function validateWorkspaceGraph(graph: any, freshnessResult?: Awaited<ReturnType<typeof buildWorkspaceFreshness>>) {
   const missing = [
     graph?.projects?.length ? '' : 'projects',
     graph?.deployables?.length ? '' : 'deployables',
@@ -1154,13 +1154,13 @@ const EXCLUDE_SECTIONS_PARAM = z
 
 // Sub-CAS-node retrieval scope (docs/cas/SPECIFICATION.md §0.4): on a promoted
 // repo (>= 2 tier-qualified ship units, see deployable-analysis.ts), scope a
-// repo-level tool to exactly one das_unit_id's sliced facts instead of the
+// repo-level tool to exactly one sub_cas_node_id's sliced facts instead of the
 // whole-repo rollup. Omitted on any repo (promoted or not) preserves today's
 // behavior unchanged. Mirrors get_workspace_agent_context's task-scoped
 // pattern one level down (spec §6).
 const DAS_SCOPE_PARAM = z
   .object({
-    das_unit_id: z.string().describe('A das_unit_id from get_summary\'s sub_cas_nodes (only present on a promoted repo).'),
+    sub_cas_node_id: z.string().describe('A sub_cas_node_id from get_summary\'s sub_cas_nodes (only present on a promoted repo).'),
   })
   .optional()
   .describe('Scope this call to one sub-CAS-node unit (see sub_cas_nodes on get_summary). Omit to query the whole repo/rollup.');
@@ -2043,13 +2043,13 @@ function registerTools(server: McpServer) {
               return json(payload);
             }
           }
-          return json(withFreshnessStamp(buildSummaryWithDasIndex(resolution.cas, scope, { detail, excludeSeams: filter.isExcluded('seams') })));
+          return json(withFreshnessStamp(buildSummaryWithSubCasNodeIndex(resolution.cas, scope, { detail, excludeSeams: filter.isExcluded('seams') })));
         }
       }
       // track-scoped reads (working/committed/incoming) bypass the freshness gate:
       // getFreshAnalysisForAgent only knows about the default track's CAS.
       const cas = track ? await getAnalysis(path, { track }) : await getFreshAnalysisForAgent(path);
-      return json(withFreshnessStamp(buildSummaryWithDasIndex(cas, scope, { detail, excludeSeams: filter.isExcluded('seams') })));
+      return json(withFreshnessStamp(buildSummaryWithSubCasNodeIndex(cas, scope, { detail, excludeSeams: filter.isExcluded('seams') })));
     })
   );
 
@@ -2380,7 +2380,7 @@ function registerTools(server: McpServer) {
       const graph = await loadCrossCodebaseSystemGraph(analysis_id_or_name);
       if (!graph) return json({ error: `Workspace analysis not found: ${analysis_id_or_name}` });
       const freshnessResult = await buildWorkspaceFreshness(graph);
-      return json(validateWasGraph(graph, freshnessResult));
+      return json(validateWorkspaceGraph(graph, freshnessResult));
     })
   );
 
@@ -3932,7 +3932,7 @@ function registerTools(server: McpServer) {
     async ({ path, query: q, type, category, level, limit, mode, detail, scope }: any) => withErrorHandling(async () => {
       const resolvedMode = mode || 'hybrid';
       const resolvedDetail = detail || 'compact';
-      const scopedGetCas = async (p: string) => scopeCasToDasUnit(
+      const scopedGetCas = async (p: string) => scopeCasToSubCasNode(
         await getFreshAnalysisForAgent(p, resolvedMode === 'lexical'
           ? CAS_SECTION_PROFILES.graph_search
           : ['identity', 'graph', 'supplemental']),
@@ -4039,7 +4039,7 @@ function registerTools(server: McpServer) {
       } as any,
     } as any,
     async ({ path, file_path, scope }: any) => withErrorHandling(async () => {
-      const cas = scopeCasToDasUnit(await getAnalysis(path, { sections: CAS_SECTION_PROFILES.graph_search }), scope);
+      const cas = scopeCasToSubCasNode(await getAnalysis(path, { sections: CAS_SECTION_PROFILES.graph_search }), scope);
       return json(query.getFileNodes(cas, file_path, path));
     })
   );
@@ -4081,7 +4081,7 @@ function registerTools(server: McpServer) {
       } as any,
     } as any,
     async ({ path, type, limit, offset, scope }: any) => withErrorHandling(async () => {
-      const cas = scopeCasToDasUnit(await getAnalysis(path), scope);
+      const cas = scopeCasToSubCasNode(await getAnalysis(path), scope);
       const result = query.getEntryPoints(cas, { type, limit, offset });
       // ENTRY-POINT ANALYSIS-GAP ENRICHMENT (query-time — keeps the stored CAS
       // canonical, mirrors the getFlowConcepts/telemetry query-time pattern).
@@ -4662,7 +4662,7 @@ function registerTools(server: McpServer) {
       } as any,
     } as any,
     async ({ path, entity_name, limit, offset, role, scope }: any) => withErrorHandling(async () => {
-      const cas = scopeCasToDasUnit(await getAnalysis(path), scope);
+      const cas = scopeCasToSubCasNode(await getAnalysis(path), scope);
       return json(query.getDataEntities(cas, { entityName: entity_name, limit, offset, role }));
     })
   );
@@ -5555,9 +5555,9 @@ function registerTools(server: McpServer) {
         ttl_ms: 0,
         heartbeat_at: new Date().toISOString(),
       };
-      const wasCapabilities = capability ? await wasCapabilitiesForWorkspace(workspace) : [];
-      const verdict = arbitrate(probe, active, casEdges, wasCapabilities);
-      const report = detectCollisions([...active, probe], [], casEdges, wasCapabilities);
+      const workspaceCapabilities = capability ? await workspaceCapabilitiesForWorkspace(workspace) : [];
+      const verdict = arbitrate(probe, active, casEdges, workspaceCapabilities);
+      const report = detectCollisions([...active, probe], [], casEdges, workspaceCapabilities);
       const grants = await getGrants(workspace);
       const heldPaths = new Set(grants.active.flatMap((g) => g.scope.paths));
       const heldSymbols = new Set(grants.active.flatMap((g) => g.scope.symbols));

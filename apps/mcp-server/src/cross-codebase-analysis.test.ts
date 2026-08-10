@@ -1592,7 +1592,7 @@ test('workspace narrative cleanup humanizes code identifiers without laundering 
   );
 });
 
-test('WAS quality gate hard-rejects id-leaking, route-dumping, single-flow prose (the Personal bad-accept)', () => {
+test('Workspace narrative quality gate hard-rejects id-leaking, route-dumping, single-flow prose (the Personal bad-accept)', () => {
   const graph = buildCrossCodebaseSystemGraph('personal-workspace', [
     { path: '/tmp/shop-api', name: 'shop-api', cas: shopCas() },
   ]);
@@ -1619,7 +1619,7 @@ test('WAS quality gate hard-rejects id-leaking, route-dumping, single-flow prose
   assert.equal(workspaceNarrativeHardRejectReason(REAL_SHOP_NARRATIVE, 'Runs the storefront ordering and catalog backend.'), null);
 });
 
-test('WAS quality gate rejects unsupported cross-project interaction even when the prose does not say both projects', () => {
+test('Workspace narrative quality gate rejects unsupported cross-project interaction even when the prose does not say both projects', () => {
   const orderCas = shopCas();
   const infraCas = cas({
     system: { id: 'infra', name: 'platform-infra', type: 'application', root_path: '/tmp/platform-infra' },
@@ -1824,7 +1824,7 @@ test('workspace item descriptions reject source filenames and decorative marketi
   ), true);
 });
 
-test('WAS quality gate accepts a real workspace narrative that enumerates the workspace\'s own capabilities', () => {
+test('Workspace narrative quality gate accepts a real workspace narrative that enumerates the workspace\'s own capabilities', () => {
   const graph = buildCrossCodebaseSystemGraph('shop-workspace', [
     { path: '/tmp/shop-api', name: 'shop-api', cas: shopCas() },
   ]);
@@ -1857,7 +1857,7 @@ test('a no-attempt AI response surfaces an honest enrichment error, never a fake
     ]);
     await assert.rejects(
       () => enrichWorkspaceAnalysisNarrative(graph),
-      (error: Error) => /no real attempt/i.test(error.message) && !/rejected by the WAS quality gate/i.test(error.message),
+      (error: Error) => /no real attempt/i.test(error.message) && !/rejected by the workspace narrative quality gate/i.test(error.message),
     );
   } finally {
     aiService.generateComponentDescription = originalGenerate;
@@ -1908,7 +1908,7 @@ test('a gate rejection re-prompts with the rejection reason (and a fresh cache k
     assert.match(enriched.workspace_narrative.description, /Order Fulfillment routes checkout orders/);
     const repairContext = contexts.find(context => typeof context?.rejection_feedback === 'string');
     assert.ok(repairContext, 'the repair re-prompt must carry rejection_feedback');
-    assert.match(String(repairContext!.rejection_feedback), /rejected by the WAS quality gate/i);
+    assert.match(String(repairContext!.rejection_feedback), /rejected by the workspace narrative quality gate/i);
     // The retry attempt index is part of the prompt context so the retry can
     // never replay the rejected response from the content-addressed AI cache.
     assert.equal(typeof repairContext!.retry_attempt, 'number');
@@ -3068,7 +3068,7 @@ test('LIVE-SHAPE: runtime_links survive a bare top-level-directory consumer (no 
 
 // LIVE-SHAPE E2E (P1 follow-up): a member CAS with tier-1 ship units must
 // NEVER produce an empty workspace applications list, and the
-// workspace-level-CAS-to-sub-CAS-node drilldown (source_das_unit_id) must resolve each service to its OWN unit.
+// workspace-level-CAS-to-sub-CAS-node drilldown (source_sub_cas_node_id) must resolve each service to its OWN unit.
 // Shape mirrors a real hosted compose+installer repo where the drilldown
 // regressed: every deployable-evidence row's root_path is the repo root
 // ('.', compose file and Dockerfiles all at root), a sub-CAS-node-promoted repo
@@ -3076,7 +3076,7 @@ test('LIVE-SHAPE: runtime_links survive a bare top-level-directory consumer (no 
 //  (1) a name-resolution-FAILED generic container unit whose bundled member
 //      root is bin/<service>: with the old single mixed-predicate find(),
 //      that unit sat earlier in the units array and captured the service's
-//      source_das_unit_id via member-root containment, beating the unit that
+//      source_sub_cas_node_id via member-root containment, beating the unit that
 //      IS the service by name;
 //  (2) service apps that workspace-level bundling folded into a sibling
 //      (bundled_into set) while sub-CAS-node promotion promoted them as standalone units —
@@ -3141,13 +3141,13 @@ test('LIVE-SHAPE E2E: tier-1 member CAS never yields empty applications, and das
   // Defect (1): name identity must outrank member-root containment — the
   // coordinator app links to its OWN unit, not the generic container that
   // bundles its bin.
-  assert.ok(coordinatorApp!.source_das_unit_id, 'coordinator must carry a das unit link on a promoted repo');
-  assert.match(coordinatorApp!.source_das_unit_id!, /compose-service.*coordinator/, `coordinator must link to its own unit, got ${coordinatorApp!.source_das_unit_id}`);
+  assert.ok(coordinatorApp!.source_sub_cas_node_id, 'coordinator must carry a das unit link on a promoted repo');
+  assert.match(coordinatorApp!.source_sub_cas_node_id!, /compose-service.*coordinator/, `coordinator must link to its own unit, got ${coordinatorApp!.source_sub_cas_node_id}`);
 
   // Defect (2): even if workspace bundling folded agent into a sibling, a
   // sub-CAS node under agent's own name is identity evidence and must link.
-  assert.ok(agentApp!.source_das_unit_id, 'agent must carry a das unit link on a promoted repo');
-  assert.match(agentApp!.source_das_unit_id!, /agent/, `agent must link to its own unit, got ${agentApp!.source_das_unit_id}`);
+  assert.ok(agentApp!.source_sub_cas_node_id, 'agent must carry a das unit link on a promoted repo');
+  assert.match(agentApp!.source_sub_cas_node_id!, /agent/, `agent must link to its own unit, got ${agentApp!.source_sub_cas_node_id}`);
 });
 
 // TASK #66 LIVE SHAPE: monorepo + extracted-subrepo co-membership. One

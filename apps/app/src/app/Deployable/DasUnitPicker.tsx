@@ -1,5 +1,5 @@
 import { MenuItem, Select, type SelectChangeEvent } from '@mui/material';
-import type { RemoteDasUnit } from '@/shared/hooks/useDasUnits';
+import type { RemoteDasUnit } from '@/shared/hooks/useSubCasNodes';
 
 export interface DasUnitPickerProps {
   units: RemoteDasUnit[];

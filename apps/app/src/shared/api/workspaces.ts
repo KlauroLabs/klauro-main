@@ -23,7 +23,7 @@ export interface WorkspaceApplication {
   kind?: string;
   deployable?: boolean;
   ports?: string[];
-  source_das_unit_id?: string;
+  source_sub_cas_node_id?: string;
   merged_into?: string;
   also_declared_by?: string[];
   [key: string]: unknown;

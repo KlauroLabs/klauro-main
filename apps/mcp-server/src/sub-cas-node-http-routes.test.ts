@@ -11,19 +11,19 @@ import type { CASNode, CASEdge, CASEntryPoint, CASOutput, DeployableEvidence } f
 /**
  * TASK (backend lane, sub-CAS nodes over HTTP): the web UI's deployable page was
  * approximating deployable-analysis.ts's phase-2 scoping
- * (getCachedDeployableAnalyses / scopeCasToDasUnit — already wired into 5 MCP
+ * (getCachedDeployableAnalyses / scopeCasToSubCasNode — already wired into 5 MCP
  * tools) client-side, because the real scoped surface was never exposed over
  * HTTP. This proves the two new routes:
  *
  *  - GET /api/projects/:id/das — the sub_cas_nodes summary (units + counts +
  *    orphan accounting) WITHOUT the multi-MB `cas` body.
- *  - GET /api/projects/:id/cas?das_unit_id=<id> — the unit's CAS-shaped
+ *  - GET /api/projects/:id/cas?sub_cas_node_id=<id> — the unit's CAS-shaped
  *    slice, membership-gated + LRU-cached like the sibling /conceptual and
  *    /semantic-coverage routes, with the SAME caller-facing errors
- *    scopeCasToDasUnit already throws for MCP callers (unknown id /
+ *    scopeCasToSubCasNode already throws for MCP callers (unknown id /
  *    non-promoted) surfaced as 4xx JSON instead of a 200 body.
  *
- * Setup mirrors das-scope.test.ts's fixture-building approach (a 2-unit
+ * Setup mirrors sub-cas-node-scope.test.ts's fixture-building approach (a 2-unit
  * promoted CAS: api + worker compose services sharing nothing) and
  * conceptual-conflict-wiring.test.ts's saveAnalysis-direct pattern (write
  * the stored analysis file the real HTTP handler reads via getAnalysis, the
@@ -55,7 +55,7 @@ function entryPoint(id: string, file: string, handlerNodeId: string): CASEntryPo
   } as CASEntryPoint;
 }
 
-/** Same 2-unit promoted shape as das-scope.test.ts's fixture (api + worker
+/** Same 2-unit promoted shape as sub-cas-node-scope.test.ts's fixture (api + worker
  *  compose services sharing libs/shared, plus 2 ungated bins) — kept local so
  *  this file exercises the HTTP surface without depending on another test
  *  file's internals. */
@@ -238,39 +238,39 @@ test('DAS routes: index shape, scoped slice smaller than full, LRU keying, unkno
     assert.deepEqual(analysisBody.summary.sub_cas_nodes, dasBody.sub_cas_nodes, 'the fast hosted path and the dedicated /das route must report the identical index');
 
     // --- scoped slice: strictly smaller than the full CAS (api's closure is
-    // A1, A2, S1 = 3 of the 6 fixture nodes, same as das-scope.test.ts's
+    // A1, A2, S1 = 3 of the 6 fixture nodes, same as sub-cas-node-scope.test.ts's
     // in-process assertion), membership-gated response shape ---
     const statsBeforeSlice = getCasReadResponseCacheStats();
-    const apiSlice = await request(port, 'GET', `/api/projects/${project.id}/cas?das_unit_id=${apiUnit.id}`, undefined, token);
+    const apiSlice = await request(port, 'GET', `/api/projects/${project.id}/cas?sub_cas_node_id=${apiUnit.id}`, undefined, token);
     assert.equal(apiSlice.statusCode, 200);
     const apiSliceBody = JSON.parse(apiSlice.body);
     assert.equal(apiSliceBody.status, 'ready');
-    assert.equal(apiSliceBody.das_unit_id, apiUnit.id);
+    assert.equal(apiSliceBody.sub_cas_node_id, apiUnit.id);
     assert.equal(apiSliceBody.project_id, project.id);
     assert.equal(apiSliceBody.cas.nodes.length, 3, 'api slice must be exactly A1, A2, S1');
     assert.ok(apiSliceBody.cas.nodes.length < promotedCas.nodes.length, `scoped slice (${apiSliceBody.cas.nodes.length}) must be smaller than the full CAS (${promotedCas.nodes.length})`);
 
     // --- LRU keys correctly for repeated slice requests: same id -> hit,
     // byte-identical; different id -> miss, distinct body ---
-    const apiSliceRepeat = await request(port, 'GET', `/api/projects/${project.id}/cas?das_unit_id=${apiUnit.id}`, undefined, token);
+    const apiSliceRepeat = await request(port, 'GET', `/api/projects/${project.id}/cas?sub_cas_node_id=${apiUnit.id}`, undefined, token);
     assert.equal(apiSliceRepeat.body, apiSlice.body, 'repeat scoped request must be byte-identical to the cached compute');
     const statsAfterRepeat = getCasReadResponseCacheStats();
     assert.equal(statsAfterRepeat.hits - statsBeforeSlice.hits, 1, 'second identical scoped GET must be served from the LRU');
 
-    const workerSlice = await request(port, 'GET', `/api/projects/${project.id}/cas?das_unit_id=${workerUnit.id}`, undefined, token);
+    const workerSlice = await request(port, 'GET', `/api/projects/${project.id}/cas?sub_cas_node_id=${workerUnit.id}`, undefined, token);
     assert.equal(workerSlice.statusCode, 200);
     const workerSliceBody = JSON.parse(workerSlice.body);
-    assert.notEqual(workerSlice.body, apiSlice.body, 'distinct das_unit_id must not share a cache entry');
+    assert.notEqual(workerSlice.body, apiSlice.body, 'distinct sub_cas_node_id must not share a cache entry');
     assert.equal(workerSliceBody.cas.nodes.length, 2, 'worker slice must be exactly W1, S1');
     const statsAfterWorker = getCasReadResponseCacheStats();
-    assert.equal(statsAfterWorker.hits, statsAfterRepeat.hits, 'a NEW das_unit_id must be a cache MISS, not accidentally served from the api slice entry');
+    assert.equal(statsAfterWorker.hits, statsAfterRepeat.hits, 'a NEW sub_cas_node_id must be a cache MISS, not accidentally served from the api slice entry');
 
     // --- unknown id: the existing caller-facing error listing available
     // units, as 4xx JSON ---
-    const unknownScope = await request(port, 'GET', `/api/projects/${project.id}/cas?das_unit_id=does-not-exist`, undefined, token);
-    assert.ok(unknownScope.statusCode >= 400 && unknownScope.statusCode < 500, `expected a 4xx for an unknown das_unit_id, got ${unknownScope.statusCode}`);
+    const unknownScope = await request(port, 'GET', `/api/projects/${project.id}/cas?sub_cas_node_id=does-not-exist`, undefined, token);
+    assert.ok(unknownScope.statusCode >= 400 && unknownScope.statusCode < 500, `expected a 4xx for an unknown sub_cas_node_id, got ${unknownScope.statusCode}`);
     const unknownScopeBody = JSON.parse(unknownScope.body);
-    assert.match(unknownScopeBody.error, /Unknown scope\.das_unit_id/);
+    assert.match(unknownScopeBody.error, /Unknown scope\.sub_cas_node_id/);
     assert.match(unknownScopeBody.error, /api/);
     assert.match(unknownScopeBody.error, /worker/);
 
@@ -294,25 +294,25 @@ test('DAS routes: index shape, scoped slice smaller than full, LRU keying, unkno
     assert.equal(graphBody.cas.nodes.length, promotedCas.nodes.length);
     assert.equal(graphBody.cas.method_calls, undefined);
 
-    // --- sections honor das_unit_id: the scope used to be accepted and
+    // --- sections honor sub_cas_node_id: the scope used to be accepted and
     // ignored, returning the whole repo's graph/comprehension under a scoped
     // URL. A scoped sections read must carry ONLY this unit's slice, and only
     // the requested sections. ---
     const scopedSections = await request(
-      port, 'GET', `/api/projects/${project.id}/cas/sections?sections=graph&das_unit_id=${apiUnit.id}`, undefined, token);
+      port, 'GET', `/api/projects/${project.id}/cas/sections?sections=graph&sub_cas_node_id=${apiUnit.id}`, undefined, token);
     assert.equal(scopedSections.statusCode, 200);
     const scopedSectionsBody = JSON.parse(scopedSections.body);
-    assert.equal(scopedSectionsBody.das_unit_id, apiUnit.id);
+    assert.equal(scopedSectionsBody.sub_cas_node_id, apiUnit.id);
     assert.equal(scopedSectionsBody.cas.nodes.length, 3, 'scoped sections must carry the unit slice, not the repo');
     assert.equal(scopedSectionsBody.cas.method_calls, undefined, 'unrequested sections stay out of a scoped read');
     assert.equal(scopedSectionsBody.cas.system_capabilities, undefined, 'comprehension was not requested');
     const scopedSectionsRepeat = await request(
-      port, 'GET', `/api/projects/${project.id}/cas/sections?sections=graph&das_unit_id=${apiUnit.id}`, undefined, token);
+      port, 'GET', `/api/projects/${project.id}/cas/sections?sections=graph&sub_cas_node_id=${apiUnit.id}`, undefined, token);
     assert.equal(scopedSectionsRepeat.body, scopedSections.body, 'repeat scoped sections read is served byte-identically');
     const unknownScopedSections = await request(
-      port, 'GET', `/api/projects/${project.id}/cas/sections?sections=graph&das_unit_id=nope`, undefined, token);
+      port, 'GET', `/api/projects/${project.id}/cas/sections?sections=graph&sub_cas_node_id=nope`, undefined, token);
     assert.equal(unknownScopedSections.statusCode, 404);
-    assert.match(JSON.parse(unknownScopedSections.body).error, /Unknown scope\.das_unit_id/);
+    assert.match(JSON.parse(unknownScopedSections.body).error, /Unknown scope\.sub_cas_node_id/);
 
     const exportResponse = await requestBuffer(port, `/api/projects/${project.id}/cas/export`, token);
     assert.equal(exportResponse.statusCode, 200);
@@ -348,7 +348,7 @@ test('DAS routes: index shape, scoped slice smaller than full, LRU keying, unkno
     assert.equal(dasNonPromotedBody.sub_cas_nodes.promotion_threshold, 2);
     assert.match(dasNonPromotedBody.sub_cas_nodes.reason, /below the promotion threshold/);
 
-    const scopeNonPromoted = await request(port, 'GET', `/api/projects/${nonPromotedProject.id}/cas?das_unit_id=anything`, undefined, token);
+    const scopeNonPromoted = await request(port, 'GET', `/api/projects/${nonPromotedProject.id}/cas?sub_cas_node_id=anything`, undefined, token);
     assert.equal(scopeNonPromoted.statusCode, 400, 'scoping a non-promoted repo must be a 4xx request error, not a 200 no_analysis body');
     const scopeNonPromotedBody = JSON.parse(scopeNonPromoted.body);
     assert.match(scopeNonPromotedBody.error, /has not promoted/);
@@ -364,7 +364,7 @@ test('DAS routes: index shape, scoped slice smaller than full, LRU keying, unkno
     const otherToken = JSON.parse(otherRegisterRes.body).token as string;
     const otherDas = await request(port, 'GET', `/api/projects/${project.id}/das`, undefined, otherToken);
     assert.equal(otherDas.statusCode, 404);
-    const otherCas = await request(port, 'GET', `/api/projects/${project.id}/cas?das_unit_id=${apiUnit.id}`, undefined, otherToken);
+    const otherCas = await request(port, 'GET', `/api/projects/${project.id}/cas?sub_cas_node_id=${apiUnit.id}`, undefined, otherToken);
     assert.equal(otherCas.statusCode, 404);
   } finally {
     await new Promise<void>(resolve => server.close(() => resolve()));

@@ -1,5 +1,5 @@
 import { Box, Chip, Stack, Typography } from '@mui/material';
-import type { RemoteDasUnit } from '@/shared/hooks/useDasUnits';
+import type { RemoteDasUnit } from '@/shared/hooks/useSubCasNodes';
 import { TIER_LABEL, KIND_LABEL } from './dasLabels';
 
 export function DasUnitOverview({ unit }: { unit: RemoteDasUnit }) {

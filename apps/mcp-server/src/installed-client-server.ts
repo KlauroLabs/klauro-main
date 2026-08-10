@@ -197,7 +197,7 @@ export function withTransparentErrors<T extends (...args: any[]) => any>(registe
 
 export function createServer(): McpServer {
   const server = new McpServer({ name: 'klauro', version: getBuildIdentity().version }, {
-    instructions: 'Klauro installed client. Upload source and diffs for hosted analysis, query hosted slices, and watch in-flight changes. No analysis, CAS/WAS construction, graph construction, proposal materialization, or embeddings execute on this machine.',
+    instructions: 'Klauro installed client. Upload source and diffs for hosted analysis, query hosted slices, and watch in-flight changes. No analysis, CAS construction at any level, graph construction, proposal materialization, or embeddings execute on this machine.',
   });
   const register = withTransparentErrors(server.registerTool.bind(server) as any);
 

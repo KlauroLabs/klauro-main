@@ -206,7 +206,7 @@ export function shouldPromote(cas: Pick<CASOutput, 'deployable_evidence'>): bool
  * derive deployable_id — a pure function of evidence content, never of array
  * position, so re-analyzing an unchanged repo re-derives the same id.
  */
-function dasUnitIds(evidence: DeployableEvidence[]): string[] {
+function subCasNodeIds(evidence: DeployableEvidence[]): string[] {
   return buildDeployableRoots(evidence).map(root => `das:${root.deployable_id.replace(/^dep:/, '')}`);
 }
 
@@ -628,7 +628,7 @@ function closureForSeeds(seedNodeIds: Set<string>, ctx: CasSliceContext): Set<st
 // §2.2 — Shared-code attribution
 // ---------------------------------------------------------------------------
 
-export type DasAttribution = 'exclusive' | 'owned' | 'shared';
+export type SubCasNodeAttribution = 'exclusive' | 'owned' | 'shared';
 
 interface NodeAttribution {
   attribution: 'exclusive' | 'shared';
@@ -1002,7 +1002,7 @@ export interface SubCasNodeIndex {
  *  five binaries link really is part of all five shipped artifacts, and a slice
  *  that omitted it would describe a binary that cannot run. It is tagged in
  *  each slice (`metadata.attribution` = 'owned' on its single canonical owner,
- *  'shared' elsewhere, with `canonical_owner_das_unit_id` pointing home), and
+ *  'shared' elsewhere, with `canonical_owner_sub_cas_node_id` pointing home), and
  *  the index reports the multiplicity in numbers rather than leaving it to be
  *  inferred: exclusive/shared/orphan partition the graph, while
  *  sum_of_unit_node_counts is allowed to exceed the graph and says by how
@@ -1012,8 +1012,8 @@ const DAS_COUNTS_NOTE =
   + 'exclusive_node_count + shared_node_count + orphan_node_count === graph_node_count, and '
   + 'each shared node has exactly one canonical owner (owned_shared_node_count).';
 
-export interface DasUnitSlice {
-  das_unit_id: string;
+export interface SubCasNodeSlice {
+  sub_cas_node_id: string;
   das_unit_name: string;
   root_path: string;
   member_root_paths: string[];
@@ -1051,7 +1051,7 @@ export interface DasUnitSlice {
 export interface BuildDeployableAnalysesResult {
   promoted: boolean;
   sub_cas_nodes: SubCasNodeIndex;
-  units: DasUnitSlice[];
+  units: SubCasNodeSlice[];
 }
 
 // ---------------------------------------------------------------------------
@@ -1065,7 +1065,7 @@ export interface BuildDeployableAnalysesResult {
  * capability/flow/entity/seam layers onto the resulting node subset. Never
  * reads source, never invents a second capability/flow algorithm.
  */
-export function sliceDeployableAnalysis(cas: CASOutput, deployable: DeployableEvidence): DasUnitSlice {
+export function sliceDeployableAnalysis(cas: CASOutput, deployable: DeployableEvidence): SubCasNodeSlice {
   const allEvidence = cas.deployable_evidence || [];
   const allRoots = buildDeployableRoots(allEvidence);
   const ctx = sliceContextFor(cas);
@@ -1076,7 +1076,7 @@ export function sliceDeployableAnalysis(cas: CASOutput, deployable: DeployableEv
   const reachable = closureForSeeds(seedNodeIds, ctx);
 
   const idx = allEvidence.indexOf(deployable);
-  const unitId = dasUnitIds(allEvidence)[idx] ?? `das:${deployable.kind}:${deployable.name}`;
+  const unitId = subCasNodeIds(allEvidence)[idx] ?? `das:${deployable.kind}:${deployable.name}`;
 
   const nodes = cas.nodes.filter(n => reachable.has(n.id));
   const edges = (cas.edges || []).filter(e => reachable.has(e.source) && reachable.has(e.target));
@@ -1106,7 +1106,7 @@ export function sliceDeployableAnalysis(cas: CASOutput, deployable: DeployableEv
   const scopedFlowGraph = filterFlowGraph(cas.flow_graph, includedEntryPointIds, reachable);
 
   return {
-    das_unit_id: unitId,
+    sub_cas_node_id: unitId,
     das_unit_name: deployable.name,
     root_path: deployable.root_path,
     member_root_paths: bundledMembersOf(deployable, allEvidence).map(m => m.root_path),
@@ -1192,7 +1192,7 @@ export function buildDeployableAnalyses(cas: CASOutput): BuildDeployableAnalyses
 
   const unitsReachability: UnitReachability[] = qualified.map((unit, i) => ({
     index: i,
-    id: rawSlices[i].das_unit_id,
+    id: rawSlices[i].sub_cas_node_id,
     name: unit.name,
     reachable: new Set(rawSlices[i].slice.nodes.map(n => n.id)),
   }));
@@ -1204,7 +1204,7 @@ export function buildDeployableAnalyses(cas: CASOutput): BuildDeployableAnalyses
 
   const attribution = computeAttribution(cas.nodes, unitsReachability, rootsWithOwner);
 
-  const units: DasUnitSlice[] = rawSlices.map((raw, i) => {
+  const units: SubCasNodeSlice[] = rawSlices.map((raw, i) => {
     const thisUnitId = unitsReachability[i].id;
     const nodes = raw.slice.nodes.map(n => {
       const info = attribution.get(n.id);
@@ -1212,10 +1212,10 @@ export function buildDeployableAnalyses(cas: CASOutput): BuildDeployableAnalyses
       const isOwner = info.canonicalOwnerId === thisUnitId;
       const taggedMetadata: Record<string, unknown> = {
         ...n.metadata,
-        attribution: (isOwner ? 'owned' : 'shared') as DasAttribution,
+        attribution: (isOwner ? 'owned' : 'shared') as SubCasNodeAttribution,
         ...(isOwner
           ? { also_used_by: info.alsoUsedBy }
-          : { canonical_owner_das_unit_id: info.canonicalOwnerId }),
+          : { canonical_owner_sub_cas_node_id: info.canonicalOwnerId }),
       };
       return {
         ...n,
@@ -1296,7 +1296,7 @@ export function buildDeployableAnalyses(cas: CASOutput): BuildDeployableAnalyses
 // ---------------------------------------------------------------------------
 
 /**
- * Resolve a `{ das_unit_id }` scope against a CAS: recomputes
+ * Resolve a `{ sub_cas_node_id }` scope against a CAS: recomputes
  * `buildDeployableAnalyses` (phase-1 recompute-on-request storage posture,
  * see the module doc comment) and returns the matching unit's slice, or
  * `undefined` when the CAS hasn't promoted or the id doesn't match any
@@ -1305,9 +1305,9 @@ export function buildDeployableAnalyses(cas: CASOutput): BuildDeployableAnalyses
  * the caller comparing against the previous sub_cas_nodes, not by this
  * function, which is a pure lookup).
  */
-export function resolveDasScope(cas: CASOutput, dasUnitId: string): DasUnitSlice | undefined {
+export function resolveSubCasNodeScope(cas: CASOutput, subCasNodeId: string): SubCasNodeSlice | undefined {
   const { units } = buildDeployableAnalyses(cas);
-  return units.find(u => u.das_unit_id === dasUnitId);
+  return units.find(u => u.sub_cas_node_id === subCasNodeId);
 }
 
 // ---------------------------------------------------------------------------
@@ -1355,32 +1355,32 @@ export function getCachedDeployableAnalyses(cas: CASOutput): BuildDeployableAnal
   return result;
 }
 
-export interface DasScopeParam {
-  das_unit_id: string;
+export interface SubCasNodeScopeParam {
+  sub_cas_node_id: string;
 }
 
 /**
- * Resolves an optional scope: { das_unit_id } against a repo-level CAS (spec
+ * Resolves an optional scope: { sub_cas_node_id } against a repo-level CAS (spec
  * §6). Returns the parent cas unchanged when scope is omitted. When given,
  * returns a CASOutput-shaped object with the sub-CAS node's sliced fields
  * overlaid on the parent CAS — repo-rollup-only facts with no unit-scoped
  * meaning pass through unchanged, so counts/nodes/entries reflect the unit,
  * never the rollup. Throws (never a silent empty result) when the CAS hasn't
- * promoted, or when das_unit_id doesn't match any current unit — naming the
+ * promoted, or when sub_cas_node_id doesn't match any current unit — naming the
  * ids that do exist.
  */
-export function scopeCasToDasUnit(cas: CASOutput, scope: DasScopeParam | undefined): CASOutput {
+export function scopeCasToSubCasNode(cas: CASOutput, scope: SubCasNodeScopeParam | undefined): CASOutput {
   if (!scope) return cas;
   const { promoted, sub_cas_nodes, units } = getCachedDeployableAnalyses(cas);
   if (!promoted) {
     throw new Error(
-      'This analysis has not promoted any sub-CAS nodes (it resolves fewer than 2 tier-qualified ship units), so scope.das_unit_id does not apply. Omit scope to query the whole repo.'
+      'This analysis has not promoted any sub-CAS nodes (it resolves fewer than 2 tier-qualified ship units), so scope.sub_cas_node_id does not apply. Omit scope to query the whole repo.'
     );
   }
-  const unit = units.find(u => u.das_unit_id === scope.das_unit_id);
+  const unit = units.find(u => u.sub_cas_node_id === scope.sub_cas_node_id);
   if (!unit) {
     const available = sub_cas_nodes.units.map(u => `${u.id} (${u.name})`).join(', ') || 'none';
-    throw new Error(`Unknown scope.das_unit_id '${scope.das_unit_id}'. Available sub-CAS-node units for this analysis: ${available}.`);
+    throw new Error(`Unknown scope.sub_cas_node_id '${scope.sub_cas_node_id}'. Available sub-CAS-node units for this analysis: ${available}.`);
   }
   return { ...cas, ...unit.slice } as CASOutput;
 }

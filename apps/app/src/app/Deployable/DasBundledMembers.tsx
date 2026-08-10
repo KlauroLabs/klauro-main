@@ -1,5 +1,5 @@
 import { Box, Stack, Typography } from '@mui/material';
-import type { RemoteDasUnit } from '@/shared/hooks/useDasUnits';
+import type { RemoteDasUnit } from '@/shared/hooks/useSubCasNodes';
 
 export function DasBundledMembers({ unit }: { unit: RemoteDasUnit }) {
   if (unit.member_root_paths.length === 0) return null;

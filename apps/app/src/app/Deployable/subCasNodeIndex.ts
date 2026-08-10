@@ -1,6 +1,6 @@
 import type { DeployableEvidence } from './dasTypes';
 
-export interface DasUnitSummary {
+export interface SubCasNodeIndexEntry {
   id: string;
   name: string;
   root_path: string;
@@ -16,9 +16,9 @@ export interface DasUnitSummary {
   member_deployable_ids: string[];
 }
 
-export interface DasIndexResult {
+export interface SubCasNodeIndex {
   promoted: boolean;
-  units: DasUnitSummary[];
+  units: SubCasNodeIndexEntry[];
 }
 
 function slug(value: string): string {
@@ -101,7 +101,7 @@ export function bundledMembersOf(unit: DeployableEvidence, allEvidence: Deployab
   return allEvidence.filter(e => e !== unit && e.bundled_into === unit.name);
 }
 
-export function buildDasIndex(evidence: DeployableEvidence[] | undefined): DasIndexResult {
+export function buildSubCasNodeIndex(evidence: DeployableEvidence[] | undefined): SubCasNodeIndex {
   const items = evidence ?? [];
   const qualified = tierQualifiedShipUnits(items);
   if (qualified.length < 2) {
@@ -111,7 +111,7 @@ export function buildDasIndex(evidence: DeployableEvidence[] | undefined): DasIn
   const seen = new Set<string>();
   const depIds = items.map((e, i) => deployableId(e, i, seen));
 
-  const units: DasUnitSummary[] = qualified.map(unit => {
+  const units: SubCasNodeIndexEntry[] = qualified.map(unit => {
     const idx = items.indexOf(unit);
     const ownDepId = depIds[idx];
     const id = `das:${ownDepId.replace(/^dep:/, '')}`;

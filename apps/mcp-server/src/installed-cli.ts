@@ -172,7 +172,7 @@ const USAGE_TEXT = [
   '                               OPERATOR-ONLY: mints a 30-minute single-use reset token directly against the account store',
   '',
   `If \`klauro update\` cannot run, reinstall from scratch: ${KLAURO_INSTALL_ONELINER}`, '',
-  'Analysis, CAS/WAS construction, graphs, proposals, embeddings, and AI execute only on Klauro infrastructure.',
+  'Analysis, CAS construction at every level, graphs, proposals, embeddings, and AI execute only on Klauro infrastructure.',
   '',
   'Every subcommand accepts --help/-h to print this usage instead of running.',
 ].join('\n') + '\n';

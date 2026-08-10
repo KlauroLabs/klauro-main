@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { arbitrate } from './arbiter';
 import { detectCollisions } from './collision';
 import { deriveActiveClaims, derivePresence, isExpired, reduceClaimLog } from './presence';
-import type { CasEdgeRef, InFlightSnapshot, WasCapabilityRef, WorkClaim } from './types';
+import type { CasEdgeRef, InFlightSnapshot, WorkspaceCapabilityRef, WorkClaim } from './types';
 
 function makeClaim(overrides: Partial<WorkClaim> = {}): WorkClaim {
   return {
@@ -33,7 +33,7 @@ const casEdges: CasEdgeRef[] = [
   { id: 'e2', source: 'barHandler', target: 'sharedUtil', type: 'calls' },
 ];
 
-const wasCapabilities: WasCapabilityRef[] = [
+const workspaceCapabilities: WorkspaceCapabilityRef[] = [
   { id: 'cap-1', name: 'user-onboarding', project_ids: ['proof-of-concept'] },
 ];
 
@@ -61,7 +61,7 @@ test('arbitrate: duplicate on same-capability claims', () => {
     },
   });
 
-  const result = arbitrate(newClaim, active, casEdges, wasCapabilities);
+  const result = arbitrate(newClaim, active, casEdges, workspaceCapabilities);
   assert.equal(result.verdict, 'duplicate');
   assert.equal(result.with_claim?.claim_id, 'claim-existing');
   assert.equal(result.kind, 'capability');
@@ -86,7 +86,7 @@ test('arbitrate: conflict on path overlap', () => {
     },
   });
 
-  const result = arbitrate(newClaim, active, casEdges, wasCapabilities);
+  const result = arbitrate(newClaim, active, casEdges, workspaceCapabilities);
   assert.equal(result.verdict, 'conflict');
   assert.equal(result.kind, 'path');
   assert.equal(result.with_claim?.claim_id, 'claim-existing');
@@ -106,7 +106,7 @@ test('arbitrate: conflict on symbol overlap', () => {
     scope: { repo: 'proof-of-concept', paths: ['apps/mcp-server/src/unrelated.ts'], symbols: ['sharedSymbol'], capability: undefined },
   });
 
-  const result = arbitrate(newClaim, active, casEdges, wasCapabilities);
+  const result = arbitrate(newClaim, active, casEdges, workspaceCapabilities);
   assert.equal(result.verdict, 'conflict');
   assert.equal(result.kind, 'symbol');
 });
@@ -127,7 +127,7 @@ test('arbitrate: conflict on blast-radius overlap via CAS edges', () => {
 
   // fooHandler and barHandler are disjoint symbols but both reach sharedUtil
   // one hop away via CAS edges -> blast radii intersect.
-  const result = arbitrate(newClaim, active, casEdges, wasCapabilities);
+  const result = arbitrate(newClaim, active, casEdges, workspaceCapabilities);
   assert.equal(result.verdict, 'conflict');
   assert.equal(result.kind, 'blast_radius');
 });
@@ -158,7 +158,7 @@ test('arbitrate: granted on a disjoint decoy claim', () => {
     },
   });
 
-  const result = arbitrate(newClaim, active, casEdges, wasCapabilities);
+  const result = arbitrate(newClaim, active, casEdges, workspaceCapabilities);
   assert.equal(result.verdict, 'granted');
 });
 
@@ -207,7 +207,7 @@ test('detectCollisions: flags planted duplicate, overlap, drift; silent on disjo
     },
   ];
 
-  const report = detectCollisions(activeClaims, inFlightSnapshots, casEdges, wasCapabilities);
+  const report = detectCollisions(activeClaims, inFlightSnapshots, casEdges, workspaceCapabilities);
 
   assert.equal(report.duplicates.length, 1);
   assert.deepEqual(
@@ -248,7 +248,7 @@ test('detectCollisions: cross-agent blast-radius intersection is flagged', () =>
     scope: { repo: 'proof-of-concept', paths: ['apps/mcp-server/src/util.ts'], symbols: ['sharedUtil'], capability: undefined },
   });
 
-  const report = detectCollisions([claimA, claimB], [], casEdges, wasCapabilities);
+  const report = detectCollisions([claimA, claimB], [], casEdges, workspaceCapabilities);
   assert.ok(report.blast_intersections.length >= 1);
   const hit = report.blast_intersections.find(
     (b) => b.claim_id === 'blast-a' && b.with_claim_id === 'blast-b'

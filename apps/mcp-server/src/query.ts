@@ -4064,7 +4064,7 @@ export function getInterfaceSignature(
       },
       purpose: cas.enhanced_system_purpose?.inferred_description || productMap.identity?.description || undefined,
       gaps: [
-        'project/workspace level is aggregated from product_map + entry/exit points, not a per-node join; cross-repo (workspace) contracts require WAS tools (get_cross_repo_contracts) which this join does not call.',
+        'project/workspace level is aggregated from product_map + entry/exit points, not a per-node join; cross-repo (workspace) contracts require workspace-level CAS tools (get_cross_repo_contracts) which this join does not call.',
       ],
     };
   }

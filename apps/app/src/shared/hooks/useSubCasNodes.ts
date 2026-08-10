@@ -4,11 +4,11 @@ import { apiRequest } from '@/shared/api/index';
 import { useAuth } from '@/shared/auth/AuthProvider';
 import { useProjectCas } from './useProjectCas';
 import type { EntryPoint } from './useEntryPoints';
-import { buildDasIndex } from '@/app/Deployable/dasIndex';
+import { buildSubCasNodeIndex } from '@/app/Deployable/subCasNodeIndex';
 import { scopeCapabilities, type UnitCapability } from '@/app/Deployable/dasScope';
 import type { CasNode, DataEntity, DeployableEvidence } from '@/app/Deployable/dasTypes';
 
-export function useDasIndex(projectId: string | undefined) {
+export function useSubCasNodeIndex(projectId: string | undefined) {
   const casQuery = useProjectCas(projectId);
 
   const { evidence, nodes, dataEntities } = useMemo(() => {
@@ -21,9 +21,9 @@ export function useDasIndex(projectId: string | undefined) {
     };
   }, [casQuery.data]);
 
-  const dasIndex = useMemo(() => buildDasIndex(evidence), [evidence]);
+  const subCasNodeIndex = useMemo(() => buildSubCasNodeIndex(evidence), [evidence]);
 
-  return { ...casQuery, ...dasIndex, evidence, nodes, dataEntities };
+  return { ...casQuery, ...subCasNodeIndex, evidence, nodes, dataEntities };
 }
 
 export interface RemoteDasUnit {
@@ -95,7 +95,7 @@ interface RemoteDasCasResponse {
   status: 'ready' | 'no_analysis';
   project_id: string;
   analysis_id?: string;
-  das_unit_id?: string;
+  sub_cas_node_id?: string;
   cas?: RemoteDasUnitCas;
   error?: string;
 }
@@ -107,13 +107,13 @@ export interface DasShipEvidenceFields {
   base_images?: string[];
 }
 
-export function useDasUnitSlice(projectId: string | undefined, dasUnitId: string | undefined) {
+export function useSubCasNodeSlice(projectId: string | undefined, dasUnitId: string | undefined) {
   const { token } = useAuth();
   const query = useQuery({
     queryKey: ['project-das-unit-cas', projectId, dasUnitId],
     queryFn: () =>
       apiRequest<RemoteDasCasResponse>(
-        `/api/projects/${encodeURIComponent(projectId!)}/cas?das_unit_id=${encodeURIComponent(dasUnitId!)}`,
+        `/api/projects/${encodeURIComponent(projectId!)}/cas?sub_cas_node_id=${encodeURIComponent(dasUnitId!)}`,
         token!,
       ),
     enabled: Boolean(token && projectId && dasUnitId),
