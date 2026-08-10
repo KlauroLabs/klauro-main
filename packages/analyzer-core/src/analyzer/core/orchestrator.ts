@@ -13831,16 +13831,36 @@ export class AnalyzerOrchestrator {
     const readOnlyNarrativeRule = observedReadOnly
       ? ' The observed product is a retrieval and review surface. Use affirmative sentences whose product-action verbs are retrieves, presents, returns, views, reviews, compares, or analyzes. Describe what is available to users, not ownership or state transitions. Do not discuss missing abilities or limitations. The domain label must describe the information or review purpose and must not use an ownership-oriented suffix.'
       : '';
+    // Bar reached (2026-08 hosted defect): a non-technical reader — a PM,
+    // designer, marketer — must be able to follow every sentence. Two
+    // prompt-facing labels leaked past that bar even though the AI text was
+    // otherwise grounded: (1) productBehaviorPaths.intent is a GENERATED
+    // journey/capability NAME (e.g. "List conversation import previews"),
+    // and the model, told to "name the product intent", quoted it verbatim
+    // ("The intent 'List conversation import previews' yields...") — internal
+    // vocabulary ("intent") plus a quoted internal label, not a sentence a
+    // customer would recognize; (2) told to describe "how it is built", the
+    // model reached for distinctiveEntities/databaseEntities NAMES and wrote
+    // "operates as a deployable unit that integrates various components like
+    // MemoryCapsule, ProjectBrainPacket, ...", narrating our own internal
+    // entity vocabulary as if it were product framing. Both are downstream of
+    // the SAME instruction bug: "name the X" reads as "use X's literal label
+    // in prose", not "describe what X means in plain language". This clause
+    // is deliberately about PROSE STYLE, not which facts are grounded —
+    // narrowing it must never make a legitimately grounded description fail
+    // the separate grounding-gate check (see the 21-raw-mechanism-name
+    // regression this module's history warns against for that gate).
+    const noInternalVocabularyRule = ' Never use the words intent, journey, entity, deployable, component, components, artifact, or record type as a label in the prose, and never put an internal name (a journey name, an entity name, a capability name) inside quotation marks — describe what the system does and what a user gets in your own plain words instead of naming or quoting the internal label for it. Never introduce a list of entity/record names with phrasing like "integrates various components like" or "operates as a deployable unit that integrates" — if multiple record types are relevant, name at most one as an ordinary noun inside a real sentence about what happens to it, never as an enumerated list.';
     const semanticRepairTask = artifactType === 'infrastructure'
       ? 'Regenerate the rejected infrastructure description from scratch. Return ONLY valid JSON with the same shape: {"system_description":"...","domain":"...","descriptions":[{"id":"...","description":"..."}]}. Write exactly 4 factual sentences. Use infrastructureDeclarations to name the exact declared resource types, runtime units, providers, replicas, and ports. Explain their declared topology without inferring application behavior from names. Do not hedge, market, discuss source artifacts, or describe scripts and commands. The domain must be a lowercase kebab-case infrastructure/deployment/platform label.'
       : observedReadOnly
-        ? 'Regenerate the rejected parts from the supplied evidence. Return ONLY valid JSON with the same shape: {"system_description":"...","domain":"...","descriptions":[{"id":"...","description":"..."}]}. Write only affirmative product statements. Describe the system as a retrieval and review product. Every product action must use one of these verbs: retrieves, presents, returns, views, reviews, compares, analyzes. Write one paragraph of 4 to 6 full sentences (at least 240 characters) answering what the system is, what information users receive, how a named intent yields a named result, and the evidenced operating shape. Use exact nouns from distinctiveEntities, terminalOutputs, and recordsRead. Choose a domain made from those product nouns plus information, reference, query, or review when appropriate. Do not discuss limitations, absent behavior, implementation surfaces, source artifacts, prompt fields, or framework internals.'
-      : 'Repair the rejected parts of the previous answer. Return ONLY valid JSON with the same shape: {"system_description":"...","domain":"...","descriptions":[{"id":"...","description":"..."}]}. Write a grounded system_description that is ONE paragraph of 4 to 6 full sentences (at least 240 characters) answering, in order, what the system is, what it does, how it works, and how it is built. Replace generic mechanism phrases with one explicit relationship from productBehaviorPaths: name the product intent and the resulting record or message. Explain a transformation or decision only when businessTransformations contains one. The prompt intentionally withholds route and implementation names; never invent or name a request path, handler, function, method, source file, or framework internal. Use the exact domain nouns supplied by distinctiveEntities, terminalOutputs, recordsRead, recordsWritten, or messagesEmitted. Never say data lookup behavior, resource checks, lifecycle operations, manages data, or coordinates workflows. Frameworks may appear only as product-shaping context, never a package inventory; architecture shapes require corroborating deployable/topology facts. Do not translate entry-point categories into prose. Infer the domain FIRST from readmeProductTitle/readmeProductOverview/manifestDescription/distinctiveEntities/terminalOutputs; libraries are supporting evidence only. Mention integrations only by exact names listed in externalServices.';
+        ? 'Regenerate the rejected parts from the supplied evidence. Return ONLY valid JSON with the same shape: {"system_description":"...","domain":"...","descriptions":[{"id":"...","description":"..."}]}. Write only affirmative product statements. Describe the system as a retrieval and review product. Every product action must use one of these verbs: retrieves, presents, returns, views, reviews, compares, analyzes. Write one paragraph of 4 to 6 full sentences (at least 240 characters) answering what the system is, what information users receive, how one product action produces one concrete result, and the evidenced operating shape. Use exact nouns from distinctiveEntities, terminalOutputs, and recordsRead as ordinary words in sentences, never as internal labels. Choose a domain made from those product nouns plus information, reference, query, or review when appropriate. Do not discuss limitations, absent behavior, implementation surfaces, source artifacts, prompt fields, or framework internals.' + noInternalVocabularyRule
+      : 'Repair the rejected parts of the previous answer. Return ONLY valid JSON with the same shape: {"system_description":"...","domain":"...","descriptions":[{"id":"...","description":"..."}]}. Write a grounded system_description that is ONE paragraph of 4 to 6 full sentences (at least 240 characters) answering, in order, what the system is, what it does, how it works, and how it is built. Replace generic mechanism phrases with one explicit relationship from productBehaviorPaths: describe, in your own plain words, one concrete thing a user does and the record or message that results — never by naming or quoting the productBehaviorPaths.intent label itself. Explain a transformation or decision only when businessTransformations contains one. The prompt intentionally withholds route and implementation names; never invent or name a request path, handler, function, method, source file, or framework internal. Use the exact domain nouns supplied by distinctiveEntities, terminalOutputs, recordsRead, recordsWritten, or messagesEmitted as ordinary words in sentences. Never say data lookup behavior, resource checks, lifecycle operations, manages data, or coordinates workflows. Frameworks may appear only as product-shaping context, never a package inventory; architecture shapes require corroborating deployable/topology facts. Do not translate entry-point categories into prose. Infer the domain FIRST from readmeProductTitle/readmeProductOverview/manifestDescription/distinctiveEntities/terminalOutputs; libraries are supporting evidence only. Mention integrations only by exact names listed in externalServices.' + noInternalVocabularyRule;
     const systemNarrativeTask = artifactType === 'infrastructure'
       ? 'Return ONLY JSON shaped as {"system_description":"...","domain":"..."}. Write one paragraph of exactly 4 concise, grammatical sentences from the supplied evidence. Name the exact resource types and runtime units in infrastructureDeclarations; explain what is provisioned, how the declarations compose the runtime, and the evidenced replica/port/provider shape. State only declared facts: never hedge with likely/possibly, infer business behavior from a resource label, or call representations of one runtime separate applications. Do not mention scripts, source files, functions, variables, prompt keys, or graph evidence. Avoid marketing language. domain must be a lowercase kebab-case label of 2 to 4 nouns and must include infrastructure, deployment, provisioning, or platform.'
       : artifactType === 'library' || artifactType === 'client-sdk'
         ? 'Return ONLY JSON shaped as {"system_description":"...","domain":"..."}. Write one paragraph of exactly 4 concise, grammatical sentences from the supplied evidence: what reusable library or client SDK this is; what consumers can accomplish with it; how its public contracts transform inputs into results; and how it is packaged or integrated. Never describe it as an independently deployed application unless deployable evidence explicitly proves that. Do not mention prompt keys, source files, functions, variables, routes, handlers, or graph evidence. domain must be a lowercase kebab-case label of 2 to 4 product nouns.'
-        : `Return ONLY JSON shaped as {"system_description":"...","domain":"..."}. Write one paragraph of exactly 4 concise, grammatical sentences from the supplied product evidence: what the product is; what users or operators can do; how one named intent yields one named record, message, or result; and the evidenced operating/deployment shape. Use concrete product nouns. Do not mention frameworks, libraries, HTTP, requests, routes, endpoints, handlers, functions, methods, variables, source files, graph evidence, prompt keys, or implementation identifiers. Do not add marketing claims. domain must be a lowercase kebab-case label of 2 to 4 product nouns.${readOnlyNarrativeRule}`;
+        : `Return ONLY JSON shaped as {"system_description":"...","domain":"..."}. Write one paragraph of exactly 4 concise, grammatical sentences from the supplied product evidence: what the product is; what users or operators can do; describe, in your own plain words, one concrete thing a user does and the record, message, or result they get back; and the evidenced operating/deployment shape. Use concrete product nouns. Do not mention frameworks, libraries, HTTP, requests, routes, endpoints, handlers, functions, methods, variables, source files, graph evidence, prompt keys, or implementation identifiers. Do not add marketing claims. Write for a non-technical reader (a PM, designer, or marketer) who has never seen the code — every sentence must be understandable without knowing any internal name.${noInternalVocabularyRule} domain must be a lowercase kebab-case label of 2 to 4 product nouns.${readOnlyNarrativeRule}`;
     try {
       timeoutHandle = setTimeout(() => {
         console.error(`[Klauro] AI interpretation is still running after ${budgetMs}ms; continuing until the provider completes`);
@@ -17678,7 +17698,7 @@ export class AnalyzerOrchestrator {
       ...(distinctiveEntities.length > 0 ? { distinctiveEntities } : {}),
       ...(productBehaviorPaths.length > 0 ? {
         productBehaviorPaths,
-        productBehaviorInstruction: 'productBehaviorPaths are compact, language-neutral traces derived from the CAS graph. Translate their intent, transformations, and terminal effects into product language; do not copy route syntax or code identifiers into prose.',
+        productBehaviorInstruction: 'productBehaviorPaths are compact, language-neutral traces derived from the CAS graph. Each path\'s "intent" field is a GENERATED internal label (a journey/capability name), not customer-facing text — translate what it MEANS into your own plain-language sentence about what the user does; never copy, name, or quote that intent label verbatim in the prose, and never use the word "intent" itself. Do the same for transformations and terminal effects: describe what happens in ordinary words, do not copy route syntax, code identifiers, or internal field/record-type names as a labeled list.',
       } : {}),
     };
   }
@@ -19869,6 +19889,46 @@ export class AnalyzerOrchestrator {
     };
   }
 
+  // A declared type that rules a field out as a credential/secret on structural
+  // grounds: real secrets (passwords, API keys, tokens-as-credentials, PII
+  // strings) are represented as strings in code. A field typed as a number,
+  // boolean, or date can carry a name that reads like "token" or "key" (a
+  // token-BUDGET, a cache-key TTL) without being one — the type is direct
+  // structural evidence the value is not a credential, independent of any
+  // name list.
+  private static readonly NON_SENSITIVE_FIELD_TYPE = /^(?:number|int(?:eger)?|float|double|long|decimal|short|byte|bigint|boolean|bool|date|datetime|timestamp|duration)(?:\s*\|\s*(?:null|undefined))*$/i;
+
+  /**
+   * Evidence-based sensitive-field discriminator. Precedence:
+   *   1. An explicit analyzer-emitted `sensitive` attribute always wins (real
+   *      structural evidence from the language analyzer, e.g. an annotation).
+   *   2. A numeric/boolean/date declared type rules the field OUT regardless
+   *      of name — a credential is not represented as a number in code.
+   *   3. Otherwise, a name-pattern match on credential/PII vocabulary is the
+   *      remaining (weaker) signal for string/unknown-typed fields.
+   * This intentionally does NOT special-case any additional literal names
+   * (e.g. "budget", "efficiency") to suppress false positives — that is the
+   * same hardcoded-vocabulary anti-pattern inverted. The type check is what
+   * keeps `tokenBudget: number` / `estimatedTokens: number` / `tokenEfficiency:
+   * number` out of sensitive_fields without a name-exclusion list.
+   */
+  private isFieldSensitiveByEvidence(name: string, type: string, analyzerFlag: boolean): boolean {
+    if (analyzerFlag) return true;
+    const normalizedType = (type || '').trim();
+    if (normalizedType && AnalyzerOrchestrator.NON_SENSITIVE_FIELD_TYPE.test(normalizedType)) {
+      return false;
+    }
+    const nameLower = name.toLowerCase();
+    return AnalyzerOrchestrator.SENSITIVE_FIELD_NAME_PATTERNS.some(p => nameLower.includes(p));
+  }
+
+  private static readonly SENSITIVE_FIELD_NAME_PATTERNS = [
+    'password', 'secret', 'token', 'key', 'credential',
+    'ssn', 'social_security', 'tax_id',
+    'email', 'phone', 'address',
+    'card', 'cvv', 'account_number'
+  ];
+
   private buildDataEntities(
     nodes: CASNode[],
     edges: CASEdge[],
@@ -19957,17 +20017,8 @@ export class AnalyzerOrchestrator {
 
       const propertyNodes = this.entityPropertyNodesFromIndex(propertyIndex, entityNode);
 
-      const sensitivePatterns = [
-        'password', 'secret', 'token', 'key', 'credential',
-        'ssn', 'social_security', 'tax_id',
-        'email', 'phone', 'address',
-        'card', 'cvv', 'account_number'
-      ];
-
       for (const prop of propertyNodes) {
-        const nameLower = prop.name.toLowerCase();
         const analyzerFlag = (prop.metadata?.attributes as Record<string, unknown> | undefined)?.sensitive;
-        const isSensitive = analyzerFlag === true || sensitivePatterns.some(p => nameLower.includes(p));
 
         // Field type: prefer an explicit return-type signature; otherwise fall back
         // to the property's declared type annotation, which language analyzers (e.g.
@@ -19976,9 +20027,11 @@ export class AnalyzerOrchestrator {
         // contract-drift) cannot see field-level type changes.
         const metadataType = (prop.metadata as Record<string, unknown> | undefined)?.type;
         const declaredType = typeof metadataType === 'string' ? metadataType : undefined;
+        const resolvedType = prop.signature?.return_type || declaredType || 'unknown';
+        const isSensitive = this.isFieldSensitiveByEvidence(prop.name, resolvedType, analyzerFlag === true);
         fields.push({
           name: prop.name,
-          type: prop.signature?.return_type || declaredType || 'unknown',
+          type: resolvedType,
           is_sensitive: isSensitive
         });
       }
@@ -20000,7 +20053,7 @@ export class AnalyzerOrchestrator {
             fields.push({
               name: fieldName,
               type: fieldType,
-              is_sensitive: sensitivePatterns.some(p => fieldName.toLowerCase().includes(p)),
+              is_sensitive: this.isFieldSensitiveByEvidence(fieldName, fieldType, false),
             });
           }
         }
@@ -20911,7 +20964,6 @@ export class AnalyzerOrchestrator {
         group.rep = node;
       }
     }
-    const sensitive = /password|secret|token|key|credential|ssn|email|phone|card|cvv|account/i;
     const derived: CASDataEntity[] = [];
     for (const group of groups.values()) {
       const fieldMap = new Map<string, { name: string; type: string; is_sensitive: boolean }>();
@@ -20920,7 +20972,8 @@ export class AnalyzerOrchestrator {
           if (!fieldMap.has(prop.name)) {
             const metadataType = (prop.metadata as Record<string, unknown> | undefined)?.type;
             const declaredType = typeof metadataType === 'string' ? metadataType : undefined;
-            fieldMap.set(prop.name, { name: prop.name, type: prop.signature?.return_type || declaredType || 'unknown', is_sensitive: sensitive.test(prop.name) });
+            const resolvedType = prop.signature?.return_type || declaredType || 'unknown';
+            fieldMap.set(prop.name, { name: prop.name, type: resolvedType, is_sensitive: this.isFieldSensitiveByEvidence(prop.name, resolvedType, false) });
           }
         }
       }

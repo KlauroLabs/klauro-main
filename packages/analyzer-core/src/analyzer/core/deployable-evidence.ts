@@ -2,6 +2,7 @@ import * as path from 'path';
 import type { CASEntryPoint, CASExitPoint, CASNode, CASOutput, DeployableEvidence } from '../../types/cas.types';
 import { getProviders } from './deployable-evidence/registry';
 import type { EvidenceCollectionContext, EvidenceProvider } from './deployable-evidence/types';
+import { UNNAMED_SERVICE_PLACEHOLDER } from './deployable-evidence/util';
 
 export type { EvidenceCollectionContext, EvidenceProvider };
 export type { DeployableEvidence };
@@ -76,7 +77,12 @@ export function collectDeployableEvidence(input: CollectDeployableEvidenceInput)
   // service, container, bin), and folding compose+container into ONE Tier-1
   // row first gives the bin-bundling pass below a single strong unit to
   // match against, instead of two weaker/duplicate ones.
-  const joined = joinComposeAndContainerUnits(consolidated);
+  const composeAndContainerJoined = joinComposeAndContainerUnits(consolidated);
+  // Same-kind Tier-1 rows declaring the identical service name (a dev/prod
+  // compose split, an override manifest, a duplicated k8s file) are the same
+  // logical ship unit, not two — collapse them before build-stage
+  // classification so neither survivor nor `qualified_unit_count` double-count.
+  const joined = mergeSameNamedTier1Rows(composeAndContainerJoined);
   // Build-infra Dockerfiles (base images other Dockerfiles FROM, and
   // multi-stage "build only" builder images) are demoted/excluded next, so
   // their ships_paths never participate in the bundling pass below as if
@@ -375,9 +381,22 @@ function joinComposeAndContainerUnits(items: DeployableEvidence[]): DeployableEv
 
     const match = containerRows.find(container => {
       if (merged.has(container)) return false;
-      if (normalizeMemberToken(container.name) !== composeKey) return false;
       const pathAgrees = isDockerfileWithinBuildContext(compose.root_path, container.root_path);
       const entrypointAgrees = entrypointTokenMatchesName(container.entrypoint_member, compose.name);
+      // A container row carrying the UNNAMED_SERVICE_PLACEHOLDER has, by
+      // construction, no name evidence at all (safeDeployableName emits it
+      // precisely when every real naming signal — dir basename, service
+      // alias, display name — was unavailable or hash-shaped). Requiring
+      // name-equality against a sentinel that carries zero identity is
+      // vacuous and blocks the join on exactly the repos where a root
+      // Dockerfile's own name resolution is weakest but a sibling
+      // compose-service row already names the real service — structural
+      // corroboration (build-context containment or entrypoint identity)
+      // alone is sufficient evidence in that case.
+      if (container.name === UNNAMED_SERVICE_PLACEHOLDER) {
+        return pathAgrees || entrypointAgrees;
+      }
+      if (normalizeMemberToken(container.name) !== composeKey) return false;
       return pathAgrees || entrypointAgrees;
     });
     if (!match) continue;
@@ -394,6 +413,67 @@ function joinComposeAndContainerUnits(items: DeployableEvidence[]): DeployableEv
   }
 
   return merged.size ? items.filter(item => !merged.has(item)) : items;
+}
+
+/**
+ * Collapses Tier-1 rows of the SAME kind that declare the IDENTICAL service
+ * name into one ship unit. Real hosted defect (2026-08): a repo with two
+ * compose files (a root `docker-compose.yml` and a
+ * `infra/deploy/docker-compose.yml` override/deploy manifest) each declaring
+ * a `build:`-carrying service named "kontinuum" produced TWO Tier-1
+ * compose-service rows — `das:compose-service:root:kontinuum` and
+ * `das:compose-service:deploy:kontinuum` — because dedupe() keys on
+ * `tier::kind::root_path::name` and the two manifests resolve different
+ * root_paths for the same logical service. Two independently-built Tier-1
+ * ship declarations of the SAME kind sharing the exact same declared service
+ * name is not realistic evidence of two distinct deployables (a repo does not
+ * ship two unrelated services both named "kontinuum") — it is the same
+ * service declared more than once (a dev/prod compose split, an override
+ * file, a duplicated k8s manifest). Runs once per kind, keeping the richest
+ * row (most ships_paths union already applied via evidence, then most
+ * evidence lines, then array order for determinism) as the survivor and
+ * unioning the rest's evidence/ships_paths/ports/base_images into it — same
+ * merge shape as `dedupeBuildTargetIdentities` below, generalized to Tier-1.
+ */
+function mergeSameNamedTier1Rows(items: DeployableEvidence[]): DeployableEvidence[] {
+  const groups = new Map<string, DeployableEvidence[]>();
+  const passthrough: DeployableEvidence[] = [];
+  for (const item of items) {
+    if (item.tier !== 1 || item.name === UNNAMED_SERVICE_PLACEHOLDER) {
+      passthrough.push(item);
+      continue;
+    }
+    const key = `${item.kind}::${normalizeMemberToken(item.name)}`;
+    if (!key || normalizeMemberToken(item.name) === '') {
+      passthrough.push(item);
+      continue;
+    }
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key)!.push(item);
+  }
+
+  const out: DeployableEvidence[] = [...passthrough];
+  for (const group of groups.values()) {
+    if (group.length === 1) {
+      out.push(group[0]);
+      continue;
+    }
+    const ranked = [...group].sort((a, b) => {
+      const evidenceDiff = b.evidence.length - a.evidence.length;
+      if (evidenceDiff !== 0) return evidenceDiff;
+      return items.indexOf(a) - items.indexOf(b);
+    });
+    const [survivor, ...rest] = ranked;
+    for (const dupe of rest) {
+      survivor.evidence = [...new Set([...survivor.evidence, ...dupe.evidence, `merged-same-name-tier1:${dupe.kind}:${dupe.root_path}`])];
+      survivor.ships_paths = unionOptional(survivor.ships_paths, dupe.ships_paths);
+      survivor.ports = unionOptional(survivor.ports, dupe.ports);
+      survivor.base_images = unionOptional(survivor.base_images, dupe.base_images);
+      survivor.entrypoint_member ||= dupe.entrypoint_member;
+    }
+    out.push(survivor);
+  }
+  return out.sort((a, b) => items.indexOf(a) - items.indexOf(b));
 }
 
 /**
