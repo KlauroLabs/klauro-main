@@ -2795,6 +2795,31 @@ async function handleAccountApi(
     // above — so an in-progress attempt must win over a landed-but-stale
     // entry, not the other way around, regardless of whether `entry` exists.
     if (lastAttempt?.state === 'in-progress') {
+      const structural = structuralReadinessDuringAttempt(entry, lastAttempt);
+      if (structural) {
+        return {
+          statusCode: 200,
+          body: {
+            // Distinct from both 'populating' (nothing usable yet) and
+            // 'ready' (fully comprehended) — L0-L4 are this attempt's own
+            // fresh output; L5 (AI enrichment) is still running. Never
+            // reused for a stale/foreign entry — see
+            // structuralReadinessDuringAttempt.
+            status: 'structurally_ready',
+            project_id: project.id,
+            analysis_id: project.analysis_id,
+            last_attempt: lastAttempt,
+            summary: {
+              name: entry!.name,
+              analysis_timestamp: entry!.analyzed_at,
+              node_count: entry!.node_count,
+              edge_count: entry!.edge_count,
+              cas_version: entry!.cas_version,
+              layers_ready: entry!.layers_ready,
+            },
+          },
+        };
+      }
       return {
         statusCode: 200,
         body: {
@@ -2875,6 +2900,33 @@ async function handleAccountApi(
     // mid-write poll reports 'populating' instead of a stale 'ready'.
     const earlyLastAttempt = await readAttemptRecord(projectAttemptRecordPath(analysisWorkspace));
     if (earlyLastAttempt?.state === 'in-progress') {
+      // Same progressive-readiness overlay as GET .../analysis-status (see
+      // structuralReadinessDuringAttempt's doc comment): a lightweight entry
+      // check — not the heavier `getAnalysis` full-CAS read below — so this
+      // still avoids the cost the #129 fix was written to skip, while no
+      // longer hiding a genuinely fresh L0-L4 landing behind bare
+      // 'populating' for the whole L5 (AI) tail.
+      const earlyEntry = await getAnalysisEntry(analysisWorkspace).catch(() => null);
+      const structural = structuralReadinessDuringAttempt(earlyEntry, earlyLastAttempt);
+      if (structural) {
+        return {
+          statusCode: 200,
+          body: {
+            status: 'structurally_ready',
+            project_id: project.id,
+            analysis_id: project.analysis_id,
+            last_attempt: earlyLastAttempt,
+            summary: {
+              name: earlyEntry!.name,
+              analysis_timestamp: earlyEntry!.analyzed_at,
+              node_count: earlyEntry!.node_count,
+              edge_count: earlyEntry!.edge_count,
+              cas_version: earlyEntry!.cas_version,
+              layers_ready: earlyEntry!.layers_ready,
+            },
+          },
+        };
+      }
       return {
         statusCode: 200,
         body: { status: 'populating', project_id: project.id, analysis_id: project.analysis_id, last_attempt: earlyLastAttempt },
@@ -4775,6 +4827,47 @@ function safeDestination(workspace: string, relativePath: string): string {
 
 function workspacePath(dataDir: string, analysisId: string): string {
   return path.join(dataDir, 'workspaces', safeName(analysisId));
+}
+
+// --- Progressive readiness during an in-progress attempt --------------------
+// #129 fixed a real defect: while `lastAttempt.state === 'in-progress'`, the
+// CAS entry already landed on disk is necessarily from BEFORE this attempt
+// (or a foreign leftover), so serving it as 'ready' told a customer stale
+// data was fresh. The fix made 'in-progress' unconditionally return bare
+// 'populating', regardless of what `entry` holds.
+//
+// That fix over-corrects for one case: `analyzer.ts`'s layered pipeline
+// deliberately lands and SAVES a real CAS the moment L0-L4 (the deterministic
+// core-graph/agent-context ladder) complete, with `layers_ready` L0-L4
+// 'ready' and L5 'pending' — well before the AI comprehension pass (L5)
+// finishes and the attempt record itself flips to 'succeeded'. On a repo
+// where AI enrichment dominates wall time, that gap is real: the entry this
+// function inspects can be the CURRENT attempt's own already-landed
+// deterministic output, not a stale leftover, and blanket 'populating' hides
+// genuinely fresh, queryable data behind the L5 tail for no honesty reason.
+//
+// Distinguishing the two without reintroducing #129: only trust `entry` as
+// belonging to THIS attempt if its `layers_ready.generated_at` is at or after
+// `lastAttempt.started_at` — anything older is exactly the #129 stale case
+// and must stay 'populating'. Returns null whenever the entry isn't usable
+// this way (no entry, stale entry, structural layers not all ready, or L5 is
+// not simply 'pending' — an L5 error/ready entry is handled by the callers'
+// normal landed-analysis path, not this in-progress overlay).
+export function structuralReadinessDuringAttempt(
+  entry: { layers_ready?: { layers?: Array<{ layer: string; status: string }>; generated_at?: string } } | null | undefined,
+  lastAttempt: { started_at?: string } | null | undefined,
+): { layers: Array<{ layer: string; status: string }>; generatedAt: string } | null {
+  const generatedAt = entry?.layers_ready?.generated_at;
+  const startedAt = lastAttempt?.started_at;
+  if (!generatedAt || !startedAt) return null;
+  if (Date.parse(generatedAt) < Date.parse(startedAt)) return null;
+  const layers = entry?.layers_ready?.layers || [];
+  const structuralErrors = layers.some(layer => layer.layer !== 'L5' && layer.status === 'error');
+  const structuralPending = layers.some(layer => layer.layer !== 'L5' && layer.status === 'pending');
+  if (structuralErrors || structuralPending) return null;
+  const l5 = layers.find(layer => layer.layer === 'L5');
+  if (!l5 || l5.status !== 'pending') return null;
+  return { layers, generatedAt };
 }
 
 function makeAnalysisId(value: string): string {
