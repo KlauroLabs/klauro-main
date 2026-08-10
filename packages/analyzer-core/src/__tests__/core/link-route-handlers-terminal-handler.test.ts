@@ -101,3 +101,133 @@ describe('linkRouteHandlers: terminal-handler resolution through a middleware ch
     expect(edges.some(e => e.target === decoyHandlerNode.id)).toBe(false);
   });
 });
+
+// REGRESSION GUARD for the defect measured live (task/#131, miniflux VPS
+// analysis): a Go entry point's `handler.file` is stamped with the file that
+// REGISTERS the route (e.g. internal/api/api.go), never the file that
+// IMPLEMENTS the handler — Go's idiomatic shape registers every route in one
+// file while each struct-method handler is defined in a sibling file in the
+// same package (internal/api/entries.go, feeds.go, users.go, ...). Because
+// `handlerFile` always self-matches linkRouteHandlers' own file-scoping
+// filter (a file path always "includes" itself), the narrowed search never
+// falls back to "search every file" even though the real handler lives
+// entirely outside the narrowed set — leaving `handler.node_id` unset,
+// `source_node` pointed at a FILE node with no outgoing calls, and
+// journey-builder's chain walk dead-ending at depth 0. Of 151 real HTTP
+// routes on that analysis, exactly one journey survived. This test locks in
+// the fix: an unambiguous EXACT project-wide name match resolves even when
+// it lives outside handlerFile's narrowed scope.
+describe('linkRouteHandlers: cross-file same-package handler resolution (Go struct-method shape)', () => {
+  const orch = new AnalyzerOrchestrator() as any;
+
+  it('resolves handler.node_id to the implementation file when it differs from the route-registration file', () => {
+    const routeFileNode: CASNode = {
+      id: 'file_internal_api_api_go',
+      name: 'api.go',
+      type: 'file',
+      qualified_name: 'internal/api/api.go',
+      source: { file: 'internal/api/api.go' },
+    } as CASNode;
+
+    // api.go itself declares an unrelated function (e.g. NewHandler) — so
+    // it's a real key in functionNodesByFile and the narrowed search is NOT
+    // empty (which would already hit the pre-existing "search everything"
+    // fallback and mask this bug). This is what forces the file-scoped
+    // search to find nothing relevant and rely on the new global fallback.
+    const unrelatedSameFileFn: CASNode = {
+      id: 'function_internal_api_api_go_NewHandler',
+      name: 'NewHandler',
+      type: 'function',
+      qualified_name: 'NewHandler',
+      source: { file: 'internal/api/api.go', line: 5, end_line: 8 },
+    } as CASNode;
+
+    // The real handler, implemented in a DIFFERENT file in the same package —
+    // never referenced by api.go's own file path.
+    const handlerNode: CASNode = {
+      id: 'method_handler_getFeeds_42',
+      name: 'getFeeds',
+      type: 'method',
+      qualified_name: 'getFeeds',
+      source: { file: 'internal/api/feeds.go', line: 42, end_line: 60 },
+    } as CASNode;
+
+    const nodes: CASNode[] = [routeFileNode, unrelatedSameFileFn, handlerNode];
+    const edges: CASEdge[] = [];
+
+    const entryPoint: CASEntryPoint = {
+      id: 'entry_go_route_internal_api_api_go_GET__v1_feeds',
+      name: 'GET /v1/feeds',
+      type: 'http',
+      source_node: routeFileNode.id,
+      trigger: { method: 'GET', path: '/v1/feeds' },
+      // Structural fact go-analyzer.ts already produces correctly:
+      // resolveGoHandlerMethodName('handler.getFeeds') -> 'getFeeds', file
+      // stamped as the REGISTRATION file (api.go), not feeds.go.
+      handler: { method_name: 'getFeeds', file: 'internal/api/api.go' },
+      security: { authenticated: false },
+    } as CASEntryPoint;
+
+    orch.linkRouteHandlers(nodes, edges, [entryPoint]);
+
+    expect(entryPoint.handler!.node_id).toBe(handlerNode.id);
+
+    const callsEdges = edges.filter(e => e.type === 'calls' && e.source === routeFileNode.id);
+    expect(callsEdges).toHaveLength(1);
+    expect(callsEdges[0].target).toBe(handlerNode.id);
+  });
+
+  it('stays honest (no node_id) when the exact name is ambiguous project-wide and neither candidate owns call edges', () => {
+    const routeFileNode: CASNode = {
+      id: 'file_internal_api_api_go',
+      name: 'api.go',
+      type: 'file',
+      qualified_name: 'internal/api/api.go',
+      source: { file: 'internal/api/api.go' },
+    } as CASNode;
+
+    const unrelatedSameFileFn: CASNode = {
+      id: 'function_internal_api_api_go_NewHandler',
+      name: 'NewHandler',
+      type: 'function',
+      qualified_name: 'NewHandler',
+      source: { file: 'internal/api/api.go', line: 5, end_line: 8 },
+    } as CASNode;
+
+    const handlerA: CASNode = {
+      id: 'method_handler_a_getEntries',
+      name: 'getEntries',
+      type: 'method',
+      qualified_name: 'getEntries',
+      source: { file: 'internal/api/entries.go', line: 10, end_line: 20 },
+    } as CASNode;
+
+    // A genuinely unrelated same-named method on a different struct —
+    // ambiguous, no call-edge tiebreaker available.
+    const handlerB: CASNode = {
+      id: 'method_handler_b_getEntries',
+      name: 'getEntries',
+      type: 'method',
+      qualified_name: 'getEntries',
+      source: { file: 'internal/other/entries.go', line: 5, end_line: 15 },
+    } as CASNode;
+
+    const nodes: CASNode[] = [routeFileNode, unrelatedSameFileFn, handlerA, handlerB];
+    const edges: CASEdge[] = [];
+
+    const entryPoint: CASEntryPoint = {
+      id: 'entry_go_route_internal_api_api_go_GET__v1_entries',
+      name: 'GET /v1/entries',
+      type: 'http',
+      source_node: routeFileNode.id,
+      trigger: { method: 'GET', path: '/v1/entries' },
+      handler: { method_name: 'getEntries', file: 'internal/api/api.go' },
+      security: { authenticated: false },
+    } as CASEntryPoint;
+
+    orch.linkRouteHandlers(nodes, edges, [entryPoint]);
+
+    expect(entryPoint.handler!.node_id).toBeUndefined();
+    expect(edges.filter(e => e.type === 'calls' && e.source === routeFileNode.id)).toHaveLength(0);
+  });
+});

@@ -27948,6 +27948,33 @@ export class AnalyzerOrchestrator {
         }
       }
 
+      // filesToSearch is narrowed by handlerFile — the file that REGISTERS
+      // the route — but a route-registration file and the file that
+      // IMPLEMENTS the handler are frequently different in the same package
+      // (Go especially: e.g. miniflux's internal/api/api.go registers every
+      // route while each handler is a struct method defined in a sibling
+      // file — entries.go, feeds.go, users.go, ...). handlerFile always
+      // self-matches the `file.includes(handlerFile)` scoping filter above,
+      // so filesToSearch is never empty and the "search everything" fallback
+      // a few lines up never fires even though the real handler lives
+      // outside the narrowed set. Measured live (task/#131): this left
+      // ep.handler.node_id unset for nearly every Go HTTP route, so
+      // journey-builder's chain walk rooted on the FILE node (no outgoing
+      // call edges) and dead-ended at depth 0. An EXACT project-wide name
+      // match is safe evidence here — same identifier, a real function node,
+      // never fabricated — as long as it's unambiguous; when more than one
+      // same-named function exists, prefer the one that actually owns
+      // outgoing calls (the real implementation, not an unrelated stub/twin).
+      if (!matchedFunctionNode && handlerName) {
+        const globalMatches = functionNodesByName.get(handlerName) || [];
+        if (globalMatches.length === 1) {
+          matchedFunctionNode = globalMatches[0];
+        } else if (globalMatches.length > 1) {
+          const withCalls = globalMatches.filter(n => callEdgeSources.has(n.id));
+          if (withCalls.length === 1) matchedFunctionNode = withCalls[0];
+        }
+      }
+
       if (!matchedFunctionNode) {
         // Substring containment (`handlerName.includes(n.name)` /
         // `n.name.includes(handlerName)`) is only meaningful evidence when
