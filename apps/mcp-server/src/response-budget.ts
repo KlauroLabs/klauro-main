@@ -48,6 +48,38 @@ export function serializeToolResponse(value: unknown): string {
   return JSON.stringify(value);
 }
 
+/**
+ * Paths whose arrays are COMPLETE FACTS about the analysed system, not samples of
+ * a larger set. Trimming these does not shorten an answer — it changes it.
+ *
+ * Observed 2026-08-10 on prod 1.0.141, `get_agent_start_context` on a Java/Spring
+ * repo, `response_profile: "first-turn"` (the narrowest profile):
+ *   scale.database_entities → ["Owner"]              (the repo has SIX entities)
+ *   system.languages        → ["TypeScript/JavaScript"]  (the repo is JAVA)
+ * Both were recorded in `trims` with correct totals, but the report is capped at
+ * MAX_REPORTED_TRUNCATED_PATHS and sorted by ABSOLUTE loss, so a small complete
+ * set losing 5 of 6 ranked below example lists losing 7 of 8 and never surfaced.
+ * The caller therefore received a confidently wrong answer — one entity, the wrong
+ * language — with no indication anything had been dropped. This is the first tool
+ * every customer agent calls.
+ *
+ * These sets are small by nature (a handful of entity names, a handful of
+ * languages), so protecting them costs on the order of a hundred bytes and buys
+ * correctness. Sibling example lists (`inventory_examples.*`, `starting_points.*`)
+ * stay trimmable: dropping 7 of 8 examples shortens an answer without changing it,
+ * which is exactly what a byte budget is for.
+ */
+const FACT_ARRAY_PATH_SUFFIXES = [
+  'scale.database_entities',
+  'system.languages',
+  'system.frameworks',
+  'system.top_capabilities',
+] as const;
+
+function isFactArrayPath(path: string): boolean {
+  return FACT_ARRAY_PATH_SUFFIXES.some(suffix => path === suffix || path.endsWith(`.${suffix}`));
+}
+
 interface ShrinkCandidate {
   path: string;
   kind: 'array' | 'string';
@@ -64,7 +96,10 @@ function collectCandidates(value: unknown, path: string, container: Record<strin
     return;
   }
   if (Array.isArray(value)) {
-    if (container && value.length > 1) {
+    // Fact arrays are never trim candidates — see FACT_ARRAY_PATH_SUFFIXES. Trimming
+    // them changes the answer rather than shortening it, and the truncation report is
+    // capped, so the change can reach a caller unannounced.
+    if (container && value.length > 1 && !isFactArrayPath(path)) {
       out.push({ path, kind: 'array', size: byteLength(JSON.stringify(value)), container, key });
     }
     value.forEach((item, index) => collectCandidates(item, `${path}[${index}]`, value, index, out));
@@ -180,8 +215,17 @@ export function boundToolPayload(data: unknown, options: BoundOptions): unknown 
     total: record.total,
     returned: record.current(),
   }));
+  // Rank by PROPORTION lost, then by absolute loss. Sorting on absolute loss alone
+  // buried the most misleading reductions: a set cut from 6 to 1 (83% gone, and very
+  // likely now a wrong answer) ranked below an example list cut from 8 to 1, so with
+  // the report capped at MAX_REPORTED_TRUNCATED_PATHS it never surfaced at all.
+  // Severity is how much of a set vanished, not how many items did.
   const truncatedPaths = [...allTruncatedPaths]
-    .sort((a, b) => (b.total - b.returned) - (a.total - a.returned))
+    .sort((a, b) => {
+      const lostFraction = (record: TruncatedPath) =>
+        record.total > 0 ? (record.total - record.returned) / record.total : 0;
+      return (lostFraction(b) - lostFraction(a)) || ((b.total - b.returned) - (a.total - a.returned));
+    })
     .slice(0, MAX_REPORTED_TRUNCATED_PATHS);
 
   const envelope: BoundedEnvelope = {
