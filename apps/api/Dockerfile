@@ -20,6 +20,23 @@ COPY apps/api/package.json ./apps/api/package.json
 COPY apps/mcp-server/package.json ./apps/mcp-server/package.json
 COPY packages/analyzer-core/package.json ./packages/analyzer-core/package.json
 
+# The two workspaces declare a `postinstall` that verifies the native tree-sitter
+# addon actually loaded — a guard added because `npm ci` silently skips a
+# dependency's own build scripts under npm's install-scripts allowlist, leaving an
+# install that parses NOTHING while reporting success (zero nodes, errors: 0).
+#
+# Those scripts must be present BEFORE `npm ci` runs, or npm fails with
+# MODULE_NOT_FOUND on its own lifecycle hook and the image build dies — which is
+# exactly what happened the first time. Copied here, alongside the manifests,
+# rather than with the source below, because the whole point of this COPY block is
+# that it changes rarely and keeps the expensive install layer cached.
+#
+# Keep the guard firing in the image build: this image runs the analyzer, so an
+# image whose parser is broken should fail loudly at build time, not serve empty
+# analyses in production.
+COPY packages/analyzer-core/scripts/verify-native-parser.cjs ./packages/analyzer-core/scripts/verify-native-parser.cjs
+COPY apps/mcp-server/scripts/verify-native-parser.cjs ./apps/mcp-server/scripts/verify-native-parser.cjs
+
 RUN npm ci \
   --workspace @klauro/api \
   --workspace @klauro/mcp-server \
