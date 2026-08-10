@@ -131,11 +131,20 @@ test('cas version parsing and comparison are semver-ish and lenient', () => {
 });
 
 test('describeAnalysisVersion classifies stored versions against the floor', () => {
+  // A genuinely future major line, computed from the live CAS_VERSION rather
+  // than hardcoded — a literal like '2.0.0' was "newer" only while
+  // CAS_VERSION sat on the 1.x line. Once CAS_VERSION itself crossed into
+  // 2.x (1.11.0 -> 2.0.0 -> 2.1.0, 2026-08-09), that literal became an
+  // OLDER version by definition and silently stopped exercising the
+  // newer-major branch at all. Mirrors the newerMinor pattern below.
+  const [futureMajor] = parseCasVersion(CAS_VERSION)!;
+  const newerMajor = `${futureMajor + 1}.0.0`;
+
   assert.equal(describeAnalysisVersion(CAS_VERSION).status, 'current');
   assert.equal(describeAnalysisVersion('1.9.0').status, 'older-compatible');
   assert.equal(describeAnalysisVersion('1.5.0').status, 'unsupported');
   assert.equal(describeAnalysisVersion('0.9.0').status, 'unsupported');
-  assert.equal(describeAnalysisVersion('2.0.0').status, 'newer-major');
+  assert.equal(describeAnalysisVersion(newerMajor).status, 'newer-major');
   assert.equal(describeAnalysisVersion(undefined).status, 'unsupported');
 
   const info = describeAnalysisVersion('1.9.0');
@@ -144,6 +153,9 @@ test('describeAnalysisVersion classifies stored versions against the floor', () 
 });
 
 test('assertAnalysisVersionSupported gives a re-analysis instruction, never a crash path', () => {
+  const [futureMajor] = parseCasVersion(CAS_VERSION)!;
+  const newerMajor = `${futureMajor + 1}.0.0`;
+
   assert.doesNotThrow(() => assertAnalysisVersionSupported(makeCurrentAnalysis(), '/tmp/p'));
   assert.doesNotThrow(() => assertAnalysisVersionSupported(makeLegacyAnalysis(), '/tmp/p'));
 
@@ -152,7 +164,7 @@ test('assertAnalysisVersionSupported gives a re-analysis instruction, never a cr
     (error: Error) => error.message.includes('Re-run analyze_codebase') && error.message.includes('1.5.0')
   );
   assert.throws(
-    () => assertAnalysisVersionSupported(makeLegacyAnalysis('2.0.0'), '/tmp/p'),
+    () => assertAnalysisVersionSupported(makeLegacyAnalysis(newerMajor), '/tmp/p'),
     (error: Error) => error.message.includes('Upgrade the Klauro MCP server')
   );
 });
