@@ -197,3 +197,91 @@ export function testCapabilityNameAgainstIdentifierVocabulary(
 
   return { failsIdentifierTest: flaggedTokens.length > 0, flaggedTokens };
 }
+
+/**
+ * §0.7.1's audience test, restated: "readable by a non-technical person" is a
+ * bar on the WHOLE capability as a customer reads it, not just its name. The
+ * cross-repo audit (2026-08-09) found vendor names, a protocol term, an
+ * `Rpc` mention, and a source-file path inside DESCRIPTIONS that survived
+ * `testCapabilityNameAgainstIdentifierVocabulary` because that function only
+ * ever looked at `name`. Same evidence-derived discriminator, same "no
+ * hardcoded vendor/protocol list" constraint (§0.3) — tokenized over the
+ * description text instead of the name's subject tokens. Every alphabetic
+ * word of length >= 4 is a candidate (a description is prose, not a
+ * name-grammar subject/verb shape, so there is no leading-verb strip to do);
+ * short/common connective words fall out on their own via the length floor,
+ * same rationale as `capabilitySubjectTokens`.
+ */
+function descriptionCandidateTokens(description: string): string[] {
+  const words = String(description || '').split(/[^A-Za-z0-9]+/).filter(Boolean);
+  return words.filter(w => w.replace(/[^a-zA-Z]/g, '').length >= 4);
+}
+
+/** A raw filesystem path leaking into a description is a mechanism leak by
+ *  construction (a PM/designer/marketer never sees or names a source file) —
+ *  detected structurally (a path separator plus a recognized source
+ *  extension), never a filename/directory keyword list. */
+const SOURCE_FILE_PATH_PATTERN = /(?:^|[\s"'(])[\w.\-/\\]*[\/\\][\w.\-]+\.(?:ts|tsx|js|jsx|py|rb|java|kt|swift|go|rs|cs|php|c|cpp|h|hpp|scala|ex|exs)\b/i;
+
+export interface AudienceDescriptionTestResult {
+  /** True when the description leaks mechanism vocabulary, a raw source
+   *  path, is missing/empty, or merely restates the capability's own name
+   *  with no added information. */
+  failsAudienceTest: boolean;
+  /** Machine-readable reason codes, one or more of: 'identifier-vocabulary',
+   *  'source-file-path', 'missing', 'restates-name'. */
+  reasons: string[];
+  flaggedTokens: string[];
+}
+
+/** Whether `description` says nothing beyond `name` — every content word in
+ *  the description already appears in the name, so it restates rather than
+ *  describes. Evidence-based (word-set containment), not a fixed phrase
+ *  list — catches "Manage Order Origin manages the order origin" and its
+ *  paraphrases alike. */
+function descriptionRestatesName(name: string, description: string): boolean {
+  const nameTokens = new Set(
+    String(name || '').split(/[^A-Za-z0-9]+/).filter(Boolean).map(w => normalizeToken(w))
+  );
+  if (nameTokens.size === 0) return false;
+  const descTokens = descriptionCandidateTokens(description).map(w => normalizeToken(w));
+  if (descTokens.length === 0) return true; // no content words at all
+  const novel = descTokens.filter(token => !nameTokens.has(token));
+  return novel.length === 0;
+}
+
+/**
+ * The description-side counterpart to
+ * `testCapabilityNameAgainstIdentifierVocabulary` (§0.7.1's audience test
+ * applied to the whole capability, not only its name). Same identifier-vs-
+ * domain-vocabulary discriminator, plus the two structural leaks the audit
+ * found have no vocabulary-table shape at all: a missing description, and a
+ * description that is a no-op restatement of the name.
+ */
+export function testCapabilityDescriptionAgainstAudience(
+  name: string,
+  description: string | undefined,
+  libraries: Pick<CASLibrary, 'name'>[],
+  entities: Pick<CASDataEntity, 'name' | 'kind'>[],
+): AudienceDescriptionTestResult {
+  const trimmed = String(description || '').trim();
+  if (!trimmed) {
+    return { failsAudienceTest: true, reasons: ['missing'], flaggedTokens: [] };
+  }
+  const reasons: string[] = [];
+  if (SOURCE_FILE_PATH_PATTERN.test(trimmed)) reasons.push('source-file-path');
+  if (descriptionRestatesName(name, trimmed)) reasons.push('restates-name');
+
+  const identifierVocab = buildIdentifierVocabulary(libraries);
+  const domainVocab = buildDomainEntityVocabulary(entities);
+  const flaggedTokens: string[] = [];
+  for (const token of descriptionCandidateTokens(trimmed)) {
+    const normalized = normalizeToken(token);
+    const appearsAsIdentifier = tokenAppearsAsIdentifier(normalized, identifierVocab);
+    const appearsAsDomainEntity = domainVocab.has(normalized);
+    if (appearsAsIdentifier && !appearsAsDomainEntity) flaggedTokens.push(token);
+  }
+  if (flaggedTokens.length > 0) reasons.push('identifier-vocabulary');
+
+  return { failsAudienceTest: reasons.length > 0, reasons, flaggedTokens };
+}
