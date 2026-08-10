@@ -64,11 +64,23 @@ function normalizeEntityName(name: string): string {
  * text to attribute it to; otherwise pass the source through as-is (honest
  * "no provenance because no text", matching identity.description_source's
  * documented contract just above it in cas.types.ts).
+ *
+ * HARDENED (same audit, second pass): the first version above only stopped
+ * this view from ADDING a new instance of the mismatch — `if
+ * (!capability.description) return capability.description_source;` still
+ * forwarded an ALREADY-mismatched capability (description_source set with no
+ * text) unchanged, e.g. a stored analysis computed before this invariant
+ * existed, or a future write site upstream that reintroduces the bug the
+ * repair loop and orchestrator.ts's `enforceCapabilityDescriptionProvenance
+ * Invariant` choke point were meant to prevent. This view is the last stop
+ * before a customer sees the capability, so it must not merely decline to
+ * make things worse — it must actively enforce the invariant on whatever it
+ * is handed, same as the orchestrator-side choke point.
  */
 function resolveCapabilityDescriptionProvenance(
   capability: Pick<SystemCapability, 'description' | 'description_source'>,
 ): SystemCapability['description_source'] | undefined {
-  if (!capability.description) return capability.description_source;
+  if (!capability.description) return undefined;
   return capability.description_source || 'deterministic';
 }
 

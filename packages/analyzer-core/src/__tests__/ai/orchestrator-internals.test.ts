@@ -11113,3 +11113,49 @@ describe('TASK #119: candidate-generation inversion (terminal / proximal-termina
     });
   });
 });
+
+// CHOKE-POINT INVARIANT (2026-08-10 live comprehension audit): a capability's
+// `description_source` and the PRESENCE of `description` text must never
+// disagree. Confirmed live on a Django "Process Forms" capability and a Go
+// "Integrate with External Services" capability, both shipping
+// `description_source: 'deterministic'` with the `description` key absent
+// entirely. Two prior fixes (orchestrator.ts's per-capability repair loop)
+// and a third (product-map.ts's view-time default) each closed one WRITE
+// SITE without closing the invariant itself — this exercises the final
+// enforcement point (enforceCapabilityDescriptionProvenanceInvariant) that
+// runs over the actual `system_capabilities` array at every output-assembly
+// exit, not just the derived product-map view.
+describe('capability description-provenance invariant (choke point)', () => {
+  it('strips a bare description_source that has no description text to back it', () => {
+    const capabilities: any[] = [
+      { id: 'cap_1', name: 'Process Forms', description: undefined, description_source: 'deterministic' },
+      { id: 'cap_2', name: 'Integrate with External Services', description: '', description_source: 'deterministic' },
+    ];
+    orch.enforceCapabilityDescriptionProvenanceInvariant(capabilities);
+    for (const capability of capabilities) {
+      expect(capability.description_source).toBeUndefined();
+    }
+  });
+
+  it('never touches a capability whose description_source is already backed by real text', () => {
+    const capabilities: any[] = [
+      { id: 'cap_1', name: 'Analyze Source Repositories', description: 'Handles analysis of source repositories.', description_source: 'deterministic' },
+      { id: 'cap_2', name: 'Manage Users', description: 'Creates and updates User records.', description_source: 'ai' },
+    ];
+    const snapshot = JSON.parse(JSON.stringify(capabilities));
+    orch.enforceCapabilityDescriptionProvenanceInvariant(capabilities);
+    expect(capabilities).toEqual(snapshot);
+  });
+
+  it('leaves a capability with no description and no source alone (honest "not described")', () => {
+    const capabilities: any[] = [
+      { id: 'cap_1', name: 'Process Forms', description: undefined, description_source: undefined },
+    ];
+    orch.enforceCapabilityDescriptionProvenanceInvariant(capabilities);
+    expect(capabilities[0].description_source).toBeUndefined();
+  });
+
+  it('tolerates an undefined capabilities array (no-op, never throws)', () => {
+    expect(() => orch.enforceCapabilityDescriptionProvenanceInvariant(undefined)).not.toThrow();
+  });
+});

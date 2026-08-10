@@ -2688,6 +2688,7 @@ export class AnalyzerOrchestrator {
       test_summary: testSummary
     } as CASOutput;
 
+    this.enforceCapabilityDescriptionProvenanceInvariant(output.system_capabilities);
     output.product_map = buildProductMap(output);
 
     // Infra -> code topology linker. Additive, deterministic, evidence-gated
@@ -2800,6 +2801,7 @@ export class AnalyzerOrchestrator {
     // now-complete edge set — makes runtime_topology fire in every path. Pure and
     // idempotent (reads only assembled facts); the pending branch may rebuild once
     // more after AI mutates descriptions, which is fine.
+    this.enforceCapabilityDescriptionProvenanceInvariant(output.system_capabilities);
     output.product_map = buildProductMap(output);
 
     if (deferAiEnrichment) {
@@ -2844,6 +2846,7 @@ export class AnalyzerOrchestrator {
           } catch (error) {
             systemCapabilities.splice(0, systemCapabilities.length, ...rawCapabilitySnapshot);
             output.system_capabilities = systemCapabilities.length > 0 ? systemCapabilities : undefined;
+            this.enforceCapabilityDescriptionProvenanceInvariant(output.system_capabilities);
             output.product_map = buildProductMap(output);
             throw error;
           }
@@ -2894,6 +2897,7 @@ export class AnalyzerOrchestrator {
           if (enhancedSystemPurpose.inferred_description) {
             output.system.description = enhancedSystemPurpose.inferred_description;
           }
+          this.enforceCapabilityDescriptionProvenanceInvariant(output.system_capabilities);
           output.product_map = buildProductMap(output);
         });
       } else {
@@ -2911,6 +2915,7 @@ export class AnalyzerOrchestrator {
         // other skip path already enforces before this ships.
         this.recordComprehensionSkipped(enhancedSystemPurpose, systemCapabilities, dataEntities, 'no-ai-provider-configured');
         output.system_capabilities = systemCapabilities.length > 0 ? systemCapabilities : undefined;
+        this.enforceCapabilityDescriptionProvenanceInvariant(output.system_capabilities);
         output.product_map = buildProductMap(output);
       }
     } else {
@@ -4107,6 +4112,7 @@ export class AnalyzerOrchestrator {
       test_suites: testSuites
     };
 
+    this.enforceCapabilityDescriptionProvenanceInvariant(rebuiltOutput.system_capabilities);
     rebuiltOutput.product_map = buildProductMap(rebuiltOutput);
     return rebuiltOutput;
   }
@@ -27061,6 +27067,34 @@ export class AnalyzerOrchestrator {
       return segments.slice(-2).join('/');
     }
     return normalized;
+  }
+
+  // CHOKE POINT (2026-08-10 provenance invariant, live comprehension audit):
+  // `description_source` and the PRESENCE of `description` text must never
+  // disagree — a source can only ever describe text that actually exists.
+  // This defect escaped two branch-level fixes and was independently sighted
+  // a third time (orchestrator.ts's per-capability repair loop x2, then
+  // product-map.ts's view-time `description_source || 'deterministic'`
+  // default) before it was recognized as a missing INVARIANT rather than a
+  // missing branch. Every site above that sets provenance already keeps text
+  // and source in lockstep by construction, but a 32k-line orchestrator with
+  // half a dozen output-assembly branches (synchronous / deferred-pending /
+  // AI-disabled / incremental-rebuild) and a catalog-reconciliation/reuse/
+  // stabilize layer downstream of them is exactly the shape where a future
+  // write site reintroduces this silently. Run this once over the FINAL
+  // `system_capabilities` array at every point the output is about to be
+  // exposed (mirrors buildProductMap's own defensive
+  // resolveCapabilityDescriptionProvenance, but normalizes the RAW array too
+  // — callers that read system_capabilities directly, not just product_map,
+  // must see the same honest state). Never fabricates text: a capability
+  // with no description simply ships with no provenance either ("not
+  // described" is honest; "deterministic" over nothing is not).
+  private enforceCapabilityDescriptionProvenanceInvariant(capabilities: SystemCapability[] | undefined): void {
+    for (const capability of capabilities || []) {
+      if (!capability.description && capability.description_source) {
+        capability.description_source = undefined;
+      }
+    }
   }
 
   // Guaranteed-safe deterministic text for a capability with no operations,
