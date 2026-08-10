@@ -1,4 +1,5 @@
 import type { AnalyzeRemotelyResult } from './remote-sync-client';
+import type { UploadManifest } from './remote-source';
 
 /**
  * Shared by cli.ts and installed-cli.ts (task #129): the human-readable
@@ -96,4 +97,28 @@ export function withAnalysisState<T extends Pick<AnalyzeRemotelyResult, 'status'
   result: T,
 ): T & { analysis_state: 'running' | 'complete' } {
   return { ...result, analysis_state: result.status === 'accepted' ? 'running' : 'complete' };
+}
+
+/**
+ * Plain-text rendering for `klauro upload-manifest`/`index` (no --json).
+ * Same bug class as the header comment above: installed-cli.ts used to hand
+ * the raw UploadManifest object straight to output(), which JSON.stringifies
+ * any non-string value regardless of the `json` flag — so `klauro
+ * upload-manifest .` dumped a full JSON manifest even without --json,
+ * despite --json being an accepted (and therefore implicitly optional) flag
+ * for this command.
+ */
+export function formatUploadManifest(manifest: UploadManifest): string {
+  const lines = [
+    `Root: ${manifest.root}${manifest.mode === 'dirty-tree' ? ' (dirty-tree: uncommitted changes only)' : ''}`,
+  ];
+  if (manifest.branch || manifest.commit) {
+    lines.push(`Revision: ${manifest.branch || 'detached'}${manifest.commit ? ` @ ${manifest.commit.slice(0, 7)}` : ''}${manifest.dirty ? ' (working tree dirty)' : ''}`);
+  }
+  lines.push(`Would upload ${manifest.summary.included_files} file(s), ${manifest.summary.included_bytes} bytes; ${manifest.summary.excluded_files} file(s) excluded.`);
+  if (manifest.workspace_recommendation?.recommended) {
+    lines.push(`Note: ${manifest.workspace_recommendation.reason}`);
+  }
+  lines.push('Run with --json for the full file-by-file manifest.');
+  return lines.join('\n');
 }

@@ -3,7 +3,7 @@ import * as path from 'node:path';
 import { existsSync, statSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { analyzeCodebaseRemotely, syncWorkingTreeRemotely } from './remote-sync-client';
-import { formatRemoteResult, withAnalysisState } from './remote-result-format';
+import { formatRemoteResult, formatUploadManifest, withAnalysisState } from './remote-result-format';
 import { buildUploadManifest } from './remote-source';
 import { assessUploadScope, confirmUploadScope } from './upload-scope-guard';
 import { clearStoredConnectorSession, connectorToken, listStoredAccounts, loadStoredConnectorAuth, normalizeServerUrl, resolveAuthStatus, saveStoredConnectorSession, switchStoredAccount, warnIfSessionExpiringSoon } from './connector-auth';
@@ -258,7 +258,17 @@ async function main() {
   const target = path.resolve(rawPathArg ?? '.');
   validateTargetPath(command, rawPathArg, target);
   const json = process.argv.includes('--json');
-  if (command === 'version' || command === '--version' || command === '-v') return output({ version: formatBuildIdentity() }, json);
+  // Every command in this file accepts --json (it is in COMMAND_FLAGS) with an
+  // implied plain-text default when it is omitted — the pattern every OTHER
+  // command here already follows (status/doctor/support-bundle/auth-status/
+  // accounts/analyze). version/upload-manifest/init/install/logout/login used
+  // to hand a bare object straight to output() regardless of `json`, and
+  // output() JSON.stringifies anything that isn't already a string — so
+  // `klauro version` (no --json) printed a JSON blob instead of the version
+  // string, exactly the class of bug #129 fixed for `analyze`/`remote-sync`
+  // but never ported to these six. Fixed by giving each a real plain-text
+  // branch below.
+  if (command === 'version' || command === '--version' || command === '-v') return output(json ? { version: formatBuildIdentity() } : formatBuildIdentity(), json);
   // Self-update. This MUST exist in the shipped CLI: the hosted server's
   // protocol-mismatch remediation (HTTP 426, remote-analyzer-service.ts) tells
   // customers to run it, and through 1.0.127 it fell through to the usage text
@@ -302,7 +312,10 @@ async function main() {
     const result = await syncWorkingTreeRemotely({ projectPath: target, requireBoundProject: true, confirmScope: scope.confirmScope });
     return output(json ? withAnalysisState(result) : formatRemoteResult(result), json);
   }
-  if (command === 'upload-manifest' || command === 'index') return output(await buildUploadManifest(target, process.argv.includes('--dirty-tree') ? 'dirty-tree' : 'full'), json);
+  if (command === 'upload-manifest' || command === 'index') {
+    const manifest = await buildUploadManifest(target, process.argv.includes('--dirty-tree') ? 'dirty-tree' : 'full');
+    return output(json ? manifest : formatUploadManifest(manifest), json);
+  }
   // status/doctor/support-bundle: the same class of dead end `update` was
   // (see the comment above SELF_UPDATE_COMMANDS) — the product's own text
   // tells customers to run all three (server error remediations, `klauro
@@ -362,7 +375,13 @@ async function main() {
       kind: 'project',
       force: process.argv.includes('--force'),
     });
-    return output({ status: 'ready', path: target, config_file: config.configPath, project_id: projectId, workspace_id: workspaceId, next: `klauro analyze ${target}` }, json);
+    const initResult = { status: 'ready' as const, path: target, config_file: config.configPath, project_id: projectId, workspace_id: workspaceId, next: `klauro analyze ${target}` };
+    return output(json ? initResult : [
+      `Ready: ${target}`,
+      `Config written to ${config.configPath}`,
+      projectId ? `Bound to hosted project ${projectId}${workspaceId ? ` (workspace ${workspaceId})` : ''}.` : 'Not signed in — no hosted project was bound. Run `klauro login` then `klauro init` again to bind one, or `klauro analyze` will fail with a sign-in prompt.',
+      `Next: klauro analyze ${target}`,
+    ].join('\n'), json);
   }
   if (command === 'install') {
     const mcpCommand = resolveMcpRegistrationCommand();
@@ -383,7 +402,12 @@ async function main() {
     results.claude = claude.error?.message || claude.stderr?.trim() || claude.stdout?.trim() || `exit ${claude.status}`;
     const codex = spawnSync('codex', ['mcp', 'add', 'klauro', '--', ...mcpCommand], { encoding: 'utf8' });
     results.codex = codex.error?.message || codex.stderr?.trim() || codex.stdout?.trim() || `exit ${codex.status}`;
-    return output({ status: claude.status === 0 || codex.status === 0 ? 'installed' : 'manual-registration-required', command: mcpCommand.join(' '), results }, json);
+    const installStatus = claude.status === 0 || codex.status === 0 ? 'installed' as const : 'manual-registration-required' as const;
+    return output(json ? { status: installStatus, command: mcpCommand.join(' '), results } : [
+      installStatus === 'installed' ? 'Registered the Klauro MCP server.' : `Could not auto-register with either client — register manually: ${mcpCommand.join(' ')}`,
+      `Claude Code: ${claude.status === 0 ? 'registered' : results.claude}`,
+      `Codex: ${codex.status === 0 ? 'registered' : results.codex}`,
+    ].join('\n'), json);
   }
   if (command === 'auth-status' || command === 'whoami') {
     // Round-trips to GET /api/me instead of only checking that a token FILE
@@ -397,7 +421,10 @@ async function main() {
       : status.detail,
       json);
   }
-  if (command === 'logout') return output(clearStoredConnectorSession(value('--server-url')), json);
+  if (command === 'logout') {
+    const cleared = clearStoredConnectorSession(value('--server-url'));
+    return output(json ? cleared : (cleared.removed ? `Signed out of ${cleared.serverUrl}.${cleared.switched_to ? ` Active account is now ${cleared.switched_to}.` : ''}` : `Not signed in to ${cleared.serverUrl}; nothing to do.`), json);
+  }
   if (command === 'accounts') {
     const serverUrl = normalizeServerUrl(value('--server-url'));
     const useEmail = value('--use');
@@ -449,7 +476,8 @@ async function main() {
     if (!response.ok) throw new Error(payload.error || `Login failed with HTTP ${response.status}`);
     const token = payload.token || payload.access_token || payload.accessToken;
     if (!token) throw new Error('Login response did not include an access token');
-    return output({ status: 'signed-in', ...saveStoredConnectorSession({ serverUrl, token, email }) }, json);
+    const saved = saveStoredConnectorSession({ serverUrl, token, email });
+    return output(json ? { status: 'signed-in', ...saved } : `Signed in as ${email} to ${serverUrl}. Session saved to ${saved.file}.`, json);
   }
   // §AUTH-LIFECYCLE — `klauro reset-password`. Redeems a single-use token an
   // operator minted (see `admin-mint-reset-token` below); PUBLIC endpoint by

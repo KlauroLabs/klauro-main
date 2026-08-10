@@ -6,6 +6,7 @@ import { detectWorkspaceIdentity, resolveFabricSettings } from './coordination/f
 import { remoteActive } from './coordination/remote-transport';
 import { getActiveClaims } from './coordination/local-store';
 import { fetchReleaseManifest } from './self-update';
+import { isNewerVersion } from './stale-client-hint';
 import { getAnalysisEntry } from './storage';
 import { summarizeAnalysisFreshness } from './freshness';
 import { listActiveSessions } from './session-lock';
@@ -376,7 +377,15 @@ export async function renderStatusReport(options: { repoPath: string; serverUrl?
     auth_detail: authStatus.detail,
     email: authStatus.email ?? stored?.email ?? null,
     latest_available: latest,
-    update_available: Boolean(latest && latest !== identity.base_version),
+    // #142: `latest !== identity.base_version` used to fire in BOTH
+    // directions — including when a stalled/partial deploy left the server
+    // advertising a version BEHIND what this client is already running, in
+    // which case it told a customer "Release: <older version> available —
+    // run: klauro update", which would have downgraded them had they
+    // followed it (self-update.ts had the identical bug — see there).
+    // isNewerVersion() is the direction-aware comparator this file already
+    // had available (stale-client-hint.ts) but never used here.
+    update_available: Boolean(latest && isNewerVersion(latest, identity.base_version)),
     repo: repoPath,
     repo_analyzed: repo.analyzed,
     repo_analysis_complete: repo.analysis_complete,
