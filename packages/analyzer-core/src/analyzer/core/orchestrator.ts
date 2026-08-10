@@ -122,6 +122,7 @@ import {
 } from './entry-point-enrichment';
 import { selectProductFrameworkNames, analyzerTypeMap } from './framework-comprehension';
 import { buildParadigmConformance } from './paradigm-conformance';
+import { assignNodeRoles } from './node-roles';
 import { deriveFrameworkIdentities } from './framework-identity';
 import { deriveDependencyRoles } from './dependency-roles';
 import { buildArchitecturalConflicts } from './architectural-conflicts';
@@ -1753,6 +1754,17 @@ export class AnalyzerOrchestrator {
     phaseStart = startPhase();
     this.liftValidationToEntryPoints(allNodes, allEntryPoints);
     logTiming('pp_liftValidation', phaseStart);
+    await yieldToEventLoop();
+
+    // Tier 2 GAP FIX (docs/SPEC-ABSTRACTION-TIERS.md, "framework-conferred
+    // node roles"): assigns the closed NODE_ROLES vocabulary (node-roles.ts)
+    // from tier-1 facts only — entry points are resolved (handler.node_id
+    // set by linkRouteHandlers above) but comprehension (capabilities/flows/
+    // entities) has not been built yet, so this stays a tier-2 read of
+    // tier-1, never the reverse.
+    phaseStart = startPhase();
+    assignNodeRoles({ nodes: allNodes, edges: allEdges, entry_points: allEntryPoints, exit_points: allExitPoints });
+    logTiming('pp_nodeRoles', phaseStart);
     await yieldToEventLoop();
 
     phaseStart = startPhase();
