@@ -122,6 +122,7 @@ import {
 import { selectProductFrameworkNames, analyzerTypeMap } from './framework-comprehension';
 import { buildParadigmConformance } from './paradigm-conformance';
 import { deriveFrameworkIdentities } from './framework-identity';
+import { deriveDependencyRoles } from './dependency-roles';
 import { buildArchitecturalConflicts } from './architectural-conflicts';
 import { buildDataLineage } from './data-lineage';
 import { isLanguageBuiltinName, isLanguageBuiltinExitPoint, isLanguageBuiltinDomainToken, isCapabilityNoiseToken, isVendorLibDomainToken } from './language-builtins';
@@ -2295,6 +2296,10 @@ export class AnalyzerOrchestrator {
       console.error(`[Klauro] Analysis completed in ${totalTime}ms. Breakdown:`, JSON.stringify(timings, null, 2));
     }
 
+    // Tier 2 GAP FIX §6.3 — see dependency-roles.ts. Computed once here so it
+    // is not derived twice inside the output literal below.
+    const dependencyRoles = deriveDependencyRoles(dependencyManifest, allExitPoints);
+
     const output = {
       cas_version: CAS_VERSION,
       analyzer_build: getBuildIdentity().version,
@@ -2357,6 +2362,7 @@ export class AnalyzerOrchestrator {
       cross_repository_links: repositoryLinks.length > 0 ? repositoryLinks : undefined,
       libraries: allLibraries.length > 0 ? allLibraries : undefined,
       dependency_manifest: dependencyManifest,
+      dependency_roles: dependencyRoles.length > 0 ? dependencyRoles : undefined,
       analyzer_contributions: contributions,
       progressive_levels: progressiveLevels,
       intents: intents.length > 0 ? intents : undefined,

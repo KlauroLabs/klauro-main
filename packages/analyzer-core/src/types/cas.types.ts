@@ -211,6 +211,21 @@ export interface CASOutput {
    */
   dependency_manifest?: CASDependencyManifest;
 
+  /**
+   * Tier 2 GAP FIX (§6.3, "Library and dependency roles"): dependency_manifest
+   * above is deliberately uninterpreted (raw names only — no meaning may live
+   * there, see its own doc comment). This is the separate, additive Tier 2
+   * field the spec identifies as missing: a role classification per declared
+   * dependency (http-client, database-driver, orm, cache, message-broker,
+   * observability, auth, ...), evidence-grounded and joinable back to
+   * dependency_manifest by name. This is the concrete input the capability
+   * builder was missing for the integrations-never-become-candidates defect.
+   * Deterministic, Tier 1-only (reads exit_points + the library analyzers'
+   * own known-package detection lists) — NOT an AI comprehension output, and
+   * not present when dependency_manifest is absent. See dependency-roles.ts.
+   */
+  dependency_roles?: CASDependencyRole[];
+
   progressive_levels: CASProgressiveLevels;
   configuration?: CASConfiguration;
   runtime?: CASRuntime;
@@ -1551,6 +1566,34 @@ export interface CASFrameworkIdentity {
    *  entry points of type http,route (analyzer: express)" or "no framework
    *  analyzer contribution matched; role left as 'other'". */
   role_evidence: string;
+}
+
+/**
+ * Closed vocabulary for what a third-party dependency DOES (Tier 2 §6.3
+ * GAP — the missing input behind the integrations-as-capabilities defect).
+ * Intentionally small; 'other'/'unknown' are honest fallbacks, never
+ * omitted in favor of a guess.
+ */
+export const DEPENDENCY_ROLE_KINDS = [
+  'http-client', 'database-driver', 'orm', 'cache', 'message-broker',
+  'observability', 'auth', 'realtime', 'graphql-client', 'workflow',
+  'other',
+] as const;
+export type CASDependencyRoleKind = typeof DEPENDENCY_ROLE_KINDS[number];
+
+export interface CASDependencyRole {
+  /** Matches CASDeclaredDependency.name exactly. */
+  name: string;
+  ecosystem: CASDeclaredDependency['ecosystem'];
+  role: CASDependencyRoleKind;
+  /** 0-1 confidence. Exit-point-grounded evidence (this exact dependency
+   *  produced a typed call-shaped exit point) scores higher than a
+   *  known-package-list match with no call evidence found in this repo. */
+  confidence: number;
+  /** Citations: exit point ids and/or which library analyzer's own
+   *  detection list matched this package name — never a bare assertion. */
+  evidence: string[];
+  source: 'exit-point-evidence' | 'known-package-list';
 }
 
 export interface CASDeclaredDependency {
