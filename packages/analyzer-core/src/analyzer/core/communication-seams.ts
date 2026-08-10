@@ -95,9 +95,18 @@ function nextId(prefix: string): string {
  *  component after. Excludes tier-2 `server-entry` route-entries whose `name`
  *  is an HTTP path — those are entry points, not deployment units, and rooted at
  *  a per-route sub-dir. A container/compose/k8s/installer/bin at a concrete root
- *  is a true boundary; a `.`-rooted compose service still names the whole tree. */
+ *  is a true boundary; a `.`-rooted compose service still names the whole tree.
+ *  Also excludes any row `bundled_into` another one — deployable-evidence.ts's
+ *  own bundling/collapse passes (packaging-variant containers folded into one
+ *  survivor, bin candidates folded into their owning service) already decided
+ *  that row is NOT an independent deployment unit; a seam classifier that
+ *  ignored that verdict would name a separate "deployable" component per
+ *  packaging variant of the SAME app (e.g. an alpine-base and a
+ *  distroless-base Dockerfile shipping the identical binary), reporting
+ *  ordinary intra-app calls as inter-deployable traffic on a system that
+ *  ships exactly one thing. */
 function isShipBoundary(d: DeployableEvidence): boolean {
-  if (d.kind === 'server-entry') return false;
+  if (d.kind === 'server-entry' || d.bundled_into) return false;
   return d.tier === 1 || d.kind === 'container' || d.kind === 'compose-service' ||
     d.kind === 'k8s' || d.kind === 'serverless' || d.kind === 'installer' || d.kind === 'bin';
 }
@@ -444,7 +453,21 @@ export function classifyCommunicationSeams(
   // the same deployable ownership as the node pass — components already ARE
   // deployable names when a deployable owns the file, so this collapses the
   // remaining libs/apps module keys onto deployables where a mapping exists.
-  if (deployables.length > 0) {
+  //
+  // Gated on >= 2 real ship boundaries (`deployableRoots`, already filtered
+  // by isShipBoundary to exclude bundled/non-independent rows) — NOT on
+  // `deployables.length > 0`, which is true for nearly every repo (even a
+  // single-deployable one has at least a tier-3 package-identity row). A
+  // system with exactly one deployment boundary has no INTER-deployable
+  // traffic to report at all: every seam is intra-app by definition, and a
+  // 'deployable' rollup built anyway relabels ordinary internal calls as
+  // cross-deployable communication. Real hosted defect: a single-binary Go
+  // app whose deployable_evidence carried >= 2 ROWS before packaging-variant
+  // collapse (container + its own bin candidacy) reported a "34 sync / 0
+  // async / 106 passive" deployable-level breakdown for a system that ships
+  // exactly one thing.
+  const distinctShipRoots = new Set(deployableRoots.map(r => r.root || '.'));
+  if (distinctShipRoots.size >= 2) {
     result.deployable_inventory = buildInventory(seams, 'deployable');
   }
 

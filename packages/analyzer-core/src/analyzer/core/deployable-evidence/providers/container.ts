@@ -30,20 +30,47 @@ function isRealMemberToken(token: string): boolean {
   if (/^(--?[a-z].*|&&|\|\||;|\.|\.\.|-p|from|as)$/i.test(t)) return false;
   // Trailing prose punctuation ("below.", "bastion,") is arg noise, not a member.
   if (/[.,;]$/.test(t)) return false;
+  // A build/packaging SCRIPT or data/manifest file is not a shipped product
+  // binary. The COPY-based member scan above already excludes these
+  // extensions at the source (line ~71's `isBuildOutput` check); the
+  // ENTRYPOINT/CMD basename path does not go through that scan, so without
+  // this check here a Dockerfile whose ENTRYPOINT/CMD invokes a packaging
+  // script (`CMD ["/src/packaging/debian/build.sh"]`) resolves an
+  // `entrypointMember` of "build.sh" — the script gets treated as if it were
+  // the shipped product identity, and a build-only packaging container
+  // (never runs the actual binary) is misread as a genuine runtime ship
+  // unit. Real hosted defect: a Debian-packaging Dockerfile whose CMD is a
+  // build script surfaced as an independent deployable alongside the actual
+  // Docker-image container shipping the same binary.
+  if (/\.(sh|bash|sql|json|yaml|yml|toml|txt|md|spec|conf)$/i.test(t)) return false;
   return true;
+}
+
+/** Does this Dockerfile's build stage copy the ENTIRE local build context in
+ *  (`ADD . <dest>` / `COPY . <dest>`, source token exactly `.`, no `--from=`
+ *  stage reference)? Structural fact about what the Dockerfile builds FROM,
+ *  independent of what it ships — used only to recognize when several
+ *  Dockerfiles in the same repo are packaging VARIANTS of the same source
+ *  tree (see collapseWholeRepoPackagingVariants in deployable-evidence.ts),
+ *  never to classify a container as build-only on its own. */
+function hasWholeRepoBuildContext(content: string): boolean {
+  return /^\s*(?:ADD|COPY)\s+\.\s+\S+/m.test(content);
 }
 
 /** Parse a Dockerfile's real bundle membership: `cargo build -p X -p Y`
  *  package args, `COPY [--from=stage] .../release/<bin> <dest>` targets, and
  *  the ENTRYPOINT/CMD primary binary. Falls back to no members (caller uses
  *  base images) when the Dockerfile doesn't match any of these patterns. */
-export function parseDockerfileMembers(projectPath: string, relativeFile: string): { members: string[]; entrypointMember?: string } {
-  if (!relativeFile) return { members: [] };
+export function parseDockerfileMembers(
+  projectPath: string,
+  relativeFile: string,
+): { members: string[]; entrypointMember?: string; wholeRepoBuildContext: boolean } {
+  if (!relativeFile) return { members: [], wholeRepoBuildContext: false };
   let content = '';
   try {
     content = fs.readFileSync(path.join(projectPath, relativeFile), 'utf8');
   } catch {
-    return { members: [] };
+    return { members: [], wholeRepoBuildContext: false };
   }
 
   const members = new Set<string>();
@@ -117,7 +144,7 @@ export function parseDockerfileMembers(projectPath: string, relativeFile: string
   const cleanMembers = [...members].filter(isRealMemberToken);
   const cleanEntrypoint =
     entrypointMember && isRealMemberToken(entrypointMember) ? entrypointMember : undefined;
-  return { members: cleanMembers, entrypointMember: cleanEntrypoint };
+  return { members: cleanMembers, entrypointMember: cleanEntrypoint, wholeRepoBuildContext: hasWholeRepoBuildContext(content) };
 }
 
 /** Clean deployable name for a Dockerfile — NEVER the node's display label.
@@ -193,6 +220,9 @@ function collect(ctx: EvidenceCollectionContext): DeployableEvidence[] {
       }
       if (dockerfileMembers.entrypointMember) {
         evidence.push(`entrypoint-member: ${dockerfileMembers.entrypointMember}`);
+      }
+      if (dockerfileMembers.wholeRepoBuildContext) {
+        evidence.push('build-context: repo-root');
       }
 
       out.push({
