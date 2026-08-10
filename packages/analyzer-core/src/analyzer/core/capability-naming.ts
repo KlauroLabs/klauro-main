@@ -196,6 +196,52 @@ export function isPathDerivedCapabilityName(name: string): boolean {
 }
 
 /**
+ * NAME-HYGIENE BACKSTOP: true when `name` cannot be a well-formed human
+ * label at all, independent of what vocabulary it uses. Two structural
+ * signatures, both measured live on a Rails operations SaaS:
+ *  - UNBALANCED bracket/parenthesis punctuation ("View *all)") — a route's
+ *    glob/optional-segment syntax (Rails' `(/*all)`) leaked past path
+ *    parsing into a display label; a real label never carries a stray
+ *    closing bracket with no opener.
+ *  - an OPAQUE/TIMESTAMP-shaped token as one of the words (a migration
+ *    filename's leading digits, "20230824042347 Create User") — reuses the
+ *    same opaque-identifier shape test the storage-path guard already
+ *    applies per-token, just scanning every word of the finished name
+ *    rather than one path segment.
+ * Shape-based only — no project vocabulary, no denylist of specific words.
+ */
+export function isMalformedCapabilityLabel(name: string): boolean {
+  const trimmed = String(name || '').trim();
+  if (!trimmed) return true;
+  const opens = (trimmed.match(/[([{]/g) || []).length;
+  const closes = (trimmed.match(/[)\]}]/g) || []).length;
+  if (opens !== closes) return true;
+  // A bare regex/glob artifact character with no legitimate label use.
+  if (/[*]/.test(trimmed)) return true;
+  const words = trimmed.split(/[^A-Za-z0-9]+/).filter(Boolean);
+  if (words.some(word => isOpaqueIdentifierToken(word) || /^\d{6,}$/.test(word))) return true;
+  return false;
+}
+
+/**
+ * Collapses immediately-repeated words a composed key/label can produce
+ * when a role-kind token and a subject token stem to the same word ("job"
+ * kind + "ApplicationJob" subject -> "Job Job"). Case-insensitive adjacency
+ * check; keeps the first occurrence's casing. Purely structural word-level
+ * dedup — no vocabulary.
+ */
+export function collapseDuplicateAdjacentWords(label: string): string {
+  const words = String(label || '').split(/\s+/).filter(Boolean);
+  const result: string[] = [];
+  for (const word of words) {
+    const previous = result[result.length - 1];
+    if (previous && previous.toLowerCase() === word.toLowerCase()) continue;
+    result.push(word);
+  }
+  return result.join(' ');
+}
+
+/**
  * Humanizes a raw code-shaped label (snake_case, kebab-case, or camelCase)
  * into Title-Cased words: "get_hot_spots" / "getHotSpots" -> "Get Hot Spots".
  */
