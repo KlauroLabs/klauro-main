@@ -723,18 +723,43 @@ describe('collectDeployableEvidence', () => {
     expect(pkg!.tier).toBe(3);
   });
 
-  test('Tier 1: CI workflow with a deploy step is detected', () => {
+  test('Tier 1: CI workflow that deploys to a runtime target is detected', () => {
     projectPath = tempProject();
     fs.mkdirpSync(path.join(projectPath, '.github', 'workflows'));
     fs.writeFileSync(
       path.join(projectPath, '.github', 'workflows', 'deploy.yml'),
-      'name: Deploy\non: push\njobs:\n  deploy:\n    runs-on: ubuntu-latest\n    steps:\n      - run: npm publish\n'
+      'name: Deploy\non: push\njobs:\n  deploy:\n    runs-on: ubuntu-latest\n    steps:\n      - run: kubectl apply -f k8s/\n'
     );
 
     const result = collectDeployableEvidence({ projectPath, nodes: [], entryPoints: [], exitPoints: [] });
     const ciDeploy = result.find(item => item.kind === 'ci-deploy');
     expect(ciDeploy).toBeDefined();
     expect(ciDeploy!.tier).toBe(1);
+  });
+
+  // Real hosted defect: a release-automation workflow that BUILDS and
+  // PUBLISHES a distributable artifact (a docker push, an `npm publish`, a
+  // "Publish Packages" job that uploads a .deb/.rpm) is a packaging pipeline
+  // for a product some OTHER evidence row (its container/bin/installer row)
+  // already represents — it never puts a workload on a running target, so it
+  // must not surface as an independent ship unit. Three such workflows for
+  // the SAME single-binary product (build+push a Docker image, build+publish
+  // a .deb, build+publish an .rpm) previously surfaced as three EXTRA
+  // "deployable" ship units alongside the actual container/bin evidence.
+  test('CI workflow that only builds/publishes a release artifact is NOT a ship unit', () => {
+    projectPath = tempProject();
+    fs.mkdirpSync(path.join(projectPath, '.github', 'workflows'));
+    fs.writeFileSync(
+      path.join(projectPath, '.github', 'workflows', 'docker.yml'),
+      'name: Docker\non: push\njobs:\n  docker-images:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: docker/build-push-action@v6\n'
+    );
+    fs.writeFileSync(
+      path.join(projectPath, '.github', 'workflows', 'debian_packages.yml'),
+      'name: Debian Packages\non: push\njobs:\n  publish-packages:\n    name: Publish Packages\n    runs-on: ubuntu-latest\n    steps:\n      - run: npm publish\n'
+    );
+
+    const result = collectDeployableEvidence({ projectPath, nodes: [], entryPoints: [], exitPoints: [] });
+    expect(result.filter(item => item.kind === 'ci-deploy')).toHaveLength(0);
   });
 
   test('returns no candidates for an empty project', () => {

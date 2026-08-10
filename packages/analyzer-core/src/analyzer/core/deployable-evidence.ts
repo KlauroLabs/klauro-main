@@ -82,14 +82,20 @@ export function collectDeployableEvidence(input: CollectDeployableEvidenceInput)
   // their ships_paths never participate in the bundling pass below as if
   // they were a real ship unit.
   const classified = classifyBuildStageContainers(joined);
-  resolveEvidenceBundling(classified);
+  // Same-binary packaging variants (e.g. an alpine-base and a distroless-base
+  // Dockerfile both shipping the identical entrypoint binary) collapse to one
+  // Tier-1 unit before bundling resolution runs, so downstream consumers
+  // (tierQualifiedShipUnits, determineSystemType's topLevelShipUnits) never
+  // see them as distinct deployables.
+  const collapsed = collapseWholeRepoPackagingVariants(collapseContainerVariants(classified));
+  resolveEvidenceBundling(collapsed);
   // Re-point any bin/server-entry candidate at a REAL joined service unit
   // (compose-service/container/k8s) when one matches by identity, even when
   // resolveEvidenceBundling already bundled it into a weaker installer unit
   // (e.g. an installer whose product-name resolution failed and fell back
   // to "unnamed-service") — real service identity always wins.
-  rebundleBinsIntoServiceUnits(classified);
-  return classified;
+  rebundleBinsIntoServiceUnits(collapsed);
+  return collapsed;
 }
 
 function canonicalEvidenceRoot(projectPath: string, rootPath: string): string {
@@ -429,8 +435,20 @@ function classifyBuildStageContainers(items: DeployableEvidence[]): DeployableEv
   // 'container'` anymore.
   const baseImageSources = items.filter(item => item.tier === 1 && (item.base_images?.length ?? 0) > 0);
 
+  // A "runtime entrypoint" means the Dockerfile's own ENTRYPOINT/CMD resolves
+  // to a REAL shipped product binary (`entrypoint_member` — see
+  // parseDockerfileMembers/isRealMemberToken in container.ts, which already
+  // excludes scripts/manifests/data files from that resolution). The former
+  // second disjunct here — "any evidence line merely starts with
+  // 'entrypoint/cmd:'" — accepted ANY ENTRYPOINT/CMD text verbatim, script or
+  // not, which defeated that filtering: a packaging Dockerfile whose
+  // `CMD ["/path/to/build.sh"]` invokes a build script (produces a .deb/.rpm
+  // as a side effect, never runs the product) still had an "entrypoint/cmd:"
+  // evidence line and so read as a genuine runtime container. Real hosted
+  // defect: a Debian-packaging Dockerfile surfaced as an independent
+  // deployable purely because it had SOME CMD directive, script or not.
   const hasRuntimeEntrypoint = (item: DeployableEvidence): boolean =>
-    Boolean(item.entrypoint_member) || item.evidence.some(e => e.startsWith('entrypoint/cmd:'));
+    Boolean(item.entrypoint_member);
 
   const usedAsBaseElsewhere = (candidate: DeployableEvidence): boolean => {
     const candidateKey = normalizeMemberToken(candidate.name);
@@ -445,6 +463,23 @@ function classifyBuildStageContainers(items: DeployableEvidence[]): DeployableEv
     });
   };
 
+  // A build-only container: no runtime entrypoint of its own, and a
+  // multi-stage build (>= 2 FROM stages) that copies >= 2 OTHER services'
+  // binaries out — the shape this check targets: a builder image that
+  // assembles several artifacts and runs none of them. Deliberately NOT
+  // broadened to "no port declared" alone: an ordinary single-stage runtime
+  // Dockerfile with no EXPOSE and no ships_paths evidence (common — many real
+  // services don't declare EXPOSE, or a test fixture that never wrote ports
+  // metadata) is structurally indistinguishable from a build-only container
+  // on port/ships_paths evidence alone, and demoting on that basis produced a
+  // false positive on a plain single-Dockerfile service with no sibling
+  // variant. Packaging-only containers with no distinguishing ships_paths of
+  // their own (a Debian/RPM packaging Dockerfile whose CMD is a build script,
+  // or whose COPY destinations are a packaging tool's staging directory) are
+  // instead folded into their sibling runtime container by
+  // collapseWholeRepoPackagingVariants below, which only activates when a
+  // genuine runtime sibling exists to attribute them to — never on a lone
+  // Dockerfile.
   const isBuilderShape = (candidate: DeployableEvidence): boolean =>
     !hasRuntimeEntrypoint(candidate) &&
     (candidate.ships_paths?.length ?? 0) >= 2 &&
@@ -480,6 +515,125 @@ function classifyBuildStageContainers(items: DeployableEvidence[]): DeployableEv
     });
   }
   return out;
+}
+
+/**
+ * Collapses distinct Tier-1 `container` rows that ship THE SAME product
+ * binary — packaging VARIANTS of one deployable, not distinct deployables.
+ * The rule (evidence-based, never a name/keyword match): rows whose own
+ * `entrypoint_member` (the real, script/data-file-excluded binary name their
+ * ENTRYPOINT/CMD resolves to — see container.ts's isRealMemberToken) is the
+ * SAME normalized token are running the identical shipped artifact, just
+ * packaged from a different base image (e.g. an `alpine`-base and a
+ * `distroless`-base Dockerfile that both `COPY --from=build .../miniflux
+ * /usr/bin/miniflux` and `CMD ["/usr/bin/miniflux"]`). Only one survives as
+ * the Tier-1 unit; the rest are marked `bundled_into` it, the same
+ * mechanism `bundledMembersOf`/`member_root_paths` already read for any
+ * other bundle membership — so a collapsed variant's own root_path still
+ * shows up on the survivor rather than silently vanishing.
+ *
+ * Survivor selection: the row with an EXPOSEd port wins first (the stronger
+ * "this one actually serves traffic" signal — a genuinely equivalent variant
+ * either both or neither expose a port, so this rarely decides anything);
+ * ties broken by declaration order, so re-analyzing an unchanged repo picks
+ * the same survivor every time.
+ *
+ * Runs AFTER classifyBuildStageContainers so a demoted build-only packaging
+ * container (already `kind: 'build-image'`, `tier: 3`) is never a candidate
+ * here — this collapse only ever applies to rows that already independently
+ * qualify as a genuine runtime container.
+ */
+function collapseContainerVariants(items: DeployableEvidence[]): DeployableEvidence[] {
+  const groups = new Map<string, DeployableEvidence[]>();
+  for (const item of items) {
+    if (item.tier !== 1 || item.kind !== 'container' || item.bundled_into) continue;
+    const key = normalizeMemberToken(item.entrypoint_member || '');
+    if (!key) continue;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key)!.push(item);
+  }
+
+  for (const group of groups.values()) {
+    if (group.length < 2) continue;
+    const ranked = [...group].sort((a, b) => {
+      const aPort = (a.ports?.length ?? 0) > 0 ? 0 : 1;
+      const bPort = (b.ports?.length ?? 0) > 0 ? 0 : 1;
+      if (aPort !== bPort) return aPort - bPort;
+      return items.indexOf(a) - items.indexOf(b);
+    });
+    const survivor = ranked[0];
+    for (const variant of ranked.slice(1)) {
+      variant.bundled_into = survivor.name;
+      variant.evidence = [
+        ...new Set([
+          ...variant.evidence,
+          `packaging-variant-of:${survivor.name}`,
+          `same entrypoint binary '${survivor.entrypoint_member}' as '${survivor.name}' — build variant, not a distinct deployable`,
+        ]),
+      ];
+    }
+  }
+  return items;
+}
+
+/**
+ * Collapses PACKAGING-ONLY Tier-1 `container` rows — no runtime entrypoint
+ * of their own (a build script, or nothing at all: see the
+ * `hasRuntimeEntrypoint`/`isBuilderShape` fixes above and their doc comments
+ * for why those checks alone can't safely demote these) — into a genuine
+ * runtime sibling, when BOTH build from the identical whole-repo source tree
+ * (`build-context: repo-root` evidence — see container.ts's
+ * hasWholeRepoBuildContext: an `ADD .`/`COPY .` of the entire local build
+ * context, not a scoped subdirectory).
+ *
+ * THE RULE (spec: "distinct artefacts sharing an entrypoint and source root
+ * are BUILD VARIANTS of one unit"): among the whole-repo-context group,
+ * `collapseContainerVariants` above has already resolved every row WITH a
+ * real entrypoint down to at most one canonical entrypoint identity per
+ * source tree. When that resolves to EXACTLY ONE surviving product identity,
+ * every OTHER whole-repo-context row with NO entrypoint of its own —
+ * evidence it never runs the product, only builds/packages it (a Debian
+ * packaging Dockerfile whose CMD is a build script; an RPM packaging
+ * Dockerfile with no ENTRYPOINT/CMD at all, only `rpmbuild`) — is a
+ * packaging variant of that same identity and folds into it.
+ *
+ * Deliberately inert when the whole-repo-context group resolves to ZERO or
+ * MORE THAN ONE distinct entrypoint identity: with no runtime sibling to
+ * attribute to, or with more than one genuinely different product built from
+ * the same repo root, there is no single answer to fold into, and this never
+ * guesses — an unresolved packaging-only row is left exactly where
+ * classifyBuildStageContainers/isBuilderShape already leaves it (still its
+ * own Tier-1 row, or already-demoted tier-3 build-image if it separately
+ * qualified there).
+ */
+function collapseWholeRepoPackagingVariants(items: DeployableEvidence[]): DeployableEvidence[] {
+  const hasRepoRootContext = (item: DeployableEvidence): boolean =>
+    item.evidence.includes('build-context: repo-root');
+
+  const wholeRepoContainers = items.filter(
+    item => item.tier === 1 && item.kind === 'container' && hasRepoRootContext(item),
+  );
+  if (wholeRepoContainers.length < 2) return items;
+
+  const runtimeSurvivors = wholeRepoContainers.filter(
+    item => !item.bundled_into && item.entrypoint_member,
+  );
+  const distinctIdentities = new Set(runtimeSurvivors.map(r => normalizeMemberToken(r.entrypoint_member!)));
+  if (distinctIdentities.size !== 1) return items; // no sibling, or ambiguous — never guess.
+  const survivor = runtimeSurvivors[0];
+
+  for (const item of wholeRepoContainers) {
+    if (item === survivor || item.bundled_into || item.entrypoint_member) continue;
+    item.bundled_into = survivor.name;
+    item.evidence = [
+      ...new Set([
+        ...item.evidence,
+        `packaging-variant-of:${survivor.name}`,
+        `same repo-root build source as '${survivor.name}' (which ships entrypoint binary '${survivor.entrypoint_member}'), no runtime entrypoint of its own — packaging variant, not a distinct deployable`,
+      ]),
+    ];
+  }
+  return items;
 }
 
 /**

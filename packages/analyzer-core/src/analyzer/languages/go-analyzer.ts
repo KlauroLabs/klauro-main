@@ -184,6 +184,7 @@ export class GoAnalyzer extends BaseAnalyzer {
     await this.analyzeGoFile(context.filePath, context.relativePath, nodes, edges, entryPoints, exitPoints, packages, context);
     this.detectFrameworkPatterns(nodes, edges, entryPoints);
     this.buildTypeRelationships(nodes, edges);
+    this.applyTestFileBoundary(nodes);
     await this.analyzeCallGraph(context.projectPath, nodes, edges, exitPoints);
 
     const imports = this.extractImports(content).map(imp => imp.path);
@@ -233,6 +234,7 @@ export class GoAnalyzer extends BaseAnalyzer {
       this.buildPackageHierarchy(packages, nodes, edges);
       this.detectFrameworkPatterns(nodes, edges, entryPoints);
       this.buildTypeRelationships(nodes, edges);
+      this.applyTestFileBoundary(nodes);
 
       if (this.shouldBuildExpensiveLanguageCallGraph(goFiles.length)) {
         await this.analyzeCallGraph(context.projectPath, nodes, edges, exitPoints);
@@ -1843,6 +1845,34 @@ export class GoAnalyzer extends BaseAnalyzer {
           ));
         }
       }
+    }
+  }
+
+  /**
+   * Tags every node in a `_test.go` file (Go's own, universal test-file
+   * naming convention — never a keyword/brand check) with `metadata.is_test`,
+   * `category: 'test'`, and a `test-code` tag, mirroring the TS/JS analyzer's
+   * applyTestSourceBoundary. Without this, Go test functions carried NO
+   * test-owned marker of any kind, so the cross-language test-framework
+   * analyzer's coverage-graph walk (test-framework-analyzer.ts's
+   * isTestOwnedNode / graphNodesForSuite) could never start a traversal from
+   * this analyzer's OWN function nodes — only from its own synthetic
+   * suite/case nodes, which carry no `calls` edges of their own. Real hosted
+   * effect: every Go project's journeys/capabilities reported
+   * `tests_present: false` and `tests_covering: []` even when `go test`
+   * itself passed hundreds of tests (test_summary counts test FILES/CASES
+   * discovered independently of this graph link) — a self-contradiction
+   * between `test_summary.total_tests` and every per-capability/journey test
+   * signal in the same response.
+   */
+  private applyTestFileBoundary(nodes: CASNode[]): void {
+    for (const node of nodes) {
+      const file = node.source?.file;
+      if (!file || !/_test\.go$/i.test(file)) continue;
+      node.metadata = { ...node.metadata, is_test: true };
+      node.category = 'test';
+      node.subcategories = [...new Set([...(node.subcategories || []), node.type, 'test-code'])];
+      node.tags = [...new Set([...(node.tags || []), 'test-code'])];
     }
   }
 

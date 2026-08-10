@@ -12,6 +12,26 @@ import {
 } from '../../types/cas.types';
 import { exposureScore } from './data-lineage';
 
+/**
+ * Presentation-only humanization of a `primary_domain` kebab-case slug
+ * ("feed-integration-category-user" -> "Feed Integration Category User")
+ * for a leadership/onboarding reader. Purely mechanical (split on `-`,
+ * title-case each token) — no synonym table, no word substitution, no
+ * fabricated content, so it can never say anything the slug didn't already
+ * say. The slug itself (`domain`) is left untouched: orchestrator.ts compares
+ * primary_domain strings token-by-token across analysis runs (reuse
+ * detection, truncation/plumbing gates), so the machine-comparable kebab form
+ * must keep shipping exactly as-is; this only adds a second, human-facing
+ * rendering of the same value alongside it. Returns undefined for 'unknown'
+ * or an empty slug — there is nothing to humanize.
+ */
+export function humanizeDomainSlug(slug: string | undefined | null): string | undefined {
+  if (!slug || slug === 'unknown') return undefined;
+  const words = slug.split('-').filter(Boolean);
+  if (!words.length) return undefined;
+  return words.map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ');
+}
+
 const CRITICALITY_RANK: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
 const RISK_RANK: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
 const TOP_JOURNEY_LIMIT = 10;
@@ -289,6 +309,37 @@ function buildCoverageCaveats(
     caveats.push(`${errorCount} analysis error${errorCount === 1 ? '' : 's'} recorded during analysis`);
   }
 
+  // The description-vs-capability cross-check (orchestrator.ts's
+  // description_capability_gaps, EnhancedSystemPurpose) exists specifically
+  // so the product can admit when its own AI description names an entity
+  // no shipped capability is anchored on — a real, evidence-derived honesty
+  // signal that, before this, no consumer-facing tool surfaced anywhere
+  // (get_summary / get_conceptual_analysis / get_product_map /
+  // run_answer_pack / get_agent_context all omitted it): the field existed
+  // but nothing a reader would call ever showed it, so it did no work.
+  // Reported here alongside every other "here is what this analysis could
+  // not fully resolve" caveat, distinguishing the two dispositions plainly
+  // rather than collapsing them into one vague warning.
+  const capabilityGaps = cas.enhanced_system_purpose?.description_capability_gaps || [];
+  const reinjected = capabilityGaps.filter(gap => gap.disposition === 'reinjected-from-candidate');
+  const unanchored = capabilityGaps.filter(gap => gap.disposition === 'no-structural-candidate');
+  if (unanchored.length > 0) {
+    caveats.push(
+      `Description names ${unanchored.length} ${unanchored.length === 1 ? 'entity' : 'entities'} `
+      + `with no capability built for ${unanchored.length === 1 ? 'it' : 'them'} in this catalog `
+      + `(${unanchored.slice(0, 5).map(gap => gap.entity_name).join(', ')}${unanchored.length > 5 ? ', ...' : ''}); `
+      + 'the description may be overreaching relative to the shipped capability list.'
+    );
+  }
+  if (reinjected.length > 0) {
+    caveats.push(
+      `${reinjected.length} ${reinjected.length === 1 ? 'capability was' : 'capabilities were'} restored into this `
+      + `catalog after the description referenced ${reinjected.length === 1 ? 'an entity' : 'entities'} `
+      + `(${reinjected.slice(0, 5).map(gap => gap.entity_name).join(', ')}${reinjected.length > 5 ? ', ...' : ''}) `
+      + `a pre-AI candidate already supported but reconciliation had dropped.`
+    );
+  }
+
   const totalTests = cas.test_summary?.total_tests ?? 0;
   const journeysWithTests = (cas.user_journeys || []).filter(journey => (journey.tests_covering || []).length > 0).length;
   if (totalTests === 0 && journeysWithTests === 0) {
@@ -552,6 +603,10 @@ export function buildProductMap(cas: CASOutput): CASProductMap {
     identity: {
       name: cas.system?.name || 'unknown',
       domain: purpose?.primary_domain || 'unknown',
+      // Human-readable rendering of `domain` for a leadership/onboarding
+      // reader — see humanizeDomainSlug's doc comment. Omitted (not a
+      // fabricated 'Unknown') when there is no domain to humanize.
+      ...(humanizeDomainSlug(purpose?.primary_domain) ? { domain_label: humanizeDomainSlug(purpose?.primary_domain) } : {}),
       // Comprehension is AI-only (docs/cas/DETERMINISM-BOUNDARY.md): 'deterministic'
       // is NOT a valid comprehension provenance. When AI hasn't run (or failed),
       // the domain/description provenance is left UNSET rather than stamped
