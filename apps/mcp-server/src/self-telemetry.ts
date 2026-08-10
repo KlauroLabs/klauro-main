@@ -285,6 +285,16 @@ export function mapSdkEvent(event: CasRuntimeEvent): TelemetryEvent {
     name: event.signal,
     service_name: event.service_name || SERVICE_NAME,
     environment: event.environment,
+    // Direct CAS correlation ids, when the SDK caller supplied them, were
+    // previously dropped here — every event fell back to route/path fuzzy
+    // matching in correlateRuntimeEvent even though it checks these first
+    // (product.ts) and getRuntimeEventContract's own correlation_order tells
+    // integrators to send static_id as the primary key.
+    static_id: event.static_id,
+    node_id: event.node_id,
+    entry_point_id: event.entry_point_id,
+    exit_point_id: event.exit_point_id,
+    call_chain_id: event.call_chain_id,
     trace_id: event.trace_id,
     span_id: event.span_id,
     parent_span_id: event.parent_span_id,
