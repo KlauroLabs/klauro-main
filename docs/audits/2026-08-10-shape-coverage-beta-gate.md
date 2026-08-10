@@ -237,4 +237,22 @@ Common thread so far: capability *quality* (readability, entity-grounding) is fi
 
 ---
 
-*(scorecard rows 8-10 to follow in this document as each subject completes)*
+### 8. electripure-infra (client) — Infrastructure/IaC, Terraform, near-zero application code
+
+- project `prj_kBZexCVYDpGeCFIk`, my own submission, `analyzer_build: 1.0.136-dev+56cde09aa104`, fresh. Finished 2026-08-10T16:44:59Z, duration **32.07s**, `errors: 0`, cas_version 2.1.0.
+- **This is the best "zero is never correct" result in the run.** capability count: **2** — "Provision and manage AWS infrastructure" (VPC/ECS/RDS/ALB) and "Control cloud access and routing" (Route53/CloudFront). Both readable by a non-technical reader, both correctly non-zero for a repo that is ~100% Terraform/HCL with 0 traditional data entities. `primary_domain`: `"electripure-infrastructure-cicd"`; description correctly frames it as infra-as-code provisioning AWS resources for a web app.
+- `database_entities`: 0 (correct — no app data model in pure IaC). `journeys.total`: 0 (defensible — no user-facing journey concept in a Terraform repo).
+- `sub_cas_nodes.promoted: false`, `reason: "no deployable_evidence row declares a ship or build artifact of its own"` — also correct; this repo provisions infrastructure, it isn't itself a deployable.
+- **`flows_to_capabilities`: 0.0278 (1/36)** — the most extreme under-mapping ratio in the entire run. 35 of 36 derived flows never reached a capability. Read with a caveat (in an IaC repo a "flow" may be a mechanical per-resource/per-file unit rather than a true product-surface unit, so this ratio may overstate the miss relative to the app-code subjects above) — but at face value it is the worst coverage number measured today.
+- **RECALL column**: the repo's `main.tf` defines 8 modules (vpc, s3, cloudfront, alb, route53, ecr, ecs, cicd-access; rds is present as a module but commented out of the root call). The 2 capabilities name VPC/ECS/RDS/ALB/Route53/CloudFront but **never mention ECR (container registry) or the `cicd-access` module (CI/CD IAM access provisioning)** — both real, both have their own `.tf` module directories, neither surfaced as or within a capability.
+- Verdict: the strongest "non-zero, readable purpose for a near-code-free repo" result measured, and proof the bar is achievable — but still under-covers 2 of 8 real modules, and the flows-to-capabilities ratio is the worst of any subject today (with the stated caveat about how "flow" is counted for this shape).
+
+---
+
+### 9. rvc-webui (OSS, RVC-Project) — Data/ML, script-and-notebook-heavy, Python + Gradio
+
+*(analysis in progress — see next commit)*
+
+---
+
+*(scorecard row 10 to follow in this document as it completes)*
