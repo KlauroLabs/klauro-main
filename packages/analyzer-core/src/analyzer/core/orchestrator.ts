@@ -121,6 +121,7 @@ import {
 } from './entry-point-enrichment';
 import { selectProductFrameworkNames, analyzerTypeMap } from './framework-comprehension';
 import { buildParadigmConformance } from './paradigm-conformance';
+import { deriveFrameworkIdentities } from './framework-identity';
 import { buildArchitecturalConflicts } from './architectural-conflicts';
 import { buildDataLineage } from './data-lineage';
 import { isLanguageBuiltinName, isLanguageBuiltinExitPoint, isLanguageBuiltinDomainToken, isCapabilityNoiseToken, isVendorLibDomainToken } from './language-builtins';
@@ -2318,6 +2319,14 @@ export class AnalyzerOrchestrator {
         technologies: {
           ...this.extractTechnologies(contributions, allLibraries, projectPath),
           frameworks: frameworkNames.map(name => ({ name, confidence: 1 })),
+          framework_identities: deriveFrameworkIdentities(
+            frameworkNames,
+            allNodes,
+            entryPointsWithContractAndCapability,
+            allExitPoints,
+            allDecorators,
+            dependencyManifest,
+          ),
           unanalyzed_languages: unanalyzedLanguages,
           ...(nestedRepositories.length > 0 ? { nested_repositories: nestedRepositories } : {}),
         },

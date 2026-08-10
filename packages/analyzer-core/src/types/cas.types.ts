@@ -425,6 +425,20 @@ export interface CASSystem {
       version?: string;
       confidence?: number;
     }>;
+    /**
+     * Tier 2 GAP FIX (§6.2, "Framework identity and version"): `frameworks`
+     * above is a bare name list with no version and no purpose. Each entry
+     * here is the SAME detected framework, additionally carrying a declared
+     * version (joined structurally against dependency_manifest — the same
+     * package name recorded by a real manifest file) and a closed-vocabulary
+     * role (§6.2 asks for "web, ORM, DI, test, build, queue, observability").
+     * Role is derived from what the framework's OWN analyzer contribution
+     * structurally produced — which ENTRY_POINT_TYPES / EXIT_POINT_TYPES its
+     * nodes carry (`source_analyzer` join) — never from a brand/domain word
+     * list. See framework-identity.ts. Additive: `frameworks` is unchanged
+     * for backward compatibility.
+     */
+    framework_identities?: CASFrameworkIdentity[];
     runtime?: string;
     databases?: string[];
     infrastructure?: string[];
@@ -1504,6 +1518,39 @@ export interface CASDependencyManifest {
   dependencies: CASDeclaredDependency[];
   /** Count of distinct dependency names (== dependencies.length; convenience). */
   total: number;
+}
+
+/**
+ * Closed vocabulary for what PURPOSE a detected framework serves (Tier 2
+ * §6.2 GAP). Deliberately small and structural: each value corresponds to a
+ * distinguishable pattern in what the framework's own contribution produced
+ * (entry/exit point kinds, decorator semantic categories) — never a per-
+ * framework-name lookup. 'other' is the honest fallback when no structural
+ * signal fires, rather than a guess.
+ */
+export const FRAMEWORK_ROLES = [
+  'web', 'orm', 'di', 'test', 'build', 'queue', 'observability', 'other',
+] as const;
+export type CASFrameworkRole = typeof FRAMEWORK_ROLES[number];
+
+export interface CASFrameworkIdentity {
+  /** Framework display name, as already carried by technologies.frameworks. */
+  name: string;
+  /** Declared version, when a dependency_manifest entry's name matched this
+   *  framework (npm/pypi/maven/gradle/cargo/go/nuget/composer/pub). Absent
+   *  when no manifest join was possible (e.g. no manifest file found). */
+  version?: string;
+  /** Ecosystem the version join came from, when version is present. */
+  ecosystem?: CASDeclaredDependency['ecosystem'];
+  role: CASFrameworkRole;
+  /** 0-1: how much of the role signal was structural vs. absent. 1.0 means
+   *  every entry/exit point produced by this framework's contribution agreed
+   *  on one role; lower means a mixed or thin signal. */
+  role_confidence: number;
+  /** Human-readable citation of the structural signal used, e.g. "produced
+   *  entry points of type http,route (analyzer: express)" or "no framework
+   *  analyzer contribution matched; role left as 'other'". */
+  role_evidence: string;
 }
 
 export interface CASDeclaredDependency {
