@@ -9195,7 +9195,7 @@ function buildWorkspaceWorkflows(
       const workflow = {
         id: journey.id,
         name: journey.name,
-        classification: journey.journey_kind === 'user-facing' ? 'primary' as const : 'supporting' as const,
+        classification: (journey.journey_kind === 'user-facing' ? 'primary' : 'supporting') as 'primary' | 'supporting' | 'internal',
         criticality: journey.criticality,
         entry_points: journey.entry_point_id ? [journey.entry_point_id] : [],
         exit_points: journey.exit_point_ids || [],
