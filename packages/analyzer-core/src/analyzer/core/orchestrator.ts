@@ -23298,14 +23298,27 @@ export class AnalyzerOrchestrator {
     // `capabilities` list. This is what keeps "Command Surface" / "Event
     // Subscriber Surface" / "Message Handler Surface" out of top_capabilities
     // while remaining fully browsable via the separate behavior_surfaces field.
+    // EXCEPTION (shape-coverage audit, 2026-08-10): buildCandidate only ever
+    // gives a candidate a non-'internal' category when its surface kind is
+    // OUTWARD_FACING_BEHAVIOR_KINDS (cli/ipc/command) — the product's own
+    // invocation surface, not registration/RPC/event plumbing. For THAT
+    // narrow class, "does not overlap anything" does not mean "pure
+    // navigation" — for a CLI-first product it can mean this candidate IS the
+    // whole outward-facing story, with no entity-anchored capability to merge
+    // into at all. An unmerged category:'internal' candidate (mcp_tool, rpc,
+    // event, message, schedule, queue, websocket registration surfaces) keeps
+    // going to `behaviorSurfaces` exactly as before — this changes routing for
+    // no other kind.
     const behaviorSurfaces: SystemCapability[] = [];
     for (const candidate of behaviorCapabilities) {
       await maybeYield();
       if (this.mergeBehaviorCapabilityIntoExisting(candidate, capabilities)) continue;
-      behaviorSurfaces.push({
-        ...candidate,
-        id: nextCapabilityId(candidate),
-      });
+      const promoted = { ...candidate, id: nextCapabilityId(candidate) };
+      if (candidate.category !== 'internal') {
+        capabilities.push(promoted);
+      } else {
+        behaviorSurfaces.push(promoted);
+      }
     }
 
     // TASK #119 (integrations never reach candidate generation): everything
@@ -24538,6 +24551,27 @@ export class AnalyzerOrchestrator {
   /** Minimum entries for a whole registration surface (e.g. an MCP tool server) to be one capability. */
   private static readonly BEHAVIOR_SURFACE_MIN_ENTRIES = 12;
   /**
+   * Shape-coverage audit (2026-08-10, docs/audits/2026-08-10-shape-coverage-beta-gate.md):
+   * a CLI tool's commands (or a script/notebook repo's runnable entry
+   * scripts, extracted as 'cli' via cli-analyzer.ts's generic-main-entry
+   * detection) ARE the outward face — the same status http/websocket/page/
+   * route already have via the resource-group pass above. journey-builder's
+   * USER_FACING_ENTRY_TYPES already agrees ('cli'/'ipc'/'command' are
+   * caller-initiated, not mechanism) — this is that SAME set, minus the
+   * types the resource-group pass already owns (http/websocket/page/route),
+   * since only the residual command-invocation types ever reach this
+   * behavior-surface fallback at all. Used both to keep such a surface out
+   * of the always-'internal' category (registration/RPC/event/mcp_tool
+   * surfaces correctly stay 'internal' — they are genuinely mechanism, not
+   * an outcome) and to admit a whole-surface candidate even when no
+   * shared-prefix family exists (see the small-surface branch below): a real
+   * CLI's commands routinely have NO common name prefix (`ingest-text`,
+   * `health`, `kernel-summary`, `eval-runs`) yet the tool as a whole still
+   * has a purpose a non-technical reader needs to see (§0.7.1, zero is
+   * essentially never correct).
+   */
+  private static readonly OUTWARD_FACING_BEHAVIOR_KINDS = new Set(['cli', 'ipc', 'command']);
+  /**
    * Hard cap: behavior derivation adds a bounded handful of flagship
    * capabilities, never bloat. Raised from 5 -> 10 alongside the module-
    * cohesion clustering fix (buildBehaviorCapabilities): a single large,
@@ -25034,7 +25068,16 @@ export class AnalyzerOrchestrator {
         // category:'internal'). Never 'core' — see reconcileCatalogedCapabilities
         // and buildSystemCapabilities, which route standalone surface candidates
         // into the separate behavior_surfaces list rather than system_capabilities.
-        category: 'internal',
+        // EXCEPTION (shape-coverage audit, 2026-08-10): a genuinely outward-
+        // facing command surface (cli/ipc/command — OUTWARD_FACING_BEHAVIOR_KINDS)
+        // is not mechanism the way an mcp_tool/rpc/event registration engine
+        // is — it is the product's own invocation surface, same status as an
+        // HTTP route. It gets a real category (same inference the resource-
+        // group pass uses) so it can reach system_capabilities instead of
+        // being permanently excluded by the category:'internal' filter.
+        category: AnalyzerOrchestrator.OUTWARD_FACING_BEHAVIOR_KINDS.has(surface.kind)
+          ? this.inferCapabilityCategory(entries.map(({ ep }) => ep), prefix || surface.kind)
+          : 'internal',
         operations,
         related_entities: relatedEntities.map(entity => entity.id),
         related_domains: [prefix || surface.kind.replace(/_/g, '-')],
@@ -25189,6 +25232,30 @@ export class AnalyzerOrchestrator {
       // entries serve one behavior.
       for (const [prefix, entries] of strongFamilies.slice(0, 3)) {
         candidates.push({ capability: buildCandidate(surface, prefix, entries), evidence: entries.length });
+      }
+
+      // Shape-coverage audit (2026-08-10) — CLI/script shapes under-generate
+      // here by construction: this whole surface never reaches the large-
+      // diverse-surface branch above because kindEvidence is 'entry-type' for
+      // a cli/ipc/command surface (its source node is a plain 'file' node,
+      // never a named registration node type), and a real CLI's command names
+      // routinely share NO prefix at all (`ingest-text`, `health`,
+      // `kernel-summary`, `eval-runs` — four different verbs, zero family).
+      // Measured live: an 8-command hybrid CLI+HTTP tool produced ZERO
+      // strongFamilies and is below BEHAVIOR_SURFACE_MIN_ENTRIES, so this
+      // whole pass previously emitted NOTHING for its entire CLI surface —
+      // the tool's outward face vanished downstream of L1 even though 8 real
+      // 'cli' entry points were extracted. One consolidated candidate for
+      // whatever strongFamilies didn't already cover keeps the CLI/script
+      // surface as a whole from being invisible, without reopening the
+      // 40-subcommand-becomes-40-capabilities anti-pattern: this is exactly
+      // one candidate per surface remainder, never one per command.
+      if (AnalyzerOrchestrator.OUTWARD_FACING_BEHAVIOR_KINDS.has(surface.kind)) {
+        const coveredByStrongFamily = new Set(strongFamilies.slice(0, 3).flatMap(([, entries]) => entries));
+        const uncovered = surface.entries.filter(entry => !coveredByStrongFamily.has(entry));
+        if (uncovered.length > 0) {
+          candidates.push({ capability: buildCandidate(surface, undefined, uncovered), evidence: uncovered.length });
+        }
       }
     }
 
