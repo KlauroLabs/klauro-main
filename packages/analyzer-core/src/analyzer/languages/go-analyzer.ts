@@ -118,6 +118,23 @@ interface GoType {
   isExported: boolean;
 }
 
+// A simple (possibly package/receiver-qualified) identifier — `getUsers`,
+// `handler.getEntriesHandler`, `(*Handler).getFeeds` — is real evidence of a
+// handler's declared name and is resolved to its last segment. Anything else
+// (an inline `func(w, r) {...}` literal, a wrapping call like
+// `wrapAuth(getFeeds)`, a struct literal) is NOT a name and is left
+// unresolved rather than guessed at — no fabrication from a naming pattern
+// alone, same doctrine the rest of this analyzer follows.
+function resolveGoHandlerMethodName(handlerExpr: string | undefined): string | undefined {
+  const expr = (handlerExpr || '').trim();
+  if (!expr) return undefined;
+  if (/[(){}\[\]]/.test(expr.replace(/^\(\*?\w+\)/, ''))) return undefined; // call/closure/struct — not a bare name
+  const segments = expr.replace(/^\(\*?(\w+)\)\.?/, '$1.').split('.').map(s => s.trim()).filter(Boolean);
+  if (segments.length === 0) return undefined;
+  const last = segments[segments.length - 1];
+  return /^[A-Za-z_]\w*$/.test(last) ? last : undefined;
+}
+
 export class GoAnalyzer extends BaseAnalyzer {
   private ginFrameworkDetected = false;
   private echoFrameworkDetected = false;
@@ -1655,7 +1672,25 @@ export class GoAnalyzer extends BaseAnalyzer {
     // (`// mux.HandleFunc("GET /debug", h)`) can't masquerade as a live route.
     content = this.stripGoComments(content);
     const seen = new Set<string>();
-    const push = (method: string, rawPath: string, authed = false) => {
+    // task #131 (measured live, VPS analysis of a miniflux-shaped stdlib
+    // net/http repo): 175 routes extracted here produced only ~3 journeys —
+    // every one of these entry points left `handler` unset, so
+    // orchestrator.ts's handler-resolution pass (`if (!ep.handler?.method_name) {
+    // if (ep.type !== 'cli') continue; ... }`) skips every Go route entry
+    // outright, `source_node` stays pointed at the FILE node (files have no
+    // outgoing call edges), and journey-builder.ts's call-graph walk
+    // dead-ends at depth 0 for all of them. Every OTHER framework analyzer
+    // here (express-analyzer.ts, fastify-analyzer.ts, fastapi-analyzer.ts,
+    // actix-analyzer.ts, node-http-analyzer.ts) sets `handler: { method_name,
+    // file }` on its route entry points; this was the one place that didn't.
+    // `handlerExpr` is the raw source text of the route-registration call's
+    // handler argument — captured per call site below and resolved to a
+    // plain method_name here, never fabricated: an expression that isn't a
+    // simple (possibly dotted) identifier — an inline func literal, a
+    // parenthesized wrapper call — is left unset rather than guessed at, so
+    // the handler-resolution pass's own name-matching decides whether it can
+    // actually find the real function node.
+    const push = (method: string, rawPath: string, authed = false, handlerExpr?: string) => {
       const m = method.toUpperCase();
       // Gorilla `{id}` / `{id:[0-9]+}` and Gin `:id` both canonicalize to `:id`.
       const path = rawPath
@@ -1664,6 +1699,7 @@ export class GoAnalyzer extends BaseAnalyzer {
       const key = `${m} ${path}`;
       if (seen.has(key)) return;
       seen.add(key);
+      const methodName = resolveGoHandlerMethodName(handlerExpr);
       entryPoints.push({
         id: `entry_go_route_${this.sanitizeId(relativePath)}_${m}_${this.sanitizeId(path)}`,
         source_node: fileId,
@@ -1672,6 +1708,7 @@ export class GoAnalyzer extends BaseAnalyzer {
         trigger: { method: m, path },
         security: { authenticated: authed },
         metadata: { framework: 'go', kind: 'route', file: relativePath, language: 'go' },
+        ...(methodName ? { handler: { method_name: methodName, file: relativePath } } : {}),
       });
     };
 
@@ -1728,7 +1765,10 @@ export class GoAnalyzer extends BaseAnalyzer {
       const argsTail = m[4] || '';
       const authed = inheritsAuth(recv) || [...argsTail.matchAll(/\b([A-Za-z_]\w*)\b/g)]
         .some(id => isAuthenticationGuardName(id[1]));
-      push(m[2], resolvePrefix(recv) + m[3], authed);
+      // Convention (Gin/Echo/Fiber): variadic middleware precede the final
+      // positional argument, which is the actual route handler.
+      const argsList = argsTail.replace(/^,/, '').split(',').map(s => s.trim()).filter(Boolean);
+      push(m[2], resolvePrefix(recv) + m[3], authed, argsList[argsList.length - 1]);
     }
 
     // Gorilla mux: `r.HandleFunc("/users", h).Methods("GET", "POST")`. Capture the
@@ -1740,13 +1780,14 @@ export class GoAnalyzer extends BaseAnalyzer {
       MethodPatch: 'PATCH', MethodHead: 'HEAD', MethodOptions: 'OPTIONS',
       MethodConnect: 'CONNECT', MethodTrace: 'TRACE',
     };
-    const gorillaRe = /\b(\w+)\.HandleFunc\s*\(\s*"([^"]+)"[^)]*\)\s*\.Methods\s*\(([^)]*)\)/g;
+    const gorillaRe = /\b(\w+)\.HandleFunc\s*\(\s*"([^"]+)"\s*,\s*([^)]*)\)\s*\.Methods\s*\(([^)]*)\)/g;
     while ((m = gorillaRe.exec(content)) !== null) {
       const path = resolvePrefix(m[1]) + m[2];
       const authed = inheritsAuth(m[1]);
-      for (const verb of m[3].matchAll(/"([A-Za-z]+)"|\bhttp\.(Method\w+)/g)) {
+      const handlerExpr = m[3];
+      for (const verb of m[4].matchAll(/"([A-Za-z]+)"|\bhttp\.(Method\w+)/g)) {
         const v = verb[1] || httpMethodConst[verb[2]];
-        if (v) push(v, path, authed);
+        if (v) push(v, path, authed, handlerExpr);
       }
     }
 
@@ -1774,12 +1815,12 @@ export class GoAnalyzer extends BaseAnalyzer {
     // `.Methods()` chain above can see this. Handler can be a struct-method
     // value (`handler.getX`) or an inline func literal; neither affects the
     // match since only the pattern string is captured.
-    const stdlibPatternRe = /\b(\w+)\.HandleFunc\s*\(\s*"(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\s+([^"\s]+)"/g;
+    const stdlibPatternRe = /\b(\w+)\.HandleFunc\s*\(\s*"(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\s+([^"\s]+)"\s*(?:,\s*([^)]*))?\)/g;
     while ((m = stdlibPatternRe.exec(content)) !== null) {
       const recv = m[1];
       const path = resolvePrefix(recv) + m[3];
       const authed = inheritsAuth(recv) || wholeHandlerAuthed.has(recv);
-      push(m[2], path, authed);
+      push(m[2], path, authed, m[4]);
     }
   }
 

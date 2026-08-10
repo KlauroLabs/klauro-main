@@ -2143,6 +2143,25 @@ export class AnalyzerOrchestrator {
     await yieldToEventLoop();
 
     phaseStart = startPhase();
+    // Journeys are a DERIVED VIEW over flows (docs/cas/SPECIFICATION.md §0 —
+    // comprehension tier is Capability/Flow/Step/Entity; journeys are not a
+    // fifth member). data_lineage hasn't been built yet at this point in the
+    // pipeline (buildDataLineage below needs userJourneys as an input), but
+    // computeFlowConcepts's entity resolution also reads data_entities
+    // directly (see entitiesForNodes in flow-concepts.ts) — already
+    // available here — so this early flow computation still yields real
+    // entity/capability evidence even with an empty data_lineage array.
+    const flowsForJourneys = computeFlowConcepts({
+      nodes: allNodes,
+      edges: allEdges,
+      entry_points: allEntryPoints,
+      exit_points: allExitPoints,
+      call_chains: callChains,
+      data_lineage: [],
+      data_entities: dataEntities,
+      system_capabilities: systemCapabilities,
+      behavior_surfaces: behaviorSurfaces,
+    } as unknown as CASOutput, {});
     const userJourneyResult = buildUserJourneys({
       nodes: allNodes,
       edges: allEdges,
@@ -2151,6 +2170,7 @@ export class AnalyzerOrchestrator {
       callChains,
       dataEntities,
       changeRisks: enhancedChangeRisks,
+      flows: flowsForJourneys,
     });
     const paradigmConformance = buildParadigmConformance({
       nodes: allNodes,
@@ -3717,6 +3737,21 @@ export class AnalyzerOrchestrator {
     );
 
     const enhancedChangeRisks = this.enhanceChangeRisks(changeRisks, callGraphBuilder, callChains, entryPoints);
+    // See the sibling call site's comment (executeAnalysis) — journeys are a
+    // derived view over flows; data_lineage isn't built yet here either, so
+    // this early flow computation relies on data_entities for entity
+    // evidence (computeFlowConcepts reads both).
+    const flowsForJourneys = computeFlowConcepts({
+      nodes,
+      edges,
+      entry_points: entryPoints,
+      exit_points: exitPoints,
+      call_chains: callChains,
+      data_lineage: [],
+      data_entities: dataEntities,
+      system_capabilities: systemCapabilities,
+      behavior_surfaces: behaviorSurfaces,
+    } as unknown as CASOutput, {});
     const userJourneyResult = buildUserJourneys({
       nodes,
       edges,
@@ -3725,6 +3760,7 @@ export class AnalyzerOrchestrator {
       callChains,
       dataEntities,
       changeRisks: enhancedChangeRisks,
+      flows: flowsForJourneys,
     });
     const paradigmConformance = buildParadigmConformance({
       nodes,

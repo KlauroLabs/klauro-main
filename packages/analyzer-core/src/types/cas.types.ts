@@ -3779,6 +3779,35 @@ export interface CASUserJourney {
   criticality: 'critical' | 'high' | 'medium' | 'low';
   call_chain_ids: string[];
   exit_point_ids: string[];
+  /**
+   * Journeys are a DERIVED VIEW over Flows (docs/cas/SPECIFICATION.md §0 —
+   * comprehension tier is Capability/Flow/Step/Entity only; journeys are not
+   * a fifth member), not an independently built structure. This is the
+   * flow_id (flow-concepts.ts FlowConcept.flow_id) this journey projects
+   * from — present whenever the caller supplied the computed flow set to
+   * buildUserJourneys. Omitted for the legacy pre-flow-projection call
+   * surface (tests / callers that haven't wired flow derivation yet).
+   */
+  derived_from_flow_id?: string;
+  /**
+   * The capability<->flow M:N relationship(s) INHERITED directly from the
+   * underlying flow's own `capability_relationships` — the fix for
+   * capability.journeys being structurally empty. Mechanical journeys built
+   * from a raw call-graph walk never satisfied the old entry-point/entity
+   * overlap heuristic in product-map.ts; a flow-derived journey carries the
+   * SAME evidence-gated capability edge flows_to_capabilities already proves
+   * out (0.8384 measured live), so the linkage is non-empty by construction
+   * wherever the flow itself relates to a capability. Omitted (never [])
+   * when the underlying flow has no capability relationship, or when this
+   * journey predates flow-projection (derived_from_flow_id is also absent
+   * in that case).
+   */
+  capability_relationships?: Array<{
+    capability_id: string;
+    role: string;
+    rationale: string;
+    evidence?: string;
+  }>;
 }
 
 export interface CASUserJourneySummary {

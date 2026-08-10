@@ -1929,6 +1929,14 @@ export function getUserJourneys(
       path: journeyStepPhrase(journey) || undefined,
       security_boundary_count: journey.security_boundaries?.length || 0,
       test_count: journey.tests_covering?.length || 0,
+      // Journeys are a derived view over flows; this is the direct,
+      // evidence-gated capability linkage the journey inherited from its
+      // underlying flow (never re-derived from journey data alone). Omitted
+      // when the flow this journey projects from has no capability
+      // relationship.
+      capability_ids: journey.capability_relationships?.length
+        ? journey.capability_relationships.map(rel => rel.capability_id)
+        : undefined,
     })),
   };
 }
