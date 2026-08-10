@@ -184,6 +184,37 @@ export class ComposeAnalyzer extends BaseAnalyzer {
         }
       }
 
+      // Entry points: a composable is a user-reachable screen — not merely an
+      // internal building block — when nothing else in the analyzed sources
+      // renders it. That is graph topology, not a name/keyword guess: the
+      // root(s) of the renders forest are exactly the destinations a user can
+      // land on (MainActivity's setContent { Root() }, a NavHost start
+      // destination, or any other composable no sibling calls). Without this,
+      // a pure-Compose UI has zero outward-face evidence for downstream
+      // capability generation to start from.
+      const rendered = new Set<string>();
+      for (const fn of composables) {
+        for (const call of fn.calls) {
+          const childId = nameToId.get(call.callee);
+          if (childId && childId !== fn.nodeId) rendered.add(childId);
+        }
+      }
+      for (const fn of composables) {
+        if (rendered.has(fn.nodeId)) continue;
+        entryPoints.push(
+          this.createEntryPoint(
+            `compose_entry_${fn.nodeId}`,
+            fn.nodeId,
+            'page',
+            fn.name,
+            `Jetpack Compose screen: @Composable fun ${fn.name}() is not rendered by any other composable in this codebase, so it is a user-reachable entry into the UI.`,
+            { pattern: fn.name },
+            undefined,
+            { framework: 'jetpack-compose', file: fn.relativePath, line: fn.lineStart }
+          )
+        );
+      }
+
       const warnings = this.collectAnalysisWarnings();
       return this.createContribution(nodes, edges, entryPoints, exitPoints, {
         ...(warnings.length > 0 ? { warnings } : {}),

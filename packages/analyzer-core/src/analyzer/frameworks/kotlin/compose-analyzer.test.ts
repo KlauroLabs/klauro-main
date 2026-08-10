@@ -76,3 +76,15 @@ test('ComposeAnalyzer emits the exact composable render tree', async () => {
   // Precision: no edge into the Compose built-in `Text` (undeclared here).
   assert.ok(!tree.some(t => /renders Text$/.test(t)), 'must not render undeclared Text');
 });
+
+test('ComposeAnalyzer emits an entry point for the root of the render tree', async () => {
+  const analyzer = new ComposeAnalyzer();
+  const contribution = await analyzer.analyze(ctx(FIXTURE_DIR));
+
+  // App is rendered by nothing else in the fixture, so it is the one
+  // user-reachable screen; every other composable is rendered by App (or by
+  // UserList) and must NOT also be surfaced as an entry point.
+  const entryNames = (contribution.entry_points ?? []).map(e => e.name).sort();
+  assert.deepEqual(entryNames, ['App']);
+  assert.equal((contribution.entry_points ?? [])[0].type, 'page');
+});
