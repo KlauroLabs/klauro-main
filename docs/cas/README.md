@@ -1,14 +1,14 @@
 # Code Analysis Specification (CAS)
 
-> **Current Version:** [1.10.0](./SPECIFICATION.md)
+> **Current Version:** [2.0.0](./SPECIFICATION.md)
 > **Status:** Active
 > **Full Specification:** [SPECIFICATION.md](./SPECIFICATION.md)
 
 ## Overview
 
-The Code Analysis Specification (CAS) is Klauro's source-of-truth format for understanding one project, repo, folder, or codebase. CAS represents that codebase as a complete relationship graph that can be inspected by humans in the UI and queried by AI agents through MCP.
+There is one structure — the CAS — and it nests. The Code Analysis Specification (CAS) is Klauro's source-of-truth format for understanding a codebase at any granularity: one project/repo/folder, a repo decomposed into per-deployable sub-CAS nodes, or an organization of many repositories. Every CAS, at any depth, represents its scope as a complete relationship graph that can be inspected by humans in the UI and queried by AI agents through MCP.
 
-Workspace-level understanding is specified separately by the [Workspace Analysis Specification (WAS)](../was/SPECIFICATION.md). WAS is generated after all associated project/repo CAS analyses finish, and it composes those completed CAS outputs into a product/system map. WAS must not require source-code reads; if a workspace relationship cannot be generated from CAS outputs, that is a repo-level CAS analyzer gap.
+Workspace-level (multi-repo) and deployable-level (per-unit) understanding are not separate specifications. A workspace is a CAS with sub-CAS nodes; a monorepo's independently shippable units are sub-CAS nodes of that repo's CAS. See `SPECIFICATION.md` §0 for the recursive structure, composition rules, and inter-sub-CAS-node communication seams. A composed (parent) CAS MUST NOT require source-code reads of its own; if a relationship between sub-CAS nodes cannot be generated from their own already-completed CAS outputs, that is a CAS analyzer gap, not a reason to read source at the parent.
 
 CAS exists so Klauro can answer behavior-level questions:
 
@@ -57,7 +57,7 @@ CAS supports progressive disclosure through levels and targeted query surfaces. 
 - Multiple analyzer perspectives with independent hierarchies
 - Rich documentation and purpose tracking
 - External service classification and tracking
-- Repo-local interface and integration hints for later WAS composition
+- Repo-local interface and integration hints for later composition into a parent CAS
 - Dependency and package management information
 - Security context and access control metadata
 - Quality metrics and code coverage
@@ -116,7 +116,7 @@ CAS supports progressive disclosure through levels and targeted query surfaces. 
 - Runtime-to-static correlation
 - Evidence-backed analysis facts
 - Semantic change impact
-- Repo-local integration confidence for later WAS composition
+- Repo-local integration confidence for later composition into a parent CAS
 
 ### [v1.9.0](./v1.9.0-rfp.md) - Codebase Idiom Intelligence
 
@@ -136,6 +136,14 @@ CAS supports progressive disclosure through levels and targeted query surfaces. 
 - Graph-anchored semantic results that carry callers, callees, tests, and risk
 - Incremental re-embedding of only changed nodes
 - MCP `semantic_search`, `search_nodes` mode parameter, and `get_embedding_status`
+
+### [v2.0.0](./SPECIFICATION.md#part-0--the-recursive-cas) - The Recursive CAS
+
+- One recursive structure replaces the separate CAS/WAS/DAS specifications: a CAS MAY have sub-CAS nodes, to any depth
+- No `scope_type`/`analysis_kind` discriminant — "workspace", "project", and "deployable" are derived properties, never a declared type
+- `das_index` renamed to `sub_cas_nodes` — no alias, no compatibility path
+- Inter-sub-CAS-node communication seams (sync/async/passive) specified explicitly across the recursion
+- MAJOR, breaking; no migration mapping from 1.x — see `docs/cas/VERSIONING.md`
 
 ## Key Principles
 

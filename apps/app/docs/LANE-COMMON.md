@@ -107,7 +107,7 @@ screen, and say so in your report.
 ## Data sources (real API, read the route bodies in apps/mcp-server/src/remote-analyzer-service.ts)
 Projects list, project analysis summary + /cas, workspace analysis (envelope!), reanalyze POSTs,
 attach POST /api/workspaces/:id/projects {project_id}, DAS: get_summary-style scoped data comes
-through /cas fields (das_index on promoted repos; applications carry source_das_unit_id).
+through /cas fields (sub_cas_nodes on promoted repos; applications carry source_das_unit_id).
 The entry-points data model: apps/app/docs/briefs/entry-points-design-brief.pdf is the CANONICAL
 brief (15 pages — Read with the pages parameter; the .html file is a summary, the PDF wins where
 they differ). Every NEW brief you write follows ITS tone: plain-language, describes what the data

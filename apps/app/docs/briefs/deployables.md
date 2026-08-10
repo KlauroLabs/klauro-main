@@ -59,7 +59,7 @@ A unit can **bundle** other candidates into itself (an installer's evidence name
 binaries it packages) — a bundled candidate is folded under its owning unit and never counted
 as a separate ship unit, even though it still gets its own root path and evidence.
 
-## The picker: das_index
+## The picker: sub_cas_nodes
 
 The top of the page is a switcher — same shape as the entry-points catalog's deployable
 switcher, one rung more specific. It lists every qualified unit by name; picking one scopes

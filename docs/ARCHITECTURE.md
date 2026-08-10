@@ -8,8 +8,8 @@
 ## 0. What Klauro is, in one paragraph
 
 Klauro parses a codebase into a deterministic structural graph (the CAS — Code Analysis
-Spec), composes multiple codebases into a workspace graph (the WAS — Workspace Analysis
-Spec), lifts that graph into a human mental model (capability → flow → step → function,
+Spec). There is one structure — the CAS — and it nests: a workspace is a CAS with
+sub-CAS nodes (`docs/cas/SPECIFICATION.md` §0). Klauro lifts that graph into a human mental model (capability → flow → step → function,
 with I/L/S/O + constraints at every level), and exposes all of it — plus a coordination
 fabric for concurrent agents — over ~200 MCP tools. AI enriches the prose; it never decides
 what is true. The moat is depth of understanding, not chat.
@@ -29,7 +29,8 @@ what is true. The moat is depth of understanding, not chat.
 │    frameworks, and codebase types (coded analyzers + declarative    │
 │    packs + local conventions + self-improving gap-discovery)        │
 ├─────────────────────────────────────────────────────────────────────┤
-│ 1. THE KERNEL — parse → CAS graph → entry points → WAS composition  │
+│ 1. THE KERNEL — parse → CAS graph → entry points → sub-CAS-node     │
+│    composition                                                       │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -39,13 +40,13 @@ does not have to climb the stack to get value; `get_summary` alone is useful, bu
 
 ## 2. Layer 1 — The kernel (SHIPPED)
 
-**Parse → CAS graph → entry points → flows/capabilities → WAS.**
+**Parse → CAS graph → entry points → flows/capabilities → sub-CAS-node composition.**
 
 1. **Parse.** ~130 languages parse via tree-sitter; ~68 have live framework/library-level
    analyzers (was ~48 before the v1.0.20 six-agent breadth wave — see `docs/CHANGELOG.md`
    v1.0.20). Deep, coded analyzers exist per major language/framework (see `docs/mcp/
    ANALYZER-COVERAGE.md`); a generic tree-sitter walker covers the rest structurally.
-2. **CAS graph** (Code Analysis Spec, `docs/cas/SPECIFICATION.md`, currently v1.11.0) —
+2. **CAS graph** (Code Analysis Spec, `docs/cas/SPECIFICATION.md`, currently v2.0.0) —
    nodes (functions, classes, routes, entities, config, …) and typed edges (`calls`,
    `references`, `provides`, `binds`, `imports`, …), all evidence-gated: an edge is only
    emitted when real source evidence supports it, never guessed by name similarity. This is
@@ -61,10 +62,11 @@ does not have to climb the stack to get value; `get_summary` alone is useful, bu
    CAS graph (detailed in Layer 3 below). `system_capabilities` are extracted structurally
    and ranked by terminal-entity proximity (the last-in-chain entity reveals the domain —
    see the terminal-entity principle in `docs/SPEC-INTELLIGENCE-CAPITALIZATION.md` §1).
-5. **WAS composition** (Workspace Analysis Spec, `docs/was/SPECIFICATION.md`) — composes
-   one or more CAS graphs into a cross-codebase view: deployables (evidence-gated, not
-   folder-name-guessed — see `docs/SPEC-DEPLOYABLE-DETECTION.md`), cross-repo contracts,
-   shared libraries, and a workspace-level capability map.
+5. **Sub-CAS-node composition** (`docs/cas/SPECIFICATION.md` §0.4/§0.7) — composes
+   one or more CAS graphs into a cross-codebase (or cross-deployable) view: deployables
+   (evidence-gated, not folder-name-guessed — see `docs/SPEC-DEPLOYABLE-DETECTION.md`),
+   cross-repo contracts, shared libraries, inter-sub-CAS-node communication seams (§0.8),
+   and a composed-level capability map.
 
 **Honest gaps (kernel):** `get_callers` blast-radius completeness is a recurring theme —
 fixed for function-call edges and several cross-file-reference shapes as of v1.0.20 ("grep
@@ -150,9 +152,9 @@ demoted to an opt-in tool (`claim_work`/`grant-manager.ts`) for the rare genuine
 case, not the default coordination mechanism.
 
 - **Awareness substrate (SHIPPED)** — every agent always sees who holds what, with what
-  intent, and the CAS/WAS blast radius, without needing to request anything.
+  intent, and the CAS blast radius (including across sub-CAS nodes), without needing to request anything.
 - **Conceptual-conflict detection (SHIPPED, the crown jewel)** — comparing concurrent
-  agents' intents + in-flight diffs against the CAS/WAS graph to flag *jointly incoherent*
+  agents' intents + in-flight diffs against the CAS graph (including composed sub-CAS-node facts) to flag *jointly incoherent*
   changes: contract divergence, invariant conflicts, structural divergence, behavior drift.
   This is invisible to git/linters (they only catch textual/merge conflicts) and only
   detectable with code semantics + intent.
@@ -197,9 +199,9 @@ on meaning. That is the thesis of `docs/SPEC-PARALLEL-DEV-FLEET.md`.
 | Spec | Layer | Status |
 |---|---|---|
 | `docs/cas/SPECIFICATION.md` | 1 (kernel) | SHIPPED, v1.11.0 |
-| `docs/was/SPECIFICATION.md` | 1 (kernel) | SHIPPED |
-| `docs/SPEC-DEPLOYABLE-DETECTION.md` | 1 (kernel/WAS) | SHIPPED |
-| `docs/SPEC-ENTITY-MODEL.md` | 1 (kernel/WAS) | DESIGN STUDY, not implemented |
+| `docs/cas/SPECIFICATION.md` §0 (recursive/sub-CAS-node composition) | 1 (kernel) | SHIPPED |
+| `docs/SPEC-DEPLOYABLE-DETECTION.md` | 1 (kernel/sub-CAS-node composition) | SHIPPED |
+| `docs/SPEC-ENTITY-MODEL.md` | 1 (kernel/sub-CAS-node composition) | DESIGN STUDY, not implemented |
 | `docs/SPEC-COVERAGE-MODEL.md` | 2 (coverage) | SHIPPED core + VISION (this doc set) |
 | `docs/SPEC-ANALYZER-PACKS.md` | 2 (coverage) | VISION, peer in progress |
 | `docs/SPEC-CONCEPTUAL-LAYER.md` | 3 (conceptual) | SHIPPED core, v1.0.12 |

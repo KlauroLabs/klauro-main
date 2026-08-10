@@ -12,7 +12,11 @@ Status: implemented. Everything described under "The policy" and "Upgrade semant
 - **MINOR** changes add optional fields. Every field addition to `CASOutput` must bump the minor version in the same change. Readers treat missing optional fields as "this analysis predates the field", keyed off the stored version.
 - **PATCH** changes fix content quality without changing shape.
 
-The current version is `CAS_VERSION` in `packages/analyzer-core/src/types/cas.types.ts` (currently `1.11.0`).
+The current version is `CAS_VERSION` in `packages/analyzer-core/src/types/cas.types.ts` (currently `2.0.0`).
+
+### 2.0.0 — the recursive CAS, no compatibility path
+
+`2.0.0` collapses the three previously separate specifications (CAS, the Workspace Analysis Specification, the Deployable Analysis Specification) into one recursive structure — see `docs/cas/SPECIFICATION.md` §0. This is treated as an ordinary MAJOR bump under the policy above: a stored `1.x` analysis is `unsupported`/older-major and every tool returns the standard re-analysis instruction. There is no migration mapping, no dual-read of the renamed `das_index` -> `sub_cas_nodes` field, and no special-cased handling of pre-2.0.0 analyses beyond what this table already does for any major-version change. Re-analysis is the only path forward for a stored 1.x analysis.
 
 ### Minimum-compatible floor
 
@@ -61,6 +65,7 @@ What each minor version added to `CASOutput`. RFPs live next to this file.
 | 1.9.0 | Codebase idiom intelligence: `codebase_idioms`, `idiom_summary`, `idiom_examples`, `idiom_violations` |
 | 1.10.0 | Graph-anchored semantic retrieval (`embedding_index`). **Honesty note:** the 1.10.0 line also accumulated, without intermediate version bumps: the behavior pillars (`user_journeys`, `user_journey_summary`, `data_lineage`, `paradigm_conformance`, `product_map`), idiom `provenance`, `secondary_domains` on enhanced system purpose, and the `tenant-isolation`/`rate-limiting` security boundary types. A stored "1.10.0" analysis therefore may or may not contain the pillar fields. |
 | 1.11.0 | No new fields. Versioning-policy release: the first version at which every 1.10.0-line field above is guaranteed present when the underlying data exists. Version notices for the pillars key off 1.11.0 (`PILLAR_ATTESTED_CAS_VERSION`) precisely because 1.10.0 is ambiguous. |
+| 2.0.0 | MAJOR, breaking. Recursive CAS structure (`docs/cas/SPECIFICATION.md` §0): a CAS MAY have child CAS nodes (`sub_cas_nodes`) to any depth. `das_index` renamed to `sub_cas_nodes` — no alias. Inter-sub-CAS-node communication seams (`seams`, §0.8) specified explicitly across the recursion. No `scope_type`/`analysis_kind` discriminant anywhere. No compatibility path from 1.x. |
 
 The per-field rule going forward: adding a field to `CASOutput` without bumping `CAS_VERSION` in the same change is a policy violation; the 1.10.0 ambiguity above is the cost it avoids.
 

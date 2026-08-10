@@ -43,7 +43,7 @@ interface RemoteDasIndexResponse {
   status: 'ready' | 'no_analysis';
   project_id: string;
   analysis_id?: string;
-  das_index?: {
+  sub_cas_nodes?: {
     promoted: boolean;
     units: RemoteDasUnit[];
     /** How many units qualified vs how many promotion needs — reported even
@@ -71,16 +71,16 @@ export function useDasUnitIndex(projectId: string | undefined) {
 
   return {
     ...query,
-    promoted: query.data?.das_index?.promoted ?? false,
-    units: query.data?.das_index?.units ?? [],
-    qualifiedUnitCount: query.data?.das_index?.qualified_unit_count,
-    promotionThreshold: query.data?.das_index?.promotion_threshold,
-    promotionReason: query.data?.das_index?.reason,
-    coverageRatio: query.data?.das_index?.coverage_ratio,
-    coveredNodeCount: query.data?.das_index?.covered_node_count,
-    graphNodeCount: query.data?.das_index?.graph_node_count,
-    orphanNodeCount: query.data?.das_index?.orphan_node_count,
-    orphanNodeIds: query.data?.das_index?.orphan_node_ids ?? [],
+    promoted: query.data?.sub_cas_nodes?.promoted ?? false,
+    units: query.data?.sub_cas_nodes?.units ?? [],
+    qualifiedUnitCount: query.data?.sub_cas_nodes?.qualified_unit_count,
+    promotionThreshold: query.data?.sub_cas_nodes?.promotion_threshold,
+    promotionReason: query.data?.sub_cas_nodes?.reason,
+    coverageRatio: query.data?.sub_cas_nodes?.coverage_ratio,
+    coveredNodeCount: query.data?.sub_cas_nodes?.covered_node_count,
+    graphNodeCount: query.data?.sub_cas_nodes?.graph_node_count,
+    orphanNodeCount: query.data?.sub_cas_nodes?.orphan_node_count,
+    orphanNodeIds: query.data?.sub_cas_nodes?.orphan_node_ids ?? [],
   };
 }
 

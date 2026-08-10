@@ -23,21 +23,22 @@ import {
 } from '../../../packages/analyzer-core/src/analyzer/core/reachability-index';
 
 /**
- * DEPLOYABLE ANALYSIS SPECIFICATION (DAS) — PHASE 1
+ * SUB-CAS-NODE (DEPLOYABLE-LEVEL) SLICING
  *
- * Implements docs/SPEC-DEPLOYABLE-ANALYSIS.md §1-§3 + §6-§7: the promotion
- * rule, per-deployable slicing, and retrieval-by-scope. Per the user's
- * verbatim constraint ("as long as the DAS is effectively the same data as
- * the CAS we're good"), a DAS unit is NOT a new object model — it is a
+ * Implements docs/cas/SPECIFICATION.md §0.4 + §0.7: the promotion rule,
+ * per-deployable slicing, and retrieval-by-scope, for the case where a CAS's
+ * sub-CAS nodes are the deployables inside one repo. Per the user's verbatim
+ * constraint ("as long as the [unit] is effectively the same data as the CAS
+ * we're good"), a sub-CAS-node unit is NOT a new object model — it is a
  * CASOutput-SHAPED object, scoped to one deployable's reachability closure,
  * built from the SAME fields a repo-level CAS already carries. No new types
  * are introduced for nodes/edges/entry-exit-points/entities/capabilities;
  * this module only ever DERIVES a subgraph + a thin index, never re-parses
- * source and never invents a second semantic algorithm (§2.1 step 4).
+ * source and never invents a second semantic algorithm.
  *
- * STORAGE (phase 1, per spec §9 open question 2): recompute-on-request. A
- * DAS unit is a VIEW over its parent CAS, not a persisted analysis artifact —
- * cheapest honest starting point; see the phase-2 open items at the bottom of
+ * STORAGE (phase 1): recompute-on-request. A sub-CAS-node unit is a VIEW over
+ * its parent CAS, not a persisted analysis artifact — cheapest honest
+ * starting point; see the phase-2 open items at the bottom of
  * this file for the persistence tradeoff.
  *
  * THREE DECISIONS THIS MODULE MAKES, each stated once where it is implemented:
@@ -926,7 +927,7 @@ function filterCommunicationSeams(
 // Public shapes
 // ---------------------------------------------------------------------------
 
-export interface DasUnitIndexEntry {
+export interface SubCasNodeIndexEntry {
   /** Stable id, spec §7 (derived from the owning DeployableEvidence's
    *  identity — same construction as buildDeployableRoots' deployable_id). */
   id: string;
@@ -937,7 +938,7 @@ export interface DasUnitIndexEntry {
   kind: DeployableEvidence['kind'];
   /** Every node in this unit's closure — INCLUDING code it shares with other
    *  units. Unit node_counts therefore do not partition the graph; see
-   *  DasIndex.counts_note. */
+   *  SubCasNodeIndex.counts_note. */
   node_count: number;
   /** The part of node_count no other unit reaches. */
   exclusive_node_count: number;
@@ -960,9 +961,9 @@ export interface DasUnitIndexEntry {
   boundary_evidence: string[];
 }
 
-export interface DasIndex {
+export interface SubCasNodeIndex {
   promoted: boolean;
-  units: DasUnitIndexEntry[];
+  units: SubCasNodeIndexEntry[];
   /** How many tier-qualified ship units this CAS resolves, and the threshold
    *  promotion needs — reported ALWAYS, including when `promoted` is false.
    *  "1 qualified unit, below the threshold of 2" and "no ship evidence at
@@ -1016,7 +1017,7 @@ export interface DasUnitSlice {
   das_unit_name: string;
   root_path: string;
   member_root_paths: string[];
-  /** See DasUnitIndexEntry.seed_node_count / seed_basis. */
+  /** See SubCasNodeIndexEntry.seed_node_count / seed_basis. */
   seed_node_count: number;
   seed_basis: string[];
   /** CASOutput-SHAPED slice — same field names/types a repo-level CAS uses,
@@ -1049,7 +1050,7 @@ export interface DasUnitSlice {
 
 export interface BuildDeployableAnalysesResult {
   promoted: boolean;
-  das_index: DasIndex;
+  sub_cas_nodes: SubCasNodeIndex;
   units: DasUnitSlice[];
 }
 
@@ -1143,13 +1144,13 @@ export function sliceDeployableAnalysis(cas: CASOutput, deployable: DeployableEv
 }
 
 // ---------------------------------------------------------------------------
-// buildDeployableAnalyses (all units + das_index + shared-code attribution)
+// buildDeployableAnalyses (all units + sub_cas_nodes + shared-code attribution)
 // ---------------------------------------------------------------------------
 
 /**
  * Top-level entry point: evaluate the promotion rule, and if it fires, slice
  * every tier-qualified unit plus tag cross-unit shared code (spec §2.2) and
- * build the rollup `das_index` (spec §3's "the list of DAS unit
+ * build the rollup `sub_cas_nodes` (spec §3's "the list of DAS unit
  * ids/names/tiers/boundary evidence itself"). Returns `promoted: false` with
  * empty arrays for the common single-deployable case — never a synthesized
  * one-entry unit list.
@@ -1161,7 +1162,7 @@ export function buildDeployableAnalyses(cas: CASOutput): BuildDeployableAnalyses
   if (qualified.length < PROMOTION_THRESHOLD) {
     return {
       promoted: false,
-      das_index: {
+      sub_cas_nodes: {
         promoted: false,
         units: [],
         qualified_unit_count: qualified.length,
@@ -1254,7 +1255,7 @@ export function buildDeployableAnalyses(cas: CASOutput): BuildDeployableAnalyses
   const coveredNodeCount = reachedAnywhere.size;
   const sumOfUnitNodeCounts = units.reduce((sum, u) => sum + u.slice.nodes.length, 0);
 
-  const das_index: DasIndex = {
+  const sub_cas_nodes: SubCasNodeIndex = {
     promoted: true,
     units: qualified.map((unit, i) => ({
       id: unitsReachability[i].id,
@@ -1287,7 +1288,7 @@ export function buildDeployableAnalyses(cas: CASOutput): BuildDeployableAnalyses
     counts_note: DAS_COUNTS_NOTE,
   };
 
-  return { promoted: true, das_index, units };
+  return { promoted: true, sub_cas_nodes, units };
 }
 
 // ---------------------------------------------------------------------------
@@ -1301,7 +1302,7 @@ export function buildDeployableAnalyses(cas: CASOutput): BuildDeployableAnalyses
  * `undefined` when the CAS hasn't promoted or the id doesn't match any
  * current unit (a caller should treat that as "this scope no longer exists",
  * e.g. after a demotion — spec §5/§7's reportable-demotion rule, surfaced by
- * the caller comparing against the previous das_index, not by this
+ * the caller comparing against the previous sub_cas_nodes, not by this
  * function, which is a pure lookup).
  */
 export function resolveDasScope(cas: CASOutput, dasUnitId: string): DasUnitSlice | undefined {
@@ -1370,7 +1371,7 @@ export interface DasScopeParam {
  */
 export function scopeCasToDasUnit(cas: CASOutput, scope: DasScopeParam | undefined): CASOutput {
   if (!scope) return cas;
-  const { promoted, das_index, units } = getCachedDeployableAnalyses(cas);
+  const { promoted, sub_cas_nodes, units } = getCachedDeployableAnalyses(cas);
   if (!promoted) {
     throw new Error(
       'This analysis has not promoted to a Deployable-Analysis Workspace (it resolves fewer than 2 tier-qualified ship units), so scope.das_unit_id does not apply. Omit scope to query the whole repo.'
@@ -1378,7 +1379,7 @@ export function scopeCasToDasUnit(cas: CASOutput, scope: DasScopeParam | undefin
   }
   const unit = units.find(u => u.das_unit_id === scope.das_unit_id);
   if (!unit) {
-    const available = das_index.units.map(u => `${u.id} (${u.name})`).join(', ') || 'none';
+    const available = sub_cas_nodes.units.map(u => `${u.id} (${u.name})`).join(', ') || 'none';
     throw new Error(`Unknown scope.das_unit_id '${scope.das_unit_id}'. Available DAS units for this analysis: ${available}.`);
   }
   return { ...cas, ...unit.slice } as CASOutput;

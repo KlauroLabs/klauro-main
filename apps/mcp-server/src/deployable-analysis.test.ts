@@ -150,17 +150,17 @@ test('shouldPromote: single-deployable CAS never promotes, and says so in number
   const result = buildDeployableAnalyses(cas);
   assert.equal(result.promoted, false);
   assert.equal(result.units.length, 0);
-  assert.equal(result.das_index.units.length, 0);
+  assert.equal(result.sub_cas_nodes.units.length, 0);
   // "1 found, not promoted" must be distinguishable from "found nothing".
-  assert.equal(result.das_index.qualified_unit_count, 1);
-  assert.equal(result.das_index.promotion_threshold, 2);
-  assert.match(result.das_index.reason, /1 tier-qualified ship unit found \(app\)/);
-  assert.equal(result.das_index.graph_node_count, 1);
+  assert.equal(result.sub_cas_nodes.qualified_unit_count, 1);
+  assert.equal(result.sub_cas_nodes.promotion_threshold, 2);
+  assert.match(result.sub_cas_nodes.reason, /1 tier-qualified ship unit found \(app\)/);
+  assert.equal(result.sub_cas_nodes.graph_node_count, 1);
 
   const noEvidence = { deployable_evidence: [], nodes: [] } as unknown as CASOutput;
   const empty = buildDeployableAnalyses(noEvidence);
-  assert.equal(empty.das_index.qualified_unit_count, 0);
-  assert.match(empty.das_index.reason, /No tier-qualified ship unit found/);
+  assert.equal(empty.sub_cas_nodes.qualified_unit_count, 0);
+  assert.match(empty.sub_cas_nodes.reason, /No tier-qualified ship unit found/);
 });
 
 test('slices carry their reachability closure, shared code is tagged and counted honestly', () => {
@@ -199,7 +199,7 @@ test('slices carry their reachability closure, shared code is tagged and counted
   // Honest coverage accounting: exclusive + shared + orphan === the graph, the
   // union is reported, and the sum of unit counts is allowed to exceed it by
   // exactly the shared multiplicity (S1 counted in 2 units).
-  const idx = result.das_index;
+  const idx = result.sub_cas_nodes;
   assert.equal(idx.graph_node_count, 7);
   assert.equal(idx.covered_node_count, 6);          // X1 (the script) is in no unit
   assert.equal(idx.orphan_node_count, 1);
@@ -260,12 +260,12 @@ test('DAS closure follows invokes edges via the persisted index, and reuse == re
   );
 
   // Reuse produces the exact same slice as rebuild — node sets, entry points,
-  // and the das_index summary all match.
+  // and the sub_cas_nodes summary all match.
   assert.deepEqual(
     apiWith.slice.nodes.map(n => n.id).sort(),
     apiWithout.slice.nodes.map(n => n.id).sort()
   );
-  assert.deepEqual(withIndex.das_index, withoutIndex.das_index);
+  assert.deepEqual(withIndex.sub_cas_nodes, withoutIndex.sub_cas_nodes);
 });
 
 /**
@@ -325,10 +325,10 @@ test('a monorepo with app dirs covers >90% of nodes', () => {
     ],
   } as unknown as CASOutput;
 
-  const { das_index } = buildDeployableAnalyses(cas);
-  assert.ok(das_index.coverage_ratio > 0.9, `coverage ${das_index.coverage_ratio} must exceed 0.9`);
-  assert.equal(das_index.orphan_node_count, 0);
-  assert.equal(das_index.shared_node_count, 10);
+  const { sub_cas_nodes } = buildDeployableAnalyses(cas);
+  assert.ok(sub_cas_nodes.coverage_ratio > 0.9, `coverage ${sub_cas_nodes.coverage_ratio} must exceed 0.9`);
+  assert.equal(sub_cas_nodes.orphan_node_count, 0);
+  assert.equal(sub_cas_nodes.shared_node_count, 10);
 });
 
 test('a repo-root ship declaration does not blanket-match the whole repo', () => {
@@ -356,7 +356,7 @@ test('a repo-root ship declaration does not blanket-match the whole repo', () =>
     ],
   } as unknown as CASOutput;
 
-  const { units, das_index } = buildDeployableAnalyses(cas);
+  const { units, sub_cas_nodes } = buildDeployableAnalyses(cas);
   assert.equal(units.length, 2);
   const agent = units.find(u => u.das_unit_name === 'agent')!;
   const coordinator = units.find(u => u.das_unit_name === 'coordinator')!;
@@ -364,9 +364,9 @@ test('a repo-root ship declaration does not blanket-match the whole repo', () =>
   // The unrelated tools/ tree belongs to neither and stays an honest orphan.
   assert.deepEqual(agent.slice.nodes.map(n => n.id).sort(), ['AG1', 'AG2']);
   assert.deepEqual(coordinator.slice.nodes.map(n => n.id), ['CO1']);
-  assert.equal(das_index.shared_node_count, 0);
-  assert.equal(das_index.orphan_node_count, 1); // tools/unrelated, honestly reported
-  assert.deepEqual(das_index.orphan_node_ids, ['OT1']);
+  assert.equal(sub_cas_nodes.shared_node_count, 0);
+  assert.equal(sub_cas_nodes.orphan_node_count, 1); // tools/unrelated, honestly reported
+  assert.deepEqual(sub_cas_nodes.orphan_node_ids, ['OT1']);
 });
 
 test('sibling build targets in one directory are told apart by their own entry files', () => {

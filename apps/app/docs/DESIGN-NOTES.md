@@ -485,7 +485,7 @@ contract for this page.
 
 ### The true DAS-scoped surface is MCP-only — data gap
 `GET /api/projects/:id/cas` returns the full, repo-wide `CASOutput` — it does not expose
-`das_index`, per-unit `node_count`/`entry_point_count`/`exit_point_count`, or orphan-node
+`sub_cas_nodes`, per-unit `node_count`/`entry_point_count`/`exit_point_count`, or orphan-node
 accounting, all of which `apps/mcp-server/src/deployable-analysis.ts`'s
 `buildDeployableAnalyses` computes via a call-graph reachability closure (and only the MCP
 `get_summary` tool's `scope` parameter can retrieve). This lane does NOT reimplement that
@@ -502,7 +502,7 @@ closure client-side (that would be the "second flow algorithm" LANE-COMMON.md fo
   shared between two units, which only the real closure algorithm tags.
 - `src/pages/deployable/DasOrphanNotice.tsx` renders an explicit "not available over HTTP yet"
   notice rather than a fabricated or omitted orphan count.
-Affected fields: `das_index` (server has it, HTTP doesn't expose it), `DasUnitSlice.slice.nodes/
+Affected fields: `sub_cas_nodes` (server has it, HTTP doesn't expose it), `DasUnitSlice.slice.nodes/
 entry_points/exit_points` (reachability-closure-scoped), `DasIndex.orphan_node_count`/
 `orphan_node_ids`. A future backend lane adding a `GET /api/projects/:id/cas?scope=<das_unit_id>`
 (or dedicated `/deployables` HTTP route) would let this page drop its approximation layer
