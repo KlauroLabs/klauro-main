@@ -22730,11 +22730,23 @@ export class AnalyzerOrchestrator {
     // already uses, just against exit points of an effect-shaped kind
     // (message/event/webhook) instead of entity lifecycle. Defaults false so
     // every other caller (tests, other candidate pools) is unaffected.
-    hasEffectEvidence = false
+    hasEffectEvidence = false,
+    // Root cause #1 (cross-repo audit 2026-08-10): a seam-only candidate
+    // (synthesized in buildSystemCapabilities from an effect exit point with
+    // no owning entry point) never has a USER_FACING_ENTRY_TYPES operation —
+    // its own trigger genuinely is async/scheduled, not user-initiated. This
+    // param carries a DIFFERENT structural fact: a real call-graph path
+    // (bounded BFS over the same calls/uses/delegates_to/invokes/queries
+    // edges GATE 2's entity hop-matching already trusts) from a genuine
+    // user-facing entry point down to this candidate's handler node. That is
+    // proximal — not terminal — user reachability (§0.7.1: co-equal), and
+    // substitutes for hasUserTriggeredEntry only when proven, never assumed.
+    // Defaults false so every other caller is unaffected.
+    isProximallyUserReachable = false
   ): boolean {
     const hasUserTriggeredEntry = (capability.operations || []).some(
       operation => USER_FACING_ENTRY_TYPES.has(operation.entry_point_type as any)
-    );
+    ) || isProximallyUserReachable;
     if (!hasUserTriggeredEntry) return false;
 
     // Entity-write check only fires when there IS entity evidence to judge —
@@ -22841,7 +22853,19 @@ export class AnalyzerOrchestrator {
     const resourceGroups = new Map<string, {
       entryPoints: CASEntryPoint[];
       name: string;
+      // Cross-repo audit (2026-08-10) root cause #1: this loop is the ONLY
+      // producer of candidate resourceGroups, and it iterates
+      // productEntryPoints exclusively — a resource with no entry point of
+      // its own (an async/queue/cron seam target: a Django app synced only
+      // from a scheduled task, a Spring AI service invoked only from another
+      // controller) never gets a group here, so the hasEffectEvidence
+      // recall widening below (root cause #2) never gets a resourceKey to
+      // attach to. `seamOnly` marks a group synthesized from effect-exit-
+      // point evidence instead of an entry point — see the synthesis pass
+      // after `exitPointsByHandlerNode` below.
+      seamOnly?: boolean;
     }>();
+    const groupedHandlerNodeIds = new Set<string>();
 
     for (const ep of productEntryPoints) {
       await maybeYield();
@@ -22857,6 +22881,9 @@ export class AnalyzerOrchestrator {
         resourceGroups.set(resourceKey, { entryPoints: [], name: resourceName });
       }
       resourceGroups.get(resourceKey)!.entryPoints.push(ep);
+      if (ep.source_node) groupedHandlerNodeIds.add(ep.source_node);
+      const epAny = ep as any;
+      if (epAny.handler?.node_id) groupedHandlerNodeIds.add(epAny.handler.node_id);
     }
 
     let capIndex = 0;
@@ -22864,6 +22891,13 @@ export class AnalyzerOrchestrator {
     // Populated by the resource-group loop below, consulted by the GATE 1/2
     // filter that follows it (root cause #2 — see isUserReachableTerminalCandidate).
     const effectEvidenceByCapabilityId = new Set<string>();
+    // Root cause #1 companion: capability ids built from a seamOnly group
+    // (synthesized below, never from a real user-facing entry point). GATE 1
+    // treats membership here as proximal — not terminal — user reachability:
+    // it substitutes for `hasUserTriggeredEntry` only when the BFS below
+    // proves the seam handler is actually reached FROM a genuine user-facing
+    // entry point's call graph, never a blanket bypass.
+    const seamReachableCapabilityIds = new Set<string>();
     const nextCapabilityId = (capability: Pick<SystemCapability, 'name' | 'related_domains'>): string => {
       const seed = capability.name || capability.related_domains?.[0] || `capability-${capIndex++}`;
       const base = `cap_${this.slugForId(seed)}`;
@@ -22936,6 +22970,94 @@ export class AnalyzerOrchestrator {
       if (list) list.push(ep);
       else exitPointsByHandlerNode.set(ep.source_node, [ep]);
     }
+
+    // ROOT CAUSE #1 FIX — seam-only candidate GENERATION (cross-repo audit,
+    // 2026-08-10). A subsystem reached only through an async/queue/cron seam
+    // (a Django app synced solely from a scheduled task, a Spring AI service
+    // invoked only from another controller's async dispatch) owns no entry
+    // point of its own, so the loop above never creates a resourceGroup for
+    // it — GATE 2's hasEffectEvidence widening (root cause #2, already
+    // shipped) is real but structurally unreachable for exactly this class,
+    // because it is only ever consulted for a resourceKey that already
+    // exists. Recall requires generating that resourceKey, not just judging
+    // it once generated.
+    //
+    // This does NOT admit every internal effect producer as a capability —
+    // that would reopen the mechanism-flood precision regression this file's
+    // history is full of fixing. It admits one exactly when the SAME
+    // structural fact GATE 1 already trusts (a real call-graph path from a
+    // genuinely user-facing entry point) proves the seam handler is
+    // PROXIMALLY reachable from a real user action, even though the
+    // triggering hop itself is async (§0.7.1: terminal and proximal-terminal
+    // are co-equal; a purely orphaned internal function with no path from
+    // any user-facing entry stays excluded, same as before).
+    const seamCandidateHandlerIds = [...exitPointsByHandlerNode.keys()]
+      .filter(nodeId => !groupedHandlerNodeIds.has(nodeId));
+    if (seamCandidateHandlerIds.length > 0) {
+      const userFacingSeedIds = new Set<string>();
+      for (const ep of productEntryPoints) {
+        if (!USER_FACING_ENTRY_TYPES.has(ep.type as any)) continue;
+        if (ep.source_node) userFacingSeedIds.add(ep.source_node);
+        const epAny = ep as any;
+        if (epAny.handler?.node_id) userFacingSeedIds.add(epAny.handler.node_id);
+      }
+      // Bounded forward BFS over the same CALLEE_EDGE_TYPES adjacency used
+      // for entity hop-matching above — a real call/delegation chain, not a
+      // name/keyword guess. Depth-capped (not just visited-set-capped) so a
+      // hub node with thousands of callees can't turn this into an
+      // effectively unbounded reachability oracle on a large graph.
+      const REACHABILITY_MAX_DEPTH = 8;
+      const reachableFromUserEntry = new Set<string>(userFacingSeedIds);
+      let frontier = [...userFacingSeedIds];
+      for (let depth = 0; depth < REACHABILITY_MAX_DEPTH && frontier.length > 0; depth++) {
+        await maybeYield();
+        const nextFrontier: string[] = [];
+        for (const nodeId of frontier) {
+          for (const callee of directCalleesBySource.get(nodeId) || []) {
+            if (reachableFromUserEntry.has(callee)) continue;
+            reachableFromUserEntry.add(callee);
+            nextFrontier.push(callee);
+          }
+        }
+        frontier = nextFrontier;
+      }
+
+      for (const nodeId of seamCandidateHandlerIds) {
+        await maybeYield();
+        if (!reachableFromUserEntry.has(nodeId)) continue;
+        const handlerNode = productNodeById.get(nodeId);
+        const resourceKey = this.inferModuleResourceKeyFromPath(handlerNode?.source?.file || '');
+        if (!resourceKey || this.isGenericCapabilityResourceKey(resourceKey)) continue;
+
+        const exitPoint = exitPointsByHandlerNode.get(nodeId)![0];
+        const handlerName = handlerNode?.name || exitPoint.name || nodeId;
+        const syntheticEntryPoint: CASEntryPoint = {
+          id: `entry_seam_${this.slugForId(nodeId)}`,
+          source_node: nodeId,
+          source_analyzer: 'orchestrator-seam-candidate',
+          // 'task' is not in USER_FACING_ENTRY_TYPES: this candidate's own
+          // trigger genuinely is not user-initiated. Its admission depends
+          // entirely on the BFS proximal-reachability evidence above, tracked
+          // separately via seamReachableCapabilityIds — never on this type.
+          type: 'task',
+          name: handlerName,
+          description: exitPoint.description || `Async/effect-triggered handler: ${handlerName}`,
+          handler: { node_id: nodeId, method_name: handlerName, file: handlerNode?.source?.file, line: handlerNode?.source?.line },
+        };
+
+        if (!resourceGroups.has(resourceKey)) {
+          resourceGroups.set(resourceKey, {
+            entryPoints: [],
+            name: this.inferResourceName(syntheticEntryPoint, resourceKey),
+            seamOnly: true,
+          });
+        }
+        const group = resourceGroups.get(resourceKey)!;
+        group.entryPoints.push(syntheticEntryPoint);
+        groupedHandlerNodeIds.add(nodeId);
+      }
+    }
+
     const groupEffectEvidence = new Map<string, boolean>();
     for (const [resourceKey, group] of resourceGroups.entries()) {
       await maybeYield();
@@ -23023,6 +23145,7 @@ export class AnalyzerOrchestrator {
       const capabilityName = this.terminalGroundedCapabilityName(structuralLabel, relatedEntities);
       const groupCapId = nextCapabilityId({ name: structuralLabel, related_domains: [resourceKey] });
       if (groupEffectEvidence.get(resourceKey)) effectEvidenceByCapabilityId.add(groupCapId);
+      if (group.seamOnly) seamReachableCapabilityIds.add(groupCapId);
 
       capabilities.push({
         id: groupCapId,
@@ -23081,7 +23204,8 @@ export class AnalyzerOrchestrator {
         this.isUserReachableTerminalCandidate(
           capability,
           productDataEntities,
-          effectEvidenceByCapabilityId.has(capability.id)
+          effectEvidenceByCapabilityId.has(capability.id),
+          seamReachableCapabilityIds.has(capability.id)
         ));
       capabilities.length = 0;
       capabilities.push(...survivingCandidates);
@@ -26621,6 +26745,32 @@ export class AnalyzerOrchestrator {
 
   private isStructuralAreaName(area: string): boolean {
     return area.split(/\s+/).every(token => CAPABILITY_STRUCTURAL_AREA_NAMES.has(token));
+  }
+
+  /**
+   * Resource key for a seam-only capability candidate (root cause #1): the
+   * handler node has no entry point of its own, so there is no route/CLI/
+   * event NAME to key off of — only its file location. Prefers a conventional
+   * module container segment (modules/<name>, apps/<name>, services/<name>,
+   * ...) exactly like Django/Rails/NestJS project layout convention, since
+   * that segment IS the subsystem's own name by construction. Falls back to
+   * the nearest containing directory that survives the same generic-token
+   * filters every other resource key in this file is judged by.
+   */
+  private inferModuleResourceKeyFromPath(filePath: string): string | undefined {
+    if (!filePath) return undefined;
+    const segments = filePath.replace(/\\/g, '/').split('/').filter(Boolean);
+    const containerNames = new Set(['modules', 'apps', 'app', 'services', 'domains', 'features', 'packages', 'plugins']);
+    for (let i = 0; i < segments.length - 1; i++) {
+      if (!containerNames.has(segments[i].toLowerCase())) continue;
+      const key = this.domainKeyFromEntryPointText(segments[i + 1]);
+      if (key && !this.isGenericCapabilityResourceKey(key)) return key;
+    }
+    for (let i = segments.length - 2; i >= 0; i--) {
+      const key = this.domainKeyFromEntryPointText(segments[i]);
+      if (key && !this.isGenericCapabilityResourceKey(key)) return key;
+    }
+    return this.domainKeyFromEntryPointText(segments[segments.length - 1] || '');
   }
 
   private inferResourceKey(ep: CASEntryPoint): string {

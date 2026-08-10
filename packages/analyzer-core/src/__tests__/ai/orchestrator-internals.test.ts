@@ -11112,4 +11112,83 @@ describe('TASK #119: candidate-generation inversion (terminal / proximal-termina
       expect(out.map((c: any) => c.id)).toEqual(['infra']);
     });
   });
+
+  // Cross-repo audit (2026-08-10) root cause #1: buildSystemCapabilities'
+  // resourceGroups map is built EXCLUSIVELY from productEntryPoints, so a
+  // subsystem reached only through an async/queue/cron seam (no entry point
+  // of its own — an FDB-drug-database sync module, a genai chat service
+  // invoked only from another controller) never gets a resourceKey at all,
+  // and the hasEffectEvidence recall widening above (GATE 2) is therefore
+  // never consulted for it. These tests reproduce that class directly at
+  // isUserReachableTerminalCandidate's new 4th param, then end-to-end
+  // through buildSystemCapabilities with a real call-graph edge standing in
+  // for the async dispatch.
+  describe('isUserReachableTerminalCandidate 4th param (proximal seam reachability)', () => {
+    it('rejects a seam-only candidate with no proximal-reachability evidence, same as before this param existed', () => {
+      const candidate = cap({ operations: [op('task')], related_entities: [] });
+      expect(orch.isUserReachableTerminalCandidate(candidate, [], true, false)).toBe(false);
+    });
+
+    it('admits a seam-only candidate that is proximally reachable AND has effect evidence', () => {
+      const candidate = cap({ operations: [op('task')], related_entities: [] });
+      expect(orch.isUserReachableTerminalCandidate(candidate, [], true, true)).toBe(true);
+    });
+
+    it('still rejects a proximally-reachable seam candidate with neither effect evidence nor an entity write', () => {
+      const candidate = cap({ operations: [op('task')], related_entities: ['e1'] });
+      const entities = [dataEntity('e1', 'AuditLog', false)];
+      expect(orch.isUserReachableTerminalCandidate(candidate, entities, false, true)).toBe(false);
+    });
+  });
+
+  describe('buildSystemCapabilities: seam-only subsystem generation (root cause #1, end-to-end)', () => {
+    const seamNode = (partial: Partial<CASNode>): CASNode => ({
+      id: partial.id || 'node_1',
+      name: partial.name || 'node',
+      type: partial.type || 'function',
+      source: partial.source,
+      ...partial,
+    } as CASNode);
+
+    it('generates NO capability for an async-only subsystem when it is unreachable from any user-facing entry point (precision preserved)', async () => {
+      const controllerNode = seamNode({ id: 'controller', name: 'OrderController', type: 'controller', source: { file: 'src/orders/controller.ts', line: 1 } });
+      const fdbNode = seamNode({ id: 'fdb_sync', name: 'syncFdbProducts', type: 'function', source: { file: 'modules/fdb/tasks.ts', line: 1 } });
+      const nodes = [controllerNode, fdbNode];
+      const entryPoints: CASEntryPoint[] = [{
+        id: 'entry_orders', source_node: controllerNode.id, type: 'http', name: 'POST /orders',
+        description: 'Create an order', trigger: { method: 'POST', path: '/orders' },
+        handler: { node_id: controllerNode.id, method_name: 'createOrder', file: controllerNode.source!.file },
+      } as CASEntryPoint];
+      // No edge at all from the reachable entry point to fdbNode — genuinely orphaned.
+      const edges: CASEdge[] = [];
+      const exitPoints: CASExitPoint[] = [
+        exitPoint({ id: 'exit_fdb', source_node: fdbNode.id, type: 'message', name: 'Publish FDB sync completion' }),
+      ];
+      const { capabilities } = await orch.buildSystemCapabilities(entryPoints, [], nodes, edges, undefined, exitPoints);
+      expect(capabilities.some((c: any) => (c.related_domains || []).includes('fdb'))).toBe(false);
+    });
+
+    it('generates a capability for an async-only subsystem that IS reached via a real call-graph edge from a user-facing entry point', async () => {
+      const controllerNode = seamNode({ id: 'controller', name: 'OrderController', type: 'controller', source: { file: 'src/orders/controller.ts', line: 1 } });
+      const fdbNode = seamNode({ id: 'fdb_sync', name: 'syncFdbProducts', type: 'function', source: { file: 'modules/fdb/tasks.ts', line: 1 } });
+      const nodes = [controllerNode, fdbNode];
+      const entryPoints: CASEntryPoint[] = [{
+        id: 'entry_orders', source_node: controllerNode.id, type: 'http', name: 'POST /orders',
+        description: 'Create an order', trigger: { method: 'POST', path: '/orders' },
+        handler: { node_id: controllerNode.id, method_name: 'createOrder', file: controllerNode.source!.file },
+      } as CASEntryPoint];
+      // The order controller dispatches into the FDB sync module — the same
+      // structural fact GATE 2's entity hop-matching already trusts, applied
+      // here as proximal reachability evidence for GATE 1.
+      const edges: CASEdge[] = [
+        { id: 'e1', source: controllerNode.id, target: fdbNode.id, type: 'calls' } as CASEdge,
+      ];
+      const exitPoints: CASExitPoint[] = [
+        exitPoint({ id: 'exit_fdb', source_node: fdbNode.id, type: 'message', name: 'Publish FDB sync completion' }),
+      ];
+      const { capabilities } = await orch.buildSystemCapabilities(entryPoints, [], nodes, edges, undefined, exitPoints);
+      const fdbCapability = capabilities.find((c: any) => (c.related_domains || []).includes('fdb'));
+      expect(fdbCapability).toBeTruthy();
+    });
+  });
 });
