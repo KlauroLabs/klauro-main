@@ -81,6 +81,51 @@ export async function promptLine(
  * fall back to --password / --password-stdin and fail with a clear message
  * rather than hang or echo.
  */
+/**
+ * First-run `login`/`login --register` error text, shared so cli.ts and
+ * installed-cli.ts cannot re-diverge the way their auth-status/whoami
+ * implementations once did (and the way this exact message drifted before:
+ * "login requires --email and --password or --password-stdin" was the
+ * FIRST sentence a brand-new user ever read from this product, on the
+ * command that is supposed to be the most forgiving one in it — see
+ * SPEC/defect notes for the 2026-08-09 first-run incident).
+ *
+ * Rules that shaped the wording:
+ *  - Say what to type next, not what was missing. "requires --email" reads
+ *    like a validator complaining; "run klauro login --email ..." is an
+ *    instruction a non-technical reader can act on immediately.
+ *  - The interactive and non-interactive cases need DIFFERENT advice: a
+ *    real TTY that reached this message means the person pressed
+ *    Enter/Ctrl-D without typing anything, so "try again" is the honest
+ *    fix. A non-TTY (CI, a pipe, an agent shelling out) can never satisfy
+ *    an interactive prompt no matter how long it waits, so the only
+ *    actionable fix is the flag-based path — and it must be named
+ *    explicitly (--password-stdin), not implied.
+ *  - --register threads through so the printed example matches the command
+ *    that was actually run; telling a --register caller to run `klauro
+ *    login --email ...` (dropping --register) would silently downgrade
+ *    "create an account" to "sign in to one that doesn't exist yet".
+ */
+export function firstRunLoginCommandExample(register: boolean): string {
+  return register ? 'klauro login --register --email you@example.com --password-stdin' : 'klauro login --email you@example.com --password-stdin';
+}
+
+export function missingEmailMessage(options: { interactive: boolean; register: boolean }): string {
+  const example = firstRunLoginCommandExample(options.register);
+  if (options.interactive) {
+    return `An email address is needed to ${options.register ? 'create your Klauro account' : 'sign in'}. Enter one at the prompt, or run: ${example}`;
+  }
+  return `${options.register ? 'Creating a Klauro account' : 'Signing in'} needs an email address, and this terminal can't prompt for one (it isn't interactive). Run: ${example}`;
+}
+
+export function missingPasswordMessage(options: { interactive: boolean; register: boolean }): string {
+  const example = firstRunLoginCommandExample(options.register);
+  if (options.interactive) {
+    return `A password is needed to ${options.register ? 'create your Klauro account' : 'sign in'}. Enter one at the prompt (it will not be shown), or provide it non-interactively with --password-stdin: ${example}`;
+  }
+  return `${options.register ? 'Creating a Klauro account' : 'Signing in'} needs a password, and this terminal can't prompt for one (it isn't interactive). Pipe it in instead — never put a password directly on the command line: echo -n 'your-password' | ${example}`;
+}
+
 export async function promptPassword(
   label: string,
   stdin: SecretStdin = process.stdin as unknown as SecretStdin,

@@ -8,12 +8,13 @@ import { buildUploadManifest } from './remote-source';
 import { assessUploadScope, confirmUploadScope } from './upload-scope-guard';
 import { clearStoredConnectorSession, connectorToken, listStoredAccounts, loadStoredConnectorAuth, normalizeServerUrl, resolveAuthStatus, saveStoredConnectorSession, switchStoredAccount, warnIfSessionExpiringSoon } from './connector-auth';
 import { writeDefaultKlauroConfig } from './klauro-config';
-import { formatBuildIdentity, resolveManifestProjectName } from './installed-client-runtime';
+import { formatBuildIdentity, getBuildIdentity, resolveManifestProjectName } from './installed-client-runtime';
 import { KLAURO_INSTALL_ONELINER, SELF_UPDATE_COMMANDS, runSelfUpdate } from './self-update';
 import { renderStatusReport } from './status-report';
 import { formatClientDoctor, runClientDoctor } from './client-doctor';
 import { buildSupportBundle, formatSupportBundleResult } from './support-bundle';
-import { promptLine, promptPassword, readAllStdin } from './password-prompt';
+import { missingEmailMessage, missingPasswordMessage, promptLine, promptPassword, readAllStdin } from './password-prompt';
+import { extractServerUrlFlag, getStaleClientUpdateHint } from './stale-client-hint';
 // §AUTH-LIFECYCLE — admin-mint-reset-token talks to the account store
 // directly (no HTTP hop, no site-wide admin role to gate an endpoint with —
 // see AccountStore.mintPasswordResetToken's doc comment). account-store.ts
@@ -438,9 +439,11 @@ async function main() {
       );
     }
     const password = passwordStdin ? await readAllStdin() : (legacyPassword || await promptPassword('Password: '));
-    if (!email) throw new Error('login requires --email or an entered email');
-    if (!password) throw new Error('login requires --password, --password-stdin, or an entered password');
-    const route = process.argv.includes('--register') ? '/api/auth/register' : '/api/auth/login';
+    const interactive = Boolean(process.stdin.isTTY);
+    const register = process.argv.includes('--register');
+    if (!email) throw new Error(missingEmailMessage({ interactive, register }));
+    if (!password) throw new Error(missingPasswordMessage({ interactive, register }));
+    const route = register ? '/api/auth/register' : '/api/auth/login';
     const response = await fetch(`${serverUrl}${route}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email, password }) });
     const payload = await response.json().catch(() => ({})) as any;
     if (!response.ok) throw new Error(payload.error || `Login failed with HTTP ${response.status}`);
@@ -578,4 +581,19 @@ function output(value: unknown, json: boolean) {
   process.stdout.write(json ? `${JSON.stringify(value, null, 2)}\n` : `${typeof value === 'string' ? value : JSON.stringify(value, null, 2)}\n`);
 }
 
-main().catch(error => { process.stderr.write(`${error instanceof Error ? error.message : error}\n`); process.exit(1); });
+main().catch(async error => {
+  process.stderr.write(`${error instanceof Error ? error.message : error}\n`);
+  // Staleness-on-failure (see stale-client-hint.ts's header comment): only
+  // ever runs here, after a real failure has already been printed, never on
+  // the happy path and never blocking longer than the module's own bounded
+  // timeout. A failure inside this check must never replace or hide the
+  // error above it.
+  try {
+    const hint = await getStaleClientUpdateHint({
+      serverUrl: normalizeServerUrl(extractServerUrlFlag(process.argv) || loadStoredConnectorAuth().defaultServerUrl),
+      currentVersion: getBuildIdentity().base_version,
+    });
+    if (hint) process.stderr.write(`${hint}\n`);
+  } catch { /* never let the hint itself fail the process */ }
+  process.exit(1);
+});
