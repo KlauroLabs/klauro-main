@@ -208,4 +208,18 @@ Common thread so far: capability *quality* (readability, entity-grounding) is fi
 
 ---
 
-*(scorecard rows 6-10 to follow in this document as each subject completes)*
+### 6. claudius — Monorepo, multiple deployables (bot server + dashboard-ui + Electron tray-app + VS Code extension)
+
+- project `prj_VPZPPFlLxoA5FUgF`, my own submission, `analyzer_build: 1.0.136-dev+56cde09aa104`, fresh. Finished 2026-08-10T16:40:51Z, duration **44.14s**, `errors: 2`, cas_version 2.1.0.
+- **Sub-CAS/deployable-boundary promotion missed the multi-deployable structure entirely.** `sub_cas_nodes.promoted: false`, `qualified_unit_count: 0`, `reason: "No tier-qualified ship unit found: no deployable_evidence row declares a ship or build artifact of its own."` This repo genuinely has 4 distinct deployables (a Node/Express bot server, a separate `dashboard-ui` web app, an `tray-app/` Electron app with its own `package.json` + `electron` main, and a `vscode-extension/` with its own `package.json` + `engines.vscode` + `activationEvents`) — none were recognized. Compare to subjects 1 and 3 above, where Docker/K8s-shaped boundary evidence let the same mechanism correctly promote 6 and 7 sub-CAS units respectively. **This looks like the deployable-boundary detector is biased toward container/K8s ship-artifact evidence and doesn't recognize Electron `main`/`vscode.engines`/multiple `package.json` roots as qualifying evidence** — a specific, falsifiable hypothesis for why sub-CAS promotion is shape-dependent rather than deployable-dependent.
+- `primary_domain`: **null**, system-level `description`: **empty string `""`** — same blank-system-purpose defect seen on subject 4 (openclaw-android), now on a second, unrelated subject; not a one-off.
+- capability count: **6** — Orchestrate AI agents, Manage agent skills, Handle agent memory, Manage network tunnels, Monitor agent sessions, Configure auto-approval rules. Readable and entity-grounded on the surface, but "Manage agent skills" has a grab-bag entity list mixing unrelated concepts — `Skill`/`SkillDefinition`/`SkillManifest` alongside `NgrokTunnel`, `TailscaleTunnel`, `TelegramUser`, `VSCodeClient`, `DashboardToken` — evidence of entity mis-attribution across capabilities, not clean grouping.
+- **RECALL column**: the repo's own `package.json` description is *"Remote AI agent orchestration system with **Telegram interface**"* — Telegram is the headline user-facing surface — yet there is no "Control agents via Telegram" (or similar) capability anywhere in the 6. `TelegramUser` exists only as an orphaned entity folded into the unrelated "Manage agent skills" bucket. Also missing: a distinct capability for the VS Code bridge / dashboard control surface (both real, both structurally present as separate deployables per the boundary-evidence miss above).
+- `flows_to_capabilities`: **0.5926** (16/27). `reachable_code_to_steps`: **0.4545** (30/66) — both under half, consistent with the multiple under-surfaced capabilities.
+- journeys: only **2** total despite 26 entry_points (18 HTTP) — heavy under-representation relative to the route surface.
+- `tests_present`/`health.tests`: both 0/false, no internal contradiction this time.
+- Verdict: this is the shape most directly aimed at testing sub-CAS promotion, and it is the clearest miss on that specific mechanism in the run — 0 promoted units on a repo with 4 real deployables, immediately after two subjects where the same mechanism worked (both container/K8s-shaped). Combined with the blank system description (2nd occurrence) and the missing Telegram capability (the product's own headline feature), this is a strong negative sample for the monorepo shape specifically.
+
+---
+
+*(scorecard rows 7-10 to follow in this document as each subject completes)*
