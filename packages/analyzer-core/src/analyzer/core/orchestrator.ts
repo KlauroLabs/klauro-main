@@ -244,6 +244,31 @@ function aiConcurrencyLimit(): number {
   return Number.isFinite(configured) && configured > 0 ? Math.floor(configured) : 5;
 }
 
+// TASK #107 hard cutoff: the capability-catalog AI stage runs concurrently
+// with deterministic work (task #118 lane decoupling), so it is measured on
+// its OWN clock from when the AI phase starts (aiPhaseStart in
+// preprocessProject), never against deterministic parse time. This ceiling
+// leaves headroom under the ~3-minute hard analysis budget for the
+// deterministic phases this stage runs alongside plus final assembly.
+// Overridable for tests/tuning; the fixed per-attempt bounds inside
+// awaitAiBoundedThenUncapped (40s x 3 = 120s worst case for the bounded
+// phase) already fit comfortably under this default.
+const CATALOG_HARD_DEADLINE_MS = (() => {
+  const configured = Number(process.env.KLAURO_AI_CATALOG_HARD_DEADLINE_MS || '');
+  return Number.isFinite(configured) && configured > 0 ? configured : 150_000;
+})();
+
+// Distinguishable, greppable marker (this file's existing convention for
+// naming failure classes — see isProviderUnavailableFailure — rather than a
+// custom Error subclass) so callers can tell "the hard deadline fired" apart
+// from an ordinary provider failure and stop retrying instead of treating it
+// like any other transient error.
+const AI_CATALOG_HARD_DEADLINE_MARKER = 'ai-catalog-hard-deadline-exceeded';
+
+function isAiCatalogHardDeadlineExceeded(error: unknown): boolean {
+  return error instanceof Error && error.message.includes(AI_CATALOG_HARD_DEADLINE_MARKER);
+}
+
 // Code-layer / folder / structural names that are never meaningful capability
 // "owners". Used to drop ownership clauses like "owned by lib and entities".
 const CAPABILITY_STRUCTURAL_AREA_NAMES = new Set([
@@ -11035,14 +11060,36 @@ export class AnalyzerOrchestrator {
    * the stage always finishes with a real, provider-produced answer no matter
    * how long a fully degraded provider takes. The bound only changes WHICH
    * attempt is currently being awaited, never whether the stage completes.
+   *
+   * TASK #107 HARD CUTOFF (added on top of the above, does not weaken it):
+   * everything above is still true for a HEALTHY provider — the completeness
+   * invariant holds unconditionally right up until `opts.hardDeadlineAt`. Only
+   * once that absolute deadline has already passed does this refuse to START
+   * another attempt (bounded or the "guaranteed" uncapped one) and instead
+   * throws a distinguishable error (see isAiCatalogHardDeadlineExceeded) so
+   * the caller can fall back to the complete deterministic layer and record
+   * HONESTLY that AI enrichment was abandoned, rather than silently letting
+   * one call consume the entire analysis budget. An attempt already in flight
+   * when the deadline lands is not killed (there is no cheap cooperative
+   * cancellation into the provider call) — the gate is "don't start a new
+   * one", checked before every attempt.
    */
   private async awaitAiBoundedThenUncapped<T>(
     attemptFactory: (attemptIndex: number) => Promise<T>,
     operation: string,
-    opts: { perAttemptTimeoutMs: number; maxBoundedAttempts: number; slowWarnMs: number },
+    opts: { perAttemptTimeoutMs: number; maxBoundedAttempts: number; slowWarnMs: number; hardDeadlineAt?: number },
   ): Promise<T> {
     const TIMED_OUT = Symbol('ai-attempt-bound-timeout');
+    const deadlineExceeded = (): boolean =>
+      opts.hardDeadlineAt !== undefined && Date.now() >= opts.hardDeadlineAt;
+    const throwDeadlineExceeded = (): never => {
+      throw new Error(`${operation}: ${AI_CATALOG_HARD_DEADLINE_MARKER} (deadline ${new Date(opts.hardDeadlineAt!).toISOString()}); abandoning further AI attempts and falling back to the deterministic layer`);
+    };
     for (let attemptIndex = 1; attemptIndex <= opts.maxBoundedAttempts; attemptIndex++) {
+      if (deadlineExceeded()) {
+        console.error(`[Klauro] ${operation}: hard deadline reached before bounded attempt ${attemptIndex}/${opts.maxBoundedAttempts}; abandoning rather than starting another attempt`);
+        throwDeadlineExceeded();
+      }
       const attemptStartedAt = Date.now();
       let timer: NodeJS.Timeout | undefined;
       try {
@@ -11064,9 +11111,14 @@ export class AnalyzerOrchestrator {
         if (timer) clearTimeout(timer);
       }
     }
-    // Every bounded, abandonable attempt was cut off or failed. Completeness is
-    // preserved here, not compromised: one final attempt runs with NO timeout,
-    // guaranteeing a real answer eventually rather than a degraded/synthetic one.
+    if (deadlineExceeded()) {
+      console.error(`[Klauro] ${operation}: all bounded attempts were cut off or failed AND the hard deadline has been reached; abandoning instead of starting the uncapped final attempt`);
+      throwDeadlineExceeded();
+    }
+    // Every bounded, abandonable attempt was cut off or failed, but there is
+    // still time before the hard deadline. Completeness is preserved here,
+    // not compromised: one final attempt runs with NO timeout, guaranteeing a
+    // real answer eventually rather than a degraded/synthetic one.
     console.error(`[Klauro] ${operation}: all ${opts.maxBoundedAttempts} bounded attempts (${opts.perAttemptTimeoutMs}ms each) were cut off or failed; committing to one final uncapped attempt — completion is guaranteed, latency is not`);
     return this.awaitAiWithoutCutoff(attemptFactory(opts.maxBoundedAttempts + 1), operation, opts.slowWarnMs);
   }
@@ -11102,6 +11154,13 @@ export class AnalyzerOrchestrator {
      *  Bounds this invocation to ONE model call (the caller owns the retry
      *  budget) and disables the internal thin-catalog nudge. */
     qualityNudge?: string;
+    /** TASK #107: absolute epoch-ms deadline (set once, in applyAIInterpretation,
+     *  from the AI phase's own start time — never the deterministic clock) past
+     *  which awaitAiBoundedThenUncapped refuses to start another attempt. When
+     *  supplied the caller MUST be prepared for this to throw (see
+     *  isAiCatalogHardDeadlineExceeded) and fall back to the deterministic
+     *  catalog; when omitted, behavior is unchanged (no hard cutoff). */
+    hardDeadlineAt?: number;
   }): Promise<SystemCapability[]> {
     const purpose = input.enhancedSystemPurpose || ({} as EnhancedSystemPurpose);
     // Bundle sizes are tuned to keep the per-repo extraction call small enough to
@@ -11337,6 +11396,7 @@ export class AnalyzerOrchestrator {
           perAttemptTimeoutMs: CATALOG_ATTEMPT_BOUND_MS,
           maxBoundedAttempts: CATALOG_MAX_BOUNDED_ATTEMPTS,
           slowWarnMs: aiBudget,
+          hardDeadlineAt: input.hardDeadlineAt,
         },
       );
     };
@@ -11356,6 +11416,12 @@ export class AnalyzerOrchestrator {
         if (parsed.length > catalog.length) catalog = parsed;
       } catch (error) {
         if (process.env.KLAURO_DEBUG_CATALOG) console.error(`[catalog-debug] attempt ${attempt} failed:`, error instanceof Error ? error.message : String(error));
+        // TASK #107: the hard deadline firing is not a transient failure worth
+        // retrying — retrying would just re-check the same already-passed
+        // deadline. Stop immediately and let the caller (runCapabilityCatalog
+        // WithQualityGate) record the honest degraded reason and hand off to
+        // the deterministic fallback with whatever partial catalog exists.
+        if (isAiCatalogHardDeadlineExceeded(error)) break;
       }
       if (catalog.length >= catalogCountMin) break;
       if (catalog.length && process.env.KLAURO_DEBUG_CATALOG) {
@@ -12930,29 +12996,54 @@ export class AnalyzerOrchestrator {
     nodes: CASNode[];
     budgetMs: number;
     libraryNames?: string[];
+    /** TASK #107: absolute epoch-ms hard deadline for the WHOLE capability-catalog
+     *  stage (all quality-gate cycles combined), not just a single AI call — see
+     *  aiExtractCapabilityCatalog.hardDeadlineAt and CATALOG_HARD_DEADLINE_MS. */
+    hardDeadlineAt?: number;
   }): Promise<SystemCapability[]> {
     const distinctFamilyCount = this.catalogDistinctFamilyCount(args.candidateSnapshot);
     let reconciled: SystemCapability[] = [];
     let qualityFailure: string | undefined;
     let cyclesRun = 0;
+    let deadlineExceeded = false;
     for (let cycle = 1; cycle <= 3; cycle++) {
+      // TASK #107: check BEFORE starting a new cycle too, not only inside a
+      // single aiExtractCapabilityCatalog call — three quality-gate cycles
+      // each running their own bounded-then-uncapped sequence is exactly the
+      // "no hard cutoff on the whole stage" shape the defect described.
+      if (args.hardDeadlineAt !== undefined && Date.now() >= args.hardDeadlineAt) {
+        deadlineExceeded = true;
+        console.error(`[Klauro] capability catalog: hard deadline reached before cycle ${cycle}/3; stopping with ${reconciled.length} capabilities from ${cycle - 1} completed cycle(s)`);
+        break;
+      }
       cyclesRun = cycle;
       const cycleNudge = cycle === 1 ? undefined
         : `Previous catalog failed a quality check (${qualityFailure}). Return a FULL catalog of purposeful capabilities: one per distinct product area the facts support, each named as a purpose a PM would write (verb-headed, never a bare noun or a page/view label), each description stating why the ability exists.`;
-      const extracted = await this.aiExtractCapabilityCatalog({
-        systemName: args.systemName,
-        enhancedSystemPurpose: args.enhancedSystemPurpose,
-        frameworks: args.frameworks,
-        userJourneys: args.userJourneys,
-        dataEntities: args.dataEntities,
-        candidateCapabilities: args.candidateSnapshot,
-        behaviorSurfaces: args.behaviorSurfaces,
-        externalServices: args.externalServices,
-        flowGraph: args.flowGraph,
-        projectTextSignal: args.projectTextSignal,
-        budgetMs: args.budgetMs,
-        ...(cycleNudge ? { qualityNudge: cycleNudge } : {}),
-      });
+      let extracted: SystemCapability[];
+      try {
+        extracted = await this.aiExtractCapabilityCatalog({
+          systemName: args.systemName,
+          enhancedSystemPurpose: args.enhancedSystemPurpose,
+          frameworks: args.frameworks,
+          userJourneys: args.userJourneys,
+          dataEntities: args.dataEntities,
+          candidateCapabilities: args.candidateSnapshot,
+          behaviorSurfaces: args.behaviorSurfaces,
+          externalServices: args.externalServices,
+          flowGraph: args.flowGraph,
+          projectTextSignal: args.projectTextSignal,
+          budgetMs: args.budgetMs,
+          hardDeadlineAt: args.hardDeadlineAt,
+          ...(cycleNudge ? { qualityNudge: cycleNudge } : {}),
+        });
+      } catch (error) {
+        if (isAiCatalogHardDeadlineExceeded(error)) {
+          deadlineExceeded = true;
+          console.error(`[Klauro] capability catalog: hard deadline exceeded during cycle ${cycle}/3; stopping with ${reconciled.length} capabilities from prior cycle(s)`);
+          break;
+        }
+        throw error;
+      }
       const cycleReconciled = extracted.length > 0
         ? this.reconcileCatalogedCapabilities(extracted, args.candidateSnapshot, args.dataEntities, args.entryPoints, args.nodes, args.enhancedSystemPurpose, args.libraryNames || [])
         : [];
@@ -12960,11 +13051,16 @@ export class AnalyzerOrchestrator {
       qualityFailure = this.catalogQualityFailure(reconciled, distinctFamilyCount);
       if (!qualityFailure) break;
     }
-    const catalogPath = reconciled.length > 0
-      ? (qualityFailure ? 'ai-below-quality-bar' : 'ai')
-      : 'deterministic-fallback';
+    const catalogPath = deadlineExceeded
+      ? (reconciled.length > 0 ? 'ai-partial-hard-deadline' : 'deterministic-fallback-hard-deadline')
+      : reconciled.length > 0
+        ? (qualityFailure ? 'ai-below-quality-bar' : 'ai')
+        : 'deterministic-fallback';
+    const gateReason = deadlineExceeded
+      ? `${AI_CATALOG_HARD_DEADLINE_MARKER}: capability-catalog AI enrichment abandoned after ${cyclesRun} cycle(s) to protect the overall analysis latency budget; deterministic capabilities remain complete${qualityFailure ? ` (last quality check: ${qualityFailure})` : ''}`
+      : qualityFailure;
     console.error(
-      `[Klauro] capability catalog path: ${catalogPath} (cycles=${cyclesRun}, capabilities=${reconciled.length}, families=${distinctFamilyCount}${qualityFailure ? `, last_failure=${qualityFailure}` : ''})`
+      `[Klauro] capability catalog path: ${catalogPath} (cycles=${cyclesRun}, capabilities=${reconciled.length}, families=${distinctFamilyCount}${gateReason ? `, last_failure=${gateReason}` : ''})`
     );
     recordSemanticDecision({
       ts: Date.now(),
@@ -12974,12 +13070,13 @@ export class AnalyzerOrchestrator {
         capabilities: reconciled.length,
         distinctFamilies: distinctFamilyCount,
         path: catalogPath,
-        lastFailure: qualityFailure,
+        lastFailure: gateReason,
+        hardDeadlineExceeded: deadlineExceeded,
       },
       parse_ok: true,
-      gate_verdict: qualityFailure ? 'degraded' : 'accepted',
-      gate_reason: qualityFailure,
-      final_outcome: reconciled.length > 0 ? (qualityFailure ? 'degraded' : 'ai') : 'degraded',
+      gate_verdict: deadlineExceeded ? 'degraded' : (qualityFailure ? 'degraded' : 'accepted'),
+      gate_reason: gateReason,
+      final_outcome: reconciled.length > 0 ? (deadlineExceeded || qualityFailure ? 'degraded' : 'ai') : 'degraded',
     });
     return reconciled;
   }
@@ -13248,6 +13345,29 @@ export class AnalyzerOrchestrator {
         candidateSnapshot,
       )
     );
+    // TASK #107: the hard deadline is measured from HERE — the AI phase's own
+    // clock (this method runs after all deterministic parsing/graph-building
+    // is done; see aiPhaseStart in preprocessProject, which starts this call
+    // concurrently with the remaining deterministic phases per the task #118
+    // lane split) — never from analysis start, so a slow deterministic pass
+    // elsewhere can't eat into the AI stage's own budget or vice versa.
+    //
+    // DO NOT move this Date.now() call earlier (e.g. up to analysis/request
+    // start) or reuse an earlier timestamp for it. This method already runs
+    // AFTER deterministic parsing/graph-building completes only because task
+    // #118 decoupled the AI-enrichment lane pool from the deterministic pool
+    // — that decoupling is WHY "measured from here" equals "AI-only wall
+    // time" today. If that invariant ever changes (this method starts being
+    // invoked earlier, or the lane split is undone), this deadline computation
+    // must move with it, or the cutoff will silently start charging
+    // deterministic parsing time against the AI budget — burning the hard
+    // deadline before AI work even begins and abandoning AI enrichment on
+    // repos where the deterministic phases alone are merely slow, not
+    // degraded. That is exactly the class of bug the latency doctrine
+    // forbids: budgets must NEVER be met by delivering an incomplete
+    // analysis, and a mis-measured clock that fires on the wrong thing is a
+    // silent way to violate that, not an enforcement of it.
+    const catalogHardDeadlineAt = Date.now() + CATALOG_HARD_DEADLINE_MS;
     const capabilityCatalogPromise = systemCapabilities.length > 0 || userJourneys.length > 0
       ? this.runCapabilityCatalogWithQualityGate({
         systemName,
@@ -13264,6 +13384,7 @@ export class AnalyzerOrchestrator {
         nodes,
         budgetMs,
         libraryNames,
+        hardDeadlineAt: catalogHardDeadlineAt,
       })
       : Promise.resolve<SystemCapability[]>([]);
     const capabilityCatalogOutcome = capabilityCatalogPromise.then(
