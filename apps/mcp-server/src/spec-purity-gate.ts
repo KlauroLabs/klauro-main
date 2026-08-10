@@ -253,10 +253,16 @@ const CONTEXT_SHAPE_PATTERNS = [
  * A product/repo name appearing in prose is essentially always marked as a name —
  * quoted, backticked, capitalised, or multi-segment (`spring-petclinic`,
  * `acme.widgets`). Bare lowercase single-word English is prose. Requiring one of
- * those signals keeps every real case the detector exists for (`the client repo
- * "acme-widgets"`, `the client's codebase AcmeCorp`) while prose stops blocking
- * deploys — which matters because a gate that cries wolf gets bypassed, and then
- * it protects nothing.
+ * those signals keeps every real case the detector exists for — a quoted slug, or
+ * a capitalised proper noun, following the phrase — while prose stops blocking
+ * deploys, which matters because a gate that cries wolf gets bypassed, and then it
+ * protects nothing.
+ *
+ * (This comment deliberately DESCRIBES those shapes rather than spelling out
+ * example names: the first version of it wrote a capitalised sample name after the
+ * words "client's codebase", and the fixed detector immediately and correctly
+ * flagged its own documentation. Pleasing evidence that the signal works, and a
+ * reminder that a gate's own source is gated source.)
  */
 function hasNameSignal(raw: string, line: string, tokenIndex: number): boolean {
   if (/[-_.]/.test(raw)) return true;                       // multi-segment: spring-petclinic
