@@ -1840,6 +1840,58 @@ export function getArchitecturalConflicts(
 }
 
 /**
+ * Module health: "which parts of this system are dangerous to touch, and
+ * why" (task #122 — a codebase-analysis product that never told its own team
+ * a 31k-line file existed). Every finding is a file that is a statistical
+ * OUTLIER within THIS codebase's own file-size/churn/fan-in/capability-anchor
+ * distribution (median + MAD modified z-score, see module-health.ts) — never
+ * a fixed line-count cutoff. A tidy codebase legitimately returns zero
+ * findings; that is success, not a gap. Call this before touching a file you
+ * do not already know well, or when onboarding to an unfamiliar system, to
+ * see where change is structurally risky before you make it.
+ */
+export function getModuleHealth(
+  cas: CASOutput,
+  opts: { kind?: 'size-outlier' | 'change-concentration' | 'fan-in-hotspot' | 'mixed-concerns' | 'danger-composite'; severity?: 'info' | 'warning' | 'error'; limit?: number; offset?: number } = {}
+) {
+  const health = cas.module_health;
+  if (!health) {
+    return {
+      available: false,
+      reason: cas.nodes.length === 0
+        ? 'No nodes on this analysis.'
+        : 'Below the statistical-signal floor (module_health requires at least 10 files with resolvable source locations) — too few files for "outlier" to be a meaningful concept, or this analysis predates module_health (re-run to populate it).',
+      analysis_version_notice: analysisVersionNotice(cas, 'module health'),
+    };
+  }
+
+  let findings = health.findings;
+  if (opts.kind) findings = findings.filter(f => f.kind === opts.kind);
+  if (opts.severity) {
+    const rank = { info: 0, warning: 1, error: 2 };
+    findings = findings.filter(f => rank[f.severity] >= rank[opts.severity!]);
+  }
+  const offset = opts.offset ?? 0;
+  const limit = opts.limit ?? 25;
+
+  const findingsByKind: Record<string, number> = {};
+  for (const f of health.findings) findingsByKind[f.kind] = (findingsByKind[f.kind] || 0) + 1;
+
+  return {
+    available: true,
+    method: health.method,
+    files_analyzed: health.files_analyzed,
+    total_lines: health.total_lines,
+    total_commits_90d: health.total_commits_90d,
+    concentration: health.concentration,
+    total_findings: health.findings.length,
+    findings_by_kind: findingsByKind,
+    findings: findings.slice(offset, offset + limit),
+    is_healthy: health.findings.length === 0,
+  };
+}
+
+/**
  * Order data-lineage access sites so the most authoritative producers/consumers
  * come first: repositories and services (where the entity is really persisted or
  * orchestrated) above controllers, above UI stores, above tests. An entity whose

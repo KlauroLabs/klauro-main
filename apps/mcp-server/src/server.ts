@@ -462,7 +462,7 @@ const GATEWAY_TOOL_GROUPS: Array<{ label: string; tools: string[] }> = [
   { label: 'Component hierarchy', tools: ['get_component_parents', 'get_component_children', 'get_component_metrics', 'get_shared_components'] },
   { label: 'Coding context and conventions', tools: ['get_conventions', 'get_modification_guide', 'get_pattern_examples', 'find_similar_code', 'get_comments', 'get_error_contracts', 'get_framework_guidance', 'get_usage_examples', 'get_configuration'] },
   { label: 'Intent, data, and risk', tools: ['get_intent', 'get_data_entities', 'get_security_overview', 'get_behavioral_invariants', 'validate_behavioral_invariants', 'get_stability', 'get_flow_coverage', 'get_semantic_coverage'] },
-  { label: 'Workflows, capabilities, and runtime', tools: ['get_workflows', 'get_paradigm_conformance', 'get_architectural_conflicts', 'get_unified_perspectives', 'get_data_lineage', 'diff_behavior', 'get_flow_graph', 'get_runtime_static_links', 'simulate_runtime_telemetry', 'correlate_runtime_event', 'record_runtime_event', 'ingest_telemetry', 'get_runtime_observations', 'get_operational_priorities', 'get_runtime_trace', 'get_analysis_facts', 'get_domain_concepts'] },
+  { label: 'Workflows, capabilities, and runtime', tools: ['get_workflows', 'get_paradigm_conformance', 'get_architectural_conflicts', 'get_module_health', 'get_unified_perspectives', 'get_data_lineage', 'diff_behavior', 'get_flow_graph', 'get_runtime_static_links', 'simulate_runtime_telemetry', 'correlate_runtime_event', 'record_runtime_event', 'ingest_telemetry', 'get_runtime_observations', 'get_operational_priorities', 'get_runtime_trace', 'get_analysis_facts', 'get_domain_concepts'] },
   { label: 'Behaviors, testing, data, and health', tools: ['get_behaviors', 'get_lifecycle_hooks', 'get_test_summary', 'get_database_schema', 'get_erd', 'get_implementation_health', 'get_system_health', 'get_documentation_coverage', 'get_todos'] },
   { label: 'Dependencies', tools: ['get_dependencies', 'get_libraries'] },
   { label: 'Coverage Intelligence', tools: ['get_coverage_gaps'] },
@@ -4860,6 +4860,25 @@ function registerTools(server: McpServer) {
     async ({ path, severity, limit, offset }: any) => withErrorHandling(async () => {
       const cas = await getFreshAnalysisForAgent(path);
       return json(withFreshnessStamp(query.getArchitecturalConflicts(cas, { severity, limit, offset })));
+    })
+  );
+
+  server.registerTool(
+    'get_module_health',
+    {
+      title: 'Get Module Health',
+      description: 'Which parts of this system are dangerous to touch, and why. Every finding is a file that is a statistical OUTLIER within this codebase\'s OWN file-size/90-day-churn/cross-file-fan-in/capability-anchor-count distribution (median + MAD modified z-score) — never a fixed line-count or commit-count cutoff, so a 3,000-line file is a finding in a 200-line-median repo and silence in a 2,500-line-median one. Kinds: size-outlier (unusually large), change-concentration (absorbs a disproportionate share of recent commits), fan-in-hotspot (everything depends on it), mixed-concerns (one file anchors several unrelated capabilities), danger-composite (a rank blend of size+churn+fan-in — the file most likely to be genuinely risky to touch). is_healthy is true only when zero findings — a tidy codebase legitimately returns no findings, that is success not a gap. available is false when the analysis has fewer than 10 resolvable-source files (too few for "outlier" to mean anything) or predates this field.',
+      inputSchema: {
+        path: z.string().describe('Project path'),
+        kind: z.enum(['size-outlier', 'change-concentration', 'fan-in-hotspot', 'mixed-concerns', 'danger-composite']).optional().describe('Filter to one finding kind'),
+        severity: z.enum(['info', 'warning', 'error']).optional().describe('Minimum severity to include'),
+        limit: z.number().optional().describe('Max findings to return (default 25)'),
+        offset: z.number().optional().describe('Skip first N findings (default 0)'),
+      } as any,
+    } as any,
+    async ({ path, kind, severity, limit, offset }: any) => withErrorHandling(async () => {
+      const cas = await getFreshAnalysisForAgent(path);
+      return json(withFreshnessStamp(query.getModuleHealth(cas, { kind, severity, limit, offset })));
     })
   );
 

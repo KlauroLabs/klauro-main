@@ -136,6 +136,11 @@ export interface CASOutput {
   paradigm_conformance?: CASParadigmConformance[];
   architectural_conflicts?: CASArchitecturalConflict[];
   principle_violations?: CASPrincipleViolation[];
+  /** File-level "dangerous to touch, and why" surface — size/churn/fan-in/
+   *  mixed-concern outliers relative to this codebase's own distribution.
+   *  See CASModuleHealth / analyzer/core/module-health.ts. Undefined when
+   *  the analyzed file count is below the statistical-signal floor. */
+  module_health?: CASModuleHealth;
   product_map?: CASProductMap;
 
   // v1.10.0+ Graph-Anchored Semantic Retrieval
@@ -1163,6 +1168,62 @@ export interface CASPrincipleViolation {
   node_id: string;
   detail: string;
   severity: 'info' | 'warning' | 'error';
+}
+
+/**
+ * Module Health — Tier 2 "which parts of this system are dangerous to touch,
+ * and why" (SPEC-ABSTRACTION-TIERS.md §4, architecture-adherence health).
+ * Composed entirely from facts computed elsewhere (node spans, temporal
+ * stability/churn, the edge graph, capability anchors); see
+ * analyzer/core/module-health.ts for the derivation. Every finding is a
+ * statistical outlier RELATIVE to this codebase's own file distribution
+ * (median + MAD modified z-score) — never a fixed line-count/churn/fan-in
+ * threshold. A tidy codebase with no outliers reports an empty `findings`
+ * array, not manufactured filler.
+ */
+export interface CASModuleHealthFileStat {
+  file: string;
+  lines: number;
+  node_count: number;
+  fan_in: number;
+  commits_90d: number;
+  capability_anchor_count: number;
+}
+
+export interface CASModuleHealthFinding {
+  id: string;
+  file: string;
+  kind: 'size-outlier' | 'change-concentration' | 'fan-in-hotspot' | 'mixed-concerns' | 'danger-composite';
+  /** The raw metric value that triggered this finding (lines / commits_90d /
+   *  fan_in / capability count / composite danger score, per `kind`). */
+  metric_value: number;
+  /** Modified z-score (Iglewicz & Hoaglin): 0.6745 * (x - median) / scale. */
+  robust_z: number;
+  comparison: { median: number; scale: number; sample_size: number };
+  severity: 'info' | 'warning' | 'error';
+  detail: string;
+  evidence: string[];
+}
+
+export interface CASModuleHealth {
+  /** Human-readable statement of the statistical method, for provenance —
+   *  so a consumer never has to guess how a threshold was chosen. */
+  method: string;
+  files_analyzed: number;
+  total_lines: number;
+  total_commits_90d: number;
+  concentration: {
+    size_outlier_file_count: number;
+    /** Fraction (0..1) of total codebase lines living in size-outlier files. */
+    size_outlier_share_of_lines: number;
+    churn_outlier_file_count: number;
+    /** Fraction (0..1) of total 90-day commits absorbed by churn-outlier files. */
+    churn_outlier_share_of_commits: number;
+  };
+  findings: CASModuleHealthFinding[];
+  /** Per-file raw stats (size-sorted, capped) for consumers that want the
+   *  distribution itself rather than just the flagged outliers. */
+  file_stats: CASModuleHealthFileStat[];
 }
 
 export interface CASParadigmConformance {
@@ -4130,7 +4191,10 @@ export interface CASFlowGraph {
 // nodes (docs/cas/SPECIFICATION.md §0), plus CASNode.role/role_source/
 // role_evidence carrying the closed NODE_ROLES vocabulary. Greenfield rename —
 // no compatibility path for pre-2.0.0 analyses; they are re-analysed.
-export const CAS_VERSION = '2.0.0';
+// v2.1.0: added module_health (CASModuleHealth) — file-level size/churn/
+// fan-in/mixed-concern outlier surface, additive-only, no field removed or
+// retyped, no compatibility break with 2.0.0.
+export const CAS_VERSION = '2.1.0';
 
 export interface CASFlowLayer {
   layer_number: number;
