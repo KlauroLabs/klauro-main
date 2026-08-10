@@ -467,6 +467,52 @@ test('assessChangeRisk scopes high_risk_nodes/untested_critical_paths to the cha
   assert.match(scoped.repo_wide.note.toLowerCase(), /not scoped/);
 });
 
+// Task #138: scoreChangeRiskOnDemand (the fallback path assessChangeRisk uses
+// when a node is missing from cas.change_risks) never had the hardcoded
+// business-domain regex buildChangeRisks had, and now both share one
+// structural-only implementation (hasStructuralSecurityEvidence in
+// orchestrator.ts). Paired regression: a domain-vocabulary name alone must
+// not escalate severity or add a security-sensitive factor, but real
+// security metadata (node.security) still must.
+test('assessChangeRisk (computed on demand) does not escalate from business-domain vocabulary in the name/file alone', () => {
+  const cas: any = {
+    nodes: [
+      {
+        id: 'method_chargeCustomer', name: 'chargeCustomerInvoice', type: 'method', metadata: {},
+        source: { file: 'src/billing/InvoiceService.ts' },
+      },
+    ],
+    edges: [],
+    entry_points: [],
+    change_risks: [],
+    change_risk_summary: { high_risk_nodes: [], untested_critical_paths: [], recent_hotspots: [] },
+  };
+
+  const result: any = assessChangeRisk(cas, 'method_chargeCustomer');
+  assert.equal(result.risk_computation, 'computed_on_demand');
+  assert.ok(!result.risk.risk_factors.some((f: any) => f.factor === 'security-sensitive'), 'a domain-vocabulary name alone must not trigger security-sensitive');
+});
+
+test('assessChangeRisk (computed on demand) still escalates from REAL structural security evidence, even with a domain-neutral name', () => {
+  const cas: any = {
+    nodes: [
+      {
+        id: 'method_doThing', name: 'doThing', type: 'method', metadata: {},
+        source: { file: 'src/widgets/WidgetService.ts' },
+        security: { authentication_required: true },
+      },
+    ],
+    edges: [],
+    entry_points: [],
+    change_risks: [],
+    change_risk_summary: { high_risk_nodes: [], untested_critical_paths: [], recent_hotspots: [] },
+  };
+
+  const result: any = assessChangeRisk(cas, 'method_doThing');
+  assert.equal(result.risk_computation, 'computed_on_demand');
+  assert.ok(result.risk.risk_factors.some((f: any) => f.factor === 'security-sensitive'), 'real node.security evidence must still trigger security-sensitive');
+});
+
 // #4: get_configuration(affecting_node_id=...) must surface an env var a node directly
 // reads via process.env.X even when cas.configuration.environment_variables never picked
 // it up (it's only populated from .env-shaped FILES, not from a plain `export const X =

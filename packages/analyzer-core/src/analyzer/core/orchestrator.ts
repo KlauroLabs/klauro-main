@@ -349,6 +349,31 @@ export const RISKABLE_NODE_TYPES: readonly string[] = [
   'entity', 'model', 'route', 'handler', 'resolver', 'mutation', 'repository'
 ];
 
+/**
+ * Whether a node has REAL, structural security evidence: authentication or
+ * authorization metadata the analyzer actually extracted from the code
+ * (decorators, guards, middleware, route metadata), never a name/keyword
+ * match against the node or file name.
+ *
+ * A prior version of both change-risk implementations (buildChangeRisks
+ * here, and a since-corrected copy in apps/mcp-server/src/query.ts's
+ * scoreChangeRiskOnDemand) matched node/file names against a hardcoded
+ * word list mixing generic security terms with business-domain nouns from
+ * one specific corpus's vocabulary (fleet/logistics: "fuel", "vehicle",
+ * "driver", "trip", "dispatch"; SaaS billing: "invoice", "billing",
+ * "customer", "partner"). That is exactly the hardcoded brand/keyword
+ * categorizer the product's cardinal rule forbids: right on repos whose
+ * author happened to use that vocabulary, silently wrong (both false
+ * positive — e.g. a device driver, a road-trip planner, a business
+ * partner-integration — and false negative on repos using different
+ * words for the same concepts) everywhere else. This is the single
+ * shared source of truth for "is this security-sensitive" now; both
+ * call sites use it so a third divergent copy cannot appear.
+ */
+export function hasStructuralSecurityEvidence(node: Pick<CASNode, 'security'>): boolean {
+  return !!(node.security?.authentication_required || node.security?.authorization_roles);
+}
+
 interface DetectedAnalyzerCacheEntry {
   expiresAt: number;
   projectRoots: string[];
@@ -19626,18 +19651,17 @@ export class AnalyzerOrchestrator {
       const isDataRelated = node.type === 'entity' || node.type === 'model' || node.type === 'serializer';
       const isRepository = node.type === 'repository' || /repository|repo|dao|gateway|store/.test(`${node.type} ${node.name} ${file}`.toLowerCase());
       const isDomainService = node.type === 'service' || /service|manager|usecase|processor|workflow/.test(`${node.type} ${node.name} ${file}`.toLowerCase());
-      const isCriticalDomain = /\b(auth|oauth|token|password|permission|role|security|invoice|billing|payment|charge|subscription|fuel|vehicle|driver|trip|dispatch|maintenance|customer|partner)\b/i.test(`${node.name} ${file}`);
-      const isSecuritySensitiveName = /\b(auth|oauth|token|password|permission|role|security|credential)\b/i.test(`${node.name} ${file}`);
+      const hasSecurityEvidence = hasStructuralSecurityEvidence(node);
       const isDataMutationName = /\b(create|update|delete|remove|save|persist|flush|store|charge|refund|sync|dispatch|send|process|generate|validate)\b/i.test(node.name);
       const isAccessorLikeMethod = node.type === 'method' && /^(get|set|is|has|can|count|add)[A-Z_]/.test(node.name);
       const nodeComplexity = node.metadata?.complexity?.cyclomatic || 0;
       const hasExternalDep = externalDependencySources.has(node.id);
 
-      if (isAccessorLikeMethod && !isSecuritySensitiveName && !isDataMutationName && !hasExternalDep && nodeComplexity < 10) {
+      if (isAccessorLikeMethod && !hasSecurityEvidence && !isDataMutationName && !hasExternalDep && nodeComplexity < 10) {
         continue;
       }
 
-      if (directCallers.length < 2 && !node.metadata?.is_exported && !isEntryRelated && !isDataRelated && !isRepository && !isDomainService && !isCriticalDomain) {
+      if (directCallers.length < 2 && !node.metadata?.is_exported && !isEntryRelated && !isDataRelated && !isRepository && !isDomainService && !hasSecurityEvidence) {
         continue;
       }
 
@@ -19667,7 +19691,7 @@ export class AnalyzerOrchestrator {
       if (isEntryRelated) {
         riskFactors.push({
           factor: 'critical-path',
-          severity: isCriticalDomain ? 'high' : 'medium',
+          severity: hasSecurityEvidence ? 'high' : 'medium',
           details: 'Entry-point or handler surface; changes can affect externally visible behavior'
         });
       }
@@ -19675,7 +19699,7 @@ export class AnalyzerOrchestrator {
       if (isDataRelated || isRepository) {
         riskFactors.push({
           factor: 'critical-path',
-          severity: isCriticalDomain ? 'high' : 'medium',
+          severity: hasSecurityEvidence ? 'high' : 'medium',
           details: 'Data model or data access surface; changes can affect persistence and downstream consumers'
         });
       }
@@ -19703,21 +19727,11 @@ export class AnalyzerOrchestrator {
         });
       }
 
-      if (node.security?.authentication_required ||
-        node.security?.authorization_roles ||
-        isSecuritySensitiveName) {
+      if (hasSecurityEvidence) {
         riskFactors.push({
           factor: 'security-sensitive',
           severity: 'high',
           details: 'Handles security-sensitive operations'
-        });
-      }
-
-      if (isCriticalDomain && !riskFactors.some(factor => factor.factor === 'critical-path')) {
-        riskFactors.push({
-          factor: 'critical-path',
-          severity: 'medium',
-          details: 'Domain name suggests business-critical fleet, billing, identity, or operational behavior'
         });
       }
 

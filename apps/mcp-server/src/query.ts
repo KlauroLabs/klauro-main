@@ -11,7 +11,7 @@ import { detectCommunities } from '../../../packages/analyzer-core/src/analyzer/
 import { findNearClones } from '../../../packages/analyzer-core/src/analyzer/core/minhash-clone-detection';
 import { isAuthenticationGuardName } from '../../../packages/analyzer-core/src/analyzer/core/guard-classification';
 import { buildProductMap } from '../../../packages/analyzer-core/src/analyzer/core/product-map';
-import { RISKABLE_NODE_TYPES } from '../../../packages/analyzer-core/src/analyzer/core/orchestrator';
+import { RISKABLE_NODE_TYPES, hasStructuralSecurityEvidence } from '../../../packages/analyzer-core/src/analyzer/core/orchestrator';
 import { buildTerminalSignal } from '../../../packages/analyzer-core/src/analyzer/core/terminal-signal';
 import { selectProductFrameworkNames, analyzerTypeMap } from '../../../packages/analyzer-core/src/analyzer/core/framework-comprehension';
 import { computeFlowConcepts, rankStoredFlowRefs, attachTelemetryToFlows, telemetryForNode, computeCapabilityTelemetry, unexercisedFlows, applyFlowRoleToCapabilityRelationships, type ComputeFlowConceptsOptions, type RuntimeMetricLike } from '../../../packages/analyzer-core/src/analyzer/core/flow-concepts';
@@ -1557,17 +1557,17 @@ function scoreChangeRiskOnDemand(cas: CASOutput, node: CASNode): CASChangeRisk {
   const isDataRelated = node.type === 'entity' || node.type === 'model' || node.type === 'serializer';
   const isRepository = node.type === 'repository' ||
     /repository|repo|dao|gateway|store/.test(`${node.type} ${node.name} ${file}`.toLowerCase());
-  // Severity escalation is driven by STRUCTURAL evidence only — real
-  // security metadata (node.security) and real fan-in — never a business-
-  // vocabulary name/keyword match. A prior version of this check matched
-  // node/file names against a hardcoded bag mixing generic security terms
-  // with business-domain nouns from an unrelated (fleet/logistics) corpus
-  // ("fuel", "vehicle", "driver", "trip", "dispatch"), which is exactly the
-  // hardcoded-categorizer class the product's cardinal rule forbids: right on
-  // repos someone thought of, silently wrong (both false-positive and
-  // false-negative) everywhere else. See the same-shaped fix already applied
-  // to capability naming in capability-audience-test.ts.
-  const hasSecurityEvidence = !!(node.security?.authentication_required || node.security?.authorization_roles);
+  // Severity escalation is driven by STRUCTURAL evidence only — see
+  // hasStructuralSecurityEvidence in orchestrator.ts (the single shared
+  // implementation buildChangeRisks also uses) for why: a prior version of
+  // this check, and of buildChangeRisks' own copy, matched node/file names
+  // against a hardcoded bag mixing generic security terms with business-
+  // domain nouns from an unrelated (fleet/logistics) corpus ("fuel",
+  // "vehicle", "driver", "trip", "dispatch"), which is exactly the
+  // hardcoded-categorizer class the product's cardinal rule forbids. See the
+  // same-shaped fix already applied to capability naming in
+  // capability-audience-test.ts.
+  const hasSecurityEvidence = hasStructuralSecurityEvidence(node);
   const nodeComplexity = node.metadata?.complexity?.cyclomatic || 0;
   const hasDirectTestCoverage = !!node.testing?.tested_by?.length || directlyTestCalled;
 

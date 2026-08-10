@@ -2461,6 +2461,79 @@ describe('architecture and capability inference', () => {
     expect(reportingRisk.risk_factors.map((factor: any) => factor.factor)).toContain('no-tests');
   });
 
+  // Task #138: buildChangeRisks used to run node/file names against a
+  // hardcoded regex of business-domain nouns lifted from one fleet/billing
+  // corpus (fuel, vehicle, driver, trip, dispatch, invoice, billing,
+  // customer, partner, ...) to both force-include low-fanout nodes and
+  // escalate severity to 'high' / add a 'critical-path' factor whose detail
+  // string literally said "Domain name suggests business-critical fleet,
+  // billing, identity, or operational behavior" — hardcoded-vocabulary
+  // scoring the product's cardinal rule forbids. A repo with a device
+  // driver, a road-trip planner, or a business partner integration got
+  // false critical-path escalation from the NAME alone, with zero real
+  // security evidence. Paired with the test below (real security evidence
+  // still escalates) so the fix can't silently regress into "nothing ever
+  // escalates" either.
+  it('does not escalate severity or add a critical-path factor from business-domain vocabulary in the name/file alone', () => {
+    const nodes: CASNode[] = [
+      node({
+        id: 'vehicle-dispatch-controller',
+        name: 'VehicleDispatchController',
+        type: 'controller',
+        source: { file: 'src/Controller/VehicleDispatchController.php' },
+      }),
+    ];
+    const edges: CASEdge[] = [];
+    const entryPoints = [{
+      id: 'vehicle-dispatch-http',
+      type: 'http',
+      name: 'POST /dispatch',
+      source_node: 'vehicle-dispatch-controller',
+      handler: { node_id: 'vehicle-dispatch-controller', file: 'src/Controller/VehicleDispatchController.php' },
+      trigger: { method: 'POST', path: '/dispatch' },
+    }];
+
+    const risks = orch.buildChangeRisks(nodes, edges, entryPoints as any);
+    const risk = risks.find((r: any) => r.node_id === 'vehicle-dispatch-controller');
+
+    expect(risk).toBeDefined();
+    expect(risk.risk_factors.map((f: any) => f.factor)).not.toContain('security-sensitive');
+    const criticalPath = risk.risk_factors.find((f: any) => f.factor === 'critical-path');
+    expect(criticalPath).toBeDefined();
+    expect(criticalPath.severity).toBe('medium');
+    expect(criticalPath.details.toLowerCase()).not.toMatch(/domain name suggests/);
+  });
+
+  it('still escalates severity and adds a security-sensitive factor from REAL structural security evidence, even with a domain-neutral name', () => {
+    const nodes: CASNode[] = [
+      node({
+        id: 'widget-controller',
+        name: 'WidgetController',
+        type: 'controller',
+        source: { file: 'src/Controller/WidgetController.php' },
+        security: { authentication_required: true, authorization_roles: ['admin'] },
+      } as any),
+    ];
+    const edges: CASEdge[] = [];
+    const entryPoints = [{
+      id: 'widget-http',
+      type: 'http',
+      name: 'POST /widgets',
+      source_node: 'widget-controller',
+      handler: { node_id: 'widget-controller', file: 'src/Controller/WidgetController.php' },
+      trigger: { method: 'POST', path: '/widgets' },
+    }];
+
+    const risks = orch.buildChangeRisks(nodes, edges, entryPoints as any);
+    const risk = risks.find((r: any) => r.node_id === 'widget-controller');
+
+    expect(risk).toBeDefined();
+    expect(risk.risk_factors.map((f: any) => f.factor)).toContain('security-sensitive');
+    const criticalPath = risk.risk_factors.find((f: any) => f.factor === 'critical-path');
+    expect(criticalPath).toBeDefined();
+    expect(criticalPath.severity).toBe('high');
+  });
+
   it('recognizes mediator, unit-of-work, singleton, and MVVM patterns', async () => {
     const nodes: CASNode[] = [
       node({ id: 'view', name: 'CheckoutView', type: 'component', source: { file: 'src/checkout/CheckoutView.tsx' } }),
