@@ -11330,8 +11330,18 @@ export class AnalyzerOrchestrator {
         writes: (journey.terminal_effects?.entities_written || []).slice(0, 3),
         terminal: (journey.terminal_entities || []).slice(0, 3).map((entity: { name: string; access: string }) => `${entity.name}:${entity.access}`),
       }));
+    // TASK #33: field-count comparator alone is not a TOTAL order — two
+    // entities with the same field count left ties in whatever order
+    // `input.dataEntities` arrived, which is a real (if currently stable)
+    // dependency on upstream array order rather than a proven invariant of
+    // this function. Name is a stable, always-present, deterministic
+    // tiebreak (matches the pattern already used by rankCatalogPromptCandidates
+    // and the journey/candidate sorts in journey-builder.ts), so identical
+    // deterministic facts always produce this exact prompt fact ordering.
     const entities = [...(input.dataEntities || [])]
-      .sort((left, right) => (right.fields?.length || 0) - (left.fields?.length || 0))
+      .sort((left, right) =>
+        (right.fields?.length || 0) - (left.fields?.length || 0) ||
+        left.name.localeCompare(right.name))
       .slice(0, 18)
       .map(entity => ({ name: entity.name, fields: (entity.fields || []).slice(0, 6).map(field => field.name) }));
     // THE CUT (candidate window): the prompt receives a BOUNDED candidate list,
@@ -24774,9 +24784,16 @@ export class AnalyzerOrchestrator {
         if (family) family.push(entry);
         else familyMap.set(entry.prefix, [entry]);
       }
+      // TASK #33: entry-count alone is not a TOTAL order — two families tied
+      // on count fell back to familyMap's insertion order (first-encountered
+      // prefix while walking surface.entries), a real order dependency on
+      // upstream data rather than a proven invariant here. `.slice(0, 3)`
+      // below means a tie can decide which families actually reach the
+      // catalog prompt, not just their display order. Prefix name is a
+      // stable, always-present tiebreak.
       const strongFamilies = [...familyMap.entries()]
         .filter(([, entries]) => entries.length >= AnalyzerOrchestrator.BEHAVIOR_FAMILY_MIN_ENTRIES)
-        .sort((a, b) => b[1].length - a[1].length);
+        .sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]));
       const familyCoverage = strongFamilies.reduce((sum, [, entries]) => sum + entries.length, 0) / total;
 
       const isLargeDiverseSurface = surface.kindEvidence === 'registration' &&
@@ -24807,9 +24824,12 @@ export class AnalyzerOrchestrator {
           if (bucket) bucket.push(entry);
           else moduleMap.set(area, [entry]);
         }
+        // TASK #33: same non-total-order gap as strongFamilies above — add
+        // an area-name tiebreak so a count tie can't leave selection (the
+        // `.slice(0, 12)` below) dependent on moduleMap insertion order.
         const moduleClusters = [...moduleMap.entries()]
           .filter(([, entries]) => entries.length >= AnalyzerOrchestrator.BEHAVIOR_FAMILY_MIN_ENTRIES)
-          .sort((a, b) => b[1].length - a[1].length);
+          .sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]));
         const moduleCoverage = moduleClusters.reduce((sum, [, entries]) => sum + entries.length, 0) /
           Math.max(remainder.length, 1);
 
@@ -24845,9 +24865,10 @@ export class AnalyzerOrchestrator {
             if (bucket) bucket.push(entry);
             else calleeModuleMap.set(area, [entry]);
           }
+          // TASK #33: same non-total-order gap, third occurrence.
           const calleeModuleClusters = [...calleeModuleMap.entries()]
             .filter(([, entries]) => entries.length >= AnalyzerOrchestrator.BEHAVIOR_FAMILY_MIN_ENTRIES)
-            .sort((a, b) => b[1].length - a[1].length);
+            .sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]));
           const calleeModuleCoverage = calleeModuleClusters.reduce((sum, [, entries]) => sum + entries.length, 0) /
             Math.max(remainder.length, 1);
 
@@ -24887,8 +24908,13 @@ export class AnalyzerOrchestrator {
       }
     }
 
+    // TASK #33: this is the FINAL cut for the behavior-surface candidates
+    // that feed the AI catalog prompt (via largeSurfaceCandidates in
+    // aiExtractCapabilityCatalog) — an evidence tie here decides which
+    // candidates survive BEHAVIOR_CAPABILITY_MAX, not just their order.
+    // Name is a stable, always-present tiebreak.
     return candidates
-      .sort((a, b) => b.evidence - a.evidence)
+      .sort((a, b) => b.evidence - a.evidence || a.capability.name.localeCompare(b.capability.name))
       .slice(0, AnalyzerOrchestrator.BEHAVIOR_CAPABILITY_MAX)
       .map(candidate => candidate.capability);
   }
