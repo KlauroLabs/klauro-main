@@ -829,7 +829,7 @@ export async function buildUploadManifest(projectPath: string, mode: 'full' | 'd
   };
 }
 
-async function detectWorkspaceRecommendation(root: string): Promise<WorkspaceRecommendation | undefined> {
+export async function detectWorkspaceRecommendation(root: string): Promise<WorkspaceRecommendation | undefined> {
   const candidates: WorkspaceCandidate[] = [];
   await walkWorkspaceCandidates(root, root, candidates, 0);
   if (candidates.length === 0) return undefined;

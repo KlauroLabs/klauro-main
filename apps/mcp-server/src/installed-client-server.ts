@@ -290,13 +290,23 @@ export function createServer(): McpServer {
       // (including regenerated AI names/descriptions), not a silent replay
       // of a prior result.
       force: z.boolean().optional().describe('Bypass the server\'s snapshot-reuse gate AND the AI response cache, forcing a genuinely fresh analysis even if the last uploaded snapshot is unchanged.'),
+      // task #134: `path` resolving to a folder that structurally looks like
+      // several unrelated projects (no Git repo/manifest of its own, multiple
+      // nested repos beneath it) refuses with an explanatory error unless
+      // this is explicitly set — there is no terminal here to prompt on, so
+      // this call fails loudly instead. Set it only after you've confirmed
+      // `path` is really the folder you intend to upload wholesale.
+      confirm_scope: z.boolean().optional().describe('Confirms uploading `path` even though it looks like a container of several unrelated projects rather than one project. Omit/false refuses that upload with an explanatory error instead of silently proceeding.'),
     },
-  }, async ({ path, force }: any) => json(await analyzeCodebaseRemotely({ projectPath: path, requireBoundProject: true, force: Boolean(force) })));
+  }, async ({ path, force, confirm_scope }: any) => json(await analyzeCodebaseRemotely({ projectPath: path, requireBoundProject: true, force: Boolean(force), confirmScope: Boolean(confirm_scope) })));
 
   register('sync_codebase_remote', {
     description: 'Upload in-flight working-tree changes for hosted incremental analysis.',
-    inputSchema: { path: z.string() },
-  }, async ({ path }: any) => json(await syncWorkingTreeRemotely({ projectPath: path, requireBoundProject: true })));
+    inputSchema: {
+      path: z.string(),
+      confirm_scope: z.boolean().optional().describe('Confirms uploading `path` even though it looks like a container of several unrelated projects rather than one project. Omit/false refuses that upload with an explanatory error instead of silently proceeding.'),
+    },
+  }, async ({ path, confirm_scope }: any) => json(await syncWorkingTreeRemotely({ projectPath: path, requireBoundProject: true, confirmScope: Boolean(confirm_scope) })));
 
   register('get_upload_manifest', {
     description: 'Preview exactly which source files would be uploaded. This reads files but performs no parsing or analysis.',

@@ -16,6 +16,7 @@ import {
   type LoadedKlauroConfig,
 } from './klauro-config';
 import { connectorToken, requireConnectorEntitlement } from './connector-auth';
+import { assessUploadScope } from './upload-scope-guard';
 import { DEFAULT_KLAURO_CLOUD_URL } from './defaults';
 import { fetch as undiciFetch } from 'undici';
 import { describeHttpFailure, describeTransportFailure, getHostedDispatcher, hostedFetch, isDeadConnectionError, resetHostedDispatcher } from './hosted-transport';
@@ -50,6 +51,19 @@ export interface RemoteSyncOptions {
    * bypass) so it is intentionally not read there.
    */
   force?: boolean;
+  /**
+   * Task #134: the caller (CLI `--yes`, or an interactive TTY prompt already
+   * answered yes) has confirmed the upload scope even though
+   * `assessUploadScope` flagged it as an unexpectedly large/multi-repo
+   * folder. Left false by default so this low-level function refuses on an
+   * unsafe scope rather than silently uploading it — see
+   * assertUploadScopeIsSafe below. Only meaningful together with
+   * `requireBoundProject: true` (same gating as assertUploadTargetIsReachable):
+   * callers that don't set requireBoundProject are intentionally exercising
+   * this function directly (most of this file's own test suite) and keep
+   * behaving exactly as before.
+   */
+  confirmScope?: boolean;
 }
 
 export interface RemoteElementDescriptionOptions extends RemoteSyncOptions {
@@ -137,12 +151,34 @@ async function assertUploadTargetIsReachable(loaded: LoadedKlauroConfig, serverU
   }
 }
 
+/**
+ * Task #134: refuse to upload a folder that structurally looks like a
+ * container of several unrelated projects (multiple sibling Git repos, no
+ * manifest/`.git` at the root — see upload-scope-guard.ts) unless the caller
+ * already confirmed the scope. This is a hard, non-interactive refusal —
+ * there is no terminal on the other side of a library/MCP call to prompt on
+ * — matching "fail loudly, never silently proceed". The CLI entry points
+ * (cli.ts / installed-cli.ts) run the interactive/`--yes` confirmation THEN
+ * set `confirmScope: true`, so a human at a terminal gets a prompt instead
+ * of this throw; a script or MCP caller that never confirms gets this error.
+ */
+async function assertUploadScopeIsSafe(projectPath: string, options: RemoteSyncOptions): Promise<void> {
+  if (!options.requireBoundProject) return;
+  if (options.confirmScope) return;
+  const assessment = await assessUploadScope(projectPath);
+  if (!assessment.safe) throw new Error(assessment.reason);
+}
+
 export async function analyzeCodebaseRemotely(options: RemoteSyncOptions): Promise<AnalyzeRemotelyResult> {
   const projectPath = path.resolve(options.projectPath);
   const loaded = await loadKlauroConfig(projectPath);
   const serverUrl = resolveAnalyzerUrl(loaded, options.serverUrl);
   assertRemoteAnalyzerAllowed(loaded, serverUrl);
   if (!serverUrl) throw new Error('Klauro server URL is not configured');
+  // Scope BEFORE the network entitlement round-trip: a folder that's obviously
+  // the wrong upload target should refuse locally, without first spending a
+  // round-trip proving credentials for an upload we're about to reject anyway.
+  await assertUploadScopeIsSafe(projectPath, options);
   await requireConnectorEntitlement({ serverUrl, token: options.token });
   await assertUploadTargetIsReachable(loaded, serverUrl, options);
   // On a dirty tree this reads the COMMITTED HEAD content from git objects (never
@@ -283,6 +319,7 @@ export async function syncWorkingTreeRemotely(options: RemoteSyncOptions): Promi
   const loaded = await loadKlauroConfig(projectPath);
   const serverUrl = resolveAnalyzerUrl(loaded, options.serverUrl);
   assertRemoteAnalyzerAllowed(loaded, serverUrl);
+  await assertUploadScopeIsSafe(projectPath, options);
   await requireConnectorEntitlement({ serverUrl, token: options.token });
   await assertUploadTargetIsReachable(loaded, serverUrl, options);
   const changes = await buildStreamingWorkingTreeChanges(projectPath);

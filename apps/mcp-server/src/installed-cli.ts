@@ -5,6 +5,7 @@ import { spawnSync } from 'node:child_process';
 import { analyzeCodebaseRemotely, syncWorkingTreeRemotely } from './remote-sync-client';
 import { formatRemoteResult, withAnalysisState } from './remote-result-format';
 import { buildUploadManifest } from './remote-source';
+import { assessUploadScope, confirmUploadScope } from './upload-scope-guard';
 import { clearStoredConnectorSession, connectorToken, listStoredAccounts, loadStoredConnectorAuth, normalizeServerUrl, resolveAuthStatus, saveStoredConnectorSession, switchStoredAccount, warnIfSessionExpiringSoon } from './connector-auth';
 import { writeDefaultKlauroConfig } from './klauro-config';
 import { formatBuildIdentity, resolveManifestProjectName } from './installed-client-runtime';
@@ -95,10 +96,14 @@ const COMMAND_FLAGS: Record<string, Set<string>> = {
   // even ACCEPTED here — the installed (customer-shipped) CLI threw "Unknown
   // option" for it, a loud failure rather than the dev CLI's silent no-op,
   // but still not the feature. Now wired through to analyzeCodebaseRemotely.
-  analyze: new Set(['--json', '--force']),
-  'remote-analyze': new Set(['--json', '--force']),
-  'remote-sync': new Set(['--json']),
-  sync: new Set(['--json']),
+  // --yes (task #134): confirms an upload whose resolved root looks like a
+  // folder containing several unrelated projects rather than one project —
+  // see upload-scope-guard.ts. Without it, an unsafe scope on a non-TTY
+  // (scripted/CI) run refuses instead of uploading; on a TTY it prompts.
+  analyze: new Set(['--json', '--force', '--yes']),
+  'remote-analyze': new Set(['--json', '--force', '--yes']),
+  'remote-sync': new Set(['--json', '--yes']),
+  sync: new Set(['--json', '--yes']),
   'upload-manifest': new Set(['--json', '--dirty-tree']),
   index: new Set(['--json', '--dirty-tree']),
   status: new Set(['--server-url', '--json']),
@@ -182,11 +187,15 @@ const USAGE_TEXT = [
   'Usage: klauro <command> [path] [options]', '',
   '  init [path]                 Configure a project for hosted Klauro analysis',
   '  install                     Register the lightweight MCP with Claude and Codex',
-  '  analyze [path] [--force]    Upload a committed source snapshot for hosted analysis',
+  '  analyze [path] [--force] [--yes]',
+  '                               Upload a committed source snapshot for hosted analysis',
   '                               --force bypasses BOTH the server\'s reuse-of-unchanged-snapshot shortcut AND the',
   '                               AI response cache, so structure and AI-generated names/descriptions are freshly',
   '                               produced instead of served from a prior run.',
-  '  remote-sync [path]          Upload in-flight changes for hosted analysis',
+  '                               --yes confirms uploading a root that looks like it contains several unrelated',
+  '                               projects instead of one (no Git repo/manifest of its own, multiple nested repos',
+  '                               beneath it) — without it this refuses (scripted) or prompts (interactive).',
+  '  remote-sync [path] [--yes]  Upload in-flight changes for hosted analysis',
   '  upload-manifest [path]      Preview source files selected for upload',
   '  status [path] [--server-url URL]',
   '                               One-glance report: account, release, project connection, analysis, MCP',
@@ -215,6 +224,22 @@ const USAGE_TEXT = [
 
 function printUsage(): void {
   process.stdout.write(USAGE_TEXT);
+}
+
+/**
+ * Task #134: gate before `analyze`/`remote-sync` upload anything. Always
+ * prints the resolved root to STDERR first (never stdout, so it can't
+ * corrupt a `--json` caller's output) — item 2 of the fix: the root must be
+ * shown prominently and BEFORE the upload, not buried in the eventual
+ * response. Then, only if the scope looks unsafe (assessUploadScope),
+ * confirms via `--yes` or an interactive prompt; see upload-scope-guard.ts
+ * for why a non-TTY/scripted run can never hang here.
+ */
+async function resolveUploadScopeConfirmation(target: string): Promise<{ proceed: boolean; confirmScope: boolean }> {
+  process.stderr.write(`Resolved project root: ${target}\n`);
+  const yes = process.argv.includes('--yes');
+  const assessment = await assessUploadScope(target);
+  return confirmUploadScope(assessment, { yes });
 }
 
 async function main() {
@@ -265,11 +290,15 @@ async function main() {
   // task #132: --force (validated above in COMMAND_FLAGS) is now actually
   // threaded through — previously this file didn't even accept the flag.
   if (command === 'analyze' || command === 'remote-analyze') {
-    const result = await analyzeCodebaseRemotely({ projectPath: target, requireBoundProject: true, force: process.argv.includes('--force') });
+    const scope = await resolveUploadScopeConfirmation(target);
+    if (!scope.proceed) { process.exitCode = 1; return; }
+    const result = await analyzeCodebaseRemotely({ projectPath: target, requireBoundProject: true, force: process.argv.includes('--force'), confirmScope: scope.confirmScope });
     return output(json ? withAnalysisState(result) : formatRemoteResult(result), json);
   }
   if (command === 'remote-sync' || command === 'sync') {
-    const result = await syncWorkingTreeRemotely({ projectPath: target, requireBoundProject: true });
+    const scope = await resolveUploadScopeConfirmation(target);
+    if (!scope.proceed) { process.exitCode = 1; return; }
+    const result = await syncWorkingTreeRemotely({ projectPath: target, requireBoundProject: true, confirmScope: scope.confirmScope });
     return output(json ? withAnalysisState(result) : formatRemoteResult(result), json);
   }
   if (command === 'upload-manifest' || command === 'index') return output(await buildUploadManifest(target, process.argv.includes('--dirty-tree') ? 'dirty-tree' : 'full'), json);

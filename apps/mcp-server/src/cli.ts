@@ -20,6 +20,7 @@ import { getAgentRevisionTracks } from './agent-revision-tracks';
 import { createRemoteAnalyzerHttpServer } from './remote-analyzer-service';
 import { AccountStore } from './account-store';
 import { buildUploadManifest } from './remote-source';
+import { assessUploadScope, confirmUploadScope } from './upload-scope-guard';
 import { loadKlauroConfig, writeDefaultKlauroConfig, writeProjectBindingIntoConfig, isUnboundHostedProjectId, probeHostedProjectBinding } from './klauro-config';
 import { buildGithubImportPlan } from './github-import';
 import { compareAnalysisIterations, getPreviewAnalysis, previewCodebaseIteration, previewGreenfieldCodebase, type ProposedFileInput } from './proposal-preview';
@@ -394,6 +395,8 @@ async function main(): Promise<void> {
     // One product: analysis always goes to the hosted service (heavy work + AI on the
     // VPS), production by default. No local/remote mode. serverUrl can point at a
     // Customer installs always submit analysis to the hosted Klauro service.
+    const scope = await resolveUploadScopeConfirmation(projectPath, args.yes);
+    if (!scope.proceed) { process.exitCode = 1; return; }
     const result = await withLogHandling(args.json, args.quiet, () => analyzeCodebaseRemotely({
       projectPath,
       serverUrl: args.serverUrl,
@@ -405,29 +408,36 @@ async function main(): Promise<void> {
       // the AI response cache (see remote-analyzer-protocol.ts's
       // RemoteAnalyzeRequest.force and CASOutput.ai_cache_reuse).
       force: args.force,
+      confirmScope: scope.confirmScope,
     }));
     process.stdout.write(args.json ? `${JSON.stringify(result, null, 2)}\n` : formatRemoteResult(result));
     return;
   }
 
   if (args.command === 'remote-analyze') {
+    const scope = await resolveUploadScopeConfirmation(projectPath, args.yes);
+    if (!scope.proceed) { process.exitCode = 1; return; }
     const result = await withLogHandling(args.json, args.quiet, () => analyzeCodebaseRemotely({
       projectPath,
       serverUrl: args.serverUrl,
       analysisId: args.analysisId,
       requireBoundProject: true,
       force: args.force,
+      confirmScope: scope.confirmScope,
     }));
     process.stdout.write(args.json ? `${JSON.stringify(result, null, 2)}\n` : formatRemoteResult(result));
     return;
   }
 
   if (args.command === 'remote-sync') {
+    const scope = await resolveUploadScopeConfirmation(projectPath, args.yes);
+    if (!scope.proceed) { process.exitCode = 1; return; }
     const result = await withLogHandling(args.json, args.quiet, () => syncWorkingTreeRemotely({
       projectPath,
       serverUrl: args.serverUrl,
       analysisId: args.analysisId,
       requireBoundProject: true,
+      confirmScope: scope.confirmScope,
     }));
     process.stdout.write(args.json ? `${JSON.stringify(result, null, 2)}\n` : formatRemoteResult(result));
     return;
@@ -759,6 +769,19 @@ async function confirmDestructiveAction(description: string, preApproved: boolea
   const answer = await new Promise<string>(resolve => rl.question('Proceed? [y/N] ', resolve));
   rl.close();
   return answer.trim().toLowerCase() === 'y' || answer.trim().toLowerCase() === 'yes';
+}
+
+/**
+ * Task #134: same gate as installed-cli.ts's resolveUploadScopeConfirmation
+ * (kept in the shared upload-scope-guard.ts) — always prints the resolved
+ * root to STDERR before any upload runs, then confirms (via `--yes` or an
+ * interactive prompt) only when the scope structurally looks like a folder
+ * of several unrelated projects rather than one. See upload-scope-guard.ts.
+ */
+async function resolveUploadScopeConfirmation(target: string, yes: boolean): Promise<{ proceed: boolean; confirmScope: boolean }> {
+  process.stderr.write(`Resolved project root: ${target}\n`);
+  const assessment = await assessUploadScope(target);
+  return confirmUploadScope(assessment, { yes });
 }
 
 /**
