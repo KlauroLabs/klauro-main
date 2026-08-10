@@ -1988,18 +1988,22 @@ export class GoAnalyzer extends BaseAnalyzer {
     for (const file of goFiles) {
       const fullPath = path.join(projectPath, file);
 
-      try {
-        const ast = await this.astRunner.parseGoAST(fullPath);
-        if (ast) {
-          this.astCache.set(file, ast);
-          await this.processGoASTCallGraph(ast, fullPath, file, nodes, edges, exitPoints, functionNodes, structNodes);
-          continue;
-        }
-      } catch (error) {
-        console.debug('AST parsing failed, using enhanced fallback for', file);
+      // No enclosing try/catch here, to match analyzeCallGraph in
+      // csharp-analyzer.ts and php-analyzer.ts: parseGoAST (tree-sitter-parser.ts)
+      // already returns null for an ordinary per-file parse failure and
+      // rethrows NativeAddonUnavailableError when the native tree-sitter addon
+      // itself is unavailable. A try/catch around the call used to swallow
+      // that rethrow too, silently degrading Go (and only Go) to the weaker
+      // regex-based fallback for every file instead of surfacing a missing
+      // parser. A missing parser must fail the same way for every language.
+      const ast = await this.astRunner.parseGoAST(fullPath);
+      if (!ast) {
+        await this.analyzeCallGraphEnhanced(fullPath, file, nodes, edges, exitPoints, functionNodes, structNodes, projectPath);
+        continue;
       }
 
-      await this.analyzeCallGraphEnhanced(fullPath, file, nodes, edges, exitPoints, functionNodes, structNodes, projectPath);
+      this.astCache.set(file, ast);
+      await this.processGoASTCallGraph(ast, fullPath, file, nodes, edges, exitPoints, functionNodes, structNodes);
     }
   }
 
