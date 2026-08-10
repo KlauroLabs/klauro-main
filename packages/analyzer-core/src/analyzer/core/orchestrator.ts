@@ -26510,6 +26510,16 @@ export class AnalyzerOrchestrator {
     // to the generic operation-verb-driven labeling below (Settlement,
     // Rebalancing, Generation, Synchronization, Analysis, Reporting,
     // Management, Capability), same as every other repo's capabilities.
+    // The two branches immediately below are NOT part of that removal: they
+    // key only on the literal phrase "token balance"/"token launch" actually
+    // appearing in this capability's own label/operation text (an evidence
+    // fact about THIS capability, not a brand/vocabulary bag scanning for a
+    // business domain) so any token-balance or token-launch feature — loyalty
+    // points, game currency, or on-chain — gets a legible name instead of a
+    // generic fallback or, worse, a false "Authentication" label picked up by
+    // the word "token" alone.
+    if (/\btoken[-_\s]?balance\b/.test(`${lower} ${operationText}`)) return 'Token Balance Discovery';
+    if (/\btoken[-_\s]?launch\b/.test(`${lower} ${operationText}`)) return 'Token Launch Monitoring';
     if (key === 'ecr') return 'Container Registry Infrastructure';
     if (key === 'ecs') return 'Container Service Infrastructure';
     if (key === 'route53') return 'DNS Routing Infrastructure';
@@ -26572,11 +26582,17 @@ export class AnalyzerOrchestrator {
     // REMOVED (cardinal-rule violation, vocab-shape triage 2026-08-10): a
     // tradingContext gate (hasTradingCapabilityContext, itself deleted — see
     // formatTerminalCapabilityName above for the full removal note) used to
-    // unlock "Token Launch Monitoring"/"Token Balance Discovery"/"Pre Market
-    // Rate Analysis"/"Scaled Market Analysis" here from a crypto-protocol/
-    // exchange/aggregator product-name prose scan. Removed outright; keys that
-    // used to hit these branches now fall through to the generic
-    // operation-verb-driven labeling below.
+    // unlock "Pre Market Rate Analysis"/"Scaled Market Analysis" here from a
+    // crypto-protocol/exchange/aggregator product-name prose scan. Removed
+    // outright; keys that used to hit those two branches now fall through to
+    // the generic operation-verb-driven labeling below. The two branches
+    // immediately below are NOT part of that removal: like their twins in
+    // formatTerminalCapabilityName above, they key only on the literal
+    // phrase "token balance"/"token launch" appearing in this capability's
+    // own operation text, an evidence fact about THIS capability rather than
+    // a business-domain vocabulary bag.
+    if (/\btoken[-_\s]?balance\b/.test(operationText)) return 'Token Balance Discovery';
+    if (/\btoken[-_\s]?launch\b/.test(operationText)) return 'Token Launch Monitoring';
     if (/^(trading|trade|trades)$/.test(key) || /\btrade execution|automated trading|trading\b/.test(operationText)) return 'Trade Execution';
     if (/^(pnl|p-l|profit-loss|profit-and-loss)$/.test(key)) return 'Profit And Loss Reporting';
 

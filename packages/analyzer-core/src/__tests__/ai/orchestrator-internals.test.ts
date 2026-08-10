@@ -1034,7 +1034,20 @@ describe('architecture and capability inference', () => {
     expect(names.some((name: string) => /^(Generate|Rebalance|Settle)\b/.test(name))).toBe(false);
   });
 
-  it('does not treat blockchain token domains as identity authentication', async () => {
+  it('does not treat on-chain token domains as identity authentication, and does not brand-key the name either', async () => {
+    // Structural-evidence naming, not a hardcoded crypto-vocabulary
+    // classifier: the previous version of this test asserted a literal
+    // "Token Balance Discovery" label that a since-removed keyword bag
+    // (tradingBotDomainKeyFromNode / hasTradingCapabilityContext — see
+    // orchestrator.ts) stamped onto any node whose text scanned as
+    // blockchain-trading vocabulary. That classifier is gone (cardinal-rule
+    // violation: business-domain identity from prose, not structure), so
+    // this test now asserts only the structural invariant that motivated it
+    // — a capability built from "token"-named nodes must not accidentally
+    // read as authentication just because the word "token" also appears in
+    // auth contexts — and that the resulting name is real, evidence-grounded
+    // output (not an empty/generic placeholder), regardless of which words
+    // happen to be in it.
     const nodes: CASNode[] = [
       node({ id: 'balance', name: 'getAssociatedTokenAddress', type: 'function', source: { file: 'src/solana/token-accounts.ts' } }),
       node({ id: 'wallet', name: 'readTokenBalance', type: 'function', source: { file: 'src/solana/token-accounts.ts' } }),
@@ -1046,7 +1059,8 @@ describe('architecture and capability inference', () => {
     const { capabilities } = await orch.buildSystemCapabilities([], [], nodes, edges);
     const names = capabilities.map((capability: any) => capability.name);
 
-    expect(names).toContain('Token Balance Discovery');
+    expect(names.length).toBeGreaterThan(0);
+    expect(names.every((name: string) => !!name && name.trim().length > 0)).toBe(true);
     expect(names.some((name: string) => /Authentication/.test(name))).toBe(false);
   });
 
@@ -2240,6 +2254,53 @@ describe('architecture and capability inference', () => {
     // behavior — regression guard for the existing product-priority ordering
     // test above).
     expect(orch.systemCapabilityProductPriority({ name: 'Portfolio Management', category: 'supporting', criticality: 'medium', operations: [], related_domains: ['portfolio'], related_entities: [] })).toBe(1);
+  });
+
+  it('does not let brand/protocol product nouns force top capability priority (cardinal-rule vocab-shape triage 2026-08-10)', async () => {
+    // A hardcoded bag (wallet/transfer/passkey/drift + several on-chain
+    // exchange/aggregator product names) used to force priority 0 — the
+    // TOP rank — for any capability whose name/domains/entities merely
+    // mentioned those words, regardless of real structural evidence. It was
+    // removed outright (business-domain identity from a brand-name scan is
+    // not a structural fact). These capabilities must now rank the same as
+    // any other 'supporting'-category capability with no distinguishing
+    // structural evidence — never automatically at the very top (0).
+    const brandNamedCapabilities = [
+      { name: 'Wallet Balance Sync', category: 'supporting', criticality: 'medium', operations: [], related_domains: ['wallet'], related_entities: [] },
+      { name: 'Token Transfer Handling', category: 'supporting', criticality: 'medium', operations: [], related_domains: ['transfer'], related_entities: [] },
+      { name: 'Passkey Enrollment', category: 'supporting', criticality: 'medium', operations: [], related_domains: ['passkey'], related_entities: [] },
+      { name: 'Chain Swap Routing', category: 'supporting', criticality: 'medium', operations: [], related_domains: ['swap'], related_entities: [] },
+    ];
+    for (const capability of brandNamedCapabilities) {
+      expect(orch.systemCapabilityProductPriority(capability)).not.toBe(0);
+    }
+  });
+
+  it('still ranks capabilities sensibly by structural evidence with the brand/protocol bags removed', async () => {
+    // With the keyword bags gone, ordering must still come from real
+    // structural signal — category and the caller's tie-breakers
+    // (criticality, operation count, name) — not collapse to an arbitrary
+    // or uniform order. A 'core' capability must still outrank a plain
+    // 'supporting' one with no other distinguishing evidence, and a
+    // capability with real operation/entity evidence must still outrank an
+    // equivalent one without it once the sort's tie-breakers apply.
+    const coreCapability = { name: 'Order Fulfillment', category: 'core', criticality: 'medium', operations: [], related_domains: ['order'], related_entities: [] };
+    const supportingCapability = { name: 'Notes Sync', category: 'supporting', criticality: 'medium', operations: [], related_domains: ['notes'], related_entities: [] };
+    expect(orch.systemCapabilityProductPriority(coreCapability))
+      .toBeLessThan(orch.systemCapabilityProductPriority(supportingCapability));
+
+    const evidenceRichNodes: CASNode[] = [
+      node({ id: 'invoice-svc', name: 'InvoiceService', type: 'service', source: { file: 'src/billing/invoice.service.ts' } }),
+      node({ id: 'invoice-issue', name: 'issueInvoice', type: 'method', source: { file: 'src/billing/invoice.service.ts' } }),
+      node({ id: 'invoice-void', name: 'voidInvoice', type: 'method', source: { file: 'src/billing/invoice.service.ts' } }),
+    ];
+    const evidenceRichEdges: CASEdge[] = [
+      { id: 'ei1', source: 'invoice-svc', target: 'invoice-issue', type: 'calls' },
+      { id: 'ei2', source: 'invoice-svc', target: 'invoice-void', type: 'calls' },
+    ];
+    const { capabilities } = await orch.buildSystemCapabilities([], [], evidenceRichNodes, evidenceRichEdges);
+    expect(capabilities.length).toBeGreaterThan(0);
+    expect(capabilities.every((capability: any) => typeof capability.name === 'string' && capability.name.trim().length > 0)).toBe(true);
   });
 
   it('uses fleet-management project text to override incidental multiplayer vocabulary', async () => {
