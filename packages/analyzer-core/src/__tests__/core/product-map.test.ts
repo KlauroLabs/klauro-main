@@ -225,6 +225,34 @@ describe('buildProductMap', () => {
     expect(map.capabilities[1].description_source).toBe('deterministic');
   });
 
+  it('never fabricates deterministic provenance for a capability with no description text (2026-08-10 live comprehension audit)', () => {
+    // Live shape: a per-capability AI description attempt was rejected with
+    // no deterministic fallback text (see orchestrator.ts's repair loop and
+    // EnhancedSystemPurpose.capability_description_degradations) — honestly
+    // 'not described' (description_source undefined, description empty).
+    // This must survive buildCapabilities as 'not described', never get
+    // stamped description_source: 'deterministic' for text that isn't there.
+    const undescribed: SystemCapability[] = [
+      {
+        id: 'cap_undescribed',
+        name: 'Process Forms',
+        description: '',
+        description_source: undefined,
+        category: 'core',
+        operations: [],
+        related_entities: [],
+        related_domains: [],
+        criticality: 'medium',
+        criticality_factors: [],
+      },
+    ];
+    const cas = { ...fullCas, system_capabilities: undescribed } as unknown as CASOutput;
+    const undescribedMap = buildProductMap(cas);
+    expect(undescribedMap.capabilities).toHaveLength(1);
+    expect(undescribedMap.capabilities[0].description).toBeFalsy();
+    expect(undescribedMap.capabilities[0].description_source).toBeUndefined();
+  });
+
   it('links capabilities to journeys via entry points and shared terminal entities', () => {
     const billing = map.capabilities[0];
     expect(billing.journeys.map(linked => linked.id)).toEqual(['j_charge', 'j_refund']);
