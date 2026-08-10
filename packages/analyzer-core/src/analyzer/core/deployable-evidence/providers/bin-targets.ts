@@ -59,15 +59,64 @@ function collectBinTargets(ctx: EvidenceCollectionContext): DeployableEvidence[]
     } catch {
       continue;
     }
-    if (!json.bin) continue;
-    const binEntries = typeof json.bin === 'string' ? { [json.name || path.basename(path.dirname(manifest))]: json.bin } : json.bin;
-    for (const [binName, binPath] of Object.entries(binEntries)) {
+    if (json.bin) {
+      const binEntries = typeof json.bin === 'string' ? { [json.name || path.basename(path.dirname(manifest))]: json.bin } : json.bin;
+      for (const [binName, binPath] of Object.entries(binEntries)) {
+        out.push({
+          root_path: path.dirname(manifest),
+          name: binName,
+          tier: 2,
+          kind: 'bin',
+          evidence: [`package.json bin["${binName}"] = "${binPath}" (${manifest})`],
+        });
+      }
+    }
+
+    // VS Code extension: `engines.vscode` + a real entry (`main`/`browser`)
+    // is the packaging convention the VS Code host itself loads and runs —
+    // as much a ship/run artifact as an npm CLI bin (SPEC-DEPLOYABLE-
+    // DETECTION.md: evidence-first, never a "the repo mentions vscode"
+    // guess). Real hosted gap (2026-08 non-container multi-deployable
+    // audit, subject "claudius"): a `vscode-extension/` package.json with
+    // `engines.vscode` + `activationEvents` + `main` produced ZERO
+    // deployable evidence before this — there was no provider that read
+    // engines.vscode at all.
+    const engines = json.engines && typeof json.engines === 'object' ? json.engines : undefined;
+    const vscodeEngineRange = typeof engines?.vscode === 'string' ? engines.vscode : undefined;
+    const vscodeEntry = typeof json.main === 'string' ? json.main : (typeof json.browser === 'string' ? json.browser : undefined);
+    if (vscodeEngineRange && vscodeEntry) {
       out.push({
         root_path: path.dirname(manifest),
-        name: binName,
+        name: json.name || safeDeployableName(displayName || path.basename(path.dirname(manifest))),
         tier: 2,
         kind: 'bin',
-        evidence: [`package.json bin["${binName}"] = "${binPath}" (${manifest})`],
+        evidence: [
+          `VS Code extension: engines.vscode="${vscodeEngineRange}", entry ${vscodeEntry} (${manifest})`,
+          ...(Array.isArray(json.activationEvents) && json.activationEvents.length
+            ? [`activationEvents: ${json.activationEvents.slice(0, 5).join(', ')}`]
+            : []),
+        ],
+      });
+    }
+
+    // Bare Electron app: `main` + `electron` as a dependency is the runtime
+    // convention `electron .` loads and runs, independent of any packaging
+    // tool. desktop-packaging.ts already covers electron-builder/
+    // electron-forge CONFIG evidence (a stronger, tier-1 signal); this
+    // covers the app that has neither configured yet — the same real gap
+    // as the VS Code case above, on the SAME hosted subject ("claudius"
+    // has a `tray-app/` Electron main with no builder/forge config).
+    const deps = { ...(json.dependencies || {}), ...(json.devDependencies || {}) };
+    const hasElectronDependency = Boolean(deps.electron);
+    const hasElectronPackagingConfig = Boolean(json.build) || Boolean(deps['electron-builder']) ||
+      Object.keys(deps).some(dep => dep.startsWith('@electron-forge/'));
+    if (typeof json.main === 'string' && hasElectronDependency && !hasElectronPackagingConfig) {
+      out.push({
+        root_path: path.dirname(manifest),
+        name: json.name || safeDeployableName(displayName || path.basename(path.dirname(manifest))),
+        tier: 2,
+        kind: 'bin',
+        evidence: [`Electron app entry: main="${json.main}", electron in dependencies (${manifest})`],
       });
     }
   }

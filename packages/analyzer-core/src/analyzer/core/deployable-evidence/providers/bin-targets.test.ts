@@ -1,5 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import * as fs from 'fs-extra';
+import * as os from 'os';
+import * as path from 'path';
 import { binTargetsProvider } from './bin-targets';
 import type { EvidenceCollectionContext } from '../types';
 import type { CASEntryPoint } from '../../../../types/cas.types';
@@ -69,4 +72,91 @@ test('collectServerEntries keeps a real named app-root directory as the deployab
   // "apps" is an app-parent segment; the named app under it ("orders-api")
   // is a real identity and must be preserved, not treated as generic.
   assert.equal(serverEntry!.name, 'orders-api');
+});
+
+function withTempDir(fn: (dir: string) => void): void {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bin-targets-test-'));
+  try {
+    fn(dir);
+  } finally {
+    fs.removeSync(dir);
+  }
+}
+
+function makeFsContext(projectPath: string, displayName?: string): EvidenceCollectionContext {
+  return {
+    cas: {},
+    projectPath,
+    nodes: [],
+    exitPoints: [],
+    displayName,
+  };
+}
+
+// Real hosted gap (2026-08 non-container multi-deployable audit, subject
+// "claudius"): a vscode-extension/ package.json with engines.vscode +
+// activationEvents + main produced ZERO deployable evidence — no provider
+// read engines.vscode at all, so a monorepo with a real VS Code extension
+// deployable never promoted it to a sub-CAS node.
+test('a package.json with engines.vscode + a main entry registers as Tier-2 bin evidence', () => {
+  withTempDir(dir => {
+    fs.writeJsonSync(path.join(dir, 'package.json'), {
+      name: 'my-vscode-extension',
+      main: './out/extension.js',
+      engines: { vscode: '^1.80.0' },
+      activationEvents: ['onStartupFinished'],
+    });
+    const result = binTargetsProvider.collect(makeFsContext(dir));
+    const ext = result.find(d => d.evidence.some(e => e.includes('VS Code extension')));
+    assert.ok(ext, 'expected a VS Code extension bin deployable');
+    assert.equal(ext!.tier, 2);
+    assert.equal(ext!.kind, 'bin');
+    assert.equal(ext!.name, 'my-vscode-extension');
+  });
+});
+
+test('a package.json with no engines.vscode does not register VS Code extension evidence', () => {
+  withTempDir(dir => {
+    fs.writeJsonSync(path.join(dir, 'package.json'), { name: 'plain-app', main: './index.js' });
+    const result = binTargetsProvider.collect(makeFsContext(dir));
+    assert.ok(!result.some(d => d.evidence.some(e => e.includes('VS Code extension'))));
+  });
+});
+
+// Same audit, same subject: a tray-app/ Electron main with no
+// electron-builder/electron-forge config produced zero evidence either —
+// desktop-packaging.ts only recognizes packaging-TOOL config, not the bare
+// `main` + `electron` dependency runtime convention `electron .` itself
+// loads and runs.
+test('a package.json with main + electron dependency (no packaging config) registers as Tier-2 bin evidence', () => {
+  withTempDir(dir => {
+    fs.writeJsonSync(path.join(dir, 'package.json'), {
+      name: 'tray-app',
+      main: './main.js',
+      dependencies: { electron: '^28.0.0' },
+    });
+    const result = binTargetsProvider.collect(makeFsContext(dir));
+    const electronEntry = result.find(d => d.evidence.some(e => e.includes('Electron app entry')));
+    assert.ok(electronEntry, 'expected an Electron app bin deployable');
+    assert.equal(electronEntry!.tier, 2);
+    assert.equal(electronEntry!.kind, 'bin');
+    assert.equal(electronEntry!.name, 'tray-app');
+  });
+});
+
+// Negative guard: when a REAL packaging-tool config already exists
+// (desktop-packaging.ts's Tier-1 territory), this Tier-2 fallback must not
+// also fire — that would double-count the same app the way the container +
+// compose-service + bin trio double-counted before this session's fix.
+test('a package.json with electron-builder configured does not ALSO register the bare-electron Tier-2 fallback', () => {
+  withTempDir(dir => {
+    fs.writeJsonSync(path.join(dir, 'package.json'), {
+      name: 'my-desktop-app',
+      main: './main.js',
+      devDependencies: { 'electron-builder': '^24.0.0', electron: '^28.0.0' },
+      build: { appId: 'com.example.myapp' },
+    });
+    const result = binTargetsProvider.collect(makeFsContext(dir));
+    assert.ok(!result.some(d => d.evidence.some(e => e.includes('Electron app entry'))));
+  });
 });
