@@ -1079,11 +1079,11 @@ async function buildWorkspaceFreshness(graph: any): Promise<{
     if (!repoPath) continue;
     const entry = await getAnalysisEntry(repoPath);
     if (!entry) {
-      staleInputs.push({ project_id: input.project_id || input.codebase_id, repo_path: repoPath, was_input_at: input.cas_generated_at, reason: 'No current CAS index entry exists for this WAS input.' });
+      staleInputs.push({ project_id: input.project_id || input.codebase_id, repo_path: repoPath, was_input_at: input.cas_generated_at, reason: 'No current CAS index entry exists for this sub-CAS node.' });
       continue;
     }
     if (input.cas_generated_at && entry.analyzed_at && new Date(entry.analyzed_at).getTime() > new Date(input.cas_generated_at).getTime()) {
-      staleInputs.push({ project_id: input.project_id || input.codebase_id, repo_path: repoPath, was_input_at: input.cas_generated_at, current_analysis_at: entry.analyzed_at, reason: 'Repo CAS was re-analyzed after this WAS was generated.' });
+      staleInputs.push({ project_id: input.project_id || input.codebase_id, repo_path: repoPath, was_input_at: input.cas_generated_at, current_analysis_at: entry.analyzed_at, reason: 'This sub-CAS node was re-analyzed after the parent CAS was generated.' });
     }
   }
   return {
