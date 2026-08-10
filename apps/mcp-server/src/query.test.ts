@@ -375,7 +375,7 @@ test('assessChangeRisk reports unsupported:true for a node type it never scores,
   assert.equal(result.node_type, 'property');
   // The whole-repo summary must NOT leak into an "unsupported" response — that's the
   // exact silent-wrong-answer shape the bug report flagged.
-  assert.equal(result.change_risk_summary, null);
+  assert.equal(result.change_risk_context, null);
 });
 
 test('assessChangeRisk still returns real risk + summary for a supported node type (no regression)', () => {
@@ -393,7 +393,78 @@ test('assessChangeRisk still returns real risk + summary for a supported node ty
   const result: any = assessChangeRisk(cas, 'method_x');
   assert.equal(result.unsupported, undefined);
   assert.equal(result.risk.risk_level, 'high');
-  assert.ok(result.change_risk_summary);
+  assert.equal(result.risk_computation, 'precomputed');
+  assert.ok(result.change_risk_context);
+});
+
+// Defect #1 (2026-08 blackbox demo): assess_change_risk's headline `risk`
+// field came back null for a real method, while the reachability engine
+// beneath it (transitive_impact) was correct. Root cause: buildChangeRisks
+// caps its repo-wide list at the top 100 and pre-filters "boring" nodes
+// (few callers, not exported/entry/data/repo/domain/critical) as noise for
+// that SUMMARY — neither reason should make a targeted per-node question
+// come back empty. assessChangeRisk must compute an answer on demand
+// instead of returning risk:null whenever the node's type is riskable.
+test('assessChangeRisk computes risk on demand instead of returning null when the node is riskable but missing from cas.change_risks', () => {
+  const cas: any = {
+    nodes: [
+      {
+        id: 'method_lonely', name: 'formatLocaleDate', type: 'method', metadata: {},
+        source: { file: 'src/i18n/locale-printer.ts' },
+      },
+    ],
+    edges: [],
+    change_risks: [], // buildChangeRisks left this node out entirely (capped/filtered)
+    change_risk_summary: { high_risk_nodes: [], untested_critical_paths: [], recent_hotspots: [] },
+  };
+
+  const result: any = assessChangeRisk(cas, 'method_lonely');
+  assert.notEqual(result.risk, null, 'risk must never be null for a riskable node type');
+  assert.equal(result.risk.node_id, 'method_lonely');
+  assert.equal(result.risk_computation, 'computed_on_demand');
+  // Zero direct test coverage and no analyzer-populated tested_by -> honestly flagged.
+  assert.ok(result.risk.risk_factors.some((f: any) => f.factor === 'no-tests'));
+});
+
+// Defect #2 (2026-08 blackbox demo): a one-method assess_change_risk query
+// returned ~100 high_risk_nodes and ~47 untested_critical_paths spanning
+// unrelated JS files, locale printers, and config parsers — repo-wide lists
+// embedded under a per-change answer, reading as "your change endangers 100
+// things". change_risk_context must scope those lists to the change's own
+// blast radius; repo-wide totals stay available but only as counts, clearly
+// labeled repo-wide.
+test('assessChangeRisk scopes high_risk_nodes/untested_critical_paths to the change\'s blast radius, not the whole repo', () => {
+  const cas: any = {
+    nodes: [
+      { id: 'method_target', name: 'chargeCard', type: 'method', metadata: {} },
+      { id: 'method_caller', name: 'checkout', type: 'method', metadata: {} },
+      { id: 'method_unrelated', name: 'formatLocale', type: 'method', metadata: {} },
+    ],
+    edges: [
+      // method_caller calls method_target -> method_caller is upstream (affected).
+      { id: 'e1', source: 'method_caller', target: 'method_target', type: 'calls' },
+    ],
+    change_risks: [
+      { node_id: 'method_target', risk_level: 'critical', risk_factors: [], test_protection: { has_direct_tests: false } },
+    ],
+    change_risk_summary: {
+      high_risk_nodes: ['method_target', 'method_unrelated'],
+      untested_critical_paths: ['method_target', 'method_unrelated'],
+      recent_hotspots: ['method_unrelated'],
+    },
+  };
+
+  const result: any = assessChangeRisk(cas, 'method_target');
+  const scoped = result.change_risk_context;
+  assert.ok(scoped);
+  // Scoped lists must be a strict subset of {the node itself, its transitive blast radius}.
+  assert.ok(scoped.high_risk_nodes.includes('method_target'));
+  assert.ok(!scoped.high_risk_nodes.includes('method_unrelated'), 'unrelated repo-wide node must not appear in the scoped list');
+  assert.ok(!scoped.untested_critical_paths.includes('method_unrelated'));
+  assert.ok(!scoped.recent_hotspots.includes('method_unrelated'));
+  // Repo-wide context still available, but as counts only, and clearly labeled.
+  assert.equal(scoped.repo_wide.high_risk_node_count, 2);
+  assert.match(scoped.repo_wide.note.toLowerCase(), /not scoped/);
 });
 
 // #4: get_configuration(affecting_node_id=...) must surface an env var a node directly

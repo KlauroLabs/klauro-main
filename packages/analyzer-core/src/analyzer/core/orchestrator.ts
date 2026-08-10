@@ -18941,10 +18941,68 @@ export class AnalyzerOrchestrator {
     return graphBuilder.buildFlowGraph(capabilities, dependencies, systemPurpose);
   }
 
+  /**
+   * Nodes directly called by a test — the same test-ownership + call-graph
+   * signal task #100-class fixes (applyTestFileBoundary et al.) wired up for
+   * tests_present/tests_covering, applied here to change-risk's own
+   * 'no-tests' factor. Before this, buildChangeRisks' only test signal was
+   * `node.testing?.tested_by`, a field NO analyzer (any language) ever
+   * populates — every riskable node scored 'no-tests' unconditionally,
+   * regardless of real test coverage, and buildChangeRiskSummary's
+   * untested_critical_paths inherited that false-positive on every repo
+   * (separate bug from the Go _test.go tagging gap: that one broke the
+   * capability/journey tests_present walk; this one is change-risk's own
+   * dead field, and affects every language, not just Go).
+   *
+   * Walks forward over 'calls' edges from every test-owned node
+   * (metadata.is_test / category 'test' / type test|mock|test_double|
+   * test_fixture — go-analyzer.ts's applyTestFileBoundary and the TS/JS/Dart
+   * equivalents already stamp this), continuing through further test-owned
+   * nodes (mocks/fixtures/helpers) but stopping and recording the target as
+   * soon as a NON-test node is reached — mirroring test-framework-analyzer's
+   * reachableProductionTargets so "directly tested" means the same thing in
+   * both places. Self-contained (only needs nodes/edges already in scope
+   * here), so it needs no pipeline reordering relative to buildTestSuites.
+   */
+  private computeDirectlyTestedNodeIds(nodes: CASNode[], edges: CASEdge[]): Set<string> {
+    const isTestOwned = (node: CASNode | undefined): boolean =>
+      !!node && (
+        node.metadata?.is_test === true ||
+        node.category === 'test' ||
+        ['test', 'mock', 'test_double', 'test_fixture'].includes(node.type)
+      );
+    const nodesById = new Map(nodes.map(n => [n.id, n]));
+    const callsBySource = new Map<string, string[]>();
+    for (const edge of edges) {
+      if (edge.type !== 'calls') continue;
+      const list = callsBySource.get(edge.source) || [];
+      list.push(edge.target);
+      callsBySource.set(edge.source, list);
+    }
+    const tested = new Set<string>();
+    const visited = new Set<string>();
+    const queue = nodes.filter(isTestOwned).map(n => n.id);
+    while (queue.length > 0) {
+      const sourceId = queue.shift()!;
+      if (visited.has(sourceId)) continue;
+      visited.add(sourceId);
+      for (const targetId of callsBySource.get(sourceId) || []) {
+        const target = nodesById.get(targetId);
+        if (isTestOwned(target)) {
+          queue.push(targetId);
+        } else {
+          tested.add(targetId);
+        }
+      }
+    }
+    return tested;
+  }
+
   private buildChangeRisks(nodes: CASNode[], edges: CASEdge[], entryPoints: CASEntryPoint[], gitAnalyzer?: GitAnalyzer): CASChangeRisk[] {
     const changeRisks: CASChangeRisk[] = [];
     const callerCounts = new Map<string, string[]>();
     const gitAvailable = gitAnalyzer?.isAvailable() || false;
+    const directlyTestedNodeIds = this.computeDirectlyTestedNodeIds(nodes, edges);
     const externalDependencySources = new Set<string>();
     const entryNodeIds = new Set<string>();
     const entryFiles = new Set<string>();
@@ -19085,7 +19143,8 @@ export class AnalyzerOrchestrator {
         });
       }
 
-      if (!node.testing?.tested_by?.length) {
+      const hasDirectTestCoverage = !!node.testing?.tested_by?.length || directlyTestedNodeIds.has(node.id);
+      if (!hasDirectTestCoverage) {
         riskFactors.push({
           factor: 'no-tests',
           severity: 'high',
@@ -19113,7 +19172,7 @@ export class AnalyzerOrchestrator {
           affected_entry_points: []
         },
         test_protection: {
-          has_direct_tests: node.testing?.tested_by?.length ? node.testing.tested_by.length > 0 : false,
+          has_direct_tests: hasDirectTestCoverage,
           has_integration_tests: false,
           test_ids: node.testing?.tested_by
         },

@@ -2760,12 +2760,14 @@ function compactMinimalRisk(risk: any) {
     risk_level: risk.risk?.risk_level || risk.risk_level || null,
     factors: Array.isArray(risk.risk?.risk_factors) ? risk.risk.risk_factors.slice(0, 2) : [],
     recommendations: Array.isArray(risk.risk?.recommendations) ? risk.risk.recommendations.slice(0, 2) : [],
-    summary: risk.change_risk_summary ? {
-      high: risk.change_risk_summary.total_high_risk_nodes,
-      medium: risk.change_risk_summary.total_medium_risk_nodes,
-      top_factors: Array.isArray(risk.change_risk_summary.top_risk_factors)
-        ? risk.change_risk_summary.top_risk_factors.slice(0, 2)
-        : [],
+    // change_risk_context is assess_change_risk's scoped-to-this-change field
+    // (formerly the repo-wide change_risk_summary leaked verbatim — defect
+    // #2). `high`/`untested` here are counts of nodes actually in this
+    // change's blast radius, not repo-wide totals.
+    summary: risk.change_risk_context ? {
+      high: risk.change_risk_context.high_risk_nodes?.length ?? 0,
+      untested: risk.change_risk_context.untested_critical_paths?.length ?? 0,
+      repo_wide_high_risk_node_count: risk.change_risk_context.repo_wide?.high_risk_node_count,
     } : null,
   };
 }
@@ -3147,7 +3149,11 @@ function compactMicroChecklist(checklist: any) {
 
 function compactRiskForMicroRepo(risk: any) {
   if (!risk || typeof risk !== 'object') return risk || null;
-  const summary = risk.change_risk_summary;
+  // change_risk_context is assess_change_risk's scoped-to-this-change field
+  // (see defect #2: the raw repo-wide change_risk_summary used to leak into
+  // this per-node payload). high_risk_nodes/untested_critical_paths here are
+  // already scoped to the change's blast radius, not repo-wide.
+  const context = risk.change_risk_context;
   return {
     ...(risk.target_file_changed_since_analysis ? { target_file_changed_since_analysis: risk.target_file_changed_since_analysis } : {}),
     risk: risk.risk ? {
@@ -3155,12 +3161,11 @@ function compactRiskForMicroRepo(risk: any) {
       risk_factors: Array.isArray(risk.risk.risk_factors) ? risk.risk.risk_factors.slice(0, 3) : risk.risk.risk_factors,
       recommendations: Array.isArray(risk.risk.recommendations) ? risk.risk.recommendations.slice(0, 3) : risk.risk.recommendations,
     } : null,
-    change_risk_summary: summary && typeof summary === 'object' ? {
-      total_high_risk_nodes: summary.total_high_risk_nodes,
-      total_medium_risk_nodes: summary.total_medium_risk_nodes,
-      top_high_risk_nodes: Array.isArray(summary.top_high_risk_nodes) ? summary.top_high_risk_nodes.slice(0, 3) : summary.top_high_risk_nodes,
-      top_risk_factors: Array.isArray(summary.top_risk_factors) ? summary.top_risk_factors.slice(0, 4) : summary.top_risk_factors,
-    } : summary || null,
+    change_risk_context: context && typeof context === 'object' ? {
+      high_risk_nodes: Array.isArray(context.high_risk_nodes) ? context.high_risk_nodes.slice(0, 3) : context.high_risk_nodes,
+      untested_critical_paths: Array.isArray(context.untested_critical_paths) ? context.untested_critical_paths.slice(0, 3) : context.untested_critical_paths,
+      repo_wide: context.repo_wide,
+    } : context || null,
   };
 }
 
@@ -3932,7 +3937,11 @@ function isAmbiguousTargetAlternative(node: CASNode): boolean {
 
 function summarizeRiskForAgent(risk: ReturnType<typeof assessChangeRisk> | null) {
   if (!risk) return null;
-  const summary = risk.change_risk_summary as any;
+  // assess_change_risk's per-node context field (change_risk_context) is
+  // ALREADY scoped to this change's blast radius (not the repo-wide summary
+  // change_risk_summary used to leak) — compactChangeRiskSummary further
+  // trims it to counts/top-8 for the agent-facing payload, same as before.
+  const summary = (risk as any).change_risk_context as any;
   const compactSummary = compactChangeRiskSummary(summary);
 
   if (risk.risk) {

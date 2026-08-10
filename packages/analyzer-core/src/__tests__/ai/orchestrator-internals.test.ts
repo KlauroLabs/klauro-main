@@ -2281,6 +2281,69 @@ describe('architecture and capability inference', () => {
     expect(summary.high_risk_nodes.length).toBeGreaterThan(0);
   });
 
+  // Defect #3 (2026-08 blackbox demo): untested_critical_paths contradicted
+  // health.tests — 47 "untested" paths alongside 1,151 passing tests. Root
+  // cause was NOT the same as the Go _test.go tagging gap (which broke
+  // tests_present/tests_covering on capabilities/journeys): buildChangeRisks'
+  // own 'no-tests' factor and has_direct_tests only ever consulted
+  // `node.testing?.tested_by`, a field NO analyzer for ANY language
+  // populates, so every riskable node scored 'no-tests' unconditionally
+  // regardless of real coverage. computeDirectlyTestedNodeIds fixes this by
+  // reusing the same is_test-tagging + 'calls'-edge signal that already
+  // powers tests_present, self-contained inside buildChangeRisks (no
+  // pipeline reordering, no language-analyzer changes).
+  it('does not flag a node as untested when a test-owned node directly calls it (test-tagging signal wired into change risk)', () => {
+    const nodes: CASNode[] = [
+      node({
+        id: 'billing-service',
+        name: 'BillingService',
+        type: 'service',
+        source: { file: 'src/Billing/BillingService.go' },
+        metadata: { complexity: { cyclomatic: 22 } },
+      }),
+      node({
+        id: 'billing-service-test',
+        name: 'TestBillingService_Charge',
+        type: 'function',
+        source: { file: 'src/Billing/BillingService_test.go' },
+        metadata: { is_test: true },
+      }),
+    ];
+    const edges: CASEdge[] = [
+      { id: 'e1', source: 'billing-service-test', target: 'billing-service', type: 'calls' },
+    ];
+
+    const risks = orch.buildChangeRisks(nodes, edges, []);
+    const summary = orch.buildChangeRiskSummary(risks);
+    const billingRisk = risks.find((risk: any) => risk.node_id === 'billing-service');
+
+    expect(billingRisk).toBeDefined();
+    expect(billingRisk.test_protection.has_direct_tests).toBe(true);
+    expect(billingRisk.risk_factors.map((factor: any) => factor.factor)).not.toContain('no-tests');
+    expect(summary.untested_critical_paths).not.toContain('billing-service');
+  });
+
+  it('still flags a node with genuinely zero test callers as untested (no false negative from the fix above)', () => {
+    const nodes: CASNode[] = [
+      node({
+        id: 'reporting-service',
+        name: 'ReportingService',
+        type: 'service',
+        source: { file: 'src/Reporting/ReportingService.go' },
+        metadata: { complexity: { cyclomatic: 22 } },
+      }),
+    ];
+    const edges: CASEdge[] = [];
+
+    const risks = orch.buildChangeRisks(nodes, edges, []);
+    const summary = orch.buildChangeRiskSummary(risks);
+    const reportingRisk = risks.find((risk: any) => risk.node_id === 'reporting-service');
+
+    expect(reportingRisk).toBeDefined();
+    expect(reportingRisk.test_protection.has_direct_tests).toBe(false);
+    expect(reportingRisk.risk_factors.map((factor: any) => factor.factor)).toContain('no-tests');
+  });
+
   it('recognizes mediator, unit-of-work, singleton, and MVVM patterns', async () => {
     const nodes: CASNode[] = [
       node({ id: 'view', name: 'CheckoutView', type: 'component', source: { file: 'src/checkout/CheckoutView.tsx' } }),
