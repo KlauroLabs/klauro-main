@@ -13,7 +13,7 @@ import { buildProductMap } from '../../../packages/analyzer-core/src/analyzer/co
 import { RISKABLE_NODE_TYPES } from '../../../packages/analyzer-core/src/analyzer/core/orchestrator';
 import { buildTerminalSignal } from '../../../packages/analyzer-core/src/analyzer/core/terminal-signal';
 import { selectProductFrameworkNames, analyzerTypeMap } from '../../../packages/analyzer-core/src/analyzer/core/framework-comprehension';
-import { computeFlowConcepts, rankStoredFlowRefs, attachTelemetryToFlows, telemetryForNode, applyFlowRoleToCapabilityRelationships, type ComputeFlowConceptsOptions, type RuntimeMetricLike } from '../../../packages/analyzer-core/src/analyzer/core/flow-concepts';
+import { computeFlowConcepts, rankStoredFlowRefs, attachTelemetryToFlows, telemetryForNode, computeCapabilityTelemetry, unexercisedFlows, applyFlowRoleToCapabilityRelationships, type ComputeFlowConceptsOptions, type RuntimeMetricLike } from '../../../packages/analyzer-core/src/analyzer/core/flow-concepts';
 import { computeSemanticCoverage, toCompactSemanticCoverage, type SemanticCoverage } from '../../../packages/analyzer-core/src/analyzer/core/semantic-coverage';
 import { computeFlowStructuralLinks, computeConflictBehavioralLinks } from '../../../packages/analyzer-core/src/analyzer/core/structural-cross-links';
 import type { CASProductMap } from '../../../packages/analyzer-core/src/types/cas.types';
@@ -4272,8 +4272,21 @@ export function getFlowConcepts(
   // on the shared `contract` object referenced by both `flows` and `flowsOut`
   // (the structural branch shallow-spreads steps, so `step.contract` is the
   // same reference).
+  //
+  // Runs over `probedFlows` (the full computed-before-display-cap set), not
+  // the possibly-truncated `flows` page: `flows` is a slice of the SAME
+  // object references when truncated, so attaching onto probedFlows covers
+  // the display page for free while also giving the capability-level rollup
+  // below (computeCapabilityTelemetry) the widest honest view this call
+  // actually computed, rather than silently only seeing page 1.
+  let capabilityTelemetry: ReturnType<typeof computeCapabilityTelemetry> | undefined;
+  let unexercised: ReturnType<typeof unexercisedFlows> | undefined;
   if (opts.runtimeMetrics && opts.runtimeMetrics.length > 0) {
-    attachTelemetryToFlows(flows, opts.runtimeMetrics);
+    attachTelemetryToFlows(probedFlows, opts.runtimeMetrics);
+    if (cas.system_capabilities && cas.system_capabilities.length > 0) {
+      capabilityTelemetry = computeCapabilityTelemetry(cas.system_capabilities, probedFlows);
+    }
+    unexercised = unexercisedFlows(probedFlows, opts.runtimeMetrics);
   }
 
   // COMPACT projection (default): D2 facet_provenance + D1 code_mappings
@@ -4337,6 +4350,19 @@ export function getFlowConcepts(
     // the probed window) — additive, so total_available dominated by test
     // count is legible instead of silently implied.
     entry_point_totals: entryPointTotals,
+    // Tier 4 capability-level rollup (docs/analysis-scope/SPECIFICATION.md
+    // §8) — "which capabilities are exercised versus dormant". Omitted
+    // (never []) when no runtime metrics were supplied, matching the
+    // evidence-gated omission rule the flow/step telemetry facet already
+    // follows. Each entry states its own `coverage` — 'dormant' is only ever
+    // true under 'full' coverage; see computeCapabilityTelemetry's doc.
+    capability_telemetry: capabilityTelemetry && capabilityTelemetry.length ? capabilityTelemetry : undefined,
+    // "Paths that exist in source but never run in production" — flows this
+    // call computed that carry no observation, only reported when real
+    // telemetry data exists for the scope at all (never a claim of dead code
+    // from an untelemetered repo, which would be indistinguishable from
+    // silence). Annotates; does not remove the flow from `flows` above.
+    unexercised_flows: unexercised && unexercised.length ? unexercised : undefined,
     gaps: gaps.length ? gaps : undefined,
   };
 }
