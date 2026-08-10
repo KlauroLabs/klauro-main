@@ -211,6 +211,21 @@ export interface CASOutput {
    */
   dependency_manifest?: CASDependencyManifest;
 
+  /**
+   * Tier 2 GAP FIX (§6.3, "Library and dependency roles"): dependency_manifest
+   * above is deliberately uninterpreted (raw names only — no meaning may live
+   * there, see its own doc comment). This is the separate, additive Tier 2
+   * field the spec identifies as missing: a role classification per declared
+   * dependency (http-client, database-driver, orm, cache, message-broker,
+   * observability, auth, ...), evidence-grounded and joinable back to
+   * dependency_manifest by name. This is the concrete input the capability
+   * builder was missing for the integrations-never-become-candidates defect.
+   * Deterministic, Tier 1-only (reads exit_points + the library analyzers'
+   * own known-package detection lists) — NOT an AI comprehension output, and
+   * not present when dependency_manifest is absent. See dependency-roles.ts.
+   */
+  dependency_roles?: CASDependencyRole[];
+
   progressive_levels: CASProgressiveLevels;
   configuration?: CASConfiguration;
   runtime?: CASRuntime;
@@ -425,6 +440,20 @@ export interface CASSystem {
       version?: string;
       confidence?: number;
     }>;
+    /**
+     * Tier 2 GAP FIX (§6.2, "Framework identity and version"): `frameworks`
+     * above is a bare name list with no version and no purpose. Each entry
+     * here is the SAME detected framework, additionally carrying a declared
+     * version (joined structurally against dependency_manifest — the same
+     * package name recorded by a real manifest file) and a closed-vocabulary
+     * role (§6.2 asks for "web, ORM, DI, test, build, queue, observability").
+     * Role is derived from what the framework's OWN analyzer contribution
+     * structurally produced — which ENTRY_POINT_TYPES / EXIT_POINT_TYPES its
+     * nodes carry (`source_analyzer` join) — never from a brand/domain word
+     * list. See framework-identity.ts. Additive: `frameworks` is unchanged
+     * for backward compatibility.
+     */
+    framework_identities?: CASFrameworkIdentity[];
     runtime?: string;
     databases?: string[];
     infrastructure?: string[];
@@ -1504,6 +1533,67 @@ export interface CASDependencyManifest {
   dependencies: CASDeclaredDependency[];
   /** Count of distinct dependency names (== dependencies.length; convenience). */
   total: number;
+}
+
+/**
+ * Closed vocabulary for what PURPOSE a detected framework serves (Tier 2
+ * §6.2 GAP). Deliberately small and structural: each value corresponds to a
+ * distinguishable pattern in what the framework's own contribution produced
+ * (entry/exit point kinds, decorator semantic categories) — never a per-
+ * framework-name lookup. 'other' is the honest fallback when no structural
+ * signal fires, rather than a guess.
+ */
+export const FRAMEWORK_ROLES = [
+  'web', 'orm', 'di', 'test', 'build', 'queue', 'observability', 'other',
+] as const;
+export type CASFrameworkRole = typeof FRAMEWORK_ROLES[number];
+
+export interface CASFrameworkIdentity {
+  /** Framework display name, as already carried by technologies.frameworks. */
+  name: string;
+  /** Declared version, when a dependency_manifest entry's name matched this
+   *  framework (npm/pypi/maven/gradle/cargo/go/nuget/composer/pub). Absent
+   *  when no manifest join was possible (e.g. no manifest file found). */
+  version?: string;
+  /** Ecosystem the version join came from, when version is present. */
+  ecosystem?: CASDeclaredDependency['ecosystem'];
+  role: CASFrameworkRole;
+  /** 0-1: how much of the role signal was structural vs. absent. 1.0 means
+   *  every entry/exit point produced by this framework's contribution agreed
+   *  on one role; lower means a mixed or thin signal. */
+  role_confidence: number;
+  /** Human-readable citation of the structural signal used, e.g. "produced
+   *  entry points of type http,route (analyzer: express)" or "no framework
+   *  analyzer contribution matched; role left as 'other'". */
+  role_evidence: string;
+}
+
+/**
+ * Closed vocabulary for what a third-party dependency DOES (Tier 2 §6.3
+ * GAP — the missing input behind the integrations-as-capabilities defect).
+ * Intentionally small; 'other'/'unknown' are honest fallbacks, never
+ * omitted in favor of a guess.
+ */
+export const DEPENDENCY_ROLE_KINDS = [
+  'http-client', 'database-driver', 'orm', 'cache', 'message-broker',
+  'observability', 'auth', 'realtime', 'graphql-client', 'workflow',
+  'other',
+] as const;
+export type CASDependencyRoleKind = typeof DEPENDENCY_ROLE_KINDS[number];
+
+export interface CASDependencyRole {
+  /** Matches CASDeclaredDependency.name exactly. */
+  name: string;
+  ecosystem: CASDeclaredDependency['ecosystem'];
+  role: CASDependencyRoleKind;
+  /** 0-1 confidence. Exit-point-grounded evidence (this exact dependency
+   *  produced a typed call-shaped exit point) scores higher than a
+   *  known-package-list match with no call evidence found in this repo. */
+  confidence: number;
+  /** Citations: exit point ids and/or which library analyzer's own
+   *  detection list matched this package name — never a bare assertion. */
+  evidence: string[];
+  source: 'exit-point-evidence' | 'known-package-list';
 }
 
 export interface CASDeclaredDependency {

@@ -42,12 +42,32 @@ const GENERIC_LEAF_DIRS = new Set([
   'schemas', 'schema', 'db', 'database', 'domain', 'data', 'lib', 'src', 'app'
 ]);
 
+// Tier 2 GAP FIX (§6.4 / STOCK-TAKE-TIERS.md "Architecture-paradigm detection
+// is naming-convention-based and biased toward layered-OOP idiom"): layer
+// membership below was ENTRY_LAYER_TYPE/ENTRY_LAYER_NAME/REPOSITORY_LAYER_*
+// regexes only — a `Controller`/`Repository` suffix convention native to
+// Java/C#/TS MVC codebases, invisible to idiomatic Go (`net/http` handlers
+// named `handleCreateOrder`), Rust, or Elixir. The structural fallbacks below
+// use vocabulary that is already closed and framework-agnostic:
+//  - WEB_ENTRY_POINT_TYPES: the same ENTRY_POINT_TYPES the determineSystemType
+//    fix (§12.4 / real defect) already uses to recognize a framework-less Go
+//    HTTP server — an entry point's handler node IS an entry-layer node
+//    regardless of what it's named.
+//  - a node emitting its OWN 'database'-type exit point IS a repository-shaped
+//    node structurally (it performs data access directly), independent of a
+//    Repository/DAO name suffix.
+// Both fallbacks are ADDITIVE (`||` alongside the existing regex checks) —
+// they widen the comparable pool, they never narrow or override it, so a
+// codebase that already matches the naming convention behaves identically.
+const WEB_ENTRY_POINT_TYPES = new Set(['http', 'websocket', 'route', 'api', 'graphql', 'webhook']);
+
 function nodeFile(node: CASNode | undefined): string | undefined {
   return node?.source?.file;
 }
 
-function isEntryLayer(node: CASNode): boolean {
-  return ENTRY_LAYER_TYPE.test(node.type) || ENTRY_LAYER_NAME.test(node.name);
+function isEntryLayer(node: CASNode, structuralEntryNodeIds?: Set<string>): boolean {
+  return ENTRY_LAYER_TYPE.test(node.type) || ENTRY_LAYER_NAME.test(node.name) ||
+    Boolean(structuralEntryNodeIds?.has(node.id));
 }
 
 function isServiceLayer(node: CASNode): boolean {
@@ -55,9 +75,23 @@ function isServiceLayer(node: CASNode): boolean {
   return SERVICE_LAYER_TYPE.test(node.type) || SERVICE_LAYER_NAME.test(node.name);
 }
 
-function isRepositoryLayer(node: CASNode): boolean {
-  return REPOSITORY_LAYER_TYPE.test(node.type) || REPOSITORY_LAYER_NAME.test(node.name);
+function isRepositoryLayer(node: CASNode, dbExitsBySource?: Map<string, CASExitPoint[]>): boolean {
+  return REPOSITORY_LAYER_TYPE.test(node.type) || REPOSITORY_LAYER_NAME.test(node.name) ||
+    Boolean(dbExitsBySource?.has(node.id));
 }
+
+/** Every entry point's handler/source node, for entry points of a web-shaped
+ *  type (§ above) — the framework-agnostic entry-layer membership signal. */
+function collectStructuralEntryNodeIds(entryPoints: CASEntryPoint[]): Set<string> {
+  const ids = new Set<string>();
+  for (const entry of entryPoints) {
+    if (!WEB_ENTRY_POINT_TYPES.has(entry.type)) continue;
+    if (entry.handler?.node_id) ids.add(entry.handler.node_id);
+    if (entry.source_node) ids.add(entry.source_node);
+  }
+  return ids;
+}
+
 
 function isEntityNode(node: CASNode): boolean {
   return ENTITY_TYPE.test(node.type);
@@ -161,7 +195,8 @@ function profileEntryNode(node: CASNode, index: GraphIndex): EntryDataProfile {
       if (isServiceLayer(target) || (owner && isServiceLayer(owner))) {
         callsService = true;
       }
-      const repoNode = isRepositoryLayer(target) ? target : owner && isRepositoryLayer(owner) ? owner : undefined;
+      const repoNode = isRepositoryLayer(target, index.dbExitsBySource) ? target :
+        owner && isRepositoryLayer(owner, index.dbExitsBySource) ? owner : undefined;
       if (repoNode && !seenRepos.has(repoNode.id)) {
         seenRepos.add(repoNode.id);
         repoCallTargets.push(repoNode);
@@ -387,7 +422,8 @@ function detectSingleOwnerEntityWrites(input: ParadigmConformanceInput, index: G
 
 export function buildParadigmConformance(input: ParadigmConformanceInput): CASParadigmConformance[] {
   const index = buildIndex(input);
-  const entryNodes = input.nodes.filter(isEntryLayer);
+  const structuralEntryNodeIds = collectStructuralEntryNodeIds(input.entryPoints);
+  const entryNodes = input.nodes.filter(node => isEntryLayer(node, structuralEntryNodeIds));
   const profiles = entryNodes.map(node => profileEntryNode(node, index));
 
   const paradigms: CASParadigmConformance[] = [];
