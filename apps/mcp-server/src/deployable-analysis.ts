@@ -447,6 +447,16 @@ interface UnitSeed {
    *  from — so a 0-node or an unexpectedly-large unit is diagnosable from the
    *  index alone instead of by re-deriving the slice. */
   basis: string[];
+  /** True when at least one seed came from evidence that names THIS unit
+   *  specifically — a declared entry file, or a concrete (non-'.') root.
+   *  False only when the unit's entire seed is the blanket repo-root
+   *  fallback (admitRepoRoot's "no narrower evidence at all" branch) — e.g.
+   *  a third-party compose image (`grafana/grafana`) with no first-party
+   *  source of its own. That closure is a courtesy so the unit is not
+   *  reported as 0 nodes; it is not evidence the unit IS anything in
+   *  particular, and must never be trusted to prove two units are duplicates
+   *  of each other (see collapseDuplicateClosureUnits). */
+  hasDiscriminatingEvidence: boolean;
 }
 
 /** Every entry file a unit's own evidence — or the evidence of a row that
@@ -573,7 +583,12 @@ function seedsForUnit(
   }
 
   if (seedNodeIds.size === 0) basis.push('no-resolvable-seed');
-  return { seedNodeIds, basis };
+  // Evidence names THIS unit specifically only via a declared entry file
+  // (ownFiles) or a concrete root that survived the sibling-discrimination
+  // filter — never via the blanket '.' fallback alone, which is admitted
+  // precisely BECAUSE no narrower evidence exists.
+  const hasDiscriminatingEvidence = ownFiles.size > 0 || discriminatingRoots.length > 0;
+  return { seedNodeIds, basis, hasDiscriminatingEvidence };
 }
 
 /**
@@ -1035,6 +1050,11 @@ export interface SubCasNodeSlice {
   /** See SubCasNodeIndexEntry.seed_node_count / seed_basis. */
   seed_node_count: number;
   seed_basis: string[];
+  /** See UnitSeed.hasDiscriminatingEvidence — carried onto the slice so
+   *  downstream passes (collapseDuplicateClosureUnits) can tell a unit whose
+   *  closure is real evidence of identity apart from one that is only a
+   *  blanket repo-root courtesy. */
+  has_discriminating_evidence: boolean;
   /** CASOutput-SHAPED slice — same field names/types a repo-level CAS uses,
    *  restricted to this unit's reachability closure. Deliberately Partial:
    *  fields with no unit-scoped meaning (system, cas_version, ...) are filled
@@ -1086,7 +1106,7 @@ export function sliceDeployableAnalysis(cas: CASOutput, deployable: DeployableEv
   const nodesById = ctx.nodesById;
 
   const roots = unitRoots(deployable, allEvidence, allRoots);
-  const { seedNodeIds, basis } = seedsForUnit(deployable, allEvidence, roots, allRoots, ctx);
+  const { seedNodeIds, basis, hasDiscriminatingEvidence } = seedsForUnit(deployable, allEvidence, roots, allRoots, ctx);
   const reachable = closureForSeeds(seedNodeIds, ctx);
 
   const idx = allEvidence.indexOf(deployable);
@@ -1126,6 +1146,7 @@ export function sliceDeployableAnalysis(cas: CASOutput, deployable: DeployableEv
     member_root_paths: bundledMembersOf(deployable, allEvidence).map(m => m.root_path),
     seed_node_count: seedNodeIds.size,
     seed_basis: basis,
+    has_discriminating_evidence: hasDiscriminatingEvidence,
     slice: {
       cas_version: cas.cas_version,
       analyzer_build: cas.analyzer_build,
@@ -1173,6 +1194,30 @@ export function sliceDeployableAnalysis(cas: CASOutput, deployable: DeployableEv
  *  share by accident. */
 const DUPLICATE_CLOSURE_OVERLAP_RATIO = 0.95;
 
+/** An overlap ratio is intersection/smaller-closure-size — meaningless (and
+ *  trivially 1.0) when the smaller side is degenerate. Two independently
+ *  observed real ship units' closures are never this small in practice; a
+ *  closure this size is far more likely a seeding artifact than a duplicate. */
+const MIN_CLOSURE_SIZE_FOR_OVERLAP = 2;
+
+/** Bare packaging/tooling nouns are never a shipped artifact's name — they
+ *  name the MECHANISM (the container runtime, the compose file, the build
+ *  step), not the thing built. A collapse whose survivor resolves to one of
+ *  these is the exact shape of the 2026-08-10 regression: ten named
+ *  microservices collapsing into a single unit literally named "docker".
+ *  Refused outright rather than merged, even if the measured overlap looks
+ *  high — a real single-deployable repo's survivor keeps ITS OWN service
+ *  name, never falls back to the packaging tool. */
+const BARE_TOOLING_NOUNS = new Set([
+  'docker', 'dockerfile', 'container', 'containers', 'compose', 'image', 'images',
+  'build', 'builder', 'dist', 'bin', 'artifact', 'artifacts', 'deploy', 'deployment',
+  'k8s', 'kubernetes', 'package', 'pkg', 'app', 'service', 'services',
+]);
+
+function isBareToolingNoun(name: string): boolean {
+  return BARE_TOOLING_NOUNS.has(name.trim().toLowerCase());
+}
+
 /**
  * Evidence-richness ranking for which of two overlapping units survives: a
  * concrete (non-'.') root beats a degenerate repo-root match, then more
@@ -1213,10 +1258,20 @@ function collapseDuplicateClosureUnits(
     if (dropped.has(i)) continue;
     for (let j = i + 1; j < qualified.length; j++) {
       if (dropped.has(j)) continue;
+      // Evidence of absence is not evidence of identity: a unit whose entire
+      // closure is the blanket repo-root fallback (no declared entry file, no
+      // concrete root of its own — e.g. a third-party `image: grafana/grafana`
+      // compose row with no first-party source) trivially "overlaps" with
+      // EVERY other unit's closure, because its closure is the whole graph.
+      // That is not measured evidence the two are the same shipped artifact;
+      // it is the absence of evidence for what this unit even is. Never let
+      // such a unit participate in a collapse, on either side.
+      if (!rawSlices[i].has_discriminating_evidence || !rawSlices[j].has_discriminating_evidence) continue;
+
       const a = closures[i];
       const b = closures[j];
       const smaller = Math.min(a.size, b.size);
-      if (smaller === 0) continue;
+      if (smaller < MIN_CLOSURE_SIZE_FOR_OVERLAP) continue;
       let intersection = 0;
       const [small, large] = a.size <= b.size ? [a, b] : [b, a];
       for (const id of small) if (large.has(id)) intersection++;
@@ -1224,6 +1279,11 @@ function collapseDuplicateClosureUnits(
       if (overlapRatio < DUPLICATE_CLOSURE_OVERLAP_RATIO) continue;
 
       const survivor = richerUnit(qualified[i], qualified[j], qualified);
+      // A collapsed unit named after the packaging tool rather than the
+      // artifact is an obvious smell (spec doctrine: merges are
+      // evidence-gated, never merge on absence of evidence) — refuse this
+      // pair outright instead of producing an unnamed/tooling-named survivor.
+      if (isBareToolingNoun(survivor.name)) continue;
       const loserIdx = survivor === qualified[i] ? j : i;
       const keptIdx = survivor === qualified[i] ? i : j;
       dropped.add(loserIdx);
