@@ -1539,9 +1539,12 @@ export interface CASFactEvidence {
 
 export interface CASAnalysisFact {
   id: string;
-  subject_type: 'node' | 'edge' | 'entry_point' | 'exit_point' | 'external_service' | 'workflow' | 'capability' | 'runtime_link' | 'repository_link';
+  /** `journey` (not `workflow`) — journeys are the derived, user-facing
+   *  presentation of `flows` (docs/cas/SPECIFICATION.md §0.5.1); there is no
+   *  separate stored workflow structure to have a fact about. */
+  subject_type: 'node' | 'edge' | 'entry_point' | 'exit_point' | 'external_service' | 'journey' | 'capability' | 'runtime_link' | 'repository_link';
   subject_id: string;
-  fact_type: 'definition' | 'relationship' | 'entry' | 'exit' | 'workflow' | 'capability' | 'runtime-correlation' | 'cross-repository';
+  fact_type: 'definition' | 'relationship' | 'entry' | 'exit' | 'journey' | 'capability' | 'runtime-correlation' | 'cross-repository';
   claim: string;
   confidence: number;
   produced_by: string;
@@ -4555,7 +4558,11 @@ export interface ChangeReport {
 }
 
 export interface ChangeSemanticImpact {
-  affected_workflows: Array<{ id: string; name: string; reason: string }>;
+  /** Journeys (the derived, user-facing view over `flows` —
+   *  docs/cas/SPECIFICATION.md §0.5.1) touched by this change. Renamed from
+   *  `affected_workflows` — there is no separate stored workflow structure
+   *  to be affected. */
+  affected_journeys: Array<{ id: string; name: string; reason: string }>;
   affected_capabilities: Array<{ id: string; name: string; reason: string }>;
   affected_data_entities: Array<{ id: string; name: string; reason: string }>;
   affected_runtime_links: Array<{ id: string; runtime_signal: string; reason: string }>;
