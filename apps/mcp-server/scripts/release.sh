@@ -104,10 +104,33 @@ git add apps/mcp-server/package.json apps/mcp-server/package-lock.json package-l
 git commit -q -m "Release v$VERSION" || echo "    (nothing to commit — version already staged/committed)"
 cd "$APP_DIR"
 
+echo "==> Building self-contained SEA binaries (Node-free install path)"
+# build:sea needs dist-sea/klauro-sea-entry.cjs, which `npm run build` writes.
+# Run build once here so build:sea has an entry bundle; pack:tarball rebuilds
+# it again below (same commit, deterministic) without touching dist-sea/*.blob
+# or dist-sea/manifest.json, which write-release-manifest.mjs reads afterward.
+npm run build >/dev/null
+npm run build:sea
+test -f ./dist-sea/manifest.json || { echo "ERROR: dist-sea/manifest.json not produced — SEA binaries did not build."; exit 1; }
+SEA_BIN_COUNT="$(node -p "require('./dist-sea/manifest.json').targets.length")"
+echo "    built $SEA_BIN_COUNT platform binaries"
+
 echo "==> Packing tarball (build + npm pack + latest.json)"
 npm run pack:tarball >/dev/null
 test -f ./.pack/klauro-latest.tgz || { echo "ERROR: tarball not produced"; exit 1; }
 test -f ./.pack/latest.json       || { echo "ERROR: latest.json not produced"; exit 1; }
+
+# The binaries must have made it into latest.json (write-release-manifest.mjs
+# folds dist-sea/manifest.json in as a nested `binaries` map + flat
+# bin_<platform>_path/_sha256 fields — see that script's header comment for
+# why both shapes exist). Fail loud here rather than silently uploading a
+# tarball-only manifest that leaves install.sh's binary path unreachable.
+MANIFEST_BIN_COUNT="$(node -p "Object.keys(require('./.pack/latest.json').binaries || {}).length")"
+if [ "$MANIFEST_BIN_COUNT" != "$SEA_BIN_COUNT" ]; then
+  echo "ERROR: latest.json carries $MANIFEST_BIN_COUNT binary entries, expected $SEA_BIN_COUNT. Refusing to upload a manifest that strands the binary install path." >&2
+  exit 1
+fi
+echo "    latest.json carries $MANIFEST_BIN_COUNT platform binaries"
 
 # Freshness gate: the tarball's INNER package.json version must equal the
 # release version. This caught real poisoning — the old picker copied the
@@ -156,10 +179,19 @@ else
     echo "    VPS creds missing (VPS_HOST/VPS_USER/VPS_PASSWORD) — skipping upload."
     echo "    Upload manually: scp .pack/klauro-latest.tgz .pack/latest.json <user>@<host>:/opt/klauro/downloads/"
   else
-    echo "==> Uploading tarball + latest.json to $VPS_HOST:/opt/klauro/downloads/"
+    # Each platform binary plus its detached .sha256 (install.sh verifies the
+    # download against the sha256 latest.json advertises, but a .sha256 file
+    # alongside the binary lets a human/CI verify independently of the manifest).
+    SEA_BIN_FILES="$(node -p "require('./dist-sea/manifest.json').targets.map(t => './dist-sea/' + t.file).join(' ')")"
+    SEA_SHA_FILES="$(node -p "require('./dist-sea/manifest.json').targets.map(t => './dist-sea/' + t.file + '.sha256').join(' ')")"
+    echo "==> Uploading tarball + latest.json + $SEA_BIN_COUNT SEA binaries to $VPS_HOST:/opt/klauro/downloads/"
     SSHOPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=20"
+    # shellcheck disable=SC2086  # SEA_BIN_FILES/SEA_SHA_FILES are intentionally
+    # word-split: each is a space-separated list of relative paths with no
+    # spaces of its own (filenames are generated, not user input).
     sshpass -p "$VPS_PASSWORD" scp $SSHOPTS \
       ./.pack/klauro-latest.tgz ./.pack/latest.json \
+      $SEA_BIN_FILES $SEA_SHA_FILES \
       "$VPS_USER@$VPS_HOST:/opt/klauro/downloads/"
     sshpass -p "$VPS_PASSWORD" ssh $SSHOPTS "$VPS_USER@$VPS_HOST" \
       "cp /opt/klauro/downloads/klauro-latest.tgz /opt/klauro/downloads/klauro-${VERSION}.tgz"
@@ -181,6 +213,27 @@ else
       echo "    !! Tarball uploaded fine, but clients can't fetch it. FIX before announcing the release." >&2
       exit 1
     fi
+
+    # Same check, per platform binary — this is the path install.sh actually
+    # uses (the tarball is the npm-fallback path only). 200 and 206 both mean
+    # "reachable" (see verify-distribution-channel.sh's header on why -r 0-0
+    # legitimately gets 206 from a range-honoring server).
+    echo "==> Verifying each SEA binary is reachable"
+    BIN_CHECK_FAILED=0
+    for bin_file in $(node -p "require('./dist-sea/manifest.json').targets.map(t => t.file).join(' ')"); do
+      BIN_CODE="$(curl -s -o /dev/null -w '%{http_code}' -r 0-0 "https://mcp.klauro.com/dist/${bin_file}" 2>/dev/null || echo 000)"
+      echo "    ${bin_file}: HTTP ${BIN_CODE}"
+      case "$BIN_CODE" in
+        200|206) ;;
+        *) BIN_CHECK_FAILED=1 ;;
+      esac
+    done
+    if [ "$BIN_CHECK_FAILED" = "1" ]; then
+      echo "    !! One or more SEA binaries are NOT reachable at /dist/. install.sh's primary" >&2
+      echo "    !! path will fail and fall back to the npm/Node path for that platform." >&2
+      exit 1
+    fi
+    echo "    OK — all $SEA_BIN_COUNT platform binaries reachable"
   fi
 fi
 
