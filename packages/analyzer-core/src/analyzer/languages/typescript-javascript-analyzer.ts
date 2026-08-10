@@ -4,7 +4,7 @@ import {
   CASCategories, CASPerspective, CASDocumentation, CASComment,
   CASTodo, CASImplementationStatus, CASCallGraph, FileAnalysisResult
 } from '../../types/cas.types';
-import { AnalyzerError } from '../core/errors';
+import { AnalyzerError, isNativeAddonUnavailableError } from '../core/errors';
 import { EnhancedCallGraphExtractor, ExtractedFunction } from '../enhanced-call-graph-extractor';
 import { TreeSitterTSExtractor, TSFileExtraction, TSExtractedFunction, TSExtractedClass, TSDecoratorDetail, UNRESOLVED_RECEIVER } from '../core/tree-sitter-ts-extractor';
 import * as path from 'path';
@@ -220,6 +220,12 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
       this.applyTestSourceBoundary(nodes, entryPoints, exitPoints, edges);
 
     } catch (error) {
+      // A native-addon load failure is process-wide, not specific to this
+      // file — swallowing it here would silently return an empty (but
+      // structurally valid) result for every incrementally-analyzed file for
+      // the rest of the process's life. Rethrow so the caller sees a real
+      // failure instead of a quiet empty diff.
+      if (isNativeAddonUnavailableError(error)) throw error;
       console.warn(`Failed to analyze ${relativePath} incrementally:`, error);
     }
 
@@ -599,6 +605,13 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
       const extraction = extractions[i];
       if (!extraction) continue;
       if (extraction instanceof Error) {
+        // A worker thread crosses postMessage as a plain string, losing the
+        // NativeAddonUnavailableError class identity — isNativeAddonUnavailableError
+        // recognizes the embedded marker instead. This is the ONLY point in the
+        // worker path where that failure would otherwise be downgraded to a
+        // silently-continuing per-file warning (extractTreeSitterFilesSequentially's
+        // own rethrow only covers the non-worker path).
+        if (isNativeAddonUnavailableError(extraction)) throw extraction;
         this.addAnalysisWarning(`${loaded.relativePath} could not be parsed: ${extraction.message}`);
         continue;
       }
@@ -642,6 +655,14 @@ export class TypeScriptJavaScriptAnalyzer extends BaseAnalyzer {
       try {
         extracted.push(this.tsExtractor.extractFromSource(file.content, file.fullPath));
       } catch (error) {
+        // A native-addon load failure means every remaining file in this
+        // batch (and every other TS/JS file in the analysis) will fail
+        // identically. Converting it into a per-file Error here — like a
+        // genuine one-off parse failure — would let the caller quietly
+        // downgrade it to a per-file warning and report a structurally valid
+        // zero-node result. Rethrow so it propagates as a hard analyzer
+        // failure instead.
+        if (isNativeAddonUnavailableError(error)) throw error;
         extracted.push(error instanceof Error ? error : new Error(String(error)));
       }
       await maybeYield();

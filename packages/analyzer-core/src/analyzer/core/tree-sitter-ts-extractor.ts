@@ -1,4 +1,5 @@
 import * as fs from 'fs';
+import { NativeAddonUnavailableError, isNativeAddonUnavailableError } from './errors';
 
 /**
  * tree-sitter's native scanners treat a literal U+0000 byte as an end-of-input
@@ -46,14 +47,30 @@ let ParserClass: any = null;
 let tsGrammar: any = null;
 let tsxGrammar: any = null;
 let jsGrammar: any = null;
+// Cached load failure. A failed native-addon require() is a deterministic,
+// process-wide condition (the binary is missing/ABI-mismatched for this Node
+// build) — it will not succeed on a later attempt within the same process, so
+// re-attempting require() per file would just repeat the same failure at
+// startup cost on every parse. Cache the ONE failure and rethrow the SAME
+// diagnostic every time: one clear error, not one per file (see
+// NativeAddonUnavailableError doc comment for why this must never be
+// swallowed into a per-file warning).
+let loadFailure: NativeAddonUnavailableError | null = null;
 
 function loadParser(): any {
+  if (loadFailure) throw loadFailure;
   if (!ParserClass) {
-    ParserClass = require('tree-sitter');
-    const tsModule = require('tree-sitter-typescript');
-    tsGrammar = tsModule.typescript;
-    tsxGrammar = tsModule.tsx;
-    jsGrammar = require('tree-sitter-javascript');
+    try {
+      ParserClass = require('tree-sitter');
+      const tsModule = require('tree-sitter-typescript');
+      tsGrammar = tsModule.typescript;
+      tsxGrammar = tsModule.tsx;
+      jsGrammar = require('tree-sitter-javascript');
+    } catch (error) {
+      loadFailure = new NativeAddonUnavailableError('tree-sitter (typescript/javascript)', error);
+      ParserClass = null;
+      throw loadFailure;
+    }
   }
   return ParserClass;
 }
@@ -604,7 +621,13 @@ export class TreeSitterTSExtractor {
     try {
       const content = fs.readFileSync(filePath, 'utf-8');
       return this.extractFromSource(content, filePath);
-    } catch {
+    } catch (error) {
+      // A native-addon load failure is not "this file couldn't be parsed" —
+      // it means NO file can be parsed for the rest of this process's life.
+      // Swallowing it here to null looks identical to a legitimately empty
+      // file to every caller upstream. Rethrow so it propagates as a hard
+      // failure instead.
+      if (isNativeAddonUnavailableError(error)) throw error;
       return null;
     }
   }

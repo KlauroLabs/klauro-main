@@ -1,48 +1,66 @@
 import * as fs from 'fs';
 import type { CSharpASTNode, GoASTNode, PHPASTNode, RustASTNode, TypeScriptASTNode } from './ast-types';
+import { NativeAddonUnavailableError, isNativeAddonUnavailableError } from './errors';
 
 let ParserClass: any = null;
 let grammars: Record<string, any> = {};
+// See tree-sitter-ts-extractor.ts's loadFailure for why this is cached and
+// rethrown identically rather than retried per call: a native addon load
+// failure is deterministic and process-wide, not a per-file event.
+let loadFailure: NativeAddonUnavailableError | null = null;
 
 function loadParser(): any {
+  if (loadFailure) throw loadFailure;
   if (!ParserClass) {
-    ParserClass = require('tree-sitter');
+    try {
+      ParserClass = require('tree-sitter');
+    } catch (error) {
+      loadFailure = new NativeAddonUnavailableError('tree-sitter', error);
+      throw loadFailure;
+    }
   }
   return ParserClass;
 }
 
 function loadGrammar(language: string): any {
+  if (loadFailure) throw loadFailure;
   if (!grammars[language]) {
-    switch (language) {
-      case 'csharp':
-        grammars[language] = require('tree-sitter-c-sharp');
-        break;
-      case 'go':
-        grammars[language] = require('tree-sitter-go');
-        break;
-      case 'php': {
-        const phpModule = require('tree-sitter-php');
-        grammars[language] = phpModule.php || phpModule;
-        break;
+    try {
+      switch (language) {
+        case 'csharp':
+          grammars[language] = require('tree-sitter-c-sharp');
+          break;
+        case 'go':
+          grammars[language] = require('tree-sitter-go');
+          break;
+        case 'php': {
+          const phpModule = require('tree-sitter-php');
+          grammars[language] = phpModule.php || phpModule;
+          break;
+        }
+        case 'rust':
+          grammars[language] = require('tree-sitter-rust');
+          break;
+        case 'typescript': {
+          const tsModule = require('tree-sitter-typescript');
+          grammars[language] = tsModule.typescript;
+          break;
+        }
+        case 'tsx': {
+          const tsModule = require('tree-sitter-typescript');
+          grammars[language] = tsModule.tsx;
+          break;
+        }
+        case 'javascript':
+          grammars[language] = require('tree-sitter-javascript');
+          break;
+        default:
+          throw new Error(`Unsupported language: ${language}`);
       }
-      case 'rust':
-        grammars[language] = require('tree-sitter-rust');
-        break;
-      case 'typescript': {
-        const tsModule = require('tree-sitter-typescript');
-        grammars[language] = tsModule.typescript;
-        break;
-      }
-      case 'tsx': {
-        const tsModule = require('tree-sitter-typescript');
-        grammars[language] = tsModule.tsx;
-        break;
-      }
-      case 'javascript':
-        grammars[language] = require('tree-sitter-javascript');
-        break;
-      default:
-        throw new Error(`Unsupported language: ${language}`);
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith('Unsupported language:')) throw error;
+      loadFailure = new NativeAddonUnavailableError(`tree-sitter-${language}`, error);
+      throw loadFailure;
     }
   }
   return grammars[language];
@@ -218,6 +236,7 @@ export class TreeSitterParser {
         children: children.length > 0 ? children : undefined
       };
     } catch (error) {
+      if (isNativeAddonUnavailableError(error)) throw error;
       return null;
     }
   }
@@ -302,6 +321,7 @@ export class TreeSitterParser {
         children: children.length > 0 ? children : undefined
       };
     } catch (error) {
+      if (isNativeAddonUnavailableError(error)) throw error;
       return null;
     }
   }
@@ -391,6 +411,7 @@ export class TreeSitterParser {
         calls: calls.length > 0 ? calls : undefined
       };
     } catch (error) {
+      if (isNativeAddonUnavailableError(error)) throw error;
       return null;
     }
   }
@@ -459,6 +480,7 @@ export class TreeSitterParser {
         children: children.length > 0 ? children : undefined
       };
     } catch (error) {
+      if (isNativeAddonUnavailableError(error)) throw error;
       return null;
     }
   }
@@ -660,6 +682,7 @@ export class TreeSitterParser {
         children: children.length > 0 ? children : undefined
       };
     } catch (error) {
+      if (isNativeAddonUnavailableError(error)) throw error;
       return null;
     }
   }
@@ -670,6 +693,7 @@ export class TreeSitterParser {
       const isTsx = filePath.endsWith('.tsx') || filePath.endsWith('.jsx');
       return this.parseTypeScriptFromSource(source, isTsx);
     } catch (error) {
+      if (isNativeAddonUnavailableError(error)) throw error;
       return null;
     }
   }
