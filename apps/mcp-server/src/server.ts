@@ -1190,13 +1190,17 @@ function registerTools(server: McpServer) {
       description: 'Upload a filtered source snapshot for hosted Klauro analysis. The installed MCP server never parses or builds CAS locally.',
       inputSchema: {
         path: z.string().describe('Absolute path to the project directory'),
-        force_full: z.boolean().optional().describe('Force full rebuild even if incremental is possible'),
+        force_full: z.boolean().optional().describe('Bypass the server\'s snapshot-reuse gate AND the AI response cache and force a genuinely fresh analysis, even if the last uploaded snapshot is unchanged. Same mechanism as `klauro analyze --force`.'),
         analysis_focus: z.enum(['agent-fast', 'ui-overview', 'deep-context', 'full']).optional().describe('Optional layered analysis profile. agent-fast prioritizes MCP context speed, ui-overview prioritizes AI narrative and visualization, deep-context enables deeper semantic layers, full uses default configured behavior.'),
       } as any,
     } as any,
     async ({ path, force_full, analysis_focus }: any) => withErrorHandling(async () => {
       const focus: AnalysisFocus = analysis_focus || 'agent-fast';
-      const result = await analyzeCodebaseRemotely({ projectPath: path, requireBoundProject: true });
+      // task #132: force_full was accepted into the schema and echoed back on
+      // `force_full_requested` but never actually reached the server — a
+      // documented parameter that silently did nothing, the MCP-tool twin of
+      // the CLI's `--force` defect. Now wired to the same protocol field.
+      const result = await analyzeCodebaseRemotely({ projectPath: path, requireBoundProject: true, force: Boolean(force_full) });
       return json({
         status: result.status,
         analysis_id: result.analysis_id,
@@ -1205,6 +1209,8 @@ function registerTools(server: McpServer) {
         files_sent: result.manifest.file_count,
         bytes_sent: result.manifest.total_bytes,
         force_full_requested: Boolean(force_full),
+        reused: result.reused,
+        reuse_decision: result.reuse_decision,
       });
     })
   );
@@ -1332,7 +1338,7 @@ function registerTools(server: McpServer) {
         event_count: z.number().optional().describe('Runtime simulation event count'),
         seed: z.string().optional().describe('Runtime simulation seed'),
         persist: z.boolean().optional().describe('Whether runtime simulation observations should be stored'),
-        force_full: z.boolean().optional().describe('Force full rebuild for refresh layers'),
+        force_full: z.boolean().optional().describe('Bypass the server\'s snapshot-reuse gate AND the AI response cache for the *-refresh layers, forcing a genuinely fresh analysis. Same mechanism as `klauro analyze --force`.'),
       } as any,
     } as any,
     async ({ path, layer, target, target_kind, instructions, scenario, event_count, seed, persist, force_full }: any) => withErrorHandling(async () => {
@@ -1362,7 +1368,8 @@ function registerTools(server: McpServer) {
           ? 'ui-overview'
           : 'deep-context';
 
-      const result = await analyzeCodebaseRemotely({ projectPath: path, requireBoundProject: true });
+      // task #132: same previously-inert force_full parameter as analyze_codebase.
+      const result = await analyzeCodebaseRemotely({ projectPath: path, requireBoundProject: true, force: Boolean(force_full) });
       return json({
         status: result.status,
         analysis_id: result.analysis_id,
@@ -1372,6 +1379,8 @@ function registerTools(server: McpServer) {
         files_sent: result.manifest.file_count,
         bytes_sent: result.manifest.total_bytes,
         force_full_requested: Boolean(force_full),
+        reused: result.reused,
+        reuse_decision: result.reuse_decision,
       });
     })
   );
@@ -1536,15 +1545,18 @@ function registerTools(server: McpServer) {
         path: z.string().describe('Absolute path to the project directory'),
         server_url: z.string().optional().describe('Remote analyzer URL. Defaults to KLAURO_ANALYZER_URL or Klauro Cloud.'),
         analysis_id: z.string().optional().describe('Stable remote analysis id. Defaults to a hash of the local project path'),
+        force: z.boolean().optional().describe('Bypass the server\'s snapshot-reuse gate AND the AI response cache, forcing a genuinely fresh analysis even if the last uploaded snapshot is unchanged. Same mechanism as `klauro analyze --force`.'),
       } as any,
     } as any,
-    async ({ path, server_url, analysis_id }: any) => withErrorHandling(async () => {
-      const result = await analyzeCodebaseRemotely({ projectPath: path, serverUrl: server_url, analysisId: analysis_id, requireBoundProject: true });
+    async ({ path, server_url, analysis_id, force }: any) => withErrorHandling(async () => {
+      const result = await analyzeCodebaseRemotely({ projectPath: path, serverUrl: server_url, analysisId: analysis_id, requireBoundProject: true, force: Boolean(force) });
       return json({
         status: result.status,
         analysis_id: result.analysis_id,
         analysis_revision: result.analysis_revision,
         analysis_type: result.analysis_type,
+        reused: result.reused,
+        reuse_decision: result.reuse_decision,
         files_sent: result.manifest.file_count,
         bytes_sent: result.manifest.total_bytes,
         path,

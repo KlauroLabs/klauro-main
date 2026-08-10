@@ -35,6 +35,8 @@ interface WorkerLayeredRequest {
   projectPath: string;
   displayName?: string;
   env: Record<string, string>;
+  /** See RunLayeredAnalysisOptions.forceFullRebuild (analyzer.ts). */
+  forceFullRebuild?: boolean;
 }
 
 type WorkerRequest = WorkerAnalyzeRequest | WorkerLayeredRequest;
@@ -103,6 +105,7 @@ async function executeLayeredAnalysis(request: WorkerLayeredRequest): Promise<La
     request.projectPath,
     request.displayName,
     event => sendProgress(request.id, event),
+    request.forceFullRebuild,
   );
 
   try {

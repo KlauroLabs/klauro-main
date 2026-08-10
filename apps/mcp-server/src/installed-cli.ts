@@ -91,8 +91,12 @@ const COMMAND_FLAGS: Record<string, Set<string>> = {
   version: new Set(['--json']),
   '--version': new Set(['--json']),
   '-v': new Set(['--json']),
-  analyze: new Set(['--json']),
-  'remote-analyze': new Set(['--json']),
+  // --force (task #132): was documented in cli.ts's usage text but never
+  // even ACCEPTED here — the installed (customer-shipped) CLI threw "Unknown
+  // option" for it, a loud failure rather than the dev CLI's silent no-op,
+  // but still not the feature. Now wired through to analyzeCodebaseRemotely.
+  analyze: new Set(['--json', '--force']),
+  'remote-analyze': new Set(['--json', '--force']),
   'remote-sync': new Set(['--json']),
   sync: new Set(['--json']),
   'upload-manifest': new Set(['--json', '--dirty-tree']),
@@ -178,7 +182,10 @@ const USAGE_TEXT = [
   'Usage: klauro <command> [path] [options]', '',
   '  init [path]                 Configure a project for hosted Klauro analysis',
   '  install                     Register the lightweight MCP with Claude and Codex',
-  '  analyze [path]              Upload a committed source snapshot for hosted analysis',
+  '  analyze [path] [--force]    Upload a committed source snapshot for hosted analysis',
+  '                               --force bypasses BOTH the server\'s reuse-of-unchanged-snapshot shortcut AND the',
+  '                               AI response cache, so structure and AI-generated names/descriptions are freshly',
+  '                               produced instead of served from a prior run.',
   '  remote-sync [path]          Upload in-flight changes for hosted analysis',
   '  upload-manifest [path]      Preview source files selected for upload',
   '  status [path] [--server-url URL]',
@@ -254,8 +261,11 @@ async function main() {
   // again, and --json now also carries an explicit `analysis_state` field
   // ('running' | 'complete') so a script/harness has one unambiguous field
   // to check instead of having to already know 'accepted' means not-done.
+  //
+  // task #132: --force (validated above in COMMAND_FLAGS) is now actually
+  // threaded through — previously this file didn't even accept the flag.
   if (command === 'analyze' || command === 'remote-analyze') {
-    const result = await analyzeCodebaseRemotely({ projectPath: target, requireBoundProject: true });
+    const result = await analyzeCodebaseRemotely({ projectPath: target, requireBoundProject: true, force: process.argv.includes('--force') });
     return output(json ? withAnalysisState(result) : formatRemoteResult(result), json);
   }
   if (command === 'remote-sync' || command === 'sync') {

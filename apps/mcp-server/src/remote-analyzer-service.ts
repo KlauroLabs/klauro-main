@@ -512,8 +512,17 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
           const identityDecision = snapshotUnchanged && !analysisAlreadyRunning
             ? await analyzerIdentityReuseDecisionFor(acceptedWorkspace)
             : null;
+          // `--force` (task #132): the client explicitly asked to bypass the
+          // reuse gate, so never take the "unchanged" shortcut for it — always
+          // fall through to the full re-run below. This does NOT override
+          // `analysisAlreadyRunning`: that guard exists to dedupe a second
+          // upload of the exact same snapshot that races an in-flight run on
+          // THIS server, not to serve a stale prior result, so forcing a
+          // second concurrent rebuild of identical bytes would only waste a
+          // worker slot without producing anything more "forced" than the
+          // run already underway.
           const reuseStoredAnalysis = analysisAlreadyRunning
-            || (snapshotUnchanged && identityDecision?.reusable === true);
+            || (!body.force && snapshotUnchanged && identityDecision?.reusable === true);
 
           if (reuseStoredAnalysis) {
             await linkAnalysisToAccountProject(
@@ -585,6 +594,12 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
             }
             throw error;
           }
+          // Would this request otherwise have hit the reuse shortcut above?
+          // Only true when force is what's actually responsible for the
+          // re-run — a genuinely changed snapshot or an analyzer upgrade get
+          // their own, more specific reason text below.
+          const forcedOverReuse = Boolean(body.force) && !analysisAlreadyRunning
+            && snapshotUnchanged && identityDecision?.reusable === true;
           writeJson(response, 202, {
             status: 'accepted',
             protocol_version: REMOTE_ANALYSIS_PROTOCOL_VERSION,
@@ -592,17 +607,22 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
             base_commit: body.snapshot.base_commit,
             manifest: body.snapshot.manifest,
             reused: false,
-            ...(analyzerUpgradeReanalysis && identityDecision
-              ? { analysis_type: 'analyzer_upgrade' as const }
-              : {}),
+            ...(forcedOverReuse
+              ? { analysis_type: 'forced' as const }
+              : analyzerUpgradeReanalysis && identityDecision
+                ? { analysis_type: 'analyzer_upgrade' as const }
+                : {}),
             reuse_decision: {
               reused: false,
-              reason: analyzerUpgradeReanalysis && identityDecision
-                ? identityDecision.reason
-                : 'Source snapshot differs from every stored revision.',
-              source: analyzerUpgradeReanalysis ? 'analyzer_upgrade' : 'source_changed',
+              reason: forcedOverReuse
+                ? 'Client requested --force: source snapshot and analyzer identity are unchanged, but the reuse gate and AI response cache were bypassed on request.'
+                : analyzerUpgradeReanalysis && identityDecision
+                  ? identityDecision.reason
+                  : 'Source snapshot differs from every stored revision.',
+              source: forcedOverReuse ? 'forced' : analyzerUpgradeReanalysis ? 'analyzer_upgrade' : 'source_changed',
               analyzer_identity_tier: analyzerUpgradeReanalysis && identityDecision ? identityDecision.tier : 'match',
               analyzer_build: currentAnalyzerIdentity().analyzer_build,
+              ...(body.force ? { ai_cache_bypassed: true } : {}),
             },
           });
           const backgroundClientId = authorization.clientId;
@@ -650,6 +670,17 @@ export function createRemoteAnalyzerHttpServer(options: RemoteAnalyzerServiceOpt
               let l0Attach: Promise<void> | null = null;
               const summary = await runLayeredAnalysis(acceptedWorkspace, {
                 displayName,
+                // --force (task #132) bypasses the AI response cache too, not
+                // just the snapshot reuse gate above — see
+                // RunLayeredAnalysisOptions.forceAiRefresh.
+                forceAiRefresh: body.force,
+                // Root-cause structural fix (see analyzeProjectLayered's
+                // forceFullRebuild doc): without this, the warm/incremental
+                // path inside runLayeredAnalysis silently reused the
+                // untouched previous CASOutput even after this handler
+                // correctly decided not to reuse — a SECOND, independent
+                // silent-reuse mechanism this task's fix would otherwise miss.
+                forceFullRebuild: body.force,
                 onPhase: (event) => {
                   // Progressive availability (task #112): attach the project +
                   // notify the workspace-level CAS the moment L0 (the fast index/inventory

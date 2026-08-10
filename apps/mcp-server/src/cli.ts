@@ -399,6 +399,12 @@ async function main(): Promise<void> {
       serverUrl: args.serverUrl,
       analysisId: args.analysisId,
       requireBoundProject: true,
+      // task #132: --force was parsed and documented but never threaded
+      // through — a "forced" re-run silently came back `reused: true`. It now
+      // bypasses BOTH the server's snapshot/analyzer-identity reuse gate and
+      // the AI response cache (see remote-analyzer-protocol.ts's
+      // RemoteAnalyzeRequest.force and CASOutput.ai_cache_reuse).
+      force: args.force,
     }));
     process.stdout.write(args.json ? `${JSON.stringify(result, null, 2)}\n` : formatRemoteResult(result));
     return;
@@ -410,6 +416,7 @@ async function main(): Promise<void> {
       serverUrl: args.serverUrl,
       analysisId: args.analysisId,
       requireBoundProject: true,
+      force: args.force,
     }));
     process.stdout.write(args.json ? `${JSON.stringify(result, null, 2)}\n` : formatRemoteResult(result));
     return;
@@ -2031,6 +2038,10 @@ function printHelp(): void {
     '',
     'Analyze:',
     '  klauro analyze [/path/to/repo] [--server-url url] [--analysis-id id] [--analysis-focus agent-fast|ui-overview|deep-context|full] [--force] [--json]',
+    '      --force: bypasses BOTH the server\'s snapshot/analyzer-identity reuse gate (an unchanged commit would',
+    '      otherwise short-circuit to a prior result) AND the AI response cache, so capability names and',
+    '      descriptions are regenerated too, not just the structural pass — this costs additional AI spend.',
+    '      Without --force, `klauro analyze` on an unchanged commit is a fast no-op that reuses the last result.',
     '  klauro index [/path/to/repo] [--dirty-tree] [--server-url url] [--json]',
     '  klauro upload-manifest [/path/to/repo] [--dirty-tree] [--json]',
     '  klauro remote-analyze /path/to/repo [--server-url url] [--analysis-id id] [--json]',
@@ -2196,7 +2207,9 @@ function formatAgentRevisionTracks(result: Awaited<ReturnType<typeof getAgentRev
 // formatRemoteResult moved to remote-result-format.ts (task #129) so
 // installed-cli.ts — the surface customers actually run — renders `analyze`
 // the same honest, non-completion-shaped way this dev CLI always has. See
-// that file's header comment for why the two had drifted.
+// that file's header comment for why the two had drifted. Reuse-decision
+// visibility (task #132: --force must never come back looking like a silent
+// no-op) lives there now too.
 
 function formatGithubImportPlan(plan: ReturnType<typeof buildGithubImportPlan>): string {
   return [

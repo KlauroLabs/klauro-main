@@ -261,6 +261,31 @@ export interface CASOutput {
   ai_enrichment_error?: string;
 
   /**
+   * AI-CACHE VISIBILITY (task #132): `reuse_decision` on the analyze response
+   * already explains snapshot/analyzer-identity reuse honestly (e.g. "Parser
+   * fingerprint changed, full re-parse required"). The AI response cache
+   * (packages/analyzer-core/src/ai/ai-cache.ts) had no equivalent — a cached
+   * capability description was indistinguishable from a freshly-generated
+   * one, which violates the same honest-degradation doctrine
+   * `comprehension.degraded` exists for. This is a per-run delta (hits/misses
+   * measured immediately before and after THIS analysis's enrichAnalysisAI
+   * call, not cumulative process totals — the AI cache is a long-lived
+   * process-wide singleton shared across many analyses), so it always
+   * describes what happened in this run.
+   */
+  ai_cache_reuse?: {
+    /** Content-addressed AI cache entries served (hit) vs generated (miss)
+     *  during this run's enrichment pass. */
+    hits: number;
+    misses: number;
+    /** True when this run was requested with `--force`, which bypasses the
+     *  AI cache entirely (every description/name call is a forced miss, and
+     *  the fresh result overwrites the cached entry) rather than only
+     *  bypassing the snapshot/analyzer-identity reuse gate. */
+    bypassed: boolean;
+  };
+
+  /**
    * Progressive-layering manifest. Absent on legacy stores and the plain
    * synchronous analyzeProject() path, where every layer is implicitly ready.
    * A partial CAS (some layers 'pending') never fabricates facts for a layer

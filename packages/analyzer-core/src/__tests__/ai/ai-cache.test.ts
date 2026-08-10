@@ -161,4 +161,61 @@ describe('AICache', () => {
     await fresh.close();
     await cache.close();
   });
+
+  // task #132: `klauro analyze --force` must bypass the AI response cache,
+  // not just the server's snapshot-reuse gate — otherwise a "forced" re-run
+  // still silently serves stale AI-generated descriptions/capability names.
+  // KLAURO_FORCE_AI_REFRESH is how the per-job analysis worker communicates
+  // that to this process-wide singleton cache (see ai-cache.ts's
+  // isBypassActive doc and apps/mcp-server/src/analysis-worker.ts's
+  // applyEnvSnapshot, which sets/clears it per job).
+  describe('KLAURO_FORCE_AI_REFRESH bypass', () => {
+    const ENV_KEY = 'KLAURO_FORCE_AI_REFRESH';
+    let previousEnv: string | undefined;
+
+    beforeEach(() => {
+      previousEnv = process.env[ENV_KEY];
+    });
+
+    afterEach(() => {
+      if (previousEnv === undefined) delete process.env[ENV_KEY];
+      else process.env[ENV_KEY] = previousEnv;
+    });
+
+    it('serves a normal cache hit when the bypass flag is unset', async () => {
+      delete process.env[ENV_KEY];
+      const cache = makeCache(diskDir);
+      await cache.set('force-flag-key', 'cached-value');
+      expect(await cache.get('force-flag-key')).toBe('cached-value');
+      await cache.close();
+    });
+
+    it('forces a miss for an existing entry when KLAURO_FORCE_AI_REFRESH=1, without deleting it', async () => {
+      const cache = makeCache(diskDir);
+      await cache.set('force-flag-key', 'cached-value');
+
+      process.env[ENV_KEY] = '1';
+      expect(await cache.get('force-flag-key')).toBeNull();
+
+      // The bypass is a per-read override, not a cache invalidation — once
+      // the flag clears (the next job that isn't --force), the entry is
+      // still there for a normal cache hit.
+      delete process.env[ENV_KEY];
+      expect(await cache.get('force-flag-key')).toBe('cached-value');
+      await cache.close();
+    });
+
+    it('a bypassed read followed by set() overwrites the stale entry with the fresh value', async () => {
+      const cache = makeCache(diskDir);
+      await cache.set('force-flag-key', 'stale-value');
+
+      process.env[ENV_KEY] = '1';
+      expect(await cache.get('force-flag-key')).toBeNull();
+      await cache.set('force-flag-key', 'fresh-value');
+
+      delete process.env[ENV_KEY];
+      expect(await cache.get('force-flag-key')).toBe('fresh-value');
+      await cache.close();
+    });
+  });
 });

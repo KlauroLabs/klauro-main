@@ -2,7 +2,7 @@ import { aiConfig, AIConfig, getAIConfig, getAIProviderChain, type AIProviderCha
 import { OpenAIProvider } from './providers/openai-provider';
 import { ClaudeProvider } from './providers/claude-provider';
 import { FallbackProvider } from './providers/fallback-provider';
-import { AICache } from './ai-cache';
+import { AICache, type CacheStats } from './ai-cache';
 import { ComponentNode, ArchitectureBlueprint, RiskArea } from '../types';
 import { prompts } from './ai-prompts';
 import { recordSemanticDecision } from './semantic-dataset';
@@ -783,6 +783,17 @@ export class AIService {
   async clearCache(): Promise<void> {
     await this.cache.clear();
     this.logger.info('AI cache cleared');
+  }
+
+  /**
+   * Snapshot of the AI cache's cumulative hit/miss counters (task #132: AI
+   * cache visibility). The cache is a long-lived process-wide singleton, so a
+   * single reading is never meaningful on its own — callers take one before
+   * and one after the work they care about and diff hits/misses to get a
+   * per-run delta (see analyzeProjectDeferred's ai_cache_reuse attachment).
+   */
+  getCacheStats(): CacheStats {
+    return this.cache.getStats();
   }
 
   async close(): Promise<void> {

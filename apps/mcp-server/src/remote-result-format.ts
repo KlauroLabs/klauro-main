@@ -31,6 +31,22 @@ export function formatRemoteResult(result: AnalyzeRemotelyResult): string {
       `Analysis is running on the Klauro server (id: ${result.analysis_id}) — results appear on your project as they land.`,
       `Check progress any time with \`klauro status\`; this command has already returned and did NOT wait for the analysis to finish.`,
     ];
+    // Reuse visibility (task #132): `reused: true` with no reason is exactly
+    // what made --force's silence invisible for months — always say what
+    // happened and why, on every path, not just in --json output.
+    if (result.reuse_decision) {
+      const decision = result.reuse_decision;
+      if (decision.reused) {
+        lines.push(`Reused a prior analysis: ${decision.reason}`);
+      } else if (decision.source === 'forced') {
+        lines.push(`Forced a fresh analysis: ${decision.reason}`);
+      } else if (decision.source === 'analyzer_upgrade') {
+        lines.push(`Re-analyzed (analyzer upgraded since the last run): ${decision.reason}`);
+      }
+      if (decision.ai_cache_bypassed) {
+        lines.push('AI-generated names/descriptions are also being regenerated (AI response cache bypassed by --force).');
+      }
+    }
     if (result.snapshot_source === 'committed-head') {
       const shortSha = (result.base_commit || '').slice(0, 7) || 'HEAD';
       lines.push(`Shared revision = committed HEAD (${shortSha}); working-tree changes ${result.in_flight?.status === 'completed' ? 'uploaded separately as in-flight context' : `in-flight pass ${result.in_flight?.status || 'skipped'}`}.`);

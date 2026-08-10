@@ -41,6 +41,15 @@ export interface RemoteSyncOptions {
    * (an explicit analysisId is itself a deliberate placement decision).
    */
   requireBoundProject?: boolean;
+  /**
+   * `klauro analyze --force` (task #132). Tells the server to bypass both the
+   * snapshot/analyzer-identity reuse gate and the AI response cache for this
+   * analyze call — see RemoteAnalyzeRequest.force. Only meaningful on
+   * analyzeCodebaseRemotely; syncWorkingTreeRemotely/analyzeBranchDiffRemotely
+   * don't take this path in the server (their routes have no reuse gate to
+   * bypass) so it is intentionally not read there.
+   */
+  force?: boolean;
 }
 
 export interface RemoteElementDescriptionOptions extends RemoteSyncOptions {
@@ -62,7 +71,7 @@ export interface AnalyzeRemotelyResult extends Omit<RemoteAnalyzeResponse, 'stat
    *  operator/test completion request carrying the finished CAS. */
   status: 'success' | 'accepted';
   analysis_revision?: number;
-  analysis_type?: 'full' | 'incremental' | 'unchanged' | 'analyzer_upgrade';
+  analysis_type?: 'full' | 'incremental' | 'unchanged' | 'analyzer_upgrade' | 'forced';
   reused?: boolean;
   /** Why the server did or did not serve the stored analysis — see
    *  RemoteAnalyzeAcceptedResponse.reuse_decision. Surfaced so a client can
@@ -147,6 +156,7 @@ export async function analyzeCodebaseRemotely(options: RemoteSyncOptions): Promi
     project_path: projectPath,
     snapshot,
     async: true,
+    force: options.force,
   }), serverUrl) as AnalyzeRemotelyResult;
   if (options.wait && response.status === 'accepted') {
     if (!response.analysis_id) throw new Error('Remote analyzer accepted source without an analysis_id');

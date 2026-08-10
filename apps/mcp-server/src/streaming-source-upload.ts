@@ -22,6 +22,8 @@ export function createAnalyzeUploadRequest(input: {
   project_path: string;
   snapshot: StreamingSourceSnapshotPlan;
   async: boolean;
+  /** See RemoteAnalyzeRequest.force (remote-analyzer-protocol.ts). */
+  force?: boolean;
 }): StreamingJsonRequest {
   return streamingRequest(() => analyzeJson(input));
 }
@@ -90,7 +92,9 @@ async function* analyzeJson(input: Parameters<typeof createAnalyzeUploadRequest>
     yield JSON.stringify({ path: file.path, content, hash: file.hash });
   }
   yield `],${field('manifest', input.snapshot.manifest)}}`;
-  yield `,${field('async', input.async)}}`;
+  yield `,${field('async', input.async)}`;
+  if (input.force) yield `,${field('force', true)}`;
+  yield '}';
 }
 
 async function* incrementalJson(input: Parameters<typeof createIncrementalUploadRequest>[0]): AsyncGenerator<string> {
