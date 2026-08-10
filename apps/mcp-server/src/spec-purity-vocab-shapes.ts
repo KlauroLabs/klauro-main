@@ -107,6 +107,32 @@ const STRING_LITERAL_RE = /'[^'\\]*(?:\\.[^'\\]*)*'|"[^"\\]*(?:\\.[^"\\]*)*"/g;
 const REGEX_ALTERNATION_RE = /\/(?:[^/\r\n\\]|\\.)*\(([^()]+)\)(?:[^/\r\n\\]|\\.)*\/[a-z]*/g;
 export const REGEX_ALTERNATION_THRESHOLD = 10;
 
+/**
+ * Stable content key for an anonymous keyword-bag shape.
+ *
+ * Order-insensitive (alternatives get reordered during refactors without the bag
+ * changing meaning) and whitespace/case-insensitive. Deliberately NOT a crypto
+ * hash: this is a baseline key, not a security boundary, and a short readable
+ * digest keeps the baseline file reviewable by a human — which matters, because
+ * the whole point of the baseline is that someone reads what got grandfathered.
+ */
+function vocabShapeFingerprint(group: string): string {
+  const normalized = group
+    .split('|')
+    .map(s => s.trim().toLowerCase())
+    .filter(Boolean)
+    .sort()
+    .join('|');
+  let h1 = 0x811c9dc5;
+  let h2 = 0x01000193;
+  for (let i = 0; i < normalized.length; i++) {
+    const c = normalized.charCodeAt(i);
+    h1 = ((h1 ^ c) * 0x01000193) >>> 0;
+    h2 = ((h2 + c) * 0x85ebca6b) >>> 0;
+  }
+  return `${h1.toString(36)}${h2.toString(36)}`.slice(0, 12);
+}
+
 function countBareWordAlternatives(group: string): number {
   const parts = group.split('|');
   if (parts.length < 2) return 0;
@@ -218,7 +244,15 @@ export async function findVocabShapeCandidates(repoRoot: string): Promise<VocabS
               candidates.push({
                 file: path.relative(repoRoot, file),
                 line: i + 1,
-                name: assign ? assign[1] : `<inline-regex-line-${i + 1}>`,
+                // Anonymous shapes are keyed by their CONTENT, not their line
+                // number. A line-keyed baseline is invalidated by any edit above
+                // it, so every future commit touching a large file would fail the
+                // gate on shapes it had already grandfathered — which is exactly
+                // what happened the first time this ran against orchestrator.ts
+                // (31k lines, edited by six lanes in one day). Content keying also
+                // means MOVING a bag keeps it grandfathered while CHANGING its
+                // contents correctly re-flags it for review.
+                name: assign ? assign[1] : `<inline:${vocabShapeFingerprint(rm[1])}>`,
                 count: altCount,
                 sample: rm[1].split('|').slice(0, 6),
               });

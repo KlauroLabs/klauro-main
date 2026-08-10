@@ -1,18 +1,18 @@
 {
-  "generated_at": "2026-08-10T05:15:06.445Z",
+  "generated_at": "2026-08-10T05:21:00.589Z",
   "note": "Pre-existing large literal-array/regex-alternation shapes as of the day the spec-purity vocab-shape gate shipped. See spec-purity-vocab-shapes.ts. Regenerate only after reviewing what changed.",
   "entries": [
     {
       "file": "apps/mcp-server/src/agent-adoption.ts",
-      "name": "<inline-regex-line-2641>"
+      "name": "<inline:113632k6lb8c>"
     },
     {
       "file": "apps/mcp-server/src/agent-adoption.ts",
-      "name": "<inline-regex-line-5003>"
+      "name": "<inline:18lo3s81qfxj>"
     },
     {
       "file": "apps/mcp-server/src/agent-adoption.ts",
-      "name": "<inline-regex-line-675>"
+      "name": "<inline:qmhvx82dclc0>"
     },
     {
       "file": "apps/mcp-server/src/agent-adoption.ts",
@@ -48,23 +48,23 @@
     },
     {
       "file": "apps/mcp-server/src/agent-live-trial.ts",
-      "name": "<inline-regex-line-1578>"
+      "name": "<inline:165i3dob32sj>"
     },
     {
       "file": "apps/mcp-server/src/agent-live-trial.ts",
-      "name": "<inline-regex-line-1579>"
+      "name": "<inline:1flz09we07gn>"
     },
     {
       "file": "apps/mcp-server/src/agent-live-trial.ts",
-      "name": "<inline-regex-line-2010>"
+      "name": "<inline:1rw7z3oy6r4e>"
     },
     {
       "file": "apps/mcp-server/src/agent-live-trial.ts",
-      "name": "<inline-regex-line-672>"
+      "name": "<inline:8ot6zf1t0ii2>"
     },
     {
       "file": "apps/mcp-server/src/agent-live-trial.ts",
-      "name": "<inline-regex-line-792>"
+      "name": "<inline:zhda9w1i1x4w>"
     },
     {
       "file": "apps/mcp-server/src/agent-live-trial.ts",
@@ -76,7 +76,7 @@
     },
     {
       "file": "apps/mcp-server/src/agent-workflow.ts",
-      "name": "<inline-regex-line-888>"
+      "name": "<inline:avq3m394v37k>"
     },
     {
       "file": "apps/mcp-server/src/analysis-focus.ts",
@@ -92,51 +92,51 @@
     },
     {
       "file": "apps/mcp-server/src/analysis-narrative-enrichment-runner.ts",
-      "name": "<inline-regex-line-473>"
+      "name": "<inline:1k3gqhcytn28>"
     },
     {
       "file": "apps/mcp-server/src/analysis-spot-read-quality.ts",
-      "name": "<inline-regex-line-511>"
+      "name": "<inline:177ef2wqdjco>"
     },
     {
       "file": "apps/mcp-server/src/analysis-spot-read-quality.ts",
-      "name": "<inline-regex-line-514>"
+      "name": "<inline:18e8uzo4wwzl>"
     },
     {
       "file": "apps/mcp-server/src/analysis-spot-read-quality.ts",
-      "name": "<inline-regex-line-528>"
+      "name": "<inline:18kmw4cvy4ef>"
     },
     {
       "file": "apps/mcp-server/src/analysis-spot-read-quality.ts",
-      "name": "<inline-regex-line-531>"
+      "name": "<inline:18rieed12hoo>"
     },
     {
       "file": "apps/mcp-server/src/analysis-spot-read-quality.ts",
-      "name": "<inline-regex-line-549>"
+      "name": "<inline:1d6mmqg63s2r>"
     },
     {
       "file": "apps/mcp-server/src/analysis-spot-read-quality.ts",
-      "name": "<inline-regex-line-552>"
+      "name": "<inline:1qxfua05vzj0>"
     },
     {
       "file": "apps/mcp-server/src/analysis-spot-read-quality.ts",
-      "name": "<inline-regex-line-555>"
+      "name": "<inline:1u4pbpk8yg5x>"
     },
     {
       "file": "apps/mcp-server/src/analysis-spot-read-quality.ts",
-      "name": "<inline-regex-line-558>"
+      "name": "<inline:4p7di41gwhsl>"
     },
     {
       "file": "apps/mcp-server/src/analysis-spot-read-quality.ts",
-      "name": "<inline-regex-line-567>"
+      "name": "<inline:63u4s42fzwu8>"
     },
     {
       "file": "apps/mcp-server/src/analysis-spot-read-quality.ts",
-      "name": "<inline-regex-line-579>"
+      "name": "<inline:lyjozolv9af4>"
     },
     {
       "file": "apps/mcp-server/src/analysis-spot-read-quality.ts",
-      "name": "<inline-regex-line-599>"
+      "name": "<inline:tk3eko2xp2ig>"
     },
     {
       "file": "apps/mcp-server/src/analysis-spot-read-quality.ts",
@@ -144,43 +144,39 @@
     },
     {
       "file": "apps/mcp-server/src/analysis-usefulness-review.ts",
-      "name": "<inline-regex-line-1413>"
+      "name": "<inline:17vsfywna8ef>"
     },
     {
       "file": "apps/mcp-server/src/analysis-usefulness-review.ts",
-      "name": "<inline-regex-line-1472>"
+      "name": "<inline:1b99uiiwdqju>"
     },
     {
       "file": "apps/mcp-server/src/analysis-usefulness-review.ts",
-      "name": "<inline-regex-line-1513>"
+      "name": "<inline:1f5zo7o4jjmr>"
     },
     {
       "file": "apps/mcp-server/src/analysis-usefulness-review.ts",
-      "name": "<inline-regex-line-1558>"
+      "name": "<inline:1ilz5z2qh1uk>"
     },
     {
       "file": "apps/mcp-server/src/analysis-usefulness-review.ts",
-      "name": "<inline-regex-line-1583>"
+      "name": "<inline:1k3gqhcytn28>"
     },
     {
       "file": "apps/mcp-server/src/analysis-usefulness-review.ts",
-      "name": "<inline-regex-line-1589>"
+      "name": "<inline:1nep5bs1xsh6>"
     },
     {
       "file": "apps/mcp-server/src/analysis-usefulness-review.ts",
-      "name": "<inline-regex-line-1639>"
+      "name": "<inline:fb2a381t4sg0>"
     },
     {
       "file": "apps/mcp-server/src/analysis-usefulness-review.ts",
-      "name": "<inline-regex-line-1649>"
+      "name": "<inline:km2z68i5wnwg>"
     },
     {
       "file": "apps/mcp-server/src/analysis-usefulness-review.ts",
-      "name": "<inline-regex-line-1711>"
-    },
-    {
-      "file": "apps/mcp-server/src/analysis-usefulness-review.ts",
-      "name": "<inline-regex-line-724>"
+      "name": "<inline:pfe69w1sr3cp>"
     },
     {
       "file": "apps/mcp-server/src/analysis-usefulness-review.ts",
@@ -188,11 +184,11 @@
     },
     {
       "file": "apps/mcp-server/src/analyzer.ts",
-      "name": "<inline-regex-line-557>"
+      "name": "<inline:6mv2n83wcn40>"
     },
     {
       "file": "apps/mcp-server/src/analyzer.ts",
-      "name": "<inline-regex-line-999>"
+      "name": "<inline:ra8vlg3nr9xc>"
     },
     {
       "file": "apps/mcp-server/src/cas-sections.ts",
@@ -207,16 +203,12 @@
       "name": "SOURCE_EXT"
     },
     {
-      "file": "apps/mcp-server/src/connector-auth.ts",
-      "name": "<inline-regex-line-47>"
+      "file": "apps/mcp-server/src/context-fabric.ts",
+      "name": "<inline:1djy99mkbbls>"
     },
     {
       "file": "apps/mcp-server/src/context-fabric.ts",
-      "name": "<inline-regex-line-176>"
-    },
-    {
-      "file": "apps/mcp-server/src/context-fabric.ts",
-      "name": "<inline-regex-line-180>"
+      "name": "<inline:1klp2mz1lxqu>"
     },
     {
       "file": "apps/mcp-server/src/coordination/conceptual-conflict.ts",
@@ -228,131 +220,119 @@
     },
     {
       "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
-      "name": "<inline-regex-line-10008>"
+      "name": "<inline:10e99bklpre9>"
     },
     {
       "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
-      "name": "<inline-regex-line-10115>"
+      "name": "<inline:10fk2ds1940w>"
     },
     {
       "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
-      "name": "<inline-regex-line-13348>"
+      "name": "<inline:1556nhc1sldo>"
     },
     {
       "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
-      "name": "<inline-regex-line-13397>"
+      "name": "<inline:15webt81xek5>"
     },
     {
       "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
-      "name": "<inline-regex-line-13518>"
+      "name": "<inline:16f2mt0qllvk>"
     },
     {
       "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
-      "name": "<inline-regex-line-13800>"
+      "name": "<inline:18m1h0o1vzki>"
     },
     {
       "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
-      "name": "<inline-regex-line-13844>"
+      "name": "<inline:1a95e3l165br>"
     },
     {
       "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
-      "name": "<inline-regex-line-14017>"
+      "name": "<inline:1b3w1jo5wac5>"
     },
     {
       "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
-      "name": "<inline-regex-line-2742>"
+      "name": "<inline:1ccjniqd0l4w>"
     },
     {
       "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
-      "name": "<inline-regex-line-3488>"
+      "name": "<inline:1hdxff01xkz7>"
     },
     {
       "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
-      "name": "<inline-regex-line-3540>"
+      "name": "<inline:1hnjzw41gjt3>"
     },
     {
       "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
-      "name": "<inline-regex-line-3708>"
+      "name": "<inline:1hwol5kqmthj>"
     },
     {
       "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
-      "name": "<inline-regex-line-4174>"
+      "name": "<inline:1i4kn9k14dzs>"
     },
     {
       "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
-      "name": "<inline-regex-line-4317>"
+      "name": "<inline:1m7ybm81weik>"
     },
     {
       "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
-      "name": "<inline-regex-line-4912>"
+      "name": "<inline:1pnsfxkg3i0w>"
     },
     {
       "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
-      "name": "<inline-regex-line-5934>"
+      "name": "<inline:1rgy2l45hzx8>"
     },
     {
       "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
-      "name": "<inline-regex-line-6319>"
+      "name": "<inline:1vk5m40196r7>"
     },
     {
       "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
-      "name": "<inline-regex-line-6320>"
+      "name": "<inline:1y7af7osbyxh>"
     },
     {
       "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
-      "name": "<inline-regex-line-6588>"
+      "name": "<inline:4e6zm01olow3>"
     },
     {
       "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
-      "name": "<inline-regex-line-7334>"
+      "name": "<inline:65t6e81ewbf7>"
     },
     {
       "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
-      "name": "<inline-regex-line-7388>"
+      "name": "<inline:9g9vpukgzr40>"
     },
     {
       "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
-      "name": "<inline-regex-line-7481>"
+      "name": "<inline:9suzso13ixqt>"
     },
     {
       "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
-      "name": "<inline-regex-line-7644>"
+      "name": "<inline:alri5ueaomww>"
     },
     {
       "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
-      "name": "<inline-regex-line-7691>"
+      "name": "<inline:cjhw04tpwbnk>"
     },
     {
       "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
-      "name": "<inline-regex-line-7712>"
+      "name": "<inline:e69migk68dts>"
     },
     {
       "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
-      "name": "<inline-regex-line-7737>"
+      "name": "<inline:i5qghg1sics8>"
     },
     {
       "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
-      "name": "<inline-regex-line-7739>"
+      "name": "<inline:od23o4fa3nk0>"
     },
     {
       "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
-      "name": "<inline-regex-line-7740>"
+      "name": "<inline:qucukc1myjpc>"
     },
     {
       "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
-      "name": "<inline-regex-line-8242>"
-    },
-    {
-      "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
-      "name": "<inline-regex-line-8622>"
-    },
-    {
-      "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
-      "name": "<inline-regex-line-8624>"
-    },
-    {
-      "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
-      "name": "<inline-regex-line-8859>"
+      "name": "<inline:vyvceg16jegw>"
     },
     {
       "file": "apps/mcp-server/src/cross-codebase-analysis.ts",
@@ -444,35 +424,35 @@
     },
     {
       "file": "apps/mcp-server/src/description-enrichment.ts",
-      "name": "<inline-regex-line-1078>"
+      "name": "<inline:182ikdc4o7ta>"
     },
     {
       "file": "apps/mcp-server/src/description-enrichment.ts",
-      "name": "<inline-regex-line-349>"
+      "name": "<inline:186vnio1qy2t>"
     },
     {
       "file": "apps/mcp-server/src/description-enrichment.ts",
-      "name": "<inline-regex-line-766>"
+      "name": "<inline:19fx93iskisc>"
     },
     {
       "file": "apps/mcp-server/src/description-enrichment.ts",
-      "name": "<inline-regex-line-778>"
+      "name": "<inline:1e3dai0jrqtq>"
     },
     {
       "file": "apps/mcp-server/src/description-enrichment.ts",
-      "name": "<inline-regex-line-782>"
+      "name": "<inline:1f5zo7o4jjmr>"
     },
     {
       "file": "apps/mcp-server/src/description-enrichment.ts",
-      "name": "<inline-regex-line-879>"
+      "name": "<inline:1g0uf80tq4oo>"
     },
     {
       "file": "apps/mcp-server/src/description-enrichment.ts",
-      "name": "<inline-regex-line-918>"
+      "name": "<inline:1ldeh0ghogfs>"
     },
     {
       "file": "apps/mcp-server/src/description-enrichment.ts",
-      "name": "<inline-regex-line-929>"
+      "name": "<inline:1obi27sgd76y>"
     },
     {
       "file": "apps/mcp-server/src/freshness.ts",
@@ -484,23 +464,19 @@
     },
     {
       "file": "apps/mcp-server/src/greenfield-build-session.ts",
-      "name": "<inline-regex-line-1112>"
+      "name": "<inline:1we2yckwrop3>"
     },
     {
       "file": "apps/mcp-server/src/greenfield-build-session.ts",
-      "name": "<inline-regex-line-495>"
+      "name": "<inline:6qlu1gitks1s>"
     },
     {
       "file": "apps/mcp-server/src/greenfield-build-session.ts",
-      "name": "<inline-regex-line-500>"
+      "name": "<inline:ojx178d41iio>"
     },
     {
       "file": "apps/mcp-server/src/greenfield-build-session.ts",
-      "name": "<inline-regex-line-863>"
-    },
-    {
-      "file": "apps/mcp-server/src/greenfield-build-session.ts",
-      "name": "<inline-regex-line-866>"
+      "name": "<inline:qh5tus1yqn5z>"
     },
     {
       "file": "apps/mcp-server/src/greenfield-build-session.ts",
@@ -512,35 +488,35 @@
     },
     {
       "file": "apps/mcp-server/src/greenfield-guidance.ts",
-      "name": "<inline-regex-line-123>"
+      "name": "<inline:187g7ascuyvw>"
     },
     {
       "file": "apps/mcp-server/src/greenfield-guidance.ts",
-      "name": "<inline-regex-line-132>"
+      "name": "<inline:1lzg33sp0oe8>"
     },
     {
       "file": "apps/mcp-server/src/greenfield-guidance.ts",
-      "name": "<inline-regex-line-137>"
+      "name": "<inline:1o3hlg41gty3>"
     },
     {
       "file": "apps/mcp-server/src/greenfield-guidance.ts",
-      "name": "<inline-regex-line-711>"
+      "name": "<inline:avq3m394v37k>"
     },
     {
       "file": "apps/mcp-server/src/greenfield-guidance.ts",
-      "name": "<inline-regex-line-712>"
+      "name": "<inline:h2r0xhfewc9s>"
     },
     {
       "file": "apps/mcp-server/src/greenfield-guidance.ts",
-      "name": "<inline-regex-line-717>"
+      "name": "<inline:l4efkw1yeqbr>"
     },
     {
       "file": "apps/mcp-server/src/greenfield-guidance.ts",
-      "name": "<inline-regex-line-725>"
+      "name": "<inline:rerdg81axppt>"
     },
     {
       "file": "apps/mcp-server/src/greenfield-guidance.ts",
-      "name": "<inline-regex-line-738>"
+      "name": "<inline:wxr8t01clmtj>"
     },
     {
       "file": "apps/mcp-server/src/greenfield-guidance.ts",
@@ -584,31 +560,31 @@
     },
     {
       "file": "apps/mcp-server/src/integration-depth.ts",
-      "name": "<inline-regex-line-172>"
+      "name": "<inline:10b4oac1vb85>"
     },
     {
       "file": "apps/mcp-server/src/integration-depth.ts",
-      "name": "<inline-regex-line-204>"
+      "name": "<inline:18kykh41itwa>"
     },
     {
       "file": "apps/mcp-server/src/integration-depth.ts",
-      "name": "<inline-regex-line-270>"
+      "name": "<inline:18srj781tjz8>"
     },
     {
       "file": "apps/mcp-server/src/integration-depth.ts",
-      "name": "<inline-regex-line-315>"
+      "name": "<inline:1altb1s60sni>"
     },
     {
       "file": "apps/mcp-server/src/integration-depth.ts",
-      "name": "<inline-regex-line-318>"
+      "name": "<inline:1bvycn81ewaa>"
     },
     {
       "file": "apps/mcp-server/src/integration-depth.ts",
-      "name": "<inline-regex-line-324>"
+      "name": "<inline:1r490g81n78a>"
     },
     {
       "file": "apps/mcp-server/src/integration-depth.ts",
-      "name": "<inline-regex-line-344>"
+      "name": "<inline:1stdms81pw2j>"
     },
     {
       "file": "apps/mcp-server/src/integration-depth.ts",
@@ -656,15 +632,15 @@
     },
     {
       "file": "apps/mcp-server/src/semantic-roles.ts",
-      "name": "<inline-regex-line-59>"
+      "name": "<inline:11m00os1eh4z>"
     },
     {
       "file": "apps/mcp-server/src/semantic-roles.ts",
-      "name": "<inline-regex-line-69>"
+      "name": "<inline:1m6biuciecjk>"
     },
     {
       "file": "apps/mcp-server/src/semantic-roles.ts",
-      "name": "<inline-regex-line-85>"
+      "name": "<inline:1x7qpyk264id>"
     },
     {
       "file": "apps/mcp-server/src/semantic-search.ts",
@@ -692,7 +668,7 @@
     },
     {
       "file": "apps/mcp-server/src/test-discovery.ts",
-      "name": "<inline-regex-line-212>"
+      "name": "<inline:jegtt41hhi1h>"
     },
     {
       "file": "apps/mcp-server/src/test-discovery.ts",
@@ -708,7 +684,7 @@
     },
     {
       "file": "packages/analyzer-core/src/ai/element-description-validator.ts",
-      "name": "<inline-regex-line-231>"
+      "name": "<inline:1f5zo7o4jjmr>"
     },
     {
       "file": "packages/analyzer-core/src/ai/element-description-validator.ts",
@@ -716,11 +692,11 @@
     },
     {
       "file": "packages/analyzer-core/src/ai/external-service-plausibility.ts",
-      "name": "<inline-regex-line-133>"
+      "name": "<inline:13xnrd8xu74u>"
     },
     {
       "file": "packages/analyzer-core/src/ai/external-service-plausibility.ts",
-      "name": "<inline-regex-line-64>"
+      "name": "<inline:kwzq21afpj40>"
     },
     {
       "file": "packages/analyzer-core/src/ai/external-service-plausibility.ts",
@@ -740,7 +716,7 @@
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/artifact-type.ts",
-      "name": "<inline-regex-line-333>"
+      "name": "<inline:vg3czcv5i7ls>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/artifact-type.ts",
@@ -752,19 +728,19 @@
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/base-analyzer.ts",
-      "name": "<inline-regex-line-365>"
+      "name": "<inline:1h1gvx616g3l>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/base-analyzer.ts",
-      "name": "<inline-regex-line-366>"
+      "name": "<inline:2ba1lccsobgg>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/base-analyzer.ts",
-      "name": "<inline-regex-line-367>"
+      "name": "<inline:8lppdk1oy1kz>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/base-analyzer.ts",
-      "name": "<inline-regex-line-368>"
+      "name": "<inline:vqbmyd1qqksn>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/base-analyzer.ts",
@@ -820,7 +796,7 @@
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/communication-seams.ts",
-      "name": "<inline-regex-line-394>"
+      "name": "<inline:1cfif001toz3>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/coverage-gaps.ts",
@@ -836,7 +812,7 @@
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/deployable-evidence/providers/container.ts",
-      "name": "<inline-regex-line-45>"
+      "name": "<inline:1x4a9pqsnzu2>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/deployable-evidence/providers/deploy-manifests.ts",
@@ -860,11 +836,11 @@
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/domain-extractor.ts",
-      "name": "<inline-regex-line-435>"
+      "name": "<inline:1p1kkg48mnls>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/domain-extractor.ts",
-      "name": "<inline-regex-line-462>"
+      "name": "<inline:1w8bgp41hcts>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/domain-extractor.ts",
@@ -960,15 +936,15 @@
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/infra-topology-linker.ts",
-      "name": "<inline-regex-line-606>"
+      "name": "<inline:1ujxx501duze>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/infra-topology-linker.ts",
-      "name": "<inline-regex-line-608>"
+      "name": "<inline:fhivg41q5w2d>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/infra-topology-linker.ts",
-      "name": "<inline-regex-line-610>"
+      "name": "<inline:q0xu90coyx34>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/journey-builder.ts",
@@ -1036,7 +1012,7 @@
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/language-spec.ts",
-      "name": "<inline-regex-line-1785>"
+      "name": "<inline:1iy0i7c1923f>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/minhash-clone-detection.ts",
@@ -1048,231 +1024,207 @@
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline-regex-line-10839>"
+      "name": "<inline:1245cps1i9ru>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline-regex-line-12671>"
+      "name": "<inline:15hbi3o1cwjy>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline-regex-line-12899>"
+      "name": "<inline:15uyidq1dgle>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline-regex-line-12907>"
+      "name": "<inline:163l8chzvtds>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline-regex-line-15755>"
+      "name": "<inline:189gas0150oo>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline-regex-line-15826>"
+      "name": "<inline:18ykvzgei4oo>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline-regex-line-15827>"
+      "name": "<inline:1dx6601g5572>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline-regex-line-15888>"
+      "name": "<inline:1egtlecf9wfl>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline-regex-line-15950>"
+      "name": "<inline:1eoyshb1tyy1>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline-regex-line-16495>"
+      "name": "<inline:1g16ahi1rlhg>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline-regex-line-16515>"
+      "name": "<inline:1h48amsht651>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline-regex-line-16890>"
+      "name": "<inline:1mr01x01a3x6>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline-regex-line-16991>"
+      "name": "<inline:1ods6r8g9962>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline-regex-line-17886>"
+      "name": "<inline:1ogchfs7aavi>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline-regex-line-18949>"
+      "name": "<inline:1p7hvuk3t92w>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline-regex-line-18952>"
+      "name": "<inline:1qzc0z83zxat>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline-regex-line-19019>"
+      "name": "<inline:1s3o8vo10tg3>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline-regex-line-19046>"
+      "name": "<inline:1t6o1p7m28bu>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline-regex-line-19065>"
+      "name": "<inline:1taxvs8t64um>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline-regex-line-19099>"
+      "name": "<inline:1umluz1ufn6k>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline-regex-line-20400>"
+      "name": "<inline:1uzcfuwzi687>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline-regex-line-20704>"
+      "name": "<inline:1wgscd86wsmp>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline-regex-line-20744>"
+      "name": "<inline:2jt86045px4w>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline-regex-line-20766>"
+      "name": "<inline:4g89i81c9fy8>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline-regex-line-20995>"
+      "name": "<inline:570r2410glf5>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline-regex-line-21275>"
+      "name": "<inline:6ff2v1ngiayo>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline-regex-line-23209>"
+      "name": "<inline:6mv2n83wcn40>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline-regex-line-23619>"
+      "name": "<inline:70xuba5t0xds>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline-regex-line-23634>"
+      "name": "<inline:73m243j1pts>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline-regex-line-23643>"
+      "name": "<inline:742s4gd6qeww>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline-regex-line-24292>"
+      "name": "<inline:7zlflkt8mxs0>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline-regex-line-24994>"
+      "name": "<inline:avq3m394v37k>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline-regex-line-25171>"
+      "name": "<inline:cgfquonc4qo>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline-regex-line-25181>"
+      "name": "<inline:cu9w8q1xjauw>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline-regex-line-25257>"
+      "name": "<inline:f86jkwr87pc0>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline-regex-line-25453>"
+      "name": "<inline:geoviomft7uo>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline-regex-line-25720>"
+      "name": "<inline:huozrgzqulo0>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline-regex-line-25786>"
+      "name": "<inline:itp6p01w7rfu>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline-regex-line-26313>"
+      "name": "<inline:iuw6o1q7iqyo>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline-regex-line-28674>"
+      "name": "<inline:j234cc1kglgq>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline-regex-line-29052>"
+      "name": "<inline:j3gc021it79c>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline-regex-line-30107>"
+      "name": "<inline:jel8cg1n5lcl>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline-regex-line-30377>"
+      "name": "<inline:kesx541gv198>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline-regex-line-4527>"
+      "name": "<inline:m9oowk2znc3k>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline-regex-line-471>"
+      "name": "<inline:o255hkhg6a9s>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline-regex-line-475>"
+      "name": "<inline:qao5bu43faww>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline-regex-line-557>"
+      "name": "<inline:r5vanw1pncl1>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline-regex-line-8113>"
+      "name": "<inline:rv1xiw1ylw4j>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline-regex-line-8212>"
+      "name": "<inline:skz8k81strxm>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline-regex-line-8469>"
+      "name": "<inline:xkh4mo1n1nw8>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline-regex-line-8520>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline-regex-line-8658>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline-regex-line-8659>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline-regex-line-8876>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline-regex-line-8900>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline-regex-line-9582>"
-    },
-    {
-      "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
-      "name": "<inline-regex-line-9585>"
+      "name": "<inline:xx9l1wx390xs>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/orchestrator.ts",
@@ -1360,7 +1312,7 @@
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/terminal-signal.ts",
-      "name": "<inline-regex-line-111>"
+      "name": "<inline:ya5k6d1x5eay>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/core/terminal-signal.ts",
@@ -1416,7 +1368,7 @@
     },
     {
       "file": "packages/analyzer-core/src/analyzer/frameworks/ocaml/dream-analyzer.ts",
-      "name": "<inline-regex-line-77>"
+      "name": "<inline:3qq2uc14pyh3>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/frameworks/rust/index.ts",
@@ -1428,7 +1380,7 @@
     },
     {
       "file": "packages/analyzer-core/src/analyzer/frameworks/web/fastapi-analyzer.ts",
-      "name": "<inline-regex-line-1025>"
+      "name": "<inline:1u9bo1i11kjj>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/frameworks/web/flask-analyzer.ts",
@@ -1436,7 +1388,7 @@
     },
     {
       "file": "packages/analyzer-core/src/analyzer/frameworks/web/nestjs-analyzer.ts",
-      "name": "<inline-regex-line-1934>"
+      "name": "<inline:mm8ggs14h0yy>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/frameworks/web/nestjs-analyzer.ts",
@@ -1464,11 +1416,11 @@
     },
     {
       "file": "packages/analyzer-core/src/analyzer/languages/csharp-analyzer.ts",
-      "name": "<inline-regex-line-2524>"
+      "name": "<inline:1j08flc1pm0s>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/languages/distribution-artifact-analyzer.ts",
-      "name": "<inline-regex-line-502>"
+      "name": "<inline:9q4nqcviyscg>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/languages/distribution-artifact-analyzer.ts",
@@ -1484,7 +1436,7 @@
     },
     {
       "file": "packages/analyzer-core/src/analyzer/languages/java-analyzer.ts",
-      "name": "<inline-regex-line-1165>"
+      "name": "<inline:1pittj41rnwp>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/languages/kotlin-analyzer.ts",
@@ -1504,11 +1456,11 @@
     },
     {
       "file": "packages/analyzer-core/src/analyzer/languages/rust-analyzer.ts",
-      "name": "<inline-regex-line-2720>"
+      "name": "<inline:1nuujo21wcwz>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/languages/rust-analyzer.ts",
-      "name": "<inline-regex-line-2723>"
+      "name": "<inline:1s2puumqvmzg>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/languages/rust-analyzer.ts",
@@ -1528,7 +1480,7 @@
     },
     {
       "file": "packages/analyzer-core/src/analyzer/languages/solidity-analyzer.ts",
-      "name": "<inline-regex-line-471>"
+      "name": "<inline:rlx5pp1b8smi>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/languages/solidity-analyzer.ts",
@@ -1536,11 +1488,11 @@
     },
     {
       "file": "packages/analyzer-core/src/analyzer/languages/swift-analyzer.ts",
-      "name": "<inline-regex-line-573>"
+      "name": "<inline:1r6kfmk1gczc>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/languages/swift-analyzer.ts",
-      "name": "<inline-regex-line-689>"
+      "name": "<inline:b4g6zcan7rwg>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/languages/swift-analyzer.ts",
@@ -1552,11 +1504,11 @@
     },
     {
       "file": "packages/analyzer-core/src/analyzer/languages/typescript-javascript-analyzer.ts",
-      "name": "<inline-regex-line-1722>"
+      "name": "<inline:c9rz4141tpmo>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/languages/typescript-javascript-analyzer.ts",
-      "name": "<inline-regex-line-2706>"
+      "name": "<inline:mm8ggs14h0yy>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/languages/typescript-javascript-analyzer.ts",
@@ -1588,19 +1540,19 @@
     },
     {
       "file": "packages/analyzer-core/src/analyzer/libraries/http/reqwest-analyzer.ts",
-      "name": "<inline-regex-line-207>"
+      "name": "<inline:1nuujo21wcwz>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/libraries/http/reqwest-analyzer.ts",
-      "name": "<inline-regex-line-210>"
+      "name": "<inline:1s2puumqvmzg>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/libraries/messaging/messaging-analyzer.ts",
-      "name": "<inline-regex-line-1332>"
+      "name": "<inline:198r91ib8d6v>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/libraries/messaging/messaging-analyzer.ts",
-      "name": "<inline-regex-line-1339>"
+      "name": "<inline:kfpwko2qlukg>"
     },
     {
       "file": "packages/analyzer-core/src/analyzer/libraries/observability/observability-analyzer.ts",
@@ -1620,11 +1572,11 @@
     },
     {
       "file": "packages/analyzer-core/src/analyzer/services/cas-analyzer.service.ts",
-      "name": "<inline-regex-line-569>"
+      "name": "<inline:hln8wtpwa9s0>"
     },
     {
       "file": "packages/analyzer-core/src/middleware/input-sanitizer.ts",
-      "name": "<inline-regex-line-8>"
+      "name": "<inline:qy631k19dbsw>"
     },
     {
       "file": "packages/analyzer-core/src/types/cas.types.ts",
