@@ -20,6 +20,8 @@ import { createYieldBudget } from '../../core/event-loop-yield';
  *   Rust    #[test] / #[tokio::test]
  *   C#      xUnit ([Fact]/[Theory]), NUnit ([Test])
  *   PHP     PHPUnit
+ *   Elixir  ExUnit
+ *   Solidity Foundry (forge-std Test)
  *   E2E     Playwright, Selenium
  *
  * Emits `test` nodes (suites carry the `suite` subcategory, cases do not — the
@@ -315,6 +317,13 @@ export class TestFrameworkAnalyzer extends BaseAnalyzer {
         // a case is added here too. Out of scope to refactor for task #126,
         // but worth flagging — see the report on this defect.
         return /tests\.swift$/.test(lower) || /(?:^|\/)tests\/.*\.swift$/.test(lower);
+      case 'exunit':
+        // Mix's own convention: `mix test` only runs `test/**/*_test.exs`.
+        return /_test\.exs$/.test(lower) || /(?:^|\/)test\/.*\.exs?$/.test(lower);
+      case 'foundry':
+        // Foundry's `forge test` default naming (`*.t.sol`) plus the
+        // conventional `test/`/`tests/` directory both toolchains use.
+        return /\.t\.sol$/.test(lower) || /(?:^|\/)tests?\/.*\.sol$/.test(lower);
       default:
         return false;
     }
@@ -732,6 +741,31 @@ export class TestFrameworkAnalyzer extends BaseAnalyzer {
         filePatterns: ['**/*Tests.swift', '**/Tests/**/*.swift'],
         evidence: [/import\s+XCTest/, /XCTestCase/, /XCTAssert/],
         casePatterns: [/\bfunc\s+(test[A-Za-z0-9_]*)\s*\(\s*\)/gm]
+      },
+      {
+        // ExUnit was previously unregistered here entirely — Elixir test
+        // files never produced suite/case `test` nodes, so `test_summary`
+        // undercounted Elixir tests independently of the node-tagging fix in
+        // elixir-analyzer.ts's applyTestFileBoundary. Both fixes are needed:
+        // this one for suite/case discovery, that one for the coverage-graph
+        // walk to find a test-owned root to traverse from.
+        framework: 'exunit',
+        language: 'elixir',
+        filePatterns: ['**/*_test.exs', '**/test/**/*.exs'],
+        evidence: [/ExUnit\.Case/, /import\s+ExUnit/],
+        casePatterns: [/^\s*test\s+["']([^"']+)["']/gm]
+      },
+      {
+        // Foundry (forge-std) was previously unregistered here entirely —
+        // Solidity test contracts never produced suite/case `test` nodes.
+        // Both fixes needed, same reasoning as xctest/exunit above: this one
+        // for suite/case discovery, solidity-analyzer.ts's
+        // applyTestFileBoundary for the coverage-graph walk's traversal root.
+        framework: 'foundry',
+        language: 'solidity',
+        filePatterns: ['**/*.t.sol', '**/test/**/*.sol', '**/tests/**/*.sol'],
+        evidence: [/forge-std\/Test\.sol/, /\bis\s+Test\b/],
+        casePatterns: [/function\s+(test[A-Za-z0-9_]*)\s*\(/gm]
       }
     ];
   }

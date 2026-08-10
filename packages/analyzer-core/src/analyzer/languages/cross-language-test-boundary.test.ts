@@ -9,10 +9,15 @@
 // then reported `tests_present: false` even when `test_summary` counted
 // real passing tests: a flat self-contradiction. Go was fixed first
 // (go-analyzer.ts's applyTestFileBoundary); this file proves the same fix
-// for the other seven affected languages, one subtest per language, each
+// for the other ten affected languages, one subtest per language, each
 // using that ecosystem's OWN test convention as evidence (never a shared
 // filename heuristic — see each analyzer's own applyTestFileBoundary doc
-// comment for why).
+// comment for why). PHP, Elixir, and Solidity were the final three
+// (task #126 follow-up): PHPUnit already had a TestFrameworkAnalyzer rule,
+// so PHP needed only the node-tagging half; ExUnit and Foundry had NEITHER
+// half, so elixir-analyzer.ts/solidity-analyzer.ts's applyTestFileBoundary
+// AND new 'exunit'/'foundry' FrameworkRules were both needed — the same two-
+// part shape the earlier xctest fix established for Swift.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as os from 'node:os';
@@ -25,6 +30,9 @@ import { JavaAnalyzer } from './java-analyzer';
 import { RustAnalyzer } from './rust-analyzer';
 import { KotlinAnalyzer } from './kotlin-analyzer';
 import { SwiftAnalyzer } from './swift-analyzer';
+import { PHPAnalyzer } from './php-analyzer';
+import { ElixirAnalyzer } from './elixir-analyzer';
+import { SolidityAnalyzer } from './solidity-analyzer';
 import { TestFrameworkAnalyzer } from '../frameworks/testing/test-framework-analyzer';
 import type { CASContribution } from '../../types/cas.types';
 
@@ -361,5 +369,153 @@ test('SwiftAnalyzer tags *Tests.swift nodes under Tests/ and links calls into pr
       existingAnalysis: [language],
     });
     assert.ok(testFrameworkResult.nodes.some(node => node.type === 'test'), 'TestFrameworkAnalyzer discovers an XCTest suite/case (previously unregistered)');
+  });
+});
+
+test('PHPAnalyzer tags PHPUnit *Test.php nodes under tests/ and links calls into production code', async () => {
+  await withTempDir('klauro-php-test-boundary-', async (root) => {
+    await fs.ensureDir(path.join(root, 'src'));
+    await fs.ensureDir(path.join(root, 'tests'));
+    await fs.writeFile(
+      path.join(root, 'src', 'Calculator.php'),
+      ['<?php', '', 'class Calculator', '{', '    public function add(int $a, int $b): int', '    {', '        return $a + $b;', '    }', '}', ''].join('\n')
+    );
+    await fs.writeFile(
+      path.join(root, 'tests', 'CalculatorTest.php'),
+      [
+        '<?php',
+        '',
+        'use PHPUnit\\Framework\\TestCase;',
+        "require_once __DIR__ . '/../src/Calculator.php';",
+        '',
+        'class CalculatorTest extends TestCase',
+        '{',
+        '    public function testAdd(): void',
+        '    {',
+        '        $calc = new Calculator();',
+        '        $calc->add(1, 2);',
+        '    }',
+        '}',
+        '',
+      ].join('\n')
+    );
+
+    const analyzer = new PHPAnalyzer();
+    const language = await analyzer.analyze({ projectPath: root });
+    const { productionNode, testNodes } = assertBoundaryTagging(language, 'add');
+    assert.ok(testNodes.some(node => node.name === 'testAdd'), 'testAdd method node is tagged');
+    assert.ok(language.edges.some(edge =>
+      edge.type === 'calls' && edge.target === productionNode.id &&
+      testNodes.some(node => node.id === edge.source)
+    ), 'a tagged test node has a calls edge into the production node');
+
+    const tests = await new TestFrameworkAnalyzer().analyze({
+      projectPath: root,
+      existingAnalysis: [language],
+    });
+    assert.ok(tests.nodes.some(node => node.type === 'test'), 'TestFrameworkAnalyzer discovers a PHPUnit suite/case');
+  });
+});
+
+test('ElixirAnalyzer tags ExUnit test/*_test.exs nodes and links calls into production code (exunit rule previously unregistered)', async () => {
+  await withTempDir('klauro-elixir-test-boundary-', async (root) => {
+    await fs.ensureDir(path.join(root, 'lib'));
+    await fs.ensureDir(path.join(root, 'test'));
+    await fs.writeFile(
+      path.join(root, 'lib', 'calculator.ex'),
+      ['defmodule Calculator do', '  def add(a, b) do', '    a + b', '  end', 'end', ''].join('\n')
+    );
+    // ExUnit's `test "..." do ... end` blocks are macros, not `def`s — this
+    // analyzer's line-based parser never turns the case itself into a node
+    // (see isElixirTestFile's doc comment). A `def`/`defp` helper declared
+    // inside the same test file DOES become a real function node with a
+    // resolvable `calls` edge, mirroring the Rust #[cfg(test)]-helper fixture
+    // above — the same "no per-function marker, tag by file" shape.
+    await fs.writeFile(
+      path.join(root, 'test', 'calculator_test.exs'),
+      [
+        'defmodule CalculatorTest do',
+        '  use ExUnit.Case',
+        '',
+        '  defp run_add do',
+        '    Calculator.add(1, 2)',
+        '  end',
+        '',
+        '  test "adds numbers" do',
+        '    assert run_add() == 3',
+        '  end',
+        'end',
+        '',
+      ].join('\n')
+    );
+
+    const analyzer = new ElixirAnalyzer();
+    const language = await analyzer.analyze({ projectPath: root });
+    const { productionNode, testNodes } = assertBoundaryTagging(language, 'add');
+    assert.ok(testNodes.some(node => node.name === 'run_add'), 'run_add helper function node is tagged');
+    assert.ok(language.edges.some(edge =>
+      edge.type === 'calls' && edge.target === productionNode.id &&
+      testNodes.some(node => node.id === edge.source)
+    ), 'a tagged test node has a calls edge into the production node');
+
+    const tests = await new TestFrameworkAnalyzer().analyze({
+      projectPath: root,
+      existingAnalysis: [language],
+    });
+    assert.ok(tests.nodes.some(node => node.type === 'test'), 'TestFrameworkAnalyzer discovers an ExUnit suite/case (previously unregistered)');
+  });
+});
+
+test('SolidityAnalyzer tags Foundry *.t.sol nodes and links calls into production code (foundry rule previously unregistered)', async () => {
+  await withTempDir('klauro-solidity-test-boundary-', async (root) => {
+    await fs.ensureDir(path.join(root, 'src'));
+    await fs.ensureDir(path.join(root, 'test'));
+    await fs.writeFile(
+      path.join(root, 'src', 'Calculator.sol'),
+      [
+        '// SPDX-License-Identifier: MIT',
+        'pragma solidity ^0.8.0;',
+        '',
+        'contract Calculator {',
+        '    function add(uint256 a, uint256 b) public pure returns (uint256) {',
+        '        return a + b;',
+        '    }',
+        '}',
+        '',
+      ].join('\n')
+    );
+    await fs.writeFile(
+      path.join(root, 'test', 'Calculator.t.sol'),
+      [
+        '// SPDX-License-Identifier: MIT',
+        'pragma solidity ^0.8.0;',
+        '',
+        'import "forge-std/Test.sol";',
+        'import "../src/Calculator.sol";',
+        '',
+        'contract CalculatorTest is Test {',
+        '    function testAdd() public {',
+        '        Calculator calc = new Calculator();',
+        '        calc.add(1, 2);',
+        '    }',
+        '}',
+        '',
+      ].join('\n')
+    );
+
+    const analyzer = new SolidityAnalyzer();
+    const language = await analyzer.analyze({ projectPath: root });
+    const { productionNode, testNodes } = assertBoundaryTagging(language, 'add');
+    assert.ok(testNodes.some(node => node.name === 'testAdd'), 'testAdd function node is tagged');
+    assert.ok(language.edges.some(edge =>
+      edge.type === 'calls' && edge.target === productionNode.id &&
+      testNodes.some(node => node.id === edge.source)
+    ), 'a tagged test node has a calls edge into the production node');
+
+    const tests = await new TestFrameworkAnalyzer().analyze({
+      projectPath: root,
+      existingAnalysis: [language],
+    });
+    assert.ok(tests.nodes.some(node => node.type === 'test'), 'TestFrameworkAnalyzer discovers a Foundry suite/case (previously unregistered)');
   });
 });
