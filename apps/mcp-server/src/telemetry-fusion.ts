@@ -9,8 +9,27 @@
  * per-workspace file, not touching the shared storage index).
  *
  * `fuseTelemetry` is pure over a given CAS (no I/O) so it is directly unit- and
- * bench-testable. `ingestAndPersist` is the thin I/O wrapper used by the (not
- * yet wired) `POST /v1/telemetry/ingest` route.
+ * bench-testable. `ingestAndPersist` is the thin I/O wrapper used by the
+ * `POST /v1/telemetry/ingest` route (`remote-analyzer-service.ts`) — wired,
+ * but with no producer in this repo: the shipped `@klauro/telemetry` SDK
+ * (`packages/klauro-sdk-js`) posts to `/api/telemetry/runtime-events/:projectId`
+ * instead, which routes through `telemetry-ingestion.ts`'s
+ * `ingestTelemetryBatch`, not through this module.
+ *
+ * ADJUDICATED (docs/STOCK-TAKE-TIERS.md, Tier 4 addendum): this module's
+ * `RuntimeFact` is node-id-keyed only and is never joined to flow/step/
+ * capability (unlike `telemetry-ingestion.ts`'s `RuntimeObservation`, which
+ * flows through `product.buildNodeRuntimeMetrics` ->
+ * `attachTelemetryToFlows`). It is not structurally blocked from that join —
+ * `RuntimeFact.node_id`/`matched_id` already match the same key family
+ * `RuntimeMetricLike` uses — it simply has never been wired through. Target
+ * state is to route `fuseTelemetry`'s output through that same join and
+ * retire this module's separate `runtime-facts.json` store and the additive
+ * `fused_runtime_facts` field, once `fix/tier4-telemetry-join` lands and
+ * production traffic to `/v1/telemetry/ingest` is confirmed absent. Until
+ * then this module and `telemetry-ingestion.ts` are two live, disagreeing-
+ * capable ingest paths onto the same CAS — see the addendum for why that is
+ * a known-risky shape for this product, not a new one.
  */
 
 import * as fs from 'fs-extra';
