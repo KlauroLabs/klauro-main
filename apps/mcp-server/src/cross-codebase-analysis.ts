@@ -1,6 +1,13 @@
 import * as path from 'path';
 import * as fs from 'fs';
 import type { CASEntryPoint, CASExitPoint, CASNode, CASOutput, CASTemporalStability } from '../../../packages/analyzer-core/src/types/cas.types';
+import type {
+  CommunicationSeam,
+  CommunicationSeamInventory,
+  CommunicationSeamsResult,
+  SeamModality,
+} from '../../../packages/analyzer-core/src/analyzer/core/communication-seams';
+import { buildSeamInventory } from '../../../packages/analyzer-core/src/analyzer/core/communication-seams';
 import { aiService } from '../../../packages/analyzer-core/src/ai/ai-service';
 import { recordSemanticDecision } from '../../../packages/analyzer-core/src/ai/semantic-dataset';
 import { ungroundedMarketingMatches } from '../../../packages/analyzer-core/src/ai/element-description-validator';
@@ -950,6 +957,15 @@ export interface CrossCodebaseSystemGraph {
    *  table — see computeCodebaseComplexity/computeWorkspaceComplexity). Absent
    *  (not zero-filled) when the workspace has no member codebases to score. */
   workspace_complexity?: WorkspaceComplexity;
+  /** Repo-to-repo communication seams (§0.8 of docs/cas/SPECIFICATION.md),
+   *  `inventory.level: 'workspace'` — the recursion-level counterpart of a
+   *  single repo's `communication_seams.deployable_inventory`. Built from
+   *  cross-repo exit-point/entry-point matches (`application_links`) plus
+   *  shared third-party dependency correlation; see
+   *  buildWorkspaceCommunicationSeams. Absent when fewer than 2 codebases
+   *  compose this workspace (§0.9 both-extremes rule) — never a zero-filled
+   *  inventory standing in for "no sub-CAS nodes to seam". */
+  communication_seams?: CommunicationSeamsResult;
   summary: {
     codebases: number;
     /** Canonical workspace-level applications exposed in the overview. */
@@ -1282,6 +1298,201 @@ function buildCrossCodebaseLookupIndexes(
   return indexes;
 }
 
+/**
+ * Repo-to-repo communication seams — the workspace-level counterpart of
+ * `classifyCommunicationSeams`'s `deployable_inventory`
+ * (packages/analyzer-core/src/analyzer/core/communication-seams.ts). §0.8.4
+ * of docs/cas/SPECIFICATION.md names this the concrete gap this closes:
+ * `SeamLevel: 'workspace'` and `kind: 'cross_repo_contract'` were declared in
+ * the type but nothing ever set them, because the exit-point/entry-point
+ * matching a workspace's sibling repos need already lives in a
+ * differently-shaped mechanism — `extractInterfaces`/`buildLinks` above,
+ * expressed as `SystemApplicationLink` (mode sync/async/passive/stream,
+ * confidence, `evidence_quality`, real route/topic/import evidence) — rather
+ * than the `CommunicationSeam` vocabulary. This function is the unification
+ * the spec calls for: it re-expresses the ALREADY-MATCHED cross-repo
+ * application links as `CommunicationSeam` records (never re-deriving the
+ * match itself, so it inherits exactly the evidence quality the link
+ * already carries), and adds the one class neither mechanism covered: two
+ * repos independently declaring the same third-party runtime dependency
+ * (§0.8.3, `buildSharedDependencySeams` below).
+ *
+ * Direction: `application_links` source/target already carry a resolved
+ * direction for `http-call`/`message-flow`/`stream-flow`/`sdk-install` — the
+ * matching that produced them established who calls/imports whom (see
+ * `buildLinks`/`inferInternalDependencyLinks`). `shared-data` links and the
+ * shared-dependency seams below carry no such evidence (two repos
+ * independently touching the same resource/package is symmetric), so those
+ * seams are `passive` and undirected by construction — the same convention
+ * `classifyCommunicationSeams` uses for its own `passive_state` seams. This
+ * function never invents a producer/consumer direction it cannot evidence:
+ * a shared-type match (routed through `shared-data`, itself sourced from
+ * `detectSharedEntityLinks`'s name-correlation, §0.8.2) stays undirected for
+ * the same reason task #128 flags entity anchoring as direction-blind today
+ * (it records CONSUMED contract types, never PRODUCED/emitted ones) — an
+ * inverted seam would be worse than a missing one.
+ *
+ * The fourth mode: a cross-repo `stream-flow` link (SSE/websocket) has no
+ * sync/async/passive analogue in the intra-repo taxonomy (§0.8.4's "fourth
+ * mode" gap). A stream is a continuous push with no single blocking reply,
+ * closer to fire-and-forget than request/response, so it maps to `async`
+ * here — the original mode is preserved on `metadata.original_mode` so a
+ * caller that must distinguish a one-shot message from a persistent stream
+ * still can.
+ *
+ * Absent (not returned) when fewer than 2 codebases compose the workspace —
+ * §0.9's both-extremes rule: a workspace with 0 or 1 member has no sibling to
+ * seam against, and MUST NOT carry a zero-filled inventory pretending it does.
+ */
+export function buildWorkspaceCommunicationSeams(
+  codebases: SystemCodebase[],
+  applicationLinks: SystemApplicationLink[],
+  repositories: CrossCodebaseInput[],
+): CommunicationSeamsResult | undefined {
+  if (codebases.length < 2) return undefined;
+
+  const nameByCodebaseId = new Map(codebases.map(codebase => [codebase.id, codebase.name]));
+  const seams: CommunicationSeam[] = [];
+  let seamSeq = 0;
+  const nextSeamId = (prefix: string) => `wseam_${prefix}_${(seamSeq += 1)}`;
+
+  for (const link of applicationLinks) {
+    // Intra-repo links are already covered by that repo's own
+    // communication_seams.deployable_inventory (§0.8.5 — a parent does not
+    // re-derive a child's own already-computed facts).
+    if (link.source_codebase_id === link.target_codebase_id) continue;
+    const source = nameByCodebaseId.get(link.source_codebase_id);
+    const target = nameByCodebaseId.get(link.target_codebase_id);
+    if (!source || !target) continue;
+
+    const kind = mapApplicationLinkKindToSeamKind(link.kind);
+    if (!kind) continue;
+    const modality: SeamModality = link.mode === 'stream' ? 'async' : link.mode;
+
+    seams.push({
+      id: nextSeamId(link.kind),
+      modality,
+      confidence: link.confidence,
+      kind,
+      source,
+      target,
+      evidence: link.evidence.length > 0 ? link.evidence.join('; ') : link.id,
+      summary: `${source} --${modality}--> ${target} (${link.kind})`,
+      ...(modality === 'passive' ? { shared_resource: link.source_application_name || link.target_application_name } : {}),
+      metadata: {
+        application_link_id: link.id,
+        evidence_quality: link.evidence_quality,
+        original_kind: link.kind,
+        original_mode: link.mode,
+      },
+    });
+  }
+
+  seams.push(...buildSharedDependencySeams(codebases, repositories, nextSeamId));
+
+  const workspaceInventory = buildSeamInventory(seams, 'workspace');
+  return {
+    seams,
+    inventory: workspaceInventory,
+    workspace_inventory: workspaceInventory,
+  };
+}
+
+function mapApplicationLinkKindToSeamKind(kind: SystemApplicationLink['kind']): CommunicationSeam['kind'] | undefined {
+  switch (kind) {
+    case 'http-call':
+    case 'message-flow':
+    case 'stream-flow':
+      // A resolved cross-repo route/topic match — exactly the declared-but-
+      // unimplemented `cross_repo_contract` kind (§0.8.1, §0.8.4).
+      return 'cross_repo_contract';
+    case 'sdk-install':
+      // A repo importing/using another repo's package — a directed code
+      // dependency, the same shape as a node-level `sdk` exit point.
+      return 'exit_point';
+    case 'shared-data':
+      return 'passive_state';
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * §0.8.3's second unimplemented class: two sub-CAS nodes independently
+ * declaring the same third-party runtime dependency, visible in each one's
+ * own `dependency_manifest` today but never correlated into a finding.
+ * Evidence-gated on an EXACT (ecosystem, package name) match against each
+ * repo's own deterministically-extracted `CASDeclaredDependency` rows —
+ * never a name-similarity heuristic. Filtered to `scopes.includes('runtime')`
+ * (a structural fact already on the dependency record, not a name list) so a
+ * shared devDependency (eslint, a test runner) — real but not a communication
+ * coupling — does not inflate the seam count.
+ *
+ * Always `passive` and undirected: co-declaring a dependency carries no
+ * producer/consumer evidence (see the direction note on
+ * buildWorkspaceCommunicationSeams above), so `source`/`target` are ordered
+ * by codebase id only for a stable, single edge per pair — never asserting
+ * which side "leads".
+ */
+function buildSharedDependencySeams(
+  codebases: SystemCodebase[],
+  repositories: CrossCodebaseInput[],
+  nextSeamId: (prefix: string) => string,
+): CommunicationSeam[] {
+  const seams: CommunicationSeam[] = [];
+  const repoByCodebaseId = new Map(repositories.map(repository => [codebaseId(repository.path), repository]));
+  const nameByCodebaseId = new Map(codebases.map(codebase => [codebase.id, codebase.name]));
+
+  const declaredBy = new Map<string, Array<{ codebaseId: string; manifests: string[] }>>();
+  for (const codebase of codebases) {
+    const repository = repoByCodebaseId.get(codebase.id);
+    const dependencies = repository?.cas.dependency_manifest?.dependencies || [];
+    for (const dependency of dependencies) {
+      if (!dependency.scopes.includes('runtime')) continue;
+      const key = `${dependency.ecosystem}:${dependency.name}`;
+      const list = declaredBy.get(key) || [];
+      list.push({ codebaseId: codebase.id, manifests: dependency.declared_in });
+      declaredBy.set(key, list);
+    }
+  }
+
+  const seen = new Set<string>();
+  for (const [key, declarations] of declaredBy) {
+    if (declarations.length < 2) continue;
+    const [ecosystem, depName] = key.split(/:(.+)/);
+    for (let i = 0; i < declarations.length; i++) {
+      for (let j = i + 1; j < declarations.length; j++) {
+        const left = declarations[i];
+        const right = declarations[j];
+        if (left.codebaseId === right.codebaseId) continue;
+        const [a, b] = left.codebaseId < right.codebaseId ? [left, right] : [right, left];
+        const pairKey = `${key}|${a.codebaseId}|${b.codebaseId}`;
+        if (seen.has(pairKey)) continue;
+        seen.add(pairKey);
+        const sourceName = nameByCodebaseId.get(a.codebaseId);
+        const targetName = nameByCodebaseId.get(b.codebaseId);
+        if (!sourceName || !targetName) continue;
+        seams.push({
+          id: nextSeamId('dep'),
+          modality: 'passive',
+          // Weakest evidence band this file emits: co-declaration is real but
+          // unlike a passive_state (shared, observed data access) it is not
+          // an observed interaction, only a structural coupling risk.
+          confidence: 0.55,
+          kind: 'shared_dependency',
+          source: sourceName,
+          target: targetName,
+          evidence: `dependency:${depName}@${ecosystem} in ${a.manifests.join(',') || 'unknown'} & ${b.manifests.join(',') || 'unknown'}`,
+          summary: `${sourceName} --passive(${depName})--> ${targetName} (shared dependency)`,
+          shared_resource: depName,
+          metadata: { ecosystem, dependency: depName },
+        });
+      }
+    }
+  }
+  return seams;
+}
+
 export function buildCrossCodebaseSystemGraph(
   name: string,
   repositories: CrossCodebaseInput[],
@@ -1339,6 +1550,7 @@ export function buildCrossCodebaseSystemGraph(
   const qualityFlags = buildWorkspaceQualityFlags(workspaceNarrative, capabilities, domains, entityMap.entities, codebases, interfaces, applicationLinks, unmatchedInterfaces);
   const detailViews = buildWorkspaceDetailViews(codebases, applications, distributionUnits, interfaces, runtimeComponents, runtimeLinks, applicationLinks, systemInsights, dataFlowPaths, entityMap.entities, entityMap.paths, unmatchedInterfaces, validation, workspaceNarrative, composition, ownership, activity, telemetry, health, riskAreas, capabilities, workflows, environments, infrastructureOverlay, sharedCodeRollup);
   const workspaceComplexity = computeWorkspaceComplexity(codebases, repositories, applications, runtimeLinks);
+  const communicationSeams = buildWorkspaceCommunicationSeams(codebases, applicationLinks, repositories);
 
   const graph: CrossCodebaseSystemGraph = {
     analysis_kind: 'workspace',
@@ -1389,6 +1601,7 @@ export function buildCrossCodebaseSystemGraph(
     validation,
     quality_flags: qualityFlags,
     ...(workspaceComplexity ? { workspace_complexity: workspaceComplexity } : {}),
+    ...(communicationSeams ? { communication_seams: communicationSeams } : {}),
     summary: summarize(codebases, applications, deployables, distributionUnits, interfaces, runtimeComponents, runtimeLinks, applicationLinks, systemInsights, links, unmatchedInterfaces, composition, riskAreas, capabilities, workflows, domains, entityMap.entities, entityMap.paths, workflowsAll.length),
   };
   normalizeWorkspaceNextMcpCalls(graph);

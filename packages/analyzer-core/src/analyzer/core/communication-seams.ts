@@ -46,8 +46,15 @@ export interface CommunicationSeam {
   /** The kind of fact this seam derives from. `device_io` is an `exit_point`
    *  whose resolved library/class identifier names a serial/USB/HID device
    *  API — a physical-hardware boundary, called out distinctly from generic
-   *  in-process `sdk` calls so it reads as its own seam class. */
-  kind: 'exit_point' | 'messaging' | 'passive_state' | 'cross_repo_contract' | 'device_io';
+   *  in-process `sdk` calls so it reads as its own seam class. `cross_repo_contract`
+   *  is a workspace-level seam whose evidence is a resolved route/topic/package
+   *  match between one sub-CAS node's exit point and another's entry point (see
+   *  buildWorkspaceCommunicationSeams in apps/mcp-server/src/cross-codebase-analysis.ts).
+   *  `shared_dependency` is a workspace-level seam whose evidence is two sub-CAS
+   *  nodes independently declaring the same third-party runtime dependency — a
+   *  coupling finding, not an observed interaction, so it is always `passive`
+   *  and always undirected. */
+  kind: 'exit_point' | 'messaging' | 'passive_state' | 'cross_repo_contract' | 'device_io' | 'shared_dependency';
   /** Component that initiates / writes. */
   source: string;
   /** Component that serves / reads / the external target. */
@@ -83,6 +90,14 @@ export interface CommunicationSeamsResult {
   inventory: CommunicationSeamInventory;
   /** Deployable-level rollup (deployable-to-deployable). Present when deployables exist. */
   deployable_inventory?: CommunicationSeamInventory;
+  /** Workspace-level rollup (repo-to-repo, `level: 'workspace'`). Built by
+   *  buildWorkspaceCommunicationSeams in apps/mcp-server/src/cross-codebase-analysis.ts
+   *  from cross-repo link evidence (resolved routes, topics, shared contract
+   *  types, shared third-party dependencies) — the single-repo orchestrator
+   *  never sets this field itself, since a single CASOutput has no sibling
+   *  sub-CAS node to seam against. Present only when >= 2 repos compose the
+   *  workspace (§0.9 both-extremes rule). */
+  workspace_inventory?: CommunicationSeamInventory;
 }
 
 let seq = 0;
@@ -444,7 +459,7 @@ export function classifyCommunicationSeams(
     }
   }
 
-  const inventory = buildInventory(seams, 'node');
+  const inventory = buildSeamInventory(seams, 'node');
 
   const result: CommunicationSeamsResult = { seams, inventory };
 
@@ -468,7 +483,7 @@ export function classifyCommunicationSeams(
   // exactly one thing.
   const distinctShipRoots = new Set(deployableRoots.map(r => r.root || '.'));
   if (distinctShipRoots.size >= 2) {
-    result.deployable_inventory = buildInventory(seams, 'deployable');
+    result.deployable_inventory = buildSeamInventory(seams, 'deployable');
   }
 
   return result;
@@ -501,10 +516,10 @@ export function mergeSeams(
   }
   const result: CommunicationSeamsResult = {
     seams: merged,
-    inventory: buildInventory(merged, base.inventory.level),
+    inventory: buildSeamInventory(merged, base.inventory.level),
   };
   if (base.deployable_inventory) {
-    result.deployable_inventory = buildInventory(merged, base.deployable_inventory.level);
+    result.deployable_inventory = buildSeamInventory(merged, base.deployable_inventory.level);
   }
   return result;
 }
@@ -512,8 +527,11 @@ export function mergeSeams(
 /** Aggregate seams into a component-to-component inventory at the given level.
  *  At node level, source/target are used as-is (module components). At
  *  deployable level they are already deployable names for deployable-owned
- *  files; module/external keys pass through so nothing is dropped. */
-function buildInventory(seams: CommunicationSeam[], level: SeamLevel): CommunicationSeamInventory {
+ *  files; module/external keys pass through so nothing is dropped. Exported so
+ *  a workspace-level composer (which has seams already classified from
+ *  cross-repo evidence — see buildWorkspaceCommunicationSeams) can build the
+ *  same shape of inventory without duplicating the aggregation logic. */
+export function buildSeamInventory(seams: CommunicationSeam[], level: SeamLevel): CommunicationSeamInventory {
   const counts = { sync: 0, async: 0, passive: 0, total: 0 };
   const byEdge = new Map<
     string,
