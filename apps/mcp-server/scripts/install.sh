@@ -122,7 +122,11 @@ install_binary() {
   mv "${TMP_BIN}" "${INSTALL_DIR}/klauro"
   trap - EXIT
   rm -rf "${TMP_DIR}"
-  echo "  Installed self-contained klauro to ${INSTALL_DIR}/klauro (no Node.js required)."
+  # Say what happened, not how it was built. A customer never had a Node
+  # dependency to be relieved of, so "self-contained"/"no Node.js required"
+  # advertises a problem they never had — it is our implementation history,
+  # not their outcome.
+  echo "  Installed klauro to ${INSTALL_DIR}/klauro"
   return 0
 }
 
@@ -132,14 +136,16 @@ install_binary() {
 # upper Node-version bound (see the top-of-file note — the published tarball
 # has never had anything to compile, on any Node version).
 install_via_npm_fallback() {
+  # Tell the customer only what affects them: no build for their platform, so
+  # this route needs Node. Our own view of this path — that it is an emergency
+  # route, not the primary one, and that we would like their platform reported —
+  # is internal and belongs in the comment above, not in their terminal.
   echo ""
-  echo "  EMERGENCY FALLBACK: no verified self-contained binary for this platform"
-  echo "  (${OS_NAME}/${ARCH_NAME}). Falling back to the npm-based install."
-  echo "  This is not the primary supported path — please report your platform"
-  echo "  so a binary can be published for it."
+  echo "  No prebuilt klauro is available for ${OS_NAME}/${ARCH_NAME}."
+  echo "  Installing via npm instead, which requires Node.js."
   echo ""
   if ! command -v node >/dev/null 2>&1; then
-    echo "Error: Node.js is not installed, and no self-contained binary is available for this platform."
+    echo "Error: klauro can't be installed on ${OS_NAME}/${ARCH_NAME} without Node.js."
     echo "Install Node.js from https://nodejs.org, then re-run this installer."
     exit 1
   fi
