@@ -1308,7 +1308,7 @@ export class AnalyzerOrchestrator {
     entryPoints: CASEntryPoint[],
     cas: Pick<
       CASOutput,
-      'nodes' | 'edges' | 'entry_points' | 'exit_points' | 'call_chains' | 'data_lineage' | 'system_capabilities' | 'behavior_surfaces'
+      'nodes' | 'edges' | 'entry_points' | 'exit_points' | 'call_chains' | 'data_lineage' | 'system_capabilities' | 'behavior_surfaces' | 'data_entities'
     >,
     flowGraph?: CASFlowGraph
   ): CASEntryPoint[] {
@@ -1391,7 +1391,7 @@ export class AnalyzerOrchestrator {
         }
       }
 
-      this.rollupSystemCapabilityDependencies(flows, cas.system_capabilities || []);
+      this.rollupSystemCapabilityDependencies(flows, cas.system_capabilities || [], cas.data_entities || []);
 
       // Structural cast: CASEntryPoint's `input.fields` is optional (real CAS
       // shape) while EntryPointLike's normalized EntryPointInputShape.fields
@@ -1443,6 +1443,7 @@ export class AnalyzerOrchestrator {
   private rollupSystemCapabilityDependencies(
     flows: Array<Pick<FlowConcept, 'flow_id' | 'capability_id' | 'capability_relationships'>>,
     capabilities: SystemCapability[],
+    dataEntities: CASDataEntity[] = [],
   ): void {
     const depPairs = new Map<string, { from: string; to: string; count: number }>();
     for (const flow of flows) {
@@ -1462,6 +1463,50 @@ export class AnalyzerOrchestrator {
     const capById = new Map<string, SystemCapability>();
     for (const cap of capabilities) capById.set(cap.id, cap);
 
+    // TASK #128 — directional evidence, not just the flow-ownership proxy.
+    // The pairing above ("primary flow owner P also touches capability C's
+    // entities") only ever proves RELEVANCE, never PRODUCE/CONSUME direction
+    // — it is symmetric with respect to which side actually emits data and
+    // which side reads it. Real direction is already a Tier-1 fact once an
+    // entity's `lifecycle` correctly attributes writers vs. readers (see
+    // `attributeMessagingEmissionLifecycle`, which closes the gap where a
+    // message/event producer's own write was previously invisible). When a
+    // shared entity's lifecycle shows one capability's own operation nodes
+    // as a pure WRITER (created_by/updated_by/deleted_by) and the other's as
+    // a pure READER (read_by only, no write), the true dependency runs
+    // reader -> writer (a consumer depends on its producer) regardless of
+    // which capability happened to own the flow that surfaced the pairing —
+    // so the pair is emitted with `from`/`to` swapped from the flow-
+    // ownership proxy whenever that evidence contradicts it. Ambiguous
+    // cases (both sides write, both sides only read, or no capability-level
+    // node evidence to check) fall back to the original proxy direction
+    // unchanged — this corrects, it does not replace, the existing signal.
+    const entityById = new Map(dataEntities.map(entity => [entity.id, entity]));
+    const capNodeIds = new Map<string, Set<string>>();
+    for (const cap of capabilities) {
+      const ids = new Set<string>();
+      for (const op of cap.operations || []) {
+        if (op.entry_point_id?.startsWith('node:')) ids.add(op.entry_point_id.slice('node:'.length));
+      }
+      capNodeIds.set(cap.id, ids);
+    }
+    const capWritesEntity = (capId: string, entity: CASDataEntity): boolean => {
+      const nodeIds = capNodeIds.get(capId);
+      if (!nodeIds || nodeIds.size === 0) return false;
+      const writers = [
+        ...(entity.lifecycle?.created_by || []),
+        ...(entity.lifecycle?.updated_by || []),
+        ...(entity.lifecycle?.deleted_by || []),
+      ];
+      return writers.some(id => nodeIds.has(id));
+    };
+    const capReadsOnlyEntity = (capId: string, entity: CASDataEntity): boolean => {
+      const nodeIds = capNodeIds.get(capId);
+      if (!nodeIds || nodeIds.size === 0) return false;
+      if (capWritesEntity(capId, entity)) return false;
+      return (entity.lifecycle?.read_by || []).some(id => nodeIds.has(id));
+    };
+
     const dependsOnById = new Map<string, CASCapabilityDependency[]>();
     const dependedByById = new Map<string, Set<string>>();
     for (const { from, to, count } of depPairs.values()) {
@@ -1473,9 +1518,41 @@ export class AnalyzerOrchestrator {
       if (!fromCap || !toCap) continue;
       const sharedEntities = (fromCap.related_entities || [])
         .filter(e => (toCap.related_entities || []).includes(e));
+
+      let directedFrom = from;
+      let directedTo = to;
+      let directedFromCap = fromCap;
+      let directedToCap = toCap;
+      if (sharedEntities.length > 0) {
+        const toReadsFromWrites = sharedEntities.some(entityId => {
+          const entity = entityById.get(entityId);
+          if (!entity) return false;
+          return capWritesEntity(from, entity) && capReadsOnlyEntity(to, entity);
+        });
+        const fromReadsToWrites = !toReadsFromWrites && sharedEntities.some(entityId => {
+          const entity = entityById.get(entityId);
+          if (!entity) return false;
+          return capWritesEntity(to, entity) && capReadsOnlyEntity(from, entity);
+        });
+        if (fromReadsToWrites) {
+          // The flow-ownership proxy pointed the wrong way: `to` is the real
+          // producer and `from` only reads what `to` writes, so the real
+          // dependency is `from` depends on `to` — already the direction as
+          // stored, no swap needed, only the rationale differs (kept below).
+        } else if (toReadsFromWrites) {
+          // `from` (the flow owner) is the real producer and `to` only
+          // reads it — the true dependency is the opposite of the proxy:
+          // `to` depends on `from`, not the reverse.
+          directedFrom = to;
+          directedTo = from;
+          directedFromCap = toCap;
+          directedToCap = fromCap;
+        }
+      }
+
       const dep: CASCapabilityDependency = {
-        from_capability: from,
-        to_capability: to,
+        from_capability: directedFrom,
+        to_capability: directedTo,
         dependency_type: sharedEntities.length > 0 ? 'shares-data' : 'uses',
         strength: count > 2 ? 'common' : 'optional',
         evidence: {
@@ -1484,12 +1561,12 @@ export class AnalyzerOrchestrator {
           shared_nodes: [],
           call_count: count,
         },
-        description: `${count} shared flow${count > 1 ? 's' : ''} between "${fromCap.name}" and "${toCap.name}"`,
+        description: `${count} shared flow${count > 1 ? 's' : ''} between "${directedFromCap.name}" and "${directedToCap.name}"`,
       };
-      if (!dependsOnById.has(from)) dependsOnById.set(from, []);
-      dependsOnById.get(from)!.push(dep);
-      if (!dependedByById.has(to)) dependedByById.set(to, new Set());
-      dependedByById.get(to)!.add(from);
+      if (!dependsOnById.has(directedFrom)) dependsOnById.set(directedFrom, []);
+      dependsOnById.get(directedFrom)!.push(dep);
+      if (!dependedByById.has(directedTo)) dependedByById.set(directedTo, new Set());
+      dependedByById.get(directedTo)!.add(directedFrom);
     }
 
     for (const cap of capabilities) {
@@ -1943,6 +2020,7 @@ export class AnalyzerOrchestrator {
       allNodes,
       projectPath
     );
+    this.attributeMessagingEmissionLifecycle(dataEntities, allNodes);
     logTiming('pp_dataEntities', phaseStart);
     await yieldToEventLoop();
     phaseStart = startPhase();
@@ -2423,6 +2501,7 @@ export class AnalyzerOrchestrator {
       data_lineage: dataLineage,
       system_capabilities: systemCapabilities,
       behavior_surfaces: behaviorSurfaces,
+      data_entities: dataEntities,
     }, flowGraph);
     logTiming('pp_entryPointContractCapability', phaseStart);
     await yieldToEventLoop();
@@ -2758,6 +2837,7 @@ export class AnalyzerOrchestrator {
             data_lineage: dataLineage,
             system_capabilities: systemCapabilities,
             behavior_surfaces: behaviorSurfaces,
+            data_entities: dataEntities,
           }, flowGraph);
           // The AI pass can populate a previously-empty catalog; output holds
           // `undefined` in that case (assembly gated on length), so re-point it.
@@ -3587,6 +3667,7 @@ export class AnalyzerOrchestrator {
       nodes,
       projectPath
     );
+    this.attributeMessagingEmissionLifecycle(dataEntities, nodes);
     const dataSummary = this.buildDataSummary(dataEntities, nodes);
     const productEntryPointsForSecurity = this.filterPrimaryProductEntryPoints(entryPoints, nodes, projectPath);
     const securityBoundaries = this.buildSecurityBoundaries(nodes, entryPoints, projectPath, edges);
@@ -3866,6 +3947,7 @@ export class AnalyzerOrchestrator {
       data_lineage: dataLineage,
       system_capabilities: systemCapabilities,
       behavior_surfaces: behaviorSurfaces,
+      data_entities: dataEntities,
     }, flowGraph);
 
     // Reachability index rebuilt over the FRESH node/edge graph (method_calls
@@ -20412,12 +20494,64 @@ export class AnalyzerOrchestrator {
     return { core, op };
   }
 
-  /** CRUD bucket for an access edge type (creates/reads/updates/deletes/...). */
+  /**
+   * TASK #128 — messaging emission/consumption lifecycle. A handler that
+   * constructs and publishes a message/event payload PRODUCES that payload
+   * type exactly as a repository `.save()` call produces a persisted row —
+   * but `addConstructedEntityPersistEdges` (typescript-javascript-analyzer.ts)
+   * only ever emits a `creates` edge when the constructed class is passed to
+   * a call classified `isRepositoryCall` (a DB-shaped receiver), so a
+   * message/event DTO's `lifecycle` stayed permanently empty on the producer
+   * side, and equally invisible on the consumer side. The messaging analyzer
+   * (libraries/messaging/messaging-analyzer.ts) already extracts the real
+   * payload type name onto every producer/consumer/worker/listener node's
+   * own `metadata.payloadType` — this was never joined to the matching
+   * data-shape entity by anything downstream (verified: `payloadType` has no
+   * other reader in this codebase). Joining it here, once, against the
+   * already-built entity list makes produced-vs-consumed a TIER-1 fact
+   * (`CASDataEntity.lifecycle.created_by`/`read_by`) available to every
+   * downstream consumer — capability entity anchoring
+   * (`buildSystemCapabilities`), flow entity matching (`entitiesForNodes` in
+   * flow-concepts.ts), and the capability-dependency rollup above — without
+   * any of them re-deriving direction themselves. Evidence-only: an entity
+   * is touched only on an EXACT payload-type-name match against a real
+   * producer/consumer node's own metadata; no fuzzy/substring matching, no
+   * vocabulary, and a name with no matching entity is left alone (never
+   * fabricates an entity).
+   */
+  private attributeMessagingEmissionLifecycle(entities: CASDataEntity[], nodes: CASNode[]): void {
+    if (entities.length === 0 || nodes.length === 0) return;
+    const entityByName = new Map<string, CASDataEntity>();
+    for (const entity of entities) {
+      if (entity.name) entityByName.set(entity.name, entity);
+    }
+    if (entityByName.size === 0) return;
+    const PRODUCER_TYPES = new Set(['producer']);
+    const CONSUMER_TYPES = new Set(['consumer', 'worker', 'listener']);
+    for (const node of nodes) {
+      if (!PRODUCER_TYPES.has(node.type) && !CONSUMER_TYPES.has(node.type)) continue;
+      const payloadType = (node.metadata as { payloadType?: string } | undefined)?.payloadType;
+      if (!payloadType) continue;
+      const entity = entityByName.get(payloadType);
+      if (!entity) continue;
+      if (!entity.lifecycle) entity.lifecycle = { created_by: [], read_by: [], updated_by: [], deleted_by: [] };
+      if (PRODUCER_TYPES.has(node.type)) {
+        if (!entity.lifecycle.created_by.includes(node.id)) entity.lifecycle.created_by.push(node.id);
+      } else {
+        if (!entity.lifecycle.read_by.includes(node.id)) entity.lifecycle.read_by.push(node.id);
+      }
+    }
+  }
+
   private crudBucketFromEdgeType(edgeType: string): 'create' | 'read' | 'update' | 'delete' | undefined {
-    if (edgeType === 'creates') return 'create';
+    // 'produces'/'consumes' (messaging-analyzer.ts) are the emission-side
+    // analogue of 'creates'/'reads' for a message/event payload — a
+    // publisher PRODUCES the entity it emits exactly as a repository call
+    // CREATES the row it persists (task #128).
+    if (edgeType === 'creates' || edgeType === 'produces') return 'create';
     if (edgeType === 'updates' || edgeType === 'writes' || edgeType === 'persists' || edgeType === 'saves' || edgeType === 'mutates') return 'update';
     if (edgeType === 'deletes') return 'delete';
-    if (edgeType === 'reads' || edgeType === 'queries') return 'read';
+    if (edgeType === 'reads' || edgeType === 'queries' || edgeType === 'consumes') return 'read';
     return undefined;
   }
 
