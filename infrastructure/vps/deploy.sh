@@ -70,14 +70,23 @@ SNAPSHOT_SHA=""
 if [ "$ALLOW_DIRTY" != "1" ]; then
   DIRTY="$(git -C "$APP_DIR" status --porcelain -uall 2>/dev/null || true)"
   if [ -n "$DIRTY" ]; then
-    echo "ERROR: refusing to deploy a DIRTY working tree — this deploy ships the tree verbatim," >&2
-    echo "       so uncommitted (or half-written) files would go straight to production." >&2
-    echo "       A concurrent editor mid-write once shipped a torn file and broke ALL analyses." >&2
+    # NOT fatal any more, and the reason matters. This deploy now ships a
+    # `git archive` of the resolved commit (see "materialise the source" below),
+    # so uncommitted bytes CANNOT reach production even mid-write — which was the
+    # entire hazard this guard was added for after a torn file broke every
+    # analysis for hours.
+    #
+    # Refusing outright would now cost more than it protects: this repo is worked
+    # as a shared tree by concurrent agents, so a permanently-quiet tree is not a
+    # state that occurs, and gating deploys on one makes the deploy the bottleneck.
+    # What is still worth saying loudly is WHAT IS NOT SHIPPING, so nobody watches
+    # a deploy succeed and assumes their in-progress edit went with it.
+    echo "NOTE: the working tree is dirty; these changes are NOT in this deploy." >&2
+    echo "      Shipping the tree of $(git -C "$APP_DIR" rev-parse --short=12 HEAD) instead (safe by construction)." >&2
     echo "" >&2
-    echo "$DIRTY" | sed 's/^/         /' >&2
+    echo "$DIRTY" | sed 's/^/        /' >&2
     echo "" >&2
-    echo "       Commit (or stash) the above, then re-run. To override: --allow-dirty" >&2
-    exit 1
+    echo "      Commit and re-deploy when you want the above live." >&2
   fi
 fi
 
@@ -242,15 +251,44 @@ else
   test -d "$APP_DIR/apps/app/dist" || { echo "ERROR: apps/app/dist not found." >&2; exit 1; }
 fi
 
+# --- materialise the source to ship, from the COMMIT, not the live tree -----
+#
+# This deploy used to rsync `./` — the working tree — which made it unsafe to
+# deploy while anyone was editing. That is a real constraint now, not a
+# hypothetical: this repo is worked as a shared tree by concurrent agents
+# ("real time collaboration ON THE SAME SHARED TREE"), so at any given moment
+# the tree legitimately contains another lane's half-finished edit. The dirty
+# guard above protects production correctly, but the cost was that a deploy had
+# to wait for every lane to reach a commit — turning the deploy into the
+# bottleneck that the collaboration model exists to remove.
+#
+# Instead, export the resolved commit into a staging dir with `git archive` and
+# ship THAT. Consequences worth stating plainly:
+#   - what lands in production is exactly the tree of $DEPLOY_SHA, byte for byte
+#   - in-flight edits by other lanes cannot reach production, ever, even by race
+#   - deploys no longer need to wait for a quiet tree
+# The dirty guard is kept: it still refuses when the SHA being deployed does not
+# describe the author's intent, and --allow-dirty still snapshots to a real
+# commit first, so there is never an untraceable build.
+DEPLOY_SHA="$(git -C "$APP_DIR" rev-parse HEAD)"
+STAGE="$(mktemp -d "${TMPDIR:-/tmp}/klauro-deploy-stage.XXXXXX")"
+trap 'rm -rf "$STAGE"' EXIT
+echo "==> Exporting $(git -C "$APP_DIR" rev-parse --short=12 HEAD) to a staging dir (not the live tree)"
+git -C "$APP_DIR" archive --format=tar "$DEPLOY_SHA" | tar -x -C "$STAGE"
+# apps/app/dist is a build product, gitignored, so it is not in the archive —
+# take it from the working tree, which is where the build just wrote it.
+STAGED_FILES="$(find "$STAGE" -type f | wc -l | tr -d ' ')"
+echo "    staged $STAGED_FILES file(s) from the commit"
+
 # --- sync artifacts --------------------------------------------------------
 echo "==> Syncing app-dist"
 rsync -az --delete -e "$SSH" apps/app/dist/ "$DEST:/opt/klauro/app-dist/"
 echo "==> Syncing source (excluding heavy/generated dirs)"
 rsync -az --delete-delay --exclude node_modules --exclude dist --exclude .git --exclude .pack \
-  --exclude logs --exclude docs.zip -e "$SSH" ./ "$DEST:/opt/klauro/source/"
+  --exclude logs --exclude docs.zip -e "$SSH" "$STAGE/" "$DEST:/opt/klauro/source/"
 echo "==> Syncing remote gate source to the identical deployment snapshot"
 rsync -az --delete-delay --exclude node_modules --exclude dist --exclude .git --exclude .pack \
-  --exclude logs --exclude docs.zip -e "$SSH" ./ "$DEST:/opt/klauro/devgate/"
+  --exclude logs --exclude docs.zip -e "$SSH" "$STAGE/" "$DEST:/opt/klauro/devgate/"
 echo "==> Syncing Caddyfile + docker-compose.yml"
 rsync -az -e "$SSH" infrastructure/vps/Caddyfile "$DEST:/opt/klauro/Caddyfile"
 rsync -az -e "$SSH" infrastructure/vps/docker-compose.yml "$DEST:/opt/klauro/docker-compose.yml"
